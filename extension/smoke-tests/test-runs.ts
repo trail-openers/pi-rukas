@@ -29,7 +29,15 @@ function assert(cond: boolean, msg: string) {
 }
 
 const stat = await fs.stat(ENSEMBLE_DIR).catch(() => null);
-assert(stat?.isDirectory() === true, `ensemble-runs dir exists at ${ENSEMBLE_DIR}`);
+if (!stat?.isDirectory()) {
+  // Fresh CI / first run — no spawns yet, so no transcripts. The runs.ts
+  // command handler already handles this case (empty list, friendly notify).
+  // Nothing more to assert here.
+  console.log(`◯ ensemble-runs dir not present yet (${ENSEMBLE_DIR}) — skipping`);
+  console.log(`\nexit ${exit}`);
+  process.exit(exit);
+}
+console.log(`✓ ensemble-runs dir exists at ${ENSEMBLE_DIR}`);
 
 const dates = await fs.readdir(ENSEMBLE_DIR);
 assert(dates.length > 0, `at least one date subdir present (found ${dates.length})`);
