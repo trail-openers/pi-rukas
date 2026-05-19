@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install jq (build.sh dependency)
+        run: |
+          if ! command -v jq >/dev/null; then sudo apt-get install -y jq; fi
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('extension/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Build per-role system prompts
+        run: bun run build
+
+      - name: Install extension deps
+        working-directory: extension
+        run: bun install --frozen-lockfile
+
+      - name: Type-check
+        working-directory: extension
+        run: bunx tsc --noEmit
+
+      - name: Lint (biome)
+        working-directory: extension
+        run: bun run check
+
+      - name: Offline smoke tests
+        working-directory: extension
+        run: |
+          bun run smoke-tests/test-command-flow.ts
+          bun run smoke-tests/test-lens-review.ts
+          bun run smoke-tests/test-models.ts
+          bun run smoke-tests/test-runs.ts

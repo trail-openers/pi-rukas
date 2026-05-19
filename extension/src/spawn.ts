@@ -1,0 +1,264 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { createInterface } from "node:readline";
+import { resolveModel } from "./models.ts";
+import { ROLES, isRoleName } from "./roles.ts";
+import type { DispatchResult, DispatchSpec } from "./types.ts";
+
+interface SpawnOptions {
+  timeoutMs?: number;
+  /**
+   * Group children from the same dispatch_parallel call under a shared id so
+   * their session files sort together on disk.
+   */
+  runId?: string;
+  /** Sequence number within a parallel batch (helps disambiguate identical roles). */
+  seq?: number;
+  /**
+   * Extra Pi CLI flags to insert before the positional prompt. Used by
+   * specialised dispatchers (e.g. lens review pinning a specific --skill).
+   */
+  extraArgs?: string[];
+  /**
+   * Optional tag appended to the transcript filename (e.g. "security",
+   * "performance"). Distinguishes children sharing the same role within a
+   * single parallel batch.
+   */
+  tag?: string;
+}
+
+/**
+ * Where per-child transcripts live. One file per spawned specialist, grouped
+ * by date so old runs are easy to prune. The user can `pi --session <path>`
+ * to replay or just open the JSON.
+ */
+function transcriptPathFor(role: string, runId: string, seq?: number, tag?: string): string {
+  const piAgentDir = process.env.PI_AGENT_DIR ?? path.join(os.homedir(), ".pi", "agent");
+  const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const parts = [role];
+  if (tag) parts.push(tag);
+  if (seq != null) parts.push(String(seq));
+  return path.join(piAgentDir, "ensemble-runs", date, `${runId}-${parts.join("-")}.json`);
+}
+
+export function makeRunId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// Pi --mode json event shape (Pi 0.75.3). The canonical assembled answer is at
+// agent_end.messages[]; usage stats come from message_end.message.usage on
+// assistant messages.
+interface PiContentBlock {
+  type: "text" | "thinking" | "toolCall" | string;
+  text?: string;
+  thinking?: string;
+  id?: string;
+  name?: string;
+  arguments?: unknown;
+}
+interface PiUsage {
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  cost?: { total?: number };
+}
+interface PiMessage {
+  role: "user" | "assistant";
+  content?: PiContentBlock[];
+  toolResults?: unknown[];
+  usage?: PiUsage;
+  model?: string;
+  stopReason?: string;
+}
+interface PiJsonEvent {
+  type?: string;
+  messages?: PiMessage[];
+  message?: PiMessage;
+}
+
+/**
+ * Resolve the pi binary. When this code runs inside a pi process (the
+ * extension is loaded), argv[1] is Pi's CLI entry script and we re-invoke the
+ * SAME pi build (avoids PATH ambiguity, matches Pi's own subagent example).
+ *
+ * When this code runs outside Pi (smoke tests under `bun run`), argv[1] is the
+ * test file and we'd recursively spawn ourselves — guard against that by only
+ * trusting argv[1] when it looks like a Pi CLI entrypoint.
+ */
+function getPiInvocation(args: string[]): { command: string; args: string[] } {
+  const currentScript = process.argv[1];
+  const looksLikePiCli =
+    currentScript &&
+    !currentScript.startsWith("/$bunfs/") &&
+    /pi-coding-agent.*\/(dist\/)?cli\.(js|cjs|mjs)$/i.test(currentScript);
+  if (looksLikePiCli) {
+    return { command: process.execPath, args: [currentScript, ...args] };
+  }
+  // Fall back to `pi` on PATH — works for smoke tests and any other context
+  // where argv[1] isn't a Pi CLI script.
+  return { command: "pi", args };
+}
+
+export async function spawnSpecialist(
+  spec: DispatchSpec,
+  opts: SpawnOptions = {},
+): Promise<DispatchResult> {
+  if (!isRoleName(spec.role)) throw new Error(`Unknown role: ${spec.role}`);
+  const role = ROLES[spec.role];
+  const systemPrompt = await fs.readFile(role.promptFile, "utf8");
+  const cwd = spec.cwd ?? process.cwd();
+
+  // Write role prompt to a temp file; Pi's --append-system-prompt accepts a
+  // file path and appends file contents to its default safety prompt. This
+  // both keeps Pi's tool-use guidance intact and avoids stuffing 15K through
+  // argv.
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-ensemble-"));
+  const tmpPromptFile = path.join(tmpDir, `${spec.role}.md`);
+  await fs.writeFile(tmpPromptFile, systemPrompt);
+
+  // Per-child transcript path. Pi will write its native session JSON here so
+  // the user can inspect/replay the child's full event log post-hoc.
+  const runId = opts.runId ?? makeRunId();
+  const transcriptPath = transcriptPathFor(spec.role, runId, opts.seq, opts.tag);
+  await fs.mkdir(path.dirname(transcriptPath), { recursive: true });
+
+  // Resolve which model this child should run on (spec > role env > global env > Pi default)
+  const modelChoice = resolveModel(spec.role, spec.model);
+
+  const childArgs = [
+    "--mode",
+    "json",
+    "-p",
+    "--no-extensions",
+    "--session",
+    transcriptPath,
+    "--append-system-prompt",
+    tmpPromptFile,
+  ];
+  if (modelChoice.model) {
+    childArgs.push("--model", modelChoice.model);
+  }
+  if (opts.extraArgs && opts.extraArgs.length > 0) {
+    childArgs.push(...opts.extraArgs);
+  }
+  childArgs.push(spec.prompt); // positional prompt — canonical form
+  const invocation = getPiInvocation(childArgs);
+
+  const child = spawn(invocation.command, invocation.args, {
+    cwd,
+    shell: false,
+    // stdin "ignore" is critical: leaving stdin open as a pipe makes Pi wait
+    // for input even in -p mode and the spawn hangs forever.
+    stdio: ["ignore", "pipe", "pipe"],
+    env: process.env,
+  });
+
+  const start = Date.now();
+  const events: PiJsonEvent[] = [];
+  let stderr = "";
+
+  if (!child.stdout || !child.stderr) {
+    throw new Error("Failed to attach to child stdio");
+  }
+
+  const stdoutRl = createInterface({ input: child.stdout });
+  stdoutRl.on("line", (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    try {
+      events.push(JSON.parse(trimmed) as PiJsonEvent);
+    } catch {
+      stderr += `${trimmed}\n`;
+    }
+  });
+  child.stderr.on("data", (d) => {
+    stderr += String(d);
+  });
+
+  let timeout: NodeJS.Timeout | undefined;
+  if (opts.timeoutMs) {
+    timeout = setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs);
+  }
+
+  let exitCode: number | null = null;
+  try {
+    [exitCode] = (await once(child, "exit")) as [number | null];
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    // Best-effort cleanup of the temp prompt file; ignore errors.
+    fs.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+
+  const ms = Date.now() - start;
+  const result = collapseEvents(events, spec.role, ms, exitCode, stderr);
+  result.transcriptPath = transcriptPath;
+  result.modelSource = modelChoice.source;
+  if (modelChoice.model && !result.model) {
+    // collapseEvents only sets `model` from assistant message metadata, which
+    // is present when the child actually got a reply. If the child failed
+    // before any assistant turn (rare), surface the requested model anyway.
+    result.model = modelChoice.model;
+  }
+  return result;
+}
+
+function collapseEvents(
+  events: PiJsonEvent[],
+  role: string,
+  ms: number,
+  exitCode: number | null,
+  stderr: string,
+): DispatchResult {
+  // Prefer agent_end's assembled messages; fall back to last assistant
+  // message_end if agent_end is missing.
+  const agentEnd = [...events].reverse().find((e) => e.type === "agent_end");
+  let messages: PiMessage[] = agentEnd?.messages ?? [];
+  if (messages.length === 0) {
+    const lastMessageEnd = [...events]
+      .reverse()
+      .find((e) => e.type === "message_end" && e.message?.role === "assistant");
+    if (lastMessageEnd?.message) messages = [lastMessageEnd.message];
+  }
+
+  const textParts: string[] = [];
+  const toolUses: PiContentBlock[] = [];
+  let turns = 0;
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+  let model: string | undefined;
+
+  for (const msg of messages) {
+    if (msg.role !== "assistant") continue;
+    turns++;
+    if (msg.model && !model) model = msg.model;
+    if (msg.usage) {
+      usage.input += msg.usage.input ?? 0;
+      usage.output += msg.usage.output ?? 0;
+      usage.cacheRead += msg.usage.cacheRead ?? 0;
+      usage.cacheWrite += msg.usage.cacheWrite ?? 0;
+      usage.cost += msg.usage.cost?.total ?? 0;
+    }
+    for (const block of msg.content ?? []) {
+      if (block.type === "text" && typeof block.text === "string") {
+        textParts.push(block.text);
+      } else if (block.type === "toolCall") {
+        toolUses.push(block);
+      }
+    }
+  }
+
+  const text = textParts.join("");
+  return {
+    role,
+    ok: exitCode === 0,
+    text: text || stderr || "(no output)",
+    toolUses,
+    ms,
+    exitCode,
+    usage: { ...usage, turns },
+    model,
+  };
+}

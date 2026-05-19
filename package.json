@@ -1,0 +1,22 @@
+{
+  "name": "pi-ensemble-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Workspace for the pi-ensemble Pi extension and its supporting prompt build pipeline.",
+  "license": "Apache-2.0",
+  "author": "Janni Turunen",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/randomm/pi-ensemble.git"
+  },
+  "bugs": {
+    "url": "https://github.com/randomm/pi-ensemble/issues"
+  },
+  "homepage": "https://github.com/randomm/pi-ensemble#readme",
+  "scripts": {
+    "install:all": "./install.sh",
+    "build": "PI_ENSEMBLE_BASE=$PWD PROMPTS_DIR=$PWD/dist/prompts ./build.sh standard",
+    "check": "cd extension && bun run check",
+    "test": "cd extension && bun run smoke-tests/test-command-flow.ts && bun run smoke-tests/test-lens-review.ts && bun run smoke-tests/test-models.ts"
+  }
+}

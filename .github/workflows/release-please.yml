@@ -1,0 +1,23 @@
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          release-type: node
+          package-name: "@randomm/pi-ensemble"
+          path: extension
+          # Keep cutting prereleases until we drop the alpha banner in
+          # README. Once the API stabilises, flip this to false (or remove)
+          # to let release-please cut a 1.0.0.
+          prerelease: true

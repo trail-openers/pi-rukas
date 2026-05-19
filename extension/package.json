@@ -1,0 +1,42 @@
+{
+  "name": "@randomm/pi-ensemble",
+  "version": "0.1.0",
+  "description": "Multi-specialist orchestrator extension for Pi — parallel worktree-isolated dispatch, adversarial gate, six-pass code review.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "ai-agent",
+    "multi-agent",
+    "code-review",
+    "orchestrator"
+  ],
+  "license": "Apache-2.0",
+  "author": "Janni Turunen",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/randomm/pi-ensemble.git",
+    "directory": "extension"
+  },
+  "bugs": {
+    "url": "https://github.com/randomm/pi-ensemble/issues"
+  },
+  "homepage": "https://github.com/randomm/pi-ensemble#readme",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "check": "biome check src/",
+    "format": "biome format --write src/",
+    "lint": "biome lint src/",
+    "test": "bun run smoke-tests/test-command-flow.ts && bun run smoke-tests/test-lens-review.ts && bun run smoke-tests/test-models.ts"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.32.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@earendil-works/pi-coding-agent": "~0.75.3",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}

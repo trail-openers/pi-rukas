@@ -1,0 +1,12 @@
+agents-base/project-manager.md
+modules/core/async-tasks.md
+modules/core/tool-preferences.md
+modules/core/vipune-heavy.md
+modules/core/colgrep.md
+modules/core/oo-command-runner.md
+modules/core/output-standards.md
+modules/core/token-economy.md
+modules/workflows/github-issues.md
+modules/workflows/quality-gates.md
+modules/domains/scope-boundaries.md
+modules/workflows/parallel-worktrees.md

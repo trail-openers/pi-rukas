@@ -1,0 +1,20 @@
+pi-ensemble
+Copyright 2026 Janni Turunen
+
+Licensed under the Apache License, Version 2.0. See LICENSE for details.
+
+This project would not exist without:
+
+  - Pi (https://pi.dev) — the terminal AI coding agent that pi-ensemble
+    extends. Built by Mario Zechner / earendil-works.
+    https://github.com/badlogic/pi-mono
+
+  - The modular prompt architecture, role-based system prompts, vipune
+    memory doctrine, and six-lens code-review pattern originated in an
+    opencode (https://opencode.ai) configuration project.
+
+  - Sibling Pi extensions in the same author's catalogue:
+      - pi-worktree   — git worktree management with safety guards
+      - pi-permissions — deny-by-default tool allowlists for Pi sessions
+    Planned integration points for safer worktrees and per-role tool
+    scoping in future releases.
