@@ -3,7 +3,6 @@
 # Outputs one Markdown file per role into PROMPTS_DIR.
 
 set -euo pipefail
-[ "${PI_ENSEMBLE_BUILD_TRACE:-0}" = "1" ] && set -x
 
 # Default BASE to the directory containing this script. Override with
 # PI_ENSEMBLE_BASE if running from elsewhere.
@@ -415,7 +414,11 @@ for env in "${ENVIRONMENTS[@]}"; do
         } >> "$output"
       fi
 
-      ((module_count++))
+      # Use explicit arithmetic instead of `((var++))` — post-increment returns
+      # the old value, so when module_count is 0 it returns 0 → bash sees exit
+      # code 1 → `set -e` aborts. Linux bash 5.x is strict; macOS bash 3.2 lets
+      # it slide. This form is safe everywhere.
+      module_count=$((module_count + 1))
     done < "$manifest"
 
     # Validate that capabilities were injected if the manifest contains a file with markers

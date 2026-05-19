@@ -35,8 +35,6 @@ jobs:
 
       - name: Build per-role system prompts
         run: bun run build
-        env:
-          PI_ENSEMBLE_BUILD_TRACE: "1"
 
       - name: Install extension deps
         working-directory: extension
