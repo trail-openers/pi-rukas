@@ -3,6 +3,7 @@
 # Outputs one Markdown file per role into PROMPTS_DIR.
 
 set -euo pipefail
+[ "${PI_ENSEMBLE_BUILD_TRACE:-0}" = "1" ] && set -x
 
 # Default BASE to the directory containing this script. Override with
 # PI_ENSEMBLE_BASE if running from elsewhere.
