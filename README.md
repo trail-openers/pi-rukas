@@ -41,6 +41,7 @@ Required CLIs on `$PATH`. The role prompts assume all of these are installed —
 | [`colgrep`](https://github.com/lightonai/next-plaid) | Semantic **code** search. Used to find existing implementations. | `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.sh \| sh` |
 | [`oo`](https://github.com/randomm/oo) | Context-efficient wrapper for chatty CLIs (git, gh) used throughout the role prompts. | `cargo install double-o` |
 | `jq` | Used by `build.sh` to assemble the capability matrix into the PM prompt. | `brew install jq` |
+| [`parallel-cli`](https://docs.parallel.ai/cli/overview) | Web search / fetch / deep research used by the `explore` role. Optional but `/research` dispatches and any cross-web investigation expect it. | `brew install parallel-web/tap/parallel-cli` then `parallel-cli login` |
 
 Tested on macOS; should work on Linux. Bun ≥ 1.1 and Node ≥ 22 (Pi's own requirement) are assumed.
 

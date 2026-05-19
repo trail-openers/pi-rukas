@@ -26,13 +26,14 @@ check_cmd() {
 }
 
 # Hard dependencies — install will continue but tools will fail at runtime.
-check_cmd pi      "bun add -g @earendil-works/pi-coding-agent"
-check_cmd git     "OS package manager"
-check_cmd gh      "brew install gh"
-check_cmd jq      "brew install jq"
-check_cmd vipune  "cargo install vipune  (https://github.com/randomm/vipune)"
-check_cmd colgrep "https://github.com/lightonai/next-plaid"
-check_cmd oo      "cargo install double-o  (https://github.com/randomm/oo)"
+check_cmd pi           "bun add -g @earendil-works/pi-coding-agent"
+check_cmd git          "OS package manager"
+check_cmd gh           "brew install gh"
+check_cmd jq           "brew install jq"
+check_cmd vipune       "cargo install vipune  (https://github.com/randomm/vipune)"
+check_cmd colgrep      "https://github.com/lightonai/next-plaid"
+check_cmd oo           "cargo install double-o  (https://github.com/randomm/oo)"
+check_cmd parallel-cli "brew install parallel-web/tap/parallel-cli  (then: parallel-cli login)"
 
 if [ ${#missing[@]} -gt 0 ]; then
   echo ""
