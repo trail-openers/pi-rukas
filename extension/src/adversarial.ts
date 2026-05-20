@@ -34,16 +34,20 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
         }),
       ),
     }),
-    async execute(_id, raw) {
+    async execute(_id, raw, signal) {
       const params = raw as { diff: string; context: string; workCwd?: string };
       const rounds: Array<{ round: number; verdict: AdversarialVerdict; ms: number }> = [];
       const currentDiff = params.diff;
 
       for (let round = 1; round <= MAX_ROUNDS; round++) {
-        const adv = await spawnSpecialist({
-          role: "adversarial-developer",
-          prompt: buildAdversarialPrompt(currentDiff, params.context, round),
-        });
+        if (signal?.aborted) break;
+        const adv = await spawnSpecialist(
+          {
+            role: "adversarial-developer",
+            prompt: buildAdversarialPrompt(currentDiff, params.context, round),
+          },
+          { signal },
+        );
 
         const verdict = parseVerdict(adv.text);
         rounds.push({ round, verdict, ms: adv.ms });
@@ -63,11 +67,14 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
         if (round === MAX_ROUNDS) break;
 
         // Dispatch developer to fix
-        await spawnSpecialist({
-          role: "developer",
-          prompt: buildFixPrompt(verdict.findings, params.context),
-          cwd: params.workCwd,
-        });
+        await spawnSpecialist(
+          {
+            role: "developer",
+            prompt: buildFixPrompt(verdict.findings, params.context),
+            cwd: params.workCwd,
+          },
+          { signal },
+        );
 
         // NOTE: caller must refetch diff between rounds; for P1 we re-use the
         // passed-in diff as developer is expected to update in place. P2 will

@@ -203,6 +203,7 @@ export async function runLensReview(opts: {
   context?: string;
   cwd?: string;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<LensReviewSummary> {
   const runId = makeRunId();
   const skillsDir = piSkillsDir();
@@ -223,6 +224,7 @@ export async function runLensReview(opts: {
           // loads explicit paths, so the reporter is the only extension in the child.
           extraArgs: ["--no-skills", "--skill", skillPath, "--extension", LENS_REPORTER_PATH],
           timeoutMs: opts.timeoutMs ?? 10 * 60_000,
+          signal: opts.signal,
         },
       );
     } catch (err) {
@@ -314,9 +316,9 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
       ),
       cwd: Type.Optional(Type.String({ description: "Working directory; defaults to current." })),
     }),
-    async execute(_id, raw) {
+    async execute(_id, raw, signal) {
       const params = raw as { diff: string; context?: string; cwd?: string };
-      const summary = await runLensReview(params);
+      const summary = await runLensReview({ ...params, signal });
       return {
         content: [{ type: "text", text: renderSummary(summary) }],
         details: summary,

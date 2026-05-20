@@ -9,7 +9,19 @@ import { ROLES, isRoleName } from "./roles.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
 
 interface SpawnOptions {
+  /**
+   * Hard cap on child wall-clock. Default 5 minutes. Critical: without a cap,
+   * a stalled model API call (Cerebras / Copilot / Anthropic — any provider)
+   * leaves the child hung forever and the parent's `await once(child, "exit")`
+   * never resolves. Override with PI_ENSEMBLE_SPAWN_TIMEOUT_MS.
+   */
   timeoutMs?: number;
+  /**
+   * Pi's tool-execute AbortSignal — fires when the user hits Esc to cancel
+   * the running tool. We listen on this and kill the child with SIGTERM so
+   * cancellation actually propagates instead of leaving Pi stuck.
+   */
+  signal?: AbortSignal;
   /**
    * Group children from the same dispatch_parallel call under a shared id so
    * their session files sort together on disk.
@@ -29,6 +41,11 @@ interface SpawnOptions {
    */
   tag?: string;
 }
+
+const DEFAULT_SPAWN_TIMEOUT_MS = (() => {
+  const env = Number(process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS);
+  return Number.isFinite(env) && env > 0 ? env : 5 * 60_000;
+})();
 
 /**
  * Where per-child transcripts live. One file per spawned specialist, grouped
@@ -179,18 +196,49 @@ export async function spawnSpecialist(
     stderr += String(d);
   });
 
-  let timeout: NodeJS.Timeout | undefined;
-  if (opts.timeoutMs) {
-    timeout = setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs);
+  // Always cap wall-clock — see DEFAULT_SPAWN_TIMEOUT_MS comment. A stalled
+  // child without a timeout hangs the parent indefinitely (observed in the
+  // wild: overnight stuck session).
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS;
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    child.kill("SIGTERM");
+    // Escalate to SIGKILL if the child ignores SIGTERM for 5s.
+    setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
+  }, timeoutMs);
+
+  // Propagate Pi's user-cancel (Esc) signal: kill the child so the tool
+  // execute promise resolves and Pi un-stuck immediately.
+  let aborted = false;
+  const onAbort = () => {
+    aborted = true;
+    child.kill("SIGTERM");
+    setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
+  };
+  if (opts.signal) {
+    if (opts.signal.aborted) {
+      onAbort();
+    } else {
+      opts.signal.addEventListener("abort", onAbort, { once: true });
+    }
   }
 
   let exitCode: number | null = null;
   try {
     [exitCode] = (await once(child, "exit")) as [number | null];
   } finally {
-    if (timeout) clearTimeout(timeout);
+    clearTimeout(timeout);
+    opts.signal?.removeEventListener("abort", onAbort);
     // Best-effort cleanup of the temp prompt file; ignore errors.
     fs.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+
+  if (timedOut) {
+    stderr += `\n[pi-ensemble] killed after ${timeoutMs}ms timeout`;
+  }
+  if (aborted) {
+    stderr += "\n[pi-ensemble] cancelled by user (Esc)";
   }
 
   const ms = Date.now() - start;

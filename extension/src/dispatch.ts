@@ -29,9 +29,9 @@ export function registerDispatchTools(pi: ExtensionAPI) {
         }),
       ),
     }),
-    async execute(_id, params) {
+    async execute(_id, params, signal) {
       const spec = params as DispatchSpec;
-      const result = await spawnSpecialist(spec);
+      const result = await spawnSpecialist(spec, { signal });
       return {
         content: [
           {
@@ -64,14 +64,17 @@ export function registerDispatchTools(pi: ExtensionAPI) {
         { maxItems: MAX_PARALLEL },
       ),
     }),
-    async execute(_id, params) {
+    async execute(_id, params, signal) {
       const specs = (params as { specs: DispatchSpec[] }).specs;
       if (specs.length > MAX_PARALLEL) {
         throw new Error(`Max ${MAX_PARALLEL} parallel slots; got ${specs.length}`);
       }
       // Share a runId so all children in this batch sort together on disk.
+      // Esc cancels all children: the same AbortSignal is passed to each spawn.
       const runId = makeRunId();
-      const results = await Promise.all(specs.map((s, i) => spawnSpecialist(s, { runId, seq: i })));
+      const results = await Promise.all(
+        specs.map((s, i) => spawnSpecialist(s, { runId, seq: i, signal })),
+      );
       const summary = results
         .map((r) => {
           const modelTag = r.model ? ` · ${r.model}` : "";
