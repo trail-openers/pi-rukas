@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 const ENSEMBLE_DIR_DEFAULT = path.join(os.homedir(), ".pi", "agent", "ensemble-runs");
 
@@ -227,7 +227,7 @@ function renderTranscript(file: RunFile, parsed: ParsedTranscript): string {
 export function registerRunsCommand(pi: ExtensionAPI) {
   pi.registerCommand("runs", {
     description: "Browse recent pi-ensemble subagent runs (transcripts + tool calls)",
-    handler: async (_args, ctx) => {
+    handler: async (args, ctx) => {
       const rootDir = process.env.PI_ENSEMBLE_RUNS_DIR ?? ENSEMBLE_DIR_DEFAULT;
       const files = await listRunFiles(rootDir);
       if (files.length === 0) {
@@ -237,21 +237,16 @@ export function registerRunsCommand(pi: ExtensionAPI) {
         );
         return;
       }
-      const batches = groupIntoBatches(files);
+      const allBatches = groupIntoBatches(files);
 
-      // Level 1: pick a batch
-      const batchLabels = batches.map((b) => {
-        const roles = b.children
-          .map((c) => `${c.role}${c.seq != null ? `${c.seq}` : ""}`)
-          .join(",");
-        return `${fmtRelative(b.mtimeMs).padEnd(8)} · ${b.runId} · ${String(b.children.length).padStart(2)} child${b.children.length === 1 ? "" : "ren"} · ${roles}`;
-      });
-      const batchPick = await ctx.ui.select("pi-ensemble runs (most recent first)", batchLabels);
-      if (!batchPick) return;
-      const batch = batches[batchLabels.indexOf(batchPick)];
+      // Allow `/runs all` to bypass the recency cap.
+      const showAll = args.trim().toLowerCase() === "all";
+
+      const batch = await pickBatch(ctx, allBatches, showAll);
       if (!batch) return;
 
-      // Level 2: pick a child within the batch
+      // Level 2: pick a child within the batch. Children-per-batch is usually
+      // 1–6 so no pagination needed here.
       const childLabels = batch.children.map((c) => {
         const tag = c.seq != null ? `${c.role}-${c.seq}` : c.role;
         return `${tag.padEnd(28)} · ${fmtSize(c.sizeBytes).padStart(6)}`;
@@ -269,4 +264,63 @@ export function registerRunsCommand(pi: ExtensionAPI) {
       await ctx.ui.editor(`${child.role}${child.seq != null ? `-${child.seq}` : ""}`, rendered);
     },
   });
+}
+
+/**
+ * Default page size for the batch picker. Sized so the list comfortably fits a
+ * typical 24-line terminal with room for the title and 1-2 sentinel rows.
+ * Pi's `ctx.ui.select` doesn't scroll well past terminal height, so capping
+ * the visible list is the only way to keep all entries reachable without the
+ * user having to shrink their font.
+ */
+const BATCH_PAGE_SIZE = 15;
+const SHOW_OLDER = "── show older ──";
+const SHOW_ALL = "── show all ──";
+
+async function pickBatch(
+  ctx: ExtensionCommandContext,
+  allBatches: Batch[],
+  showAll: boolean,
+): Promise<Batch | undefined> {
+  // Paginate by recency. Start at offset 0; "show older" steps forward by
+  // BATCH_PAGE_SIZE; "show all" widens to the full list (only when small
+  // enough that scrolling won't matter, or when the user opted in via
+  // `/runs all`).
+  let offset = 0;
+  while (true) {
+    const limit = showAll ? allBatches.length : BATCH_PAGE_SIZE;
+    const slice = allBatches.slice(offset, offset + limit);
+    const labels = slice.map(batchLabel);
+
+    const more = !showAll && offset + limit < allBatches.length;
+    const sentinels: string[] = [];
+    if (more) sentinels.push(SHOW_OLDER);
+    if (!showAll && allBatches.length <= BATCH_PAGE_SIZE * 3) sentinels.push(SHOW_ALL);
+
+    const total = allBatches.length;
+    const shownTo = Math.min(offset + limit, total);
+    const title = showAll
+      ? `pi-ensemble runs · all ${total}`
+      : `pi-ensemble runs · ${offset + 1}–${shownTo} of ${total}`;
+
+    const pick = await ctx.ui.select(title, [...labels, ...sentinels]);
+    if (!pick) return undefined;
+
+    if (pick === SHOW_OLDER) {
+      offset += BATCH_PAGE_SIZE;
+      continue;
+    }
+    if (pick === SHOW_ALL) {
+      // Re-open with the cap removed. (showAll=true on the next loop.)
+      // Tail call via simple flag swap.
+      return pickBatch(ctx, allBatches, true);
+    }
+    const idx = labels.indexOf(pick);
+    return slice[idx];
+  }
+}
+
+function batchLabel(b: Batch): string {
+  const roles = b.children.map((c) => `${c.role}${c.seq != null ? `${c.seq}` : ""}`).join(",");
+  return `${fmtRelative(b.mtimeMs).padEnd(8)} · ${b.runId} · ${String(b.children.length).padStart(2)} child${b.children.length === 1 ? "" : "ren"} · ${roles}`;
 }
