@@ -12,12 +12,22 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
-      - uses: googleapis/release-please-action@v4
+      - id: release
+        uses: googleapis/release-please-action@v4
         with:
           release-type: node
           package-name: "@randomm/pi-ensemble"
           path: extension
-          # Keep cutting prereleases until we drop the alpha banner in
-          # README. Once the API stabilises, flip this to false (or remove)
-          # to let release-please cut a 1.0.0.
-          prerelease: true
+
+      # release-please's `prerelease: true` flag only affects releases whose
+      # version *string* is a prerelease (e.g. 0.2.0-alpha). We want clean
+      # SemVer (0.1.1, 0.1.2, ...) while still flagging every 0.x.y release
+      # as a GitHub Pre-release until we cross 1.0.0. Flip the flag post-hoc.
+      - name: Mark 0.x releases as Pre-release
+        if: ${{ steps.release.outputs.release_created == 'true' && steps.release.outputs.major == '0' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${{ steps.release.outputs.tag_name }}" \
+            --repo "${{ github.repository }}" \
+            --prerelease
