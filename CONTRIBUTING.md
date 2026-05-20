@@ -90,6 +90,29 @@ BREAKING CHANGE: the hardcoded 10-slot limit is now configurable
                  via env var; default remains 10.
 ```
 
+## Supply-chain hygiene
+
+The extension's npm dependencies are guarded against zero-day supply-chain
+attacks (the kind where a compromised maintainer publishes a malicious
+version that's caught and yanked within hours).
+
+- **`extension/bunfig.toml`** sets `minimumReleaseAge = 345600` (4 days).
+  Bun refuses to install any package version published more recently. Requires
+  bun ≥ 1.2.20.
+- **`extension/.npmrc`** mirrors this with `min-release-age=4` and
+  `engine-strict=true` for npm / pnpm / yarn users. Requires npm ≥ 11.10.0.
+- **`extension/package.json`** declares the engines floor so older tools
+  refuse to install at all.
+- **Lockfile** (`extension/bun.lock`) is committed; CI uses
+  `bun install --frozen-lockfile`.
+- **Only npm-registry installs** — no `github:` or `git+` URLs in the
+  dependency graph. Adding one would defeat the embargo (release-age and
+  engines checks don't apply to direct git installs).
+
+If you need a fresh release (a security patch <4 days old you've vetted
+yourself), add the package name to `minimumReleaseAgeExcludes` in
+`extension/bunfig.toml`. Keep the list small; review it on every Dependabot PR.
+
 ## Pi compatibility
 
 pi-ensemble depends on Pi's CLI flags, JSON event stream shape, and

@@ -23,6 +23,10 @@
   "homepage": "https://github.com/randomm/pi-ensemble#readme",
   "type": "module",
   "main": "src/index.ts",
+  "engines": {
+    "bun": ">=1.2.20",
+    "npm": ">=11.10.0"
+  },
   "scripts": {
     "check": "biome check src/",
     "format": "biome format --write src/",

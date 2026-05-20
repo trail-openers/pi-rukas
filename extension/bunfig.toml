@@ -1,0 +1,15 @@
+# Supply-chain defence: refuse to install any npm package version published in
+# the last 4 days. By the time the embargo lifts, any compromised release that
+# slipped through has typically been detected, reported, and yanked.
+#
+# Reference: https://daniakash.com/posts/simplest-supply-chain-defense/
+# Requires bun >= 1.2.20.
+
+[install]
+# 4 days in seconds (60 * 60 * 24 * 4)
+minimumReleaseAge = 345600
+
+# Packages exempt from the age check. Add a name here ONLY when you have a
+# concrete reason to install a fresh release (e.g. urgent security patch you
+# vetted yourself). Keep this list small.
+minimumReleaseAgeExcludes = []
