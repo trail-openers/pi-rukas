@@ -15,14 +15,13 @@ jobs:
       - id: release
         uses: googleapis/release-please-action@v4
         with:
-          release-type: node
-          package-name: "@randomm/pi-ensemble"
-          path: extension
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
 
-      # release-please's `prerelease: true` flag only affects releases whose
-      # version *string* is a prerelease (e.g. 0.2.0-alpha). We want clean
-      # SemVer (0.1.1, 0.1.2, ...) while still flagging every 0.x.y release
-      # as a GitHub Pre-release until we cross 1.0.0. Flip the flag post-hoc.
+      # release-please's `prerelease` flag only affects releases whose version
+      # *string* is itself a prerelease (e.g. 0.2.0-alpha.1). We want clean
+      # SemVer (0.1.1, 0.1.2, ...) while flagging every 0.x.y release as a
+      # GitHub Pre-release until we cross 1.0.0. Flip the badge post-hoc.
       - name: Mark 0.x releases as Pre-release
         if: ${{ steps.release.outputs.release_created == 'true' && steps.release.outputs.major == '0' }}
         env:
