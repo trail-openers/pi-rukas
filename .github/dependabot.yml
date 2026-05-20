@@ -1,0 +1,39 @@
+version: 2
+
+# Dependabot raises PRs when new versions land. Our `bunfig.toml` /  `.npmrc`
+# enforce a 4-day release-age embargo on every install, so any Dependabot PR
+# naturally has a built-in soak window before its install succeeds. By the
+# time the embargo lifts, a compromised release is typically detected and
+# yanked from the registry, and the PR can be safely merged.
+
+updates:
+  - package-ecosystem: "npm"
+    directory: "/extension"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "deps"
+      - "npm"
+    groups:
+      # Group dev / type-only deps so we get one weekly PR instead of N
+      dev-dependencies:
+        dependency-type: "development"
+        patterns:
+          - "@types/*"
+          - "@biomejs/*"
+          - "typescript"
+          - "vitest"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "ci"
+    commit-message:
+      prefix: "ci(deps)"
+      include: "scope"
