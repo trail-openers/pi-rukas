@@ -5,6 +5,25 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 
 const ENSEMBLE_DIR_DEFAULT = path.join(os.homedir(), ".pi", "agent", "ensemble-runs");
 
+/**
+ * Keep this many most-recent batches on disk; everything older is auto-pruned
+ * on extension activation. The default (20) covers the common case ("look at
+ * the latest or second-latest run") with comfortable headroom for a heavy
+ * /work cycle that might fire 10+ dispatches in quick succession.
+ *
+ * Override with PI_ENSEMBLE_RUNS_KEEP_LAST. A value ≤ 0 disables pruning.
+ */
+const KEEP_LAST_BATCHES = (() => {
+  const env = Number(process.env.PI_ENSEMBLE_RUNS_KEEP_LAST);
+  return Number.isFinite(env) ? env : 20;
+})();
+
+/**
+ * Safety floor — never delete anything younger than this regardless of count
+ * cap. Protects in-progress spawns whose transcripts are still being written.
+ */
+const PRUNE_MIN_AGE_MS = 60_000;
+
 interface RunFile {
   path: string;
   filename: string;
@@ -93,6 +112,101 @@ function groupIntoBatches(files: RunFile[]): Batch[] {
   }
   batches.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return batches;
+}
+
+export interface PruneSummary {
+  /** Total batches found before pruning. */
+  totalBatches: number;
+  /** Batches actually deleted. */
+  deletedBatches: number;
+  /** Individual transcript files deleted. */
+  deletedFiles: number;
+  /** Bytes freed. */
+  bytesFreed: number;
+  /** Batches kept young enough to survive even past the cap (safety floor). */
+  preservedByAgeFloor: number;
+}
+
+/**
+ * Delete all batches beyond `keepLast` most-recent — but never anything
+ * younger than `PRUNE_MIN_AGE_MS` (60 s). The min-age guard protects
+ * in-progress spawns whose transcript files Pi is still writing.
+ *
+ * Returns a summary the caller can log/trace. Cheap to call repeatedly:
+ * a single dir walk + filtered unlinks.
+ */
+export async function pruneOldRuns(
+  rootDir: string = process.env.PI_ENSEMBLE_RUNS_DIR ?? ENSEMBLE_DIR_DEFAULT,
+  keepLast: number = KEEP_LAST_BATCHES,
+): Promise<PruneSummary> {
+  const summary: PruneSummary = {
+    totalBatches: 0,
+    deletedBatches: 0,
+    deletedFiles: 0,
+    bytesFreed: 0,
+    preservedByAgeFloor: 0,
+  };
+  if (keepLast <= 0) return summary;
+
+  const files = await listRunFiles(rootDir);
+  const batches = groupIntoBatches(files);
+  summary.totalBatches = batches.length;
+  if (batches.length <= keepLast) return summary;
+
+  const now = Date.now();
+  const candidates = batches.slice(keepLast);
+  for (const b of candidates) {
+    if (now - b.mtimeMs < PRUNE_MIN_AGE_MS) {
+      summary.preservedByAgeFloor++;
+      continue;
+    }
+    for (const c of b.children) {
+      try {
+        await fs.unlink(c.path);
+        summary.deletedFiles++;
+        summary.bytesFreed += c.sizeBytes;
+      } catch {
+        // Best effort — ignore unlink races / permissions
+      }
+    }
+    summary.deletedBatches++;
+  }
+
+  // Best-effort: remove empty date subdirs.
+  try {
+    const dates = await fs.readdir(rootDir);
+    for (const d of dates) {
+      const sub = path.join(rootDir, d);
+      const st = await fs.stat(sub).catch(() => null);
+      if (!st?.isDirectory()) continue;
+      const remaining = await fs.readdir(sub);
+      if (remaining.length === 0) await fs.rmdir(sub).catch(() => undefined);
+    }
+  } catch {
+    // ignore
+  }
+
+  return summary;
+}
+
+/**
+ * One-line summary for /ensemble-debug: file count, batch count, oldest age,
+ * total size on disk. Returns an empty string when no runs exist yet.
+ */
+export async function transcriptsSummary(
+  rootDir: string = process.env.PI_ENSEMBLE_RUNS_DIR ?? ENSEMBLE_DIR_DEFAULT,
+): Promise<string> {
+  const files = await listRunFiles(rootDir);
+  if (files.length === 0) return "";
+  const batches = groupIntoBatches(files);
+  const oldest = batches[batches.length - 1];
+  const totalBytes = files.reduce((acc, f) => acc + f.sizeBytes, 0);
+  const sizeStr =
+    totalBytes < 1024 * 1024
+      ? `${(totalBytes / 1024).toFixed(0)} KB`
+      : `${(totalBytes / 1024 / 1024).toFixed(1)} MB`;
+  const oldestAge = oldest ? fmtRelative(oldest.mtimeMs) : "?";
+  return `${files.length} files · ${batches.length} batches · oldest ${oldestAge} · ${sizeStr}  (keep last ${KEEP_LAST_BATCHES})`;
 }
 
 function fmtRelative(mtimeMs: number, now = Date.now()): string {
@@ -226,9 +340,37 @@ function renderTranscript(file: RunFile, parsed: ParsedTranscript): string {
 
 export function registerRunsCommand(pi: ExtensionAPI) {
   pi.registerCommand("runs", {
-    description: "Browse recent pi-ensemble subagent runs (transcripts + tool calls)",
+    description: "Browse recent pi-ensemble subagent runs (or `/runs all`, `/runs prune [N]`)",
     handler: async (args, ctx) => {
       const rootDir = process.env.PI_ENSEMBLE_RUNS_DIR ?? ENSEMBLE_DIR_DEFAULT;
+      const trimmed = args.trim().toLowerCase();
+
+      // `/runs prune [N]` — manual cleanup
+      if (trimmed.startsWith("prune")) {
+        const m = trimmed.match(/^prune\s+(\d+)/);
+        const keep = m ? Number(m[1]) : KEEP_LAST_BATCHES;
+        const preview = await listRunFiles(rootDir).then(groupIntoBatches);
+        const willDelete = Math.max(0, preview.length - keep);
+        if (willDelete === 0) {
+          ctx.ui.notify(
+            `Nothing to prune — ${preview.length} batches on disk, keeping ${keep}.`,
+            "info",
+          );
+          return;
+        }
+        const confirmed = await ctx.ui.confirm(
+          "Prune old runs?",
+          `Delete ${willDelete} batches (keep last ${keep})? In-progress runs younger than ${Math.round(PRUNE_MIN_AGE_MS / 1000)}s are preserved.`,
+        );
+        if (!confirmed) return;
+        const s = await pruneOldRuns(rootDir, keep);
+        ctx.ui.notify(
+          `Pruned ${s.deletedBatches} batches · ${s.deletedFiles} files · ${(s.bytesFreed / 1024).toFixed(1)} KB freed.${s.preservedByAgeFloor > 0 ? `  (${s.preservedByAgeFloor} kept by age floor.)` : ""}`,
+          "info",
+        );
+        return;
+      }
+
       const files = await listRunFiles(rootDir);
       if (files.length === 0) {
         ctx.ui.notify(
@@ -240,7 +382,7 @@ export function registerRunsCommand(pi: ExtensionAPI) {
       const allBatches = groupIntoBatches(files);
 
       // Allow `/runs all` to bypass the recency cap.
-      const showAll = args.trim().toLowerCase() === "all";
+      const showAll = trimmed === "all";
 
       const batch = await pickBatch(ctx, allBatches, showAll);
       if (!batch) return;

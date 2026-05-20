@@ -9,6 +9,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { GLOBAL_KEY, getAllOverrides } from "./model-config.ts";
 import { modelConfigSnapshot } from "./models.ts";
+import { transcriptsSummary } from "./runs.ts";
 import { trace } from "./trace.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -72,6 +73,7 @@ export function registerCommands(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       const overrides = getAllOverrides();
       const globalOverride = overrides[GLOBAL_KEY];
+      const runsLine = await transcriptsSummary().catch(() => "");
       const modelLines = modelConfigSnapshot().map(({ role, choice }) => {
         const m = choice.model ?? "(Pi default)";
         const src =
@@ -93,7 +95,8 @@ export function registerCommands(pi: ExtensionAPI) {
         `PM prompt file:   ${PM_PROMPT_FILE}`,
         `pmDoctrineActive: ${pmDoctrineActive}`,
         "commands:         /start /research /plan /work /review /runs /ensemble-model /ensemble-debug",
-        "tools:            dispatch_specialist, dispatch_parallel, adversarial_loop",
+        "tools:            dispatch_specialist, dispatch_parallel, adversarial_loop, dispatch_lens_review",
+        ...(runsLine ? [`transcripts:      ${runsLine}`] : []),
         "",
         "subagent models  (change via /ensemble-model — saved to ~/.pi/agent/ensemble-models.json)",
         ...(globalOverride
