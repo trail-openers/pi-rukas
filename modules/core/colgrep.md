@@ -21,6 +21,6 @@ colgrep "<query>"
 - ❌ `colgrep "testing quality gates"`
 - ❌ `colgrep "team norms"`
 
-Those don't return useful results because no source file says "project architecture" inside it. For meta-questions about the project, use `vipune search` (memory) or read documentation files (`AGENTS.md`, `README.md`, `CONTRIBUTING.md`).
+Those don't return useful results because no source file says "project architecture" inside it. For meta-questions about the project, use `vipune search` (memory) or read documentation files (`README.md`, `CONTRIBUTING.md`).
 
 Run `colgrep --help` for advanced options.

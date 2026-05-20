@@ -14,7 +14,6 @@ If no input was provided, ask the user before proceeding.
 ## Steps
 
 1. **Read project context** (do not rely on session memory):
-   - Read AGENTS.md if present — issue conventions, quality gates, labels.
    - **Search memory for prior decisions.** Derive a few conceptual keywords from the user's input and run a focused `vipune search "<keyword>" --limit 5` per keyword. Use your judgment for what's worth searching. Avoid passing the user's whole sentence as a single query — vipune is keyword-semantic search and prefers short phrases.
 
 2. **Classify the issue**:
@@ -34,7 +33,7 @@ If no input was provided, ask the user before proceeding.
 4. **Investigate** — dispatch `explore` via `dispatch_specialist`:
    ```
    role: explore
-   prompt: "Use colgrep to find any existing code implementing what the issue is asking for (e.g. a function, module, or feature concept). Skip colgrep if the request is a meta/project-level question — read AGENTS.md and vipune instead. Also check open GitHub issues for duplicates."
+   prompt: "Use colgrep to find any existing code implementing what the issue is asking for (e.g. a function, module, or feature concept). Skip colgrep if the request is a meta/project-level question — consult vipune instead. Also check open GitHub issues for duplicates."
    ```
 
 5. **Draft using the type-specific template**:
@@ -45,7 +44,7 @@ If no input was provided, ask the user before proceeding.
    - **Chore**: title `chore: …`; sections — What, Why, Acceptance Criteria.
    - **Research/Spike**: title `research: …`; sections — Question, Background, Timebox, Expected Deliverable (not code — a decision or proof of concept), Out of Scope.
 
-   Acceptance criteria are checkbox lists. Definition of Done sections should cover tests, linting, type checking, and any project-specific quality gates (look these up in AGENTS.md). Keep titles under 70 chars.
+   Acceptance criteria are checkbox lists. Definition of Done sections should cover tests, linting, type checking, and any project-specific quality gates. Keep titles under 70 chars.
 
 6. **Confirm before creating** — always show the draft, wait for explicit confirmation.
 
@@ -63,5 +62,4 @@ If no input was provided, ask the user before proceeding.
 - Context before drafting — 2-min codebase search prevents a mis-scoped issue.
 - Confirm before creating — issues are harder to clean up than to get right.
 - Type-specific quality — chore ≠ feature; apply the right standard.
-- AGENTS.md is the law.
 - Epics are containers; implementation details go in child issues.

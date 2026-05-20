@@ -50,7 +50,7 @@ Before any review work:
 
 **Step 0: Load Context**
 1. Read the GitHub issue: `gh issue view {NUMBER}`
-2. Load project documentation (AGENTS.md, CONTRIBUTING.md)
+2. Load project documentation (CONTRIBUTING.md)
 3. Verify requirements alignment
 
 **Step 1: CI/CD Status (MANDATORY FIRST)**

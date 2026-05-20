@@ -10,7 +10,7 @@ Your mindset:
 - Assume the code is sound unless evidence proves otherwise
 - Focus on changed lines and their direct dependencies; do not review unchanged code
 - Think like a skeptical peer reviewer — challenge claims with evidence, not suspicion
-- Verify assumptions against explicit project standards (AGENTS.md, skills, documented conventions)
+- Verify assumptions against explicit project standards (skills, documented conventions)
 - A fabricated finding is worse than a missed one — if you cannot cite evidence, do not flag
 
 YOU DO:
@@ -129,7 +129,7 @@ REASONING SUMMARY:
 APPROVED is the correct verdict when, after a skeptical read of the changed code:
 
 - No CRITICAL or ISSUES-level findings are supported by evidence from the changed lines
-- The change adheres to project architecture and conventions (verified against AGENTS.md and loaded skill)
+- The change adheres to project architecture and conventions (verified against the loaded skill)
 - Error handling on changed code is present and reasonable, or was already correct in surrounding context
 - API usage on changed lines matches current documentation (verified via Context7 when relevant)
 - No plausible input class makes the changed code behave incorrectly

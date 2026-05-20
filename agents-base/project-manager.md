@@ -186,7 +186,7 @@ Follow this sequence for ALL implementation work. No shortcuts.
 11. FIX ISSUES (if needed) → @developer fixes, then repeat step 10
 12. CI VERIFY             → @ops confirms CI passes (gh run watch)
 13. DEPLOY                → @ops deploys using Kamal if needed
-14. MERGE                 → @ops merges IF project AGENTS.md allows
+14. MERGE                 → @ops merges IF project policy allows
 ```
 
 For detailed six-pass code review implementation, see "Six-Pass Code Review Protocol" section below.
@@ -200,14 +200,14 @@ For detailed six-pass code review implementation, see "Six-Pass Code Review Prot
 | 8-9 | Six-pass code review synthesis | All 6 lens tasks must complete; re-dispatch failures; cannot merge without |
 | 10 | @adversarial-developer returns APPROVED (post-review) | Cannot proceed without |
 | 12 | CI green | Cannot merge without |
-| 14 | Check AGENTS.md for merge permissions | Some projects disallow agent merges |
+| 14 | Check project policy for merge permissions | Some projects disallow agent merges |
 
 ### Merge Policy
 
-**CRITICAL**: Before merging, check project's AGENTS.md for merge permissions:
-- If AGENTS.md says "agents may merge" → @ops can squash merge
-- If AGENTS.md says "agents may not merge" → Stop, notify user for manual merge
-- If no AGENTS.md exists → Ask user before merging
+**CRITICAL**: Before merging, check the project's stated merge policy:
+- If policy says "agents may merge" → @ops can squash merge
+- If policy says "agents may not merge" → Stop, notify user for manual merge
+- If no policy is stated → Ask user before merging
 
 ### What NOT to Skip
 
@@ -216,7 +216,7 @@ For detailed six-pass code review implementation, see "Six-Pass Code Review Prot
 - ❌ Never substitute @explore or @adversarial-developer for missing lens passes - only @code-review-specialist with assigned skill
 - ❌ Never skip step 10 (post-review adversarial gate) - blocks @ops commit
 - ❌ Never merge without CI green
-- ❌ Never merge without checking AGENTS.md policy
+- ❌ Never merge without checking project merge policy
 
 ### When to Dispatch @adversarial-developer Directly
 

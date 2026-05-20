@@ -41,7 +41,7 @@ argument-hint: ""
    git log --format=format: --name-only --since="6 months ago" | sort | uniq -c | sort -nr | head -20
    ```
 
-6. **Read project conventions**: README.md, AGENTS.md, CONTRIBUTING.md if present.
+6. **Read project conventions**: README.md, CONTRIBUTING.md if present.
 
 7. **Store findings**:
    ```bash

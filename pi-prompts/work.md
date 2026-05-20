@@ -27,11 +27,8 @@ gh issue view "$ARGUMENTS"
 ```
 
 Simultaneously dispatch `explore` via `dispatch_specialist`:
-- Read project AGENTS.md (it overrides defaults).
 - `vipune search "<keyword>" --limit 5` — prior decisions. Derive conceptual keywords from the issue title/body and run a focused search per keyword. Use your judgment for what's worth searching. Avoid passing the whole issue as a single query — vipune prefers short phrases.
 - `colgrep "<concept>"` — find existing code that implements something described in the issue. ColGREP is **code-only** semantic search; the query must describe something you'd expect to find in source files (e.g. `"JWT validation"`, `"retry on HTTP 5xx"`, `"users table migration"`). Do not use it for meta-questions like `"project architecture"` — those return useless matches.
-
-**AGENTS.md is the law.**
 
 ## Step 2 — Decompose and plan
 
@@ -126,7 +123,7 @@ so the user can see exactly how many rounds ran and where to find the per-lens d
 
 Dispatch `ops` to run `gh run watch`. On failure, dispatch `developer` to fix, then loop back to Step 5.
 
-On green CI + APPROVED review: merge per AGENTS.md merge policy.
+On green CI + APPROVED review: merge per project merge policy.
 
 ## Step 9 — Store learnings
 
@@ -141,6 +138,5 @@ vipune add 'issue #N: [decision/pattern discovered]'
 - Parallel first.
 - Worktrees are temporary scratch.
 - One PR per issue.
-- AGENTS.md overrides everything.
 - Developer hands off with uncommitted changes — `ops` commits.
 - Adversarial gate is not optional.
