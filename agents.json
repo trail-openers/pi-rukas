@@ -43,7 +43,8 @@
           "oo learn *": "allow",
           "oo patterns": "allow",
           "oo recall *": "allow",
-          "oo version": "allow"
+          "oo version": "allow",
+          "ctx7 *": "allow"
         },
         "write": "deny",
         "edit": "deny",
@@ -59,7 +60,6 @@
         "cancel_task": "allow",
         "list_tasks": "allow",
         "check_task": "allow",
-        "context7*": "allow",
         "vipune": "allow",
         "meadow*": "allow",
         "issue": "allow",
@@ -79,7 +79,6 @@
     },
     "developer": {
       "permission": {
-        "context7*": "allow",
         "meadow*": "allow",
         "issue": "allow",
         "pr": "allow",
@@ -201,7 +200,8 @@
           "shellcheck*": "allow",
           "shfmt*": "allow",
           "docker *": "allow",
-          "curl *": "allow"
+          "curl *": "allow",
+          "ctx7 *": "allow"
         },
         "read": "allow",
         "edit": "allow",
@@ -378,7 +378,6 @@
     },
     "code-review-specialist": {
       "permission": {
-        "context7*": "allow",
         "meadow*": "allow",
         "issue": "allow",
         "pr": "allow",
@@ -403,7 +402,8 @@
           "oo git merge-base*": "allow",
           "oo recall *": "allow",
           "oo help *": "allow",
-          "oo patterns": "allow"
+          "oo patterns": "allow",
+          "ctx7 *": "allow"
         },
         "read": "allow",
         "edit": "deny",
@@ -420,7 +420,6 @@
     "explore": {
       "permission": {
         "external_directory": "ask",
-        "context7*": "allow",
         "vipune": "allow",
         "meadow*": "allow",
         "issue": "allow",
@@ -486,7 +485,8 @@
           "redis-cli* ZSCORE *": "allow",
           "redis-cli* DBSIZE*": "allow",
           "redis-cli* CLIENT LIST *": "allow",
-          "redis-cli* SLOWLOG *": "allow"
+          "redis-cli* SLOWLOG *": "allow",
+          "ctx7 *": "allow"
         },
         "read": "allow",
         "edit": "deny",
@@ -502,7 +502,6 @@
     },
     "adversarial-developer": {
       "permission": {
-        "context7*": "allow",
         "meadow*": "allow",
         "external_directory": "ask",
         "bash": {
@@ -529,7 +528,8 @@
           "go vet*": "allow",
           "golangci-lint*": "allow",
           "rubocop*": "allow",
-          "shellcheck*": "allow"
+          "shellcheck*": "allow",
+          "ctx7 *": "allow"
         },
         "read": "allow",
         "edit": "deny",

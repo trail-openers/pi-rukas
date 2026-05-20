@@ -34,6 +34,7 @@ check_cmd vipune       "cargo install vipune  (https://github.com/randomm/vipune
 check_cmd colgrep      "https://github.com/lightonai/next-plaid"
 check_cmd oo           "cargo install double-o  (https://github.com/randomm/oo)"
 check_cmd parallel-cli "brew install parallel-web/tap/parallel-cli  (then: parallel-cli login)"
+check_cmd ctx7         "npm install -g ctx7  (free tier works without login; Node.js >= 18)"
 
 if [ ${#missing[@]} -gt 0 ]; then
   echo ""

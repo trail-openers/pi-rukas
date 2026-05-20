@@ -42,6 +42,7 @@ Required CLIs on `$PATH`. The role prompts assume all of these are installed —
 | [`oo`](https://github.com/randomm/oo) | Context-efficient wrapper for chatty CLIs (git, gh) used throughout the role prompts. | `cargo install double-o` |
 | `jq` | Used by `build.sh` to assemble the capability matrix into the PM prompt. | `brew install jq` |
 | [`parallel-cli`](https://docs.parallel.ai/cli/overview) | Web search / fetch / deep research used by the `explore` role. Optional but `/research` dispatches and any cross-web investigation expect it. | `brew install parallel-web/tap/parallel-cli` then `parallel-cli login` |
+| [`ctx7`](https://context7.com) | Current third-party library documentation via the Context7 CLI. Specialists call `ctx7 library <name>` → `ctx7 docs <id> <query>` to verify API shape before writing or reviewing code. Free tier works without login. | `npm install -g ctx7` (Node.js ≥ 18) |
 
 Tested on macOS; should work on Linux. Bun ≥ 1.1 and Node ≥ 22 (Pi's own requirement) are assumed.
 
