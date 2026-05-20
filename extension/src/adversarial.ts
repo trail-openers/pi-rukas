@@ -1,9 +1,15 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { type RunningState, renderSingle } from "./progress.ts";
 import { spawnSpecialist } from "./spawn.ts";
 import type { AdversarialVerdict } from "./types.ts";
 
 const MAX_ROUNDS = 3;
+
+type ToolUpdateCallback = (partial: {
+  content: Array<{ type: "text"; text: string }>;
+  details: unknown;
+}) => void;
 
 /**
  * Runs an adversarial review loop:
@@ -34,10 +40,19 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
         }),
       ),
     }),
-    async execute(_id, raw, signal) {
+    async execute(_id, raw, signal, onUpdate) {
       const params = raw as { diff: string; context: string; workCwd?: string };
       const rounds: Array<{ round: number; verdict: AdversarialVerdict; ms: number }> = [];
       const currentDiff = params.diff;
+      const update = onUpdate as ToolUpdateCallback | undefined;
+      const emit = (round: number, phase: "adversarial" | "developer", state: RunningState) => {
+        if (!update) return;
+        const header = `adversarial_loop · round ${round}/${MAX_ROUNDS} · ${phase}`;
+        update({
+          content: [{ type: "text", text: `${header}\n${renderSingle(state)}` }],
+          details: { round, phase, state: { ...state, usage: { ...state.usage } } },
+        });
+      };
 
       for (let round = 1; round <= MAX_ROUNDS; round++) {
         if (signal?.aborted) break;
@@ -46,7 +61,7 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
             role: "adversarial-developer",
             prompt: buildAdversarialPrompt(currentDiff, params.context, round),
           },
-          { signal },
+          { signal, onProgress: (state) => emit(round, "adversarial", state) },
         );
 
         const verdict = parseVerdict(adv.text);
@@ -73,7 +88,7 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
             prompt: buildFixPrompt(verdict.findings, params.context),
             cwd: params.workCwd,
           },
-          { signal },
+          { signal, onProgress: (state) => emit(round, "developer", state) },
         );
 
         // NOTE: caller must refetch diff between rounds; for P1 we re-use the

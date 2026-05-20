@@ -3,8 +3,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { type RunningState, emptyRunningState, renderBatch } from "./progress.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import type { DispatchResult } from "./types.ts";
+
+type ToolUpdateCallback = (partial: {
+  content: Array<{ type: "text"; text: string }>;
+  details: unknown;
+}) => void;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LENS_REPORTER_PATH = path.join(__dirname, "lens-reporter.ts");
@@ -204,12 +210,25 @@ export async function runLensReview(opts: {
   cwd?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  onUpdate?: ToolUpdateCallback;
 }): Promise<LensReviewSummary> {
   const runId = makeRunId();
   const skillsDir = piSkillsDir();
   const context = opts.context ?? "";
 
-  const promises = LENSES.map(async (lens): Promise<LensRunResult> => {
+  // Per-lens progress state, in fixed lens order so the rendered table is
+  // stable as updates trickle in.
+  const lensStates: RunningState[] = LENSES.map((l) =>
+    emptyRunningState("code-review-specialist", l.name.toLowerCase().replaceAll("_", "-")),
+  );
+  const emitProgress = () => {
+    opts.onUpdate?.({
+      content: [{ type: "text", text: renderBatch("dispatch_lens_review", lensStates) }],
+      details: { states: lensStates.map((s) => ({ ...s, usage: { ...s.usage } })) },
+    });
+  };
+
+  const promises = LENSES.map(async (lens, lensIdx): Promise<LensRunResult> => {
     const skillPath = path.join(skillsDir, lens.skill);
     const prompt = lensPromptFor(lens, opts.diff, context);
     let result: DispatchResult;
@@ -225,6 +244,10 @@ export async function runLensReview(opts: {
           extraArgs: ["--no-skills", "--skill", skillPath, "--extension", LENS_REPORTER_PATH],
           timeoutMs: opts.timeoutMs ?? 10 * 60_000,
           signal: opts.signal,
+          onProgress: (state) => {
+            lensStates[lensIdx] = state;
+            emitProgress();
+          },
         },
       );
     } catch (err) {
@@ -316,9 +339,13 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
       ),
       cwd: Type.Optional(Type.String({ description: "Working directory; defaults to current." })),
     }),
-    async execute(_id, raw, signal) {
+    async execute(_id, raw, signal, onUpdate) {
       const params = raw as { diff: string; context?: string; cwd?: string };
-      const summary = await runLensReview({ ...params, signal });
+      const summary = await runLensReview({
+        ...params,
+        signal,
+        onUpdate: onUpdate as ToolUpdateCallback | undefined,
+      });
       return {
         content: [{ type: "text", text: renderSummary(summary) }],
         details: summary,

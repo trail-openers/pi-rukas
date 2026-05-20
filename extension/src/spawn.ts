@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { resolveModel } from "./models.ts";
+import { type RunningState, emptyRunningState, ingestEvent } from "./progress.ts";
 import { ROLES, isRoleName } from "./roles.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
 
@@ -40,6 +41,12 @@ interface SpawnOptions {
    * single parallel batch.
    */
   tag?: string;
+  /**
+   * Live-progress callback. Fires every time the child emits a `message_end`
+   * event with `role: "assistant"` — i.e. once per turn completion. The
+   * snapshot is a defensive copy; safe to mutate downstream.
+   */
+  onProgress?: (snapshot: RunningState) => void;
 }
 
 const DEFAULT_SPAWN_TIMEOUT_MS = (() => {
@@ -177,6 +184,9 @@ export async function spawnSpecialist(
   const start = Date.now();
   const events: PiJsonEvent[] = [];
   let stderr = "";
+  // Running state shared with the parent's onProgress callback. Each child
+  // gets its own state; lens-review aggregates over 6 of them in parallel.
+  const runningState = emptyRunningState(spec.role, opts.tag);
 
   if (!child.stdout || !child.stderr) {
     throw new Error("Failed to attach to child stdio");
@@ -186,10 +196,18 @@ export async function spawnSpecialist(
   stdoutRl.on("line", (line) => {
     const trimmed = line.trim();
     if (!trimmed) return;
+    let parsed: PiJsonEvent | null = null;
     try {
-      events.push(JSON.parse(trimmed) as PiJsonEvent);
+      parsed = JSON.parse(trimmed) as PiJsonEvent;
     } catch {
       stderr += `${trimmed}\n`;
+      return;
+    }
+    events.push(parsed);
+    // Stream into the running state. ingestEvent returns true only when an
+    // assistant turn completed (the right cadence to surface to the user).
+    if (ingestEvent(runningState, parsed as Parameters<typeof ingestEvent>[1], start)) {
+      opts.onProgress?.({ ...runningState, usage: { ...runningState.usage } });
     }
   });
   child.stderr.on("data", (d) => {
@@ -251,6 +269,15 @@ export async function spawnSpecialist(
     // before any assistant turn (rare), surface the requested model anyway.
     result.model = modelChoice.model;
   }
+
+  // Final onProgress emit — flips the child from running to done so the
+  // aggregator's last render shows the resolved icon (✓ / ✗) instead of the
+  // running spinner.
+  runningState.done = true;
+  runningState.ok = result.ok;
+  runningState.elapsedMs = ms;
+  if (result.model && !runningState.model) runningState.model = result.model;
+  opts.onProgress?.({ ...runningState, usage: { ...runningState.usage } });
   return result;
 }
 
