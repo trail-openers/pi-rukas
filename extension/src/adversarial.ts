@@ -1,34 +1,26 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { type RunningState, renderSingle } from "./progress.ts";
+import { startJob } from "./async-jobs.ts";
 import { spawnSpecialist } from "./spawn.ts";
-import type { AdversarialVerdict } from "./types.ts";
+import type { AdversarialVerdict, DispatchResult } from "./types.ts";
 
 const MAX_ROUNDS = 3;
 
-type ToolUpdateCallback = (partial: {
-  content: Array<{ type: "text"; text: string }>;
-  details: unknown;
-}) => void;
-
 /**
- * Runs an adversarial review loop:
- *   1. Spawn adversarial-developer on the diff
- *   2. If APPROVED → return ok
- *   3. Otherwise dispatch developer for fix, refetch diff, re-adversarial
- *   4. Max 3 rounds; on round 4, escalate to user.
+ * Async adversarial gate.
  *
- * The caller is responsible for producing the diff string (the prompt template
- * obtains it via `git diff` in the appropriate worktree). The loop does NOT
- * refetch the diff itself — that's the prompt's job — but it does feed each
- * round's findings into the next developer dispatch.
+ * The orchestrator does sequential rounds internally (adversarial → developer
+ * fix → re-adversarial, up to 3 rounds). From the PM's POV the whole saga is
+ * one async dispatch: tool returns a job handle immediately, and one consolidated
+ * report ("APPROVED after round N" or "REJECTED after 3 rounds") arrives as a
+ * [ensemble:async] user message when the loop terminates.
  */
 export function registerAdversarialTool(pi: ExtensionAPI) {
   pi.registerTool({
     name: "adversarial_loop",
     label: "Adversarial Loop",
     description:
-      "Run the mandatory adversarial gate: adversarial review → developer fix → re-review, up to 3 rounds. Returns APPROVED or escalates.",
+      "Run the mandatory adversarial gate as an async job: adversarial review → developer fix → re-review, up to 3 rounds. Returns a job handle immediately. The final verdict (APPROVED or REJECTED + findings) arrives as a [ensemble:async] user message. End your turn after dispatching.",
     parameters: Type.Object({
       diff: Type.String({ description: "Current diff to review (git diff output)." }),
       context: Type.String({
@@ -40,74 +32,129 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
         }),
       ),
     }),
-    async execute(_id, raw, signal, onUpdate) {
+    async execute(_id, raw) {
       const params = raw as { diff: string; context: string; workCwd?: string };
-      const rounds: Array<{ round: number; verdict: AdversarialVerdict; ms: number }> = [];
-      const currentDiff = params.diff;
-      const update = onUpdate as ToolUpdateCallback | undefined;
-      const emit = (round: number, phase: "adversarial" | "developer", state: RunningState) => {
-        if (!update) return;
-        const header = `adversarial_loop · round ${round}/${MAX_ROUNDS} · ${phase}`;
-        update({
-          content: [{ type: "text", text: `${header}\n${renderSingle(state)}` }],
-          details: { round, phase, state: { ...state, usage: { ...state.usage } } },
-        });
-      };
-
-      for (let round = 1; round <= MAX_ROUNDS; round++) {
-        if (signal?.aborted) break;
-        const adv = await spawnSpecialist(
-          {
-            role: "adversarial-developer",
-            prompt: buildAdversarialPrompt(currentDiff, params.context, round),
-          },
-          { signal, onProgress: (state) => emit(round, "adversarial", state) },
-        );
-
-        const verdict = parseVerdict(adv.text);
-        rounds.push({ round, verdict, ms: adv.ms });
-
-        if (verdict.status === "APPROVED") {
-          return {
-            content: [
-              {
-                type: "text",
-                text: `Adversarial APPROVED after round ${round}.`,
-              },
-            ],
-            details: { ok: true, finalRound: round, rounds },
-          };
-        }
-
-        if (round === MAX_ROUNDS) break;
-
-        // Dispatch developer to fix
-        await spawnSpecialist(
-          {
-            role: "developer",
-            prompt: buildFixPrompt(verdict.findings, params.context),
-            cwd: params.workCwd,
-          },
-          { signal, onProgress: (state) => emit(round, "developer", state) },
-        );
-
-        // NOTE: caller must refetch diff between rounds; for P1 we re-use the
-        // passed-in diff as developer is expected to update in place. P2 will
-        // refetch via a worktree-aware helper.
-      }
-
-      const lastRound = rounds[rounds.length - 1];
+      const { jobId } = startJob(pi, {
+        label: "adversarial_loop",
+        role: "adversarial-loop",
+        work: (signal) => runAdversarialLoop(params, signal),
+      });
       return {
         content: [
           {
             type: "text",
-            text: `❌ Adversarial rejected after ${MAX_ROUNDS} rounds. Last verdict: ${lastRound?.verdict.status}\n\n${lastRound?.verdict.findings}\n\nHalt workflow and ask user for guidance.`,
+            text: `Dispatched async adversarial_loop job ${jobId}. Verdict will arrive as a [ensemble:async] user message. End your turn.`,
           },
         ],
-        details: { ok: false, finalRound: MAX_ROUNDS, rounds },
+        details: { jobId, role: "adversarial-loop", async: true },
       };
     },
   });
+}
+
+async function runAdversarialLoop(
+  params: { diff: string; context: string; workCwd?: string },
+  signal: AbortSignal,
+): Promise<DispatchResult> {
+  const start = Date.now();
+  const rounds: Array<{ round: number; verdict: AdversarialVerdict; ms: number }> = [];
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+  let lastTranscript: string | undefined;
+  let lastModel: string | undefined;
+  const accumulate = (r: DispatchResult) => {
+    if (r.usage) {
+      usage.input += r.usage.input;
+      usage.output += r.usage.output;
+      usage.cacheRead += r.usage.cacheRead;
+      usage.cacheWrite += r.usage.cacheWrite;
+      usage.cost += r.usage.cost;
+      usage.turns += r.usage.turns;
+    }
+    if (r.transcriptPath) lastTranscript = r.transcriptPath;
+    if (r.model && !lastModel) lastModel = r.model;
+  };
+
+  for (let round = 1; round <= MAX_ROUNDS; round++) {
+    if (signal.aborted) break;
+    const adv = await spawnSpecialist(
+      {
+        role: "adversarial-developer",
+        prompt: buildAdversarialPrompt(params.diff, params.context, round),
+      },
+      { signal },
+    );
+    accumulate(adv);
+
+    const verdict = parseVerdict(adv.text);
+    rounds.push({ round, verdict, ms: adv.ms });
+
+    if (verdict.status === "APPROVED") {
+      return synthesizeResult({
+        ok: true,
+        text: `Adversarial APPROVED after round ${round}.\n\n${verdict.findings}`,
+        ms: Date.now() - start,
+        usage,
+        transcriptPath: lastTranscript,
+        model: lastModel,
+      });
+    }
+
+    if (round === MAX_ROUNDS) break;
+
+    const fix = await spawnSpecialist(
+      {
+        role: "developer",
+        prompt: buildFixPrompt(verdict.findings, params.context),
+        cwd: params.workCwd,
+      },
+      { signal },
+    );
+    accumulate(fix);
+  }
+
+  const last = rounds[rounds.length - 1];
+  return synthesizeResult({
+    ok: false,
+    text: [
+      `❌ Adversarial REJECTED after ${MAX_ROUNDS} rounds. Last verdict: ${last?.verdict.status}`,
+      "",
+      last?.verdict.findings ?? "",
+      "",
+      "Surface the following options to the user verbatim and wait for their choice — do not pick on their behalf:",
+      "",
+      "  (a) Authorise another adversarial_loop pass (3 more rounds against the current diff).",
+      "  (b) Accept the current state and proceed to @ops commit. Record the override in vipune.",
+      "  (c) Abandon and rework the approach — return to issue scoping or developer redesign.",
+      "  (d) Take over manually — user steps in to address findings directly.",
+    ].join("\n"),
+    ms: Date.now() - start,
+    usage,
+    transcriptPath: lastTranscript,
+    model: lastModel,
+  });
+}
+
+interface SynthesizeInput {
+  ok: boolean;
+  text: string;
+  ms: number;
+  usage: DispatchResult["usage"];
+  transcriptPath?: string;
+  model?: string;
+}
+
+function synthesizeResult(i: SynthesizeInput): DispatchResult {
+  return {
+    role: "adversarial-loop",
+    ok: i.ok,
+    text: i.text,
+    toolUses: [],
+    ms: i.ms,
+    exitCode: i.ok ? 0 : 1,
+    usage: i.usage,
+    model: i.model,
+    transcriptPath: i.transcriptPath,
+  };
 }
 
 function buildAdversarialPrompt(diff: string, context: string, round: number): string {

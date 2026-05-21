@@ -104,10 +104,10 @@ Format the response as:
 <one-line summary per lens that contributed findings>
 
 ### Transcripts
-<bullet list of transcriptPath values from the tool result so the user can /runs or pi --session each one>
+<bullet list of transcriptPath values from the tool result — paths only, for the user's post-hoc inspection>
 ```
 
-Each lens's transcript path is in the tool result. Surface them so the user can drill in via `/runs` or open a child's full session with `pi --session <path>`.
+Each lens's transcript path is in the `[ensemble:async]` tool report. Copy the paths verbatim into the Transcripts section so the user can navigate to them. **Do NOT read the transcripts yourself** — they re-import content the tool already returned to you in deduped form.
 
 ---
 

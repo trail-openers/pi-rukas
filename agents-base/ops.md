@@ -70,14 +70,37 @@ These git operations require file editing which you cannot do:
 
 ## Branch Workflow
 
-**Pre-Work Branch Creation:**
-1. `git checkout main && git pull origin main`
-2. `git checkout -b feature/issue-{NUMBER}-description`
-3. `git push -u origin feature/issue-{NUMBER}-description`
+**Pre-Work Branch Creation (preconditions are MANDATORY, in this order):**
+
+1. **Identify mainline.** Default `main`; for repos using `master`/`develop`/`trunk`, detect via:
+   ```bash
+   MAINLINE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
+   MAINLINE=${MAINLINE:-main}
+   ```
+2. **Verify clean working tree** before branching:
+   ```bash
+   test -z "$(git status --porcelain)" || { echo "ABORT: dirty working tree"; exit 1; }
+   ```
+   If dirty → ABORT and surface to PM. Do NOT branch off uncommitted state.
+3. **Fetch and fast-forward the mainline:**
+   ```bash
+   git fetch origin && git checkout "$MAINLINE" && git pull --ff-only origin "$MAINLINE"
+   ```
+   `--ff-only` is mandatory — if the mainline diverged (rare but possible after a rebase or force-push upstream), ABORT and surface to PM. Never create a surprise merge commit.
+4. **Branch from there:**
+   ```bash
+   git checkout -b feature/issue-{NUMBER}-description
+   ```
+5. **Push and set upstream:**
+   ```bash
+   git push -u origin feature/issue-{NUMBER}-description
+   ```
+
+If any precondition (1-3) fails, do NOT proceed to step 4. Surface the failure to PM verbatim with the exact error output so PM can decide whether to ask the user or course-correct.
 
 **Pre-Commit Verification:**
-1. Check NOT on main: `git branch --show-current`
-2. If on main → STOP, create feature branch first
+1. Check NOT on mainline: `git branch --show-current` (compare against the `$MAINLINE` discovered above).
+2. If on mainline → STOP, create feature branch first.
 
 ## Kamal Deployment
 

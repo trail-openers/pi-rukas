@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { adapterFor } from "./model-adapters.ts";
 import { resolveModel } from "./models.ts";
 import { type RunningState, emptyRunningState, ingestEvent } from "./progress.ts";
 import { ROLES, isRoleName } from "./roles.ts";
@@ -96,6 +97,8 @@ interface PiMessage {
   toolResults?: unknown[];
   usage?: PiUsage;
   model?: string;
+  provider?: string;
+  api?: string;
   stopReason?: string;
 }
 interface PiJsonEvent {
@@ -304,11 +307,15 @@ function collapseEvents(
   let turns = 0;
   const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
   let model: string | undefined;
+  let provider: string | undefined;
+  let api: string | undefined;
 
   for (const msg of messages) {
     if (msg.role !== "assistant") continue;
     turns++;
     if (msg.model && !model) model = msg.model;
+    if (msg.provider && !provider) provider = msg.provider;
+    if (msg.api && !api) api = msg.api;
     if (msg.usage) {
       usage.input += msg.usage.input ?? 0;
       usage.output += msg.usage.output ?? 0;
@@ -316,8 +323,13 @@ function collapseEvents(
       usage.cacheWrite += msg.usage.cacheWrite ?? 0;
       usage.cost += msg.usage.cost?.total ?? 0;
     }
+    // Per-message model adapter: handles quirks specific to the LLM family
+    // that emitted this message (e.g. GLM's "None" placeholder text blocks).
+    // Default adapter is no-op, so unknown models pass through unchanged.
+    const adapter = adapterFor(msg.model, msg.provider);
     for (const block of msg.content ?? []) {
       if (block.type === "text" && typeof block.text === "string") {
+        if (adapter.isArtifactText?.(block.text)) continue;
         textParts.push(block.text);
       } else if (block.type === "toolCall") {
         toolUses.push(block);
@@ -325,7 +337,9 @@ function collapseEvents(
     }
   }
 
-  const text = textParts.join("");
+  // Join with double-newline so distinct text blocks across turns (separated
+  // by tool calls in between) stay visually delimited instead of concatenated.
+  const text = textParts.filter((t) => t.trim()).join("\n\n");
   return {
     role,
     ok: exitCode === 0,
@@ -335,5 +349,7 @@ function collapseEvents(
     exitCode,
     usage: { ...usage, turns },
     model,
+    provider,
+    api,
   };
 }

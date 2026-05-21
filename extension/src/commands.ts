@@ -26,10 +26,32 @@ const PM_PROMPT_FILE = path.resolve(
 const SLASH_COMMANDS = ["start", "research", "plan", "work", "review"] as const;
 type SlashCommand = (typeof SLASH_COMMANDS)[number];
 
-// Session-scoped flag — set when a registered slash command activates, read &
-// cleared by the before_agent_start hook to inject PM doctrine for that single
-// turn. Avoids file writes or global APPEND_SYSTEM.md changes.
-let pmDoctrineActive = false;
+// Session-scoped flags.
+//
+// `pmDoctrineFirstTurnPending` — one-shot for injecting the FULL project-manager
+// doctrine on the first turn after a workflow slash command fires. Cleared
+// after the first agent_start so we don't re-inject the 53K-char doctrine on
+// every PM turn.
+//
+// `pmModeActive` — sticky from the first slash command for the rest of the
+// session. While true, every PM agent_start gets a SHORT preamble (~200
+// chars) reminding the model that it MUST NOT edit/write/code itself. This
+// closes the live-test bug where PM had the doctrine only on turn 1, then
+// happily reached for the edit tool on turns 2+ once the doctrine was gone
+// from context.
+let pmDoctrineFirstTurnPending = false;
+let pmModeActive = false;
+
+const PM_STICKY_PREAMBLE = `# PM mode — orchestration only
+
+You are running inside a pi-ensemble workflow (/start, /research, /plan, /work, /review). Even though Pi has read, edit, write, and bash tools registered, you MUST NOT use edit, write, or non-vipune/git-read-only bash for implementation work. Implementation, tests, debugging, commits, deployment — ALL of it belongs to subagents:
+
+- Implementation, tests, debugging, file edits → \`dispatch_specialist\` with role \`developer\` (or \`pair_watch\` for live pair-coding)
+- Git ops, commits, PRs, branch creation, deployment → \`dispatch_specialist\` with role \`ops\`
+- Research, file reading, vipune searches, web → \`dispatch_specialist\` with role \`explore\`
+
+If you catch yourself about to call \`edit\`, \`write\`, or \`bash\` for anything beyond \`vipune\` / \`gh issue view\` / read-only \`git status|diff|log|branch\` / \`oo recall\`, STOP and dispatch instead. Touching files yourself is a doctrine violation.
+`;
 
 export function registerCommands(pi: ExtensionAPI) {
   for (const name of SLASH_COMMANDS) {
@@ -61,8 +83,11 @@ export function registerCommands(pi: ExtensionAPI) {
           );
           return;
         }
-        pmDoctrineActive = true;
-        trace(`/${name} → sendUserMessage (${expanded.length} chars); PM doctrine armed`);
+        pmDoctrineFirstTurnPending = true;
+        pmModeActive = true;
+        trace(
+          `/${name} → sendUserMessage (${expanded.length} chars); PM doctrine armed + PM mode sticky`,
+        );
         pi.sendUserMessage(expanded);
       },
     });
@@ -93,9 +118,11 @@ export function registerCommands(pi: ExtensionAPI) {
       const lines = [
         `prompts dir:      ${PI_PROMPTS_DIR}`,
         `PM prompt file:   ${PM_PROMPT_FILE}`,
-        `pmDoctrineActive: ${pmDoctrineActive}`,
+        `PM mode:          ${pmModeActive ? "active (sticky preamble injected every turn)" : "idle"}`,
+        `PM first-turn doctrine pending: ${pmDoctrineFirstTurnPending}`,
         "commands:         /start /research /plan /work /review /runs /ensemble-model /ensemble-debug",
-        "tools:            dispatch_specialist, dispatch_parallel, adversarial_loop, dispatch_lens_review",
+        "tools:            dispatch_specialist, dispatch_parallel, adversarial_loop, dispatch_lens_review (all async),",
+        "                  dispatch_status, dispatch_kill",
         ...(runsLine ? [`transcripts:      ${runsLine}`] : []),
         "",
         "subagent models  (change via /ensemble-model — saved to ~/.pi/agent/ensemble-models.json)",
@@ -111,17 +138,28 @@ export function registerCommands(pi: ExtensionAPI) {
   pi.on(
     "before_agent_start",
     async (event: BeforeAgentStartEvent): Promise<BeforeAgentStartEventResult | undefined> => {
-      if (!pmDoctrineActive) return undefined;
-      pmDoctrineActive = false; // one-shot per slash command
-      try {
-        const pmPrompt = await fs.readFile(PM_PROMPT_FILE, "utf8");
-        const base = event.systemPrompt ?? "";
-        trace(`before_agent_start: appending PM doctrine (${pmPrompt.length} chars)`);
-        return { systemPrompt: `${base}\n\n${pmPrompt}` };
-      } catch (err) {
-        trace(`before_agent_start: PM doctrine load FAILED: ${(err as Error).message}`);
-        return undefined;
+      // Two-layer doctrine: full PM doctrine on turn 1 (heavy, one-shot to
+      // amortise cost), short PM_STICKY_PREAMBLE on every turn while in PM
+      // mode (light, closes the "PM forgets the doctrine on turn 2+" gap that
+      // let it self-code on issue #580).
+      if (!pmModeActive) return undefined;
+      const base = event.systemPrompt ?? "";
+      const pieces: string[] = [base, PM_STICKY_PREAMBLE];
+      if (pmDoctrineFirstTurnPending) {
+        pmDoctrineFirstTurnPending = false;
+        try {
+          const pmPrompt = await fs.readFile(PM_PROMPT_FILE, "utf8");
+          pieces.push(pmPrompt);
+          trace(
+            `before_agent_start: appended PM sticky preamble + full doctrine (${pmPrompt.length} chars)`,
+          );
+        } catch (err) {
+          trace(`before_agent_start: PM doctrine load FAILED: ${(err as Error).message}`);
+        }
+      } else {
+        trace("before_agent_start: appended PM sticky preamble only (doctrine already loaded)");
       }
+      return { systemPrompt: pieces.join("\n\n") };
     },
   );
 }

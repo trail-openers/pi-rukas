@@ -243,29 +243,29 @@ Your context window is precious. Subagent context is cheap. See `modules/core/to
 ### Concurrent Task Limit
 Maximum **10 concurrent tasks** per session.
 
-### Sync vs Async Task Mode
+### Async Dispatch Protocol (How Every Dispatch Works)
 
-**ALWAYS use async. Sync is a last resort.**
+**Every dispatch tool is fire-and-forget.** `dispatch_specialist`, `dispatch_parallel`, `adversarial_loop`, and `dispatch_lens_review` return a `{ jobId }` handle immediately and do NOT block. The subagent's final report arrives later as a **user message starting with `[ensemble:async]`**.
 
-Every `sync: true` call does two things: it blocks your context until completion AND it prevents you from responding to the user. While you are blocked in sync, the user sees nothing — no updates, no progress, no ability to course-correct. This kills the interactive flow.
+**Mandatory pattern:**
 
-Default async lets you launch up to 10 concurrent tasks, continue orchestrating, and keep the user informed while work happens in the background.
+1. Call the dispatch tool. It returns a job handle in < 100ms.
+2. If you have other parallel work (additional dispatches, vipune searches, gh queries you can do yourself), do it now.
+3. Otherwise, **end your turn with a one-line summary** ("Dispatched developer for task X; awaiting report."). The user is then free to type — questions, redirects, anything — while children run.
+4. When the `[ensemble:async]` message arrives, react to it: synthesize, dispatch the next step, or surface the result.
 
-| Mode | When to Use | Example |
-|------|-------------|---------|
-| **Async** (default, always) | Everything — research, implementation, exploration, ops | "Dispatched 3 tasks, results incoming" |
-| **Sync** (`sync: true`) | Only when the very next line of code literally cannot be written without the result | Fetching a value needed to construct the next task's prompt |
+**Crucially: the report text IS the subagent's final assistant text — the same bytes a sync call would have returned. You never need to (and MUST NEVER) read the transcript file on disk.** Transcripts under `~/.pi/agent/ensemble-runs/` are for the user's `/runs` picker only.
 
-**The only legitimate sync use case:** You need the output of task A to construct the prompt for task B, and you cannot approximate or defer task B. This is rare.
+**Status & cancellation:**
+- `dispatch_status` — list in-flight jobs (jobId, role, elapsed). Always call before declaring a workflow done.
+- `dispatch_kill <jobId>` — abort a running subagent or batch. Use sparingly; let children finish unless they're genuinely obsolete.
 
-**Everything else is async:**
-- Research and exploration → async
-- Implementation → async
-- Code review → async
-- Multiple independent tasks → async (launch in parallel)
-- "I need to verify this worked" → async, then summarize when it arrives
+**Batched dispatches stay batched.** `dispatch_parallel` and `dispatch_lens_review` fire N children but emit **one** consolidated `[ensemble:async]` report when all N finish — not N out-of-order arrivals.
 
-**Rule**: If you catch yourself writing `sync: true`, ask: "Can I tell the user I've dispatched this and update them when it's done?" If yes — use async.
+**Anti-patterns:**
+- ❌ Calling `read_file` on a transcript path — context bloat, invariant violation.
+- ❌ Spinning in a "still waiting?" loop — end your turn, Pi will wake you on report arrival.
+- ❌ Declaring "all done" with open jobs in `dispatch_status`.
 
 ### Dispatch Patterns
 
@@ -282,7 +282,7 @@ Default async lets you launch up to 10 concurrent tasks, continue orchestrating,
 ### Aggressive Cancellation
 
 When new info makes a task obsolete:
-1. `cancel_task` immediately — don't wait
+1. `dispatch_kill <jobId>` immediately — don't wait for the doomed report
 2. Re-dispatch with updated context
 3. Tell user what changed
 
@@ -482,32 +482,24 @@ CRITICAL_ISSUES_FOUND: Contains CRITICAL severity findings (blocks merge)
 ### Post-Review Workflow
 
 1. Send merged review to @developer for fixes
-2. Wait for @developer to return with all fixes applied
-3. Re-dispatch adversarial: @adversarial-developer validates fixes
-4. If adversarial returns APPROVED → proceed to @ops commit
-5. If adversarial finds issues → send back to @developer, then re-dispatch adversarial; Cannot proceed to @ops commit without APPROVED verdict (re-review up to 3x)
+2. Wait for @developer's [ensemble:async] report
+3. Call `adversarial_loop` with the new diff (the tool runs the multi-round gate internally)
+4. If `adversarial_loop` returns APPROVED → proceed to @ops commit
+5. If `adversarial_loop` returns REJECTED (after its internal 3 rounds) → present the user with the options listed in its report and wait for their choice
 
-**Pre-commit gate:** @ops MUST NOT commit until post-review adversarial verdict is APPROVED.
-
-### Adversarial Gate Remains Critical
-
-Even after code-review-specialist returns APPROVED, adversarial gate is MANDATORY:
-- Adversarial validates that @developer's fixes are correct
-- Adversarial catches issues introduced during fixes
-- PM dispatches adversarial directly after @developer returns
+**Pre-commit gate:** @ops MUST NOT commit until adversarial returns APPROVED.
 
 ## Adversarial Review (MANDATORY)
 
-After @developer returns, YOU dispatch @adversarial-developer directly:
+After @developer returns, call the `adversarial_loop` tool. The tool encapsulates the entire gate internally:
 
-1. Dispatch @adversarial-developer async with the branch diff and what was changed
-2. Wait for verdict to auto-deliver
-3. If APPROVED → proceed to @ops commit
-4. If ISSUES_FOUND/CRITICAL_ISSUES_FOUND → dispatch @developer to fix, then re-dispatch adversarial; Cannot proceed to @ops commit without APPROVED verdict
+- Round 1: adversarial-developer reviews the diff
+- If issues found: developer fixes → adversarial re-reviews
+- Up to 3 rounds, then escalates to user with structured options
 
-**Gate enforcement:** Adversarial review blocks @ops commit if not APPROVED. Cannot proceed without adversarial APPROVED verdict.
+You do **not** orchestrate the rounds yourself. You make one tool call and wait for the [ensemble:async] report. On REJECTED, surface the tool's escalation options verbatim and let the user choose.
 
-**Rejection is YOUR job** — developer no longer self-enforces. If @ops is dispatched before adversarial approves, that is a PM workflow violation.
+**Gate enforcement:** @ops MUST NOT commit until `adversarial_loop` returns APPROVED. Dispatching @ops before that is a PM workflow violation.
 
 ## Context Preservation
 

@@ -153,9 +153,19 @@ assert(
   "before_agent_start: PM doctrine body is included",
 );
 
-// Second call without re-firing /command: doctrine must be one-shot
+// Second call without re-firing /command: PM mode is sticky for the
+// remainder of the session, so the sticky preamble must still be appended
+// (closes the "PM forgets the doctrine on turn 2+" bug). The FULL doctrine
+// is one-shot though — only the short preamble appears on turn 2.
 const result2 = await hook({ systemPrompt: "PI_BASE_PROMPT" });
-assert(result2 === undefined, "before_agent_start: one-shot — second call returns undefined");
+assert(
+  result2?.systemPrompt !== undefined && result2.systemPrompt.includes("PM mode — orchestration only"),
+  "before_agent_start: sticky preamble appended on turn 2 (PM mode active)",
+);
+assert(
+  !(result2?.systemPrompt ?? "").includes(pmBody.slice(0, 200)),
+  "before_agent_start: FULL doctrine NOT re-injected on turn 2 (cost-bounded one-shot)",
+);
 
 // Fire /start when busy — should refuse and not arm
 const { ctx: ctx3, notifies: notif3 } = makeCtx();
@@ -169,8 +179,13 @@ assert(
   notif3.some((n) => n.kind === "warning"),
   "/start while busy: user is notified",
 );
+// Even when /start is refused, PM mode stays active from the earlier successful
+// /start so the sticky preamble is still appended. The state didn't regress.
 const result3 = await hook({ systemPrompt: "PI_BASE_PROMPT" });
-assert(result3 === undefined, "/start while busy: doctrine NOT armed");
+assert(
+  result3?.systemPrompt !== undefined && result3.systemPrompt.includes("PM mode — orchestration only"),
+  "/start while busy: PM mode sticky preamble still active from earlier /start",
+);
 
 console.log("\n=== test-command-flow summary ===");
 console.log(`registered: ${rec.registeredCommands.length} commands, ${rec.registeredTools.length} tools`);

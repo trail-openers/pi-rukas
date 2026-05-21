@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { startJob } from "./async-jobs.ts";
 import { type RunningState, emptyRunningState, renderBatch } from "./progress.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import type { DispatchResult } from "./types.ts";
@@ -326,7 +327,7 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
     name: "dispatch_lens_review",
     label: "Six-pass Code Review",
     description:
-      "Fan out the six mandatory code-review lenses (SECURITY, ERROR_HANDLING, TYPE_SAFETY, PERFORMANCE, ARCHITECTURE, SIMPLICITY) in parallel, dedupe findings by (path, line, title), apply precedence, and return a verdict (APPROVED / ISSUES_FOUND / CRITICAL_ISSUES_FOUND).",
+      "Fan out the six mandatory code-review lenses (SECURITY, ERROR_HANDLING, TYPE_SAFETY, PERFORMANCE, ARCHITECTURE, SIMPLICITY) in parallel as an async job. Returns a job handle immediately; ONE consolidated verdict + dedup'd findings arrives as a [ensemble:async] user message when all 6 lenses finish. End your turn after dispatching.",
     parameters: Type.Object({
       diff: Type.String({
         description:
@@ -339,16 +340,32 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
       ),
       cwd: Type.Optional(Type.String({ description: "Working directory; defaults to current." })),
     }),
-    async execute(_id, raw, signal, onUpdate) {
+    async execute(_id, raw) {
       const params = raw as { diff: string; context?: string; cwd?: string };
-      const summary = await runLensReview({
-        ...params,
-        signal,
-        onUpdate: onUpdate as ToolUpdateCallback | undefined,
+      const { jobId } = startJob(pi, {
+        label: "lens_review",
+        role: "lens-review",
+        work: async (signal): Promise<DispatchResult> => {
+          const start = Date.now();
+          const summary = await runLensReview({ ...params, signal });
+          return {
+            role: "lens-review",
+            ok: summary.verdict !== "CRITICAL_ISSUES_FOUND",
+            text: renderSummary(summary),
+            toolUses: [],
+            ms: Date.now() - start,
+            exitCode: 0,
+          };
+        },
       });
       return {
-        content: [{ type: "text", text: renderSummary(summary) }],
-        details: summary,
+        content: [
+          {
+            type: "text",
+            text: `Dispatched async six-pass lens review; job ${jobId}. Verdict + findings will arrive as a [ensemble:async] user message when all 6 lenses finish. End your turn.`,
+          },
+        ],
+        details: { jobId, role: "lens-review", async: true },
       };
     },
   });

@@ -27,7 +27,12 @@ export interface DispatchResult {
   ms: number;
   exitCode: number | null;
   usage?: DispatchUsage;
+  /** Model id as reported by Pi (e.g. "zai-glm-4.7", "claude-sonnet-4"). */
   model?: string;
+  /** Provider as reported by Pi (e.g. "cerebras", "anthropic"). */
+  provider?: string;
+  /** API surface as reported by Pi (e.g. "openai-completions", "anthropic-messages"). */
+  api?: string;
   /**
    * Path to the child's session file (Pi native session JSON). Open with
    * `pi --session <path>` to resume/replay, or just read the file directly.
