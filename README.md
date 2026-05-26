@@ -168,6 +168,53 @@ You probably want a smarter model for the PM and a faster one for the specialist
 
 Run `/ensemble-model` inside Pi to pick interactively from your authenticated provider catalog. Add new providers (Anthropic, GitHub Copilot, OpenAI, etc.) via Pi's `/login` — `pi-ensemble` picks them up automatically.
 
+## Using MCP servers (optional, per-host)
+
+Pi has no built-in Model Context Protocol support by design — MCP is a host-level concern, not a framework feature. pi-ensemble implements a two-layer permission model for MCP tools:
+
+- **Top-level session** (where you type): if you have [pi-permissions](https://github.com/randomm/pi-permissions) installed, it handles interactive allow/deny for all tool access at the parent Pi process level.
+- **Subagents** (developer, ops, explore, code-review-specialist, adversarial-developer): run with `--no-extensions` (no pi-permissions), instead loading your MCP bridge via `PI_ENSEMBLE_USER_EXTENSION`. Role-based enforcement happens through pi-ensemble's tool_call interceptor in `extension/src/dispatch.ts` — tools not in a role's allowlist in `agents.json` are blocked at runtime.
+
+### Setup (machines that need MCP)
+
+```bash
+# Install a Pi MCP bridge — recommended: pi-mcp-adapter (lazy-proxy, ~200 token overhead)
+pi install npm:pi-mcp-adapter
+
+# Configure your MCP server in the bridge's config
+# (~/.pi/agent/mcp-servers.json — see pi-mcp-adapter docs)
+
+# Tell pi-ensemble subagents to load it
+export PI_ENSEMBLE_USER_EXTENSION=npm:pi-mcp-adapter   # add to ~/.zshrc / ~/.bashrc
+```
+
+Grant access in `agents.json` for the roles that need the tool. For example, to allow PostgreSQL access for developer and ops:
+
+```json
+{
+  "agent": {
+    "developer": {
+      "permission": {
+        "postgres_*": "allow"
+      }
+    },
+    "ops": {
+      "permission": {
+        "postgres_*": "allow"
+      }
+    }
+  }
+}
+```
+
+### Security note
+
+Read-only guarantees for database access must be enforced at the MCP server level (via DB credentials with restricted permissions). pi-permissions adds interactive approval at the top-level session, and pi-ensemble's tool_call interceptor enforces role-based access for subagents, but neither can override a tool that writes when it shouldn't.
+
+### Machines without MCP
+
+Don't set `PI_ENSEMBLE_USER_EXTENSION` on hosts that don't need MCP integration. There's zero impact — pi-ensemble works normally without it.
+
 ## Configuration & paths
 
 | | Path |

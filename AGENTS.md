@@ -102,6 +102,8 @@ The major modules — know which one to edit for which kind of change:
 | `skill/<name>/SKILL.md` | Skills auto-symlinked to `~/.pi/agent/skills/` |
 | `pi-prompts/*.md` | Slash-command body (read at runtime, no build) |
 
+**pi-permissions and MCP tools**: pi-permissions (if installed) applies to the top-level Pi session only. Subagents run headless with `--no-extensions` — pi-permissions is intentionally not loaded for them. For MCP tools in subagents, set `PI_ENSEMBLE_USER_EXTENSION` to your MCP bridge extension. Role-based enforcement for subagents is handled by pi-ensemble's own tool_call interceptor (see `agents.json` under `agent.<role>.permission`).
+
 ---
 
 ## 4. Pi compatibility (load-bearing)

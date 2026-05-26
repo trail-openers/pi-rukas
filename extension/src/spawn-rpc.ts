@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { type ResolvedModelChoice, resolveModel } from "./models.ts";
 import { ROLES, isRoleName } from "./roles.ts";
+import { applyUserExtension } from "./spawn.ts";
 import { trace } from "./trace.ts";
 
 /**
@@ -145,6 +146,7 @@ export async function spawnRpcChild(
     tmpPromptFile,
   ];
   if (modelChoice.model) childArgs.push("--model", modelChoice.model);
+  applyUserExtension(childArgs, spec.role);
   if (spec.extraArgs?.length) childArgs.push(...spec.extraArgs);
   const invocation = getPiInvocation(childArgs);
 
@@ -153,7 +155,7 @@ export async function spawnRpcChild(
     shell: false,
     // stdin "pipe" — we send JSONL commands. stdout/stderr "pipe" — we read events/errors.
     stdio: ["pipe", "pipe", "pipe"],
-    env: process.env,
+    env: { ...process.env, PI_ENSEMBLE_ROLE: spec.role },
   });
 
   trace(`spawn-rpc[${spec.role}] pid=${child.pid} runId=${runId} transcript=${transcript}`);

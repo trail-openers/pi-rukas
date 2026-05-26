@@ -8,6 +8,7 @@ import { registerLensReviewTool } from "./lens-review.ts";
 import { loadOverrides } from "./model-config.ts";
 import { registerModelPicker } from "./model-picker.ts";
 import { registerPairWatchTool } from "./pair-watch.ts";
+import { registerPermissionGuard } from "./permission-guard.ts";
 import { pruneOldRuns, registerRunsCommand } from "./runs.ts";
 import { trace } from "./trace.ts";
 
@@ -24,6 +25,7 @@ export default async function (pi: ExtensionAPI) {
   registerRunsCommand(pi);
   registerModelPicker(pi);
   registerAsyncJobsLifecycle(pi);
+  registerPermissionGuard(pi);
 
   // Fire-and-forget housekeeping: keep the most-recent N subagent transcripts
   // on disk (default 20, override via PI_ENSEMBLE_RUNS_KEEP_LAST). The user's

@@ -8,6 +8,7 @@ import { adapterFor } from "./model-adapters.ts";
 import { resolveModel } from "./models.ts";
 import { type RunningState, emptyRunningState, ingestEvent } from "./progress.ts";
 import { ROLES, isRoleName } from "./roles.ts";
+import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
 
 interface SpawnOptions {
@@ -71,6 +72,21 @@ function transcriptPathFor(role: string, runId: string, seq?: number, tag?: stri
 
 export function makeRunId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export function applyUserExtension(childArgs: string[], role: string): void {
+  const userExt = process.env.PI_ENSEMBLE_USER_EXTENSION;
+  if (!userExt) return;
+  const isNpmRef = userExt.startsWith("npm:");
+  const isAbsPath = userExt.startsWith("/") || userExt.startsWith("~");
+  if (!isNpmRef && !isAbsPath) {
+    const msg = `pi-ensemble: PI_ENSEMBLE_USER_EXTENSION='${userExt}' rejected (must start with 'npm:' or be an absolute path) — MCP extension will NOT be loaded`;
+    console.warn(msg);
+    trace(`spawn[${role}]: ${msg}`);
+  } else {
+    childArgs.push("--extension", userExt);
+    trace(`spawn[${role}]: --extension ${userExt}`);
+  }
 }
 
 // Pi --mode json event shape (Pi 0.75.3). The canonical assembled answer is at
@@ -169,6 +185,7 @@ export async function spawnSpecialist(
   if (modelChoice.model) {
     childArgs.push("--model", modelChoice.model);
   }
+  applyUserExtension(childArgs, spec.role);
   if (opts.extraArgs && opts.extraArgs.length > 0) {
     childArgs.push(...opts.extraArgs);
   }
@@ -181,7 +198,7 @@ export async function spawnSpecialist(
     // stdin "ignore" is critical: leaving stdin open as a pipe makes Pi wait
     // for input even in -p mode and the spawn hangs forever.
     stdio: ["ignore", "pipe", "pipe"],
-    env: process.env,
+    env: { ...process.env, PI_ENSEMBLE_ROLE: spec.role },
   });
 
   const start = Date.now();
