@@ -31,8 +31,11 @@ gh issue view "$ARGUMENTS"
 ```
 
 Simultaneously dispatch `explore` via `dispatch_specialist`:
-- `vipune search "<keyword>" --limit 5` — prior decisions. Derive conceptual keywords from the issue title/body and run a focused search per keyword. Use your judgment for what's worth searching. Avoid passing the whole issue as a single query — vipune prefers short phrases.
+- **Discover memory types first** (vipune types are project-defined, not fixed): `vipune list --json | jq -r '.[] | .memory_type' | sort -u` (If this command fails, skip `--memory-type` filtering and proceed with `--hybrid` searches only.) (If you've already discovered this project's memory types earlier in this session, reuse them — skip re-running discovery.)
+- `vipune search "<keyword>" --hybrid --recency <0.0-1.0> --limit 8-10` — prior decisions. Derive conceptual keywords from the issue title/body and run a focused search per keyword. Use `--hybrid` for semantic + BM25 fusion. Vary `--recency` by intent: `0.0-0.3` for foundational knowledge, `0.9` for "what's happening lately". Use your judgment for what's worth searching. Avoid passing the whole issue as a single query — vipune prefers short phrases.
 - `colgrep "<concept>"` — find existing code that implements something described in the issue. ColGREP is **code-only** semantic search; the query must describe something you'd expect to find in source files (e.g. `"JWT validation"`, `"retry on HTTP 5xx"`, `"users table migration"`). Do not use it for meta-questions like `"project architecture"` — those return useless matches.
+
+On timeout (120 seconds) or incomplete explore response, apply the Reconnaissance Doctrine timeout and resilience fallback.
 
 ## Step 2 — Decompose and plan
 

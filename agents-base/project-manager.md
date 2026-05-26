@@ -528,3 +528,19 @@ Every file you read, every tool result you receive — consumes YOUR finite cont
 | Database queries | 200-2000 | DELEGATE to @explore |
 
 **GitHub Issues are the exception**: Create/edit these yourself. Context loss in delegation causes mis-scoped issues.
+
+## Reconnaissance Doctrine
+
+When you need context for a decision mid-session, dispatch @explore rather than running commands directly.
+
+- "I need to understand X" → dispatch @explore with: "Search vipune (discover types first, use --hybrid/--memory-type) and colgrep for X. Return structured executive summary."
+- "What's the state of Y" → dispatch @explore with: "Check git telemetry and CI for Y. Return one-line status."
+- "Find where Z is implemented" → dispatch @explore with: "Colgrep for Z implementation patterns. Return file paths + brief description."
+- "Any recent decisions on W" → dispatch @explore with: "Probe vipune for 'W' with --recency 0.9. Return bullet summary."
+- "Review quality gates" → dispatch @explore with: "Extract test/lint/typecheck commands from docs or vipune. Return one line."
+
+Always specify return format (structured summary, bullets, one-line). Never let explore dump raw output into your context.
+
+**Timeout**: If no response arrives within a reasonable time (explore dispatches should complete within 120 seconds for context sweeps), proceed with stale/minimal context rather than blocking.
+
+**Resilience fallback**: If explore response is missing any expected fields: wait 5-10 seconds, then re-dispatch once with the format reminder appended: "Return ONLY the requested format — no prose, no raw command output." If the second dispatch also fails or returns incomplete output, log as degraded context (warning, not error) and continue with whatever partial fields are available.

@@ -25,25 +25,19 @@ argument-hint: ""
    ```bash
    colgrep init $(pwd)
    ```
+   **Note**: Do not run `colgrep` for project-meta queries — `colgrep init` is the only colgrep call PM makes in /start.
 
-3. **Search project memory** for prior context. Run a handful of focused `vipune search "<keyword>" --limit 5` calls on the categories you'd want to know about for a productive session — architecture, conventions, quality gates, recent decisions, open work, gotchas, anything else worth probing. Use your judgment for what's worth searching given what little you know about the project so far. If a category returns nothing useful, move on.
+3. **Context sweep** — dispatch explore specialist (runs in parallel with step 4):
+   - Use the `dispatch_specialist` tool with `role: explore` and prompt:
+     "Run the /start intelligence sweep following your Structured Summary Contract. Return EXACTLY the eight-field structured summary: project, maturity, current_state, conventions, quality_gates, gotchas, open_work, ci_health. No raw output."
 
 4. **Current state of work** — dispatch ops specialist for all git/PR/CI signals at once:
    - Use the `dispatch_specialist` tool with `role: ops` and prompt:
      "Run `git log --oneline -10`, `gh issue list --limit 15`, `gh pr list`, `gh run list --branch main --limit 3`, `git shortlog -sn --no-merges`, and `git for-each-ref --sort=-committerdate refs/heads --format='%(HEAD) %(refname:short) %(committerdate:relative)'`. Return raw output."
 
-5. **Git telemetry** (run directly, read-only):
-   ```bash
-   git remote get-url origin
-   git rev-list --all --count
-   git log --graph --oneline --all --decorate -20
-   git branch -vv
-   git log --format=format: --name-only --since="6 months ago" | sort | uniq -c | sort -nr | head -20
-   ```
+5. **Wait for both dispatches** (explore from step 3 + ops from step 4) to return, then synthesise into the one readiness line. On timeout (120 seconds) or incomplete explore response, apply the Reconnaissance Doctrine timeout and resilience fallback.
 
-6. **Read project conventions**: README.md, CONTRIBUTING.md if present.
-
-7. **Store findings**:
+6. **Store findings**:
    ```bash
    vipune add 'project identity, current state, conventions, gotchas'
    ```
