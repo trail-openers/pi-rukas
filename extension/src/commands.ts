@@ -23,7 +23,7 @@ const PM_PROMPT_FILE = path.resolve(
     path.join(__dirname, "..", "..", "dist", "prompts", "standard", "project-manager.md"),
 );
 
-const SLASH_COMMANDS = ["start", "research", "plan", "work", "review"] as const;
+const SLASH_COMMANDS = ["start", "research", "plan", "work", "review", "audit"] as const;
 type SlashCommand = (typeof SLASH_COMMANDS)[number];
 
 // Session-scoped flags.
@@ -120,7 +120,7 @@ export function registerCommands(pi: ExtensionAPI) {
         `PM prompt file:   ${PM_PROMPT_FILE}`,
         `PM mode:          ${pmModeActive ? "active (sticky preamble injected every turn)" : "idle"}`,
         `PM first-turn doctrine pending: ${pmDoctrineFirstTurnPending}`,
-        "commands:         /start /research /plan /work /review /runs /ensemble-model /ensemble-debug",
+        "commands:         /start /research /plan /work /review /audit /runs /ensemble-model /ensemble-debug",
         "tools:            dispatch_specialist, dispatch_parallel, adversarial_loop, dispatch_lens_review, pair_watch (all async),",
         "                  dispatch_status, dispatch_kill",
         ...(runsLine ? [`transcripts:      ${runsLine}`] : []),
@@ -179,6 +179,8 @@ function descriptionFor(name: SlashCommand): string {
       return "<issue-number> — Execute a GitHub issue end-to-end: branch → implement → adversarial → PR → review → CI → merge";
     case "review":
       return "[#PR | path | latest N | empty=full] — On-demand six-pass code review (SECURITY/ERROR/TYPES/PERF/ARCH/SIMPLICITY)";
+    case "audit":
+      return "[<path> | <path>=<scope> ...] — Audit repo/path against its own standards (derive from docs/config/examples, not hard-coded)";
   }
 }
 

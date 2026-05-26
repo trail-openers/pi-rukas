@@ -18,3 +18,4 @@ dist/prompts/
 
 # Run artefacts (live tests can leave temp dirs)
 /tmp-*/
+.worktrees/

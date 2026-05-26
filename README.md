@@ -18,6 +18,7 @@ Five slash commands, an orchestrator-shaped system prompt, and six tools that dr
 | `/plan <description>` | Drafts a GitHub issue from your input — auto-classifies as bug/feature/epic/chore/spike, applies the right template, asks before creating. |
 | `/work <issue#>` | Runs an issue end-to-end: feature branch → optional parallel worktrees → `pair_watch` (developer + live adversarial observer, in one call) → ops commits → PR → **six-pass code review** → CI watch → merge per project policy. |
 | `/review [#PR \| path \| latest N]` | On-demand six-pass code review of a PR, file, directory, or the latest N PRs. Returns a deduplicated, precedence-merged verdict (APPROVED / ISSUES_FOUND / CRITICAL_ISSUES_FOUND). |
+| `/audit [<path> \| "full"]` | Standards-first repo/path audit. Derives expectations from docs/config/CI/memory/examples, then reports misalignments across bugs, dead code, style drift, architecture drift, and quality-gate gaps. |
 
 Plus two utility commands:
 
@@ -26,6 +27,23 @@ Plus two utility commands:
 | `/ensemble-model` | Interactive picker for per-role subagent models. Saves to `~/.pi/agent/ensemble-models.json`. |
 | `/runs` | Browse recent subagent runs — drills into per-child transcripts with tool calls and findings. |
 | `/ensemble-debug` | Show current resolved configuration: prompts dir, registered commands and tools, per-role model resolution. |
+
+## When to use which command
+
+| Command | When to use | Scope | Standard source | Memory behavior |
+|---|---|---|---|---|
+| `/start` | Beginning of a session: load context, check state | Project repo | N/A (informational) | Reads only (no writes) |
+| `/research <topic>` | Investigate a topic: web + codebase + memory | Any topic | N/A (informational) | Saves results as fact/observation |
+| `/plan <description>` | Draft a GitHub issue | N/A (creates issue) | N/A | No memory writes |
+| `/work <issue#>` | Execute an issue: implement → review → merge | Feature branch | Universal quality lenses (via `/review`) | Subagents may write to memory |
+| `/review [#PR \| path \| latest]` | Evaluate code against universal quality lenses | PR, file, dir, or codebase | Six review lenses (SECURITY/ERROR/TYPES/PERF/ARCH/SIMPLICITY) | Does not write to memory |
+| `/audit [<path> \| "full"]` | Audit repo/path against its own intended standards | Repo or scoped path | Derived from docs, config, CI, memory, examples | Sparse, durable stores only (critical/high findings, conventions, architecture, aggregated drift) |
+
+**Quick rule of thumb**:
+- Need to learn about something? Use `/research`.
+- Need to fix something? Use `/work`.
+- Need to check code quality before merging? Use `/review`.
+- Need to assess overall repo health and standards alignment? Use `/audit`.
 
 ## Prerequisites
 
@@ -114,7 +132,7 @@ cd ~/some/git/repo
 pi
 # in the Pi prompt:
 > /ensemble-debug
-# should list 8 slash commands, 7 tools, and the per-role model table.
+# should list 9 slash commands, 7 tools, and the per-role model table.
 ```
 
 ## How it works

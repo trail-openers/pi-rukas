@@ -92,6 +92,7 @@ assert(rec.registeredCommands.includes("research"), "/research registered");
 assert(rec.registeredCommands.includes("plan"), "/plan registered");
 assert(rec.registeredCommands.includes("work"), "/work registered");
 assert(rec.registeredCommands.includes("review"), "/review registered");
+assert(rec.registeredCommands.includes("audit"), "/audit registered");
 assert(rec.registeredCommands.includes("ensemble-debug"), "/ensemble-debug registered");
 assert(rec.registeredCommands.includes("runs"), "/runs registered");
 assert(rec.registeredTools.includes("dispatch_specialist"), "dispatch_specialist tool registered");
