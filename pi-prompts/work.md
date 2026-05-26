@@ -16,7 +16,7 @@ If no issue number provided, ask.
 - Up to **10 async parallel slots** via `dispatch_parallel`. Never serialise independent work.
 - **Worktrees are cheap scratch space.** Multiple developers run in parallel worktrees; cherry-pick into ONE feature branch → ONE PR → ONE CI run.
 - **Developer never commits.** Returns with uncommitted changes in the worktree. `ops` commits.
-- **Adversarial gate is mandatory.** Use the `adversarial_loop` tool after developer returns; `ops` does not commit until APPROVED.
+- **Adversarial gate is mandatory.** Implementation goes through `pair_watch` (developer + live adversarial observer in one call). `ops` does not commit until pair_watch returns APPROVED.
 
 ## How dispatch works (read once)
 
@@ -52,25 +52,31 @@ Delegate to `ops` via `dispatch_specialist`. The ops prompt MUST explicitly requ
 
 Never silently branch off stale or dirty state. If any precondition fails, ops surfaces the failure verbatim and PM stops the workflow to ask the user.
 
-## Step 4 — Execute in parallel
+## Step 4 — Implementation + adversarial verification (`pair_watch`)
 
-Use `dispatch_parallel` with specs for:
-- `explore` — technical context, prior decisions
-- `developer` (one per worktree) — implement with TDD, run local quality gates
+Call `pair_watch` ONCE per workstream. The tool spawns developer + adversarial-developer concurrently — developer implements, adversarial observes the live stream and intervenes via `interrupt_developer` when needed, then issues the verdict via `approve_developer` / `escalate_to_user`. **The pair_watch verdict IS the adversarial gate.** Do NOT call `adversarial_loop` separately afterwards — that's redundant.
 
-**Developer prompt must include:** worktree path, branch, issue number, files in scope, and the instruction "list changed files and return; do not attempt git commands."
+Required params:
+- `task` — one-line directive ("Implement issue #N: <brief>")
+- `context` — 1-3 sentence framing for the adversarial watcher
+- `issueText` — **full issue body verbatim from `gh issue view`** (acceptance criteria, DoD, etc.). Mandatory: without it, adversarial has no criteria to verify against and tends to rubber-stamp.
+- `cwd` — working directory (worktree path or repo root)
 
-## Step 5 — Adversarial gate (MANDATORY)
+Optional:
+- `wallClockMin` — bump from default 10min for complex tasks (max 30)
+- `developerModel` / `adversarialModel` — per-spawn model overrides
 
-When the developer(s) return:
-1. Obtain the diff:
-   - Worktree: `git -C .worktrees/task-A diff`
-   - Main wd: `git diff`
-2. Call the `adversarial_loop` tool with `diff`, `context`, and `workCwd`.
-3. On APPROVED → step 6.
-4. On rejection after 3 rounds → halt and surface the failure summary to the user.
+Multi-task parallel work: when the issue decomposes into N independent workstreams, fire N `pair_watch` calls (one per worktree). Each is async and runs concurrently. PM gets N separate `[ensemble:async]` reports.
 
-## Step 6 — Commit and PR
+### Verdict handling
+
+| pair_watch verdict | What you do |
+|---|---|
+| `APPROVED` | Proceed to Step 5 (commit). Do NOT re-fetch the diff to "verify" — pair_watch already verified it. |
+| `ESCALATED` | Surface the adversarial's reason verbatim to the user. Do NOT auto-retry. |
+| `TIMEOUT` / `CAP_HIT` / `DEV_FINISHED_NO_VERDICT` | **Terminal — do NOT retry pair_watch.** Fall back: take the dev's current diff and run `adversarial_loop` on it as the gate, OR surface to the user. |
+
+## Step 5 — Commit and PR
 
 Dispatch `ops`:
 - Single task: `git add` + `git commit` from main wd.
@@ -78,9 +84,9 @@ Dispatch `ops`:
 - Push feature branch.
 - `gh pr create` with `Fixes #N` in the body.
 
-## Step 7 — Six-pass code review (MANDATORY)
+## Step 6 — Six-pass code review (MANDATORY)
 
-**Initialise round tracking**: `review_round = 1` on first entry. Track wall-clock from now (90-min cap for the entire Step 7 loop).
+**Initialise round tracking**: `review_round = 1` on first entry. Track wall-clock from now (90-min cap for the entire Step 6 loop).
 
 **Fetch the PR diff ONCE** and reuse it for the lens review and any subsequent retry rounds:
 
@@ -90,38 +96,40 @@ gh pr diff "$PR_NUMBER"        # or: git diff main...feature/issue-N
 
 Call the `dispatch_lens_review` tool with `diff`, optional `context` (1-3 sentence summary of the change), and optional `cwd`. The tool fans out six parallel `code-review-specialist` children — one per lens (SECURITY, ERROR_HANDLING, TYPE_SAFETY, PERFORMANCE, ARCHITECTURE, SIMPLICITY) — each pinned to its skill via `--no-skills --skill <path>`. Findings are deduped by `(path, line, title)`, precedence-merged (SECURITY > ERROR_HANDLING > TYPE_SAFETY > PERFORMANCE > ARCHITECTURE > SIMPLICITY), and a verdict is computed:
 
-- **APPROVED** (no findings, or only LOW) → proceed to Step 8.
+- **APPROVED** (no findings, or only LOW) → proceed to Step 7.
 - **ISSUES_FOUND** (any HIGH or MEDIUM) → enter the fix loop below.
 - **CRITICAL_ISSUES_FOUND** (any CRITICAL) → enter the fix loop below; treat as highest priority; user override is NOT permitted for CRITICAL.
 
-### Step 7f — Fix loop (when verdict is not APPROVED)
+### Step 6f — Fix loop (when verdict is not APPROVED)
 
 Run the following cycle, incrementing `review_round` after each complete pass:
 
 1. **Consolidate findings**: take the `findings` array from the tool's `details`. Group by file. For each file, summarise what needs fixing (title, severity, suggestion).
 
-2. **Dispatch developer to fix** via `dispatch_specialist` with role `developer`:
-   - Provide the consolidated findings, the worktree path (same as Step 4), and the explicit instruction: "Address every finding listed below. Make the minimal change per finding. Run local quality gates before returning. Do NOT touch unrelated code."
+2. **Dispatch `pair_watch` to fix** with the consolidated findings as the task. Use the same primary path as Step 4 — fixing a lens-review finding is implementation work and benefits from live adversarial observation just as much as the original implementation does. Required params:
+   - `task`: "Address the following six-pass review findings against the diff currently on this worktree. Make the minimal change per finding. Run local quality gates before declaring complete. Do NOT touch unrelated code."
+   - `context`: 1-2 sentence framing for the adversarial watcher (e.g., "Six-pass review round N fix pass; lens findings below")
+   - `issueText`: the consolidated findings list verbatim (severity, file:line, title, suggestion per finding) — this is the adversarial's checklist for verifying each fix
+   - `cwd`: same worktree as Step 4
+   - The pair_watch verdict closes this fix round: APPROVED → continue to step 3; ESCALATED / TIMEOUT / CAP_HIT / DEV_FINISHED_NO_VERDICT → halt and surface to the user.
 
-3. **Re-fetch diff** after developer returns (developer may have changed line numbers): `git -C <worktree> diff` or `gh pr diff <N>` if changes were committed.
+3. **Re-fetch diff** after pair_watch APPROVED: `git -C <worktree> diff` or `gh pr diff <N>` if changes were committed.
 
-4. **Re-run the adversarial gate** (Step 5): call `adversarial_loop` with the new diff. If adversarial rejects after its own 3 internal rounds, the gate hard-fails — halt and surface to the user with the adversarial verdict text.
+4. **Re-run this step** (Step 6) by calling `dispatch_lens_review` again with the new diff.
 
-5. **Re-run this step** (Step 7) by calling `dispatch_lens_review` again with the new diff.
-
-6. **Check loop caps** BEFORE starting the next round:
+5. **Check loop caps** BEFORE starting the next round:
    - If `review_round > 3` → halt, summarise what keeps failing per lens, and ask the user for guidance.
    - If wall-clock exceeds 90 minutes → halt with timeout message.
 
-7. **User override paths** (only when caps are exceeded, only for verdicts ≤ ISSUES_FOUND, never for CRITICAL):
-   - Option A: continue to Step 8 with the lens issues unresolved. Requires explicit "yes" confirmation. Record the override in vipune: `vipune add 'override issue #N PR#M: [lens names] bypassed. Reason: [user-provided]'`.
+6. **User override paths** (only when caps are exceeded, only for verdicts ≤ ISSUES_FOUND, never for CRITICAL):
+   - Option A: continue to Step 7 with the lens issues unresolved. Requires explicit "yes" confirmation. Record the override in vipune: `vipune add 'override issue #N PR#M: [lens names] bypassed. Reason: [user-provided]'`.
    - Option B: user manually addresses the remaining findings and confirms ready to proceed.
 
 Per-lens transcripts auto-save under `~/.pi/agent/ensemble-runs/` for the **user's** post-hoc inspection. Do NOT read them yourself — that bloats your context and re-imports content the lens-review tool already returned to you in summarised form.
 
-### Step 7e — Mandatory observability output
+### Step 6e — Mandatory observability output
 
-After Step 7f resolves (APPROVED, halted, or overridden), print a status line of the form:
+After Step 6f resolves (APPROVED, halted, or overridden), print a status line of the form:
 
 ```
 six-pass review · round <N> of 3 · verdict <APPROVED|ISSUES_FOUND|CRITICAL_ISSUES_FOUND>
@@ -130,13 +138,13 @@ transcripts: <copy the `transcripts` block from the [ensemble:async] report verb
 
 so the user can see exactly how many rounds ran and where to find the per-lens detail. The `[ensemble:async]` report from `dispatch_lens_review` already contains the transcript paths — surface them verbatim, do not synthesise.
 
-## Step 8 — CI monitoring
+## Step 7 — CI monitoring
 
-Dispatch `ops` to run `gh run watch`. On failure, dispatch `developer` to fix, then loop back to Step 5.
+Dispatch `ops` to run `gh run watch`. On failure, fix via `pair_watch` using the same shape as Step 6f's fix loop (CI failure summary becomes the `task` + `issueText`), then loop back to Step 6 if any code changed.
 
 On green CI + APPROVED review: merge per project merge policy.
 
-## Step 9 — Store learnings
+## Step 8 — Store learnings
 
 ```bash
 vipune add 'issue #N: [decision/pattern discovered]'
@@ -150,4 +158,4 @@ vipune add 'issue #N: [decision/pattern discovered]'
 - Worktrees are temporary scratch.
 - One PR per issue.
 - Developer hands off with uncommitted changes — `ops` commits.
-- Adversarial gate is not optional.
+- Adversarial gate is not optional — `pair_watch` is the gate.

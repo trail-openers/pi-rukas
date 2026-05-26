@@ -121,7 +121,7 @@ export function registerCommands(pi: ExtensionAPI) {
         `PM mode:          ${pmModeActive ? "active (sticky preamble injected every turn)" : "idle"}`,
         `PM first-turn doctrine pending: ${pmDoctrineFirstTurnPending}`,
         "commands:         /start /research /plan /work /review /runs /ensemble-model /ensemble-debug",
-        "tools:            dispatch_specialist, dispatch_parallel, adversarial_loop, dispatch_lens_review (all async),",
+        "tools:            dispatch_specialist, dispatch_parallel, adversarial_loop, dispatch_lens_review, pair_watch (all async),",
         "                  dispatch_status, dispatch_kill",
         ...(runsLine ? [`transcripts:      ${runsLine}`] : []),
         "",

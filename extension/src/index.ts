@@ -7,6 +7,7 @@ import { registerDispatchTools } from "./dispatch.ts";
 import { registerLensReviewTool } from "./lens-review.ts";
 import { loadOverrides } from "./model-config.ts";
 import { registerModelPicker } from "./model-picker.ts";
+import { registerPairWatchTool } from "./pair-watch.ts";
 import { pruneOldRuns, registerRunsCommand } from "./runs.ts";
 import { trace } from "./trace.ts";
 
@@ -18,6 +19,7 @@ export default async function (pi: ExtensionAPI) {
   registerDispatchStatusTool(pi);
   registerAdversarialTool(pi);
   registerLensReviewTool(pi);
+  registerPairWatchTool(pi);
   registerCommands(pi);
   registerRunsCommand(pi);
   registerModelPicker(pi);
