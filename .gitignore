@@ -19,3 +19,7 @@ dist/prompts/
 # Run artefacts (live tests can leave temp dirs)
 /tmp-*/
 .worktrees/
+
+# pi-ensemble permission config (user-specific)
+.pi/permissions.json
+.pi/decisions.json

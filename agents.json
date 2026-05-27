@@ -365,7 +365,7 @@
         "rg": "allow",
         "list": "allow",
         "read": "allow",
-        "webfetch": "allow",
+        "webfetch": "deny",
         "todowrite": "allow",
         "task": "deny",
         "parallel-search_web_search_preview": "deny",
@@ -541,7 +541,64 @@
         "cancel_task": "deny",
         "task": {
           "*": "deny"
-        }
+        },
+        "webfetch": "deny"
+      }
+    },
+    "default": {
+      "permission": {
+        "*": "deny",
+        "bash": {
+          "*": "deny",
+          "which*": "allow",
+          "head*": "allow",
+          "tail*": "allow",
+          "wc*": "allow",
+          "sort*": "allow",
+          "uniq*": "allow",
+          "echo*": "allow",
+          "vipune *": "allow",
+          "vipune search *": "allow",
+          "vipune add *": "allow",
+          "colgrep *": "allow",
+          "kide *": "allow",
+          "tee*": "allow",
+          "jq*": "allow",
+          "uuidgen*": "allow",
+          "oo forget": "allow",
+          "oo gh label list*": "allow",
+          "oo git branch*": "allow",
+          "oo git config --get*": "allow",
+          "oo git diff*": "allow",
+          "oo git log*": "allow",
+          "oo git merge-base*": "allow",
+          "oo git remote*": "allow",
+          "oo git rev-list*": "allow",
+          "oo git rev-parse*": "allow",
+          "oo git for-each-ref*": "allow",
+          "oo git shortlog*": "allow",
+          "oo git show*": "allow",
+          "oo git status*": "allow",
+          "oo git tag*": "allow",
+          "oo git worktree list*": "allow",
+          "oo help *": "allow",
+          "oo init": "allow",
+          "oo learn *": "allow",
+          "oo patterns": "allow",
+          "oo recall *": "allow",
+          "oo version": "allow",
+          "ctx7 *": "allow"
+        },
+        "read": "allow",
+        "rg": "allow",
+        "list": "allow",
+        "skill": "allow",
+        "webfetch": "deny",
+        "websearch": "deny",
+        "write": "deny",
+        "edit": "deny",
+        "multiedit": "deny",
+        "todowrite": "allow"
       }
     }
   }

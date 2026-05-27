@@ -2,17 +2,22 @@
 /**
  * Smoke test for permission-guard tool_call interceptor.
  *
- * Tests the pure functions from permission-guard.ts without spawning Pi children.
+ * Tests the three-layer config resolution without spawning Pi children.
  * Verifies:
- *   - Built-in tools are always allowed
- *   - Tools allowed in agents.json for a role are permitted
- *   - Deny-by-default: tools not mentioned are denied
- *   - Tools explicitly denied for a role are blocked
+ *   - Builtin tools are no longer bypassed (issue #50)
+ *   - Three-layer resolution: project > global > agents.json > deny (issue #51)
+ *   - Explicit builtin tool grants per role (issue #50)
+ *   - Default role when PI_ENSEMBLE_ROLE is unset (issue #50)
+ *   - Wildcard patterns work correctly
  */
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { isToolAllowedForRole, BUILTIN_TOOLS } from "../src/permission-guard.js";
+import {
+  isToolAllowedForRole,
+  resolveToolPermission,
+  BUILTIN_TOOLS,
+} from "../src/permission-guard.js";
 
 let exitCode = 0;
 function assert(cond: boolean, msg: string) {
@@ -24,8 +29,9 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-
-let agentsConfig: Record<string, { permission?: Record<string, string | Record<string, string>> }>;
+let agentsConfig: Record<string, {
+  permission?: Record<string, string | Record<string, string>>;
+}>;
 try {
   const __filename = new URL(import.meta.url).pathname;
   const __dirname = path.dirname(__filename);
@@ -40,57 +46,236 @@ try {
 
 console.log("=== test-permission-guard summary ===\n");
 
-// Test 1: Built-in tools are always allowed regardless of role
-for (const tool of BUILTIN_TOOLS) {
-  const allowed = isToolAllowedForRole(tool, "project-manager", agentsConfig);
-  assert(allowed, `Test 1: built-in tool '${tool}' allowed for project-manager`);
+// === Issue #50 tests ===
+
+// Test 1: isToolAllowedForRole("edit", "ops") returns false
+const editDeniedForOps = isToolAllowedForRole("edit", "ops", agentsConfig);
+assert(!editDeniedForOps, "Issue #50: edit is denied for ops role");
+
+// Test 2: isToolAllowedForRole("edit", "developer") returns true
+const editAllowedForDev = isToolAllowedForRole("edit", "developer", agentsConfig);
+assert(editAllowedForDev, "Issue #50: edit is allowed for developer role");
+
+// Test 3: isToolAllowedForRole("read", "adversarial-developer") returns true
+const readAllowedForAdv = isToolAllowedForRole("read", "adversarial-developer", agentsConfig);
+assert(readAllowedForAdv, "Issue #50: read is allowed for adversarial-developer role");
+
+// Test 4: isToolAllowedForRole("write", "adversarial-developer") returns false
+const writeDeniedForAdv = isToolAllowedForRole("write", "adversarial-developer", agentsConfig);
+assert(!writeDeniedForAdv, "Issue #50: write is denied for adversarial-developer role");
+
+// Test 5: Default role has explicit permissions
+const readAllowedForDefault = isToolAllowedForRole("read", "default", agentsConfig);
+assert(readAllowedForDefault, "Issue #50: read is allowed for default role");
+
+// Test 6: Default role denies write
+const writeDeniedForDefault = isToolAllowedForRole("write", "default", agentsConfig);
+assert(!writeDeniedForDefault, "Issue #50: write is denied for default role");
+
+// Test 7: All roles have explicit builtin tool grants (no bypass)
+for (const role of ["project-manager", "developer", "ops", "code-review-specialist", "explore", "adversarial-developer", "default"]) {
+  const readAllowed = isToolAllowedForRole("read", role, agentsConfig);
+  assert(readAllowed, `Issue #50: read is explicitly allowed for ${role} (no bypass)`);
 }
 
-// Test 2: context7 (wildcard) - allowed for explore at top level
-// In agents.json, explore role has "ctx7 *": "allow" under bash, but the permission guard
-// checks top-level keys. At top level, explore has "vipune": "allow" at the top level.
-const allowedForVipune = isToolAllowedForRole("vipune", "explore", agentsConfig);
-assert(allowedForVipune, "Test 2: vipune allowed for explore role (top-level wildcard)");
+// Test 8: Wildcard patterns work correctly
+const meadowAllowedForOps = isToolAllowedForRole("meadow_command", "ops", agentsConfig);
+assert(meadowAllowedForOps, "Issue #50: wildcard pattern works (meadow* matches meadow_command for ops)");
 
-// Test 3: An MCP tool NOT in agents.json for adversarial-developer → blocked (deny-by-default)
-// adversarial-developer has no explicit allow for an unknown MCP tool like "mcp_unknown_tool"
-const allowedUnknownMCP = isToolAllowedForRole(
-  "mcp_unknown_tool",
-  "adversarial-developer",
-  agentsConfig,
-);
-assert(
-  !allowedUnknownMCP,
-  "Test 3: unknown MCP tool 'mcp_unknown_tool' BLOCKED for adversarial-developer (deny-by-default)",
-);
-
-// Test 4: A tool explicitly denied for a role → blocked
-// ops role has "parallel-search_web_search_preview": "deny"
-const deniedForOps = isToolAllowedForRole(
+// Test 9: Explicit deny overrides wildcard (parallel-search_* denied for ops)
+const parallelSearchDeniedForOps = isToolAllowedForRole(
   "parallel-search_web_search_preview",
   "ops",
   agentsConfig,
 );
 assert(
-  !deniedForOps,
-  "Test 4: parallel-search_web_search_preview blocked for ops (explicitly denied)",
+  !parallelSearchDeniedForOps,
+  "Issue #50: explicit deny blocks parallel-search_web_search_preview for ops",
 );
 
-// Test 5: Tool explicitly allowed for a role → allowed
-// ops role has "meadow*": "allow"
-const allowedForOps = isToolAllowedForRole("meadow_command", "ops", agentsConfig);
-assert(allowedForOps, "Test 5: meadow_command allowed for ops (explicitly allowed with wildcard)");
+// Test 10: Tool not mentioned is denied (deny-by-default)
+const unknownToolDeniedForDev = isToolAllowedForRole("unknown_tool_12345", "developer", agentsConfig);
+assert(
+  !unknownToolDeniedForDev,
+  "Issue #50: unknown tool denied for developer (deny-by-default)",
+);
 
-// Test 6: Wildcard patterns work correctly
-// ops role has "meadow*": "allow" at the top level (not nested under bash)
-// This should match "meadow_command" which starts with "meadow"
-const allowedWildcard = isToolAllowedForRole("meadow_command", "explore", agentsConfig);
-assert(allowedWildcard, "Test 6: wildcard pattern works (meadow* matches meadow_command)");
+// === Issue #51 tests: three-layer resolution ===
 
-// Test 7: Role with no permission config → non-builtin tools blocked by default
-// Create a mock role that doesn't exist in agents.json
-const allowedForUnknownRole = isToolAllowedForRole("some_tool", "nonexistent_role", agentsConfig);
-assert(!allowedForUnknownRole, "Test 7: non-builtin tool BLOCKED for role with no permission config");
+const emptyProject: { roles: Record<string, { permission?: Record<string, "allow" | "deny" | "ask"> }> } = { roles: {} };
+const emptyGlobal: typeof emptyProject = { roles: {} };
+
+// Test 11: Project config overrides agents.json
+const projectOverride: typeof emptyProject = {
+  roles: {
+    developer: {
+      permission: {
+        unknown_tool_12345: "allow", // Override deny-by-default
+      },
+    },
+  },
+};
+const verdict11 = resolveToolPermission(
+  "unknown_tool_12345",
+  "developer",
+  projectOverride.roles,
+  emptyGlobal.roles,
+  agentsConfig,
+);
+assert(verdict11 === "allow", "Issue #51: project config overrides agents.json (allow)");
+
+const projectDenyOverride: typeof emptyProject = {
+  roles: {
+    developer: {
+      permission: {
+        edit: "deny", // Override agents.json allow
+      },
+    },
+  },
+};
+const verdict11b = resolveToolPermission(
+  "edit",
+  "developer",
+  projectDenyOverride.roles,
+  emptyGlobal.roles,
+  agentsConfig,
+);
+assert(verdict11b === "deny", "Issue #51: project config overrides agents.json (deny)");
+
+// Test 12: Global config applies when no project entry
+const globalConfig: typeof emptyProject = {
+  roles: {
+    developer: {
+      permission: {
+        another_unknown_tool: "allow",
+      },
+    },
+  },
+};
+const verdict12 = resolveToolPermission(
+  "another_unknown_tool",
+  "developer",
+  emptyProject.roles,
+  globalConfig.roles,
+  agentsConfig,
+);
+assert(verdict12 === "allow", "Issue #51: global config applies when no project entry");
+
+// Test 13: agents.json applies when no global or project entry
+const verdict13 = resolveToolPermission(
+  "read",
+  "developer",
+  emptyProject.roles,
+  emptyGlobal.roles,
+  agentsConfig,
+);
+assert(verdict13 === "allow", "Issue #51: agents.json applies when no global or project entry");
+
+// Test 14: Missing config files handled silently (empty objects)
+const verdict14 = resolveToolPermission(
+  "read",
+  "developer",
+  {}, // Missing project config
+  {}, // Missing global config
+  agentsConfig,
+);
+assert(verdict14 === "allow", "Issue #51: missing config files handled silently");
+
+// Test 15: Wildcard patterns in project config
+const projectWildcard: typeof emptyProject = {
+  roles: {
+    developer: {
+      permission: {
+        "test_*": "allow",
+      },
+    },
+  },
+};
+const verdict15 = resolveToolPermission(
+  "test_foo_bar",
+  "developer",
+  projectWildcard.roles,
+  emptyGlobal.roles,
+  agentsConfig,
+);
+assert(verdict15 === "allow", "Issue #51: wildcard pattern in project config works");
+
+// Test 16: Exact match takes precedence over wildcard in same layer
+const projectOrder: typeof emptyProject = {
+  roles: {
+    developer: {
+      permission: {
+        "test_*": "deny",
+        "test_specific": "allow",
+      },
+    },
+  },
+};
+const verdict16a = resolveToolPermission(
+  "test_specific",
+  "developer",
+  projectOrder.roles,
+  emptyGlobal.roles,
+  agentsConfig,
+);
+assert(verdict16a === "allow", "Issue #51: exact match in project config overrides wildcard");
+
+const verdict16b = resolveToolPermission(
+  "test_other",
+  "developer",
+  projectOrder.roles,
+  emptyGlobal.roles,
+  agentsConfig,
+);
+assert(verdict16b === "deny", "Issue #51: wildcard in project config catches non-exact matches");
+
+// Test 17: Project exact match, then project wildcard, then global exact, then global wildcard
+const layeredTest: typeof emptyProject = {
+  roles: {
+    developer: {
+      permission: {
+        "layered_*": "deny",
+        "layered_exact": "deny",
+      },
+    },
+  },
+};
+const globalTest: typeof emptyProject = {
+  roles: {
+    developer: {
+      permission: {
+        "layered_*": "allow",
+        "layered_global_only": "allow",
+      },
+    },
+  },
+};
+const verdict17a = resolveToolPermission(
+  "layered_exact",
+  "developer",
+  layeredTest.roles,
+  globalTest.roles,
+  agentsConfig,
+);
+assert(verdict17a === "deny", "Issue #51: project exact match beats project wildcard");
+
+const verdict17b = resolveToolPermission(
+  "layered_other",
+  "developer",
+  layeredTest.roles,
+  globalTest.roles,
+  agentsConfig,
+);
+assert(verdict17b === "deny", "Issue #51: project wildcard beats global exact/wildcard");
+
+const verdict17c = resolveToolPermission(
+  "layered_global_only",
+  "developer",
+  emptyProject.roles,
+  globalTest.roles,
+  agentsConfig,
+);
+assert(verdict17c === "allow", "Issue #51: global exact/wildcard beats agents.json");
 
 console.log("\n=== test-permission-guard summary ===");
 console.log(`exit ${exitCode}`);
