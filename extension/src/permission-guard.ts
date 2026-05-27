@@ -18,6 +18,62 @@ const DECISION_KEY_MAX_LENGTH = 250;
 const MAX_CACHED_DECISIONS = 500;
 const MAX_CONFIG_FILE_SIZE = 1 * 1024 * 1024; // 1MB
 
+// Pattern key constants for bash command prefix caching
+const BASH_PATTERN_PREFIX = "bash:";
+const PATTERN_SUFFIX = " *";
+
+// Pattern key helpers
+function buildPatternKey(prefix: string): string {
+  return `${BASH_PATTERN_PREFIX}${prefix}${PATTERN_SUFFIX}`;
+}
+function isPatternKey(key: string): boolean {
+  return key.startsWith(BASH_PATTERN_PREFIX) && key.endsWith(PATTERN_SUFFIX);
+}
+function extractPatternPrefix(key: string): string {
+  return key.slice(BASH_PATTERN_PREFIX.length, -PATTERN_SUFFIX.length);
+}
+
+// Helper: extract command prefix from bash command for pattern caching
+export function extractCommandPrefix(command: string): string {
+  const tokens = command
+    .trim()
+    .split(/\s+/)
+    .filter((t) => t !== "");
+  const prefixTokens: string[] = [];
+  for (const token of tokens) {
+    // Stop at the first token that looks like an argument or value
+    if (
+      token.startsWith("-") ||
+      token.includes("/") ||
+      /^\d+$/.test(token) ||
+      token.includes(">") ||
+      token.includes("|") ||
+      token.includes("&") ||
+      token.includes(";") ||
+      token.includes("$") ||
+      token.includes("`")
+    ) {
+      // If token contains a command separator, extract the part before it
+      const sepIndex =
+        token.indexOf(";") !== -1
+          ? token.indexOf(";")
+          : token.indexOf("$") !== -1
+            ? token.indexOf("$")
+            : token.indexOf("`");
+      if (sepIndex > 0) {
+        prefixTokens.push(token.slice(0, sepIndex));
+      }
+      break;
+    }
+    prefixTokens.push(token);
+    // Cap at 3 prefix tokens to avoid overly long patterns
+    if (prefixTokens.length >= 3) break;
+  }
+  // Must have at least 1 token
+  if (prefixTokens.length === 0) return tokens[0] ?? "bash";
+  return prefixTokens.join(" ");
+}
+
 // Helper: evict oldest entries from a decisions map
 function evictOldest(map: Map<string, { allowed: boolean; timestamp: string }>, max: number): void {
   if (map.size <= max) return;
@@ -378,7 +434,7 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
 
       if (verdict === "allow") return; // allowed
 
-      // Check cached decisions first (for both deny and ask)
+      // Check cached decisions — exact match first
       const key = decisionKey(event.toolName, event.input);
       const cached = decisions.get(key);
       if (cached !== undefined) {
@@ -387,6 +443,39 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
           block: true,
           reason: `Tool '${event.toolName}' denied (cached decision)`,
         };
+      }
+
+      // Then check pattern matches (for bash "always" decisions)
+      if (event.toolName === "bash") {
+        const command = (event.input as { command?: string })?.command ?? "";
+        const commandPrefix = extractCommandPrefix(command);
+        for (const [patternKey, decision] of decisions) {
+          if (isPatternKey(patternKey)) {
+            const prefix = extractPatternPrefix(patternKey);
+            // Security: enforce word boundary — after prefix, must be space or end of string
+            const nextCharIndex = prefix.length;
+            const isValidMatch = nextCharIndex === command.length || command[nextCharIndex] === " ";
+            if (isValidMatch && command.startsWith(prefix) && prefix === commandPrefix) {
+              if (decision.allowed) return; // cached pattern allow
+              return {
+                block: true,
+                reason: `Tool 'bash' denied (cached pattern: ${prefix} *)`,
+              };
+            }
+          }
+        }
+      }
+
+      // For non-bash, also check tool-name-level decisions
+      if (event.toolName !== "bash") {
+        const toolLevelCached = decisions.get(event.toolName);
+        if (toolLevelCached !== undefined) {
+          if (toolLevelCached.allowed) return;
+          return {
+            block: true,
+            reason: `Tool '${event.toolName}' denied (cached decision)`,
+          };
+        }
       }
 
       // For deny verdict (not ask), block immediately
@@ -415,14 +504,25 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
       }
       const message = `pi-ensemble [${role}]: ${event.toolName} ${argsPreview}`;
 
+      const command =
+        event.toolName === "bash" ? ((event.input as { command?: string })?.command ?? "") : "";
+      const patternScope = event.toolName === "bash" ? extractCommandPrefix(command) : "";
+
+      let promptOptions: string[];
+      if (event.toolName === "bash" && patternScope) {
+        promptOptions = [
+          "Allow once",
+          `Allow always (${patternScope} *)`,
+          "Deny once",
+          `Deny always (${patternScope} *)`,
+        ];
+      } else {
+        promptOptions = ["Allow once", "Allow always", "Deny once", "Deny always"];
+      }
+
       let choice: string | undefined;
       try {
-        choice = await ctx.ui.select(message, [
-          "Allow once",
-          "Allow always",
-          "Deny once",
-          "Deny always",
-        ]);
+        choice = await ctx.ui.select(message, promptOptions);
       } catch (err) {
         trace(`pi-ensemble permission-guard: ctx.ui.select failed for ${event.toolName} (${err})`);
         return { block: true, reason: `Tool '${event.toolName}' denied (UI error)` };
@@ -435,10 +535,16 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
         };
       }
 
-      const allowed = choice === "Allow once" || choice === "Allow always";
+      const allowed = choice === "Allow once" || choice.startsWith("Allow always");
 
-      if (choice === "Allow always" || choice === "Deny always") {
-        decisions.set(key, { allowed, timestamp: new Date().toISOString() });
+      if (choice.startsWith("Allow always") || choice.startsWith("Deny always")) {
+        let cacheKey: string;
+        if (event.toolName === "bash" && patternScope) {
+          cacheKey = buildPatternKey(patternScope);
+        } else {
+          cacheKey = event.toolName; // tool-name level for non-bash
+        }
+        decisions.set(cacheKey, { allowed, timestamp: new Date().toISOString() });
         // Evict oldest entries if over limit
         evictOldest(decisions, MAX_CACHED_DECISIONS);
         persistDecisions(decisions);

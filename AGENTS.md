@@ -34,6 +34,8 @@ Files matching `extension/smoke-tests/test-*-live.ts` spawn real Pi children and
 
 CI runs the offline tests only. Live tests are dev-machine only.
 
+**Six-pass review findings are blocking at MEDIUM severity and above.** The fix loop continues until all MEDIUM, HIGH, and CRITICAL findings are resolved — there is no round cap for these severities. Only LOW findings may be deferred or overridden with user confirmation.
+
 ---
 
 ## 2. Two change paths (READ FIRST before editing)

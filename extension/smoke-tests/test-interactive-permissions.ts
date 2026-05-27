@@ -24,6 +24,7 @@ import {
   decisionKey,
   persistDecisions,
   registerPermissionGuard,
+  extractCommandPrefix,
 } from "../src/permission-guard.js";
 
 let exitCode = 0;
@@ -74,6 +75,35 @@ assert(key4 === expectedKey4, "decisionKey handles undefined args");
 const key5 = decisionKey("test", null);
 const expectedKey5 = "test:{}";
 assert(key5 === expectedKey5, "decisionKey handles null args");
+
+// === extractCommandPrefix tests ===
+
+// Test: extractCommandPrefix("oo gh pr diff 53") returns "oo gh pr"
+const prefix1 = extractCommandPrefix("oo gh pr diff 53");
+assert(prefix1 === "oo gh pr", "extractCommandPrefix extracts oo gh pr from 'oo gh pr diff 53'");
+
+// Test: extractCommandPrefix("git status --porcelain") returns "git status"
+const prefix2 = extractCommandPrefix("git status --porcelain");
+assert(prefix2 === "git status", "extractCommandPrefix extracts git status from 'git status --porcelain'");
+
+// Test: extractCommandPrefix("ls -la /tmp") returns "ls"
+const prefix3 = extractCommandPrefix("ls -la /tmp");
+assert(prefix3 === "ls", "extractCommandPrefix extracts ls from 'ls -la /tmp'");
+
+// Test: extractCommandPrefix("echo hello") returns "echo hello"
+const prefix4 = extractCommandPrefix("echo hello");
+assert(prefix4 === "echo hello", "extractCommandPrefix extracts full command from 'echo hello'");
+
+// Test: extractCommandPrefix("") returns "bash" (fallback)
+const prefix5 = extractCommandPrefix("");
+assert(prefix5 === "bash", "extractCommandPrefix returns 'bash' for empty string");
+
+// Security: command separators stop prefix extraction
+assert(extractCommandPrefix("git; rm -rf /") === "git", "extractCommandPrefix stops at semicolon");
+assert(extractCommandPrefix("echo $(whoami)") === "echo", "extractCommandPrefix stops at $()");
+assert(extractCommandPrefix("echo `whoami`") === "echo", "extractCommandPrefix stops at backtick");
+assert(extractCommandPrefix("cmd1 && cmd2") === "cmd1", "extractCommandPrefix stops at &&");
+assert(extractCommandPrefix("cmd1 || cmd2") === "cmd1", "extractCommandPrefix stops at ||");
 
 // Test 6: persistDecisions creates .pi/ directory
 const decisions = new Map<string, { allowed: boolean; timestamp: string }>();
