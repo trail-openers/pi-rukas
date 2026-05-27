@@ -259,9 +259,9 @@ chore/...                             # tooling / config (no issue required)
 
 Experimental architectural work (e.g., the original `feat/pair-watch` spike) lives on a feature branch and does NOT merge to main without explicit human approval. Stack spikes on top of foundational PRs if needed; rebase onto fresh main after the foundation merges.
 
-### LLMs must NEVER merge PRs
+### LLMs are allowed to squash merge PRs
 
-Only humans merge. You can open PRs, request review, address feedback — but the merge button is a human's decision.
+If all project quality gates have been met (code reviews, CI, linters, type checks etc) LLMs / agents are allowed to squash merge PRs.
 
 ---
 

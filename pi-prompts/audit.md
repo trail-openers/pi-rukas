@@ -29,6 +29,7 @@ You may specify paths and scopes: e.g., `src/` for src directory only, `src/ lib
 - Severity (critical | high | medium | low)
 - Confidence (high | medium | low)
 - Source standard (documented | enforced | inferred | heuristic)
+- Discovery mode and limitations when discovery degrades
 - Observed deviation
 - Evidence (file:line or pattern)
 - Suggested next action
@@ -44,6 +45,23 @@ You may specify paths and scopes: e.g., `src/` for src directory only, `src/ lib
 5. **No giant rubric** — Rules come from the repo itself (docs, configs, examples), not hard-coded assumptions.
 
 ---
+
+## Vipune Memory Policy
+
+See [../docs/audit-vipune-policy.md](../docs/audit-vipune-policy.md) for the canonical policy.
+
+- Search vipune before auditing with scope-derived terms from `$ARGUMENTS` and focused subsystem names.
+- Keep storage limited to durable results: CRITICAL/HIGH findings, conventions, architecture decisions, quality gates, and recurring drift.
+- Do not use vipune as a bug tracker; follow the canonical doc for duplicate detection, superseding, and candidate handling.
+
+## ColGREP Usage Policy
+
+See [../docs/audit-colgrep-policy.md](../docs/audit-colgrep-policy.md) for the canonical policy.
+
+- Use colgrep for concrete code patterns during standards discovery and audit passes.
+- Prefer files-only for breadth checks and content inspection for concrete matches.
+- If colgrep is unavailable or fails, continue standards discovery with docs/config/CI/vipune evidence only, and carry a limitation note into synthesis/final report.
+- Keep query examples and fallback guidance in the canonical doc.
 
 ## Phase 0: Argument Normalization
 
@@ -87,6 +105,7 @@ Your job: derive what this repo INTENDS to follow by inspecting:
    - colgrep 'test pattern' → find typical test structure
    - colgrep 'async function' → find async patterns if the codebase uses them
 
+If colgrep is unavailable or errors, do not abort discovery: continue using docs/config/CI/vipune evidence only, record a limitation note, and proceed as long as you still have enough evidence to build a usable standards model.
 Do NOT use colgrep for meta-questions like 'project architecture' — that returns useless matches.
 
 OUTPUT FORMAT (return this EXACT structure as your final assistant text):
@@ -124,7 +143,7 @@ If a category has no findings, return it as an empty array. Conflicts are import
 
 Wait for the `[ensemble:async]` report. The discovery output becomes the `standardsModel` for audit passes.
 
-**If discovery fails**: Surface the error and halt. Cannot audit without standards.
+**If total discovery fails**: Surface the error and halt. Cannot audit without any usable standards model.
 
 ---
 
@@ -285,6 +304,54 @@ Audit transcripts are auto-saved to `~/.pi/agent/ensemble-runs/` under the same 
 DO NOT read transcript files yourself — that bloats context and defeats the bounded-summary invariant of async dispatch.
 
 ---
+
+## Standards Discovery Output Shape
+
+See [../docs/audit-contract-examples.md](../docs/audit-contract-examples.md) for full examples.
+
+Required keys:
+- `discovery_mode`
+- `limitations`
+- `standards`
+- `quality_gates`
+- `architecture_patterns`
+- `conflicts`
+
+`standards` contains these arrays:
+- `documented[]` → `source`, `summary`, `evidence`
+- `enforced[]` → `source`, `rule`, `tool`
+- `inferred[]` → `source`, `convention`, `confidence`
+- `heuristic[]` → `assumption`, `basis`
+
+`quality_gates[]` entries use `gate` + `source`; `architecture_patterns[]` use `pattern` + `evidence`; `conflicts[]` use `description` + `signals`.
+
+## Merged Audit Report Shape
+
+See [../docs/audit-contract-examples.md](../docs/audit-contract-examples.md) for full examples.
+
+Required keys:
+- `discovery_mode`
+- `limitations`
+- `summary`
+- `findings`
+
+`summary` contains `critical`, `high`, `medium`, `low`, and `passes_completed`.
+`findings[]` entries use `category`, `severity`, `confidence`, `standard_source`, `standard_description`, `observed_deviation`, `evidence`, and `suggested_action`.
+
+## Partial-Failure Graceful Degradation Shape
+
+See [../docs/audit-contract-examples.md](../docs/audit-contract-examples.md) for full examples.
+
+Required keys:
+- `discovery_mode`
+- `limitations`
+- `summary`
+- `pass_failures`
+- `findings`
+
+`summary` contains `critical`, `high`, `medium`, `low`, `passes_completed`, and `total_passes`.
+`pass_failures[]` entries use `pass` + `error`.
+`findings[]` use the same fields as the merged report.
 
 ## Principles
 

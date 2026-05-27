@@ -2,206 +2,198 @@
 /**
  * Smoke test for the /audit command.
  *
- * Tests:
- *   - command registration and prompt loading
- *   - argument expansion
- *   - prompt frontmatter structure
- *   - basic shape of audit workflow
- *
- * Bypasses Pi entirely. Useful for fast iteration on /audit wiring.
+ * Covers:
+ *   - command registration and message wiring
+ *   - prompt frontmatter keys
+ *   - policy link presence
+ *   - compact contract guidance in the runtime prompt
+ *   - a few load-bearing shape checks in the non-runtime examples doc
  */
 
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import extensionEntry from "../src/index.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const EXT_DIR = path.resolve(__dirname, "..");
-const PROJ_DIR = path.resolve(EXT_DIR, "..");
-const PI_PROMPTS = path.join(PROJ_DIR, "pi-prompts");
-const AUDIT_PROMPT = path.join(PI_PROMPTS, "audit.md");
+const PROJ_DIR = path.resolve(__dirname, "..", "..");
+const AUDIT_PROMPT = path.join(PROJ_DIR, "pi-prompts", "audit.md");
+const AUDIT_EXAMPLES = path.join(PROJ_DIR, "docs", "audit-contract-examples.md");
 
-interface Recorded {
+type PiRecord = {
   sentMessages: string[];
-  notifies: Array<{ msg: string; kind?: string }>;
-  registeredTools: string[];
   registeredCommands: string[];
-  beforeAgentStartHandlers: Array<(event: unknown) => Promise<unknown>>;
-}
+};
+
+type RegisterCommand = Pick<ExtensionAPI, "registerCommand">["registerCommand"];
+type RegisteredCommand = Parameters<RegisterCommand>[1];
+type CommandHandler = RegisteredCommand["handler"];
 
 function makePi() {
-  const rec: Recorded = {
+  const rec: PiRecord = {
     sentMessages: [],
-    notifies: [],
-    registeredTools: [],
     registeredCommands: [],
-    beforeAgentStartHandlers: [],
   };
   const pi = {
-    registerTool: (def: { name: string }) => rec.registeredTools.push(def.name),
-    registerCommand: (name: string, _def: unknown) => rec.registeredCommands.push(name),
-    on: (event: string, handler: (e: unknown) => Promise<unknown>) => {
-      if (event === "before_agent_start") rec.beforeAgentStartHandlers.push(handler);
+    registerTool: () => undefined,
+    registerCommand: (name, def) => {
+      rec.registeredCommands.push(name);
+      handlers[name] = def.handler;
     },
-    sendUserMessage: (msg: string) => rec.sentMessages.push(msg),
-    sendMessage: (_msg: string) => undefined,
-    getCommands: () => [],
-  };
+    on: () => undefined,
+    sendUserMessage: (msg) => {
+      rec.sentMessages.push(typeof msg === "string" ? msg : JSON.stringify(msg));
+    },
+  } satisfies Pick<ExtensionAPI, "registerTool" | "registerCommand" | "on" | "sendUserMessage">;
   return { pi, rec };
 }
 
-function makeCtx() {
-  const notifies: Array<{ msg: string; kind?: string }> = [];
+function makeCtx(): Parameters<CommandHandler>[1] {
   const ctx = {
     isIdle: () => true,
     cwd: process.cwd(),
     ui: {
-      notify: (msg: string, kind?: string) => notifies.push({ msg, kind }),
+      notify: () => undefined,
     },
-  };
-  return { ctx, notifies };
+  } satisfies Parameters<CommandHandler>[1];
+  return ctx;
 }
 
+class AssertionError extends Error {}
 let exit = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) {
-    console.log(`✓ ${msg}`);
-  } else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
+function assert(condition: unknown, message: string): asserts condition {
+  if (condition) return;
+  exit = 1;
+  throw new AssertionError(message);
 }
 
-// Capture handlers as they register — registerCommand stores name only above,
-// so we re-wire here to keep references to the actual handler fns.
-const handlers: Record<string, (args: string, ctx: unknown) => Promise<void>> = {};
+function parseJsonBlock(section: string, label: string): unknown {
+  const match = section.match(/```json\n([\s\S]*?)\n```/);
+  assert(match !== null, `${label} contains a JSON code block`);
+  return JSON.parse(match[1]);
+}
+
+function getSection(content: string, heading: string) {
+  const start = content.indexOf(heading);
+  assert(start !== -1, `${heading} section exists`);
+  const section = content.slice(start);
+  const next = section.slice(heading.length).search(/\n##\s/);
+  return next === -1 ? section : section.slice(0, heading.length + next);
+}
+
+function assertObject(value: unknown, label: string): asserts value is Record<string, unknown> {
+  assert(typeof value === "object" && value !== null && !Array.isArray(value), `${label} is an object`);
+}
+
+function assertString(value: unknown, label: string) {
+  assert(typeof value === "string", `${label} is a string`);
+}
+
+function assertNumber(value: unknown, label: string) {
+  assert(typeof value === "number", `${label} is a number`);
+}
+
+function assertArray(value: unknown, label: string): asserts value is unknown[] {
+  assert(Array.isArray(value), `${label} is an array`);
+}
+
+const handlers: Record<string, CommandHandler> = {};
 const { pi, rec } = makePi();
-pi.registerCommand = (name: string, def: { handler: (a: string, c: unknown) => Promise<void> }) => {
-  rec.registeredCommands.push(name);
-  handlers[name] = def.handler;
-};
 
-// biome-ignore lint/suspicious/noExplicitAny: mock pi has narrower type than real ExtensionAPI
-await extensionEntry(pi as any);
+await extensionEntry(pi);
 
-// Test 1: /audit command registration
-assert(rec.registeredCommands.includes("audit"), "/audit registered");
+try {
+  assert(rec.registeredCommands.includes("audit"), "/audit registered");
 
-// Test 2: audit.md exists and is readable
-const auditFile = await fs.stat(AUDIT_PROMPT).then(() => true).catch(() => false);
-assert(auditFile, "pi-prompts/audit.md exists");
+  const auditContent = await fs.readFile(AUDIT_PROMPT, "utf8");
+  const frontmatter = auditContent.match(/^---\n([\s\S]*?)\n---\n/);
+  assert(frontmatter !== null, "audit.md has frontmatter");
+  assert(frontmatter?.[1].includes("description:"), "audit.md frontmatter includes description");
+  assert(frontmatter?.[1].includes("argument-hint:"), "audit.md frontmatter includes argument-hint");
+  assert(auditContent.includes("../docs/audit-vipune-policy.md"), "audit.md references vipune policy");
+  assert(auditContent.includes("../docs/audit-colgrep-policy.md"), "audit.md references colgrep policy");
+  assert(auditContent.includes("../docs/audit-contract-examples.md"), "audit.md references contract examples doc");
+  assert(!auditContent.includes("```json"), "runtime prompt no longer contains inline JSON examples");
 
-// Test 3: audit.md has correct frontmatter structure
-const auditContent = await fs.readFile(AUDIT_PROMPT, "utf8");
-assert(auditContent.includes("---"), "audit.md has frontmatter delimiter");
-assert(auditContent.includes("description:"), "audit.md has description field");
-assert(auditContent.includes("argument-hint:"), "audit.md has argument-hint field");
-assert(
-  auditContent.includes("standards-first"),
-  "audit.md body mentions standards-first",
-);
-assert(
-  auditContent.includes("Phase 1: Standards Discovery"),
-  "audit.md describes Phase 1 (standards discovery)",
-);
-assert(
-  auditContent.includes("Phase 2: Audit Passes"),
-  "audit.md describes Phase 2 (audit passes)",
-);
-assert(
-  auditContent.includes("Phase 3: Synthesis & Reporting"),
-  "audit.md describes Phase 3 (synthesis)",
-);
+  const discoverySection = getSection(auditContent, "## Standards Discovery Output Shape");
+  assert(discoverySection.includes("discovery_mode"), "discovery section mentions discovery_mode");
+  assert(discoverySection.includes("quality_gates"), "discovery section mentions quality_gates");
+  assert(discoverySection.includes("../docs/audit-contract-examples.md"), "discovery section points to examples doc");
 
-// Test 4: Fire /audit with no args (should default to entire repo)
-const { ctx: ctx1 } = makeCtx();
-await handlers.audit!("", ctx1);
-assert(rec.sentMessages.length === 1, "/audit (no args) → 1 message queued");
-assert(
-  rec.sentMessages[0].includes("**Scope"),
-  "/audit: expanded body includes scope section",
-);
+  const mergedSection = getSection(auditContent, "## Merged Audit Report Shape");
+  assert(mergedSection.includes("summary"), "merged section mentions summary");
+  assert(mergedSection.includes("findings"), "merged section mentions findings");
 
-// Test 5: Fire /audit with path argument
-const { ctx: ctx2 } = makeCtx();
-await handlers.audit!("src/", ctx2);
-assert(rec.sentMessages.length === 2, "/audit src/ → second message queued");
-assert(
-  rec.sentMessages[1].includes("**Scope**: src/"),
-  "/audit src/: $ARGUMENTS expanded to 'src/'",
-);
+  const partialSection = getSection(auditContent, "## Partial-Failure Graceful Degradation Shape");
+  assert(partialSection.includes("pass_failures"), "partial section mentions pass_failures");
+  assert(partialSection.includes("findings"), "partial section mentions findings");
 
-// Test 6: Fire /audit with multiple paths
-const { ctx: ctx3 } = makeCtx();
-await handlers.audit!("src/ lib/", ctx3);
-assert(rec.sentMessages.length === 3, "/audit src/ lib/ → third message queued");
-assert(
-  rec.sentMessages[2].includes("**Scope**: src/ lib/"),
-  "/audit src/ lib/: $ARGUMENTS expanded to 'src/ lib/'",
-);
+  await handlers.audit!("", makeCtx());
+  const sentAfterDefault = rec.sentMessages.length;
+  assert(sentAfterDefault === 1, "/audit emits one message for default scope");
 
-// Test 7: Verify audit workflow mentions the required phases
-assert(
-  auditContent.includes("dispatch_specialist"),
-  "audit.md mentions dispatch_specialist for standards discovery",
-);
-assert(
-  auditContent.includes("dispatch_parallel"),
-  "audit.md mentions dispatch_parallel for audit passes",
-);
-assert(
-  auditContent.includes("explore"),
-  "audit.md mentions explore role",
-);
-assert(
-  auditContent.includes("adversarial-developer"),
-  "audit.md mentions adversarial-developer role",
-);
-assert(
-  auditContent.includes("code-review-specialist"),
-  "audit.md mentions code-review-specialist role",
-);
+  await handlers.audit!("src/", makeCtx());
+  const sentAfterSinglePath = rec.sentMessages.length;
+  assert(sentAfterSinglePath === 2, "/audit emits a second message for one path");
+  assert(rec.sentMessages[1].includes("src/"), "/audit forwards a single path argument");
 
-// Test 8: Verify findings structure is documented
-assert(
-  auditContent.includes('category'),
-  "audit.md documents findings category field",
-);
-assert(
-  auditContent.includes('severity'),
-  "audit.md documents findings severity field",
-);
-assert(
-  auditContent.includes('confidence'),
-  "audit.md documents findings confidence field",
-);
-assert(
-  auditContent.includes('evidence'),
-  "audit.md documents findings evidence field",
-);
+  await handlers.audit!("src/ lib/", makeCtx());
+  const sentAfterMultiplePaths = rec.sentMessages.length;
+  assert(sentAfterMultiplePaths === 3, "/audit emits a third message for multiple paths");
+  assert(rec.sentMessages[2].includes("src/ lib/"), "/audit forwards multiple path arguments");
 
-// Test 9: Verify vipune and colgrep usage policies
-assert(
-  auditContent.includes("vipune"),
-  "audit.md mentions vipune for memory lookup",
-);
-assert(
-  auditContent.includes("colgrep"),
-  "audit.md mentions colgrep for code pattern search",
-);
+  const examplesContent = await fs.readFile(AUDIT_EXAMPLES, "utf8");
+  assert(examplesContent.includes("## Standards Discovery Output Shape"), "examples doc includes discovery example");
+  assert(examplesContent.includes("## Merged Audit Report Shape"), "examples doc includes merged example");
+  assert(examplesContent.includes("## Partial-Failure Graceful Degradation Shape"), "examples doc includes partial example");
 
-// Test 10: Verify async reporting compatibility
-assert(
-  auditContent.includes("[ensemble:async]"),
-  "audit.md mentions async report format",
-);
-assert(
-  auditContent.includes("/runs"),
-  "audit.md mentions /runs for transcript access",
-);
+  const discovery = parseJsonBlock(getSection(examplesContent, "## Standards Discovery Output Shape"), "standards discovery example");
+  assertObject(discovery, "standards discovery example");
+  assertString(discovery.discovery_mode, "standards discovery example.discovery_mode");
+  assertArray(discovery.limitations, "standards discovery example.limitations");
+  const discoveryStandards = discovery.standards;
+  assertObject(discoveryStandards, "standards discovery example.standards");
+  const discoveryDocumented = discoveryStandards.documented;
+  assertArray(discoveryDocumented, "standards discovery example.standards.documented");
+  const discoveryDocumentedFirst = discoveryDocumented[0];
+  assertObject(discoveryDocumentedFirst, "standards discovery example.standards.documented[0]");
+  assertString(discoveryDocumentedFirst.source, "standards discovery example.standards.documented[0].source");
+  assertString(discoveryDocumentedFirst.summary, "standards discovery example.standards.documented[0].summary");
+  assertString(discoveryDocumentedFirst.evidence, "standards discovery example.standards.documented[0].evidence");
 
-console.log("\n=== test-audit summary ===");
-console.log("All command registration and prompt flow tests passed.");
-console.log(`exit ${exit}`);
-process.exit(exit);
+  const merged = parseJsonBlock(getSection(examplesContent, "## Merged Audit Report Shape"), "merged audit example");
+  assertObject(merged, "merged audit example");
+  assertString(merged.discovery_mode, "merged audit example.discovery_mode");
+  const mergedSummary = merged.summary;
+  assertObject(mergedSummary, "merged audit example.summary");
+  assertNumber(mergedSummary.passes_completed, "merged audit example.summary.passes_completed");
+  const mergedFindings = merged.findings;
+  assertArray(mergedFindings, "merged audit example.findings");
+  const mergedFirstFinding = mergedFindings[0];
+  assertObject(mergedFirstFinding, "merged audit example.findings[0]");
+  assertString(mergedFirstFinding.category, "merged audit example.findings[0].category");
+  assertString(mergedFirstFinding.severity, "merged audit example.findings[0].severity");
+  assertString(mergedFirstFinding.evidence, "merged audit example.findings[0].evidence");
+
+  const partial = parseJsonBlock(getSection(examplesContent, "## Partial-Failure Graceful Degradation Shape"), "partial failure example");
+  assertObject(partial, "partial failure example");
+  assertString(partial.discovery_mode, "partial failure example.discovery_mode");
+  const partialSummary = partial.summary;
+  assertObject(partialSummary, "partial failure example.summary");
+  assertNumber(partialSummary.total_passes, "partial failure example.summary.total_passes");
+  const partialFailures = partial.pass_failures;
+  assertArray(partialFailures, "partial failure example.pass_failures");
+  const partialFirstFailure = partialFailures[0];
+  assertObject(partialFirstFailure, "partial failure example.pass_failures[0]");
+  assertString(partialFirstFailure.pass, "partial failure example.pass_failures[0].pass");
+  assertString(partialFirstFailure.error, "partial failure example.pass_failures[0].error");
+} catch (error) {
+  exit = 1;
+  console.error(error instanceof Error ? error.message : error);
+} finally {
+  console.log("\n=== test-audit summary ===");
+  console.log(exit === 0 ? "All audit smoke tests passed." : "Audit smoke tests failed.");
+  console.log(`exit ${exit}`);
+  process.exit(exit);
+}
