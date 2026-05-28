@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -21,6 +22,7 @@ const MAX_CONFIG_FILE_SIZE = 1 * 1024 * 1024; // 1MB
 // Pattern key constants for bash command prefix caching
 const BASH_PATTERN_PREFIX = "bash:";
 const PATTERN_SUFFIX = " *";
+const BASH_PATTERN_UNSAFE_CHARS = /['"`*?\[\]{}|&;<>$]/;
 
 // Pattern key helpers
 function buildPatternKey(prefix: string): string {
@@ -31,6 +33,49 @@ function isPatternKey(key: string): boolean {
 }
 function extractPatternPrefix(key: string): string {
   return key.slice(BASH_PATTERN_PREFIX.length, -PATTERN_SUFFIX.length);
+}
+
+function isSafeBashPatternPrefix(prefix: string): boolean {
+  return prefix.length > 0 && !BASH_PATTERN_UNSAFE_CHARS.test(prefix);
+}
+
+export function getBashAlwaysScope(command: string): string | null {
+  if (command.trim().length === 0) return null;
+  const prefix = extractCommandPrefix(command);
+  if (!isSafeBashPatternPrefix(prefix)) return null;
+  if (BASH_PATTERN_UNSAFE_CHARS.test(command)) return null;
+  return prefix;
+}
+
+export function getBashAlwaysPromptLabel(
+  action: "Allow always" | "Deny always",
+  command: string,
+): string {
+  const scope = getBashAlwaysScope(command);
+  return scope ? `${action} (${scope} *)` : action;
+}
+
+function buildExactBashDecisionKey(command: string): string {
+  const digest = createHash("sha256").update(command, "utf8").digest("hex");
+  return `${BASH_PATTERN_PREFIX}exact:${digest}`;
+}
+
+export function bashPatternMatches(command: string, scope: string): boolean {
+  if (!isSafeBashPatternPrefix(scope)) return false;
+  const matchesPrefix =
+    command.startsWith(scope) && (command.length === scope.length || command[scope.length] === " ");
+  if (!matchesPrefix) return false;
+  return extractCommandPrefix(command) === scope;
+}
+
+function isSafeBashPatternKey(key: string): boolean {
+  if (!isPatternKey(key)) return false;
+  return isSafeBashPatternPrefix(extractPatternPrefix(key));
+}
+
+export function getBashDecisionCacheKey(command: string, input: unknown): string {
+  const scope = getBashAlwaysScope(command);
+  return scope ? buildPatternKey(scope) : buildExactBashDecisionKey(command);
 }
 
 // Helper: extract command prefix from bash command for pattern caching
@@ -379,6 +424,12 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
           );
           continue;
         }
+        if (isPatternKey(key) && !isSafeBashPatternKey(key)) {
+          trace(
+            `pi-ensemble permission-guard: skipping unsafe bash wildcard decision key: ${key.slice(0, 50)}...`,
+          );
+          continue;
+        }
         // Validate entry shape BEFORE casting
         if (val === null || typeof val !== "object") {
           trace(`permission-guard: skipping malformed decision for key: ${key.slice(0, 50)}`);
@@ -434,8 +485,15 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
 
       if (verdict === "allow") return; // allowed
 
+      const command =
+        event.toolName === "bash" ? ((event.input as { command?: string })?.command ?? "") : "";
+      const bashAlwaysScope = event.toolName === "bash" ? getBashAlwaysScope(command) : null;
+
       // Check cached decisions — exact match first
-      const key = decisionKey(event.toolName, event.input);
+      const key =
+        event.toolName === "bash" && bashAlwaysScope === null
+          ? buildExactBashDecisionKey(command)
+          : decisionKey(event.toolName, event.input);
       const cached = decisions.get(key);
       if (cached !== undefined) {
         if (cached.allowed) return; // cached allow
@@ -447,21 +505,15 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
 
       // Then check pattern matches (for bash "always" decisions)
       if (event.toolName === "bash") {
-        const command = (event.input as { command?: string })?.command ?? "";
-        const commandPrefix = extractCommandPrefix(command);
         for (const [patternKey, decision] of decisions) {
-          if (isPatternKey(patternKey)) {
-            const prefix = extractPatternPrefix(patternKey);
-            // Security: enforce word boundary — after prefix, must be space or end of string
-            const nextCharIndex = prefix.length;
-            const isValidMatch = nextCharIndex === command.length || command[nextCharIndex] === " ";
-            if (isValidMatch && command.startsWith(prefix) && prefix === commandPrefix) {
-              if (decision.allowed) return; // cached pattern allow
-              return {
-                block: true,
-                reason: `Tool 'bash' denied (cached pattern: ${prefix} *)`,
-              };
-            }
+          if (!isSafeBashPatternKey(patternKey)) continue;
+          const prefix = extractPatternPrefix(patternKey);
+          if (bashPatternMatches(command, prefix)) {
+            if (decision.allowed) return; // cached pattern allow
+            return {
+              block: true,
+              reason: `Tool 'bash' denied (cached pattern: ${prefix} *)`,
+            };
           }
         }
       }
@@ -504,17 +556,13 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
       }
       const message = `pi-ensemble [${role}]: ${event.toolName} ${argsPreview}`;
 
-      const command =
-        event.toolName === "bash" ? ((event.input as { command?: string })?.command ?? "") : "";
-      const patternScope = event.toolName === "bash" ? extractCommandPrefix(command) : "";
-
       let promptOptions: string[];
-      if (event.toolName === "bash" && patternScope) {
+      if (event.toolName === "bash") {
         promptOptions = [
           "Allow once",
-          `Allow always (${patternScope} *)`,
+          getBashAlwaysPromptLabel("Allow always", command),
           "Deny once",
-          `Deny always (${patternScope} *)`,
+          getBashAlwaysPromptLabel("Deny always", command),
         ];
       } else {
         promptOptions = ["Allow once", "Allow always", "Deny once", "Deny always"];
@@ -538,12 +586,10 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
       const allowed = choice === "Allow once" || choice.startsWith("Allow always");
 
       if (choice.startsWith("Allow always") || choice.startsWith("Deny always")) {
-        let cacheKey: string;
-        if (event.toolName === "bash" && patternScope) {
-          cacheKey = buildPatternKey(patternScope);
-        } else {
-          cacheKey = event.toolName; // tool-name level for non-bash
-        }
+        const cacheKey =
+          event.toolName === "bash"
+            ? getBashDecisionCacheKey(command, event.input)
+            : event.toolName;
         decisions.set(cacheKey, { allowed, timestamp: new Date().toISOString() });
         // Evict oldest entries if over limit
         evictOldest(decisions, MAX_CACHED_DECISIONS);

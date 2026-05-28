@@ -10,21 +10,17 @@
  *   - Atomic write: verify .tmp file is cleaned up
  */
 
-import {
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  chmodSync,
-  existsSync,
-  readdirSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
+  bashPatternMatches,
   decisionKey,
+  extractCommandPrefix,
+  getBashAlwaysPromptLabel,
+  getBashAlwaysScope,
+  getBashDecisionCacheKey,
   persistDecisions,
   registerPermissionGuard,
-  extractCommandPrefix,
 } from "../src/permission-guard.js";
 
 let exitCode = 0;
@@ -98,6 +94,109 @@ assert(prefix4 === "echo hello", "extractCommandPrefix extracts full command fro
 const prefix5 = extractCommandPrefix("");
 assert(prefix5 === "bash", "extractCommandPrefix returns 'bash' for empty string");
 
+// Unsafe bash scopes fall back to exact command caching
+const unsafeQuotedCommand = 'vipune search "key';
+const unsafeGlobCommand = "ls *.ts";
+const unsafeCpCommand = "cp src/* dist/";
+const unsafeLongCommandA = `${unsafeQuotedCommand} ${"a".repeat(260)}`;
+const unsafeLongCommandB = `${unsafeQuotedCommand} ${"b".repeat(260)}`;
+const blankCommand = "   ";
+const safeCommand = "git status --porcelain";
+
+assert(getBashAlwaysScope(unsafeQuotedCommand) === null, "unsafe quoted bash command falls back to exact caching");
+assert(getBashAlwaysScope(unsafeGlobCommand) === null, "glob-heavy bash command falls back to exact caching");
+assert(getBashAlwaysScope(unsafeCpCommand) === null, "asterisk-containing bash command falls back to exact caching");
+assert(getBashAlwaysScope(blankCommand) === null, "blank bash command falls back to exact caching");
+assert(getBashAlwaysScope(safeCommand) === "git status", "safe bash command normalizes to prefix scope");
+assert(
+  getBashAlwaysPromptLabel("Allow always", unsafeQuotedCommand) === "Allow always",
+  "unsafe quoted bash command never renders malformed label",
+);
+assert(
+  getBashAlwaysPromptLabel("Deny always", unsafeGlobCommand) === "Deny always",
+  "glob-heavy bash command never renders malformed label",
+);
+assert(
+  getBashAlwaysPromptLabel("Allow always", safeCommand) === "Allow always (git status *)",
+  "safe bash command renders normalized wildcard label",
+);
+const unsafeQuotedKey = getBashDecisionCacheKey(unsafeQuotedCommand, { command: unsafeQuotedCommand });
+const unsafeGlobKey = getBashDecisionCacheKey(unsafeGlobCommand, { command: unsafeGlobCommand });
+const blankKey = getBashDecisionCacheKey(blankCommand, { command: blankCommand });
+assert(unsafeQuotedKey.startsWith("bash:"), "unsafe quoted bash command uses a bash cache key");
+assert(!unsafeQuotedKey.endsWith(" *"), "unsafe quoted bash command does not use wildcard scope");
+assert(unsafeGlobKey.startsWith("bash:"), "glob-heavy bash command uses a bash cache key");
+assert(!unsafeGlobKey.endsWith(" *"), "glob-heavy bash command does not use wildcard scope");
+assert(blankKey.startsWith("bash:"), "blank bash command uses a bash cache key");
+assert(!blankKey.endsWith(" *"), "blank bash command does not use wildcard scope");
+assert(getBashDecisionCacheKey(safeCommand, { command: safeCommand }) === "bash:git status *", "safe bash command persists wildcard key");
+assert(bashPatternMatches("git status --porcelain", "git status"), "boundary-safe wildcard matches command with suffix");
+assert(!bashPatternMatches("git status --porcelain; rm -rf /", "git status"), "boundary-safe wildcard rejects compound shell commands");
+assert(!bashPatternMatches("git statusx", "git status"), "boundary-safe wildcard rejects glued suffix");
+assert(!bashPatternMatches("git status --porcelain", "git statusx"), "boundary-safe wildcard rejects mismatched prefix");
+assert(
+  getBashDecisionCacheKey(unsafeLongCommandA, { command: unsafeLongCommandA }) !==
+    getBashDecisionCacheKey(unsafeLongCommandB, { command: unsafeLongCommandB }),
+  "unsafe exact-cache keys remain unique for long commands",
+);
+
+const originalCwd = process.cwd();
+const staleDecisionFixture = {
+  "bash:vipune search \"key *": { allowed: true, timestamp: "2024-01-01T00:00:00Z" },
+  [unsafeQuotedKey]: { allowed: true, timestamp: "2024-01-01T00:00:10Z" },
+  [getBashDecisionCacheKey(unsafeLongCommandA, { command: unsafeLongCommandA })]: {
+    allowed: true,
+    timestamp: "2024-01-01T00:00:30Z",
+  },
+  "bash:git status *": { allowed: true, timestamp: "2024-01-01T00:01:00Z" },
+};
+
+mkdirSync(piDir, { recursive: true, mode: 0o700 });
+writeFileSync(decisionsPath, JSON.stringify(staleDecisionFixture, null, 2));
+assert(existsSync(decisionsPath), "cached JSON fixture written for load-time validation");
+
+const registeredHandlers = new Map<string, (() => Promise<void> | void)[]>();
+const fakePi = {
+  on(event: string, handler: () => Promise<void> | void) {
+    const handlers = registeredHandlers.get(event) ?? [];
+    handlers.push(handler);
+    registeredHandlers.set(event, handlers);
+  },
+} as unknown as { on: (event: string, handler: () => Promise<void> | void) => void };
+
+try {
+  process.chdir(tmpDir);
+  registerPermissionGuard(fakePi);
+  const sessionStartHandler = registeredHandlers.get("session_start")?.[0];
+  await sessionStartHandler?.();
+  const toolCallHandler = registeredHandlers.get("tool_call")?.[0];
+  const unsafeResult = await toolCallHandler?.(
+    { toolName: "bash", input: { command: unsafeQuotedCommand } },
+    { hasUI: false },
+  );
+  assert(unsafeResult === undefined, "exact cached unsafe command is allowed after load");
+  const malformedWildcardResult = await toolCallHandler?.(
+    { toolName: "bash", input: { command: `${unsafeQuotedCommand} extra` } },
+    { hasUI: false },
+  );
+  assert(
+    malformedWildcardResult && typeof malformedWildcardResult === "object" && "block" in malformedWildcardResult,
+    "malformed wildcard cache entry is skipped on load and does not allow a matching command",
+  );
+  const safeResult = await toolCallHandler?.(
+    { toolName: "bash", input: { command: safeCommand } },
+    { hasUI: false },
+  );
+  assert(safeResult === undefined, "safe cached wildcard entry still allows matching command");
+} catch (err) {
+  assert(false, `registerPermissionGuard failed to load cached JSON fixture: ${err}`);
+} finally {
+  process.chdir(originalCwd);
+}
+
+const blankFixture = { bash: { command: "   " } };
+assert(getBashDecisionCacheKey("   ", blankFixture) === blankKey, "blank command reuses the exact bash cache key");
+
 // Security: command separators stop prefix extraction
 assert(extractCommandPrefix("git; rm -rf /") === "git", "extractCommandPrefix stops at semicolon");
 assert(extractCommandPrefix("echo $(whoami)") === "echo", "extractCommandPrefix stops at $()");
@@ -109,7 +208,6 @@ assert(extractCommandPrefix("cmd1 || cmd2") === "cmd1", "extractCommandPrefix st
 const decisions = new Map<string, { allowed: boolean; timestamp: string }>();
 decisions.set("bash:ls", { allowed: true, timestamp: "2024-01-01T00:00:00Z" });
 
-const originalCwd = process.cwd();
 try {
   process.chdir(tmpDir);
   persistDecisions(decisions);
