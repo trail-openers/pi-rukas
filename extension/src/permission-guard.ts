@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -427,13 +434,33 @@ function lookupPermission(
   return null;
 }
 
+// Resolve the path to the repo's agents.json regardless of how the extension
+// was loaded. The standard install symlinks ~/.pi/agent/extensions/pi-ensemble
+// at the repo's `extension/` directory, so `import.meta.url` may be either
+// the real file path or the symlink path depending on the Node/jiti symlink
+// policy. realpathSync collapses the difference; `../..` then walks from
+// `extension/src/` up to the repo root.
+//
+// PI_ENSEMBLE_DIR (if set) is an explicit override for users with unusual
+// install layouts — useful in tests too.
+export function resolveAgentsJsonPath(): string {
+  const override = process.env.PI_ENSEMBLE_DIR;
+  if (override) return path.resolve(override, "agents.json");
+  try {
+    const realDir = realpathSync(__dirname);
+    return path.resolve(realDir, "..", "..", "agents.json");
+  } catch {
+    return path.resolve(__dirname, "..", "..", "agents.json");
+  }
+}
+
 // agents.json ships with the repo, so ENOENT is unexpected and should warn.
 // In contrast, project/global config ENOENT is silent (user may not have created them).
-function loadAgentsJson(): Record<
+export function loadAgentsJson(): Record<
   string,
   { permission?: Record<string, string | Record<string, string>> }
 > {
-  const agentsPath = path.resolve(__dirname, "../../..", "agents.json");
+  const agentsPath = resolveAgentsJsonPath();
   try {
     const raw = readFileSync(agentsPath, "utf8");
     const parsed = JSON.parse(raw);
@@ -443,7 +470,7 @@ function loadAgentsJson(): Record<
     };
     return obj.agent ?? {};
   } catch (err) {
-    const msg = `pi-ensemble permission-guard: failed to load agents.json (${err}) — non-builtin tools will require interactive approval (or be blocked in headless mode)`;
+    const msg = `pi-ensemble permission-guard: failed to load agents.json from ${agentsPath} (${err}) — non-builtin tools will require interactive approval (or be blocked in headless mode)`;
     console.warn(msg);
     trace(msg);
     return {};

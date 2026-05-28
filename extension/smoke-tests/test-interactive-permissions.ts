@@ -19,8 +19,10 @@ import {
   getBashAlwaysPromptLabel,
   getBashAlwaysScope,
   getBashDecisionCacheKey,
+  loadAgentsJson,
   persistDecisions,
   registerPermissionGuard,
+  resolveAgentsJsonPath,
   resolveToolPermission,
 } from "../src/permission-guard.js";
 
@@ -439,6 +441,53 @@ assert(
     "vipune add foo",
   ) === "allow",
   "nested allowlist: longest-prefix wins (specific rule beats broader)",
+);
+
+// === #83 regression guard — agents.json must actually load at runtime ===
+// Bug history: from PR #53 (2026-05-26) through PR #81 (2026-05-28),
+// loadAgentsJson resolved agentsPath with one ".." too many ("../../.." from
+// extension/src/), landing in the parent of the repo where no agents.json
+// exists. readFileSync threw, the catch returned {}, and every tool call
+// fell through to "ask". Symptom on the user side: every command prompts
+// even when agents.json declares it auto-allowed.
+//
+// Stub-based tests in this file didn't catch it because they construct the
+// agents config inline. This assertion exercises the real file-loading
+// path and would have caught the regression.
+const resolvedAgentsPath = resolveAgentsJsonPath();
+assert(
+  resolvedAgentsPath.endsWith("/pi-ensemble/agents.json"),
+  `resolveAgentsJsonPath() points at repo's agents.json (got: ${resolvedAgentsPath})`,
+);
+const liveAgents = loadAgentsJson();
+const liveRoleNames = Object.keys(liveAgents);
+assert(
+  liveRoleNames.length >= 5,
+  `loadAgentsJson() returns the role config (got ${liveRoleNames.length} roles: ${liveRoleNames.join(", ")})`,
+);
+assert(
+  liveAgents.default !== undefined,
+  "loadAgentsJson() returns the 'default' role used by top-level Pi sessions",
+);
+const liveDefaultBash = (liveAgents.default?.permission as { bash?: Record<string, unknown> } | undefined)
+  ?.bash;
+assert(
+  typeof liveDefaultBash === "object" && liveDefaultBash !== null,
+  "default role's permission.bash is the nested allowlist (not a string verdict)",
+);
+assert(
+  Object.keys(liveDefaultBash ?? {}).length >= 10,
+  `default role's bash allowlist has multiple patterns (got ${Object.keys(liveDefaultBash ?? {}).length})`,
+);
+// End-to-end: with the real config loaded, common bash commands declared in
+// agents.json should resolve to "allow" without ever touching the cache.
+assert(
+  resolveToolPermission("bash", "default", emptyConfig, emptyConfig, liveAgents, "oo git status") === "allow",
+  "real agents.json: 'oo git status' resolves to allow via nested allowlist",
+);
+assert(
+  resolveToolPermission("bash", "default", emptyConfig, emptyConfig, liveAgents, 'vipune add "anything"') === "allow",
+  "real agents.json: quoted-arg vipune add resolves to allow via nested allowlist",
 );
 
 // Test 6: persistDecisions creates .pi/ directory
