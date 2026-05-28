@@ -76,6 +76,7 @@ The major modules — know which one to edit for which kind of change:
 | `index.ts` | Extension activation, tool/command registration | Adding/removing a top-level command or tool |
 | `commands.ts` | Slash-command handlers, PM doctrine injection | Changing slash-command body loading, PM sticky preamble |
 | `dispatch.ts` | `dispatch_specialist` and `dispatch_parallel` tools | Single/parallel dispatch semantics |
+| `permission-guard.ts` | Top-level session permission enforcement (project + global + `agents.json` layers); bash subcommand allowlist matching; decision cache | Permission prompts, cache shape, allow/deny logic |
 | `dispatch-status.ts` | `dispatch_status`, `dispatch_kill` tools | Job-introspection surface |
 | `async-jobs.ts` | Job registry, push-callback delivery via `pi.sendUserMessage` | All async-dispatch lifecycle changes |
 | `spawn.ts` | Fire-and-forget `pi -p --mode json` child spawn | Single-shot subagent spawn behaviour |
@@ -101,7 +102,13 @@ The major modules — know which one to edit for which kind of change:
 | `skill/<name>/SKILL.md` | Skills auto-symlinked to `~/.pi/agent/skills/` |
 | `pi-prompts/*.md` | Slash-command body (read at runtime, no build) |
 
-**pi-permissions and MCP tools**: pi-permissions (if installed) applies to the top-level Pi session only. Subagents run headless with `--no-extensions` — pi-permissions is intentionally not loaded for them. For MCP tools in subagents, set `PI_ENSEMBLE_USER_EXTENSION` to your MCP bridge extension. Role-based enforcement for subagents is handled by pi-ensemble's own tool_call interceptor (see `agents.json` under `agent.<role>.permission`).
+**Permission model — top-level vs subagents.**
+
+*Top-level session* (the parent `pi` you launch): pi-ensemble's `permission-guard.ts` is the active enforcer. It intercepts every tool call, resolves a verdict via three layers (`.pi/permissions.json` project config → `~/.pi/agent/permissions.json` global config → `agents.json`), prompts the user for `ask`, and caches "Allow always" / "Deny always" decisions in `.pi/decisions.json`. `pi-permissions` (if installed) adds a separate interactive layer on top of this.
+
+*Subagents* (developer, ops, explore, code-review-specialist, adversarial-developer): spawned with `--no-extensions`, so **pi-ensemble's extension is NOT loaded** inside subagent processes. There is no runtime enforcement from pi-ensemble for subagent tool calls — the role's system prompt (assembled from `agents.json` `agent.<role>.permission`) tells the role what it may use, but a misbehaving subagent isn't blocked at the tool layer. Hard confinement requires Pi's own built-in checks or sandboxing.
+
+*MCP tools in subagents*: set `PI_ENSEMBLE_USER_EXTENSION` to your MCP bridge extension. That extension *does* load in subagents (it's passed via `--extension`, separate from `--no-extensions` which suppresses installed extensions). The MCP server-side credentials are the real security boundary for tool capabilities.
 
 ---
 

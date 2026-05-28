@@ -22,7 +22,18 @@ const MAX_CONFIG_FILE_SIZE = 1 * 1024 * 1024; // 1MB
 // Pattern key constants for bash command prefix caching
 const BASH_PATTERN_PREFIX = "bash:";
 const PATTERN_SUFFIX = " *";
+// Chars that should NEVER appear in a stored bash *pattern prefix*. A prefix
+// like `vipune add` is safe; one like `vipune "add` or `vipune *` is not — at
+// match time it would either fail to compare correctly or could match unexpected
+// commands. Used by isSafeBashPatternPrefix to gate what we save to disk.
 const BASH_PATTERN_UNSAFE_CHARS = /['"`*?\[\]{}|&;<>$]/;
+// Chars that indicate command injection / chaining in a bash *command*. If a
+// command contains any of these, we refuse to extract a wildcard scope and we
+// refuse to match it against any cached wildcard pattern — the prefix matcher
+// cannot reason about what `&&`, `$(...)`, or backticks will actually run.
+// Quoted-argument content (`'` and `"`) is *not* in this set: a command like
+// `vipune add "lorem ipsum"` is safe to wildcard against `vipune add *`.
+const BASH_COMMAND_INJECTION_CHARS = /[`$;&|<>\n]/;
 
 // Pattern key helpers
 function buildPatternKey(prefix: string): string {
@@ -41,9 +52,12 @@ function isSafeBashPatternPrefix(prefix: string): boolean {
 
 export function getBashAlwaysScope(command: string): string | null {
   if (command.trim().length === 0) return null;
+  // Commands with injection vectors (`&&`, `$(...)`, backticks, redirects, etc.)
+  // can't be safely wildcarded — what we'd cache as `cmd *` would also match
+  // benign invocations that contain the same injection at runtime.
+  if (BASH_COMMAND_INJECTION_CHARS.test(command)) return null;
   const prefix = extractCommandPrefix(command);
   if (!isSafeBashPatternPrefix(prefix)) return null;
-  if (BASH_PATTERN_UNSAFE_CHARS.test(command)) return null;
   return prefix;
 }
 
@@ -62,6 +76,11 @@ function buildExactBashDecisionKey(command: string): string {
 
 export function bashPatternMatches(command: string, scope: string): boolean {
   if (!isSafeBashPatternPrefix(scope)) return false;
+  // Even if the prefix matches, refuse to honour a wildcard for commands that
+  // contain injection vectors. This is the runtime mirror of the check in
+  // getBashAlwaysScope — a command with `$(...)` can't be auto-approved by any
+  // wildcard, only by an explicit "Allow once" decision.
+  if (BASH_COMMAND_INJECTION_CHARS.test(command)) return false;
   const matchesPrefix =
     command.startsWith(scope) && (command.length === scope.length || command[scope.length] === " ");
   if (!matchesPrefix) return false;
@@ -78,45 +97,179 @@ export function getBashDecisionCacheKey(command: string, input: unknown): string
   return scope ? buildPatternKey(scope) : buildExactBashDecisionKey(command);
 }
 
-// Helper: extract command prefix from bash command for pattern caching
-export function extractCommandPrefix(command: string): string {
-  const tokens = command
-    .trim()
-    .split(/\s+/)
-    .filter((t) => t !== "");
-  const prefixTokens: string[] = [];
-  for (const token of tokens) {
-    // Stop at the first token that looks like an argument or value
-    if (
-      token.startsWith("-") ||
-      token.includes("/") ||
-      /^\d+$/.test(token) ||
-      token.includes(">") ||
-      token.includes("|") ||
-      token.includes("&") ||
-      token.includes(";") ||
-      token.includes("$") ||
-      token.includes("`")
-    ) {
-      // If token contains a command separator, extract the part before it
-      const sepIndex =
-        token.indexOf(";") !== -1
-          ? token.indexOf(";")
-          : token.indexOf("$") !== -1
-            ? token.indexOf("$")
-            : token.indexOf("`");
-      if (sepIndex > 0) {
-        prefixTokens.push(token.slice(0, sepIndex));
+// Process-wrapper tokens to skip when extracting a command prefix.
+// `timeout 30 npm test` should extract to `npm test`, not `timeout`.
+// Matches Claude Code's documented strip set.
+const COMMAND_WRAPPERS = new Set([
+  "timeout",
+  "time",
+  "nice",
+  "nohup",
+  "stdbuf",
+  "command",
+  "builtin",
+  "exec",
+  "env",
+]);
+
+// Multi-subcommand CLI tools: take 2 tokens (e.g. `git commit`, `npm test`).
+// These are tools where the first token alone is too broad to be a useful
+// "Allow always" scope — `git *` would also allow `git push --force`.
+// `oo` is included because it wraps other tools; extractCommandPrefix detects
+// that case and recurses into the inner tool's prefix.
+const MULTI_SUBCOMMAND_TOOLS = new Set([
+  "git",
+  "gh",
+  "npm",
+  "pnpm",
+  "yarn",
+  "cargo",
+  "go",
+  "bun",
+  "bunx",
+  "vipune",
+  "docker",
+  "pi",
+  "ctx7",
+  "kubectl",
+  "oo",
+]);
+
+// Three-token run-style invocations where the third token is the script name
+// the user actually cares about granting (`npm run lint`, not `npm run *`).
+const TRIPLE_LEVEL_PAIRS = new Set(["npm run", "pnpm run", "yarn run", "bun run", "cargo run"]);
+
+// Chars that mark a token as "not part of the command prefix". Anything outside
+// [A-Za-z0-9_.-=] terminates prefix collection — paths (`/tmp/foo`), globs
+// (`*.ts`), env-var values past `=`, etc.
+const NON_PREFIX_TOKEN = /[^A-Za-z0-9_.\-=]/;
+// Chars that, when found inside a token, mean the *next* shell command starts
+// here (compound/redirect). Distinct from BASH_COMMAND_INJECTION_CHARS because
+// we use this to find the head of the *current* command — `git;` should yield
+// `git`, not get filtered as junk. Backtick and `$` would also start an inline
+// substitution; treat them the same.
+const PREFIX_TERMINATOR = /[`$;&|<>]/;
+
+// Shell-quote-aware tokeniser used only for prefix extraction. Treats quoted
+// runs as a single sentinel token (we don't care about argument content for
+// permission scope, only that there *is* an argument here). Does NOT attempt
+// to be a full shell parser — anything beyond simple quoting (heredocs, brace
+// expansion, etc.) falls through to the injection-vector check in
+// getBashAlwaysScope and ends up uncached.
+export function tokenizeForPrefix(command: string): string[] {
+  const tokens: string[] = [];
+  let i = 0;
+  const n = command.length;
+  while (i < n) {
+    while (i < n && /\s/.test(command[i] ?? "")) i++;
+    if (i >= n) break;
+    const ch = command[i];
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      i++;
+      while (i < n && command[i] !== quote) {
+        if (command[i] === "\\" && i + 1 < n) i++;
+        i++;
       }
+      if (i < n) i++; // consume closing quote
+      tokens.push("<arg>");
+      continue;
+    }
+    const start = i;
+    while (i < n && !/\s/.test(command[i] ?? "") && command[i] !== '"' && command[i] !== "'") {
+      i++;
+    }
+    tokens.push(command.slice(start, i));
+  }
+  return tokens;
+}
+
+// Strip leading process-wrapper tokens and KEY=value env-var assignments.
+// Returns the remaining tokens — the "real" command after unwrapping.
+function stripLeadingWrappers(tokens: string[]): string[] {
+  let i = 0;
+  while (i < tokens.length) {
+    const t = tokens[i] ?? "";
+    // KEY=value env-var assignment
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) {
+      i++;
+      continue;
+    }
+    if (!COMMAND_WRAPPERS.has(t)) break;
+    i++;
+    // Wrapper-specific positional arguments to skip
+    if (t === "timeout" || t === "stdbuf") {
+      const next = tokens[i] ?? "";
+      if (/^\d+[smhd]?$/.test(next)) i++;
+    } else if (t === "nice") {
+      if ((tokens[i] ?? "") === "-n") {
+        i++;
+        const next = tokens[i] ?? "";
+        if (/^-?\d+$/.test(next)) i++;
+      }
+    } else if (t === "env") {
+      // `env KEY=VAL cmd` — KEY=VAL handled by the env-var loop above on next iteration.
+    }
+  }
+  return tokens.slice(i);
+}
+
+// Collect the leading "command word" tokens. Stops at the first argument-like
+// token: a quoted run (<arg>), a flag (-x), a path (/foo), an injection char
+// (where the next command starts), or anything outside the prefix charset.
+// When a token contains an injection char part-way through (`git;`), the part
+// *before* the char is kept as the last prefix token.
+function collectPrefixTokens(rawTokens: string[]): string[] {
+  const out: string[] = [];
+  for (const token of rawTokens) {
+    if (token === "<arg>") break;
+    if (token.startsWith("-")) break;
+    const term = token.search(PREFIX_TERMINATOR);
+    if (term !== -1) {
+      const head = token.slice(0, term);
+      if (head.length > 0 && !NON_PREFIX_TOKEN.test(head)) out.push(head);
       break;
     }
-    prefixTokens.push(token);
-    // Cap at 3 prefix tokens to avoid overly long patterns
-    if (prefixTokens.length >= 3) break;
+    if (NON_PREFIX_TOKEN.test(token)) break;
+    out.push(token);
   }
-  // Must have at least 1 token
-  if (prefixTokens.length === 0) return tokens[0] ?? "bash";
-  return prefixTokens.join(" ");
+  return out;
+}
+
+// Helper: extract command prefix from bash command for pattern caching.
+// Strategy: tokenise (quote-aware), strip wrappers/env-vars, collect leading
+// command-word tokens, then take 1-3 of them depending on whether the leading
+// tool is in a known multi-subcommand family.
+export function extractCommandPrefix(command: string): string {
+  const trimmed = command.trim();
+  if (trimmed.length === 0) return "bash";
+  const stripped = stripLeadingWrappers(tokenizeForPrefix(trimmed));
+  const cleanTokens = collectPrefixTokens(stripped);
+  if (cleanTokens.length === 0) {
+    // Fallback: the first raw token if it survives the safe-token check.
+    const first = stripped[0] ?? "";
+    return NON_PREFIX_TOKEN.test(first) || PREFIX_TERMINATOR.test(first) || first === "<arg>"
+      ? "bash"
+      : first;
+  }
+  const t1 = cleanTokens[0] ?? "";
+  if (cleanTokens.length === 1 || !MULTI_SUBCOMMAND_TOOLS.has(t1)) {
+    return t1;
+  }
+  const t2 = cleanTokens[1] ?? "";
+  if (t2 === "") return t1;
+  // Recursive case: `oo <tool>` where the inner tool is itself multi-level.
+  // Drives `oo git status` → `oo git status`, `oo gh issue view` → `oo gh issue`.
+  if (t1 === "oo" && MULTI_SUBCOMMAND_TOOLS.has(t2)) {
+    const innerPrefix = extractCommandPrefix(cleanTokens.slice(1).join(" "));
+    return `oo ${innerPrefix}`;
+  }
+  // Three-token run-style invocations.
+  if (TRIPLE_LEVEL_PAIRS.has(`${t1} ${t2}`) && cleanTokens.length >= 3) {
+    const t3 = cleanTokens[2] ?? "";
+    if (t3 !== "") return `${t1} ${t2} ${t3}`;
+  }
+  return `${t1} ${t2}`;
 }
 
 // Helper: evict oldest entries from a decisions map
@@ -125,6 +278,55 @@ function evictOldest(map: Map<string, { allowed: boolean; timestamp: string }>, 
   const sorted = [...map.entries()].sort((a, b) => b[1].timestamp.localeCompare(a[1].timestamp));
   map.clear();
   for (const [k, v] of sorted.slice(0, max)) map.set(k, v);
+}
+
+// Tool names that have been removed from pi-ensemble but may still appear in
+// older `.pi/decisions.json` files. Loading them is harmless but they bloat
+// the cache and confuse `/runs`-style introspection. Add a tool here when it
+// is removed; entries here are cleaned out of the cache on session_start.
+const STALE_TOOL_NAMES = new Set(["pair_watch"]);
+
+// Decision keys we accept come in three shapes (see save sites):
+//   1. `bash:<prefix> *`         — bash wildcard pattern (from "Allow always")
+//   2. `bash:exact:<sha256>`     — bash exact-command hash (injection-vector
+//                                  commands that the user "Allow always"-ed)
+//   3. `<toolname>`              — non-bash tool-level grant (no ":" at all)
+//
+// Anything else came from an earlier version of the code that keyed decisions
+// on a JSON.stringify(input). Those entries are tied to a literal input string
+// and will never match a future invocation — drop them.
+type DecisionKeyShape =
+  | "bash-pattern"
+  | "bash-exact"
+  | "tool-level"
+  | "old-format-full-input"
+  | "unsafe-pattern"
+  | "stale-tool"
+  | "invalid";
+
+function classifyDecisionKey(key: string): DecisionKeyShape {
+  if (key.length === 0) return "invalid";
+  if (key.startsWith(BASH_PATTERN_PREFIX)) {
+    if (key.startsWith(`${BASH_PATTERN_PREFIX}exact:`)) return "bash-exact";
+    if (isPatternKey(key)) {
+      return isSafeBashPatternKey(key) ? "bash-pattern" : "unsafe-pattern";
+    }
+    // Starts with `bash:` but neither `exact:` nor ends with ` *` → must be the
+    // old `bash:{"command":"..."}` JSON-input shape.
+    return "old-format-full-input";
+  }
+  if (!key.includes(":")) {
+    // Tool-name level (e.g. `dispatch_specialist`). Reject if the tool no
+    // longer exists.
+    if (STALE_TOOL_NAMES.has(key)) return "stale-tool";
+    // Reject obviously malformed entries (whitespace, control chars, etc.).
+    if (!/^[A-Za-z0-9_.\-]+$/.test(key)) return "invalid";
+    return "tool-level";
+  }
+  // Has ":" but doesn't start with "bash:" → old-format `<toolname>:{...}` shape.
+  const prefix = key.slice(0, key.indexOf(":"));
+  if (STALE_TOOL_NAMES.has(prefix)) return "stale-tool";
+  return "old-format-full-input";
 }
 
 // Built-in Pi tool names — never block these
@@ -148,12 +350,66 @@ export const BUILTIN_TOOLS = new Set([
   "question",
 ]);
 
-// Helper: lookup a tool in permission entries, exact match first then wildcard
-// Permission entries: string verdicts or nested objects (e.g. bash subcommands)
+// Match a concrete bash command against a nested subcommand allowlist
+// (e.g. agents.json's `permission.bash` { "vipune *": "allow", ... }).
+// Returns the verdict from the longest matching pattern, or the catch-all "*"
+// if present. Returns null if the allowlist has no matching entry.
+//
+// Pattern semantics:
+//   - "pattern *" (trailing " *"): word-boundary prefix. `vipune *` matches
+//     `vipune` and `vipune add foo` but not `vipuneish`.
+//   - "pattern*"  (trailing "*" no space): loose prefix. `which*` matches
+//     `whichever`. Matches the long-standing convention in agents.json.
+//   - "pattern"    (no wildcard): exact match.
+// Most specific pattern wins (longest prefix). Catch-all "*" is checked last.
+//
+// Refuses to match commands containing injection vectors — those must always
+// reach the interactive prompt.
+function matchBashSubcommand(command: string, allowlist: Record<string, string>): string | null {
+  if (BASH_COMMAND_INJECTION_CHARS.test(command)) return null;
+  // Sort patterns by length descending so the more specific entry wins.
+  const patterns = Object.entries(allowlist)
+    .filter(([k]) => k !== "*")
+    .sort(([a], [b]) => b.length - a.length);
+  for (const [pattern, verdict] of patterns) {
+    if (typeof verdict !== "string") continue;
+    if (pattern.endsWith(" *")) {
+      const prefix = pattern.slice(0, -2);
+      if (command === prefix || command.startsWith(`${prefix} `)) return verdict;
+    } else if (pattern.endsWith("*")) {
+      const prefix = pattern.slice(0, -1);
+      if (command.startsWith(prefix)) return verdict;
+    } else if (command === pattern) {
+      return verdict;
+    }
+  }
+  const catchall = allowlist["*"];
+  return typeof catchall === "string" ? catchall : null;
+}
+
+// Helper: lookup a tool in permission entries, exact match first then wildcard.
+// Permission entries: string verdicts or nested objects (bash subcommand
+// allowlists). When the tool is `bash` and a concrete command is supplied,
+// the nested allowlist (if any) is consulted before the top-level fallback.
 function lookupPermission(
   entries: Record<string, string | Record<string, string>>,
   toolName: string,
+  bashCommand?: string,
 ): string | null {
+  // Bash nested-allowlist lookup: agents.json may declare bash as an object
+  // whose keys are command-prefix patterns. Without this branch the nested
+  // allowlist was previously unreachable — the loop below skipped it because
+  // its value is an object, not a string verdict.
+  if (toolName === "bash" && bashCommand !== undefined) {
+    const bashEntry = entries.bash;
+    if (bashEntry && typeof bashEntry === "object") {
+      const verdict = matchBashSubcommand(bashCommand, bashEntry as Record<string, string>);
+      if (verdict !== null) return verdict;
+      // Nested allowlist had no match and no catch-all — fall through to the
+      // top-level lookup, which will skip the object entry and return null.
+    }
+  }
+
   // Check exact match first
   const exactMatch = entries[toolName];
   if (exactMatch !== undefined && typeof exactMatch === "string") {
@@ -268,6 +524,7 @@ export function resolveToolPermission(
   project: RoleConfig,
   global: RoleConfig,
   agents: Record<string, { permission?: Record<string, string | Record<string, string>> }>,
+  bashCommand?: string,
 ): PermVerdict {
   // Helper to check a single config
   const checkConfig = (config: RoleConfig): PermVerdict | null => {
@@ -275,7 +532,7 @@ export function resolveToolPermission(
     if (!roleConfig?.permission) return null;
 
     // Use shared helper: exact match first, then wildcard
-    const verdict = lookupPermission(roleConfig.permission, toolName);
+    const verdict = lookupPermission(roleConfig.permission, toolName, bashCommand);
     if (verdict !== null) {
       if (verdict === "allow" || verdict === "deny" || verdict === "ask") {
         return verdict satisfies PermVerdict;
@@ -297,7 +554,7 @@ export function resolveToolPermission(
   // Layer 3: agents.json (reuse lookup helper)
   const agentsRoleConfig = agents[role];
   if (agentsRoleConfig?.permission) {
-    const verdict = lookupPermission(agentsRoleConfig.permission, toolName);
+    const verdict = lookupPermission(agentsRoleConfig.permission, toolName, bashCommand);
     if (verdict !== null) {
       if (verdict === "allow" || verdict === "deny" || verdict === "ask") {
         return verdict;
@@ -416,23 +673,48 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
       const raw = readFileSync(decisionsPath, "utf8");
       const parsed = JSON.parse(raw);
       let loaded = 0;
+      let droppedMalformed = 0;
+      let droppedStale = 0;
+      let droppedOldFormat = 0;
       for (const [key, val] of Object.entries(parsed)) {
-        // Validate key format
-        if (!key.includes(":") || key.length > DECISION_KEY_MAX_LENGTH) {
+        if (key.length > DECISION_KEY_MAX_LENGTH) {
           trace(
-            `pi-ensemble permission-guard: skipping invalid decision key: ${key.slice(0, 50)}...`,
+            `pi-ensemble permission-guard: skipping over-length decision key: ${key.slice(0, 50)}...`,
           );
+          droppedMalformed++;
           continue;
         }
-        if (isPatternKey(key) && !isSafeBashPatternKey(key)) {
+        const shape = classifyDecisionKey(key);
+        if (shape === "stale-tool") {
+          trace(`pi-ensemble permission-guard: dropping stale tool decision: ${key}`);
+          droppedStale++;
+          continue;
+        }
+        if (shape === "old-format-full-input") {
+          // Old-format full-input keys (`bash:{"command":"..."}`, `dispatch_specialist:{"cwd":...}`)
+          // are tied to a literal input string. They never match a future
+          // invocation that differs by a single character — dead weight that
+          // bloats the cache without providing matches.
+          trace(`pi-ensemble permission-guard: dropping old-format decision: ${key.slice(0, 50)}`);
+          droppedOldFormat++;
+          continue;
+        }
+        if (shape === "unsafe-pattern") {
           trace(
             `pi-ensemble permission-guard: skipping unsafe bash wildcard decision key: ${key.slice(0, 50)}...`,
           );
+          droppedMalformed++;
+          continue;
+        }
+        if (shape === "invalid") {
+          trace(`pi-ensemble permission-guard: skipping invalid decision key: ${key.slice(0, 50)}`);
+          droppedMalformed++;
           continue;
         }
         // Validate entry shape BEFORE casting
         if (val === null || typeof val !== "object") {
           trace(`permission-guard: skipping malformed decision for key: ${key.slice(0, 50)}`);
+          droppedMalformed++;
           continue;
         }
         const entry = val as Record<string, unknown>;
@@ -442,12 +724,24 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
           entry.timestamp.length > 50
         ) {
           trace(`permission-guard: skipping malformed decision for key: ${key.slice(0, 50)}`);
+          droppedMalformed++;
           continue;
         }
         decisions.set(key, { allowed: entry.allowed, timestamp: entry.timestamp });
         loaded++;
       }
-      trace(`permission-guard: loaded ${loaded} cached decisions`);
+      const dropped = droppedMalformed + droppedStale + droppedOldFormat;
+      if (dropped > 0) {
+        // Persist the cleaned cache so the next session sees a tidy file and
+        // we don't repeatedly re-evaluate the same stale entries.
+        persistDecisions(decisions);
+        console.info(
+          `pi-ensemble permission-guard: loaded ${loaded} decisions; dropped ${dropped} (` +
+            `${droppedMalformed} malformed, ${droppedOldFormat} old-format, ${droppedStale} stale-tool)`,
+        );
+      } else {
+        trace(`permission-guard: loaded ${loaded} cached decisions`);
+      }
     } catch (err) {
       if (err && typeof err === "object" && "code" in err) {
         const code = (err as { code: string }).code;
@@ -475,18 +769,19 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
 
   pi.on("tool_call", async (event, ctx) => {
     try {
+      const command =
+        event.toolName === "bash" ? ((event.input as { command?: string })?.command ?? "") : "";
       const verdict = resolveToolPermission(
         event.toolName,
         role,
         projectConfig,
         globalConfig,
         agentsConfig,
+        event.toolName === "bash" ? command : undefined,
       );
 
       if (verdict === "allow") return; // allowed
 
-      const command =
-        event.toolName === "bash" ? ((event.input as { command?: string })?.command ?? "") : "";
       const bashAlwaysScope = event.toolName === "bash" ? getBashAlwaysScope(command) : null;
 
       // Check cached decisions — exact match first

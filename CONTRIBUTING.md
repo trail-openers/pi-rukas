@@ -62,12 +62,46 @@ CI runs the offline tests on every push and PR. Live tests run on the dev machin
 
 Examples: `vipune`, `ctx7`, `gh`, `oo`, `parallel-cli`, `jq`, `sqlite3 -readonly`.
 
+#### Bash subcommand permission patterns
+
+`agents.json` `agent.<role>.permission.bash` is a nested object keyed on
+*command prefix patterns*. `permission-guard.ts` resolves a verdict for every
+bash invocation by matching the command against these patterns; longest prefix
+wins. Pattern grammar:
+
+| Pattern | Meaning | Example match |
+|---|---|---|
+| `"vipune *"` (trailing ` *`) | word-boundary prefix | `vipune`, `vipune search foo`, `vipune add "x"` |
+| `"which*"` (trailing `*`, no space) | loose prefix | `which`, `which python`, `whichever` |
+| `"oo init"` (no wildcard) | exact match | `oo init` only |
+| `"*"` (catch-all) | fallback when no other pattern matches | anything not matched above |
+
+Verdict values: `"allow"`, `"deny"`, `"ask"`. Most specific (longest) pattern
+wins, with the bare `"*"` only consulted last.
+
+**Injection-vector refusal**: a command containing `` ` ``, `$`, `;`, `&`,
+`|`, `<`, `>`, or a newline is *never* matched against any wildcard pattern —
+it always falls through to interactive prompt (or deny in headless mode). This
+prevents `&&`-chained / `$(...)`-substituted commands from sneaking past a
+broad allow rule.
+
+**Quoted arguments are transparent**: `vipune add "lorem ipsum"` extracts to
+the prefix `vipune add` and matches `"vipune add *"`. Quote characters
+inside argument values are not injection vectors.
+
+The extractor knows about a small set of process wrappers (`timeout`, `time`,
+`nice -n N`, `nohup`, `stdbuf`, `command`, `builtin`, `exec`, `env`) and
+leading `KEY=value` env-var assignments — these are stripped before the prefix
+is taken, so `timeout 30 npm test` is permitted by `"npm test *"`. Multi-level
+CLI tools like `git`, `npm`, `cargo`, `oo`, `gh` produce 2-3 token prefixes
+(`git commit`, `oo gh issue`).
+
 **MCP-backed tools** (for tools that can't safely be CLI-wrapped, e.g., database servers):
 
 - Install a Pi MCP bridge on the host (`pi install npm:pi-mcp-adapter`)
 - Set `PI_ENSEMBLE_USER_EXTENSION=npm:pi-mcp-adapter` in your shell profile (`~/.zshrc` / `~/.bashrc`)
 - Add tool name or pattern with verdict to `agents.json` under `agent.<role>.permission` (e.g., `"postgres_*": "allow"`)
-- pi-ensemble's tool_call interceptor in `extension/src/permission-guard.ts` enforces at runtime for subagents (tools not explicitly allowed are blocked)
+- `extension/src/permission-guard.ts` enforces at runtime in the **top-level session only** (interceptor on every tool call). Subagents run with `--no-extensions`, so pi-ensemble is not loaded inside them — the role's system prompt is the only thing keeping each subagent in its lane. Hard confinement comes from MCP server-side credentials or Pi's built-in checks, not pi-ensemble.
 - If you have [pi-permissions](https://github.com/randomm/pi-permissions) installed, it enforces interactively at the top-level session
 - Run `bun run build` to regenerate role-specific prompts
 
@@ -82,6 +116,7 @@ For non-trivial changes, know which file owns which concern:
 | `extension/src/index.ts` | Extension activation; tool + command registration |
 | `extension/src/commands.ts` | Slash-command handlers; PM sticky-preamble injection |
 | `extension/src/dispatch.ts` | `dispatch_specialist` + `dispatch_parallel` tools |
+| `extension/src/permission-guard.ts` | Top-level session permission enforcement; bash subcommand allowlist matching; decision cache |
 | `extension/src/dispatch-status.ts` | `dispatch_status` + `dispatch_kill` introspection tools |
 | `extension/src/async-jobs.ts` | Job registry; push-callback delivery via `pi.sendUserMessage` |
 | `extension/src/spawn.ts` | Fire-and-forget `pi -p --mode json` child spawn |

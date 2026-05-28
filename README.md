@@ -172,7 +172,7 @@ Run `/ensemble-model` inside Pi to pick interactively from your authenticated pr
 Pi has no built-in Model Context Protocol support by design — MCP is a host-level concern, not a framework feature. pi-ensemble implements a two-layer permission model for MCP tools:
 
 - **Top-level session** (where you type): if you have [pi-permissions](https://github.com/randomm/pi-permissions) installed, it handles interactive allow/deny for all tool access at the parent Pi process level.
-- **Subagents** (developer, ops, explore, code-review-specialist, adversarial-developer): run with `--no-extensions` (no pi-permissions), instead loading your MCP bridge via `PI_ENSEMBLE_USER_EXTENSION`. Role-based enforcement happens through pi-ensemble's tool_call interceptor in `extension/src/dispatch.ts` — tools not in a role's allowlist in `agents.json` are blocked at runtime.
+- **Subagents** (developer, ops, explore, code-review-specialist, adversarial-developer): spawned with `--no-extensions`, so **pi-ensemble's extension does not load** inside them. The role's system prompt (built from `agents.json` `agent.<role>.permission`) tells the subagent what tools it should use, but there is no runtime block — a misbehaving subagent will not be stopped at the tool layer by pi-ensemble. For MCP tools, set `PI_ENSEMBLE_USER_EXTENSION` to your MCP bridge (passed in via `--extension`, separate from the suppressed installed-extension set); the MCP server's own credentials are the real capability boundary.
 
 ### Setup (machines that need MCP)
 
