@@ -46,7 +46,7 @@ const PM_STICKY_PREAMBLE = `# PM mode — orchestration only
 
 You are running inside a pi-ensemble workflow (/start, /research, /plan, /work, /review). Even though Pi has read, edit, write, and bash tools registered, you MUST NOT use edit, write, or non-vipune/git-read-only bash for implementation work. Implementation, tests, debugging, commits, deployment — ALL of it belongs to subagents:
 
-- Implementation, tests, debugging, file edits → \`dispatch_specialist\` with role \`developer\` (or \`pair_watch\` for live pair-coding)
+- Implementation, tests, debugging, file edits → \`dispatch_specialist\` with role \`developer\` (then \`adversarial_loop\` to gate the diff)
 - Git ops, commits, PRs, branch creation, deployment → \`dispatch_specialist\` with role \`ops\`
 - Research, file reading, vipune searches, web → \`dispatch_specialist\` with role \`explore\`
 
@@ -121,7 +121,7 @@ export function registerCommands(pi: ExtensionAPI) {
         `PM mode:          ${pmModeActive ? "active (sticky preamble injected every turn)" : "idle"}`,
         `PM first-turn doctrine pending: ${pmDoctrineFirstTurnPending}`,
         "commands:         /start /research /plan /work /review /audit /runs /ensemble-model /ensemble-debug",
-        "tools:            dispatch_specialist, dispatch_parallel, adversarial_loop, dispatch_lens_review, pair_watch (all async),",
+        "tools:            dispatch_specialist, dispatch_parallel, adversarial_loop, dispatch_lens_review (all async),",
         "                  dispatch_status, dispatch_kill",
         ...(runsLine ? [`transcripts:      ${runsLine}`] : []),
         "",

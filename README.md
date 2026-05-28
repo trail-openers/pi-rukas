@@ -16,7 +16,7 @@ Five slash commands, an orchestrator-shaped system prompt, and six tools that dr
 | `/start` | Initialises a project session — searches memory, indexes the codebase, gathers git/PR/CI state, reports readiness. |
 | `/research <topic>` | Fans out multiple `explore` specialists in parallel against web, codebase, and prior memory. Synthesises and saves. |
 | `/plan <description>` | Drafts a GitHub issue from your input — auto-classifies as bug/feature/epic/chore/spike, applies the right template, asks before creating. |
-| `/work <issue#>` | Runs an issue end-to-end: feature branch → optional parallel worktrees → `pair_watch` (developer + live adversarial observer, in one call) → ops commits → PR → **six-pass code review** → CI watch → merge per project policy. |
+| `/work <issue#>` | Runs an issue end-to-end: feature branch → optional parallel worktrees → developer (via `dispatch_specialist`) → `adversarial_loop` gate → ops commits → PR → **six-pass code review** → CI watch → merge per project policy. |
 | `/review [#PR \| path \| latest N]` | On-demand six-pass code review of a PR, file, directory, or the latest N PRs. Returns a deduplicated, precedence-merged verdict (APPROVED / ISSUES_FOUND / CRITICAL_ISSUES_FOUND). |
 | `/audit [<path> \| "full"]` | Standards-first repo/path audit. Derives expectations from docs/config/CI/memory/examples, then reports misalignments across bugs, dead code, style drift, architecture drift, and quality-gate gaps. |
 
@@ -147,8 +147,7 @@ Tools (all async via push-callback — tools return a `{ jobId }` immediately; t
 |---|---|
 | `dispatch_specialist` | Spawn exactly ONE specialist (developer / ops / explore / adversarial-developer / code-review-specialist). |
 | `dispatch_parallel` | Fan out 2-10 specialists in parallel; ONE consolidated report arrives when all complete. |
-| `pair_watch` | Live pair-coding gate — spawns developer + adversarial-developer concurrently. Adversarial observes a summarised live stream of dev's turns and may interrupt mid-task. **The pair_watch verdict IS the adversarial gate**; do not call `adversarial_loop` separately afterwards. Default path for `/work` Step 4 and Step 6f fix loops. |
-| `adversarial_loop` | Encapsulated 3-round adversarial review (legacy / fallback path). Used when `pair_watch` returns TIMEOUT / CAP_HIT / DEV_FINISHED_NO_VERDICT. |
+| `adversarial_loop` | Encapsulated 3-round review-then-fix gate. Takes the developer's diff, runs an adversarial review, spawns a fresh developer to address any findings, re-reviews; up to 3 rounds. The mandatory adversarial gate before any commit. |
 | `dispatch_lens_review` | Six-pass code review — fans out six children, each pinned to its lens skill. Findings come back as native `report_finding` tool calls (schema-validated by Pi inside the child), deduped by `(path, line, title)`, precedence-merged, turned into a verdict. |
 | `dispatch_status` | List in-flight async jobs (jobId, role, elapsed). Metadata only — never transcript content. |
 | `dispatch_kill <jobId>` | Abort a running subagent or batch. |

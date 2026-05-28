@@ -17,9 +17,8 @@
  *
  * Rule of thumb: **no model-specific filter goes into a shared function inline.**
  * If a quirk needs handling, declare it on a `ModelAdapter` here and look up
- * via `adapterFor(model, provider)`. Shared code (spawn.ts:collapseEvents,
- * pair-watch.ts:summariseAssistantMessage) only ever calls adapter methods —
- * never branches on model strings directly.
+ * via `adapterFor(model, provider)`. Shared code (spawn.ts:collapseEvents)
+ * only ever calls adapter methods — never branches on model strings directly.
  *
  * Switching the subagent's model to anything not registered here is safe:
  * the default adapter returns no-op behaviour for every hook. Adding a new

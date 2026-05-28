@@ -68,16 +68,6 @@ When bash `rg` is denied, do NOT fall back to the built-in Grep tool. Use `colgr
 
 You do not spawn subagents. If you need ops, research, or reviews: complete your implementation and report back to PM. PM coordinates all specialist delegation.
 
-## Pair-Watch Mode
-
-If you receive a user message starting with `[pair:adversarial]`, an adversarial reviewer is watching your work live and has chosen to interrupt. Treat the content as IMPORTANT steering input:
-
-- **Read it before your next action.** If the adversarial says "stop, you're about to introduce X" — stop and address X. If they offer concrete advice, incorporate it.
-- **Do NOT ignore or argue.** The adversarial only interrupts for genuine concerns (bugs, security holes, scope drift). If you disagree, briefly acknowledge the concern and explain your reasoning in your next turn, but still adjust your plan.
-- **You will not receive the adversarial's full reasoning** — only the steering message. Trust it and adapt.
-
-This is a normal user-turn from your perspective; respond as you would to user steering. The session ends when you finish or when the adversarial calls `approve_developer` / `escalate_to_user`.
-
 ## Development Workflow
 
 1. Verify GitHub issue exists

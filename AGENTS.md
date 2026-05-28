@@ -12,7 +12,7 @@ CI is for VERIFICATION, not DISCOVERY. All gates pass locally before `git push`.
 
 ```bash
 cd extension && bunx tsc --noEmit && bun run check && \
-  for t in test-command-flow test-lens-review test-models test-runs test-progress test-prune test-async-dispatch test-pair-watch; do \
+  for t in test-command-flow test-lens-review test-models test-runs test-progress test-prune test-async-dispatch; do \
     bun run smoke-tests/$t.ts || break; \
   done
 ```
@@ -28,7 +28,7 @@ If any check fails: fix the issue, re-run, only then push. Do NOT:
 
 Files matching `extension/smoke-tests/test-*-live.ts` spawn real Pi children and cost real tokens (a few cents per run on Cerebras GLM-4.7). Run them only when:
 
-- You changed `spawn.ts` / `spawn-rpc.ts` / `pair-watch.ts` (changes to child process behaviour)
+- You changed `spawn.ts` (changes to child process behaviour)
 - You bumped the Pi version pin in `extension/package.json`
 - You're investigating a production-only failure mode
 
@@ -79,10 +79,7 @@ The major modules — know which one to edit for which kind of change:
 | `dispatch-status.ts` | `dispatch_status`, `dispatch_kill` tools | Job-introspection surface |
 | `async-jobs.ts` | Job registry, push-callback delivery via `pi.sendUserMessage` | All async-dispatch lifecycle changes |
 | `spawn.ts` | Fire-and-forget `pi -p --mode json` child spawn | Single-shot subagent spawn behaviour |
-| `spawn-rpc.ts` | Long-lived `pi --mode rpc` child client | Bidirectional Pi children (used by pair-watch) |
-| `pair-watch.ts` | Live pair-coding orchestrator (developer + adversarial-developer) | Pair-watch mechanism, prompts, caps |
-| `pair-watch-tools.ts` | Child extension loaded into adversarial via `--extension` | `interrupt_developer` / `approve_developer` / `escalate_to_user` / `view_current_diff` tool surfaces |
-| `adversarial.ts` | Encapsulated 3-round adversarial loop (legacy, fallback path) | Fallback when pair-watch verdict is TIMEOUT/CAP_HIT |
+| `adversarial.ts` | Encapsulated 3-round adversarial review-then-fix gate | The mandatory adversarial gate after every developer dispatch |
 | `lens-review.ts` | Six-pass code-review orchestrator | Lens dispatch, deduplication, verdict computation |
 | `lens-reporter.ts` | Child extension loaded into review specialists | `report_finding` tool registration |
 | `model-adapters.ts` | Per-LLM-family text-artifact filtering | Adding support for a new model family with known quirks |
@@ -189,7 +186,7 @@ When you (the agent) run inside the parent `pi` session triggered by a workflow 
 
 This is real doctrine, not a hint. The PM exists to orchestrate; specialists exist to execute. Specifically:
 
-- **Implementation / tests / debugging / file edits** → `dispatch_specialist` with role `developer`, or `pair_watch` for live pair-coding
+- **Implementation / tests / debugging / file edits** → `dispatch_specialist` with role `developer`, then `adversarial_loop` to gate the resulting diff
 - **Git operations / commits / PRs / branch creation / deployment** → `dispatch_specialist` with role `ops`
 - **Research / vipune searches / web / file reading** → `dispatch_specialist` with role `explore`
 
@@ -221,7 +218,6 @@ Scope conventions for this repo:
 
 - `feat(work):` change to `/work` flow
 - `feat(review):` change to six-pass review
-- `feat(pair-watch):` pair-watch mechanism
 - `feat(model):` model resolution
 - `fix(spawn):` spawn / child-process bugs
 - `chore(deps):` dependency bumps
@@ -257,7 +253,7 @@ chore/...                             # tooling / config (no issue required)
 
 ### Spike branches
 
-Experimental architectural work (e.g., the original `feat/pair-watch` spike) lives on a feature branch and does NOT merge to main without explicit human approval. Stack spikes on top of foundational PRs if needed; rebase onto fresh main after the foundation merges.
+Experimental architectural work lives on a feature branch and does NOT merge to main without explicit human approval. Stack spikes on top of foundational PRs if needed; rebase onto fresh main after the foundation merges.
 
 ### LLMs are allowed to squash merge PRs
 
@@ -346,7 +342,7 @@ If it changes frequently or is task-specific, don't document it as a file. Use G
 
 ### 🚨 "None" placeholder text from GLM family
 
-GLM-4.x / 5.x emits literal `{type: "text", text: "None"}` blocks between tool calls. The `model-adapters.ts` registry filters these in `spawn.ts:collapseEvents` and `pair-watch.ts:summariseAssistantMessage`. **Do NOT add inline GLM-specific filtering in shared paths.** If a new family has quirks, add an entry to `FAMILY_DETECTORS` in `model-adapters.ts`.
+GLM-4.x / 5.x emits literal `{type: "text", text: "None"}` blocks between tool calls. The `model-adapters.ts` registry filters these in `spawn.ts:collapseEvents`. **Do NOT add inline GLM-specific filtering in shared paths.** If a new family has quirks, add an entry to `FAMILY_DETECTORS` in `model-adapters.ts`.
 
 ### 🚨 PM trying to code
 

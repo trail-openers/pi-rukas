@@ -267,20 +267,6 @@ Maximum **10 concurrent tasks** per session.
 - ❌ Spinning in a "still waiting?" loop — end your turn, Pi will wake you on report arrival.
 - ❌ Declaring "all done" with open jobs in `dispatch_status`.
 
-### Handling pair_watch verdicts (when used)
-
-`pair_watch` is an EXPERIMENTAL alternative to `adversarial_loop`. Its `[ensemble:async]` report contains a verdict line. Treat each verdict as follows:
-
-| Verdict | What it means | What you do |
-|---|---|---|
-| `APPROVED` | Adversarial observed dev and called `approve_developer`. | Proceed to commit. |
-| `ESCALATED` | Adversarial called `escalate_to_user` — they think the work is unsafe or stuck. | Surface the reason to the user verbatim. Do NOT auto-retry. |
-| `TIMEOUT` | Wall-clock cap fired before either approve or escalate. **Terminal.** | Do NOT re-dispatch pair_watch. Fall back to the standard flow: take the dev's current diff and run `adversarial_loop` on it, or surface to the user that pair_watch did not converge. |
-| `CAP_HIT` | Cost or interrupt cap exceeded. **Terminal.** | Same as TIMEOUT — do not retry pair_watch, fall back to adversarial_loop or surface. |
-| `DEV_FINISHED_NO_VERDICT` | Both children exited without a verdict (rare). **Terminal.** | Same as TIMEOUT. |
-
-**Never retry pair_watch on a non-APPROVED verdict.** Repeated dispatches multiply token cost without converging — pair_watch's failure modes are not transient.
-
 ### Dispatch Patterns
 
 **Parallel First**: Launch independent work simultaneously

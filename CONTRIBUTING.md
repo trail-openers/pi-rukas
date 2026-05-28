@@ -32,14 +32,13 @@ named list with install hints. See README → Prerequisites for the full table.
 | `cd extension && bun run smoke-tests/test-progress.ts` | Unit smoke for per-child live-progress rendering (offline). |
 | `cd extension && bun run smoke-tests/test-prune.ts` | Unit smoke for transcript auto-prune (offline). |
 | `cd extension && bun run smoke-tests/test-async-dispatch.ts` | Unit smoke for the async-job registry + push-callback delivery (offline). |
-| `cd extension && bun run smoke-tests/test-pair-watch.ts` | Unit smoke for pair-watch event routing, cap enforcement (offline). |
 | `cd extension && bun run smoke-tests/test-cancel.ts` | Unit smoke for tool cancellation (offline). |
 | `cd extension && bun run smoke-tests/test-spawn.ts` | **Live** — spawns a real Pi child, costs a few cents. |
 | `cd extension && bun run smoke-tests/test-parallel.ts` | **Live** — three concurrent children. |
 | `cd extension && bun run smoke-tests/test-progress-live.ts` | **Live** — multi-turn child verifies progress callbacks. |
 | `cd extension && bun run smoke-tests/test-lens-review-live.ts` | **Live** — full six-pass review against a synthetic diff (~$0.02 on Cerebras). |
 
-CI runs the offline tests on every push and PR. Live tests run on the dev machine only and cost real tokens — gate them to changes in `spawn.ts` / `spawn-rpc.ts` / `pair-watch.ts` or Pi version bumps.
+CI runs the offline tests on every push and PR. Live tests run on the dev machine only and cost real tokens — gate them to changes in `spawn.ts` or Pi version bumps.
 
 ## What lives where
 
@@ -86,10 +85,7 @@ For non-trivial changes, know which file owns which concern:
 | `extension/src/dispatch-status.ts` | `dispatch_status` + `dispatch_kill` introspection tools |
 | `extension/src/async-jobs.ts` | Job registry; push-callback delivery via `pi.sendUserMessage` |
 | `extension/src/spawn.ts` | Fire-and-forget `pi -p --mode json` child spawn |
-| `extension/src/spawn-rpc.ts` | Long-lived `pi --mode rpc` child client (used by pair-watch) |
-| `extension/src/pair-watch.ts` | Live pair-coding orchestrator (developer + adversarial-developer) |
-| `extension/src/pair-watch-tools.ts` | Child-side tool surfaces loaded into adversarial via `--extension`: `interrupt_developer`, `approve_developer`, `escalate_to_user`, `view_current_diff` |
-| `extension/src/adversarial.ts` | Encapsulated 3-round adversarial loop (legacy / fallback path) |
+| `extension/src/adversarial.ts` | Encapsulated 3-round adversarial review-then-fix gate (the mandatory gate after every developer dispatch) |
 | `extension/src/lens-review.ts` | Six-pass code-review orchestrator (`dispatch_lens_review`) |
 | `extension/src/lens-reporter.ts` | Child extension for review specialists, provides `report_finding` |
 | `extension/src/model-adapters.ts` | Pluggable per-LLM-family text-artifact filtering |
