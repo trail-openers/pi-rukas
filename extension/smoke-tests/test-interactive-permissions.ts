@@ -490,6 +490,31 @@ assert(
   "real agents.json: quoted-arg vipune add resolves to allow via nested allowlist",
 );
 
+// === #85 regression guard — pi-ensemble's own dispatch tools must always be ===
+// === granted for the top-level session, otherwise the PM can't orchestrate. ===
+// Bug history: PR #50 removed the BUILTIN_TOOLS runtime bypass. agents.json
+// needed to be updated to grant pi-ensemble's own dispatch tools, but it
+// wasn't. The gap was hidden by PR #53's path-resolution bug (#83), which
+// prevented agents.json from loading at all. Once #84 fixed the loader,
+// every /work invocation broke because dispatch_parallel / dispatch_lens_review
+// got denied.
+const dispatchTools = [
+  "dispatch_specialist",
+  "dispatch_parallel",
+  "dispatch_lens_review",
+  "dispatch_status",
+  "dispatch_kill",
+  "adversarial_loop",
+];
+for (const role of ["default", "project-manager"]) {
+  for (const tool of dispatchTools) {
+    assert(
+      resolveToolPermission(tool, role, emptyConfig, emptyConfig, liveAgents) === "allow",
+      `real agents.json: ${role} role grants ${tool}`,
+    );
+  }
+}
+
 // Test 6: persistDecisions creates .pi/ directory
 const decisions = new Map<string, { allowed: boolean; timestamp: string }>();
 decisions.set("bash:ls", { allowed: true, timestamp: "2024-01-01T00:00:00Z" });

@@ -67,6 +67,12 @@
         "ci": "allow",
         "parallel-search*": "deny",
         "parallel-task*": "deny",
+        "dispatch_specialist": "allow",
+        "dispatch_parallel": "allow",
+        "dispatch_lens_review": "allow",
+        "dispatch_status": "allow",
+        "dispatch_kill": "allow",
+        "adversarial_loop": "allow",
         "task": {
           "*": "deny",
           "ops": "allow",
@@ -598,7 +604,13 @@
         "write": "deny",
         "edit": "deny",
         "multiedit": "deny",
-        "todowrite": "allow"
+        "todowrite": "allow",
+        "dispatch_specialist": "allow",
+        "dispatch_parallel": "allow",
+        "dispatch_lens_review": "allow",
+        "dispatch_status": "allow",
+        "dispatch_kill": "allow",
+        "adversarial_loop": "allow"
       }
     }
   }
