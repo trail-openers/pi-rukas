@@ -8,6 +8,18 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.1](https://github.com/randomm/pi-ensemble/compare/v0.12.0...v0.12.1) (2026-05-29)
+
+
+### Bug Fixes
+
+* **permissions:** /start step 4 PM-direct read-only gh pr/run; drop ops dispatch dependency ([#103](https://github.com/randomm/pi-ensemble/issues/103)) ([846dcd9](https://github.com/randomm/pi-ensemble/commit/846dcd95a31d0fedf524c5580b78e824c5f8e3fe)), closes [#102](https://github.com/randomm/pi-ensemble/issues/102)
+* **permissions:** clean ghost issue/pr/ci grants, PM tickets via bare gh, /start $(pwd) injection ([#100](https://github.com/randomm/pi-ensemble/issues/100)) ([d99a93a](https://github.com/randomm/pi-ensemble/commit/d99a93a14c61e8e121e39f30571263019658500c)), closes [#99](https://github.com/randomm/pi-ensemble/issues/99)
+* **permissions:** injection-vector check ignores content inside quoted args ([#109](https://github.com/randomm/pi-ensemble/issues/109)) ([b89f79c](https://github.com/randomm/pi-ensemble/commit/b89f79cd42633861fc626558ae365eb8a01a0598)), closes [#108](https://github.com/randomm/pi-ensemble/issues/108)
+* **permissions:** PM allowed bare \`git diff\` — adversarial_loop needs raw diff as input ([#113](https://github.com/randomm/pi-ensemble/issues/113)) ([194c202](https://github.com/randomm/pi-ensemble/commit/194c2023f245190c507fd74f67ede05618e189ce)), closes [#112](https://github.com/randomm/pi-ensemble/issues/112)
+* **prompts:** strengthen subagent output contract — never empty turn, ~300-line cap ([#107](https://github.com/randomm/pi-ensemble/issues/107)) ([b5ebf98](https://github.com/randomm/pi-ensemble/commit/b5ebf9887af07a4812ad01c70dfd226263a4c51c)), closes [#106](https://github.com/randomm/pi-ensemble/issues/106)
+* **prompts:** tell agent Pi's bash captures stderr (no 2&gt;&1 needed) + `(no output)` ≠ failure ([#111](https://github.com/randomm/pi-ensemble/issues/111)) ([69399ca](https://github.com/randomm/pi-ensemble/commit/69399ca3ccde0e250bfa2caab999a1a055f19223)), closes [#110](https://github.com/randomm/pi-ensemble/issues/110)
+
 ## [0.12.0](https://github.com/randomm/pi-ensemble/compare/v0.11.0...v0.12.0) (2026-05-29)
 
 
