@@ -106,6 +106,31 @@ Run each command as a **separate** bash tool call. Do NOT combine multiple comma
 
 If you need to process output, do it in separate steps: run the producer first (output appears in the tool result), then run a follow-up with the value(s) you extracted. The agent layer is the pipeline.
 
+## Pi's bash tool already captures stderr
+
+There is no reason to add `2>&1` or any stderr redirect to your commands. Pi's bash tool returns both stdout and stderr — the tool result contains everything the command emitted. Adding `2>&1` does nothing useful and will be denied by the anti-injection rule (the `>` character). Just run the command:
+
+```
+# WRONG — will be denied
+gh issue list --state open 2>&1
+
+# RIGHT — Pi already shows both streams
+gh issue list --state open
+```
+
+If the command failed and you want to see the error, just look at the tool result you already got. No flag adjustments needed.
+
+## `(no output)` usually means "no matches", not "failure"
+
+When a search / list command (`gh issue list`, `git log`, `grep`, `rg`, `colgrep`, etc.) returns `(no output)`, the most common cause is that the command succeeded and found nothing matching the query — **not** that the command broke. Don't retry with different flags or invent new query variations to "fix" it. Treat empty output as a legitimate answer:
+
+- `gh issue list --state open` → `(no output)` → there are zero open issues. Done.
+- `grep "foo" src/` → `(no output)` → the string "foo" doesn't appear in `src/`. Done.
+
+If you need a deterministic shape for empty results (e.g., to programmatically distinguish "no matches" from "command failed"), prefer the JSON variant where available: `gh issue list --state open --json number,title` returns `[]` for zero matches, which is unambiguously distinct from a failure.
+
+Retrying a command 4 times with permutations to get past `(no output)` is wasted tokens; the first run already told you the answer.
+
 ## GitHub Issue Reading Fallback
 
 Use this fallback only when `oo gh issue view` fails with `repository.issue.projectCards` deprecation errors. Do NOT fallback for auth/network/rate limit errors.
