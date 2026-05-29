@@ -681,7 +681,18 @@ export function persistDecisions(
 }
 
 export function registerPermissionGuard(pi: ExtensionAPI): void {
-  const role = process.env.PI_ENSEMBLE_ROLE ?? "default";
+  // Parent Pi sessions don't set PI_ENSEMBLE_ROLE — only spawn.ts sets it for
+  // subagent child processes (spec.role). In pi-ensemble's design the parent
+  // process IS the orchestrator (project-manager), so resolve to that role at
+  // the permission layer when no explicit role is set. There is no separate
+  // "default" role anymore (issue #104) — the doctrine layer already aliased
+  // default → project-manager via roles.ts, and the permission layer now does
+  // the same so the parent process gets exactly the permissions its doctrine
+  // prescribes.
+  const role = process.env.PI_ENSEMBLE_ROLE ?? "project-manager";
+  trace(
+    `permission-guard: registering for role '${role}' (PI_ENSEMBLE_ROLE=${process.env.PI_ENSEMBLE_ROLE ?? "<unset>"})`,
+  );
   const agentsConfig = loadAgentsJson();
   const projectConfig = loadProjectConfig();
   const globalConfig = loadGlobalConfig();

@@ -16,7 +16,6 @@ export const ROLE_NAMES = [
   "explore",
   "adversarial-developer",
   "code-review-specialist",
-  "default",
 ] as const;
 
 export type RoleName = (typeof ROLE_NAMES)[number];
@@ -49,10 +48,6 @@ export const ROLES: Record<RoleName, RoleDef> = {
   },
   "code-review-specialist": {
     promptFile: path.join(PROMPTS_DIR, "code-review-specialist.md"),
-    cwd: "repo",
-  },
-  default: {
-    promptFile: path.join(PROMPTS_DIR, "project-manager.md"),
     cwd: "repo",
   },
 };

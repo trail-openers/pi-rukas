@@ -64,19 +64,34 @@ assert(readAllowedForAdv, "Issue #50: read is allowed for adversarial-developer 
 const writeDeniedForAdv = isToolAllowedForRole("write", "adversarial-developer", agentsConfig);
 assert(!writeDeniedForAdv, "Issue #50: write is denied for adversarial-developer role");
 
-// Test 5: Default role has explicit permissions
-const readAllowedForDefault = isToolAllowedForRole("read", "default", agentsConfig);
-assert(readAllowedForDefault, "Issue #50: read is allowed for default role");
+// Test 5: project-manager role allows read (was "default" pre-#104 — same
+// semantics; default merged into project-manager)
+const readAllowedForPM = isToolAllowedForRole("read", "project-manager", agentsConfig);
+assert(readAllowedForPM, "Issue #50: read is allowed for project-manager role");
 
-// Test 6: Default role denies write
-const writeDeniedForDefault = isToolAllowedForRole("write", "default", agentsConfig);
-assert(!writeDeniedForDefault, "Issue #50: write is denied for default role");
+// Test 6: project-manager denies write
+const writeDeniedForPM = isToolAllowedForRole("write", "project-manager", agentsConfig);
+assert(!writeDeniedForPM, "Issue #50: write is denied for project-manager role");
 
-// Test 7: All roles have explicit builtin tool grants (no bypass)
-for (const role of ["project-manager", "developer", "ops", "code-review-specialist", "explore", "adversarial-developer", "default"]) {
+// Test 7: All roles have explicit builtin tool grants (no bypass).
+// Issue #104: removed "default" role — only 6 roles remain.
+for (const role of [
+  "project-manager",
+  "developer",
+  "ops",
+  "code-review-specialist",
+  "explore",
+  "adversarial-developer",
+]) {
   const readAllowed = isToolAllowedForRole("read", role, agentsConfig);
   assert(readAllowed, `Issue #50: read is explicitly allowed for ${role} (no bypass)`);
 }
+
+// Test 7b: querying the removed "default" role returns false (deny-by-default
+// for unknown roles). This is the visible behaviour change from #104 — if any
+// caller still passes role="default", it fails closed.
+const defaultRoleRemoved = isToolAllowedForRole("read", "default", agentsConfig);
+assert(!defaultRoleRemoved, "Issue #104: default role removed → unknown-role queries return false");
 
 // Test 8: Wildcard patterns work correctly
 const meadowAllowedForOps = isToolAllowedForRole("meadow_command", "ops", agentsConfig);
@@ -334,10 +349,16 @@ for (const command of bashDenied) {
   assert(v === "deny", `Issue #96: \`${command}\` remains denied for project-manager`);
 }
 
-// Same allowlist semantics apply to `default` role (parent session catch-all)
+// Issue #104: `default` role removed. Calling resolveToolPermission with
+// role="default" finds no role config → falls through to "ask" (not "allow").
+// Parent Pi sessions now resolve to project-manager directly via the
+// permission-guard fallback.
 for (const command of ["git status", "git branch", "oo git log"]) {
   const v = resolveToolPermission("bash", "default", {}, {}, agentsConfig, command);
-  assert(v === "allow", `Issue #96: \`${command}\` is allowed for default role`);
+  assert(
+    v === "ask",
+    `Issue #104: \`${command}\` for removed role 'default' falls through to ask (got: ${v})`,
+  );
 }
 
 // === Issue #99 tests: PM ticket lifecycle direct via gh ===
