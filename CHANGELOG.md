@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.2](https://github.com/randomm/pi-ensemble/compare/v0.12.1...v0.12.2) (2026-05-29)
+
+
+### Bug Fixes
+
+* **spawn:** bump subagent timeout to 30min, drop lens-review 10min override ([#115](https://github.com/randomm/pi-ensemble/issues/115)) ([a39e490](https://github.com/randomm/pi-ensemble/commit/a39e490c279cac19c7cff2ffe1fb1a59c7e73f4b)), closes [#114](https://github.com/randomm/pi-ensemble/issues/114)
+
 ## [0.12.1](https://github.com/randomm/pi-ensemble/compare/v0.12.0...v0.12.1) (2026-05-29)
 
 

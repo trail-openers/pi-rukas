@@ -1,6 +1,6 @@
 {
   "name": "pi-ensemble-workspace",
-  "version": "0.12.1",
+  "version": "0.12.2",
   "private": true,
   "description": "Workspace for the pi-ensemble Pi extension and its supporting prompt build pipeline.",
   "license": "Apache-2.0",
