@@ -14,10 +14,20 @@ import type { DispatchResult, DispatchSpec } from "./types.ts";
 
 interface SpawnOptions {
   /**
-   * Hard cap on child wall-clock. Default 5 minutes. Critical: without a cap,
-   * a stalled model API call (Cerebras / Copilot / Anthropic — any provider)
-   * leaves the child hung forever and the parent's `await once(child, "exit")`
-   * never resolves. Override with PI_ENSEMBLE_SPAWN_TIMEOUT_MS.
+   * Hard cap on child wall-clock. Default 30 minutes (DEFAULT_SPAWN_TIMEOUT_MS).
+   * Critical: without a cap, a stalled model API call (Cerebras / Copilot /
+   * Anthropic — any provider) leaves the child hung forever and the parent's
+   * `await once(child, "exit")` never resolves.
+   *
+   * NOT a PM-callable knob. No agent-facing dispatch tool schema exposes
+   * `timeoutMs` — verified across dispatch_specialist, dispatch_parallel,
+   * dispatch_lens_review, adversarial_loop. This field exists for internal
+   * callers (currently unused in production) and for smoke tests that
+   * deliberately use short timeouts to exercise cancel/timeout paths
+   * (e.g. test-cancel.ts uses 2s to assert SIGTERM behaviour).
+   *
+   * Operator/CI override: `PI_ENSEMBLE_SPAWN_TIMEOUT_MS` env var. Not
+   * settable by the agent (PM cannot set env vars at runtime).
    */
   timeoutMs?: number;
   /**
@@ -52,9 +62,13 @@ interface SpawnOptions {
   onProgress?: (snapshot: RunningState) => void;
 }
 
+// Hard 30-minute cap on subagent wall-clock (issue #114). Long enough for
+// real work (a 6-pass lens review, a multi-round adversarial loop, a deep
+// /research sweep) without being unbounded. Operators can tune via the env
+// var; PM cannot influence it (no tool schema exposes timeout).
 const DEFAULT_SPAWN_TIMEOUT_MS = (() => {
   const env = Number(process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS);
-  return Number.isFinite(env) && env > 0 ? env : 5 * 60_000;
+  return Number.isFinite(env) && env > 0 ? env : 30 * 60_000;
 })();
 
 /**

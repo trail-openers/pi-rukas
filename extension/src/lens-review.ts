@@ -209,7 +209,6 @@ export async function runLensReview(opts: {
   diff: string;
   context?: string;
   cwd?: string;
-  timeoutMs?: number;
   signal?: AbortSignal;
   onUpdate?: ToolUpdateCallback;
 }): Promise<LensReviewSummary> {
@@ -243,7 +242,7 @@ export async function runLensReview(opts: {
           // (set in spawn.ts) disables auto-discovery; `--extension <path>` still
           // loads explicit paths, so the reporter is the only extension in the child.
           extraArgs: ["--no-skills", "--skill", skillPath, "--extension", LENS_REPORTER_PATH],
-          timeoutMs: opts.timeoutMs ?? 10 * 60_000,
+          // No timeoutMs override — inherits DEFAULT_SPAWN_TIMEOUT_MS (30 min, #114).
           signal: opts.signal,
           onProgress: (state) => {
             lensStates[lensIdx] = state;
