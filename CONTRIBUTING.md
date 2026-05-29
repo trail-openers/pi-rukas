@@ -99,11 +99,13 @@ CLI tools like `git`, `npm`, `cargo`, `oo`, `gh` produce 2-3 token prefixes
 **MCP-backed tools** (for tools that can't safely be CLI-wrapped, e.g., database servers):
 
 - Install a Pi MCP bridge on the host (`pi install npm:pi-mcp-adapter`)
-- Set `PI_ENSEMBLE_USER_EXTENSION=npm:pi-mcp-adapter` in your shell profile (`~/.zshrc` / `~/.bashrc`)
+- The bridge lives in `~/.pi/agent/extensions/` and is auto-forwarded to subagents by `discoverInstalledExtensions` in `extension/src/spawn.ts` — no env var needed
+- For dev-mode bridges outside the standard install dir, `PI_ENSEMBLE_USER_EXTENSION=/abs/path` or `npm:<pkg>` is appended on top of the auto-forward list
 - Add tool name or pattern with verdict to `agents.json` under `agent.<role>.permission` (e.g., `"postgres_*": "allow"`)
-- `extension/src/permission-guard.ts` enforces at runtime in the **top-level session only** (interceptor on every tool call). Subagents run with `--no-extensions`, so pi-ensemble is not loaded inside them — the role's system prompt is the only thing keeping each subagent in its lane. Hard confinement comes from MCP server-side credentials or Pi's built-in checks, not pi-ensemble.
+- `extension/src/permission-guard.ts` enforces at runtime in the **top-level session only** (interceptor on every tool call). Subagents run with `--no-extensions`, so pi-ensemble's own enforcement is not loaded inside them — the role's system prompt is the only thing keeping each subagent in its lane. Hard confinement comes from MCP server-side credentials or Pi's built-in checks, not pi-ensemble.
 - If you have [pi-permissions](https://github.com/randomm/pi-permissions) installed, it enforces interactively at the top-level session
 - Run `bun run build` to regenerate role-specific prompts
+- Set `PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD=1` to opt out of auto-forwarding (debugging only — disables identity headers and MCP in subagents)
 
 **Security caveat for MCP tools**: read-only guarantees must be enforced at the MCP server level. For database access, use DB credentials with restricted permissions. pi-permissions and pi-ensemble's interceptor control who can call a tool, not what the tool can do.
 

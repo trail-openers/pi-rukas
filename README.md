@@ -172,7 +172,7 @@ Run `/ensemble-model` inside Pi to pick interactively from your authenticated pr
 Pi has no built-in Model Context Protocol support by design — MCP is a host-level concern, not a framework feature. pi-ensemble implements a two-layer permission model for MCP tools:
 
 - **Top-level session** (where you type): if you have [pi-permissions](https://github.com/randomm/pi-permissions) installed, it handles interactive allow/deny for all tool access at the parent Pi process level.
-- **Subagents** (developer, ops, explore, code-review-specialist, adversarial-developer): spawned with `--no-extensions`, so **pi-ensemble's extension does not load** inside them. The role's system prompt (built from `agents.json` `agent.<role>.permission`) tells the subagent what tools it should use, but there is no runtime block — a misbehaving subagent will not be stopped at the tool layer by pi-ensemble. For MCP tools, set `PI_ENSEMBLE_USER_EXTENSION` to your MCP bridge (passed in via `--extension`, separate from the suppressed installed-extension set); the MCP server's own credentials are the real capability boundary.
+- **Subagents** (developer, ops, explore, code-review-specialist, adversarial-developer): spawned with `--no-extensions`, so **pi-ensemble's own extension does not load** inside them — a misbehaving subagent isn't stopped at the tool layer by pi-ensemble. *Other* installed extensions in `~/.pi/agent/extensions/` (e.g. `pi-claude-auth` for Anthropic identity, `pi-mcp-adapter` for MCP bridges) are auto-forwarded to subagents via `--extension`, so the provider/auth/tool setup the main agent uses also reaches the children. The role's system prompt (built from `agents.json` `agent.<role>.permission`) tells the subagent what tools it may use; MCP server credentials are the real capability boundary.
 
 ### Setup (machines that need MCP)
 
@@ -182,10 +182,9 @@ pi install npm:pi-mcp-adapter
 
 # Configure your MCP server in the bridge's config
 # (~/.pi/agent/mcp-servers.json — see pi-mcp-adapter docs)
-
-# Tell pi-ensemble subagents to load it
-export PI_ENSEMBLE_USER_EXTENSION=npm:pi-mcp-adapter   # add to ~/.zshrc / ~/.bashrc
 ```
+
+`pi install` drops the bridge into `~/.pi/agent/extensions/`, where pi-ensemble's auto-forward picks it up for subagents automatically — no env-var wiring needed. If you maintain a bridge outside the standard install location (dev-mode checkouts, monorepo paths), set `PI_ENSEMBLE_USER_EXTENSION` to the absolute path or `npm:<pkg>` ref and it will be appended to the auto-forward list.
 
 Grant access in `agents.json` for the roles that need the tool. For example, to allow PostgreSQL access for developer and ops:
 
@@ -210,9 +209,9 @@ Grant access in `agents.json` for the roles that need the tool. For example, to 
 
 Read-only guarantees for database access must be enforced at the MCP server level (via DB credentials with restricted permissions). pi-permissions adds interactive approval at the top-level session, and pi-ensemble's tool_call interceptor enforces role-based access for subagents, but neither can override a tool that writes when it shouldn't.
 
-### Machines without MCP
+### Disabling auto-forward
 
-Don't set `PI_ENSEMBLE_USER_EXTENSION` on hosts that don't need MCP integration. There's zero impact — pi-ensemble works normally without it.
+Auto-forward is on by default and picks up everything in `~/.pi/agent/extensions/` except pi-ensemble itself. To restore the old "subagents inherit nothing" behaviour, set `PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD=1`. `PI_ENSEMBLE_USER_EXTENSION` remains independent of this flag — when it's set, that one extension is always forwarded.
 
 ## Configuration & paths
 

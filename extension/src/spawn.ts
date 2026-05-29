@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { readFileSync, readdirSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -87,6 +88,82 @@ export function applyUserExtension(childArgs: string[], role: string): void {
     childArgs.push("--extension", userExt);
     trace(`spawn[${role}]: --extension ${userExt}`);
   }
+}
+
+// pi-ensemble's own package name. Used by discoverInstalledExtensions to skip
+// forwarding ourselves into subagents — otherwise a subagent could call
+// dispatch_specialist and recursively spawn another subagent.
+const PI_ENSEMBLE_PACKAGE_NAME = "@randomm/pi-ensemble";
+
+interface ExtensionPackageJson {
+  name?: string;
+  pi?: {
+    extensions?: string[];
+  };
+}
+
+/**
+ * Scan `~/.pi/agent/extensions/` (or `$PI_AGENT_DIR/extensions`) for installed
+ * Pi extensions and return absolute paths suitable for `--extension <path>`.
+ *
+ * Subagents launch with `--no-extensions`, which suppresses every installed
+ * extension. That breaks anything that depends on extension-injected provider
+ * config — most importantly `pi-claude-auth`, which adds the Claude Code
+ * identity headers Anthropic now enforces server-side. Auto-forwarding lets
+ * subagents inherit the same provider/auth setup the main agent has.
+ *
+ * Rules:
+ *  - Skip if `PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD=1` (global opt-out).
+ *  - Skip entries without a readable `package.json`.
+ *  - Skip entries whose `package.json` has no `pi.extensions` manifest (not
+ *    a Pi extension — e.g. stray directories, half-installed packages).
+ *  - Skip pi-ensemble itself by package name (prevents recursive spawn).
+ *  - Resolve through `realpathSync` because `~/.pi/agent/extensions/<name>`
+ *    is typically a symlink to the source checkout.
+ */
+export function discoverInstalledExtensions(role: string): string[] {
+  if (process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD === "1") {
+    trace(
+      `spawn[${role}]: extension auto-forward disabled via PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD`,
+    );
+    return [];
+  }
+
+  const piAgentDir = process.env.PI_AGENT_DIR ?? path.join(os.homedir(), ".pi", "agent");
+  const extensionsDir = path.join(piAgentDir, "extensions");
+
+  let entries: string[];
+  try {
+    entries = readdirSync(extensionsDir);
+  } catch {
+    return [];
+  }
+
+  const forwarded: string[] = [];
+  for (const entry of entries) {
+    const entryPath = path.join(extensionsDir, entry);
+    const pkgPath = path.join(entryPath, "package.json");
+
+    let pkg: ExtensionPackageJson;
+    try {
+      pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as ExtensionPackageJson;
+    } catch {
+      continue;
+    }
+
+    if (!pkg.pi?.extensions || pkg.pi.extensions.length === 0) continue;
+    if (pkg.name === PI_ENSEMBLE_PACKAGE_NAME) continue;
+
+    let resolved: string;
+    try {
+      resolved = realpathSync(entryPath);
+    } catch {
+      resolved = entryPath;
+    }
+    forwarded.push(resolved);
+    trace(`spawn[${role}]: auto-forward --extension ${resolved} (${pkg.name ?? entry})`);
+  }
+  return forwarded;
 }
 
 // Pi --mode json event shape (Pi 0.75.3). The canonical assembled answer is at
@@ -184,6 +261,13 @@ export async function spawnSpecialist(
   ];
   if (modelChoice.model) {
     childArgs.push("--model", modelChoice.model);
+  }
+  // Re-inject extensions Pi just suppressed via --no-extensions. Order matters:
+  // install-dir extensions (pi-claude-auth, MCP bridges) come first, then any
+  // dev-mode extension pinned via PI_ENSEMBLE_USER_EXTENSION, then specialised
+  // per-call args (e.g. lens-review's reporter) via opts.extraArgs.
+  for (const ext of discoverInstalledExtensions(spec.role)) {
+    childArgs.push("--extension", ext);
   }
   applyUserExtension(childArgs, spec.role);
   if (opts.extraArgs && opts.extraArgs.length > 0) {
