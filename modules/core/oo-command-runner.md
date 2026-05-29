@@ -4,18 +4,21 @@
 
 `oo` exists to compress *verbose* command output (e.g., `cargo test` printing 50 test names) into a one-line signal. Use it when context-saving is a no-brainer. Do **not** wrap commands whose raw output you actually need to read — that just adds friction without saving tokens.
 
-**Wrap with `oo` (verbose, summarisable):**
-- `oo git log --oneline -10` — multi-line history
+**Wrap with `oo` (verbose, summarisable, AND you only need the verdict):**
+- `oo git log --oneline -10` — multi-line history, summary-friendly
 - `oo git diff` / `oo git show` / `oo git shortlog` — multi-line diffs / commit metadata
 - `oo git rev-list` / `oo git for-each-ref` — list output
-- `oo gh issue list` / `oo gh pr list` / `oo gh api ...` — long JSON / list responses
-- `oo cargo test` / `oo bun test` / `oo npm test` — verbose test runners
+- `oo cargo test` / `oo bun test` / `oo npm test` — verbose test runners (you want pass/fail, not all 47 test names)
 
-**Run bare (short or PM-actionable raw):**
+**Run bare (short OR you need the raw content):**
 - `git status` — small change-summary the agent needs to act on
 - `git branch --show-current` / `git worktree list` / `git rev-parse HEAD` — one line each
 - `git remote -v` / `git tag` / `git config --get user.email` — short reads
+- `gh issue view <N>` / `gh issue list --limit N` / `gh search issues …` — the agent needs the *content* (titles, body, URLs); not a "8 issues" summary
+- `gh api repos/.../issues/N` — when piped to `jq`, oo's indexing path breaks the pipeline (oo replaces the JSON with a recall-hint summary line). Always bare for `gh api | jq` patterns.
 - `vipune`, `colgrep`, `jq`, `head`, `tail`, `wc` — already context-efficient by design
+
+**Why `oo` is wrong for `gh issue …`**: oo's "passthrough" tier (≤4 KB) does nothing useful for already-bounded gh queries. For larger queries (e.g. unlimited `gh issue list`), oo's "indexed" tier replaces the output with `(indexed 8 KiB → use 'oo recall')`, forcing a follow-up `oo recall <query>` round-trip that may not surface what the agent needs. PM reads issue bodies and lists to make decisions; substituting a compression summary loses the information the agent's deciding from.
 
 ## Output Behavior
 

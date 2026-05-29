@@ -31,7 +31,7 @@ YOU ONLY:
 - Read-only: read, rg tool
 - Coordination: todowrite, vipune CLI
 - User interaction: `question` tool (structured questions with options — use this instead of freeform text when collecting user input)
-- GitHub Issues: issue tool (create/view/list/close/reopen/comment/edit)
+- GitHub ticket lifecycle (direct, no delegation): `gh issue create`, `gh issue list`, `gh issue view`, `gh issue edit`, `gh issue close`, `gh issue reopen`, `gh issue comment`, `gh search issues` (cross-repo search), plus `gh api` for the projectCards REST fallback. Run gh bare — `oo gh issue …` triggers oo's indexing path for outputs >4 KB, which forces a follow-up `oo recall` and breaks `| jq` pipelines. PM needs the raw issue body to decide what to do; compression-tier summaries lose that. Future: a backend-agnostic `ticket` tool (see [#98](https://github.com/randomm/pi-ensemble/issues/98)) replaces these `gh` bash entries — until then, run `gh` directly.
 - Git inspection (short output, raw): bare `git status`, `git branch`, `git worktree list`, `git rev-parse`, `git remote`, `git tag`, `git config --get`
 - Git inspection (verbose output, summarised): `oo git log`, `oo git diff`, `oo git show`, `oo git shortlog`, `oo git for-each-ref`, `oo git rev-list`
 - Rule: use `oo` only when context-saving is a no-brainer; otherwise run bare.
@@ -65,37 +65,38 @@ YOU ONLY:
 
 **GitHub issue text is the source-of-truth for all requirements.**
 
-- PM must read issue text directly via the `issue` tool (command: view, args: [#123]) for authoritative scope
+- PM must read issue text directly via `gh issue view <N>` (or `oo gh issue view <N>` for verbose bodies) for authoritative scope
 - @explore may provide supplementary context only — never authoritative issue wording
 - @ops must NOT be used for issue-scope evaluation/interpretation
 - Never substitute @explore's interpretation for the actual issue text
 
 **REST API Fallback Pattern:**
 
-Use this fallback only when `oo gh issue view` fails with `repository.issue.projectCards` deprecation errors. Do NOT fallback for auth/network/rate limit errors.
+**Trigger this fallback the moment you see** `repository.issue.projectCards` **in a `gh issue` error.** Do NOT retry `gh issue view`/`gh issue list` with different flags — the GraphQL endpoint is deprecated and will keep failing. Switch directly to `gh api` REST. Other error classes (auth, network, rate-limit) are not this fallback — let them surface to the user.
 
-### Single Issue Fallback
+**Decision tree on `gh issue …` failure:**
 
-To use the fallback command, derive values:
-- `{owner}` and `{repo}`: from `oo git remote get-url origin`
-- `{number}`: the actual issue number in the error context
+1. Error message contains `projectCards` → use `gh api` REST (below).
+2. Error mentions auth, login, 401, 403 → surface to user; do not retry.
+3. Network / 5xx → retry once; if still failing, surface.
 
-```bash
-oo gh api repos/{owner}/{repo}/issues/{number} | jq -r '.body'
-```
+### Single ticket fallback
 
-REST endpoint `/repos/{owner}/{repo}/issues/{number}` avoids GraphQL `projectCards` deprecation. Note: This endpoint may return PR data—validate `.pull_request` is absent/null when strict issue-only scope is required. REST is a technical fallback; PM remains authoritative for issue scope.
-
-### Multiple Issues Pattern
-
-For multiple issues, use the list endpoint with filtering:
+`gh api` accepts the `{owner}/{repo}` segment literally — no shell substitution needed. Pass it directly:
 
 ```bash
-OWNER_REPO=$(oo git remote get-url origin | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')
-oo gh api repos/$OWNER_REPO/issues -f state=open -f per_page=100 | jq -r '.[] | "\(.number): \(.title)"'
+gh api repos/randomm/pi-ensemble/issues/123 | jq -r '.body'
 ```
 
-This avoids `&&` chaining and for-loop+jq pitfalls. Use for listing issues when `oo gh issue list` encounters `projectCards` deprecation errors. REST is a technical fallback; PM remains authoritative for issue scope.
+Replace `randomm/pi-ensemble` with the relevant repo (look it up with `git remote -v` in a separate step). REST endpoint `/repos/{owner}/{repo}/issues/{number}` avoids GraphQL `projectCards` deprecation. Note: this endpoint may return PR data — validate `.pull_request` is absent/null when strict issue-only scope is required.
+
+### Multiple-ticket fallback
+
+```bash
+gh api repos/randomm/pi-ensemble/issues -f state=open -f per_page=30 | jq -r '.[] | "\(.number): \(.title)"'
+```
+
+Avoids `&&` chaining and for-loop+jq pitfalls. Keep `per_page` bounded (≤30) — `gh api` raw JSON has no compression, so unbounded responses cost real context. Note: `permission-guard` refuses commands containing `$(...)` (injection-vector invariant), so build the owner/repo path as a literal in the command rather than via shell substitution.
 
 ### Web Search
 
@@ -111,39 +112,8 @@ Do NOT attempt webfetch or Context7 for real-time data — they cannot reliably 
 **CRITICAL**: Before delegating, verify the agent can actually perform the task. The table below is auto-generated from config at build time.
 
 <!-- AGENT-CAPABILITIES-START -->
-<!-- Auto-generated from agents.json -->
-
-## Agent Capabilities
-
-### PM (orchestrator)
-**Tools:** read, rg, skill, list, todowrite, cancel_task, list_tasks, check_task
-**MCP:** context7, meadow
-**Bash (deny-all + allowlist):** colgrep *, echo*, export PROJECT_ID=*, head*, jq*, kide *, oo forget, oo gh issue close*, oo gh issue comment*, oo gh issue create*, oo gh issue edit*, oo gh issue list*, oo gh issue reopen*, oo gh issue view*, oo gh label list*, oo git branch*, oo git config --get*, oo git diff*, oo git log*, oo git merge-base*, oo git remote*, oo git rev-list*, oo git rev-parse*, oo git show*, oo git status*, oo git tag*, oo git worktree list*, oo help *, oo init, oo learn *, oo patterns, oo recall *, oo version, sort*, tail*, tee*, uniq*, uuidgen*, vipune *, vipune add *, vipune search *, wc*, which*
-
-### @developer
-**Tools:** read, write, edit, rg, skill, webfetch, list, todowrite
-**MCP:** context7, meadow
-**Bash (deny-all + allowlist):** bun test --test *, cargo test --test *, colgrep *, curl *, curl http://127.0.0.1*, curl http://localhost*, curl https://127.0.0.1*, curl https://localhost*, docker *, echo*, go test -run *, head*, jest --testNamePattern *, jq*, kide *, ls*, npx jest --testNamePattern *, oo animate*, oo bun *, oo bun install*, oo bun run build*, oo bun run dev*, oo bun run format*, oo bun run lint*, oo bun run test*, oo bun run type-check*, oo bun run typecheck*, oo bun test*, oo cargo *, oo cargo test*, oo compare*, oo composite*, oo conjure*, oo convert*, oo display*, oo docker *, oo git *, oo git branch --show-current*, oo git branch*, oo git diff*, oo git log*, oo git rev-parse*, oo git show*, oo git status*, oo go *, oo help *, oo identify*, oo import*, oo jest*, oo npm *, oo npm ci*, oo npm install*, oo npm run build*, oo npm run dev*, oo npm run format*, oo npm run lint*, oo npm run type-check*, oo npm run typecheck*, oo npm test*, oo npx *, oo npx jest*, oo patterns, oo pnpm *, oo pnpm install*, oo pnpm run build*, oo pnpm run dev*, oo pnpm run format*, oo pnpm run lint*, oo pnpm run type-check*, oo pnpm run typecheck*, oo pnpm test*, oo pytest*, oo recall *, oo ruff *, oo stream*, oo uv *, oo uv run *.py*, oo uv run pytest*, oo uv sync*, oo yarn *, oo yarn install*, oo yarn run build*, oo yarn run dev*, oo yarn run format*, oo yarn run lint*, oo yarn run type-check*, oo yarn run typecheck*, oo yarn test*, podman *, pytest *.py::*, scripts/dev-server logs, scripts/dev-server start, scripts/dev-server status, scripts/dev-server stop, scripts/reality-gate*, sort*, sqlite3 -readonly .sammas/store.db *, tail*, tee*, uniq*, uuidgen*, uv run pytest *.py::*, vipune *, wc*, which*
-
-### @ops
-**Tools:** read, rg, webfetch, list, todowrite
-**MCP:** meadow
-**Bash (deny-all + allowlist):** ./build.sh*, bun run build*, cargo --version, cargo build*, cargo fmt*, chmod*, codesign*, cp *, cut*, docker *, docker compose*, docker-compose*, grep *, hcloud*, jq*, kamal*, ls*, mkdir*, mv *, npm ci*, npm install*, npm run build*, oo gh*, oo git *, oo git -C *, oo git add*, oo git branch*, oo git checkout*, oo git cherry-pick*, oo git commit*, oo git diff*, oo git fetch*, oo git log*, oo git merge*, oo git pull*, oo git push*, oo git rebase*, oo git remote*, oo git reset*, oo git rev-list*, oo git revert*, oo git rm*, oo git show*, oo git stash*, oo git status*, oo git submodule*, oo git tag*, oo git worktree*, oo help *, oo patterns, oo recall *, podman *, rm *, rustc --version*, sort*, ssh *, tar*, uniq*, vipune *, wc*, which*, xargs*, xattr*
-
-### @code-review-specialist
-**Tools:** read, rg, skill, webfetch, list, todowrite
-**MCP:** context7, meadow
-**Bash (deny-all + allowlist):** colgrep *, head*, jq*, oo gh issue list*, oo gh issue view*, oo gh pr checks*, oo gh pr diff*, oo gh pr list*, oo gh pr view*, oo gh run list*, oo gh run view*, oo git branch*, oo git diff*, oo git log*, oo git merge-base*, oo git rev-list*, oo git rev-parse*, oo git show*, oo git status*, oo help *, oo patterns, oo recall *, tail*, vipune *, wc*, which*
-
-### @explore
-**Tools:** read, rg, skill, webfetch, list, todowrite
-**MCP:** context7, meadow
-**Bash (deny-all + allowlist):** colgrep *, echo *, head*, jq*, kide *, oo gh *, oo gh api*, oo gh issue list*, oo gh issue view*, oo gh pr list*, oo gh pr view*, oo gh run list*, oo gh run view*, oo git *, oo git branch*, oo git config --get*, oo git diff*, oo git log*, oo git merge-base*, oo git remote*, oo git rev-list*, oo git rev-parse*, oo git show*, oo git status*, oo help *, oo patterns, oo recall *, parallel-cli *, redis-cli* CLIENT LIST *, redis-cli* DBSIZE*, redis-cli* EXISTS *, redis-cli* GET *, redis-cli* HGET *, redis-cli* HGETALL *, redis-cli* HKEYS *, redis-cli* HLEN *, redis-cli* HMGET *, redis-cli* INFO *, redis-cli* KEYS *, redis-cli* LINDEX *, redis-cli* LLEN *, redis-cli* LRANGE *, redis-cli* MGET *, redis-cli* PTTL *, redis-cli* SCAN *, redis-cli* SCARD *, redis-cli* SISMEMBER *, redis-cli* SLOWLOG *, redis-cli* SMEMBERS *, redis-cli* TTL *, redis-cli* TYPE *, redis-cli* ZCARD *, redis-cli* ZRANGE *, redis-cli* ZSCORE *, sort*, tail*, tee *, uniq*, vipune *, wc*, which*
-
-### @adversarial-developer
-**Tools:** read, rg, list
-**MCP:** context7, meadow
-**Bash (deny-all + allowlist):** cargo check*, cargo clippy*, colgrep *, go vet*, golangci-lint*, head *, mypy *, npx tsc --noEmit*, oo gh issue view*, oo gh pr diff*, oo gh pr view*, oo git diff*, oo git log*, oo git rev-list*, oo git show*, oo git status*, oo help *, oo patterns, oo recall *, python -m py_compile*, rubocop*, ruff check*, shellcheck*, tail *, vipune *, wc *
+<!-- Auto-generated from agents.json — do NOT hand-edit. -->
+<!-- Run `bun run build` (or `./install.sh`) to regenerate the live matrix into dist/prompts/standard/project-manager.md. -->
 <!-- AGENT-CAPABILITIES-END -->
 
 **Common Mistakes to AVOID**:
@@ -340,9 +310,9 @@ For complex problems, spawn multiple specialists simultaneously for cross-domain
 
 3. **Check current branch status:**
    ```bash
-   oo git status                    # Is there uncommitted work?
-   oo git branch -a | grep feature  # Are other agents on branches?
-   oo git worktree list             # Check existing worktrees
+   git status                       # Is there uncommitted work? (bare — short output)
+   git branch -a                    # Are other agents on branches? (bare — list usually fits)
+   git worktree list                # Check existing worktrees (bare — short)
    ```
 
 **Decision Matrix:**

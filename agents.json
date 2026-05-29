@@ -36,6 +36,15 @@
           "oo git shortlog *": "allow",
           "oo git rev-list *": "allow",
           "oo git for-each-ref *": "allow",
+          "gh issue create*": "allow",
+          "gh issue list*": "allow",
+          "gh issue view*": "allow",
+          "gh issue edit*": "allow",
+          "gh issue close*": "allow",
+          "gh issue reopen*": "allow",
+          "gh issue comment*": "allow",
+          "gh search issues*": "allow",
+          "gh api*": "allow",
           "oo gh label list*": "allow",
           "oo forget": "allow",
           "oo help *": "allow",
@@ -62,9 +71,6 @@
         "check_task": "allow",
         "vipune": "allow",
         "meadow*": "allow",
-        "issue": "allow",
-        "pr": "allow",
-        "ci": "allow",
         "parallel-search*": "deny",
         "parallel-task*": "deny",
         "dispatch_specialist": "allow",
@@ -86,9 +92,6 @@
     "developer": {
       "permission": {
         "meadow*": "allow",
-        "issue": "allow",
-        "pr": "allow",
-        "ci": "allow",
         "external_directory": "ask",
         "bash": {
           "*": "deny",
@@ -230,9 +233,6 @@
       "permission": {
         "external_directory": "ask",
         "meadow*": "allow",
-        "issue": "allow",
-        "pr": "allow",
-        "ci": "allow",
         "bash": {
           "*": "deny",
           "oo git *": "allow",
@@ -385,9 +385,6 @@
     "code-review-specialist": {
       "permission": {
         "meadow*": "allow",
-        "issue": "allow",
-        "pr": "allow",
-        "ci": "allow",
         "external_directory": "ask",
         "bash": {
           "*": "deny",
@@ -428,9 +425,6 @@
         "external_directory": "ask",
         "vipune": "allow",
         "meadow*": "allow",
-        "issue": "allow",
-        "pr": "allow",
-        "ci": "allow",
         "bash": {
           "*": "deny",
           "oo git *": "allow",

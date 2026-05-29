@@ -23,7 +23,7 @@ argument-hint: ""
 
 2. **Index the codebase**
    ```bash
-   colgrep init $(pwd)
+   colgrep init .
    ```
    **Note**: Do not run `colgrep` for project-meta queries — `colgrep init` is the only colgrep call PM makes in /start.
 

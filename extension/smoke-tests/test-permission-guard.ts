@@ -340,6 +340,53 @@ for (const command of ["git status", "git branch", "oo git log"]) {
   assert(v === "allow", `Issue #96: \`${command}\` is allowed for default role`);
 }
 
+// === Issue #99 tests: PM ticket lifecycle direct via gh ===
+// Bare gh for ticket CRUD (oo wrapping breaks gh issue / gh api | jq usage).
+
+const ghIssueAllowed = [
+  "gh issue create -t 'foo' -b 'bar'",
+  "gh issue list --limit 15",
+  "gh issue list --state open --label bug",
+  "gh issue view 123",
+  "gh issue view 123 -R randomm/pi-ensemble",
+  "gh issue edit 123 --add-label triaged",
+  "gh issue close 123",
+  "gh issue reopen 123",
+  "gh issue comment 123 -b 'thx'",
+  "gh search issues 'is:open author:janni'",
+  "gh api repos/randomm/pi-ensemble/issues/123",
+];
+for (const command of ghIssueAllowed) {
+  const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
+  assert(v === "allow", `Issue #99: \`${command}\` is allowed for project-manager`);
+}
+
+// PR mutations + CI re-runs stay denied (ops territory)
+const ghOpsDenied = [
+  "gh pr create",
+  "gh pr merge 42",
+  "gh pr close 42",
+  "gh pr edit 42",
+  "gh run rerun 12345",
+];
+for (const command of ghOpsDenied) {
+  const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
+  assert(v === "deny", `Issue #99: \`${command}\` remains denied for project-manager (ops territory)`);
+}
+
+// Ghost `issue` / `pr` / `ci` tool grants are gone — those tool names resolve
+// to "ask" (no explicit rule) rather than "allow" (which would prove the ghost
+// grant survived the cleanup).
+for (const ghostTool of ["issue", "pr", "ci"]) {
+  for (const role of ["project-manager", "developer", "ops", "code-review-specialist", "explore"]) {
+    const v = resolveToolPermission(ghostTool, role, {}, {}, agentsConfig);
+    assert(
+      v !== "allow",
+      `Issue #99: ghost \`${ghostTool}\` permission removed from ${role} role (current verdict: ${v})`,
+    );
+  }
+}
+
 console.log("\n=== test-permission-guard summary ===");
 console.log(`exit ${exitCode}`);
 process.exit(exitCode);
