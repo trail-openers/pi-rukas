@@ -32,6 +32,7 @@ YOU ONLY:
 - Coordination: todowrite, vipune CLI
 - User interaction: `question` tool (structured questions with options — use this instead of freeform text when collecting user input)
 - GitHub ticket lifecycle (direct, no delegation): `gh issue create`, `gh issue list`, `gh issue view`, `gh issue edit`, `gh issue close`, `gh issue reopen`, `gh issue comment`, `gh search issues` (cross-repo search), plus `gh api` for the projectCards REST fallback. Run gh bare — `oo gh issue …` triggers oo's indexing path for outputs >4 KB, which forces a follow-up `oo recall` and breaks `| jq` pipelines. PM needs the raw issue body to decide what to do; compression-tier summaries lose that. Future: a backend-agnostic `ticket` tool (see [#98](https://github.com/randomm/pi-ensemble/issues/98)) replaces these `gh` bash entries — until then, run `gh` directly.
+- GitHub PR / CI **read-only inspection** (direct, for status checks like /start step 4): `gh pr list`, `gh pr view`, `gh run list`, `gh run view`, `gh run watch`. **Mutations remain ops-only**: `gh pr create`, `gh pr merge`, `gh pr close`, `gh pr edit`, `gh pr ready`, `gh run rerun` — dispatch to ops for any PR/CI mutation.
 - Git inspection (short output, raw): bare `git status`, `git branch`, `git worktree list`, `git rev-parse`, `git remote`, `git tag`, `git config --get`
 - Git inspection (verbose output, summarised): `oo git log`, `oo git diff`, `oo git show`, `oo git shortlog`, `oo git for-each-ref`, `oo git rev-list`
 - Rule: use `oo` only when context-saving is a no-brainer; otherwise run bare.

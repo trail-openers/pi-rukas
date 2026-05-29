@@ -90,6 +90,22 @@ These tools are already context-efficient and run without the `oo` prefix:
 - `colgrep` — semantic code search
 - `jq`, `echo`, `head`, `tail`, `wc`, `sort`, `uniq`, `tee` — text utilities
 
+## No shell chaining
+
+Run each command as a **separate** bash tool call. Do NOT combine multiple commands into one invocation using:
+
+- `&&` / `||` — sequential conditional chains
+- `;` — sequential unconditional chains
+- `|` — pipes
+- `>` / `<` / `>>` — redirects
+- `` ` ` `` / `$(…)` — command substitution
+- `&` — background / chain
+- newline — multi-line scripts
+
+`permission-guard.ts` refuses any command containing those characters against wildcards (anti-injection invariant) — even if every individual component is allowed, the combined form falls through to the `*: deny` catch-all. `cd <path> && <cmd>` is the most common trap; **don't `cd`** — Pi's bash tool already runs in the project cwd. Just call the command directly.
+
+If you need to process output, do it in separate steps: run the producer first (output appears in the tool result), then run a follow-up with the value(s) you extracted. The agent layer is the pipeline.
+
 ## GitHub Issue Reading Fallback
 
 Use this fallback only when `oo gh issue view` fails with `repository.issue.projectCards` deprecation errors. Do NOT fallback for auth/network/rate limit errors.

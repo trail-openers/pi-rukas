@@ -387,6 +387,56 @@ for (const ghostTool of ["issue", "pr", "ci"]) {
   }
 }
 
+// === Issue #102 tests: PM read-only PR / CI inspection ===
+// /start step 4 now runs in PM directly instead of dispatching to ops.
+
+const ghPrCiReadAllowed = [
+  "gh pr list",
+  "gh pr list --state open",
+  "gh pr view 42",
+  "gh run list --branch main --limit 3",
+  "gh run view 12345",
+  "gh run watch 12345",
+];
+for (const command of ghPrCiReadAllowed) {
+  const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
+  assert(v === "allow", `Issue #102: read-only \`${command}\` is allowed for project-manager`);
+}
+
+// PR / CI mutations still denied for PM
+const ghPrCiMutationDenied = [
+  "gh pr create -t foo -b bar",
+  "gh pr merge 42",
+  "gh pr close 42",
+  "gh pr edit 42 --add-label triaged",
+  "gh pr ready 42",
+  "gh run rerun 12345",
+];
+for (const command of ghPrCiMutationDenied) {
+  const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
+  assert(
+    v === "deny",
+    `Issue #102: PR/CI mutation \`${command}\` remains denied for project-manager (ops territory)`,
+  );
+}
+
+// Chained commands hit the anti-injection invariant — regression guard.
+// Even if every component is individually allowed, the chained form must deny.
+const chainedShouldDeny = [
+  "git status && git branch",
+  "git status; git branch",
+  "git status | head -5",
+  "gh issue list | grep open",
+  "cd /tmp && git status",
+];
+for (const command of chainedShouldDeny) {
+  const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
+  assert(
+    v === "deny",
+    `Issue #102: chained \`${command}\` is denied (anti-injection invariant)`,
+  );
+}
+
 console.log("\n=== test-permission-guard summary ===");
 console.log(`exit ${exitCode}`);
 process.exit(exitCode);
