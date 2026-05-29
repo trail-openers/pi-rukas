@@ -3,9 +3,12 @@ export interface DispatchSpec {
   prompt: string;
   cwd?: string;
   /**
-   * Optional Pi model id of the form "<provider>/<model>[:thinking]" or a
-   * Pi-supported glob like "*sonnet*". Overrides /ensemble-model and env
-   * defaults. Run `pi --list-models` for the catalog your install knows.
+   * Internal-only Pi model id of the form "<provider>/<model>[:thinking]"
+   * or a Pi-supported glob like "*sonnet*". Reserved for future internal
+   * callers. Agent-callable dispatch tools strip this field at the boundary
+   * (see dispatch.ts:stripModelOverride and issue #92) — model choice for
+   * subagents is user-authority-only via /ensemble-model and PI_ENSEMBLE_*
+   * env vars.
    */
   model?: string;
 }

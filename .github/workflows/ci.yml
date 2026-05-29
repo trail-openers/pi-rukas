@@ -56,3 +56,4 @@ jobs:
           bun run smoke-tests/test-models.ts
           bun run smoke-tests/test-runs.ts
           bun run smoke-tests/test-discover-extensions.ts
+          bun run smoke-tests/test-dispatch-schema.ts

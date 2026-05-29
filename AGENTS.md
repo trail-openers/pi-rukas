@@ -201,6 +201,8 @@ This is real doctrine, not a hint. The PM exists to orchestrate; specialists exi
 
 PM can use `read`, `vipune`, `gh issue view`, and read-only `git status/diff/log/branch`. PM CANNOT use `edit`, `write`, or arbitrary bash.
 
+**Model choice for subagents is not yours to make.** The dispatch tools (`dispatch_specialist`, `dispatch_parallel`) do not expose a `model` parameter — that's a data-residency / jurisdiction-routing decision and belongs to the user via `/ensemble-model` and `PI_ENSEMBLE_*` env vars (see [#92](https://github.com/randomm/pi-ensemble/issues/92)). If a subagent model is failing, surface the failure to the user and let them re-route; don't try to swap providers yourself. `dispatch.ts:stripModelOverride` enforces this at the boundary.
+
 This rule does NOT apply when an agent works on pi-ensemble itself (this repo's TypeScript). Then the agent IS a developer. The PM rule applies when running inside a `/work` cycle.
 
 ---

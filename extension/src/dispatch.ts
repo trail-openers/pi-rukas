@@ -7,6 +7,19 @@ import type { DispatchSpec } from "./types.ts";
 
 const MAX_PARALLEL = 10;
 
+// Issue #92: the agent must not pick subagent provider/model per dispatch —
+// that's a data-residency / jurisdiction-routing decision and belongs to the
+// user, via `/ensemble-model` or PI_ENSEMBLE_* env vars. The tool schemas no
+// longer declare a `model` field, but a misaligned client could still pass
+// one; strip it explicitly before the spec reaches spawnSpecialist.
+export function stripModelOverride(spec: DispatchSpec): DispatchSpec {
+  if ("model" in spec) {
+    const { model: _discarded, ...rest } = spec as DispatchSpec & { model?: unknown };
+    return rest as DispatchSpec;
+  }
+  return spec;
+}
+
 export function registerDispatchTools(pi: ExtensionAPI) {
   const roleDesc = `One of: ${ROLE_NAMES.join(", ")}`;
 
@@ -23,15 +36,12 @@ export function registerDispatchTools(pi: ExtensionAPI) {
           description: "Working directory; defaults to current cwd.",
         }),
       ),
-      model: Type.Optional(
-        Type.String({
-          description:
-            "Override the model for this spawn ('<provider>/<model>' — see `pi --list-models`). Falls back to /ensemble-model config, then PI_ENSEMBLE_MODEL_<ROLE>, then PI_ENSEMBLE_SUBAGENT_MODEL, then Pi default.",
-        }),
-      ),
     }),
     async execute(_id, params) {
-      const spec = params as DispatchSpec;
+      // Defence in depth: TypeBox may not strict-strip undeclared fields, so
+      // we discard any agent-supplied `model` before constructing the spec.
+      // Model choice is user-authority-only (see issue #92).
+      const spec = stripModelOverride(params as DispatchSpec);
       const { jobId } = startJob(pi, {
         label: spec.role,
         role: spec.role,
@@ -59,26 +69,23 @@ export function registerDispatchTools(pi: ExtensionAPI) {
           role: Type.String({ description: roleDesc }),
           prompt: Type.String(),
           cwd: Type.Optional(Type.String()),
-          model: Type.Optional(
-            Type.String({
-              description:
-                "Per-spec model override ('<provider>/<model>'). Falls back to /ensemble-model config or env vars; final fallback is Pi default.",
-            }),
-          ),
         }),
         { maxItems: MAX_PARALLEL },
       ),
     }),
     async execute(_id, params) {
-      const specs = (params as { specs: DispatchSpec[] }).specs;
-      if (specs.length < 2) {
+      const rawSpecs = (params as { specs: DispatchSpec[] }).specs;
+      if (rawSpecs.length < 2) {
         throw new Error(
-          `dispatch_parallel requires 2+ specs; got ${specs.length}. Use dispatch_specialist for a single subagent.`,
+          `dispatch_parallel requires 2+ specs; got ${rawSpecs.length}. Use dispatch_specialist for a single subagent.`,
         );
       }
-      if (specs.length > MAX_PARALLEL) {
-        throw new Error(`Max ${MAX_PARALLEL} parallel slots; got ${specs.length}`);
+      if (rawSpecs.length > MAX_PARALLEL) {
+        throw new Error(`Max ${MAX_PARALLEL} parallel slots; got ${rawSpecs.length}`);
       }
+      // Defence in depth: drop any agent-supplied `model` from every spec.
+      // Model choice is user-authority-only (see issue #92).
+      const specs = rawSpecs.map(stripModelOverride);
       // Share a runId so all children in this batch sort together on disk.
       const runId = makeRunId();
       const { batchId } = startBatch(pi, {

@@ -156,14 +156,13 @@ Per-child transcripts are saved to `~/.pi/agent/ensemble-runs/<date>/<runId>-<ro
 
 ## Configuring subagent models
 
-You probably want a smarter model for the PM and a faster one for the specialists. The main agent (the `pi` you launch) is configured via Pi's own `--model` flag or settings. Subagents have a 5-layer resolution:
+You probably want a smarter model for the PM and a faster one for the specialists. The main agent (the `pi` you launch) is configured via Pi's own `--model` flag or settings. Subagent model choice is **user-authority-only** — the orchestrating agent cannot route a dispatch to a different provider on its own (see [#92](https://github.com/randomm/pi-ensemble/issues/92): jurisdiction routing is a data-residency / compliance decision, not an agent concern). Resolution order:
 
-1. Per-call `model` field on a dispatch spec (highest)
-2. `/ensemble-model` per-role choice (saved to `~/.pi/agent/ensemble-models.json`)
-3. `/ensemble-model` all-subagents default (same file)
-4. `PI_ENSEMBLE_MODEL_<ROLE>` env var (e.g. `PI_ENSEMBLE_MODEL_DEVELOPER`)
-5. `PI_ENSEMBLE_SUBAGENT_MODEL` env var (global fallback for subagents)
-6. Pi default (lowest)
+1. `/ensemble-model` per-role choice (saved to `~/.pi/agent/ensemble-models.json`)
+2. `/ensemble-model` all-subagents default (same file)
+3. `PI_ENSEMBLE_MODEL_<ROLE>` env var (e.g. `PI_ENSEMBLE_MODEL_DEVELOPER`)
+4. `PI_ENSEMBLE_SUBAGENT_MODEL` env var (global fallback for subagents)
+5. Pi default (lowest)
 
 Run `/ensemble-model` inside Pi to pick interactively from your authenticated provider catalog. Add new providers (Anthropic, GitHub Copilot, OpenAI, etc.) via Pi's `/login` — `pi-ensemble` picks them up automatically.
 
