@@ -221,7 +221,7 @@ Surface transcript paths in your reply verbatim; let the user browse via `/runs`
 <type>(#<issue>|<scope>): <description>
 ```
 
-Types: `feat` (MINOR) | `fix` (PATCH) | `refactor` | `docs` | `test` | `chore` | `ci` | `perf` | `feat!` (BREAKING → MAJOR).
+Types: `feat` (MINOR post-1.0; PATCH pre-1.0) | `fix` (PATCH) | `refactor` | `docs` | `test` | `chore` | `ci` | `perf` | `feat!` / `fix!` (BREAKING — MAJOR post-1.0; MINOR pre-1.0).
 
 Scope conventions for this repo:
 
@@ -243,6 +243,8 @@ BREAKING CHANGE: hardcoded 10-slot limit is now configurable via env var.
 ```
 
 Versioning is automated by [release-please](https://github.com/googleapis/release-please). Conventional commit messages drive `CHANGELOG.md` entries and the version bump in the release PR.
+
+**Pre-1.0 versioning model**: while the project is in alpha (`0.x`), `release-please-config.json` sets both `bump-minor-pre-major: true` and `bump-patch-for-minor-pre-major: true`. This means `feat:` bumps PATCH (not MINOR) and BREAKING changes bump MINOR (not MAJOR). Only `feat!` / `fix!` / explicit `BREAKING CHANGE:` footers move the minor digit. Once we cut `1.0.0`, both flags become inert and standard semver resumes (`feat:` → MINOR, BREAKING → MAJOR).
 
 ### Branch naming
 
