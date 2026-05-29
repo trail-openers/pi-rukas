@@ -8,6 +8,24 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.0](https://github.com/randomm/pi-ensemble/compare/v0.11.0...v0.12.0) (2026-05-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **dispatch:** strip agent-controlled model override from dispatch tools ([#93](https://github.com/randomm/pi-ensemble/issues/93))
+
+### Features
+
+* **spawn:** auto-forward installed Pi extensions to subagents ([#89](https://github.com/randomm/pi-ensemble/issues/89)) ([db7d596](https://github.com/randomm/pi-ensemble/commit/db7d59633f10efe02f2def16e811a0790917dd14)), closes [#88](https://github.com/randomm/pi-ensemble/issues/88)
+
+
+### Bug Fixes
+
+* **ci:** bump feat: to PATCH instead of MINOR while pre-1.0 ([#95](https://github.com/randomm/pi-ensemble/issues/95)) ([3354d55](https://github.com/randomm/pi-ensemble/commit/3354d5506eb649d56375c1caa360047c8d88ca05)), closes [#94](https://github.com/randomm/pi-ensemble/issues/94)
+* **dispatch:** strip agent-controlled model override from dispatch tools ([#93](https://github.com/randomm/pi-ensemble/issues/93)) ([4d646e5](https://github.com/randomm/pi-ensemble/commit/4d646e561389b9c5a5be6c8efa922ab0e95a9cd1)), closes [#92](https://github.com/randomm/pi-ensemble/issues/92)
+* **permissions:** allow bare git reads for PM, drop redundant oo variants ([#97](https://github.com/randomm/pi-ensemble/issues/97)) ([ca77a15](https://github.com/randomm/pi-ensemble/commit/ca77a15fd68283d92b60bf1c2f155d45401c447f)), closes [#96](https://github.com/randomm/pi-ensemble/issues/96)
+
 ## [0.11.0](https://github.com/randomm/pi-ensemble/compare/v0.10.1...v0.11.0) (2026-05-28)
 
 
