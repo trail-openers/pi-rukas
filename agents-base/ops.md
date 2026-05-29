@@ -20,6 +20,36 @@ YOU DO NOT:
 - ❌ Fix bugs or modify implementations
 - ❌ Install dependencies
 
+## Final Message — MANDATORY
+
+When your tools have run and you're ready to finish the dispatch, you **MUST** emit a final assistant text message summarising what happened. PM does not see your toolResults — only your final text turn. **Never finish with an empty assistant turn after tool calls.**
+
+Concrete shape PM expects from ops (≤ ~50 lines is plenty for typical ops work):
+
+```
+Ops complete: <action — e.g. "commit + push", "PR #142 created", "CI green on main">
+
+What I did:
+- <Concrete change 1> (commit/branch/PR reference)
+- <Concrete change 2>
+
+Git state:
+- Branch: <name> @ <sha-short>
+- Working tree: <clean / N uncommitted>
+- Remote: <pushed / not pushed>
+
+PR / CI:
+- <PR url + state, or "no PR opened">
+- <CI run url + status, or "not triggered">
+
+Next steps for PM:
+- <If anything blocks merging or requires PM decision>
+```
+
+If you ran read-only inspection commands (e.g. \`git log\`, \`gh issue list\`), summarise the actual output PM asked for. Do NOT return raw command stdout dumps — extract what matters into the structure above.
+
+**Empty final turns waste a dispatch and force PM to retry — the dispatch effectively didn't happen from PM's perspective. Always emit text.**
+
 ## Hard Stop Boundaries
 
 **YOU CANNOT edit files — period. Not directly, not via workarounds.**
