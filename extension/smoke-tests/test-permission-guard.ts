@@ -277,6 +277,69 @@ const verdict17c = resolveToolPermission(
 );
 assert(verdict17c === "allow", "Issue #51: global exact/wildcard beats agents.json");
 
+// === Issue #96 tests: PM bare git allowlist ===
+// Short-output git reads should be allowed bare; oo-wrapped equivalents are
+// no longer redundantly granted (single source of truth per command).
+
+const bareGitAllowed = [
+  "git status",
+  "git status --short",
+  "git branch --show-current",
+  "git worktree list",
+  "git rev-parse HEAD",
+  "git merge-base main HEAD",
+  "git remote -v",
+  "git tag --list",
+  "git config --get user.email",
+];
+for (const command of bareGitAllowed) {
+  const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
+  assert(v === "allow", `Issue #96: bare \`${command}\` is allowed for project-manager`);
+}
+
+// Verbose-output git commands still require oo wrapper
+const ooGitAllowed = [
+  "oo git log --oneline -10",
+  "oo git diff HEAD~1",
+  "oo git show HEAD",
+  "oo git shortlog -sn",
+  "oo git rev-list --count HEAD",
+  "oo git for-each-ref refs/heads",
+];
+for (const command of ooGitAllowed) {
+  const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
+  assert(v === "allow", `Issue #96: \`${command}\` is allowed for project-manager`);
+}
+
+// Now-redundant oo-wrapped variants of short commands are NOT in the allowlist
+// (forces the bare canonical pattern; catch-all `*: deny` applies).
+const ooGitDenied = [
+  "oo git status",
+  "oo git branch --show-current",
+  "oo git worktree list",
+  "oo git rev-parse HEAD",
+];
+for (const command of ooGitDenied) {
+  const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
+  assert(
+    v === "deny",
+    `Issue #96: \`${command}\` is no longer allowed for project-manager (use bare form)`,
+  );
+}
+
+// Write/mutation bash is still denied via catch-all
+const bashDenied = ["git push origin main", "git commit -m foo", "rm -rf /"];
+for (const command of bashDenied) {
+  const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
+  assert(v === "deny", `Issue #96: \`${command}\` remains denied for project-manager`);
+}
+
+// Same allowlist semantics apply to `default` role (parent session catch-all)
+for (const command of ["git status", "git branch", "oo git log"]) {
+  const v = resolveToolPermission("bash", "default", {}, {}, agentsConfig, command);
+  assert(v === "allow", `Issue #96: \`${command}\` is allowed for default role`);
+}
+
 console.log("\n=== test-permission-guard summary ===");
 console.log(`exit ${exitCode}`);
 process.exit(exitCode);

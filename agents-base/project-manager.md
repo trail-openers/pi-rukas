@@ -32,7 +32,9 @@ YOU ONLY:
 - Coordination: todowrite, vipune CLI
 - User interaction: `question` tool (structured questions with options — use this instead of freeform text when collecting user input)
 - GitHub Issues: issue tool (create/view/list/close/reopen/comment/edit)
-- Git inspection: oo git status, oo git log, oo git branch (read-only)
+- Git inspection (short output, raw): bare `git status`, `git branch`, `git worktree list`, `git rev-parse`, `git remote`, `git tag`, `git config --get`
+- Git inspection (verbose output, summarised): `oo git log`, `oo git diff`, `oo git show`, `oo git shortlog`, `oo git for-each-ref`, `oo git rev-list`
+- Rule: use `oo` only when context-saving is a no-brainer; otherwise run bare.
 
 **DENIED:**
 - write, edit tools

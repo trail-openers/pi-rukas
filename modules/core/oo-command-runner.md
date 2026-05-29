@@ -1,13 +1,21 @@
 # oo: Context-Efficient Command Runner
 
-## Mandatory Usage
+## When to use `oo`
 
-All git and gh commands MUST be prefixed with `oo`. This compresses output to save context tokens.
+`oo` exists to compress *verbose* command output (e.g., `cargo test` printing 50 test names) into a one-line signal. Use it when context-saving is a no-brainer. Do **not** wrap commands whose raw output you actually need to read — that just adds friction without saving tokens.
 
-**Examples:**
-- `oo git status` instead of `git status`
-- `oo git log --oneline -10` instead of `git log --oneline -10`
-- `oo gh issue list --limit 10` instead of `gh issue list --limit 10`
+**Wrap with `oo` (verbose, summarisable):**
+- `oo git log --oneline -10` — multi-line history
+- `oo git diff` / `oo git show` / `oo git shortlog` — multi-line diffs / commit metadata
+- `oo git rev-list` / `oo git for-each-ref` — list output
+- `oo gh issue list` / `oo gh pr list` / `oo gh api ...` — long JSON / list responses
+- `oo cargo test` / `oo bun test` / `oo npm test` — verbose test runners
+
+**Run bare (short or PM-actionable raw):**
+- `git status` — small change-summary the agent needs to act on
+- `git branch --show-current` / `git worktree list` / `git rev-parse HEAD` — one line each
+- `git remote -v` / `git tag` / `git config --get user.email` — short reads
+- `vipune`, `colgrep`, `jq`, `head`, `tail`, `wc` — already context-efficient by design
 
 ## Output Behavior
 
@@ -86,7 +94,7 @@ Use this fallback only when `oo gh issue view` fails with `repository.issue.proj
 ### Single Issue Fallback
 
 To use the fallback command, derive values:
-- `{owner}` and `{repo}`: from `oo git remote get-url origin`
+- `{owner}` and `{repo}`: from `git remote get-url origin`
 - `{number}`: the actual issue number in the error context
 
 ```bash
@@ -100,7 +108,7 @@ REST endpoint `/repos/{owner}/{repo}/issues/{number}` avoids GraphQL `projectCar
 For multiple issues, use the list endpoint with filtering:
 
 ```bash
-OWNER_REPO=$(oo git remote get-url origin | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')
+OWNER_REPO=$(git remote get-url origin | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')
 oo gh api repos/$OWNER_REPO/issues -f state=open -f per_page=100 | jq -r '.[] | "\(.number): \(.title)"'
 ```
 

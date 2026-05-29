@@ -199,7 +199,9 @@ This is real doctrine, not a hint. The PM exists to orchestrate; specialists exi
 - **Git operations / commits / PRs / branch creation / deployment** → `dispatch_specialist` with role `ops`
 - **Research / vipune searches / web / file reading** → `dispatch_specialist` with role `explore`
 
-PM can use `read`, `vipune`, `gh issue view`, and read-only `git status/diff/log/branch`. PM CANNOT use `edit`, `write`, or arbitrary bash.
+PM can use `read`, `vipune`, `gh issue view`, and read-only git inspection. PM CANNOT use `edit`, `write`, or arbitrary bash.
+
+**Bare vs `oo` rule** (issue #96): bare `git status`, `git branch`, `git worktree list`, `git rev-parse`, `git remote`, `git tag`, `git config --get` run directly — output is short and PM needs the raw text to act on it. Verbose commands (`git log`, `git diff`, `git show`, `git shortlog`, `git for-each-ref`, `git rev-list`) require the `oo` wrapper because their full output is context-heavy and PM only needs the summary. Use `oo` only when context-saving is a no-brainer; otherwise run bare. The `oo`-wrapped form is NOT redundantly allowed for short commands — the per-command pattern is canonical.
 
 **Model choice for subagents is not yours to make.** The dispatch tools (`dispatch_specialist`, `dispatch_parallel`) do not expose a `model` parameter — that's a data-residency / jurisdiction-routing decision and belongs to the user via `/ensemble-model` and `PI_ENSEMBLE_*` env vars (see [#92](https://github.com/randomm/pi-ensemble/issues/92)). If a subagent model is failing, surface the failure to the user and let them re-route; don't try to swap providers yourself. `dispatch.ts:stripModelOverride` enforces this at the boundary.
 
