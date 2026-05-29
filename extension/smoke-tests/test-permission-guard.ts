@@ -521,6 +521,43 @@ for (const command of commandSubstitutionShouldDeny) {
   );
 }
 
+// === Issue #112 tests: PM bare `git diff` for adversarial_loop input ===
+// Bare `git diff` is allowed because adversarial_loop takes the raw diff text
+// as a parameter — PM runs the diff, captures stdout, passes to the dispatch.
+// `oo git diff *` stays available for compression-tier reads PM does itself.
+
+const gitDiffShouldAllow = [
+  "git diff",
+  "git diff --stat",
+  "git diff --shortstat",
+  "git diff --name-only",
+  "git diff --name-status",
+  "git diff HEAD",
+  "git diff main..feature",
+  "git diff HEAD~1 src/foo.ts",
+];
+for (const command of gitDiffShouldAllow) {
+  const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
+  assert(
+    v === "allow",
+    `Issue #112: bare \`${command}\` is allowed for project-manager (for adversarial_loop input)`,
+  );
+}
+
+// Anti-injection invariant still applies — redirects, chains, etc. on git diff still deny.
+const gitDiffWithInjectionShouldDeny = [
+  "git diff > /tmp/foo",
+  "git diff && cat /etc/passwd",
+  "git diff | grep secret",
+];
+for (const command of gitDiffWithInjectionShouldDeny) {
+  const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
+  assert(
+    v === "deny",
+    `Issue #112: \`${command}\` denied (anti-injection — bare git diff allow does not override the chain/redirect rule)`,
+  );
+}
+
 console.log("\n=== test-permission-guard summary ===");
 console.log(`exit ${exitCode}`);
 process.exit(exitCode);

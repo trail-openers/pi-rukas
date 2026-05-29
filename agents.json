@@ -30,6 +30,7 @@
           "git remote*": "allow",
           "git tag*": "allow",
           "git config --get*": "allow",
+          "git diff*": "allow",
           "oo git log *": "allow",
           "oo git diff *": "allow",
           "oo git show *": "allow",
