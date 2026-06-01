@@ -6,6 +6,7 @@ import * as dispatchDeck from "./dispatch-deck.ts";
 import { registerDispatchStatusTool } from "./dispatch-status.ts";
 import { registerDispatchTools } from "./dispatch.ts";
 import { registerLensReviewTool } from "./lens-review.ts";
+import * as lifecycle from "./lifecycle-events.ts";
 import { loadOverrides } from "./model-config.ts";
 import { registerModelPicker } from "./model-picker.ts";
 import { registerPermissionGuard } from "./permission-guard.ts";
@@ -25,6 +26,8 @@ export default async function (pi: ExtensionAPI) {
   registerModelPicker(pi);
   registerAsyncJobsLifecycle(pi);
   registerPermissionGuard(pi);
+  // Lifecycle scrollback (#118) — register renderer + capture pi for sendMessage.
+  lifecycle.attach(pi);
 
   // Capture an ExtensionContext so the dispatch deck (#117) can call
   // ctx.ui.setStatus from spawn.ts onProgress callbacks that fire outside
@@ -35,6 +38,7 @@ export default async function (pi: ExtensionAPI) {
   });
   pi.on("session_shutdown", () => {
     dispatchDeck.detach();
+    lifecycle.detach();
   });
 
   // Fire-and-forget housekeeping: keep the most-recent N subagent transcripts

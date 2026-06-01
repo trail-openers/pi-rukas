@@ -1,8 +1,15 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as dispatchDeck from "./dispatch-deck.ts";
+import * as lifecycle from "./lifecycle-events.ts";
 import type { RunningState } from "./progress.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
+
+function totalTokens(result: DispatchResult): number {
+  const u = result.usage;
+  if (!u) return 0;
+  return (u.input ?? 0) + (u.output ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0);
+}
 
 /**
  * Async-dispatch job registry.
@@ -217,6 +224,7 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): { jobId: strin
   if (!input.skipDeck) {
     dispatchDeck.startEntry(jobId, { label: input.label, role: input.role });
   }
+  lifecycle.emitDispatched(jobId, input.label, input.role);
 
   const hooks: WorkHooks = {
     onProgress: (progress) => {
@@ -228,6 +236,17 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): { jobId: strin
     (result) => {
       jobs.delete(jobId);
       if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
+      if (result.ok) {
+        lifecycle.emitCompleted(jobId, input.label, input.role, result.ms, totalTokens(result));
+      } else {
+        lifecycle.emitFailed(
+          jobId,
+          input.label,
+          input.role,
+          result.ms,
+          result.exitCode ?? undefined,
+        );
+      }
       const report = formatSingleReport(jobId, input.label, result);
       deliverReport(pi, report);
       trace(`async job ${jobId} (${input.label}) finished in ${result.ms}ms`);
@@ -235,6 +254,7 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): { jobId: strin
     (err: Error) => {
       jobs.delete(jobId);
       if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
+      lifecycle.emitFailed(jobId, input.label, input.role, Date.now() - state.startedAt);
       const report = formatFailReport(jobId, input.label, err);
       deliverReport(pi, report);
       trace(`async job ${jobId} (${input.label}) failed: ${err.message}`);
@@ -277,6 +297,7 @@ export function startBatch(
     completed: 0,
   };
   jobs.set(batchId, orchestrator);
+  lifecycle.emitDispatched(batchId, input.batchLabel, input.batchLabel);
 
   const memberJobIds: string[] = [];
   const memberResults: BatchReportInput["members"] = [];
@@ -325,6 +346,17 @@ export function startBatch(
         orchestrator.completed++;
         if (orchestrator.completed === orchestrator.size) {
           jobs.delete(batchId);
+          const batchMs = Date.now() - startedAt;
+          const anyFailed = memberResults.some((m) => "failed" in m.result || !m.result.ok);
+          const tokens = memberResults.reduce((acc, m) => {
+            if ("failed" in m.result) return acc;
+            return acc + totalTokens(m.result);
+          }, 0);
+          if (anyFailed) {
+            lifecycle.emitFailed(batchId, input.batchLabel, input.batchLabel, batchMs);
+          } else {
+            lifecycle.emitCompleted(batchId, input.batchLabel, input.batchLabel, batchMs, tokens);
+          }
           const report = formatBatchReport({
             batchLabel: input.batchLabel,
             batchId,
