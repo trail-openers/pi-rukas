@@ -412,7 +412,7 @@ CLI flags and event shapes change between Pi minor versions. The pin in `extensi
 5. **PM never codes** — orchestrate via dispatch tools; the sticky preamble enforces this
 6. **Conventional commits + issue-driven** — `feat(#123): …`, branch `feature/issue-N-…`
 7. **Spike branches stay off main** — explicit human approval required for experimental merges
-8. **LLMs never merge** — humans gate the merge button
+8. **LLMs may squash-merge when gates pass** (see §9) — humans still hold approval authority on breaking changes and disputed PRs
 9. **200-PR test for docs** — endures or doesn't get written
 10. **Transcript discipline** — orchestrator reads dispatch-tool summaries, never raw transcript files
 
