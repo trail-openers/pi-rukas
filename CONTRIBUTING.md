@@ -32,6 +32,7 @@ named list with install hints. See README → Prerequisites for the full table.
 | `cd extension && bun run smoke-tests/test-progress.ts` | Unit smoke for per-child live-progress rendering (offline). |
 | `cd extension && bun run smoke-tests/test-dispatch-deck.ts` | Unit smoke for the live dispatch deck (#117): insertion ordering, overflow rendering, opt-out (offline). |
 | `cd extension && bun run smoke-tests/test-lifecycle-events.ts` | Unit smoke for dispatch lifecycle scrollback entries (#118): dispatched/completed/failed formatting + opt-out (offline). |
+| `cd extension && bun run smoke-tests/test-dispatch-peek.ts` | Unit smoke for `dispatch_peek` introspection tool (#21): renderPeek shapes, lastText truncation, insertion-order (offline). |
 | `cd extension && bun run smoke-tests/test-prune.ts` | Unit smoke for transcript auto-prune (offline). |
 | `cd extension && bun run smoke-tests/test-async-dispatch.ts` | Unit smoke for the async-job registry + push-callback delivery (offline). |
 | `cd extension && bun run smoke-tests/test-cancel.ts` | Unit smoke for tool cancellation (offline). |
@@ -152,6 +153,7 @@ For non-trivial changes, know which file owns which concern:
 | `extension/src/dispatch.ts` | `dispatch_specialist` + `dispatch_parallel` tools |
 | `extension/src/permission-guard.ts` | Top-level session permission enforcement; bash subcommand allowlist matching; decision cache |
 | `extension/src/dispatch-status.ts` | `dispatch_status` + `dispatch_kill` introspection tools |
+| `extension/src/dispatch-peek.ts` | `dispatch_peek` introspection tool — bounded RunningState snapshot (turns, lastTool, ≤200-char lastText) per in-flight job |
 | `extension/src/async-jobs.ts` | Job registry; push-callback delivery via `pi.sendUserMessage` |
 | `extension/src/spawn.ts` | Fire-and-forget `pi -p --mode json` child spawn |
 | `extension/src/adversarial.ts` | Encapsulated 3-round adversarial review-then-fix gate (the mandatory gate after every developer dispatch) |

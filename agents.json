@@ -84,6 +84,7 @@
         "dispatch_lens_review": "allow",
         "dispatch_status": "allow",
         "dispatch_kill": "allow",
+        "dispatch_peek": "allow",
         "adversarial_loop": "allow",
         "task": {
           "*": "deny",

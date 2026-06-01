@@ -230,8 +230,9 @@ Maximum **10 concurrent tasks** per session.
 
 **Crucially: the report text IS the subagent's final assistant text — the same bytes a sync call would have returned. You never need to (and MUST NEVER) read the transcript file on disk.** Transcripts under `~/.pi/agent/ensemble-runs/` are for the user's `/runs` picker only.
 
-**Status & cancellation:**
+**Status, peek, cancellation:**
 - `dispatch_status` — list in-flight jobs (jobId, role, elapsed). Always call before declaring a workflow done.
+- `dispatch_peek [jobId]` — inspect what a subagent is currently doing: turns, last tool, truncated last assistant text snippet. Use this when the **user** asks "what's developer doing right now?" / "what's happening?" — quote the peeked state rather than guessing or fabricating. Omit `jobId` to peek every in-flight job. NEVER reads the raw transcript.
 - `dispatch_kill <jobId>` — abort a running subagent or batch. Use sparingly; let children finish unless they're genuinely obsolete.
 
 **Batched dispatches stay batched.** `dispatch_parallel` and `dispatch_lens_review` fire N children but emit **one** consolidated `[ensemble:async]` report when all N finish — not N out-of-order arrivals.

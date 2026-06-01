@@ -3,6 +3,7 @@ import { registerAdversarialTool } from "./adversarial.ts";
 import { registerAsyncJobsLifecycle } from "./async-jobs.ts";
 import { registerCommands } from "./commands.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
+import { registerDispatchPeekTool } from "./dispatch-peek.ts";
 import { registerDispatchStatusTool } from "./dispatch-status.ts";
 import { registerDispatchTools } from "./dispatch.ts";
 import { registerLensReviewTool } from "./lens-review.ts";
@@ -19,6 +20,7 @@ export default async function (pi: ExtensionAPI) {
   await loadOverrides();
   registerDispatchTools(pi);
   registerDispatchStatusTool(pi);
+  registerDispatchPeekTool(pi);
   registerAdversarialTool(pi);
   registerLensReviewTool(pi);
   registerCommands(pi);

@@ -12,7 +12,7 @@ CI is for VERIFICATION, not DISCOVERY. All gates pass locally before `git push`.
 
 ```bash
 cd extension && bunx tsc --noEmit && bun run check && \
-  for t in test-command-flow test-lens-review test-models test-runs test-progress test-prune test-async-dispatch test-dispatch-deck test-lifecycle-events; do \
+  for t in test-command-flow test-lens-review test-models test-runs test-progress test-prune test-async-dispatch test-dispatch-deck test-lifecycle-events test-dispatch-peek; do \
     bun run smoke-tests/$t.ts || break; \
   done
 ```
@@ -78,6 +78,7 @@ The major modules — know which one to edit for which kind of change:
 | `dispatch.ts` | `dispatch_specialist` and `dispatch_parallel` tools | Single/parallel dispatch semantics |
 | `permission-guard.ts` | Top-level session permission enforcement (project + global + `agents.json` layers); bash subcommand allowlist matching; decision cache | Permission prompts, cache shape, allow/deny logic |
 | `dispatch-status.ts` | `dispatch_status`, `dispatch_kill` tools | Job-introspection surface |
+| `dispatch-peek.ts` | `dispatch_peek` tool — bounded RunningState snapshot (turns, lastTool, ≤200-char lastText) | PM "what is X doing right now?" |
 | `async-jobs.ts` | Job registry, push-callback delivery via `pi.sendUserMessage` | All async-dispatch lifecycle changes |
 | `spawn.ts` | Fire-and-forget `pi -p --mode json` child spawn | Single-shot subagent spawn behaviour |
 | `adversarial.ts` | Encapsulated 3-round adversarial review-then-fix gate | The mandatory adversarial gate after every developer dispatch |
