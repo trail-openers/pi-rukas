@@ -30,6 +30,7 @@ named list with install hints. See README → Prerequisites for the full table.
 | `cd extension && bun run smoke-tests/test-models.ts` | Unit smoke for model resolution priority (offline). |
 | `cd extension && bun run smoke-tests/test-runs.ts` | Unit smoke for transcript browsing (offline). |
 | `cd extension && bun run smoke-tests/test-progress.ts` | Unit smoke for per-child live-progress rendering (offline). |
+| `cd extension && bun run smoke-tests/test-dispatch-deck.ts` | Unit smoke for the live dispatch deck (#117): insertion ordering, overflow rendering, opt-out (offline). |
 | `cd extension && bun run smoke-tests/test-prune.ts` | Unit smoke for transcript auto-prune (offline). |
 | `cd extension && bun run smoke-tests/test-async-dispatch.ts` | Unit smoke for the async-job registry + push-callback delivery (offline). |
 | `cd extension && bun run smoke-tests/test-cancel.ts` | Unit smoke for tool cancellation (offline). |
@@ -158,6 +159,7 @@ For non-trivial changes, know which file owns which concern:
 | `extension/src/model-adapters.ts` | Pluggable per-LLM-family text-artifact filtering |
 | `extension/src/models.ts`, `model-config.ts`, `model-picker.ts` | Per-role model resolution + interactive picker (`/ensemble-model`) |
 | `extension/src/progress.ts` | Per-child running state + live-progress rendering |
+| `extension/src/dispatch-deck.ts` | Live footer status (`ensemble:deck` via `ctx.ui.setStatus`) — multi-line block of in-flight subagents, insertion-order stable, 4-row overflow with `+N more` |
 | `extension/src/roles.ts`, `types.ts` | Role enum + result/dispatch types |
 | `extension/src/runs.ts` | `/runs` slash command + transcript browsing/pruning |
 | `extension/src/worktree.ts` | Git worktree helpers (delegated to ops in practice) |

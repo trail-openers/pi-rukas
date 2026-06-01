@@ -1,4 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import * as dispatchDeck from "./dispatch-deck.ts";
+import type { RunningState } from "./progress.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 
@@ -163,6 +165,16 @@ function formatBatchReport(input: BatchReportInput): string {
   return `${head}\n\n${sections.join("\n\n")}\n\n${footer}`;
 }
 
+/** Live-progress hooks passed to a job's work function. */
+export interface WorkHooks {
+  /**
+   * Forward a child's RunningState update. Wired to the dispatch deck so the
+   * footer can render live activity (#117). Work functions should pass this
+   * straight through to spawnSpecialist's onProgress option.
+   */
+  onProgress: (state: RunningState) => void;
+}
+
 interface StartJobInput {
   /** Human-readable subagent label (role + optional tag, e.g. "code-review-specialist[security]"). */
   label: string;
@@ -171,9 +183,17 @@ interface StartJobInput {
   /**
    * Work function. Receives an AbortSignal tied to our internal abort
    * controller (NOT the tool's exec signal — that one is gone the moment we
-   * return from execute()). Should call spawnSpecialist internally.
+   * return from execute()). Should call spawnSpecialist internally and
+   * forward `hooks.onProgress` to it.
    */
-  work: (signal: AbortSignal) => Promise<DispatchResult>;
+  work: (signal: AbortSignal, hooks: WorkHooks) => Promise<DispatchResult>;
+  /**
+   * Skip the automatic dispatch-deck entry. Set true for orchestrators that
+   * fan out internally (lens-review, adversarial) and manage their own
+   * per-child deck entries — otherwise the orchestrator's "synthetic" row
+   * would mask the real children behind it.
+   */
+  skipDeck?: boolean;
 }
 
 /**
@@ -194,15 +214,27 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): { jobId: strin
   };
   jobs.set(jobId, state);
 
-  void input.work(abort.signal).then(
+  if (!input.skipDeck) {
+    dispatchDeck.startEntry(jobId, { label: input.label, role: input.role });
+  }
+
+  const hooks: WorkHooks = {
+    onProgress: (progress) => {
+      if (!input.skipDeck) dispatchDeck.updateEntry(jobId, progress);
+    },
+  };
+
+  void input.work(abort.signal, hooks).then(
     (result) => {
       jobs.delete(jobId);
+      if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
       const report = formatSingleReport(jobId, input.label, result);
       deliverReport(pi, report);
       trace(`async job ${jobId} (${input.label}) finished in ${result.ms}ms`);
     },
     (err: Error) => {
       jobs.delete(jobId);
+      if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
       const report = formatFailReport(jobId, input.label, err);
       deliverReport(pi, report);
       trace(`async job ${jobId} (${input.label}) failed: ${err.message}`);
@@ -218,7 +250,7 @@ interface StartBatchInput {
   members: Array<{
     label: string;
     role: string;
-    work: (signal: AbortSignal) => Promise<DispatchResult>;
+    work: (signal: AbortSignal, hooks: WorkHooks) => Promise<DispatchResult>;
   }>;
 }
 
@@ -266,15 +298,22 @@ export function startBatch(
     };
     jobs.set(jobId, memberState);
 
+    dispatchDeck.startEntry(jobId, { label: m.label, role: m.role });
+    const memberHooks: WorkHooks = {
+      onProgress: (progress) => dispatchDeck.updateEntry(jobId, progress),
+    };
+
     void m
-      .work(memberAbort.signal)
+      .work(memberAbort.signal, memberHooks)
       .then(
         (result) => {
           jobs.delete(jobId);
+          dispatchDeck.clearEntry(jobId);
           memberResults.push({ jobId, label: m.label, result });
         },
         (err: Error) => {
           jobs.delete(jobId);
+          dispatchDeck.clearEntry(jobId);
           memberResults.push({
             jobId,
             label: m.label,

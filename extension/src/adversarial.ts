@@ -1,7 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { startJob } from "./async-jobs.ts";
-import { spawnSpecialist } from "./spawn.ts";
+import * as dispatchDeck from "./dispatch-deck.ts";
+import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import type { AdversarialVerdict, DispatchResult } from "./types.ts";
 
 const MAX_ROUNDS = 3;
@@ -37,6 +38,10 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
       const { jobId } = startJob(pi, {
         label: "adversarial_loop",
         role: "adversarial-loop",
+        // Each round spawns its own deck entry (adversarial review → developer
+        // fix → re-review). A single umbrella row would just flicker between
+        // sub-states; per-round entries show the actual child running now.
+        skipDeck: true,
         work: (signal) => runAdversarialLoop(params, signal),
       });
       return {
@@ -57,6 +62,7 @@ async function runAdversarialLoop(
   signal: AbortSignal,
 ): Promise<DispatchResult> {
   const start = Date.now();
+  const runId = makeRunId();
   const rounds: Array<{ round: number; verdict: AdversarialVerdict; ms: number }> = [];
   const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
   let lastTranscript: string | undefined;
@@ -74,14 +80,39 @@ async function runAdversarialLoop(
     if (r.model && !lastModel) lastModel = r.model;
   };
 
+  /**
+   * Run one phase (adversarial review or developer fix), threading dispatch-deck
+   * lifecycle and onProgress so the deck shows whichever phase is running now.
+   */
+  const runPhase = async (
+    role: "adversarial-developer" | "developer",
+    tag: string,
+    prompt: string,
+    cwd?: string,
+  ): Promise<DispatchResult> => {
+    const deckKey = `${runId}/${tag}`;
+    dispatchDeck.startEntry(deckKey, { label: `${role}[${tag}]`, role, tag });
+    try {
+      return await spawnSpecialist(
+        { role, prompt, cwd },
+        {
+          signal,
+          runId,
+          tag,
+          onProgress: (state) => dispatchDeck.updateEntry(deckKey, state),
+        },
+      );
+    } finally {
+      dispatchDeck.clearEntry(deckKey);
+    }
+  };
+
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     if (signal.aborted) break;
-    const adv = await spawnSpecialist(
-      {
-        role: "adversarial-developer",
-        prompt: buildAdversarialPrompt(params.diff, params.context, round),
-      },
-      { signal },
+    const adv = await runPhase(
+      "adversarial-developer",
+      `round${round}-review`,
+      buildAdversarialPrompt(params.diff, params.context, round),
     );
     accumulate(adv);
 
@@ -101,13 +132,11 @@ async function runAdversarialLoop(
 
     if (round === MAX_ROUNDS) break;
 
-    const fix = await spawnSpecialist(
-      {
-        role: "developer",
-        prompt: buildFixPrompt(verdict.findings, params.context),
-        cwd: params.workCwd,
-      },
-      { signal },
+    const fix = await runPhase(
+      "developer",
+      `round${round}-fix`,
+      buildFixPrompt(verdict.findings, params.context),
+      params.workCwd,
     );
     accumulate(fix);
   }

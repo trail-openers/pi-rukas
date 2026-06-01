@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { startJob } from "./async-jobs.ts";
+import * as dispatchDeck from "./dispatch-deck.ts";
 import { type RunningState, emptyRunningState, renderBatch } from "./progress.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import type { DispatchResult } from "./types.ts";
@@ -231,13 +232,22 @@ export async function runLensReview(opts: {
   const promises = LENSES.map(async (lens, lensIdx): Promise<LensRunResult> => {
     const skillPath = path.join(skillsDir, lens.skill);
     const prompt = lensPromptFor(lens, opts.diff, context);
+    const tag = lens.name.toLowerCase().replaceAll("_", "-");
+    // Per-lens deck key — orchestrator is `skipDeck: true`, so each lens
+    // shows up as its own row in the dispatch deck (#117).
+    const deckKey = `${runId}/${tag}`;
+    dispatchDeck.startEntry(deckKey, {
+      label: `code-review-specialist[${tag}]`,
+      role: "code-review-specialist",
+      tag,
+    });
     let result: DispatchResult;
     try {
       result = await spawnSpecialist(
         { role: "code-review-specialist", prompt, cwd: opts.cwd },
         {
           runId,
-          tag: lens.name.toLowerCase().replaceAll("_", "-"),
+          tag,
           // Pin to this lens's skill + load the report_finding tool. `--no-extensions`
           // (set in spawn.ts) disables auto-discovery; `--extension <path>` still
           // loads explicit paths, so the reporter is the only extension in the child.
@@ -247,10 +257,12 @@ export async function runLensReview(opts: {
           onProgress: (state) => {
             lensStates[lensIdx] = state;
             emitProgress();
+            dispatchDeck.updateEntry(deckKey, state);
           },
         },
       );
     } catch (err) {
+      dispatchDeck.clearEntry(deckKey);
       return {
         lens: lens.name,
         ok: false,
@@ -259,6 +271,7 @@ export async function runLensReview(opts: {
         parseError: `spawn failed: ${(err as Error).message}`,
       };
     }
+    dispatchDeck.clearEntry(deckKey);
     const { findings, skipped } = extractFindings(result.toolUses, lens.name);
     return {
       lens: lens.name,
@@ -344,6 +357,10 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
       const { jobId } = startJob(pi, {
         label: "lens_review",
         role: "lens-review",
+        // Orchestrator-only — runLensReview opens one deck entry per lens
+        // (6 rows) so the deck shows the real children, not a synthetic
+        // umbrella row that masks them.
+        skipDeck: true,
         work: async (signal): Promise<DispatchResult> => {
           const start = Date.now();
           const summary = await runLensReview({ ...params, signal });

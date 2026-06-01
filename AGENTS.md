@@ -12,7 +12,7 @@ CI is for VERIFICATION, not DISCOVERY. All gates pass locally before `git push`.
 
 ```bash
 cd extension && bunx tsc --noEmit && bun run check && \
-  for t in test-command-flow test-lens-review test-models test-runs test-progress test-prune test-async-dispatch; do \
+  for t in test-command-flow test-lens-review test-models test-runs test-progress test-prune test-async-dispatch test-dispatch-deck; do \
     bun run smoke-tests/$t.ts || break; \
   done
 ```
@@ -86,6 +86,7 @@ The major modules — know which one to edit for which kind of change:
 | `model-adapters.ts` | Per-LLM-family text-artifact filtering | Adding support for a new model family with known quirks |
 | `models.ts` + `model-config.ts` + `model-picker.ts` | Per-role model resolution, `/ensemble-model` interactive picker | Model resolution priority changes |
 | `progress.ts` | Per-child live-progress state for `onUpdate` callbacks | Tool-output stream rendering |
+| `dispatch-deck.ts` | Live footer status (`ensemble:deck` via `ctx.ui.setStatus`) — multi-line block of all in-flight subagents | Footer rendering, overflow, deck-entry lifecycle |
 | `roles.ts` + `types.ts` | Role enum + result/dispatch types | New specialist role |
 | `runs.ts` | `/runs` slash command + transcript browsing/pruning | Transcript management |
 | `worktree.ts` | Git worktree helpers (delegated to ops in practice) | Worktree lifecycle |

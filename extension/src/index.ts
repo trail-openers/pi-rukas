@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerAdversarialTool } from "./adversarial.ts";
 import { registerAsyncJobsLifecycle } from "./async-jobs.ts";
 import { registerCommands } from "./commands.ts";
+import * as dispatchDeck from "./dispatch-deck.ts";
 import { registerDispatchStatusTool } from "./dispatch-status.ts";
 import { registerDispatchTools } from "./dispatch.ts";
 import { registerLensReviewTool } from "./lens-review.ts";
@@ -24,6 +25,17 @@ export default async function (pi: ExtensionAPI) {
   registerModelPicker(pi);
   registerAsyncJobsLifecycle(pi);
   registerPermissionGuard(pi);
+
+  // Capture an ExtensionContext so the dispatch deck (#117) can call
+  // ctx.ui.setStatus from spawn.ts onProgress callbacks that fire outside
+  // any event handler scope. Pi passes ctx into every event listener; we
+  // hold the reference until session_shutdown.
+  pi.on("session_start", (_event, ctx) => {
+    dispatchDeck.attach(ctx);
+  });
+  pi.on("session_shutdown", () => {
+    dispatchDeck.detach();
+  });
 
   // Fire-and-forget housekeeping: keep the most-recent N subagent transcripts
   // on disk (default 20, override via PI_ENSEMBLE_RUNS_KEEP_LAST). The user's
