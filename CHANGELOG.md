@@ -8,6 +8,15 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.3](https://github.com/randomm/pi-ensemble/compare/v0.12.2...v0.12.3) (2026-06-01)
+
+
+### Features
+
+* **#117:** live dispatch deck — footer status for in-flight subagents ([#122](https://github.com/randomm/pi-ensemble/issues/122)) ([79abef2](https://github.com/randomm/pi-ensemble/commit/79abef24257833618549636910ca7d91e2af73d3))
+* **#118:** lifecycle scrollback entries for dispatch transitions ([#124](https://github.com/randomm/pi-ensemble/issues/124)) ([73dbebc](https://github.com/randomm/pi-ensemble/commit/73dbebcbd294a81ade1844342a6c1d62acf36590))
+* **#21:** dispatch_peek tool — PM-callable subagent introspection ([#125](https://github.com/randomm/pi-ensemble/issues/125)) ([1c67bd4](https://github.com/randomm/pi-ensemble/commit/1c67bd47d9aa74f7d9d12dc8fbf4a7a78c1ce004))
+
 ## [0.12.2](https://github.com/randomm/pi-ensemble/compare/v0.12.1...v0.12.2) (2026-05-29)
 
 
