@@ -5,14 +5,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { startJob } from "./async-jobs.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
-import { type RunningState, emptyRunningState, renderBatch } from "./progress.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import type { DispatchResult } from "./types.ts";
-
-type ToolUpdateCallback = (partial: {
-  content: Array<{ type: "text"; text: string }>;
-  details: unknown;
-}) => void;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LENS_REPORTER_PATH = path.join(__dirname, "lens-reporter.ts");
@@ -211,30 +205,19 @@ export async function runLensReview(opts: {
   context?: string;
   cwd?: string;
   signal?: AbortSignal;
-  onUpdate?: ToolUpdateCallback;
 }): Promise<LensReviewSummary> {
   const runId = makeRunId();
   const skillsDir = piSkillsDir();
   const context = opts.context ?? "";
 
-  // Per-lens progress state, in fixed lens order so the rendered table is
-  // stable as updates trickle in.
-  const lensStates: RunningState[] = LENSES.map((l) =>
-    emptyRunningState("code-review-specialist", l.name.toLowerCase().replaceAll("_", "-")),
-  );
-  const emitProgress = () => {
-    opts.onUpdate?.({
-      content: [{ type: "text", text: renderBatch("dispatch_lens_review", lensStates) }],
-      details: { states: lensStates.map((s) => ({ ...s, usage: { ...s.usage } })) },
-    });
-  };
-
-  const promises = LENSES.map(async (lens, lensIdx): Promise<LensRunResult> => {
+  const promises = LENSES.map(async (lens): Promise<LensRunResult> => {
     const skillPath = path.join(skillsDir, lens.skill);
     const prompt = lensPromptFor(lens, opts.diff, context);
     const tag = lens.name.toLowerCase().replaceAll("_", "-");
-    // Per-lens deck key — orchestrator is `skipDeck: true`, so each lens
-    // shows up as its own row in the dispatch deck (#117).
+    // Per-lens deck key. The dispatch deck (#117) is now the single live
+    // surface — there used to be a parallel onUpdate callback rendering an
+    // inline tool block, but the deck displays the same data so the inline
+    // path was duplicative (#119).
     const deckKey = `${runId}/${tag}`;
     dispatchDeck.startEntry(deckKey, {
       label: `code-review-specialist[${tag}]`,
@@ -254,11 +237,7 @@ export async function runLensReview(opts: {
           extraArgs: ["--no-skills", "--skill", skillPath, "--extension", LENS_REPORTER_PATH],
           // No timeoutMs override — inherits DEFAULT_SPAWN_TIMEOUT_MS (30 min, #114).
           signal: opts.signal,
-          onProgress: (state) => {
-            lensStates[lensIdx] = state;
-            emitProgress();
-            dispatchDeck.updateEntry(deckKey, state);
-          },
+          onProgress: (state) => dispatchDeck.updateEntry(deckKey, state),
         },
       );
     } catch (err) {
