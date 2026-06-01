@@ -3,19 +3,25 @@
  * Pure unit test for the dispatch deck (#117):
  *  - entries inserted in stable insertion order
  *  - update mutates in place without reordering
- *  - clear drops the row at 0s (no linger)
- *  - overflow (>4) renders header + 4 detail rows + "+N more"
+ *  - clear drops the row at 0s (no linger) AND clears the corresponding
+ *    Pi setStatus entry
+ *  - one setStatus key PER child (Pi joins them side-by-side on a single
+ *    footer line — see #128 follow-up: multi-line text was sanitised away)
+ *  - setStatus key is prefixed with a zero-padded insertion sequence so
+ *    Pi's alphabetical sort matches dispatch order
+ *  - lastToolName + use-count surface in the row; lastText does NOT (kept
+ *    out so per-child rows stay compact when Pi packs them side-by-side)
  *  - PI_ENSEMBLE_QUIET_STATUS=1 short-circuits everything
- *  - lastText is truncated and newline-flattened
  *
  * No Pi spawns. The deck's setStatus path is exercised by attaching a fake
- * ExtensionContext that records the most recent call.
+ * ExtensionContext that records every call.
  */
 
 import {
-  type DeckEntry,
+  attach,
   clearEntry,
-  formatDeck,
+  detach,
+  formatRow,
   reset,
   snapshot,
   startEntry,
@@ -34,7 +40,28 @@ function assert(cond: boolean, msg: string) {
 }
 
 function makeState(role: string, opts: Partial<RunningState> = {}): RunningState {
-  return { ...emptyRunningState(role), ...opts, usage: { ...emptyRunningState(role).usage } };
+  const base = emptyRunningState(role);
+  return { ...base, ...opts, usage: { ...base.usage, ...(opts.usage ?? {}) } };
+}
+
+interface RecordedCall {
+  key: string;
+  text: string | undefined;
+}
+
+function fakeCtx(): {
+  calls: RecordedCall[];
+  ctx: Parameters<typeof attach>[0];
+} {
+  const calls: RecordedCall[] = [];
+  const ctx = {
+    ui: {
+      setStatus: (key: string, text: string | undefined) => {
+        calls.push({ key, text });
+      },
+    },
+  } as unknown as Parameters<typeof attach>[0];
+  return { calls, ctx };
 }
 
 // 1. Insertion order is preserved across updates.
@@ -48,96 +75,133 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   updateEntry("a", makeState("developer", { elapsedMs: 8000, lastToolName: "bash", toolUses: 3 }));
 
   const keys = snapshot().map((e) => e.key);
-  assert(JSON.stringify(keys) === '["a","b","c"]', "insertion order preserved after interleaved updates");
+  assert(
+    JSON.stringify(keys) === '["a","b","c"]',
+    "insertion order preserved after interleaved updates",
+  );
 }
 
-// 2. Update mutates in place; clear removes immediately.
+// 2. Update mutates in place; clear removes immediately AND clears the status.
 {
   reset();
+  const { calls, ctx } = fakeCtx();
+  attach(ctx);
   startEntry("x", { label: "developer", role: "developer" });
   updateEntry("x", makeState("developer", { elapsedMs: 12000, lastToolName: "bash" }));
   assert(snapshot()[0]?.state.lastToolName === "bash", "update set lastToolName");
 
   clearEntry("x");
   assert(snapshot().length === 0, "clear drops the entry immediately (no 0s linger)");
+  const lastCall = calls[calls.length - 1];
+  assert(lastCall?.text === undefined, "clear calls setStatus(<key>, undefined) on the entry's key");
+  detach();
 }
 
-// 3. formatDeck renders a single row with icon + label + elapsed + tool + lastText.
+// 3. formatRow renders compact single line: icon + label + elapsed + tool.
 {
-  const entries: DeckEntry[] = [
-    {
-      key: "a",
-      label: "developer",
-      state: makeState("developer", {
-        elapsedMs: 134000,
-        lastToolName: "bash",
-        toolUses: 7,
-        lastText: "Running test suite in worktree-A",
-      }),
-    },
-  ];
-  const out = formatDeck(entries);
+  const out = formatRow({
+    key: "df8a-2k",
+    label: "developer",
+    seq: "000001",
+    state: makeState("developer", {
+      elapsedMs: 134000,
+      lastToolName: "bash",
+      toolUses: 7,
+    }),
+  });
   assert(out.startsWith("⏳"), "row starts with hourglass icon");
   assert(out.includes("developer"), "row includes label");
   assert(out.includes("2m14s"), "row includes elapsed");
   assert(out.includes("bash (#7)"), "row includes tool name + use-count when >1");
-  assert(out.includes("Running test suite"), "row includes lastText");
+  assert(!out.includes("\n"), "row is single-line (no newlines — Pi's footer sanitises them)");
 }
 
-// 4. lastText truncation + newline flattening (≤60 chars, " · "-joined head).
+// 4. formatRow shows tool name without count when only 1 use.
 {
-  const longText =
-    "This is a very long status message\nwith embedded newlines that should be flattened into a single line and then truncated when it exceeds the budget";
-  const out = formatDeck([
-    {
-      key: "a",
-      label: "explore",
-      state: makeState("explore", { elapsedMs: 1000, lastText: longText }),
-    },
-  ]);
-  // The header through " — " is at most ~25 chars; the trailing chunk is the
-  // truncated text, capped at 60 chars including the ellipsis.
-  const tail = out.slice(out.indexOf(" — ") + 3);
-  assert(tail.length <= 60, `truncated tail length ≤60 (got ${tail.length}): "${tail}"`);
-  assert(!tail.includes("\n"), "newlines flattened out of lastText");
-  assert(tail.endsWith("…"), "long text ends with ellipsis");
+  const out = formatRow({
+    key: "x",
+    label: "explore",
+    seq: "000002",
+    state: makeState("explore", { elapsedMs: 4000, lastToolName: "grep", toolUses: 1 }),
+  });
+  assert(out.includes(" grep"), "single-use tool includes name");
+  assert(!out.includes("(#1)"), "no use-count when only 1 use");
 }
 
-// 5. <=4 entries: one line each, no overflow header.
+// 5. formatRow omits tool when lastToolName not set.
 {
-  const entries: DeckEntry[] = ["a", "b", "c", "d"].map((k) => ({
-    key: k,
-    label: `agent-${k}`,
-    state: makeState("developer", { elapsedMs: 1000 + 1000 * k.charCodeAt(0) }),
-  }));
-  const out = formatDeck(entries);
-  const lines = out.split("\n");
-  assert(lines.length === 4, "4 entries → exactly 4 lines (no header)");
-  assert(!out.includes("more"), "no overflow line for exactly 4 entries");
+  const out = formatRow({
+    key: "x",
+    label: "ops",
+    seq: "000003",
+    state: makeState("ops", { elapsedMs: 1000 }),
+  });
+  assert(out === "⏳ ops 1.0s", "no tool → just icon + label + elapsed");
 }
 
-// 6. >4 entries: overflow header + 4 detail rows (insertion-order, first 4) + "+N more".
+// 6. formatRow does NOT include lastText (footer is single-line; detail goes to dispatch_peek).
 {
-  const entries: DeckEntry[] = ["a", "b", "c", "d", "e", "f"].map((k, i) => ({
-    key: k,
-    label: `agent-${k}`,
-    state: makeState("developer", { elapsedMs: 1000 + i * 1000, lastToolName: "bash" }),
-  }));
-  const out = formatDeck(entries);
-  const lines = out.split("\n");
-  // Layout: header, 4 detail rows, 1 overflow summary = 6 lines total.
-  assert(lines.length === 6, `overflow layout has 6 lines (got ${lines.length})`);
-  assert(lines[0]?.startsWith("⏳ ensemble dispatch · 6 in flight"), "overflow header counts entries");
-  assert(lines[0]?.includes("elapsed"), "overflow header shows oldest elapsed");
-  assert(lines[1]?.startsWith(" ↳ "), "detail rows use arrow prefix");
-  assert(lines[1]?.includes("agent-a"), "first detail row is insertion-order first");
-  assert(lines[4]?.includes("agent-d"), "fourth detail row is fourth-inserted (not 'most recent')");
-  assert(!out.includes("agent-e"), "fifth+ entries not shown directly");
-  assert(lines[5]?.includes("(+2 more"), "overflow summary counts hidden entries");
-  assert(lines[5]?.includes("dispatch_status"), "overflow hint points at dispatch_status");
+  const out = formatRow({
+    key: "x",
+    label: "developer",
+    seq: "000004",
+    state: makeState("developer", {
+      elapsedMs: 1000,
+      lastToolName: "bash",
+      lastText: "Running tests in worktree-A",
+    }),
+  });
+  assert(!out.includes("Running tests"), "lastText is NOT rendered in the row");
+  assert(!out.includes("worktree"), "lastText is NOT rendered in the row");
 }
 
-// 7. PI_ENSEMBLE_QUIET_STATUS=1 short-circuits start/update.
+// 7. Multiple entries → one setStatus call per entry, each with its own key.
+{
+  reset();
+  const { calls, ctx } = fakeCtx();
+  attach(ctx);
+  startEntry("a", { label: "developer", role: "developer" });
+  startEntry("b", { label: "explore", role: "explore" });
+  await new Promise((r) => setImmediate(r));
+
+  const lastTwo = calls.slice(-2);
+  assert(lastTwo.length === 2, "two startEntries → two setStatus calls in last render");
+  assert(
+    new Set(lastTwo.map((c) => c.key)).size === 2,
+    "each entry uses a unique setStatus key",
+  );
+  assert(
+    lastTwo.every((c) => c.key.startsWith("ensemble:deck:")),
+    "all keys use ensemble:deck: prefix",
+  );
+  detach();
+}
+
+// 8. setStatus keys are prefixed with zero-padded insertion sequence → alphabetical sort
+//    matches dispatch order. Pi sorts statuses by key.
+{
+  reset();
+  const { calls, ctx } = fakeCtx();
+  attach(ctx);
+  // Use jobIds that would sort in REVERSE alphabetical order if sorted by jobId alone.
+  startEntry("zzz-first", { label: "developer", role: "developer" });
+  startEntry("aaa-second", { label: "explore", role: "explore" });
+  await new Promise((r) => setImmediate(r));
+
+  const renderedKeys = calls.slice(-2).map((c) => c.key).sort((a, b) => a.localeCompare(b));
+  // First-inserted should sort first under alphabetical sort.
+  assert(
+    renderedKeys[0]?.includes("zzz-first"),
+    "insertion-order sequence prefix makes first-inserted sort first regardless of jobId order",
+  );
+  assert(
+    renderedKeys[1]?.includes("aaa-second"),
+    "second-inserted sorts second",
+  );
+  detach();
+}
+
+// 9. PI_ENSEMBLE_QUIET_STATUS=1 short-circuits start/update.
 {
   reset();
   process.env.PI_ENSEMBLE_QUIET_STATUS = "1";
@@ -145,40 +209,33 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   updateEntry("muted", makeState("developer", { elapsedMs: 9000 }));
   assert(snapshot().length === 0, "quiet env var prevents entry registration");
   delete process.env.PI_ENSEMBLE_QUIET_STATUS;
-  // and now non-quiet works again
   startEntry("audible", { label: "developer", role: "developer" });
   assert(snapshot().length === 1, "deck resumes when env var unset");
 }
 
-// 8. formatDeck on empty list returns empty string.
-{
-  assert(formatDeck([]) === "", "empty list → empty string");
-}
-
-// 9. setStatus is called via attached context. Use a fake to capture the call.
+// 10. detach clears every entry's status and drops the context reference.
 {
   reset();
-  let lastStatusText: string | undefined | null = null;
-  const fakeCtx = {
-    ui: {
-      setStatus: (_key: string, text: string | undefined) => {
-        lastStatusText = text;
-      },
-    },
-  } as unknown as Parameters<typeof import("../src/dispatch-deck.ts").attach>[0];
-  const deck = await import("../src/dispatch-deck.ts");
-  deck.attach(fakeCtx);
-  deck.startEntry("only", { label: "developer", role: "developer" });
-  deck.updateEntry("only", makeState("developer", { elapsedMs: 4000, lastToolName: "bash" }));
-
-  // setStatus is throttled via setImmediate; await one tick to flush.
+  const { calls, ctx } = fakeCtx();
+  attach(ctx);
+  startEntry("a", { label: "developer", role: "developer" });
+  startEntry("b", { label: "explore", role: "explore" });
   await new Promise((r) => setImmediate(r));
-  assert(typeof lastStatusText === "string", "setStatus called with string text");
-  assert((lastStatusText ?? "").includes("developer"), "status text includes label");
 
-  deck.clearEntry("only");
-  await new Promise((r) => setImmediate(r));
-  assert(lastStatusText === undefined, "setStatus called with undefined to clear when empty");
+  const callsBeforeDetach = calls.length;
+  detach();
+  const callsAfterDetach = calls.length;
+  // detach should have issued setStatus(<key>, undefined) for each entry — at least 2 new calls.
+  assert(
+    callsAfterDetach >= callsBeforeDetach + 2,
+    "detach clears every entry's status (≥2 new setStatus calls)",
+  );
+  const clearCalls = calls.slice(callsBeforeDetach);
+  assert(
+    clearCalls.every((c) => c.text === undefined),
+    "all post-detach calls pass undefined text",
+  );
+  assert(snapshot().length === 0, "detach drains entries");
 }
 
 console.log(`\nexit ${exit}`);

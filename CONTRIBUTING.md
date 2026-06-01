@@ -30,7 +30,7 @@ named list with install hints. See README → Prerequisites for the full table.
 | `cd extension && bun run smoke-tests/test-models.ts` | Unit smoke for model resolution priority (offline). |
 | `cd extension && bun run smoke-tests/test-runs.ts` | Unit smoke for transcript browsing (offline). |
 | `cd extension && bun run smoke-tests/test-progress.ts` | Unit smoke for per-child live-progress rendering (offline). |
-| `cd extension && bun run smoke-tests/test-dispatch-deck.ts` | Unit smoke for the live dispatch deck (#117): insertion ordering, overflow rendering, opt-out (offline). |
+| `cd extension && bun run smoke-tests/test-dispatch-deck.ts` | Unit smoke for the live dispatch deck (#117): one setStatus key per child, insertion-order stable via sequence-prefixed keys, row formatting, opt-out (offline). |
 | `cd extension && bun run smoke-tests/test-lifecycle-events.ts` | Unit smoke for dispatch lifecycle scrollback entries (#118): dispatched/completed/failed formatting + opt-out (offline). |
 | `cd extension && bun run smoke-tests/test-dispatch-peek.ts` | Unit smoke for `dispatch_peek` introspection tool (#21): renderPeek shapes, lastText truncation, insertion-order (offline). |
 | `cd extension && bun run smoke-tests/test-prune.ts` | Unit smoke for transcript auto-prune (offline). |
@@ -162,7 +162,7 @@ For non-trivial changes, know which file owns which concern:
 | `extension/src/model-adapters.ts` | Pluggable per-LLM-family text-artifact filtering |
 | `extension/src/models.ts`, `model-config.ts`, `model-picker.ts` | Per-role model resolution + interactive picker (`/ensemble-model`) |
 | `extension/src/progress.ts` | Per-child running state + live-progress rendering |
-| `extension/src/dispatch-deck.ts` | Live footer status (`ensemble:deck` via `ctx.ui.setStatus`) — multi-line block of in-flight subagents, insertion-order stable, 4-row overflow with `+N more` |
+| `extension/src/dispatch-deck.ts` | Live footer status — one `ensemble:deck:<seq>-<jobId>` entry per in-flight subagent via `ctx.ui.setStatus`. Pi joins them side-by-side on a single footer line and truncates at terminal width; sequence prefix keeps insertion order stable across Pi's alphabetical sort |
 | `extension/src/lifecycle-events.ts` | Scrollback markers (`ensemble:lifecycle` custom messages) — durable `▸ dispatched / ✓ finished / ✗ failed` lines per job, batch-scoped for parallel/lens/adversarial |
 | `extension/src/roles.ts`, `types.ts` | Role enum + result/dispatch types |
 | `extension/src/runs.ts` | `/runs` slash command + transcript browsing/pruning |
