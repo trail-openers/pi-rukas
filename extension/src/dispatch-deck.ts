@@ -40,12 +40,20 @@ export interface DeckEntry {
   /** Zero-padded insertion sequence. Encoded into the setStatus key so Pi's
    *  alphabetical sort matches dispatch order. */
   seq: string;
+  /** When this entry was registered. Used at render time to compute fresh
+   *  elapsed regardless of when the child last emitted an event (#131). */
+  startedAt: number;
 }
+
+/** Re-render cadence (ms) — keeps the elapsed timer ticking between assistant
+ * turns even when the child emits no events. */
+const TICK_INTERVAL_MS = 1000;
 
 const entries = new Map<string, DeckEntry>();
 let activeCtx: ExtensionContext | undefined;
 let pendingRender = false;
 let insertionCounter = 0;
+let tickHandle: ReturnType<typeof setInterval> | undefined;
 
 function isQuiet(): boolean {
   return process.env.PI_ENSEMBLE_QUIET_STATUS === "1";
@@ -62,11 +70,15 @@ function nextSeq(): string {
 /** Capture the Pi extension context from session_start so we can call setStatus later. */
 export function attach(ctx: ExtensionContext): void {
   activeCtx = ctx;
-  if (entries.size > 0) scheduleRender();
+  if (entries.size > 0) {
+    startTickerIfNeeded();
+    scheduleRender();
+  }
 }
 
 /** Drop the context reference and clear any displayed statuses. Called on session_shutdown. */
 export function detach(): void {
+  stopTicker();
   if (activeCtx) {
     for (const entry of entries.values()) {
       try {
@@ -97,7 +109,9 @@ export function startEntry(key: string, opts: StartEntryOpts): void {
     label: opts.label,
     state: emptyRunningState(opts.role, opts.tag),
     seq: nextSeq(),
+    startedAt: Date.now(),
   });
+  startTickerIfNeeded();
   scheduleRender();
 }
 
@@ -120,6 +134,7 @@ export function clearEntry(key: string): void {
       trace(`dispatch-deck: clear setStatus failed: ${(err as Error).message}`);
     }
   }
+  if (entries.size === 0) stopTicker();
 }
 
 /** Pure snapshot for tests — defensive copy. */
@@ -132,10 +147,32 @@ export function snapshot(): DeckEntry[] {
 
 /** Test-only — purge module state between cases. */
 export function reset(): void {
+  stopTicker();
   entries.clear();
   activeCtx = undefined;
   pendingRender = false;
   insertionCounter = 0;
+}
+
+/** Test-only — is the self-tick interval armed? */
+export function isTicking(): boolean {
+  return tickHandle !== undefined;
+}
+
+function startTickerIfNeeded(): void {
+  if (tickHandle !== undefined || isQuiet()) return;
+  tickHandle = setInterval(() => {
+    if (entries.size === 0) return;
+    scheduleRender();
+  }, TICK_INTERVAL_MS);
+  // Don't keep the Node process alive on this timer — it's purely UI.
+  tickHandle.unref?.();
+}
+
+function stopTicker(): void {
+  if (tickHandle === undefined) return;
+  clearInterval(tickHandle);
+  tickHandle = undefined;
 }
 
 function scheduleRender(): void {
@@ -170,9 +207,15 @@ function entryLabel(e: DeckEntry): string {
  * joined by a single space and truncated to terminal width. Keep it short:
  * icon + label + elapsed + tool name (+ use-count if >1). Detailed
  * lastText snippets belong in dispatch_peek, not the deck.
+ *
+ * Elapsed is computed fresh from entry.startedAt at render time (#131) — NOT
+ * from state.elapsedMs, which is only updated on assistant-turn boundaries.
+ * The self-tick interval keeps re-rendering at ~1Hz so the timer stays live
+ * between turns.
  */
-export function formatRow(entry: DeckEntry): string {
-  const parts: string[] = ["⏳", entryLabel(entry), formatElapsed(entry.state.elapsedMs)];
+export function formatRow(entry: DeckEntry, now: number = Date.now()): string {
+  const elapsedMs = Math.max(0, now - entry.startedAt);
+  const parts: string[] = ["⏳", entryLabel(entry), formatElapsed(elapsedMs)];
   if (entry.state.lastToolName) {
     parts.push(
       entry.state.toolUses > 1

@@ -22,6 +22,7 @@ import {
   clearEntry,
   detach,
   formatRow,
+  isTicking,
   reset,
   snapshot,
   startEntry,
@@ -98,61 +99,97 @@ function fakeCtx(): {
 }
 
 // 3. formatRow renders compact single line: icon + label + elapsed + tool.
+//    Elapsed is computed from startedAt (NOT state.elapsedMs) — supplying `now`
+//    pins it for the test.
 {
-  const out = formatRow({
-    key: "df8a-2k",
-    label: "developer",
-    seq: "000001",
-    state: makeState("developer", {
-      elapsedMs: 134000,
-      lastToolName: "bash",
-      toolUses: 7,
-    }),
-  });
+  const startedAt = 1_000_000;
+  const out = formatRow(
+    {
+      key: "df8a-2k",
+      label: "developer",
+      seq: "000001",
+      startedAt,
+      state: makeState("developer", {
+        elapsedMs: 999, // STALE — must not be used at render time
+        lastToolName: "bash",
+        toolUses: 7,
+      }),
+    },
+    startedAt + 134000,
+  );
   assert(out.startsWith("⏳"), "row starts with hourglass icon");
   assert(out.includes("developer"), "row includes label");
-  assert(out.includes("2m14s"), "row includes elapsed");
+  assert(out.includes("2m14s"), "row includes elapsed computed from now − startedAt");
+  assert(!out.includes("999"), "stale state.elapsedMs is NOT rendered (uses startedAt instead)");
   assert(out.includes("bash (#7)"), "row includes tool name + use-count when >1");
   assert(!out.includes("\n"), "row is single-line (no newlines — Pi's footer sanitises them)");
 }
 
 // 4. formatRow shows tool name without count when only 1 use.
 {
-  const out = formatRow({
-    key: "x",
-    label: "explore",
-    seq: "000002",
-    state: makeState("explore", { elapsedMs: 4000, lastToolName: "grep", toolUses: 1 }),
-  });
+  const startedAt = 2_000_000;
+  const out = formatRow(
+    {
+      key: "x",
+      label: "explore",
+      seq: "000002",
+      startedAt,
+      state: makeState("explore", { lastToolName: "grep", toolUses: 1 }),
+    },
+    startedAt + 4000,
+  );
   assert(out.includes(" grep"), "single-use tool includes name");
   assert(!out.includes("(#1)"), "no use-count when only 1 use");
 }
 
 // 5. formatRow omits tool when lastToolName not set.
 {
-  const out = formatRow({
-    key: "x",
-    label: "ops",
-    seq: "000003",
-    state: makeState("ops", { elapsedMs: 1000 }),
-  });
+  const startedAt = 3_000_000;
+  const out = formatRow(
+    {
+      key: "x",
+      label: "ops",
+      seq: "000003",
+      startedAt,
+      state: makeState("ops"),
+    },
+    startedAt + 1000,
+  );
   assert(out === "⏳ ops 1.0s", "no tool → just icon + label + elapsed");
 }
 
 // 6. formatRow does NOT include lastText (footer is single-line; detail goes to dispatch_peek).
 {
-  const out = formatRow({
-    key: "x",
-    label: "developer",
-    seq: "000004",
-    state: makeState("developer", {
-      elapsedMs: 1000,
-      lastToolName: "bash",
-      lastText: "Running tests in worktree-A",
-    }),
-  });
+  const startedAt = 4_000_000;
+  const out = formatRow(
+    {
+      key: "x",
+      label: "developer",
+      seq: "000004",
+      startedAt,
+      state: makeState("developer", {
+        lastToolName: "bash",
+        lastText: "Running tests in worktree-A",
+      }),
+    },
+    startedAt + 1000,
+  );
   assert(!out.includes("Running tests"), "lastText is NOT rendered in the row");
   assert(!out.includes("worktree"), "lastText is NOT rendered in the row");
+}
+
+// 6b. The self-tick is armed when entries exist; stopped when the deck drains (#131).
+{
+  reset();
+  assert(!isTicking(), "ticker is not armed when no entries");
+  startEntry("a", { label: "developer", role: "developer" });
+  assert(isTicking(), "ticker arms when first entry registers");
+  startEntry("b", { label: "explore", role: "explore" });
+  assert(isTicking(), "ticker stays armed across additional entries");
+  clearEntry("a");
+  assert(isTicking(), "ticker still armed while at least one entry remains");
+  clearEntry("b");
+  assert(!isTicking(), "ticker stops when the last entry drains");
 }
 
 // 7. Multiple entries → one setStatus call per entry, each with its own key.
