@@ -3,6 +3,14 @@ export interface DispatchSpec {
   prompt: string;
   cwd?: string;
   /**
+   * Short tag (≤16 chars) disambiguating same-role parallel members in the
+   * live dispatch deck (#136). Used by dispatch_parallel only — single
+   * dispatch_specialist calls render with the bare role and ignore this.
+   * When set: deck row becomes "⏳ developer[task-A] 8s bash". When
+   * omitted: dispatch_parallel falls back to "developer#1", "developer#2".
+   */
+  label?: string;
+  /**
    * Internal-only Pi model id of the form "<provider>/<model>[:thinking]"
    * or a Pi-supported glob like "*sonnet*". Reserved for future internal
    * callers. Agent-callable dispatch tools strip this field at the boundary

@@ -249,6 +249,8 @@ Maximum **10 concurrent tasks** per session.
 @explore (API patterns) + @explore (test patterns) + @developer (scaffolding)
 ```
 
+**Disambiguate same-role parallel members**: when fanning out N specs that share a role via `dispatch_parallel` (e.g., 3 developers across worktrees), pass a short `label` per spec — the live dispatch deck (footer) uses it to render distinct rows like `developer[task-A]` instead of three identical `developer` rows. Mirror the worktree name where possible. Falls back to `<role>#<index>` when omitted.
+
 **Thorough Instructions**: Subagents work only as well as their prompts
 - Include: file paths, issue numbers, expected output format
 - Specify return format: "Return: bullet summary under 200 words"

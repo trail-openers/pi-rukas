@@ -20,6 +20,7 @@ import {
   startBatch,
   startJob,
 } from "../src/async-jobs.ts";
+import * as dispatchDeck from "../src/dispatch-deck.ts";
 import type { DispatchResult } from "../src/types.ts";
 
 let exit = 0;
@@ -215,6 +216,44 @@ async function nextTick() {
     "fail report includes error tail",
   );
   assert(inbox[0].content.length < 500, "fail report is bounded (<500 bytes)");
+}
+
+// ---------------------------------------------------------------------------
+// Test 6 — startBatch propagates per-member labels to the dispatch deck (#136)
+// ---------------------------------------------------------------------------
+{
+  dispatchDeck.reset();
+  const { pi } = makePiStub();
+  startBatch(pi, {
+    batchLabel: "dispatch_parallel",
+    members: [
+      {
+        label: "developer[task-A]",
+        role: "developer",
+        work: () => new Promise(() => undefined), // never resolves — we only inspect the deck snapshot
+      },
+      {
+        label: "developer[task-B]",
+        role: "developer",
+        work: () => new Promise(() => undefined),
+      },
+      {
+        label: "explore[context]",
+        role: "explore",
+        work: () => new Promise(() => undefined),
+      },
+    ],
+  });
+  const snap = dispatchDeck.snapshot();
+  assert(snap.length === 3, "startBatch with 3 members creates 3 deck entries");
+  const labels = snap.map((e) => e.label).sort();
+  assert(
+    JSON.stringify(labels) === '["developer[task-A]","developer[task-B]","explore[context]"]',
+    "deck entry labels match per-member labels (disambiguates same-role members)",
+  );
+  // Cleanup so subsequent tests / suite shutdown don't see leaked entries.
+  killAllJobs();
+  dispatchDeck.reset();
 }
 
 console.log(`\nexit ${exit}`);

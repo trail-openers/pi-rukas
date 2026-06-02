@@ -62,13 +62,19 @@ export function registerDispatchTools(pi: ExtensionAPI) {
   pi.registerTool({
     name: "dispatch_parallel",
     label: "Dispatch Parallel",
-    description: `Fan out TWO OR MORE specialists in parallel (up to ${MAX_PARALLEL}). **Use ONLY when you have 2+ independent subagents to dispatch at the same time** — e.g., explore + developer, or developers across separate worktrees. For a single subagent, use \`dispatch_specialist\` instead; never pass a single-element specs array. Returns a batch handle immediately; ONE consolidated report (covering all members) arrives as a user message when every child has finished.`,
+    description: `Fan out TWO OR MORE specialists in parallel (up to ${MAX_PARALLEL}). **Use ONLY when you have 2+ independent subagents to dispatch at the same time** — e.g., explore + developer, or developers across separate worktrees. For a single subagent, use \`dispatch_specialist\` instead; never pass a single-element specs array. Returns a batch handle immediately; ONE consolidated report (covering all members) arrives as a user message when every child has finished. When fanning out same-role specs (e.g., 3 developers across worktrees), pass a short \`label\` per spec — the live deck uses it to disambiguate rows (\`developer[task-A]\` vs \`developer[task-B]\`).`,
     parameters: Type.Object({
       specs: Type.Array(
         Type.Object({
           role: Type.String({ description: roleDesc }),
           prompt: Type.String(),
           cwd: Type.Optional(Type.String()),
+          label: Type.Optional(
+            Type.String({
+              description:
+                "Short tag (≤16 chars) disambiguating this member in the live deck. Especially useful when multiple specs share the same role — mirror the worktree name where possible (e.g., 'task-A', 'worktree-1', 'refactor-auth'). Falls back to '<role>#<index>' when omitted.",
+            }),
+          ),
         }),
         { maxItems: MAX_PARALLEL },
       ),
@@ -90,17 +96,24 @@ export function registerDispatchTools(pi: ExtensionAPI) {
       const runId = makeRunId();
       const { batchId } = startBatch(pi, {
         batchLabel: "dispatch_parallel",
-        members: specs.map((spec, i) => ({
-          label: spec.role,
-          role: spec.role,
-          work: (signal, hooks) =>
-            spawnSpecialist(spec, {
-              runId,
-              seq: i,
-              signal,
-              onProgress: hooks.onProgress,
-            }),
-        })),
+        members: specs.map((spec, i) => {
+          // Resolve display tag: PM-supplied label takes priority, else index.
+          // The deck row shows `<role>[<tag>]` so the user can tell members apart.
+          const tag = spec.label?.trim() || `#${i + 1}`;
+          const displayLabel = `${spec.role}[${tag}]`;
+          return {
+            label: displayLabel,
+            role: spec.role,
+            work: (signal, hooks) =>
+              spawnSpecialist(spec, {
+                runId,
+                seq: i,
+                tag,
+                signal,
+                onProgress: hooks.onProgress,
+              }),
+          };
+        }),
       });
       return {
         content: [
