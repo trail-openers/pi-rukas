@@ -30,7 +30,7 @@ If no input was provided, ask the user before proceeding.
 
 3. **Interview only what cannot be inferred** — scope, acceptance criteria, constraints, type-specific specifics.
 
-4. **Investigate** — dispatch `explore` via `dispatch_specialist`:
+4. **Investigate** — dispatch `explore`. When the topic decomposes into distinct angles (codebase implementation + open issues for duplicates + prior decisions in different domains), use `dispatch_parallel` with one explore spec per angle so they run concurrently. Otherwise a single `dispatch_specialist explore` is fine.
    ```
    role: explore
    prompt: "Use colgrep to find any existing code implementing what the issue is asking for (e.g. a function, module, or feature concept). Skip colgrep if the request is a meta/project-level question — consult vipune instead. Also check open GitHub issues for duplicates."
@@ -60,6 +60,7 @@ If no input was provided, ask the user before proceeding.
 ## Principles
 
 - Context before drafting — 2-min codebase search prevents a mis-scoped issue.
+- **Parallel where it helps** — multi-angle investigation runs concurrently via `dispatch_parallel`; single-angle is fine sequential.
 - Confirm before creating — issues are harder to clean up than to get right.
 - Type-specific quality — chore ≠ feature; apply the right standard.
 - Epics are containers; implementation details go in child issues.

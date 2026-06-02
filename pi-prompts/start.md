@@ -26,11 +26,11 @@ argument-hint: ""
 
    **Note**: Do not run `colgrep` for project-meta queries — `colgrep init` is the only colgrep call PM makes in /start.
 
-3. **Context sweep** — dispatch explore specialist (runs in parallel with step 4's direct reads):
+3. **Context sweep** — dispatch explore specialist. **Do NOT wait for it before starting step 4** — explore and your own bash reads run concurrently.
    - Use the `dispatch_specialist` tool with `role: explore` and prompt:
      "Run the /start intelligence sweep following your Structured Summary Contract. Return EXACTLY the eight-field structured summary: project, maturity, current_state, conventions, quality_gates, gotchas, open_work, ci_health. No raw output."
 
-4. **Current state of work** — run these directly (one bash call each, in parallel with step 3's dispatched explore):
+4. **Current state of work** — run these directly IN THE SAME PM TURN as step 3's dispatch (one bash call each, all in parallel):
    - `oo git log --oneline -10`
    - `gh issue list --limit 15`
    - `gh pr list`
@@ -57,6 +57,7 @@ This is NOT a report — you are confirming readiness.
 
 ## Principles
 
+- **Parallel first** — explore dispatch (step 3) and direct reads (step 4) run concurrently in the same PM turn.
 - Build on existing knowledge, don't repeat what's in memory.
 - Discover, don't assume.
 - Focus on what enables productivity.

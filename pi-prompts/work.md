@@ -18,6 +18,20 @@ If no issue number provided, ask.
 - **Developer never commits.** Returns with uncommitted changes in the worktree. `ops` commits.
 - **Adversarial gate is mandatory.** After every developer dispatch, run `adversarial_loop` on the resulting diff. `ops` does not commit until `adversarial_loop` returns APPROVED.
 
+## Parallelism mode (default)
+
+**Default to parallel.** At every step below, identify what can run concurrently and dispatch multiple tools in the SAME PM turn. Skip parallelism only when the next dispatch literally depends on prior output (e.g., Step 3's branch name → Step 4's worktree path).
+
+Trust your judgment, but bias hard toward parallel. The live dispatch deck (footer) shows you what's actually in flight — use it to confirm you've fanned out when you intended to.
+
+Concrete defaults this command expects you to exploit:
+
+- **Step 1**: `gh issue view` (your own bash call) PLUS dispatch `explore` IN THE SAME TURN. Do NOT wait for explore before continuing your own reads.
+- **Step 4**: `developer` (one per workstream) PLUS just-in-time `explore` if the developer might benefit from related context (test patterns at the touchpoints, related API surface, prior similar fixes). Do NOT wait for explore to finish — its report arrives alongside the developer's.
+- **Step 7**: the lens review fans out 6 children automatically via `dispatch_lens_review`.
+
+If a step truly doesn't decompose into parallel work (e.g., Step 5's adversarial gate is sequential by design — `adversarial_loop` IS the parallel unit), just do it sequentially. Bias toward parallel, not religious adherence.
+
 ## How dispatch works (read once)
 
 All dispatch tools are async: they return a `{ jobId }` handle in < 100ms. The subagent's final report arrives later as a user message starting with `[ensemble:async]`. After dispatching, **end your turn with a one-line summary** unless you have other parallel work — the user can interact freely while children run. React to the `[ensemble:async]` report when it arrives. Never read transcript files under `~/.pi/agent/ensemble-runs/` — those are user-only. Before declaring the workflow done at the end, call `dispatch_status` to confirm no children are still running.
@@ -25,6 +39,8 @@ All dispatch tools are async: they return a `{ jobId }` handle in < 100ms. The s
 ---
 
 ## Step 1 — Read the issue and project context (parallel)
+
+**In ONE PM turn**: run `gh issue view` AND dispatch `explore` — do not wait for explore before continuing.
 
 ```bash
 gh issue view "$ARGUMENTS"
@@ -55,9 +71,15 @@ Delegate to `ops` via `dispatch_specialist`. The ops prompt MUST explicitly requ
 
 Never silently branch off stale or dirty state. If any precondition fails, ops surfaces the failure verbatim and PM stops the workflow to ask the user.
 
-## Step 4 — Implementation
+## Step 4 — Implementation (parallel-first)
 
-Dispatch `developer` via `dispatch_specialist` for each workstream. When the issue decomposes into N independent workstreams, use `dispatch_parallel` with one developer spec per worktree.
+**In ONE PM turn**, dispatch concurrently using all relevant slots:
+
+1. **Implementation** — for N independent workstreams: ONE `dispatch_parallel` call with one developer spec per worktree. For a single workstream: `dispatch_specialist developer`.
+2. **Just-in-time context** — if the developer might benefit from context Step 1's explore didn't cover (test patterns at the touchpoints, related API surface, prior similar fixes), dispatch `explore` in the SAME TURN. Its report arrives alongside the developer's; synthesise both when the batch reports back.
+3. **Skip parallel-explore only when** the developer task is trivially clear and there is nothing useful explore could surface in time. PM judgment.
+
+Do NOT serialise: do NOT dispatch explore, wait for its report, then dispatch developer. Dispatch both in one turn.
 
 Required developer prompt fields:
 - **Task**: one-line directive ("Implement issue #N: <brief>")
@@ -161,7 +183,9 @@ vipune add 'issue #N: [decision/pattern discovered]'
 
 ## Principles
 
-- Parallel first.
+- **Parallel first** — at every step, ask "what else can run alongside this?" Dispatch in one PM turn, end with a one-line status. Never serialise independent work.
+- **Trust PM judgment** — skip parallelism only when the next dispatch literally depends on prior output.
+- **Use the deck** — the footer shows what's in flight. If you intended to fan out and only see one row, you serialised by accident.
 - Worktrees are temporary scratch.
 - One PR per issue.
 - Developer hands off with uncommitted changes — `ops` commits.
