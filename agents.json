@@ -86,6 +86,7 @@
         "dispatch_kill": "allow",
         "dispatch_peek": "allow",
         "dispatch_steer": "allow",
+        "check_review_cap": "allow",
         "adversarial_loop": "allow",
         "task": {
           "*": "deny",

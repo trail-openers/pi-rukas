@@ -114,7 +114,7 @@ Dispatch `ops`:
 
 ## Step 7 — Six-pass code review (MANDATORY)
 
-**Initialise round tracking**: `review_round = 1` on first entry. Track wall-clock from now (90-min cap for the entire Step 7 loop).
+**Initialise round tracking + wall-clock cap**: `review_round = 1` on first entry. Call `check_review_cap` with `key: "issue-${N}"` (or `pr-${N}`) and `reset: true` to start the 90-min wall-clock timer in extension state — this is the deterministic source of truth; do not try to track wall-clock yourself.
 
 **Fetch the PR diff ONCE** and reuse it for the lens review and any subsequent retry rounds:
 
@@ -148,7 +148,7 @@ Run the following cycle, incrementing `review_round` after each complete pass:
 
 6. **Check loop caps** BEFORE starting the next round:
    - If `review_round > 3` → halt, summarise what keeps failing per lens, and ask the user for guidance.
-   - If wall-clock exceeds 90 minutes → halt with timeout message.
+   - Call `check_review_cap` with `key: "issue-${N}"` (no `reset`). If `ok: false`, halt with the tool's reason text and ask the user for guidance.
 
 7. **User override paths** (only when caps are exceeded, only for verdicts ≤ ISSUES_FOUND, never for CRITICAL):
    - Option A: continue to Step 8 with the lens issues unresolved. Requires explicit "yes" confirmation. Record the override in vipune: `vipune add 'override issue #N PR#M: [lens names] bypassed. Reason: [user-provided]'`.

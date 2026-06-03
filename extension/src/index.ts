@@ -12,6 +12,7 @@ import * as lifecycle from "./lifecycle-events.ts";
 import { loadOverrides } from "./model-config.ts";
 import { registerModelPicker } from "./model-picker.ts";
 import { registerPermissionGuard } from "./permission-guard.ts";
+import { registerCheckReviewCapTool } from "./review-cap.ts";
 import { pruneOldRuns, registerRunsCommand } from "./runs.ts";
 import { trace } from "./trace.ts";
 
@@ -23,6 +24,7 @@ export default async function (pi: ExtensionAPI) {
   registerDispatchStatusTool(pi);
   registerDispatchPeekTool(pi);
   registerDispatchSteerTool(pi);
+  registerCheckReviewCapTool(pi);
   registerAdversarialTool(pi);
   registerLensReviewTool(pi);
   registerCommands(pi);
