@@ -101,7 +101,8 @@ Attempting git commands after finishing wastes time and context. PM knows your c
 - All linting passing
 - Type checking passing
 - No quality gate bypasses (#noqa, @ts-ignore, eslint-disable)
-- For Rust projects: run `cargo fmt --all` before returning
+- For Rust projects: run `oo cargo fmt --all` before returning
+- **All verbose-runner commands use the `oo` prefix** — `oo cargo test`, `oo cargo clippy`, `oo cargo build`, `oo bun test`, `oo npm test`, `oo pnpm test`, `oo yarn test`, `oo pytest`. These produce 50+ lines of output that bloat your context and the dispatch report PM ultimately reads. `oo` compresses them to `✓ cargo test (47 passed)` while preserving failures verbatim. You see the verdict, not the full transcript.
 
 ## Feature Branch Verification
 

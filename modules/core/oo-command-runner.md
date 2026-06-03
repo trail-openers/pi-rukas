@@ -1,6 +1,20 @@
 # oo: Context-Efficient Command Runner
 
-## When to use `oo`
+## Mandatory `oo` prefix for verbose runners
+
+These commands ALWAYS use `oo` — no judgment call, no exceptions:
+
+- `oo cargo test`, `oo cargo clippy`, `oo cargo build`, `oo cargo fmt`, `oo cargo check`
+- `oo bun test`, `oo bun run build`, `oo bun run typecheck`, `oo bun run lint`
+- `oo npm test`, `oo npm run build`, `oo pnpm test`, `oo yarn test` (and equivalents)
+- `oo pytest`, `oo uv run pytest`
+- `oo ruff`, `oo go test`, `oo cargo nextest`
+
+They produce 50+ lines of output that bloat your context and the dispatch report PM ultimately reads. Bare is wasteful even when allowlisted — `oo` compresses to `✓ cargo test (47 passed)` while preserving failures verbatim.
+
+The nuanced "Wrap with oo / Run bare" doctrine below covers everything ELSE — `git status`, `gh issue view`, `jq` pipes, single-line reads.
+
+## When to use `oo` (other commands)
 
 `oo` exists to compress *verbose* command output (e.g., `cargo test` printing 50 test names) into a one-line signal. Use it when context-saving is a no-brainer. Do **not** wrap commands whose raw output you actually need to read — that just adds friction without saving tokens.
 
@@ -8,7 +22,7 @@
 - `oo git log --oneline -10` — multi-line history, summary-friendly
 - `oo git diff` / `oo git show` / `oo git shortlog` — multi-line diffs / commit metadata
 - `oo git rev-list` / `oo git for-each-ref` — list output
-- `oo cargo test` / `oo bun test` / `oo npm test` — verbose test runners (you want pass/fail, not all 47 test names)
+- Verbose test runners and build tools — see the **Mandatory** list above
 
 **Run bare (short OR you need the raw content):**
 - `git status` — small change-summary the agent needs to act on
