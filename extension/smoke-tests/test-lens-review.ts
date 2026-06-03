@@ -203,5 +203,95 @@ assert(
   assert(skipped === 0, "no skipped counter for entries missing 'input' entirely");
 }
 
+// ---------------------------------------------------------------------------
+// Per-lens retry + REVIEW_INCOMPLETE verdict (#3)
+// ---------------------------------------------------------------------------
+
+import type { LensRunResult } from "../src/lens-review.ts";
+
+function lensResult(
+  lens: "SECURITY" | "ERROR_HANDLING" | "TYPE_SAFETY" | "PERFORMANCE" | "ARCHITECTURE" | "SIMPLICITY",
+  opts: { ok: boolean; attempts: number; blocked: boolean; findings?: typeof mk extends (...a: never[]) => infer F ? F[] : never },
+): LensRunResult {
+  return {
+    lens,
+    ok: opts.ok,
+    ms: 1000,
+    findings: opts.findings ?? [],
+    attempts: opts.attempts,
+    blocked: opts.blocked,
+  };
+}
+
+// 15. Verdict precedence: any blocked lens → REVIEW_INCOMPLETE (even with no
+//     findings on the lenses that did complete).
+{
+  const lenses: LensRunResult[] = [
+    lensResult("SECURITY", { ok: false, attempts: 4, blocked: true }),
+    lensResult("ERROR_HANDLING", { ok: true, attempts: 1, blocked: false }),
+    lensResult("TYPE_SAFETY", { ok: true, attempts: 1, blocked: false }),
+    lensResult("PERFORMANCE", { ok: true, attempts: 1, blocked: false }),
+    lensResult("ARCHITECTURE", { ok: true, attempts: 1, blocked: false }),
+    lensResult("SIMPLICITY", { ok: true, attempts: 1, blocked: false }),
+  ];
+  assert(
+    computeVerdict([], lenses) === "REVIEW_INCOMPLETE",
+    "blocked lens with no findings → REVIEW_INCOMPLETE",
+  );
+}
+
+// 16. Verdict precedence: blocked beats CRITICAL — we won't claim CRITICAL
+//     when a lens didn't actually run; the review is incomplete first.
+{
+  const lenses: LensRunResult[] = [
+    lensResult("ERROR_HANDLING", { ok: false, attempts: 4, blocked: true }),
+    lensResult("SECURITY", { ok: true, attempts: 1, blocked: false }),
+  ];
+  const findings = [mk("SECURITY", "CRITICAL", "a.ts", 1, "RCE")];
+  assert(
+    computeVerdict(findings, lenses) === "REVIEW_INCOMPLETE",
+    "blocked lens preempts CRITICAL verdict (review is incomplete first)",
+  );
+}
+
+// 17. Verdict precedence: all lenses complete + CRITICAL → CRITICAL_ISSUES_FOUND.
+{
+  const lenses: LensRunResult[] = [
+    lensResult("SECURITY", { ok: true, attempts: 1, blocked: false }),
+    lensResult("ERROR_HANDLING", { ok: true, attempts: 1, blocked: false }),
+  ];
+  const findings = [mk("SECURITY", "CRITICAL", "a.ts", 1, "RCE")];
+  assert(
+    computeVerdict(findings, lenses) === "CRITICAL_ISSUES_FOUND",
+    "no blocked + CRITICAL → CRITICAL_ISSUES_FOUND (pre-#3 behaviour preserved)",
+  );
+}
+
+// 18. Verdict precedence: succeeded-with-retries does NOT block. Retries are
+//     informational; the lens did complete and contribute findings.
+{
+  const lenses: LensRunResult[] = [
+    lensResult("SECURITY", { ok: true, attempts: 3, blocked: false }), // succeeded on retry
+    lensResult("ERROR_HANDLING", { ok: true, attempts: 1, blocked: false }),
+  ];
+  assert(
+    computeVerdict([], lenses) === "APPROVED",
+    "successful retries don't trigger REVIEW_INCOMPLETE — only blocked=true does",
+  );
+}
+
+// 19. Backwards compat: computeVerdict still works without the lensResults arg.
+//     Pre-#3 callers (and pure verdict-from-findings tests) keep working.
+{
+  assert(
+    computeVerdict([mk("SECURITY", "CRITICAL", "a.ts", 1, "x")]) === "CRITICAL_ISSUES_FOUND",
+    "computeVerdict(findings) without lensResults still resolves CRITICAL",
+  );
+  assert(
+    computeVerdict([], undefined) === "APPROVED",
+    "computeVerdict(findings, undefined) explicit-undefined → APPROVED",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

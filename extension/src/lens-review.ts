@@ -31,7 +31,23 @@ export const LENSES = [
 
 export type LensName = (typeof LENSES)[number]["name"];
 export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
-export type Verdict = "APPROVED" | "ISSUES_FOUND" | "CRITICAL_ISSUES_FOUND";
+export type Verdict =
+  | "APPROVED"
+  | "ISSUES_FOUND"
+  | "CRITICAL_ISSUES_FOUND"
+  /** At least one lens failed all retry attempts — the review is incomplete
+   * and the user/PM must decide whether to retry the whole pass, override,
+   * or halt. Never silently downgrade a six-pass review to a five-pass one (#3). */
+  | "REVIEW_INCOMPLETE";
+
+/** Max attempts per lens — 1 initial + 3 retries on spawn failure or non-zero
+ * exit. Matches the opencode contract. Aborted lenses (user cancel) don't
+ * retry. */
+const MAX_LENS_ATTEMPTS = 4;
+
+/** Backoff between retries (ms). Small fixed delay — these failures are
+ * usually transient (process spawn pressure, provider-side rate limits). */
+const LENS_RETRY_BACKOFF_MS = 1000;
 
 export interface RawFinding {
   severity: string;
@@ -56,6 +72,12 @@ export interface LensRunResult {
   transcriptPath?: string;
   /** Set when the child failed to spawn or returned non-zero. */
   parseError?: string;
+  /** Number of spawn attempts made for this lens (1 = no retries; up to
+   * MAX_LENS_ATTEMPTS on transient failures). #3. */
+  attempts: number;
+  /** True when ALL attempts failed — the lens contributes no findings and
+   * the overall verdict is REVIEW_INCOMPLETE. #3. */
+  blocked: boolean;
 }
 
 export interface LensReviewSummary {
@@ -188,7 +210,24 @@ function sortFindings(a: Finding, b: Finding): number {
   return (a.line ?? 0) - (b.line ?? 0);
 }
 
-export function computeVerdict(findings: Finding[]): Verdict {
+/**
+ * Map (findings × lens completion state) to a single verdict.
+ *
+ * Precedence (first match wins):
+ *   1. REVIEW_INCOMPLETE — at least one lens hit max retries (#3); the
+ *      six-pass review degenerated to a five-or-fewer-pass review. Never
+ *      silently downgrade — surface explicitly.
+ *   2. CRITICAL_ISSUES_FOUND — any CRITICAL finding from any completed lens.
+ *   3. ISSUES_FOUND — any HIGH / MEDIUM finding from any completed lens.
+ *   4. APPROVED — only LOW (or no) findings AND all lenses completed.
+ *
+ * lensResults is optional for backwards compat with pure-function tests
+ * that only care about finding-driven verdicts. When omitted, blocked
+ * lenses can't be detected and the verdict logic falls back to pre-#3
+ * behaviour.
+ */
+export function computeVerdict(findings: Finding[], lensResults?: LensRunResult[]): Verdict {
+  if (lensResults?.some((r) => r.blocked)) return "REVIEW_INCOMPLETE";
   if (findings.some((f) => f.severity === "CRITICAL")) return "CRITICAL_ISSUES_FOUND";
   if (findings.some((f) => f.severity === "HIGH" || f.severity === "MEDIUM")) return "ISSUES_FOUND";
   return "APPROVED";
@@ -239,41 +278,75 @@ export async function runLensReview(opts: {
       tag,
       batchKey,
     });
-    let result: DispatchResult;
-    try {
-      result = await spawnSpecialist(
-        { role: "code-review-specialist", prompt, cwd: opts.cwd },
-        {
-          runId,
-          tag,
-          // Pin to this lens's skill + load the report_finding tool. `--no-extensions`
-          // (set in spawn.ts) disables auto-discovery; `--extension <path>` still
-          // loads explicit paths, so the reporter is the only extension in the child.
-          extraArgs: ["--no-skills", "--skill", skillPath, "--extension", LENS_REPORTER_PATH],
-          // No timeoutMs override — inherits DEFAULT_SPAWN_TIMEOUT_MS (30 min, #114).
-          signal: opts.signal,
-          onProgress: (state) => dispatchDeck.updateEntry(deckKey, state),
-        },
-      );
-    } catch (err) {
-      dispatchDeck.clearEntry(deckKey);
-      bumpBatch();
+
+    // Retry loop (#3). Up to MAX_LENS_ATTEMPTS attempts on transient
+    // failure (spawn error OR non-zero exit). User abort (opts.signal)
+    // breaks out immediately — that's the operator saying stop, not a
+    // transient failure. Backoff between retries gives the provider /
+    // local process spawner room to recover.
+    let attempts = 0;
+    let result: DispatchResult | undefined;
+    let lastError: string | undefined;
+    while (attempts < MAX_LENS_ATTEMPTS) {
+      attempts++;
+      if (opts.signal?.aborted) {
+        lastError = "aborted by user";
+        break;
+      }
+      try {
+        result = await spawnSpecialist(
+          { role: "code-review-specialist", prompt, cwd: opts.cwd },
+          {
+            runId,
+            tag,
+            // Pin to this lens's skill + load the report_finding tool. `--no-extensions`
+            // (set in spawn.ts) disables auto-discovery; `--extension <path>` still
+            // loads explicit paths, so the reporter is the only extension in the child.
+            extraArgs: ["--no-skills", "--skill", skillPath, "--extension", LENS_REPORTER_PATH],
+            // No timeoutMs override — inherits DEFAULT_SPAWN_TIMEOUT_MS (30 min, #114).
+            signal: opts.signal,
+            onProgress: (state) => dispatchDeck.updateEntry(deckKey, state),
+          },
+        );
+        if (result.ok) {
+          lastError = undefined;
+          break; // success
+        }
+        lastError = `attempt ${attempts}/${MAX_LENS_ATTEMPTS}: exit ${result.exitCode ?? "?"}`;
+      } catch (err) {
+        lastError = `attempt ${attempts}/${MAX_LENS_ATTEMPTS}: spawn failed: ${(err as Error).message}`;
+      }
+      // Backoff before next retry (skipped on last attempt to keep total
+      // wall-clock bounded).
+      if (attempts < MAX_LENS_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, LENS_RETRY_BACKOFF_MS));
+      }
+    }
+
+    dispatchDeck.clearEntry(deckKey);
+    bumpBatch();
+
+    // All attempts failed (or user aborted) — lens is blocked, no findings.
+    if (!result || !result.ok) {
       return {
         lens: lens.name,
         ok: false,
-        ms: 0,
+        ms: result?.ms ?? 0,
         findings: [],
-        parseError: `spawn failed: ${(err as Error).message}`,
+        attempts,
+        blocked: true,
+        parseError: lastError ?? "unknown failure",
       };
     }
-    dispatchDeck.clearEntry(deckKey);
-    bumpBatch();
+
     const { findings, skipped } = extractFindings(result.toolUses, lens.name);
     return {
       lens: lens.name,
       ok: result.ok,
       ms: result.ms,
       findings,
+      attempts,
+      blocked: false,
       model: result.model,
       transcriptPath: result.transcriptPath,
       parseError: skipped > 0 ? `${skipped} malformed report_finding call(s) skipped` : undefined,
@@ -284,7 +357,7 @@ export async function runLensReview(opts: {
   dispatchDeck.clearBatchEntry(batchKey);
   const all = lensResults.flatMap((r) => r.findings);
   const deduped = dedupeFindings(all);
-  const verdict = computeVerdict(deduped);
+  const verdict = computeVerdict(deduped, lensResults);
   return {
     verdict,
     totalFindings: deduped.length,
@@ -295,10 +368,21 @@ export async function runLensReview(opts: {
 }
 
 function renderSummary(s: LensReviewSummary): string {
+  const blockedLenses = s.lenses.filter((r) => r.blocked);
+  const retriedLenses = s.lenses.filter((r) => !r.blocked && r.attempts > 1);
+
   const lensLines = s.lenses.map((r) => {
-    const tag = r.ok
-      ? `${r.findings.length} finding${r.findings.length === 1 ? "" : "s"}`
-      : (r.parseError ?? "fail");
+    let tag: string;
+    if (r.blocked) {
+      tag = `BLOCKED after ${r.attempts} attempts — ${r.parseError ?? "fail"}`;
+    } else if (r.ok) {
+      const findingCount = `${r.findings.length} finding${r.findings.length === 1 ? "" : "s"}`;
+      const retryNote =
+        r.attempts > 1 ? ` (succeeded on attempt ${r.attempts}/${MAX_LENS_ATTEMPTS})` : "";
+      tag = `${findingCount}${retryNote}`;
+    } else {
+      tag = r.parseError ?? "fail";
+    }
     const model = r.model ? ` · ${r.model}` : "";
     return `  ${r.lens.padEnd(16)} ${(`${r.ms}ms`).padStart(7)}   ${tag}${model}`;
   });
@@ -314,9 +398,36 @@ function renderSummary(s: LensReviewSummary): string {
     .filter((r) => r.transcriptPath)
     .map((r) => `  ${r.lens}: ${r.transcriptPath}`)
     .join("\n");
+
+  // Blocked-lens banner — prominent because verdict=REVIEW_INCOMPLETE means
+  // the six-pass review did NOT actually complete six lenses. PM/user MUST
+  // decide whether to retry, override, or halt; never silently downgrade (#3).
+  const blockedBanner =
+    blockedLenses.length > 0
+      ? [
+          "",
+          `⛔ REVIEW INCOMPLETE: ${blockedLenses.length}/${s.lenses.length} lens(es) failed all ${MAX_LENS_ATTEMPTS} attempts:`,
+          ...blockedLenses.map((r) => `  - ${r.lens}: ${r.parseError ?? "unknown failure"}`),
+          "",
+          "The verdict above is computed from the lenses that DID complete; the failed lens(es) contributed zero findings — they did not approve, they did not run. Re-dispatch dispatch_lens_review to retry, or surface this to the user for an override decision per AGENTS.md Step 7 doctrine.",
+        ]
+      : [];
+
+  const retryNote =
+    retriedLenses.length > 0
+      ? [
+          "",
+          `ℹ Retry note: ${retriedLenses.length} lens(es) needed retries but eventually succeeded — ${retriedLenses
+            .map((r) => `${r.lens}(×${r.attempts})`)
+            .join(", ")}.`,
+        ]
+      : [];
+
   return [
     `Six-pass code review verdict: ${s.verdict}`,
     `Total findings: ${s.totalFindings}  (${sevSummary || "none"})`,
+    ...blockedBanner,
+    ...retryNote,
     "",
     "Per-lens results:",
     ...lensLines,
@@ -361,9 +472,15 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
         work: async (signal): Promise<DispatchResult> => {
           const start = Date.now();
           const summary = await runLensReview({ ...params, signal });
+          // ok is true when the review completed AND the verdict is neither
+          // CRITICAL nor INCOMPLETE. INCOMPLETE means at least one lens
+          // failed all retries (#3) — the review did NOT actually run six
+          // passes, so PM/user must decide whether to retry or override.
           return {
             role: "lens-review",
-            ok: summary.verdict !== "CRITICAL_ISSUES_FOUND",
+            ok:
+              summary.verdict !== "CRITICAL_ISSUES_FOUND" &&
+              summary.verdict !== "REVIEW_INCOMPLETE",
             text: renderSummary(summary),
             toolUses: [],
             ms: Date.now() - start,
