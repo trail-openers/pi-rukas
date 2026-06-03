@@ -273,7 +273,9 @@ function fakeCtx(): { calls: WidgetCall[]; ctx: Parameters<typeof attach>[0] } {
   const last = calls[calls.length - 1];
   assert(last?.key === "ensemble:deck", "setWidget called with 'ensemble:deck' key");
   assert(Array.isArray(last?.content), "setWidget called with array content (multi-line)");
-  assert(last?.content?.length === 2, "content has one line per entry");
+  // Two entries + one trailing blank for breathing room (#143).
+  assert(last?.content?.length === 3, "content has one line per entry plus a trailing blank");
+  assert(last?.content?.at(-1) === "", "last element is an empty trailing line (#143)");
   assert(last?.options?.placement === "belowEditor", "widget placement is 'belowEditor'");
   detach();
 }

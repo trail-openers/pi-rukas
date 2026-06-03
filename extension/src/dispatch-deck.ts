@@ -282,7 +282,9 @@ function renderNow(): void {
       }
       return;
     }
-    activeCtx.ui.setWidget(WIDGET_KEY, lines, { placement: "belowEditor" });
+    // Trailing empty line keeps Pi's cwd / status line from hugging the
+    // last entry — pure presentation, not part of buildLines (#143).
+    activeCtx.ui.setWidget(WIDGET_KEY, [...lines, ""], { placement: "belowEditor" });
     widgetVisible = true;
   } catch (err) {
     trace(`dispatch-deck: setWidget failed: ${(err as Error).message}`);
