@@ -117,10 +117,6 @@ Before starting work:
 4. If branch name is wrong → ask PM to have @ops rename it
 
 <!-- AGENT-CAPABILITIES-START -->
-<!-- Auto-generated from agents.json -->
-
-### Tools & Permissions
-**Tools:** read, write, edit, rg, skill, webfetch, list, todowrite
-**MCP:** context7, meadow
-**Bash (deny-all + allowlist):** bun test --test *, cargo test --test *, colgrep *, curl *, curl http://127.0.0.1*, curl http://localhost*, curl https://127.0.0.1*, curl https://localhost*, docker *, echo*, go test -run *, head*, jest --testNamePattern *, jq*, kide *, ls*, npx jest --testNamePattern *, oo animate*, oo bun *, oo bun install*, oo bun run build*, oo bun run dev*, oo bun run format*, oo bun run lint*, oo bun run test*, oo bun run type-check*, oo bun run typecheck*, oo bun test*, oo cargo *, oo cargo test*, oo compare*, oo composite*, oo conjure*, oo convert*, oo display*, oo docker *, oo git *, oo git branch --show-current*, oo git branch*, oo git diff*, oo git log*, oo git rev-parse*, oo git show*, oo git status*, oo go *, oo help *, oo identify*, oo import*, oo jest*, oo npm *, oo npm ci*, oo npm install*, oo npm run build*, oo npm run dev*, oo npm run format*, oo npm run lint*, oo npm run type-check*, oo npm run typecheck*, oo npm test*, oo npx *, oo npx jest*, oo patterns, oo pnpm *, oo pnpm install*, oo pnpm run build*, oo pnpm run dev*, oo pnpm run format*, oo pnpm run lint*, oo pnpm run type-check*, oo pnpm run typecheck*, oo pnpm test*, oo pytest*, oo recall *, oo ruff *, oo stream*, oo uv *, oo uv run *.py*, oo uv run pytest*, oo uv sync*, oo yarn *, oo yarn install*, oo yarn run build*, oo yarn run dev*, oo yarn run format*, oo yarn run lint*, oo yarn run type-check*, oo yarn run typecheck*, oo yarn test*, podman *, pytest *.py::*, scripts/dev-server logs, scripts/dev-server start, scripts/dev-server status, scripts/dev-server stop, scripts/reality-gate*, sort*, sqlite3 -readonly .sammas/store.db *, tail*, tee*, uniq*, uuidgen*, uv run pytest *.py::*, vipune *, wc*, which*
+<!-- Auto-generated from agents.json — do NOT hand-edit. -->
+<!-- Run `bun run build` (or `./install.sh`) to regenerate the live capability block into dist/prompts/standard/<role>.md. -->
 <!-- AGENT-CAPABILITIES-END -->

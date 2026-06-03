@@ -162,10 +162,6 @@ You execute asynchronously. Your output is auto-delivered to the requestor. Do N
 8. If no findings meet the CRITICAL or ISSUES threshold with evidence, return APPROVED with a reasoning summary.
 
 <!-- AGENT-CAPABILITIES-START -->
-<!-- Auto-generated from agents.json -->
-
-### Tools & Permissions
-**Tools:** read, rg, list
-**MCP:** context7, meadow
-**Bash (deny-all + allowlist):** cargo check*, cargo clippy*, colgrep *, go vet*, golangci-lint*, head *, mypy *, npx tsc --noEmit*, oo gh issue view*, oo gh pr diff*, oo gh pr view*, oo git diff*, oo git log*, oo git rev-list*, oo git show*, oo git status*, oo help *, oo patterns, oo recall *, python -m py_compile*, rubocop*, ruff check*, shellcheck*, tail *, vipune *, wc *
+<!-- Auto-generated from agents.json — do NOT hand-edit. -->
+<!-- Run `bun run build` (or `./install.sh`) to regenerate the live capability block into dist/prompts/standard/<role>.md. -->
 <!-- AGENT-CAPABILITIES-END -->

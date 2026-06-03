@@ -122,10 +122,6 @@ Next Steps: [what needs to happen]
 **CRITICAL RULE**: If `Skill Load Status=FAILED`, verdict CANNOT be APPROVED. Must return `Status: BLOCKED` with the skill load error.
 
 <!-- AGENT-CAPABILITIES-START -->
-<!-- Auto-generated from agents.json -->
-
-### Tools & Permissions
-**Tools:** read, rg, skill, webfetch, list, todowrite
-**MCP:** context7, meadow
-**Bash (deny-all + allowlist):** colgrep *, head*, jq*, oo gh issue list*, oo gh issue view*, oo gh pr checks*, oo gh pr diff*, oo gh pr list*, oo gh pr view*, oo gh run list*, oo gh run view*, oo git branch*, oo git diff*, oo git log*, oo git merge-base*, oo git rev-list*, oo git rev-parse*, oo git show*, oo git status*, oo help *, oo patterns, oo recall *, tail*, vipune *, wc*, which*
+<!-- Auto-generated from agents.json — do NOT hand-edit. -->
+<!-- Run `bun run build` (or `./install.sh`) to regenerate the live capability block into dist/prompts/standard/<role>.md. -->
 <!-- AGENT-CAPABILITIES-END -->

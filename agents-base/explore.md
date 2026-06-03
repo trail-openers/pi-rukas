@@ -211,10 +211,6 @@ Once complete:
 - Let PM delegate implementation to specialists
 
 <!-- AGENT-CAPABILITIES-START -->
-<!-- Auto-generated from agents.json -->
-
-### Tools & Permissions
-**Tools:** read, rg, skill, webfetch, list, todowrite
-**MCP:** context7, meadow
-**Bash (deny-all + allowlist):** colgrep *, echo *, head*, jq*, kide *, oo gh *, oo gh api*, oo gh issue list*, oo gh issue view*, oo gh pr list*, oo gh pr view*, oo gh run list*, oo gh run view*, oo git *, oo git branch*, oo git config --get*, oo git diff*, oo git log*, oo git merge-base*, oo git remote*, oo git rev-list*, oo git rev-parse*, oo git show*, oo git status*, oo help *, oo patterns, oo recall *, parallel-cli *, redis-cli* CLIENT LIST *, redis-cli* DBSIZE*, redis-cli* EXISTS *, redis-cli* GET *, redis-cli* HGET *, redis-cli* HGETALL *, redis-cli* HKEYS *, redis-cli* HLEN *, redis-cli* HMGET *, redis-cli* INFO *, redis-cli* KEYS *, redis-cli* LINDEX *, redis-cli* LLEN *, redis-cli* LRANGE *, redis-cli* MGET *, redis-cli* PTTL *, redis-cli* SCAN *, redis-cli* SCARD *, redis-cli* SISMEMBER *, redis-cli* SLOWLOG *, redis-cli* SMEMBERS *, redis-cli* TTL *, redis-cli* TYPE *, redis-cli* ZCARD *, redis-cli* ZRANGE *, redis-cli* ZSCORE *, sort*, tail*, tee *, uniq*, vipune *, wc*, which*
+<!-- Auto-generated from agents.json — do NOT hand-edit. -->
+<!-- Run `bun run build` (or `./install.sh`) to regenerate the live capability block into dist/prompts/standard/<role>.md. -->
 <!-- AGENT-CAPABILITIES-END -->

@@ -289,10 +289,6 @@ For CI monitoring:
 - `ci` tool (command: list, args: ["--branch", "main", "--limit", "3"])
 
 <!-- AGENT-CAPABILITIES-START -->
-<!-- Auto-generated from agents.json -->
-
-### Tools & Permissions
-**Tools:** read, rg, webfetch, list, todowrite
-**MCP:** meadow
-**Bash (deny-all + allowlist):** ./build.sh*, bun run build*, cargo --version, cargo build*, cargo fmt*, chmod*, codesign*, cp *, cut*, docker *, docker compose*, docker-compose*, grep *, hcloud*, jq*, kamal*, ls*, mkdir*, mv *, npm ci*, npm install*, npm run build*, oo gh*, oo git *, oo git -C *, oo git add*, oo git branch*, oo git checkout*, oo git cherry-pick*, oo git commit*, oo git diff*, oo git fetch*, oo git log*, oo git merge*, oo git pull*, oo git push*, oo git rebase*, oo git remote*, oo git reset*, oo git rev-list*, oo git revert*, oo git rm*, oo git show*, oo git stash*, oo git status*, oo git submodule*, oo git tag*, oo git worktree*, oo help *, oo patterns, oo recall *, podman *, rm *, rustc --version*, sort*, ssh *, tar*, uniq*, vipune *, wc*, which*, xargs*, xattr*
+<!-- Auto-generated from agents.json — do NOT hand-edit. -->
+<!-- Run `bun run build` (or `./install.sh`) to regenerate the live capability block into dist/prompts/standard/<role>.md. -->
 <!-- AGENT-CAPABILITIES-END -->
