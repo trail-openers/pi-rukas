@@ -409,6 +409,8 @@
           "gh pr view*": "allow",
           "gh pr diff*": "allow",
           "gh pr checks*": "allow",
+          "gh pr review --approve*": "allow",
+          "gh pr review --request-changes*": "allow",
           "gh issue view*": "allow",
           "git diff*": "allow",
           "oo git status*": "allow",
