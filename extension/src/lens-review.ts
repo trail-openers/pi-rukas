@@ -237,6 +237,7 @@ export async function runLensReview(opts: {
       label: `code-review-specialist[${tag}]`,
       role: "code-review-specialist",
       tag,
+      batchKey,
     });
     let result: DispatchResult;
     try {

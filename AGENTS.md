@@ -69,30 +69,7 @@ pi-ensemble has **two distinct codebases** that need different handling. Misiden
 
 ### Extension code (`extension/src/`)
 
-The major modules — know which one to edit for which kind of change:
-
-| File | Owns | Edit when |
-|---|---|---|
-| `index.ts` | Extension activation, tool/command registration | Adding/removing a top-level command or tool |
-| `commands.ts` | Slash-command handlers, PM doctrine injection | Changing slash-command body loading, PM sticky preamble |
-| `dispatch.ts` | `dispatch_specialist` and `dispatch_parallel` tools | Single/parallel dispatch semantics |
-| `permission-guard.ts` | Top-level session permission enforcement (project + global + `agents.json` layers); bash subcommand allowlist matching; decision cache | Permission prompts, cache shape, allow/deny logic |
-| `dispatch-status.ts` | `dispatch_status`, `dispatch_kill` tools | Job-introspection surface |
-| `dispatch-peek.ts` | `dispatch_peek` tool — bounded RunningState snapshot (turns, lastTool, ≤200-char lastText) | PM "what is X doing right now?" |
-| `async-jobs.ts` | Job registry, push-callback delivery via `pi.sendUserMessage` | All async-dispatch lifecycle changes |
-| `spawn.ts` | Fire-and-forget `pi -p --mode json` child spawn | Single-shot subagent spawn behaviour |
-| `adversarial.ts` | Encapsulated 3-round adversarial review-then-fix gate | The mandatory adversarial gate after every developer dispatch |
-| `lens-review.ts` | Six-pass code-review orchestrator | Lens dispatch, deduplication, verdict computation |
-| `lens-reporter.ts` | Child extension loaded into review specialists | `report_finding` tool registration |
-| `model-adapters.ts` | Per-LLM-family text-artifact filtering | Adding support for a new model family with known quirks |
-| `models.ts` + `model-config.ts` + `model-picker.ts` | Per-role model resolution, `/ensemble-model` interactive picker | Model resolution priority changes |
-| `progress.ts` | Per-child live-progress state for `onUpdate` callbacks | Tool-output stream rendering |
-| `dispatch-deck.ts` | Live footer status — one `ensemble:deck:<seq>-<jobId>` entry per in-flight subagent via `ctx.ui.setStatus`, plus a persistent `batch[<role>×N]` summary row per `dispatch_parallel` / `dispatch_lens_review` invocation that survives individual member completions. Per-row rendering includes a truncated tool-arg hint (`bash parallel-cli research poll trun_…`). Pi joins them side-by-side and truncates at terminal width; sequence prefix keeps insertion order stable across Pi's alphabetical sort | Row rendering, deck-entry lifecycle, batch summary row |
-| `lifecycle-events.ts` | Scrollback markers for dispatch transitions (`ensemble:lifecycle` custom messages) — durable record of dispatched/completed/failed events | Scrollback formatting, renderer wiring |
-| `roles.ts` + `types.ts` | Role enum + result/dispatch types | New specialist role |
-| `runs.ts` | `/runs` slash command + transcript browsing/pruning | Transcript management |
-| `worktree.ts` | Git worktree helpers (delegated to ops in practice) | Worktree lifecycle |
-| `trace.ts` | Gated stderr trace (set `PI_ENSEMBLE_DEBUG=1`) | Debug instrumentation |
+Each module's responsibilities are documented in the jsdoc header of its source file — that's the authoritative contract, and it evolves with the code. Run `ls extension/src/` to list modules; their names are self-documenting (`dispatch.ts`, `dispatch-deck.ts`, `lifecycle-events.ts`, `permission-guard.ts`, etc.). Read the top of any file you're about to edit; don't rely on a stale registry here.
 
 ### Modular prompt layer
 
@@ -328,6 +305,14 @@ Before adding documentation: *"Will this be true in 200 PRs?"*
 - ❌ `TODO` comments — create GitHub issues instead
 
 If it changes frequently or is task-specific, don't document it as a file. Use GitHub issues / PR descriptions / vipune memory.
+
+### Module-level descriptions live in source jsdoc, not in tables
+
+Don't add file-by-file "what does X own" tables to AGENTS.md or CONTRIBUTING.md. Such tables drift away from the code with every refactor — each PR ends up tweaking the row to match the new shape, and the description becomes a second source of truth that's perpetually out of date.
+
+The authoritative module contract lives in the **jsdoc header of the source file itself**. It evolves with the code that imports it. When a contributor (human or agent) wants to know what `dispatch-deck.ts` does, the right answer is "open the file" — not "consult AGENTS.md row 47".
+
+This file enforces principles, conventions, and load-bearing constraints. It's not a module registry.
 
 ---
 

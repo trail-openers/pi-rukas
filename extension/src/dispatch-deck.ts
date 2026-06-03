@@ -1,12 +1,22 @@
 /**
- * Live dispatch deck — one footer status entry per in-flight subagent.
+ * Live dispatch deck — a multi-line widget showing all in-flight subagents.
  *
- * Why one-key-per-child (not one combined entry with multi-line text): Pi's
- * footer sanitizes \n/\t/\r to spaces and joins all extension statuses with
- * a single space (see footer-data-provider + interactive/components/footer.js
- * sanitizeStatusText). Multi-line text gets collapsed onto one line and reads
- * badly. With one key per child Pi renders them side-by-side as designed,
- * and truncates at terminal width when there are too many.
+ * Rendering uses `ctx.ui.setWidget("ensemble:deck", lines, { placement:
+ * "belowEditor" })`. The widget accepts `string[]` (one element per visible
+ * line) so we control vertical layout explicitly — unlike `setStatus`, which
+ * Pi joins onto a single footer line with a space separator (see #141).
+ *
+ * Hierarchy:
+ *   ⏳ batch[developer×3] 1m04s · 1/3 done · 2 running
+ *    ↳ developer[task-A] 1m04s bash yarn test
+ *    ↳ developer[task-B] 1m04s read src/auth.ts
+ *   ⏳ explore 0m23s grep "lifecycle hook patterns"
+ *
+ * - Top-level rows use the `⏳` icon — batch summaries OR standalone subagents.
+ * - Member rows are indented with ` ↳ ` (no icon) — they belong to the batch
+ *   directly above them.
+ * - Ordering: top-level items in global insertion order; members within their
+ *   batch in member insertion order.
  *
  * Wired to spawn.ts's onProgress emissions via hooks plumbed through
  * async-jobs.startJob / startBatch and orchestrators that fan out internally
@@ -16,11 +26,6 @@
  * scrollback (#118) is the durable record; PM's reaction text carries any
  * failure context.
  *
- * Ordering: Pi sorts setStatus entries alphabetically by key. We prefix the
- * key with a zero-padded insertion-sequence number so visual order matches
- * insertion order (the jobId alone would tie-break random within a single ms
- * for parallel/lens-review fan-outs).
- *
  * Opt-out: PI_ENSEMBLE_QUIET_STATUS=1 disables the deck entirely.
  */
 
@@ -28,7 +33,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type RunningState, emptyRunningState, formatElapsed } from "./progress.ts";
 import { trace } from "./trace.ts";
 
-const STATUS_KEY_PREFIX = "ensemble:deck:";
+const WIDGET_KEY = "ensemble:deck";
 const HINT_MAX = 50;
 
 export interface DeckEntry {
@@ -38,12 +43,20 @@ export interface DeckEntry {
   label: string;
   /** Most recent progress snapshot from the child. */
   state: RunningState;
-  /** Zero-padded insertion sequence. Encoded into the setStatus key so Pi's
-   *  alphabetical sort matches dispatch order. */
-  seq: string;
+  /**
+   * Internal monotonic insertion sequence — used to order top-level items and
+   * members consistently. Not encoded into any user-visible identifier;
+   * the widget's `string[]` ordering is what Pi sees.
+   */
+  seq: number;
   /** When this entry was registered. Used at render time to compute fresh
    *  elapsed regardless of when the child last emitted an event (#131). */
   startedAt: number;
+  /**
+   * When this entry belongs to a parallel/lens batch, the batch's key.
+   * Render groups members under their batch row with indentation (#141).
+   */
+  batchKey?: string;
 }
 
 /**
@@ -60,7 +73,7 @@ export interface BatchDeckEntry {
   size: number;
   /** Members that have settled (success or failure). Mutable. */
   completed: number;
-  seq: string;
+  seq: number;
   startedAt: number;
 }
 
@@ -74,20 +87,17 @@ let activeCtx: ExtensionContext | undefined;
 let pendingRender = false;
 let insertionCounter = 0;
 let tickHandle: ReturnType<typeof setInterval> | undefined;
+let widgetVisible = false;
 
 function isQuiet(): boolean {
   return process.env.PI_ENSEMBLE_QUIET_STATUS === "1";
 }
 
-function statusKeyFor(entry: DeckEntry | BatchDeckEntry): string {
-  return `${STATUS_KEY_PREFIX}${entry.seq}-${entry.key}`;
+function nextSeq(): number {
+  return insertionCounter++;
 }
 
-function nextSeq(): string {
-  return String(insertionCounter++).padStart(6, "0");
-}
-
-/** Capture the Pi extension context from session_start so we can call setStatus later. */
+/** Capture the Pi extension context from session_start so we can call setWidget later. */
 export function attach(ctx: ExtensionContext): void {
   activeCtx = ctx;
   if (entries.size > 0 || batches.size > 0) {
@@ -96,29 +106,21 @@ export function attach(ctx: ExtensionContext): void {
   }
 }
 
-/** Drop the context reference and clear any displayed statuses. Called on session_shutdown. */
+/** Drop the context reference and clear the widget. Called on session_shutdown. */
 export function detach(): void {
   stopTicker();
-  if (activeCtx) {
-    for (const entry of entries.values()) {
-      try {
-        activeCtx.ui.setStatus(statusKeyFor(entry), undefined);
-      } catch {
-        /* session is going away anyway */
-      }
-    }
-    for (const batch of batches.values()) {
-      try {
-        activeCtx.ui.setStatus(statusKeyFor(batch), undefined);
-      } catch {
-        /* session is going away anyway */
-      }
+  if (activeCtx && widgetVisible) {
+    try {
+      activeCtx.ui.setWidget(WIDGET_KEY, undefined);
+    } catch {
+      /* session is going away anyway */
     }
   }
   activeCtx = undefined;
   entries.clear();
   batches.clear();
   pendingRender = false;
+  widgetVisible = false;
 }
 
 export interface StartEntryOpts {
@@ -128,6 +130,11 @@ export interface StartEntryOpts {
   role: string;
   /** Optional tag (lens name, batch member index, etc.). */
   tag?: string;
+  /**
+   * When this entry is a member of a parallel/lens batch, the parent batch's
+   * key. Render groups members under their batch row with indentation.
+   */
+  batchKey?: string;
 }
 
 export function startEntry(key: string, opts: StartEntryOpts): void {
@@ -138,6 +145,7 @@ export function startEntry(key: string, opts: StartEntryOpts): void {
     state: emptyRunningState(opts.role, opts.tag),
     seq: nextSeq(),
     startedAt: Date.now(),
+    batchKey: opts.batchKey,
   });
   startTickerIfNeeded();
   scheduleRender();
@@ -152,16 +160,8 @@ export function updateEntry(key: string, state: RunningState): void {
 }
 
 export function clearEntry(key: string): void {
-  const e = entries.get(key);
-  if (!e) return;
-  entries.delete(key);
-  if (activeCtx) {
-    try {
-      activeCtx.ui.setStatus(statusKeyFor(e), undefined);
-    } catch (err) {
-      trace(`dispatch-deck: clear setStatus failed: ${(err as Error).message}`);
-    }
-  }
+  if (!entries.delete(key)) return;
+  scheduleRender();
   if (entries.size === 0 && batches.size === 0) stopTicker();
 }
 
@@ -180,8 +180,8 @@ export interface StartBatchEntryOpts {
 /**
  * Register a persistent batch-summary row. Lives until clearBatchEntry is
  * called — survives individual member completions. Register BEFORE the
- * member entries so its seq is lowest and Pi's alphabetical sort places it
- * first on the footer line.
+ * member entries so its `seq` is lower; render places batch rows before
+ * their members in the widget content array.
  */
 export function startBatchEntry(key: string, opts: StartBatchEntryOpts): void {
   if (isQuiet()) return;
@@ -208,16 +208,8 @@ export function updateBatchProgress(key: string, completed: number): void {
 }
 
 export function clearBatchEntry(key: string): void {
-  const b = batches.get(key);
-  if (!b) return;
-  batches.delete(key);
-  if (activeCtx) {
-    try {
-      activeCtx.ui.setStatus(statusKeyFor(b), undefined);
-    } catch (err) {
-      trace(`dispatch-deck: clear setStatus failed: ${(err as Error).message}`);
-    }
-  }
+  if (!batches.delete(key)) return;
+  scheduleRender();
   if (entries.size === 0 && batches.size === 0) stopTicker();
 }
 
@@ -243,6 +235,7 @@ export function reset(): void {
   activeCtx = undefined;
   pendingRender = false;
   insertionCounter = 0;
+  widgetVisible = false;
 }
 
 /** Test-only — is the self-tick interval armed? */
@@ -271,7 +264,7 @@ function scheduleRender(): void {
   pendingRender = true;
   // Coalesce bursts of updates within one event-loop tick — the child can emit
   // multiple onProgress events in rapid succession (parallel batch starting, a
-  // chatty turn, etc.) and we don't need to repaint the footer for each one.
+  // chatty turn, etc.) and we don't need to repaint the widget for each one.
   setImmediate(() => {
     pendingRender = false;
     renderNow();
@@ -280,16 +273,69 @@ function scheduleRender(): void {
 
 function renderNow(): void {
   if (!activeCtx) return;
+  const lines = buildLines();
   try {
-    for (const batch of batches.values()) {
-      activeCtx.ui.setStatus(statusKeyFor(batch), formatBatchRow(batch));
+    if (lines.length === 0) {
+      if (widgetVisible) {
+        activeCtx.ui.setWidget(WIDGET_KEY, undefined);
+        widgetVisible = false;
+      }
+      return;
     }
-    for (const entry of entries.values()) {
-      activeCtx.ui.setStatus(statusKeyFor(entry), formatRow(entry));
-    }
+    activeCtx.ui.setWidget(WIDGET_KEY, lines, { placement: "belowEditor" });
+    widgetVisible = true;
   } catch (err) {
-    trace(`dispatch-deck: setStatus failed: ${(err as Error).message}`);
+    trace(`dispatch-deck: setWidget failed: ${(err as Error).message}`);
   }
+}
+
+/**
+ * Assemble the multi-line content for the widget.
+ * Order: top-level items (batches + standalone singles) interleaved by global
+ * insertion seq; members nested under their parent batch in member seq order.
+ *
+ * Exposed for tests — production callers use renderNow().
+ */
+export function buildLines(now: number = Date.now()): string[] {
+  // Group entries by batchKey: each batch's members + the standalone (non-batched) ones.
+  const byBatch = new Map<string, DeckEntry[]>();
+  const standalone: DeckEntry[] = [];
+  for (const e of entries.values()) {
+    if (e.batchKey && batches.has(e.batchKey)) {
+      const arr = byBatch.get(e.batchKey) ?? [];
+      arr.push(e);
+      byBatch.set(e.batchKey, arr);
+    } else {
+      standalone.push(e);
+    }
+  }
+
+  // Unified top-level traversal: batches + standalone singles, sorted by seq
+  // so the user sees them in dispatch order.
+  type TopLevel = { kind: "batch"; b: BatchDeckEntry } | { kind: "single"; e: DeckEntry };
+  const topLevel: TopLevel[] = [
+    ...[...batches.values()].map((b) => ({ kind: "batch" as const, b })),
+    ...standalone.map((e) => ({ kind: "single" as const, e })),
+  ];
+  topLevel.sort((a, b) => {
+    const sa = a.kind === "batch" ? a.b.seq : a.e.seq;
+    const sb = b.kind === "batch" ? b.b.seq : b.e.seq;
+    return sa - sb;
+  });
+
+  const lines: string[] = [];
+  for (const item of topLevel) {
+    if (item.kind === "batch") {
+      lines.push(formatBatchRow(item.b, now));
+      const members = (byBatch.get(item.b.key) ?? []).slice().sort((a, b) => a.seq - b.seq);
+      for (const m of members) {
+        lines.push(formatMemberRow(m, now));
+      }
+    } else {
+      lines.push(formatRow(item.e, now));
+    }
+  }
+  return lines;
 }
 
 function entryLabel(e: DeckEntry): string {
@@ -303,21 +349,13 @@ function truncateHint(s: string): string {
 }
 
 /**
- * Compact single-line row for one entry — Pi renders these side-by-side,
- * joined by a single space and truncated to terminal width. Keep it short:
- * icon + label + elapsed + tool name (+ use-count if >1) + truncated hint
- * extracted from the tool's primary arg (e.g. the bash command, file path,
- * grep pattern). The hint makes "bash (#14)" actually informative — see
- * #139 / progress.ts:extractToolHint.
- *
- * Elapsed is computed fresh from entry.startedAt at render time (#131) — NOT
- * from state.elapsedMs, which is only updated on assistant-turn boundaries.
- * The self-tick interval keeps re-rendering at ~1Hz so the timer stays live
- * between turns.
+ * The bits after the row's leading icon: `<label> <elapsed> [<tool>(#N) <hint>]`.
+ * Shared between top-level rendering (formatRow) and indented member
+ * rendering (formatMemberRow).
  */
-export function formatRow(entry: DeckEntry, now: number = Date.now()): string {
+function formatRowCore(entry: DeckEntry, now: number): string {
   const elapsedMs = Math.max(0, now - entry.startedAt);
-  const parts: string[] = ["⏳", entryLabel(entry), formatElapsed(elapsedMs)];
+  const parts: string[] = [entryLabel(entry), formatElapsed(elapsedMs)];
   if (entry.state.lastToolName) {
     parts.push(
       entry.state.toolUses > 1
@@ -329,6 +367,23 @@ export function formatRow(entry: DeckEntry, now: number = Date.now()): string {
     }
   }
   return parts.join(" ");
+}
+
+/**
+ * Top-level row: `⏳ <label> <elapsed> <tool>(#N) <hint>`. Used for batch
+ * summaries (via formatBatchRow) and standalone (non-batched) singles.
+ */
+export function formatRow(entry: DeckEntry, now: number = Date.now()): string {
+  return `⏳ ${formatRowCore(entry, now)}`;
+}
+
+/**
+ * Indented member row: ` ↳ <label> <elapsed> <tool>(#N) <hint>`. No icon —
+ * the `↳` is the visual indicator that this row belongs to the batch
+ * directly above it.
+ */
+export function formatMemberRow(entry: DeckEntry, now: number = Date.now()): string {
+  return ` ↳ ${formatRowCore(entry, now)}`;
 }
 
 /**

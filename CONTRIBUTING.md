@@ -144,30 +144,7 @@ The PM role's allowlist is the reference implementation of this rule
 
 ### Major extension modules
 
-For non-trivial changes, know which file owns which concern:
-
-| File | Owns |
-|---|---|
-| `extension/src/index.ts` | Extension activation; tool + command registration |
-| `extension/src/commands.ts` | Slash-command handlers; PM sticky-preamble injection |
-| `extension/src/dispatch.ts` | `dispatch_specialist` + `dispatch_parallel` tools |
-| `extension/src/permission-guard.ts` | Top-level session permission enforcement; bash subcommand allowlist matching; decision cache |
-| `extension/src/dispatch-status.ts` | `dispatch_status` + `dispatch_kill` introspection tools |
-| `extension/src/dispatch-peek.ts` | `dispatch_peek` introspection tool — bounded RunningState snapshot (turns, lastTool, ≤200-char lastText) per in-flight job |
-| `extension/src/async-jobs.ts` | Job registry; push-callback delivery via `pi.sendUserMessage` |
-| `extension/src/spawn.ts` | Fire-and-forget `pi -p --mode json` child spawn |
-| `extension/src/adversarial.ts` | Encapsulated 3-round adversarial review-then-fix gate (the mandatory gate after every developer dispatch) |
-| `extension/src/lens-review.ts` | Six-pass code-review orchestrator (`dispatch_lens_review`) |
-| `extension/src/lens-reporter.ts` | Child extension for review specialists, provides `report_finding` |
-| `extension/src/model-adapters.ts` | Pluggable per-LLM-family text-artifact filtering |
-| `extension/src/models.ts`, `model-config.ts`, `model-picker.ts` | Per-role model resolution + interactive picker (`/ensemble-model`) |
-| `extension/src/progress.ts` | Per-child running state + live-progress rendering |
-| `extension/src/dispatch-deck.ts` | Live footer status — one `ensemble:deck:<seq>-<jobId>` entry per in-flight subagent via `ctx.ui.setStatus`, plus a persistent `batch[<role>×N]` summary row per parallel/lens batch that survives individual member completions. Per-row rendering includes a truncated tool-arg hint. Pi joins them side-by-side on a single footer line and truncates at terminal width; sequence prefix keeps insertion order stable across Pi's alphabetical sort |
-| `extension/src/lifecycle-events.ts` | Scrollback markers (`ensemble:lifecycle` custom messages) — durable `▸ dispatched / ✓ finished / ✗ failed` lines per job, batch-scoped for parallel/lens/adversarial |
-| `extension/src/roles.ts`, `types.ts` | Role enum + result/dispatch types |
-| `extension/src/runs.ts` | `/runs` slash command + transcript browsing/pruning |
-| `extension/src/worktree.ts` | Git worktree helpers (delegated to ops in practice) |
-| `extension/src/trace.ts` | Gated stderr trace (`PI_ENSEMBLE_DEBUG=1`) |
+Each module's responsibilities are documented in the jsdoc header of its source file. Run `ls extension/src/` to list modules; the names are self-documenting (`dispatch.ts`, `dispatch-deck.ts`, `lifecycle-events.ts`, `permission-guard.ts`, etc.). For non-trivial changes, open the file and read its header — that's the authoritative contract, and it evolves with the code. We deliberately don't maintain a parallel registry of "what does X own" here: such tables drift away from the implementation and create a second source of truth that's perpetually out of date.
 
 ## Commit conventions
 

@@ -333,7 +333,7 @@ export function startBatch(
     };
     jobs.set(jobId, memberState);
 
-    dispatchDeck.startEntry(jobId, { label: m.label, role: m.role });
+    dispatchDeck.startEntry(jobId, { label: m.label, role: m.role, batchKey: batchId });
     const memberHooks: WorkHooks = {
       onProgress: (progress) => dispatchDeck.updateEntry(jobId, progress),
     };
