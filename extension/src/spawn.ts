@@ -264,9 +264,13 @@ export async function spawnSpecialist(
   const modelChoice = resolveModel(spec.role, spec.model);
 
   const childArgs = [
+    // --mode rpc keeps stdin open for JSON command injection (#152). The
+    // initial prompt is sent via stdin as a `{ type: "prompt", message }`
+    // RPC command, not positional argv — this is the foundation that
+    // dispatch_steer (#153) will use to inject mid-flight steers via the
+    // `{ type: "steer", message }` command.
     "--mode",
-    "json",
-    "-p",
+    "rpc",
     "--no-extensions",
     "--session",
     transcriptPath,
@@ -287,15 +291,17 @@ export async function spawnSpecialist(
   if (opts.extraArgs && opts.extraArgs.length > 0) {
     childArgs.push(...opts.extraArgs);
   }
-  childArgs.push(spec.prompt); // positional prompt — canonical form
+  // No positional prompt — sent over stdin RPC channel below.
   const invocation = getPiInvocation(childArgs);
 
   const child = spawn(invocation.command, invocation.args, {
     cwd,
     shell: false,
-    // stdin "ignore" is critical: leaving stdin open as a pipe makes Pi wait
-    // for input even in -p mode and the spawn hangs forever.
-    stdio: ["ignore", "pipe", "pipe"],
+    // stdin "pipe" (not "ignore") so we can send the initial prompt and
+    // any subsequent RPC commands (steer, abort, …). Closing stdin signals
+    // "no more commands" — Pi exits cleanly once the current prompt's
+    // agent_end has fired.
+    stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env, PI_ENSEMBLE_ROLE: spec.role },
   });
 
@@ -306,9 +312,33 @@ export async function spawnSpecialist(
   // gets its own state; lens-review aggregates over 6 of them in parallel.
   const runningState = emptyRunningState(spec.role, opts.tag);
 
-  if (!child.stdout || !child.stderr) {
+  if (!child.stdout || !child.stderr || !child.stdin) {
     throw new Error("Failed to attach to child stdio");
   }
+
+  // Send the kickoff prompt via the RPC channel. Pi treats this as the
+  // first user turn for the agent.
+  try {
+    child.stdin.write(`${JSON.stringify({ type: "prompt", message: spec.prompt })}\n`);
+  } catch (err) {
+    trace(`spawn[${spec.role}]: initial stdin.write failed: ${(err as Error).message}`);
+  }
+
+  // Done-detection: in --mode rpc the child stays alive after the prompt's
+  // agent_end (waiting for more commands). For our fire-and-forget contract
+  // we close stdin on agent_end — Pi exits cleanly. promptCompleted guards
+  // against double-trigger if Pi emits agent_end more than once for some
+  // reason.
+  let promptCompleted = false;
+  const completePrompt = () => {
+    if (promptCompleted) return;
+    promptCompleted = true;
+    try {
+      child.stdin?.end();
+    } catch {
+      /* child already gone */
+    }
+  };
 
   const stdoutRl = createInterface({ input: child.stdout });
   stdoutRl.on("line", (line) => {
@@ -327,6 +357,9 @@ export async function spawnSpecialist(
     if (ingestEvent(runningState, parsed as Parameters<typeof ingestEvent>[1], start)) {
       opts.onProgress?.({ ...runningState, usage: { ...runningState.usage } });
     }
+    // agent_end is the canonical "prompt fully processed" signal in Pi's
+    // event stream. Close stdin to release the child.
+    if (parsed.type === "agent_end") completePrompt();
   });
   child.stderr.on("data", (d) => {
     stderr += String(d);
