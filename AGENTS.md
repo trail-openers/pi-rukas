@@ -12,7 +12,7 @@ CI is for VERIFICATION, not DISCOVERY. All gates pass locally before `git push`.
 
 ```bash
 cd extension && bunx tsc --noEmit && bun run check && \
-  for t in test-command-flow test-lens-review test-models test-runs test-progress test-prune test-async-dispatch test-dispatch-deck test-lifecycle-events test-dispatch-peek; do \
+  for t in test-command-flow test-lens-review test-models test-runs test-progress test-prune test-async-dispatch test-dispatch-deck test-lifecycle-events test-dispatch-peek test-review-cap test-dispatch-steer test-session-autosave; do \
     bun run smoke-tests/$t.ts || break; \
   done
 ```
@@ -398,7 +398,7 @@ CLI flags and event shapes change between Pi minor versions. The pin in `extensi
 
 ## Summary — pi-ensemble at a Glance
 
-1. **Quality gates BLOCKING** — tsc + biome + 8 offline smoke tests pass locally before push
+1. **Quality gates BLOCKING** — tsc + biome + 13 offline smoke tests pass locally before push
 2. **Two change paths** — extension code (no build) vs modular prompt layer (`bun run build` required, commit `dist/`)
 3. **Pi compatibility is load-bearing** — pin is deliberate; bumps require live tests
 4. **4-day npm embargo** — applies to `extension/` deps via bunfig; recommend pinning for prerequisite CLIs too

@@ -3,6 +3,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import * as lifecycle from "./lifecycle-events.ts";
 import type { RunningState } from "./progress.ts";
+import * as sessionAutosave from "./session-autosave.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 
@@ -252,6 +253,7 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): { jobId: strin
     dispatchDeck.startEntry(jobId, { label: input.label, role: input.role });
   }
   lifecycle.emitDispatched(jobId, input.label, input.role);
+  sessionAutosave.recordDispatch(input.role);
 
   const hooks: WorkHooks = {
     onProgress: (progress) => {
@@ -278,6 +280,7 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): { jobId: strin
           result.exitCode ?? undefined,
         );
       }
+      sessionAutosave.recordOutcome(result.ok);
       const report = formatSingleReport(jobId, input.label, result);
       deliverReport(pi, report);
       trace(`async job ${jobId} (${input.label}) finished in ${result.ms}ms`);
@@ -287,6 +290,7 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): { jobId: strin
       childHandles.delete(jobId);
       if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
       lifecycle.emitFailed(jobId, input.label, input.role, Date.now() - state.startedAt);
+      sessionAutosave.recordOutcome(false);
       const report = formatFailReport(jobId, input.label, err);
       deliverReport(pi, report);
       trace(`async job ${jobId} (${input.label}) failed: ${err.message}`);
@@ -366,6 +370,7 @@ export function startBatch(
     jobs.set(jobId, memberState);
 
     dispatchDeck.startEntry(jobId, { label: m.label, role: m.role, batchKey: batchId });
+    sessionAutosave.recordDispatch(m.role);
     const memberHooks: WorkHooks = {
       onProgress: (progress) => dispatchDeck.updateEntry(jobId, progress),
       onStdin: (stdin) => {
@@ -380,12 +385,14 @@ export function startBatch(
           jobs.delete(jobId);
           childHandles.delete(jobId);
           dispatchDeck.clearEntry(jobId);
+          sessionAutosave.recordOutcome(result.ok);
           memberResults.push({ jobId, label: m.label, result });
         },
         (err: Error) => {
           jobs.delete(jobId);
           childHandles.delete(jobId);
           dispatchDeck.clearEntry(jobId);
+          sessionAutosave.recordOutcome(false);
           memberResults.push({
             jobId,
             label: m.label,
@@ -486,7 +493,7 @@ export function killJob(jobId: string): boolean {
   return true;
 }
 
-/** Kill everything in flight. Called from session_end so we don't orphan children. */
+/** Kill everything in flight. Called from session_shutdown so we don't orphan children. */
 export function killAllJobs(): number {
   let n = 0;
   for (const job of jobs.values()) {
@@ -496,19 +503,17 @@ export function killAllJobs(): number {
   return n;
 }
 
-/** Hooked into the extension `session_end` event (or comparable shutdown signal). */
+/**
+ * Register the session_shutdown handler that aborts in-flight async jobs.
+ * Pi's only documented shutdown hook is `session_shutdown` (`session_end`
+ * was a guess we dropped in #23); we register against the documented API
+ * directly with proper typing instead of the previous `as unknown as` cast.
+ */
 export function registerAsyncJobsLifecycle(pi: ExtensionAPI): void {
-  // Pi's extension API doesn't expose a uniform "session_end" event today, so
-  // we register on whatever lifecycle signal is available. If none, the
-  // extension process exit will tear down children via SIGTERM anyway.
-  const anyPi = pi as unknown as {
-    on?: (event: string, handler: () => void | Promise<void>) => void;
+  const piWithOn = pi as unknown as {
+    on?: (event: "session_shutdown", handler: () => Promise<void> | void) => void;
   };
-  anyPi.on?.("session_end", () => {
-    const n = killAllJobs();
-    if (n > 0) trace(`session_end: aborted ${n} in-flight async jobs`);
-  });
-  anyPi.on?.("session_shutdown", () => {
+  piWithOn.on?.("session_shutdown", () => {
     const n = killAllJobs();
     if (n > 0) trace(`session_shutdown: aborted ${n} in-flight async jobs`);
   });

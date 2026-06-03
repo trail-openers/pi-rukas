@@ -14,6 +14,7 @@ import { registerModelPicker } from "./model-picker.ts";
 import { registerPermissionGuard } from "./permission-guard.ts";
 import { registerCheckReviewCapTool } from "./review-cap.ts";
 import { pruneOldRuns, registerRunsCommand } from "./runs.ts";
+import * as sessionAutosave from "./session-autosave.ts";
 import { trace } from "./trace.ts";
 
 export default async function (pi: ExtensionAPI) {
@@ -34,6 +35,9 @@ export default async function (pi: ExtensionAPI) {
   registerPermissionGuard(pi);
   // Lifecycle scrollback (#118) — register renderer + capture pi for sendMessage.
   lifecycle.attach(pi);
+  // Session autosave (#23) — writes a structured summary to vipune on
+  // session_shutdown when PI_ENSEMBLE_AUTOSAVE=1. Opt-in; no-op otherwise.
+  sessionAutosave.attach(pi);
 
   // Capture an ExtensionContext so the dispatch deck (#117) can call
   // ctx.ui.setStatus from spawn.ts onProgress callbacks that fire outside

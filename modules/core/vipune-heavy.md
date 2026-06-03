@@ -44,6 +44,8 @@ vipune search "what did we decide on X" --recency 0.9 --memory-type observation
 - Search vipune **before major decisions** to verify alignment
 - Store findings **after each task completes** for cross-session continuity
 
+**Session autosave (opt-in):** When `PI_ENSEMBLE_AUTOSAVE=1` is set, pi-ensemble writes a structured one-line summary of the session (dispatches by role, outcomes, elapsed time, cwd) to vipune on quit — purely deterministic, no LLM call. This covers the "agent forgot to memorialise the session" case. It does NOT replace the `vipune add 'fact'` calls you make during the session for specific decisions and findings — those are still load-bearing for cross-session continuity.
+
 **Use single quotes for safe vipune add:**
 ```bash
 # SAFE: Single quotes prevent shell expansion
