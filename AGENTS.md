@@ -113,11 +113,16 @@ Don't assume these are stable across Pi versions — verify when bumping:
 
 1. Read the Pi changelog: `gh api repos/badlogic/pi-mono/releases | jq -r '.[0:5][] | "\(.tag_name): \(.body[0:200])"'`.
 2. Bump in `extension/package.json` (e.g. `~0.75.3` → `~0.76.0`).
-3. Run **live** smoke tests on the new version (offline tests won't catch shape changes).
+3. Run **live** smoke tests on the new version (offline tests won't catch shape changes):
+   - `bun run smoke-tests/test-pi-shape-live.ts` — load-bearing shape assertions (#7). Spawns a trivial PONG child and verifies the event shapes (`agent_end`, `message_end.message.role/usage`, `content[].type`, `model`) we depend on.
+   - `bun run smoke-tests/test-spawn.ts` — single-child spawn end-to-end.
+   - `bun run smoke-tests/test-parallel.ts` — 3 concurrent children.
+   - `bun run smoke-tests/test-progress-live.ts` — multi-turn `onProgress` cadence.
+   - `bun run smoke-tests/test-lens-review-live.ts` — six-pass review against a synthetic diff.
 4. Update `CHANGELOG.md`'s "Tested against pi X.Y.Z" line.
 5. PR with the bump + smoke-test evidence.
 
-When Pi changes a shape we depend on (this has happened: `tool_use` → `toolCall`), the offline smoke tests won't catch it. Manual inspection of a recent transcript is the canonical check until a future `test-pi-shape.ts` exists.
+When Pi changes a shape we depend on (this has happened: `tool_use` → `toolCall`), the offline smoke tests won't catch it — `test-pi-shape-live.ts` will.
 
 ---
 
