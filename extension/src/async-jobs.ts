@@ -1,3 +1,4 @@
+import type { Writable } from "node:stream";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import * as lifecycle from "./lifecycle-events.ts";
@@ -172,6 +173,25 @@ function formatBatchReport(input: BatchReportInput): string {
   return `${head}\n\n${sections.join("\n\n")}\n\n${footer}`;
 }
 
+/**
+ * Per-job child handle — exposes the child's stdin so dispatch_steer (#153)
+ * can write `{ type: "steer", message }` RPC commands to a running child.
+ * Lives in `childHandles` for the duration of the job; cleared on settle.
+ */
+interface ChildHandle {
+  stdin: Writable;
+  label: string;
+  role: string;
+}
+
+const childHandles = new Map<string, ChildHandle>();
+
+/** Look up a running child's stdin + label by jobId. Used by dispatch_steer.
+ *  Returns undefined when the job has already settled (stdin handle cleaned up). */
+export function getChildHandle(jobId: string): ChildHandle | undefined {
+  return childHandles.get(jobId);
+}
+
 /** Live-progress hooks passed to a job's work function. */
 export interface WorkHooks {
   /**
@@ -180,6 +200,13 @@ export interface WorkHooks {
    * straight through to spawnSpecialist's onProgress option.
    */
   onProgress: (state: RunningState) => void;
+  /**
+   * Stdin-handle callback (#153). Called once after the child is spawned,
+   * before the kickoff prompt is written. Work functions pass this through
+   * to spawnSpecialist's onStdin option so the async-jobs registry can
+   * record the handle for dispatch_steer lookups.
+   */
+  onStdin: (stdin: Writable) => void;
 }
 
 interface StartJobInput {
@@ -230,11 +257,15 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): { jobId: strin
     onProgress: (progress) => {
       if (!input.skipDeck) dispatchDeck.updateEntry(jobId, progress);
     },
+    onStdin: (stdin) => {
+      childHandles.set(jobId, { stdin, label: input.label, role: input.role });
+    },
   };
 
   void input.work(abort.signal, hooks).then(
     (result) => {
       jobs.delete(jobId);
+      childHandles.delete(jobId);
       if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
       if (result.ok) {
         lifecycle.emitCompleted(jobId, input.label, input.role, result.ms, totalTokens(result));
@@ -253,6 +284,7 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): { jobId: strin
     },
     (err: Error) => {
       jobs.delete(jobId);
+      childHandles.delete(jobId);
       if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
       lifecycle.emitFailed(jobId, input.label, input.role, Date.now() - state.startedAt);
       const report = formatFailReport(jobId, input.label, err);
@@ -336,6 +368,9 @@ export function startBatch(
     dispatchDeck.startEntry(jobId, { label: m.label, role: m.role, batchKey: batchId });
     const memberHooks: WorkHooks = {
       onProgress: (progress) => dispatchDeck.updateEntry(jobId, progress),
+      onStdin: (stdin) => {
+        childHandles.set(jobId, { stdin, label: m.label, role: m.role });
+      },
     };
 
     void m
@@ -343,11 +378,13 @@ export function startBatch(
       .then(
         (result) => {
           jobs.delete(jobId);
+          childHandles.delete(jobId);
           dispatchDeck.clearEntry(jobId);
           memberResults.push({ jobId, label: m.label, result });
         },
         (err: Error) => {
           jobs.delete(jobId);
+          childHandles.delete(jobId);
           dispatchDeck.clearEntry(jobId);
           memberResults.push({
             jobId,

@@ -60,6 +60,18 @@ interface SpawnOptions {
    * snapshot is a defensive copy; safe to mutate downstream.
    */
   onProgress?: (snapshot: RunningState) => void;
+  /**
+   * Stdin-handle callback (#153). Fires once after the child process has
+   * been spawned and its stdio attached, BEFORE the initial prompt is
+   * written. Callers use this to register the stdin handle in a registry
+   * (e.g., async-jobs's `childHandles` map) so dispatch_steer can write
+   * `{ type: "steer", message }` RPC commands later.
+   *
+   * The handle's lifetime is the child's lifetime. spawnSpecialist closes
+   * stdin on agent_end (done-detection) or process exit; downstream code
+   * MUST handle EPIPE / closed-stream errors gracefully.
+   */
+  onStdin?: (stdin: import("node:stream").Writable) => void;
 }
 
 // Hard 30-minute cap on subagent wall-clock (issue #114). Long enough for
@@ -315,6 +327,11 @@ export async function spawnSpecialist(
   if (!child.stdout || !child.stderr || !child.stdin) {
     throw new Error("Failed to attach to child stdio");
   }
+
+  // Hand the stdin handle to the caller (#153) BEFORE writing the kickoff
+  // prompt — this lets the dispatch_steer registry observe a stdin for the
+  // child's entire lifetime, not just after the initial prompt.
+  opts.onStdin?.(child.stdin);
 
   // Send the kickoff prompt via the RPC channel. Pi treats this as the
   // first user turn for the agent.

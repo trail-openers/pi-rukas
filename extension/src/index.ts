@@ -5,6 +5,7 @@ import { registerCommands } from "./commands.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { registerDispatchPeekTool } from "./dispatch-peek.ts";
 import { registerDispatchStatusTool } from "./dispatch-status.ts";
+import { registerDispatchSteerTool } from "./dispatch-steer.ts";
 import { registerDispatchTools } from "./dispatch.ts";
 import { registerLensReviewTool } from "./lens-review.ts";
 import * as lifecycle from "./lifecycle-events.ts";
@@ -21,6 +22,7 @@ export default async function (pi: ExtensionAPI) {
   registerDispatchTools(pi);
   registerDispatchStatusTool(pi);
   registerDispatchPeekTool(pi);
+  registerDispatchSteerTool(pi);
   registerAdversarialTool(pi);
   registerLensReviewTool(pi);
   registerCommands(pi);

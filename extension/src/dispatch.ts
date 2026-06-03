@@ -45,7 +45,12 @@ export function registerDispatchTools(pi: ExtensionAPI) {
       const { jobId } = startJob(pi, {
         label: spec.role,
         role: spec.role,
-        work: (signal, hooks) => spawnSpecialist(spec, { signal, onProgress: hooks.onProgress }),
+        work: (signal, hooks) =>
+          spawnSpecialist(spec, {
+            signal,
+            onProgress: hooks.onProgress,
+            onStdin: hooks.onStdin,
+          }),
       });
       return {
         content: [
@@ -111,6 +116,7 @@ export function registerDispatchTools(pi: ExtensionAPI) {
                 tag,
                 signal,
                 onProgress: hooks.onProgress,
+                onStdin: hooks.onStdin,
               }),
           };
         }),

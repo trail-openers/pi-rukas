@@ -28,7 +28,7 @@ import { trace } from "./trace.ts";
 
 const CUSTOM_TYPE = "ensemble:lifecycle";
 
-export type LifecycleKind = "dispatched" | "completed" | "failed";
+export type LifecycleKind = "dispatched" | "completed" | "failed" | "steered";
 
 export interface LifecycleDetails {
   kind: LifecycleKind;
@@ -43,6 +43,8 @@ export interface LifecycleDetails {
   totalTokens?: number;
   /** Exit code for failed; omitted otherwise. */
   exitCode?: number;
+  /** Steer message (truncated for scrollback) — set for kind="steered" only. */
+  steerMessage?: string;
 }
 
 let activePi: ExtensionAPI | undefined;
@@ -103,6 +105,12 @@ export function emitFailed(
   emit({ kind: "failed", jobId, label, role, elapsedMs, exitCode });
 }
 
+/** Emit a steer scrollback entry (#153). The `message` is truncated for display
+ *  but the full payload was delivered to the child via RPC stdin separately. */
+export function emitSteered(jobId: string, label: string, role: string, message: string): void {
+  emit({ kind: "steered", jobId, label, role, steerMessage: message });
+}
+
 function emit(details: LifecycleDetails): void {
   if (isQuiet()) return;
   const text = formatLine(details);
@@ -143,6 +151,11 @@ export function formatLine(d: LifecycleDetails): string {
       const exit = d.exitCode != null ? ` · exit ${d.exitCode}` : "";
       return `▸ ensemble: ✗ ${d.label} failed${elapsed}${exit} — see report`;
     }
+    case "steered": {
+      const msg = (d.steerMessage ?? "").replaceAll(/\s+/g, " ").trim();
+      const truncated = msg.length > 80 ? `${msg.slice(0, 79)}…` : msg;
+      return `▸ ensemble: ⤳ steered ${d.label} · "${truncated}"`;
+    }
   }
 }
 
@@ -159,5 +172,7 @@ function applyTheme(
       return theme.fg("success", content);
     case "failed":
       return theme.fg("error", content);
+    case "steered":
+      return theme.fg("warning", content);
   }
 }
