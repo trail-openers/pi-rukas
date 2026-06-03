@@ -19,13 +19,18 @@
 
 import {
   attach,
+  batchSnapshot,
+  clearBatchEntry,
   clearEntry,
   detach,
+  formatBatchRow,
   formatRow,
   isTicking,
   reset,
   snapshot,
+  startBatchEntry,
   startEntry,
+  updateBatchProgress,
   updateEntry,
 } from "../src/dispatch-deck.ts";
 import { type RunningState, emptyRunningState } from "../src/progress.ts";
@@ -273,6 +278,144 @@ function fakeCtx(): {
     "all post-detach calls pass undefined text",
   );
   assert(snapshot().length === 0, "detach drains entries");
+}
+
+// 11. formatRow includes the tool-arg hint when state.lastToolHint is set (#139).
+{
+  const startedAt = 5_000_000;
+  const out = formatRow(
+    {
+      key: "df8a",
+      label: "explore[ux-web]",
+      seq: "000005",
+      startedAt,
+      state: makeState("explore", {
+        tag: "ux-web",
+        lastToolName: "bash",
+        toolUses: 14,
+        lastToolHint: "parallel-cli research poll trun_ff2b6…",
+      }),
+    },
+    startedAt + 210_000,
+  );
+  assert(out.includes("bash (#14)"), "row still includes tool name + count");
+  assert(out.includes("parallel-cli research poll"), "row includes tool-arg hint");
+  assert(!out.includes("\n"), "row remains single-line with hint");
+}
+
+// 11b. formatRow without a hint falls back to existing compact format.
+{
+  const startedAt = 6_000_000;
+  const out = formatRow(
+    {
+      key: "x",
+      label: "ops",
+      seq: "000006",
+      startedAt,
+      state: makeState("ops", { lastToolName: "gh", toolUses: 1 }),
+    },
+    startedAt + 1000,
+  );
+  assert(out === "⏳ ops 1.0s gh", "no hint → identical to pre-#139 format");
+}
+
+// 12. Batch entry lifecycle: start → updateProgress → clear (#139).
+{
+  reset();
+  startBatchEntry("batch-x", { label: "explore×3", size: 3 });
+  assert(batchSnapshot().length === 1, "startBatchEntry adds one batch row");
+  assert(batchSnapshot()[0]?.completed === 0, "batch starts at 0 completed");
+
+  updateBatchProgress("batch-x", 1);
+  assert(batchSnapshot()[0]?.completed === 1, "updateBatchProgress advances completed");
+
+  // Monotonic — lower values don't regress
+  updateBatchProgress("batch-x", 0);
+  assert(batchSnapshot()[0]?.completed === 1, "updateBatchProgress doesn't regress");
+
+  updateBatchProgress("batch-x", 3);
+  assert(batchSnapshot()[0]?.completed === 3, "updateBatchProgress reaches size");
+
+  clearBatchEntry("batch-x");
+  assert(batchSnapshot().length === 0, "clearBatchEntry removes the row immediately");
+}
+
+// 13. formatBatchRow shape: label, elapsed, X/N done, optional running suffix.
+{
+  const startedAt = 7_000_000;
+  const fresh = formatBatchRow(
+    { key: "b", label: "explore×3", size: 3, completed: 0, seq: "0", startedAt },
+    startedAt + 5000,
+  );
+  assert(fresh.startsWith("⏳ batch["), "batch row starts with hourglass and batch[…]");
+  assert(fresh.includes("explore×3"), "row includes the batch label");
+  assert(fresh.includes("0/3 done"), "row shows 0/3 done early on");
+  assert(fresh.includes("3 running"), "row shows running count when any remain");
+
+  const partial = formatBatchRow(
+    { key: "b", label: "explore×3", size: 3, completed: 1, seq: "0", startedAt },
+    startedAt + 60_000,
+  );
+  assert(partial.includes("1/3 done"), "after one finishes: 1/3 done");
+  assert(partial.includes("2 running"), "after one finishes: 2 running");
+
+  const finished = formatBatchRow(
+    { key: "b", label: "explore×3", size: 3, completed: 3, seq: "0", startedAt },
+    startedAt + 90_000,
+  );
+  assert(finished.includes("3/3 done"), "all done: 3/3 done");
+  assert(!finished.includes("running"), "all done: no 'running' suffix");
+}
+
+// 14. Batch row sorts BEFORE its members on Pi's alphabetical setStatus order (#139).
+//     The batch is registered first → lowest seq → status key sorts first.
+{
+  reset();
+  const { calls, ctx } = fakeCtx();
+  attach(ctx);
+
+  startBatchEntry("the-batch", { label: "explore×3", size: 3 });
+  startEntry("member-a", { label: "explore[task-A]", role: "explore" });
+  startEntry("member-b", { label: "explore[task-B]", role: "explore" });
+  startEntry("member-c", { label: "explore[task-C]", role: "explore" });
+
+  await new Promise((r) => setImmediate(r));
+
+  const setCalls = calls.filter((c) => c.text !== undefined);
+  // We expect at least 4 set calls (1 batch + 3 members). Pi sorts alphabetically by
+  // key; with our `ensemble:deck:<seq>-<key>` format, the batch's lower seq sorts first.
+  const orderedKeys = setCalls.map((c) => c.key).sort((a, b) => a.localeCompare(b));
+  assert(
+    orderedKeys[0]?.includes("the-batch"),
+    "alphabetical sort places the batch's setStatus key first",
+  );
+  detach();
+}
+
+// 15. snapshot() excludes batch entries — dispatch_peek must not see them.
+{
+  reset();
+  startEntry("member-a", { label: "explore[task-A]", role: "explore" });
+  startBatchEntry("batch", { label: "explore×3", size: 3 });
+  startEntry("member-b", { label: "explore[task-B]", role: "explore" });
+
+  const singles = snapshot();
+  assert(singles.length === 2, "snapshot() returns only single entries (no batch)");
+  assert(
+    singles.every((e) => e.key !== "batch"),
+    "snapshot() never includes the batch row",
+  );
+  // batchSnapshot() does include the batch
+  assert(batchSnapshot().length === 1, "batchSnapshot() returns the batch row");
+}
+
+// 16. isTicking stays armed while only batches exist (no single entries left).
+{
+  reset();
+  startBatchEntry("bonly", { label: "explore×2", size: 2 });
+  assert(isTicking(), "ticker arms for a batch-only state");
+  clearBatchEntry("bonly");
+  assert(!isTicking(), "ticker stops when the batch row clears with no singles left");
 }
 
 console.log(`\nexit ${exit}`);

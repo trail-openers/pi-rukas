@@ -162,7 +162,7 @@ For non-trivial changes, know which file owns which concern:
 | `extension/src/model-adapters.ts` | Pluggable per-LLM-family text-artifact filtering |
 | `extension/src/models.ts`, `model-config.ts`, `model-picker.ts` | Per-role model resolution + interactive picker (`/ensemble-model`) |
 | `extension/src/progress.ts` | Per-child running state + live-progress rendering |
-| `extension/src/dispatch-deck.ts` | Live footer status — one `ensemble:deck:<seq>-<jobId>` entry per in-flight subagent via `ctx.ui.setStatus`. Pi joins them side-by-side on a single footer line and truncates at terminal width; sequence prefix keeps insertion order stable across Pi's alphabetical sort |
+| `extension/src/dispatch-deck.ts` | Live footer status — one `ensemble:deck:<seq>-<jobId>` entry per in-flight subagent via `ctx.ui.setStatus`, plus a persistent `batch[<role>×N]` summary row per parallel/lens batch that survives individual member completions. Per-row rendering includes a truncated tool-arg hint. Pi joins them side-by-side on a single footer line and truncates at terminal width; sequence prefix keeps insertion order stable across Pi's alphabetical sort |
 | `extension/src/lifecycle-events.ts` | Scrollback markers (`ensemble:lifecycle` custom messages) — durable `▸ dispatched / ✓ finished / ✗ failed` lines per job, batch-scoped for parallel/lens/adversarial |
 | `extension/src/roles.ts`, `types.ts` | Role enum + result/dispatch types |
 | `extension/src/runs.ts` | `/runs` slash command + transcript browsing/pruning |

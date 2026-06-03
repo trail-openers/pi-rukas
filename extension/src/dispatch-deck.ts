@@ -29,6 +29,7 @@ import { type RunningState, emptyRunningState, formatElapsed } from "./progress.
 import { trace } from "./trace.ts";
 
 const STATUS_KEY_PREFIX = "ensemble:deck:";
+const HINT_MAX = 50;
 
 export interface DeckEntry {
   /** Stable id; jobId for dispatched specialists, jobId+tag for lens children. */
@@ -45,11 +46,30 @@ export interface DeckEntry {
   startedAt: number;
 }
 
+/**
+ * Persistent batch-summary row (#139). One per dispatch_parallel batch and
+ * one per dispatch_lens_review invocation; survives individual member
+ * completions so the user retains the "I dispatched N" context after fast
+ * members have already dropped from the deck at 0s linger.
+ */
+export interface BatchDeckEntry {
+  key: string;
+  /** Human-friendly batch label, e.g. "explore×3", "code-review-specialist×6". */
+  label: string;
+  /** Total member count (immutable for the batch's lifetime). */
+  size: number;
+  /** Members that have settled (success or failure). Mutable. */
+  completed: number;
+  seq: string;
+  startedAt: number;
+}
+
 /** Re-render cadence (ms) — keeps the elapsed timer ticking between assistant
  * turns even when the child emits no events. */
 const TICK_INTERVAL_MS = 1000;
 
 const entries = new Map<string, DeckEntry>();
+const batches = new Map<string, BatchDeckEntry>();
 let activeCtx: ExtensionContext | undefined;
 let pendingRender = false;
 let insertionCounter = 0;
@@ -59,7 +79,7 @@ function isQuiet(): boolean {
   return process.env.PI_ENSEMBLE_QUIET_STATUS === "1";
 }
 
-function statusKeyFor(entry: DeckEntry): string {
+function statusKeyFor(entry: DeckEntry | BatchDeckEntry): string {
   return `${STATUS_KEY_PREFIX}${entry.seq}-${entry.key}`;
 }
 
@@ -70,7 +90,7 @@ function nextSeq(): string {
 /** Capture the Pi extension context from session_start so we can call setStatus later. */
 export function attach(ctx: ExtensionContext): void {
   activeCtx = ctx;
-  if (entries.size > 0) {
+  if (entries.size > 0 || batches.size > 0) {
     startTickerIfNeeded();
     scheduleRender();
   }
@@ -87,9 +107,17 @@ export function detach(): void {
         /* session is going away anyway */
       }
     }
+    for (const batch of batches.values()) {
+      try {
+        activeCtx.ui.setStatus(statusKeyFor(batch), undefined);
+      } catch {
+        /* session is going away anyway */
+      }
+    }
   }
   activeCtx = undefined;
   entries.clear();
+  batches.clear();
   pendingRender = false;
 }
 
@@ -134,10 +162,67 @@ export function clearEntry(key: string): void {
       trace(`dispatch-deck: clear setStatus failed: ${(err as Error).message}`);
     }
   }
-  if (entries.size === 0) stopTicker();
+  if (entries.size === 0 && batches.size === 0) stopTicker();
 }
 
-/** Pure snapshot for tests — defensive copy. */
+export interface StartBatchEntryOpts {
+  /**
+   * Display label rendered inside `batch[...]`. Caller is responsible for
+   * choosing meaningful text — e.g. "explore×3" for a uniform-role batch,
+   * "code-review-specialist×6" for lens review, or "mixed×3" when the
+   * member roles differ.
+   */
+  label: string;
+  /** Number of children in the batch (immutable). */
+  size: number;
+}
+
+/**
+ * Register a persistent batch-summary row. Lives until clearBatchEntry is
+ * called — survives individual member completions. Register BEFORE the
+ * member entries so its seq is lowest and Pi's alphabetical sort places it
+ * first on the footer line.
+ */
+export function startBatchEntry(key: string, opts: StartBatchEntryOpts): void {
+  if (isQuiet()) return;
+  batches.set(key, {
+    key,
+    label: opts.label,
+    size: opts.size,
+    completed: 0,
+    seq: nextSeq(),
+    startedAt: Date.now(),
+  });
+  startTickerIfNeeded();
+  scheduleRender();
+}
+
+/** Bump the `completed` counter shown in the batch row. Called from each
+ * member's settle path so the user sees "1/3 done · 2 running" advance. */
+export function updateBatchProgress(key: string, completed: number): void {
+  if (isQuiet()) return;
+  const b = batches.get(key);
+  if (!b) return;
+  b.completed = Math.max(b.completed, completed);
+  scheduleRender();
+}
+
+export function clearBatchEntry(key: string): void {
+  const b = batches.get(key);
+  if (!b) return;
+  batches.delete(key);
+  if (activeCtx) {
+    try {
+      activeCtx.ui.setStatus(statusKeyFor(b), undefined);
+    } catch (err) {
+      trace(`dispatch-deck: clear setStatus failed: ${(err as Error).message}`);
+    }
+  }
+  if (entries.size === 0 && batches.size === 0) stopTicker();
+}
+
+/** Pure snapshot of single entries — used by dispatch_peek. Batches are
+ * UI sugar and not subagents, so peek skips them by design. */
 export function snapshot(): DeckEntry[] {
   return [...entries.values()].map((e) => ({
     ...e,
@@ -145,10 +230,16 @@ export function snapshot(): DeckEntry[] {
   }));
 }
 
+/** Pure snapshot of batch rows — test-only. */
+export function batchSnapshot(): BatchDeckEntry[] {
+  return [...batches.values()].map((b) => ({ ...b }));
+}
+
 /** Test-only — purge module state between cases. */
 export function reset(): void {
   stopTicker();
   entries.clear();
+  batches.clear();
   activeCtx = undefined;
   pendingRender = false;
   insertionCounter = 0;
@@ -162,7 +253,7 @@ export function isTicking(): boolean {
 function startTickerIfNeeded(): void {
   if (tickHandle !== undefined || isQuiet()) return;
   tickHandle = setInterval(() => {
-    if (entries.size === 0) return;
+    if (entries.size === 0 && batches.size === 0) return;
     scheduleRender();
   }, TICK_INTERVAL_MS);
   // Don't keep the Node process alive on this timer — it's purely UI.
@@ -190,6 +281,9 @@ function scheduleRender(): void {
 function renderNow(): void {
   if (!activeCtx) return;
   try {
+    for (const batch of batches.values()) {
+      activeCtx.ui.setStatus(statusKeyFor(batch), formatBatchRow(batch));
+    }
     for (const entry of entries.values()) {
       activeCtx.ui.setStatus(statusKeyFor(entry), formatRow(entry));
     }
@@ -202,11 +296,19 @@ function entryLabel(e: DeckEntry): string {
   return e.label || (e.state.tag ? `${e.state.role}[${e.state.tag}]` : e.state.role);
 }
 
+function truncateHint(s: string): string {
+  const oneLine = s.replaceAll(/\s+/g, " ").trim();
+  if (oneLine.length <= HINT_MAX) return oneLine;
+  return `${oneLine.slice(0, HINT_MAX - 1).trimEnd()}…`;
+}
+
 /**
  * Compact single-line row for one entry — Pi renders these side-by-side,
  * joined by a single space and truncated to terminal width. Keep it short:
- * icon + label + elapsed + tool name (+ use-count if >1). Detailed
- * lastText snippets belong in dispatch_peek, not the deck.
+ * icon + label + elapsed + tool name (+ use-count if >1) + truncated hint
+ * extracted from the tool's primary arg (e.g. the bash command, file path,
+ * grep pattern). The hint makes "bash (#14)" actually informative — see
+ * #139 / progress.ts:extractToolHint.
  *
  * Elapsed is computed fresh from entry.startedAt at render time (#131) — NOT
  * from state.elapsedMs, which is only updated on assistant-turn boundaries.
@@ -222,6 +324,22 @@ export function formatRow(entry: DeckEntry, now: number = Date.now()): string {
         ? `${entry.state.lastToolName} (#${entry.state.toolUses})`
         : entry.state.lastToolName,
     );
+    if (entry.state.lastToolHint) {
+      parts.push(truncateHint(entry.state.lastToolHint));
+    }
   }
   return parts.join(" ");
+}
+
+/**
+ * `⏳ batch[<label>] <elapsed> · <done>/<size> done` — persistent summary
+ * row for a parallel/lens batch. Survives individual member completions so
+ * the user retains the "I dispatched N" context after fast members have
+ * dropped at 0s linger (#139).
+ */
+export function formatBatchRow(batch: BatchDeckEntry, now: number = Date.now()): string {
+  const elapsedMs = Math.max(0, now - batch.startedAt);
+  const running = Math.max(0, batch.size - batch.completed);
+  const tail = running > 0 ? ` · ${running} running` : "";
+  return `⏳ batch[${batch.label}] ${formatElapsed(elapsedMs)} · ${batch.completed}/${batch.size} done${tail}`;
 }

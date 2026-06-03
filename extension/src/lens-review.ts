@@ -210,6 +210,20 @@ export async function runLensReview(opts: {
   const skillsDir = piSkillsDir();
   const context = opts.context ?? "";
 
+  // Persistent batch summary row (#139). Lets the user see "X/6 done"
+  // throughout the run even as fast lenses drop out at 0s linger. Registered
+  // BEFORE the per-lens entries so its seq sorts first on Pi's footer.
+  const batchKey = `${runId}/batch`;
+  dispatchDeck.startBatchEntry(batchKey, {
+    label: `code-review-specialist×${LENSES.length}`,
+    size: LENSES.length,
+  });
+  let completedLenses = 0;
+  const bumpBatch = () => {
+    completedLenses += 1;
+    dispatchDeck.updateBatchProgress(batchKey, completedLenses);
+  };
+
   const promises = LENSES.map(async (lens): Promise<LensRunResult> => {
     const skillPath = path.join(skillsDir, lens.skill);
     const prompt = lensPromptFor(lens, opts.diff, context);
@@ -242,6 +256,7 @@ export async function runLensReview(opts: {
       );
     } catch (err) {
       dispatchDeck.clearEntry(deckKey);
+      bumpBatch();
       return {
         lens: lens.name,
         ok: false,
@@ -251,6 +266,7 @@ export async function runLensReview(opts: {
       };
     }
     dispatchDeck.clearEntry(deckKey);
+    bumpBatch();
     const { findings, skipped } = extractFindings(result.toolUses, lens.name);
     return {
       lens: lens.name,
@@ -264,6 +280,7 @@ export async function runLensReview(opts: {
   });
 
   const lensResults = await Promise.all(promises);
+  dispatchDeck.clearBatchEntry(batchKey);
   const all = lensResults.flatMap((r) => r.findings);
   const deduped = dedupeFindings(all);
   const verdict = computeVerdict(deduped);

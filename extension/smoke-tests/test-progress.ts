@@ -11,6 +11,7 @@
 
 import {
   emptyRunningState,
+  extractToolHint,
   formatElapsed,
   formatTokens,
   formatUsage,
@@ -198,6 +199,97 @@ assert(formatElapsed(75_000) === "1m15s", "minutes+seconds combined");
   assert(out.includes("(errors)"), "second child labelled with tag");
   assert(out.includes("✓"), "done child still shows check");
   assert(out.includes("⏳"), "running child still shows hourglass");
+}
+
+// 8. extractToolHint (#139) — priority key picking, fallback, truncation
+{
+  // Priority key picks 'command' first for bash-shaped args
+  assert(
+    extractToolHint({ command: "git status" }) === "git status",
+    "extractToolHint picks .command for bash",
+  );
+  assert(
+    extractToolHint({ cmd: "ls -la", description: "list" }) === "ls -la",
+    "extractToolHint picks .cmd when no .command",
+  );
+  assert(
+    extractToolHint({ file_path: "/src/x.ts" }) === "/src/x.ts",
+    "extractToolHint picks .file_path for read/write/edit",
+  );
+  assert(extractToolHint({ path: "/src/x.ts" }) === "/src/x.ts", "extractToolHint picks .path");
+  assert(
+    extractToolHint({ pattern: "JWT.*validate" }) === "JWT.*validate",
+    "extractToolHint picks .pattern for grep",
+  );
+  assert(
+    extractToolHint({ query: "auth refactor" }) === "auth refactor",
+    "extractToolHint picks .query for search/vipune",
+  );
+  assert(
+    extractToolHint({ url: "https://example.com" }) === "https://example.com",
+    "extractToolHint picks .url for fetch",
+  );
+
+  // Priority order: command beats path
+  assert(
+    extractToolHint({ path: "/x", command: "git status" }) === "git status",
+    "priority: command beats path",
+  );
+
+  // Fallback to first non-empty string-valued field when no priority key matches
+  assert(
+    extractToolHint({ misc: "fallback-value" }) === "fallback-value",
+    "fallback to first string-valued field",
+  );
+
+  // Truncation at 50 chars with ellipsis
+  const long = "parallel-cli research run \"very long deep research query about something complex\"";
+  const truncated = extractToolHint({ command: long });
+  assert(truncated !== undefined && truncated.length <= 50, "truncated hint ≤ 50 chars");
+  assert(truncated?.endsWith("…"), "truncated hint ends with ellipsis");
+
+  // Newline flattening
+  assert(
+    extractToolHint({ command: "git\nstatus" }) === "git status",
+    "newlines collapsed in hint",
+  );
+
+  // Defensive: undefined / non-object / array / null
+  assert(extractToolHint(undefined) === undefined, "undefined args → no hint");
+  assert(extractToolHint(null) === undefined, "null args → no hint");
+  assert(extractToolHint("not an object") === undefined, "string args → no hint");
+  assert(extractToolHint(["a", "b"]) === undefined, "array args → no hint");
+  assert(extractToolHint({}) === undefined, "empty object → no hint");
+  assert(extractToolHint({ count: 42 }) === undefined, "no string fields → no hint");
+  assert(extractToolHint({ command: "" }) === undefined, "empty string command → no hint");
+}
+
+// 9. ingestEvent populates state.lastToolHint from tool call arguments
+{
+  const s = emptyRunningState("developer");
+  const start = Date.now();
+  ingestEvent(
+    s,
+    {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            name: "bash",
+            arguments: { command: "parallel-cli research poll trun_xyz" },
+          },
+        ],
+      },
+    },
+    start,
+  );
+  assert(s.lastToolName === "bash", "lastToolName captured");
+  assert(
+    s.lastToolHint === "parallel-cli research poll trun_xyz",
+    "lastToolHint captured from arguments.command",
+  );
 }
 
 console.log(`\nexit ${exit}`);

@@ -299,6 +299,20 @@ export function startBatch(
   jobs.set(batchId, orchestrator);
   lifecycle.emitDispatched(batchId, input.batchLabel, input.batchLabel);
 
+  // Persistent batch summary row (#139). Registered BEFORE members so its
+  // seq is lowest and Pi's alphabetical sort places it first on the footer.
+  // The label collapses uniform-role batches to "<role>×N" and mixed batches
+  // to a generic count; users get e.g. "batch[explore×3]" or "batch[mixed×3]".
+  const uniqueRoles = new Set(input.members.map((m) => m.role));
+  const batchDeckLabel =
+    uniqueRoles.size === 1
+      ? `${[...uniqueRoles][0]}×${input.members.length}`
+      : `mixed×${input.members.length}`;
+  dispatchDeck.startBatchEntry(batchId, {
+    label: batchDeckLabel,
+    size: input.members.length,
+  });
+
   const memberJobIds: string[] = [];
   const memberResults: BatchReportInput["members"] = [];
 
@@ -344,8 +358,11 @@ export function startBatch(
       )
       .finally(() => {
         orchestrator.completed++;
+        // Advance the batch row's counter so the user sees "1/3 done · 2 running".
+        dispatchDeck.updateBatchProgress(batchId, orchestrator.completed);
         if (orchestrator.completed === orchestrator.size) {
           jobs.delete(batchId);
+          dispatchDeck.clearBatchEntry(batchId);
           const batchMs = Date.now() - startedAt;
           const anyFailed = memberResults.some((m) => "failed" in m.result || !m.result.ok);
           const tokens = memberResults.reduce((acc, m) => {

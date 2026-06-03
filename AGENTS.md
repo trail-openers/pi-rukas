@@ -87,7 +87,7 @@ The major modules — know which one to edit for which kind of change:
 | `model-adapters.ts` | Per-LLM-family text-artifact filtering | Adding support for a new model family with known quirks |
 | `models.ts` + `model-config.ts` + `model-picker.ts` | Per-role model resolution, `/ensemble-model` interactive picker | Model resolution priority changes |
 | `progress.ts` | Per-child live-progress state for `onUpdate` callbacks | Tool-output stream rendering |
-| `dispatch-deck.ts` | Live footer status — one `ensemble:deck:<seq>-<jobId>` entry per in-flight subagent via `ctx.ui.setStatus`. Pi joins them side-by-side and truncates at terminal width; sequence prefix keeps insertion order stable across Pi's alphabetical sort | Row rendering, deck-entry lifecycle |
+| `dispatch-deck.ts` | Live footer status — one `ensemble:deck:<seq>-<jobId>` entry per in-flight subagent via `ctx.ui.setStatus`, plus a persistent `batch[<role>×N]` summary row per `dispatch_parallel` / `dispatch_lens_review` invocation that survives individual member completions. Per-row rendering includes a truncated tool-arg hint (`bash parallel-cli research poll trun_…`). Pi joins them side-by-side and truncates at terminal width; sequence prefix keeps insertion order stable across Pi's alphabetical sort | Row rendering, deck-entry lifecycle, batch summary row |
 | `lifecycle-events.ts` | Scrollback markers for dispatch transitions (`ensemble:lifecycle` custom messages) — durable record of dispatched/completed/failed events | Scrollback formatting, renderer wiring |
 | `roles.ts` + `types.ts` | Role enum + result/dispatch types | New specialist role |
 | `runs.ts` | `/runs` slash command + transcript browsing/pruning | Transcript management |

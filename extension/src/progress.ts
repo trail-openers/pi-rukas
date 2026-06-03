@@ -25,6 +25,14 @@ export interface RunningState {
   toolUses: number;
   /** Most recent tool call's name (e.g. "bash", "read"). */
   lastToolName?: string;
+  /**
+   * Truncated string hint extracted from the most recent tool call's
+   * arguments — e.g., the bash command for `bash`, the file path for
+   * `read`/`write`/`edit`, the pattern for `grep`. Surfaced in the
+   * dispatch deck row so the user can see "bash: parallel-cli research
+   * poll trun_…" instead of just "bash". See `extractToolHint`.
+   */
+  lastToolHint?: string;
   /** Truncated assistant text from the most recent message. */
   lastText?: string;
   /** Running cumulative usage stats. */
@@ -134,6 +142,7 @@ interface ProgressEvent {
       type?: string;
       text?: string;
       name?: string;
+      arguments?: unknown;
     }>;
     usage?: {
       input?: number;
@@ -144,6 +153,52 @@ interface ProgressEvent {
     };
     model?: string;
   };
+}
+
+/**
+ * Priority-ordered keys we look at first when extracting a one-line hint
+ * from a tool call's `arguments` object. Order matches "what's most
+ * meaningful to a human glancing at the deck row":
+ *   - `command` / `cmd` — the bash command (most informative for `bash`)
+ *   - `file_path` / `path` — file targets for read/write/edit
+ *   - `pattern` — grep/colgrep query
+ *   - `query` — vipune / search-style tools
+ *   - `url` — fetch-style tools
+ * If none match, falls back to the first non-empty string-valued field.
+ * Used by `ingestEvent` to populate `RunningState.lastToolHint`.
+ */
+const TOOL_HINT_PRIORITY_KEYS = [
+  "command",
+  "cmd",
+  "file_path",
+  "path",
+  "pattern",
+  "query",
+  "url",
+] as const;
+
+const TOOL_HINT_MAX = 50;
+
+export function extractToolHint(args: unknown): string | undefined {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
+  const obj = args as Record<string, unknown>;
+  const pick = (v: unknown): string | undefined =>
+    typeof v === "string" && v.length > 0 ? v : undefined;
+  for (const k of TOOL_HINT_PRIORITY_KEYS) {
+    const v = pick(obj[k]);
+    if (v) return truncateHint(v);
+  }
+  for (const v of Object.values(obj)) {
+    const s = pick(v);
+    if (s) return truncateHint(s);
+  }
+  return undefined;
+}
+
+function truncateHint(s: string): string {
+  const oneLine = s.replaceAll(/\s+/g, " ").trim();
+  if (oneLine.length <= TOOL_HINT_MAX) return oneLine;
+  return `${oneLine.slice(0, TOOL_HINT_MAX - 1).trimEnd()}…`;
 }
 
 /**
@@ -168,16 +223,21 @@ export function ingestEvent(state: RunningState, event: ProgressEvent, startMs: 
   }
   // Find the latest tool call name + assistant text in this turn.
   let latestToolName: string | undefined;
+  let latestToolHint: string | undefined;
   let latestText: string | undefined;
   for (const block of msg.content ?? []) {
     if (block.type === "toolCall" && block.name) {
       latestToolName = block.name;
+      latestToolHint = extractToolHint(block.arguments);
       state.toolUses += 1;
     } else if (block.type === "text" && typeof block.text === "string") {
       latestText = block.text;
     }
   }
   if (latestToolName) state.lastToolName = latestToolName;
+  // Hint refreshes alongside the name (or clears if the latest tool has no
+  // extractable hint — keeps deck snapshot honest).
+  if (latestToolName) state.lastToolHint = latestToolHint;
   if (latestText) state.lastText = latestText;
   return true;
 }
