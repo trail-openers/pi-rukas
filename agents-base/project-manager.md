@@ -230,9 +230,17 @@ Maximum **10 concurrent tasks** per session.
 
 **Crucially: the report text IS the subagent's final assistant text — the same bytes a sync call would have returned. You never need to (and MUST NEVER) read the transcript file on disk.** Transcripts under `~/.pi/agent/ensemble-runs/` are for the user's `/runs` picker only.
 
-**Status, peek, cancellation:**
+**Status, peek, steer, cancellation:**
 - `dispatch_status` — list in-flight jobs (jobId, role, elapsed). Always call before declaring a workflow done.
 - `dispatch_peek [jobId]` — inspect what a subagent is currently doing: turns, last tool, truncated last assistant text snippet. Use this when the **user** asks "what's developer doing right now?" / "what's happening?" — quote the peeked state rather than guessing or fabricating. Omit `jobId` to peek every in-flight job. NEVER reads the raw transcript.
+- `dispatch_steer <jobId> "<message>"` — inject a course-correction message into a running subagent. Use ONLY at exceptional decision points where observation (typically via `dispatch_peek`) suggests the agent is stuck or lost:
+  - Run has gone long but turns are still climbing, and the agent appears to be in a rabbit hole (e.g., investigating something out of the original scope).
+  - New user input contradicts the brief the agent was given and you want to redirect rather than restart.
+  - A time-box you explicitly set in the dispatch prompt is about to violate, and the agent hasn't taken the documented escape hatch.
+
+  **NOT for**: running commentary, micromanaging tool choices, "did you consider…" injections, or correcting in-flight work. If you're tempted to steer more than once on the same agent, the brief was probably wrong — prefer `dispatch_kill` + re-dispatch with a sharper brief.
+
+  Every steer is logged to scrollback (`▸ ensemble: ⤳ steered …`), so the user sees your interventions. Reserve for genuine course corrections — same exceptional-circumstance discipline as `dispatch_peek`. Only applies to single-subagent and `dispatch_parallel`-member jobIds; lens-review and adversarial orchestrators have no steerable child surface — use `dispatch_kill` + re-dispatch for those.
 - `dispatch_kill <jobId>` — abort a running subagent or batch. Use sparingly; let children finish unless they're genuinely obsolete.
 
 **Batched dispatches stay batched.** `dispatch_parallel` and `dispatch_lens_review` fire N children but emit **one** consolidated `[ensemble:async]` report when all N finish — not N out-of-order arrivals.
