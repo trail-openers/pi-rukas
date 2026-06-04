@@ -122,7 +122,7 @@ export function registerCommands(pi: ExtensionAPI) {
         `PM first-turn doctrine pending: ${pmDoctrineFirstTurnPending}`,
         "commands:         /start /research /plan /work /review /audit /runs /ensemble-model /ensemble-debug",
         "tools:            dispatch_specialist, dispatch_parallel, adversarial_loop, dispatch_lens_review (all async),",
-        "                  dispatch_status, dispatch_kill",
+        "                  dispatch_status, dispatch_kill, dispatch_peek, dispatch_steer, check_review_cap",
         ...(runsLine ? [`transcripts:      ${runsLine}`] : []),
         "",
         "subagent models  (change via /ensemble-model — saved to ~/.pi/agent/ensemble-models.json)",

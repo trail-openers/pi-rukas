@@ -225,14 +225,17 @@ When updating the pin:
 3. Run the live smoke tests on the new version. Especially watch:
    - `agent_end.messages[].content[]` block types (we depend on `text`, `thinking`, `toolCall`).
    - Tool-call args field (we depend on `arguments`).
-   - CLI flags: `-p`, `--mode json`, `--no-extensions`, `--no-session`, `--append-system-prompt`, `--session`, `--skill`, `--extension`, `--model`.
+   - CLI flags: `--mode rpc`, `--no-extensions`, `--append-system-prompt`, `--session`, `--skill`, `--extension`, `--model`.
+   - `--mode rpc` stdin protocol: `{type:"prompt"|"steer"|"abort"|"follow_up"|"get_state", …}` commands (load-bearing for `dispatch_steer` and the initial-prompt path).
 4. Update CHANGELOG.md's "Tested against pi X.Y.Z" line.
 5. Open a PR with the bump + smoke-test evidence.
 
 When Pi changes a shape we depend on (this has happened — `tool_use` →
-`toolCall`), the offline smoke tests won't catch it. The live ones will, and a
-future `test-pi-shape.ts` will codify the assertions. Until then, manual
-inspection of a recent transcript is the canonical check.
+`toolCall`), the offline smoke tests won't catch it. Run `bun run
+smoke-tests/test-pi-shape-live.ts` ([#7](https://github.com/randomm/pi-ensemble/issues/7))
+after every Pi pin bump — it spawns a trivial PONG child and asserts
+the load-bearing event shapes (`agent_end`, `message_end.message.role/usage`,
+content-block `type`, assistant `model`) we depend on.
 
 ## Adding to the modular prompt layer
 

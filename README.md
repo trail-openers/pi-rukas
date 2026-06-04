@@ -9,7 +9,7 @@ A multi-specialist orchestrator extension for [Pi](https://pi.dev) — the termi
 
 ## What you get
 
-Five slash commands, an orchestrator-shaped system prompt, and six tools that drive parallel specialist agents:
+Five slash commands, an orchestrator-shaped system prompt, and nine tools that drive parallel specialist agents:
 
 | Command | What it does |
 |---|---|
@@ -132,14 +132,14 @@ cd ~/some/git/repo
 pi
 # in the Pi prompt:
 > /ensemble-debug
-# should list 9 slash commands, 7 tools, and the per-role model table.
+# should list 9 slash commands, 9 tools, and the per-role model table.
 ```
 
 ## How it works
 
 The parent `pi` you launch becomes the **project manager (PM)**. When you fire a registered slash command, the extension injects PM doctrine into the system prompt for that turn (one-shot, no global bleed). The PM then runs through the workflow body and calls tools to dispatch specialists.
 
-Each **specialist** is a child `pi` process spawned with `pi --mode json -p --no-extensions --no-session --append-system-prompt <role.md>`. Six roles ship: `project-manager`, `developer`, `ops`, `explore`, `adversarial-developer`, `code-review-specialist`. Each has its own system prompt assembled from `agents-base/`, `modules/`, and `manifests/` via `build.sh`.
+Each **specialist** is a child `pi` process spawned with `pi --mode rpc --no-extensions --session <transcript> --append-system-prompt <role.md>`. `--mode rpc` keeps stdin open for JSON command injection — the initial prompt is sent as a `{ type: "prompt", message }` RPC command, and the same channel carries mid-flight `{ type: "steer", message }` injections from `dispatch_steer`. Six roles ship: `project-manager`, `developer`, `ops`, `explore`, `adversarial-developer`, `code-review-specialist`. Each has its own system prompt assembled from `agents-base/`, `modules/`, and `manifests/` via `build.sh`.
 
 Tools (all async via push-callback — tools return a `{ jobId }` immediately; the final report arrives later as an `[ensemble:async]` user message):
 
@@ -151,6 +151,9 @@ Tools (all async via push-callback — tools return a `{ jobId }` immediately; t
 | `dispatch_lens_review` | Six-pass code review — fans out six children, each pinned to its lens skill. Findings come back as native `report_finding` tool calls (schema-validated by Pi inside the child), deduped by `(path, line, title)`, precedence-merged, turned into a verdict. |
 | `dispatch_status` | List in-flight async jobs (jobId, role, elapsed). Metadata only — never transcript content. |
 | `dispatch_kill <jobId>` | Abort a running subagent or batch. |
+| `dispatch_peek <jobId>` | Bounded, read-only introspection of a running subagent — last assistant text + last tool call ([#21](https://github.com/randomm/pi-ensemble/issues/21)). |
+| `dispatch_steer <jobId> <message>` | Inject a mid-flight steer into a running subagent via Pi's `--mode rpc` stdin channel — for exceptional rescue only (long-elapsed, stuck-looking) ([#152](https://github.com/randomm/pi-ensemble/issues/152)). |
+| `check_review_cap <key>` | Wall-clock cap helper for `/work` Step 7 fix loop — returns ok/exceeded against a 90-min budget so the PM stops doom-loops ([#4](https://github.com/randomm/pi-ensemble/issues/4)). |
 
 Per-child transcripts are saved to `~/.pi/agent/ensemble-runs/<date>/<runId>-<role>[-<tag>].json` — replay with `pi --session <path>` or browse via `/runs`. The user inspects these; orchestrating agents do NOT read them (the dispatch tool's report is the bounded summary by design).
 

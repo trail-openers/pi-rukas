@@ -192,9 +192,9 @@ export function discoverInstalledExtensions(role: string): string[] {
   return forwarded;
 }
 
-// Pi --mode json event shape (Pi 0.75.3). The canonical assembled answer is at
-// agent_end.messages[]; usage stats come from message_end.message.usage on
-// assistant messages.
+// Pi event shape (Pi 0.75.3) — emitted by `--mode rpc` to stdout as JSONL.
+// The canonical assembled answer is at agent_end.messages[]; usage stats
+// come from message_end.message.usage on assistant messages.
 interface PiContentBlock {
   type: "text" | "thinking" | "toolCall" | string;
   text?: string;

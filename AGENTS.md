@@ -105,7 +105,8 @@ Don't assume these are stable across Pi versions — verify when bumping:
 - `agent_end.messages[].content[]` blocks: `text`, `thinking`, `toolCall` (with `id`, `name`, `arguments`)
 - `message_end` events with `message.role` and `message.usage` (input, output, cacheRead, cacheWrite)
 - `tool_execution_start` events with `toolName` and `args`
-- CLI flags: `-p`, `--mode json`, `--mode rpc`, `--no-extensions`, `--no-session`, `--append-system-prompt`, `--session`, `--skill`, `--extension`, `--model`, `--no-skills`
+- CLI flags: `--mode rpc`, `--no-extensions`, `--append-system-prompt`, `--session`, `--skill`, `--extension`, `--model`, `--no-skills`
+- `--mode rpc` stdin commands: `{type:"prompt"|"steer"|"abort"|"follow_up"|"get_state", …}` (load-bearing for the initial-prompt path and `dispatch_steer` #152)
 - RPC commands: `prompt` (with `streamingBehavior: "steer" | "followUp"`), `steer`, `abort`
 - `pi.sendUserMessage(content, { deliverAs: "steer" })` — load-bearing for async push-callback
 
