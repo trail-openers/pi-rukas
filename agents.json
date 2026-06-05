@@ -2,7 +2,7 @@
   "agent": {
     "project-manager": {
       "permission": {
-        "*": "deny",
+        "*": "ask",
         "external_directory": "ask",
         "bash": {
           "*": "deny",

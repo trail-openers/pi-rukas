@@ -452,7 +452,15 @@ export const BUILTIN_TOOLS = new Set([
 // segments — those must always reach the interactive prompt. Quoted content
 // is transparent (see stripQuotedSegments and issue #108).
 function matchBashSubcommand(command: string, allowlist: Record<string, string>): string | null {
-  if (BASH_COMMAND_INJECTION_CHARS.test(stripQuotedSegments(command))) return null;
+  // Commands containing injection vectors OUTSIDE quoted segments (`&&`, `|`,
+  // `>`, `$(...)`, backticks, etc.) can never be matched safely — any future
+  // wildcard would also let `cmd && rm -rf /` through. Return "deny" directly
+  // rather than null so the role-level catch-all (now `*: ask` since #168)
+  // cannot accidentally turn these into a prompt the user might approve.
+  // Pre-#168 the role-level catch-all was `*: deny`, which masked this
+  // distinction; flipping to `*: ask` requires the bash matcher to enforce
+  // injection-vector deny itself.
+  if (BASH_COMMAND_INJECTION_CHARS.test(stripQuotedSegments(command))) return "deny";
   // Sort patterns by length descending so the more specific entry wins.
   const patterns = Object.entries(allowlist)
     .filter(([k]) => k !== "*")
@@ -502,15 +510,25 @@ function lookupPermission(
     return exactMatch;
   }
 
-  // Check wildcard match
-  for (const [pattern, verdict] of Object.entries(entries)) {
-    if (typeof verdict !== "string") continue; // Skip nested objects
-    if (pattern.endsWith("*") && toolName.startsWith(pattern.slice(0, -1))) {
-      return verdict;
+  // Check wildcard matches, longest prefix wins, "*" catch-all checked last.
+  // Without the sort + catch-all-last semantics, an entry like `{"*": "deny",
+  // "mcp*": "ask"}` would always return "deny" on the first iteration because
+  // `*` matches every tool — so no specific role-level wildcard could ever
+  // override the catch-all. Mirrors matchBashSubcommand's specificity rule
+  // (line 458) so tool-level and bash-subcommand patterns behave the same way.
+  const patterns = Object.entries(entries)
+    .filter(
+      ([pattern, verdict]) =>
+        typeof verdict === "string" && pattern !== "*" && pattern.endsWith("*"),
+    )
+    .sort(([a], [b]) => b.length - a.length);
+  for (const [pattern, verdict] of patterns) {
+    if (toolName.startsWith(pattern.slice(0, -1))) {
+      return verdict as string;
     }
   }
-
-  return null;
+  const catchall = entries["*"];
+  return typeof catchall === "string" ? catchall : null;
 }
 
 // Resolve the path to the repo's agents.json regardless of how the extension

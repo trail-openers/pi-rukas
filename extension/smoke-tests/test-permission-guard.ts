@@ -14,9 +14,9 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
+  BUILTIN_TOOLS,
   isToolAllowedForRole,
   resolveToolPermission,
-  BUILTIN_TOOLS,
 } from "../src/permission-guard.js";
 
 let exitCode = 0;
@@ -29,9 +29,12 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-let agentsConfig: Record<string, {
-  permission?: Record<string, string | Record<string, string>>;
-}>;
+let agentsConfig: Record<
+  string,
+  {
+    permission?: Record<string, string | Record<string, string>>;
+  }
+>;
 try {
   const __filename = new URL(import.meta.url).pathname;
   const __dirname = path.dirname(__filename);
@@ -95,7 +98,10 @@ assert(!defaultRoleRemoved, "Issue #104: default role removed → unknown-role q
 
 // Test 8: Wildcard patterns work correctly
 const meadowAllowedForOps = isToolAllowedForRole("meadow_command", "ops", agentsConfig);
-assert(meadowAllowedForOps, "Issue #50: wildcard pattern works (meadow* matches meadow_command for ops)");
+assert(
+  meadowAllowedForOps,
+  "Issue #50: wildcard pattern works (meadow* matches meadow_command for ops)",
+);
 
 // Test 9: Explicit deny overrides wildcard (parallel-search_* denied for ops)
 const parallelSearchDeniedForOps = isToolAllowedForRole(
@@ -109,15 +115,18 @@ assert(
 );
 
 // Test 10: Tool not mentioned is denied (deny-by-default)
-const unknownToolDeniedForDev = isToolAllowedForRole("unknown_tool_12345", "developer", agentsConfig);
-assert(
-  !unknownToolDeniedForDev,
-  "Issue #50: unknown tool denied for developer (deny-by-default)",
+const unknownToolDeniedForDev = isToolAllowedForRole(
+  "unknown_tool_12345",
+  "developer",
+  agentsConfig,
 );
+assert(!unknownToolDeniedForDev, "Issue #50: unknown tool denied for developer (deny-by-default)");
 
 // === Issue #51 tests: three-layer resolution ===
 
-const emptyProject: { roles: Record<string, { permission?: Record<string, "allow" | "deny" | "ask"> }> } = { roles: {} };
+const emptyProject: {
+  roles: Record<string, { permission?: Record<string, "allow" | "deny" | "ask"> }>;
+} = { roles: {} };
 const emptyGlobal: typeof emptyProject = { roles: {} };
 
 // Test 11: Project config overrides agents.json
@@ -221,7 +230,7 @@ const projectOrder: typeof emptyProject = {
     developer: {
       permission: {
         "test_*": "deny",
-        "test_specific": "allow",
+        test_specific: "allow",
       },
     },
   },
@@ -250,7 +259,7 @@ const layeredTest: typeof emptyProject = {
     developer: {
       permission: {
         "layered_*": "deny",
-        "layered_exact": "deny",
+        layered_exact: "deny",
       },
     },
   },
@@ -260,7 +269,7 @@ const globalTest: typeof emptyProject = {
     developer: {
       permission: {
         "layered_*": "allow",
-        "layered_global_only": "allow",
+        layered_global_only: "allow",
       },
     },
   },
@@ -392,7 +401,10 @@ const ghOpsDenied = [
 ];
 for (const command of ghOpsDenied) {
   const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
-  assert(v === "deny", `Issue #99: \`${command}\` remains denied for project-manager (ops territory)`);
+  assert(
+    v === "deny",
+    `Issue #99: \`${command}\` remains denied for project-manager (ops territory)`,
+  );
 }
 
 // Ghost `issue` / `pr` / `ci` tool grants are gone — those tool names resolve
@@ -452,10 +464,7 @@ const chainedShouldDeny = [
 ];
 for (const command of chainedShouldDeny) {
   const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
-  assert(
-    v === "deny",
-    `Issue #102: chained \`${command}\` is denied (anti-injection invariant)`,
-  );
+  assert(v === "deny", `Issue #102: chained \`${command}\` is denied (anti-injection invariant)`);
 }
 
 // === Issue #108 tests: injection-vector check is now quote-aware ===
@@ -486,10 +495,7 @@ const mixedInjectionShouldDeny = [
 ];
 for (const command of mixedInjectionShouldDeny) {
   const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
-  assert(
-    v === "deny",
-    `Issue #108: operator OUTSIDE quoted segment still denies — \`${command}\``,
-  );
+  assert(v === "deny", `Issue #108: operator OUTSIDE quoted segment still denies — \`${command}\``);
 }
 
 // Malformed (unterminated quote) — safe-default: stripQuotedSegments returns
@@ -557,6 +563,101 @@ for (const command of gitDiffWithInjectionShouldDeny) {
     `Issue #112: \`${command}\` denied (anti-injection — bare git diff allow does not override the chain/redirect rule)`,
   );
 }
+
+// === Issue #168: ask-by-default for unknown tools ===
+// PM's catch-all used to be `"*": "deny"` — that silently denied every tool
+// not explicitly allowlisted, including the `mcp` gateway AND per-server
+// direct tools that pi-mcp-adapter surfaces with arbitrary names like
+// `alpha_staging_db_execute_sql`. There's no way to predict those names
+// (server name comes from the user's MCP config), so any prefix-based
+// allowlist would always miss something. Fix: flip the catch-all to
+// `"*": "ask"` so any unknown tool prompts. "Allow always" persists
+// per-project ($PWD/.pi/decisions.json), so cleanup is one prompt per
+// project per tool.
+
+// MCP gateway tool — first call should prompt.
+const mcpVerdictPM = resolveToolPermission("mcp", "project-manager", {}, {}, agentsConfig);
+assert(mcpVerdictPM === "ask", "Issue #168: `mcp` resolves to ask for PM");
+
+// Per-server direct tools (arbitrary names from user's MCP config).
+const directDbTool = resolveToolPermission(
+  "alpha_staging_db_execute_sql",
+  "project-manager",
+  {},
+  {},
+  agentsConfig,
+);
+assert(
+  directDbTool === "ask",
+  "Issue #168: `alpha_staging_db_execute_sql` (per-server direct tool) resolves to ask for PM",
+);
+
+const mcpUnderscore = resolveToolPermission(
+  "mcp_postgres",
+  "project-manager",
+  {},
+  {},
+  agentsConfig,
+);
+assert(mcpUnderscore === "ask", "Issue #168: `mcp_postgres` resolves to ask for PM");
+
+// Any unknown tool — the prompt is the security boundary now, not silent deny.
+const unknownVerdictPM = resolveToolPermission(
+  "some_random_tool",
+  "project-manager",
+  {},
+  {},
+  agentsConfig,
+);
+assert(
+  unknownVerdictPM === "ask",
+  "Issue #168: any unknown tool resolves to ask for PM (catch-all = ask)",
+);
+
+// Explicit allows still take precedence over catch-all.
+const explicitAllow = resolveToolPermission("read", "project-manager", {}, {}, agentsConfig);
+assert(explicitAllow === "allow", "Issue #168: explicit `read: allow` still beats `*: ask`");
+
+// Explicit denies still take precedence over catch-all.
+const explicitDeny = resolveToolPermission("write", "project-manager", {}, {}, agentsConfig);
+assert(explicitDeny === "deny", "Issue #168: explicit `write: deny` still beats `*: ask`");
+
+// Wildcard precedence (the lookupPermission ordering fix from this PR):
+// longest prefix wins, then `"*"` catch-all. Without the fix, `"*"` matched
+// first on iteration order regardless of specificity.
+const synthetic = {
+  "project-manager": {
+    permission: {
+      "*": "ask",
+      "dangerous_*": "deny",
+      "dangerous_but_safe_*": "allow",
+    },
+  },
+};
+const longer = resolveToolPermission(
+  "dangerous_but_safe_read",
+  "project-manager",
+  {},
+  {},
+  synthetic,
+);
+assert(
+  longer === "allow",
+  "Issue #168: longer prefix `dangerous_but_safe_*` beats shorter `dangerous_*`",
+);
+const shorter = resolveToolPermission("dangerous_op", "project-manager", {}, {}, synthetic);
+assert(
+  shorter === "deny",
+  "Issue #168: shorter prefix `dangerous_*` fires when longer does not match",
+);
+const fallthrough = resolveToolPermission(
+  "totally_unrelated",
+  "project-manager",
+  {},
+  {},
+  synthetic,
+);
+assert(fallthrough === "ask", "Issue #168: catch-all `*: ask` fires when no wildcard matches");
 
 console.log("\n=== test-permission-guard summary ===");
 console.log(`exit ${exitCode}`);
