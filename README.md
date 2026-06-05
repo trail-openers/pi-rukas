@@ -195,9 +195,20 @@ pi install npm:pi-mcp-adapter
 | 3 | `./.mcp.json` | Project (cross-tool) |
 | 4 | `./.pi/mcp.json` | Project, Pi-specific — **highest precedence** |
 
-The bridge also supports an `imports` array that auto-adopts servers already configured for Claude Code, Cursor, VS Code, Windsurf, Claude Desktop, Codex. See the [pi-mcp-adapter docs](https://github.com/nicobailon/pi-mcp-adapter) for the JSON schema.
+The bridge also supports an `imports` array that auto-adopts servers already configured for Claude Code, Cursor, VS Code, Windsurf, Claude Desktop, Codex. See the [pi-mcp-adapter docs](https://github.com/nicobailon/pi-mcp-adapter) for the full JSON schema.
 
-`pi-mcp-adapter` surfaces a single gateway tool called `mcp` to the model. All MCP server traffic flows through it via arguments like `{server: "alpha-staging-db", tool: "query", args: …}`.
+#### Tool-surface modes: `directTools`
+
+Each server entry can set `"directTools": true | false`. This controls how the bridge surfaces tools to Pi — and therefore what the permission prompt asks about:
+
+| Mode | What Pi sees | First-call prompt covers |
+|---|---|---|
+| `directTools: false` *(default)* | One gateway tool literally named `mcp` | Everything that bridge ever does (single Allow/Deny) |
+| `directTools: true` | Each MCP tool registered as a top-level Pi tool named `<server_snake_case>_<tool>` (kebab→snake, then `_<tool>`) | Each tool individually — finer-grained audit trail |
+
+Example: a server named `alpha-staging-db` with `directTools: true` and a `list_schemas` MCP tool surfaces in Pi as `alpha_staging_db_list_schemas`. With `directTools: false`, the same call goes via `mcp({server: "alpha-staging-db", tool: "list_schemas", args: …})`.
+
+Either mode works with the ask-by-default prompt UX described below — pick based on how much per-tool granularity you want in your `$PWD/.pi/decisions.json` audit trail. Read-only safety (e.g. `--access-mode=restricted` for `crystaldba/postgres-mcp`) is enforced at the MCP server level regardless of the surface mode.
 
 ### Step 3 — Grant role access (pi-ensemble permission overlay, 3 tiers)
 
