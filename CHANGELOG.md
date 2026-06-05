@@ -8,6 +8,16 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.4](https://github.com/randomm/pi-ensemble/compare/v0.12.3...v0.12.4) (2026-06-05)
+
+
+### Features
+
+* **#153:** dispatch_steer — PM-callable mid-flight course correction ([#156](https://github.com/randomm/pi-ensemble/issues/156)) ([99e36bb](https://github.com/randomm/pi-ensemble/commit/99e36bbea96e6425d375c9e4d204fdb3bb39ab1a))
+* **#168:** ask-by-default for unknown tools (MCP discovery UX) ([#169](https://github.com/randomm/pi-ensemble/issues/169)) ([bc6d785](https://github.com/randomm/pi-ensemble/commit/bc6d785b233aaeb94d119e67cfeee8f4f6067a55))
+* **#23:** session autosave to vipune on quit (opt-in) ([#164](https://github.com/randomm/pi-ensemble/issues/164)) ([4158c52](https://github.com/randomm/pi-ensemble/commit/4158c525e9164df93941b39f7b1981bc87063088))
+* **#4:** check_review_cap — extension-state wall-clock cap for Step 7 fix loop ([#162](https://github.com/randomm/pi-ensemble/issues/162)) ([591757a](https://github.com/randomm/pi-ensemble/commit/591757a7428c6f304e9243fb1ee5b31ce21f102a))
+
 ## [0.12.3](https://github.com/randomm/pi-ensemble/compare/v0.12.2...v0.12.3) (2026-06-01)
 
 
