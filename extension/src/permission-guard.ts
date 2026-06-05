@@ -1,3 +1,37 @@
+/**
+ * pi-ensemble permission interceptor — owns the `tool_call` hook that
+ * decides allow/deny/ask for every tool the parent agent invokes.
+ *
+ * Five concerns live here today (refactor tracker: #171):
+ *
+ *   1. Bash-command parsing — quote-stripping, prefix extraction, injection-
+ *      vector detection. Used to compute "Allow always (cmd *)" scopes and
+ *      to refuse caching for injection-bearing commands.
+ *
+ *   2. Three-layer config resolution — $PWD/.pi/permissions.json (project)
+ *      → ~/.pi/agent/permissions.json (host-global) → shipped agents.json
+ *      (baseline). First match wins, project beats host beats baseline.
+ *
+ *   3. Decision cache — Map<key, {allowed, timestamp}> persisted to
+ *      $PWD/.pi/decisions.json. Exact bash commands hash to a sha256 key;
+ *      wildcard-able commands key on `bash:<prefix> *`. Bounded by
+ *      MAX_CACHED_DECISIONS with insertion-order eviction.
+ *
+ *   4. Permission resolution — `resolveToolPermission` and
+ *      `lookupPermission`. Tool-name wildcards: exact match → longest
+ *      prefix → `"*"` catch-all (#168). Bash subcommands use the same
+ *      specificity rule via `matchBashSubcommand`.
+ *
+ *   5. Orchestration — `registerPermissionGuard` hooks `tool_call`,
+ *      prompts the user via `ctx.ui.select` when verdict is "ask" and a
+ *      UI exists, hard-denies "ask" in headless mode.
+ *
+ * Headless safety: `"ask"` verdicts hard-deny when `!ctx.hasUI`, so
+ * automation never silently approves anything. Bash commands with
+ * injection vectors hard-deny at the matcher level — they never reach
+ * the prompt.
+ */
+
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -83,7 +117,12 @@ function stripQuotedSegments(command: string): string {
         }
         i++;
       }
-      if (!foundClose) return command;
+      if (!foundClose) {
+        trace(
+          "permission-guard: stripQuotedSegments: unterminated single quote — returning raw command for fail-closed injection check",
+        );
+        return command;
+      }
     } else if (ch === '"') {
       // Double quotes: most operators (`&`, `|`, `;`, `<`, `>`, newline) are
       // literal inside, BUT bash still interprets `$` (variable + command
@@ -110,7 +149,12 @@ function stripQuotedSegments(command: string): string {
         // Other chars are literal inside double quotes — strip them.
         i++;
       }
-      if (!foundClose) return command;
+      if (!foundClose) {
+        trace(
+          "permission-guard: stripQuotedSegments: unterminated double quote — returning raw command for fail-closed injection check",
+        );
+        return command;
+      }
     } else {
       result += ch;
       i++;
@@ -960,7 +1004,14 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
         }
       }
 
-      // For deny verdict (not ask), block immediately
+      // For deny verdict (not ask), block immediately. Note: this is the
+      // configured-deny path — verdict came from agents.json / project /
+      // global config. We do NOT re-run the bash injection-vector check
+      // here because matchBashSubcommand already enforces it (returns
+      // "deny" for any bash command with `&&`, `|`, `$(...)`, redirects,
+      // etc. outside quoted segments). Configured deny entries are
+      // source-of-truth by design — if an operator wrote `"foo": "deny"`
+      // they meant it regardless of how foo's input is shaped.
       if (verdict === "deny") {
         trace(`permission-guard: BLOCKED ${event.toolName} for role=${role} (verdict=deny)`);
         return {

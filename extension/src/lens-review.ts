@@ -174,6 +174,9 @@ function normalisePath(p: string): string {
  */
 export function dedupeFindings(input: Finding[]): Finding[] {
   const precedenceOf = new Map<LensName, number>(LENSES.map((l) => [l.name, l.precedence]));
+  // `bestByKey` is bounded by the lens fan-in (≤6 children × finite findings
+  // per pass) — at most a few hundred entries per invocation, and the whole
+  // map goes out of scope when this function returns. No explicit cap needed.
   const bestByKey = new Map<string, Finding>();
   for (const f of input) {
     const key = `${f.path}::${f.line ?? 0}::${normaliseTitle(f.title)}`;

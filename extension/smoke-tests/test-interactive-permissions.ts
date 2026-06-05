@@ -407,8 +407,8 @@ assert(
     emptyConfig,
     defaultAgentsConfig,
     "vipune add foo && rm bar",
-  ) === "ask",
-  "nested allowlist: injection-vector command refused → falls through to top-level ask",
+  ) === "deny",
+  "nested allowlist: injection-vector command is hard-denied by matchBashSubcommand (#169 — was 'ask' fall-through pre-#168 when role-level catch-all was deny; matcher now enforces its own deny so the `*: ask` catch-all post-#168 cannot accidentally prompt for `cmd && evil`)",
 );
 assert(
   resolveToolPermission(
@@ -465,28 +465,50 @@ assert(
   liveRoleNames.length >= 5,
   `loadAgentsJson() returns the role config (got ${liveRoleNames.length} roles: ${liveRoleNames.join(", ")})`,
 );
+// #104 removed the "default" role from agents.json — parent Pi sessions now
+// resolve to "project-manager" directly via the permission-guard fallback
+// (permission-guard.ts:771 `process.env.PI_ENSEMBLE_ROLE ?? "project-manager"`).
+// Tests that used to assert `liveAgents.default` now assert against PM.
 assert(
-  liveAgents.default !== undefined,
-  "loadAgentsJson() returns the 'default' role used by top-level Pi sessions",
+  liveAgents["project-manager"] !== undefined,
+  "loadAgentsJson() returns the 'project-manager' role used by top-level Pi sessions (default → project-manager per #104)",
 );
-const liveDefaultBash = (liveAgents.default?.permission as { bash?: Record<string, unknown> } | undefined)
-  ?.bash;
+const livePmBash = (
+  liveAgents["project-manager"]?.permission as { bash?: Record<string, unknown> } | undefined
+)?.bash;
 assert(
-  typeof liveDefaultBash === "object" && liveDefaultBash !== null,
-  "default role's permission.bash is the nested allowlist (not a string verdict)",
+  typeof livePmBash === "object" && livePmBash !== null,
+  "project-manager role's permission.bash is the nested allowlist (not a string verdict)",
 );
 assert(
-  Object.keys(liveDefaultBash ?? {}).length >= 10,
-  `default role's bash allowlist has multiple patterns (got ${Object.keys(liveDefaultBash ?? {}).length})`,
+  Object.keys(livePmBash ?? {}).length >= 10,
+  `project-manager role's bash allowlist has multiple patterns (got ${Object.keys(livePmBash ?? {}).length})`,
 );
 // End-to-end: with the real config loaded, common bash commands declared in
 // agents.json should resolve to "allow" without ever touching the cache.
+// PM has bare `git status*` not `oo git status*` per the bare-vs-oo doctrine
+// (bare for content-need / short output; oo for verbose-wrap). Subagent
+// roles like developer/ops carry the oo-wrapped variant.
 assert(
-  resolveToolPermission("bash", "default", emptyConfig, emptyConfig, liveAgents, "oo git status") === "allow",
-  "real agents.json: 'oo git status' resolves to allow via nested allowlist",
+  resolveToolPermission(
+    "bash",
+    "project-manager",
+    emptyConfig,
+    emptyConfig,
+    liveAgents,
+    "git status",
+  ) === "allow",
+  "real agents.json: bare 'git status' resolves to allow for PM via nested allowlist",
 );
 assert(
-  resolveToolPermission("bash", "default", emptyConfig, emptyConfig, liveAgents, 'vipune add "anything"') === "allow",
+  resolveToolPermission(
+    "bash",
+    "project-manager",
+    emptyConfig,
+    emptyConfig,
+    liveAgents,
+    'vipune add "anything"',
+  ) === "allow",
   "real agents.json: quoted-arg vipune add resolves to allow via nested allowlist",
 );
 
@@ -506,13 +528,13 @@ const dispatchTools = [
   "dispatch_kill",
   "adversarial_loop",
 ];
-for (const role of ["default", "project-manager"]) {
-  for (const tool of dispatchTools) {
-    assert(
-      resolveToolPermission(tool, role, emptyConfig, emptyConfig, liveAgents) === "allow",
-      `real agents.json: ${role} role grants ${tool}`,
-    );
-  }
+// #104 removed "default" role; project-manager is the only top-level role now.
+for (const tool of dispatchTools) {
+  assert(
+    resolveToolPermission(tool, "project-manager", emptyConfig, emptyConfig, liveAgents) ===
+      "allow",
+    `real agents.json: project-manager role grants ${tool}`,
+  );
 }
 
 // Test 6: persistDecisions creates .pi/ directory

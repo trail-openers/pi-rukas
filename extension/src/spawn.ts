@@ -1,3 +1,42 @@
+/**
+ * Child Pi spawn — the single seam between the orchestrator extension
+ * and every specialist subagent. All dispatch tools (single / parallel /
+ * lens-review / adversarial) eventually call `spawnSpecialist` here.
+ *
+ * Responsibilities:
+ *
+ *   1. `--mode rpc` protocol — children run with stdin held open so we
+ *      can inject `{type:"prompt"|"steer"|"abort"|"follow_up", …}` JSON
+ *      commands. The initial prompt is sent via stdin after spawn, not as
+ *      argv, so `dispatch_steer` (#152) shares the same channel.
+ *
+ *   2. Extension auto-forward — `discoverInstalledExtensions` scans
+ *      `$PI_AGENT_DIR/extensions/` (default `~/.pi/agent/extensions/`)
+ *      and re-injects every installed extension into the child via
+ *      `--extension <real-path>` except pi-ensemble itself. That keeps
+ *      `pi-claude-auth`, MCP bridges, etc. reaching subagents without
+ *      env-var wiring. `PI_ENSEMBLE_USER_EXTENSION` is an additional
+ *      escape hatch for extensions outside the canonical location;
+ *      `PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD=1` opts out entirely.
+ *
+ *   3. JSONL event stream parsing — children emit `agent_end`,
+ *      `message_end`, `toolCall`, `usage` events to stdout. We parse
+ *      them via `ingestEvent` (progress.ts) for live `onProgress`
+ *      callbacks, the dispatch deck footer (#117), and the consolidated
+ *      report formatter (async-jobs.ts). The Pi event shape is pinned
+ *      and verified by `test-pi-shape-live.ts` (#7).
+ *
+ *   4. Done detection + transcript path — closes stdin on `agent_end`
+ *      so the child exits cleanly; saves the session JSONL under
+ *      `$PI_AGENT_DIR/ensemble-runs/<date>/<runId>-<role>[-<tag>].json`
+ *      for `/runs` introspection.
+ *
+ * Subagents do NOT inherit pi-ensemble's permission interceptor — `--no-
+ * extensions` suppresses our own load inside the child (so we can't
+ * recursively spawn). Their prompt-layer doctrine is the only constraint;
+ * MCP server credentials remain the real capability boundary.
+ */
+
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { readFileSync, readdirSync, realpathSync } from "node:fs";

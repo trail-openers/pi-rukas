@@ -1,3 +1,33 @@
+/**
+ * Slash-command registration + PM doctrine injection.
+ *
+ * Three concerns:
+ *
+ *   1. Workflow slash commands — `/start`, `/research`, `/plan`, `/work`,
+ *      `/review`, `/audit`. Each `registerCommand` handler reads the
+ *      corresponding `pi-prompts/<name>.md` body, substitutes the user's
+ *      arguments, and injects it via `pi.sendUserMessage` so the next
+ *      assistant turn runs the workflow. Bodies live outside the extension
+ *      (gitignored `dist/` for the built copy; source in `pi-prompts/`)
+ *      and are loaded fresh per invocation so hot-edits during dev take
+ *      effect without an extension reload.
+ *
+ *   2. `/ensemble-debug` — synchronous introspection: registered
+ *      commands, registered tools, per-role model resolution, prompt-dir
+ *      paths, recent-runs summary. Used by AGENTS.md §1 verification and
+ *      by users debugging their setup.
+ *
+ *   3. PM doctrine injection — the `before_agent_start` handler injects
+ *      project-manager.md doctrine the first time PM enters orchestrator
+ *      mode (one-shot), then a short sticky preamble on every subsequent
+ *      turn. The full-doctrine cost is paid once per session; the
+ *      preamble keeps PM's mental model coherent without re-burning the
+ *      40KB body each turn.
+ *
+ * Slash commands fire in interactive TUI mode. They do NOT resolve from
+ * `pi -p "/cmd …"` invocations — see earendil-works/pi#5423.
+ */
+
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
