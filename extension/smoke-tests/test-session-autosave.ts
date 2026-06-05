@@ -2,19 +2,25 @@
 /**
  * Pure unit test for session-autosave (#23).
  *
- * Exercises the deterministic-extract module without touching Pi's event
- * bus or invoking vipune. We verify:
+ * Exercises the deterministic-extract module plus the writeToVipune failure
+ * modes that the audit (#171) flagged as previously uncovered. We verify:
  *   - hadMeaningfulWork() reflects accumulated dispatches
  *   - buildSessionSummary() produces a one-line, bounded extract that
  *     names roles, totals, and outcomes faithfully
  *   - elapsed formatting handles s / m / h ranges
  *   - 1000-char truncation kicks in for pathological inputs
+ *   - writeToVipune() returns false when vipune is not on PATH (ENOENT)
+ *   - writeToVipune() returns false when vipune hangs past VIPUNE_TIMEOUT_MS
  *
- * Vipune invocation is *not* tested here — execFileSync would fork a real
- * binary. The attach()/handler-wiring path is exercised indirectly by the
- * shutdown flow during live spawn tests.
+ * Failure modes are tested by manipulating $PATH rather than mocking
+ * execFileSync — the real spawn-and-fail path is what production hits,
+ * so we exercise it directly. The attach()/handler-wiring path is still
+ * exercised indirectly by the shutdown flow during live spawn tests.
  */
 
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
   buildSessionSummary,
   hadMeaningfulWork,
@@ -22,6 +28,7 @@ import {
   recordOutcome,
   reset,
   snapshot,
+  writeToVipune,
 } from "../src/session-autosave.ts";
 
 let exit = 0;
@@ -157,6 +164,37 @@ function assert(cond: boolean, msg: string) {
   const opsIdx = s.indexOf("1 ops");
   assert(devIdx > -1 && expIdx > -1 && opsIdx > -1, `all three roles present: "${breakdown}"`);
   assert(devIdx < expIdx && expIdx < opsIdx, "roles sorted by count descending");
+}
+
+// 11. writeToVipune returns false when the binary path doesn't exist (ENOENT).
+// Pass an absolute path to a non-existent file rather than rely on PATH
+// manipulation — Bun's child_process resolves PATH at process startup so
+// runtime overrides don't reach the spawn. opts.binaryPath bypasses PATH
+// entirely (execFileSync takes the path verbatim when it contains a slash).
+{
+  const result = writeToVipune("test session summary — ENOENT path", {
+    binaryPath: "/nonexistent-pi-ensemble-test-vipune",
+  });
+  assert(result === false, "writeToVipune returns false when binary doesn't exist (ENOENT)");
+}
+
+// 12. writeToVipune returns false when the binary exceeds VIPUNE_TIMEOUT_MS.
+// Write a stub shell script that sleeps longer than the 5s timeout; the
+// execFileSync call kills it and throws, which writeToVipune catches and
+// converts to false.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "pi-ensemble-autosave-test-"));
+  const stub = path.join(dir, "vipune");
+  writeFileSync(stub, "#!/bin/sh\nsleep 30\n");
+  chmodSync(stub, 0o755);
+  const t0 = Date.now();
+  const result = writeToVipune("test session summary — timeout path", {
+    binaryPath: stub,
+  });
+  const elapsed = Date.now() - t0;
+  assert(result === false, "writeToVipune returns false when vipune hangs past VIPUNE_TIMEOUT_MS");
+  // Should bail close to the 5s cap, not run the full 30s sleep.
+  assert(elapsed < 10_000, `writeToVipune bailed inside the 10s budget (actual: ${elapsed}ms)`);
 }
 
 console.log(`\nexit ${exit}`);

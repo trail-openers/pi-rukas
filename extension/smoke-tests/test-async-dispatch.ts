@@ -14,6 +14,7 @@
  */
 
 import {
+  clearJobsForTesting,
   jobStatusSnapshot,
   killAllJobs,
   killJob,
@@ -253,6 +254,82 @@ async function nextTick() {
   );
   // Cleanup so subsequent tests / suite shutdown don't see leaked entries.
   killAllJobs();
+  dispatchDeck.reset();
+}
+
+// ---------------------------------------------------------------------------
+// Test — MAX_JOBS bound (audit #171): startJob throws past the cap, and
+// startBatch rejects if the orchestrator+members would push past it. The
+// cap is 50; we fill up just under the line, then assert the next single
+// is refused and the next batch is refused.
+// ---------------------------------------------------------------------------
+{
+  const { pi } = makePiStub();
+  // Drain the module-level jobs Map — prior tests in this file used
+  // never-resolving work, and killAllJobs only aborts; it can't remove
+  // entries whose work function never reacts to AbortSignal.
+  clearJobsForTesting();
+  dispatchDeck.reset();
+  // Fill 49 single jobs with never-resolving work so they all stay in the map.
+  for (let i = 0; i < 49; i++) {
+    startJob(pi, {
+      label: `filler-${i}`,
+      role: "developer",
+      work: () => new Promise(() => undefined),
+    });
+  }
+  // The 50th is still fine — equal-to-cap is allowed.
+  let fiftiethOk = false;
+  try {
+    startJob(pi, {
+      label: "filler-49",
+      role: "developer",
+      work: () => new Promise(() => undefined),
+    });
+    fiftiethOk = true;
+  } catch {
+    // unreachable; cap is 50, this is the 50th
+  }
+  assert(fiftiethOk, "MAX_JOBS=50: 50th in-flight single still allowed");
+  // The 51st must throw with a recognisable message.
+  let threw = false;
+  let errMsg = "";
+  try {
+    startJob(pi, {
+      label: "overflow",
+      role: "developer",
+      work: () => new Promise(() => undefined),
+    });
+  } catch (err) {
+    threw = true;
+    errMsg = (err as Error).message;
+  }
+  assert(threw, "MAX_JOBS=50: 51st single throws");
+  assert(
+    errMsg.includes("cap 50") && errMsg.includes("already in flight"),
+    `MAX_JOBS error message names the cap clearly (got: "${errMsg}")`,
+  );
+  // A batch that would push past the cap is also refused — atomic, not partial.
+  let batchThrew = false;
+  let batchErrMsg = "";
+  try {
+    startBatch(pi, {
+      batchLabel: "overflow-batch",
+      members: [
+        { label: "m1", role: "developer", work: () => new Promise(() => undefined) },
+        { label: "m2", role: "developer", work: () => new Promise(() => undefined) },
+      ],
+    });
+  } catch (err) {
+    batchThrew = true;
+    batchErrMsg = (err as Error).message;
+  }
+  assert(batchThrew, "MAX_JOBS: batch that would overflow is rejected atomically");
+  assert(
+    batchErrMsg.includes("refusing to start batch"),
+    `batch overflow error message is recognisable (got: "${batchErrMsg}")`,
+  );
+  clearJobsForTesting();
   dispatchDeck.reset();
 }
 

@@ -69,6 +69,13 @@ interface BatchOrchestratorJobState {
 
 type JobState = SingleJobState | BatchMemberJobState | BatchOrchestratorJobState;
 
+// Hard cap on concurrent jobs. Realistic upper bound: a six-pass lens review
+// (1 orchestrator + 6 members) plus a parallel batch (1 + ≤8 members) plus a
+// few outstanding singles ≈ 25. 50 leaves comfortable headroom; pathological
+// dispatch-without-settle scenarios (e.g., a bug in a settle path) are caught
+// before the map grows unbounded. Members count against the same cap as
+// orchestrators because they share the same memory profile and abort tree.
+const MAX_JOBS = 50;
 const jobs = new Map<string, JobState>();
 
 function newJobId(): string {
@@ -237,6 +244,11 @@ interface StartJobInput {
  * parent via pi.sendUserMessage when the work resolves.
  */
 export function startJob(pi: ExtensionAPI, input: StartJobInput): { jobId: string } {
+  if (jobs.size >= MAX_JOBS) {
+    throw new Error(
+      `async-jobs: refusing to start job — ${jobs.size} jobs already in flight (cap ${MAX_JOBS}). This usually indicates a stuck settle path; check 'dispatch_status' or restart Pi.`,
+    );
+  }
   const jobId = newJobId();
   const abort = new AbortController();
   const state: SingleJobState = {
@@ -319,6 +331,14 @@ export function startBatch(
   pi: ExtensionAPI,
   input: StartBatchInput,
 ): { batchId: string; jobIds: string[] } {
+  // Batch slot count: 1 orchestrator + N members. Reject up-front rather than
+  // letting some members land and others fail mid-construction.
+  const required = 1 + input.members.length;
+  if (jobs.size + required > MAX_JOBS) {
+    throw new Error(
+      `async-jobs: refusing to start batch of ${input.members.length} members — would exceed cap (in-flight=${jobs.size}, required=${required}, cap=${MAX_JOBS}). Check 'dispatch_status' or restart Pi.`,
+    );
+  }
   const batchId = newJobId();
   const startedAt = Date.now();
   const orchestratorAbort = new AbortController();
@@ -501,6 +521,21 @@ export function killAllJobs(): number {
     n++;
   }
   return n;
+}
+
+/**
+ * Test-only: forcibly drain the jobs and childHandles maps without going
+ * through the abort+settle cycle. Required for tests that use
+ * never-resolving work (`new Promise(() => undefined)`) — aborting such a
+ * promise emits the signal but the work function never reacts, so the
+ * `.then` cleanup that would remove the entry never runs. Production code
+ * never wants this; tests need it for clean isolation against the
+ * module-level singleton maps.
+ */
+export function clearJobsForTesting(): void {
+  for (const job of jobs.values()) job.abort.abort();
+  jobs.clear();
+  childHandles.clear();
 }
 
 /**

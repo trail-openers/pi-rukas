@@ -21,6 +21,13 @@
  *   - Truncate to 1000 chars. Vipune-friendly bounded fact, not an essay.
  *   - Tolerate vipune-not-installed / vipune-failed silently. This is
  *     opportunistic memory, not load-bearing.
+ *
+ * Concurrency: the `facts` record is mutated from async-jobs settle paths
+ * (recordDispatch on startJob/startBatch, recordOutcome in both success and
+ * error handlers). All mutations run on Node's single-threaded event loop —
+ * each settle handler is one synchronous turn — so there's no true race on
+ * the counters. If we ever introduce a Worker-thread or sub-process settle
+ * path this assumption breaks and the counters need explicit locking.
  */
 
 import { execFileSync } from "node:child_process";
@@ -132,10 +139,16 @@ export function buildSessionSummary(now: number = Date.now()): string {
  * raw argv element, no shell interpolation; injection-safe by construction.
  * The synchronous variant is appropriate because Pi awaits session_shutdown
  * handlers; an async spawn would risk being abandoned mid-call.
+ *
+ * `opts.binaryPath` defaults to `"vipune"` (PATH lookup). Tests pass an
+ * absolute path to a stub so the ENOENT and timeout failure paths can be
+ * exercised without depending on the test runner's PATH resolution
+ * (Bun's child_process resolves PATH at process startup, not call time).
  */
-export function writeToVipune(summary: string): boolean {
+export function writeToVipune(summary: string, opts: { binaryPath?: string } = {}): boolean {
+  const binary = opts.binaryPath ?? "vipune";
   try {
-    execFileSync("vipune", ["add", summary], {
+    execFileSync(binary, ["add", summary], {
       stdio: ["ignore", "pipe", "pipe"],
       timeout: VIPUNE_TIMEOUT_MS,
     });

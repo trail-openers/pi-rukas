@@ -23,8 +23,32 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
 const REVIEW_CAP_MS = 90 * 60 * 1000; // 90 minutes
+// Hard cap on distinct keys. A long PM session that called check_review_cap
+// for many issues would otherwise grow the Map unbounded. 100 is well above
+// realistic usage (concurrent /work cycles are rare; each adds one key) and
+// the audit's bounded-state convention (#171) is to cap state explicitly.
+const MAX_CACHED_CAPS = 100;
+// Mirror permission-guard.ts's DECISION_KEY_MAX_LENGTH — long keys are almost
+// always a misuse (PM passing a payload instead of an identifier).
+const MAX_KEY_LENGTH = 250;
 
 const caps = new Map<string, number>();
+
+// Evict the oldest entry (smallest startedAt) once the map exceeds the cap.
+// Caller invokes this right after caps.set(); only runs work when the cap is
+// breached, so amortised cost is O(1) for typical usage.
+function evictOldestCap(): void {
+  if (caps.size <= MAX_CACHED_CAPS) return;
+  let oldestKey: string | undefined;
+  let oldestStartedAt = Number.POSITIVE_INFINITY;
+  for (const [k, startedAt] of caps) {
+    if (startedAt < oldestStartedAt) {
+      oldestKey = k;
+      oldestStartedAt = startedAt;
+    }
+  }
+  if (oldestKey !== undefined) caps.delete(oldestKey);
+}
 
 /** Test-only — purge state between cases. */
 export function reset(): void {
@@ -51,7 +75,10 @@ interface CheckResult {
  * Decide whether the fix loop for `key` is within the cap.
  *
  * On first call (or when `reset: true`): start the timer at `now`, return
- * ok with elapsedMs=0.
+ * ok with elapsedMs=0. Note that `reset: true` UNCONDITIONALLY overwrites
+ * any existing timer for `key` — if PM sends it mid-loop by mistake the cap
+ * is defeated. This is by design (matches dispatch_kill / dispatch_steer's
+ * trust-the-prompt model); enforcement is via /work doctrine, not mechanics.
  *
  * Subsequent calls: compare `now - startedAt` against the cap; return
  * ok=false when exceeded.
@@ -60,8 +87,24 @@ interface CheckResult {
  */
 export function checkReviewCap(key: string, opts: { reset?: boolean } = {}): CheckResult {
   const now = Date.now();
+  // Validate before any state mutation — invalid keys must not pollute the
+  // map. Empty/long keys are almost always a misuse (PM sending a payload
+  // instead of an identifier). Return ok=true with a clear diagnostic so
+  // the loop continues but the PM sees the warning in the response text.
+  if (key.length === 0 || key.length > MAX_KEY_LENGTH) {
+    return {
+      ok: true,
+      key,
+      startedAt: now,
+      elapsedMs: 0,
+      capMs: REVIEW_CAP_MS,
+      reset: false,
+      message: `Invalid cap key (${key.length === 0 ? "empty" : `${key.length} chars; max ${MAX_KEY_LENGTH}`}) — pass a short identifier like "issue-42". Timer not started; cap not enforced for this call.`,
+    };
+  }
   if (opts.reset || !caps.has(key)) {
     caps.set(key, now);
+    evictOldestCap();
     return {
       ok: true,
       key,

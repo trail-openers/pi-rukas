@@ -121,6 +121,43 @@ function restoreNow() {
   assert(bAfter.elapsedMs === 30 * 60 * 1000, "b's timer unaffected — still 30m elapsed");
 }
 
+// 7. Eviction at MAX_CACHED_CAPS — once the map exceeds 100 keys, the oldest
+// startedAt is dropped. Audit #171 flagged the previously-unbounded growth.
+{
+  reset();
+  // Insert 101 keys with strictly increasing startedAt so the OLDEST is key-0.
+  for (let i = 0; i < 101; i++) {
+    setMockNow(10_000_000 + i);
+    checkReviewCap(`evict-key-${i}`);
+  }
+  const after = snapshot();
+  assert(after.length === 100, `after 101 inserts, map size capped at 100 (got ${after.length})`);
+  const keys = new Set(after.map((e) => e.key));
+  assert(!keys.has("evict-key-0"), "oldest key (evict-key-0) was evicted");
+  assert(keys.has("evict-key-100"), "newest key (evict-key-100) is retained");
+}
+
+// 8. Empty key — return ok but with a clear diagnostic and don't pollute the map.
+{
+  reset();
+  setMockNow(20_000_000);
+  const r = checkReviewCap("");
+  assert(r.ok === true, "empty key: ok=true (don't block PM)");
+  assert(r.message.toLowerCase().includes("invalid"), "empty key: message flags invalid");
+  assert(snapshot().length === 0, "empty key: timer not stored");
+}
+
+// 9. Over-length key — same diagnostic, no state mutation.
+{
+  reset();
+  setMockNow(20_000_001);
+  const longKey = "x".repeat(251);
+  const r = checkReviewCap(longKey);
+  assert(r.ok === true, "over-length key: ok=true");
+  assert(r.message.toLowerCase().includes("max 250"), "over-length key: message names the limit");
+  assert(snapshot().length === 0, "over-length key: timer not stored");
+}
+
 restoreNow();
 console.log(`\nexit ${exit}`);
 process.exit(exit);
