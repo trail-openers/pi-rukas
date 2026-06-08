@@ -328,6 +328,13 @@ export async function spawnSpecialist(
     "--append-system-prompt",
     tmpPromptFile,
   ];
+  // `--provider` must precede `--model` so Pi disambiguates the model ID
+  // against the named provider's catalog. Required for custom OpenAI-
+  // compatible endpoints whose model IDs are upstream-vendor strings
+  // (e.g. "Qwen/Qwen3.6-...") that don't carry a provider prefix.
+  if (modelChoice.provider) {
+    childArgs.push("--provider", modelChoice.provider);
+  }
   if (modelChoice.model) {
     childArgs.push("--model", modelChoice.model);
   }

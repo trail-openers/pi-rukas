@@ -4,7 +4,13 @@
  * No Pi spawns; just exercises `resolveModel` under various env states.
  */
 
-import { clearAllOverrides, loadOverrides, setGlobalOverride, setOverride } from "../src/model-config.ts";
+import {
+  clearAllOverrides,
+  loadOverrides,
+  resetForTesting,
+  setGlobalOverride,
+  setOverride,
+} from "../src/model-config.ts";
 import { resolveModel } from "../src/models.ts";
 
 // Use a throwaway config file for the test so we don't clobber the user's.
@@ -88,7 +94,7 @@ delete process.env.PI_ENSEMBLE_MODEL_ADVERSARIAL_DEVELOPER;
 
 // 7. /ensemble-model per-role override beats env vars
 {
-  await setOverride("developer", "cerebras/zai-glm-4.7");
+  await setOverride("developer", { model: "cerebras/zai-glm-4.7" });
   const r = resolveModel("developer");
   assert(
     r.model === "cerebras/zai-glm-4.7" && r.source === "config",
@@ -99,7 +105,7 @@ delete process.env.PI_ENSEMBLE_MODEL_ADVERSARIAL_DEVELOPER;
 
 // 8. /ensemble-model all-subagents default beats env defaults but not per-role env
 {
-  await setGlobalOverride("cerebras/zai-glm-4.7");
+  await setGlobalOverride({ model: "cerebras/zai-glm-4.7" });
   const r = resolveModel("ops");
   assert(
     r.model === "cerebras/zai-glm-4.7" && r.source === "config-default",
@@ -116,7 +122,7 @@ delete process.env.PI_ENSEMBLE_MODEL_ADVERSARIAL_DEVELOPER;
 
 // 9. Per-call spec still wins over /ensemble-model
 {
-  await setOverride("developer", "cerebras/zai-glm-4.7");
+  await setOverride("developer", { model: "cerebras/zai-glm-4.7" });
   const r = resolveModel("developer", "anthropic/claude-sonnet-4-5");
   assert(
     r.model === "anthropic/claude-sonnet-4-5" && r.source === "spec",
@@ -124,6 +130,85 @@ delete process.env.PI_ENSEMBLE_MODEL_ADVERSARIAL_DEVELOPER;
   );
   await clearAllOverrides();
 }
+
+// 10. Custom provider via /ensemble-model — provider carried through to resolveModel
+{
+  await setOverride("developer", { provider: "my-vllm", model: "vendor/some-model" });
+  const r = resolveModel("developer");
+  assert(
+    r.provider === "my-vllm" && r.model === "vendor/some-model" && r.source === "config",
+    "/ensemble-model {provider, model} preserves provider on read",
+  );
+  await clearAllOverrides();
+}
+
+// 11. PI_ENSEMBLE_PROVIDER_<ROLE> pairs with PI_ENSEMBLE_MODEL_<ROLE>
+const savedRoleDevProvider = process.env.PI_ENSEMBLE_PROVIDER_DEVELOPER;
+const savedSubProvider = process.env.PI_ENSEMBLE_SUBAGENT_PROVIDER;
+{
+  process.env.PI_ENSEMBLE_PROVIDER_DEVELOPER = "my-vllm";
+  process.env.PI_ENSEMBLE_MODEL_DEVELOPER = "vendor/some-model";
+  const r = resolveModel("developer");
+  assert(
+    r.provider === "my-vllm" && r.model === "vendor/some-model" && r.source === "role-env",
+    "PI_ENSEMBLE_PROVIDER_DEVELOPER pairs with PI_ENSEMBLE_MODEL_DEVELOPER",
+  );
+}
+
+// 12. PI_ENSEMBLE_PROVIDER_<ROLE> alone (without paired MODEL) is ignored at that tier
+{
+  delete process.env.PI_ENSEMBLE_MODEL_DEVELOPER;
+  // PROVIDER still set from test 11
+  process.env.PI_ENSEMBLE_SUBAGENT_MODEL = "fallback/model";
+  const r = resolveModel("developer");
+  // Tier should fall through to subagent-env since role-env has no MODEL
+  assert(
+    r.source === "subagent-env" && r.model === "fallback/model",
+    "PI_ENSEMBLE_PROVIDER_DEVELOPER alone falls through to subagent-env tier",
+  );
+  delete process.env.PI_ENSEMBLE_PROVIDER_DEVELOPER;
+  delete process.env.PI_ENSEMBLE_SUBAGENT_MODEL;
+}
+
+// 13. PI_ENSEMBLE_SUBAGENT_PROVIDER pairs with PI_ENSEMBLE_SUBAGENT_MODEL
+{
+  process.env.PI_ENSEMBLE_SUBAGENT_MODEL = "vendor/some-model";
+  process.env.PI_ENSEMBLE_SUBAGENT_PROVIDER = "my-vllm";
+  const r = resolveModel("ops");
+  assert(
+    r.provider === "my-vllm" && r.model === "vendor/some-model" && r.source === "subagent-env",
+    "PI_ENSEMBLE_SUBAGENT_PROVIDER pairs with PI_ENSEMBLE_SUBAGENT_MODEL",
+  );
+  delete process.env.PI_ENSEMBLE_SUBAGENT_PROVIDER;
+  delete process.env.PI_ENSEMBLE_SUBAGENT_MODEL;
+}
+
+// 14. Legacy string-form ensemble-models.json entry still loads (backwards compat).
+// Write the legacy string-only schema directly to disk and re-load.
+{
+  const fs = await import("node:fs/promises");
+  const legacyPath = process.env.PI_ENSEMBLE_MODELS_CONFIG ?? "";
+  await fs.writeFile(
+    legacyPath,
+    JSON.stringify({ models: { developer: "legacy/model-id" } }),
+    "utf8",
+  );
+  // resetForTesting clears the `loaded` flag so loadOverrides re-reads disk.
+  resetForTesting();
+  await loadOverrides();
+  const r = resolveModel("developer");
+  assert(
+    r.model === "legacy/model-id" && r.provider === undefined && r.source === "config",
+    "legacy string-form ensemble-models.json entry resolves with provider undefined",
+  );
+  await clearAllOverrides();
+}
+
+// Restore provider env vars
+if (savedRoleDevProvider) process.env.PI_ENSEMBLE_PROVIDER_DEVELOPER = savedRoleDevProvider;
+else delete process.env.PI_ENSEMBLE_PROVIDER_DEVELOPER;
+if (savedSubProvider) process.env.PI_ENSEMBLE_SUBAGENT_PROVIDER = savedSubProvider;
+else delete process.env.PI_ENSEMBLE_SUBAGENT_PROVIDER;
 
 // Restore env
 if (savedSub) process.env.PI_ENSEMBLE_SUBAGENT_MODEL = savedSub;

@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type PiModel, listAvailableModels } from "./list-models.ts";
 import {
   GLOBAL_KEY,
+  type ModelChoice,
   clearAllOverrides,
   clearOverride,
   getAllOverrides,
@@ -45,14 +46,14 @@ export function registerModelPicker(pi: ExtensionAPI) {
 
       const role = parseRow(rolePick);
       const isGlobal = role === ALL_OPTION;
-      const roleKey = isGlobal ? GLOBAL_KEY : role;
+      const _roleKey = isGlobal ? GLOBAL_KEY : role;
       const roleLabel = isGlobal ? "all subagents" : role;
 
       // Step 2: pick a model — group by provider, no hardcoded model IDs
       // so the list stays correct as Pi's catalog evolves.
       ctx.ui.notify("Loading models from pi --list-models …", "info");
       const models = await listAvailableModels();
-      const modelOptions = buildModelOptions(models);
+      const { options: modelOptions, byLabel } = buildModelOptions(models);
       modelOptions.push(USE_PI_DEFAULT, CUSTOM_MODEL);
 
       const modelPick = await ctx.ui.select(`Model for ${roleLabel}`, modelOptions);
@@ -71,41 +72,57 @@ export function registerModelPicker(pi: ExtensionAPI) {
         return;
       }
 
-      let modelId: string;
+      let choice: ModelChoice;
       if (modelPick === CUSTOM_MODEL) {
-        const typed = await ctx.ui.input(
+        // Two-step custom entry so the user can pin a provider explicitly
+        // (required for custom OpenAI-compatible endpoints whose model IDs
+        // are vendor strings without a Pi provider prefix).
+        const typedModel = await ctx.ui.input(
           "Type a model id",
-          "<provider>/<model>  — run `pi --list-models` to see options",
+          "vendor/model OR just the model name (for custom providers, set provider below)",
         );
-        if (!typed || typed.trim().length === 0) return;
-        modelId = typed.trim();
+        if (!typedModel || typedModel.trim().length === 0) return;
+        const typedProvider = await ctx.ui.input(
+          "Provider name (optional)",
+          "leave blank for built-in providers; required for custom OpenAI-compatible endpoints",
+        );
+        const provider = typedProvider?.trim();
+        choice =
+          provider && provider.length > 0
+            ? { provider, model: typedModel.trim() }
+            : { model: typedModel.trim() };
       } else if (modelPick.startsWith("── ")) {
-        // user picked a section header
-        return;
+        return; // user picked a section header
       } else {
-        modelId = parseModelLine(modelPick);
+        const m = byLabel.get(modelPick);
+        if (!m) return;
+        choice = { provider: m.provider, model: m.model };
       }
 
       // Step 3: confirm and save
       if (isGlobal) {
-        await setGlobalOverride(modelId);
+        await setGlobalOverride(choice);
       } else {
-        await setOverride(role, modelId);
+        await setOverride(role, choice);
       }
 
+      const display = formatChoiceForNotify(choice);
       const resolved = isGlobal ? "(applies to roles without their own override)" : "";
       ctx.ui.notify(
-        `Saved: ${roleLabel} → ${modelId}\n${resolved}\nWritten to ~/.pi/agent/ensemble-models.json.`,
+        `Saved: ${roleLabel} → ${display}\n${resolved}\nWritten to ~/.pi/agent/ensemble-models.json.`,
         "info",
       );
     },
   });
 }
 
-function formatRow(label: string, current: string | undefined): string {
+function formatChoiceForNotify(c: ModelChoice): string {
+  return c.provider ? `${c.provider} · ${c.model}` : c.model;
+}
+
+function formatRow(label: string, current: ModelChoice | undefined): string {
   if (!current) return label;
-  const eff = label === ALL_OPTION ? current : current;
-  return `${label}  →  ${eff}`;
+  return `${label}  →  ${formatChoiceForNotify(current)}`;
 }
 
 function parseRow(row: string): string {
@@ -122,12 +139,6 @@ function formatModelLine(m: { id: string; context?: string; thinking?: string })
   return `${m.id}${trail}`;
 }
 
-function parseModelLine(line: string): string {
-  // "<provider>/<model>   (ctx, thinks)" → "<provider>/<model>"
-  const i = line.indexOf("   (");
-  return i < 0 ? line : line.slice(0, i);
-}
-
 /**
  * Group available models by provider with a section header per provider.
  *
@@ -135,11 +146,20 @@ function parseModelLine(line: string): string {
  * they're easy to reach, then alphabetical by provider name. Within each
  * provider, models are listed in the order Pi returned them.
  *
+ * Returns the display options AND a label→PiModel map so the picker can map
+ * the user's selected line back to the structured `{provider, model}` we
+ * persist — required for custom providers where the displayed line and the
+ * stored ID are not interchangeable.
+ *
  * NB: this intentionally has zero hardcoded model IDs. Whatever Pi knows about
  * appears verbatim — no regex match against specific names that could rot.
  */
-function buildModelOptions(models: PiModel[]): string[] {
-  if (models.length === 0) return [];
+function buildModelOptions(models: PiModel[]): {
+  options: string[];
+  byLabel: Map<string, PiModel>;
+} {
+  const byLabel = new Map<string, PiModel>();
+  if (models.length === 0) return { options: [], byLabel };
   const byProvider = new Map<string, PiModel[]>();
   for (const m of models) {
     const arr = byProvider.get(m.provider) ?? [];
@@ -154,13 +174,17 @@ function buildModelOptions(models: PiModel[]): string[] {
     if (aSub !== bSub) return aSub - bSub;
     return a.localeCompare(b);
   });
-  const out: string[] = [];
+  const options: string[] = [];
   for (const provider of sortedProviders) {
     const list = byProvider.get(provider) ?? [];
-    out.push(`── ${provider} (${list.length}) ──`);
-    for (const m of list) out.push(formatModelLine(m));
+    options.push(`── ${provider} (${list.length}) ──`);
+    for (const m of list) {
+      const label = formatModelLine(m);
+      options.push(label);
+      byLabel.set(label, m);
+    }
   }
-  return out;
+  return { options, byLabel };
 }
 
 /** Re-export used by ensemble-debug for status rendering. */

@@ -163,11 +163,68 @@ You probably want a smarter model for the PM and a faster one for the specialist
 
 1. `/ensemble-model` per-role choice (saved to `~/.pi/agent/ensemble-models.json`)
 2. `/ensemble-model` all-subagents default (same file)
-3. `PI_ENSEMBLE_MODEL_<ROLE>` env var (e.g. `PI_ENSEMBLE_MODEL_DEVELOPER`)
-4. `PI_ENSEMBLE_SUBAGENT_MODEL` env var (global fallback for subagents)
+3. `PI_ENSEMBLE_MODEL_<ROLE>` env var (e.g. `PI_ENSEMBLE_MODEL_DEVELOPER`), optionally paired with `PI_ENSEMBLE_PROVIDER_<ROLE>` for custom OpenAI-compatible providers
+4. `PI_ENSEMBLE_SUBAGENT_MODEL` env var (global fallback for subagents), optionally paired with `PI_ENSEMBLE_SUBAGENT_PROVIDER`
 5. Pi default (lowest)
 
-Run `/ensemble-model` inside Pi to pick interactively from your authenticated provider catalog. Add new providers (Anthropic, GitHub Copilot, OpenAI, etc.) via Pi's `/login` — `pi-ensemble` picks them up automatically.
+Run `/ensemble-model` inside Pi to pick interactively from your authenticated provider catalog. Add new built-in providers (Anthropic, GitHub Copilot, OpenAI, etc.) via Pi's `/login` — `pi-ensemble` picks them up automatically.
+
+### Adding a custom OpenAI-compatible provider
+
+For self-hosted vLLM, an internal LLM endpoint, or any third-party OpenAI Chat-Completions–compatible API, register it once in Pi's own config and `pi-ensemble` will route subagents through it like any other provider.
+
+**Step 1 — register the provider in `~/.pi/agent/models.json`** (create the file if it doesn't exist; merge with existing `providers` block if it does):
+
+```jsonc
+{
+  "providers": {
+    "my-vllm": {
+      "api": "openai-completions",
+      "baseUrl": "https://llm.example.com/v1",
+      "apiKey": "$MY_LLM_KEY",
+      "models": [
+        {
+          "id": "vendor/model-name",
+          "name": "Friendly Display Name",
+          "reasoning": true,
+          "input": ["text"],
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "compat": {
+            "thinkingFormat": "qwen-chat-template",
+            "supportsReasoningEffort": false,
+            "maxTokensField": "max_tokens"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+Compat flags worth knowing:
+- `thinkingFormat: "qwen-chat-template"` — for vLLM servers running `--reasoning-parser qwen3`; Pi sends `chat_template_kwargs.enable_thinking` instead of the OpenAI-style `reasoning_effort` field. Omit if your endpoint is non-reasoning.
+- `supportsReasoningEffort: false` — most open-weight reasoning models are binary on/off, not tiered.
+- `maxTokensField: "max_tokens"` — classic OpenAI naming; vLLM expects this rather than the newer `max_completion_tokens`.
+- `cost: { zeros }` — internal/free endpoints; Pi's usage reporter still tracks tokens but won't multiply by a per-token rate.
+
+**Step 2 — store the API key.** Pick whichever option fits your security posture:
+
+- **1Password CLI** — store the credential in 1Password, then in `models.json`: `"apiKey": "!op read 'op://Private/<vault-item>/credential'"` (Pi re-executes the reference on each request)
+- **Env var** — `export MY_LLM_KEY="..."` in your shell rc, then `"apiKey": "$MY_LLM_KEY"`
+- **Plaintext** — paste the key directly into the `apiKey` field. Pi creates `models.json` with `0600` perms; fine for personal machines, not for shared hosts
+
+**Step 3 — use it.** Three ways depending on how broadly you want it applied:
+
+- *Main agent only*: `pi --provider my-vllm --model "vendor/model-name"` — or set it as the default in `~/.pi/agent/settings.json`:
+  ```json
+  { "defaultProvider": "my-vllm", "defaultModel": "vendor/model-name" }
+  ```
+- *Main agent for one specific project*: drop the same `defaultProvider`/`defaultModel` snippet into `./.pi/settings.json` at the project root. Pi reads project-local config and overrides the user-global default when invoked from there.
+- *Subagents*: run `/ensemble-model` inside Pi — the custom provider appears under its own section in the picker. Pick a role + model and the choice persists as `{provider, model}` in `~/.pi/agent/ensemble-models.json`. Alternatively set `PI_ENSEMBLE_PROVIDER_<ROLE>=my-vllm` + `PI_ENSEMBLE_MODEL_<ROLE>=vendor/model-name` per role, or the `PI_ENSEMBLE_SUBAGENT_*` pair for all subagents.
+
+`pi-ensemble` passes `--provider <name>` ahead of `--model <id>` to each spawned subagent when a provider is configured, so Pi disambiguates the model ID against your registered providers rather than only its built-in catalog.
 
 ## Using MCP servers (per-host or per-project)
 
@@ -206,7 +263,7 @@ Each server entry can set `"directTools": true | false`. This controls how the b
 | `directTools: false` *(default)* | One gateway tool literally named `mcp` | Everything that bridge ever does (single Allow/Deny) |
 | `directTools: true` | Each MCP tool registered as a top-level Pi tool named `<server_snake_case>_<tool>` (kebab→snake, then `_<tool>`) | Each tool individually — finer-grained audit trail |
 
-Example: a server named `alpha-staging-db` with `directTools: true` and a `list_schemas` MCP tool surfaces in Pi as `alpha_staging_db_list_schemas`. With `directTools: false`, the same call goes via `mcp({server: "alpha-staging-db", tool: "list_schemas", args: …})`.
+Example: a server named `staging-db` with `directTools: true` and a `list_schemas` MCP tool surfaces in Pi as `staging_db_list_schemas`. With `directTools: false`, the same call goes via `mcp({server: "staging-db", tool: "list_schemas", args: …})`.
 
 Either mode works with the ask-by-default prompt UX described below — pick based on how much per-tool granularity you want in your `$PWD/.pi/decisions.json` audit trail. Read-only safety (e.g. `--access-mode=restricted` for `crystaldba/postgres-mcp`) is enforced at the MCP server level regardless of the surface mode.
 
@@ -273,7 +330,9 @@ All optional. Defaults are reasonable for typical use.
 | `PI_ENSEMBLE_RUNS_KEEP_LAST` | `20` | How many recent subagent transcript batches to keep on disk; older ones auto-prune. Set to `0` to disable pruning. |
 | `PI_ENSEMBLE_DEBUG` | unset | Set to `1` for verbose stderr trace from the extension. |
 | `PI_ENSEMBLE_SUBAGENT_MODEL` | unset | Global fallback model for all subagents (see "Configuring subagent models"). |
+| `PI_ENSEMBLE_SUBAGENT_PROVIDER` | unset | Optional Pi provider name paired with `PI_ENSEMBLE_SUBAGENT_MODEL` — required for custom OpenAI-compatible providers whose model IDs don't carry a built-in provider prefix. |
 | `PI_ENSEMBLE_MODEL_<ROLE>` | unset | Per-role model override (e.g. `PI_ENSEMBLE_MODEL_DEVELOPER`). Uppercase, `-` → `_`. |
+| `PI_ENSEMBLE_PROVIDER_<ROLE>` | unset | Per-role provider override, paired with the corresponding `_MODEL_` var. Same naming rule. |
 | `PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD` | unset | Set to `1` to opt out of auto-forwarding installed extensions to subagents (subagents inherit nothing — disables pi-claude-auth, MCP bridges, etc.). |
 | `PI_ENSEMBLE_USER_EXTENSION` | unset | Absolute path or `npm:<pkg>` ref of an extra extension to forward to subagents, on top of the auto-discovered list. |
 | `PI_ENSEMBLE_AUTOSAVE` | unset | Set to `1` to opt into a deterministic session summary written to `vipune` on session quit ([#23](https://github.com/randomm/pi-ensemble/issues/23)). Pure local extract — no LLM call. Off by default. |

@@ -130,7 +130,11 @@ export function registerCommands(pi: ExtensionAPI) {
       const globalOverride = overrides[GLOBAL_KEY];
       const runsLine = await transcriptsSummary().catch(() => "");
       const modelLines = modelConfigSnapshot().map(({ role, choice }) => {
-        const m = choice.model ?? "(Pi default)";
+        const m = choice.model
+          ? choice.provider
+            ? `${choice.provider} · ${choice.model}`
+            : choice.model
+          : "(Pi default)";
         const src =
           choice.source === "spec"
             ? "/ensemble-model spec"
@@ -157,7 +161,9 @@ export function registerCommands(pi: ExtensionAPI) {
         "",
         "subagent models  (change via /ensemble-model — saved to ~/.pi/agent/ensemble-models.json)",
         ...(globalOverride
-          ? [`  default for all   ← ${globalOverride}   [/ensemble-model (all)]`]
+          ? [
+              `  default for all   ← ${globalOverride.provider ? `${globalOverride.provider} · ${globalOverride.model}` : globalOverride.model}   [/ensemble-model (all)]`,
+            ]
           : []),
         ...modelLines,
       ];
