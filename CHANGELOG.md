@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.5](https://github.com/randomm/pi-ensemble/compare/v0.12.4...v0.12.5) (2026-06-08)
+
+
+### Features
+
+* **models:** route subagents through custom OpenAI-compatible providers ([#174](https://github.com/randomm/pi-ensemble/issues/174)) ([1fa57ee](https://github.com/randomm/pi-ensemble/commit/1fa57ee5ad60cbf812e4dcc521b51e2aba130e81))
+
 ## [0.12.4](https://github.com/randomm/pi-ensemble/compare/v0.12.3...v0.12.4) (2026-06-05)
 
 
