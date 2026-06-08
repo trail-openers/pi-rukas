@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { trace } from "./trace.ts";
 
 const execFileP = promisify(execFile);
 
@@ -19,26 +20,40 @@ export interface PiModel {
  *
  * Pi formats the table with spaces, not tabs, and column widths vary. We split
  * on 2+ whitespace, which is robust across Pi versions.
+ *
+ * Stream selection: Pi 0.75 wrote the table to stdout; Pi 0.78 writes it to
+ * stderr (probably to keep stdout clean for piping). We read both and
+ * concatenate so the parser works across both versions without a runtime
+ * Pi-version probe.
  */
 export async function listAvailableModels(query?: string): Promise<PiModel[]> {
   const args = ["--list-models"];
   if (query) args.push(query);
-  let stdout = "";
+  let combined = "";
   try {
     const r = await execFileP("pi", args, { maxBuffer: 4 * 1024 * 1024 });
-    stdout = r.stdout;
-  } catch {
+    combined = `${r.stdout}\n${r.stderr}`;
+  } catch (err) {
+    trace(`list-models: pi --list-models failed: ${(err as Error).message}`);
     return [];
   }
-  const rows = stdout
+  const rows = combined
     .split("\n")
     .map((l) => l.trimEnd())
     .filter((l) => l.length > 0);
-  if (rows.length < 2) return [];
+  if (rows.length < 2) {
+    trace(`list-models: too few rows (${rows.length}); first 200 chars: ${combined.slice(0, 200)}`);
+    return [];
+  }
 
-  // Strip any extension-activation stderr that leaked into stdout (defensive).
+  // Find the header row — stdout and stderr might be interleaved with our
+  // own extension activation traces, so we anchor on the literal column
+  // header rather than assuming row 0.
   const headerIdx = rows.findIndex((l) => /^provider\s+model\b/i.test(l));
-  if (headerIdx < 0) return [];
+  if (headerIdx < 0) {
+    trace(`list-models: header row not found; rows[0..3]=${JSON.stringify(rows.slice(0, 3))}`);
+    return [];
+  }
 
   const out: PiModel[] = [];
   for (let i = headerIdx + 1; i < rows.length; i++) {
