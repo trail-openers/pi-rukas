@@ -1,4 +1,30 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+/**
+ * /ensemble-model — interactive picker for per-subagent (and "all subagents")
+ * model overrides.
+ *
+ * UX (Pi 0.78 verified): uses `ctx.ui.custom()` to embed a `SelectList`
+ * component from `@earendil-works/pi-tui` — the same primitive Pi's own
+ * `/model` / `/login` / `/theme` selectors use. That gives us arrow-key
+ * navigation, type-as-you-filter, and `description` annotations per item.
+ *
+ * The older `ctx.ui.select(title, options[])` API renders as a numbered
+ * text prompt in 0.78 (user types the literal option string), so it's
+ * unsuitable for long model lists with structured IDs like
+ * `local-gpu/Qwen/Qwen3.6-35B-A3B-FP8`. We keep `ctx.ui.input`
+ * for the "type a custom model id" fallback path only.
+ *
+ * Both selection modes are preserved:
+ *   - per-subagent override (one role, one model)
+ *   - "all subagents" default (applies to roles without their own override)
+ */
+
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import {
+  Container,
+  type SelectItem,
+  SelectList,
+  type SelectListTheme,
+} from "@earendil-works/pi-tui";
 import { type PiModel, listAvailableModels } from "./list-models.ts";
 import {
   GLOBAL_KEY,
@@ -13,178 +39,288 @@ import { resolveModel } from "./models.ts";
 import { ROLE_NAMES } from "./roles.ts";
 
 const SUBAGENT_ROLES = ROLE_NAMES.filter((r) => r !== "project-manager");
-const ALL_OPTION = "all subagents (default for unset roles)";
-const RESET_ALL = "── reset all overrides ──";
-const CUSTOM_MODEL = "── type a custom model id ──";
-const USE_PI_DEFAULT = "── use Pi default (clear this role's override) ──";
+
+// Sentinel values returned by the picker. Real role names cannot collide
+// with these (no role contains "__" prefix in our naming).
+const SENTINEL_ALL_SUBAGENTS = "__all_subagents__";
+const SENTINEL_RESET_ALL = "__reset_all__";
+const SENTINEL_PI_DEFAULT = "__pi_default__";
+const SENTINEL_CUSTOM = "__custom__";
+const SENTINEL_CANCEL = "__cancel__";
+
+// Model value encoding: "<provider>|<model>". `|` is not valid in any Pi
+// provider or model identifier (per `pi --list-models` output we've seen),
+// so round-tripping is unambiguous even when the model itself contains `/`.
+const MODEL_VALUE_SEP = "|";
 
 export function registerModelPicker(pi: ExtensionAPI) {
   pi.registerCommand("ensemble-model", {
     description: "Pick subagent model per role (persists across sessions)",
     handler: async (_args, ctx) => {
-      // Step 1: pick a role (or "all subagents", or "reset all")
-      const overrides = getAllOverrides();
-      const roleOptions = [
-        formatRow(ALL_OPTION, overrides[GLOBAL_KEY]),
-        ...SUBAGENT_ROLES.map((r) => formatRow(r, overrides[r])),
-        RESET_ALL,
-      ];
-      const rolePick = await ctx.ui.select("Pick a role to configure", roleOptions);
-      if (!rolePick) return;
-
-      if (rolePick === RESET_ALL) {
-        const yes = await ctx.ui.confirm(
-          "Reset all overrides?",
-          "This clears ensemble-models.json. Env vars (PI_ENSEMBLE_*) still apply if set.",
-        );
-        if (yes) {
-          await clearAllOverrides();
-          ctx.ui.notify("All ensemble-model overrides cleared.", "info");
-        }
-        return;
-      }
-
-      const role = parseRow(rolePick);
-      const isGlobal = role === ALL_OPTION;
-      const _roleKey = isGlobal ? GLOBAL_KEY : role;
-      const roleLabel = isGlobal ? "all subagents" : role;
-
-      // Step 2: pick a model — group by provider, no hardcoded model IDs
-      // so the list stays correct as Pi's catalog evolves.
-      ctx.ui.notify("Loading models from pi --list-models …", "info");
-      const models = await listAvailableModels();
-      const { options: modelOptions, byLabel } = buildModelOptions(models);
-      modelOptions.push(USE_PI_DEFAULT, CUSTOM_MODEL);
-
-      const modelPick = await ctx.ui.select(`Model for ${roleLabel}`, modelOptions);
-      if (!modelPick) return;
-
-      if (modelPick === USE_PI_DEFAULT) {
-        if (isGlobal) {
-          await clearOverride(GLOBAL_KEY);
-        } else {
-          await clearOverride(role);
-        }
-        ctx.ui.notify(
-          `Cleared override for ${roleLabel}. Now falls through to env/default.`,
-          "info",
-        );
-        return;
-      }
-
-      let choice: ModelChoice;
-      if (modelPick === CUSTOM_MODEL) {
-        // Two-step custom entry so the user can pin a provider explicitly
-        // (required for custom OpenAI-compatible endpoints whose model IDs
-        // are vendor strings without a Pi provider prefix).
-        const typedModel = await ctx.ui.input(
-          "Type a model id",
-          "vendor/model OR just the model name (for custom providers, set provider below)",
-        );
-        if (!typedModel || typedModel.trim().length === 0) return;
-        const typedProvider = await ctx.ui.input(
-          "Provider name (optional)",
-          "leave blank for built-in providers; required for custom OpenAI-compatible endpoints",
-        );
-        const provider = typedProvider?.trim();
-        choice =
-          provider && provider.length > 0
-            ? { provider, model: typedModel.trim() }
-            : { model: typedModel.trim() };
-      } else if (modelPick.startsWith("── ")) {
-        return; // user picked a section header
-      } else {
-        const m = byLabel.get(modelPick);
-        if (!m) return;
-        choice = { provider: m.provider, model: m.model };
-      }
-
-      // Step 3: confirm and save
-      if (isGlobal) {
-        await setGlobalOverride(choice);
-      } else {
-        await setOverride(role, choice);
-      }
-
-      const display = formatChoiceForNotify(choice);
-      const resolved = isGlobal ? "(applies to roles without their own override)" : "";
-      ctx.ui.notify(
-        `Saved: ${roleLabel} → ${display}\n${resolved}\nWritten to ~/.pi/agent/ensemble-models.json.`,
-        "info",
-      );
+      await runEnsembleModel(ctx);
     },
   });
 }
 
-function formatChoiceForNotify(c: ModelChoice): string {
-  return c.provider ? `${c.provider} · ${c.model}` : c.model;
+async function runEnsembleModel(ctx: ExtensionCommandContext): Promise<void> {
+  // Step 1: role pick (real interactive list).
+  const overrides = getAllOverrides();
+  const roleItems = buildRoleItems(overrides);
+  const rolePick = await showPicker<string>(ctx, "Pick a role to configure", roleItems);
+  if (rolePick === undefined || rolePick === SENTINEL_CANCEL) return;
+
+  if (rolePick === SENTINEL_RESET_ALL) {
+    const yes = await ctx.ui.confirm(
+      "Reset all overrides?",
+      "This clears ensemble-models.json. Env vars (PI_ENSEMBLE_*) still apply if set.",
+    );
+    if (yes) {
+      await clearAllOverrides();
+      ctx.ui.notify("All ensemble-model overrides cleared.", "info");
+    }
+    return;
+  }
+
+  const isGlobal = rolePick === SENTINEL_ALL_SUBAGENTS;
+  const role = isGlobal ? GLOBAL_KEY : rolePick;
+  const roleLabel = isGlobal ? "all subagents" : rolePick;
+
+  // Step 2: model pick.
+  ctx.ui.notify("Loading models from pi --list-models …", "info");
+  const models = await listAvailableModels();
+  const modelItems = buildModelItems(models);
+  const modelPick = await showPicker<string>(ctx, `Model for ${roleLabel}`, modelItems);
+  if (modelPick === undefined || modelPick === SENTINEL_CANCEL) return;
+
+  if (modelPick === SENTINEL_PI_DEFAULT) {
+    await clearOverride(role);
+    ctx.ui.notify(`Cleared override for ${roleLabel}. Now falls through to env/default.`, "info");
+    return;
+  }
+
+  let choice: ModelChoice;
+  if (modelPick === SENTINEL_CUSTOM) {
+    const typed = await promptCustomModel(ctx);
+    if (!typed) return;
+    choice = typed;
+  } else {
+    const parsed = parseModelValue(modelPick);
+    if (!parsed) return;
+    choice = parsed;
+  }
+
+  if (isGlobal) {
+    await setGlobalOverride(choice);
+  } else {
+    await setOverride(role, choice);
+  }
+
+  const display = formatChoiceForNotify(choice);
+  const resolved = isGlobal ? "(applies to roles without their own override)" : "";
+  ctx.ui.notify(
+    `Saved: ${roleLabel} → ${display}\n${resolved}\nWritten to ~/.pi/agent/ensemble-models.json.`,
+    "info",
+  );
 }
 
-function formatRow(label: string, current: ModelChoice | undefined): string {
-  if (!current) return label;
-  return `${label}  →  ${formatChoiceForNotify(current)}`;
-}
+// =============================================================================
+// Picker primitives
+// =============================================================================
 
-function parseRow(row: string): string {
-  // strip trailing "  →  <model>" if present
-  const i = row.indexOf("  →  ");
-  return i < 0 ? row : row.slice(0, i);
-}
-
-function formatModelLine(m: { id: string; context?: string; thinking?: string }): string {
-  const tags: string[] = [];
-  if (m.context) tags.push(m.context);
-  if (m.thinking === "yes") tags.push("thinks");
-  const trail = tags.length ? `   (${tags.join(", ")})` : "";
-  return `${m.id}${trail}`;
+/**
+ * Show an interactive SelectList via `ctx.ui.custom`. Returns the selected
+ * item's value, or undefined if the user cancelled (Esc / Ctrl-C). On any
+ * environment where ctx.ui.custom isn't available (e.g. `pi -p` headless),
+ * surface a clear notify and return undefined — the caller treats that as
+ * cancel.
+ */
+async function showPicker<T extends string>(
+  ctx: ExtensionCommandContext,
+  title: string,
+  items: SelectItem[],
+): Promise<T | undefined> {
+  try {
+    return await ctx.ui.custom<T | undefined>((_tui, theme, _keybindings, done) => {
+      const selectListTheme: SelectListTheme = {
+        selectedPrefix: (t) => theme.fg("accent", t),
+        selectedText: (t) => theme.bg("selectedBg", t),
+        description: (t) => theme.fg("dim", t),
+        scrollInfo: (t) => theme.fg("muted", t),
+        noMatch: (t) => theme.fg("muted", t),
+      };
+      const container = new Container();
+      const list = new SelectList(items, 12, selectListTheme, {
+        minPrimaryColumnWidth: 24,
+        maxPrimaryColumnWidth: 48,
+      });
+      list.onSelect = (item) => done(item.value as T);
+      list.onCancel = () => done(undefined);
+      container.addChild(new TitleBar(title, theme));
+      container.addChild(list);
+      return container;
+    });
+  } catch (err) {
+    ctx.ui.notify(
+      `/ensemble-model requires interactive mode. Edit ~/.pi/agent/ensemble-models.json directly (see README). (${(err as Error).message})`,
+      "warning",
+    );
+    return undefined;
+  }
 }
 
 /**
- * Group available models by provider with a section header per provider.
- *
- * Provider order: subscription-based providers (where Pi can OAuth) first so
- * they're easy to reach, then alphabetical by provider name. Within each
- * provider, models are listed in the order Pi returned them.
- *
- * Returns the display options AND a label→PiModel map so the picker can map
- * the user's selected line back to the structured `{provider, model}` we
- * persist — required for custom providers where the displayed line and the
- * stored ID are not interchangeable.
- *
- * NB: this intentionally has zero hardcoded model IDs. Whatever Pi knows about
- * appears verbatim — no regex match against specific names that could rot.
+ * Minimal one-line title bar above the picker — gives the user context for
+ * what they're selecting. Pi's own selectors use DynamicBorder; that lives
+ * in pi-coding-agent internals and isn't part of the public export, so we
+ * build a trivial Text-based banner instead.
  */
-function buildModelOptions(models: PiModel[]): {
-  options: string[];
-  byLabel: Map<string, PiModel>;
-} {
-  const byLabel = new Map<string, PiModel>();
-  if (models.length === 0) return { options: [], byLabel };
+class TitleBar {
+  // biome-ignore lint/suspicious/noExplicitAny: pi-tui Theme type — using minimum surface to keep this independent of internal type churn.
+  private theme: any;
+  private title: string;
+  constructor(title: string, theme: unknown) {
+    this.title = title;
+    this.theme = theme;
+  }
+  render(_width: number): string[] {
+    return [this.theme.fg("accent", `▸ ${this.title}`)];
+  }
+  invalidate(): void {
+    // No mutable state; nothing to invalidate.
+  }
+}
+
+// =============================================================================
+// Item builders (pure functions, easy to unit-test)
+// =============================================================================
+
+export function buildRoleItems(overrides: Record<string, ModelChoice>): SelectItem[] {
+  const items: SelectItem[] = [];
+  // "all subagents" first — it's the most common selection in practice.
+  items.push({
+    value: SENTINEL_ALL_SUBAGENTS,
+    label: "all subagents (default for unset roles)",
+    description: describeOverride(overrides[GLOBAL_KEY]),
+  });
+  for (const role of SUBAGENT_ROLES) {
+    items.push({
+      value: role,
+      label: role,
+      description: describeOverride(overrides[role]),
+    });
+  }
+  // Footer affordances.
+  items.push({
+    value: SENTINEL_RESET_ALL,
+    label: "── reset all overrides ──",
+    description: undefined,
+  });
+  items.push({
+    value: SENTINEL_CANCEL,
+    label: "── cancel ──",
+    description: undefined,
+  });
+  return items;
+}
+
+export function buildModelItems(models: PiModel[]): SelectItem[] {
+  const items: SelectItem[] = [];
+  // Sentinels first so they're reachable without scrolling on long lists.
+  items.push({
+    value: SENTINEL_PI_DEFAULT,
+    label: "── use Pi default (clear override) ──",
+    description: undefined,
+  });
+  items.push({
+    value: SENTINEL_CUSTOM,
+    label: "── type a custom model id ──",
+    description:
+      "for models not in `pi --list-models` (e.g. custom providers pending API-key resolution)",
+  });
+  items.push({
+    value: SENTINEL_CANCEL,
+    label: "── cancel ──",
+    description: undefined,
+  });
+  // Subscription providers first (Pi handles them via OAuth), then
+  // alphabetical. Within each provider, the order Pi returned.
+  const subscriptionProviders = new Set(["anthropic", "github-copilot", "openai"]);
   const byProvider = new Map<string, PiModel[]>();
   for (const m of models) {
     const arr = byProvider.get(m.provider) ?? [];
     arr.push(m);
     byProvider.set(m.provider, arr);
   }
-  // Subscription providers Pi handles via OAuth/login.
-  const subscriptionProviders = new Set(["anthropic", "github-copilot", "openai"]);
   const sortedProviders = [...byProvider.keys()].sort((a, b) => {
     const aSub = subscriptionProviders.has(a) ? 0 : 1;
     const bSub = subscriptionProviders.has(b) ? 0 : 1;
     if (aSub !== bSub) return aSub - bSub;
     return a.localeCompare(b);
   });
-  const options: string[] = [];
   for (const provider of sortedProviders) {
     const list = byProvider.get(provider) ?? [];
-    options.push(`── ${provider} (${list.length}) ──`);
     for (const m of list) {
-      const label = formatModelLine(m);
-      options.push(label);
-      byLabel.set(label, m);
+      items.push({
+        value: encodeModelValue(provider, m.model),
+        label: m.model,
+        description: describeModel(m),
+      });
     }
   }
-  return { options, byLabel };
+  return items;
+}
+
+export function encodeModelValue(provider: string, model: string): string {
+  return `${provider}${MODEL_VALUE_SEP}${model}`;
+}
+
+export function parseModelValue(value: string): ModelChoice | undefined {
+  const i = value.indexOf(MODEL_VALUE_SEP);
+  if (i < 0) return undefined;
+  const provider = value.slice(0, i);
+  const model = value.slice(i + 1);
+  if (!provider || !model) return undefined;
+  return { provider, model };
+}
+
+function describeOverride(c: ModelChoice | undefined): string | undefined {
+  if (!c) return "(falls through to default)";
+  return `→ ${formatChoiceForNotify(c)}`;
+}
+
+function describeModel(m: PiModel): string {
+  const tags = [m.provider];
+  if (m.context) tags.push(m.context);
+  if (m.thinking === "yes") tags.push("thinks");
+  return tags.join(" · ");
+}
+
+// =============================================================================
+// Custom-model entry (fallback when the desired model isn't in --list-models)
+// =============================================================================
+
+async function promptCustomModel(ctx: ExtensionCommandContext): Promise<ModelChoice | undefined> {
+  const typedModel = await ctx.ui.input(
+    "Type a model id",
+    "vendor/model OR just the model name (for custom providers, set provider below)",
+  );
+  if (!typedModel || typedModel.trim().length === 0) return undefined;
+  const typedProvider = await ctx.ui.input(
+    "Provider name (optional)",
+    "leave blank for built-in providers; required for custom OpenAI-compatible endpoints",
+  );
+  const provider = typedProvider?.trim();
+  return provider && provider.length > 0
+    ? { provider, model: typedModel.trim() }
+    : { model: typedModel.trim() };
+}
+
+// =============================================================================
+// Formatting helpers (kept as before)
+// =============================================================================
+
+function formatChoiceForNotify(c: ModelChoice): string {
+  return c.provider ? `${c.provider} · ${c.model}` : c.model;
 }
 
 /** Re-export used by ensemble-debug for status rendering. */
