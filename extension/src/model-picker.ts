@@ -19,12 +19,7 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import {
-  Container,
-  type SelectItem,
-  SelectList,
-  type SelectListTheme,
-} from "@earendil-works/pi-tui";
+import { type SelectItem, SelectList, type SelectListTheme } from "@earendil-works/pi-tui";
 import { type PiModel, listAvailableModels } from "./list-models.ts";
 import {
   GLOBAL_KEY,
@@ -133,12 +128,23 @@ async function runEnsembleModel(ctx: ExtensionCommandContext): Promise<void> {
  * environment where ctx.ui.custom isn't available (e.g. `pi -p` headless),
  * surface a clear notify and return undefined — the caller treats that as
  * cancel.
+ *
+ * IMPLEMENTATION NOTE: We return the SelectList directly, NOT wrapped in a
+ * Container. pi-tui's Container does not implement `handleInput` — only
+ * `render` and `invalidate` (verified in tui.js). Pi's TUI overlay routes
+ * keyboard input ONLY to the focused component via its `handleInput`
+ * method (see `focusedComponent.handleInput(data)` in tui.js). Wrapping
+ * SelectList in a Container therefore swallows every keystroke including
+ * Ctrl-C, locking the user out (PR #176 regression — this file's previous
+ * Container wrapper had exactly that bug). The title context is provided
+ * via the `ctx.ui.notify` call immediately before opening the picker.
  */
 async function showPicker<T extends string>(
   ctx: ExtensionCommandContext,
   title: string,
   items: SelectItem[],
 ): Promise<T | undefined> {
+  ctx.ui.notify(title, "info");
   try {
     return await ctx.ui.custom<T | undefined>((_tui, theme, _keybindings, done) => {
       const selectListTheme: SelectListTheme = {
@@ -148,16 +154,13 @@ async function showPicker<T extends string>(
         scrollInfo: (t) => theme.fg("muted", t),
         noMatch: (t) => theme.fg("muted", t),
       };
-      const container = new Container();
       const list = new SelectList(items, 12, selectListTheme, {
         minPrimaryColumnWidth: 24,
         maxPrimaryColumnWidth: 48,
       });
       list.onSelect = (item) => done(item.value as T);
       list.onCancel = () => done(undefined);
-      container.addChild(new TitleBar(title, theme));
-      container.addChild(list);
-      return container;
+      return list;
     });
   } catch (err) {
     ctx.ui.notify(
@@ -165,28 +168,6 @@ async function showPicker<T extends string>(
       "warning",
     );
     return undefined;
-  }
-}
-
-/**
- * Minimal one-line title bar above the picker — gives the user context for
- * what they're selecting. Pi's own selectors use DynamicBorder; that lives
- * in pi-coding-agent internals and isn't part of the public export, so we
- * build a trivial Text-based banner instead.
- */
-class TitleBar {
-  // biome-ignore lint/suspicious/noExplicitAny: pi-tui Theme type — using minimum surface to keep this independent of internal type churn.
-  private theme: any;
-  private title: string;
-  constructor(title: string, theme: unknown) {
-    this.title = title;
-    this.theme = theme;
-  }
-  render(_width: number): string[] {
-    return [this.theme.fg("accent", `▸ ${this.title}`)];
-  }
-  invalidate(): void {
-    // No mutable state; nothing to invalidate.
   }
 }
 
