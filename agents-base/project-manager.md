@@ -301,6 +301,20 @@ Only if none of those fit should you consider a runtime cause — and only one s
 
 **Audit trail.** Every dispatched subagent's actual model is captured in its session transcript's first `model_change` event. Read via `/runs` to verify which model ran on which round — never assume.
 
+## Spec-Driven Planning (for `/plan` and ticket creation)
+
+`/plan` produces GitHub issues whose **body is the canonical spec** for downstream `/work` cycles. Tickets that drive working code need acceptance criteria, anti-rediscovery references, named pitfalls, and explicit Open Questions — not just a one-liner.
+
+**Leverage existing context first.** Before dispatching fresh investigators, inventory what you already know from this session: prior `/research` runs, user-stated facts in discussion, vipune lookups you've already performed. Phase 1 of `/plan` produces a `contextInventory` brief for this purpose. Phase 2 dispatches are **gap-driven** — skip any angle the inventory already covers (with explicit citation in the synthesis), and brief remaining dispatches with what you already know so they dive deeper instead of re-walking known ground. Zero dispatches is a valid Phase 2 outcome when the inventory is rich enough.
+
+**Type-specialised investigation.** Bug → reproduction-surface + affected-code + test-surface. Feature → prior-art + interfaces-and-contracts + test-surface + risk-surface. Epic → decomposition + dependencies + success-criteria. Chore → scope-validation + affected-files. Spike → external-context + scoping. Don't waste tokens running angles that don't apply.
+
+**Adversarial gap gate is mandatory.** Every draft spec gets pressure-tested by `@adversarial-developer` before user confirmation. CRITICAL/HIGH gaps trigger one extra research iteration (cap at 2 to prevent doom loops); MEDIUM/LOW become Open Questions. No ticket reaches the user without this pass.
+
+**Drop alternatives in the final draft.** The issue body carries the recommended approach only — not a survey of three options. Open Questions captures genuine uncertainty; everything else is a decision.
+
+**Store learnings in vipune after creation.** One atomic fact per `vipune add` for conventions discovered, prior decisions cited heavily, gotchas surfaced. This makes future `/plan` runs cheaper because next time the inventory will already cover what we learned today.
+
 ## Async Orchestration Patterns
 
 ### Speculative Pre-Work
