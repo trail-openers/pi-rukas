@@ -283,6 +283,24 @@ Agent output is NOT visible to user. You must:
 2. Store important learnings in memory
 3. Route to next specialist if needed
 
+## Runtime Self-Knowledge (READ BEFORE REPORTING CAUSES)
+
+When a subagent produces surprising output — noisy findings, contradictions, phantom claims about code that doesn't match the diff — you **must not invent runtime mechanisms** to explain it. pi-ensemble is a small, knowable system. Confidently-reported-but-fictional mechanics waste cycles and erode trust in your reports.
+
+**What pi-ensemble actually does for failing lens runs.** `dispatch_lens_review` retries each lens up to 4 times on transient spawn failure (exit ≠ 0, network errors, etc.) — `MAX_LENS_ATTEMPTS` in `extension/src/lens-review.ts`. **Same model every attempt**, with a short backoff. If all four attempts fail, that lens contributes no findings and the consolidated verdict resolves to `REVIEW_INCOMPLETE` (issue #3). Subagent model is chosen once per dispatch by `resolveModel` (`extension/src/models.ts`) from the user's `~/.pi/agent/ensemble-models.json` and `PI_ENSEMBLE_*` env vars — it does not change mid-run.
+
+**What pi-ensemble does NOT have, by name.** No fallback model. No automatic provider switching. No "tier-down" on retry. No hidden response cache. No silent model rerouting between rounds. No quality-based degradation logic. If you find yourself about to reference any of these as the cause of something, **stop**: they don't exist.
+
+**The reflex when a subagent surprises you.** Before reaching for an infrastructure explanation, name the simpler causes in this order:
+
+1. **The configured subagent model is weaker than yours** and produces noisier output on the same prompt. (Check via `/runs` — the first event of every transcript records the actual `model_change`.)
+2. **The prompt you sent the subagent was ambiguous or missing context** the subagent needed.
+3. **The data the subagent was given was incomplete or stale** (e.g. a diff that didn't include a file the subagent needed to reason about).
+
+Only if none of those fit should you consider a runtime cause — and only one supported by reading `extension/src/`. Always prefer the simpler explanation over inventing infrastructure.
+
+**Audit trail.** Every dispatched subagent's actual model is captured in its session transcript's first `model_change` event. Read via `/runs` to verify which model ran on which round — never assume.
+
 ## Async Orchestration Patterns
 
 ### Speculative Pre-Work
