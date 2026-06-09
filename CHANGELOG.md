@@ -8,6 +8,20 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.6](https://github.com/randomm/pi-ensemble/compare/v0.12.5...v0.12.6) (2026-06-09)
+
+
+### Features
+
+* **model-picker:** interactive SelectList replaces text-input prompts ([#176](https://github.com/randomm/pi-ensemble/issues/176)) ([5841560](https://github.com/randomm/pi-ensemble/commit/584156097efc632f4c3f7079dfa50b9aa56cf2c7))
+* **plan:** multi-phase spec-driven ticket creation with adversarial gap gate ([#181](https://github.com/randomm/pi-ensemble/issues/181)) ([0c0e309](https://github.com/randomm/pi-ensemble/commit/0c0e3092e472cbc6525cf312c2ced1329b3b6557))
+
+
+### Bug Fixes
+
+* **#176:** drop Container wrapper that swallows all input incl. Ctrl-C ([#178](https://github.com/randomm/pi-ensemble/issues/178)) ([e4376cf](https://github.com/randomm/pi-ensemble/commit/e4376cfe27c18eb5a54421a9b5f6cd48e90391cd))
+* **list-models:** Pi 0.78 writes --list-models to stderr, not stdout ([#179](https://github.com/randomm/pi-ensemble/issues/179)) ([5b5e042](https://github.com/randomm/pi-ensemble/commit/5b5e042ca07fb0cfadc0fc9cb38b7e255e56a47c))
+
 ## [0.12.5](https://github.com/randomm/pi-ensemble/compare/v0.12.4...v0.12.5) (2026-06-08)
 
 
