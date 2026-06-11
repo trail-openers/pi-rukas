@@ -41,9 +41,11 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
+import { type Socket, createConnection } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { BrokerDeps, PermissionRequest } from "./permission-broker.ts";
 import { ROLE_NAMES } from "./roles.js";
 import { trace } from "./trace.js";
 
@@ -821,7 +823,179 @@ export function persistDecisions(
   }
 }
 
+// Captured by registerPermissionGuard for the broker — set when the parent
+// Pi session starts; null in subagent mode (subagents never broker for anyone).
+// Use `makeBrokerDeps()` from outside this file to get the typed deps wrapper
+// that closes over `decisions` + `parentCtx` + persistDecisions.
+// biome-ignore lint/suspicious/noExplicitAny: ExtensionCommandContext is the runtime ctx Pi passes to event handlers; not exported as a type from the public API.
+let parentCtx: any = null;
+let brokerDepsFactory: (() => BrokerDeps) | null = null;
+
+/**
+ * Subagent-mode permission guard. Runs INSIDE spawned Pi subagents (when
+ * PI_ENSEMBLE_SUBAGENT_MODE=1 + pi-ensemble forwarded via --extension by
+ * spawn.ts). Same 3-tier resolution as the parent guard, but `ask` verdicts
+ * escalate to the parent over a Unix socket (PI_ENSEMBLE_PERM_SOCKET) instead
+ * of prompting locally (subagents have no UI).
+ *
+ * Recursion firewall: spawn.ts + index.ts together ensure subagent-mode
+ * pi-ensemble registers ONLY this guard — no dispatch tools, no slash
+ * commands. So a subagent's permission decisions can't trigger further
+ * subagent spawns.
+ */
+function registerSubagentGuard(pi: ExtensionAPI): void {
+  const role = process.env.PI_ENSEMBLE_ROLE;
+  const socketPath = process.env.PI_ENSEMBLE_PERM_SOCKET;
+  if (!role) {
+    trace("subagent-guard: PI_ENSEMBLE_ROLE unset — guard inactive, role unknown");
+    return;
+  }
+  trace(
+    `subagent-guard: registering for role '${role}' · socket=${socketPath ?? "<unset, will headless-deny on ask>"}`,
+  );
+  const agentsConfig = loadAgentsJson();
+  // Subagents do NOT read project/global overlays — those reflect the user's
+  // local layered config and don't belong to the subagent's process context.
+  // The agents.json baseline is authoritative for subagent enforcement.
+  const projectConfig: RoleConfig = {};
+  const globalConfig: RoleConfig = {};
+
+  let socket: Socket | null = null;
+  let socketBuffer = "";
+  let pendingResolvers: Array<(verdict: { allowed: boolean; reason?: string }) => void> = [];
+
+  function ensureSocket(): Socket | null {
+    if (!socketPath) return null;
+    if (socket && !socket.destroyed) return socket;
+    try {
+      socket = createConnection(socketPath);
+      socket.setEncoding("utf8");
+      socket.on("data", (chunk: string | Buffer) => {
+        socketBuffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+        let nl = socketBuffer.indexOf("\n");
+        while (nl >= 0) {
+          const line = socketBuffer.slice(0, nl);
+          socketBuffer = socketBuffer.slice(nl + 1);
+          nl = socketBuffer.indexOf("\n");
+          try {
+            const v = JSON.parse(line) as {
+              type?: string;
+              allowed?: boolean;
+              reason?: string;
+            };
+            if (v.type === "permission-verdict" && typeof v.allowed === "boolean") {
+              const resolve = pendingResolvers.shift();
+              if (resolve) resolve({ allowed: v.allowed, reason: v.reason });
+            }
+          } catch (err) {
+            trace(`subagent-guard: malformed verdict line: ${(err as Error).message}`);
+          }
+        }
+      });
+      socket.on("error", (err) => {
+        trace(`subagent-guard: socket error: ${err.message}`);
+        socket = null;
+      });
+      socket.on("close", () => {
+        socket = null;
+        // Resolve any pending requests as deny so the subagent doesn't hang.
+        const resolvers = pendingResolvers;
+        pendingResolvers = [];
+        for (const r of resolvers) r({ allowed: false, reason: "broker socket closed" });
+      });
+      return socket;
+    } catch (err) {
+      trace(`subagent-guard: connect to ${socketPath} failed: ${(err as Error).message}`);
+      return null;
+    }
+  }
+
+  async function escalateAsk(
+    toolName: string,
+    bashCommand: string | undefined,
+  ): Promise<{ allowed: boolean; reason?: string }> {
+    const sock = ensureSocket();
+    if (!sock) {
+      return { allowed: false, reason: "no broker socket — headless deny" };
+    }
+    const req: PermissionRequest = {
+      type: "permission-request",
+      role: role ?? "unknown",
+      toolName,
+      bashCommand,
+    };
+    return new Promise((resolve) => {
+      pendingResolvers.push(resolve);
+      try {
+        sock.write(`${JSON.stringify(req)}\n`);
+      } catch (err) {
+        // Remove our resolver, return deny.
+        const idx = pendingResolvers.indexOf(resolve);
+        if (idx >= 0) pendingResolvers.splice(idx, 1);
+        resolve({ allowed: false, reason: `socket write failed: ${(err as Error).message}` });
+      }
+    });
+  }
+
+  pi.on("tool_call", async (event, _ctx) => {
+    try {
+      const command =
+        event.toolName === "bash" ? ((event.input as { command?: string })?.command ?? "") : "";
+      const verdict = resolveToolPermission(
+        event.toolName,
+        role,
+        projectConfig,
+        globalConfig,
+        agentsConfig,
+        event.toolName === "bash" ? command : undefined,
+      );
+      if (verdict === "allow") return;
+      if (verdict === "deny") {
+        trace(`subagent-guard: BLOCKED ${event.toolName} for role=${role} (verdict=deny)`);
+        return {
+          block: true,
+          reason: `Tool '${event.toolName}' is not permitted for role '${role}' (subagent)`,
+        };
+      }
+      // verdict === "ask" — escalate to parent over socket.
+      const result = await escalateAsk(
+        event.toolName,
+        event.toolName === "bash" ? command : undefined,
+      );
+      if (result.allowed) return;
+      return {
+        block: true,
+        reason: `Tool '${event.toolName}' denied (subagent ask → ${result.reason ?? "denied"})`,
+      };
+    } catch (err) {
+      trace(`subagent-guard: internal error: ${(err as Error).message}`);
+      return { block: true, reason: "subagent guard internal error" };
+    }
+  });
+}
+
+/**
+ * Returns the BrokerDeps closure for spawn.ts to wire a per-spawn permission
+ * broker against. Returns null when called from a subagent process (where
+ * registerSubagentGuard ran instead of the parent guard) or before the
+ * parent session has started. Decisions cache + persistence write-through +
+ * UI prompts all reuse the parent guard's existing state.
+ */
+export function makeBrokerDeps(): BrokerDeps | null {
+  return brokerDepsFactory ? brokerDepsFactory() : null;
+}
+
 export function registerPermissionGuard(pi: ExtensionAPI): void {
+  // Subagent-mode firewall: when spawn.ts forwards pi-ensemble into a subagent
+  // it also sets PI_ENSEMBLE_SUBAGENT_MODE=1. The subagent's pi-ensemble load
+  // should ONLY register the permission-guard (no dispatch tools, no slash
+  // commands) — index.ts handles the registration firewall; here we install a
+  // minimal tool_call handler that escalates `ask` verdicts to the parent
+  // over a Unix socket (per-spawn path in PI_ENSEMBLE_PERM_SOCKET).
+  if (process.env.PI_ENSEMBLE_SUBAGENT_MODE === "1") {
+    registerSubagentGuard(pi);
+    return;
+  }
   // Parent Pi sessions don't set PI_ENSEMBLE_ROLE — only spawn.ts sets it for
   // subagent child processes (spec.role). In pi-ensemble's design the parent
   // process IS the orchestrator (project-manager), so resolve to that role at
@@ -846,7 +1020,11 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
   const decisions = new Map<string, { allowed: boolean; timestamp: string }>();
 
   // Load decisions on session_start
-  pi.on("session_start", async () => {
+  pi.on("session_start", async (_event, ctx) => {
+    // Capture ctx for the subagent-permission broker — the broker fires user
+    // prompts asynchronously (when a subagent escalates an "ask"), so it can't
+    // get ctx via an event parameter the way the tool_call handler does.
+    parentCtx = ctx;
     const decisionsPath = path.join(process.cwd(), ".pi", "decisions.json");
     try {
       const raw = readFileSync(decisionsPath, "utf8");
@@ -945,6 +1123,74 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
   });
 
   trace(`permission-guard: active for role=${role}`);
+
+  // Expose the broker-deps factory now that the closure is built. spawn.ts
+  // calls makeBrokerDeps() per spawn to get this wrapper, then starts a
+  // permission-broker against it. The subagent's permission-guard escalates
+  // `ask` verdicts over the per-spawn socket; the broker calls into here to
+  // reuse the SAME decisions cache + persistDecisions write-through + UI
+  // prompts that the parent's tool_call handler uses.
+  brokerDepsFactory = () => ({
+    cachedLookup(req: PermissionRequest): boolean | undefined {
+      // Match the lookup shape the parent tool_call handler uses (line ~966)
+      // so subagent-escalated decisions hit the same cache entries.
+      const isBash = req.toolName === "bash" && req.bashCommand !== undefined;
+      const bashCmd = isBash ? (req.bashCommand ?? "") : "";
+      const bashAlwaysScope = isBash ? getBashAlwaysScope(bashCmd) : null;
+      const exactKey =
+        isBash && bashAlwaysScope === null
+          ? buildExactBashDecisionKey(bashCmd)
+          : isBash
+            ? buildPatternKey(bashAlwaysScope as string)
+            : req.toolName;
+      const exact = decisions.get(exactKey);
+      if (exact) return exact.allowed;
+      // For bash, also check pattern matches (Allow always with a prefix).
+      if (isBash) {
+        for (const [patternKey, decision] of decisions) {
+          if (!isSafeBashPatternKey(patternKey)) continue;
+          const prefix = extractPatternPrefix(patternKey);
+          if (bashPatternMatches(bashCmd, prefix)) return decision.allowed;
+        }
+      }
+      return undefined;
+    },
+    persistDecision(req: PermissionRequest, allowed: boolean): void {
+      const isBash = req.toolName === "bash" && req.bashCommand !== undefined;
+      const bashCmd = isBash ? (req.bashCommand ?? "") : "";
+      const cacheKey = isBash ? getBashDecisionCacheKey(bashCmd, undefined) : req.toolName;
+      decisions.set(cacheKey, { allowed, timestamp: new Date().toISOString() });
+      evictOldest(decisions, MAX_CACHED_DECISIONS);
+      persistDecisions(decisions);
+    },
+    async promptUser(
+      req: PermissionRequest,
+    ): Promise<{ allowed: boolean; scope: "once" | "always" }> {
+      if (!parentCtx || !parentCtx.hasUI) {
+        throw new Error("headless: no parent UI to prompt against");
+      }
+      const argsPreview =
+        req.toolName === "bash" && req.bashCommand
+          ? req.bashCommand.slice(0, 60)
+          : `(${req.toolName})`;
+      const message = `pi-ensemble [${req.role}] (subagent): ${req.toolName} ${argsPreview}`;
+      const promptOptions =
+        req.toolName === "bash"
+          ? [
+              "Allow once",
+              getBashAlwaysPromptLabel("Allow always", req.bashCommand ?? ""),
+              "Deny once",
+              getBashAlwaysPromptLabel("Deny always", req.bashCommand ?? ""),
+            ]
+          : ["Allow once", "Allow always", "Deny once", "Deny always"];
+      const choice = await parentCtx.ui.select(message, promptOptions);
+      if (!choice) throw new Error("user cancelled");
+      const allowed = choice === "Allow once" || choice.startsWith("Allow always");
+      const scope: "once" | "always" =
+        choice.startsWith("Allow always") || choice.startsWith("Deny always") ? "always" : "once";
+      return { allowed, scope };
+    },
+  });
 
   pi.on("tool_call", async (event, ctx) => {
     try {

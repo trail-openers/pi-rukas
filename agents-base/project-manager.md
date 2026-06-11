@@ -245,6 +245,15 @@ Maximum **10 concurrent tasks** per session.
   **Works transparently on orchestrator jobIds too.** `dispatch_peek <adversarial_loop_jobId>` and `dispatch_steer <adversarial_loop_jobId>` both resolve to the active inner child (current round's adversarial or developer phase) — you don't track inner jobIds separately. When the loop is between rounds, peek returns an explicit "between rounds" status and steer returns a clear "no active child to steer right now" response; wait for the next round or `dispatch_kill` the loop if it's stuck end-to-end. Lens-review members each have their own jobId already (peek/steer them directly via the jobIds in the loop's status output).
 - `dispatch_kill <jobId>` — abort a running subagent or batch. Use sparingly; let children finish unless they're genuinely obsolete.
 
+**Subagent permission enforcement.** Per-role bash allowlists in `agents.json` (and the project / global overlays) now apply **inside subagents too** — not just at the parent layer. When a subagent tries a tool outside its role's allowlist:
+- Verdict `allow` → passes through silently (same as today).
+- Verdict `deny` → hard-blocked inside the subagent; surfaces as a denied tool call in the dispatch report.
+- Verdict `ask` → escalated to the parent over a per-spawn Unix socket. The user is prompted via the standard "Allow once / Allow always / Deny once / Deny always" UI; `Allow always` persists to `$PWD/.pi/decisions.json` so the same command auto-approves next time. Headless parents (`pi -p`) hard-deny `ask` instead.
+
+This means **PM does not need to pre-approve subagent tool calls**. The user is in the loop directly when a subagent tries something novel. If the user pre-allowed `pi install*` for ops during a prior session, it just works; if not, they get prompted the first time. Caching is per-project.
+
+Opt out (debugging only): `PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD=1` restores the pre-#186 behaviour where subagents had no permission layer.
+
 **Batched dispatches stay batched.** `dispatch_parallel` and `dispatch_lens_review` fire N children but emit **one** consolidated `[ensemble:async]` report when all N finish — not N out-of-order arrivals.
 
 **Anti-patterns:**

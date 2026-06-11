@@ -19,6 +19,18 @@ import { trace } from "./trace.ts";
 
 export default async function (pi: ExtensionAPI) {
   trace("extension activated");
+  // Subagent-mode firewall: when pi-ensemble is forwarded INTO a spawned
+  // subagent (by spawn.ts setting PI_ENSEMBLE_SUBAGENT_MODE=1), register
+  // ONLY the permission-guard. No dispatch tools, no slash commands, no
+  // model picker, no auto-save — those are parent-orchestrator concerns
+  // and registering them in subagents would enable recursive spawning.
+  // permission-guard.ts detects the same env var and installs its
+  // subagent-mode handler (escalates `ask` to parent over a Unix socket).
+  if (process.env.PI_ENSEMBLE_SUBAGENT_MODE === "1") {
+    registerPermissionGuard(pi);
+    trace("extension: subagent mode — permission-guard only");
+    return;
+  }
   // Load persisted model overrides BEFORE any spawn can ask for a model.
   await loadOverrides();
   registerDispatchTools(pi);

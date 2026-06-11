@@ -46,6 +46,8 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { adapterFor } from "./model-adapters.ts";
 import { resolveModel } from "./models.ts";
+import { type BrokerHandle, startBroker } from "./permission-broker.ts";
+import { makeBrokerDeps } from "./permission-guard.ts";
 import { type RunningState, emptyRunningState, ingestEvent } from "./progress.ts";
 import { ROLES, isRoleName } from "./roles.ts";
 import { trace } from "./trace.ts";
@@ -159,6 +161,26 @@ export function applyUserExtension(childArgs: string[], role: string): void {
 // forwarding ourselves into subagents — otherwise a subagent could call
 // dispatch_specialist and recursively spawn another subagent.
 const PI_ENSEMBLE_PACKAGE_NAME = "@randomm/pi-ensemble";
+
+/**
+ * Resolve the absolute path to pi-ensemble's extension directory for the
+ * subagent permission-guard forward. Walks up from this module file
+ * (`extension/src/spawn.ts`) to the `extension/` dir, then realpathSyncs
+ * to follow the install symlink (`~/.pi/agent/extensions/pi-ensemble` is
+ * a symlink to the repo's `extension/` directory). Returns undefined if
+ * the path can't be resolved — caller falls through to "subagent has no
+ * forwarded guard" cleanly.
+ */
+function piEnsembleExtensionPath(): string | undefined {
+  try {
+    const here = new URL(import.meta.url).pathname; // .../extension/src/spawn.ts
+    const extensionDir = path.resolve(path.dirname(here), "..");
+    return realpathSync(extensionDir);
+  } catch (err) {
+    trace(`spawn: piEnsembleExtensionPath resolution failed: ${(err as Error).message}`);
+    return undefined;
+  }
+}
 
 interface ExtensionPackageJson {
   name?: string;
@@ -314,6 +336,31 @@ export async function spawnSpecialist(
   // Resolve which model this child should run on (spec > role env > global env > Pi default)
   const modelChoice = resolveModel(spec.role, spec.model);
 
+  // Subagent-permission plumbing: per-spawn Unix socket + broker.
+  //
+  // The subagent's pi-ensemble (forwarded below via --extension and gated by
+  // PI_ENSEMBLE_SUBAGENT_MODE=1) escalates `ask` verdicts over this socket.
+  // The parent broker prompts the user via ctx.ui.select, caches via the
+  // existing decisions.json plumbing, and replies on the socket. Both the
+  // forward and the broker are opt-out via PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD=1.
+  const subagentGuardEnabled = process.env.PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD !== "1";
+  let permSocketPath: string | undefined;
+  let broker: BrokerHandle | undefined;
+  if (subagentGuardEnabled) {
+    permSocketPath = path.join(os.tmpdir(), `pi-ensemble-perm-${runId}-${spec.role}.sock`);
+    const deps = makeBrokerDeps();
+    if (deps) {
+      broker = startBroker(permSocketPath, deps);
+    } else {
+      trace(
+        `spawn[${spec.role}]: parent guard not ready — subagent permissions will headless-deny on ask`,
+      );
+      // Don't pass the socket env var if we couldn't start a broker; the
+      // subagent guard will fall through to headless-deny cleanly.
+      permSocketPath = undefined;
+    }
+  }
+
   const childArgs = [
     // --mode rpc keeps stdin open for JSON command injection (#152). The
     // initial prompt is sent via stdin as a `{ type: "prompt", message }`
@@ -346,11 +393,31 @@ export async function spawnSpecialist(
     childArgs.push("--extension", ext);
   }
   applyUserExtension(childArgs, spec.role);
+  // Forward pi-ensemble ITSELF into the subagent so its permission-guard
+  // can enforce the per-role allowlist inside the child. The subagent load
+  // detects PI_ENSEMBLE_SUBAGENT_MODE=1 and ONLY registers the guard (no
+  // dispatch tools — recursion firewall). discoverInstalledExtensions still
+  // skips pi-ensemble by package name (avoid double-forwarding via the
+  // installed-extensions loop above); we re-add it here once, explicitly.
+  if (subagentGuardEnabled) {
+    const ensemblePath = piEnsembleExtensionPath();
+    if (ensemblePath) {
+      childArgs.push("--extension", ensemblePath);
+    }
+  }
   if (opts.extraArgs && opts.extraArgs.length > 0) {
     childArgs.push(...opts.extraArgs);
   }
   // No positional prompt — sent over stdin RPC channel below.
   const invocation = getPiInvocation(childArgs);
+
+  const childEnv: Record<string, string> = { ...process.env, PI_ENSEMBLE_ROLE: spec.role };
+  if (subagentGuardEnabled) {
+    childEnv.PI_ENSEMBLE_SUBAGENT_MODE = "1";
+    if (permSocketPath) {
+      childEnv.PI_ENSEMBLE_PERM_SOCKET = permSocketPath;
+    }
+  }
 
   const child = spawn(invocation.command, invocation.args, {
     cwd,
@@ -360,7 +427,7 @@ export async function spawnSpecialist(
     // "no more commands" — Pi exits cleanly once the current prompt's
     // agent_end has fired.
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, PI_ENSEMBLE_ROLE: spec.role },
+    env: childEnv,
   });
 
   const start = Date.now();
@@ -464,6 +531,14 @@ export async function spawnSpecialist(
     opts.signal?.removeEventListener("abort", onAbort);
     // Best-effort cleanup of the temp prompt file; ignore errors.
     fs.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
+    // Stop the per-spawn permission broker; unlinks the socket file.
+    if (broker) {
+      try {
+        broker.stop();
+      } catch (err) {
+        trace(`spawn[${spec.role}]: broker stop failed: ${(err as Error).message}`);
+      }
+    }
   }
 
   if (timedOut) {
