@@ -499,14 +499,23 @@ export const BUILTIN_TOOLS = new Set([
 // is transparent (see stripQuotedSegments and issue #108).
 function matchBashSubcommand(command: string, allowlist: Record<string, string>): string | null {
   // Commands containing injection vectors OUTSIDE quoted segments (`&&`, `|`,
-  // `>`, `$(...)`, backticks, etc.) can never be matched safely — any future
-  // wildcard would also let `cmd && rm -rf /` through. Return "deny" directly
-  // rather than null so the role-level catch-all (now `*: ask` since #168)
-  // cannot accidentally turn these into a prompt the user might approve.
-  // Pre-#168 the role-level catch-all was `*: deny`, which masked this
-  // distinction; flipping to `*: ask` requires the bash matcher to enforce
-  // injection-vector deny itself.
-  if (BASH_COMMAND_INJECTION_CHARS.test(stripQuotedSegments(command))) return "deny";
+  // `>`, `$(...)`, backticks, etc.) can't be safely auto-approved by any
+  // wildcard pattern. We return null here so the lookup falls through to the
+  // role's `*: ask` catch-all (or, absent that, resolveToolPermission's
+  // default "ask") — i.e. the parent prompts the user with the FULL command
+  // text visible. The user is the trust boundary: they read the chain and
+  // approve / deny once. LLM subagents naturally emit chains like
+  // `cd $WORKTREE && git status`, and hard-denying without a prompt blocks
+  // legitimate workflows (#188 follow-up; broke ops/developer subagent bash
+  // for routine /work cycles).
+  //
+  // Defense in depth on the CACHE side stays intact: getBashAlwaysScope and
+  // bashPatternMatches both refuse to wildcard a command with injection
+  // vectors. "Allow always" on a chained command stores only an exact-hash
+  // cache entry — any *different* chain shape will still re-prompt. So the
+  // user can never approve `git X && rm -rf /` as a side-effect of having
+  // ever approved `git status && git diff`.
+  if (BASH_COMMAND_INJECTION_CHARS.test(stripQuotedSegments(command))) return null;
   // Sort patterns by length descending so the more specific entry wins.
   const patterns = Object.entries(allowlist)
     .filter(([k]) => k !== "*")

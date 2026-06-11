@@ -252,7 +252,7 @@ Maximum **10 concurrent tasks** per session.
 
 This means **PM does not need to pre-approve subagent tool calls**. The user is in the loop directly when a subagent tries something novel. If the user pre-allowed `pi install*` for ops during a prior session, it just works; if not, they get prompted the first time. Caching is per-project.
 
-Unknown bash subcommands now resolve to `ask` (not `deny`) for every role — i.e. a novel command like `git symbolic-ref` prompts the user instead of hard-blocking. Injection-vector patterns (`&&`, `|`, `$(…)`, redirects) still hard-deny without prompting. Same flow whether the call originates in PM or in a subagent.
+Unknown bash subcommands now resolve to `ask` (not `deny`) for every role — i.e. a novel command like `git symbolic-ref` prompts the user instead of hard-blocking. Chained / injection-vector shapes (`&&`, `|`, `$(…)`, redirects) ALSO prompt — the user is the trust boundary, and the full command text is visible in the prompt. The cache side refuses to wildcard injection-vector commands, so "Allow always" stores only an exact-hash entry; a differently shaped chain still re-prompts. Same flow whether the call originates in PM or in a subagent.
 
 Opt out (debugging only): `PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD=1` restores the pre-#186 behaviour where subagents had no permission layer.
 

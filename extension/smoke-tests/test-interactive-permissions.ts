@@ -407,8 +407,8 @@ assert(
     emptyConfig,
     defaultAgentsConfig,
     "vipune add foo && rm bar",
-  ) === "deny",
-  "nested allowlist: injection-vector command is hard-denied by matchBashSubcommand (#169 — was 'ask' fall-through pre-#168 when role-level catch-all was deny; matcher now enforces its own deny so the `*: ask` catch-all post-#168 cannot accidentally prompt for `cmd && evil`)",
+  ) === "ask",
+  "nested allowlist: injection-vector command falls through to ask — the user reads the full chain and decides (#188+). Cache wildcard expansion still refuses to wildcard these; 'Allow always' stores only the exact-hash key, so a different chain re-prompts.",
 );
 assert(
   resolveToolPermission(
