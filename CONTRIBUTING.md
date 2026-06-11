@@ -13,8 +13,10 @@ cd pi-ensemble
 ```
 
 The installer runs preflight checks for required CLIs (`pi`, `bun`, `git`,
-`gh`, `vipune`, `colgrep`, `oo`, `jq`) — if any are missing you'll get a
-named list with install hints. See README → Prerequisites for the full table.
+`gh`, `vipune`, `oo`, `jq`) — if any are missing you'll get a named list
+with install hints. `codebase-memory-mcp` is installed separately as an MCP
+server (see README → Prerequisites / Using MCP servers). See README →
+Prerequisites for the full table.
 
 ## Build, test, lint
 

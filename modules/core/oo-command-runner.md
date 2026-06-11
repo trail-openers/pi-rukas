@@ -30,7 +30,7 @@ The nuanced "Wrap with oo / Run bare" doctrine below covers everything ELSE — 
 - `git remote -v` / `git tag` / `git config --get user.email` — short reads
 - `gh issue view <N>` / `gh issue list --limit N` / `gh search issues …` — the agent needs the *content* (titles, body, URLs); not a "8 issues" summary
 - `gh api repos/.../issues/N` — when piped to `jq`, oo's indexing path breaks the pipeline (oo replaces the JSON with a recall-hint summary line). Always bare for `gh api | jq` patterns.
-- `vipune`, `colgrep`, `jq`, `head`, `tail`, `wc` — already context-efficient by design
+- `vipune`, `jq`, `head`, `tail`, `wc` — already context-efficient by design (codebase-memory-mcp tools are MCP, not bash; same principle)
 
 **Why `oo` is wrong for `gh issue …`**: oo's "passthrough" tier (≤4 KB) does nothing useful for already-bounded gh queries. For larger queries (e.g. unlimited `gh issue list`), oo's "indexed" tier replaces the output with `(indexed 8 KiB → use 'oo recall')`, forcing a follow-up `oo recall <query>` round-trip that may not surface what the agent needs. PM reads issue bodies and lists to make decisions; substituting a compression summary loses the information the agent's deciding from.
 
@@ -101,7 +101,7 @@ Shows oo version. Use to verify installation.
 
 These tools are already context-efficient and run without the `oo` prefix:
 - `vipune` — project memory (search/store)
-- `colgrep` — semantic code search
+- `codebase_memory_*` MCP tools — indexed code search / structural queries (not bash; see `modules/core/codebase-memory-mcp.md`)
 - `jq`, `echo`, `head`, `tail`, `wc`, `sort`, `uniq`, `tee` — text utilities
 
 ## No shell chaining — STOPS YOUR WORK
@@ -176,7 +176,7 @@ If the command failed and you want to see the error, just look at the tool resul
 
 ## `(no output)` usually means "no matches", not "failure"
 
-When a search / list command (`gh issue list`, `git log`, `grep`, `rg`, `colgrep`, etc.) returns `(no output)`, the most common cause is that the command succeeded and found nothing matching the query — **not** that the command broke. Don't retry with different flags or invent new query variations to "fix" it. Treat empty output as a legitimate answer:
+When a search / list command (`gh issue list`, `git log`, `grep`, `rg`, `codebase_memory_search_code`, etc.) returns `(no output)` or an empty result set, the most common cause is that the command succeeded and found nothing matching the query — **not** that the command broke. Don't retry with different flags or invent new query variations to "fix" it. Treat empty output as a legitimate answer:
 
 - `gh issue list --state open` → `(no output)` → there are zero open issues. Done.
 - `grep "foo" src/` → `(no output)` → the string "foo" doesn't appear in `src/`. Done.

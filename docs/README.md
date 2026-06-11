@@ -26,16 +26,16 @@ Explicit vipune usage policy for `/audit`. This document defines:
 
 **Status**: Draft — Addresses Issue #36
 
-### [audit-colgrep-policy.md](audit-colgrep-policy.md)
-Explicit colgrep usage policy for `/audit`. This document defines:
-- When to use colgrep in each audit phase
+### [audit-code-search-policy.md](audit-code-search-policy.md)
+Code-search (codebase-memory-mcp) usage policy for `/audit`. This document defines:
+- When to use each `codebase_memory_*` tool in each audit phase
 - Good vs bad query patterns (concrete code vs meta-questions)
 - Phase 1 discovery queries by category
-- Phase 2 audit pass queries for each pass
-- `files-only` vs content inspection
-- Indexing and setup expectations
+- Phase 2 audit pass queries for each pass (including diff-bounded audits via `detect_changes`)
+- Structural sweep (`search_graph` / `trace_path` / `get_architecture`) vs content match (`search_code`)
+- Index lifecycle and failure handling
 
-**Status**: Draft — Addresses Issue #37
+**Status**: Active — supersedes the previous colgrep policy.
 
 ## Quick Links
 

@@ -132,10 +132,10 @@ Do NOT attempt webfetch or Context7 for real-time data — they cannot reliably 
 
 Before handling ANY user request, bootstrap your context:
 
-1. **Search your memory:**
-     ```bash
-     colgrep "project architecture"      # Code search (auto-indexes on first use)
-     vipune search "key decisions"       # Memory recall
+1. **Search your memory and code:**
+     ```
+     codebase_memory_get_architecture({path: "."})   # Structural module map
+     vipune search "key decisions"                   # Decisions / conventions / gotchas
      ```
 
 2. **Delegate context gathering:**
@@ -549,9 +549,9 @@ Every file you read, every tool result you receive — consumes YOUR finite cont
 
 When you need context for a decision mid-session, dispatch @explore rather than running commands directly.
 
-- "I need to understand X" → dispatch @explore with: "Search vipune (discover types first, use --hybrid/--memory-type) and colgrep for X. Return structured executive summary."
+- "I need to understand X" → dispatch @explore with: "Search vipune (discover types first, use --hybrid/--memory-type) and codebase_memory_search_code for X. Return structured executive summary."
 - "What's the state of Y" → dispatch @explore with: "Check git telemetry and CI for Y. Return one-line status."
-- "Find where Z is implemented" → dispatch @explore with: "Colgrep for Z implementation patterns. Return file paths + brief description."
+- "Find where Z is implemented" → dispatch @explore with: "codebase_memory_search_code for Z implementation patterns. Return file paths + brief description."
 - "Any recent decisions on W" → dispatch @explore with: "Probe vipune for 'W' with --recency 0.9. Return bullet summary."
 - "Review quality gates" → dispatch @explore with: "Extract test/lint/typecheck commands from docs or vipune. Return one line."
 

@@ -31,8 +31,10 @@ check_cmd git          "OS package manager"
 check_cmd gh           "brew install gh"
 check_cmd jq           "brew install jq"
 check_cmd vipune       "cargo install vipune  (https://github.com/randomm/vipune)"
-check_cmd colgrep      "https://github.com/lightonai/next-plaid"
 check_cmd oo           "cargo install double-o  (https://github.com/randomm/oo)"
+# codebase-memory-mcp is not preflighted here — it's an MCP server loaded by
+# pi-mcp-adapter, not a CLI on PATH. See README → Using MCP servers + the
+# codebase-memory-mcp install at https://github.com/DeusData/codebase-memory-mcp
 check_cmd parallel-cli "brew install parallel-web/tap/parallel-cli  (then: parallel-cli login)"
 check_cmd ctx7         "npm install -g ctx7  (free tier works without login; Node.js >= 18)"
 

@@ -4,7 +4,7 @@
 
 Vipune is **project-scoped semantic memory**. Search before starting work on any task. Store findings so future sessions have context.
 
-**Use vipune for project meta-questions** ("what's our convention here?", "did we decide on a stack?", "what's the gotcha with X?"). For code-level questions ("where is X implemented?") use ColGREP.
+**Use vipune for project meta-questions** ("what's our convention here?", "did we decide on a stack?", "what's the gotcha with X?"). For code-level questions ("where is X implemented?") use `codebase_memory_search_code` (see `modules/core/codebase-memory-mcp.md`).
 
 ## Memory types (5)
 

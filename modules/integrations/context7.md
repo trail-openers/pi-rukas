@@ -31,7 +31,7 @@ When to use it:
 
 Skip it for:
 
-- The project's own code (`colgrep` is faster).
+- The project's own code (`codebase_memory_search_code` is faster).
 - Standard library / built-in language features.
 - Meta-questions about the project (`vipune search`).
 

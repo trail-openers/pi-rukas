@@ -56,7 +56,7 @@ Required CLIs on `$PATH`. The role prompts assume all of these are installed —
 | `git` ≥ 2.20 | Worktrees, branches, diffs. |
 | [`gh`](https://cli.github.com/) | GitHub issue / PR / CI ops from inside `/work` and `/review`. |
 | [`vipune`](https://github.com/randomm/vipune) | Cross-session memory (fact + observation patterns). All agents call this. |
-| [`colgrep`](https://github.com/lightonai/next-plaid) | Semantic **code** search. Used to find existing implementations. |
+| [`codebase-memory-mcp`](https://github.com/DeusData/codebase-memory-mcp) | Persistent knowledge-graph code indexer exposed as MCP. Powers `codebase_memory_search_code` / `trace_path` / `detect_changes` / `get_architecture` — pre-approved on the read-heavy roles. |
 | [`oo`](https://github.com/randomm/oo) | Context-efficient wrapper for chatty CLIs (git, gh). |
 | `jq` | Used by `build.sh` to assemble the capability matrix into the PM prompt. |
 | [`parallel-cli`](https://docs.parallel.ai/cli/overview) | Web search / fetch / deep research used by the `explore` role. `/research` and cross-web investigation depend on it. |
@@ -98,8 +98,9 @@ brew install git gh jq                                                # macOS
 cargo install vipune
 cargo install double-o
 
-# colgrep
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.sh | sh
+# codebase-memory-mcp (see upstream README for the current install command)
+# https://github.com/DeusData/codebase-memory-mcp
+# After install, configure pi-mcp-adapter to load it — see "MCP setup" below.
 
 # parallel-cli
 brew install parallel-web/tap/parallel-cli
@@ -109,7 +110,10 @@ parallel-cli login
 npm install -g --ignore-scripts ctx7
 ```
 
-After install: `vipune version` once to initialise `~/.vipune/`, and `colgrep init $(pwd)` inside any project (the `/start` command does this for you on first use).
+After install:
+
+- `vipune version` once to initialise `~/.vipune/`.
+- Configure `codebase-memory-mcp` in `~/.config/mcp/mcp.json` (user-global) so pi-mcp-adapter picks it up — see [Using MCP servers](#using-mcp-servers-per-host-or-per-project) below. Then run `codebase_memory_index_repository({path: "."})` once per project (the `/start` command does this for you on first use).
 
 Tested on macOS; should work on Linux. Bun ≥ 1.2.20 and Node ≥ 22 (Pi's own requirement) are assumed.
 

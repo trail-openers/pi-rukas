@@ -161,7 +161,7 @@ interface ProgressEvent {
  * meaningful to a human glancing at the deck row":
  *   - `command` / `cmd` — the bash command (most informative for `bash`)
  *   - `file_path` / `path` — file targets for read/write/edit
- *   - `pattern` — grep/colgrep query
+ *   - `pattern` — rg / regex query
  *   - `query` — vipune / search-style tools
  *   - `url` — fetch-style tools
  * If none match, falls back to the first non-empty string-valued field.

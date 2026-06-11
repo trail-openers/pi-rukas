@@ -1,7 +1,7 @@
 agents-base/code-review-specialist.md
 modules/core/tool-preferences.md
 modules/core/vipune-light.md
-modules/core/colgrep.md
+modules/core/codebase-memory-mcp.md
 modules/core/oo-command-runner.md
 modules/core/output-standards.md
 modules/workflows/ci-monitoring.md

@@ -156,7 +156,7 @@ This discipline applies to **prerequisite CLIs** too (Pi, ctx7, parallel-cli, et
 Before adding a new module, function, type, or feature:
 
 - [ ] Is it required by the GitHub issue?
-- [ ] Can existing code solve it (search with `colgrep` first)?
+- [ ] Can existing code solve it (search with `codebase_memory_search_code` first)?
 - [ ] Is this the simplest solution?
 - [ ] Does it add essential capability or just convenience?
 - [ ] Will it be maintainable in 6 months?

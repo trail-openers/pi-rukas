@@ -112,7 +112,7 @@ try {
   assert(frontmatter?.[1].includes("description:"), "audit.md frontmatter includes description");
   assert(frontmatter?.[1].includes("argument-hint:"), "audit.md frontmatter includes argument-hint");
   assert(auditContent.includes("../docs/audit-vipune-policy.md"), "audit.md references vipune policy");
-  assert(auditContent.includes("../docs/audit-colgrep-policy.md"), "audit.md references colgrep policy");
+  assert(auditContent.includes("../docs/audit-code-search-policy.md"), "audit.md references code-search policy");
   assert(auditContent.includes("../docs/audit-contract-examples.md"), "audit.md references contract examples doc");
   assert(!auditContent.includes("```json"), "runtime prompt no longer contains inline JSON examples");
 

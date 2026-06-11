@@ -33,7 +33,7 @@ You are orchestrating research. **Default to parallel** — multiple angles disp
      - role: explore
        prompt: "Technical depth angle (docs, specs): …"
      - role: explore
-       prompt: "Codebase relevance angle: use colgrep to find existing code related to the topic. ColGREP is code-only — only useful if the topic is something that would exist in source files (a function, feature, module). Skip if the topic is meta/project-level."
+       prompt: "Codebase relevance angle: use codebase_memory_search_code (and trace_path / get_architecture if relevant) to find existing code related to the topic. Only useful if the topic is something that would exist in source files (a function, feature, module). Skip if the topic is meta/project-level."
    ```
    Up to 10 parallel slots; do NOT serialise independent angles.
 
@@ -52,6 +52,6 @@ You are orchestrating research. **Default to parallel** — multiple angles disp
 ## Principles
 
 - Parallel is better — dispatch_parallel, never serialise independent angles.
-- Right tool for the job: web search for current, context7 for library docs, colgrep for code, vipune for prior research.
+- Right tool for the job: web search for current, context7 for library docs, codebase_memory_* for code, vipune for prior research.
 - Synthesise, don't dump.
 - Memory is valuable — save so future sessions build on this research.

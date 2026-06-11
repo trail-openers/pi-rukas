@@ -54,13 +54,13 @@ See [../docs/audit-vipune-policy.md](../docs/audit-vipune-policy.md) for the can
 - Keep storage limited to durable results: CRITICAL/HIGH findings, conventions, architecture decisions, quality gates, and recurring drift.
 - Do not use vipune as a bug tracker; follow the canonical doc for duplicate detection, superseding, and candidate handling.
 
-## ColGREP Usage Policy
+## Code-search Usage Policy
 
-See [../docs/audit-colgrep-policy.md](../docs/audit-colgrep-policy.md) for the canonical policy.
+See [../docs/audit-code-search-policy.md](../docs/audit-code-search-policy.md) for the canonical policy.
 
-- Use colgrep for concrete code patterns during standards discovery and audit passes.
-- Prefer files-only for breadth checks and content inspection for concrete matches.
-- If colgrep is unavailable or fails, continue standards discovery with docs/config/CI/vipune evidence only, and carry a limitation note into synthesis/final report.
+- Use `codebase_memory_search_code` for concrete code patterns during standards discovery and audit passes. Use `codebase_memory_search_graph` / `trace_path` for structural questions ("what depends on X", "what calls Y"). Use `codebase_memory_get_architecture` for module maps. Use `codebase_memory_detect_changes` to bound the scope of a change-driven audit.
+- Prefer structural queries for breadth checks; use `search_code` for concrete matches.
+- If codebase-memory-mcp is unavailable or returns nothing, continue standards discovery with docs/config/CI/vipune evidence only, and carry a limitation note into synthesis/final report.
 - Keep query examples and fallback guidance in the canonical doc.
 
 ## Phase 0: Argument Normalization
@@ -100,13 +100,13 @@ Your job: derive what this repo INTENDS to follow by inspecting:
    - Search for standards/decisions: vipune search '<keyword>' --memory-type fact --limit 5
    - Keywords: 'standard', 'convention', 'style', 'quality gate', 'lint', 'test'
 
-4. REPRESENTATIVE EXAMPLES — Use colgrep ONLY for concrete pattern gathering:
-   - colgrep 'error handling pattern' → find how errors are typically handled
-   - colgrep 'test pattern' → find typical test structure
-   - colgrep 'async function' → find async patterns if the codebase uses them
+4. REPRESENTATIVE EXAMPLES — Use codebase_memory_search_code ONLY for concrete pattern gathering:
+   - codebase_memory_search_code({query: 'error handling pattern'}) → find how errors are typically handled
+   - codebase_memory_search_code({query: 'test pattern'}) → find typical test structure
+   - codebase_memory_search_code({query: 'async function'}) → find async patterns if the codebase uses them
 
-If colgrep is unavailable or errors, do not abort discovery: continue using docs/config/CI/vipune evidence only, record a limitation note, and proceed as long as you still have enough evidence to build a usable standards model.
-Do NOT use colgrep for meta-questions like 'project architecture' — that returns useless matches.
+If codebase_memory_* is unavailable or returns nothing, do not abort discovery: continue using docs/config/CI/vipune evidence only, record a limitation note, and proceed as long as you still have enough evidence to build a usable standards model.
+Do NOT use search_code for meta-questions like 'project architecture' — use codebase_memory_get_architecture({path: '.'}) for that.
 
 OUTPUT FORMAT (return this EXACT structure as your final assistant text):
 
@@ -161,7 +161,7 @@ Use this standards model to find:
 - Dead code (unused functions, commented-out blocks, TODOs over 6 months old)
 - Hygiene issues (inconsistent formatting, missing docs where documented standard requires)
 
-Search via colgrep for concrete patterns. Every finding must have:
+Search via codebase_memory_search_code (and search_graph / trace_path where structural) for concrete patterns. Every finding must have:
 
 {
   \"category\": \"drift|dead-code|hygiene\",
@@ -184,7 +184,7 @@ Use this standards model to find:
 - Risky assumptions (implicit dependencies, fragile ordering, missing error paths)
 - Anti-patterns per the repo's own standards
 
-Search via colgrep for concrete patterns. Every finding must have:
+Search via codebase_memory_search_code (and search_graph / trace_path where structural) for concrete patterns. Every finding must have:
 
 {
   \"category\": \"bug|risky-assumption|anti-pattern\",
@@ -207,7 +207,7 @@ Use this standards model to find:
 - Test gaps (missing coverage per quality gate, untested critical paths)
 - Quality-gate violations (lint rules ignored, type errors suppressed)
 
-Search via colgrep for concrete patterns. Every finding must have:
+Search via codebase_memory_search_code (and search_graph / trace_path where structural) for concrete patterns. Every finding must have:
 
 {
   \"category\": \"architecture-drift|test-gap|quality-gate\",

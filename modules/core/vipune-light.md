@@ -12,7 +12,7 @@ vipune search 'topic' --hybrid --recency 0.3 --limit 5
 
 Score thresholds: **0.80+ act / 0.70–0.79 cross-check / <0.60 ignore.**
 
-For project meta-questions (conventions, decisions, gotchas) → vipune. For code-level questions (where is X implemented?) → ColGREP.
+For project meta-questions (conventions, decisions, gotchas) → vipune. For code-level questions (where is X implemented?) → `codebase_memory_search_code` (see `modules/core/codebase-memory-mcp.md`).
 
 ## Memory types — by name
 

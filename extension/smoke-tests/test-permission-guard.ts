@@ -96,11 +96,20 @@ for (const role of [
 const defaultRoleRemoved = isToolAllowedForRole("read", "default", agentsConfig);
 assert(!defaultRoleRemoved, "Issue #104: default role removed → unknown-role queries return false");
 
-// Test 8: Wildcard patterns work correctly
-const meadowAllowedForOps = isToolAllowedForRole("meadow_command", "ops", agentsConfig);
+// Test 8: Wildcard patterns work correctly (live agents.json — was meadow* pre-codebase-memory-mcp).
+// PM has `"parallel-search*": "deny"`; verify the wildcard matches an arbitrary suffix.
+// We assert on resolveToolPermission (not isToolAllowedForRole) so we can distinguish
+// "wildcard hit and returned deny" from "no rule matched and defaulted to ask/deny".
+const parallelSearchVerdict = resolveToolPermission(
+  "parallel-search_some_new_tool",
+  "project-manager",
+  {},
+  {},
+  agentsConfig,
+);
 assert(
-  meadowAllowedForOps,
-  "Issue #50: wildcard pattern works (meadow* matches meadow_command for ops)",
+  parallelSearchVerdict === "deny",
+  "Issue #50: wildcard pattern works (parallel-search* matches arbitrary suffix for PM, resolves to deny)",
 );
 
 // Test 9: Explicit deny overrides wildcard (parallel-search_* denied for ops)
@@ -599,9 +608,13 @@ for (const command of gitDiffWithInjectionShouldAsk) {
 // per-project ($PWD/.pi/decisions.json), so cleanup is one prompt per
 // project per tool.
 
-// MCP gateway tool — first call should prompt.
+// MCP gateway tool — explicit entries now exist per role (post codebase-memory-mcp
+// adoption). PM owns admin calls so its `mcp` is `allow`; specialists are `ask`.
 const mcpVerdictPM = resolveToolPermission("mcp", "project-manager", {}, {}, agentsConfig);
-assert(mcpVerdictPM === "ask", "Issue #168: `mcp` resolves to ask for PM");
+assert(mcpVerdictPM === "allow", "PM has explicit `mcp: allow` (owns first-run index_repository)");
+
+const mcpVerdictDev = resolveToolPermission("mcp", "developer", {}, {}, agentsConfig);
+assert(mcpVerdictDev === "ask", "Specialists have explicit `mcp: ask` (prompts for admin calls)");
 
 // Per-server direct tools (arbitrary names from user's MCP config).
 const directDbTool = resolveToolPermission(

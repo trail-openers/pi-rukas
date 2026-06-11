@@ -108,10 +108,10 @@ Specifically:
    gh issue list --search '<keyword>' --state all --limit 10
    Return titles + numbers + state for any near-duplicates or related issues.
 
-3. CODE PRIOR ART — Use colgrep for concrete patterns ONLY when the descriptor names a code feature:
-   colgrep '<pattern>' → find existing implementations to avoid duplication
+3. CODE PRIOR ART — Use codebase_memory_search_code for concrete patterns ONLY when the descriptor names a code feature:
+   codebase_memory_search_code({query: '<pattern>'}) → find existing implementations to avoid duplication
 
-   Skip colgrep for meta/project-level questions; it returns noise there.
+   Skip codebase_memory_search_code for meta/project-level questions; it returns noise there. For meta queries use codebase_memory_get_architecture or vipune.
 
 OUTPUT FORMAT (return this EXACT structure as your final assistant text):
 
@@ -189,7 +189,7 @@ This gap-briefing is non-negotiable — it's what makes the dispatch cheap and t
 **`reproduction-surface` (Bug)**:
 ```
 Determine concrete steps to reproduce. Find:
-- Logs / error messages relevant to this bug (use colgrep + git log)
+- Logs / error messages relevant to this bug (use codebase_memory_search_code + git log)
 - Environment specifics (Node version, OS, dependencies) that matter
 - Flakiness factors (timing, ordering, state)
 - Existing related test cases that should have caught this
@@ -221,7 +221,7 @@ OUTPUT: { existingTests: [...], goldenFixtureCandidates: [...], coverageGaps: [.
 ```
 Look for similar features already implemented OR similar patterns in adjacent codebases / docs.
 - Specifically check if /research findings (per PM's brief) already cover this — DO NOT re-fetch.
-- For genuinely new gaps, search vipune + colgrep for patterns to follow.
+- For genuinely new gaps, search vipune + codebase_memory_search_code for patterns to follow.
 
 OUTPUT: { priorArt: [{source, summary, reuseOpportunity}], conventions: [...], gaps }
 ```

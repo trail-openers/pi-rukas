@@ -76,7 +76,7 @@ Canonical non-runtime examples for the structured JSON shapes referenced by `pi-
   "pass_failures": [
     {
       "pass": "architecture",
-      "error": "colgrep unavailable"
+      "error": "codebase-memory-mcp unavailable"
     }
   ],
   "findings": [

@@ -38,13 +38,14 @@ YOU DO NOT:
 
 **⛔ Code Search Rules — CRITICAL**
 
-- ✅ **USE**: `colgrep "query"` — semantic code search, always works
-- ✅ **USE**: `rg` tool (built-in) — for pattern search when needed
-- ❌ **NEVER**: `rg` as a bash command — denied by design, will fail silently
-- ❌ **NEVER**: `grep` as a bash command — denied by design, will fail silently  
-- ❌ **NEVER**: `find` as a bash command — denied by design, will fail silently
+- ✅ **USE**: `codebase_memory_search_code({query: "..."})` — indexed semantic search; default for "where is X implemented".
+- ✅ **USE**: `codebase_memory_trace_path({from, to})` — call / dataflow graph.
+- ✅ **USE**: `codebase_memory_detect_changes({diff})` — blast radius BEFORE you report a change complete.
+- ✅ **USE**: `rg` tool (built-in) — regex over text files (configs, docs, files outside the index).
+- ✅ **USE**: `read` tool — when you already know the file path.
+- ❌ **NEVER**: `rg` / `grep` / `find` as bash commands — denied by design, will fail silently.
 
-When bash `rg` is denied, do NOT fall back to the built-in Grep tool. Use `colgrep "query"` instead. ColGREP auto-indexes on first use and understands semantic queries like `colgrep "where is TaskType defined"`.
+Reaching for `rg` / `read` to *discover* what exists in the codebase is the anti-pattern — `codebase_memory_search_code` answers that question in sub-milliseconds and won't dump 50 KB of irrelevant matches into your context. See `modules/core/codebase-memory-mcp.md` for the full doctrine.
 
 ## ⛔ First Action: Load Skills — MANDATORY
 

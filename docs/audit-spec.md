@@ -86,7 +86,7 @@ Build a `DerivedStandards` model that captures the project's intended behavior, 
 | **Configuration** | Build configs, linter rules, CI/CD | Read and parse |
 | **CI/CD pipelines** | Test expectations, check gates | Read workflow files, job definitions |
 | **Memory** | Prior decisions, architecture notes, conventions | `vipune search` before starting |
-| **Representative examples** | Idiomatic patterns, style conventions | `colgrep` queries for concrete implementations |
+| **Representative examples** | Idiomatic patterns, style conventions | `codebase_memory_search_code` queries for concrete implementations |
 | **Test files** | Testing patterns, coverage expectations | Read `test/`, `__tests__/`, `*test.*` files |
 
 ### DerivedStandards schema
@@ -243,17 +243,17 @@ vipune search "bug" "fix" "workaround" --limit 10
 
 **Important**: Use targeted keyword searches, not the whole user query. Vipune prefers short phrases. See [docs/audit-vipune-policy.md](docs/audit-vipune-policy.md) for the complete vipune usage policy.
 
-#### Representative examples via colgrep
+#### Representative examples via codebase-memory-mcp
 
-Use colgrep to find concrete implementation examples. Query code directly. See [docs/audit-colgrep-policy.md](docs/audit-colgrep-policy.md) for the complete colgrep usage policy, including query patterns and examples.
+Use `codebase_memory_search_code` to find concrete implementation examples. Query code directly. See [docs/audit-code-search-policy.md](audit-code-search-policy.md) for the complete code-search usage policy, including query patterns and examples.
 
-```bash
+```
 # Examples of high-signal queries
-colgrep "error handling"
-colgrep "test coverage"
-colgrep "API endpoint"
-colgrep "validation"
-colgrep "transaction"
+codebase_memory_search_code({query: "error handling"})
+codebase_memory_search_code({query: "test coverage"})
+codebase_memory_search_code({query: "API endpoint"})
+codebase_memory_search_code({query: "validation"})
+codebase_memory_search_code({query: "transaction"})
 ```
 
 For each query, collect:
@@ -261,12 +261,12 @@ For each query, collect:
 - Path and line numbers
 - Pattern observation (what's typical)
 
-**Avoid low-signal queries** (see [audit-colgrep-policy.md](docs/audit-colgrep-policy.md#query-patterns-good-vs-bad) for more examples):
-- ❌ `colgrep "project architecture"` — too meta
-- ❌ `colgrep "best practices"` — no code says this
-- ❌ `colgrep "good code"` — subjective
+**Avoid low-signal queries** (see [audit-code-search-policy.md](audit-code-search-policy.md#query-patterns-good-vs-bad) for more examples):
+- ❌ `codebase_memory_search_code({query: "project architecture"})` — too meta; use `get_architecture` instead
+- ❌ `codebase_memory_search_code({query: "best practices"})` — no code says this; use `vipune search`
+- ❌ `codebase_memory_search_code({query: "good code"})` — subjective; drop the query
 
-Use `colgrep --files-only` when you need a survey of what files exist without inspecting content deeply.
+Use `codebase_memory_get_architecture({path: "..."})` when you need a structural map without inspecting content. Use `codebase_memory_search_graph({entity: "..."})` to walk dependencies.
 
 #### Test files
 
@@ -422,7 +422,7 @@ Find unused, unreferenced, or unreachable code:
 ```typescript
 {
   role: "explore",
-  prompt: "Audit for dead code. Find unused modules, unreferenced functions, unreachable code paths, and deprecated artifacts. Use colgrep to trace references. Return findings as Finding objects."
+  prompt: "Audit for dead code. Find unused modules, unreferenced functions, unreachable code paths, and deprecated artifacts. Use codebase_memory_search_graph / trace_path to trace references; fall back to search_code for dynamically-referenced symbols. Return findings as Finding objects."
 }
 ```
 
@@ -439,7 +439,7 @@ Check architectural invariants:
 ```typescript
 {
   role: "adversarial-developer",
-  prompt: "Audit architecture drift. Check for dependency violations, layer crossings, circular dependencies, and broken abstractions. Use colgrep to trace call patterns. Return findings as Finding objects."
+  prompt: "Audit architecture drift. Check for dependency violations, layer crossings, circular dependencies, and broken abstractions. Use codebase_memory_get_architecture for the module map and codebase_memory_search_graph / trace_path to confirm cross-layer references. Return findings as Finding objects."
 }
 ```
 
@@ -661,16 +661,16 @@ If a specialist pass times out or errors:
 - Continue with other passes (partial audit is better than none)
 - Encourage user to retry or inspect transcript
 
-### When vipune/colgrep fail
+### When vipune / codebase-memory-mcp fail
 
 If vipune search fails:
 - Proceed without memory context
 - Note in report: `"Memory inaccessible: <reason>"`
 
-If colgrep indexing not initialized:
-- Run `colgrep init` automatically
-- If that fails, note in report and skip example discovery
-- Warn user in report: `"Colgrep unavailable; standards inference limited to/docs/config/CI"`
+If the project is unindexed (codebase_memory_get_architecture returns nothing):
+- Prompt the user via the `mcp` proxy to run `codebase_memory_index_repository({path: "."})`
+- If indexing fails, note in report and skip example / structural discovery
+- Warn user in report: `"codebase-memory-mcp unavailable; standards inference limited to docs/config/CI"`
 
 ---
 
@@ -741,7 +741,7 @@ Add smoke coverage in `extension/smoke-tests/`:
 - Epic #31: `/audit` command
 - Issue #32: This spec
 - Issue #36: Vipune policy for audit
-- Issue #37: Colgrep policy for audit
+- Issue #37: Code-search policy for audit (originally colgrep; superseded by codebase-memory-mcp)
 - `docs/audit-vipune-policy.md` — Explicit vipune usage policy
-- `docs/audit-colgrep-policy.md` — Explicit colgrep usage policy
+- `docs/audit-code-search-policy.md` — Explicit code-search (codebase-memory-mcp) usage policy
 - README.md — For command positioning vs `/review` and `/research`

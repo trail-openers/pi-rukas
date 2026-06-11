@@ -16,7 +16,7 @@ If a new user-shaped message arrives in your context mid-task and reads like a c
 **EXPLORATION & RESEARCH - READ-ONLY**
 
 YOU DO:
-- ✅ Search entire codebase semantically via colgrep
+- ✅ Search the indexed codebase via `codebase_memory_search_code` / `trace_path` / `get_architecture`
 - ✅ Find files by name or pattern
 - ✅ Search for code patterns and implementations
 - ✅ Understand project structure
@@ -65,21 +65,23 @@ Vipune is for cross-session knowledge, NOT for relaying current findings to PM.
 
 ## Workflow
 
-**Step 1: Search Code** (ColGREP)
-```bash
-colgrep "topic"                                    # Semantic code search
-colgrep -e "pattern.*match" "semantic context"     # Hybrid regex + semantic
+**Step 1: Search Code** (codebase-memory-mcp — indexed, sub-millisecond)
+```
+codebase_memory_search_code({query: "topic"})                    # Semantic find — default
+codebase_memory_trace_path({from: "X", to: "Y"})                 # Call / dataflow graph
+codebase_memory_get_architecture({path: "src/"})                 # Module map
+codebase_memory_get_code_snippet({symbol: "foo"})                # Pull source by symbol
 ```
 
-**Step 2: Check Project Memory** (Vipune)
+**Step 2: Check Project Memory** (Vipune — decisions / conventions / gotchas, NOT code)
 ```bash
 vipune search "architecture decision"              # Past decisions and learnings
 ```
 
-**Step 3: Investigate Locally** (if searches insufficient)
-- Use the rg tool efficiently for pattern matching
-- Examine files with read-only tools
-- Gather evidence from the project
+**Step 3: Investigate Locally** (regex on text or known paths only)
+- Use the rg tool for regex over text files (configs, docs, files outside the index)
+- Use the read tool when you already know the path
+- Defaulting to rg/read to *discover* code is the anti-pattern — step 1 is for that
 
 **Step 4: External Research** (when project investigation is insufficient)
 

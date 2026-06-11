@@ -4,7 +4,7 @@
 
 Vipune is **project-scoped semantic memory** — cross-session knowledge that prevents re-paving ground already walked. Search aggressively, store continuously, type aggressively.
 
-**Use vipune for project meta-questions** (conventions, decisions, gotchas, architectural rationale, who-is-working-on-what). For code-level "where is X implemented?" questions use ColGREP — they're orthogonal tools.
+**Use vipune for project meta-questions** (conventions, decisions, gotchas, architectural rationale, who-is-working-on-what). For code-level "where is X implemented?" questions use `codebase_memory_search_code` — they're orthogonal tools (see `modules/core/codebase-memory-mcp.md`).
 
 ## Memory types (5)
 
