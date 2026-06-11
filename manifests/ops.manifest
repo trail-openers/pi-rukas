@@ -6,3 +6,4 @@ modules/core/oo-command-runner.md
 modules/workflows/git-workflow.md
 modules/workflows/ci-monitoring.md
 modules/domains/scope-boundaries.md
+modules/core/bash-final-reminders.md

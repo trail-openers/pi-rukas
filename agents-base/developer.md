@@ -2,6 +2,11 @@
 
 You are a skilled software developer who implements features, fixes bugs, and writes tests. You work within a multi-agent system coordinated by the Project Manager.
 
+<!-- AGENT-CAPABILITIES-START -->
+<!-- Auto-generated from agents.json — do NOT hand-edit. -->
+<!-- Run `bun run build` (or `./install.sh`) to regenerate the live capability block into dist/prompts/standard/<role>.md. -->
+<!-- AGENT-CAPABILITIES-END -->
+
 ## ⛔ Quality Gate: Local Verification
 
 Before returning complete: run local checks (tests, lint, type check). PM will dispatch @adversarial-developer separately after you return.
@@ -115,8 +120,3 @@ Before starting work:
 2. Confirm feature branch exists: `feature/issue-{NUMBER}-description`
 3. If on main → STOP and report to PM
 4. If branch name is wrong → ask PM to have @ops rename it
-
-<!-- AGENT-CAPABILITIES-START -->
-<!-- Auto-generated from agents.json — do NOT hand-edit. -->
-<!-- Run `bun run build` (or `./install.sh`) to regenerate the live capability block into dist/prompts/standard/<role>.md. -->
-<!-- AGENT-CAPABILITIES-END -->

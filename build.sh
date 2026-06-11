@@ -237,15 +237,61 @@ EOF
        # Format MCP line - show (none) if empty
        (if $mcp_tools == "" then "(none)" else $mcp_tools end) as $mcp_display |
 
-       # Bash allows (excluding the * default) - sorted for deterministic output
-       [
-         (($perm.bash // {}) | to_entries[] | select(.key != "*" and .value == "allow") | .key)
-       ] | sort | unique | join(", ") as $bash_allows |
+       # Bash allow / deny lists grouped by category so the model can scan
+       # them without parsing a comma-wall. Each group is sorted; entries
+       # outside any known prefix bucket land in the catch-all "other".
+       (($perm.bash // {}) | to_entries) as $bash_entries |
+       ($bash_entries | map(select(.key != "*" and .value == "allow") | .key)) as $bash_allow_keys |
+       ($bash_entries | map(select(.key != "*" and .value == "deny") | .key)) as $bash_deny_keys |
 
-       # Bash default
+       def group_by_prefix($keys):
+         {
+           git: ($keys | map(select(startswith("git ") or startswith("git status") or startswith("git branch") or startswith("git log") or startswith("git diff") or startswith("git config") or startswith("git remote") or startswith("git tag") or startswith("git worktree") or startswith("git rev-") or startswith("git merge-") or startswith("git -C "))) | sort),
+           oo_git: ($keys | map(select(startswith("oo git"))) | sort),
+           gh: ($keys | map(select(startswith("gh "))) | sort),
+           oo_gh: ($keys | map(select(startswith("oo gh"))) | sort),
+           build: ($keys | map(select(startswith("npm") or startswith("yarn") or startswith("pnpm") or startswith("bun ") or startswith("cargo") or startswith("go test") or startswith("rustc") or startswith("node ") or startswith("corepack") or startswith("volta") or startswith("fnm ") or startswith("ruff") or startswith("pytest") or startswith("uv ") or startswith("oo npm") or startswith("oo yarn") or startswith("oo pnpm") or startswith("oo bun") or startswith("oo cargo") or startswith("oo go ") or startswith("oo uv ") or startswith("oo npx") or startswith("oo ruff"))) | sort),
+           fs: ($keys | map(select(. == "ls*" or . == "cp *" or . == "mv *" or . == "rm *" or . == "mkdir*" or . == "chmod*" or . == "tar*" or . == "tee*" or . == "cut*" or . == "head*" or . == "tail*" or . == "wc*" or . == "sort*" or . == "uniq*" or . == "grep *" or . == "which*" or . == "echo*" or . == "jq*" or . == "xargs*" or . == "uuidgen*")) | sort),
+           container: ($keys | map(select(startswith("docker") or startswith("podman") or startswith("kamal") or startswith("hcloud") or startswith("ssh ") or startswith("xattr") or startswith("codesign"))) | sort),
+           project_memory: ($keys | map(select(startswith("vipune") or startswith("colgrep") or startswith("kide") or startswith("apfel") or startswith("ctx7") or startswith("oo recall") or startswith("oo help") or startswith("oo patterns") or startswith("oo learn") or startswith("oo forget"))) | sort),
+           shell: ($keys | map(select(startswith("./") or . == "ls*" or startswith("export "))) | sort | unique),
+           other: ($keys | map(select(
+             (startswith("git ") or startswith("git status") or startswith("git branch") or startswith("git log") or startswith("git diff") or startswith("git config") or startswith("git remote") or startswith("git tag") or startswith("git worktree") or startswith("git rev-") or startswith("git merge-") or startswith("git -C ")) | not
+           ) | select(startswith("oo git") | not) | select(startswith("gh ") | not) | select(startswith("oo gh") | not) | select(
+             (startswith("npm") or startswith("yarn") or startswith("pnpm") or startswith("bun ") or startswith("cargo") or startswith("go test") or startswith("rustc") or startswith("node ") or startswith("corepack") or startswith("volta") or startswith("fnm ") or startswith("ruff") or startswith("pytest") or startswith("uv ") or startswith("oo npm") or startswith("oo yarn") or startswith("oo pnpm") or startswith("oo bun") or startswith("oo cargo") or startswith("oo go ") or startswith("oo uv ") or startswith("oo npx") or startswith("oo ruff")) | not
+           ) | select(
+             (. == "ls*" or . == "cp *" or . == "mv *" or . == "rm *" or . == "mkdir*" or . == "chmod*" or . == "tar*" or . == "tee*" or . == "cut*" or . == "head*" or . == "tail*" or . == "wc*" or . == "sort*" or . == "uniq*" or . == "grep *" or . == "which*" or . == "echo*" or . == "jq*" or . == "xargs*" or . == "uuidgen*") | not
+           ) | select(
+             (startswith("docker") or startswith("podman") or startswith("kamal") or startswith("hcloud") or startswith("ssh ") or startswith("xattr") or startswith("codesign")) | not
+           ) | select(
+             (startswith("vipune") or startswith("colgrep") or startswith("kide") or startswith("apfel") or startswith("ctx7") or startswith("oo recall") or startswith("oo help") or startswith("oo patterns") or startswith("oo learn") or startswith("oo forget")) | not
+           ) | select(startswith("./") | not) | select(startswith("export ") | not)) | sort)
+         };
+
+       (group_by_prefix($bash_allow_keys)) as $allow_groups |
+       def fmt_group($name; $items):
+         if ($items | length) == 0 then "" else "- **\($name):** \($items | join(", "))" end;
+
+       ([
+         fmt_group("git (bare)"; $allow_groups.git),
+         fmt_group("git (via oo — preferred for verbose output)"; $allow_groups.oo_git),
+         fmt_group("gh (bare)"; $allow_groups.gh),
+         fmt_group("gh (via oo)"; $allow_groups.oo_gh),
+         fmt_group("build tools (npm/yarn/pnpm/bun/cargo/go/etc.)"; $allow_groups.build),
+         fmt_group("filesystem / text utilities"; $allow_groups.fs),
+         fmt_group("container / deploy / ssh"; $allow_groups.container),
+         fmt_group("project memory / oo helpers"; $allow_groups.project_memory),
+         fmt_group("project scripts"; $allow_groups.shell),
+         fmt_group("other"; $allow_groups.other)
+       ] | map(select(. != "")) | join("\n")) as $bash_allow_block |
+
+       (if ($bash_deny_keys | length) == 0 then ""
+        else "\n\n**Hard-denied bash patterns** (never allowed, even with user approval):\n" + ($bash_deny_keys | sort | map("- `" + . + "`") | join("\n"))
+        end) as $bash_deny_block |
+
        (if ($perm.bash["*"] // "deny") == "deny" then "deny-all + allowlist" else "allow-all" end) as $bash_default |
 
-       "**Tools:** \($tools)\n**MCP:** \($mcp_display)\n**Bash (\($bash_default)):** \($bash_allows)\n"
+       "**Tools:** \($tools)\n\n**MCP:** \($mcp_display)\n\n**Bash policy: `\($bash_default)`** — anything not on the list below resolves to `ask`. Stick to the allow-list.\n\n### Bash hygiene rules (READ FIRST)\n\n1. **Use `oo`-wrapped commands** for git / gh / npm / cargo / bun / pnpm. Examples: `oo git commit -m …`, `oo gh pr view 123`, `oo npm install`, `oo cargo build`. Bare `git commit`, `gh pr view`, `npm install`, `cargo build` are NOT on the allow-list.\n2. **Do NOT `cd <path> && <cmd>`.** You are already in the right working directory. To target a different dir use the tool flag: `git -C <path>`, `cargo --manifest-path <path>`, `npm --prefix <path>`.\n3. **Do NOT chain or pipe.** No `&&`, `|`, `;`, `>`, `<`, `$(…)`, backticks. Run each command as a separate tool call. To filter output: run the producer, read its result, then call the consumer with the extracted value.\n\n### Allow-listed bash patterns (grouped by category)\n\n\($bash_allow_block)\($bash_deny_block)\n"
      ' "$config_file" >> "$temp_capabilities" || {
        echo "ERROR: Failed to parse config file with jq for agent $AGENT_NAME"
       rm -f "$temp_capabilities"

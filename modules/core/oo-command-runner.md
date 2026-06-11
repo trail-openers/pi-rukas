@@ -104,7 +104,9 @@ These tools are already context-efficient and run without the `oo` prefix:
 - `colgrep` — semantic code search
 - `jq`, `echo`, `head`, `tail`, `wc`, `sort`, `uniq`, `tee` — text utilities
 
-## No shell chaining
+## No shell chaining — STOPS YOUR WORK
+
+> **Every** chained command interrupts the user with a permission prompt. Each prompt is a context-switch they have to deal with. A chain like `cd /path && cargo build` will **always** prompt — even if `cd *` and `cargo build *` are individually allow-listed — because the matcher can't safely wildcard chained shapes. They burn the user's time and your turn budget. **Don't chain.**
 
 Run each command as a **separate** bash tool call. Do NOT combine multiple commands into one invocation using:
 
@@ -116,9 +118,47 @@ Run each command as a **separate** bash tool call. Do NOT combine multiple comma
 - `&` — background / chain
 - newline — multi-line scripts
 
-`permission-guard.ts` refuses any command containing those characters against wildcards (anti-injection invariant) — even if every individual component is allowed, the combined form falls through to the `*: deny` catch-all. `cd <path> && <cmd>` is the most common trap; **don't `cd`** — Pi's bash tool already runs in the project cwd. Just call the command directly.
+`permission-guard.ts` refuses to wildcard any command containing those characters (anti-injection invariant). The catch-all for unknown bash is `*: ask` — so chained commands open a permission prompt with the full command text visible. The user can approve, but each unique chain shape re-prompts (the cache stores only an exact hash, never a wildcard). **Three unique chains = three prompts.** That's why this rule exists.
+
+### `cd <path> && <cmd>` — the #1 reason agents get prompted
+
+**You are already in the right working directory.** When PM dispatched you, it set your cwd to the worktree (or the project root). You do not need to `cd` before running commands. Calling `cd /Users/dev/projects/foo && cargo build` triggers a prompt the user has to deal with. Calling `cargo build` directly does not. Same outcome, zero friction.
+
+If you genuinely need to operate against a different directory (rare), use the tool's native flag instead of `cd`:
+
+- `git -C /path status` — `git`'s built-in dir flag (bare, no chain)
+- `cargo build --manifest-path /path/Cargo.toml` — cargo's manifest flag
+- `npm --prefix /path run build` — npm's prefix flag
+
+### Pipelines — split into steps, not chains
 
 If you need to process output, do it in separate steps: run the producer first (output appears in the tool result), then run a follow-up with the value(s) you extracted. The agent layer is the pipeline.
+
+```
+# WRONG — `|` triggers a prompt every time
+gh pr list --json number,title | jq -r '.[].number'
+
+# RIGHT — bare `gh` returns JSON in the tool result; read it directly
+gh pr list --json number,title
+```
+
+## Prefer `oo`-wrapped commands
+
+Your allowlist heavily uses `oo` as the canonical wrapper for git / gh / npm / cargo. **Bare `git commit`, `gh pr view`, `npm install` are NOT in your allowlist — they will prompt the user.** `oo git commit`, `oo gh pr view`, `oo npm install` ARE allow-listed and pass through silently. The wrapper does nothing semantically different (oo just compresses verbose output) — the user is the one who allow-listed `oo X` patterns specifically.
+
+Quick reference for the commands most often confused:
+
+| You want to run    | Use this (allow-listed) | Not this (prompts) |
+|--------------------|-------------------------|--------------------|
+| `git commit -m …`  | `oo git commit -m …`    | `git commit -m …`  |
+| `git push origin …`| `oo git push origin …`  | `git push origin …`|
+| `git diff HEAD~1`  | `oo git diff HEAD~1`    | `git diff HEAD~1`  |
+| `gh pr view 123`   | `oo gh pr view 123` *or* the native `pr` tool if your role has it | `gh pr view 123` |
+| `gh pr create …`   | `oo gh pr create …`     | `gh pr create …`   |
+| `cargo build`      | `oo cargo build`        | `cargo build`      |
+| `npm test`         | `oo npm test`           | `npm test`         |
+
+The bare commands that ARE allow-listed (and don't need `oo`): `git status`, `git branch`, `git log --oneline`, `vipune *`, `jq`, `echo`, `head`, `tail`, `wc`, `sort`, `uniq`, `which`, `grep`. Everything else: prefer `oo`.
 
 ## Pi's bash tool already captures stderr
 
