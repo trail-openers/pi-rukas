@@ -13,7 +13,7 @@
  */
 
 import { type DeckEntry, reset, startEntry, updateEntry } from "../src/dispatch-deck.ts";
-import { renderPeek } from "../src/dispatch-peek.ts";
+import { renderOrchestratorPeek, renderPeek } from "../src/dispatch-peek.ts";
 import { type RunningState, emptyRunningState } from "../src/progress.ts";
 
 let exit = 0;
@@ -146,6 +146,28 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
     },
   ]);
   assert(!out.includes("toks"), "zero tokens omitted from header");
+}
+
+// 8. renderOrchestratorPeek surfaces the active inner child plus the
+//    orchestrator's jobId, so PM can tell at a glance "this came from an
+//    orchestrator" vs a normal single dispatch.
+{
+  const entry: DeckEntry = {
+    key: "run1/round2-review",
+    label: "adversarial-developer[round2-review]",
+    state: makeState("adversarial-developer", {
+      turns: 4,
+      lastToolName: "read",
+      lastText: "Reviewing the diff line by line. Found 2 issues so far.",
+      elapsedMs: 45000,
+    }),
+  };
+  const out = renderOrchestratorPeek("loop-xyz123", entry);
+  assert(out.includes("orchestrator 'loop-xyz123'"), "renderOrchestratorPeek names the orchestrator jobId");
+  assert(out.includes("active inner child"), "renderOrchestratorPeek labels the row as the active inner child");
+  assert(out.includes("adversarial-developer[round2-review]"), "renderOrchestratorPeek shows the inner child's label");
+  assert(out.includes("4 turns"), "renderOrchestratorPeek carries the active child's turn count");
+  assert(out.includes('last said: "Reviewing the diff'), "renderOrchestratorPeek includes the active child's last text");
 }
 
 console.log(`\nexit ${exit}`);

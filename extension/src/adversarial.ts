@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { startJob } from "./async-jobs.ts";
+import { markOrchestrator, setOrchestratorActiveChild, startJob } from "./async-jobs.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import type { AdversarialVerdict, DispatchResult } from "./types.ts";
@@ -42,7 +42,7 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
         // fix → re-review). A single umbrella row would just flicker between
         // sub-states; per-round entries show the actual child running now.
         skipDeck: true,
-        work: (signal) => runAdversarialLoop(params, signal),
+        work: (signal, hooks) => runAdversarialLoop(params, signal, hooks.jobId),
       });
       return {
         content: [
@@ -60,6 +60,7 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
 async function runAdversarialLoop(
   params: { diff: string; context: string; workCwd?: string },
   signal: AbortSignal,
+  orchestratorJobId: string,
 ): Promise<DispatchResult> {
   const start = Date.now();
   const runId = makeRunId();
@@ -67,6 +68,10 @@ async function runAdversarialLoop(
   const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
   let lastTranscript: string | undefined;
   let lastModel: string | undefined;
+  // Mark this job as orchestrator-shaped so dispatch_peek / dispatch_steer
+  // can resolve the orchestrator jobId to its active inner child instead of
+  // returning "no such job". Active child is updated below in runPhase.
+  markOrchestrator(orchestratorJobId);
   const accumulate = (r: DispatchResult) => {
     if (r.usage) {
       usage.input += r.usage.input;
@@ -83,6 +88,9 @@ async function runAdversarialLoop(
   /**
    * Run one phase (adversarial review or developer fix), threading dispatch-deck
    * lifecycle and onProgress so the deck shows whichever phase is running now.
+   * Also registers the inner spawn as the orchestrator's `activeChild` so PM
+   * can `dispatch_peek` / `dispatch_steer` against the loop's jobId and reach
+   * the currently-running inner child transparently.
    */
   const runPhase = async (
     role: "adversarial-developer" | "developer",
@@ -91,7 +99,8 @@ async function runAdversarialLoop(
     cwd?: string,
   ): Promise<DispatchResult> => {
     const deckKey = `${runId}/${tag}`;
-    dispatchDeck.startEntry(deckKey, { label: `${role}[${tag}]`, role, tag });
+    const label = `${role}[${tag}]`;
+    dispatchDeck.startEntry(deckKey, { label, role, tag });
     try {
       return await spawnSpecialist(
         { role, prompt, cwd },
@@ -100,10 +109,17 @@ async function runAdversarialLoop(
           runId,
           tag,
           onProgress: (state) => dispatchDeck.updateEntry(deckKey, state),
+          onStdin: (stdin) => {
+            // Publish this inner spawn as the orchestrator's active child so
+            // PM's peek/steer calls against the orchestrator jobId resolve
+            // to this stdin. Updated on each round; cleared in the finally.
+            setOrchestratorActiveChild(orchestratorJobId, { role, label, deckKey, stdin });
+          },
         },
       );
     } finally {
       dispatchDeck.clearEntry(deckKey);
+      setOrchestratorActiveChild(orchestratorJobId, null);
     }
   };
 

@@ -44,6 +44,32 @@ interface SingleJobState {
   label: string;
   startedAt: number;
   abort: AbortController;
+  /**
+   * True when this job is an orchestrator that spawns its OWN inner children
+   * sequentially (adversarial_loop + future orchestrators). Set at
+   * work-function entry via `markOrchestrator`. Independent of whether a
+   * child is active right now — so `dispatch_peek` / `dispatch_steer` can
+   * still recognise the job as orchestrator-shape and return the
+   * "between rounds" status when activeChild is undefined.
+   */
+  isOrchestrator?: boolean;
+  /**
+   * For orchestrator-shaped jobs — pointer to whichever inner child is
+   * running right now. Updated by the orchestrator's work function via
+   * `setOrchestratorActiveChild`. Read by `dispatch_peek` (to surface the
+   * active child's last text) and `dispatch_steer` (to route stdin writes
+   * to the currently-running inner child). Cleared between rounds →
+   * undefined when the orchestrator is idle between phases.
+   */
+  activeChild?: {
+    role: string;
+    label: string;
+    /** Dispatch-deck key for the active inner spawn (`${runId}/${tag}`). */
+    deckKey: string;
+    /** Stdin handle for the active inner Pi --mode rpc child. */
+    stdin: Writable;
+    startedAt: number;
+  };
 }
 
 interface BatchMemberJobState {
@@ -200,6 +226,70 @@ export function getChildHandle(jobId: string): ChildHandle | undefined {
   return childHandles.get(jobId);
 }
 
+/**
+ * Orchestrator active-child registry — used by adversarial_loop (and any
+ * future orchestrator that fans out internally) to publish "which inner
+ * child is running right now" so `dispatch_peek` and `dispatch_steer` can
+ * resolve an orchestrator jobId to the active inner child transparently.
+ *
+ * Pass `null` to clear (between rounds, or after the orchestrator settles).
+ * Pass a child descriptor when starting a new inner phase. The descriptor
+ * carries the inner spawn's deck key (for peek to look up live state) and
+ * stdin handle (for steer to write into).
+ */
+export function setOrchestratorActiveChild(
+  jobId: string,
+  child: { role: string; label: string; deckKey: string; stdin: Writable } | null,
+): void {
+  const state = jobs.get(jobId);
+  if (!state || state.kind !== "single") return;
+  if (child === null) {
+    state.activeChild = undefined;
+  } else {
+    state.activeChild = { ...child, startedAt: Date.now() };
+  }
+}
+
+/**
+ * Look up the orchestrator's active inner child. Returns undefined when the
+ * jobId isn't an orchestrator, or when the orchestrator is between rounds
+ * (no active inner child right now). Used by `dispatch_peek` to surface the
+ * active child's live state, and by `dispatch_steer` to route the steer.
+ */
+export function getOrchestratorActiveChild(
+  jobId: string,
+):
+  | { role: string; label: string; deckKey: string; stdin: Writable; startedAt: number }
+  | undefined {
+  const state = jobs.get(jobId);
+  if (!state || state.kind !== "single") return undefined;
+  return state.activeChild;
+}
+
+/**
+ * Mark a job as orchestrator-shaped — called by the orchestrator's work
+ * function at entry, BEFORE the first inner round. Tells `dispatch_peek`
+ * and `dispatch_steer` to use the active-child resolution path instead of
+ * the regular deck snapshot lookup. Idempotent.
+ */
+export function markOrchestrator(jobId: string): void {
+  const state = jobs.get(jobId);
+  if (!state || state.kind !== "single") return;
+  state.isOrchestrator = true;
+}
+
+/**
+ * Probe: is this jobId orchestrator-shaped? True if its work function
+ * called `markOrchestrator`. Independent of whether an inner child is
+ * currently active — so peek/steer can recognise the job between rounds
+ * and return the explicit "between rounds" status.
+ */
+export function isOrchestratorJob(jobId: string): boolean {
+  const state = jobs.get(jobId);
+  if (!state || state.kind !== "single") return false;
+  return state.isOrchestrator === true;
+}
+
 /** Live-progress hooks passed to a job's work function. */
 export interface WorkHooks {
   /**
@@ -215,6 +305,13 @@ export interface WorkHooks {
    * record the handle for dispatch_steer lookups.
    */
   onStdin: (stdin: Writable) => void;
+  /**
+   * Orchestrator-shaped work functions (adversarial_loop) need to know their
+   * own job id so they can register the currently-running inner child via
+   * `setOrchestratorActiveChild`. Provided to every work function for
+   * symmetry; single dispatches ignore it.
+   */
+  jobId: string;
 }
 
 interface StartJobInput {
@@ -274,6 +371,7 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): { jobId: strin
     onStdin: (stdin) => {
       childHandles.set(jobId, { stdin, label: input.label, role: input.role });
     },
+    jobId,
   };
 
   void input.work(abort.signal, hooks).then(
@@ -396,6 +494,7 @@ export function startBatch(
       onStdin: (stdin) => {
         childHandles.set(jobId, { stdin, label: m.label, role: m.role });
       },
+      jobId,
     };
 
     void m

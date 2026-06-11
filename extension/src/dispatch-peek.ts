@@ -16,6 +16,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { getOrchestratorActiveChild, isOrchestratorJob } from "./async-jobs.ts";
 import { type DeckEntry, snapshot as deckSnapshot } from "./dispatch-deck.ts";
 import { type RunningState, formatElapsed, formatTokens } from "./progress.ts";
 
@@ -39,6 +40,68 @@ export function registerDispatchPeekTool(pi: ExtensionAPI) {
       const params = raw as { jobId?: string };
       const all = deckSnapshot();
       if (params.jobId) {
+        // Orchestrator-shaped jobs (adversarial_loop) don't have a deck entry
+        // keyed by their own jobId — they hide and let each inner phase own
+        // the deck row. Resolve via the orchestrator's active-child registry
+        // instead: if active, peek that inner deck entry; if between rounds,
+        // return an explicit "between rounds" status.
+        if (isOrchestratorJob(params.jobId)) {
+          const active = getOrchestratorActiveChild(params.jobId);
+          if (!active) {
+            const details: PeekDetails = {
+              found: true,
+              jobId: params.jobId,
+              orchestrator: { activeChild: null },
+              entries: [],
+            };
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `orchestrator '${params.jobId}' is between rounds — no inner child running right now. dispatch_status to confirm it's still alive.`,
+                },
+              ],
+              details,
+            };
+          }
+          const entry = all.find((e) => e.key === active.deckKey);
+          if (!entry) {
+            // Active child registered but deck entry already cleared — rare
+            // race between setOrchestratorActiveChild(child) and the deck
+            // startEntry call. Treat as between-rounds.
+            const details: PeekDetails = {
+              found: true,
+              jobId: params.jobId,
+              orchestrator: { activeChild: null },
+              entries: [],
+            };
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `orchestrator '${params.jobId}' is between rounds (child handoff in progress).`,
+                },
+              ],
+              details,
+            };
+          }
+          const childSerial = serialise(entry);
+          const details: PeekDetails = {
+            found: true,
+            jobId: params.jobId,
+            orchestrator: {
+              activeChild: {
+                ...childSerial,
+                childStartedAt: active.startedAt,
+              },
+            },
+            entries: [childSerial],
+          };
+          return {
+            content: [{ type: "text", text: renderOrchestratorPeek(params.jobId, entry) }],
+            details,
+          };
+        }
         const entry = all.find((e) => e.key === params.jobId);
         if (!entry) {
           const details: PeekDetails = { found: false, jobId: params.jobId, entries: [] };
@@ -74,6 +137,16 @@ interface PeekDetails {
   /** Echoed back when caller passed a specific jobId. */
   jobId?: string;
   entries: SerialisedEntry[];
+  /**
+   * Set when the jobId resolved to an orchestrator-shaped job (e.g.
+   * adversarial_loop). Surfaces the active inner child or `null` if the
+   * orchestrator is between rounds. PM can read both `entries` (compat
+   * shape: the active child's serialised state, if any) and this richer
+   * field to distinguish orchestrator from single-dispatch results.
+   */
+  orchestrator?: {
+    activeChild: (SerialisedEntry & { childStartedAt: number }) | null;
+  };
 }
 
 interface SerialisedEntry {
@@ -134,6 +207,20 @@ export function renderPeek(entries: DeckEntry[]): string {
     if (e.state.lastText) {
       lines.push(`    last said: "${truncate(e.state.lastText, LAST_TEXT_MAX)}"`);
     }
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Render-shape for an orchestrator peek with an active child. Carries the
+ * orchestrator's jobId in the header so PM can tell at a glance "this came
+ * from peeking an orchestrator" vs "a single dispatch".
+ */
+export function renderOrchestratorPeek(orchestratorJobId: string, entry: DeckEntry): string {
+  const lines: string[] = [`peek (orchestrator '${orchestratorJobId}' → active inner child):`];
+  lines.push(`  ${renderHeader(entry.state, entry.label, entry.key)}`);
+  if (entry.state.lastText) {
+    lines.push(`    last said: "${truncate(entry.state.lastText, LAST_TEXT_MAX)}"`);
   }
   return lines.join("\n");
 }

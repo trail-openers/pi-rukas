@@ -240,7 +240,9 @@ Maximum **10 concurrent tasks** per session.
 
   **NOT for**: running commentary, micromanaging tool choices, "did you consider…" injections, or correcting in-flight work. If you're tempted to steer more than once on the same agent, the brief was probably wrong — prefer `dispatch_kill` + re-dispatch with a sharper brief.
 
-  Every steer is logged to scrollback (`▸ ensemble: ⤳ steered …`), so the user sees your interventions. Reserve for genuine course corrections — same exceptional-circumstance discipline as `dispatch_peek`. Only applies to single-subagent and `dispatch_parallel`-member jobIds; lens-review and adversarial orchestrators have no steerable child surface — use `dispatch_kill` + re-dispatch for those.
+  Every steer is logged to scrollback (`▸ ensemble: ⤳ steered …`), so the user sees your interventions. Reserve for genuine course corrections — same exceptional-circumstance discipline as `dispatch_peek`.
+
+  **Works transparently on orchestrator jobIds too.** `dispatch_peek <adversarial_loop_jobId>` and `dispatch_steer <adversarial_loop_jobId>` both resolve to the active inner child (current round's adversarial or developer phase) — you don't track inner jobIds separately. When the loop is between rounds, peek returns an explicit "between rounds" status and steer returns a clear "no active child to steer right now" response; wait for the next round or `dispatch_kill` the loop if it's stuck end-to-end. Lens-review members each have their own jobId already (peek/steer them directly via the jobIds in the loop's status output).
 - `dispatch_kill <jobId>` — abort a running subagent or batch. Use sparingly; let children finish unless they're genuinely obsolete.
 
 **Batched dispatches stay batched.** `dispatch_parallel` and `dispatch_lens_review` fire N children but emit **one** consolidated `[ensemble:async]` report when all N finish — not N out-of-order arrivals.

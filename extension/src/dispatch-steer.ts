@@ -27,7 +27,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { getChildHandle } from "./async-jobs.ts";
+import { getChildHandle, getOrchestratorActiveChild, isOrchestratorJob } from "./async-jobs.ts";
 import * as lifecycle from "./lifecycle-events.ts";
 
 interface SteerDetails {
@@ -54,6 +54,70 @@ export function registerDispatchSteerTool(pi: ExtensionAPI) {
     }),
     async execute(_id, raw) {
       const params = raw as { jobId: string; message: string };
+      // Orchestrator-shaped jobs (adversarial_loop) don't have a stdin handle
+      // of their own — the orchestrator is a function, not a Pi process. Their
+      // inner spawns have stdin handles though, registered via
+      // setOrchestratorActiveChild. Resolve the orchestrator jobId to its
+      // active inner child here so PM's steer transparently reaches the
+      // currently-running inner phase.
+      if (isOrchestratorJob(params.jobId)) {
+        const active = getOrchestratorActiveChild(params.jobId);
+        if (!active) {
+          const details: SteerDetails = {
+            jobId: params.jobId,
+            delivered: false,
+            reason: "between-rounds",
+          };
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Orchestrator '${params.jobId}' is between rounds — no inner child to steer right now. Wait for the next round (use dispatch_peek to watch progress), or if the loop seems stuck end-to-end, consider dispatch_kill.`,
+              },
+            ],
+            details,
+          };
+        }
+        const cmd = JSON.stringify({ type: "steer", message: params.message });
+        try {
+          active.stdin.write(`${cmd}\n`);
+        } catch (err) {
+          const reason = (err as Error).message;
+          const details: SteerDetails = { jobId: params.jobId, delivered: false, reason };
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Steer delivery to orchestrator '${params.jobId}' (active child ${active.label}) failed: ${reason}. The inner child likely exited between lookup and write.`,
+              },
+            ],
+            details,
+          };
+        }
+        // Emit lifecycle with BOTH the orchestrator jobId and the active
+        // child label so scrollback shows what was steered into and where.
+        lifecycle.emitSteered(
+          params.jobId,
+          `${params.jobId} → ${active.label}`,
+          active.role,
+          params.message,
+        );
+        const details: SteerDetails = {
+          jobId: params.jobId,
+          delivered: true,
+          label: active.label,
+        };
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Steered orchestrator '${params.jobId}' → active inner child ${active.label}. The inner subagent will treat this as highest-priority guidance after its current tool call settles.`,
+            },
+          ],
+          details,
+        };
+      }
+
       const handle = getChildHandle(params.jobId);
       if (!handle) {
         const details: SteerDetails = {

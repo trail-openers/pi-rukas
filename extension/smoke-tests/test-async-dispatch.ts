@@ -13,11 +13,16 @@
  * No Pi process spawned, no network.
  */
 
+import { Writable } from "node:stream";
 import {
   clearJobsForTesting,
+  getOrchestratorActiveChild,
+  isOrchestratorJob,
   jobStatusSnapshot,
   killAllJobs,
   killJob,
+  markOrchestrator,
+  setOrchestratorActiveChild,
   startBatch,
   startJob,
 } from "../src/async-jobs.ts";
@@ -329,6 +334,125 @@ async function nextTick() {
     batchErrMsg.includes("refusing to start batch"),
     `batch overflow error message is recognisable (got: "${batchErrMsg}")`,
   );
+  clearJobsForTesting();
+  dispatchDeck.reset();
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator active-child registry — used by adversarial_loop so PM's
+// dispatch_peek / dispatch_steer against the loop's jobId can resolve to the
+// currently-running inner child instead of returning "no such job".
+// ---------------------------------------------------------------------------
+{
+  const { pi } = makePiStub();
+  clearJobsForTesting();
+  dispatchDeck.reset();
+
+  // Start an orchestrator-shaped job. Use a never-resolving work so the
+  // jobId stays in the map for our state inspection.
+  const { jobId } = startJob(pi, {
+    label: "adversarial_loop",
+    role: "adversarial-loop",
+    skipDeck: true,
+    work: () => new Promise(() => undefined),
+  });
+
+  // Before markOrchestrator: it's just a normal single dispatch.
+  assert(
+    isOrchestratorJob(jobId) === false,
+    "isOrchestratorJob: false before markOrchestrator",
+  );
+  assert(
+    getOrchestratorActiveChild(jobId) === undefined,
+    "getOrchestratorActiveChild: undefined before any registration",
+  );
+
+  // Mark the job as orchestrator-shaped.
+  markOrchestrator(jobId);
+  assert(isOrchestratorJob(jobId) === true, "isOrchestratorJob: true after markOrchestrator");
+  assert(
+    getOrchestratorActiveChild(jobId) === undefined,
+    "getOrchestratorActiveChild: undefined even after mark (no child set yet)",
+  );
+
+  // Set an active child with a mock stdin and verify retrieval.
+  const writes: string[] = [];
+  const mockStdin = new Writable({
+    write(chunk, _enc, cb) {
+      writes.push(chunk.toString());
+      cb();
+    },
+  });
+  setOrchestratorActiveChild(jobId, {
+    role: "adversarial-developer",
+    label: "adversarial-developer[round1-review]",
+    deckKey: "run1/round1-review",
+    stdin: mockStdin,
+  });
+  const active1 = getOrchestratorActiveChild(jobId);
+  assert(active1 !== undefined, "getOrchestratorActiveChild returns the registered child");
+  assert(active1?.role === "adversarial-developer", "active child carries role");
+  assert(active1?.label === "adversarial-developer[round1-review]", "active child carries label");
+  assert(active1?.deckKey === "run1/round1-review", "active child carries deck key");
+  assert(active1?.stdin === mockStdin, "active child carries stdin handle");
+  assert(typeof active1?.startedAt === "number", "active child gets a startedAt timestamp");
+
+  // Writing to the active child's stdin works (this is the dispatch_steer
+  // routing path — the steer command is JSON-on-newline).
+  mockStdin.write(`${JSON.stringify({ type: "steer", message: "focus on file X" })}\n`);
+  assert(writes.length === 1, "active child stdin receives one write");
+  assert(writes[0]?.includes('"type":"steer"'), "stdin write contains the steer JSON");
+  assert(writes[0]?.includes("focus on file X"), "stdin write contains the message");
+
+  // Replacing the active child (round 1 → round 2 transition).
+  setOrchestratorActiveChild(jobId, {
+    role: "developer",
+    label: "developer[round1-fix]",
+    deckKey: "run1/round1-fix",
+    stdin: new Writable({
+      write(_c, _e, cb) {
+        cb();
+      },
+    }),
+  });
+  const active2 = getOrchestratorActiveChild(jobId);
+  assert(active2?.label === "developer[round1-fix]", "active child replaced atomically on round transition");
+
+  // Clearing (between rounds, or on orchestrator settle).
+  setOrchestratorActiveChild(jobId, null);
+  assert(
+    getOrchestratorActiveChild(jobId) === undefined,
+    "getOrchestratorActiveChild: undefined after setting to null",
+  );
+  // Marker stays — isOrchestratorJob remains true so peek/steer still
+  // recognise the orchestrator shape and return "between rounds" cleanly.
+  assert(
+    isOrchestratorJob(jobId) === true,
+    "isOrchestratorJob: still true after clearing active child (marker is independent)",
+  );
+
+  // Operations against a non-existent jobId are no-ops, not throws.
+  let setThrew = false;
+  try {
+    setOrchestratorActiveChild("ghost-job-id", {
+      role: "x",
+      label: "y",
+      deckKey: "z",
+      stdin: mockStdin,
+    });
+  } catch {
+    setThrew = true;
+  }
+  assert(!setThrew, "setOrchestratorActiveChild on unknown jobId is a safe no-op");
+  assert(
+    getOrchestratorActiveChild("ghost-job-id") === undefined,
+    "getOrchestratorActiveChild on unknown jobId returns undefined",
+  );
+  assert(
+    isOrchestratorJob("ghost-job-id") === false,
+    "isOrchestratorJob on unknown jobId returns false",
+  );
+
   clearJobsForTesting();
   dispatchDeck.reset();
 }
