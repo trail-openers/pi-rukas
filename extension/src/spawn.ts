@@ -130,6 +130,23 @@ const DEFAULT_SPAWN_TIMEOUT_MS = (() => {
 const STDERR_TAIL_BYTES = 64 * 1024;
 
 /**
+ * Build the runtime cwd hint prepended to the subagent's kickoff prompt.
+ *
+ * When PM dispatches with `cwd: <abs path>`, the subagent's shell already
+ * lives there — but weak local models (Qwen3-class, 30-40B) skim past the
+ * generic "do not cd" doctrine in the system prompt. A concrete absolute
+ * path in the runtime prompt is a much harder cue to ignore. See PR #192
+ * + arxiv 2505.18135 on the measured strength of runtime context engineering
+ * vs. system-prompt-only steering for weak models.
+ *
+ * Exported for unit testing — the live spawn smoke is slow.
+ */
+export function buildCwdHint(cwd: string | undefined): string {
+  if (!cwd) return "";
+  return `[runtime context: your shell starts in ${cwd}. Do NOT 'cd' to any worktree path — you are already there. If you genuinely need to operate on a different directory, use the tool's flag (\`git -C <path>\`, \`cargo --manifest-path <path>\`, \`npm --prefix <path>\`) — never \`cd && X\`, which prompts the user and caches as an exact-hash entry that never re-matches.]\n\n`;
+}
+
+/**
  * Where per-child transcripts live. One file per spawned specialist, grouped
  * by date so old runs are easy to prune. The user can `pi --session <path>`
  * to replay or just open the JSON.
@@ -474,8 +491,16 @@ export async function spawnSpecialist(
 
   // Send the kickoff prompt via the RPC channel. Pi treats this as the
   // first user turn for the agent.
+  //
+  // When the caller passed `spec.cwd`, prepend a runtime context note so
+  // the subagent knows its concrete working directory from line 1. This
+  // exists because weak local models (Qwen3-class) skim past generic
+  // doctrine ("do not cd"); a concrete absolute path in the runtime prompt
+  // is a much harder cue to ignore. See PR #192 + arxiv 2505.18135 on the
+  // measured strength of runtime context vs. system-prompt-only steering.
+  const cwdHint = buildCwdHint(spec.cwd);
   try {
-    child.stdin.write(`${JSON.stringify({ type: "prompt", message: spec.prompt })}\n`);
+    child.stdin.write(`${JSON.stringify({ type: "prompt", message: cwdHint + spec.prompt })}\n`);
   } catch (err) {
     trace(`spawn[${spec.role}]: initial stdin.write failed: ${(err as Error).message}`);
   }

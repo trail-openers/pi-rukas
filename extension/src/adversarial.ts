@@ -129,6 +129,7 @@ async function runAdversarialLoop(
       "adversarial-developer",
       `round${round}-review`,
       buildAdversarialPrompt(params.diff, params.context, round),
+      params.workCwd,
     );
     accumulate(adv);
 

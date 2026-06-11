@@ -1,8 +1,13 @@
-# codebase-memory-mcp: structural code search
+# codebase-memory-mcp: the canonical tool for finding code
 
-`codebase-memory-mcp` is a persistent knowledge-graph indexer over the active project, exposed as MCP tools. It answers structural questions about your code that text search can't: "what calls this function?", "what does my diff break?", "what's the module map?". Indexed data lives in `~/.cache/codebase-memory-mcp/`; the seven read-side tools are pre-approved on your role and run in sub-milliseconds.
+**`codebase_memory_search_code` IS the canonical tool for finding code in this repository.** Use it whenever you need to locate a function, class, route, or pattern in source. It is indexed, sub-millisecond, and pre-approved on your role.
 
-**Use this BEFORE reaching for `rg` / `read` whenever the question is about code.** `rg` is for regex over text; `read` is for loading a known file path. Discovering what exists in the codebase is what `codebase_memory_*` is for.
+`rg` and `read` are NOT alternatives for code discovery — they only apply to:
+
+- **`rg`**: regex over text files (configs, docs, log fixtures, files outside the code index)
+- **`read`**: loading a file at a known path (after `codebase_memory_*` returned it, or for a config/doc file)
+
+Reaching for `rg` or `read` to *discover* what exists in the codebase is the anti-pattern. `codebase-memory-mcp` answers structural questions text search can't: "what calls this function?", "what does my diff break?", "what's the module map?". Indexed data lives in `~/.cache/codebase-memory-mcp/`.
 
 ## Which tool answers which question
 

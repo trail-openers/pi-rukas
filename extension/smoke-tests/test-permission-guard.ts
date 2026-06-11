@@ -11,13 +11,16 @@
  *   - Wildcard patterns work correctly
  */
 
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {
   BUILTIN_TOOLS,
+  findProjectConfigPath,
   isToolAllowedForRole,
   resolveToolPermission,
 } from "../src/permission-guard.js";
+import { buildCwdHint } from "../src/spawn.js";
 
 let exitCode = 0;
 function assert(cond: boolean, msg: string) {
@@ -695,6 +698,133 @@ const fallthrough = resolveToolPermission(
   synthetic,
 );
 assert(fallthrough === "ask", "Issue #168: catch-all `*: ask` fires when no wildcard matches");
+
+// === L7 (PR #192): findProjectConfigPath walks up from cwd ===
+// User behaviour: place `.pi/permissions.json` at the repo root and expect it
+// to apply when pi runs in any subdirectory (or any worktree subagent spawned
+// with `cwd=<worktree>`). Mirrors git's `.git` ancestor search.
+{
+  const tmpRoot = mkdtempSync(path.join(os.tmpdir(), "pi-ensemble-walkup-"));
+  try {
+    const repoRoot = path.join(tmpRoot, "fake-repo");
+    const piDir = path.join(repoRoot, ".pi");
+    const overlayPath = path.join(piDir, "permissions.json");
+    const nestedDir = path.join(repoRoot, "src", "sub", "deeper");
+    mkdirSync(nestedDir, { recursive: true });
+    mkdirSync(piDir, { recursive: true });
+    writeFileSync(overlayPath, JSON.stringify({ roles: { developer: { permission: { "mcp*": "allow" } } } }));
+
+    // Walks up from a nested dir
+    const walkedUp = findProjectConfigPath(nestedDir);
+    assert(
+      walkedUp === overlayPath,
+      `L7: findProjectConfigPath walks up from nested dir to repo root (got: ${walkedUp})`,
+    );
+
+    // Returns null when no overlay anywhere in ancestry
+    const noOverlayTmp = mkdtempSync(path.join(os.tmpdir(), "pi-ensemble-no-overlay-"));
+    try {
+      const noOverlayResult = findProjectConfigPath(noOverlayTmp);
+      assert(
+        noOverlayResult === null,
+        `L7: findProjectConfigPath returns null when no .pi/permissions.json in ancestry (got: ${noOverlayResult})`,
+      );
+    } finally {
+      rmSync(noOverlayTmp, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
+// === L7 (PR #192): subagent guard now honors project + global overlays ===
+// Pre-#192 the subagent guard stubbed projectConfig + globalConfig to `{}`,
+// so a user's `.pi/permissions.json` like
+//   { "roles": { "developer": { "permission": { "mcp*": "allow" } } } }
+// was silently ignored. The subagent flow now resolves overlays the same
+// way the parent does. We exercise the resolution function with a
+// synthesized overlay because the runtime overlay load is a side-effect
+// (file I/O) — what matters is that the verdict resolver applies it.
+{
+  const subagentAgentsConfig: Record<
+    string,
+    { permission?: Record<string, string | Record<string, string>> }
+  > = {
+    developer: {
+      permission: {
+        // baseline denies a wildcard the user wants to grant
+        "mcp*": "deny",
+      },
+    },
+  };
+  const subagentProjectOverlay: typeof subagentAgentsConfig = {
+    developer: {
+      permission: {
+        // user grants it in the project overlay
+        "mcp*": "allow",
+      },
+    },
+  };
+  const subagentResolved = resolveToolPermission(
+    "mcp__playwright__browser_navigate",
+    "developer",
+    subagentProjectOverlay,
+    {},
+    subagentAgentsConfig,
+  );
+  assert(
+    subagentResolved === "allow",
+    "L7: project overlay (developer mcp*: allow) overrides baseline deny — applies in subagents too post-#192",
+  );
+
+  // Global overlay also takes effect
+  const subagentGlobalOverlay: typeof subagentAgentsConfig = {
+    developer: {
+      permission: {
+        "mcp*": "allow",
+      },
+    },
+  };
+  const subagentGlobalResolved = resolveToolPermission(
+    "mcp__playwright__browser_navigate",
+    "developer",
+    {},
+    subagentGlobalOverlay,
+    subagentAgentsConfig,
+  );
+  assert(
+    subagentGlobalResolved === "allow",
+    "L7: global overlay also overrides baseline deny in subagents",
+  );
+}
+
+// === L4 (PR #192): buildCwdHint emits a concrete runtime context line ===
+// When PM dispatches with `cwd: <path>`, spawn.ts prepends a runtime hint
+// containing the absolute path. Weak models can't ignore a concrete path
+// the way they can ignore generic "do not cd" doctrine.
+{
+  const noCwd = buildCwdHint(undefined);
+  assert(noCwd === "", "L4: buildCwdHint returns empty string when cwd is undefined");
+
+  const withCwd = buildCwdHint("/Users/dev/projects/lantern/.worktrees/issue-482");
+  assert(
+    withCwd.includes("/Users/dev/projects/lantern/.worktrees/issue-482"),
+    "L4: buildCwdHint embeds the literal cwd path",
+  );
+  assert(
+    withCwd.startsWith("[runtime context:"),
+    "L4: buildCwdHint is recognizable as a runtime-context line",
+  );
+  assert(
+    withCwd.includes("Do NOT 'cd'"),
+    "L4: buildCwdHint carries the no-cd instruction",
+  );
+  assert(
+    withCwd.includes("git -C") && withCwd.includes("--manifest-path") && withCwd.includes("--prefix"),
+    "L4: buildCwdHint lists the cd-replacement tool flags",
+  );
+  assert(withCwd.endsWith("\n\n"), "L4: buildCwdHint terminates with blank line so prompt body starts cleanly");
+}
 
 console.log("\n=== test-permission-guard summary ===");
 console.log(`exit ${exitCode}`);

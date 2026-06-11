@@ -6,9 +6,11 @@ File editing permissions vary by agent.
 
 # Tool Preferences
 
-## Search: prefer codebase-memory-mcp for code; rg for regex on text
+## Search: code search uses codebase-memory-mcp
 
-When the question is "find code about X", "what calls Y", or "what does my diff break", use the indexed `codebase_memory_*` MCP tools. They run in sub-milliseconds and return structural answers `rg` cannot. The `rg` tool stays useful for regex over text files (configs, docs, log fixtures) and for files outside the index.
+**Code search uses codebase-memory-mcp.** `codebase_memory_search_code` IS the canonical tool for finding code; `rg` IS the canonical tool for regex over text files; `read` IS for loading a known file path. These are not substitutes for one another.
+
+When the question is "find code about X", "what calls Y", or "what does my diff break", use the indexed `codebase_memory_*` MCP tools. They run in sub-milliseconds and return structural answers `rg` cannot. `rg` is for regex over text files (configs, docs, log fixtures, files outside the code index) — NOT for code discovery.
 
 Ordering (use the first one that fits):
 

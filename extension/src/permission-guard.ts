@@ -35,6 +35,7 @@
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   readFileSync,
   realpathSync,
@@ -668,17 +669,38 @@ function loadConfigFile(configPath: string, label: string): RoleConfig {
   }
 }
 
+// Walk up from `process.cwd()` looking for `.pi/permissions.json`. Mirrors
+// git's `.git` ancestor search so a project overlay placed at the repo root
+// applies inside worktree subdirectories too — which matters when subagents
+// are spawned with `cwd = <repo>/.worktrees/<branch>` (PR #192 onward).
+// Stops at the user's home directory: we never read a permissions overlay
+// from outside the user's projects (no `/Users/.pi/permissions.json` or
+// `/.pi/permissions.json` poisoning).
+export function findProjectConfigPath(startDir?: string): string | null {
+  const home = os.homedir();
+  let dir = startDir ?? process.cwd();
+  while (true) {
+    const candidate = path.join(dir, ".pi", "permissions.json");
+    if (existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null; // hit FS root
+    if (dir === home) return null; // do not search above $HOME
+    dir = parent;
+  }
+}
+
 function loadProjectConfig(): RoleConfig {
-  const configPath = path.join(process.cwd(), ".pi", "permissions.json");
+  const configPath = findProjectConfigPath();
+  if (!configPath) return {};
   try {
     // Resolve symlinks before reading
-    const resolvedPath = require("node:fs").realpathSync(configPath);
+    const resolvedPath = realpathSync(configPath);
     return loadConfigFile(resolvedPath, "project");
   } catch (err) {
     if (err && typeof err === "object" && "code" in err) {
       const code = (err as { code: string }).code;
       if (code === "ENOENT") {
-        // Missing file is normal — silent
+        // Missing file is normal — silent (existsSync race; very unlikely)
         return {};
       }
       if (code === "EACCES" || code === "EPERM") {
@@ -863,11 +885,18 @@ function registerSubagentGuard(pi: ExtensionAPI): void {
     `subagent-guard: registering for role '${role}' · socket=${socketPath ?? "<unset, will headless-deny on ask>"}`,
   );
   const agentsConfig = loadAgentsJson();
-  // Subagents do NOT read project/global overlays — those reflect the user's
-  // local layered config and don't belong to the subagent's process context.
-  // The agents.json baseline is authoritative for subagent enforcement.
-  const projectConfig: RoleConfig = {};
-  const globalConfig: RoleConfig = {};
+  // Subagents DO read project + global permission overlays — the user edits
+  // these precisely to override the agents.json baseline (e.g. granting a
+  // role a project-specific MCP tool the baseline withholds). Pre-#192 the
+  // subagent guard stubbed both overlays to `{}` with the now-disproven
+  // rationale "those reflect the user's local layered config and don't
+  // belong to the subagent's process context" — that broke users who put
+  // `mcp*: allow` for developer in `.pi/permissions.json` and saw their
+  // grant silently ignored by every dispatched developer subagent.
+  // findProjectConfigPath walks up from cwd so worktree subagents resolve
+  // the repo-root overlay correctly.
+  const projectConfig = loadProjectConfig();
+  const globalConfig = loadGlobalConfig();
 
   let socket: Socket | null = null;
   let socketBuffer = "";

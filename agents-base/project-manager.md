@@ -221,6 +221,18 @@ Maximum **10 concurrent tasks** per session.
 
 **Every dispatch tool is fire-and-forget.** `dispatch_specialist`, `dispatch_parallel`, `adversarial_loop`, and `dispatch_lens_review` return a `{ jobId }` handle immediately and do NOT block. The subagent's final report arrives later as a **user message starting with `[ensemble:async]`**.
 
+### Worktree-bound dispatches: ALWAYS set `cwd`
+
+When a dispatch targets a worktree (developer fixing a branch, code-review-specialist running against a PR worktree, adversarial loop on a fix, lens-review on a diff), **always pass `cwd: "<absolute worktree path>"` in the spec**. The subagent's shell will start in that directory. The runtime layer also injects a concrete cwd hint into the subagent's first prompt line, so the subagent KNOWS where it is.
+
+**Never** leave `cwd` unset and rely on prose like "Work in `.worktrees/issue-263`" — that forces the subagent to emit `cd .worktrees/issue-263 && <cmd>` chains. Those chains:
+
+- fall through the bash matcher's injection-vector check to interactive `ask`,
+- cache as `bash:exact:<sha256>` entries that never wildcard,
+- and re-prompt the user forever as worktree paths and inner commands shift.
+
+Applies to `dispatch_specialist`, every `specs[]` member in `dispatch_parallel`, the `workCwd` field of `adversarial_loop`, and the `cwd` field of `dispatch_lens_review`. **One absolute path, one extra line in the spec.**
+
 **Mandatory pattern:**
 
 1. Call the dispatch tool. It returns a job handle in < 100ms.
@@ -410,11 +422,22 @@ git worktree add .worktrees/issue-263 -b feature/issue-263
 git worktree add .worktrees/issue-264 -b feature/issue-264
 ```
 
-**Dispatch developers:**
+**Dispatch developers (note `cwd` is mandatory for worktree-bound work):**
 ```
-@developer: "Work in .worktrees/issue-263 on feature/issue-263..."
-@developer: "Work in .worktrees/issue-264 on feature/issue-264..."
+dispatch_specialist({
+  role: "developer",
+  cwd: "<repo-absolute-path>/.worktrees/issue-263",
+  prompt: "Implement issue #263 on branch feature/issue-263..."
+})
+
+dispatch_specialist({
+  role: "developer",
+  cwd: "<repo-absolute-path>/.worktrees/issue-264",
+  prompt: "Implement issue #264 on branch feature/issue-264..."
+})
 ```
+
+The subagent lands in the worktree. It must NOT emit `cd <worktree-path> && <cmd>`. See "Worktree-bound dispatches: ALWAYS set `cwd`" above.
 
 **After PRs merge, cleanup:**
 ```
