@@ -5,7 +5,7 @@
         "*": "ask",
         "external_directory": "ask",
         "bash": {
-          "*": "deny",
+          "*": "ask",
           "which*": "allow",
           "head*": "allow",
           "tail*": "allow",
@@ -103,7 +103,7 @@
         "meadow*": "allow",
         "external_directory": "ask",
         "bash": {
-          "*": "deny",
+          "*": "ask",
           "./mnto*": "allow",
           "./test/e2e/e2e-qa.sh": "allow",
           "oo git *": "allow",
@@ -243,7 +243,7 @@
         "external_directory": "ask",
         "meadow*": "allow",
         "bash": {
-          "*": "deny",
+          "*": "ask",
           "oo git *": "allow",
           "docker *": "allow",
           "podman *": "allow",
@@ -399,7 +399,7 @@
         "meadow*": "allow",
         "external_directory": "ask",
         "bash": {
-          "*": "deny",
+          "*": "ask",
           "which*": "allow",
           "head*": "allow",
           "tail*": "allow",
@@ -445,7 +445,7 @@
         "vipune": "allow",
         "meadow*": "allow",
         "bash": {
-          "*": "deny",
+          "*": "ask",
           "oo git *": "allow",
           "oo gh api*": "allow",
           "which*": "allow",
@@ -524,7 +524,7 @@
         "meadow*": "allow",
         "external_directory": "ask",
         "bash": {
-          "*": "deny",
+          "*": "ask",
           "vipune *": "allow",
           "colgrep *": "allow",
           "head *": "allow",

@@ -124,6 +124,11 @@ const DEFAULT_SPAWN_TIMEOUT_MS = (() => {
   return Number.isFinite(env) && env > 0 ? env : 30 * 60_000;
 })();
 
+// Per-spawn stderr tail cap. The full byte budget is enough to retain the
+// last ~10-20 turns of telemetry from a chatty child — plenty for failure
+// debugging — without unbounded ConsString growth on long runs.
+const STDERR_TAIL_BYTES = 64 * 1024;
+
 /**
  * Where per-child transcripts live. One file per spawned specialist, grouped
  * by date so old runs are easy to prune. The user can `pi --session <path>`
@@ -431,8 +436,29 @@ export async function spawnSpecialist(
   });
 
   const start = Date.now();
-  const events: PiJsonEvent[] = [];
-  let stderr = "";
+  // Bounded per-spawn buffers. The previous unbounded `events: PiJsonEvent[]`
+  // and `let stderr = ""` accumulators caused parent-process OOM at ~3.7GB
+  // heap during long /work cycles — V8 SlowFlatten on the ConsString tree
+  // built by repeated `stderr += chunk` blew up on the next regex match.
+  // collapseEvents only needs the latest agent_end (or latest assistant
+  // message_end as fallback); intermediate events are processed live by
+  // ingestEvent which mutates runningState in place, then discarded.
+  let lastAgentEnd: PiJsonEvent | null = null;
+  let lastAssistantMessageEnd: PiJsonEvent | null = null;
+  // stderr is surfaced only as a tail in failure reports. Keep the most
+  // recent ~STDERR_TAIL_BYTES of bytes via a ring of Buffers; concat once
+  // at end-of-spawn to a flat string (no ConsString tree → no SlowFlatten).
+  const stderrChunks: Buffer[] = [];
+  let stderrSize = 0;
+  const appendStderr = (chunk: Buffer | string): void => {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8");
+    stderrChunks.push(buf);
+    stderrSize += buf.length;
+    while (stderrSize > STDERR_TAIL_BYTES && stderrChunks.length > 1) {
+      const evicted = stderrChunks.shift();
+      if (evicted) stderrSize -= evicted.length;
+    }
+  };
   // Running state shared with the parent's onProgress callback. Each child
   // gets its own state; lens-review aggregates over 6 of them in parallel.
   const runningState = emptyRunningState(spec.role, opts.tag);
@@ -478,21 +504,30 @@ export async function spawnSpecialist(
     try {
       parsed = JSON.parse(trimmed) as PiJsonEvent;
     } catch {
-      stderr += `${trimmed}\n`;
+      appendStderr(`${trimmed}\n`);
       return;
     }
-    events.push(parsed);
     // Stream into the running state. ingestEvent returns true only when an
     // assistant turn completed (the right cadence to surface to the user).
     if (ingestEvent(runningState, parsed as Parameters<typeof ingestEvent>[1], start)) {
       opts.onProgress?.({ ...runningState, usage: { ...runningState.usage } });
     }
-    // agent_end is the canonical "prompt fully processed" signal in Pi's
-    // event stream. Close stdin to release the child.
-    if (parsed.type === "agent_end") completePrompt();
+    // Retain only the two events collapseEvents actually reads (the latest
+    // agent_end + the latest assistant message_end as fallback). Everything
+    // else is already absorbed by ingestEvent into runningState above, and
+    // dropping the rest keeps per-spawn memory bounded.
+    if (parsed.type === "agent_end") {
+      lastAgentEnd = parsed;
+      completePrompt();
+    } else if (
+      parsed.type === "message_end" &&
+      (parsed as { message?: { role?: string } }).message?.role === "assistant"
+    ) {
+      lastAssistantMessageEnd = parsed;
+    }
   });
   child.stderr.on("data", (d) => {
-    stderr += String(d);
+    appendStderr(d);
   });
 
   // Always cap wall-clock — see DEFAULT_SPAWN_TIMEOUT_MS comment. A stalled
@@ -542,14 +577,24 @@ export async function spawnSpecialist(
   }
 
   if (timedOut) {
-    stderr += `\n[pi-ensemble] killed after ${timeoutMs}ms timeout`;
+    appendStderr(`\n[pi-ensemble] killed after ${timeoutMs}ms timeout`);
   }
   if (aborted) {
-    stderr += "\n[pi-ensemble] cancelled by user (Esc)";
+    appendStderr("\n[pi-ensemble] cancelled by user (Esc)");
   }
 
+  // Final flat string from the ring buffer (bounded; no SlowFlatten on the
+  // 64KB total even if the rest of the spawn ran a regex over it).
+  const stderr = Buffer.concat(stderrChunks).toString("utf8");
   const ms = Date.now() - start;
-  const result = collapseEvents(events, spec.role, ms, exitCode, stderr);
+  const result = collapseEvents(
+    lastAgentEnd,
+    lastAssistantMessageEnd,
+    spec.role,
+    ms,
+    exitCode,
+    stderr,
+  );
   result.transcriptPath = transcriptPath;
   result.modelSource = modelChoice.source;
   if (modelChoice.model && !result.model) {
@@ -571,21 +616,20 @@ export async function spawnSpecialist(
 }
 
 function collapseEvents(
-  events: PiJsonEvent[],
+  lastAgentEnd: PiJsonEvent | null,
+  lastAssistantMessageEnd: PiJsonEvent | null,
   role: string,
   ms: number,
   exitCode: number | null,
   stderr: string,
 ): DispatchResult {
   // Prefer agent_end's assembled messages; fall back to last assistant
-  // message_end if agent_end is missing.
-  const agentEnd = [...events].reverse().find((e) => e.type === "agent_end");
-  let messages: PiMessage[] = agentEnd?.messages ?? [];
-  if (messages.length === 0) {
-    const lastMessageEnd = [...events]
-      .reverse()
-      .find((e) => e.type === "message_end" && e.message?.role === "assistant");
-    if (lastMessageEnd?.message) messages = [lastMessageEnd.message];
+  // message_end if agent_end is missing. The two slots are filled by the
+  // stdoutRl line handler — see spawn() — so we never need to walk a full
+  // event history here.
+  let messages: PiMessage[] = lastAgentEnd?.messages ?? [];
+  if (messages.length === 0 && lastAssistantMessageEnd?.message) {
+    messages = [lastAssistantMessageEnd.message];
   }
 
   const textParts: string[] = [];

@@ -336,26 +336,32 @@ for (const command of ooGitAllowed) {
 }
 
 // Now-redundant oo-wrapped variants of short commands are NOT in the allowlist
-// (forces the bare canonical pattern; catch-all `*: deny` applies).
-const ooGitDenied = [
+// (forces the bare canonical pattern). Bash catch-all migrated from `deny`
+// to `ask` (closing #169's gap on the nested bash block) — these prompt the
+// user rather than hard-denying. The bare canonical form is still the
+// recommended idiom; the prompt is the safety net for novel inputs.
+const ooGitAsked = [
   "oo git status",
   "oo git branch --show-current",
   "oo git worktree list",
   "oo git rev-parse HEAD",
 ];
-for (const command of ooGitDenied) {
+for (const command of ooGitAsked) {
   const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
   assert(
-    v === "deny",
-    `Issue #96: \`${command}\` is no longer allowed for project-manager (use bare form)`,
+    v === "ask",
+    `Issue #96: \`${command}\` prompts the user for project-manager (use bare form to skip prompt)`,
   );
 }
 
-// Write/mutation bash is still denied via catch-all
-const bashDenied = ["git push origin main", "git commit -m foo", "rm -rf /"];
-for (const command of bashDenied) {
+// Write/mutation bash now prompts the user instead of hard-denying. Defense
+// in depth for true injection vectors (`&&`, `|`, `$()`, redirects) is still
+// hard-deny via matchBashSubcommand's injection check — see chainedShouldDeny
+// below.
+const bashAsked = ["git push origin main", "git commit -m foo", "rm -rf /"];
+for (const command of bashAsked) {
   const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
-  assert(v === "deny", `Issue #96: \`${command}\` remains denied for project-manager`);
+  assert(v === "ask", `Issue #96: \`${command}\` prompts the user for project-manager`);
 }
 
 // Issue #104: `default` role removed. Calling resolveToolPermission with
@@ -391,19 +397,21 @@ for (const command of ghIssueAllowed) {
   assert(v === "allow", `Issue #99: \`${command}\` is allowed for project-manager`);
 }
 
-// PR mutations + CI re-runs stay denied (ops territory)
-const ghOpsDenied = [
+// PR mutations + CI re-runs prompt the user (ops territory — PM shouldn't
+// do these silently, but per the post-#169 catch-all migration the user
+// is in the loop rather than hard-blocked).
+const ghOpsAsked = [
   "gh pr create",
   "gh pr merge 42",
   "gh pr close 42",
   "gh pr edit 42",
   "gh run rerun 12345",
 ];
-for (const command of ghOpsDenied) {
+for (const command of ghOpsAsked) {
   const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
   assert(
-    v === "deny",
-    `Issue #99: \`${command}\` remains denied for project-manager (ops territory)`,
+    v === "ask",
+    `Issue #99: \`${command}\` prompts the user for project-manager (ops territory)`,
   );
 }
 
@@ -436,8 +444,9 @@ for (const command of ghPrCiReadAllowed) {
   assert(v === "allow", `Issue #102: read-only \`${command}\` is allowed for project-manager`);
 }
 
-// PR / CI mutations still denied for PM
-const ghPrCiMutationDenied = [
+// PR / CI mutations prompt the user for PM — see ghOpsAsked above for the
+// reasoning behind the catch-all `deny` → `ask` migration.
+const ghPrCiMutationAsked = [
   "gh pr create -t foo -b bar",
   "gh pr merge 42",
   "gh pr close 42",
@@ -445,11 +454,11 @@ const ghPrCiMutationDenied = [
   "gh pr ready 42",
   "gh run rerun 12345",
 ];
-for (const command of ghPrCiMutationDenied) {
+for (const command of ghPrCiMutationAsked) {
   const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
   assert(
-    v === "deny",
-    `Issue #102: PR/CI mutation \`${command}\` remains denied for project-manager (ops territory)`,
+    v === "ask",
+    `Issue #102: PR/CI mutation \`${command}\` prompts the user for project-manager (ops territory)`,
   );
 }
 
