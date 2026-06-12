@@ -303,6 +303,21 @@ The bridge also supports an `imports` array that auto-adopts servers already con
 
 > **codebase-memory-mcp is wired automatically by `./install.sh`.** It writes a `codebase_memory` entry to `~/.config/mcp/mcp.json` (Tier 1) with selective `directTools` exposing the seven read-side tools (`search_code`, `search_graph`, `trace_path`, `detect_changes`, `get_code_snippet`, `get_architecture`, `query_graph`). Admin tools (`index_repository`, `delete_project`, `manage_adr`) stay behind the proxy `mcp` tool. Re-running `./install.sh` is safe — other MCP servers you've configured by hand are preserved (idempotent jq merge). See "Prerequisites" above for the binary install.
 
+#### `command:` portability between host and sandbox
+
+The same `~/.config/mcp/mcp.json` is read by both host-mode `pi` and sandbox-mode `pi-ensemble` (the wrapper bind-mounts the host file into the container). For server entries to work in BOTH contexts, use **PATH-relative `command:` values** — a bare binary name or `npx -y <package>`. Node's `spawn` resolves non-absolute `command:` values via `$PATH` at MCP-spawn time, so the same entry resolves to `~/.local/bin/foo` on host and `/usr/local/bin/foo` (or wherever) inside the sandbox.
+
+```jsonc
+// ✅ Portable — works on host AND in sandbox
+{ "command": "codebase-memory-mcp" }
+{ "command": "npx", "args": ["-y", "@anthropic/some-mcp"] }
+
+// ❌ Host-only — fails inside the sandbox (path doesn't exist there)
+{ "command": "/Users/dev/.local/bin/codebase-memory-mcp" }
+```
+
+If a server's binary doesn't exist inside the sandbox container, you have two options: extend `.devcontainer/Dockerfile` to install it, or scope that server to host-mode only by placing the entry in `~/.pi/agent/mcp.json` (Tier 2) and adding it to the bind-mount exclude list in `bin/pi-ensemble`.
+
 #### Tool-surface modes: `directTools`
 
 Each server entry can set `"directTools": true | false`. This controls how the bridge surfaces tools to Pi — and therefore what the permission prompt asks about:

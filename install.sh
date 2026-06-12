@@ -133,16 +133,29 @@ echo "==> Registered extension at $ext_target"
 # ingest_traces) stay behind the proxy `mcp` tool, gated by `"mcp": "ask"|
 # "allow"` per role.
 
+# PATH-portability: we write the BINARY NAME (not the resolved absolute
+# path) so the same mcp.json works in both host AND sandbox-container
+# contexts. Node's child_process.spawn falls back to $PATH for any
+# non-absolute first-arg. Host has `~/.local/bin/codebase-memory-mcp`
+# on PATH (per upstream installer); container has `/usr/local/bin/
+# codebase-memory-mcp` (per .devcontainer/Dockerfile). Same key,
+# different binary location, no mcp.json rewrite needed at container
+# entry. This matches pi-mcp-adapter's own README idiom (`"command":
+# "npx"` everywhere). PR #200 shipped absolute paths and the sandbox
+# couldn't spawn the host path; this fix makes mcp.json portable.
 CBM_BIN=""
 if command -v codebase-memory-mcp >/dev/null 2>&1; then
-  CBM_BIN="$(command -v codebase-memory-mcp)"
+  CBM_BIN="codebase-memory-mcp"   # PATH-relative name (see comment above)
 elif [ -x "$HOME/.local/bin/codebase-memory-mcp" ]; then
-  CBM_BIN="$HOME/.local/bin/codebase-memory-mcp"
+  CBM_BIN="codebase-memory-mcp"
+  # Detected at $HOME/.local/bin but not currently on $PATH. install.sh
+  # already warns about ~/.local/bin not being on PATH if applicable
+  # (see sandbox-setup block). If PATH is fixed, the binary name resolves.
 fi
 
 if [ -n "$CBM_BIN" ]; then
   echo "==> Registering codebase-memory-mcp with pi-mcp-adapter"
-  echo "    binary: $CBM_BIN"
+  echo "    binary: $CBM_BIN (PATH-resolved at MCP-spawn time; portable across host + sandbox)"
   MCP_CONFIG_DIR="$HOME/.config/mcp"
   MCP_CONFIG="$MCP_CONFIG_DIR/mcp.json"
   mkdir -p "$MCP_CONFIG_DIR"
