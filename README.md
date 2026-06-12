@@ -98,9 +98,12 @@ brew install git gh jq                                                # macOS
 cargo install vipune
 cargo install double-o
 
-# codebase-memory-mcp (see upstream README for the current install command)
-# https://github.com/DeusData/codebase-memory-mcp
-# After install, configure pi-mcp-adapter to load it — see "MCP setup" below.
+# codebase-memory-mcp (REQUIRED — pi-ensemble's code-search doctrine depends on it)
+curl -fsSL https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh | bash
+# Installs the C binary at ~/.local/bin/codebase-memory-mcp (~250 MB; ships
+# embedded Nomic embeddings — no API keys needed). pi-ensemble's install.sh
+# will register it with pi-mcp-adapter automatically (see step "After install"
+# below — no manual MCP config edits required).
 
 # parallel-cli
 brew install parallel-web/tap/parallel-cli
@@ -113,7 +116,12 @@ npm install -g --ignore-scripts ctx7
 After install:
 
 - `vipune version` once to initialise `~/.vipune/`.
-- Configure `codebase-memory-mcp` in `~/.config/mcp/mcp.json` (user-global) so pi-mcp-adapter picks it up — see [Using MCP servers](#using-mcp-servers-per-host-or-per-project) below. Then run `codebase_memory_index_repository({path: "."})` once per project (the `/start` command does this for you on first use).
+- Run pi-ensemble's `./install.sh` from this repo. That script detects `codebase-memory-mcp` on your `PATH` (or in `~/.local/bin/`) and writes a `codebase_memory` entry to `~/.config/mcp/mcp.json` for pi-mcp-adapter to pick up. **You should not have to hand-edit any MCP config.** Re-running `./install.sh` is safe (idempotent merge — other MCP servers you configured by hand are preserved). Verify after `pi` restarts with `/mcp` — should list `codebase_memory` with 7 direct tools (`search_code`, `search_graph`, `trace_path`, `detect_changes`, `get_code_snippet`, `get_architecture`, `query_graph`).
+- One-shot index every project the first time pi opens there:
+  ```
+  mcp({tool: "codebase_memory_index_repository", args: '{"repo_path": "."}'})
+  ```
+  The `/start` command does this for you on first use. The file watcher keeps it current after that. Indexed data lives in `~/.cache/codebase-memory-mcp/`.
 
 Tested on macOS; should work on Linux. Bun ≥ 1.2.20 and Node ≥ 22 (Pi's own requirement) are assumed.
 
@@ -257,6 +265,8 @@ pi install npm:pi-mcp-adapter
 | 4 | `./.pi/mcp.json` | Project, Pi-specific — **highest precedence** |
 
 The bridge also supports an `imports` array that auto-adopts servers already configured for Claude Code, Cursor, VS Code, Windsurf, Claude Desktop, Codex. See the [pi-mcp-adapter docs](https://github.com/nicobailon/pi-mcp-adapter) for the full JSON schema.
+
+> **codebase-memory-mcp is wired automatically by `./install.sh`.** It writes a `codebase_memory` entry to `~/.config/mcp/mcp.json` (Tier 1) with selective `directTools` exposing the seven read-side tools (`search_code`, `search_graph`, `trace_path`, `detect_changes`, `get_code_snippet`, `get_architecture`, `query_graph`). Admin tools (`index_repository`, `delete_project`, `manage_adr`) stay behind the proxy `mcp` tool. Re-running `./install.sh` is safe — other MCP servers you've configured by hand are preserved (idempotent jq merge). See "Prerequisites" above for the binary install.
 
 #### Tool-surface modes: `directTools`
 

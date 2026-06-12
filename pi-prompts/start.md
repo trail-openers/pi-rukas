@@ -22,7 +22,7 @@ argument-hint: ""
 
    If uncommitted changes exist: decide if they belong to current task. Stash or worktree-park if not.
 
-2. **Index the codebase** (if not already indexed): `mcp({tool: "codebase_memory_index_repository", args: '{"path": "."}'})`. Idempotent — safe to call every /start; the server skips re-indexing if the working tree hasn't changed.
+2. **Index the codebase** (if not already indexed): `mcp({tool: "codebase_memory_index_repository", args: '{"repo_path": "."}'})`. Idempotent — safe to call every /start; the server skips re-indexing if the working tree hasn't changed.
 
    **Note**: For structural queries during /start (architecture overview, key entry points), use `codebase_memory_get_architecture({path: "."})` instead of running `search_code` for meta-questions.
 

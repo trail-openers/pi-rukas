@@ -668,7 +668,7 @@ If vipune search fails:
 - Note in report: `"Memory inaccessible: <reason>"`
 
 If the project is unindexed (codebase_memory_get_architecture returns nothing):
-- Prompt the user via the `mcp` proxy to run `codebase_memory_index_repository({path: "."})`
+- Prompt the user via the `mcp` proxy to run `codebase_memory_index_repository({repo_path: "."})`
 - If indexing fails, note in report and skip example / structural discovery
 - Warn user in report: `"codebase-memory-mcp unavailable; standards inference limited to docs/config/CI"`
 

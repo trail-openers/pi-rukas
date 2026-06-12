@@ -52,7 +52,7 @@ codebase_memory_detect_changes({diff: "<git diff HEAD>"})
 
 ## When the index is missing or stale
 
-If `search_code` returns nothing for an obvious query, the project may not be indexed yet, or the index may be behind the working tree. Tell the user; do not retry with grep variations. The user owns indexing — they run `mcp({tool: "codebase_memory_index_repository", args: '{"path": "..."}'})` once per project, and the file watcher keeps it current after that.
+If `search_code` returns nothing for an obvious query, the project may not be indexed yet, or the index may be behind the working tree. Tell the user; do not retry with grep variations. The user owns indexing — they run `mcp({tool: "codebase_memory_index_repository", args: '{"repo_path": "..."}'})` once per project, and the file watcher keeps it current after that.
 
 ## Falling back
 

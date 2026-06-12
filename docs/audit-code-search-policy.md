@@ -310,10 +310,10 @@ codebase_memory_detect_changes({diff: "<git diff base..HEAD>"})
 
 ```
 # One-time index of a project (PM owns this; allow-listed for PM)
-mcp({tool: "codebase_memory_index_repository", args: '{"path": "/path/to/repo"}'})
+mcp({tool: "codebase_memory_index_repository", args: '{"repo_path": "/path/to/repo"}'})
 
 # Check status (allow-listed via mcp proxy)
-mcp({tool: "codebase_memory_index_status", args: '{"path": "/path/to/repo"}'})
+mcp({tool: "codebase_memory_index_status", args: '{"repo_path": "/path/to/repo"}'})
 ```
 
 ### Automatic preflight
@@ -443,7 +443,7 @@ For each query, collect 3–5 representative matches. Record:
 - What the pattern shows
 - How consistent it is across matches
 
-**If the project is unindexed**, ask the user to run `mcp({tool: "codebase_memory_index_repository", args: '{"path": "."}'})`. If indexing fails, continue without `codebase_memory_*` and note the limitation in your report.
+**If the project is unindexed**, ask the user to run `mcp({tool: "codebase_memory_index_repository", args: '{"repo_path": "."}'})`. If indexing fails, continue without `codebase_memory_*` and note the limitation in your report.
 ```
 
 ### Audit pass sections
