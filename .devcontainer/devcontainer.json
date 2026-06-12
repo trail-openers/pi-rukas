@@ -11,6 +11,7 @@
   "mounts": [
     "source=${localEnv:HOME}/.vipune,target=/home/vscode/.vipune,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.pi/agent/ensemble-runs,target=/home/vscode/.pi/agent/ensemble-runs,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.pi/agent/sessions,target=/home/vscode/.pi/agent/sessions,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.pi/agent/models.json,target=/home/vscode/.pi/agent/models.json,type=bind,readonly",
     "source=${localEnv:HOME}/.config/mcp,target=/home/vscode/.config/mcp,type=bind,readonly",
     "source=${localEnv:HOME}/.config/gh,target=/home/vscode/.config/gh,type=bind,readonly",

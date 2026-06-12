@@ -167,12 +167,15 @@ pi
 | Command | What it does |
 |---|---|
 | `pi-ensemble` | Interactive `pi` session in the container (default) |
+| `pi-ensemble -r` | `pi -r` passthrough — resume a previous sandbox session for this project (see note on cross-mode resume below) |
 | `pi-ensemble shell` | Drop into bash inside the container |
 | `pi-ensemble rebuild` | Rebuild the pi-ensemble image (after pulling new pi-ensemble code) |
 | `pi-ensemble stop` | Stop the running container for this project |
 | `pi-ensemble prune` | Remove sandbox caches (bind-mounted host state is NOT touched) |
 | `pi-ensemble logs` | Tail container logs |
 | `pi-ensemble status` | Show whether a container is running for this project |
+
+> **Session resume note.** Pi scopes sessions by absolute project path. The same project at `~/projects/foo` on the host mounts at `/workspace` inside the container, so host-mode `pi -r` sessions and sandbox-mode `pi-ensemble -r` sessions live in different scope buckets and don't cross-resume — even though both modes share `~/.pi/agent/sessions/` via bind-mount. Within a single mode, resume works as expected.
 
 **Why a sandbox.** Host-mode Pi gates every bash / tool call against a per-role allow/deny/ask policy. In practice the LLM emits novel command shapes constantly — chained pipes, new git subcommands, novel paths — and the user ends up rubber-stamping prompts they no longer read (dangerous failure mode). The sandbox moves the trust boundary from per-call gating to the container fence: full filesystem isolation from the host, all tools allowed inside. The image bakes in every CLI the role prompts assume on `$PATH` (Pi, bun, node, git, gh, vipune, oo, codebase-memory-mcp, ctx7).
 

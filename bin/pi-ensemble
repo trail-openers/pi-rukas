@@ -10,6 +10,12 @@
 #       (cross-session project memory; preserves your accumulated vipune store)
 #   - $HOME/.pi/agent/ensemble-runs/       → /home/vscode/.pi/agent/ensemble-runs
 #       (transcripts; /runs browses these in both host AND sandbox sessions)
+#   - $HOME/.pi/agent/sessions/            → /home/vscode/.pi/agent/sessions
+#       (Pi conversation sessions; `pi-ensemble -r` finds previous sandbox
+#        sessions for the same project. NOTE: Pi scopes sessions by absolute
+#        project path, so host-mode `pi -r` sessions live in a DIFFERENT
+#        sub-bucket from sandbox-mode `pi-ensemble -r` sessions — they
+#        don't cross-resume, even with this bind-mount.)
 #   - $HOME/.pi/agent/ensemble-models.json → same path inside container
 #       (per-role subagent model picks)
 #   - $HOME/.config/mcp/mcp.json           → same path inside container (RO)
@@ -23,11 +29,14 @@
 #
 # Subcommands:
 #   (none)        Interactive `pi` session in the container (default)
+#   -r, --resume  Pass through to `pi -r` — resume a previous sandbox
+#                 session for this project. Forwarded as a flag, not a
+#                 subcommand.
 #   shell         Drop into bash inside the container
 #   rebuild       Rebuild the pi-ensemble image
 #   stop          Stop the running container for this project
-#   prune         Remove named volumes (DESTROYS sandbox caches — vipune/runs
-#                 stay safe because they're bind-mounted from host)
+#   prune         Remove named volumes (DESTROYS sandbox caches — vipune/runs/
+#                 sessions stay safe because they're bind-mounted from host)
 #   logs          Tail container logs
 #   status        Show whether a container is running for this project
 #   --help        Show this help
@@ -105,6 +114,21 @@ build_mounts() {
     mounts+=(-v "$HOME/.pi/agent/ensemble-runs:/home/vscode/.pi/agent/ensemble-runs")
   else
     mounts+=(-v pi-ensemble-runs:/home/vscode/.pi/agent/ensemble-runs)
+  fi
+
+  # Pi sessions — `pi -r` reads these for resume. Bind-mount the host's
+  # sessions dir if it exists; else use a named volume so container
+  # sessions persist across container restarts. NOTE: Pi scopes sessions
+  # by absolute project path, and the same project mounts at /workspace
+  # inside the container vs. ~/projects/foo on the host — so host and
+  # sandbox sessions live in DIFFERENT sub-buckets and don't cross-
+  # resume. Within sandbox: `pi-ensemble -r` finds previous pi-ensemble
+  # sessions for the same project. Within host: `pi -r` finds previous
+  # host-mode sessions. Crossing modes is out of scope.
+  if [ -d "$HOME/.pi/agent/sessions" ]; then
+    mounts+=(-v "$HOME/.pi/agent/sessions:/home/vscode/.pi/agent/sessions")
+  else
+    mounts+=(-v pi-ensemble-sessions:/home/vscode/.pi/agent/sessions)
   fi
 
   # ensemble-models.json — pi-ensemble's per-role model picks. Only bind
