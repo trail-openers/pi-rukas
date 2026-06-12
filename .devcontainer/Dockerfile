@@ -31,7 +31,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential pkg-config libssl-dev \
       python3 python3-pip \
       sudo \
-    && rm -rf /var/lib/apt/lists/*
+      ripgrep fd-find \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/fdfind /usr/local/bin/fd
+# ripgrep + fd-find: Pi's built-in rg/search tooling looks for `rg` and `fd`
+# on $PATH and self-downloads them into ~/.pi/agent/bin/ on first run if
+# missing — which (a) slows first start by ~10s, (b) needs network at boot.
+# Baking them in eliminates both. Ubuntu's `fd-find` package installs the
+# binary as `fdfind` to avoid a conflict with `fdupes-fd`; we symlink to `fd`
+# so Pi finds it without renaming.
 
 # -----------------------------------------------------------------------------
 # 2. GitHub CLI

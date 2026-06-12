@@ -79,25 +79,61 @@ ensure_image() {
 build_mounts() {
   # bash arrays via stdout — caller eval's. This is the cleanest way to assemble
   # conditional -v flags without losing word boundaries.
+  #
+  # Design principle: the sandbox MUST NOT require the host to have
+  # pi-ensemble's toolchain installed. Docker is the only host prereq.
+  # Where the host happens to have existing state (vipune memories,
+  # ensemble-runs transcripts, etc.) we bind-mount it through to
+  # preserve continuity. Where the host has nothing, we fall back to
+  # named volumes so the container still gets persistent state across
+  # runs (just container-scoped instead of shared with host).
   local mounts=()
   mounts+=(-v "$PROJECT_ROOT:/workspace:delegated")
-  # Bind-mount host state if present (each is independent — skip if missing)
+
+  # vipune — host bind-mount if present (preserves accumulated memories);
+  # else named volume (persists across container runs).
   if [ -d "$HOME/.vipune" ]; then
     mounts+=(-v "$HOME/.vipune:/home/vscode/.vipune")
+  else
+    mounts+=(-v pi-ensemble-vipune:/home/vscode/.vipune)
   fi
+
+  # ensemble-runs transcripts — same pattern. /runs slash command browses
+  # these, so persisting them across container restarts is the user
+  # expectation regardless of host state.
   if [ -d "$HOME/.pi/agent/ensemble-runs" ]; then
     mounts+=(-v "$HOME/.pi/agent/ensemble-runs:/home/vscode/.pi/agent/ensemble-runs")
+  else
+    mounts+=(-v pi-ensemble-runs:/home/vscode/.pi/agent/ensemble-runs)
   fi
+
+  # ensemble-models.json — single file. Only bind if present on host.
+  # Otherwise the container uses its own (defaults). Optional — model
+  # picks via /ensemble-model inside the container will persist via the
+  # named state volume if we add one (TODO follow-up).
   if [ -f "$HOME/.pi/agent/ensemble-models.json" ]; then
     mounts+=(-v "$HOME/.pi/agent/ensemble-models.json:/home/vscode/.pi/agent/ensemble-models.json:ro")
   fi
+
+  # mcp.json — bind-mount if present; PR #202 made entries PATH-portable
+  # so the same file works in both host and container contexts. If the
+  # host doesn't have one, the container's baked default (with
+  # codebase_memory wired) takes over.
   if [ -f "$HOME/.config/mcp/mcp.json" ]; then
     mounts+=(-v "$HOME/.config/mcp/mcp.json:/home/vscode/.config/mcp/mcp.json:ro")
   fi
+
+  # gh auth — bind-mount as fallback. The primary auth channel is the
+  # GH_TOKEN env var (extracted via `gh auth token` on host; see
+  # build_env). gh inside the container honors GH_TOKEN first; the
+  # bind-mount is a belt-and-braces option for installations that
+  # configured gh without a token (e.g. SSO web flow only).
   if [ -d "$HOME/.config/gh" ]; then
     mounts+=(-v "$HOME/.config/gh:/home/vscode/.config/gh:ro")
   fi
+
   # Named volumes (caches, shell history) — shared across all projects
+  # using the same image, container-scoped, NOT bind-mounted from host.
   mounts+=(-v pi-ensemble-cache:/home/vscode/.cache)
   mounts+=(-v pi-ensemble-bun-cache:/home/vscode/.bun)
   mounts+=(-v pi-ensemble-cargo-cache:/home/vscode/.cargo)
@@ -122,6 +158,19 @@ build_env() {
       envs+=(-e "$var=${!var}")
     fi
   done
+
+  # gh auth: if the user has gh installed and authenticated on host, extract
+  # the token and forward as GH_TOKEN. This handles the common macOS case
+  # where `gh auth login` stores the token in Keychain (not on disk at
+  # ~/.config/gh/hosts.yml), making the bind-mount-alone strategy
+  # insufficient. `gh auth token` works regardless of where the token
+  # lives. Skip silently if gh isn't installed or no token is configured —
+  # user can `gh auth login -h github.com` inside the container in that case.
+  if [ -z "${GH_TOKEN-}" ] && [ -z "${GITHUB_TOKEN-}" ] && command -v gh >/dev/null 2>&1; then
+    if gh_tok="$(gh auth token 2>/dev/null)" && [ -n "$gh_tok" ]; then
+      envs+=(-e "GH_TOKEN=$gh_tok")
+    fi
+  fi
   # Container-only flags
   envs+=(-e PI_ENSEMBLE_SANDBOX_MODE=1)
   envs+=(-e "HISTFILE=/commandhistory/.bash_history")
