@@ -160,7 +160,26 @@ pi
 
 ## Sandboxed mode (recommended)
 
-`pi-ensemble` launches Pi inside a Docker container where the container fence IS the trust boundary — no per-call permission prompts. The host's `~/.vipune/` (project memory), `~/.pi/agent/ensemble-runs/` (transcripts), `~/.pi/agent/ensemble-models.json` (per-role model picks), `~/.config/mcp/mcp.json` (codebase-memory-mcp wiring), and `~/.config/gh/` (gh auth) are bind-mounted in, so your accumulated state — memories, model picks, run history — survives across host and container modes seamlessly.
+`pi-ensemble` launches Pi inside a Docker container where the container fence IS the trust boundary — no per-call permission prompts. Host state that should survive across sessions is bind-mounted in; container-local caches use named volumes.
+
+**What's mounted where:**
+
+| Source on host | Target in container | Type | Purpose |
+|---|---|---|---|
+| `$PWD` (the project) | same absolute path | bind | Workspace. Mounted at the host's absolute path (not `/workspace`) so Pi's session-scope buckets match host-mode `pi`. |
+| `~/.vipune/` | same | bind / volume fallback | Cross-session project memory. If host has none, a named volume `pi-ensemble-vipune` is used. |
+| `~/.pi/agent/sessions/` | same | bind / volume fallback | Pi conversation sessions — drives `pi-ensemble -r`. |
+| `~/.pi/agent/ensemble-runs/` | same | bind / volume fallback | Subagent transcripts (`/runs` slash command). |
+| `~/.pi/agent/ensemble-models.json` | same | bind (ro) | pi-ensemble per-role model picks. |
+| `~/.pi/agent/models.json` | same | bind (ro) | Pi PROVIDER config (anthropic / openai / local-gpu / fieldbox / etc.). |
+| `~/.config/mcp/mcp.json` | same | bind (ro) | pi-mcp-adapter config (codebase-memory-mcp wiring + your other MCP servers). |
+| `~/.config/gh/` | same | bind (ro) | gh CLI config (fallback; primary auth is `GH_TOKEN` extracted from `gh auth token` and forwarded as env). |
+| — | `~/.cache/` | named volume `pi-ensemble-cache` | codebase-memory-mcp index, HF model cache. |
+| — | `~/.bun/` | named volume `pi-ensemble-bun-cache` | bun download cache. |
+| — | `~/.cargo/` | named volume `pi-ensemble-cargo-cache` | cargo download cache. |
+| — | `/commandhistory` | named volume `pi-ensemble-history` | shell history. |
+
+**Cross-mode persistence:** vipune memories, transcripts, sessions, model picks, MCP config, and gh auth all share state between host-mode `pi` and sandbox-mode `pi-ensemble` (same bind-mount targets, same Pi scope-bucket keys post-#207). Container-local caches (above) don't — they're container-scoped and survive container restarts via named volumes, but the host runs against its own caches.
 
 **Wrapper subcommands:**
 
@@ -412,6 +431,18 @@ All optional. Defaults are reasonable for typical use.
 | `PI_ENSEMBLE_USER_EXTENSION` | unset | Absolute path or `npm:<pkg>` ref of an extra extension to forward to subagents, on top of the auto-discovered list. |
 | `PI_ENSEMBLE_AUTOSAVE` | unset | Set to `1` to opt into a deterministic session summary written to `vipune` on session quit ([#23](https://github.com/randomm/pi-ensemble/issues/23)). Pure local extract — no LLM call. Off by default. |
 
+**Sandbox mode (`pi-ensemble` wrapper):**
+
+| Variable | Set by | Purpose |
+|---|---|---|
+| `PI_ENSEMBLE_SANDBOX_MODE` | wrapper / devcontainer.json | `1` inside container; the parent + subagent permission guards short-circuit and treat the container fence as the trust boundary. |
+| `PI_ENSEMBLE_WORKSPACE_ROOT` | wrapper | Absolute host path mounted into the container as the workspace. `sandbox-fs-guard.ts` reads it to enforce out-of-workspace FS access (#207). |
+| `PI_ENSEMBLE_HOST_ALIASES` | user | Comma-separated `name:ip` pairs the wrapper passes as `--add-host`. Default: `fieldbox:192.0.2.10`. Use to teach the container's resolver about Mesh VPN / LAN hostnames not in DNS. |
+| `PI_ENSEMBLE_EXTRA_ENV` | user | Comma-separated env-var names to forward into the container beyond the auto-pattern (`*_API_KEY` / `*_LLM_KEY`) and the explicit list. Use for custom-provider tokens with unusual names. |
+| `PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD` | user (debugging) | `1` disables the subagent permission-broker socket. Host-mode only; redundant inside sandbox where the guard already short-circuits. |
+| `GH_TOKEN` / `GITHUB_TOKEN` | host shell, or wrapper | If set on host, forwarded directly. If unset, wrapper extracts via `gh auth token` (handles macOS Keychain). Container's `gh` reads it for auth. |
+| `*_API_KEY`, `*_LLM_KEY` | host shell | Pattern-auto-forwarded by the wrapper. Catches custom-provider tokens (e.g. `TRAIL_OPENERS_LLM_KEY`) without per-name config. |
+
 Advanced (internal path overrides; rarely needed): `PI_ENSEMBLE_DIR`, `PI_ENSEMBLE_PROMPTS_DIR`, `PI_ENSEMBLE_PI_PROMPTS_DIR`, `PI_ENSEMBLE_PM_PROMPT`, `PI_ENSEMBLE_MODELS_CONFIG`, `PI_ENSEMBLE_RUNS_DIR`, `PI_ENSEMBLE_SKILLS_DIR` — override default file/directory locations.
 
 `PI_ENSEMBLE_ROLE` is set internally by `spawn.ts` for subagent processes; do not set it manually.
@@ -428,14 +459,14 @@ The 28 modules under `modules/` (vipune memory patterns, output standards, async
 
 ## Caveats (alpha)
 
-- **No per-role permission enforcement yet.** Specialists inherit Pi's default permissions; the role system prompt is the only thing keeping each in its lane. Use a sandbox repo until you've seen how the model behaves.
+- **Two permission models.** Sandbox mode (recommended) treats the container fence as the trust boundary — no per-call permission prompts. Host mode uses a 3-tier allow/deny/ask policy (`agents.json` baseline + `~/.pi/agent/permissions.json` global overlay + `$PWD/.pi/permissions.json` project overlay). Both are exercised in production; sandbox is the path of least friction for novel command shapes.
 - **Cost.** Six-pass review on a typical PR is roughly 6 × ~2K tokens output per child plus context — order of `$0.02–$0.10` per cycle on cheap Cerebras models, more on Anthropic.
 - **Worktrees are git CLI calls.** Will be migrated to the safer [`pi-worktree`](https://github.com/randomm/pi-worktree) plugin when its programmatic API stabilises.
 - **Smoke tests live in `extension/smoke-tests/`.** `*-live.ts` files actually spawn Pi children and cost a few cents per run; CI runs only the offline ones.
 
 ## Pi compatibility
 
-pi-ensemble depends on Pi's CLI flags, JSON event stream shape, and `ExtensionAPI` surface. The current release is tested against pi `0.75.3` and pins `@earendil-works/pi-coding-agent` to `~0.75.3` in `extension/devDependencies` so a Pi minor bump is a deliberate update.
+pi-ensemble depends on Pi's CLI flags, JSON event stream shape, and `ExtensionAPI` surface. The current sandbox image ships pi `0.79.1`; the host-mode dev-deps pin `@earendil-works/pi-coding-agent` to `~0.75.3` so a Pi minor bump is a deliberate update.
 
 When updating Pi:
 1. Check the [pi-mono releases](https://github.com/badlogic/pi-mono/releases).

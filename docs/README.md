@@ -1,8 +1,13 @@
-# `/audit` Command Documentation
+# pi-ensemble docs
 
-This directory contains the complete documentation and policy specifications for the `/audit` command (part of Epic #31).
+Specifications + policy docs for `/audit` (Epic #31) plus a troubleshooting guide for the sandboxed runtime.
 
-## Documents
+## Operator docs
+
+### [troubleshooting.md](troubleshooting.md)
+Symptom → cause → fix entries for the most common `pi-ensemble` sandbox issues: `MCP: 0/N servers`, `gh` 401 inside container, custom LLM endpoints unreachable, custom provider missing from `/ensemble-model`, vipune embedding 404, fd/rg auto-download at boot, session-resume picker failures, named-volume cleanup. Each entry links the PR that addressed it. First stop when something weird happens — usually `./install.sh` fixes it.
+
+## `/audit` Command Documentation
 
 ### [audit-spec.md](audit-spec.md)
 The master specification for the `/audit` command. This document defines:
@@ -14,7 +19,7 @@ The master specification for the `/audit` command. This document defines:
 - Failure handling and fallback behavior
 - v1/v2 boundaries
 
-**Status**: Draft — Addresses Issue #32
+**Status**: Active — `/audit` ships in pi-ensemble alpha. v2 boundary work tracked separately under Epic #31.
 
 ### [audit-vipune-policy.md](audit-vipune-policy.md)
 Explicit vipune usage policy for `/audit`. This document defines:

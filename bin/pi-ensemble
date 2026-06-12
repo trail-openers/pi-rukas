@@ -97,7 +97,17 @@ build_mounts() {
   # named volumes so the container still gets persistent state across
   # runs (just container-scoped instead of shared with host).
   local mounts=()
-  mounts+=(-v "$PROJECT_ROOT:/workspace:delegated")
+  # Mount the project at its HOST ABSOLUTE PATH inside the container, not at
+  # /workspace. Why: Pi scopes sessions by absolute cwd, so a project at
+  # /Users/dev/projects/lantern running in host mode and the same project
+  # running in sandbox mode must share cwd to share the same sessions/<scope>
+  # bucket. Pre-#207 we mounted at /workspace and Pi inside the container
+  # cwd'd there, sending sandbox sessions for ALL projects into a single
+  # co-mingled `--workspace--` bucket — which broke `pi-ensemble -r`
+  # entirely (couldn't tell which session belonged to which project).
+  # Post-#207: host cwd == container cwd → session buckets match,
+  # per-project isolation restored, host↔sandbox cross-resume works.
+  mounts+=(-v "$PROJECT_ROOT:$PROJECT_ROOT:delegated")
 
   # vipune — host bind-mount if present (preserves accumulated memories);
   # else named volume (persists across container runs).
@@ -259,6 +269,11 @@ build_env() {
   fi
   # Container-only flags
   envs+=(-e PI_ENSEMBLE_SANDBOX_MODE=1)
+  # Workspace root — used by sandbox-fs-guard to enforce the FS boundary.
+  # Set to PROJECT_ROOT (the host absolute path mounted in by build_mounts)
+  # so the guard's "outside the workspace" check works for the new mount
+  # shape (#207 — was hard-coded /workspace).
+  envs+=(-e "PI_ENSEMBLE_WORKSPACE_ROOT=$PROJECT_ROOT")
   envs+=(-e "HISTFILE=/commandhistory/.bash_history")
   printf '%s\n' "${envs[@]}"
 }
@@ -292,7 +307,7 @@ run_container() {
   mapfile -t hosts < <(build_host_aliases)
   docker run --rm -it \
     --name "$CONTAINER_NAME" \
-    -w /workspace \
+    -w "$PROJECT_ROOT" \
     "${mounts[@]}" \
     "${envs[@]}" \
     "${hosts[@]}" \

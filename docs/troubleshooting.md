@@ -1,0 +1,170 @@
+# pi-ensemble troubleshooting
+
+Symptoms → causes → fixes. Most issues here come from running an older sandbox image; the first move on anything weird is usually `./install.sh` from the pi-ensemble repo to rebuild + refresh.
+
+## Sandbox launch
+
+### `MCP: 0/N servers` — codebase_memory not connected
+
+**Symptom:** Inside `pi-ensemble`, the bottom status line shows `MCP: 0/1 servers` (or 0/N). `/mcp` reports no servers connected. Subagents fail any `codebase_memory_*` tool call.
+
+**Cause:** pi-mcp-adapter reads `~/.config/mcp/mcp.json` (Tier 1). `install.sh` writes this file with the codebase_memory entry, but if you never ran `./install.sh` (or ran it before pi-ensemble shipped this wiring), the file is missing or empty.
+
+**Fix:** `cd ~/.config/opencode/pi-ensemble && ./install.sh`. Validate with `jq '.mcpServers | keys' ~/.config/mcp/mcp.json` — should list `codebase_memory`. Restart the sandbox.
+
+PR: [#196](https://github.com/randomm/pi-ensemble/pull/196)
+
+### `gh issue list` returns "HTTP 401: Requires authentication" inside container
+
+**Symptom:** Inside `pi-ensemble`, `gh` commands that hit the GitHub API return 401. Outside the container on the host, the same commands work fine.
+
+**Cause:** macOS `gh auth login` stores the token in Keychain, not in `~/.config/gh/hosts.yml`. The container's bind-mount of `~/.config/gh/` brings the config dir but not the keychain-stored token.
+
+**Fix:** The wrapper extracts the token via `gh auth token` on the host and forwards it as `GH_TOKEN` env into the container. If you're seeing 401, check the host: `gh auth status` should report you authenticated. If you're using a personal access token directly, export it as `GH_TOKEN` in your shell so the wrapper forwards it explicitly.
+
+PR: [#203](https://github.com/randomm/pi-ensemble/pull/203)
+
+### Custom LLM endpoint (e.g. `fieldbox`) returns "connection refused" or "no such host"
+
+**Symptom:** A custom provider (configured in `~/.pi/agent/models.json` with `baseUrl: "http://fieldbox:8080/v1"`) works from host-mode `pi` but fails inside `pi-ensemble`.
+
+**Cause:** The container's resolver doesn't see your `/etc/hosts`, Mesh VPN mesh DNS, or your home network. The hostname `fieldbox` doesn't resolve.
+
+**Fix:** Set `PI_ENSEMBLE_HOST_ALIASES` before launching:
+
+```bash
+PI_ENSEMBLE_HOST_ALIASES="fieldbox:192.0.2.10,myserver:192.0.2.20" pi-ensemble
+```
+
+Comma-separated `name:ip` pairs. The IP must be reachable from the host (the container's network rides the host's stack via Docker bridge).
+
+Default already includes `fieldbox:192.0.2.10` — set the var if your fieldbox is elsewhere or you need additional hosts.
+
+PR: [#204](https://github.com/randomm/pi-ensemble/pull/204)
+
+### Custom provider missing from `/ensemble-model` picker
+
+**Symptom:** `/ensemble-model` inside sandbox shows fewer providers than `/ensemble-model` outside. Your `local-gpu`, `fieldbox`, or other custom provider is missing.
+
+**Cause:** Wrapper bind-mounts `~/.pi/agent/models.json:ro` (post-#205). If you're on an older wrapper version, custom providers aren't visible inside the container.
+
+**Fix:** `./install.sh` from pi-ensemble repo to refresh the wrapper. If after that the provider's API requests fail with `401`, check that the api key env var matches the auto-forward pattern (`*_API_KEY` or `*_LLM_KEY`). For odd names, add to `PI_ENSEMBLE_EXTRA_ENV="MY_CUSTOM_KEY,ANOTHER_TOKEN"`.
+
+PR: [#205](https://github.com/randomm/pi-ensemble/pull/205)
+
+### `vipune search` returns "Failed to download embedding model … 404"
+
+**Symptom:** Inside `pi-ensemble`, `vipune search` errors with `Configuration error: Failed to download embedding model 'BAAI/bge-small-en-v1.5': request error: http status: 404`. Suggests `huggingface-cli download …`.
+
+**Cause:** vipune downloads the embedding model on first semantic-search call. Its HTTP client 404s on the pinned revision (URLs work via `curl` — likely a redirect/User-Agent quirk).
+
+**Fix:** The image pre-fetches the model into `/opt/hf-cache-seed/` and the entrypoint seeds the named cache volume from there on first start. If you're seeing the 404, your image is stale: `./install.sh` to rebuild. Verify the seed is present:
+
+```bash
+docker run --rm randomm/pi-ensemble:latest ls /opt/hf-cache-seed/hub/models--BAAI--bge-small-en-v1.5/snapshots
+```
+
+Should list the pinned revision SHA.
+
+PR: [#205](https://github.com/randomm/pi-ensemble/pull/205)
+
+### "fd not found. Downloading..." / "ripgrep not found. Downloading..." at startup
+
+**Symptom:** First few lines after `pi-ensemble` boot show Pi auto-downloading `fd` and `rg` into `~/.pi/agent/bin/`. Adds ~10s of boot time + requires network.
+
+**Cause:** Image is stale (pre-#203). Modern image bakes both binaries in via apt.
+
+**Fix:** `./install.sh` to rebuild. Verify: `docker run --rm randomm/pi-ensemble:latest which fd rg` → `/usr/local/bin/fd` + `/usr/bin/rg`.
+
+PR: [#203](https://github.com/randomm/pi-ensemble/pull/203)
+
+## Session resume
+
+### `pi-ensemble -r` opens the picker but selecting a session does nothing
+
+**Symptom:** `pi-ensemble -r` shows the resume picker with sessions listed. Selecting one returns "No session selected" or fails silently. Or: the picker shows sessions from many projects and your specific one is hard to find.
+
+**Cause (pre-#207):** Pi keys sessions by absolute `cwd`. The old wrapper mounted projects at `/workspace`, so sandbox sessions for ALL projects co-mingled in a single `~/.pi/agent/sessions/--workspace--/` bucket. Selecting a session whose original `cwd` was a host path (`/Users/…/projects/foo`) failed to load because that path didn't exist inside the container.
+
+**Fix:** `./install.sh` to refresh the wrapper. Post-#207, the wrapper mounts your project at its host absolute path inside the container — same `cwd` as host mode, so session buckets align. `pi-ensemble -r` from any project shows sessions for that project only, and host-mode `pi -r` sessions are visible too (and vice versa).
+
+**Pre-fix sessions:** anything written to `~/.pi/agent/sessions/--workspace--/` before #207 is orphaned in that bucket. To resume one you specifically need, `pi --session <uuid>` from inside the container (it will search across scopes).
+
+PR: [#207](https://github.com/randomm/pi-ensemble/pull/207)
+
+### Container hostnames change between sandbox runs
+
+**Symptom:** Container names like `pi-ensemble-lantern--8cbaf2dccfbd` appear in `docker ps`. New name each launch.
+
+**Cause:** Wrapper hashes the project root path for the container name to keep concurrent sessions in different projects distinct. Not a bug.
+
+**Not a fix:** The name doesn't affect functionality — only how containers show up in `docker ps`. `pi-ensemble stop` resolves the name from `$PWD`.
+
+## State + caches
+
+### `pi-ensemble prune` warning about volumes "in use"
+
+**Symptom:** Running `pi-ensemble prune` errors with `volume is in use` for `pi-ensemble-cache` etc.
+
+**Cause:** Another `pi-ensemble` session is currently running and holding the named volume.
+
+**Fix:** Exit running `pi-ensemble` sessions (the wrapper uses `docker run --rm` so they're gone on exit) then re-run `prune`. Use `docker ps` to find still-running containers.
+
+### Bind-mounted host state showing up in container as `root`-owned
+
+**Symptom:** Files written by `pi-ensemble` end up on the host owned by `root` instead of your user.
+
+**Cause:** This shouldn't happen — the image's `vscode` user has UID 1000, the wrapper does NOT use `--user root`. If you see this, you're likely running an old image (pre-#200) or a custom Dockerfile derivative that switched users.
+
+**Fix:** `./install.sh` to rebuild the official image. Verify: `docker run --rm randomm/pi-ensemble:latest id` → `uid=1000(vscode)`.
+
+## Diagnostics
+
+### Confirm a bind-mount is reaching the container
+
+```bash
+docker run --rm \
+  -v "$HOME/.pi/agent/models.json:/home/vscode/.pi/agent/models.json:ro" \
+  randomm/pi-ensemble:latest \
+  jq '.providers | keys' /home/vscode/.pi/agent/models.json
+```
+
+Should print your provider keys. If it prints `null` or the file is missing, the bind-mount didn't take.
+
+### Confirm an env var was forwarded
+
+```bash
+docker run --rm \
+  -e "TRAIL_OPENERS_LLM_KEY=$TRAIL_OPENERS_LLM_KEY" \
+  randomm/pi-ensemble:latest \
+  bash -c 'env | grep -E "(API|LLM)_KEY" | head -5'
+```
+
+Inside the wrapper-spawned container, the same env vars are auto-forwarded by pattern match (`*_API_KEY` / `*_LLM_KEY`).
+
+### See what the wrapper actually does
+
+`pi-ensemble shell` drops you into bash inside the container with all the same mounts + env. From there:
+
+```bash
+env | sort                       # what env was forwarded
+mount | grep -v 'cgroup\|proc'   # what was bind-mounted
+ls ~/.pi/agent/                   # what state is visible
+cat ~/.config/mcp/mcp.json        # MCP server config
+```
+
+## When in doubt
+
+`./install.sh` is the right first move for almost everything. It:
+
+- Rebuilds the image (cache-fast unless prereqs changed)
+- Refreshes the `~/.local/bin/pi-ensemble` symlink
+- Re-writes `~/.config/mcp/mcp.json` with the current codebase-memory-mcp wiring
+- Validates that codebase-memory-mcp is reachable on PATH
+
+If after `./install.sh` something still doesn't work, capture:
+
+1. `pi-ensemble --version` (or the wrapper file path: `which pi-ensemble`)
+2. `docker images randomm/pi-ensemble --format '{{.Repository}}:{{.Tag}} {{.CreatedSince}} {{.Size}}'`
+3. The exact failing command + error message
+4. Open an issue at <https://github.com/randomm/pi-ensemble/issues>.

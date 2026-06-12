@@ -11,7 +11,7 @@
  *   - Wildcard patterns work correctly
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -920,6 +920,64 @@ assert(fallthrough === "ask", "Issue #168: catch-all `*: ask` fires when no wild
     checkSandboxFsArgs("read", { name: "/etc/passwd" }).ok === true,
     "L8: sandbox-fs-guard: unknown argument keys are not auto-checked (only well-known FS keys)",
   );
+}
+
+// === PR #207: sandbox-fs-guard reads PI_ENSEMBLE_WORKSPACE_ROOT env var ===
+// The wrapper now mounts the project at its host absolute path (e.g.
+// /Users/dev/projects/lantern) instead of /workspace. The guard's
+// boundary check must follow — read the env var, fall back to /workspace
+// for raw `docker run` users without the wrapper.
+//
+// Use mkdtempSync to get a real non-symlinked dir for the boundary
+// (macOS /tmp is a symlink to /private/tmp, which trips realpath
+// resolution and defeats the prefix-match test).
+{
+  const { checkSandboxFsArgs } = await import("../src/sandbox-fs-guard.js");
+
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "pi-ensemble-fs-guard-")));
+  const inside = path.join(root, "some-file");
+  // Sibling dir with overlapping prefix to test separator-boundary
+  const sibling = `${root}-elsewhere`;
+  mkdirSync(sibling, { recursive: true });
+
+  const prev = process.env.PI_ENSEMBLE_WORKSPACE_ROOT;
+  try {
+    process.env.PI_ENSEMBLE_WORKSPACE_ROOT = root;
+
+    // Inside the new boundary → permitted.
+    const insideOk = checkSandboxFsArgs("read", { path: inside });
+    assert(
+      insideOk.ok === true,
+      `PR #207: PI_ENSEMBLE_WORKSPACE_ROOT honored — inside-root path permitted (root=${root}, candidate=${inside})`,
+    );
+
+    // Outside the new boundary → rejected.
+    const outside = checkSandboxFsArgs("read", { path: "/etc/passwd" });
+    assert(
+      outside.ok === false,
+      "PR #207: PI_ENSEMBLE_WORKSPACE_ROOT honored — /etc/passwd rejected",
+    );
+    if (!outside.ok) {
+      assert(
+        outside.reason.includes(root),
+        "PR #207: rejection reason names the active workspace root",
+      );
+    }
+
+    // Separator-boundary check — a sibling dir sharing root's prefix
+    // ("/.../pi-ensemble-fs-guard-XXX-elsewhere") should NOT be inside
+    // the root.
+    const tokenBoundary = checkSandboxFsArgs("read", { path: path.join(sibling, "foo") });
+    assert(
+      tokenBoundary.ok === false,
+      "PR #207: separator boundary respected — sibling-with-prefix is NOT inside root",
+    );
+  } finally {
+    if (prev === undefined) delete process.env.PI_ENSEMBLE_WORKSPACE_ROOT;
+    else process.env.PI_ENSEMBLE_WORKSPACE_ROOT = prev;
+    rmSync(root, { recursive: true, force: true });
+    rmSync(sibling, { recursive: true, force: true });
+  }
 }
 
 console.log("\n=== test-permission-guard summary ===");

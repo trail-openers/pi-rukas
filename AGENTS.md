@@ -299,6 +299,7 @@ Before adding documentation: *"Will this be true in 200 PRs?"*
 - ✅ Core concepts and terminology
 - ✅ Non-obvious algorithms (code comments — short, focused)
 - ✅ Architectural decisions tied to a load-bearing rationale
+- ✅ Operator troubleshooting (`docs/troubleshooting.md`) — symptom → fix → PR-ref entries for sandbox / install / wiring issues that recur. Update on every PR that resolves a class of user-facing failure.
 
 ### Forbidden documentation
 

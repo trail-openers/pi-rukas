@@ -31,10 +31,21 @@ import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { trace } from "./trace.js";
 
-// Sandbox workspace root inside the container. Bind-mounted by the wrapper /
-// devcontainer.json. Anything outside this is off-limits to filesystem
-// arguments after canonicalisation.
-const WORKSPACE_ROOT = "/workspace";
+// Sandbox workspace root inside the container — anything outside this is
+// off-limits to filesystem arguments after canonicalisation.
+//
+// Read from PI_ENSEMBLE_WORKSPACE_ROOT env, set by bin/pi-ensemble wrapper
+// to the project's host absolute path (e.g. /Users/dev/projects/lantern)
+// so Pi's session-bucket scoping matches host mode (#207). Falls back to
+// `/workspace` for users running the image directly via `docker run`
+// without the wrapper, or via VS Code devcontainer.json (which still mounts
+// at /workspace by spec).
+//
+// Read on every call (not module-level const) so tests can mutate the env
+// between assertions and so a runtime env change is honored.
+function getWorkspaceRoot(): string {
+  return process.env.PI_ENSEMBLE_WORKSPACE_ROOT ?? "/workspace";
+}
 
 // Tool argument names that conventionally carry filesystem paths.
 const PATH_ARG_KEYS = new Set(["path", "file_path", "cwd", "dir", "target", "filepath"]);
@@ -58,14 +69,15 @@ const FS_AGNOSTIC_TOOLS = new Set([
 ]);
 
 function isInsideWorkspace(candidate: string): boolean {
-  // Canonicalise: resolve symlinks. If the symlink target leaves /workspace,
-  // realpath surfaces that on its own.
+  const workspaceRoot = getWorkspaceRoot();
+  // Canonicalise: resolve symlinks. If the symlink target leaves the
+  // workspace, realpath surfaces that on its own.
   let resolved: string;
   try {
     resolved = realpathSync(candidate);
   } catch {
     // File doesn't exist yet (common for write tools). Fall back to a
-    // resolve-relative-to-parent check so a write to /workspace/new-file
+    // resolve-relative-to-parent check so a write to <workspace>/new-file
     // doesn't get blocked just because new-file doesn't exist yet.
     try {
       const parent = path.dirname(candidate);
@@ -77,9 +89,9 @@ function isInsideWorkspace(candidate: string): boolean {
       return true;
     }
   }
-  // Permit anything under WORKSPACE_ROOT (with a separator boundary so
+  // Permit anything under workspaceRoot (with a separator boundary so
   // /workspace2 isn't accidentally treated as /workspace).
-  return resolved === WORKSPACE_ROOT || resolved.startsWith(`${WORKSPACE_ROOT}/`);
+  return resolved === workspaceRoot || resolved.startsWith(`${workspaceRoot}/`);
 }
 
 export function checkSandboxFsArgs(
@@ -95,9 +107,10 @@ export function checkSandboxFsArgs(
     // Skip relative paths — they resolve to /workspace via the cwd.
     if (!value.startsWith("/")) continue;
     if (!isInsideWorkspace(value)) {
+      const workspaceRoot = getWorkspaceRoot();
       return {
         ok: false,
-        reason: `Path '${value}' resolves outside the sandbox workspace (/workspace). The sandbox-fs-guard refuses out-of-workspace filesystem access via tool arguments — use a relative path or reference a file under /workspace.`,
+        reason: `Path '${value}' resolves outside the sandbox workspace (${workspaceRoot}). The sandbox-fs-guard refuses out-of-workspace filesystem access via tool arguments — use a relative path or reference a file under ${workspaceRoot}.`,
       };
     }
   }
@@ -106,7 +119,7 @@ export function checkSandboxFsArgs(
 
 export function registerSandboxFsGuard(pi: ExtensionAPI): void {
   if (process.env.PI_ENSEMBLE_SANDBOX_MODE !== "1") return;
-  trace("sandbox-fs-guard: registered (workspace=/workspace)");
+  trace(`sandbox-fs-guard: registered (workspace=${getWorkspaceRoot()})`);
   pi.on("tool_call", (event) => {
     const verdict = checkSandboxFsArgs(event.toolName, event.input);
     if (!verdict.ok) {
