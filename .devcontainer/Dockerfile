@@ -142,8 +142,48 @@ RUN cd ${PI_ENSEMBLE_DIR} && ./install.sh || true
 # -----------------------------------------------------------------------------
 # 7. Workspace + sandbox-mode env
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# 8. Pre-fetch vipune's embedding model so it doesn't need network at first run
+# -----------------------------------------------------------------------------
+# Vipune downloads BAAI/bge-small-en-v1.5 from HuggingFace on first
+# semantic-search call. The pinned revision currently returns 404 from
+# vipune's HTTP client (URLs work via curl — likely a redirect / User-Agent
+# handling quirk), so vipune fails with "Failed to download embedding
+# model" on every fresh container. Fix: pre-fetch at build time. Cached at
+# /opt/hf-cache-seed/ AND copied into the vscode user's standard HF cache
+# location. The entrypoint script seeds the named-volume cache from
+# /opt/hf-cache-seed/ on container start, so users with existing
+# pi-ensemble-cache volumes don't need to `pi-ensemble prune` after the
+# upgrade — first launch of the new image automatically populates.
+USER root
+RUN pip3 install --no-cache-dir --break-system-packages "huggingface_hub>=0.20"
+USER vscode
+RUN huggingface-cli download \
+      BAAI/bge-small-en-v1.5 \
+      --revision 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a \
+      --cache-dir /home/vscode/.cache/huggingface/hub \
+    || echo "WARNING: pre-fetch of BAAI/bge-small-en-v1.5 failed at image build; vipune may need network at first use"
+USER root
+RUN if [ -d /home/vscode/.cache/huggingface ]; then \
+      cp -r /home/vscode/.cache/huggingface /opt/hf-cache-seed \
+      && chown -R vscode:vscode /opt/hf-cache-seed; \
+    fi
+
+# Entrypoint: seed ~/.cache/huggingface from the image's /opt/hf-cache-seed
+# if the user's mounted cache is empty (handles named-volume masking).
+COPY --chown=vscode:vscode .devcontainer/entrypoint.sh /usr/local/bin/pi-ensemble-entrypoint
+RUN chmod +x /usr/local/bin/pi-ensemble-entrypoint
+
+# -----------------------------------------------------------------------------
+# 9. Workspace + sandbox-mode env + entrypoint
+# -----------------------------------------------------------------------------
+USER vscode
 WORKDIR /workspace
 ENV PI_ENSEMBLE_SANDBOX_MODE=1
+
+# Entrypoint seeds the HF cache if needed, then exec's the CMD (or whatever
+# the user supplies after `docker run ... image <cmd>`).
+ENTRYPOINT ["/usr/local/bin/pi-ensemble-entrypoint"]
 
 # Default: drop the user into `pi` directly. The wrapper script overrides via
 # `pi-ensemble shell` for a bash prompt instead.

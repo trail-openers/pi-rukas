@@ -11,6 +11,7 @@
   "mounts": [
     "source=${localEnv:HOME}/.vipune,target=/home/vscode/.vipune,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.pi/agent/ensemble-runs,target=/home/vscode/.pi/agent/ensemble-runs,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.pi/agent/models.json,target=/home/vscode/.pi/agent/models.json,type=bind,readonly",
     "source=${localEnv:HOME}/.config/mcp,target=/home/vscode/.config/mcp,type=bind,readonly",
     "source=${localEnv:HOME}/.config/gh,target=/home/vscode/.config/gh,type=bind,readonly",
     "source=pi-ensemble-cache,target=/home/vscode/.cache,type=volume",
@@ -23,13 +24,20 @@
     "PI_ENSEMBLE_SANDBOX_MODE": "1",
     "HISTFILE": "/commandhistory/.bash_history"
   },
-  "//2": "Forward provider API keys + GH token from the host shell.",
+  "//2": "Forward provider API keys + GH token from the host shell. The terminal-native bin/pi-ensemble wrapper does ADDITIONAL pattern-based forwarding of any *_API_KEY / *_LLM_KEY var; that's not portable to devcontainer.json's static remoteEnv shape, so devcontainer users should add custom-provider tokens here by editing the file.",
   "remoteEnv": {
     "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}",
     "CEREBRAS_API_KEY": "${localEnv:CEREBRAS_API_KEY}",
     "PARALLEL_API_KEY": "${localEnv:PARALLEL_API_KEY}",
     "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}",
     "GROQ_API_KEY": "${localEnv:GROQ_API_KEY}",
+    "GOOGLE_API_KEY": "${localEnv:GOOGLE_API_KEY}",
+    "GEMINI_API_KEY": "${localEnv:GEMINI_API_KEY}",
+    "OPENROUTER_API_KEY": "${localEnv:OPENROUTER_API_KEY}",
+    "DEEPSEEK_API_KEY": "${localEnv:DEEPSEEK_API_KEY}",
+    "XAI_API_KEY": "${localEnv:XAI_API_KEY}",
+    "MISTRAL_API_KEY": "${localEnv:MISTRAL_API_KEY}",
+    "TRAIL_OPENERS_LLM_KEY": "${localEnv:TRAIL_OPENERS_LLM_KEY}",
     "GH_TOKEN": "${localEnv:GH_TOKEN}",
     "GITHUB_TOKEN": "${localEnv:GITHUB_TOKEN}"
   },
