@@ -14,6 +14,7 @@ import { registerModelPicker } from "./model-picker.ts";
 import { registerPermissionGuard } from "./permission-guard.ts";
 import { registerCheckReviewCapTool } from "./review-cap.ts";
 import { pruneOldRuns, registerRunsCommand } from "./runs.ts";
+import { registerSandboxFsGuard } from "./sandbox-fs-guard.ts";
 import * as sessionAutosave from "./session-autosave.ts";
 import { trace } from "./trace.ts";
 
@@ -28,7 +29,10 @@ export default async function (pi: ExtensionAPI) {
   // subagent-mode handler (escalates `ask` to parent over a Unix socket).
   if (process.env.PI_ENSEMBLE_SUBAGENT_MODE === "1") {
     registerPermissionGuard(pi);
-    trace("extension: subagent mode — permission-guard only");
+    // sandbox-fs-guard self-gates on PI_ENSEMBLE_SANDBOX_MODE; safe to call always.
+    // It's the only filesystem fence in sandbox mode (permission-guard short-circuits).
+    registerSandboxFsGuard(pi);
+    trace("extension: subagent mode — permission-guard + sandbox-fs-guard only");
     return;
   }
   // Load persisted model overrides BEFORE any spawn can ask for a model.
@@ -45,6 +49,10 @@ export default async function (pi: ExtensionAPI) {
   registerModelPicker(pi);
   registerAsyncJobsLifecycle(pi);
   registerPermissionGuard(pi);
+  // Sandbox FS guard — self-gates on PI_ENSEMBLE_SANDBOX_MODE=1. In sandbox
+  // mode the permission-guard short-circuits, so this is the only layer
+  // preventing symlink-traversal out of /workspace (CVE-2026-39861 class).
+  registerSandboxFsGuard(pi);
   // Lifecycle scrollback (#118) — register renderer + capture pi for sendMessage.
   lifecycle.attach(pi);
   // Session autosave (#23) — writes a structured summary to vipune on

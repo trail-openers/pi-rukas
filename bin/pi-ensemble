@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+#
+# pi-ensemble — launch pi inside the sandboxed Docker container.
+#
+# The container fence IS the trust boundary: inside, all permission gating is
+# disabled (PI_ENSEMBLE_SANDBOX_MODE=1) so the user is never prompted for a
+# tool call. Host state that should survive across sessions is bind-mounted:
+#
+#   - $HOME/.vipune/                       → /home/vscode/.vipune
+#       (cross-session project memory; preserves your accumulated vipune store)
+#   - $HOME/.pi/agent/ensemble-runs/       → /home/vscode/.pi/agent/ensemble-runs
+#       (transcripts; /runs browses these in both host AND sandbox sessions)
+#   - $HOME/.pi/agent/ensemble-models.json → same path inside container
+#       (per-role subagent model picks)
+#   - $HOME/.config/mcp/mcp.json           → same path inside container (RO)
+#       (host install.sh writes this; codebase-memory-mcp wiring lives here)
+#   - $HOME/.config/gh/                    → same path inside container (RO)
+#       (gh auth — alternative is to pass GH_TOKEN env)
+#
+# Caches (codebase-memory-mcp index, ~/.bun, ~/.cargo, shell history) live in
+# named volumes (`pi-ensemble-cache`, `pi-ensemble-bun-cache`, etc.) shared
+# across projects.
+#
+# Subcommands:
+#   (none)        Interactive `pi` session in the container (default)
+#   shell         Drop into bash inside the container
+#   rebuild       Rebuild the pi-ensemble image
+#   stop          Stop the running container for this project
+#   prune         Remove named volumes (DESTROYS sandbox caches — vipune/runs
+#                 stay safe because they're bind-mounted from host)
+#   logs          Tail container logs
+#   status        Show whether a container is running for this project
+#   --help        Show this help
+
+set -euo pipefail
+
+IMAGE="${PI_ENSEMBLE_IMAGE:-randomm/pi-ensemble:latest}"
+PROJECT_ROOT="$(cd "$(pwd)" && pwd -P)"
+PROJECT_NAME="$(basename "$PROJECT_ROOT" | tr -c 'A-Za-z0-9._-' '-' | head -c 40)"
+# Project-hash for container naming so concurrent `pi-ensemble` calls in
+# different projects get distinct containers.
+PROJECT_HASH="$(printf '%s' "$PROJECT_ROOT" | shasum -a 256 | cut -c1-12)"
+CONTAINER_NAME="pi-ensemble-${PROJECT_NAME}-${PROJECT_HASH}"
+
+usage() {
+  sed -n '/^#$/,/^$/p' "$0" | grep -E '^#' | sed 's/^# \{0,1\}//'
+  exit 0
+}
+
+require_docker() {
+  if ! command -v docker >/dev/null 2>&1; then
+    cat >&2 <<EOF
+!! Docker not found on PATH.
+   pi-ensemble (sandbox mode) needs Docker Desktop, Colima, or another
+   docker-compatible runtime. Install one of:
+     - Docker Desktop  https://docker.com
+     - Colima (macOS)  brew install colima && colima start
+     - OrbStack (macOS, paid)  https://orbstack.dev
+   Alternatively, use host-mode \`pi\` directly (with the legacy permission
+   system).
+EOF
+    exit 2
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    echo "!! Docker is installed but the daemon isn't running. Start Docker and retry." >&2
+    exit 2
+  fi
+}
+
+ensure_image() {
+  if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    echo "==> Image $IMAGE not present locally. Building from pi-ensemble repo..."
+    local repo_dir
+    repo_dir="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$0")")/.." && pwd)"
+    docker build -t "$IMAGE" -f "$repo_dir/.devcontainer/Dockerfile" "$repo_dir"
+  fi
+}
+
+build_mounts() {
+  # bash arrays via stdout — caller eval's. This is the cleanest way to assemble
+  # conditional -v flags without losing word boundaries.
+  local mounts=()
+  mounts+=(-v "$PROJECT_ROOT:/workspace:delegated")
+  # Bind-mount host state if present (each is independent — skip if missing)
+  if [ -d "$HOME/.vipune" ]; then
+    mounts+=(-v "$HOME/.vipune:/home/vscode/.vipune")
+  fi
+  if [ -d "$HOME/.pi/agent/ensemble-runs" ]; then
+    mounts+=(-v "$HOME/.pi/agent/ensemble-runs:/home/vscode/.pi/agent/ensemble-runs")
+  fi
+  if [ -f "$HOME/.pi/agent/ensemble-models.json" ]; then
+    mounts+=(-v "$HOME/.pi/agent/ensemble-models.json:/home/vscode/.pi/agent/ensemble-models.json:ro")
+  fi
+  if [ -f "$HOME/.config/mcp/mcp.json" ]; then
+    mounts+=(-v "$HOME/.config/mcp/mcp.json:/home/vscode/.config/mcp/mcp.json:ro")
+  fi
+  if [ -d "$HOME/.config/gh" ]; then
+    mounts+=(-v "$HOME/.config/gh:/home/vscode/.config/gh:ro")
+  fi
+  # Named volumes (caches, shell history) — shared across all projects
+  mounts+=(-v pi-ensemble-cache:/home/vscode/.cache)
+  mounts+=(-v pi-ensemble-bun-cache:/home/vscode/.bun)
+  mounts+=(-v pi-ensemble-cargo-cache:/home/vscode/.cargo)
+  mounts+=(-v pi-ensemble-history:/commandhistory)
+  printf '%s\n' "${mounts[@]}"
+}
+
+build_env() {
+  # Env passthrough (only set vars get forwarded)
+  local envs=()
+  local passthrough=(
+    ANTHROPIC_API_KEY
+    CEREBRAS_API_KEY
+    PARALLEL_API_KEY
+    OPENAI_API_KEY
+    GROQ_API_KEY
+    GH_TOKEN
+    GITHUB_TOKEN
+  )
+  for var in "${passthrough[@]}"; do
+    if [ -n "${!var-}" ]; then
+      envs+=(-e "$var=${!var}")
+    fi
+  done
+  # Container-only flags
+  envs+=(-e PI_ENSEMBLE_SANDBOX_MODE=1)
+  envs+=(-e "HISTFILE=/commandhistory/.bash_history")
+  printf '%s\n' "${envs[@]}"
+}
+
+run_container() {
+  local cmd=("$@")
+  local mounts envs
+  mapfile -t mounts < <(build_mounts)
+  mapfile -t envs < <(build_env)
+  docker run --rm -it \
+    --name "$CONTAINER_NAME" \
+    -w /workspace \
+    "${mounts[@]}" \
+    "${envs[@]}" \
+    "$IMAGE" \
+    "${cmd[@]}"
+}
+
+cmd_default() {
+  require_docker
+  ensure_image
+  run_container pi "$@"
+}
+
+cmd_shell() {
+  require_docker
+  ensure_image
+  run_container bash
+}
+
+cmd_rebuild() {
+  require_docker
+  local repo_dir
+  repo_dir="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$0")")/.." && pwd)"
+  docker build -t "$IMAGE" -f "$repo_dir/.devcontainer/Dockerfile" "$repo_dir"
+}
+
+cmd_stop() {
+  require_docker
+  if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
+    docker stop "$CONTAINER_NAME"
+  else
+    echo "No running pi-ensemble container for $PROJECT_ROOT"
+  fi
+}
+
+cmd_prune() {
+  require_docker
+  echo "This removes shared sandbox caches (codebase-memory-mcp index,"
+  echo "bun/cargo caches, shell history). Bind-mounted host state"
+  echo "(vipune, transcripts, model picks) is NOT affected."
+  read -r -p "Continue? [y/N] " ans
+  case "$ans" in
+    y|Y|yes) ;;
+    *) echo "Cancelled"; exit 0 ;;
+  esac
+  for vol in pi-ensemble-cache pi-ensemble-bun-cache pi-ensemble-cargo-cache pi-ensemble-history; do
+    docker volume rm "$vol" 2>/dev/null && echo "removed $vol" || echo "skip $vol (not present or in use)"
+  done
+}
+
+cmd_logs() {
+  require_docker
+  docker logs -f "$CONTAINER_NAME"
+}
+
+cmd_status() {
+  require_docker
+  if docker ps --format '{{.Names}}\t{{.Status}}' | grep -q "^$CONTAINER_NAME\b"; then
+    docker ps --format 'table {{.Names}}\t{{.Status}}' | grep -E "^(NAMES|$CONTAINER_NAME\b)"
+  else
+    echo "No running pi-ensemble container for $PROJECT_ROOT"
+  fi
+}
+
+# ----- dispatch -----
+case "${1:-}" in
+  ""|--)        shift || true; cmd_default "$@" ;;
+  shell)        cmd_shell ;;
+  rebuild)      cmd_rebuild ;;
+  stop)         cmd_stop ;;
+  prune)        cmd_prune ;;
+  logs)         cmd_logs ;;
+  status)       cmd_status ;;
+  -h|--help|help) usage ;;
+  *)            cmd_default "$@" ;;
+esac

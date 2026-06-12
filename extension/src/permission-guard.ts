@@ -875,6 +875,17 @@ let brokerDepsFactory: (() => BrokerDeps) | null = null;
  * subagent spawns.
  */
 function registerSubagentGuard(pi: ExtensionAPI): void {
+  // Sandbox mode short-circuit (PR #197). When pi-ensemble runs inside the
+  // Docker sandbox (`pi-ensemble` wrapper sets PI_ENSEMBLE_SANDBOX_MODE=1),
+  // the container fence IS the trust boundary. Every tool call passes
+  // through with no per-call gating, no socket broker, no overlay loading.
+  // This is the structural fix for the prompt-flood UX problem: the user
+  // moves into a sandboxed container instead of rubber-stamping prompts
+  // they no longer read. See bin/pi-ensemble + .devcontainer/.
+  if (process.env.PI_ENSEMBLE_SANDBOX_MODE === "1") {
+    trace("subagent-guard: PI_ENSEMBLE_SANDBOX_MODE=1 — bypassing all tool gating");
+    return;
+  }
   const role = process.env.PI_ENSEMBLE_ROLE;
   const socketPath = process.env.PI_ENSEMBLE_PERM_SOCKET;
   if (!role) {
@@ -1024,6 +1035,16 @@ export function makeBrokerDeps(): BrokerDeps | null {
 }
 
 export function registerPermissionGuard(pi: ExtensionAPI): void {
+  // Sandbox-mode short-circuit (PR #197). Inside the Docker sandbox (set by
+  // the `pi-ensemble` wrapper / .devcontainer.json) the container fence IS
+  // the trust boundary. No per-call prompts, no broker, no overlay loading.
+  // The parent Pi session has no UI gating, the user types in the TUI
+  // directly. agents.json entries become inert at runtime (still rendered
+  // into prompts for documentation; just not enforced).
+  if (process.env.PI_ENSEMBLE_SANDBOX_MODE === "1") {
+    trace("permission-guard: PI_ENSEMBLE_SANDBOX_MODE=1 — bypassing all tool gating");
+    return;
+  }
   // Subagent-mode firewall: when spawn.ts forwards pi-ensemble into a subagent
   // it also sets PI_ENSEMBLE_SUBAGENT_MODE=1. The subagent's pi-ensemble load
   // should ONLY register the permission-guard (no dispatch tools, no slash

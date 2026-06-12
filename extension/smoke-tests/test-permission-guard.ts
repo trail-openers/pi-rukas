@@ -826,6 +826,102 @@ assert(fallthrough === "ask", "Issue #168: catch-all `*: ask` fires when no wild
   assert(withCwd.endsWith("\n\n"), "L4: buildCwdHint terminates with blank line so prompt body starts cleanly");
 }
 
+// === L8 (PR #197): sandbox-mode short-circuits permission gating ===
+// When PI_ENSEMBLE_SANDBOX_MODE=1, registerPermissionGuard and
+// registerSubagentGuard return immediately without installing any tool_call
+// handler. The container fence becomes the trust boundary. Tested by
+// observing the registration is a no-op: pi-ensemble's `tool_call`
+// listener list doesn't grow when we re-register with sandbox mode on.
+{
+  // Minimal fake ExtensionAPI that captures handler registrations.
+  const handlers: Array<{ event: string; fn: unknown }> = [];
+  const fakeApi = {
+    on: (event: string, fn: unknown) => {
+      handlers.push({ event, fn });
+    },
+  } as unknown as Parameters<typeof import("../src/permission-guard.js").registerPermissionGuard>[0];
+
+  // Save + clear the env, run with sandbox mode on, verify zero handlers
+  // got registered. Restore env afterwards.
+  const prev = process.env.PI_ENSEMBLE_SANDBOX_MODE;
+  process.env.PI_ENSEMBLE_SANDBOX_MODE = "1";
+  try {
+    const { registerPermissionGuard } = await import("../src/permission-guard.js");
+    handlers.length = 0;
+    registerPermissionGuard(fakeApi);
+    const toolCallHandlers = handlers.filter((h) => h.event === "tool_call");
+    assert(
+      toolCallHandlers.length === 0,
+      "L8: PI_ENSEMBLE_SANDBOX_MODE=1 short-circuits registerPermissionGuard — no tool_call handler registered",
+    );
+
+    // session_start is also a guard concern (decisions cache load).
+    // Sandbox mode short-circuits before that's registered.
+    const sessionStartHandlers = handlers.filter((h) => h.event === "session_start");
+    assert(
+      sessionStartHandlers.length === 0,
+      "L8: PI_ENSEMBLE_SANDBOX_MODE=1 also skips session_start handler (no decisions cache load)",
+    );
+  } finally {
+    if (prev === undefined) delete process.env.PI_ENSEMBLE_SANDBOX_MODE;
+    else process.env.PI_ENSEMBLE_SANDBOX_MODE = prev;
+  }
+}
+
+// === L8 (PR #197): sandbox-fs-guard rejects out-of-workspace paths ===
+// CVE-2026-39861 class: symlink at /workspace/escape → /etc lets sandboxed
+// agents read host config. sandbox-fs-guard canonicalises path arguments
+// (`path` / `file_path` / `cwd` / `dir` / `target` / `filepath`) and rejects
+// resolved paths outside /workspace.
+{
+  const { checkSandboxFsArgs } = await import("../src/sandbox-fs-guard.js");
+
+  // FS-agnostic tools always pass.
+  assert(
+    checkSandboxFsArgs("websearch", { query: "/etc/passwd" }).ok === true,
+    "L8: sandbox-fs-guard: FS-agnostic tools (websearch) skip the path check entirely",
+  );
+  assert(
+    checkSandboxFsArgs("vipune", { query: "/etc/passwd" }).ok === true,
+    "L8: sandbox-fs-guard: vipune tool skips the path check",
+  );
+
+  // Relative paths inside /workspace pass.
+  assert(
+    checkSandboxFsArgs("read", { path: "src/index.ts" }).ok === true,
+    "L8: sandbox-fs-guard: relative paths permitted (resolve to /workspace via cwd)",
+  );
+
+  // Absolute paths outside /workspace are blocked.
+  const blocked = checkSandboxFsArgs("read", { path: "/etc/passwd" });
+  assert(
+    blocked.ok === false,
+    "L8: sandbox-fs-guard: absolute path /etc/passwd rejected",
+  );
+  if (!blocked.ok) {
+    assert(
+      blocked.reason.includes("outside the sandbox workspace"),
+      "L8: sandbox-fs-guard: rejection carries a clear reason",
+    );
+  }
+
+  // file_path / cwd / dir / target are all checked, not just `path`.
+  for (const key of ["file_path", "cwd", "dir", "target", "filepath"]) {
+    const v = checkSandboxFsArgs("write", { [key]: "/etc/shadow" });
+    assert(
+      v.ok === false,
+      `L8: sandbox-fs-guard: ${key} argument also gets canonicalised + checked`,
+    );
+  }
+
+  // Unknown path-arg keys are NOT checked (avoid false positives on tool
+  // calls that happen to have a `name: "/etc/foo"` string field).
+  assert(
+    checkSandboxFsArgs("read", { name: "/etc/passwd" }).ok === true,
+    "L8: sandbox-fs-guard: unknown argument keys are not auto-checked (only well-known FS keys)",
+  );
+}
+
 console.log("\n=== test-permission-guard summary ===");
 console.log(`exit ${exitCode}`);
 process.exit(exitCode);

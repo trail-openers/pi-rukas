@@ -191,13 +191,67 @@ else
 CBM_HINT
 fi
 
+# ---- 7. Sandbox-mode setup (PR #197) ----------------------------------------
+#
+# `pi-ensemble` (the wrapper) launches a Docker-sandboxed runtime where ALL
+# per-call permission gating is disabled (PI_ENSEMBLE_SANDBOX_MODE=1). The
+# container fence IS the trust boundary — host filesystem is protected by
+# container isolation; host state we want to preserve (vipune memory,
+# transcripts, model picks, MCP config, gh auth) is bind-mounted in.
+#
+# This block is OPTIONAL — if Docker isn't installed, host-mode `pi` still
+# works with the legacy permission system. The user picks which to invoke.
+
+PI_ENSEMBLE_IMAGE="${PI_ENSEMBLE_IMAGE:-randomm/pi-ensemble:latest}"
+
+if command -v docker >/dev/null 2>&1; then
+  if docker info >/dev/null 2>&1; then
+    echo "==> Building pi-ensemble sandbox image: $PI_ENSEMBLE_IMAGE"
+    echo "    (first build ~5-10 min; Docker layer cache makes subsequent builds fast)"
+    if docker build -t "$PI_ENSEMBLE_IMAGE" -f "$ENSEMBLE_DIR/.devcontainer/Dockerfile" "$ENSEMBLE_DIR"; then
+      echo "    image built: $PI_ENSEMBLE_IMAGE"
+    else
+      echo "!! Docker build failed — sandbox mode unavailable until you fix it."
+      echo "   Re-run \`./install.sh\` after fixing. Host-mode \`pi\` still works."
+    fi
+
+    # Symlink bin/pi-ensemble into ~/.local/bin/ (creating if missing).
+    local_bin="$HOME/.local/bin"
+    mkdir -p "$local_bin"
+    ln -sfn "$ENSEMBLE_DIR/bin/pi-ensemble" "$local_bin/pi-ensemble"
+    echo "==> Symlinked: $local_bin/pi-ensemble -> $ENSEMBLE_DIR/bin/pi-ensemble"
+
+    case ":$PATH:" in
+      *":$local_bin:"*) ;;
+      *)
+        echo "!! WARNING: $local_bin is NOT on your \$PATH."
+        echo "   Add this to your shell rc:"
+        echo "     export PATH=\"\$HOME/.local/bin:\$PATH\""
+        ;;
+    esac
+  else
+    echo "==> Docker installed but daemon not running — skipping sandbox image build."
+    echo "    Start Docker and re-run \`./install.sh\` to build the image."
+  fi
+else
+  echo "==> Docker not found — skipping sandbox mode setup."
+  echo "    To enable the sandboxed \`pi-ensemble\` runtime later, install Docker"
+  echo "    (Docker Desktop / Colima / OrbStack), then re-run \`./install.sh\`."
+  echo "    Host-mode \`pi\` (with the legacy permission system) works regardless."
+fi
+
 cat <<EOF
 
 ==> Install complete.
 
 Next steps:
-  - Smoke test: in any git repo, run \`pi\` and try \`/start\`.
-  - See \`/ensemble-debug\` for the live configuration overview.
+  - **Sandboxed mode (recommended)**: in any git repo, run \`pi-ensemble\`
+    to launch Pi inside a Docker container. Zero permission prompts inside.
+    Your host \`~/.vipune/\` and \`~/.pi/agent/ensemble-runs/\` are bind-
+    mounted in, so memories and transcripts survive across host + container.
+  - **Host mode (legacy)**: in any git repo, run \`pi\` directly. Uses the
+    layered permission system; expect interactive prompts on novel commands.
+  - See \`/ensemble-debug\` (inside Pi) for the live configuration overview.
   - Configure subagent models with \`/ensemble-model\`.
   - Inside a project, run /mcp to confirm codebase_memory is connected (7 direct tools).
   - One-shot index per project on first use:

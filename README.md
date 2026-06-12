@@ -135,17 +135,52 @@ cd pi-ensemble
 ./install.sh
 ```
 
-The installer builds the role prompts, symlinks the bundled skills into `~/.pi/agent/skills/`, installs the extension's deps, and registers the extension with Pi.
+The installer builds the role prompts, symlinks the bundled skills into `~/.pi/agent/skills/`, installs the extension's deps, registers the extension with Pi, **builds the sandbox Docker image (if Docker is installed)**, and symlinks the `pi-ensemble` wrapper into `~/.local/bin/`.
 
-Verify:
+Verify (sandbox mode, recommended):
+
+```bash
+cd ~/some/git/repo
+pi-ensemble
+# pi launches inside a Docker container with PI_ENSEMBLE_SANDBOX_MODE=1.
+# Zero permission prompts inside; vipune + transcripts bind-mounted from host.
+> /ensemble-debug
+# should list 9 slash commands, 9 tools, and the per-role model table.
+```
+
+Verify (host mode, legacy):
 
 ```bash
 cd ~/some/git/repo
 pi
 # in the Pi prompt:
 > /ensemble-debug
-# should list 9 slash commands, 9 tools, and the per-role model table.
+# uses the 3-tier permission system; expect interactive prompts on novel commands.
 ```
+
+## Sandboxed mode (recommended)
+
+`pi-ensemble` launches Pi inside a Docker container where the container fence IS the trust boundary — no per-call permission prompts. The host's `~/.vipune/` (project memory), `~/.pi/agent/ensemble-runs/` (transcripts), `~/.pi/agent/ensemble-models.json` (per-role model picks), `~/.config/mcp/mcp.json` (codebase-memory-mcp wiring), and `~/.config/gh/` (gh auth) are bind-mounted in, so your accumulated state — memories, model picks, run history — survives across host and container modes seamlessly.
+
+**Wrapper subcommands:**
+
+| Command | What it does |
+|---|---|
+| `pi-ensemble` | Interactive `pi` session in the container (default) |
+| `pi-ensemble shell` | Drop into bash inside the container |
+| `pi-ensemble rebuild` | Rebuild the pi-ensemble image (after pulling new pi-ensemble code) |
+| `pi-ensemble stop` | Stop the running container for this project |
+| `pi-ensemble prune` | Remove sandbox caches (bind-mounted host state is NOT touched) |
+| `pi-ensemble logs` | Tail container logs |
+| `pi-ensemble status` | Show whether a container is running for this project |
+
+**Why a sandbox.** Host-mode Pi gates every bash / tool call against a per-role allow/deny/ask policy. In practice the LLM emits novel command shapes constantly — chained pipes, new git subcommands, novel paths — and the user ends up rubber-stamping prompts they no longer read (dangerous failure mode). The sandbox moves the trust boundary from per-call gating to the container fence: full filesystem isolation from the host, all tools allowed inside. The image bakes in every CLI the role prompts assume on `$PATH` (Pi, bun, node, git, gh, vipune, oo, codebase-memory-mcp, ctx7).
+
+**What v1 does NOT include.** The container has unrestricted network egress for v1. A follow-up (see issues) adds an init-firewall.sh + `--cap-add=NET_ADMIN` allowlist for `api.anthropic.com`, `github.com`, npm/pypi/crates.io, parallel.ai, ctx7. Until then, the sandbox protects your filesystem but not your network.
+
+**Symlink-traversal mitigation.** Even Anthropic's reference devcontainer had a symlink-traversal escape (CVE-2026-39861, fixed Apr 2026). pi-ensemble ships with `extension/src/sandbox-fs-guard.ts` that canonicalizes any filesystem path argument and rejects ones pointing outside `/workspace`.
+
+**Host mode is still available.** `pi` continues to work with the layered permission system for users who don't have Docker, prefer the legacy UX, or are iterating on pi-ensemble itself. Choice per invocation: `pi-ensemble` for sandbox, `pi` for host.
 
 ## How it works
 

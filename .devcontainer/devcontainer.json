@@ -1,0 +1,47 @@
+{
+  "name": "pi-ensemble",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "remoteUser": "vscode",
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
+  "//": "Mounts: bind-mount host state that should persist across sessions (vipune memory, transcripts, model picks, MCP config, gh auth). Named volumes for caches that are container-local.",
+  "mounts": [
+    "source=${localEnv:HOME}/.vipune,target=/home/vscode/.vipune,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.pi/agent/ensemble-runs,target=/home/vscode/.pi/agent/ensemble-runs,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.config/mcp,target=/home/vscode/.config/mcp,type=bind,readonly",
+    "source=${localEnv:HOME}/.config/gh,target=/home/vscode/.config/gh,type=bind,readonly",
+    "source=pi-ensemble-cache,target=/home/vscode/.cache,type=volume",
+    "source=pi-ensemble-bun-cache,target=/home/vscode/.bun,type=volume",
+    "source=pi-ensemble-cargo-cache,target=/home/vscode/.cargo,type=volume",
+    "source=pi-ensemble-history,target=/commandhistory,type=volume"
+  ],
+  "//1": "Sandbox mode strips all permission gating inside the container. The container fence is the trust boundary.",
+  "containerEnv": {
+    "PI_ENSEMBLE_SANDBOX_MODE": "1",
+    "HISTFILE": "/commandhistory/.bash_history"
+  },
+  "//2": "Forward provider API keys + GH token from the host shell.",
+  "remoteEnv": {
+    "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}",
+    "CEREBRAS_API_KEY": "${localEnv:CEREBRAS_API_KEY}",
+    "PARALLEL_API_KEY": "${localEnv:PARALLEL_API_KEY}",
+    "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}",
+    "GROQ_API_KEY": "${localEnv:GROQ_API_KEY}",
+    "GH_TOKEN": "${localEnv:GH_TOKEN}",
+    "GITHUB_TOKEN": "${localEnv:GITHUB_TOKEN}"
+  },
+  "//3": "v1 ships without an egress firewall — the container can reach any network. Filed as follow-up: ship init-firewall.sh + --cap-add=NET_ADMIN.",
+  "runArgs": [],
+  "//4": "If a user opens this from VS Code / Cursor, they get a terminal at /workspace with `pi` ready to invoke.",
+  "postCreateCommand": "echo 'pi-ensemble container ready. Type `pi` to launch the orchestrator. Run /start in any project.'",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  }
+}
