@@ -177,16 +177,39 @@ build_env() {
   printf '%s\n' "${envs[@]}"
 }
 
+build_host_aliases() {
+  # Hostnames that exist on the host's network (Mesh VPN mesh DNS, LAN, /etc/hosts)
+  # but won't resolve inside the container. Use `--add-host name:ip` to teach the
+  # container's resolver. List is colon-separated `name:ip` pairs in
+  # $PI_ENSEMBLE_HOST_ALIASES (env), with one well-known default:
+  #
+  #   PI_ENSEMBLE_HOST_ALIASES="fieldbox:192.0.2.10,myserver:192.0.2.20"
+  #
+  # The default below registers `fieldbox` (the LLM gateway documented in your
+  # ~/.pi/agent/models.json). Override the env to add more or change the IP.
+  local aliases=()
+  local default_aliases="fieldbox:192.0.2.10"
+  local raw="${PI_ENSEMBLE_HOST_ALIASES:-$default_aliases}"
+  IFS=',' read -ra pairs <<<"$raw"
+  for pair in "${pairs[@]}"; do
+    [ -z "$pair" ] && continue
+    aliases+=(--add-host="$pair")
+  done
+  printf '%s\n' "${aliases[@]}"
+}
+
 run_container() {
   local cmd=("$@")
-  local mounts envs
+  local mounts envs hosts
   mapfile -t mounts < <(build_mounts)
   mapfile -t envs < <(build_env)
+  mapfile -t hosts < <(build_host_aliases)
   docker run --rm -it \
     --name "$CONTAINER_NAME" \
     -w /workspace \
     "${mounts[@]}" \
     "${envs[@]}" \
+    "${hosts[@]}" \
     "$IMAGE" \
     "${cmd[@]}"
 }
