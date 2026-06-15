@@ -47,7 +47,7 @@ import { createInterface } from "node:readline";
 import { adapterFor } from "./model-adapters.ts";
 import { resolveModel } from "./models.ts";
 import { type BrokerHandle, startBroker } from "./permission-broker.ts";
-import { makeBrokerDeps } from "./permission-guard.ts";
+import { isParentInTrustMode, makeBrokerDeps } from "./permission-guard.ts";
 import { type RunningState, emptyRunningState, ingestEvent } from "./progress.ts";
 import { ROLES, isRoleName } from "./roles.ts";
 import { trace } from "./trace.ts";
@@ -365,7 +365,16 @@ export async function spawnSpecialist(
   // The parent broker prompts the user via ctx.ui.select, caches via the
   // existing decisions.json plumbing, and replies on the socket. Both the
   // forward and the broker are opt-out via PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD=1.
-  const subagentGuardEnabled = process.env.PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD !== "1";
+  // Subagent guard wiring depends on parent's trust state:
+  //   - Sandbox or interactive host (trust mode): subagent gets PI_ENSEMBLE_TRUST_MODE=1,
+  //     no broker socket, no pi-ensemble extension forward — subagent's permission-guard
+  //     short-circuits the same way the parent does.
+  //   - Headless / strict-opt-in: full broker socket + pi-ensemble extension forward so
+  //     subagent escalates `ask` verdicts to the parent (or hard-denies if no UI).
+  //   - PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD=1: forces guard off (debugging escape hatch).
+  const parentTrustMode = isParentInTrustMode();
+  const subagentGuardEnabled =
+    process.env.PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD !== "1" && !parentTrustMode;
   let permSocketPath: string | undefined;
   let broker: BrokerHandle | undefined;
   if (subagentGuardEnabled) {
@@ -439,6 +448,12 @@ export async function spawnSpecialist(
     if (permSocketPath) {
       childEnv.PI_ENSEMBLE_PERM_SOCKET = permSocketPath;
     }
+  } else if (parentTrustMode) {
+    // Propagate trust mode so any future subagent-side pi-ensemble load (e.g.
+    // if --extension forwarding is re-enabled) short-circuits the same way the
+    // parent does. Sandbox already sets PI_ENSEMBLE_SANDBOX_MODE on every child
+    // via the wrapper env; this covers the interactive-host case.
+    childEnv.PI_ENSEMBLE_TRUST_MODE = "1";
   }
 
   const child = spawn(invocation.command, invocation.args, {

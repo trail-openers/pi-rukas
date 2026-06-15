@@ -2,6 +2,39 @@
 
 Symptoms → causes → fixes. Most issues here come from running an older sandbox image; the first move on anything weird is usually `./install.sh` from the pi-ensemble repo to rebuild + refresh.
 
+## Permissions
+
+### Host-mode pi-ensemble is asking me to approve every command
+
+**Symptom:** Running `pi` (host mode, no sandbox) in an interactive terminal: every novel bash / tool call prompts "Allow once / Allow always / Deny once / Deny always". Within a few minutes, dozens of prompts. Unusable.
+
+**Cause:** You have `PI_ENSEMBLE_STRICT_PERMISSIONS=1` set in your shell rc. Trust-mode (no per-call prompts in interactive host) is the default; strict-mode is opt-in.
+
+**Fix:** Unset the var.
+
+```bash
+# Check
+env | grep PI_ENSEMBLE_STRICT_PERMISSIONS
+
+# Remove from your shell rc (~/.zshrc, ~/.bashrc, etc.) then:
+unset PI_ENSEMBLE_STRICT_PERMISSIONS
+exec $SHELL -l   # re-source rc
+```
+
+Relaunch `pi` — no more prompts. The agent runs as your UID with your credentials; that's the deal in interactive host mode. Use `pi-ensemble` (sandbox) if you want confined execution.
+
+PR: [#215](https://github.com/randomm/pi-ensemble/pull/215)
+
+### Headless `pi -p` hard-denies all novel commands
+
+**Symptom:** `pi -p "do something"` in a script / CI returns immediately with "Tool 'bash' requires approval (no UI available)" for any command not in the role's allowlist.
+
+**Cause:** Headless mode (no TTY) preserves the legacy strict ask-flow with no human to consent → hard-deny. This is deliberate safety: silent rubber-stamping in automation contexts would be worse than failing closed.
+
+**Fix:** Either (a) widen the allowlist in `.pi/permissions.json` for that project, (b) run inside the sandbox where there's no per-call gating, or (c) if you genuinely need an unrestricted automated run, prepend `PI_ENSEMBLE_SANDBOX_MODE=1 pi -p ...` — but understand this disables ALL guard layers and should ONLY be used in a context already sandboxed by other means (Docker, VM).
+
+PR: [#215](https://github.com/randomm/pi-ensemble/pull/215)
+
 ## Sandbox launch
 
 ### `MCP: 0/N servers` — codebase_memory not connected

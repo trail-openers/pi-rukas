@@ -863,6 +863,44 @@ let parentCtx: any = null;
 let brokerDepsFactory: (() => BrokerDeps) | null = null;
 
 /**
+ * Trust mode — pi-ensemble does NOT enforce per-call permissions when there's
+ * no boundary worth enforcing. Three cases:
+ *
+ *   1. Sandbox (PI_ENSEMBLE_SANDBOX_MODE=1) — container fence isolates; we
+ *      already trust the container, not the per-call gate.
+ *   2. Interactive host (hasUI=true, no strict opt-in) — the parent runs as
+ *      the user's own UID with the user's own credentials. Per-call prompts
+ *      provide ZERO meaningful protection (the agent already has full FS /
+ *      network / credential access) but emit ~30 prompts/minute, training
+ *      users to rubber-stamp and degrading attention on prompts that DO
+ *      matter. Honest answer: trust the agent or don't run it.
+ *   3. Headless (no UI) — STAYS strict. No human present to consent, so
+ *      `ask` verdicts hard-deny. CI/cron contexts where the agent runs
+ *      without a person in the loop are genuinely adversarial threat
+ *      surfaces; the deny is meaningful.
+ *
+ * Opt-in escape hatch: PI_ENSEMBLE_STRICT_PERMISSIONS=1 restores the legacy
+ * ask-flow for users who actively want it back in interactive host mode.
+ */
+export function isInTrustMode(hasUI: boolean): boolean {
+  if (process.env.PI_ENSEMBLE_SANDBOX_MODE === "1") return true;
+  if (process.env.PI_ENSEMBLE_TRUST_MODE === "1") return true;
+  if (process.env.PI_ENSEMBLE_STRICT_PERMISSIONS === "1") return false;
+  return hasUI;
+}
+
+/**
+ * Read parent's trust-mode status for spawn.ts. parentCtx is captured at
+ * session_start; if it's missing (very early spawn), assume strict to fail
+ * safe — the subagent will then use the broker fallback, which is correct.
+ */
+export function isParentInTrustMode(): boolean {
+  if (process.env.PI_ENSEMBLE_SANDBOX_MODE === "1") return true;
+  if (process.env.PI_ENSEMBLE_STRICT_PERMISSIONS === "1") return false;
+  return parentCtx?.hasUI === true;
+}
+
+/**
  * Subagent-mode permission guard. Runs INSIDE spawned Pi subagents (when
  * PI_ENSEMBLE_SUBAGENT_MODE=1 + pi-ensemble forwarded via --extension by
  * spawn.ts). Same 3-tier resolution as the parent guard, but `ask` verdicts
@@ -884,6 +922,14 @@ function registerSubagentGuard(pi: ExtensionAPI): void {
   // they no longer read. See bin/pi-ensemble + .devcontainer/.
   if (process.env.PI_ENSEMBLE_SANDBOX_MODE === "1") {
     trace("subagent-guard: PI_ENSEMBLE_SANDBOX_MODE=1 — bypassing all tool gating");
+    return;
+  }
+  // Trust mode propagated from parent (interactive host without strict opt-in).
+  // Parent set PI_ENSEMBLE_TRUST_MODE=1 in our env via spawn.ts — same effect
+  // as sandbox: no per-call gating, no socket broker. See isInTrustMode in
+  // permission-guard.ts for the full rationale.
+  if (process.env.PI_ENSEMBLE_TRUST_MODE === "1") {
+    trace("subagent-guard: PI_ENSEMBLE_TRUST_MODE=1 — bypassing all tool gating");
     return;
   }
   const role = process.env.PI_ENSEMBLE_ROLE;
@@ -1253,6 +1299,10 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
 
   pi.on("tool_call", async (event, ctx) => {
     try {
+      // Trust-mode short-circuit (see isInTrustMode for rationale). Interactive
+      // host + sandbox both bypass; headless + strict-opt-in fall through to
+      // the legacy verdict / prompt flow.
+      if (isInTrustMode(ctx.hasUI === true)) return;
       const command =
         event.toolName === "bash" ? ((event.input as { command?: string })?.command ?? "") : "";
       const verdict = resolveToolPermission(

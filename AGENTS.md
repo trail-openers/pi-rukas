@@ -82,11 +82,19 @@ Each module's responsibilities are documented in the jsdoc header of its source 
 | `skill/<name>/SKILL.md` | Skills auto-symlinked to `~/.pi/agent/skills/` |
 | `pi-prompts/*.md` | Slash-command body (read at runtime, no build) |
 
-**Permission model — top-level vs subagents.**
+**Permission model — trust mode is the default.**
 
-*Top-level session* (the parent `pi` you launch): pi-ensemble's `permission-guard.ts` is the active enforcer. It intercepts every tool call, resolves a verdict via three layers (`.pi/permissions.json` project config → `~/.pi/agent/permissions.json` global config → `agents.json`), prompts the user for `ask`, and caches "Allow always" / "Deny always" decisions in `.pi/decisions.json`. `pi-permissions` (if installed) adds a separate interactive layer on top of this.
+pi-ensemble's `permission-guard.ts` runs in one of three states. The active state is decided by `isInTrustMode(hasUI)`:
 
-*Subagents* (developer, ops, explore, code-review-specialist, adversarial-developer): spawned with `--no-extensions`, so **pi-ensemble's own extension is NOT loaded** inside subagent processes. There is no runtime enforcement from pi-ensemble for subagent tool calls — the role's system prompt (assembled from `agents.json` `agent.<role>.permission`) tells the role what it may use, but a misbehaving subagent isn't blocked at the tool layer. Hard confinement requires Pi's own built-in checks or sandboxing.
+| State | Trigger | Behavior |
+|---|---|---|
+| **Trust mode** | sandbox env, OR interactive (hasUI=true) without strict-opt-in, OR explicit `PI_ENSEMBLE_TRUST_MODE=1` | tool_call handler returns immediately. No verdict resolution, no prompts, no decisions cache. |
+| **Strict** | `PI_ENSEMBLE_STRICT_PERMISSIONS=1` in interactive mode | Legacy 3-layer verdict resolution (`.pi/permissions.json` project → `~/.pi/agent/permissions.json` global → `agents.json`), prompts on `ask`, caches "Allow always" / "Deny always" in `.pi/decisions.json`. |
+| **Headless safety** | `!hasUI` (e.g. `pi -p`) | Verdict resolution runs as in strict mode, but `ask` hard-denies (no human to consent). Safety boundary for automation contexts. |
+
+*Why trust mode is the default in interactive host:* pi-ensemble running as the user's own UID has no agent-tool-layer gate that can meaningfully constrain a misbehaving subagent — same FS / network / credential access as the user. Per-call prompts at runtime volumes (~30/minute) become theatre: rubber-stamped or ignored. Sandbox is the path for confined execution.
+
+*Subagents* (developer, ops, explore, code-review-specialist, adversarial-developer): when parent is in trust mode, `spawn.ts` propagates `PI_ENSEMBLE_TRUST_MODE=1` to the child env and skips the per-spawn broker socket. When parent is in strict / headless mode, the subagent's pi-ensemble extension is forwarded via `--extension` so the subagent guard can escalate `ask` verdicts to the parent over a Unix socket. Either way: **the role's system prompt is the actual behavioral guidance**; the runtime gate is either off (trust) or a soft fence (strict).
 
 *Extension auto-forward to subagents*: `discoverInstalledExtensions` in `extension/src/spawn.ts` scans `~/.pi/agent/extensions/` (or `$PI_AGENT_DIR/extensions`) and re-injects every installed extension into the subagent via `--extension <real-path>`, except pi-ensemble itself (matched by `package.json.name === "@randomm/pi-ensemble"` to prevent recursive spawn). This means `pi-claude-auth` (Anthropic Claude Code identity headers) and MCP bridges like `pi-mcp-adapter` reach subagents automatically once installed in the canonical location — no env-var wiring needed.
 

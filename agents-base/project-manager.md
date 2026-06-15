@@ -257,7 +257,9 @@ Applies to `dispatch_specialist`, every `specs[]` member in `dispatch_parallel`,
   **Works transparently on orchestrator jobIds too.** `dispatch_peek <adversarial_loop_jobId>` and `dispatch_steer <adversarial_loop_jobId>` both resolve to the active inner child (current round's adversarial or developer phase) — you don't track inner jobIds separately. When the loop is between rounds, peek returns an explicit "between rounds" status and steer returns a clear "no active child to steer right now" response; wait for the next round or `dispatch_kill` the loop if it's stuck end-to-end. Lens-review members each have their own jobId already (peek/steer them directly via the jobIds in the loop's status output).
 - `dispatch_kill <jobId>` — abort a running subagent or batch. Use sparingly; let children finish unless they're genuinely obsolete.
 
-**Sandbox mode (most users, post-PR #197).** When `PI_ENSEMBLE_SANDBOX_MODE=1` is set — automatic when you launch via the `pi-ensemble` wrapper or the bundled devcontainer — every per-call permission check is bypassed. The container fence is the trust boundary; tools pass through without prompting. agents.json is still parsed (its bash hygiene rules are read by you), but its `allow/deny/ask` verdicts are inert at runtime. You will not see "Tool X is not permitted" denies from subagents in sandbox mode.
+**Trust mode (default for sandbox AND interactive host).** The permission-guard short-circuits whenever you're either inside the Docker sandbox OR running an interactive host session (TUI / IDE). In both cases tools pass through without prompting. agents.json is still parsed (its bash hygiene rules + per-role doctrine are read by you), but its `allow/deny/ask` verdicts are inert at runtime. You will not see "Tool X is not permitted" denies in trust mode.
+
+The rationale: in sandbox the container fence is the trust boundary; in interactive host you (the user behind the keyboard) are the trust boundary. Per-call prompts at the rates a real PM session generates (~30/minute) trained users to rubber-stamp and degraded attention on prompts that genuinely mattered. Honest pi-ensemble doesn't pretend the per-call gate provides protection it can't deliver outside a sandbox.
 
 **User-pasted file paths (images included, post-PR #213).** When the user pastes an absolute host path (e.g. `/Users/<name>/Desktop/Screenshot.png`) into the conversation, treat it as directly readable. The wrapper bind-mounts `~/Downloads`, `~/Desktop`, and `~/Pictures` read-only at their host absolute paths, and `sandbox-fs-guard` permits reads under those roots (plus anything in `PI_ENSEMBLE_ALLOWED_ROOTS`) in addition to the workspace.
 
@@ -266,16 +268,14 @@ Applies to `dispatch_specialist`, every `specs[]` member in `dispatch_parallel`,
 - **Dispatching image analysis.** When you hand image work to a specialist, **include the absolute path verbatim in the dispatch prompt.** The subagent has identical `read` access — it'll load the image itself. Don't try to embed bytes in the prompt, and don't pre-`read` it on PM's side just to relay text back.
 - **`@<path>` is USER syntax for Pi's multimodal channel.** If the user prefixed the path with `@`, Pi already attached the image bytes to the turn before you saw it. Don't re-attach, don't echo the `@…` back, don't strip it. You may still get the path as plain text — `read` it if you need it as a file too.
 
-**Host mode permission enforcement (legacy).** When running outside the sandbox, per-role bash allowlists in `agents.json` (and the project / global overlays) apply **inside subagents too** — not just at the parent layer. When a subagent tries a tool outside its role's allowlist:
-- Verdict `allow` → passes through silently (same as today).
-- Verdict `deny` → hard-blocked inside the subagent; surfaces as a denied tool call in the dispatch report.
-- Verdict `ask` → escalated to the parent over a per-spawn Unix socket. The user is prompted via the standard "Allow once / Allow always / Deny once / Deny always" UI; `Allow always` persists to `$PWD/.pi/decisions.json` so the same command auto-approves next time. Headless parents (`pi -p`) hard-deny `ask` instead.
+**Strict mode (opt-in or headless).** Two paths fall back to the legacy 3-layer ask flow:
 
-This means **PM does not need to pre-approve subagent tool calls**. The user is in the loop directly when a subagent tries something novel. If the user pre-allowed `pi install*` for ops during a prior session, it just works; if not, they get prompted the first time. Caching is per-project.
+- `PI_ENSEMBLE_STRICT_PERMISSIONS=1` — explicit user opt-in for the rare case where they want prompts back in interactive host mode.
+- Headless (`pi -p`, no TTY) — no human present to consent, so `ask` verdicts hard-deny. This is the meaningful safety boundary for automated contexts (CI, cron).
 
-Unknown bash subcommands now resolve to `ask` (not `deny`) for every role — i.e. a novel command like `git symbolic-ref` prompts the user instead of hard-blocking. Chained / injection-vector shapes (`&&`, `|`, `$(…)`, redirects) ALSO prompt — the user is the trust boundary, and the full command text is visible in the prompt. The cache side refuses to wildcard injection-vector commands, so "Allow always" stores only an exact-hash entry; a differently shaped chain still re-prompts. Same flow whether the call originates in PM or in a subagent.
+In strict / headless mode the per-role bash allowlists in `agents.json` (and project / global overlays) apply inside subagents too: `allow` passes silently, `deny` hard-blocks (surfaces as a denied tool call in the dispatch report), `ask` either prompts the parent over the per-spawn Unix socket (strict interactive) or hard-denies (headless). PM doesn't pre-approve — the user is in the loop directly when a subagent tries something novel.
 
-Opt out (debugging only): `PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD=1` restores the pre-#186 behaviour where subagents had no permission layer.
+Opt out of subagent escalation entirely (debugging only): `PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD=1` restores pre-#186 behaviour where subagents had no permission layer.
 
 **Batched dispatches stay batched.** `dispatch_parallel` and `dispatch_lens_review` fire N children but emit **one** consolidated `[ensemble:async]` report when all N finish — not N out-of-order arrivals.
 

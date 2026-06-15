@@ -868,6 +868,73 @@ assert(fallthrough === "ask", "Issue #168: catch-all `*: ask` fires when no wild
   }
 }
 
+// === L9: trust-mode bypasses per-call gating in interactive host mode ===
+// pi-ensemble enforces NO per-call permissions when there's no boundary worth
+// enforcing. Three short-circuit conditions: sandbox env, interactive host
+// (hasUI=true, no strict opt-in), explicit TRUST_MODE env. Headless mode
+// (!hasUI) preserves the legacy hard-deny safety boundary. See isInTrustMode
+// in permission-guard.ts for the rationale.
+{
+  const savedSandbox = process.env.PI_ENSEMBLE_SANDBOX_MODE;
+  const savedStrict = process.env.PI_ENSEMBLE_STRICT_PERMISSIONS;
+  const savedTrust = process.env.PI_ENSEMBLE_TRUST_MODE;
+  // Clear all three before each case to start from a clean slate.
+  const reset = () => {
+    delete process.env.PI_ENSEMBLE_SANDBOX_MODE;
+    delete process.env.PI_ENSEMBLE_STRICT_PERMISSIONS;
+    delete process.env.PI_ENSEMBLE_TRUST_MODE;
+  };
+  try {
+    const { isInTrustMode } = await import("../src/permission-guard.js");
+
+    reset();
+    assert(
+      isInTrustMode(true) === true,
+      "L9: interactive host (hasUI=true, no env) → trust mode ON",
+    );
+    assert(
+      isInTrustMode(false) === false,
+      "L9: headless (hasUI=false, no env) → trust mode OFF (legacy hard-deny path preserved)",
+    );
+
+    reset();
+    process.env.PI_ENSEMBLE_SANDBOX_MODE = "1";
+    assert(
+      isInTrustMode(true) === true && isInTrustMode(false) === true,
+      "L9: sandbox env → trust mode ON regardless of hasUI",
+    );
+
+    reset();
+    process.env.PI_ENSEMBLE_TRUST_MODE = "1";
+    assert(
+      isInTrustMode(false) === true,
+      "L9: explicit TRUST_MODE env (set by spawn.ts on subagents) → trust mode ON even without UI",
+    );
+
+    reset();
+    process.env.PI_ENSEMBLE_STRICT_PERMISSIONS = "1";
+    assert(
+      isInTrustMode(true) === false,
+      "L9: STRICT_PERMISSIONS opt-in restores legacy ask flow even when interactive",
+    );
+
+    reset();
+    process.env.PI_ENSEMBLE_STRICT_PERMISSIONS = "1";
+    process.env.PI_ENSEMBLE_SANDBOX_MODE = "1";
+    assert(
+      isInTrustMode(true) === true,
+      "L9: sandbox env wins over STRICT_PERMISSIONS (sandbox is structurally trusted regardless)",
+    );
+  } finally {
+    if (savedSandbox === undefined) delete process.env.PI_ENSEMBLE_SANDBOX_MODE;
+    else process.env.PI_ENSEMBLE_SANDBOX_MODE = savedSandbox;
+    if (savedStrict === undefined) delete process.env.PI_ENSEMBLE_STRICT_PERMISSIONS;
+    else process.env.PI_ENSEMBLE_STRICT_PERMISSIONS = savedStrict;
+    if (savedTrust === undefined) delete process.env.PI_ENSEMBLE_TRUST_MODE;
+    else process.env.PI_ENSEMBLE_TRUST_MODE = savedTrust;
+  }
+}
+
 // === L8 (PR #197): sandbox-fs-guard rejects out-of-workspace paths ===
 // CVE-2026-39861 class: symlink at /workspace/escape → /etc lets sandboxed
 // agents read host config. sandbox-fs-guard canonicalises path arguments
