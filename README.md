@@ -189,10 +189,12 @@ pi
 | `pi-ensemble -r` | `pi -r` passthrough — resume a previous sandbox session for this project (see note on cross-mode resume below) |
 | `pi-ensemble shell` | Drop into bash inside the container |
 | `pi-ensemble rebuild` | Rebuild the pi-ensemble image (after pulling new pi-ensemble code) |
-| `pi-ensemble stop` | Stop the running container for this project |
+| `pi-ensemble stop` | Stop all running containers for this project (multi-session safe) |
 | `pi-ensemble prune` | Remove sandbox caches (bind-mounted host state is NOT touched) |
-| `pi-ensemble logs` | Tail container logs |
-| `pi-ensemble status` | Show whether a container is running for this project |
+| `pi-ensemble logs` | Tail container logs (errors with a name list if multiple sessions are running) |
+| `pi-ensemble status` | Show all running containers for this project |
+
+> **Multiple concurrent sessions.** Each `pi-ensemble` invocation gets its own container (per-invocation random suffix on the name). You can run several sessions in the same project simultaneously — e.g., long-form work in one terminal, a quick investigation in another. Bind-mounted state (`sessions/`, vipune, `models.json`) is concurrency-safe at the storage layer. `pi-ensemble stop` stops them all; `pi-ensemble status` lists them all.
 
 > **Session resume note.** Pi scopes sessions by absolute project path. The same project at `~/projects/foo` on the host mounts at `/workspace` inside the container, so host-mode `pi -r` sessions and sandbox-mode `pi-ensemble -r` sessions live in different scope buckets and don't cross-resume — even though both modes share `~/.pi/agent/sessions/` via bind-mount. Within a single mode, resume works as expected.
 

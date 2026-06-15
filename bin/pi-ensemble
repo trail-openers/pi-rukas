@@ -46,10 +46,17 @@ set -euo pipefail
 IMAGE="${PI_ENSEMBLE_IMAGE:-randomm/pi-ensemble:latest}"
 PROJECT_ROOT="$(cd "$(pwd)" && pwd -P)"
 PROJECT_NAME="$(basename "$PROJECT_ROOT" | tr -c 'A-Za-z0-9._-' '-' | head -c 40)"
-# Project-hash for container naming so concurrent `pi-ensemble` calls in
-# different projects get distinct containers.
+# Project-hash so concurrent `pi-ensemble` calls in DIFFERENT projects get
+# distinct container-name prefixes. Same-project concurrency relies on the
+# RUN_SUFFIX below, not this hash.
 PROJECT_HASH="$(printf '%s' "$PROJECT_ROOT" | shasum -a 256 | cut -c1-12)"
-CONTAINER_NAME="pi-ensemble-${PROJECT_NAME}-${PROJECT_HASH}"
+# BASE_NAME identifies the project; CONTAINER_NAME identifies the specific
+# `pi-ensemble` invocation. The RUN_SUFFIX lets two terminals open sessions
+# in the same project without colliding on the docker --name flag. The
+# stop/status/logs subcommands enumerate `${BASE_NAME}-*` to find sessions.
+BASE_NAME="pi-ensemble-${PROJECT_NAME}-${PROJECT_HASH}"
+RUN_SUFFIX="$(head -c 4 /dev/urandom | xxd -p)"
+CONTAINER_NAME="${BASE_NAME}-${RUN_SUFFIX}"
 
 usage() {
   sed -n '/^#$/,/^$/p' "$0" | grep -E '^#' | sed 's/^# \{0,1\}//'
@@ -395,11 +402,18 @@ cmd_rebuild() {
 
 cmd_stop() {
   require_docker
-  if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
-    docker stop "$CONTAINER_NAME"
-  else
+  local matches
+  matches="$(docker ps --format '{{.Names}}' | grep -E "^${BASE_NAME}-" || true)"
+  if [ -z "$matches" ]; then
     echo "No running pi-ensemble container for $PROJECT_ROOT"
+    return
   fi
+  local count
+  count=$(printf '%s\n' "$matches" | wc -l | tr -d ' ')
+  echo "Stopping $count pi-ensemble container(s) for $PROJECT_ROOT:"
+  printf '%s\n' "$matches" | while IFS= read -r name; do
+    docker stop "$name"
+  done
 }
 
 cmd_prune() {
@@ -419,16 +433,32 @@ cmd_prune() {
 
 cmd_logs() {
   require_docker
-  docker logs -f "$CONTAINER_NAME"
+  local matches count
+  matches="$(docker ps --format '{{.Names}}' | grep -E "^${BASE_NAME}-" || true)"
+  count=$(printf '%s' "$matches" | grep -c . || true)
+  if [ "$count" -eq 0 ]; then
+    echo "No running pi-ensemble container for $PROJECT_ROOT" >&2
+    exit 1
+  fi
+  if [ "$count" -eq 1 ]; then
+    docker logs -f "$matches"
+    return
+  fi
+  echo "Multiple pi-ensemble containers running for $PROJECT_ROOT:" >&2
+  printf '%s\n' "$matches" | sed 's/^/  /' >&2
+  echo "Specify one: docker logs -f <name>" >&2
+  exit 1
 }
 
 cmd_status() {
   require_docker
-  if docker ps --format '{{.Names}}\t{{.Status}}' | grep -q "^$CONTAINER_NAME\b"; then
-    docker ps --format 'table {{.Names}}\t{{.Status}}' | grep -E "^(NAMES|$CONTAINER_NAME\b)"
-  else
+  local matches
+  matches="$(docker ps --format '{{.Names}}\t{{.Status}}' | grep -E "^${BASE_NAME}-" || true)"
+  if [ -z "$matches" ]; then
     echo "No running pi-ensemble container for $PROJECT_ROOT"
+    return
   fi
+  printf 'NAMES\tSTATUS\n%s\n' "$matches"
 }
 
 # ----- dispatch -----

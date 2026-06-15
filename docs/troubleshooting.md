@@ -213,11 +213,21 @@ PR: [#207](https://github.com/randomm/pi-ensemble/pull/207)
 
 ### Container hostnames change between sandbox runs
 
-**Symptom:** Container names like `pi-ensemble-lantern--8cbaf2dccfbd` appear in `docker ps`. New name each launch.
+**Symptom:** Container names like `pi-ensemble-lantern--8cbaf2dccfbd-a1b2c3d4` appear in `docker ps`. New name each launch.
 
-**Cause:** Wrapper hashes the project root path for the container name to keep concurrent sessions in different projects distinct. Not a bug.
+**Cause:** Wrapper composes the container name as `pi-ensemble-<project>-<project-hash>-<run-suffix>`. The project-hash disambiguates DIFFERENT projects (avoiding collisions in `docker ps`). The 8-hex run-suffix disambiguates concurrent sessions in the SAME project. Not a bug.
 
-**Not a fix:** The name doesn't affect functionality — only how containers show up in `docker ps`. `pi-ensemble stop` resolves the name from `$PWD`.
+**Not a fix:** The name doesn't affect functionality — only how containers show up in `docker ps`. `pi-ensemble stop` enumerates all containers matching the project's `<base>-*` prefix and stops them. `pi-ensemble status` lists all of them.
+
+### `docker: Error response from daemon: Conflict. The container name "/pi-ensemble-..." is already in use`
+
+**Symptom:** Trying to start a second `pi-ensemble` in the same project errors with a name-conflict from docker.
+
+**Cause:** Pre-#217 the container name was deterministic per project, so two concurrent sessions in the same project collided on `docker run --name`.
+
+**Fix:** Pull + rebuild — `cd ~/.config/opencode/pi-ensemble && git pull && ./install.sh`. Post-#217 each `pi-ensemble` invocation gets a unique 8-hex run-suffix; concurrent sessions in the same project Just Work.
+
+PR: [#217](https://github.com/randomm/pi-ensemble/pull/217)
 
 ## State + caches
 
