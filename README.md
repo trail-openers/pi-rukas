@@ -228,6 +228,12 @@ PI_ENSEMBLE_IMAGE_DIRS="$HOME/work-images" pi-ensemble
 
 For your provider to actually use the image, `~/.pi/agent/models.json` must mark the model as multimodal: `"input": ["text", "image"]`. Built-in providers (Anthropic / OpenAI / Google) know vision capabilities natively; custom OpenAI-compatible providers (e.g. fieldbox's Qwen3.6) need the explicit hint.
 
+**Docker-based MCP servers.** If your project's `.pi/mcp.json` launches MCP servers via `docker run` (e.g. database MCPs like `postgres-mcp`, vendor-bundled tools), set `PI_ENSEMBLE_DOCKER_SOCKET=1` so the wrapper bind-mounts the host's docker socket into the sandbox. The CLI inside the sandbox then talks to the **host** docker daemon — spawned MCP servers are sibling containers on the host (not nested inside our sandbox), visible in your host's `docker ps`. SECURITY: mounting the docker socket grants root-equivalent host access from inside the sandbox; the container fence is weakened. Only enable when your workflow actually needs it.
+
+```bash
+PI_ENSEMBLE_DOCKER_SOCKET=1 pi-ensemble
+```
+
 ## How it works
 
 The parent `pi` you launch becomes the **project manager (PM)**. When you fire a registered slash command, the extension injects PM doctrine into the system prompt for that turn (one-shot, no global bleed). The PM then runs through the workflow body and calls tools to dispatch specialists.
@@ -458,6 +464,7 @@ All optional. Defaults are reasonable for typical use.
 | `PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD` | user (debugging) | `1` disables the subagent permission-broker socket. Redundant in sandbox / interactive host where the guard already short-circuits; meaningful only under `PI_ENSEMBLE_STRICT_PERMISSIONS=1`. |
 | `PI_ENSEMBLE_STRICT_PERMISSIONS` | user (host mode) | `1` restores the legacy per-call ask-flow in interactive host mode. Default OFF — pi-ensemble does not enforce per-call permissions in interactive host mode (no real boundary exists; prompts are theatre at runtime volumes). Use this only if you want prompts back. |
 | `PI_ENSEMBLE_TRUST_MODE` | internal (spawn.ts) | `1` propagated from parent to subagent when parent is in trust mode. Mirror of `PI_ENSEMBLE_SANDBOX_MODE` for the interactive-host case. Not a user-facing knob. |
+| `PI_ENSEMBLE_DOCKER_SOCKET` | user (opt-in) | `1` bind-mounts the host's `/var/run/docker.sock` into the sandbox + the entrypoint chmods it accessible. Required when `.pi/mcp.json` launches MCP servers via `docker run`. Grants root-equivalent host access — weakens the sandbox fence; only enable for workflows that need it. |
 | `GH_TOKEN` / `GITHUB_TOKEN` | host shell, or wrapper | If set on host, forwarded directly. If unset, wrapper extracts via `gh auth token` (handles macOS Keychain). Container's `gh` reads it for auth. |
 | `*_API_KEY`, `*_LLM_KEY` | host shell | Pattern-auto-forwarded by the wrapper. Catches custom-provider tokens (e.g. `TRAIL_OPENERS_LLM_KEY`) without per-name config. |
 | `PI_ENSEMBLE_IMAGE_DIRS` | user | Colon-separated list of host dirs to bind-mount RO for image drag-and-drop (`@file` syntax). Default: `$HOME/Downloads:$HOME/Desktop:$HOME/Pictures`. Replaces default if set. |

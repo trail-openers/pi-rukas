@@ -111,6 +111,46 @@ PR: [#205](https://github.com/randomm/pi-ensemble/pull/205)
 
 PR: [#203](https://github.com/randomm/pi-ensemble/pull/203)
 
+## Docker-based MCP servers
+
+### `MCP: Failed to connect to <name>: spawn docker ENOENT`
+
+**Symptom:** Project-level MCP servers configured in `.pi/mcp.json` (or `.mcp.json`) with `command: "docker"` (e.g. `docker run -i some-mcp-image`) fail to connect inside the sandbox. Host-mode `pi` works fine.
+
+**Cause:** Two missing pieces in the default sandbox:
+1. Until this fix, the `docker` CLI wasn't installed in the image (`spawn docker ENOENT` = binary not on PATH).
+2. The host's docker socket isn't bind-mounted by default.
+
+**Fix:** Set `PI_ENSEMBLE_DOCKER_SOCKET=1` before launching:
+
+```bash
+PI_ENSEMBLE_DOCKER_SOCKET=1 pi-ensemble
+# Or persist in your shell rc:
+export PI_ENSEMBLE_DOCKER_SOCKET=1
+```
+
+The wrapper bind-mounts `/var/run/docker.sock` into the sandbox; the entrypoint relaxes its perms so the `vscode` user can connect. The `docker` CLI then talks to the **host** docker daemon — spawned MCP servers are sibling containers on the host (`docker ps` on the host shows them).
+
+**Security note:** mounting the docker socket grants root-equivalent host access from inside the sandbox. The container-fence-as-trust-boundary story is weakened. Only enable when you actually need docker-based MCPs AND you trust the agent that's running.
+
+PR: [#216](https://github.com/randomm/pi-ensemble/pull/216)
+
+### `docker: permission denied while trying to connect to the Docker daemon socket`
+
+**Symptom:** With `PI_ENSEMBLE_DOCKER_SOCKET=1`, the socket is mounted but `docker ps` inside the sandbox returns "permission denied".
+
+**Cause:** The entrypoint's `chmod 666 /var/run/docker.sock` didn't fire. Likely an outdated image (pre-#216 entrypoint runs as `vscode`, can't chmod a root-owned socket).
+
+**Fix:** Rebuild the image.
+
+```bash
+cd ~/.config/opencode/pi-ensemble && ./install.sh
+```
+
+Verify post-rebuild: `pi-ensemble shell` → `ls -la /var/run/docker.sock` shows `srw-rw-rw-`.
+
+PR: [#216](https://github.com/randomm/pi-ensemble/pull/216)
+
 ## Vision / images
 
 > **Reminder:** Pi attaches a file as multimodal input only when its path is prefixed with `@` (e.g. `@/Users/you/Downloads/foo.png describe this`). Dragging an image into the terminal pastes the path but does NOT add the `@` — you have to type it yourself. Without it, Pi treats the path as plain text and never sends image bytes.

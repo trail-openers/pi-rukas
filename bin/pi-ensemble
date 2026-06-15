@@ -198,6 +198,22 @@ build_mounts() {
     mounts+=(-v "$dir:$dir:ro")
   done
 
+  # Host docker socket — opt-in via PI_ENSEMBLE_DOCKER_SOCKET=1. Required
+  # when .pi/mcp.json (project-level MCP config) launches MCP servers via
+  # `docker run ...`. The CLI inside the sandbox talks to the HOST docker
+  # daemon, so spawned containers are SIBLINGS of the sandbox (not nested);
+  # they appear in `docker ps` on the host. SECURITY: mounting the socket
+  # grants root-equivalent host access from inside the sandbox. The fence-
+  # as-trust-boundary story (#200 / #215) is weakened — only enable when
+  # your workflow genuinely needs it and you trust the agent that's running.
+  if [ "${PI_ENSEMBLE_DOCKER_SOCKET-}" = "1" ]; then
+    if [ -S /var/run/docker.sock ]; then
+      mounts+=(-v "/var/run/docker.sock:/var/run/docker.sock")
+    else
+      echo "pi-ensemble: warning — PI_ENSEMBLE_DOCKER_SOCKET=1 but /var/run/docker.sock not found on host" >&2
+    fi
+  fi
+
   # Named volumes (caches, shell history) — shared across all projects
   # using the same image, container-scoped, NOT bind-mounted from host.
   mounts+=(-v pi-ensemble-cache:/home/vscode/.cache)
