@@ -141,12 +141,13 @@ build_mounts() {
     mounts+=(-v pi-ensemble-sessions:/home/vscode/.pi/agent/sessions)
   fi
 
-  # ensemble-models.json — pi-ensemble's per-role model picks. Only bind
-  # if present on host. Otherwise the container uses its own (defaults).
-  # Optional — model picks via /ensemble-model inside the container will
-  # persist via the named state volume if we add one (TODO follow-up).
+  # ensemble-models.json — pi-ensemble's per-role model picks. Bound RW
+  # (not :ro) so /ensemble-model inside the sandbox can update picks and
+  # those updates persist back to the host's ~/.pi/agent/ensemble-models.json
+  # (symmetric with the sessions/ bind from PR #206). Only bind if present
+  # on host; otherwise the container uses its own (defaults) and won't write.
   if [ -f "$HOME/.pi/agent/ensemble-models.json" ]; then
-    mounts+=(-v "$HOME/.pi/agent/ensemble-models.json:/home/vscode/.pi/agent/ensemble-models.json:ro")
+    mounts+=(-v "$HOME/.pi/agent/ensemble-models.json:/home/vscode/.pi/agent/ensemble-models.json")
   fi
 
   # models.json — Pi's PROVIDER config (custom OpenAI-compatible endpoints
@@ -176,6 +177,26 @@ build_mounts() {
   if [ -d "$HOME/.config/gh" ]; then
     mounts+=(-v "$HOME/.config/gh:/home/vscode/.config/gh:ro")
   fi
+
+  # Image directories — for drag-and-drop into Pi via @file syntax. Bind-
+  # mounted READ-ONLY at the host's absolute paths so a path pasted by the
+  # terminal (e.g. /Users/you/Downloads/screenshot.png) resolves inside.
+  # sandbox-fs-guard is also told about these via PI_ENSEMBLE_ALLOWED_ROOTS
+  # so the read tool doesn't block paths outside the project workspace.
+  # Default: $HOME/Downloads, $HOME/Desktop, $HOME/Pictures. Override via
+  # PI_ENSEMBLE_IMAGE_DIRS="dir1:dir2" (colon-separated, replaces default).
+  # Extend via PI_ENSEMBLE_EXTRA_IMAGE_DIRS="dir1:dir2" (appends).
+  local default_image_dirs="$HOME/Downloads:$HOME/Desktop:$HOME/Pictures"
+  local image_dirs_raw="${PI_ENSEMBLE_IMAGE_DIRS:-$default_image_dirs}"
+  if [ -n "${PI_ENSEMBLE_EXTRA_IMAGE_DIRS-}" ]; then
+    image_dirs_raw="${image_dirs_raw}:${PI_ENSEMBLE_EXTRA_IMAGE_DIRS}"
+  fi
+  IFS=':' read -ra image_dirs <<<"$image_dirs_raw"
+  for dir in "${image_dirs[@]}"; do
+    [ -z "$dir" ] && continue
+    [ -d "$dir" ] || continue
+    mounts+=(-v "$dir:$dir:ro")
+  done
 
   # Named volumes (caches, shell history) — shared across all projects
   # using the same image, container-scoped, NOT bind-mounted from host.
@@ -274,6 +295,28 @@ build_env() {
   # so the guard's "outside the workspace" check works for the new mount
   # shape (#207 — was hard-coded /workspace).
   envs+=(-e "PI_ENSEMBLE_WORKSPACE_ROOT=$PROJECT_ROOT")
+  # Additional allowed roots — sandbox-fs-guard treats paths under these as
+  # in-bounds in addition to the workspace root. Wrapper sets this to the
+  # same list of image-dirs build_mounts bind-mounts, so drag-and-dropped
+  # images from $HOME/Downloads etc. work without blanket-allowing all FS
+  # access. Mirrors PI_ENSEMBLE_IMAGE_DIRS / EXTRA_IMAGE_DIRS so the
+  # mount-list and guard-allow-list stay in sync.
+  local default_image_dirs="$HOME/Downloads:$HOME/Desktop:$HOME/Pictures"
+  local guard_roots="${PI_ENSEMBLE_IMAGE_DIRS:-$default_image_dirs}"
+  if [ -n "${PI_ENSEMBLE_EXTRA_IMAGE_DIRS-}" ]; then
+    guard_roots="${guard_roots}:${PI_ENSEMBLE_EXTRA_IMAGE_DIRS}"
+  fi
+  # Filter to existing dirs only (extant_dirs preserves order, skips missing)
+  local extant_dirs=""
+  IFS=':' read -ra dir_list <<<"$guard_roots"
+  for dir in "${dir_list[@]}"; do
+    [ -z "$dir" ] && continue
+    [ -d "$dir" ] || continue
+    extant_dirs="${extant_dirs:+$extant_dirs:}$dir"
+  done
+  if [ -n "$extant_dirs" ]; then
+    envs+=(-e "PI_ENSEMBLE_ALLOWED_ROOTS=$extant_dirs")
+  fi
   envs+=(-e "HISTFILE=/commandhistory/.bash_history")
   printf '%s\n' "${envs[@]}"
 }

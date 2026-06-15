@@ -31,8 +31,7 @@ import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { trace } from "./trace.js";
 
-// Sandbox workspace root inside the container — anything outside this is
-// off-limits to filesystem arguments after canonicalisation.
+// Sandbox workspace root inside the container — the primary in-bounds dir.
 //
 // Read from PI_ENSEMBLE_WORKSPACE_ROOT env, set by bin/pi-ensemble wrapper
 // to the project's host absolute path (e.g. /Users/dev/projects/lantern)
@@ -45,6 +44,18 @@ import { trace } from "./trace.js";
 // between assertions and so a runtime env change is honored.
 function getWorkspaceRoot(): string {
   return process.env.PI_ENSEMBLE_WORKSPACE_ROOT ?? "/workspace";
+}
+
+// Additional allowed roots — colon-separated list (PATH-like) of absolute
+// directories that should be treated as in-bounds in addition to the
+// workspace root. Wrapper populates this with the image-drag-and-drop dirs
+// ($HOME/Downloads, /Desktop, /Pictures) bind-mounted RO so paths pasted
+// by the terminal resolve inside the container AND the guard permits the
+// read. Empty / unset → only the workspace root is allowed (status quo).
+function getAllowedRoots(): string[] {
+  const raw = process.env.PI_ENSEMBLE_ALLOWED_ROOTS;
+  if (!raw) return [];
+  return raw.split(":").filter((p) => p.length > 0);
 }
 
 // Tool argument names that conventionally carry filesystem paths.
@@ -69,9 +80,8 @@ const FS_AGNOSTIC_TOOLS = new Set([
 ]);
 
 function isInsideWorkspace(candidate: string): boolean {
-  const workspaceRoot = getWorkspaceRoot();
   // Canonicalise: resolve symlinks. If the symlink target leaves the
-  // workspace, realpath surfaces that on its own.
+  // allowed area, realpath surfaces that on its own.
   let resolved: string;
   try {
     resolved = realpathSync(candidate);
@@ -89,9 +99,27 @@ function isInsideWorkspace(candidate: string): boolean {
       return true;
     }
   }
-  // Permit anything under workspaceRoot (with a separator boundary so
-  // /workspace2 isn't accidentally treated as /workspace).
-  return resolved === workspaceRoot || resolved.startsWith(`${workspaceRoot}/`);
+  // Permit anything under the workspace root OR any additional allowed
+  // root (separator boundary so /workspace2 isn't accidentally treated as
+  // /workspace, and /Users/dev/DownloadsX isn't treated as inside
+  // /Users/dev/Downloads).
+  const roots = [getWorkspaceRoot(), ...getAllowedRoots()];
+  for (const root of roots) {
+    // Resolve symlinks on the root too — macOS-style `/tmp` → `/private/tmp`
+    // would otherwise defeat the prefix-match for paths the user thinks
+    // are inside.
+    let rootResolved: string;
+    try {
+      rootResolved = realpathSync(root);
+    } catch {
+      // Root doesn't exist on disk — skip (can't be inside a non-existent dir).
+      continue;
+    }
+    if (resolved === rootResolved || resolved.startsWith(`${rootResolved}/`)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function checkSandboxFsArgs(
@@ -108,9 +136,12 @@ export function checkSandboxFsArgs(
     if (!value.startsWith("/")) continue;
     if (!isInsideWorkspace(value)) {
       const workspaceRoot = getWorkspaceRoot();
+      const extras = getAllowedRoots();
+      const allowed =
+        extras.length > 0 ? `${workspaceRoot} (or any of: ${extras.join(", ")})` : workspaceRoot;
       return {
         ok: false,
-        reason: `Path '${value}' resolves outside the sandbox workspace (${workspaceRoot}). The sandbox-fs-guard refuses out-of-workspace filesystem access via tool arguments — use a relative path or reference a file under ${workspaceRoot}.`,
+        reason: `Path '${value}' resolves outside the sandbox workspace. The sandbox-fs-guard permits paths under ${allowed}. For images outside these roots, either drop them into the project first OR set PI_ENSEMBLE_EXTRA_IMAGE_DIRS to include their parent directory before launching pi-ensemble.`,
       };
     }
   }

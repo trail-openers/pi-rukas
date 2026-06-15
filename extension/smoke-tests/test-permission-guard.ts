@@ -980,6 +980,77 @@ assert(fallthrough === "ask", "Issue #168: catch-all `*: ask` fires when no wild
   }
 }
 
+// === PR #213: PI_ENSEMBLE_ALLOWED_ROOTS extends the FS boundary ===
+// For image drag-and-drop: the wrapper bind-mounts $HOME/Downloads,
+// $HOME/Desktop, $HOME/Pictures and exports their paths in
+// PI_ENSEMBLE_ALLOWED_ROOTS. The fs-guard treats those as in-bounds.
+{
+  const { checkSandboxFsArgs } = await import("../src/sandbox-fs-guard.js");
+
+  const workspace = realpathSync(mkdtempSync(path.join(os.tmpdir(), "pi-ensemble-fs-ws-")));
+  const downloads = realpathSync(mkdtempSync(path.join(os.tmpdir(), "pi-ensemble-fs-dl-")));
+  const pictures = realpathSync(mkdtempSync(path.join(os.tmpdir(), "pi-ensemble-fs-pics-")));
+  const outside = realpathSync(mkdtempSync(path.join(os.tmpdir(), "pi-ensemble-fs-outside-")));
+
+  const prevWs = process.env.PI_ENSEMBLE_WORKSPACE_ROOT;
+  const prevAllowed = process.env.PI_ENSEMBLE_ALLOWED_ROOTS;
+  try {
+    process.env.PI_ENSEMBLE_WORKSPACE_ROOT = workspace;
+    process.env.PI_ENSEMBLE_ALLOWED_ROOTS = `${downloads}:${pictures}`;
+
+    // Path inside workspace → permitted (existing behavior).
+    const wsPath = checkSandboxFsArgs("read", { path: path.join(workspace, "code.ts") });
+    assert(
+      wsPath.ok === true,
+      "PR #213: workspace path still permitted with allowed-roots set",
+    );
+
+    // Path inside an ALLOWED root → permitted (the new behavior).
+    const dlPath = checkSandboxFsArgs("read", { path: path.join(downloads, "screenshot.png") });
+    assert(
+      dlPath.ok === true,
+      "PR #213: paths inside PI_ENSEMBLE_ALLOWED_ROOTS dirs are permitted",
+    );
+
+    const picPath = checkSandboxFsArgs("read", { path: path.join(pictures, "photo.jpg") });
+    assert(
+      picPath.ok === true,
+      "PR #213: multiple allowed roots — all of them permit reads",
+    );
+
+    // Path OUTSIDE both workspace and allowed roots → still rejected.
+    const outsidePath = checkSandboxFsArgs("read", { path: path.join(outside, "secret.txt") });
+    assert(
+      outsidePath.ok === false,
+      "PR #213: paths outside workspace AND outside allowed roots still rejected",
+    );
+    if (!outsidePath.ok) {
+      assert(
+        outsidePath.reason.includes(downloads) && outsidePath.reason.includes(pictures),
+        "PR #213: rejection reason lists all permitted roots so the LLM can react",
+      );
+    }
+
+    // Empty PI_ENSEMBLE_ALLOWED_ROOTS → only workspace permits (regression
+    // guard for the workspace-only mode).
+    process.env.PI_ENSEMBLE_ALLOWED_ROOTS = "";
+    const dlAfterUnset = checkSandboxFsArgs("read", { path: path.join(downloads, "x.png") });
+    assert(
+      dlAfterUnset.ok === false,
+      "PR #213: clearing PI_ENSEMBLE_ALLOWED_ROOTS reverts to workspace-only",
+    );
+  } finally {
+    if (prevWs === undefined) delete process.env.PI_ENSEMBLE_WORKSPACE_ROOT;
+    else process.env.PI_ENSEMBLE_WORKSPACE_ROOT = prevWs;
+    if (prevAllowed === undefined) delete process.env.PI_ENSEMBLE_ALLOWED_ROOTS;
+    else process.env.PI_ENSEMBLE_ALLOWED_ROOTS = prevAllowed;
+    rmSync(workspace, { recursive: true, force: true });
+    rmSync(downloads, { recursive: true, force: true });
+    rmSync(pictures, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+}
+
 console.log("\n=== test-permission-guard summary ===");
 console.log(`exit ${exitCode}`);
 process.exit(exitCode);

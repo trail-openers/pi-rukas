@@ -78,6 +78,52 @@ PR: [#205](https://github.com/randomm/pi-ensemble/pull/205)
 
 PR: [#203](https://github.com/randomm/pi-ensemble/pull/203)
 
+## Vision / images
+
+> **Reminder:** Pi attaches a file as multimodal input only when its path is prefixed with `@` (e.g. `@/Users/you/Downloads/foo.png describe this`). Dragging an image into the terminal pastes the path but does NOT add the `@` — you have to type it yourself. Without it, Pi treats the path as plain text and never sends image bytes.
+
+### Image dropped but model never mentions it / treats it as text
+
+**Symptom:** Pasted path appears in the prompt, no error, model's reply ignores the image entirely or describes the path string instead of the image.
+
+**Cause:** Missing `@` prefix. Pi only triggers multimodal attachment for `@<path>` tokens; a bare absolute path is just a string.
+
+**Fix:** Re-send with `@` prefixed. Use `Home` / `Ctrl-A` after the drop to jump to the start of the pasted path, type `@`, submit.
+
+### Dropped image rejected by sandbox-fs-guard
+
+**Symptom:** After dragging an image into the `pi-ensemble` session and prefixing `@`, Pi's `read` tool errors with `"Path '/Users/.../Downloads/foo.png' resolves outside the sandbox workspace"`.
+
+**Cause:** The image lives outside the project workspace and outside the wrapper's default image-dir list (`$HOME/Downloads`, `$HOME/Desktop`, `$HOME/Pictures`).
+
+**Fix:** Add the dir to `PI_ENSEMBLE_EXTRA_IMAGE_DIRS` before launching, OR move/copy the image into your project workspace.
+
+```bash
+PI_ENSEMBLE_EXTRA_IMAGE_DIRS="$HOME/Documents/screenshots" pi-ensemble
+```
+
+The wrapper bind-mounts each listed dir RO and tells `sandbox-fs-guard` to permit reads under those roots.
+
+PR: [#213](https://github.com/randomm/pi-ensemble/pull/213)
+
+### Image attached but model says "I can't see images"
+
+**Symptom:** `@image.png` is included in the prompt, the file exists, but the model response says it can't see / process images.
+
+**Cause:** Pi only routes image bytes to providers whose model entry declares `"input": ["text", "image"]` in `~/.pi/agent/models.json`. Custom OpenAI-compatible providers default to text-only.
+
+**Fix:** Edit `~/.pi/agent/models.json` — add `"input": ["text", "image"]` to the model entry. Built-in providers (Anthropic Claude, OpenAI GPT-4o, Google Gemini) know vision capabilities natively; custom providers need the hint.
+
+```jsonc
+{
+  "id": "qwen3.6-35b",
+  "input": ["text", "image"],   // ← add this
+  // ... rest of entry
+}
+```
+
+PR: [#213](https://github.com/randomm/pi-ensemble/pull/213)
+
 ## Session resume
 
 ### `pi-ensemble -r` opens the picker but selecting a session does nothing

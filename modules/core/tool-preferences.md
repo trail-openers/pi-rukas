@@ -48,6 +48,7 @@ Use `jq` for structured data:
 
 - **Read files**: Use Read tool, not `cat`/`head`/`tail`
 - **Edit files**: Only if your agent has edit/write permission; otherwise report changes to PM
+- **Absolute paths from PM (images, screenshots, etc.)**: paths under `PI_ENSEMBLE_ALLOWED_ROOTS` (default: `~/Downloads`, `~/Desktop`, `~/Pictures`) are readable in sandbox mode in addition to the workspace root. When PM dispatches you with an absolute host path, call `read` directly — no `find`/`ls`/`file` probing. If `read` errors with "outside the sandbox workspace", report that back to PM verbatim (do not work around).
 
 ## FORBIDDEN in Bash
 

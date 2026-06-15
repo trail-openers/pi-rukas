@@ -212,6 +212,22 @@ PI_ENSEMBLE_HOST_ALIASES="fieldbox:192.0.2.10,myserver:192.0.2.20" pi-ensemble
 
 Comma-separated `name:ip` pairs. The IPs must be reachable from the host (the container's network rides the host's stack via Docker bridge); Mesh VPN-only hostnames work as long as your host can route to the mesh network IP.
 
+**Drag-and-drop images.** Pi uses `@<path>` to attach a file as multimodal input — e.g. `@/Users/you/Downloads/screenshot.png describe this`. Dragging an image into the terminal pastes its absolute path; **you then type `@` in front of the pasted path yourself** (the terminal doesn't add it). Without the `@` prefix, Pi treats the path as plain text in the prompt and never attaches the bytes.
+
+Typical flow: drag image → cursor lands after the pasted path → press `Home` (or `Ctrl-A`) to jump to line start → type `@` → submit. The wrapper bind-mounts `$HOME/Downloads`, `$HOME/Desktop`, and `$HOME/Pictures` read-only at their host absolute paths and tells `sandbox-fs-guard` to permit reads under those roots via `PI_ENSEMBLE_ALLOWED_ROOTS`, so the path the terminal pastes resolves inside the container. A vision-capable model (Claude / GPT-4o / Qwen3.6-35B / Gemma-4 / etc.) then sees the image.
+
+Add or replace image dirs via env:
+
+```bash
+# Add (keeps default + appends)
+PI_ENSEMBLE_EXTRA_IMAGE_DIRS="$HOME/Documents/screenshots" pi-ensemble
+
+# Replace entirely
+PI_ENSEMBLE_IMAGE_DIRS="$HOME/work-images" pi-ensemble
+```
+
+For your provider to actually use the image, `~/.pi/agent/models.json` must mark the model as multimodal: `"input": ["text", "image"]`. Built-in providers (Anthropic / OpenAI / Google) know vision capabilities natively; custom OpenAI-compatible providers (e.g. fieldbox's Qwen3.6) need the explicit hint.
+
 ## How it works
 
 The parent `pi` you launch becomes the **project manager (PM)**. When you fire a registered slash command, the extension injects PM doctrine into the system prompt for that turn (one-shot, no global bleed). The PM then runs through the workflow body and calls tools to dispatch specialists.
@@ -442,6 +458,9 @@ All optional. Defaults are reasonable for typical use.
 | `PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD` | user (debugging) | `1` disables the subagent permission-broker socket. Host-mode only; redundant inside sandbox where the guard already short-circuits. |
 | `GH_TOKEN` / `GITHUB_TOKEN` | host shell, or wrapper | If set on host, forwarded directly. If unset, wrapper extracts via `gh auth token` (handles macOS Keychain). Container's `gh` reads it for auth. |
 | `*_API_KEY`, `*_LLM_KEY` | host shell | Pattern-auto-forwarded by the wrapper. Catches custom-provider tokens (e.g. `TRAIL_OPENERS_LLM_KEY`) without per-name config. |
+| `PI_ENSEMBLE_IMAGE_DIRS` | user | Colon-separated list of host dirs to bind-mount RO for image drag-and-drop (`@file` syntax). Default: `$HOME/Downloads:$HOME/Desktop:$HOME/Pictures`. Replaces default if set. |
+| `PI_ENSEMBLE_EXTRA_IMAGE_DIRS` | user | Colon-separated host dirs to APPEND to the image-dir list (keeps the default). Use to add e.g. `~/Documents/screenshots`. |
+| `PI_ENSEMBLE_ALLOWED_ROOTS` | wrapper | Colon-separated allowed roots for `sandbox-fs-guard` beyond the workspace. Auto-populated from the image-dir list so dragged images aren't blocked. |
 
 Advanced (internal path overrides; rarely needed): `PI_ENSEMBLE_DIR`, `PI_ENSEMBLE_PROMPTS_DIR`, `PI_ENSEMBLE_PI_PROMPTS_DIR`, `PI_ENSEMBLE_PM_PROMPT`, `PI_ENSEMBLE_MODELS_CONFIG`, `PI_ENSEMBLE_RUNS_DIR`, `PI_ENSEMBLE_SKILLS_DIR` — override default file/directory locations.
 
