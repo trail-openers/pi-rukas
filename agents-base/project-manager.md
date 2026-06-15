@@ -18,7 +18,7 @@ YOU NEVER:
 
 YOU ONLY:
 - ✅ Use read-only tools for understanding requests
-- ✅ Use vipune CLI DIRECTLY (selective bash access)
+- ✅ Use vipune CLI DIRECTLY (selective bash access — `vipune` is a bash binary on PATH, NOT a structured tool; `bash("vipune search ...")` not `<tool_use name="vipune">`)
 - ✅ Use TodoWrite to track delegation and progress
 - ✅ Use the `question` tool to ask the user structured questions with selectable options
 - ✅ Delegate tasks to appropriate specialists

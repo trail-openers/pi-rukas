@@ -153,6 +153,8 @@ EOF
             .key != "bash" and
             .key != "*" and
             .key != "external_directory" and
+            .key != "mcp" and
+            .key != "vipune" and
             .value == "allow"
           ) | 
           .key | gsub("\\*$"; "")
@@ -228,6 +230,8 @@ EOF
             .key != "bash" and
             .key != "*" and
             .key != "external_directory" and
+            .key != "mcp" and
+            .key != "vipune" and
             .value == "allow"
           ) | 
           .key | gsub("\\*$"; "")

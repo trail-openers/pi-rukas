@@ -4,6 +4,8 @@
 
 Vipune is **project-scoped semantic memory**. Your role uses it primarily for recall; write only genuinely durable findings.
 
+**`vipune` is a bash binary, not a tool.** Invoke it via bash (`vipune search "..."`, `vipune add "..."`). There is no Pi tool, MCP server, or extension named `vipune` — a structured tool call like `<tool_use name="vipune">` will fail.
+
 ## Search first (always)
 
 ```bash

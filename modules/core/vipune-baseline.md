@@ -4,6 +4,8 @@
 
 Vipune is **project-scoped semantic memory**. Search before starting work on any task. Store findings so future sessions have context.
 
+**`vipune` is a bash binary, not a tool.** Invoke it via bash (`vipune search "..."`, `vipune add "..."`). There is no Pi tool, MCP server, or extension named `vipune` — a structured tool call like `<tool_use name="vipune">` will fail. Every example below is shell.
+
 **Use vipune for project meta-questions** ("what's our convention here?", "did we decide on a stack?", "what's the gotcha with X?"). For code-level questions ("where is X implemented?") use `codebase_memory_search_code` (see `modules/core/codebase-memory-mcp.md`).
 
 ## Memory types (5)

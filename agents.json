@@ -106,7 +106,6 @@
         "cancel_task": "allow",
         "list_tasks": "allow",
         "check_task": "allow",
-        "vipune": "allow",
         "codebase_memory_search_code": "allow",
         "codebase_memory_search_graph": "allow",
         "codebase_memory_trace_path": "allow",
@@ -614,7 +613,6 @@
     "explore": {
       "permission": {
         "external_directory": "ask",
-        "vipune": "allow",
         "codebase_memory_search_code": "allow",
         "codebase_memory_search_graph": "allow",
         "codebase_memory_trace_path": "allow",
