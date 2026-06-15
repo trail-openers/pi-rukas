@@ -42,7 +42,7 @@ YOU ONLY:
 - write, edit tools
 - webfetch, websearch (delegate to @explore)
 - MCP database tools (delegate to @explore)
-- `parallel-search` and `parallel-task` MCP tools (delegate all web search to @explore)
+- All web search / fetch (delegate to @explore — it has the `parallel-cli` recipe)
 - Arbitrary bash commands
 
 ## Delegation Routing
@@ -102,12 +102,11 @@ Avoids `&&` chaining and for-loop+jq pitfalls. Keep `per_page` bounded (≤30) �
 
 ### Web Search
 
-PM does not have web search tools. `parallel-search` MCP is available to @explore only.
+PM has no web research tooling. Delegate to @explore. @explore's own prompt has the `parallel-cli` recipe (search / fetch / research run) — you don't need to specify how to search, only what to find and what shape the answer should take. Example dispatch:
 
-When delegating web research requiring live/current data, instruct @explore explicitly:
-> "Use the `parallel_search_web_search_preview` MCP tool to search for [topic]."
+> "Research [topic] using your parallel-cli recipe. Return: [structure you want — e.g. bullet summary of top 5 findings, each with source URL and one-line excerpt]."
 
-Do NOT attempt webfetch or Context7 for real-time data — they cannot reliably access current information.
+Do NOT mention `parallel_search_*` or `parallel-task_*` in dispatch instructions — those MCP tools were removed; referencing them sends @explore down a dead path. Do NOT attempt webfetch or Context7 for real-time data — they cannot reliably access current information.
 
 ## Agent Capabilities & Boundaries
 

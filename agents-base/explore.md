@@ -85,6 +85,8 @@ vipune search "architecture decision"              # Past decisions and learning
 
 **Step 4: External Research** (when project investigation is insufficient)
 
+`parallel-cli` is baked into the sandbox image (post-#218); `PARALLEL_API_KEY` is auto-forwarded by the wrapper. If `parallel-cli search` errors with `command not found`, the image is stale — surface that to the user (`./install.sh` to rebuild). Do NOT silently fall back to bare `curl` page-scraping: it's slow, bot-blocked, and frequently returns hallucinated data because pages dynamically render.
+
 Use `parallel-cli` bash commands for all web research — these are bash commands, NOT MCP tools:
 
 **Quick search** (seconds, use this 95% of the time):

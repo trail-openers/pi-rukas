@@ -151,6 +151,26 @@ Verify post-rebuild: `pi-ensemble shell` → `ls -la /var/run/docker.sock` shows
 
 PR: [#216](https://github.com/randomm/pi-ensemble/pull/216)
 
+## Web research
+
+### @explore agents are `curl`-scraping web pages instead of using `parallel-cli`
+
+**Symptom:** `dispatch_peek` on a running @explore agent shows it `curl`-ing random pricing/blog pages. Long turn counts (30+) burning hundreds of thousands of tokens. Often returns hallucinated or stale data because pages dynamically render.
+
+**Cause:** The image is stale — pre-#218 the sandbox didn't install `parallel-cli`. Without it, @explore's `parallel-cli search` returns `command not found` and the agent falls back to bare `curl` page-scraping (slow, bot-blocked, often wrong).
+
+**Fix:** Rebuild the image.
+
+```bash
+cd ~/.config/opencode/pi-ensemble && ./install.sh
+```
+
+Verify post-rebuild: `pi-ensemble shell` → `which parallel-cli` returns a path; `parallel-cli --version` prints; `parallel-cli search "test"` returns structured results (requires `PARALLEL_API_KEY` exported on host — auto-forwarded by the wrapper).
+
+If you don't have a parallel.ai account, @explore degrades to telling you to set up one. There's no other web-search path baked into the role — webfetch / Context7 are documented as unreliable for real-time data.
+
+PR: [#218](https://github.com/randomm/pi-ensemble/pull/218)
+
 ## Vision / images
 
 > **Reminder:** Pi attaches a file as multimodal input only when its path is prefixed with `@` (e.g. `@/Users/you/Downloads/foo.png describe this`). Dragging an image into the terminal pastes the path but does NOT add the `@` — you have to type it yourself. Without it, Pi treats the path as plain text and never sends image bytes.

@@ -113,12 +113,14 @@ RUN curl -fsSL https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/ma
        fi \
     && rm -rf /root/.local/share
 
-# parallel-cli — used by explore role for web research.
-# Upstream supports `brew install parallel-web/tap/parallel-cli`; Linux fallback
-# documented at https://docs.parallel.ai/cli/overview. For v1 we skip if the
-# install path isn't obvious — the explore role degrades gracefully when
-# parallel-cli isn't on $PATH. File as follow-up if/when upstream ships a
-# clean Linux installer.
+# parallel-cli — web research tool for the @explore role. Subcommands:
+# search / fetch / research run|poll. Auth via PARALLEL_API_KEY env (auto-
+# forwarded by bin/pi-ensemble). Linux install path per
+# https://github.com/parallel-web/parallel-web-tools. Soft-fail consistent
+# with ctx7 above so an upstream npm hiccup doesn't break the whole image
+# build; @explore's prompt surfaces the missing-binary case to the user
+# (instead of letting agents fall back to bare `curl` scraping).
+RUN npm install -g --ignore-scripts parallel-web-cli || true
 
 # -----------------------------------------------------------------------------
 # 6. Copy pi-ensemble repo + run install.sh

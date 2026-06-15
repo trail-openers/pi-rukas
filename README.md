@@ -469,6 +469,7 @@ All optional. Defaults are reasonable for typical use.
 | `PI_ENSEMBLE_DOCKER_SOCKET` | user (opt-in) | `1` bind-mounts the host's `/var/run/docker.sock` into the sandbox + the entrypoint chmods it accessible. Required when `.pi/mcp.json` launches MCP servers via `docker run`. Grants root-equivalent host access — weakens the sandbox fence; only enable for workflows that need it. |
 | `GH_TOKEN` / `GITHUB_TOKEN` | host shell, or wrapper | If set on host, forwarded directly. If unset, wrapper extracts via `gh auth token` (handles macOS Keychain). Container's `gh` reads it for auth. |
 | `*_API_KEY`, `*_LLM_KEY` | host shell | Pattern-auto-forwarded by the wrapper. Catches custom-provider tokens (e.g. `TRAIL_OPENERS_LLM_KEY`) without per-name config. |
+| `PARALLEL_API_KEY` | host shell | Auto-forwarded (matches `*_API_KEY` pattern). Required for @explore's web research via `parallel-cli` (baked into the sandbox image). Without it, @explore's `parallel-cli search` returns an auth error. |
 | `PI_ENSEMBLE_IMAGE_DIRS` | user | Colon-separated list of host dirs to bind-mount RO for image drag-and-drop (`@file` syntax). Default: `$HOME/Downloads:$HOME/Desktop:$HOME/Pictures`. Replaces default if set. |
 | `PI_ENSEMBLE_EXTRA_IMAGE_DIRS` | user | Colon-separated host dirs to APPEND to the image-dir list (keeps the default). Use to add e.g. `~/Documents/screenshots`. |
 | `PI_ENSEMBLE_ALLOWED_ROOTS` | wrapper | Colon-separated allowed roots for `sandbox-fs-guard` beyond the workspace. Auto-populated from the image-dir list so dragged images aren't blocked. |
