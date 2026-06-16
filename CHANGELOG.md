@@ -8,6 +8,39 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.7](https://github.com/randomm/pi-ensemble/compare/v0.12.6...v0.12.7) (2026-06-16)
+
+
+### Features
+
+* adopt codebase-memory-mcp; deprecate meadow + colgrep across the doctrine ([#191](https://github.com/randomm/pi-ensemble/issues/191)) ([4fe1cb7](https://github.com/randomm/pi-ensemble/commit/4fe1cb7f5b49f6239bb6e371b470d6a69b9e0a64))
+* **ci:** publish sandbox image to GHCR; install.sh pulls instead of builds ([#219](https://github.com/randomm/pi-ensemble/issues/219)) ([a0ceb91](https://github.com/randomm/pi-ensemble/commit/a0ceb91da51cf04c78ebae38208a3c848da5a3f2))
+* dispatch_peek/steer transparently handle adversarial_loop jobIds ([#186](https://github.com/randomm/pi-ensemble/issues/186)) ([5082e85](https://github.com/randomm/pi-ensemble/commit/5082e859728678127f701396c0d24d4d10299b3d))
+* extend permission-guard into subagents (per-role allowlist applies universally) ([#187](https://github.com/randomm/pi-ensemble/issues/187)) ([56bcd6a](https://github.com/randomm/pi-ensemble/commit/56bcd6a7728ada2ae7b34e39e3a2791d6ba60f3d))
+* **sandbox:** --add-host plumbing so mesh network/LAN hostnames resolve inside container ([#204](https://github.com/randomm/pi-ensemble/issues/204)) ([aad53cb](https://github.com/randomm/pi-ensemble/commit/aad53cb46691b716dcd92059f3d2a903b23c4175))
+* **sandbox:** docker-out-of-docker support for docker-based MCP servers ([#216](https://github.com/randomm/pi-ensemble/issues/216)) ([bcf3be2](https://github.com/randomm/pi-ensemble/commit/bcf3be2921efe49ebf10c2a89f2847c46773db88))
+* **sandbox:** drag-and-drop images + PM image-path guidance + /ensemble-model EROFS fix ([#213](https://github.com/randomm/pi-ensemble/issues/213)) ([88d423c](https://github.com/randomm/pi-ensemble/commit/88d423cdea2d5376e94e361883bbe99d0326549a))
+* **sandbox:** install parallel-cli in image + scrub PM's ghost-MCP web-search refs ([#218](https://github.com/randomm/pi-ensemble/issues/218)) ([5a47955](https://github.com/randomm/pi-ensemble/commit/5a47955719a337675d3e0f8120601da21a478693))
+* **sandbox:** pi-ensemble Dockerized runtime — strip permissions, container fence is the trust boundary ([#200](https://github.com/randomm/pi-ensemble/issues/200)) ([8bab38a](https://github.com/randomm/pi-ensemble/commit/8bab38a4c45f6cedfeb116f68d8faf1156b1970f))
+* **vipune:** bundle skill/vipune/ + upgrade modules to richer 5-type taxonomy ([#184](https://github.com/randomm/pi-ensemble/issues/184)) ([44a29fe](https://github.com/randomm/pi-ensemble/commit/44a29fe5516d586e3eb02b4ec72b123a5c42a3b7))
+
+
+### Bug Fixes
+
+* bound spawn buffers + bash catch-all ask (parent OOM + permission regression) ([#188](https://github.com/randomm/pi-ensemble/issues/188)) ([986989d](https://github.com/randomm/pi-ensemble/commit/986989d897eabad05b889f87baaa83cdb9c0eb98))
+* install.sh wires codebase-memory-mcp; expand read-side bash baseline; fix repo_path doctrine ([#196](https://github.com/randomm/pi-ensemble/issues/196)) ([29f03cd](https://github.com/randomm/pi-ensemble/commit/29f03cdc030401e59798381bd387f34c97851a8f))
+* **perms:** injection-vector bash falls through to ask, not hard-deny ([#189](https://github.com/randomm/pi-ensemble/issues/189)) ([2c48364](https://github.com/randomm/pi-ensemble/commit/2c4836494a87752a740f84e4a9b4c9474f1b7887))
+* **perms:** strip per-call gating from interactive host mode — symmetric with sandbox ([#215](https://github.com/randomm/pi-ensemble/issues/215)) ([1860272](https://github.com/randomm/pi-ensemble/commit/18602727f3a8a24af5ffd6059078f53e28c83604))
+* **perms:** subagent overlays + spec.cwd threading + assertive code-search doctrine ([#192](https://github.com/randomm/pi-ensemble/issues/192)) ([4f520de](https://github.com/randomm/pi-ensemble/commit/4f520dea1bd53e7e525b8e8e588e4b1ba9d6a8f2))
+* **prompts:** hoist tool/permission section + add reminders footer per literature ([#190](https://github.com/randomm/pi-ensemble/issues/190)) ([96cb0ff](https://github.com/randomm/pi-ensemble/commit/96cb0ff715180c00730071ccc003e493536037e8))
+* **prompts:** stop PM from emitting &lt;tool_use name="vipune"&gt; — clean up MCP inventory ([#214](https://github.com/randomm/pi-ensemble/issues/214)) ([d60344a](https://github.com/randomm/pi-ensemble/commit/d60344a2c486b7007892debd1bb2fabcd62c30ab))
+* **sandbox:** align session buckets between host and sandbox + docs refresh ([#212](https://github.com/randomm/pi-ensemble/issues/212)) ([189162f](https://github.com/randomm/pi-ensemble/commit/189162fc59e595decf81722f1178c9c0a49cb09a))
+* **sandbox:** bake fd+rg into image, forward gh token, named-volume fallback for vipune ([#203](https://github.com/randomm/pi-ensemble/issues/203)) ([0411b5a](https://github.com/randomm/pi-ensemble/commit/0411b5a642989ae501970c1bb4a9ec7a8dab24ab))
+* **sandbox:** bind-mount models.json, pattern-forward LLM keys, pre-fetch vipune embedding model ([#205](https://github.com/randomm/pi-ensemble/issues/205)) ([93a7946](https://github.com/randomm/pi-ensemble/commit/93a7946453a41711f9bcacdab39dc6e82bfd0f88))
+* **sandbox:** bind-mount Pi sessions dir so \`pi-ensemble -r\` resumes previous sandbox sessions ([#206](https://github.com/randomm/pi-ensemble/issues/206)) ([2f1c811](https://github.com/randomm/pi-ensemble/commit/2f1c81193e4d2b724b9e579fd9951a1540f81f3c))
+* **sandbox:** PATH-relative `command:` in mcp.json so host config works inside container ([#202](https://github.com/randomm/pi-ensemble/issues/202)) ([8488119](https://github.com/randomm/pi-ensemble/commit/8488119e0a1cd9c2c98cb2710af348465316fbde))
+* **wrapper:** allow concurrent pi-ensemble sessions in the same project ([#217](https://github.com/randomm/pi-ensemble/issues/217)) ([af364b4](https://github.com/randomm/pi-ensemble/commit/af364b4aec5171fdd22019d4568b5b9c7a87b59d))
+
 ## [0.12.6](https://github.com/randomm/pi-ensemble/compare/v0.12.5...v0.12.6) (2026-06-09)
 
 
