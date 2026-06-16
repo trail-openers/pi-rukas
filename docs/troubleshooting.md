@@ -35,6 +35,53 @@ PR: [#215](https://github.com/randomm/pi-ensemble/pull/215)
 
 PR: [#215](https://github.com/randomm/pi-ensemble/pull/215)
 
+## Image acquisition
+
+### `./install.sh` takes 10+ minutes (cold local build)
+
+**Symptom:** Running `./install.sh` on a fresh host (or after `docker system prune`) takes 10-30 minutes. Output shows `cargo install vipune`, `cargo install double-o`, `npm install -g ...`, the Rust toolchain compiling.
+
+**Cause:** You're on an `install.sh` from before #219 — pre-#219 the script always built the image locally. Post-#219 it pulls a pre-built multi-arch image from `ghcr.io/randomm/pi-ensemble:latest` (built + published on every merge to main).
+
+**Fix:** Pull the latest pi-ensemble repo + rerun install.
+
+```bash
+cd ~/.config/opencode/pi-ensemble && git pull && ./install.sh
+```
+
+The pull should finish in ~10-20s on broadband. If it falls back to a local build, see the next entry.
+
+PR: [#219](https://github.com/randomm/pi-ensemble/pull/219)
+
+### `docker pull ghcr.io/randomm/pi-ensemble:latest` returns `denied`
+
+**Symptom:** `./install.sh` reports `Pull failed; building locally from this checkout instead.` Inside that pull attempt: `Error response from daemon: denied`.
+
+**Cause:** The GHCR package is private. By default, GHCR packages start private until the repo owner flips them to public.
+
+**Fix (if you own the repo):** GitHub → Profile → Packages → `pi-ensemble` → Package settings → Change visibility → Public.
+
+**Fix (if you don't own the repo, but have a GitHub account):** Authenticate to GHCR with a personal access token that has `read:packages`.
+
+```bash
+gh auth token | docker login ghcr.io -u USERNAME --password-stdin
+./install.sh
+```
+
+PR: [#219](https://github.com/randomm/pi-ensemble/pull/219)
+
+### Forcing a local build (Dockerfile development)
+
+**When:** You're iterating on `.devcontainer/Dockerfile` and want to test changes before they're merged + republished.
+
+**How:** Pass `--build` to install.sh.
+
+```bash
+./install.sh --build
+```
+
+Skips the registry pull, builds directly from your checkout. Takes 10-30 minutes cold; uses Docker layer cache on subsequent runs.
+
 ## Sandbox launch
 
 ### `MCP: 0/N servers` — codebase_memory not connected

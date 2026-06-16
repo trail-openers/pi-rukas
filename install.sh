@@ -6,6 +6,24 @@ set -euo pipefail
 # 1. Builds the per-role system prompts from manifests/ + modules/ + agents-base/.
 # 2. Symlinks skill/ into ~/.pi/agent/skills/ (Claude-Agent-Skills compatible).
 # 3. Installs extension deps and registers the extension with Pi.
+# 4. Pulls (or builds, opt-in) the sandbox Docker image.
+#
+# Flags:
+#   --build       Force a local image build instead of pulling from GHCR.
+#                 Use when you're iterating on the Dockerfile.
+#   --pull-only   Hard-fail if the registry pull doesn't work — no fallback build.
+
+IMAGE_MODE="auto"  # auto | force-build | force-pull
+for arg in "$@"; do
+  case "$arg" in
+    --build) IMAGE_MODE="force-build" ;;
+    --pull-only) IMAGE_MODE="force-pull" ;;
+    --help|-h)
+      sed -n '1,/^IMAGE_MODE=/p' "$0" | grep -E '^# ?' | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+  esac
+done
 
 ENSEMBLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI_AGENT_DIR="${PI_AGENT_DIR:-$HOME/.pi/agent}"
@@ -215,16 +233,38 @@ fi
 # This block is OPTIONAL — if Docker isn't installed, host-mode `pi` still
 # works with the legacy permission system. The user picks which to invoke.
 
-PI_ENSEMBLE_IMAGE="${PI_ENSEMBLE_IMAGE:-randomm/pi-ensemble:latest}"
+PI_ENSEMBLE_IMAGE="${PI_ENSEMBLE_IMAGE:-ghcr.io/randomm/pi-ensemble:latest}"
+
+# Image acquisition: prefer `docker pull` (GHCR publishes on every merge to
+# main via .github/workflows/publish-image.yml), fall back to local build
+# only if pull fails or --build was passed. On broadband the pull is
+# ~10–20s; a cold build is 10–30 min depending on host CPU.
+acquire_image() {
+  if [ "$IMAGE_MODE" = "force-build" ]; then
+    echo "==> --build set; building locally: $PI_ENSEMBLE_IMAGE"
+    docker build -t "$PI_ENSEMBLE_IMAGE" -f "$ENSEMBLE_DIR/.devcontainer/Dockerfile" "$ENSEMBLE_DIR"
+    return $?
+  fi
+  echo "==> Pulling sandbox image: $PI_ENSEMBLE_IMAGE"
+  if docker pull "$PI_ENSEMBLE_IMAGE"; then
+    echo "    image pulled: $PI_ENSEMBLE_IMAGE"
+    return 0
+  fi
+  if [ "$IMAGE_MODE" = "force-pull" ]; then
+    echo "!! --pull-only set and pull failed. Aborting." >&2
+    return 1
+  fi
+  echo "==> Pull failed; building locally from this checkout instead."
+  echo "    (cold build ~10-30 min; Docker layer cache makes subsequent builds fast)"
+  docker build -t "$PI_ENSEMBLE_IMAGE" -f "$ENSEMBLE_DIR/.devcontainer/Dockerfile" "$ENSEMBLE_DIR"
+}
 
 if command -v docker >/dev/null 2>&1; then
   if docker info >/dev/null 2>&1; then
-    echo "==> Building pi-ensemble sandbox image: $PI_ENSEMBLE_IMAGE"
-    echo "    (first build ~5-10 min; Docker layer cache makes subsequent builds fast)"
-    if docker build -t "$PI_ENSEMBLE_IMAGE" -f "$ENSEMBLE_DIR/.devcontainer/Dockerfile" "$ENSEMBLE_DIR"; then
-      echo "    image built: $PI_ENSEMBLE_IMAGE"
+    if acquire_image; then
+      :
     else
-      echo "!! Docker build failed — sandbox mode unavailable until you fix it."
+      echo "!! Image acquisition failed — sandbox mode unavailable until you fix it."
       echo "   Re-run \`./install.sh\` after fixing. Host-mode \`pi\` still works."
     fi
 

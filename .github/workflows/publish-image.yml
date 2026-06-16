@@ -1,0 +1,79 @@
+name: publish-image
+
+# Builds + publishes the pi-ensemble sandbox image to GHCR so users running
+# `./install.sh` on fresh hosts can pull a pre-built image instead of
+# rebuilding from scratch (rebuild on a slow host: 10–30 min; pull on
+# broadband: ~10–20s).
+#
+# Triggers:
+#   - push to main (only when files baked into the image change — paths: filter)
+#   - release published (release-please cuts a tag → publish a versioned image)
+#   - manual workflow_dispatch (ad-hoc republish when needed)
+#
+# Tags pushed: `latest`, `sha-<12char-commit>`, and `<tag>` on release.
+# Multi-arch: linux/amd64 + linux/arm64 (Apple Silicon hosts get native, not emulated).
+# Cache: BuildKit GHA cache lets subsequent builds finish in 2–3 min vs. ~10 cold.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.devcontainer/**'
+      - 'extension/**'
+      - 'bin/pi-ensemble'
+      - 'install.sh'
+      - 'agents-base/**'
+      - 'modules/**'
+      - 'manifests/**'
+      - 'agents.json'
+      - 'build.sh'
+      - '.github/workflows/publish-image.yml'
+  release:
+    types: [published]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        run: |
+          owner_lc="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          tags="ghcr.io/${owner_lc}/pi-ensemble:latest"
+          tags="${tags},ghcr.io/${owner_lc}/pi-ensemble:sha-${GITHUB_SHA::12}"
+          if [ "${{ github.event_name }}" = "release" ]; then
+            tags="${tags},ghcr.io/${owner_lc}/pi-ensemble:${{ github.event.release.tag_name }}"
+          fi
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: .devcontainer/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

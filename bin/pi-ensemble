@@ -43,7 +43,7 @@
 
 set -euo pipefail
 
-IMAGE="${PI_ENSEMBLE_IMAGE:-randomm/pi-ensemble:latest}"
+IMAGE="${PI_ENSEMBLE_IMAGE:-ghcr.io/randomm/pi-ensemble:latest}"
 PROJECT_ROOT="$(cd "$(pwd)" && pwd -P)"
 PROJECT_NAME="$(basename "$PROJECT_ROOT" | tr -c 'A-Za-z0-9._-' '-' | head -c 40)"
 # Project-hash so concurrent `pi-ensemble` calls in DIFFERENT projects get
@@ -84,12 +84,21 @@ EOF
 }
 
 ensure_image() {
-  if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-    echo "==> Image $IMAGE not present locally. Building from pi-ensemble repo..."
-    local repo_dir
-    repo_dir="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$0")")/.." && pwd)"
-    docker build -t "$IMAGE" -f "$repo_dir/.devcontainer/Dockerfile" "$repo_dir"
+  if docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    return  # already cached locally
   fi
+  # Prefer pull from the registry (GHCR auto-publishes on every merge to main
+  # via .github/workflows/publish-image.yml). Fall back to local build for
+  # offline / unpublished-image / dev scenarios — no regression for users
+  # actively iterating on the Dockerfile.
+  echo "==> Image $IMAGE not present locally. Pulling from registry..."
+  if docker pull "$IMAGE"; then
+    return
+  fi
+  echo "==> Pull failed. Falling back to local build from pi-ensemble repo..."
+  local repo_dir
+  repo_dir="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$0")")/.." && pwd)"
+  docker build -t "$IMAGE" -f "$repo_dir/.devcontainer/Dockerfile" "$repo_dir"
 }
 
 build_mounts() {

@@ -135,7 +135,7 @@ cd pi-ensemble
 ./install.sh
 ```
 
-The installer builds the role prompts, symlinks the bundled skills into `~/.pi/agent/skills/`, installs the extension's deps, registers the extension with Pi, **builds the sandbox Docker image (if Docker is installed)**, and symlinks the `pi-ensemble` wrapper into `~/.local/bin/`.
+The installer builds the role prompts, symlinks the bundled skills into `~/.pi/agent/skills/`, installs the extension's deps, registers the extension with Pi, **pulls the sandbox Docker image from `ghcr.io/randomm/pi-ensemble:latest`** (~10-20s on broadband; falls back to a local build if the pull fails), and symlinks the `pi-ensemble` wrapper into `~/.local/bin/`. Pass `--build` if you're iterating on the Dockerfile and want to force a local build; pass `--pull-only` to hard-fail when the registry is unreachable.
 
 Verify (sandbox mode, recommended):
 
