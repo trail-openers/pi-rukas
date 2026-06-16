@@ -230,11 +230,12 @@ PI_ENSEMBLE_IMAGE_DIRS="$HOME/work-images" pi-ensemble
 
 For your provider to actually use the image, `~/.pi/agent/models.json` must mark the model as multimodal: `"input": ["text", "image"]`. Built-in providers (Anthropic / OpenAI / Google) know vision capabilities natively; custom OpenAI-compatible providers (e.g. fieldbox's Qwen3.6) need the explicit hint.
 
-**Docker-based MCP servers.** If your project's `.pi/mcp.json` launches MCP servers via `docker run` (e.g. database MCPs like `postgres-mcp`, vendor-bundled tools), set `PI_ENSEMBLE_DOCKER_SOCKET=1` so the wrapper bind-mounts the host's docker socket into the sandbox. The CLI inside the sandbox then talks to the **host** docker daemon — spawned MCP servers are sibling containers on the host (not nested inside our sandbox), visible in your host's `docker ps`. SECURITY: mounting the docker socket grants root-equivalent host access from inside the sandbox; the container fence is weakened. Only enable when your workflow actually needs it.
+**Docker-based MCP servers and SSH work transparently.** Two capabilities that exist on the host carry through to the sandbox by default — you don't set a flag for them:
 
-```bash
-PI_ENSEMBLE_DOCKER_SOCKET=1 pi-ensemble
-```
+- **Docker socket** — if Docker is running on the host, `/var/run/docker.sock` is bind-mounted into the sandbox. MCP servers in `.pi/mcp.json` that launch via `docker run` Just Work; spawned containers are sibling containers on the host's daemon (not nested), visible in your host's `docker ps`.
+- **SSH** — `~/.ssh/` is bind-mounted read-only and the host's `$SSH_AUTH_SOCK` (if set) is forwarded. Inside the sandbox, `ssh remote-host` uses the same identities as host-mode pi.
+
+**Security trade-off (named explicitly):** the docker socket grants root-equivalent host access from inside the sandbox; SSH agent access lets the sandbox impersonate any identity loaded in your agent. Both weaken the container-fence-as-trust-boundary story (#200 / #215). Consistent with pi-ensemble's design: the sandbox is the agent's runtime, not the user's security boundary. Opt out with `PI_ENSEMBLE_NO_DOCKER_SOCKET=1` and/or `PI_ENSEMBLE_NO_SSH=1` if you want the tighter sandbox (docker-based MCPs / outbound SSH stop working under these opt-outs).
 
 ## How it works
 
@@ -466,7 +467,8 @@ All optional. Defaults are reasonable for typical use.
 | `PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD` | user (debugging) | `1` disables the subagent permission-broker socket. Redundant in sandbox / interactive host where the guard already short-circuits; meaningful only under `PI_ENSEMBLE_STRICT_PERMISSIONS=1`. |
 | `PI_ENSEMBLE_STRICT_PERMISSIONS` | user (host mode) | `1` restores the legacy per-call ask-flow in interactive host mode. Default OFF — pi-ensemble does not enforce per-call permissions in interactive host mode (no real boundary exists; prompts are theatre at runtime volumes). Use this only if you want prompts back. |
 | `PI_ENSEMBLE_TRUST_MODE` | internal (spawn.ts) | `1` propagated from parent to subagent when parent is in trust mode. Mirror of `PI_ENSEMBLE_SANDBOX_MODE` for the interactive-host case. Not a user-facing knob. |
-| `PI_ENSEMBLE_DOCKER_SOCKET` | user (opt-in) | `1` bind-mounts the host's `/var/run/docker.sock` into the sandbox + the entrypoint chmods it accessible. Required when `.pi/mcp.json` launches MCP servers via `docker run`. Grants root-equivalent host access — weakens the sandbox fence; only enable for workflows that need it. |
+| `PI_ENSEMBLE_NO_DOCKER_SOCKET` | user (opt-out) | `1` skips the default docker-socket bind-mount. By default the wrapper mounts `/var/run/docker.sock` so `.pi/mcp.json` docker-based MCPs Just Work; setting this disables that. Grants root-equivalent host access in the default-on case — weakens the sandbox fence. |
+| `PI_ENSEMBLE_NO_SSH` | user (opt-out) | `1` skips the default `~/.ssh/` bind-mount + `SSH_AUTH_SOCK` forwarding. By default the wrapper makes `ssh remote-host` work inside the sandbox the same way it does on host. Setting this disables outbound SSH from the sandbox. |
 | `GH_TOKEN` / `GITHUB_TOKEN` | host shell, or wrapper | If set on host, forwarded directly. If unset, wrapper extracts via `gh auth token` (handles macOS Keychain). Container's `gh` reads it for auth. |
 | `*_API_KEY`, `*_LLM_KEY` | host shell | Pattern-auto-forwarded by the wrapper. Catches custom-provider tokens (e.g. `TRAIL_OPENERS_LLM_KEY`) without per-name config. |
 | `PARALLEL_API_KEY` | host shell | Auto-forwarded (matches `*_API_KEY` pattern). Required for @explore's web research via `parallel-cli` (baked into the sandbox image). Without it, @explore's `parallel-cli search` returns an auth error. |

@@ -214,19 +214,44 @@ build_mounts() {
     mounts+=(-v "$dir:$dir:ro")
   done
 
-  # Host docker socket — opt-in via PI_ENSEMBLE_DOCKER_SOCKET=1. Required
-  # when .pi/mcp.json (project-level MCP config) launches MCP servers via
-  # `docker run ...`. The CLI inside the sandbox talks to the HOST docker
-  # daemon, so spawned containers are SIBLINGS of the sandbox (not nested);
-  # they appear in `docker ps` on the host. SECURITY: mounting the socket
-  # grants root-equivalent host access from inside the sandbox. The fence-
-  # as-trust-boundary story (#200 / #215) is weakened — only enable when
-  # your workflow genuinely needs it and you trust the agent that's running.
-  if [ "${PI_ENSEMBLE_DOCKER_SOCKET-}" = "1" ]; then
-    if [ -S /var/run/docker.sock ]; then
-      mounts+=(-v "/var/run/docker.sock:/var/run/docker.sock")
-    else
-      echo "pi-ensemble: warning — PI_ENSEMBLE_DOCKER_SOCKET=1 but /var/run/docker.sock not found on host" >&2
+  # Host docker socket — bind-mounted by default if Docker is running on
+  # the host, so docker-based MCP servers in .pi/mcp.json work transparently
+  # (the CLI inside the sandbox talks to the HOST docker daemon; spawned
+  # MCPs are SIBLING containers, visible in the host's `docker ps`). Opt
+  # out with PI_ENSEMBLE_NO_DOCKER_SOCKET=1 if you want the tighter sandbox.
+  # SECURITY: the docker socket grants root-equivalent host access from
+  # inside the sandbox, weakening the container fence. Consistent with the
+  # trust-mode philosophy from #215: pi-ensemble's container is the agent's
+  # runtime, not a meaningful security boundary — the user is the trust
+  # authority. See AGENTS.md "Permission model" section.
+  if [ "${PI_ENSEMBLE_NO_DOCKER_SOCKET-}" = "1" ]; then
+    :  # explicit opt-out — keep the tighter sandbox
+  elif [ -S /var/run/docker.sock ]; then
+    mounts+=(-v "/var/run/docker.sock:/var/run/docker.sock")
+  fi
+
+  # SSH credentials — bind-mount ~/.ssh/ read-only AND forward the host's
+  # SSH_AUTH_SOCK (if set) so `ssh remote-host` inside the sandbox uses the
+  # same identities as host-mode pi. Mirrors the docker-socket transparency:
+  # the user shouldn't need a flag to make ssh work the way it does on host.
+  # Opt out with PI_ENSEMBLE_NO_SSH=1.
+  #
+  # RO mount means: known_hosts updates from inside the sandbox don't persist
+  # to host (acceptable trade-off — fresh host-key entries can be added on
+  # the host with `ssh -o StrictHostKeyChecking=accept-new ...`). Keys with
+  # strict file perms still work because the agent socket sidesteps file IO
+  # when SSH_AUTH_SOCK is set; if you have on-disk keys only (no agent), the
+  # UID mismatch between host (501 on macOS) and vscode (1000) may cause
+  # SSH's StrictModes to refuse them — workaround: start an ssh-agent on
+  # host (`eval $(ssh-agent) && ssh-add <key>`) before launching pi-ensemble.
+  if [ "${PI_ENSEMBLE_NO_SSH-}" = "1" ]; then
+    :
+  else
+    if [ -d "$HOME/.ssh" ]; then
+      mounts+=(-v "$HOME/.ssh:/home/vscode/.ssh:ro")
+    fi
+    if [ -n "${SSH_AUTH_SOCK-}" ] && [ -S "${SSH_AUTH_SOCK}" ]; then
+      mounts+=(-v "${SSH_AUTH_SOCK}:/run/host-ssh-auth.sock")
     fi
   fi
 
@@ -320,6 +345,13 @@ build_env() {
       envs+=(-e "GH_TOKEN=$gh_tok")
     fi
   fi
+  # SSH agent forwarding — if the host has an agent running AND ssh isn't
+  # explicitly opted out via PI_ENSEMBLE_NO_SSH=1, point the container's
+  # SSH_AUTH_SOCK at the bind-mounted host socket (see build_mounts).
+  if [ "${PI_ENSEMBLE_NO_SSH-}" != "1" ] && [ -n "${SSH_AUTH_SOCK-}" ] && [ -S "${SSH_AUTH_SOCK}" ]; then
+    envs+=(-e "SSH_AUTH_SOCK=/run/host-ssh-auth.sock")
+  fi
+
   # Container-only flags
   envs+=(-e PI_ENSEMBLE_SANDBOX_MODE=1)
   # Workspace root — used by sandbox-fs-guard to enforce the FS boundary.

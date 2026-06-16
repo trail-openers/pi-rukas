@@ -160,33 +160,27 @@ PR: [#203](https://github.com/randomm/pi-ensemble/pull/203)
 
 ## Docker-based MCP servers
 
-### `MCP: Failed to connect to <name>: spawn docker ENOENT`
+### `MCP: Failed to connect to <name>: spawn docker ENOENT` or `MCP error -32000: Connection closed`
 
-**Symptom:** Project-level MCP servers configured in `.pi/mcp.json` (or `.mcp.json`) with `command: "docker"` (e.g. `docker run -i some-mcp-image`) fail to connect inside the sandbox. Host-mode `pi` works fine.
+**Symptom:** Project-level MCP servers configured in `.pi/mcp.json` with `command: "docker"` fail to connect inside the sandbox. Host-mode `pi` works fine. Pre-#216 the error was `spawn docker ENOENT` (docker CLI missing); pre-#220 it was `MCP error -32000: Connection closed` (CLI present, no socket mounted by default).
 
-**Cause:** Two missing pieces in the default sandbox:
-1. Until this fix, the `docker` CLI wasn't installed in the image (`spawn docker ENOENT` = binary not on PATH).
-2. The host's docker socket isn't bind-mounted by default.
+**Cause:** Stale wrapper / image. Post-#220 the docker socket is bind-mounted by default — no env-var flag needed.
 
-**Fix:** Set `PI_ENSEMBLE_DOCKER_SOCKET=1` before launching:
+**Fix:** Refresh.
 
 ```bash
-PI_ENSEMBLE_DOCKER_SOCKET=1 pi-ensemble
-# Or persist in your shell rc:
-export PI_ENSEMBLE_DOCKER_SOCKET=1
+cd ~/.config/opencode/pi-ensemble && git pull && ./install.sh
 ```
 
-The wrapper bind-mounts `/var/run/docker.sock` into the sandbox; the entrypoint relaxes its perms so the `vscode` user can connect. The `docker` CLI then talks to the **host** docker daemon — spawned MCP servers are sibling containers on the host (`docker ps` on the host shows them).
+Then relaunch `pi-ensemble` (no env vars) and `/mcp` should show the docker-based MCP servers connected. Spawned MCP containers are siblings on the host's daemon — visible in the host's `docker ps`.
 
-**Security note:** mounting the docker socket grants root-equivalent host access from inside the sandbox. The container-fence-as-trust-boundary story is weakened. Only enable when you actually need docker-based MCPs AND you trust the agent that's running.
-
-PR: [#216](https://github.com/randomm/pi-ensemble/pull/216)
+PR: [#220](https://github.com/randomm/pi-ensemble/pull/220)
 
 ### `docker: permission denied while trying to connect to the Docker daemon socket`
 
-**Symptom:** With `PI_ENSEMBLE_DOCKER_SOCKET=1`, the socket is mounted but `docker ps` inside the sandbox returns "permission denied".
+**Symptom:** Docker socket is mounted but `docker ps` inside the sandbox returns "permission denied".
 
-**Cause:** The entrypoint's `chmod 666 /var/run/docker.sock` didn't fire. Likely an outdated image (pre-#216 entrypoint runs as `vscode`, can't chmod a root-owned socket).
+**Cause:** The entrypoint's `chmod 666 /var/run/docker.sock` didn't fire — likely an outdated image (pre-#216 entrypoint runs as `vscode`, can't chmod a root-owned socket).
 
 **Fix:** Rebuild the image.
 
@@ -197,6 +191,66 @@ cd ~/.config/opencode/pi-ensemble && ./install.sh
 Verify post-rebuild: `pi-ensemble shell` → `ls -la /var/run/docker.sock` shows `srw-rw-rw-`.
 
 PR: [#216](https://github.com/randomm/pi-ensemble/pull/216)
+
+### I want a tighter sandbox — disable docker socket access
+
+**Symptom:** You want the pre-#220 isolation where the sandbox can't talk to the host docker daemon.
+
+**Cause:** Docker socket grants root-equivalent host access from inside the sandbox (any process can mount host paths, launch privileged containers, etc.). The default-on behavior accepts this trade-off; the opt-out is for users who don't.
+
+**Fix:**
+
+```bash
+export PI_ENSEMBLE_NO_DOCKER_SOCKET=1
+```
+
+Note: docker-based MCPs in `.pi/mcp.json` will stop working under this opt-out.
+
+PR: [#220](https://github.com/randomm/pi-ensemble/pull/220)
+
+## SSH from inside the sandbox
+
+### `ssh remote-host` fails with "Permission denied (publickey)" or "no identities"
+
+**Symptom:** Agents inside the sandbox can't `ssh` to remote hosts that work fine on the host. `ssh-add -l` reports "Could not open a connection to your authentication agent" or "agent has no identities".
+
+**Cause:** Stale wrapper (pre-#220). The wrapper now bind-mounts `~/.ssh/` (read-only) and forwards the host's `$SSH_AUTH_SOCK` by default so outbound SSH inside the sandbox uses the same identities as host-mode `pi`.
+
+**Fix:**
+
+```bash
+cd ~/.config/opencode/pi-ensemble && git pull && ./install.sh
+```
+
+Then relaunch `pi-ensemble`. Verify: `pi-ensemble shell` → `ssh-add -l` lists your host's loaded identities; `ssh remote-host` works.
+
+**If you have no SSH agent running on the host:** start one before launching pi-ensemble so the agent socket exists for forwarding:
+
+```bash
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_ed25519   # or whichever key
+pi-ensemble
+```
+
+**If you have on-disk keys only (no agent):** the wrapper mounts `~/.ssh/` RO so the keys are visible inside, BUT SSH's `StrictModes` may reject keys whose host UID (501 on macOS) doesn't match the container's `vscode` UID (1000). Workaround: use ssh-agent (above) so the keys load via the agent socket and never get read from disk inside the container.
+
+PR: [#220](https://github.com/randomm/pi-ensemble/pull/220)
+
+### I want a tighter sandbox — disable SSH credentials access
+
+**Symptom:** You want the sandbox to have no SSH identities — neither `~/.ssh/` keys nor agent forwarding.
+
+**Cause:** SSH agent forwarding lets the sandboxed agent impersonate any identity loaded in your host agent (push to remotes, ssh into prod boxes, etc.). The default-on behavior accepts this trade-off; opt out if you don't.
+
+**Fix:**
+
+```bash
+export PI_ENSEMBLE_NO_SSH=1
+```
+
+Note: outbound SSH from inside the sandbox will stop working — including agent operations that ssh to remotes (e.g. `git push` over ssh, deploy scripts).
+
+PR: [#220](https://github.com/randomm/pi-ensemble/pull/220)
 
 ## Web research
 
