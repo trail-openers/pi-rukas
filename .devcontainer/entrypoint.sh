@@ -42,6 +42,30 @@ if [ "$(id -u)" = "0" ]; then
   if [ -S /var/run/docker.sock ]; then
     chmod 666 /var/run/docker.sock 2>/dev/null || true
   fi
+  # SSH agent-forward sanity check (post-#227). The wrapper bind-mounts the
+  # host's $SSH_AUTH_SOCK to /run/host-ssh-auth.sock and forwards that path
+  # in the container env. Two failure modes need handling:
+  #   (a) Socket is a real socket but root-owned with restrictive perms
+  #       (Linux hosts where the user's agent socket isn't world-writable).
+  #       Same fix as docker.sock: chmod 666. Single-trust-domain container.
+  #   (b) Mount destination ended up as a DIRECTORY, not a socket — happens
+  #       when Docker can't resolve the host-side path as a usable socket at
+  #       mount time. macOS Docker Desktop + launchd-managed agent paths
+  #       (`/private/tmp/com.apple.launchd.<random>/Listeners`) are the
+  #       canonical case. SSH would loop on "Error connecting to agent"
+  #       even though on-disk keys at ~/.ssh/ would work fine. Unset
+  #       SSH_AUTH_SOCK so SSH falls back cleanly. The `unset` propagates
+  #       through the upcoming `exec env HOME=... setpriv ... "$0" "$@"`
+  #       because `env HOME=...` only ADDS/OVERRIDES HOME — the rest of
+  #       the env is inherited from this shell.
+  if [ -n "${SSH_AUTH_SOCK-}" ]; then
+    if [ -S "${SSH_AUTH_SOCK}" ]; then
+      chmod 666 "${SSH_AUTH_SOCK}" 2>/dev/null || true
+    else
+      echo "pi-ensemble: SSH_AUTH_SOCK=${SSH_AUTH_SOCK} is not a usable socket (likely a Docker Desktop on macOS bind-mount quirk); unsetting so SSH falls back to ~/.ssh/ on-disk keys." >&2
+      unset SSH_AUTH_SOCK
+    fi
+  fi
   # setpriv (util-linux, baked into image) preserves env verbatim — no PATH
   # stripping like sudo's secure_path. --init-groups initialises supplementary
   # groups for vscode. Explicit HOME=/home/vscode so the vscode-phase HF cache

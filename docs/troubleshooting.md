@@ -210,11 +210,26 @@ PR: [#220](https://github.com/randomm/pi-ensemble/pull/220)
 
 ## SSH from inside the sandbox
 
-### `ssh remote-host` fails with "Permission denied (publickey)" or "no identities"
+### `ssh remote-host` fails with "Permission denied (publickey)" or "Error connecting to agent"
 
-**Symptom:** Agents inside the sandbox can't `ssh` to remote hosts that work fine on the host. `ssh-add -l` reports "Could not open a connection to your authentication agent" or "agent has no identities".
+**Symptom:** Agents inside the sandbox can't `ssh` to remote hosts that work on the host. `ssh-add -l` returns one of:
+- *"Could not open a connection to your authentication agent"* — no agent at all
+- *"Error connecting to agent: Permission denied"* — the forwarded agent socket exists but isn't usable
 
-**Cause:** Stale wrapper (pre-#220). The wrapper now bind-mounts `~/.ssh/` (read-only) and forwards the host's `$SSH_AUTH_SOCK` by default so outbound SSH inside the sandbox uses the same identities as host-mode `pi`.
+Outbound `ssh` then fails with `Permission denied (publickey,...)` even though you have working keys on the host.
+
+**Cause:** Two sub-cases:
+
+1. **Stale wrapper (pre-#220).** The wrapper didn't bind-mount `~/.ssh/` or forward `$SSH_AUTH_SOCK`. Fix: `cd ~/.config/opencode/pi-ensemble && git pull && ./install.sh`.
+2. **Broken agent forward (pre-#227).** Wrapper attempted the forward but Docker created an empty **directory** at `/run/host-ssh-auth.sock` instead of a usable socket — common on macOS Docker Desktop where the host's `$SSH_AUTH_SOCK` is a launchd-managed path Docker can't bind-mount cleanly. SSH then loops on "Error connecting to agent" even though on-disk keys at `~/.ssh/` would work. **Post-#227 the entrypoint detects this and unsets `SSH_AUTH_SOCK`** so SSH falls back to your on-disk keys cleanly. Refresh with `./install.sh`.
+
+**Diagnose your case (inside the sandbox):**
+
+```bash
+echo "SSH_AUTH_SOCK=${SSH_AUTH_SOCK:-<unset>}"
+ls -la "${SSH_AUTH_SOCK:-/dev/null}" 2>&1   # should show `srw-` (socket); `drwx` = broken bind-mount
+ls -la ~/.ssh/                              # on-disk keys + known_hosts + config
+```
 
 **Fix:**
 
@@ -222,9 +237,9 @@ PR: [#220](https://github.com/randomm/pi-ensemble/pull/220)
 cd ~/.config/opencode/pi-ensemble && git pull && ./install.sh
 ```
 
-Then relaunch `pi-ensemble`. Verify: `pi-ensemble shell` → `ssh-add -l` lists your host's loaded identities; `ssh remote-host` works.
+Then relaunch `pi-ensemble`. Inside, `ssh-add -l` either lists your forwarded identities (working forward) or reports "Could not open a connection to your authentication agent" CLEANLY (broken forward → fell back to disk keys). `ssh remote-host` should succeed via one path or the other.
 
-**If you have no SSH agent running on the host:** start one before launching pi-ensemble so the agent socket exists for forwarding:
+**If you have no SSH agent running on the host:** start one before launching pi-ensemble so a forwardable agent socket exists:
 
 ```bash
 eval "$(ssh-agent -s)"
@@ -232,9 +247,15 @@ ssh-add ~/.ssh/id_ed25519   # or whichever key
 pi-ensemble
 ```
 
-**If you have on-disk keys only (no agent):** the wrapper mounts `~/.ssh/` RO so the keys are visible inside, BUT SSH's `StrictModes` may reject keys whose host UID (501 on macOS) doesn't match the container's `vscode` UID (1000). Workaround: use ssh-agent (above) so the keys load via the agent socket and never get read from disk inside the container.
+**On-disk keys + UID mismatch (macOS edge case):** the wrapper mounts `~/.ssh/` RO so keys are visible inside, BUT SSH's `StrictModes` may refuse keys whose host UID (501 on macOS) doesn't match the container's vscode UID (1000). Workaround: use ssh-agent (above) — the agent socket bypasses file-perm checks.
 
-PR: [#220](https://github.com/randomm/pi-ensemble/pull/220)
+**Last-resort manual recipe (pre-refresh or weird host env):** explicit key, bypass any broken agent.
+
+```bash
+ssh -o IdentityAgent=none -i ~/.ssh/<your-key> user@host
+```
+
+PRs: [#220](https://github.com/randomm/pi-ensemble/pull/220), [#227](https://github.com/randomm/pi-ensemble/pull/227)
 
 ### I want a tighter sandbox — disable SSH credentials access
 
