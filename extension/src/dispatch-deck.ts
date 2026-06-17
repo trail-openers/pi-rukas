@@ -29,12 +29,28 @@
  * Opt-out: PI_ENSEMBLE_QUIET_STATUS=1 disables the deck entirely.
  */
 
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { Container, type TUI, Text } from "@earendil-works/pi-tui";
 import { type RunningState, emptyRunningState, formatElapsed } from "./progress.ts";
 import { trace } from "./trace.ts";
 
 const WIDGET_KEY = "ensemble:deck";
 const HINT_MAX = 50;
+
+// Pi's array-form setWidget caps content at MAX_WIDGET_LINES=10 and appends
+// "... (widget truncated)" — see Pi's interactive-mode.js:1357. That's
+// painful for batched-dispatch flows: two simultaneous 6-way lens reviews
+// produce 14 rows (2 headers + 12 members) and the second batch's tail
+// disappears. We bypass via the factory form of setWidget (no truncation
+// on that path); we then cap ourselves at DECK_MAX_ROWS_DEFAULT (env-
+// overridable) to prevent a runaway 50-way fanout from owning the screen.
+const DECK_MAX_ROWS_DEFAULT = 20;
+function getDeckMaxRows(): number {
+  const raw = process.env.PI_ENSEMBLE_DECK_MAX_ROWS;
+  if (!raw) return DECK_MAX_ROWS_DEFAULT;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : DECK_MAX_ROWS_DEFAULT;
+}
 
 export interface DeckEntry {
   /** Stable id; jobId for dispatched specialists, jobId+tag for lens children. */
@@ -282,9 +298,30 @@ function renderNow(): void {
       }
       return;
     }
+    const cap = getDeckMaxRows();
+    const visible = lines.slice(0, cap);
+    const overflow = Math.max(0, lines.length - cap);
+    // Factory form of setWidget — bypasses Pi's MAX_WIDGET_LINES=10 cap
+    // (interactive-mode.js:1357 only truncates the string[] array path).
+    // We render up to `cap` rows ourselves, then append our own overflow
+    // indicator with a count so the user knows how much was hidden.
     // Trailing empty line keeps Pi's cwd / status line from hugging the
-    // last entry — pure presentation, not part of buildLines (#143).
-    activeCtx.ui.setWidget(WIDGET_KEY, [...lines, ""], { placement: "belowEditor" });
+    // last entry (presentation separator from #143, preserved here).
+    activeCtx.ui.setWidget(
+      WIDGET_KEY,
+      (_tui: TUI, theme: Theme) => {
+        const container = new Container();
+        for (const line of visible) {
+          container.addChild(new Text(line, 1, 0));
+        }
+        if (overflow > 0) {
+          container.addChild(new Text(theme.fg("muted", `... (${overflow} more)`), 1, 0));
+        }
+        container.addChild(new Text("", 1, 0));
+        return container;
+      },
+      { placement: "belowEditor" },
+    );
     widgetVisible = true;
   } catch (err) {
     trace(`dispatch-deck: setWidget failed: ${(err as Error).message}`);

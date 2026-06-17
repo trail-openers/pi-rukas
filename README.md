@@ -475,6 +475,7 @@ All optional. Defaults are reasonable for typical use.
 | `PI_ENSEMBLE_IMAGE_DIRS` | user | Colon-separated list of host dirs to bind-mount RO for image drag-and-drop (`@file` syntax). Default: `$HOME/Downloads:$HOME/Desktop:$HOME/Pictures`. Replaces default if set. |
 | `PI_ENSEMBLE_EXTRA_IMAGE_DIRS` | user | Colon-separated host dirs to APPEND to the image-dir list (keeps the default). Use to add e.g. `~/Documents/screenshots`. |
 | `PI_ENSEMBLE_ALLOWED_ROOTS` | wrapper | Colon-separated allowed roots for `sandbox-fs-guard` beyond the workspace. Auto-populated from the image-dir list so dragged images aren't blocked. |
+| `PI_ENSEMBLE_DECK_MAX_ROWS` | user | Maximum rows shown in the live dispatch deck (the in-flight subagent footer). Default: `20`. The deck bypasses Pi's built-in 10-row widget cap via the factory-form `setWidget` so two-batch lens-reviews (~14 rows) fit cleanly. Lower it (`=15`) for a tighter footer, raise it (`=50`) to never get clipped, set to `999` for effectively unlimited. |
 
 Advanced (internal path overrides; rarely needed): `PI_ENSEMBLE_DIR`, `PI_ENSEMBLE_PROMPTS_DIR`, `PI_ENSEMBLE_PI_PROMPTS_DIR`, `PI_ENSEMBLE_PM_PROMPT`, `PI_ENSEMBLE_MODELS_CONFIG`, `PI_ENSEMBLE_RUNS_DIR`, `PI_ENSEMBLE_SKILLS_DIR` — override default file/directory locations.
 

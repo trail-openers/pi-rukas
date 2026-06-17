@@ -16,6 +16,7 @@
  *  - PI_ENSEMBLE_QUIET_STATUS=1 short-circuits everything
  */
 
+import { Container } from "@earendil-works/pi-tui";
 import {
   attach,
   batchSnapshot,
@@ -52,9 +53,14 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   return { ...base, ...opts, usage: { ...base.usage, ...(opts.usage ?? {}) } };
 }
 
+// Post-#232 the dispatch deck uses the factory form of setWidget (returns a
+// Container) to bypass Pi's MAX_WIDGET_LINES=10 cap on the array form. The
+// fake context captures whatever shape the production code sends through.
+// biome-ignore lint/suspicious/noExplicitAny: factory return type is Pi-specific Component
+type WidgetContent = string[] | ((tui: any, theme: any) => any) | undefined;
 interface WidgetCall {
   key: string;
-  content: string[] | undefined;
+  content: WidgetContent;
   options?: { placement?: string };
 }
 
@@ -64,7 +70,7 @@ function fakeCtx(): { calls: WidgetCall[]; ctx: Parameters<typeof attach>[0] } {
     ui: {
       setWidget: (
         key: string,
-        content: string[] | undefined,
+        content: WidgetContent,
         options?: { placement?: string },
       ) => {
         calls.push({ key, content, options });
@@ -74,6 +80,18 @@ function fakeCtx(): { calls: WidgetCall[]; ctx: Parameters<typeof attach>[0] } {
     },
   } as unknown as Parameters<typeof attach>[0];
   return { calls, ctx };
+}
+
+// Minimal theme stub that the deck factory uses for muted-overflow text.
+// Returns the text unchanged so assertions can match plainly.
+const fakeTheme = { fg: (_color: string, text: string) => text } as const;
+
+// Invoke a factory and return its child count. Used by the deck-content
+// assertions post-#232 (factory form bypasses Pi's array-truncation cap).
+function renderFactoryChildren(content: WidgetContent): unknown[] {
+  if (typeof content !== "function") return [];
+  const component = content(null, fakeTheme);
+  return component instanceof Container ? component.children : [];
 }
 
 // 1. Insertion order is preserved in the snapshot.
@@ -261,7 +279,8 @@ function fakeCtx(): { calls: WidgetCall[]; ctx: Parameters<typeof attach>[0] } {
   assert(lines[3]?.startsWith(" ↳ "), "member 2 indented");
 }
 
-// 11. attach + scheduleRender → setWidget called with string[] + belowEditor placement.
+// 11. attach + scheduleRender → setWidget called with factory function +
+// belowEditor placement (#232 — factory form bypasses Pi's array truncation).
 {
   reset();
   const { calls, ctx } = fakeCtx();
@@ -272,11 +291,35 @@ function fakeCtx(): { calls: WidgetCall[]; ctx: Parameters<typeof attach>[0] } {
 
   const last = calls[calls.length - 1];
   assert(last?.key === "ensemble:deck", "setWidget called with 'ensemble:deck' key");
-  assert(Array.isArray(last?.content), "setWidget called with array content (multi-line)");
-  // Two entries + one trailing blank for breathing room (#143).
-  assert(last?.content?.length === 3, "content has one line per entry plus a trailing blank");
-  assert(last?.content?.at(-1) === "", "last element is an empty trailing line (#143)");
+  assert(typeof last?.content === "function", "setWidget called with factory function (#232 — bypasses Pi's MAX_WIDGET_LINES=10 array cap)");
+  // Invoke the factory and count Container children: 2 entries + 1 trailing
+  // blank line (#143 presentation separator) = 3.
+  const children = renderFactoryChildren(last?.content);
+  assert(children.length === 3, "factory returns a Container with one Text per entry plus a trailing blank");
   assert(last?.options?.placement === "belowEditor", "widget placement is 'belowEditor'");
+  detach();
+}
+
+// 11b. Factory form caps at DECK_MAX_ROWS_DEFAULT (20) when exceeded, with
+// overflow indicator. Avoids a runaway 50-way fanout from dominating the screen.
+{
+  reset();
+  const { calls, ctx } = fakeCtx();
+  attach(ctx);
+  // 25 entries — exceeds the default cap of 20.
+  for (let i = 0; i < 25; i++) {
+    startEntry(`e${i}`, { label: `developer-${i}`, role: "developer" });
+  }
+  await new Promise((r) => setImmediate(r));
+
+  const last = calls[calls.length - 1];
+  assert(typeof last?.content === "function", "overflow case still uses factory form");
+  // 20 entry rows + 1 overflow indicator + 1 trailing blank = 22 children.
+  const children = renderFactoryChildren(last?.content);
+  assert(
+    children.length === 22,
+    `25 entries → 22 children (20 visible + overflow indicator + trailing blank); got ${children.length}`,
+  );
   detach();
 }
 
