@@ -265,73 +265,46 @@ build_mounts() {
 }
 
 build_env() {
-  # Env passthrough — two layers:
+  # Env passthrough — forward the host shell's FULL env into the sandbox
+  # EXCEPT vars on the blocklist (would conflict with the container's
+  # identity / paths) or already handled separately by the wrapper.
   #
-  # 1. Pattern-based auto-forward: anything matching *_API_KEY or *_LLM_KEY
-  #    in the host shell. Catches custom provider tokens like
-  #    TRAIL_OPENERS_LLM_KEY without needing to enumerate every provider
-  #    by name. Pi's models.json `apiKey: "$VAR"` syntax depends on these
-  #    env vars existing inside the container.
+  # Why wholesale-forward (post-#228): host-mode `pi` inherits the parent
+  # shell's env naturally; sandbox-mode should match that so `.pi/mcp.json`
+  # env-refs (`${VAR}` / `{env:VAR}`) Just Work. Same transparency principle
+  # as docker socket (#220) and SSH agent (#220/#227). The user is the trust
+  # authority; the container is the agent's runtime, not a meaningful
+  # security boundary. Per the feedback memory:
+  # "It needs to be completely transparent to the user that pi just happens
+  #  to run inside devcontainer".
   #
-  # 2. Explicit list: well-known vars we always forward if set
-  #    (Anthropic / OpenAI / Cerebras / Parallel / Groq / Gemini /
-  #    OpenRouter / DeepSeek / xAI plus GH/GITHUB tokens).
-  #
-  # 3. User-override: PI_ENSEMBLE_EXTRA_ENV="VAR1,VAR2" lets the user
-  #    forward arbitrary extra vars.
-  #
-  # Deduplication: track forwarded names so the same var doesn't get forwarded
-  # twice if it matches both a pattern AND the explicit list.
+  # Blocklist categories:
+  #   - container-identity conflicts: PATH, HOME, SHELL, PWD, OLDPWD, USER,
+  #     LOGNAME, TMPDIR/TEMP/TMP, MAIL, HOSTNAME — the container has its own
+  #   - shell internals: SHLVL, _
+  #   - already wrapper-managed: SSH_AUTH_SOCK (re-set to /run/host-ssh-auth.sock
+  #     by the dedicated block below), PI_ENSEMBLE_* (set explicitly farther down)
+  #   - locale: LC_* (container has its own)
+  #   - bash function exports: BASH_FUNC_* (don't translate cleanly across shells)
+  #   - system internals: __* (macOS Apple_PubSub_Socket_Render, __CF_USER_*, etc.)
+  local blocklist_exact=" PATH HOME SHELL PWD OLDPWD USER LOGNAME TMPDIR TEMP TMP SHLVL _ MAIL HOSTNAME SSH_AUTH_SOCK "
   local envs=()
-  local seen_names=" "
-  local explicit=(
-    ANTHROPIC_API_KEY
-    CEREBRAS_API_KEY
-    PARALLEL_API_KEY
-    OPENAI_API_KEY
-    GROQ_API_KEY
-    GOOGLE_API_KEY
-    GEMINI_API_KEY
-    OPENROUTER_API_KEY
-    DEEPSEEK_API_KEY
-    XAI_API_KEY
-    MISTRAL_API_KEY
-    TOGETHER_API_KEY
-    COHERE_API_KEY
-    GH_TOKEN
-    GITHUB_TOKEN
-  )
-  # Pattern-based auto-forward
   while IFS='=' read -r var _; do
     [[ -z "$var" ]] && continue
+    # Skip exact-match blocklist (space-padded boundary)
+    [[ "$blocklist_exact" == *" $var "* ]] && continue
+    # Skip pattern blocklist
     case "$var" in
-      *_API_KEY|*_LLM_KEY)
-        if [ -n "${!var-}" ] && [[ "$seen_names" != *" $var "* ]]; then
-          envs+=(-e "$var=${!var}")
-          seen_names+="$var "
-        fi
-        ;;
+      LC_*|PI_ENSEMBLE_*|BASH_FUNC_*|__*) continue ;;
     esac
+    # Skip empty values — no info, just clutter in `docker inspect`
+    [ -z "${!var-}" ] && continue
+    envs+=(-e "$var=${!var}")
   done < <(env)
-  # Explicit list (covers vars not matching the patterns above)
-  for var in "${explicit[@]}"; do
-    if [ -n "${!var-}" ] && [[ "$seen_names" != *" $var "* ]]; then
-      envs+=(-e "$var=${!var}")
-      seen_names+="$var "
-    fi
-  done
-  # User override: PI_ENSEMBLE_EXTRA_ENV="VAR1,VAR2,VAR3"
-  if [ -n "${PI_ENSEMBLE_EXTRA_ENV-}" ]; then
-    IFS=',' read -ra extra <<<"$PI_ENSEMBLE_EXTRA_ENV"
-    for var in "${extra[@]}"; do
-      var="${var// /}"  # strip whitespace
-      [ -z "$var" ] && continue
-      if [ -n "${!var-}" ] && [[ "$seen_names" != *" $var "* ]]; then
-        envs+=(-e "$var=${!var}")
-        seen_names+="$var "
-      fi
-    done
-  fi
+  # PI_ENSEMBLE_EXTRA_ENV is now a no-op (wholesale forwarding makes it
+  # redundant). Kept tolerant: if a user has it set in their shell rc from
+  # pre-#228 days, the listed vars are forwarded by the wholesale loop above
+  # anyway — no breakage.
 
   # gh auth: if the user has gh installed and authenticated on host, extract
   # the token and forward as GH_TOKEN. This handles the common macOS case

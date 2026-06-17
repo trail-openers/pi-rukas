@@ -128,9 +128,33 @@ PR: [#204](https://github.com/randomm/pi-ensemble/pull/204)
 
 **Cause:** Wrapper bind-mounts `~/.pi/agent/models.json:ro` (post-#205). If you're on an older wrapper version, custom providers aren't visible inside the container.
 
-**Fix:** `./install.sh` from pi-ensemble repo to refresh the wrapper. If after that the provider's API requests fail with `401`, check that the api key env var matches the auto-forward pattern (`*_API_KEY` or `*_LLM_KEY`). For odd names, add to `PI_ENSEMBLE_EXTRA_ENV="MY_CUSTOM_KEY,ANOTHER_TOKEN"`.
+**Fix:** `./install.sh` from pi-ensemble repo to refresh the wrapper. If after that the provider's API requests fail with `401`, check that the api key env var is exported in your shell rc — post-#228 the wrapper forwards the full host shell env, so any exported var (regardless of name) reaches the container.
 
-PR: [#205](https://github.com/randomm/pi-ensemble/pull/205)
+PR: [#205](https://github.com/randomm/pi-ensemble/pull/205), [#228](https://github.com/randomm/pi-ensemble/pull/228)
+
+### `MCP error -32000: Connection closed` for env-driven docker MCPs
+
+**Symptom:** `.pi/mcp.json` defines an MCP server like `docker run -i --rm -e DATABASE_URI crystaldba/postgres-mcp` with `"env": { "DATABASE_URI": "${SOME_DB_URI}" }`. Works on host-mode `pi`; fails in `pi-ensemble` with `MCP error -32000: Connection closed`. The MCP server process exits within milliseconds.
+
+**Diagnose (inside the sandbox):**
+
+```bash
+env | grep SOME_DB_URI   # is the var even visible inside?
+```
+
+If empty: the var isn't reaching the sandbox.
+
+**Cause:** Pre-#228 the wrapper only forwarded a curated env subset (`*_API_KEY` / `*_LLM_KEY` patterns + explicit list). Vars referenced in `.pi/mcp.json` env-refs (`${VAR}` / `{env:VAR}`) had to be explicitly listed in `PI_ENSEMBLE_EXTRA_ENV`. pi-mcp-adapter interpolated them against the sandbox's env, got empty strings, spawned `docker run -e DATABASE_URI=""`, and the postgres-mcp container exited on invalid URI.
+
+**Fix:** Refresh.
+
+```bash
+cd ~/.config/opencode/pi-ensemble && git pull && ./install.sh
+```
+
+Post-#228 the wrapper forwards the entire host shell env (less a small conflict-blocklist — see README env-vars table). Any var you `export` in your shell rc reaches the sandbox. Verify post-refresh: `pi-ensemble shell` → `echo "$SOME_DB_URI"` prints the URI.
+
+PR: [#228](https://github.com/randomm/pi-ensemble/pull/228)
 
 ### `vipune search` returns "Failed to download embedding model … 404"
 
