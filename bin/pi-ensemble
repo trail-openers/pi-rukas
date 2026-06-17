@@ -261,7 +261,10 @@ build_mounts() {
   mounts+=(-v pi-ensemble-bun-cache:/home/vscode/.bun)
   mounts+=(-v pi-ensemble-cargo-cache:/home/vscode/.cargo)
   mounts+=(-v pi-ensemble-history:/commandhistory)
-  printf '%s\n' "${mounts[@]}"
+  # NUL-separated so multi-line values (FZF_DEFAULT_OPTS etc., though they
+  # only appear in build_env in practice) survive the IPC into run_container.
+  # Consistent IPC across build_mounts / build_env / build_host_aliases.
+  printf '%s\0' "${mounts[@]}"
 }
 
 build_env() {
@@ -368,7 +371,12 @@ build_env() {
     envs+=(-e "PI_ENSEMBLE_ALLOWED_ROOTS=$extant_dirs")
   fi
   envs+=(-e "HISTFILE=/commandhistory/.bash_history")
-  printf '%s\n' "${envs[@]}"
+  # NUL-separated so multi-line env values (FZF_DEFAULT_OPTS etc., commonly
+  # ~500 chars with 8+ embedded newlines) reach run_container intact. With
+  # newline-separated IPC, multi-line values fragment into separate read-loop
+  # iterations; docker then sees the continuation lines as positional args
+  # and errors out with "docker: invalid reference format".
+  printf '%s\0' "${envs[@]}"
 }
 
 build_host_aliases() {
@@ -389,7 +397,8 @@ build_host_aliases() {
     [ -z "$pair" ] && continue
     aliases+=(--add-host="$pair")
   done
-  printf '%s\n' "${aliases[@]}"
+  # NUL-separated for consistency with build_mounts / build_env IPC.
+  printf '%s\0' "${aliases[@]}"
 }
 
 # Repair the host terminal after `docker run -it`. Pi inside the container
@@ -414,9 +423,12 @@ run_container() {
   local envs=()
   local hosts=()
   local line
-  while IFS= read -r line; do mounts+=("$line"); done < <(build_mounts)
-  while IFS= read -r line; do envs+=("$line"); done < <(build_env)
-  while IFS= read -r line; do hosts+=("$line"); done < <(build_host_aliases)
+  # NUL-separated IPC — see build_mounts/build_env/build_host_aliases. With
+  # newline-separated, multi-line env values (e.g. FZF_DEFAULT_OPTS) fragment
+  # into bogus -e/-v args and docker run errors with "invalid reference format".
+  while IFS= read -r -d '' line; do mounts+=("$line"); done < <(build_mounts)
+  while IFS= read -r -d '' line; do envs+=("$line"); done < <(build_env)
+  while IFS= read -r -d '' line; do hosts+=("$line"); done < <(build_host_aliases)
   # Ensure terminal gets cleaned up even if docker run exits non-zero
   # (Pi crashed, OOM, etc.). Without this, the host shell is unusable.
   trap repair_tty EXIT
