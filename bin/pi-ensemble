@@ -289,8 +289,21 @@ build_env() {
   #   - system internals: __* (macOS Apple_PubSub_Socket_Render, __CF_USER_*, etc.)
   local blocklist_exact=" PATH HOME SHELL PWD OLDPWD USER LOGNAME TMPDIR TEMP TMP SHLVL _ MAIL HOSTNAME SSH_AUTH_SOCK "
   local envs=()
-  while IFS='=' read -r var _; do
-    [[ -z "$var" ]] && continue
+  # NUL-separated parsing (env -0) so multi-line env values stay intact.
+  # The naïve newline-split approach (`while read < <(env)`) splits values
+  # that contain literal newlines (e.g. FZF_DEFAULT_OPTS, which is commonly
+  # a multi-line config string), parsing the continuation lines as bogus
+  # var names like `--height 40%` and breaking the ${!var-} lookup.
+  # Available on both BSD env (macOS) and GNU env (Linux).
+  local entry var value
+  while IFS= read -r -d '' entry; do
+    [[ -z "$entry" ]] && continue
+    var="${entry%%=*}"
+    value="${entry#*=}"
+    # Defensive: skip anything that isn't a syntactically valid var name.
+    # Catches e.g. lines that somehow lacked '=' and partial-entry edge
+    # cases. Pure POSIX identifier shape: [A-Za-z_][A-Za-z0-9_]*
+    [[ ! "$var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && continue
     # Skip exact-match blocklist (space-padded boundary)
     [[ "$blocklist_exact" == *" $var "* ]] && continue
     # Skip pattern blocklist
@@ -298,9 +311,9 @@ build_env() {
       LC_*|PI_ENSEMBLE_*|BASH_FUNC_*|__*) continue ;;
     esac
     # Skip empty values — no info, just clutter in `docker inspect`
-    [ -z "${!var-}" ] && continue
-    envs+=(-e "$var=${!var}")
-  done < <(env)
+    [[ -z "$value" ]] && continue
+    envs+=(-e "$var=$value")
+  done < <(env -0)
   # PI_ENSEMBLE_EXTRA_ENV is now a no-op (wholesale forwarding makes it
   # redundant). Kept tolerant: if a user has it set in their shell rc from
   # pre-#228 days, the listed vars are forwarded by the wholesale loop above
@@ -379,6 +392,22 @@ build_host_aliases() {
   printf '%s\n' "${aliases[@]}"
 }
 
+# Repair the host terminal after `docker run -it`. Pi inside the container
+# runs in TUI mode (alt-screen + raw input + hidden cursor). If the container
+# exits abruptly (OOM-kill, segfault, dispatch_lens_review fanout overrun,
+# etc.), Pi never gets a chance to exit alt-screen / restore terminal modes,
+# and the host shell is left in a corrupted state: typing produces "weird
+# UTF-8 characters", the cursor is invisible, scrollback is gone. The
+# commands below are all no-ops on a clean terminal, so safe to run on every
+# exit path. Only fires when stdout is a TTY (skips piped invocations).
+repair_tty() {
+  if [ -t 1 ]; then
+    stty sane 2>/dev/null || true
+    tput rmcup 2>/dev/null || true   # exit alt-screen
+    tput cnorm 2>/dev/null || true   # show cursor
+  fi
+}
+
 run_container() {
   local cmd=("$@")
   local mounts=()
@@ -388,6 +417,9 @@ run_container() {
   while IFS= read -r line; do mounts+=("$line"); done < <(build_mounts)
   while IFS= read -r line; do envs+=("$line"); done < <(build_env)
   while IFS= read -r line; do hosts+=("$line"); done < <(build_host_aliases)
+  # Ensure terminal gets cleaned up even if docker run exits non-zero
+  # (Pi crashed, OOM, etc.). Without this, the host shell is unusable.
+  trap repair_tty EXIT
   docker run --rm -it \
     --name "$CONTAINER_NAME" \
     -w "$PROJECT_ROOT" \
