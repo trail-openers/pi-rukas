@@ -280,10 +280,10 @@ build_env() {
   # 3. User-override: PI_ENSEMBLE_EXTRA_ENV="VAR1,VAR2" lets the user
   #    forward arbitrary extra vars.
   #
-  # Deduplication: forwarded var set is a hash so the same var doesn't
-  # get forwarded twice if it matches both a pattern AND the explicit list.
+  # Deduplication: track forwarded names so the same var doesn't get forwarded
+  # twice if it matches both a pattern AND the explicit list.
   local envs=()
-  declare -A seen=()
+  local seen_names=" "
   local explicit=(
     ANTHROPIC_API_KEY
     CEREBRAS_API_KEY
@@ -306,18 +306,18 @@ build_env() {
     [[ -z "$var" ]] && continue
     case "$var" in
       *_API_KEY|*_LLM_KEY)
-        if [ -n "${!var-}" ] && [ -z "${seen[$var]-}" ]; then
+        if [ -n "${!var-}" ] && [[ "$seen_names" != *" $var "* ]]; then
           envs+=(-e "$var=${!var}")
-          seen[$var]=1
+          seen_names+="$var "
         fi
         ;;
     esac
   done < <(env)
   # Explicit list (covers vars not matching the patterns above)
   for var in "${explicit[@]}"; do
-    if [ -n "${!var-}" ] && [ -z "${seen[$var]-}" ]; then
+    if [ -n "${!var-}" ] && [[ "$seen_names" != *" $var "* ]]; then
       envs+=(-e "$var=${!var}")
-      seen[$var]=1
+      seen_names+="$var "
     fi
   done
   # User override: PI_ENSEMBLE_EXTRA_ENV="VAR1,VAR2,VAR3"
@@ -326,9 +326,9 @@ build_env() {
     for var in "${extra[@]}"; do
       var="${var// /}"  # strip whitespace
       [ -z "$var" ] && continue
-      if [ -n "${!var-}" ] && [ -z "${seen[$var]-}" ]; then
+      if [ -n "${!var-}" ] && [[ "$seen_names" != *" $var "* ]]; then
         envs+=(-e "$var=${!var}")
-        seen[$var]=1
+        seen_names+="$var "
       fi
     done
   fi
@@ -408,10 +408,13 @@ build_host_aliases() {
 
 run_container() {
   local cmd=("$@")
-  local mounts envs hosts
-  mapfile -t mounts < <(build_mounts)
-  mapfile -t envs < <(build_env)
-  mapfile -t hosts < <(build_host_aliases)
+  local mounts=()
+  local envs=()
+  local hosts=()
+  local line
+  while IFS= read -r line; do mounts+=("$line"); done < <(build_mounts)
+  while IFS= read -r line; do envs+=("$line"); done < <(build_env)
+  while IFS= read -r line; do hosts+=("$line"); done < <(build_host_aliases)
   docker run --rm -it \
     --name "$CONTAINER_NAME" \
     -w "$PROJECT_ROOT" \
