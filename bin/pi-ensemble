@@ -287,10 +287,16 @@ build_env() {
   #   - shell internals: SHLVL, _
   #   - already wrapper-managed: SSH_AUTH_SOCK (re-set to /run/host-ssh-auth.sock
   #     by the dedicated block below), PI_ENSEMBLE_* (set explicitly farther down)
+  #   - host-only filesystem paths that break inside the container:
+  #       DOCKER_HOST — Colima / Podman / alt-docker set this to a path under
+  #       /Users/<u>/.colima/... that doesn't exist inside the sandbox. The
+  #       container has /var/run/docker.sock bind-mounted (post-#220); docker
+  #       CLI falls back to that default when DOCKER_HOST is unset. Forwarding
+  #       it intact = "failed to connect to docker API at <host-only-path>".
   #   - locale: LC_* (container has its own)
   #   - bash function exports: BASH_FUNC_* (don't translate cleanly across shells)
   #   - system internals: __* (macOS Apple_PubSub_Socket_Render, __CF_USER_*, etc.)
-  local blocklist_exact=" PATH HOME SHELL PWD OLDPWD USER LOGNAME TMPDIR TEMP TMP SHLVL _ MAIL HOSTNAME SSH_AUTH_SOCK "
+  local blocklist_exact=" PATH HOME SHELL PWD OLDPWD USER LOGNAME TMPDIR TEMP TMP SHLVL _ MAIL HOSTNAME SSH_AUTH_SOCK DOCKER_HOST "
   local envs=()
   # NUL-separated parsing (env -0) so multi-line env values stay intact.
   # The naïve newline-split approach (`while read < <(env)`) splits values
