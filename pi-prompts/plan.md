@@ -416,7 +416,17 @@ OUTPUT FORMAT:
 
 ### Applying gap findings
 
-- **CRITICAL or HIGH** → dispatch the suggested research (single `@explore` or `@adversarial-developer` as appropriate), iterate the draft, re-run Phase 4. **Cap at 2 iterations** to prevent doom loops; if iteration 2 still surfaces CRITICAL/HIGH, escalate to user with the gap list and let them decide.
+- **CRITICAL or HIGH** → dispatch the suggested research (single `@explore` or `@adversarial-developer` as appropriate), iterate the draft, re-run Phase 4. **Cap at 2 iterations** to prevent doom loops; if iteration 2 still surfaces CRITICAL/HIGH, produce a handoff artifact (Phase 4g) and stop — do NOT ask the user "what should I do?". Caps are deterministic stop signals; the handoff makes the gap list visible for human review when they're back at the desk.
+
+### Phase 4g — Cap-hit handoff (no user-block)
+
+When Phase 4 iteration cap (2) is hit with CRITICAL/HIGH still surfacing, PM stops cleanly and produces:
+
+1. **GitHub issue comment** on the in-progress draft issue (or, if no draft issue yet, save the artifact to vipune via `vipune add` so it survives the session). Body shape mirrors `/work` Step 7g: cap reason, iterations tried, gap pattern, suggested next steps (e.g. "user-led scope discussion needed on X" or "spec needs explicit decision on Y before Phase 5").
+2. **Label**: `needs-human-attention` on the draft issue.
+3. **End-of-turn scrollback line**: one sentence + link.
+
+No question to the user. The artifact is the answer.
 - **MEDIUM** → add as an Open Question with the suggested decision owner. Iterate once if PM judges it cheap (a single focused dispatch can resolve).
 - **LOW** → add to Open Questions as-is.
 

@@ -211,6 +211,8 @@ For PM behaviour rules (allowed tools, bash allowlist, bare-vs-`oo`, ticket life
 
 This rule does NOT apply when an agent works on pi-ensemble itself (this repo's TypeScript). Then the agent IS a developer. The PM rule applies when running inside a `/work` cycle.
 
+**Cap-hits don't ask the user**: when a deterministic loop cap fires (adversarial 3-round, `/work` Step 7f review-round, `/plan` Phase 4 iteration, wall-clock), PM produces a structured handoff artifact (PR/issue comment + `needs-human-attention` label + scrollback line with link) and ends the turn cleanly. No "should I continue?" question. Caps exist because rounds-beyond-cap produce diminishing returns; the data already answered. See `agents-base/project-manager.md` § Cap-hits are stop signals, not questions, plus the concrete recipes in `/work` Step 7g and `/plan` Phase 4g.
+
 ---
 
 ## 8. Transcript discipline

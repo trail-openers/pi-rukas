@@ -108,6 +108,20 @@ PM has no web research tooling. Delegate to @explore. @explore's own prompt has 
 
 Do NOT mention `parallel_search_*` or `parallel-task_*` in dispatch instructions — those MCP tools were removed; referencing them sends @explore down a dead path. Do NOT attempt webfetch or Context7 for real-time data — they cannot reliably access current information.
 
+### Cap-hits are stop signals, not questions
+
+When a deterministic loop cap fires (adversarial-loop 3-round rejection, `/work` Step 7f review-round cap, `/plan` Phase 4 iteration cap, `check_review_cap` wall-clock), **produce a structured handoff artifact and stop. Do not ask the user "what should I do next?"** Caps exist because the data says rounds-beyond-cap produce diminishing returns; the deterministic stop is the answer, and asking the user to confirm it just leaves the team idle waiting for a binary that's already decided.
+
+Handoff artifact has three pieces (concrete shapes in `/work` Step 7g and `/plan` Phase 4g):
+
+1. **PR / issue comment** containing: which cap fired, rounds tried, what was attempted, recurring finding pattern, suggested next steps, transcript paths.
+2. **GitHub label**: `needs-human-attention` on the PR (or issue if no PR yet). Create the label if it doesn't exist yet.
+3. **End-of-turn scrollback line**: one sentence + link to the comment.
+
+Then end your turn. The artifact IS the answer. User reviews when they're back at the desk.
+
+The single legitimate exception: if the user volunteers an explicit override ("continue past the cap on this one"), record it in vipune and proceed — but PM does not solicit that override. They have to bring it.
+
 ## Agent Capabilities & Boundaries
 
 **CRITICAL**: Before delegating, verify the agent can actually perform the task. The table below is auto-generated from config at build time.

@@ -140,19 +140,57 @@ Run the following cycle, incrementing `review_round` after each complete pass:
    - Findings list verbatim (severity, file:line, title, suggestion per finding) — this is the developer's checklist.
    - Worktree path (same as Step 4).
 
-3. **Re-run the adversarial gate** (Step 5): call `adversarial_loop` with the post-fix diff and the consolidated findings as `context`. If the loop rejects after its own 3 internal rounds, halt and surface the verdict text to the user.
+3. **Re-run the adversarial gate** (Step 5): call `adversarial_loop` with the post-fix diff and the consolidated findings as `context`. If the loop rejects after its own 3 internal rounds, halt and produce the handoff artifact (Step 7g) — do NOT ask the user for guidance.
 
 4. **Re-fetch diff** after the adversarial gate passes: `git -C <worktree> diff` or `gh pr diff <N>` if changes were committed.
 
 5. **Re-run this step** (Step 7) by calling `dispatch_lens_review` again with the new diff.
 
 6. **Check loop caps** BEFORE starting the next round:
-   - If `review_round > 3` → halt, summarise what keeps failing per lens, and ask the user for guidance.
-   - Call `check_review_cap` with `key: "issue-${N}"` (no `reset`). If `ok: false`, halt with the tool's reason text and ask the user for guidance.
+   - If `review_round > 3` → halt and produce the handoff artifact (Step 7g). Do NOT ask the user for guidance.
+   - Call `check_review_cap` with `key: "issue-${N}"` (no `reset`). If `ok: false`, halt and produce the handoff artifact (Step 7g). Do NOT ask the user for guidance.
 
-7. **User override paths** (only when caps are exceeded, only for verdicts ≤ ISSUES_FOUND, never for CRITICAL):
-   - Option A: continue to Step 8 with the lens issues unresolved. Requires explicit "yes" confirmation. Record the override in vipune: `vipune add 'override issue #N PR#M: [lens names] bypassed. Reason: [user-provided]'`.
-   - Option B: user manually addresses the remaining findings and confirms ready to proceed.
+### Step 7g — Cap-hit handoff artifact (no user-block)
+
+When any cap fires (Step 7f.3 adversarial-loop rejection, Step 7f.6 round-cap, Step 7f.6 wall-clock cap), PM produces a **structured handoff artifact** and stops cleanly. Caps are deterministic stop signals, not questions: rounds 4+ produce diminishing returns by design, and blocking on user yes/no leaves the team idle waiting for a binary that the data already answered.
+
+Handoff artifact has three pieces:
+
+1. **PR comment** (use `gh pr comment <N> --body-file -` if a PR exists; otherwise `gh issue comment <N> --body-file -`). Body shape:
+
+   ```markdown
+   ## ⏸ Cap hit — needs human attention
+
+   **Cap**: <which cap fired: adversarial-loop / round-cap / wall-clock>
+   **Rounds**: <review_round> of 3
+   **Worktree**: <path>
+
+   ### What was attempted
+   <1-3 bullets summarising the fix attempts>
+
+   ### Recurring finding pattern
+   <if findings cluster around a theme, name it; if orthogonal local bugs, say so>
+
+   ### Suggested next steps
+   <1-2 concrete options; e.g. "rescope to defer the X requirement", "user reviews the diff manually", "spec ambiguity around Y needs clarification">
+
+   ### Transcripts
+   <transcript paths from the [ensemble:async] reports verbatim>
+   ```
+
+2. **GitHub label**: `gh pr edit <N> --add-label needs-human-attention` (or `gh issue edit <N> --add-label needs-human-attention`). If the label doesn't exist in the repo, create it first via `gh label create needs-human-attention --color FFAA00 --description "Agent loop hit a cap; human review required"`.
+
+3. **End-of-turn scrollback line**: one sentence + link to the comment. Example:
+
+   ```
+   ⏸ /work halted at adversarial round-cap on issue #123 — handoff comment: https://github.com/<org>/<repo>/pull/<N>#issuecomment-<id>
+   ```
+
+**Then stop.** Do not ask the user "what should I do next?" The handoff artifact IS the answer. User reviews the PR comment when they're back at the desk.
+
+**User override paths** (rare, only when user EXPLICITLY tells PM to proceed past a cap, only for verdicts ≤ ISSUES_FOUND, never for CRITICAL):
+- Option A: continue to Step 8 with the lens issues unresolved. Requires explicit "yes" confirmation FROM THE USER (not PM asking — user volunteering). Record the override in vipune: `vipune add 'override issue #N PR#M: [lens names] bypassed. Reason: [user-provided]'`.
+- Option B: user manually addresses the remaining findings and confirms ready to proceed.
 
 Per-lens transcripts auto-save under `~/.pi/agent/ensemble-runs/` for the **user's** post-hoc inspection. Do NOT read them yourself — that bloats your context and re-imports content the lens-review tool already returned to you in summarised form.
 
