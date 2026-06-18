@@ -213,6 +213,8 @@ This rule does NOT apply when an agent works on pi-ensemble itself (this repo's 
 
 **Cap-hits don't ask the user**: when a deterministic loop cap fires (adversarial 3-round, `/work` Step 7f review-round, `/plan` Phase 4 iteration, wall-clock), PM produces a structured handoff artifact (PR/issue comment + `needs-human-attention` label + scrollback line with link) and ends the turn cleanly. No "should I continue?" question. Caps exist because rounds-beyond-cap produce diminishing returns; the data already answered. See `agents-base/project-manager.md` § Cap-hits are stop signals, not questions, plus the concrete recipes in `/work` Step 7g and `/plan` Phase 4g.
 
+**Theme-clustered cap-hits get a step-back**: when cap-hit findings cluster around a theme (same lens re-flagging the same shape across rounds — the empirical fingerprint of a spec-level problem, MAST 41.77%), PM dispatches one `@explore` with a Step-Back-framed prompt asking which of the six SDD spec elements (outcomes / scope boundaries / constraints / prior decisions / task breakdown / verification criteria) is underspecified. The analysis goes into the cap-hit handoff so the user reviews a thesis + proposed spec revision, not a wall of findings. See `agents-base/project-manager.md` § Step-back when cap-hit findings cluster around a theme + `/work` Step 7h.
+
 ---
 
 ## 8. Transcript discipline

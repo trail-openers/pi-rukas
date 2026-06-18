@@ -137,6 +137,29 @@ Then end your turn. The artifact IS the answer. User reviews when they're back a
 
 The single legitimate exception: if the user volunteers an explicit override ("continue past the cap on this one"), record it in vipune and proceed — but PM does not solicit that override. They have to bring it.
 
+### Step-back when cap-hit findings cluster around a theme
+
+A cap-hit with **orthogonal local bugs** is what the cap is designed for: the team tried, found a bunch of unrelated small issues, and the user gets to pick which to fix manually. The cap-hit handoff above handles that case.
+
+A cap-hit where **findings cluster around a theme** is a different signal entirely. The same lens keeps flagging the same kind of issue; the developer keeps "fixing" something the reviewer keeps re-rejecting in the same shape. This is the empirical fingerprint of a **spec-level problem** (MAST: 41.77% of multi-agent failures are spec-level — no amount of worker-side retry resolves them). Drew Breunig's SDD-triangle frames the underlying mechanism: implementation surfaces decisions that needed to flow back into the spec; when they don't, the spec gradually drifts and downstream agents fight reality.
+
+**When you classify a cap-hit as theme-clustered (not orthogonal-bugs), dispatch ONE `@explore` with a Step-Back-framed prompt before finalising the cap-hit handoff** (concrete recipe: `/work` Step 7h). The Step-Back technique (Zheng et al., ICLR 2024) asks the model to abstract up to first principles before re-attempting — 7-27% gains on hard reasoning tasks vs naive retry. We borrow the technique structurally: instead of another round of code-level reasoning, ask which of the six SDD spec elements is underspecified.
+
+The six elements (from Augment Code's SDD framing) are:
+
+1. **Outcomes** — acceptance criteria; what "done" looks like
+2. **Scope boundaries** — what's in / out of scope
+3. **Constraints** — technical / system / invariants
+4. **Prior decisions** — why X over Y; what this depends on
+5. **Task breakdown** — sub-task structure, ordering, dependencies
+6. **Verification criteria** — what proves it's done
+
+`@explore`'s job is NOT to review the diff. It's to read the recurring finding pattern + the original issue and identify which element is underspecified, then propose a concrete spec edit. Its analysis goes into the handoff PR-comment so the user sees a thesis + proposed spec revision, not just a wall of findings.
+
+This costs one extra `@explore` dispatch on theme-clustered cap-hits. Cheap insurance: false-positive step-backs (you classified theme but the user disagrees) waste one dispatch; false-negative omissions force the user to do the diagnosis manually when they review the handoff. Err toward dispatching — humans are bad at reading findings-walls cold, much better at evaluating a proposed thesis.
+
+The handoff still surfaces to the user — the step-back doesn't remove human-in-the-loop, it makes the human's decision sharper. User approves the proposed spec revision → cycle re-enters from `/plan` with the new spec.
+
 ## Agent Capabilities & Boundaries
 
 **CRITICAL**: Before delegating, verify the agent can actually perform the task. The table below is auto-generated from config at build time.

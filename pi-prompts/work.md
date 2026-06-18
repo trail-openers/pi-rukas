@@ -154,6 +154,48 @@ Run the following cycle, incrementing `review_round` after each complete pass:
 
 When any cap fires (Step 7f.3 adversarial-loop rejection, Step 7f.6 round-cap, Step 7f.6 wall-clock cap), PM produces a **structured handoff artifact** and stops cleanly. Caps are deterministic stop signals, not questions: rounds 4+ produce diminishing returns by design, and blocking on user yes/no leaves the team idle waiting for a binary that the data already answered.
 
+**Before finalising the handoff, classify the failure pattern.** Look at the consolidated findings across all rounds:
+
+- **Orthogonal local bugs** (different findings in each round, no clear theme) → proceed directly to the handoff artifact below
+- **Recurring theme** (same lens repeatedly flags the same kind of issue; or the developer keeps "fixing" something that the reviewer keeps re-rejecting in the same shape) → **dispatch the step-back** before the handoff (Step 7h below)
+
+### Step 7h — Step-back dispatch (only when findings cluster around a theme)
+
+When findings recur around a theme, the failure category is likely spec-level, not implementation-level (MAST: 41.77% of multi-agent failures are spec-level; no amount of worker-side retry fixes that class). Dispatch ONE `@explore` with a Step-Back-framed prompt that asks which of the six SDD spec elements is underspecified — before finalising the handoff. The `@explore` analysis then gets included in the handoff so the user sees a thesis, not just findings.
+
+Use `dispatch_specialist` with `role: explore`. The prompt template:
+
+```
+Don't review THIS diff. Take a step back and consider whether the SPEC has a problem.
+
+Original issue: <link to issue or quote the spec>
+Recurring rejection pattern across <N> rounds: <summary of the theme>
+Findings cluster: <verbatim 2-4 findings that show the pattern>
+
+Which of these six SDD spec elements appears underspecified?
+  1. Outcomes — acceptance criteria, what "done" looks like
+  2. Scope boundaries — what's in / out of scope
+  3. Constraints — technical / system / invariants
+  4. Prior decisions — why X was chosen over Y; what previous decisions
+     this depends on
+  5. Task breakdown — sub-task structure, ordering, dependencies
+  6. Verification criteria — what proves it's done
+
+Return:
+- which element is underspecified (one of the six)
+- one-sentence diagnosis
+- concrete proposed spec edit (verbatim text to add to the issue body)
+- alternative approach if applicable
+```
+
+When `@explore` returns:
+
+- Include its analysis verbatim in the handoff PR-comment under a "Step-back analysis" heading
+- Draft a "Proposed spec revision" section using `@explore`'s concrete edit, as a quoted diff against the current issue body
+- Surface to user via the standard handoff mechanism — user reviews the proposed spec revision and decides whether to approve / modify / reject
+
+This adds ONE extra `@explore` dispatch on cap-hits where the pattern suggests structural issue — cheap insurance against handing the user a wall of findings without a thesis. When the pattern is orthogonal bugs (no theme), skip this step and go directly to the bare handoff.
+
 Handoff artifact has three pieces:
 
 1. **PR comment** (use `gh pr comment <N> --body-file -` if a PR exists; otherwise `gh issue comment <N> --body-file -`). Body shape:
@@ -171,8 +213,18 @@ Handoff artifact has three pieces:
    ### Recurring finding pattern
    <if findings cluster around a theme, name it; if orthogonal local bugs, say so>
 
+   ### Step-back analysis (only if step-back dispatched per Step 7h)
+   <verbatim @explore output identifying which of the six SDD spec
+   elements is underspecified + diagnosis>
+
+   ### Proposed spec revision (only if step-back dispatched)
+   <quoted diff against the current issue body, derived from @explore's
+   recommended-change; user reviews and approves/modifies/rejects>
+
    ### Suggested next steps
-   <1-2 concrete options; e.g. "rescope to defer the X requirement", "user reviews the diff manually", "spec ambiguity around Y needs clarification">
+   <1-2 concrete options; e.g. "approve the proposed spec revision and
+   re-enter from /plan", "rescope to defer the X requirement", "user
+   reviews the diff manually">
 
    ### Transcripts
    <transcript paths from the [ensemble:async] reports verbatim>
