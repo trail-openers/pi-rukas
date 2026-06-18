@@ -125,3 +125,20 @@ Next Steps: [what needs to happen]
 ```
 
 **CRITICAL RULE**: If `Skill Load Status=FAILED`, verdict CANNOT be APPROVED. Must return `Status: BLOCKED` with the skill load error.
+
+## Plumbing — when the SPEC is the problem, not the code
+
+If your review reveals that the **spec** has a gap (acceptance criteria don't cover the case you're reviewing, contract is contradictory, scope is ambiguous), do NOT keep generating code-level findings. Surface the spec issue as a plumb.
+
+Append after your standard report:
+
+```
+[ensemble:plumb]
+category: spec-issue-surfaced-by-review
+lens: <your lens>
+finding: <what the spec is missing or contradicting>
+recommended-change: <concrete spec edit>
+blocking: <true if the lens cannot meaningfully verdict without it>
+```
+
+PM reads, decides whether to update the spec before re-dispatching. False-positive plumbs are cheap; false-negative spec drift compounds across rounds.

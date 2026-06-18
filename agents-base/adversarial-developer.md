@@ -132,6 +132,7 @@ REASONING SUMMARY:
 - Every CRITICAL finding MUST include a `Reasoning:` chain of thought and a `Confidence:` level. If confidence is not HIGH or MEDIUM, the finding cannot be CRITICAL.
 - Numeric claims (collisions, ranges, thresholds, scores) MUST show the step-by-step computation. "These collapse to the same value" without a visible calculation is disallowed.
 - Findings in files not present in the diff are out of scope. If a genuine concern exists in unchanged code, note it as a MINOR_OBSERVATION with an explicit `OUT_OF_DIFF` tag and reference the file, do not flag as CRITICAL or ISSUES.
+- **Spec-level findings: label them `category: plumb-needed`.** If the issue you're flagging isn't a code defect but a spec gap (acceptance criteria missing, contract contradictory, scope ambiguous), the finding belongs in a plumb report — not a code-level CRITICAL/ISSUES verdict. Use the field `category: plumb-needed` on the finding and PM will route it to a spec update rather than back to the developer for another fix round. This prevents the loop where the developer keeps "fixing" what's actually a spec problem.
 
 ## When to Approve
 

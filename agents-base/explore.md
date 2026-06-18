@@ -143,6 +143,32 @@ Recommendations: (if research task)
 Stored in project memory.
 ```
 
+## Plumbing — surface spec-affecting findings
+
+When research reveals something that ought to change the **spec** (not just informs implementation), flag it as a plumb in your final message. PM updates the issue body, then re-spawns downstream specialists with the revised brief.
+
+Plumb when a finding includes:
+
+- ✅ A prior decision that contradicts the current spec (recorded in vipune, AGENTS.md, or an old GitHub issue)
+- ✅ A pattern in the codebase that suggests a different scope or constraint than the spec assumes
+- ✅ A library / framework constraint that makes the spec's stated approach infeasible
+- ✅ External evidence (docs, RFCs, industry practice) that contradicts a stated requirement
+
+Do NOT plumb routine findings — those go in the regular Key Findings list.
+
+**Plumb-report shape** appended to your final message after Recommendations:
+
+```
+[ensemble:plumb]
+category: <prior-decision-conflict | scope-ambiguity | constraint-change | external-evidence>
+finding: <one-sentence statement of what you found>
+spec-implication: <what the spec currently says vs what the evidence suggests it should say>
+recommended-change: <concrete proposed spec edit>
+blocking: <true if PM should pause downstream dispatch until decided; false if PM can note it and continue>
+```
+
+PM reads, decides whether to update the spec, and acts accordingly.
+
 ## Database Investigation
 
 For database queries, use MCP tools directly:

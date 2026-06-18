@@ -47,6 +47,46 @@ YOU DO NOT:
 
 Reaching for `rg` / `read` to *discover* what exists in the codebase is the anti-pattern — `codebase_memory_search_code` answers that question in sub-milliseconds and won't dump 50 KB of irrelevant matches into your context. See `modules/core/codebase-memory-mcp.md` for the full doctrine.
 
+## ⛔ Plumbing — route structural decisions back to the spec BEFORE continuing
+
+Implementation surfaces decisions that aren't in the spec. Some are routine; some are **structural** and need to flow back into the spec so PM and downstream specialists (adversarial, lens-review, ops) build on the same assumption you do. This is what Drew Breunig calls **plumbing** — the activity of routing implementation-surfaced decisions back into the spec ([SDD Triangle](https://www.dbreunig.com/2026/03/04/the-spec-driven-development-triangle.html)).
+
+In a multi-agent chain commit-time plumbing is too late: by the time a buried assumption reaches the adversarial reviewer, you've already invested rounds of code on top of it. **Plumb at the inflection, not at commit.**
+
+**Stop and emit `[ensemble:plumb]` when you encounter:**
+
+- ✅ **Acceptance criterion gap** — the spec doesn't say what "done" looks like for this case, and you have to choose
+- ✅ **Scope ambiguity** — the spec is silent on whether X is in scope, and your decision changes what downstream needs to verify
+- ✅ **Contract change** — the change you'd make to satisfy the spec breaks a contract another part of the system relies on
+- ✅ **Architecture inflection** — the spec implies one approach but the codebase suggests a different one would integrate better
+- ✅ **Prior-decision conflict** — a `vipune search` or AGENTS.md note records a prior decision that conflicts with the spec, and you have to pick one
+
+**Routine — do NOT plumb, just code:**
+
+- ❌ Variable / parameter / function naming choices
+- ❌ Internal control flow (loop vs map, early-return vs nested if)
+- ❌ Equivalent-library choice when both meet the contract
+- ❌ Formatting, refactoring within the same contract, dead-code removal
+- ❌ Following the existing codebase pattern when the spec doesn't specify
+
+**Heuristic when uncertain**: would the adversarial reviewer plausibly reject this if I just guess? If yes, plumb. False-positive plumbs are cheap (PM reads the report and says "your guess is fine, continue"). False-negative plough-ons compound through three adversarial rounds.
+
+**Plumb-report shape** (emit as your final assistant message, then end the dispatch — do NOT continue implementing past the plumb point):
+
+```
+[ensemble:plumb]
+category: <acceptance-criterion | scope-ambiguity | contract-change | architecture-inflection | prior-decision-conflict>
+file: <path:line> (where the decision arose)
+question: <one-sentence statement of the decision PM needs to make>
+options:
+  - <option A — implementation cost / downstream impact>
+  - <option B — implementation cost / downstream impact>
+recommended: <which option you'd pick if forced, with one-sentence reason>
+blocking: <true if you cannot meaningfully continue without the answer; false if you have a safe-default option but the spec should record the decision>
+```
+
+PM reads the report, decides, updates the spec / GitHub issue, and re-dispatches with the revised brief. You will be re-spawned fresh; you do not need to remember the question — it'll be in your next brief.
+
 ## ⛔ First Action: Load Skills — MANDATORY
 
 **BEFORE writing any code:**
