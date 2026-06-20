@@ -49,6 +49,7 @@ import { resolveModel } from "./models.ts";
 import { type BrokerHandle, startBroker } from "./permission-broker.ts";
 import { isParentInTrustMode, makeBrokerDeps } from "./permission-guard.ts";
 import { type RunningState, emptyRunningState, ingestEvent } from "./progress.ts";
+import { excludeToolsFor } from "./role-tools.ts";
 import { ROLES, isRoleName } from "./roles.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
@@ -413,6 +414,18 @@ export async function spawnSpecialist(
     "--append-system-prompt",
     tmpPromptFile,
   ];
+  // Per-role tool gating (PR #238 — Option A in determinism plan). Strips
+  // tools the role should not have at the boundary, regardless of what the
+  // doctrine prompt says. PM loses write/edit/multiedit so under-pressure
+  // role-drift ("PM forgets and tries to code itself") becomes physically
+  // impossible. Reviewer roles lose the same — silent edit + approve is a
+  // catastrophic regression the doctrine prompts have historically warned
+  // against but couldn't enforce post-#215 trust-mode. Empty list (developer,
+  // ops) → flag omitted entirely. See role-tools.ts for the per-role table.
+  const excludeTools = excludeToolsFor(spec.role);
+  if (excludeTools) {
+    childArgs.push("--exclude-tools", excludeTools);
+  }
   // `--provider` must precede `--model` so Pi disambiguates the model ID
   // against the named provider's catalog. Required for custom OpenAI-
   // compatible endpoints whose model IDs are upstream-vendor strings
