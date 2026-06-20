@@ -150,12 +150,35 @@ function fmtUsage(result: {
  * sync dispatch would have returned). The header is ~100 chars. NEVER includes
  * raw transcript content.
  */
-function formatSingleReport(jobId: string, label: string, result: DispatchResult): string {
+export function formatSingleReport(jobId: string, label: string, result: DispatchResult): string {
   const turns = result.usage?.turns ?? 0;
   const elapsed = fmtElapsed(result.ms);
-  const status = result.ok ? "finished" : `FAILED (exit ${result.exitCode ?? "?"})`;
+  // Three-way status: provider error-stop (synthetic empty assistant message,
+  // process exited 0 but the conversation didn't actually produce a reply —
+  // see DispatchResult.errorStop), process-level FAILED (non-zero exit), or
+  // ok. The error-stop case is visually distinct so PM treats it as failure
+  // and routes through the cap-hit handoff doctrine (PR #233).
+  let status: string;
+  if (result.errorStop) {
+    status = "FAILED-PROVIDER-ERROR";
+  } else if (result.ok) {
+    status = "finished";
+  } else {
+    status = `FAILED (exit ${result.exitCode ?? "?"})`;
+  }
   const head = `[ensemble:async] Subagent \`${label}\` (job ${jobId}) ${status} — ${turns} turns, ${elapsed}${fmtUsage(result)}`;
-  const body = result.text?.trim() || "(no output)";
+  let body = result.text?.trim() || "(no output)";
+  if (result.errorStop) {
+    const errMsgLine = result.errorStop.message
+      ? `Provider request error: ${result.errorStop.message}`
+      : "Provider request error: (no error message captured from pi-ai)";
+    body = [
+      errMsgLine,
+      "Last text below is the agent's pre-failure activity — VERIFY DIRECTLY before assuming progress (worktree may be unchanged).",
+      "",
+      body,
+    ].join("\n");
+  }
   const footer = result.ok
     ? "---\nYou started this async dispatch earlier. Continue the workflow."
     : `---\n(See /runs for full transcript at ${result.transcriptPath ?? "ensemble-runs/"}.)`;
@@ -379,7 +402,14 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): { jobId: strin
       jobs.delete(jobId);
       childHandles.delete(jobId);
       if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
-      if (result.ok) {
+      // Three-way: ok / FAILED-PROVIDER-ERROR / process-exit-failed. The
+      // errorStop branch fires when pi-ai turned an HTTP timeout into a
+      // synthetic empty assistant message — the process exited 0, but the
+      // run didn't actually produce a usable reply. See spawn.ts collapseEvents
+      // and the failure transcript in PR #236 for the shape.
+      if (result.errorStop) {
+        lifecycle.emitErrored(jobId, input.label, input.role, result.ms, totalTokens(result));
+      } else if (result.ok) {
         lifecycle.emitCompleted(jobId, input.label, input.role, result.ms, totalTokens(result));
       } else {
         lifecycle.emitFailed(

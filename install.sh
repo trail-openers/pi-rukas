@@ -222,6 +222,53 @@ else
 CBM_HINT
 fi
 
+# ---- 6b. Pi provider retry defaults (PR #236) -------------------------------
+#
+# Pi reads `settings.retry.provider.timeoutMs` from ~/.pi/agent/settings.json
+# and forwards it to pi-ai providers as the upstream SDK HTTP timeout. Without
+# this, providers default to ~10 min, and a hung request silently exhausts
+# Pi's retries (3 attempts × 10 min) before falling out as a synthetic
+# `stopReason: error` empty-content assistant message. pi-ensemble's dispatch
+# report then mistakes that for a successful completion (see PR #236).
+#
+# Sensible defaults: 3 min per request (healthy LLM calls return in seconds;
+# 3 min is well above p99 of healthy traffic, tight enough to detect hangs
+# fast), 3 retries with exponential backoff. Worst case 1 + 3 × 3 min ≈ 12
+# min, comfortably inside pi-ensemble's 30-min wall-clock cap.
+#
+# Idempotent: only writes the retry block if `retry.provider.timeoutMs` is
+# absent (or null). User-set values are preserved.
+
+PI_AGENT_DIR_INSTALL="${PI_AGENT_DIR:-$HOME/.pi/agent}"
+PI_SETTINGS="$PI_AGENT_DIR_INSTALL/settings.json"
+
+if [ -f "$PI_SETTINGS" ]; then
+  if ! jq empty "$PI_SETTINGS" >/dev/null 2>&1; then
+    echo "!! $PI_SETTINGS is not valid JSON — skipping provider-retry defaults."
+    echo "   Fix the file and re-run install.sh, or add manually:"
+    echo "     retry.provider = { timeoutMs: 180000, maxRetries: 3, maxRetryDelayMs: 60000 }"
+  else
+    existing="$(jq -r '.retry.provider.timeoutMs // "null"' "$PI_SETTINGS")"
+    if [ "$existing" = "null" ]; then
+      echo "==> Setting provider-retry defaults in $PI_SETTINGS"
+      echo "    timeoutMs=180000 (3 min/request), maxRetries=3 — detect provider hangs fast"
+      tmp="$(mktemp)"
+      jq '
+        .retry //= {} |
+        .retry.provider //= {} |
+        .retry.provider.timeoutMs = 180000 |
+        .retry.provider.maxRetries //= 3 |
+        .retry.provider.maxRetryDelayMs //= 60000
+      ' "$PI_SETTINGS" > "$tmp" && mv "$tmp" "$PI_SETTINGS"
+      chmod 600 "$PI_SETTINGS"
+    else
+      echo "==> Keeping existing retry.provider.timeoutMs=$existing in $PI_SETTINGS"
+    fi
+  fi
+else
+  echo "==> No $PI_SETTINGS yet — Pi will create it on first run. Re-run ./install.sh after to set retry defaults."
+fi
+
 # ---- 7. Sandbox-mode setup (PR #197) ----------------------------------------
 #
 # `pi-ensemble` (the wrapper) launches a Docker-sandboxed runtime where ALL

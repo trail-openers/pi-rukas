@@ -446,6 +446,7 @@ All optional. Defaults are reasonable for typical use.
 | `PI_ENSEMBLE_QUIET_STATUS` | unset | Set to `1` to disable the live dispatch deck — one footer status row per in-flight subagent ([#117](https://github.com/randomm/pi-ensemble/issues/117)). |
 | `PI_ENSEMBLE_QUIET_LIFECYCLE` | unset | Set to `1` to disable scrollback lifecycle markers (`▸ ensemble: dispatched / ✓ finished / ✗ failed`) ([#118](https://github.com/randomm/pi-ensemble/issues/118)). |
 | `PI_ENSEMBLE_SPAWN_TIMEOUT_MS` | `1800000` (30 min) | Hard wall-clock cap per spawned subagent. Operator/CI override — not settable by the agent. |
+| (no env var) | settings.json `retry.provider.timeoutMs` | `install.sh` writes a 3-min default into `~/.pi/agent/settings.json` (#236). Healthy LLM calls return in seconds; 3 min detects provider hangs fast while leaving headroom. Edit settings.json directly to tune; idempotent — install.sh preserves existing values. |
 | `PI_ENSEMBLE_RUNS_KEEP_LAST` | `20` | How many recent subagent transcript batches to keep on disk; older ones auto-prune. Set to `0` to disable pruning. |
 | `PI_ENSEMBLE_DEBUG` | unset | Set to `1` for verbose stderr trace from the extension. |
 | `PI_ENSEMBLE_SUBAGENT_MODEL` | unset | Global fallback model for all subagents (see "Configuring subagent models"). |

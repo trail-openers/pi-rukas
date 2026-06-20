@@ -2,6 +2,54 @@
 
 Symptoms → causes → fixes. Most issues here come from running an older sandbox image; the first move on anything weird is usually `./install.sh` from the pi-ensemble repo to rebuild + refresh.
 
+## Subagent silently "finished" but the worktree wasn't touched
+
+### Symptom
+
+PM dispatches a subagent (developer / explore / ops); the `[ensemble:async]` report comes back looking normal — "Subagent finished — N turns, Tm Ts" with what reads like a final assistant message (e.g. *"Step 1: Read sweep_stats.rs"*). PM proceeds as if work was done. You arrive at the desk and find `git status` clean, no commits, no PR — the agent never actually wrote anything.
+
+### Cause
+
+The provider HTTP request hung mid-stream. pi-ai turned the timeout into a synthetic assistant message with `stopReason: "error"` and empty content. Pre-#236 the dispatch report treated that as a normal completion and displayed the agent's last successful thinking block as if it were the final reply. Pi's default HTTP timeout is ~10 minutes (provider SDK default), so a degraded provider could burn 4 retry attempts × 10 min = 40 min before failing — and the failure looked like a success.
+
+This is **independent of the LLM backend**: across recent runs, Anthropic Claude Sonnet 4.6 and Cerebras `zai-glm-4.7` produced this failure roughly equally.
+
+### Fix
+
+```bash
+cd ~/.config/opencode/pi-ensemble && git pull && ./install.sh
+```
+
+Post-#236, `install.sh` writes sensible `retry.provider` defaults into `~/.pi/agent/settings.json` (3 min per request, 3 retries with backoff). Healthy LLM calls return in seconds; 3 min is well above p99 of healthy traffic but tight enough to detect hangs fast. If you have non-default settings you want to keep, they're preserved — install.sh only writes the retry block when it's missing.
+
+The dispatch report also now distinguishes the failure mode visually:
+
+- Header: `Subagent \`developer\` (job X) FAILED-PROVIDER-ERROR — N turns, Tm Ts`
+- Body prefix: *"Provider request error: \<errorMessage\>. Last text below is the agent's pre-failure activity — VERIFY DIRECTLY before assuming progress."*
+- Scrollback line: `▸ ensemble: ⚠ developer terminated mid-stream — provider request error, see report`
+
+PM treats `FAILED-PROVIDER-ERROR` as a failed dispatch per existing doctrine (routes through the cap-hit handoff from #233), so you'll see the `needs-human-attention` label and PR comment when you check.
+
+### Tuning
+
+If 3 min is too tight for your provider (some heavy thinking on Sonnet's `-Opus`-tier with very long context can legitimately take 60-120 s, and you'd want headroom), edit `~/.pi/agent/settings.json` directly:
+
+```json
+{
+  "retry": {
+    "provider": {
+      "timeoutMs": 300000,    // 5 min per request
+      "maxRetries": 3,
+      "maxRetryDelayMs": 60000
+    }
+  }
+}
+```
+
+Keep `maxRetries * timeoutMs` comfortably below pi-ensemble's 30-min wall-clock cap (`DEFAULT_SPAWN_TIMEOUT_MS`); otherwise retries get truncated.
+
+PR: [#236](https://github.com/randomm/pi-ensemble/pull/236)
+
 ## Permissions
 
 ### Host-mode pi-ensemble is asking me to approve every command

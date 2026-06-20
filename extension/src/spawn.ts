@@ -302,6 +302,13 @@ interface PiMessage {
   provider?: string;
   api?: string;
   stopReason?: string;
+  /**
+   * Set by pi-ai providers when a request fails (timeout, transport, etc) —
+   * see openai-completions.js:324-325, anthropic.js:522-523. Pi emits the
+   * failed turn as a synthetic assistant message with `stopReason: "error"`,
+   * empty content, and this field populated.
+   */
+  errorMessage?: string;
 }
 interface PiJsonEvent {
   type?: string;
@@ -710,9 +717,24 @@ function collapseEvents(
   // Join with double-newline so distinct text blocks across turns (separated
   // by tool calls in between) stay visually delimited instead of concatenated.
   const text = textParts.filter((t) => t.trim()).join("\n\n");
+
+  // Detect synthetic error-stop: pi-ai providers turn HTTP timeouts and
+  // transport failures into an assistant message with `stopReason: "error"`
+  // and empty content. The child process still exits 0 (the failure is
+  // *inside* the conversation, not at the process level), so without this
+  // signal the dispatch report mistakes the last successful thinking block
+  // for the final reply. See PR #236 + transcripts under
+  // ~/.pi/agent/ensemble-runs/2026-06-19/run-id-*.json for the
+  // failure shape that motivated the detection.
+  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+  const errorStop =
+    lastAssistant?.stopReason === "error"
+      ? { reason: "error", message: lastAssistant.errorMessage }
+      : undefined;
+
   return {
     role,
-    ok: exitCode === 0,
+    ok: exitCode === 0 && !errorStop,
     text: text || stderr || "(no output)",
     toolUses,
     ms,
@@ -721,5 +743,6 @@ function collapseEvents(
     model,
     provider,
     api,
+    errorStop,
   };
 }

@@ -51,6 +51,22 @@ export interface DispatchResult {
   transcriptPath?: string;
   /** Where the spawn picked its model from. */
   modelSource?: "spec" | "config" | "config-default" | "role-env" | "subagent-env" | "default";
+  /**
+   * Set when the child exited with `stopReason: "error"` on its final
+   * assistant message (provider HTTP timeout, transport failure, etc).
+   * Pi turns these into a synthetic empty-content assistant message that
+   * looks like a normal completion at the process level (exit 0). Without
+   * this signal, the dispatch report mistakes the child's last successful
+   * thinking block for the actual reply. When present, the report renders
+   * as FAILED-PROVIDER-ERROR (see async-jobs.ts) and the scrollback shows
+   * a distinct "terminated mid-stream" warning (see lifecycle-events.ts).
+   */
+  errorStop?: {
+    /** stopReason from the synthetic final assistant message. */
+    reason: string;
+    /** errorMessage from the synthetic final assistant message, if any. */
+    message?: string;
+  };
 }
 
 export interface AdversarialVerdict {

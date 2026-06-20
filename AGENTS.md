@@ -215,6 +215,8 @@ This rule does NOT apply when an agent works on pi-ensemble itself (this repo's 
 
 **Theme-clustered cap-hits get a step-back**: when cap-hit findings cluster around a theme (same lens re-flagging the same shape across rounds — the empirical fingerprint of a spec-level problem, MAST 41.77%), PM dispatches one `@explore` with a Step-Back-framed prompt asking which of the six SDD spec elements (outcomes / scope boundaries / constraints / prior decisions / task breakdown / verification criteria) is underspecified. The analysis goes into the cap-hit handoff so the user reviews a thesis + proposed spec revision, not a wall of findings. See `agents-base/project-manager.md` § Step-back when cap-hit findings cluster around a theme + `/work` Step 7h.
 
+**Provider-timeout dispatches route through the same handoff**: when a subagent's final assistant message has `stopReason: "error"` (pi-ai turned an HTTP timeout into a synthetic empty message), the dispatch report is tagged `FAILED-PROVIDER-ERROR` and the scrollback line shows `⚠ <role> terminated mid-stream — provider request error`. PM treats this as a failed dispatch and routes through the cap-hit handoff doctrine — no separate code path needed. The provider-side fix is `~/.pi/agent/settings.json` `retry.provider.timeoutMs` (`install.sh` writes a 3-min default). See `extension/src/spawn.ts` `collapseEvents` + `extension/src/async-jobs.ts` `formatSingleReport` + PR #236.
+
 ---
 
 ## 8. Transcript discipline
