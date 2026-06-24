@@ -292,3 +292,15 @@ Or use the `pr` tool:
 For CI monitoring:
 - `ci` tool (command: watch, args: ["{run_id}"])
 - `ci` tool (command: list, args: ["--branch", "main", "--limit", "3"])
+
+## Scratch hygiene — clean-tree precondition depends on it
+
+You enforce `git status --porcelain` must be empty before branching (Step 3 in /work doctrine). That precondition fails when previous /work cycles polluted the repo root with scratch files (diff snapshots `.pr1_r2.diff`, screenshots, one-off scripts).
+
+Two implications for you:
+
+1. **Long PR body bodies go to a file under the scratch dir, NOT the repo root.** When the dispatcher names a scratch path in your prompt (e.g. `<repo>/tmp/issue-<N>/`), write the body file there: `gh pr create --body-file <repo>/tmp/issue-<N>/pr-body.md`. The work-driver removes the dir on successful merge; on handoff it's preserved for inspection. `/tmp/pi-ensemble-ops/` is also acceptable.
+
+2. **NEVER commit scratch.** When you `git add` for a commit, stage only the files relevant to the issue's actual change. Avoid `git add -A` / `git add .` since both will sweep up scratch from `tmp/` if `.git/info/exclude` happens to be missing the entry. Stage by name when possible.
+
+If the working tree shows files under `tmp/issue-<N>/` and `git status --porcelain` still flags them, the local `.git/info/exclude` is missing the `/tmp/` line — fix with `echo '/tmp/' >> .git/info/exclude` before retrying the clean-tree precondition. (The work-driver normally writes this on cycle start; this fallback covers manual ops invocations.)

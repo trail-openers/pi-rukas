@@ -93,8 +93,29 @@ assert(rec.registeredCommands.includes("plan"), "/plan registered");
 assert(rec.registeredCommands.includes("work"), "/work registered");
 assert(rec.registeredCommands.includes("review"), "/review registered");
 assert(rec.registeredCommands.includes("audit"), "/audit registered");
+assert(rec.registeredCommands.includes("do"), "/do registered (PR7 — free-form work counterpart to /work)");
 assert(rec.registeredCommands.includes("ensemble-debug"), "/ensemble-debug registered");
 assert(rec.registeredCommands.includes("runs"), "/runs registered");
+
+// PR7 — pi-prompts/do.md exists and uses the expected placeholders +
+// toolkit mentions. /do is PM-driven; its body is loaded from disk on
+// every invocation (no compiled driver code path).
+{
+  const doBody = await fs.readFile(path.join(PI_PROMPTS, "do.md"), "utf8");
+  assert(doBody.length > 500, "pi-prompts/do.md exists and is non-trivial");
+  assert(
+    doBody.includes("$ARGUMENTS"),
+    "pi-prompts/do.md uses $ARGUMENTS (consumed by expandArgs in commands.ts)",
+  );
+  assert(
+    doBody.includes("dispatch_specialist"),
+    "pi-prompts/do.md mentions dispatch_specialist (PM orchestration toolkit)",
+  );
+  assert(
+    doBody.includes("adversarial_loop"),
+    "pi-prompts/do.md mentions adversarial_loop (non-negotiable commit gate)",
+  );
+}
 assert(rec.registeredTools.includes("dispatch_specialist"), "dispatch_specialist tool registered");
 assert(rec.registeredTools.includes("dispatch_parallel"), "dispatch_parallel tool registered");
 assert(rec.registeredTools.includes("adversarial_loop"), "adversarial_loop tool registered");
@@ -102,7 +123,7 @@ assert(rec.registeredTools.includes("dispatch_lens_review"), "dispatch_lens_revi
 assert(rec.beforeAgentStartHandlers.length === 1, "exactly one before_agent_start hook");
 
 // Verify pi-prompts files exist
-for (const name of ["start", "research", "plan", "work", "review"]) {
+for (const name of ["start", "research", "plan", "work", "review", "do"]) {
   const file = path.join(PI_PROMPTS, `${name}.md`);
   const exists = await fs.stat(file).then(() => true).catch(() => false);
   assert(exists, `pi-prompts/${name}.md exists`);
@@ -120,14 +141,24 @@ assert(
   "/start: queued message equals start.md body (no $ARGUMENTS in start.md, so no expansion)",
 );
 
-// Fire /work 42 (with arg expansion)
-const { ctx: ctx2 } = makeCtx();
-await handlers.work!("42", ctx2);
-assert(rec.sentMessages.length === 2, "/work 42 → second message queued");
-assert(
-  rec.sentMessages[1].includes("**Issue**: 42"),
-  "/work 42: $ARGUMENTS expanded to '42' in workflow body",
-);
+// Fire /work 42 — under PI_ENSEMBLE_WORK_DRIVER=0 this exercises the
+// legacy PM-driven path: handler reads pi-prompts/work.md and sends it.
+// (PR1 of workflow-graph compilation introduced the driver-based path; the
+// legacy path stays available as a fallback.)
+const prevFlag = process.env.PI_ENSEMBLE_WORK_DRIVER;
+process.env.PI_ENSEMBLE_WORK_DRIVER = "0";
+try {
+  const { ctx: ctx2 } = makeCtx();
+  await handlers.work!("42", ctx2);
+  assert(rec.sentMessages.length === 2, "/work 42 (legacy flag=0) → second message queued");
+  assert(
+    rec.sentMessages[1].includes("**Issue**: 42"),
+    "/work 42 (legacy flag=0): $ARGUMENTS expanded to '42' in workflow body",
+  );
+} finally {
+  if (prevFlag === undefined) delete process.env.PI_ENSEMBLE_WORK_DRIVER;
+  else process.env.PI_ENSEMBLE_WORK_DRIVER = prevFlag;
+}
 
 // Fire /review #456 (with arg expansion)
 const { ctx: ctxR } = makeCtx();
@@ -137,6 +168,53 @@ assert(
   rec.sentMessages[2].includes("**Scope**: #456"),
   "/review #456: $ARGUMENTS expanded to '#456' in workflow body",
 );
+
+// /work under PI_ENSEMBLE_WORK_DRIVER=1 (default) should NOT send a user
+// message — it spins up the driver via notify() instead. We can't actually
+// run the driver here (it would spawn real Pi children) but we can verify:
+//  - no new sendUserMessage is queued (count stays at 3),
+//  - a notify of kind "info" fires naming the work-state path.
+{
+  const prevFlag = process.env.PI_ENSEMBLE_WORK_DRIVER;
+  delete process.env.PI_ENSEMBLE_WORK_DRIVER; // default = ON
+  try {
+    const { ctx: ctxW, notifies: notifW } = makeCtx();
+    await handlers.work!("789", ctxW);
+    assert(
+      rec.sentMessages.length === 3,
+      "/work 789 (driver default-ON): does NOT call sendUserMessage",
+    );
+    assert(
+      notifW.some((n) => n.kind === "info" && /work-state\/789\.json/.test(n.msg)),
+      "/work 789 (driver default-ON): info notify names the work-state file path",
+    );
+  } finally {
+    if (prevFlag === undefined) delete process.env.PI_ENSEMBLE_WORK_DRIVER;
+    else process.env.PI_ENSEMBLE_WORK_DRIVER = prevFlag;
+  }
+}
+
+// /work without an issue number under driver mode should reject cleanly
+// (warning notify, no sendUserMessage).
+{
+  const prevFlag = process.env.PI_ENSEMBLE_WORK_DRIVER;
+  delete process.env.PI_ENSEMBLE_WORK_DRIVER;
+  try {
+    const { ctx: ctxWE, notifies: notifWE } = makeCtx();
+    await handlers.work!("", ctxWE);
+    assert(
+      rec.sentMessages.length === 3,
+      "/work (driver default-ON, no args): does NOT send a message",
+    );
+    assert(
+      notifWE.some((n) => n.kind === "warning" && /issue number/.test(n.msg)),
+      "/work (driver default-ON, no args): warning notify mentions missing issue number",
+    );
+  } finally {
+    if (prevFlag === undefined) delete process.env.PI_ENSEMBLE_WORK_DRIVER;
+    else process.env.PI_ENSEMBLE_WORK_DRIVER = prevFlag;
+  }
+}
 
 // Fire before_agent_start with doctrine armed (set by the most recent /work call)
 const hook = rec.beforeAgentStartHandlers[0]!;
@@ -187,6 +265,23 @@ assert(
   result3?.systemPrompt !== undefined && result3.systemPrompt.includes("PM mode — orchestration only"),
   "/start while busy: PM mode sticky preamble still active from earlier /start",
 );
+
+// PR7 — Fire /do <description>. PM-driven, no driver path; same shape
+// as /research / /plan. Placed at the end so the earlier hardcoded
+// sentMessages.length === N assertions don't shift.
+{
+  const { ctx: ctxDo } = makeCtx();
+  const before = rec.sentMessages.length;
+  await handlers.do!("fix the typo in README.md", ctxDo);
+  assert(
+    rec.sentMessages.length === before + 1,
+    "/do <description> → 1 message queued (PM-driven, no driver detour)",
+  );
+  assert(
+    rec.sentMessages[before].includes("**Request**: fix the typo in README.md"),
+    "/do: $ARGUMENTS expanded into the **Request** field of do.md",
+  );
+}
 
 console.log("\n=== test-command-flow summary ===");
 console.log(`registered: ${rec.registeredCommands.length} commands, ${rec.registeredTools.length} tools`);

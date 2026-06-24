@@ -41,6 +41,17 @@ export interface RunningState {
   model?: string;
   /** ms since spawn began. */
   elapsedMs: number;
+  /**
+   * Epoch ms of the most recent `message_end` ingested. Used by the
+   * dispatch-deck STALE detection (PR2 O3): if `now - lastEventAt` exceeds
+   * `PI_ENSEMBLE_STALE_THRESHOLD_MS` (default 90s), the row marks STALE.
+   * Subagents that emit at least one message_end per LLM turn stay
+   * non-stale even during long-running tool calls because the model's
+   * thinking surfaces on a message; only true hangs (provider down, child
+   * in an infinite local tool loop with no LLM output) cross the threshold.
+   * Undefined until the first message_end arrives.
+   */
+  lastEventAt?: number;
   /** True once the child has exited; false while in-flight. */
   done: boolean;
   /** Set when done — child exited cleanly. */
@@ -239,5 +250,9 @@ export function ingestEvent(state: RunningState, event: ProgressEvent, startMs: 
   // extractable hint — keeps deck snapshot honest).
   if (latestToolName) state.lastToolHint = latestToolHint;
   if (latestText) state.lastText = latestText;
+  // PR2 O3 — heartbeat for STALE detection. Set on every assistant turn
+  // completion, NOT on every event (e.g., tool_result events that don't
+  // signal LLM activity wouldn't count as "still working").
+  state.lastEventAt = Date.now();
   return true;
 }

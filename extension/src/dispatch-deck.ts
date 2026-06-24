@@ -388,9 +388,41 @@ function truncateHint(s: string): string {
 }
 
 /**
- * The bits after the row's leading icon: `<label> <elapsed> [<tool>(#N) <hint>]`.
+ * STALE detection threshold (PR2 O3). A row whose RunningState hasn't
+ * received a `message_end` in this long flips to the `⚠ STALE` icon and
+ * gets a "no progress Ns" badge appended.
+ *
+ * Default: 90s. Long enough to absorb legitimate LLM "thinking" pauses
+ * (Anthropic / Cerebras / GLM all stream message_end events on each
+ * assistant turn, including thinking-only turns, so 90s without ANY
+ * event means the child is genuinely stuck — provider down, child in a
+ * non-LLM loop). Operator-tunable via PI_ENSEMBLE_STALE_THRESHOLD_MS.
+ * The existing 30-min spawn timeout in spawn.ts remains the hard cap;
+ * STALE is just earlier user-visible signal that something's wrong.
+ */
+const STALE_THRESHOLD_MS = (() => {
+  const env = Number(process.env.PI_ENSEMBLE_STALE_THRESHOLD_MS);
+  return Number.isFinite(env) && env >= 1000 ? env : 90_000;
+})();
+
+/**
+ * Returns true iff the child has produced no message_end event for at
+ * least STALE_THRESHOLD_MS. Children that haven't emitted a first event
+ * yet (`lastEventAt` undefined) are NOT stale until elapsed itself
+ * crosses the threshold — a fresh spawn waiting on provider connect is
+ * expected; a 2-minute spawn that's never emitted is not.
+ */
+function isStale(entry: DeckEntry, now: number): boolean {
+  const last = entry.state.lastEventAt ?? entry.startedAt;
+  return now - last >= STALE_THRESHOLD_MS;
+}
+
+/**
+ * The bits after the row's leading icon: `<label> <elapsed> [<tool>(#N) <hint>] [STALE]`.
  * Shared between top-level rendering (formatRow) and indented member
- * rendering (formatMemberRow).
+ * rendering (formatMemberRow). When the row is stale (no progress beyond
+ * the threshold), append a "no progress Ns" suffix so the user spots
+ * the hang without needing a separate command.
  */
 function formatRowCore(entry: DeckEntry, now: number): string {
   const elapsedMs = Math.max(0, now - entry.startedAt);
@@ -405,21 +437,29 @@ function formatRowCore(entry: DeckEntry, now: number): string {
       parts.push(truncateHint(entry.state.lastToolHint));
     }
   }
+  if (isStale(entry, now)) {
+    const idleMs = now - (entry.state.lastEventAt ?? entry.startedAt);
+    parts.push(`STALE (no progress ${formatElapsed(idleMs)})`);
+  }
   return parts.join(" ");
 }
 
 /**
  * Top-level row: `⏳ <label> <elapsed> <tool>(#N) <hint>`. Used for batch
  * summaries (via formatBatchRow) and standalone (non-batched) singles.
+ * Stale rows render with ⚠ instead of ⏳ so the user spots the hang at a
+ * glance across a deck with several rows.
  */
 export function formatRow(entry: DeckEntry, now: number = Date.now()): string {
-  return `⏳ ${formatRowCore(entry, now)}`;
+  const icon = isStale(entry, now) ? "⚠" : "⏳";
+  return `${icon} ${formatRowCore(entry, now)}`;
 }
 
 /**
  * Indented member row: ` ↳ <label> <elapsed> <tool>(#N) <hint>`. No icon —
  * the `↳` is the visual indicator that this row belongs to the batch
- * directly above it.
+ * directly above it. Stale member rows still show the STALE badge via
+ * formatRowCore.
  */
 export function formatMemberRow(entry: DeckEntry, now: number = Date.now()): string {
   return ` ↳ ${formatRowCore(entry, now)}`;

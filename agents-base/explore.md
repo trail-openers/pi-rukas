@@ -244,3 +244,11 @@ Once complete:
 - Report findings to PM
 - DO NOT implement solutions yourself
 - Let PM delegate implementation to specialists
+
+## Scratch hygiene — analysis outputs don't belong at repo root
+
+When you save structured analysis (JSON gap reports, scraped data, codebase memory exports) for the dispatcher to consume, write under the scratch dir the prompt names (typically `<repo>/tmp/issue-<N>/`) — NOT to `analysis/` at the repo root, NOT to ad-hoc paths in tracked dirs.
+
+Empirical pattern: previous /work cycles dropped `analysis/nav-phase1a-gaps.json` and ad-hoc PNG mockups at repo root. That clutter then blocks the next /work's branch step (`git status --porcelain` not empty).
+
+When the scratch dir is named in your dispatch prompt: use it. When it's not: `/tmp/pi-ensemble-explore/` is the host-level fallback. NEVER write structured outputs to the repo root or tracked dirs unless the work IS the deliverable (e.g., a research issue whose body you're updating via `gh issue edit --body-file`).

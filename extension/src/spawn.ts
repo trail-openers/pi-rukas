@@ -50,7 +50,7 @@ import { type BrokerHandle, startBroker } from "./permission-broker.ts";
 import { isParentInTrustMode, makeBrokerDeps } from "./permission-guard.ts";
 import { type RunningState, emptyRunningState, ingestEvent } from "./progress.ts";
 import { excludeToolsFor } from "./role-tools.ts";
-import { ROLES, isRoleName } from "./roles.ts";
+import { ROLES, type RoleName, isRoleName } from "./roles.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
 
@@ -116,14 +116,56 @@ interface SpawnOptions {
   onStdin?: (stdin: import("node:stream").Writable) => void;
 }
 
-// Hard 30-minute cap on subagent wall-clock (issue #114). Long enough for
-// real work (a 6-pass lens review, a multi-round adversarial loop, a deep
-// /research sweep) without being unbounded. Operators can tune via the env
-// var; PM cannot influence it (no tool schema exposes timeout).
-const DEFAULT_SPAWN_TIMEOUT_MS = (() => {
-  const env = Number(process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS);
-  return Number.isFinite(env) && env > 0 ? env : 30 * 60_000;
-})();
+// Hard wall-clock cap on subagent runtime (issue #114). PR5 splits the old
+// single 30-min global into per-role defaults — a single cap couldn't
+// serve roles whose legitimate runtimes differ by an order of magnitude
+// (developer needs 60-90 min for multi-defect issues per the #553 live-
+// test; ops needs 5-10 min; lens children need 15 min). Operators tune
+// via env; PM cannot influence (no tool schema exposes timeout — #114).
+//
+// Per-role overrides via PI_ENSEMBLE_SPAWN_TIMEOUT_MS_<ROLE_UPPER> (with
+// hyphens as underscores: PI_ENSEMBLE_SPAWN_TIMEOUT_MS_CODE_REVIEW_SPECIALIST).
+// The umbrella PI_ENSEMBLE_SPAWN_TIMEOUT_MS is preserved as a global
+// override (back-compat for callers who set it before PR5).
+const ROLE_TIMEOUT_DEFAULTS_MS: Record<RoleName, number> = {
+  // 90 min — empirical #553 evidence: developer was 43 min into substantive
+  // multi-defect work when the old 30-min cap SIGTERM'd it.
+  developer: 90 * 60_000,
+  // 15 min — single-pass lens child reviewing a stable diff.
+  "code-review-specialist": 15 * 60_000,
+  // 15 min — adversarial-developer's review/fix round inside the 3-round loop.
+  "adversarial-developer": 15 * 60_000,
+  // 15 min — read-heavy, bounded by vipune/codebase-memory query latency.
+  explore: 15 * 60_000,
+  // 10 min — mechanical (gh / git invocations); generous for slow networks.
+  ops: 10 * 60_000,
+  // 30 min — unchanged. Parent process spawn (rare) — keeps prior behaviour.
+  "project-manager": 30 * 60_000,
+};
+
+/**
+ * Resolve a per-role spawn timeout. Reads env per-call so tests can
+ * override after module init. Precedence (highest to lowest):
+ *   1. PI_ENSEMBLE_SPAWN_TIMEOUT_MS_<ROLE_UPPER> per-role env
+ *   2. PI_ENSEMBLE_SPAWN_TIMEOUT_MS umbrella env (PR4-and-earlier semantics)
+ *   3. ROLE_TIMEOUT_DEFAULTS_MS[role] per-role default
+ *   4. 30 * 60_000 hard fallback (unknown role)
+ */
+function roleTimeoutMs(role: string): number {
+  const envKey = `PI_ENSEMBLE_SPAWN_TIMEOUT_MS_${role.toUpperCase().replaceAll("-", "_")}`;
+  const envRole = Number(process.env[envKey]);
+  if (Number.isFinite(envRole) && envRole > 0) return envRole;
+  const envUmbrella = Number(process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS);
+  if (Number.isFinite(envUmbrella) && envUmbrella > 0) return envUmbrella;
+  if (isRoleName(role)) return ROLE_TIMEOUT_DEFAULTS_MS[role];
+  return 30 * 60_000;
+}
+
+// Back-compat export for callers that referenced the constant directly.
+// Now resolved per-call via roleTimeoutMs (PR5), so the static value is
+// always the unknown-role fallback. Most call sites should use
+// roleTimeoutMs(spec.role) instead.
+const DEFAULT_SPAWN_TIMEOUT_MS = 30 * 60_000;
 
 // Per-spawn stderr tail cap. The full byte budget is enough to retain the
 // last ~10-20 turns of telemetry from a chatty child — plenty for failure
@@ -414,18 +456,21 @@ export async function spawnSpecialist(
     "--append-system-prompt",
     tmpPromptFile,
   ];
-  // Per-role tool gating (PR #238 — Option A in determinism plan). Strips
-  // tools the role should not have at the boundary, regardless of what the
-  // doctrine prompt says. PM loses write/edit/multiedit so under-pressure
-  // role-drift ("PM forgets and tries to code itself") becomes physically
-  // impossible. Reviewer roles lose the same — silent edit + approve is a
-  // catastrophic regression the doctrine prompts have historically warned
-  // against but couldn't enforce post-#215 trust-mode. Empty list (developer,
-  // ops) → flag omitted entirely. See role-tools.ts for the per-role table.
-  const excludeTools = excludeToolsFor(spec.role);
-  if (excludeTools) {
-    childArgs.push("--exclude-tools", excludeTools);
-  }
+  // Per-role tool gating (PR #238 — Option A in determinism plan) was
+  // designed to call `pi --exclude-tools <csv>` here so reader roles
+  // (explore, adversarial-developer, code-review-specialist) physically
+  // could not invoke write/edit/multiedit regardless of doctrine. Pi
+  // 0.75.3 (the pinned version, see package.json) does NOT support that
+  // flag — passing it makes the child exit immediately with
+  // `Error: Unknown option: --exclude-tools`, killing every subagent
+  // dispatch. Until Pi grows a compatible exclude-flag (or we switch to
+  // `--tools` as an exhaustive allowlist — currently brittle because it
+  // also gates extension tools like codebase_memory_*, ctx7, dispatch_*),
+  // we keep the role-tools.ts table as documentation of intent but do NOT
+  // pass the flag to Pi. Reader-role containment regresses to doctrine
+  // only, matching the pre-#238 posture. Tracked in the determinism plan;
+  // re-enable when the pin moves to a Pi version that supports it.
+  void excludeToolsFor;
   // `--provider` must precede `--model` so Pi disambiguates the model ID
   // against the named provider's catalog. Required for custom OpenAI-
   // compatible endpoints whose model IDs are upstream-vendor strings
@@ -593,7 +638,7 @@ export async function spawnSpecialist(
   // Always cap wall-clock — see DEFAULT_SPAWN_TIMEOUT_MS comment. A stalled
   // child without a timeout hangs the parent indefinitely (observed in the
   // wild: overnight stuck session).
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS;
+  const timeoutMs = opts.timeoutMs ?? roleTimeoutMs(spec.role);
   let timedOut = false;
   const timeout = setTimeout(() => {
     timedOut = true;

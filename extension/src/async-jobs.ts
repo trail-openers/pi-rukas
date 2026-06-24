@@ -45,6 +45,27 @@ interface SingleJobState {
   startedAt: number;
   abort: AbortController;
   /**
+   * Who consumes the eventual result.
+   *
+   *   "pm" (default) — the parent PM session. On completion we push a
+   *   formatted report to PM via `pi.sendUserMessage(report, { deliverAs:
+   *   "steer" })` so the next PM turn picks it up as `[ensemble:async] …`.
+   *   This is the contract every dispatch tool (dispatch_specialist,
+   *   dispatch_parallel, adversarial_loop, dispatch_lens_review) relies on.
+   *
+   *   "driver" — the in-process work-driver (PR1 of the workflow-graph
+   *   compilation). The driver awaits the `completion` promise returned by
+   *   `startJob` directly. We MUST NOT also send the steer report — that
+   *   would inject an `[ensemble:async]` user message PM didn't ask for and
+   *   confuse the next turn. Driver-owned jobs are 100% in-process; the
+   *   completion promise IS the contract.
+   *
+   * This single field is the integration seam that lets PM-tool dispatch
+   * and driver dispatch coexist on the same async-jobs primitive without a
+   * second consumer racing for the result.
+   */
+  ownerKind: "pm" | "driver";
+  /**
    * True when this job is an orchestrator that spawns its OWN inner children
    * sequentially (adversarial_loop + future orchestrators). Set at
    * work-function entry via `markOrchestrator`. Independent of whether a
@@ -356,19 +377,50 @@ interface StartJobInput {
    * would mask the real children behind it.
    */
   skipDeck?: boolean;
+  /**
+   * Who consumes the result. Default "pm" — preserves the existing
+   * send-as-steer behaviour every dispatch tool depends on. Set "driver"
+   * when an in-process caller (e.g. the work-driver) will await the
+   * `completion` promise directly; we then skip the sendUserMessage steer
+   * so PM doesn't see a `[ensemble:async]` it didn't ask for.
+   *
+   * See SingleJobState.ownerKind for the full rationale.
+   */
+  ownerKind?: "pm" | "driver";
+}
+
+export interface StartJobHandle {
+  jobId: string;
+  /**
+   * Resolves with the DispatchResult when the work function settles. Always
+   * returned. PM-owned callers normally ignore it (the steer is the
+   * contract). Driver-owned callers await this to consume the result
+   * directly — `deliverReport` is skipped for them so PM never sees an
+   * `[ensemble:async]` it didn't initiate.
+   *
+   * Note: this promise resolves (not rejects) for both ok and failed
+   * dispatches — failure is encoded in `result.ok === false` /
+   * `result.errorStop`. It DOES reject if the work function throws
+   * (transport / spawn-level errors before any DispatchResult is produced).
+   * Driver code should catch that explicitly.
+   */
+  completion: Promise<DispatchResult>;
 }
 
 /**
  * Fire a single async job. Returns immediately with the jobId; the tool's
  * execute() should also return immediately. The report is delivered to the
- * parent via pi.sendUserMessage when the work resolves.
+ * parent via pi.sendUserMessage when the work resolves — UNLESS
+ * `input.ownerKind === "driver"`, in which case the in-process caller
+ * consumes the result via the `completion` promise and the steer is skipped.
  */
-export function startJob(pi: ExtensionAPI, input: StartJobInput): { jobId: string } {
+export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle {
   if (jobs.size >= MAX_JOBS) {
     throw new Error(
       `async-jobs: refusing to start job — ${jobs.size} jobs already in flight (cap ${MAX_JOBS}). This usually indicates a stuck settle path; check 'dispatch_status' or restart Pi.`,
     );
   }
+  const ownerKind: "pm" | "driver" = input.ownerKind ?? "pm";
   const jobId = newJobId();
   const abort = new AbortController();
   const state: SingleJobState = {
@@ -378,6 +430,7 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): { jobId: strin
     label: input.label,
     startedAt: Date.now(),
     abort,
+    ownerKind,
   };
   jobs.set(jobId, state);
 
@@ -397,7 +450,7 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): { jobId: strin
     jobId,
   };
 
-  void input.work(abort.signal, hooks).then(
+  const completion = input.work(abort.signal, hooks).then(
     (result) => {
       jobs.delete(jobId);
       childHandles.delete(jobId);
@@ -421,9 +474,16 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): { jobId: strin
         );
       }
       sessionAutosave.recordOutcome(result.ok);
-      const report = formatSingleReport(jobId, input.label, result);
-      deliverReport(pi, report);
-      trace(`async job ${jobId} (${input.label}) finished in ${result.ms}ms`);
+      // Driver-owned jobs skip the steer: the in-process caller is awaiting
+      // `completion` and will route the result through the work-driver's
+      // state machine. Posting a steer too would inject a duplicate
+      // [ensemble:async] message into PM's session and confuse the next turn.
+      if (ownerKind === "pm") {
+        const report = formatSingleReport(jobId, input.label, result);
+        deliverReport(pi, report);
+      }
+      trace(`async job ${jobId} (${input.label}, owner=${ownerKind}) finished in ${result.ms}ms`);
+      return result;
     },
     (err: Error) => {
       jobs.delete(jobId);
@@ -431,14 +491,30 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): { jobId: strin
       if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
       lifecycle.emitFailed(jobId, input.label, input.role, Date.now() - state.startedAt);
       sessionAutosave.recordOutcome(false);
-      const report = formatFailReport(jobId, input.label, err);
-      deliverReport(pi, report);
-      trace(`async job ${jobId} (${input.label}) failed: ${err.message}`);
+      if (ownerKind === "pm") {
+        const report = formatFailReport(jobId, input.label, err);
+        deliverReport(pi, report);
+      }
+      trace(`async job ${jobId} (${input.label}, owner=${ownerKind}) failed: ${err.message}`);
+      // Driver-owned callers want the error surfaced via the promise so
+      // they can route it into the state machine; PM-owned callers had the
+      // failure delivered as a fail-report steer and would have nothing to
+      // do with a rejection here. Re-throw uniformly — PM-owned callers
+      // ignore the promise.
+      throw err;
     },
   );
 
-  trace(`async job ${jobId} (${input.label}) started`);
-  return { jobId };
+  // PM-owned callers (every dispatch tool today) destructure only `jobId`
+  // and ignore `completion`. Without this suppressor a rejected completion
+  // promise would trigger Node's unhandled-rejection warning. The internal
+  // .catch attaches an observer — it does NOT consume the rejection from
+  // the perspective of any other observer, so a driver-owned caller's
+  // `await completion` still throws as expected.
+  completion.catch(() => undefined);
+
+  trace(`async job ${jobId} (${input.label}, owner=${ownerKind}) started`);
+  return { jobId, completion };
 }
 
 interface StartBatchInput {

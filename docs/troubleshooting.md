@@ -511,3 +511,118 @@ If after `./install.sh` something still doesn't work, capture:
 2. `docker images randomm/pi-ensemble --format '{{.Repository}}:{{.Tag}} {{.CreatedSince}} {{.Size}}'`
 3. The exact failing command + error message
 4. Open an issue at <https://github.com/randomm/pi-ensemble/issues>.
+
+## `/work` driver state recovery
+
+### Symptom
+
+`/work N` says it can't start, or halts immediately with a message like:
+
+```
+pi-ensemble /work driver halted on issue #N: state-file inconsistencies detected.
+  - pipelineState.inFlightJobIds includes <jobId> but log has no record of it
+Inspect <project>/.pi/work-state/N.json or rm to start fresh (your git work is unaffected; only the workflow tracker state is removed).
+```
+
+Or you get a loud schema-version error when re-invoking `/work` after upgrading pi-ensemble:
+
+```
+work-state: <path> has schemaVersion=2 but this build expects 1. This /work cycle was started under a different driver version. …
+```
+
+### Cause
+
+Since this PR, `/work` runs through a compiled state-machine driver (`extension/src/work-driver.ts`). Workflow state persists at `<project>/.pi/work-state/<issue>.json` so the user can intervene surgically when subagent providers degrade and the driver can resume cleanly after restart.
+
+The state file is the durable contract that lets the driver know which step is current, what dispatches have completed, and which caps have already fired. Two situations can leave it in a state the driver refuses to run against:
+
+1. **Mid-flight crash**: Pi got killed (process exit, machine reboot, OOM) while a dispatch was in flight. The eventLog has a `dispatch-started` without a matching `dispatch-completed`. The driver detects the orphan jobId on resume and halts rather than fabricating a result.
+2. **Schema version mismatch**: you upgraded pi-ensemble between `/work` invocations, and the saved state-file's `schemaVersion` no longer matches what the new driver expects. We never auto-migrate state silently.
+
+### Fix
+
+Pick the option that matches your context:
+
+**A. Resume manually (preferred for valuable in-flight work).** Open `<project>/.pi/work-state/<issue>.json` in your editor. The `eventLog` array shows every step the driver completed and every dispatch's outcome. Worktree path, branch name, PR number (if any), and last review round are all in `pipelineState`. Use that to decide what to do next yourself: finish the work in the worktree manually, or push the PR if the branch is ready, or rm the state file and start fresh.
+
+**B. Start fresh.** `rm <project>/.pi/work-state/<issue>.json` — only the workflow-tracker state goes; your git work (worktree, branch, commits, PR) is unaffected. Then re-run `/work N` to begin a new cycle. The driver will detect that no PR / branch / worktree exists yet for this issue and run Steps 1-3 from scratch — for issues where the developer already pushed a PR, you may want to skip that path and resume manually instead.
+
+**C. Bypass the driver entirely.** `PI_ENSEMBLE_WORK_DRIVER=0 /work N` falls back to the legacy PM-driven flow (`pi.sendUserMessage(work.md)`) — the same flow used before this PR. The driver's state file is left untouched. Use this when you need to debug a driver issue or you want the older PM-orchestrated path for any reason.
+
+### Inspecting the state file directly
+
+The state file shape (schema v1) is:
+
+```jsonc
+{
+  "schemaVersion": 1,
+  "resumable": false,          // v1 is observational; user intervenes, no auto-replay
+  "issue": 547,
+  "startedAt": <epoch-ms>,
+  "updatedAt": <epoch-ms>,
+  "pipelineState": {
+    "currentStep": "lens-review",   // explore | plan | branch | develop | adversarial | commit-pr | lens-review | lens-fix | step-back | handoff | ci | merged
+    "lastCompletedStep": "commit-pr",
+    "inFlightJobIds": [],
+    "branchName": "feature/issue-547-fix-thing",
+    "worktrees": { "task-a": "/abs/path/.worktrees/task-a", ... },  // populated for N>1 fanout
+    "workstreams": { "task-a": { id, scope, paths, outOfScope }, ... },  // PR3 decomposition
+    "reviewRound": 2,
+    "reviewCapStartedAt": <epoch-ms>,
+    "ciRetryCount": 0,        // PR2 — outer ci → develop retry counter, capped at MAX_CI_RETRIES
+    "retryAttempts": { "adversarial": 1 },  // PR5 — per-step RETRY_ONCE budget tracking
+    "exploreVerdict": "NEEDS_WORK",  // PR6 — explore's parsed verdict (NEEDS_WORK | ALREADY_COMPLETE | NEEDS_CLARIFICATION)
+    "handoffSnapshot": {       // PR5 — captured by runHandoff for renderer surfaces
+      "modifiedFiles": ["src/foo.ts"], "unstagedCount": 1, "stagedCount": 0,
+      "branchExists": true, "branchPushed": true, "headSha": "abc1234",
+      "capturedAt": <epoch-ms>
+    },
+    "plumbReports": [],
+    "status": "running"             // running | merged | handoff | aborted
+  },
+  "eventLog": [
+    { "kind": "step-started", "step": "explore", "at": <epoch-ms> },
+    { "kind": "dispatch-completed", "step": "explore", "role": "explore", "ok": true, ... },
+    { "kind": "branches-fanned-out", "step": "develop", "workstreams": ["task-a", "task-b"], "at": ... },  // PR3
+    { "kind": "branch-completed", "step": "develop", "workstreamId": "task-a", "ok": true, ... },         // PR3
+    { "kind": "branches-converged", "step": "develop", "verdicts": [{ "id": "task-a", "ok": true }, ...] },// PR3
+    { "kind": "lens-skipped-empty-diff", "round": 1, "at": ... },  // PR6 — guard fired (no diff to review)
+    { "kind": "cap-hit", "cap": "developer-timeout", "nextStep": "handoff", ... },  // PR5 cap shapes (below)
+    ...
+  ]
+}
+```
+
+The `eventLog` is append-only and authoritative; `pipelineState` is a derived snapshot for O(1) "where are we" reads. Large subagent outputs go to claim-check artifacts under `.pi/work-state/<issue>/<jobId>.txt` and are referenced from the corresponding `dispatch-completed` event's `artifactPath`.
+
+### Cap-hit shapes and what to do about each
+
+When the driver halts intentionally on a load-bearing failure (rather than crashing), it appends a `cap-hit` event with a named `cap` shape, sets `currentStep="handoff"`, and runs `runHandoff` which posts a rich operator comment to the GitHub issue / PR (or surfaces it in chat if the GitHub post fails). The cap shape determines the operator-readable explanation and the recovery commands the renderer suggests.
+
+| `cap` value | What it means | Most-common operator action |
+|---|---|---|
+| `developer-timeout` | Developer subagent SIGTERM'd at its wall-clock spawn cap (default 90 min via `PI_ENSEMBLE_SPAWN_TIMEOUT_MS_DEVELOPER`). Files-modified-but-uncommitted count appears in the message. | Inspect with `git status`; retry with a longer cap (`PI_ENSEMBLE_SPAWN_TIMEOUT_MS_DEVELOPER=5400000 && rm .pi/work-state/N.json && pi`) or split the issue. |
+| `step-failed:<step>` | A HALT-class step's dispatch failed (network / provider error / non-zero exit). For multi-workstream steps (`develop`, `lens-review`), explainCap surfaces an `(N/M workstream branches failed)` parenthetical. Retry exhausted on RETRY_ONCE-class steps (`adversarial`, `lens-review`) also lands here. | Read the failing dispatch's transcript via `/runs` (path in the handoff comment); retry, or take over manually. |
+| `explore-already-complete` | Explore concluded the issue is already done (e.g., satisfied by a prior PR). Driver halts before any branch/develop. No code was written. | `gh issue close N --comment "Verified complete by /work — see prior PR"` if you agree; or `gh issue comment N --body "Additional context: …"` + `rm .pi/work-state/N.json && pi` if you disagree. |
+| `explore-needs-clarification` | Explore couldn't determine concrete work (issue ambiguous / missing acceptance criteria). | Edit issue body via `gh issue edit N`, then `rm .pi/work-state/N.json && pi`. |
+| `adversarial-loop` | `adversarial_loop` ran its 3-round internal fix loop and could not reach APPROVED. For N>1 multi-workstream cycles, the aggregate-rejected case (any per-workstream adversarial REJECTED) also fires this cap, with per-workstream findings tagged `[workstream <id>]`. | Read the rejection findings; if phantom, merge manually; if real, take over the worktree to fix or split the work. |
+| `round-cap` | Lens-review hit its 3-round cap with findings still open — review loop didn't converge. | Inspect the latest `lens-issues-found` event in `eventLog`; if findings cluster around a theme, that's a spec-level problem (consider revising the issue body before re-running). |
+| `wall-clock` | Lens-review fix loop exceeded the 90-minute wall-clock cap. | Same as `round-cap` — inspect findings, decide whether to retry or take over. |
+| `ci-retry` | CI failed `MAX_CI_RETRIES` times in a row (default 2 → 3 attempts total). Either CI is permanently broken for this branch, or develop keeps producing the same failure. | Read CI logs (URL in the handoff `ci-status` event); fix manually, or `rm .pi/work-state/N.json && pi` to re-run from scratch. |
+
+The handoff comment quotes 4 concrete recovery shell commands keyed to the cap shape — paste-and-run-ready. The `/work-status` command renders the same postmortem layout from the state file if you'd rather inspect locally.
+
+### Per-role spawn timeouts (PR5)
+
+The driver uses per-role wall-clock caps for each dispatched subagent. Defaults reflect typical role runtime (developer is the slow one):
+
+| Role | Default cap | Env var override |
+|---|---|---|
+| `developer` | 90 min | `PI_ENSEMBLE_SPAWN_TIMEOUT_MS_DEVELOPER` |
+| `code-review-specialist` | 15 min | `PI_ENSEMBLE_SPAWN_TIMEOUT_MS_CODE_REVIEW_SPECIALIST` |
+| `adversarial-developer` | 15 min | `PI_ENSEMBLE_SPAWN_TIMEOUT_MS_ADVERSARIAL_DEVELOPER` |
+| `explore` | 15 min | `PI_ENSEMBLE_SPAWN_TIMEOUT_MS_EXPLORE` |
+| `ops` | 10 min | `PI_ENSEMBLE_SPAWN_TIMEOUT_MS_OPS` |
+| `project-manager` | 30 min | `PI_ENSEMBLE_SPAWN_TIMEOUT_MS_PROJECT_MANAGER` |
+
+Env precedence: per-role override > umbrella `PI_ENSEMBLE_SPAWN_TIMEOUT_MS` > per-role default. Setting a per-role override is the cleanest fix when a `developer-timeout` cap-hit suggests the issue genuinely needs more wall-clock than the default 90 min.

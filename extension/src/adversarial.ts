@@ -57,7 +57,19 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
   });
 }
 
-async function runAdversarialLoop(
+/**
+ * Run the 3-round adversarial loop directly. Exported so the work-driver can
+ * call it without going through the tool-registration layer (PR1 of the
+ * workflow-graph compilation). The legacy `adversarial_loop` tool wraps this
+ * with `startJob` + steer-back for PM-driven flows; the driver wraps it with
+ * `startJob({ ownerKind: "driver", skipDeck: true })` so the result resolves
+ * via promise instead of as an [ensemble:async] steer.
+ *
+ * `orchestratorJobId` should be the jobId of the wrapping job that hosts this
+ * loop — used to publish active-child state for dispatch_peek / dispatch_steer
+ * to resolve into the currently-running inner spawn.
+ */
+export async function runAdversarialLoop(
   params: { diff: string; context: string; workCwd?: string },
   signal: AbortSignal,
   orchestratorJobId: string,

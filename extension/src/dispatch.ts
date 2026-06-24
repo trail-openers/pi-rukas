@@ -3,7 +3,7 @@ import { Type } from "@sinclair/typebox";
 import { startBatch, startJob } from "./async-jobs.ts";
 import { ROLE_NAMES } from "./roles.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
-import type { DispatchSpec } from "./types.ts";
+import type { DispatchResult, DispatchSpec } from "./types.ts";
 
 const MAX_PARALLEL = 10;
 
@@ -18,6 +18,57 @@ export function stripModelOverride(spec: DispatchSpec): DispatchSpec {
     return rest as DispatchSpec;
   }
   return spec;
+}
+
+/**
+ * Single-call dispatch surface for in-process orchestrators (the
+ * work-driver — see workflow-state.ts / work-driver.ts).
+ *
+ * Wraps the same `startJob` + `spawnSpecialist` plumbing the PM-facing
+ * dispatch tools use, but flagged as `ownerKind: "driver"` so async-jobs
+ * skips the `pi.sendUserMessage(report, deliverAs:"steer")` step — the
+ * caller awaits the returned promise instead. PM never sees an
+ * `[ensemble:async]` it didn't initiate.
+ *
+ * Why this lives in dispatch.ts: the dispatch tools and the driver both
+ * need the same spawn → progress → completion plumbing. Factoring this
+ * one entry point keeps the spawn/abort/lifecycle semantics in one place
+ * — adding a tool surface in the future means "register a new tool that
+ * calls dispatchCore," not "build a parallel plumbing chain."
+ *
+ * Failure semantics: the promise resolves for ok/failed/errorStop
+ * dispatches (failure is encoded in `result.ok` / `result.errorStop`). It
+ * REJECTS only if the work function (spawnSpecialist) throws before any
+ * DispatchResult is produced — i.e. spawn-level transport errors. The
+ * work-driver routes both flavours through its state machine; callers
+ * should catch the rejection and emit a `dispatch-failed-provider`
+ * (or similar) event into the state file.
+ */
+export function dispatchCore(
+  pi: ExtensionAPI,
+  spec: DispatchSpec,
+  opts: { label?: string; skipDeck?: boolean; timeoutMs?: number } = {},
+): Promise<DispatchResult> {
+  const stripped = stripModelOverride(spec);
+  const label = opts.label ?? stripped.role;
+  const handle = startJob(pi, {
+    label,
+    role: stripped.role,
+    ownerKind: "driver",
+    skipDeck: opts.skipDeck,
+    work: (signal, hooks) =>
+      spawnSpecialist(stripped, {
+        signal,
+        onProgress: hooks.onProgress,
+        onStdin: hooks.onStdin,
+        // PR5: per-call timeout override. Used by runHandoff to cap the
+        // gh-comment ops dispatch at 3 min (the body file is on disk; ops
+        // just runs two CLI invocations — the ops 10-min role default
+        // would be too generous).
+        timeoutMs: opts.timeoutMs,
+      }),
+  });
+  return handle.completion;
 }
 
 export function registerDispatchTools(pi: ExtensionAPI) {

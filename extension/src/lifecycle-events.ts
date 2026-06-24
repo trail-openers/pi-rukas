@@ -28,23 +28,67 @@ import { trace } from "./trace.ts";
 
 const CUSTOM_TYPE = "ensemble:lifecycle";
 
-export type LifecycleKind = "dispatched" | "completed" | "failed" | "errored" | "steered";
+export type LifecycleKind =
+  | "dispatched"
+  | "completed"
+  | "failed"
+  | "errored"
+  | "steered"
+  | "step-started"
+  | "step-completed"
+  | "step-failed"
+  /**
+   * PR5 — a RETRY_ONCE-classified step (adversarial, lens-review) hit a
+   * dispatch-failed and the driver is re-running it. Distinct from
+   * step-failed so the scrollback signals "transient — retrying" vs
+   * "permanent — handoff". One event per retry attempt.
+   */
+  | "step-retry";
 
 export interface LifecycleDetails {
   kind: LifecycleKind;
+  /**
+   * For dispatch/steer kinds: the async-jobs jobId. For step-* kinds:
+   * the workflow-driver step name (e.g., "adversarial", "lens-review")
+   * so the scrollback line can carry it directly.
+   */
   jobId: string;
-  /** Display label, e.g. "developer" or "lens_review" or "dispatch_parallel". */
+  /** Display label. For step-* kinds, this is the step name. */
   label: string;
   /** Role for telemetry; same as label for synthetic orchestrator labels. */
   role: string;
-  /** Elapsed ms for completed/failed/errored; omitted for dispatched. */
+  /** Elapsed ms for completed/failed/errored/step-completed/step-failed. */
   elapsedMs?: number;
-  /** Total tokens (input + output + cache); set for completed/errored. */
+  /** Total tokens (input + output + cache); set for completed/errored/step-completed. */
   totalTokens?: number;
   /** Exit code for failed; omitted otherwise. */
   exitCode?: number;
   /** Steer message (truncated for scrollback) — set for kind="steered" only. */
   steerMessage?: string;
+  /**
+   * Step ordinal for step-* kinds (1-indexed). Pair with stepTotal to render
+   * "step 5/9". Plain dispatches omit both.
+   */
+  stepNumber?: number;
+  /** Total step count for step-* kinds. */
+  stepTotal?: number;
+  /**
+   * Failure reason for step-failed (e.g., "subagent ABORT", "cap-hit:
+   * ci-retry"). Shown after the elapsed metric on the scrollback line so
+   * the user knows WHY the step failed without opening the state file.
+   */
+  reason?: string;
+  /**
+   * Sub-round counter for steps that iterate within a cycle (PR4 label
+   * polish). adversarial / lens-review / lens-fix all run multiple times
+   * during a fix loop, and `develop` re-enters on ci-status:failure.
+   * `(round N)` is appended to the scrollback line when set so the user
+   * can tell apart "first adversarial gate" from "third adversarial
+   * gate" without checking the state file. Omitted on first entry of a
+   * step (round 1 — no suffix needed) and on steps that never iterate
+   * (explore, plan, branch, commit-pr, step-back, ci, handoff, merged).
+   */
+  round?: number;
 }
 
 let activePi: ExtensionAPI | undefined;
@@ -128,6 +172,102 @@ export function emitSteered(jobId: string, label: string, role: string, message:
   emit({ kind: "steered", jobId, label, role, steerMessage: message });
 }
 
+/**
+ * Step-level lifecycle events for the work-driver (PR2). Distinct from the
+ * per-dispatch events above: the work-driver runs 9 STEPS, each of which
+ * may dispatch one or more subagents. Adversarial and lens-review steps
+ * call into existing orchestrator functions (`runAdversarialLoop` /
+ * `runLensReview`) that bypass startJob → bypass `emitDispatched/Completed`.
+ * The PR #239 live test on issue #553 made those two steps invisible in
+ * scrollback. Step-level emitters surface them uniformly.
+ *
+ * `step` is the step name (e.g. "adversarial"); `stepNumber/stepTotal`
+ * render as "5/9" for at-a-glance progress.
+ */
+export function emitStepStarted(
+  step: string,
+  stepNumber: number,
+  stepTotal: number,
+  round?: number,
+): void {
+  emit({
+    kind: "step-started",
+    jobId: step,
+    label: step,
+    role: step,
+    stepNumber,
+    stepTotal,
+    round,
+  });
+}
+
+export function emitStepCompleted(
+  step: string,
+  stepNumber: number,
+  stepTotal: number,
+  elapsedMs: number,
+  totalTokens?: number,
+  round?: number,
+): void {
+  emit({
+    kind: "step-completed",
+    jobId: step,
+    label: step,
+    role: step,
+    stepNumber,
+    stepTotal,
+    elapsedMs,
+    totalTokens,
+    round,
+  });
+}
+
+export function emitStepFailed(
+  step: string,
+  stepNumber: number,
+  stepTotal: number,
+  elapsedMs: number,
+  reason?: string,
+  round?: number,
+): void {
+  emit({
+    kind: "step-failed",
+    jobId: step,
+    label: step,
+    role: step,
+    stepNumber,
+    stepTotal,
+    elapsedMs,
+    reason,
+    round,
+  });
+}
+
+/**
+ * PR5 — a RETRY_ONCE step (adversarial, lens-review) had its dispatch
+ * fail and the driver is re-running it. `attempt` is the new attempt
+ * number (i.e., the retry count + 1; first retry is attempt=2). Reason
+ * carries why the previous attempt failed for scrollback context.
+ */
+export function emitStepRetry(
+  step: string,
+  stepNumber: number,
+  stepTotal: number,
+  attempt: number,
+  reason?: string,
+): void {
+  emit({
+    kind: "step-retry",
+    jobId: step,
+    label: step,
+    role: step,
+    stepNumber,
+    stepTotal,
+    round: attempt,
+    reason,
+  });
+}
+
 function emit(details: LifecycleDetails): void {
   if (isQuiet()) return;
   const text = formatLine(details);
@@ -179,6 +319,32 @@ export function formatLine(d: LifecycleDetails): string {
       const truncated = msg.length > 80 ? `${msg.slice(0, 79)}…` : msg;
       return `▸ ensemble: ⤳ steered ${d.label} · "${truncated}"`;
     }
+    case "step-started": {
+      const ordinal = d.stepNumber && d.stepTotal ? `${d.stepNumber}/${d.stepTotal} ` : "";
+      const round = d.round && d.round > 1 ? ` (round ${d.round})` : "";
+      return `▸ ensemble: ▶ step ${ordinal}${d.label}${round} started`;
+    }
+    case "step-completed": {
+      const ordinal = d.stepNumber && d.stepTotal ? `${d.stepNumber}/${d.stepTotal} ` : "";
+      const round = d.round && d.round > 1 ? ` (round ${d.round})` : "";
+      const tokens =
+        d.totalTokens && d.totalTokens > 0 ? ` · ${formatTokens(d.totalTokens)} tokens` : "";
+      const elapsed = d.elapsedMs != null ? ` · ${fmtElapsed(d.elapsedMs)}` : "";
+      return `▸ ensemble: ✓ step ${ordinal}${d.label}${round} finished${elapsed}${tokens}`;
+    }
+    case "step-failed": {
+      const ordinal = d.stepNumber && d.stepTotal ? `${d.stepNumber}/${d.stepTotal} ` : "";
+      const round = d.round && d.round > 1 ? ` (round ${d.round})` : "";
+      const elapsed = d.elapsedMs != null ? ` · ${fmtElapsed(d.elapsedMs)}` : "";
+      const reason = d.reason ? ` · ${d.reason}` : "";
+      return `▸ ensemble: ✗ step ${ordinal}${d.label}${round} failed${elapsed}${reason}`;
+    }
+    case "step-retry": {
+      const ordinal = d.stepNumber && d.stepTotal ? `${d.stepNumber}/${d.stepTotal} ` : "";
+      const attempt = d.round ? ` attempt ${d.round}` : "";
+      const reason = d.reason ? ` · prior failure: ${d.reason}` : "";
+      return `▸ ensemble: ↻ step ${ordinal}${d.label} retrying${attempt}${reason}`;
+    }
   }
 }
 
@@ -200,6 +366,17 @@ function applyTheme(
       // gone wrong; the line text itself distinguishes the failure mode.
       return theme.fg("error", content);
     case "steered":
+      return theme.fg("warning", content);
+    case "step-started":
+      // Step-level events use a different visual weight than dispatches —
+      // dim for start to keep the eye drawn to the success/failure line.
+      return theme.fg("dim", content);
+    case "step-completed":
+      return theme.fg("success", content);
+    case "step-failed":
+      return theme.fg("error", content);
+    case "step-retry":
+      // Warning colour — transient, not yet a failure but worth noticing.
       return theme.fg("warning", content);
   }
 }

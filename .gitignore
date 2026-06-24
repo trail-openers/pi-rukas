@@ -23,3 +23,6 @@ dist/prompts/
 # pi-ensemble permission config (user-specific)
 .pi/permissions.json
 .pi/decisions.json
+
+# /work driver workflow state (per-issue, per-project)
+.pi/work-state/

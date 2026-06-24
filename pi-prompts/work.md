@@ -18,6 +18,19 @@ If no issue number provided, ask.
 - **Developer never commits.** Returns with uncommitted changes in the worktree. `ops` commits.
 - **Adversarial gate is mandatory.** After every developer dispatch, run `adversarial_loop` on the resulting diff. `ops` does not commit until `adversarial_loop` returns APPROVED.
 
+## Scratch hygiene — agents NEVER pollute the repo root
+
+Any ephemeral artefacts (diff snapshots between adversarial rounds, captured screenshots, one-off verification scripts, analysis JSON, PR-body files you pass to `gh pr create --body-file`) go under **`<repo>/tmp/issue-<N>/`** (project-local, gitignored via `.git/info/exclude`, NOT a committed `.gitignore` entry) OR `/tmp/pi-ensemble-<role>/` (host-level).
+
+The work-driver creates `<repo>/tmp/issue-<N>/` and adds `/tmp/` to `.git/info/exclude` on cycle start automatically; under the legacy PM-driven flow (PI_ENSEMBLE_WORK_DRIVER=0) you (PM) must create it yourself before the first dispatch:
+
+```bash
+mkdir -p tmp/issue-$ARGUMENTS
+grep -q '^/tmp/' .git/info/exclude 2>/dev/null || echo '/tmp/' >> .git/info/exclude
+```
+
+Pass the absolute path of this dir into every developer/ops/explore dispatch prompt — *"scratch goes under `/abs/path/tmp/issue-<N>/`"*. Empirical pattern from lantern issue #553: previous cycles left 12 dot-prefixed diff files (`.pr1_r2.diff`, `.regate-1.diff` …), abandoned screenshots, e2e scripts, and a 2.3 GB core dump at the repo root — the next /work's branch step then ABORTed correctly on a dirty tree.
+
 ## Parallelism mode (default)
 
 **Default to parallel.** At every step below, identify what can run concurrently and dispatch multiple tools in the SAME PM turn. Skip parallelism only when the next dispatch literally depends on prior output (e.g., Step 3's branch name → Step 4's worktree path).

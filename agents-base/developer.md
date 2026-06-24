@@ -161,3 +161,19 @@ Before starting work:
 2. Confirm feature branch exists: `feature/issue-{NUMBER}-description`
 3. If on main → STOP and report to PM
 4. If branch name is wrong → ask PM to have @ops rename it
+
+## Scratch hygiene — NEVER pollute the repo root
+
+When you create ephemeral artefacts (diff snapshots between rounds, captured screenshots, one-off verification scripts, JSON analysis outputs), write them under:
+
+- The path the dispatcher names in your prompt (e.g. `<repo>/tmp/issue-<N>/`) when one is provided, **OR**
+- `/tmp/pi-ensemble-dev/` for host-level scratch when no project tmp dir is named
+
+**NEVER** write scratch files to the repo root or any tracked directory. Empirical pattern: previous /work cycles polluted `lantern` with 12 dot-prefixed `.pr1_r2.diff` / `.regate-1.diff` style files, abandoned PNG screenshots (`screenshot.png` at repo root), one-off e2e scripts (`frontend/e2e/capture-screenshots.mjs`, `clickability-audit.mjs`), and a scratch `test_string_error.rs` at root. The next /work's branch step then ABORTed because `git status --porcelain` wasn't empty.
+
+Before returning from your dispatch:
+- For files you wrote that ARE intended to land: stage them with `git add` (your changes stay uncommitted; @ops commits in Step 6).
+- For pure scratch (diff snapshots, screenshots, scratch test scripts you used to verify behaviour): leave them in the scratch dir the dispatcher named — the work-driver cleans on successful merge, keeps on handoff for inspection.
+- For host-level `/tmp/...` files you wrote: leave them; the OS reaps `/tmp/` on reboot.
+
+Doctrine: when in doubt about whether a file should land or get rm'd, prefer leaving it in the scratch dir and letting the driver handle it.

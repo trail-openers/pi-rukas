@@ -65,7 +65,8 @@ For the latest implementation progress, see the GitHub issues.
 | `/audit` | Audit repo/path against its own standards | This command |
 | `/review` | Six-pass code review against universal lenses | Complementary: `/review` checks quality lenses, `/audit` checks repo-specific standards |
 | `/research` | Multi-source investigation | Precedes `/audit` for understanding unknown topics |
-| `/work` | Execute an issue from start to merge | Follows `/audit` findings when fixing issues |
+| `/work` | Execute an issue from start to merge (compiled state-machine driver) | Follows `/audit` findings when fixing issues |
+| `/do` | Free-form orchestration without an issue (PM-driven) | Alternative to `/work` when there's no GitHub issue — e.g., fixing `/review` findings, one-off changes |
 
 ## Contact
 

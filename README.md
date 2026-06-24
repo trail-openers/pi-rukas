@@ -9,24 +9,26 @@ A multi-specialist orchestrator extension for [Pi](https://pi.dev) — the termi
 
 ## What you get
 
-Five slash commands, an orchestrator-shaped system prompt, and nine tools that drive parallel specialist agents:
+Seven slash commands, an orchestrator-shaped system prompt, and nine tools that drive parallel specialist agents:
 
 | Command | What it does |
 |---|---|
 | `/start` | Initialises a project session — searches memory, indexes the codebase, gathers git/PR/CI state, reports readiness. |
 | `/research <topic>` | Fans out multiple `explore` specialists in parallel against web, codebase, and prior memory. Synthesises and saves. |
 | `/plan <description>` | Drafts a GitHub issue from your input — auto-classifies as bug/feature/epic/chore/spike, applies the right template, asks before creating. |
-| `/work <issue#>` | Runs an issue end-to-end: feature branch → optional parallel worktrees → developer (via `dispatch_specialist`) → `adversarial_loop` gate → ops commits → PR → **six-pass code review** → CI watch → merge per project policy. |
+| `/work <issue#>` | Runs an issue end-to-end through a **compiled state-machine driver** (`extension/src/work-driver.ts`): explore → plan → feature branch (with optional parallel worktrees for multi-workstream decomposition) → developer dispatch → **per-workstream `adversarial_loop` gate** (parallel for N>1) → ops commits → PR → **six-pass code review** → CI watch → merge per project policy. Resumable state at `.pi/work-state/<issue>.json`; cap-hits surface as structured handoff comments on the issue/PR with verbatim recovery commands. |
+| `/do <description>` | Free-form orchestration counterpart to `/work` — no GitHub issue required. PM-driven (same dispatch toolkit as `/work` but no compiled driver / state file). Use when you want to act on lens-review findings, fix something small without filing an issue, or work on a community-submitted PR. |
 | `/review [#PR \| path \| latest N]` | On-demand six-pass code review of a PR, file, directory, or the latest N PRs. Returns a deduplicated, precedence-merged verdict (APPROVED / ISSUES_FOUND / CRITICAL_ISSUES_FOUND). |
 | `/audit [<path> \| "full"]` | Standards-first repo/path audit. Derives expectations from docs/config/CI/memory/examples, then reports misalignments across bugs, dead code, style drift, architecture drift, and quality-gate gaps. |
 
-Plus two utility commands:
+Plus utility commands:
 
 | Command | What it does |
 |---|---|
 | `/ensemble-model` | Interactive picker for per-role subagent models. Saves to `~/.pi/agent/ensemble-models.json`. |
 | `/runs` | Browse recent subagent runs — drills into per-child transcripts with tool calls and findings. |
 | `/ensemble-debug` | Show current resolved configuration: prompts dir, registered commands and tools, per-role model resolution. |
+| `/work-status` | Live status of an active `/work` cycle: current step, review-round caps, per-step durations, recent events. Postmortem layout when the cycle is in a terminal state (handoff/aborted/merged). |
 
 ## When to use which command
 
@@ -36,12 +38,14 @@ Plus two utility commands:
 | `/research <topic>` | Investigate a topic: web + codebase + memory | Any topic | N/A (informational) | Saves results as fact/observation |
 | `/plan <description>` | Draft a GitHub issue | N/A (creates issue) | N/A | No memory writes |
 | `/work <issue#>` | Execute an issue: implement → review → merge | Feature branch | Universal quality lenses (via `/review`) | Subagents may write to memory |
+| `/do <description>` | Free-form work without an issue (act on review findings, one-off fixes) | Whatever the description names | Target project's `AGENTS.md` | Subagents may write to memory |
 | `/review [#PR \| path \| latest]` | Evaluate code against universal quality lenses | PR, file, dir, or codebase | Six review lenses (SECURITY/ERROR/TYPES/PERF/ARCH/SIMPLICITY) | Does not write to memory |
 | `/audit [<path> \| "full"]` | Audit repo/path against its own intended standards | Repo or scoped path | Derived from docs, config, CI, memory, examples | Sparse, durable stores only (critical/high findings, conventions, architecture, aggregated drift) |
 
 **Quick rule of thumb**:
 - Need to learn about something? Use `/research`.
-- Need to fix something? Use `/work`.
+- Need to fix something with a GitHub issue backing it? Use `/work <issue#>`.
+- Need to fix something free-form (no issue, or acting on `/review` findings)? Use `/do <description>`.
 - Need to check code quality before merging? Use `/review`.
 - Need to assess overall repo health and standards alignment? Use `/audit`.
 

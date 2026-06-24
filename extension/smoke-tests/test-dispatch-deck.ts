@@ -122,23 +122,68 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
 // 3. formatRow renders compact single line: icon + label + elapsed + tool.
 {
   const startedAt = 1_000_000;
+  const now = startedAt + 134000;
   const e: DeckEntry = {
     key: "df8a-2k",
     label: "developer",
     seq: 1,
     startedAt,
+    // Provide a fresh lastEventAt so the row is NOT marked STALE (PR2 O3).
+    // STALE branding is exercised separately in the "stale row" assertion
+    // block below.
     state: makeState("developer", {
       elapsedMs: 999, // STALE — must not be used
+      lastEventAt: now - 1000,
       lastToolName: "bash",
       toolUses: 7,
     }),
   };
-  const out = formatRow(e, startedAt + 134000);
+  const out = formatRow(e, now);
   assert(out.startsWith("⏳"), "row starts with hourglass icon");
   assert(out.includes("developer"), "row includes label");
   assert(out.includes("2m14s"), "row includes elapsed computed from now − startedAt");
   assert(!out.includes("999"), "stale state.elapsedMs is NOT rendered");
   assert(out.includes("bash (#7)"), "row includes tool name + use-count when >1");
+  assert(!out.includes("STALE"), "fresh row does not get STALE badge");
+}
+
+// 3c. PR2 O3 — STALE detection: row with no message_end in >90s flips icon
+// and gets a "no progress Ns" badge appended. Default threshold is 90_000 ms.
+{
+  const startedAt = 2_000_000;
+  const now = startedAt + 120000; // 2m elapsed
+  const e: DeckEntry = {
+    key: "stale-key",
+    label: "developer",
+    seq: 1,
+    startedAt,
+    state: makeState("developer", {
+      lastEventAt: now - 100000, // 100s ago > 90s threshold
+      lastToolName: "bash",
+      toolUses: 1,
+    }),
+  };
+  const out = formatRow(e, now);
+  assert(out.startsWith("⚠"), "STALE row uses ⚠ icon instead of ⏳");
+  assert(out.includes("STALE"), "STALE row includes STALE label");
+  assert(out.includes("no progress"), "STALE row names the no-progress duration");
+}
+
+// 3d. Fresh-spawn grace: a row with NO lastEventAt yet but young elapsed
+// is NOT stale (provider connect time, first turn still pending).
+{
+  const startedAt = 3_000_000;
+  const now = startedAt + 5000; // 5s elapsed, never emitted
+  const e: DeckEntry = {
+    key: "fresh-key",
+    label: "explore",
+    seq: 1,
+    startedAt,
+    state: makeState("explore"), // lastEventAt undefined
+  };
+  const out = formatRow(e, now);
+  assert(out.startsWith("⏳"), "fresh row (no lastEventAt, young elapsed) is NOT stale");
+  assert(!out.includes("STALE"), "fresh row does not get STALE badge");
 }
 
 // 3b. formatRow with tool-arg hint (#139).

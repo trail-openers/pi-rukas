@@ -17,6 +17,7 @@ import { pruneOldRuns, registerRunsCommand } from "./runs.ts";
 import { registerSandboxFsGuard } from "./sandbox-fs-guard.ts";
 import * as sessionAutosave from "./session-autosave.ts";
 import { trace } from "./trace.ts";
+import * as workWidget from "./work-widget.ts";
 
 export default async function (pi: ExtensionAPI) {
   trace("extension activated");
@@ -65,9 +66,11 @@ export default async function (pi: ExtensionAPI) {
   // hold the reference until session_shutdown.
   pi.on("session_start", (_event, ctx) => {
     dispatchDeck.attach(ctx);
+    workWidget.attach(ctx);
   });
   pi.on("session_shutdown", () => {
     dispatchDeck.detach();
+    workWidget.detach();
     lifecycle.detach();
   });
 
