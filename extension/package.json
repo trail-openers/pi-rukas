@@ -1,6 +1,6 @@
 {
   "name": "@randomm/pi-ensemble",
-  "version": "0.12.7",
+  "version": "0.12.8",
   "description": "Multi-specialist orchestrator extension for Pi — parallel worktree-isolated dispatch, adversarial gate, six-pass code review.",
   "keywords": [
     "pi-package",

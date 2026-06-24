@@ -8,6 +8,30 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.8](https://github.com/randomm/pi-ensemble/compare/v0.12.7...v0.12.8) (2026-06-24)
+
+
+### Features
+
+* **deck:** bypass Pi's 10-row widget cap via setWidget factory form ([#232](https://github.com/randomm/pi-ensemble/issues/232)) ([1860775](https://github.com/randomm/pi-ensemble/commit/1860775d14eb69c0c87806a0834cb8122acfe803))
+* **doctrine:** cap-hits produce structured handoff artifact, not user-block ([#233](https://github.com/randomm/pi-ensemble/issues/233)) ([38ac291](https://github.com/randomm/pi-ensemble/commit/38ac291838d3f3e5b772fd11647dce5a470df703))
+* **doctrine:** plumbing — subagents surface structural decisions to PM mid-dispatch ([#234](https://github.com/randomm/pi-ensemble/issues/234)) ([59b70d2](https://github.com/randomm/pi-ensemble/commit/59b70d214e913d702d52bb3b25fb96cde5323ee2))
+* **doctrine:** PM step-back via [@explore](https://github.com/explore) when cap-hit findings cluster around a theme ([#235](https://github.com/randomm/pi-ensemble/issues/235)) ([f95fa5c](https://github.com/randomm/pi-ensemble/commit/f95fa5c220266fc43d7210bc68ba1a715cd63a80))
+* **spawn:** per-role tool-gating for reviewer subagents (Option A of determinism plan) ([#238](https://github.com/randomm/pi-ensemble/issues/238)) ([b7a1172](https://github.com/randomm/pi-ensemble/commit/b7a1172fa9d9ad3c031ef936e4951781f0a12ee2))
+
+
+### Bug Fixes
+
+* **#210:** support macOS bash in launcher ([#211](https://github.com/randomm/pi-ensemble/issues/211)) ([85c7117](https://github.com/randomm/pi-ensemble/commit/85c7117576b1b037101396b09f0bbf58aeca2a8a))
+* **sandbox:** allow parallel-web-cli postinstall so binary downloads ([#243](https://github.com/randomm/pi-ensemble/issues/243)) ([00f5d61](https://github.com/randomm/pi-ensemble/commit/00f5d614f14c9bf1a978965e7afbe03f3b82b6d5))
+* **sandbox:** block DOCKER_HOST from host-env forward — Colima users couldn't spawn sibling containers ([#231](https://github.com/randomm/pi-ensemble/issues/231)) ([6912ca3](https://github.com/randomm/pi-ensemble/commit/6912ca31fdda1480b5211736632fb7e5e1e61c1b))
+* **sandbox:** forward all host env vars (less blocklist) — fix .pi/mcp.json env-refs ([#228](https://github.com/randomm/pi-ensemble/issues/228)) ([05ac264](https://github.com/randomm/pi-ensemble/commit/05ac2642709fd51c9396aa24c515051cd6def46e))
+* **sandbox:** make docker socket + SSH default-on (transparent to user) ([#220](https://github.com/randomm/pi-ensemble/issues/220)) ([0f2f8ae](https://github.com/randomm/pi-ensemble/commit/0f2f8ae06a2e122e469cd08c674e47a5bab2bced))
+* **sandbox:** NUL-separated env parsing + TTY repair after container exit ([#229](https://github.com/randomm/pi-ensemble/issues/229)) ([3a4e842](https://github.com/randomm/pi-ensemble/commit/3a4e8420c8c992e616494e47cb1fd8042a96e843))
+* **sandbox:** NUL-separated IPC between build_* and run_container ([#230](https://github.com/randomm/pi-ensemble/issues/230)) ([8ff2332](https://github.com/randomm/pi-ensemble/commit/8ff233227589132acc643147324566c9ba1038f3))
+* **sandbox:** unset broken SSH_AUTH_SOCK so SSH falls back to ~/.ssh/ keys ([#227](https://github.com/randomm/pi-ensemble/issues/227)) ([3748b3c](https://github.com/randomm/pi-ensemble/commit/3748b3cde9b47a232806d0f27029e32d1ad898a6))
+* **spawn:** surface provider HTTP timeouts as FAILED-PROVIDER-ERROR + tight retry defaults ([#236](https://github.com/randomm/pi-ensemble/issues/236)) ([546e19f](https://github.com/randomm/pi-ensemble/commit/546e19fbcb1544354c05da3b7dc0a42ad7b15066))
+
 ## [0.12.7](https://github.com/randomm/pi-ensemble/compare/v0.12.6...v0.12.7) (2026-06-16)
 
 
