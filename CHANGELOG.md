@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.9](https://github.com/randomm/pi-ensemble/compare/v0.12.8...v0.12.9) (2026-06-24)
+
+
+### Features
+
+* **work:** compile /work into a deterministic driver (Option C v1) ([#239](https://github.com/randomm/pi-ensemble/issues/239)) ([93443b6](https://github.com/randomm/pi-ensemble/commit/93443b682bcef5eab427c29a0e467300864b3716))
+
 ## [0.12.8](https://github.com/randomm/pi-ensemble/compare/v0.12.7...v0.12.8) (2026-06-24)
 
 
