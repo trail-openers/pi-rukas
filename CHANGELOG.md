@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.10](https://github.com/randomm/pi-ensemble/compare/v0.12.9...v0.12.10) (2026-06-25)
+
+
+### Bug Fixes
+
+* **work-driver:** execute merge step + multi-issue /work with per-issue verdict routing ([#245](https://github.com/randomm/pi-ensemble/issues/245)) ([e27a8d4](https://github.com/randomm/pi-ensemble/commit/e27a8d4ce911ed60ae01a1d4f3e6a9a683d5bf72))
+
 ## [0.12.9](https://github.com/randomm/pi-ensemble/compare/v0.12.8...v0.12.9) (2026-06-24)
 
 
