@@ -557,7 +557,8 @@ The state file shape (schema v1) is:
 {
   "schemaVersion": 1,
   "resumable": false,          // v1 is observational; user intervenes, no auto-replay
-  "issue": 547,
+  "issue": 547,                    // primary issue (state-file path + branch anchor)
+  "issues": [547, 548, 549],       // PR10 — all issues passed to /work; absent for single-issue cycles
   "startedAt": <epoch-ms>,
   "updatedAt": <epoch-ms>,
   "pipelineState": {
@@ -572,6 +573,10 @@ The state file shape (schema v1) is:
     "ciRetryCount": 0,        // PR2 — outer ci → develop retry counter, capped at MAX_CI_RETRIES
     "retryAttempts": { "adversarial": 1 },  // PR5 — per-step RETRY_ONCE budget tracking
     "exploreVerdict": "NEEDS_WORK",  // PR6 — explore's parsed verdict (NEEDS_WORK | ALREADY_COMPLETE | NEEDS_CLARIFICATION)
+    "activeIssues": [561, 563],      // PR10 — NEEDS_WORK subset for multi-issue cycles; fallback [issue] when absent
+    "droppedIssues": [               // PR10 — ALREADY_COMPLETE / NEEDS_CLARIFICATION issues filtered out
+      { "issue": 562, "verdict": "ALREADY_COMPLETE", "reason": "satisfied by PR #534" }
+    ],
     "handoffSnapshot": {       // PR5 — captured by runHandoff for renderer surfaces
       "modifiedFiles": ["src/foo.ts"], "unstagedCount": 1, "stagedCount": 0,
       "branchExists": true, "branchPushed": true, "headSha": "abc1234",
@@ -602,7 +607,7 @@ When the driver halts intentionally on a load-bearing failure (rather than crash
 | `cap` value | What it means | Most-common operator action |
 |---|---|---|
 | `developer-timeout` | Developer subagent SIGTERM'd at its wall-clock spawn cap (default 90 min via `PI_ENSEMBLE_SPAWN_TIMEOUT_MS_DEVELOPER`). Files-modified-but-uncommitted count appears in the message. | Inspect with `git status`; retry with a longer cap (`PI_ENSEMBLE_SPAWN_TIMEOUT_MS_DEVELOPER=5400000 && rm .pi/work-state/N.json && pi`) or split the issue. |
-| `step-failed:<step>` | A HALT-class step's dispatch failed (network / provider error / non-zero exit). For multi-workstream steps (`develop`, `lens-review`), explainCap surfaces an `(N/M workstream branches failed)` parenthetical. Retry exhausted on RETRY_ONCE-class steps (`adversarial`, `lens-review`) also lands here. | Read the failing dispatch's transcript via `/runs` (path in the handoff comment); retry, or take over manually. |
+| `step-failed:<step>` | A HALT-class step's dispatch failed (network / provider error / non-zero exit). For multi-workstream steps (`develop`, `lens-review`), explainCap surfaces an `(N/M workstream branches failed)` parenthetical. Retry exhausted on RETRY_ONCE-class steps (`adversarial`, `lens-review`) also lands here. PR10: `step-failed:merged` fires when ops can't actually merge (auth / branch protection / conflicts / missing required review) — recovery is to run `gh pr merge <PR-N> --squash --delete-branch` manually. | Read the failing dispatch's transcript via `/runs` (path in the handoff comment); retry, or take over manually. |
 | `explore-already-complete` | Explore concluded the issue is already done (e.g., satisfied by a prior PR). Driver halts before any branch/develop. No code was written. | `gh issue close N --comment "Verified complete by /work — see prior PR"` if you agree; or `gh issue comment N --body "Additional context: …"` + `rm .pi/work-state/N.json && pi` if you disagree. |
 | `explore-needs-clarification` | Explore couldn't determine concrete work (issue ambiguous / missing acceptance criteria). | Edit issue body via `gh issue edit N`, then `rm .pi/work-state/N.json && pi`. |
 | `adversarial-loop` | `adversarial_loop` ran its 3-round internal fix loop and could not reach APPROVED. For N>1 multi-workstream cycles, the aggregate-rejected case (any per-workstream adversarial REJECTED) also fires this cap, with per-workstream findings tagged `[workstream <id>]`. | Read the rejection findings; if phantom, merge manually; if real, take over the worktree to fix or split the work. |

@@ -32,6 +32,8 @@ import {
   parseBranchName,
   parseExploreVerdict,
   parseHandoffCommentUrl,
+  parseMergeCommit,
+  parsePerIssueVerdicts,
   parsePrNumber,
   parseWorkstreams,
   parseWorktreesBlock,
@@ -2171,6 +2173,424 @@ branch: feature/issue-553-fix
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// 35. PR10 — parsePerIssueVerdicts pure helper.
+{
+  const text = `## Verdict
+- #561: NEEDS_WORK — fresh bug
+- #562: ALREADY_COMPLETE — satisfied by PR #534
+- #563: NEEDS_CLARIFICATION — acceptance criteria missing
+`;
+  const result = parsePerIssueVerdicts(text, [561, 562, 563]);
+  assert(result.length === 3, "parsePerIssueVerdicts: returns one entry per requested issue");
+  assert(
+    result[0]?.issue === 561 && result[0]?.verdict === "NEEDS_WORK" && result[0]?.reason === "fresh bug",
+    "parsePerIssueVerdicts: #561 NEEDS_WORK + reason captured",
+  );
+  assert(
+    result[1]?.verdict === "ALREADY_COMPLETE" && result[1]?.reason.includes("PR #534"),
+    "parsePerIssueVerdicts: #562 ALREADY_COMPLETE + reason captured",
+  );
+  assert(
+    result[2]?.verdict === "NEEDS_CLARIFICATION" && result[2]?.reason.includes("acceptance criteria"),
+    "parsePerIssueVerdicts: #563 NEEDS_CLARIFICATION + reason captured",
+  );
+  // Missing per-issue line falls back to overall verdict.
+  const fallback = parsePerIssueVerdicts("VERDICT: NEEDS_WORK\n", [700, 701]);
+  assert(
+    fallback[0]?.verdict === "NEEDS_WORK" && fallback[1]?.verdict === "NEEDS_WORK",
+    "parsePerIssueVerdicts: falls back to overall VERDICT when per-issue absent",
+  );
+  // Missing per-issue + no overall → default NEEDS_WORK.
+  const defaulted = parsePerIssueVerdicts("no verdicts here at all", [800]);
+  assert(
+    defaulted[0]?.verdict === "NEEDS_WORK",
+    "parsePerIssueVerdicts: defaults to NEEDS_WORK when nothing parseable (driver proceeds rather than silently drops)",
+  );
+}
+
+// 36. PR10 — parseMergeCommit pure helper.
+{
+  assert(parseMergeCommit("merge-commit: abc1234") === "abc1234",
+    "parseMergeCommit: plain marker line captured");
+  assert(parseMergeCommit("**merge-commit:** `deadbee567`") === "deadbee567",
+    "parseMergeCommit: markdown emphasis + backticks tolerated");
+  assert(parseMergeCommit("...preamble...\nmerge-commit: 1234567890abcdef") === "1234567890abcdef",
+    "parseMergeCommit: marker line found inside multi-line reply");
+  assert(parseMergeCommit("no marker") === undefined,
+    "parseMergeCommit: missing marker → undefined");
+  assert(parseMergeCommit(undefined) === undefined,
+    "parseMergeCommit: undefined input → undefined");
+}
+
+// 37. PR10 — runMerged actually dispatches ops on the happy path; the
+// merged event captures the parsed merge-commit SHA. Empirical /work 561
+// + /work 562 case: pre-PR10 driver said MERGED ✓ while PRs sat OPEN.
+// After PR10 the dispatch fires and status flips on completion.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-merge-ok-"));
+  try {
+    const fs = await import("node:fs/promises");
+    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    let s = initialState(950, 1_000_000);
+    s = {
+      ...s,
+      pipelineState: {
+        ...s.pipelineState,
+        currentStep: "merged",
+        lastCompletedStep: "ci",
+        branchName: "feature/issue-950",
+        prNumber: 9501,
+      },
+    };
+    await writeState(dir, s);
+    const seenLabels: string[] = [];
+    const ctx: DriverContext = {
+      pi: makeFakePi().pi,
+      repoRoot: dir,
+      issue: 950,
+      dispatchFn: async (_pi, spec, opts) => {
+        seenLabels.push(opts?.label ?? spec.role);
+        if (opts?.label === "ops:merge") {
+          return mkResult({
+            role: "ops",
+            text: "PR squash-merged + branch deleted.\nmerge-commit: abc1234def\n",
+          });
+        }
+        throw new Error(`unexpected dispatch: ${spec.role} / ${opts?.label}`);
+      },
+    };
+    await runWorkDriver(ctx);
+    const after = await readState(dir, 950);
+    assert(
+      seenLabels.includes("ops:merge"),
+      "runMerged: ops:merge dispatch DID fire (was a 0ms no-op pre-PR10)",
+    );
+    assert(
+      after?.pipelineState.status === "merged",
+      "runMerged: terminal status='merged' after successful dispatch",
+    );
+    const mergedEvent = (after?.eventLog ?? []).find((e) => e.kind === "merged");
+    assert(
+      mergedEvent?.kind === "merged" && mergedEvent.mergeCommit === "abc1234def",
+      "runMerged: merged event captures parsed mergeCommit SHA",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// 38. PR10 — runMerged dispatch failure → cap-hit 'step-failed:merged' →
+// handoff. STEP_FAILURE_POLICY[merged] is HALT (was DEGRADED_OK pre-PR10),
+// so PR5's halt-cascade router intercepts when ops can't actually merge.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-merge-fail-"));
+  try {
+    const fs = await import("node:fs/promises");
+    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    let s = initialState(951, 1_000_000);
+    s = {
+      ...s,
+      pipelineState: {
+        ...s.pipelineState,
+        currentStep: "merged",
+        lastCompletedStep: "ci",
+        branchName: "feature/issue-951",
+        prNumber: 9511,
+      },
+    };
+    await writeState(dir, s);
+    const ctx: DriverContext = {
+      pi: makeFakePi().pi,
+      repoRoot: dir,
+      issue: 951,
+      dispatchFn: async (_pi, spec, opts) => {
+        if (opts?.label === "ops:merge") {
+          return mkResult({
+            role: "ops",
+            ok: false,
+            exitCode: 1,
+            text: "[pi-ensemble] killed after 600000ms timeout",
+          });
+        }
+        if (opts?.label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
+        throw new Error(`unexpected dispatch: ${spec.role} / ${opts?.label}`);
+      },
+    };
+    await runWorkDriver(ctx);
+    const after = await readState(dir, 951);
+    const capHit = (after?.eventLog ?? []).find((e) => e.kind === "cap-hit");
+    assert(
+      capHit?.kind === "cap-hit" && capHit.cap === "step-failed:merged",
+      "runMerged failure: cap='step-failed:merged' synthesised (PR5 halt-cascade router fires for HALT-class merged)",
+    );
+    assert(
+      after?.pipelineState.status === "aborted",
+      "runMerged failure: terminal status='aborted' (mid-flight failure routed through handoff)",
+    );
+    const explanation = explainCap("step-failed:merged", after!);
+    assert(
+      explanation.includes("gh pr merge") && /merge manually/i.test(explanation),
+      "explainCap step-failed:merged gives the operator a merge-manually recovery hint",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// 39. PR10 — multi-issue happy path: explore returns per-issue NEEDS_WORK
+// for all 3, activeIssues = [all 3], droppedIssues empty, plan + commit-pr
+// see the full list.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-multi-ok-"));
+  try {
+    const fs = await import("node:fs/promises");
+    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    const seenLabels: string[] = [];
+    let planPrompt = "";
+    let commitPrPrompt = "";
+    const ctx: DriverContext = {
+      pi: makeFakePi().pi,
+      repoRoot: dir,
+      issue: 961,
+      issues: [961, 962, 963],
+      dispatchFn: async (_pi, spec, opts) => {
+        seenLabels.push(opts?.label ?? spec.role);
+        if (opts?.label === "explore") {
+          return mkResult({
+            role: "explore",
+            text: `## Verdict
+- #961: NEEDS_WORK
+- #962: NEEDS_WORK
+- #963: NEEDS_WORK
+
+## Workstreams
+
+### default — fix the bugs
+- paths: src/foo.ts
+- out-of-scope: docs
+`,
+          });
+        }
+        if (opts?.label === "plan") {
+          planPrompt = spec.prompt;
+          throw new Error("halt at plan: captured prompt for assertion");
+        }
+        if (opts?.label === "ops:commit-pr") {
+          commitPrPrompt = spec.prompt;
+          throw new Error("halt at commit-pr: captured prompt for assertion");
+        }
+        if (opts?.label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
+        throw new Error(`unexpected dispatch: ${spec.role} / ${opts?.label}`);
+      },
+    };
+    await runWorkDriver(ctx).catch(() => {});
+    const after = await readState(dir, 961);
+    assert(
+      after?.pipelineState.activeIssues?.length === 3,
+      "multi-issue happy: activeIssues includes all 3 NEEDS_WORK issues",
+    );
+    assert(
+      (after?.pipelineState.droppedIssues ?? []).length === 0,
+      "multi-issue happy: droppedIssues empty",
+    );
+    assert(
+      planPrompt.includes("#961, #962, #963"),
+      "multi-issue happy: plan prompt threads all 3 issue numbers in the headline",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// 40. PR10 — multi-issue mixed verdict: NEEDS_WORK + ALREADY_COMPLETE +
+// NEEDS_CLARIFICATION → activeIssues = [needs-work only], droppedIssues
+// populated, commit-pr Fixes lines for active issues only.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-multi-mixed-"));
+  try {
+    const fs = await import("node:fs/promises");
+    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    let commitPrPrompt = "";
+    const ctx: DriverContext = {
+      pi: makeFakePi().pi,
+      repoRoot: dir,
+      issue: 970,
+      issues: [970, 971, 972],
+      dispatchFn: async (_pi, spec, opts) => {
+        if (opts?.label === "explore") {
+          return mkResult({
+            role: "explore",
+            text: `## Verdict
+- #970: NEEDS_WORK
+- #971: ALREADY_COMPLETE — satisfied by PR #534
+- #972: NEEDS_CLARIFICATION — acceptance criteria missing
+
+## Workstreams
+
+### default — fix it
+- paths: src/foo.ts
+- out-of-scope: docs
+`,
+          });
+        }
+        if (opts?.label === "ops:commit-pr") {
+          commitPrPrompt = spec.prompt;
+          throw new Error("halt at commit-pr: captured prompt for assertion");
+        }
+        if (opts?.label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
+        // Stub everything else; we only care about explore + commit-pr.
+        return mkResult({ role: spec.role, text: "stub" });
+      },
+    };
+    await runWorkDriver(ctx).catch(() => {});
+    const after = await readState(dir, 970);
+    assert(
+      JSON.stringify(after?.pipelineState.activeIssues) === JSON.stringify([970]),
+      `multi-issue mixed: activeIssues = [970] (got ${JSON.stringify(after?.pipelineState.activeIssues)})`,
+    );
+    const dropped = after?.pipelineState.droppedIssues ?? [];
+    assert(
+      dropped.length === 2,
+      "multi-issue mixed: droppedIssues contains 2 entries (971 + 972)",
+    );
+    assert(
+      dropped.find((d) => d.issue === 971)?.verdict === "ALREADY_COMPLETE",
+      "multi-issue mixed: #971 dropped as ALREADY_COMPLETE",
+    );
+    assert(
+      dropped.find((d) => d.issue === 972)?.verdict === "NEEDS_CLARIFICATION",
+      "multi-issue mixed: #972 dropped as NEEDS_CLARIFICATION",
+    );
+    if (commitPrPrompt) {
+      assert(
+        commitPrPrompt.includes("Fixes #970") && !commitPrPrompt.includes("Fixes #971"),
+        "multi-issue mixed: commit-pr prompt has Fixes for active only (not for dropped 971)",
+      );
+      assert(
+        commitPrPrompt.includes("Companion to #971"),
+        "multi-issue mixed: commit-pr prompt mentions dropped #971 as Companion-to (PR body context)",
+      );
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// 41. PR10 — multi-issue all-dropped: every issue ALREADY_COMPLETE →
+// activeIssues = [], aggregate cap-hit 'explore-already-complete' →
+// handoff (existing PR6 routing). Empirical /work 533 path generalised.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-multi-all-done-"));
+  try {
+    const fs = await import("node:fs/promises");
+    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    const seenLabels: string[] = [];
+    const ctx: DriverContext = {
+      pi: makeFakePi().pi,
+      repoRoot: dir,
+      issue: 980,
+      issues: [980, 981],
+      dispatchFn: async (_pi, spec, opts) => {
+        seenLabels.push(opts?.label ?? spec.role);
+        if (opts?.label === "explore") {
+          return mkResult({
+            role: "explore",
+            text: `## Verdict
+- #980: ALREADY_COMPLETE — merged via PR #100
+- #981: ALREADY_COMPLETE — merged via PR #101
+`,
+          });
+        }
+        if (opts?.label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
+        throw new Error(`unexpected dispatch: ${spec.role} / ${opts?.label}`);
+      },
+    };
+    await runWorkDriver(ctx);
+    const after = await readState(dir, 980);
+    const capHit = (after?.eventLog ?? []).find((e) => e.kind === "cap-hit");
+    assert(
+      capHit?.kind === "cap-hit" && capHit.cap === "explore-already-complete",
+      "multi-issue all-dropped: cap='explore-already-complete' (aggregate)",
+    );
+    assert(
+      after?.pipelineState.activeIssues?.length === 0,
+      "multi-issue all-dropped: activeIssues = [] (all filtered)",
+    );
+    // No plan / branch / develop dispatches when all issues dropped.
+    const cascadeLabels = seenLabels.filter((l) =>
+      l === "plan" || l === "developer" || l.startsWith("developer["),
+    );
+    assert(
+      cascadeLabels.length === 0,
+      `multi-issue all-dropped: NO plan/develop dispatch (got: ${cascadeLabels.join(",") || "none"})`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// 42. PR10 — renderHandoffUserMessage surfaces per-issue verdicts for
+// multi-issue cycles.
+{
+  let s = initialState(970, 1_000_000);
+  s = {
+    ...s,
+    issues: [970, 971, 972],
+    pipelineState: {
+      ...s.pipelineState,
+      currentStep: "handoff",
+      status: "handoff",
+      branchName: "feature/issues-970-971-972",
+      activeIssues: [970],
+      droppedIssues: [
+        { issue: 971, verdict: "ALREADY_COMPLETE", reason: "satisfied by PR #534" },
+        { issue: 972, verdict: "NEEDS_CLARIFICATION", reason: "acceptance criteria missing" },
+      ],
+    },
+  };
+  s = appendEvent(s, {
+    kind: "cap-hit",
+    at: 1_000_400,
+    cap: "explore-already-complete",
+    reviewRound: 0,
+    nextStep: "handoff",
+  });
+  s = appendEvent(s, {
+    kind: "handoff-emitted",
+    at: 1_000_500,
+    commentUrl: "https://github.com/x/y/issues/970#c1",
+    labelApplied: true,
+    handoffBodyPath: "/tmp/issue-970/handoff-comment.md",
+  });
+  const msg = renderHandoffUserMessage(s, "/repo/proj", "/repo/proj/tmp/issue-970");
+  assert(
+    msg.includes("issues #970, #971, #972"),
+    "renderHandoffUserMessage multi-issue: header lists all 3 issues",
+  );
+  assert(
+    msg.includes("#970: NEEDS_WORK (active in this PR)"),
+    "renderHandoffUserMessage multi-issue: #970 listed as active",
+  );
+  assert(
+    msg.includes("#971: ALREADY_COMPLETE — satisfied by PR #534"),
+    "renderHandoffUserMessage multi-issue: #971 with verdict + reason surfaced",
+  );
+  assert(
+    msg.includes("#972: NEEDS_CLARIFICATION"),
+    "renderHandoffUserMessage multi-issue: #972 NEEDS_CLARIFICATION surfaced",
+  );
+
+  const md = renderHandoffMarkdown(s);
+  assert(
+    md.includes("`#970`, `#971`, `#972`"),
+    "renderHandoffMarkdown multi-issue: header lists all 3 issues in code spans",
+  );
+  assert(
+    md.includes("### Issues in this cycle"),
+    "renderHandoffMarkdown multi-issue: 'Issues in this cycle' section emitted",
+  );
 }
 
 console.log(`\nexit ${exit}`);

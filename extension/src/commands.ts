@@ -145,16 +145,23 @@ export function registerCommands(pi: ExtensionAPI) {
         // so the user can interact with the chat while it works. Other
         // commands stay on the legacy sendUserMessage(prompt-body) path.
         if (name === "work" && isWorkDriverEnabled()) {
-          const issueArg = args.trim().split(/\s+/)[0] ?? "";
-          const issue = Number.parseInt(issueArg, 10);
-          if (!issueArg || !Number.isFinite(issue) || issue <= 0) {
+          // PR10: parse N issue tokens — `/work 547` (single) or
+          // `/work 561 562 563` (multi-issue bundle into one PR).
+          // First number anchors the state file path + feature branch
+          // name; the full list flows through plan/develop/commit-pr.
+          const tokens = args.trim().split(/\s+/).filter(Boolean);
+          const issues = tokens
+            .map((t) => Number.parseInt(t, 10))
+            .filter((n) => Number.isFinite(n) && n > 0);
+          if (issues.length === 0 || issues[0] === undefined) {
             ctx.ui.notify(
-              "pi-ensemble: /work needs an issue number (e.g., /work 547). " +
+              "pi-ensemble: /work needs at least one issue number (e.g., /work 547, or /work 561 562 to bundle). " +
                 "Set PI_ENSEMBLE_WORK_DRIVER=0 to use the legacy PM-driven flow.",
               "warning",
             );
             return;
           }
+          const issue = issues[0];
           if (!ctx.isIdle()) {
             ctx.ui.notify(
               "pi-ensemble: agent is busy — try /work again when idle, or use /steer for an inline nudge",
@@ -164,13 +171,15 @@ export function registerCommands(pi: ExtensionAPI) {
           }
           const cwd = process.cwd();
           const repoRoot = await resolveRepoRoot(cwd);
-          trace(`/work → driver loop for issue #${issue} (repoRoot=${repoRoot})`);
+          const issueListMsg =
+            issues.length > 1 ? `issues #${issues.join(", #")}` : `issue #${issue}`;
+          trace(`/work → driver loop for ${issueListMsg} (repoRoot=${repoRoot})`);
           // PM stays in reporter mode so user-visible progress messages
           // emitted by the driver via sendUserMessage land cleanly.
           pmDoctrineFirstTurnPending = true;
           pmModeActive = true;
           ctx.ui.notify(
-            `pi-ensemble: /work driver running for issue #${issue}. ` +
+            `pi-ensemble: /work driver running for ${issueListMsg}. ` +
               `State in .pi/work-state/${issue}.json. Set PI_ENSEMBLE_WORK_DRIVER=0 to use legacy PM flow.`,
             "info",
           );
@@ -178,11 +187,11 @@ export function registerCommands(pi: ExtensionAPI) {
           // and surfaces final outcome via pi.sendUserMessage. We catch
           // unexpected throws so the background promise doesn't trip
           // Node's unhandled-rejection warning.
-          void runWorkDriver({ pi, repoRoot, issue }).catch((err) => {
-            trace(`work-driver: unexpected throw for issue #${issue}: ${(err as Error).message}`);
+          void runWorkDriver({ pi, repoRoot, issue, issues }).catch((err) => {
+            trace(`work-driver: unexpected throw for ${issueListMsg}: ${(err as Error).message}`);
             try {
               pi.sendUserMessage(
-                `pi-ensemble: /work driver crashed for issue #${issue}: ${(err as Error).message}. ` +
+                `pi-ensemble: /work driver crashed for ${issueListMsg}: ${(err as Error).message}. ` +
                   `Inspect .pi/work-state/${issue}.json or run with PI_ENSEMBLE_WORK_DRIVER=0 to use the legacy flow.`,
               );
             } catch {

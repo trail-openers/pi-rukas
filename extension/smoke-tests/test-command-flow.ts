@@ -216,6 +216,30 @@ assert(
   }
 }
 
+// PR10 — /work N M P (multi-issue) should accept all tokens and the
+// notify mentions all of them.
+{
+  const prevFlag = process.env.PI_ENSEMBLE_WORK_DRIVER;
+  delete process.env.PI_ENSEMBLE_WORK_DRIVER;
+  try {
+    const { ctx: ctxMulti, notifies: notifMulti } = makeCtx();
+    await handlers.work!("561 562 563", ctxMulti);
+    assert(
+      rec.sentMessages.length === 3,
+      "/work 561 562 563 (driver default-ON): does NOT call sendUserMessage (driver runs in background)",
+    );
+    assert(
+      notifMulti.some((n) =>
+        n.kind === "info" && /issues #561, #562, #563/.test(n.msg) && /work-state\/561\.json/.test(n.msg),
+      ),
+      "/work 561 562 563: info notify names all 3 issues + primary state-file path",
+    );
+  } finally {
+    if (prevFlag === undefined) delete process.env.PI_ENSEMBLE_WORK_DRIVER;
+    else process.env.PI_ENSEMBLE_WORK_DRIVER = prevFlag;
+  }
+}
+
 // Fire before_agent_start with doctrine armed (set by the most recent /work call)
 const hook = rec.beforeAgentStartHandlers[0]!;
 const result1 = (await hook({ systemPrompt: "PI_BASE_PROMPT" })) as

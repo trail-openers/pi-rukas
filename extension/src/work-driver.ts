@@ -210,8 +210,14 @@ export const STEP_FAILURE_POLICY: Record<WorkStep, StepFailurePolicy> = {
   // Must never halt the loop — IS the loop terminator. PR5 hardens
   // handoff itself via in-process gh fallback (see runHandoff).
   handoff: "DEGRADED_OK",
-  // Pure state mutation, cannot fail.
-  merged: "DEGRADED_OK",
+  // PR10: was DEGRADED_OK while runMerged was a 0ms state mutation; now
+  // it actually dispatches ops to run `gh pr merge`, which CAN fail
+  // (auth, branch protection, conflicts). Silently flipping status to
+  // 'merged' on dispatch failure would be exactly the bug PR10 fixes
+  // (the empirical /work 561/562 case: driver reported MERGED ✓ while
+  // PRs sat OPEN on GitHub). HALT routes the failure through cap-hit
+  // 'step-failed:merged' → handoff so the operator merges manually.
+  merged: "HALT",
 };
 
 /**
@@ -241,6 +247,22 @@ export const STEP_FAILURE_POLICY: Record<WorkStep, StepFailurePolicy> = {
  */
 export function scratchDir(repoRoot: string, issue: number): string {
   return path.join(repoRoot, "tmp", `issue-${issue}`);
+}
+
+/**
+ * PR10 — Resolve the active-issue list for downstream steps.
+ *
+ * Precedence: `pipelineState.activeIssues` (the NEEDS_WORK subset
+ * populated by runExplore for multi-issue cycles) → `WorkState.issues`
+ * (all issues passed to /work, populated by commands.ts) →
+ * `[WorkState.issue]` (legacy single-issue path; back-compat with
+ * pre-PR10 state files where neither array existed).
+ *
+ * Every step body that needs to know "which issues are we working on
+ * right now" should call this, NOT read `state.issue` directly.
+ */
+export function activeIssuesOf(state: WorkState): number[] {
+  return state.pipelineState.activeIssues ?? state.issues ?? [state.issue];
 }
 
 /**
@@ -306,8 +328,12 @@ export interface DriverContext {
   pi: ExtensionAPI;
   /** Project root (NOT a worktree). State file lives here. */
   repoRoot: string;
-  /** Issue number being worked. */
+  /** Primary issue number — anchors state file path + branch name. For
+   * multi-issue cycles this is `issues[0]`. */
   issue: number;
+  /** PR10 — full list of issue numbers passed to /work. Optional for
+   * back-compat; absent means single-issue (driver treats as [issue]). */
+  issues?: number[];
   /**
    * Optional injection point for tests: replace dispatchCore with a fake.
    * Production callers omit this — the default is the real dispatchCore.
@@ -475,49 +501,67 @@ async function runExplore(ctx: DriverContext, state: WorkState, now: number): Pr
     { kind: "step-started", step: "explore", at: now },
   );
 
+  // PR10 — multi-issue: fetch + present all N issue bodies. For N=1
+  // this collapses to the existing single-issue shape.
+  const issues = ctx.issues ?? state.issues ?? [ctx.issue];
   const dispatch = ctx.dispatchFn ?? dispatchCore;
-  const prompt = inlineExplorePrompt(ctx.issue, scratchDir(ctx.repoRoot, ctx.issue));
+  const prompt = inlineExplorePrompt(issues, scratchDir(ctx.repoRoot, ctx.issue));
   const startedAt = Date.now();
 
-  // PR3 Pattern 1 (intra-step fanout): the driver runs `gh issue view N`
-  // itself concurrently with the explore dispatch. Previously the explore
-  // prompt began with "Run gh issue view N first and report verbatim" —
-  // serialising the two streams inside one subagent turn. With this
-  // change both run in parallel: driver caches the issue body to a
-  // claim-check artifact (so Step 2 plan and others can reference it
-  // without re-fetching), explore does its semantic search work
-  // simultaneously. Old /work.md Step 1 doctrine restored.
-  const [issueBodyResult, dispatchResult] = await Promise.allSettled([
-    execp(`gh issue view ${ctx.issue}`, { cwd: ctx.repoRoot, maxBuffer: 256 * 1024 }),
-    (async () => dispatch(ctx.pi, { role: "explore", prompt }, { label: "explore" }))(),
+  // PR3 Pattern 1 (intra-step fanout): driver fetches issue bodies in
+  // parallel with the explore dispatch. PR10 extends to N issues —
+  // Promise.allSettled over `gh issue view <N>` for each, then persist
+  // each body as its own claim-check artifact at
+  // `.pi/work-state/<primary>/issue-body-<N>.txt`.
+  const dispatchPromise = (async () =>
+    dispatch(ctx.pi, { role: "explore", prompt }, { label: "explore" }))();
+  const bodyPromises = issues.map((n) =>
+    execp(`gh issue view ${n}`, { cwd: ctx.repoRoot, maxBuffer: 256 * 1024 }),
+  );
+  const [dispatchSettled, ...bodySettled] = await Promise.allSettled([
+    dispatchPromise,
+    ...bodyPromises,
   ]);
 
-  // Persist the issue body as a claim-check artifact (best-effort). On
-  // failure (gh not on PATH, no auth, network) the prompt the explore
-  // subagent received still asks it for context, so the cycle can
-  // continue — Step 2 just won't have the cached body to reference.
-  if (issueBodyResult.status === "fulfilled") {
-    const body = issueBodyResult.value.stdout;
-    try {
-      const artifactPath = await writeDispatchArtifact(ctx.repoRoot, ctx.issue, "issue-body", body);
-      next = {
-        ...next,
-        pipelineState: { ...next.pipelineState, issueBodyArtifact: artifactPath },
-      };
-    } catch (err) {
-      trace(`work-driver: failed to persist issue-body artifact: ${(err as Error).message}`);
+  // Persist each issue body as a claim-check artifact (best-effort).
+  // For single-issue cycles, the first body is stored under the legacy
+  // "issue-body" name so back-compat readers still find it; additional
+  // bodies use "issue-body-<N>" naming.
+  for (let i = 0; i < issues.length; i++) {
+    const n = issues[i];
+    if (n === undefined) continue;
+    const result = bodySettled[i];
+    if (result?.status === "fulfilled") {
+      const body = result.value.stdout;
+      try {
+        const artifactName = issues.length === 1 ? "issue-body" : `issue-body-${n}`;
+        const artifactPath = await writeDispatchArtifact(
+          ctx.repoRoot,
+          ctx.issue,
+          artifactName,
+          body,
+        );
+        // Only set issueBodyArtifact for the PRIMARY issue (back-compat
+        // path readers look for `state.pipelineState.issueBodyArtifact`).
+        if (n === ctx.issue) {
+          next = {
+            ...next,
+            pipelineState: { ...next.pipelineState, issueBodyArtifact: artifactPath },
+          };
+        }
+      } catch (err) {
+        trace(
+          `work-driver: failed to persist issue-body artifact for #${n}: ${(err as Error).message}`,
+        );
+      }
+    } else if (result?.status === "rejected") {
+      trace(
+        `work-driver: gh issue view ${n} failed: ${(result.reason as Error).message?.slice(0, 200)}`,
+      );
     }
-  } else {
-    trace(
-      `work-driver: gh issue view ${ctx.issue} failed: ${(issueBodyResult.reason as Error).message?.slice(0, 200)}`,
-    );
   }
 
-  if (dispatchResult.status === "rejected") {
-    // Spawn-level failure on the explore dispatch (transport error
-    // before any DispatchResult). The gh-side outcome is captured
-    // already above; explore failure halts the cycle via the existing
-    // dispatch-failed → aborted path.
+  if (dispatchSettled?.status === "rejected") {
     return appendEvent(next, {
       kind: "dispatch-failed",
       step: "explore",
@@ -526,43 +570,89 @@ async function runExplore(ctx: DriverContext, state: WorkState, now: number): Pr
       label: "explore",
       ms: Date.now() - startedAt,
       at: Date.now(),
-      errorTail: (dispatchResult.reason as Error).message?.slice(-200),
+      errorTail: (dispatchSettled.reason as Error).message?.slice(-200),
+    });
+  }
+  if (!dispatchSettled || dispatchSettled.status !== "fulfilled") {
+    // Defensive — Promise.allSettled returns either fulfilled or rejected;
+    // this branch unreachable. Synthesise a dispatch-failed so the driver
+    // can route normally.
+    return appendEvent(next, {
+      kind: "dispatch-failed",
+      step: "explore",
+      role: "explore",
+      jobId: "unknown",
+      label: "explore",
+      ms: Date.now() - startedAt,
+      at: Date.now(),
+      errorTail: "explore dispatch settled in an unexpected state",
     });
   }
 
-  const event = await buildCompletionEvent(
-    ctx,
-    "explore",
-    "explore",
-    "explore",
-    dispatchResult.value,
-  );
+  // dispatchSettled.value is the explore role's dispatch result
+  // (single-dispatch — explore returns one report covering all issues).
+  const exploreDispatch = dispatchSettled.value as DispatchResult;
+  const event = await buildCompletionEvent(ctx, "explore", "explore", "explore", exploreDispatch);
   next = appendEvent(next, event);
 
-  // PR6 — verdict router. Explore's structured `## Verdict` decides
-  // whether the cycle proceeds (NEEDS_WORK) or halts immediately
-  // (ALREADY_COMPLETE / NEEDS_CLARIFICATION). The #533 cascade
-  // happened because explore correctly identified ALREADY_COMPLETED
-  // in prose but the driver had no parseable signal to route on; it
-  // ran every step to lens-fix before the user killed it. Null
-  // verdict (agent ignored the prompt) falls through to NEEDS_WORK
-  // — same shape as today, no contract break.
-  const verdict = parseExploreVerdict(dispatchResult.value.text ?? "");
-  if (verdict) {
-    next = {
-      ...next,
-      pipelineState: { ...next.pipelineState, exploreVerdict: verdict },
-    };
+  // PR6 + PR10 — verdict router. For N=1, the existing
+  // parseExploreVerdict path is unchanged. For N>1, parse per-issue
+  // verdicts and split into activeIssues (NEEDS_WORK) + droppedIssues
+  // (ALREADY_COMPLETE / NEEDS_CLARIFICATION). If ALL issues are
+  // dropped, synthesise an aggregate cap-hit (PR6 path); otherwise
+  // continue with the activeIssues subset.
+  const responseText = exploreDispatch.text ?? "";
+  if (issues.length === 1) {
+    const verdict = parseExploreVerdict(responseText);
+    if (verdict) {
+      next = {
+        ...next,
+        pipelineState: { ...next.pipelineState, exploreVerdict: verdict },
+      };
+    }
+    if (verdict === "ALREADY_COMPLETE" || verdict === "NEEDS_CLARIFICATION") {
+      const cap =
+        verdict === "ALREADY_COMPLETE" ? "explore-already-complete" : "explore-needs-clarification";
+      next = appendEvent(next, {
+        kind: "cap-hit",
+        at: Date.now(),
+        cap,
+        reviewRound: next.pipelineState.reviewRound,
+        nextStep: "handoff",
+      });
+    }
+    return next;
   }
-  if (verdict === "ALREADY_COMPLETE" || verdict === "NEEDS_CLARIFICATION") {
+
+  // N>1 path — per-issue verdicts.
+  const perIssue = parsePerIssueVerdicts(responseText, issues);
+  const activeIssues = perIssue.filter((p) => p.verdict === "NEEDS_WORK").map((p) => p.issue);
+  const droppedIssues = perIssue.filter((p) => p.verdict !== "NEEDS_WORK");
+  // Aggregate verdict for back-compat surfacing: NEEDS_WORK if any
+  // active; else ALREADY_COMPLETE if every dropped is already-complete;
+  // else NEEDS_CLARIFICATION.
+  const aggregateVerdict: ExploreVerdict =
+    activeIssues.length > 0
+      ? "NEEDS_WORK"
+      : droppedIssues.every((d) => d.verdict === "ALREADY_COMPLETE")
+        ? "ALREADY_COMPLETE"
+        : "NEEDS_CLARIFICATION";
+  next = {
+    ...next,
+    pipelineState: {
+      ...next.pipelineState,
+      exploreVerdict: aggregateVerdict,
+      activeIssues,
+      droppedIssues,
+    },
+  };
+  if (activeIssues.length === 0) {
+    // Every issue dropped → handoff with the aggregate cap. Existing
+    // PR6 routing handles both cap shapes through nextStep().
     const cap =
-      verdict === "ALREADY_COMPLETE" ? "explore-already-complete" : "explore-needs-clarification";
-    // Synthesise the cap-hit but leave currentStep='explore'. The driver
-    // loop's nextStep() reads the tail cap-hit, returns 'handoff', and
-    // the next iteration runs runHandoff. Setting currentStep='handoff'
-    // here would trip nextStep's terminal short-circuit (line 329) and
-    // exit the loop BEFORE runHandoff fires — same hazard PR5's
-    // halt-cascade router avoids by `continue`ing.
+      aggregateVerdict === "ALREADY_COMPLETE"
+        ? "explore-already-complete"
+        : "explore-needs-clarification";
     next = appendEvent(next, {
       kind: "cap-hit",
       at: Date.now(),
@@ -606,7 +696,7 @@ async function runPlan(ctx: DriverContext, state: WorkState, now: number): Promi
   );
   const dispatch = ctx.dispatchFn ?? dispatchCore;
   const startedAt = Date.now();
-  const prompt = inlinePlanPrompt(ctx.issue, scratchDir(ctx.repoRoot, ctx.issue));
+  const prompt = inlinePlanPrompt(activeIssuesOf(state), scratchDir(ctx.repoRoot, ctx.issue));
   let result: DispatchResult;
   try {
     result = await dispatch(ctx.pi, { role: "explore", prompt }, { label: "plan" });
@@ -664,6 +754,49 @@ export function parseExploreVerdict(text: string): ExploreVerdict | null {
   const m = text.match(/VERDICT:\s*\**\s*(NEEDS_WORK|ALREADY_COMPLETE|NEEDS_CLARIFICATION)\b/i);
   const tok = m?.[1];
   return tok ? (tok.toUpperCase() as ExploreVerdict) : null;
+}
+
+/**
+ * PR10 — Multi-issue counterpart to parseExploreVerdict.
+ *
+ * For `/work N M P`, explore returns a per-issue verdict block like:
+ *
+ *   ## Verdict
+ *   - #561: NEEDS_WORK
+ *   - #562: ALREADY_COMPLETE — satisfied by PR #534
+ *   - #563: NEEDS_WORK
+ *
+ * Parses one verdict per requested issue number. The `reason` string
+ * captures the trailing prose after `—`/`-` (handoff renderers surface
+ * it). When explore omitted a per-issue line for an issue, fall back
+ * to the overall verdict via parseExploreVerdict; if even that is
+ * absent, default to NEEDS_WORK so the driver proceeds rather than
+ * silently dropping the issue.
+ */
+export function parsePerIssueVerdicts(
+  text: string,
+  issues: number[],
+): Array<{ issue: number; verdict: ExploreVerdict; reason: string }> {
+  const overall = parseExploreVerdict(text);
+  return issues.map((n) => {
+    const re = new RegExp(
+      `#${n}\\s*:\\s*\\**\\s*(NEEDS_WORK|ALREADY_COMPLETE|NEEDS_CLARIFICATION)\\b\\**\\s*[—\\-]?\\s*(.*)`,
+      "i",
+    );
+    const m = text.match(re);
+    const tok = m?.[1];
+    if (tok) {
+      const reason = (m?.[2] ?? "").trim();
+      return { issue: n, verdict: tok.toUpperCase() as ExploreVerdict, reason };
+    }
+    return {
+      issue: n,
+      verdict: (overall ?? "NEEDS_WORK") as ExploreVerdict,
+      reason: overall
+        ? "(no per-issue verdict; using overall)"
+        : "(no verdict; defaulting to NEEDS_WORK)",
+    };
+  });
 }
 
 /**
@@ -776,7 +909,7 @@ function extractListField(body: string, keyPattern: string): string[] {
 async function runBranch(ctx: DriverContext, state: WorkState, now: number): Promise<WorkState> {
   const workstreamIds = Object.keys(state.pipelineState.workstreams ?? {});
   const next = await runSingleDispatch(ctx, state, "branch", "ops", "ops", now, () =>
-    inlineBranchPrompt(ctx.issue, workstreamIds, scratchDir(ctx.repoRoot, ctx.issue)),
+    inlineBranchPrompt(activeIssuesOf(state), workstreamIds, scratchDir(ctx.repoRoot, ctx.issue)),
   );
   const last = next.eventLog[next.eventLog.length - 1];
   if (last?.kind !== "dispatch-completed") return next;
@@ -1236,7 +1369,11 @@ async function runAdversarial(
  */
 async function runCommitPr(ctx: DriverContext, state: WorkState, now: number): Promise<WorkState> {
   const next = await runSingleDispatch(ctx, state, "commit-pr", "ops", "ops:commit-pr", now, () =>
-    inlineCommitPrPrompt(ctx.issue, scratchDir(ctx.repoRoot, ctx.issue)),
+    inlineCommitPrPrompt(
+      activeIssuesOf(state),
+      state.pipelineState.droppedIssues ?? [],
+      scratchDir(ctx.repoRoot, ctx.issue),
+    ),
   );
   const last = next.eventLog[next.eventLog.length - 1];
   if (last?.kind !== "dispatch-completed") return next;
@@ -1853,12 +1990,16 @@ export function renderHandoffMarkdown(state: WorkState): string {
   const capForExplain = capHit?.kind === "cap-hit" ? capHit.cap : ("adversarial-loop" as const);
   const explain = explainCap(capForExplain, state);
 
+  // PR10 — multi-issue header + per-issue verdict block.
+  const allIssues = state.issues ?? [issue];
+  const issuesHeader = allIssues.length === 1 ? `\`#${issue}\`` : `\`#${allIssues.join("`, `#")}\``;
   const lines: string[] = [
     "## ⏸ Cap hit — needs human attention",
     "",
     `**Cap**: ${capDescription}`,
     `**Rounds**: ${reviewRound} of 3 review rounds`,
     `**Branch**: \`${branch}\``,
+    `**Issues**: ${issuesHeader}`,
     `**State file**: \`.pi/work-state/${issue}.json\``,
     "",
     "### What this cap means",
@@ -1869,6 +2010,20 @@ export function renderHandoffMarkdown(state: WorkState): string {
     ...stepDurations.map((s) => s),
     "",
   ];
+  if (allIssues.length > 1) {
+    const active = ps.activeIssues ?? allIssues;
+    const dropped = ps.droppedIssues ?? [];
+    lines.push("### Issues in this cycle", "");
+    for (const n of allIssues) {
+      if (active.includes(n)) {
+        lines.push(`- **#${n}** — NEEDS_WORK (active in this PR)`);
+      } else {
+        const d = dropped.find((x) => x.issue === n);
+        lines.push(`- #${n} — ${d?.verdict ?? "UNKNOWN"}${d?.reason ? ` (${d.reason})` : ""}`);
+      }
+    }
+    lines.push("");
+  }
 
   // PR5: Worktree state at handoff (from handoffSnapshot).
   if (ps.handoffSnapshot) {
@@ -2141,10 +2296,15 @@ export function explainCap(
         return "the lens-fix step dispatch failed mid-fix — re-running adversarial on a partial fix is not meaningful";
       case "ci":
         return "the CI monitoring step dispatch failed — cannot mark a cycle merged without confirming CI passed";
+      case "merged":
+        // PR10 — merged step is now HALT (was DEGRADED_OK pre-PR10
+        // when runMerged was a 0ms state mutation). The actual
+        // `gh pr merge` invocation in ops can fail on auth, branch
+        // protection, conflicts, or a missing required review.
+        return "the merge step dispatch failed — the PR was approved and CI passed, but `gh pr merge` did not succeed (auth / branch protection / conflicts / missing required review). Merge manually via `gh pr merge <PR-N> --squash --delete-branch` or per project policy";
       case "step-back":
       case "handoff":
-      case "merged":
-        // These are DEGRADED_OK in STEP_FAILURE_POLICY and should never
+        // These remain DEGRADED_OK in STEP_FAILURE_POLICY and should never
         // produce a step-failed:<step> cap. Render generic if it ever happens.
         return `step "${step}" failed unexpectedly — see state-file event log`;
     }
@@ -2220,9 +2380,16 @@ export function renderHandoffUserMessage(
     );
   }
 
+  // PR10 — multi-issue: surface all requested + active + dropped issues.
+  // For single-issue cycles the header collapses to the original
+  // `issue #N` shape; multi-issue cycles get a richer header + extra
+  // section listing the per-issue verdicts and reasons.
+  const allIssues = state.issues ?? [issue];
+  const headerIssues =
+    allIssues.length === 1 ? `issue #${issue}` : `issues #${allIssues.join(", #")}`;
   // 2. Standard handoff sections.
   lines.push(
-    `pi-ensemble /work for issue #${issue} — HANDOFF (needs human attention)`,
+    `pi-ensemble /work for ${headerIssues} — HANDOFF (needs human attention)`,
     "",
     `Why: ${why}`,
     `Last step: ${ps.lastCompletedStep ?? ps.currentStep}${ps.reviewRound > 0 ? ` · review round ${ps.reviewRound}/${MAX_REVIEW_ROUNDS}` : ""}`,
@@ -2233,6 +2400,22 @@ export function renderHandoffUserMessage(
     `  ${prTag}`,
     `  ${fileCount} file(s) modified${snap && snap.stagedCount > 0 ? ` (${snap.stagedCount} staged, ${snap.unstagedCount} unstaged)` : ""}`,
   );
+  // PR10 — per-issue verdict surface for multi-issue cycles. Shows
+  // active (NEEDS_WORK) + dropped (ALREADY_COMPLETE / NEEDS_CLARIFICATION)
+  // with the per-issue reason explore provided.
+  if (allIssues.length > 1) {
+    const active = ps.activeIssues ?? allIssues;
+    const dropped = ps.droppedIssues ?? [];
+    lines.push("", "Issues in this cycle:");
+    for (const n of allIssues) {
+      if (active.includes(n)) {
+        lines.push(`  #${n}: NEEDS_WORK (active in this PR)`);
+      } else {
+        const d = dropped.find((x) => x.issue === n);
+        lines.push(`  #${n}: ${d?.verdict ?? "UNKNOWN"}${d?.reason ? ` — ${d.reason}` : ""}`);
+      }
+    }
+  }
   if (snap && snap.modifiedFiles.length > 0) {
     const shown = snap.modifiedFiles.slice(0, 5);
     lines.push(
@@ -2328,19 +2511,55 @@ export function renderHandoffUserMessage(
 }
 
 /**
- * Step 9 — Merged terminal state. Stores learnings via vipune as a
- * @ops dispatch in the full impl; for v1 skeleton just flips status.
+ * PR10 — Parse a `merge-commit: <sha>` marker line from ops's merge reply.
+ * Lenient: accepts surrounding markdown (`**merge-commit:**`), backticks,
+ * and the 7+ hex-char SHA shape `gh pr merge` prints. Returns undefined
+ * when no marker is present (the merge still succeeded; we just lost the
+ * SHA for the merged event payload).
+ */
+export function parseMergeCommit(text: string | undefined): string | undefined {
+  if (!text) return undefined;
+  // Lenient: anchor on `merge-commit`, then allow ANY non-hex characters
+  // (markdown emphasis, colons, backticks, whitespace) up to the SHA.
+  // The SHA itself is the only required structural element. Per-line
+  // (multiline mode) so a multi-line ops reply can have the marker
+  // anywhere on its own line.
+  const m = text.match(/^[ \t]*[*_`]*\s*merge-commit\b[^0-9a-f\n]*([0-9a-f]{7,40})[^0-9a-f\n]*$/im);
+  return m?.[1];
+}
+
+/**
+ * Step 9 — Merge the PR. PR10: was a 0ms state mutation pre-fix; now
+ * actually dispatches ops to run `gh pr merge` per project policy.
+ *
+ * Empirical bug fixed: pre-PR10 the driver reported "MERGED ✓" while
+ * the GitHub PR sat OPEN (live evidence /work 561 + /work 562 on
+ * lantern). The doctrine in pi-prompts/work.md:277 ("On green CI +
+ * APPROVED review: merge per project merge policy") declared the
+ * intent; nothing executed it. runMerged now closes that gap.
+ *
+ * On dispatch failure: STEP_FAILURE_POLICY[merged] is HALT (changed
+ * from DEGRADED_OK), so the post-step dispatch-failed router (PR5)
+ * intercepts → cap-hit 'step-failed:merged' → handoff. Operator
+ * merges manually with the recovery command in the handoff body.
+ *
+ * On dispatch success: capture the merge-commit SHA (if ops emits the
+ * marker line); flip status='merged'.
  */
 async function runMerged(ctx: DriverContext, state: WorkState, now: number): Promise<WorkState> {
-  // Resolve PR number from prior events if not already on pipelineState.
   const prNumber = state.pipelineState.prNumber ?? 0;
-  return appendEvent(
-    {
-      ...state,
-      pipelineState: { ...state.pipelineState, currentStep: "merged", status: "merged" },
-    },
-    { kind: "merged", at: now, prNumber },
+  const issues = activeIssuesOf(state);
+  const next = await runSingleDispatch(ctx, state, "merged", "ops", "ops:merge", now, () =>
+    inlineMergePrompt(issues, prNumber, scratchDir(ctx.repoRoot, state.issue)),
   );
+  const last = next.eventLog[next.eventLog.length - 1];
+  if (last?.kind !== "dispatch-completed") return next;
+  const mergeCommit = parseMergeCommit(last.summary);
+  return {
+    ...next,
+    pipelineState: { ...next.pipelineState, currentStep: "merged", status: "merged" },
+    eventLog: [...next.eventLog, { kind: "merged", at: Date.now(), prNumber, mergeCommit }],
+  };
 }
 
 /**
@@ -2517,25 +2736,46 @@ function scratchHygieneSection(scratchDirAbs: string): string {
  * context-gathering. Old `## Issue` heading dropped from the return
  * shape since the driver already has the body cached.
  */
-function inlineExplorePrompt(issue: number, scratchDirAbs: string): string {
+function inlineExplorePrompt(issues: number[], scratchDirAbs: string): string {
+  const headline = issues.length === 1 ? `issue #${issues[0]}` : `issues #${issues.join(", #")}`;
+  const verdictBlock =
+    issues.length === 1
+      ? [
+          "  - a verdict (heading: `## Verdict`), one line, EXACTLY one of:",
+          "      `VERDICT: NEEDS_WORK`           — issue is open and has real work to do",
+          "      `VERDICT: ALREADY_COMPLETE`     — issue is closed, merged, or already satisfied by a prior PR",
+          "      `VERDICT: NEEDS_CLARIFICATION`  — issue is ambiguous, contradictory, or missing acceptance criteria",
+        ]
+      : [
+          "  - a per-issue verdict block (heading: `## Verdict`), ONE line per issue with EXACTLY one verdict and an optional reason after `—`:",
+          "      ```",
+          "      ## Verdict",
+          ...issues.map(
+            (n) =>
+              `      - #${n}: NEEDS_WORK | ALREADY_COMPLETE | NEEDS_CLARIFICATION  — <optional one-line reason>`,
+          ),
+          "      ```",
+          "    The driver parses each line and routes per-issue. NEEDS_WORK issues proceed into plan/branch/develop; ALREADY_COMPLETE / NEEDS_CLARIFICATION are dropped (surfaced in the PR body + handoff). If EVERY issue is dropped, the cycle halts at handoff before any code is written.",
+        ];
+  const verdictDoctrine =
+    issues.length === 1
+      ? "The `## Verdict` block is LOAD-BEARING. If you conclude the issue is already done (e.g., a prior PR addressed it), say `VERDICT: ALREADY_COMPLETE` even if the issue is still technically open in the tracker — the driver routes on your verdict, not on the issue's status. On ALREADY_COMPLETE or NEEDS_CLARIFICATION the driver halts immediately and hands off to the operator; no plan/branch/develop will run."
+      : "The `## Verdict` block is LOAD-BEARING per issue. Mark each issue with the verdict you'd give if it were the only one in scope; the driver merges the active subset and runs ONE bundled PR with `Fixes #N` for each active issue.";
   return [
-    `/work issue #${issue} — Step 1 (Reconnaissance). The driver is fetching the issue body in parallel with your dispatch; do NOT run \`gh issue view\` yourself.`,
+    `/work ${headline} — Step 1 (Reconnaissance). The driver is fetching the issue body for each in parallel with your dispatch; do NOT run \`gh issue view\` yourself.`,
     "",
-    "Gather context relevant to executing this issue:",
+    `Gather context relevant to executing ${issues.length === 1 ? "this issue" : "these issues together"}:`,
     "  1. `vipune list --json | jq -r '.[] | .memory_type' | sort -u` to discover project memory types,",
     "  2. `vipune search '<keywords-from-issue-title>' --hybrid --recency 0.3 --limit 8` for prior decisions,",
     "  3. `codebase_memory_search_code({query: '<concept>'})` for existing relevant code.",
     "",
     "Return a STRUCTURED summary the work-driver can route on:",
-    "  - a verdict (heading: `## Verdict`), one line, EXACTLY one of:",
-    "      `VERDICT: NEEDS_WORK`           — issue is open and has real work to do",
-    "      `VERDICT: ALREADY_COMPLETE`     — issue is closed, merged, or already satisfied by a prior PR",
-    "      `VERDICT: NEEDS_CLARIFICATION`  — issue is ambiguous, contradictory, or missing acceptance criteria",
+    ...verdictBlock,
     "  - parallel-workstream candidates (heading: `## Workstreams`),",
     "  - relevant prior decisions (heading: `## Prior decisions`),",
     "  - touchpoint files (heading: `## Touchpoints`).",
     "",
-    "The `## Verdict` block is LOAD-BEARING. If you conclude the issue is already done (e.g., a prior PR addressed it), say `VERDICT: ALREADY_COMPLETE` even if the issue is still technically open in the tracker — the driver routes on your verdict, not on the issue's status. On ALREADY_COMPLETE or NEEDS_CLARIFICATION the driver halts immediately and hands off to the operator; no plan/branch/develop will run.",
+    verdictDoctrine,
     scratchHygieneSection(scratchDirAbs),
   ].join("\n");
 }
@@ -2547,11 +2787,12 @@ function inlineExplorePrompt(issue: number, scratchDirAbs: string): string {
  * Cribbed from `pi-prompts/plan.md` Phase 2's type-conditional
  * decomposition philosophy.
  */
-function inlinePlanPrompt(issue: number, scratchDirAbs: string): string {
+function inlinePlanPrompt(issues: number[], scratchDirAbs: string): string {
+  const headline = issues.length === 1 ? `issue #${issues[0]}` : `issues #${issues.join(", #")}`;
   return [
-    `/work issue #${issue} — Step 2 (Decomposition).`,
+    `/work ${headline} — Step 2 (Decomposition).`,
     "",
-    "The driver has already cached the issue body and Step 1's explore report. Read both, then decide:",
+    `The driver has already cached ${issues.length === 1 ? "the issue body" : "each issue body"} and Step 1's explore report. Read ${issues.length === 1 ? "both" : "all of them"}, then decide:`,
     "",
     "  1. Does this issue decompose into 2+ INDEPENDENT workstreams that could run in parallel worktrees?",
     "  2. Workstreams are independent when they touch DISJOINT files / subsystems / concerns. A frontend fix + a docs update = independent. Two changes to the same module = NOT independent.",
@@ -2574,25 +2815,38 @@ function inlinePlanPrompt(issue: number, scratchDirAbs: string): string {
   ].join("\n");
 }
 
-function inlineBranchPrompt(issue: number, workstreamIds: string[], scratchDirAbs: string): string {
+function inlineBranchPrompt(
+  issues: number[],
+  workstreamIds: string[],
+  scratchDirAbs: string,
+): string {
   const multi = workstreamIds.length > 1;
+  const multiIssue = issues.length > 1;
+  const primary = issues[0] ?? 0;
+  const headline = multiIssue ? `issues #${issues.join(", #")}` : `issue #${primary}`;
+  const branchHint = multiIssue
+    ? `feature/issues-${issues.join("-")}-<brief-description>`
+    : `feature/issue-${primary}-<brief-description>`;
+  const worktreePrefix = multiIssue
+    ? `.worktrees/issues-${issues.join("-")}`
+    : `.worktrees/issue-${primary}`;
   const lines = [
-    `/work issue #${issue} — Step 3 (Setup). Create the feature branch under the safety preconditions below.`,
+    `/work ${headline} — Step 3 (Setup). Create the feature branch under the safety preconditions below.`,
     "",
     "  1. Identify the mainline branch (default `main`; detect via `git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@'`).",
     "  2. Verify clean working tree (`git status --porcelain` must be empty). If dirty, ABORT and surface the failure verbatim — do NOT branch off uncommitted work.",
     "  3. Fetch + fast-forward mainline (`git fetch origin && git checkout <mainline> && git pull --ff-only origin <mainline>`). If --ff-only fails, ABORT.",
-    `  4. Create branch \`feature/issue-${issue}-<brief-description>\` from the fresh mainline tip.`,
+    `  4. Create branch \`${branchHint}\` from the fresh mainline tip.`,
     "  5. End your reply with a single line `branch: <branch-name>` so the driver can capture it.",
   ];
   if (multi) {
     lines.push(
       "",
-      `  6. **Multi-workstream cycle** — Step 2 decomposed this issue into ${workstreamIds.length} workstreams (${workstreamIds.join(", ")}). Create one git worktree per workstream off the feature branch:`,
+      `  6. **Multi-workstream cycle** — Step 2 decomposed the active issue${multiIssue ? "s" : ""} into ${workstreamIds.length} workstreams (${workstreamIds.join(", ")}). Create one git worktree per workstream off the feature branch:`,
       "",
       ...workstreamIds.map(
         (id) =>
-          `       git worktree add .worktrees/issue-${issue}-${id} feature/issue-${issue}-<brief>`,
+          `       git worktree add ${worktreePrefix}-${id} ${branchHint.replace("<brief-description>", "<brief>")}`,
       ),
       "",
       "  7. End your reply with an additional fenced `## Worktrees` block mapping each workstream id to its absolute path:",
@@ -2700,16 +2954,38 @@ function inlineSpeculativeExplorePrompt(
   ].join("\n");
 }
 
-function inlineCommitPrPrompt(issue: number, scratchDirAbs: string): string {
+function inlineCommitPrPrompt(
+  issues: number[],
+  droppedIssues: Array<{ issue: number; verdict: string; reason: string }>,
+  scratchDirAbs: string,
+): string {
+  const headline = issues.length === 1 ? `issue #${issues[0]}` : `issues #${issues.join(", #")}`;
+  const fixesLines = issues.map((n) => `Fixes #${n}`).join("\\n");
+  const fixesNote =
+    issues.length === 1
+      ? `body MUST include \`Fixes #${issues[0]}\` so merge auto-closes the issue.`
+      : `body MUST include ONE \`Fixes #N\` line per active issue (\`${issues.map((n) => `Fixes #${n}`).join("\\n")}\`) so merge auto-closes them all.`;
+  const droppedNote =
+    droppedIssues.length > 0
+      ? [
+          "",
+          "  Multi-issue cycle: include a `Companion to` line in the PR body for each issue dropped by explore (these will NOT auto-close on merge — the operator handles them separately):",
+          ...droppedIssues.map(
+            (d) =>
+              `    - Companion to #${d.issue} (${d.verdict}: ${d.reason || "no reason given"}; left untouched).`,
+          ),
+        ]
+      : [];
   return [
-    `/work issue #${issue} — Step 6 (Commit + PR).`,
+    `/work ${headline} — Step 6 (Commit + PR).`,
     "",
     "  1. `git status --porcelain` to confirm the developer left uncommitted changes.",
     "  2. `git add` the changed files (avoid `git add -A` — keep the staged set explicit).",
-    '  3. `git commit -m "<concise subject>"` with a meaningful message. Body should reference the issue.',
+    '  3. `git commit -m "<concise subject>"` with a meaningful message. Body should reference the active issue(s).',
     "  4. `git push -u origin <feature-branch>`.",
-    `  5. \`gh pr create --title \"<title>\" --body \"...\\n\\nFixes #${issue}\"\` — body MUST include \`Fixes #${issue}\` so merge auto-closes the issue.`,
+    `  5. \`gh pr create --title \"<title>\" --body \"...\\n\\n${fixesLines}\"\` — ${fixesNote}`,
     "  6. End your reply with `pr: <PR-number>` so the driver can capture it.",
+    ...droppedNote,
     "",
     "If you need a longer PR body, write it to a file under the scratch dir and pass via `gh pr create --body-file <path>` — DO NOT write the body file to the repo root.",
     scratchHygieneSection(scratchDirAbs),
@@ -2729,6 +3005,40 @@ function inlineLensFixPrompt(findings: string, scratchDirAbs: string): string {
     "```json",
     findings,
     "```",
+    scratchHygieneSection(scratchDirAbs),
+  ].join("\n");
+}
+
+/**
+ * PR10 — Step 9 (Merge) ops prompt. The merge step was a 0ms no-op
+ * pre-PR10; this prompt finally drives ops to execute `gh pr merge`.
+ *
+ * Doctrine: target project's `AGENTS.md` / `CONTRIBUTING.md` is the
+ * source of truth for merge method (--squash / --merge / --rebase) and
+ * branch-cleanup policy. Driver doesn't try to second-guess. Default
+ * is `--squash --delete-branch` because that's the most common policy
+ * in the projects pi-ensemble runs against (verified in lantern's
+ * AGENTS.md §7); ops overrides per project doc when present.
+ */
+function inlineMergePrompt(issues: number[], prNumber: number, scratchDirAbs: string): string {
+  const issueList = issues.map((n) => `#${n}`).join(", ");
+  const issueLines = issues
+    .map((n) => `  - issue #${n} (auto-closes via the PR's Fixes line)`)
+    .join("\n");
+  return [
+    `/work issue(s) ${issueList} — Step 9 (Merge).`,
+    "",
+    "CI is green and lens-review APPROVED. Merge the PR per project policy:",
+    "",
+    "  1. Read `AGENTS.md` / `CONTRIBUTING.md` at repo root for the project's merge method (`--squash`, `--merge`, or `--rebase`) and whether to delete the branch.",
+    `  2. \`gh pr merge ${prNumber} --squash --delete-branch\` is the DEFAULT — adjust the flags to match the project's policy if it differs.`,
+    "  3. On success, `gh pr merge` prints the merge commit SHA. End your reply with `merge-commit: <sha>` so the driver captures it on the merged event.",
+    "  4. If the merge fails (auth, branch protection, conflicts, missing required review), report the gh error verbatim and end with `merge-commit: FAILED — <one-line reason>` — DO NOT retry. The driver routes failures through cap-hit handoff.",
+    "",
+    "Active issues that will auto-close on merge:",
+    issueLines,
+    "",
+    "After the merge succeeds, the driver runs no further steps — the cycle terminates with status='merged'.",
     scratchHygieneSection(scratchDirAbs),
   ].join("\n");
 }
@@ -2846,6 +3156,14 @@ export class DriverNotImplementedError extends Error {
  */
 export async function runWorkDriver(ctx: DriverContext): Promise<void> {
   let state = (await readState(ctx.repoRoot, ctx.issue)) ?? initialState(ctx.issue);
+  // PR10 — persist the full multi-issue list on first run. On resume,
+  // honour what's already in the file (the user may have continued a
+  // single-issue cycle by re-invoking /work N; we don't widen scope
+  // silently). Only fresh state files (issues===undefined) take the
+  // ctx.issues list.
+  if (ctx.issues && ctx.issues.length > 0 && state.issues === undefined) {
+    state = { ...state, issues: ctx.issues };
+  }
 
   // Detect a half-written state (resume hazard). v1 policy: refuse to
   // resume cleanly; surface to user and halt.

@@ -425,6 +425,27 @@ export interface PipelineState {
    */
   exploreVerdict?: "NEEDS_WORK" | "ALREADY_COMPLETE" | "NEEDS_CLARIFICATION";
   /**
+   * PR10 — for multi-issue /work (`/work 561 562 563`), the NEEDS_WORK
+   * subset after `runExplore` parses per-issue verdicts. Implicit
+   * fallback to `[WorkState.issue]` for single-issue cycles and for
+   * state files written before this field existed. `runPlan` and
+   * everything downstream operate on this subset; ALREADY_COMPLETE /
+   * NEEDS_CLARIFICATION issues land in `droppedIssues` instead.
+   */
+  activeIssues?: number[];
+  /**
+   * PR10 — multi-issue counterpart of `activeIssues`: issues filtered
+   * out by `runExplore` because explore declared them complete or
+   * ambiguous. Surfaced in handoff renderers + PR body so the operator
+   * sees WHICH issues were dropped and WHY. Empty for single-issue
+   * cycles and for older state files.
+   */
+  droppedIssues?: Array<{
+    issue: number;
+    verdict: "NEEDS_WORK" | "ALREADY_COMPLETE" | "NEEDS_CLARIFICATION";
+    reason: string;
+  }>;
+  /**
    * PR5 — per-step retry budget for RETRY_ONCE-classified steps
    * (adversarial, lens-review). Driver's halt-cascade router increments
    * on dispatch-failed; once `>= 1` the next failure routes to handoff
@@ -486,8 +507,19 @@ export interface WorkState {
    * so v2 (true resumable) can flip it without a schema bump.
    */
   resumable: false;
-  /** Issue number this /work cycle targets. */
+  /** Primary issue number this /work cycle targets — anchors the state-file path
+   * (`.pi/work-state/<issue>.json`) and the feature branch name. For multi-issue
+   * cycles (PR10 `/work N M P`) this is the FIRST issue in `issues`; readers
+   * that need the full list should consult `issues` and fall back to `[issue]`
+   * when absent (back-compat with pre-PR10 state files).
+   */
   issue: number;
+  /**
+   * PR10 — all issue numbers passed to `/work`. Absent for single-issue cycles
+   * and for state files written before PR10; readers MUST fall back to
+   * `[WorkState.issue]` in that case. The first entry equals `WorkState.issue`.
+   */
+  issues?: number[];
   /** Epoch ms when the cycle started. */
   startedAt: number;
   /** Latest write; for "did the user just nudge this?" UX heuristics. */
