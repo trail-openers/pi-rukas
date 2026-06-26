@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.13](https://github.com/randomm/pi-ensemble/compare/v0.12.12...v0.12.13) (2026-06-26)
+
+
+### Bug Fixes
+
+* **work-driver:** inline issue body in explore prompt (eliminate PR3 Pattern 1 race) ([#251](https://github.com/randomm/pi-ensemble/issues/251)) ([082dd9d](https://github.com/randomm/pi-ensemble/commit/082dd9d31fac56a4c87ebada0c4fe5c98565fe02))
+
 ## [0.12.12](https://github.com/randomm/pi-ensemble/compare/v0.12.11...v0.12.12) (2026-06-26)
 
 
