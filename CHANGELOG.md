@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.12](https://github.com/randomm/pi-ensemble/compare/v0.12.11...v0.12.12) (2026-06-26)
+
+
+### Bug Fixes
+
+* **work-driver:** add /work --restart + clear notify on terminal-state re-entry + step-back-aware handoff recovery ([#249](https://github.com/randomm/pi-ensemble/issues/249)) ([40aadd4](https://github.com/randomm/pi-ensemble/commit/40aadd4556534e033ebc1318c4cd435acd6624cd))
+
 ## [0.12.11](https://github.com/randomm/pi-ensemble/compare/v0.12.10...v0.12.11) (2026-06-26)
 
 
