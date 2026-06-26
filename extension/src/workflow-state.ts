@@ -233,6 +233,11 @@ export type WorkEvent =
         // 2026-06-25 where 4/5 empty bodies cascaded into wrong-issue
         // work landing on main).
         | "explore-bodies-empty"
+        // PR12 — emitted by `runStepBack` after the SDD analysis lands so
+        // the handoff renderers have a cap to switch on (step-back-
+        // completed alone is invisible to explainCap). Surfaces the
+        // proposedRevision + the /plan + /work --restart recovery path.
+        | "step-back-revise-spec"
         | `step-failed:${WorkStep}`;
       reviewRound: number;
       /** What the driver will do next — either "handoff" (terminal) or "step-back" (Step 7h). */

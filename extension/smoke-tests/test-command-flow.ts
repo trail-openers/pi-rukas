@@ -240,6 +240,57 @@ assert(
   }
 }
 
+// PR12 — /work N --restart should parse the flag (order-independent)
+// and the notify includes the "(restart — prior state wiped)" tag.
+{
+  const prevFlag = process.env.PI_ENSEMBLE_WORK_DRIVER;
+  delete process.env.PI_ENSEMBLE_WORK_DRIVER;
+  try {
+    // Trailing --restart.
+    const { ctx: ctxR1, notifies: notifR1 } = makeCtx();
+    await handlers.work!("547 --restart", ctxR1);
+    assert(
+      notifR1.some(
+        (n) => n.kind === "info" && /issue #547/.test(n.msg) && /restart.*prior state wiped/.test(n.msg),
+      ),
+      "/work 547 --restart: notify includes restart tag",
+    );
+    // Leading --restart.
+    const { ctx: ctxR2, notifies: notifR2 } = makeCtx();
+    await handlers.work!("--restart 548", ctxR2);
+    assert(
+      notifR2.some(
+        (n) => n.kind === "info" && /issue #548/.test(n.msg) && /restart.*prior state wiped/.test(n.msg),
+      ),
+      "/work --restart 548: --restart order-independent (leading)",
+    );
+    // Multi-issue + --restart in the middle.
+    const { ctx: ctxR3, notifies: notifR3 } = makeCtx();
+    await handlers.work!("549 --restart 550", ctxR3);
+    assert(
+      notifR3.some(
+        (n) =>
+          n.kind === "info" &&
+          /issues #549, #550/.test(n.msg) &&
+          /restart.*prior state wiped/.test(n.msg),
+      ),
+      "/work 549 --restart 550: --restart filtered out of issue parse, multi-issue list intact",
+    );
+    // Plain /work N (no --restart) — no restart tag in notify.
+    const { ctx: ctxR4, notifies: notifR4 } = makeCtx();
+    await handlers.work!("551", ctxR4);
+    assert(
+      notifR4.some(
+        (n) => n.kind === "info" && /issue #551/.test(n.msg) && !/restart/i.test(n.msg),
+      ),
+      "/work 551 (no flag): notify does NOT include restart tag (regression guard)",
+    );
+  } finally {
+    if (prevFlag === undefined) delete process.env.PI_ENSEMBLE_WORK_DRIVER;
+    else process.env.PI_ENSEMBLE_WORK_DRIVER = prevFlag;
+  }
+}
+
 // Fire before_agent_start with doctrine armed (set by the most recent /work call)
 const hook = rec.beforeAgentStartHandlers[0]!;
 const result1 = (await hook({ systemPrompt: "PI_BASE_PROMPT" })) as

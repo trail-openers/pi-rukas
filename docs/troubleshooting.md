@@ -611,12 +611,29 @@ When the driver halts intentionally on a load-bearing failure (rather than crash
 | `explore-already-complete` | Explore concluded the issue is already done (e.g., satisfied by a prior PR). Driver halts before any branch/develop. No code was written. | `gh issue close N --comment "Verified complete by /work — see prior PR"` if you agree; or `gh issue comment N --body "Additional context: …"` + `rm .pi/work-state/N.json && pi` if you disagree. |
 | `explore-needs-clarification` | Explore couldn't determine concrete work (issue ambiguous / missing acceptance criteria). | Edit issue body via `gh issue edit N`, then `rm .pi/work-state/N.json && pi`. |
 | `explore-bodies-empty` | PR11 — `gh issue view <N>` returned empty or errored for one or more issues. Pre-condition failure; the driver cannot reliably classify work it can't read. Common causes: gh version with projectCards GraphQL deprecation, gh extension hijacking stdout, expired auth, network. | `gh auth status && gh --version` to confirm gh setup. `gh api repos/<owner>/<repo>/issues/<N> --jq .body` works when `gh issue view` is broken — use it to verify the issue body fetches via REST. `gh extension list` if a misbehaving extension is suspected. Once fixed, `rm .pi/work-state/N.json && pi`. |
+| `step-back-revise-spec` | PR12 — `runStepBack` fired (lens-review fix loop kept flagging the same shape across rounds — spec-level problem fingerprint). The @explore SDD analysis identified which of the six SDD elements (outcomes / scope / constraints / prior decisions / task breakdown / verification) is underspecified, and produced a proposed revision. | Read the proposed revision (surfaced in the handoff body): `cat tmp/issue-N/handoff-comment.md`. Apply the revision via `/plan N` (or `gh issue edit N`). Restart the cycle: `/work N --restart`. The `--restart` flag wipes the prior state file so the fresh cycle reads the revised spec. |
 | `adversarial-loop` | `adversarial_loop` ran its 3-round internal fix loop and could not reach APPROVED. For N>1 multi-workstream cycles, the aggregate-rejected case (any per-workstream adversarial REJECTED) also fires this cap, with per-workstream findings tagged `[workstream <id>]`. | Read the rejection findings; if phantom, merge manually; if real, take over the worktree to fix or split the work. |
 | `round-cap` | Lens-review hit its 3-round cap with findings still open — review loop didn't converge. | Inspect the latest `lens-issues-found` event in `eventLog`; if findings cluster around a theme, that's a spec-level problem (consider revising the issue body before re-running). |
 | `wall-clock` | Lens-review fix loop exceeded the 90-minute wall-clock cap. | Same as `round-cap` — inspect findings, decide whether to retry or take over. |
 | `ci-retry` | CI failed `MAX_CI_RETRIES` times in a row (default 2 → 3 attempts total). Either CI is permanently broken for this branch, or develop keeps producing the same failure. | Read CI logs (URL in the handoff `ci-status` event); fix manually, or `rm .pi/work-state/N.json && pi` to re-run from scratch. |
 
 The handoff comment quotes 4 concrete recovery shell commands keyed to the cap shape — paste-and-run-ready. The `/work-status` command renders the same postmortem layout from the state file if you'd rather inspect locally.
+
+### Restarting a /work cycle after revising the issue (PR12)
+
+When `/work N` terminates (handoff / aborted / merged) and you've since revised the issue body — typically via `/plan N` after a `step-back-revise-spec` handoff — re-running `/work N` would silently no-op pre-PR12 (the existing state file still showed `status=handoff`, and the loop never re-entered).
+
+Fix: pass `--restart` to wipe the prior state file and start a fresh cycle.
+
+```bash
+/work N --restart            # restart the cycle against the (now-revised) spec
+/work --restart N             # order-independent — flag can lead or trail
+/work N M --restart           # multi-issue + restart also works
+```
+
+Without `--restart`, re-invoking `/work N` on a terminal-state file now emits a clear notify pointing at the recovery: *"`/work` for issue #N already terminated as <status>. To start a fresh cycle (e.g., after revising the issue via /plan), re-run with `--restart`..."*.
+
+`--restart` only wipes the driver's state file (`.pi/work-state/N.json`). Worktrees and feature branches from the prior cycle are NOT removed — the branch step will detect existing branches at runtime (ops checks out + resets, or ABORTs cleanly with the error). If you want a fully clean slate, also `rm -rf .worktrees/issue-N-*` and `git branch -D feature/issue-N-*` before re-running.
 
 ### Per-role spawn timeouts (PR5)
 

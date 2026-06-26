@@ -149,8 +149,14 @@ export function registerCommands(pi: ExtensionAPI) {
           // `/work 561 562 563` (multi-issue bundle into one PR).
           // First number anchors the state file path + feature branch
           // name; the full list flows through plan/develop/commit-pr.
+          // PR12: also accept `--restart` (order-independent) which
+          // wipes any existing state file and starts a fresh cycle.
+          // Used after the operator revises the issue via /plan
+          // following a prior terminal cycle (handoff / aborted / merged).
           const tokens = args.trim().split(/\s+/).filter(Boolean);
+          const restart = tokens.includes("--restart");
           const issues = tokens
+            .filter((t) => !t.startsWith("--"))
             .map((t) => Number.parseInt(t, 10))
             .filter((n) => Number.isFinite(n) && n > 0);
           if (issues.length === 0 || issues[0] === undefined) {
@@ -173,13 +179,14 @@ export function registerCommands(pi: ExtensionAPI) {
           const repoRoot = await resolveRepoRoot(cwd);
           const issueListMsg =
             issues.length > 1 ? `issues #${issues.join(", #")}` : `issue #${issue}`;
-          trace(`/work → driver loop for ${issueListMsg} (repoRoot=${repoRoot})`);
+          const restartTag = restart ? " (restart — prior state wiped)" : "";
+          trace(`/work → driver loop for ${issueListMsg}${restartTag} (repoRoot=${repoRoot})`);
           // PM stays in reporter mode so user-visible progress messages
           // emitted by the driver via sendUserMessage land cleanly.
           pmDoctrineFirstTurnPending = true;
           pmModeActive = true;
           ctx.ui.notify(
-            `pi-ensemble: /work driver running for ${issueListMsg}. ` +
+            `pi-ensemble: /work driver running for ${issueListMsg}${restartTag}. ` +
               `State in .pi/work-state/${issue}.json. Set PI_ENSEMBLE_WORK_DRIVER=0 to use legacy PM flow.`,
             "info",
           );
@@ -187,7 +194,7 @@ export function registerCommands(pi: ExtensionAPI) {
           // and surfaces final outcome via pi.sendUserMessage. We catch
           // unexpected throws so the background promise doesn't trip
           // Node's unhandled-rejection warning.
-          void runWorkDriver({ pi, repoRoot, issue, issues }).catch((err) => {
+          void runWorkDriver({ pi, repoRoot, issue, issues, restart }).catch((err) => {
             trace(`work-driver: unexpected throw for ${issueListMsg}: ${(err as Error).message}`);
             try {
               pi.sendUserMessage(

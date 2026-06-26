@@ -352,6 +352,17 @@ export interface DriverContext {
    */
   issueBodyFetcherFn?: (issue: number, cwd: string) => Promise<{ stdout: string }>;
   /**
+   * PR12 — when true, `runWorkDriver` skips `readState` and starts from
+   * `initialState(issue)`. Set by `commands.ts` when the operator
+   * passes `/work N --restart` to wipe a prior terminal cycle's state
+   * and run fresh (e.g., after revising the issue body via /plan).
+   * Branch step's existing existing-branch detection handles worktree
+   * / branch leftovers at runtime; this flag only resets the driver's
+   * state file. Default behaviour (omitted / false) reads the existing
+   * state if present.
+   */
+  restart?: boolean;
+  /**
    * Optional injection point for tests: replace runAdversarialLoop with a
    * fake. Production callers omit this — runAdversarial uses the real
    * orchestrator from adversarial.ts. Mirrors `dispatchFn` for symmetry.
@@ -1605,6 +1616,40 @@ async function runLensFix(ctx: DriverContext, state: WorkState, now: number): Pr
  * here, includes the prior lens-findings as input, and lets @explore
  * decide which SDD element is underspecified.
  */
+/**
+ * PR12 — Parse the @explore step-back reply for the structured fields
+ * `sddElement:`, `diagnosis:`, `proposedRevision:`. Lenient: tolerates
+ * markdown emphasis around the keys, leading whitespace, multi-line
+ * values (everything from the colon to the next `^<key>:` line or the
+ * end of the reply). All three fields fall back to empty strings when
+ * absent — the renderer surfaces what's present and the cap-hit fires
+ * regardless so the handoff still happens.
+ */
+export function parseStepBackReply(text: string): {
+  sddElement: string;
+  diagnosis: string;
+  proposedRevision: string;
+} {
+  const extract = (key: string): string => {
+    // Anchor key at start-of-line (input start OR after newline). Capture
+    // is non-greedy + multi-line ([\s\S]*?) and terminates at the next
+    // recognised key OR end-of-input. `$` without `m` flag matches end-
+    // of-input only — `m` would terminate at the first newline and lose
+    // multi-line values like proposedRevision.
+    const re = new RegExp(
+      String.raw`(?:^|\n)\s*[*_\x60]*${key}[*_\x60]*\s*:\s*([\s\S]*?)(?=\n\s*[*_\x60]*(?:sddElement|diagnosis|proposedRevision|alternativeApproach)[*_\x60]*\s*:|$)`,
+      "i",
+    );
+    const m = text.match(re);
+    return (m?.[1] ?? "").trim();
+  };
+  return {
+    sddElement: extract("sddElement"),
+    diagnosis: extract("diagnosis"),
+    proposedRevision: extract("proposedRevision"),
+  };
+}
+
 async function runStepBack(ctx: DriverContext, state: WorkState, now: number): Promise<WorkState> {
   const allFindings = state.eventLog
     .filter(
@@ -1613,9 +1658,44 @@ async function runStepBack(ctx: DriverContext, state: WorkState, now: number): P
     )
     .map((e) => e.findings)
     .join("\n---\n");
-  return runSingleDispatch(ctx, state, "step-back", "explore", "explore:step-back", now, () =>
-    inlineStepBackPrompt(ctx.issue, allFindings, scratchDir(ctx.repoRoot, ctx.issue)),
+  let next = await runSingleDispatch(
+    ctx,
+    state,
+    "step-back",
+    "explore",
+    "explore:step-back",
+    now,
+    () => inlineStepBackPrompt(ctx.issue, allFindings, scratchDir(ctx.repoRoot, ctx.issue)),
   );
+  // PR12 — parse the structured reply + emit step-back-completed and
+  // cap-hit so the handoff renderer can branch on cap='step-back-revise-spec'.
+  // Pre-PR12 the routing fell through the generic linear table
+  // (step-back → handoff) and the handoff renderer had no cap to switch
+  // on, surfacing the wrong recovery commands ("git push what's there"
+  // etc.) for a spec-revision workflow.
+  const last = next.eventLog[next.eventLog.length - 1];
+  if (last?.kind === "dispatch-completed") {
+    const parsed = parseStepBackReply(last.summary ?? "");
+    next = appendEvent(
+      next,
+      {
+        kind: "step-back-completed",
+        at: Date.now(),
+        jobId: last.jobId,
+        sddElement: parsed.sddElement || "(not specified)",
+        diagnosis: parsed.diagnosis || "(not specified)",
+        proposedRevision: parsed.proposedRevision || "(not specified)",
+      },
+      {
+        kind: "cap-hit",
+        at: Date.now(),
+        cap: "step-back-revise-spec",
+        reviewRound: next.pipelineState.reviewRound,
+        nextStep: "handoff",
+      },
+    );
+  }
+  return next;
 }
 
 /**
@@ -2209,6 +2289,34 @@ export function renderHandoffMarkdown(state: WorkState): string {
       "",
     );
   }
+  // PR12 — surface the step-back analysis (sddElement / diagnosis /
+  // proposedRevision) above the recovery commands when the cap is
+  // step-back-revise-spec. This is what the operator needs to actually
+  // revise the issue — the recovery commands below just point at /plan.
+  if (capForExplain === "step-back-revise-spec") {
+    const sb = [...state.eventLog]
+      .reverse()
+      .find(
+        (e): e is Extract<WorkEvent, { kind: "step-back-completed" }> =>
+          e.kind === "step-back-completed",
+      );
+    if (sb) {
+      lines.push(
+        "### Step-back analysis (which SDD element is underspecified?)",
+        "",
+        `**SDD element**: ${sb.sddElement}`,
+        "",
+        `**Diagnosis**: ${sb.diagnosis}`,
+        "",
+        "**Proposed revision** (paste into the issue body or rephrase via /plan):",
+        "",
+        "```",
+        sb.proposedRevision,
+        "```",
+        "",
+      );
+    }
+  }
 
   // PR5: Concrete recovery commands (was prose "Suggested next steps").
   // The four named shell commands map to the four decisions an operator
@@ -2264,6 +2372,20 @@ export function renderHandoffMarkdown(state: WorkState): string {
       "",
       `# 4. Once fixed, re-run /work — the cycle halts cleanly with no code written for ${failedList}:`,
       `rm .pi/work-state/${issue}.json && pi`,
+    );
+  } else if (capForExplain === "step-back-revise-spec") {
+    lines.push(
+      "# 1. Read the proposed revision above and the rich handoff body:",
+      `cat tmp/issue-${issue}/handoff-comment.md`,
+      "",
+      "# 2. Revise the issue body via /plan (or gh issue edit) — apply the proposed wording:",
+      `/plan ${issue}    # or: gh issue edit ${issue}`,
+      "",
+      "# 3. Restart /work from scratch against the revised spec:",
+      `/work ${issue} --restart`,
+      "",
+      "# 4. Abandon this cycle entirely:",
+      `rm .pi/work-state/${issue}.json`,
     );
   } else {
     lines.push(
@@ -2427,6 +2549,16 @@ export function explainCap(
       const which =
         failed.length > 0 ? failed.map((f) => `#${f.issue}`).join(", ") : "one or more issues";
       return `\`gh issue view\` returned empty/error for ${which} — the driver cannot reliably classify work that hasn't been read. Most likely causes: gh version with projectCards GraphQL deprecation, gh extension hijacking stdout, expired auth (\`gh auth status\`), or network. Fix the gh setup and re-run /work; the body fetch is a load-bearing pre-condition`;
+    }
+    case "step-back-revise-spec": {
+      const sb = [...state.eventLog]
+        .reverse()
+        .find(
+          (e): e is Extract<WorkEvent, { kind: "step-back-completed" }> =>
+            e.kind === "step-back-completed",
+        );
+      const elem = sb?.sddElement ?? "(spec element not specified)";
+      return `explore stepped back and identified a spec-level gap in **${elem}** — the lens-review fix loop kept flagging the same shape across rounds (MAST 41.77% — spec-level problem fingerprint). The handoff body includes a proposed revision. After updating the issue (via /plan or \`gh issue edit\`), re-run with \`/work N --restart\` to start a fresh cycle against the revised spec`;
     }
   }
   // Template-literal `step-failed:<step>` values land here. Switch on the
@@ -2682,6 +2814,34 @@ export function renderHandoffUserMessage(
       "",
       `  # 4. Once fixed, re-run /work — the cycle halts cleanly with no code written for ${failedList}:`,
       `     rm ${repoRoot}/.pi/work-state/${issue}.json && pi`,
+    );
+  } else if (cap === "step-back-revise-spec") {
+    const sb = [...state.eventLog]
+      .reverse()
+      .find(
+        (e): e is Extract<WorkEvent, { kind: "step-back-completed" }> =>
+          e.kind === "step-back-completed",
+      );
+    lines.push(
+      "",
+      "Step-back analysis:",
+      `  SDD element underspecified: ${sb?.sddElement ?? "(not parsed)"}`,
+      `  Diagnosis: ${sb?.diagnosis ?? "(not parsed)"}`,
+      "",
+      "Proposed revision (preview — full text in the GitHub handoff body):",
+      `  ${(sb?.proposedRevision ?? "(not parsed)").slice(0, 160)}${(sb?.proposedRevision?.length ?? 0) > 160 ? "..." : ""}`,
+      "",
+      "  # 1. Read the proposed revision + handoff context:",
+      `     cat ${handoffBodyPath}`,
+      "",
+      "  # 2. Revise the issue body via /plan (or gh issue edit):",
+      `     /plan ${issue}    # or: gh issue edit ${issue}`,
+      "",
+      "  # 3. Restart /work from scratch against the revised spec:",
+      `     /work ${issue} --restart`,
+      "",
+      "  # 4. Abandon this cycle entirely:",
+      `     rm ${repoRoot}/.pi/work-state/${issue}.json`,
     );
   } else {
     lines.push(
@@ -3359,14 +3519,40 @@ export class DriverNotImplementedError extends Error {
  * step bodies land.
  */
 export async function runWorkDriver(ctx: DriverContext): Promise<void> {
-  let state = (await readState(ctx.repoRoot, ctx.issue)) ?? initialState(ctx.issue);
+  // PR12 — `/work N --restart`: skip readState and start fresh from
+  // `initialState(issue)`. Used after the operator revises the issue
+  // body via /plan (or gh issue edit) following a prior terminal cycle
+  // (handoff / aborted / merged). Branch step's existing-branch logic
+  // handles worktree leftovers at runtime; this flag only wipes the
+  // driver's state file.
+  let state =
+    ctx.restart === true
+      ? initialState(ctx.issue)
+      : ((await readState(ctx.repoRoot, ctx.issue)) ?? initialState(ctx.issue));
+  if (ctx.restart === true) {
+    trace(`work-driver: --restart wiped state for issue #${ctx.issue} (fresh cycle)`);
+  }
   // PR10 — persist the full multi-issue list on first run. On resume,
   // honour what's already in the file (the user may have continued a
   // single-issue cycle by re-invoking /work N; we don't widen scope
   // silently). Only fresh state files (issues===undefined) take the
-  // ctx.issues list.
+  // ctx.issues list. On --restart, the freshly-initialised state has
+  // issues===undefined so the ctx.issues list flows through.
   if (ctx.issues && ctx.issues.length > 0 && state.issues === undefined) {
     state = { ...state, issues: ctx.issues };
+  }
+
+  // PR12 — surface a clear notify when /work re-invocation finds the
+  // state already terminal (handoff / aborted / merged) and the
+  // operator didn't pass --restart. Pre-PR12 this silently fell
+  // through to the end of the function — the operator saw nothing
+  // and PM ended up recommending /do as a workaround.
+  if (state.pipelineState.status !== "running" && ctx.restart !== true) {
+    const terminalStatus = state.pipelineState.status;
+    ctx.pi.sendUserMessage(
+      `pi-ensemble: /work for issue #${ctx.issue} already terminated as ${terminalStatus}. To start a fresh cycle (e.g., after revising the issue via /plan), re-run with --restart:\n  /work ${ctx.issue} --restart\nOr rm ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json manually. The prior cycle's event log is preserved in the state file until you restart or remove it.`,
+    );
+    return;
   }
 
   // Detect a half-written state (resume hazard). v1 policy: refuse to
