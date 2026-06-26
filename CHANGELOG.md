@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.11](https://github.com/randomm/pi-ensemble/compare/v0.12.10...v0.12.11) (2026-06-26)
+
+
+### Bug Fixes
+
+* **work-driver:** lens-review uses merge-base diff + develop prompt threads active issues + halt on empty issue bodies ([#247](https://github.com/randomm/pi-ensemble/issues/247)) ([98b58b8](https://github.com/randomm/pi-ensemble/commit/98b58b8e4758689ee6977d7b0b1f68c77bf2f813))
+
 ## [0.12.10](https://github.com/randomm/pi-ensemble/compare/v0.12.9...v0.12.10) (2026-06-25)
 
 
