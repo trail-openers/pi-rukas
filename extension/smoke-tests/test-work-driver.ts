@@ -76,6 +76,16 @@ function makeFakePi(): { pi: ExtensionAPI; sent: string[] } {
   return { pi, sent };
 }
 
+// PR11 — default issue-body fetcher for tests. runExplore's empty-body
+// halt guard (PR11 §C) would otherwise fire when execp("gh issue view N")
+// rejects or returns empty stdout — true for almost every test (the test
+// repos don't have GitHub remotes). Tests that deliberately exercise
+// the empty-body path pass their own injection; everything else gets
+// this stub so the cycle proceeds to plan/branch/develop normally.
+const mockIssueBodyOk = async (issue: number, _cwd: string) => ({
+  stdout: `title:\tmock issue #${issue}\nstate:\tOPEN\n\nmock body for issue #${issue} — non-empty placeholder so PR11's empty-body guard doesn't fire`,
+});
+
 // Fake DispatchResult builder.
 function mkResult(overrides: Partial<DispatchResult> = {}): DispatchResult {
   return {
@@ -329,6 +339,7 @@ function mkResult(overrides: Partial<DispatchResult> = {}): DispatchResult {
       pi,
       repoRoot: dir,
       issue: 600,
+      issueBodyFetcherFn: mockIssueBodyOk,
       dispatchFn: async (_pi, spec, opts) => {
         rolesDispatched.push(spec.role);
         labelsDispatched.push(opts?.label ?? spec.role);
@@ -688,6 +699,7 @@ branch: feature/issue-553-fix
       schemaVersion: 1 as const,
       resumable: false as const,
       issue: 700,
+      issueBodyFetcherFn: mockIssueBodyOk,
       startedAt: 1_000_000,
       updatedAt: 1_000_000,
       pipelineState: {
@@ -725,6 +737,7 @@ branch: feature/issue-553-fix
       pi: makeFakePi().pi,
       repoRoot: dir,
       issue: 700,
+      issueBodyFetcherFn: mockIssueBodyOk,
       dispatchFn: async (_pi, spec, opts) => {
         seenCwds.push(spec.cwd ?? "<no cwd>");
         seenLabels.push(opts?.label ?? spec.role);
@@ -953,6 +966,7 @@ branch: feature/issue-553-fix
       pi: makeFakePi().pi,
       repoRoot: dir,
       issue: 700,
+      issueBodyFetcherFn: mockIssueBodyOk,
       dispatchFn: async (_pi, spec, opts) => {
         seenLabels.push(opts?.label ?? spec.role);
         // Capture whether the developer prompt mentions the speculative
@@ -1176,6 +1190,7 @@ branch: feature/issue-553-fix
       pi: makeFakePi().pi,
       repoRoot: dir,
       issue: 800,
+      issueBodyFetcherFn: mockIssueBodyOk,
       dispatchFn: async (_pi, spec, opts) => {
         seenLabels.push(opts?.label ?? spec.role);
         // Developer dispatch SIGTERMs (the #553 shape).
@@ -1410,6 +1425,7 @@ branch: feature/issue-553-fix
       pi: makeFakePi().pi,
       repoRoot: dir,
       issue: 533,
+      issueBodyFetcherFn: mockIssueBodyOk,
       dispatchFn: async (_pi, spec, opts) => {
         seenLabels.push(opts?.label ?? spec.role);
         if (spec.role === "explore" && opts?.label === "explore") {
@@ -1468,6 +1484,7 @@ branch: feature/issue-553-fix
       pi: makeFakePi().pi,
       repoRoot: dir,
       issue: 700,
+      issueBodyFetcherFn: mockIssueBodyOk,
       dispatchFn: async (_pi, spec, opts) => {
         if (spec.role === "explore" && opts?.label === "explore") {
           return mkResult({
@@ -1507,6 +1524,7 @@ branch: feature/issue-553-fix
       pi: makeFakePi().pi,
       repoRoot: dir,
       issue: 701,
+      issueBodyFetcherFn: mockIssueBodyOk,
       dispatchFn: async (_pi, spec, opts) => {
         if (spec.role === "explore" && opts?.label === "explore") {
           return mkResult({
@@ -1588,6 +1606,7 @@ branch: feature/issue-553-fix
       pi: makeFakePi().pi,
       repoRoot: dir,
       issue: 702,
+      issueBodyFetcherFn: mockIssueBodyOk,
       dispatchFn: async (_pi, spec, opts) => {
         seenLabels.push(opts?.label ?? spec.role);
         if (opts?.label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
@@ -1715,6 +1734,7 @@ branch: feature/issue-553-fix
       pi: makeFakePi().pi,
       repoRoot: dir,
       issue: 900,
+      issueBodyFetcherFn: mockIssueBodyOk,
       dispatchFn: async (_pi, spec, opts) => {
         seenLabels.push(opts?.label ?? spec.role);
         // All 3 developer dispatches return ok:false (provider-error shape).
@@ -1792,6 +1812,7 @@ branch: feature/issue-553-fix
       pi: makeFakePi().pi,
       repoRoot: dir,
       issue: 901,
+      issueBodyFetcherFn: mockIssueBodyOk,
       dispatchFn: async (_pi, spec, opts) => {
         seenLabels.push(opts?.label ?? spec.role);
         if (spec.role === "developer") {
@@ -1958,6 +1979,7 @@ branch: feature/issue-553-fix
       pi: makeFakePi().pi,
       repoRoot: dir,
       issue: 910,
+      issueBodyFetcherFn: mockIssueBodyOk,
       adversarialLoopFn: async (params) => {
         seenWorkCwds.push(params.workCwd ?? "<no cwd>");
         // APPROVED on round 1 for all three.
@@ -2049,6 +2071,7 @@ branch: feature/issue-553-fix
       pi: makeFakePi().pi,
       repoRoot: dir,
       issue: 911,
+      issueBodyFetcherFn: mockIssueBodyOk,
       adversarialLoopFn: async (params) => {
         // task-b's workCwd → REJECTED after 3 rounds. Others APPROVED.
         if (params.workCwd?.endsWith("task-b")) {
@@ -2139,6 +2162,7 @@ branch: feature/issue-553-fix
       pi: makeFakePi().pi,
       repoRoot: dir,
       issue: 912,
+      issueBodyFetcherFn: mockIssueBodyOk,
       adversarialLoopFn: async (params) => {
         // task-a APPROVED in 1 round; task-b APPROVED in 2 rounds.
         // Aggregate rounds should be max = 2.
@@ -2250,6 +2274,7 @@ branch: feature/issue-553-fix
       pi: makeFakePi().pi,
       repoRoot: dir,
       issue: 950,
+      issueBodyFetcherFn: mockIssueBodyOk,
       dispatchFn: async (_pi, spec, opts) => {
         seenLabels.push(opts?.label ?? spec.role);
         if (opts?.label === "ops:merge") {
@@ -2305,6 +2330,7 @@ branch: feature/issue-553-fix
       pi: makeFakePi().pi,
       repoRoot: dir,
       issue: 951,
+      issueBodyFetcherFn: mockIssueBodyOk,
       dispatchFn: async (_pi, spec, opts) => {
         if (opts?.label === "ops:merge") {
           return mkResult({
@@ -2355,6 +2381,7 @@ branch: feature/issue-553-fix
       repoRoot: dir,
       issue: 961,
       issues: [961, 962, 963],
+      issueBodyFetcherFn: mockIssueBodyOk,
       dispatchFn: async (_pi, spec, opts) => {
         seenLabels.push(opts?.label ?? spec.role);
         if (opts?.label === "explore") {
@@ -2418,6 +2445,7 @@ branch: feature/issue-553-fix
       repoRoot: dir,
       issue: 970,
       issues: [970, 971, 972],
+      issueBodyFetcherFn: mockIssueBodyOk,
       dispatchFn: async (_pi, spec, opts) => {
         if (opts?.label === "explore") {
           return mkResult({
@@ -2492,6 +2520,7 @@ branch: feature/issue-553-fix
       repoRoot: dir,
       issue: 980,
       issues: [980, 981],
+      issueBodyFetcherFn: mockIssueBodyOk,
       dispatchFn: async (_pi, spec, opts) => {
         seenLabels.push(opts?.label ?? spec.role);
         if (opts?.label === "explore") {
@@ -2590,6 +2619,426 @@ branch: feature/issue-553-fix
   assert(
     md.includes("### Issues in this cycle"),
     "renderHandoffMarkdown multi-issue: 'Issues in this cycle' section emitted",
+  );
+}
+
+// 43. PR11 — runLens uses merge-base diff (origin/<base>..HEAD), not
+// `git diff HEAD`. Empirical /work 533+557 (v10r 2026-06-25): pre-PR11
+// the empty-diff guard fired POST-commit on every cycle because the
+// diff was committed and `git diff HEAD` was empty → lens-review skipped
+// in 34 ms → code merged without six-pass review.
+//
+// This test wires a real git repo with a committed feature branch and a
+// simulated origin/main, then runs runWorkDriver at lens-review and
+// asserts the empty-diff guard does NOT fire (lens-review attempts to
+// dispatch — captured via the dispatchFn throwing).
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-lens-postcommit-"));
+  try {
+    const fs = await import("node:fs/promises");
+    const { promisify } = await import("node:util");
+    const { exec } = await import("node:child_process");
+    const execp = promisify(exec);
+
+    // Real git repo: init, commit, branch, commit, simulate origin/main
+    // pointing at the initial commit so git diff origin/main..HEAD shows
+    // the feature branch's change.
+    await execp("git init -q", { cwd: dir });
+    await execp('git config user.email "t@t" && git config user.name "T"', {
+      cwd: dir,
+      shell: "/bin/bash",
+    });
+    await fs.writeFile(path.join(dir, "base.txt"), "hello\n");
+    await execp("git add base.txt && git commit -q -m initial", { cwd: dir, shell: "/bin/bash" });
+    // Simulate origin/main + origin/HEAD → main without an actual remote.
+    await execp("git update-ref refs/remotes/origin/main HEAD", { cwd: dir });
+    await execp("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", {
+      cwd: dir,
+    });
+    await execp("git checkout -qb feature/pr11-test", { cwd: dir });
+    await fs.writeFile(path.join(dir, "feature.txt"), "world\n");
+    await execp("git add feature.txt && git commit -q -m 'feature change'", {
+      cwd: dir,
+      shell: "/bin/bash",
+    });
+
+    // Confirm setup: git diff HEAD is empty, git diff origin/main..HEAD has content.
+    const diffHead = await execp("git diff HEAD", { cwd: dir });
+    const diffMerged = await execp("git diff origin/main..HEAD", { cwd: dir });
+    assert(diffHead.stdout.trim() === "", "test setup: git diff HEAD is empty (post-commit)");
+    assert(
+      diffMerged.stdout.includes("feature.txt"),
+      "test setup: git diff origin/main..HEAD shows the merged feature diff",
+    );
+
+    // Pre-seed state at lens-review with worktrees.default = dir so
+    // runLens fetches the merged diff from this real repo. dispatchFn
+    // throws on the lens-review child so we can halt and inspect.
+    let s = initialState(820, 1_000_000);
+    s = {
+      ...s,
+      pipelineState: {
+        ...s.pipelineState,
+        currentStep: "lens-review",
+        lastCompletedStep: "commit-pr",
+        worktrees: { default: dir },
+        workstreams: {
+          default: { id: "default", scope: "test", paths: [], outOfScope: [] },
+        },
+        branchName: "feature/pr11-test",
+        prNumber: 8200,
+      },
+    };
+    await writeState(dir, s);
+
+    let lensDispatched = false;
+    const ctx: DriverContext = {
+      pi: makeFakePi().pi,
+      repoRoot: dir,
+      issue: 820,
+      issueBodyFetcherFn: mockIssueBodyOk,
+      dispatchFn: async (_pi, spec, opts) => {
+        if (spec.role === "code-review-specialist") {
+          lensDispatched = true;
+          throw new Error("halt-lens-dispatch (test detected runLensReview was reached)");
+        }
+        if (opts?.label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
+        return mkResult({ role: spec.role, text: "stub" });
+      },
+    };
+    await runWorkDriver(ctx).catch(() => {});
+
+    const after = await readState(dir, 820);
+    const kinds = (after?.eventLog ?? []).map((e) => e.kind);
+    // Either runLensReview was reached (lensDispatched=true, signalling our
+    // halt was hit), OR a lens-review dispatch-completed/failed event
+    // appears in the log. Both confirm the empty-diff guard did NOT fire.
+    assert(
+      lensDispatched ||
+        kinds.includes("dispatch-completed") ||
+        kinds.includes("dispatch-failed"),
+      "PR11 §A: runLens did NOT skip on empty diff post-commit (merge-base fetcher saw the feature diff)",
+    );
+    assert(
+      !kinds.includes("lens-skipped-empty-diff"),
+      "PR11 §A: lens-skipped-empty-diff event was NOT emitted (the bug it prevented)",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// 44. PR11 — runLens still emits lens-skipped-empty-diff for genuinely
+// empty cycles (feature branch == origin/main, no commits ahead).
+// Regression guard so PR11 §A doesn't lose the PR6 guard's protection.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-lens-empty-real-"));
+  try {
+    const fs = await import("node:fs/promises");
+    const { promisify } = await import("node:util");
+    const { exec } = await import("node:child_process");
+    const execp = promisify(exec);
+
+    await execp("git init -q", { cwd: dir });
+    await execp('git config user.email "t@t" && git config user.name "T"', {
+      cwd: dir,
+      shell: "/bin/bash",
+    });
+    await fs.writeFile(path.join(dir, "base.txt"), "hello\n");
+    await execp("git add base.txt && git commit -q -m initial", { cwd: dir, shell: "/bin/bash" });
+    await execp("git update-ref refs/remotes/origin/main HEAD", { cwd: dir });
+    await execp("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", {
+      cwd: dir,
+    });
+    await execp("git checkout -qb feature/pr11-empty", { cwd: dir });
+    // No commits on the feature branch → origin/main..HEAD is empty.
+
+    let s = initialState(821, 1_000_000);
+    s = {
+      ...s,
+      pipelineState: {
+        ...s.pipelineState,
+        currentStep: "lens-review",
+        lastCompletedStep: "commit-pr",
+        worktrees: { default: dir },
+        workstreams: {
+          default: { id: "default", scope: "test", paths: [], outOfScope: [] },
+        },
+        branchName: "feature/pr11-empty",
+        prNumber: 8210,
+      },
+    };
+    await writeState(dir, s);
+
+    const ctx: DriverContext = {
+      pi: makeFakePi().pi,
+      repoRoot: dir,
+      issue: 821,
+      issueBodyFetcherFn: mockIssueBodyOk,
+      dispatchFn: async (_pi, spec, opts) => {
+        if (opts?.label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
+        if (spec.role === "ops") return mkResult({ role: "ops", text: "CI_STATUS: success" });
+        throw new Error(`unexpected dispatch: ${spec.role} / ${opts?.label}`);
+      },
+    };
+    await runWorkDriver(ctx).catch(() => {});
+    const after = await readState(dir, 821);
+    const kinds = (after?.eventLog ?? []).map((e) => e.kind);
+    assert(
+      kinds.includes("lens-skipped-empty-diff"),
+      "PR11 §A regression: lens-skipped-empty-diff still fires when origin/main..HEAD is empty (genuine no-work cycle)",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// 45. PR11 §B — develop prompt threads activeIssues, not ctx.issue.
+// Empirical v10r incident: pre-PR11 the developer prompt hardcoded
+// ctx.issue (= primary = first token) even when activeIssues = [different
+// issue from explore]. Result: PR #483 implemented #479's --config work
+// while branded fix(#476).
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-dev-active-issue-"));
+  try {
+    const fs = await import("node:fs/promises");
+    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    // Pre-seed at develop with primary issue=479 but activeIssues=[476]
+    // (the v10r-incident shape). The developer prompt must reference #476.
+    let s = initialState(479, 1_000_000);
+    s = {
+      ...s,
+      issues: [479, 480, 481, 482, 476],
+      pipelineState: {
+        ...s.pipelineState,
+        currentStep: "develop",
+        lastCompletedStep: "branch",
+        worktrees: { default: dir },
+        workstreams: {
+          default: { id: "default", scope: "fix the HNSW listener crash", paths: [], outOfScope: [] },
+        },
+        branchName: "feature/issue-476-heal-invalid-hnsw-index",
+        activeIssues: [476],
+        droppedIssues: [
+          { issue: 479, verdict: "NEEDS_CLARIFICATION", reason: "No issue body available" },
+          { issue: 480, verdict: "NEEDS_CLARIFICATION", reason: "No issue body available" },
+          { issue: 481, verdict: "NEEDS_CLARIFICATION", reason: "No issue body available" },
+          { issue: 482, verdict: "NEEDS_CLARIFICATION", reason: "No issue body available" },
+        ],
+      },
+    };
+    await writeState(dir, s);
+
+    let developerPrompt = "";
+    let speculativePrompt = "";
+    const ctx: DriverContext = {
+      pi: makeFakePi().pi,
+      repoRoot: dir,
+      issue: 479,
+      issues: [479, 480, 481, 482, 476],
+      issueBodyFetcherFn: mockIssueBodyOk,
+      dispatchFn: async (_pi, spec, opts) => {
+        if (opts?.label === "developer") developerPrompt = spec.prompt;
+        if (opts?.label === "explore:speculative") speculativePrompt = spec.prompt;
+        if (opts?.label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
+        // Throw on any non-developer/non-speculative dispatch to halt the cycle.
+        if (spec.role === "developer") {
+          return mkResult({ role: "developer", text: "stub" });
+        }
+        if (spec.role === "explore" && opts?.label?.startsWith("explore:speculative")) {
+          return mkResult({ role: "explore", text: "stub" });
+        }
+        throw new Error(`halt: ${spec.role} / ${opts?.label}`);
+      },
+    };
+    await runWorkDriver(ctx).catch(() => {});
+
+    // Developer prompt must reference #476 (the active issue), NOT #479
+    // (the primary). The pre-PR11 bug would have the prompt say `#479`.
+    assert(
+      developerPrompt.includes("issue #476") && !developerPrompt.includes("issue #479"),
+      `PR11 §B: developer prompt references active issue #476, NOT primary #479 (got headline: "${developerPrompt.split("\n")[0]}")`,
+    );
+    assert(
+      developerPrompt.includes("gh issue view 476") && !developerPrompt.includes("gh issue view 479"),
+      "PR11 §B: developer prompt's re-fetch instruction targets active issue #476",
+    );
+    if (speculativePrompt) {
+      assert(
+        speculativePrompt.includes("#476") && !speculativePrompt.includes("#479"),
+        "PR11 §B: speculative explore prompt also references active issue #476",
+      );
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// 46. PR11 §C — runExplore halts on empty issue body (test-only injection).
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-explore-empty-"));
+  try {
+    const fs = await import("node:fs/promises");
+    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    const seenLabels: string[] = [];
+    const ctx: DriverContext = {
+      pi: makeFakePi().pi,
+      repoRoot: dir,
+      issue: 850,
+      // Simulate the v10r incident: gh issue view returns empty stdout
+      // (projectCards GraphQL deprecation / gh extension hijack /
+      // auth lapse). All bodies empty → halt.
+      issueBodyFetcherFn: async (_n, _cwd) => ({ stdout: "" }),
+      dispatchFn: async (_pi, spec, opts) => {
+        seenLabels.push(opts?.label ?? spec.role);
+        if (opts?.label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
+        return mkResult({ role: spec.role, text: "stub" });
+      },
+    };
+    await runWorkDriver(ctx);
+
+    const after = await readState(dir, 850);
+    const capHit = (after?.eventLog ?? []).find((e) => e.kind === "cap-hit");
+    assert(
+      capHit?.kind === "cap-hit" && capHit.cap === "explore-bodies-empty",
+      "PR11 §C: empty body → cap='explore-bodies-empty'",
+    );
+    assert(
+      (after?.pipelineState.emptyBodyIssues ?? []).length === 1,
+      "PR11 §C: emptyBodyIssues populated with the failed fetch",
+    );
+    assert(
+      after?.pipelineState.emptyBodyIssues?.[0]?.issue === 850,
+      "PR11 §C: emptyBodyIssues entry names the failing issue",
+    );
+    const cascadeLabels = seenLabels.filter(
+      (l) => l === "plan" || l === "branch" || l === "developer" || l.startsWith("developer["),
+    );
+    assert(
+      cascadeLabels.length === 0,
+      `PR11 §C: NO plan/branch/develop dispatch (the v10r cascade prevented; got: ${cascadeLabels.join(",") || "none"})`,
+    );
+    assert(
+      seenLabels.includes("ops:handoff"),
+      "PR11 §C: handoff DID run (operator gets the explanation + recovery commands)",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// 47. PR11 §C — partial-empty (some bodies present, some empty) STILL
+// halts. Strict rule per design — partial-data flow-through is what
+// caused the v10r incident.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-explore-partial-empty-"));
+  try {
+    const fs = await import("node:fs/promises");
+    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    let fetchCount = 0;
+    const ctx: DriverContext = {
+      pi: makeFakePi().pi,
+      repoRoot: dir,
+      issue: 860,
+      issues: [860, 861, 862],
+      issueBodyFetcherFn: async (n, _cwd) => {
+        fetchCount++;
+        // #860 succeeds; #861 + #862 return empty (v10r-shape).
+        if (n === 860) return { stdout: `title:\tok\n\nreal body for #${n}` };
+        return { stdout: "" };
+      },
+      dispatchFn: async (_pi, spec, opts) => {
+        if (opts?.label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
+        return mkResult({ role: spec.role, text: "stub" });
+      },
+    };
+    await runWorkDriver(ctx);
+    const after = await readState(dir, 860);
+    const capHit = (after?.eventLog ?? []).find((e) => e.kind === "cap-hit");
+    assert(
+      capHit?.kind === "cap-hit" && capHit.cap === "explore-bodies-empty",
+      "PR11 §C: ANY empty body halts (strict rule, not majority)",
+    );
+    const empty = after?.pipelineState.emptyBodyIssues ?? [];
+    assert(
+      empty.length === 2 && empty.some((e) => e.issue === 861) && empty.some((e) => e.issue === 862),
+      "PR11 §C: emptyBodyIssues lists exactly the failed fetches (#861, #862)",
+    );
+    assert(fetchCount === 3, "PR11 §C: fetcher called once per requested issue");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// 48. PR11 §E — explainCap covers the new cap shape + renderHandoffUserMessage
+// surfaces empty-body details with diagnostic recovery commands.
+{
+  let s = initialState(479, 1_000_000);
+  s = {
+    ...s,
+    issues: [479, 480, 481, 482, 476],
+    pipelineState: {
+      ...s.pipelineState,
+      currentStep: "handoff",
+      status: "handoff",
+      emptyBodyIssues: [
+        { issue: 479, reason: "gh issue view returned empty stdout (possible projectCards GraphQL deprecation, gh extension hijack, or auth lapse)" },
+        { issue: 480, reason: "gh issue view returned empty stdout" },
+        { issue: 481, reason: "gh issue view returned empty stdout" },
+        { issue: 482, reason: "gh issue view returned empty stdout" },
+      ],
+    },
+  };
+  s = appendEvent(s, {
+    kind: "cap-hit",
+    at: 1_000_400,
+    cap: "explore-bodies-empty",
+    reviewRound: 0,
+    nextStep: "handoff",
+  });
+  s = appendEvent(s, {
+    kind: "handoff-emitted",
+    at: 1_000_500,
+    commentUrl: "https://github.com/x/y/issues/479#c1",
+    labelApplied: true,
+    handoffBodyPath: "/tmp/issue-479/handoff-comment.md",
+  });
+
+  // explainCap covers the new shape and names the failing issues.
+  const explanation = explainCap("explore-bodies-empty", s);
+  assert(
+    explanation.includes("#479") && explanation.includes("#480"),
+    "PR11 §E: explainCap explore-bodies-empty names the failing issues",
+  );
+  assert(
+    /gh auth status/i.test(explanation),
+    "PR11 §E: explainCap suggests gh auth status as part of the diagnostic",
+  );
+
+  // renderHandoffUserMessage surfaces the diagnostic recovery commands.
+  const msg = renderHandoffUserMessage(s, "/repo/v10r", "/repo/v10r/tmp/issue-479");
+  assert(
+    msg.includes("Empty/error body fetches:"),
+    "PR11 §E: renderHandoffUserMessage lists failed body fetches",
+  );
+  assert(
+    msg.includes("gh auth status") && msg.includes("gh --version"),
+    "PR11 §E: recovery commands include gh auth status + gh --version",
+  );
+  assert(
+    msg.includes("gh api repos/") && msg.includes("--jq .body"),
+    "PR11 §E: recovery commands include REST-fallback probe",
+  );
+
+  // renderHandoffMarkdown emits the empty-body section above recovery.
+  const md = renderHandoffMarkdown(s);
+  assert(
+    md.includes("### Empty / failed issue-body fetches"),
+    "PR11 §E: renderHandoffMarkdown emits 'Empty / failed issue-body fetches' section",
+  );
+  assert(
+    md.includes("#479") && md.includes("#480"),
+    "PR11 §E: renderHandoffMarkdown lists each failed issue under the section",
   );
 }
 

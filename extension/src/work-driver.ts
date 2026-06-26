@@ -344,6 +344,14 @@ export interface DriverContext {
     opts?: { label?: string; skipDeck?: boolean; timeoutMs?: number },
   ) => Promise<DispatchResult>;
   /**
+   * PR11 — optional injection point for tests: replace the `gh issue view`
+   * fetch in runExplore. Production callers omit this; the default
+   * shells out via `execp("gh issue view <N>")`. Tests inject a fake to
+   * simulate empty bodies / rejected fetches without mocking PATH.
+   * Returns `{ stdout: string }` matching the execp shape.
+   */
+  issueBodyFetcherFn?: (issue: number, cwd: string) => Promise<{ stdout: string }>;
+  /**
    * Optional injection point for tests: replace runAdversarialLoop with a
    * fake. Production callers omit this — runAdversarial uses the real
    * orchestrator from adversarial.ts. Mirrors `dispatchFn` for symmetry.
@@ -515,13 +523,25 @@ async function runExplore(ctx: DriverContext, state: WorkState, now: number): Pr
   // `.pi/work-state/<primary>/issue-body-<N>.txt`.
   const dispatchPromise = (async () =>
     dispatch(ctx.pi, { role: "explore", prompt }, { label: "explore" }))();
-  const bodyPromises = issues.map((n) =>
-    execp(`gh issue view ${n}`, { cwd: ctx.repoRoot, maxBuffer: 256 * 1024 }),
-  );
+  // PR11 — body fetch via injection point (default: shell out to gh).
+  // The injection lets tests simulate empty / failed fetches without
+  // mocking PATH, and keeps the production path unchanged.
+  const fetchBody =
+    ctx.issueBodyFetcherFn ??
+    ((n: number, cwd: string) => execp(`gh issue view ${n}`, { cwd, maxBuffer: 256 * 1024 }));
+  const bodyPromises = issues.map((n) => fetchBody(n, ctx.repoRoot));
   const [dispatchSettled, ...bodySettled] = await Promise.allSettled([
     dispatchPromise,
     ...bodyPromises,
   ]);
+
+  // PR11 — track per-issue fetch outcome. Any empty/failed body is a
+  // pre-condition failure for the cycle: explore can't reliably classify
+  // work that hasn't been read. Live evidence (v10r 2026-06-25 / PR #483):
+  // 4 of 5 empty bodies cascaded silently into wrong-issue work landing
+  // on main. Strict halt — operator gets a clear remediation message and
+  // can fix gh auth / version / network before re-running.
+  const emptyBodyIssues: Array<{ issue: number; reason: string }> = [];
 
   // Persist each issue body as a claim-check artifact (best-effort).
   // For single-issue cycles, the first body is stored under the legacy
@@ -533,6 +553,14 @@ async function runExplore(ctx: DriverContext, state: WorkState, now: number): Pr
     const result = bodySettled[i];
     if (result?.status === "fulfilled") {
       const body = result.value.stdout;
+      if (!body.trim()) {
+        emptyBodyIssues.push({
+          issue: n,
+          reason:
+            "gh issue view returned empty stdout (possible projectCards GraphQL deprecation, gh extension hijack, or auth lapse)",
+        });
+        continue;
+      }
       try {
         const artifactName = issues.length === 1 ? "issue-body" : `issue-body-${n}`;
         const artifactPath = await writeDispatchArtifact(
@@ -555,10 +583,31 @@ async function runExplore(ctx: DriverContext, state: WorkState, now: number): Pr
         );
       }
     } else if (result?.status === "rejected") {
-      trace(
-        `work-driver: gh issue view ${n} failed: ${(result.reason as Error).message?.slice(0, 200)}`,
-      );
+      const reason = (result.reason as Error).message?.slice(0, 200) ?? "(no error message)";
+      trace(`work-driver: gh issue view ${n} failed: ${reason}`);
+      emptyBodyIssues.push({ issue: n, reason: `gh issue view rejected: ${reason}` });
     }
+  }
+
+  // PR11 — halt the cycle if ANY issue body failed to fetch. Pre-condition
+  // failure; the operator fixes gh and re-runs. No explore-dispatch
+  // processing past this point — the cycle's verdict routing depends on
+  // fully-read bodies, and per-issue NEEDS_CLARIFICATION from empty
+  // bodies looks identical to "issue is genuinely ambiguous", which
+  // mixed with one readable issue caused PR #483's wrong-issue merge.
+  if (emptyBodyIssues.length > 0) {
+    next = {
+      ...next,
+      pipelineState: { ...next.pipelineState, emptyBodyIssues },
+    };
+    next = appendEvent(next, {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "explore-bodies-empty",
+      reviewRound: 0,
+      nextStep: "handoff",
+    });
+    return next;
   }
 
   if (dispatchSettled?.status === "rejected") {
@@ -983,6 +1032,11 @@ async function runDevelop(ctx: DriverContext, state: WorkState, now: number): Pr
     Object.keys(state.pipelineState.workstreams ?? {}).length > 0
       ? Object.keys(state.pipelineState.workstreams ?? {})
       : ["default"];
+  // PR11 — thread the ACTIVE issue list (NEEDS_WORK subset after
+  // explore) into developer + speculative-explore prompts, not the
+  // primary cycle issue. activeIssuesOf falls back to [ctx.issue] for
+  // single-issue cycles so existing behaviour is preserved.
+  const activeIssues = activeIssuesOf(state);
 
   let next: WorkState = {
     ...state,
@@ -1027,7 +1081,7 @@ async function runDevelop(ctx: DriverContext, state: WorkState, now: number): Pr
             {
               role: "developer",
               prompt: inlineDevelopPrompt(
-                ctx.issue,
+                activeIssues,
                 scratchAbs,
                 ws,
                 ids.length > 1 ? id : undefined,
@@ -1043,7 +1097,7 @@ async function runDevelop(ctx: DriverContext, state: WorkState, now: number): Pr
                 {
                   role: "explore",
                   prompt: inlineSpeculativeExplorePrompt(
-                    ctx.issue,
+                    activeIssues,
                     ws,
                     speculativeContextPath,
                     scratchAbs,
@@ -1422,19 +1476,25 @@ async function runLens(ctx: DriverContext, state: WorkState, now: number): Promi
   };
   next = appendEvent(next, { kind: "step-started", step: "lens-review", at: now });
 
-  // PR3: multi-worktree diff with provenance headers (or single diff for
-  // N=1). Replaces the PR2 broken-fallback path that returned empty diff
-  // when worktrees was {}, making lens-review review nothing.
-  const diff = await fetchAllDiffs(ps.worktrees ?? {}, ctx.repoRoot);
+  // PR11 — lens-review runs POST-commit, when the developer's work is
+  // already committed on the feature branch. `git diff HEAD` (what
+  // fetchAllDiffs uses) is empty at this point — the changes are IN
+  // HEAD, not against it. Pre-PR11 the empty-diff guard fired on every
+  // successful cycle (34 ms lens-review skip → code merged without six-
+  // pass review). fetchAllMergedDiffs uses `git diff origin/<base>..HEAD`
+  // which correctly returns the integrated diff. runAdversarial still
+  // uses fetchAllDiffs because adversarial runs PRE-commit (uncommitted
+  // diff in the worktree is the right input there).
+  const diff = await fetchAllMergedDiffs(ps.worktrees ?? {}, ctx.repoRoot);
 
   // PR6 — empty-diff guard. Lens children hallucinate findings against
   // unrelated files when given empty context: on #533 (a devDep bump
   // already merged 5 days earlier) develop committed nothing, then
   // lens-review found PERFORMANCE issues in `src/web/sweep_stats.rs`.
-  // Skip the dispatch and synthesise an `lens-approved` so nextStep
-  // advances normally — catches the failure mode independently of any
-  // upstream short-circuit (cherry-pick reverted, manual takeover that
-  // reset HEAD, future paths that yield empty diff for any reason).
+  // PR11 narrows the failure mode the guard fires for: the integration
+  // branch has no commits ahead of mainline (genuinely nothing to
+  // review), not "git diff HEAD is empty after commit" (post-PR11 the
+  // diff is base..HEAD, not HEAD).
   if (!diff.trim()) {
     next = appendEvent(
       next,
@@ -1701,6 +1761,81 @@ async function fetchAllDiffs(worktrees: Record<string, string>, repoRoot: string
   // Mixed-or-full diff: emit headers + bodies with the same budget rules
   // as before. Header preserved even for empty bodies in this branch so
   // reviewers see "task-a had no changes" alongside "task-b had X".
+  const TOTAL_CAP = 1024 * 1024;
+  const sections: string[] = [];
+  let totalBytes = 0;
+  let truncated = false;
+  for (const { id, body: piece } of fetched) {
+    if (truncated) break;
+    const header = `## workstream: ${id}\n`;
+    const remaining = TOTAL_CAP - totalBytes - header.length;
+    if (remaining <= 0) {
+      truncated = true;
+      break;
+    }
+    const body = piece.length > remaining ? `${piece.slice(0, remaining)}\n[... truncated]` : piece;
+    sections.push(header + body);
+    totalBytes += header.length + body.length;
+  }
+  if (truncated) sections.push("\n[... merged diff truncated at 1 MiB total]");
+  return sections.join("\n");
+}
+
+/**
+ * PR11 — Resolve the integration-branch-vs-mainline diff from inside a
+ * worktree. Used by `runLens` POST-commit; the changes are committed on
+ * the feature branch by the time lens-review fires, so `git diff HEAD`
+ * (what `fetchDiff` does) is empty. Pre-PR11 this caused PR6's empty-
+ * diff guard to fire on EVERY successful cycle (34 ms lens-review skip).
+ *
+ * Mainline resolution mirrors what ops's branch step does:
+ *   `git symbolic-ref refs/remotes/origin/HEAD` → fallback "main".
+ * Then `git diff origin/<base>..HEAD` returns the integrated diff that
+ * lens-review actually wants. Best-effort: any shell failure returns
+ * empty (caller's empty-diff guard handles cleanly).
+ */
+async function fetchMergedDiff(cwd: string | undefined): Promise<string> {
+  if (!cwd) return "";
+  try {
+    const { stdout: head } = await execp(
+      "git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@'",
+      { cwd, shell: "/bin/bash" },
+    );
+    const base = head.trim() || "main";
+    const { stdout } = await execp(`git diff origin/${base}..HEAD`, {
+      cwd,
+      maxBuffer: 1024 * 1024,
+    });
+    return stdout;
+  } catch (err) {
+    trace(`work-driver: fetchMergedDiff(${cwd}) failed: ${(err as Error).message?.slice(0, 200)}`);
+    return "";
+  }
+}
+
+/**
+ * PR11 — Multi-worktree counterpart to `fetchMergedDiff`. Same N=1
+ * vs N>1 shape as `fetchAllDiffs`, same headers + 1 MiB cap + empty-
+ * aware return — just uses `fetchMergedDiff` instead of `fetchDiff` so
+ * post-commit lens-review sees the integrated diff against mainline.
+ */
+async function fetchAllMergedDiffs(
+  worktrees: Record<string, string>,
+  repoRoot: string,
+): Promise<string> {
+  const ids = Object.keys(worktrees);
+  if (ids.length <= 1) {
+    const cwd = ids.length === 1 ? worktrees[ids[0] ?? ""] : repoRoot;
+    return fetchMergedDiff(cwd ?? repoRoot);
+  }
+  const fetched: Array<{ id: string; body: string }> = [];
+  for (const id of ids) {
+    const wt = worktrees[id];
+    if (!wt) continue;
+    fetched.push({ id, body: await fetchMergedDiff(wt) });
+  }
+  if (fetched.every((f) => !f.body.trim())) return "";
+
   const TOTAL_CAP = 1024 * 1024;
   const sections: string[] = [];
   let totalBytes = 0;
@@ -2062,6 +2197,19 @@ export function renderHandoffMarkdown(state: WorkState): string {
     );
   }
 
+  // PR11 — when explore halted on empty issue bodies, list the failed
+  // fetches above the recovery commands so the operator sees exactly
+  // which `gh issue view N` calls broke (and can target the actual fix
+  // — gh auth, gh version, network, or an extension hijack).
+  if (capForExplain === "explore-bodies-empty" && (ps.emptyBodyIssues ?? []).length > 0) {
+    lines.push(
+      "### Empty / failed issue-body fetches",
+      "",
+      ...(ps.emptyBodyIssues ?? []).map((f) => `- **#${f.issue}** — ${f.reason}`),
+      "",
+    );
+  }
+
   // PR5: Concrete recovery commands (was prose "Suggested next steps").
   // The four named shell commands map to the four decisions an operator
   // faces at handoff time — same shape as renderHandoffUserMessage's
@@ -2099,6 +2247,23 @@ export function renderHandoffMarkdown(state: WorkState): string {
       "",
       "# 4. Abandon the handoff entry:",
       `rm .pi/work-state/${issue}.json`,
+    );
+  } else if (capForExplain === "explore-bodies-empty") {
+    const failed = ps.emptyBodyIssues ?? [];
+    const probeIssue = failed[0]?.issue ?? issue;
+    const failedList = failed.map((f) => `#${f.issue}`).join(", ") || `#${issue}`;
+    lines.push(
+      "# 1. Confirm gh auth + version (most common cause: projectCards GraphQL deprecation in older gh):",
+      "gh auth status && gh --version",
+      "",
+      "# 2. Probe a failing issue via REST (works when `gh issue view` is broken):",
+      `gh api repos/<owner>/<repo>/issues/${probeIssue} --jq .body | head`,
+      "",
+      "# 3. If gh issue view is hijacked, check for a misbehaving gh extension:",
+      "gh extension list",
+      "",
+      `# 4. Once fixed, re-run /work — the cycle halts cleanly with no code written for ${failedList}:`,
+      `rm .pi/work-state/${issue}.json && pi`,
     );
   } else {
     lines.push(
@@ -2257,6 +2422,12 @@ export function explainCap(
       return "explore concluded this issue is already done (e.g., satisfied by a prior PR or merged earlier). The driver halted before branch/develop ran — no code was written. Close the issue if you agree, or re-run /work with additional context if you believe there IS work to do";
     case "explore-needs-clarification":
       return "explore could not determine concrete work to do — the issue may be ambiguous, missing acceptance criteria, or contradictory. The driver halted before plan ran. Clarify the issue body and re-run /work";
+    case "explore-bodies-empty": {
+      const failed = state.pipelineState.emptyBodyIssues ?? [];
+      const which =
+        failed.length > 0 ? failed.map((f) => `#${f.issue}`).join(", ") : "one or more issues";
+      return `\`gh issue view\` returned empty/error for ${which} — the driver cannot reliably classify work that hasn't been read. Most likely causes: gh version with projectCards GraphQL deprecation, gh extension hijacking stdout, expired auth (\`gh auth status\`), or network. Fix the gh setup and re-run /work; the body fetch is a load-bearing pre-condition`;
+    }
   }
   // Template-literal `step-failed:<step>` values land here. Switch on the
   // step suffix to produce a tailored sentence.
@@ -2490,6 +2661,27 @@ export function renderHandoffUserMessage(
       "",
       "  # 4. Abandon the handoff entry:",
       `     rm ${repoRoot}/.pi/work-state/${issue}.json`,
+    );
+  } else if (cap === "explore-bodies-empty") {
+    const failed = ps.emptyBodyIssues ?? [];
+    const failedList = failed.map((f) => `#${f.issue}`).join(", ") || `#${issue}`;
+    const probeIssue = failed[0]?.issue ?? issue;
+    lines.push(
+      "",
+      "Empty/error body fetches:",
+      ...failed.map((f) => `  #${f.issue} — ${f.reason}`),
+      "",
+      "  # 1. Confirm gh auth + version (most common cause: projectCards GraphQL deprecation in older gh):",
+      "     gh auth status && gh --version",
+      "",
+      "  # 2. Probe a failing issue via REST (works when `gh issue view` is broken):",
+      `     gh api repos/<owner>/<repo>/issues/${probeIssue} --jq .body | head`,
+      "",
+      "  # 3. If gh issue view is hijacked, check for a misbehaving gh extension:",
+      "     gh extension list",
+      "",
+      `  # 4. Once fixed, re-run /work — the cycle halts cleanly with no code written for ${failedList}:`,
+      `     rm ${repoRoot}/.pi/work-state/${issue}.json && pi`,
     );
   } else {
     lines.push(
@@ -2870,19 +3062,26 @@ function inlineBranchPrompt(
 }
 
 function inlineDevelopPrompt(
-  issue: number,
+  issues: number[],
   scratchDirAbs: string,
   workstream?: { id: string; scope: string; paths: string[]; outOfScope: string[] },
   workstreamId?: string,
   speculativeContextPath?: string,
 ): string {
-  const lines = [`/work issue #${issue} — Step 4 (Implementation).`, ""];
+  // PR11 — multi-issue cycles must show the developer the ACTIVE issues
+  // (NEEDS_WORK subset after explore), not the primary cycle issue. The
+  // pre-PR11 hardcoded `ctx.issue` told developers to fetch + work on
+  // `issues[0]` even when activeIssues = [different]; on the v10r
+  // incident this is how PR #483 ended up implementing #479's --config
+  // work while labelled `fix(#476)`.
+  const headline = issues.length === 1 ? `issue #${issues[0]}` : `issue(s) #${issues.join(", #")}`;
+  const lines = [`/work ${headline} — Step 4 (Implementation).`, ""];
   if (workstream && workstreamId && workstreamId !== "default") {
     // Multi-workstream branch — anchor scope explicitly so this developer
     // doesn't drift into another workstream's territory. The out-of-scope
     // fence addresses the issue #553 scope-contamination pattern.
     lines.push(
-      `**Workstream: \`${workstream.id}\`** — one of multiple developers running in parallel for this issue.`,
+      `**Workstream: \`${workstream.id}\`** — one of multiple developers running in parallel for this ${issues.length === 1 ? "issue" : "set of issues"}.`,
       `Scope: ${workstream.scope}`,
       workstream.paths.length > 0
         ? `In-scope files: ${workstream.paths.join(", ")}`
@@ -2893,8 +3092,12 @@ function inlineDevelopPrompt(
       "",
     );
   }
+  const fetchInstr =
+    issues.length === 1
+      ? `\`gh issue view ${issues[0]}\` to re-fetch the issue body (acceptance criteria, DoD).`
+      : `Re-fetch each active issue body — run \`gh issue view <N>\` for each of: ${issues.map((n) => `#${n}`).join(", ")}.`;
   lines.push(
-    `  1. \`gh issue view ${issue}\` to re-fetch the issue body (acceptance criteria, DoD).`,
+    `  1. ${fetchInstr}`,
     "  2. Implement the change end-to-end in the current branch. Run local quality gates (typecheck, lint, tests as the project defines them).",
     "  3. Do NOT commit. Do NOT push. Leave the changes uncommitted in the working directory — ops commits in Step 6 after the adversarial gate.",
     "  4. End your reply with a `## Touched files` section listing every file you changed and a one-line `## Summary`.",
@@ -2925,16 +3128,17 @@ function inlineDevelopPrompt(
  * scratch file so the dispatch report stays small.
  */
 function inlineSpeculativeExplorePrompt(
-  issue: number,
+  issues: number[],
   workstream: { id: string; scope: string; paths: string[]; outOfScope: string[] } | undefined,
   contextPath: string,
   scratchDirAbs: string,
 ): string {
+  const headline = issues.length === 1 ? `issue #${issues[0]}` : `issue(s) #${issues.join(", #")}`;
   const scopeBlurb = workstream
     ? `Workstream \`${workstream.id}\` scope: ${workstream.scope}. In-scope files: ${workstream.paths.join(", ") || "(derive from scope)"}.`
-    : `Issue #${issue}.`;
+    : `${headline}.`;
   return [
-    `/work issue #${issue} — Step 4 speculative context.`,
+    `/work ${headline} — Step 4 speculative context.`,
     "",
     "You are running IN PARALLEL with a developer working on the change. Your job is to surface context the developer may benefit from:",
     "  - test patterns at the touchpoints (how does the project structure its tests for this area?)",

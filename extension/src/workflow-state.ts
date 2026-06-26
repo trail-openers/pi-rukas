@@ -226,6 +226,13 @@ export type WorkEvent =
         | "developer-timeout"
         | "explore-already-complete"
         | "explore-needs-clarification"
+        // PR11: pre-condition failure — `gh issue view <N>` returned empty
+        // or errored for one or more issues. The driver halts before
+        // explore-dispatch processing because per-issue verdict routing
+        // is unreliable on partial body data (live evidence: v10r
+        // 2026-06-25 where 4/5 empty bodies cascaded into wrong-issue
+        // work landing on main).
+        | "explore-bodies-empty"
         | `step-failed:${WorkStep}`;
       reviewRound: number;
       /** What the driver will do next — either "handoff" (terminal) or "step-back" (Step 7h). */
@@ -433,6 +440,15 @@ export interface PipelineState {
    * NEEDS_CLARIFICATION issues land in `droppedIssues` instead.
    */
   activeIssues?: number[];
+  /**
+   * PR11 — per-issue body-fetch failure list. Populated by `runExplore`
+   * when `gh issue view <N>` returns empty stdout or rejects for any
+   * issue in the cycle. Drives the operator-facing handoff body — each
+   * entry names which `gh` call broke so the operator can target the
+   * actual failure (gh auth, gh version, network, extension hijack).
+   * Absent for normal cycles where every issue body fetched cleanly.
+   */
+  emptyBodyIssues?: Array<{ issue: number; reason: string }>;
   /**
    * PR10 — multi-issue counterpart of `activeIssues`: issues filtered
    * out by `runExplore` because explore declared them complete or
