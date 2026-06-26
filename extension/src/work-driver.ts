@@ -524,27 +524,25 @@ async function runExplore(ctx: DriverContext, state: WorkState, now: number): Pr
   // this collapses to the existing single-issue shape.
   const issues = ctx.issues ?? state.issues ?? [ctx.issue];
   const dispatch = ctx.dispatchFn ?? dispatchCore;
-  const prompt = inlineExplorePrompt(issues, scratchDir(ctx.repoRoot, ctx.issue));
   const startedAt = Date.now();
 
-  // PR3 Pattern 1 (intra-step fanout): driver fetches issue bodies in
-  // parallel with the explore dispatch. PR10 extends to N issues —
-  // Promise.allSettled over `gh issue view <N>` for each, then persist
-  // each body as its own claim-check artifact at
-  // `.pi/work-state/<primary>/issue-body-<N>.txt`.
-  const dispatchPromise = (async () =>
-    dispatch(ctx.pi, { role: "explore", prompt }, { label: "explore" }))();
-  // PR11 — body fetch via injection point (default: shell out to gh).
-  // The injection lets tests simulate empty / failed fetches without
-  // mocking PATH, and keeps the production path unchanged.
+  // PR13 — fetch bodies as a BARRIER before the explore dispatch (was
+  // a fan-out in PR3 Pattern 1; the race caused false NEEDS_CLARIFICATION
+  // cap-hits on issues with substantive bodies because the agent's
+  // verdict committed before the gh fetch settled and the prompt never
+  // pointed at the cached artifact path). The bodies are then inlined
+  // into the explore prompt — agent has the body content directly and
+  // doesn't need to read files or trust the "driver is fetching in
+  // parallel" instruction. Wall-clock impact: ~1-2 s (the parallel-
+  // fetch dispatch overlap was never that large).
+  //
+  // PR11 §C empty-body halt also moves above the dispatch — if any
+  // fetch returns empty stdout, we halt BEFORE wasting tokens on the
+  // explore dispatch.
   const fetchBody =
     ctx.issueBodyFetcherFn ??
     ((n: number, cwd: string) => execp(`gh issue view ${n}`, { cwd, maxBuffer: 256 * 1024 }));
-  const bodyPromises = issues.map((n) => fetchBody(n, ctx.repoRoot));
-  const [dispatchSettled, ...bodySettled] = await Promise.allSettled([
-    dispatchPromise,
-    ...bodyPromises,
-  ]);
+  const bodySettled = await Promise.allSettled(issues.map((n) => fetchBody(n, ctx.repoRoot)));
 
   // PR11 — track per-issue fetch outcome. Any empty/failed body is a
   // pre-condition failure for the cycle: explore can't reliably classify
@@ -553,6 +551,13 @@ async function runExplore(ctx: DriverContext, state: WorkState, now: number): Pr
   // on main. Strict halt — operator gets a clear remediation message and
   // can fix gh auth / version / network before re-running.
   const emptyBodyIssues: Array<{ issue: number; reason: string }> = [];
+
+  // PR13 — per-issue body content for inlining in the explore prompt.
+  // Capped at 16 KiB per body — covers virtually every real-world issue
+  // body. Larger bodies get a truncation marker pointing at the cached
+  // artifact so the agent can `cat` for the rest if needed.
+  const INLINE_BODY_CAP = 16 * 1024;
+  const bodiesForPrompt: Array<{ issue: number; body: string; truncated: boolean }> = [];
 
   // Persist each issue body as a claim-check artifact (best-effort).
   // For single-issue cycles, the first body is stored under the legacy
@@ -572,14 +577,10 @@ async function runExplore(ctx: DriverContext, state: WorkState, now: number): Pr
         });
         continue;
       }
+      let artifactPath: string | undefined;
       try {
         const artifactName = issues.length === 1 ? "issue-body" : `issue-body-${n}`;
-        const artifactPath = await writeDispatchArtifact(
-          ctx.repoRoot,
-          ctx.issue,
-          artifactName,
-          body,
-        );
+        artifactPath = await writeDispatchArtifact(ctx.repoRoot, ctx.issue, artifactName, body);
         // Only set issueBodyArtifact for the PRIMARY issue (back-compat
         // path readers look for `state.pipelineState.issueBodyArtifact`).
         if (n === ctx.issue) {
@@ -593,6 +594,11 @@ async function runExplore(ctx: DriverContext, state: WorkState, now: number): Pr
           `work-driver: failed to persist issue-body artifact for #${n}: ${(err as Error).message}`,
         );
       }
+      const truncated = body.length > INLINE_BODY_CAP;
+      const inlineBody = truncated
+        ? `${body.slice(0, INLINE_BODY_CAP)}\n[... truncated; full body at ${artifactPath ?? "(artifact write failed)"}]`
+        : body;
+      bodiesForPrompt.push({ issue: n, body: inlineBody, truncated });
     } else if (result?.status === "rejected") {
       const reason = (result.reason as Error).message?.slice(0, 200) ?? "(no error message)";
       trace(`work-driver: gh issue view ${n} failed: ${reason}`);
@@ -601,11 +607,9 @@ async function runExplore(ctx: DriverContext, state: WorkState, now: number): Pr
   }
 
   // PR11 — halt the cycle if ANY issue body failed to fetch. Pre-condition
-  // failure; the operator fixes gh and re-runs. No explore-dispatch
-  // processing past this point — the cycle's verdict routing depends on
-  // fully-read bodies, and per-issue NEEDS_CLARIFICATION from empty
-  // bodies looks identical to "issue is genuinely ambiguous", which
-  // mixed with one readable issue caused PR #483's wrong-issue merge.
+  // failure; the operator fixes gh and re-runs. PR13 moves this check
+  // above the dispatch so we don't spend tokens on an explore that's
+  // bound to halt anyway. Same routing as before.
   if (emptyBodyIssues.length > 0) {
     next = {
       ...next,
@@ -620,6 +624,13 @@ async function runExplore(ctx: DriverContext, state: WorkState, now: number): Pr
     });
     return next;
   }
+
+  // PR13 — now dispatch with bodies embedded in the prompt. Verdict can
+  // be sound from a single turn — no race, no agency-dependence.
+  const prompt = inlineExplorePrompt(issues, scratchDir(ctx.repoRoot, ctx.issue), bodiesForPrompt);
+  const dispatchSettled = await Promise.allSettled([
+    dispatch(ctx.pi, { role: "explore", prompt }, { label: "explore" }),
+  ]).then((arr) => arr[0]);
 
   if (dispatchSettled?.status === "rejected") {
     return appendEvent(next, {
@@ -3081,14 +3092,25 @@ function scratchHygieneSection(scratchDirAbs: string): string {
 }
 
 /**
- * Step 1 explore prompt. PR3 Pattern 1 (intra-step fanout): the driver
- * runs `gh issue view N` ITSELF in parallel with this dispatch and
- * persists the body to a claim-check artifact. The explore agent no
- * longer needs to fetch the issue body — it goes straight to semantic
- * context-gathering. Old `## Issue` heading dropped from the return
- * shape since the driver already has the body cached.
+ * Step 1 explore prompt. PR3 Pattern 1 fetched the body in PARALLEL
+ * with the explore dispatch — but the prompt never inlined the body
+ * content or pointed at the cached artifact path, so the agent's
+ * verdict committed BEFORE the fetch settled and the agent never had
+ * the body to read. Empirical false-NEEDS_CLARIFICATION cap-hits on
+ * v0.12.12's `/work 563 565` (and prior #561) had verdict reasons
+ * literally "Issue body not provided - awaiting driver to deliver
+ * issue content".
+ *
+ * PR13 fixes the race: driver fetches bodies as a BARRIER before this
+ * prompt is built, and the bodies are EMBEDDED inline below. The
+ * agent reads them directly — no race, no agency-dependence, no
+ * "trust the driver to deliver" footgun.
  */
-function inlineExplorePrompt(issues: number[], scratchDirAbs: string): string {
+function inlineExplorePrompt(
+  issues: number[],
+  scratchDirAbs: string,
+  bodies: Array<{ issue: number; body: string; truncated: boolean }> = [],
+): string {
   const headline = issues.length === 1 ? `issue #${issues[0]}` : `issues #${issues.join(", #")}`;
   const verdictBlock =
     issues.length === 1
@@ -3113,12 +3135,33 @@ function inlineExplorePrompt(issues: number[], scratchDirAbs: string): string {
     issues.length === 1
       ? "The `## Verdict` block is LOAD-BEARING. If you conclude the issue is already done (e.g., a prior PR addressed it), say `VERDICT: ALREADY_COMPLETE` even if the issue is still technically open in the tracker — the driver routes on your verdict, not on the issue's status. On ALREADY_COMPLETE or NEEDS_CLARIFICATION the driver halts immediately and hands off to the operator; no plan/branch/develop will run."
       : "The `## Verdict` block is LOAD-BEARING per issue. Mark each issue with the verdict you'd give if it were the only one in scope; the driver merges the active subset and runs ONE bundled PR with `Fixes #N` for each active issue.";
+  // PR13 — embed each issue body inline. This is the agent's source of
+  // truth for what each issue needs; reading these BEFORE answering the
+  // verdict prevents the false NEEDS_CLARIFICATION cap-hit pattern.
+  const bodyBlock =
+    bodies.length > 0
+      ? [
+          "",
+          "---",
+          "## Issue bodies (read these to determine your verdict)",
+          "",
+          ...bodies.flatMap(({ issue, body, truncated }) => [
+            `### Issue #${issue}${truncated ? " (truncated — full body cached on disk; see scratch dir if needed)" : ""}`,
+            "",
+            "```",
+            body,
+            "```",
+            "",
+          ]),
+        ].join("\n")
+      : "";
+
   return [
-    `/work ${headline} — Step 1 (Reconnaissance). The driver is fetching the issue body for each in parallel with your dispatch; do NOT run \`gh issue view\` yourself.`,
+    `/work ${headline} — Step 1 (Reconnaissance). The driver has fetched and embedded each issue body below — read those to determine the verdict; you do NOT need to re-fetch via \`gh issue view\`.`,
     "",
     `Gather context relevant to executing ${issues.length === 1 ? "this issue" : "these issues together"}:`,
     "  1. `vipune list --json | jq -r '.[] | .memory_type' | sort -u` to discover project memory types,",
-    "  2. `vipune search '<keywords-from-issue-title>' --hybrid --recency 0.3 --limit 8` for prior decisions,",
+    "  2. `vipune search '<keywords-from-issue-title-or-body>' --hybrid --recency 0.3 --limit 8` for prior decisions,",
     "  3. `codebase_memory_search_code({query: '<concept>'})` for existing relevant code.",
     "",
     "Return a STRUCTURED summary the work-driver can route on:",
@@ -3128,6 +3171,7 @@ function inlineExplorePrompt(issues: number[], scratchDirAbs: string): string {
     "  - touchpoint files (heading: `## Touchpoints`).",
     "",
     verdictDoctrine,
+    bodyBlock,
     scratchHygieneSection(scratchDirAbs),
   ].join("\n");
 }
