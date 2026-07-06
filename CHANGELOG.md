@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.14](https://github.com/randomm/pi-ensemble/compare/v0.12.13...v0.12.14) (2026-07-06)
+
+
+### Bug Fixes
+
+* **work-driver:** commit-pr consolidates ALL workstream worktrees (N&gt;1 convergence) ([#253](https://github.com/randomm/pi-ensemble/issues/253)) ([97a00ca](https://github.com/randomm/pi-ensemble/commit/97a00ca61f1559e6a5c7453df2d672b4f250d48e))
+
 ## [0.12.13](https://github.com/randomm/pi-ensemble/compare/v0.12.12...v0.12.13) (2026-06-26)
 
 
