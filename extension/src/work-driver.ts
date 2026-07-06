@@ -1444,21 +1444,121 @@ async function runAdversarial(
  * `gh issue comment`.
  */
 async function runCommitPr(ctx: DriverContext, state: WorkState, now: number): Promise<WorkState> {
-  const next = await runSingleDispatch(ctx, state, "commit-pr", "ops", "ops:commit-pr", now, () =>
+  let next = await runSingleDispatch(ctx, state, "commit-pr", "ops", "ops:commit-pr", now, () =>
+    // PR14 — thread worktrees + workstreams + branchName into the prompt
+    // so ops knows to consolidate every worktree's uncommitted changes
+    // (not just whichever one its dispatch landed in). Pre-PR14 the
+    // prompt was single-tree shaped; multi-workstream cycles silently
+    // committed only one worktree's slice (v0.12.13 /work 577 incident).
     inlineCommitPrPrompt(
       activeIssuesOf(state),
       state.pipelineState.droppedIssues ?? [],
+      state.pipelineState.worktrees ?? {},
+      state.pipelineState.workstreams ?? {},
+      state.pipelineState.branchName ?? "(branch not captured — set in Step 3)",
       scratchDir(ctx.repoRoot, ctx.issue),
     ),
   );
   const last = next.eventLog[next.eventLog.length - 1];
   if (last?.kind !== "dispatch-completed") return next;
   const prNumber = parsePrNumber(last.summary);
-  if (prNumber === undefined) return next;
-  return {
-    ...next,
-    pipelineState: { ...next.pipelineState, prNumber },
-  };
+  if (prNumber !== undefined) {
+    next = {
+      ...next,
+      pipelineState: { ...next.pipelineState, prNumber },
+    };
+  }
+  // PR14 — post-dispatch consolidation gate. For N>1 cycles, verify the
+  // committed diff includes files from EVERY workstream's `paths` list.
+  // If any workstream's paths are entirely absent from the diff, ops
+  // committed a partial slice — halt with cap-hit so the operator can
+  // investigate before the merge step ships the partial work.
+  //
+  // Defense in depth: the new prompt instructions explicitly tell ops
+  // to consolidate all worktrees and verify before committing, but
+  // doctrine alone isn't enough — the v0.12.13 incident merged 1 of 3
+  // workstreams as a "successful" cycle.
+  const consolidationCheck = await verifyConsolidation(ctx, next);
+  if (consolidationCheck.missing.length > 0) {
+    trace(
+      `work-driver: commit-pr partial-consolidation detected — missing workstreams: ${consolidationCheck.missing.map((m) => m.id).join(", ")}`,
+    );
+    next = {
+      ...next,
+      pipelineState: {
+        ...next.pipelineState,
+        incompleteConsolidation: consolidationCheck.missing,
+      },
+    };
+    next = appendEvent(next, {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "commit-pr-incomplete-consolidation",
+      reviewRound: next.pipelineState.reviewRound,
+      nextStep: "handoff",
+    });
+  }
+  return next;
+}
+
+/**
+ * PR14 — Verify the integration branch's committed diff (vs origin/main)
+ * includes files from EVERY active workstream's `paths` list. Used as
+ * the post-dispatch safety gate in runCommitPr. Returns missing
+ * workstreams (those whose paths are entirely absent from the diff)
+ * so the cap-hit message can name them.
+ *
+ * Best-effort: any git-shell failure returns no-missing (don't false-
+ * alarm on a transient git issue). The N=1 case short-circuits since
+ * there's only one workstream and partial-commit doesn't apply.
+ */
+async function verifyConsolidation(
+  ctx: DriverContext,
+  state: WorkState,
+): Promise<{ missing: Array<{ id: string; paths: string[] }> }> {
+  const workstreams = state.pipelineState.workstreams ?? {};
+  const ids = Object.keys(workstreams);
+  if (ids.length <= 1) return { missing: [] };
+  // Resolve the mainline branch to diff against.
+  let base = "main";
+  try {
+    const { stdout } = await execp(
+      "git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@'",
+      { cwd: ctx.repoRoot, shell: "/bin/bash" },
+    );
+    if (stdout.trim()) base = stdout.trim();
+  } catch {
+    // Use 'main' default.
+  }
+  let diffNames = "";
+  try {
+    const { stdout } = await execp(`git diff --name-only origin/${base}..HEAD`, {
+      cwd: ctx.repoRoot,
+      maxBuffer: 1024 * 1024,
+    });
+    diffNames = stdout;
+  } catch (err) {
+    trace(
+      `work-driver: verifyConsolidation diff failed (treating as no-missing): ${(err as Error).message?.slice(0, 120)}`,
+    );
+    return { missing: [] };
+  }
+  const changedFiles = new Set(diffNames.split("\n").filter((s) => s.trim().length > 0));
+  const missing: Array<{ id: string; paths: string[] }> = [];
+  for (const id of ids) {
+    const ws = workstreams[id];
+    if (!ws || ws.paths.length === 0) {
+      // No paths declared → can't verify; skip (don't false-alarm).
+      continue;
+    }
+    const anyPresent = ws.paths.some((p) =>
+      Array.from(changedFiles).some((f) => f === p || f.startsWith(`${p}/`)),
+    );
+    if (!anyPresent) {
+      missing.push({ id, paths: ws.paths });
+    }
+  }
+  return { missing };
 }
 
 /**
@@ -2398,6 +2498,25 @@ export function renderHandoffMarkdown(state: WorkState): string {
       "# 4. Abandon this cycle entirely:",
       `rm .pi/work-state/${issue}.json`,
     );
+  } else if (capForExplain === "commit-pr-incomplete-consolidation") {
+    const missing = ps.incompleteConsolidation ?? [];
+    lines.push(
+      "# 1. Inspect each missing workstream's worktree — the developer's work is still there uncommitted:",
+      ...missing.map((m) => `git -C .worktrees/issue-${issue}-${m.id} status --porcelain`),
+      "",
+      "# 2. Apply the missing diffs to the integration branch:",
+      ...missing.map(
+        (m) =>
+          `git -C .worktrees/issue-${issue}-${m.id} diff HEAD | git apply --index    # in the integration tree`,
+      ),
+      "",
+      "# 3. Verify all workstreams' files now appear, then commit + push:",
+      "git diff --name-only --cached",
+      "git commit -m '<concise>' && git push",
+      "",
+      "# 4. Or: abandon + restart from scratch:",
+      `rm .pi/work-state/${issue}.json && /work ${issue} --restart`,
+    );
   } else {
     lines.push(
       "# 1. Inspect what survived before deciding:",
@@ -2570,6 +2689,12 @@ export function explainCap(
         );
       const elem = sb?.sddElement ?? "(spec element not specified)";
       return `explore stepped back and identified a spec-level gap in **${elem}** — the lens-review fix loop kept flagging the same shape across rounds (MAST 41.77% — spec-level problem fingerprint). The handoff body includes a proposed revision. After updating the issue (via /plan or \`gh issue edit\`), re-run with \`/work N --restart\` to start a fresh cycle against the revised spec`;
+    }
+    case "commit-pr-incomplete-consolidation": {
+      const missing = state.pipelineState.incompleteConsolidation ?? [];
+      const which =
+        missing.length > 0 ? missing.map((m) => m.id).join(", ") : "one or more workstreams";
+      return `commit-pr's post-dispatch consolidation gate detected that the committed diff is missing files from these workstreams: ${which}. Ops committed a partial slice — the developers' work in the missing worktrees is uncommitted on disk. Pre-PR14 this would have merged silently (v0.12.13 /work 577 closed an issue with 1 of 3 workstreams' changes shipped). The driver halted before merge; recover by collecting the missing diffs from \`.worktrees/issue-N-<id>\` and re-running, or take over the integration manually`;
     }
   }
   // Template-literal `step-failed:<step>` values land here. Switch on the
@@ -2853,6 +2978,34 @@ export function renderHandoffUserMessage(
       "",
       "  # 4. Abandon this cycle entirely:",
       `     rm ${repoRoot}/.pi/work-state/${issue}.json`,
+    );
+  } else if (cap === "commit-pr-incomplete-consolidation") {
+    const missing = ps.incompleteConsolidation ?? [];
+    lines.push(
+      "",
+      "Missing workstreams from the committed diff:",
+      ...missing.map(
+        (m) =>
+          `  ${m.id} — paths not in diff: ${m.paths.slice(0, 3).join(", ")}${m.paths.length > 3 ? "..." : ""}`,
+      ),
+      "",
+      "  # 1. Inspect each missing workstream's worktree:",
+      ...missing.map(
+        (m) => `     git -C ${repoRoot}/.worktrees/issue-${issue}-${m.id} status --porcelain`,
+      ),
+      "",
+      "  # 2. Apply each missing diff to the integration branch:",
+      ...missing.map(
+        (m) =>
+          `     git -C ${repoRoot}/.worktrees/issue-${issue}-${m.id} diff HEAD | git -C ${repoRoot} apply --index`,
+      ),
+      "",
+      "  # 3. Verify, commit, push:",
+      `     git -C ${repoRoot} diff --name-only --cached`,
+      `     git -C ${repoRoot} commit -m '<concise>' && git -C ${repoRoot} push`,
+      "",
+      "  # 4. Or: abandon + restart from scratch:",
+      `     rm ${repoRoot}/.pi/work-state/${issue}.json && /work ${issue} --restart`,
     );
   } else {
     lines.push(
@@ -3365,6 +3518,9 @@ function inlineSpeculativeExplorePrompt(
 function inlineCommitPrPrompt(
   issues: number[],
   droppedIssues: Array<{ issue: number; verdict: string; reason: string }>,
+  worktrees: Record<string, string>,
+  workstreams: Record<string, { id: string; scope: string; paths: string[]; outOfScope: string[] }>,
+  branchName: string,
   scratchDirAbs: string,
 ): string {
   const headline = issues.length === 1 ? `issue #${issues[0]}` : `issues #${issues.join(", #")}`;
@@ -3384,13 +3540,69 @@ function inlineCommitPrPrompt(
           ),
         ]
       : [];
+
+  // PR14 — multi-workstream cycles need explicit consolidation. Each
+  // worktree has its own uncommitted slice of the work (developer prompt
+  // Step 3 says "Do NOT commit"); ops's job here is to gather ALL of
+  // them onto the integration branch before pushing. Pre-PR14 the prompt
+  // was single-tree shaped, ops only committed the cwd's slice, and
+  // sibling worktrees' changes were silently lost.
+  const ids = Object.keys(worktrees).filter((id) => id !== "default" || worktrees[id]);
+  const isMultiWorktree = ids.length > 1;
+
+  if (isMultiWorktree) {
+    const worktreeLines = ids.flatMap((id) => {
+      const ws = workstreams[id];
+      const path = worktrees[id] ?? "(no path)";
+      const scope = ws?.scope ?? "(no scope captured)";
+      const paths = ws?.paths.length ? ws.paths.join(", ") : "(no paths declared)";
+      return [
+        `  - **${id}** at \`${path}\``,
+        `      scope: ${scope}`,
+        `      in-scope paths: ${paths}`,
+      ];
+    });
+    return [
+      `/work ${headline} — Step 6 (Commit + PR). **Multi-workstream cycle** — ${ids.length} workstreams.`,
+      "",
+      "Each developer worked in its own worktree and left changes UNCOMMITTED per Step 4 doctrine. Your job is to consolidate every worktree's slice onto the integration branch BEFORE pushing — otherwise the sibling workstreams' work is silently dropped (the v0.12.13 /work 577 failure mode).",
+      "",
+      `Integration branch: \`${branchName}\``,
+      "",
+      "Workstream worktrees (each contains uncommitted developer work):",
+      ...worktreeLines,
+      "",
+      `  1. **Verify each worktree has uncommitted work.** Run \`git -C <path> status --porcelain | head\` for each of the ${ids.length} worktrees. If any worktree shows clean status (no uncommitted changes), the developer didn't write — STOP, report which workstream, and DO NOT proceed.`,
+      "",
+      `  2. **Consolidate each worktree's diff onto the integration branch.** Capture each worktree's diff and apply it on the integration branch's working tree (the repo root if it's checked out on \`${branchName}\`, else \`cd\` into a worktree that is). Concrete recipe per workstream:`,
+      "       ```",
+      `       git -C <worktree-path> diff HEAD > tmp/issue-${issues[0]}/<workstream-id>.patch`,
+      `       git apply --index tmp/issue-${issues[0]}/<workstream-id>.patch`,
+      "       ```",
+      `     Repeat for ALL ${ids.length} workstreams. Use \`git apply --check\` first if you want to dry-run.`,
+      "",
+      `  3. **Verify the staged set includes files from ALL ${ids.length} workstreams.** Run \`git diff --name-only --cached\` and confirm each workstream's in-scope paths appear. The driver re-runs this check after your dispatch via \`git diff --name-only origin/<base>..HEAD\` — if any workstream's paths are entirely absent, the cycle halts with cap \`commit-pr-incomplete-consolidation\` and the operator has to investigate. Catch it here first to save the round-trip.`,
+      "",
+      `  4. \`git commit -m "<concise subject>"\` with a meaningful message. Body should reference all active issues + summarise the ${ids.length} workstreams' contributions.`,
+      `  5. \`git push -u origin ${branchName}\`.`,
+      `  6. \`gh pr create --title "<title>" --body "...\\n\\n${fixesLines}"\` — ${fixesNote}`,
+      "  7. End your reply with `pr: <PR-number>` so the driver can capture it.",
+      ...droppedNote,
+      "",
+      "If you need a longer PR body, write it to a file under the scratch dir and pass via `gh pr create --body-file <path>` — DO NOT write the body file to the repo root.",
+      scratchHygieneSection(scratchDirAbs),
+    ].join("\n");
+  }
+
+  // N=1 (or no worktrees populated): existing single-tree flow. No churn
+  // for the common case.
   return [
     `/work ${headline} — Step 6 (Commit + PR).`,
     "",
     "  1. `git status --porcelain` to confirm the developer left uncommitted changes.",
     "  2. `git add` the changed files (avoid `git add -A` — keep the staged set explicit).",
     '  3. `git commit -m "<concise subject>"` with a meaningful message. Body should reference the active issue(s).',
-    "  4. `git push -u origin <feature-branch>`.",
+    `  4. \`git push -u origin ${branchName}\`.`,
     `  5. \`gh pr create --title \"<title>\" --body \"...\\n\\n${fixesLines}\"\` — ${fixesNote}`,
     "  6. End your reply with `pr: <PR-number>` so the driver can capture it.",
     ...droppedNote,

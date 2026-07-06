@@ -238,6 +238,16 @@ export type WorkEvent =
         // completed alone is invisible to explainCap). Surfaces the
         // proposedRevision + the /plan + /work --restart recovery path.
         | "step-back-revise-spec"
+        // PR14 — emitted by the post-dispatch consolidation gate in
+        // runCommitPr when the committed diff is missing files from
+        // one or more workstreams' scope. The N>1 commit-pr prompt
+        // (also new in PR14) is supposed to consolidate every worktree
+        // before committing; this cap-hit catches the case where ops
+        // drifted and committed only a subset. Pre-PR14 the partial
+        // commit shipped silently (live evidence: /work 577 on v0.12.13
+        // closed #577 with 1 of 3 workstreams' changes — root fix
+        // lost from main).
+        | "commit-pr-incomplete-consolidation"
         | `step-failed:${WorkStep}`;
       reviewRound: number;
       /** What the driver will do next — either "handoff" (terminal) or "step-back" (Step 7h). */
@@ -454,6 +464,16 @@ export interface PipelineState {
    * Absent for normal cycles where every issue body fetched cleanly.
    */
   emptyBodyIssues?: Array<{ issue: number; reason: string }>;
+  /**
+   * PR14 — per-workstream "missing from committed diff" list. Populated
+   * by `runCommitPr`'s post-dispatch consolidation gate when the
+   * integration branch's diff (vs origin/main) doesn't include files
+   * from one or more workstreams' `paths`. Drives the operator-facing
+   * handoff body — each entry names which workstream's slice didn't
+   * land. Absent for N=1 cycles and for happy-path N>1 cycles where
+   * every workstream's files appear in the diff.
+   */
+  incompleteConsolidation?: Array<{ id: string; paths: string[] }>;
   /**
    * PR10 — multi-issue counterpart of `activeIssues`: issues filtered
    * out by `runExplore` because explore declared them complete or
