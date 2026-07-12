@@ -2366,9 +2366,18 @@ branch: feature/issue-553-fix
   }
 }
 
-// 39. PR10 — multi-issue happy path: explore returns per-issue NEEDS_WORK
-// for all 3, activeIssues = [all 3], droppedIssues empty, plan + commit-pr
-// see the full list.
+// Tests 39-41 exercise the driver-level PR10 multi-issue bundled API
+// (ctx.issues = [N, M, P]). PR15+ the /work entry point (commands.ts)
+// no longer produces this shape — it fires per-issue sequential cycles
+// instead, one PR per issue. These tests remain as back-compat contract
+// tests for the driver-level API: programmatic callers or a future
+// re-enablement path can still invoke the bundled shape. Retiring the
+// bundled prompts/logic is deferred to a cleanup PR once we're sure the
+// sequential shape is durable in the field.
+
+// 39. PR10 — multi-issue happy path (driver-level API): explore returns
+// per-issue NEEDS_WORK for all 3, activeIssues = [all 3], droppedIssues
+// empty, plan + commit-pr see the full list.
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-multi-ok-"));
   try {

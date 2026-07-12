@@ -45,6 +45,7 @@ import { transcriptsSummary } from "./runs.ts";
 import { trace } from "./trace.ts";
 import { runWorkDriver } from "./work-driver.ts";
 import { registerWorkStatusCommand } from "./work-status.ts";
+import { readState } from "./workflow-state.ts";
 
 const execp = promisify(exec);
 
@@ -145,14 +146,16 @@ export function registerCommands(pi: ExtensionAPI) {
         // so the user can interact with the chat while it works. Other
         // commands stay on the legacy sendUserMessage(prompt-body) path.
         if (name === "work" && isWorkDriverEnabled()) {
-          // PR10: parse N issue tokens — `/work 547` (single) or
-          // `/work 561 562 563` (multi-issue bundle into one PR).
-          // First number anchors the state file path + feature branch
-          // name; the full list flows through plan/develop/commit-pr.
-          // PR12: also accept `--restart` (order-independent) which
-          // wipes any existing state file and starts a fresh cycle.
-          // Used after the operator revises the issue via /plan
-          // following a prior terminal cycle (handoff / aborted / merged).
+          // Parse N issue tokens — `/work 547` (single) or `/work 561 562`
+          // (multi-issue, PR15+: sequential single-issue cycles — one PR
+          // per issue). Pre-PR15 the multi-issue shape bundled into ONE
+          // PR; that empirically failed 3+ times (vipune `memory-row`) so
+          // /work N M P now iterates, matching the old PM-driven /work
+          // and today's /do flow. Halt-on-non-merged: if cycle N
+          // terminates as anything other than `merged` we STOP the queue
+          // and let the operator intervene before continuing.
+          // Also accept `--restart` (order-independent) — applied to
+          // every cycle in the queue.
           const tokens = args.trim().split(/\s+/).filter(Boolean);
           const restart = tokens.includes("--restart");
           const issues = tokens
@@ -161,13 +164,12 @@ export function registerCommands(pi: ExtensionAPI) {
             .filter((n) => Number.isFinite(n) && n > 0);
           if (issues.length === 0 || issues[0] === undefined) {
             ctx.ui.notify(
-              "pi-ensemble: /work needs at least one issue number (e.g., /work 547, or /work 561 562 to bundle). " +
+              "pi-ensemble: /work needs at least one issue number (e.g., /work 547, or /work 561 562 for sequential cycles). " +
                 "Set PI_ENSEMBLE_WORK_DRIVER=0 to use the legacy PM-driven flow.",
               "warning",
             );
             return;
           }
-          const issue = issues[0];
           if (!ctx.isIdle()) {
             ctx.ui.notify(
               "pi-ensemble: agent is busy — try /work again when idle, or use /steer for an inline nudge",
@@ -177,34 +179,73 @@ export function registerCommands(pi: ExtensionAPI) {
           }
           const cwd = process.cwd();
           const repoRoot = await resolveRepoRoot(cwd);
-          const issueListMsg =
-            issues.length > 1 ? `issues #${issues.join(", #")}` : `issue #${issue}`;
           const restartTag = restart ? " (restart — prior state wiped)" : "";
+          const issueListMsg =
+            issues.length > 1
+              ? `${issues.length} issues sequentially — #${issues.join(", then #")} (one PR per issue)`
+              : `issue #${issues[0]}`;
           trace(`/work → driver loop for ${issueListMsg}${restartTag} (repoRoot=${repoRoot})`);
           // PM stays in reporter mode so user-visible progress messages
           // emitted by the driver via sendUserMessage land cleanly.
           pmDoctrineFirstTurnPending = true;
           pmModeActive = true;
+          const statePathMsg =
+            issues.length > 1
+              ? "State per issue in .pi/work-state/<N>.json"
+              : `State in .pi/work-state/${issues[0]}.json`;
           ctx.ui.notify(
-            `pi-ensemble: /work driver running for ${issueListMsg}${restartTag}. ` +
-              `State in .pi/work-state/${issue}.json. Set PI_ENSEMBLE_WORK_DRIVER=0 to use legacy PM flow.`,
+            `pi-ensemble: /work driver running for ${issueListMsg}${restartTag}. ${statePathMsg}. Set PI_ENSEMBLE_WORK_DRIVER=0 to use legacy PM flow.`,
             "info",
           );
-          // Fire-and-forget. The driver awaits its own dispatch promises
-          // and surfaces final outcome via pi.sendUserMessage. We catch
-          // unexpected throws so the background promise doesn't trip
-          // Node's unhandled-rejection warning.
-          void runWorkDriver({ pi, repoRoot, issue, issues, restart }).catch((err) => {
-            trace(`work-driver: unexpected throw for ${issueListMsg}: ${(err as Error).message}`);
-            try {
-              pi.sendUserMessage(
-                `pi-ensemble: /work driver crashed for ${issueListMsg}: ${(err as Error).message}. ` +
-                  `Inspect .pi/work-state/${issue}.json or run with PI_ENSEMBLE_WORK_DRIVER=0 to use the legacy flow.`,
-              );
-            } catch {
-              /* nothing we can do */
+          // Fire-and-forget sequential queue. Each cycle produces its own
+          // PR (single-issue driver call). We await one cycle before
+          // starting the next; on non-merged terminal we HALT and notify
+          // so the operator can intervene. Unexpected throws in a cycle
+          // also halt the queue.
+          void (async () => {
+            for (let i = 0; i < issues.length; i++) {
+              const n = issues[i];
+              if (n === undefined) continue;
+              try {
+                await runWorkDriver({ pi, repoRoot, issue: n, restart });
+              } catch (err) {
+                trace(`work-driver: unexpected throw for #${n}: ${(err as Error).message}`);
+                try {
+                  pi.sendUserMessage(
+                    `pi-ensemble: /work driver crashed on issue #${n}: ${(err as Error).message}. Queue halted. ` +
+                      `Inspect .pi/work-state/${n}.json or run with PI_ENSEMBLE_WORK_DRIVER=0 to use the legacy flow.`,
+                  );
+                } catch {
+                  /* nothing we can do */
+                }
+                return;
+              }
+              const state = await readState(repoRoot, n);
+              const status = state?.pipelineState.status;
+              if (status !== "merged" && i + 1 < issues.length) {
+                const remaining = issues.slice(i + 1);
+                try {
+                  pi.sendUserMessage(
+                    `pi-ensemble: /work #${n} terminated as ${status ?? "unknown"}; queue halted. ` +
+                      `Remaining issues (#${remaining.join(", #")}) were NOT started. ` +
+                      `Fix / abandon #${n}, then re-run /work with the remaining issues.`,
+                  );
+                } catch {
+                  /* nothing we can do */
+                }
+                return;
+              }
             }
-          });
+            if (issues.length > 1) {
+              try {
+                pi.sendUserMessage(
+                  `pi-ensemble: /work queue complete — ${issues.length} issues merged sequentially: #${issues.join(", #")}`,
+                );
+              } catch {
+                /* nothing we can do */
+              }
+            }
+          })();
           return;
         }
 

@@ -650,3 +650,55 @@ The driver uses per-role wall-clock caps for each dispatched subagent. Defaults 
 | `project-manager` | 30 min | `PI_ENSEMBLE_SPAWN_TIMEOUT_MS_PROJECT_MANAGER` |
 
 Env precedence: per-role override > umbrella `PI_ENSEMBLE_SPAWN_TIMEOUT_MS` > per-role default. Setting a per-role override is the cleanest fix when a `developer-timeout` cap-hit suggests the issue genuinely needs more wall-clock than the default 90 min.
+
+### `ci` step timeout — CI runs > 10 min (PR15)
+
+The `ci` step dispatches `ops` to run `gh run watch <id>`, which blocks until CI completes. Pre-PR15 this inherited ops' 10-min default, so any CI run exceeding 10 min SIGTERM'd mid-watch and routed through `step-failed:ci` handoff (3× this session on lantern's ~15-min pipeline).
+
+PR15 gives `ci` its own 30-min cap (30 × 60000 ms). Override via `PI_ENSEMBLE_CI_WATCH_TIMEOUT_MS` (milliseconds). Only the `ci` step's `ops` dispatch uses this cap — every other `ops` invocation (commit-pr, handoff, merged) still uses the 10-min ops default.
+
+If your project's CI genuinely takes longer than 30 min, either raise `PI_ENSEMBLE_CI_WATCH_TIMEOUT_MS` or accept the handoff — inspect the CI run in the browser, then either fix + push or manually merge as appropriate.
+
+The `inlineCiPrompt` also carries a bounded poll-fallback recipe (`gh run view --json status`) so ops has something to reach for if `gh run watch` fails outright.
+
+## Multi-issue `/work` — what to expect (PR15+)
+
+### Behavior
+
+`/work 561 562 563` runs each issue as a **sequential single-issue cycle**:
+
+1. Cycle for #561 runs end-to-end (explore → plan → branch → develop → adversarial → commit-pr → lens-review → ci → merged).
+2. Only after #561 lands as `merged` does the cycle for #562 start.
+3. Same for #563.
+
+Each cycle produces **its own PR** and its own state file (`.pi/work-state/561.json`, `.pi/work-state/562.json`, `.pi/work-state/563.json`).
+
+### Halt-on-non-merged
+
+If cycle #N terminates as anything other than `merged` (handoff, aborted, crashed), the queue **HALTS**. The extension emits a message like:
+
+```
+pi-ensemble: /work #561 terminated as handoff; queue halted.
+Remaining issues (#562, #563) were NOT started.
+Fix / abandon #561, then re-run /work with the remaining issues.
+```
+
+The operator inspects the handoff comment, either resolves the underlying blocker (re-run `/work 561 --restart` after `/plan 561` clarifies the spec) or abandons it, then re-runs `/work 562 563` to continue.
+
+Rationale: an intermediate handoff usually signals something the operator wants to review before we auto-start the next cycle. Auto-continuing would blur the "why the previous halted" signal.
+
+### `--restart` semantics with a multi-issue queue
+
+`/work 561 562 --restart` applies `--restart` to **every** cycle — each issue's state file is wiped before its cycle starts. For issues that have no prior state file, `--restart` is a no-op.
+
+### Why not bundle into one PR?
+
+Pre-PR15 (v0.12.6-v0.12.13) `/work N M P` bundled N issues into ONE PR. That shape empirically failed 3+ times in the field (vipune memory `memory-row`):
+
+- `#553` fanout convergence-drop — one workstream's changes lost during commit-pr consolidation
+- `#563` phantom-bundle — driver bundled unrelated issues that shouldn't have been together
+- `#582-586` oversized-diff cap — 13-file / 692-line diff, 15-min / 8.8M-token developer run, adversarial couldn't converge over 3 rounds
+
+The sequential shape matches what the old PM-driven `/work` did and what `/do` still supports.
+
+The driver-level bundled API (`ctx.issues=[N,M,P]`) is still exported for programmatic callers, and PR10's per-issue verdict logic + `activeIssues` / `droppedIssues` fields remain in the state-file schema for back-compat — but the `/work` entry point no longer produces that shape.

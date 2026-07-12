@@ -216,8 +216,11 @@ assert(
   }
 }
 
-// PR10 — /work N M P (multi-issue) should accept all tokens and the
-// notify mentions all of them.
+// PR15 — /work N M P (multi-issue) now runs SEQUENTIAL single-issue
+// cycles (one PR per issue). The notify names all issues + the
+// "sequentially" / "one PR per issue" phrasing. Pre-PR15 (PR10) this
+// bundled into one PR — that shape empirically failed 3+ times
+// (vipune `memory-row`) so it's retired at the entry point.
 {
   const prevFlag = process.env.PI_ENSEMBLE_WORK_DRIVER;
   delete process.env.PI_ENSEMBLE_WORK_DRIVER;
@@ -229,10 +232,14 @@ assert(
       "/work 561 562 563 (driver default-ON): does NOT call sendUserMessage (driver runs in background)",
     );
     assert(
-      notifMulti.some((n) =>
-        n.kind === "info" && /issues #561, #562, #563/.test(n.msg) && /work-state\/561\.json/.test(n.msg),
+      notifMulti.some(
+        (n) =>
+          n.kind === "info" &&
+          /3 issues sequentially/.test(n.msg) &&
+          /#561, then #562, then #563/.test(n.msg) &&
+          /one PR per issue/.test(n.msg),
       ),
-      "/work 561 562 563: info notify names all 3 issues + primary state-file path",
+      "/work 561 562 563: info notify names all 3 issues + explicit sequential/one-PR-per-issue phrasing",
     );
   } finally {
     if (prevFlag === undefined) delete process.env.PI_ENSEMBLE_WORK_DRIVER;
@@ -271,10 +278,11 @@ assert(
       notifR3.some(
         (n) =>
           n.kind === "info" &&
-          /issues #549, #550/.test(n.msg) &&
+          /2 issues sequentially/.test(n.msg) &&
+          /#549, then #550/.test(n.msg) &&
           /restart.*prior state wiped/.test(n.msg),
       ),
-      "/work 549 --restart 550: --restart filtered out of issue parse, multi-issue list intact",
+      "/work 549 --restart 550: --restart filtered out of issue parse, sequential-cycle phrasing intact",
     );
     // Plain /work N (no --restart) — no restart tag in notify.
     const { ctx: ctxR4, notifies: notifR4 } = makeCtx();

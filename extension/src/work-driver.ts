@@ -1814,9 +1814,32 @@ async function runStepBack(ctx: DriverContext, state: WorkState, now: number): P
  * The driver parses the result text for "ci-status: success/failure" so
  * routing is deterministic.
  */
+/**
+ * PR15 — resolve the ci-step ops timeout. `gh run watch` blocks until
+ * CI completes; real project CI runs regularly exceed the ops role's
+ * 10-min default (spawn.ts:141). Ci-specific override lifts the cap
+ * to 30 min by default, env-tunable via
+ * `PI_ENSEMBLE_CI_WATCH_TIMEOUT_MS`. Empirical: 3× ops-CI-poll
+ * timeouts this session before PR15 forced cycles to false-halt on
+ * `step-failed:ci`.
+ */
+function ciWatchTimeoutMs(): number {
+  const envRaw = process.env.PI_ENSEMBLE_CI_WATCH_TIMEOUT_MS;
+  const env = Number(envRaw);
+  if (Number.isFinite(env) && env > 0) return env;
+  return 30 * 60_000; // 30 min default
+}
+
 async function runCi(ctx: DriverContext, state: WorkState, now: number): Promise<WorkState> {
-  let next = await runSingleDispatch(ctx, state, "ci", "ops", "ops:ci", now, () =>
-    inlineCiPrompt(ctx.issue, scratchDir(ctx.repoRoot, ctx.issue)),
+  let next = await runSingleDispatch(
+    ctx,
+    state,
+    "ci",
+    "ops",
+    "ops:ci",
+    now,
+    () => inlineCiPrompt(ctx.issue, scratchDir(ctx.repoRoot, ctx.issue)),
+    { timeoutMs: ciWatchTimeoutMs() },
   );
   // Parse the just-appended dispatch-completed event for a structured status
   // line. The ops prompt asks the agent to end with `ci-status: success` or
@@ -3189,6 +3212,7 @@ async function runSingleDispatch(
   label: string,
   now: number,
   buildPrompt: () => string,
+  opts?: { timeoutMs?: number },
 ): Promise<WorkState> {
   const next = appendEvent(
     { ...state, pipelineState: { ...state.pipelineState, currentStep: step } },
@@ -3198,7 +3222,17 @@ async function runSingleDispatch(
   const startedAt = Date.now();
   let result: DispatchResult;
   try {
-    result = await dispatch(ctx.pi, { role, prompt: buildPrompt() }, { label });
+    // PR15 — per-call timeout override (routed through dispatchCore's
+    // existing timeoutMs support that PR5 added for the 3-min handoff-ops
+    // path). runCi uses this to lift the 10-min ops default up to 30 min
+    // (env-overridable) since `gh run watch` blocks until CI completes
+    // and CI runs regularly exceed 10 min. Empirical: 3× ops-CI-poll
+    // timeouts this session before PR15.
+    result = await dispatch(
+      ctx.pi,
+      { role, prompt: buildPrompt() },
+      { label, timeoutMs: opts?.timeoutMs },
+    );
   } catch (err) {
     return appendEvent(next, {
       kind: "dispatch-failed",
@@ -3737,7 +3771,7 @@ function inlineCiPrompt(issue: number, scratchDirAbs: string): string {
     `/work issue #${issue} — Step 8 (CI monitoring).`,
     "",
     "  1. Find the latest workflow run for the feature branch — `gh run list --branch <branch> --limit 1 --json status,conclusion,databaseId,url`.",
-    "  2. If the run is still in progress: `gh run watch <id>` (or poll `gh run view <id> --json status,conclusion` until done).",
+    '  2. If the run is still in progress: prefer `gh run watch <id>` (blocks until CI completes). PR15 — the driver now allows this dispatch up to 30 min by default (env-tunable via `PI_ENSEMBLE_CI_WATCH_TIMEOUT_MS`); pre-PR15 the ops 10-min cap SIGTERM\'d `gh run watch` mid-stream for real CI runs. If `gh run watch` fails or the run needs longer than the cap, fall back to a bounded poll: `while true; do status=$(gh run view <id> --json status,conclusion --jq \'.status + ":" + (.conclusion // "")\'); case $status in completed:success|completed:failure|completed:cancelled) break;; esac; sleep 30; done`.',
     "  3. On success: end your reply with the line `ci-status: success` (driver routes to merge).",
     "  4. On failure: end your reply with `ci-status: failure` AND include the failing-job summary so the developer round that follows has the failure context.",
     "",
