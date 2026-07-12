@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.15](https://github.com/randomm/pi-ensemble/compare/v0.12.14...v0.12.15) (2026-07-12)
+
+
+### Bug Fixes
+
+* **work-driver:** ci step 30-min timeout + /work N M P runs sequential single-issue cycles ([#260](https://github.com/randomm/pi-ensemble/issues/260)) ([21e9543](https://github.com/randomm/pi-ensemble/commit/21e9543478ccd3dd020235fb98f4dd1f0207eb07))
+
 ## [0.12.14](https://github.com/randomm/pi-ensemble/compare/v0.12.13...v0.12.14) (2026-07-06)
 
 
