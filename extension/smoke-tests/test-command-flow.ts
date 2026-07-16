@@ -216,11 +216,16 @@ assert(
   }
 }
 
-// PR15 — /work N M P (multi-issue) now runs SEQUENTIAL single-issue
-// cycles (one PR per issue). The notify names all issues + the
-// "sequentially" / "one PR per issue" phrasing. Pre-PR15 (PR10) this
-// bundled into one PR — that shape empirically failed 3+ times
-// (vipune `memory-row`) so it's retired at the entry point.
+// PR16 — /work N M P (multi-issue) now runs a DETERMINISTIC GROUPING
+// pass at the entry point (groupIssues) and then iterates the resulting
+// groups sequentially (halt-on-non-merged). Related issues share one
+// PR (via the PR10 bundled driver-level API); unrelated issues run as
+// separate cycles.
+//
+// This test only asserts the immediate notify (analyzing…); the actual
+// grouping + iteration happens in the background fire-and-forget
+// coroutine (which needs `gh issue view` we can't mock here — that's
+// exercised by the groupIssues unit tests in test-work-driver.ts).
 {
   const prevFlag = process.env.PI_ENSEMBLE_WORK_DRIVER;
   delete process.env.PI_ENSEMBLE_WORK_DRIVER;
@@ -229,17 +234,17 @@ assert(
     await handlers.work!("561 562 563", ctxMulti);
     assert(
       rec.sentMessages.length === 3,
-      "/work 561 562 563 (driver default-ON): does NOT call sendUserMessage (driver runs in background)",
+      "/work 561 562 563 (driver default-ON): does NOT call sendUserMessage synchronously",
     );
     assert(
       notifMulti.some(
         (n) =>
           n.kind === "info" &&
-          /3 issues sequentially/.test(n.msg) &&
-          /#561, then #562, then #563/.test(n.msg) &&
-          /one PR per issue/.test(n.msg),
+          /analyzing 3 issues/.test(n.msg) &&
+          /#561, #562, #563/.test(n.msg) &&
+          /grouping/.test(n.msg),
       ),
-      "/work 561 562 563: info notify names all 3 issues + explicit sequential/one-PR-per-issue phrasing",
+      "/work 561 562 563: info notify names all 3 issues + 'analyzing…grouping' phrasing",
     );
   } finally {
     if (prevFlag === undefined) delete process.env.PI_ENSEMBLE_WORK_DRIVER;
@@ -272,17 +277,20 @@ assert(
       "/work --restart 548: --restart order-independent (leading)",
     );
     // Multi-issue + --restart in the middle.
+    //
+    // PR16 — the immediate notify is the "analyzing…" line (grouping
+    // pass runs in the background). The --restart tag surfaces later
+    // in the sendUserMessage grouping-decision line, not the notify.
     const { ctx: ctxR3, notifies: notifR3 } = makeCtx();
     await handlers.work!("549 --restart 550", ctxR3);
     assert(
       notifR3.some(
         (n) =>
           n.kind === "info" &&
-          /2 issues sequentially/.test(n.msg) &&
-          /#549, then #550/.test(n.msg) &&
-          /restart.*prior state wiped/.test(n.msg),
+          /analyzing 2 issues/.test(n.msg) &&
+          /#549, #550/.test(n.msg),
       ),
-      "/work 549 --restart 550: --restart filtered out of issue parse, sequential-cycle phrasing intact",
+      "/work 549 --restart 550: --restart filtered out of issue parse, multi-issue analyzing phrasing intact",
     );
     // Plain /work N (no --restart) — no restart tag in notify.
     const { ctx: ctxR4, notifies: notifR4 } = makeCtx();

@@ -661,44 +661,64 @@ If your project's CI genuinely takes longer than 30 min, either raise `PI_ENSEMB
 
 The `inlineCiPrompt` also carries a bounded poll-fallback recipe (`gh run view --json status`) so ops has something to reach for if `gh run watch` fails outright.
 
-## Multi-issue `/work` — what to expect (PR15+)
+## Multi-issue `/work` — how grouping is decided (PR16+)
 
 ### Behavior
 
-`/work 561 562 563` runs each issue as a **sequential single-issue cycle**:
+`/work 561 562 563` runs a **deterministic grouping analysis** first, then iterates the resulting groups sequentially:
 
-1. Cycle for #561 runs end-to-end (explore → plan → branch → develop → adversarial → commit-pr → lens-review → ci → merged).
-2. Only after #561 lands as `merged` does the cycle for #562 start.
-3. Same for #563.
+1. Fetches each issue's body via `gh issue view` (in parallel).
+2. Runs `groupIssues()` (pure code, no LLM) which partitions the N issues into K groups.
+3. Iterates groups: each group runs as one cycle producing one PR. Multi-issue groups use the PR10 bundled driver-level API (all issues in the group's PR body via `Fixes #X #Y`).
+4. Halt-on-non-merged between groups: if a cycle handoffs / aborts, remaining groups are NOT started.
 
-Each cycle produces **its own PR** and its own state file (`.pi/work-state/561.json`, `.pi/work-state/562.json`, `.pi/work-state/563.json`).
+### Grouping rules (first-match-wins, union-find)
+
+**R1 — Explicit link markers** merge issues into the same group. Regex on each body: `depends-on: #N`, `companion-to: #N`, `blocks #N`, `blocked-by: #N` (case-insensitive, hyphen or space).
+
+**R2 — Path overlap ≥ 50% (Jaccard)** merges issues that touch the same files. Extract path-shaped tokens (`src/foo/bar.ts` etc.) from each body's prose + code blocks; compute Jaccard between issue pairs.
+
+**R3 — SPLIT markers** force an issue into its own singleton group even if R1/R2 would have merged it. Regex on the body: `split`, `separate PRs`, `independent`.
+
+**R4 — Subsystem tag prefix** in the issue title merges same-prefix issues (`[frontend]`, `[docs]`, `[ci]`, `[extension]`, ...).
+
+**R5 — Default** is separate groups. Absent R1-R4 evidence, two issues do NOT merge.
+
+### Guardrails
+
+- **`MAX_ISSUES_PER_GROUP` = 3**: a component with more than 3 issues splits into per-issue singletons. Empirical convergence ceiling from vipune `memory-row` — bigger groups approach the adversarial fix-loop wall.
+- **Fanout policy**: today groups run sequentially regardless of `fanout.mode`. Future PR may add per-group parallel worktrees; the `groupIssues()` return already carries the intended mode (`parallel` for K ≤ 2, `sequential` for K > 2), overridable via `PI_ENSEMBLE_PARALLEL_GROUPS`.
+
+### Cycle shape per group
+
+Each group's cycle runs end-to-end (explore → plan → branch → develop → adversarial → commit-pr → lens-review → ci → merged) with the group's issues in `ctx.issues`. Single-issue groups follow today's shape exactly. Multi-issue groups use the PR10 bundled shape — safe *because the grouping rules said the issues belong together*.
+
+Each cycle produces **its own PR** and its own state file (`.pi/work-state/<primary>.json`).
+
+### Pre-PR16 behavior (v0.12.6–v0.12.15)
+
+- **PR10 (v0.12.6–v0.12.9)**: bundled ALL N issues into ONE PR unconditionally. Empirically failed 3× (vipune `memory-row`: convergence-drop, phantom-bundle, oversized-diff cap).
+- **PR15 (v0.12.15)**: retreated to strictly sequential one-PR-per-issue. Safe but ignored the "these issues genuinely belong together" signal.
+- **PR16 (v0.12.16+)**: deterministic grouping decides the middle path.
 
 ### Halt-on-non-merged
 
-If cycle #N terminates as anything other than `merged` (handoff, aborted, crashed), the queue **HALTS**. The extension emits a message like:
+If a group's cycle terminates as anything other than `merged` (handoff, aborted, crashed), the queue **HALTS**. The extension emits a message like:
 
 ```
-pi-ensemble: /work #561 terminated as handoff; queue halted.
-Remaining issues (#562, #563) were NOT started.
-Fix / abandon #561, then re-run /work with the remaining issues.
+pi-ensemble: /work group-a (#561, #562) terminated as handoff; queue halted.
+Remaining groups (group-b (#563)) were NOT started.
+Fix / abandon group-a, then re-run /work with the remaining issues.
 ```
 
-The operator inspects the handoff comment, either resolves the underlying blocker (re-run `/work 561 --restart` after `/plan 561` clarifies the spec) or abandons it, then re-runs `/work 562 563` to continue.
+The operator inspects the handoff comment, either resolves the underlying blocker (re-run `/work 561 --restart` after `/plan 561` clarifies the spec) or abandons it, then re-runs `/work` with the remaining issues to continue.
 
-Rationale: an intermediate handoff usually signals something the operator wants to review before we auto-start the next cycle. Auto-continuing would blur the "why the previous halted" signal.
+Rationale: an intermediate handoff usually signals something the operator wants to review before we auto-start the next group. Auto-continuing would blur the "why the previous halted" signal.
 
 ### `--restart` semantics with a multi-issue queue
 
-`/work 561 562 --restart` applies `--restart` to **every** cycle — each issue's state file is wiped before its cycle starts. For issues that have no prior state file, `--restart` is a no-op.
+`/work 561 562 --restart` applies `--restart` to **every** cycle — each group's state file is wiped before its cycle starts. For groups that have no prior state file, `--restart` is a no-op.
 
-### Why not bundle into one PR?
+### Why deterministic grouping rather than PM-narrated?
 
-Pre-PR15 (v0.12.6-v0.12.13) `/work N M P` bundled N issues into ONE PR. That shape empirically failed 3+ times in the field (vipune memory `memory-row`):
-
-- `#553` fanout convergence-drop — one workstream's changes lost during commit-pr consolidation
-- `#563` phantom-bundle — driver bundled unrelated issues that shouldn't have been together
-- `#582-586` oversized-diff cap — 13-file / 692-line diff, 15-min / 8.8M-token developer run, adversarial couldn't converge over 3 rounds
-
-The sequential shape matches what the old PM-driven `/work` did and what `/do` still supports.
-
-The driver-level bundled API (`ctx.issues=[N,M,P]`) is still exported for programmatic callers, and PR10's per-issue verdict logic + `activeIssues` / `droppedIssues` fields remain in the state-file schema for back-compat — but the `/work` entry point no longer produces that shape.
+The compiled driver's PR10 shortcut (v0.12.5–v0.12.14) bundled ALL issues into ONE PR without any judgment — that empirically failed 3× (vipune `memory-row`). PR15's retreat to strictly-sequential was safe but ignored real relatedness signal. PR16's grouping rules encode explicit heuristics (link markers, path overlap, subsystem tags) that produce reproducible partitions — same input → same groups, testable, no LLM budget, no drift between runs.

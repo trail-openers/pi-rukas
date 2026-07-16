@@ -43,7 +43,7 @@ import { GLOBAL_KEY, getAllOverrides } from "./model-config.ts";
 import { modelConfigSnapshot } from "./models.ts";
 import { transcriptsSummary } from "./runs.ts";
 import { trace } from "./trace.ts";
-import { runWorkDriver } from "./work-driver.ts";
+import { groupIssues, runWorkDriver } from "./work-driver.ts";
 import { registerWorkStatusCommand } from "./work-status.ts";
 import { readState } from "./workflow-state.ts";
 
@@ -147,13 +147,23 @@ export function registerCommands(pi: ExtensionAPI) {
         // commands stay on the legacy sendUserMessage(prompt-body) path.
         if (name === "work" && isWorkDriverEnabled()) {
           // Parse N issue tokens — `/work 547` (single) or `/work 561 562`
-          // (multi-issue, PR15+: sequential single-issue cycles — one PR
-          // per issue). Pre-PR15 the multi-issue shape bundled into ONE
-          // PR; that empirically failed 3+ times (vipune `memory-row`) so
-          // /work N M P now iterates, matching the old PM-driven /work
-          // and today's /do flow. Halt-on-non-merged: if cycle N
-          // terminates as anything other than `merged` we STOP the queue
-          // and let the operator intervene before continuing.
+          // (multi-issue).
+          //
+          // PR16 — multi-issue shape now runs a DETERMINISTIC GROUPING
+          // pass at the entry point (groupIssues in work-driver.ts) that
+          // partitions the issues into K groups using explicit rules
+          // (link markers, path-overlap Jaccard ≥ 0.5, SPLIT markers,
+          // subsystem-tag prefixes). Related issues share ONE PR (via the
+          // PR10 bundled driver-level API); unrelated issues run as
+          // separate cycles. This restores the old PM-driven /work's
+          // "analyze first, decide the plan" shape but in pure code.
+          //
+          // Pre-PR16 (v0.12.15/PR15): `/work N M P` = strictly sequential
+          // one-PR-per-issue. That was safe but ignored the fact that
+          // related issues genuinely belong together. PR16 keeps the
+          // sequential cycle boundary (halt-on-non-merged between
+          // groups) but uses grouping to decide what a "cycle" is.
+          //
           // Also accept `--restart` (order-independent) — applied to
           // every cycle in the queue.
           const tokens = args.trim().split(/\s+/).filter(Boolean);
@@ -164,7 +174,7 @@ export function registerCommands(pi: ExtensionAPI) {
             .filter((n) => Number.isFinite(n) && n > 0);
           if (issues.length === 0 || issues[0] === undefined) {
             ctx.ui.notify(
-              "pi-ensemble: /work needs at least one issue number (e.g., /work 547, or /work 561 562 for sequential cycles). " +
+              "pi-ensemble: /work needs at least one issue number (e.g., /work 547, or /work 561 562 to analyze + group multi-issue). " +
                 "Set PI_ENSEMBLE_WORK_DRIVER=0 to use the legacy PM-driven flow.",
               "warning",
             );
@@ -180,55 +190,127 @@ export function registerCommands(pi: ExtensionAPI) {
           const cwd = process.cwd();
           const repoRoot = await resolveRepoRoot(cwd);
           const restartTag = restart ? " (restart — prior state wiped)" : "";
-          const issueListMsg =
-            issues.length > 1
-              ? `${issues.length} issues sequentially — #${issues.join(", then #")} (one PR per issue)`
-              : `issue #${issues[0]}`;
-          trace(`/work → driver loop for ${issueListMsg}${restartTag} (repoRoot=${repoRoot})`);
+          trace(
+            `/work → driver loop for ${issues.length === 1 ? `issue #${issues[0]}` : `${issues.length} issues (#${issues.join(", #")})`}${restartTag} (repoRoot=${repoRoot})`,
+          );
           // PM stays in reporter mode so user-visible progress messages
           // emitted by the driver via sendUserMessage land cleanly.
           pmDoctrineFirstTurnPending = true;
           pmModeActive = true;
-          const statePathMsg =
-            issues.length > 1
-              ? "State per issue in .pi/work-state/<N>.json"
-              : `State in .pi/work-state/${issues[0]}.json`;
+
+          // Single-issue path — no grouping needed.
+          if (issues.length === 1) {
+            const soleIssue = issues[0];
+            if (soleIssue === undefined) return;
+            ctx.ui.notify(
+              `pi-ensemble: /work driver running for issue #${soleIssue}${restartTag}. State in .pi/work-state/${soleIssue}.json. Set PI_ENSEMBLE_WORK_DRIVER=0 to use legacy PM flow.`,
+              "info",
+            );
+            void (async () => {
+              try {
+                await runWorkDriver({ pi, repoRoot, issue: soleIssue, restart });
+              } catch (err) {
+                trace(`work-driver: unexpected throw for #${soleIssue}: ${(err as Error).message}`);
+                try {
+                  pi.sendUserMessage(
+                    `pi-ensemble: /work driver crashed on issue #${soleIssue}: ${(err as Error).message}. ` +
+                      `Inspect .pi/work-state/${soleIssue}.json or run with PI_ENSEMBLE_WORK_DRIVER=0 to use the legacy flow.`,
+                  );
+                } catch {
+                  /* nothing we can do */
+                }
+              }
+            })();
+            return;
+          }
+
+          // Multi-issue path — analyze + group + iterate. Fire-and-forget
+          // so the handler returns immediately; grouping analysis + K
+          // cycles all run in the background.
           ctx.ui.notify(
-            `pi-ensemble: /work driver running for ${issueListMsg}${restartTag}. ${statePathMsg}. Set PI_ENSEMBLE_WORK_DRIVER=0 to use legacy PM flow.`,
+            `pi-ensemble: analyzing ${issues.length} issues (#${issues.join(", #")}) for grouping…`,
             "info",
           );
-          // Fire-and-forget sequential queue. Each cycle produces its own
-          // PR (single-issue driver call). We await one cycle before
-          // starting the next; on non-merged terminal we HALT and notify
-          // so the operator can intervene. Unexpected throws in a cycle
-          // also halt the queue.
           void (async () => {
+            // Fetch each issue body in parallel via `gh issue view`. The
+            // grouping rules read the body to detect link markers, file
+            // paths, subsystem tags. Empty body on failure → grouping
+            // falls back to R5 (separate groups) for that issue.
+            const bodiesByIssue: Record<number, string> = {};
+            const fetches = await Promise.allSettled(
+              issues.map(
+                (n) =>
+                  new Promise<{ n: number; body: string }>((resolve, reject) => {
+                    exec(
+                      `gh issue view ${n} --json title,body,labels`,
+                      { cwd: repoRoot, maxBuffer: 2 * 1024 * 1024 },
+                      (err, stdout) => {
+                        if (err) reject(err);
+                        else resolve({ n, body: stdout });
+                      },
+                    );
+                  }),
+              ),
+            );
             for (let i = 0; i < issues.length; i++) {
               const n = issues[i];
               if (n === undefined) continue;
+              const r = fetches[i];
+              bodiesByIssue[n] = r?.status === "fulfilled" ? r.value.body : "";
+            }
+
+            const { groups, notes } = groupIssues(issues, bodiesByIssue);
+            const groupList = Object.values(groups);
+            const summary = groupList.map((g) => `${g.id}: #${g.issues.join(", #")}`).join(" | ");
+            const notesLine = notes.length > 0 ? `\n  rules fired: ${notes.join("; ")}` : "";
+            try {
+              pi.sendUserMessage(
+                `pi-ensemble: /work grouping decided K=${groupList.length} group(s) — ${summary}${notesLine}\nRunning cycles sequentially${restartTag}; halt-on-non-merged between groups.`,
+              );
+            } catch {
+              /* nothing we can do */
+            }
+
+            // Iterate groups sequentially with halt-on-non-merged.
+            for (let gi = 0; gi < groupList.length; gi++) {
+              const g = groupList[gi];
+              if (!g) continue;
+              const primary = g.issues[0];
+              if (primary === undefined) continue;
+              const groupIssueList = g.issues;
               try {
-                await runWorkDriver({ pi, repoRoot, issue: n, restart });
+                await runWorkDriver({
+                  pi,
+                  repoRoot,
+                  issue: primary,
+                  issues: groupIssueList.length > 1 ? groupIssueList : undefined,
+                  restart,
+                });
               } catch (err) {
-                trace(`work-driver: unexpected throw for #${n}: ${(err as Error).message}`);
+                trace(
+                  `work-driver: unexpected throw for ${g.id} (#${groupIssueList.join(", #")}): ${(err as Error).message}`,
+                );
                 try {
                   pi.sendUserMessage(
-                    `pi-ensemble: /work driver crashed on issue #${n}: ${(err as Error).message}. Queue halted. ` +
-                      `Inspect .pi/work-state/${n}.json or run with PI_ENSEMBLE_WORK_DRIVER=0 to use the legacy flow.`,
+                    `pi-ensemble: /work driver crashed on ${g.id} (#${groupIssueList.join(", #")}): ${(err as Error).message}. Queue halted. ` +
+                      `Inspect .pi/work-state/${primary}.json or run with PI_ENSEMBLE_WORK_DRIVER=0 to use the legacy flow.`,
                   );
                 } catch {
                   /* nothing we can do */
                 }
                 return;
               }
-              const state = await readState(repoRoot, n);
+              const state = await readState(repoRoot, primary);
               const status = state?.pipelineState.status;
-              if (status !== "merged" && i + 1 < issues.length) {
-                const remaining = issues.slice(i + 1);
+              if (status !== "merged" && gi + 1 < groupList.length) {
+                const remaining = groupList
+                  .slice(gi + 1)
+                  .map((r) => `${r.id} (#${r.issues.join(", #")})`);
                 try {
                   pi.sendUserMessage(
-                    `pi-ensemble: /work #${n} terminated as ${status ?? "unknown"}; queue halted. ` +
-                      `Remaining issues (#${remaining.join(", #")}) were NOT started. ` +
-                      `Fix / abandon #${n}, then re-run /work with the remaining issues.`,
+                    `pi-ensemble: /work ${g.id} (#${groupIssueList.join(", #")}) terminated as ${status ?? "unknown"}; queue halted. ` +
+                      `Remaining groups (${remaining.join(", ")}) were NOT started. ` +
+                      `Fix / abandon ${g.id}, then re-run /work with the remaining issues.`,
                   );
                 } catch {
                   /* nothing we can do */
@@ -236,14 +318,12 @@ export function registerCommands(pi: ExtensionAPI) {
                 return;
               }
             }
-            if (issues.length > 1) {
-              try {
-                pi.sendUserMessage(
-                  `pi-ensemble: /work queue complete — ${issues.length} issues merged sequentially: #${issues.join(", #")}`,
-                );
-              } catch {
-                /* nothing we can do */
-              }
+            try {
+              pi.sendUserMessage(
+                `pi-ensemble: /work queue complete — ${groupList.length} group(s) merged: ${groupList.map((g) => `${g.id} (#${g.issues.join(", #")})`).join(", ")}`,
+              );
+            } catch {
+              /* nothing we can do */
             }
           })();
           return;
