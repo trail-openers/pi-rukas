@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.16](https://github.com/randomm/pi-ensemble/compare/v0.12.15...v0.12.16) (2026-07-16)
+
+
+### Features
+
+* **work-driver:** deterministic multi-issue grouping analysis at /work entry point ([#265](https://github.com/randomm/pi-ensemble/issues/265)) ([4a61140](https://github.com/randomm/pi-ensemble/commit/4a61140b027840d18c3cb90b3bcd7a1b74560bb3))
+
 ## [0.12.15](https://github.com/randomm/pi-ensemble/compare/v0.12.14...v0.12.15) (2026-07-12)
 
 
