@@ -40,6 +40,8 @@ import {
   parseWorktreesBlock,
   groupIssues,
   MAX_ISSUES_PER_GROUP,
+  verifyCmdFor,
+  verifyStepOutcome,
   renderHandoffMarkdown,
   renderHandoffUserMessage,
   runWorkDriver,
@@ -88,6 +90,14 @@ function makeFakePi(): { pi: ExtensionAPI; sent: string[] } {
 const mockIssueBodyOk = async (issue: number, _cwd: string) => ({
   stdout: `title:\tmock issue #${issue}\nstate:\tOPEN\n\nmock body for issue #${issue} — non-empty placeholder so PR11's empty-body guard doesn't fire`,
 });
+
+// PR17 — the outcome-verification gate shells out (git status/rev-list,
+// verify command, gh pr view) against the driver's repoRoot/worktrees.
+// The flow tests below run in fake tmp dirs that aren't git repos and
+// must not depend on this host's gh auth, so the gate is disabled
+// globally here. The dedicated PR17 gate tests at the bottom re-enable
+// it with an injected verifyExecFn.
+process.env.PI_ENSEMBLE_VERIFY = "0";
 
 // Fake DispatchResult builder.
 function mkResult(overrides: Partial<DispatchResult> = {}): DispatchResult {
@@ -4106,6 +4116,275 @@ alternativeApproach: Could also split into two issues — one for the impl, one 
     Object.keys(twoGroups.groups).sort().join(",") === "group-a,group-b",
     "group id convention: group-a, group-b",
   );
+}
+
+// PR17 — driver-side outcome-verification gate (verifyCmdFor +
+// verifyStepOutcome). These tests re-enable the gate (disabled globally
+// at the top of this file) and inject verifyExecFn so no real git/gh
+// runs. Types: the injected fn sees the command string and returns
+// canned outputs.
+{
+  const prevVerify = process.env.PI_ENSEMBLE_VERIFY;
+  process.env.PI_ENSEMBLE_VERIFY = "1";
+  const fsSync = await import("node:fs");
+  try {
+    // --- verifyCmdFor discovery ---
+    {
+      const dir = mkdtempSync(path.join(tmpdir(), "verify-cmd-"));
+      try {
+        // Nothing → undefined.
+        assert(
+          (await verifyCmdFor(dir)) === undefined,
+          "verifyCmdFor: empty dir → undefined (diff-evidence-only mode)",
+        );
+        // package.json with test script only, no lockfile → npm run test.
+        fsSync.writeFileSync(
+          path.join(dir, "package.json"),
+          JSON.stringify({ scripts: { test: "vitest run" } }),
+        );
+        assert(
+          (await verifyCmdFor(dir)) === "npm run test",
+          "verifyCmdFor: package.json test script, no lockfile → npm run test",
+        );
+        // typecheck preferred over test; bun lockfile → bun run.
+        fsSync.writeFileSync(
+          path.join(dir, "package.json"),
+          JSON.stringify({ scripts: { test: "vitest run", typecheck: "tsc --noEmit" } }),
+        );
+        fsSync.writeFileSync(path.join(dir, "bun.lock"), "");
+        assert(
+          (await verifyCmdFor(dir)) === "bun run typecheck",
+          "verifyCmdFor: typecheck preferred over test; bun.lock → bun run",
+        );
+        // Explicit .pi/verify-cmd wins over everything.
+        fsSync.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+        fsSync.writeFileSync(
+          path.join(dir, ".pi", "verify-cmd"),
+          "# comment line\ncargo test --workspace\n",
+        );
+        assert(
+          (await verifyCmdFor(dir)) === "cargo test --workspace",
+          "verifyCmdFor: .pi/verify-cmd wins; comments skipped",
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+      // Cargo.toml → cargo check.
+      const rustDir = mkdtempSync(path.join(tmpdir(), "verify-cmd-rs-"));
+      try {
+        fsSync.writeFileSync(path.join(rustDir, "Cargo.toml"), "[package]\nname='x'\n");
+        assert(
+          (await verifyCmdFor(rustDir)) === "cargo check --quiet",
+          "verifyCmdFor: Cargo.toml → cargo check --quiet",
+        );
+      } finally {
+        rmSync(rustDir, { recursive: true, force: true });
+      }
+    }
+
+    // --- verifyStepOutcome: develop ---
+    const mkCtx = (
+      repoRoot: string,
+      execFn: NonNullable<DriverContext["verifyExecFn"]>,
+    ): DriverContext => ({
+      pi: makeFakePi().pi,
+      repoRoot,
+      issue: 999,
+      verifyExecFn: execFn,
+    });
+
+    {
+      const dir = mkdtempSync(path.join(tmpdir(), "verify-develop-"));
+      try {
+        // Empty diff everywhere → failure.
+        let s = initialState(999, 1000);
+        s = {
+          ...s,
+          pipelineState: { ...s.pipelineState, worktrees: { default: dir }, baseSha: "abc123" },
+        };
+        const emptyExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+          if (cmd === "git status --porcelain") return { stdout: "" };
+          if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
+          return { stdout: "" };
+        };
+        const emptyGate = await verifyStepOutcome(mkCtx(dir, emptyExec), s, "develop");
+        assert(!emptyGate.ok, "develop gate: all-empty worktrees → NOT ok");
+        assert(
+          emptyGate.failures.some((f) => /empty diff/.test(f)),
+          "develop gate: failure names the hollow claim (empty diff)",
+        );
+
+        // Changed worktree + verify cmd passes → ok. (.pi/verify-cmd so
+        // discovery finds a command; the fake exec passes it.)
+        fsSync.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+        fsSync.writeFileSync(path.join(dir, ".pi", "verify-cmd"), "run-verify\n");
+        const passExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+          if (cmd === "git status --porcelain") return { stdout: " M src/foo.ts\n" };
+          if (cmd === "run-verify") return { stdout: "all good" };
+          return { stdout: "" };
+        };
+        const passGate = await verifyStepOutcome(mkCtx(dir, passExec), s, "develop");
+        assert(
+          passGate.ok && passGate.failures.length === 0,
+          "develop gate: changed worktree + passing verify cmd → ok",
+        );
+
+        // Changed worktree + verify cmd FAILS → failure with output tail.
+        const failExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+          if (cmd === "git status --porcelain") return { stdout: " M src/foo.ts\n" };
+          if (cmd === "run-verify") {
+            const err = new Error("Command failed: run-verify") as Error & {
+              stdout?: string;
+              stderr?: string;
+            };
+            err.stdout = "";
+            err.stderr = "error[E0308]: mismatched types --> src/foo.rs:42";
+            throw err;
+          }
+          return { stdout: "" };
+        };
+        const failGate = await verifyStepOutcome(mkCtx(dir, failExec), s, "develop");
+        assert(!failGate.ok, "develop gate: failing verify cmd → NOT ok");
+        assert(
+          failGate.failures.some((f) => /E0308/.test(f)),
+          "develop gate: failure carries the verify-cmd output tail as evidence",
+        );
+
+        // Escape hatch.
+        process.env.PI_ENSEMBLE_VERIFY = "0";
+        const skipped = await verifyStepOutcome(mkCtx(dir, emptyExec), s, "develop");
+        assert(
+          skipped.ok && skipped.notes.some((n) => /skipped/.test(n)),
+          "develop gate: PI_ENSEMBLE_VERIFY=0 → skipped with note",
+        );
+        process.env.PI_ENSEMBLE_VERIFY = "1";
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    // --- verifyStepOutcome: commit-pr ---
+    {
+      const dir = mkdtempSync(path.join(tmpdir(), "verify-commitpr-"));
+      try {
+        let s = initialState(999, 1000);
+        s = {
+          ...s,
+          pipelineState: {
+            ...s.pipelineState,
+            branchName: "feature/issue-999",
+            prNumber: 556,
+          },
+        };
+        // Zero commits ahead → failure even though PR resolves.
+        const zeroCommits: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+          if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
+          if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
+          if (cmd.startsWith("gh pr view")) return { stdout: '{"state":"OPEN"}' };
+          return { stdout: "" };
+        };
+        const zeroGate = await verifyStepOutcome(mkCtx(dir, zeroCommits), s, "commit-pr");
+        assert(!zeroGate.ok, "commit-pr gate: zero commits ahead → NOT ok");
+        assert(
+          zeroGate.failures.some((f) => /zero commits/.test(f)),
+          "commit-pr gate: failure names the missing commits",
+        );
+
+        // Commits ahead + PR resolves → ok.
+        const happy: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+          if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
+          if (cmd.startsWith("git rev-list --count")) return { stdout: "2\n" };
+          if (cmd.startsWith("gh pr view")) return { stdout: '{"state":"OPEN"}' };
+          return { stdout: "" };
+        };
+        const happyGate = await verifyStepOutcome(mkCtx(dir, happy), s, "commit-pr");
+        assert(happyGate.ok, "commit-pr gate: commits ahead + PR resolves → ok");
+
+        // prNumber missing + gh pr list resolves → ok + adoptedPrNumber.
+        let sNoPr = initialState(999, 1000);
+        sNoPr = {
+          ...sNoPr,
+          pipelineState: { ...sNoPr.pipelineState, branchName: "feature/issue-999" },
+        };
+        const adopt: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+          if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
+          if (cmd.startsWith("git rev-list --count")) return { stdout: "2\n" };
+          if (cmd.startsWith("gh pr list")) return { stdout: "789\n" };
+          if (cmd.startsWith("gh pr view")) return { stdout: '{"state":"OPEN"}' };
+          return { stdout: "" };
+        };
+        const adoptGate = await verifyStepOutcome(mkCtx(dir, adopt), sNoPr, "commit-pr");
+        assert(
+          adoptGate.ok && adoptGate.adoptedPrNumber === 789,
+          "commit-pr gate: missing pr: marker resolved via gh pr list → adoptedPrNumber (bonus repair)",
+        );
+
+        // prNumber missing + NO PR for branch → failure.
+        const noPr: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+          if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
+          if (cmd.startsWith("git rev-list --count")) return { stdout: "2\n" };
+          if (cmd.startsWith("gh pr list")) return { stdout: "\n" };
+          return { stdout: "" };
+        };
+        const noPrGate = await verifyStepOutcome(mkCtx(dir, noPr), sNoPr, "commit-pr");
+        assert(!noPrGate.ok, "commit-pr gate: no marker + no PR on branch → NOT ok");
+        assert(
+          noPrGate.failures.some((f) => /not backed by an actual PR/.test(f)),
+          "commit-pr gate: failure names the hollow PR claim",
+        );
+
+        // prNumber set but gh pr view errors → failure.
+        const ghosted: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+          if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
+          if (cmd.startsWith("git rev-list --count")) return { stdout: "2\n" };
+          if (cmd.startsWith("gh pr view")) {
+            const err = new Error("gh failed") as Error & { stderr?: string };
+            err.stderr = "GraphQL: Could not resolve to a PullRequest with the number of 556.";
+            throw err;
+          }
+          return { stdout: "" };
+        };
+        const ghostGate = await verifyStepOutcome(mkCtx(dir, ghosted), s, "commit-pr");
+        assert(!ghostGate.ok, "commit-pr gate: PR number doesn't resolve via gh → NOT ok");
+        assert(
+          ghostGate.failures.some((f) => /does not resolve/.test(f)),
+          "commit-pr gate: failure carries the gh stderr evidence",
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    // --- explainCap renders the evidence ---
+    {
+      let s = initialState(999, 1000);
+      s = {
+        ...s,
+        pipelineState: {
+          ...s.pipelineState,
+          verifyEvidence: {
+            step: "develop",
+            failures: ["developer claimed done but every worktree has an empty diff"],
+            at: 2000,
+          },
+        },
+      };
+      const text = explainCap("verify-failed:develop", s);
+      assert(
+        /outcome-verification gate/.test(text) && /empty diff/.test(text),
+        "explainCap verify-failed:develop: names the gate + surfaces the evidence lines",
+      );
+      assert(
+        /PI_ENSEMBLE_VERIFY=0/.test(text),
+        "explainCap verify-failed: names the escape hatch",
+      );
+    }
+  } finally {
+    if (prevVerify === undefined) delete process.env.PI_ENSEMBLE_VERIFY;
+    else process.env.PI_ENSEMBLE_VERIFY = prevVerify;
+    // Restore the top-of-file default for any code that runs after.
+    process.env.PI_ENSEMBLE_VERIFY = "0";
+  }
 }
 
 console.log(`\nexit ${exit}`);

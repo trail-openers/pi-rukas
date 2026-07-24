@@ -248,6 +248,15 @@ export type WorkEvent =
         // closed #577 with 1 of 3 workstreams' changes — root fix
         // lost from main).
         | "commit-pr-incomplete-consolidation"
+        // PR17 — emitted by the driver-side outcome verification gate
+        // (verifyStepOutcome) when a step's claimed outcome doesn't match
+        // executed evidence: develop claimed done but no worktree has any
+        // diff, the project's verify command (typecheck/test) exits
+        // non-zero, commit-pr claimed a PR but no commits exist on the
+        // branch or the PR number doesn't resolve via gh. The evidence
+        // lives in pipelineState.verifyEvidence for the handoff body.
+        // Escape hatch: PI_ENSEMBLE_VERIFY=0 disables the gate.
+        | `verify-failed:${WorkStep}`
         | `step-failed:${WorkStep}`;
       reviewRound: number;
       /** What the driver will do next — either "handoff" (terminal) or "step-back" (Step 7h). */
@@ -530,6 +539,24 @@ export interface PipelineState {
   plumbReports: Array<{ step: WorkStep; role: string; body: string; at: number }>;
   /** PR number once Step 6 opens one. */
   prNumber?: number;
+  /**
+   * PR17 — SHA of the base commit the feature branch grew from, recorded
+   * by the branch step (git rev-parse HEAD at repoRoot right after ops
+   * created the branch). The outcome-verification gate diffs against
+   * this to prove the developer actually produced changes. Optional so
+   * pre-PR17 state files load cleanly; verifiers fall back to
+   * origin/<default-branch> when absent.
+   */
+  baseSha?: string;
+  /**
+   * PR17 — evidence captured by the outcome-verification gate
+   * (verifyStepOutcome) when a `verify-failed:<step>` cap fires. Each
+   * failure string is one human-readable finding (e.g., "developer
+   * claimed done but every worktree has an empty diff", "verify command
+   * `cargo check` exited 101: <tail>"). Rendered into the handoff body
+   * by explainCap. Optional — absent unless a gate has failed.
+   */
+  verifyEvidence?: { step: WorkStep; failures: string[]; at: number };
   /** Terminal status. "running" while active; flips on `merged` or `handoff`. */
   status: "running" | "merged" | "handoff" | "aborted";
 }

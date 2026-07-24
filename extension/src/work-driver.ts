@@ -375,6 +375,21 @@ export interface DriverContext {
     signal: AbortSignal,
     orchestratorJobId: string,
   ) => Promise<DispatchResult>;
+  /**
+   * PR17 — optional injection point for tests: replace the shell
+   * executor used by verifyStepOutcome (git status / rev-list, the
+   * project's verify command, gh pr view). Production callers omit
+   * this; the default is `execp`. Mirrors `issueBodyFetcherFn`.
+   */
+  verifyExecFn?: (
+    cmd: string,
+    opts?: {
+      cwd?: string;
+      timeout?: number;
+      maxBuffer?: number;
+      shell?: string;
+    },
+  ) => Promise<{ stdout: string; stderr?: string }>;
 }
 
 /** Decide the next step from the current step + just-appended events. */
@@ -1262,6 +1277,21 @@ async function runBranch(ctx: DriverContext, state: WorkState, now: number): Pro
       : { default: ctx.repoRoot };
   const ps: typeof next.pipelineState = { ...next.pipelineState, worktrees };
   if (branch) ps.branchName = branch;
+  // PR17 — record the base SHA the feature branch grew from. At this
+  // point the branch was just created and has zero commits, so HEAD at
+  // repoRoot IS the base. verifyStepOutcome diffs against this to prove
+  // develop produced real changes. Best-effort: a git failure leaves
+  // baseSha unset and the verifier falls back to porcelain-only checks.
+  try {
+    const execFn = ctx.verifyExecFn ?? execp;
+    const { stdout } = await execFn("git rev-parse HEAD", {
+      cwd: ctx.repoRoot,
+      maxBuffer: 64 * 1024,
+    });
+    if (stdout.trim()) ps.baseSha = stdout.trim();
+  } catch {
+    trace("work-driver: baseSha capture failed (verify gate falls back to porcelain-only)");
+  }
   return { ...next, pipelineState: ps };
 }
 
@@ -1475,6 +1505,33 @@ async function runDevelop(ctx: DriverContext, state: WorkState, now: number): Pr
       verdicts,
       at: Date.now(),
     });
+  }
+  // PR17 — outcome verification gate. Only when every branch claims
+  // success (failed branches already route through the dispatch-failed
+  // HALT machinery); the gate exists to catch the OTHER case, where all
+  // claims are green but the evidence isn't: no diff anywhere, or the
+  // project's verify command (typecheck/test) fails on the produced
+  // code. Catching a broken build here saves the full adversarial →
+  // lens → CI round-trip that would otherwise discover it post-PR.
+  if (verdicts.every((v) => v.ok)) {
+    const gate = await verifyStepOutcome(ctx, next, "develop");
+    if (!gate.ok) {
+      trace(`work-driver: verify-failed:develop — ${gate.failures.join(" | ")}`);
+      next = {
+        ...next,
+        pipelineState: {
+          ...next.pipelineState,
+          verifyEvidence: { step: "develop", failures: gate.failures, at: Date.now() },
+        },
+      };
+      next = appendEvent(next, {
+        kind: "cap-hit",
+        at: Date.now(),
+        cap: "verify-failed:develop",
+        reviewRound: next.pipelineState.reviewRound,
+        nextStep: "handoff",
+      });
+    }
   }
   return next;
 }
@@ -1763,6 +1820,38 @@ async function runCommitPr(ctx: DriverContext, state: WorkState, now: number): P
       reviewRound: next.pipelineState.reviewRound,
       nextStep: "handoff",
     });
+    return next;
+  }
+  // PR17 — outcome verification gate: prove the "committed + opened PR"
+  // claim with executed evidence (commits ahead of origin/<base>, PR
+  // number resolving via gh). Runs only when the consolidation gate
+  // passed — one cap per failure, most-specific wins. Bonus repair: when
+  // ops forgot the `pr: <N>` marker but the PR exists, the gate adopts
+  // the number resolved via `gh pr list --head` so handoff/ci target
+  // the right PR (pre-PR17 a missing marker silently degraded both).
+  const gate = await verifyStepOutcome(ctx, next, "commit-pr");
+  if (gate.adoptedPrNumber !== undefined) {
+    next = {
+      ...next,
+      pipelineState: { ...next.pipelineState, prNumber: gate.adoptedPrNumber },
+    };
+  }
+  if (!gate.ok) {
+    trace(`work-driver: verify-failed:commit-pr — ${gate.failures.join(" | ")}`);
+    next = {
+      ...next,
+      pipelineState: {
+        ...next.pipelineState,
+        verifyEvidence: { step: "commit-pr", failures: gate.failures, at: Date.now() },
+      },
+    };
+    next = appendEvent(next, {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "verify-failed:commit-pr",
+      reviewRound: next.pipelineState.reviewRound,
+      nextStep: "handoff",
+    });
   }
   return next;
 }
@@ -1825,6 +1914,260 @@ async function verifyConsolidation(
     }
   }
   return { missing };
+}
+
+/**
+ * PR17 — Discover the project's verify command (typecheck/test) for the
+ * driver-side outcome-verification gate.
+ *
+ * Precedence:
+ *   1. `.pi/verify-cmd` file at the target repo root — first non-empty,
+ *      non-comment line is the command verbatim. The explicit escape
+ *      valve for projects whose gate isn't derivable.
+ *   2. `package.json` scripts: `typecheck` preferred over `test`
+ *      (cheaper, deterministic; test suites may need services). Runner
+ *      detected from lockfile: bun.lock(b) → bun, pnpm-lock.yaml → pnpm,
+ *      yarn.lock → yarn, else npm.
+ *   3. `Cargo.toml` → `cargo check --quiet`.
+ *   4. Nothing found → undefined; the gate skips command verification
+ *      and checks diff/commit/PR evidence only (note emitted).
+ */
+export async function verifyCmdFor(repoRoot: string): Promise<string | undefined> {
+  try {
+    const raw = await fs.readFile(path.join(repoRoot, ".pi", "verify-cmd"), "utf8");
+    const line = raw
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l.length > 0 && !l.startsWith("#"));
+    if (line) return line;
+  } catch {
+    // No explicit file — try derivation.
+  }
+  try {
+    const pkgRaw = await fs.readFile(path.join(repoRoot, "package.json"), "utf8");
+    const pkg = JSON.parse(pkgRaw) as { scripts?: Record<string, string> };
+    const script = pkg.scripts?.typecheck ? "typecheck" : pkg.scripts?.test ? "test" : undefined;
+    if (script) {
+      let runner = "npm run";
+      const has = async (f: string) =>
+        fs
+          .access(path.join(repoRoot, f))
+          .then(() => true)
+          .catch(() => false);
+      if ((await has("bun.lock")) || (await has("bun.lockb"))) runner = "bun run";
+      else if (await has("pnpm-lock.yaml")) runner = "pnpm run";
+      else if (await has("yarn.lock")) runner = "yarn";
+      return `${runner} ${script}`;
+    }
+  } catch {
+    // No package.json or malformed — fall through.
+  }
+  try {
+    await fs.access(path.join(repoRoot, "Cargo.toml"));
+    return "cargo check --quiet";
+  } catch {
+    // Not a Rust project either.
+  }
+  return undefined;
+}
+
+/** PR17 — bounded wall-clock for the verify command (default 10 min). */
+function verifyTimeoutMs(): number {
+  const env = Number(process.env.PI_ENSEMBLE_VERIFY_TIMEOUT_MS);
+  if (Number.isFinite(env) && env > 0) return env;
+  return 10 * 60_000;
+}
+
+/** PR17 — escape hatch: PI_ENSEMBLE_VERIFY=0 disables the outcome gate. */
+function verifyGateEnabled(): boolean {
+  const v = process.env.PI_ENSEMBLE_VERIFY;
+  return v !== "0" && v !== "false";
+}
+
+/**
+ * PR17 — Driver-side outcome verification gate.
+ *
+ * Every quality gate before this PR was LLM judgment (adversarial + six
+ * lenses reading diffs/transcripts); nothing driver-side ever EXECUTED
+ * anything until post-PR CI. Agents claim "done" and the driver trusted
+ * the claim — the documented silent-merge (#245/#253) and phantom-
+ * handoff incidents are exactly this failure class (MAST: verification
+ * failures = 21.3% of multi-agent failures). This gate checks executed
+ * evidence, costs zero LLM tokens, and shortens the failure loop from
+ * post-PR CI churn to pre-commit.
+ *
+ * Checks by step:
+ *
+ *   develop —
+ *     (a) at least one worktree has real changes (uncommitted porcelain
+ *         entries, or commits ahead of baseSha when the developer
+ *         committed locally). ALL worktrees empty = the claim was
+ *         hollow.
+ *     (b) the project's verify command (verifyCmdFor) exits 0 in each
+ *         changed worktree. Non-zero exit = broken build/tests would
+ *         have burned adversarial+lens+CI cycles downstream.
+ *
+ *   commit-pr —
+ *     (a) commits exist on the branch: `git rev-list --count
+ *         origin/<base>..HEAD` > 0 at repoRoot.
+ *     (b) the parsed PR number resolves via `gh pr view`. When ops
+ *         forgot the `pr: <N>` marker, fall back to `gh pr list
+ *         --head <branch>` and ADOPT the number into pipelineState
+ *         (bonus repair — pre-PR17 a missing marker degraded handoff
+ *         targeting). No PR found at all = the "opened a PR" claim was
+ *         hollow.
+ *
+ * Failure semantics: returns `{ok: false, failures}` — the caller emits
+ * cap-hit `verify-failed:<step>` → handoff with evidence in
+ * pipelineState.verifyEvidence. Infra errors on OUR side (git itself
+ * erroring at repoRoot) are notes, not failures — same no-false-alarm
+ * stance as verifyConsolidation.
+ */
+export async function verifyStepOutcome(
+  ctx: DriverContext,
+  state: WorkState,
+  step: "develop" | "commit-pr",
+): Promise<{ ok: boolean; failures: string[]; notes: string[]; adoptedPrNumber?: number }> {
+  const failures: string[] = [];
+  const notes: string[] = [];
+  if (!verifyGateEnabled()) {
+    return { ok: true, failures, notes: ["PI_ENSEMBLE_VERIFY=0 — outcome gate skipped"] };
+  }
+  const execFn = ctx.verifyExecFn ?? execp;
+
+  if (step === "develop") {
+    const worktrees =
+      Object.keys(state.pipelineState.worktrees ?? {}).length > 0
+        ? (state.pipelineState.worktrees ?? {})
+        : { default: ctx.repoRoot };
+    const baseSha = state.pipelineState.baseSha;
+    const changedWorktrees: string[] = [];
+    for (const [id, cwd] of Object.entries(worktrees)) {
+      let changed = false;
+      try {
+        const { stdout } = await execFn("git status --porcelain", {
+          cwd,
+          maxBuffer: 1024 * 1024,
+        });
+        if (stdout.trim().length > 0) changed = true;
+      } catch (err) {
+        notes.push(`git status failed in ${id} (${(err as Error).message?.slice(0, 100)})`);
+      }
+      if (!changed && baseSha) {
+        try {
+          const { stdout } = await execFn(`git rev-list --count ${baseSha}..HEAD`, {
+            cwd,
+            maxBuffer: 64 * 1024,
+          });
+          if (Number.parseInt(stdout.trim(), 10) > 0) changed = true;
+        } catch {
+          // baseSha may not exist in this worktree's history — not evidence
+          // either way.
+        }
+      }
+      if (changed) changedWorktrees.push(cwd);
+    }
+    if (changedWorktrees.length === 0 && notes.length === 0) {
+      failures.push(
+        "developer claimed done but every worktree has an empty diff (no uncommitted changes, no commits ahead of base) — the claim is not backed by any code change",
+      );
+    }
+    // (b) verify command in each changed worktree.
+    const cmd = await verifyCmdFor(ctx.repoRoot);
+    if (!cmd) {
+      notes.push(
+        "no verify command discoverable (.pi/verify-cmd, package.json scripts, Cargo.toml) — diff evidence only",
+      );
+    } else {
+      for (const cwd of changedWorktrees) {
+        try {
+          await execFn(cmd, {
+            cwd,
+            timeout: verifyTimeoutMs(),
+            maxBuffer: 4 * 1024 * 1024,
+          });
+        } catch (err) {
+          const e = err as Error & { stdout?: string; stderr?: string; killed?: boolean };
+          const tail = `${e.stdout ?? ""}\n${e.stderr ?? ""}`.trim().slice(-1500);
+          failures.push(
+            e.killed
+              ? `verify command \`${cmd}\` exceeded its ${Math.round(verifyTimeoutMs() / 60000)}-min timeout in ${cwd}`
+              : `verify command \`${cmd}\` failed in ${cwd}: ${tail || e.message?.slice(0, 300)}`,
+          );
+        }
+      }
+    }
+    return { ok: failures.length === 0, failures, notes };
+  }
+
+  // step === "commit-pr"
+  let base = "main";
+  try {
+    const { stdout } = await execFn(
+      "git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@'",
+      { cwd: ctx.repoRoot, shell: "/bin/bash" },
+    );
+    if (stdout.trim()) base = stdout.trim();
+  } catch {
+    // Use 'main' default.
+  }
+  try {
+    const { stdout } = await execFn(`git rev-list --count origin/${base}..HEAD`, {
+      cwd: ctx.repoRoot,
+      maxBuffer: 64 * 1024,
+    });
+    if (Number.parseInt(stdout.trim(), 10) === 0) {
+      failures.push(
+        `ops claimed commit+PR done but the branch has zero commits ahead of origin/${base} — nothing was committed`,
+      );
+    }
+  } catch (err) {
+    notes.push(
+      `git rev-list failed (${(err as Error).message?.slice(0, 100)}) — commit evidence unavailable`,
+    );
+  }
+  let adoptedPrNumber: number | undefined;
+  let prToCheck = state.pipelineState.prNumber;
+  if (prToCheck === undefined) {
+    // Ops forgot the `pr: <N>` marker. Try to resolve by branch name
+    // before declaring failure (bonus repair for handoff targeting).
+    const branch = state.pipelineState.branchName;
+    if (branch) {
+      try {
+        const { stdout } = await execFn(
+          `gh pr list --head ${JSON.stringify(branch)} --json number --jq '.[0].number'`,
+          { cwd: ctx.repoRoot, maxBuffer: 64 * 1024 },
+        );
+        const n = Number.parseInt(stdout.trim(), 10);
+        if (Number.isFinite(n) && n > 0) {
+          adoptedPrNumber = n;
+          prToCheck = n;
+          notes.push(`ops omitted the pr: marker; resolved PR #${n} via gh pr list --head`);
+        }
+      } catch {
+        // gh unavailable or no PR — the check below reports it.
+      }
+    }
+    if (prToCheck === undefined) {
+      failures.push(
+        "ops claimed a PR was opened but no `pr: <N>` marker was parsed and no PR exists for the branch — the claim is not backed by an actual PR",
+      );
+    }
+  }
+  if (prToCheck !== undefined) {
+    try {
+      await execFn(`gh pr view ${prToCheck} --json state`, {
+        cwd: ctx.repoRoot,
+        maxBuffer: 256 * 1024,
+      });
+    } catch (err) {
+      const e = err as Error & { stderr?: string };
+      failures.push(
+        `PR #${prToCheck} does not resolve via \`gh pr view\`: ${(e.stderr ?? e.message ?? "").slice(0, 200)}`,
+      );
+    }
+  }
+  return { ok: failures.length === 0, failures, notes, adoptedPrNumber };
 }
 
 /**
@@ -2985,6 +3328,18 @@ export function explainCap(
         missing.length > 0 ? missing.map((m) => m.id).join(", ") : "one or more workstreams";
       return `commit-pr's post-dispatch consolidation gate detected that the committed diff is missing files from these workstreams: ${which}. Ops committed a partial slice — the developers' work in the missing worktrees is uncommitted on disk. Pre-PR14 this would have merged silently (v0.12.13 /work 577 closed an issue with 1 of 3 workstreams' changes shipped). The driver halted before merge; recover by collecting the missing diffs from \`.worktrees/issue-N-<id>\` and re-running, or take over the integration manually`;
     }
+  }
+  // PR17 — `verify-failed:<step>`: the driver-side outcome gate found
+  // the step's claimed result isn't backed by executed evidence. The
+  // per-check findings live in pipelineState.verifyEvidence.
+  if (cap.startsWith("verify-failed:")) {
+    const step = cap.slice("verify-failed:".length);
+    const evidence = state.pipelineState.verifyEvidence;
+    const findings =
+      evidence && evidence.failures.length > 0
+        ? `\n${evidence.failures.map((f) => `  - ${f}`).join("\n")}`
+        : " (evidence detail missing from state)";
+    return `the driver's outcome-verification gate rejected the ${step} step's "done" claim — the claimed result is not backed by executed evidence:${findings}\nNo LLM judged this; the driver ran the checks itself (git diff/rev-list, the project's verify command, gh pr view). Inspect the worktree(s), fix or re-dispatch, and re-run. Set PI_ENSEMBLE_VERIFY=0 to disable the gate (not recommended)`;
   }
   // Template-literal `step-failed:<step>` values land here. Switch on the
   // step suffix to produce a tailored sentence.
