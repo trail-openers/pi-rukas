@@ -760,3 +760,19 @@ The command is capped at 10 minutes (`PI_ENSEMBLE_VERIFY_TIMEOUT_MS` to override
 ### Why this exists
 
 Pre-PR17, every quality gate (adversarial, six lenses) was LLM judgment reading diffs and transcripts — nothing driver-side ever *executed* anything until post-PR CI. The #245/#253 silent-merge incidents were exactly this failure class: agents claimed success, the driver trusted the claim. The gate costs zero LLM tokens and catches hollow claims pre-commit instead of after a full adversarial → lens → CI round-trip.
+
+## Mechanized commit-pr — driver-executed consolidation (PR19+)
+
+### What changed
+
+The `commit-pr` step's consolidation + commit + push + PR creation now run as **driver code** (`mechanizedCommitPr` in `work-driver.ts`), not as an LLM ops dispatch. The recipe is the same one the PR14 prompt narrated to ops — per-worktree stage → `git diff --cached` → `git apply --index` at the repo root → templated commit (`Fixes #N` per active issue, `Companion to` per dropped issue) → push → `gh pr create --body-file` — with one improvement: worktree slices are staged before capture, so **untracked new files are included** (`git diff HEAD` alone silently missed them).
+
+### Fallback semantics
+
+Any mechanized-path failure (apply conflict, push rejection, unexpected repo state, clean worktree) emits a `plumb-report` naming the reason and falls back to the LLM ops dispatch — whose behavior is unchanged from PR14. The LLM absorbs environment variance the deterministic recipe can't (auth quirks, odd remotes); the driver handles the 95% enumerable case. Both paths share the same downstream gates (`parsePrNumber`, `verifyConsolidation`, `verifyStepOutcome`), so a bad consolidation is caught identically either way.
+
+If you see repeated fallbacks in the plumb-reports, the reason string says why; the most common legitimate one is a `git apply` conflict between workstreams (overlapping edits) — that's genuinely judgmental and the LLM path is the right tool.
+
+### Escape hatch
+
+`PI_ENSEMBLE_MECHANIZE_OPS=0` forces the LLM ops dispatch for every commit-pr (the pre-PR19 behavior). Use it only to debug a suspected mechanization bug — the mechanized path is the reliability-preferred default (every worst-class incident in the harness's history — #245/#253 silent merges, v0.12.13 partial consolidation — was LLM ops improvising these operations).
