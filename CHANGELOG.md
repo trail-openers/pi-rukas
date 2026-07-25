@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.19](https://github.com/randomm/pi-ensemble/compare/v0.12.18...v0.12.19) (2026-07-25)
+
+
+### Features
+
+* **work-driver:** mechanized commit-pr — driver-executed consolidation, commit, push, PR creation ([#274](https://github.com/randomm/pi-ensemble/issues/274)) ([12ab67c](https://github.com/randomm/pi-ensemble/commit/12ab67c3ead714d3c60cb834c1595247a7e41fc2))
+
 ## [0.12.18](https://github.com/randomm/pi-ensemble/compare/v0.12.17...v0.12.18) (2026-07-25)
 
 
