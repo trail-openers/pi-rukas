@@ -741,12 +741,13 @@ On failure the driver emits cap `verify-failed:<step>` → handoff, with the per
 
 ### Verify command discovery
 
-Precedence:
+Precedence (PR18 shape):
 
 1. **`.pi/verify-cmd`** at the target repo root — first non-empty, non-comment line is the command verbatim. Use this when the derived command is wrong or you want tests instead of typecheck.
-2. **`package.json` scripts** — `typecheck` preferred over `test`; the runner is detected from the lockfile (`bun.lock`/`bun.lockb` → `bun run`, `pnpm-lock.yaml` → `pnpm run`, `yarn.lock` → `yarn`, else `npm run`).
-3. **`Cargo.toml`** → `cargo check --quiet`.
-4. Nothing found → the gate checks diff/commit/PR evidence only and notes the absence.
+2. **`package.json` `typecheck` script** — an intentional project-level signal; wins even next to a `Cargo.toml`. Runner detected from the lockfile (`bun.lock`/`bun.lockb` → `bun run`, `pnpm-lock.yaml` → `pnpm run`, `yarn.lock` → `yarn`, else `npm run`).
+3. **`Cargo.toml`** → `cargo check --quiet`. Beats a bare `package.json` `test` script — a Rust repo with a tooling package.json (docs build, hooks) must not run `npm run test` as its gate. (Pre-PR18 package.json won unconditionally, producing spurious verify-failures on Rust projects.)
+4. **`package.json` `test` script** (non-Rust repos only).
+5. Nothing found → the gate checks diff/commit/PR evidence only and notes the absence.
 
 The command is capped at 10 minutes (`PI_ENSEMBLE_VERIFY_TIMEOUT_MS` to override).
 

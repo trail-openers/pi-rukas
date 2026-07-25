@@ -4387,5 +4387,295 @@ alternativeApproach: Could also split into two issues — one for the impl, one 
   }
 }
 
+// PR18 — gate hardening: R1 note-suppression fix, R6 verify-cmd
+// precedence fix, R4 end-to-end cap-wiring integration tests.
+{
+  const prevVerify = process.env.PI_ENSEMBLE_VERIFY;
+  const prevSpec = process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE;
+  process.env.PI_ENSEMBLE_VERIFY = "1";
+  process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE = "1";
+  const fsSync = await import("node:fs");
+  try {
+    // --- R1: one worktree's git-status error must NOT suppress the
+    // hollow-diff failure for the others (pre-PR18 it did — the exact
+    // silent-pass class PR17 exists to kill).
+    {
+      const dir = mkdtempSync(path.join(tmpdir(), "verify-r1-"));
+      try {
+        let s = initialState(998, 1000);
+        s = {
+          ...s,
+          pipelineState: {
+            ...s.pipelineState,
+            worktrees: { "task-a": path.join(dir, "a"), "task-b": path.join(dir, "b") },
+            baseSha: "abc123",
+          },
+        };
+        const oneErrOneEmpty: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
+          if (cmd === "git status --porcelain") {
+            if (opts?.cwd?.endsWith("/a")) throw new Error("not a git repository");
+            return { stdout: "" };
+          }
+          if (cmd.startsWith("git rev-list --count")) {
+            if (opts?.cwd?.endsWith("/a")) throw new Error("bad revision");
+            return { stdout: "0\n" };
+          }
+          return { stdout: "" };
+        };
+        const ctx: DriverContext = {
+          pi: makeFakePi().pi,
+          repoRoot: dir,
+          issue: 998,
+          verifyExecFn: oneErrOneEmpty,
+        };
+        const gate = await verifyStepOutcome(ctx, s, "develop");
+        assert(
+          !gate.ok && gate.failures.some((f) => /empty diff/.test(f)),
+          "R1: one worktree erroring does NOT suppress the hollow-diff failure for the assessed one",
+        );
+        assert(
+          gate.notes.some((n) => /git status failed/.test(n)),
+          "R1: the erroring worktree is still surfaced as a note",
+        );
+
+        // All worktrees unassessable → degrade to pass-with-note, no failure.
+        const allErr: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+          if (cmd === "git status --porcelain") throw new Error("not a git repository");
+          if (cmd.startsWith("git rev-list --count")) throw new Error("bad revision");
+          return { stdout: "" };
+        };
+        const degraded = await verifyStepOutcome({ ...ctx, verifyExecFn: allErr }, s, "develop");
+        assert(
+          degraded.ok && degraded.notes.some((n) => /no worktree could be assessed/.test(n)),
+          "R1: ALL worktrees unassessable → degrade to pass-with-note (no evidence either way)",
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    // --- R6: Cargo.toml beats a bare package.json `test` script; an
+    // explicit `typecheck` script still wins over Cargo.toml.
+    {
+      const dir = mkdtempSync(path.join(tmpdir(), "verify-r6-"));
+      try {
+        fsSync.writeFileSync(path.join(dir, "Cargo.toml"), "[package]\nname='x'\n");
+        fsSync.writeFileSync(
+          path.join(dir, "package.json"),
+          JSON.stringify({ scripts: { test: "node tools/docs-lint.js" } }),
+        );
+        assert(
+          (await verifyCmdFor(dir)) === "cargo check --quiet",
+          "R6: Rust repo with tooling package.json (test only) → cargo check wins",
+        );
+        fsSync.writeFileSync(
+          path.join(dir, "package.json"),
+          JSON.stringify({ scripts: { test: "x", typecheck: "tsc --noEmit" } }),
+        );
+        assert(
+          (await verifyCmdFor(dir)) === "npm run typecheck",
+          "R6: explicit typecheck script wins even next to Cargo.toml (intentional signal)",
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    // --- R4: end-to-end cap wiring. Drive the FULL runWorkDriver with
+    // scripted dispatchFn + verifyExecFn and assert the gate's cap-hit,
+    // evidence persistence, and handoff routing through the real state
+    // machine (pre-PR18 the wiring was asserted only via explainCap text).
+
+    // R4a — hollow develop claim → cap-hit verify-failed:develop →
+    // handoff terminal.
+    {
+      const dir = mkdtempSync(path.join(tmpdir(), "verify-r4a-"));
+      try {
+        await (await import("node:fs/promises")).mkdir(path.join(dir, ".git", "info"), {
+          recursive: true,
+        });
+        const hollowExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+          if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
+          if (cmd === "git status --porcelain") return { stdout: "" };
+          if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
+          if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
+          return { stdout: "" };
+        };
+        const ctx: DriverContext = {
+          pi: makeFakePi().pi,
+          repoRoot: dir,
+          issue: 991,
+          issueBodyFetcherFn: mockIssueBodyOk,
+          verifyExecFn: hollowExec,
+          dispatchFn: async (_pi, spec, opts) => {
+            const label = opts?.label ?? spec.role;
+            if (label === "explore") return mkResult({ text: "VERDICT: NEEDS_WORK" });
+            if (label === "plan") return mkResult({ text: "" });
+            if (label === "ops")
+              return mkResult({ role: "ops", text: "branch: feature/issue-991" });
+            if (label === "developer")
+              return mkResult({ role: "developer", text: "done — implemented the fix" });
+            if (label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
+            throw new Error(`unexpected dispatch: ${label}`);
+          },
+        };
+        await runWorkDriver(ctx).catch(() => {});
+        const after = await readState(dir, 991);
+        const capEvent = after?.eventLog.find(
+          (e) => e.kind === "cap-hit" && e.cap === "verify-failed:develop",
+        );
+        assert(
+          capEvent !== undefined,
+          "R4a: hollow develop claim fires cap-hit verify-failed:develop through the real wiring",
+        );
+        assert(
+          after?.pipelineState.verifyEvidence?.step === "develop" &&
+            (after?.pipelineState.verifyEvidence?.failures.length ?? 0) > 0,
+          "R4a: verifyEvidence persisted to the state file with the failure detail",
+        );
+        assert(
+          after?.pipelineState.status === "handoff",
+          "R4a: cycle terminal status is handoff (gate failure routed through nextStep)",
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    // R4b — good develop evidence passes the gate; cycle reaches
+    // adversarial and (with an approving loop) commit-pr, whose gate then
+    // catches a zero-commit claim.
+    {
+      const dir = mkdtempSync(path.join(tmpdir(), "verify-r4b-"));
+      try {
+        await (await import("node:fs/promises")).mkdir(path.join(dir, ".git", "info"), {
+          recursive: true,
+        });
+        const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+          if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
+          if (cmd === "git status --porcelain") return { stdout: " M src/lib.rs\n" };
+          if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
+          if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
+          if (cmd.startsWith("gh pr view")) return { stdout: '{"state":"OPEN"}' };
+          return { stdout: "" };
+        };
+        const ctx: DriverContext = {
+          pi: makeFakePi().pi,
+          repoRoot: dir,
+          issue: 992,
+          issueBodyFetcherFn: mockIssueBodyOk,
+          verifyExecFn: exec,
+          adversarialLoopFn: async () =>
+            mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
+          dispatchFn: async (_pi, spec, opts) => {
+            const label = opts?.label ?? spec.role;
+            if (label === "explore") return mkResult({ text: "VERDICT: NEEDS_WORK" });
+            if (label === "plan") return mkResult({ text: "" });
+            if (label === "ops")
+              return mkResult({ role: "ops", text: "branch: feature/issue-992" });
+            if (label === "developer")
+              return mkResult({ role: "developer", text: "done — implemented" });
+            if (label === "ops:commit-pr")
+              return mkResult({ role: "ops", text: "Committed and pushed.\npr: 556" });
+            if (label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
+            throw new Error(`unexpected dispatch: ${label}`);
+          },
+        };
+        await runWorkDriver(ctx).catch(() => {});
+        const after = await readState(dir, 992);
+        assert(
+          !after?.eventLog.some((e) => e.kind === "cap-hit" && e.cap === "verify-failed:develop"),
+          "R4b: real develop evidence passes the gate (no verify-failed:develop)",
+        );
+        assert(
+          after?.eventLog.some((e) => e.kind === "adversarial-approved"),
+          "R4b: cycle proceeded through adversarial after the develop gate",
+        );
+        const commitCap = after?.eventLog.find(
+          (e) => e.kind === "cap-hit" && e.cap === "verify-failed:commit-pr",
+        );
+        assert(
+          commitCap !== undefined,
+          "R4b: zero-commits-ahead claim fires cap-hit verify-failed:commit-pr through the real wiring",
+        );
+        assert(
+          after?.pipelineState.verifyEvidence?.step === "commit-pr" &&
+            after?.pipelineState.verifyEvidence?.failures.some((f) => /zero commits/.test(f)),
+          "R4b: commit-pr verifyEvidence persisted with the zero-commits failure",
+        );
+        assert(
+          after?.pipelineState.status === "handoff",
+          "R4b: commit-pr gate failure routes the cycle to handoff",
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    // R4c — pr:-marker omission repaired via gh pr list adoption; no
+    // cap fires and pipelineState.prNumber is written back.
+    {
+      const dir = mkdtempSync(path.join(tmpdir(), "verify-r4c-"));
+      try {
+        await (await import("node:fs/promises")).mkdir(path.join(dir, ".git", "info"), {
+          recursive: true,
+        });
+        const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+          if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
+          if (cmd === "git status --porcelain") return { stdout: " M src/lib.rs\n" };
+          if (cmd.startsWith("git rev-list --count")) return { stdout: "2\n" };
+          if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
+          if (cmd.startsWith("gh pr list")) return { stdout: "789\n" };
+          if (cmd.startsWith("gh pr view")) return { stdout: '{"state":"OPEN"}' };
+          return { stdout: "" };
+        };
+        const ctx: DriverContext = {
+          pi: makeFakePi().pi,
+          repoRoot: dir,
+          issue: 993,
+          issueBodyFetcherFn: mockIssueBodyOk,
+          verifyExecFn: exec,
+          adversarialLoopFn: async () =>
+            mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
+          dispatchFn: async (_pi, spec, opts) => {
+            const label = opts?.label ?? spec.role;
+            if (label === "explore") return mkResult({ text: "VERDICT: NEEDS_WORK" });
+            if (label === "plan") return mkResult({ text: "" });
+            if (label === "ops")
+              return mkResult({ role: "ops", text: "branch: feature/issue-993" });
+            if (label === "developer")
+              return mkResult({ role: "developer", text: "done — implemented" });
+            if (label === "ops:commit-pr")
+              return mkResult({ role: "ops", text: "Committed and pushed. (forgot the marker)" });
+            if (label === "ops:ci") throw new Error("halt at ci: integration assertion boundary");
+            if (label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
+            throw new Error(`unexpected dispatch: ${label}`);
+          },
+        };
+        await runWorkDriver(ctx).catch(() => {});
+        const after = await readState(dir, 993);
+        assert(
+          !after?.eventLog.some(
+            (e) => e.kind === "cap-hit" && e.cap === "verify-failed:commit-pr",
+          ),
+          "R4c: missing pr: marker repaired via gh pr list — no verify-failed:commit-pr cap",
+        );
+        assert(
+          after?.pipelineState.prNumber === 789,
+          "R4c: adopted PR number written back to pipelineState.prNumber (bonus repair wired)",
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  } finally {
+    if (prevVerify === undefined) delete process.env.PI_ENSEMBLE_VERIFY;
+    else process.env.PI_ENSEMBLE_VERIFY = prevVerify;
+    process.env.PI_ENSEMBLE_VERIFY = "0";
+    if (prevSpec === undefined) delete process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE;
+    else process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE = prevSpec;
+  }
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
