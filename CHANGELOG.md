@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.18](https://github.com/randomm/pi-ensemble/compare/v0.12.17...v0.12.18) (2026-07-25)
+
+
+### Bug Fixes
+
+* **work-driver:** harden outcome-verification gates (R1 note-suppression, R6 verify-cmd precedence, R4 integration tests) ([#272](https://github.com/randomm/pi-ensemble/issues/272)) ([b2a543e](https://github.com/randomm/pi-ensemble/commit/b2a543e82c023430151c7615cb9d56b0a302272a))
+
 ## [0.12.17](https://github.com/randomm/pi-ensemble/compare/v0.12.16...v0.12.17) (2026-07-24)
 
 
