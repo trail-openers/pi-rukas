@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.20](https://github.com/randomm/pi-ensemble/compare/v0.12.19...v0.12.20) (2026-07-29)
+
+
+### Bug Fixes
+
+* **spawn:** reliability overhaul — timeout retune, transient retries, honest failure telemetry ([#301](https://github.com/randomm/pi-ensemble/issues/301)) ([a41090a](https://github.com/randomm/pi-ensemble/commit/a41090a72c7b56007eb108fe103fec6fdb112159)), closes [#295](https://github.com/randomm/pi-ensemble/issues/295) [#296](https://github.com/randomm/pi-ensemble/issues/296) [#297](https://github.com/randomm/pi-ensemble/issues/297) [#298](https://github.com/randomm/pi-ensemble/issues/298) [#299](https://github.com/randomm/pi-ensemble/issues/299) [#300](https://github.com/randomm/pi-ensemble/issues/300)
+
 ## [0.12.19](https://github.com/randomm/pi-ensemble/compare/v0.12.18...v0.12.19) (2026-07-25)
 
 
