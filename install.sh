@@ -222,41 +222,49 @@ else
 CBM_HINT
 fi
 
-# ---- 6b. Pi provider retry defaults (PR #236) -------------------------------
+# ---- 6b. Pi provider retry defaults (PR #236, retuned by #295) --------------
 #
 # Pi reads `settings.retry.provider.timeoutMs` from ~/.pi/agent/settings.json
 # and forwards it to pi-ai providers as the upstream SDK HTTP timeout. Without
-# this, providers default to ~10 min, and a hung request silently exhausts
-# Pi's retries (3 attempts × 10 min) before falling out as a synthetic
-# `stopReason: error` empty-content assistant message. pi-ensemble's dispatch
-# report then mistakes that for a successful completion (see PR #236).
+# this, providers default to ~10 min before a hung request falls out as a
+# synthetic `stopReason: error` assistant message (see PR #236).
 #
-# Sensible defaults: 3 min per request (healthy LLM calls return in seconds;
-# 3 min is well above p99 of healthy traffic, tight enough to detect hangs
-# fast), 3 retries with exponential backoff. Worst case 1 + 3 × 3 min ≈ 12
-# min, comfortably inside pi-ensemble's 30-min wall-clock cap.
+# Default: 10 min per request. The earlier 3-min default (#236) sat BELOW the
+# legitimate turn length of thinking-heavy models (a single xhigh-thinking
+# turn routinely streams 10-17 min): one slow-but-healthy request would burn
+# two stacked retry layers (~10-17 min of silence) and surface as
+# "Request timed out." / "terminated" on a perfectly healthy endpoint —
+# the #295 reliability regression. 10 min matches pi's own upstream default
+# while keeping the block explicit and operator-tunable.
 #
-# Idempotent: only writes the retry block if `retry.provider.timeoutMs` is
-# absent (or null). User-set values are preserved.
+# Idempotent + non-clobbering: writes the block only when
+# `retry.provider.timeoutMs` is absent (or null). One exception: a value of
+# exactly 180000 is our own #236 footprint, not an operator choice — repair
+# it to the new default. Any other value is preserved.
 
 PI_AGENT_DIR_INSTALL="${PI_AGENT_DIR:-$HOME/.pi/agent}"
 PI_SETTINGS="$PI_AGENT_DIR_INSTALL/settings.json"
+RETRY_TIMEOUT_MS=600000
 
 if [ -f "$PI_SETTINGS" ]; then
   if ! jq empty "$PI_SETTINGS" >/dev/null 2>&1; then
     echo "!! $PI_SETTINGS is not valid JSON — skipping provider-retry defaults."
     echo "   Fix the file and re-run install.sh, or add manually:"
-    echo "     retry.provider = { timeoutMs: 180000, maxRetries: 3, maxRetryDelayMs: 60000 }"
+    echo "     retry.provider = { timeoutMs: $RETRY_TIMEOUT_MS, maxRetries: 3, maxRetryDelayMs: 60000 }"
   else
     existing="$(jq -r '.retry.provider.timeoutMs // "null"' "$PI_SETTINGS")"
-    if [ "$existing" = "null" ]; then
-      echo "==> Setting provider-retry defaults in $PI_SETTINGS"
-      echo "    timeoutMs=180000 (3 min/request), maxRetries=3 — detect provider hangs fast"
+    if [ "$existing" = "null" ] || [ "$existing" = "180000" ]; then
+      if [ "$existing" = "180000" ]; then
+        echo "==> Repairing provider-retry timeout in $PI_SETTINGS (old 180000ms default from #236 → ${RETRY_TIMEOUT_MS}ms)"
+      else
+        echo "==> Setting provider-retry defaults in $PI_SETTINGS"
+      fi
+      echo "    timeoutMs=$RETRY_TIMEOUT_MS (10 min/request), maxRetries=3"
       tmp="$(mktemp)"
-      jq '
+      jq --argjson t "$RETRY_TIMEOUT_MS" '
         .retry //= {} |
         .retry.provider //= {} |
-        .retry.provider.timeoutMs = 180000 |
+        .retry.provider.timeoutMs = $t |
         .retry.provider.maxRetries //= 3 |
         .retry.provider.maxRetryDelayMs //= 60000
       ' "$PI_SETTINGS" > "$tmp" && mv "$tmp" "$PI_SETTINGS"

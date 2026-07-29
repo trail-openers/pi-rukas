@@ -135,15 +135,55 @@ export async function runAdversarialLoop(
     }
   };
 
+  /**
+   * #298 — a round whose dispatch errored (provider error-stop, pi-ensemble
+   * kill, non-zero exit) produced NO verdict. Pre-#298 the loop fed its
+   * partial text into parseVerdict, whose ISSUES_FOUND default then
+   * manufactured a developer "fix" cycle from garbage findings (empirical:
+   * run ms5udbl0 2026-07-29 — a SIGTERM'd review round spawned a fix +
+   * re-review against an empty diff).
+   */
+  const infraFailed = (r: DispatchResult): boolean => !r.ok || !!r.errorStop || !!r.killCause;
+  const describeInfra = (r: DispatchResult): string => {
+    if (r.killCause) return `killed by pi-ensemble (${r.killCause})`;
+    if (r.errorStop)
+      return `provider/transport error: ${r.errorStop.message ?? r.errorStop.reason}`;
+    return `failed (exit ${r.exitCode})`;
+  };
+  /** One bounded infra-retry per phase; second failure aborts the loop. */
+  const runPhaseWithInfraRetry = async (
+    role: "adversarial-developer" | "developer",
+    tag: string,
+    prompt: string,
+    cwd?: string,
+  ): Promise<DispatchResult> => {
+    const first = await runPhase(role, tag, prompt, cwd);
+    accumulate(first);
+    if (!infraFailed(first) || signal.aborted) return first;
+    const retry = await runPhase(role, `${tag}-retry`, prompt, cwd);
+    accumulate(retry);
+    return retry;
+  };
+  const infraFailureResult = (round: number, phase: string, r: DispatchResult): DispatchResult =>
+    synthesizeResult({
+      ok: false,
+      loopOutcome: "infra-failure",
+      text: `Adversarial loop infrastructure failure: round ${round} ${phase} dispatch ${describeInfra(r)} (after one retry). No verdict was produced — this is NOT a review rejection.`,
+      ms: Date.now() - start,
+      usage,
+      transcriptPath: lastTranscript,
+      model: lastModel,
+    });
+
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     if (signal.aborted) break;
-    const adv = await runPhase(
+    const adv = await runPhaseWithInfraRetry(
       "adversarial-developer",
       `round${round}-review`,
       buildAdversarialPrompt(params.diff, params.context, round),
       params.workCwd,
     );
-    accumulate(adv);
+    if (infraFailed(adv)) return infraFailureResult(round, "review", adv);
 
     const verdict = parseVerdict(adv.text);
     rounds.push({ round, verdict, ms: adv.ms });
@@ -151,6 +191,7 @@ export async function runAdversarialLoop(
     if (verdict.status === "APPROVED") {
       return synthesizeResult({
         ok: true,
+        loopOutcome: "approved",
         text: `Adversarial APPROVED after round ${round}.\n\n${verdict.findings}`,
         ms: Date.now() - start,
         usage,
@@ -161,18 +202,19 @@ export async function runAdversarialLoop(
 
     if (round === MAX_ROUNDS) break;
 
-    const fix = await runPhase(
+    const fix = await runPhaseWithInfraRetry(
       "developer",
       `round${round}-fix`,
       buildFixPrompt(verdict.findings, params.context),
       params.workCwd,
     );
-    accumulate(fix);
+    if (infraFailed(fix)) return infraFailureResult(round, "fix", fix);
   }
 
   const last = rounds[rounds.length - 1];
   return synthesizeResult({
     ok: false,
+    loopOutcome: "rejected",
     text: [
       `❌ Adversarial REJECTED after ${MAX_ROUNDS} rounds. Last verdict: ${last?.verdict.status}`,
       "",
@@ -199,6 +241,8 @@ interface SynthesizeInput {
   usage: DispatchResult["usage"];
   transcriptPath?: string;
   model?: string;
+  /** #298 — how the loop ended; see DispatchResult.loopOutcome. */
+  loopOutcome?: DispatchResult["loopOutcome"];
 }
 
 function synthesizeResult(i: SynthesizeInput): DispatchResult {
@@ -212,6 +256,7 @@ function synthesizeResult(i: SynthesizeInput): DispatchResult {
     usage: i.usage,
     model: i.model,
     transcriptPath: i.transcriptPath,
+    loopOutcome: i.loopOutcome,
   };
 }
 

@@ -147,18 +147,20 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   assert(!out.includes("STALE"), "fresh row does not get STALE badge");
 }
 
-// 3c. PR2 O3 — STALE detection: row with no message_end in >90s flips icon
-// and gets a "no progress Ns" badge appended. Default threshold is 90_000 ms.
+// 3c. PR2 O3 (retuned by #299) — STALE detection: row with no child event
+// in longer than the threshold flips icon and gets a "no progress Ns" badge.
+// Default threshold is now 15 min (#299): the old 90s default false-flagged
+// healthy children during every long thinking turn / tool execution.
 {
   const startedAt = 2_000_000;
-  const now = startedAt + 120000; // 2m elapsed
+  const now = startedAt + 20 * 60_000; // 20m elapsed
   const e: DeckEntry = {
     key: "stale-key",
     label: "developer",
     seq: 1,
     startedAt,
     state: makeState("developer", {
-      lastEventAt: now - 100000, // 100s ago > 90s threshold
+      lastEventAt: now - 16 * 60_000, // 16m ago > 15m threshold
       lastToolName: "bash",
       toolUses: 1,
     }),
@@ -167,6 +169,26 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   assert(out.startsWith("⚠"), "STALE row uses ⚠ icon instead of ⏳");
   assert(out.includes("STALE"), "STALE row includes STALE label");
   assert(out.includes("no progress"), "STALE row names the no-progress duration");
+}
+
+// 3c-2 (#299) — a gap that would have false-flagged under the old 90s
+// default (e.g. a 10-min healthy thinking turn) is NOT stale anymore.
+{
+  const startedAt = 2_000_000;
+  const now = startedAt + 12 * 60_000;
+  const e: DeckEntry = {
+    key: "healthy-gap-key",
+    label: "developer",
+    seq: 1,
+    startedAt,
+    state: makeState("developer", {
+      lastEventAt: now - 10 * 60_000, // 10m ago < 15m threshold
+      lastToolName: "bash",
+      toolUses: 1,
+    }),
+  };
+  const out = formatRow(e, now);
+  assert(!out.includes("STALE"), "#299: 10-min healthy gap no longer flags STALE");
 }
 
 // 3d. Fresh-spawn grace: a row with NO lastEventAt yet but young elapsed

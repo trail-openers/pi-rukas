@@ -77,8 +77,11 @@ function assert(cond: boolean, msg: string) {
   );
   assert(erroredLine.includes("9m00s"), "errored line includes formatted elapsed");
   assert(erroredLine.includes("280k tokens"), "errored line includes token total");
+  // #299 reworded the blanket "provider request error" to name the actual
+  // failure class — the shape is a transport-level verdict, not proof the
+  // endpoint is down.
   assert(
-    erroredLine.includes("provider request error"),
+    erroredLine.includes("provider/transport error"),
     "errored line names the failure category for user scrollback",
   );
 

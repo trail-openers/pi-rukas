@@ -388,21 +388,23 @@ function truncateHint(s: string): string {
 }
 
 /**
- * STALE detection threshold (PR2 O3). A row whose RunningState hasn't
- * received a `message_end` in this long flips to the `⚠ STALE` icon and
- * gets a "no progress Ns" badge appended.
+ * STALE detection threshold (PR2 O3, retuned by #299). A row whose
+ * RunningState hasn't received ANY child event in this long flips to the
+ * `⚠ STALE` icon and gets a "no progress Ns" badge appended.
  *
- * Default: 90s. Long enough to absorb legitimate LLM "thinking" pauses
- * (Anthropic / Cerebras / GLM all stream message_end events on each
- * assistant turn, including thinking-only turns, so 90s without ANY
- * event means the child is genuinely stuck — provider down, child in a
- * non-LLM loop). Operator-tunable via PI_ENSEMBLE_STALE_THRESHOLD_MS.
- * The existing 30-min spawn timeout in spawn.ts remains the hard cap;
- * STALE is just earlier user-visible signal that something's wrong.
+ * Default: 15 min. The old 90s default was empirically wrong about its own
+ * premise — pi children emit NO events mid-turn (a single xhigh-thinking
+ * turn streams 10-17 min) or mid-tool-execution (healthy bash gaps up to
+ * 14.6 min measured in production transcripts), so 90s produced constant
+ * false STALE badges that trained operators to see endpoint failures
+ * everywhere (#299). 15 min sits just above the longest measured healthy
+ * gap; genuinely hung children are killed by the spawn.ts inactivity
+ * watchdog (#296, default 25 min) shortly after. Operator-tunable via
+ * PI_ENSEMBLE_STALE_THRESHOLD_MS.
  */
 const STALE_THRESHOLD_MS = (() => {
   const env = Number(process.env.PI_ENSEMBLE_STALE_THRESHOLD_MS);
-  return Number.isFinite(env) && env >= 1000 ? env : 90_000;
+  return Number.isFinite(env) && env >= 1000 ? env : 15 * 60_000;
 })();
 
 /**

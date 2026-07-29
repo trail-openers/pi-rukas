@@ -292,5 +292,21 @@ assert(formatElapsed(75_000) === "1m15s", "minutes+seconds combined");
   );
 }
 
+// 10 (#299) — the STALE heartbeat refreshes on ANY child event (tool events
+// included), not just assistant turn ends. Pre-#299 a >90s tool execution
+// false-flagged healthy children because the toolCall's message_end fires
+// BEFORE the tool runs.
+{
+  const s = emptyRunningState("developer");
+  const start = Date.now();
+  const before = Date.now();
+  const advanced = ingestEvent(s, { type: "tool_execution_start" }, start);
+  assert(advanced === false, "#299: tool event does not signal a completed turn");
+  assert(
+    typeof s.lastEventAt === "number" && s.lastEventAt >= before,
+    "#299: tool event still refreshes the STALE heartbeat",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

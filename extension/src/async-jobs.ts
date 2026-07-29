@@ -461,7 +461,13 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
       // run didn't actually produce a usable reply. See spawn.ts collapseEvents
       // and the failure transcript in PR #236 for the shape.
       if (result.errorStop) {
-        lifecycle.emitErrored(jobId, input.label, input.role, result.ms, totalTokens(result));
+        // #299 — driver-owned jobs skip the per-child "terminated
+        // mid-stream" line: the driver emits its own step-failed /
+        // step-retry line for the same event, and pre-#299 a single
+        // error-stop produced three provider-blame lines in scrollback.
+        if (ownerKind === "pm") {
+          lifecycle.emitErrored(jobId, input.label, input.role, result.ms, totalTokens(result));
+        }
       } else if (result.ok) {
         lifecycle.emitCompleted(jobId, input.label, input.role, result.ms, totalTokens(result));
       } else {

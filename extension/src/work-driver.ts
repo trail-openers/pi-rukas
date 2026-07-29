@@ -221,6 +221,46 @@ export const STEP_FAILURE_POLICY: Record<WorkStep, StepFailurePolicy> = {
 };
 
 /**
+ * #297 — max INFRASTRUCTURE-TRANSIENT retries per step on HALT-class
+ * steps. Pre-#297, a single transient (provider error-stop, pi-ensemble
+ * timeout kill) anywhere in a multi-hour cycle aborted the whole cycle —
+ * the amplifier behind the month-long "failing more than getting work
+ * done" regression. Semantic failures (subagent completed but the work
+ * failed) still HALT immediately.
+ */
+const TRANSIENT_MAX_RETRIES = 2;
+
+/** #297 — escape hatch: PI_ENSEMBLE_TRANSIENT_RETRY=0 restores halt-on-first-failure. */
+function transientRetryEnabled(): boolean {
+  const v = process.env.PI_ENSEMBLE_TRANSIENT_RETRY;
+  return v !== "0" && v !== "false";
+}
+
+/**
+ * #297 — backoff between transient retries (ms, scaled by attempt).
+ * Overridable so the offline suite doesn't sleep.
+ */
+function transientRetryBackoffMs(): number {
+  const env = Number(process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS);
+  if (Number.isFinite(env) && env >= 0) return env;
+  return 5_000;
+}
+
+/**
+ * #297 — infrastructure-transient failure detection. Provider error-stops
+ * (dispatch-failed-provider) and pi-ensemble's own timeout/inactivity
+ * kills (#296 structured marker in errorTail) are transient: the work was
+ * interrupted, not judged. User aborts and semantic failures are not.
+ */
+function isTransientFailure(tail: { kind: string; errorTail?: string }): boolean {
+  if (tail.kind === "dispatch-failed-provider") return true;
+  if (tail.kind === "dispatch-failed") {
+    return /\[pi-ensemble\] killed after \d+ms (timeout|inactivity)/.test(tail.errorTail ?? "");
+  }
+  return false;
+}
+
+/**
  * Project-local scratch directory for ephemeral /work artefacts (diff
  * snapshots between adversarial rounds, captured screenshots, one-off
  * verification scripts, analysis outputs).
@@ -1601,6 +1641,8 @@ async function runAdversarial(
     id: string;
     ok: boolean;
     rounds: number;
+    /** #298 — true when the loop died on infrastructure (no verdict exists). */
+    infra?: boolean;
     rejectionText?: string;
     completionEvent?: WorkEvent;
     failureEvent?: WorkEvent;
@@ -1670,7 +1712,11 @@ async function runAdversarial(
         "adversarial",
         "adversarial-loop",
         label,
-        result,
+        // #298 — a REJECTED verdict is a COMPLETED review, not a dispatch
+        // failure. Pre-#298 the loop's exitCode=1 recorded the verdict as
+        // dispatch-failed with the operator escalation menu as errorTail
+        // (verified in lantern 553.json / pi-ensemble 277.json).
+        result.loopOutcome === "rejected" ? { ...result, ok: true, exitCode: 0 } : result,
       );
       const ok = result.ok && !result.errorStop;
       const rounds = parseAdversarialRounds(result.text);
@@ -1678,6 +1724,7 @@ async function runAdversarial(
         id,
         ok,
         rounds,
+        infra: !ok && result.loopOutcome === "infra-failure",
         rejectionText: ok ? undefined : result.text,
         completionEvent,
         branchEvent:
@@ -1715,23 +1762,34 @@ async function runAdversarial(
   }
 
   // Aggregate verdict. ALL approved → adversarial-approved (nextStep routes
-  // to commit-pr). ANY rejected → adversarial-rejected + cap-hit (nextStep
-  // routes to handoff via the cap-hit). Synthesised here so the existing
-  // nextStep verdict-routing branches still work without modification.
+  // to commit-pr). ANY rejected VERDICT → adversarial-rejected + cap-hit
+  // (nextStep routes to handoff via the cap-hit). #298: failures that are
+  // PURELY infrastructure (no verdict exists) append NO verdict events —
+  // the dispatch-failed event stays the eventLog tail so the halt-cascade
+  // router's RETRY_ONCE branch re-runs the step (pre-#298 the synthesized
+  // cap-hit tail made that retry branch unreachable and every loop infra
+  // failure went straight to handoff).
   const maxRounds = outcomes.reduce((acc, o) => Math.max(acc, o.rounds), 0);
   const aggregateJobId = makeRunId();
-  if (outcomes.every((o) => o.ok)) {
+  const failed = outcomes.filter((o) => !o.ok);
+  if (failed.length === 0) {
     next = appendEvent(next, {
       kind: "adversarial-approved",
       at: Date.now(),
       jobId: aggregateJobId,
       rounds: maxRounds,
     });
+  } else if (failed.every((o) => o.infra) && ids.length === 1) {
+    // N>1 keeps the legacy aggregate below: its tail is branches-converged,
+    // which the RETRY_ONCE router doesn't intercept, so dropping the verdict
+    // events there would strand the cycle instead of retrying it.
+    trace(
+      "work-driver: adversarial loop infrastructure failure — leaving dispatch-failed tail for RETRY_ONCE router",
+    );
   } else {
     // Concatenate per-workstream rejection text (or dispatch-failure
     // marker) into findings so the handoff renderer surfaces all of them.
-    const findings = outcomes
-      .filter((o) => !o.ok)
+    const findings = failed
       .map((o) => {
         const tag = ids.length > 1 ? `[workstream ${o.id}] ` : "";
         return `${tag}${o.rejectionText ?? "(dispatch failed — see dispatch-failed event)"}`;
@@ -3064,12 +3122,14 @@ async function runHandoff(ctx: DriverContext, state: WorkState, now: number): Pr
     trace(`work-driver: failed to write handoff body file: ${(err as Error).message}`);
   }
 
-  // Dispatch @ops to post the comment + apply the label. PR5: pass a
-  // TIGHT 3-min timeout — the body file is already on disk, ops just runs
-  // two `gh` invocations. Overrides the ops 10-min default and prevents
-  // the #553 40-min provider-spin. If the ops dispatch fails OR the
-  // commentUrl doesn't parse out, the in-process gh fallback below takes
-  // over so the user never silently loses the artefact.
+  // Dispatch @ops to post the comment + apply the label. The body file is
+  // already on disk; ops just runs two `gh` invocations — but its LLM
+  // turns are not free: a thinking-heavy model needs 10+ min for a single
+  // turn, and PR5's tight 3-min budget SIGTERM'd the RECOVERY path itself
+  // (#296, lantern 592/595/596: exit-143 kills at exactly 180000ms). 15 min
+  // gives one long turn headroom; the in-process gh fallback below still
+  // takes over on any failure, so the user never silently loses the
+  // artefact.
   const dispatch = ctx.dispatchFn ?? dispatchCore;
   const startedAt = Date.now();
   const prNumber = state.pipelineState.prNumber;
@@ -3086,7 +3146,7 @@ async function runHandoff(ctx: DriverContext, state: WorkState, now: number): Pr
     const res = await dispatch(
       ctx.pi,
       { role: "ops", prompt },
-      { label: "ops:handoff", timeoutMs: 3 * 60_000 },
+      { label: "ops:handoff", timeoutMs: 15 * 60_000 },
     );
     opsReplyText = res.text ?? "";
     dispatchOk = res.ok && !res.errorStop;
@@ -4025,6 +4085,30 @@ async function buildCompletionEvent(
   const at = Date.now();
   const jobId = result.transcriptPath ? path.basename(result.transcriptPath, ".json") : "unknown";
 
+  // Structured kill-cause (#296) wins over everything: a child pi-ensemble
+  // itself killed (wall-clock cap / inactivity watchdog / abort) is OUR
+  // failure, never a provider failure — even if the dying child also
+  // flushed an error-stop message. The errorTail names the budget and the
+  // override knob so the operator-facing explanation is accurate.
+  if (result.killCause) {
+    const roleEnv = `PI_ENSEMBLE_SPAWN_TIMEOUT_MS_${role.toUpperCase().replaceAll("-", "_")}`;
+    const detail =
+      result.killCause === "abort"
+        ? "[pi-ensemble] cancelled (abort signal)"
+        : `[pi-ensemble] killed after ${result.killBudgetMs}ms ${result.killCause}` +
+          ` (override: ${result.killCause === "timeout" ? roleEnv : "PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS"})`;
+    return {
+      kind: "dispatch-failed",
+      step,
+      role,
+      jobId,
+      label,
+      ms: result.ms,
+      at,
+      exitCode: result.exitCode ?? null,
+      errorTail: detail,
+    };
+  }
   if (result.errorStop) {
     return {
       kind: "dispatch-failed-provider",
@@ -4863,9 +4947,23 @@ export async function runWorkDriver(ctx: DriverContext): Promise<void> {
       if (lastEvent?.kind === "dispatch-failed" || lastEvent?.kind === "dispatch-failed-provider") {
         const reason =
           lastEvent.kind === "dispatch-failed-provider"
-            ? "provider error"
+            ? "provider/transport error"
             : (lastEvent.errorTail?.slice(0, 60) ?? "subagent failed");
-        lifecycle.emitStepFailed(step, stepOrd.num, stepOrd.total, elapsed, reason, stepRound);
+        // #299 — when the halt-cascade router below is about to RETRY this
+        // failure, skip the ✗ step-failed line: the single ↻ retry line
+        // carries the reason, and pre-#299 one transient produced multiple
+        // provider-blame lines with no retraction on recovery.
+        const policy = STEP_FAILURE_POLICY[step];
+        const semanticRetryAvailable =
+          policy === "RETRY_ONCE" && (state.pipelineState.retryAttempts?.[step] ?? 0) < 1;
+        const transientRetryAvailable =
+          policy === "HALT" &&
+          transientRetryEnabled() &&
+          isTransientFailure(lastEvent) &&
+          (state.pipelineState.transientRetryAttempts?.[step] ?? 0) < TRANSIENT_MAX_RETRIES;
+        if (!semanticRetryAvailable && !transientRetryAvailable) {
+          lifecycle.emitStepFailed(step, stepOrd.num, stepOrd.total, elapsed, reason, stepRound);
+        }
       } else if (lastEvent?.kind === "cap-hit") {
         lifecycle.emitStepFailed(
           step,
@@ -4885,6 +4983,26 @@ export async function runWorkDriver(ctx: DriverContext): Promise<void> {
           // event; leave undefined and let the per-dispatch line carry it.
           totalTokens = undefined;
         }
+        // #297/#299 — successful completion resets BOTH retry budgets
+        // (per-attempt semantics: a later step-back re-entry gets a fresh
+        // budget) and marks the scrollback line "recovered after retry"
+        // when a ↻ line preceded it.
+        const usedSemantic = state.pipelineState.retryAttempts?.[step] ?? 0;
+        const usedTransient = state.pipelineState.transientRetryAttempts?.[step] ?? 0;
+        const recovered = usedSemantic > 0 || usedTransient > 0;
+        if (recovered) {
+          const { [step]: _semantic, ...restRetry } = state.pipelineState.retryAttempts ?? {};
+          const { [step]: _transient, ...restTransient } =
+            state.pipelineState.transientRetryAttempts ?? {};
+          state = {
+            ...state,
+            pipelineState: {
+              ...state.pipelineState,
+              retryAttempts: restRetry,
+              transientRetryAttempts: restTransient,
+            },
+          };
+        }
         lifecycle.emitStepCompleted(
           step,
           stepOrd.num,
@@ -4892,6 +5010,7 @@ export async function runWorkDriver(ctx: DriverContext): Promise<void> {
           elapsed,
           totalTokens,
           stepRound,
+          recovered,
         );
       }
     }
@@ -4907,11 +5026,48 @@ export async function runWorkDriver(ctx: DriverContext): Promise<void> {
         tail?.kind === "dispatch-failed" || tail?.kind === "dispatch-failed-provider";
       if (isDispatchFail) {
         const policy = STEP_FAILURE_POLICY[step];
+        // #297 — transient failures on HALT-class steps get a bounded
+        // retry with backoff BEFORE the halt-cascade. The work was
+        // interrupted (provider blip, #296 kill), not judged; aborting a
+        // multi-hour cycle over one transient was the reliability
+        // regression's amplifier. Semantic failures fall through to HALT
+        // unchanged. (When REPLAY_ONCE (#276) lands for develop, its
+        // evidence-carrying replay fires from its own router branch and
+        // this generic path becomes develop's fallback.)
+        if (policy === "HALT" && transientRetryEnabled() && isTransientFailure(tail)) {
+          const attempts = state.pipelineState.transientRetryAttempts ?? {};
+          const used = attempts[step] ?? 0;
+          if (used < TRANSIENT_MAX_RETRIES) {
+            state = {
+              ...state,
+              pipelineState: {
+                ...state.pipelineState,
+                transientRetryAttempts: { ...attempts, [step]: used + 1 },
+              },
+            };
+            await writeState(ctx.repoRoot, state);
+            const reason =
+              tail.kind === "dispatch-failed-provider"
+                ? "provider/transport error"
+                : (tail.errorTail?.slice(0, 60) ?? "transient failure");
+            lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason);
+            trace(
+              `work-driver: transient retry on step="${step}" (attempt ${used + 2}/${TRANSIENT_MAX_RETRIES + 1})`,
+            );
+            const backoff = transientRetryBackoffMs() * (used + 1);
+            if (backoff > 0) await new Promise((r) => setTimeout(r, backoff));
+            continue; // re-run same step on next loop iteration
+          }
+          // Budget exhausted → fall through to the HALT cap-hit below.
+        }
         if (policy === "HALT") {
           // Recognise SIGTERM-on-developer as a distinct cap shape so
           // explainCap() can produce the right operator-facing sentence.
+          // #296: the kill marker now arrives in errorTail via the
+          // structured killCause branch in buildCompletionEvent (pre-#296
+          // it only ever existed in stderr, making this test dead code).
           const errorTail = tail.kind === "dispatch-failed" ? (tail.errorTail ?? "") : "";
-          const isTimeout = /killed after \d+ms timeout/.test(errorTail);
+          const isTimeout = /killed after \d+ms (timeout|inactivity)/.test(errorTail);
           const cap =
             step === "develop" && isTimeout
               ? ("developer-timeout" as const)

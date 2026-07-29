@@ -1,3 +1,4 @@
+import { readFileSync, statSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -31,10 +32,59 @@ interface PersistedConfig {
 
 let inMemory: Record<string, ModelChoice> = {};
 let loaded = false;
+/**
+ * Disk snapshot stamp for cross-session freshness (#300). `getOverride`
+ * stat()s the config file and re-reads when mtime/size moved, so a
+ * `/ensemble-model` switch in one pi session reaches every other live
+ * session on its next spawn instead of never. `null` = file absent at
+ * last check.
+ */
+let diskStamp: { mtimeMs: number; size: number } | null = null;
 const SPECIAL_DEFAULT_KEY = "__all__";
 
 function getConfigPath(): string {
   return process.env.PI_ENSEMBLE_MODELS_CONFIG ?? CONFIG_PATH_DEFAULT;
+}
+
+function parseConfig(raw: string): Record<string, ModelChoice> {
+  const cfg = JSON.parse(raw) as PersistedConfig;
+  const out: Record<string, ModelChoice> = {};
+  for (const [role, entry] of Object.entries(cfg.models ?? {})) {
+    const choice = normaliseEntry(entry);
+    if (choice) out[role] = choice;
+  }
+  return out;
+}
+
+/**
+ * Sync freshness check (#300): re-read the config when the file on disk
+ * changed since our snapshot. A malformed intermediate write (another
+ * session mid-`persist`) keeps the last good snapshot AND the old stamp,
+ * so the next call retries until the file parses again. File deleted →
+ * no overrides (matches `loadOverrides`'s catch behavior).
+ */
+function refreshIfChanged(): void {
+  const file = getConfigPath();
+  let stat: { mtimeMs: number; size: number };
+  try {
+    const s = statSync(file);
+    stat = { mtimeMs: s.mtimeMs, size: s.size };
+  } catch {
+    if (diskStamp !== null || !loaded) {
+      inMemory = {};
+      diskStamp = null;
+      loaded = true;
+    }
+    return;
+  }
+  if (diskStamp && diskStamp.mtimeMs === stat.mtimeMs && diskStamp.size === stat.size) return;
+  try {
+    inMemory = parseConfig(readFileSync(file, "utf8"));
+    diskStamp = stat;
+    loaded = true;
+  } catch {
+    /* mid-write / malformed — keep last good snapshot, retry next call */
+  }
 }
 
 function normaliseEntry(entry: PersistedEntry): ModelChoice | undefined {
@@ -57,15 +107,14 @@ export async function loadOverrides(): Promise<void> {
   if (loaded) return;
   loaded = true;
   try {
-    const raw = await fs.readFile(getConfigPath(), "utf8");
-    const cfg = JSON.parse(raw) as PersistedConfig;
-    inMemory = {};
-    for (const [role, entry] of Object.entries(cfg.models ?? {})) {
-      const choice = normaliseEntry(entry);
-      if (choice) inMemory[role] = choice;
-    }
+    const file = getConfigPath();
+    const raw = await fs.readFile(file, "utf8");
+    inMemory = parseConfig(raw);
+    const s = statSync(file);
+    diskStamp = { mtimeMs: s.mtimeMs, size: s.size };
   } catch {
     inMemory = {};
+    diskStamp = null;
   }
 }
 
@@ -78,6 +127,7 @@ export async function loadOverrides(): Promise<void> {
 export function resetForTesting(): void {
   loaded = false;
   inMemory = {};
+  diskStamp = null;
 }
 
 async function persist(): Promise<void> {
@@ -85,6 +135,14 @@ async function persist(): Promise<void> {
   await fs.mkdir(path.dirname(file), { recursive: true });
   const body: PersistedConfig = { models: { ...inMemory } };
   await fs.writeFile(file, `${JSON.stringify(body, null, 2)}\n`, "utf8");
+  // Stamp our own write so the next getOverride doesn't re-read it, and a
+  // concurrent session's later write (different mtime) still triggers one.
+  try {
+    const s = statSync(file);
+    diskStamp = { mtimeMs: s.mtimeMs, size: s.size };
+  } catch {
+    diskStamp = null;
+  }
 }
 
 export interface OverrideLookup {
@@ -98,6 +156,7 @@ export interface OverrideLookup {
  * `PI_ENSEMBLE_SUBAGENT_MODEL` / `PI_ENSEMBLE_SUBAGENT_PROVIDER`.
  */
 export function getOverride(role: string): OverrideLookup {
+  refreshIfChanged();
   const direct = inMemory[role];
   if (direct) return { choice: direct, key: role };
   const fallback = inMemory[SPECIAL_DEFAULT_KEY];
@@ -130,6 +189,7 @@ export async function clearAllOverrides(): Promise<void> {
 }
 
 export function getAllOverrides(): Record<string, ModelChoice> {
+  refreshIfChanged();
   return { ...inMemory };
 }
 

@@ -42,14 +42,15 @@ export interface RunningState {
   /** ms since spawn began. */
   elapsedMs: number;
   /**
-   * Epoch ms of the most recent `message_end` ingested. Used by the
-   * dispatch-deck STALE detection (PR2 O3): if `now - lastEventAt` exceeds
-   * `PI_ENSEMBLE_STALE_THRESHOLD_MS` (default 90s), the row marks STALE.
-   * Subagents that emit at least one message_end per LLM turn stay
-   * non-stale even during long-running tool calls because the model's
-   * thinking surfaces on a message; only true hangs (provider down, child
-   * in an infinite local tool loop with no LLM output) cross the threshold.
-   * Undefined until the first message_end arrives.
+   * Epoch ms of the most recent child event ingested — ANY event type
+   * (#299), not just assistant turn ends: the assistant message carrying a
+   * toolCall completes BEFORE the tool executes, so a turn-end-only
+   * heartbeat flagged healthy children as STALE during every long build/
+   * test/CI tool call. Used by the dispatch-deck STALE detection: if
+   * `now - lastEventAt` exceeds `PI_ENSEMBLE_STALE_THRESHOLD_MS`, the row
+   * marks STALE. Note pi children emit NO events mid-turn (long thinking)
+   * or mid-tool-execution, so healthy gaps up to ~15 min occur — the
+   * threshold default accounts for that. Undefined until the first event.
    */
   lastEventAt?: number;
   /** True once the child has exited; false while in-flight. */
@@ -219,6 +220,13 @@ function truncateHint(s: string): string {
  */
 export function ingestEvent(state: RunningState, event: ProgressEvent, startMs: number): boolean {
   state.elapsedMs = Date.now() - startMs;
+  // #299 — STALE heartbeat refreshes on ANY child event, not just assistant
+  // turn ends. The assistant message carrying a toolCall completes BEFORE
+  // the tool executes, so under the old turn-end-only heartbeat any build/
+  // test/CI tool call >90s flagged a healthy child as STALE (empirical:
+  // 14.6-min healthy bash gaps flagged in production transcripts). Any
+  // event from the child — tool results included — proves it is alive.
+  state.lastEventAt = Date.now();
   if (event.type !== "message" && event.type !== "message_end") return false;
   const msg = event.message;
   if (!msg || msg.role !== "assistant") return false;
@@ -250,9 +258,5 @@ export function ingestEvent(state: RunningState, event: ProgressEvent, startMs: 
   // extractable hint — keeps deck snapshot honest).
   if (latestToolName) state.lastToolHint = latestToolHint;
   if (latestText) state.lastText = latestText;
-  // PR2 O3 — heartbeat for STALE detection. Set on every assistant turn
-  // completion, NOT on every event (e.g., tool_result events that don't
-  // signal LLM activity wouldn't count as "still working").
-  state.lastEventAt = Date.now();
   return true;
 }

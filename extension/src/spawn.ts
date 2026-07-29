@@ -117,10 +117,13 @@ interface SpawnOptions {
 }
 
 // Hard wall-clock cap on subagent runtime (issue #114). PR5 splits the old
-// single 30-min global into per-role defaults — a single cap couldn't
-// serve roles whose legitimate runtimes differ by an order of magnitude
-// (developer needs 60-90 min for multi-defect issues per the #553 live-
-// test; ops needs 5-10 min; lens children need 15 min). Operators tune
+// single 30-min global into per-role defaults. #296 raised them: the PR5
+// values (15 min lens/adversarial, 10 min ops) sat BELOW the legitimate
+// runtime of thinking-heavy models — a single xhigh-thinking review turn
+// streams 10-17 min, so healthy children were SIGTERM'd mid-work (lantern
+// work-state 592/595/596: exit-143 kills at exactly the 15-min/3-min
+// budgets). The wall-clock cap is now a generous OUTER bound; the
+// inactivity watchdog below is the primary hang detector. Operators tune
 // via env; PM cannot influence (no tool schema exposes timeout — #114).
 //
 // Per-role overrides via PI_ENSEMBLE_SPAWN_TIMEOUT_MS_<ROLE_UPPER> (with
@@ -131,17 +134,35 @@ const ROLE_TIMEOUT_DEFAULTS_MS: Record<RoleName, number> = {
   // 90 min — empirical #553 evidence: developer was 43 min into substantive
   // multi-defect work when the old 30-min cap SIGTERM'd it.
   developer: 90 * 60_000,
-  // 15 min — single-pass lens child reviewing a stable diff.
-  "code-review-specialist": 15 * 60_000,
-  // 15 min — adversarial-developer's review/fix round inside the 3-round loop.
-  "adversarial-developer": 15 * 60_000,
-  // 15 min — read-heavy, bounded by vipune/codebase-memory query latency.
-  explore: 15 * 60_000,
-  // 10 min — mechanical (gh / git invocations); generous for slow networks.
-  ops: 10 * 60_000,
+  // 45 min — lens child reviewing a diff; xhigh-thinking turns alone run
+  // 10-17 min, and a review is several turns.
+  "code-review-specialist": 45 * 60_000,
+  // 45 min — adversarial-developer's review/fix round inside the 3-round loop.
+  "adversarial-developer": 45 * 60_000,
+  // 30 min — read-heavy, bounded by vipune/codebase-memory query latency.
+  explore: 30 * 60_000,
+  // 30 min — mechanical (gh / git invocations) but includes CI watches and
+  // recovery/handoff dispatches that deserve generous budgets (#296).
+  ops: 30 * 60_000,
   // 30 min — unchanged. Parent process spawn (rare) — keeps prior behaviour.
   "project-manager": 30 * 60_000,
 };
+
+/**
+ * Inactivity watchdog (#296): kill a child only when it has produced NO
+ * stdout at all for this long — the empirical signature of a genuine hang
+ * (provider stream stalled through every retry layer, or a wedged local
+ * process). Healthy children emit an event at least every turn/tool
+ * boundary; the longest healthy silent gap measured in production
+ * transcripts is ~15 min (a long bash execution), so 25 min gives margin
+ * while still detecting true hangs long before the wall-clock cap.
+ * Override: PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS (0 disables).
+ */
+function inactivityTimeoutMs(): number {
+  const env = Number(process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS);
+  if (Number.isFinite(env) && env >= 0) return env;
+  return 25 * 60_000;
+}
 
 /**
  * Resolve a per-role spawn timeout. Reads env per-call so tests can
@@ -601,8 +622,13 @@ export async function spawnSpecialist(
     }
   };
 
+  // Inactivity watchdog state (#296): ANY stdout line counts as life —
+  // parseable or not. Checked on a coarse interval below.
+  let lastActivityAt = Date.now();
+
   const stdoutRl = createInterface({ input: child.stdout });
   stdoutRl.on("line", (line) => {
+    lastActivityAt = Date.now();
     const trimmed = line.trim();
     if (!trimmed) return;
     let parsed: PiJsonEvent | null = null;
@@ -637,7 +663,9 @@ export async function spawnSpecialist(
 
   // Always cap wall-clock — see DEFAULT_SPAWN_TIMEOUT_MS comment. A stalled
   // child without a timeout hangs the parent indefinitely (observed in the
-  // wild: overnight stuck session).
+  // wild: overnight stuck session). #296: the cap is a generous outer bound;
+  // the inactivity watchdog below detects true hangs much earlier without
+  // killing children that are streaming legitimate long work.
   const timeoutMs = opts.timeoutMs ?? roleTimeoutMs(spec.role);
   let timedOut = false;
   const timeout = setTimeout(() => {
@@ -646,6 +674,26 @@ export async function spawnSpecialist(
     // Escalate to SIGKILL if the child ignores SIGTERM for 5s.
     setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
   }, timeoutMs);
+
+  // Inactivity watchdog (#296): kill only on total stdout silence. Coarse
+  // poll — half the budget, clamped to [250ms, 30s] so production budgets
+  // poll cheaply and short test budgets still fire promptly.
+  const inactivityMs = inactivityTimeoutMs();
+  let inactivityKilled = false;
+  const inactivityPoll =
+    inactivityMs > 0
+      ? setInterval(
+          () => {
+            if (Date.now() - lastActivityAt >= inactivityMs) {
+              inactivityKilled = true;
+              child.kill("SIGTERM");
+              setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
+            }
+          },
+          Math.min(30_000, Math.max(250, Math.floor(inactivityMs / 2))),
+        )
+      : undefined;
+  inactivityPoll?.unref();
 
   // Propagate Pi's user-cancel (Esc) signal: kill the child so the tool
   // execute promise resolves and Pi un-stuck immediately.
@@ -668,6 +716,7 @@ export async function spawnSpecialist(
     [exitCode] = (await once(child, "exit")) as [number | null];
   } finally {
     clearTimeout(timeout);
+    if (inactivityPoll) clearInterval(inactivityPoll);
     opts.signal?.removeEventListener("abort", onAbort);
     // Best-effort cleanup of the temp prompt file; ignore errors.
     fs.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
@@ -683,6 +732,9 @@ export async function spawnSpecialist(
 
   if (timedOut) {
     appendStderr(`\n[pi-ensemble] killed after ${timeoutMs}ms timeout`);
+  }
+  if (inactivityKilled) {
+    appendStderr(`\n[pi-ensemble] killed after ${inactivityMs}ms inactivity`);
   }
   if (aborted) {
     appendStderr("\n[pi-ensemble] cancelled by user (Esc)");
@@ -702,6 +754,19 @@ export async function spawnSpecialist(
   );
   result.transcriptPath = transcriptPath;
   result.modelSource = modelChoice.source;
+  // Structured kill-cause (#296): downstream classification branches on this
+  // BEFORE errorStop/exitCode so self-kills are never blamed on the provider.
+  if (timedOut) {
+    result.killCause = "timeout";
+    result.killBudgetMs = timeoutMs;
+  } else if (inactivityKilled) {
+    result.killCause = "inactivity";
+    result.killBudgetMs = inactivityMs;
+  } else if (aborted) {
+    result.killCause = "abort";
+  }
+  // A killed child never completed its assignment, whatever its exit code.
+  if (result.killCause) result.ok = false;
   if (modelChoice.model && !result.model) {
     // collapseEvents only sets `model` from assistant message metadata, which
     // is present when the child actually got a reply. If the child failed

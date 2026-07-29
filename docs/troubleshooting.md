@@ -20,7 +20,7 @@ This is **independent of the LLM backend**: across recent runs, Anthropic Claude
 cd ~/.config/opencode/pi-ensemble && git pull && ./install.sh
 ```
 
-Post-#236, `install.sh` writes sensible `retry.provider` defaults into `~/.pi/agent/settings.json` (3 min per request, 3 retries with backoff). Healthy LLM calls return in seconds; 3 min is well above p99 of healthy traffic but tight enough to detect hangs fast. If you have non-default settings you want to keep, they're preserved — install.sh only writes the retry block when it's missing.
+Post-#236 (retuned by #295), `install.sh` writes `retry.provider` defaults into `~/.pi/agent/settings.json` (10 min per request, 3 retries with backoff). If you have non-default settings you want to keep, they're preserved — install.sh only writes the retry block when it's missing, with one exception: the old #236 value of exactly `180000` (3 min) is recognized as our own footprint and repaired to the new default.
 
 The dispatch report also now distinguishes the failure mode visually:
 
@@ -32,13 +32,13 @@ PM treats `FAILED-PROVIDER-ERROR` as a failed dispatch per existing doctrine (ro
 
 ### Tuning
 
-If 3 min is too tight for your provider (some heavy thinking on Sonnet's `-Opus`-tier with very long context can legitimately take 60-120 s, and you'd want headroom), edit `~/.pi/agent/settings.json` directly:
+Do NOT set this below the longest single turn your subagent models legitimately produce. A thinking-heavy model (e.g. `xhigh` thinking level) routinely streams a single turn for 10-17 minutes; with a too-tight timeout, pi's client burns two stacked retry layers (~10-17 min of total silence) and then reports `"Request timed out."` / `"terminated"` **on a perfectly healthy endpoint** — the signature of the #295 regression (constant "endpoint sporadically failing" reports across endpoints that check out fine). Edit `~/.pi/agent/settings.json` directly:
 
 ```json
 {
   "retry": {
     "provider": {
-      "timeoutMs": 300000,    // 5 min per request
+      "timeoutMs": 600000,    // 10 min per request (the #295 default)
       "maxRetries": 3,
       "maxRetryDelayMs": 60000
     }
@@ -46,9 +46,9 @@ If 3 min is too tight for your provider (some heavy thinking on Sonnet's `-Opus`
 }
 ```
 
-Keep `maxRetries * timeoutMs` comfortably below pi-ensemble's 30-min wall-clock cap (`DEFAULT_SPAWN_TIMEOUT_MS`); otherwise retries get truncated.
+Keep `maxRetries * timeoutMs` comfortably below the per-role wall-clock caps in `spawn.ts` (`ROLE_TIMEOUT_DEFAULTS_MS`); otherwise retries get truncated.
 
-PR: [#236](https://github.com/randomm/pi-ensemble/pull/236)
+PRs: [#236](https://github.com/randomm/pi-ensemble/pull/236), [#295](https://github.com/randomm/pi-ensemble/issues/295)
 
 ## Permissions
 

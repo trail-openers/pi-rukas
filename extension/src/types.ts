@@ -67,6 +67,25 @@ export interface DispatchResult {
     /** errorMessage from the synthetic final assistant message, if any. */
     message?: string;
   };
+  /**
+   * Set when pi-ensemble itself ended the child (#296): "timeout" = per-role
+   * wall-clock cap, "inactivity" = no child stdout for the inactivity window,
+   * "abort" = user cancel / driver abort propagated. Downstream classification
+   * MUST branch on this before errorStop/exitCode — a self-kill is never a
+   * provider failure and must never be reported as one.
+   */
+  killCause?: "timeout" | "inactivity" | "abort";
+  /**
+   * #298 — set only on the SYNTHESIZED adversarial-loop result (role
+   * "adversarial-loop"): "rejected" is a COMPLETED reviewer verdict (must be
+   * recorded as a completion + adversarial-rejected, never as a dispatch
+   * failure), "infra-failure" means a round's dispatch errored twice and no
+   * verdict exists (must route through the dispatch-failure/retry machinery,
+   * never be read as findings).
+   */
+  loopOutcome?: "approved" | "rejected" | "infra-failure";
+  /** The budget (ms) that expired for killCause "timeout"/"inactivity". */
+  killBudgetMs?: number;
 }
 
 export interface AdversarialVerdict {

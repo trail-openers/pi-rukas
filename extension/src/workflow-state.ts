@@ -505,6 +505,16 @@ export interface PipelineState {
    */
   retryAttempts?: Partial<Record<WorkStep, number>>;
   /**
+   * #297 — per-step budget for INFRASTRUCTURE-TRANSIENT failures
+   * (provider error-stop, pi-ensemble timeout/inactivity kill) on
+   * HALT-class steps. Distinct from `retryAttempts` (the RETRY_ONCE
+   * semantic budget): a transient is retried up to 2× with backoff on any
+   * step before the halt-cascade fires. Both counters reset when the step
+   * completes successfully, so a later step-back re-entry gets a fresh
+   * budget. Optional for back-compat; absent keys = 0 used.
+   */
+  transientRetryAttempts?: Partial<Record<WorkStep, number>>;
+  /**
    * PR5 — worktree snapshot captured by `runHandoff` before emitting
    * the handoff artefact. Lets the operator-facing surfaces
    * (renderHandoffUserMessage, renderTerminalStatus,

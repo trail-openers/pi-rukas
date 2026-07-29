@@ -204,6 +204,70 @@ const savedSubProvider = process.env.PI_ENSEMBLE_SUBAGENT_PROVIDER;
   await clearAllOverrides();
 }
 
+// 15. (#300) Cross-session freshness: a config file rewritten on disk by
+// ANOTHER session is picked up on the next resolveModel — no reset, no reload.
+{
+  const fs = await import("node:fs/promises");
+  const cfgPath = process.env.PI_ENSEMBLE_MODELS_CONFIG ?? "";
+  await fs.writeFile(
+    cfgPath,
+    JSON.stringify({ models: { __all__: { provider: "prov-a", model: "vendor/model-v1" } } }),
+    "utf8",
+  );
+  const before = resolveModel("developer");
+  assert(before.model === "vendor/model-v1", "#300: initial on-disk __all__ resolves");
+  // Simulate another session switching /ensemble-model (different size too).
+  await fs.writeFile(
+    cfgPath,
+    JSON.stringify({
+      models: { __all__: { provider: "prov-b-longer", model: "vendor/model-v2-longer" } },
+    }),
+    "utf8",
+  );
+  const after = resolveModel("developer");
+  assert(
+    after.model === "vendor/model-v2-longer" && after.provider === "prov-b-longer",
+    "#300: on-disk rewrite reaches resolveModel without reset/reload",
+  );
+}
+
+// 16. (#300) Malformed intermediate write keeps the last good snapshot, then
+// recovers once the file parses again.
+{
+  const fs = await import("node:fs/promises");
+  const cfgPath = process.env.PI_ENSEMBLE_MODELS_CONFIG ?? "";
+  await fs.writeFile(cfgPath, '{"models": {"__all__": {"model": "vendor/', "utf8");
+  const during = resolveModel("developer");
+  assert(
+    during.model === "vendor/model-v2-longer",
+    "#300: malformed mid-write keeps last good snapshot",
+  );
+  await fs.writeFile(
+    cfgPath,
+    JSON.stringify({ models: { __all__: { model: "vendor/model-v3" } } }),
+    "utf8",
+  );
+  const recovered = resolveModel("developer");
+  assert(recovered.model === "vendor/model-v3", "#300: recovers after the write completes");
+}
+
+// 17. (#300) File deleted → defaults; restored → picked up again.
+{
+  const fs = await import("node:fs/promises");
+  const cfgPath = process.env.PI_ENSEMBLE_MODELS_CONFIG ?? "";
+  await fs.rm(cfgPath);
+  const gone = resolveModel("developer");
+  assert(gone.source === "default" && gone.model === undefined, "#300: deleted file → defaults");
+  await fs.writeFile(
+    cfgPath,
+    JSON.stringify({ models: { __all__: { model: "vendor/model-v4" } } }),
+    "utf8",
+  );
+  const back = resolveModel("developer");
+  assert(back.model === "vendor/model-v4", "#300: restored file picked up again");
+  await clearAllOverrides();
+}
+
 // Restore provider env vars
 if (savedRoleDevProvider) process.env.PI_ENSEMBLE_PROVIDER_DEVELOPER = savedRoleDevProvider;
 else delete process.env.PI_ENSEMBLE_PROVIDER_DEVELOPER;

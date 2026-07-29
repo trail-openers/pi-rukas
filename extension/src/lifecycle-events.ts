@@ -79,6 +79,12 @@ export interface LifecycleDetails {
    */
   reason?: string;
   /**
+   * #299 — set on step-completed when the step succeeded after one or more
+   * retries. The scrollback line appends "recovered after retry" so a
+   * transient failure's earlier ↻ line doesn't stand as the last word.
+   */
+  recovered?: boolean;
+  /**
    * Sub-round counter for steps that iterate within a cycle (PR4 label
    * polish). adversarial / lens-review / lens-fix all run multiple times
    * during a fix loop, and `develop` re-enters on ci-status:failure.
@@ -208,6 +214,7 @@ export function emitStepCompleted(
   elapsedMs: number,
   totalTokens?: number,
   round?: number,
+  recovered?: boolean,
 ): void {
   emit({
     kind: "step-completed",
@@ -219,6 +226,7 @@ export function emitStepCompleted(
     elapsedMs,
     totalTokens,
     round,
+    recovered,
   });
 }
 
@@ -312,7 +320,10 @@ export function formatLine(d: LifecycleDetails): string {
       const tokens =
         d.totalTokens && d.totalTokens > 0 ? ` · ${formatTokens(d.totalTokens)} tokens` : "";
       const elapsed = d.elapsedMs != null ? ` · ${fmtElapsed(d.elapsedMs)}` : "";
-      return `▸ ensemble: ⚠ ${d.label} terminated mid-stream${elapsed}${tokens} — provider request error, see report`;
+      // #299 — name the failure class honestly: this shape is a transport-
+      // level verdict from the child's HTTP client (stream severed mid-body
+      // or client retry-exhaustion), not proof the endpoint is down.
+      return `▸ ensemble: ⚠ ${d.label} terminated mid-stream${elapsed}${tokens} — provider/transport error (stream severed or client retry-exhaustion), see report`;
     }
     case "steered": {
       const msg = (d.steerMessage ?? "").replaceAll(/\s+/g, " ").trim();
@@ -330,7 +341,8 @@ export function formatLine(d: LifecycleDetails): string {
       const tokens =
         d.totalTokens && d.totalTokens > 0 ? ` · ${formatTokens(d.totalTokens)} tokens` : "";
       const elapsed = d.elapsedMs != null ? ` · ${fmtElapsed(d.elapsedMs)}` : "";
-      return `▸ ensemble: ✓ step ${ordinal}${d.label}${round} finished${elapsed}${tokens}`;
+      const recovered = d.recovered ? " · recovered after retry" : "";
+      return `▸ ensemble: ✓ step ${ordinal}${d.label}${round} finished${elapsed}${tokens}${recovered}`;
     }
     case "step-failed": {
       const ordinal = d.stepNumber && d.stepTotal ? `${d.stepNumber}/${d.stepTotal} ` : "";
