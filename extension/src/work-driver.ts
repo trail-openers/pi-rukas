@@ -2291,6 +2291,166 @@ export async function verifyCmdFor(repoRoot: string): Promise<string | undefined
   return undefined;
 }
 
+/**
+ * Skip-marker counters — PR277.
+ *
+ * Scans a single diff line (including the leading +/-) for skip markers,
+ * excluding comments and string literals. Single-pass over all markers.
+ *
+ * R1 fix: counts consecutive backslashes ending at pos-1; a quote is
+ *   escaped only when that count is ODD (even count = quote terminates).
+ * R2 fix: while outside strings, "//" starts a line comment and the
+ *   remainder is ignored (but "//" inside a string does NOT start a
+ *   comment).
+ */
+
+// Markers the skip-ratchet gate detects. Must stay in sync with the set
+// used by verifyStepOutcome when PI_ENSEMBLE_SKIP_RATCHET is active.
+export const SKIP_MARKERS = [
+  "#[ignore]",
+  "it.skip(",
+  "describe.skip(",
+  "test.skip(",
+  "@Disabled",
+  "pytest.mark.skip",
+  "t.Skip(",
+] as const;
+
+/**
+ * Count consecutive occurrences of `ch` going backwards from `index`
+ * (exclusive) in `str`. Stops at the first non-matching character.
+ */
+/**
+ * Count skip markers in a single diff line (including the leading +/-
+ * indicator). Returns the number of markers found, excluding those
+ * inside comments or string literals.
+ *
+ * Single-pass: walks the line once, tracking quote-state and a running
+ * backslash counter for O(1) escape detection.
+ *
+ * Comment exclusion: filters full-line comments (`//`, `/*`, `*`, `#`),
+ * line-leading block comments, trailing `//` comments, and Rust attributes
+ * like `#[ignore]` (NOT treated as comments).
+ *
+ * Known limitations (single-line analysis, `git diff -U0` yields fragments):
+ *
+ * - **Unterminated strings on a diff line**: a diff line with an odd number
+ *   of quotes (e.g. `+"it.skip(` from a multi-line template literal) will
+ *   cause the rest of the line to be parsed as inside a string. Markers
+ *   after the unterminated quote are **not counted** (false negative).
+ *   Cross-line state cannot be reconstructed reliably from diff fragments.
+ *
+ * - **Markers on continuation lines inside multi-line strings**: a diff line
+ *   that is a continuation of a multi-line template literal (e.g. the second
+ *   line `  it.skip("x")`) will look balanced in isolation and the marker
+ *   **will be counted** (false positive). Same reconstruction limitation.
+ *
+ * - **Mid-line block comments**: markers inside a C-style block comment that
+ *   starts mid-line ARE counted. Only line-leading `/*` and `*` are filtered.
+ *   Adding an `inBlockComment` state is intentionally deferred — the added
+ *   complexity costs more than the rare case is worth.
+ */
+export function countSkipMarkersInDiffLine(line: string): number {
+  // Remove the leading +/- and leading whitespace.
+  const trimmed = line.slice(1).trimStart();
+
+  // Skip lines that are entirely comments (but NOT Rust attributes like #[ignore]).
+  if (trimmed.startsWith("//")) return 0;
+  if (trimmed.startsWith("/*")) return 0;
+  if (trimmed.startsWith("*")) return 0;
+  if (trimmed.startsWith("#") && !trimmed.startsWith("#[")) return 0;
+
+  let count = 0;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let inBacktick = false;
+  let pos = 0;
+  let backslashCount = 0;
+
+  while (pos < trimmed.length) {
+    const ch = trimmed[pos];
+
+    // Track consecutive backslashes — O(1) incremental counter.
+    // A quote is escaped iff backslashCount is ODD at the moment we see it.
+    if (ch === "\\") {
+      backslashCount++;
+      pos++;
+      continue;
+    }
+
+    // Determine the effective backslash count for this character, then reset.
+    const bs = backslashCount;
+    backslashCount = 0;
+
+    if (inDoubleQuote) {
+      if (ch === '"') {
+        if (bs % 2 !== 0) {
+          // Escaped quote — stays inside string.
+        } else {
+          inDoubleQuote = false;
+        }
+      }
+    } else if (inSingleQuote) {
+      if (ch === "'") {
+        if (bs % 2 !== 0) {
+          // Escaped quote.
+        } else {
+          inSingleQuote = false;
+        }
+      }
+    } else if (inBacktick) {
+      if (ch === "`") {
+        if (bs % 2 !== 0) {
+          // Escaped backtick.
+        } else {
+          inBacktick = false;
+        }
+      }
+    } else {
+      // Outside any string or comment.
+      // Check for line-comment start — always extends to end of line.
+      if (ch === "/" && trimmed[pos + 1] === "/") {
+        break;
+      }
+
+      // Check for string starts.
+      if (ch === '"') {
+        inDoubleQuote = true;
+      } else if (ch === "'") {
+        inSingleQuote = true;
+      } else if (ch === "`") {
+        inBacktick = true;
+      } else {
+        // Check for any skip marker.
+        let matchedMarker = false;
+        for (const marker of SKIP_MARKERS) {
+          if (trimmed.startsWith(marker, pos)) {
+            // Word-boundary guard: reject if the character after the marker
+            // is an identifier character. Prevents false positives like
+            // `pytest.mark.skipif` matching `pytest.mark.skip`, or
+            // `@DisabledOnOs` matching `@Disabled`.
+            const afterPos = pos + marker.length;
+            const nextCh = afterPos < trimmed.length ? trimmed[afterPos] : undefined;
+            if (nextCh !== undefined && /[A-Za-z0-9_]/.test(nextCh)) {
+              continue; // word-boundary not met; try next marker
+            }
+            count++;
+            pos += marker.length;
+            backslashCount = 0;
+            matchedMarker = true;
+            break; // matched — stop checking other markers at this position
+          }
+        }
+        if (matchedMarker) continue; // skip pos++ (F4: explicit marker advance)
+      }
+    }
+
+    pos++;
+  }
+
+  return count;
+}
+
 /** PR17 — bounded wall-clock for the verify command (default 10 min). */
 function verifyTimeoutMs(): number {
   const env = Number(process.env.PI_ENSEMBLE_VERIFY_TIMEOUT_MS);
@@ -2436,6 +2596,93 @@ export async function verifyStepOutcome(
         }
       }
     }
+
+    // --- Skip-ratchet gate (PR277) ---
+    // Counts net increase in test skip markers to prevent disabling gates.
+    // Excludes comments, strings, and documentation to avoid false positives.
+    if (process.env.PI_ENSEMBLE_SKIP_RATCHET !== "0") {
+      // F4: if baseSha is absent, note the weakened scope of the check
+      if (!baseSha) {
+        notes.push(
+          "baseSha unavailable — skip-ratchet compared working tree against HEAD only; committed changes not inspected",
+        );
+      }
+
+      for (const cwd of changedWorktrees) {
+        let diffContent = "";
+        try {
+          const { stdout } = await execFn(`git diff ${baseSha ?? "HEAD"} -U0`, {
+            cwd,
+            timeout: verifyTimeoutMs(),
+            maxBuffer: 64 * 1024 * 1024,
+          });
+          diffContent = stdout;
+        } catch (err) {
+          failures.push(
+            `skip-ratchet: git diff failed in ${cwd} (${(err as Error).message?.slice(0, 100)}) — cannot inspect diff`,
+          );
+        }
+        if (!diffContent) continue;
+
+        let netIncrease = 0;
+        const lines = diffContent.split("\n");
+        for (const line of lines) {
+          if (line.startsWith("+")) {
+            netIncrease += countSkipMarkersInDiffLine(line);
+          } else if (line.startsWith("-")) {
+            netIncrease -= countSkipMarkersInDiffLine(line);
+          }
+        }
+        if (netIncrease > 0) {
+          failures.push(
+            `diff adds ${netIncrease} skipped-test marker(s) — a skipped test is a disabled gate`,
+          );
+        }
+      }
+    } else {
+      notes.push("PI_ENSEMBLE_SKIP_RATCHET=0 — skip-ratchet gate disabled");
+    }
+
+    // --- Product smoke command gate (PR277) ---
+    if (process.env.PI_ENSEMBLE_SMOKE !== "0") {
+      let smokeCmd: string | undefined;
+      try {
+        const smokeFile = path.join(ctx.repoRoot, ".pi", "smoke-cmd");
+        const content = await fs.readFile(smokeFile, "utf8");
+        const firstLine = content
+          .split("\n")
+          .map((l) => l.trim())
+          .find((l) => l.length > 0 && !l.startsWith("#"));
+        smokeCmd = firstLine;
+      } catch {
+        // No smoke-cmd file — not a failure, just a note
+      }
+      if (smokeCmd) {
+        try {
+          await execFn(smokeCmd, {
+            cwd: ctx.repoRoot,
+            timeout: verifyTimeoutMs(),
+            maxBuffer: 4 * 1024 * 1024,
+          });
+        } catch (err) {
+          const e = err as Error & { stdout?: string; stderr?: string; killed?: boolean };
+          const tail = `${e.stdout ?? ""}
+${e.stderr ?? ""}`
+            .trim()
+            .slice(-1500);
+          failures.push(
+            e.killed
+              ? `smoke: command \`${smokeCmd}\` exceeded its ${Math.round(verifyTimeoutMs() / 60000)}-min timeout`
+              : `smoke: command \`${smokeCmd}\` failed: ${tail || e.message?.slice(0, 300)}`,
+          );
+        }
+      } else {
+        notes.push("no .pi/smoke-cmd — product smoke not run");
+      }
+    } else {
+      notes.push("PI_ENSEMBLE_SMOKE=0 — smoke gate disabled");
+    }
+
     return { ok: failures.length === 0, failures, notes };
   }
 

@@ -739,6 +739,36 @@ After the `develop` step (when every branch claims success) and after the `commi
 
 On failure the driver emits cap `verify-failed:<step>` → handoff, with the per-check evidence in `pipelineState.verifyEvidence` (rendered into the handoff body).
 
+#### Skip-ratchet check (PR277)
+
+The develop gate also counts net additions of **skip-markers** in the diff (`#[ignore]`, `it.skip(`, `describe.skip(`, `test.skip(`, `@Disabled`, `pytest.mark.skip`, `t.Skip(`). A net increase means you're **disabling a test gate** that existed before — the ratchet only moves one direction.
+
+If the diff adds skip-markers, the gate fails with an evidence line naming the count. The filter excludes comments (but NOT Rust attributes like `#[ignore]`) and string literals to avoid false positives in documentation or quoted code. Word-boundary matching prevents false positives like `pytest.mark.skipif` or `@DisabledOnOs` matching their shorter counterparts.
+
+**Known limitations (single-line analysis):** `git diff -U0` yields per-line fragments, so cross-line state cannot be reconstructed:
+
+- **Unterminated strings on a diff line** (e.g. `+"it.skip(` from a multi-line template literal): the rest of the line is parsed as inside a string, so markers after the quote are **not counted** (false negative).
+- **Markers on continuation lines inside multi-line strings** (e.g. `  it.skip("x")` as the second line of a template literal): the line looks balanced in isolation, so the marker **is counted** (false positive).
+- **Mid-line block comments** (e.g. `+code() /* it.skip("x") */`): the marker IS counted. Only line-leading `/*` and `*` are filtered.
+
+These are documented limits, not bugs — fixing them requires real parser state across diff lines, which is undecidable from `git diff -U0` fragments.
+
+**Why this exists:** vipune's core embedder was broken for ~2.5 months while its test suite stayed green — 22 `#[ignore]` sites kept the real-embedder tests out of the fast suite, and nothing ever executed the product. The ratchet catches skip-marker additions before they accumulate.
+
+**Escape hatch:** `PI_ENSEMBLE_SKIP_RATCHET=0` disables the check (use sparingly).
+
+#### Product smoke command (PR277)
+
+The develop gate runs an optional **smoke test** configured in `.pi/smoke-cmd` at the repo root. Format mirrors `.pi/verify-cmd`: first non-empty, non-comment line is the command verbatim, executed with the same 10-minute timeout as the verify command (`PI_ENSEMBLE_VERIFY_TIMEOUT_MS`; shared for simplicity).
+
+If the smoke command exits non-zero, the gate fails with a `smoke:`-prefixed failure message carrying the output tail (~1500 chars). If `.pi/smoke-cmd` is absent, the gate notes the omission explicitly (never silent) — per the "never silently downgrade a six-pass review to a five-pass" doctrine.
+
+**Security note:** The smoke command is executed via shell (`/bin/sh` on Unix), which allows pipes, command substitution, and chaining operators. This is intentional flexibility (e.g., `bun run smoke && curl localhost:8080/health`), but it means `.pi/smoke-cmd` is a privileged execution surface. If `.pi/smoke-cmd` is added to your repo (via a supply chain attack or malicious PR), it can execute arbitrary commands as your user. Treat write access to `.pi/smoke-cmd` as equivalent to shell access. The same surface exists for `.pi/verify-cmd` (pre-PR277).
+
+**Why this exists:** A test suite passing in isolation doesn't prove the product works. vipune's failure mode was tests passing while the broken feature never executed; a smoke command forces a basic end-to-end path through the real artifact.
+
+**Escape hatches:** `PI_ENSEMBLE_SMOKE=0` disables the smoke gate; remove `.pi/smoke-cmd` to omit the smoke test from verification.
+
 ### Verify command discovery
 
 Precedence (PR18 shape):
