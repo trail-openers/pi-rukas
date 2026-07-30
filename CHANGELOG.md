@@ -8,6 +8,18 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.21](https://github.com/randomm/pi-ensemble/compare/v0.12.20...v0.12.21) (2026-07-30)
+
+
+### Features
+
+* **work-driver:** deterministic develop gates — skipped-test ratchet + product smoke command ([#303](https://github.com/randomm/pi-ensemble/issues/303)) ([c5d5391](https://github.com/randomm/pi-ensemble/commit/c5d53913d957956da1d9ca0e1a650240b925d862))
+
+
+### Bug Fixes
+
+* **work-driver:** commit lens-fix changes so the lens review loop can converge ([#310](https://github.com/randomm/pi-ensemble/issues/310)) ([2ff2c40](https://github.com/randomm/pi-ensemble/commit/2ff2c405a0d7fc3214a5deeeae10bd4a0d0666d9))
+
 ## [0.12.20](https://github.com/randomm/pi-ensemble/compare/v0.12.19...v0.12.20) (2026-07-29)
 
 
