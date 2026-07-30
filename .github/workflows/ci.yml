@@ -51,9 +51,8 @@ jobs:
       - name: Offline smoke tests
         working-directory: extension
         run: |
-          bun run smoke-tests/test-command-flow.ts
-          bun run smoke-tests/test-lens-review.ts
-          bun run smoke-tests/test-models.ts
-          bun run smoke-tests/test-runs.ts
-          bun run smoke-tests/test-discover-extensions.ts
-          bun run smoke-tests/test-dispatch-schema.ts
+          for t in smoke-tests/test-*.ts; do
+            case "$t" in *-live.ts) continue;; esac
+            echo "--- $t"
+            bun run "$t" || exit 1
+          done

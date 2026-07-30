@@ -1289,7 +1289,7 @@ branch: feature/issue-553-fix
     const { promisify } = await import("node:util");
     const { exec } = await import("node:child_process");
     const execp = promisify(exec);
-    await execp("git init -q", { cwd: dir });
+    await execp("git init -q -b main", { cwd: dir });
     await execp(
       'git config user.email "smoke@test" && git config user.name "Smoke" && git commit --allow-empty -q -m init',
       { cwd: dir, shell: "/bin/bash" },
