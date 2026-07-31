@@ -222,20 +222,49 @@ else
 CBM_HINT
 fi
 
-# ---- 6b. Pi provider retry defaults (PR #236, retuned by #295) --------------
+# ---- 6b. Pi provider retry defaults (PR #236, retuned by #295, extended by #313) --
 #
-# Pi reads `settings.retry.provider.timeoutMs` from ~/.pi/agent/settings.json
-# and forwards it to pi-ai providers as the upstream SDK HTTP timeout. Without
-# this, providers default to ~10 min before a hung request falls out as a
-# synthetic `stopReason: error` assistant message (see PR #236).
+# Two timeout knobs control provider request lifetimes:
 #
-# Default: 10 min per request. The earlier 3-min default (#236) sat BELOW the
-# legitimate turn length of thinking-heavy models (a single xhigh-thinking
-# turn routinely streams 10-17 min): one slow-but-healthy request would burn
-# two stacked retry layers (~10-17 min of silence) and surface as
-# "Request timed out." / "terminated" on a perfectly healthy endpoint —
-# the #295 reliability regression. 10 min matches pi's own upstream default
-# while keeping the block explicit and operator-tunable.
+# 1. `retry.provider.timeoutMs` — the OUTER per-request SDK deadline. Pi-ai
+#    uses this as the overall HTTP request timeout. Without it, providers
+#    default to ~10 min before a hung request falls out as a synthetic
+#    `stopReason: error` assistant message (see PR #236). The earlier 3-min
+#    default (#236) sat BELOW the legitimate turn length of thinking-heavy
+#    models (a single xhigh-thinking turn routinely streams 10-17 min): one
+#    slow-but-healthy request would burn two stacked retry layers (~10-17 min
+#    of silence) and surface as "Request timed out." / "terminated" on a
+#    perfectly healthy endpoint — the #295 reliability regression. 10 min
+#    (`600000`) matches pi's own upstream default while keeping the block
+#    explicit and operator-tunable.
+#
+# 2. `httpIdleTimeoutMs` — the INNER undici socket bound. Pi sets BOTH
+#    `headersTimeout` (time-to-first-byte) AND `bodyTimeout` (time between
+#    chunks) to this value. THE SMALLER OF THE TWO KNOBS WINS — raising the
+#    outer to 600000 in #295 while leaving the inner at Pi's own default of
+#    300000 made the outer largely inert for time-to-first-byte failures; the
+#    inner fired first, then retries compounded: 4 x 300s + 3 x 60s = ~23 min
+#    of total wall-clock to discover a single failed request.
+#
+# The trade-off: one key (`httpIdleTimeoutMs`) drives both timeouts, but they
+# want opposite values. `headersTimeout` should be seconds (a dead socket
+# never sends headers). `bodyTimeout` must tolerate minutes (thinking-heavy
+# generation pauses between chunks). **60000 was tried in production and
+# demonstrably aborted healthy streams mid-generation at xhigh thinking — two
+# dispatches died at ~4m50s. 120000 (2 min) is the tested floor.** Do not
+# lower it without re-testing under a thinking-heavy model.
+#
+# `httpIdleTimeoutMs` was introduced in Pi 0.75.4 (one patch AFTER
+# pi-ensemble's `~0.75.3` pin) and made universal for all providers in
+# 0.78.1. install.sh omitting it was a consequence of the stale pin, not an
+# oversight. No single value is correct for both headersTimeout and
+# bodyTimeout — that is an upstream Pi limitation this setting cannot fully
+# fix.
+#
+# `maxRetryDelayMs` lowered from 60000 to 10000: with 3 retries, the old
+# value added 3 x 60s of backoff on top of per-request timeouts. 10s is
+# sufficient to avoid thundering-herd retries without extending total
+# wall-clock to absurd lengths.
 #
 # Idempotent + non-clobbering: writes the block only when
 # `retry.provider.timeoutMs` is absent (or null). One exception: a value of
@@ -250,7 +279,7 @@ if [ -f "$PI_SETTINGS" ]; then
   if ! jq empty "$PI_SETTINGS" >/dev/null 2>&1; then
     echo "!! $PI_SETTINGS is not valid JSON — skipping provider-retry defaults."
     echo "   Fix the file and re-run install.sh, or add manually:"
-    echo "     retry.provider = { timeoutMs: $RETRY_TIMEOUT_MS, maxRetries: 3, maxRetryDelayMs: 60000 }"
+    echo "     retry.provider = { timeoutMs: $RETRY_TIMEOUT_MS, maxRetries: 3, maxRetryDelayMs: 10000, httpIdleTimeoutMs: 120000 }"
   else
     existing="$(jq -r '.retry.provider.timeoutMs // "null"' "$PI_SETTINGS")"
     if [ "$existing" = "null" ] || [ "$existing" = "180000" ]; then
@@ -259,14 +288,15 @@ if [ -f "$PI_SETTINGS" ]; then
       else
         echo "==> Setting provider-retry defaults in $PI_SETTINGS"
       fi
-      echo "    timeoutMs=$RETRY_TIMEOUT_MS (10 min/request), maxRetries=3"
+      echo "    timeoutMs=$RETRY_TIMEOUT_MS (10 min/request), maxRetries=3, httpIdleTimeoutMs=120000"
       tmp="$(mktemp)"
       jq --argjson t "$RETRY_TIMEOUT_MS" '
         .retry //= {} |
         .retry.provider //= {} |
         .retry.provider.timeoutMs = $t |
         .retry.provider.maxRetries //= 3 |
-        .retry.provider.maxRetryDelayMs //= 60000
+        .retry.provider.maxRetryDelayMs //= 10000 |
+        .retry.provider.httpIdleTimeoutMs //= 120000
       ' "$PI_SETTINGS" > "$tmp" && mv "$tmp" "$PI_SETTINGS"
       chmod 600 "$PI_SETTINGS"
     else

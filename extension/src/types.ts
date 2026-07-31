@@ -88,6 +88,45 @@ export interface DispatchResult {
   killBudgetMs?: number;
 }
 
+/**
+ * #314 — Single source of truth for 429 rate-limit detection.
+ *
+ * Used by: adversarial.ts (classifyDispatchOutcome), async-jobs.ts
+ * (formatSingleReport + startJob lifecycle), work-driver.ts (isRateLimit429).
+ *
+ * Observed text: "Provider request error: Server requested 86399s retry delay (max: 60s). 429 status code (no body)"
+ */
+export const RATE_LIMIT_429_PATTERN = /429\s*status|retry delay.*429/i;
+
+/** Check whether a message string indicates a 429 rate-limit. */
+export function isRateLimit429Msg(msg: string | undefined): boolean {
+  return msg ? RATE_LIMIT_429_PATTERN.test(msg) : false;
+}
+
+/**
+ * #314 — Shared cause union for dispatch failure classification.
+ * Both classifyDispatchOutcome (adversarial.ts) and classifyFailureCause
+ * (work-driver.ts) must use these same names so the operator taxonomy
+ * is consistent across async-jobs, adversarial loop, and work-driver.
+ */
+export type DispatchFailureCause =
+  | "success"
+  | "self-killed:timeout"
+  | "self-killed:inactivity"
+  | "self-killed:abort"
+  | "rate-limited:429"
+  | "provider-severed"
+  | "crashed"
+  | "crashed-unknown";
+
+/**
+ * #314 — Named constant for the adversarial loop's transient (provider-severed)
+ * retry depth. Deliberately 3 (not work-driver's TRANSIENT_MAX_RETRIES=2)
+ * because adversarial reviews are short-lived and the cost of a wasted retry
+ * is lower than the cost of a false handoff.
+ */
+export const ADVERSARIAL_TRANSIENT_MAX_RETRIES = 3;
+
 export interface AdversarialVerdict {
   status: "APPROVED" | "ISSUES_FOUND" | "CRITICAL_ISSUES_FOUND";
   findings: string;

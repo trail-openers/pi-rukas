@@ -69,7 +69,7 @@ import { runLensReview } from "./lens-review.ts";
 import * as lifecycle from "./lifecycle-events.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
-import type { DispatchResult } from "./types.ts";
+import { type DispatchFailureCause, type DispatchResult, isRateLimit429Msg } from "./types.ts";
 import * as workWidget from "./work-widget.ts";
 
 const execp = promisify(exec);
@@ -247,17 +247,113 @@ function transientRetryBackoffMs(): number {
 }
 
 /**
- * #297 — infrastructure-transient failure detection. Provider error-stops
- * (dispatch-failed-provider) and pi-ensemble's own timeout/inactivity
- * kills (#296 structured marker in errorTail) are transient: the work was
- * interrupted, not judged. User aborts and semantic failures are not.
+ * #308/#314 — classify a dispatch-failure event by its ROOT CAUSE so the retry
+ * router can branch on structure (killCause / 429 / errorStop) instead of
+ * regex-matching errorTail strings. Uses shared DispatchFailureCause type
+ * and RATE_LIMIT_429_PATTERN from types.ts for consistency with adversarial.ts.
  */
-function isTransientFailure(tail: { kind: string; errorTail?: string }): boolean {
-  if (tail.kind === "dispatch-failed-provider") return true;
-  if (tail.kind === "dispatch-failed") {
-    return /\[pi-ensemble\] killed after \d+ms (timeout|inactivity)/.test(tail.errorTail ?? "");
+export function classifyFailureCause(tail: {
+  kind: string;
+  errorTail?: string;
+  killCause?: string;
+  providerMessage?: string;
+}): {
+  cause: DispatchFailureCause;
+  shouldRetry: boolean;
+  maxRetries: number;
+} {
+  // Structured killCause (#296) — pi-ensemble itself ended the child.
+  // MUST be checked first; a self-kill is never a provider failure.
+  if (tail.killCause === "timeout") {
+    return { cause: "self-killed:timeout", shouldRetry: false, maxRetries: 0 };
   }
-  return false;
+  if (tail.killCause === "inactivity") {
+    return { cause: "self-killed:inactivity", shouldRetry: true, maxRetries: 1 };
+  }
+  if (tail.killCause === "abort") {
+    return { cause: "self-killed:abort", shouldRetry: false, maxRetries: 0 };
+  }
+
+  // 429 rate-limit — detected from providerMessage (errorStop.message).
+  // Retrying is definitionally useless; the provider explicitly asked us to wait.
+  const msg = tail.providerMessage ?? tail.errorTail ?? "";
+  if (isRateLimit429Msg(msg)) {
+    return { cause: "rate-limited:429", shouldRetry: false, maxRetries: 0 };
+  }
+
+  // Provider error-stop (transport severance, provider timeout, etc).
+  if (tail.kind === "dispatch-failed-provider") {
+    return { cause: "provider-severed", shouldRetry: true, maxRetries: TRANSIENT_MAX_RETRIES };
+  }
+
+  // Non-zero exit with no structured signal — generic crash. Retry once as safety net.
+  if (tail.kind === "dispatch-failed") {
+    return { cause: "crashed", shouldRetry: true, maxRetries: 1 };
+  }
+
+  // Unexpected kind — treat as crash but don't retry.
+  return { cause: "crashed-unknown", shouldRetry: false, maxRetries: 0 };
+}
+
+/**
+ * #309 — produce the operator-facing reason string for a dispatch failure.
+ * Used by lifecycle emitStepRetry and any downstream reporting. Each cause
+ * gets a distinct, human-readable headline so the operator can act on it.
+ */
+export function failureCauseReason(tail: {
+  kind: string;
+  errorTail?: string;
+  providerMessage?: string;
+  killCause?: string;
+}): string {
+  const cls = classifyFailureCause(tail);
+  switch (cls.cause) {
+    case "self-killed:timeout":
+      return "killed by pi-ensemble (wall-clock timeout)";
+    case "self-killed:inactivity":
+      return "killed by pi-ensemble (inactivity watchdog)";
+    case "self-killed:abort":
+      return "cancelled (abort signal)";
+    case "rate-limited:429":
+      return "provider rate-limited (429) — retrying cannot help";
+    case "provider-severed":
+      return `provider/transport error: ${tail.providerMessage ?? tail.errorTail?.slice(0, 60) ?? "connection lost"}`;
+    case "crashed":
+      return `subagent failed: ${tail.errorTail?.slice(0, 60) ?? "non-zero exit"}`;
+    case "crashed-unknown":
+      return `subagent failed (unexpected event): ${tail.errorTail?.slice(0, 60) ?? "unknown failure"}`;
+    case "success":
+      return "(success — no failure reason)";
+  }
+}
+
+/**
+ * #314 — variant of failureCauseReason that accepts a pre-computed
+ * classification to avoid double-calling classifyFailureCause on the
+ * same event (e.g. in the step-completion handler at ~5428).
+ */
+function failureCauseReasonForClass(
+  tail: { errorTail?: string; providerMessage?: string },
+  cls: { cause: DispatchFailureCause },
+): string {
+  switch (cls.cause) {
+    case "self-killed:timeout":
+      return "killed by pi-ensemble (wall-clock timeout)";
+    case "self-killed:inactivity":
+      return "killed by pi-ensemble (inactivity watchdog)";
+    case "self-killed:abort":
+      return "cancelled (abort signal)";
+    case "rate-limited:429":
+      return "provider rate-limited (429) — retrying cannot help";
+    case "provider-severed":
+      return `provider/transport error: ${tail.providerMessage ?? tail.errorTail?.slice(0, 60) ?? "connection lost"}`;
+    case "crashed":
+      return `subagent failed: ${tail.errorTail?.slice(0, 60) ?? "non-zero exit"}`;
+    case "crashed-unknown":
+      return `subagent failed (unexpected event): ${tail.errorTail?.slice(0, 60) ?? "unknown failure"}`;
+    case "success":
+      return "(success — no failure reason)";
+  }
 }
 
 /**
@@ -4489,6 +4585,7 @@ async function buildCompletionEvent(
       at,
       exitCode: result.exitCode ?? null,
       errorTail: detail,
+      killCause: result.killCause,
     };
   }
   if (result.errorStop) {
@@ -5327,10 +5424,9 @@ export async function runWorkDriver(ctx: DriverContext): Promise<void> {
       const lastEvent = state.eventLog[state.eventLog.length - 1];
       const elapsed = Date.now() - stepStartedAt;
       if (lastEvent?.kind === "dispatch-failed" || lastEvent?.kind === "dispatch-failed-provider") {
-        const reason =
-          lastEvent.kind === "dispatch-failed-provider"
-            ? "provider/transport error"
-            : (lastEvent.errorTail?.slice(0, 60) ?? "subagent failed");
+        // #314 — classify once, derive both reason and retry policy.
+        const classification = classifyFailureCause(lastEvent);
+        const reason = failureCauseReasonForClass(lastEvent, classification);
         // #299 — when the halt-cascade router below is about to RETRY this
         // failure, skip the ✗ step-failed line: the single ↻ retry line
         // carries the reason, and pre-#299 one transient produced multiple
@@ -5341,8 +5437,8 @@ export async function runWorkDriver(ctx: DriverContext): Promise<void> {
         const transientRetryAvailable =
           policy === "HALT" &&
           transientRetryEnabled() &&
-          isTransientFailure(lastEvent) &&
-          (state.pipelineState.transientRetryAttempts?.[step] ?? 0) < TRANSIENT_MAX_RETRIES;
+          classification.shouldRetry &&
+          (state.pipelineState.transientRetryAttempts?.[step] ?? 0) < classification.maxRetries;
         if (!semanticRetryAvailable && !transientRetryAvailable) {
           lifecycle.emitStepFailed(step, stepOrd.num, stepOrd.total, elapsed, reason, stepRound);
         }
@@ -5408,7 +5504,7 @@ export async function runWorkDriver(ctx: DriverContext): Promise<void> {
         tail?.kind === "dispatch-failed" || tail?.kind === "dispatch-failed-provider";
       if (isDispatchFail) {
         const policy = STEP_FAILURE_POLICY[step];
-        // #297 — transient failures on HALT-class steps get a bounded
+        // #308 — transient failures on HALT-class steps get a bounded
         // retry with backoff BEFORE the halt-cascade. The work was
         // interrupted (provider blip, #296 kill), not judged; aborting a
         // multi-hour cycle over one transient was the reliability
@@ -5416,10 +5512,11 @@ export async function runWorkDriver(ctx: DriverContext): Promise<void> {
         // unchanged. (When REPLAY_ONCE (#276) lands for develop, its
         // evidence-carrying replay fires from its own router branch and
         // this generic path becomes develop's fallback.)
-        if (policy === "HALT" && transientRetryEnabled() && isTransientFailure(tail)) {
+        const classification = classifyFailureCause(tail);
+        if (policy === "HALT" && transientRetryEnabled() && classification.shouldRetry) {
           const attempts = state.pipelineState.transientRetryAttempts ?? {};
           const used = attempts[step] ?? 0;
-          if (used < TRANSIENT_MAX_RETRIES) {
+          if (used < classification.maxRetries) {
             state = {
               ...state,
               pipelineState: {
@@ -5428,13 +5525,10 @@ export async function runWorkDriver(ctx: DriverContext): Promise<void> {
               },
             };
             await writeState(ctx.repoRoot, state);
-            const reason =
-              tail.kind === "dispatch-failed-provider"
-                ? "provider/transport error"
-                : (tail.errorTail?.slice(0, 60) ?? "transient failure");
+            const reason = failureCauseReason(tail);
             lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason);
             trace(
-              `work-driver: transient retry on step="${step}" (attempt ${used + 2}/${TRANSIENT_MAX_RETRIES + 1})`,
+              `work-driver: retry on step="${step}" (attempt ${used + 2}/${classification.maxRetries + 1}, cause=${classification.cause})`,
             );
             const backoff = transientRetryBackoffMs() * (used + 1);
             if (backoff > 0) await new Promise((r) => setTimeout(r, backoff));
@@ -5443,13 +5537,10 @@ export async function runWorkDriver(ctx: DriverContext): Promise<void> {
           // Budget exhausted → fall through to the HALT cap-hit below.
         }
         if (policy === "HALT") {
-          // Recognise SIGTERM-on-developer as a distinct cap shape so
-          // explainCap() can produce the right operator-facing sentence.
-          // #296: the kill marker now arrives in errorTail via the
-          // structured killCause branch in buildCompletionEvent (pre-#296
-          // it only ever existed in stderr, making this test dead code).
-          const errorTail = tail.kind === "dispatch-failed" ? (tail.errorTail ?? "") : "";
-          const isTimeout = /killed after \d+ms (timeout|inactivity)/.test(errorTail);
+          // #308 — use structured killCause for cap detection instead of
+          // regex-matching errorTail. A timeout self-kill is a deliberate
+          // budget cap; it should NEVER be retried.
+          const isTimeout = (tail as { killCause?: string }).killCause === "timeout";
           const cap =
             step === "develop" && isTimeout
               ? ("developer-timeout" as const)
@@ -5487,10 +5578,7 @@ export async function runWorkDriver(ctx: DriverContext): Promise<void> {
               },
             };
             await writeState(ctx.repoRoot, state);
-            const reason =
-              tail.kind === "dispatch-failed-provider"
-                ? "provider error"
-                : (tail.errorTail?.slice(0, 60) ?? "subagent failed");
+            const reason = failureCauseReason(tail);
             lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason);
             trace(`work-driver: RETRY_ONCE on step="${step}" (attempt ${used + 2})`);
             continue; // re-run same step on next loop iteration

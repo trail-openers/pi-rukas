@@ -5,7 +5,7 @@ import * as lifecycle from "./lifecycle-events.ts";
 import type { RunningState } from "./progress.ts";
 import * as sessionAutosave from "./session-autosave.ts";
 import { trace } from "./trace.ts";
-import type { DispatchResult } from "./types.ts";
+import { type DispatchResult, isRateLimit429Msg } from "./types.ts";
 
 function totalTokens(result: DispatchResult): number {
   const u = result.usage;
@@ -174,28 +174,45 @@ function fmtUsage(result: {
 export function formatSingleReport(jobId: string, label: string, result: DispatchResult): string {
   const turns = result.usage?.turns ?? 0;
   const elapsed = fmtElapsed(result.ms);
-  // Three-way status: provider error-stop (synthetic empty assistant message,
-  // process exited 0 but the conversation didn't actually produce a reply —
-  // see DispatchResult.errorStop), process-level FAILED (non-zero exit), or
-  // ok. The error-stop case is visually distinct so PM treats it as failure
-  // and routes through the cap-hit handoff doctrine (PR #233).
+  // Five-way status: killCause (#296) is checked first — pi-ensemble's own
+  // kill is never a provider failure. Then 429 rate-limit. Then errorStop
+  // (provider error-stop, transport severance). Then process-level FAILED.
+  // See DispatchResult.errorStop and DispatchResult.killCause.
   let status: string;
-  if (result.errorStop) {
+  let bodyPrefix: string | null = null;
+
+  // #309 — killCause wins over errorStop. A self-kill is never reported
+  // as a provider error.
+  if (result.killCause === "timeout") {
+    status = `FAILED (self-killed: wall-clock timeout, ${result.killBudgetMs ? `${Math.round(result.killBudgetMs / 1000)}s` : "budget exceeded"})`;
+  } else if (result.killCause === "inactivity") {
+    status = "FAILED (self-killed: inactivity watchdog)";
+  } else if (result.killCause === "abort") {
+    status = "FAILED (cancelled: abort signal)";
+  } else if (result.errorStop && isRateLimit429Msg(result.errorStop.message)) {
+    status = "FAILED (rate-limited: 429 — retrying cannot help)";
+    bodyPrefix = result.errorStop.message
+      ? `Provider request error: ${result.errorStop.message}`
+      : "Provider request error: 429 retry delay requested";
+  } else if (result.errorStop) {
     status = "FAILED-PROVIDER-ERROR";
+    bodyPrefix = result.errorStop.message
+      ? `Provider request error: ${result.errorStop.message}`
+      : "Provider request error: (no error message captured from pi-ai)";
   } else if (result.ok) {
     status = "finished";
   } else {
     status = `FAILED (exit ${result.exitCode ?? "?"})`;
   }
+
   const head = `[ensemble:async] Subagent \`${label}\` (job ${jobId}) ${status} — ${turns} turns, ${elapsed}${fmtUsage(result)}`;
   let body = result.text?.trim() || "(no output)";
-  if (result.errorStop) {
-    const errMsgLine = result.errorStop.message
-      ? `Provider request error: ${result.errorStop.message}`
-      : "Provider request error: (no error message captured from pi-ai)";
+  if (bodyPrefix) {
     body = [
-      errMsgLine,
-      "Last text below is the agent's pre-failure activity — VERIFY DIRECTLY before assuming progress (worktree may be unchanged).",
+      bodyPrefix,
+      result.errorStop && !isRateLimit429Msg(result.errorStop.message)
+        ? "Last text below is the agent's pre-failure activity — VERIFY DIRECTLY before assuming progress (worktree may be unchanged)."
+        : "Retrying cannot help; the provider explicitly asked for a wait period.",
       "",
       body,
     ].join("\n");
@@ -455,12 +472,23 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
       jobs.delete(jobId);
       childHandles.delete(jobId);
       if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
-      // Three-way: ok / FAILED-PROVIDER-ERROR / process-exit-failed. The
-      // errorStop branch fires when pi-ai turned an HTTP timeout into a
-      // synthetic empty assistant message — the process exited 0, but the
-      // run didn't actually produce a usable reply. See spawn.ts collapseEvents
-      // and the failure transcript in PR #236 for the shape.
-      if (result.errorStop) {
+      // Five-way: ok / killCause / 429 / FAILED-PROVIDER-ERROR / process-exit-failed.
+      // #309/#314 — killCause (#296) wins over errorStop. A self-kill is NOT a
+      // provider/transport error and must not emit the "terminated mid-stream" badge.
+      // Uses shared isRateLimit429Msg (types.ts) so lifecycle + formatSingleReport
+      // cannot disagree on what is a 429.
+      const is429 = result.errorStop && isRateLimit429Msg(result.errorStop.message);
+      if (result.killCause) {
+        // Self-kill: treat as process-level failure, not provider error.
+        lifecycle.emitFailed(
+          jobId,
+          input.label,
+          input.role,
+          result.ms,
+          result.exitCode ?? undefined,
+        );
+      } else if (result.errorStop && !is429) {
+        // Genuine provider/transport error (not 429).
         // #299 — driver-owned jobs skip the per-child "terminated
         // mid-stream" line: the driver emits its own step-failed /
         // step-retry line for the same event, and pre-#299 a single
@@ -468,6 +496,18 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
         if (ownerKind === "pm") {
           lifecycle.emitErrored(jobId, input.label, input.role, result.ms, totalTokens(result));
         }
+      } else if (is429) {
+        // #309 — 429 with ok=true must NOT emit a "finished" badge.
+        // The child technically exited ok (it produced output), but the
+        // provider rate-limited the request. Emit as failed so the
+        // operator sees a consistent failure signal.
+        lifecycle.emitFailed(
+          jobId,
+          input.label,
+          input.role,
+          result.ms,
+          result.exitCode ?? undefined,
+        );
       } else if (result.ok) {
         lifecycle.emitCompleted(jobId, input.label, input.role, result.ms, totalTokens(result));
       } else {

@@ -8,6 +8,12 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [Unreleased]
+
+### Known gaps
+
+- The `@earendil-works/pi-coding-agent` devDependency is pinned to `~0.75.3`, but the typical runtime Pi has advanced to **0.82.1**. This combination is **unvalidated** — no live shape tests have been run against 0.82.1. See AGENTS.md § 4 for details.
+
 ## [0.12.21](https://github.com/randomm/pi-ensemble/compare/v0.12.20...v0.12.21) (2026-07-30)
 
 

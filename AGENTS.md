@@ -115,7 +115,20 @@ For extensions outside the canonical install location (dev-mode, monorepo paths)
 
 ## 4. Pi compatibility (load-bearing)
 
-The extension depends on Pi's CLI flags, JSON event stream shape, and `ExtensionAPI` surface. The pin in `extension/package.json` (`@earendil-works/pi-coding-agent: ~0.75.3`) is **deliberate**, not a default.
+The extension depends on Pi's CLI flags, JSON event stream shape, and `ExtensionAPI` surface. The pin in `extension/package.json` (`@earendil-works/pi-coding-agent: ~0.75.3`) is **deliberate**, not a default. But understanding what it actually protects — and what it does not — is critical.
+
+### What the pin protects
+
+1. **Type-checking.** Every import of `@earendil-works/pi-coding-agent` across the extension source is `import type` — erased at compile time, zero runtime footprint. The pin ensures the extension's types match 0.75.3's shape. That's it.
+2. **pi-tui widget code.** `@earendil-works/pi-tui` has value imports (`Text`, `SelectList`, `Container` in `lifecycle-events.ts`, `model-picker.ts`, `dispatch-deck.ts`) that resolve to the pinned 0.75.3 code at runtime. So 0.75.3 TUI widgets render inside whatever Pi version the user actually runs. This IS a real runtime footprint.
+
+### What the pin does NOT protect
+
+The runtime `ExtensionAPI` surface. `@earendil-works/pi-coding-agent` is a devDependency; it cannot fence runtime. `spawnSpecialist` re-invokes `process.argv[1]` — the **running pi binary** — never the pinned package. The extension is typed against 0.75.3 but called with the installed Pi's ExtensionAPI. If the user's Pi drifts past 0.75.3 (e.g. runtime 0.82.1), the pin is silent. Shape changes in the ExtensionAPI or CLI flags will only surface as runtime errors, not type errors.
+
+### The uncovered risk: runtime drift
+
+The actual risk is the runtime Pi version advancing while the pin sits still. That is exactly the current state: runtime 0.82.1 vs pin `~0.75.3`, never validated together. The only detector is `test-pi-shape-live.ts`, but it is gated on a deliberate pin bump that may never happen. If nobody bumps the pin, the check never runs, and drift accumulates silently.
 
 ### Shapes we depend on
 
@@ -135,8 +148,6 @@ Don't assume these are stable across Pi versions — verify when bumping:
 2. Bump in `extension/package.json` (e.g. `~0.75.3` → `~0.76.0`).
 3. Run **live** smoke tests on the new version (offline tests won't catch shape changes):
    - `bun run smoke-tests/test-pi-shape-live.ts` — load-bearing shape assertions (#7). Spawns a trivial PONG child and verifies the event shapes (`agent_end`, `message_end.message.role/usage`, `content[].type`, `model`) we depend on.
-   - `bun run smoke-tests/test-spawn.ts` — single-child spawn end-to-end.
-   - `bun run smoke-tests/test-parallel.ts` — 3 concurrent children.
    - `bun run smoke-tests/test-progress-live.ts` — multi-turn `onProgress` cadence.
    - `bun run smoke-tests/test-lens-review-live.ts` — six-pass review against a synthetic diff.
 4. Update `CHANGELOG.md`'s "Tested against pi X.Y.Z" line.
@@ -369,7 +380,23 @@ This file enforces principles, conventions, and load-bearing constraints. It's n
 - No `// @ts-ignore`, no `// @ts-expect-error` without an explicit reason in the comment
 - Imports sorted automatically by Biome (`bunx biome format --write src/`)
 - Avoid `any` — use `unknown` and narrow with type guards. If you must cast, comment WHY.
-- One concern per module; modules under `extension/src/` should stay readable in one screen where possible
+
+### File size limits
+
+- **Hard limit**: 500 lines per source file
+- **Ideal target**: 300 lines or fewer
+- **Refactor trigger**: Exceeds 500 lines OR has 3+ distinct responsibilities
+
+The repo is currently NOT compliant. Existing violations are grandfathered pending a split:
+
+- `extension/src/work-driver.ts` (5,703 lines)
+- `extension/smoke-tests/test-work-driver.ts` (7,237 lines)
+- `extension/src/permission-guard.ts` (1,444 lines)
+- `extension/src/spawn.ts` (871 lines)
+- `extension/src/workflow-state.ts` (792 lines)
+- `extension/src/async-jobs.ts` (806 lines)
+
+The rule applies to NEW and MODIFIED files. There is currently NO mechanical enforcement (no lint rule, no CI check). A size ratchet — allow existing, fail on net growth, same shape as the #277 skip-ratchet — is the intended mechanism.
 
 ### Markdown (prompts/)
 
@@ -448,6 +475,7 @@ CLI flags and event shapes change between Pi minor versions. The pin in `extensi
 8. **LLMs may squash-merge when gates pass** (see §9) — humans still hold approval authority on breaking changes and disputed PRs
 9. **200-PR test for docs** — endures or doesn't get written
 10. **Transcript discipline** — orchestrator reads dispatch-tool summaries, never raw transcript files
+11. **File size limits** — 500 lines hard cap, 300 ideal; existing violations grandfathered, new/modified files enforced
 
 **Golden rule**: Question every addition. Simplest solution wins. When in doubt, the doctrine in this file is authoritative — including for me.
 

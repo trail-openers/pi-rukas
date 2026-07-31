@@ -154,6 +154,8 @@ export type WorkEvent =
       /** Process-level failure (non-zero exit), distinct from provider-error. */
       exitCode?: number | null;
       errorTail?: string;
+      /** Structured kill-cause from pi-ensemble self-kill (timeout/inactivity/abort). */
+      killCause?: "timeout" | "inactivity" | "abort";
     }
   | {
       kind: "adversarial-approved";
