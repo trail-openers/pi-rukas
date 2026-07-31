@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.22](https://github.com/randomm/pi-ensemble/compare/v0.12.21...v0.12.22) (2026-07-31)
+
+
+### Bug Fixes
+
+* **work-driver:** classify failures by cause — retry depth, operator taxonomy, and install defaults ([#314](https://github.com/randomm/pi-ensemble/issues/314)) ([b909152](https://github.com/randomm/pi-ensemble/commit/b909152c80c2b99faffa6361fb435eccbe0fb45a))
+
 ## [Unreleased]
 
 ### Known gaps
