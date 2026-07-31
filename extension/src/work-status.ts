@@ -26,12 +26,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { trace } from "./trace.ts";
-import {
-  MAX_CI_RETRIES,
-  MAX_REVIEW_ROUNDS,
-  REVIEW_WALL_CLOCK_MS,
-  explainCap,
-} from "./work-driver.ts";
+import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS, REVIEW_WALL_CLOCK_MS } from "./work-driver-context.ts";
+import { explainCap } from "./work-driver-explain.ts";
 import { type WorkEvent, type WorkState, readState, workStateDir } from "./workflow-state.ts";
 
 const execp = promisify(exec);

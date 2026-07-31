@@ -387,16 +387,7 @@ This file enforces principles, conventions, and load-bearing constraints. It's n
 - **Ideal target**: 300 lines or fewer
 - **Refactor trigger**: Exceeds 500 lines OR has 3+ distinct responsibilities
 
-The repo is currently NOT compliant. Existing violations are grandfathered pending a split:
-
-- `extension/src/work-driver.ts` (5,703 lines)
-- `extension/smoke-tests/test-work-driver.ts` (7,237 lines)
-- `extension/src/permission-guard.ts` (1,444 lines)
-- `extension/src/spawn.ts` (871 lines)
-- `extension/src/workflow-state.ts` (792 lines)
-- `extension/src/async-jobs.ts` (806 lines)
-
-The rule applies to NEW and MODIFIED files. There is currently NO mechanical enforcement (no lint rule, no CI check). A size ratchet — allow existing, fail on net growth, same shape as the #277 skip-ratchet — is the intended mechanism.
+The repo is fully compliant as of #171's sweep (2026-07-31) — every `.ts` file under `extension/src/` and `extension/smoke-tests/` is ≤500 lines. Enforcement is mechanical: `extension/smoke-tests/test-file-size-limit.ts` runs in the same offline pre-push/CI loop as every other smoke test (§1) and fails the gate if any file regresses past the limit. Escape hatch: `PI_ENSEMBLE_SIZE_RATCHET=0`. Large modules split along natural seams (e.g. `work-driver.ts`'s per-step handlers each got their own `work-driver-<step>.ts` file importing a shared `work-driver-context.ts`) — when a file is heading toward the limit, look for the same kind of seam before reaching for the escape hatch.
 
 ### Markdown (prompts/)
 
@@ -465,7 +456,7 @@ CLI flags and event shapes change between Pi minor versions. The pin in `extensi
 
 ## Summary — pi-ensemble at a Glance
 
-1. **Quality gates BLOCKING** — tsc + biome + 23 offline smoke tests pass locally before push
+1. **Quality gates BLOCKING** — tsc + biome + 57 offline smoke tests pass locally before push
 2. **Two change paths** — extension code (no build) vs modular prompt layer (`bun run build` required, commit `dist/`)
 3. **Pi compatibility is load-bearing** — pin is deliberate; bumps require live tests
 4. **4-day npm embargo** — applies to `extension/` deps via bunfig; recommend pinning for prerequisite CLIs too
@@ -475,7 +466,7 @@ CLI flags and event shapes change between Pi minor versions. The pin in `extensi
 8. **LLMs may squash-merge when gates pass** (see §9) — humans still hold approval authority on breaking changes and disputed PRs
 9. **200-PR test for docs** — endures or doesn't get written
 10. **Transcript discipline** — orchestrator reads dispatch-tool summaries, never raw transcript files
-11. **File size limits** — 500 lines hard cap, 300 ideal; existing violations grandfathered, new/modified files enforced
+11. **File size limits** — 500 lines hard cap, 300 ideal; fully compliant repo-wide, mechanically enforced by `test-file-size-limit.ts`
 
 **Golden rule**: Question every addition. Simplest solution wins. When in doubt, the doctrine in this file is authoritative — including for me.
 

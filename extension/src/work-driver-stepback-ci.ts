@@ -1,0 +1,190 @@
+/**
+ * work-driver-stepback-ci — Step 7h (step-back) + Step 8 (CI monitoring)
+ * handlers.
+ *
+ * Extracted from work-driver.ts (issue #171 file-size hygiene). Grouped
+ * together as small tail-pipeline steps — step-back reroutes to handoff
+ * with a spec-revision proposal; CI is the last gate before merge.
+ */
+
+import { type DriverContext, MAX_CI_RETRIES } from "./work-driver-context.ts";
+import { runSingleDispatch } from "./work-driver-merged.ts";
+import { inlineCiPrompt, inlineStepBackPrompt } from "./work-driver-prompts-late.ts";
+import { scratchDir } from "./work-driver-workspace.ts";
+import { type WorkState, appendEvent } from "./workflow-state.ts";
+
+/**
+ * Step 7h — Step-back when findings cluster around a theme. Dispatches
+ * @explore with the SDD-six-element step-back prompt from /work.md Step 7h.
+ *
+ * v1: the driver does NOT cluster findings itself (that's fuzzy judgement).
+ * It dispatches step-back unconditionally when the cap-hit nextStep routes
+ * here, includes the prior lens-findings as input, and lets @explore
+ * decide which SDD element is underspecified.
+ */
+/**
+ * PR12 — Parse the @explore step-back reply for the structured fields
+ * `sddElement:`, `diagnosis:`, `proposedRevision:`. Lenient: tolerates
+ * markdown emphasis around the keys, leading whitespace, multi-line
+ * values (everything from the colon to the next `^<key>:` line or the
+ * end of the reply). All three fields fall back to empty strings when
+ * absent — the renderer surfaces what's present and the cap-hit fires
+ * regardless so the handoff still happens.
+ */
+export function parseStepBackReply(text: string): {
+  sddElement: string;
+  diagnosis: string;
+  proposedRevision: string;
+} {
+  const extract = (key: string): string => {
+    // Anchor key at start-of-line (input start OR after newline). Capture
+    // is non-greedy + multi-line ([\s\S]*?) and terminates at the next
+    // recognised key OR end-of-input. `$` without `m` flag matches end-
+    // of-input only — `m` would terminate at the first newline and lose
+    // multi-line values like proposedRevision.
+    const re = new RegExp(
+      String.raw`(?:^|\n)\s*[*_\x60]*${key}[*_\x60]*\s*:\s*([\s\S]*?)(?=\n\s*[*_\x60]*(?:sddElement|diagnosis|proposedRevision|alternativeApproach)[*_\x60]*\s*:|$)`,
+      "i",
+    );
+    const m = text.match(re);
+    return (m?.[1] ?? "").trim();
+  };
+  return {
+    sddElement: extract("sddElement"),
+    diagnosis: extract("diagnosis"),
+    proposedRevision: extract("proposedRevision"),
+  };
+}
+
+export async function runStepBack(
+  ctx: DriverContext,
+  state: WorkState,
+  now: number,
+): Promise<WorkState> {
+  const allFindings = state.eventLog
+    .filter(
+      (e): e is Extract<(typeof state.eventLog)[number], { kind: "lens-issues-found" }> =>
+        e.kind === "lens-issues-found",
+    )
+    .map((e) => e.findings)
+    .join("\n---\n");
+  let next = await runSingleDispatch(
+    ctx,
+    state,
+    "step-back",
+    "explore",
+    "explore:step-back",
+    now,
+    () => inlineStepBackPrompt(ctx.issue, allFindings, scratchDir(ctx.repoRoot, ctx.issue)),
+  );
+  // PR12 — parse the structured reply + emit step-back-completed and
+  // cap-hit so the handoff renderer can branch on cap='step-back-revise-spec'.
+  // Pre-PR12 the routing fell through the generic linear table
+  // (step-back → handoff) and the handoff renderer had no cap to switch
+  // on, surfacing the wrong recovery commands ("git push what's there"
+  // etc.) for a spec-revision workflow.
+  const last = next.eventLog[next.eventLog.length - 1];
+  if (last?.kind === "dispatch-completed") {
+    const parsed = parseStepBackReply(last.summary ?? "");
+    next = appendEvent(
+      next,
+      {
+        kind: "step-back-completed",
+        at: Date.now(),
+        jobId: last.jobId,
+        sddElement: parsed.sddElement || "(not specified)",
+        diagnosis: parsed.diagnosis || "(not specified)",
+        proposedRevision: parsed.proposedRevision || "(not specified)",
+      },
+      {
+        kind: "cap-hit",
+        at: Date.now(),
+        cap: "step-back-revise-spec",
+        reviewRound: next.pipelineState.reviewRound,
+        nextStep: "handoff",
+      },
+    );
+  }
+  return next;
+}
+
+/**
+ * Step 8 — CI monitoring. ops runs `gh run watch` and reports the outcome.
+ * The driver parses the result text for "ci-status: success/failure" so
+ * routing is deterministic.
+ */
+/**
+ * PR15 — resolve the ci-step ops timeout. `gh run watch` blocks until
+ * CI completes; real project CI runs regularly exceed the ops role's
+ * 10-min default (spawn.ts:141). Ci-specific override lifts the cap
+ * to 30 min by default, env-tunable via
+ * `PI_ENSEMBLE_CI_WATCH_TIMEOUT_MS`. Empirical: 3× ops-CI-poll
+ * timeouts this session before PR15 forced cycles to false-halt on
+ * `step-failed:ci`.
+ */
+function ciWatchTimeoutMs(): number {
+  const envRaw = process.env.PI_ENSEMBLE_CI_WATCH_TIMEOUT_MS;
+  const env = Number(envRaw);
+  if (Number.isFinite(env) && env > 0) return env;
+  return 30 * 60_000; // 30 min default
+}
+
+export async function runCi(ctx: DriverContext, state: WorkState, now: number): Promise<WorkState> {
+  let next = await runSingleDispatch(
+    ctx,
+    state,
+    "ci",
+    "ops",
+    "ops:ci",
+    now,
+    () => inlineCiPrompt(ctx.issue, scratchDir(ctx.repoRoot, ctx.issue)),
+    { timeoutMs: ciWatchTimeoutMs() },
+  );
+  // Parse the just-appended dispatch-completed event for a structured status
+  // line. The ops prompt asks the agent to end with `ci-status: success` or
+  // `ci-status: failure`. If parsing fails (no marker line), we treat as
+  // "failure" rather than "pending" — that way the ci-retry cap engages
+  // when the ops agent didn't follow the protocol (the empirical failure
+  // mode on issue #553 was the ops agent reporting "no PR exists" without
+  // emitting the marker, leaving status="pending" → driver stayed at ci
+  // → safety-break would eventually fire).
+  const last = next.eventLog[next.eventLog.length - 1];
+  if (last?.kind === "dispatch-completed") {
+    const text = last.summary ?? "";
+    const status: "success" | "failure" | "pending" = text.includes("ci-status: success")
+      ? "success"
+      : text.includes("ci-status: failure")
+        ? "failure"
+        : // No marker line — treat as failure so the retry cap fires.
+          // Logged via the event payload so the user can see this happened
+          // on inspection. ops doctrine should still emit the marker; this
+          // is the safety net.
+          "failure";
+    // Bump ciRetryCount BEFORE appending the event so nextStep's
+    // `ciRetryCount >= MAX_CI_RETRIES` check reflects this attempt.
+    const nextCount = (next.pipelineState.ciRetryCount ?? 0) + (status === "failure" ? 1 : 0);
+    next = {
+      ...next,
+      pipelineState: { ...next.pipelineState, ciRetryCount: nextCount },
+    };
+    if (status === "failure" && nextCount > MAX_CI_RETRIES) {
+      // Cap hit — emit cap-hit AND ci-status (the cap-hit is the routing
+      // signal; ci-status is the audit trail). Driver loop reads the
+      // cap-hit branch in nextStep and routes to handoff.
+      next = appendEvent(
+        next,
+        { kind: "ci-status", at: Date.now(), status },
+        {
+          kind: "cap-hit",
+          at: Date.now(),
+          cap: "ci-retry",
+          reviewRound: next.pipelineState.reviewRound,
+          nextStep: "handoff",
+        },
+      );
+    } else {
+      next = appendEvent(next, { kind: "ci-status", at: Date.now(), status });
+    }
+  }
+  return next;
+}

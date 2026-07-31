@@ -1,5 +1,21 @@
 import type { Writable } from "node:stream";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  type BatchMemberJobState,
+  type BatchOrchestratorJobState,
+  MAX_JOBS,
+  type SingleJobState,
+  childHandles,
+  jobs,
+  newJobId,
+} from "./async-jobs-registry.ts";
+import {
+  type BatchReportInput,
+  formatBatchReport,
+  formatFailReport,
+  formatSingleReport,
+  totalTokens,
+} from "./async-jobs-report.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import * as lifecycle from "./lifecycle-events.ts";
 import type { RunningState } from "./progress.ts";
@@ -7,11 +23,22 @@ import * as sessionAutosave from "./session-autosave.ts";
 import { trace } from "./trace.ts";
 import { type DispatchResult, isRateLimit429Msg } from "./types.ts";
 
-function totalTokens(result: DispatchResult): number {
-  const u = result.usage;
-  if (!u) return 0;
-  return (u.input ?? 0) + (u.output ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0);
-}
+export { formatSingleReport } from "./async-jobs-report.ts";
+export {
+  getChildHandle,
+  getOrchestratorActiveChild,
+  isOrchestratorJob,
+  markOrchestrator,
+  setOrchestratorActiveChild,
+} from "./async-jobs-registry.ts";
+export {
+  type JobStatusRow,
+  clearJobsForTesting,
+  jobStatusSnapshot,
+  killAllJobs,
+  killJob,
+  registerAsyncJobsLifecycle,
+} from "./async-jobs-lifecycle.ts";
 
 /**
  * Async-dispatch job registry.
@@ -34,322 +61,6 @@ function totalTokens(result: DispatchResult): number {
  *   3. Batched orchestrators (dispatch_parallel, lens review) fire a SINGLE
  *      steer when ALL children complete — never N out-of-order arrivals.
  */
-
-type JobKind = "single" | "batch-member" | "batch-orchestrator";
-
-interface SingleJobState {
-  kind: "single";
-  jobId: string;
-  role: string;
-  label: string;
-  startedAt: number;
-  abort: AbortController;
-  /**
-   * Who consumes the eventual result.
-   *
-   *   "pm" (default) — the parent PM session. On completion we push a
-   *   formatted report to PM via `pi.sendUserMessage(report, { deliverAs:
-   *   "steer" })` so the next PM turn picks it up as `[ensemble:async] …`.
-   *   This is the contract every dispatch tool (dispatch_specialist,
-   *   dispatch_parallel, adversarial_loop, dispatch_lens_review) relies on.
-   *
-   *   "driver" — the in-process work-driver (PR1 of the workflow-graph
-   *   compilation). The driver awaits the `completion` promise returned by
-   *   `startJob` directly. We MUST NOT also send the steer report — that
-   *   would inject an `[ensemble:async]` user message PM didn't ask for and
-   *   confuse the next turn. Driver-owned jobs are 100% in-process; the
-   *   completion promise IS the contract.
-   *
-   * This single field is the integration seam that lets PM-tool dispatch
-   * and driver dispatch coexist on the same async-jobs primitive without a
-   * second consumer racing for the result.
-   */
-  ownerKind: "pm" | "driver";
-  /**
-   * True when this job is an orchestrator that spawns its OWN inner children
-   * sequentially (adversarial_loop + future orchestrators). Set at
-   * work-function entry via `markOrchestrator`. Independent of whether a
-   * child is active right now — so `dispatch_peek` / `dispatch_steer` can
-   * still recognise the job as orchestrator-shape and return the
-   * "between rounds" status when activeChild is undefined.
-   */
-  isOrchestrator?: boolean;
-  /**
-   * For orchestrator-shaped jobs — pointer to whichever inner child is
-   * running right now. Updated by the orchestrator's work function via
-   * `setOrchestratorActiveChild`. Read by `dispatch_peek` (to surface the
-   * active child's last text) and `dispatch_steer` (to route stdin writes
-   * to the currently-running inner child). Cleared between rounds →
-   * undefined when the orchestrator is idle between phases.
-   */
-  activeChild?: {
-    role: string;
-    label: string;
-    /** Dispatch-deck key for the active inner spawn (`${runId}/${tag}`). */
-    deckKey: string;
-    /** Stdin handle for the active inner Pi --mode rpc child. */
-    stdin: Writable;
-    startedAt: number;
-  };
-}
-
-interface BatchMemberJobState {
-  kind: "batch-member";
-  jobId: string;
-  role: string;
-  label: string;
-  startedAt: number;
-  abort: AbortController;
-  batchId: string;
-}
-
-interface BatchOrchestratorJobState {
-  kind: "batch-orchestrator";
-  jobId: string;
-  role: string; // synthetic, describes the batch ("dispatch_parallel", "lens_review")
-  label: string;
-  startedAt: number;
-  abort: AbortController;
-  size: number;
-  completed: number;
-}
-
-type JobState = SingleJobState | BatchMemberJobState | BatchOrchestratorJobState;
-
-// Hard cap on concurrent jobs. Realistic upper bound: a six-pass lens review
-// (1 orchestrator + 6 members) plus a parallel batch (1 + ≤8 members) plus a
-// few outstanding singles ≈ 25. 50 leaves comfortable headroom; pathological
-// dispatch-without-settle scenarios (e.g., a bug in a settle path) are caught
-// before the map grows unbounded. Members count against the same cap as
-// orchestrators because they share the same memory profile and abort tree.
-const MAX_JOBS = 50;
-const jobs = new Map<string, JobState>();
-
-function newJobId(): string {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function fmtElapsed(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  const m = Math.floor(ms / 60_000);
-  const s = Math.floor((ms % 60_000) / 1000);
-  return `${m}m${s.toString().padStart(2, "0")}s`;
-}
-
-/** "12.3k" / "1.2M" / "456" — bounded to 4-5 chars regardless of input size. */
-function fmtTokens(n: number | undefined): string {
-  if (!n || n <= 0) return "0";
-  if (n < 1000) return String(n);
-  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
-  return `${(n / 1_000_000).toFixed(2)}M`;
-}
-
-/**
- * "12.3k tokens · cerebras/zai-glm-4.7" — the in-context observables we
- * actually care about: how much context this run consumed and which model
- * produced it. Cost is omitted; for users on flat-rate plans (e.g. Cerebras
- * Coder) it's just noise, and per-token billing users can derive their own
- * cost from the token count if needed.
- */
-function fmtUsage(result: {
-  usage?: { input: number; output: number; cacheRead: number; cacheWrite: number };
-  model?: string;
-  provider?: string;
-}): string {
-  const u = result.usage;
-  const totalTokens = u ? u.input + u.output + u.cacheRead + u.cacheWrite : 0;
-  const tokens = totalTokens > 0 ? ` · ${fmtTokens(totalTokens)} tokens` : "";
-  const modelTag = result.model
-    ? ` · ${result.provider ? `${result.provider}/` : ""}${result.model}`
-    : "";
-  return `${tokens}${modelTag}`;
-}
-
-/**
- * Bounded report. The body is the child's final assistant text (same bytes
- * sync dispatch would have returned). The header is ~100 chars. NEVER includes
- * raw transcript content.
- */
-export function formatSingleReport(jobId: string, label: string, result: DispatchResult): string {
-  const turns = result.usage?.turns ?? 0;
-  const elapsed = fmtElapsed(result.ms);
-  // Five-way status: killCause (#296) is checked first — pi-ensemble's own
-  // kill is never a provider failure. Then 429 rate-limit. Then errorStop
-  // (provider error-stop, transport severance). Then process-level FAILED.
-  // See DispatchResult.errorStop and DispatchResult.killCause.
-  let status: string;
-  let bodyPrefix: string | null = null;
-
-  // #309 — killCause wins over errorStop. A self-kill is never reported
-  // as a provider error.
-  if (result.killCause === "timeout") {
-    status = `FAILED (self-killed: wall-clock timeout, ${result.killBudgetMs ? `${Math.round(result.killBudgetMs / 1000)}s` : "budget exceeded"})`;
-  } else if (result.killCause === "inactivity") {
-    status = "FAILED (self-killed: inactivity watchdog)";
-  } else if (result.killCause === "abort") {
-    status = "FAILED (cancelled: abort signal)";
-  } else if (result.errorStop && isRateLimit429Msg(result.errorStop.message)) {
-    status = "FAILED (rate-limited: 429 — retrying cannot help)";
-    bodyPrefix = result.errorStop.message
-      ? `Provider request error: ${result.errorStop.message}`
-      : "Provider request error: 429 retry delay requested";
-  } else if (result.errorStop) {
-    status = "FAILED-PROVIDER-ERROR";
-    bodyPrefix = result.errorStop.message
-      ? `Provider request error: ${result.errorStop.message}`
-      : "Provider request error: (no error message captured from pi-ai)";
-  } else if (result.ok) {
-    status = "finished";
-  } else {
-    status = `FAILED (exit ${result.exitCode ?? "?"})`;
-  }
-
-  const head = `[ensemble:async] Subagent \`${label}\` (job ${jobId}) ${status} — ${turns} turns, ${elapsed}${fmtUsage(result)}`;
-  let body = result.text?.trim() || "(no output)";
-  if (bodyPrefix) {
-    body = [
-      bodyPrefix,
-      result.errorStop && !isRateLimit429Msg(result.errorStop.message)
-        ? "Last text below is the agent's pre-failure activity — VERIFY DIRECTLY before assuming progress (worktree may be unchanged)."
-        : "Retrying cannot help; the provider explicitly asked for a wait period.",
-      "",
-      body,
-    ].join("\n");
-  }
-  const footer = result.ok
-    ? "---\nYou started this async dispatch earlier. Continue the workflow."
-    : `---\n(See /runs for full transcript at ${result.transcriptPath ?? "ensemble-runs/"}.)`;
-  return `${head}\n\n${body}\n\n${footer}`;
-}
-
-function formatFailReport(jobId: string, label: string, err: Error): string {
-  const tail = (err.message ?? "").slice(-200);
-  return [
-    `[ensemble:async] Subagent \`${label}\` (job ${jobId}) FAILED before producing output`,
-    `error tail: ${tail}`,
-    "",
-    "(See /runs for any partial transcript.)",
-  ].join("\n");
-}
-
-interface BatchReportInput {
-  batchLabel: string;
-  batchId: string;
-  startedAt: number;
-  members: Array<{
-    jobId: string;
-    label: string;
-    result: DispatchResult | { failed: true; error: string };
-  }>;
-}
-
-function formatBatchReport(input: BatchReportInput): string {
-  const ms = Date.now() - input.startedAt;
-  const totalTokens = input.members.reduce((acc, m) => {
-    if ("failed" in m.result) return acc;
-    const u = m.result.usage;
-    return acc + (u ? u.input + u.output + u.cacheRead + u.cacheWrite : 0);
-  }, 0);
-  const okCount = input.members.filter((m) => !("failed" in m.result) && m.result.ok).length;
-  const tokenTag = totalTokens > 0 ? ` · ${fmtTokens(totalTokens)} tokens` : "";
-  const head = `[ensemble:async] Batch \`${input.batchLabel}\` (batch ${input.batchId}) finished — ${okCount}/${input.members.length} ok, ${fmtElapsed(ms)}${tokenTag}`;
-  const sections = input.members.map((m) => {
-    if ("failed" in m.result) {
-      return `=== ${m.label} (job ${m.jobId}) — FAILED ===\nerror: ${m.result.error.slice(-200)}`;
-    }
-    const turns = m.result.usage?.turns ?? 0;
-    const elapsed = fmtElapsed(m.result.ms);
-    const status = m.result.ok ? "ok" : `fail (exit ${m.result.exitCode ?? "?"})`;
-    const body = m.result.text?.trim() || "(no output)";
-    return `=== ${m.label} (job ${m.jobId}) — ${status} · ${turns} turns · ${elapsed}${fmtUsage(m.result)} ===\n${body}`;
-  });
-  const footer = "---\nYou started this async batch earlier. Continue the workflow.";
-  return `${head}\n\n${sections.join("\n\n")}\n\n${footer}`;
-}
-
-/**
- * Per-job child handle — exposes the child's stdin so dispatch_steer (#153)
- * can write `{ type: "steer", message }` RPC commands to a running child.
- * Lives in `childHandles` for the duration of the job; cleared on settle.
- */
-interface ChildHandle {
-  stdin: Writable;
-  label: string;
-  role: string;
-}
-
-const childHandles = new Map<string, ChildHandle>();
-
-/** Look up a running child's stdin + label by jobId. Used by dispatch_steer.
- *  Returns undefined when the job has already settled (stdin handle cleaned up). */
-export function getChildHandle(jobId: string): ChildHandle | undefined {
-  return childHandles.get(jobId);
-}
-
-/**
- * Orchestrator active-child registry — used by adversarial_loop (and any
- * future orchestrator that fans out internally) to publish "which inner
- * child is running right now" so `dispatch_peek` and `dispatch_steer` can
- * resolve an orchestrator jobId to the active inner child transparently.
- *
- * Pass `null` to clear (between rounds, or after the orchestrator settles).
- * Pass a child descriptor when starting a new inner phase. The descriptor
- * carries the inner spawn's deck key (for peek to look up live state) and
- * stdin handle (for steer to write into).
- */
-export function setOrchestratorActiveChild(
-  jobId: string,
-  child: { role: string; label: string; deckKey: string; stdin: Writable } | null,
-): void {
-  const state = jobs.get(jobId);
-  if (!state || state.kind !== "single") return;
-  if (child === null) {
-    state.activeChild = undefined;
-  } else {
-    state.activeChild = { ...child, startedAt: Date.now() };
-  }
-}
-
-/**
- * Look up the orchestrator's active inner child. Returns undefined when the
- * jobId isn't an orchestrator, or when the orchestrator is between rounds
- * (no active inner child right now). Used by `dispatch_peek` to surface the
- * active child's live state, and by `dispatch_steer` to route the steer.
- */
-export function getOrchestratorActiveChild(
-  jobId: string,
-):
-  | { role: string; label: string; deckKey: string; stdin: Writable; startedAt: number }
-  | undefined {
-  const state = jobs.get(jobId);
-  if (!state || state.kind !== "single") return undefined;
-  return state.activeChild;
-}
-
-/**
- * Mark a job as orchestrator-shaped — called by the orchestrator's work
- * function at entry, BEFORE the first inner round. Tells `dispatch_peek`
- * and `dispatch_steer` to use the active-child resolution path instead of
- * the regular deck snapshot lookup. Idempotent.
- */
-export function markOrchestrator(jobId: string): void {
-  const state = jobs.get(jobId);
-  if (!state || state.kind !== "single") return;
-  state.isOrchestrator = true;
-}
-
-/**
- * Probe: is this jobId orchestrator-shaped? True if its work function
- * called `markOrchestrator`. Independent of whether an inner child is
- * currently active — so peek/steer can recognise the job between rounds
- * and return the explicit "between rounds" status.
- */
-export function isOrchestratorJob(jobId: string): boolean {
-  const state = jobs.get(jobId);
-  if (!state || state.kind !== "single") return false;
-  return state.isOrchestrator === true;
-}
 
 /** Live-progress hooks passed to a job's work function. */
 export interface WorkHooks {
@@ -718,89 +429,4 @@ function deliverReport(pi: ExtensionAPI, report: string): void {
   } catch (err) {
     trace(`async report delivery failed: ${(err as Error).message}`);
   }
-}
-
-/** Snapshot of current jobs for dispatch_status (metadata only — never content). */
-export interface JobStatusRow {
-  jobId: string;
-  kind: JobKind;
-  role: string;
-  label: string;
-  elapsedMs: number;
-  batchId?: string;
-  batchProgress?: { completed: number; size: number };
-}
-
-export function jobStatusSnapshot(): JobStatusRow[] {
-  const now = Date.now();
-  const out: JobStatusRow[] = [];
-  for (const job of jobs.values()) {
-    const base = {
-      jobId: job.jobId,
-      kind: job.kind,
-      role: job.role,
-      label: job.label,
-      elapsedMs: now - job.startedAt,
-    };
-    if (job.kind === "batch-member") {
-      out.push({ ...base, batchId: job.batchId });
-    } else if (job.kind === "batch-orchestrator") {
-      out.push({
-        ...base,
-        batchProgress: { completed: job.completed, size: job.size },
-      });
-    } else {
-      out.push(base);
-    }
-  }
-  return out;
-}
-
-/** Kill one job by id (best-effort — AbortSignal propagates to spawnSpecialist). */
-export function killJob(jobId: string): boolean {
-  const job = jobs.get(jobId);
-  if (!job) return false;
-  job.abort.abort();
-  return true;
-}
-
-/** Kill everything in flight. Called from session_shutdown so we don't orphan children. */
-export function killAllJobs(): number {
-  let n = 0;
-  for (const job of jobs.values()) {
-    job.abort.abort();
-    n++;
-  }
-  return n;
-}
-
-/**
- * Test-only: forcibly drain the jobs and childHandles maps without going
- * through the abort+settle cycle. Required for tests that use
- * never-resolving work (`new Promise(() => undefined)`) — aborting such a
- * promise emits the signal but the work function never reacts, so the
- * `.then` cleanup that would remove the entry never runs. Production code
- * never wants this; tests need it for clean isolation against the
- * module-level singleton maps.
- */
-export function clearJobsForTesting(): void {
-  for (const job of jobs.values()) job.abort.abort();
-  jobs.clear();
-  childHandles.clear();
-}
-
-/**
- * Register the session_shutdown handler that aborts in-flight async jobs.
- * Pi's only documented shutdown hook is `session_shutdown` (`session_end`
- * was a guess we dropped in #23); we register against the documented API
- * directly with proper typing instead of the previous `as unknown as` cast.
- */
-export function registerAsyncJobsLifecycle(pi: ExtensionAPI): void {
-  const piWithOn = pi as unknown as {
-    on?: (event: "session_shutdown", handler: () => Promise<void> | void) => void;
-  };
-  piWithOn.on?.("session_shutdown", () => {
-    const n = killAllJobs();
-    if (n > 0) trace(`session_shutdown: aborted ${n} in-flight async jobs`);
-  });
 }

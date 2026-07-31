@@ -1,0 +1,290 @@
+/**
+ * work-driver-context — shared driver state/type foundation.
+ *
+ * Extracted from work-driver.ts (issue #171 file-size hygiene). Every
+ * step-handler file imports `DriverContext` from here; this file has no
+ * dependency on any step-handler file, keeping it a clean leaf that the
+ * rest of the driver module graph can sit on top of.
+ *
+ * Contains: the step display-ordinal table, the per-step failure policy,
+ * the review/CI caps `nextStep()` enforces, the `DriverContext` shape
+ * every step handler is dispatched with, and the `nextStep()` transition
+ * table itself.
+ */
+
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { DispatchResult } from "./types.ts";
+import type { WorkState, WorkStep } from "./workflow-state.ts";
+
+/**
+ * Display ordinal for the user-facing "step N/9" badge in scrollback /
+ * widget output. Matches the numbering in pi-prompts/work.md verbatim.
+ * `plan` collapses without a dispatch but still gets a number for
+ * consistency. Internal-only steps (handoff / merged / step-back) get
+ * sequence numbers past 9 so the badge stays informative without lying
+ * about the doctrine's named 9.
+ */
+export const STEP_ORDINAL: Record<string, { num: number; total: number }> = {
+  explore: { num: 1, total: 9 },
+  plan: { num: 2, total: 9 },
+  branch: { num: 3, total: 9 },
+  develop: { num: 4, total: 9 },
+  adversarial: { num: 5, total: 9 },
+  "commit-pr": { num: 6, total: 9 },
+  "lens-review": { num: 7, total: 9 },
+  "lens-fix": { num: 7, total: 9 }, // sub-step of 7
+  "step-back": { num: 7, total: 9 }, // sub-step of 7
+  ci: { num: 8, total: 9 },
+  merged: { num: 9, total: 9 },
+  handoff: { num: 9, total: 9 }, // terminal alternative to merged
+};
+
+/**
+ * Maximum review-fix rounds before the driver halts and routes to the
+ * cap-hit handoff path (Step 7g doctrine). Mirrors the 3-round limit in
+ * `pi-prompts/work.md` Step 7f.6.
+ */
+export const MAX_REVIEW_ROUNDS = 3;
+
+/**
+ * Maximum CI retry attempts before routing to handoff. Counts ci-status:
+ * failure → develop transitions; 2 means up to 3 total CI attempts (the
+ * first attempt + 2 retries). Added in PR2 after issue #553's live cycle
+ * spun forever in ci → develop → adversarial → lens-review → ci when no
+ * PR existed for CI to watch.
+ */
+export const MAX_CI_RETRIES = 2;
+
+/**
+ * Wall-clock cap for the entire fix loop (lens-review → developer-fix →
+ * adversarial → re-review). 90 minutes, same as legacy review-cap.ts.
+ * Persisted in `pipelineState.reviewCapStartedAt` so it survives restart.
+ */
+export const REVIEW_WALL_CLOCK_MS = 90 * 60 * 1000;
+
+/**
+ * Per-step failure policy (PR5 halt-cascade prevention).
+ *
+ * Background: PR #239 driver continued past `dispatch-failed` because
+ * `nextStep()` has no branch for that event kind — the linear table just
+ * advanced. On lantern #553, a developer SIGTERM at 30 min cascaded into
+ * 2h31m of adversarial review against partial work, then 40 min of
+ * provider-timeouting handoff. ~4 hours wasted, opaque outcome.
+ *
+ * The fix is a routing classifier: when a step body's tail event is
+ * `dispatch-failed` (or `dispatch-failed-provider`), the driver loop
+ * consults this table BEFORE calling `nextStep()`:
+ *
+ *  - **HALT**: synthesise a cap-hit `step-failed:<step>` (or the special
+ *    `developer-timeout` shape when the errorTail matches the spawn
+ *    timeout marker), set `status='aborted'`, route to handoff. There
+ *    is no useful downstream past a HALT failure.
+ *  - **RETRY_ONCE**: re-run the same step body once. Idempotent steps
+ *    (adversarial loop against a stable diff, lens-review 6-way fanout)
+ *    can absorb transient provider transport errors. Second failure
+ *    HALTs via the same path.
+ *  - **DEGRADED_OK**: the existing fall-through to `nextStep()` is fine.
+ *    Step-back (informational) and the terminal steps (handoff, merged)
+ *    fit here.
+ *
+ * The verdict paths (adversarial-rejected → cap-hit handoff, lens
+ * round-cap → handoff) are unchanged — those route correctly already.
+ * This table only governs dispatch-failed at the step level.
+ */
+export type StepFailurePolicy = "HALT" | "RETRY_ONCE" | "DEGRADED_OK";
+
+export const STEP_FAILURE_POLICY: Record<WorkStep, StepFailurePolicy> = {
+  // No spec foundation → plan/branch/develop run blind.
+  explore: "HALT",
+  // No workstreams → silent regression to single-task develop without
+  // out-of-scope fences (PR3 doctrine violated).
+  plan: "HALT",
+  // No branch → develop edits HEAD, commit-pr has nothing to push, CI
+  // has nothing to watch. Was the empirical root of issue #553's first
+  // run cascade.
+  branch: "HALT",
+  // Partial uncommitted work after SIGTERM is not adversarial-reviewable.
+  // For N>1 workstreams: HALT if ANY branch failed (runDevelop's
+  // Promise.allSettled aggregate is the failure signal).
+  develop: "HALT",
+  // Internal 3-round loop is idempotent against a stable diff; transient
+  // transport is realistic. Second failure HALTs. The
+  // REJECTED-after-3-rounds verdict path already routes correctly to
+  // handoff via cap-hit — unchanged.
+  adversarial: "RETRY_ONCE",
+  // No PR → lens-review wastes hours on uncommitted work, CI retries
+  // to no purpose. Was a contributing factor in the #553 spin.
+  "commit-pr": "HALT",
+  // 6 lens children against a stable diff are idempotent. Cannot ship
+  // code that bypassed lens-review.
+  "lens-review": "RETRY_ONCE",
+  // Same shape as develop — partial fix work cannot meaningfully re-
+  // enter adversarial→lens.
+  "lens-fix": "HALT",
+  // Output is informational; an empty step-back reply still produces a
+  // useful handoff.
+  "step-back": "DEGRADED_OK",
+  // Silently marking a cycle merged when CI was never checked is the
+  // worst possible outcome. Marker-missing-but-ops-ran is already
+  // handled via ciRetryCount (PR2).
+  ci: "HALT",
+  // Must never halt the loop — IS the loop terminator. PR5 hardens
+  // handoff itself via in-process gh fallback (see runHandoff).
+  handoff: "DEGRADED_OK",
+  // PR10: was DEGRADED_OK while runMerged was a 0ms state mutation; now
+  // it actually dispatches ops to run `gh pr merge`, which CAN fail
+  // (auth, branch protection, conflicts). Silently flipping status to
+  // 'merged' on dispatch failure would be exactly the bug PR10 fixes
+  // (the empirical /work 561/562 case: driver reported MERGED ✓ while
+  // PRs sat OPEN on GitHub). HALT routes the failure through cap-hit
+  // 'step-failed:merged' → handoff so the operator merges manually.
+  merged: "HALT",
+};
+
+export interface DriverContext {
+  pi: ExtensionAPI;
+  /** Project root (NOT a worktree). State file lives here. */
+  repoRoot: string;
+  /** Primary issue number — anchors state file path + branch name. For
+   * multi-issue cycles this is `issues[0]`. */
+  issue: number;
+  /** PR10 — full list of issue numbers passed to /work. Optional for
+   * back-compat; absent means single-issue (driver treats as [issue]). */
+  issues?: number[];
+  /**
+   * Optional injection point for tests: replace dispatchCore with a fake.
+   * Production callers omit this — the default is the real dispatchCore.
+   */
+  dispatchFn?: (
+    pi: ExtensionAPI,
+    spec: { role: string; prompt: string; cwd?: string },
+    opts?: { label?: string; skipDeck?: boolean; timeoutMs?: number },
+  ) => Promise<DispatchResult>;
+  /**
+   * PR11 — optional injection point for tests: replace the `gh issue view`
+   * fetch in runExplore. Production callers omit this; the default
+   * shells out via `execp("gh issue view <N>")`. Tests inject a fake to
+   * simulate empty bodies / rejected fetches without mocking PATH.
+   * Returns `{ stdout: string }` matching the execp shape.
+   */
+  issueBodyFetcherFn?: (issue: number, cwd: string) => Promise<{ stdout: string }>;
+  /**
+   * PR12 — when true, `runWorkDriver` skips `readState` and starts from
+   * `initialState(issue)`. Set by `commands.ts` when the operator
+   * passes `/work N --restart` to wipe a prior terminal cycle's state
+   * and run fresh (e.g., after revising the issue body via /plan).
+   * Branch step's existing existing-branch detection handles worktree
+   * / branch leftovers at runtime; this flag only resets the driver's
+   * state file. Default behaviour (omitted / false) reads the existing
+   * state if present.
+   */
+  restart?: boolean;
+  /**
+   * Optional injection point for tests: replace runAdversarialLoop with a
+   * fake. Production callers omit this — runAdversarial uses the real
+   * orchestrator from adversarial.ts. Mirrors `dispatchFn` for symmetry.
+   * Added in PR8 alongside the per-workstream adversarial fanout so the
+   * smoke tests can validate fanout shape without spawning real Pi
+   * children.
+   */
+  adversarialLoopFn?: (
+    params: { diff: string; context: string; workCwd?: string },
+    signal: AbortSignal,
+    orchestratorJobId: string,
+  ) => Promise<DispatchResult>;
+  /**
+   * PR17 — optional injection point for tests: replace the shell
+   * executor used by verifyStepOutcome (git status / rev-list, the
+   * project's verify command, gh pr view). Production callers omit
+   * this; the default is `execp`. Mirrors `issueBodyFetcherFn`.
+   */
+  verifyExecFn?: (
+    cmd: string,
+    opts?: {
+      cwd?: string;
+      timeout?: number;
+      maxBuffer?: number;
+      shell?: string;
+    },
+  ) => Promise<{ stdout: string; stderr?: string }>;
+}
+
+/** Decide the next step from the current step + just-appended events. */
+export function nextStep(state: WorkState): WorkStep | "done" {
+  const ps = state.pipelineState;
+  if (ps.status !== "running") return "done";
+  const lastEvent = state.eventLog[state.eventLog.length - 1];
+
+  // Terminal short-circuits.
+  if (ps.currentStep === "merged" || ps.currentStep === "handoff") return "done";
+
+  // Cap-hit routes to either handoff or step-back regardless of which step
+  // emitted the cap-hit event. The driver records the next-step decision in
+  // the cap-hit event itself.
+  if (lastEvent?.kind === "cap-hit") return lastEvent.nextStep;
+
+  // Adversarial verdict routes the next step.
+  if (lastEvent?.kind === "adversarial-approved") {
+    // The post-adversarial transition depends on what step we came FROM,
+    // not what step we ARE — by the time this check fires, `currentStep`
+    // has already been clobbered to "adversarial" by runAdversarial. The
+    // original PR #239 read `ps.currentStep === "develop"` which was
+    // always false here and silently routed every adversarial-approved to
+    // lens-review, skipping commit-pr. PR2 routes on lastCompletedStep:
+    //  - From "develop" → "commit-pr" (the happy path after first dev).
+    //  - From "lens-fix" → "lens-review" (re-verify the fix loop).
+    return ps.lastCompletedStep === "develop" ? "commit-pr" : "lens-review";
+  }
+  if (lastEvent?.kind === "adversarial-rejected") {
+    // adversarial_loop already did 3 internal rounds and STILL rejected →
+    // this is a cap-hit. The driver emits the cap-hit event in the same
+    // transition; the cap-hit branch above handles routing.
+    return "handoff";
+  }
+
+  // Lens-review verdict routes.
+  if (lastEvent?.kind === "lens-approved") return "ci";
+  if (lastEvent?.kind === "lens-issues-found") {
+    if (ps.reviewRound >= MAX_REVIEW_ROUNDS) return "handoff";
+    if (ps.reviewCapStartedAt && Date.now() - ps.reviewCapStartedAt > REVIEW_WALL_CLOCK_MS) {
+      return "handoff";
+    }
+    return "lens-fix";
+  }
+
+  // Step-back completes → emit handoff with the spec analysis attached.
+  if (lastEvent?.kind === "step-back-completed") return "handoff";
+
+  // CI outcomes.
+  if (lastEvent?.kind === "ci-status") {
+    if (lastEvent.status === "success") return "merged";
+    if (lastEvent.status === "failure") {
+      // The re-fix loop. Cap at MAX_CI_RETRIES so a permanently-failing CI
+      // (e.g., branch step ABORTed and no PR exists for CI to watch — see
+      // issue #553) can't spin develop → adversarial → review → ci forever.
+      // The runCi step body bumps ciRetryCount when it appends the
+      // ci-status event; this check just routes on the post-bump value.
+      if ((ps.ciRetryCount ?? 0) >= MAX_CI_RETRIES) return "handoff";
+      return "develop";
+    }
+    // "pending" — caller decides whether to poll again; for v1 we just stay.
+    return "ci";
+  }
+
+  // Linear happy-path transitions when no special event fired.
+  const linear: Record<WorkStep, WorkStep> = {
+    explore: "plan",
+    plan: "branch",
+    branch: "develop",
+    develop: "adversarial",
+    adversarial: "commit-pr",
+    "commit-pr": "lens-review",
+    "lens-review": "ci",
+    "lens-fix": "adversarial",
+    "step-back": "handoff",
+    handoff: "handoff",
+    ci: "merged",
+    merged: "merged",
+  };
+  return linear[ps.currentStep];
+}

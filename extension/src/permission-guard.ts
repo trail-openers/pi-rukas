@@ -2,29 +2,21 @@
  * pi-ensemble permission interceptor — owns the `tool_call` hook that
  * decides allow/deny/ask for every tool the parent agent invokes.
  *
- * Five concerns live here today (refactor tracker: #171):
+ * Two concerns live here today (refactor tracker: #171 — bash-command
+ * parsing moved to bash-command-parser.ts, the decision cache moved to
+ * permission-decision-cache.ts, and 3-layer config loading moved to
+ * permission-config.ts):
  *
- *   1. Bash-command parsing — quote-stripping, prefix extraction, injection-
- *      vector detection. Used to compute "Allow always (cmd *)" scopes and
- *      to refuse caching for injection-bearing commands.
- *
- *   2. Three-layer config resolution — $PWD/.pi/permissions.json (project)
- *      → ~/.pi/agent/permissions.json (host-global) → shipped agents.json
- *      (baseline). First match wins, project beats host beats baseline.
- *
- *   3. Decision cache — Map<key, {allowed, timestamp}> persisted to
- *      $PWD/.pi/decisions.json. Exact bash commands hash to a sha256 key;
- *      wildcard-able commands key on `bash:<prefix> *`. Bounded by
- *      MAX_CACHED_DECISIONS with insertion-order eviction.
- *
- *   4. Permission resolution — `resolveToolPermission` and
+ *   1. Permission resolution — `resolveToolPermission` and
  *      `lookupPermission`. Tool-name wildcards: exact match → longest
  *      prefix → `"*"` catch-all (#168). Bash subcommands use the same
- *      specificity rule via `matchBashSubcommand`.
+ *      specificity rule via `matchBashSubcommand` (bash-command-parser.ts).
  *
- *   5. Orchestration — `registerPermissionGuard` hooks `tool_call`,
+ *   2. Orchestration — `registerPermissionGuard` hooks `tool_call`,
  *      prompts the user via `ctx.ui.select` when verdict is "ask" and a
- *      UI exists, hard-denies "ask" in headless mode.
+ *      UI exists, hard-denies "ask" in headless mode. This is the only
+ *      cluster that touches Pi's `ExtensionAPI` surface (`pi.on(...)`,
+ *      `ctx.ui.select`, `ctx.hasUI`).
  *
  * Headless safety: `"ask"` verdicts hard-deny when `!ctx.hasUI`, so
  * automation never silently approves anything. Bash commands with
@@ -32,434 +24,55 @@
  * the prompt.
  */
 
-import { createHash } from "node:crypto";
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  realpathSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
-import { type Socket, createConnection } from "node:net";
-import os from "node:os";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  extractCommandPrefix,
+  matchBashSubcommand,
+  tokenizeForPrefix,
+} from "./bash-command-parser.ts";
 import type { BrokerDeps, PermissionRequest } from "./permission-broker.ts";
+import {
+  findProjectConfigPath,
+  loadAgentsJson,
+  loadGlobalConfig,
+  loadProjectConfig,
+  resolveAgentsJsonPath,
+} from "./permission-config.ts";
+import type { PermVerdict, RoleConfig } from "./permission-config.ts";
+import {
+  MAX_CACHED_DECISIONS,
+  bashPatternMatches,
+  decisionKey,
+  evictOldest,
+  getBashAlwaysPromptLabel,
+  getBashAlwaysScope,
+  getBashDecisionCacheKey,
+  loadPersistedDecisions,
+  lookupCachedBrokerDecision,
+  lookupCachedToolDecision,
+  persistCachedBrokerDecision,
+  persistDecisions,
+} from "./permission-decision-cache.ts";
+import { registerSubagentGuard } from "./permission-subagent-guard.ts";
 import { ROLE_NAMES } from "./roles.js";
 import { trace } from "./trace.js";
 
-const __dirname = path.dirname(new URL(import.meta.url).pathname);
-
-// Type definitions
-export type PermVerdict = "allow" | "deny" | "ask";
-type PermPattern = Record<string, PermVerdict | Record<string, PermVerdict>>;
-export type RoleConfig = Record<string, { permission?: PermPattern }>;
-
-// Constants
-const DECISION_KEY_MAX_ARGS = 200;
-const DECISION_KEY_MAX_LENGTH = 250;
-const MAX_CACHED_DECISIONS = 500;
-const MAX_CONFIG_FILE_SIZE = 1 * 1024 * 1024; // 1MB
-
-// Pattern key constants for bash command prefix caching
-const BASH_PATTERN_PREFIX = "bash:";
-const PATTERN_SUFFIX = " *";
-// Chars that should NEVER appear in a stored bash *pattern prefix*. A prefix
-// like `vipune add` is safe; one like `vipune "add` or `vipune *` is not — at
-// match time it would either fail to compare correctly or could match unexpected
-// commands. Used by isSafeBashPatternPrefix to gate what we save to disk.
-const BASH_PATTERN_UNSAFE_CHARS = /['"`*?\[\]{}|&;<>$]/;
-// Chars that indicate command injection / chaining in a bash *command*. If a
-// command contains any of these OUTSIDE quoted segments, we refuse to extract
-// a wildcard scope and we refuse to match it against any cached wildcard
-// pattern — the prefix matcher cannot reason about what `&&`, `$(...)`, or
-// backticks will actually run.
-//
-// IMPORTANT: this regex is applied to the OUTPUT of stripQuotedSegments(), not
-// to the raw command. `vipune add "lorem && ipsum"` extracts to `vipune add `
-// after quote-stripping and passes the test cleanly — bash never interprets
-// `&&` inside a quoted argument as a separator, so it isn't an injection
-// vector there. See issue #108.
-const BASH_COMMAND_INJECTION_CHARS = /[`$;&|<>\n]/;
-
-// Strip single- and double-quoted segments from a shell command, returning the
-// portion that bash would interpret as command structure (operators, paths,
-// flag names, etc.). Used to apply BASH_COMMAND_INJECTION_CHARS only against
-// the "executable" portion, so quoted arguments containing `&&`, `|`, `;`,
-// etc. don't trip the injection-vector check (issue #108).
-//
-// Edge case: an unterminated quote is a syntactic error in bash. We return
-// the ORIGINAL full command in that case — fail closed; the injection-vector
-// test will then see whatever's inside the unterminated quote and reject if
-// it contains operators. Defense in depth against an agent emitting malformed
-// quoting to slip operators past the check.
-//
-// Out of scope: command substitution `$(...)` / backticks — these stay in
-// the output of stripping and remain caught by the injection-vector regex
-// (correctly: `$(curl evil)` is a real injection vector even if visually
-// "inside" a string).
-function stripQuotedSegments(command: string): string {
-  let result = "";
-  let i = 0;
-  const n = command.length;
-  while (i < n) {
-    const ch = command[i];
-    if (ch === "'") {
-      // Single quotes: bash treats everything inside as literal — no
-      // variable expansion, no command substitution, no escape sequences.
-      // Strip the whole quoted run.
-      i++;
-      let foundClose = false;
-      while (i < n) {
-        if (command[i] === "'") {
-          foundClose = true;
-          i++;
-          break;
-        }
-        i++;
-      }
-      if (!foundClose) {
-        trace(
-          "permission-guard: stripQuotedSegments: unterminated single quote — returning raw command for fail-closed injection check",
-        );
-        return command;
-      }
-    } else if (ch === '"') {
-      // Double quotes: most operators (`&`, `|`, `;`, `<`, `>`, newline) are
-      // literal inside, BUT bash still interprets `$` (variable + command
-      // substitution) and `` ` `` (command substitution) and `\` (escape).
-      // Keep `$` and `` ` `` in the output so the injection-vector check sees
-      // them — they're real injection vectors regardless of being "inside"
-      // the quotes.
-      i++;
-      let foundClose = false;
-      while (i < n) {
-        if (command[i] === "\\" && i + 1 < n) {
-          // Backslash escape — next char is literal, skip both.
-          i += 2;
-          continue;
-        }
-        if (command[i] === '"') {
-          foundClose = true;
-          i++;
-          break;
-        }
-        if (command[i] === "$" || command[i] === "`") {
-          result += command[i] ?? "";
-        }
-        // Other chars are literal inside double quotes — strip them.
-        i++;
-      }
-      if (!foundClose) {
-        trace(
-          "permission-guard: stripQuotedSegments: unterminated double quote — returning raw command for fail-closed injection check",
-        );
-        return command;
-      }
-    } else {
-      result += ch;
-      i++;
-    }
-  }
-  return result;
-}
-
-// Pattern key helpers
-function buildPatternKey(prefix: string): string {
-  return `${BASH_PATTERN_PREFIX}${prefix}${PATTERN_SUFFIX}`;
-}
-function isPatternKey(key: string): boolean {
-  return key.startsWith(BASH_PATTERN_PREFIX) && key.endsWith(PATTERN_SUFFIX);
-}
-function extractPatternPrefix(key: string): string {
-  return key.slice(BASH_PATTERN_PREFIX.length, -PATTERN_SUFFIX.length);
-}
-
-function isSafeBashPatternPrefix(prefix: string): boolean {
-  return prefix.length > 0 && !BASH_PATTERN_UNSAFE_CHARS.test(prefix);
-}
-
-export function getBashAlwaysScope(command: string): string | null {
-  if (command.trim().length === 0) return null;
-  // Commands with injection vectors (`&&`, `$(...)`, backticks, redirects, etc.)
-  // OUTSIDE quoted segments can't be safely wildcarded — what we'd cache as
-  // `cmd *` would also match benign invocations that contain the same
-  // injection at runtime. Quoted content is exempt (see stripQuotedSegments).
-  if (BASH_COMMAND_INJECTION_CHARS.test(stripQuotedSegments(command))) return null;
-  const prefix = extractCommandPrefix(command);
-  if (!isSafeBashPatternPrefix(prefix)) return null;
-  return prefix;
-}
-
-export function getBashAlwaysPromptLabel(
-  action: "Allow always" | "Deny always",
-  command: string,
-): string {
-  const scope = getBashAlwaysScope(command);
-  return scope ? `${action} (${scope} *)` : action;
-}
-
-function buildExactBashDecisionKey(command: string): string {
-  const digest = createHash("sha256").update(command, "utf8").digest("hex");
-  return `${BASH_PATTERN_PREFIX}exact:${digest}`;
-}
-
-export function bashPatternMatches(command: string, scope: string): boolean {
-  if (!isSafeBashPatternPrefix(scope)) return false;
-  // Even if the prefix matches, refuse to honour a wildcard for commands that
-  // contain injection vectors OUTSIDE quoted segments. Runtime mirror of the
-  // check in getBashAlwaysScope — `$(...)` outside quotes can't be auto-
-  // approved by any wildcard, only by explicit "Allow once" decision.
-  if (BASH_COMMAND_INJECTION_CHARS.test(stripQuotedSegments(command))) return false;
-  const matchesPrefix =
-    command.startsWith(scope) && (command.length === scope.length || command[scope.length] === " ");
-  if (!matchesPrefix) return false;
-  return extractCommandPrefix(command) === scope;
-}
-
-function isSafeBashPatternKey(key: string): boolean {
-  if (!isPatternKey(key)) return false;
-  return isSafeBashPatternPrefix(extractPatternPrefix(key));
-}
-
-export function getBashDecisionCacheKey(command: string, input: unknown): string {
-  const scope = getBashAlwaysScope(command);
-  return scope ? buildPatternKey(scope) : buildExactBashDecisionKey(command);
-}
-
-// Process-wrapper tokens to skip when extracting a command prefix.
-// `timeout 30 npm test` should extract to `npm test`, not `timeout`.
-// Matches Claude Code's documented strip set.
-const COMMAND_WRAPPERS = new Set([
-  "timeout",
-  "time",
-  "nice",
-  "nohup",
-  "stdbuf",
-  "command",
-  "builtin",
-  "exec",
-  "env",
-]);
-
-// Multi-subcommand CLI tools: take 2 tokens (e.g. `git commit`, `npm test`).
-// These are tools where the first token alone is too broad to be a useful
-// "Allow always" scope — `git *` would also allow `git push --force`.
-// `oo` is included because it wraps other tools; extractCommandPrefix detects
-// that case and recurses into the inner tool's prefix.
-const MULTI_SUBCOMMAND_TOOLS = new Set([
-  "git",
-  "gh",
-  "npm",
-  "pnpm",
-  "yarn",
-  "cargo",
-  "go",
-  "bun",
-  "bunx",
-  "vipune",
-  "docker",
-  "pi",
-  "ctx7",
-  "kubectl",
-  "oo",
-]);
-
-// Three-token run-style invocations where the third token is the script name
-// the user actually cares about granting (`npm run lint`, not `npm run *`).
-const TRIPLE_LEVEL_PAIRS = new Set(["npm run", "pnpm run", "yarn run", "bun run", "cargo run"]);
-
-// Chars that mark a token as "not part of the command prefix". Anything outside
-// [A-Za-z0-9_.-=] terminates prefix collection — paths (`/tmp/foo`), globs
-// (`*.ts`), env-var values past `=`, etc.
-const NON_PREFIX_TOKEN = /[^A-Za-z0-9_.\-=]/;
-// Chars that, when found inside a token, mean the *next* shell command starts
-// here (compound/redirect). Distinct from BASH_COMMAND_INJECTION_CHARS because
-// we use this to find the head of the *current* command — `git;` should yield
-// `git`, not get filtered as junk. Backtick and `$` would also start an inline
-// substitution; treat them the same.
-const PREFIX_TERMINATOR = /[`$;&|<>]/;
-
-// Shell-quote-aware tokeniser used only for prefix extraction. Treats quoted
-// runs as a single sentinel token (we don't care about argument content for
-// permission scope, only that there *is* an argument here). Does NOT attempt
-// to be a full shell parser — anything beyond simple quoting (heredocs, brace
-// expansion, etc.) falls through to the injection-vector check in
-// getBashAlwaysScope and ends up uncached.
-export function tokenizeForPrefix(command: string): string[] {
-  const tokens: string[] = [];
-  let i = 0;
-  const n = command.length;
-  while (i < n) {
-    while (i < n && /\s/.test(command[i] ?? "")) i++;
-    if (i >= n) break;
-    const ch = command[i];
-    if (ch === '"' || ch === "'") {
-      const quote = ch;
-      i++;
-      while (i < n && command[i] !== quote) {
-        if (command[i] === "\\" && i + 1 < n) i++;
-        i++;
-      }
-      if (i < n) i++; // consume closing quote
-      tokens.push("<arg>");
-      continue;
-    }
-    const start = i;
-    while (i < n && !/\s/.test(command[i] ?? "") && command[i] !== '"' && command[i] !== "'") {
-      i++;
-    }
-    tokens.push(command.slice(start, i));
-  }
-  return tokens;
-}
-
-// Strip leading process-wrapper tokens and KEY=value env-var assignments.
-// Returns the remaining tokens — the "real" command after unwrapping.
-function stripLeadingWrappers(tokens: string[]): string[] {
-  let i = 0;
-  while (i < tokens.length) {
-    const t = tokens[i] ?? "";
-    // KEY=value env-var assignment
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) {
-      i++;
-      continue;
-    }
-    if (!COMMAND_WRAPPERS.has(t)) break;
-    i++;
-    // Wrapper-specific positional arguments to skip
-    if (t === "timeout" || t === "stdbuf") {
-      const next = tokens[i] ?? "";
-      if (/^\d+[smhd]?$/.test(next)) i++;
-    } else if (t === "nice") {
-      if ((tokens[i] ?? "") === "-n") {
-        i++;
-        const next = tokens[i] ?? "";
-        if (/^-?\d+$/.test(next)) i++;
-      }
-    } else if (t === "env") {
-      // `env KEY=VAL cmd` — KEY=VAL handled by the env-var loop above on next iteration.
-    }
-  }
-  return tokens.slice(i);
-}
-
-// Collect the leading "command word" tokens. Stops at the first argument-like
-// token: a quoted run (<arg>), a flag (-x), a path (/foo), an injection char
-// (where the next command starts), or anything outside the prefix charset.
-// When a token contains an injection char part-way through (`git;`), the part
-// *before* the char is kept as the last prefix token.
-function collectPrefixTokens(rawTokens: string[]): string[] {
-  const out: string[] = [];
-  for (const token of rawTokens) {
-    if (token === "<arg>") break;
-    if (token.startsWith("-")) break;
-    const term = token.search(PREFIX_TERMINATOR);
-    if (term !== -1) {
-      const head = token.slice(0, term);
-      if (head.length > 0 && !NON_PREFIX_TOKEN.test(head)) out.push(head);
-      break;
-    }
-    if (NON_PREFIX_TOKEN.test(token)) break;
-    out.push(token);
-  }
-  return out;
-}
-
-// Helper: extract command prefix from bash command for pattern caching.
-// Strategy: tokenise (quote-aware), strip wrappers/env-vars, collect leading
-// command-word tokens, then take 1-3 of them depending on whether the leading
-// tool is in a known multi-subcommand family.
-export function extractCommandPrefix(command: string): string {
-  const trimmed = command.trim();
-  if (trimmed.length === 0) return "bash";
-  const stripped = stripLeadingWrappers(tokenizeForPrefix(trimmed));
-  const cleanTokens = collectPrefixTokens(stripped);
-  if (cleanTokens.length === 0) {
-    // Fallback: the first raw token if it survives the safe-token check.
-    const first = stripped[0] ?? "";
-    return NON_PREFIX_TOKEN.test(first) || PREFIX_TERMINATOR.test(first) || first === "<arg>"
-      ? "bash"
-      : first;
-  }
-  const t1 = cleanTokens[0] ?? "";
-  if (cleanTokens.length === 1 || !MULTI_SUBCOMMAND_TOOLS.has(t1)) {
-    return t1;
-  }
-  const t2 = cleanTokens[1] ?? "";
-  if (t2 === "") return t1;
-  // Recursive case: `oo <tool>` where the inner tool is itself multi-level.
-  // Drives `oo git status` → `oo git status`, `oo gh issue view` → `oo gh issue`.
-  if (t1 === "oo" && MULTI_SUBCOMMAND_TOOLS.has(t2)) {
-    const innerPrefix = extractCommandPrefix(cleanTokens.slice(1).join(" "));
-    return `oo ${innerPrefix}`;
-  }
-  // Three-token run-style invocations.
-  if (TRIPLE_LEVEL_PAIRS.has(`${t1} ${t2}`) && cleanTokens.length >= 3) {
-    const t3 = cleanTokens[2] ?? "";
-    if (t3 !== "") return `${t1} ${t2} ${t3}`;
-  }
-  return `${t1} ${t2}`;
-}
-
-// Helper: evict oldest entries from a decisions map
-function evictOldest(map: Map<string, { allowed: boolean; timestamp: string }>, max: number): void {
-  if (map.size <= max) return;
-  const sorted = [...map.entries()].sort((a, b) => b[1].timestamp.localeCompare(a[1].timestamp));
-  map.clear();
-  for (const [k, v] of sorted.slice(0, max)) map.set(k, v);
-}
-
-// Tool names that have been removed from pi-ensemble but may still appear in
-// older `.pi/decisions.json` files. Loading them is harmless but they bloat
-// the cache and confuse `/runs`-style introspection. Add a tool here when it
-// is removed; entries here are cleaned out of the cache on session_start.
-const STALE_TOOL_NAMES = new Set(["pair_watch"]);
-
-// Decision keys we accept come in three shapes (see save sites):
-//   1. `bash:<prefix> *`         — bash wildcard pattern (from "Allow always")
-//   2. `bash:exact:<sha256>`     — bash exact-command hash (injection-vector
-//                                  commands that the user "Allow always"-ed)
-//   3. `<toolname>`              — non-bash tool-level grant (no ":" at all)
-//
-// Anything else came from an earlier version of the code that keyed decisions
-// on a JSON.stringify(input). Those entries are tied to a literal input string
-// and will never match a future invocation — drop them.
-type DecisionKeyShape =
-  | "bash-pattern"
-  | "bash-exact"
-  | "tool-level"
-  | "old-format-full-input"
-  | "unsafe-pattern"
-  | "stale-tool"
-  | "invalid";
-
-function classifyDecisionKey(key: string): DecisionKeyShape {
-  if (key.length === 0) return "invalid";
-  if (key.startsWith(BASH_PATTERN_PREFIX)) {
-    if (key.startsWith(`${BASH_PATTERN_PREFIX}exact:`)) return "bash-exact";
-    if (isPatternKey(key)) {
-      return isSafeBashPatternKey(key) ? "bash-pattern" : "unsafe-pattern";
-    }
-    // Starts with `bash:` but neither `exact:` nor ends with ` *` → must be the
-    // old `bash:{"command":"..."}` JSON-input shape.
-    return "old-format-full-input";
-  }
-  if (!key.includes(":")) {
-    // Tool-name level (e.g. `dispatch_specialist`). Reject if the tool no
-    // longer exists.
-    if (STALE_TOOL_NAMES.has(key)) return "stale-tool";
-    // Reject obviously malformed entries (whitespace, control chars, etc.).
-    if (!/^[A-Za-z0-9_.\-]+$/.test(key)) return "invalid";
-    return "tool-level";
-  }
-  // Has ":" but doesn't start with "bash:" → old-format `<toolname>:{...}` shape.
-  const prefix = key.slice(0, key.indexOf(":"));
-  if (STALE_TOOL_NAMES.has(prefix)) return "stale-tool";
-  return "old-format-full-input";
-}
+// Re-export the public surface that used to live directly in this file —
+// callers (spawn.ts, index.ts, smoke tests) import these from
+// "./permission-guard.ts" and must keep working unchanged.
+export type { PermVerdict, RoleConfig };
+export { findProjectConfigPath, loadAgentsJson, resolveAgentsJsonPath };
+export { extractCommandPrefix, tokenizeForPrefix };
+export {
+  bashPatternMatches,
+  decisionKey,
+  getBashAlwaysPromptLabel,
+  getBashAlwaysScope,
+  getBashDecisionCacheKey,
+  persistDecisions,
+};
 
 // Built-in Pi tool names — never block these
 // Exported for tests and documentation — no longer used as runtime bypass
@@ -481,61 +94,6 @@ export const BUILTIN_TOOLS = new Set([
   "check_task",
   "question",
 ]);
-
-// Match a concrete bash command against a nested subcommand allowlist
-// (e.g. agents.json's `permission.bash` { "vipune *": "allow", ... }).
-// Returns the verdict from the longest matching pattern, or the catch-all "*"
-// if present. Returns null if the allowlist has no matching entry.
-//
-// Pattern semantics:
-//   - "pattern *" (trailing " *"): word-boundary prefix. `vipune *` matches
-//     `vipune` and `vipune add foo` but not `vipuneish`.
-//   - "pattern*"  (trailing "*" no space): loose prefix. `which*` matches
-//     `whichever`. Matches the long-standing convention in agents.json.
-//   - "pattern"    (no wildcard): exact match.
-// Most specific pattern wins (longest prefix). Catch-all "*" is checked last.
-//
-// Refuses to match commands containing injection vectors OUTSIDE quoted
-// segments — those must always reach the interactive prompt. Quoted content
-// is transparent (see stripQuotedSegments and issue #108).
-function matchBashSubcommand(command: string, allowlist: Record<string, string>): string | null {
-  // Commands containing injection vectors OUTSIDE quoted segments (`&&`, `|`,
-  // `>`, `$(...)`, backticks, etc.) can't be safely auto-approved by any
-  // wildcard pattern. We return null here so the lookup falls through to the
-  // role's `*: ask` catch-all (or, absent that, resolveToolPermission's
-  // default "ask") — i.e. the parent prompts the user with the FULL command
-  // text visible. The user is the trust boundary: they read the chain and
-  // approve / deny once. LLM subagents naturally emit chains like
-  // `cd $WORKTREE && git status`, and hard-denying without a prompt blocks
-  // legitimate workflows (#188 follow-up; broke ops/developer subagent bash
-  // for routine /work cycles).
-  //
-  // Defense in depth on the CACHE side stays intact: getBashAlwaysScope and
-  // bashPatternMatches both refuse to wildcard a command with injection
-  // vectors. "Allow always" on a chained command stores only an exact-hash
-  // cache entry — any *different* chain shape will still re-prompt. So the
-  // user can never approve `git X && rm -rf /` as a side-effect of having
-  // ever approved `git status && git diff`.
-  if (BASH_COMMAND_INJECTION_CHARS.test(stripQuotedSegments(command))) return null;
-  // Sort patterns by length descending so the more specific entry wins.
-  const patterns = Object.entries(allowlist)
-    .filter(([k]) => k !== "*")
-    .sort(([a], [b]) => b.length - a.length);
-  for (const [pattern, verdict] of patterns) {
-    if (typeof verdict !== "string") continue;
-    if (pattern.endsWith(" *")) {
-      const prefix = pattern.slice(0, -2);
-      if (command === prefix || command.startsWith(`${prefix} `)) return verdict;
-    } else if (pattern.endsWith("*")) {
-      const prefix = pattern.slice(0, -1);
-      if (command.startsWith(prefix)) return verdict;
-    } else if (command === pattern) {
-      return verdict;
-    }
-  }
-  const catchall = allowlist["*"];
-  return typeof catchall === "string" ? catchall : null;
-}
 
 // Helper: lookup a tool in permission entries, exact match first then wildcard.
 // Permission entries: string verdicts or nested objects (bash subcommand
@@ -571,7 +129,7 @@ function lookupPermission(
   // "mcp*": "ask"}` would always return "deny" on the first iteration because
   // `*` matches every tool — so no specific role-level wildcard could ever
   // override the catch-all. Mirrors matchBashSubcommand's specificity rule
-  // (line 458) so tool-level and bash-subcommand patterns behave the same way.
+  // so tool-level and bash-subcommand patterns behave the same way.
   const patterns = Object.entries(entries)
     .filter(
       ([pattern, verdict]) =>
@@ -585,138 +143,6 @@ function lookupPermission(
   }
   const catchall = entries["*"];
   return typeof catchall === "string" ? catchall : null;
-}
-
-// Resolve the path to the repo's agents.json regardless of how the extension
-// was loaded. The standard install symlinks ~/.pi/agent/extensions/pi-ensemble
-// at the repo's `extension/` directory, so `import.meta.url` may be either
-// the real file path or the symlink path depending on the Node/jiti symlink
-// policy. realpathSync collapses the difference; `../..` then walks from
-// `extension/src/` up to the repo root.
-//
-// PI_ENSEMBLE_DIR (if set) is an explicit override for users with unusual
-// install layouts — useful in tests too.
-export function resolveAgentsJsonPath(): string {
-  const override = process.env.PI_ENSEMBLE_DIR;
-  if (override) return path.resolve(override, "agents.json");
-  try {
-    const realDir = realpathSync(__dirname);
-    return path.resolve(realDir, "..", "..", "agents.json");
-  } catch {
-    return path.resolve(__dirname, "..", "..", "agents.json");
-  }
-}
-
-// agents.json ships with the repo, so ENOENT is unexpected and should warn.
-// In contrast, project/global config ENOENT is silent (user may not have created them).
-export function loadAgentsJson(): Record<
-  string,
-  { permission?: Record<string, string | Record<string, string>> }
-> {
-  const agentsPath = resolveAgentsJsonPath();
-  try {
-    const raw = readFileSync(agentsPath, "utf8");
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return {};
-    const obj = parsed as {
-      agent?: Record<string, { permission?: Record<string, string | Record<string, string>> }>;
-    };
-    return obj.agent ?? {};
-  } catch (err) {
-    const msg = `pi-ensemble permission-guard: failed to load agents.json from ${agentsPath} (${err}) — non-builtin tools will require interactive approval (or be blocked in headless mode)`;
-    console.warn(msg);
-    trace(msg);
-    return {};
-  }
-}
-
-function loadConfigFile(configPath: string, label: string): RoleConfig {
-  try {
-    const raw = readFileSync(configPath, "utf8");
-
-    // Enforce max file size to prevent DoS
-    if (raw.length > MAX_CONFIG_FILE_SIZE) {
-      const msg = `pi-ensemble permission-guard: ${label} config exceeds ${MAX_CONFIG_FILE_SIZE} bytes, skipping`;
-      console.warn(msg);
-      return {};
-    }
-
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return {};
-    const rolesObj = parsed as { roles?: RoleConfig };
-    return rolesObj.roles ?? {};
-  } catch (err) {
-    if (err && typeof err === "object" && "code" in err) {
-      const code = (err as { code: string }).code;
-      if (code === "ENOENT") {
-        // Missing file is normal — silent
-        return {};
-      }
-      if (code === "EACCES" || code === "EPERM") {
-        const msg = `pi-ensemble permission-guard: cannot read ${label} config (${err})`;
-        console.warn(msg);
-        return {};
-      }
-    }
-    if (err instanceof SyntaxError) {
-      const msg = `pi-ensemble permission-guard: ${label} config is not valid JSON (${err.message})`;
-      console.warn(msg);
-      return {};
-    }
-    // Other errors: trace for debugging
-    trace(`pi-ensemble permission-guard: error loading ${label} config (${err})`);
-    return {};
-  }
-}
-
-// Walk up from `process.cwd()` looking for `.pi/permissions.json`. Mirrors
-// git's `.git` ancestor search so a project overlay placed at the repo root
-// applies inside worktree subdirectories too — which matters when subagents
-// are spawned with `cwd = <repo>/.worktrees/<branch>` (PR #192 onward).
-// Stops at the user's home directory: we never read a permissions overlay
-// from outside the user's projects (no `/Users/.pi/permissions.json` or
-// `/.pi/permissions.json` poisoning).
-export function findProjectConfigPath(startDir?: string): string | null {
-  const home = os.homedir();
-  let dir = startDir ?? process.cwd();
-  while (true) {
-    const candidate = path.join(dir, ".pi", "permissions.json");
-    if (existsSync(candidate)) return candidate;
-    const parent = path.dirname(dir);
-    if (parent === dir) return null; // hit FS root
-    if (dir === home) return null; // do not search above $HOME
-    dir = parent;
-  }
-}
-
-function loadProjectConfig(): RoleConfig {
-  const configPath = findProjectConfigPath();
-  if (!configPath) return {};
-  try {
-    // Resolve symlinks before reading
-    const resolvedPath = realpathSync(configPath);
-    return loadConfigFile(resolvedPath, "project");
-  } catch (err) {
-    if (err && typeof err === "object" && "code" in err) {
-      const code = (err as { code: string }).code;
-      if (code === "ENOENT") {
-        // Missing file is normal — silent (existsSync race; very unlikely)
-        return {};
-      }
-      if (code === "EACCES" || code === "EPERM") {
-        const msg = `pi-ensemble permission-guard: cannot read project config (${err})`;
-        console.warn(msg);
-        return {};
-      }
-    }
-    trace(`pi-ensemble permission-guard: error loading project config (${err})`);
-    return {};
-  }
-}
-
-function loadGlobalConfig(): RoleConfig {
-  const configPath = path.join(os.homedir(), ".pi", "agent", "permissions.json");
-  return loadConfigFile(configPath, "global");
 }
 
 export function resolveToolPermission(
@@ -789,71 +215,6 @@ export function isToolAllowedForRole(
   return false; // not mentioned = deny (deny-by-default)
 }
 
-export function decisionKey(toolName: string, args: unknown): string {
-  try {
-    return `${toolName}:${JSON.stringify(args ?? {}).slice(0, DECISION_KEY_MAX_ARGS)}`;
-  } catch (err) {
-    trace(`permission-guard: JSON.stringify args failed (${err}), falling back to type-only`);
-  }
-  try {
-    return `${toolName}:${JSON.stringify({ type: typeof args }).slice(0, DECISION_KEY_MAX_ARGS)}`;
-  } catch (err) {
-    trace(`permission-guard: JSON.stringify fallback failed (${err}), using generic key`);
-  }
-  return `${toolName}:unknown`;
-  // NOTE: This serializes entire args before truncating. Acceptable for typical tool args (<1KB).
-  // Do NOT add custom replacer — over-engineering for this use case.
-}
-
-export function persistDecisions(
-  decisionsMap: Map<string, { allowed: boolean; timestamp: string }>,
-): void {
-  const piDir = path.join(process.cwd(), ".pi");
-  const decisionsPath = path.join(piDir, "decisions.json");
-  const tmpPath = `${decisionsPath}.tmp`;
-
-  try {
-    // Ensure .pi/ exists with secure permissions in one call
-    mkdirSync(piDir, { recursive: true, mode: 0o700 });
-
-    // Evict oldest entries if over limit
-    evictOldest(decisionsMap, MAX_CACHED_DECISIONS);
-
-    // NOTE: writeFileSync blocks the event loop. Acceptable for now: decision writes are
-    // <50KB and happen only on "always" choices (not every tool call). Do NOT refactor to async.
-    const obj = Object.fromEntries(decisionsMap.entries());
-    writeFileSync(tmpPath, JSON.stringify(obj, null, 2), { mode: 0o600 });
-    renameSync(tmpPath, decisionsPath);
-
-    // Belt-and-braces chmod: log failure instead of silent catch
-    try {
-      chmodSync(decisionsPath, 0o600);
-    } catch (err) {
-      trace(
-        `pi-ensemble permission-guard: chmod ${decisionsPath} failed (${err}) — file may have incorrect permissions`,
-      );
-    }
-  } catch (err) {
-    const msg = `pi-ensemble permission-guard: failed to persist decisions (${err})`;
-    console.warn(msg);
-    trace(msg);
-
-    // Clean up .tmp file if it exists (best-effort)
-    try {
-      // Use dynamic require to avoid importing fs at top level
-      const fs = require("node:fs");
-      if (fs.existsSync(tmpPath)) {
-        fs.unlinkSync(tmpPath);
-      }
-    } catch {
-      // Cleanup failure is acceptable — .tmp will be ignored next write
-    }
-
-    // Return without crashing
-    return;
-  }
-}
-
 // Captured by registerPermissionGuard for the broker — set when the parent
 // Pi session starts; null in subagent mode (subagents never broker for anyone).
 // Use `makeBrokerDeps()` from outside this file to get the typed deps wrapper
@@ -898,175 +259,6 @@ export function isParentInTrustMode(): boolean {
   if (process.env.PI_ENSEMBLE_SANDBOX_MODE === "1") return true;
   if (process.env.PI_ENSEMBLE_STRICT_PERMISSIONS === "1") return false;
   return parentCtx?.hasUI === true;
-}
-
-/**
- * Subagent-mode permission guard. Runs INSIDE spawned Pi subagents (when
- * PI_ENSEMBLE_SUBAGENT_MODE=1 + pi-ensemble forwarded via --extension by
- * spawn.ts). Same 3-tier resolution as the parent guard, but `ask` verdicts
- * escalate to the parent over a Unix socket (PI_ENSEMBLE_PERM_SOCKET) instead
- * of prompting locally (subagents have no UI).
- *
- * Recursion firewall: spawn.ts + index.ts together ensure subagent-mode
- * pi-ensemble registers ONLY this guard — no dispatch tools, no slash
- * commands. So a subagent's permission decisions can't trigger further
- * subagent spawns.
- */
-function registerSubagentGuard(pi: ExtensionAPI): void {
-  // Sandbox mode short-circuit (PR #197). When pi-ensemble runs inside the
-  // Docker sandbox (`pi-ensemble` wrapper sets PI_ENSEMBLE_SANDBOX_MODE=1),
-  // the container fence IS the trust boundary. Every tool call passes
-  // through with no per-call gating, no socket broker, no overlay loading.
-  // This is the structural fix for the prompt-flood UX problem: the user
-  // moves into a sandboxed container instead of rubber-stamping prompts
-  // they no longer read. See bin/pi-ensemble + .devcontainer/.
-  if (process.env.PI_ENSEMBLE_SANDBOX_MODE === "1") {
-    trace("subagent-guard: PI_ENSEMBLE_SANDBOX_MODE=1 — bypassing all tool gating");
-    return;
-  }
-  // Trust mode propagated from parent (interactive host without strict opt-in).
-  // Parent set PI_ENSEMBLE_TRUST_MODE=1 in our env via spawn.ts — same effect
-  // as sandbox: no per-call gating, no socket broker. See isInTrustMode in
-  // permission-guard.ts for the full rationale.
-  if (process.env.PI_ENSEMBLE_TRUST_MODE === "1") {
-    trace("subagent-guard: PI_ENSEMBLE_TRUST_MODE=1 — bypassing all tool gating");
-    return;
-  }
-  const role = process.env.PI_ENSEMBLE_ROLE;
-  const socketPath = process.env.PI_ENSEMBLE_PERM_SOCKET;
-  if (!role) {
-    trace("subagent-guard: PI_ENSEMBLE_ROLE unset — guard inactive, role unknown");
-    return;
-  }
-  trace(
-    `subagent-guard: registering for role '${role}' · socket=${socketPath ?? "<unset, will headless-deny on ask>"}`,
-  );
-  const agentsConfig = loadAgentsJson();
-  // Subagents DO read project + global permission overlays — the user edits
-  // these precisely to override the agents.json baseline (e.g. granting a
-  // role a project-specific MCP tool the baseline withholds). Pre-#192 the
-  // subagent guard stubbed both overlays to `{}` with the now-disproven
-  // rationale "those reflect the user's local layered config and don't
-  // belong to the subagent's process context" — that broke users who put
-  // `mcp*: allow` for developer in `.pi/permissions.json` and saw their
-  // grant silently ignored by every dispatched developer subagent.
-  // findProjectConfigPath walks up from cwd so worktree subagents resolve
-  // the repo-root overlay correctly.
-  const projectConfig = loadProjectConfig();
-  const globalConfig = loadGlobalConfig();
-
-  let socket: Socket | null = null;
-  let socketBuffer = "";
-  let pendingResolvers: Array<(verdict: { allowed: boolean; reason?: string }) => void> = [];
-
-  function ensureSocket(): Socket | null {
-    if (!socketPath) return null;
-    if (socket && !socket.destroyed) return socket;
-    try {
-      socket = createConnection(socketPath);
-      socket.setEncoding("utf8");
-      socket.on("data", (chunk: string | Buffer) => {
-        socketBuffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
-        let nl = socketBuffer.indexOf("\n");
-        while (nl >= 0) {
-          const line = socketBuffer.slice(0, nl);
-          socketBuffer = socketBuffer.slice(nl + 1);
-          nl = socketBuffer.indexOf("\n");
-          try {
-            const v = JSON.parse(line) as {
-              type?: string;
-              allowed?: boolean;
-              reason?: string;
-            };
-            if (v.type === "permission-verdict" && typeof v.allowed === "boolean") {
-              const resolve = pendingResolvers.shift();
-              if (resolve) resolve({ allowed: v.allowed, reason: v.reason });
-            }
-          } catch (err) {
-            trace(`subagent-guard: malformed verdict line: ${(err as Error).message}`);
-          }
-        }
-      });
-      socket.on("error", (err) => {
-        trace(`subagent-guard: socket error: ${err.message}`);
-        socket = null;
-      });
-      socket.on("close", () => {
-        socket = null;
-        // Resolve any pending requests as deny so the subagent doesn't hang.
-        const resolvers = pendingResolvers;
-        pendingResolvers = [];
-        for (const r of resolvers) r({ allowed: false, reason: "broker socket closed" });
-      });
-      return socket;
-    } catch (err) {
-      trace(`subagent-guard: connect to ${socketPath} failed: ${(err as Error).message}`);
-      return null;
-    }
-  }
-
-  async function escalateAsk(
-    toolName: string,
-    bashCommand: string | undefined,
-  ): Promise<{ allowed: boolean; reason?: string }> {
-    const sock = ensureSocket();
-    if (!sock) {
-      return { allowed: false, reason: "no broker socket — headless deny" };
-    }
-    const req: PermissionRequest = {
-      type: "permission-request",
-      role: role ?? "unknown",
-      toolName,
-      bashCommand,
-    };
-    return new Promise((resolve) => {
-      pendingResolvers.push(resolve);
-      try {
-        sock.write(`${JSON.stringify(req)}\n`);
-      } catch (err) {
-        // Remove our resolver, return deny.
-        const idx = pendingResolvers.indexOf(resolve);
-        if (idx >= 0) pendingResolvers.splice(idx, 1);
-        resolve({ allowed: false, reason: `socket write failed: ${(err as Error).message}` });
-      }
-    });
-  }
-
-  pi.on("tool_call", async (event, _ctx) => {
-    try {
-      const command =
-        event.toolName === "bash" ? ((event.input as { command?: string })?.command ?? "") : "";
-      const verdict = resolveToolPermission(
-        event.toolName,
-        role,
-        projectConfig,
-        globalConfig,
-        agentsConfig,
-        event.toolName === "bash" ? command : undefined,
-      );
-      if (verdict === "allow") return;
-      if (verdict === "deny") {
-        trace(`subagent-guard: BLOCKED ${event.toolName} for role=${role} (verdict=deny)`);
-        return {
-          block: true,
-          reason: `Tool '${event.toolName}' is not permitted for role '${role}' (subagent)`,
-        };
-      }
-      // verdict === "ask" — escalate to parent over socket.
-      const result = await escalateAsk(
-        event.toolName,
-        event.toolName === "bash" ? command : undefined,
-      );
-      if (result.allowed) return;
-      return {
-        block: true,
-        reason: `Tool '${event.toolName}' denied (subagent ask → ${result.reason ?? "denied"})`,
-      };
-    } catch (err) {
-      trace(`subagent-guard: internal error: ${(err as Error).message}`);
-      return { block: true, reason: "subagent guard internal error" };
-    }
-  });
 }
 
 /**
@@ -1131,100 +323,7 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
     // get ctx via an event parameter the way the tool_call handler does.
     parentCtx = ctx;
     const decisionsPath = path.join(process.cwd(), ".pi", "decisions.json");
-    try {
-      const raw = readFileSync(decisionsPath, "utf8");
-      const parsed = JSON.parse(raw);
-      let loaded = 0;
-      let droppedMalformed = 0;
-      let droppedStale = 0;
-      let droppedOldFormat = 0;
-      for (const [key, val] of Object.entries(parsed)) {
-        if (key.length > DECISION_KEY_MAX_LENGTH) {
-          trace(
-            `pi-ensemble permission-guard: skipping over-length decision key: ${key.slice(0, 50)}...`,
-          );
-          droppedMalformed++;
-          continue;
-        }
-        const shape = classifyDecisionKey(key);
-        if (shape === "stale-tool") {
-          trace(`pi-ensemble permission-guard: dropping stale tool decision: ${key}`);
-          droppedStale++;
-          continue;
-        }
-        if (shape === "old-format-full-input") {
-          // Old-format full-input keys (`bash:{"command":"..."}`, `dispatch_specialist:{"cwd":...}`)
-          // are tied to a literal input string. They never match a future
-          // invocation that differs by a single character — dead weight that
-          // bloats the cache without providing matches.
-          trace(`pi-ensemble permission-guard: dropping old-format decision: ${key.slice(0, 50)}`);
-          droppedOldFormat++;
-          continue;
-        }
-        if (shape === "unsafe-pattern") {
-          trace(
-            `pi-ensemble permission-guard: skipping unsafe bash wildcard decision key: ${key.slice(0, 50)}...`,
-          );
-          droppedMalformed++;
-          continue;
-        }
-        if (shape === "invalid") {
-          trace(`pi-ensemble permission-guard: skipping invalid decision key: ${key.slice(0, 50)}`);
-          droppedMalformed++;
-          continue;
-        }
-        // Validate entry shape BEFORE casting
-        if (val === null || typeof val !== "object") {
-          trace(`permission-guard: skipping malformed decision for key: ${key.slice(0, 50)}`);
-          droppedMalformed++;
-          continue;
-        }
-        const entry = val as Record<string, unknown>;
-        if (
-          typeof entry.allowed !== "boolean" ||
-          typeof entry.timestamp !== "string" ||
-          entry.timestamp.length > 50
-        ) {
-          trace(`permission-guard: skipping malformed decision for key: ${key.slice(0, 50)}`);
-          droppedMalformed++;
-          continue;
-        }
-        decisions.set(key, { allowed: entry.allowed, timestamp: entry.timestamp });
-        loaded++;
-      }
-      const dropped = droppedMalformed + droppedStale + droppedOldFormat;
-      if (dropped > 0) {
-        // Persist the cleaned cache so the next session sees a tidy file and
-        // we don't repeatedly re-evaluate the same stale entries.
-        persistDecisions(decisions);
-        console.info(
-          `pi-ensemble permission-guard: loaded ${loaded} decisions; dropped ${dropped} (` +
-            `${droppedMalformed} malformed, ${droppedOldFormat} old-format, ${droppedStale} stale-tool)`,
-        );
-      } else {
-        trace(`permission-guard: loaded ${loaded} cached decisions`);
-      }
-    } catch (err) {
-      if (err && typeof err === "object" && "code" in err) {
-        const code = (err as { code: string }).code;
-        if (code === "ENOENT") {
-          // Missing file is normal on first run — silent
-          return;
-        }
-        if (code === "EACCES") {
-          const msg = `pi-ensemble permission-guard: cannot read decisions file (${err})`;
-          console.warn(msg);
-          return;
-        }
-      }
-      if (err instanceof SyntaxError) {
-        const msg = `pi-ensemble permission-guard: decisions file is not valid JSON (${err.message})`;
-        console.warn(msg);
-        return;
-      }
-      // Other errors: trace for debugging
-      trace(`pi-ensemble permission-guard: error loading decisions (${err})`);
-    }
+    loadPersistedDecisions(decisionsPath, decisions);
   });
 
   trace(`permission-guard: active for role=${role}`);
@@ -1237,36 +336,10 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
   // prompts that the parent's tool_call handler uses.
   brokerDepsFactory = () => ({
     cachedLookup(req: PermissionRequest): boolean | undefined {
-      // Match the lookup shape the parent tool_call handler uses (line ~966)
-      // so subagent-escalated decisions hit the same cache entries.
-      const isBash = req.toolName === "bash" && req.bashCommand !== undefined;
-      const bashCmd = isBash ? (req.bashCommand ?? "") : "";
-      const bashAlwaysScope = isBash ? getBashAlwaysScope(bashCmd) : null;
-      const exactKey =
-        isBash && bashAlwaysScope === null
-          ? buildExactBashDecisionKey(bashCmd)
-          : isBash
-            ? buildPatternKey(bashAlwaysScope as string)
-            : req.toolName;
-      const exact = decisions.get(exactKey);
-      if (exact) return exact.allowed;
-      // For bash, also check pattern matches (Allow always with a prefix).
-      if (isBash) {
-        for (const [patternKey, decision] of decisions) {
-          if (!isSafeBashPatternKey(patternKey)) continue;
-          const prefix = extractPatternPrefix(patternKey);
-          if (bashPatternMatches(bashCmd, prefix)) return decision.allowed;
-        }
-      }
-      return undefined;
+      return lookupCachedBrokerDecision(decisions, req);
     },
     persistDecision(req: PermissionRequest, allowed: boolean): void {
-      const isBash = req.toolName === "bash" && req.bashCommand !== undefined;
-      const bashCmd = isBash ? (req.bashCommand ?? "") : "";
-      const cacheKey = isBash ? getBashDecisionCacheKey(bashCmd, undefined) : req.toolName;
-      decisions.set(cacheKey, { allowed, timestamp: new Date().toISOString() });
-      evictOldest(decisions, MAX_CACHED_DECISIONS);
-      persistDecisions(decisions);
+      persistCachedBrokerDecision(decisions, req, allowed);
     },
     async promptUser(
       req: PermissionRequest,
@@ -1316,47 +389,17 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
 
       if (verdict === "allow") return; // allowed
 
-      const bashAlwaysScope = event.toolName === "bash" ? getBashAlwaysScope(command) : null;
-
-      // Check cached decisions — exact match first
-      const key =
-        event.toolName === "bash" && bashAlwaysScope === null
-          ? buildExactBashDecisionKey(command)
-          : decisionKey(event.toolName, event.input);
-      const cached = decisions.get(key);
-      if (cached !== undefined) {
-        if (cached.allowed) return; // cached allow
-        return {
-          block: true,
-          reason: `Tool '${event.toolName}' denied (cached decision)`,
-        };
-      }
-
-      // Then check pattern matches (for bash "always" decisions)
-      if (event.toolName === "bash") {
-        for (const [patternKey, decision] of decisions) {
-          if (!isSafeBashPatternKey(patternKey)) continue;
-          const prefix = extractPatternPrefix(patternKey);
-          if (bashPatternMatches(command, prefix)) {
-            if (decision.allowed) return; // cached pattern allow
-            return {
-              block: true,
-              reason: `Tool 'bash' denied (cached pattern: ${prefix} *)`,
-            };
-          }
-        }
-      }
-
-      // For non-bash, also check tool-name-level decisions
-      if (event.toolName !== "bash") {
-        const toolLevelCached = decisions.get(event.toolName);
-        if (toolLevelCached !== undefined) {
-          if (toolLevelCached.allowed) return;
-          return {
-            block: true,
-            reason: `Tool '${event.toolName}' denied (cached decision)`,
-          };
-        }
+      // Check cached decisions — exact match, then bash pattern ("always")
+      // matches, then non-bash tool-name-level cache.
+      const cachedResult = lookupCachedToolDecision(
+        decisions,
+        event.toolName,
+        command,
+        event.input,
+      );
+      if (cachedResult) {
+        if (cachedResult.allowed) return;
+        return { block: true, reason: cachedResult.reason };
       }
 
       // For deny verdict (not ask), block immediately. Note: this is the

@@ -35,373 +35,47 @@
  * extensions` suppresses our own load inside the child (so we can't
  * recursively spawn). Their prompt-layer doctrine is the only constraint;
  * MCP server credentials remain the real capability boundary.
+ *
+ * Split (#171) across several files to stay under the module-size guideline
+ * (AGENTS.md §12): type/interface definitions live in `pi-event-shapes.ts`,
+ * timeout/transcript-path/pi-invocation helpers live in `spawn-support.ts`,
+ * extension auto-forward helpers live in `spawn-extension-forward.ts`, event
+ * collapsing lives in `spawn-collapse-events.ts`, and this file keeps
+ * `spawnSpecialist` — the spawn + parsing contract itself.
  */
 
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { readFileSync, readdirSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
-import { adapterFor } from "./model-adapters.ts";
 import { resolveModel } from "./models.ts";
 import { type BrokerHandle, startBroker } from "./permission-broker.ts";
 import { isParentInTrustMode, makeBrokerDeps } from "./permission-guard.ts";
-import { type RunningState, emptyRunningState, ingestEvent } from "./progress.ts";
+import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
+import { emptyRunningState, ingestEvent } from "./progress.ts";
 import { excludeToolsFor } from "./role-tools.ts";
 import { ROLES, type RoleName, isRoleName } from "./roles.ts";
+import { collapseEvents } from "./spawn-collapse-events.ts";
+import {
+  applyUserExtension,
+  discoverInstalledExtensions,
+  piEnsembleExtensionPath,
+} from "./spawn-extension-forward.ts";
+import {
+  STDERR_TAIL_BYTES,
+  buildCwdHint,
+  getPiInvocation,
+  inactivityTimeoutMs,
+  makeRunId,
+  roleTimeoutMs,
+  transcriptPathFor,
+} from "./spawn-support.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
 
-interface SpawnOptions {
-  /**
-   * Hard cap on child wall-clock. Default 30 minutes (DEFAULT_SPAWN_TIMEOUT_MS).
-   * Critical: without a cap, a stalled model API call (Cerebras / Copilot /
-   * Anthropic — any provider) leaves the child hung forever and the parent's
-   * `await once(child, "exit")` never resolves.
-   *
-   * NOT a PM-callable knob. No agent-facing dispatch tool schema exposes
-   * `timeoutMs` — verified across dispatch_specialist, dispatch_parallel,
-   * dispatch_lens_review, adversarial_loop. This field exists for internal
-   * callers (currently unused in production) and for smoke tests that
-   * deliberately use short timeouts to exercise cancel/timeout paths
-   * (e.g. test-cancel.ts uses 2s to assert SIGTERM behaviour).
-   *
-   * Operator/CI override: `PI_ENSEMBLE_SPAWN_TIMEOUT_MS` env var. Not
-   * settable by the agent (PM cannot set env vars at runtime).
-   */
-  timeoutMs?: number;
-  /**
-   * Pi's tool-execute AbortSignal — fires when the user hits Esc to cancel
-   * the running tool. We listen on this and kill the child with SIGTERM so
-   * cancellation actually propagates instead of leaving Pi stuck.
-   */
-  signal?: AbortSignal;
-  /**
-   * Group children from the same dispatch_parallel call under a shared id so
-   * their session files sort together on disk.
-   */
-  runId?: string;
-  /** Sequence number within a parallel batch (helps disambiguate identical roles). */
-  seq?: number;
-  /**
-   * Extra Pi CLI flags to insert before the positional prompt. Used by
-   * specialised dispatchers (e.g. lens review pinning a specific --skill).
-   */
-  extraArgs?: string[];
-  /**
-   * Optional tag appended to the transcript filename (e.g. "security",
-   * "performance"). Distinguishes children sharing the same role within a
-   * single parallel batch.
-   */
-  tag?: string;
-  /**
-   * Live-progress callback. Fires every time the child emits a `message_end`
-   * event with `role: "assistant"` — i.e. once per turn completion. The
-   * snapshot is a defensive copy; safe to mutate downstream.
-   */
-  onProgress?: (snapshot: RunningState) => void;
-  /**
-   * Stdin-handle callback (#153). Fires once after the child process has
-   * been spawned and its stdio attached, BEFORE the initial prompt is
-   * written. Callers use this to register the stdin handle in a registry
-   * (e.g., async-jobs's `childHandles` map) so dispatch_steer can write
-   * `{ type: "steer", message }` RPC commands later.
-   *
-   * The handle's lifetime is the child's lifetime. spawnSpecialist closes
-   * stdin on agent_end (done-detection) or process exit; downstream code
-   * MUST handle EPIPE / closed-stream errors gracefully.
-   */
-  onStdin?: (stdin: import("node:stream").Writable) => void;
-}
-
-// Hard wall-clock cap on subagent runtime (issue #114). PR5 splits the old
-// single 30-min global into per-role defaults. #296 raised them: the PR5
-// values (15 min lens/adversarial, 10 min ops) sat BELOW the legitimate
-// runtime of thinking-heavy models — a single xhigh-thinking review turn
-// streams 10-17 min, so healthy children were SIGTERM'd mid-work (lantern
-// work-state 592/595/596: exit-143 kills at exactly the 15-min/3-min
-// budgets). The wall-clock cap is now a generous OUTER bound; the
-// inactivity watchdog below is the primary hang detector. Operators tune
-// via env; PM cannot influence (no tool schema exposes timeout — #114).
-//
-// Per-role overrides via PI_ENSEMBLE_SPAWN_TIMEOUT_MS_<ROLE_UPPER> (with
-// hyphens as underscores: PI_ENSEMBLE_SPAWN_TIMEOUT_MS_CODE_REVIEW_SPECIALIST).
-// The umbrella PI_ENSEMBLE_SPAWN_TIMEOUT_MS is preserved as a global
-// override (back-compat for callers who set it before PR5).
-const ROLE_TIMEOUT_DEFAULTS_MS: Record<RoleName, number> = {
-  // 90 min — empirical #553 evidence: developer was 43 min into substantive
-  // multi-defect work when the old 30-min cap SIGTERM'd it.
-  developer: 90 * 60_000,
-  // 45 min — lens child reviewing a diff; xhigh-thinking turns alone run
-  // 10-17 min, and a review is several turns.
-  "code-review-specialist": 45 * 60_000,
-  // 45 min — adversarial-developer's review/fix round inside the 3-round loop.
-  "adversarial-developer": 45 * 60_000,
-  // 30 min — read-heavy, bounded by vipune/codebase-memory query latency.
-  explore: 30 * 60_000,
-  // 30 min — mechanical (gh / git invocations) but includes CI watches and
-  // recovery/handoff dispatches that deserve generous budgets (#296).
-  ops: 30 * 60_000,
-  // 30 min — unchanged. Parent process spawn (rare) — keeps prior behaviour.
-  "project-manager": 30 * 60_000,
-};
-
-/**
- * Inactivity watchdog (#296): kill a child only when it has produced NO
- * stdout at all for this long — the empirical signature of a genuine hang
- * (provider stream stalled through every retry layer, or a wedged local
- * process). Healthy children emit an event at least every turn/tool
- * boundary; the longest healthy silent gap measured in production
- * transcripts is ~15 min (a long bash execution), so 25 min gives margin
- * while still detecting true hangs long before the wall-clock cap.
- * Override: PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS (0 disables).
- */
-function inactivityTimeoutMs(): number {
-  const env = Number(process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS);
-  if (Number.isFinite(env) && env >= 0) return env;
-  return 25 * 60_000;
-}
-
-/**
- * Resolve a per-role spawn timeout. Reads env per-call so tests can
- * override after module init. Precedence (highest to lowest):
- *   1. PI_ENSEMBLE_SPAWN_TIMEOUT_MS_<ROLE_UPPER> per-role env
- *   2. PI_ENSEMBLE_SPAWN_TIMEOUT_MS umbrella env (PR4-and-earlier semantics)
- *   3. ROLE_TIMEOUT_DEFAULTS_MS[role] per-role default
- *   4. 30 * 60_000 hard fallback (unknown role)
- */
-function roleTimeoutMs(role: string): number {
-  const envKey = `PI_ENSEMBLE_SPAWN_TIMEOUT_MS_${role.toUpperCase().replaceAll("-", "_")}`;
-  const envRole = Number(process.env[envKey]);
-  if (Number.isFinite(envRole) && envRole > 0) return envRole;
-  const envUmbrella = Number(process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS);
-  if (Number.isFinite(envUmbrella) && envUmbrella > 0) return envUmbrella;
-  if (isRoleName(role)) return ROLE_TIMEOUT_DEFAULTS_MS[role];
-  return 30 * 60_000;
-}
-
-// Back-compat export for callers that referenced the constant directly.
-// Now resolved per-call via roleTimeoutMs (PR5), so the static value is
-// always the unknown-role fallback. Most call sites should use
-// roleTimeoutMs(spec.role) instead.
-const DEFAULT_SPAWN_TIMEOUT_MS = 30 * 60_000;
-
-// Per-spawn stderr tail cap. The full byte budget is enough to retain the
-// last ~10-20 turns of telemetry from a chatty child — plenty for failure
-// debugging — without unbounded ConsString growth on long runs.
-const STDERR_TAIL_BYTES = 64 * 1024;
-
-/**
- * Build the runtime cwd hint prepended to the subagent's kickoff prompt.
- *
- * When PM dispatches with `cwd: <abs path>`, the subagent's shell already
- * lives there — but weak local models (Qwen3-class, 30-40B) skim past the
- * generic "do not cd" doctrine in the system prompt. A concrete absolute
- * path in the runtime prompt is a much harder cue to ignore. See PR #192
- * + arxiv 2505.18135 on the measured strength of runtime context engineering
- * vs. system-prompt-only steering for weak models.
- *
- * Exported for unit testing — the live spawn smoke is slow.
- */
-export function buildCwdHint(cwd: string | undefined): string {
-  if (!cwd) return "";
-  return `[runtime context: your shell starts in ${cwd}. Do NOT 'cd' to any worktree path — you are already there. If you genuinely need to operate on a different directory, use the tool's flag (\`git -C <path>\`, \`cargo --manifest-path <path>\`, \`npm --prefix <path>\`) — never \`cd && X\`, which prompts the user and caches as an exact-hash entry that never re-matches.]\n\n`;
-}
-
-/**
- * Where per-child transcripts live. One file per spawned specialist, grouped
- * by date so old runs are easy to prune. The user can `pi --session <path>`
- * to replay or just open the JSON.
- */
-function transcriptPathFor(role: string, runId: string, seq?: number, tag?: string): string {
-  const piAgentDir = process.env.PI_AGENT_DIR ?? path.join(os.homedir(), ".pi", "agent");
-  const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-  const parts = [role];
-  if (tag) parts.push(tag);
-  if (seq != null) parts.push(String(seq));
-  return path.join(piAgentDir, "ensemble-runs", date, `${runId}-${parts.join("-")}.json`);
-}
-
-export function makeRunId(): string {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-export function applyUserExtension(childArgs: string[], role: string): void {
-  const userExt = process.env.PI_ENSEMBLE_USER_EXTENSION;
-  if (!userExt) return;
-  const isNpmRef = userExt.startsWith("npm:");
-  const isAbsPath = userExt.startsWith("/") || userExt.startsWith("~");
-  if (!isNpmRef && !isAbsPath) {
-    const msg = `pi-ensemble: PI_ENSEMBLE_USER_EXTENSION='${userExt}' rejected (must start with 'npm:' or be an absolute path) — MCP extension will NOT be loaded`;
-    console.warn(msg);
-    trace(`spawn[${role}]: ${msg}`);
-  } else {
-    childArgs.push("--extension", userExt);
-    trace(`spawn[${role}]: --extension ${userExt}`);
-  }
-}
-
-// pi-ensemble's own package name. Used by discoverInstalledExtensions to skip
-// forwarding ourselves into subagents — otherwise a subagent could call
-// dispatch_specialist and recursively spawn another subagent.
-const PI_ENSEMBLE_PACKAGE_NAME = "@randomm/pi-ensemble";
-
-/**
- * Resolve the absolute path to pi-ensemble's extension directory for the
- * subagent permission-guard forward. Walks up from this module file
- * (`extension/src/spawn.ts`) to the `extension/` dir, then realpathSyncs
- * to follow the install symlink (`~/.pi/agent/extensions/pi-ensemble` is
- * a symlink to the repo's `extension/` directory). Returns undefined if
- * the path can't be resolved — caller falls through to "subagent has no
- * forwarded guard" cleanly.
- */
-function piEnsembleExtensionPath(): string | undefined {
-  try {
-    const here = new URL(import.meta.url).pathname; // .../extension/src/spawn.ts
-    const extensionDir = path.resolve(path.dirname(here), "..");
-    return realpathSync(extensionDir);
-  } catch (err) {
-    trace(`spawn: piEnsembleExtensionPath resolution failed: ${(err as Error).message}`);
-    return undefined;
-  }
-}
-
-interface ExtensionPackageJson {
-  name?: string;
-  pi?: {
-    extensions?: string[];
-  };
-}
-
-/**
- * Scan `~/.pi/agent/extensions/` (or `$PI_AGENT_DIR/extensions`) for installed
- * Pi extensions and return absolute paths suitable for `--extension <path>`.
- *
- * Subagents launch with `--no-extensions`, which suppresses every installed
- * extension. That breaks anything that depends on extension-injected provider
- * config — most importantly `pi-claude-auth`, which adds the Claude Code
- * identity headers Anthropic now enforces server-side. Auto-forwarding lets
- * subagents inherit the same provider/auth setup the main agent has.
- *
- * Rules:
- *  - Skip if `PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD=1` (global opt-out).
- *  - Skip entries without a readable `package.json`.
- *  - Skip entries whose `package.json` has no `pi.extensions` manifest (not
- *    a Pi extension — e.g. stray directories, half-installed packages).
- *  - Skip pi-ensemble itself by package name (prevents recursive spawn).
- *  - Resolve through `realpathSync` because `~/.pi/agent/extensions/<name>`
- *    is typically a symlink to the source checkout.
- */
-export function discoverInstalledExtensions(role: string): string[] {
-  if (process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD === "1") {
-    trace(
-      `spawn[${role}]: extension auto-forward disabled via PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD`,
-    );
-    return [];
-  }
-
-  const piAgentDir = process.env.PI_AGENT_DIR ?? path.join(os.homedir(), ".pi", "agent");
-  const extensionsDir = path.join(piAgentDir, "extensions");
-
-  let entries: string[];
-  try {
-    entries = readdirSync(extensionsDir);
-  } catch {
-    return [];
-  }
-
-  const forwarded: string[] = [];
-  for (const entry of entries) {
-    const entryPath = path.join(extensionsDir, entry);
-    const pkgPath = path.join(entryPath, "package.json");
-
-    let pkg: ExtensionPackageJson;
-    try {
-      pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as ExtensionPackageJson;
-    } catch {
-      continue;
-    }
-
-    if (!pkg.pi?.extensions || pkg.pi.extensions.length === 0) continue;
-    if (pkg.name === PI_ENSEMBLE_PACKAGE_NAME) continue;
-
-    let resolved: string;
-    try {
-      resolved = realpathSync(entryPath);
-    } catch {
-      resolved = entryPath;
-    }
-    forwarded.push(resolved);
-    trace(`spawn[${role}]: auto-forward --extension ${resolved} (${pkg.name ?? entry})`);
-  }
-  return forwarded;
-}
-
-// Pi event shape (Pi 0.75.3) — emitted by `--mode rpc` to stdout as JSONL.
-// The canonical assembled answer is at agent_end.messages[]; usage stats
-// come from message_end.message.usage on assistant messages.
-interface PiContentBlock {
-  type: "text" | "thinking" | "toolCall" | string;
-  text?: string;
-  thinking?: string;
-  id?: string;
-  name?: string;
-  arguments?: unknown;
-}
-interface PiUsage {
-  input?: number;
-  output?: number;
-  cacheRead?: number;
-  cacheWrite?: number;
-  cost?: { total?: number };
-}
-interface PiMessage {
-  role: "user" | "assistant";
-  content?: PiContentBlock[];
-  toolResults?: unknown[];
-  usage?: PiUsage;
-  model?: string;
-  provider?: string;
-  api?: string;
-  stopReason?: string;
-  /**
-   * Set by pi-ai providers when a request fails (timeout, transport, etc) —
-   * see openai-completions.js:324-325, anthropic.js:522-523. Pi emits the
-   * failed turn as a synthetic assistant message with `stopReason: "error"`,
-   * empty content, and this field populated.
-   */
-  errorMessage?: string;
-}
-interface PiJsonEvent {
-  type?: string;
-  messages?: PiMessage[];
-  message?: PiMessage;
-}
-
-/**
- * Resolve the pi binary. When this code runs inside a pi process (the
- * extension is loaded), argv[1] is Pi's CLI entry script and we re-invoke the
- * SAME pi build (avoids PATH ambiguity, matches Pi's own subagent example).
- *
- * When this code runs outside Pi (smoke tests under `bun run`), argv[1] is the
- * test file and we'd recursively spawn ourselves — guard against that by only
- * trusting argv[1] when it looks like a Pi CLI entrypoint.
- */
-function getPiInvocation(args: string[]): { command: string; args: string[] } {
-  const currentScript = process.argv[1];
-  const looksLikePiCli =
-    currentScript &&
-    !currentScript.startsWith("/$bunfs/") &&
-    /pi-coding-agent.*\/(dist\/)?cli\.(js|cjs|mjs)$/i.test(currentScript);
-  if (looksLikePiCli) {
-    return { command: process.execPath, args: [currentScript, ...args] };
-  }
-  // Fall back to `pi` on PATH — works for smoke tests and any other context
-  // where argv[1] isn't a Pi CLI script.
-  return { command: "pi", args };
-}
+export { buildCwdHint, makeRunId };
 
 export async function spawnSpecialist(
   spec: DispatchSpec,
@@ -783,89 +457,4 @@ export async function spawnSpecialist(
   if (result.model && !runningState.model) runningState.model = result.model;
   opts.onProgress?.({ ...runningState, usage: { ...runningState.usage } });
   return result;
-}
-
-function collapseEvents(
-  lastAgentEnd: PiJsonEvent | null,
-  lastAssistantMessageEnd: PiJsonEvent | null,
-  role: string,
-  ms: number,
-  exitCode: number | null,
-  stderr: string,
-): DispatchResult {
-  // Prefer agent_end's assembled messages; fall back to last assistant
-  // message_end if agent_end is missing. The two slots are filled by the
-  // stdoutRl line handler — see spawn() — so we never need to walk a full
-  // event history here.
-  let messages: PiMessage[] = lastAgentEnd?.messages ?? [];
-  if (messages.length === 0 && lastAssistantMessageEnd?.message) {
-    messages = [lastAssistantMessageEnd.message];
-  }
-
-  const textParts: string[] = [];
-  const toolUses: PiContentBlock[] = [];
-  let turns = 0;
-  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
-  let model: string | undefined;
-  let provider: string | undefined;
-  let api: string | undefined;
-
-  for (const msg of messages) {
-    if (msg.role !== "assistant") continue;
-    turns++;
-    if (msg.model && !model) model = msg.model;
-    if (msg.provider && !provider) provider = msg.provider;
-    if (msg.api && !api) api = msg.api;
-    if (msg.usage) {
-      usage.input += msg.usage.input ?? 0;
-      usage.output += msg.usage.output ?? 0;
-      usage.cacheRead += msg.usage.cacheRead ?? 0;
-      usage.cacheWrite += msg.usage.cacheWrite ?? 0;
-      usage.cost += msg.usage.cost?.total ?? 0;
-    }
-    // Per-message model adapter: handles quirks specific to the LLM family
-    // that emitted this message (e.g. GLM's "None" placeholder text blocks).
-    // Default adapter is no-op, so unknown models pass through unchanged.
-    const adapter = adapterFor(msg.model, msg.provider);
-    for (const block of msg.content ?? []) {
-      if (block.type === "text" && typeof block.text === "string") {
-        if (adapter.isArtifactText?.(block.text)) continue;
-        textParts.push(block.text);
-      } else if (block.type === "toolCall") {
-        toolUses.push(block);
-      }
-    }
-  }
-
-  // Join with double-newline so distinct text blocks across turns (separated
-  // by tool calls in between) stay visually delimited instead of concatenated.
-  const text = textParts.filter((t) => t.trim()).join("\n\n");
-
-  // Detect synthetic error-stop: pi-ai providers turn HTTP timeouts and
-  // transport failures into an assistant message with `stopReason: "error"`
-  // and empty content. The child process still exits 0 (the failure is
-  // *inside* the conversation, not at the process level), so without this
-  // signal the dispatch report mistakes the last successful thinking block
-  // for the final reply. See PR #236 + transcripts under
-  // ~/.pi/agent/ensemble-runs/2026-06-19/run-id-*.json for the
-  // failure shape that motivated the detection.
-  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
-  const errorStop =
-    lastAssistant?.stopReason === "error"
-      ? { reason: "error", message: lastAssistant.errorMessage }
-      : undefined;
-
-  return {
-    role,
-    ok: exitCode === 0 && !errorStop,
-    text: text || stderr || "(no output)",
-    toolUses,
-    ms,
-    exitCode,
-    usage: { ...usage, turns },
-    model,
-    provider,
-    api,
-    errorStop,
-  };
 }

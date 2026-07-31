@@ -43,7 +43,8 @@ import { GLOBAL_KEY, getAllOverrides } from "./model-config.ts";
 import { modelConfigSnapshot } from "./models.ts";
 import { transcriptsSummary } from "./runs.ts";
 import { trace } from "./trace.ts";
-import { groupIssues, runWorkDriver } from "./work-driver.ts";
+import { groupIssues } from "./work-driver-grouping.ts";
+import { runWorkDriver } from "./work-driver.ts";
 import { registerWorkStatusCommand } from "./work-status.ts";
 import { readState } from "./workflow-state.ts";
 

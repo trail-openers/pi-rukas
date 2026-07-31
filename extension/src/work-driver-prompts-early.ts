@@ -1,0 +1,281 @@
+/**
+ * /work driver — inline prompt builders for the early pipeline steps.
+ *
+ * Pure string-template builders (no `DriverContext`, no state-machine
+ * logic) for Steps 1-4: explore, plan, branch, develop, and the Step 4
+ * speculative-explore side-dispatch. Split out of work-driver.ts per
+ * AGENTS.md §12 module-size hygiene (issue #171) — these are called
+ * directly by the corresponding `run<Step>` handlers in work-driver.ts.
+ */
+import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
+
+/**
+ * Step 1 explore prompt. PR3 Pattern 1 fetched the body in PARALLEL
+ * with the explore dispatch — but the prompt never inlined the body
+ * content or pointed at the cached artifact path, so the agent's
+ * verdict committed BEFORE the fetch settled and the agent never had
+ * the body to read. Empirical false-NEEDS_CLARIFICATION cap-hits on
+ * v0.12.12's `/work 563 565` (and prior #561) had verdict reasons
+ * literally "Issue body not provided - awaiting driver to deliver
+ * issue content".
+ *
+ * PR13 fixes the race: driver fetches bodies as a BARRIER before this
+ * prompt is built, and the bodies are EMBEDDED inline below. The
+ * agent reads them directly — no race, no agency-dependence, no
+ * "trust the driver to deliver" footgun.
+ */
+export function inlineExplorePrompt(
+  issues: number[],
+  scratchDirAbs: string,
+  bodies: Array<{ issue: number; body: string; truncated: boolean }> = [],
+): string {
+  const headline = issues.length === 1 ? `issue #${issues[0]}` : `issues #${issues.join(", #")}`;
+  const verdictBlock =
+    issues.length === 1
+      ? [
+          "  - a verdict (heading: `## Verdict`), one line, EXACTLY one of:",
+          "      `VERDICT: NEEDS_WORK`           — issue is open and has real work to do",
+          "      `VERDICT: ALREADY_COMPLETE`     — issue is closed, merged, or already satisfied by a prior PR",
+          "      `VERDICT: NEEDS_CLARIFICATION`  — issue is ambiguous, contradictory, or missing acceptance criteria",
+        ]
+      : [
+          "  - a per-issue verdict block (heading: `## Verdict`), ONE line per issue with EXACTLY one verdict and an optional reason after `—`:",
+          "      ```",
+          "      ## Verdict",
+          ...issues.map(
+            (n) =>
+              `      - #${n}: NEEDS_WORK | ALREADY_COMPLETE | NEEDS_CLARIFICATION  — <optional one-line reason>`,
+          ),
+          "      ```",
+          "    The driver parses each line and routes per-issue. NEEDS_WORK issues proceed into plan/branch/develop; ALREADY_COMPLETE / NEEDS_CLARIFICATION are dropped (surfaced in the PR body + handoff). If EVERY issue is dropped, the cycle halts at handoff before any code is written.",
+        ];
+  const verdictDoctrine =
+    issues.length === 1
+      ? "The `## Verdict` block is LOAD-BEARING. If you conclude the issue is already done (e.g., a prior PR addressed it), say `VERDICT: ALREADY_COMPLETE` even if the issue is still technically open in the tracker — the driver routes on your verdict, not on the issue's status. On ALREADY_COMPLETE or NEEDS_CLARIFICATION the driver halts immediately and hands off to the operator; no plan/branch/develop will run."
+      : "The `## Verdict` block is LOAD-BEARING per issue. Mark each issue with the verdict you'd give if it were the only one in scope; the driver merges the active subset and runs ONE bundled PR with `Fixes #N` for each active issue.";
+  // PR13 — embed each issue body inline. This is the agent's source of
+  // truth for what each issue needs; reading these BEFORE answering the
+  // verdict prevents the false NEEDS_CLARIFICATION cap-hit pattern.
+  const bodyBlock =
+    bodies.length > 0
+      ? [
+          "",
+          "---",
+          "## Issue bodies (read these to determine your verdict)",
+          "",
+          ...bodies.flatMap(({ issue, body, truncated }) => [
+            `### Issue #${issue}${truncated ? " (truncated — full body cached on disk; see scratch dir if needed)" : ""}`,
+            "",
+            "```",
+            body,
+            "```",
+            "",
+          ]),
+        ].join("\n")
+      : "";
+
+  return [
+    `/work ${headline} — Step 1 (Reconnaissance). The driver has fetched and embedded each issue body below — read those to determine the verdict; you do NOT need to re-fetch via \`gh issue view\`.`,
+    "",
+    `Gather context relevant to executing ${issues.length === 1 ? "this issue" : "these issues together"}:`,
+    "  1. `vipune list --json | jq -r '.[] | .memory_type' | sort -u` to discover project memory types,",
+    "  2. `vipune search '<keywords-from-issue-title-or-body>' --hybrid --recency 0.3 --limit 8` for prior decisions,",
+    "  3. `codebase_memory_search_code({query: '<concept>'})` for existing relevant code.",
+    "",
+    "Return a STRUCTURED summary the work-driver can route on:",
+    ...verdictBlock,
+    "  - parallel-workstream candidates (heading: `## Workstreams`),",
+    "  - relevant prior decisions (heading: `## Prior decisions`),",
+    "  - touchpoint files (heading: `## Touchpoints`).",
+    "",
+    verdictDoctrine,
+    bodyBlock,
+    scratchHygieneSection(scratchDirAbs),
+  ].join("\n");
+}
+
+/**
+ * Step 2 (plan) prompt. PR3: explicitly asks for `## Workstreams` —
+ * matches the parser in `parseWorkstreams`. Single-workstream issues
+ * return one `### default` entry (or zero, which the driver synthesises).
+ * Cribbed from `pi-prompts/plan.md` Phase 2's type-conditional
+ * decomposition philosophy.
+ */
+export function inlinePlanPrompt(issues: number[], scratchDirAbs: string): string {
+  const headline = issues.length === 1 ? `issue #${issues[0]}` : `issues #${issues.join(", #")}`;
+  return [
+    `/work ${headline} — Step 2 (Decomposition).`,
+    "",
+    `The driver has already cached ${issues.length === 1 ? "the issue body" : "each issue body"} and Step 1's explore report. Read ${issues.length === 1 ? "both" : "all of them"}, then decide:`,
+    "",
+    "  1. Does this issue decompose into 2+ INDEPENDENT workstreams that could run in parallel worktrees?",
+    "  2. Workstreams are independent when they touch DISJOINT files / subsystems / concerns. A frontend fix + a docs update = independent. Two changes to the same module = NOT independent.",
+    "  3. Bias toward SINGLE-WORKSTREAM when in doubt. Parallelism is for genuinely separable work; over-decomposition compounds review cost.",
+    "",
+    "Return your reasoning, then a fenced workstreams block. Format MUST match exactly:",
+    "",
+    "```markdown",
+    "## Workstreams",
+    "",
+    "### default — <one-line scope label>",
+    "- paths: <comma-separated touchpoint files>",
+    "- out-of-scope: <comma-separated explicit exclusions — what NOT to touch>",
+    "```",
+    "",
+    "For N>1 workstreams, repeat the `###` subheading per workstream (use short ids like `task-a`, `task-b`). The `out-of-scope` line is LOAD-BEARING — issue #553 polluted PR #556 with off-scope files because nothing told the developer what was OUT. Fence the scope explicitly even when you think it's obvious.",
+    "",
+    "If single-workstream, ALWAYS use `### default` so the driver routes through the same code path uniformly.",
+    scratchHygieneSection(scratchDirAbs),
+  ].join("\n");
+}
+
+export function inlineBranchPrompt(
+  issues: number[],
+  workstreamIds: string[],
+  scratchDirAbs: string,
+): string {
+  const multi = workstreamIds.length > 1;
+  const multiIssue = issues.length > 1;
+  const primary = issues[0] ?? 0;
+  const headline = multiIssue ? `issues #${issues.join(", #")}` : `issue #${primary}`;
+  const branchHint = multiIssue
+    ? `feature/issues-${issues.join("-")}-<brief-description>`
+    : `feature/issue-${primary}-<brief-description>`;
+  const worktreePrefix = multiIssue
+    ? `.worktrees/issues-${issues.join("-")}`
+    : `.worktrees/issue-${primary}`;
+  const lines = [
+    `/work ${headline} — Step 3 (Setup). Create the feature branch under the safety preconditions below.`,
+    "",
+    "  1. Identify the mainline branch (default `main`; detect via `git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@'`).",
+    "  2. Verify clean working tree (`git status --porcelain` must be empty). If dirty, ABORT and surface the failure verbatim — do NOT branch off uncommitted work.",
+    "  3. Fetch + fast-forward mainline (`git fetch origin && git checkout <mainline> && git pull --ff-only origin <mainline>`). If --ff-only fails, ABORT.",
+    `  4. Create branch \`${branchHint}\` from the fresh mainline tip.`,
+    "  5. End your reply with a single line `branch: <branch-name>` so the driver can capture it.",
+  ];
+  if (multi) {
+    lines.push(
+      "",
+      `  6. **Multi-workstream cycle** — Step 2 decomposed the active issue${multiIssue ? "s" : ""} into ${workstreamIds.length} workstreams (${workstreamIds.join(", ")}). Create one git worktree per workstream off the feature branch:`,
+      "",
+      ...workstreamIds.map(
+        (id) =>
+          `       git worktree add ${worktreePrefix}-${id} ${branchHint.replace("<brief-description>", "<brief>")}`,
+      ),
+      "",
+      "  7. End your reply with an additional fenced `## Worktrees` block mapping each workstream id to its absolute path:",
+      "",
+      "       ```markdown",
+      "       ## Worktrees",
+      "",
+      ...workstreamIds.map((id) => `       - ${id}: <absolute-path-to-worktree>`),
+      "       ```",
+      "",
+      "       Use `git rev-parse --show-toplevel` from inside each worktree to get the absolute path. The driver parses this block to wire up Step 4's per-workstream developer dispatches.",
+    );
+  } else {
+    lines.push(
+      "",
+      "Single-workstream cycle — do NOT create worktrees. The driver records the repo root as the `default` workstream's path automatically.",
+    );
+  }
+  lines.push(scratchHygieneSection(scratchDirAbs));
+  return lines.join("\n");
+}
+
+export function inlineDevelopPrompt(
+  issues: number[],
+  scratchDirAbs: string,
+  workstream?: { id: string; scope: string; paths: string[]; outOfScope: string[] },
+  workstreamId?: string,
+  speculativeContextPath?: string,
+): string {
+  // PR11 — multi-issue cycles must show the developer the ACTIVE issues
+  // (NEEDS_WORK subset after explore), not the primary cycle issue. The
+  // pre-PR11 hardcoded `ctx.issue` told developers to fetch + work on
+  // `issues[0]` even when activeIssues = [different]; on the v10r
+  // incident this is how PR #483 ended up implementing #479's --config
+  // work while labelled `fix(#476)`.
+  const headline = issues.length === 1 ? `issue #${issues[0]}` : `issue(s) #${issues.join(", #")}`;
+  const lines = [`/work ${headline} — Step 4 (Implementation).`, ""];
+  if (workstream && workstreamId && workstreamId !== "default") {
+    // Multi-workstream branch — anchor scope explicitly so this developer
+    // doesn't drift into another workstream's territory. The out-of-scope
+    // fence addresses the issue #553 scope-contamination pattern.
+    lines.push(
+      `**Workstream: \`${workstream.id}\`** — one of multiple developers running in parallel for this ${issues.length === 1 ? "issue" : "set of issues"}.`,
+      `Scope: ${workstream.scope}`,
+      workstream.paths.length > 0
+        ? `In-scope files: ${workstream.paths.join(", ")}`
+        : "In-scope files: derive from the scope description above.",
+      workstream.outOfScope.length > 0
+        ? `**OUT OF SCOPE — do NOT touch**: ${workstream.outOfScope.join(", ")}`
+        : "Stay tightly focused on the scope; other workstreams handle the rest.",
+      "",
+    );
+  }
+  const fetchInstr =
+    issues.length === 1
+      ? `\`gh issue view ${issues[0]}\` to re-fetch the issue body (acceptance criteria, DoD).`
+      : `Re-fetch each active issue body — run \`gh issue view <N>\` for each of: ${issues.map((n) => `#${n}`).join(", ")}.`;
+  lines.push(
+    `  1. ${fetchInstr}`,
+    "  2. Implement the change end-to-end in the current branch. Run local quality gates (typecheck, lint, tests as the project defines them).",
+    "  3. Do NOT commit. Do NOT push. Leave the changes uncommitted in the working directory — ops commits in Step 6 after the adversarial gate.",
+    "  4. End your reply with a `## Touched files` section listing every file you changed and a one-line `## Summary`.",
+    "",
+    "Discourage drive-by edits; only touch files in scope.",
+  );
+  if (speculativeContextPath) {
+    lines.push(
+      "",
+      "## Speculative context — read when you reach a decision point",
+      "",
+      "An explore subagent ran in parallel with this dispatch to surface context Step 1 may have missed (test patterns at the touchpoints, related API surface, similar prior fixes). When it lands it writes to:",
+      "",
+      `  ${speculativeContextPath}`,
+      "",
+      "Consult this file when you hit a decision point you're unsure about (test framework conventions, API shape, prior-art patterns). It's CONTEXT, not instructions — your scope is unchanged. Absent or empty file = the parallel explore had nothing new to surface; proceed without it.",
+    );
+  }
+  lines.push(scratchHygieneSection(scratchDirAbs));
+  return lines.join("\n");
+}
+
+/**
+ * Step 4 speculative explore prompt (PR4 Pattern 3 restoration). Runs in
+ * Promise.all alongside the developer; writes its findings to a scratch
+ * file the developer's prompt names. Returns a brief one-liner so the
+ * dispatch event has a useful summary; the heavy content goes to the
+ * scratch file so the dispatch report stays small.
+ */
+export function inlineSpeculativeExplorePrompt(
+  issues: number[],
+  workstream: { id: string; scope: string; paths: string[]; outOfScope: string[] } | undefined,
+  contextPath: string,
+  scratchDirAbs: string,
+): string {
+  const headline = issues.length === 1 ? `issue #${issues[0]}` : `issue(s) #${issues.join(", #")}`;
+  const scopeBlurb = workstream
+    ? `Workstream \`${workstream.id}\` scope: ${workstream.scope}. In-scope files: ${workstream.paths.join(", ") || "(derive from scope)"}.`
+    : `${headline}.`;
+  return [
+    `/work ${headline} — Step 4 speculative context.`,
+    "",
+    "You are running IN PARALLEL with a developer working on the change. Your job is to surface context the developer may benefit from:",
+    "  - test patterns at the touchpoints (how does the project structure its tests for this area?)",
+    "  - related API surface (what functions/types nearby will the change interact with?)",
+    "  - similar prior fixes (vipune / git log for the same module — what did past changes look like?)",
+    "  - non-obvious constraints (rate limits, perf budgets, doctrine notes)",
+    "",
+    scopeBlurb,
+    "",
+    `Write your findings to: \`${contextPath}\` (overwrite if it exists).`,
+    "Keep it under 200 lines — terse, actionable, with file:line references. NOT a tutorial; the developer is competent.",
+    "",
+    "End your reply with a one-line summary (e.g., `wrote 14 KB of context covering test fixtures + auth flow`). Do NOT include the full content in your reply — it goes to the file.",
+    "",
+    "Speculative: if there's genuinely nothing useful to surface (the developer already has full context from Step 1), write a one-line `(no additional context worth surfacing)` to the file and return.",
+    scratchHygieneSection(scratchDirAbs),
+  ].join("\n");
+}
