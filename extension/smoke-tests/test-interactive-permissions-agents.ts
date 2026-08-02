@@ -158,8 +158,12 @@ assert(
 // path and would have caught the regression.
 const resolvedAgentsPath = resolveAgentsJsonPath();
 assert(
-  resolvedAgentsPath.endsWith("/pi-ensemble/agents.json"),
-  `resolveAgentsJsonPath() points at repo's agents.json (got: ${resolvedAgentsPath})`,
+  path.basename(resolvedAgentsPath) === "agents.json",
+  `resolveAgentsJsonPath() resolves to agents.json at checkout root (got: ${resolvedAgentsPath})`,
+);
+assert(
+  existsSync(resolvedAgentsPath),
+  `resolved agents.json actually exists on disk (got: ${resolvedAgentsPath})`,
 );
 const liveAgents = loadAgentsJson();
 const liveRoleNames = Object.keys(liveAgents);

@@ -11,6 +11,10 @@ This document is auto-loaded by Pi when any agent works inside this repo. It est
 CI is for VERIFICATION, not DISCOVERY. All gates pass locally before `git push`. Never push to "see if CI catches anything."
 
 ```bash
+# 1. Build prompts (repo root) — generates dist/prompts/standard/*.md
+bun run build
+
+# 2. Type-check, lint, and smoke-test (extension/)
 cd extension && bunx tsc --noEmit && bun run check && \
   for t in smoke-tests/test-*.ts; do \
     case "$t" in *-live.ts) continue;; esac; \
