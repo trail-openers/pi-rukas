@@ -1,33 +1,18 @@
 version: 2
 
-# Dependabot raises PRs when new versions land. Our `bunfig.toml` /  `.npmrc`
-# enforce a 4-day release-age embargo on every install, so any Dependabot PR
-# naturally has a built-in soak window before its install succeeds. By the
-# time the embargo lifts, a compromised release is typically detected and
-# yanked from the registry, and the PR can be safely merged.
+# This file configures Dependabot for github-actions updates only.
+#
+# npm/bun updates are deliberately absent: Dependabot does not regenerate
+# `extension/bun.lock`, so every npm PR it opens fails CI on
+# `bun install --frozen-lockfile` (see #329).
+# `extension/` dependencies are bumped manually, regenerating the lockfile
+# in the same commit.
+#
+# The 4-day release-age embargo in `extension/bunfig.toml` and
+# `extension/.npmrc` still applies to every install — enforced at install
+# time, regardless of how the bump arrives.
 
 updates:
-  - package-ecosystem: "npm"
-    directory: "/extension"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
-    labels:
-      - "deps"
-      - "npm"
-    groups:
-      # Group dev / type-only deps so we get one weekly PR instead of N
-      dev-dependencies:
-        dependency-type: "development"
-        patterns:
-          - "@types/*"
-          - "@biomejs/*"
-          - "typescript"
-          - "vitest"
-    commit-message:
-      prefix: "chore(deps)"
-      include: "scope"
-
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
