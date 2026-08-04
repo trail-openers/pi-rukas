@@ -72,7 +72,7 @@ Most prerequisites below install from npm or other public registries. Recent sup
 
 ```bash
 # npm — applies to all `npm install -g …` from now on
-npm config set min-release-age 4d                                 # requires npm ≥ 11.10.0
+npm config set min-release-age 4                                  # requires npm ≥ 11.10.0
 
 # bun — applies to project-local `bun add` (global ~/.bunfig.toml is currently
 # silently ignored by `bun add`, see oven-sh/bun#30748; project-local works)
