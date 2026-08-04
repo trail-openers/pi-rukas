@@ -10,6 +10,9 @@
 
 import { runLensReview } from "../src/lens-review.ts";
 
+// Opt-in to live spawn — this test deliberately fires real Pi children.
+process.env.PI_ENSEMBLE_ALLOW_LIVE_SPAWN = "1";
+
 const diff = `diff --git a/src/auth.ts b/src/auth.ts
 @@ -10,7 +10,15 @@ export async function login(username: string, password: string) {
 +  // INSECURE: building SQL by string concatenation

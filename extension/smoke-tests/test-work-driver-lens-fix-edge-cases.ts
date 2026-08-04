@@ -14,6 +14,7 @@ import path from "node:path";
 import { type DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, writeState } from "../src/workflow-state.ts";
+import { mkLensSummary, setupSpawnGuard } from "./test-helpers.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -73,6 +74,8 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 // PR17 — the outcome-verification gate is disabled globally here; dedicated
 // gate tests re-enable it with an injected verifyExecFn.
 process.env.PI_ENSEMBLE_VERIFY = "0";
+
+setupSpawnGuard();
 
 // 47. Issue #305 — lens-fix making NO change does NOT produce an empty commit.
 {
@@ -176,6 +179,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           loopOutcome: "approved",
           text: "Adversarial APPROVED.",
         });
+      },
+      lensReviewFn: async () => {
+        return mkLensSummary({ verdict: "APPROVED" });
       },
     };
 
@@ -307,6 +313,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           loopOutcome: "approved",
           text: "Adversarial APPROVED.",
         });
+      },
+      lensReviewFn: async () => {
+        return mkLensSummary({ verdict: "APPROVED" });
       },
     };
 

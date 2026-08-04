@@ -94,9 +94,10 @@ export async function runLens(
     ctx.repoRoot;
   const startedAt = Date.now();
   const jobId = makeRunId();
-  let summary: import("./lens-review.ts").LensReviewSummary;
+  const reviewFn = ctx.lensReviewFn ?? runLensReview;
+  let summary: Awaited<ReturnType<typeof reviewFn>>;
   try {
-    summary = await runLensReview({
+    summary = await reviewFn({
       diff,
       context: `/work issue #${ctx.issue}, lens-review round ${round}`,
       cwd,

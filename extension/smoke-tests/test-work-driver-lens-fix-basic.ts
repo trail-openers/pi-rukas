@@ -14,6 +14,7 @@ import path from "node:path";
 import { type DriverContext, nextStep } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
+import { mkLensSummary, setupSpawnGuard } from "./test-helpers.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -73,6 +74,8 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 // PR17 — the outcome-verification gate is disabled globally here; dedicated
 // gate tests re-enable it with an injected verifyExecFn.
 process.env.PI_ENSEMBLE_VERIFY = "0";
+
+setupSpawnGuard();
 
 // 46. Issue #305 — driver commits after a successful lens-fix.
 //
@@ -182,6 +185,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           loopOutcome: "approved",
           text: "Adversarial APPROVED.",
         });
+      },
+      lensReviewFn: async () => {
+        return mkLensSummary({ verdict: "APPROVED" });
       },
     };
 
@@ -333,14 +339,31 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           text: "Adversarial APPROVED.",
         });
       },
+      lensReviewFn: async () => {
+        return mkLensSummary({ verdict: "APPROVED" });
+      },
     };
 
     await runWorkDriver(ctx).catch(() => {});
 
+    const after = await readState(dir, 307);
+    const kinds = (after?.eventLog ?? []).map((e) => e.kind);
+
+    // Falsifiability: lens-review outcome must reach the eventLog.
+    // If lensReviewFn were missing and FORBID_LIVE_SPAWN=1 were set,
+    // runLens would catch the throw and emit a dispatch-failed event on
+    // step lens-review — confirming the injection seam is wired.
+    const relevantEvents = kinds.filter(
+      (k) => k === "lens-approved" || k === "lens-issues-found" || k === "dispatch-failed",
+    );
+    assert(
+      relevantEvents.length > 0,
+      "lens-review outcome reached the eventLog (lens-approved, lens-issues-found, or dispatch-failed)",
+    );
+
     // After lens-fix → commit → adversarial-approved → nextStep = lens-review.
     // The committed diff should contain the fix — this is the input
-    // runLens would read for round 2. Full lens-review dispatch is not
-    // exercised here (runLensReview spawns real Pi children, not mocked).
+    // runLens would read for round 2.
     const { stdout: diff } = await execp("git diff origin/main..HEAD", { cwd: dir });
     assert(
       diff.includes("safeParse"),

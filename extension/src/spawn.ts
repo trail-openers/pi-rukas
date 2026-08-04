@@ -82,6 +82,26 @@ export async function spawnSpecialist(
   opts: SpawnOptions = {},
 ): Promise<DispatchResult> {
   if (!isRoleName(spec.role)) throw new Error(`Unknown role: ${spec.role}`);
+
+  // FORBID_LIVE_SPAWN — test-only guard that prevents accidental live
+  // spawns in offline smoke tests. When set, throws immediately with
+  // an informative message naming the role. Bypassed by
+  // PI_ENSEMBLE_ALLOW_LIVE_SPAWN=1 (set by *-live.ts tests).
+  // Production code never sets this flag.
+  const INJECTION_NAMES: Record<string, string> = {
+    "code-review-specialist": "lensReviewFn",
+    "adversarial-developer": "adversarialLoopFn",
+  };
+  if (
+    process.env.PI_ENSEMBLE_FORBID_LIVE_SPAWN === "1" &&
+    process.env.PI_ENSEMBLE_ALLOW_LIVE_SPAWN !== "1"
+  ) {
+    const injectionName = INJECTION_NAMES[spec.role] ?? "dispatchFn";
+    throw new Error(
+      `FORBID_LIVE_SPAWN: spawnSpecialist called for role "${spec.role}" without injection. Set PI_ENSEMBLE_ALLOW_LIVE_SPAWN=1 for live tests, or inject ${injectionName} in DriverContext.`,
+    );
+  }
+
   const role = ROLES[spec.role];
   const systemPrompt = await fs.readFile(role.promptFile, "utf8");
   const cwd = spec.cwd ?? process.cwd();

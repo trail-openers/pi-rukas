@@ -13,6 +13,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { LensReviewSummary } from "./lens-review.ts";
 import type { DispatchResult } from "./types.ts";
 import type { WorkState, WorkStep } from "./workflow-state.ts";
 
@@ -207,6 +208,19 @@ export interface DriverContext {
       shell?: string;
     },
   ) => Promise<{ stdout: string; stderr?: string }>;
+  /**
+   * Optional injection point for tests: replace runLensReview with a fake.
+   * Production callers omit this — runLens uses the real runLensReview.
+   * Mirrors `adversarialLoopFn` for symmetry, but returns
+   * `LensReviewSummary` (verdict, totalFindings, bySeverity, lenses,
+   * findings), NOT `DispatchResult`.
+   */
+  lensReviewFn?: (opts: {
+    diff: string;
+    context?: string;
+    cwd?: string;
+    signal?: AbortSignal;
+  }) => Promise<LensReviewSummary>;
 }
 
 /** Decide the next step from the current step + just-appended events. */
