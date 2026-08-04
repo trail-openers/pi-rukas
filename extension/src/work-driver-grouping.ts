@@ -25,10 +25,12 @@
  *        "blocked-by: #N". Directed edge; both directions merge.
  *   R2 — Path-overlap ≥ 50% (Jaccard): parse file paths from body
  *        fenced code + bullet lists; ≥ 0.5 overlap → same group.
- *   R3 — Explicit SPLIT marker: "split", "separate PRs",
- *        "independent" anywhere in the body → force the containing
+ *   R3 — Explicit SPLIT marker (anchored at line start):
+ *        "Split: true", "Split: yes", "Split: separate", or
+ *        "This work must ship separately" → force the containing
  *        issue into its own singleton group even if R1/R2 would have
- *        merged it.
+ *        merged it. (#312 — bare word "independent" removed due to
+ *        high false-positive rate in prose).
  *   R4 — Subsystem tag prefix in title: [frontend], [docs], etc.
  *        Same-prefix issues group together, absent R3.
  *   R5 — Default: separate groups.
@@ -90,12 +92,23 @@ export function groupIssues(
 
   // R3 — Detect SPLIT markers up-front. Issues marked SPLIT become
   // singleton groups regardless of other rules.
-  const splitRe = /\b(?:split|separate\s+prs?|independent)\b/i;
-  const splitIssues = new Set<number>(
-    activeIssues.filter((n) => splitRe.test(bodiesByIssue[n] ?? "")),
-  );
+  //
+  // Explicit structured marker anchored at line start (#312).
+  // "independent" as a bare word is removed — it's a common English
+  // word that appears in prose ("provider-independent", "independent
+  // investigation") and causes false-positive splits.
+  const splitRe = /^(?:Split\s*:\s*(?:true|yes|separate)|This work must ship separately)/im;
+  const splitIssues = new Map<number, string>();
+  for (const n of activeIssues) {
+    const body = bodiesByIssue[n] ?? "";
+    const m = splitRe.exec(body);
+    if (m) {
+      splitIssues.set(n, m[0].trim());
+    }
+  }
   if (splitIssues.size > 0) {
-    notes.push(`R3 split: ${[...splitIssues].map((n) => `#${n}`).join(", ")}`);
+    const splitList = [...splitIssues.entries()].map(([n, text]) => `#${n} ("${text}")`).join(", ");
+    notes.push(`R3 split: ${splitList}`);
   }
 
   // Union-find over activeIssues.

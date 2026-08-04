@@ -104,21 +104,89 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     "R2 path-overlap: below-threshold overlap does NOT merge (jaccard=1/3)",
   );
 
-  // R3 — SPLIT marker overrides R1/R2.
+  // R3 — Explicit Split: marker overrides R1/R2.
   //
   // Both issues have a Depends-on link (would merge under R1), but #700
-  // has the word "independent" → R3 forces it into its own group.
+  // has "Split: true" → R3 forces it into its own group.
   const r3 = groupIssues([700, 701], {
-    700: "Depends-on: #701\n\nMust ship as an independent PR",
+    700: "Depends-on: #701\n\nSplit: true\n\nMust ship separately from the API change",
     701: "Standalone",
   });
   assert(
     Object.keys(r3.groups).length === 2,
-    "R3 SPLIT: 'independent' marker overrides R1 link — two groups",
+    "R3 SPLIT: 'Split: true' marker overrides R1 link — two groups",
   );
   assert(
     r3.notes.some((n) => n.startsWith("R3 split:")),
     "R3 SPLIT: notes surfaces the rule",
+  );
+  assert(
+    r3.notes.some((n) => n.includes('"Split: true"')),
+    "R3 SPLIT: notes include the matching text for diagnostics",
+  );
+
+  // #312 — Regression: "provider-independent" in body does NOT trigger split.
+  const r3NoProvider = groupIssues([710, 711], {
+    710: "Depends-on: #711\n\nThis signature was reproduced against Anthropic as well as the self-hosted endpoint, so it is provider-independent.",
+    711: "The API change for the counterpart fix",
+  });
+  assert(
+    Object.keys(r3NoProvider.groups).length === 1,
+    "#312: 'provider-independent' does NOT trigger R3 split",
+  );
+  assert(
+    !r3NoProvider.notes.some((n) => n.startsWith("R3")),
+    "#312: no R3 note for 'provider-independent'",
+  );
+
+  // #312 — Regression: "Independent investigation" in body does NOT trigger split.
+  const r3NoInvestigation = groupIssues([720, 721], {
+    720: "Depends-on: #721\n\nIndependent investigation found the opposite error one step away. A second team independently confirmed the mechanism.",
+    721: "The counterpart fix",
+  });
+  assert(
+    Object.keys(r3NoInvestigation.groups).length === 1,
+    "#312: 'Independent investigation' does NOT trigger R3 split",
+  );
+
+  // R3 — Split: yes also works as explicit marker.
+  const r3Yes = groupIssues([730, 731], {
+    730: "Split: yes\n\nThis needs its own PR",
+    731: "Another issue",
+  });
+  assert(
+    Object.keys(r3Yes.groups).length === 2,
+    "R3: 'Split: yes' forces singleton group",
+  );
+
+  // R3 — Split: separate also works.
+  const r3Separate = groupIssues([740, 741], {
+    740: "Split: separate\n\nShips on its own",
+    741: "Another issue",
+  });
+  assert(
+    Object.keys(r3Separate.groups).length === 2,
+    "R3: 'Split: separate' forces singleton group",
+  );
+
+  // R3 — "This work must ship separately" also triggers.
+  const r3Full = groupIssues([750, 751], {
+    750: "Depends-on: #751\n\nThis work must ship separately",
+    751: "The other part",
+  });
+  assert(
+    Object.keys(r3Full.groups).length === 2,
+    "R3: 'This work must ship separately' forces singleton group",
+  );
+
+  // R3 — "split" mid-prose (e.g. "we split the function") does NOT trigger.
+  const r3MidProse = groupIssues([760, 761], {
+    760: "We split the function into two parts and fixed the bug",
+    761: "Another issue",
+  });
+  assert(
+    Object.keys(r3MidProse.groups).length === 2,
+    "R3: 'split' mid-prose does NOT trigger (no explicit marker)",
   );
 
   // R4 — Subsystem tag prefix in title merges.
