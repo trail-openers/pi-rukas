@@ -8,6 +8,16 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.23](https://github.com/randomm/pi-ensemble/compare/v0.12.22...v0.12.23) (2026-08-04)
+
+
+### Bug Fixes
+
+* **smoke-tests:** offline gate stack cannot pass in a fresh worktree — h ([a84a09d](https://github.com/randomm/pi-ensemble/commit/a84a09dbe16d72395235c6f1e560c70f330706ad))
+* **smoke-tests:** offline gate stack cannot pass in a fresh worktree — h ([8385776](https://github.com/randomm/pi-ensemble/commit/83857762cf8e5f1e493a7639db8b1205fd025437)), closes [#318](https://github.com/randomm/pi-ensemble/issues/318)
+* **work-driver:** R3 SPLIT detection matches the bare word 'independent' ([#336](https://github.com/randomm/pi-ensemble/issues/336)) ([5444e78](https://github.com/randomm/pi-ensemble/commit/5444e78cb0255fb26954804a344048eaf254d568)), closes [#312](https://github.com/randomm/pi-ensemble/issues/312)
+* **work-driver:** R4 subsystem-tag matcher is unanchored — incidental br ([#335](https://github.com/randomm/pi-ensemble/issues/335)) ([9b4ec7b](https://github.com/randomm/pi-ensemble/commit/9b4ec7b6786d02f6b4d1c04e42150b361df02df0)), closes [#282](https://github.com/randomm/pi-ensemble/issues/282)
+
 ## [0.12.22](https://github.com/randomm/pi-ensemble/compare/v0.12.21...v0.12.22) (2026-07-31)
 
 
