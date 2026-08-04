@@ -178,7 +178,7 @@ export function groupIssues(
   for (const n of activeIssues) {
     const body = bodiesByIssue[n] ?? "";
     const firstLine = body.split("\n").find((l) => l.trim().length > 0) ?? "";
-    const m = firstLine.match(/\[([a-z0-9_-]+)\]/i);
+    const m = firstLine.match(/^(?:title:\s*)?\[([a-z0-9_-]+)\]\s/i);
     if (m?.[1]) tagByIssue.set(n, m[1].toLowerCase());
   }
   for (let i = 0; i < activeIssues.length; i++) {

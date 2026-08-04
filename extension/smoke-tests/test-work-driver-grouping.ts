@@ -137,6 +137,56 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     "R4 subsystem: frontend group carries both 800 and 801",
   );
 
+  // #282 — R4 anchor + trailing-space guard.
+  // Mid-line bracketed tokens (like #[ignore] in a Rust title) must NOT
+  // be promoted to subsystem tags.
+  const r4MidLine = groupIssues([810, 811], {
+    810: "fix #[ignore] ratchet skipping tests\n\nBody with #[ignore] references",
+    811: "re-enable #[ignore] tests that were falsely passing\n\nAlso mentions #[ignore]",
+  });
+  assert(
+    Object.keys(r4MidLine.groups).length === 2,
+    "R4 anchor: mid-line #[ignore] does NOT union (2 separate groups)",
+  );
+  assert(
+    !r4MidLine.notes.some((n) => n.startsWith("R4")),
+    "R4 anchor: no R4 note emitted for mid-line brackets",
+  );
+
+  // #282 — leading bracketed token with no trailing space does NOT match.
+  const r4NoSpace = groupIssues([820, 821], {
+    820: "[ignore]text without space\n\nBody",
+    821: "[ignore]more text\n\nBody",
+  });
+  assert(
+    Object.keys(r4NoSpace.groups).length === 2,
+    "R4 trailing-space: [ignore]text (no space after ]) does NOT union",
+  );
+
+  // #282 — "title:" header prefix from plain `gh issue view` is tolerated.
+  const r4TitlePrefix = groupIssues([830, 831], {
+    830: "title:\t[backend] add auth middleware\n\nBody",
+    831: "title:    [backend] add rate limiter\n\nBody",
+  });
+  assert(
+    Object.keys(r4TitlePrefix.groups).length === 1,
+    "R4 title-prefix: 'title:' header is stripped before tag match → 1 group",
+  );
+  assert(
+    r4TitlePrefix.notes.some((n) => n.startsWith("R4 subsystem:")),
+    "R4 title-prefix: notes confirm the R4 rule fired",
+  );
+
+  // #282 — regression: [frontend] at line start still unions (no regression).
+  const r4Regression = groupIssues([840, 841], {
+    840: "[frontend] fix button click\n\nBody",
+    841: "[frontend] fix button hover\n\nBody",
+  });
+  assert(
+    Object.keys(r4Regression.groups).length === 1,
+    "R4 regression: [frontend] at line start still unions → 1 group",
+  );
+
   // Guardrail — MAX_ISSUES_PER_GROUP splits oversized components.
   //
   // Four issues all linked pairwise via depends-on → one component.
