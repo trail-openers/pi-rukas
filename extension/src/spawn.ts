@@ -50,7 +50,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
-import { resolveModel } from "./models.ts";
+import { type ResolvedModelChoice, resolveModel } from "./models.ts";
 import { type BrokerHandle, startBroker } from "./permission-broker.ts";
 import { isParentInTrustMode, makeBrokerDeps } from "./permission-guard.ts";
 import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
@@ -76,6 +76,61 @@ import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
 
 export { buildCwdHint, makeRunId };
+
+const CHILD_ARGS_BASE = ["--mode", "rpc", "--no-extensions"] as const;
+
+/**
+ * Build the complete child argument list for spawning a subagent Pi process.
+ * Used by `spawnSpecialist` and exported for smoke-test verification.
+ *
+ * Argument order is load-bearing:
+ *   - `--provider` must precede `--model` so Pi disambiguates against the
+ *     provider catalog (custom providers need explicit provider IDs).
+ *   - Extension `--extension` flags are appended after model flags so Pi
+ *     resolves the model before extensions can override it.
+ */
+export function buildChildArgs(
+  role: string,
+  tmpPromptFile: string,
+  transcriptPath: string,
+  modelChoice: ResolvedModelChoice,
+  subagentGuardEnabled: boolean,
+  extraArgs?: string[],
+): string[] {
+  const args: string[] = [...CHILD_ARGS_BASE];
+  // `--mode rpc` keeps stdin open for JSON command injection
+  // ({type:"prompt"|"steer"|"abort"|"follow_up"}); this is the foundation
+  // for dispatch_steer (#152) and all async push-callback flows.
+  args.push("--session", transcriptPath);
+  args.push("--append-system-prompt", tmpPromptFile);
+  // `--exclude-tools` requires Pi >= 0.83.0; with pin at ~0.82.0 the
+  // flag is accepted by 0.82.x but was unknown in 0.75.x (caused
+  // immediate child exit). Verified by test-role-tools.ts smoke test.
+  const excludedTools = excludeToolsFor(role);
+  if (excludedTools) {
+    args.push("--exclude-tools", excludedTools);
+  }
+  if (modelChoice.provider) {
+    args.push("--provider", modelChoice.provider);
+  }
+  if (modelChoice.model) {
+    args.push("--model", modelChoice.model);
+  }
+  for (const ext of discoverInstalledExtensions(role)) {
+    args.push("--extension", ext);
+  }
+  applyUserExtension(args, role);
+  if (subagentGuardEnabled) {
+    const ensemblePath = piEnsembleExtensionPath();
+    if (ensemblePath) {
+      args.push("--extension", ensemblePath);
+    }
+  }
+  if (extraArgs && extraArgs.length > 0) {
+    args.push(...extraArgs);
+  }
+  return args;
+}
 
 export async function spawnSpecialist(
   spec: DispatchSpec,
@@ -157,68 +212,14 @@ export async function spawnSpecialist(
     }
   }
 
-  const childArgs = [
-    // --mode rpc keeps stdin open for JSON command injection (#152). The
-    // initial prompt is sent via stdin as a `{ type: "prompt", message }`
-    // RPC command, not positional argv — this is the foundation that
-    // dispatch_steer (#153) will use to inject mid-flight steers via the
-    // `{ type: "steer", message }` command.
-    "--mode",
-    "rpc",
-    "--no-extensions",
-    "--session",
-    transcriptPath,
-    "--append-system-prompt",
+  const childArgs = buildChildArgs(
+    spec.role,
     tmpPromptFile,
-  ];
-  // Per-role tool gating (PR #238 — Option A in determinism plan) was
-  // designed to call `pi --exclude-tools <csv>` here so reader roles
-  // (explore, adversarial-developer, code-review-specialist) physically
-  // could not invoke write/edit/multiedit regardless of doctrine. Pi
-  // 0.75.3 (the pinned version, see package.json) does NOT support that
-  // flag — passing it makes the child exit immediately with
-  // `Error: Unknown option: --exclude-tools`, killing every subagent
-  // dispatch. Until Pi grows a compatible exclude-flag (or we switch to
-  // `--tools` as an exhaustive allowlist — currently brittle because it
-  // also gates extension tools like codebase_memory_*, ctx7, dispatch_*),
-  // we keep the role-tools.ts table as documentation of intent but do NOT
-  // pass the flag to Pi. Reader-role containment regresses to doctrine
-  // only, matching the pre-#238 posture. Tracked in the determinism plan;
-  // re-enable when the pin moves to a Pi version that supports it.
-  void excludeToolsFor;
-  // `--provider` must precede `--model` so Pi disambiguates the model ID
-  // against the named provider's catalog. Required for custom OpenAI-
-  // compatible endpoints whose model IDs are upstream-vendor strings
-  // (e.g. "Qwen/Qwen3.6-...") that don't carry a provider prefix.
-  if (modelChoice.provider) {
-    childArgs.push("--provider", modelChoice.provider);
-  }
-  if (modelChoice.model) {
-    childArgs.push("--model", modelChoice.model);
-  }
-  // Re-inject extensions Pi just suppressed via --no-extensions. Order matters:
-  // install-dir extensions (pi-claude-auth, MCP bridges) come first, then any
-  // dev-mode extension pinned via PI_ENSEMBLE_USER_EXTENSION, then specialised
-  // per-call args (e.g. lens-review's reporter) via opts.extraArgs.
-  for (const ext of discoverInstalledExtensions(spec.role)) {
-    childArgs.push("--extension", ext);
-  }
-  applyUserExtension(childArgs, spec.role);
-  // Forward pi-ensemble ITSELF into the subagent so its permission-guard
-  // can enforce the per-role allowlist inside the child. The subagent load
-  // detects PI_ENSEMBLE_SUBAGENT_MODE=1 and ONLY registers the guard (no
-  // dispatch tools — recursion firewall). discoverInstalledExtensions still
-  // skips pi-ensemble by package name (avoid double-forwarding via the
-  // installed-extensions loop above); we re-add it here once, explicitly.
-  if (subagentGuardEnabled) {
-    const ensemblePath = piEnsembleExtensionPath();
-    if (ensemblePath) {
-      childArgs.push("--extension", ensemblePath);
-    }
-  }
-  if (opts.extraArgs && opts.extraArgs.length > 0) {
-    childArgs.push(...opts.extraArgs);
-  }
+    transcriptPath,
+    modelChoice,
+    subagentGuardEnabled,
+    opts.extraArgs,
+  );
   // No positional prompt — sent over stdin RPC channel below.
   const invocation = getPiInvocation(childArgs);
 
