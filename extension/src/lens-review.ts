@@ -31,7 +31,7 @@ const LENS_REPORTER_PATH = path.join(__dirname, "lens-reporter.ts");
  * this module owns spawning, retries, and the async-job/tool wiring.
  */
 
-export { LENSES, extractFindings, dedupeFindings };
+export { LENSES, extractFindings, dedupeFindings, renderSummary };
 export type { LensName };
 
 export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";

@@ -191,7 +191,7 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
           `⛔ REVIEW INCOMPLETE: ${blockedLenses.length}/${s.lenses.length} lens(es) failed all ${maxLensAttempts} attempts:`,
           ...blockedLenses.map((r) => `  - ${r.lens}: ${r.parseError ?? "unknown failure"}`),
           "",
-          "The verdict above is computed from the lenses that DID complete; the failed lens(es) contributed zero findings — they did not approve, they did not run. Re-dispatch dispatch_lens_review to retry, or surface this to the user for an override decision per AGENTS.md Step 7 doctrine.",
+          "The verdict above is computed from the lenses that DID complete; the failed lens(es) contributed zero findings — they did not approve, they did not run. Re-dispatch dispatch_lens_review to retry, or override and proceed despite the incomplete review.",
         ]
       : [];
 

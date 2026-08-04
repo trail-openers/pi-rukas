@@ -12,6 +12,7 @@ import {
   computeVerdict,
   dedupeFindings,
   extractFindings,
+  renderSummary,
   type Finding,
   type LensName,
 } from "../src/lens-review.ts";
@@ -211,7 +212,7 @@ import type { LensRunResult } from "../src/lens-review.ts";
 
 function lensResult(
   lens: "SECURITY" | "ERROR_HANDLING" | "TYPE_SAFETY" | "PERFORMANCE" | "ARCHITECTURE" | "SIMPLICITY",
-  opts: { ok: boolean; attempts: number; blocked: boolean; findings?: typeof mk extends (...a: never[]) => infer F ? F[] : never },
+  opts: { ok: boolean; attempts: number; blocked: boolean; parseError?: string; findings?: typeof mk extends (...a: never[]) => infer F ? F[] : never },
 ): LensRunResult {
   return {
     lens,
@@ -220,6 +221,7 @@ function lensResult(
     findings: opts.findings ?? [],
     attempts: opts.attempts,
     blocked: opts.blocked,
+    parseError: opts.parseError,
   };
 }
 
@@ -290,6 +292,45 @@ function lensResult(
   assert(
     computeVerdict([], undefined) === "APPROVED",
     "computeVerdict(findings, undefined) explicit-undefined → APPROVED",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// renderSummary blocked-lens banner (#327)
+// ---------------------------------------------------------------------------
+
+{
+  const lenses: LensRunResult[] = [
+    lensResult("SECURITY", { ok: false, attempts: 4, blocked: true, parseError: "parse failure" }),
+    lensResult("ERROR_HANDLING", { ok: true, attempts: 1, blocked: false }),
+    lensResult("TYPE_SAFETY", { ok: true, attempts: 1, blocked: false }),
+    lensResult("PERFORMANCE", { ok: true, attempts: 1, blocked: false }),
+    lensResult("ARCHITECTURE", { ok: true, attempts: 1, blocked: false }),
+    lensResult("SIMPLICITY", { ok: true, attempts: 1, blocked: false }),
+  ];
+  const summary = {
+    verdict: "REVIEW_INCOMPLETE" as const,
+    totalFindings: 0,
+    bySeverity: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 },
+    findings: [],
+    lenses,
+  };
+  const rendered = renderSummary(summary, 4);
+  assert(
+    rendered.includes("⛔ REVIEW INCOMPLETE"),
+    "blocked-lens banner includes REVIEW INCOMPLETE marker",
+  );
+  assert(
+    rendered.includes("SECURITY: parse failure"),
+    "blocked-lens banner names the failed lens and its error",
+  );
+  assert(
+    !rendered.includes("AGENTS.md"),
+    "blocked-lens banner does NOT reference AGENTS.md (#327)",
+  );
+  assert(
+    rendered.includes("Re-dispatch dispatch_lens_review to retry, or override and proceed despite the incomplete review"),
+    "blocked-lens banner states the available user choices without external doc references",
   );
 }
 
