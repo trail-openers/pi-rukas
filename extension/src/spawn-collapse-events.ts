@@ -34,6 +34,8 @@ export function collapseEvents(
   let model: string | undefined;
   let provider: string | undefined;
   let api: string | undefined;
+  let hasThinking = false;
+  let hasText = false;
 
   for (const msg of messages) {
     if (msg.role !== "assistant") continue;
@@ -56,6 +58,12 @@ export function collapseEvents(
       if (block.type === "text" && typeof block.text === "string") {
         if (adapter.isArtifactText?.(block.text)) continue;
         textParts.push(block.text);
+        hasText = true;
+      } else if (block.type === "thinking" && typeof block.thinking === "string") {
+        // Track thinking existence separately from text
+        if (block.thinking.trim()) {
+          hasThinking = true;
+        }
       } else if (block.type === "toolCall") {
         toolUses.push(block);
       }
@@ -65,6 +73,13 @@ export function collapseEvents(
   // Join with double-newline so distinct text blocks across turns (separated
   // by tool calls in between) stay visually delimited instead of concatenated.
   const text = textParts.filter((t) => t.trim()).join("\n\n");
+
+  // Detect thinking-only output: some thinking-heavy models produce
+  // thinking blocks but no text blocks (issue #5). Surface this clearly
+  // instead of returning "(no output)" which reads like a bug. If the
+  // model also emitted tool calls, don't flag as thinking-only — tool
+  // execution is meaningful output.
+  const thinkingOnly = hasThinking && !hasText && toolUses.length === 0;
 
   // Detect synthetic error-stop: pi-ai providers turn HTTP timeouts and
   // transport failures into an assistant message with `stopReason: "error"`
@@ -80,10 +95,16 @@ export function collapseEvents(
       ? { reason: "error", message: lastAssistant.errorMessage }
       : undefined;
 
+  // Construct the text field. For thinking-only output, use a clear message
+  // that distinguishes this case from actual "no output".
+  const resolvedText = thinkingOnly
+    ? "(thinking content only - no text output)"
+    : text || stderr || "(no output)";
+
   return {
     role,
     ok: exitCode === 0 && !errorStop,
-    text: text || stderr || "(no output)",
+    text: resolvedText,
     toolUses,
     ms,
     exitCode,
@@ -92,5 +113,6 @@ export function collapseEvents(
     provider,
     api,
     errorStop,
+    thinkingOnly,
   };
 }
