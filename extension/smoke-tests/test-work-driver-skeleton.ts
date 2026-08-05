@@ -24,6 +24,7 @@ import {
   initialState,
   readState,
   writeState,
+  type WorkState,
 } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -345,6 +346,70 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     // Teardown on already-removed dir is a no-op (no throw).
     await teardownWorkspaceTmp(dir, 999);
     assert(true, "teardownWorkspaceTmp on missing dir is safe (no-op)");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// #292 — branchName resolved from git; mismatch emits plumb-report; git failure falls back to reply.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-branch-verify-"));
+  try {
+    const { exec } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const execp = promisify(exec);
+    await execp("git init -b main", { cwd: dir });
+    await execp("git config user.email 't@t'", { cwd: dir });
+    await execp("git config user.name 'T'", { cwd: dir });
+    await execp("git commit --allow-empty -m 'init'", { cwd: dir });
+    await execp("git checkout -b feature/issue-800-real-work", { cwd: dir });
+    const fs = await import("node:fs/promises");
+    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    const { runBranch } = await import("../src/work-driver-branch-develop.ts");
+    const { pi } = makeFakePi();
+    const baseState = () => {
+      const s = initialState(800, 1_000);
+      s.pipelineState.workstreams = { default: { id: "default", scope: "t", paths: [], outOfScope: [] } };
+      s.pipelineState.currentStep = "branch";
+      return s;
+    };
+    const plumbs = (log: WorkState["eventLog"]) => log.filter((e) => e.kind === "plumb-report");
+
+    // A — mismatch: ops reports a wrong branch, git resolves the real one.
+    {
+      const ctx: DriverContext = {
+        pi,
+        repoRoot: dir,
+        issue: 800,
+        dispatchFn: async () =>
+          mkResult({ role: "ops", text: "branch: feature/issue-800-wrong-branch\n" }),
+        verifyExecFn: async (cmd: string, opts: object) => execp(cmd, opts),
+      };
+      const result = await runBranch(ctx, baseState(), 1_000);
+      assert(
+        result.pipelineState.branchName === "feature/issue-800-real-work",
+        "uses git-resolved branch on mismatch",
+      );
+      assert(plumbs(result.eventLog).length > 0, "emits plumb-report for mismatch");
+    }
+
+    // B — git failure: falls back to parsed ops reply, no crash.
+    {
+      const ctx: DriverContext = {
+        pi,
+        repoRoot: dir,
+        issue: 800,
+        dispatchFn: async () =>
+          mkResult({ role: "ops", text: "branch: feature/issue-800-from-reply\n" }),
+        verifyExecFn: async () => { throw new Error("not a git repo"); },
+      };
+      const result = await runBranch(ctx, baseState(), 1_000);
+      assert(
+        result.pipelineState.branchName === "feature/issue-800-from-reply",
+        "falls back to parsed reply when git fails",
+      );
+      assert(plumbs(result.eventLog).length === 0, "no plumb-report when git fails");
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

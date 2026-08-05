@@ -350,9 +350,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         await (await import("node:fs/promises")).mkdir(path.join(dir, ".git", "info"), {
           recursive: true,
         });
-        const mechCalls: string[] = [];
         const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
-          if (cmd === "git rev-parse --abbrev-ref HEAD") mechCalls.push(cmd);
+          // #292 — runBranch now calls git rev-parse --abbrev-ref HEAD for
+          // branch verification. Return a valid branch so runBranch completes.
+          if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-997\n" };
           if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
           if (cmd === "git status --porcelain") {
             const cwd = o?.cwd ?? "";
@@ -380,10 +381,6 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         };
         await runWorkDriver(ctx).catch(() => {});
         const after = await readState(dir, 997);
-        assert(
-          mechCalls.length === 0,
-          "M4: PI_ENSEMBLE_MECHANIZE_OPS=0 → mechanized path never probes the repo",
-        );
         assert(
           after?.eventLog.some(
             (e) =>

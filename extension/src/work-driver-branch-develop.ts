@@ -35,12 +35,12 @@ const execp = promisify(exec);
  * pipelineState once the dispatch returns so subsequent steps can compose
  * worktree paths and the PR URL.
  *
- * v1 simplification: the driver does not parse the branch name out of the
- * ops reply — it leaves pipelineState.branchName undefined and lets the
- * subsequent steps include the issue number in their prompts, asking the
- * @developer / @ops to discover the branch via `git rev-parse --abbrev-ref HEAD`
- * in the worktree. A future version with a structured-output schema on
- * @ops can populate pipelineState.branchName explicitly.
+ * #292 — branchName is resolved from git, NOT from the ops reply. Pre-fix
+ * the driver parsed branchName from the ops reply via parseBranchName and
+ * stored it verbatim. On live issue #277 the ops subagent reported a branch
+ * name unrelated to the issue, and the real work was on a different branch.
+ * Now: `git rev-parse --abbrev-ref HEAD` is the source of truth. If the
+ * reported name disagrees, a plumb-report is emitted.
  */
 export async function runBranch(
   ctx: DriverContext,
@@ -48,12 +48,51 @@ export async function runBranch(
   now: number,
 ): Promise<WorkState> {
   const workstreamIds = Object.keys(state.pipelineState.workstreams ?? {});
-  const next = await runSingleDispatch(ctx, state, "branch", "ops", "ops", now, () =>
+  let next = await runSingleDispatch(ctx, state, "branch", "ops", "ops", now, () =>
     inlineBranchPrompt(activeIssuesOf(state), workstreamIds, scratchDir(ctx.repoRoot, ctx.issue)),
   );
   const last = next.eventLog[next.eventLog.length - 1];
   if (last?.kind !== "dispatch-completed") return next;
-  const branch = parseBranchName(last.summary);
+  // Parse the ops reply for reference (used in mismatch plumb-report only).
+  const reportedBranch = parseBranchName(last.summary);
+  // #292 — resolve the actual branch from git, not from the subagent reply.
+  const execFn = ctx.verifyExecFn ?? execp;
+  let actualBranch: string | undefined;
+  try {
+    const { stdout } = await execFn("git rev-parse --abbrev-ref HEAD", {
+      cwd: ctx.repoRoot,
+      maxBuffer: 64 * 1024,
+    });
+    actualBranch = stdout.trim() || undefined;
+  } catch (err) {
+    trace(
+      `work-driver: git rev-parse --abbrev-ref HEAD failed: ${(err as Error).message?.slice(0, 200)}`,
+    );
+  }
+  // Determine the branch name: git-resolved (source of truth), fallback to
+  // parsed reply if git is unavailable.
+  const branch = actualBranch ?? reportedBranch;
+  // #292 — emit a plumb-report if reported-vs-actual mismatch.
+  if (actualBranch && reportedBranch && actualBranch !== reportedBranch) {
+    const body = [
+      "[ensemble:plumb]",
+      "category: scope-ambiguity",
+      "file: work-driver-branch-develop.ts:runBranch",
+      "question: ops reported branch name differs from the branch actually checked out.",
+      `reported: ${reportedBranch}`,
+      `actual (git rev-parse --abbrev-ref HEAD): ${actualBranch}`,
+      "The driver uses the git-resolved branch. Verify the ops dispatch executed the intended branch creation.",
+    ].join("\n");
+    next = appendEvent(next, {
+      kind: "plumb-report",
+      step: "branch",
+      role: "ops",
+      body,
+      at: now,
+    });
+  }
+  const ps: typeof next.pipelineState = { ...next.pipelineState };
+  if (branch) ps.branchName = branch;
   // Parse worktree assignments (PR3 multi-workstream). For N=1 default
   // workstream, ops doesn't create an actual worktree — driver records
   // `{default: ctx.repoRoot}` so downstream Steps 4/5/7 use the same
@@ -63,22 +102,22 @@ export async function runBranch(
     workstreamIds.length > 1
       ? parseWorktreesBlock(last.summary ?? "", ctx.repoRoot)
       : { default: ctx.repoRoot };
-  const ps: typeof next.pipelineState = { ...next.pipelineState, worktrees };
-  if (branch) ps.branchName = branch;
+  ps.worktrees = worktrees;
   // PR17 — record the base SHA the feature branch grew from. At this
   // point the branch was just created and has zero commits, so HEAD at
   // repoRoot IS the base. verifyStepOutcome diffs against this to prove
   // develop produced real changes. Best-effort: a git failure leaves
   // baseSha unset and the verifier falls back to porcelain-only checks.
   try {
-    const execFn = ctx.verifyExecFn ?? execp;
     const { stdout } = await execFn("git rev-parse HEAD", {
       cwd: ctx.repoRoot,
       maxBuffer: 64 * 1024,
     });
     if (stdout.trim()) ps.baseSha = stdout.trim();
-  } catch {
-    trace("work-driver: baseSha capture failed (verify gate falls back to porcelain-only)");
+  } catch (err) {
+    trace(
+      `work-driver: baseSha capture failed: ${(err as Error).message?.slice(0, 200)} (verify gate falls back to porcelain-only)`,
+    );
   }
   return { ...next, pipelineState: ps };
 }
