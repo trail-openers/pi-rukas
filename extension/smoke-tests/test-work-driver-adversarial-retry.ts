@@ -64,6 +64,11 @@ function mkResult(overrides: Partial<DispatchResult> = {}): DispatchResult {
 // retry.
 process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
 
+// #286 — these tests exercise adversarial loop verdicts (REJECTED, infra-
+// failure retry) and do not set up real git diffs. Disable the empty-diff
+// skip so the loop runs as intended.
+process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
+
 // Offline-suite safety net: a few flow tests deliberately reach the
 // adversarial / lens steps without injecting a loopFn. Cap any such
 // accidental live spawn at 2s so the suite stays deterministic and fast.

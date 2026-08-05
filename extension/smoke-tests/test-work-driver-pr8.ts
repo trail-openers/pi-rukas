@@ -74,6 +74,11 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 // gate tests re-enable it with an injected verifyExecFn.
 process.env.PI_ENSEMBLE_VERIFY = "0";
 
+// #286 — this test exercises PR8 per-workstream fanout (adversarial loop
+// verdicts) and does not set up real git diffs. Disable the empty-diff
+// skip so the loop runs as intended.
+process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
+
 // 33. PR8 — runAdversarial fans out per-workstream for N>1 (instead of
 // reviewing a fragmented `## workstream:` merged diff). Empirical /work
 // 553 2026-06-24: pre-PR8 single-shot adversarial on merged fanout

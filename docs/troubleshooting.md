@@ -592,6 +592,7 @@ The state file shape (schema v1) is:
     { "kind": "branch-completed", "step": "develop", "workstreamId": "task-a", "ok": true, ... },         // PR3
     { "kind": "branches-converged", "step": "develop", "verdicts": [{ "id": "task-a", "ok": true }, ...] },// PR3
     { "kind": "lens-skipped-empty-diff", "round": 1, "at": ... },  // PR6 — guard fired (no diff to review)
+    { "kind": "adversarial-skipped-empty-diff", "workstreamId": "default", "at": ... },  // #286 — guard fired (empty diff, no adversarial spawn)
     { "kind": "cap-hit", "cap": "developer-timeout", "nextStep": "handoff", ... },  // PR5 cap shapes (below)
     ...
   ]

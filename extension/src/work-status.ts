@@ -146,6 +146,8 @@ function fmtEvent(e: WorkEvent): string {
     }
     case "lens-skipped-empty-diff":
       return `  lens-skipped-empty-diff · round ${e.round}`;
+    case "adversarial-skipped-empty-diff":
+      return `  adversarial-skipped-empty-diff · workstream ${e.workstreamId}`;
   }
 }
 

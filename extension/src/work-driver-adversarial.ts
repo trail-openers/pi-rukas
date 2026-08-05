@@ -105,6 +105,41 @@ export async function runAdversarial(
       // commit-pr where ops integrates the per-workstream branches; this
       // adversarial pass gates each workstream independently.
       const diff = await fetchDiff(cwd);
+
+      // #286 — empty-diff short-circuit. A full adversarial reviewer spawn
+      // on an empty diff is pure waste (transcript-verified on lantern
+      // 2026-07-27: one spawn concluded "treat the empty diff as a
+      // legitimate no-op" after burning a complete review cycle). Lens
+      // review already has this guard (PR6); adversarial didn't. The
+      // PR17 hollow-diff develop gate fires BEFORE adversarial, so
+      // reaching here with all-empty diffs means a resumed/edge-case
+      // cycle — which is fine, the skip is the correct response.
+      const emptySkipDisabled = process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP === "0";
+      if (!emptySkipDisabled && !diff.trim()) {
+        trace(`work-driver: adversarial[${id}] skipped — empty diff`);
+        return {
+          id,
+          ok: true,
+          rounds: 0,
+          completionEvent: {
+            kind: "adversarial-skipped-empty-diff",
+            at: Date.now(),
+            workstreamId: id,
+          },
+          branchEvent:
+            ids.length > 1
+              ? {
+                  kind: "branch-completed",
+                  step: "adversarial",
+                  workstreamId: id,
+                  ok: true,
+                  ms: Date.now() - startedAt,
+                  at: Date.now(),
+                }
+              : undefined,
+        } as Outcome;
+      }
+
       const loopFn = ctx.adversarialLoopFn ?? runAdversarialLoop;
       let result: DispatchResult;
       try {
