@@ -16,6 +16,7 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import { detectMainline } from "./work-driver-git.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
 import type { WorkState } from "./workflow-state.ts";
 
@@ -44,14 +45,9 @@ export async function verifyConsolidation(
   if (ids.length <= 1) return { missing: [] };
   // Resolve the mainline branch to diff against.
   let base = "main";
-  try {
-    const { stdout } = await execp(
-      "git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@'",
-      { cwd: ctx.repoRoot, shell: "/bin/bash" },
-    );
-    if (stdout.trim()) base = stdout.trim();
-  } catch {
-    // Use 'main' default.
+  const mainline = await detectMainline(ctx.repoRoot, execp);
+  if (mainline && "branch" in mainline) {
+    base = mainline.branch;
   }
   let diffNames = "";
   try {
@@ -141,14 +137,9 @@ export async function verifyStepOutcome(
 
   // step === "commit-pr"
   let base = "main";
-  try {
-    const { stdout } = await execFn(
-      "git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@'",
-      { cwd: ctx.repoRoot, shell: "/bin/bash" },
-    );
-    if (stdout.trim()) base = stdout.trim();
-  } catch {
-    // Use 'main' default.
+  const mainline = await detectMainline(ctx.repoRoot, execFn);
+  if (mainline && "branch" in mainline) {
+    base = mainline.branch;
   }
   try {
     const { stdout } = await execFn(`git rev-list --count origin/${base}..HEAD`, {

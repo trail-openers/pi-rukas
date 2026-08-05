@@ -117,11 +117,10 @@ export function explainCap(
       case "ci":
         return "the CI monitoring step dispatch failed — cannot mark a cycle merged without confirming CI passed";
       case "merged":
-        // PR10 — merged step is now HALT (was DEGRADED_OK pre-PR10
-        // when runMerged was a 0ms state mutation). The actual
-        // `gh pr merge` invocation in ops can fail on auth, branch
+        // PR10 — merged step is now HALT. The `gh pr merge` invocation
+        // (mechanized or LLM fallback) can fail on auth, branch
         // protection, conflicts, or a missing required review.
-        return "the merge step dispatch failed — the PR was approved and CI passed, but `gh pr merge` did not succeed (auth / branch protection / conflicts / missing required review). Merge manually via `gh pr merge <PR-N> --squash --delete-branch` or per project policy";
+        return "the merge step failed — the PR was approved and CI passed, but `gh pr merge` did not succeed (auth / branch protection / conflicts / missing required review). Merge manually via `gh pr merge <PR-N> --squash --delete-branch` (check `gh repo view --json squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed` for allowed methods)";
       case "step-back":
       case "handoff":
         // These remain DEGRADED_OK in STEP_FAILURE_POLICY and should never

@@ -17,10 +17,13 @@
 import path from "node:path";
 import { dispatchCore } from "./dispatch.ts";
 import type { DispatchResult } from "./types.ts";
+import { mechanizeOpsEnabled } from "./work-driver-commit.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { parseAbort } from "./work-driver-diff.ts";
+import { detectMainline, restoreCheckout } from "./work-driver-git.ts";
+import { type MergeMethod, mechanizedMerge } from "./work-driver-merged-mechanized.ts";
 import { inlineMergePrompt } from "./work-driver-prompts-late.ts";
-import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
+import { activeIssuesOf, scratchDir, teardownWorkspaceTmp } from "./work-driver-workspace.ts";
 import {
   type WorkState,
   type WorkStep,
@@ -229,21 +232,21 @@ export async function runSingleDispatch(
 
 /**
  * Step 9 — Merge the PR. PR10: was a 0ms state mutation pre-fix; now
- * actually dispatches ops to run `gh pr merge` per project policy.
+ * actually merges via mechanized merge (or LLM fallback) and restores
+ * the local checkout to an up-to-date mainline.
  *
- * Empirical bug fixed: pre-PR10 the driver reported "MERGED ✓" while
- * the GitHub PR sat OPEN (live evidence /work 561 + /work 562 on
- * lantern). The doctrine in pi-prompts/work.md:277 ("On green CI +
- * APPROVED review: merge per project merge policy") declared the
- * intent; nothing executed it. runMerged now closes that gap.
+ * Mechanized path (default): derive merge method from GitHub repo
+ * settings, execute `gh pr merge`, verify MERGED via `gh pr view`,
+ * restore checkout. Fallback to LLM ops dispatch on any mechanized
+ * failure (plumb-report emitted). Escape hatch:
+ * PI_ENSEMBLE_MECHANIZE_OPS=0 forces LLM path.
  *
- * On dispatch failure: STEP_FAILURE_POLICY[merged] is HALT (changed
- * from DEGRADED_OK), so the post-step dispatch-failed router (PR5)
- * intercepts → cap-hit 'step-failed:merged' → handoff. Operator
- * merges manually with the recovery command in the handoff body.
+ * Restoration runs INSIDE runMerged, before routeStepOutcome persists
+ * state. Combined with idempotent merge (already-merged tolerance), a
+ * crash mid-restoration is recoverable on resume.
  *
- * On dispatch success: capture the merge-commit SHA (if ops emits the
- * marker line); flip status='merged'.
+ * On dispatch failure: STEP_FAILURE_POLICY[merged] is HALT → cap-hit
+ * 'step-failed:merged' → handoff. Operator merges manually.
  */
 export async function runMerged(
   ctx: DriverContext,
@@ -252,12 +255,110 @@ export async function runMerged(
 ): Promise<WorkState> {
   const prNumber = state.pipelineState.prNumber ?? 0;
   const issues = activeIssuesOf(state);
-  const next = await runSingleDispatch(ctx, state, "merged", "ops", "ops:merge", now, () =>
-    inlineMergePrompt(issues, prNumber, scratchDir(ctx.repoRoot, state.issue)),
-  );
+  let next: WorkState;
+  let mergeMethod: MergeMethod = "squash";
+  let preDispatch = state;
+  let mergeSucceeded = false;
+
+  // Try mechanized merge first.
+  const mechResult = await mechanizedMerge(ctx, state);
+  if (mechResult.ok) {
+    mergeMethod = mechResult.method;
+    mergeSucceeded = true;
+    // Mechanized merge succeeded — build the same event shapes the
+    // dispatch path produces so downstream (merged event) is identical.
+    next = await runSingleDispatch(
+      ctx,
+      state,
+      "merged",
+      "driver",
+      "driver:merge",
+      now,
+      () => "Mechanized merge succeeded (no dispatch needed — short-circuit).",
+    );
+    // Replace the dispatch-completed event with a proper merge summary.
+    const lastIdx = next.eventLog.length - 1;
+    const last = next.eventLog[lastIdx];
+    if (last?.kind === "dispatch-completed") {
+      next.eventLog[lastIdx] = {
+        ...last,
+        role: "driver",
+        label: "driver:merge",
+        summary: `Mechanized merge: PR #${prNumber} merged via --${mergeMethod}${mechResult.notes.length > 0 ? ` Notes: ${mechResult.notes.join("; ")}` : ""}`,
+      };
+    }
+  } else {
+    // Mechanized path failed — emit plumb-report and fall back to LLM.
+    if (mechResult.reason !== "PI_ENSEMBLE_MECHANIZE_OPS=0 — mechanized ops disabled") {
+      preDispatch = appendEvent(state, {
+        kind: "plumb-report",
+        at: Date.now(),
+        step: "merged",
+        role: "driver",
+        body: `Mechanized merge fell back to ops dispatch: ${mechResult.reason}.`,
+      });
+    }
+    // Always resolve the merge method for the fallback prompt.
+    mergeMethod = mechResult.method ?? "squash";
+    next = await runSingleDispatch(ctx, preDispatch, "merged", "ops", "ops:merge", now, () =>
+      inlineMergePrompt(issues, prNumber, mergeMethod, scratchDir(ctx.repoRoot, state.issue)),
+    );
+  }
+
   const last = next.eventLog[next.eventLog.length - 1];
   if (last?.kind !== "dispatch-completed") return next;
-  const mergeCommit = parseMergeCommit(last.summary);
+
+  // For LLM fallback path: parse merge-commit marker from ops reply.
+  // Mechanized path: mergeSucceeded is already true; mergeCommit stays
+  // undefined (merge SHA extraction from mechanized path is a separate
+  // enhancement — gh pr merge output doesn't include the commit SHA).
+  let mergeCommit: string | undefined;
+  if (!mechResult.ok) {
+    mergeCommit = parseMergeCommit(last.summary);
+  }
+
+  // Restore checkout to mainline BEFORE persisting state (routeStepOutcome).
+  // Combined with idempotent merge (already-merged tolerance), a crash
+  // mid-restoration is recoverable: resume re-enters merged step, merge
+  // short-circuits as already-done, restoration runs again.
+  if (mergeSucceeded) {
+    try {
+      const execFn = ctx.verifyExecFn;
+      if (execFn) {
+        const mainlineResult = await detectMainline(ctx.repoRoot, execFn);
+        if ("branch" in mainlineResult) {
+          const restorationNotes = await restoreCheckout(
+            ctx.repoRoot,
+            mainlineResult.branch,
+            state.pipelineState.branchName,
+            execFn,
+          );
+          for (const note of restorationNotes) {
+            // Log restoration notes (informational — not errors).
+            next = appendEvent(next, {
+              kind: "plumb-report",
+              at: Date.now(),
+              step: "merged",
+              role: "driver",
+              body: `Checkout restoration: ${note}`,
+            });
+          }
+        }
+      }
+      // Clean up scratch dir on merged outcome.
+      await teardownWorkspaceTmp(ctx.repoRoot, state.issue);
+    } catch (err) {
+      // Restoration failure — log but don't halt. The merge succeeded.
+      next = appendEvent(next, {
+        kind: "plumb-report",
+        at: Date.now(),
+        step: "merged",
+        role: "driver",
+        body: `Checkout restoration failed: ${(err as Error).message?.slice(0, 300)}`,
+      });
+    }
+  }
+
   return {
     ...next,
     pipelineState: { ...next.pipelineState, currentStep: "merged", status: "merged" },

@@ -1,3 +1,5 @@
+import type { MergeMethod } from "./work-driver-merged-mechanized.ts";
+
 /**
  * /work driver — inline prompt builders for the late pipeline steps.
  *
@@ -154,19 +156,18 @@ export function inlineLensFixPrompt(findings: string, scratchDirAbs: string): st
 }
 
 /**
- * PR10 — Step 9 (Merge) ops prompt. The merge step was a 0ms no-op
- * pre-PR10; this prompt finally drives ops to execute `gh pr merge`.
+ * Step 9 (Merge) ops prompt — fallback path when mechanized merge
+ * can't execute (derive fallback, infra failure, or mechanized ops
+ * disabled).
  *
- * Doctrine: target project's `AGENTS.md` / `CONTRIBUTING.md` is the
- * source of truth for merge method (--squash / --merge / --rebase) and
- * branch-cleanup policy. Driver doesn't try to second-guess. Default
- * is `--squash --delete-branch` because that's the most common policy
- * in the projects pi-ensemble runs against (verified in lantern's
- * AGENTS.md §7); ops overrides per project doc when present.
+ * Merge method is derived from GitHub repo settings; the resolved
+ * method is passed as a parameter and this prompt must NOT instruct
+ * the agent to choose or override it.
  */
 export function inlineMergePrompt(
   issues: number[],
   prNumber: number,
+  mergeMethod: MergeMethod,
   scratchDirAbs: string,
 ): string {
   const issueList = issues.map((n) => `#${n}`).join(", ");
@@ -176,12 +177,11 @@ export function inlineMergePrompt(
   return [
     `/work issue(s) ${issueList} — Step 9 (Merge).`,
     "",
-    "CI is green and lens-review APPROVED. Merge the PR per project policy:",
+    "CI is green and lens-review APPROVED. Merge the PR:",
     "",
-    "  1. Read `AGENTS.md` / `CONTRIBUTING.md` at repo root for the project's merge method (`--squash`, `--merge`, or `--rebase`) and whether to delete the branch.",
-    `  2. \`gh pr merge ${prNumber} --squash --delete-branch\` is the DEFAULT — adjust the flags to match the project's policy if it differs.`,
-    "  3. On success, `gh pr merge` prints the merge commit SHA. End your reply with `merge-commit: <sha>` so the driver captures it on the merged event.",
-    "  4. If the merge fails (auth, branch protection, conflicts, missing required review), report the gh error verbatim and end with `merge-commit: FAILED — <one-line reason>` — DO NOT retry. The driver routes failures through cap-hit handoff.",
+    `  1. \`gh pr merge ${prNumber} --${mergeMethod} --delete-branch\` — use the specified merge method. Do NOT change it.`,
+    "  2. On success, `gh pr merge` prints the merge commit SHA. End your reply with `merge-commit: <sha>` so the driver captures it on the merged event.",
+    "  3. If the merge fails (auth, branch protection, conflicts, missing required review), report the gh error verbatim and end with `merge-commit: FAILED — <one-line reason>` — DO NOT retry. The driver routes failures through cap-hit handoff.",
     "",
     "Active issues that will auto-close on merge:",
     issueLines,
