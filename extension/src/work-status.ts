@@ -359,8 +359,7 @@ export function registerWorkStatusCommand(pi: ExtensionAPI): void {
       const tokens = args.trim().split(/\s+/).filter(Boolean);
       const wantJson = tokens.includes("--json");
       const issueArg = tokens.find((t) => /^\d+$/.test(t));
-      const cwd = process.cwd();
-      const repoRoot = await resolveRepoRoot(cwd);
+      const repoRoot = await resolveRepoRoot(ctx.cwd);
 
       let issue: number | undefined;
       if (issueArg) {

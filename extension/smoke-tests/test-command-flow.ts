@@ -13,7 +13,10 @@
  * Bypasses Pi entirely. Useful for fast iteration on extension wiring.
  */
 
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import fs from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import extensionEntry from "../src/index.ts";
@@ -53,17 +56,42 @@ function makePi() {
   return { pi, rec };
 }
 
-function makeCtx() {
+// #360 — command handlers resolve the repo root from `ctx.cwd`, so every
+// /work case passes a throwaway dir. Without it the driver writes its state
+// file into this repo's own .pi/work-state/, where fixtures then collide with
+// real cycles (547/548/549/551/561/789.json were all test residue).
+const TMP_CWD = mkdtempSync(path.join(tmpdir(), "pi-ensemble-cmdflow-"));
+// Init a real repo so `resolveRepoRoot` behaves as it does in production; a
+// bare dir makes the driver throw early, and its crash-report
+// `sendUserMessage` would then perturb the message counts asserted below.
+execFileSync("git", ["init", "--quiet"], { cwd: TMP_CWD, stdio: "ignore" });
+
+/** Snapshot of this repo's real state dir, compared again at exit (#360). */
+const REPO_WORK_STATE = path.join(PROJ_DIR, ".pi", "work-state");
+const listRepoWorkState = () =>
+  existsSync(REPO_WORK_STATE) ? readdirSync(REPO_WORK_STATE).sort().join(",") : "";
+const repoWorkStateBefore = listRepoWorkState();
+
+function makeCtx(cwd: string = process.cwd()) {
   const notifies: Array<{ msg: string; kind?: string }> = [];
   const ctx = {
     isIdle: () => true,
-    cwd: process.cwd(),
+    cwd,
     ui: {
       notify: (msg: string, kind?: string) => notifies.push({ msg, kind }),
     },
   };
   return { ctx, notifies };
 }
+
+/**
+ * Prompt bodies queued by slash commands, excluding the driver's own status
+ * lines. Both travel over `sendUserMessage`, but only the former is this
+ * suite's subject; the driver runs fire-and-forget, so its grouping /
+ * crash-report lines land at nondeterministic points and would otherwise make
+ * every hardcoded count below a race (#360).
+ */
+const promptMessages = () => rec.sentMessages.filter((m) => !m.startsWith("pi-ensemble:"));
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -134,10 +162,10 @@ assert(pmExists, "PM doctrine prompt built (dist/prompts/standard/project-manage
 // Fire /start with no args
 const { ctx: ctx1 } = makeCtx();
 await handlers.start!("", ctx1);
-assert(rec.sentMessages.length === 1, "/start → 1 message queued");
+assert(promptMessages().length === 1, "/start → 1 message queued");
 const startBody = await fs.readFile(path.join(PI_PROMPTS, "start.md"), "utf8");
 assert(
-  rec.sentMessages[0] === startBody,
+  promptMessages()[0] === startBody,
   "/start: queued message equals start.md body (no $ARGUMENTS in start.md, so no expansion)",
 );
 
@@ -150,9 +178,9 @@ process.env.PI_ENSEMBLE_WORK_DRIVER = "0";
 try {
   const { ctx: ctx2 } = makeCtx();
   await handlers.work!("42", ctx2);
-  assert(rec.sentMessages.length === 2, "/work 42 (legacy flag=0) → second message queued");
+  assert(promptMessages().length === 2, "/work 42 (legacy flag=0) → second message queued");
   assert(
-    rec.sentMessages[1].includes("**Issue**: 42"),
+    promptMessages()[1].includes("**Issue**: 42"),
     "/work 42 (legacy flag=0): $ARGUMENTS expanded to '42' in workflow body",
   );
 } finally {
@@ -163,9 +191,9 @@ try {
 // Fire /review #456 (with arg expansion)
 const { ctx: ctxR } = makeCtx();
 await handlers.review!("#456", ctxR);
-assert(rec.sentMessages.length === 3, "/review #456 → third message queued");
+assert(promptMessages().length === 3, "/review #456 → third message queued");
 assert(
-  rec.sentMessages[2].includes("**Scope**: #456"),
+  promptMessages()[2].includes("**Scope**: #456"),
   "/review #456: $ARGUMENTS expanded to '#456' in workflow body",
 );
 
@@ -178,10 +206,10 @@ assert(
   const prevFlag = process.env.PI_ENSEMBLE_WORK_DRIVER;
   delete process.env.PI_ENSEMBLE_WORK_DRIVER; // default = ON
   try {
-    const { ctx: ctxW, notifies: notifW } = makeCtx();
+    const { ctx: ctxW, notifies: notifW } = makeCtx(TMP_CWD);
     await handlers.work!("789", ctxW);
     assert(
-      rec.sentMessages.length === 3,
+      promptMessages().length === 3,
       "/work 789 (driver default-ON): does NOT call sendUserMessage",
     );
     assert(
@@ -200,10 +228,10 @@ assert(
   const prevFlag = process.env.PI_ENSEMBLE_WORK_DRIVER;
   delete process.env.PI_ENSEMBLE_WORK_DRIVER;
   try {
-    const { ctx: ctxWE, notifies: notifWE } = makeCtx();
+    const { ctx: ctxWE, notifies: notifWE } = makeCtx(TMP_CWD);
     await handlers.work!("", ctxWE);
     assert(
-      rec.sentMessages.length === 3,
+      promptMessages().length === 3,
       "/work (driver default-ON, no args): does NOT send a message",
     );
     assert(
@@ -230,10 +258,10 @@ assert(
   const prevFlag = process.env.PI_ENSEMBLE_WORK_DRIVER;
   delete process.env.PI_ENSEMBLE_WORK_DRIVER;
   try {
-    const { ctx: ctxMulti, notifies: notifMulti } = makeCtx();
+    const { ctx: ctxMulti, notifies: notifMulti } = makeCtx(TMP_CWD);
     await handlers.work!("561 562 563", ctxMulti);
     assert(
-      rec.sentMessages.length === 3,
+      promptMessages().length === 3,
       "/work 561 562 563 (driver default-ON): does NOT call sendUserMessage synchronously",
     );
     assert(
@@ -259,7 +287,7 @@ assert(
   delete process.env.PI_ENSEMBLE_WORK_DRIVER;
   try {
     // Trailing --restart.
-    const { ctx: ctxR1, notifies: notifR1 } = makeCtx();
+    const { ctx: ctxR1, notifies: notifR1 } = makeCtx(TMP_CWD);
     await handlers.work!("547 --restart", ctxR1);
     assert(
       notifR1.some(
@@ -268,7 +296,7 @@ assert(
       "/work 547 --restart: notify includes restart tag",
     );
     // Leading --restart.
-    const { ctx: ctxR2, notifies: notifR2 } = makeCtx();
+    const { ctx: ctxR2, notifies: notifR2 } = makeCtx(TMP_CWD);
     await handlers.work!("--restart 548", ctxR2);
     assert(
       notifR2.some(
@@ -281,7 +309,7 @@ assert(
     // PR16 — the immediate notify is the "analyzing…" line (grouping
     // pass runs in the background). The --restart tag surfaces later
     // in the sendUserMessage grouping-decision line, not the notify.
-    const { ctx: ctxR3, notifies: notifR3 } = makeCtx();
+    const { ctx: ctxR3, notifies: notifR3 } = makeCtx(TMP_CWD);
     await handlers.work!("549 --restart 550", ctxR3);
     assert(
       notifR3.some(
@@ -293,7 +321,7 @@ assert(
       "/work 549 --restart 550: --restart filtered out of issue parse, multi-issue analyzing phrasing intact",
     );
     // Plain /work N (no --restart) — no restart tag in notify.
-    const { ctx: ctxR4, notifies: notifR4 } = makeCtx();
+    const { ctx: ctxR4, notifies: notifR4 } = makeCtx(TMP_CWD);
     await handlers.work!("551", ctxR4);
     assert(
       notifR4.some(
@@ -342,7 +370,7 @@ const { ctx: ctx3, notifies: notif3 } = makeCtx();
 ctx3.isIdle = () => false;
 await handlers.start!("", ctx3);
 assert(
-  rec.sentMessages.length === 3,
+  promptMessages().length === 3,
   "/start while busy: no new message queued (still 3 from earlier)",
 );
 assert(
@@ -362,17 +390,27 @@ assert(
 // sentMessages.length === N assertions don't shift.
 {
   const { ctx: ctxDo } = makeCtx();
-  const before = rec.sentMessages.length;
+  const before = promptMessages().length;
   await handlers.do!("fix the typo in README.md", ctxDo);
   assert(
-    rec.sentMessages.length === before + 1,
+    promptMessages().length === before + 1,
     "/do <description> → 1 message queued (PM-driven, no driver detour)",
   );
   assert(
-    rec.sentMessages[before].includes("**Request**: fix the typo in README.md"),
+    promptMessages()[before].includes("**Request**: fix the typo in README.md"),
     "/do: $ARGUMENTS expanded into the **Request** field of do.md",
   );
 }
+
+// #360 — the driver runs fire-and-forget, so give any stray background write
+// a chance to land before asserting the repo's own state dir is untouched.
+// Pre-#360 this suite left 547/548/549/551/561/789.json behind on every run.
+await new Promise((r) => setTimeout(r, 250));
+assert(
+  listRepoWorkState() === repoWorkStateBefore,
+  "/work cases honour ctx.cwd — repo .pi/work-state/ is unchanged by the suite",
+);
+rmSync(TMP_CWD, { recursive: true, force: true });
 
 console.log("\n=== test-command-flow summary ===");
 console.log(`registered: ${rec.registeredCommands.length} commands, ${rec.registeredTools.length} tools`);

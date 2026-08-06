@@ -72,9 +72,13 @@ function isWorkDriverEnabled(): boolean {
 /**
  * Resolve the project repo root (the worktree containing the `.git` dir or
  * gitlink). The driver state file lives here so it survives `git worktree
- * remove` against any sub-worktree. Falls back to process.cwd() when not
+ * remove` against any sub-worktree. Falls back to the caller's cwd when not
  * inside a git repo (which would mean /work is being run in a non-git
  * directory — surface clearly rather than fabricate a path).
+ *
+ * Callers pass `ctx.cwd` (the session's directory, first-class Pi API), never
+ * `process.cwd()` — those diverge whenever Pi was launched from elsewhere, and
+ * the divergence silently retargets the state file at the wrong repo (#360).
  */
 async function resolveRepoRoot(cwd: string): Promise<string> {
   try {
@@ -188,8 +192,7 @@ export function registerCommands(pi: ExtensionAPI) {
             );
             return;
           }
-          const cwd = process.cwd();
-          const repoRoot = await resolveRepoRoot(cwd);
+          const repoRoot = await resolveRepoRoot(ctx.cwd);
           const restartTag = restart ? " (restart — prior state wiped)" : "";
           trace(
             `/work → driver loop for ${issues.length === 1 ? `issue #${issues[0]}` : `${issues.length} issues (#${issues.join(", #")})`}${restartTag} (repoRoot=${repoRoot})`,
