@@ -174,10 +174,12 @@ export interface DriverContext {
    * `initialState(issue)`. Set by `commands.ts` when the operator
    * passes `/work N --restart` to wipe a prior terminal cycle's state
    * and run fresh (e.g., after revising the issue body via /plan).
-   * Branch step's existing existing-branch detection handles worktree
-   * / branch leftovers at runtime; this flag only resets the driver's
-   * state file. Default behaviour (omitted / false) reads the existing
-   * state if present.
+   * This flag only resets the driver's state file — it does NOT clean up
+   * branches, worktrees, or an already-open PR. #362 adds a branch-step
+   * pre-flight that halts when an open PR already covers the issue,
+   * because wiping state alone made the driver rebuild #5 from scratch
+   * and open a duplicate PR (#358 orphaned by #359). Default behaviour
+   * (omitted / false) reads the existing state if present.
    */
   restart?: boolean;
   /**

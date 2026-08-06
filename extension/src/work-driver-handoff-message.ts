@@ -172,6 +172,27 @@ export function renderHandoffUserMessage(
       "  # 4. Abandon the handoff entry (no code was written; safe to discard):",
       `     rm ${repoRoot}/.pi/work-state/${issue}.json`,
     );
+  } else if (cap === "existing-pr-detected") {
+    const pr = ps.existingPr;
+    const head = pr?.headRefName ?? "<branch>";
+    lines.push(
+      "",
+      `Existing PR #${pr?.number ?? "?"} on \`${head}\` (matched by ${pr?.matchedBy ?? "?"}).`,
+      "No branch was created and no subagent ran.",
+      "",
+      "  # 1. Look at what the open PR already contains:",
+      `     gh pr view ${pr?.number ?? "<pr>"} --json state,mergeable,files`,
+      "",
+      "  # 2. Continue that PR instead of starting over (preferred):",
+      `     git fetch origin && git checkout ${head}`,
+      "",
+      "  # 3. Or abandon it, then re-run — the pre-flight will pass once it is closed:",
+      `     gh pr close ${pr?.number ?? "<pr>"} --comment "Superseded; restarting via /work"`,
+      `     rm ${repoRoot}/.pi/work-state/${issue}.json && pi`,
+      "",
+      "  # 4. Or proceed anyway, accepting a second PR for this issue:",
+      "     PI_ENSEMBLE_PR_PREFLIGHT=0 pi",
+    );
   } else if (cap === "explore-needs-clarification") {
     lines.push(
       "",

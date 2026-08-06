@@ -214,6 +214,14 @@ export type WorkEvent =
         // branch or the PR number doesn't resolve via gh. The evidence
         // lives in pipelineState.verifyEvidence for the handoff body.
         // Escape hatch: PI_ENSEMBLE_VERIFY=0 disables the gate.
+        // #362 — emitted by the branch-step pre-flight when an open PR
+        // already covers this cycle's issue. Fires BEFORE any dispatch, so
+        // a duplicate cycle costs zero tokens. The driver halts rather than
+        // adopting the PR: attaching our commits to a PR whose head is a
+        // different branch is the false-MERGED class (#245/#253), and
+        // choosing between resume / retarget / close is judgment.
+        // Escape hatch: PI_ENSEMBLE_PR_PREFLIGHT=0.
+        | "existing-pr-detected"
         | `verify-failed:${WorkStep}`
         | `step-failed:${WorkStep}`;
       reviewRound: number;

@@ -198,6 +198,26 @@ export function renderHandoffMarkdown(state: WorkState): string {
       "# 4. Abandon the handoff entry (no code was written; safe to discard):",
       `rm .pi/work-state/${issue}.json`,
     );
+  } else if (capForExplain === "existing-pr-detected") {
+    const pr = ps.existingPr;
+    const head = pr?.headRefName ?? "<branch>";
+    lines.push(
+      `# Existing PR #${pr?.number ?? "?"} on ${head} (matched by ${pr?.matchedBy ?? "?"}).`,
+      "# No branch was created and no subagent ran.",
+      "",
+      "# 1. Look at what the open PR already contains:",
+      `gh pr view ${pr?.number ?? "<pr>"} --json state,mergeable,files`,
+      "",
+      "# 2. Continue that PR instead of starting over (preferred):",
+      `git fetch origin && git checkout ${head}`,
+      "",
+      "# 3. Or abandon it, then re-run — the pre-flight passes once it is closed:",
+      `gh pr close ${pr?.number ?? "<pr>"} --comment "Superseded; restarting via /work"`,
+      `rm .pi/work-state/${issue}.json && pi`,
+      "",
+      "# 4. Or proceed anyway, accepting a second PR for this issue:",
+      "PI_ENSEMBLE_PR_PREFLIGHT=0 pi",
+    );
   } else if (capForExplain === "explore-needs-clarification") {
     lines.push(
       "# 1. Read what explore couldn't determine:",

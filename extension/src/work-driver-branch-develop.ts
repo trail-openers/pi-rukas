@@ -15,6 +15,7 @@ import type { DriverContext } from "./work-driver-context.ts";
 import { parseBranchName } from "./work-driver-diff.ts";
 import { buildCompletionEvent, runSingleDispatch } from "./work-driver-merged.ts";
 import { sliceMarkdownSection } from "./work-driver-plan.ts";
+import { findOpenPrForIssue, prPreflightEnabled } from "./work-driver-pr-preflight.ts";
 import {
   inlineBranchPrompt,
   inlineDevelopPrompt,
@@ -48,6 +49,27 @@ export async function runBranch(
   now: number,
 ): Promise<WorkState> {
   const workstreamIds = Object.keys(state.pipelineState.workstreams ?? {});
+  const execFnPre = ctx.verifyExecFn ?? execp;
+  // #362 — pre-flight BEFORE the dispatch. `--restart` wipes the state file
+  // but not GitHub, so without this the driver rebuilds an issue that already
+  // has an open PR and opens a second one (#358 orphaned by #359). Halting
+  // here costs zero tokens; halting after develop costs a whole cycle.
+  if (prPreflightEnabled()) {
+    const existing = await findOpenPrForIssue(execFnPre, ctx.repoRoot, ctx.issue);
+    if (existing) {
+      const withPr: WorkState = {
+        ...state,
+        pipelineState: { ...state.pipelineState, currentStep: "branch", existingPr: existing },
+      };
+      return appendEvent(withPr, {
+        kind: "cap-hit",
+        at: now,
+        cap: "existing-pr-detected",
+        reviewRound: 0,
+        nextStep: "handoff",
+      });
+    }
+  }
   let next = await runSingleDispatch(ctx, state, "branch", "ops", "ops", now, () =>
     inlineBranchPrompt(activeIssuesOf(state), workstreamIds, scratchDir(ctx.repoRoot, ctx.issue)),
   );

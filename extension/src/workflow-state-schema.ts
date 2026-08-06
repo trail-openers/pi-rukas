@@ -130,6 +130,13 @@ export interface PipelineState {
    */
   emptyBodyIssues?: Array<{ issue: number; reason: string }>;
   /**
+   * #362 — the open PR the branch-step pre-flight found already covering
+   * this issue, which is why the cycle halted with cap
+   * `existing-pr-detected`. Drives the handoff body (PR number, its head
+   * branch, and which signal matched). Absent for every cycle that ran.
+   */
+  existingPr?: { number: number; headRefName: string; matchedBy: "body" | "branch" };
+  /**
    * PR14 — per-workstream "missing from committed diff" list. Populated
    * by `runCommitPr`'s post-dispatch consolidation gate when the
    * integration branch's diff (vs origin/main) doesn't include files
