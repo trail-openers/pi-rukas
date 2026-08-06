@@ -702,6 +702,14 @@ Each cycle produces **its own PR** and its own state file (`.pi/work-state/<prim
 - **PR15 (v0.12.15)**: retreated to strictly sequential one-PR-per-issue. Safe but ignored the "these issues genuinely belong together" signal.
 - **PR16 (v0.12.16+)**: deterministic grouping decides the middle path.
 
+### Parallel group execution
+
+`/work N M P …` runs up to `PI_ENSEMBLE_PARALLEL_GROUPS` (default **3**) groups concurrently. Each group develops in its own `.worktrees/` tree, so the only shared resource is the repo root, and every operation that touches it — branch creation, patch integration, commit, push, `gh pr create`, the verify gates, lens-fix re-integration, `restoreCheckout`, worktree teardown — runs under a single integration lock. That lock is an in-process promise chain plus an `O_EXCL` lockfile under `.git/`, so a second `/work` invocation or a second Pi process on the same clone is also serialised.
+
+Child-process load is bounded by `PI_ENSEMBLE_SPAWN_CAP` (default 12), **not** by the group count: excess spawns queue FIFO. The speculative explore that normally accompanies each developer is switched off automatically when more than one cycle runs at once, halving develop's fanout.
+
+Set `PI_ENSEMBLE_PARALLEL_WORK=0` for strictly sequential execution.
+
 ### Park-and-continue (was: halt-on-non-merged)
 
 If a group's cycle terminates as anything other than `merged`, the queue **parks that group and carries on**. At the end you get one report:

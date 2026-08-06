@@ -183,6 +183,16 @@ export interface DriverContext {
    */
   restart?: boolean;
   /**
+   * How many cycles this invocation runs at once. Set by the queue; the
+   * single-issue path leaves it at 1.
+   *
+   * This is the ACTUAL concurrency of the run, not the configured cap:
+   * `/work 123` runs one cycle whatever `PI_ENSEMBLE_PARALLEL_GROUPS` says,
+   * and sizing decisions that key off the cap instead would degrade a
+   * single-issue run for a pool it is not part of.
+   */
+  parallelCycles?: number;
+  /**
    * Optional injection point for tests: replace runAdversarialLoop with a
    * fake. Production callers omit this — runAdversarial uses the real
    * orchestrator from adversarial.ts. Mirrors `dispatchFn` for symmetry.

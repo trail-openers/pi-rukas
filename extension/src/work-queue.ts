@@ -155,6 +155,8 @@ export interface RunQueueOpts {
   restart: boolean;
   /** Runs one group's cycle. Injected so the offline suite never spawns Pi. */
   runGroup: (primary: number, issues: number[] | undefined) => Promise<void>;
+  /** Groups to run at once. Defaults to 1 (strictly sequential). */
+  concurrency?: number;
   readStateFn?: (repoRoot: string, issue: number) => Promise<WorkState | undefined>;
 }
 
@@ -167,73 +169,116 @@ export interface RunQueueOpts {
  */
 export async function runWorkQueue(opts: RunQueueOpts): Promise<QueueSummary> {
   const read = opts.readStateFn ?? readState;
-  const entries: QueueEntry[] = [];
   const groups = opts.groups;
+  // Keyed by original index so the summary is deterministic regardless of the
+  // order groups actually finish in.
+  const entries = new Map<number, QueueEntry>();
+  const claimed = new Set<string>();
+  let cursor = 0;
+  let halted = false;
 
-  for (let gi = 0; gi < groups.length; gi++) {
-    const g = groups[gi];
-    if (!g) continue;
-    const primary = g.issues[0];
-    if (primary === undefined) continue;
+  const cap = Math.max(1, Math.min(opts.concurrency ?? 1, groups.length || 1));
 
-    let threw: Error | undefined;
-    try {
-      await opts.runGroup(primary, g.issues.length > 1 ? g.issues : undefined);
-    } catch (err) {
-      threw = err as Error;
-    }
+  /**
+   * One worker: claim the next unclaimed group, run it to completion, repeat.
+   * `cursor++` is atomic because JS is single-threaded — the claim happens
+   * between awaits, never across one.
+   */
+  async function worker(): Promise<void> {
+    for (;;) {
+      if (halted) return;
+      const gi = cursor;
+      cursor += 1;
+      if (gi >= groups.length) return;
+      const g = groups[gi];
+      if (!g) continue;
+      const primary = g.issues[0];
+      if (primary === undefined) continue;
+      claimed.add(g.id);
 
-    if (threw) {
-      entries.push({
+      let threw: Error | undefined;
+      try {
+        await opts.runGroup(primary, g.issues.length > 1 ? g.issues : undefined);
+      } catch (err) {
+        threw = err as Error;
+      }
+
+      if (threw) {
+        // A driver throw is an unknown-shape failure: we cannot tell whether
+        // it left the repo in a state the next group depends on.
+        halted = true;
+        entries.set(gi, {
+          groupId: g.id,
+          issues: g.issues,
+          outcome: "halted",
+          reason: `driver crashed: ${threw.message?.slice(0, 200)}`,
+          humanAction: `inspect .pi/work-state/${primary}.json, or re-run with PI_ENSEMBLE_WORK_DRIVER=0`,
+        });
+        // Return from THIS worker only. Siblings already mid-cycle drain to
+        // completion — abandoning a group halfway through commit-pr would
+        // leave exactly the debris the halt exists to avoid.
+        return;
+      }
+
+      const state = await read(opts.repoRoot, primary).catch(() => undefined);
+      if (state?.pipelineState.status === "merged") {
+        entries.set(gi, { groupId: g.id, issues: g.issues, outcome: "merged" });
+        continue;
+      }
+
+      const { reason, failedStep } = parkReason(state);
+      const systemic = isSystemicFailure(state);
+      if (systemic.systemic || queueHaltOnFailure()) {
+        halted = true;
+        entries.set(gi, {
+          groupId: g.id,
+          issues: g.issues,
+          outcome: "halted",
+          reason: systemic.reason ?? reason,
+          failedStep,
+          humanAction: humanActionFor(reason, primary),
+        });
+        return;
+      }
+
+      trace(`work-queue: parking ${g.id} (${reason}) and continuing`);
+      entries.set(gi, {
         groupId: g.id,
         issues: g.issues,
-        outcome: "halted",
-        reason: `driver crashed: ${threw.message?.slice(0, 200)}`,
-        humanAction: `inspect .pi/work-state/${primary}.json, or re-run with PI_ENSEMBLE_WORK_DRIVER=0`,
-      });
-      return finish(entries, groups, gi);
-    }
-
-    const state = await read(opts.repoRoot, primary).catch(() => undefined);
-    if (state?.pipelineState.status === "merged") {
-      entries.push({ groupId: g.id, issues: g.issues, outcome: "merged" });
-      continue;
-    }
-
-    const { reason, failedStep } = parkReason(state);
-    const systemic = isSystemicFailure(state);
-    if (systemic.systemic || queueHaltOnFailure()) {
-      entries.push({
-        groupId: g.id,
-        issues: g.issues,
-        outcome: "halted",
-        reason: systemic.reason ?? reason,
+        outcome: "parked",
+        reason,
         failedStep,
         humanAction: humanActionFor(reason, primary),
       });
-      return finish(entries, groups, gi);
     }
-
-    trace(`work-queue: parking ${g.id} (${reason}) and continuing`);
-    entries.push({
-      groupId: g.id,
-      issues: g.issues,
-      outcome: "parked",
-      reason,
-      failedStep,
-      humanAction: humanActionFor(reason, primary),
-    });
   }
 
-  return finish(entries, groups, groups.length - 1);
+  await Promise.all(Array.from({ length: cap }, () => worker()));
+  return finish(entries, groups, claimed);
 }
 
-function finish(entries: QueueEntry[], groups: IssueGroup[], lastIndex: number): QueueSummary {
-  const notStarted = groups.slice(lastIndex + 1).map((r) => `${r.id} (#${r.issues.join(", #")})`);
+function finish(
+  entries: Map<number, QueueEntry>,
+  groups: IssueGroup[],
+  claimed: Set<string>,
+): QueueSummary {
+  // Never-claimed, not "everything after the last index". With K workers
+  // groups complete out of order, so a positional slice would report groups
+  // that actually ran as skipped — and miss ones that genuinely were.
+  const notStarted = groups
+    .filter((g) => !claimed.has(g.id))
+    .map((r) => `${r.id} (#${r.issues.join(", #")})`);
+  // Ordered by original group index so the report reads the same every run.
+  const ordered = [...entries.entries()].sort((a, b) => a[0] - b[0]).map(([, e]) => e);
+  // A systemic fault hits every in-flight group at once, so K workers can each
+  // record a halt for the same cause. Tell the operator once.
+  const halts = ordered.filter((e) => e.outcome === "halted");
+  const deduped =
+    halts.length > 1 ? ordered.filter((e) => e.outcome !== "halted" || e === halts[0]) : ordered;
   return {
-    entries,
-    merged: entries.filter((e) => e.outcome === "merged").length,
-    parked: entries.filter((e) => e.outcome === "parked").length,
+    entries: deduped,
+    merged: deduped.filter((e) => e.outcome === "merged").length,
+    parked: deduped.filter((e) => e.outcome === "parked").length,
     notStarted,
   };
 }

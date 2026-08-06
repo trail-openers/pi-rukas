@@ -473,6 +473,10 @@ All optional. Defaults are reasonable for typical use.
 | `PI_ENSEMBLE_ALWAYS_WORKTREE` | `1` | Set to `0` to let a single-workstream cycle develop directly in the repo root (the pre-#287 behaviour). Default ON — every workstream gets its own detached worktree under `.worktrees/`, and the repo root is only ever an integration point. Isolation is what keeps your uncommitted work out of the PR, stops one failed cycle from wedging the rest of the queue, and makes parallel groups possible. |
 | `PI_ENSEMBLE_PR_PREFLIGHT` | `1` | Set to `0` to skip the branch-step check for an open PR already covering the issue. Default ON — `--restart` wipes the driver's state file but not GitHub, and without this the driver rebuilds the issue and opens a duplicate (#358 was orphaned by #359 exactly this way). |
 | `PI_ENSEMBLE_SPAWN_CAP` | `12` | Maximum concurrent specialist child processes across the whole session. Excess dispatches queue FIFO — they are never rejected. Set to `0` to disable the cap. This is the only global ceiling: `MAX_JOBS` rejects rather than queues and does not see the six-pass lens children or adversarial children, which spawn directly. |
+| `PI_ENSEMBLE_PARALLEL_GROUPS` | `3` | How many issue groups `/work` runs concurrently. Parallelism is on by default; each group develops in its own worktree and only the repo-root integration step is serialised. Actual child-process load is bounded by `PI_ENSEMBLE_SPAWN_CAP`, not by this number. |
+| `PI_ENSEMBLE_PARALLEL_WORK` | `1` | Set to `0` to force strictly sequential group execution regardless of `PI_ENSEMBLE_PARALLEL_GROUPS`. |
+| `PI_ENSEMBLE_MAX_WORKSTREAMS` | `6` | Ceiling on workstreams per cycle. Excess folds into the last workstream (paths unioned, fold recorded) rather than being dropped. Each workstream is a worktree and a developer child, so this bounds fanout. |
+| `PI_ENSEMBLE_PLAN_QUALITY` | `1` | Set to `0` to disable the plan-quality re-dispatch (under-decomposed plan, or a workstream with no declared paths). The prompt doctrine stays either way. |
 
 **Sandbox mode (`pi-ensemble` wrapper):**
 

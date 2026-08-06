@@ -43,7 +43,7 @@ import { GLOBAL_KEY, getAllOverrides } from "./model-config.ts";
 import { modelConfigSnapshot } from "./models.ts";
 import { transcriptsSummary } from "./runs.ts";
 import { trace } from "./trace.ts";
-import { groupIssues } from "./work-driver-grouping.ts";
+import { groupIssues, resolvedParallelGroups } from "./work-driver-grouping.ts";
 import { runWorkDriver } from "./work-driver.ts";
 import { renderQueueSummary, runWorkQueue } from "./work-queue.ts";
 import { registerWorkStatusCommand } from "./work-status.ts";
@@ -270,7 +270,7 @@ export function registerCommands(pi: ExtensionAPI) {
             const notesLine = notes.length > 0 ? `\n  rules fired: ${notes.join("; ")}` : "";
             try {
               pi.sendUserMessage(
-                `pi-ensemble: /work grouping decided K=${groupList.length} group(s) — ${summary}${notesLine}\nRunning cycles sequentially${restartTag}; a failed group parks and the queue continues.`,
+                `pi-ensemble: /work grouping decided K=${groupList.length} group(s) — ${summary}${notesLine}\n${resolvedParallelGroups() > 1 ? `Running up to ${Math.min(resolvedParallelGroups(), groupList.length)} cycle(s) concurrently` : "Running cycles sequentially"}${restartTag}; a failed group parks and the queue continues.`,
               );
             } catch {
               /* nothing we can do */
@@ -282,12 +282,21 @@ export function registerCommands(pi: ExtensionAPI) {
             // everything, because only those make the next group's attempt
             // pointless. Pre-#368 any failure halted, which is how one 429
             // left 11 unrelated issues unstarted.
+            const concurrency = Math.min(resolvedParallelGroups(), groupList.length);
             const summaryResult = await runWorkQueue({
               repoRoot,
               groups: groupList,
               restart,
+              concurrency,
               runGroup: (primary, issues) =>
-                runWorkDriver({ pi, repoRoot, issue: primary, issues, restart }),
+                runWorkDriver({
+                  pi,
+                  repoRoot,
+                  issue: primary,
+                  issues,
+                  restart,
+                  parallelCycles: concurrency,
+                }),
             });
             try {
               pi.sendUserMessage(renderQueueSummary(summaryResult));

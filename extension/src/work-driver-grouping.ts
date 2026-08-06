@@ -51,15 +51,19 @@
  * `Object.keys(workstreams)` unchanged.
  */
 export const MAX_ISSUES_PER_GROUP = 3;
-export const MAX_PARALLEL_GROUPS_DEFAULT = 2;
+// Parallelism is ON by default: strict sequentiality is what made /work slow
+// enough to be a standing complaint. 3 sits inside the 2-4 band Cursor and
+// Claude Code independently arrive at, and the real resource bound is the
+// spawn semaphore, not this number.
+export const MAX_PARALLEL_GROUPS_DEFAULT = 3;
 
 /**
- * The concurrency the queue will actually use. Exported so callers that must
- * size themselves against it — notably the speculative-explore default in the
- * develop step — read the same number the pool does, rather than re-deriving
- * the env parse and drifting.
+ * The concurrency the queue will actually use. Exported so anything that must
+ * size itself against it reads the same number the pool does rather than
+ * re-deriving the env parse and drifting.
  */
 export function resolvedParallelGroups(): number {
+  if (process.env.PI_ENSEMBLE_PARALLEL_WORK === "0") return 1;
   const env = Number(process.env.PI_ENSEMBLE_PARALLEL_GROUPS);
   return Number.isFinite(env) && env > 0 ? env : MAX_PARALLEL_GROUPS_DEFAULT;
 }

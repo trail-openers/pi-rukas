@@ -288,7 +288,15 @@ export async function runDevelop(
   // Wall-clock cost is the developer's elapsed (always longer than explore);
   // token cost is one extra explore per workstream. Opt-out via env var for
   // budget-sensitive users.
-  const speculativeOn = process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE !== "1";
+  // The speculative explore doubles develop's fanout — one extra child per
+  // workstream — for what the comment above calls best-effort observability.
+  // Fair for a single cycle; under a pool it is the difference between M and
+  // 2M children per cycle, multiplied by the concurrency. So: on at
+  // concurrency 1, off when groups run concurrently, and the env var wins
+  // either way.
+  const speculativeEnv = process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE;
+  const speculativeOn =
+    speculativeEnv === "0" ? true : speculativeEnv === "1" ? false : (ctx.parallelCycles ?? 1) <= 1;
   const verdicts: Array<{ id: string; ok: boolean }> = [];
   const branchEvents: typeof next.eventLog = [];
   const results = await Promise.all(

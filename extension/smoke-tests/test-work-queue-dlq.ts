@@ -251,5 +251,123 @@ function mkState(
   assert(!/queue halted/.test(text), "no halt language when nothing halted");
 }
 
+// ============================================================ #289 pool
+
+/**
+ * The pool. `finish()` used to compute notStarted as
+ * `groups.slice(lastIndex + 1)` — a positional assumption that only holds for
+ * a strictly sequential walk. With K workers, groups finish out of order and
+ * that slice reports groups which actually ran as skipped, and misses ones
+ * that genuinely were.
+ */
+{
+  const started: number[] = [];
+  let live = 0;
+  let peak = 0;
+  const summary = await runWorkQueue({
+    repoRoot: "/repo",
+    groups: groups(6),
+    restart: false,
+    concurrency: 3,
+    runGroup: async (primary) => {
+      started.push(primary);
+      live += 1;
+      peak = Math.max(peak, live);
+      // Deliberately uneven: the LAST group finishes first, so any positional
+      // reasoning about completion order breaks.
+      await new Promise((r) => setTimeout(r, primary === 105 ? 5 : 40));
+      live -= 1;
+    },
+    readStateFn: async (_r, issue) => mkState(issue, "merged"),
+  });
+  assert(peak === 3, `concurrency 3 ran three groups at once (peak ${peak})`);
+  assert(started.length === 6, "every group ran exactly once");
+  assert(new Set(started).size === 6, "no group was claimed twice");
+  assert(summary.merged === 6, "all six merged");
+  assert(summary.notStarted.length === 0, "nothing reported as not-started when all ran");
+  assert(
+    summary.entries.map((e) => e.groupId).join(",") ===
+      "group-a,group-b,group-c,group-d,group-e,group-f",
+    "the report is ordered by original group index despite out-of-order completion",
+  );
+}
+
+{
+  // A halt must stop CLAIMING new groups while letting in-flight ones drain —
+  // abandoning a group halfway through commit-pr leaves exactly the debris
+  // the halt exists to avoid.
+  const finished: number[] = [];
+  const summary = await runWorkQueue({
+    repoRoot: "/repo",
+    groups: groups(6),
+    restart: false,
+    concurrency: 2,
+    runGroup: async (primary) => {
+      await new Promise((r) => setTimeout(r, primary === 100 ? 5 : 40));
+      finished.push(primary);
+    },
+    readStateFn: async (_r, issue) =>
+      issue === 100
+        ? mkState(issue, "aborted", {
+            providerMessage: "Server requested 86399s retry delay. 429 status code",
+          })
+        : mkState(issue, "merged"),
+  });
+  assert(
+    finished.includes(101),
+    "the group already in flight when the halt fired ran to completion (drained)",
+  );
+  assert(summary.notStarted.length > 0, "groups never claimed are reported as not-started");
+  assert(
+    !summary.notStarted.some((n) => n.includes("group-b")),
+    "a group that DID run is never listed as not-started (the positional-slice bug)",
+  );
+}
+
+{
+  // A systemic fault hits every in-flight group at once, so K workers can each
+  // record a halt for the same cause. The operator should be told once.
+  const summary = await runWorkQueue({
+    repoRoot: "/repo",
+    groups: groups(4),
+    restart: false,
+    concurrency: 3,
+    runGroup: async () => {
+      await new Promise((r) => setTimeout(r, 5));
+    },
+    readStateFn: async (_r, issue) =>
+      mkState(issue, "aborted", {
+        providerMessage: "Server requested 86399s retry delay. 429 status code",
+      }),
+  });
+  assert(
+    summary.entries.filter((e) => e.outcome === "halted").length === 1,
+    "duplicate halt entries for one systemic cause are deduped",
+  );
+}
+
+{
+  // concurrency 1 must reproduce the sequential behaviour exactly.
+  const started: number[] = [];
+  let live = 0;
+  let peak = 0;
+  await runWorkQueue({
+    repoRoot: "/repo",
+    groups: groups(4),
+    restart: false,
+    concurrency: 1,
+    runGroup: async (primary) => {
+      started.push(primary);
+      live += 1;
+      peak = Math.max(peak, live);
+      await new Promise((r) => setTimeout(r, 5));
+      live -= 1;
+    },
+    readStateFn: async (_r, issue) => mkState(issue, "merged"),
+  });
+  assert(peak === 1, "concurrency 1 is strictly sequential");
+  assert(started.join(",") === "100,101,102,103", "and runs groups in order");
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
