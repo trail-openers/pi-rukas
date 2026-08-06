@@ -53,6 +53,17 @@
 export const MAX_ISSUES_PER_GROUP = 3;
 export const MAX_PARALLEL_GROUPS_DEFAULT = 2;
 
+/**
+ * The concurrency the queue will actually use. Exported so callers that must
+ * size themselves against it — notably the speculative-explore default in the
+ * develop step — read the same number the pool does, rather than re-deriving
+ * the env parse and drifting.
+ */
+export function resolvedParallelGroups(): number {
+  const env = Number(process.env.PI_ENSEMBLE_PARALLEL_GROUPS);
+  return Number.isFinite(env) && env > 0 ? env : MAX_PARALLEL_GROUPS_DEFAULT;
+}
+
 export interface GroupingResult {
   groups: Record<
     string,

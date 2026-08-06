@@ -16,6 +16,7 @@ import {
 } from "./lens-review-format.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import type { DispatchResult } from "./types.ts";
+import { jitteredMs } from "./work-driver-failure-taxonomy.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LENS_REPORTER_PATH = path.join(__dirname, "lens-reporter.ts");
@@ -202,7 +203,13 @@ export async function runLensReview(opts: {
       // Backoff before next retry (skipped on last attempt to keep total
       // wall-clock bounded).
       if (attempts < MAX_LENS_ATTEMPTS) {
-        await new Promise((r) => setTimeout(r, LENS_RETRY_BACKOFF_MS));
+        // Jittered, not flat. Six lenses fail in lockstep whenever the cause
+        // is a provider blip — which is the common case — so a fixed delay
+        // retries all six at the same instant, i.e. a self-inflicted
+        // thundering herd against the endpoint that just rate-limited us.
+        // Reuses the driver's canonical jitter (#366) rather than adding a
+        // second formula.
+        await new Promise((r) => setTimeout(r, jitteredMs(LENS_RETRY_BACKOFF_MS)));
       }
     }
 

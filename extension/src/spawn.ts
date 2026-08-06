@@ -63,6 +63,7 @@ import {
   discoverInstalledExtensions,
   piEnsembleExtensionPath,
 } from "./spawn-extension-forward.ts";
+import { withSpawnSlot } from "./spawn-semaphore.ts";
 import {
   STDERR_TAIL_BYTES,
   buildCwdHint,
@@ -132,7 +133,21 @@ export function buildChildArgs(
   return args;
 }
 
+/**
+ * Spawn one specialist child, bounded by the global spawn semaphore.
+ *
+ * The cap wraps THIS function rather than `startJob` because
+ * `lens-review.ts` and `adversarial.ts` call it directly and bypass the job
+ * registry entirely — they are exactly the fanout that needs bounding.
+ */
 export async function spawnSpecialist(
+  spec: DispatchSpec,
+  opts: SpawnOptions = {},
+): Promise<DispatchResult> {
+  return withSpawnSlot(() => spawnSpecialistInner(spec, opts));
+}
+
+async function spawnSpecialistInner(
   spec: DispatchSpec,
   opts: SpawnOptions = {},
 ): Promise<DispatchResult> {
