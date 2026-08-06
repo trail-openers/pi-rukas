@@ -68,9 +68,10 @@ On timeout (120 seconds) or incomplete explore response, apply the Reconnaissanc
 
 ## Step 2 — Decompose and plan
 
-Identify parallel workstreams. Decide worktree strategy:
-- Single task → single feature branch, no worktrees.
-- Multiple independent tasks → worktrees as scratch, cherry-pick into one branch.
+Identify parallel workstreams. Worktree strategy under the compiled driver (#287):
+- EVERY workstream develops in its own detached worktree under `.worktrees/`, including a single-task cycle. The repo root is never a development tree — it is the integration point, and nothing between branch and commit-pr runs git against it.
+- Patches are transplanted onto the feature branch at the repo root by the driver's `integrate()`; there is no cherry-picking of scratch branches.
+- Legacy `PI_ENSEMBLE_ALWAYS_WORKTREE=0` (or `PI_ENSEMBLE_WORK_DRIVER=0`) restores the old "single task → no worktrees" shape.
 
 ## Step 3 — Setup
 

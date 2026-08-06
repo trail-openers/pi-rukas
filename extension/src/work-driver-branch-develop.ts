@@ -11,8 +11,10 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { dispatchCore } from "./dispatch.ts";
 import { trace } from "./trace.ts";
+import { alwaysWorktreeEnabled, mechanizedBranchSetup } from "./work-driver-branch-mechanized.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { parseBranchName } from "./work-driver-diff.ts";
+import { cachedIssueTitle, mechanizeOpsEnabled } from "./work-driver-integrate.ts";
 import { buildCompletionEvent, runSingleDispatch } from "./work-driver-merged.ts";
 import { sliceMarkdownSection } from "./work-driver-plan.ts";
 import { findOpenPrForIssue, prPreflightEnabled } from "./work-driver-pr-preflight.ts";
@@ -49,6 +51,9 @@ export async function runBranch(
   now: number,
 ): Promise<WorkState> {
   const workstreamIds = Object.keys(state.pipelineState.workstreams ?? {});
+  // Reassigned only when the mechanized path falls back, to carry its
+  // plumb-report into the ops dispatch below.
+  let base = state;
   const execFnPre = ctx.verifyExecFn ?? execp;
   // #362 — pre-flight BEFORE the dispatch. `--restart` wipes the state file
   // but not GitHub, so without this the driver rebuilds an issue that already
@@ -70,8 +75,61 @@ export async function runBranch(
       });
     }
   }
-  let next = await runSingleDispatch(ctx, state, "branch", "ops", "ops", now, () =>
-    inlineBranchPrompt(activeIssuesOf(state), workstreamIds, scratchDir(ctx.repoRoot, ctx.issue)),
+  // #287 — mechanized, always-worktree branch setup. Development never
+  // happens at repoRoot again: every workstream (including the degenerate
+  // N=1 `default`) gets a detached worktree, and repoRoot is touched only by
+  // `integrate()` at commit-pr. The LLM ops dispatch remains as the fallback
+  // for env variance, exactly as it does for commit-pr.
+  if (mechanizeOpsEnabled() && alwaysWorktreeEnabled()) {
+    const execFnMech = ctx.verifyExecFn ?? execp;
+    try {
+      const setup = await mechanizedBranchSetup(
+        execFnMech,
+        ctx.repoRoot,
+        ctx.issue,
+        activeIssuesOf(state),
+        workstreamIds,
+        await cachedIssueTitle(state),
+      );
+      const started = appendEvent(
+        { ...state, pipelineState: { ...state.pipelineState, currentStep: "branch" } },
+        { kind: "step-started", step: "branch", at: now },
+      );
+      const done = appendEvent(started, {
+        kind: "dispatch-completed",
+        step: "branch",
+        role: "driver",
+        jobId: "mechanized",
+        label: "driver:branch",
+        ok: true,
+        ms: 0,
+        at: Date.now(),
+        summary: `Mechanized branch setup: ${setup.branchName} @ ${setup.baseSha.slice(0, 8)} off origin/${setup.mainline}; ${Object.keys(setup.worktrees).length} worktree(s).`,
+      });
+      return {
+        ...done,
+        pipelineState: {
+          ...done.pipelineState,
+          branchName: setup.branchName,
+          baseSha: setup.baseSha,
+          worktrees: setup.worktrees,
+        },
+      };
+    } catch (err) {
+      trace(
+        `work-driver: mechanized branch setup fell back to ops dispatch: ${(err as Error).message?.slice(0, 200)}`,
+      );
+      base = appendEvent(base, {
+        kind: "plumb-report",
+        at: Date.now(),
+        step: "branch",
+        role: "driver",
+        body: `Mechanized branch setup failed, falling back to the ops dispatch: ${(err as Error).message?.slice(0, 300)}`,
+      });
+    }
+  }
+  let next = await runSingleDispatch(ctx, base, "branch", "ops", "ops", now, () =>
+    inlineBranchPrompt(activeIssuesOf(base), workstreamIds, scratchDir(ctx.repoRoot, ctx.issue)),
   );
   const last = next.eventLog[next.eventLog.length - 1];
   if (last?.kind !== "dispatch-completed") return next;

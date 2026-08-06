@@ -8,18 +8,57 @@
  */
 
 import { exec } from "node:child_process";
+import path from "node:path";
 import { promisify } from "node:util";
 import { runAdversarialLoop } from "./adversarial.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
+import { alwaysWorktreeEnabled } from "./work-driver-branch-mechanized.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { fetchDiff } from "./work-driver-diff.ts";
+import { integrate } from "./work-driver-integrate.ts";
 import { commitLensFixChanges } from "./work-driver-lens.ts";
+import { scratchDir } from "./work-driver-workspace.ts";
+import type { PipelineState } from "./workflow-state-schema.ts";
+import type { ExecFn } from "./worktree.ts";
+
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
 const execp = promisify(exec);
+
+/**
+ * #287 Part C — re-integrate a lens-fix made in a worktree.
+ *
+ * Mirrors `commitLensFixChanges`'s return shape so the caller's error and
+ * push handling is unchanged, but routes through `integrate()` in "followup"
+ * mode: the worktree's new diff is applied onto the feature branch at
+ * repoRoot as an additional commit, then pushed, so the next lens-review
+ * round and CI both see it.
+ */
+async function integrateLensFix(
+  execFn: ExecFn,
+  ctx: DriverContext,
+  ps: PipelineState,
+  worktrees: Record<string, string>,
+): Promise<{ committed: boolean; error?: string; pushed?: boolean }> {
+  const branchName = ps.branchName;
+  if (!branchName) return { committed: false, error: "no branch name recorded" };
+  const round = ps.reviewRound;
+  const res = await integrate(execFn, {
+    repoRoot: ctx.repoRoot,
+    branchName,
+    worktrees,
+    scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
+    commitTitle: `fix(lens): round ${round} review findings`,
+    commitBody: `Addresses six-pass review findings from round ${round}.`,
+    mode: "followup",
+  });
+  if (!res.ok) return { committed: false, error: res.reason };
+  if (res.empty) return { committed: false };
+  return { committed: true, pushed: true };
+}
 
 /** PR8 — extract round count from adversarial_loop's reply text. */
 function parseAdversarialRounds(text: string): number {
@@ -270,11 +309,19 @@ export async function runAdversarial(
     // state and are not used to gate this path.
     if (state.pipelineState.lastCompletedStep === "lens-fix") {
       const execFn = ctx.verifyExecFn ?? execp;
-      const result = await commitLensFixChanges(
-        ctx.repoRoot,
-        state.pipelineState.reviewRound,
-        execFn,
-      );
+      const psFix = state.pipelineState;
+      const fixWorktrees = psFix.worktrees ?? {};
+      const inWorktree =
+        alwaysWorktreeEnabled() &&
+        Object.values(fixWorktrees).some((p) => path.resolve(p) !== path.resolve(ctx.repoRoot));
+      // #287 — lens-fix runs in the WORKTREE (work-driver-lens.ts picks
+      // `worktrees.default` as its cwd), so committing at repoRoot found a
+      // clean tree and silently skipped: the fix never reached the PR. Pull
+      // the worktree's new diff onto the branch through the same integration
+      // path commit-pr uses, as a follow-up commit.
+      const result = inWorktree
+        ? await integrateLensFix(execFn, ctx, psFix, fixWorktrees)
+        : await commitLensFixChanges(ctx.repoRoot, psFix.reviewRound, execFn);
       if (result.error) {
         // Surface git failures as plumb-report so the operator can intervene.
         // Record in pipelineState.plumbReports instead of event log so the
@@ -286,7 +333,8 @@ export async function runAdversarial(
           at: Date.now(),
         });
       }
-      if (result.committed) {
+      // `integrate()` already pushed; only the legacy repoRoot path needs this.
+      if (result.committed && !result.pushed) {
         // Push the commit so the remote branch (and PR) are updated for
         // the next lens-review round and CI.
         try {

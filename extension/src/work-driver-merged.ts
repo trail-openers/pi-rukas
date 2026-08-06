@@ -14,8 +14,11 @@
  * parseMergeCommit.
  */
 
+import { exec } from "node:child_process";
 import path from "node:path";
+import { promisify } from "node:util";
 import { dispatchCore } from "./dispatch.ts";
+import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { mechanizeOpsEnabled } from "./work-driver-commit.ts";
 import type { DriverContext } from "./work-driver-context.ts";
@@ -30,6 +33,7 @@ import {
   appendEvent,
   writeDispatchArtifact,
 } from "./workflow-state.ts";
+import { worktreePrune, worktreeRemove } from "./worktree.ts";
 
 /**
  * Threshold above which a dispatch's text payload moves to a claim-check
@@ -38,6 +42,8 @@ import {
  * is parsed on every driver wake).
  */
 const ARTIFACT_THRESHOLD_BYTES = 4_000;
+
+const execp = promisify(exec);
 
 /**
  * PR10 — Parse a `merge-commit: <sha>` marker line from ops's merge reply.
@@ -357,6 +363,21 @@ export async function runMerged(
         body: `Checkout restoration failed: ${(err as Error).message?.slice(0, 300)}`,
       });
     }
+  }
+
+  // #287 Part E — tear down this cycle's worktrees. Best-effort: a cycle that
+  // merged is done regardless, and a stuck worktree must not turn success into
+  // a handoff. `worktreeRemove` was exported and never invoked before this,
+  // so worktrees accumulated indefinitely (EPIC #326's done-when clause).
+  const wtToRemove = Object.keys(next.pipelineState.worktrees ?? {});
+  if (wtToRemove.length > 0) {
+    const execFnWt = ctx.verifyExecFn ?? execp;
+    for (const id of wtToRemove) {
+      await worktreeRemove(execFnWt, ctx.repoRoot, `issue-${ctx.issue}-${id}`, true).catch((err) =>
+        trace(`work-driver: worktree cleanup for '${id}' failed: ${(err as Error).message}`),
+      );
+    }
+    await worktreePrune(execFnWt, ctx.repoRoot).catch(() => undefined);
   }
 
   return {

@@ -47,7 +47,11 @@ export async function runHandoff(
   // sendUserMessage, GitHub body, /work-status terminal) can answer
   // WHERE the work is without re-shelling git. Snapshot persists into
   // pipelineState even if subsequent steps in runHandoff fail.
-  const snap = await captureWorktreeSnapshot(ctx.repoRoot, state.pipelineState.branchName);
+  const snap = await captureWorktreeSnapshot(
+    ctx.repoRoot,
+    state.pipelineState.branchName,
+    state.pipelineState.worktrees,
+  );
   next = {
     ...next,
     pipelineState: { ...next.pipelineState, handoffSnapshot: snap },
@@ -210,6 +214,7 @@ export function parseHandoffCommentUrl(text: string | undefined): string | undef
 export async function captureWorktreeSnapshot(
   repoRoot: string,
   branchName: string | undefined,
+  worktrees?: Record<string, string>,
 ): Promise<NonNullable<WorkState["pipelineState"]["handoffSnapshot"]>> {
   const snapshot: NonNullable<WorkState["pipelineState"]["handoffSnapshot"]> = {
     modifiedFiles: [],
@@ -220,25 +225,41 @@ export async function captureWorktreeSnapshot(
     headSha: "",
     capturedAt: Date.now(),
   };
+  // #287 — the developer's uncommitted work lives in the WORKTREES, not at
+  // repoRoot. Snapshotting repoRoot alone would report "0 files modified" on
+  // exactly the handoffs where the operator needs to know what survived.
+  // Scan every worktree (falling back to repoRoot when none were recorded,
+  // i.e. a pre-branch halt or PI_ENSEMBLE_ALWAYS_WORKTREE=0), prefixing paths
+  // with the workstream id when there is more than one so the file list is
+  // unambiguous.
+  const scanRoots = Object.entries(worktrees ?? {});
+  const targets: Array<{ id: string | undefined; dir: string }> =
+    scanRoots.length > 0
+      ? scanRoots.map(([id, dir]) => ({ id: scanRoots.length > 1 ? id : undefined, dir }))
+      : [{ id: undefined, dir: repoRoot }];
   // git status --porcelain (XY format: column 1 = staged tier, column 2 = unstaged tier).
-  try {
-    const { stdout } = await execp("git status --porcelain", {
-      cwd: repoRoot,
-      maxBuffer: 256 * 1024,
-    });
-    const lines = stdout.split("\n").filter((l) => l.length > 0);
-    for (const line of lines) {
-      const x = line[0] ?? " ";
-      const y = line[1] ?? " ";
-      if (x !== " " && x !== "?") snapshot.stagedCount += 1;
-      if (y !== " ") snapshot.unstagedCount += 1;
-      const filePath = line.slice(3);
-      if (snapshot.modifiedFiles.length < 50) snapshot.modifiedFiles.push(filePath);
+  for (const { id, dir } of targets) {
+    try {
+      const { stdout } = await execp("git status --porcelain", {
+        cwd: dir,
+        maxBuffer: 256 * 1024,
+      });
+      const lines = stdout.split("\n").filter((l) => l.length > 0);
+      for (const line of lines) {
+        const x = line[0] ?? " ";
+        const y = line[1] ?? " ";
+        if (x !== " " && x !== "?") snapshot.stagedCount += 1;
+        if (y !== " ") snapshot.unstagedCount += 1;
+        const filePath = line.slice(3);
+        if (snapshot.modifiedFiles.length < 50) {
+          snapshot.modifiedFiles.push(id ? `${id}: ${filePath}` : filePath);
+        }
+      }
+    } catch (err) {
+      trace(
+        `work-driver: captureWorktreeSnapshot git status failed for ${dir}: ${(err as Error).message?.slice(0, 200)}`,
+      );
     }
-  } catch (err) {
-    trace(
-      `work-driver: captureWorktreeSnapshot git status failed: ${(err as Error).message?.slice(0, 200)}`,
-    );
   }
   // HEAD short SHA.
   try {

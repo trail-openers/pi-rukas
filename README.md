@@ -470,6 +470,8 @@ All optional. Defaults are reasonable for typical use.
 | `PI_ENSEMBLE_VERIFY_TIMEOUT_MS` | `600000` (10 min) | Timeout for both verify command and smoke command. Shared timeout keeps gate configuration simple. Override for slow commands or fast CI. |
 | `PI_ENSEMBLE_SKIP_RATCHET` | `1` | Set to `0` to disable the skip-marker ratchet (prevents net additions of `#[ignore]`, `it.skip`, etc.). Default ON — a skipped test is a disabled gate. |
 | `PI_ENSEMBLE_SMOKE` | `1` | Set to `0` to disable the product smoke command gate (runs `.pi/smoke-cmd` if present). Default ON — tests passing in isolation doesn't prove the product works. |
+| `PI_ENSEMBLE_ALWAYS_WORKTREE` | `1` | Set to `0` to let a single-workstream cycle develop directly in the repo root (the pre-#287 behaviour). Default ON — every workstream gets its own detached worktree under `.worktrees/`, and the repo root is only ever an integration point. Isolation is what keeps your uncommitted work out of the PR, stops one failed cycle from wedging the rest of the queue, and makes parallel groups possible. |
+| `PI_ENSEMBLE_PR_PREFLIGHT` | `1` | Set to `0` to skip the branch-step check for an open PR already covering the issue. Default ON — `--restart` wipes the driver's state file but not GitHub, and without this the driver rebuilds the issue and opens a duplicate (#358 was orphaned by #359 exactly this way). |
 
 **Sandbox mode (`pi-ensemble` wrapper):**
 

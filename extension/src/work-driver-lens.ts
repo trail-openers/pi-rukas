@@ -69,7 +69,7 @@ export async function runLens(
   // which correctly returns the integrated diff. runAdversarial still
   // uses fetchAllDiffs because adversarial runs PRE-commit (uncommitted
   // diff in the worktree is the right input there).
-  const diff = await fetchAllMergedDiffs(ps.worktrees ?? {}, ctx.repoRoot);
+  const diff = await fetchAllMergedDiffs(ps.worktrees ?? {}, ctx.repoRoot, ps.branchName);
 
   // PR6 — empty-diff guard. Lens children hallucinate findings against
   // unrelated files when given empty context: on #533 (a devDep bump
@@ -175,7 +175,7 @@ export async function commitLensFixChanges(
     cmd: string,
     opts?: { cwd?: string; maxBuffer?: number; shell?: string },
   ) => Promise<{ stdout: string; stderr?: string }>,
-): Promise<{ committed: boolean; error?: string }> {
+): Promise<{ committed: boolean; error?: string; pushed?: boolean }> {
   // Check if there are any changes (staged + unstaged + untracked), and
   // capture the porcelain output for path parsing. One git status fork.
   let status: string;

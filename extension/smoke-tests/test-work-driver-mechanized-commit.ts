@@ -17,6 +17,15 @@ import { type DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { readState } from "../src/workflow-state.ts";
 
+// #287 — these fixtures pin the PRE-always-worktree shape: their exec stubs
+// answer the legacy branch-step commands and hard-code worktree paths the
+// driver now chooses itself. Running them under the escape hatch keeps that
+// coverage intact AND is the standing proof of #287's acceptance criterion
+// that PI_ENSEMBLE_ALWAYS_WORKTREE=0 restores the previous behaviour.
+// Always-worktree is covered by test-work-driver-always-worktree.ts.
+process.env.PI_ENSEMBLE_ALWAYS_WORKTREE = "0";
+
+
 let exit = 0;
 function assert(cond: boolean, msg: string) {
   if (cond) console.log(`✓ ${msg}`);

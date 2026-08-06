@@ -1,0 +1,262 @@
+/**
+ * work-driver-integrate — #287 Part B: the ONLY path that writes to repoRoot.
+ *
+ * Under always-worktree, development happens in `.worktrees/issue-<N>-<id>`
+ * and repoRoot is an integration point. Every workstream's slice reaches the
+ * feature branch through `integrate()`: stage in the worktree, capture the
+ * staged diff, apply it onto the branch at repoRoot, commit, push.
+ *
+ * Concentrating repoRoot mutation here is what makes #287's acceptance
+ * criterion checkable — "no git command with cwd === repoRoot between branch
+ * and commit-pr" is a property of the call graph, not a convention.
+ *
+ * Two callers, two modes:
+ *   - "create"   — commit-pr. `checkout -B <branch> <baseSha>` first, so the
+ *                  branch is born at the base the worktrees were cut from
+ *                  rather than at whatever repoRoot's HEAD happened to be.
+ *   - "followup" — lens-fix re-integration (#287 Part C). Stays on the branch
+ *                  and adds a commit. Pre-#287 lens-fix edits were made in a
+ *                  worktree and nothing ever pushed them, so they never
+ *                  reached the PR — a latent bug this structure removes.
+ */
+
+import fs from "node:fs/promises";
+import path from "node:path";
+import { trace } from "./trace.ts";
+import type { WorkState } from "./workflow-state-schema.ts";
+import type { ExecFn } from "./worktree.ts";
+
+/**
+ * PR19 escape hatch: PI_ENSEMBLE_MECHANIZE_OPS=0 forces the LLM ops path.
+ *
+ * Lives here rather than in work-driver-commit.ts so the branch step can read
+ * it without importing the commit module — that edge would close an import
+ * cycle (#356 flags the same shape).
+ */
+export function mechanizeOpsEnabled(): boolean {
+  const v = process.env.PI_ENSEMBLE_MECHANIZE_OPS;
+  return v !== "0" && v !== "false";
+}
+
+/**
+ * The issue title, from the body artifact the explore step cached. Used for
+ * the deterministic branch slug and the commit/PR title. Falls back to
+ * undefined so callers can supply their own generic text.
+ */
+export async function cachedIssueTitle(state: WorkState): Promise<string | undefined> {
+  const artifact = state.pipelineState.issueBodyArtifact;
+  if (!artifact) return undefined;
+  try {
+    const body = await fs.readFile(artifact, "utf8");
+    return body.match(/^title:\s*(.+)$/m)?.[1]?.trim();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Stage every path `git status --porcelain` lists, explicitly.
+ *
+ * Never `git add -A`: a misbehaving agent's root-level scratch (the #553
+ * pollution pattern) must not ride along. Rename entries (`R old -> new`)
+ * stage both sides.
+ */
+export async function stagePorcelainPaths(execFn: ExecFn, cwd: string): Promise<number> {
+  const { stdout } = await execFn("git status --porcelain", { cwd, maxBuffer: 1024 * 1024 });
+  const paths: string[] = [];
+  for (const line of stdout.split("\n")) {
+    if (line.trim().length === 0) continue;
+    const entry = line.slice(3);
+    const arrow = entry.indexOf(" -> ");
+    if (arrow >= 0) {
+      paths.push(entry.slice(0, arrow), entry.slice(arrow + 4));
+    } else {
+      paths.push(entry);
+    }
+  }
+  for (const p of paths) {
+    // Porcelain quotes paths containing special characters; strip those
+    // quotes so JSON.stringify below re-quotes exactly once.
+    const clean = p.startsWith('"') && p.endsWith('"') ? p.slice(1, -1) : p;
+    await execFn(`git add -- ${JSON.stringify(clean)}`, { cwd, maxBuffer: 256 * 1024 });
+  }
+  return paths.length;
+}
+
+export interface IntegrateOpts {
+  repoRoot: string;
+  branchName: string;
+  /** Commit-ish the branch is created at. Required for mode "create". */
+  baseSha?: string;
+  worktrees: Record<string, string>;
+  /** Where conflict patches are preserved for the operator. */
+  scratchDir: string;
+  commitTitle: string;
+  commitBody: string;
+  mode: "create" | "followup";
+  /**
+   * Fail if ANY workstream produced no diff, rather than consolidating the
+   * rest. commit-pr sets this: a silently-skipped workstream is how
+   * /work 577 shipped 1 of 3 slices and closed the issue with the root fix
+   * missing (v0.12.13). Lens-fix leaves it off — a fix round legitimately
+   * touches only the worktree that had findings.
+   */
+  requireAllNonEmpty?: boolean;
+}
+
+export type IntegrateResult =
+  | { ok: true; workstreams: string[]; empty: false }
+  /** Nothing to integrate — every worktree was clean. Not an error. */
+  | { ok: true; workstreams: []; empty: true }
+  | { ok: false; reason: string; conflictPatch?: string };
+
+/**
+ * Consolidate every worktree onto the feature branch at repoRoot.
+ *
+ * Fails rather than forces at every step. In particular the dirty-repoRoot
+ * preflight (#283's gate, relocated here from the branch step) runs before
+ * `checkout -B`, because that command would otherwise silently carry an
+ * operator's uncommitted work onto the feature branch — the incident-#602
+ * shape, where stale repoRoot residue was swept into a merged PR.
+ */
+export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<IntegrateResult> {
+  const { repoRoot, branchName, worktrees, mode } = opts;
+  const ids = Object.keys(worktrees);
+  try {
+    // 1. Preflight: repoRoot must be clean before we touch its checkout.
+    const { stdout: rootStatus } = await execFn("git status --porcelain", {
+      cwd: repoRoot,
+      maxBuffer: 1024 * 1024,
+    });
+    // `.worktrees/` is the driver's own scaffolding, not operator residue.
+    // `.git/info/exclude` normally hides it; this filter is the backstop for
+    // when that write failed, because treating it as dirt would block every
+    // integration forever.
+    const rootDirt = rootStatus
+      .split("\n")
+      .filter((l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l));
+    if (rootDirt.length > 0) {
+      const files = rootDirt
+        .slice(0, 10)
+        .map((l) => l.slice(3))
+        .join(", ");
+      return {
+        ok: false,
+        reason: `repo root has uncommitted changes, refusing to integrate onto ${branchName}: ${files}. Commit, stash, or discard them — integration would otherwise sweep them into the PR.`,
+      };
+    }
+
+    // 2. Put repoRoot on the integration branch.
+    if (mode === "create") {
+      if (!opts.baseSha) return { ok: false, reason: "baseSha is required to create a branch" };
+      await execFn(
+        `git checkout -B ${JSON.stringify(branchName)} ${JSON.stringify(opts.baseSha)}`,
+        { cwd: repoRoot, maxBuffer: 256 * 1024 },
+      );
+    } else {
+      await execFn(`git checkout ${JSON.stringify(branchName)}`, {
+        cwd: repoRoot,
+        maxBuffer: 256 * 1024,
+      });
+    }
+
+    // 3. Transplant each worktree's slice. Staging inside the worktree first
+    //    is what captures untracked new files — `git diff HEAD` alone misses
+    //    them, which silently dropped whole files pre-PR19.
+    const applied: string[] = [];
+    for (const id of ids) {
+      const wt = worktrees[id];
+      if (!wt) continue;
+      // Porcelain, not the staged diff, is the emptiness signal: it is what
+      // says "this developer wrote nothing", and it is checked before any
+      // staging so a worktree that produced no work is identified as such
+      // rather than inferred from a diff that may be empty for other reasons.
+      const staged = await stagePorcelainPaths(execFn, wt);
+      if (staged === 0) {
+        if (opts.requireAllNonEmpty) {
+          return {
+            ok: false,
+            reason: `worktree '${id}' has no uncommitted work — nothing to consolidate (developer may not have written). Refusing to ship a partial consolidation.`,
+          };
+        }
+        trace(`work-driver: integrate — workstream '${id}' produced no diff, skipping`);
+        continue;
+      }
+      const { stdout: patch } = await execFn("git diff --cached", {
+        cwd: wt,
+        maxBuffer: 8 * 1024 * 1024,
+      });
+      if (!patch.trim()) {
+        if (opts.requireAllNonEmpty) {
+          return { ok: false, reason: `worktree '${id}' staged diff came back empty` };
+        }
+        continue;
+      }
+      const patchFile = path.join(opts.scratchDir, `integrate-${id}.patch`);
+      await fs.mkdir(path.dirname(patchFile), { recursive: true });
+      await fs.writeFile(patchFile, patch, "utf8");
+      try {
+        await execFn(`git apply --index ${JSON.stringify(patchFile)}`, {
+          cwd: repoRoot,
+          maxBuffer: 1024 * 1024,
+        });
+      } catch (err) {
+        const e = err as Error & { stderr?: string };
+        return {
+          ok: false,
+          reason: `git apply failed for workstream '${id}': ${(e.stderr ?? e.message ?? "").toString().trim().slice(0, 200)}`,
+          conflictPatch: patchFile,
+        };
+      }
+      applied.push(id);
+    }
+    if (applied.length === 0) return { ok: true, workstreams: [], empty: true };
+
+    // 4. Commit + push.
+    await execFn(
+      `git commit -m ${JSON.stringify(opts.commitTitle)} -m ${JSON.stringify(opts.commitBody)}`,
+      { cwd: repoRoot, maxBuffer: 256 * 1024 },
+    );
+    await execFn(`git push -u origin ${JSON.stringify(branchName)}`, {
+      cwd: repoRoot,
+      maxBuffer: 1024 * 1024,
+    });
+
+    // Advance each worktree to the commit its work just became.
+    //
+    // Without this the worktree keeps the slice staged, so the NEXT
+    // integration re-captures the same patch — which either fails to apply
+    // (already present) or re-commits stale content. That is precisely how a
+    // lens-fix round would have silently shipped the pre-fix version.
+    //
+    // `reset --hard` is safe here specifically because everything porcelain
+    // listed was staged and applied a moment ago: the commit is a superset of
+    // the worktree's state, so nothing can be lost.
+    const { stdout: newHead } = await execFn("git rev-parse HEAD", {
+      cwd: repoRoot,
+      maxBuffer: 64 * 1024,
+    });
+    const headSha = newHead.trim();
+    if (headSha) {
+      for (const id of applied) {
+        const wt = worktrees[id];
+        if (!wt) continue;
+        await execFn(`git reset --hard ${JSON.stringify(headSha)}`, {
+          cwd: wt,
+          maxBuffer: 256 * 1024,
+        }).catch((err) =>
+          trace(
+            `work-driver: integrate — could not advance worktree '${id}' to ${headSha.slice(0, 8)}: ${(err as Error).message?.slice(0, 160)}`,
+          ),
+        );
+      }
+    }
+    return { ok: true, workstreams: applied, empty: false };
+  } catch (err) {
+    const e = err as Error & { stderr?: string };
+    return {
+      ok: false,
+      reason: (e.stderr ?? e.message ?? "unknown error").toString().trim().slice(0, 300),
+    };
+  }
+}

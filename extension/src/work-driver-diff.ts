@@ -122,17 +122,39 @@ async function fetchAllDiffs(worktrees: Record<string, string>, repoRoot: string
 }
 
 /**
- * PR11 — Resolve the integration-branch-vs-mainline diff from inside a
- * worktree. Used by `runLens` POST-commit; the changes are committed on
- * the feature branch by the time lens-review fires, so `git diff HEAD`
- * (what `fetchDiff` does) is empty. Pre-PR11 this caused PR6's empty-
- * diff guard to fire on EVERY successful cycle (34 ms lens-review skip).
- *
- * Mainline resolution mirrors what ops's branch step does:
- *   `git symbolic-ref refs/remotes/origin/HEAD` → fallback "main".
- * Then `git diff origin/<base>..HEAD` returns the integrated diff that
- * lens-review actually wants. Best-effort: any shell failure returns
- * empty (caller's empty-diff guard handles cleanly).
+ * #287 — the integrated diff, read at repoRoot from the pushed branch:
+ * `origin/<mainline>..origin/<branch>`. This is the shape lens-review wants
+ * once `integrate()` has committed and pushed, and it is independent of any
+ * worktree's HEAD (which stays detached at baseSha). Best-effort: any failure
+ * returns empty and the caller falls back to the per-worktree read.
+ */
+export async function fetchIntegratedDiff(repoRoot: string, branchName: string): Promise<string> {
+  try {
+    const { stdout: head } = await execp(
+      "git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@'",
+      { cwd: repoRoot, shell: "/bin/bash" },
+    );
+    const base = head.trim() || "main";
+    const { stdout } = await execp(`git diff origin/${base}..origin/${branchName}`, {
+      cwd: repoRoot,
+      maxBuffer: 1024 * 1024,
+    });
+    return stdout;
+  } catch (err) {
+    trace(
+      `work-driver: fetchIntegratedDiff(${branchName}) failed: ${(err as Error).message?.slice(0, 200)}`,
+    );
+    return "";
+  }
+}
+
+/**
+ * PR11 — the integration-branch-vs-mainline diff read from INSIDE a worktree
+ * (`git diff origin/<base>..HEAD`). Correct whenever the worktree's HEAD
+ * actually advances — i.e. the legacy PI_ENSEMBLE_ALWAYS_WORKTREE=0 shape,
+ * where development happens on the branch itself. Under always-worktree the
+ * worktree stays detached at baseSha, so `fetchIntegratedDiff` above is the
+ * one that sees the commits.
  */
 async function fetchMergedDiff(cwd: string | undefined): Promise<string> {
   if (!cwd) return "";
@@ -162,7 +184,18 @@ async function fetchMergedDiff(cwd: string | undefined): Promise<string> {
 export async function fetchAllMergedDiffs(
   worktrees: Record<string, string>,
   repoRoot: string,
+  branchName?: string,
 ): Promise<string> {
+  // #287 — after always-worktree the worktrees are DETACHED at baseSha and
+  // never advance: the integrated commits live on the feature branch at
+  // repoRoot. Reading `origin/<base>..HEAD` from inside a worktree would
+  // therefore return empty on every cycle, silently skipping six-pass review
+  // — the same failure PR11 fixed once already, from the other direction.
+  // With a branch name available, diff the pushed branch instead.
+  if (branchName) {
+    const integrated = await fetchIntegratedDiff(repoRoot, branchName);
+    if (integrated.trim()) return integrated;
+  }
   const ids = Object.keys(worktrees);
   if (ids.length <= 1) {
     const cwd = ids.length === 1 ? worktrees[ids[0] ?? ""] : repoRoot;

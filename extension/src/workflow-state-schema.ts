@@ -137,6 +137,14 @@ export interface PipelineState {
    */
   existingPr?: { number: number; headRefName: string; matchedBy: "body" | "branch" };
   /**
+   * #287 — bookkeeping for the integration step. `reintegrations` counts
+   * lens-fix follow-up commits applied onto the branch after the first
+   * consolidation, which is the signal that the fix loop is actually reaching
+   * the PR (pre-#287 lens-fix edits were made in the worktree and never
+   * pushed, so they silently never did).
+   */
+  integration?: { integratedAt?: number; reintegrations?: number };
+  /**
    * PR14 — per-workstream "missing from committed diff" list. Populated
    * by `runCommitPr`'s post-dispatch consolidation gate when the
    * integration branch's diff (vs origin/main) doesn't include files

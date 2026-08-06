@@ -15,6 +15,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import { cachedIssueTitle, integrate, mechanizeOpsEnabled } from "./work-driver-integrate.ts";
 import { parsePrNumber } from "./work-driver-lens.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
 import { inlineCommitPrPrompt } from "./work-driver-prompts-late.ts";
@@ -25,42 +26,10 @@ import type { WorkState } from "./workflow-state.ts";
 
 const execp = promisify(exec);
 
-/** PR19 — escape hatch: PI_ENSEMBLE_MECHANIZE_OPS=0 forces the LLM ops path. */
-export function mechanizeOpsEnabled(): boolean {
-  const v = process.env.PI_ENSEMBLE_MECHANIZE_OPS;
-  return v !== "0" && v !== "false";
-}
-
-/**
- * PR19 — Stage every path listed by `git status --porcelain` explicitly
- * (doctrine: avoid `git add -A` so a misbehaving agent's root-level
- * scratch junk — the #553 pollution pattern — never rides along).
- * Handles rename entries (`R  old -> new`) by staging both sides.
- */
-async function stagePorcelainPaths(
-  execFn: NonNullable<DriverContext["verifyExecFn"]>,
-  cwd: string,
-): Promise<number> {
-  const { stdout } = await execFn("git status --porcelain", { cwd, maxBuffer: 1024 * 1024 });
-  const paths: string[] = [];
-  for (const line of stdout.split("\n")) {
-    if (line.trim().length === 0) continue;
-    const entry = line.slice(3);
-    const arrow = entry.indexOf(" -> ");
-    if (arrow >= 0) {
-      paths.push(entry.slice(0, arrow), entry.slice(arrow + 4));
-    } else {
-      paths.push(entry);
-    }
-  }
-  for (const p of paths) {
-    // Porcelain may quote paths with special chars; strip surrounding
-    // quotes — JSON.stringify below re-quotes safely for the shell.
-    const clean = p.startsWith('"') && p.endsWith('"') ? p.slice(1, -1) : p;
-    await execFn(`git add -- ${JSON.stringify(clean)}`, { cwd, maxBuffer: 256 * 1024 });
-  }
-  return paths.length;
-}
+// #287 — `mechanizeOpsEnabled` moved to work-driver-integrate.ts (a leaf) so
+// the branch step can read it without importing this module. Re-exported here
+// for the existing importers.
+export { mechanizeOpsEnabled };
 
 /**
  * PR19 — Mechanized commit-pr: the driver executes the consolidation +
@@ -111,70 +80,17 @@ export async function mechanizedCommitPr(
     return { ok: false, reason: "integration branch name was not captured at Step 3" };
   }
   const issues = activeIssuesOf(state);
-  const worktrees =
-    Object.keys(ps.worktrees ?? {}).length > 0 ? (ps.worktrees ?? {}) : { default: ctx.repoRoot };
+  // #287 — no `?? ctx.repoRoot` fallback: after always-worktree, a missing
+  // worktree map means the branch step did not complete, and integrating from
+  // repoRoot would consolidate whatever happens to be sitting there.
+  const worktrees = ps.worktrees ?? {};
   const ids = Object.keys(worktrees);
+  if (ids.length === 0) {
+    return { ok: false, reason: "no worktrees recorded at Step 3 — nothing to consolidate" };
+  }
   const startedAt = Date.now();
   try {
-    // 1. repoRoot on the integration branch.
-    const { stdout: headRef } = await execFn("git rev-parse --abbrev-ref HEAD", {
-      cwd: ctx.repoRoot,
-      maxBuffer: 64 * 1024,
-    });
-    if (headRef.trim() !== branchName) {
-      await execFn(`git checkout ${JSON.stringify(branchName)}`, {
-        cwd: ctx.repoRoot,
-        maxBuffer: 256 * 1024,
-      });
-    }
-    // 2. Consolidate every worktree's slice.
-    for (const id of ids) {
-      const wt = worktrees[id] ?? ctx.repoRoot;
-      const { stdout: porcelain } = await execFn("git status --porcelain", {
-        cwd: wt,
-        maxBuffer: 1024 * 1024,
-      });
-      if (!porcelain.trim()) {
-        return {
-          ok: false,
-          reason: `worktree '${id}' has no uncommitted work — nothing to consolidate (developer may not have written)`,
-        };
-      }
-      if (path.resolve(wt) === path.resolve(ctx.repoRoot)) {
-        // repoRoot IS the worktree (N=1 default case) — stage in place.
-        await stagePorcelainPaths(execFn, ctx.repoRoot);
-      } else {
-        // Sibling worktree: stage there first so untracked new files are
-        // captured, then transplant the staged diff onto the branch.
-        await stagePorcelainPaths(execFn, wt);
-        const { stdout: patch } = await execFn("git diff --cached", {
-          cwd: wt,
-          maxBuffer: 8 * 1024 * 1024,
-        });
-        if (!patch.trim()) {
-          return { ok: false, reason: `worktree '${id}' staged diff came back empty` };
-        }
-        const patchFile = path.join(scratchDir(ctx.repoRoot, ctx.issue), `mech-${id}.patch`);
-        await fs.mkdir(path.dirname(patchFile), { recursive: true });
-        await fs.writeFile(patchFile, patch, "utf8");
-        await execFn(`git apply --index ${JSON.stringify(patchFile)}`, {
-          cwd: ctx.repoRoot,
-          maxBuffer: 1024 * 1024,
-        });
-      }
-    }
-    // 3. Commit with a templated message.
-    let title = `implement issue #${ctx.issue}`;
-    try {
-      const artifact = ps.issueBodyArtifact;
-      if (artifact) {
-        const body = await fs.readFile(artifact, "utf8");
-        const m = body.match(/^title:\s*(.+)$/m);
-        if (m?.[1]?.trim()) title = m[1].trim().slice(0, 72);
-      }
-    } catch {
-      // Fall back to the generic title.
-    }
+    const title = (await cachedIssueTitle(state))?.slice(0, 72) ?? `implement issue #${ctx.issue}`;
     const fixesLines = issues.map((n) => `Fixes #${n}`);
     const companionLines = (ps.droppedIssues ?? []).map(
       (d) =>
@@ -190,15 +106,37 @@ export async function mechanizedCommitPr(
           ]
         : [];
     const commitBody = [...fixesLines, ...companionLines, ...workstreamLines].join("\n");
-    await execFn(`git commit -m ${JSON.stringify(title)} -m ${JSON.stringify(commitBody)}`, {
-      cwd: ctx.repoRoot,
-      maxBuffer: 256 * 1024,
+    // #287 — consolidation, commit and push all happen inside `integrate()`,
+    // the single writer to repoRoot. It creates the branch at the recorded
+    // baseSha rather than at whatever repoRoot's HEAD is, and refuses to run
+    // against a dirty repoRoot (#283's gate, relocated here) so operator
+    // residue can never be swept into the PR — incident #602's shape.
+    const res = await integrate(execFn, {
+      repoRoot: ctx.repoRoot,
+      branchName,
+      baseSha: ps.baseSha,
+      worktrees,
+      scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
+      commitTitle: title,
+      commitBody,
+      mode: "create",
+      requireAllNonEmpty: true,
     });
-    // 4. Push + PR.
-    await execFn(`git push -u origin ${JSON.stringify(branchName)}`, {
-      cwd: ctx.repoRoot,
-      maxBuffer: 1024 * 1024,
-    });
+    if (!res.ok) {
+      return {
+        ok: false,
+        reason: res.conflictPatch
+          ? `${res.reason} (patch preserved at ${res.conflictPatch})`
+          : res.reason,
+      };
+    }
+    if (res.empty) {
+      return {
+        ok: false,
+        reason:
+          "every worktree was clean — no uncommitted work to consolidate (developer may not have written)",
+      };
+    }
     const prBody = [
       "Automated by pi-ensemble /work driver (mechanized commit-pr).",
       "",
