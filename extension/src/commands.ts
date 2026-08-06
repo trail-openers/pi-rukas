@@ -45,6 +45,7 @@ import { transcriptsSummary } from "./runs.ts";
 import { trace } from "./trace.ts";
 import { groupIssues } from "./work-driver-grouping.ts";
 import { runWorkDriver } from "./work-driver.ts";
+import { renderQueueSummary, runWorkQueue } from "./work-queue.ts";
 import { registerWorkStatusCommand } from "./work-status.ts";
 import { readState } from "./workflow-state.ts";
 
@@ -269,63 +270,27 @@ export function registerCommands(pi: ExtensionAPI) {
             const notesLine = notes.length > 0 ? `\n  rules fired: ${notes.join("; ")}` : "";
             try {
               pi.sendUserMessage(
-                `pi-ensemble: /work grouping decided K=${groupList.length} group(s) — ${summary}${notesLine}\nRunning cycles sequentially${restartTag}; halt-on-non-merged between groups.`,
+                `pi-ensemble: /work grouping decided K=${groupList.length} group(s) — ${summary}${notesLine}\nRunning cycles sequentially${restartTag}; a failed group parks and the queue continues.`,
               );
             } catch {
               /* nothing we can do */
             }
 
-            // Iterate groups sequentially with halt-on-non-merged.
-            for (let gi = 0; gi < groupList.length; gi++) {
-              const g = groupList[gi];
-              if (!g) continue;
-              const primary = g.issues[0];
-              if (primary === undefined) continue;
-              const groupIssueList = g.issues;
-              try {
-                await runWorkDriver({
-                  pi,
-                  repoRoot,
-                  issue: primary,
-                  issues: groupIssueList.length > 1 ? groupIssueList : undefined,
-                  restart,
-                });
-              } catch (err) {
-                trace(
-                  `work-driver: unexpected throw for ${g.id} (#${groupIssueList.join(", #")}): ${(err as Error).message}`,
-                );
-                try {
-                  pi.sendUserMessage(
-                    `pi-ensemble: /work driver crashed on ${g.id} (#${groupIssueList.join(", #")}): ${(err as Error).message}. Queue halted. ` +
-                      `Inspect .pi/work-state/${primary}.json or run with PI_ENSEMBLE_WORK_DRIVER=0 to use the legacy flow.`,
-                  );
-                } catch {
-                  /* nothing we can do */
-                }
-                return;
-              }
-              const state = await readState(repoRoot, primary);
-              const status = state?.pipelineState.status;
-              if (status !== "merged" && gi + 1 < groupList.length) {
-                const remaining = groupList
-                  .slice(gi + 1)
-                  .map((r) => `${r.id} (#${r.issues.join(", #")})`);
-                try {
-                  pi.sendUserMessage(
-                    `pi-ensemble: /work ${g.id} (#${groupIssueList.join(", #")}) terminated as ${status ?? "unknown"}; queue halted. ` +
-                      `Remaining groups (${remaining.join(", ")}) were NOT started. ` +
-                      `Fix / abandon ${g.id}, then re-run /work with the remaining issues.`,
-                  );
-                } catch {
-                  /* nothing we can do */
-                }
-                return;
-              }
-            }
+            // #368 — park-and-continue. A group that ends non-merged is
+            // recorded with its reason and the queue moves on; only a
+            // systemic failure (spend cap, quota window, driver throw) stops
+            // everything, because only those make the next group's attempt
+            // pointless. Pre-#368 any failure halted, which is how one 429
+            // left 11 unrelated issues unstarted.
+            const summaryResult = await runWorkQueue({
+              repoRoot,
+              groups: groupList,
+              restart,
+              runGroup: (primary, issues) =>
+                runWorkDriver({ pi, repoRoot, issue: primary, issues, restart }),
+            });
             try {
-              pi.sendUserMessage(
-                `pi-ensemble: /work queue complete — ${groupList.length} group(s) merged: ${groupList.map((g) => `${g.id} (#${g.issues.join(", #")})`).join(", ")}`,
-              );
+              pi.sendUserMessage(renderQueueSummary(summaryResult));
             } catch {
               /* nothing we can do */
             }

@@ -702,19 +702,32 @@ Each cycle produces **its own PR** and its own state file (`.pi/work-state/<prim
 - **PR15 (v0.12.15)**: retreated to strictly sequential one-PR-per-issue. Safe but ignored the "these issues genuinely belong together" signal.
 - **PR16 (v0.12.16+)**: deterministic grouping decides the middle path.
 
-### Halt-on-non-merged
+### Park-and-continue (was: halt-on-non-merged)
 
-If a group's cycle terminates as anything other than `merged` (handoff, aborted, crashed), the queue **HALTS**. The extension emits a message like:
+If a group's cycle terminates as anything other than `merged`, the queue **parks that group and carries on**. At the end you get one report:
 
 ```
-pi-ensemble: /work group-a (#561, #562) terminated as handoff; queue halted.
-Remaining groups (group-b (#563)) were NOT started.
-Fix / abandon group-a, then re-run /work with the remaining issues.
+pi-ensemble: /work queue finished — 4 merged, 1 parked
+  ✓ group-a (#561) — merged
+  ⏸ group-b (#562, #563) — cap round-cap at lens-review
+      → review the findings on #562's PR — the fix loop did not converge
+  ✓ group-c (#564) — merged
 ```
 
-The operator inspects the handoff comment, either resolves the underlying blocker (re-run `/work 561 --restart` after `/plan 561` clarifies the spec) or abandons it, then re-runs `/work` with the remaining issues to continue.
+Each parked entry carries the cap that fired, the step it died on, and the action *you* have to take.
 
-Rationale: an intermediate handoff usually signals something the operator wants to review before we auto-start the next group. Auto-continuing would blur the "why the previous halted" signal.
+**Only a systemic failure halts the whole queue**, because only those make the next group's attempt pointless:
+
+| Failure | Queue |
+|---|---|
+| Review cap, adversarial rejection, verify-gate rejection, dirty tree, exhausted transient retries | **parks**, continues |
+| `rate-limited:quota-window` — nothing will succeed until the reset | **halts** |
+| `rate-limited:quota-terminal` — provider spend cap | **halts** |
+| Driver throw (unknown shape; unsafe to continue past) | **halts** |
+
+Escape hatch: `PI_ENSEMBLE_QUEUE_HALT_ON_FAILURE=1` restores the old halt-on-first-failure behaviour.
+
+**Why this reversed (#368).** The old rationale was that an intermediate handoff signals something the operator wants to review before the next group starts. In practice the halt *buried* that signal: one reviewable handoff arrived underneath N unstarted issues that then had to be re-driven by hand. Measured on this repo, `/work` over 13 issues died on #279 and left **11 unrelated groups unstarted** — and 69% of the failures that trigger a halt are provider infrastructure (#366), i.e. they say nothing at all about the remaining work. The parked entry preserves the review signal; halting the queue only added work.
 
 ### `--restart` semantics with a multi-issue queue
 
