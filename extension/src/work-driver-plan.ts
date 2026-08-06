@@ -6,7 +6,9 @@
  * `parseWorktreesBlock` reuses the same fenced-section slicer.
  */
 
+import fs from "node:fs/promises";
 import { dispatchCore } from "./dispatch.ts";
+import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
@@ -70,7 +72,41 @@ export async function runPlan(
   next = appendEvent(next, event);
   // Parse workstreams out of the reply. Failure or N=0 collapses to
   // `default` — never blocks the cycle.
-  const workstreams = parseWorkstreams(result.text ?? "");
+  let workstreams = parseWorkstreams(result.text ?? "");
+
+  // #290 — deterministic plan-quality gate. An under-decomposed plan is the
+  // dominant convergence failure: on lantern #604 an 8.6s plan collapsed six
+  // enumerated findings into ONE workstream, the developer then sprawled
+  // across 11 files, looped 17 failed builds and burned 10.5M tokens before
+  // dying. The check is arithmetic, not judgment — asking the model that just
+  // under-decomposed whether it decomposed well is worthless.
+  const findingsCount = await countFindingsForCycle(ctx, next);
+  const reason = planQualityReason(workstreams, findingsCount);
+  let redispatched = false;
+  if (planQualityEnabled() && reason) {
+    trace(`work-driver: plan quality — ${reason}, re-dispatching once`);
+    const retry = await dispatch(
+      ctx.pi,
+      {
+        role: "explore",
+        prompt: `${prompt}\n\n${correctivePlanSteer(reason, findingsCount, Object.keys(workstreams).length)}`,
+      },
+      { label: "plan:corrective" },
+    ).catch(() => undefined);
+    if (retry) {
+      next = appendEvent(
+        next,
+        await buildCompletionEvent(ctx, "plan", "explore", "plan:corrective", retry),
+      );
+      const reparsed = parseWorkstreams(retry.text ?? "");
+      // Second result is final — including when it is no better. One retry,
+      // never a loop; a plan step that can re-dispatch on its own verdict is
+      // a plan step that can spin.
+      if (Object.keys(reparsed).length > 0) workstreams = reparsed;
+      redispatched = true;
+    }
+  }
+
   if (Object.keys(workstreams).length === 0) {
     workstreams.default = {
       id: "default",
@@ -81,8 +117,81 @@ export async function runPlan(
   }
   return {
     ...next,
-    pipelineState: { ...next.pipelineState, workstreams },
+    pipelineState: {
+      ...next.pipelineState,
+      workstreams,
+      planQuality: { findingsCount, redispatched, ...(reason ? { reason } : {}) },
+    },
   };
+}
+
+/** #290 escape hatch: PI_ENSEMBLE_PLAN_QUALITY=0 disables the re-dispatch (doctrine stays). */
+export function planQualityEnabled(): boolean {
+  const v = process.env.PI_ENSEMBLE_PLAN_QUALITY;
+  return v !== "0" && v !== "false";
+}
+
+/**
+ * Which plan-quality rule was violated, if any. Both are structural: an
+ * under-decomposed plan produces a sprawling diff, and a workstream with no
+ * declared paths disables `verifyConsolidation`'s oracle for that slice
+ * (`work-driver-verify.ts` skips workstreams with `paths.length === 0`).
+ */
+export function planQualityReason(
+  workstreams: Record<string, { paths: string[] }>,
+  findingsCount: number,
+): "under-decomposed" | "empty-paths" | undefined {
+  const ids = Object.keys(workstreams);
+  if (findingsCount >= 3 && ids.length === 1) return "under-decomposed";
+  if (ids.length > 0 && ids.some((id) => (workstreams[id]?.paths.length ?? 0) === 0)) {
+    return "empty-paths";
+  }
+  return undefined;
+}
+
+/** The corrective steer appended to the second plan dispatch. */
+export function correctivePlanSteer(
+  reason: "under-decomposed" | "empty-paths",
+  findingsCount: number,
+  workstreamCount: number,
+): string {
+  if (reason === "under-decomposed") {
+    return [
+      "## Corrective re-dispatch",
+      "",
+      `Your previous plan produced ${workstreamCount} workstream(s) for an issue body containing ${findingsCount} enumerated findings.`,
+      "That is under-decomposed. Two findings share a workstream ONLY when they require edits to THE SAME FILES —",
+      "conceptual relatedness is not a reason. Re-plan: map each finding to its own workstream unless the file sets",
+      "genuinely overlap, and list anything you are deliberately not doing under `Deferred:`.",
+    ].join("\n");
+  }
+  return [
+    "## Corrective re-dispatch",
+    "",
+    "At least one workstream in your previous plan declared no `paths:`.",
+    "Every workstream MUST list the files it will touch — the driver uses that list to verify the committed diff",
+    "actually contains each workstream's slice, and an empty list silently disables that check.",
+    "Re-plan with a non-empty `paths:` and `out-of-scope:` for every workstream.",
+  ].join("\n");
+}
+
+/**
+ * Enumerated-finding count for this cycle's primary issue, read from the body
+ * artifact the explore step cached. Returns 0 when unavailable — the gate then
+ * cannot fire on the findings rule, which is the correct conservative
+ * behaviour for a body we could not read.
+ */
+async function countFindingsForCycle(ctx: DriverContext, state: WorkState): Promise<number> {
+  const artifact = state.pipelineState.issueBodyArtifact;
+  if (!artifact) return 0;
+  try {
+    return countEnumeratedFindings(await fs.readFile(artifact, "utf8"));
+  } catch (err) {
+    trace(
+      `work-driver: plan quality could not read issue body artifact: ${(err as Error).message?.slice(0, 120)}`,
+    );
+    return 0;
+  }
 }
 
 /**
@@ -203,14 +312,62 @@ export function parseWorkstreams(
     const bodyStart = h.index + h.length;
     const bodyEnd = headings[i + 1]?.index ?? section.length;
     const body = section.slice(bodyStart, bodyEnd);
-    out[h.id] = {
+    const entry = {
       id: h.id,
       scope: h.scope,
       paths: extractListField(body, "paths"),
       outOfScope: extractListField(body, "out[- ]of[- ]scope"),
     };
+    // #290 — ceiling. Each workstream becomes a worktree AND a developer
+    // child, so M is a direct multiplier on process count; parallel groups
+    // multiply it again. The prompt now deliberately biases toward MORE
+    // workstreams, which makes an unbounded M actively dangerous rather than
+    // merely untidy. Excess FOLDS into the last kept workstream — union of
+    // paths, scope annotated — so the work is never silently dropped, which
+    // is the failure mode a hard truncation would introduce.
+    if (Object.keys(out).length >= maxWorkstreams()) {
+      const lastId = Object.keys(out)[Object.keys(out).length - 1];
+      const last = lastId ? out[lastId] : undefined;
+      if (last) {
+        last.paths = [...new Set([...last.paths, ...entry.paths])];
+        last.outOfScope = [...new Set([...last.outOfScope, ...entry.outOfScope])];
+        last.scope = `${last.scope} (+folded: ${entry.id})`;
+        trace(
+          `work-driver: plan exceeded MAX_WORKSTREAMS — folded '${entry.id}' into '${last.id}'`,
+        );
+      }
+      continue;
+    }
+    out[h.id] = entry;
   }
   return out;
+}
+
+/** #290 — ceiling on workstreams per cycle. Override: PI_ENSEMBLE_MAX_WORKSTREAMS. */
+export function maxWorkstreams(): number {
+  const env = Number(process.env.PI_ENSEMBLE_MAX_WORKSTREAMS);
+  return Number.isFinite(env) && env >= 1 ? env : 6;
+}
+
+/**
+ * #290 — count discrete, actionable findings in an issue body.
+ *
+ * Deliberately deterministic and dumb: top-level numbered items (`1.`, `2)`)
+ * and checkboxes (`- [ ]`). Indented continuations are excluded, because a
+ * nested sub-point is detail about one finding, not a second finding.
+ *
+ * This exists to catch under-decomposition without asking a model whether it
+ * decomposed well — a model that just produced one workstream is the last
+ * thing you should ask. The count is compared against the workstream count
+ * and nothing else.
+ */
+export function countEnumeratedFindings(body: string): number {
+  let n = 0;
+  for (const line of body.split("\n")) {
+    if (/^\s{2,}/.test(line)) continue; // indented → sub-point of a finding
+    if (/^\s*(?:\d+[.)]\s+\S|[-*]\s+\[[ xX]\]\s*\S)/.test(line)) n += 1;
+  }
+  return n;
 }
 
 /**

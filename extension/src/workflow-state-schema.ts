@@ -145,6 +145,17 @@ export interface PipelineState {
    */
   integration?: { integratedAt?: number; reintegrations?: number };
   /**
+   * #290 — plan-step decomposition quality. `findingsCount` is the count of
+   * enumerated findings in the issue body; `reason` records which structural
+   * rule fired (if any) and `redispatched` whether the one corrective
+   * re-dispatch was spent. Absent on cycles predating the gate.
+   */
+  planQuality?: {
+    findingsCount: number;
+    redispatched: boolean;
+    reason?: "under-decomposed" | "empty-paths";
+  };
+  /**
    * PR14 — per-workstream "missing from committed diff" list. Populated
    * by `runCommitPr`'s post-dispatch consolidation gate when the
    * integration branch's diff (vs origin/main) doesn't include files
