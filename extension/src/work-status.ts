@@ -227,6 +227,10 @@ function fmtEvent(e: WorkEvent): string {
       return `  lens-skipped-empty-diff · round ${e.round}`;
     case "adversarial-skipped-empty-diff":
       return `  adversarial-skipped-empty-diff · workstream ${e.workstreamId}`;
+    case "verify-full-status":
+      return `  verify-full-status · ${e.status}${e.ms ? ` · ${fmtElapsed(e.ms)}` : ""}${e.evidenceTail ? ` · ${e.evidenceTail.slice(0, 50)}` : ""}`;
+    case "widening-scan":
+      return `  widening-scan · ${e.findings.length} finding(s)`;
   }
 }
 

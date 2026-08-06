@@ -9,6 +9,7 @@
  * lens-fix's commit step, not adversarial's.
  */
 
+import { type WideningFinding, scanTypeWidening } from "./invariant-scan.ts";
 import { runLensReview } from "./lens-review.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
@@ -71,6 +72,20 @@ export async function runLens(
   // diff in the worktree is the right input there).
   const diff = await fetchAllMergedDiffs(ps.worktrees ?? {}, ctx.repoRoot, ps.branchName);
 
+  // #279 — type-widening scan: route-only detector for invariant removal.
+  // Findings are injected into the lens context with framing for the
+  // ARCHITECTURE lens to evaluate. Escape hatch: PI_ENSEMBLE_WIDENING_SCAN=0.
+  const wideningScanEnabled = process.env.PI_ENSEMBLE_WIDENING_SCAN !== "0";
+  let widenings: WideningFinding[] = [];
+  if (wideningScanEnabled) {
+    widenings = scanTypeWidening(diff);
+    next = appendEvent(next, {
+      kind: "widening-scan",
+      at: Date.now(),
+      findings: widenings,
+    });
+  }
+
   // PR6 — empty-diff guard. Lens children hallucinate findings against
   // unrelated files when given empty context: on #533 (a devDep bump
   // already merged 5 days earlier) develop committed nothing, then
@@ -95,13 +110,24 @@ export async function runLens(
   const startedAt = Date.now();
   const jobId = makeRunId();
   const reviewFn = ctx.lensReviewFn ?? runLensReview;
+
+  // Build lens context: base context + widening findings (if any).
+  let context = `/work issue #${ctx.issue}, lens-review round ${round}`;
+  if (wideningScanEnabled && widenings.length > 0) {
+    const findingsSummary = widenings
+      .map(
+        (f) =>
+          `  ${f.file}:${f.line ?? "?"} [${f.kind}]${f.before ? ` before: ${f.before}` : ""}${
+            f.after ? ` after: ${f.after}` : ""
+          }`,
+      )
+      .join("\n");
+    context += `\n\nTYPE-WIDENING DETECTED (route-only to ARCHITECTURE lens):\n${findingsSummary}\n\nMANDATE: the ARCHITECTURE lens must answer: what invariant did this widening remove, and what now guarantees it?`;
+  }
+
   let summary: Awaited<ReturnType<typeof reviewFn>>;
   try {
-    summary = await reviewFn({
-      diff,
-      context: `/work issue #${ctx.issue}, lens-review round ${round}`,
-      cwd,
-    });
+    summary = await reviewFn({ diff, context, cwd });
   } catch (err) {
     return appendEvent(next, {
       kind: "dispatch-failed",

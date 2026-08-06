@@ -5,13 +5,22 @@
  * Extracted from work-driver.ts (issue #171 file-size hygiene). Grouped
  * together as small tail-pipeline steps — step-back reroutes to handoff
  * with a spec-revision proposal; CI is the last gate before merge.
+ *
+ * Issue #279 adds the verify-full tier to runCi BEFORE the ops gh-run-watch
+ * dispatch.
  */
 
+import { exec as nodeExec } from "node:child_process";
+import { promisify } from "node:util";
+import { trace } from "./trace.ts";
 import { type DriverContext, MAX_CI_RETRIES } from "./work-driver-context.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
 import { inlineCiPrompt, inlineStepBackPrompt } from "./work-driver-prompts-late.ts";
+import { runVerifyFull, verifyCmdFullFor } from "./work-driver-verify-full.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
+
+const execp = promisify(nodeExec);
 
 /**
  * Step 7h — Step-back when findings cluster around a theme. Dispatches
@@ -129,10 +138,102 @@ function ciWatchTimeoutMs(): number {
   return 30 * 60_000; // 30 min default
 }
 
+/**
+ * #279 — verify-full tier timeout. The full suite can take longer
+ * than the fast verify command (e.g., running workspace-wide tests).
+ * Default 30 min, env-tunable via `PI_ENSEMBLE_VERIFY_FULL_TIMEOUT_MS`.
+ */
+function verifyFullTimeoutMs(): number {
+  const envRaw = process.env.PI_ENSEMBLE_VERIFY_FULL_TIMEOUT_MS;
+  const env = Number(envRaw);
+  if (Number.isFinite(env) && env > 0) return env;
+  return 30 * 60_000; // 30 min default
+}
+
+/**
+ * #279 — escape hatch for the verify-full tier. When set to "0" or "false",
+ * skips the verify-full command entirely (restores pre-#279 behaviour).
+ */
+function verifyFullEnabled(): boolean {
+  const v = process.env.PI_ENSEMBLE_VERIFY_FULL;
+  return v !== "0" && v !== "false";
+}
+
 export async function runCi(ctx: DriverContext, state: WorkState, now: number): Promise<WorkState> {
-  let next = await runSingleDispatch(
+  let next = state;
+
+  // #279 — verify-full tier: read `.pi/verify-cmd-full` and execute it
+  // BEFORE the ops gh-run-watch dispatch. Run in the group's primary
+  // worktree, NOT repoRoot (addendum: parallel groups may have repoRoot
+  // on a different branch by ci time).
+  if (verifyFullEnabled()) {
+    const ps = next.pipelineState;
+
+    // Resolve the primary worktree (first key in worktrees map, or repoRoot fallback)
+    const primaryWorktreeEntry = Object.entries(ps.worktrees ?? {})[0];
+    const primaryWorktree = primaryWorktreeEntry?.[1] ?? ctx.repoRoot;
+    const primaryWorktreeId = primaryWorktreeEntry?.[0] ?? "default";
+
+    const cmd = await verifyCmdFullFor(ctx.repoRoot);
+    if (cmd) {
+      trace(
+        `work-driver: ci step — running verify-full in worktree ${primaryWorktreeId}: ${cmd.slice(0, 100)}`,
+      );
+      const result = await runVerifyFull(
+        cmd,
+        primaryWorktree,
+        verifyFullTimeoutMs(),
+        ctx.verifyExecFn ?? execp,
+      );
+      next = appendEvent(next, {
+        kind: "verify-full-status",
+        at: Date.now(),
+        status: result.outcome,
+        ms: result.ms,
+        evidenceTail: result.output.slice(-500), // Last 500 chars for handoff
+      });
+
+      if (result.outcome === "failure") {
+        // Verify-full failed — bump ciRetryCount and skip ops dispatch for
+        // this round. The ci-retry cap will fire on the next iteration if
+        // we've exhausted retries.
+        const nextCount = (next.pipelineState.ciRetryCount ?? 0) + 1;
+        next = {
+          ...next,
+          pipelineState: { ...next.pipelineState, ciRetryCount: nextCount },
+        };
+        if (nextCount > MAX_CI_RETRIES) {
+          next = appendEvent(
+            next,
+            {
+              kind: "cap-hit",
+              at: Date.now(),
+              cap: "ci-retry",
+              reviewRound: next.pipelineState.reviewRound,
+              nextStep: "handoff",
+            },
+            {
+              kind: "ci-status",
+              at: Date.now(),
+              status: "failure",
+            },
+          );
+        }
+        return next; // Skip ops dispatch on verify-full failure
+      }
+    } else {
+      trace("work-driver: ci step — .pi/verify-cmd-full absent, skipping verify-full tier");
+      next = appendEvent(next, {
+        kind: "verify-full-status",
+        at: Date.now(),
+        status: "skipped",
+      });
+    }
+  }
+
+  next = await runSingleDispatch(
     ctx,
-    state,
+    next,
     "ci",
     "ops",
     "ops:ci",
@@ -162,7 +263,14 @@ export async function runCi(ctx: DriverContext, state: WorkState, now: number): 
           "failure";
     // Bump ciRetryCount BEFORE appending the event so nextStep's
     // `ciRetryCount >= MAX_CI_RETRIES` check reflects this attempt.
-    const nextCount = (next.pipelineState.ciRetryCount ?? 0) + (status === "failure" ? 1 : 0);
+    // Note: verify-full failures already bumped ciRetryCount above; don't
+    // bump again to avoid double-counting a single ci-round failure.
+    const hasVerifyFullFailure = next.eventLog.some(
+      (e) => e.kind === "verify-full-status" && e.status === "failure",
+    );
+    const nextCount =
+      (next.pipelineState.ciRetryCount ?? 0) +
+      (status === "failure" && !hasVerifyFullFailure ? 1 : 0);
     next = {
       ...next,
       pipelineState: { ...next.pipelineState, ciRetryCount: nextCount },

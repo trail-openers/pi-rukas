@@ -702,6 +702,40 @@ Each cycle produces **its own PR** and its own state file (`.pi/work-state/<prim
 - **PR15 (v0.12.15)**: retreated to strictly sequential one-PR-per-issue. Safe but ignored the "these issues genuinely belong together" signal.
 - **PR16 (v0.12.16+)**: deterministic grouping decides the middle path.
 
+### Verify-full tier: "fast green, full unrun"
+
+The `ci` step runs two tiers. The fast one (`.pi/verify-cmd`) already gated `develop`. The full one is opt-in: create `.pi/verify-cmd-full` whose first non-empty, non-comment line is the command that exercises real dependencies, e.g.
+
+```
+cargo test --workspace
+```
+
+It runs at the start of `ci`, **before** the CI watch, and its result is a separate `verify-full-status` event so the handoff shows fast and full outcomes independently. That separation is the point: in vipune the fast suite stayed green for ~2.5 months while the real-embedder tests sat behind `#[ignore]`, and nothing in the pipeline could express the difference.
+
+| Outcome | Behaviour |
+|---|---|
+| file absent | `verify-full-status: skipped` — **visible**, never silent |
+| exits 0 | `verify-full-status: success`, CI watch proceeds |
+| exits non-zero | `verify-full-status: failure`, `ciRetryCount` bumped, ops dispatch **skipped** this round; the existing ci-retry cap governs the loop |
+
+There is deliberately **no derivation fallback**. An inferred "full suite" recreates exactly the ambiguity the tier exists to remove.
+
+The command runs in the group's worktree, never the repo root — under parallel groups the repo root may be checked out on a different group's branch by the time `ci` runs, so testing there would test the wrong code.
+
+Escape hatches: `PI_ENSEMBLE_VERIFY_FULL=0`, `PI_ENSEMBLE_VERIFY_FULL_TIMEOUT_MS`.
+
+### Type-widening scan
+
+Before each lens review the integrated diff is scanned for removed compiler-enforced invariants: `T` → `Option<T>` (Rust), `T` → `T | null` / `| undefined` and added `?:` (TS), removed `readonly`/`final`/`const`, narrowing to `any`/`unknown`, removed `assert`/`debug_assert!`, removed `pub`/`mut`.
+
+Findings are appended to the lens context with an explicit mandate — *what invariant did this widening remove, and what now guarantees it?* — and emitted as a `widening-scan` event for audit.
+
+**Route-only.** The scan never fails a cycle; it attaches context. It exists because constraint removal was not an event: in vipune, `EmbeddingEngine` → `Option<EmbeddingEngine>` removed an invariant, and a later change read the `Option` as an invitation to write a mock-fallback `None` branch in production.
+
+The "removed X" classes only fire when the token is genuinely absent from the hunk's added lines — otherwise every touched `const` declaration would produce a finding, and a route-only signal that cries wolf gets ignored.
+
+Escape hatch: `PI_ENSEMBLE_WIDENING_SCAN=0`.
+
 ### Parallel group execution
 
 `/work N M P …` runs up to `PI_ENSEMBLE_PARALLEL_GROUPS` (default **3**) groups concurrently. Each group develops in its own `.worktrees/` tree, so the only shared resource is the repo root, and every operation that touches it — branch creation, patch integration, commit, push, `gh pr create`, the verify gates, lens-fix re-integration, `restoreCheckout`, worktree teardown — runs under a single integration lock. That lock is an in-process promise chain plus an `O_EXCL` lockfile under `.git/`, so a second `/work` invocation or a second Pi process on the same clone is also serialised.

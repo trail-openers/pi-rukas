@@ -320,6 +320,61 @@ export type WorkEvent =
       step: WorkStep;
       verdicts: Array<{ id: string; ok: boolean }>;
       at: number;
+    }
+  | {
+      /**
+       * Issue #279 — verify-full tier status.
+       *
+       * The verify-full suite runs driver-side in the ci step BEFORE
+       * the ops gh-run-watch dispatch. Provides visibility into the
+       * "fast green, full unrun/red" gap that caused the vipune bug:
+       * the fast suite passed for ~2.5 months while the real-embedder
+       * tests sat behind #[ignore].
+       *
+       * "skipped" is emitted when `.pi/verify-cmd-full` is absent —
+       * silent absence would recreate the exact ambiguity this removes.
+       */
+      kind: "verify-full-status";
+      at: number;
+      status: "success" | "failure" | "skipped";
+      /** Time spent executing the full suite (ms). Undefined when skipped. */
+      ms?: number;
+      /** Tail of the command output for the handoff/comment body. */
+      evidenceTail?: string;
+    }
+  | {
+      /**
+       * Issue #279 — type-widening scan results.
+       *
+       * The deterministic scanner (invariant-scan.ts fires before
+       * lens-review, capturing compiler-enforced invariants being
+       * removed or weakened. Findings are injected into the lens
+       * context with framing "the ARCHITECTURE lens must answer: what
+       * invariant did this widening remove, and what now guarantees it?"
+       *
+       * Routes-only — does not fail the cycle. The precision of these
+       * patterns is measured via fixture tests; the ARCHITECTURE lens
+       * decides whether each finding is a real problem or benign.
+       */
+      kind: "widening-scan";
+      at: number;
+      /** Findings from the scan (empty list = no widening detected). */
+      findings: Array<{
+        file: string;
+        line?: number;
+        kind:
+          | "option-widening-rust"
+          | "option-widening-ts"
+          | "optional-property"
+          | "removed-readonly"
+          | "type-erasure"
+          | "removed-assert"
+          | "removed-pub"
+          | "removed-mut"
+          | "generic-widening";
+        before?: string;
+        after?: string;
+      }>;
     };
 
 /** Discriminator union of event kinds — useful for callers that switch on it. */
