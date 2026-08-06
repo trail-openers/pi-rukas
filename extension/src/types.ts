@@ -112,6 +112,34 @@ export function isRateLimit429Msg(msg: string | undefined): boolean {
 }
 
 /**
+ * #366 — the seconds the provider asked us to wait.
+ *
+ * The discriminator between "clears in a minute" and "clears tomorrow" is
+ * right there in the message and was never read, so a per-minute token-bucket
+ * 429 and a 24-hour quota exhaustion were handled identically: kill the cycle
+ * and tell the operator "retrying cannot help". On the observed
+ * `"Server requested 86399s retry delay (max: 60s)"` shape, note that the
+ * SERVER-requested value is the one that matters — `max:` is Pi's own ceiling
+ * and describes what it was willing to wait, not what the provider asked for.
+ *
+ * Returns undefined when no delay is stated, which keeps the conservative
+ * pre-#366 handling for messages we cannot read.
+ */
+export function parseRetryDelaySeconds(msg: string | undefined): number | undefined {
+  if (!msg) return undefined;
+  const m = msg.match(/requested\s+(\d+(?:\.\d+)?)\s*s(?:ec(?:onds?)?)?\s+retry\s+delay/i);
+  const n = m?.[1] ? Number.parseFloat(m[1]) : Number.NaN;
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
+/** Wording that means a spend cap, not a rate limit — waiting will not clear it. */
+const SPEND_CAP_PATTERN = /spend (?:cap|limit)|billing|credit balance|quota exceeded for|payment/i;
+
+export function isSpendCapMsg(msg: string | undefined): boolean {
+  return msg ? SPEND_CAP_PATTERN.test(msg) : false;
+}
+
+/**
  * #314 — Shared cause union for dispatch failure classification.
  * Both classifyDispatchOutcome (adversarial.ts) and classifyFailureCause
  * (work-driver.ts) must use these same names so the operator taxonomy
@@ -122,7 +150,14 @@ export type DispatchFailureCause =
   | "self-killed:timeout"
   | "self-killed:inactivity"
   | "self-killed:abort"
+  /** 429 with no parseable delay — conservative pre-#366 handling: halt. */
   | "rate-limited:429"
+  /** #366 — 429 whose requested delay is short enough to wait out in-cycle. */
+  | "rate-limited:burst"
+  /** #366 — 429 whose requested delay is hours away (daily/org quota). */
+  | "rate-limited:quota-window"
+  /** #366 — spend cap. Waiting genuinely does not help. */
+  | "rate-limited:quota-terminal"
   | "provider-severed"
   | "crashed"
   | "crashed-unknown";

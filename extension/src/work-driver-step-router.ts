@@ -20,10 +20,27 @@ import {
   classifyFailureCause,
   failureCauseReason,
   failureCauseReasonForClass,
+  jitteredMs,
   transientRetryBackoffMs,
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
 import { type WorkState, type WorkStep, appendEvent, writeState } from "./workflow-state.ts";
+
+/**
+ * #366 — injectable sleep. Real waits are the point in production (a burst
+ * 429 clears by waiting), but the offline suite must never actually sleep, so
+ * the seam is here rather than a bare setTimeout at each call site.
+ */
+let sleepFn: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Test seam. Returns a restore function. */
+export function __setSleepFn(fn: (ms: number) => Promise<void>): () => void {
+  const prev = sleepFn;
+  sleepFn = fn;
+  return () => {
+    sleepFn = prev;
+  };
+}
 
 /**
  * Step completed — figure out if it ended in a step-failure-shaped
@@ -153,8 +170,14 @@ export async function routeStepOutcome(
           trace(
             `work-driver: retry on step="${step}" (attempt ${used + 2}/${classification.maxRetries + 1}, cause=${classification.cause})`,
           );
-          const backoff = transientRetryBackoffMs() * (used + 1);
-          if (backoff > 0) await new Promise((r) => setTimeout(r, backoff));
+          // #366 — honour the provider's own requested delay when it stated
+          // one (a rate-limit floor: waiting less is what earns the next 429),
+          // otherwise the linear transient backoff. Full jitter either way, so
+          // parallel cycles that trip the same limit don't resynchronise into
+          // a thundering herd (#289 makes that concrete).
+          const base = transientRetryBackoffMs() * (used + 1);
+          const backoff = jitteredMs(base, classification.waitMs ?? 0);
+          if (backoff > 0) await sleepFn(backoff);
           return { state, retry: true }; // re-run same step on next loop iteration
         }
         // Budget exhausted → fall through to the HALT cap-hit below.
@@ -190,20 +213,40 @@ export async function routeStepOutcome(
         return { state, retry: true };
       }
       if (policy === "RETRY_ONCE") {
-        const attempts = state.pipelineState.retryAttempts ?? {};
+        // #366 — an infrastructure fault must never decrement the SEMANTIC
+        // attempt budget. Pre-fix this branch never consulted the
+        // classification, so one 429 on `adversarial` burned the single
+        // semantic retry and the next failure — of any kind — halted the
+        // cycle. Infra faults on RETRY_ONCE steps use the transient budget,
+        // same as HALT-class steps do.
+        const infra = classification.cause !== "crashed-unknown" && classification.shouldRetry;
+        const attempts = infra
+          ? (state.pipelineState.transientRetryAttempts ?? {})
+          : (state.pipelineState.retryAttempts ?? {});
         const used = attempts[step] ?? 0;
-        if (used < 1) {
+        const budget = infra ? classification.maxRetries : 1;
+        if (used < budget) {
+          const bumped = { ...attempts, [step]: used + 1 };
           state = {
             ...state,
             pipelineState: {
               ...state.pipelineState,
-              retryAttempts: { ...attempts, [step]: used + 1 },
+              ...(infra ? { transientRetryAttempts: bumped } : { retryAttempts: bumped }),
             },
           };
           await writeState(ctx.repoRoot, state);
           const reason = failureCauseReason(tail);
           lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason);
-          trace(`work-driver: RETRY_ONCE on step="${step}" (attempt ${used + 2})`);
+          trace(
+            `work-driver: RETRY_ONCE on step="${step}" (attempt ${used + 2}, budget=${infra ? "transient" : "semantic"})`,
+          );
+          if (infra) {
+            const wait = jitteredMs(
+              transientRetryBackoffMs() * (used + 1),
+              classification.waitMs ?? 0,
+            );
+            if (wait > 0) await sleepFn(wait);
+          }
           return { state, retry: true }; // re-run same step on next loop iteration
         }
         // Retry exhausted → HALT via the same cap shape. Same

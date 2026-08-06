@@ -107,9 +107,12 @@ async function testFailureCauseTaxonomy() {
           "Server requested 86399s retry delay (max: 60s). 429 status code (no body)",
       }),
     );
-    assert(cls.cause === "rate-limited:429", "429 → rate-limited:429");
-    assert(cls.shouldRetry === false, "429 → shouldRetry=false");
-    assert(cls.maxRetries === 0, "429 → maxRetries=0");
+    // #366 — the 86399s message is now classified precisely as a quota
+    // window rather than a generic 429. The HALT behaviour below is
+    // unchanged; only the label got accurate enough to act on.
+    assert(cls.cause === "rate-limited:quota-window", "86399s 429 → rate-limited:quota-window");
+    assert(cls.shouldRetry === false, "quota-window → shouldRetry=false (unchanged)");
+    assert(cls.maxRetries === 0, "quota-window → maxRetries=0 (unchanged)");
   }
 
   // --- classifyFailureCause: transport severance retries ---
@@ -160,9 +163,12 @@ async function testFailureCauseTaxonomy() {
           "Server requested 86399s retry delay (max: 60s). 429 status code (no body)",
       }),
     );
+    // #366 — "cannot help" was the pre-fix blanket claim and is now reserved
+    // for the cases where it is true (spend cap, or no stated delay). A quota
+    // window states when it clears instead.
     assert(
-      reason429.includes("429") && reason429.includes("cannot help"),
-      `429 reason names rate-limit: ${reason429}`,
+      reason429.includes("429") && /quota window/.test(reason429),
+      `429 reason names the rate-limit class: ${reason429}`,
     );
 
     const reasonSevered = failureCauseReason(mkEvent({ kind: "dispatch-failed-provider" }));

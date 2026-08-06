@@ -8,7 +8,12 @@
  * decide retry vs. halt behaviour per PR5/#297/#308/#314.
  */
 
-import { type DispatchFailureCause, isRateLimit429Msg } from "./types.ts";
+import {
+  type DispatchFailureCause,
+  isRateLimit429Msg,
+  isSpendCapMsg,
+  parseRetryDelaySeconds,
+} from "./types.ts";
 
 /**
  * #297 — max INFRASTRUCTURE-TRANSIENT retries per step on HALT-class
@@ -37,6 +42,34 @@ export function transientRetryBackoffMs(): number {
 }
 
 /**
+ * #366 — the boundary between "wait it out inside the cycle" and "this is a
+ * quota window, come back later". Default 300s: long enough to absorb every
+ * per-minute bucket reset, short enough that the operator is not left staring
+ * at a cycle that looks alive but is asleep for hours.
+ */
+export function burstThresholdSeconds(): number {
+  const env = Number(process.env.PI_ENSEMBLE_RATE_LIMIT_BURST_MAX_S);
+  return Number.isFinite(env) && env >= 0 ? env : 300;
+}
+
+/**
+ * #366 — full jitter (AWS Builders' Library): sleep a uniform random amount in
+ * [0, computed). Without it, N cycles that hit the same rate limit compute the
+ * same backoff and retry in the same instant, converting a recoverable blip
+ * into a self-inflicted thundering herd. This becomes load-bearing the moment
+ * parallel groups land (#289); it is cheap to have now and expensive to
+ * retrofit under a live incident.
+ *
+ * A provider-requested delay is treated as a FLOOR — waiting less than asked
+ * is what earns the next 429 — so jitter is added on top rather than sampled
+ * across the whole interval.
+ */
+export function jitteredMs(baseMs: number, floorMs = 0, rand: () => number = Math.random): number {
+  if (floorMs > 0) return Math.ceil(floorMs + rand() * Math.max(baseMs, 1000));
+  return Math.ceil(rand() * Math.max(baseMs, 0));
+}
+
+/**
  * #308/#314 — classify a dispatch-failure event by its ROOT CAUSE so the retry
  * router can branch on structure (killCause / 429 / errorStop) instead of
  * regex-matching errorTail strings. Uses shared DispatchFailureCause type
@@ -51,6 +84,8 @@ export function classifyFailureCause(tail: {
   cause: DispatchFailureCause;
   shouldRetry: boolean;
   maxRetries: number;
+  /** #366 — provider-requested wait, when it stated one. */
+  waitMs?: number;
 } {
   // Structured killCause (#296) — pi-ensemble itself ended the child.
   // MUST be checked first; a self-kill is never a provider failure.
@@ -64,11 +99,36 @@ export function classifyFailureCause(tail: {
     return { cause: "self-killed:abort", shouldRetry: false, maxRetries: 0 };
   }
 
-  // 429 rate-limit — detected from providerMessage (errorStop.message).
-  // Retrying is definitionally useless; the provider explicitly asked us to wait.
+  // 429 rate-limit. #366 — read the delay the provider actually asked for
+  // instead of treating every 429 as permanently fatal. A per-minute token
+  // bucket and a 24-hour quota exhaustion arrive as the same status code and
+  // differ only in that number; conflating them is what turned a 60-second
+  // wait into a dead cycle and 11 unstarted issues.
   const msg = tail.providerMessage ?? tail.errorTail ?? "";
   if (isRateLimit429Msg(msg)) {
-    return { cause: "rate-limited:429", shouldRetry: false, maxRetries: 0 };
+    if (isSpendCapMsg(msg)) {
+      return { cause: "rate-limited:quota-terminal", shouldRetry: false, maxRetries: 0 };
+    }
+    const delayS = parseRetryDelaySeconds(msg);
+    if (delayS === undefined) {
+      // Unreadable message — keep the conservative pre-#366 halt rather than
+      // guessing a wait that might be a day long.
+      return { cause: "rate-limited:429", shouldRetry: false, maxRetries: 0 };
+    }
+    if (delayS <= burstThresholdSeconds()) {
+      return {
+        cause: "rate-limited:burst",
+        shouldRetry: true,
+        maxRetries: TRANSIENT_MAX_RETRIES,
+        waitMs: Math.ceil(delayS * 1000),
+      };
+    }
+    return {
+      cause: "rate-limited:quota-window",
+      shouldRetry: false,
+      maxRetries: 0,
+      waitMs: Math.ceil(delayS * 1000),
+    };
   }
 
   // Provider error-stop (transport severance, provider timeout, etc).
@@ -105,7 +165,13 @@ export function failureCauseReason(tail: {
     case "self-killed:abort":
       return "cancelled (abort signal)";
     case "rate-limited:429":
-      return "provider rate-limited (429) — retrying cannot help";
+      return "provider rate-limited (429), no retry delay stated — halting rather than guessing how long to wait";
+    case "rate-limited:burst":
+      return `provider rate-limited (429), asked us to wait ${Math.round((cls.waitMs ?? 0) / 1000)}s — waiting it out and resuming`;
+    case "rate-limited:quota-window":
+      return `provider rate-limited (429), asked us to wait ~${Math.round((cls.waitMs ?? 0) / 3600000)}h — a quota window, not a burst`;
+    case "rate-limited:quota-terminal":
+      return "provider spend cap reached — waiting will not clear this";
     case "provider-severed":
       return `provider/transport error: ${tail.providerMessage ?? tail.errorTail?.slice(0, 60) ?? "connection lost"}`;
     case "crashed":
@@ -134,7 +200,13 @@ export function failureCauseReasonForClass(
     case "self-killed:abort":
       return "cancelled (abort signal)";
     case "rate-limited:429":
-      return "provider rate-limited (429) — retrying cannot help";
+      return "provider rate-limited (429), no retry delay stated — halting rather than guessing how long to wait";
+    case "rate-limited:burst":
+      return "provider rate-limited (429) within the burst window — waiting it out and resuming";
+    case "rate-limited:quota-window":
+      return "provider rate-limited (429) on a quota window — retrying now cannot help; come back after the reset";
+    case "rate-limited:quota-terminal":
+      return "provider spend cap reached — waiting will not clear this";
     case "provider-severed":
       return `provider/transport error: ${tail.providerMessage ?? tail.errorTail?.slice(0, 60) ?? "connection lost"}`;
     case "crashed":
