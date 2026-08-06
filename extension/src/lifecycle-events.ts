@@ -95,6 +95,32 @@ export interface LifecycleDetails {
    * (explore, plan, branch, commit-pr, step-back, ci, handoff, merged).
    */
   round?: number;
+  /**
+   * #288 — which cycle this line belongs to.
+   *
+   * Without it, two concurrent cycles entering `develop` emit byte-identical
+   * scrollback: `▸ ensemble: ▶ step 4/9 develop started`, twice. There is
+   * nothing in the payload, the label or the theme to tell them apart, so a
+   * failure line gives the operator a coin-flip on which issue to investigate.
+   * Rendered only when more than one cycle is live, so single-cycle output is
+   * unchanged.
+   */
+  issue?: number;
+}
+
+/**
+ * How many cycles are currently live. Set by the work-widget, which already
+ * tracks exactly this; lifecycle lines only need the count to decide whether
+ * disambiguation is worth the width.
+ */
+let liveCycleCount = 0;
+export function setLiveCycleCount(n: number): void {
+  liveCycleCount = n;
+}
+
+/** The `#N ` tag, or "" when a single cycle makes it noise. */
+function cycleTag(issue: number | undefined): string {
+  return issue !== undefined && liveCycleCount > 1 ? `#${issue} ` : "";
 }
 
 let activePi: ExtensionAPI | undefined;
@@ -195,6 +221,7 @@ export function emitStepStarted(
   stepNumber: number,
   stepTotal: number,
   round?: number,
+  issue?: number,
 ): void {
   emit({
     kind: "step-started",
@@ -204,6 +231,7 @@ export function emitStepStarted(
     stepNumber,
     stepTotal,
     round,
+    issue,
   });
 }
 
@@ -215,9 +243,11 @@ export function emitStepCompleted(
   totalTokens?: number,
   round?: number,
   recovered?: boolean,
+  issue?: number,
 ): void {
   emit({
     kind: "step-completed",
+    issue,
     jobId: step,
     label: step,
     role: step,
@@ -237,9 +267,11 @@ export function emitStepFailed(
   elapsedMs: number,
   reason?: string,
   round?: number,
+  issue?: number,
 ): void {
   emit({
     kind: "step-failed",
+    issue,
     jobId: step,
     label: step,
     role: step,
@@ -263,9 +295,11 @@ export function emitStepRetry(
   stepTotal: number,
   attempt: number,
   reason?: string,
+  issue?: number,
 ): void {
   emit({
     kind: "step-retry",
+    issue,
     jobId: step,
     label: step,
     role: step,
@@ -333,7 +367,7 @@ export function formatLine(d: LifecycleDetails): string {
     case "step-started": {
       const ordinal = d.stepNumber && d.stepTotal ? `${d.stepNumber}/${d.stepTotal} ` : "";
       const round = d.round && d.round > 1 ? ` (round ${d.round})` : "";
-      return `▸ ensemble: ▶ step ${ordinal}${d.label}${round} started`;
+      return `▸ ensemble: ${cycleTag(d.issue)}▶ step ${ordinal}${d.label}${round} started`;
     }
     case "step-completed": {
       const ordinal = d.stepNumber && d.stepTotal ? `${d.stepNumber}/${d.stepTotal} ` : "";
@@ -342,20 +376,20 @@ export function formatLine(d: LifecycleDetails): string {
         d.totalTokens && d.totalTokens > 0 ? ` · ${formatTokens(d.totalTokens)} tokens` : "";
       const elapsed = d.elapsedMs != null ? ` · ${fmtElapsed(d.elapsedMs)}` : "";
       const recovered = d.recovered ? " · recovered after retry" : "";
-      return `▸ ensemble: ✓ step ${ordinal}${d.label}${round} finished${elapsed}${tokens}${recovered}`;
+      return `▸ ensemble: ${cycleTag(d.issue)}✓ step ${ordinal}${d.label}${round} finished${elapsed}${tokens}${recovered}`;
     }
     case "step-failed": {
       const ordinal = d.stepNumber && d.stepTotal ? `${d.stepNumber}/${d.stepTotal} ` : "";
       const round = d.round && d.round > 1 ? ` (round ${d.round})` : "";
       const elapsed = d.elapsedMs != null ? ` · ${fmtElapsed(d.elapsedMs)}` : "";
       const reason = d.reason ? ` · ${d.reason}` : "";
-      return `▸ ensemble: ✗ step ${ordinal}${d.label}${round} failed${elapsed}${reason}`;
+      return `▸ ensemble: ${cycleTag(d.issue)}✗ step ${ordinal}${d.label}${round} failed${elapsed}${reason}`;
     }
     case "step-retry": {
       const ordinal = d.stepNumber && d.stepTotal ? `${d.stepNumber}/${d.stepTotal} ` : "";
       const attempt = d.round ? ` attempt ${d.round}` : "";
       const reason = d.reason ? ` · prior failure: ${d.reason}` : "";
-      return `▸ ensemble: ↻ step ${ordinal}${d.label} retrying${attempt}${reason}`;
+      return `▸ ensemble: ${cycleTag(d.issue)}↻ step ${ordinal}${d.label} retrying${attempt}${reason}`;
     }
   }
 }

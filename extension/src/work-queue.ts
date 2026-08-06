@@ -105,7 +105,7 @@ function parkReason(state: WorkState | undefined): { reason: string; failedStep?
  * is not that. If we cannot name an action, we say so plainly rather than
  * inventing one.
  */
-function humanActionFor(reason: string, primary: number): string {
+export function humanActionFor(reason: string, primary: number): string {
   if (/existing-pr-detected/.test(reason)) {
     return `decide whether to resume, retarget or close the open PR for #${primary}`;
   }

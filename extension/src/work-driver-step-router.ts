@@ -80,7 +80,15 @@ export async function routeStepOutcome(
         classification.shouldRetry &&
         (state.pipelineState.transientRetryAttempts?.[step] ?? 0) < classification.maxRetries;
       if (!semanticRetryAvailable && !transientRetryAvailable) {
-        lifecycle.emitStepFailed(step, stepOrd.num, stepOrd.total, elapsed, reason, stepRound);
+        lifecycle.emitStepFailed(
+          step,
+          stepOrd.num,
+          stepOrd.total,
+          elapsed,
+          reason,
+          stepRound,
+          ctx.issue,
+        );
       }
     } else if (lastEvent?.kind === "cap-hit") {
       lifecycle.emitStepFailed(
@@ -90,6 +98,7 @@ export async function routeStepOutcome(
         elapsed,
         `cap-hit: ${lastEvent.cap}`,
         stepRound,
+        ctx.issue,
       );
     } else {
       // Sum tokens from any dispatch-completed events that fired during
@@ -129,6 +138,7 @@ export async function routeStepOutcome(
         totalTokens,
         stepRound,
         recovered,
+        ctx.issue,
       );
     }
   }
@@ -166,7 +176,7 @@ export async function routeStepOutcome(
           };
           await writeState(ctx.repoRoot, state);
           const reason = failureCauseReason(tail);
-          lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason);
+          lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason, ctx.issue);
           trace(
             `work-driver: retry on step="${step}" (attempt ${used + 2}/${classification.maxRetries + 1}, cause=${classification.cause})`,
           );
@@ -236,7 +246,7 @@ export async function routeStepOutcome(
           };
           await writeState(ctx.repoRoot, state);
           const reason = failureCauseReason(tail);
-          lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason);
+          lifecycle.emitStepRetry(step, stepOrd.num, stepOrd.total, used + 2, reason, ctx.issue);
           trace(
             `work-driver: RETRY_ONCE on step="${step}" (attempt ${used + 2}, budget=${infra ? "transient" : "semantic"})`,
           );

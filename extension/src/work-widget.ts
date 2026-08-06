@@ -23,6 +23,7 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { setLiveCycleCount } from "./lifecycle-events.ts";
 import { trace } from "./trace.ts";
 import type { WorkState } from "./workflow-state.ts";
 
@@ -45,9 +46,22 @@ const STEP_ORDINAL: Record<string, { num: number; total: number }> = {
 };
 
 let activeCtx: ExtensionContext | undefined;
-let lastIssue: number | undefined;
-let stepStartedAt: number | undefined;
 let tickHandle: ReturnType<typeof setInterval> | undefined;
+
+/**
+ * #288 — one view per live cycle, not one global cursor.
+ *
+ * The singletons this replaces made `clear()` destructive: it is called by
+ * every cycle on exit, and it cleared the SHARED status key and the ticker —
+ * so the first group to finish blanked the footer for every group still
+ * running, for the rest of their runtime. Already reachable today, because two
+ * `/work` invocations can overlap.
+ */
+interface CycleView {
+  state: WorkState;
+  stepStartedAt: number;
+}
+const views = new Map<number, CycleView>();
 
 function isQuiet(): boolean {
   return process.env.PI_ENSEMBLE_QUIET_STATUS === "1";
@@ -80,8 +94,7 @@ export function detach(): void {
     }
   }
   activeCtx = undefined;
-  lastIssue = undefined;
-  stepStartedAt = undefined;
+  views.clear();
 }
 
 /**
@@ -132,32 +145,42 @@ export function renderStatus(
  */
 export function update(state: WorkState, stepStartedAtMs: number): void {
   if (isQuiet()) return;
-  lastIssue = state.issue;
-  stepStartedAt = stepStartedAtMs;
+  views.set(state.issue, { state, stepStartedAt: stepStartedAtMs });
+  setLiveCycleCount(views.size);
   if (!activeCtx) return;
   // Render once immediately, then start the ticker so elapsed advances
   // even when no transitions fire (e.g., a 5-min adversarial loop where
   // the widget would otherwise be stale until next step).
-  writeStatus(state);
-  startTickerIfNeeded(state);
+  writeStatus();
+  startTickerIfNeeded();
 }
 
-function writeStatus(state: WorkState): void {
-  if (!activeCtx || stepStartedAt === undefined) return;
+/**
+ * Render every live cycle into the one status key Pi gives us.
+ *
+ * Segments are joined with ` │ ` rather than the ` · ` used INSIDE a segment,
+ * so the eye can still find the field boundaries. A single cycle renders
+ * byte-identically to the pre-#288 line.
+ */
+function writeStatus(): void {
+  if (!activeCtx || views.size === 0) return;
+  const now = Date.now();
+  const segments = [...views.values()].map((v, i) =>
+    i === 0
+      ? renderStatus(v.state, v.stepStartedAt, now)
+      : renderStatus(v.state, v.stepStartedAt, now).replace(/^▸ \/work /, ""),
+  );
   try {
-    activeCtx.ui.setStatus(STATUS_KEY, renderStatus(state, stepStartedAt));
+    activeCtx.ui.setStatus(STATUS_KEY, segments.join(" │ "));
   } catch (err) {
     trace(`work-widget: setStatus failed: ${(err as Error).message}`);
   }
 }
 
-let lastState: WorkState | undefined;
-function startTickerIfNeeded(state: WorkState): void {
-  lastState = state;
+function startTickerIfNeeded(): void {
   if (tickHandle) return;
   tickHandle = setInterval(() => {
-    if (!lastState) return;
-    writeStatus(lastState);
+    if (views.size > 0) writeStatus();
   }, 1000);
   // Don't keep the process alive just for the ticker.
   if (typeof (tickHandle as { unref?: () => void }).unref === "function") {
@@ -165,14 +188,23 @@ function startTickerIfNeeded(state: WorkState): void {
   }
 }
 
-/** Clear the status line. Called by work-driver on terminal status (merged/handoff/aborted). */
-export function clear(): void {
+/**
+ * Retire ONE cycle's segment. Called by work-driver on terminal status.
+ *
+ * The ticker and the status key are only torn down once the last cycle is
+ * gone — clearing them per-cycle is what blanked siblings.
+ */
+export function clear(issue: number): void {
+  views.delete(issue);
+  setLiveCycleCount(views.size);
+  if (views.size > 0) {
+    writeStatus();
+    return;
+  }
   if (tickHandle) {
     clearInterval(tickHandle);
     tickHandle = undefined;
   }
-  lastState = undefined;
-  stepStartedAt = undefined;
   if (!activeCtx) return;
   try {
     activeCtx.ui.setStatus(STATUS_KEY, undefined);
@@ -182,6 +214,15 @@ export function clear(): void {
 }
 
 /** Test-only — expose attached state for assertions. */
-export function snapshot(): { issue: number | undefined; stepStartedAt: number | undefined } {
-  return { issue: lastIssue, stepStartedAt };
+export function snapshot(): {
+  issue: number | undefined;
+  stepStartedAt: number | undefined;
+  cycles: number[];
+} {
+  const first = [...views.values()][0];
+  return {
+    issue: first?.state.issue,
+    stepStartedAt: first?.stepStartedAt,
+    cycles: [...views.keys()],
+  };
 }

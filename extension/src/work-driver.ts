@@ -247,7 +247,7 @@ export async function runWorkDriver(ctx: DriverContext): Promise<void> {
     // so the user can distinguish first-pass from third-pass at a glance.
     // First entry (round=1) shows no suffix — formatLine suppresses it.
     const stepRound = countPriorStepStarts(state, step) + 1;
-    lifecycle.emitStepStarted(step, stepOrd.num, stepOrd.total, stepRound);
+    lifecycle.emitStepStarted(step, stepOrd.num, stepOrd.total, stepRound, ctx.issue);
     // PR2 O2: update the footer status cursor — distinct from the deck,
     // which shows individual subagent children. The cursor shows the
     // driver's step-level position with live-tick elapsed.
@@ -271,6 +271,7 @@ export async function runWorkDriver(ctx: DriverContext): Promise<void> {
           Date.now() - stepStartedAt,
           "step not implemented",
           stepRound,
+          ctx.issue,
         );
         ctx.pi.sendUserMessage(
           `pi-ensemble /work driver halted: step "${err.step}" not yet implemented in this build. Run with PI_ENSEMBLE_WORK_DRIVER=0 to use the legacy PM-driven flow.`,
@@ -291,6 +292,7 @@ export async function runWorkDriver(ctx: DriverContext): Promise<void> {
         Date.now() - stepStartedAt,
         (err as Error).message?.slice(0, 80),
         stepRound,
+        ctx.issue,
       );
       ctx.pi.sendUserMessage(
         `pi-ensemble /work driver aborted on step "${step}" for issue #${ctx.issue}: ` +
@@ -330,7 +332,7 @@ export async function runWorkDriver(ctx: DriverContext): Promise<void> {
   // Clear the footer status cursor (PR2 O2). Stale cursors after a
   // cycle ends are worse than no cursor — the user might think a /work
   // is still running when it isn't.
-  workWidget.clear();
+  workWidget.clear(ctx.issue);
 
   // Cleanup scratch dir on success only — handoff/aborted KEEP the dir
   // so the user can inspect what the agents produced when something
