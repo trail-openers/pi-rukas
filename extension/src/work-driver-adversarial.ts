@@ -17,7 +17,7 @@ import type { DispatchResult } from "./types.ts";
 import { alwaysWorktreeEnabled } from "./work-driver-branch-mechanized.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { fetchDiff } from "./work-driver-diff.ts";
-import { integrate } from "./work-driver-integrate.ts";
+import { integrate, withIntegrationLock } from "./work-driver-integrate.ts";
 import { commitLensFixChanges } from "./work-driver-lens.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
@@ -46,15 +46,17 @@ async function integrateLensFix(
   const branchName = ps.branchName;
   if (!branchName) return { committed: false, error: "no branch name recorded" };
   const round = ps.reviewRound;
-  const res = await integrate(execFn, {
-    repoRoot: ctx.repoRoot,
-    branchName,
-    worktrees,
-    scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
-    commitTitle: `fix(lens): round ${round} review findings`,
-    commitBody: `Addresses six-pass review findings from round ${round}.`,
-    mode: "followup",
-  });
+  const res = await withIntegrationLock(ctx.repoRoot, () =>
+    integrate(execFn, {
+      repoRoot: ctx.repoRoot,
+      branchName,
+      worktrees,
+      scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
+      commitTitle: `fix(lens): round ${round} review findings`,
+      commitBody: `Addresses six-pass review findings from round ${round}.`,
+      mode: "followup",
+    }),
+  );
   if (!res.ok) return { committed: false, error: res.reason };
   if (res.empty) return { committed: false };
   return { committed: true, pushed: true };

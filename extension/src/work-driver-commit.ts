@@ -15,7 +15,12 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
-import { cachedIssueTitle, integrate, mechanizeOpsEnabled } from "./work-driver-integrate.ts";
+import {
+  cachedIssueTitle,
+  integrate,
+  mechanizeOpsEnabled,
+  withIntegrationLock,
+} from "./work-driver-integrate.ts";
 import { parsePrNumber } from "./work-driver-lens.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
 import { inlineCommitPrPrompt } from "./work-driver-prompts-late.ts";
@@ -147,8 +152,13 @@ export async function mechanizedCommitPr(
     const prBodyFile = path.join(scratchDir(ctx.repoRoot, ctx.issue), "mech-pr-body.md");
     await fs.mkdir(path.dirname(prBodyFile), { recursive: true });
     await fs.writeFile(prBodyFile, prBody, "utf8");
+    // `--head` is not optional under concurrency: without it gh infers the
+    // head from repoRoot's CURRENT checkout, so a sibling group that moved
+    // HEAD between our push and this call would have its branch opened as our
+    // PR — with our title and body. The lock makes that impossible; the flag
+    // makes it impossible even if the lock is ever wrong.
     const { stdout: prOut } = await execFn(
-      `gh pr create --title ${JSON.stringify(title)} --body-file ${JSON.stringify(prBodyFile)}`,
+      `gh pr create --head ${JSON.stringify(branchName)} --title ${JSON.stringify(title)} --body-file ${JSON.stringify(prBodyFile)}`,
       { cwd: ctx.repoRoot, maxBuffer: 256 * 1024 },
     );
     const prMatch = prOut.match(/\/pull\/(\d+)/);
@@ -194,6 +204,19 @@ export async function mechanizedCommitPr(
  * `gh issue comment`.
  */
 export async function runCommitPr(
+  ctx: DriverContext,
+  state: WorkState,
+  now: number,
+): Promise<WorkState> {
+  // #289 — one contiguous critical section per group. The span deliberately
+  // includes the LLM ops fallback (it mutates repoRoot exactly as the
+  // mechanized path does) and BOTH verify gates, which read repoRoot HEAD via
+  // `git rev-list` / `git diff --name-only` and would otherwise validate a
+  // sibling group's commits as this group's evidence.
+  return withIntegrationLock(ctx.repoRoot, () => runCommitPrLocked(ctx, state, now));
+}
+
+async function runCommitPrLocked(
   ctx: DriverContext,
   state: WorkState,
   now: number,

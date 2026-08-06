@@ -10,6 +10,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
+import { ensureGitExclude } from "./work-driver-branch-mechanized.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 /**
@@ -73,31 +74,12 @@ export async function setupWorkspaceTmp(repoRoot: string, issue: number): Promis
   } catch (err) {
     trace(`work-driver: failed to mkdir scratch dir ${dir}: ${(err as Error).message}`);
   }
-  // Add `/tmp/` to .git/info/exclude if absent. The leading slash anchors
-  // to repo root (subdir `node_modules/tmp/` would NOT be ignored). The
-  // file may not exist on fresh clones; create with the line.
-  const excludeFile = path.join(repoRoot, ".git", "info", "exclude");
-  try {
-    let current = "";
-    try {
-      current = await fs.readFile(excludeFile, "utf8");
-    } catch {
-      /* fresh repo or no .git/info dir — handled below */
-    }
-    if (!/^\/tmp\/?\s*$/m.test(current)) {
-      const banner = current.includes("# pi-ensemble")
-        ? ""
-        : "\n# pi-ensemble: scratch dir for /work cycles (see docs/troubleshooting.md)\n";
-      const next = `${current.endsWith("\n") || current.length === 0 ? current : `${current}\n`}${banner}/tmp/\n`;
-      // Ensure the parent directory exists; .git/info may be missing on
-      // weird clones (e.g., shallow worktrees) but mkdir -p is harmless.
-      await fs.mkdir(path.dirname(excludeFile), { recursive: true });
-      await fs.writeFile(excludeFile, next, "utf8");
-      trace(`work-driver: added /tmp/ to ${excludeFile}`);
-    }
-  } catch (err) {
-    trace(`work-driver: failed to update ${excludeFile}: ${(err as Error).message}`);
-  }
+  // #289 — one atomic writer for `.git/info/exclude`. This used to be a
+  // non-atomic read-then-writeFile here AND a read-then-appendFile in
+  // work-driver-branch-mechanized.ts; interleaved, the overwrite clobbered the
+  // other's line. The leading slash anchors `/tmp/` to the repo root so a
+  // nested `node_modules/tmp/` is not also ignored.
+  await ensureGitExclude(repoRoot, ["/tmp/"]);
   return dir;
 }
 

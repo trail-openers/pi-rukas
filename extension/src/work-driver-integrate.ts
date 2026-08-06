@@ -33,6 +33,109 @@ import type { ExecFn } from "./worktree.ts";
  * it without importing the commit module — that edge would close an import
  * cycle (#356 flags the same shape).
  */
+/**
+ * #289 — serialise every operation that touches repoRoot's checkout, index or
+ * HEAD.
+ *
+ * `integrate()` below mutates all three. Two concurrent groups doing that
+ * corrupt each other in ways that are silent rather than loud:
+ *
+ *   - `checkout -B` carries a dirty index ACROSS branches, so B's applied-but-
+ *     uncommitted slice moves onto A's branch and A's commit ships B's code
+ *     under A's `Fixes #N`;
+ *   - `git apply --index` contends on `index.lock` and surfaces as a phantom
+ *     "patch conflict", routing a healthy group to handoff;
+ *   - `git rev-parse HEAD` after the commit can read a SIBLING's commit, and
+ *     the worktree `reset --hard` that follows then destroys this group's work.
+ *
+ * Two layers, because one Pi process is not the whole story: `/work` is
+ * fire-and-forget and `ctx.isIdle()` reports idle immediately after launch, so
+ * a second `/work` — or a second Pi process on the same clone — can already
+ * race today. The promise chain is the fast path within a process; the
+ * lockfile is the cross-process backstop.
+ */
+let integrationChain: Promise<unknown> = Promise.resolve();
+
+/** How long a lockfile may sit before it is presumed abandoned. */
+const LOCK_STALE_MS = 30 * 60 * 1000;
+
+function lockPath(repoRoot: string): string {
+  return path.join(repoRoot, ".git", "pi-ensemble-integration.lock");
+}
+
+async function acquireLockfile(repoRoot: string): Promise<() => Promise<void>> {
+  const file = lockPath(repoRoot);
+  const deadline = Date.now() + LOCK_STALE_MS;
+  for (;;) {
+    try {
+      // `wx` is O_EXCL: the create itself is the atomic test-and-set.
+      const fh = await fs.open(file, "wx");
+      await fh.writeFile(JSON.stringify({ pid: process.pid, at: Date.now() }));
+      await fh.close();
+      return async () => {
+        await fs.rm(file, { force: true }).catch(() => undefined);
+      };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+        // Cannot create the lock at all (read-only .git, permissions). Fail
+        // OPEN: the in-process chain still serialises this process, and
+        // refusing to integrate would be a worse failure than a lock we
+        // could not take.
+        trace(`integration-lock: lockfile unavailable, continuing: ${(err as Error).message}`);
+        return async () => undefined;
+      }
+      // Held. Sweep it if the holder is long gone, otherwise wait.
+      try {
+        const raw = JSON.parse(await fs.readFile(file, "utf8")) as { at?: number };
+        if (typeof raw.at === "number" && Date.now() - raw.at > LOCK_STALE_MS) {
+          trace("integration-lock: sweeping a stale lockfile");
+          await fs.rm(file, { force: true }).catch(() => undefined);
+          continue;
+        }
+      } catch {
+        // Unreadable/corrupt lock — treat as stale rather than deadlocking.
+        await fs.rm(file, { force: true }).catch(() => undefined);
+        continue;
+      }
+      if (Date.now() > deadline) {
+        trace("integration-lock: waited past the stale window, proceeding");
+        return async () => undefined;
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+}
+
+/**
+ * Run `fn` holding the integration lock.
+ *
+ * The chain deliberately never inherits a prior rejection (`then(fn, fn)`) and
+ * is re-armed with a swallowing `catch` — otherwise one failed integration
+ * would poison every subsequent one for the life of the process.
+ */
+export function withIntegrationLock<T>(repoRoot: string, fn: () => Promise<T>): Promise<T> {
+  const run = integrationChain.then(
+    () => guarded(repoRoot, fn),
+    () => guarded(repoRoot, fn),
+  );
+  integrationChain = run.catch(() => undefined);
+  return run;
+}
+
+async function guarded<T>(repoRoot: string, fn: () => Promise<T>): Promise<T> {
+  const release = await acquireLockfile(repoRoot);
+  try {
+    return await fn();
+  } finally {
+    await release();
+  }
+}
+
+/** Test seam: reset the in-process chain between fixtures. */
+export function __resetIntegrationLock(): void {
+  integrationChain = Promise.resolve();
+}
+
 export function mechanizeOpsEnabled(): boolean {
   const v = process.env.PI_ENSEMBLE_MECHANIZE_OPS;
   return v !== "0" && v !== "false";

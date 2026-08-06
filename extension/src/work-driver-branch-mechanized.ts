@@ -93,23 +93,83 @@ export async function detectMainline(execFn: ExecFn, repoRoot: string): Promise<
  * refuses to run — every cycle, forever. Caught by the real-git test, missed
  * by the mocked one, which is the whole argument for having both.
  */
-export async function ensureWorktreesExcluded(execFn: ExecFn, repoRoot: string): Promise<void> {
+export async function ensureWorktreesExcluded(_execFn: ExecFn, repoRoot: string): Promise<void> {
+  await ensureGitExclude(repoRoot, [".worktrees/"]);
+}
+
+/**
+ * Add lines to `.git/info/exclude` as ONE atomic read-modify-write.
+ *
+ * Two callers append to this file — this one and `setupWorkspaceTmp` (for
+ * `tmp/`) — and both previously did a non-atomic read-then-write. Interleaved,
+ * the `writeFile` overwrite clobbers whatever the other just appended. Losing
+ * the `.worktrees/` line is not cosmetic: every worktree file then shows in
+ * repoRoot's `git status --porcelain`, and while `integrate()`'s preflight
+ * filters it defensively, nothing else does.
+ *
+ * tmp-file + rename, the same shape `writeState` uses, so a concurrent reader
+ * never observes a half-written file.
+ *
+ * `.git/info/exclude` rather than `.gitignore`: per-clone, so the driver never
+ * alters the project's tracked shape — the convention AGENTS.md §7 already
+ * mandates for `tmp/`.
+ */
+let excludeChain: Promise<unknown> = Promise.resolve();
+
+export function ensureGitExclude(repoRoot: string, lines: string[]): Promise<void> {
+  // Serialised, not merely atomic. tmp-file + rename makes each WRITE atomic,
+  // but two callers that read the same original and each write their own
+  // version still lose one update — which is precisely the bug: whichever
+  // wrote second silently dropped the other's line. The chain makes the whole
+  // read-modify-write the unit.
+  const run = excludeChain.then(
+    () => ensureGitExcludeInner(repoRoot, lines),
+    () => ensureGitExcludeInner(repoRoot, lines),
+  );
+  excludeChain = run.catch(() => undefined);
+  return run;
+}
+
+async function ensureGitExcludeInner(repoRoot: string, lines: string[]): Promise<void> {
   const excludePath = path.join(repoRoot, ".git", "info", "exclude");
   try {
     const existing = await fs.readFile(excludePath, "utf8").catch(() => "");
-    if (/^\.worktrees\/?$/m.test(existing)) return;
+    const missing = lines.filter(
+      (l) => !new RegExp(`^${l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m").test(existing),
+    );
+    if (missing.length === 0) return;
     await fs.mkdir(path.dirname(excludePath), { recursive: true });
     const sep = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
-    await fs.appendFile(
-      excludePath,
-      `${sep}# pi-ensemble /work driver (#287) — per-cycle worktrees\n.worktrees/\n`,
-      "utf8",
-    );
+    const body = `${existing}${sep}# pi-ensemble /work driver\n${missing.join("\n")}\n`;
+    const tmp = `${excludePath}.${process.pid}.tmp`;
+    await fs.writeFile(tmp, body, "utf8");
+    await fs.rename(tmp, excludePath);
   } catch (err) {
-    // Best-effort: the preflight filters `.worktrees/` defensively too.
+    // Best-effort: integrate()'s preflight filters `.worktrees/` defensively.
     trace(
       `work-driver: could not update .git/info/exclude: ${(err as Error).message?.slice(0, 120)}`,
     );
+  }
+}
+
+let inFlightFetch: { key: string; p: Promise<unknown> } | undefined;
+
+/** Coalesce concurrent `git fetch origin <ref>` calls into one. */
+async function sharedFetch(execFn: ExecFn, repoRoot: string, ref: string): Promise<void> {
+  const key = `${repoRoot}::${ref}`;
+  if (inFlightFetch?.key === key) {
+    await inFlightFetch.p.catch(() => undefined);
+    return;
+  }
+  const p = execFn(`git fetch origin ${JSON.stringify(ref)}`, {
+    cwd: repoRoot,
+    maxBuffer: 1024 * 1024,
+  });
+  inFlightFetch = { key, p };
+  try {
+    await p;
+  } finally {
+    if (inFlightFetch?.p === p) inFlightFetch = undefined;
   }
 }
 
@@ -140,10 +200,12 @@ export async function mechanizedBranchSetup(
 ): Promise<MechanizedBranchResult> {
   await ensureWorktreesExcluded(execFn, repoRoot);
   const mainline = await detectMainline(execFn, repoRoot);
-  await execFn(`git fetch origin ${JSON.stringify(mainline)}`, {
-    cwd: repoRoot,
-    maxBuffer: 1024 * 1024,
-  });
+  // Concurrent fetches of the SAME ref collide on `packed-refs.lock` and
+  // throw, which `runBranch` catches and demotes to the LLM ops fallback —
+  // so a group silently loses mechanized setup for a transient lock. Groups
+  // starting together all want the same ref, so one shared in-flight fetch
+  // serves them all.
+  await sharedFetch(execFn, repoRoot, mainline);
   const { stdout: shaOut } = await execFn(`git rev-parse ${JSON.stringify(`origin/${mainline}`)}`, {
     cwd: repoRoot,
     maxBuffer: 64 * 1024,

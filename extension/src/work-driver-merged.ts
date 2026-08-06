@@ -24,6 +24,7 @@ import { mechanizeOpsEnabled } from "./work-driver-commit.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { parseAbort } from "./work-driver-diff.ts";
 import { detectMainline, restoreCheckout } from "./work-driver-git.ts";
+import { withIntegrationLock } from "./work-driver-integrate.ts";
 import { type MergeMethod, mechanizedMerge } from "./work-driver-merged-mechanized.ts";
 import { inlineMergePrompt } from "./work-driver-prompts-late.ts";
 import { activeIssuesOf, scratchDir, teardownWorkspaceTmp } from "./work-driver-workspace.ts";
@@ -333,11 +334,17 @@ export async function runMerged(
       if (execFn) {
         const mainlineResult = await detectMainline(ctx.repoRoot, execFn);
         if ("branch" in mainlineResult) {
-          const restorationNotes = await restoreCheckout(
-            ctx.repoRoot,
-            mainlineResult.branch,
-            state.pipelineState.branchName,
-            execFn,
+          // #289 — restoreCheckout runs `git checkout <mainline>` + `pull
+          // --ff-only` + `branch -d` at repoRoot. A sibling group mid-
+          // integrate would find itself moved onto mainline and commit
+          // there, so this takes the same lock as integration.
+          const restorationNotes = await withIntegrationLock(ctx.repoRoot, () =>
+            restoreCheckout(
+              ctx.repoRoot,
+              mainlineResult.branch,
+              state.pipelineState.branchName,
+              execFn,
+            ),
           );
           for (const note of restorationNotes) {
             // Log restoration notes (informational — not errors).
@@ -372,12 +379,17 @@ export async function runMerged(
   const wtToRemove = Object.keys(next.pipelineState.worktrees ?? {});
   if (wtToRemove.length > 0) {
     const execFnWt = ctx.verifyExecFn ?? execp;
-    for (const id of wtToRemove) {
-      await worktreeRemove(execFnWt, ctx.repoRoot, `issue-${ctx.issue}-${id}`, true).catch((err) =>
-        trace(`work-driver: worktree cleanup for '${id}' failed: ${(err as Error).message}`),
-      );
-    }
-    await worktreePrune(execFnWt, ctx.repoRoot).catch(() => undefined);
+    // `git worktree prune` touches the shared worktree admin area, so a
+    // sibling's `worktree add` can collide with it. Same lock.
+    await withIntegrationLock(ctx.repoRoot, async () => {
+      for (const id of wtToRemove) {
+        await worktreeRemove(execFnWt, ctx.repoRoot, `issue-${ctx.issue}-${id}`, true).catch(
+          (err) =>
+            trace(`work-driver: worktree cleanup for '${id}' failed: ${(err as Error).message}`),
+        );
+      }
+      await worktreePrune(execFnWt, ctx.repoRoot).catch(() => undefined);
+    });
   }
 
   return {
