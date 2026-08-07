@@ -172,6 +172,30 @@ export function renderHandoffUserMessage(
       "  # 4. Abandon the handoff entry (no code was written; safe to discard):",
       `     rm ${repoRoot}/.pi/work-state/${issue}.json`,
     );
+  } else if (cap === "awaiting-human-merge") {
+    const hold = ps.mergeHold;
+    const pr = ps.prNumber;
+    lines.push(
+      "",
+      `PR #${pr ?? "?"} is open and the work is complete — only the merge is held.`,
+      hold?.authorityGranted
+        ? `Merging is permitted here (${hold.authoritySource}), but the evidence gate refused: ${hold.evidenceReason ?? "no evidence"}.`
+        : "Nothing grants this driver authority to merge in this project. That is the default: merging is opt-in.",
+      "",
+      "  # 1. See what the checks actually say:",
+      `     gh pr checks ${pr ?? "<pr>"}`,
+      "",
+      "  # 2. Review and merge it yourself:",
+      `     gh pr view ${pr ?? "<pr>"} --web`,
+      ...(hold?.authorityGranted
+        ? []
+        : [
+            "",
+            "  # 3. Or grant the driver authority — either add an explicit line to AGENTS.md",
+            '  #    (e.g. "LLMs are allowed to squash merge PRs"), or pass --merge:',
+            `     /work ${issue} --merge`,
+          ]),
+    );
   } else if (cap === "existing-pr-detected") {
     const pr = ps.existingPr;
     const head = pr?.headRefName ?? "<branch>";

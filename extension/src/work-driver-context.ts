@@ -183,6 +183,15 @@ export interface DriverContext {
    */
   restart?: boolean;
   /**
+   * #380 — the operator's in-session grant of merge authority, from
+   * `/work N --merge`. Merging is the one irreversible act in the cycle and
+   * is opt-in: absent this flag the driver falls back to reading the
+   * project's `AGENTS.md`, and absent a grant there too it opens the PR and
+   * parks as `awaiting-human-merge`. There is deliberately no way to grant
+   * authority implicitly — the absence of a prohibition is not permission.
+   */
+  mergeGrant?: boolean;
+  /**
    * How many cycles this invocation runs at once. Set by the queue; the
    * single-issue path leaves it at 1.
    *

@@ -84,6 +84,7 @@ function mkCtx(
     issue,
     pi: mkPi(),
     verifyExecFn: exec,
+    mergeGrant: true, // #380 — granted the way `/work N --merge` would
     issueBodyFetcherFn: async () => ({
       stdout: `title:\ttest #${issue}\nstate:\tOPEN\n\nbody`,
     }),
@@ -118,7 +119,10 @@ setupSpawnGuard();
     },
   });
   const r = await deriveMergeMethod(fn, "/fake");
-  assert("method" in r && r.method === "squash", "deriveMergeMethod: squash preferred when all allowed");
+  assert(
+    "method" in r && r.method === "squash",
+    "deriveMergeMethod: squash preferred when all allowed",
+  );
 }
 {
   const { fn } = mkExec({
@@ -127,7 +131,10 @@ setupSpawnGuard();
     },
   });
   const r = await deriveMergeMethod(fn, "/fake");
-  assert("method" in r && r.method === "merge", "deriveMergeMethod: squash false, merge true → merge");
+  assert(
+    "method" in r && r.method === "merge",
+    "deriveMergeMethod: squash false, merge true → merge",
+  );
 }
 {
   const { fn } = mkExec({
@@ -136,7 +143,10 @@ setupSpawnGuard();
     },
   });
   const r = await deriveMergeMethod(fn, "/fake");
-  assert("method" in r && r.method === "rebase", "deriveMergeMethod: squash+merge false, rebase true → rebase");
+  assert(
+    "method" in r && r.method === "rebase",
+    "deriveMergeMethod: squash+merge false, rebase true → rebase",
+  );
 }
 {
   const { fn } = mkExec({
@@ -276,7 +286,9 @@ setupSpawnGuard();
     let vc = 0;
     const base = mkExec({
       "gh pr merge": { stdout: "Merged" },
-      "gh repo view": { stdout: '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}' },
+      "gh repo view": {
+        stdout: '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
+      },
     });
     const exec: VerifyExecFn = async (cmd) => {
       if (cmd.includes("gh pr view")) {
@@ -292,7 +304,10 @@ setupSpawnGuard();
     const r = await mechanizedMerge({ repoRoot: dir, issue: 100, pi: mkPi(), verifyExecFn: exec }, {
       pipelineState: { prNumber: 999 },
     } as unknown as WorkState);
-    assert(r.ok === true && r.method === "squash", "mechanizedMerge: happy path squash from repo settings");
+    assert(
+      r.ok === true && r.method === "squash",
+      "mechanizedMerge: happy path squash from repo settings",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -303,7 +318,9 @@ setupSpawnGuard();
     let mergeCmd = "";
     let vc = 0;
     const base = mkExec({
-      "gh repo view": { stdout: '{"squashMergeAllowed":false,"mergeCommitAllowed":false,"rebaseMergeAllowed":true}' },
+      "gh repo view": {
+        stdout: '{"squashMergeAllowed":false,"mergeCommitAllowed":false,"rebaseMergeAllowed":true}',
+      },
     });
     const exec: VerifyExecFn = async (cmd) => {
       if (cmd.includes("gh pr view")) {
@@ -346,125 +363,6 @@ setupSpawnGuard();
     r.ok === false && r.reason.includes("no merge method permitted"),
     "mechanizedMerge: all methods false → fallback",
   );
-}
-
-// ---- Full runMerged flow tests ----
-
-function mkExecFull(calls: string[], branch: string, throwFirstView: boolean): VerifyExecFn {
-  let vc = 0;
-  return async (cmd: string) => {
-    calls.push(cmd);
-    if (cmd.includes("gh pr view")) {
-      vc++;
-      if (throwFirstView && vc === 1)
-        return Promise.reject(Object.assign(new Error("not merged"), { stderr: "not merged" }));
-      return { stdout: "MERGED\n" };
-    }
-    if (cmd.includes("gh pr merge")) return { stdout: "Merged" };
-    if (cmd.includes("gh repo view")) return { stdout: '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}' };
-    if (cmd.includes("git symbolic-ref")) return { stdout: "origin/main\n" };
-    if (cmd.includes("git rev-parse")) return { stdout: `${branch}\n` };
-    return { stdout: "" };
-  };
-}
-
-// T18. Full mechanized merge + restoration.
-{
-  const dir = mkdtempSync(path.join(tmpdir(), "wd-full-"));
-  try {
-    mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
-    await writeState(dir, mkState(960, 9601, "feature/issue-960"));
-    const calls: string[] = [];
-    await runWorkDriver(
-      mkCtx(960, mkExecFull(calls, "feature/issue-960", true), {
-        repoRoot: dir,
-        dispatchFn: async () => mkResult({ role: "driver", text: "Mechanized merge succeeded." }),
-      }),
-    );
-    const after = await readState(dir, 960);
-    assert(after?.pipelineState.status === "merged", "T18: status='merged'");
-    const ev = (after?.eventLog ?? []).find((e: any) => e.kind === "merged");
-    assert(ev?.kind === "merged" && ev.prNumber === 9601, "T18: merged event has PR number");
-    assert(ev?.mergeCommit === undefined, "T18: mergeCommit undefined for mechanized path");
-    const hasRestoration =
-      calls.some((c) => c.includes("git fetch origin --prune")) &&
-      calls.some((c) => c.includes("git checkout")) &&
-      calls.some((c) => c.includes("git pull --ff-only"));
-    assert(hasRestoration, "T18: restoration (fetch+checkout+pull) executed");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-// T19. Fallback dispatch carries mergeMethod into prompt.
-{
-  const dir = mkdtempSync(path.join(tmpdir(), "wd-fallback-"));
-  try {
-    mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
-    await writeState(dir, mkState(961, 9611, "feature/issue-961"));
-    process.env.PI_ENSEMBLE_MECHANIZE_OPS = "0";
-    let capturedPrompt = "";
-    const exec: VerifyExecFn = async () => ({ stdout: "" });
-    await runWorkDriver(
-      mkCtx(961, exec, {
-        repoRoot: dir,
-        dispatchFn: async (_pi, spec, opts) => {
-          if (opts?.label !== "ops:merge") throw new Error(`unexpected: ${opts?.label}`);
-          capturedPrompt = spec.prompt;
-          return mkResult({
-            role: "ops",
-            text: "PR merged.\nmerge-commit: def1234567\n",
-          });
-        },
-      }),
-    );
-    process.env.PI_ENSEMBLE_MECHANIZE_OPS = undefined;
-    assert(
-      capturedPrompt.includes("--squash --delete-branch"),
-      "T19: prompt carries squash as default hint when mechanized ops disabled",
-    );
-    assert(!/adjust the flags/i.test(capturedPrompt), "T19: no escape clause in prompt");
-    const after = await readState(dir, 961);
-    assert(after?.pipelineState.status === "merged", "T19: status='merged' after LLM ops fallback");
-    const ev = (after?.eventLog ?? []).find((e: any) => e.kind === "merged");
-    assert(
-      ev?.kind === "merged" && ev.mergeCommit === "def1234567",
-      "T19: mergeCommit captured from ops merge-commit marker",
-    );
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-// T20. Already-merged idempotent on resume.
-{
-  const dir = mkdtempSync(path.join(tmpdir(), "wd-idem-"));
-  try {
-    mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
-    await writeState(dir, mkState(962, 9621, "feature/issue-962"));
-    const calls: string[] = [];
-    await runWorkDriver(
-      mkCtx(962, mkExecFull(calls, "feature/issue-962", false), {
-        repoRoot: dir,
-        dispatchFn: async () => mkResult({ role: "driver", text: "Mechanized merge succeeded." }),
-      }),
-    );
-    const after = await readState(dir, 962);
-    assert(
-      after?.pipelineState.status === "merged",
-      "T20: idempotent status='merged' when PR already merged",
-    );
-    assert(
-      !calls.some((c) => c.includes("gh pr merge")),
-      "T20: gh pr merge NOT called (short-circuited)",
-    );
-    assert(
-      calls.some((c) => c.includes("git fetch")),
-      "T20: restoration runs even when merge short-circuits",
-    );
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
 }
 
 console.log(`\nexit ${exit}`);

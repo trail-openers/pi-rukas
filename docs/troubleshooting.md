@@ -764,6 +764,38 @@ Grouping markers (`Split:`, `Depends-on:`, subsystem tags) remain a **fast path*
 
 Escape hatch: `PI_ENSEMBLE_INTENT=0`.
 
+### Merge authority — why `/work` opened a PR and stopped
+
+**`/work` will not merge unless something explicitly permitted it to.** That is the default, and the absence of a prohibition is not permission.
+
+Two independent gates run at the `merged` step, and both default to "no":
+
+**1. Authority — did anyone allow this?** In order:
+
+| Source | How |
+|---|---|
+| `operator` | You passed `/work <issue> --merge` for this run |
+| `agents-md` | The project's `AGENTS.md` contains an explicit grant — e.g. *"LLMs are allowed to squash merge PRs"*, *"agents may merge their own PRs"*, or `automerge: true` |
+| `none` | Anything else, including no `AGENTS.md` at all |
+
+An explicit prohibition in `AGENTS.md` (*"never merge"*, *"do not merge"*, `automerge: false`) beats a grant elsewhere in the same file. The matcher is deliberately narrow: prose that merely *discusses* merging ("ask a maintainer to merge on your behalf") is not a grant, because the worst possible failure here is inventing permission nobody gave.
+
+**2. Evidence — did CI actually pass?** The driver asks `gh`, not the agent that just claimed success. It reads `mergeStateStatus` and `gh pr checks`, and it **fails closed**: an unreadable answer blocks the merge. Unlike every other gate in the driver, "no signal" here means stop, because the next act is irreversible.
+
+Required checks reporting **`skipped` or `neutral` do not count as passing**, even though [GitHub counts them as success](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches). A required workflow that gains a `paths-ignore:` silently becomes a gate that can never fail; this driver refuses to merge on one.
+
+When either gate refuses, the cycle parks as `awaiting-human-merge`. **The work is done and pushed** — only the merge is held. Do not `--restart`: that wipes the state file but not the open PR, so the re-run halts immediately on the `existing-pr-detected` pre-flight. Either merge it yourself, or grant authority and re-run:
+
+```bash
+gh pr checks <pr>        # what the checks actually say
+gh pr view <pr> --web    # review and merge it yourself
+/work <issue> --merge    # or grant authority for a re-run
+```
+
+At the `ci` step a weaker version of gate 2 applies: **narration cannot promote a status, but executed evidence can demote one.** An ops agent claiming `ci-status: success` gets checked against `gh`; if `gh` disagrees, it becomes a failure. An unreadable `gh` there leaves the claim standing — burning the retry budget on a run that genuinely passed is worse, and the merge gate is the one that has to be right.
+
+Escape hatch: `PI_ENSEMBLE_MERGE_AUTHORITY=0` restores the previous behaviour, where the driver merged whenever an ops child's reply contained the substring `ci-status: success`.
+
 ### Parallel group execution
 
 `/work N M P …` runs up to `PI_ENSEMBLE_PARALLEL_GROUPS` (default **3**) groups concurrently. Each group develops in its own `.worktrees/` tree, so the only shared resource is the repo root, and every operation that touches it — branch creation, patch integration, commit, push, `gh pr create`, the verify gates, lens-fix re-integration, `restoreCheckout`, worktree teardown — runs under a single integration lock. That lock is an in-process promise chain plus an `O_EXCL` lockfile under `.git/`, so a second `/work` invocation or a second Pi process on the same clone is also serialised.

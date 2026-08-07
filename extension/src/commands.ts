@@ -174,6 +174,10 @@ export function registerCommands(pi: ExtensionAPI) {
           // every cycle in the queue.
           const tokens = args.trim().split(/\s+/).filter(Boolean);
           const restart = tokens.includes("--restart");
+          // #380 — the operator's grant of merge authority for this run. The
+          // only other source is an explicit grant in the project's
+          // AGENTS.md; with neither, cycles open their PR and park.
+          const mergeGrant = tokens.includes("--merge");
           const issues = tokens
             .filter((t) => !t.startsWith("--"))
             .map((t) => Number.parseInt(t, 10))
@@ -213,7 +217,7 @@ export function registerCommands(pi: ExtensionAPI) {
             );
             void (async () => {
               try {
-                await runWorkDriver({ pi, repoRoot, issue: soleIssue, restart });
+                await runWorkDriver({ pi, repoRoot, issue: soleIssue, restart, mergeGrant });
               } catch (err) {
                 trace(`work-driver: unexpected throw for #${soleIssue}: ${(err as Error).message}`);
                 try {
@@ -311,6 +315,7 @@ export function registerCommands(pi: ExtensionAPI) {
                   issue: primary,
                   issues,
                   restart,
+                  mergeGrant,
                   parallelCycles: concurrency,
                 }),
             });

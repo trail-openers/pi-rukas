@@ -170,6 +170,22 @@ export interface PipelineState {
     parkReason?: string;
     rationale: string;
   };
+  /**
+   * #380 — why the cycle stopped at the merge step. Two independent gates,
+   * both defaulting to "no": whether anyone permitted an agent to merge in
+   * this project, and whether `gh` reports the required checks actually
+   * passed. Absent unless the merge was held.
+   */
+  mergeHold?: {
+    authorityGranted: boolean;
+    authoritySource: "agents-md" | "operator" | "none";
+    /** The AGENTS.md sentence that granted or forbade it, verbatim. */
+    authorityQuote?: string;
+    /** Why the executed-evidence gate refused, when authority was granted. */
+    evidenceReason?: string;
+    /** Required checks reporting `skipped`/`neutral` — green to GitHub, not to us. */
+    inconclusive?: string[];
+  };
   planQuality?: {
     findingsCount: number;
     redispatched: boolean;

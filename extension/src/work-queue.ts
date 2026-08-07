@@ -99,10 +99,15 @@ function parkReason(state: WorkState | undefined): { reason: string; failedStep?
   if (cap?.kind === "cap-hit") {
     // Carry the intent park's specific reason, so humanActionFor and the
     // summary can be specific rather than saying "cap intent-park".
-    const suffix =
-      cap.cap === "intent-park" && state.pipelineState.normalisedSpec?.parkReason
-        ? `:${state.pipelineState.normalisedSpec.parkReason}`
-        : "";
+    let suffix = "";
+    if (cap.cap === "intent-park" && state.pipelineState.normalisedSpec?.parkReason) {
+      suffix = `:${state.pipelineState.normalisedSpec.parkReason}`;
+    } else if (cap.cap === "awaiting-human-merge") {
+      // #380 — carry the PR number and whether authority was the blocker, so
+      // the action can name the PR instead of pointing at a state file.
+      const granted = state.pipelineState.mergeHold?.authorityGranted ? "granted" : "no-authority";
+      suffix = `:${granted}:pr${state.pipelineState.prNumber ?? 0}`;
+    }
     return { reason: `cap ${cap.cap}${suffix}`, failedStep: step };
   }
   return { reason: `cycle ended as ${state.pipelineState.status}`, failedStep: step };
@@ -121,6 +126,22 @@ export function humanActionFor(reason: string, primary: number): string {
   const intentPark = reason.match(/intent-park(?::([a-z-]+))?/);
   if (intentPark) {
     return parkAction((intentPark[1] ?? "underspecified") as ParkReason, primary);
+  }
+  // #380 — the PR is open, green and pushed; the only thing missing is a human
+  // decision. Telling the operator to `--restart` here would rebuild work that
+  // is already done and open a duplicate PR.
+  const heldMerge = reason.match(/awaiting-human-merge:(granted|no-authority):pr(\d+)/);
+  if (heldMerge) {
+    const pr = Number(heldMerge[2]) > 0 ? `#${heldMerge[2]}` : `the PR for #${primary}`;
+    return heldMerge[1] === "granted"
+      ? `check the incomplete required checks on ${pr}, then merge`
+      : `review and merge ${pr} yourself — agent merging is not permitted in this project (grant it in AGENTS.md or re-run with --merge)`;
+  }
+  // #380 — `--restart` after a failed merge wipes the state file but NOT the
+  // open PR, so the re-run halts immediately on the pre-flight (#362). The
+  // work is committed and pushed; the merge is the only thing left.
+  if (/step-failed:merged/.test(reason)) {
+    return `merge #${primary}'s PR by hand — the branch is pushed and the work is done (do NOT --restart: the open PR would halt the re-run)`;
   }
   if (/existing-pr-detected/.test(reason)) {
     return `decide whether to resume, retarget or close the open PR for #${primary}`;

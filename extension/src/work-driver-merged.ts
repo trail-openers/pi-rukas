@@ -25,6 +25,11 @@ import type { DriverContext } from "./work-driver-context.ts";
 import { parseAbort } from "./work-driver-diff.ts";
 import { detectMainline, restoreCheckout } from "./work-driver-git.ts";
 import { withIntegrationLock } from "./work-driver-integrate.ts";
+import {
+  gatherMergeEvidence,
+  mergeAuthorityEnabled,
+  resolveMergeAuthority,
+} from "./work-driver-merge-authority.ts";
 import { type MergeMethod, mechanizedMerge } from "./work-driver-merged-mechanized.ts";
 import { inlineMergePrompt } from "./work-driver-prompts-late.ts";
 import { activeIssuesOf, scratchDir, teardownWorkspaceTmp } from "./work-driver-workspace.ts";
@@ -266,6 +271,45 @@ export async function runMerged(
   let mergeMethod: MergeMethod = "squash";
   let preDispatch = state;
   let mergeSucceeded = false;
+
+  // #380 — two independent gates, both defaulting to "no". Merging is the one
+  // irreversible act in the cycle and had neither: no authority check existed
+  // anywhere in src/, and the decision to merge came from a substring in an
+  // ops child's reply. A cycle that reaches here has a green PR; it does NOT
+  // automatically have permission to merge it.
+  if (mergeAuthorityEnabled()) {
+    const execFnAuth = ctx.verifyExecFn ?? execp;
+    const authority = await resolveMergeAuthority(ctx.repoRoot, ctx.mergeGrant);
+    const evidence = authority.granted
+      ? await gatherMergeEvidence(execFnAuth, ctx.repoRoot, prNumber)
+      : undefined;
+    if (!authority.granted || !evidence?.ok) {
+      trace(
+        `work-driver: merge held — authority=${authority.source}, evidence=${evidence?.reason ?? "not gathered"}`,
+      );
+      const held: WorkState = {
+        ...state,
+        pipelineState: {
+          ...state.pipelineState,
+          currentStep: "merged",
+          mergeHold: {
+            authorityGranted: authority.granted,
+            authoritySource: authority.source,
+            ...(authority.quote ? { authorityQuote: authority.quote } : {}),
+            ...(evidence?.reason ? { evidenceReason: evidence.reason } : {}),
+            ...(evidence?.inconclusive?.length ? { inconclusive: evidence.inconclusive } : {}),
+          },
+        },
+      };
+      return appendEvent(held, {
+        kind: "cap-hit",
+        at: Date.now(),
+        cap: "awaiting-human-merge",
+        reviewRound: held.pipelineState.reviewRound,
+        nextStep: "handoff",
+      });
+    }
+  }
 
   // Try mechanized merge first.
   const mechResult = await mechanizedMerge(ctx, state);

@@ -14,8 +14,8 @@ import path from "node:path";
 import { type DriverContext, STEP_FAILURE_POLICY } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { parseMergeCommit } from "../src/work-driver-merged.ts";
-import { runWorkDriver } from "../src/work-driver.ts";
 import { parsePerIssueVerdicts } from "../src/work-driver-plan.ts";
+import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -160,11 +160,26 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       },
     };
     await writeState(dir, s);
+    // #380 — merging now needs an explicit grant AND executed evidence. These
+    // tests cover the merge MECHANISM, so they grant it the way `--merge`
+    // would and answer `gh` green. The gate is covered by
+    // test-merge-authority.ts, and by the no-grant case at the end of this file.
+    const greenGh = async (cmd: string) => {
+      if (cmd.includes("mergeStateStatus")) {
+        return { stdout: JSON.stringify({ mergeStateStatus: "CLEAN", state: "OPEN" }) };
+      }
+      if (cmd.includes("gh pr checks")) {
+        return { stdout: JSON.stringify([{ name: "ci", bucket: "pass", isRequired: true }]) };
+      }
+      return { stdout: "" };
+    };
     const seenLabels: string[] = [];
     const ctx: DriverContext = {
       pi: makeFakePi().pi,
       repoRoot: dir,
       issue: 950,
+      mergeGrant: true,
+      verifyExecFn: greenGh,
       issueBodyFetcherFn: mockIssueBodyOk,
       dispatchFn: async (_pi, spec, opts) => {
         seenLabels.push(opts?.label ?? spec.role);
@@ -217,10 +232,25 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       },
     };
     await writeState(dir, s);
+    // #380 — merging now needs an explicit grant AND executed evidence. These
+    // tests cover the merge MECHANISM, so they grant it the way `--merge`
+    // would and answer `gh` green. The gate is covered by
+    // test-merge-authority.ts, and by the no-grant case at the end of this file.
+    const greenGh = async (cmd: string) => {
+      if (cmd.includes("mergeStateStatus")) {
+        return { stdout: JSON.stringify({ mergeStateStatus: "CLEAN", state: "OPEN" }) };
+      }
+      if (cmd.includes("gh pr checks")) {
+        return { stdout: JSON.stringify([{ name: "ci", bucket: "pass", isRequired: true }]) };
+      }
+      return { stdout: "" };
+    };
     const ctx: DriverContext = {
       pi: makeFakePi().pi,
       repoRoot: dir,
       issue: 951,
+      mergeGrant: true,
+      verifyExecFn: greenGh,
       issueBodyFetcherFn: mockIssueBodyOk,
       dispatchFn: async (_pi, spec, opts) => {
         if (opts?.label === "ops:merge") {
@@ -250,6 +280,81 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     assert(
       explanation.includes("gh pr merge") && /merge manually/i.test(explanation),
       "explainCap step-failed:merged gives the operator a merge-manually recovery hint",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// 39. #380 — the whole point: with NO grant, the driver reaches the merged
+// step and does NOT merge. This is the integration-level canary. Sections 37
+// and 38 above both had to be given `mergeGrant: true` to keep passing, which
+// is itself the proof that the gate is load-bearing rather than decorative:
+// remove the gate and this section fails; remove the grant from 37 and IT
+// fails.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-merge-nogrant-"));
+  try {
+    const fs = await import("node:fs/promises");
+    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    // Deliberately an AGENTS.md that says plenty but never grants merging —
+    // the common real case, and stricter than simply omitting the file.
+    await fs.writeFile(
+      path.join(dir, "AGENTS.md"),
+      "# Conventions\n\nOne PR per issue. Run the quality gate before pushing.\n",
+    );
+    let s2 = initialState(952, 1_000_000);
+    s2 = {
+      ...s2,
+      pipelineState: {
+        ...s2.pipelineState,
+        currentStep: "merged",
+        lastCompletedStep: "ci",
+        branchName: "feature/issue-952",
+        prNumber: 9521,
+      },
+    };
+    await writeState(dir, s2);
+    const seenLabels: string[] = [];
+    await runWorkDriver({
+      pi: makeFakePi().pi,
+      repoRoot: dir,
+      issue: 952,
+      issueBodyFetcherFn: mockIssueBodyOk,
+      // No mergeGrant, and an AGENTS.md with no grant in it.
+      verifyExecFn: async () => ({ stdout: "" }),
+      dispatchFn: async (_pi, spec, opts) => {
+        seenLabels.push(opts?.label ?? spec.role);
+        if (opts?.label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
+        return mkResult({ role: "ops", text: "ok" });
+      },
+    });
+    const after = await readState(dir, 952);
+    assert(
+      !seenLabels.includes("ops:merge"),
+      "#380: with no grant, ops:merge NEVER dispatches — pre-#380 this merged unconditionally",
+    );
+    assert(
+      after?.pipelineState.status !== "merged",
+      "#380: and the cycle does not claim it merged",
+    );
+    const cap = (after?.eventLog ?? []).find((e) => e.kind === "cap-hit");
+    assert(
+      cap?.kind === "cap-hit" && cap.cap === "awaiting-human-merge",
+      "#380: it parks as awaiting-human-merge instead",
+    );
+    assert(
+      after?.pipelineState.mergeHold?.authorityGranted === false,
+      "#380: the hold records that authority — not evidence — was the blocker",
+    );
+    const explanation = explainCap("awaiting-human-merge", after!);
+    assert(
+      /9521/.test(explanation) && /not permitted/i.test(explanation),
+      "#380: the operator explanation names the PR and says plainly it was not permitted",
+    );
+    assert(
+      /AGENTS\.md/.test(explanation),
+      "...and points at where the grant would have to come from",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

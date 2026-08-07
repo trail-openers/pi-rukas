@@ -10,11 +10,15 @@
  * GitHub is authoritative and cannot drift — no local config file needed.
  */
 
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
 import { trace } from "./trace.ts";
 import { mechanizeOpsEnabled } from "./work-driver-commit.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import type { WorkState } from "./workflow-state.ts";
+
+const execp = promisify(exec);
 
 /** Valid merge methods — maps to `gh pr merge` flags. */
 export type MergeMethod = "squash" | "merge" | "rebase";
@@ -165,13 +169,14 @@ export async function mechanizedMerge(
     };
   }
 
-  const execFn = ctx.verifyExecFn;
-  if (!execFn) {
-    return {
-      ok: false,
-      reason: "verifyExecFn not injected — mechanized merge requires exec injection",
-    };
-  }
+  // #380 — this used to read `ctx.verifyExecFn` with no fallback, unlike
+  // every other consumer of the seam. `verifyExecFn` is a TEST injection point
+  // and is never assigned in production, so mechanized merge always returned
+  // `ok: false` and every real merge went down the LLM-narrated path. That
+  // also silently disabled `restoreCheckout`, since `mergeSucceeded` is only
+  // set on this branch — which is why repoRoot was left sitting on the merged
+  // feature branch after a cycle.
+  const execFn = ctx.verifyExecFn ?? execp;
 
   const prNumber = state.pipelineState.prNumber;
   if (!prNumber) {

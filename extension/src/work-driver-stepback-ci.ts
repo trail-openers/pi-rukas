@@ -14,6 +14,11 @@ import { exec as nodeExec } from "node:child_process";
 import { promisify } from "node:util";
 import { trace } from "./trace.ts";
 import { type DriverContext, MAX_CI_RETRIES } from "./work-driver-context.ts";
+import {
+  contradictsSuccess,
+  gatherMergeEvidence,
+  mergeAuthorityEnabled,
+} from "./work-driver-merge-authority.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
 import { inlineCiPrompt, inlineStepBackPrompt } from "./work-driver-prompts-late.ts";
 import { runVerifyFull, verifyCmdFullFor } from "./work-driver-verify-full.ts";
@@ -252,7 +257,7 @@ export async function runCi(ctx: DriverContext, state: WorkState, now: number): 
   const last = next.eventLog[next.eventLog.length - 1];
   if (last?.kind === "dispatch-completed") {
     const text = last.summary ?? "";
-    const status: "success" | "failure" | "pending" = text.includes("ci-status: success")
+    let status: "success" | "failure" | "pending" = text.includes("ci-status: success")
       ? "success"
       : text.includes("ci-status: failure")
         ? "failure"
@@ -261,6 +266,24 @@ export async function runCi(ctx: DriverContext, state: WorkState, now: number): 
           // on inspection. ops doctrine should still emit the marker; this
           // is the safety net.
           "failure";
+    // #380 — a narrated success is a claim, not evidence. The driver used to
+    // route to `merged` on `text.includes("ci-status: success")` without ever
+    // calling `gh`. Check it: narration cannot PROMOTE a status, but executed
+    // evidence can DEMOTE one. (Unreadable `gh` leaves the claim standing —
+    // the merge gate fails closed, so being lenient here costs nothing.)
+    if (status === "success" && mergeAuthorityEnabled() && next.pipelineState.prNumber) {
+      const contradiction = contradictsSuccess(
+        await gatherMergeEvidence(
+          ctx.verifyExecFn ?? execp,
+          ctx.repoRoot,
+          next.pipelineState.prNumber,
+        ),
+      );
+      if (contradiction) {
+        trace(`work-driver: ci — ops claimed success, gh disagrees (${contradiction})`);
+        status = "failure";
+      }
+    }
     // Bump ciRetryCount BEFORE appending the event so nextStep's
     // `ciRetryCount >= MAX_CI_RETRIES` check reflects this attempt.
     // Note: verify-full failures already bumped ciRetryCount above; don't

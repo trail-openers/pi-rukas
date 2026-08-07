@@ -198,6 +198,28 @@ export function renderHandoffMarkdown(state: WorkState): string {
       "# 4. Abandon the handoff entry (no code was written; safe to discard):",
       `rm .pi/work-state/${issue}.json`,
     );
+  } else if (capForExplain === "awaiting-human-merge") {
+    const hold = ps.mergeHold;
+    const pr = ps.prNumber;
+    lines.push(
+      `# PR #${pr ?? "?"} is open and complete — only the merge is held.`,
+      hold?.authorityGranted
+        ? `# Merging is permitted (${hold.authoritySource}); the evidence gate refused: ${hold.evidenceReason ?? "no evidence"}.`
+        : "# Nothing grants this driver authority to merge here. Merging is opt-in by default.",
+      "",
+      "# 1. See what the checks actually say:",
+      `gh pr checks ${pr ?? "<pr>"}`,
+      "",
+      "# 2. Review and merge it yourself:",
+      `gh pr view ${pr ?? "<pr>"} --web`,
+      ...(hold?.authorityGranted
+        ? []
+        : [
+            "",
+            "# 3. Or grant authority — an explicit line in AGENTS.md, or the --merge flag:",
+            `/work ${issue} --merge`,
+          ]),
+    );
   } else if (capForExplain === "existing-pr-detected") {
     const pr = ps.existingPr;
     const head = pr?.headRefName ?? "<branch>";

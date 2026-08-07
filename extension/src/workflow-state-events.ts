@@ -226,6 +226,11 @@ export type WorkEvent =
         // so a park costs one explore dispatch rather than a whole cycle. The
         // specific reason lives in pipelineState.normalisedSpec.parkReason.
         | "intent-park"
+        // #380 — the PR is open and green but the driver is not permitted to
+        // merge it (no grant in AGENTS.md, no operator grant), or the executed
+        // evidence refused. Merging is the one irreversible act in the cycle
+        // and is opt-in: the absence of permission is not permission.
+        | "awaiting-human-merge"
         | "existing-pr-detected"
         | `verify-failed:${WorkStep}`
         | `step-failed:${WorkStep}`;

@@ -10,6 +10,7 @@
 
 import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { type ParkReason, explainPark } from "./work-driver-intent.ts";
+import { explainMergeHold } from "./work-driver-merge-authority.ts";
 import type { WorkEvent, WorkState, WorkStep } from "./workflow-state.ts";
 
 /**
@@ -53,6 +54,26 @@ export function explainCap(
           : "";
       const rationale = spec?.rationale ? `\n\nResolver's rationale: ${spec.rationale}` : "";
       return `${why} No code was written — the driver halted at intent resolution, before plan or branch ran.${evidence}${rationale}`;
+    }
+    case "awaiting-human-merge": {
+      const hold = state.pipelineState.mergeHold;
+      const pr = state.pipelineState.prNumber;
+      const base = explainMergeHold(
+        {
+          granted: hold?.authorityGranted ?? false,
+          source: hold?.authoritySource ?? "none",
+          ...(hold?.authorityQuote ? { quote: hold.authorityQuote } : {}),
+        },
+        hold?.evidenceReason
+          ? { ok: false, reason: hold.evidenceReason, failing: [], inconclusive: [] }
+          : undefined,
+        pr,
+      );
+      const skipped =
+        hold?.inconclusive && hold.inconclusive.length > 0
+          ? `\n\nRequired checks reporting \`skipped\`/\`neutral\`: ${hold.inconclusive.join(", ")}. GitHub counts those as success; this driver does not, because a required workflow that can be skipped is a gate that cannot fail.`
+          : "";
+      return `${base}${skipped} All the work is done and pushed — only the merge is held.`;
     }
     case "existing-pr-detected": {
       const pr = state.pipelineState.existingPr;
