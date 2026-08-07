@@ -112,7 +112,15 @@ export function groupIssues(
   // "independent" as a bare word is removed — it's a common English
   // word that appears in prose ("provider-independent", "independent
   // investigation") and causes false-positive splits.
-  const splitRe = /^(?:Split\s*:\s*(?:true|yes|separate)|This work must ship separately)/im;
+  // #376 — the second alternative was `This work must ship separately`, which
+  // no issue in this repo has ever contained. The phrasing actually written is
+  // "This work must ship as its own separate PR, independent of any other open
+  // issue." Matching the real sentence (with `as its own separate PR` optional
+  // so both survive) is what makes R3 fire at all. Still anchored: the bare
+  // word "independent" was removed pre-#312 as a false-positive magnet, and
+  // that stays removed.
+  const splitRe =
+    /^(?:Split\s*:\s*(?:true|yes|separate)|This work must ship (?:as its own separate PR|separately))/im;
   const splitIssues = new Map<number, string>();
   for (const n of activeIssues) {
     const body = bodiesByIssue[n] ?? "";
@@ -139,11 +147,23 @@ export function groupIssues(
     }
     return p;
   }
-  function union(a: number, b: number): void {
-    if (splitIssues.has(a) || splitIssues.has(b)) return;
+  /**
+   * Union two issues, returning whether the merge actually happened.
+   *
+   * #376 — callers used to push a `notes` line unconditionally, so the
+   * decision log claimed unions that a split marker had silently blocked:
+   * running the real backlog reported `R4 subsystem: #287 ↔ #368` when #287
+   * carries a split marker and was never merged with anything. Notes the
+   * operator cannot trust are worse than no notes, since they are the only
+   * explanation of why grouping decided what it decided.
+   */
+  function union(a: number, b: number): boolean {
+    if (splitIssues.has(a) || splitIssues.has(b)) return false;
     const ra = find(a);
     const rb = find(b);
-    if (ra !== rb) parent.set(ra, rb);
+    if (ra === rb) return false;
+    parent.set(ra, rb);
+    return true;
   }
 
   // R1 — Explicit link markers: depends-on / companion-to / blocks /
@@ -156,8 +176,7 @@ export function groupIssues(
     // biome-ignore lint/suspicious/noAssignInExpressions: regex iteration idiom
     while ((m = linkRe.exec(body))) {
       const other = Number.parseInt(m[1] ?? "", 10);
-      if (Number.isFinite(other) && parent.has(other) && other !== n) {
-        union(n, other);
+      if (Number.isFinite(other) && parent.has(other) && other !== n && union(n, other)) {
         notes.push(`R1 link: #${n} ↔ #${other}`);
       }
     }
@@ -166,8 +185,16 @@ export function groupIssues(
 
   // R2 — Path overlap. Extract path-shaped tokens from each body,
   // compute Jaccard on pairs, union if ≥ 0.5.
-  const pathRe =
-    /(?<![a-z0-9/])([a-z0-9._-]+\/[a-z0-9._/-]+\.(?:ts|tsx|js|jsx|py|rs|go|md|json|toml|yaml|yml|sh|css|scss|html))\b/gi;
+  const EXT = "ts|tsx|js|jsx|py|rs|go|md|json|toml|yaml|yml|sh|css|scss|html";
+  const pathRe = new RegExp(`(?<![a-z0-9/])([a-z0-9._-]+/[a-z0-9._/-]+\\.(?:${EXT}))\\b`, "gi");
+  // #376 — issues reference bare module names with line anchors far more often
+  // than directory-qualified paths: `work-driver.ts:1274`, `commands.ts:262`.
+  // Requiring a directory component extracted ZERO paths from 5 of 7 real
+  // issues, so R2 never fired and `groups[id].paths` propagated empty. The
+  // trailing `:NNN` is required here precisely so prose mentions of a file
+  // name do not count — an anchored reference is deliberate, a prose mention
+  // is not.
+  const bareRe = new RegExp(`(?<![a-z0-9._/-])([a-z0-9._-]+\\.(?:${EXT})):\\d+`, "gi");
   const pathsByIssue = new Map<number, Set<string>>();
   for (const n of activeIssues) {
     const body = bodiesByIssue[n] ?? "";
@@ -179,6 +206,14 @@ export function groupIssues(
       if (p) s.add(p.toLowerCase());
     }
     pathRe.lastIndex = 0;
+    // Bare `module.ts:NNN` — normalised to the basename so it can overlap with
+    // a directory-qualified mention of the same file in a sibling issue.
+    // biome-ignore lint/suspicious/noAssignInExpressions: regex iteration idiom
+    while ((m = bareRe.exec(body))) {
+      const p = m[1];
+      if (p) s.add(p.toLowerCase());
+    }
+    bareRe.lastIndex = 0;
     pathsByIssue.set(n, s);
   }
   for (let i = 0; i < activeIssues.length; i++) {
@@ -192,8 +227,7 @@ export function groupIssues(
       const inter = [...pa].filter((p) => pb.has(p)).length;
       const union_ = pa.size + pb.size - inter;
       const jaccard = union_ === 0 ? 0 : inter / union_;
-      if (jaccard >= 0.5) {
-        union(a, b);
+      if (jaccard >= 0.5 && union(a, b)) {
         notes.push(`R2 path-overlap: #${a} ↔ #${b} (jaccard=${jaccard.toFixed(2)})`);
       }
     }
@@ -206,8 +240,17 @@ export function groupIssues(
   for (const n of activeIssues) {
     const body = bodiesByIssue[n] ?? "";
     const firstLine = body.split("\n").find((l) => l.trim().length > 0) ?? "";
-    const m = firstLine.match(/^(?:title:\s*)?\[([a-z0-9_-]+)\]\s/i);
-    if (m?.[1]) tagByIssue.set(n, m[1].toLowerCase());
+    const bracket = firstLine.match(/^(?:title:\s*)?\[([a-z0-9_-]+)\]\s/i);
+    // #376 — `[tag]` at the head of a title is structurally impossible for a
+    // /plan-authored issue, which mandates `feat: ` / `fix: ` / `EPIC: `
+    // prefixes. But the subsystem is already there, as the conventional-commit
+    // scope: `fix(work-driver): …`. Read that too rather than asking anyone to
+    // change how titles are written.
+    const scope = firstLine.match(
+      /^(?:title:\s*)?(?:feat|fix|chore|docs|test|refactor|perf|ci|build|style)!?\(([a-z0-9_.-]+)\)!?\s*:/i,
+    );
+    const tag = bracket?.[1] ?? scope?.[1];
+    if (tag) tagByIssue.set(n, tag.toLowerCase());
   }
   for (let i = 0; i < activeIssues.length; i++) {
     for (let j = i + 1; j < activeIssues.length; j++) {
@@ -216,8 +259,7 @@ export function groupIssues(
       if (a === undefined || b === undefined) continue;
       const ta = tagByIssue.get(a);
       const tb = tagByIssue.get(b);
-      if (ta && tb && ta === tb) {
-        union(a, b);
+      if (ta && tb && ta === tb && union(a, b)) {
         notes.push(`R4 subsystem: #${a} ↔ #${b} (tag=[${ta}])`);
       }
     }

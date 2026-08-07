@@ -250,8 +250,24 @@ export function registerCommands(pi: ExtensionAPI) {
                       `gh issue view ${n} --json title,body,labels`,
                       { cwd: repoRoot, maxBuffer: 2 * 1024 * 1024 },
                       (err, stdout) => {
-                        if (err) reject(err);
-                        else resolve({ n, body: stdout });
+                        if (err) return reject(err);
+                        // #376 — parse out `.body`. The raw `--json` stdout is
+                        // ONE line of compact JSON with `\n` as two-character
+                        // escapes, so every `^`-anchored rule (R3 split
+                        // markers, R4 subsystem tags) could only ever see
+                        // `{"body":"` as its line start and never fired.
+                        // Title is kept because R4 reads it.
+                        try {
+                          const parsed = JSON.parse(stdout) as { title?: string; body?: string };
+                          resolve({
+                            n,
+                            body: `title: ${parsed.title ?? ""}\n${parsed.body ?? ""}`,
+                          });
+                        } catch {
+                          // Unparseable — fall back to the raw text rather than
+                          // dropping the issue from grouping entirely.
+                          resolve({ n, body: stdout });
+                        }
                       },
                     );
                   }),
