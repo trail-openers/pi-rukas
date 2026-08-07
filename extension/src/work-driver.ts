@@ -5,7 +5,8 @@
  * /work — /research, /audit, /plan, /review, /start stay prose-driven; see
  * the plan file's command taxonomy table). The driver:
  *
- *   1. owns the step transition table (walked from `pi-prompts/work.md`),
+ *   1. owns the step transition table — this module IS the definition of a
+ *      /work cycle; #393 deleted the prose flow it was originally derived from,
  *   2. dispatches subagents directly via `dispatchCore()` (ownerKind:driver),
  *   3. persists every transition to `.pi/work-state/<issue>.json` via
  *      `writeState()`,
@@ -37,14 +38,7 @@
  * - **Cap-state lives in the work-state file.** `reviewRound` and
  *   `reviewCapStartedAt` are persisted to `pipelineState`; the driver
  *   enforces caps directly without going through the legacy
- *   `check_review_cap` tool. The tool remains for PM-driven /work cycles
- *   (PI_ENSEMBLE_WORK_DRIVER=0 fallback).
- *
- * ## Feature flag
- *
- * `PI_ENSEMBLE_WORK_DRIVER=0` bypasses the driver entirely and falls back
- * to the legacy PM-driven flow (`pi.sendUserMessage(work.md)`). Default is
- * ON in v1. See `commands.ts:registerCommands` for the dispatch.
+ *   `check_review_cap` tool, which the PM-driven commands still use.
  *
  * ## Status
  *
@@ -156,10 +150,10 @@ export class DriverNotImplementedError extends Error {
  * `void runWorkDriver(...).catch(reportFatal)`. The handler returns
  * immediately; the loop runs in the background.
  *
- * Status: skeleton — only `explore`, `plan`, `handoff`, and `merged` are
- * wired today. Other steps throw `DriverNotImplementedError`; the handler
- * catches and falls back to the legacy work.md flow until the rest of the
- * step bodies land.
+ * Every step is wired. A step body that throws `DriverNotImplementedError`
+ * aborts the cycle and hands off — #393 removed the prose flow that used to
+ * absorb that case, and silently continuing past an unimplemented step would
+ * be worse than stopping.
  */
 export async function runWorkDriver(ctx: DriverContext): Promise<void> {
   // PR12 — `/work N --restart`: skip readState and start fresh from
@@ -230,7 +224,7 @@ export async function runWorkDriver(ctx: DriverContext): Promise<void> {
   }
 
   // Persist the initial state on first run so the user can see the file
-  // appear and PI_ENSEMBLE_WORK_DRIVER=0 fallback knows a cycle exists.
+  // appear as soon as a cycle starts.
   await writeState(ctx.repoRoot, state);
 
   // PR2 fold-in (post-#553 cleanup): set up the project-local scratch
@@ -300,7 +294,7 @@ export async function runWorkDriver(ctx: DriverContext): Promise<void> {
           ctx.issue,
         );
         ctx.pi.sendUserMessage(
-          `pi-ensemble /work driver halted: step "${err.step}" not yet implemented in this build. Run with PI_ENSEMBLE_WORK_DRIVER=0 to use the legacy PM-driven flow.`,
+          `pi-ensemble /work driver halted: step "${err.step}" is not implemented in this build. This is a bug — the state file at .pi/work-state/ has the full cycle for the report.`,
         );
         return;
       }

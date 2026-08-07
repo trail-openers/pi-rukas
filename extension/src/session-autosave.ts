@@ -1,8 +1,8 @@
 /**
  * Deterministic session summary written to vipune on session_shutdown (#23).
  *
- * PM is already instructed (in agents-base/project-manager.md and
- * pi-prompts/work.md) to `vipune add '…'` at the end of each workflow.
+ * PM is instructed (agents-base/project-manager.md) to `vipune add '…'` at
+ * the end of each workflow.
  * That's prompt-discipline and fails on interrupted sessions, abandoned
  * /work cycles, or PMs that simply forget. This module makes the write
  * deterministic — it fires from Pi's session_shutdown hook with a

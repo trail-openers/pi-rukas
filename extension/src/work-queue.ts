@@ -265,7 +265,7 @@ export async function runWorkQueue(opts: RunQueueOpts): Promise<QueueSummary> {
         // A driver throw is an unknown-shape failure: we cannot tell whether
         // it left the repo in a state the next group depends on.
         halted = true;
-        const crashAction = `inspect .pi/work-state/${primary}.json, or re-run with PI_ENSEMBLE_WORK_DRIVER=0`;
+        const crashAction = `inspect .pi/work-state/${primary}.json (or /work-status ${primary}) — the driver threw, so this is a bug worth filing`;
         entries.set(gi, {
           groupId: g.id,
           issues: g.issues,

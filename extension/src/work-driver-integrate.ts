@@ -27,7 +27,6 @@ import type { WorkState } from "./workflow-state-schema.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
- * PR19 escape hatch: PI_ENSEMBLE_MECHANIZE_OPS=0 forces the LLM ops path.
  *
  * Lives here rather than in work-driver-commit.ts so the branch step can read
  * it without importing the commit module — that edge would close an import
@@ -134,11 +133,6 @@ async function guarded<T>(repoRoot: string, fn: () => Promise<T>): Promise<T> {
 /** Test seam: reset the in-process chain between fixtures. */
 export function __resetIntegrationLock(): void {
   integrationChain = Promise.resolve();
-}
-
-export function mechanizeOpsEnabled(): boolean {
-  const v = process.env.PI_ENSEMBLE_MECHANIZE_OPS;
-  return v !== "0" && v !== "false";
 }
 
 /**

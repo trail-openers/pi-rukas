@@ -11,7 +11,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type DriverContext } from "../src/work-driver-context.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
 import { parseAbort, parseBranchName } from "../src/work-driver-diff.ts";
 import {
   scratchDir,
@@ -20,21 +20,12 @@ import {
 } from "../src/work-driver-workspace.ts";
 import { DriverNotImplementedError, runWorkDriver } from "../src/work-driver.ts";
 import {
+  type WorkState,
   detectInconsistencies,
   initialState,
   readState,
   writeState,
-  type WorkState,
 } from "../src/workflow-state.ts";
-
-// #287 — these fixtures pin the PRE-always-worktree shape: their exec stubs
-// answer the legacy branch-step commands and hard-code worktree paths the
-// driver now chooses itself. Running them under the escape hatch keeps that
-// coverage intact AND is the standing proof of #287's acceptance criterion
-// that PI_ENSEMBLE_ALWAYS_WORKTREE=0 restores the previous behaviour.
-// Always-worktree is covered by test-work-driver-always-worktree.ts.
-process.env.PI_ENSEMBLE_ALWAYS_WORKTREE = "0";
-
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -378,7 +369,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     const { pi } = makeFakePi();
     const baseState = () => {
       const s = initialState(800, 1_000);
-      s.pipelineState.workstreams = { default: { id: "default", scope: "t", paths: [], outOfScope: [] } };
+      s.pipelineState.workstreams = {
+        default: { id: "default", scope: "t", paths: [], outOfScope: [] },
+      };
       s.pipelineState.currentStep = "branch";
       return s;
     };
@@ -403,6 +396,12 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     }
 
     // B — git failure: falls back to parsed ops reply, no crash.
+    // #393 note: mechanization is now unconditional, so this stub's throwing
+    // exec ALSO fails the mechanized branch setup first. That fallback emits
+    // a plumb-report by design — it is how the operator learns mechanization
+    // was skipped. Pre-#393 this fixture ran with the mechanized path
+    // switched off, so it asserted zero plumb-reports; that was an artefact
+    // of the escape hatch, not the behaviour anyone wants.
     {
       const ctx: DriverContext = {
         pi,
@@ -410,14 +409,24 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         issue: 800,
         dispatchFn: async () =>
           mkResult({ role: "ops", text: "branch: feature/issue-800-from-reply\n" }),
-        verifyExecFn: async () => { throw new Error("not a git repo"); },
+        verifyExecFn: async () => {
+          throw new Error("not a git repo");
+        },
       };
       const result = await runBranch(ctx, baseState(), 1_000);
       assert(
         result.pipelineState.branchName === "feature/issue-800-from-reply",
         "falls back to parsed reply when git fails",
       );
-      assert(plumbs(result.eventLog).length === 0, "no plumb-report when git fails");
+      const reports = plumbs(result.eventLog);
+      assert(
+        reports.length > 0,
+        "git failure at branch setup emits a plumb-report — the operator is told mechanization fell back",
+      );
+      assert(
+        reports.every((r) => r.kind === "plumb-report" && /[Mm]echanized/.test(r.body)),
+        "...and the report names mechanization as what fell back, not something generic",
+      );
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });

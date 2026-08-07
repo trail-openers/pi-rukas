@@ -52,25 +52,6 @@ import { readState } from "./workflow-state.ts";
 const execp = promisify(exec);
 
 /**
- * /work driver feature flag. Default ON in v1 — the compiled state-machine
- * driver owns /work transitions. Set PI_ENSEMBLE_WORK_DRIVER=0 to bypass
- * the driver and fall back to the legacy PM-driven flow (`sendUserMessage(work.md)`).
- *
- * Fallback is essential for two reasons:
- *  1. In-flight /work cycles started under older versions don't have a
- *     state file; the driver halts on missing schema vs. attempting to
- *     fabricate one.
- *  2. If a driver step body throws unexpectedly, the user can flip the
- *     env var and keep working without waiting for a fix.
- */
-function isWorkDriverEnabled(): boolean {
-  const v = process.env.PI_ENSEMBLE_WORK_DRIVER;
-  // Default ON. Explicit "0" / "false" disables; everything else (including
-  // unset) is on.
-  return v !== "0" && v !== "false";
-}
-
-/**
  * Resolve the project repo root (the worktree containing the `.git` dir or
  * gitlink). The driver state file lives here so it survives `git worktree
  * remove` against any sub-worktree. Falls back to the caller's cwd when not
@@ -146,12 +127,14 @@ export function registerCommands(pi: ExtensionAPI) {
       handler: async (args: string, ctx: ExtensionCommandContext) => {
         trace(`/${name} fired (args: ${args ? `"${args.slice(0, 40)}"` : "<none>"})`);
 
-        // /work has a code-driven execution path (work-driver.ts) when the
-        // PI_ENSEMBLE_WORK_DRIVER flag is on (default). The driver runs in
-        // the background — the handler kicks it off and returns immediately
-        // so the user can interact with the chat while it works. Other
-        // commands stay on the legacy sendUserMessage(prompt-body) path.
-        if (name === "work" && isWorkDriverEnabled()) {
+        // /work runs the compiled state-machine driver (work-driver.ts) in the
+        // background — the handler kicks it off and returns immediately so the
+        // user can interact with the chat while it works. Every other command
+        // is prompt-orchestrated and takes the sendUserMessage path below.
+        // #393 deleted the flag that used to bypass the driver: it fell back
+        // to a prose flow with no state file and none of the verification
+        // gates, which is the whole class of failure the driver replaced.
+        if (name === "work") {
           // Parse N issue tokens — `/work 547` (single) or `/work 561 562`
           // (multi-issue).
           //
@@ -184,8 +167,7 @@ export function registerCommands(pi: ExtensionAPI) {
             .filter((n) => Number.isFinite(n) && n > 0);
           if (issues.length === 0 || issues[0] === undefined) {
             ctx.ui.notify(
-              "pi-ensemble: /work needs at least one issue number (e.g., /work 547, or /work 561 562 to analyze + group multi-issue). " +
-                "Set PI_ENSEMBLE_WORK_DRIVER=0 to use the legacy PM-driven flow.",
+              "pi-ensemble: /work needs at least one issue number (e.g., /work 547, or /work 561 562 to analyze + group multi-issue).",
               "warning",
             );
             return;
@@ -212,7 +194,7 @@ export function registerCommands(pi: ExtensionAPI) {
             const soleIssue = issues[0];
             if (soleIssue === undefined) return;
             ctx.ui.notify(
-              `pi-ensemble: /work driver running for issue #${soleIssue}${restartTag}. State in .pi/work-state/${soleIssue}.json. Set PI_ENSEMBLE_WORK_DRIVER=0 to use legacy PM flow.`,
+              `pi-ensemble: /work driver running for issue #${soleIssue}${restartTag}. State in .pi/work-state/${soleIssue}.json — inspect it any time with /work-status.`,
               "info",
             );
             void (async () => {
@@ -223,7 +205,7 @@ export function registerCommands(pi: ExtensionAPI) {
                 try {
                   pi.sendUserMessage(
                     `pi-ensemble: /work driver crashed on issue #${soleIssue}: ${(err as Error).message}. ` +
-                      `Inspect .pi/work-state/${soleIssue}.json or run with PI_ENSEMBLE_WORK_DRIVER=0 to use the legacy flow.`,
+                      `Inspect .pi/work-state/${soleIssue}.json (or run /work-status ${soleIssue}). The cycle's own state is intact — your git work is untouched.`,
                   );
                 } catch {
                   /* nothing we can do */

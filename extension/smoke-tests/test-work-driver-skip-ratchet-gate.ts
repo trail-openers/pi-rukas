@@ -14,7 +14,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type DriverContext } from "../src/work-driver-context.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState } from "../src/workflow-state.ts";
@@ -81,13 +81,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 {
   const prevVerify = process.env.PI_ENSEMBLE_VERIFY;
   const prevSpec = process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE;
-  const prevMech = process.env.PI_ENSEMBLE_MECHANIZE_OPS;
   process.env.PI_ENSEMBLE_VERIFY = "1";
   process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE = "1";
-  process.env.PI_ENSEMBLE_MECHANIZE_OPS = "1";
 
   try {
-
     // PR277 — skip-ratchet + smoke-cmd gates. Inject verifyExecFn to
     // return canned diff output with skip-marker patterns, canned
     // smoke-cmd file content, and canned issue bodies. Verify the
@@ -481,8 +478,6 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     process.env.PI_ENSEMBLE_VERIFY = "0";
     if (prevSpec === undefined) delete process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE;
     else process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE = prevSpec;
-    if (prevMech === undefined) delete process.env.PI_ENSEMBLE_MECHANIZE_OPS;
-    else process.env.PI_ENSEMBLE_MECHANIZE_OPS = prevMech;
   }
 }
 

@@ -264,21 +264,19 @@ setupSpawnGuard();
 // ---- mechanizedMerge integration tests ----
 
 {
-  const orig = process.env.PI_ENSEMBLE_MECHANIZE_OPS;
-  process.env.PI_ENSEMBLE_MECHANIZE_OPS = "0";
-  try {
-    const r = await mechanizedMerge(
-      { repoRoot: "/fake", issue: 100, pi: mkPi() } as DriverContext,
-      { pipelineState: { prNumber: 999 } } as unknown as WorkState,
-    );
-    assert(
-      r.ok === false && r.reason.includes("PI_ENSEMBLE_MECHANIZE_OPS=0"),
-      "mechanizedMerge: PI_ENSEMBLE_MECHANIZE_OPS=0 bypass",
-    );
-    assert(r.method === "squash", "mechanizedMerge: disabled path returns squash hint");
-  } finally {
-    process.env.PI_ENSEMBLE_MECHANIZE_OPS = orig;
-  }
+  // #393 — this used to assert that PI_ENSEMBLE_MECHANIZE_OPS=0 short-circuits
+  // mechanized merge. That knob is deleted: it restored the LLM-narrated merge
+  // that caused the #245/#253 silent merges. What replaces it is the assertion
+  // that there is NO opt-out left — mechanization is attempted unconditionally,
+  // and the only way past it is a genuine failure.
+  const r = await mechanizedMerge(
+    { repoRoot: "/fake", issue: 100, pi: mkPi() } as DriverContext,
+    { pipelineState: { prNumber: 999 } } as unknown as WorkState,
+  );
+  assert(
+    r.ok === false && !/disabled|MECHANIZE_OPS/.test(r.reason),
+    "mechanizedMerge is always ATTEMPTED — no env knob can switch it off",
+  );
 }
 {
   const dir = mkdtempSync(path.join(tmpdir(), "mm-ok-"));

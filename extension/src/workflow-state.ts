@@ -135,7 +135,7 @@ function assertSchemaVersion(raw: Record<string, unknown>, file: string): WorkSt
   const v = raw.schemaVersion;
   if (v !== WORK_STATE_SCHEMA_VERSION) {
     throw new Error(
-      `work-state: ${file} has schemaVersion=${String(v)} but this build expects ${WORK_STATE_SCHEMA_VERSION}. This /work cycle was started under a different driver version. Inspect the file or rm to start fresh (your git work is unaffected; only the workflow-state file is removed). Alternatively run with PI_ENSEMBLE_WORK_DRIVER=0 to use the legacy PM-driven flow.`,
+      `work-state: ${file} has schemaVersion=${String(v)} but this build expects ${WORK_STATE_SCHEMA_VERSION}. This /work cycle was started under a different driver version. Inspect the file or rm to start fresh (your git work is unaffected; only the workflow-state file is removed).`,
     );
   }
   return raw as unknown as WorkState;

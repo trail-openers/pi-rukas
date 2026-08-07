@@ -156,9 +156,11 @@ function mkExecFull(calls: string[], branch: string, throwFirstView: boolean): V
   try {
     mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
     await writeState(dir, mkState(961, 9611, "feature/issue-961"));
-    process.env.PI_ENSEMBLE_MECHANIZE_OPS = "0";
     let capturedPrompt = "";
-    // The gate runs regardless of PI_ENSEMBLE_MECHANIZE_OPS.
+    // #393 — the knob that forced the LLM path is gone, so the fallback is
+    // reached the only way that remains: mechanization genuinely fails.
+    // `gh repo view` returns nothing here, so deriveMergeMethod cannot resolve
+    // a method and falls back — which is the real production trigger.
     const exec: VerifyExecFn = async (cmd) => mergeGateGreen(cmd) ?? { stdout: "" };
     await runWorkDriver(
       mkCtx(961, exec, {
@@ -173,7 +175,6 @@ function mkExecFull(calls: string[], branch: string, throwFirstView: boolean): V
         },
       }),
     );
-    process.env.PI_ENSEMBLE_MECHANIZE_OPS = undefined;
     assert(
       capturedPrompt.includes("--squash --delete-branch"),
       "T19: prompt carries squash as default hint when mechanized ops disabled",

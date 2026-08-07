@@ -1,8 +1,8 @@
 /**
  * Wall-clock cap for /work Step 7 fix loops (#4).
  *
- * `pi-prompts/work.md` Step 7 says: 90-min wall-clock cap on the lens-review
- * → developer fix → adversarial → re-review fix loop. The OLD design asked
+ * Doctrine: a 90-min wall-clock cap on the lens-review → developer fix →
+ * adversarial → re-review fix loop. The OLD design asked
  * PM to track 90 minutes itself and halt — trust-the-model. Brittle: PM
  * might miscount, forget, or never call dispatch_status before extending.
  *

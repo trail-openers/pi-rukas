@@ -9,7 +9,7 @@
  * Mirrors Restate UI's "no progress in last hour" query semantics but
  * scoped to a single issue + session: a quick at-a-glance summary plus
  * the most recent few events, so the user can decide whether to
- * intervene, wait, or run /work again with PI_ENSEMBLE_WORK_DRIVER=0
+ * intervene, wait, or re-run /work
  * as the legacy fallback.
  *
  * Inputs:

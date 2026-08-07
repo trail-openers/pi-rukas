@@ -11,10 +11,10 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { dispatchCore } from "./dispatch.ts";
 import { trace } from "./trace.ts";
-import { alwaysWorktreeEnabled, mechanizedBranchSetup } from "./work-driver-branch-mechanized.ts";
+import { mechanizedBranchSetup } from "./work-driver-branch-mechanized.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { parseBranchName } from "./work-driver-diff.ts";
-import { cachedIssueTitle, mechanizeOpsEnabled } from "./work-driver-integrate.ts";
+import { cachedIssueTitle } from "./work-driver-integrate.ts";
 import { buildCompletionEvent, runSingleDispatch } from "./work-driver-merged.ts";
 import { sliceMarkdownSection } from "./work-driver-plan.ts";
 import { findOpenPrForIssue, prPreflightEnabled } from "./work-driver-pr-preflight.ts";
@@ -33,7 +33,7 @@ const execp = promisify(exec);
 /**
  * Step 3 — Setup: ops creates the feature branch + worktrees.
  *
- * The ops subagent enforces the safety preconditions in /work.md Step 3:
+ * The ops subagent enforces the branch-step safety preconditions:
  * clean working tree, fast-forward mainline, then create
  * `feature/issue-N-<brief>` branch. The driver stores the branch name in
  * pipelineState once the dispatch returns so subsequent steps can compose
@@ -77,11 +77,13 @@ export async function runBranch(
     }
   }
   // #287 — mechanized, always-worktree branch setup. Development never
-  // happens at repoRoot again: every workstream (including the degenerate
-  // N=1 `default`) gets a detached worktree, and repoRoot is touched only by
-  // `integrate()` at commit-pr. The LLM ops dispatch remains as the fallback
-  // for env variance, exactly as it does for commit-pr.
-  if (mechanizeOpsEnabled() && alwaysWorktreeEnabled()) {
+  // happens at repoRoot: every workstream (including the degenerate N=1
+  // `default`) gets a detached worktree, and repoRoot is touched only by
+  // `integrate()` at commit-pr. #393 removed the two knobs that used to gate
+  // this — both restored the pre-#287 shape that swept stale repoRoot residue
+  // into a merged PR. The LLM ops dispatch below remains as the fallback for
+  // env variance, which is recovery, not an opt-out.
+  {
     const execFnMech = ctx.verifyExecFn ?? execp;
     try {
       const setup = await mechanizedBranchSetup(
@@ -236,8 +238,8 @@ export function parseWorktreesBlock(text: string, repoRoot: string): Record<stri
 /**
  * Step 4 — Implementation.
  *
- * PR3 restored multi-workstream parallelism (the original /work.md
- * "default to parallel" doctrine PR #239 silently dropped). When Step 2
+ * PR3 restored multi-workstream parallelism (the "default to parallel"
+ * doctrine PR #239 silently dropped). When Step 2
  * decomposed the issue into N>1 workstreams, this step fans out N
  * developers in parallel — each in its own worktree — via Promise.all
  * over driver-owned `dispatchCore` calls (the same pattern that

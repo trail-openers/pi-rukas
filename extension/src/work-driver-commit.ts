@@ -15,12 +15,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
-import {
-  cachedIssueTitle,
-  integrate,
-  mechanizeOpsEnabled,
-  withIntegrationLock,
-} from "./work-driver-integrate.ts";
+import { cachedIssueTitle, integrate, withIntegrationLock } from "./work-driver-integrate.ts";
 import { renderAssumptions } from "./work-driver-intent.ts";
 import { parsePrNumber } from "./work-driver-lens.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
@@ -31,11 +26,6 @@ import { appendEvent } from "./workflow-state.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 const execp = promisify(exec);
-
-// #287 — `mechanizeOpsEnabled` moved to work-driver-integrate.ts (a leaf) so
-// the branch step can read it without importing this module. Re-exported here
-// for the existing importers.
-export { mechanizeOpsEnabled };
 
 /**
  * PR19 — Mechanized commit-pr: the driver executes the consolidation +
@@ -241,9 +231,11 @@ async function runCommitPrLocked(
   // directly; the LLM ops dispatch remains as fallback when the
   // mechanized path hits something judgmental (apply conflict, push
   // rejection, unexpected repo state) — that env variance is exactly
-  // what the LLM absorbs well. Escape hatch: PI_ENSEMBLE_MECHANIZE_OPS=0
-  // forces the LLM path.
-  if (mechanizeOpsEnabled()) {
+  // what the LLM absorbs well. #393 removed the knob that forced the LLM path
+  // outright: an opt-out restores the shape that caused #245/#253's silent
+  // merges and v0.12.13's partial consolidation. The fallback below is
+  // recovery from a failed attempt, which is a different thing.
+  {
     const mech = await mechanizedCommitPr(ctx, state, now);
     if (mech.ok) {
       next = mech.state;

@@ -13,7 +13,6 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { trace } from "./trace.ts";
-import { mechanizeOpsEnabled } from "./work-driver-commit.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -145,9 +144,6 @@ export async function executeAndVerifyMerge(
  * ANY failure returns `{ok: false, reason}` — the caller in runMerged
  * emits a plumb-report and falls back to the LLM ops dispatch.
  *
- * Escape hatch: PI_ENSEMBLE_MECHANIZE_OPS=0 bypasses this entirely,
- * forcing the LLM ops path (same as mechanizedCommitPr).
- *
  * On success, returns the resolved merge method (for the merged event
  * and any fallback dispatch that follows) plus any notes from the
  * derive step.
@@ -159,16 +155,6 @@ export async function mechanizedMerge(
   | { ok: true; method: MergeMethod; notes: string[] }
   | { ok: false; reason: string; method?: MergeMethod }
 > {
-  if (!mechanizeOpsEnabled()) {
-    // Mechanized ops disabled — return squash as the prompt hint.
-    // The LLM has AGENTS.md in context and will use the repo's actual policy.
-    return {
-      ok: false,
-      reason: "PI_ENSEMBLE_MECHANIZE_OPS=0 — mechanized ops disabled",
-      method: "squash",
-    };
-  }
-
   // #380 — this used to read `ctx.verifyExecFn` with no fallback, unlike
   // every other consumer of the seam. `verifyExecFn` is a TEST injection point
   // and is never assigned in production, so mechanized merge always returned

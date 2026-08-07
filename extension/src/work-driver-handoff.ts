@@ -229,7 +229,7 @@ export async function captureWorktreeSnapshot(
   // repoRoot. Snapshotting repoRoot alone would report "0 files modified" on
   // exactly the handoffs where the operator needs to know what survived.
   // Scan every worktree (falling back to repoRoot when none were recorded,
-  // i.e. a pre-branch halt or PI_ENSEMBLE_ALWAYS_WORKTREE=0), prefixing paths
+  // i.e. a pre-branch halt), prefixing paths
   // with the workstream id when there is more than one so the file list is
   // unambiguous.
   const scanRoots = Object.entries(worktrees ?? {});

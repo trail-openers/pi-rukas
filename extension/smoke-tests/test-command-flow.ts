@@ -121,7 +121,10 @@ assert(rec.registeredCommands.includes("plan"), "/plan registered");
 assert(rec.registeredCommands.includes("work"), "/work registered");
 assert(rec.registeredCommands.includes("review"), "/review registered");
 assert(rec.registeredCommands.includes("audit"), "/audit registered");
-assert(rec.registeredCommands.includes("do"), "/do registered (PR7 — free-form work counterpart to /work)");
+assert(
+  rec.registeredCommands.includes("do"),
+  "/do registered (PR7 — free-form work counterpart to /work)",
+);
 assert(rec.registeredCommands.includes("ensemble-debug"), "/ensemble-debug registered");
 assert(rec.registeredCommands.includes("runs"), "/runs registered");
 
@@ -147,16 +150,27 @@ assert(rec.registeredCommands.includes("runs"), "/runs registered");
 assert(rec.registeredTools.includes("dispatch_specialist"), "dispatch_specialist tool registered");
 assert(rec.registeredTools.includes("dispatch_parallel"), "dispatch_parallel tool registered");
 assert(rec.registeredTools.includes("adversarial_loop"), "adversarial_loop tool registered");
-assert(rec.registeredTools.includes("dispatch_lens_review"), "dispatch_lens_review tool registered");
+assert(
+  rec.registeredTools.includes("dispatch_lens_review"),
+  "dispatch_lens_review tool registered",
+);
 assert(rec.beforeAgentStartHandlers.length === 1, "exactly one before_agent_start hook");
 
-// Verify pi-prompts files exist
-for (const name of ["start", "research", "plan", "work", "review", "do"]) {
+// Verify pi-prompts files exist. #393 removed "work" — /work is the compiled
+// driver and has no prompt file; a stale work.md would be documentation that
+// reads as authoritative while matching nothing the driver actually does.
+for (const name of ["start", "research", "plan", "review", "do"]) {
   const file = path.join(PI_PROMPTS, `${name}.md`);
-  const exists = await fs.stat(file).then(() => true).catch(() => false);
+  const exists = await fs
+    .stat(file)
+    .then(() => true)
+    .catch(() => false);
   assert(exists, `pi-prompts/${name}.md exists`);
 }
-const pmExists = await fs.stat(PM_PROMPT).then(() => true).catch(() => false);
+const pmExists = await fs
+  .stat(PM_PROMPT)
+  .then(() => true)
+  .catch(() => false);
 assert(pmExists, "PM doctrine prompt built (dist/prompts/standard/project-manager.md)");
 
 // Fire /start with no args
@@ -169,78 +183,49 @@ assert(
   "/start: queued message equals start.md body (no $ARGUMENTS in start.md, so no expansion)",
 );
 
-// Fire /work 42 — under PI_ENSEMBLE_WORK_DRIVER=0 this exercises the
-// legacy PM-driven path: handler reads pi-prompts/work.md and sends it.
-// (PR1 of workflow-graph compilation introduced the driver-based path; the
-// legacy path stays available as a fallback.)
-const prevFlag = process.env.PI_ENSEMBLE_WORK_DRIVER;
-process.env.PI_ENSEMBLE_WORK_DRIVER = "0";
-try {
-  const { ctx: ctx2 } = makeCtx();
-  await handlers.work!("42", ctx2);
-  assert(promptMessages().length === 2, "/work 42 (legacy flag=0) → second message queued");
-  assert(
-    promptMessages()[1].includes("**Issue**: 42"),
-    "/work 42 (legacy flag=0): $ARGUMENTS expanded to '42' in workflow body",
-  );
-} finally {
-  if (prevFlag === undefined) delete process.env.PI_ENSEMBLE_WORK_DRIVER;
-  else process.env.PI_ENSEMBLE_WORK_DRIVER = prevFlag;
-}
-
 // Fire /review #456 (with arg expansion)
 const { ctx: ctxR } = makeCtx();
 await handlers.review!("#456", ctxR);
-assert(promptMessages().length === 3, "/review #456 → third message queued");
+assert(promptMessages().length === 2, "/review #456 → second message queued");
 assert(
-  promptMessages()[2].includes("**Scope**: #456"),
+  promptMessages()[1].includes("**Scope**: #456"),
   "/review #456: $ARGUMENTS expanded to '#456' in workflow body",
 );
 
-// /work under PI_ENSEMBLE_WORK_DRIVER=1 (default) should NOT send a user
-// message — it spins up the driver via notify() instead. We can't actually
-// run the driver here (it would spawn real Pi children) but we can verify:
-//  - no new sendUserMessage is queued (count stays at 3),
-//  - a notify of kind "info" fires naming the work-state path.
+// #393 — /work has NO prompt path any more. It always runs the compiled
+// driver, so unlike every other command it must not queue a message. The
+// assertion this replaces set PI_ENSEMBLE_WORK_DRIVER=0 and checked that
+// work.md was sent verbatim; both the flag and work.md are deleted.
 {
-  const prevFlag = process.env.PI_ENSEMBLE_WORK_DRIVER;
-  delete process.env.PI_ENSEMBLE_WORK_DRIVER; // default = ON
-  try {
+  {
     const { ctx: ctxW, notifies: notifW } = makeCtx(TMP_CWD);
     await handlers.work!("789", ctxW);
     assert(
-      promptMessages().length === 3,
-      "/work 789 (driver default-ON): does NOT call sendUserMessage",
+      promptMessages().length === 2,
+      "/work 789: does NOT call sendUserMessage — there is no prose flow to send",
     );
     assert(
       notifW.some((n) => n.kind === "info" && /work-state\/789\.json/.test(n.msg)),
-      "/work 789 (driver default-ON): info notify names the work-state file path",
+      "/work 789: info notify names the work-state file path",
     );
-  } finally {
-    if (prevFlag === undefined) delete process.env.PI_ENSEMBLE_WORK_DRIVER;
-    else process.env.PI_ENSEMBLE_WORK_DRIVER = prevFlag;
+    assert(
+      notifW.every((n) => !/PI_ENSEMBLE_WORK_DRIVER|legacy/i.test(n.msg)),
+      "...and no message advertises a legacy fallback that no longer exists",
+    );
   }
 }
 
-// /work without an issue number under driver mode should reject cleanly
-// (warning notify, no sendUserMessage).
+// /work without an issue number should reject cleanly (warning notify, no
+// sendUserMessage).
 {
-  const prevFlag = process.env.PI_ENSEMBLE_WORK_DRIVER;
-  delete process.env.PI_ENSEMBLE_WORK_DRIVER;
-  try {
+  {
     const { ctx: ctxWE, notifies: notifWE } = makeCtx(TMP_CWD);
     await handlers.work!("", ctxWE);
-    assert(
-      promptMessages().length === 3,
-      "/work (driver default-ON, no args): does NOT send a message",
-    );
+    assert(promptMessages().length === 2, "/work (no args): does NOT send a message");
     assert(
       notifWE.some((n) => n.kind === "warning" && /issue number/.test(n.msg)),
-      "/work (driver default-ON, no args): warning notify mentions missing issue number",
+      "/work (no args): warning notify mentions missing issue number",
     );
-  } finally {
-    if (prevFlag === undefined) delete process.env.PI_ENSEMBLE_WORK_DRIVER;
-    else process.env.PI_ENSEMBLE_WORK_DRIVER = prevFlag;
   }
 }
 
@@ -255,14 +240,12 @@ assert(
 // coroutine (which needs `gh issue view` we can't mock here — that's
 // exercised by the groupIssues unit tests in test-work-driver.ts).
 {
-  const prevFlag = process.env.PI_ENSEMBLE_WORK_DRIVER;
-  delete process.env.PI_ENSEMBLE_WORK_DRIVER;
-  try {
+  {
     const { ctx: ctxMulti, notifies: notifMulti } = makeCtx(TMP_CWD);
     await handlers.work!("561 562 563", ctxMulti);
     assert(
-      promptMessages().length === 3,
-      "/work 561 562 563 (driver default-ON): does NOT call sendUserMessage synchronously",
+      promptMessages().length === 2,
+      "/work 561 562 563: does NOT call sendUserMessage synchronously",
     );
     assert(
       notifMulti.some(
@@ -274,24 +257,20 @@ assert(
       ),
       "/work 561 562 563: info notify names all 3 issues + 'analyzing…grouping' phrasing",
     );
-  } finally {
-    if (prevFlag === undefined) delete process.env.PI_ENSEMBLE_WORK_DRIVER;
-    else process.env.PI_ENSEMBLE_WORK_DRIVER = prevFlag;
   }
 }
 
 // PR12 — /work N --restart should parse the flag (order-independent)
 // and the notify includes the "(restart — prior state wiped)" tag.
 {
-  const prevFlag = process.env.PI_ENSEMBLE_WORK_DRIVER;
-  delete process.env.PI_ENSEMBLE_WORK_DRIVER;
-  try {
+  {
     // Trailing --restart.
     const { ctx: ctxR1, notifies: notifR1 } = makeCtx(TMP_CWD);
     await handlers.work!("547 --restart", ctxR1);
     assert(
       notifR1.some(
-        (n) => n.kind === "info" && /issue #547/.test(n.msg) && /restart.*prior state wiped/.test(n.msg),
+        (n) =>
+          n.kind === "info" && /issue #547/.test(n.msg) && /restart.*prior state wiped/.test(n.msg),
       ),
       "/work 547 --restart: notify includes restart tag",
     );
@@ -300,7 +279,8 @@ assert(
     await handlers.work!("--restart 548", ctxR2);
     assert(
       notifR2.some(
-        (n) => n.kind === "info" && /issue #548/.test(n.msg) && /restart.*prior state wiped/.test(n.msg),
+        (n) =>
+          n.kind === "info" && /issue #548/.test(n.msg) && /restart.*prior state wiped/.test(n.msg),
       ),
       "/work --restart 548: --restart order-independent (leading)",
     );
@@ -313,10 +293,7 @@ assert(
     await handlers.work!("549 --restart 550", ctxR3);
     assert(
       notifR3.some(
-        (n) =>
-          n.kind === "info" &&
-          /analyzing 2 issues/.test(n.msg) &&
-          /#549, #550/.test(n.msg),
+        (n) => n.kind === "info" && /analyzing 2 issues/.test(n.msg) && /#549, #550/.test(n.msg),
       ),
       "/work 549 --restart 550: --restart filtered out of issue parse, multi-issue analyzing phrasing intact",
     );
@@ -324,14 +301,9 @@ assert(
     const { ctx: ctxR4, notifies: notifR4 } = makeCtx(TMP_CWD);
     await handlers.work!("551", ctxR4);
     assert(
-      notifR4.some(
-        (n) => n.kind === "info" && /issue #551/.test(n.msg) && !/restart/i.test(n.msg),
-      ),
+      notifR4.some((n) => n.kind === "info" && /issue #551/.test(n.msg) && !/restart/i.test(n.msg)),
       "/work 551 (no flag): notify does NOT include restart tag (regression guard)",
     );
-  } finally {
-    if (prevFlag === undefined) delete process.env.PI_ENSEMBLE_WORK_DRIVER;
-    else process.env.PI_ENSEMBLE_WORK_DRIVER = prevFlag;
   }
 }
 
@@ -357,7 +329,8 @@ assert(
 // is one-shot though — only the short preamble appears on turn 2.
 const result2 = await hook({ systemPrompt: "PI_BASE_PROMPT" });
 assert(
-  result2?.systemPrompt !== undefined && result2.systemPrompt.includes("PM mode — orchestration only"),
+  result2?.systemPrompt !== undefined &&
+    result2.systemPrompt.includes("PM mode — orchestration only"),
   "before_agent_start: sticky preamble appended on turn 2 (PM mode active)",
 );
 assert(
@@ -370,8 +343,8 @@ const { ctx: ctx3, notifies: notif3 } = makeCtx();
 ctx3.isIdle = () => false;
 await handlers.start!("", ctx3);
 assert(
-  promptMessages().length === 3,
-  "/start while busy: no new message queued (still 3 from earlier)",
+  promptMessages().length === 2,
+  "/start while busy: no new message queued (still 2 from earlier)",
 );
 assert(
   notif3.some((n) => n.kind === "warning"),
@@ -381,7 +354,8 @@ assert(
 // /start so the sticky preamble is still appended. The state didn't regress.
 const result3 = await hook({ systemPrompt: "PI_BASE_PROMPT" });
 assert(
-  result3?.systemPrompt !== undefined && result3.systemPrompt.includes("PM mode — orchestration only"),
+  result3?.systemPrompt !== undefined &&
+    result3.systemPrompt.includes("PM mode — orchestration only"),
   "/start while busy: PM mode sticky preamble still active from earlier /start",
 );
 
@@ -413,6 +387,8 @@ assert(
 rmSync(TMP_CWD, { recursive: true, force: true });
 
 console.log("\n=== test-command-flow summary ===");
-console.log(`registered: ${rec.registeredCommands.length} commands, ${rec.registeredTools.length} tools`);
+console.log(
+  `registered: ${rec.registeredCommands.length} commands, ${rec.registeredTools.length} tools`,
+);
 console.log(`exit ${exit}`);
 process.exit(exit);

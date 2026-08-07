@@ -20,7 +20,6 @@ import { promisify } from "node:util";
 import { dispatchCore } from "./dispatch.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
-import { mechanizeOpsEnabled } from "./work-driver-commit.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { parseAbort } from "./work-driver-diff.ts";
 import { detectMainline, restoreCheckout } from "./work-driver-git.ts";
@@ -264,7 +263,7 @@ export async function runSingleDispatch(
  * settings, execute `gh pr merge`, verify MERGED via `gh pr view`,
  * restore checkout. Fallback to LLM ops dispatch on any mechanized
  * failure (plumb-report emitted). Escape hatch:
- * PI_ENSEMBLE_MECHANIZE_OPS=0 forces LLM path.
+ * The LLM ops dispatch remains as the fallback on mechanized failure.
  *
  * Restoration runs INSIDE runMerged, before routeStepOutcome persists
  * state. Combined with idempotent merge (already-merged tolerance), a
@@ -353,15 +352,13 @@ export async function runMerged(
     }
   } else {
     // Mechanized path failed — emit plumb-report and fall back to LLM.
-    if (mechResult.reason !== "PI_ENSEMBLE_MECHANIZE_OPS=0 — mechanized ops disabled") {
-      preDispatch = appendEvent(state, {
-        kind: "plumb-report",
-        at: Date.now(),
-        step: "merged",
-        role: "driver",
-        body: `Mechanized merge fell back to ops dispatch: ${mechResult.reason}.`,
-      });
-    }
+    preDispatch = appendEvent(state, {
+      kind: "plumb-report",
+      at: Date.now(),
+      step: "merged",
+      role: "driver",
+      body: `Mechanized merge fell back to ops dispatch: ${mechResult.reason}.`,
+    });
     // Always resolve the merge method for the fallback prompt.
     mergeMethod = mechResult.method ?? "squash";
     next = await runSingleDispatch(ctx, preDispatch, "merged", "ops", "ops:merge", now, () =>

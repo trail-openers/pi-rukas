@@ -83,7 +83,7 @@ export interface PipelineState {
   lastDiffHash?: string;
   /**
    * Six-pass-review round counter; starts at 1 on first lens-review entry.
-   * Hard cap at 3 per /work.md Step 7f.6.
+   * Hard cap at 3 — see MAX_REVIEW_ROUNDS in work-driver-context.ts.
    */
   reviewRound: number;
   /**

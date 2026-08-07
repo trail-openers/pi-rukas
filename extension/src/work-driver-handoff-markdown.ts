@@ -11,7 +11,7 @@ import { explainCap } from "./work-driver-explain.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 /**
- * Build the cap-hit handoff markdown body per /work.md Step 7g shape.
+ * Build the cap-hit handoff markdown body.
  * Walks state.eventLog for: which cap fired (cap-hit event's `cap` field),
  * how many lens-review rounds ran, last lens-issues-found findings (for
  * the recurring-pattern paragraph), any plumb-reports, transcript paths

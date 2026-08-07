@@ -14,7 +14,6 @@ import { runAdversarialLoop } from "./adversarial.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
-import { alwaysWorktreeEnabled } from "./work-driver-branch-mechanized.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { fetchDiff } from "./work-driver-diff.ts";
 import { integrate, withIntegrationLock } from "./work-driver-integrate.ts";
@@ -313,9 +312,14 @@ export async function runAdversarial(
       const execFn = ctx.verifyExecFn ?? execp;
       const psFix = state.pipelineState;
       const fixWorktrees = psFix.worktrees ?? {};
-      const inWorktree =
-        alwaysWorktreeEnabled() &&
-        Object.values(fixWorktrees).some((p) => path.resolve(p) !== path.resolve(ctx.repoRoot));
+      // #287 — development always happens in a worktree, so this is normally
+      // true; the check stays as a defensive read of the ACTUAL worktree map
+      // rather than an assumption about it. (#393 removed the env knob that
+      // used to gate it, which restored the pre-#287 repoRoot-as-dev-tree
+      // shape.)
+      const inWorktree = Object.values(fixWorktrees).some(
+        (p) => path.resolve(p) !== path.resolve(ctx.repoRoot),
+      );
       // #287 — lens-fix runs in the WORKTREE (work-driver-lens.ts picks
       // `worktrees.default` as its cwd), so committing at repoRoot found a
       // clean tree and silently skipped: the fix never reached the PR. Pull

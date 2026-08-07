@@ -295,8 +295,8 @@ export async function routeStepOutcome(
   //
   // Doctrine: ANY failed branch on a HALT-class step routes to
   // handoff. Partial success on multi-workstream is not a meaningful
-  // input downstream — /work.md's out-of-scope fence doctrine implies
-  // a failed branch leaves the broader decomposition incoherent.
+  // input downstream — the out-of-scope fence doctrine implies a failed
+  // branch leaves the broader decomposition incoherent.
   {
     const tail = state.eventLog[state.eventLog.length - 1];
     if (tail?.kind === "branches-converged" && tail.verdicts.length > 0) {

@@ -99,8 +99,12 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         "schema mismatch error names both versions",
       );
       assert(
-        msg.includes("PI_ENSEMBLE_WORK_DRIVER=0"),
-        "error surfaces the flag-bypass recovery path",
+        /rm to start fresh/.test(msg) && /git work is unaffected/.test(msg),
+        "error names a real recovery and reassures that git work is untouched",
+      );
+      assert(
+        !/PI_ENSEMBLE_WORK_DRIVER|legacy/i.test(msg),
+        "#393: and does NOT point at the deleted legacy flow",
       );
     }
   } finally {

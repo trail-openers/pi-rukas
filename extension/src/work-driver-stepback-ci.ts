@@ -28,8 +28,8 @@ import { type WorkState, appendEvent } from "./workflow-state.ts";
 const execp = promisify(nodeExec);
 
 /**
- * Step 7h — Step-back when findings cluster around a theme. Dispatches
- * @explore with the SDD-six-element step-back prompt from /work.md Step 7h.
+ * Step-back when findings cluster around a theme. Dispatches @explore with
+ * the SDD-six-element step-back prompt.
  *
  * v1: the driver does NOT cluster findings itself (that's fuzzy judgement).
  * It dispatches step-back unconditionally when the cap-hit nextStep routes

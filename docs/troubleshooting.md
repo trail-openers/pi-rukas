@@ -547,7 +547,7 @@ Pick the option that matches your context:
 
 **B. Start fresh.** `rm <project>/.pi/work-state/<issue>.json` — only the workflow-tracker state goes; your git work (worktree, branch, commits, PR) is unaffected. Then re-run `/work N` to begin a new cycle. The driver will detect that no PR / branch / worktree exists yet for this issue and run Steps 1-3 from scratch — for issues where the developer already pushed a PR, you may want to skip that path and resume manually instead.
 
-**C. Bypass the driver entirely.** `PI_ENSEMBLE_WORK_DRIVER=0 /work N` falls back to the legacy PM-driven flow (`pi.sendUserMessage(work.md)`) — the same flow used before this PR. The driver's state file is left untouched. Use this when you need to debug a driver issue or you want the older PM-orchestrated path for any reason.
+**C. Work the issue outside the driver.** There is no longer a prose `/work` fallback — #393 deleted it, because a flow with no state file and none of the verification gates is the failure class the driver exists to remove. If the driver itself is the problem, use `/do "<what you want done>"`: same subagent toolkit, no compiled cycle, no GitHub issue required. The driver's state file is left untouched.
 
 ### Inspecting the state file directly
 
@@ -1006,4 +1006,4 @@ If you see repeated fallbacks in the plumb-reports, the reason string says why; 
 
 ### Escape hatch
 
-`PI_ENSEMBLE_MECHANIZE_OPS=0` forces the LLM ops dispatch for every commit-pr (the pre-PR19 behavior). Use it only to debug a suspected mechanization bug — the mechanized path is the reliability-preferred default (every worst-class incident in the harness's history — #245/#253 silent merges, v0.12.13 partial consolidation — was LLM ops improvising these operations).
+There is no way to force the LLM ops dispatch. #393 deleted `PI_ENSEMBLE_MECHANIZE_OPS=0`, because every worst-class incident in this harness's history — #245/#253 silent merges, v0.12.13 shipping 1 of 3 workstreams — was LLM ops improvising exactly the operations mechanization now executes. The LLM path still runs as a **fallback when mechanization fails**, which is recovery from environment variance rather than an opt-out; a plumb-report records every such fallback so you can see it happened.

@@ -13,18 +13,9 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type DriverContext } from "../src/work-driver-context.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { readState } from "../src/workflow-state.ts";
-
-// #287 — these fixtures pin the PRE-always-worktree shape: their exec stubs
-// answer the legacy branch-step commands and hard-code worktree paths the
-// driver now chooses itself. Running them under the escape hatch keeps that
-// coverage intact AND is the standing proof of #287's acceptance criterion
-// that PI_ENSEMBLE_ALWAYS_WORKTREE=0 restores the previous behaviour.
-// Always-worktree is covered by test-work-driver-always-worktree.ts.
-process.env.PI_ENSEMBLE_ALWAYS_WORKTREE = "0";
-
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -93,10 +84,8 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 {
   const prevVerify = process.env.PI_ENSEMBLE_VERIFY;
   const prevSpec = process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE;
-  const prevMech = process.env.PI_ENSEMBLE_MECHANIZE_OPS;
   process.env.PI_ENSEMBLE_VERIFY = "1";
   process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE = "1";
-  process.env.PI_ENSEMBLE_MECHANIZE_OPS = "1";
 
   // Shared fixture bits for the 3-workstream shape.
   const PLAN_REPLY = `## Workstreams
@@ -159,11 +148,22 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           calls.push(cmd);
           if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
           if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-994\n" };
+          // #393 — mechanized branch setup is now unconditional (the knob that
+          // skipped it is gone), so the stub must answer its commands too or
+          // the branch step falls back and emits a plumb-report that this
+          // fixture's "mechanized path completed cleanly" assertion then trips on.
+          if (cmd.startsWith("git rev-parse ")) return { stdout: "base123\n" };
+          if (cmd.startsWith("git fetch origin")) return { stdout: "" };
+          if (cmd.startsWith("git worktree add")) return { stdout: "" };
           if (cmd === "git status --porcelain") {
+            // #393 — worktree paths now come from mechanized branch setup
+            // (`.worktrees/issue-994/<workstream>`), not from the ops reply,
+            // so key on the workstream id rather than the old /wta,/wtb,/wtc
+            // paths the LLM branch flow used to invent.
             const cwd = o?.cwd ?? "";
-            if (cwd.endsWith("/wta")) return { stdout: " M src/a.rs\n" };
-            if (cwd.endsWith("/wtb")) return { stdout: " M src/b.rs\n" };
-            if (cwd.endsWith("/wtc")) return { stdout: "?? src/c.rs\n" };
+            if (cwd.endsWith("-task-a")) return { stdout: " M src/a.rs\n" };
+            if (cwd.endsWith("-task-b")) return { stdout: " M src/b.rs\n" };
+            if (cwd.endsWith("-task-c")) return { stdout: "?? src/c.rs\n" };
             return { stdout: "" };
           }
           if (cmd.startsWith("git rev-list --count base123")) return { stdout: "0\n" };
@@ -243,10 +243,13 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
           if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
           if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-995\n" };
+          // #393 — branch setup is mechanized unconditionally now.
+          if (cmd.startsWith("git rev-parse ")) return { stdout: "base123\n" };
+          if (cmd.startsWith("git fetch origin")) return { stdout: "" };
+          if (cmd.startsWith("git worktree add")) return { stdout: "" };
           if (cmd === "git status --porcelain") {
             const cwd = o?.cwd ?? "";
-            if (cwd.endsWith("/wta") || cwd.endsWith("/wtb") || cwd.endsWith("/wtc"))
-              return { stdout: " M src/x.rs\n" };
+            if (/-task-[abc]$/.test(cwd)) return { stdout: " M src/x.rs\n" };
             return { stdout: "" };
           }
           if (cmd.startsWith("git rev-list --count base123")) return { stdout: "0\n" };
@@ -350,66 +353,17 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       }
     }
 
-    // M4 — escape hatch: PI_ENSEMBLE_MECHANIZE_OPS=0 → straight to the
-    // LLM ops dispatch, no mechanized attempt, no plumb-report.
-    {
-      process.env.PI_ENSEMBLE_MECHANIZE_OPS = "0";
-      const dir = mkdtempSync(path.join(tmpdir(), "mech-off-"));
-      try {
-        await (await import("node:fs/promises")).mkdir(path.join(dir, ".git", "info"), {
-          recursive: true,
-        });
-        const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
-          // #292 — runBranch now calls git rev-parse --abbrev-ref HEAD for
-          // branch verification. Return a valid branch so runBranch completes.
-          if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-997\n" };
-          if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
-          if (cmd === "git status --porcelain") {
-            const cwd = o?.cwd ?? "";
-            if (cwd.endsWith("/wta") || cwd.endsWith("/wtb") || cwd.endsWith("/wtc"))
-              return { stdout: " M src/x.rs\n" };
-            return { stdout: "" };
-          }
-          if (cmd.startsWith("git rev-list --count base123")) return { stdout: "0\n" };
-          if (cmd.startsWith("git rev-list --count origin/")) return { stdout: "1\n" };
-          if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
-          if (cmd.startsWith("git diff --name-only origin/"))
-            return { stdout: "src/a.rs\nsrc/b.rs\nsrc/c.rs\n" };
-          if (cmd.startsWith("gh pr view")) return { stdout: '{"state":"OPEN"}' };
-          return { stdout: "" };
-        };
-        const ctx: DriverContext = {
-          pi: makeFakePi().pi,
-          repoRoot: dir,
-          issue: 997,
-          issueBodyFetcherFn: mockIssueBodyOk,
-          verifyExecFn: exec,
-          adversarialLoopFn: async () =>
-            mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
-          dispatchFn: mkDispatchFn(dir, 997, { allowOpsCommitPr: true }),
-        };
-        await runWorkDriver(ctx).catch(() => {});
-        const after = await readState(dir, 997);
-        assert(
-          after?.eventLog.some(
-            (e) =>
-              e.kind === "dispatch-completed" && e.role === "ops" && e.label === "ops:commit-pr",
-          ) && !after?.eventLog.some((e) => e.kind === "plumb-report"),
-          "M4: LLM ops path used directly, no fallback plumb-report",
-        );
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-        process.env.PI_ENSEMBLE_MECHANIZE_OPS = "1";
-      }
-    }
+    // #393 deleted M4. It exercised PI_ENSEMBLE_MECHANIZE_OPS=0 — the knob
+    // that sent commit-pr straight to the LLM ops dispatch with no mechanized
+    // attempt. That knob restored the shape behind the #245/#253 silent merges
+    // and v0.12.13's partial consolidation, so the path it tested no longer
+    // exists. The LLM fallback ON MECHANIZED FAILURE is still covered by M2/M3.
   } finally {
     if (prevVerify === undefined) delete process.env.PI_ENSEMBLE_VERIFY;
     else process.env.PI_ENSEMBLE_VERIFY = prevVerify;
     process.env.PI_ENSEMBLE_VERIFY = "0";
     if (prevSpec === undefined) delete process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE;
     else process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE = prevSpec;
-    if (prevMech === undefined) delete process.env.PI_ENSEMBLE_MECHANIZE_OPS;
-    else process.env.PI_ENSEMBLE_MECHANIZE_OPS = prevMech;
   }
 }
 

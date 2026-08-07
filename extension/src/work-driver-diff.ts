@@ -224,96 +224,18 @@ export async function readAllMergedDiffs(
   // directions: a confirmed-empty diff means no commits ahead of base, which
   // no per-worktree read can contradict, and a failure means we do not know.
   if (branchName) return readIntegratedDiff(repoRoot, branchName);
-  // No branch name — fall back to the worktree read, which cannot report
-  // failure. Say so rather than pretending the answer is trustworthy.
-  const legacy = await fetchAllMergedDiffs(worktrees, repoRoot, branchName);
-  return legacy.trim()
-    ? { ok: true, diff: legacy, empty: false }
-    : {
-        ok: false,
-        reason: "no branch name recorded, and the per-worktree diff read came back empty",
-      };
-}
-
-/**
- * PR11 — the integration-branch-vs-mainline diff read from INSIDE a worktree
- * (`git diff origin/<base>..HEAD`). Correct whenever the worktree's HEAD
- * actually advances — i.e. the legacy PI_ENSEMBLE_ALWAYS_WORKTREE=0 shape,
- * where development happens on the branch itself. Under always-worktree the
- * worktree stays detached at baseSha, so `fetchIntegratedDiff` above is the
- * one that sees the commits.
- */
-async function fetchMergedDiff(cwd: string | undefined): Promise<string> {
-  if (!cwd) return "";
-  try {
-    const { stdout: head } = await execp(
-      "git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@'",
-      { cwd, shell: "/bin/bash" },
-    );
-    const base = head.trim() || "main";
-    const { stdout } = await execp(`git diff origin/${base}..HEAD`, {
-      cwd,
-      maxBuffer: 1024 * 1024,
-    });
-    return stdout;
-  } catch (err) {
-    trace(`work-driver: fetchMergedDiff(${cwd}) failed: ${(err as Error).message?.slice(0, 200)}`);
-    return "";
-  }
-}
-
-/**
- * PR11 — Multi-worktree counterpart to `fetchMergedDiff`. Same N=1
- * vs N>1 shape as `fetchAllDiffs`, same headers + 1 MiB cap + empty-
- * aware return — just uses `fetchMergedDiff` instead of `fetchDiff` so
- * post-commit lens-review sees the integrated diff against mainline.
- */
-export async function fetchAllMergedDiffs(
-  worktrees: Record<string, string>,
-  repoRoot: string,
-  branchName?: string,
-): Promise<string> {
-  // #287 — after always-worktree the worktrees are DETACHED at baseSha and
-  // never advance: the integrated commits live on the feature branch at
-  // repoRoot. Reading `origin/<base>..HEAD` from inside a worktree would
-  // therefore return empty on every cycle, silently skipping six-pass review
-  // — the same failure PR11 fixed once already, from the other direction.
-  // With a branch name available, diff the pushed branch instead.
-  if (branchName) {
-    const integrated = await fetchIntegratedDiff(repoRoot, branchName);
-    if (integrated.trim()) return integrated;
-  }
-  const ids = Object.keys(worktrees);
-  if (ids.length <= 1) {
-    const cwd = ids.length === 1 ? worktrees[ids[0] ?? ""] : repoRoot;
-    return fetchMergedDiff(cwd ?? repoRoot);
-  }
-  const fetched: Array<{ id: string; body: string }> = [];
-  for (const id of ids) {
-    const wt = worktrees[id];
-    if (!wt) continue;
-    fetched.push({ id, body: await fetchMergedDiff(wt) });
-  }
-  if (fetched.every((f) => !f.body.trim())) return "";
-
-  const TOTAL_CAP = 1024 * 1024;
-  const sections: string[] = [];
-  let totalBytes = 0;
-  let truncated = false;
-  for (const { id, body: piece } of fetched) {
-    if (truncated) break;
-    const header = `## workstream: ${id}\n`;
-    const remaining = TOTAL_CAP - totalBytes - header.length;
-    if (remaining <= 0) {
-      truncated = true;
-      break;
-    }
-    const body = piece.length > remaining ? `${piece.slice(0, remaining)}\n[... truncated]` : piece;
-    sections.push(header + body);
-    totalBytes += header.length + body.length;
-  }
-  if (truncated) sections.push("\n[... merged diff truncated at 1 MiB total]");
-  return sections.join("\n");
+  // No branch name at lens-review means the branch step never recorded one —
+  // an abnormal state, not an empty diff. #393 deleted the per-worktree
+  // fallback that used to run here: under always-worktree the worktrees stay
+  // DETACHED at baseSha, so `git diff origin/<base>..HEAD` read from inside
+  // one is empty BY CONSTRUCTION. The fallback could only ever return
+  // "nothing to review", which is exactly the inference #384 established must
+  // never be drawn from an absent answer.
+  void worktrees;
+  return {
+    ok: false,
+    reason: "no branch name recorded on the cycle, so there is no integrated diff to review",
+  };
 }
 
 /**

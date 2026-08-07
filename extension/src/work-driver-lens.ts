@@ -193,7 +193,7 @@ export async function runLens(
   } else {
     // REVIEW_INCOMPLETE — at least one lens failed all retries. Treat as a
     // halt that needs human attention rather than continuing the fix loop
-    // against a partial review. /work.md doctrine: never silently downgrade
+    // against a partial review. Standing doctrine: never silently downgrade
     // a six-pass to a five-pass.
     next = appendEvent(next, {
       kind: "cap-hit",

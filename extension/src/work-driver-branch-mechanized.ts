@@ -30,12 +30,6 @@ import { trace } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";
 import { worktreeCreate } from "./worktree.ts";
 
-/** #287 escape hatch: PI_ENSEMBLE_ALWAYS_WORKTREE=0 restores the N=1 repoRoot behaviour. */
-export function alwaysWorktreeEnabled(): boolean {
-  const v = process.env.PI_ENSEMBLE_ALWAYS_WORKTREE;
-  return v !== "0" && v !== "false";
-}
-
 /**
  * Deterministic branch slug. Replaces the LLM-authored name, which produced
  * `…-thinking-only-output` and `…-thinking-only-model-output` for the same

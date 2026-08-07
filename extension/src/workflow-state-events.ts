@@ -1,7 +1,7 @@
 /**
  * /work workflow state — event-log types.
  *
- * `WorkStep` (the linear step identifiers walked from `pi-prompts/work.md`)
+ * `WorkStep` (the linear step identifiers the driver walks)
  * and `WorkEvent` (the append-only, typed event-log entries the driver
  * writes on every state transition). Split out of `workflow-state.ts` for
  * module-size hygiene (AGENTS.md §12) — re-exported from there so external
@@ -10,7 +10,8 @@
  */
 
 /**
- * Linear step identifiers walked from `pi-prompts/work.md` (verbatim). Add
+ * Linear step identifiers the driver walks. This union IS the definition of
+ * the cycle — #393 deleted the prose flow that used to be its source. Add
  * a step here and the discriminator carries through every event type that
  * names a step. Removing a step is a breaking change → schema bump.
  */
@@ -159,7 +160,7 @@ export type WorkEvent =
       kind: "cap-hit";
       at: number;
       /**
-       * Which cap fired. Maps to /work.md Step 7g doctrine plus the
+       * Which cap fired. Covers the handoff-doctrine caps plus the
        * "ci-retry" cap added in PR2 after the live-test infinite-loop bug:
        * ci-status:failure → develop → adversarial → review → ci → ... had no
        * cap of its own and could spin forever when the branch step silently

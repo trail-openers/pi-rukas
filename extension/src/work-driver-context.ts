@@ -19,7 +19,7 @@ import type { WorkState, WorkStep } from "./workflow-state.ts";
 
 /**
  * Display ordinal for the user-facing "step N/9" badge in scrollback /
- * widget output. Matches the numbering in pi-prompts/work.md verbatim.
+ * widget output.
  * `plan` collapses without a dispatch but still gets a number for
  * consistency. Internal-only steps (handoff / merged / step-back) get
  * sequence numbers past 9 so the badge stays informative without lying
@@ -42,8 +42,8 @@ export const STEP_ORDINAL: Record<string, { num: number; total: number }> = {
 
 /**
  * Maximum review-fix rounds before the driver halts and routes to the
- * cap-hit handoff path (Step 7g doctrine). Mirrors the 3-round limit in
- * `pi-prompts/work.md` Step 7f.6.
+ * cap-hit handoff path. Three rounds is the limit: past that the fix loop
+ * has demonstrably stopped converging and a human should look.
  */
 export const MAX_REVIEW_ROUNDS = 3;
 
