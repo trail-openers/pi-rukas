@@ -78,8 +78,16 @@ export function inlineExplorePrompt(
     `/work ${headline} — Step 1 (Reconnaissance). The driver has fetched and embedded each issue body below — read those to determine the verdict; you do NOT need to re-fetch via \`gh issue view\`.`,
     "",
     `Gather context relevant to executing ${issues.length === 1 ? "this issue" : "these issues together"}:`,
-    "  1. `vipune list --json | jq -r '.[] | .memory_type' | sort -u` to discover project memory types,",
-    "  2. `vipune search '<keywords-from-issue-title-or-body>' --hybrid --recency 0.3 --limit 8` for prior decisions,",
+    // #394 — the line this replaces could never work: `list --json` returns an
+    // OBJECT, so `.[]` yields the array and `.memory_type` errors — and the
+    // pipeline still exits 0, so the agent saw empty output and concluded the
+    // project had no memory types. The enum is closed and fixed, so state it.
+    "  1. memory types are a closed set: `fact`, `preference`, `procedure`, `guard`, `observation` — do not try to discover them,",
+    // #394 — `--hybrid --recency 0.3` was a recency SORT, not a search: RRF
+    // scores span ~0.048 while the recency term spans r*1.0, so relevance is
+    // swamped. Pure semantic at 0.0 is the only mode whose score means anything.
+    "  2. `vipune search '<keywords-from-issue-title>' --no-hybrid --recency 0.0 --limit 5` for prior decisions,",
+    "     and `vipune search '<same>' --memory-type guard --no-hybrid --recency 0.0 --limit 5` for traps,",
     "  3. `codebase_memory_search_code({query: '<concept>'})` for existing relevant code.",
     "",
     "Return a STRUCTURED summary the work-driver can route on:",

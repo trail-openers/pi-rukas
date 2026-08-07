@@ -96,7 +96,7 @@ Your job: derive what this repo INTENDS to follow by inspecting:
    - CI config: .github/workflows/*.yml, .gitlab-ci.yml, .travis.yml, Jenkinsfile
 
 3. DURABLE FINDINGS — Query vipune memory:
-   - List memory types: vipune list --json | jq -r '.[] | .memory_type' | sort -u
+   - Memory types are a closed set — `fact`, `preference`, `procedure`, `guard`, `observation`. Do not try to discover them; the field is not returned by any vipune command (randomm/vipune#178).
    - Search for standards/decisions: vipune search '<keyword>' --memory-type fact --limit 5
    - Keywords: 'standard', 'convention', 'style', 'quality gate', 'lint', 'test'
 

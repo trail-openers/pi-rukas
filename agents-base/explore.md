@@ -219,13 +219,14 @@ ci_health: <last build status, one line>
 | `--limit 10-20` | Larger than default 5 when exploring breadth. |
 | `vipune list --limit 20` | "What's been touched recently" without keyword bias. |
 
-**Memory types are project-defined, not a fixed enum.** You must discover types per-project before querying.
+**Memory types are a fixed, closed enum** — `fact`, `preference`, `procedure`, `guard`, `observation`. There is nothing to discover, and the field is not returned by any vipune command (randomm/vipune#178), so filter by it rather than trying to read it back.
 
 ### Sweep pattern
 
 **Step 0 — Discover memory types (if no prior knowledge):**
 ```bash
-vipune list --json | jq -r '.[] | .memory_type' | sort -u
+# Memory types are a CLOSED set: `fact`, `preference`, `procedure`, `guard`, `observation`.
+# Do not try to discover them — no vipune command returns the field (randomm/vipune#178).
 ```
 Skip this step if you already know the project's memory types from this session.
 

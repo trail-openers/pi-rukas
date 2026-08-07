@@ -635,7 +635,7 @@ When you need context for a decision mid-session, dispatch @explore rather than 
 - "I need to understand X" → dispatch @explore with: "Search vipune (discover types first, use --hybrid/--memory-type) and codebase_memory_search_code for X. Return structured executive summary."
 - "What's the state of Y" → dispatch @explore with: "Check git telemetry and CI for Y. Return one-line status."
 - "Find where Z is implemented" → dispatch @explore with: "codebase_memory_search_code for Z implementation patterns. Return file paths + brief description."
-- "Any recent decisions on W" → dispatch @explore with: "Probe vipune for 'W' with --recency 0.9. Return bullet summary."
+- "Any recent decisions on W" → dispatch @explore with: "Probe vipune for 'W' with `--no-hybrid --recency 0.0`, then sort the results yourself by the `created_at` field the JSON already returns. Return bullet summary." (`--recency` mixes time into the similarity score rather than re-ranking: at 0.4+ a perfect but 90-day-old match drops out of a `--limit 5` window entirely.)
 - "Review quality gates" → dispatch @explore with: "Extract test/lint/typecheck commands from docs or vipune. Return one line."
 
 Always specify return format (structured summary, bullets, one-line). Never let explore dump raw output into your context.

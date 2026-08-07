@@ -817,6 +817,26 @@ Orphaned `dispatch-started` events are deliberately kept in the log. They are th
 
 Escape hatch: `PI_ENSEMBLE_RESUME=0`.
 
+### Memory (vipune) — what the flags actually do
+
+Two facts about vipune's scoring drive every retrieval rule here, and neither is guessable from its docs. Both were measured against the binary.
+
+**`--hybrid` scores are Reciprocal Rank Fusion reciprocals (k=25), not relevance.** A perfect identifier match scores `2/26 = 0.0769` — on a 5-row corpus and on a 35-row corpus alike, because both times it was rank 1 in both retrievers. A nonsense query still returns a top row, at `1/26 = 0.0385`. **A hybrid score cannot be thresholded, sorted by, averaged, or compared to a semantic score.** It carries exactly one usable bit: *both retrievers ranked this first*.
+
+**`--recency` mixes time into the score rather than re-ranking.** The composite is `(1-r)*cosine + r*2^(-ageDays/8)`. At `r=0.4` a perfect but 90-day-old match falls out of a `--limit 5` window entirely. So every compiled read uses `--recency 0.0` and sorts on the `created_at` field the JSON already returns.
+
+Retrieval that injects a guard into an agent's prompt therefore requires **both** a semantic floor (0.65) **and** the hybrid agreement bit. Neither alone is sufficient:
+
+| Rule | true positives | false positives |
+|---|---|---|
+| floor alone | 5/5 | **1/5** — injects a guard about an unrelated file |
+| agreement alone | 5/5 | 0/5 |
+| **both (AND)** | **5/5** | **0/5** |
+
+The floor cannot separate these by itself for a structural reason: every guard in this store is *about a pi-ensemble filename*, so any plausible basename is semantically near all of them. Cosine cannot tell "about THIS file" from "about SOME file here"; BM25 can, because it only ranks a row first on a literal token match.
+
+Three upstream issues are worked around rather than fixed here — [vipune#177](https://github.com/randomm/vipune/issues/177) (exit code 2 means both "conflict detected" and "you typed the flags wrong"; only stdout separates them), [#178](https://github.com/randomm/vipune/issues/178) (`memory_type` and `status` are settable and filterable but returned by no command, so a supersede cannot read back the type it must preserve), and [#179](https://github.com/randomm/vipune/issues/179) (retrieval telemetry is maintained but unreadable, so candidate promotion has no measured signal).
+
 ### Getting told when something needs you
 
 `/work` over several issues is meant to be fire-and-forget, but until #388 nothing it produced reached you outside the Pi session — the scrollback and a JSON file both require you to already be looking. Fire over eight issues, go to lunch, come back to a queue that stopped after twenty minutes.
