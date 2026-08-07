@@ -817,6 +817,30 @@ Orphaned `dispatch-started` events are deliberately kept in the log. They are th
 
 Escape hatch: `PI_ENSEMBLE_RESUME=0`.
 
+### Getting told when something needs you
+
+`/work` over several issues is meant to be fire-and-forget, but until #388 nothing it produced reached you outside the Pi session — the scrollback and a JSON file both require you to already be looking. Fire over eight issues, go to lunch, come back to a queue that stopped after twenty minutes.
+
+Set `PI_ENSEMBLE_NOTIFY_CMD` to any command. The message arrives on **stdin** and as `$PI_ENSEMBLE_NOTIFY_MESSAGE`:
+
+```bash
+# macOS desktop notification
+export PI_ENSEMBLE_NOTIFY_CMD='terminal-notifier -title "pi-ensemble" -message "$PI_ENSEMBLE_NOTIFY_MESSAGE"'
+
+# macOS, no extra install
+export PI_ENSEMBLE_NOTIFY_CMD='osascript -e "display notification \"$PI_ENSEMBLE_NOTIFY_MESSAGE\""'
+
+# Linux
+export PI_ENSEMBLE_NOTIFY_CMD='notify-send "pi-ensemble" "$PI_ENSEMBLE_NOTIFY_MESSAGE"'
+
+# Anything that reads stdin — Slack, ntfy.sh, a log
+export PI_ENSEMBLE_NOTIFY_CMD='curl -sS -d @- https://ntfy.sh/your-topic'
+```
+
+It fires on the four states that need a human — parked, queue halted, `awaiting-human-merge`, driver crash — **once per group**, never on a clean merge. The second line is always the action, taken from the same `humanActionFor` the queue summary uses: *"add acceptance criteria to #287"*, not *"issue #287 parked"*.
+
+**It cannot hurt the run.** A missing binary, a non-zero exit, or a hook that never returns is timed out after 5s and swallowed; the queue's outcome is byte-identical with a completely broken hook. The message is never interpolated into the command string — issue titles and provider errors are untrusted text, so they travel on stdin.
+
 ### Queue state after you walk away
 
 A multi-issue `/work` run writes its outcome to `.pi/work-state/queue-summary.json`: which groups merged, which parked and why, the human action for each, and — the part nothing else records — the groups that **never started**. Those leave no state file at all, so before #382 the run that parked them was the only place they were ever named, and it died with the session.

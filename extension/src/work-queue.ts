@@ -28,6 +28,7 @@ import { trace } from "./trace.ts";
 import { classifyFailureCause } from "./work-driver-failure-taxonomy.ts";
 import type { GroupingResult } from "./work-driver-grouping.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
+import { notify } from "./work-notify.ts";
 
 /** One entry of `groupIssues()`'s result — the unit the queue iterates. */
 export type IssueGroup = GroupingResult["groups"][string];
@@ -264,12 +265,19 @@ export async function runWorkQueue(opts: RunQueueOpts): Promise<QueueSummary> {
         // A driver throw is an unknown-shape failure: we cannot tell whether
         // it left the repo in a state the next group depends on.
         halted = true;
+        const crashAction = `inspect .pi/work-state/${primary}.json, or re-run with PI_ENSEMBLE_WORK_DRIVER=0`;
         entries.set(gi, {
           groupId: g.id,
           issues: g.issues,
           outcome: "halted",
           reason: `driver crashed: ${threw.message?.slice(0, 200)}`,
-          humanAction: `inspect .pi/work-state/${primary}.json, or re-run with PI_ENSEMBLE_WORK_DRIVER=0`,
+          humanAction: crashAction,
+        });
+        await notify({
+          kind: "crashed",
+          issues: g.issues,
+          reason: threw.message?.slice(0, 160) ?? "driver threw",
+          action: crashAction,
         });
         // Return from THIS worker only. Siblings already mid-cycle drain to
         // completion — abandoning a group halfway through commit-pr would
@@ -295,6 +303,12 @@ export async function runWorkQueue(opts: RunQueueOpts): Promise<QueueSummary> {
           failedStep,
           humanAction: humanActionFor(reason, primary),
         });
+        await notify({
+          kind: "halted",
+          issues: g.issues,
+          reason: systemic.reason ?? reason,
+          action: humanActionFor(reason, primary),
+        });
         return;
       }
 
@@ -306,6 +320,17 @@ export async function runWorkQueue(opts: RunQueueOpts): Promise<QueueSummary> {
         reason,
         failedStep,
         humanAction: humanActionFor(reason, primary),
+      });
+      // #388 — one notification per parked group, carrying the action rather
+      // than the event. A merged group is never notified: nothing is asked
+      // of the operator, and a hook that fires on success is noise.
+      await notify({
+        // #380's hold is not a failure — the work is done and only the merge
+        // is waiting, so it reads differently on a lock screen.
+        kind: /awaiting-human-merge/.test(reason) ? "awaiting-merge" : "parked",
+        issues: g.issues,
+        reason,
+        action: humanActionFor(reason, primary),
       });
     }
   }
