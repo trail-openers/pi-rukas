@@ -41,7 +41,7 @@ const groups = (n: number): IssueGroup[] =>
 function mkState(
   issue: number,
   status: WorkState["pipelineState"]["status"],
-  opts: { cap?: string; providerMessage?: string } = {},
+  opts: { cap?: string; providerMessage?: string; recovered?: boolean } = {},
 ): WorkState {
   const eventLog: WorkState["eventLog"] = [];
   if (opts.providerMessage) {
@@ -54,6 +54,20 @@ function mkState(
       ms: 1,
       at: 1,
       providerMessage: opts.providerMessage,
+    } as WorkState["eventLog"][number]);
+  }
+  // #386 — a successful dispatch AFTER the failure means it was retried and
+  // recovered. The cycle went on to stop for some other reason.
+  if (opts.recovered) {
+    eventLog.push({
+      kind: "dispatch-completed",
+      step: "develop",
+      role: "developer",
+      jobId: "j2",
+      label: "developer",
+      ms: 1,
+      at: 2,
+      summary: "ok",
     } as WorkState["eventLog"][number]);
   }
   if (opts.cap) {
@@ -165,6 +179,31 @@ function mkState(
   assert(
     !isSystemicFailure(state).systemic,
     "an exhausted burst 429 is issue-scoped — the next group gets its chance",
+  );
+}
+{
+  // #386 — the headline. The driver retries transient faults, so a cycle can
+  // hit a quota window, recover, run for another twenty minutes, and then
+  // park for something unrelated. Reading the last provider failure
+  // unconditionally found the RECOVERED one and halted every remaining group
+  // — the outcome #368 exists to prevent, reached by a different route.
+  const state = mkState(1, "handoff", {
+    providerMessage: "Server requested 7200s retry delay (max: 10s). 429 status code",
+    recovered: true,
+    cap: "round-cap",
+  });
+  assert(
+    !isSystemicFailure(state).systemic,
+    "a quota failure that was RETRIED AND RECOVERED does not halt the queue",
+  );
+  // Same event log without the recovery: still systemic, so the assertion
+  // above is about the recovery and not about the message.
+  const unrecovered = mkState(1, "handoff", {
+    providerMessage: "Server requested 7200s retry delay (max: 10s). 429 status code",
+  });
+  assert(
+    isSystemicFailure(unrecovered).systemic,
+    "...while the identical failure with no recovery after it still halts",
   );
 }
 {

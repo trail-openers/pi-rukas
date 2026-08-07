@@ -764,6 +764,14 @@ Grouping markers (`Split:`, `Depends-on:`, subsystem tags) remain a **fast path*
 
 Escape hatch: `PI_ENSEMBLE_INTENT=0`.
 
+### Why the queue halted when only one group failed
+
+A multi-issue `/work` parks a failed group and continues (#368). It halts everything only for a **systemic** failure — a provider spend cap or a quota window — because only those make the next group's attempt pointless.
+
+Before #386 that check read the last `dispatch-failed*` event in the log with no regard for whether it had been **retried and recovered**. The driver retries transient faults, so a cycle could hit a quota window at `explore`, recover, run for another twenty minutes, and park for a completely unrelated reason — and the queue would still stop, citing a failure that had resolved itself twenty minutes earlier.
+
+The check now scans back only as far as the last successful `dispatch-completed`. A failure followed by a success was recovered and does not count.
+
 ### Why a cycle halted at `lens-diff-unreadable`
 
 The six-pass review approves when the diff is empty — a cycle that genuinely changed nothing has nothing to review. The hazard, removed in #384, was that "empty" and "I could not find out" were the same value: the diff read swallowed every git error and returned `""`, so a stale `origin/<branch>` ref, a transient git failure, or a `maxBuffer` overrun on a large diff all read as *approved*, and the code merged unreviewed.

@@ -72,9 +72,24 @@ export function isSystemicFailure(state: WorkState | undefined): {
   reason?: string;
 } {
   if (!state) return { systemic: false };
-  const lastFailure = [...state.eventLog]
-    .reverse()
-    .find((e) => e.kind === "dispatch-failed-provider" || e.kind === "dispatch-failed");
+  // #386 — the failure that matters is the one that ENDED the cycle, not the
+  // most recent one of its kind. The driver retries transient faults, so a
+  // cycle can hit a quota window at `explore`, recover, run for another
+  // twenty minutes, and then park for an unrelated semantic reason. Reading
+  // the last failure unconditionally found the recovered quota event and
+  // halted every remaining group — the exact outcome #368 exists to prevent,
+  // arriving by a different route. A failure followed by a successful
+  // `dispatch-completed` was recovered and does not count.
+  let lastFailure: WorkState["eventLog"][number] | undefined;
+  for (let i = state.eventLog.length - 1; i >= 0; i--) {
+    const e = state.eventLog[i];
+    if (!e) continue;
+    if (e.kind === "dispatch-completed") break;
+    if (e.kind === "dispatch-failed-provider" || e.kind === "dispatch-failed") {
+      lastFailure = e;
+      break;
+    }
+  }
   if (!lastFailure) return { systemic: false };
   const cls = classifyFailureCause(lastFailure as Parameters<typeof classifyFailureCause>[0]);
   if (cls.cause === "rate-limited:quota-terminal") {
