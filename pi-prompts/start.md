@@ -38,17 +38,28 @@ argument-hint: ""
    - `oo git shortlog -sn --no-merges`
    - `oo git for-each-ref --sort=-committerdate refs/heads --format='%(HEAD) %(refname:short) %(committerdate:relative)'`
 
-   These are read-only — no dispatch, no subagent spawn, no GLM summarisation dependency. The output is yours to synthesise in step 5.
+   These are read-only — no dispatch, no subagent spawn, no GLM summarisation dependency. The output is yours to synthesise in step 6.
 
-5. **Wait for the explore dispatch** (step 3) to return, then synthesise step 4's raw output + explore's summary into the one readiness line. On timeout (120 seconds) or incomplete explore response, apply the Reconnaissance Doctrine timeout and resilience fallback.
+5. **What `/work` left behind** — run these directly, one bash call each, alongside step 4:
+   - `ls .pi/work-state/`
+   - `cat .pi/work-state/queue-summary.json`
 
-6. **Store findings**: `vipune add '<project identity, current state, conventions, gotchas>'` (single bash call; quoted argument).
+   This is the most actionable state in the repo and the only part of it that is invisible everywhere else. A parked cycle has no open PR and no issue comment; a group that never started has no state file at all — `queue-summary.json` is the only record it existed.
+
+   Both commands fail harmlessly in a repo that has never run `/work`. **Absence is silent** — say nothing rather than reporting a missing file as a finding.
+
+   From the summary, carry into step 6: each parked group's issue numbers and its `humanAction`, the groups under `notStarted`, and how long ago `at` was. A summary from last week is history, not this morning's queue — say which.
+
+6. **Wait for the explore dispatch** (step 3) to return, then synthesise step 4's raw output + step 5's driver state + explore's summary into the one readiness line. On timeout (120 seconds) or incomplete explore response, apply the Reconnaissance Doctrine timeout and resilience fallback.
+
+7. **Store findings**: `vipune add '<project identity, current state, conventions, gotchas>'` (single bash call; quoted argument).
 
 ## Output
 
 One readiness line:
 - Project (with maturity + team size from telemetry)
 - Current status (active work, CI health, hotspots)
+- **Anything `/work` parked, named with its action** — "#287 parked, needs acceptance criteria; group g4 (#301, #302) never started". This goes before the general status: it is the only part the operator cannot find any other way, and it is usually why they opened the session.
 - "Ready for instructions."
 
 This is NOT a report — you are confirming readiness.
@@ -57,7 +68,7 @@ This is NOT a report — you are confirming readiness.
 
 ## Principles
 
-- **Parallel first** — explore dispatch (step 3) and direct reads (step 4) run concurrently in the same PM turn.
+- **Parallel first** — explore dispatch (step 3) and direct reads (steps 4 and 5) run concurrently in the same PM turn.
 - Build on existing knowledge, don't repeat what's in memory.
 - Discover, don't assume.
 - Focus on what enables productivity.

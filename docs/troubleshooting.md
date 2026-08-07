@@ -847,6 +847,8 @@ A multi-issue `/work` run writes its outcome to `.pi/work-state/queue-summary.js
 
 `/work-status` with no issue argument now shows the multi-cycle index when more than one cycle exists, including that never-started list. Pass an explicit issue number for the single-cycle detail view.
 
+`/start` reads both files at session open (#390) and leads its readiness line with anything parked — that is usually why you opened the session, and it is the one part you cannot find from `gh pr list` or `gh issue list`. A repo that has never run `/work` sees no change.
+
 ### Merge authority — why `/work` opened a PR and stopped
 
 **`/work` will not merge unless something explicitly permitted it to.** That is the default, and the absence of a prohibition is not permission.
