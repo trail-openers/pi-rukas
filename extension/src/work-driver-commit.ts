@@ -21,6 +21,7 @@ import {
   mechanizeOpsEnabled,
   withIntegrationLock,
 } from "./work-driver-integrate.ts";
+import { renderAssumptions } from "./work-driver-intent.ts";
 import { parsePrNumber } from "./work-driver-lens.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
 import { inlineCommitPrPrompt } from "./work-driver-prompts-late.ts";
@@ -142,13 +143,23 @@ export async function mechanizedCommitPr(
           "every worktree was clean — no uncommitted work to consolidate (developer may not have written)",
       };
     }
+    // #378 — when the intent resolver filled gaps with defensible defaults,
+    // those assumptions belong where review happens. `proceed-with-assumptions`
+    // is only honest if the assumptions are visible; buried in a state file
+    // they may as well not exist.
+    const assumptionsBlock = ps.normalisedSpec
+      ? renderAssumptions(ps.normalisedSpec as Parameters<typeof renderAssumptions>[0])
+      : "";
     const prBody = [
       "Automated by pi-ensemble /work driver (mechanized commit-pr).",
       "",
       ...fixesLines,
       ...companionLines,
       ...workstreamLines,
-    ].join("\n");
+      assumptionsBlock,
+    ]
+      .filter((l) => l !== "")
+      .join("\n");
     const prBodyFile = path.join(scratchDir(ctx.repoRoot, ctx.issue), "mech-pr-body.md");
     await fs.mkdir(path.dirname(prBodyFile), { recursive: true });
     await fs.writeFile(prBodyFile, prBody, "utf8");

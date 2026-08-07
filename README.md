@@ -480,6 +480,7 @@ All optional. Defaults are reasonable for typical use.
 | `PI_ENSEMBLE_PARALLEL_WORK` | `1` | Set to `0` to force strictly sequential group execution regardless of `PI_ENSEMBLE_PARALLEL_GROUPS`. |
 | `PI_ENSEMBLE_MAX_WORKSTREAMS` | `6` | Ceiling on workstreams per cycle. Excess folds into the last workstream (paths unioned, fold recorded) rather than being dropped. Each workstream is a worktree and a developer child, so this bounds fanout. |
 | `PI_ENSEMBLE_PLAN_QUALITY` | `1` | Set to `0` to disable the plan-quality re-dispatch (under-decomposed plan, or a workstream with no declared paths). The prompt doctrine stays either way. |
+| `PI_ENSEMBLE_INTENT` | `1` | Set to `0` to disable intent resolution and restore the single-token explore verdict. Default ON — the driver resolves what an issue is actually asking for from **any** body (a full spec, a paragraph, a one-line bug report), grounds it against the code and the world, and then decides: proceed, proceed-with-assumptions, or **park** without writing code. A missing or unreadable verdict parks; silence is never permission. |
 
 **Sandbox mode (`pi-ensemble` wrapper):**
 

@@ -221,6 +221,11 @@ export type WorkEvent =
         // different branch is the false-MERGED class (#245/#253), and
         // choosing between resume / retarget / close is judgment.
         // Escape hatch: PI_ENSEMBLE_PR_PREFLIGHT=0.
+        // #378 — the intent resolver refused to write code: the issue could
+        // not be resolved into a concrete, grounded intent. Fires BEFORE plan,
+        // so a park costs one explore dispatch rather than a whole cycle. The
+        // specific reason lives in pipelineState.normalisedSpec.parkReason.
+        | "intent-park"
         | "existing-pr-detected"
         | `verify-failed:${WorkStep}`
         | `step-failed:${WorkStep}`;

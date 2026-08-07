@@ -12,6 +12,11 @@ import { dispatchCore } from "./dispatch.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import {
+  intentResolutionEnabled,
+  parseNormalisedSpec,
+  reconcileVerdict,
+} from "./work-driver-intent.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import {
   type ExploreVerdict,
@@ -201,6 +206,42 @@ export async function runExplore(
   // dropped, synthesise an aggregate cap-hit (PR6 path); otherwise
   // continue with the activeIssues subset.
   const responseText = exploreDispatch.text ?? "";
+
+  // #378 — intent resolution. The resolver worked out what is actually being
+  // asked and checked it against the code and the world; route on that rather
+  // than on a single classification token. Falls through to the pre-#378
+  // router when no `## Spec` block came back, so an older prompt or a drifting
+  // agent degrades to the previous behaviour instead of parking everything.
+  if (intentResolutionEnabled()) {
+    const parsed = parseNormalisedSpec(responseText);
+    if (parsed) {
+      const spec = reconcileVerdict(parsed);
+      next = {
+        ...next,
+        pipelineState: { ...next.pipelineState, normalisedSpec: spec },
+      };
+      try {
+        await writeDispatchArtifact(ctx.repoRoot, ctx.issue, "spec", JSON.stringify(spec, null, 2));
+      } catch (err) {
+        trace(`work-driver: could not persist spec artifact: ${(err as Error).message}`);
+      }
+      trace(
+        `work-driver: intent verdict=${spec.verdict}${spec.parkReason ? ` (${spec.parkReason})` : ""}, ${spec.deliverables.length} deliverable(s)`,
+      );
+      if (spec.verdict === "park") {
+        return appendEvent(next, {
+          kind: "cap-hit",
+          at: Date.now(),
+          cap: "intent-park",
+          reviewRound: next.pipelineState.reviewRound,
+          nextStep: "handoff",
+        });
+      }
+      return next;
+    }
+    trace("work-driver: no `## Spec` block in the explore reply — using the legacy verdict router");
+  }
+
   if (issues.length === 1) {
     const verdict = parseExploreVerdict(responseText);
     if (verdict) {

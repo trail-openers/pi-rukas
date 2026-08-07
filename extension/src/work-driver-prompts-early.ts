@@ -89,8 +89,79 @@ export function inlineExplorePrompt(
     "  - touchpoint files (heading: `## Touchpoints`).",
     "",
     verdictDoctrine,
+    intentResolutionBlock(issues),
     bodyBlock,
     scratchHygieneSection(scratchDirAbs),
+  ].join("\n");
+}
+
+/**
+ * #378 — ask the explore agent to resolve INTENT, not just classify.
+ *
+ * The single `VERDICT:` token assumed the issue already said what to build.
+ * Specs are often hand-written, terse, or wrong, so the resolver has to work
+ * out what is being asked, check whether that is TRUE against the code and the
+ * world, and then decide — including deciding not to build.
+ *
+ * This runs in the explore role, which is structurally denied write/edit/
+ * multiedit (#238). That matters: an agent holding edit tools rationalises
+ * ambiguity away because building is cheaper than asking.
+ */
+function intentResolutionBlock(issues: number[]): string {
+  const one = issues.length === 1;
+  return [
+    "",
+    "---",
+    "## Resolve the intent (LOAD-BEARING — the driver routes on this)",
+    "",
+    `Whatever shape ${one ? "the issue body takes" : "the issue bodies take"} — a full spec, a paragraph, or one line — work out what is actually being asked, then check whether it is TRUE:`,
+    "",
+    "  1. **Against the code.** Do the named symbols and files exist? Does the described behaviour match what the code actually does? Is this already implemented? Use `codebase_memory_search_code` / `trace_path` and read the files.",
+    "  2. **Against the world.** If a third-party API or library behaviour is referenced, does it exist with that shape? Use `ctx7` or web search.",
+    "",
+    "A contradiction between the issue and the code is the most valuable thing you can find. Report it — do not quietly work around it.",
+    "",
+    "Then emit these two markers on their own lines, followed by a `## Spec` block:",
+    "",
+    "```",
+    "INTENT-VERDICT: proceed | proceed-with-assumptions | park",
+    "PARK-REASON: underspecified | contradicted-by-code | already-implemented | too-large | premise-unsound",
+    "```",
+    "",
+    "  - `proceed` — the intent is clear and grounded.",
+    "  - `proceed-with-assumptions` — gaps exist, but each has a defensible default. List every one under Assumptions; they go into the PR body for review.",
+    "  - `park` — do NOT guess. Use this when the intent cannot be resolved, is contradicted by the code, is already done, is too large for one cycle, or rests on a premise you could not substantiate. `PARK-REASON` is required for a park.",
+    "",
+    "**Parking is a good outcome when it is the right one.** Writing code from a guess is how the wrong thing ships confidently. Ask at most 3 clarifying questions, and only where the answer would change what gets built; anything smaller becomes an Assumption.",
+    "",
+    "```markdown",
+    "## Spec",
+    "",
+    "### Intent",
+    "<one sentence: what outcome is actually wanted>",
+    "",
+    "### Deliverables",
+    "- <id>: <what to build> [paths: src/foo.ts, src/bar.ts]",
+    "",
+    "### Acceptance criteria",
+    "- <testable outcome>",
+    "",
+    "### Out of scope",
+    "- <what NOT to touch>",
+    "",
+    "### Assumptions",
+    "- <assumption> — <why it is the defensible default>",
+    "",
+    "### Open questions",
+    "- <question that did not block>",
+    "",
+    "### Evidence",
+    "- <claim you checked> — <file:line or URL> — confirmed | contradicted | unverifiable",
+    "```",
+    "",
+    "Then a `## Rationale` section: two or three sentences on why you reached that verdict. On a park this is what the operator reads.",
+    "",
+    "Deliverables are the units of work, NOT the acceptance criteria — one per separable thing to build. If the issue enumerates them, carry them across; if it does not, derive them.",
   ].join("\n");
 }
 

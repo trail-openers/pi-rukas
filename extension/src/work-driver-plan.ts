@@ -80,7 +80,19 @@ export async function runPlan(
   // across 11 files, looped 17 failed builds and burned 10.5M tokens before
   // dying. The check is arithmetic, not judgment — asking the model that just
   // under-decomposed whether it decomposed well is worthless.
-  const findingsCount = await countFindingsForCycle(ctx, next);
+  // #378 — count DELIVERABLES from the resolved spec, not enumerated markdown.
+  // countEnumeratedFindings counts top-level `- [ ]`, and in a /plan-authored
+  // issue checkboxes are exclusive to `## Acceptance criteria` — so it was
+  // counting test assertions. Measured on real issues: #287→7, #288→6,
+  // #289→7, #366→6, with ZERO of #287's five actual deliverables (`**A.**`–
+  // `**E.**`) seen, because bolded letters are invisible to it. A correctly
+  // planned single-workstream issue therefore triggered a corrective
+  // re-dispatch essentially every time.
+  const spec = next.pipelineState.normalisedSpec;
+  const findingsCount =
+    spec && spec.deliverables.length > 0
+      ? spec.deliverables.length
+      : await countFindingsForCycle(ctx, next);
   const reason = planQualityReason(workstreams, findingsCount);
   let redispatched = false;
   if (planQualityEnabled() && reason) {

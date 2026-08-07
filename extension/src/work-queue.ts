@@ -25,6 +25,7 @@
 import { trace } from "./trace.ts";
 import { classifyFailureCause } from "./work-driver-failure-taxonomy.ts";
 import type { GroupingResult } from "./work-driver-grouping.ts";
+import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 
 /** One entry of `groupIssues()`'s result — the unit the queue iterates. */
 export type IssueGroup = GroupingResult["groups"][string];
@@ -95,7 +96,15 @@ function parkReason(state: WorkState | undefined): { reason: string; failedStep?
   if (!state) return { reason: "cycle produced no state file" };
   const cap = [...state.eventLog].reverse().find((e) => e.kind === "cap-hit");
   const step = state.pipelineState.lastCompletedStep ?? state.pipelineState.currentStep;
-  if (cap?.kind === "cap-hit") return { reason: `cap ${cap.cap}`, failedStep: step };
+  if (cap?.kind === "cap-hit") {
+    // Carry the intent park's specific reason, so humanActionFor and the
+    // summary can be specific rather than saying "cap intent-park".
+    const suffix =
+      cap.cap === "intent-park" && state.pipelineState.normalisedSpec?.parkReason
+        ? `:${state.pipelineState.normalisedSpec.parkReason}`
+        : "";
+    return { reason: `cap ${cap.cap}${suffix}`, failedStep: step };
+  }
   return { reason: `cycle ended as ${state.pipelineState.status}`, failedStep: step };
 }
 
@@ -106,6 +115,13 @@ function parkReason(state: WorkState | undefined): { reason: string; failedStep?
  * inventing one.
  */
 export function humanActionFor(reason: string, primary: number): string {
+  // #378 — intent parks carry their own specific action; the generic
+  // "inspect the state file and --restart" fallback is useless here, because
+  // re-running an unresolvable issue unchanged produces the same park.
+  const intentPark = reason.match(/intent-park(?::([a-z-]+))?/);
+  if (intentPark) {
+    return parkAction((intentPark[1] ?? "underspecified") as ParkReason, primary);
+  }
   if (/existing-pr-detected/.test(reason)) {
     return `decide whether to resume, retarget or close the open PR for #${primary}`;
   }

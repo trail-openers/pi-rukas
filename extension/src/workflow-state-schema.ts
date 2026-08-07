@@ -150,6 +150,26 @@ export interface PipelineState {
    * rule fired (if any) and `redispatched` whether the one corrective
    * re-dispatch was spent. Absent on cycles predating the gate.
    */
+  /**
+   * #378 — the resolved intent for this cycle: what the issue is actually
+   * asking for, checked against the code and the world, plus the verdict the
+   * driver routed on. Absent when intent resolution is disabled or the
+   * resolver returned no `## Spec` block (the legacy verdict router then
+   * applies). The full artifact is also written to
+   * `.pi/work-state/<issue>/spec.txt` for inspection.
+   */
+  normalisedSpec?: {
+    intent: string;
+    deliverables: Array<{ id: string; description: string; paths: string[] }>;
+    acceptanceCriteria: string[];
+    outOfScope: string[];
+    assumptions: Array<{ text: string; basis: string }>;
+    openQuestions: string[];
+    evidence: Array<{ claim: string; source: string; verdict: string }>;
+    verdict: "proceed" | "proceed-with-assumptions" | "park";
+    parkReason?: string;
+    rationale: string;
+  };
   planQuality?: {
     findingsCount: number;
     redispatched: boolean;

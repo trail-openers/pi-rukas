@@ -9,6 +9,7 @@
  */
 
 import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
+import { type ParkReason, explainPark } from "./work-driver-intent.ts";
 import type { WorkEvent, WorkState, WorkStep } from "./workflow-state.ts";
 
 /**
@@ -41,6 +42,18 @@ export function explainCap(
       return `developer subagent hit its wall-clock cap (PI_ENSEMBLE_SPAWN_TIMEOUT_MS_DEVELOPER, default 90 min) with ${fileBlurb} in the worktree — work needs different decomposition (split issue into smaller workstreams), a longer cap, or manual takeover`;
     case "explore-already-complete":
       return "explore concluded this issue is already done (e.g., satisfied by a prior PR or merged earlier). The driver halted before branch/develop ran — no code was written. Close the issue if you agree, or re-run /work with additional context if you believe there IS work to do";
+    case "intent-park": {
+      const spec = state.pipelineState.normalisedSpec;
+      const reason = (spec?.parkReason ?? "underspecified") as ParkReason;
+      const why = explainPark(reason, state.issue);
+      const contradictions = (spec?.evidence ?? []).filter((e) => e.verdict === "contradicted");
+      const evidence =
+        contradictions.length > 0
+          ? `\n\nContradicting evidence:\n${contradictions.map((e) => `  - ${e.claim}${e.source ? ` (${e.source})` : ""}`).join("\n")}`
+          : "";
+      const rationale = spec?.rationale ? `\n\nResolver's rationale: ${spec.rationale}` : "";
+      return `${why} No code was written — the driver halted at intent resolution, before plan or branch ran.${evidence}${rationale}`;
+    }
     case "existing-pr-detected": {
       const pr = state.pipelineState.existingPr;
       const via =

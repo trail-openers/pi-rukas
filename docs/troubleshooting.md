@@ -736,6 +736,34 @@ The "removed X" classes only fire when the token is genuinely absent from the hu
 
 Escape hatch: `PI_ENSEMBLE_WIDENING_SCAN=0`.
 
+### Intent resolution: why a cycle refused to write code
+
+Before planning, `/work` resolves what the issue is actually asking for — from whatever body it was given — and checks whether that is *true* against the code and against the world. It then decides one of three things:
+
+| Verdict | Meaning |
+|---|---|
+| `proceed` | Intent clear and grounded |
+| `proceed-with-assumptions` | Gaps existed, each filled with a defensible default. **Every assumption appears in the PR body** so review sees exactly what was assumed |
+| `park` | No code written. The cycle halts at `intent-park` before plan or branch runs |
+
+Park reasons, each with its own operator action:
+
+| Reason | What it means |
+|---|---|
+| `underspecified` | The issue does not say enough to build from |
+| `contradicted-by-code` | Its central claim disagrees with the code as it actually is — usually a stale issue, or one already fixed |
+| `already-implemented` | The work appears done |
+| `too-large` | Not executable as one cycle; split it |
+| `premise-unsound` | It rests on an API or behaviour that could not be substantiated |
+
+**A missing or unreadable verdict parks.** Before this, an absent token defaulted to "build it" — silence was treated as permission. Parking early is cheap: it costs one explore dispatch rather than a whole cycle ending in a bad PR.
+
+The resolver runs in the `explore` role, which is structurally denied `write`/`edit`/`multiedit`. That is deliberate — an agent holding edit tools rationalises ambiguity away, because building is cheaper than asking.
+
+Grouping markers (`Split:`, `Depends-on:`, subsystem tags) remain a **fast path**, never a requirement. Hand-written and imported issues resolve the same way.
+
+Escape hatch: `PI_ENSEMBLE_INTENT=0`.
+
 ### Parallel group execution
 
 `/work N M P …` runs up to `PI_ENSEMBLE_PARALLEL_GROUPS` (default **3**) groups concurrently. Each group develops in its own `.worktrees/` tree, so the only shared resource is the repo root, and every operation that touches it — branch creation, patch integration, commit, push, `gh pr create`, the verify gates, lens-fix re-integration, `restoreCheckout`, worktree teardown — runs under a single integration lock. That lock is an in-process promise chain plus an `O_EXCL` lockfile under `.git/`, so a second `/work` invocation or a second Pi process on the same clone is also serialised.
