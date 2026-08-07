@@ -297,12 +297,24 @@ export interface WorkState {
   /** Schema version; MANDATORY. Mismatched versions are rejected loudly. */
   schemaVersion: typeof WORK_STATE_SCHEMA_VERSION;
   /**
-   * v1 contract: state is observational, not resumable for in-flight async
-   * jobs. The user can intervene surgically when they come back; the
-   * driver does not auto-resume completed dispatches yet. Reserved field
-   * so v2 (true resumable) can flip it without a schema bump.
+   * Whether this state file carries enough information to resume from.
+   *
+   * #382 — this was `false` as a LITERAL TYPE, so it could never be anything
+   * else, and no code wrote it. It is now a real boolean: `true` once a
+   * dispatch write-ahead has happened, meaning `inFlightJobIds` and `owner`
+   * can be trusted. State files written by older versions read `false` and
+   * are treated as pre-resume, which is the honest answer for them.
    */
-  resumable: false;
+  resumable: boolean;
+  /**
+   * #382 — which process owns this cycle, and since when.
+   *
+   * A file that says `status: "running"` is either a live driver's or a
+   * corpse's, and those need opposite responses: resume the corpse, refuse
+   * the live one. Without this the driver could not tell them apart, so it
+   * did neither.
+   */
+  owner?: { pid: number; at: number };
   /** Primary issue number this /work cycle targets — anchors the state-file path
    * (`.pi/work-state/<issue>.json`) and the feature branch name. For multi-issue
    * cycles (PR10 `/work N M P`) this is the FIRST issue in `issues`; readers

@@ -24,6 +24,7 @@ import {
   parsePerIssueVerdicts,
 } from "./work-driver-plan.ts";
 import { inlineExplorePrompt } from "./work-driver-prompts-early.ts";
+import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent, writeDispatchArtifact } from "./workflow-state.ts";
 
@@ -161,16 +162,19 @@ export async function runExplore(
   // PR13 — now dispatch with bodies embedded in the prompt. Verdict can
   // be sound from a single turn — no race, no agency-dependence.
   const prompt = inlineExplorePrompt(issues, scratchDir(ctx.repoRoot, ctx.issue), bodiesForPrompt);
+  // #382 — write-ahead before the await; see work-driver-resume.ts.
+  const begun = await beginDispatch(ctx.repoRoot, next, "explore", "explore", "explore", startedAt);
+  next = begun.state;
   const dispatchSettled = await Promise.allSettled([
     dispatch(ctx.pi, { role: "explore", prompt }, { label: "explore" }),
   ]).then((arr) => arr[0]);
 
   if (dispatchSettled?.status === "rejected") {
-    return appendEvent(next, {
+    return appendEvent(clearDispatch(next, begun.jobId), {
       kind: "dispatch-failed",
       step: "explore",
       role: "explore",
-      jobId: "unknown",
+      jobId: begun.jobId,
       label: "explore",
       ms: Date.now() - startedAt,
       at: Date.now(),
@@ -181,11 +185,11 @@ export async function runExplore(
     // Defensive — Promise.allSettled returns either fulfilled or rejected;
     // this branch unreachable. Synthesise a dispatch-failed so the driver
     // can route normally.
-    return appendEvent(next, {
+    return appendEvent(clearDispatch(next, begun.jobId), {
       kind: "dispatch-failed",
       step: "explore",
       role: "explore",
-      jobId: "unknown",
+      jobId: begun.jobId,
       label: "explore",
       ms: Date.now() - startedAt,
       at: Date.now(),
@@ -197,7 +201,7 @@ export async function runExplore(
   // (single-dispatch — explore returns one report covering all issues).
   const exploreDispatch = dispatchSettled.value as DispatchResult;
   const event = await buildCompletionEvent(ctx, "explore", "explore", "explore", exploreDispatch);
-  next = appendEvent(next, event);
+  next = appendEvent(clearDispatch(next, begun.jobId), event);
 
   // PR6 + PR10 — verdict router. For N=1, the existing
   // parseExploreVerdict path is unchanged. For N>1, parse per-issue

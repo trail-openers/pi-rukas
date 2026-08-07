@@ -69,6 +69,13 @@ import { runHandoff } from "./work-driver-handoff.ts";
 import { runLens, runLensFix } from "./work-driver-lens.ts";
 import { runMerged } from "./work-driver-merged.ts";
 import { runPlan } from "./work-driver-plan.ts";
+import {
+  classifyRunningState,
+  clearForResume,
+  explainRefusal,
+  explainResume,
+  resumeEnabled,
+} from "./work-driver-resume.ts";
 import { routeStepOutcome } from "./work-driver-step-router.ts";
 import { runCi, runStepBack } from "./work-driver-stepback-ci.ts";
 import { scratchDir, setupWorkspaceTmp, teardownWorkspaceTmp } from "./work-driver-workspace.ts";
@@ -189,6 +196,25 @@ export async function runWorkDriver(ctx: DriverContext): Promise<void> {
       `pi-ensemble: /work for issue #${ctx.issue} already terminated as ${terminalStatus}. To start a fresh cycle (e.g., after revising the issue via /plan), re-run with --restart:\n  /work ${ctx.issue} --restart\nOr rm ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json manually. The prior cycle's event log is preserved in the state file until you restart or remove it.`,
     );
     return;
+  }
+
+  // #382 — a `running` state file means one of three things, and the driver
+  // used to conflate all of them into "just keep going". Either another
+  // process owns this cycle (refuse — two drivers on one branch interleave
+  // commits), or the previous run died mid-dispatch (resume at that step), or
+  // it is a clean step boundary (continue as before).
+  if (resumeEnabled() && ctx.restart !== true) {
+    const verdict = classifyRunningState(state);
+    if (verdict.action === "refuse") {
+      ctx.pi.sendUserMessage(explainRefusal(ctx.issue, verdict.ownerPid));
+      return;
+    }
+    if (verdict.action === "resume") {
+      ctx.pi.sendUserMessage(explainResume(ctx.issue, verdict.step, verdict.jobIds.length));
+      // The orphaned `dispatch-started` events stay in the log — they are the
+      // only record that a dispatch was paid for and lost.
+      state = clearForResume(state);
+    }
   }
 
   // Detect a half-written state (resume hazard). v1 policy: refuse to

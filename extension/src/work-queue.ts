@@ -22,6 +22,8 @@
  *             the same wall (spend cap, quota window, driver throw)
  */
 
+import fs from "node:fs/promises";
+import path from "node:path";
 import { trace } from "./trace.ts";
 import { classifyFailureCause } from "./work-driver-failure-taxonomy.ts";
 import type { GroupingResult } from "./work-driver-grouping.ts";
@@ -29,7 +31,7 @@ import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 
 /** One entry of `groupIssues()`'s result — the unit the queue iterates. */
 export type IssueGroup = GroupingResult["groups"][string];
-import { type WorkState, readState } from "./workflow-state.ts";
+import { type WorkState, readState, workStateDir } from "./workflow-state.ts";
 
 /** #368 escape hatch: PI_ENSEMBLE_QUEUE_HALT_ON_FAILURE=1 restores halt-on-first-failure. */
 export function queueHaltOnFailure(): boolean {
@@ -291,7 +293,51 @@ export async function runWorkQueue(opts: RunQueueOpts): Promise<QueueSummary> {
   }
 
   await Promise.all(Array.from({ length: cap }, () => worker()));
-  return finish(entries, groups, claimed);
+  const summary = finish(entries, groups, claimed);
+  // #382 — the summary is the most actionable state the run produces: which
+  // groups parked, why, and what a human has to do about each. It used to
+  // exist only in the scrollback of the session that produced it, so walking
+  // away and coming back meant it was gone. Best-effort: a failed write must
+  // not turn a completed queue into an error.
+  await writeQueueSummary(opts.repoRoot, summary);
+  return summary;
+}
+
+/** Where the last queue run's outcome is kept, for `/work-status` and `/start`. */
+export function queueSummaryPath(repoRoot: string): string {
+  return path.join(workStateDir(repoRoot), "queue-summary.json");
+}
+
+/** Persist the queue outcome so it survives the session that produced it. */
+export async function writeQueueSummary(
+  repoRoot: string,
+  summary: QueueSummary,
+  at = Date.now(),
+): Promise<void> {
+  const file = queueSummaryPath(repoRoot);
+  try {
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    // tmp+rename so a crash mid-write cannot leave a half-parsed summary
+    // where a whole one is expected.
+    const tmp = `${file}.${process.pid}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify({ at, ...summary }, null, 2));
+    await fs.rename(tmp, file);
+  } catch (err) {
+    trace(`work-queue: could not persist queue summary: ${(err as Error).message?.slice(0, 160)}`);
+  }
+}
+
+/** Read back the last queue run's outcome, or undefined if there is none. */
+export async function readQueueSummary(
+  repoRoot: string,
+): Promise<(QueueSummary & { at: number }) | undefined> {
+  try {
+    const raw = await fs.readFile(queueSummaryPath(repoRoot), "utf8");
+    const parsed = JSON.parse(raw) as QueueSummary & { at: number };
+    return Array.isArray(parsed.entries) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function finish(

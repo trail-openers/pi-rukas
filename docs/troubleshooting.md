@@ -764,6 +764,34 @@ Grouping markers (`Split:`, `Depends-on:`, subsystem tags) remain a **fast path*
 
 Escape hatch: `PI_ENSEMBLE_INTENT=0`.
 
+### Resume — what happens when Pi dies mid-cycle
+
+Before #382 a crash lost the cycle *and* hid the fact. State was persisted only at step boundaries while a single dispatch can run for thirty minutes, so a death inside that window left the file at the *previous* boundary still saying `status: "running"`. A dead cycle and a live one looked identical, forever. (This repo still carries the evidence: `.pi/work-state/547.json` and `551.json` are stuck at `running` with empty event logs.)
+
+Every step now **writes ahead**: before awaiting a dispatch it persists a `dispatch-started` event, the in-flight job id, and the owning process id. All nine steps do this, not just the five that share `runSingleDispatch` — `develop` is the longest-running step in the cycle and has its own fan-out, so covering only the shared helper would have left the biggest window uncovered.
+
+Re-invoking `/work N` on a state file that says `running` now resolves to one of three things:
+
+| Situation | What happens |
+|---|---|
+| The recorded owner process is **alive** and is not us | **Refused.** Two drivers on one branch interleave commits and produce a PR nobody can review |
+| The owner is **gone** and a dispatch was in flight | **Resumed** at the step that was in flight. Completed steps are not re-dispatched |
+| Nothing in flight | Continues from the step boundary, as before |
+
+Resume granularity is the **step**, not the dispatch: the child process died and its work with it, so the step starts over rather than continuing mid-flight. That is sound because every step is dispatch-then-verify and the verify gates catch partial work; `commit-pr` and `merged` additionally carry their own idempotency (#362's PR pre-flight, already-merged tolerance).
+
+An in-flight job id with **no** matching `dispatch-started` event is not a crash — it cannot have come from the write-ahead. That is corrupt state, and the existing inconsistency halt still fires on it rather than being silently cleared.
+
+Orphaned `dispatch-started` events are deliberately kept in the log. They are the only record that a dispatch was paid for and lost.
+
+Escape hatch: `PI_ENSEMBLE_RESUME=0`.
+
+### Queue state after you walk away
+
+A multi-issue `/work` run writes its outcome to `.pi/work-state/queue-summary.json`: which groups merged, which parked and why, the human action for each, and — the part nothing else records — the groups that **never started**. Those leave no state file at all, so before #382 the run that parked them was the only place they were ever named, and it died with the session.
+
+`/work-status` with no issue argument now shows the multi-cycle index when more than one cycle exists, including that never-started list. Pass an explicit issue number for the single-cycle detail view.
+
 ### Merge authority — why `/work` opened a PR and stopped
 
 **`/work` will not merge unless something explicitly permitted it to.** That is the default, and the absence of a prohibition is not permission.

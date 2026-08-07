@@ -13,6 +13,7 @@ import type { DispatchResult } from "./types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { inlinePlanPrompt } from "./work-driver-prompts-early.ts";
+import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -53,15 +54,20 @@ export async function runPlan(
   const dispatch = ctx.dispatchFn ?? dispatchCore;
   const startedAt = Date.now();
   const prompt = inlinePlanPrompt(activeIssuesOf(state), scratchDir(ctx.repoRoot, ctx.issue));
+  // #382 — write-ahead: persist the intent to dispatch BEFORE awaiting, so a
+  // process death inside the dispatch window is visible on disk rather than
+  // leaving the file at the previous step boundary still claiming `running`.
+  const begun = await beginDispatch(ctx.repoRoot, next, "plan", "explore", "plan", startedAt);
+  next = begun.state;
   let result: DispatchResult;
   try {
     result = await dispatch(ctx.pi, { role: "explore", prompt }, { label: "plan" });
   } catch (err) {
-    return appendEvent(next, {
+    return appendEvent(clearDispatch(next, begun.jobId), {
       kind: "dispatch-failed",
       step: "plan",
       role: "explore",
-      jobId: "unknown",
+      jobId: begun.jobId,
       label: "plan",
       ms: Date.now() - startedAt,
       at: Date.now(),
@@ -69,7 +75,7 @@ export async function runPlan(
     });
   }
   const event = await buildCompletionEvent(ctx, "plan", "explore", "plan", result);
-  next = appendEvent(next, event);
+  next = appendEvent(clearDispatch(next, begun.jobId), event);
   // Parse workstreams out of the reply. Failure or N=0 collapses to
   // `default` — never blocks the cycle.
   let workstreams = parseWorkstreams(result.text ?? "");

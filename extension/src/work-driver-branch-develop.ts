@@ -23,6 +23,7 @@ import {
   inlineDevelopPrompt,
   inlineSpeculativeExplorePrompt,
 } from "./work-driver-prompts-early.ts";
+import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -299,6 +300,20 @@ export async function runDevelop(
     speculativeEnv === "0" ? true : speculativeEnv === "1" ? false : (ctx.parallelCycles ?? 1) <= 1;
   const verdicts: Array<{ id: string; ok: boolean }> = [];
   const branchEvents: typeof next.eventLog = [];
+  // #382 — write-ahead. `develop` is the longest-running step in the cycle
+  // and the biggest crash window; covering only `runSingleDispatch` (which
+  // this fan-out does not use) would have left exactly that window uncovered.
+  // One marker for the whole step: resume granularity is the step, and a
+  // half-finished fan-out is re-entered wholesale.
+  const begun = await beginDispatch(
+    ctx.repoRoot,
+    next,
+    "develop",
+    "developer",
+    ids.length > 1 ? `developer×${ids.length}` : "developer",
+    Date.now(),
+  );
+  next = begun.state;
   const results = await Promise.all(
     ids.map(async (id) => {
       const ws = state.pipelineState.workstreams?.[id];
@@ -416,7 +431,7 @@ export async function runDevelop(
     }),
   );
   void results;
-  next = appendEvent(next, ...branchEvents);
+  next = appendEvent(clearDispatch(next, begun.jobId), ...branchEvents);
   if (ids.length > 1) {
     next = appendEvent(next, {
       kind: "branches-converged",

@@ -33,7 +33,8 @@ import {
   STEP_ORDINAL,
 } from "./work-driver-context.ts";
 import { explainCap } from "./work-driver-explain.ts";
-import { humanActionFor } from "./work-queue.ts";
+import { humanActionFor, readQueueSummary } from "./work-queue.ts";
+import { discoverAllCycles, renderCycleIndex } from "./work-status-index.ts";
 import { type WorkEvent, type WorkState, readState, workStateDir } from "./workflow-state.ts";
 
 const execp = promisify(exec);
@@ -79,79 +80,6 @@ async function discoverActiveIssue(repoRoot: string): Promise<number | undefined
   if (candidates.length === 0) return undefined;
   candidates.sort((a, b) => b.updatedAt - a.updatedAt);
   return candidates[0]?.issue;
-}
-
-/**
- * #288 — every cycle with a state file, not just the most recently written.
- *
- * `discoverActiveIssue` picks `max(updatedAt)`, which is biased AGAINST the
- * cycle you care about: a handed-off cycle writes its final state and stops,
- * while a running one can go 15+ minutes between writes. With concurrent
- * groups it also silently reports on one arbitrary cycle out of N.
- */
-export async function discoverAllCycles(
-  repoRoot: string,
-): Promise<Array<{ issue: number; state: WorkState }>> {
-  const dir = workStateDir(repoRoot);
-  let entries: string[];
-  try {
-    entries = await fs.readdir(dir);
-  } catch {
-    return [];
-  }
-  const out: Array<{ issue: number; state: WorkState }> = [];
-  for (const entry of entries) {
-    const match = entry.match(/^(\d+)\.json$/);
-    if (!match) continue;
-    const issue = Number.parseInt(match[1] ?? "", 10);
-    if (!Number.isFinite(issue)) continue;
-    try {
-      const state = await readState(repoRoot, issue);
-      if (state) out.push({ issue, state });
-    } catch {
-      // Same tolerance as discoverActiveIssue: a malformed file surfaces via
-      // the explicit-issue path rather than breaking the index.
-    }
-  }
-  return out;
-}
-
-/**
- * The three-bucket index. `running` / `needs your input` / `done` is a total
- * mapping over the status enum — handoff and aborted both mean "a human has
- * to decide something", which is the distinction the operator actually acts
- * on. Sorted running-first, then most-recent.
- */
-export function renderCycleIndex(
-  cycles: Array<{ issue: number; state: WorkState }>,
-  now = Date.now(),
-): string {
-  const running = cycles.filter((c) => c.state.pipelineState.status === "running");
-  const needsInput = cycles.filter(
-    (c) => c.state.pipelineState.status === "handoff" || c.state.pipelineState.status === "aborted",
-  );
-  const done = cycles.filter((c) => c.state.pipelineState.status === "merged");
-  const lines = [
-    `/work — ${running.length} running, ${needsInput.length} needs your input, ${done.length} done`,
-  ];
-  for (const c of [...running].sort((a, b) => b.state.updatedAt - a.state.updatedAt)) {
-    const ps = c.state.pipelineState;
-    const ord = STEP_ORDINAL[ps.currentStep];
-    const stale = now - c.state.updatedAt > 30 * 60 * 1000 ? "  (no update in 30m+)" : "";
-    lines.push(
-      `  ⏳ #${c.issue}  step ${ord ? `${ord.num}/${ord.total}` : "?"} ${ps.currentStep}${ps.reviewRound > 0 ? ` · round ${ps.reviewRound}/${MAX_REVIEW_ROUNDS}` : ""}${stale}`,
-    );
-  }
-  for (const c of needsInput) {
-    const cap = [...c.state.eventLog].reverse().find((e) => e.kind === "cap-hit");
-    const reason = cap?.kind === "cap-hit" ? `cap ${cap.cap}` : c.state.pipelineState.status;
-    lines.push(`  ⏸ #${c.issue}  ${reason} at ${c.state.pipelineState.lastCompletedStep ?? "?"}`);
-    lines.push(`      → ${humanActionFor(reason, c.issue)}`);
-  }
-  if (done.length > 0) {
-    lines.push(`  ✓ ${done.map((c) => `#${c.issue}`).join(" ")} merged`);
-  }
-  return lines.join("\n");
 }
 
 function fmtElapsed(ms: number): string {
@@ -448,6 +376,32 @@ export function registerWorkStatusCommand(pi: ExtensionAPI): void {
       if (issueArg) {
         issue = Number.parseInt(issueArg, 10);
       } else {
+        // #382 — with no issue argument and more than one cycle on disk, show
+        // the INDEX. `discoverAllCycles` and `renderCycleIndex` were written
+        // for exactly this and had no caller anywhere in src/, so after a
+        // multi-issue queue run the operator could only inspect one cycle at
+        // a time and had no way to see which groups never started at all.
+        if (!wantJson) {
+          const all = await discoverAllCycles(repoRoot);
+          if (all.length > 1) {
+            const lastQueue = await readQueueSummary(repoRoot);
+            ctx.ui.notify(
+              renderCycleIndex(
+                all,
+                Date.now(),
+                lastQueue
+                  ? {
+                      at: lastQueue.at,
+                      parked: lastQueue.parked,
+                      notStarted: lastQueue.notStarted,
+                    }
+                  : undefined,
+              ),
+              "info",
+            );
+            return;
+          }
+        }
         issue = await discoverActiveIssue(repoRoot);
         if (issue === undefined) {
           ctx.ui.notify(

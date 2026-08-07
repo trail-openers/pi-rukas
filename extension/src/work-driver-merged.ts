@@ -32,12 +32,14 @@ import {
 } from "./work-driver-merge-authority.ts";
 import { type MergeMethod, mechanizedMerge } from "./work-driver-merged-mechanized.ts";
 import { inlineMergePrompt } from "./work-driver-prompts-late.ts";
+import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { activeIssuesOf, scratchDir, teardownWorkspaceTmp } from "./work-driver-workspace.ts";
 import {
   type WorkState,
   type WorkStep,
   appendEvent,
   writeDispatchArtifact,
+  writeState,
 } from "./workflow-state.ts";
 import { worktreePrune, worktreeRemove } from "./worktree.ts";
 
@@ -207,12 +209,20 @@ export async function runSingleDispatch(
   buildPrompt: () => string,
   opts?: { timeoutMs?: number },
 ): Promise<WorkState> {
-  const next = appendEvent(
+  let next = appendEvent(
     { ...state, pipelineState: { ...state.pipelineState, currentStep: step } },
     { kind: "step-started", step, at: now },
   );
   const dispatch = ctx.dispatchFn ?? dispatchCore;
   const startedAt = Date.now();
+  // #382 — WRITE-AHEAD. A dispatch can run for thirty minutes; before this,
+  // nothing hit disk until it returned, so a crash inside that window left
+  // the state file at the PREVIOUS step boundary still claiming `running`. A
+  // crashed cycle was indistinguishable from a live one, forever. Persisting
+  // the intent first is what makes the difference visible on resume.
+  const begun = await beginDispatch(ctx.repoRoot, next, step, role, label, startedAt);
+  next = begun.state;
+  const jobId = begun.jobId;
   let result: DispatchResult;
   try {
     // PR15 — per-call timeout override (routed through dispatchCore's
@@ -227,11 +237,11 @@ export async function runSingleDispatch(
       { label, timeoutMs: opts?.timeoutMs },
     );
   } catch (err) {
-    return appendEvent(next, {
+    return appendEvent(clearDispatch(next, jobId), {
       kind: "dispatch-failed",
       step,
       role,
-      jobId: "unknown",
+      jobId,
       label,
       ms: Date.now() - startedAt,
       at: Date.now(),
@@ -239,7 +249,10 @@ export async function runSingleDispatch(
     });
   }
   const event = await buildCompletionEvent(ctx, step, role, label, result);
-  return appendEvent(next, event);
+  // Clear the in-flight marker whichever way the dispatch settled — a
+  // completed dispatch that still looks in-flight would make the next
+  // invocation resume a step that already finished.
+  return appendEvent(clearDispatch(next, jobId), event);
 }
 
 /**
