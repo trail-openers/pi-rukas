@@ -129,23 +129,110 @@ async function fetchAllDiffs(worktrees: Record<string, string>, repoRoot: string
  * returns empty and the caller falls back to the per-worktree read.
  */
 export async function fetchIntegratedDiff(repoRoot: string, branchName: string): Promise<string> {
+  const r = await readIntegratedDiff(repoRoot, branchName);
+  return r.ok ? r.diff : "";
+}
+
+/**
+ * The same read, but able to say "I could not tell" — #384.
+ *
+ * `fetchIntegratedDiff` swallowed every error and returned `""`, and
+ * `runLens` treats an empty diff as APPROVED. So a transient git failure, a
+ * stale `origin/<branch>` ref, or a `maxBuffer` overrun on a large diff all
+ * produced the same value as "there is genuinely nothing to review" — and
+ * that value meant approve, then merge. A gate whose no-signal answer is
+ * approval is a gate that cannot fail, the same defect #380 removed from the
+ * merge step.
+ *
+ * `empty` is established POSITIVELY, by counting commits ahead of base,
+ * rather than inferred from the absence of output. Proving the green is the
+ * whole difference between a gate and a formality.
+ */
+export type IntegratedDiff =
+  | { ok: true; diff: string; empty: boolean }
+  | { ok: false; reason: string };
+
+export async function readIntegratedDiff(
+  repoRoot: string,
+  branchName: string,
+): Promise<IntegratedDiff> {
+  let base: string;
   try {
     const { stdout: head } = await execp(
       "git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@'",
       { cwd: repoRoot, shell: "/bin/bash" },
     );
-    const base = head.trim() || "main";
+    base = head.trim() || "main";
+  } catch (err) {
+    // The mainline is unknowable, so the diff below would be meaningless.
+    return { ok: false, reason: `could not resolve mainline: ${errText(err)}` };
+  }
+  try {
     const { stdout } = await execp(`git diff origin/${base}..origin/${branchName}`, {
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
     });
-    return stdout;
+    if (stdout.trim()) return { ok: true, diff: stdout, empty: false };
   } catch (err) {
-    trace(
-      `work-driver: fetchIntegratedDiff(${branchName}) failed: ${(err as Error).message?.slice(0, 200)}`,
-    );
-    return "";
+    return {
+      ok: false,
+      reason: `git diff origin/${base}..origin/${branchName} failed: ${errText(err)}`,
+    };
   }
+  // Empty output. Confirm it means "no commits ahead" rather than "the read
+  // silently produced nothing" — those are the two cases this whole type
+  // exists to separate.
+  try {
+    const { stdout } = await execp(`git rev-list --count origin/${base}..origin/${branchName}`, {
+      cwd: repoRoot,
+      maxBuffer: 64 * 1024,
+    });
+    const ahead = Number.parseInt(stdout.trim(), 10);
+    if (!Number.isFinite(ahead)) {
+      return { ok: false, reason: `could not count commits ahead of origin/${base}` };
+    }
+    if (ahead === 0) return { ok: true, diff: "", empty: true };
+    // Commits exist but the diff is empty. Possible legitimately (an empty
+    // commit, or changes that cancel out), but it is not something to approve
+    // on silently.
+    return {
+      ok: false,
+      reason: `branch is ${ahead} commit(s) ahead of origin/${base} but the diff came back empty`,
+    };
+  } catch (err) {
+    return { ok: false, reason: `could not count commits ahead: ${errText(err)}` };
+  }
+}
+
+function errText(err: unknown): string {
+  return ((err as Error).message ?? String(err)).slice(0, 200);
+}
+
+/**
+ * #384 — `fetchAllMergedDiffs` with the failure case preserved.
+ *
+ * The plain version cannot distinguish "nothing to review" from "could not
+ * find out", and `runLens` approves on both. Lens review is the last gate
+ * before merge, so it is the one place that distinction has to survive.
+ */
+export async function readAllMergedDiffs(
+  worktrees: Record<string, string>,
+  repoRoot: string,
+  branchName?: string,
+): Promise<IntegratedDiff> {
+  // With a branch name the integrated read is authoritative in BOTH
+  // directions: a confirmed-empty diff means no commits ahead of base, which
+  // no per-worktree read can contradict, and a failure means we do not know.
+  if (branchName) return readIntegratedDiff(repoRoot, branchName);
+  // No branch name — fall back to the worktree read, which cannot report
+  // failure. Say so rather than pretending the answer is trustworthy.
+  const legacy = await fetchAllMergedDiffs(worktrees, repoRoot, branchName);
+  return legacy.trim()
+    ? { ok: true, diff: legacy, empty: false }
+    : {
+        ok: false,
+        reason: "no branch name recorded, and the per-worktree diff read came back empty",
+      };
 }
 
 /**

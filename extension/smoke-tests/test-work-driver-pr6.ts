@@ -304,6 +304,13 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       'git config user.email "t@t" && git config user.name "T" && git commit --allow-empty -q -m init',
       { cwd: dir, shell: "/bin/bash" },
     );
+    // #384 — the remote refs must EXIST for this to be the genuine no-work
+    // case. Without them the diff read fails with "unknown revision", which
+    // pre-#384 returned "" and was indistinguishable from empty — so this
+    // test passed by exercising a git FAILURE rather than an empty diff.
+    await execp("git update-ref refs/remotes/origin/main HEAD", { cwd: dir });
+    await execp("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", { cwd: dir });
+    await execp("git update-ref refs/remotes/origin/feature/issue-702-test HEAD", { cwd: dir });
 
     const seenLabels: string[] = [];
     const ctx: DriverContext = {

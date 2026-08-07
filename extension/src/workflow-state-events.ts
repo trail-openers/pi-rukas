@@ -231,6 +231,11 @@ export type WorkEvent =
         // evidence refused. Merging is the one irreversible act in the cycle
         // and is opt-in: the absence of permission is not permission.
         | "awaiting-human-merge"
+        // #384 — lens-review could not read the diff it is supposed to
+        // review. Previously an unreadable diff returned "" and the
+        // empty-diff guard APPROVED on it, merging code unreviewed. Halting
+        // is cheap; approving on the absence of evidence is not.
+        | "lens-diff-unreadable"
         | "existing-pr-detected"
         | `verify-failed:${WorkStep}`
         | `step-failed:${WorkStep}`;

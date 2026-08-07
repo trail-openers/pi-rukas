@@ -55,6 +55,10 @@ export function explainCap(
       const rationale = spec?.rationale ? `\n\nResolver's rationale: ${spec.rationale}` : "";
       return `${why} No code was written — the driver halted at intent resolution, before plan or branch ran.${evidence}${rationale}`;
     }
+    case "lens-diff-unreadable": {
+      const why = state.pipelineState.lensDiffError ?? "(no detail recorded)";
+      return `The six-pass code review could not read the diff it is supposed to review: ${why}. The driver halted rather than approving. Before #384 an unreadable diff returned empty, and the empty-diff guard treated empty as approved — so a stale ref or a transient git error merged code that nothing had reviewed. Check that the branch is pushed and \`origin\` is current (\`git fetch origin --prune\`), then re-run.`;
+    }
     case "awaiting-human-merge": {
       const hold = state.pipelineState.mergeHold;
       const pr = state.pipelineState.prNumber;

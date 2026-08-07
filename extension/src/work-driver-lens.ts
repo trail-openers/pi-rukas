@@ -14,7 +14,7 @@ import { runLensReview } from "./lens-review.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
-import { fetchAllMergedDiffs } from "./work-driver-diff.ts";
+import { readAllMergedDiffs } from "./work-driver-diff.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
 import { inlineLensFixPrompt } from "./work-driver-prompts-late.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
@@ -70,7 +70,30 @@ export async function runLens(
   // which correctly returns the integrated diff. runAdversarial still
   // uses fetchAllDiffs because adversarial runs PRE-commit (uncommitted
   // diff in the worktree is the right input there).
-  const diff = await fetchAllMergedDiffs(ps.worktrees ?? {}, ctx.repoRoot, ps.branchName);
+  // #384 — read the diff in a form that can say "I could not tell". The
+  // plain read returned "" on every git failure, and the guard below treats
+  // an empty diff as APPROVED — so a stale ref, a transient git error or a
+  // maxBuffer overrun on a large diff all merged code unreviewed. Same defect
+  // class as the `ci-status:` substring #380 removed from the merge step.
+  const diffResult = await readAllMergedDiffs(ps.worktrees ?? {}, ctx.repoRoot, ps.branchName);
+  if (!diffResult.ok) {
+    trace(`work-driver: lens-review — diff unreadable: ${diffResult.reason}`);
+    next = {
+      ...next,
+      pipelineState: {
+        ...next.pipelineState,
+        lensDiffError: diffResult.reason,
+      },
+    };
+    return appendEvent(next, {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "lens-diff-unreadable",
+      reviewRound: round,
+      nextStep: "handoff",
+    });
+  }
+  const diff = diffResult.diff;
 
   // #279 — type-widening scan: route-only detector for invariant removal.
   // Findings are injected into the lens context with framing for the
@@ -94,7 +117,10 @@ export async function runLens(
   // branch has no commits ahead of mainline (genuinely nothing to
   // review), not "git diff HEAD is empty after commit" (post-PR11 the
   // diff is base..HEAD, not HEAD).
-  if (!diff.trim()) {
+  // Reaching here with an empty diff now means the branch was CONFIRMED to
+  // have no commits ahead of base (`git rev-list --count` returned 0), not
+  // merely that the read produced no output.
+  if (diffResult.empty) {
     next = appendEvent(
       next,
       { kind: "lens-skipped-empty-diff", at: Date.now(), round },

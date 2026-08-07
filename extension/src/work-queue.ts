@@ -145,6 +145,9 @@ export function humanActionFor(reason: string, primary: number): string {
   if (/step-failed:merged/.test(reason)) {
     return `merge #${primary}'s PR by hand — the branch is pushed and the work is done (do NOT --restart: the open PR would halt the re-run)`;
   }
+  if (/lens-diff-unreadable/.test(reason)) {
+    return `check that #${primary}'s branch is pushed and \`git fetch origin --prune\` is current — the review could not read the diff`;
+  }
   if (/existing-pr-detected/.test(reason)) {
     return `decide whether to resume, retarget or close the open PR for #${primary}`;
   }

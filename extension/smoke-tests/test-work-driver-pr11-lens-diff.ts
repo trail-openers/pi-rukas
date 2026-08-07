@@ -207,7 +207,13 @@ setupSpawnGuard();
       cwd: dir,
     });
     await execp("git checkout -qb feature/pr11-empty", { cwd: dir });
-    // No commits on the feature branch → origin/main..HEAD is empty.
+    // No commits on the feature branch → origin/main..origin/<branch> is empty.
+    // #384 — the remote ref must EXIST for this to be the genuine-empty case.
+    // Without it `git diff origin/main..origin/feature/pr11-empty` fails with
+    // "unknown revision", which pre-#384 returned "" and was indistinguishable
+    // from empty — so this test was passing by exercising a git FAILURE, not
+    // the no-work cycle it claims to cover.
+    await execp("git update-ref refs/remotes/origin/feature/pr11-empty HEAD", { cwd: dir });
 
     let s = initialState(821, 1_000_000);
     s = {

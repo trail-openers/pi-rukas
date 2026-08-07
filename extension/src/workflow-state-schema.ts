@@ -176,6 +176,11 @@ export interface PipelineState {
    * this project, and whether `gh` reports the required checks actually
    * passed. Absent unless the merge was held.
    */
+  /**
+   * #384 — why lens-review could not read the diff, when it could not. The
+   * git error verbatim, so the operator does not have to reproduce it.
+   */
+  lensDiffError?: string;
   mergeHold?: {
     authorityGranted: boolean;
     authoritySource: "agents-md" | "operator" | "none";

@@ -764,6 +764,29 @@ Grouping markers (`Split:`, `Depends-on:`, subsystem tags) remain a **fast path*
 
 Escape hatch: `PI_ENSEMBLE_INTENT=0`.
 
+### Why a cycle halted at `lens-diff-unreadable`
+
+The six-pass review approves when the diff is empty — a cycle that genuinely changed nothing has nothing to review. The hazard, removed in #384, was that "empty" and "I could not find out" were the same value: the diff read swallowed every git error and returned `""`, so a stale `origin/<branch>` ref, a transient git failure, or a `maxBuffer` overrun on a large diff all read as *approved*, and the code merged unreviewed.
+
+Empty is now established **positively**. `git rev-list --count origin/<base>..origin/<branch>` must return 0; only then does the review skip. Anything else — the branch ref missing, git failing, or commits existing while the diff comes back empty — halts with `lens-diff-unreadable` and the git error recorded verbatim.
+
+```bash
+git fetch origin --prune          # the usual cause: a stale remote-tracking ref
+git rev-list --count origin/main..origin/<branch>
+```
+
+Two pre-existing tests (`test-work-driver-pr6.ts`, `test-work-driver-pr11-lens-diff.ts`) claimed to cover the genuine no-work cycle but never created `origin/<branch>`, so they were exercising a git *failure* and passing for the wrong reason. Both fixtures now create the ref.
+
+**If you are wondering whether the six-pass review has been skipping:** check the event log rather than guessing. A skip is recorded, and so is every real run.
+
+```bash
+# every cycle, and whether lens-review actually ran
+grep -l 'lens-skipped-empty-diff' .pi/work-state/*.json
+grep -o 'lens-review×6 ([^)]*)' .pi/work-state/<issue>.json
+```
+
+A cycle that aborts or hands off before `commit-pr` never reaches `lens-review` at all — which looks like a skip in the scrollback but is not one.
+
 ### Resume — what happens when Pi dies mid-cycle
 
 Before #382 a crash lost the cycle *and* hid the fact. State was persisted only at step boundaries while a single dispatch can run for thirty minutes, so a death inside that window left the file at the *previous* boundary still saying `status: "running"`. A dead cycle and a live one looked identical, forever. (This repo still carries the evidence: `.pi/work-state/547.json` and `551.json` are stuck at `running` with empty event logs.)
