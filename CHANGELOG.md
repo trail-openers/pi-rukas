@@ -8,6 +8,41 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.24](https://github.com/randomm/pi-ensemble/compare/v0.12.23...v0.12.24) (2026-08-07)
+
+
+### Features
+
+* **#279:** verify-full tier + type-widening scan (and the hollow tests that hid four bugs) ([#375](https://github.com/randomm/pi-ensemble/issues/375)) ([5151f08](https://github.com/randomm/pi-ensemble/commit/5151f08c6e5d6c412571b9d485223f09e42e3ee6))
+* **#287:** repoRoot is never a dev tree — always-worktree isolation ([#365](https://github.com/randomm/pi-ensemble/issues/365)) ([2217c33](https://github.com/randomm/pi-ensemble/commit/2217c33a807fdc21ab664541bba6faf0364d1c63)), closes [#287](https://github.com/randomm/pi-ensemble/issues/287)
+* **#288:** multi-cycle observability — widget, scrollback, /work-status ([#373](https://github.com/randomm/pi-ensemble/issues/373)) ([f28f6a1](https://github.com/randomm/pi-ensemble/commit/f28f6a1e90c82e44d28c04f7134734cbca75a97d)), closes [#288](https://github.com/randomm/pi-ensemble/issues/288)
+* **#289:** bounded parallel group pool — parallelism on by default ([#374](https://github.com/randomm/pi-ensemble/issues/374)) ([dacdaae](https://github.com/randomm/pi-ensemble/commit/dacdaae4181296332a2ac03004a7e22fcbe5274b)), closes [#289](https://github.com/randomm/pi-ensemble/issues/289)
+* **#289:** integration lock — repoRoot mutations are serialised ([#372](https://github.com/randomm/pi-ensemble/issues/372)) ([7abb193](https://github.com/randomm/pi-ensemble/commit/7abb193bb4dfc9e29fc07826516ad3c90f405a85)), closes [#289](https://github.com/randomm/pi-ensemble/issues/289)
+* **#290:** plan decomposition doctrine + workstream ceiling ([#370](https://github.com/randomm/pi-ensemble/issues/370)) ([8f63c53](https://github.com/randomm/pi-ensemble/commit/8f63c5380dd1ace42941c94327c454df9dccd668)), closes [#290](https://github.com/randomm/pi-ensemble/issues/290)
+* **#323:** mechanize merge + restore checkout ([#354](https://github.com/randomm/pi-ensemble/issues/354)) ([f2e62af](https://github.com/randomm/pi-ensemble/commit/f2e62af7971fc4068fa623a7a2584f096d170d80))
+* **#378:** resolve intent from any spec, then proceed, assume, or park ([#379](https://github.com/randomm/pi-ensemble/issues/379)) ([db806b1](https://github.com/randomm/pi-ensemble/commit/db806b120049c527f0365ae31ac19b6db19eb6f6)), closes [#378](https://github.com/randomm/pi-ensemble/issues/378)
+* **#380:** merging requires explicit authority and executed evidence ([#381](https://github.com/randomm/pi-ensemble/issues/381)) ([075bd1c](https://github.com/randomm/pi-ensemble/commit/075bd1cf0b7c01bf415c77499b1da8df667cf78d)), closes [#380](https://github.com/randomm/pi-ensemble/issues/380)
+* **#382:** a crash mid-cycle no longer loses the work silently ([#383](https://github.com/randomm/pi-ensemble/issues/383)) ([1f5f97e](https://github.com/randomm/pi-ensemble/commit/1f5f97e9af0a6454294bd80e98e297823e98fb03)), closes [#382](https://github.com/randomm/pi-ensemble/issues/382)
+* **#388:** tell the operator when a cycle needs them ([#389](https://github.com/randomm/pi-ensemble/issues/389)) ([8030d39](https://github.com/randomm/pi-ensemble/commit/8030d3900927923f4f2f0d3dda971000451f1069)), closes [#388](https://github.com/randomm/pi-ensemble/issues/388)
+* **#390:** /start reads what /work left behind ([#392](https://github.com/randomm/pi-ensemble/issues/392)) ([2a667c8](https://github.com/randomm/pi-ensemble/commit/2a667c84c3d4cbbeeeb59b68150d7888c2a088c6)), closes [#390](https://github.com/randomm/pi-ensemble/issues/390)
+* **#394:** the vipune seam, calibrated on measurement not documentation ([#396](https://github.com/randomm/pi-ensemble/issues/396)) ([e995771](https://github.com/randomm/pi-ensemble/commit/e9957713cc77916ae704ded91c500584135b4d46)), closes [#394](https://github.com/randomm/pi-ensemble/issues/394)
+* **concurrency:** global spawn semaphore + jittered lens retry ([#371](https://github.com/randomm/pi-ensemble/issues/371)) ([e015ccb](https://github.com/randomm/pi-ensemble/commit/e015ccba6fa9384fd7a2cdef261226e69e1fcd62))
+
+
+### Bug Fixes
+
+* **#360:** command handlers honour ctx.cwd, not process.cwd() ([#361](https://github.com/randomm/pi-ensemble/issues/361)) ([9f8fc40](https://github.com/randomm/pi-ensemble/commit/9f8fc4033661acdb27371b5234c55074e19bab4b)), closes [#360](https://github.com/randomm/pi-ensemble/issues/360)
+* **#362:** halt at the branch step when an open PR already covers the issue ([#363](https://github.com/randomm/pi-ensemble/issues/363)) ([970b068](https://github.com/randomm/pi-ensemble/commit/970b06806a9e2bffe289739bd39799efd00ee9a3)), closes [#362](https://github.com/randomm/pi-ensemble/issues/362)
+* **#366:** classify 429s by the delay the provider actually requested ([#367](https://github.com/randomm/pi-ensemble/issues/367)) ([7e5402c](https://github.com/randomm/pi-ensemble/commit/7e5402c7fc703107a3c0f704e11d199ed1ef6e6c)), closes [#366](https://github.com/randomm/pi-ensemble/issues/366)
+* **#368:** a failed group parks and the queue continues ([#369](https://github.com/randomm/pi-ensemble/issues/369)) ([f227a77](https://github.com/randomm/pi-ensemble/commit/f227a77922857b2ad8dc58c2d7ae5dde8b06d98e)), closes [#368](https://github.com/randomm/pi-ensemble/issues/368)
+* **#376:** four grouping rules were dead on real issues ([#377](https://github.com/randomm/pi-ensemble/issues/377)) ([fc46581](https://github.com/randomm/pi-ensemble/commit/fc46581f8cc198b55a57851546d6d1dfadb577ad)), closes [#376](https://github.com/randomm/pi-ensemble/issues/376)
+* **#384:** the six-pass review no longer approves on absent evidence ([#385](https://github.com/randomm/pi-ensemble/issues/385)) ([3a30a70](https://github.com/randomm/pi-ensemble/commit/3a30a70abefb9512fe65de16ed71175fec473b99)), closes [#384](https://github.com/randomm/pi-ensemble/issues/384)
+* **#386:** a recovered provider failure no longer halts the whole queue ([#387](https://github.com/randomm/pi-ensemble/issues/387)) ([32e5c12](https://github.com/randomm/pi-ensemble/commit/32e5c1270637b1e0250235e86544daa085c957e5)), closes [#386](https://github.com/randomm/pi-ensemble/issues/386)
+* **lens:** review output cites AGENTS.md Step 7, which does not exist in ([#346](https://github.com/randomm/pi-ensemble/issues/346)) ([a54f747](https://github.com/randomm/pi-ensemble/commit/a54f7479ba4a39d6a7ce44aacb54a72334838505)), closes [#327](https://github.com/randomm/pi-ensemble/issues/327)
+* **smoke-tests:** lens-review has no injection seam — five offline tests ([#348](https://github.com/randomm/pi-ensemble/issues/348)) ([70dceac](https://github.com/randomm/pi-ensemble/commit/70dceacae46825c4f08aef01ba7ad19cd3d326cd))
+* **spawn:** --exclude-tools is never passed to children — [#238](https://github.com/randomm/pi-ensemble/issues/238)'s reviewe ([#350](https://github.com/randomm/pi-ensemble/issues/350)) ([7d15a0d](https://github.com/randomm/pi-ensemble/commit/7d15a0d6a830b6c9155b1d6e21c60213656bddd4))
+* **work-driver:** branchName recorded from LLM ops reply, not verified a ([#352](https://github.com/randomm/pi-ensemble/issues/352)) ([6cca39d](https://github.com/randomm/pi-ensemble/commit/6cca39d2cb4a4041050a3d412310416556d457c2))
+
 ## [0.12.23](https://github.com/randomm/pi-ensemble/compare/v0.12.22...v0.12.23) (2026-08-04)
 
 
