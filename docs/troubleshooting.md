@@ -883,6 +883,14 @@ Two independent causes, both now closed:
 
 The override is deliberately narrow. `already-implemented`, `too-large`, `premise-unsound` and `contradicted-by-code` are all compatible with a complete spec and still park. And requiring a *confirmed* evidence row is what keeps "silence is not permission" true: a resolver that fills in the template without checking anything against the code has no confirmed row, so it still parks.
 
+### Handoff recovery commands
+
+A handoff's numbered options are keyed on which cap fired. Caps that halt **before** the branch step — `intent-park`, `existing-pr-detected`, `explore-*` — get a block that says so: nothing was written, no branch exists, nothing timed out. They point at `.pi/work-state/<issue>/spec.txt` and the specific human action, not at `git push`.
+
+Before #398, `intent-park` had no branch in either renderer and inherited a block written for `developer-timeout` — so a cycle that never created a branch was told to run `git push -u origin (branch not captured)`, with the display placeholder inside a copy-pasteable command.
+
+Recovery commands are also **never chained**. They arrive in the Pi chat, and per `modules/core/oo-command-runner.md` the permission matcher cannot wildcard a chained shape, so every unique `a && b` re-prompts you. One command per line.
+
 ### Merge authority — why `/work` opened a PR and stopped
 
 **`/work` will not merge unless something explicitly permitted it to.** That is the default, and the absence of a prohibition is not permission.

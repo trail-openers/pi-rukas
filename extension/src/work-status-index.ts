@@ -81,7 +81,17 @@ export function renderCycleIndex(
   }
   for (const c of needsInput) {
     const cap = [...c.state.eventLog].reverse().find((e) => e.kind === "cap-hit");
-    const reason = cap?.kind === "cap-hit" ? `cap ${cap.cap}` : c.state.pipelineState.status;
+    // #398 — the suffix `work-queue.ts` attaches was dropped here, so every
+    // intent-park hit `humanActionFor`'s `?? "underspecified"` default and
+    // every parked cycle showed the same (often wrong) action.
+    const parkReason =
+      cap?.kind === "cap-hit" && cap.cap === "intent-park"
+        ? c.state.pipelineState.normalisedSpec?.parkReason
+        : undefined;
+    const reason =
+      cap?.kind === "cap-hit"
+        ? `cap ${cap.cap}${parkReason ? `:${parkReason}` : ""}`
+        : c.state.pipelineState.status;
     lines.push(`  ⏸ #${c.issue}  ${reason} at ${c.state.pipelineState.lastCompletedStep ?? "?"}`);
     lines.push(`      → ${humanActionFor(reason, c.issue)}`);
   }

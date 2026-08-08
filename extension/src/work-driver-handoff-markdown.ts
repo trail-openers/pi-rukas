@@ -8,6 +8,7 @@
  */
 
 import { explainCap } from "./work-driver-explain.ts";
+import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 /**
@@ -186,14 +187,16 @@ export function renderHandoffMarkdown(state: WorkState): string {
   if (capForExplain === "explore-already-complete") {
     lines.push(
       "# 1. Verify by reading the issue + the explore report:",
-      `gh issue view ${issue} && cat tmp/issue-${issue}/handoff-comment.md`,
+      `gh issue view ${issue}`,
+      `cat tmp/issue-${issue}/handoff-comment.md`,
       "",
       "# 2. If you agree the issue is done, close it:",
       `gh issue close ${issue} --comment "Verified complete by /work — see prior PR"`,
       "",
       "# 3. If you disagree, add context and re-run /work:",
       `gh issue comment ${issue} --body "Additional context: <what /work missed>"`,
-      `rm .pi/work-state/${issue}.json && pi`,
+      `rm .pi/work-state/${issue}.json`,
+      "# then restart Pi",
       "",
       "# 4. Abandon the handoff entry (no code was written; safe to discard):",
       `rm .pi/work-state/${issue}.json`,
@@ -231,11 +234,13 @@ export function renderHandoffMarkdown(state: WorkState): string {
       `gh pr view ${pr?.number ?? "<pr>"} --json state,mergeable,files`,
       "",
       "# 2. Continue that PR instead of starting over (preferred):",
-      `git fetch origin && git checkout ${head}`,
+      "git fetch origin",
+      `git checkout ${head}`,
       "",
       "# 3. Or abandon it, then re-run — the pre-flight passes once it is closed:",
       `gh pr close ${pr?.number ?? "<pr>"} --comment "Superseded; restarting via /work"`,
-      `rm .pi/work-state/${issue}.json && pi`,
+      `rm .pi/work-state/${issue}.json`,
+      "# then restart Pi",
       "",
       "# 4. Or proceed anyway, accepting a second PR for this issue:",
       "PI_ENSEMBLE_PR_PREFLIGHT=0 pi",
@@ -249,7 +254,8 @@ export function renderHandoffMarkdown(state: WorkState): string {
       `gh issue edit ${issue}`,
       "",
       "# 3. Re-run /work once the issue is clearer:",
-      `rm .pi/work-state/${issue}.json && pi`,
+      `rm .pi/work-state/${issue}.json`,
+      "# then restart Pi",
       "",
       "# 4. Abandon the handoff entry:",
       `rm .pi/work-state/${issue}.json`,
@@ -260,7 +266,8 @@ export function renderHandoffMarkdown(state: WorkState): string {
     const failedList = failed.map((f) => `#${f.issue}`).join(", ") || `#${issue}`;
     lines.push(
       "# 1. Confirm gh auth + version (most common cause: projectCards GraphQL deprecation in older gh):",
-      "gh auth status && gh --version",
+      "gh auth status",
+      "gh --version",
       "",
       "# 2. Probe a failing issue via REST (works when `gh issue view` is broken):",
       `gh api repos/<owner>/<repo>/issues/${probeIssue} --jq .body | head`,
@@ -269,7 +276,8 @@ export function renderHandoffMarkdown(state: WorkState): string {
       "gh extension list",
       "",
       `# 4. Once fixed, re-run /work — the cycle halts cleanly with no code written for ${failedList}:`,
-      `rm .pi/work-state/${issue}.json && pi`,
+      `rm .pi/work-state/${issue}.json`,
+      "# then restart Pi",
     );
   } else if (capForExplain === "step-back-revise-spec") {
     lines.push(
@@ -299,24 +307,46 @@ export function renderHandoffMarkdown(state: WorkState): string {
       "",
       "# 3. Verify all workstreams' files now appear, then commit + push:",
       "git diff --name-only --cached",
-      "git commit -m '<concise>' && git push",
+      "git commit -m '<concise>'",
+      "git push",
       "",
       "# 4. Or: abandon + restart from scratch:",
-      `rm .pi/work-state/${issue}.json && /work ${issue} --restart`,
+      `rm .pi/work-state/${issue}.json`,
+      `/work ${issue} --restart`,
+    );
+  } else if (capForExplain === "intent-park") {
+    // #398 — fires in `explore`, before the branch step: nothing was written,
+    // no branch exists, nothing timed out. `parkAction` already has the text.
+    const reason = (ps.normalisedSpec?.parkReason ?? "underspecified") as ParkReason;
+    lines.push(
+      "# No branch, no worktree, no PR — the cycle halted at intent resolution.",
+      "# There is nothing to inspect, push or abandon.",
+      "",
+      `# 1. Do this: ${parkAction(reason, issue)}`,
+      "",
+      "# 2. Read the resolver's own reasoning first:",
+      `cat .pi/work-state/${issue}/spec.txt`,
+      "",
+      "# 3. Then re-run:",
+      `/work ${issue} --restart`,
     );
   } else {
     lines.push(
       "# 1. Inspect what survived before deciding:",
-      "git status && git diff --stat",
+      "git status",
+      "git diff --stat",
       "",
       "# 2. Retry with a longer per-spawn cap (use if dispatches kept timing out):",
-      `export PI_ENSEMBLE_SPAWN_TIMEOUT_MS_DEVELOPER=5400000 && rm .pi/work-state/${issue}.json && pi`,
+      "export PI_ENSEMBLE_SPAWN_TIMEOUT_MS_DEVELOPER=5400000",
+      `rm .pi/work-state/${issue}.json`,
       "",
       "# 3. Abandon the cycle, keep the worktree changes for manual takeover:",
       `rm .pi/work-state/${issue}.json`,
       "",
       "# 4. Take over manually — commit + push what's there, open the PR yourself:",
-      `git add -p && git commit && git push -u origin ${branchForCmd}`,
+      "git add -p",
+      "git commit",
+      `git push -u origin ${branchForCmd}`,
     );
   }
   lines.push("```", "");

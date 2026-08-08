@@ -9,6 +9,7 @@
 
 import { MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { explainCap } from "./work-driver-explain.ts";
+import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 /**
@@ -46,10 +47,19 @@ export function renderHandoffUserMessage(
     (handoffEvt?.kind === "handoff-emitted" ? handoffEvt.handoffBodyPath : undefined) ??
     `${scratchDirAbs}/handoff-comment.md`;
   const branchName = ps.branchName ?? "(branch not captured)";
+  // #398 — the display fallback must never reach a shell command. It did:
+  // `git push -u origin (branch not captured)` shipped to an operator as a
+  // copy-pasteable line. The markdown renderer already made this split.
+  const branchForCmd = ps.branchName ?? "<branch>";
   const branchPushedTag = snap
-    ? snap.branchPushed
-      ? " (pushed)"
-      : " (NOT pushed — local only)"
+    ? // #398 — `branchPushed: false` because no branch was ever CREATED used to
+      // render "(NOT pushed — local only)", which asserts a local branch
+      // exists. `branchExists` is the field that distinguishes them.
+      !snap.branchExists
+      ? " (no branch was created)"
+      : snap.branchPushed
+        ? " (pushed)"
+        : " (NOT pushed — local only)"
     : "";
   const headTag = snap?.headSha ? ` · HEAD ${snap.headSha}` : "";
   const fileCount = snap ? snap.unstagedCount + snap.stagedCount : 0;
@@ -92,7 +102,12 @@ export function renderHandoffUserMessage(
     `Cycle: ${ps.status}${ps.status === "aborted" ? " (mid-flight failure, not a cap-hit)" : ""}`,
     "",
     "Worktree state:",
-    `  branch: ${branchName}${branchPushedTag}${headTag}`,
+    // #398 — when no branch exists, say that, rather than printing a
+    // parenthetical placeholder next to "(NOT pushed — local only)", which
+    // together read as "there is a local branch you have not pushed".
+    ps.branchName
+      ? `  branch: ${ps.branchName}${branchPushedTag}${headTag}`
+      : `  no branch was created${headTag}`,
     `  ${prTag}`,
     `  ${fileCount} file(s) modified${snap && snap.stagedCount > 0 ? ` (${snap.stagedCount} staged, ${snap.unstagedCount} unstaged)` : ""}`,
   );
@@ -160,14 +175,16 @@ export function renderHandoffUserMessage(
     lines.push(
       "",
       "  # 1. Verify by reading the issue + the explore report:",
-      `     gh issue view ${issue}  &&  cat ${handoffBodyPath}`,
+      `     gh issue view ${issue}`,
+      `     cat ${handoffBodyPath}`,
       "",
       "  # 2. If you agree the issue is done, close it:",
       `     gh issue close ${issue} --comment "Verified complete by /work — see prior PR"`,
       "",
       "  # 3. If you disagree, add context and re-run /work:",
       `     gh issue comment ${issue} --body "Additional context: <what /work missed>"`,
-      `     rm ${repoRoot}/.pi/work-state/${issue}.json && pi`,
+      `     rm ${repoRoot}/.pi/work-state/${issue}.json`,
+      "     # then restart Pi",
       "",
       "  # 4. Abandon the handoff entry (no code was written; safe to discard):",
       `     rm ${repoRoot}/.pi/work-state/${issue}.json`,
@@ -208,11 +225,13 @@ export function renderHandoffUserMessage(
       `     gh pr view ${pr?.number ?? "<pr>"} --json state,mergeable,files`,
       "",
       "  # 2. Continue that PR instead of starting over (preferred):",
-      `     git fetch origin && git checkout ${head}`,
+      `     git -C ${repoRoot} fetch origin`,
+      `     git -C ${repoRoot} checkout ${head}`,
       "",
       "  # 3. Or abandon it, then re-run — the pre-flight will pass once it is closed:",
       `     gh pr close ${pr?.number ?? "<pr>"} --comment "Superseded; restarting via /work"`,
-      `     rm ${repoRoot}/.pi/work-state/${issue}.json && pi`,
+      `     rm ${repoRoot}/.pi/work-state/${issue}.json`,
+      "     # then restart Pi",
       "",
       "  # 4. Or proceed anyway, accepting a second PR for this issue:",
       "     PI_ENSEMBLE_PR_PREFLIGHT=0 pi",
@@ -227,7 +246,8 @@ export function renderHandoffUserMessage(
       `     gh issue edit ${issue}`,
       "",
       "  # 3. Re-run /work once the issue is clearer:",
-      `     rm ${repoRoot}/.pi/work-state/${issue}.json && pi`,
+      `     rm ${repoRoot}/.pi/work-state/${issue}.json`,
+      "     # then restart Pi",
       "",
       "  # 4. Abandon the handoff entry:",
       `     rm ${repoRoot}/.pi/work-state/${issue}.json`,
@@ -242,7 +262,8 @@ export function renderHandoffUserMessage(
       ...failed.map((f) => `  #${f.issue} — ${f.reason}`),
       "",
       "  # 1. Confirm gh auth + version (most common cause: projectCards GraphQL deprecation in older gh):",
-      "     gh auth status && gh --version",
+      "     gh auth status",
+      "     gh --version",
       "",
       "  # 2. Probe a failing issue via REST (works when `gh issue view` is broken):",
       `     gh api repos/<owner>/<repo>/issues/${probeIssue} --jq .body | head`,
@@ -251,7 +272,8 @@ export function renderHandoffUserMessage(
       "     gh extension list",
       "",
       `  # 4. Once fixed, re-run /work — the cycle halts cleanly with no code written for ${failedList}:`,
-      `     rm ${repoRoot}/.pi/work-state/${issue}.json && pi`,
+      `     rm ${repoRoot}/.pi/work-state/${issue}.json`,
+      "     # then restart Pi",
     );
   } else if (cap === "step-back-revise-spec") {
     const sb = [...state.eventLog]
@@ -304,25 +326,51 @@ export function renderHandoffUserMessage(
       "",
       "  # 3. Verify, commit, push:",
       `     git -C ${repoRoot} diff --name-only --cached`,
-      `     git -C ${repoRoot} commit -m '<concise>' && git -C ${repoRoot} push`,
+      `     git -C ${repoRoot} commit -m '<concise>'`,
+      `     git -C ${repoRoot} push`,
       "",
       "  # 4. Or: abandon + restart from scratch:",
-      `     rm ${repoRoot}/.pi/work-state/${issue}.json && /work ${issue} --restart`,
+      `     rm ${repoRoot}/.pi/work-state/${issue}.json`,
+      `     /work ${issue} --restart`,
+    );
+  } else if (cap === "intent-park") {
+    // #398 — this cap fires in `explore`, BEFORE the branch step: no branch,
+    // no worktree, no PR, nothing written. It used to fall through to the
+    // generic block below and tell the operator to retry a timeout that never
+    // happened, keep worktree changes that do not exist, and push a branch
+    // that was never created. `parkAction` already produces the right text.
+    const reason = (ps.normalisedSpec?.parkReason ?? "underspecified") as ParkReason;
+    lines.push(
+      "",
+      "No branch, no worktree and no PR — the cycle halted at intent resolution,",
+      "before plan or branch ran. There is nothing to inspect, push or abandon.",
+      "",
+      `  # 1. Do this: ${parkAction(reason, issue)}`,
+      "",
+      "  # 2. Read the resolver's own reasoning before deciding:",
+      `     cat ${repoRoot}/.pi/work-state/${issue}/spec.txt`,
+      "",
+      "  # 3. Then re-run — the state file is discarded automatically on --restart:",
+      `     /work ${issue} --restart`,
     );
   } else {
     lines.push(
       "",
       "  # 1. Inspect what survived before deciding:",
-      `     git -C ${repoRoot} status && git -C ${repoRoot} diff --stat`,
+      `     git -C ${repoRoot} status`,
+      `     git -C ${repoRoot} diff --stat`,
       "",
       "  # 2. Retry with a longer per-spawn cap (use if dispatches kept timing out):",
-      `     export PI_ENSEMBLE_SPAWN_TIMEOUT_MS_DEVELOPER=5400000 && rm ${repoRoot}/.pi/work-state/${issue}.json && pi`,
+      "     export PI_ENSEMBLE_SPAWN_TIMEOUT_MS_DEVELOPER=5400000",
+      `     rm ${repoRoot}/.pi/work-state/${issue}.json`,
       "",
       "  # 3. Abandon the cycle, keep the worktree changes for manual takeover:",
       `     rm ${repoRoot}/.pi/work-state/${issue}.json`,
       "",
       `  # 4. Take over manually — commit + push what's there, open the PR yourself:`,
-      `     cd ${repoRoot} && git add -p && git commit && git push -u origin ${branchName}`,
+      `     git -C ${repoRoot} add -p`,
+      `     git -C ${repoRoot} commit`,
+      `     git -C ${repoRoot} push -u origin ${branchForCmd}`,
     );
   }
   return lines.join("\n");

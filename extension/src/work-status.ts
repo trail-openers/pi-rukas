@@ -331,20 +331,42 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
     const target = ps.prNumber ? `pr ${ps.prNumber}` : `issue ${issue}`;
     const objType = ps.prNumber ? "pr" : "issue";
     const targetId = ps.prNumber ?? issue;
+    // #398 — this block had NO cap branching at all, so every cap got
+    // timeout-shaped recovery, including the pre-branch ones where nothing was
+    // written and no branch exists.
+    const lastCap = [...state.eventLog].reverse().find((e) => e.kind === "cap-hit");
+    const preBranch =
+      lastCap?.kind === "cap-hit" &&
+      (lastCap.cap === "intent-park" ||
+        lastCap.cap === "existing-pr-detected" ||
+        String(lastCap.cap).startsWith("explore-"));
     lines.push(
       "",
       "Recovery commands (pick one):",
-      "  # 1. Inspect what survived:",
-      "  git status && git diff --stat",
-      "",
-      "  # 2. Retry with longer per-spawn cap:",
-      `  export PI_ENSEMBLE_SPAWN_TIMEOUT_MS_DEVELOPER=5400000 && rm .pi/work-state/${issue}.json && pi`,
-      "",
-      "  # 3. Abandon the cycle, keep worktree:",
-      `  rm .pi/work-state/${issue}.json`,
-      "",
-      "  # 4. Take over manually:",
-      `  git add -p && git commit && git push -u origin ${branchForCmd}`,
+      ...(preBranch
+        ? [
+            "  # Nothing was written — this cap fires before the branch step.",
+            "  # Read the reasoning, then re-run:",
+            `  cat .pi/work-state/${issue}/spec.txt`,
+            `  /work ${issue} --restart`,
+          ]
+        : [
+            "  # 1. Inspect what survived:",
+            "  git status",
+            "  git diff --stat",
+            "",
+            "  # 2. Retry with longer per-spawn cap:",
+            "  export PI_ENSEMBLE_SPAWN_TIMEOUT_MS_DEVELOPER=5400000",
+            `  rm .pi/work-state/${issue}.json`,
+            "",
+            "  # 3. Abandon the cycle, keep worktree:",
+            `  rm .pi/work-state/${issue}.json`,
+            "",
+            "  # 4. Take over manually:",
+            "  git add -p",
+            "  git commit",
+            `  git push -u origin ${branchForCmd}`,
+          ]),
     );
     if (handoffEvt?.kind === "handoff-emitted" && !handoffEvt.commentUrl) {
       lines.push(
