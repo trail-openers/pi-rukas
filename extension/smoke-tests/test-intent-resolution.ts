@@ -252,6 +252,87 @@ Add a retry.
   );
 }
 
+// ------------------------------- #397: evidence verdicts as LLMs write them
+
+{
+  // A real resolver bolded all seven of its verdicts and the strict
+  // `last === "confirmed"` test downgraded every one to `unverifiable`.
+  const s = resolve(
+    "INTENT-VERDICT: proceed\n\n## Spec\n\n### Intent\nx\n\n### Evidence\n" +
+      "- a — src/a.ts:1 — **confirmed**\n" +
+      "- b — src/b.ts:2 — **confirmed** (distinct identity bypasses anti-recursion)\n" +
+      "- c — src/c.ts:3 — I could not confirm this\n",
+  );
+  assert(s?.evidence[0]?.verdict === "confirmed", "a BOLDED `**confirmed**` parses as confirmed");
+  assert(s?.evidence[1]?.verdict === "confirmed", "...even with a trailing parenthetical after it");
+  assert(
+    s?.evidence[2]?.verdict === "unverifiable",
+    "but 'I could not confirm this' stays unverifiable — the match is anchored, not a substring",
+  );
+}
+{
+  const s = resolve(
+    "INTENT-VERDICT: proceed\n\n## Spec\n\n### Intent\nx\n\n### Deliverables\n- d1: do it\n\n### Evidence\n- a — src/a.ts:1 — **contradicted**\n",
+  );
+  assert(
+    s?.verdict === "park" && s.parkReason === "contradicted-by-code",
+    "a BOLDED `**contradicted**` still overrides a proceed — the contradiction rule keeps working",
+  );
+}
+
+// --------------------------- #397: a complete spec refutes `underspecified`
+
+const COMPLETE = (parkReason: string) =>
+  `INTENT-VERDICT: park\nPARK-REASON: ${parkReason}\n\n## Spec\n\n### Intent\nFix the release gate.\n\n### Deliverables\n- d1: edit the workflow [paths: .github/workflows/x.yml]\n\n### Acceptance criteria\n- the next PR shows a real run\n\n### Open questions\n- **None blocking** — mechanism is confirmed\n\n### Evidence\n- the token is the default — gh pr view — **confirmed**\n`;
+
+{
+  const s = resolve(COMPLETE("underspecified"));
+  assert(
+    s?.verdict === "proceed-with-assumptions",
+    "an `underspecified` park is OVERRIDDEN when the spec is demonstrably complete",
+  );
+  assert(s?.parkReason === undefined, "...and the stale parkReason is dropped, not left behind");
+  assert(
+    s?.assumptions.some((a) => /underspecified/.test(a.text)) === true,
+    "...and the override is recorded as an assumption so review sees it",
+  );
+}
+{
+  // The guard that keeps the override narrow. These four reasons are all
+  // perfectly compatible with a complete spec — overriding them would be
+  // exactly the "silence is permission" failure #378 exists to prevent.
+  for (const reason of [
+    "too-large",
+    "already-implemented",
+    "premise-unsound",
+    "contradicted-by-code",
+  ]) {
+    const s = resolve(COMPLETE(reason));
+    assert(
+      s?.verdict === "park" && s.parkReason === reason,
+      `a complete spec does NOT override \`${reason}\` — only \`underspecified\` is refuted by completeness`,
+    );
+  }
+}
+{
+  // The conjunct that keeps "silence is not permission" true: a resolver that
+  // filled in the template without checking anything has no confirmed row.
+  const noEvidence = resolve(
+    "INTENT-VERDICT: park\nPARK-REASON: underspecified\n\n## Spec\n\n### Intent\nx\n\n### Deliverables\n- d1: do it\n\n### Acceptance criteria\n- it works\n",
+  );
+  assert(
+    noEvidence?.verdict === "park",
+    "a spec with NO confirmed evidence still parks — completeness requires grounding, not just structure",
+  );
+  const realQuestion = resolve(
+    COMPLETE("underspecified").replace(
+      "- **None blocking** — mechanism is confirmed",
+      "- Which auth identity should the workflow use?",
+    ),
+  );
+  assert(realQuestion?.verdict === "park", "a spec with a REAL blocking open question still parks");
+}
+
 // ------------------------------------------------------------ escape hatch
 
 {

@@ -28,10 +28,25 @@ export function inlineExplorePrompt(
   issues: number[],
   scratchDirAbs: string,
   bodies: Array<{ issue: number; body: string; truncated: boolean }> = [],
+  /**
+   * #397 — which verdict protocol this prompt asks for. Passed in rather than
+   * read from `intentResolutionEnabled()` because importing it here would
+   * close the cycle prompts-early → intent → plan → prompts-early.
+   */
+  intentEnabled = true,
 ): string {
   const headline = issues.length === 1 ? `issue #${issues[0]}` : `issues #${issues.join(", #")}`;
-  const verdictBlock =
-    issues.length === 1
+  // #397 — ONE verdict protocol per dispatch. This prompt used to carry both
+  // the legacy `## Verdict` block and the #378 `INTENT-VERDICT:` block, each
+  // labelled LOAD-BEARING. A resolver on #337 answered the legacy one, the
+  // driver read only the other, found nothing, defaulted to `park` /
+  // `underspecified`, and told the operator a fully-resolved issue "does not
+  // say enough to build from". Multi-issue stays on the legacy protocol
+  // because intent resolution yields ONE spec, not N.
+  const useLegacyVerdict = !intentEnabled || issues.length > 1;
+  const verdictBlock = !useLegacyVerdict
+    ? []
+    : issues.length === 1
       ? [
           "  - a verdict (heading: `## Verdict`), one line, EXACTLY one of:",
           "      `VERDICT: NEEDS_WORK`           — issue is open and has real work to do",
@@ -49,8 +64,9 @@ export function inlineExplorePrompt(
           "      ```",
           "    The driver parses each line and routes per-issue. NEEDS_WORK issues proceed into plan/branch/develop; ALREADY_COMPLETE / NEEDS_CLARIFICATION are dropped (surfaced in the PR body + handoff). If EVERY issue is dropped, the cycle halts at handoff before any code is written.",
         ];
-  const verdictDoctrine =
-    issues.length === 1
+  const verdictDoctrine = !useLegacyVerdict
+    ? ""
+    : issues.length === 1
       ? "The `## Verdict` block is LOAD-BEARING. If you conclude the issue is already done (e.g., a prior PR addressed it), say `VERDICT: ALREADY_COMPLETE` even if the issue is still technically open in the tracker — the driver routes on your verdict, not on the issue's status. On ALREADY_COMPLETE or NEEDS_CLARIFICATION the driver halts immediately and hands off to the operator; no plan/branch/develop will run."
       : "The `## Verdict` block is LOAD-BEARING per issue. Mark each issue with the verdict you'd give if it were the only one in scope; the driver merges the active subset and runs ONE bundled PR with `Fixes #N` for each active issue.";
   // PR13 — embed each issue body inline. This is the agent's source of
@@ -97,10 +113,14 @@ export function inlineExplorePrompt(
     "  - touchpoint files (heading: `## Touchpoints`).",
     "",
     verdictDoctrine,
-    intentResolutionBlock(issues),
+    useLegacyVerdict ? "" : intentResolutionBlock(issues),
     bodyBlock,
     scratchHygieneSection(scratchDirAbs),
-  ].join("\n");
+    // #397 — drop the block the gate above suppressed, so removing a protocol
+    // does not leave a stray blank line where it used to be.
+  ]
+    .filter((part) => part !== "")
+    .join("\n");
 }
 
 /**

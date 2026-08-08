@@ -184,13 +184,29 @@ function parseDeliverables(section: string | undefined): SpecDeliverable[] {
   });
 }
 
-/** `- <claim> — <source> — confirmed|contradicted|unverifiable` */
+/**
+ * `- <claim> — <source> — confirmed|contradicted|unverifiable`
+ *
+ * The verdict token tolerates the shapes an LLM actually emits, not just the
+ * one the template shows. #397: a real resolver reply wrote `— **confirmed**`
+ * on all seven of its evidence rows, and the strict `last === "confirmed"`
+ * test downgraded every one to `unverifiable` — so the driver held seven
+ * executed-evidence confirmations and recorded them as "could not tell".
+ * The sibling verdict parsers already tolerate bold (`\**` in the
+ * INTENT-VERDICT and PARK-REASON regexes above); this was the one place the
+ * tolerance was omitted.
+ *
+ * Anchored at `^` deliberately: an unanchored `/confirmed/` would accept
+ * prose like "I could not confirm this" as a confirmation.
+ */
 function parseEvidence(section: string | undefined): SpecEvidence[] {
   return bullets(section).map((line) => {
     const parts = line.split(/\s+—\s+|\s+--\s+/);
     const last = (parts[parts.length - 1] ?? "").trim().toLowerCase();
+    // Trailing parentheticals are common too: `**confirmed** (distinct identity…)`.
+    const tok = last.match(/^\**\s*(confirmed|contradicted)\b/)?.[1];
     const verdict: SpecEvidence["verdict"] =
-      last === "confirmed" || last === "contradicted" ? last : "unverifiable";
+      tok === "confirmed" || tok === "contradicted" ? tok : "unverifiable";
     return {
       claim: (parts[0] ?? line).trim(),
       source: (parts.length > 2 ? parts[1] : "")?.trim() ?? "",
@@ -208,8 +224,71 @@ function parseEvidence(section: string | undefined): SpecEvidence[] {
  * this step produces, and ignoring it is how a confidently-wrong bug report
  * gets built.
  */
+/**
+ * An open question that reads as an explicit "nothing blocking" is not one.
+ *
+ * Resolvers write `- **None blocking** — mechanism is confirmed with executed
+ * evidence` rather than emitting an empty section. Counting that as a blocking
+ * question is how a fully-resolved spec looks unresolved.
+ */
+function blockingQuestions(qs: string[]): string[] {
+  return qs.filter((q) => !/^[\s*_`]*(none|n\/a)\b/i.test(q));
+}
+
+/**
+ * Does this spec, on its own terms, determine what to build?
+ *
+ * The `confirmed` conjunct is what keeps #378's "silence is not permission"
+ * true. A resolver that filled in the template without checking anything
+ * against the code has no confirmed evidence row, fails this predicate, and
+ * still parks. It also couples this to `parseEvidence` by design: without the
+ * bold tolerance there, a real reply scores zero confirmed rows and this
+ * correctly returns false.
+ */
+export function specIsComplete(spec: NormalisedSpec): boolean {
+  return (
+    spec.intent.trim().length > 0 &&
+    spec.deliverables.length > 0 &&
+    spec.acceptanceCriteria.length > 0 &&
+    spec.evidence.some((e) => e.verdict === "confirmed") &&
+    !spec.evidence.some((e) => e.verdict === "contradicted") &&
+    blockingQuestions(spec.openQuestions).length === 0
+  );
+}
+
+/**
+ * What the driver appends when it overrides an `underspecified` park.
+ *
+ * The resolver never said proceed — the driver inferred it — so the override
+ * must be visible where review happens, not only in `trace`. This rides the
+ * existing `renderAssumptions` call in the PR body.
+ */
+const OVERRIDE_ASSUMPTION = {
+  text: "The explore step's verdict read `underspecified`, but its own spec named an intent, deliverables, acceptance criteria and confirmed evidence with no blocking open questions. The driver proceeded on the spec rather than the label.",
+  basis: "a complete spec refutes `underspecified` on its face",
+};
+
 export function reconcileVerdict(spec: NormalisedSpec): NormalisedSpec {
-  if (spec.verdict === "park") return spec;
+  if (spec.verdict === "park") {
+    // #397 — `underspecified` is the ONE park reason a complete spec refutes
+    // on its face, and it is also the value the parser synthesises when the
+    // resolver omits its verdict token entirely. A cycle on #337 produced two
+    // deliverables, three acceptance criteria and seven confirmed evidence
+    // rows, then told the operator the issue "does not say enough to build
+    // from". The other four reasons are all compatible with a complete spec —
+    // already-implemented, too-large, premise-unsound and contradicted-by-code
+    // must still park, so the override stays deliberately narrow.
+    if (spec.parkReason === "underspecified" && specIsComplete(spec)) {
+      trace("work-driver: intent — 'underspecified' park refuted by a complete spec, proceeding");
+      const { parkReason: _dropped, ...rest } = spec;
+      return {
+        ...rest,
+        verdict: "proceed-with-assumptions",
+        assumptions: [...spec.assumptions, OVERRIDE_ASSUMPTION],
+      };
+    }
+    return spec;
+  }
   if (spec.evidence.some((e) => e.verdict === "contradicted")) {
     trace("work-driver: intent — evidence contradicts a proceed verdict, parking");
     return { ...spec, verdict: "park", parkReason: "contradicted-by-code" };

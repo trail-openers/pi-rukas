@@ -161,7 +161,18 @@ export async function runExplore(
 
   // PR13 — now dispatch with bodies embedded in the prompt. Verdict can
   // be sound from a single turn — no race, no agency-dependence.
-  const prompt = inlineExplorePrompt(issues, scratchDir(ctx.repoRoot, ctx.issue), bodiesForPrompt);
+  // #397 — ask for exactly one verdict protocol, and read the one we asked
+  // for. Multi-issue is legacy-only: intent resolution yields ONE spec, so a
+  // `## Spec` block in a multi-issue reply used to take the intent path and
+  // return without setting activeIssues/droppedIssues at all — silently
+  // dropping per-issue routing so every requested issue proceeded.
+  const useIntent = intentResolutionEnabled() && issues.length === 1;
+  const prompt = inlineExplorePrompt(
+    issues,
+    scratchDir(ctx.repoRoot, ctx.issue),
+    bodiesForPrompt,
+    useIntent,
+  );
   // #382 — write-ahead before the await; see work-driver-resume.ts.
   const begun = await beginDispatch(ctx.repoRoot, next, "explore", "explore", "explore", startedAt);
   next = begun.state;
@@ -216,7 +227,7 @@ export async function runExplore(
   // than on a single classification token. Falls through to the pre-#378
   // router when no `## Spec` block came back, so an older prompt or a drifting
   // agent degrades to the previous behaviour instead of parking everything.
-  if (intentResolutionEnabled()) {
+  if (useIntent) {
     const parsed = parseNormalisedSpec(responseText);
     if (parsed) {
       const spec = reconcileVerdict(parsed);

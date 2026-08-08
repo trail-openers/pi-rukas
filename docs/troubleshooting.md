@@ -869,6 +869,20 @@ A multi-issue `/work` run writes its outcome to `.pi/work-state/queue-summary.js
 
 `/start` reads both files at session open (#390) and leads its readiness line with anything parked — that is usually why you opened the session, and it is the one part you cannot find from `gh pr list` or `gh issue list`. A repo that has never run `/work` sees no change.
 
+### Why a cycle parked as `intent-park:underspecified`
+
+Check the spec before believing the label. If `.pi/work-state/<issue>/spec.txt` shows deliverables and acceptance criteria, the park was wrong and you have hit the #397 bug — fixed, but worth knowing the shape.
+
+Two independent causes, both now closed:
+
+**The prompt asked for two verdicts.** The explore prompt carried the legacy `## Verdict` block *and* the `INTENT-VERDICT:` block, each labelled LOAD-BEARING. A resolver answering the legacy one emitted `VERDICT: NEEDS_WORK` — meaning *proceed* — and no `INTENT-VERDICT:`. The driver read only the token it was not given, defaulted to `park`, then defaulted the reason to `underspecified`. Each prompt now asks for exactly one protocol: `INTENT-VERDICT` for a single issue with intent resolution on, the legacy block for multi-issue or with `PI_ENSEMBLE_INTENT=0`.
+
+**Bolded evidence verdicts were discarded.** `parseEvidence` required a bare `confirmed`; resolvers write `— **confirmed**`. On the run that surfaced this, all seven executed-evidence confirmations parsed as `unverifiable`, so the handoff shipped its boilerplate with no evidence attached. The match now tolerates bold and trailing parentheticals, while staying anchored so prose like *"I could not confirm this"* is still `unverifiable`.
+
+**A complete spec now refutes `underspecified`.** `reconcileVerdict` overrides that one park reason when the spec names an intent, at least one deliverable, at least one acceptance criterion, at least one confirmed evidence row, no contradicted row, and no blocking open question (`- **None blocking** — …` does not count as blocking). The verdict becomes `proceed-with-assumptions`, never a plain `proceed` — the resolver did not say proceed, the driver inferred it — and the override is recorded as an assumption so it appears in the PR body rather than only in a trace line.
+
+The override is deliberately narrow. `already-implemented`, `too-large`, `premise-unsound` and `contradicted-by-code` are all compatible with a complete spec and still park. And requiring a *confirmed* evidence row is what keeps "silence is not permission" true: a resolver that fills in the template without checking anything against the code has no confirmed row, so it still parks.
+
 ### Merge authority — why `/work` opened a PR and stopped
 
 **`/work` will not merge unless something explicitly permitted it to.** That is the default, and the absence of a prohibition is not permission.

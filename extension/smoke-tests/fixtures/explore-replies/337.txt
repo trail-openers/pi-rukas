@@ -1,0 +1,67 @@
+
+
+Now I have the complete picture. Let me verify one more thing — the exact mechanism by checking the release-please action's token parameter:
+
+
+
+
+
+Now I have the complete picture. Let me compile the structured reconnaissance report.
+
+---
+
+## Verdict
+VERDICT: NEEDS_WORK
+
+## Spec
+
+### Intent
+Fix the release-please CI gate so that the `release-please--branches--main--components--pi-ensemble` PR triggers real CI workflow execution (with jobs that run to `success`/`failure` instead of `action_required` at 0s).
+
+### Deliverables
+- **D1**: Update `.github/workflows/release-please.yml` to authenticate `release-please-action` with a non-`GITHUB_TOKEN` identity so PRs it creates trigger `on: pull_request` workflows [paths: `.github/workflows/release-please.yml`]
+- **D2**: Document the required repository secret (`RELEASE_PLEASE_TOKEN` — fine-grained PAT) in README or install instructions so operators can provision it [paths: `README.md` or `CONTRIBUTING.md`]
+
+### Acceptance criteria
+- The **next** release-please PR (after this fix) shows at least one CI workflow run with terminal state `success` or `failure` and non-zero duration
+- `gh pr checks` on that PR reports real checks rather than "no checks reported"
+- `gh api repos/randomm/pi-ensemble/actions/runs/<run-id>/jobs` returns at least 1 job (currently returns 0)
+
+### Out of scope
+- Changes to `.github/workflows/ci.yml` (it already has correct triggers)
+- Changes to `.github/workflows/publish-image.yml`
+- Any extension/src/ code changes
+- Dependabot configuration (dependabot already works — its `app/dependabot` identity is distinct from `GITHUB_TOKEN`)
+
+### Assumptions
+- Repository has no org-level first-time-contributor approval policy blocking the release-please branch — confirmed by `app/dependabot` PRs running normally and `actions/permissions` returning `allowed_actions: "all"`
+- A fine-grained PAT with `contents: write` + `pull-requests: write` on this repo is the preferred token over a GitHub App (simpler setup, single-repo scope)
+- The `GITHUB_TOKEN` anti-recursion rule is the root cause, not a combination with other factors — confirmed by evidence pattern (0 jobs, `action_required`, exclusive to `app/github-actions` PRs)
+
+### Open questions
+- **None blocking** — mechanism is confirmed with executed evidence
+
+### Evidence
+- **`app/github-actions` is the PR author** — `gh pr view 322` returns `author.login: "app/github-actions"` — **confirmed**
+- **0 jobs in CI run** — `gh api repos/.../actions/runs/31160603722/jobs` returns `total_count: 0` for release-please branch, while run `31160570771` (main push) returns 1 job — **confirmed**
+- **`action_required` conclusion** — `gh run list --workflow=ci.yml` shows every `release-please--branches--main--components--pi-ensemble` PR run concludes `action_required`, all normal runs conclude `success` — **confirmed**
+- **Dependabot PRs work** — PR #9 (`app/dependabot`, branch `dependabot/...`) has CI run `26151226212` with conclusion `success` — **confirmed** (distinct identity bypasses anti-recursion)
+- **No environments or org-block** — `gh api repos/.../environments` returns `total_count: 0`, `gh api repos/.../actions/permissions` returns `allowed_actions: "all"` — **confirmed**
+- **CI workflow triggers on `pull_request`** — `.github/workflows/ci.yml` line 4: `pull_request:` with no branch filter — **confirmed**
+- **release-please-action uses `GITHUB_TOKEN` by default** — `.github/workflows/release-please.yml` does NOT set a `token:` input — **confirmed**
+
+## Workstreams
+This is a single, atomic workstream. The fix is one line in `.github/workflows/release-please.yml` (add `token: ${{ secrets.RELEASE_PLEASE_TOKEN }}`) plus documentation. No file collisions with any EPIC #328 member.
+
+## Prior decisions
+- **EPIC #328 "make review gates observable"** — this issue (#337) is a member of that epic, zero collisions with other members, parallelizable immediately (per issue body)
+- **`release-please-config.json`** — uses `node` release type, bumps `package.json` + `extension/package.json` via `extra-files`; this is stable and unrelated to the CI trigger issue
+
+## Touchpoints
+- `.github/workflows/release-please.yml` — **primary change**: add `token: ${{ secrets.RELEASE_PLEASE_TOKEN }}` to the `release-please-action@v4` step
+- `README.md` or `CONTRIBUTING.md` — document the `RELEASE_PLEASE_TOKEN` secret (fine-grained PAT with `contents: write`, `pull-requests: write` scopes on this repo)
+- Repository secrets (GitHub UI) — operator must create `RELEASE_PLEASE_TOKEN`
+
+## Rationale
+
+The mechanism is confirmed via executed evidence, not assertion: release-please PRs are authored by `app/github-actions` (the default `GITHUB_TOKEN`), CI runs for those PRs create 0 jobs and conclude `action_required`, while all other PRs (feature branches, dependabot) create 1 job and conclude `success`. This is the exact signature of GitHub's anti-recursion rule: `GITHUB_TOKEN`-authored PRs do not trigger `on: pull_request` workflows. Dependabot works because it has a distinct identity (`app/dependabot`). The fix is well-documented by GitHub and release-please-action: pass a PAT or GitHub App token via the `token:` input so the PR carries a real identity.
