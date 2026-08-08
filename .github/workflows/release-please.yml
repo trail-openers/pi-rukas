@@ -15,6 +15,24 @@ jobs:
       - id: release
         uses: googleapis/release-please-action@v4
         with:
+          # #337 — a PR authored with the default GITHUB_TOKEN does not
+          # trigger `on: pull_request` workflows. That is GitHub's
+          # anti-recursion rule, not a permissions failure: nothing is denied,
+          # the runs are simply created with zero jobs and conclude
+          # `action_required`. Every release PR to date has therefore merged
+          # with NO CI having run on it.
+          #
+          # Confirmed by executed evidence: release PRs are authored by
+          # `app/github-actions` and their runs report `total_count: 0` jobs,
+          # while Dependabot's PRs — same repo, same workflow, same trigger,
+          # but a distinct identity (`app/dependabot`) — run and pass.
+          #
+          # A PAT gives the PR a real identity, so `pull_request` fires
+          # normally. RELEASE_PAT needs Contents: write (push the branch, tag
+          # the release) and Pull requests: write (open and update the PR).
+          # It does NOT need `workflows` — that scope only governs pushing
+          # changes to `.github/workflows/`, which a release PR never does.
+          token: ${{ secrets.RELEASE_PAT }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 

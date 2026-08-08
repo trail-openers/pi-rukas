@@ -315,6 +315,10 @@ BREAKING CHANGE: hardcoded 10-slot limit is now configurable via env var.
 
 Versioning is automated by [release-please](https://github.com/googleapis/release-please). Conventional commit messages drive `CHANGELOG.md` entries and the version bump in the release PR.
 
+**Release PRs authenticate with `RELEASE_PAT` (#337).** `release-please-action` gets `token: ${{ secrets.RELEASE_PAT }}` rather than the default `GITHUB_TOKEN`. This is not a permissions fix — nothing was being denied. A PR authored with `GITHUB_TOKEN` does not trigger `on: pull_request` workflows at all, by GitHub's anti-recursion rule, so every release PR up to v0.12.25 merged with **zero CI runs**: the runs existed but reported `total_count: 0` jobs and concluded `action_required` in 0s. Dependabot's PRs worked throughout, because `app/dependabot` is a distinct identity.
+
+The secret needs `Contents: write` (push the branch, tag the release) and `Pull requests: write` (open and update the PR). It does **not** need `workflows` — that scope only governs pushing changes *to* `.github/workflows/`, and a release PR touches only `CHANGELOG.md`, the manifest and the two `package.json`s. If the PAT ever expires the symptom returns exactly: a release PR reporting "no checks reported".
+
 **Pre-1.0 versioning model**: while the project is in alpha (`0.x`), `release-please-config.json` sets both `bump-minor-pre-major: true` and `bump-patch-for-minor-pre-major: true`. This means `feat:` bumps PATCH (not MINOR) and BREAKING changes bump MINOR (not MAJOR). Only `feat!` / `fix!` / explicit `BREAKING CHANGE:` footers move the minor digit. Once we cut `1.0.0`, both flags become inert and standard semver resumes (`feat:` → MINOR, BREAKING → MAJOR).
 
 ### Branch naming

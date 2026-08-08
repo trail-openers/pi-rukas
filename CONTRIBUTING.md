@@ -254,6 +254,16 @@ To add a new skill: drop a directory under `skill/<skill-name>/` with a
 `SKILL.md` (frontmatter + body, Claude-Agent-Skills compatible). Re-run
 `./install.sh` to symlink it into `~/.pi/agent/skills/`.
 
+## Releases
+
+Versioning is automated by release-please; see AGENTS.md §9 for the pre-1.0 bump model.
+
+One piece of setup is required and is easy to lose: the repository secret **`RELEASE_PAT`**, a fine-grained PAT with `Contents: write` and `Pull requests: write` on this repo. `release-please-action` uses it via its `token:` input so the release PR carries a real identity.
+
+Without it, release PRs are authored by `GITHUB_TOKEN` and GitHub's anti-recursion rule means `on: pull_request` workflows never fire — the runs are created with zero jobs and conclude `action_required`, so `gh pr checks` reports "no checks reported" and the release merges untested. That was the state of every release up to v0.12.25 (#337).
+
+**If a release PR ever shows "no checks reported" again, the PAT has expired.** Regenerate it and update the secret; no code change is needed.
+
 ## Issue / PR etiquette
 
 - One concern per PR. Small + reviewable beats Big Bang.
