@@ -8,6 +8,14 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.25](https://github.com/randomm/pi-ensemble/compare/v0.12.24...v0.12.25) (2026-08-08)
+
+
+### Bug Fixes
+
+* **#397:** one verdict protocol, and a complete spec is not "underspecified" ([#399](https://github.com/randomm/pi-ensemble/issues/399)) ([079f8e3](https://github.com/randomm/pi-ensemble/commit/079f8e35c9b2132d90fbb82323685ecc8226fbe8)), closes [#397](https://github.com/randomm/pi-ensemble/issues/397)
+* **#398:** intent-park stops inheriting a handoff written for a timeout ([#400](https://github.com/randomm/pi-ensemble/issues/400)) ([5ecbe74](https://github.com/randomm/pi-ensemble/commit/5ecbe74e644055b69ee790e472e993613fd30afe)), closes [#398](https://github.com/randomm/pi-ensemble/issues/398)
+
 ## [0.12.24](https://github.com/randomm/pi-ensemble/compare/v0.12.23...v0.12.24) (2026-08-07)
 
 
