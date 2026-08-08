@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.26](https://github.com/randomm/pi-ensemble/compare/v0.12.25...v0.12.26) (2026-08-08)
+
+
+### Bug Fixes
+
+* **#337:** release PRs authenticate with RELEASE_PAT so CI actually runs ([#402](https://github.com/randomm/pi-ensemble/issues/402)) ([5cf77d4](https://github.com/randomm/pi-ensemble/commit/5cf77d43d7f7ff396e8643542794fcd9a453c9b6)), closes [#337](https://github.com/randomm/pi-ensemble/issues/337)
+
 ## [0.12.25](https://github.com/randomm/pi-ensemble/compare/v0.12.24...v0.12.25) (2026-08-08)
 
 
