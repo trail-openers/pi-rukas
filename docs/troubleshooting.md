@@ -944,6 +944,25 @@ At the `ci` step a weaker version of gate 2 applies: **narration cannot promote 
 
 Escape hatch: `PI_ENSEMBLE_MERGE_AUTHORITY=0` restores the previous behaviour, where the driver merged whenever an ops child's reply contained the substring `ci-status: success`.
 
+### A cycle cannot grant itself authority (#406)
+
+Gate 1 above reads `AGENTS.md`. The `merged` step runs **after** `commit-pr` has integrated the developer subagents' patches into the repo — so until #406, a developer that wrote *"LLMs are allowed to squash merge PRs"* into `AGENTS.md` had that sentence integrated by the driver's own consolidation and then read back as permission. The cycle authorised itself.
+
+Two different mechanisms close this, because there are two different threats:
+
+| What changed | Mechanism | Why this one |
+|---|---|---|
+| `AGENTS.md`, `CLAUDE.md` | **Neutralised** — doctrine is read at the cycle's `baseSha` via `git show`, never from the working tree | A grant written during the cycle is invisible to the gate, but an *honest* docs change still ships in the PR. Blanket-halting would break the rule that documentation ships alongside the behaviour it describes. |
+| `.github/`, `.pi/`, `CODEOWNERS`, `agents.json` | **Halted** — the develop gate fails with `protected path` and the cycle parks | These define what *verified*, *reviewed* and *green* mean, and they take effect within the same cycle: a workflow edited at develop is the workflow the `ci` step then reads. Reading them at base does not help, because the running system uses the working-tree copy. |
+
+If the develop gate halts on a protected path, the message names each path. Either make that change yourself, or — if editing those files genuinely *is* the work you asked for — re-run with the gate off:
+
+```bash
+PI_ENSEMBLE_PROTECTED_PATHS=0 /work <issue>
+```
+
+A doctrine-prose edit is not a failure; it appears in the verify notes as *"allowed, and inert for this cycle"*. If merge authority is unexpectedly denied on a repo whose `AGENTS.md` clearly grants it, check that the grant is **committed at or before the cycle's base** — an uncommitted grant in your working tree is exactly what this gate ignores.
+
 ### Parallel group execution
 
 `/work N M P …` runs up to `PI_ENSEMBLE_PARALLEL_GROUPS` (default **3**) groups concurrently. Each group develops in its own `.worktrees/` tree, so the only shared resource is the repo root, and every operation that touches it — branch creation, patch integration, commit, push, `gh pr create`, the verify gates, lens-fix re-integration, `restoreCheckout`, worktree teardown — runs under a single integration lock. That lock is an in-process promise chain plus an `O_EXCL` lockfile under `.git/`, so a second `/work` invocation or a second Pi process on the same clone is also serialised.

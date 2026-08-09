@@ -27,8 +27,6 @@
  * in both directions.
  */
 
-import fs from "node:fs/promises";
-import path from "node:path";
 import { trace } from "./trace.ts";
 
 /** Shell executor, matching `DriverContext.verifyExecFn`. */
@@ -91,29 +89,33 @@ function stripCode(text: string): string {
 }
 
 /**
- * Resolve whether merging is permitted for this cycle.
+ * Resolve whether merging is permitted, from doctrine text the caller supplies.
  *
- * Order matters: an explicit denial anywhere in AGENTS.md beats a grant, and
- * an absent or unreadable AGENTS.md means no grant. The operator override is
+ * Takes text rather than a path deliberately (#406). The caller that matters —
+ * the `merged` step — must read doctrine as of the cycle's *base commit*, via
+ * `readDoctrineAtBase`, because by that point the working tree contains
+ * whatever the developer subagents wrote and a grant found there proves
+ * nothing. Making this function unable to open a file means it cannot
+ * accidentally be pointed at the post-integration copy.
+ *
+ * Order matters: an explicit denial anywhere in the doctrine beats a grant, and
+ * absent or unreadable doctrine means no grant. The operator override is
  * checked first because a human saying "yes, merge this run" is the most
  * direct evidence of intent there is.
  */
-export async function resolveMergeAuthority(
-  repoRoot: string,
+export function resolveMergeAuthorityFromDoctrine(
+  doctrine: string | undefined,
   operatorGrant?: boolean,
-): Promise<MergeAuthority> {
+): MergeAuthority {
   if (operatorGrant === true) {
     return { granted: true, source: "operator", quote: "operator granted merge for this run" };
   }
-  let text: string;
-  try {
-    text = await fs.readFile(path.join(repoRoot, "AGENTS.md"), "utf8");
-  } catch {
-    // No AGENTS.md is not a grant. A project that never said anything about
+  if (doctrine === undefined) {
+    // No doctrine is not a grant. A project that never said anything about
     // merging has not permitted it.
     return { granted: false, source: "none" };
   }
-  const prose = stripCode(text);
+  const prose = stripCode(doctrine);
   for (const deny of DENY_PATTERNS) {
     const m = prose.match(deny);
     if (m) {

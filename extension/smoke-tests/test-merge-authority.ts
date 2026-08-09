@@ -23,7 +23,7 @@ import {
   gatherMergeEvidence,
   mergeAuthorityEnabled,
   mergeHoldAction,
-  resolveMergeAuthority,
+  resolveMergeAuthorityFromDoctrine,
 } from "../src/work-driver-merge-authority.ts";
 
 let exit = 0;
@@ -37,34 +37,35 @@ function assert(cond: boolean, msg: string) {
 }
 
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-merge-auth-"));
-const repo = async (agentsMd?: string) => {
-  const dir = await fs.mkdtemp(path.join(tmp, "r-"));
-  if (agentsMd !== undefined) await fs.writeFile(path.join(dir, "AGENTS.md"), agentsMd);
-  return dir;
-};
 
 // ------------------------------------------------------ authority
+//
+// #406 — these take doctrine TEXT, not a directory. `resolveMergeAuthority`
+// used to open `<repoRoot>/AGENTS.md` itself, which is the working-tree copy;
+// at the `merged` step that copy contains whatever the developer subagents
+// just wrote. The reader now lives in `work-driver-doctrine.ts` and is pinned
+// to the base commit, and is exercised against a real git repo below.
 
 {
   // The headline behaviour change. Pre-#380 this merged.
-  const dir = await repo();
-  const a = await resolveMergeAuthority(dir);
+  const doc = undefined;
+  const a = resolveMergeAuthorityFromDoctrine(doc);
   assert(!a.granted, "no AGENTS.md → NO merge authority (the absence of a rule is not a grant)");
   assert(a.source === "none", "...and the source is recorded as none");
 }
 {
-  const dir = await repo("# Contributing\n\nRun the tests before pushing.\n");
+  const doc = ("# Contributing\n\nRun the tests before pushing.\n");
   assert(
-    (await resolveMergeAuthority(dir)).granted === false,
+    resolveMergeAuthorityFromDoctrine(doc).granted === false,
     "an AGENTS.md that simply never mentions merging is NOT a grant",
   );
 }
 {
   // This repo's own §9 — the positive case that must keep working, verbatim.
-  const dir = await repo(
+  const doc = (
     "## 9. Git workflow\n\nLLMs are allowed to squash merge PRs once CI is green.\n",
   );
-  const a = await resolveMergeAuthority(dir);
+  const a = resolveMergeAuthorityFromDoctrine(doc);
   assert(a.granted && a.source === "agents-md", "this repo's own §9 wording grants authority");
   assert(
     /allowed to squash merge/i.test(a.quote ?? ""),
@@ -72,55 +73,55 @@ const repo = async (agentsMd?: string) => {
   );
 }
 {
-  const dir = await repo("Agents are allowed to merge their own PRs.\n");
+  const doc = ("Agents are allowed to merge their own PRs.\n");
   assert(
-    (await resolveMergeAuthority(dir)).granted,
+    resolveMergeAuthorityFromDoctrine(doc).granted,
     "the 'agents are allowed to merge' form works",
   );
 }
 {
-  const dir = await repo("automerge: true\n");
-  assert((await resolveMergeAuthority(dir)).granted, "an explicit `automerge: true` marker works");
+  const doc = ("automerge: true\n");
+  assert(resolveMergeAuthorityFromDoctrine(doc).granted, "an explicit `automerge: true` marker works");
 }
 {
   // A denial anywhere in the file beats a grant elsewhere in it.
-  const dir = await repo(
+  const doc = (
     "LLMs are allowed to squash merge PRs.\n\nActually: never merge without a human review.\n",
   );
-  const a = await resolveMergeAuthority(dir);
+  const a = resolveMergeAuthorityFromDoctrine(doc);
   assert(!a.granted, "an explicit prohibition overrides a grant elsewhere in the same file");
   assert(/never merge/i.test(a.quote ?? ""), "and the prohibition is quoted");
 }
 {
-  const dir = await repo("Do not merge PRs yourself.\n");
+  const doc = ("Do not merge PRs yourself.\n");
   assert(
-    !(await resolveMergeAuthority(dir)).granted,
+    !resolveMergeAuthorityFromDoctrine(doc).granted,
     "'do not merge' is honoured as a prohibition",
   );
 }
 {
   // The riskiest false positive: prose that discusses merging without granting.
-  const dir = await repo(
+  const doc = (
     "When you merge, use squash. Ask a maintainer to merge on your behalf.\n" +
       "The reviewer will merge once approved.\n",
   );
   assert(
-    !(await resolveMergeAuthority(dir)).granted,
+    !resolveMergeAuthorityFromDoctrine(doc).granted,
     "prose ABOUT merging is not a grant — the matcher is narrow on purpose",
   );
 }
 {
-  const dir = await repo();
-  const a = await resolveMergeAuthority(dir, true);
+  const doc = undefined;
+  const a = resolveMergeAuthorityFromDoctrine(doc, true);
   assert(a.granted && a.source === "operator", "`--merge` grants authority for the run");
 }
 {
   // An operator grant must not resurrect a project that forbade it... but the
   // operator IS the human the prohibition protects, so this documents the
   // precedence deliberately: the in-session human wins over the file.
-  const dir = await repo("Never merge.\n");
+  const doc = ("Never merge.\n");
   assert(
-    (await resolveMergeAuthority(dir, true)).source === "operator",
+    resolveMergeAuthorityFromDoctrine(doc, true).source === "operator",
     "an explicit in-session operator grant takes precedence over AGENTS.md",
   );
 }
@@ -130,22 +131,22 @@ const repo = async (agentsMd?: string) => {
   // this repo's AGENTS.md that DESCRIBED the deny matcher — quoting the phrase
   // "never merge" — flipped the repo from granted to denied. A file that
   // documents the mechanism will contain the phrases the mechanism looks for.
-  const dir = await repo(
+  const doc = (
     "LLMs are allowed to squash merge PRs.\n\n" +
       "A prohibition of the `never merge` shape anywhere in this file turns it off.\n" +
       "```\ndo not merge\n```\n",
   );
   assert(
-    (await resolveMergeAuthority(dir)).granted,
+    resolveMergeAuthorityFromDoctrine(doc).granted,
     "a prohibition QUOTED in backticks or a code fence is documentation, not a directive",
   );
 }
 {
-  const dir = await repo(
+  const doc = (
     "Policy: `LLMs are allowed to squash merge PRs` is what a grant looks like.\n",
   );
   assert(
-    !(await resolveMergeAuthority(dir)).granted,
+    !resolveMergeAuthorityFromDoctrine(doc).granted,
     "...and the same holds for a grant — a quoted example does not grant authority",
   );
 }
@@ -153,7 +154,9 @@ const repo = async (agentsMd?: string) => {
   // The end-to-end case the above protects: this repo's OWN AGENTS.md, read
   // from disk. If a doc edit ever silently disables merging here, this fails.
   const root = path.resolve(import.meta.dirname, "..", "..");
-  const a = await resolveMergeAuthority(root);
+  const a = resolveMergeAuthorityFromDoctrine(
+    await fs.readFile(path.join(root, "AGENTS.md"), "utf8"),
+  );
   assert(
     a.granted && a.source === "agents-md",
     "pi-ensemble's own AGENTS.md still grants merge authority (real file, not a fixture)",

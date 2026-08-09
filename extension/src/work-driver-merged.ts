@@ -22,12 +22,13 @@ import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { parseAbort } from "./work-driver-diff.ts";
+import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
 import { detectMainline, restoreCheckout } from "./work-driver-git.ts";
 import { withIntegrationLock } from "./work-driver-integrate.ts";
 import {
   gatherMergeEvidence,
   mergeAuthorityEnabled,
-  resolveMergeAuthority,
+  resolveMergeAuthorityFromDoctrine,
 } from "./work-driver-merge-authority.ts";
 import { type MergeMethod, mechanizedMerge } from "./work-driver-merged-mechanized.ts";
 import { inlineMergePrompt } from "./work-driver-prompts-late.ts";
@@ -291,7 +292,18 @@ export async function runMerged(
   // automatically have permission to merge it.
   if (mergeAuthorityEnabled()) {
     const execFnAuth = ctx.verifyExecFn ?? execp;
-    const authority = await resolveMergeAuthority(ctx.repoRoot, ctx.mergeGrant);
+    // #406 — doctrine is read at the BASE commit, never from the working tree.
+    // This step runs after `commit-pr` integrated the developer's patches, so
+    // an AGENTS.md read from disk here would include any grant a subagent just
+    // wrote for itself. Reading at base makes such a patch inert without
+    // forbidding it: honest AGENTS.md changes still ship in the PR.
+    const doctrine = await readDoctrineAtBase(
+      execFnAuth,
+      ctx.repoRoot,
+      state.pipelineState.baseSha,
+    );
+    const authority = resolveMergeAuthorityFromDoctrine(doctrine.text, ctx.mergeGrant);
+    if (doctrine.reason) trace(`work-driver: merge authority — ${doctrine.reason}`);
     const evidence = authority.granted
       ? await gatherMergeEvidence(execFnAuth, ctx.repoRoot, prNumber)
       : undefined;

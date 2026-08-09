@@ -9,6 +9,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { DriverContext } from "./work-driver-context.ts";
+import {
+  doctrineProsePathsIn,
+  explainProtectedPaths,
+  porcelainPaths,
+  protectedPathsEnabled,
+  protectedPathsIn,
+} from "./work-driver-doctrine.ts";
 import { countSkipMarkersInDiffLine } from "./work-driver-skip-ratchet.ts";
 import { readFirstConfigLine, verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -53,6 +60,10 @@ export async function verifyDevelopOutcome(
       : { default: ctx.repoRoot };
   const baseSha = state.pipelineState.baseSha;
   const changedWorktrees: string[] = [];
+  // #406 — every path the developers touched, across all worktrees, so the
+  // protected-path gate below sees the whole change set rather than one
+  // worktree's slice of it.
+  const touchedPaths: string[] = [];
   // PR18 (R1): track per-worktree assessability so one erroring worktree
   // doesn't suppress the hollow-diff check for all others.
   let assessedCount = 0;
@@ -66,10 +77,11 @@ export async function verifyDevelopOutcome(
       });
       assessed = true;
       if (stdout.trim().length > 0) changed = true;
+      touchedPaths.push(...porcelainPaths(stdout));
     } catch (err) {
       notes.push(`git status failed in ${id} (${(err as Error).message?.slice(0, 100)})`);
     }
-    if (!changed && isValidSha(baseSha)) {
+    if (isValidSha(baseSha)) {
       try {
         const { stdout } = await execFn(`git rev-list --count ${baseSha}..HEAD`, {
           cwd,
@@ -81,9 +93,39 @@ export async function verifyDevelopOutcome(
         // baseSha may not exist in this worktree's history — not evidence
         // either way.
       }
+      // Committed work counts too: a developer that commits a workflow edit
+      // rather than leaving it uncommitted must not slip past the gate.
+      try {
+        const { stdout } = await execFn(`git diff --name-only ${baseSha}..HEAD`, {
+          cwd,
+          maxBuffer: 4 * 1024 * 1024,
+        });
+        touchedPaths.push(...stdout.split("\n").filter((l) => l.trim().length > 0));
+      } catch {
+        // Same as above — an absent baseSha in this worktree is not evidence.
+      }
     }
     if (assessed) assessedCount++;
     if (changed) changedWorktrees.push(cwd);
+  }
+
+  // --- Protected-path gate (#406) ---
+  //
+  // A cycle must not edit the files that decide whether its own work passes.
+  // Policy prose (AGENTS.md, CLAUDE.md) is deliberately NOT halted here — it
+  // is neutralised instead, by reading doctrine at baseSha in the merge gate —
+  // so that this repo's own "docs ship with the PR" rule keeps working.
+  if (protectedPathsEnabled()) {
+    const protectedHits = protectedPathsIn(touchedPaths);
+    if (protectedHits.length > 0) failures.push(explainProtectedPaths(protectedHits));
+    const prose = doctrineProsePathsIn(touchedPaths);
+    if (prose.length > 0) {
+      notes.push(
+        `develop changed policy prose (${prose.join(", ")}) — allowed, and inert for this cycle: merge authority is read at the base commit, so a grant added here cannot take effect until an operator merges it`,
+      );
+    }
+  } else {
+    notes.push("PI_ENSEMBLE_PROTECTED_PATHS=0 — protected-path gate disabled");
   }
   if (changedWorktrees.length === 0) {
     if (assessedCount > 0) {
