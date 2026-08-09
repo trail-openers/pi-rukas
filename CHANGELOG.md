@@ -8,6 +8,19 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.28](https://github.com/randomm/pi-ensemble/compare/v0.12.27...v0.12.28) (2026-08-09)
+
+
+### Features
+
+* **#407:** resolve merge authority by asking the documents, not regexing them ([#412](https://github.com/randomm/pi-ensemble/issues/412)) ([603d611](https://github.com/randomm/pi-ensemble/commit/603d6112e63b2b4ffcbc217409366ce18e2ada68)), closes [#407](https://github.com/randomm/pi-ensemble/issues/407)
+
+
+### Bug Fixes
+
+* **#406:** a cycle can no longer grant itself merge authority ([#410](https://github.com/randomm/pi-ensemble/issues/410)) ([22127ea](https://github.com/randomm/pi-ensemble/commit/22127ea1655654c9ef0f4c1dba047167cc8bd496)), closes [#406](https://github.com/randomm/pi-ensemble/issues/406)
+* **#408:** a marker that fails to parse must not produce a confident wrong answer ([#413](https://github.com/randomm/pi-ensemble/issues/413)) ([72143e3](https://github.com/randomm/pi-ensemble/commit/72143e329de930e6d262caf9d22fe9a6c51f58b9)), closes [#408](https://github.com/randomm/pi-ensemble/issues/408)
+
 ## [0.12.27](https://github.com/randomm/pi-ensemble/compare/v0.12.26...v0.12.27) (2026-08-09)
 
 
