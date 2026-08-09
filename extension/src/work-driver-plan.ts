@@ -257,7 +257,13 @@ export function parseExploreVerdict(text: string): ExploreVerdict | null {
 export function parsePerIssueVerdicts(
   text: string,
   issues: number[],
-): Array<{ issue: number; verdict: ExploreVerdict; reason: string }> {
+): Array<{
+  issue: number;
+  verdict: ExploreVerdict;
+  reason: string;
+  /** Where the verdict came from. `default` means nothing was parsed (#408). */
+  verdictSource: "per-issue" | "overall" | "default";
+}> {
   const overall = parseExploreVerdict(text);
   return issues.map((n) => {
     const re = new RegExp(
@@ -268,14 +274,36 @@ export function parsePerIssueVerdicts(
     const tok = m?.[1];
     if (tok) {
       const reason = (m?.[2] ?? "").trim();
-      return { issue: n, verdict: tok.toUpperCase() as ExploreVerdict, reason };
+      return {
+        issue: n,
+        verdict: tok.toUpperCase() as ExploreVerdict,
+        reason,
+        verdictSource: "per-issue" as const,
+      };
     }
+    if (overall) {
+      return {
+        issue: n,
+        verdict: overall as ExploreVerdict,
+        reason: "(no per-issue verdict; using overall)",
+        verdictSource: "overall" as const,
+      };
+    }
+    // #408 — this used to default to NEEDS_WORK, i.e. BUILD IT. Nothing in
+    // the reply said so; the driver invented it. That is the "silence is
+    // permission" shape #378 set out to remove, and it survived here on the
+    // multi-issue path — which #397 then made the ONLY multi-issue path.
+    //
+    // A value the driver made up must not drive an irreversible decision
+    // (the #404 lesson, one step upstream). NEEDS_CLARIFICATION drops the
+    // issue and tells the operator the verdict could not be read, which is
+    // recoverable; building something nobody asked for is not.
     return {
       issue: n,
-      verdict: (overall ?? "NEEDS_WORK") as ExploreVerdict,
-      reason: overall
-        ? "(no per-issue verdict; using overall)"
-        : "(no verdict; defaulting to NEEDS_WORK)",
+      verdict: "NEEDS_CLARIFICATION" as ExploreVerdict,
+      reason:
+        "the verdict for this issue could not be read — neither a per-issue marker nor an overall VERDICT was present. Not building on a verdict the driver invented.",
+      verdictSource: "default" as const,
     };
   });
 }

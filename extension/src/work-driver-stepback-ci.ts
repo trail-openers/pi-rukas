@@ -12,6 +12,7 @@
 
 import { exec as nodeExec } from "node:child_process";
 import { promisify } from "node:util";
+import { readMarker } from "./reply-markers.ts";
 import { trace } from "./trace.ts";
 import { type DriverContext, MAX_CI_RETRIES } from "./work-driver-context.ts";
 import {
@@ -257,15 +258,23 @@ export async function runCi(ctx: DriverContext, state: WorkState, now: number): 
   const last = next.eventLog[next.eventLog.length - 1];
   if (last?.kind === "dispatch-completed") {
     const text = last.summary ?? "";
-    let status: "success" | "failure" | "pending" = text.includes("ci-status: success")
-      ? "success"
-      : text.includes("ci-status: failure")
-        ? "failure"
-        : // No marker line — treat as failure so the retry cap fires.
-          // Logged via the event payload so the user can see this happened
-          // on inspection. ops doctrine should still emit the marker; this
-          // is the safety net.
-          "failure";
+    // #408 — this was a bare `text.includes("ci-status: success")`: case
+    // sensitive, and blind to the `**ci-status:** success` an ops agent
+    // routinely writes. Any such drift read as a CI failure, which burnt a
+    // retry on a green run and could park a finished cycle. `readMarker`
+    // accepts the shapes agents actually emit, and — unlike `includes` —
+    // reports ABSENCE distinctly, so the two cases can be told apart in the
+    // event payload instead of being collapsed into one.
+    const marker = readMarker(text, "ci-status", /(success|failure|pending)/);
+    let status: "success" | "failure" | "pending" =
+      marker === "success"
+        ? "success"
+        : marker === "pending"
+          ? "pending"
+          : // Explicit failure, or no marker at all — treat as failure so the
+            // retry cap fires rather than the driver idling at `ci` forever
+            // (#553's shape: ops reported "no PR exists" with no marker).
+            "failure";
     // #380 — a narrated success is a claim, not evidence. The driver used to
     // route to `merged` on `text.includes("ci-status: success")` without ever
     // calling `gh`. Check it: narration cannot PROMOTE a status, but executed

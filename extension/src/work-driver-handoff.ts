@@ -87,7 +87,6 @@ export async function runHandoff(
     scratchDir(ctx.repoRoot, ctx.issue),
   );
   let opsReplyText = "";
-  let dispatchOk = false;
   try {
     const res = await dispatch(
       ctx.pi,
@@ -95,7 +94,6 @@ export async function runHandoff(
       { label: "ops:handoff", timeoutMs: 15 * 60_000 },
     );
     opsReplyText = res.text ?? "";
-    dispatchOk = res.ok && !res.errorStop;
     const completionEvent = await buildCompletionEvent(ctx, "handoff", "ops", "ops:handoff", res);
     next = appendEvent(next, completionEvent);
   } catch (err) {
@@ -113,7 +111,17 @@ export async function runHandoff(
   }
 
   let commentUrl = parseHandoffCommentUrl(opsReplyText);
-  let labelApplied = dispatchOk && /label.*needs-human-attention/i.test(opsReplyText);
+  // #408 — this used to be `/label.*needs-human-attention/i.test(opsReplyText)`,
+  // which matches "I could not apply the label needs-human-attention" just as
+  // happily as a success. It recorded the label as applied, skipped the
+  // mechanical fallback below, and the issue never got labelled — the operator
+  // then had no way to find the cycle that needed them.
+  //
+  // There is nothing to parse here. `gh --add-label` is idempotent, the driver
+  // is already willing to run it, and running it is cheaper than reasoning
+  // about whether an agent's prose meant success. Narration cannot establish
+  // that a side effect happened; performing it can.
+  let labelApplied = false;
 
   // PR5 in-process fallback. When the ops dispatch failed OR the
   // commentUrl didn't parse out, the driver itself shells out `gh` —

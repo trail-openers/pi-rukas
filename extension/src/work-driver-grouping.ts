@@ -168,8 +168,12 @@ export function groupIssues(
 
   // R1 — Explicit link markers: depends-on / companion-to / blocks /
   // blocked-by. Directed edge → union both ends.
+  // #408 — `closes` / `fixes` / `resolves` / `part of` / `related to` were
+  // missing, and GitHub's own closing keywords are how issues reference each
+  // other in practice: lantern #657 said "closes #650" and R1 saw nothing, so
+  // two issues that were literally the same work were grouped apart.
   const linkRe =
-    /\b(?:depends[-\s]?on|companion[-\s]?(?:to|of)|blocks?|blocked[-\s]?by)\s*:?\s*#?(\d+)/gi;
+    /\b(?:depends[-\s]?on|companion[-\s]?(?:to|of)|blocks?|blocked[-\s]?by|close[sd]?|fix(?:e[sd])?|resolve[sd]?|supersedes?|part[-\s]of|relate[sd]?[-\s]to|duplicate[-\s]of)\s*:?\s*#(\d+)/gi;
   for (const n of activeIssues) {
     const body = bodiesByIssue[n] ?? "";
     let m: RegExpExecArray | null;
@@ -185,7 +189,11 @@ export function groupIssues(
 
   // R2 — Path overlap. Extract path-shaped tokens from each body,
   // compute Jaccard on pairs, union if ≥ 0.5.
-  const EXT = "ts|tsx|js|jsx|py|rs|go|md|json|toml|yaml|yml|sh|css|scss|html";
+  // #408 — `container` was absent, so the one file lantern #650 and #657
+  // genuinely shared contributed nothing to their Jaccard score. Extended
+  // with the infra/config shapes issues actually cite.
+  const EXT =
+    "ts|tsx|js|jsx|mjs|cjs|py|rs|go|rb|java|kt|swift|c|h|cpp|hpp|md|mdx|json|jsonc|toml|yaml|yml|sh|bash|zsh|sql|css|scss|html|container|service|dockerfile|env|ini|cfg|conf|lock|tf|gradle|nix";
   const pathRe = new RegExp(`(?<![a-z0-9/])([a-z0-9._-]+/[a-z0-9._/-]+\\.(?:${EXT}))\\b`, "gi");
   // #376 — issues reference bare module names with line anchors far more often
   // than directory-qualified paths: `work-driver.ts:1274`, `commands.ts:262`.

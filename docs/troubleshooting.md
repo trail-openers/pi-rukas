@@ -949,6 +949,26 @@ At the `ci` step a weaker version of gate 2 applies: **narration cannot promote 
 
 Escape hatch: `PI_ENSEMBLE_MERGE_AUTHORITY=0` restores the previous behaviour, where the driver merged whenever an ops child's reply contained the substring `ci-status: success`.
 
+### Structured markers in subagent replies (#408)
+
+Steps ask their child to end with a marker (`VERDICT: APPROVED`, `ci-status: success`, `#561: NEEDS_WORK`). One shared reader (`extension/src/reply-markers.ts`) accepts every shape agents actually emit — `**VERDICT:** APPROVED`, `verdict: approved`, and the heading form:
+
+```
+### VERDICT
+APPROVED
+```
+
+It also reports **absence** distinctly from a parsed value. That distinction is the point: before #408 each site collapsed "no marker" into some default, and the defaults were wrong in the dangerous direction.
+
+| Site | A miss used to mean | Now |
+|---|---|---|
+| `parsePerIssueVerdicts` | **build the issue** — nothing in the reply said so | `NEEDS_CLARIFICATION`; the issue is dropped and the operator is told the verdict was unreadable |
+| adversarial `VERDICT` | `ISSUES_FOUND`, with the whole approval message handed to the fix-developer as "findings" | still another round, but the reply is labelled as unparsed prose rather than presented as defects |
+| `ci-status` | CI failure — burning a retry and possibly parking a green cycle | only an explicit `failure`, or a genuinely absent marker, counts as failure |
+| handoff `needs-human-attention` label | *applied* — the matcher also matched *"I could not apply the label needs-human-attention"* | not parsed at all; the driver runs `gh --add-label` itself and records what happened |
+
+If you see a cycle drop an issue with *"the verdict for this issue could not be read"*, the explore child did not emit a per-issue marker. Re-run; if it recurs, the issue body is likely confusing the resolver.
+
 ### A cycle cannot grant itself authority (#406)
 
 Gate 1 above reads `AGENTS.md`. The `merged` step runs **after** `commit-pr` has integrated the developer subagents' patches into the repo — so until #406, a developer that wrote *"LLMs are allowed to squash merge PRs"* into `AGENTS.md` had that sentence integrated by the driver's own consolidation and then read back as permission. The cycle authorised itself.

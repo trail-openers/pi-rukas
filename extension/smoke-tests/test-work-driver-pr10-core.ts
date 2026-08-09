@@ -107,11 +107,37 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     fallback[0]?.verdict === "NEEDS_WORK" && fallback[1]?.verdict === "NEEDS_WORK",
     "parsePerIssueVerdicts: falls back to overall VERDICT when per-issue absent",
   );
-  // Missing per-issue + no overall → default NEEDS_WORK.
+  assert(
+    fallback[0]?.verdictSource === "overall",
+    "parsePerIssueVerdicts: ...and records that the verdict came from the overall marker, not per-issue",
+  );
+
+  // #408 — this assertion is INVERTED from what it said before, deliberately.
+  // It used to read "defaults to NEEDS_WORK when nothing parseable (driver
+  // proceeds rather than silently drops)", which is the "silence is
+  // permission" shape #378 set out to remove: nothing in the reply said to
+  // build these issues, and the driver decided to anyway. On the multi-issue
+  // path — which #397 made the only multi-issue path — that means building
+  // work nobody asked for, off a verdict the driver invented.
+  //
+  // Dropping to NEEDS_CLARIFICATION is recoverable: the operator is told the
+  // verdict could not be read and can re-run. Building the wrong thing is not.
   const defaulted = parsePerIssueVerdicts("no verdicts here at all", [800]);
   assert(
-    defaulted[0]?.verdict === "NEEDS_WORK",
-    "parsePerIssueVerdicts: defaults to NEEDS_WORK when nothing parseable (driver proceeds rather than silently drops)",
+    defaulted[0]?.verdict === "NEEDS_CLARIFICATION",
+    "parsePerIssueVerdicts: NOTHING parseable does NOT mean build it — it means ask",
+  );
+  assert(
+    defaulted[0]?.verdictSource === "default",
+    "...and the verdict is marked as driver-invented, not something the reply said",
+  );
+  assert(
+    /could not be read/.test(defaulted[0]?.reason ?? ""),
+    "...with a reason that says the verdict was unreadable, not that the issue was vague",
+  );
+  assert(
+    parsePerIssueVerdicts("#561: NEEDS_WORK — go", [561])[0]?.verdictSource === "per-issue",
+    "a real per-issue verdict is still recorded as parsed (the assertions above are not vacuous)",
   );
 }
 

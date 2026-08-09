@@ -174,4 +174,10 @@ export interface AdversarialVerdict {
   status: "APPROVED" | "ISSUES_FOUND" | "CRITICAL_ISSUES_FOUND";
   findings: string;
   raw: string;
+  /**
+   * #408 — false when no VERDICT marker could be read and the status was
+   * defaulted. `findings` then carries unstructured prose, not review output,
+   * and callers must not present it to a fix-developer as a list of defects.
+   */
+  verdictParsed?: boolean;
 }

@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { markOrchestrator, setOrchestratorActiveChild, startJob } from "./async-jobs.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
+import { readEnumMarker } from "./reply-markers.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import type { AdversarialVerdict, DispatchFailureCause, DispatchResult } from "./types.ts";
 import { ADVERSARIAL_TRANSIENT_MAX_RETRIES, isRateLimit429Msg } from "./types.ts";
@@ -373,8 +374,31 @@ function buildFixPrompt(findings: string, context: string): string {
   return `Fix the following adversarial review findings. Original context: ${context}\n\nFindings:\n${findings}\n\nMake the minimal changes needed to address every finding. Run local quality gates before returning.`;
 }
 
+/**
+ * Read the reviewer's verdict marker.
+ *
+ * #408 — this was `/VERDICT:\s*(APPROVED|…)/`: case-sensitive, no tolerance
+ * for the `**VERDICT: APPROVED**` that reviewers routinely write. A miss
+ * defaulted to `ISSUES_FOUND` *and* passed the whole reply on as `findings`,
+ * so an approval was handed to the fix-developer as a list of things to fix.
+ * Another round then burned on a diff nobody had objected to.
+ *
+ * The default is still `ISSUES_FOUND` — another review round is the safe
+ * direction, and unlike the merge gate nothing irreversible follows. But an
+ * unparsed reply is now marked as such, so `findings` is not passed off as
+ * review output it never was.
+ */
 function parseVerdict(text: string): AdversarialVerdict {
-  const m = text.match(/VERDICT:\s*(APPROVED|ISSUES_FOUND|CRITICAL_ISSUES_FOUND)/);
-  const status = (m?.[1] ?? "ISSUES_FOUND") as AdversarialVerdict["status"];
-  return { status, findings: text, raw: text };
+  const status = readEnumMarker(text, "VERDICT", [
+    "APPROVED",
+    "ISSUES_FOUND",
+    "CRITICAL_ISSUES_FOUND",
+  ] as const);
+  if (status) return { status, findings: text, raw: text };
+  return {
+    status: "ISSUES_FOUND",
+    findings: `The reviewer's reply contained no readable VERDICT marker, so its verdict is unknown — this is NOT a list of findings. Treat the text below as unstructured review notes, and if it raises nothing actionable, say so plainly rather than inventing work.\n\n${text}`,
+    raw: text,
+    verdictParsed: false,
+  };
 }
