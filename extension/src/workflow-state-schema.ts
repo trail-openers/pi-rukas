@@ -183,7 +183,10 @@ export interface PipelineState {
   lensDiffError?: string;
   mergeHold?: {
     authorityGranted: boolean;
-    authoritySource: "agents-md" | "operator" | "none";
+    /** #407 — `doctrine` is a citation-verified grant; `citation-failed` is a
+     * judge that asserted permission it could not point at. `agents-md`
+     * remains for state files written before #407. */
+    authoritySource: "agents-md" | "doctrine" | "operator" | "none" | "citation-failed";
     /** The AGENTS.md sentence that granted or forbade it, verbatim. */
     authorityQuote?: string;
     /** Why the executed-evidence gate refused, when authority was granted. */

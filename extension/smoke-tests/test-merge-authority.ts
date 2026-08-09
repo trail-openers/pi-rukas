@@ -7,7 +7,7 @@
  * `text.includes("ci-status: success")` in an LLM's reply. Two things are now
  * required, and both default to "no":
  *
- *   1. Someone explicitly permitted it (AGENTS.md, or `--merge`).
+ *   1. Someone explicitly permitted it (the project's documents, or `--merge`).
  *   2. `gh` — not an agent — reports the required checks passed.
  *
  * The exec seam is a fake, so this is offline. Every `gh` invocation the
@@ -15,15 +15,11 @@
  * a gate that calls it and ignores the answer look identical from outside.
  */
 
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import {
   contradictsSuccess,
   gatherMergeEvidence,
   mergeAuthorityEnabled,
   mergeHoldAction,
-  resolveMergeAuthorityFromDoctrine,
 } from "../src/work-driver-merge-authority.ts";
 
 let exit = 0;
@@ -36,132 +32,11 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-merge-auth-"));
+// Authority RESOLUTION moved to test-policy-judge.ts in #407: the three
+// English regexes are gone, replaced by a judged + citation-verified seam.
+// What remains here is the half that never depended on parsing — the
+// executed-evidence gate, and how a hold is explained to the operator.
 
-// ------------------------------------------------------ authority
-//
-// #406 — these take doctrine TEXT, not a directory. `resolveMergeAuthority`
-// used to open `<repoRoot>/AGENTS.md` itself, which is the working-tree copy;
-// at the `merged` step that copy contains whatever the developer subagents
-// just wrote. The reader now lives in `work-driver-doctrine.ts` and is pinned
-// to the base commit, and is exercised against a real git repo below.
-
-{
-  // The headline behaviour change. Pre-#380 this merged.
-  const doc = undefined;
-  const a = resolveMergeAuthorityFromDoctrine(doc);
-  assert(!a.granted, "no AGENTS.md → NO merge authority (the absence of a rule is not a grant)");
-  assert(a.source === "none", "...and the source is recorded as none");
-}
-{
-  const doc = ("# Contributing\n\nRun the tests before pushing.\n");
-  assert(
-    resolveMergeAuthorityFromDoctrine(doc).granted === false,
-    "an AGENTS.md that simply never mentions merging is NOT a grant",
-  );
-}
-{
-  // This repo's own §9 — the positive case that must keep working, verbatim.
-  const doc = (
-    "## 9. Git workflow\n\nLLMs are allowed to squash merge PRs once CI is green.\n",
-  );
-  const a = resolveMergeAuthorityFromDoctrine(doc);
-  assert(a.granted && a.source === "agents-md", "this repo's own §9 wording grants authority");
-  assert(
-    /allowed to squash merge/i.test(a.quote ?? ""),
-    "the granting sentence is quoted verbatim, so the operator can audit why it merged",
-  );
-}
-{
-  const doc = ("Agents are allowed to merge their own PRs.\n");
-  assert(
-    resolveMergeAuthorityFromDoctrine(doc).granted,
-    "the 'agents are allowed to merge' form works",
-  );
-}
-{
-  const doc = ("automerge: true\n");
-  assert(resolveMergeAuthorityFromDoctrine(doc).granted, "an explicit `automerge: true` marker works");
-}
-{
-  // A denial anywhere in the file beats a grant elsewhere in it.
-  const doc = (
-    "LLMs are allowed to squash merge PRs.\n\nActually: never merge without a human review.\n",
-  );
-  const a = resolveMergeAuthorityFromDoctrine(doc);
-  assert(!a.granted, "an explicit prohibition overrides a grant elsewhere in the same file");
-  assert(/never merge/i.test(a.quote ?? ""), "and the prohibition is quoted");
-}
-{
-  const doc = ("Do not merge PRs yourself.\n");
-  assert(
-    !resolveMergeAuthorityFromDoctrine(doc).granted,
-    "'do not merge' is honoured as a prohibition",
-  );
-}
-{
-  // The riskiest false positive: prose that discusses merging without granting.
-  const doc = (
-    "When you merge, use squash. Ask a maintainer to merge on your behalf.\n" +
-      "The reviewer will merge once approved.\n",
-  );
-  assert(
-    !resolveMergeAuthorityFromDoctrine(doc).granted,
-    "prose ABOUT merging is not a grant — the matcher is narrow on purpose",
-  );
-}
-{
-  const doc = undefined;
-  const a = resolveMergeAuthorityFromDoctrine(doc, true);
-  assert(a.granted && a.source === "operator", "`--merge` grants authority for the run");
-}
-{
-  // An operator grant must not resurrect a project that forbade it... but the
-  // operator IS the human the prohibition protects, so this documents the
-  // precedence deliberately: the in-session human wins over the file.
-  const doc = ("Never merge.\n");
-  assert(
-    resolveMergeAuthorityFromDoctrine(doc, true).source === "operator",
-    "an explicit in-session operator grant takes precedence over AGENTS.md",
-  );
-}
-
-{
-  // Found the hard way while writing this PR's own docs: adding a sentence to
-  // this repo's AGENTS.md that DESCRIBED the deny matcher — quoting the phrase
-  // "never merge" — flipped the repo from granted to denied. A file that
-  // documents the mechanism will contain the phrases the mechanism looks for.
-  const doc = (
-    "LLMs are allowed to squash merge PRs.\n\n" +
-      "A prohibition of the `never merge` shape anywhere in this file turns it off.\n" +
-      "```\ndo not merge\n```\n",
-  );
-  assert(
-    resolveMergeAuthorityFromDoctrine(doc).granted,
-    "a prohibition QUOTED in backticks or a code fence is documentation, not a directive",
-  );
-}
-{
-  const doc = (
-    "Policy: `LLMs are allowed to squash merge PRs` is what a grant looks like.\n",
-  );
-  assert(
-    !resolveMergeAuthorityFromDoctrine(doc).granted,
-    "...and the same holds for a grant — a quoted example does not grant authority",
-  );
-}
-{
-  // The end-to-end case the above protects: this repo's OWN AGENTS.md, read
-  // from disk. If a doc edit ever silently disables merging here, this fails.
-  const root = path.resolve(import.meta.dirname, "..", "..");
-  const a = resolveMergeAuthorityFromDoctrine(
-    await fs.readFile(path.join(root, "AGENTS.md"), "utf8"),
-  );
-  assert(
-    a.granted && a.source === "agents-md",
-    "pi-ensemble's own AGENTS.md still grants merge authority (real file, not a fixture)",
-  );
-}
 
 // -------------------------------------------------------- evidence
 
@@ -352,6 +227,5 @@ const passing = (name: string) => ({ name, state: "SUCCESS", bucket: "pass", isR
   assert(mergeAuthorityEnabled(), "and the gate is ON by default");
 }
 
-await fs.rm(tmp, { recursive: true, force: true });
 console.log(`\nexit ${exit}`);
 process.exit(exit);

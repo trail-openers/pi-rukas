@@ -28,9 +28,10 @@ import { withIntegrationLock } from "./work-driver-integrate.ts";
 import {
   gatherMergeEvidence,
   mergeAuthorityEnabled,
-  resolveMergeAuthorityFromDoctrine,
+  resolveMergeAuthority,
 } from "./work-driver-merge-authority.ts";
 import { type MergeMethod, mechanizedMerge } from "./work-driver-merged-mechanized.ts";
+import { DOCTRINE_FILES, type DoctrineDoc, judgePolicy } from "./work-driver-policy.ts";
 import { inlineMergePrompt } from "./work-driver-prompts-late.ts";
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { activeIssuesOf, scratchDir, teardownWorkspaceTmp } from "./work-driver-workspace.ts";
@@ -297,13 +298,20 @@ export async function runMerged(
     // an AGENTS.md read from disk here would include any grant a subagent just
     // wrote for itself. Reading at base makes such a patch inert without
     // forbidding it: honest AGENTS.md changes still ship in the PR.
-    const doctrine = await readDoctrineAtBase(
-      execFnAuth,
-      ctx.repoRoot,
-      state.pipelineState.baseSha,
-    );
-    const authority = resolveMergeAuthorityFromDoctrine(doctrine.text, ctx.mergeGrant);
-    if (doctrine.reason) trace(`work-driver: merge authority — ${doctrine.reason}`);
+    const docs: DoctrineDoc[] = [];
+    for (const file of DOCTRINE_FILES) {
+      const read = await readDoctrineAtBase(
+        execFnAuth,
+        ctx.repoRoot,
+        state.pipelineState.baseSha,
+        file,
+      );
+      if (read.text !== undefined) docs.push({ file, text: read.text });
+      else if (read.reason) trace(`work-driver: merge authority — ${read.reason}`);
+    }
+    // #407 — the documents are read by a judge and its answer is
+    // citation-verified, not matched against English regexes.
+    const authority = await resolveMergeAuthority(judgePolicy(ctx.repoRoot), docs, ctx.mergeGrant);
     const evidence = authority.granted
       ? await gatherMergeEvidence(execFnAuth, ctx.repoRoot, prNumber)
       : undefined;

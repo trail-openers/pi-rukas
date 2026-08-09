@@ -15,9 +15,12 @@
  * Two independent things have to be true now, and both default to "no":
  *
  *   1. **Authority** — someone explicitly permitted merging. Either the
- *      project's `AGENTS.md` says so, or the operator granted it for the run.
+ *      project's own documents say so, or the operator granted it for the run.
  *      Absent a grant the PR is opened and the cycle parks; a repo that never
- *      opted in never gets an auto-merge.
+ *      opted in never gets an auto-merge. Since #407 the documents are read by
+ *      a judge child and its answer is citation-verified, rather than matched
+ *      against three English regexes that got real files wrong in both
+ *      directions — see `work-driver-policy.ts`.
  *   2. **Evidence** — required checks actually passed, per `gh`, not per an
  *      agent's narration.
  *
@@ -27,7 +30,12 @@
  * in both directions.
  */
 
-import { trace } from "./trace.ts";
+import {
+  type DoctrineDoc,
+  MERGE_POLICY_QUESTION,
+  type PolicyJudgeFn,
+  askPolicy,
+} from "./work-driver-policy.ts";
 
 /** Shell executor, matching `DriverContext.verifyExecFn`. */
 type ExecFn = (
@@ -35,13 +43,21 @@ type ExecFn = (
   opts?: { cwd?: string; timeout?: number; maxBuffer?: number; shell?: string },
 ) => Promise<{ stdout: string; stderr?: string }>;
 
-export type AuthoritySource = "agents-md" | "operator" | "none";
+export type AuthoritySource =
+  | "agents-md"
+  | "doctrine"
+  | "operator"
+  | "none"
+  /** The judge answered "permitted" but cited a sentence that is not in the file. */
+  | "citation-failed";
 
 export interface MergeAuthority {
   granted: boolean;
   source: AuthoritySource;
   /** Verbatim evidence of the grant, for the handoff and the merged event. */
   quote?: string;
+  /** Operator-facing explanation — why granted, or why not. */
+  reason?: string;
 }
 
 /**
@@ -54,80 +70,44 @@ export function mergeAuthorityEnabled(): boolean {
 }
 
 /**
- * Sentences in an AGENTS.md that constitute a grant.
+ * Resolve whether merging is permitted for this cycle.
  *
- * Deliberately narrow and affirmative. A permissive matcher here is the worst
- * possible failure — it would invent permission that nobody gave — so anything
- * ambiguous is treated as no grant. The first pattern matches this repo's own
- * §9, "LLMs are allowed to squash merge PRs".
+ * Two tiers, and only the first is repo-controlled:
+ *
+ *   1. **Durable, in code.** Default deny; the operator's `--merge` grant;
+ *      `PI_ENSEMBLE_MERGE_AUTHORITY=0`. A repository cannot alter these — per
+ *      the research, a checked-in file or a build step could otherwise inject
+ *      its own allow rules.
+ *   2. **Prose, judged and citation-verified.** The project's own documents
+ *      may grant the exception, in any language, phrased however the operator
+ *      likes. `askPolicy` puts the question to a judge child and honours the
+ *      answer only if the sentence it quotes actually exists. See
+ *      `work-driver-policy.ts` for why the judge is not trusted.
+ *
+ * Prose grants the exception; it can never grant the rule.
+ *
+ * The `docs` come from `readDoctrineAtBase` (#406) — doctrine as of the
+ * cycle's base commit, never the working tree, which by this step contains
+ * whatever the developer subagents wrote.
  */
-const GRANT_PATTERNS: RegExp[] = [
-  /\b(?:LLMs?|agents?|bots?)\b[^.\n]{0,80}\b(?:are\s+)?allowed\s+to\s+(?:squash[\s-]?)?merge\b/i,
-  /\bmay\s+(?:squash[\s-]?)?merge\s+(?:their\s+own\s+)?PRs?\b/i,
-  /\bauto[-\s]?merge\s*:\s*(?:true|yes|enabled|allowed)\b/i,
-];
-
-/** Explicit prohibitions win over any grant found elsewhere in the file. */
-const DENY_PATTERNS: RegExp[] = [
-  /\bauto[-\s]?merge\s*:\s*(?:false|no|disabled|forbidden)\b/i,
-  /\b(?:never|do\s+not|don't|must\s+not)\s+(?:auto[-\s]?)?merge\b/i,
-];
-
-/**
- * Strip fenced code blocks and inline-code spans before matching.
- *
- * Found the hard way: adding a sentence to this repo's own AGENTS.md that
- * *described* the deny matcher — quoting the phrase "never merge" — flipped
- * the repo from granted to denied. A file that documents this mechanism will
- * inevitably contain the phrases the mechanism looks for, and a matcher that
- * cannot tell a rule from a description of a rule is unusable in exactly the
- * files it has to read. Backticks are the available "I am quoting, not
- * asserting" marker in Markdown, so text inside them is not a directive.
- */
-function stripCode(text: string): string {
-  return text.replace(/```[\s\S]*?```/g, " ").replace(/`[^`\n]*`/g, " ");
-}
-
-/**
- * Resolve whether merging is permitted, from doctrine text the caller supplies.
- *
- * Takes text rather than a path deliberately (#406). The caller that matters —
- * the `merged` step — must read doctrine as of the cycle's *base commit*, via
- * `readDoctrineAtBase`, because by that point the working tree contains
- * whatever the developer subagents wrote and a grant found there proves
- * nothing. Making this function unable to open a file means it cannot
- * accidentally be pointed at the post-integration copy.
- *
- * Order matters: an explicit denial anywhere in the doctrine beats a grant, and
- * absent or unreadable doctrine means no grant. The operator override is
- * checked first because a human saying "yes, merge this run" is the most
- * direct evidence of intent there is.
- */
-export function resolveMergeAuthorityFromDoctrine(
-  doctrine: string | undefined,
+export async function resolveMergeAuthority(
+  judge: PolicyJudgeFn,
+  docs: readonly DoctrineDoc[],
   operatorGrant?: boolean,
-): MergeAuthority {
+): Promise<MergeAuthority> {
   if (operatorGrant === true) {
     return { granted: true, source: "operator", quote: "operator granted merge for this run" };
   }
-  if (doctrine === undefined) {
-    // No doctrine is not a grant. A project that never said anything about
-    // merging has not permitted it.
-    return { granted: false, source: "none" };
+  const decision = await askPolicy(judge, MERGE_POLICY_QUESTION, docs);
+  if (decision.permitted) {
+    return { granted: true, source: "doctrine", quote: decision.quote, reason: decision.reason };
   }
-  const prose = stripCode(doctrine);
-  for (const deny of DENY_PATTERNS) {
-    const m = prose.match(deny);
-    if (m) {
-      trace(`merge-authority: AGENTS.md explicitly forbids merging ("${m[0].slice(0, 60)}")`);
-      return { granted: false, source: "none", quote: m[0].trim().slice(0, 200) };
-    }
-  }
-  for (const grant of GRANT_PATTERNS) {
-    const m = prose.match(grant);
-    if (m) return { granted: true, source: "agents-md", quote: m[0].trim().slice(0, 200) };
-  }
-  return { granted: false, source: "none" };
+  return {
+    granted: false,
+    source: decision.citationFailed ? "citation-failed" : "none",
+    quote: decision.quote,
+    reason: decision.reason,
+  };
 }
 
 export interface MergeEvidence {
@@ -306,10 +286,19 @@ export function explainMergeHold(
 ): string {
   const pr = prNumber ? `PR #${prNumber}` : "the PR";
   if (!authority.granted) {
-    const why = authority.quote
-      ? ` This project's AGENTS.md explicitly forbids it ("${authority.quote}").`
-      : " Nothing in this project's AGENTS.md permits an agent to merge, and no operator grant was given for this run.";
-    return `${pr} is open and ready, but the driver is not permitted to merge it.${why} Merging is opt-in by design: review and merge it yourself, or grant the authority and re-run.`;
+    const why = authority.reason
+      ? ` ${authority.reason[0]?.toUpperCase()}${authority.reason.slice(1)}.`
+      : " Nothing in this project's documents permits an agent to merge, and no operator grant was given for this run.";
+    // A failed citation is a different event from an absent grant, and the
+    // operator should hear about it: the judge asserted a permission and then
+    // could not point at it.
+    const hallucinated =
+      authority.source === "citation-failed"
+        ? " That is a citation failure, not a missing rule — if the grant really is in your documents, quote it exactly and re-run."
+        : "";
+    // Always name where a grant would live. An operator told only "not
+    // permitted" has to go and find that out; one sentence here saves it.
+    return `${pr} is open and ready, but the driver is not permitted to merge it.${why}${hallucinated} Merging is opt-in by design: review and merge it yourself, or say so plainly in this project's AGENTS.md (one sentence, any language — e.g. "Agents may merge a PR to main once CI is green") and re-run, or pass --merge for a single run.`;
   }
   return `${pr} is open and merging is permitted, but the evidence gate refused: ${evidence?.reason ?? "no evidence gathered"}. The driver merges on what \`gh\` reports, never on a subagent's claim.`;
 }

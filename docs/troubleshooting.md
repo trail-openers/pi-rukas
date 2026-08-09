@@ -923,10 +923,15 @@ Two independent gates run at the `merged` step, and both default to "no":
 | Source | How |
 |---|---|
 | `operator` | You passed `/work <issue> --merge` for this run |
-| `agents-md` | The project's `AGENTS.md` contains an explicit grant — e.g. *"LLMs are allowed to squash merge PRs"*, *"agents may merge their own PRs"*, or `automerge: true` |
-| `none` | Anything else, including no `AGENTS.md` at all |
+| `doctrine` | The project's `AGENTS.md` or `CLAUDE.md` explicitly grants it, **and** the judge could quote the granting sentence verbatim |
+| `citation-failed` | The judge answered "permitted" but cited a sentence that is not in the file — denied, and flagged |
+| `none` | Anything else, including no doctrine files at all |
 
-An explicit prohibition in `AGENTS.md` (*"never merge"*, *"do not merge"*, `automerge: false`) beats a grant elsewhere in the same file. The matcher is deliberately narrow: prose that merely *discusses* merging ("ask a maintainer to merge on your behalf") is not a grant, because the worst possible failure here is inventing permission nobody gave.
+**Write the grant however you like, in any language (#407).** Until #407 this was three English regexes, and they were wrong in both directions on real files: *"Agents may squash-merge **a** PR to main once CI is green"* — a deliberate grant — matched nothing because the pattern wanted `PRs` immediately after `merge`; and *"does **NOT** merge to main without explicit human approval"* escaped the deny matcher, which wanted `do not`. Now a short-lived read-only judge child reads the documents and answers one question through a schema-validated tool call.
+
+**The judge is not trusted.** It must quote the sentence that grants the permission, and the driver checks that sentence actually appears in the file the judge named before honouring anything. A fabricated quote is denied *and reported as a citation failure*, because a judge inventing policy is something you should hear about rather than see silently swallowed. The judge never sees the developer's argument for why the merge should be allowed — only the documents and the question — so it cannot be talked into a yes.
+
+Prose grants the *exception*; it can never grant the *rule*. Default-deny, the `--merge` operator grant and `PI_ENSEMBLE_MERGE_AUTHORITY=0` live in code and cannot be changed by anything in the repository. If you are unsure whether your wording reads as a grant, say it plainly in one sentence — *"Agents may merge a PR to main once CI is green"* — and check the merged event's `authorityQuote`, which records the exact sentence relied upon.
 
 **2. Evidence — did CI actually pass?** The driver asks `gh`, not the agent that just claimed success. It reads `mergeStateStatus` and `gh pr checks`, and it **fails closed**: an unreadable answer blocks the merge. Unlike every other gate in the driver, "no signal" here means stop, because the next act is irreversible.
 
