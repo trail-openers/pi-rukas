@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.27](https://github.com/randomm/pi-ensemble/compare/v0.12.26...v0.12.27) (2026-08-09)
+
+
+### Bug Fixes
+
+* **#404:** a park the resolver declared is never overridden ([#405](https://github.com/randomm/pi-ensemble/issues/405)) ([97fbc2d](https://github.com/randomm/pi-ensemble/commit/97fbc2d9602f62c0cc99e9bf260b49c68f614b02)), closes [#404](https://github.com/randomm/pi-ensemble/issues/404)
+
 ## [0.12.26](https://github.com/randomm/pi-ensemble/compare/v0.12.25...v0.12.26) (2026-08-08)
 
 
