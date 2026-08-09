@@ -871,6 +871,27 @@ A multi-issue `/work` run writes its outcome to `.pi/work-state/queue-summary.js
 
 ### Why a cycle parked as `intent-park:underspecified`
 
+**First, check whether the driver actually read that reason or invented it.** `.pi/work-state/<issue>/spec.txt` now records `parkReasonSource` and `verdictSource`: `"parsed"` means the resolver said it, `"default"` means the parser synthesised it because the token did not match.
+
+That distinction is load-bearing. `underspecified` is both the null value and a real diagnosis, and the driver may override the diagnosis when a complete spec refutes it. Before #404, a resolver that wrote its reason as a markdown heading —
+
+```
+### PARK-REASON
+already-implemented
+```
+
+— missed the colon-anchored regex, got `underspecified` substituted, and then had that override fire: the driver **built work the resolver had said was already done**, and attached an assumption to the PR explaining why it was right to. Both token forms now parse, and more importantly a synthesised reason can no longer license an override.
+
+The rule, in full:
+
+| `INTENT-VERDICT` | `PARK-REASON` | complete spec overrides the park? |
+|---|---|---|
+| absent | absent | **yes** — the resolver declared nothing |
+| `park` | `underspecified` | **yes** — it contradicts itself; the spec wins |
+| `park` | unparseable | **no** — it did say park |
+| any | any other reason | **no** — never in scope |
+
+
 Check the spec before believing the label. If `.pi/work-state/<issue>/spec.txt` shows deliverables and acceptance criteria, the park was wrong and you have hit the #397 bug — fixed, but worth knowing the shape.
 
 Two independent causes, both now closed:

@@ -67,6 +67,20 @@ export interface NormalisedSpec {
   evidence: SpecEvidence[];
   verdict: IntentVerdict;
   parkReason?: ParkReason;
+  /**
+   * Whether `parkReason` was read from the reply or synthesised by the parser.
+   * #404 — `underspecified` is both the null value and a real diagnosis, and
+   * `reconcileVerdict` may override the diagnosis. Only a value the resolver
+   * actually stated may license that.
+   */
+  parkReasonSource?: "parsed" | "default";
+  /**
+   * Whether the `park` verdict was stated by the resolver or synthesised
+   * because no `INTENT-VERDICT` token parsed. #337's fix depends on knowing
+   * the difference: a park nobody declared may be refuted by a complete spec;
+   * a park the resolver actually declared may not.
+   */
+  verdictSource?: "parsed" | "default";
   /** The resolver's own words on why — surfaced verbatim in the handoff. */
   rationale: string;
 }
@@ -114,6 +128,30 @@ function bullets(section: string | undefined): string[] {
 }
 
 /**
+ * Read a `TOKEN: value` marker in the shapes resolvers actually emit.
+ *
+ * The prompt asks for an inline `PARK-REASON: <value>`, but a real resolver
+ * wrote it as a markdown heading with the value on the next line:
+ *
+ *     ### PARK-REASON
+ *     already-implemented
+ *
+ * The old colon-anchored regex silently missed that, and the synthesised
+ * default then flowed into a decision (#404). Both forms are accepted; bold
+ * and heading markers are tolerated, as they are on every sibling parser.
+ */
+function readToken(text: string, token: string, value: RegExp): string | undefined {
+  const v = value.source;
+  const inline = text.match(new RegExp(`${token}:\\s*\\**\\s*${v}\\b`, "i"));
+  if (inline?.[1]) return inline[1].toLowerCase();
+  // Heading form: the token on its own line, the value on the next.
+  const heading = text.match(
+    new RegExp(`^#{1,6}\\s*\\**\\s*${token}\\s*\\**\\s*$\\n+\\s*\\**\\s*${v}\\b`, "im"),
+  );
+  return heading?.[1]?.toLowerCase();
+}
+
+/**
  * Parse the resolver's reply into a normalised spec.
  *
  * Deliberately lenient in the same way `parseWorkstreams` is: agents drift, and
@@ -124,10 +162,7 @@ export function parseNormalisedSpec(text: string): NormalisedSpec | undefined {
   const section = sliceMarkdownSection(text, "Spec");
   if (section === undefined) return undefined;
 
-  const verdictMatch = text.match(
-    /INTENT-VERDICT:\s*\**\s*(proceed-with-assumptions|proceed|park)\b/i,
-  );
-  const rawVerdict = verdictMatch?.[1]?.toLowerCase();
+  const rawVerdict = readToken(text, "INTENT-VERDICT", /(proceed-with-assumptions|proceed|park)/);
   // No parseable verdict → park. This inverts the pre-#378 default, where a
   // missing token meant NEEDS_WORK and silence became permission to build.
   const verdict: IntentVerdict =
@@ -135,8 +170,7 @@ export function parseNormalisedSpec(text: string): NormalisedSpec | undefined {
       ? (rawVerdict as IntentVerdict)
       : "park";
 
-  const reasonMatch = text.match(/PARK-REASON:\s*\**\s*([a-z-]+)\b/i);
-  const rawReason = reasonMatch?.[1]?.toLowerCase();
+  const rawReason = readToken(text, "PARK-REASON", /([a-z-]+)/);
   const parkReason = PARK_REASONS.find((r) => r === rawReason);
 
   const intent = (sliceSubsection(section, "Intent") ?? "").trim().split("\n")[0] ?? "";
@@ -154,9 +188,18 @@ export function parseNormalisedSpec(text: string): NormalisedSpec | undefined {
     openQuestions: bullets(sliceSubsection(section, "Open questions")),
     evidence: parseEvidence(sliceSubsection(section, "Evidence")),
     verdict,
-    // A park with no stated reason is still a park; `underspecified` is the
-    // honest default, since an unreadable reply is itself underspecified.
-    ...(verdict === "park" ? { parkReason: parkReason ?? "underspecified" } : {}),
+    // A park with no stated reason is still a park, and `underspecified` is
+    // still the honest label for the operator. But #404: the driver must
+    // remember that it INVENTED this value, because `reconcileVerdict` treats
+    // `underspecified` as the one reason a complete spec may override — and a
+    // value nobody said must never license building something.
+    ...(verdict === "park"
+      ? {
+          parkReason: parkReason ?? "underspecified",
+          parkReasonSource: parkReason ? ("parsed" as const) : ("default" as const),
+          verdictSource: rawVerdict ? ("parsed" as const) : ("default" as const),
+        }
+      : {}),
     rationale,
   };
 }
@@ -278,9 +321,27 @@ export function reconcileVerdict(spec: NormalisedSpec): NormalisedSpec {
     // from". The other four reasons are all compatible with a complete spec —
     // already-implemented, too-large, premise-unsound and contradicted-by-code
     // must still park, so the override stays deliberately narrow.
-    if (spec.parkReason === "underspecified" && specIsComplete(spec)) {
+    //
+    // #404 — narrower still: the reason must have been STATED, not synthesised.
+    // `underspecified` is also what the parser invents when the token does not
+    // parse, and a resolver really did emit `### PARK-REASON` / heading-form
+    // `already-implemented`. Overriding an invented value let the driver build
+    // work the resolver had said was already done, and attach the assumption
+    // below as a confident justification for doing it.
+    //
+    // The override therefore needs BOTH provenances, not just one:
+    //
+    //   INTENT-VERDICT | PARK-REASON      | override a complete spec?
+    //   absent         | absent           | YES — the resolver said nothing (#337)
+    //   `park`         | `underspecified` | YES — it contradicts itself; the spec wins (#397)
+    //   `park`         | unparseable      | NO  — it DID say park (#404)
+    //   any            | any other reason | NO  — never in scope
+    const refutable =
+      spec.parkReason === "underspecified" &&
+      (spec.verdictSource === "default" || spec.parkReasonSource === "parsed");
+    if (refutable && specIsComplete(spec)) {
       trace("work-driver: intent — 'underspecified' park refuted by a complete spec, proceeding");
-      const { parkReason: _dropped, ...rest } = spec;
+      const { parkReason: _dropped, parkReasonSource: _src, verdictSource: _vsrc, ...rest } = spec;
       return {
         ...rest,
         verdict: "proceed-with-assumptions",

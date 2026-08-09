@@ -333,6 +333,80 @@ const COMPLETE = (parkReason: string) =>
   assert(realQuestion?.verdict === "park", "a spec with a REAL blocking open question still parks");
 }
 
+// ------------- #404: a park the RESOLVER declared is never overridden
+
+{
+  // The bug, verbatim from a live lantern run: the resolver wrote its reason as
+  // a markdown heading, the colon-anchored regex missed it, the parser
+  // synthesised `underspecified`, and #397's override then BUILT the thing the
+  // resolver had said was already done — attaching OVERRIDE_ASSUMPTION to the
+  // PR as a confident justification for doing it.
+  const s = resolve(
+    `### INTENT-VERDICT\npark\n\n### PARK-REASON\nalready-implemented\n\n${COMPLETE("underspecified").split("## Spec")[1] ? `## Spec${COMPLETE("underspecified").split("## Spec")[1]}` : ""}`,
+  );
+  assert(
+    s?.verdict === "park",
+    "a heading-form park reason is HONOURED, not overridden — this built the wrong thing before #404",
+  );
+  assert(
+    s?.parkReason === "already-implemented",
+    "...and the heading form parses, so the operator gets the real reason",
+  );
+}
+{
+  // The narrower guard: even if the reason had NOT parsed, a stated `park`
+  // must survive. The resolver said park; the driver may not disagree on the
+  // strength of a value it invented itself.
+  const s = resolve(
+    `INTENT-VERDICT: park\nPARK-REASON: !!garbled!!\n\n${COMPLETE("x").split("\n\n").slice(1).join("\n\n")}`,
+  );
+  assert(
+    s?.verdict === "park",
+    "a STATED park with an unreadable reason still parks — a synthesised reason cannot license an override",
+  );
+  assert(
+    s?.parkReasonSource === "default",
+    "...and the state records that the reason was synthesised, not read",
+  );
+}
+{
+  // #337 must still work: no tokens at all means the resolver never declared a
+  // park, so a complete spec may still refute the parser's invention.
+  const noTokens = COMPLETE("underspecified").split("\n\n").slice(1).join("\n\n");
+  const s = resolve(noTokens);
+  assert(
+    s?.verdict === "proceed-with-assumptions",
+    "#337 preserved: with NO verdict token, a complete spec still proceeds",
+  );
+}
+{
+  const s = resolve(COMPLETE("underspecified"));
+  assert(
+    s?.verdict === "proceed-with-assumptions",
+    "#397 preserved: an explicitly stated `underspecified` is still refuted by a complete spec",
+  );
+  assert(
+    s?.verdictSource === undefined && s?.parkReasonSource === undefined,
+    "...and the provenance fields are dropped alongside parkReason on override",
+  );
+}
+{
+  const inline = resolve(
+    "INTENT-VERDICT: park\nPARK-REASON: too-large\n\n## Spec\n\n### Intent\nx\n",
+  );
+  const heading = resolve(
+    "### INTENT-VERDICT\npark\n\n### PARK-REASON\ntoo-large\n\n## Spec\n\n### Intent\nx\n",
+  );
+  assert(
+    inline?.parkReason === "too-large" && heading?.parkReason === "too-large",
+    "inline and heading token forms are equivalent — the inline form is not regressed",
+  );
+  assert(
+    inline?.parkReasonSource === "parsed" && heading?.parkReasonSource === "parsed",
+    "...and both are recorded as PARSED, not synthesised",
+  );
+}
+
 // ------------------------------------------------------------ escape hatch
 
 {
