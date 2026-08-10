@@ -9,13 +9,19 @@
  * lens-fix's commit step, not adversarial's.
  */
 
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
 import { type WideningFinding, scanTypeWidening } from "./invariant-scan.ts";
+import { buildEvidence, runClaimScan } from "./lens-evidence.ts";
 import { runLensReview } from "./lens-review.ts";
+import { resolveReviewThreshold } from "./review-threshold.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { readAllMergedDiffs } from "./work-driver-diff.ts";
+import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
+import { DOCTRINE_FILES, type DoctrineDoc, judgePolicy } from "./work-driver-policy.ts";
 import { inlineLensFixPrompt } from "./work-driver-prompts-late.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -28,6 +34,8 @@ import { type WorkState, appendEvent } from "./workflow-state.ts";
  * succeeded but ops forgot the marker — that's fine, runHandoff will
  * fall back to `gh issue comment`).
  */
+const execp = promisify(exec);
+
 export function parsePrNumber(text: string | undefined): number | undefined {
   if (!text) return undefined;
   const m = text.match(/^[ \t]*\*{0,2}pr\*{0,2}\s*:\s*`?#?(\d+)`?\s*$/im);
@@ -151,9 +159,36 @@ export async function runLens(
     context += `\n\nTYPE-WIDENING DETECTED (route-only to ARCHITECTURE lens):\n${findingsSummary}\n\nMANDATE: the ARCHITECTURE lens must answer: what invariant did this widening remove, and what now guarantees it?`;
   }
 
+  // Post-change file content for the lenses, and the claim scan. Both need the
+  // BRANCH, not `cwd`: under always-worktree the worktrees stay detached at
+  // baseSha, so anything read from the filesystem here is the pre-change text.
+  const execFn = ctx.verifyExecFn ?? execp;
+  const evidence = ps.branchName
+    ? await buildEvidence(ctx.repoRoot, ps.branchName, diff)
+    : undefined;
+  const extraFindings = ps.branchName
+    ? await runClaimScan(execFn, ctx.repoRoot, ps.branchName, diff)
+    : [];
+  if (extraFindings.length > 0) {
+    trace(
+      `work-driver: lens-review — claim-scan flagged ${extraFindings.length} unsourced claim(s)`,
+    );
+  }
+
+  // The blocking bar is the project's, not this code's. Doctrine is read at
+  // baseSha so a cycle cannot lower its own bar mid-run (#406's shape).
+  const docs: DoctrineDoc[] = [];
+  for (const file of DOCTRINE_FILES) {
+    const read = await readDoctrineAtBase(execFn, ctx.repoRoot, ps.baseSha, file);
+    if (read.text !== undefined) docs.push({ file, text: read.text });
+  }
+  const thresholdDecision = await resolveReviewThreshold(judgePolicy(ctx.repoRoot), docs);
+  trace(`work-driver: lens-review — blocking severity ${thresholdDecision.severity}`);
+  const threshold = thresholdDecision.severity;
+
   let summary: Awaited<ReturnType<typeof reviewFn>>;
   try {
-    summary = await reviewFn({ diff, context, cwd });
+    summary = await reviewFn({ diff, context, cwd, evidence, extraFindings, threshold });
   } catch (err) {
     return appendEvent(next, {
       kind: "dispatch-failed",

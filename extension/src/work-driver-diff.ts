@@ -208,6 +208,59 @@ function errText(err: unknown): string {
   return ((err as Error).message ?? String(err)).slice(0, 200);
 }
 
+/** A path that is safe to interpolate into a git command. */
+const SAFE_PATH = /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/;
+
+/**
+ * Read a file as it stands ON THE BRANCH, not in the working tree.
+ *
+ * This distinction is the whole reason the function exists. The reviewed diff
+ * is built from `origin/<base>..origin/<branch>` (see `readIntegratedDiff`),
+ * but lens children run with `cwd` set to a worktree, and under always-worktree
+ * those "stay DETACHED at baseSha" — the invariant recorded at the bottom of
+ * `readAllMergedDiffs`. A reviewer that opens a changed file from its own cwd
+ * therefore reads the version from BEFORE the change.
+ *
+ * That is not a hypothetical. A real cycle shipped a documentation paragraph
+ * contradicting another paragraph 70 lines further down the same file, and no
+ * lens reported it: the contradicting line was outside the diff, so it was
+ * never in any reviewer's context, and opening the file would have shown the
+ * pre-change text anyway.
+ *
+ * Returns undefined rather than throwing — an unreadable file means the
+ * reviewer gets less evidence, never a fabricated finding.
+ */
+export async function readFileAtBranch(
+  repoRoot: string,
+  branchName: string,
+  filePath: string,
+): Promise<string | undefined> {
+  if (!SAFE_PATH.test(filePath) || !SAFE_PATH.test(branchName)) return undefined;
+  try {
+    const { stdout } = await execp(`git show origin/${branchName}:${filePath}`, {
+      cwd: repoRoot,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    return stdout;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Paths a unified diff touches, in order, deduplicated. */
+export function pathsInDiff(diff: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const line of diff.split("\n")) {
+    if (!line.startsWith("+++ ")) continue;
+    const p = line.slice(4).replace(/^b\//, "").trim();
+    if (p === "/dev/null" || p.length === 0 || seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  return out;
+}
+
 /**
  * #384 — `fetchAllMergedDiffs` with the failure case preserved.
  *

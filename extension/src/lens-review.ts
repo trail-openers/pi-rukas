@@ -63,9 +63,17 @@ export interface RawFinding {
   suggestion?: string;
 }
 
+/**
+ * Where a finding came from. Not every finding comes from a lens: `CLAIM_SCAN`
+ * is deterministic and model-free (see `claim-scan.ts`). Labelling its output
+ * as a lens's would be a false attribution in the operator's summary — the
+ * exact defect class this scan exists to catch.
+ */
+export type FindingSource = LensName | "CLAIM_SCAN";
+
 export interface Finding extends RawFinding {
   severity: Severity;
-  lens: LensName;
+  lens: FindingSource;
 }
 
 export interface LensRunResult {
@@ -106,19 +114,54 @@ function piSkillsDir(): string {
  *      six-pass review degenerated to a five-or-fewer-pass review. Never
  *      silently downgrade — surface explicitly.
  *   2. CRITICAL_ISSUES_FOUND — any CRITICAL finding from any completed lens.
- *   3. ISSUES_FOUND — any HIGH / MEDIUM finding from any completed lens.
- *   4. APPROVED — only LOW (or no) findings AND all lenses completed.
+ *   3. ISSUES_FOUND — any finding at or above `threshold` (default MEDIUM).
+ *   4. APPROVED — only sub-threshold (or no) findings AND all lenses completed.
+ *
+ * CRITICAL blocks regardless of `threshold`. A project may decide that MEDIUM
+ * findings are advisory; none gets to decide that a CRITICAL one is.
  *
  * lensResults is optional for backwards compat with pure-function tests
  * that only care about finding-driven verdicts. When omitted, blocked
  * lenses can't be detected and the verdict logic falls back to pre-#3
  * behaviour.
  */
-export function computeVerdict(findings: Finding[], lensResults?: LensRunResult[]): Verdict {
+export function computeVerdict(
+  findings: Finding[],
+  lensResults?: LensRunResult[],
+  threshold: Severity = DEFAULT_REVIEW_THRESHOLD,
+): Verdict {
   if (lensResults?.some((r) => r.blocked)) return "REVIEW_INCOMPLETE";
   if (findings.some((f) => f.severity === "CRITICAL")) return "CRITICAL_ISSUES_FOUND";
-  if (findings.some((f) => f.severity === "HIGH" || f.severity === "MEDIUM")) return "ISSUES_FOUND";
+  const bar = SEVERITY_RANK[threshold];
+  if (findings.some((f) => SEVERITY_RANK[f.severity] <= bar)) return "ISSUES_FOUND";
   return "APPROVED";
+}
+
+/**
+ * How serious a finding must be before it blocks.
+ *
+ * The lens decides a finding's severity — that is its judgment and this module
+ * does not second-guess it. Which severity is serious *enough to stop a merge*
+ * is a different question, and it belongs to the project, not to this code.
+ * `AGENTS.md §1` in this repo has always said "blocking at MEDIUM severity and
+ * above"; until now nothing read that sentence, so it was decorative and a
+ * project wanting a different bar had no way to say so.
+ *
+ * MEDIUM stays the default, so a project that says nothing — or has no
+ * AGENTS.md at all — gets exactly today's behaviour. See
+ * `work-driver-policy.ts` for how a project loosens it.
+ */
+export const DEFAULT_REVIEW_THRESHOLD: Severity = "MEDIUM";
+
+const SEVERITY_RANK: Record<Severity, number> = {
+  CRITICAL: 0,
+  HIGH: 1,
+  MEDIUM: 2,
+  LOW: 3,
+};
+
+export function isSeverity(s: string): s is Severity {
+  return s === "CRITICAL" || s === "HIGH" || s === "MEDIUM" || s === "LOW";
 }
 
 export async function runLensReview(opts: {
@@ -126,6 +169,20 @@ export async function runLensReview(opts: {
   context?: string;
   cwd?: string;
   signal?: AbortSignal;
+  /**
+   * Post-change content of files the diff touches, rendered for the prompt.
+   * Supplied by the caller because only it knows the branch ref; see
+   * `readFileAtBranch`.
+   */
+  evidence?: string;
+  /**
+   * Deterministic findings produced without a model — currently `claim-scan`.
+   * They join the lens findings before dedup and verdict, so they reach both
+   * `/work` and `/review` through this one path.
+   */
+  extraFindings?: Finding[];
+  /** Blocking bar; defaults to MEDIUM. See `DEFAULT_REVIEW_THRESHOLD`. */
+  threshold?: Severity;
 }): Promise<LensReviewSummary> {
   const runId = makeRunId();
   const skillsDir = piSkillsDir();
@@ -147,7 +204,7 @@ export async function runLensReview(opts: {
 
   const promises = LENSES.map(async (lens): Promise<LensRunResult> => {
     const skillPath = path.join(skillsDir, lens.skill);
-    const prompt = lensPromptFor(lens, opts.diff, context);
+    const prompt = lensPromptFor(lens, opts.diff, context, opts.evidence);
     const tag = lens.name.toLowerCase().replaceAll("_", "-");
     // Per-lens deck key. The dispatch deck (#117) is now the single live
     // surface — there used to be a parallel onUpdate callback rendering an
@@ -245,9 +302,12 @@ export async function runLensReview(opts: {
 
   const lensResults = await Promise.all(promises);
   dispatchDeck.clearBatchEntry(batchKey);
-  const all = lensResults.flatMap((r) => r.findings);
+  // Deterministic findings are merged BEFORE dedup and verdict so they are
+  // indistinguishable downstream from a lens's own — same precedence rules,
+  // same threshold, same rendering. They are findings, not a side channel.
+  const all = [...lensResults.flatMap((r) => r.findings), ...(opts.extraFindings ?? [])];
   const deduped = dedupeFindings(all);
-  const verdict = computeVerdict(deduped, lensResults);
+  const verdict = computeVerdict(deduped, lensResults, opts.threshold);
   return {
     verdict,
     totalFindings: deduped.length,

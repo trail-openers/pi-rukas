@@ -949,6 +949,47 @@ At the `ci` step a weaker version of gate 2 applies: **narration cannot promote 
 
 Escape hatch: `PI_ENSEMBLE_MERGE_AUTHORITY=0` restores the previous behaviour, where the driver merged whenever an ops child's reply contained the substring `ci-status: success`.
 
+### False claims in a diff — and why there is no seventh lens
+
+A `/work` cycle shipped a PR with two defects the six-pass review missed entirely, returning one cosmetic LOW finding: a documentation paragraph describing the **bug** as the intended behaviour (contradicting the same file 70 lines below), and invented hardware specifications with no source anywhere in the repo.
+
+The obvious remedy was a seventh "documentation truth" lens. It was researched and rejected:
+
+- **No shipping reviewer has that lane.** Graphite alone publishes a "Documentation issue" category, and its own docs demote it to a bullet under Logic bugs. Codacy's and DeepSource's "Documentation" categories mean *presence*, not truth. Where it exists at all (CodeRabbit) it is a separate pre-merge pass, not a lens.
+- **Consistency detection is not truth detection.** Kang, Milliken & Yoo ([arXiv:2406.14836](https://arxiv.org/abs/2406.14836)) measured that existing code-comment consistency detectors have *no statistically significant relationship* with comment accuracy.
+- **The lane already existed.** `skill/code-review-simplicity/SKILL.md` lists *"Confusing or contradictory documentation"*. SIMPLICITY was chartered for the first defect and said nothing.
+
+**What actually caused the miss** is worth knowing if you write reviewers of your own. The reviewed diff is built from `origin/<base>..origin/<branch>`, but lens children run with `cwd` set to a **worktree that stays detached at `baseSha`**. They keep read/grep/bash — only write/edit/multiedit are stripped — so a reviewer *can* open a file, and gets the version from before the change. The contradicting line was outside the diff and stale on disk. A seventh lens would have inherited that blind spot exactly.
+
+Two mechanisms replace it, one per defect:
+
+| Defect | Mechanism |
+|---|---|
+| A claim contradicting something outside the diff | **Evidence supply** — the post-change content of changed prose files, read via `git show origin/<branch>:<path>`, is included in every lens prompt, along with a standing warning that the working tree is at the base commit. The existing lane can finally see what it was chartered to judge. |
+| An invented specification with no referent | **`claim-scan`** — deterministic and model-free. It extracts checkable particulars from lines the diff adds to prose files and greps the branch for each one. |
+
+**The grounding rule matters in both directions.** A token counts as grounded when it occurs *outside the prose file asserting it* — in code, config or tests, **including lines this same diff added**. Same-diff code must count, or this project's own rule that documentation ships with the change it documents would make the scan fire on nearly every honest PR. And prose must not ground prose, or an invented specification would validate itself.
+
+If `claim-scan` flags something legitimate, the fix is usually to point the prose at something real. A URL or a product name that genuinely has no repo referent is the case the escape hatch exists for:
+
+```bash
+PI_ENSEMBLE_CLAIM_SCAN=0 /work <issue>
+```
+
+### How severe is "blocking"? Your project decides
+
+A lens assigns a finding's severity — that is its judgment. Which severity is serious enough to **stop a merge** is your project's call, stated in your `AGENTS.md`:
+
+> Six-pass review findings are blocking at MEDIUM severity and above.
+
+That is pi-ensemble's own sentence, and since this change it is read rather than merely written down. Say something equivalent in your own `AGENTS.md` to move the bar. Rules:
+
+- **No `AGENTS.md`, or one that never mentions review severity, is the normal case** — you get the default, `MEDIUM`. This deliberately differs from merge authority, which fails closed and denies when doctrine is silent. Configuration falls back to a default; authority does not.
+- **Loosening requires a verified citation.** The judge must quote the sentence, and the driver checks that sentence exists in the file — the #407 mechanism, reused unchanged. A fabricated sentence cannot raise your bar.
+- **Doctrine is read at the cycle's base commit**, so a cycle cannot lower its own bar mid-run.
+- **`CRITICAL` always blocks.** A project may decide MEDIUM findings are advisory; none gets to wave through a CRITICAL.
+- `PI_ENSEMBLE_REVIEW_THRESHOLD=<severity>` overrides everything for one run.
+
 ### Structured markers in subagent replies (#408)
 
 Steps ask their child to end with a marker (`VERDICT: APPROVED`, `ci-status: success`, `#561: NEEDS_WORK`). One shared reader (`extension/src/reply-markers.ts`) accepts every shape agents actually emit — `**VERDICT:** APPROVED`, `verdict: approved`, and the heading form:

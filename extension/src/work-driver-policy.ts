@@ -264,6 +264,14 @@ ${question}
 
 ${bodies || "(no documents were supplied)"}
 
+## Answer only from the documents above
+
+Those blocks are the whole record. Other project files may be present in your
+context — your working directory has its own copy of some of them — and they may
+be a **different version** of what is quoted here. Ignore them. If a rule is not
+in the text above, it does not exist for this question, however plausible it
+looks elsewhere.
+
 ## How to answer
 
 Call the \`report_policy\` tool exactly once. Your prose reply is discarded.

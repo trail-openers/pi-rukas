@@ -6,7 +6,13 @@
  * lens-review.ts.
  */
 
-import type { Finding, LensReviewSummary, LensRunResult, Severity } from "./lens-review.ts";
+import type {
+  Finding,
+  FindingSource,
+  LensReviewSummary,
+  LensRunResult,
+  Severity,
+} from "./lens-review.ts";
 
 export const LENSES = [
   { name: "SECURITY", skill: "code-review-security", precedence: 0 },
@@ -23,6 +29,7 @@ export function lensPromptFor(
   lens: (typeof LENSES)[number],
   diff: string,
   context: string,
+  evidence?: string,
 ): string {
   return `You are running the **${lens.name}** review lens.
 
@@ -34,6 +41,10 @@ Diff to review:
 \`\`\`diff
 ${diff}
 \`\`\`
+${evidence ? `\n${evidence}\n` : ""}
+## Your working directory is NOT the branch
+
+Read the supplied content above rather than opening files. Your filesystem is checked out at the **base commit** — the state before this PR — so a file you open yourself shows the code as it was, not as this diff leaves it. Reviewing the diff against a stale file produces contradictions that do not exist. If you need a changed file in full and it is not supplied, say so in your summary instead of guessing.
 
 ## How to report findings
 
@@ -103,7 +114,11 @@ function normalisePath(p: string): string {
  * (SECURITY > ERROR_HANDLING > TYPE_SAFETY > PERFORMANCE > ARCHITECTURE > SIMPLICITY).
  */
 export function dedupeFindings(input: Finding[]): Finding[] {
-  const precedenceOf = new Map<LensName, number>(LENSES.map((l) => [l.name, l.precedence]));
+  const precedenceOf = new Map<FindingSource, number>(LENSES.map((l) => [l.name, l.precedence]));
+  // CLAIM_SCAN outranks every lens on a collision. Its findings are lookups,
+  // not judgments — if a lens and the scan land on the same line, the one that
+  // can point at a grep result is the one worth keeping.
+  precedenceOf.set("CLAIM_SCAN", -1);
   // `bestByKey` is bounded by the lens fan-in (≤6 children × finite findings
   // per pass) — at most a few hundred entries per invocation, and the whole
   // map goes out of scope when this function returns. No explicit cap needed.
