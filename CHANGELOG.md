@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.29](https://github.com/randomm/pi-ensemble/compare/v0.12.28...v0.12.29) (2026-08-10)
+
+
+### Features
+
+* **review:** catch false claims in a diff — evidence supply + claim-scan ([#415](https://github.com/randomm/pi-ensemble/issues/415)) ([2280e85](https://github.com/randomm/pi-ensemble/commit/2280e856b569ec1287351343cd3a7258f75654d1))
+
 ## [0.12.28](https://github.com/randomm/pi-ensemble/compare/v0.12.27...v0.12.28) (2026-08-09)
 
 
