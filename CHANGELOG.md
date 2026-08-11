@@ -8,6 +8,18 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.30](https://github.com/randomm/pi-ensemble/compare/v0.12.29...v0.12.30) (2026-08-11)
+
+
+### Features
+
+* **#420:** close the vipune read/write loop and resolve staleness after retrieval ([#421](https://github.com/randomm/pi-ensemble/issues/421)) ([273fdd1](https://github.com/randomm/pi-ensemble/commit/273fdd14ec03ba3cf0224a7affeb7710b0d36ca9)), closes [#420](https://github.com/randomm/pi-ensemble/issues/420)
+
+
+### Bug Fixes
+
+* **#417:** the calibrated vipune seam was unreachable while a broken invocation ran daily ([#418](https://github.com/randomm/pi-ensemble/issues/418)) ([9df187a](https://github.com/randomm/pi-ensemble/commit/9df187a1e6aa75b59ec281e3ce3ca2f5c8b8395a)), closes [#417](https://github.com/randomm/pi-ensemble/issues/417)
+
 ## [0.12.29](https://github.com/randomm/pi-ensemble/compare/v0.12.28...v0.12.29) (2026-08-10)
 
 
