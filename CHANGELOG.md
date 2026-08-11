@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.31](https://github.com/randomm/pi-ensemble/compare/v0.12.30...v0.12.31) (2026-08-11)
+
+
+### Bug Fixes
+
+* **#423:** no agent rewrites a memory in place, and the seam cannot die unnoticed ([#424](https://github.com/randomm/pi-ensemble/issues/424)) ([41bb29c](https://github.com/randomm/pi-ensemble/commit/41bb29c2936e210351681cd5b5e5350abde154e7)), closes [#423](https://github.com/randomm/pi-ensemble/issues/423)
+
 ## [0.12.30](https://github.com/randomm/pi-ensemble/compare/v0.12.29...v0.12.30) (2026-08-11)
 
 
