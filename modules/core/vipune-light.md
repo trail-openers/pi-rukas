@@ -47,6 +47,6 @@ vipune add "finding $(whoami)"   # ❌ DANGEROUS — shell expansion
 
 ## Freshness check before acting
 
-Memories are snapshots. Verify against current state (`ls`, `grep`, `--help`) before using as the basis for action. If stale, `--supersedes <old-id>` or `vipune delete <id>`.
+Memories are snapshots. Verify against current state (`ls`, `grep`, `--help`) before using as the basis for action. If stale, correct it with `vipune add '<new>' --supersedes <old-id> --memory-type <type>` — `vipune delete` and `vipune update` are denied to every role.
 
 For the full doctrine load the bundled skill via `--skill <skills-dir>/vipune`. Run `vipune --help` for options.

@@ -40,12 +40,17 @@ const SEAM = "vipune.ts";
  * to it is allowed — leaving something out of it is not.
  */
 const PENDING_WIRING: Record<string, string> = {
-  selectResults: "#422 — used by the read leg",
+  // NOT planned for a caller. #394 calibrated `selectResults` as floor AND
+  // agreement, and a later 940-observation sweep showed the floor costs recall
+  // for nothing on this corpus (files-hit 22/24 -> 8/24, zero false positives
+  // removed). The develop read therefore applies the agreement bit directly.
+  // Kept because the rule is correct for the question it was calibrated on.
+  selectResults: "superseded for the develop leg — see memory-brief.ts",
+  SIM_FLOOR: "superseded for the develop leg — read only by selectResults",
   readDoctrineFromDisk:
     "#407 — superseded by readDoctrineAtBase; kept for callers outside the driver",
   // Consumed inside the seam by functions that are themselves unwired, so these
   // reach production only once those do.
-  SIM_FLOOR: "#422 — read by selectResults",
   looksLikeSecret: "#422 — called by vipuneAdd inside the seam",
   searchArgv: "#422 — called by vipuneSearch (and by the offline argv gate)",
 };

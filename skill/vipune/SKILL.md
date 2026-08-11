@@ -121,8 +121,9 @@ Vipune has no built-in TTL. Use `--status` instead:
 vipune add 'tofu apply takes ~5 min when only user_data changed' \
   --memory-type observation --status candidate
 
-# Promote to active once validated across multiple sessions
-vipune update <id> --status active
+# You cannot promote or edit a memory: `vipune update` is denied to every role,
+# because it replaces content in place with no lineage and no undo. Correct a
+# memory by writing a new one with `--supersedes <id>`.
 ```
 
 **Promote candidates only after the fact survives a second confirmation.** Otherwise, let them sit — they're inert until explicitly queried. This is the short-term tier.
@@ -146,7 +147,7 @@ If verification fails: **update or delete the stale memory immediately.** Don't 
 vipune add 'New corrected statement' --supersedes <old-id> --memory-type fact
 
 # Memory is fully obsolete — delete
-vipune delete <old-id>
+# (`vipune delete` is denied to every role — superseding is the correction.)
 ```
 
 ## Contradiction handling — supersede, don't duplicate
@@ -214,7 +215,7 @@ These bands apply to **semantic mode only** (`--no-hybrid --recency 0.0`). A hyb
 
 **NEVER** (defeats the purpose, causes bloat or actual harm):
 
-- **Secrets of any kind** — API tokens, passwords, SSH private keys, .env contents. Vipune stores in plaintext SQLite. **This is a hard line.** If you discover a secret in memory, `vipune delete` immediately and rotate the credential.
+- **Secrets of any kind** — API tokens, passwords, SSH private keys, .env contents. Vipune stores in plaintext SQLite. **This is a hard line.** If you discover a secret in memory, **tell the operator immediately and say which memory id** so they can remove it, and treat the credential as compromised — it must be rotated. You cannot delete it yourself: `vipune delete` is denied to every role.
 - Raw conversation turns
 - One-off file paths likely to move
 - Intermediate debugging hypotheses
@@ -290,12 +291,16 @@ vipune add '<distilled fact/preference/procedure/guard/observation>' \
 # LIST (for the consolidation pass)
 vipune list --limit 50
 
-# UPDATE / SUPERSEDE (when a memory drifts)
-vipune update <id> --text '<new content>'
+# SUPERSEDE (when a memory drifts) — the ONLY correction available to you.
+# `--supersedes` preserves the original row, so the change is auditable and
+# reversible. `--memory-type` is mandatory: vipune will not tell you the old
+# row's type, and guessing wrong silently retypes it out of every typed read.
 vipune add '<new content>' --supersedes <old-id> --memory-type <type>
 
-# DELETE (when fully obsolete)
-vipune delete <id>
+# NOT AVAILABLE: `vipune update --text` and `vipune delete` are denied to every
+# role. `update --text` replaces content in place — same id, no lineage, no
+# undo — so anything that cited that memory would silently point at new text.
+# Deleting or editing a memory is an operator action.
 
 # VALIDATE (check before adding long content)
 vipune validate '<text>'           # exits 3 if over 512-token embedding limit
@@ -341,3 +346,26 @@ vipune is for **project-scoped, persistent, semantic-recall-worthy** knowledge. 
 - [ ] What gotcha did we hit that the next session should avoid?
 - [ ] Save each as `vipune add ... --memory-type <type>`, with `--status candidate` if uncertain
 - [ ] One atomic fact per `vipune add` call. Don't dump whole reports — distil first.
+
+## Writing a memory others can actually find
+
+One claim per row, **leading with the file basename**, under ~300 characters:
+
+```
+work-driver-lens.ts: reviewRound is incremented here and never reset
+```
+
+Three reasons, all measured:
+
+- **Lead with the basename** because that is the token a later search is built from. A row that
+  says "the review loop" and a query that says `work-driver-lens.ts` share nothing for BM25 to
+  match, so only the semantic leg fires and the row scores on the dead `1/(25+r)` ladder.
+- **One claim per row** because a retrieved memory is injected into somebody's prompt and has to be
+  checkable on its own. A row carrying four claims is right about some and stale about others, and
+  the reader cannot tell which.
+- **Short** because of injection cost, *not* findability — long rows retrieve perfectly well (the
+  most-retrieved row in this project is 1598 characters). But a brief carries several hits, and the
+  corpus median is 742 characters, so unbounded rows crowd out the actual task.
+
+Do **not** shorten by dropping the operative clause. If a memory needs the rule stated last after
+its evidence, write two rows instead of truncating one.

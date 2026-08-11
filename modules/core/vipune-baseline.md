@@ -80,3 +80,26 @@ Write at **task close**, not mid-debug. One atomic fact per `vipune add`. Save:
 All session agents (PM, @explore, @developer, etc.) share the **same project-scoped DB**. Use `--memory-type observation` for findings you want PM to retrieve later this session via `vipune search '...' --recency 0.9 --memory-type observation`.
 
 **For the full doctrine** (failure modes, search-recipe scoring tables, deep examples), load the bundled skill via `--skill <skills-dir>/vipune`. Run `vipune --help` for advanced options.
+
+## Writing a memory others can actually find
+
+One claim per row, **leading with the file basename**, under ~300 characters:
+
+```
+work-driver-lens.ts: reviewRound is incremented here and never reset
+```
+
+Three reasons, all measured:
+
+- **Lead with the basename** because that is the token a later search is built from. A row that
+  says "the review loop" and a query that says `work-driver-lens.ts` share nothing for BM25 to
+  match, so only the semantic leg fires and the row scores on the dead `1/(25+r)` ladder.
+- **One claim per row** because a retrieved memory is injected into somebody's prompt and has to be
+  checkable on its own. A row carrying four claims is right about some and stale about others, and
+  the reader cannot tell which.
+- **Short** because of injection cost, *not* findability — long rows retrieve perfectly well (the
+  most-retrieved row in this project is 1598 characters). But a brief carries several hits, and the
+  corpus median is 742 characters, so unbounded rows crowd out the actual task.
+
+Do **not** shorten by dropping the operative clause. If a memory needs the rule stated last after
+its evidence, write two rows instead of truncating one.

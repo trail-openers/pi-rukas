@@ -1,0 +1,5 @@
+# Full verification for pi-ensemble (AGENTS.md §1 plus the vipune fixture suite).
+# Used by the driver's second-tier verify. PI_ENSEMBLE_VIPUNE_REQUIRED=1 makes the
+# memory tests FAIL rather than skip when the binary is absent — a skipped
+# calibration test is how the retrieval rule stayed dead for the life of #394.
+cd extension && bunx tsc --noEmit && cd .. && bun run check && cd extension && PI_ENSEMBLE_VIPUNE_REQUIRED=1 bun smoke-tests/test-vipune-capability.ts && PI_ENSEMBLE_VIPUNE_REQUIRED=1 bun smoke-tests/test-memory-brief.ts

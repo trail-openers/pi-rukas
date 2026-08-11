@@ -1016,7 +1016,7 @@ Near-duplicate is judged on content overlap, not on score: two rows that say opp
 
 ### Agents can no longer delete your memories
 
-`agents.json` granted `"vipune *": "allow"` to all six roles. `vipune delete <ID>` takes no confirmation flag, and the wildcard also reached `vipune mcp`. The allowlist is now explicit: `search`, `add`, `get`, `list`, `update`, `doctor`, `version`. `delete`, `mcp`, `reindex` and `project` are not granted to any role — an operator runs those.
+`agents.json` granted `"vipune *": "allow"` to all six roles. `vipune delete <ID>` takes no confirmation flag, and the wildcard also reached `vipune mcp`. The allowlist is explicit: `search`, `add`, `get`, `list`, `validate`, `doctor`, `version`. `delete`, `update`, `mcp`, `reindex` and `project` are granted to no role — an operator runs those. (`update` was allowed until it was measured to replace content in place with no lineage; see below.)
 
 ### False claims in a diff — and why there is no seventh lens
 

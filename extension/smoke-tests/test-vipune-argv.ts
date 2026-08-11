@@ -171,6 +171,80 @@ assert(
   assert(typed[typed.indexOf("--memory-type") + 1] === "guard", "a typed leg passes --memory-type");
 }
 
+// ------------------- rule 3: prose must not teach a command the roles cannot run
+
+{
+  // The failure this catches actually happened, in this very series: #424
+  // denied `vipune update` to every role while three prompt files went on
+  // instructing agents to run `vipune update <id> --status active`. An agent
+  // following doctrine would have hit a permission denial with no explanation.
+  //
+  // Keyed on the permission file rather than a hardcoded list, so denying a new
+  // verb automatically starts policing the prose for it.
+  const agents = JSON.parse(readFileSync(path.join(ROOT, "agents.json"), "utf8")) as {
+    agent: Record<string, { permission?: { bash?: Record<string, string> } }>;
+  };
+
+  const allowedVerbs = new Set<string>();
+  for (const role of Object.values(agents.agent)) {
+    for (const [pattern, verdict] of Object.entries(role.permission?.bash ?? {})) {
+      const m = pattern.match(/^vipune (\w+)/);
+      if (m?.[1] && verdict === "allow") allowedVerbs.add(m[1]);
+    }
+  }
+  assert(allowedVerbs.size > 0, `the allowlist grants ${allowedVerbs.size} vipune verb(s)`);
+  assert(
+    !allowedVerbs.has("delete") && !allowedVerbs.has("update"),
+    "...and neither `delete` nor `update` is among them",
+  );
+
+  /** `vipune --help` as of 0.9.0. A word that is not one of these is prose. */
+  const VIPUNE_SUBCOMMANDS = new Set([
+    "validate",
+    "add",
+    "search",
+    "get",
+    "list",
+    "delete",
+    "update",
+    "doctor",
+    "reindex",
+    "project",
+    "version",
+    "mcp",
+  ]);
+
+  const taught: string[] = [];
+  for (const f of files) {
+    let content: string;
+    try {
+      content = readFileSync(f, "utf8");
+    } catch {
+      continue;
+    }
+    content.split("\n").forEach((text, i) => {
+      // A commented-out line is documentation about the prohibition, not an
+      // instruction to run it.
+      if (/^\s*(#|\/\/|<!--|\*)/.test(text)) return;
+      // Only a real subcommand in command position counts. Prose like "vipune
+      // memory" or "vipune searches" is not an instruction to run anything, and
+      // matching any word after `vipune` flags 58 such lines.
+      const m = text.match(/(?:^\s*|[`$]\s*)vipune (\w+)/);
+      const verb = m?.[1];
+      if (!verb || !VIPUNE_SUBCOMMANDS.has(verb) || allowedVerbs.has(verb)) return;
+      // Prose that names the verb in order to FORBID it is the point of the
+      // documentation, not a violation of it.
+      if (/denied|deny|cannot|not available|forbidden|refus|granted to no|not granted/i.test(text))
+        return;
+      taught.push(`${path.relative(ROOT, f)}:${i + 1}`);
+    });
+  }
+  assert(
+    taught.length === 0,
+    `no prose teaches a vipune verb the roles cannot run${taught.length ? ` — ${taught.join(", ")}` : ""}`,
+  );
+}
+
 // ------------------------------------- the env covers what prose cannot reach
 
 {

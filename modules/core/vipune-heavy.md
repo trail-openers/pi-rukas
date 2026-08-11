@@ -37,7 +37,9 @@ vipune has no built-in TTL. Use `--status`:
 
 ```bash
 vipune add 'tentative observation' --memory-type observation --status candidate
-vipune update <id> --status active   # promote once validated
+# NOTE: you cannot promote. `vipune update` is denied to every role — it can
+# replace a memory's content in place with no lineage and no undo. Leave the
+# row a candidate; promotion is an operator action.
 ```
 
 Default to `candidate` for anything you're not certain will outlast this session.
@@ -79,7 +81,7 @@ If verification fails: **supersede or delete the stale memory immediately**. Don
 
 ```bash
 vipune add 'corrected statement' --supersedes <old-id> --memory-type fact
-vipune delete <old-id>
+# (`vipune delete` is denied to every role — superseding is the correction.)
 ```
 
 ## Conflict handling — supersede, don't duplicate
@@ -130,8 +132,31 @@ Look for: duplicates (supersede older), stale facts (delete/supersede), drift ac
 vipune search '<term>' --no-hybrid --recency 0.0 --limit 5 --no-touch --json
 vipune add '<distilled fact>' --memory-type <type> [--status candidate] [--supersedes <id>]
 vipune list --limit 50
-vipune update <id> --status active            # promote candidate
-vipune delete <id>
+# `vipune update` and `vipune delete` are DENIED to every role. To correct a
+# memory, write a new one with `--supersedes <id>`, which preserves the original.
 ```
 
 **One atomic fact per `vipune add` call.** For the full doctrine (deep search recipes, failure-mode catalogue, all examples), load the bundled skill via `--skill <skills-dir>/vipune` (pi-ensemble installs it to `~/.pi/agent/skills/vipune`).
+
+## Writing a memory others can actually find
+
+One claim per row, **leading with the file basename**, under ~300 characters:
+
+```
+work-driver-lens.ts: reviewRound is incremented here and never reset
+```
+
+Three reasons, all measured:
+
+- **Lead with the basename** because that is the token a later search is built from. A row that
+  says "the review loop" and a query that says `work-driver-lens.ts` share nothing for BM25 to
+  match, so only the semantic leg fires and the row scores on the dead `1/(25+r)` ladder.
+- **One claim per row** because a retrieved memory is injected into somebody's prompt and has to be
+  checkable on its own. A row carrying four claims is right about some and stale about others, and
+  the reader cannot tell which.
+- **Short** because of injection cost, *not* findability — long rows retrieve perfectly well (the
+  most-retrieved row in this project is 1598 characters). But a brief carries several hits, and the
+  corpus median is 742 characters, so unbounded rows crowd out the actual task.
+
+Do **not** shorten by dropping the operative clause. If a memory needs the rule stated last after
+its evidence, write two rows instead of truncating one.
