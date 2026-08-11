@@ -8,6 +8,14 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.32](https://github.com/randomm/pi-ensemble/compare/v0.12.31...v0.12.32) (2026-08-11)
+
+
+### Features
+
+* **#422:** the develop step reads memory, on a rule measured against the real corpus ([#428](https://github.com/randomm/pi-ensemble/issues/428)) ([fa4dd91](https://github.com/randomm/pi-ensemble/commit/fa4dd9171446952e1a0b37f8e9b764339f8fbdd7)), closes [#422](https://github.com/randomm/pi-ensemble/issues/422)
+* **#422:** the driver writes what it already knows, and we can tell whether it helps ([#426](https://github.com/randomm/pi-ensemble/issues/426)) ([fee532f](https://github.com/randomm/pi-ensemble/commit/fee532fde0b9918c09dd515b3d724014e5af375a)), closes [#422](https://github.com/randomm/pi-ensemble/issues/422)
+
 ## [0.12.31](https://github.com/randomm/pi-ensemble/compare/v0.12.30...v0.12.31) (2026-08-11)
 
 
