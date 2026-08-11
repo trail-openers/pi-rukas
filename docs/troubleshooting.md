@@ -965,6 +965,21 @@ Three things now prevent it:
 
 **Score bands apply to semantic mode only** — `--no-hybrid --recency 0.0`.
 
+### An agent tried to edit a memory and was refused
+
+`vipune update <id> --text "…"` is denied to every role, and the refusal is enforced in
+`bash-command-parser.ts` ahead of the permission allowlist so it holds even if the allowlist changes.
+
+The reason is that `update --text` **replaces content in place**: one row before, one row after, no
+new row, no `superseded_by` lineage, no undo. The id survives, so any prior citation of that memory
+now points at different text — which makes it quieter than `delete`, and worse.
+
+Repairs go through `add --supersedes`, which keeps the original row (six already exist in this
+project's store) and leaves the correction auditable and reversible.
+
+If you want to edit a memory yourself, do it outside the harness — this restriction is on agents,
+not on you.
+
 ### Two contradictory memories — which one comes back?
 
 Recency matters here, but not as a score. vipune can blend age into the ranking (`--recency`), and that is precisely what broke retrieval: the recency term spans `w` while a hybrid top-5 spans ~0.044, so blending replaces the ranking rather than weighting it.

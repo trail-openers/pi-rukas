@@ -294,6 +294,30 @@ export function extractCommandPrefix(command: string): string {
 // Refuses to match commands containing injection vectors OUTSIDE quoted
 // segments — those must always reach the interactive prompt. Quoted content
 // is transparent (see stripQuotedSegments and issue #108).
+/**
+ * `vipune update` carrying new content — refused for every role, unconditionally.
+ *
+ * Measured: `vipune update <id> -t "…"` REPLACES the row's content in place. One
+ * row before, one row after; no new row, no `superseded_by` lineage, no undo. The
+ * id survives, so anything that cited that memory now cites different text —
+ * which makes it quieter than `delete`, and worse.
+ *
+ * The allowlist alone cannot express this. `matchBashSubcommand` is
+ * prefix-based, so `"vipune update *"` grants every flag or none; there is no way
+ * to permit `--status` (harmless promotion) while refusing `--text`. So the
+ * refusal lives here, ahead of the allowlist, and holds even if a future edit
+ * re-admits the verb.
+ *
+ * The harness repairs memory with `add --supersedes`, which preserves the
+ * original row — the same reasoning as #406: an agent must not silently rewrite
+ * the record it is judged against.
+ */
+export function isDestructiveMemoryWrite(command: string): boolean {
+  const c = command.trim();
+  if (!/^vipune\s+update\b/.test(c)) return false;
+  return /(^|\s)(-t|--text)(\s|=|$)/.test(c);
+}
+
 export function matchBashSubcommand(
   command: string,
   allowlist: Record<string, string>,
@@ -316,6 +340,7 @@ export function matchBashSubcommand(
   // user can never approve `git X && rm -rf /` as a side-effect of having
   // ever approved `git status && git diff`.
   if (BASH_COMMAND_INJECTION_CHARS.test(stripQuotedSegments(command))) return null;
+  if (isDestructiveMemoryWrite(command)) return "deny";
   // Sort patterns by length descending so the more specific entry wins.
   const patterns = Object.entries(allowlist)
     .filter(([k]) => k !== "*")
