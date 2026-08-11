@@ -965,6 +965,24 @@ Three things now prevent it:
 
 **Score bands apply to semantic mode only** — `--no-hybrid --recency 0.0`.
 
+### The developer prompt now carries prior memory
+
+At the develop step the driver searches for memories about the files the workstream will touch, and injects what it finds above the task. Rows are framed as **hypotheses** and carry `[vipune:<id>]` so the developer can cite one back if the code disagrees with it.
+
+If the brief is empty, that is recorded (`memory-inject` with `emptyBrief: true`) rather than passing silently — a retrieval leg that returns nothing forever is a failure this project has already shipped once, invisible for the life of the feature because nothing counted it.
+
+**Why the rule differs from the seam's own defaults**, all measured:
+
+| Choice | Why |
+|---|---|
+| Unfiltered, not `--memory-type guard` | Filtered, `permission-guard.ts` scores 0.0385 and is missed; unfiltered it scores 0.076923 and is found. Guards are 5 of 111 rows — the filter discards 95% of the corpus. |
+| Agreement bit only, no `SIM_FLOOR` | Re-adding the floor drops files-hit from 22/24 to 8/24 and removes **zero** false positives. |
+| One query per basename, plus the stem | Concatenating names scored the target guard 0.6301 — below any usable floor — where the basename alone scored 0.6513. |
+
+The threshold stays at 0.075 rather than the measured-clean 0.04 separator: 0.075 gives precision 1.00 against 0.04's 0.85, and a memory injected into a developer's prompt is adopted at first exposure.
+
+Escape: nothing to disable here — if vipune is missing, slow or broken, the brief is simply empty and the cycle is unaffected.
+
 ### An agent tried to edit a memory and was refused
 
 `vipune update <id> --text "…"` is denied to every role, and the refusal is enforced in

@@ -10,6 +10,7 @@ import { exec } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
 import { dispatchCore } from "./dispatch.ts";
+import { buildMemoryBrief } from "./memory-brief.ts";
 import { trace } from "./trace.ts";
 import { mechanizedBranchSetup } from "./work-driver-branch-mechanized.ts";
 import type { DriverContext } from "./work-driver-context.ts";
@@ -329,6 +330,22 @@ export async function runDevelop(
         // returning so the developer can consult it mid-flight (the
         // developer prompt names the path explicitly). Promise.allSettled
         // ensures one failing doesn't abort the other.
+        // #422 — prior memory about the files this workstream will touch.
+        // Never fatal: any vipune problem degrades to an empty brief.
+        const brief = await buildMemoryBrief(ws?.paths ?? [], {
+          cwd: ctx.repoRoot,
+          timeoutMs: 8000,
+        });
+        next = appendEvent(next, {
+          kind: "memory-inject",
+          at: Date.now(),
+          step: "develop",
+          queries: brief.queries,
+          hits: brief.hits.length,
+          emptyBrief: brief.emptyBrief,
+          ids: brief.hits.map((h: { id: string }) => h.id),
+        });
+
         const [developerSettled, speculativeSettled] = await Promise.allSettled([
           dispatch(
             ctx.pi,
@@ -340,6 +357,7 @@ export async function runDevelop(
                 ws,
                 ids.length > 1 ? id : undefined,
                 speculativeOn ? speculativeContextPath : undefined,
+                brief.text,
               ),
               cwd,
             },

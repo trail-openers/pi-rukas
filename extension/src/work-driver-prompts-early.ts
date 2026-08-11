@@ -293,6 +293,8 @@ export function inlineDevelopPrompt(
   workstream?: { id: string; scope: string; paths: string[]; outOfScope: string[] },
   workstreamId?: string,
   speculativeContextPath?: string,
+  /** #422 — prior memory about the in-scope files, already rendered. */
+  memoryBrief?: string,
 ): string {
   // PR11 — multi-issue cycles must show the developer the ACTIVE issues
   // (NEEDS_WORK subset after explore), not the primary cycle issue. The
@@ -312,6 +314,9 @@ export function inlineDevelopPrompt(
       workstream.paths.length > 0
         ? `In-scope files: ${workstream.paths.join(", ")}`
         : "In-scope files: derive from the scope description above.",
+      // Prior memory sits directly under the file list because it is ABOUT
+      // those files; separating them invites the reader to skip it.
+      memoryBrief ?? "",
       workstream.outOfScope.length > 0
         ? `**OUT OF SCOPE — do NOT touch**: ${workstream.outOfScope.join(", ")}`
         : "Stay tightly focused on the scope; other workstreams handle the rest.",

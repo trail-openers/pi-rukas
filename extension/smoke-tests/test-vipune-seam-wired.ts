@@ -40,17 +40,12 @@ const SEAM = "vipune.ts";
  * to it is allowed — leaving something out of it is not.
  */
 const PENDING_WIRING: Record<string, string> = {
-  vipuneSearch: "#422 — the develop-step read leg",
   selectResults: "#422 — used by the read leg",
-  renderBrief: "#422 — used by the read leg",
-  preferNewest: "#422 — used by the read leg",
   readDoctrineFromDisk:
     "#407 — superseded by readDoctrineAtBase; kept for callers outside the driver",
   // Consumed inside the seam by functions that are themselves unwired, so these
   // reach production only once those do.
   SIM_FLOOR: "#422 — read by selectResults",
-  HYBRID_AGREEMENT: "#422 — read by selectResults",
-  isIdentifierShaped: "#422 — gates the hybrid sibling leg on the read path",
   looksLikeSecret: "#422 — called by vipuneAdd inside the seam",
   searchArgv: "#422 — called by vipuneSearch (and by the offline argv gate)",
 };
