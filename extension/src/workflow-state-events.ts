@@ -391,6 +391,40 @@ export type WorkEvent =
         before?: string;
         after?: string;
       }>;
+    }
+  /**
+   * A memory was written, or refused. Emitted per attempt, not per success —
+   * the refusals are the interesting half, and a silent refusal is how the
+   * write path would go dead without anyone noticing.
+   */
+  | {
+      kind: "memory-write";
+      at: number;
+      outcome: "written" | "cap" | "refused" | "conflict" | "error";
+      /** Present on success. */
+      id?: string;
+      memoryType?: string;
+      /** Why, when the outcome is not `written`. */
+      detail?: string;
+    }
+  /**
+   * A memory brief was composed for a subagent prompt.
+   *
+   * `emptyBrief` is the load-bearing field. A retrieval leg that returns
+   * nothing, forever and silently, is the exact failure this project already
+   * shipped once — a 100% empty rate was invisible for the whole life of the
+   * feature because nothing recorded it.
+   */
+  | {
+      kind: "memory-inject";
+      at: number;
+      step: WorkStep;
+      /** Queries issued, so a leg that asks the wrong thing is diagnosable. */
+      queries: string[];
+      hits: number;
+      emptyBrief: boolean;
+      /** Ids injected, so a later citation can be matched back to this brief. */
+      ids?: string[];
     };
 
 /** Discriminator union of event kinds — useful for callers that switch on it. */

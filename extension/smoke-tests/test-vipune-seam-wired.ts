@@ -41,7 +41,6 @@ const SEAM = "vipune.ts";
  */
 const PENDING_WIRING: Record<string, string> = {
   vipuneSearch: "#422 — the develop-step read leg",
-  vipuneAdd: "#422 — the lens-finding write path",
   selectResults: "#422 — used by the read leg",
   renderBrief: "#422 — used by the read leg",
   preferNewest: "#422 — used by the read leg",
@@ -51,8 +50,8 @@ const PENDING_WIRING: Record<string, string> = {
   // reach production only once those do.
   SIM_FLOOR: "#422 — read by selectResults",
   HYBRID_AGREEMENT: "#422 — read by selectResults",
-  looksLikeSecret: "#422 — called by vipuneAdd",
   isIdentifierShaped: "#422 — gates the hybrid sibling leg on the read path",
+  looksLikeSecret: "#422 — called by vipuneAdd inside the seam",
   searchArgv: "#422 — called by vipuneSearch (and by the offline argv gate)",
 };
 
@@ -68,7 +67,18 @@ assert(exported.length > 5, `the seam publishes ${exported.length} functions/con
 /** Production sources: everything under src/ except the seam itself. */
 const productionFiles = readdirSync(SRC)
   .filter((f) => f.endsWith(".ts") && f !== SEAM)
-  .map((f) => ({ name: f, text: readFileSync(path.join(SRC, f), "utf8") }));
+  .map((f) => ({ name: f, text: stripComments(readFileSync(path.join(SRC, f), "utf8")) }));
+
+/**
+ * Comments are not callers.
+ *
+ * Without this, a docstring that merely NAMES an export counts as wiring it —
+ * which is exactly how this test first reported `renderBrief` as live when the
+ * only mention of it was a sentence explaining what it does.
+ */
+function stripComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
+}
 
 const importers = productionFiles.filter((f) => /from "\.\/vipune\.ts"/.test(f.text));
 

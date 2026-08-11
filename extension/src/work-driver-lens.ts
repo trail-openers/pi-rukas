@@ -14,6 +14,7 @@ import { promisify } from "node:util";
 import { type WideningFinding, scanTypeWidening } from "./invariant-scan.ts";
 import { buildEvidence, runClaimScan } from "./lens-evidence.ts";
 import { runLensReview } from "./lens-review.ts";
+import { writeFindings } from "./memory-write.ts";
 import { resolveReviewThreshold } from "./review-threshold.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
@@ -213,6 +214,27 @@ export async function runLens(
     at: Date.now(),
     summary: `verdict=${summary.verdict}; findings=${summary.totalFindings}`,
   });
+
+  // #422 — persist what the review found, deterministically. Candidates only,
+  // capped, and never fatal: a memory problem must not affect a cycle whose
+  // code work is already done.
+  if (summary.findings.length > 0) {
+    const written = await writeFindings(
+      summary.findings.map((f) => ({ path: f.path, title: f.title, severity: f.severity })),
+      { src: "pi-ensemble", issue: ctx.issue, kind: "lens-finding", cycle: String(round) },
+      { cwd: ctx.repoRoot, timeoutMs: 8000 },
+    );
+    for (const w of written) {
+      next = appendEvent(next, {
+        kind: "memory-write",
+        at: Date.now(),
+        outcome: w.outcome,
+        id: w.id,
+        memoryType: "guard",
+        detail: w.detail,
+      });
+    }
+  }
 
   if (summary.verdict === "APPROVED") {
     next = appendEvent(next, { kind: "lens-approved", at: Date.now(), jobId, round });

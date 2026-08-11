@@ -159,6 +159,15 @@ function fmtEvent(e: WorkEvent): string {
       return `  verify-full-status · ${e.status}${e.ms ? ` · ${fmtElapsed(e.ms)}` : ""}${e.evidenceTail ? ` · ${e.evidenceTail.slice(0, 50)}` : ""}`;
     case "widening-scan":
       return `  widening-scan · ${e.findings.length} finding(s)`;
+    case "memory-write":
+      return `  memory-write · ${e.outcome}${e.detail ? ` · ${e.detail}` : ""}`;
+    case "memory-inject":
+      // The empty case is called out rather than rendered as "0 hits": a leg
+      // that silently returns nothing forever is the failure this event exists
+      // to make visible.
+      return e.emptyBrief
+        ? `  memory-inject · ${e.step} · EMPTY BRIEF · ${e.queries.length} quer${e.queries.length === 1 ? "y" : "ies"}`
+        : `  memory-inject · ${e.step} · ${e.hits} hit(s)`;
   }
 }
 
