@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.33](https://github.com/randomm/pi-ensemble/compare/v0.12.32...v0.12.33) (2026-08-11)
+
+
+### Bug Fixes
+
+* **#429:** the prompt tree taught commands the roles are denied, and the write doctrine never shipped ([#430](https://github.com/randomm/pi-ensemble/issues/430)) ([f63e2e8](https://github.com/randomm/pi-ensemble/commit/f63e2e8a31994a13d8a33fcad0732f11aba1ef58)), closes [#429](https://github.com/randomm/pi-ensemble/issues/429)
+
 ## [0.12.32](https://github.com/randomm/pi-ensemble/compare/v0.12.31...v0.12.32) (2026-08-11)
 
 
