@@ -42,6 +42,13 @@ export interface MemoryHit {
   content: string;
   /** Cosine for semantic reads; an RRF reciprocal for hybrid ones. Never compare across modes. */
   similarity: number;
+  /**
+   * RFC3339, as returned by `search --json`. Carried because it is the ONLY
+   * temporal signal available: the score must be read at `--recency 0` to mean
+   * anything, so staleness has to be resolved after retrieval rather than
+   * blended into the ranking. See `preferNewest`.
+   */
+  created_at?: string;
 }
 
 export type VipuneResult =
@@ -223,6 +230,21 @@ export interface SearchOpts extends VipuneOpts {
    * instead — `search --json` already returns it.
    */
   recency?: 0;
+  /**
+   * Include `candidate` rows. Off by default, matching vipune.
+   *
+   * Without this the write side cannot reach the read side at all: vipune
+   * defaults to `--status active`, and every write this driver makes is a
+   * candidate, so 100% of what it stores is invisible to its own reads.
+   * Measured on a probe DB with one active and one candidate row: default
+   * returns 1, `--include-candidates` returns 2.
+   *
+   * The boolean is preferred over `--status active,candidate` — measured
+   * identical result sets, but a comma list degrades silently when a member is
+   * misspelled (`guard,bogus` == `guard`), producing a narrower query that
+   * still returns plausible output.
+   */
+  includeCandidates?: boolean;
 }
 
 export type SearchResult =
@@ -256,6 +278,7 @@ export function searchArgv(query: string, opts: SearchOpts): string[] {
   args.push(opts.hybrid ? "--hybrid" : "--no-hybrid");
   args.push("--recency", "0.0", "--limit", String(opts.limit ?? 5), "--no-touch", "--json");
   if (opts.memoryType) args.push("--memory-type", opts.memoryType);
+  if (opts.includeCandidates) args.push("--include-candidates");
   args.push("--", query);
   return args;
 }
@@ -359,6 +382,89 @@ export function selectResults(
   if (!hybrid) return [];
   const agreed = new Set(hybrid.filter((h) => h.similarity >= HYBRID_AGREEMENT).map((h) => h.id));
   return passedFloor.filter((h) => agreed.has(h.id));
+}
+
+/**
+ * Volatility by memory type — how fast a claim of that kind goes stale.
+ *
+ * A `preference` is the operator's current wish, so the newest statement wins
+ * outright. A `fact` about a codebase decays with every commit. A `guard` is a
+ * hazard learned once and stays true until the code it describes changes, so
+ * age is weak evidence against it. `procedure` sits between. `observation` is
+ * inherently timestamped and is usually read newest-first anyway.
+ *
+ * These order a tie; they never re-rank across similarity. That distinction is
+ * the whole lesson of the recency default — mixing time into the score does not
+ * weight the ranking, it replaces it.
+ */
+const VOLATILE: Record<MemoryType, boolean> = {
+  preference: true,
+  fact: true,
+  observation: true,
+  procedure: false,
+  guard: false,
+};
+
+/**
+ * Among near-duplicate hits, keep the newest.
+ *
+ * This is the answer to "two contradictory memories were stored and the newer
+ * one is the right one" — a real and named production failure mode
+ * (contradictory memory accumulation: update is never called, so new memories
+ * pile on top of old ones). The durable fix is to supersede at write time, and
+ * `vipuneAdd` does that. This is the read-side backstop for rows already in the
+ * store from before, or written by something other than this driver.
+ *
+ * Near-duplicate is judged on content, not on score: two rows that say
+ * opposite things about the same subject retrieve at *similar* scores, which is
+ * exactly why the score cannot be used to separate them.
+ *
+ * Only volatile types are collapsed. Two guards about one file are usually two
+ * distinct hazards, and dropping the older would lose a real one.
+ */
+export function preferNewest(hits: readonly MemoryHit[], memoryType?: MemoryType): MemoryHit[] {
+  if (memoryType && !VOLATILE[memoryType]) return [...hits];
+  const kept: MemoryHit[] = [];
+  for (const h of hits) {
+    const dupIdx = kept.findIndex((k) => nearDuplicate(k.content, h.content));
+    if (dupIdx < 0) {
+      kept.push(h);
+      continue;
+    }
+    const incumbent = kept[dupIdx];
+    if (incumbent && newerThan(h, incumbent)) kept[dupIdx] = h;
+  }
+  return kept;
+}
+
+/** Undated rows never displace a dated one — absence of a date is not recency. */
+function newerThan(a: MemoryHit, b: MemoryHit): boolean {
+  if (!a.created_at) return false;
+  if (!b.created_at) return true;
+  return Date.parse(a.created_at) > Date.parse(b.created_at);
+}
+
+/**
+ * Do two memories talk about the same thing? Jaccard over content words.
+ *
+ * 0.6 is deliberately loose: a correction usually restates its subject and
+ * changes the claim ("the cap is 12" / "the cap is now 16"), so the overlap is
+ * high while the meaning is opposite.
+ */
+function nearDuplicate(a: string, b: string): boolean {
+  const words = (s: string) =>
+    new Set(
+      s
+        .toLowerCase()
+        .split(/[^a-z0-9._-]+/)
+        .filter((w) => w.length > 2),
+    );
+  const A = words(a);
+  const B = words(b);
+  if (A.size === 0 || B.size === 0) return false;
+  let shared = 0;
+  for (const w of A) if (B.has(w)) shared++;
+  return shared / Math.min(A.size, B.size) >= 0.6;
 }
 
 /**

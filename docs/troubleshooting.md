@@ -965,6 +965,22 @@ Three things now prevent it:
 
 **Score bands apply to semantic mode only** — `--no-hybrid --recency 0.0`.
 
+### Two contradictory memories — which one comes back?
+
+Recency matters here, but not as a score. vipune can blend age into the ranking (`--recency`), and that is precisely what broke retrieval: the recency term spans `w` while a hybrid top-5 spans ~0.044, so blending replaces the ranking rather than weighting it.
+
+Staleness is resolved in three places instead, none of them the score:
+
+| Where | Mechanism |
+|---|---|
+| Write time | A conflict at ≥0.85 cosine should `--supersedes` the older row. This is the durable fix — the older memory becomes `superseded` and stops being returned at all. |
+| The data model | `MemoryHit.created_at` — always returned by `search --json`, previously discarded by the seam. |
+| After retrieval | `preferNewest` collapses near-duplicates to the newest, **per memory type**. |
+
+Type matters because volatility does. A `preference` is the operator's current wish and a `fact` about the codebase decays with every commit, so for those the newest statement wins. A `guard` is a hazard learned once and stays true until the code it describes changes — two guards about one file are usually two *distinct* hazards, so they are never collapsed.
+
+Near-duplicate is judged on content overlap, not on score: two rows that say opposite things about the same subject retrieve at *similar* scores, which is exactly why the score cannot separate them.
+
 ### Agents can no longer delete your memories
 
 `agents.json` granted `"vipune *": "allow"` to all six roles. `vipune delete <ID>` takes no confirmation flag, and the wildcard also reached `vipune mcp`. The allowlist is now explicit: `search`, `add`, `get`, `list`, `update`, `doctor`, `version`. `delete`, `mcp`, `reindex` and `project` are not granted to any role — an operator runs those.
