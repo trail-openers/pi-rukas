@@ -79,7 +79,16 @@ export const HYBRID_AGREEMENT = 0.075;
  * have been silently refused on the highest-value write path.
  */
 const SECRET_PATTERNS: RegExp[] = [
-  /\b(sk-[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})\b/,
+  // OpenAI and Anthropic both use `sk-` with an infix segment (`sk-proj-`,
+  // `sk-ant-api03-`), so the token body is NOT alphanumeric-only. Measured: the
+  // previous `sk-[A-Za-z0-9]{16,}` refused a legacy key and passed both current
+  // formats — including this project's own provider.
+  /\bsk-[A-Za-z0-9](?:[A-Za-z0-9-]{15,})\b/,
+  /\b(gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})\b/,
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/,
+  /\bglpat-[A-Za-z0-9_-]{16,}\b/,
+  /\bAIza[0-9A-Za-z_-]{30,}\b/,
+  /\bnpm_[A-Za-z0-9]{30,}\b/,
   /\bAKIA[0-9A-Z]{16}\b/,
   /\bBearer\s+[A-Za-z0-9._-]{20,}/,
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
@@ -222,21 +231,63 @@ export type SearchResult =
   | { kind: "timeout"; ms: number }
   | { kind: "error"; detail: string };
 
+/**
+ * The one canonical `vipune search` argv, exported so prose cannot drift from it.
+ *
+ * Every flag here is load-bearing and was measured:
+ *
+ *   - **`--recency 0.0` is mandatory.** vipune's config default is
+ *     `recency_weight = 0.3`, and it scores `(1-w)*raw + w*exp(-1e-6*age)`. The
+ *     recency term spans 0.3 while a whole hybrid top-5 spans ~0.044, so at the
+ *     default the ranking is age, not relevance. Measured on one query: the
+ *     single correct memory came back rank 44 of 50 at the default and rank 1
+ *     at `--recency 0`. Both `SIM_FLOOR` and `HYBRID_AGREEMENT` were calibrated
+ *     against raw scores and mean nothing without it.
+ *   - **`--` last.** The query is positional, so a query beginning with a dash
+ *     is otherwise parsed as a flag — reachable in production whenever
+ *     retrieval is keyed on a raw compiler error line. `search -- "<q>" --limit 3`
+ *     does NOT work either: `--` makes every later token positional.
+ *
+ * `assertCanonicalSearch` checks documented command lines against this, so a
+ * prompt file and the driver can never again disagree about how to search.
+ */
+export function searchArgv(query: string, opts: SearchOpts): string[] {
+  const args = ["search"];
+  args.push(opts.hybrid ? "--hybrid" : "--no-hybrid");
+  args.push("--recency", "0.0", "--limit", String(opts.limit ?? 5), "--no-touch", "--json");
+  if (opts.memoryType) args.push("--memory-type", opts.memoryType);
+  args.push("--", query);
+  return args;
+}
+
+/**
+ * Environment every specialist child is spawned with.
+ *
+ * This is the only mitigation that is not prompt-shaped, and it is why the
+ * prompt tree does not have to be perfect. 66 of the 80 documented
+ * `vipune search` lines pass no `--recency` at all and therefore silently
+ * inherit 0.3 — and an agent composing its own query inherits it too. Setting
+ * the weight in the environment makes the safe value the default for anything
+ * a child runs, whether or not it remembers the flag.
+ *
+ * Measured equivalence: with `VIPUNE_RECENCY_WEIGHT=0` and no flag, a probe
+ * query scored 0.8194 — identical to explicit `--recency 0`, against 0.8735 at
+ * the inherited default.
+ */
+export function vipuneChildEnv(): Record<string, string> {
+  const env: Record<string, string> = { VIPUNE_RECENCY_WEIGHT: "0" };
+  const project = process.env.VIPUNE_PROJECT;
+  if (project) env.VIPUNE_PROJECT = project;
+  return env;
+}
+
 export async function vipuneSearch(query: string, opts: SearchOpts): Promise<SearchResult> {
   if (opts.hybrid && (opts.recency ?? 0) !== 0) {
     // RRF's whole top-10 spread is ~0.048 while the recency term spans r*1.0,
     // so any non-zero recency simply re-sorts by age and discards relevance.
     throw new Error("vipune: --hybrid with a non-zero --recency is a recency sort, not a search");
   }
-  const args = ["search"];
-  args.push(opts.hybrid ? "--hybrid" : "--no-hybrid");
-  args.push("--recency", "0.0", "--limit", String(opts.limit ?? 5), "--no-touch", "--json");
-  if (opts.memoryType) args.push("--memory-type", opts.memoryType);
-  // `--` last, so a query beginning with a dash is not parsed as a flag.
-  // Reachable in production: retrieval keyed on a raw compiler error line.
-  // Note `search -- "<query>" --limit 3` does NOT work — `--` makes every
-  // later token positional — so the flags must come first.
-  args.push("--", query);
+  const args = searchArgv(query, opts);
   const r = await run(args, opts);
   if ("failure" in r) {
     const f = r.failure;

@@ -39,10 +39,10 @@ vipune add 'tentative finding' --memory-type observation --status candidate
 ## Search (always start here)
 
 ```bash
-vipune search 'topic' --hybrid --recency 0.3 --limit 5
+vipune search 'topic' --no-hybrid --recency 0.0 --limit 5 --no-touch --json
 ```
 
-Score thresholds: **0.80+ act / 0.70–0.79 cross-check / <0.60 ignore.**
+Score thresholds — **semantic mode only** (`--no-hybrid --recency 0.0`); hybrid scores are RRF reciprocals that ceiling near 0.077 and must never be compared to these: **0.80+ act / 0.70–0.79 cross-check / <0.60 ignore.**
 
 ## Freshness verification
 

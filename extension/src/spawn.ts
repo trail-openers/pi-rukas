@@ -75,6 +75,7 @@ import {
 } from "./spawn-support.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
+import { vipuneChildEnv } from "./vipune.ts";
 
 export { buildCwdHint, makeRunId };
 
@@ -239,6 +240,7 @@ async function spawnSpecialistInner(
   const invocation = getPiInvocation(childArgs);
 
   const childEnv: Record<string, string> = { ...process.env, PI_ENSEMBLE_ROLE: spec.role };
+  Object.assign(childEnv, vipuneChildEnv());
   if (subagentGuardEnabled) {
     childEnv.PI_ENSEMBLE_SUBAGENT_MODE = "1";
     if (permSocketPath) {

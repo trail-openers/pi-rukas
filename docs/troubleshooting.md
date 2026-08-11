@@ -949,6 +949,26 @@ At the `ci` step a weaker version of gate 2 applies: **narration cannot promote 
 
 Escape hatch: `PI_ENSEMBLE_MERGE_AUTHORITY=0` restores the previous behaviour, where the driver merged whenever an ops child's reply contained the substring `ci-status: success`.
 
+### Memory searches return the wrong thing (or nothing)
+
+**vipune blends recency into every score by default.** Its config sets `recency_weight = 0.3`, and it returns `(1-w)*raw + w*exp(-1e-6*age)` unless you pass `--recency 0`. The recency term spans 0.3; a whole hybrid top-5 spans about 0.044. So at the default, the ranking is age, not relevance.
+
+Measured on the real store: one memory answering the query, five irrelevant ones. Under `--hybrid --recency 0.3` the correct answer was **not in the top 5**. Under `--recency 0` it was rank 1 by a 2× margin. It degrades with age — rank 1 at one day old, gone from the top 5 by two. This project's corpus spans months.
+
+Three things now prevent it:
+
+- **`searchArgv` is the only place the argv is built**, and it always passes an explicit `--recency 0.0`.
+- **Every specialist child is spawned with `VIPUNE_RECENCY_WEIGHT=0`.** This is the one mitigation that is not prompt-shaped: most documented search lines pass no `--recency` at all, and an agent composing its own query would inherit 0.3 regardless of what any prompt says.
+- **`test-vipune-argv.ts`** is an offline gate over `modules/`, `agents-base/`, `pi-prompts/`, `skill/`, `docs/`, `README.md` and `AGENTS.md`. It fails if any documented line pairs `--hybrid` with a non-zero recency, or applies a similarity band to a recency-blended score.
+
+**Recency is not banned.** `--recency 0.9 --memory-type observation`, to pull back what a sibling agent stored minutes ago, is a correct use — age-ordering *is* the intent there. What is banned is the combination that measured as broken, and the incoherent one: a hybrid score is an RRF reciprocal (a perfect match reads 0.0769), so a cosine-calibrated band like "0.80+ act" cannot be read against it, and a blended score is not a similarity at all.
+
+**Score bands apply to semantic mode only** — `--no-hybrid --recency 0.0`.
+
+### Agents can no longer delete your memories
+
+`agents.json` granted `"vipune *": "allow"` to all six roles. `vipune delete <ID>` takes no confirmation flag, and the wildcard also reached `vipune mcp`. The allowlist is now explicit: `search`, `add`, `get`, `list`, `update`, `doctor`, `version`. `delete`, `mcp`, `reindex` and `project` are not granted to any role — an operator runs those.
+
 ### False claims in a diff — and why there is no seventh lens
 
 A `/work` cycle shipped a PR with two defects the six-pass review missed entirely, returning one cosmetic LOW finding: a documentation paragraph describing the **bug** as the intended behaviour (contradicting the same file 70 lines below), and invented hardware specifications with no source anywhere in the repo.

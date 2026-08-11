@@ -45,7 +45,7 @@ Default to `candidate` for anything you're not certain will outlast this session
 ## Search (always start here)
 
 ```bash
-vipune search 'topic' --hybrid --recency 0.3 --limit 5
+vipune search 'topic' --no-hybrid --recency 0.0 --limit 5 --no-touch --json
 ```
 
 Search recipes — what works:
@@ -55,7 +55,7 @@ Search recipes — what works:
 - **`--recency 0.7+`** for "what changed recently"
 - **`--memory-type <type>`** for narrow recall
 
-**Score thresholds**: 0.80+ act / 0.70–0.79 cross-check top 2–3 / <0.60 ignore.
+**Score thresholds — semantic mode only** (`--no-hybrid --recency 0.0`). Hybrid scores are RRF reciprocals ceilinged near 0.077; never compare them to these bands, and never apply a band to a recency-blended score: 0.80+ act / 0.70–0.79 cross-check top 2–3 / <0.60 ignore.
 
 **Usage pattern**:
 - Search vipune at **session start** for project context
@@ -127,7 +127,7 @@ Look for: duplicates (supersede older), stale facts (delete/supersede), drift ac
 ## Quick reference
 
 ```bash
-vipune search '<term>' --hybrid --recency 0.3 --limit 5
+vipune search '<term>' --no-hybrid --recency 0.0 --limit 5 --no-touch --json
 vipune add '<distilled fact>' --memory-type <type> [--status candidate] [--supersedes <id>]
 vipune list --limit 50
 vipune update <id> --status active            # promote candidate

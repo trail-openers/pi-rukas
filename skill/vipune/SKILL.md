@@ -46,7 +46,7 @@ Codebases evolve, conventions accumulate, the user corrects the agent on things,
 Before reading code, before running anything, before forming a plan:
 
 ```bash
-vipune search "<topic the user mentioned>" --hybrid --recency 0.3 --limit 5
+vipune search "<topic the user mentioned>" --no-hybrid --recency 0.0 --limit 5 --no-touch --json
 ```
 
 Read the returned memories. They tell you:
@@ -194,6 +194,8 @@ vipune search "stop" --memory-type procedure     # only validated recipes
 
 Score thresholds:
 
+These bands apply to **semantic mode only** (`--no-hybrid --recency 0.0`). A hybrid score is an RRF reciprocal — a perfect match reads 0.0769 — and a recency-blended score is not a similarity at all; neither can be read against this table.
+
 - **0.80+** — Use the result directly
 - **0.70–0.79** — Cross-check top 2–3
 - **0.60–0.69** — Refine the query
@@ -279,7 +281,7 @@ Real failure patterns documented in agentic memory systems — don't repeat them
 
 ```bash
 # SEARCH (start every task here)
-vipune search '<technical term or compound>' --hybrid --recency 0.3 --limit 5
+vipune search '<technical term or compound>' --no-hybrid --recency 0.0 --limit 5 --no-touch --json
 
 # SAVE (at task boundaries only)
 vipune add '<distilled fact/preference/procedure/guard/observation>' \
@@ -326,7 +328,7 @@ vipune is for **project-scoped, persistent, semantic-recall-worthy** knowledge. 
 
 ## Pre-flight checklist (start of any project task)
 
-- [ ] `vipune search '<task topic>' --hybrid --recency 0.3` — what do we already know?
+- [ ] `vipune search '<task topic>' --no-hybrid --recency 0.0` — what do we already know?
 - [ ] Read top 3–5 results; verify any I plan to act on against current state
 - [ ] If contradictions surface: `--supersedes` the wrong one before continuing
 - [ ] Note candidate observations mentally; save after task closes
