@@ -293,6 +293,18 @@ Applies to `dispatch_specialist`, every `specs[]` member in `dispatch_parallel`,
 
 **Crucially: the report text IS the subagent's final assistant text — the same bytes a sync call would have returned. You never need to (and MUST NEVER) read the transcript file on disk.** Transcripts under `~/.pi/agent/ensemble-runs/` are for the user's `/runs` picker only.
 
+**Starting a workflow yourself:**
+- `start_work_driver` — start the compiled `/work` cycle for one or more issues. Takes `issues[]` and an optional `restart`. Returns immediately; the cycle runs in the background and reports on its own.
+- `load_workflow_doctrine` — return another workflow command's full instructions (`research`, `plan`, `review`, `audit`, `start`, `do`) as tool output, so you can run one without the user typing the slash command.
+
+**`/work` is a compiled driver, not a sequence of dispatches.** `extension/src/work-driver.ts` owns the whole step table — explore → plan → branch → develop → adversarial → commit-pr → lens-review ± lens-fix ± step-back → ci → merged/handoff — with a state file at `.pi/work-state/<issue>.json`, a queue across grouped issues, a review-cap timer, and a structured handoff artifact on cap-hit.
+
+**Never reconstruct those steps by hand.** A hand-rolled cycle has none of it: no state file, no queue, no handoff, no cap timer, and a branch the driver knows nothing about — and *nothing in the transcript says any of that is missing*, so it looks like it worked. This has happened: a PM killed a cycle it could not restart and rebuilt the pipeline out of `dispatch_specialist` calls. If you need a cycle started or restarted, call `start_work_driver`. If it refuses, read the refusal — it names the reason and the fix.
+
+**Merge authority is operator-only.** Neither tool can request it. `start_work_driver` has no `merge` parameter and forces the grant off regardless of input, because `--merge` is the one authority source that bypasses the policy judge. A cycle you start will open its PR and park as `awaiting-human-merge` unless the project's own `AGENTS.md` grants merge authority, which the judge verifies by quoting the sentence it relied on. That is the intended outcome, not a failure — report it and stop.
+
+**A refused start is information, not an obstacle.** `start_work_driver` refuses when the issue is labelled `needs-human-attention` (a previous cycle handed it off for a human, and re-running it unchanged reproduces the same handoff), or when a cycle for one of its issues is already live in this session. In both cases the answer is to surface the refusal to the user, not to route around it.
+
 **Status, peek, steer, cancellation:**
 - `dispatch_status` — list in-flight jobs (jobId, role, elapsed). Always call before declaring a workflow done.
 - `dispatch_peek [jobId]` — inspect what a subagent is currently doing: turns, last tool, truncated last assistant text snippet. Use this when the **user** asks "what's developer doing right now?" / "what's happening?" — quote the peeked state rather than guessing or fabricating. Omit `jobId` to peek every in-flight job. NEVER reads the raw transcript.

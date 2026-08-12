@@ -130,6 +130,8 @@
         "dispatch_steer": "allow",
         "check_review_cap": "allow",
         "adversarial_loop": "allow",
+        "start_work_driver": "allow",
+        "load_workflow_doctrine": "allow",
         "task": {
           "*": "deny",
           "ops": "allow",
