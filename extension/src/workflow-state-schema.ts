@@ -21,6 +21,14 @@ export const WORK_STATE_SCHEMA_VERSION = 1 as const;
  * eventLog is authoritative; the driver should rebuild pipelineState from
  * scratch on read if it detects inconsistency.
  */
+/**
+ * Why a plan earned one corrective re-dispatch.
+ *
+ * Lives with the schema because it is persisted: `work-driver-plan.ts` decides
+ * it, and `/work-status` and the handoff renderers read it back.
+ */
+export type PlanQualityReason = "under-decomposed" | "empty-paths" | "overlapping-paths";
+
 export interface PipelineState {
   /** Current step. Drives template selection and transition table. */
   currentStep: WorkStep;
@@ -197,7 +205,7 @@ export interface PipelineState {
   planQuality?: {
     findingsCount: number;
     redispatched: boolean;
-    reason?: "under-decomposed" | "empty-paths";
+    reason?: PlanQualityReason;
   };
   /**
    * PR14 — per-workstream "missing from committed diff" list. Populated

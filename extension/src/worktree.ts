@@ -17,6 +17,8 @@
  */
 
 import path from "node:path";
+import { trace } from "./trace.ts";
+import { provisionWorktree } from "./worktree-provision.ts";
 
 /** Shell executor, matching `DriverContext.verifyExecFn`. */
 export type ExecFn = (
@@ -60,6 +62,14 @@ export async function worktreeCreate(execFn: ExecFn, opts: WorktreeCreateOpts): 
     cwd: opts.repoRoot,
     maxBuffer: 1024 * 1024,
   });
+  // A worktree with only tracked files cannot run the project's own commands:
+  // every gitignored dependency directory is absent, and the develop step runs
+  // the verify command in here. Never throws — a bare worktree is what shipped
+  // before this, so a provisioning failure is the status quo, not a regression.
+  const provisioned = await provisionWorktree(execFn, opts.repoRoot, abs);
+  if (provisioned.problem) {
+    trace(`worktree: ${opts.name} provisioning incomplete — ${provisioned.problem}`);
+  }
   return abs;
 }
 

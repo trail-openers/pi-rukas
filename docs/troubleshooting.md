@@ -99,6 +99,18 @@ Two new checks can park here, both because explore did not produce a decision th
 
 Revise the issue body (`/plan`) and re-run with `--restart`.
 
+### The develop gate fails on missing dependencies, not on the diff
+
+Development happens in a `git worktree`, which contains tracked files only — no `node_modules`, no virtualenv, no vendor tree. If your verify command needs them, it fails for a reason that has nothing to do with the change.
+
+pi-ensemble now provisions the worktree: it runs **`.pi/worktree-setup`** if you provide one (the reliable option — put `bun install`, `uv sync`, whatever your project needs, in it), and otherwise symlinks `node_modules`, `.venv` and `vendor` when they exist at the repo root and are gitignored. Build output (`target/`, `build/`, `dist/`) is never shared: concurrent workstreams writing one directory would serialise the fan-out.
+
+A verify failure that looks dependency-caused now says so in the handoff rather than implying the diff is at fault. If you see that, add `.pi/worktree-setup`.
+
+### The plan step re-dispatches saying two workstreams claim the same file
+
+Each workstream gets its own worktree and its own developer, running in parallel, so a file in two `paths` lists means two developers editing it at once — which used to surface much later as a `git apply` conflict at commit-pr. The plan step now catches it and re-plans once. If it persists, the issue probably needs those workstreams merged.
+
 ### A cycle merged even though the full verification failed
 
 **Symptom:** `.pi/verify-cmd-full` fails (typecheck, lint, or a fixture suite) and the cycle still reports MERGED.

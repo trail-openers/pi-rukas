@@ -52,8 +52,20 @@ assert(
 
 // ------------------------------------------------------ planQualityReason
 
-const ws = (n: number, paths = ["src/a.ts"]) =>
-  Object.fromEntries(Array.from({ length: n }, (_, i) => [`t${i}`, { paths }]));
+/**
+ * N workstreams with DISTINCT paths.
+ *
+ * Every workstream used to share `["src/a.ts"]`, because only the count
+ * mattered here. Paths matter now: `planQualityReason` also reports
+ * `overlapping-paths`, and N workstreams all claiming one file is exactly that
+ * defect — two developers editing the same file in parallel worktrees. A real
+ * plan declares distinct file sets, so the helper does too. The overlap rule
+ * has its own coverage in test-plan-overlapping-paths.ts.
+ */
+const ws = (n: number, paths?: string[]) =>
+  Object.fromEntries(
+    Array.from({ length: n }, (_, i) => [`t${i}`, { paths: paths ?? [`src/t${i}.ts`] }]),
+  );
 
 assert(
   planQualityReason(ws(1), 6) === "under-decomposed",

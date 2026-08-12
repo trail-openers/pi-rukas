@@ -12,9 +12,11 @@ import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
+import { type PathCollision, findPathCollisions } from "./work-driver-plan-paths.ts";
 import { inlinePlanPrompt } from "./work-driver-prompts-early.ts";
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
+import type { PlanQualityReason } from "./workflow-state-schema.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 /**
@@ -107,7 +109,7 @@ export async function runPlan(
       ctx.pi,
       {
         role: "explore",
-        prompt: `${prompt}\n\n${correctivePlanSteer(reason, findingsCount, Object.keys(workstreams).length)}`,
+        prompt: `${prompt}\n\n${correctivePlanSteer(reason, findingsCount, Object.keys(workstreams).length, findPathCollisions(workstreams))}`,
       },
       { label: "plan:corrective" },
     ).catch(() => undefined);
@@ -158,21 +160,39 @@ export function planQualityEnabled(): boolean {
 export function planQualityReason(
   workstreams: Record<string, { paths: string[] }>,
   findingsCount: number,
-): "under-decomposed" | "empty-paths" | undefined {
+): PlanQualityReason | undefined {
   const ids = Object.keys(workstreams);
   if (findingsCount >= 3 && ids.length === 1) return "under-decomposed";
   if (ids.length > 0 && ids.some((id) => (workstreams[id]?.paths.length ?? 0) === 0)) {
     return "empty-paths";
   }
+  // An empty list cannot overlap anything, so it is reported above as the more
+  // specific diagnosis; by here every workstream has declared something.
+  if (findPathCollisions(workstreams).length > 0) return "overlapping-paths";
   return undefined;
 }
 
 /** The corrective steer appended to the second plan dispatch. */
 export function correctivePlanSteer(
-  reason: "under-decomposed" | "empty-paths",
+  reason: PlanQualityReason,
   findingsCount: number,
   workstreamCount: number,
+  collisions: PathCollision[] = [],
 ): string {
+  if (reason === "overlapping-paths") {
+    return [
+      "## Corrective re-dispatch",
+      "",
+      "Two workstreams in your previous plan declared the same file:",
+      ...collisions.map((c) => `- \`${c.a}\` and \`${c.b}\` both claim ${c.path}`),
+      "",
+      "Each workstream gets its own worktree and its own developer, running in parallel, so two",
+      "workstreams sharing a file means two developers editing it at once — which surfaces later as a",
+      "merge conflict the driver cannot resolve. Re-plan so every file belongs to exactly ONE workstream:",
+      "either move the shared file into whichever workstream genuinely owns it, or merge the two",
+      "workstreams if they cannot be separated.",
+    ].join("\n");
+  }
   if (reason === "under-decomposed") {
     return [
       "## Corrective re-dispatch",

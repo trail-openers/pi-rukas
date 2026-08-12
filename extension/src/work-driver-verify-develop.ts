@@ -19,6 +19,7 @@ import {
 import { countSkipMarkersInDiffLine } from "./work-driver-skip-ratchet.ts";
 import { readFirstConfigLine, verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import type { WorkState } from "./workflow-state.ts";
+import { looksLikeMissingDeps } from "./worktree-provision.ts";
 
 /** PR17 — bounded wall-clock for the verify command (default 10 min). */
 function verifyTimeoutMs(): number {
@@ -154,11 +155,20 @@ export async function verifyDevelopOutcome(
         });
       } catch (err) {
         const e = err as Error & { stdout?: string; stderr?: string; killed?: boolean };
+        // A verify command that fails for want of `node_modules` reports the
+        // same shape as one that fails on a real defect, and the operator reads
+        // the second. Development happens in a fresh worktree, so this is the
+        // likelier of the two when it matches — say so rather than implying the
+        // diff is at fault.
+        const output = `${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.message ?? ""}`;
+        const depsHint = looksLikeMissingDeps(output)
+          ? " — this looks like missing dependencies in the worktree rather than a defect in the diff; see .pi/worktree-setup"
+          : "";
         failures.push(
           formatExecError(
             e,
             `verify command \`${cmd}\` exceeded its ${Math.round(verifyTimeoutMs() / 60000)}-min timeout in ${cwd}`,
-            `verify command \`${cmd}\` failed in ${cwd}`,
+            `verify command \`${cmd}\` failed in ${cwd}${depsHint}`,
           ),
         );
       }
