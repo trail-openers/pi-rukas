@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.36](https://github.com/randomm/pi-ensemble/compare/v0.12.35...v0.12.36) (2026-08-12)
+
+
+### Bug Fixes
+
+* **#408:** PM could not actually call the tools it was given ([#437](https://github.com/randomm/pi-ensemble/issues/437)) ([c1df78a](https://github.com/randomm/pi-ensemble/commit/c1df78a867e3ef2208c3cb7fd2387e5750abcd8a))
+
 ## [0.12.35](https://github.com/randomm/pi-ensemble/compare/v0.12.34...v0.12.35) (2026-08-12)
 
 
