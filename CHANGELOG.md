@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.38](https://github.com/randomm/pi-ensemble/compare/v0.12.37...v0.12.38) (2026-08-12)
+
+
+### Bug Fixes
+
+* **work-driver:** four gates that could corrupt main ([#441](https://github.com/randomm/pi-ensemble/issues/441)) ([080e97c](https://github.com/randomm/pi-ensemble/commit/080e97c89d8dd38569b3e579ca826f7e415fa548))
+
 ## [0.12.37](https://github.com/randomm/pi-ensemble/compare/v0.12.36...v0.12.37) (2026-08-12)
 
 
