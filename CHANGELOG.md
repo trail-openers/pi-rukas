@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.37](https://github.com/randomm/pi-ensemble/compare/v0.12.36...v0.12.37) (2026-08-12)
+
+
+### Bug Fixes
+
+* **#664:** the adversarial gate rejected code its own reviewer approved ([#439](https://github.com/randomm/pi-ensemble/issues/439)) ([fa90728](https://github.com/randomm/pi-ensemble/commit/fa90728557edfa1f858921900ebb5ab782d98a17))
+
 ## [0.12.36](https://github.com/randomm/pi-ensemble/compare/v0.12.35...v0.12.36) (2026-08-12)
 
 
