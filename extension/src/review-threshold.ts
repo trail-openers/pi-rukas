@@ -81,7 +81,7 @@ export async function resolveReviewThreshold(
   }
 
   const decision = await askPolicy(judge, REVIEW_THRESHOLD_QUESTION, docs);
-  const named = decision.quote ? severityIn(decision.quote) : undefined;
+  const named = decision.quote ? severityFromQuote(decision.quote) : undefined;
   if (!decision.permitted || !named) {
     return {
       severity: defaultSeverity,
@@ -110,8 +110,52 @@ export async function resolveReviewThreshold(
   };
 }
 
-/** The most severe level named in a sentence, if any. */
-function severityIn(quote: string): ReviewSeverity | undefined {
+/**
+ * The blocking bar a sentence sets, if it sets one.
+ *
+ * This used to be `SEVERITIES.find((s) => upper.includes(s))` — the most severe
+ * level *named*, which is the LOOSEST bar. On this repo's own AGENTS.md §1 that
+ * made the gate depend on how much of the passage the judge chose to quote:
+ *
+ *   "…blocking at MEDIUM severity and above."                        → MEDIUM
+ *   …plus "until all MEDIUM, HIGH, and CRITICAL findings are resolved" → CRITICAL
+ *
+ * Both are honest citations that verify against the file, and the second
+ * silently moved the bar two levels so HIGH and MEDIUM findings stopped
+ * blocking. Scanning for the *least* severe token is not the fix either: the
+ * same passage ends "Only LOW findings may be deferred", which would resolve to
+ * LOW and over-tighten.
+ *
+ * The relation carries the meaning, so read the relation. "at X and above",
+ * "X or higher", "X and up" name X as the bar. A bare list of severities that
+ * block ("CRITICAL and HIGH findings block the merge") sets the bar at its
+ * least severe member, because that is the lowest thing named as blocking.
+ * Anything else is unreadable, and the caller applies the default.
+ */
+export function severityFromQuote(quote: string): ReviewSeverity | undefined {
   const upper = quote.toUpperCase();
-  return SEVERITIES.find((s) => upper.includes(s));
+
+  // "blocking at MEDIUM severity and above" / "block at MEDIUM or higher"
+  const relational = upper.match(
+    /\b(CRITICAL|HIGH|MEDIUM|LOW)\b[^.]{0,40}?\b(?:AND ABOVE|OR ABOVE|AND UP|OR HIGHER|AND HIGHER|OR GREATER)\b/,
+  );
+  if (relational?.[1]) return relational[1] as ReviewSeverity;
+
+  // A sentence that says which severities block, without a relation. The bar is
+  // the least severe of them — everything named is blocking, so the lowest one
+  // is where blocking starts.
+  if (/\bBLOCK/.test(upper)) {
+    const named = SEVERITIES.filter((s) => new RegExp(`\\b${s}\\b`).test(upper));
+    // Ignore a trailing "only LOW may be deferred"-style exemption: a severity
+    // named as NOT blocking is not the bar.
+    const blocking = named.filter(
+      (s) =>
+        !new RegExp(
+          `\\b${s}\\b[^.]{0,40}?\\b(?:MAY BE DEFERRED|ARE DEFERRED|MAY BE OVERRIDDEN|NON-?BLOCKING)`,
+        ).test(upper),
+    );
+    const last = blocking[blocking.length - 1];
+    if (last) return last;
+  }
+  return undefined;
 }

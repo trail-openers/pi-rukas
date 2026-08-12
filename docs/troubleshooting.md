@@ -86,6 +86,20 @@ Check the raw transcript under `~/.pi/agent/ensemble-runs/<date>/` before conclu
 
 ## Review gates
 
+### A cycle merged even though the full verification failed
+
+**Symptom:** `.pi/verify-cmd-full` fails (typecheck, lint, or a fixture suite) and the cycle still reports MERGED.
+
+**Cause (fixed):** `runCi` emitted `verify-full-status: failure` without a `ci-status`, and `nextStep` had no branch for it, so the cycle fell through the linear `ci → merged`. `ci-status: failure` was always routed correctly to `develop`; its sibling was not. Since the full-verify check is opt-out (`PI_ENSEMBLE_VERIFY_FULL=0` disables it) and this repo ships the command file, it applied to every cycle here.
+
+**Now:** both failure signals route identically — back to `develop` within the retry budget, then to handoff at the cap.
+
+### A merged PR reported a failed cycle
+
+**Symptom:** `gh` shows the PR merged, the driver shows `step-failed:merged` and hands off; the worktree is not torn down and the checkout is not restored.
+
+**Cause (fixed):** after a successful mechanized merge the driver dispatched role `driver`, which is not a spawnable role, so `spawn.ts` threw `Unknown role: driver`. Work the driver performs itself is now recorded directly via `work-driver-events.ts` rather than dispatched.
+
 ### `/work` hit the adversarial cap and handed off with no PR
 
 **Symptom:** the cycle reaches step 5, the adversarial loop runs its three rounds, and the run parks with *"could not reach APPROVED"* — no commit, no branch pushed, nothing on GitHub. The diff is left unstaged in `.worktrees/issue-<n>-*/`, often with green tests.

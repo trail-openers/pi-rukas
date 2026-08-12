@@ -290,6 +290,24 @@ export function nextStep(state: WorkState): WorkStep | "done" {
   // Step-back completes → emit handoff with the spec analysis attached.
   if (lastEvent?.kind === "step-back-completed") return "handoff";
 
+  // A failing full verification is a failing verification.
+  //
+  // `runCi` runs `.pi/verify-cmd-full` before watching CI — strictly more than
+  // CI does — and on failure appends this event WITHOUT a `ci-status`, on the
+  // stated assumption that "the ci-retry cap will fire on the next iteration".
+  // There is no next iteration: with no branch here the tail fell through to
+  // the linear table, where `ci: "merged"`. A diff whose full verification
+  // failed went to merged, on every cycle, because the check is opt-out and
+  // this repo ships the file.
+  //
+  // Deliberately routed identically to `ci-status`, not merged into it: the two
+  // events mean different things, and `verify-full-status` carries the
+  // `evidenceTail` that says what actually broke.
+  if (lastEvent?.kind === "verify-full-status" && lastEvent.status === "failure") {
+    if ((ps.ciRetryCount ?? 0) >= MAX_CI_RETRIES) return "handoff";
+    return "develop";
+  }
+
   // CI outcomes.
   if (lastEvent?.kind === "ci-status") {
     if (lastEvent.status === "success") return "merged";

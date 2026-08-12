@@ -67,6 +67,48 @@ const MAX = 3;
   );
 }
 
+// ---------------- an unreadable verdict is not a verdict, and must not pass
+
+{
+  // The regression this file failed to prevent when it was written. Relaxing
+  // the terminal rule to "only CRITICAL blocks" silently relaxed it for the
+  // NO-VERDICT case too, because a marker miss defaults to ISSUES_FOUND — so a
+  // reviewer that crashed, was truncated, or wrote its marker in a shape the
+  // parser does not know went from REJECT to PASS. That is the mirror of the
+  // bug this file exists to fix, and worse: it passes on no signal at all.
+  const shapes: Array<[string, string]> = [
+    ["no marker at all", "The reviewer crashed before writing a verdict."],
+    // reply-markers.ts builds the separator as `\s*:?\s*\**\s*:?\s*`, which
+    // an em-dash does not match.
+    ["an em-dash separator", "VERDICT — CRITICAL_ISSUES_FOUND"],
+    // spawn-collapse-events.ts sets this exact string, with ok=true, when a
+    // child produced only thinking content.
+    ["thinking-only output", "(thinking content only - no text output)"],
+  ];
+
+  for (const [name, text] of shapes) {
+    const v = parseVerdict(text);
+    assert(v.verdictParsed === false, `${name}: marked unparsed`);
+    assert(
+      decideLoopAction(v.status, MAX, MAX, v.verdictParsed) !== "pass",
+      `canary: ${name} does NOT pass the terminal gate — no verdict is not an approval`,
+    );
+  }
+
+  // ...and it is not silently downgraded to a rejection either: nothing was
+  // reviewed, so this is an infrastructure failure, which is what the loop
+  // already knows how to report and retry.
+  const v = parseVerdict("garbage");
+  assert(
+    decideLoopAction(v.status, MAX, MAX, v.verdictParsed) === "incomplete",
+    "an unreadable reply is INCOMPLETE — distinct from a reviewer that read the diff and objected",
+  );
+  assert(
+    decideLoopAction("ISSUES_FOUND", MAX, MAX, true) === "pass",
+    "...while a genuine ISSUES_FOUND still passes, so the #664 fix is intact",
+  );
+}
+
 // ------------------- the LAST marker wins, not the first (reply-markers.ts:44)
 
 {
@@ -90,35 +132,35 @@ const MAX = 3;
 {
   // Mid-loop: anything unresolved earns a fix round. That is what the rounds
   // are for, and in #664 rounds 1 and 2 produced real fixes.
-  assert(decideLoopAction("APPROVED", 1, MAX) === "pass", "APPROVED passes immediately");
+  assert(decideLoopAction("APPROVED", 1, MAX, true) === "pass", "APPROVED passes immediately");
   assert(
-    decideLoopAction("MINOR_OBSERVATIONS", 1, MAX) === "pass",
+    decideLoopAction("MINOR_OBSERVATIONS", 1, MAX, true) === "pass",
     "MINOR_OBSERVATIONS passes immediately — 'author's discretion'",
   );
-  assert(decideLoopAction("ISSUES_FOUND", 1, MAX) === "fix", "ISSUES_FOUND earns a fix round");
+  assert(decideLoopAction("ISSUES_FOUND", 1, MAX, true) === "fix", "ISSUES_FOUND earns a fix round");
   assert(
-    decideLoopAction("CRITICAL_ISSUES_FOUND", 1, MAX) === "fix",
+    decideLoopAction("CRITICAL_ISSUES_FOUND", 1, MAX, true) === "fix",
     "CRITICAL_ISSUES_FOUND earns a fix round",
   );
-  assert(decideLoopAction("ISSUES_FOUND", 2, MAX) === "fix", "...still, on round 2");
+  assert(decideLoopAction("ISSUES_FOUND", 2, MAX, true) === "fix", "...still, on round 2");
 }
 
 {
   // Terminal: only the verdict the doctrine calls blocking actually blocks.
   assert(
-    decideLoopAction("ISSUES_FOUND", MAX, MAX) === "pass",
+    decideLoopAction("ISSUES_FOUND", MAX, MAX, true) === "pass",
     "canary: ISSUES_FOUND on the LAST round passes — 83.7% of all rejections ended here",
   );
   assert(
-    decideLoopAction("MINOR_OBSERVATIONS", MAX, MAX) === "pass",
+    decideLoopAction("MINOR_OBSERVATIONS", MAX, MAX, true) === "pass",
     "MINOR_OBSERVATIONS on the last round passes",
   );
   assert(
-    decideLoopAction("CRITICAL_ISSUES_FOUND", MAX, MAX) === "reject",
+    decideLoopAction("CRITICAL_ISSUES_FOUND", MAX, MAX, true) === "reject",
     "CRITICAL_ISSUES_FOUND on the last round still REJECTS — the gate keeps its teeth",
   );
   assert(
-    decideLoopAction("APPROVED", MAX, MAX) === "pass",
+    decideLoopAction("APPROVED", MAX, MAX, true) === "pass",
     "APPROVED on the last round passes",
   );
 }
@@ -128,7 +170,7 @@ const MAX = 3;
 {
   // The real sequence from loop mspwtzfk-dkzy3v.
   const sequence = ["CRITICAL_ISSUES_FOUND", "ISSUES_FOUND", "ISSUES_FOUND"] as const;
-  const actions = sequence.map((v, i) => decideLoopAction(v, i + 1, MAX));
+  const actions = sequence.map((v, i) => decideLoopAction(v, i + 1, MAX, true));
   assert(
     actions[0] === "fix" && actions[1] === "fix",
     "#664: rounds 1 and 2 still earn fix rounds — they produced real fixes and must not be skipped",
@@ -141,7 +183,7 @@ const MAX = 3;
   // And the counter-case must still fail, or this is not a gate.
   const bad = ["ISSUES_FOUND", "ISSUES_FOUND", "CRITICAL_ISSUES_FOUND"] as const;
   assert(
-    bad.map((v, i) => decideLoopAction(v, i + 1, MAX))[2] === "reject",
+    bad.map((v, i) => decideLoopAction(v, i + 1, MAX, true))[2] === "reject",
     "a loop ending CRITICAL still rejects — the fix is not 'always pass'",
   );
 }

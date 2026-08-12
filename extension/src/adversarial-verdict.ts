@@ -59,8 +59,14 @@ export const VERDICT_STATUSES = [
   "APPROVED",
 ] as const;
 
-/** What the loop does next. */
-export type LoopAction = "pass" | "fix" | "reject";
+/**
+ * What the loop does next.
+ *
+ * `incomplete` is not a review outcome — it means no verdict was produced at
+ * all, so there is nothing to pass or reject. The loop reports it as the
+ * infrastructure failure it is.
+ */
+export type LoopAction = "pass" | "fix" | "reject" | "incomplete";
 
 /**
  * Read the reviewer's verdict marker.
@@ -95,15 +101,22 @@ export function decideLoopAction(
   status: AdversarialVerdictStatus,
   round: number,
   maxRounds: number,
+  verdictParsed = true,
 ): LoopAction {
+  // No readable marker means no verdict, and `parseVerdict` defaults the status
+  // to ISSUES_FOUND so another round is attempted. That default is safe
+  // mid-loop and became dangerous at the terminal round the moment ISSUES_FOUND
+  // stopped blocking: a reviewer that crashed, was truncated, or wrote its
+  // marker in an unknown shape would have PASSED on no signal whatsoever —
+  // the mirror of the bug the relaxation fixed.
+  //
+  // It is not a rejection either. Nothing was reviewed, so this is an
+  // infrastructure failure, which the loop already knows how to report and the
+  // step router already knows how to retry.
+  if (!verdictParsed) return round < maxRounds ? "fix" : "incomplete";
   if (status === "APPROVED" || status === "MINOR_OBSERVATIONS") return "pass";
   // Unresolved. More rounds left → spend one.
   if (round < maxRounds) return "fix";
   // Out of rounds. Only the verdict the doctrine calls blocking blocks.
   return status === "CRITICAL_ISSUES_FOUND" ? "reject" : "pass";
-}
-
-/** True when findings should travel onward rather than be discarded. */
-export function hasOutstandingFindings(verdict: AdversarialVerdict): boolean {
-  return verdict.status !== "APPROVED" && verdict.verdictParsed !== false;
 }

@@ -316,7 +316,17 @@ export async function runAdversarialLoop(
     const verdict = parseVerdict(adv.text);
     rounds.push({ round, verdict, ms: adv.ms });
 
-    const action = decideLoopAction(verdict.status, round, MAX_ROUNDS);
+    const action = decideLoopAction(verdict.status, round, MAX_ROUNDS, verdict.verdictParsed);
+    if (action === "incomplete") {
+      // Out of rounds with no readable verdict on the last one. Nothing was
+      // reviewed, so this is not an approval and not a rejection — it is the
+      // same "no verdict exists" case the infra path already reports, and the
+      // step router already knows to retry it once.
+      return infraFailureResult(round, "review", adv, {
+        ...advCls,
+        headline: "produced no readable VERDICT marker on the final round",
+      });
+    }
     if (action === "pass") {
       // `PASSED WITH FINDINGS` rather than `APPROVED` when something is still
       // outstanding: the operator (and the lens gate) must be able to tell the

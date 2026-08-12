@@ -23,6 +23,7 @@ import type { DispatchResult } from "./types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { parseAbort } from "./work-driver-diff.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
+import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { detectMainline, restoreCheckout } from "./work-driver-git.ts";
 import { withIntegrationLock } from "./work-driver-integrate.ts";
 import {
@@ -350,26 +351,25 @@ export async function runMerged(
     mergeSucceeded = true;
     // Mechanized merge succeeded — build the same event shapes the
     // dispatch path produces so downstream (merged event) is identical.
-    next = await runSingleDispatch(
-      ctx,
-      state,
-      "merged",
-      "driver",
-      "driver:merge",
-      now,
-      () => "Mechanized merge succeeded (no dispatch needed — short-circuit).",
+    // Record it; do not dispatch it. `runSingleDispatch` really spawns, and
+    // `driver` is not a role — every successful mechanized merge used to throw
+    // `Unknown role: driver`, become dispatch-failed, and route a merged PR to
+    // handoff with teardown skipped. `work-driver-commit.ts` builds its
+    // mechanized event directly for the same reason.
+    next = appendEvent(
+      { ...state, pipelineState: { ...state.pipelineState, currentStep: "merged" } },
+      { kind: "step-started", step: "merged", at: now },
     );
-    // Replace the dispatch-completed event with a proper merge summary.
-    const lastIdx = next.eventLog.length - 1;
-    const last = next.eventLog[lastIdx];
-    if (last?.kind === "dispatch-completed") {
-      next.eventLog[lastIdx] = {
-        ...last,
-        role: "driver",
+    next = appendEvent(
+      next,
+      synthesizeDriverCompletion({
+        step: "merged",
         label: "driver:merge",
         summary: `Mechanized merge: PR #${prNumber} merged via --${mergeMethod}${mechResult.notes.length > 0 ? ` Notes: ${mechResult.notes.join("; ")}` : ""}`,
-      };
-    }
+        startedAt: now,
+        now: Date.now(),
+      }),
+    );
   } else {
     // Mechanized path failed — emit plumb-report and fall back to LLM.
     preDispatch = appendEvent(state, {
