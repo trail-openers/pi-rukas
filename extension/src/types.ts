@@ -35,6 +35,14 @@ export interface DispatchResult {
   ok: boolean;
   text: string;
   toolUses: unknown[];
+  /**
+   * Tool calls counted live from the event stream, when the replay carried
+   * none. A child killed mid-flight reports `toolUses: []` because
+   * `agent_end.messages` holds only the last retry segment — but it may well
+   * have made dozens. Set only when it did, so "no tool calls" stays distinct
+   * from "we could not tell".
+   */
+  observedToolCalls?: number;
   ms: number;
   exitCode: number | null;
   usage?: DispatchUsage;

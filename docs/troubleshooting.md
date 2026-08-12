@@ -48,7 +48,41 @@ Do NOT set this below the longest single turn your subagent models legitimately 
 
 Keep `maxRetries * timeoutMs` comfortably below the per-role wall-clock caps in `spawn.ts` (`ROLE_TIMEOUT_DEFAULTS_MS`); otherwise retries get truncated.
 
+**Do not lower `maxRetryDelayMs`.** It is a *ceiling* on a provider's `retry-after`, not a delay we add. Pi's own backoff is `min(0.5 * 2 ** i, 8) * 1000`, capped at 8s, so raising the ceiling costs no wall-clock unless a provider explicitly asks us to wait longer. Its only effect is deciding which provider instructions to discard — and when it discards one, **nothing waits at all**: the throw happens inside `getRetryDelayMs` while computing the next delay, before any sleep, so the `maxRetries` budget is never even consumed.
+
+pi-ensemble shipped `10000` here for several releases on the mistaken reasoning that it "added 3 x 60s of backoff". Providers routinely ask for 59-60s, so every real throttle became a hard failure. Measured on one run: three parallel `/research` children and two `/work` developers all died on `Server requested 59s retry delay (max: 10s). 429 status code`, having gathered ~305k characters of research between them, all discarded. `install.sh` now repairs a value of exactly `10000` on sight — including on hosts where `timeoutMs` was already set, which previously skipped the whole block and so were never fixed.
+
+If you have deliberately chosen a value below 60s, it is preserved; the extension traces a warning at startup instead, visible in `/ensemble-debug`.
+
 PRs: [#236](https://github.com/randomm/pi-ensemble/pull/236), [#295](https://github.com/randomm/pi-ensemble/issues/295)
+
+## Dispatch reports
+
+### A parallel child reports `fail (exit 0) · 1 turns · (no output)`
+
+**Symptom:** `dispatch_parallel` returns a batch report in which one or more children show no output and no reason, while a sibling completed normally. The obvious reading — "the dispatch never got going, or the brief was bad" — is usually wrong.
+
+**Cause:** the batch report rendered `text || "(no output)"` and never looked at the child's `errorStop`. The single-job report had handled it all along, so the two paths disagreed. A child killed mid-flight has no final assistant text, and `collapseEvents` counts turns from `agent_end.messages`, which on an error carries only the last turn — hence `1 turns` for a child that had actually made 41 tool calls across 105 transcript turns.
+
+The real cause was almost always a provider 429 (see [Tuning](#tuning) above). Measured on one `/research` run, three of four children died this way after gathering ~305k characters between them; the PM read the report, concluded "a dispatch failure, not a research failure", and re-dispatched with tighter briefs — treating a rate limit as a prompting problem.
+
+**Fix:** both report shapes now share one `describeOutcome`, so a killed child names its cause. A 429 is classified with the same `classifyFailureCause` the driver uses, which distinguishes a burst (*"provider asked for a 59s wait"* — waiting is the remedy) from a quota window (*"a ~24h quota window, so retrying now cannot help"*). `(no output)` now means what it says: the child really produced nothing, and did not fail.
+
+### A child reports far fewer turns than it took
+
+**Symptom:** a dispatch reports `29 turns` when the transcript on disk has 57 assistant messages; a killed child reports `1 turns`. Not confined to failures — healthy children were under-reported too.
+
+**Cause:** `agent_end.messages` is not the session. It carries the messages produced *since the previous* `agent_end`, and Pi emits one per in-process retry boundary. `spawn.ts` kept only the last one (a deliberate memory bound — unbounded event accumulation had caused a ~3.7GB parent OOM), so the reported counts were the last segment. Measured: `rust-slack` recovered from five 429s and its final segment was exactly 29 messages, against 57 on disk. A child that *dies* ends on the error, so its segment is the lone error stub — hence `1 turns`.
+
+**Fix:** `reconcileObservedCounts` restores the counts from the live `runningState`, which `ingestEvent` accumulates across every segment. It only ever revises upward: a lower live count would mean missed events, and the replay is then the better source. A failed child that did work now also shows `· 41 tool calls before it died`.
+
+### `/runs` shows `tool calls: 0` for a run that clearly used tools
+
+**Cause:** the transcript parser matched Anthropic's `tool_use` / `tool_result` block names and expected tool results as blocks inside a `user` message. Pi emits `toolCall` blocks with an `arguments` string, and gives tool results their own `toolResult` role — the local type did not even permit that role, so the branch could never run. `/runs` therefore reported zero tool calls for **every** transcript.
+
+**Fix:** the parser accepts both spellings. Turn counts were always correct; only the tool call/result lists were empty.
+
+Check the raw transcript under `~/.pi/agent/ensemble-runs/<date>/` before concluding a child did no work.
 
 ## Permissions
 

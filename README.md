@@ -259,6 +259,8 @@ Tools (all async via push-callback — tools return a `{ jobId }` immediately; t
 | `dispatch_kill <jobId>` | Abort a running subagent or batch. |
 | `dispatch_peek <jobId>` | Bounded, read-only introspection of a running subagent — last assistant text + last tool call ([#21](https://github.com/randomm/pi-ensemble/issues/21)). |
 | `dispatch_steer <jobId> <message>` | Inject a mid-flight steer into a running subagent via Pi's `--mode rpc` stdin channel — for exceptional rescue only (long-elapsed, stuck-looking) ([#152](https://github.com/randomm/pi-ensemble/issues/152)). |
+| `start_work_driver <issues[]>` | Start the compiled `/work` driver — the same pipeline the slash command runs, with its state file, queue, handoff artifact and review-cap timer. Returns immediately. Exists so PM restarts a real cycle instead of reconstructing one by hand; merge authority is operator-only and has no parameter here ([#408](https://github.com/randomm/pi-ensemble/issues/408)). |
+| `load_workflow_doctrine <name>` | Return a workflow command's full instructions (`research`, `plan`, `review`, `audit`, `start`, `do`) as tool output, so PM can run one without the user typing the slash command. `/work` is deliberately excluded — it is a compiled driver, not prose. |
 | `check_review_cap <key>` | Wall-clock cap helper for `/work` Step 7 fix loop — returns ok/exceeded against a 90-min budget so the PM stops doom-loops ([#4](https://github.com/randomm/pi-ensemble/issues/4)). |
 
 Per-child transcripts are saved to `~/.pi/agent/ensemble-runs/<date>/<runId>-<role>[-<tag>].json` — replay with `pi --session <path>` or browse via `/runs`. The user inspects these; orchestrating agents do NOT read them (the dispatch tool's report is the bounded summary by design).

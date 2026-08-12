@@ -51,6 +51,7 @@
           "gh api*": "allow",
           "gh pr list*": "allow",
           "gh pr view*": "allow",
+          "gh pr diff*": "allow",
           "gh run list*": "allow",
           "gh run view*": "allow",
           "gh run watch*": "allow",

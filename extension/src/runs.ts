@@ -236,13 +236,18 @@ interface ParsedTranscript {
 interface SessionEvent {
   type: string;
   message?: {
-    role: "user" | "assistant";
+    // Pi emits tool results under their own role, not as blocks inside a user
+    // message. The type said otherwise, so the parser could not have matched.
+    role: "user" | "assistant" | "toolResult";
     content?: Array<{
       type: string;
       text?: string;
       thinking?: string;
       name?: string;
+      /** Anthropic spelling. */
       input?: unknown;
+      /** Pi's spelling on a `toolCall` block — a JSON string, not an object. */
+      arguments?: unknown;
       content?: unknown;
     }>;
     usage?: { cost?: { total?: number } };
@@ -250,7 +255,8 @@ interface SessionEvent {
   };
 }
 
-async function summariseTranscript(file: string): Promise<ParsedTranscript> {
+/** Exported for the parser canary: the block shapes here are Pi's, not Anthropic's. */
+export async function summariseTranscript(file: string): Promise<ParsedTranscript> {
   const raw = await fs.readFile(file, "utf8");
   const out: ParsedTranscript = {
     userPrompt: "",
@@ -269,7 +275,17 @@ async function summariseTranscript(file: string): Promise<ParsedTranscript> {
     }
     if (ev.type !== "message" || !ev.message) continue;
     const msg = ev.message;
-    if (msg.role === "user") {
+    // Pi emits tool results as their OWN message role, not as blocks inside a
+    // user message, and names the block type `toolCall`/`toolResult` rather
+    // than Anthropic's `tool_use`/`tool_result`. Matching only the Anthropic
+    // spelling meant `/runs` reported "tool calls: 0" for every transcript —
+    // including one with 41 of them, at the exact moment an operator was
+    // reading it to find out whether a killed child had done any work.
+    if (msg.role === "toolResult") {
+      const blocks = msg.content ?? [];
+      const preview = blocks.map((b) => (b.type === "text" && b.text ? b.text : "")).join("");
+      out.toolResults.push({ preview: preview.slice(0, 400) });
+    } else if (msg.role === "user") {
       for (const b of msg.content ?? []) {
         if (b.type === "text" && b.text) {
           out.userPrompt += b.text;
@@ -289,8 +305,8 @@ async function summariseTranscript(file: string): Promise<ParsedTranscript> {
       if (msg.usage?.cost?.total) out.cost = (out.cost ?? 0) + msg.usage.cost.total;
       for (const b of msg.content ?? []) {
         if (b.type === "text" && b.text) out.assistantText += b.text;
-        else if (b.type === "tool_use") {
-          out.toolCalls.push({ name: b.name ?? "?", input: b.input });
+        else if (b.type === "tool_use" || b.type === "toolCall") {
+          out.toolCalls.push({ name: b.name ?? "?", input: b.input ?? b.arguments });
         }
       }
     }

@@ -66,10 +66,12 @@ import {
 import { withSpawnSlot } from "./spawn-semaphore.ts";
 import {
   STDERR_TAIL_BYTES,
+  assertLiveSpawnAllowed,
   buildCwdHint,
   getPiInvocation,
   inactivityTimeoutMs,
   makeRunId,
+  reconcileObservedCounts,
   roleTimeoutMs,
   transcriptPathFor,
   willRetryAfter,
@@ -155,24 +157,7 @@ async function spawnSpecialistInner(
 ): Promise<DispatchResult> {
   if (!isRoleName(spec.role)) throw new Error(`Unknown role: ${spec.role}`);
 
-  // FORBID_LIVE_SPAWN — test-only guard that prevents accidental live
-  // spawns in offline smoke tests. When set, throws immediately with
-  // an informative message naming the role. Bypassed by
-  // PI_ENSEMBLE_ALLOW_LIVE_SPAWN=1 (set by *-live.ts tests).
-  // Production code never sets this flag.
-  const INJECTION_NAMES: Record<string, string> = {
-    "code-review-specialist": "lensReviewFn",
-    "adversarial-developer": "adversarialLoopFn",
-  };
-  if (
-    process.env.PI_ENSEMBLE_FORBID_LIVE_SPAWN === "1" &&
-    process.env.PI_ENSEMBLE_ALLOW_LIVE_SPAWN !== "1"
-  ) {
-    const injectionName = INJECTION_NAMES[spec.role] ?? "dispatchFn";
-    throw new Error(
-      `FORBID_LIVE_SPAWN: spawnSpecialist called for role "${spec.role}" without injection. Set PI_ENSEMBLE_ALLOW_LIVE_SPAWN=1 for live tests, or inject ${injectionName} in DriverContext.`,
-    );
-  }
+  assertLiveSpawnAllowed(spec.role);
 
   const role = ROLES[spec.role];
   const systemPrompt = await fs.readFile(role.promptFile, "utf8");
@@ -267,13 +252,12 @@ async function spawnSpecialistInner(
   });
 
   const start = Date.now();
-  // Bounded per-spawn buffers. The previous unbounded `events: PiJsonEvent[]`
-  // and `let stderr = ""` accumulators caused parent-process OOM at ~3.7GB
-  // heap during long /work cycles — V8 SlowFlatten on the ConsString tree
-  // built by repeated `stderr += chunk` blew up on the next regex match.
-  // collapseEvents only needs the latest agent_end (or latest assistant
-  // message_end as fallback); intermediate events are processed live by
-  // ingestEvent which mutates runningState in place, then discarded.
+  // Bounded per-spawn buffers: unbounded `events[]` / `stderr +=` accumulators
+  // caused parent OOM at ~3.7GB during long /work cycles (V8 SlowFlatten on the
+  // ConsString tree, blown up by the next regex match). The cost is that this
+  // holds the last agent_end SEGMENT, not the session — Pi emits one per retry
+  // boundary. reconcileObservedCounts restores the true counts from
+  // runningState; see its docstring for what the gap hid.
   let lastAgentEnd: PiJsonEvent | null = null;
   let lastAssistantMessageEnd: PiJsonEvent | null = null;
   // stderr is surfaced only as a tail in failure reports. Keep the most
@@ -487,6 +471,8 @@ async function spawnSpecialistInner(
     // before any assistant turn (rare), surface the requested model anyway.
     result.model = modelChoice.model;
   }
+
+  reconcileObservedCounts(result, runningState);
 
   // Final onProgress emit — flips the child from running to done so the
   // aggregator's last render shows the resolved icon (✓ / ✗) instead of the

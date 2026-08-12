@@ -39,37 +39,21 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
+import { notifyAgent } from "./agent-message.ts";
+import { buildMemoryPanel } from "./memory-panel.ts";
 import { GLOBAL_KEY, getAllOverrides } from "./model-config.ts";
 import { modelConfigSnapshot } from "./models.ts";
+import { armPmMode, isPmModeActive, peekDoctrinePending, takeDoctrinePending } from "./pm-mode.ts";
 import { transcriptsSummary } from "./runs.ts";
 import { trace } from "./trace.ts";
 import { groupIssues, resolvedParallelGroups } from "./work-driver-grouping.ts";
 import { runWorkDriver } from "./work-driver.ts";
+import { launchWork, parseWorkArgs, resolveRepoRoot } from "./work-entry.ts";
 import { renderQueueSummary, runWorkQueue } from "./work-queue.ts";
 import { registerWorkStatusCommand } from "./work-status.ts";
 import { readState } from "./workflow-state.ts";
 
 const execp = promisify(exec);
-
-/**
- * Resolve the project repo root (the worktree containing the `.git` dir or
- * gitlink). The driver state file lives here so it survives `git worktree
- * remove` against any sub-worktree. Falls back to the caller's cwd when not
- * inside a git repo (which would mean /work is being run in a non-git
- * directory — surface clearly rather than fabricate a path).
- *
- * Callers pass `ctx.cwd` (the session's directory, first-class Pi API), never
- * `process.cwd()` — those diverge whenever Pi was launched from elsewhere, and
- * the divergence silently retargets the state file at the wrong repo (#360).
- */
-async function resolveRepoRoot(cwd: string): Promise<string> {
-  try {
-    const { stdout } = await execp("git rev-parse --show-toplevel", { cwd });
-    return stdout.trim();
-  } catch {
-    return cwd;
-  }
-}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -82,24 +66,18 @@ const PM_PROMPT_FILE = path.resolve(
     path.join(__dirname, "..", "..", "dist", "prompts", "standard", "project-manager.md"),
 );
 
-const SLASH_COMMANDS = ["start", "research", "plan", "work", "review", "audit", "do"] as const;
-type SlashCommand = (typeof SLASH_COMMANDS)[number];
+export const SLASH_COMMANDS = [
+  "start",
+  "research",
+  "plan",
+  "work",
+  "review",
+  "audit",
+  "do",
+] as const;
+export type SlashCommand = (typeof SLASH_COMMANDS)[number];
 
-// Session-scoped flags.
-//
-// `pmDoctrineFirstTurnPending` — one-shot for injecting the FULL project-manager
-// doctrine on the first turn after a workflow slash command fires. Cleared
-// after the first agent_start so we don't re-inject the 53K-char doctrine on
-// every PM turn.
-//
-// `pmModeActive` — sticky from the first slash command for the rest of the
-// session. While true, every PM agent_start gets a SHORT preamble (~200
-// chars) reminding the model that it MUST NOT edit/write/code itself. This
-// closes the live-test bug where PM had the doctrine only on turn 1, then
-// happily reached for the edit tool on turns 2+ once the doctrine was gone
-// from context.
-let pmDoctrineFirstTurnPending = false;
-let pmModeActive = false;
+// The PM-mode session flags moved to `pm-mode.ts` so a tool can arm them too.
 
 const PM_STICKY_PREAMBLE = `# PM mode — orchestration only
 
@@ -110,6 +88,8 @@ You are running inside a pi-ensemble workflow (/start, /research, /plan, /work, 
 - Research, file reading, vipune searches, web → \`dispatch_specialist\` with role \`explore\`
 
 If you catch yourself about to call \`edit\`, \`write\`, or \`bash\` for anything beyond \`vipune\` / \`gh issue view\` / read-only \`git status|diff|log|branch\` / \`oo recall\`, STOP and dispatch instead. Touching files yourself is a doctrine violation.
+
+\`/work\` is a COMPILED DRIVER, not a sequence of dispatches. Never reconstruct its steps by hand — a hand-rolled cycle has no state file, no queue, no handoff artifact, no review-cap timer, and produces a branch the driver knows nothing about, with nothing in the transcript saying any of that is missing. To start or restart one, call \`start_work_driver\`. To run any other workflow yourself, call \`load_workflow_doctrine\` and follow what it returns. Merge authority is operator-only: neither tool can grant it.
 `;
 
 export function registerCommands(pi: ExtensionAPI) {
@@ -155,21 +135,9 @@ export function registerCommands(pi: ExtensionAPI) {
           //
           // Also accept `--restart` (order-independent) — applied to
           // every cycle in the queue.
-          const tokens = args.trim().split(/\s+/).filter(Boolean);
-          const restart = tokens.includes("--restart");
-          // #380 — the operator's grant of merge authority for this run. The
-          // only other source is an explicit grant in the project's
-          // AGENTS.md; with neither, cycles open their PR and park.
-          const mergeGrant = tokens.includes("--merge");
-          const issues = tokens
-            .filter((t) => !t.startsWith("--"))
-            .map((t) => Number.parseInt(t, 10))
-            .filter((n) => Number.isFinite(n) && n > 0);
-          if (issues.length === 0 || issues[0] === undefined) {
-            ctx.ui.notify(
-              "pi-ensemble: /work needs at least one issue number (e.g., /work 547, or /work 561 562 to analyze + group multi-issue).",
-              "warning",
-            );
+          const parsed = parseWorkArgs(args);
+          if ("error" in parsed) {
+            ctx.ui.notify(parsed.error, "warning");
             return;
           }
           if (!ctx.isIdle()) {
@@ -179,134 +147,14 @@ export function registerCommands(pi: ExtensionAPI) {
             );
             return;
           }
-          const repoRoot = await resolveRepoRoot(ctx.cwd);
-          const restartTag = restart ? " (restart — prior state wiped)" : "";
-          trace(
-            `/work → driver loop for ${issues.length === 1 ? `issue #${issues[0]}` : `${issues.length} issues (#${issues.join(", #")})`}${restartTag} (repoRoot=${repoRoot})`,
-          );
           // PM stays in reporter mode so user-visible progress messages
-          // emitted by the driver via sendUserMessage land cleanly.
-          pmDoctrineFirstTurnPending = true;
-          pmModeActive = true;
-
-          // Single-issue path — no grouping needed.
-          if (issues.length === 1) {
-            const soleIssue = issues[0];
-            if (soleIssue === undefined) return;
-            ctx.ui.notify(
-              `pi-ensemble: /work driver running for issue #${soleIssue}${restartTag}. State in .pi/work-state/${soleIssue}.json — inspect it any time with /work-status.`,
-              "info",
-            );
-            void (async () => {
-              try {
-                await runWorkDriver({ pi, repoRoot, issue: soleIssue, restart, mergeGrant });
-              } catch (err) {
-                trace(`work-driver: unexpected throw for #${soleIssue}: ${(err as Error).message}`);
-                try {
-                  pi.sendUserMessage(
-                    `pi-ensemble: /work driver crashed on issue #${soleIssue}: ${(err as Error).message}. ` +
-                      `Inspect .pi/work-state/${soleIssue}.json (or run /work-status ${soleIssue}). The cycle's own state is intact — your git work is untouched.`,
-                  );
-                } catch {
-                  /* nothing we can do */
-                }
-              }
-            })();
-            return;
-          }
-
-          // Multi-issue path — analyze + group + iterate. Fire-and-forget
-          // so the handler returns immediately; grouping analysis + K
-          // cycles all run in the background.
-          ctx.ui.notify(
-            `pi-ensemble: analyzing ${issues.length} issues (#${issues.join(", #")}) for grouping…`,
-            "info",
-          );
-          void (async () => {
-            // Fetch each issue body in parallel via `gh issue view`. The
-            // grouping rules read the body to detect link markers, file
-            // paths, subsystem tags. Empty body on failure → grouping
-            // falls back to R5 (separate groups) for that issue.
-            const bodiesByIssue: Record<number, string> = {};
-            const fetches = await Promise.allSettled(
-              issues.map(
-                (n) =>
-                  new Promise<{ n: number; body: string }>((resolve, reject) => {
-                    exec(
-                      `gh issue view ${n} --json title,body,labels`,
-                      { cwd: repoRoot, maxBuffer: 2 * 1024 * 1024 },
-                      (err, stdout) => {
-                        if (err) return reject(err);
-                        // #376 — parse out `.body`. The raw `--json` stdout is
-                        // ONE line of compact JSON with `\n` as two-character
-                        // escapes, so every `^`-anchored rule (R3 split
-                        // markers, R4 subsystem tags) could only ever see
-                        // `{"body":"` as its line start and never fired.
-                        // Title is kept because R4 reads it.
-                        try {
-                          const parsed = JSON.parse(stdout) as { title?: string; body?: string };
-                          resolve({
-                            n,
-                            body: `title: ${parsed.title ?? ""}\n${parsed.body ?? ""}`,
-                          });
-                        } catch {
-                          // Unparseable — fall back to the raw text rather than
-                          // dropping the issue from grouping entirely.
-                          resolve({ n, body: stdout });
-                        }
-                      },
-                    );
-                  }),
-              ),
-            );
-            for (let i = 0; i < issues.length; i++) {
-              const n = issues[i];
-              if (n === undefined) continue;
-              const r = fetches[i];
-              bodiesByIssue[n] = r?.status === "fulfilled" ? r.value.body : "";
-            }
-
-            const { groups, notes } = groupIssues(issues, bodiesByIssue);
-            const groupList = Object.values(groups);
-            const summary = groupList.map((g) => `${g.id}: #${g.issues.join(", #")}`).join(" | ");
-            const notesLine = notes.length > 0 ? `\n  rules fired: ${notes.join("; ")}` : "";
-            try {
-              pi.sendUserMessage(
-                `pi-ensemble: /work grouping decided K=${groupList.length} group(s) — ${summary}${notesLine}\n${resolvedParallelGroups() > 1 ? `Running up to ${Math.min(resolvedParallelGroups(), groupList.length)} cycle(s) concurrently` : "Running cycles sequentially"}${restartTag}; a failed group parks and the queue continues.`,
-              );
-            } catch {
-              /* nothing we can do */
-            }
-
-            // #368 — park-and-continue. A group that ends non-merged is
-            // recorded with its reason and the queue moves on; only a
-            // systemic failure (spend cap, quota window, driver throw) stops
-            // everything, because only those make the next group's attempt
-            // pointless. Pre-#368 any failure halted, which is how one 429
-            // left 11 unrelated issues unstarted.
-            const concurrency = Math.min(resolvedParallelGroups(), groupList.length);
-            const summaryResult = await runWorkQueue({
-              repoRoot,
-              groups: groupList,
-              restart,
-              concurrency,
-              runGroup: (primary, issues) =>
-                runWorkDriver({
-                  pi,
-                  repoRoot,
-                  issue: primary,
-                  issues,
-                  restart,
-                  mergeGrant,
-                  parallelCycles: concurrency,
-                }),
-            });
-            try {
-              pi.sendUserMessage(renderQueueSummary(summaryResult));
-            } catch {
-              /* nothing we can do */
-            }
-          })();
+          // emitted by the driver via notifyAgent land cleanly.
+          armPmMode();
+          await launchWork(pi, {
+            repoRoot: await resolveRepoRoot(ctx.cwd),
+            invocation: parsed,
+            sink: { notify: (t) => ctx.ui.notify(t, "info") },
+          });
           return;
         }
 
@@ -318,7 +166,14 @@ export function registerCommands(pi: ExtensionAPI) {
           ctx.ui.notify(`pi-ensemble: ${(err as Error).message}`, "error");
           return;
         }
-        const expanded = expandArgs(body, args);
+        let expanded = expandArgs(body, args);
+        // #422 — /audit gains a memory section. `memory-stats.ts` shipped in
+        // v0.12.32 with no caller; this is it. Appended, never substituted: a
+        // repo with no memory store gets a byte-identical message.
+        if (name === "audit") {
+          const panel = await buildMemoryPanel(await resolveRepoRoot(ctx.cwd));
+          if (panel) expanded = `${expanded}\n\n---\n\n${panel}`;
+        }
         if (!ctx.isIdle()) {
           ctx.ui.notify(
             `pi-ensemble: agent is busy — try /${name} again when idle, or use /steer for an inline nudge`,
@@ -326,12 +181,11 @@ export function registerCommands(pi: ExtensionAPI) {
           );
           return;
         }
-        pmDoctrineFirstTurnPending = true;
-        pmModeActive = true;
+        armPmMode();
         trace(
           `/${name} → sendUserMessage (${expanded.length} chars); PM doctrine armed + PM mode sticky`,
         );
-        pi.sendUserMessage(expanded);
+        notifyAgent(pi, expanded);
       },
     });
   }
@@ -365,8 +219,8 @@ export function registerCommands(pi: ExtensionAPI) {
       const lines = [
         `prompts dir:      ${PI_PROMPTS_DIR}`,
         `PM prompt file:   ${PM_PROMPT_FILE}`,
-        `PM mode:          ${pmModeActive ? "active (sticky preamble injected every turn)" : "idle"}`,
-        `PM first-turn doctrine pending: ${pmDoctrineFirstTurnPending}`,
+        `PM mode:          ${isPmModeActive() ? "active (sticky preamble injected every turn)" : "idle"}`,
+        `PM first-turn doctrine pending: ${peekDoctrinePending()}`,
         "commands:         /start /research /plan /work /review /audit /runs /ensemble-model /ensemble-debug",
         "tools:            dispatch_specialist, dispatch_parallel, adversarial_loop, dispatch_lens_review (all async),",
         "                  dispatch_status, dispatch_kill, dispatch_peek, dispatch_steer, check_review_cap",
@@ -397,11 +251,10 @@ export function registerCommands(pi: ExtensionAPI) {
       // amortise cost), short PM_STICKY_PREAMBLE on every turn while in PM
       // mode (light, closes the "PM forgets the doctrine on turn 2+" gap that
       // let it self-code on issue #580).
-      if (!pmModeActive) return undefined;
+      if (!isPmModeActive()) return undefined;
       const base = event.systemPrompt ?? "";
       const pieces: string[] = [base, PM_STICKY_PREAMBLE];
-      if (pmDoctrineFirstTurnPending) {
-        pmDoctrineFirstTurnPending = false;
+      if (takeDoctrinePending()) {
         try {
           const pmPrompt = await fs.readFile(PM_PROMPT_FILE, "utf8");
           pieces.push(pmPrompt);
@@ -441,12 +294,12 @@ function descriptionFor(name: SlashCommand): string {
   }
 }
 
-async function loadPromptBody(name: SlashCommand): Promise<string> {
+export async function loadPromptBody(name: SlashCommand): Promise<string> {
   const file = path.join(PI_PROMPTS_DIR, `${name}.md`);
   return fs.readFile(file, "utf8");
 }
 
-function expandArgs(body: string, args: string) {
+export function expandArgs(body: string, args: string) {
   const tokens = args.trim().length === 0 ? [] : args.trim().split(/\s+/);
   let out = body.replaceAll("$ARGUMENTS", args.trim()).replaceAll("$@", args.trim());
   for (let i = 0; i < tokens.length; i++) {

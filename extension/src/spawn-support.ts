@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { type RoleName, isRoleName } from "./roles.ts";
+import type { DispatchUsage } from "./types.ts";
 
 // Hard wall-clock cap on subagent runtime (issue #114). PR5 splits the old
 // single 30-min global into per-role defaults. #296 raised them: the PR5
@@ -161,4 +162,64 @@ export function getPiInvocation(args: string[]): { command: string; args: string
  */
 export function willRetryAfter(event: PiJsonEvent): boolean {
   return event.willRetry === true;
+}
+
+/**
+ * Correct a result's counts against what we actually watched go past.
+ *
+ * `agent_end.messages` is NOT the session — it is the messages produced since
+ * the previous `agent_end`, and Pi emits one per in-process retry boundary. So
+ * the last `agent_end` holds only the final segment. Measured on four real
+ * children: `rust-slack` recovered from five 429s and its last segment was
+ * exactly 29 messages — the "29 turns" we reported, against 57 assistant turns
+ * on disk. The three that DIED ended on the error itself, so their segment was
+ * the lone error stub: `1 turns · (no output)` for a child that had made 41
+ * tool calls and fetched 136k characters.
+ *
+ * The running state has no such gap: `ingestEvent` counts every `message_end`
+ * across every segment. Prefer it wherever it saw more — which is exactly the
+ * case where the segment under-reports. Never prefer it downward: a lower count
+ * would mean we missed events, and the replay is then the better source.
+ */
+export function reconcileObservedCounts(
+  result: {
+    usage?: DispatchUsage;
+    toolUses: unknown[];
+    observedToolCalls?: number;
+  },
+  observed: { usage: DispatchUsage; toolUses: number },
+): void {
+  if (observed.usage.turns > (result.usage?.turns ?? 0)) {
+    result.usage = { ...observed.usage };
+  }
+  // Tool calls are only ever counted live; the replay carries no equivalent.
+  if (result.toolUses.length === 0 && observed.toolUses > 0) {
+    result.observedToolCalls = observed.toolUses;
+  }
+}
+
+/** Injection point a test should have used, per role. */
+const INJECTION_NAMES: Record<string, string> = {
+  "code-review-specialist": "lensReviewFn",
+  "adversarial-developer": "adversarialLoopFn",
+};
+
+/**
+ * Test-only guard against an accidental live spawn in an offline smoke test.
+ *
+ * Throws naming the role and the injection point that should have been used.
+ * Bypassed by PI_ENSEMBLE_ALLOW_LIVE_SPAWN=1, which the `*-live.ts` tests set.
+ * Production never sets the forbidding flag, so this is a no-op there.
+ */
+export function assertLiveSpawnAllowed(role: string): void {
+  if (
+    process.env.PI_ENSEMBLE_FORBID_LIVE_SPAWN !== "1" ||
+    process.env.PI_ENSEMBLE_ALLOW_LIVE_SPAWN === "1"
+  ) {
+    return;
+  }
+  const injectionName = INJECTION_NAMES[role] ?? "dispatchFn";
+  throw new Error(
+    `FORBID_LIVE_SPAWN: spawnSpecialist called for role "${role}" without injection. Set PI_ENSEMBLE_ALLOW_LIVE_SPAWN=1 for live tests, or inject ${injectionName} in DriverContext.`,
+  );
 }

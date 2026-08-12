@@ -12,11 +12,13 @@ import * as lifecycle from "./lifecycle-events.ts";
 import { loadOverrides } from "./model-config.ts";
 import { registerModelPicker } from "./model-picker.ts";
 import { registerPermissionGuard } from "./permission-guard.ts";
+import { warnIfRetryConfigTooLow } from "./retry-config-check.ts";
 import { registerCheckReviewCapTool } from "./review-cap.ts";
 import { pruneOldRuns, registerRunsCommand } from "./runs.ts";
 import { registerSandboxFsGuard } from "./sandbox-fs-guard.ts";
 import * as sessionAutosave from "./session-autosave.ts";
 import { trace } from "./trace.ts";
+import { registerWorkTools } from "./work-tool.ts";
 import * as workWidget from "./work-widget.ts";
 
 export default async function (pi: ExtensionAPI) {
@@ -38,6 +40,9 @@ export default async function (pi: ExtensionAPI) {
   }
   // Load persisted model overrides BEFORE any spawn can ask for a model.
   await loadOverrides();
+  // The whole retry story assumes a provider's `retry-after` is honoured. That
+  // depends on a setting pi-ensemble does not own, so say so when it is not.
+  void warnIfRetryConfigTooLow();
   registerDispatchTools(pi);
   registerDispatchStatusTool(pi);
   registerDispatchPeekTool(pi);
@@ -46,6 +51,9 @@ export default async function (pi: ExtensionAPI) {
   registerAdversarialTool(pi);
   registerLensReviewTool(pi);
   registerCommands(pi);
+  // #408 — PM can start the compiled driver instead of hand-rolling it. Must
+  // follow registerCommands: the doctrine tool reads the same prompt bodies.
+  registerWorkTools(pi);
   registerRunsCommand(pi);
   registerModelPicker(pi);
   registerAsyncJobsLifecycle(pi);

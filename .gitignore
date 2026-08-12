@@ -26,3 +26,8 @@ dist/prompts/
 
 # /work driver workflow state (per-issue, per-project)
 .pi/work-state/
+
+# Research artefacts from workflow runs — local working material, not shipped.
+outputs/
+.feynman/
+.pi-subagents/

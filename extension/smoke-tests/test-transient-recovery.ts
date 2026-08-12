@@ -29,7 +29,7 @@
  * with `transientRetryAttempts: {}`. Never attempted, not exhausted.
  */
 
-import { willRetryAfter } from "../src/spawn-support.ts";
+import { reconcileObservedCounts, willRetryAfter } from "../src/spawn-support.ts";
 import { failureEventOf } from "../src/work-driver-step-router.ts";
 import type { WorkEvent } from "../src/workflow-state-events.ts";
 
@@ -177,7 +177,66 @@ const fanOutTail = (opts: { anySucceeded: boolean }): WorkEvent[] =>
   );
 }
 
-// ----------------------------- 3. the park report names the step that failed
+// -------------------- 3. the counts survive Pi's agent_end segmentation
+
+{
+  // Measured from `mspr5ylf-eg4d66-explore-*`. `agent_end.messages` carries
+  // only the messages since the PREVIOUS agent_end, and Pi emits one per
+  // in-process retry boundary — so the last one is a segment, not the session.
+  const usage = (turns: number) => ({
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 0,
+    turns,
+  });
+
+  {
+    // daphne-arch: died ON its 429, so its final segment was the lone error
+    // stub. Reported "1 turns · (no output)" for 63 assistant turns and 41
+    // tool calls.
+    const result = { usage: usage(1), toolUses: [] as unknown[] } as {
+      usage: ReturnType<typeof usage>;
+      toolUses: unknown[];
+      observedToolCalls?: number;
+    };
+    reconcileObservedCounts(result, { usage: usage(63), toolUses: 41 });
+    assert(result.usage.turns === 63, `canary: 1 turn becomes the real 63 (got ${result.usage.turns})`);
+    assert(result.observedToolCalls === 41, "...and the 41 tool calls are recorded");
+  }
+
+  {
+    // rust-slack: survived five 429s. Its last segment was exactly 29 messages
+    // — the "29 turns" reported — against 57 assistant turns on disk. The bug
+    // was never confined to the children that died.
+    const result = { usage: usage(29), toolUses: [] as unknown[] } as {
+      usage: ReturnType<typeof usage>;
+      toolUses: unknown[];
+      observedToolCalls?: number;
+    };
+    reconcileObservedCounts(result, { usage: usage(57), toolUses: 51 });
+    assert(result.usage.turns === 57, "a SUCCESSFUL child was under-reported too, and is corrected");
+  }
+
+  {
+    // Never revise downward: a lower live count means we missed events, and
+    // the replay is then the better source.
+    const result = { usage: usage(40), toolUses: [{}] as unknown[] } as {
+      usage: ReturnType<typeof usage>;
+      toolUses: unknown[];
+      observedToolCalls?: number;
+    };
+    reconcileObservedCounts(result, { usage: usage(3), toolUses: 2 });
+    assert(result.usage.turns === 40, "a lower live count does NOT overwrite a higher replay count");
+    assert(
+      result.observedToolCalls === undefined,
+      "...and a replay that already carried tool calls is left alone",
+    );
+  }
+}
+
+// ----------------------------- 4. the park report names the step that failed
 
 {
   // `failedStep` was derived from `lastCompletedStep` — the last step that

@@ -261,25 +261,45 @@ fi
 # bodyTimeout — that is an upstream Pi limitation this setting cannot fully
 # fix.
 #
-# `maxRetryDelayMs` lowered from 60000 to 10000: with 3 retries, the old
-# value added 3 x 60s of backoff on top of per-request timeouts. 10s is
-# sufficient to avoid thundering-herd retries without extending total
-# wall-clock to absurd lengths.
+# `maxRetryDelayMs` restored to Pi's own default of 60000. It had been lowered
+# to 10000 on the reasoning that "with 3 retries, the old value added 3 x 60s
+# of backoff". That reasoning was wrong, in a way worth recording so it is not
+# repeated:
+#
+#   * It is a CEILING, not a delay. Pi's own backoff is
+#     `min(0.5 * 2 ** retryIndex, 8) * 1000` — capped at 8s, i.e. always below
+#     even the 10s ceiling. Raising it to 60000 adds no wall-clock at all
+#     unless a provider explicitly asks us to wait longer.
+#   * It does nothing about thundering herds. It does not spread retries; it
+#     only decides which provider instructions to discard.
+#   * When it discards one, nothing waits. The throw happens inside
+#     `getRetryDelayMs` while COMPUTING the next delay, before any sleep is
+#     reached — so the `maxRetries` budget is never consumed either.
+#
+# Its sole effect, therefore, was to throw away a provider's `retry-after`
+# whenever that exceeded 10s. Providers routinely ask for 59-60s. Measured on
+# one run: three parallel research children and two /work developers all died
+# on `Server requested 59s retry delay (max: 10s). 429 status code`, having
+# gathered ~305k characters of research between them, which was discarded and
+# re-fetched. At 60000 the same 429 is slept through and the work survives.
 #
 # Idempotent + non-clobbering: writes the block only when
-# `retry.provider.timeoutMs` is absent (or null). One exception: a value of
-# exactly 180000 is our own #236 footprint, not an operator choice — repair
-# it to the new default. Any other value is preserved.
+# `retry.provider.timeoutMs` is absent (or null). Two exceptions, both our own
+# footprints rather than operator choices, repaired wherever they are found:
+# `timeoutMs` of exactly 180000 (#236), and `maxRetryDelayMs` of exactly 10000
+# (the value documented above). Any other value is preserved.
 
 PI_AGENT_DIR_INSTALL="${PI_AGENT_DIR:-$HOME/.pi/agent}"
 PI_SETTINGS="$PI_AGENT_DIR_INSTALL/settings.json"
 RETRY_TIMEOUT_MS=600000
+RETRY_MAX_DELAY_MS=60000   # Pi's own default; see the note above before lowering
+RETRY_BAD_MAX_DELAY_MS=10000   # our own past footprint, repaired on sight
 
 if [ -f "$PI_SETTINGS" ]; then
   if ! jq empty "$PI_SETTINGS" >/dev/null 2>&1; then
     echo "!! $PI_SETTINGS is not valid JSON — skipping provider-retry defaults."
     echo "   Fix the file and re-run install.sh, or add manually:"
-    echo "     retry.provider = { timeoutMs: $RETRY_TIMEOUT_MS, maxRetries: 3, maxRetryDelayMs: 10000, httpIdleTimeoutMs: 120000 }"
+    echo "     retry.provider = { timeoutMs: $RETRY_TIMEOUT_MS, maxRetries: 3, maxRetryDelayMs: $RETRY_MAX_DELAY_MS, httpIdleTimeoutMs: 120000 }"
   else
     existing="$(jq -r '.retry.provider.timeoutMs // "null"' "$PI_SETTINGS")"
     if [ "$existing" = "null" ] || [ "$existing" = "180000" ]; then
@@ -290,17 +310,31 @@ if [ -f "$PI_SETTINGS" ]; then
       fi
       echo "    timeoutMs=$RETRY_TIMEOUT_MS (10 min/request), maxRetries=3, httpIdleTimeoutMs=120000"
       tmp="$(mktemp)"
-      jq --argjson t "$RETRY_TIMEOUT_MS" '
+      jq --argjson t "$RETRY_TIMEOUT_MS" --argjson d "$RETRY_MAX_DELAY_MS" '
         .retry //= {} |
         .retry.provider //= {} |
         .retry.provider.timeoutMs = $t |
         .retry.provider.maxRetries //= 3 |
-        .retry.provider.maxRetryDelayMs //= 10000 |
+        .retry.provider.maxRetryDelayMs //= $d |
         .retry.provider.httpIdleTimeoutMs //= 120000
       ' "$PI_SETTINGS" > "$tmp" && mv "$tmp" "$PI_SETTINGS"
       chmod 600 "$PI_SETTINGS"
     else
       echo "==> Keeping existing retry.provider.timeoutMs=$existing in $PI_SETTINGS"
+    fi
+
+    # Repair our own 10000 footprint independently of the branch above. A host
+    # that already had `timeoutMs` set never entered it, so the bad ceiling
+    # survived every re-install — which is exactly how it persisted long enough
+    # to kill five dispatches.
+    bad_delay="$(jq -r '.retry.provider.maxRetryDelayMs // "null"' "$PI_SETTINGS")"
+    if [ "$bad_delay" = "$RETRY_BAD_MAX_DELAY_MS" ]; then
+      echo "==> Repairing provider retry ceiling in $PI_SETTINGS (${RETRY_BAD_MAX_DELAY_MS}ms → ${RETRY_MAX_DELAY_MS}ms)"
+      echo "    At ${RETRY_BAD_MAX_DELAY_MS}ms a provider asking for the usual 59s is discarded without waiting at all."
+      tmp="$(mktemp)"
+      jq --argjson d "$RETRY_MAX_DELAY_MS" '.retry.provider.maxRetryDelayMs = $d' \
+        "$PI_SETTINGS" > "$tmp" && mv "$tmp" "$PI_SETTINGS"
+      chmod 600 "$PI_SETTINGS"
     fi
   fi
 else

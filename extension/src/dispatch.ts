@@ -1,8 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { startBatch, startJob } from "./async-jobs.ts";
+import { type RetryNotice, withProviderBackoff } from "./dispatch-retry.ts";
 import { ROLE_NAMES } from "./roles.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
+import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
 
 const MAX_PARALLEL = 10;
@@ -97,11 +99,15 @@ export function registerDispatchTools(pi: ExtensionAPI) {
         label: spec.role,
         role: spec.role,
         work: (signal, hooks) =>
-          spawnSpecialist(spec, {
-            signal,
-            onProgress: hooks.onProgress,
-            onStdin: hooks.onStdin,
-          }),
+          withProviderBackoff(
+            (sig) =>
+              spawnSpecialist(spec, {
+                signal: sig,
+                onProgress: hooks.onProgress,
+                onStdin: hooks.onStdin,
+              }),
+            { signal, onRetry: (n) => traceRetry(spec.role, n) },
+          ),
       });
       return {
         content: [
@@ -161,14 +167,18 @@ export function registerDispatchTools(pi: ExtensionAPI) {
             label: displayLabel,
             role: spec.role,
             work: (signal, hooks) =>
-              spawnSpecialist(spec, {
-                runId,
-                seq: i,
-                tag,
-                signal,
-                onProgress: hooks.onProgress,
-                onStdin: hooks.onStdin,
-              }),
+              withProviderBackoff(
+                (sig) =>
+                  spawnSpecialist(spec, {
+                    runId,
+                    seq: i,
+                    tag,
+                    signal: sig,
+                    onProgress: hooks.onProgress,
+                    onStdin: hooks.onStdin,
+                  }),
+                { signal, onRetry: (n) => traceRetry(displayLabel, n) },
+              ),
           };
         }),
       });
@@ -183,4 +193,17 @@ export function registerDispatchTools(pi: ExtensionAPI) {
       };
     },
   });
+}
+
+/**
+ * Say out loud that we are waiting rather than failing.
+ *
+ * Silence here would reproduce the original confusion in a new shape: a child
+ * that appears to hang for a minute reads as a stall unless the reason is
+ * visible.
+ */
+function traceRetry(label: string, n: RetryNotice): void {
+  trace(
+    `dispatch: ${label} hit ${n.cause}; waiting ${Math.round(n.waitMs / 1000)}s before attempt ${n.attempt + 1} (the provider asked for it)`,
+  );
 }
