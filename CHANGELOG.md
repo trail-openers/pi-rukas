@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.34](https://github.com/randomm/pi-ensemble/compare/v0.12.33...v0.12.34) (2026-08-12)
+
+
+### Bug Fixes
+
+* **#432:** transient failures were terminal — three defects, all measured ([#433](https://github.com/randomm/pi-ensemble/issues/433)) ([084edeb](https://github.com/randomm/pi-ensemble/commit/084edeb3efcb6af109149ea9ece7bcb63bffe505)), closes [#432](https://github.com/randomm/pi-ensemble/issues/432)
+
 ## [0.12.33](https://github.com/randomm/pi-ensemble/compare/v0.12.32...v0.12.33) (2026-08-11)
 
 
