@@ -51,9 +51,15 @@ const QUOTA = res({
 
 {
   const burst = retryDecision(BURST);
-  assert(burst.retry, "canary: the real 59s 429 is retried — the tool path did nothing at all before");
+  assert(
+    burst.retry,
+    "canary: the real 59s 429 is retried — the tool path did nothing at all before",
+  );
   assert(burst.waitMs === 59_000, `...after the delay the provider stated (${burst.waitMs}ms)`);
-  assert(burst.cause === "rate-limited:burst", "...classified by the same taxonomy the driver uses");
+  assert(
+    burst.cause === "rate-limited:burst",
+    "...classified by the same taxonomy the driver uses",
+  );
 
   const quota = retryDecision(QUOTA);
   assert(!quota.retry, "a ~24h quota window is NOT retried — waiting cannot clear it");
@@ -63,10 +69,7 @@ const QUOTA = res({
     !retryDecision(res({ killCause: "timeout" })).retry,
     "a self-kill is not blamed on the provider, and not retried",
   );
-  assert(
-    !retryDecision(res({ killCause: "abort" })).retry,
-    "a cancelled dispatch is not retried",
-  );
+  assert(!retryDecision(res({ killCause: "abort" })).retry, "a cancelled dispatch is not retried");
 }
 
 // -------------------------------------------------------- the retry loop
@@ -96,7 +99,10 @@ const QUOTA = res({
     waits.every((w) => w > 8_000),
     `each wait exceeds Pi's own 8s backoff ceiling (${waits.join(", ")}ms) — that is the whole point`,
   );
-  assert(notices.length === 2, "each wait is announced, so a paused child does not read as a stall");
+  assert(
+    notices.length === 2,
+    "each wait is announced, so a paused child does not read as a stall",
+  );
 }
 
 {

@@ -222,7 +222,7 @@ const LANTERN_DIFF = `diff --git a/docs/deployment.md b/docs/deployment.md
     (await runClaimScan(exec, "/repo", "feature/x", LANTERN_DIFF)).length === 0,
     "PI_ENSEMBLE_CLAIM_SCAN=0 disables it",
   );
-  if (prev === undefined) delete process.env.PI_ENSEMBLE_CLAIM_SCAN;
+  if (prev === undefined) process.env.PI_ENSEMBLE_CLAIM_SCAN = undefined;
   else process.env.PI_ENSEMBLE_CLAIM_SCAN = prev;
 }
 

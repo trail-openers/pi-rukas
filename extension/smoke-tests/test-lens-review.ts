@@ -9,12 +9,12 @@
  */
 
 import {
+  type Finding,
+  type LensName,
   computeVerdict,
   dedupeFindings,
   extractFindings,
   renderSummary,
-  type Finding,
-  type LensName,
 } from "../src/lens-review.ts";
 
 let exit = 0;
@@ -211,8 +211,21 @@ assert(
 import type { LensRunResult } from "../src/lens-review.ts";
 
 function lensResult(
-  lens: "SECURITY" | "ERROR_HANDLING" | "TYPE_SAFETY" | "PERFORMANCE" | "ARCHITECTURE" | "SIMPLICITY",
-  opts: { ok: boolean; attempts: number; blocked: boolean; parseError?: string; findings?: typeof mk extends (...a: never[]) => infer F ? F[] : never },
+  lens:
+    | "SECURITY"
+    | "ERROR_HANDLING"
+    | "TYPE_SAFETY"
+    | "PERFORMANCE"
+    | "ARCHITECTURE"
+    | "SIMPLICITY",
+  opts: {
+    ok: boolean;
+    attempts: number;
+    blocked: boolean;
+    parseError?: string;
+    summary?: string;
+    findings?: typeof mk extends (...a: never[]) => infer F ? F[] : never;
+  },
 ): LensRunResult {
   return {
     lens,
@@ -222,6 +235,10 @@ function lensResult(
     attempts: opts.attempts,
     blocked: opts.blocked,
     parseError: opts.parseError,
+    // A lens that ran reports back — findings, a closing summary, or both. The
+    // silent case is a defect with its own coverage in test-lens-silence.ts;
+    // these fixtures model lenses that worked, so they say something.
+    summary: opts.summary ?? "Reviewed the diff for this lens.",
   };
 }
 
@@ -329,7 +346,9 @@ function lensResult(
     "blocked-lens banner does NOT reference AGENTS.md (#327)",
   );
   assert(
-    rendered.includes("Re-dispatch dispatch_lens_review to retry, or override and proceed despite the incomplete review"),
+    rendered.includes(
+      "Re-dispatch dispatch_lens_review to retry, or override and proceed despite the incomplete review",
+    ),
     "blocked-lens banner states the available user choices without external doc references",
   );
 }

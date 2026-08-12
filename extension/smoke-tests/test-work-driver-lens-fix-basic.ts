@@ -200,10 +200,7 @@ setupSpawnGuard();
     const lensFixCompleted = events.find(
       (e) => e.kind === "dispatch-completed" && e.step === "lens-fix",
     );
-    assert(
-      lensFixCompleted !== undefined && lensFixCompleted.ok,
-      "lens-fix dispatch completed successfully",
-    );
+    assert(lensFixCompleted?.ok, "lens-fix dispatch completed successfully");
 
     // Verify the driver committed (extra commit after lens-fix).
     const { stdout: afterLog } = await execp("git rev-list --count origin/main..HEAD", {

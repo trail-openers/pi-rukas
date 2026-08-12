@@ -94,7 +94,10 @@ const root3 = await fs.mkdtemp(path.join(os.tmpdir(), "pi-ensemble-prune-"));
 await makeFakeRun(root3, today, "x-abc", ["explore"], 24 * 60 * 60 * 1000);
 {
   const s = await pruneOldRuns(root3, 0);
-  assert(s.deletedBatches === 0 && s.totalBatches === 0, "keepLast=0 → no-op (returns zeros without scanning)");
+  assert(
+    s.deletedBatches === 0 && s.totalBatches === 0,
+    "keepLast=0 → no-op (returns zeros without scanning)",
+  );
 }
 {
   const s = await pruneOldRuns(root3, -1);

@@ -15,7 +15,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type DriverContext } from "../src/work-driver-context.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { type WorkEvent, initialState, readState, writeState } from "../src/workflow-state.ts";
 
@@ -422,7 +422,7 @@ async function seedAdversarialState(
     } finally {
       // Restore env.
       if (origSkip === undefined) {
-        delete process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP;
+        process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = undefined;
       } else {
         process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = origSkip;
       }

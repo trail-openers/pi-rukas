@@ -15,7 +15,7 @@
  * PI_ENSEMBLE_SMOKE).
  */
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 
 const HARD_LIMIT = 500;

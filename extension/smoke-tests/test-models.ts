@@ -32,9 +32,9 @@ function assert(cond: boolean, msg: string) {
 const savedSub = process.env.PI_ENSEMBLE_SUBAGENT_MODEL;
 const savedRoleDev = process.env.PI_ENSEMBLE_MODEL_DEVELOPER;
 const savedRoleAdv = process.env.PI_ENSEMBLE_MODEL_ADVERSARIAL_DEVELOPER;
-delete process.env.PI_ENSEMBLE_SUBAGENT_MODEL;
-delete process.env.PI_ENSEMBLE_MODEL_DEVELOPER;
-delete process.env.PI_ENSEMBLE_MODEL_ADVERSARIAL_DEVELOPER;
+process.env.PI_ENSEMBLE_SUBAGENT_MODEL = undefined;
+process.env.PI_ENSEMBLE_MODEL_DEVELOPER = undefined;
+process.env.PI_ENSEMBLE_MODEL_ADVERSARIAL_DEVELOPER = undefined;
 
 // 1. No env, no override → Pi default
 {
@@ -157,7 +157,7 @@ const savedSubProvider = process.env.PI_ENSEMBLE_SUBAGENT_PROVIDER;
 
 // 12. PI_ENSEMBLE_PROVIDER_<ROLE> alone (without paired MODEL) is ignored at that tier
 {
-  delete process.env.PI_ENSEMBLE_MODEL_DEVELOPER;
+  process.env.PI_ENSEMBLE_MODEL_DEVELOPER = undefined;
   // PROVIDER still set from test 11
   process.env.PI_ENSEMBLE_SUBAGENT_MODEL = "fallback/model";
   const r = resolveModel("developer");
@@ -166,8 +166,8 @@ const savedSubProvider = process.env.PI_ENSEMBLE_SUBAGENT_PROVIDER;
     r.source === "subagent-env" && r.model === "fallback/model",
     "PI_ENSEMBLE_PROVIDER_DEVELOPER alone falls through to subagent-env tier",
   );
-  delete process.env.PI_ENSEMBLE_PROVIDER_DEVELOPER;
-  delete process.env.PI_ENSEMBLE_SUBAGENT_MODEL;
+  process.env.PI_ENSEMBLE_PROVIDER_DEVELOPER = undefined;
+  process.env.PI_ENSEMBLE_SUBAGENT_MODEL = undefined;
 }
 
 // 13. PI_ENSEMBLE_SUBAGENT_PROVIDER pairs with PI_ENSEMBLE_SUBAGENT_MODEL
@@ -179,8 +179,8 @@ const savedSubProvider = process.env.PI_ENSEMBLE_SUBAGENT_PROVIDER;
     r.provider === "my-vllm" && r.model === "vendor/some-model" && r.source === "subagent-env",
     "PI_ENSEMBLE_SUBAGENT_PROVIDER pairs with PI_ENSEMBLE_SUBAGENT_MODEL",
   );
-  delete process.env.PI_ENSEMBLE_SUBAGENT_PROVIDER;
-  delete process.env.PI_ENSEMBLE_SUBAGENT_MODEL;
+  process.env.PI_ENSEMBLE_SUBAGENT_PROVIDER = undefined;
+  process.env.PI_ENSEMBLE_SUBAGENT_MODEL = undefined;
 }
 
 // 14. Legacy string-form ensemble-models.json entry still loads (backwards compat).
@@ -270,17 +270,17 @@ const savedSubProvider = process.env.PI_ENSEMBLE_SUBAGENT_PROVIDER;
 
 // Restore provider env vars
 if (savedRoleDevProvider) process.env.PI_ENSEMBLE_PROVIDER_DEVELOPER = savedRoleDevProvider;
-else delete process.env.PI_ENSEMBLE_PROVIDER_DEVELOPER;
+else process.env.PI_ENSEMBLE_PROVIDER_DEVELOPER = undefined;
 if (savedSubProvider) process.env.PI_ENSEMBLE_SUBAGENT_PROVIDER = savedSubProvider;
-else delete process.env.PI_ENSEMBLE_SUBAGENT_PROVIDER;
+else process.env.PI_ENSEMBLE_SUBAGENT_PROVIDER = undefined;
 
 // Restore env
 if (savedSub) process.env.PI_ENSEMBLE_SUBAGENT_MODEL = savedSub;
-else delete process.env.PI_ENSEMBLE_SUBAGENT_MODEL;
+else process.env.PI_ENSEMBLE_SUBAGENT_MODEL = undefined;
 if (savedRoleDev) process.env.PI_ENSEMBLE_MODEL_DEVELOPER = savedRoleDev;
-else delete process.env.PI_ENSEMBLE_MODEL_DEVELOPER;
+else process.env.PI_ENSEMBLE_MODEL_DEVELOPER = undefined;
 if (savedRoleAdv) process.env.PI_ENSEMBLE_MODEL_ADVERSARIAL_DEVELOPER = savedRoleAdv;
-else delete process.env.PI_ENSEMBLE_MODEL_ADVERSARIAL_DEVELOPER;
+else process.env.PI_ENSEMBLE_MODEL_ADVERSARIAL_DEVELOPER = undefined;
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

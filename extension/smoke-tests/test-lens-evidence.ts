@@ -160,7 +160,7 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-lens-evidence-"));
     (await buildEvidence(repo, "feature/x", diff)) === undefined,
     "PI_ENSEMBLE_LENS_EVIDENCE=0 disables supply",
   );
-  if (prev === undefined) delete process.env.PI_ENSEMBLE_LENS_EVIDENCE;
+  if (prev === undefined) process.env.PI_ENSEMBLE_LENS_EVIDENCE = undefined;
   else process.env.PI_ENSEMBLE_LENS_EVIDENCE = prev;
 }
 
@@ -259,7 +259,7 @@ const docs = (text: string): DoctrineDoc[] => [{ file: "AGENTS.md", text }];
       "MEDIUM",
     "a nonsense override is ignored rather than obeyed",
   );
-  if (prev === undefined) delete process.env.PI_ENSEMBLE_REVIEW_THRESHOLD;
+  if (prev === undefined) process.env.PI_ENSEMBLE_REVIEW_THRESHOLD = undefined;
   else process.env.PI_ENSEMBLE_REVIEW_THRESHOLD = prev;
 }
 

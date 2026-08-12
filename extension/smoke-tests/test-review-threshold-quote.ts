@@ -31,8 +31,7 @@ function assert(cond: boolean, msg: string) {
 }
 
 const S1 = "Six-pass review findings are blocking at MEDIUM severity and above.";
-const FULL =
-  `${S1} The fix loop continues until all MEDIUM, HIGH, and CRITICAL findings are resolved — there is no round cap for these severities. Only LOW findings may be deferred or overridden with user confirmation.`;
+const FULL = `${S1} The fix loop continues until all MEDIUM, HIGH, and CRITICAL findings are resolved — there is no round cap for these severities. Only LOW findings may be deferred or overridden with user confirmation.`;
 
 // ------------------------------------- this repo's own doctrine, both quotes
 

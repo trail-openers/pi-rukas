@@ -15,6 +15,7 @@ import { trace } from "./trace.ts";
 import { mechanizedBranchSetup } from "./work-driver-branch-mechanized.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { parseBranchName } from "./work-driver-diff.ts";
+import { resolvedTheMainline } from "./work-driver-git.ts";
 import { cachedIssueTitle } from "./work-driver-integrate.ts";
 import { buildCompletionEvent, runSingleDispatch } from "./work-driver-merged.ts";
 import { sliceMarkdownSection } from "./work-driver-plan.ts";
@@ -156,6 +157,18 @@ export async function runBranch(
   // Determine the branch name: git-resolved (source of truth), fallback to
   // parsed reply if git is unavailable.
   const branch = actualBranch ?? reportedBranch;
+  if (await resolvedTheMainline(ctx.repoRoot, execFn, branch)) {
+    trace(
+      `work-driver: branch step resolved the mainline (${branch}) as the cycle branch — halting`,
+    );
+    return appendEvent(next, {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "step-failed:branch",
+      reviewRound: next.pipelineState.reviewRound,
+      nextStep: "handoff",
+    });
+  }
   // #292 — emit a plumb-report if reported-vs-actual mismatch.
   if (actualBranch && reportedBranch && actualBranch !== reportedBranch) {
     const body = [
@@ -289,15 +302,10 @@ export async function runDevelop(
   const dispatch = ctx.dispatchFn ?? dispatchCore;
   const scratchAbs = scratchDir(ctx.repoRoot, ctx.issue);
   // PR4 Pattern 3: speculative just-in-time explore alongside each developer.
-  // Wall-clock cost is the developer's elapsed (always longer than explore);
-  // token cost is one extra explore per workstream. Opt-out via env var for
-  // budget-sensitive users.
-  // The speculative explore doubles develop's fanout — one extra child per
-  // workstream — for what the comment above calls best-effort observability.
-  // Fair for a single cycle; under a pool it is the difference between M and
-  // 2M children per cycle, multiplied by the concurrency. So: on at
-  // concurrency 1, off when groups run concurrently, and the env var wins
-  // either way.
+  // Free in wall-clock (the developer always runs longer) but it doubles
+  // develop's fanout — M children become 2M, multiplied by the group
+  // concurrency. So: on at concurrency 1, off when groups run concurrently,
+  // and the env var wins either way.
   const speculativeEnv = process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE;
   const speculativeOn =
     speculativeEnv === "0" ? true : speculativeEnv === "1" ? false : (ctx.parallelCycles ?? 1) <= 1;

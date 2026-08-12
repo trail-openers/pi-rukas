@@ -238,7 +238,10 @@ Add a retry.
   // Recording assumptions while claiming a plain `proceed` understates what
   // review needs to see.
   const s = resolve(
-    "INTENT-VERDICT: proceed\n\n## Spec\n\n### Intent\nx\n\n### Assumptions\n- assumed a default — no basis given\n",
+    // A deliverable is present because a real `proceed` reply carries one —
+    // see fixtures/explore-replies/337.txt. Without it the spec is not
+    // actionable and parks before promotion, which is a different test.
+    "INTENT-VERDICT: proceed\n\n## Spec\n\n### Intent\nx\n\n### Deliverables\n- d1: do the thing [paths: src/a.ts]\n\n### Assumptions\n- assumed a default — no basis given\n",
   );
   assert(
     s?.verdict === "proceed-with-assumptions",
@@ -415,7 +418,7 @@ const COMPLETE = (parkReason: string) =>
   try {
     assert(!intentResolutionEnabled(), "PI_ENSEMBLE_INTENT=0 disables intent resolution");
   } finally {
-    if (prev === undefined) delete process.env.PI_ENSEMBLE_INTENT;
+    if (prev === undefined) process.env.PI_ENSEMBLE_INTENT = undefined;
     else process.env.PI_ENSEMBLE_INTENT = prev;
   }
   assert(intentResolutionEnabled(), "and it is ON by default");

@@ -358,10 +358,7 @@ async function nextTick() {
   });
 
   // Before markOrchestrator: it's just a normal single dispatch.
-  assert(
-    isOrchestratorJob(jobId) === false,
-    "isOrchestratorJob: false before markOrchestrator",
-  );
+  assert(isOrchestratorJob(jobId) === false, "isOrchestratorJob: false before markOrchestrator");
   assert(
     getOrchestratorActiveChild(jobId) === undefined,
     "getOrchestratorActiveChild: undefined before any registration",
@@ -416,7 +413,10 @@ async function nextTick() {
     }),
   });
   const active2 = getOrchestratorActiveChild(jobId);
-  assert(active2?.label === "developer[round1-fix]", "active child replaced atomically on round transition");
+  assert(
+    active2?.label === "developer[round1-fix]",
+    "active child replaced atomically on round transition",
+  );
 
   // Clearing (between rounds, or on orchestrator settle).
   setOrchestratorActiveChild(jobId, null);

@@ -40,7 +40,7 @@ if (eventCount < 2) {
   process.exit(1);
 }
 if (!r.ok) {
-  console.error(`✗ child did not exit cleanly`);
+  console.error("✗ child did not exit cleanly");
   process.exit(1);
 }
 console.log("✓ live progress test passed");

@@ -47,7 +47,9 @@ const result = await spawnSpecialist({
   prompt: "Reply with exactly the word PONG. Nothing else.",
 });
 
-console.log(`[test] spawn returned in ${result.ms}ms, ok=${result.ok}, exitCode=${result.exitCode}`);
+console.log(
+  `[test] spawn returned in ${result.ms}ms, ok=${result.ok}, exitCode=${result.exitCode}`,
+);
 
 assert(result.ok === true, "spawnSpecialist returned ok=true");
 assert(result.exitCode === 0, "exitCode is 0");
@@ -56,13 +58,17 @@ assert(typeof result.transcriptPath === "string", "transcriptPath is set");
 // Read the transcript (JSONL events).
 const transcript = result.transcriptPath ?? "";
 const raw = readFileSync(transcript, "utf8");
-const events: Array<{ type?: string; message?: Record<string, unknown>; messages?: unknown[] }> = raw
-  .split("\n")
-  .filter((l) => l.trim().length > 0)
-  .map((l) => JSON.parse(l));
+const events: Array<{ type?: string; message?: Record<string, unknown>; messages?: unknown[] }> =
+  raw
+    .split("\n")
+    .filter((l) => l.trim().length > 0)
+    .map((l) => JSON.parse(l));
 
 console.log(`[test] transcript has ${events.length} events`);
-assert(events.length >= 3, "transcript contains at least 3 events (session + at least one message + close)");
+assert(
+  events.length >= 3,
+  "transcript contains at least 3 events (session + at least one message + close)",
+);
 
 // 1. agent_end shape (load-bearing for --mode rpc done-detection in #152).
 //    Note: Pi's session transcript may or may not include `agent_end` —
@@ -92,7 +98,10 @@ const msg = (assistantTurn?.message ?? {}) as {
   usage?: { input?: unknown; output?: unknown; cacheRead?: unknown; cacheWrite?: unknown };
 };
 
-assert(typeof msg.model === "string" && msg.model.length > 0, "assistant message has non-empty `model` field");
+assert(
+  typeof msg.model === "string" && msg.model.length > 0,
+  "assistant message has non-empty `model` field",
+);
 assert(typeof msg.usage === "object" && msg.usage !== null, "assistant message has `usage` object");
 assert(typeof msg.usage?.input === "number", "usage.input is a number");
 assert(typeof msg.usage?.output === "number", "usage.output is a number");
@@ -116,7 +125,9 @@ assert(
   `result.text contains PONG (actual preview: "${result.text.slice(0, 60)}")`,
 );
 
-console.log(`\n[test] pinned Pi version: ${process.env.npm_package_devDependencies__earendil_works_pi_coding_agent ?? "(read from package.json)"}`);
+console.log(
+  `\n[test] pinned Pi version: ${process.env.npm_package_devDependencies__earendil_works_pi_coding_agent ?? "(read from package.json)"}`,
+);
 console.log(`[test] transcript: ${transcript}`);
 console.log(`\nexit ${exit}`);
 process.exit(exit);

@@ -73,10 +73,7 @@ const state = (cap: string, extra: unknown[] = []): WorkState =>
     md.includes(FINDING),
     "canary: the actual blocking finding is in the comment — an operator had to read transcripts for this",
   );
-  assert(
-    /What the reviewer objected to/.test(md),
-    "...under a heading that says what it is",
-  );
+  assert(/What the reviewer objected to/.test(md), "...under a heading that says what it is");
 }
 
 // --------------------------------- a lens cap still reports the lens counter
@@ -89,10 +86,7 @@ const state = (cap: string, extra: unknown[] = []): WorkState =>
     /\*\*Rounds\*\*: 2 of 3 review rounds/.test(md),
     "a lens-review cap still reports the review round — the fix is targeted, not a blanket rewrite",
   );
-  assert(
-    !/adversarial round/.test(md),
-    "...and does not claim adversarial rounds it never ran",
-  );
+  assert(!/adversarial round/.test(md), "...and does not claim adversarial rounds it never ran");
 }
 
 // ------------------------------------------------- degrading without evidence

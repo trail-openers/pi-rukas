@@ -37,7 +37,6 @@ function assert(cond: boolean, msg: string) {
 // What remains here is the half that never depended on parsing — the
 // executed-evidence gate, and how a hold is explained to the operator.
 
-
 // -------------------------------------------------------- evidence
 
 type Call = { cmd: string };
@@ -221,7 +220,7 @@ const passing = (name: string) => ({ name, state: "SUCCESS", bucket: "pass", isR
   try {
     assert(!mergeAuthorityEnabled(), "PI_ENSEMBLE_MERGE_AUTHORITY=0 restores pre-#380 behaviour");
   } finally {
-    if (prev === undefined) delete process.env.PI_ENSEMBLE_MERGE_AUTHORITY;
+    if (prev === undefined) process.env.PI_ENSEMBLE_MERGE_AUTHORITY = undefined;
     else process.env.PI_ENSEMBLE_MERGE_AUTHORITY = prev;
   }
   assert(mergeAuthorityEnabled(), "and the gate is ON by default");

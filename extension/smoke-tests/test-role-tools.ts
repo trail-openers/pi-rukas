@@ -11,9 +11,9 @@
  * Also retains the direct map assertions for role-tools.ts itself.
  */
 
-import { buildChildArgs } from "../src/spawn.ts";
-import { type ResolvedModelChoice } from "../src/models.ts";
+import type { ResolvedModelChoice } from "../src/models.ts";
 import { excludeToolListFor, excludeToolsFor } from "../src/role-tools.ts";
+import { buildChildArgs } from "../src/spawn.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -34,7 +34,11 @@ function excludeToolsValueFromArgs(args: string[]): string | undefined {
 // Shared test fixtures.
 const TEST_PROMPT = "/tmp/pi-ensemble-test-prompt.md";
 const TEST_TRANSCRIPT = "/tmp/pi-ensemble-test-transcript.json";
-const TEST_MODEL: ResolvedModelChoice = { provider: undefined, model: undefined, source: "default" };
+const TEST_MODEL: ResolvedModelChoice = {
+  provider: undefined,
+  model: undefined,
+  source: "default",
+};
 
 // ============================================================
 // CHILD ARGV ASSERTIONS — the fix for #339
@@ -98,14 +102,10 @@ const TEST_MODEL: ResolvedModelChoice = { provider: undefined, model: undefined,
 
 // 6. extraArgs are appended.
 {
-  const args = buildChildArgs(
-    "developer",
-    TEST_PROMPT,
-    TEST_TRANSCRIPT,
-    TEST_MODEL,
-    false,
-    ["--extra-flag", "value"],
-  );
+  const args = buildChildArgs("developer", TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, false, [
+    "--extra-flag",
+    "value",
+  ]);
   assert(args.includes("--extra-flag"), "child argv includes extraArgs");
   assert(args[args.indexOf("--extra-flag") + 1] === "value", "extraArgs value is correct");
 }
@@ -136,7 +136,10 @@ const TEST_MODEL: ResolvedModelChoice = { provider: undefined, model: undefined,
       `${role}: empty exclude list (developer/ops legitimately need write/edit)`,
     );
     const csv = excludeToolsFor(role);
-    assert(csv === undefined, `${role}: excludeToolsFor returns undefined (spawn.ts skips the flag)`);
+    assert(
+      csv === undefined,
+      `${role}: excludeToolsFor returns undefined (spawn.ts skips the flag)`,
+    );
   }
 }
 

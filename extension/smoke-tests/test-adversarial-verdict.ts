@@ -40,10 +40,7 @@ const MAX = 3;
 
 {
   assert(parseVerdict("VERDICT: APPROVED").status === "APPROVED", "APPROVED parses");
-  assert(
-    parseVerdict("VERDICT: ISSUES_FOUND").status === "ISSUES_FOUND",
-    "ISSUES_FOUND parses",
-  );
+  assert(parseVerdict("VERDICT: ISSUES_FOUND").status === "ISSUES_FOUND", "ISSUES_FOUND parses");
   assert(
     parseVerdict("VERDICT: MINOR_OBSERVATIONS").status === "MINOR_OBSERVATIONS",
     "canary: MINOR_OBSERVATIONS parses — the prompt's own non-blocking verdict, absent from the enum before this",
@@ -137,7 +134,10 @@ const MAX = 3;
     decideLoopAction("MINOR_OBSERVATIONS", 1, MAX, true) === "pass",
     "MINOR_OBSERVATIONS passes immediately — 'author's discretion'",
   );
-  assert(decideLoopAction("ISSUES_FOUND", 1, MAX, true) === "fix", "ISSUES_FOUND earns a fix round");
+  assert(
+    decideLoopAction("ISSUES_FOUND", 1, MAX, true) === "fix",
+    "ISSUES_FOUND earns a fix round",
+  );
   assert(
     decideLoopAction("CRITICAL_ISSUES_FOUND", 1, MAX, true) === "fix",
     "CRITICAL_ISSUES_FOUND earns a fix round",
@@ -197,18 +197,18 @@ const MAX = 3;
   const path = await import("node:path");
   const ROOT = path.resolve(import.meta.dirname, "..", "..");
 
-  const doctrine = readFileSync(
-    path.join(ROOT, "agents-base", "adversarial-developer.md"),
-    "utf8",
-  );
-  const src = readFileSync(
-    path.join(ROOT, "extension", "src", "adversarial-verdict.ts"),
-    "utf8",
-  );
+  const doctrine = readFileSync(path.join(ROOT, "agents-base", "adversarial-developer.md"), "utf8");
+  const src = readFileSync(path.join(ROOT, "extension", "src", "adversarial-verdict.ts"), "utf8");
 
   const menu = doctrine.match(/VERDICT:\s*\[([A-Z_|\s]+)\]/);
-  const tokens = (menu?.[1] ?? "").split("|").map((t) => t.trim()).filter(Boolean);
-  assert(tokens.length === 4, `the doctrine offers ${tokens.length} verdicts: ${tokens.join(", ")}`);
+  const tokens = (menu?.[1] ?? "")
+    .split("|")
+    .map((t) => t.trim())
+    .filter(Boolean);
+  assert(
+    tokens.length === 4,
+    `the doctrine offers ${tokens.length} verdicts: ${tokens.join(", ")}`,
+  );
   const missing = tokens.filter((t) => !src.includes(t));
   assert(
     missing.length === 0,

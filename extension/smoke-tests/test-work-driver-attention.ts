@@ -13,11 +13,7 @@
  * no review-cap timer, and a branch the driver knew nothing about.
  */
 
-import {
-  ATTENTION_LABEL,
-  judgeAttention,
-  parseLabels,
-} from "../src/work-driver-attention.ts";
+import { ATTENTION_LABEL, judgeAttention, parseLabels } from "../src/work-driver-attention.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -32,7 +28,10 @@ function assert(cond: boolean, msg: string) {
 
 {
   const v = judgeAttention(664, ["bug", ATTENTION_LABEL, "P1"]);
-  assert(v.refuse, "canary: a flagged issue is refused — before this it ran the full pipeline again");
+  assert(
+    v.refuse,
+    "canary: a flagged issue is refused — before this it ran the full pipeline again",
+  );
   assert(v.checked, "...and the check is recorded as having run");
   assert(/--restart/.test(v.message ?? ""), "the message names the override that clears it");
   assert(
@@ -101,6 +100,30 @@ function assert(cond: boolean, msg: string) {
   assert(
     noLabels.checked && !noLabels.refuse,
     "'no labels' is a CHECKED pass, distinct from an unreadable one",
+  );
+}
+
+// ------------------------------ every issue in the group, not just the primary
+
+{
+  // `claimCycle(ctx.issue, ctx.issues)` keys the in-process registry on every
+  // issue in the group. This check was written on the adjacent line in the same
+  // PR and keyed on the primary alone, so a grouped cycle for #10+#11 where
+  // #11 carried the label started anyway — the exact case the label exists to
+  // stop, surviving in the grouped path.
+  //
+  // `judgeAttention` is per-issue by construction; what follows asserts the
+  // contract the caller must honour, so a future refactor cannot quietly drop
+  // the group again.
+  const flagged = judgeAttention(11, [ATTENTION_LABEL]);
+  assert(flagged.refuse, "a non-primary issue's label is judged the same as a primary's");
+  assert(
+    (flagged.message ?? "").includes("#11"),
+    "canary: the refusal names the issue that is actually flagged (#11), not the cycle's primary",
+  );
+  assert(
+    (flagged.message ?? "").includes("/work 11 --restart"),
+    "...and the recovery command targets that issue",
   );
 }
 

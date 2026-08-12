@@ -202,7 +202,10 @@ const fanOutTail = (opts: { anySucceeded: boolean }): WorkEvent[] =>
       observedToolCalls?: number;
     };
     reconcileObservedCounts(result, { usage: usage(63), toolUses: 41 });
-    assert(result.usage.turns === 63, `canary: 1 turn becomes the real 63 (got ${result.usage.turns})`);
+    assert(
+      result.usage.turns === 63,
+      `canary: 1 turn becomes the real 63 (got ${result.usage.turns})`,
+    );
     assert(result.observedToolCalls === 41, "...and the 41 tool calls are recorded");
   }
 
@@ -216,7 +219,10 @@ const fanOutTail = (opts: { anySucceeded: boolean }): WorkEvent[] =>
       observedToolCalls?: number;
     };
     reconcileObservedCounts(result, { usage: usage(57), toolUses: 51 });
-    assert(result.usage.turns === 57, "a SUCCESSFUL child was under-reported too, and is corrected");
+    assert(
+      result.usage.turns === 57,
+      "a SUCCESSFUL child was under-reported too, and is corrected",
+    );
   }
 
   {
@@ -228,7 +234,10 @@ const fanOutTail = (opts: { anySucceeded: boolean }): WorkEvent[] =>
       observedToolCalls?: number;
     };
     reconcileObservedCounts(result, { usage: usage(3), toolUses: 2 });
-    assert(result.usage.turns === 40, "a lower live count does NOT overwrite a higher replay count");
+    assert(
+      result.usage.turns === 40,
+      "a lower live count does NOT overwrite a higher replay count",
+    );
     assert(
       result.observedToolCalls === undefined,
       "...and a replay that already carried tool calls is left alone",

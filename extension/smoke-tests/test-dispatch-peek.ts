@@ -101,12 +101,7 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
 
 // 5. lastText longer than 200 chars is truncated + flattened.
 {
-  const longText =
-    "x".repeat(50) +
-    "\n" +
-    "y".repeat(50) +
-    " z\nw\n" +
-    "tail".repeat(40);
+  const longText = `${"x".repeat(50)}\n${"y".repeat(50)} z\nw\n${"tail".repeat(40)}`;
   const out = renderPeek([
     {
       key: "k",
@@ -163,11 +158,23 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
     }),
   };
   const out = renderOrchestratorPeek("loop-xyz123", entry);
-  assert(out.includes("orchestrator 'loop-xyz123'"), "renderOrchestratorPeek names the orchestrator jobId");
-  assert(out.includes("active inner child"), "renderOrchestratorPeek labels the row as the active inner child");
-  assert(out.includes("adversarial-developer[round2-review]"), "renderOrchestratorPeek shows the inner child's label");
+  assert(
+    out.includes("orchestrator 'loop-xyz123'"),
+    "renderOrchestratorPeek names the orchestrator jobId",
+  );
+  assert(
+    out.includes("active inner child"),
+    "renderOrchestratorPeek labels the row as the active inner child",
+  );
+  assert(
+    out.includes("adversarial-developer[round2-review]"),
+    "renderOrchestratorPeek shows the inner child's label",
+  );
   assert(out.includes("4 turns"), "renderOrchestratorPeek carries the active child's turn count");
-  assert(out.includes('last said: "Reviewing the diff'), "renderOrchestratorPeek includes the active child's last text");
+  assert(
+    out.includes('last said: "Reviewing the diff'),
+    "renderOrchestratorPeek includes the active child's last text",
+  );
 }
 
 console.log(`\nexit ${exit}`);

@@ -228,6 +228,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<void> {
   {
     const attention = await checkAttentionLabel(ctx.repoRoot, ctx.issue, {
       restart: ctx.restart === true,
+      issues: ctx.issues,
     });
     if (attention.refuse && attention.message) {
       notifyAgent(ctx.pi, attention.message);

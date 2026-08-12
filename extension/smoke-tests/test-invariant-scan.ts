@@ -5,8 +5,8 @@
  * and fires correctly on fixture diffs. All tests are offline (no CI, no LLM).
  */
 
-import { scanTypeWidening } from "../src/invariant-scan.ts";
 import assert from "node:assert/strict";
+import { scanTypeWidening } from "../src/invariant-scan.ts";
 
 /** Rust option widening (vipune ea8c836 shape: `T` → `Option<T>` or `T?`) */
 function testRustOptionWidening() {
@@ -411,7 +411,6 @@ export async function run() {
   testLineNumberTracking();
   console.log("\n✓ All invariant-scan tests passed");
 }
-
 
 // The invocation. Without it this file defines its tests and executes none:
 // `bun run` prints nothing and exits 0, so the suite counted it as passing

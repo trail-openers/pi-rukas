@@ -70,14 +70,44 @@ export async function verifyConsolidation(
       // No paths declared → can't verify; skip (don't false-alarm).
       continue;
     }
-    const anyPresent = ws.paths.some((p) =>
-      Array.from(changedFiles).some((f) => f === p || f.startsWith(`${p}/`)),
-    );
+    const anyPresent = ws.paths.some((raw) => {
+      const p = normaliseDeclaredPath(raw);
+      if (!p) return false;
+      return Array.from(changedFiles).some((f) => f === p || f.startsWith(`${p}/`));
+    });
     if (!anyPresent) {
       missing.push({ id, paths: ws.paths });
     }
   }
   return { missing };
+}
+
+/**
+ * A declared path as `git` would spell it.
+ *
+ * `paths` is prose from the plan step, not `git` output, and — measured across
+ * the real state files on this host — it carries annotations the planner added
+ * for a human reader:
+ *
+ *     "extension/src/work-driver-verify-cmd.ts (new)"
+ *     "extension/src/role-tools.ts (no changes)"
+ *
+ * Compared by exact equality against `git diff --name-only`, neither ever
+ * matches, so the workstream reads as MISSING even when its files changed. The
+ * failure is one-directional — a false alarm at commit-pr, never a false pass —
+ * which is why it went unnoticed.
+ *
+ * A trailing parenthetical is stripped; one INSIDE a name ("notes (draft).md")
+ * is not, because that is a real filename.
+ */
+export function normaliseDeclaredPath(raw: string): string {
+  return raw
+    .trim()
+    .replace(/\s*\([^()]*\)\s*$/, "")
+    .replace(/^[`*\s]+|[`*\s]+$/g, "")
+    .replace(/^\.\//, "")
+    .replace(/\/+$/, "")
+    .trim();
 }
 
 /** PR17 — escape hatch: PI_ENSEMBLE_VERIFY=0 disables the outcome gate. */
@@ -118,6 +148,48 @@ function verifyGateEnabled(): boolean {
  * erroring at repoRoot) are notes, not failures — same no-false-alarm
  * stance as verifyConsolidation.
  */
+/** The fields of `gh pr view --json state,headRefName` this gate reads. */
+export interface PrView {
+  state?: string;
+  headRefName?: string;
+}
+
+/**
+ * Is this the PR this cycle opened?
+ *
+ * Fails CLOSED on anything unreadable. Unlike the review threshold — where
+ * silent doctrine is the normal case and the default applies — this guards the
+ * one irreversible act in the cycle, so an answer it cannot understand is a
+ * refusal rather than a shrug.
+ */
+export function judgePrIdentity(
+  branchName: string | undefined,
+  view: PrView | undefined,
+): { ok: true } | { ok: false; failure: string } {
+  if (!branchName) {
+    return { ok: false, failure: "cannot be bound to this cycle: no branch was recorded" };
+  }
+  if (!view?.headRefName) {
+    return {
+      ok: false,
+      failure: "returned no headRefName, so it cannot be bound to this cycle's branch",
+    };
+  }
+  if (view.headRefName !== branchName) {
+    return {
+      ok: false,
+      failure: `is opened against \`${view.headRefName}\`, not this cycle's branch \`${branchName}\` — the number does not belong to this cycle`,
+    };
+  }
+  if (view.state !== "OPEN") {
+    return {
+      ok: false,
+      failure: `is ${view.state ?? "in an unreported state"}, not OPEN — there is nothing here left to merge`,
+    };
+  }
+  return { ok: true };
+}
+
 export async function verifyStepOutcome(
   ctx: DriverContext,
   state: WorkState,
@@ -185,16 +257,29 @@ export async function verifyStepOutcome(
     }
   }
   if (prToCheck !== undefined) {
+    // The number may have come from an ops child's reply. Asking whether it
+    // resolves proves only that SOME PR has that number — in a busy repo the
+    // numbers around a real PR are all live PRs, so a plausible mistake is a
+    // valid one. Bind it to the branch instead: that is driver-computed, and
+    // `gh pr create --head` opened the PR against exactly it.
+    let view: PrView | undefined;
     try {
-      await execFn(`gh pr view ${prToCheck} --json state`, {
+      const { stdout } = await execFn(`gh pr view ${prToCheck} --json state,headRefName`, {
         cwd: ctx.repoRoot,
         maxBuffer: 256 * 1024,
       });
+      view = JSON.parse(stdout) as PrView;
     } catch (err) {
       const e = err as Error & { stderr?: string };
       failures.push(
         `PR #${prToCheck} does not resolve via \`gh pr view\`: ${(e.stderr ?? e.message ?? "").slice(0, 200)}`,
       );
+    }
+    if (view !== undefined) {
+      const identity = judgePrIdentity(state.pipelineState.branchName, view);
+      if (!identity.ok && identity.failure) {
+        failures.push(`PR #${prToCheck} ${identity.failure}`);
+      }
     }
   }
   return { ok: failures.length === 0, failures, notes, adoptedPrNumber };

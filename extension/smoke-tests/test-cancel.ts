@@ -80,10 +80,7 @@ const savedInactivity = process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS;
   process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
   console.log("\n[test] silent fake child, 2000ms inactivity budget...");
   const start = Date.now();
-  const r = await spawnSpecialist(
-    { role: "explore", prompt: "irrelevant" },
-    { timeoutMs: 60_000 },
-  );
+  const r = await spawnSpecialist({ role: "explore", prompt: "irrelevant" }, { timeoutMs: 60_000 });
   const elapsed = Date.now() - start;
   assert(elapsed < 15_000, `inactivity-killed child returned early (took ${elapsed}ms)`);
   assert(r.ok === false, "#296: inactivity-killed child reports ok=false");
@@ -99,7 +96,7 @@ const savedInactivity = process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS;
     [
       "#!/bin/sh",
       "i=0",
-      "while [ $i -lt 10 ]; do echo \"noise $i\"; i=$((i+1)); sleep 0.5; done",
+      'while [ $i -lt 10 ]; do echo "noise $i"; i=$((i+1)); sleep 0.5; done',
       `echo '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"survived"}]}]}'`,
       "exit 0",
     ].join("\n"),
@@ -107,10 +104,7 @@ const savedInactivity = process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS;
   chmodSync(join(fakeDir, "pi"), 0o755);
   process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
   console.log("\n[test] streaming fake child (5s of 500ms-spaced output, 2000ms budget)...");
-  const r = await spawnSpecialist(
-    { role: "explore", prompt: "irrelevant" },
-    { timeoutMs: 60_000 },
-  );
+  const r = await spawnSpecialist({ role: "explore", prompt: "irrelevant" }, { timeoutMs: 60_000 });
   assert(r.killCause === undefined, "#296: streaming child is NOT killed by the watchdog");
   assert(r.exitCode === 0 && r.ok === true, "#296: streaming child completes cleanly");
   assert(r.text.includes("survived"), "#296: streaming child's final text survives");
@@ -123,10 +117,7 @@ const savedInactivity = process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS;
   chmodSync(join(fakeDir, "pi"), 0o755);
   process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "0";
   console.log("\n[test] silent fake child, 1500ms wall-clock cap, watchdog off...");
-  const r = await spawnSpecialist(
-    { role: "explore", prompt: "irrelevant" },
-    { timeoutMs: 1500 },
-  );
+  const r = await spawnSpecialist({ role: "explore", prompt: "irrelevant" }, { timeoutMs: 1500 });
   assert(r.ok === false, "#296: cap-killed child reports ok=false");
   assert(r.killCause === "timeout", "#296: cap-killed child carries killCause='timeout'");
   assert(r.killBudgetMs === 1500, "#296: killBudgetMs records the expired wall-clock budget");
@@ -134,7 +125,7 @@ const savedInactivity = process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS;
 
 process.env.PATH = savedPath;
 if (savedInactivity) process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = savedInactivity;
-else delete process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS;
+else process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = undefined;
 rmSync(fakeDir, { recursive: true, force: true });
 
 console.log(`\nexit ${exit}`);

@@ -67,14 +67,16 @@ if (totalFiles === 0) {
   console.log(`\nexit ${exit}`);
   process.exit(exit);
 }
-console.log(`✓ ensemble-runs has ${dates.length} date subdir(s) and ${totalFiles} transcript file(s)`);
+console.log(
+  `✓ ensemble-runs has ${dates.length} date subdir(s) and ${totalFiles} transcript file(s)`,
+);
 
 if (sampleSession.length > 0) {
   const file = sampleSession[0];
   if (!file) throw new Error("no sample");
   const raw = await fs.readFile(file, "utf8");
   const lines = raw.split("\n").filter((l) => l.trim());
-  let saw = { session: false, message: false, agentEnd: false };
+  const saw = { session: false, message: false, agentEnd: false };
   for (const line of lines.slice(0, 200)) {
     try {
       const ev = JSON.parse(line);

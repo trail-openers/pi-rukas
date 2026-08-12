@@ -196,8 +196,14 @@ assert(
 // (bare for content-need / short output; oo for verbose-wrap). Subagent
 // roles like developer/ops carry the oo-wrapped variant.
 assert(
-  resolveToolPermission("bash", "project-manager", emptyConfig, emptyConfig, liveAgents, "git status") ===
-    "allow",
+  resolveToolPermission(
+    "bash",
+    "project-manager",
+    emptyConfig,
+    emptyConfig,
+    liveAgents,
+    "git status",
+  ) === "allow",
   "real agents.json: bare 'git status' resolves to allow for PM via nested allowlist",
 );
 assert(
@@ -231,7 +237,8 @@ const dispatchTools = [
 // #104 removed "default" role; project-manager is the only top-level role now.
 for (const tool of dispatchTools) {
   assert(
-    resolveToolPermission(tool, "project-manager", emptyConfig, emptyConfig, liveAgents) === "allow",
+    resolveToolPermission(tool, "project-manager", emptyConfig, emptyConfig, liveAgents) ===
+      "allow",
     `real agents.json: project-manager role grants ${tool}`,
   );
 }
@@ -314,9 +321,9 @@ if (existsSync(decisionsPath)) {
     const keys = Object.keys(parsed);
     assert(keys.length === 500, "Max 500 entries enforced (oldest evicted)");
     // Newest (highest index number) should be present
-    assert(`tool:500` in parsed, "Newest entry present after evict");
+    assert("tool:500" in parsed, "Newest entry present after evict");
     // Oldest (lowest index number) should be evicted
-    assert(!(`tool:0` in parsed), "Oldest entry evicted");
+    assert(!("tool:0" in parsed), "Oldest entry evicted");
   } catch (err) {
     assert(false, `Checking 501 decisions eviction failed: ${err}`);
   }

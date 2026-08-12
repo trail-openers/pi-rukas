@@ -38,8 +38,8 @@ const summary = await runLensReview({
 console.log(`\n[test] wall: ${Date.now() - start}ms`);
 console.log(`[test] verdict: ${summary.verdict}`);
 console.log(`[test] total findings: ${summary.totalFindings}`);
-console.log(`[test] by severity:`, summary.bySeverity);
-console.log(`\nper-lens:`);
+console.log("[test] by severity:", summary.bySeverity);
+console.log("\nper-lens:");
 for (const l of summary.lenses) {
   const tag = l.parseError ? `parseError=${l.parseError}` : `${l.findings.length} findings`;
   console.log(`  ${l.lens.padEnd(16)} ${l.ms}ms   ${tag}`);
@@ -47,7 +47,7 @@ for (const l of summary.lenses) {
     console.log(`    note: ${l.parseError}`);
   }
 }
-console.log(`\nfindings (deduped, sorted):`);
+console.log("\nfindings (deduped, sorted):");
 for (const f of summary.findings) {
   console.log(`  [${f.severity}] ${f.lens}  ${f.path}:${f.line} — ${f.title}`);
 }

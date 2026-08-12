@@ -57,6 +57,29 @@ const mockIssueBodyOk = async (issue: number, _cwd: string) => ({
   stdout: `title:\tmock issue #${issue}\nstate:\tOPEN\n\nmock body for issue #${issue} — non-empty placeholder so PR11's empty-body guard doesn't fire`,
 });
 
+/**
+ * A minimal but PARSEABLE explore reply.
+ *
+ * Explore's reply has to carry a decision — a `## Spec` block or the legacy
+ * verdict token — because the driver now parks when it can extract neither
+ * rather than planning and building against a reply it could not read. These
+ * mocks used to return bare prose, which is exactly that no-signal shape.
+ *
+ * This file tests the dispatch SEQUENCE; the no-signal behaviour has its own
+ * coverage in test-explore-no-signal.ts.
+ */
+const EXPLORE_REPLY = [
+  "INTENT-VERDICT: proceed",
+  "",
+  "## Spec",
+  "",
+  "### Intent",
+  "Implement issue #600.",
+  "",
+  "### Deliverables",
+  "- d1: implement the change [paths: src/a.ts]",
+].join("\n");
+
 // Fake DispatchResult builder.
 function mkResult(overrides: Partial<DispatchResult> = {}): DispatchResult {
   return {
@@ -118,7 +141,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         }
         return mkResult({
           role: spec.role,
-          text: `mock ${spec.role} output for issue #600`,
+          text:
+            spec.role === "explore" && (opts?.label ?? spec.role) !== "plan"
+              ? EXPLORE_REPLY
+              : `mock ${spec.role} output for issue #600`,
         });
       },
     };

@@ -42,7 +42,7 @@ function createMockExecFn(
   ): Promise<{ stdout: string; stderr?: string }> => {
     trackCalls.push({ cmd, cwd: opts?.cwd });
     const result = results[idx++] ?? { stdout: "", stderr: "unexpected call" };
-    if (result.stderr && result.stderr.startsWith("error:")) {
+    if (result.stderr?.startsWith("error:")) {
       throw new Error(result.stderr);
     }
     return result;

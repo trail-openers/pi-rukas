@@ -10,6 +10,7 @@
  */
 
 import {
+  type RunningState,
   emptyRunningState,
   extractToolHint,
   formatElapsed,
@@ -18,7 +19,6 @@ import {
   ingestEvent,
   renderBatch,
   renderSingle,
-  type RunningState,
 } from "../src/progress.ts";
 
 let exit = 0;
@@ -243,7 +243,7 @@ assert(formatElapsed(75_000) === "1m15s", "minutes+seconds combined");
   );
 
   // Truncation at 50 chars with ellipsis
-  const long = "parallel-cli research run \"very long deep research query about something complex\"";
+  const long = 'parallel-cli research run "very long deep research query about something complex"';
   const truncated = extractToolHint({ command: long });
   assert(truncated !== undefined && truncated.length <= 50, "truncated hint ≤ 50 chars");
   assert(truncated?.endsWith("…"), "truncated hint ends with ellipsis");

@@ -32,12 +32,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import {
-  type MemoryHit,
-  preferNewest,
-  searchArgv,
-  vipuneSearch,
-} from "../src/vipune.ts";
+import { type MemoryHit, preferNewest, searchArgv, vipuneSearch } from "../src/vipune.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -79,17 +74,21 @@ function assert(cond: boolean, msg: string) {
     created_at,
   });
 
-  const old = hit("a", "The spawn cap is 12 concurrent children by default", "2026-01-01T00:00:00Z");
+  const old = hit(
+    "a",
+    "The spawn cap is 12 concurrent children by default",
+    "2026-01-01T00:00:00Z",
+  );
   const recent = hit("b", "The spawn cap is now 16 concurrent children", "2026-08-01T00:00:00Z");
 
   const kept = preferNewest([old, recent], "fact");
   assert(kept.length === 1, "two contradictory facts about one subject collapse to one");
-  assert(kept[0]?.id === "b", "...and the NEWER one is what survives — your case, deterministically");
-
   assert(
-    preferNewest([recent, old], "fact")[0]?.id === "b",
-    "...regardless of retrieval order",
+    kept[0]?.id === "b",
+    "...and the NEWER one is what survives — your case, deterministically",
   );
+
+  assert(preferNewest([recent, old], "fact")[0]?.id === "b", "...regardless of retrieval order");
 
   // Guards are hazards, not statements of current fact: two guards about one
   // file are usually two distinct hazards and both must survive.
@@ -99,7 +98,11 @@ function assert(cond: boolean, msg: string) {
   );
 
   // Not vacuous: unrelated rows are never collapsed.
-  const unrelated = hit("c", "Docs must ship in the same PR as the behaviour", "2026-08-05T00:00:00Z");
+  const unrelated = hit(
+    "c",
+    "Docs must ship in the same PR as the behaviour",
+    "2026-08-05T00:00:00Z",
+  );
   assert(
     preferNewest([old, unrelated], "fact").length === 2,
     "unrelated memories are left alone (the collapse is not indiscriminate)",
@@ -108,10 +111,7 @@ function assert(cond: boolean, msg: string) {
   // An undated row must not displace a dated one — absence of a date is not recency.
   const undated = hit("d", "The spawn cap is 12 concurrent children by default");
   const r = preferNewest([recent, undated], "fact");
-  assert(
-    r.length === 1 && r[0]?.id === "b",
-    "an undated duplicate never displaces a dated one",
-  );
+  assert(r.length === 1 && r[0]?.id === "b", "an undated duplicate never displaces a dated one");
 }
 
 // --------------------------------------------------- live: the closed loop
@@ -131,7 +131,12 @@ if (!haveVipune) {
   const run = (args: string[]) =>
     execFileAsync("vipune", ["--db-path", db, "-p", proj, ...args], { maxBuffer: 4 * 1024 * 1024 });
 
-  await run(["add", "spawn-semaphore.ts caps concurrent children at twelve", "--memory-type", "guard"]);
+  await run([
+    "add",
+    "spawn-semaphore.ts caps concurrent children at twelve",
+    "--memory-type",
+    "guard",
+  ]);
   await run([
     "add",
     "spawn-semaphore.ts queues excess dispatches FIFO and never rejects",
@@ -149,11 +154,10 @@ if (!haveVipune) {
     args: string[],
     o: { cwd: string; timeout: number; maxBuffer: number },
   ) => {
-    const { stdout, stderr } = await execFileAsync(
-      file,
-      ["--db-path", db, "-p", proj, ...args],
-      { ...o, env },
-    );
+    const { stdout, stderr } = await execFileAsync(file, ["--db-path", db, "-p", proj, ...args], {
+      ...o,
+      env,
+    });
     return { stdout: String(stdout), stderr: String(stderr) };
   };
 
@@ -168,10 +172,7 @@ if (!haveVipune) {
   const nBoth = both.kind === "hits" ? both.hits.length : -1;
 
   assert(nActive === 1, `the default read sees only the ACTIVE row (${nActive})`);
-  assert(
-    nBoth === 2,
-    `--include-candidates sees both (${nBoth}) — this is the loop that was open`,
-  );
+  assert(nBoth === 2, `--include-candidates sees both (${nBoth}) — this is the loop that was open`);
   assert(
     nBoth > nActive,
     "canary: without includeCandidates every candidate write is invisible to its own read",

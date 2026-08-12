@@ -48,7 +48,9 @@ const stats = (o: Partial<MemoryStats>): MemoryStats => ({
 }
 
 {
-  const panel = renderMemoryPanel(stats({ totalRetrievals: 0, maxRetrievals: 0, neverRetrieved: 100 }));
+  const panel = renderMemoryPanel(
+    stats({ totalRetrievals: 0, maxRetrievals: 0, neverRetrieved: 100 }),
+  );
   assert(/write-only/.test(panel), "a store nothing reads back is named as write-only");
   assert(/pure cost/.test(panel), "...and the consequence is stated plainly");
 }
@@ -59,7 +61,17 @@ const stats = (o: Partial<MemoryStats>): MemoryStats => ({
 }
 
 {
-  const panel = renderMemoryPanel(stats({ rows: 0, byStatus: {}, byType: {}, totalRetrievals: 0, maxRetrievals: 0, neverRetrieved: 0, medianChars: 0 }));
+  const panel = renderMemoryPanel(
+    stats({
+      rows: 0,
+      byStatus: {},
+      byType: {},
+      totalRetrievals: 0,
+      maxRetrievals: 0,
+      neverRetrieved: 0,
+      medianChars: 0,
+    }),
+  );
   assert(/No memories recorded/.test(panel), "an empty store says so");
   assert(!/NaN|Infinity/.test(panel), "canary: no division-by-zero artefacts on an empty store");
 }

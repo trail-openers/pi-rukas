@@ -35,9 +35,7 @@ interface MockState {
   cache: Map<string, boolean>;
   persistCalls: Array<{ key: string; allowed: boolean }>;
   promptCalls: PermissionRequest[];
-  promptResponse:
-    | { allowed: boolean; scope: "once" | "always" }
-    | { reject: Error };
+  promptResponse: { allowed: boolean; scope: "once" | "always" } | { reject: Error };
 }
 
 function makeDeps(state: MockState): BrokerDeps {
@@ -173,7 +171,10 @@ function sendRaw(socketPath: string, raw: string): Promise<{ allowed: boolean; r
       bashCommand: "rm -rf /",
     });
     assert(resp.allowed === false, "cached deny → allowed=false");
-    assert(typeof resp.reason === "string" && resp.reason.length > 0, "cached deny carries a reason");
+    assert(
+      typeof resp.reason === "string" && resp.reason.length > 0,
+      "cached deny carries a reason",
+    );
     assert(state.promptCalls.length === 0, "cached deny → promptUser not called");
   } finally {
     broker.stop();
@@ -311,12 +312,15 @@ function sendRaw(socketPath: string, raw: string): Promise<{ allowed: boolean; r
 // 8. stop() is idempotent.
 {
   const sockPath = path.join(os.tmpdir(), `pi-ensemble-test-broker-${process.pid}-8.sock`);
-  const broker = startBroker(sockPath, makeDeps({
-    cache: new Map(),
-    persistCalls: [],
-    promptCalls: [],
-    promptResponse: { allowed: false, scope: "once" },
-  }));
+  const broker = startBroker(
+    sockPath,
+    makeDeps({
+      cache: new Map(),
+      persistCalls: [],
+      promptCalls: [],
+      promptResponse: { allowed: false, scope: "once" },
+    }),
+  );
   broker.stop();
   let threw = false;
   try {

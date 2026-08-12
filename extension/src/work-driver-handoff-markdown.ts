@@ -79,6 +79,7 @@ export function renderHandoffMarkdown(state: WorkState): string {
     explain,
     "",
     ...blockingFindingSection(state),
+    ...plumbReportSection(state),
     "### What was attempted",
     ...stepDurations.map((s) => s),
     "",
@@ -411,4 +412,27 @@ function blockingFindingSection(state: WorkState): string[] {
     ];
   }
   return [];
+}
+
+/**
+ * Plumbing failures the cycle worked around and kept going.
+ *
+ * `pipelineState.plumbReports` records git failures during lens-fix — a failed
+ * commit or push — deliberately OUT of the event log, because appending there
+ * would change the tail and `nextStep()` routes on it. The comment at the write
+ * site says these exist "so the operator sees it in handoff", and until now
+ * nothing rendered them: written in two places, read in none.
+ *
+ * They matter precisely because the cycle continued. A lens-fix whose push
+ * failed means the PR the reviewer is looking at does not contain the fix.
+ */
+function plumbReportSection(state: WorkState): string[] {
+  const reports = state.pipelineState.plumbReports ?? [];
+  if (reports.length === 0) return [];
+  return [
+    "### Plumbing that failed (the cycle continued anyway)",
+    "",
+    ...reports.map((r) => `- \`${r.step}\`: ${r.body}`),
+    "",
+  ];
 }

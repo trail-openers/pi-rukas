@@ -79,7 +79,10 @@ assert(prefix1 === "oo gh pr", "extractCommandPrefix extracts oo gh pr from 'oo 
 
 // Test: extractCommandPrefix("git status --porcelain") returns "git status"
 const prefix2 = extractCommandPrefix("git status --porcelain");
-assert(prefix2 === "git status", "extractCommandPrefix extracts git status from 'git status --porcelain'");
+assert(
+  prefix2 === "git status",
+  "extractCommandPrefix extracts git status from 'git status --porcelain'",
+);
 
 // Test: extractCommandPrefix("ls -la /tmp") returns "ls"
 const prefix3 = extractCommandPrefix("ls -la /tmp");
@@ -88,7 +91,10 @@ assert(prefix3 === "ls", "extractCommandPrefix extracts ls from 'ls -la /tmp'");
 // Test: extractCommandPrefix("echo hello") returns "echo" (echo is not a
 // multi-subcommand CLI, so the prefix is single-token).
 const prefix4 = extractCommandPrefix("echo hello");
-assert(prefix4 === "echo", "extractCommandPrefix returns single-token prefix for non-multi-subcommand CLIs");
+assert(
+  prefix4 === "echo",
+  "extractCommandPrefix returns single-token prefix for non-multi-subcommand CLIs",
+);
 
 // Test: extractCommandPrefix("") returns "bash" (fallback)
 const prefix5 = extractCommandPrefix("");
@@ -147,7 +153,10 @@ const injectionKey = getBashDecisionCacheKey(injectionCommand, { command: inject
 const blankKey = getBashDecisionCacheKey(blankCommand, { command: blankCommand });
 assert(quotedKey === "bash:vipune search *", "quoted-arg command persists wildcard key");
 assert(globKey === "bash:ls *", "glob-arg command persists wildcard key");
-assert(injectionKey.startsWith("bash:exact:"), "injection-vector command falls back to exact-hash key");
+assert(
+  injectionKey.startsWith("bash:exact:"),
+  "injection-vector command falls back to exact-hash key",
+);
 assert(blankKey.startsWith("bash:exact:"), "blank bash command falls back to exact-hash key");
 assert(
   getBashDecisionCacheKey(safeCommand, { command: safeCommand }) === "bash:git status *",
@@ -161,7 +170,10 @@ assert(
   !bashPatternMatches("git status --porcelain; rm -rf /", "git status"),
   "boundary-safe wildcard rejects compound shell commands",
 );
-assert(!bashPatternMatches("git statusx", "git status"), "boundary-safe wildcard rejects glued suffix");
+assert(
+  !bashPatternMatches("git statusx", "git status"),
+  "boundary-safe wildcard rejects glued suffix",
+);
 assert(
   !bashPatternMatches("git status --porcelain", "git statusx"),
   "boundary-safe wildcard rejects mismatched prefix",
@@ -177,7 +189,7 @@ const originalCwd = process.cwd();
 // handle. After load, only the entries marked KEEP should remain.
 const mixedDecisionFixture = {
   // DROP: malformed pattern (quote in prefix; isSafeBashPatternKey rejects).
-  "bash:vipune search \"key *": { allowed: true, timestamp: "2024-01-01T00:00:00Z" },
+  'bash:vipune search "key *': { allowed: true, timestamp: "2024-01-01T00:00:00Z" },
   // DROP: old-format full-input bash key (JSON.stringify input shape).
   'bash:{"command":"some old command"}': {
     allowed: true,
@@ -302,7 +314,10 @@ assert(
   "git commit -m 'msg' → git commit",
 );
 assert(extractCommandPrefix("timeout 30 npm test") === "npm test", "timeout wrapper stripped");
-assert(extractCommandPrefix("nice -n 10 cargo build") === "cargo build", "nice -n N wrapper stripped");
+assert(
+  extractCommandPrefix("nice -n 10 cargo build") === "cargo build",
+  "nice -n N wrapper stripped",
+);
 assert(
   extractCommandPrefix("nohup ./long-running") === "bash",
   "nohup wrapper stripped; path token has no extractable prefix → fallback to 'bash'",

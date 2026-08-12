@@ -304,12 +304,21 @@ export function inlineDevelopPrompt(
   // work while labelled `fix(#476)`.
   const headline = issues.length === 1 ? `issue #${issues[0]}` : `issue(s) #${issues.join(", #")}`;
   const lines = [`/work ${headline} — Step 4 (Implementation).`, ""];
-  if (workstream && workstreamId && workstreamId !== "default") {
-    // Multi-workstream branch — anchor scope explicitly so this developer
-    // doesn't drift into another workstream's territory. The out-of-scope
+  if (workstream) {
+    // Anchor scope explicitly so this developer doesn't drift. The out-of-scope
     // fence addresses the issue #553 scope-contamination pattern.
+    //
+    // NOT gated on N>1. It was, and since every cycle measured on the dev host
+    // was N=1, that meant the fence the plan step re-dispatches to produce —
+    // and the vipune memory brief the driver pays ~8s for before every develop
+    // dispatch — were computed and thrown away on every real run. Only the
+    // "you are one of several parallel developers" framing is genuinely
+    // multi-workstream; the scope is not.
+    const parallel = Boolean(workstreamId) && workstreamId !== "default";
     lines.push(
-      `**Workstream: \`${workstream.id}\`** — one of multiple developers running in parallel for this ${issues.length === 1 ? "issue" : "set of issues"}.`,
+      parallel
+        ? `**Workstream: \`${workstream.id}\`** — one of multiple developers running in parallel for this ${issues.length === 1 ? "issue" : "set of issues"}.`
+        : "**Scope for this dispatch** — stay inside it.",
       `Scope: ${workstream.scope}`,
       workstream.paths.length > 0
         ? `In-scope files: ${workstream.paths.join(", ")}`

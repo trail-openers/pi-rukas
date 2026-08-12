@@ -208,3 +208,28 @@ export async function restoreCheckout(
  * one place and stays under budget.
  */
 export { teardownWorkspaceTmp } from "./work-driver-workspace.ts";
+
+/**
+ * Did the branch step resolve the mainline as this cycle's branch?
+ *
+ * `ps.branchName` becomes the integration branch: `integrate()` runs
+ * `git checkout -B <branch> <baseSha>` and `git push -u origin <branch>`
+ * against it. The ops-fallback path reads it from wherever `repoRoot`'s HEAD
+ * happens to point, so an ops child that creates the branch and worktrees and
+ * then returns `repoRoot` to the mainline hands the cycle `main` — and a grep
+ * across the write path found no mainline check anywhere.
+ *
+ * An unreadable mainline means "not proven to be the mainline", so the cycle
+ * proceeds. That is the right direction here: this guards one specific mistake,
+ * and a repo whose default branch cannot be resolved is normal enough that
+ * halting on it would cost more than the risk it removes.
+ */
+export async function resolvedTheMainline(
+  repoRoot: string,
+  execFn: VerifyExecFn,
+  branch: string | undefined,
+): Promise<boolean> {
+  if (!branch) return false;
+  const mainline = await detectMainline(repoRoot, execFn);
+  return "branch" in mainline && mainline.branch === branch;
+}

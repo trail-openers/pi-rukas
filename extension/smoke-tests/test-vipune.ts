@@ -76,10 +76,7 @@ const hit = (id: string, similarity: number): MemoryHit => ({ id, content: id, s
 
   // The defect the v2 spec shipped: a UNION is monotone, so it can only add
   // rows and can never remove the floor's false positive.
-  const union = [
-    ...floorOnly,
-    ...hybrid.filter((h) => h.similarity >= HYBRID_AGREEMENT),
-  ];
+  const union = [...floorOnly, ...hybrid.filter((h) => h.similarity >= HYBRID_AGREEMENT)];
   assert(
     union.length >= floorOnly.length,
     "a UNION can never be smaller than the floor alone — which is why it cannot fix a false positive",
@@ -210,7 +207,7 @@ async function withFake(script: string, fn: (bin: string) => Promise<void>) {
 {
   let threw = false;
   try {
-    await vipuneSearch("q", { cwd: "/tmp", hybrid: true, recency: 0 as 0 });
+    await vipuneSearch("q", { cwd: "/tmp", hybrid: true, recency: 0 as const });
     await vipuneSearch("q", {
       cwd: "/tmp",
       hybrid: true,

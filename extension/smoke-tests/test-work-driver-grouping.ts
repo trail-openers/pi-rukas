@@ -154,10 +154,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     730: "Split: yes\n\nThis needs its own PR",
     731: "Another issue",
   });
-  assert(
-    Object.keys(r3Yes.groups).length === 2,
-    "R3: 'Split: yes' forces singleton group",
-  );
+  assert(Object.keys(r3Yes.groups).length === 2, "R3: 'Split: yes' forces singleton group");
 
   // R3 — Split: separate also works.
   const r3Separate = groupIssues([740, 741], {

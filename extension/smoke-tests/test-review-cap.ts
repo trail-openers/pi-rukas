@@ -66,14 +66,8 @@ function restoreNow() {
   const r = checkReviewCap("issue-42");
   assert(r.ok === false, "91 minutes in: not ok");
   assert(r.elapsedMs > 90 * 60 * 1000, "elapsedMs reflects exceeded cap");
-  assert(
-    r.message.toLowerCase().includes("cap exceeded"),
-    "message clearly says cap exceeded",
-  );
-  assert(
-    r.message.toLowerCase().includes("halt"),
-    "message instructs PM to halt and escalate",
-  );
+  assert(r.message.toLowerCase().includes("cap exceeded"), "message clearly says cap exceeded");
+  assert(r.message.toLowerCase().includes("halt"), "message instructs PM to halt and escalate");
 }
 
 // 4. reset=true explicitly restarts the timer regardless of state.

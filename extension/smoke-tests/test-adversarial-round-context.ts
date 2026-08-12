@@ -69,7 +69,10 @@ rather than writing a second parser.`;
     round: 1,
     maxRounds: 3,
   });
-  assert(!noIssue.includes("undefined"), "an absent issue body leaves no 'undefined' in the prompt");
+  assert(
+    !noIssue.includes("undefined"),
+    "an absent issue body leaves no 'undefined' in the prompt",
+  );
   assert(noIssue.includes("diff --git"), "...and the diff still reaches the reviewer");
 }
 
@@ -94,10 +97,7 @@ rather than writing a second parser.`;
     round: 2,
   });
 
-  assert(
-    prompt.includes("extract_metadata false-match"),
-    "the fixer gets this round's findings",
-  );
+  assert(prompt.includes("extract_metadata false-match"), "the fixer gets this round's findings");
   assert(
     prompt.includes("diff --git a/src/cron/agenda/sanitize.rs"),
     "canary: the fixer gets the DIFF — measured absent from both of #664's real fix prompts",

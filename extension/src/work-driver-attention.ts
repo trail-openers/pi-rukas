@@ -90,14 +90,25 @@ export function judgeAttention(
 export async function checkAttentionLabel(
   repoRoot: string,
   issue: number,
-  opts: { restart?: boolean } = {},
+  opts: { restart?: boolean; issues?: number[] } = {},
 ): Promise<AttentionVerdict> {
   if (opts.restart === true) return { refuse: false, checked: true };
-  try {
-    const { stdout } = await execp(`gh issue view ${issue} --json labels`, { cwd: repoRoot });
-    return judgeAttention(issue, parseLabels(stdout), opts);
-  } catch (err) {
-    trace(`work-driver: could not read labels for #${issue}: ${(err as Error).message}`);
-    return { refuse: false, checked: false };
+  // EVERY issue in the group, not just the primary. `claimCycle` keys the
+  // in-process registry on all of them — this check was written on the
+  // adjacent line and keyed on one, so a grouped cycle for #10+#11 where #11
+  // carried the label proceeded anyway, which is the exact case the label
+  // exists to stop.
+  const all = [...new Set([issue, ...(opts.issues ?? [])])];
+  let anyUnchecked = false;
+  for (const n of all) {
+    try {
+      const { stdout } = await execp(`gh issue view ${n} --json labels`, { cwd: repoRoot });
+      const verdict = judgeAttention(n, parseLabels(stdout), opts);
+      if (verdict.refuse) return verdict;
+    } catch (err) {
+      trace(`work-driver: could not read labels for #${n}: ${(err as Error).message}`);
+      anyUnchecked = true;
+    }
   }
+  return { refuse: false, checked: !anyUnchecked };
 }

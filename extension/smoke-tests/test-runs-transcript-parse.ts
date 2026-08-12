@@ -30,14 +30,22 @@ function assert(cond: boolean, msg: string) {
 }
 
 const rows = [
-  { type: "message", message: { role: "user", content: [{ type: "text", text: "research daphne" }] } },
+  {
+    type: "message",
+    message: { role: "user", content: [{ type: "text", text: "research daphne" }] },
+  },
   {
     type: "message",
     message: {
       role: "assistant",
       content: [
         { type: "text", text: "Looking at the tests." },
-        { type: "toolCall", id: "79a6111c5", name: "bash", arguments: "{'command': 'find . -name *.py'}" },
+        {
+          type: "toolCall",
+          id: "79a6111c5",
+          name: "bash",
+          arguments: "{'command': 'find . -name *.py'}",
+        },
       ],
     },
   },

@@ -175,7 +175,7 @@ assert(pmExists, "PM doctrine prompt built (dist/prompts/standard/project-manage
 
 // Fire /start with no args
 const { ctx: ctx1 } = makeCtx();
-await handlers.start!("", ctx1);
+await handlers.start?.("", ctx1);
 assert(promptMessages().length === 1, "/start → 1 message queued");
 const startBody = await fs.readFile(path.join(PI_PROMPTS, "start.md"), "utf8");
 assert(
@@ -185,7 +185,7 @@ assert(
 
 // Fire /review #456 (with arg expansion)
 const { ctx: ctxR } = makeCtx();
-await handlers.review!("#456", ctxR);
+await handlers.review?.("#456", ctxR);
 assert(promptMessages().length === 2, "/review #456 → second message queued");
 assert(
   promptMessages()[1].includes("**Scope**: #456"),
@@ -199,7 +199,7 @@ assert(
 {
   {
     const { ctx: ctxW, notifies: notifW } = makeCtx(TMP_CWD);
-    await handlers.work!("789", ctxW);
+    await handlers.work?.("789", ctxW);
     assert(
       promptMessages().length === 2,
       "/work 789: does NOT call sendUserMessage — there is no prose flow to send",
@@ -220,7 +220,7 @@ assert(
 {
   {
     const { ctx: ctxWE, notifies: notifWE } = makeCtx(TMP_CWD);
-    await handlers.work!("", ctxWE);
+    await handlers.work?.("", ctxWE);
     assert(promptMessages().length === 2, "/work (no args): does NOT send a message");
     assert(
       notifWE.some((n) => n.kind === "warning" && /issue number/.test(n.msg)),
@@ -242,7 +242,7 @@ assert(
 {
   {
     const { ctx: ctxMulti, notifies: notifMulti } = makeCtx(TMP_CWD);
-    await handlers.work!("561 562 563", ctxMulti);
+    await handlers.work?.("561 562 563", ctxMulti);
     assert(
       promptMessages().length === 2,
       "/work 561 562 563: does NOT call sendUserMessage synchronously",
@@ -266,7 +266,7 @@ assert(
   {
     // Trailing --restart.
     const { ctx: ctxR1, notifies: notifR1 } = makeCtx(TMP_CWD);
-    await handlers.work!("547 --restart", ctxR1);
+    await handlers.work?.("547 --restart", ctxR1);
     assert(
       notifR1.some(
         (n) =>
@@ -276,7 +276,7 @@ assert(
     );
     // Leading --restart.
     const { ctx: ctxR2, notifies: notifR2 } = makeCtx(TMP_CWD);
-    await handlers.work!("--restart 548", ctxR2);
+    await handlers.work?.("--restart 548", ctxR2);
     assert(
       notifR2.some(
         (n) =>
@@ -290,7 +290,7 @@ assert(
     // pass runs in the background). The --restart tag surfaces later
     // in the sendUserMessage grouping-decision line, not the notify.
     const { ctx: ctxR3, notifies: notifR3 } = makeCtx(TMP_CWD);
-    await handlers.work!("549 --restart 550", ctxR3);
+    await handlers.work?.("549 --restart 550", ctxR3);
     assert(
       notifR3.some(
         (n) => n.kind === "info" && /analyzing 2 issues/.test(n.msg) && /#549, #550/.test(n.msg),
@@ -299,7 +299,7 @@ assert(
     );
     // Plain /work N (no --restart) — no restart tag in notify.
     const { ctx: ctxR4, notifies: notifR4 } = makeCtx(TMP_CWD);
-    await handlers.work!("551", ctxR4);
+    await handlers.work?.("551", ctxR4);
     assert(
       notifR4.some((n) => n.kind === "info" && /issue #551/.test(n.msg) && !/restart/i.test(n.msg)),
       "/work 551 (no flag): notify does NOT include restart tag (regression guard)",
@@ -329,8 +329,7 @@ assert(
 // is one-shot though — only the short preamble appears on turn 2.
 const result2 = await hook({ systemPrompt: "PI_BASE_PROMPT" });
 assert(
-  result2?.systemPrompt !== undefined &&
-    result2.systemPrompt.includes("PM mode — orchestration only"),
+  result2?.systemPrompt?.includes("PM mode — orchestration only"),
   "before_agent_start: sticky preamble appended on turn 2 (PM mode active)",
 );
 assert(
@@ -341,7 +340,7 @@ assert(
 // Fire /start when busy — should refuse and not arm
 const { ctx: ctx3, notifies: notif3 } = makeCtx();
 ctx3.isIdle = () => false;
-await handlers.start!("", ctx3);
+await handlers.start?.("", ctx3);
 assert(
   promptMessages().length === 2,
   "/start while busy: no new message queued (still 2 from earlier)",
@@ -354,8 +353,7 @@ assert(
 // /start so the sticky preamble is still appended. The state didn't regress.
 const result3 = await hook({ systemPrompt: "PI_BASE_PROMPT" });
 assert(
-  result3?.systemPrompt !== undefined &&
-    result3.systemPrompt.includes("PM mode — orchestration only"),
+  result3?.systemPrompt?.includes("PM mode — orchestration only"),
   "/start while busy: PM mode sticky preamble still active from earlier /start",
 );
 
@@ -365,7 +363,7 @@ assert(
 {
   const { ctx: ctxDo } = makeCtx();
   const before = promptMessages().length;
-  await handlers.do!("fix the typo in README.md", ctxDo);
+  await handlers.do?.("fix the typo in README.md", ctxDo);
   assert(
     promptMessages().length === before + 1,
     "/do <description> → 1 message queued (PM-driven, no driver detour)",

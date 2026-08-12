@@ -11,10 +11,10 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type DriverContext } from "../src/work-driver-context.ts";
-import { runWorkDriver } from "../src/work-driver.ts";
 import { parseWorktreesBlock } from "../src/work-driver-branch-develop.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
 import { parseWorkstreams } from "../src/work-driver-plan.ts";
+import { runWorkDriver } from "../src/work-driver.ts";
 import { readState, writeState } from "../src/workflow-state.ts";
 
 let exit = 0;

@@ -43,10 +43,7 @@ function assert(cond: boolean, msg: string) {
     !isRoleName("driver"),
     `canary: "driver" is NOT a spawnable role — roles are ${ROLE_NAMES.join(", ")}`,
   );
-  assert(
-    isRoleName("ops"),
-    "...while the role the fallback path really dispatches is one",
-  );
+  assert(isRoleName("ops"), "...while the role the fallback path really dispatches is one");
 }
 
 // -------------------------- the driver's own work is recorded, not dispatched

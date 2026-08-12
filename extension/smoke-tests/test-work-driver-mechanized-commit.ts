@@ -359,10 +359,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     // and v0.12.13's partial consolidation, so the path it tested no longer
     // exists. The LLM fallback ON MECHANIZED FAILURE is still covered by M2/M3.
   } finally {
-    if (prevVerify === undefined) delete process.env.PI_ENSEMBLE_VERIFY;
+    if (prevVerify === undefined) process.env.PI_ENSEMBLE_VERIFY = undefined;
     else process.env.PI_ENSEMBLE_VERIFY = prevVerify;
     process.env.PI_ENSEMBLE_VERIFY = "0";
-    if (prevSpec === undefined) delete process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE;
+    if (prevSpec === undefined) process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE = undefined;
     else process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE = prevSpec;
   }
 }

@@ -11,7 +11,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type DriverContext } from "../src/work-driver-context.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
 import { mkLensSummary, setupSpawnGuard } from "./test-helpers.ts";
@@ -345,10 +345,7 @@ setupSpawnGuard();
     const lensFixCompleted = events.find(
       (e) => e.kind === "dispatch-completed" && e.step === "lens-fix",
     );
-    assert(
-      lensFixCompleted !== undefined && lensFixCompleted.ok,
-      "lens-fix dispatch completed successfully",
-    );
+    assert(lensFixCompleted?.ok, "lens-fix dispatch completed successfully");
 
     // Verify the driver committed (extra commit after lens-fix) at repoRoot.
     const { stdout: afterLog } = await execp("git rev-list --count origin/main..HEAD", {

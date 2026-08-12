@@ -80,9 +80,7 @@ const succeeded: DispatchResult = {
   );
   // Scoped to the killed child's own section: the surviving child's section
   // must not be able to satisfy this. Sections are separated by the `===` rule.
-  const daphneSection = report
-    .split("=== ")
-    .find((s) => s.startsWith("explore[daphne-arch]"));
+  const daphneSection = report.split("=== ").find((s) => s.startsWith("explore[daphne-arch]"));
   assert(
     daphneSection !== undefined && !daphneSection.includes("(no output)"),
     "canary: the killed child's section does NOT read '(no output)' — the exact line that caused the misdiagnosis",

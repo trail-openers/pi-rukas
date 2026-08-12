@@ -66,15 +66,13 @@ const settings = (ms: unknown) => ({ retry: { provider: { maxRetryDelayMs: ms } 
 {
   // Reproduces pi-ai's `validateServerRetryDelayMs` so the threshold is chosen
   // against the real predicate rather than a remembered one.
-  const wouldThrow = (delayMs: number, maxDelayMs: number) => maxDelayMs > 0 && delayMs > maxDelayMs;
+  const wouldThrow = (delayMs: number, maxDelayMs: number) =>
+    maxDelayMs > 0 && delayMs > maxDelayMs;
 
   assert(wouldThrow(59_000, 10_000), "canary: at 10s, a 59s hint throws");
   assert(!wouldThrow(59_000, 60_000), "at 60s it does NOT — the request is retried");
   assert(!wouldThrow(60_000, 60_000), "a 60s hint at 60s is also fine (strictly greater)");
-  assert(
-    !wouldThrow(600_000, 0),
-    "0 disables the ceiling entirely — any delay is honoured",
-  );
+  assert(!wouldThrow(600_000, 0), "0 disables the ceiling entirely — any delay is honoured");
 
   // Pi's own backoff never reaches 10s, so the ceiling only ever discards a
   // provider instruction. This is why raising it has no downside.

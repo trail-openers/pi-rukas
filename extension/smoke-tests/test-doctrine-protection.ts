@@ -306,7 +306,7 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-doctrine-"));
       off.notes.some((n) => /PROTECTED_PATHS=0/.test(n)),
     "PI_ENSEMBLE_PROTECTED_PATHS=0 disables the gate, and says so",
   );
-  delete process.env.PI_ENSEMBLE_PROTECTED_PATHS;
+  process.env.PI_ENSEMBLE_PROTECTED_PATHS = undefined;
 }
 
 await fs.rm(tmp, { recursive: true, force: true });

@@ -83,7 +83,10 @@ function getSection(content: string, heading: string) {
 }
 
 function assertObject(value: unknown, label: string): asserts value is Record<string, unknown> {
-  assert(typeof value === "object" && value !== null && !Array.isArray(value), `${label} is an object`);
+  assert(
+    typeof value === "object" && value !== null && !Array.isArray(value),
+    `${label} is an object`,
+  );
 }
 
 function assertString(value: unknown, label: string) {
@@ -110,16 +113,34 @@ try {
   const frontmatter = auditContent.match(/^---\n([\s\S]*?)\n---\n/);
   assert(frontmatter !== null, "audit.md has frontmatter");
   assert(frontmatter?.[1].includes("description:"), "audit.md frontmatter includes description");
-  assert(frontmatter?.[1].includes("argument-hint:"), "audit.md frontmatter includes argument-hint");
-  assert(auditContent.includes("../docs/audit-vipune-policy.md"), "audit.md references vipune policy");
-  assert(auditContent.includes("../docs/audit-code-search-policy.md"), "audit.md references code-search policy");
-  assert(auditContent.includes("../docs/audit-contract-examples.md"), "audit.md references contract examples doc");
-  assert(!auditContent.includes("```json"), "runtime prompt no longer contains inline JSON examples");
+  assert(
+    frontmatter?.[1].includes("argument-hint:"),
+    "audit.md frontmatter includes argument-hint",
+  );
+  assert(
+    auditContent.includes("../docs/audit-vipune-policy.md"),
+    "audit.md references vipune policy",
+  );
+  assert(
+    auditContent.includes("../docs/audit-code-search-policy.md"),
+    "audit.md references code-search policy",
+  );
+  assert(
+    auditContent.includes("../docs/audit-contract-examples.md"),
+    "audit.md references contract examples doc",
+  );
+  assert(
+    !auditContent.includes("```json"),
+    "runtime prompt no longer contains inline JSON examples",
+  );
 
   const discoverySection = getSection(auditContent, "## Standards Discovery Output Shape");
   assert(discoverySection.includes("discovery_mode"), "discovery section mentions discovery_mode");
   assert(discoverySection.includes("quality_gates"), "discovery section mentions quality_gates");
-  assert(discoverySection.includes("../docs/audit-contract-examples.md"), "discovery section points to examples doc");
+  assert(
+    discoverySection.includes("../docs/audit-contract-examples.md"),
+    "discovery section points to examples doc",
+  );
 
   const mergedSection = getSection(auditContent, "## Merged Audit Report Shape");
   assert(mergedSection.includes("summary"), "merged section mentions summary");
@@ -129,26 +150,38 @@ try {
   assert(partialSection.includes("pass_failures"), "partial section mentions pass_failures");
   assert(partialSection.includes("findings"), "partial section mentions findings");
 
-  await handlers.audit!("", makeCtx());
+  await handlers.audit?.("", makeCtx());
   const sentAfterDefault = rec.sentMessages.length;
   assert(sentAfterDefault === 1, "/audit emits one message for default scope");
 
-  await handlers.audit!("src/", makeCtx());
+  await handlers.audit?.("src/", makeCtx());
   const sentAfterSinglePath = rec.sentMessages.length;
   assert(sentAfterSinglePath === 2, "/audit emits a second message for one path");
   assert(rec.sentMessages[1].includes("src/"), "/audit forwards a single path argument");
 
-  await handlers.audit!("src/ lib/", makeCtx());
+  await handlers.audit?.("src/ lib/", makeCtx());
   const sentAfterMultiplePaths = rec.sentMessages.length;
   assert(sentAfterMultiplePaths === 3, "/audit emits a third message for multiple paths");
   assert(rec.sentMessages[2].includes("src/ lib/"), "/audit forwards multiple path arguments");
 
   const examplesContent = await fs.readFile(AUDIT_EXAMPLES, "utf8");
-  assert(examplesContent.includes("## Standards Discovery Output Shape"), "examples doc includes discovery example");
-  assert(examplesContent.includes("## Merged Audit Report Shape"), "examples doc includes merged example");
-  assert(examplesContent.includes("## Partial-Failure Graceful Degradation Shape"), "examples doc includes partial example");
+  assert(
+    examplesContent.includes("## Standards Discovery Output Shape"),
+    "examples doc includes discovery example",
+  );
+  assert(
+    examplesContent.includes("## Merged Audit Report Shape"),
+    "examples doc includes merged example",
+  );
+  assert(
+    examplesContent.includes("## Partial-Failure Graceful Degradation Shape"),
+    "examples doc includes partial example",
+  );
 
-  const discovery = parseJsonBlock(getSection(examplesContent, "## Standards Discovery Output Shape"), "standards discovery example");
+  const discovery = parseJsonBlock(
+    getSection(examplesContent, "## Standards Discovery Output Shape"),
+    "standards discovery example",
+  );
   assertObject(discovery, "standards discovery example");
   assertString(discovery.discovery_mode, "standards discovery example.discovery_mode");
   assertArray(discovery.limitations, "standards discovery example.limitations");
@@ -158,11 +191,23 @@ try {
   assertArray(discoveryDocumented, "standards discovery example.standards.documented");
   const discoveryDocumentedFirst = discoveryDocumented[0];
   assertObject(discoveryDocumentedFirst, "standards discovery example.standards.documented[0]");
-  assertString(discoveryDocumentedFirst.source, "standards discovery example.standards.documented[0].source");
-  assertString(discoveryDocumentedFirst.summary, "standards discovery example.standards.documented[0].summary");
-  assertString(discoveryDocumentedFirst.evidence, "standards discovery example.standards.documented[0].evidence");
+  assertString(
+    discoveryDocumentedFirst.source,
+    "standards discovery example.standards.documented[0].source",
+  );
+  assertString(
+    discoveryDocumentedFirst.summary,
+    "standards discovery example.standards.documented[0].summary",
+  );
+  assertString(
+    discoveryDocumentedFirst.evidence,
+    "standards discovery example.standards.documented[0].evidence",
+  );
 
-  const merged = parseJsonBlock(getSection(examplesContent, "## Merged Audit Report Shape"), "merged audit example");
+  const merged = parseJsonBlock(
+    getSection(examplesContent, "## Merged Audit Report Shape"),
+    "merged audit example",
+  );
   assertObject(merged, "merged audit example");
   assertString(merged.discovery_mode, "merged audit example.discovery_mode");
   const mergedSummary = merged.summary;
@@ -176,7 +221,10 @@ try {
   assertString(mergedFirstFinding.severity, "merged audit example.findings[0].severity");
   assertString(mergedFirstFinding.evidence, "merged audit example.findings[0].evidence");
 
-  const partial = parseJsonBlock(getSection(examplesContent, "## Partial-Failure Graceful Degradation Shape"), "partial failure example");
+  const partial = parseJsonBlock(
+    getSection(examplesContent, "## Partial-Failure Graceful Degradation Shape"),
+    "partial failure example",
+  );
   assertObject(partial, "partial failure example");
   assertString(partial.discovery_mode, "partial failure example.discovery_mode");
   const partialSummary = partial.summary;

@@ -288,6 +288,36 @@ function blockingQuestions(qs: string[]): string[] {
  * bold tolerance there, a real reply scores zero confirmed rows and this
  * correctly returns false.
  */
+/**
+ * Is there something to build, and something to judge it by?
+ *
+ * Deliberately a LOWER bar than `specIsComplete`. That predicate exists to
+ * refute a park — to overturn an "underspecified" verdict — and demands a
+ * confirmed evidence row, which is the right price for overturning a decision
+ * and the wrong price for making one. A straightforward issue with no contested
+ * claims has no evidence to confirm, and parking it would be a regression.
+ *
+ * This one asks only what `proceed` has to MEAN: an intent, at least one
+ * deliverable, and no blocking question whose answer would change what gets
+ * built. Without deliverables `work-driver-plan.ts` silently falls back to
+ * `countEnumeratedFindings`, and #290's decomposition arithmetic degrades on
+ * exactly that input.
+ *
+ * Acceptance criteria are deliberately NOT required. Demanding them looked
+ * right and was wrong: `proceed-with-assumptions` exists precisely for a spec
+ * with a defensible gap, and two existing tests document cycles that proceed
+ * without criteria. Parking those would have been a regression dressed as a
+ * guardrail — the bar has to be the thing whose absence actually breaks
+ * something downstream, not everything one might wish for.
+ */
+export function specIsActionable(spec: NormalisedSpec): boolean {
+  return (
+    spec.intent.trim().length > 0 &&
+    spec.deliverables.some((d) => d.description.trim().length > 0) &&
+    blockingQuestions(spec.openQuestions).length === 0
+  );
+}
+
 export function specIsComplete(spec: NormalisedSpec): boolean {
   return (
     spec.intent.trim().length > 0 &&
@@ -353,6 +383,16 @@ export function reconcileVerdict(spec: NormalisedSpec): NormalisedSpec {
   if (spec.evidence.some((e) => e.verdict === "contradicted")) {
     trace("work-driver: intent — evidence contradicts a proceed verdict, parking");
     return { ...spec, verdict: "park", parkReason: "contradicted-by-code" };
+  }
+  // The symmetric question, which nothing used to ask: a `proceed` has to be a
+  // decision ABOUT something. An empty spec that says proceed is exactly the
+  // "underspecified" case the park path already handles well — it just arrived
+  // wearing the other verdict.
+  if (!specIsActionable(spec)) {
+    trace(
+      "work-driver: intent — 'proceed' with no deliverables or criteria, parking as underspecified",
+    );
+    return { ...spec, verdict: "park", parkReason: "underspecified" };
   }
   // Claiming a plain `proceed` while recording assumptions understates what
   // review needs to see; promote so the assumptions reach the PR body.

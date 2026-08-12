@@ -15,8 +15,8 @@ import { type DriverContext, nextStep } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
-import { runWorkDriver } from "../src/work-driver.ts";
 import { parseStepBackReply } from "../src/work-driver-stepback-ci.ts";
+import { runWorkDriver } from "../src/work-driver.ts";
 import { appendEvent, initialState, readState, writeState } from "../src/workflow-state.ts";
 
 let exit = 0;

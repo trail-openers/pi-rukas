@@ -51,19 +51,13 @@ assert(parallel !== undefined, "dispatch_parallel is registered");
 // --- Schema absence (issue #92) ---
 
 const specialistProps = specialist?.parameters.properties ?? {};
-assert(
-  !("model" in specialistProps),
-  "dispatch_specialist schema does NOT expose `model`",
-);
+assert(!("model" in specialistProps), "dispatch_specialist schema does NOT expose `model`");
 
 const parallelSpecsItems = parallel?.parameters.properties?.specs as
   | { items?: { properties?: Record<string, unknown> } }
   | undefined;
 const parallelItemProps = parallelSpecsItems?.items?.properties ?? {};
-assert(
-  !("model" in parallelItemProps),
-  "dispatch_parallel.specs[] schema does NOT expose `model`",
-);
+assert(!("model" in parallelItemProps), "dispatch_parallel.specs[] schema does NOT expose `model`");
 
 // Sanity: the legitimate fields stayed.
 assert("role" in specialistProps, "dispatch_specialist still declares `role`");

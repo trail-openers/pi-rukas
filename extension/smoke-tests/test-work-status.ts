@@ -12,6 +12,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { renderStatus } from "../src/work-status.ts";
 import {
   type WorkState,
   appendEvent,
@@ -19,7 +20,6 @@ import {
   workStateFile,
   writeState,
 } from "../src/workflow-state.ts";
-import { renderStatus } from "../src/work-status.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

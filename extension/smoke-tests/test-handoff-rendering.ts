@@ -19,9 +19,9 @@
  * re-prompts the operator.
  */
 
-import type { WorkState } from "../src/workflow-state.ts";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
+import type { WorkState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -61,9 +61,7 @@ function intentParkState(parkReason = "underspecified"): WorkState {
         rationale: "The mechanism is confirmed via executed evidence.",
       },
     },
-    eventLog: [
-      { kind: "cap-hit", at: 3, cap: "intent-park", reviewRound: 0, nextStep: "handoff" },
-    ],
+    eventLog: [{ kind: "cap-hit", at: 3, cap: "intent-park", reviewRound: 0, nextStep: "handoff" }],
     // biome-ignore lint/suspicious/noExplicitAny: partial fixture; renderers read a subset
   } as any;
 }
@@ -78,10 +76,7 @@ for (const [name, render] of [
 
   // ---- the four things the #337 handoff got wrong
 
-  assert(
-    !/git push/.test(out),
-    `${name}: no 'git push' — the cycle never created a branch`,
-  );
+  assert(!/git push/.test(out), `${name}: no 'git push' — the cycle never created a branch`);
   assert(
     !/\(branch not captured\)/.test(out.replace(/\*\*Branch\*\*:[^\n]*/g, "")),
     `${name}: the '(branch not captured)' fallback never reaches a command`,
@@ -97,18 +92,12 @@ for (const [name, render] of [
 
   // ---- and what it should say instead
 
-  assert(
-    /intent resolution/i.test(out),
-    `${name}: says the cycle halted at intent resolution`,
-  );
+  assert(/intent resolution/i.test(out), `${name}: says the cycle halted at intent resolution`);
   assert(
     /add acceptance criteria|concrete description/i.test(out),
     `${name}: carries parkAction's text for the recorded reason`,
   );
-  assert(
-    /spec\.txt/.test(out),
-    `${name}: points at the resolver's own reasoning`,
-  );
+  assert(/spec\.txt/.test(out), `${name}: points at the resolver's own reasoning`);
 
   // ---- no chained shell commands anywhere in the rendered output
 
@@ -151,7 +140,12 @@ for (const [name, render] of [
     "a post-branch cap DOES get the takeover command, with the real branch name",
   );
   assert(
-    !/&&/.test(out.split("\n").filter((l) => /^\s*git\b/.test(l.trim())).join("\n")),
+    !/&&/.test(
+      out
+        .split("\n")
+        .filter((l) => /^\s*git\b/.test(l.trim()))
+        .join("\n"),
+    ),
     "...still unchained",
   );
 }

@@ -55,7 +55,10 @@ for (const f of readdirSync(SRC).filter((f) => f.endsWith(".ts"))) {
   }
 }
 
-assert(registered.size >= 9, `found ${registered.size} registered tools: ${[...registered].sort().join(", ")}`);
+assert(
+  registered.size >= 9,
+  `found ${registered.size} registered tools: ${[...registered].sort().join(", ")}`,
+);
 
 const agents = JSON.parse(readFileSync(AGENTS, "utf8")) as {
   agent: Record<string, { permission: Record<string, unknown> }>;
@@ -98,7 +101,9 @@ assert(
   // exists is dead config that hides a typo in a real one.
   const known = new Set([...registered, ...Object.keys(NOT_FOR_PM)]);
   const orphans = Object.keys(perm).filter(
-    (k) => (k.startsWith("dispatch_") || k.endsWith("_loop") || k === "check_review_cap") && !known.has(k),
+    (k) =>
+      (k.startsWith("dispatch_") || k.endsWith("_loop") || k === "check_review_cap") &&
+      !known.has(k),
   );
   assert(
     orphans.length === 0,

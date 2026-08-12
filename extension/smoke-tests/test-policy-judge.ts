@@ -23,6 +23,7 @@
  * says: that a claim only becomes permission when its citation checks out.
  */
 
+import { resolveMergeAuthority } from "../src/work-driver-merge-authority.ts";
 import {
   type DoctrineDoc,
   MERGE_POLICY_QUESTION,
@@ -33,7 +34,6 @@ import {
   extractPolicyAnswer,
   policyPrompt,
 } from "../src/work-driver-policy.ts";
-import { resolveMergeAuthority } from "../src/work-driver-merge-authority.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -45,7 +45,8 @@ function assert(cond: boolean, msg: string) {
 }
 
 /** A judge that answers with a fixed `report_policy` call. */
-const judgeSaying = (...answers: Partial<PolicyAnswer>[]) =>
+const judgeSaying =
+  (...answers: Partial<PolicyAnswer>[]) =>
   async () => ({
     toolUses: answers.map((a) => ({ name: "report_policy", arguments: a })),
   });
@@ -92,8 +93,7 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
 // ------------------------------------------------------------ any language
 
 {
-  const FI =
-    "Agentit saavat yhdistää pull requestin main-haaraan itsenäisesti, kun CI on vihreä.";
+  const FI = "Agentit saavat yhdistää pull requestin main-haaraan itsenäisesti, kun CI on vihreä.";
   const decision = await askPolicy(
     judgeSaying({ verdict: "permitted", quote: FI, sourceFile: "AGENTS.md" }),
     MERGE_POLICY_QUESTION,
@@ -175,9 +175,8 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
     "no doctrine documents → denied",
   );
   assert(
-    !(
-      await askPolicy(async () => undefined, MERGE_POLICY_QUESTION, docs("Agents may merge."))
-    ).permitted,
+    !(await askPolicy(async () => undefined, MERGE_POLICY_QUESTION, docs("Agents may merge.")))
+      .permitted,
     "a judge that returns nothing → denied",
   );
   assert(
@@ -209,7 +208,7 @@ const docs = (text: string, file = "AGENTS.md"): DoctrineDoc[] => [{ file, text 
     docs("Agents may merge."),
   );
   assert(!off.permitted, "PI_ENSEMBLE_POLICY_JUDGE=0 denies rather than falling back to a guess");
-  if (prev === undefined) delete process.env.PI_ENSEMBLE_POLICY_JUDGE;
+  if (prev === undefined) process.env.PI_ENSEMBLE_POLICY_JUDGE = undefined;
   else process.env.PI_ENSEMBLE_POLICY_JUDGE = prev;
 }
 

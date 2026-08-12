@@ -50,9 +50,18 @@ function assert(cond: boolean, msg: string) {
 
 // 3. parseModelValue rejects malformed values cleanly.
 {
-  assert(parseModelValue("no-separator-here") === undefined, "parseModelValue: no separator → undefined");
-  assert(parseModelValue("|model-only") === undefined, "parseModelValue: empty provider → undefined");
-  assert(parseModelValue("provider-only|") === undefined, "parseModelValue: empty model → undefined");
+  assert(
+    parseModelValue("no-separator-here") === undefined,
+    "parseModelValue: no separator → undefined",
+  );
+  assert(
+    parseModelValue("|model-only") === undefined,
+    "parseModelValue: empty provider → undefined",
+  );
+  assert(
+    parseModelValue("provider-only|") === undefined,
+    "parseModelValue: empty model → undefined",
+  );
 }
 
 // 4. buildRoleItems — sentinels in expected positions, all subagent roles
@@ -64,7 +73,10 @@ function assert(cond: boolean, msg: string) {
   };
   const items = buildRoleItems(overrides);
   // First item is "all subagents".
-  assert(items[0]?.value === "__all_subagents__", "buildRoleItems[0] is __all_subagents__ sentinel");
+  assert(
+    items[0]?.value === "__all_subagents__",
+    "buildRoleItems[0] is __all_subagents__ sentinel",
+  );
   assert(items[0]?.label.includes("all subagents"), "buildRoleItems[0] label says 'all subagents'");
   assert(
     items[0]?.description?.includes("anthropic · claude-sonnet-4-7") ?? false,
@@ -79,7 +91,10 @@ function assert(cond: boolean, msg: string) {
   );
   // An unset role shows fallthrough text.
   const ops = items.find((i) => i.value === "ops");
-  assert(ops?.description === "(falls through to default)", "ops (unset) shows fallthrough description");
+  assert(
+    ops?.description === "(falls through to default)",
+    "ops (unset) shows fallthrough description",
+  );
   // Last items: reset-all then cancel sentinels.
   const lastTwo = items.slice(-2).map((i) => i.value);
   assert(
@@ -92,10 +107,34 @@ function assert(cond: boolean, msg: string) {
 //    first then alphabetical, encoded values round-trip.
 {
   const models: PiModel[] = [
-    { provider: "huggingface", model: "Qwen/A", id: "huggingface/Qwen/A", context: "262K", thinking: "yes" },
-    { provider: "anthropic", model: "claude-sonnet-4-7", id: "anthropic/claude-sonnet-4-7", context: "200K", thinking: "yes" },
-    { provider: "local-gpu", model: "Qwen/Qwen3.6-35B-A3B-FP8", id: "local-gpu/Qwen/Qwen3.6-35B-A3B-FP8", context: "262K", thinking: "yes" },
-    { provider: "cerebras", model: "zai-glm-4.7", id: "cerebras/zai-glm-4.7", context: "131K", thinking: "no" },
+    {
+      provider: "huggingface",
+      model: "Qwen/A",
+      id: "huggingface/Qwen/A",
+      context: "262K",
+      thinking: "yes",
+    },
+    {
+      provider: "anthropic",
+      model: "claude-sonnet-4-7",
+      id: "anthropic/claude-sonnet-4-7",
+      context: "200K",
+      thinking: "yes",
+    },
+    {
+      provider: "local-gpu",
+      model: "Qwen/Qwen3.6-35B-A3B-FP8",
+      id: "local-gpu/Qwen/Qwen3.6-35B-A3B-FP8",
+      context: "262K",
+      thinking: "yes",
+    },
+    {
+      provider: "cerebras",
+      model: "zai-glm-4.7",
+      id: "cerebras/zai-glm-4.7",
+      context: "131K",
+      thinking: "no",
+    },
   ];
   const items = buildModelItems(models);
   // First three items are sentinels in fixed order.
@@ -117,15 +156,26 @@ function assert(cond: boolean, msg: string) {
     `non-subscription providers in alpha order (got ${JSON.stringify(nonSub)})`,
   );
   // Description carries provider + context + thinking flag.
-  const local-gpu = realItems.find((i) => parseModelValue(i.value)?.provider === "local-gpu");
+  const local-gpu = realItems.find(
+    (i) => parseModelValue(i.value)?.provider === "local-gpu",
+  );
   assert(
     local-gpu?.description?.includes("local-gpu") ?? false,
     "local-gpu description names the provider",
   );
-  assert(local-gpu?.description?.includes("262K") ?? false, "local-gpu description shows context");
-  assert(local-gpu?.description?.includes("thinks") ?? false, "local-gpu description shows thinking flag");
+  assert(
+    local-gpu?.description?.includes("262K") ?? false,
+    "local-gpu description shows context",
+  );
+  assert(
+    local-gpu?.description?.includes("thinks") ?? false,
+    "local-gpu description shows thinking flag",
+  );
   // The displayed label is the model (without provider prefix).
-  assert(local-gpu?.label === "Qwen/Qwen3.6-35B-A3B-FP8", "local-gpu label is the model id (no provider prefix)");
+  assert(
+    local-gpu?.label === "Qwen/Qwen3.6-35B-A3B-FP8",
+    "local-gpu label is the model id (no provider prefix)",
+  );
 }
 
 // 6. buildModelItems with empty model list still emits the sentinels.

@@ -11,7 +11,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type DriverContext } from "../src/work-driver-context.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
 
@@ -120,7 +120,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           }
           return mkResult({
             role: "ops",
-            text: "branch: feature/issue-950-transient-test\nworktrees:\n  default: " + dir,
+            text: `branch: feature/issue-950-transient-test\nworktrees:\n  default: ${dir}`,
           });
         }
         // Halt cleanly once develop dispatches (out of scope for this test).
@@ -263,7 +263,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     assert(branchAttempts === 1, `#297 T3: opt-out → no retry (got ${branchAttempts})`);
     assert(after?.pipelineState.status === "aborted", "#297 T3: opt-out halts immediately");
   } finally {
-    if (prev === undefined) delete process.env.PI_ENSEMBLE_TRANSIENT_RETRY;
+    if (prev === undefined) process.env.PI_ENSEMBLE_TRANSIENT_RETRY = undefined;
     else process.env.PI_ENSEMBLE_TRANSIENT_RETRY = prev;
     rmSync(dir, { recursive: true, force: true });
   }

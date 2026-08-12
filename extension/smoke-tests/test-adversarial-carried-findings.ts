@@ -13,10 +13,7 @@
  * and into the six-lens review's context.
  */
 
-import {
-  carriedAdversarialFindings,
-  renderCarriedFindings,
-} from "../src/adversarial-findings.ts";
+import { carriedAdversarialFindings, renderCarriedFindings } from "../src/adversarial-findings.ts";
 import type { WorkEvent } from "../src/workflow-state-events.ts";
 
 let exit = 0;

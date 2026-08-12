@@ -106,7 +106,7 @@ assert(
     "## Workstreams",
     "",
     ...Array.from({ length: 9 }, (_, i) =>
-      [`### t${i} — scope ${i}`, `- paths: src/f${i}.ts`, `- out-of-scope: docs/`, ""].join("\n"),
+      [`### t${i} — scope ${i}`, `- paths: src/f${i}.ts`, "- out-of-scope: docs/", ""].join("\n"),
     ),
   ].join("\n");
   const parsed = parseWorkstreams(block);
@@ -150,7 +150,7 @@ assert(
       "PI_ENSEMBLE_MAX_WORKSTREAMS tunes the ceiling",
     );
   } finally {
-    if (prev === undefined) delete process.env.PI_ENSEMBLE_MAX_WORKSTREAMS;
+    if (prev === undefined) process.env.PI_ENSEMBLE_MAX_WORKSTREAMS = undefined;
     else process.env.PI_ENSEMBLE_MAX_WORKSTREAMS = prev;
   }
 }

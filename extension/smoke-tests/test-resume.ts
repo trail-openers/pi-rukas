@@ -377,7 +377,7 @@ const withInFlight = (over: Partial<WorkState> = {}): WorkState => {
   try {
     assert(!resumeEnabled(), "PI_ENSEMBLE_RESUME=0 restores the pre-#382 behaviour");
   } finally {
-    if (prev === undefined) delete process.env.PI_ENSEMBLE_RESUME;
+    if (prev === undefined) process.env.PI_ENSEMBLE_RESUME = undefined;
     else process.env.PI_ENSEMBLE_RESUME = prev;
   }
   assert(resumeEnabled(), "and resume is ON by default");

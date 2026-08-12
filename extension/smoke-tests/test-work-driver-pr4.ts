@@ -13,9 +13,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { type DriverContext, nextStep } from "../src/work-driver-context.ts";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
-import { runWorkDriver } from "../src/work-driver.ts";
 import { parseHandoffCommentUrl } from "../src/work-driver-handoff.ts";
 import { parsePrNumber } from "../src/work-driver-lens.ts";
+import { runWorkDriver } from "../src/work-driver.ts";
 import { appendEvent, initialState, writeState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -312,7 +312,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         "opt-out: speculative explore skipped under PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE=1",
       );
     } finally {
-      if (prev === undefined) delete process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE;
+      if (prev === undefined) process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE = undefined;
       else process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE = prev;
     }
   } finally {

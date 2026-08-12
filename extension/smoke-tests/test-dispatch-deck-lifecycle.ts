@@ -147,7 +147,7 @@ function fakeCtx(): { calls: WidgetCall[]; ctx: Parameters<typeof attach>[0] } {
   startBatchEntry("muted-b", { label: "developer×2", size: 2 });
   assert(snapshot().length === 0, "quiet env var prevents single entry registration");
   assert(batchSnapshot().length === 0, "quiet env var prevents batch entry registration");
-  delete process.env.PI_ENSEMBLE_QUIET_STATUS;
+  process.env.PI_ENSEMBLE_QUIET_STATUS = undefined;
   startEntry("audible", { label: "developer", role: "developer" });
   assert(snapshot().length === 1, "deck resumes when env var unset");
 }

@@ -74,10 +74,7 @@ registerWorkTools(fakePi);
 
   // The source must force it off rather than merely omit it: `parseWorkArgs`
   // reads `--merge`, and an issues array is stringified into that same parser.
-  const src = readFileSync(
-    path.resolve(import.meta.dirname, "..", "src", "work-tool.ts"),
-    "utf8",
-  );
+  const src = readFileSync(path.resolve(import.meta.dirname, "..", "src", "work-tool.ts"), "utf8");
   assert(
     /mergeGrant:\s*false/.test(src),
     "canary: mergeGrant is forced to false, not just left unset",
