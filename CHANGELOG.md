@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.40](https://github.com/randomm/pi-ensemble/compare/v0.12.39...v0.12.40) (2026-08-12)
+
+
+### Bug Fixes
+
+* **work-driver:** provision worktrees, catch path collisions at plan time ([#448](https://github.com/randomm/pi-ensemble/issues/448)) ([95078fe](https://github.com/randomm/pi-ensemble/commit/95078fea0e34b4f384e5ec4d7c38eb53eba76a9f))
+
 ## [0.12.39](https://github.com/randomm/pi-ensemble/compare/v0.12.38...v0.12.39) (2026-08-12)
 
 
