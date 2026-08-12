@@ -129,6 +129,8 @@ export async function runAdversarial(
     /** #298 — true when the loop died on infrastructure (no verdict exists). */
     infra?: boolean;
     rejectionText?: string;
+    /** Non-blocking findings outstanding when this workstream passed. */
+    passFindings?: string;
     completionEvent?: WorkEvent;
     failureEvent?: WorkEvent;
     branchEvent?: WorkEvent;
@@ -191,6 +193,14 @@ export async function runAdversarial(
                 ? `/work issue #${ctx.issue}: gating diff for workstream "${id}" before commit (Step 5).`
                 : `/work issue #${ctx.issue}: gating diff before commit (Step 5).`,
             workCwd: cwd,
+            // Re-read before each round. Without this, rounds 2+ are prompted
+            // with the pre-fix diff and the reviewer has to notice for itself
+            // that its earlier objections were already addressed.
+            getDiff: () => fetchDiff(cwd),
+            // #278 — the reviewer judges the diff against what was ASKED FOR,
+            // not just against generic code quality. Absent on cycles resumed
+            // from older state files, which degrade to the previous behaviour.
+            issueBody: state.pipelineState.issueBodyArtifact,
           },
           // No AbortController plumbing in v1 — spawn-level timeouts
           // in spawn.ts (per-role) bound the work.
@@ -246,6 +256,8 @@ export async function runAdversarial(
         rounds,
         infra: !ok && result.loopOutcome === "infra-failure",
         rejectionText: ok ? undefined : result.text,
+        // A pass that carried unresolved findings says so in its headline.
+        passFindings: ok && result.text?.includes("PASSED WITH FINDINGS") ? result.text : undefined,
         completionEvent,
         branchEvent:
           ids.length > 1
@@ -293,11 +305,18 @@ export async function runAdversarial(
   const aggregateJobId = makeRunId();
   const failed = outcomes.filter((o) => !o.ok);
   if (failed.length === 0) {
+    // Non-blocking findings survive the pass. `PASSED WITH FINDINGS` is not
+    // `APPROVED`, and the difference has to reach the PR and the lens gate.
+    const carried = outcomes
+      .map((o) => (o.passFindings?.trim() ? `### ${o.id}\n\n${o.passFindings.trim()}` : ""))
+      .filter(Boolean)
+      .join("\n\n---\n\n");
     next = appendEvent(next, {
       kind: "adversarial-approved",
       at: Date.now(),
       jobId: aggregateJobId,
       rounds: maxRounds,
+      ...(carried ? { findings: carried } : {}),
     });
 
     // Issue #305 — commit lens-fix changes AFTER adversarial approves.

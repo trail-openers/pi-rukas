@@ -41,13 +41,20 @@
  */
 export function readMarker(text: string, token: string, value: RegExp): string | undefined {
   const v = value.source;
-  const inline = text.match(new RegExp(`${token}\\s*:?\\s*\\**\\s*:?\\s*${v}\\b`, "i"));
-  if (inline?.[1]) return inline[1].toLowerCase();
+  // LAST match, not first. `text.match` without /g returns the first hit, and a
+  // reviewer that mentions the token while thinking — "I will return VERDICT:
+  // ISSUES_FOUND if the parser is wrong" — had its musing read as its verdict.
+  // The marker a model means is the one it ends on.
+  const inline = [...text.matchAll(new RegExp(`${token}\\s*:?\\s*\\**\\s*:?\\s*${v}\\b`, "gi"))];
+  const lastInline = inline[inline.length - 1];
+  if (lastInline?.[1]) return lastInline[1].toLowerCase();
   // Heading form: the token on its own line, the value on the next.
-  const heading = text.match(
-    new RegExp(`^#{1,6}\\s*\\**\\s*${token}\\s*\\**\\s*$\\n+\\s*\\**\\s*${v}\\b`, "im"),
-  );
-  return heading?.[1]?.toLowerCase();
+  const headings = [
+    ...text.matchAll(
+      new RegExp(`^#{1,6}\\s*\\**\\s*${token}\\s*\\**\\s*$\\n+\\s*\\**\\s*${v}\\b`, "gim"),
+    ),
+  ];
+  return headings[headings.length - 1]?.[1]?.toLowerCase();
 }
 
 /**

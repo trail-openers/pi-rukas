@@ -13,6 +13,7 @@ import { exec } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { carriedAdversarialFindings, renderCarriedFindings } from "./adversarial-findings.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { cachedIssueTitle, integrate, withIntegrationLock } from "./work-driver-integrate.ts";
@@ -147,6 +148,7 @@ export async function mechanizedCommitPr(
       ...companionLines,
       ...workstreamLines,
       assumptionsBlock,
+      renderCarriedFindings(carriedAdversarialFindings(state.eventLog)),
     ]
       .filter((l) => l !== "")
       .join("\n");

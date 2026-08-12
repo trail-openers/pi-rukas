@@ -11,6 +11,7 @@
 
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
+import { carriedAdversarialFindings } from "./adversarial-findings.ts";
 import { type WideningFinding, scanTypeWidening } from "./invariant-scan.ts";
 import { buildEvidence, runClaimScan } from "./lens-evidence.ts";
 import { runLensReview } from "./lens-review.ts";
@@ -148,6 +149,14 @@ export async function runLens(
 
   // Build lens context: base context + widening findings (if any).
   let context = `/work issue #${ctx.issue}, lens-review round ${round}`;
+  // Non-blocking findings the adversarial gate passed on. It saw only the diff;
+  // this gate applies the project's configurable severity threshold and has the
+  // issue, the lenses and the full branch — so it is the right place to decide
+  // whether any of them actually matter.
+  const carried = carriedAdversarialFindings(state.eventLog);
+  if (carried) {
+    context += `\n\nOUTSTANDING FROM THE ADVERSARIAL GATE (non-blocking there — judge them yourself):\n${carried}`;
+  }
   if (wideningScanEnabled && widenings.length > 0) {
     const findingsSummary = widenings
       .map(

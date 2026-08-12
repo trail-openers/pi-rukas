@@ -84,6 +84,24 @@ The real cause was almost always a provider 429 (see [Tuning](#tuning) above). M
 
 Check the raw transcript under `~/.pi/agent/ensemble-runs/<date>/` before concluding a child did no work.
 
+## Review gates
+
+### `/work` hit the adversarial cap and handed off with no PR
+
+**Symptom:** the cycle reaches step 5, the adversarial loop runs its three rounds, and the run parks with *"could not reach APPROVED"* — no commit, no branch pushed, nothing on GitHub. The diff is left unstaged in `.worktrees/issue-<n>-*/`, often with green tests.
+
+**Cause (fixed):** the loop exited only on `APPROVED`, so `ISSUES_FOUND` — which `agents-base/adversarial-developer.md` explicitly defines as *"Should address, **not blocking**"* — halted the cycle exactly as hard as `CRITICAL_ISSUES_FOUND`. Measured across 253 loops, 41 of 49 rejections (83.7%) ended on that non-blocking verdict. `MINOR_OBSERVATIONS` was worse: absent from the code's enum entirely, so a reviewer that used it fell through to the `ISSUES_FOUND` default and was reported as having produced no readable verdict.
+
+**Now:** every unresolved verdict still earns a fix round, but at the last round only `CRITICAL_ISSUES_FOUND` blocks. A pass that left findings behind reports `PASSED WITH FINDINGS` rather than `APPROVED`, and those findings appear in the PR body under *"Adversarial review — non-blocking findings"* and in the six-lens review's context. If your cycle still parks here, the reviewer returned `CRITICAL_ISSUES_FOUND` — read the *"What the reviewer objected to"* section of the handoff comment, which now quotes it.
+
+### The handoff says `Rounds: 0 of 3` but the loop clearly ran
+
+`reviewRound` is the **lens-review** counter and is legitimately 0 when a cycle dies at step 5 without reaching step 7. It used to be printed under an adversarial cap too, so a loop that ran three full rounds reported zero. Fixed: an adversarial cap now reports its own round count, and the handoff quotes the blocking finding instead of the generic *"the diff still has issues the adversarial-developer flagged"*.
+
+### A restarted cycle erased its own history
+
+`/work <n> --restart` overwrites `.pi/work-state/<n>.json`, including the event log of the run you are trying to diagnose. Copy the state file before restarting. The subagent transcripts under `~/.pi/agent/ensemble-runs/<date>/` survive longer but are pruned to the last 20 batches (`runs.ts`); the durable record is `~/.pi/agent/sessions/`, which is not pruned.
+
 ## Permissions
 
 ### Host-mode pi-ensemble is asking me to approve every command

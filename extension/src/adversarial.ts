@@ -1,9 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
+import { decideLoopAction, parseVerdict } from "./adversarial-verdict.ts";
 import { markOrchestrator, setOrchestratorActiveChild, startJob } from "./async-jobs.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { readEnumMarker } from "./reply-markers.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
+import { trace } from "./trace.ts";
 import type { AdversarialVerdict, DispatchFailureCause, DispatchResult } from "./types.ts";
 import { ADVERSARIAL_TRANSIENT_MAX_RETRIES, isRateLimit429Msg } from "./types.ts";
 
@@ -72,7 +75,15 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
  * to resolve into the currently-running inner spawn.
  */
 export async function runAdversarialLoop(
-  params: { diff: string; context: string; workCwd?: string },
+  params: {
+    diff: string;
+    context: string;
+    workCwd?: string;
+    /** Recompute the diff before each review. Without it rounds 2+ see pre-fix material. */
+    getDiff?: () => Promise<string>;
+    /** The issue this diff is meant to satisfy (#278). Optional: older state files have none. */
+    issueBody?: string;
+  },
   signal: AbortSignal,
   orchestratorJobId: string,
 ): Promise<DispatchResult> {
@@ -269,12 +280,34 @@ export async function runAdversarialLoop(
     });
   };
 
+  // Re-read before every review. `fetchDiff` used to run once, before the loop,
+  // so rounds 2 and 3 were prompted with pre-fix material and the reviewer had
+  // to notice the staleness itself.
+  let diff = params.diff;
+  const priorFindings: string[] = [];
+
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     if (signal.aborted) break;
+    if (round > 1 && params.getDiff) {
+      try {
+        const fresh = await params.getDiff();
+        if (fresh.trim()) diff = fresh;
+      } catch (err) {
+        // A failed re-read is not a reason to abandon the round; the previous
+        // diff plus the live worktree is what the reviewer had before this.
+        trace(`adversarial: diff re-read failed for round ${round}: ${(err as Error).message}`);
+      }
+    }
     const adv = await runPhaseWithInfraRetry(
       "adversarial-developer",
       `round${round}-review`,
-      buildAdversarialPrompt(params.diff, params.context, round),
+      buildAdversarialPrompt({
+        diff,
+        context: params.context,
+        round,
+        maxRounds: MAX_ROUNDS,
+        issueBody: params.issueBody,
+      }),
       params.workCwd,
     );
     const advCls = classifyDispatchOutcome(adv);
@@ -283,25 +316,42 @@ export async function runAdversarialLoop(
     const verdict = parseVerdict(adv.text);
     rounds.push({ round, verdict, ms: adv.ms });
 
-    if (verdict.status === "APPROVED") {
+    const action = decideLoopAction(verdict.status, round, MAX_ROUNDS);
+    if (action === "pass") {
+      // `PASSED WITH FINDINGS` rather than `APPROVED` when something is still
+      // outstanding: the operator (and the lens gate) must be able to tell the
+      // two apart, and `commit-pr` carries the findings into the PR body.
+      const clean = verdict.status === "APPROVED";
       return synthesizeResult({
         ok: true,
         loopOutcome: "approved",
-        text: `Adversarial APPROVED after round ${round}.\n\n${verdict.findings}`,
+        text: clean
+          ? `Adversarial APPROVED after round ${round}.\n\n${verdict.findings}`
+          : `Adversarial PASSED WITH FINDINGS after round ${round} (verdict: ${verdict.status} — non-blocking per agents-base/adversarial-developer.md). These findings are unresolved and travel to the PR body and the lens review; they did not block the commit.\n\n${verdict.findings}`,
         ms: Date.now() - start,
         usage,
         transcriptPath: lastTranscript,
         model: lastModel,
       });
     }
-
-    if (round === MAX_ROUNDS) break;
+    if (action === "reject") break;
 
     const fix = await runPhaseWithInfraRetry(
       "developer",
       `round${round}-fix`,
-      buildFixPrompt(verdict.findings, params.context),
+      buildFixPrompt({
+        findings: verdict.findings,
+        context: params.context,
+        diff,
+        round,
+        issueBody: params.issueBody,
+        priorFindings: [...priorFindings],
+      }),
       params.workCwd,
+    );
+    // Record what this round asked for, so the next fixer does not undo it.
+    priorFindings.push(
+      `Round ${round} (${verdict.status}): ${summariseFindings(verdict.findings)}`,
     );
     const fixCls = classifyDispatchOutcome(fix);
     if (fixCls.cause !== "success") return infraFailureResult(round, "fix", fix, fixCls);
@@ -356,49 +406,16 @@ function synthesizeResult(i: SynthesizeInput): DispatchResult {
   };
 }
 
-function buildAdversarialPrompt(diff: string, context: string, round: number): string {
-  return `You are reviewing the diff below. Context: ${context}\nRound: ${round} of ${MAX_ROUNDS}.
-
-Attack this implementation. Find edge cases, security holes, race conditions, API misuse, flawed assumptions. Run lint/type/test if any. Return a verdict line at the end exactly matching one of:
-  VERDICT: APPROVED
-  VERDICT: ISSUES_FOUND
-  VERDICT: CRITICAL_ISSUES_FOUND
-
-Diff:
-\`\`\`diff
-${diff}
-\`\`\``;
-}
-
-function buildFixPrompt(findings: string, context: string): string {
-  return `Fix the following adversarial review findings. Original context: ${context}\n\nFindings:\n${findings}\n\nMake the minimal changes needed to address every finding. Run local quality gates before returning.`;
-}
-
 /**
- * Read the reviewer's verdict marker.
+ * One line of what a round objected to, for the next round's fixer.
  *
- * #408 — this was `/VERDICT:\s*(APPROVED|…)/`: case-sensitive, no tolerance
- * for the `**VERDICT: APPROVED**` that reviewers routinely write. A miss
- * defaulted to `ISSUES_FOUND` *and* passed the whole reply on as `findings`,
- * so an approval was handed to the fix-developer as a list of things to fix.
- * Another round then burned on a diff nobody had objected to.
- *
- * The default is still `ISSUES_FOUND` — another review round is the safe
- * direction, and unlike the merge gate nothing irreversible follows. But an
- * unparsed reply is now marked as such, so `findings` is not passed off as
- * review output it never was.
+ * The full text is the reviewer's entire reply — narration included — and
+ * replaying all of it every round would crowd out the round's actual findings.
  */
-function parseVerdict(text: string): AdversarialVerdict {
-  const status = readEnumMarker(text, "VERDICT", [
-    "APPROVED",
-    "ISSUES_FOUND",
-    "CRITICAL_ISSUES_FOUND",
-  ] as const);
-  if (status) return { status, findings: text, raw: text };
-  return {
-    status: "ISSUES_FOUND",
-    findings: `The reviewer's reply contained no readable VERDICT marker, so its verdict is unknown — this is NOT a list of findings. Treat the text below as unstructured review notes, and if it raises nothing actionable, say so plainly rather than inventing work.\n\n${text}`,
-    raw: text,
-    verdictParsed: false,
-  };
+function summariseFindings(findings: string): string {
+  const line = findings
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => /^(?:[-*\d]|###?\s)/.test(l) && l.length > 12);
+  return (line ?? findings.trim().split("\n")[0] ?? "(no detail)").slice(0, 200);
 }

@@ -178,8 +178,19 @@ export type DispatchFailureCause =
  */
 export const ADVERSARIAL_TRANSIENT_MAX_RETRIES = 3;
 
+/**
+ * The verdicts `agents-base/adversarial-developer.md` offers the reviewer.
+ * Two of them are documented there as non-blocking; see `adversarial-verdict.ts`
+ * for what each costs the loop.
+ */
+export type AdversarialVerdictStatus =
+  | "CRITICAL_ISSUES_FOUND"
+  | "ISSUES_FOUND"
+  | "MINOR_OBSERVATIONS"
+  | "APPROVED";
+
 export interface AdversarialVerdict {
-  status: "APPROVED" | "ISSUES_FOUND" | "CRITICAL_ISSUES_FOUND";
+  status: AdversarialVerdictStatus;
   findings: string;
   raw: string;
   /**

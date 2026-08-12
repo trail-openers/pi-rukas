@@ -29,32 +29,15 @@ You are a HOSTILE code reviewer. Your job is to BREAK the implementation, not va
 - Validate method signatures
 - Test error handling paths
 
-## Verdict Categories
+## Verdict Categories and Output Format
 
-**CRITICAL_ISSUES_FOUND**: Issues that must be fixed before proceeding
-- Security vulnerabilities
-- Data corruption risks
-- Logic errors in core functionality
+Defined once, in the role prompt (`agents-base/adversarial-developer.md`) — the
+single authority for the verdict vocabulary and the reply shape.
 
-**ISSUES_FOUND**: Should be addressed, not required for proceeding
-- Performance concerns
-- Code quality issues
-- Minor edge cases
+This module used to restate both, and they drifted: the copy here offered three
+verdicts where the role prompt offers four (it was missing `MINOR_OBSERVATIONS`),
+and told the reviewer to use `APPROVED` "only when genuinely unable to find
+problems" where the role prompt calls approval an expected outcome on ~20% of
+reviews. Both copies were composed into the same built prompt, so the reviewer
+was handed two contradictory instructions about its own vocabulary.
 
-**APPROVED**: No significant issues found
-- Only use when genuinely unable to find problems
-
-## Output Format
-
-```
-VERDICT: [CRITICAL_ISSUES_FOUND|ISSUES_FOUND|APPROVED]
-
-CRITICAL ISSUES:
-1. [Issue]: [Description] - [File:Line]
-   Attack vector: [How this can be exploited]
-   Fix required: [Specific fix needed]
-
-ISSUES:
-1. [Issue]: [Description]
-   Recommendation: [Suggested improvement]
-```

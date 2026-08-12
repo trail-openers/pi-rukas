@@ -106,6 +106,17 @@ export type WorkEvent =
       at: number;
       jobId: string;
       rounds: number;
+      /**
+       * Non-blocking findings that were outstanding when the gate passed.
+       *
+       * Only `CRITICAL_ISSUES_FOUND` blocks the commit; `ISSUES_FOUND` and
+       * `MINOR_OBSERVATIONS` are documented as non-blocking and let the cycle
+       * proceed. They are carried here so `commit-pr` can put them in the PR
+       * body and the six-lens review can see them — passing a finding on is
+       * not the same as discarding it, and that distinction is what makes the
+       * relaxed terminal rule safe.
+       */
+      findings?: string;
     }
   | {
       kind: "adversarial-rejected";

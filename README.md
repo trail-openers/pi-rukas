@@ -253,7 +253,7 @@ Tools (all async via push-callback — tools return a `{ jobId }` immediately; t
 |---|---|
 | `dispatch_specialist` | Spawn exactly ONE specialist (developer / ops / explore / adversarial-developer / code-review-specialist). |
 | `dispatch_parallel` | Fan out 2-10 specialists in parallel; ONE consolidated report arrives when all complete. |
-| `adversarial_loop` | Encapsulated 3-round review-then-fix gate. Takes the developer's diff, runs an adversarial review, spawns a fresh developer to address any findings, re-reviews; up to 3 rounds. The mandatory adversarial gate before any commit. |
+| `adversarial_loop` | Encapsulated 3-round review-then-fix gate. Takes the developer's diff, runs an adversarial review, spawns a fresh developer to address any findings, re-reviews; up to 3 rounds, with the diff re-read before each. The mandatory adversarial gate before any commit. Every unresolved verdict earns a fix round, but only `CRITICAL_ISSUES_FOUND` blocks when the rounds run out — `ISSUES_FOUND` and `MINOR_OBSERVATIONS` are non-blocking by the reviewer's own doctrine, and their findings are carried into the PR body and the six-pass review instead of killing the cycle. |
 | `dispatch_lens_review` | Six-pass code review — fans out six children, each pinned to its lens skill. Findings come back as native `report_finding` tool calls (schema-validated by Pi inside the child), deduped by `(path, line, title)`, precedence-merged, turned into a verdict. |
 | `dispatch_status` | List in-flight async jobs (jobId, role, elapsed). Metadata only — never transcript content. |
 | `dispatch_kill <jobId>` | Abort a running subagent or batch. |
