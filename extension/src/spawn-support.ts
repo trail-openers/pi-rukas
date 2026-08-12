@@ -10,6 +10,7 @@
 
 import os from "node:os";
 import path from "node:path";
+import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { type RoleName, isRoleName } from "./roles.ts";
 
 // Hard wall-clock cap on subagent runtime (issue #114). PR5 splits the old
@@ -145,4 +146,19 @@ export function getPiInvocation(args: string[]): { command: string; args: string
   // Fall back to `pi` on PATH — works for smoke tests and any other context
   // where argv[1] isn't a Pi CLI script.
   return { command: "pi", args };
+}
+
+/**
+ * Is the child about to retry this failure itself?
+ *
+ * Pi's own retry is in-process, so it keeps the child's accumulated context and
+ * resumes the work. The driver's retry re-dispatches from scratch. Whenever
+ * both are available the child's is strictly better, so the parent's only job
+ * is to stay out of its way — which means not closing stdin.
+ *
+ * Read defensively: a Pi version that does not stamp the flag simply yields
+ * `false`, restoring the previous behaviour exactly.
+ */
+export function willRetryAfter(event: PiJsonEvent): boolean {
+  return event.willRetry === true;
 }

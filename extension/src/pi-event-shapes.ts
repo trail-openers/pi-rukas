@@ -112,6 +112,13 @@ export interface PiJsonEvent {
   type?: string;
   messages?: PiMessage[];
   message?: PiMessage;
+  /**
+   * Pi stamps this on `agent_end` when it is about to retry a transient
+   * provider failure itself (3 attempts, 2s/4s/8s backoff). The parent must not
+   * close the child's stdin while it is set — doing so ends the process at the
+   * moment it was about to recover. See `willRetryAfter` in spawn.ts.
+   */
+  willRetry?: boolean;
 }
 
 export interface ExtensionPackageJson {

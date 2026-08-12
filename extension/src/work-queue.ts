@@ -113,7 +113,16 @@ export function isSystemicFailure(state: WorkState | undefined): {
 function parkReason(state: WorkState | undefined): { reason: string; failedStep?: string } {
   if (!state) return { reason: "cycle produced no state file" };
   const cap = [...state.eventLog].reverse().find((e) => e.kind === "cap-hit");
-  const step = state.pipelineState.lastCompletedStep ?? state.pipelineState.currentStep;
+  // `lastCompletedStep` is the last step that SUCCEEDED, so reporting it as the
+  // failure point names the wrong step every time — an operator chasing a failed
+  // develop was sent to `branch` and spent half a session diagnosing a branch
+  // collision that never happened. The halt-cascade stamps the real step into
+  // the cap itself (`step-failed:<step>`); prefer that whenever it is present.
+  const capStep =
+    cap?.kind === "cap-hit" && cap.cap.startsWith("step-failed:")
+      ? cap.cap.slice("step-failed:".length)
+      : undefined;
+  const step = capStep ?? state.pipelineState.lastCompletedStep ?? state.pipelineState.currentStep;
   if (cap?.kind === "cap-hit") {
     // Carry the intent park's specific reason, so humanActionFor and the
     // summary can be specific rather than saying "cap intent-park".

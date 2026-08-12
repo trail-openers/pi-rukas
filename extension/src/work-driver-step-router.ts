@@ -24,6 +24,7 @@ import {
   transientRetryBackoffMs,
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
+import type { WorkEvent } from "./workflow-state-events.ts";
 import { type WorkState, type WorkStep, appendEvent, writeState } from "./workflow-state.ts";
 
 /**
@@ -51,6 +52,44 @@ export function __setSleepFn(fn: (ms: number) => Promise<void>): () => void {
  * transition (a retry re-run or a synthesized cap-hit → handoff
  * re-entry, both of which already persisted state via `writeState`).
  */
+/**
+ * The dispatch failure this step ended on, if any.
+ *
+ * A single-dispatch step ends ON its failure, so the last event is the answer.
+ * A FAN-OUT step does not: `runDevelop` finishes by appending a
+ * `branch-completed` per workstream and then `branches-converged`, which buries
+ * the per-child failures several events back. Reading only the last event
+ * therefore classified fan-out failures as nothing at all.
+ *
+ * Measured consequence: three developers hit a 429 carrying a 59-second
+ * retry-after — a delay the taxonomy already knows how to wait out, and does
+ * wait out for single dispatches — and the step halted with
+ * `transientRetryAttempts: {}`. Never attempted, not exhausted. A transient
+ * throttle and "the developer genuinely failed" collapsed into the same
+ * `ok:false`, and the cap tripped on the latter's semantics.
+ *
+ * The scan is bounded by `branches-fanned-out`, the marker that opens the
+ * fan-out, so it can never reach back into a previous step. All children must
+ * have failed for this to return a failure: if any workstream succeeded, the
+ * step's problem is not purely transient and re-running it is not the answer.
+ */
+export function failureEventOf(events: readonly WorkEvent[]): WorkEvent | undefined {
+  const last = events[events.length - 1];
+  if (last?.kind === "dispatch-failed" || last?.kind === "dispatch-failed-provider") return last;
+  if (last?.kind !== "branches-converged") return undefined;
+  if (last.verdicts.some((v: { ok: boolean }) => v.ok)) return undefined;
+
+  let failure: WorkEvent | undefined;
+  for (let i = events.length - 2; i >= 0; i--) {
+    const e = events[i];
+    if (!e || e.kind === "branches-fanned-out") break;
+    if (!failure && (e.kind === "dispatch-failed" || e.kind === "dispatch-failed-provider")) {
+      failure = e;
+    }
+  }
+  return failure;
+}
+
 export async function routeStepOutcome(
   ctx: DriverContext,
   stateIn: WorkState,
@@ -61,7 +100,7 @@ export async function routeStepOutcome(
 ): Promise<{ state: WorkState; retry: boolean }> {
   let state = stateIn;
   {
-    const lastEvent = state.eventLog[state.eventLog.length - 1];
+    const lastEvent = failureEventOf(state.eventLog);
     const elapsed = Date.now() - stepStartedAt;
     if (lastEvent?.kind === "dispatch-failed" || lastEvent?.kind === "dispatch-failed-provider") {
       // #314 — classify once, derive both reason and retry policy.

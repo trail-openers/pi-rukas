@@ -965,6 +965,29 @@ Three things now prevent it:
 
 **Score bands apply to semantic mode only** — `--no-hybrid --recency 0.0`.
 
+### A dispatch died and the work is gone
+
+Three distinct causes, and they are told apart by *when* the child died.
+
+**The child was about to retry and we hung up on it.** Pi retries transient provider failures itself — 3 attempts, 2s/4s/8s backoff — and stamps `willRetry` on `agent_end`. The harness used to close the child's stdin on any `agent_end`, and rpc mode exits when stdin ends, so the retry never ran. Fixed: stdin stays open while `willRetry` is set. The child's retry is the one worth having — it is in-process, so it resumes with its context intact, where a driver-level retry starts over.
+
+**A fan-out step hit a 429 and halted instead of waiting.** The taxonomy honours a provider's `retry-after` — that is why single dispatches recover from throttling. It never ran for fan-out children, because the router classified only the last event and `runDevelop` ends on `branches-converged`. Fixed. Note the deliberate limit: if *any* workstream succeeded, the step is not retried, because re-running it would re-dispatch work that already landed.
+
+**The machine went to sleep.** This is the most common one on a laptop and it looks exactly like a provider failure — `Provider request error: terminated`. That string is undici's mid-stream body abort, raised when a socket dies; the real cause is discarded upstream. Signs it was a suspend:
+
+- the gap before death is 15–25 minutes with no output
+- a long shell command shows huge wall clock and tiny CPU (`real 15m37s / user 0m28s`)
+- the same error appears on unrelated providers
+
+Check with `pmset -g log | grep -E 'Sleep|DarkWake'`. Note that `pmset -g custom` showing `sleep 1` is *not* disabled sleep — if the only assertion holding it off is powerd's "Prevent sleep while display is on", the machine sleeps a minute after your screen switches off, in DarkWake cycles you never see.
+
+The fix is not in the harness:
+
+```bash
+caffeinate -dimsu          # for the session
+sudo pmset -a sleep 0      # permanent
+```
+
 ### The developer prompt now carries prior memory
 
 At the develop step the driver searches for memories about the files the workstream will touch, and injects what it finds above the task. Rows are framed as **hypotheses** and carry `[vipune:<id>]` so the developer can cite one back if the code disagrees with it.

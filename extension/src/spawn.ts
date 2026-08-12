@@ -72,6 +72,7 @@ import {
   makeRunId,
   roleTimeoutMs,
   transcriptPathFor,
+  willRetryAfter,
 } from "./spawn-support.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
@@ -361,7 +362,8 @@ async function spawnSpecialistInner(
     // dropping the rest keeps per-spawn memory bounded.
     if (parsed.type === "agent_end") {
       lastAgentEnd = parsed;
-      completePrompt();
+      // Not while the child is retrying — see `willRetryAfter`.
+      if (!willRetryAfter(parsed)) completePrompt();
     } else if (
       parsed.type === "message_end" &&
       (parsed as { message?: { role?: string } }).message?.role === "assistant"
