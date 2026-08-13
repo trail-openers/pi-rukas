@@ -67,6 +67,7 @@ import { withSpawnSlot } from "./spawn-semaphore.ts";
 import {
   STDERR_TAIL_BYTES,
   assertLiveSpawnAllowed,
+  buildChildArgs,
   buildCwdHint,
   getPiInvocation,
   inactivityTimeoutMs,
@@ -80,62 +81,10 @@ import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
 import { vipuneChildEnv } from "./vipune.ts";
 
-export { buildCwdHint, makeRunId };
-
-const CHILD_ARGS_BASE = ["--mode", "rpc", "--no-extensions"] as const;
-
-/**
- * Build the complete child argument list for spawning a subagent Pi process.
- * Used by `spawnSpecialist` and exported for smoke-test verification.
- *
- * Argument order is load-bearing:
- *   - `--provider` must precede `--model` so Pi disambiguates against the
- *     provider catalog (custom providers need explicit provider IDs).
- *   - Extension `--extension` flags are appended after model flags so Pi
- *     resolves the model before extensions can override it.
- */
-export function buildChildArgs(
-  role: string,
-  tmpPromptFile: string,
-  transcriptPath: string,
-  modelChoice: ResolvedModelChoice,
-  subagentGuardEnabled: boolean,
-  extraArgs?: string[],
-): string[] {
-  const args: string[] = [...CHILD_ARGS_BASE];
-  // `--mode rpc` keeps stdin open for JSON command injection
-  // ({type:"prompt"|"steer"|"abort"|"follow_up"}); this is the foundation
-  // for dispatch_steer (#152) and all async push-callback flows.
-  args.push("--session", transcriptPath);
-  args.push("--append-system-prompt", tmpPromptFile);
-  // `--exclude-tools` requires Pi >= 0.83.0; with pin at ~0.82.0 the
-  // flag is accepted by 0.82.x but was unknown in 0.75.x (caused
-  // immediate child exit). Verified by test-role-tools.ts smoke test.
-  const excludedTools = excludeToolsFor(role);
-  if (excludedTools) {
-    args.push("--exclude-tools", excludedTools);
-  }
-  if (modelChoice.provider) {
-    args.push("--provider", modelChoice.provider);
-  }
-  if (modelChoice.model) {
-    args.push("--model", modelChoice.model);
-  }
-  for (const ext of discoverInstalledExtensions(role)) {
-    args.push("--extension", ext);
-  }
-  applyUserExtension(args, role);
-  if (subagentGuardEnabled) {
-    const ensemblePath = piEnsembleExtensionPath();
-    if (ensemblePath) {
-      args.push("--extension", ensemblePath);
-    }
-  }
-  if (extraArgs && extraArgs.length > 0) {
-    args.push(...extraArgs);
-  }
-  return args;
-}
+// `buildChildArgs` lives in spawn-support.ts (§12): argument construction is
+// invocation plumbing, which that module already holds. Re-exported here
+// because smoke tests assert on the argument ORDER, which is load-bearing.
+export { buildChildArgs, buildCwdHint, makeRunId };
 
 /**
  * Spawn one specialist child, bounded by the global spawn semaphore.
@@ -322,12 +271,19 @@ async function spawnSpecialistInner(
   // Inactivity watchdog state (#296): ANY stdout line counts as life —
   // parseable or not. Checked on a coarse interval below.
   let lastActivityAt = Date.now();
+  // The SHAPE of the silence, so a kill can be attributed rather than merely
+  // tuned: `linesSeen: 0` is a provider stall or auth failure, not a hang.
+  // Full reasoning in test-kill-attribution.ts.
+  let lastActivityKind = "nothing yet";
+  let stdoutLines = 0;
 
   const stdoutRl = createInterface({ input: child.stdout });
   stdoutRl.on("line", (line) => {
     lastActivityAt = Date.now();
+    stdoutLines += 1;
     const trimmed = line.trim();
     if (!trimmed) return;
+    lastActivityKind = "unparsed stdout";
     let parsed: PiJsonEvent | null = null;
     try {
       parsed = JSON.parse(trimmed) as PiJsonEvent;
@@ -344,6 +300,7 @@ async function spawnSpecialistInner(
     // agent_end + the latest assistant message_end as fallback). Everything
     // else is already absorbed by ingestEvent into runningState above, and
     // dropping the rest keeps per-spawn memory bounded.
+    lastActivityKind = parsed.type ?? "unknown event";
     if (parsed.type === "agent_end") {
       lastAgentEnd = parsed;
       // Not while the child is retrying — see `willRetryAfter`.
@@ -464,7 +421,16 @@ async function spawnSpecialistInner(
     result.killCause = "abort";
   }
   // A killed child never completed its assignment, whatever its exit code.
-  if (result.killCause) result.ok = false;
+  if (result.killCause) {
+    result.ok = false;
+    // Only meaningful for a kill; attaching it always would imply we killed
+    // every child.
+    result.lastActivity = {
+      kind: lastActivityKind,
+      agoMs: Date.now() - lastActivityAt,
+      linesSeen: stdoutLines,
+    };
+  }
   if (modelChoice.model && !result.model) {
     // collapseEvents only sets `model` from assistant message metadata, which
     // is present when the child actually got a reply. If the child failed

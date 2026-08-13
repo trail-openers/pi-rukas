@@ -10,7 +10,14 @@
 
 import os from "node:os";
 import path from "node:path";
+import type { ResolvedModelChoice } from "./models.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
+import { excludeToolsFor } from "./role-tools.ts";
+import {
+  applyUserExtension,
+  discoverInstalledExtensions,
+  piEnsembleExtensionPath,
+} from "./spawn-extension-forward.ts";
 import type { DispatchUsage } from "./types.ts";
 
 /**
@@ -198,4 +205,59 @@ export function assertLiveSpawnAllowed(role: string): void {
   throw new Error(
     `FORBID_LIVE_SPAWN: spawnSpecialist called for role "${role}" without injection. Set PI_ENSEMBLE_ALLOW_LIVE_SPAWN=1 for live tests, or inject ${injectionName} in DriverContext.`,
   );
+}
+
+const CHILD_ARGS_BASE = ["--mode", "rpc", "--no-extensions"] as const;
+
+/**
+ * Build the complete child argument list for spawning a subagent Pi process.
+ * Used by `spawnSpecialist` and exported for smoke-test verification.
+ *
+ * Argument order is load-bearing:
+ *   - `--provider` must precede `--model` so Pi disambiguates against the
+ *     provider catalog (custom providers need explicit provider IDs).
+ *   - Extension `--extension` flags are appended after model flags so Pi
+ *     resolves the model before extensions can override it.
+ */
+export function buildChildArgs(
+  role: string,
+  tmpPromptFile: string,
+  transcriptPath: string,
+  modelChoice: ResolvedModelChoice,
+  subagentGuardEnabled: boolean,
+  extraArgs?: string[],
+): string[] {
+  const args: string[] = [...CHILD_ARGS_BASE];
+  // `--mode rpc` keeps stdin open for JSON command injection
+  // ({type:"prompt"|"steer"|"abort"|"follow_up"}); this is the foundation
+  // for dispatch_steer (#152) and all async push-callback flows.
+  args.push("--session", transcriptPath);
+  args.push("--append-system-prompt", tmpPromptFile);
+  // `--exclude-tools` requires Pi >= 0.83.0; with pin at ~0.82.0 the
+  // flag is accepted by 0.82.x but was unknown in 0.75.x (caused
+  // immediate child exit). Verified by test-role-tools.ts smoke test.
+  const excludedTools = excludeToolsFor(role);
+  if (excludedTools) {
+    args.push("--exclude-tools", excludedTools);
+  }
+  if (modelChoice.provider) {
+    args.push("--provider", modelChoice.provider);
+  }
+  if (modelChoice.model) {
+    args.push("--model", modelChoice.model);
+  }
+  for (const ext of discoverInstalledExtensions(role)) {
+    args.push("--extension", ext);
+  }
+  applyUserExtension(args, role);
+  if (subagentGuardEnabled) {
+    const ensemblePath = piEnsembleExtensionPath();
+    if (ensemblePath) {
+      args.push("--extension", ensemblePath);
+    }
+  }
+  if (extraArgs && extraArgs.length > 0) {
+    args.push(...extraArgs);
+  }
+  return args;
 }

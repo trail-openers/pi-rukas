@@ -112,6 +112,21 @@ Not a failure, and not a halt. The driver declined to run that group — usually
 Previously the queue could not distinguish them from a cycle that ran and parked, so it read whatever state file was on disk — which in the interesting cases belongs to the cycle that is *actually running* — took its most recent `cap-hit` as this group's park reason, and recommended `--restart`. Restarting a live cycle wipes its state file and starts a second driver on the same issue, which is the interleaving the claim check exists to prevent. The field report was *"finished — 0 merged, 2 parked"* while both explores were still alive, with `updatedAt` only 1.3 s after `startedAt`.
 
 Two independent guards now: the queue refuses to interpret a state file at all when the driver reports it never started, and `parkReason` separately refuses to call a `running` cycle with a live owner "parked".
+### An inactivity kill — read `line(s)` before touching the budget
+
+A kill now reports the shape of the silence, not just the budget:
+
+```
+[pi-ensemble] killed after 1500000ms inactivity (override: PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS)
+  · last output: toolCall 1500s before the kill, after 412 line(s)
+```
+
+That number separates two failures a bare cause could not:
+
+- **`0 line(s)`** — the child never spoke at all. A provider stall, an auth failure, or a bad model id. Nothing was produced, nothing is recoverable, and the problem is upstream of the agent. Raising the watchdog changes nothing.
+- **a large count** — the child worked and then went quiet. A genuine hang, with real output on disk in its worktree worth recovering before you re-run.
+
+The 25-minute budget is deliberately unchanged. Raising a wall-clock number to cover a cause you have not identified is exactly the mistake the six per-role timers were deleted for — each was raised twice, and each time the finding was that the number was too small for a *healthy* child.
 
 ### Reading a handoff
 

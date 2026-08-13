@@ -110,6 +110,15 @@ export async function buildCompletionEvent(
               ? "PI_ENSEMBLE_SPAWN_TIMEOUT_MS"
               : "PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS"
           })`;
+    // Attribute the silence, not just the budget. `linesSeen: 0` means the
+    // child never spoke at all — a provider stall, an auth failure or a bad
+    // model id — which is a different problem from a child that went quiet
+    // after real work. Raising the budget fixes neither, and cannot tell them
+    // apart, which is why this records the shape instead.
+    const la = result.lastActivity;
+    const attribution = la
+      ? ` · last output: ${la.kind} ${Math.round(la.agoMs / 1000)}s before the kill, after ${la.linesSeen} line(s)`
+      : "";
     return {
       kind: "dispatch-failed",
       step,
@@ -119,7 +128,7 @@ export async function buildCompletionEvent(
       ms: result.ms,
       at,
       exitCode: result.exitCode ?? null,
-      errorTail: detail,
+      errorTail: `${detail}${attribution}`,
       killCause: result.killCause,
     };
   }

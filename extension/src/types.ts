@@ -95,6 +95,15 @@ export interface DispatchResult {
   /** The budget (ms) that expired for killCause "timeout"/"inactivity". */
   killBudgetMs?: number;
   /**
+   * What the child last emitted before we killed it. Present only on a kill.
+   *
+   * A bare cause cannot distinguish a child that went quiet after forty tool
+   * calls — a genuine hang mid-work — from one that never said anything at all,
+   * which is a provider stall, an auth failure or a bad model id. Those need
+   * opposite responses. `linesSeen: 0` is the tell.
+   */
+  lastActivity?: { kind: string; agoMs: number; linesSeen: number };
+  /**
    * Set when the model emitted thinking blocks but no text blocks (issue #5).
    * Some thinking-heavy models (e.g. cerebras/gpt-oss-120b on trivial prompts)
    * produce only thinking content without text output. This is informational —
