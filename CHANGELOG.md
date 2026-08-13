@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.41](https://github.com/randomm/pi-ensemble/compare/v0.12.40...v0.12.41) (2026-08-13)
+
+
+### Bug Fixes
+
+* **work-driver:** stop parking work the resolver approved; serialise cycles ([#457](https://github.com/randomm/pi-ensemble/issues/457)) ([9f247c9](https://github.com/randomm/pi-ensemble/commit/9f247c93f81e6f5c7b423ec09f702e6132501c64))
+
 ## [0.12.40](https://github.com/randomm/pi-ensemble/compare/v0.12.39...v0.12.40) (2026-08-12)
 
 
