@@ -360,3 +360,49 @@ export function matchBashSubcommand(
   const catchall = allowlist["*"];
   return typeof catchall === "string" ? catchall : null;
 }
+
+/**
+ * Does this command discard uncommitted work in the working tree?
+ *
+ * A validation subagent "cleaned up scratch commits" with `git checkout`,
+ * wiped the uncommitted deliverable, and then "restored" it by re-applying an
+ * older patch — silently reverting two reviewed defect fixes. It was caught
+ * only because a diffstat line count looked wrong.
+ *
+ * Nothing anywhere stopped it. Gating is bypassed in trust mode (the default
+ * on an interactive host), bypassed in sandbox mode, and explicitly allowed
+ * even under strict opt-in by the `oo git *` catch-all in agents.json. So this
+ * refusal cannot live in the allowlist — like `isDestructiveMemoryWrite`, it
+ * sits ahead of it and holds regardless.
+ *
+ * Deliberately conservative, because the costs are asymmetric: a false
+ * positive makes an agent pick another route, while a false negative destroys
+ * work the harness has already paid a developer and a reviewer to produce.
+ *
+ * NOT included: `git stash`, which moves work aside recoverably (`git stash
+ * list`), and `git reset` without `--hard`, which touches only the index.
+ * Plain `git checkout <branch>` is also allowed — git itself refuses to switch
+ * when that would clobber local modifications.
+ */
+export function discardsUncommittedWork(command: string): string | undefined {
+  // Compound commands are the norm (`cd x && git checkout .`), and `git -C
+  // <path>` moves the target elsewhere, so scan the whole string rather than
+  // parsing a single leading verb. Quoted segments are stripped first, so a
+  // command that merely MENTIONS one of these inside a message is not blocked.
+  const c = stripQuotedSegments(command);
+  const GIT = "(?:^|[;&|]|\\s)(?:oo\\s+)?git(?:\\s+-C\\s+\\S+)*\\s+";
+  const hit = (verb: string): string | undefined => new RegExp(GIT + verb).exec(c)?.[0]?.trim();
+  return (
+    // `git checkout .` / `-- <path>` / `-f` restores tracked files from the
+    // index or a commit, destroying edits. `-b`/`-B` create a branch instead.
+    hit("checkout\\s+(?!-{1,2}[bB]\\b)(--\\s|-f\\b|--force\\b|\\.(?:\\s|$))") ??
+    // `git restore <path>` exists only to discard. `--staged` ALONE merely
+    // unstages, which loses nothing.
+    hit("restore\\s+(?!--staged(?:\\s|$))") ??
+    // Only --hard/--merge/--keep touch the working tree.
+    hit("reset\\s+(?:--hard|--merge|--keep)\\b") ??
+    // `git clean -f` deletes untracked files outright — including whole new
+    // files a developer just wrote.
+    hit("clean\\s+[^;&|]*(?:-[a-zA-Z]*f|--force)")
+  );
+}

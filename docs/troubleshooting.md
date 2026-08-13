@@ -94,6 +94,18 @@ That broke two gates in opposite directions: the plan-time overlap check compare
 
 If the cap fires for real, the recovery commands now match what the driver itself does — stage inside the worktree first (`git diff HEAD` omits untracked new files), capture with `--binary`, apply with `--3way`. The old advice used `git diff HEAD | git apply --index`, which dropped new files and rejected any second workstream touching the same file.
 
+### A subagent was refused a `git checkout` / `reset --hard` / `clean -f`
+
+Deliberate, and it holds regardless of trust level. A validation subagent once "cleaned up scratch commits" with `git checkout`, wiped an uncommitted deliverable, and then "restored" it by re-applying an older patch — silently reverting two reviewed defect fixes. It was caught only because a diffstat line count looked wrong.
+
+Nothing stopped it at any layer: trust mode (the default on an interactive host) and sandbox mode (the default in a container) both bypass gating entirely, and under strict opt-in the `oo git *` catch-all in `agents.json` allowed it explicitly. So the refusal sits ahead of all three.
+
+The distinction: the permission layers answer *"may this role run git?"* — yes. This answers *"may anything destroy work nobody has captured yet?"* — no. The container fence and the operator's trust both protect the **host**; neither protects the developer's own diff.
+
+**Still allowed**, because they lose nothing: `git checkout <branch>` (git refuses to clobber local edits), `git reset` without `--hard`, `git restore --staged`, `git stash push` (recoverable via `git stash list`), and `git clean -n`.
+
+Opt out with `PI_ENSEMBLE_ALLOW_DESTRUCTIVE_GIT=1`.
+
 ### Reading a handoff
 
 Every handoff carries three things it previously withheld.

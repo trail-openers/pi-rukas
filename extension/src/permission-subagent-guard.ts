@@ -15,12 +15,26 @@
 
 import { type Socket, createConnection } from "node:net";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { discardsUncommittedWork } from "./bash-command-parser.ts";
 import type { PermissionRequest } from "./permission-broker.ts";
 import { loadAgentsJson, loadGlobalConfig, loadProjectConfig } from "./permission-config.ts";
 import { resolveToolPermission } from "./permission-guard.ts";
 import { trace } from "./trace.ts";
 
 export function registerSubagentGuard(pi: ExtensionAPI): void {
+  // BEFORE every bypass below. Trust mode is the default on an interactive
+  // host and sandbox mode is the default in a container, so a guard placed
+  // after them would, in practice, never run — which is exactly the state that
+  // let a subagent `git checkout` away an uncommitted deliverable and silently
+  // revert two reviewed defect fixes.
+  //
+  // This is not a permission. The permission layers answer "is this role
+  // allowed to run git?", and the answer is yes. This answers "may anything
+  // destroy work the harness has not captured yet?", and the answer is no,
+  // whatever the trust level — the container fence and the operator's trust
+  // both protect the HOST, and neither protects the developer's own diff.
+  registerDestructiveGitGuard(pi);
+
   // Sandbox mode short-circuit (PR #197). When pi-ensemble runs inside the
   // Docker sandbox (`pi-ensemble` wrapper sets PI_ENSEMBLE_SANDBOX_MODE=1),
   // the container fence IS the trust boundary. Every tool call passes
@@ -174,5 +188,36 @@ export function registerSubagentGuard(pi: ExtensionAPI): void {
       trace(`subagent-guard: internal error: ${(err as Error).message}`);
       return { block: true, reason: "subagent guard internal error" };
     }
+  });
+}
+
+/** Opt-out for an operator who genuinely wants a subagent to reset a tree. */
+function destructiveGitAllowed(): boolean {
+  return process.env.PI_ENSEMBLE_ALLOW_DESTRUCTIVE_GIT === "1";
+}
+
+/**
+ * Refuse working-tree-discarding git inside a subagent.
+ *
+ * The message names a non-destructive route rather than only saying no: an
+ * agent told "denied" tends to retry the same command through another shell,
+ * which is how the original incident's "restore" step re-applied a stale
+ * patch over reviewed fixes.
+ */
+function registerDestructiveGitGuard(pi: ExtensionAPI): void {
+  if (destructiveGitAllowed()) {
+    trace("subagent-guard: PI_ENSEMBLE_ALLOW_DESTRUCTIVE_GIT=1 — destructive git permitted");
+    return;
+  }
+  pi.on("tool_call", async (event, _ctx) => {
+    if (event.toolName !== "bash") return;
+    const command = (event.input as { command?: string })?.command ?? "";
+    const offending = discardsUncommittedWork(command);
+    if (!offending) return;
+    trace(`subagent-guard: BLOCKED destructive git — ${offending}`);
+    return {
+      block: true,
+      reason: `Refused: \`${offending}\` discards uncommitted work in the working tree, and a subagent cannot know whether that work is another workstream's, a lens-fix that has not been integrated yet, or its own. This has silently reverted reviewed fixes before.\n\nNon-destructive alternatives: inspect with \`git status\` / \`git diff\`; move work aside with \`git stash push\` (recoverable via \`git stash list\`); undo a COMMIT with \`git revert\`; unstage with \`git restore --staged\`. If you genuinely need the tree reset, say so in your report and let the driver decide.`,
+    };
   });
 }
