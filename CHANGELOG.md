@@ -8,6 +8,24 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.43](https://github.com/randomm/pi-ensemble/compare/v0.12.42...v0.12.43) (2026-08-13)
+
+
+### Features
+
+* make an inactivity kill diagnosable instead of tuning it ([#469](https://github.com/randomm/pi-ensemble/issues/469)) ([549c066](https://github.com/randomm/pi-ensemble/commit/549c06625e0bb4b1f6842715184bca65e269df05))
+* refuse working-tree-discarding git inside subagents ([#467](https://github.com/randomm/pi-ensemble/issues/467)) ([14a57a2](https://github.com/randomm/pi-ensemble/commit/14a57a2423f72545488d511f5653dbed7029c07b))
+
+
+### Bug Fixes
+
+* a comma inside a parenthetical is not a list separator ([#465](https://github.com/randomm/pi-ensemble/issues/465)) ([4c50a93](https://github.com/randomm/pi-ensemble/commit/4c50a93cd932f106d1f51b6c855694c4e2c58e86))
+* let the review gate pass, and stop reviewing a branch that never moved ([#462](https://github.com/randomm/pi-ensemble/issues/462)) ([3e8c2f4](https://github.com/randomm/pi-ensemble/commit/3e8c2f4849ed8001b4fc1b6557f385e4dfe2a047))
+* stop staging our own worktree scaffolding into the PR ([#461](https://github.com/randomm/pi-ensemble/issues/461)) ([359803d](https://github.com/randomm/pi-ensemble/commit/359803d9b7cac80d7873239592c5f30a25138fcc))
+* the handoff prints what the review found, and admits our own kills ([#463](https://github.com/randomm/pi-ensemble/issues/463)) ([a126dac](https://github.com/randomm/pi-ensemble/commit/a126dac0c4caa933e31135d164f85e83a83a01b2))
+* the queue stops reporting live cycles as parked ([#466](https://github.com/randomm/pi-ensemble/issues/466)) ([af8d35d](https://github.com/randomm/pi-ensemble/commit/af8d35d20ca2f5cf1dbdbee36adbea7d9f7befaa))
+* the size ratchet measures the whole repo, and is proven to fail ([#468](https://github.com/randomm/pi-ensemble/issues/468)) ([6c7a092](https://github.com/randomm/pi-ensemble/commit/6c7a0925920e2ee70b992539b09ca9dd3a83fe84))
+
 ## [0.12.42](https://github.com/randomm/pi-ensemble/compare/v0.12.41...v0.12.42) (2026-08-13)
 
 
