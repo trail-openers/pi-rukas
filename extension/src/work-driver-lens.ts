@@ -19,7 +19,11 @@ import { writeFindings } from "./memory-write.ts";
 import { resolveReviewThreshold } from "./review-threshold.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
-import type { DriverContext } from "./work-driver-context.ts";
+import {
+  type DriverContext,
+  MAX_REVIEW_ROUNDS,
+  REVIEW_WALL_CLOCK_MS,
+} from "./work-driver-context.ts";
 import { readAllMergedDiffs } from "./work-driver-diff.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
@@ -139,10 +143,7 @@ export async function runLens(
     return next;
   }
 
-  const cwd =
-    ps.worktrees?.default ??
-    ps.worktrees?.[Object.keys(ps.worktrees ?? {})[0] ?? ""] ??
-    ctx.repoRoot;
+  const cwd = lensWorktree(ctx, state);
   const startedAt = Date.now();
   const jobId = makeRunId();
   const reviewFn = ctx.lensReviewFn ?? runLensReview;
@@ -264,11 +265,27 @@ export async function runLens(
     next = appendEvent(next, {
       kind: "cap-hit",
       at: Date.now(),
-      cap: "adversarial-loop",
+      // Not "adversarial-loop" — a copy-paste that made `explainCap` tell the
+      // operator the adversarial gate could not reach APPROVED, for a state
+      // where the adversarial gate had approved and the LENS review came back
+      // incomplete.
+      cap: "review-incomplete",
       reviewRound: round,
       nextStep: "handoff",
     });
   }
+
+  // The round cap and the review wall clock route to handoff from `nextStep`,
+  // which is a PURE function of state and cannot append. So nothing recorded
+  // WHY, and four renderers defaulted the missing cap to "adversarial-loop":
+  // measured across 53 handoffs, 23 said "the adversarial gate ran its 3-round
+  // internal loop and could not reach APPROVED" and 14 of those had
+  // `Last step: lens-review` with adversarial approving every round. That is
+  // 26% of all handoffs pointing the operator at the wrong gate.
+  //
+  // Emitted here, where the round has just been recorded, against the same
+  // `reviewRound` value `nextStep` will read.
+  next = appendReviewCapHit(next, round);
 
   return next;
 }
@@ -388,5 +405,67 @@ export async function runLensFix(
     `developer:lens-fix-${state.pipelineState.reviewRound}`,
     now,
     () => inlineLensFixPrompt(findings, scratchDir(ctx.repoRoot, ctx.issue)),
+    // Fix the code where the code IS. This dispatch carried no cwd, so the
+    // child edited repoRoot while `integrateLensFix` staged from the worktree
+    // nobody had touched — `stagePorcelainPaths` returned 0 and the loop
+    // `continue`d, so the fix was silently dropped and the next lens round
+    // re-flagged the same findings at escalating severity until the cap.
+    //
+    // Observed on lantern #663: the pushed commit had deleted 1007 lines of
+    // src/config/mod.rs, breaking the build. The lens-fix developer restored it
+    // correctly — 1174 lines, staged — and none of it was ever committed.
+    //
+    // The same worktree the review itself read, so the fix lands against the
+    // tree the findings describe. One worktree holds every workstream's
+    // consolidated work, so there is no N>1 partition to make here.
+    { cwd: lensWorktree(ctx, state) },
   );
+}
+
+/**
+ * The tree the lens gate works in.
+ *
+ * The review and the fix have to agree on this. They did not: `runLens`
+ * resolved a worktree while the fix dispatch passed no `cwd` at all and landed
+ * in the Pi process's directory, so the fix was written somewhere the driver
+ * never looked. Having one resolver is what keeps them from drifting apart
+ * again.
+ *
+ * Falls back to repoRoot when no worktree is recorded — a cycle whose
+ * mechanized branch setup fell back develops there, and the fix belongs
+ * wherever the work is.
+ */
+function lensWorktree(ctx: DriverContext, state: WorkState): string {
+  const wt = state.pipelineState.worktrees ?? {};
+  return wt.default ?? wt[Object.keys(wt)[0] ?? ""] ?? ctx.repoRoot;
+}
+
+/**
+ * Record the review cap that is about to route this cycle to handoff.
+ *
+ * `nextStep` decides the routing and cannot write; this writes the reason and
+ * leaves the routing exactly where it was. The two read the same fields, so
+ * they cannot disagree about whether a cap fired.
+ */
+function appendReviewCapHit(state: WorkState, round: number): WorkState {
+  const ps = state.pipelineState;
+  if (round >= MAX_REVIEW_ROUNDS) {
+    return appendEvent(state, {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "round-cap",
+      reviewRound: round,
+      nextStep: "handoff",
+    });
+  }
+  if (ps.reviewCapStartedAt && Date.now() - ps.reviewCapStartedAt > REVIEW_WALL_CLOCK_MS) {
+    return appendEvent(state, {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "wall-clock",
+      reviewRound: round,
+      nextStep: "handoff",
+    });
+  }
+  return state;
 }

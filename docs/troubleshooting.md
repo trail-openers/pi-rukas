@@ -111,6 +111,23 @@ A verify failure that looks dependency-caused now says so in the handoff rather 
 
 Each workstream gets its own worktree and its own developer, running in parallel, so a file in two `paths` lists means two developers editing it at once — which used to surface much later as a `git apply` conflict at commit-pr. The plan step now catches it and re-plans once. If it persists, the issue probably needs those workstreams merged.
 
+### `/work` parks my issue as "underspecified" but the resolver said it was fine
+
+The handoff quotes its own resolver saying "the intent is clear, no contradictions" and then says the issue does not say enough to build from. Fixed in v0.12.41 — two causes, both in the gate rather than your issue:
+
+- A **blocking open question** used to park a `proceed`. It no longer does; `proceed-with-assumptions` is the supported path for a spec with a defensible gap.
+- A **numbered** deliverables list (`1. …`) was invisible to the parser, which read only `-`/`*` bullets. It emptied four spec fields at once.
+
+**Do not reformat your issues.** The theory that deliverables need a `D{N}:` prefix is wrong — ids are assigned automatically, and 0 of 40 real issue bodies were affected by the numbered-list gap.
+
+### A cycle parked at explore right after a timeout
+
+A timed-out explore produced an empty reply, and the driver read that as "explore found nothing to say" — emitting a needs-clarification cap over the dispatch failure. Fixed: a failed dispatch is now classified as the infrastructure fault it is.
+
+### Cycles run one at a time now
+
+`PI_ENSEMBLE_PARALLEL_GROUPS` defaults to 1. Measured across 69 cycles, every autonomous merge ran alone, and concurrent cycles ran ~2.4× slower per role — enough to trip the watchdogs — as well as corrupting each other through the shared repo root. Set the env var if you want the old behaviour.
+
 ### A cycle merged even though the full verification failed
 
 **Symptom:** `.pi/verify-cmd-full` fails (typecheck, lint, or a fixture suite) and the cycle still reports MERGED.

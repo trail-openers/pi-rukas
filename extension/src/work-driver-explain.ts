@@ -23,9 +23,18 @@ import type { WorkEvent, WorkState, WorkStep } from "./workflow-state.ts";
  * forces a typecheck error here, which is the design intent.
  */
 export function explainCap(
-  cap: Extract<WorkEvent, { kind: "cap-hit" }>["cap"],
+  cap: Extract<WorkEvent, { kind: "cap-hit" }>["cap"] | undefined,
   state: WorkState,
 ): string {
+  // An absent cap is a real state — a cycle can reach handoff without one — and
+  // this used to throw on `cap.startsWith`, so the four renderers all defaulted
+  // to "adversarial-loop" rather than risk it. That default is what told the
+  // operator the adversarial gate had failed in 23 of 53 handoffs, 14 of which
+  // died at lens-review with adversarial approving every round. Saying nothing
+  // was recorded is honest; naming a gate that passed is not.
+  if (!cap) {
+    return "the cycle halted without recording which gate stopped it — check the event log directly";
+  }
   const snap = state.pipelineState.handoffSnapshot;
   const fileCount = snap ? snap.unstagedCount + snap.stagedCount : undefined;
   const fileBlurb =
@@ -37,6 +46,8 @@ export function explainCap(
       return `lens-review hit its ${MAX_REVIEW_ROUNDS}-round cap with findings still open — the lens reviewers and the developer's fixes did not converge`;
     case "wall-clock":
       return "lens-review fix loop exceeded its 90-minute wall-clock cap — total time spent in review/fix iterations is past the budget";
+    case "review-incomplete":
+      return "at least one lens failed every retry, so the six-pass review is incomplete — the diff was not fully reviewed, which is not the same as being rejected";
     case "ci-retry":
       return `CI failed ${MAX_CI_RETRIES} times in a row (each retry re-entered develop → adversarial → lens-review → ci) — CI is permanently broken for this branch, or the develop step keeps producing the same failure`;
     case "developer-timeout":

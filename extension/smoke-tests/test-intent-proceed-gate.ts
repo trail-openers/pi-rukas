@@ -94,14 +94,22 @@ const spec = (over: Partial<NormalisedSpec>): NormalisedSpec =>
 }
 
 {
-  // But a blocking open question is a real reason to stop, on either path.
+  // A blocking open question does NOT stop a proceed — and this assertion used
+  // to say the opposite, which was the single largest source of false parks.
+  //
+  // Measured over the 13 real resolver replies on this host, that conjunct
+  // alone flipped FIVE `proceed` verdicts to `park`/underspecified. It is the
+  // third time in this series I priced a decision the same as *overturning* a
+  // park: `blockingQuestions` belongs to `specIsComplete`, which refutes a
+  // park, and `proceed-with-assumptions` exists precisely for a spec that has
+  // open questions and defensible answers to them.
   const blocked = spec({
     // biome-ignore lint/suspicious/noExplicitAny: partial fixture
     openQuestions: [{ text: "Which config file wins?", blocking: true } as any],
   });
   assert(
-    !specIsActionable(blocked),
-    "a blocking open question stops a proceed — the answer changes what gets built",
+    specIsActionable(blocked),
+    "canary: a blocking open question proceeds — asserting the opposite here is what parked 5 of 13 real specs",
   );
 }
 

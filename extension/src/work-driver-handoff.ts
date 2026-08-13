@@ -91,7 +91,13 @@ export async function runHandoff(
     const res = await dispatch(
       ctx.pi,
       { role: "ops", prompt },
-      { label: "ops:handoff", timeoutMs: 15 * 60_000 },
+      // No shortened override: handoff is the TERMINAL step, and when its
+      // dispatch is killed the operator gets nothing at all — no comment, no
+      // label, no artefact. That happened twice in one overnight run, once
+      // after three retries. The 15-min cap dates from when this only posted a
+      // gh comment; it now writes artefacts, posts to the issue or PR, and
+      // applies a label. It inherits the ops budget.
+      { label: "ops:handoff" },
     );
     opsReplyText = res.text ?? "";
     const completionEvent = await buildCompletionEvent(ctx, "handoff", "ops", "ops:handoff", res);
@@ -177,8 +183,13 @@ export async function runHandoff(
   //     ci-retry) → 'handoff' (cycle reached handoff via the verdict
   //     path, not via dispatch-failure)
   const lastCapHit = [...next.eventLog].reverse().find((e) => e.kind === "cap-hit");
-  const capShape = lastCapHit?.kind === "cap-hit" ? lastCapHit.cap : ("adversarial-loop" as const);
-  const isMidFlightHalt = capShape === "developer-timeout" || capShape.startsWith("step-failed:");
+  // Not a renderer — this only decides `aborted` vs `handoff`. It used to spell
+  // "no cap recorded" as `"adversarial-loop"`, which happened to give the right
+  // answer here (an absent cap is not a mid-flight halt) while seeding the same
+  // fake cap name the renderers were misreporting. Say what is meant instead.
+  const capShape = lastCapHit?.kind === "cap-hit" ? lastCapHit.cap : undefined;
+  const isMidFlightHalt =
+    capShape === "developer-timeout" || (capShape?.startsWith("step-failed:") ?? false);
   next = {
     ...next,
     pipelineState: {

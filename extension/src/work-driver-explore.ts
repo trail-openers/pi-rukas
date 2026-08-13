@@ -214,6 +214,14 @@ export async function runExplore(
   const event = await buildCompletionEvent(ctx, "explore", "explore", "explore", exploreDispatch);
   next = appendEvent(clearDispatch(next, begun.jobId), event);
 
+  // A dispatch that FAILED has no reply to route on, and the verdict router
+  // below would read its empty text as "explore said nothing" — emitting a
+  // cap-hit that overrides the `dispatch-failed` tail the step router
+  // classifies. Two timed-out explores (lantern #686, #693) were reported to the
+  // operator as "this issue does not say enough to build from"; both issues
+  // were fine. Leave the failure as the tail and let the router judge it.
+  if (event.kind !== "dispatch-completed") return next;
+
   // PR6 + PR10 — verdict router. For N=1, the existing
   // parseExploreVerdict path is unchanged. For N>1, parse per-issue
   // verdicts and split into activeIssues (NEEDS_WORK) + droppedIssues

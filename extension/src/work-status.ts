@@ -263,7 +263,9 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
 
   if (ps.status !== "merged") {
     const capHit = [...state.eventLog].reverse().find((e) => e.kind === "cap-hit");
-    const cap = capHit?.kind === "cap-hit" ? capHit.cap : ("adversarial-loop" as const);
+    // No "adversarial-loop" default: naming a gate that passed is worse than
+    // naming none. `explainCap` handles an absent cap explicitly now.
+    const cap = capHit?.kind === "cap-hit" ? capHit.cap : undefined;
     lines.push("", `Verdict: ${explainCap(cap, state)}`);
   }
 

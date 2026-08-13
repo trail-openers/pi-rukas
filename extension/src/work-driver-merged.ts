@@ -209,7 +209,7 @@ export async function runSingleDispatch(
   label: string,
   now: number,
   buildPrompt: () => string,
-  opts?: { timeoutMs?: number },
+  opts?: { timeoutMs?: number; cwd?: string },
 ): Promise<WorkState> {
   let next = appendEvent(
     { ...state, pipelineState: { ...state.pipelineState, currentStep: step } },
@@ -235,7 +235,11 @@ export async function runSingleDispatch(
     // timeouts this session before PR15.
     result = await dispatch(
       ctx.pi,
-      { role, prompt: buildPrompt() },
+      // `cwd` matters for any step whose work lives somewhere other than the
+      // integration point. Without it `spawn.ts` falls back to the Pi process's
+      // own directory, so a lens-fix developer edited repoRoot while the driver
+      // staged from the worktree — see the lens-fix call site.
+      { role, prompt: buildPrompt(), ...(opts?.cwd ? { cwd: opts.cwd } : {}) },
       { label, timeoutMs: opts?.timeoutMs },
     );
   } catch (err) {

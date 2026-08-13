@@ -51,11 +51,17 @@
  * `Object.keys(workstreams)` unchanged.
  */
 export const MAX_ISSUES_PER_GROUP = 3;
-// Parallelism is ON by default: strict sequentiality is what made /work slow
-// enough to be a standing complaint. 3 sits inside the 2-4 band Cursor and
-// Claude Code independently arrive at, and the real resource bound is the
-// spawn semaphore, not this number.
-export const MAX_PARALLEL_GROUPS_DEFAULT = 3;
+// Cycles run ONE at a time by default. This reverses a previous judgement, on
+// this repo's own record: parallelism was defaulted to 3 because "strict
+// sequentiality is what made /work slow enough to be a standing complaint",
+// which is sound in the abstract and wrong here. Measured across 69 terminal
+// cycles, every one of the 10 autonomous merges ran with zero other cycles in
+// flight — no exception — while concurrent cycles ran ~2.4x slower per role
+// (pushing developers past the inactivity watchdog and ops past its cap) and
+// destroyed each other through the shared repo-root integration point in 2 of
+// the 4 lantern cycles that reached commit-pr. A cycle that never merges is not
+// fast. `PI_ENSEMBLE_PARALLEL_GROUPS` still opts back in.
+export const MAX_PARALLEL_GROUPS_DEFAULT = 1;
 
 /**
  * The concurrency the queue will actually use. Exported so anything that must

@@ -192,6 +192,10 @@ export type WorkEvent =
         | "adversarial-loop"
         | "round-cap"
         | "wall-clock"
+        // A lens failed every retry, so the six-pass review is incomplete.
+        // Distinct from the round cap: nothing capped, the review could not be
+        // completed. This used to be reported as "adversarial-loop".
+        | "review-incomplete"
         | "ci-retry"
         | "developer-timeout"
         | "explore-already-complete"

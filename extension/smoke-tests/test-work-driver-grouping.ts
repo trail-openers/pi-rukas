@@ -298,14 +298,34 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     "missing bodies: fall back to R5 (separate groups)",
   );
 
-  // Fanout mode — K ≤ 2 = parallel; K > 2 = sequential batches.
-  const fanoutSmall = groupIssues([1, 2], { 1: "body A", 2: "body B" });
+  // Fanout mode: parallel while K fits the cap, sequential beyond it.
+  //
+  // The cap is set explicitly here rather than relying on the default. These
+  // assertions are about the MODE DERIVATION, and conflating that with whatever
+  // the shipped default happens to be made them break when the default moved
+  // from 3 to 1 — a change about throughput, not about this logic. The default
+  // has its own coverage in test-serialise-cycles.ts.
+  const priorCap = process.env.PI_ENSEMBLE_PARALLEL_GROUPS;
+  process.env.PI_ENSEMBLE_PARALLEL_GROUPS = "2";
+  try {
+    const fanoutSmall = groupIssues([1, 2], { 1: "body A", 2: "body B" });
+    assert(
+      fanoutSmall.fanout.mode === "parallel" && fanoutSmall.fanout.concurrencyCap >= 1,
+      "fanout: K=2 at cap 2 → parallel mode",
+    );
+    const fanoutBig = groupIssues([1, 2, 3, 4, 5], { 1: "a", 2: "b", 3: "c", 4: "d", 5: "e" });
+    assert(fanoutBig.fanout.mode === "sequential", "fanout: K > cap → sequential mode");
+  } finally {
+    if (priorCap === undefined) process.env.PI_ENSEMBLE_PARALLEL_GROUPS = undefined;
+    else process.env.PI_ENSEMBLE_PARALLEL_GROUPS = priorCap;
+  }
+
+  // And with the shipped default, two groups run one after the other.
+  const fanoutDefault = groupIssues([1, 2], { 1: "body A", 2: "body B" });
   assert(
-    fanoutSmall.fanout.mode === "parallel" && fanoutSmall.fanout.concurrencyCap >= 1,
-    "fanout: K=2 → parallel mode",
+    fanoutDefault.fanout.mode === "sequential",
+    "fanout: at the shipped default, K=2 is sequential — every autonomous merge on record ran alone",
   );
-  const fanoutBig = groupIssues([1, 2, 3, 4, 5], { 1: "a", 2: "b", 3: "c", 4: "d", 5: "e" });
-  assert(fanoutBig.fanout.mode === "sequential", "fanout: K > cap (2) → sequential mode");
 
   // Group id convention — group-a, group-b, ... in order.
   const twoGroups = groupIssues([1000, 2000], { 1000: "unrelated", 2000: "also unrelated" });

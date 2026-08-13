@@ -38,7 +38,9 @@ export function renderHandoffUserMessage(
   const issue = state.issue;
   const capHit = [...state.eventLog].reverse().find((e) => e.kind === "cap-hit");
   const handoffEvt = [...state.eventLog].reverse().find((e) => e.kind === "handoff-emitted");
-  const cap = capHit?.kind === "cap-hit" ? capHit.cap : ("adversarial-loop" as const);
+  // No "adversarial-loop" default: naming a gate that passed is worse than
+  // naming none. `explainCap` handles an absent cap explicitly now.
+  const cap = capHit?.kind === "cap-hit" ? capHit.cap : undefined;
   const why = explainCap(cap, state);
   const snap = ps.handoffSnapshot;
   const commentUrl = handoffEvt?.kind === "handoff-emitted" ? handoffEvt.commentUrl : undefined;

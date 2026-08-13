@@ -117,13 +117,23 @@ function sliceSubsection(text: string, name: string): string | undefined {
 }
 
 /** Bullet lines of a markdown section, with the leading marker stripped. */
+/**
+ * The items of a markdown list, whichever marker the writer used.
+ *
+ * This matched `^[-*]\s+` only, so a NUMBERED list was invisible — and it backs
+ * four spec fields (deliverables, acceptanceCriteria, evidence, openQuestions),
+ * so a numbered spec parsed to an empty spec on every one of them. It could not
+ * even self-rescue through #397's "a complete spec refutes underspecified"
+ * path, because that reads the same empty fields. lantern #662 parked twice this
+ * way while its own resolver rationale said the intent was clear.
+ */
 function bullets(section: string | undefined): string[] {
   if (!section) return [];
   return section
     .split("\n")
     .map((l) => l.trim())
-    .filter((l) => /^[-*]\s+\S/.test(l))
-    .map((l) => l.replace(/^[-*]\s+/, "").trim())
+    .filter((l) => /^(?:[-*]|\d+[.)])\s+\S/.test(l))
+    .map((l) => l.replace(/^(?:[-*]|\d+[.)])\s+/, "").trim())
     .filter(Boolean);
 }
 
@@ -297,24 +307,30 @@ function blockingQuestions(qs: string[]): string[] {
  * and the wrong price for making one. A straightforward issue with no contested
  * claims has no evidence to confirm, and parking it would be a regression.
  *
- * This one asks only what `proceed` has to MEAN: an intent, at least one
- * deliverable, and no blocking question whose answer would change what gets
- * built. Without deliverables `work-driver-plan.ts` silently falls back to
- * `countEnumeratedFindings`, and #290's decomposition arithmetic degrades on
- * exactly that input.
+ * This one asks only what `proceed` has to MEAN: an intent, and at least one
+ * deliverable. Without deliverables `work-driver-plan.ts` silently falls back
+ * to `countEnumeratedFindings`, and #290's decomposition arithmetic degrades on
+ * exactly that input — that is a real downstream break, so it stays the bar.
  *
- * Acceptance criteria are deliberately NOT required. Demanding them looked
- * right and was wrong: `proceed-with-assumptions` exists precisely for a spec
- * with a defensible gap, and two existing tests document cycles that proceed
- * without criteria. Parking those would have been a regression dressed as a
- * guardrail — the bar has to be the thing whose absence actually breaks
- * something downstream, not everything one might wish for.
+ * Two things are deliberately NOT required, for the same reason.
+ *
+ * Acceptance criteria: demanding them looked right and was wrong, and two
+ * existing tests caught it before it shipped.
+ *
+ * A blocking open question: the same mistake, which nothing caught. Measured
+ * over the 13 real resolver replies on this host, that conjunct alone flipped
+ * FIVE `proceed` verdicts to `park` — the single largest source of false
+ * parks. `blockingQuestions` prices *overturning* a park inside
+ * `specIsComplete`; pricing a decision the same way is a category error, and
+ * `proceed-with-assumptions` exists precisely for a spec that has open
+ * questions and defensible answers to them.
+ *
+ * The bar has to be the thing whose absence actually breaks something
+ * downstream, not everything one might wish a spec had.
  */
 export function specIsActionable(spec: NormalisedSpec): boolean {
   return (
-    spec.intent.trim().length > 0 &&
-    spec.deliverables.some((d) => d.description.trim().length > 0) &&
-    blockingQuestions(spec.openQuestions).length === 0
+    spec.intent.trim().length > 0 && spec.deliverables.some((d) => d.description.trim().length > 0)
   );
 }
 

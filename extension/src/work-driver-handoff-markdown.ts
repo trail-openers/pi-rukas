@@ -59,7 +59,9 @@ export function renderHandoffMarkdown(state: WorkState): string {
 
   // PR5: explainCap provides the operator-readable WHY sentence used
   // across all three handoff surfaces (in-chat, GitHub body, /work-status).
-  const capForExplain = capHit?.kind === "cap-hit" ? capHit.cap : ("adversarial-loop" as const);
+  // No "adversarial-loop" default: naming a gate that passed is worse than
+  // naming none. `explainCap` handles an absent cap explicitly now.
+  const capForExplain = capHit?.kind === "cap-hit" ? capHit.cap : undefined;
   const explain = explainCap(capForExplain, state);
 
   // PR10 — multi-issue header + per-issue verdict block.
@@ -377,7 +379,7 @@ export function renderHandoffMarkdown(state: WorkState): string {
  * `Rounds: 0 of 3` — lantern #664, verbatim. The reader's reasonable conclusion
  * is that nothing happened, when in fact three reviews and two fix rounds had.
  */
-function roundsLine(state: WorkState, cap: string, reviewRound: number): string {
+function roundsLine(state: WorkState, cap: string | undefined, reviewRound: number): string {
   if (cap === "adversarial-loop") {
     for (let i = state.eventLog.length - 1; i >= 0; i--) {
       const e = state.eventLog[i];
