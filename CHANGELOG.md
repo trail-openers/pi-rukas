@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.42](https://github.com/randomm/pi-ensemble/compare/v0.12.41...v0.12.42) (2026-08-13)
+
+
+### Features
+
+* unblock workstream parallelism — spawn cap, integration correctness, verify-before-push ([#459](https://github.com/randomm/pi-ensemble/issues/459)) ([0137cac](https://github.com/randomm/pi-ensemble/commit/0137cac10b3aa9df024c205db7cb6a946ceeee80))
+
 ## [0.12.41](https://github.com/randomm/pi-ensemble/compare/v0.12.40...v0.12.41) (2026-08-13)
 
 
