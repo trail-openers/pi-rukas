@@ -250,7 +250,8 @@ const INTEGRATE_BASE = {
   // Apply conflicts must surface the patch path so the operator can inspect it.
   const execFn: ExecFn = async (cmd, o) => {
     const cwd = o?.cwd ?? "";
-    if (cmd.startsWith("git status --porcelain")) return { stdout: cwd === REPO ? "" : " M src/a.ts\n" };
+    if (cmd.startsWith("git status --porcelain"))
+      return { stdout: cwd === REPO ? "" : " M src/a.ts\n" };
     if (cmd.startsWith("git diff --cached")) return { stdout: "diff --git a/a b/a\n+x\n" };
     if (cmd.startsWith("git apply")) throw new Error("patch does not apply");
     return { stdout: "" };
@@ -269,7 +270,8 @@ const INTEGRATE_BASE = {
   const execFn: ExecFn = async (cmd, o) => {
     calls.push(cmd);
     const cwd = o?.cwd ?? "";
-    if (cmd.startsWith("git status --porcelain")) return { stdout: cwd === REPO ? "" : " M src/a.ts\n" };
+    if (cmd.startsWith("git status --porcelain"))
+      return { stdout: cwd === REPO ? "" : " M src/a.ts\n" };
     if (cmd.startsWith("git diff --cached")) return { stdout: "diff --git a/a b/a\n+x\n" };
     return { stdout: "" };
   };

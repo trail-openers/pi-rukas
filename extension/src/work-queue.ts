@@ -28,6 +28,7 @@ import { trace } from "./trace.ts";
 import { classifyFailureCause } from "./work-driver-failure-taxonomy.ts";
 import type { GroupingResult } from "./work-driver-grouping.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
+import { processAlive } from "./work-driver-resume.ts";
 import { notify } from "./work-notify.ts";
 
 /** One entry of `groupIssues()`'s result — the unit the queue iterates. */
@@ -40,10 +41,16 @@ export function queueHaltOnFailure(): boolean {
   return v === "1" || v === "true";
 }
 
+/** What `runGroup` reports back. `started: false` means it never ran. */
+export interface GroupOutcome {
+  started: boolean;
+  reason?: string;
+}
+
 export interface QueueEntry {
   groupId: string;
   issues: number[];
-  outcome: "merged" | "parked" | "halted";
+  outcome: "merged" | "parked" | "halted" | "not-started";
   /** Operator-facing why, for parked/halted. */
   reason?: string;
   /** The step the cycle died on, when known — enough to re-drive it. */
@@ -56,7 +63,13 @@ export interface QueueSummary {
   entries: QueueEntry[];
   merged: number;
   parked: number;
-  /** Groups never started because the queue halted. */
+  /**
+   * Groups the driver REFUSED to run — a live cycle already owns the issue, a
+   * terminal state, an attention label. Counted apart from `parked` because a
+   * refusal is not a failure and needs no operator action on this group.
+   */
+  refused: number;
+  /** Groups the queue never reached, because it halted first. */
   notStarted: string[];
 }
 
@@ -109,9 +122,28 @@ export function isSystemicFailure(state: WorkState | undefined): {
   return { systemic: false };
 }
 
+/**
+ * Is the process that owns this state file still alive?
+ *
+ * `processAlive` treats an EPERM as alive (the pid exists, owned by another
+ * user), which is the safe direction here: mistaking a live cycle for a corpse
+ * is what produced the `--restart` advice that would race two drivers on one
+ * issue.
+ */
+function ownerAlive(state: WorkState): boolean {
+  const pid = state.owner?.pid;
+  return typeof pid === "number" && processAlive(pid);
+}
+
 /** The reason a non-merged cycle stopped, read back off its state file. */
 function parkReason(state: WorkState | undefined): { reason: string; failedStep?: string } {
   if (!state) return { reason: "cycle produced no state file" };
+  // A `running` status with a live owner is not a park — it is a cycle in
+  // flight. Reporting its most recent cap-hit as a terminal reason told the
+  // operator a live cycle had failed, and recommended `--restart`.
+  if (state.pipelineState.status === "running" && ownerAlive(state)) {
+    return { reason: "still running — this is not a terminal state" };
+  }
   const cap = [...state.eventLog].reverse().find((e) => e.kind === "cap-hit");
   // `lastCompletedStep` is the last step that SUCCEEDED, so reporting it as the
   // failure point names the wrong step every time — an operator chasing a failed
@@ -194,8 +226,8 @@ export function humanActionFor(reason: string, primary: number): string {
 export function renderQueueSummary(s: QueueSummary): string {
   const lines = [
     `pi-ensemble: /work queue finished — ${s.merged} merged, ${s.parked} parked${
-      s.notStarted.length > 0 ? `, ${s.notStarted.length} not started` : ""
-    }`,
+      s.refused > 0 ? `, ${s.refused} did not start` : ""
+    }${s.notStarted.length > 0 ? `, ${s.notStarted.length} never reached` : ""}`,
   ];
   for (const e of s.entries) {
     const issues = `#${e.issues.join(", #")}`;
@@ -205,6 +237,12 @@ export function renderQueueSummary(s: QueueSummary): string {
       lines.push(
         `  ⏸ ${e.groupId} (${issues}) — ${e.reason}${e.failedStep ? ` at ${e.failedStep}` : ""}`,
       );
+      if (e.humanAction) lines.push(`      → ${e.humanAction}`);
+    } else if (e.outcome === "not-started") {
+      // Not a failure and emphatically not a halt: the driver declined to run,
+      // usually because a live cycle already owns the issue. Rendering it
+      // through the `else` below reported a halt that never happened.
+      lines.push(`  – ${e.groupId} (${issues}) — did not start: ${e.reason}`);
       if (e.humanAction) lines.push(`      → ${e.humanAction}`);
     } else {
       lines.push(`  ✗ ${e.groupId} (${issues}) — ${e.reason} · queue halted here`);
@@ -221,7 +259,13 @@ export interface RunQueueOpts {
   groups: IssueGroup[];
   restart: boolean;
   /** Runs one group's cycle. Injected so the offline suite never spawns Pi. */
-  runGroup: (primary: number, issues: number[] | undefined) => Promise<void>;
+  /**
+   * Run one group. The returned `started: false` means the driver refused and
+   * never ran — a claim conflict, another live pid, a terminal state. The
+   * queue MUST NOT read a state file as this group's outcome in that case: the
+   * file on disk belongs to whatever cycle is actually running.
+   */
+  runGroup: (primary: number, issues: number[] | undefined) => Promise<GroupOutcome>;
   /** Groups to run at once. Defaults to 1 (strictly sequential). */
   concurrency?: number;
   readStateFn?: (repoRoot: string, issue: number) => Promise<WorkState | undefined>;
@@ -264,8 +308,9 @@ export async function runWorkQueue(opts: RunQueueOpts): Promise<QueueSummary> {
       claimed.add(g.id);
 
       let threw: Error | undefined;
+      let outcome: GroupOutcome | undefined;
       try {
-        await opts.runGroup(primary, g.issues.length > 1 ? g.issues : undefined);
+        outcome = await opts.runGroup(primary, g.issues.length > 1 ? g.issues : undefined);
       } catch (err) {
         threw = err as Error;
       }
@@ -292,6 +337,22 @@ export async function runWorkQueue(opts: RunQueueOpts): Promise<QueueSummary> {
         // completion — abandoning a group halfway through commit-pr would
         // leave exactly the debris the halt exists to avoid.
         return;
+      }
+
+      // The driver refused before running. Whatever state file is on disk
+      // belongs to the cycle that is ACTUALLY running, so reading it here
+      // would report a live cycle's mid-flight cap as this group's park
+      // reason — and the park advice is `--restart`, which would race fresh
+      // jobs against live ones on the same issue.
+      if (outcome?.started === false) {
+        entries.set(gi, {
+          groupId: g.id,
+          issues: g.issues,
+          outcome: "not-started",
+          reason: outcome.reason ?? "the driver refused to start this cycle",
+          humanAction: `nothing to do here — ${outcome.reason ?? "this cycle never started"}. Check /work-status ${primary} for the cycle that owns it.`,
+        });
+        continue;
       }
 
       const state = await read(opts.repoRoot, primary).catch(() => undefined);
@@ -414,6 +475,7 @@ function finish(
     entries: deduped,
     merged: deduped.filter((e) => e.outcome === "merged").length,
     parked: deduped.filter((e) => e.outcome === "parked").length,
+    refused: deduped.filter((e) => e.outcome === "not-started").length,
     notStarted,
   };
 }

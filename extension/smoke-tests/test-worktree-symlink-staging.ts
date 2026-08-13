@@ -107,14 +107,21 @@ try {
       `canary: the escaping symlink is NOT staged (staged: ${JSON.stringify(names)})`,
     );
     assert(names.includes("src.txt"), "...while the developer's real edit still is");
-    assert(n === names.length, `the returned count matches what was staged (${n} vs ${names.length})`);
+    assert(
+      n === names.length,
+      `the returned count matches what was staged (${n} vs ${names.length})`,
+    );
 
     // The count is load-bearing: `integrate()` treats 0 as "this developer
     // wrote nothing" and refuses to ship a partial consolidation. If the
     // symlink were counted, a worktree containing ONLY scaffolding would look
     // like real work.
     const { wt: empty } = await fixture("sink-empty");
-    symlinkSync(path.join(root, "sink-empty", "node_modules"), path.join(empty, "node_modules"), "dir");
+    symlinkSync(
+      path.join(root, "sink-empty", "node_modules"),
+      path.join(empty, "node_modules"),
+      "dir",
+    );
     assert(
       (await stagePorcelainPaths(realExec, empty)) === 0,
       "canary: a worktree containing ONLY the scaffolding link counts as empty, not as work",
@@ -138,7 +145,10 @@ try {
   {
     const { repo, wt } = await fixture("source");
     const res = await provisionWorktree(realExec, repo, wt);
-    assert(res.linked.includes("node_modules"), `provisioning linked node_modules (via ${res.via})`);
+    assert(
+      res.linked.includes("node_modules"),
+      `provisioning linked node_modules (via ${res.via})`,
+    );
     const { stdout } = await git(wt, ["status", "--porcelain"]);
     assert(
       !stdout.includes("node_modules"),

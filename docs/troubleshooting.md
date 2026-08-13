@@ -105,6 +105,13 @@ The distinction: the permission layers answer *"may this role run git?"* — yes
 **Still allowed**, because they lose nothing: `git checkout <branch>` (git refuses to clobber local edits), `git reset` without `--hard`, `git restore --staged`, `git stash push` (recoverable via `git stash list`), and `git clean -n`.
 
 Opt out with `PI_ENSEMBLE_ALLOW_DESTRUCTIVE_GIT=1`.
+### The queue says a group "did not start"
+
+Not a failure, and not a halt. The driver declined to run that group — usually because a live cycle already owns the issue, but also for a terminal status, a `needs-human-attention` label, or state-file inconsistencies. All five of those return in about a millisecond.
+
+Previously the queue could not distinguish them from a cycle that ran and parked, so it read whatever state file was on disk — which in the interesting cases belongs to the cycle that is *actually running* — took its most recent `cap-hit` as this group's park reason, and recommended `--restart`. Restarting a live cycle wipes its state file and starts a second driver on the same issue, which is the interleaving the claim check exists to prevent. The field report was *"finished — 0 merged, 2 parked"* while both explores were still alive, with `updatedAt` only 1.3 s after `startedAt`.
+
+Two independent guards now: the queue refuses to interpret a state file at all when the driver reports it never started, and `parkReason` separately refuses to call a `running` cycle with a live owner "parked".
 
 ### Reading a handoff
 

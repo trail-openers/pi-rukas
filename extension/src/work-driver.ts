@@ -167,23 +167,39 @@ export class DriverNotImplementedError extends Error {
  * other. Harmless while only a human typing `/work` could start one; not
  * harmless once a tool can, because an LLM can call a tool twice.
  */
-export async function runWorkDriver(ctx: DriverContext): Promise<void> {
+/**
+ * What a `runWorkDriver` call actually did.
+ *
+ * It used to return `Promise<void>`, and five of its early exits resolve in
+ * ~0 ms without running a cycle at all — a claim conflict, another live pid, a
+ * terminal state, an attention label, or state-file inconsistencies. The queue
+ * could not tell those apart from a cycle that ran and parked, so it read the
+ * OTHER cycle's mid-flight state file and reported it as this group's outcome,
+ * complete with a `--restart` recommendation that would have raced fresh jobs
+ * against live ones.
+ */
+export type DriverOutcome = { started: true } | { started: false; reason: string };
+
+export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> {
   const claimed = claimCycle(ctx.issue, ctx.issues);
   if (!claimed.ok) {
     notifyAgent(
       ctx.pi,
       `pi-ensemble: /work for issue #${ctx.issue} refused — issue #${claimed.conflictIssue} is already being worked by the cycle for #${claimed.heldByCycle} in this session. Two drivers on one branch interleave commits and produce a PR nobody can review. Wait for it to finish, or check /work-status.`,
     );
-    return;
+    return {
+      started: false,
+      reason: `issue #${claimed.conflictIssue} is already held by the live cycle for #${claimed.heldByCycle}`,
+    };
   }
   try {
-    await runWorkDriverInner(ctx);
+    return await runWorkDriverInner(ctx);
   } finally {
     claimed.claim.release();
   }
 }
 
-async function runWorkDriverInner(ctx: DriverContext): Promise<void> {
+async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
   // PR12 — `/work N --restart`: skip readState and start fresh from
   // `initialState(issue)`. Used after the operator revises the issue
   // body via /plan (or gh issue edit) following a prior terminal cycle
@@ -218,7 +234,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<void> {
       ctx.pi,
       `pi-ensemble: /work for issue #${ctx.issue} already terminated as ${terminalStatus}. To start a fresh cycle (e.g., after revising the issue via /plan), re-run with --restart:\n  /work ${ctx.issue} --restart\nOr rm ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json manually. The prior cycle's event log is preserved in the state file until you restart or remove it.`,
     );
-    return;
+    return { started: false, reason: `already terminated as ${terminalStatus}` };
   }
 
   // #408 — the driver has always WRITTEN `needs-human-attention` and never read
@@ -232,7 +248,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<void> {
     });
     if (attention.refuse && attention.message) {
       notifyAgent(ctx.pi, attention.message);
-      return;
+      return { started: false, reason: "issue carries the needs-human-attention label" };
     }
     if (!attention.checked) {
       trace(`work-driver: needs-human-attention check did not run for #${ctx.issue}`);
@@ -248,7 +264,10 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<void> {
     const verdict = classifyRunningState(state);
     if (verdict.action === "refuse") {
       notifyAgent(ctx.pi, explainRefusal(ctx.issue, verdict.ownerPid));
-      return;
+      return {
+        started: false,
+        reason: `another live process (pid ${verdict.ownerPid}) owns this cycle`,
+      };
     }
     if (verdict.action === "resume") {
       notifyAgent(ctx.pi, explainResume(ctx.issue, verdict.step, verdict.jobIds.length));
@@ -268,7 +287,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<void> {
       ctx.pi,
       `pi-ensemble /work driver halted on issue #${ctx.issue}: state-file inconsistencies detected.\n  - ${detail}\nInspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json or rm to start fresh (your git work is unaffected; only the workflow tracker state is removed).`,
     );
-    return;
+    return { started: false, reason: "state-file inconsistencies detected" };
   }
 
   // Persist the initial state on first run so the user can see the file
@@ -302,7 +321,8 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<void> {
         `pi-ensemble /work driver aborted on issue #${ctx.issue}: transition safety limit reached. ` +
           `Inspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json for the state.`,
       );
-      return;
+      // The cycle ran and then aborted — its state file is the real outcome.
+      return { started: true };
     }
     const step = state.pipelineState.currentStep;
     // Step-level lifecycle event (PR2 O1): emits "▶ step N/9 X started"
@@ -346,7 +366,8 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<void> {
           ctx.pi,
           `pi-ensemble /work driver halted: step "${err.step}" is not implemented in this build. This is a bug — the state file at .pi/work-state/ has the full cycle for the report.`,
         );
-        return;
+        // The cycle ran and then aborted — its state file is the real outcome.
+        return { started: true };
       }
       // Spawn-level / unexpected error — mark aborted with the error.
       trace(`work-driver: step "${step}" threw: ${(err as Error).message}`);
@@ -369,7 +390,8 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<void> {
         `pi-ensemble /work driver aborted on step "${step}" for issue #${ctx.issue}: ` +
           `${(err as Error).message}`,
       );
-      return;
+      // The cycle ran and then aborted — its state file is the real outcome.
+      return { started: true };
     }
     // Step completed — emit the scrollback lifecycle line, then apply
     // the PR5 single-dispatch + PR7 multi-workstream halt-cascade
@@ -428,4 +450,5 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<void> {
       renderHandoffUserMessage(state, ctx.repoRoot, scratchDir(ctx.repoRoot, ctx.issue)),
     );
   }
+  return { started: true };
 }
