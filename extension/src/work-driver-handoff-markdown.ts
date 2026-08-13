@@ -7,6 +7,8 @@
  * `gh pr comment` / `gh issue comment`.
  */
 
+import { killDetail } from "./kill-detail.ts";
+import { renderLensFindings } from "./lens-findings-render.ts";
 import { explainCap } from "./work-driver-explain.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
@@ -126,11 +128,23 @@ export function renderHandoffMarkdown(state: WorkState): string {
     lines.push("### Workstream verdicts (Step 4 fanout)", ...branches, "");
   }
   if (lastFindings) {
-    const verdict = lastFindings.verdict;
+    // The findings themselves, not a pointer to them. This block used to say
+    // "review the JSON findings in the state file" — so four lantern cycles
+    // handed off with CRITICAL findings nobody read, and the same defects were
+    // later rediscovered by hand from the diff. See lens-findings-render.ts.
+    const rendered = renderLensFindings(lastFindings.findings, lastFindings.verdict);
     lines.push(
-      `### Recurring finding pattern (last round: ${verdict})`,
-      "",
-      "Review the JSON findings in the state file's most recent `lens-issues-found` event.",
+      ...(rendered.length > 0
+        ? rendered
+        : // A round that reported issues but stored no readable findings is
+          // itself worth saying out loud — silence here would read as "the
+          // review found nothing", which is the opposite of what happened.
+          [
+            `### Review findings — none recorded (verdict: ${lastFindings.verdict})`,
+            "",
+            "The round reported issues but the findings blob was empty or unreadable.",
+            "",
+          ]),
       "Patterns to look for:",
       "  - Same lens flagging the same shape across rounds → spec-level problem (MAST 41.77%)",
       "  - Orthogonal local bugs → genuine work remains, not a doctrine failure",
@@ -334,8 +348,21 @@ export function renderHandoffMarkdown(state: WorkState): string {
       "# 3. Then re-run:",
       `/work ${issue} --restart`,
     );
+  } else if (!ps.branchName) {
+    // See the twin in work-driver-handoff-message.ts: the predicate is the
+    // state, not the cap, so a NEW pre-branch cap cannot fall through to
+    // commands for a branch that was never created.
+    lines.push(
+      ...killDetail(state),
+      "# 1. Read what the failing step actually reported:",
+      `cat .pi/work-state/${issue}.json`,
+      "",
+      "# 2. Then re-run:",
+      `/work ${issue} --restart`,
+    );
   } else {
     lines.push(
+      ...killDetail(state),
       "# 1. Inspect what survived before deciding:",
       "git status",
       "git diff --stat",

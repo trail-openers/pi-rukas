@@ -1,0 +1,53 @@
+/**
+ * kill-detail — say out loud that we killed the child.
+ *
+ * When a subagent is SIGTERM'd, `buildCompletionEvent` records the cause on
+ * the `dispatch-failed` event: `killCause` ("timeout" | "inactivity" | "abort")
+ * and an `errorTail` naming the budget and the override knob. Nothing rendered
+ * either of them. `grep errorTail` across all three handoff surfaces returned
+ * zero hits, so the operator was told only that a step "failed" and could not
+ * distinguish a wall-clock kill from a crash, a 429, or a provider error
+ * without opening the state file by hand.
+ *
+ * That is how lantern #686 and #693 — both killed at 31m08s having produced
+ * nothing — arrived at their operator described as issue-quality problems,
+ * inviting the editing of two perfectly good issues.
+ *
+ * The distinction matters because the three causes need different responses:
+ * a `timeout` means the work is too large for one child, `inactivity` means
+ * the child went genuinely silent, and `abort` means we cancelled it.
+ */
+
+import type { WorkEvent, WorkState } from "./workflow-state.ts";
+
+const WHY: Record<string, string> = {
+  timeout:
+    "hit the wall-clock backstop — that only catches runaway loops, so this means the work needs splitting or manual takeover",
+  inactivity:
+    "produced no output at all for the watchdog window — a genuine hang, or a provider stall that outlasted every retry",
+  abort: "was cancelled",
+};
+
+/**
+ * Lines describing the most recent self-kill, or `[]` when nothing was killed.
+ *
+ * Returned as lines rather than a string so callers can indent them into
+ * whichever surface they are building.
+ */
+export function killDetail(state: WorkState): string[] {
+  const killed = [...state.eventLog]
+    .reverse()
+    .find(
+      (e): e is Extract<WorkEvent, { kind: "dispatch-failed" }> =>
+        e.kind === "dispatch-failed" && Boolean(e.killCause),
+    );
+  if (!killed?.killCause) return [];
+  const why = WHY[killed.killCause] ?? "was killed by the harness";
+  const tail = killed.errorTail?.trim();
+  return [
+    `# The ${killed.role ?? "subagent"} on step \`${killed.step}\` ${why}.`,
+    ...(tail ? [`#   ${tail.split("\n")[0]?.slice(0, 200)}`] : []),
+    "#   This is OUR kill, not a provider failure and not a bad issue.",
+    "",
+  ];
+}

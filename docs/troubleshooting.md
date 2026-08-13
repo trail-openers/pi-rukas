@@ -86,6 +86,16 @@ Check the raw transcript under `~/.pi/agent/ensemble-runs/<date>/` before conclu
 
 ## Review gates
 
+### Reading a handoff
+
+Every handoff carries three things it previously withheld.
+
+**The review's own findings**, severity-ordered worst-first, with lens, path and line. These used to be replaced by a pointer — *"Review the JSON findings in the state file"* — in the GitHub body, and omitted entirely from the in-chat message. Four lantern cycles handed off with CRITICAL findings that nobody read, and the same defects were later rediscovered by hand from the diff. If a round reports issues but records nothing readable, the handoff says *that* rather than staying silent.
+
+**Whether we killed the subagent.** A `timeout` or `inactivity` kill is now named as ours, with its cause. Previously `killCause` and `errorTail` were written to the event and rendered nowhere, so a wall-clock kill was indistinguishable from a crash, a 429, or a provider error — and two perfectly good issues were described to their operator as ambiguous because of it.
+
+**Recovery commands that match reality.** A cycle halting before the branch step has no branch, no worktree and no PR, and no longer receives `git status` / `git push -u origin <branch>`. The predicate is the absence of a branch name, not a list of caps — so a newly added pre-branch cap cannot fall through to the wrong text again.
+
 ### The six-pass review said APPROVED but nothing looks reviewed
 
 A lens that exits 0 without calling `report_finding` used to be indistinguishable from one that reviewed carefully and found nothing, so a silent review reported APPROVED. It now reports `REVIEW_INCOMPLETE` unless every lens produced either findings or a closing summary. If you see REVIEW_INCOMPLETE with no obvious failure, check the lens transcripts under `~/.pi/agent/ensemble-runs/<date>/` — a lens that returned only thinking content is the usual cause.

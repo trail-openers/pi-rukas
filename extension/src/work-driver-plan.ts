@@ -450,10 +450,11 @@ export function sliceMarkdownSection(text: string, name: string): string | undef
   const start = m.index + m[0].length;
   const after = text.slice(start);
   const nextMatch = after.match(/^##\s/m);
-  if (nextMatch && nextMatch.index !== undefined) {
-    return after.slice(0, nextMatch.index);
-  }
-  return after;
+  const body = nextMatch && nextMatch.index !== undefined ? after.slice(0, nextMatch.index) : after;
+  // A `---` rule between sections belongs to neither. It terminated nothing,
+  // so it rode along on the section above and surfaced verbatim in the park
+  // explanation a human reads ("Resolver's rationale: …\n\n---").
+  return body.replace(/\n\s*-{3,}\s*$/, "\n");
 }
 
 /** Extract `- key: a, b, c` or `- key: a` from a markdown sub-section. */

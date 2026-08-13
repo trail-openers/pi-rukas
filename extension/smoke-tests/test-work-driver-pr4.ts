@@ -184,9 +184,14 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   assert(md.includes(".pi/work-state/553.json"), "renderHandoffMarkdown: points at state file");
   assert(md.includes("What was attempted"), "renderHandoffMarkdown: includes step-duration block");
   assert(md.includes("28.0s · explore"), "renderHandoffMarkdown: includes per-step durations");
+  // The heading changed when the handoff started printing the findings
+  // themselves rather than a pointer to the state file. This fixture stores
+  // `findings: "[]"`, so it exercises the empty branch: a round that reported
+  // issues but recorded nothing readable must still say so, because silence
+  // here reads as "the review found nothing".
   assert(
-    md.includes("Recurring finding pattern"),
-    "renderHandoffMarkdown: includes finding-pattern section when lens-issues-found present",
+    md.includes("Review findings") && md.includes("none recorded"),
+    "renderHandoffMarkdown: an issues-found round with an empty findings blob says so explicitly",
   );
   assert(md.includes("Transcripts"), "renderHandoffMarkdown: lists transcripts when present");
   assert(md.includes("/tmp/foo/explore.json"), "renderHandoffMarkdown: transcript paths verbatim");

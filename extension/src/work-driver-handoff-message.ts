@@ -7,6 +7,8 @@
  * full operator-facing summary via `pi.sendUserMessage`.
  */
 
+import { killDetail } from "./kill-detail.ts";
+import { renderLensFindings } from "./lens-findings-render.ts";
 import { MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { explainCap } from "./work-driver-explain.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
@@ -113,6 +115,21 @@ export function renderHandoffUserMessage(
     `  ${prTag}`,
     `  ${fileCount} file(s) modified${snap && snap.stagedCount > 0 ? ` (${snap.stagedCount} staged, ${snap.unstagedCount} unstaged)` : ""}`,
   );
+  // The review's own findings, in the surface the operator actually reads.
+  // This message showed them NOWHERE — not a pointer, not a count — while the
+  // six lenses had already located the defect, named the file and rated it
+  // CRITICAL. Four lantern cycles handed off that way and the same defects were
+  // rediscovered later by hand from the diff. See lens-findings-render.ts.
+  const lastFindings = [...state.eventLog]
+    .reverse()
+    .find(
+      (e): e is Extract<WorkEvent, { kind: "lens-issues-found" }> => e.kind === "lens-issues-found",
+    );
+  if (lastFindings) {
+    const rendered = renderLensFindings(lastFindings.findings, lastFindings.verdict);
+    if (rendered.length > 0) lines.push("", ...rendered);
+  }
+
   // PR10 — per-issue verdict surface for multi-issue cycles. Shows
   // active (NEEDS_WORK) + dropped (ALREADY_COMPLETE / NEEDS_CLARIFICATION)
   // with the per-issue reason explore provided.
@@ -355,9 +372,28 @@ export function renderHandoffUserMessage(
       "  # 3. Then re-run — the state file is discarded automatically on --restart:",
       `     /work ${issue} --restart`,
     );
+  } else if (!ps.branchName) {
+    // Nothing was created, so the generic block below is all wrong: it tells
+    // the operator to inspect a worktree that does not exist and push a branch
+    // that was never made. This used to be special-cased per cap, which meant
+    // every NEW pre-branch cap (a timed-out explore, for one) fell through to
+    // the misleading text again. The predicate is the state, not the cap.
+    lines.push(
+      "",
+      "No branch, no worktree and no PR — the cycle halted before the branch step,",
+      "so there is nothing to inspect, push or abandon.",
+      "",
+      ...killDetail(state).map((l) => `  ${l}`),
+      "  # 1. Read what the failing step actually reported:",
+      `     cat ${repoRoot}/.pi/work-state/${issue}.json`,
+      "",
+      "  # 2. Then re-run:",
+      `     /work ${issue} --restart`,
+    );
   } else {
     lines.push(
       "",
+      ...killDetail(state).map((l) => `  ${l}`),
       "  # 1. Inspect what survived before deciding:",
       `     git -C ${repoRoot} status`,
       `     git -C ${repoRoot} diff --stat`,
