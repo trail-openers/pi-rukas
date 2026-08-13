@@ -165,8 +165,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       "PR14 §B: commit-pr prompt includes the verify-all-workstreams check",
     );
     assert(
-      capturedPrompt.includes("git apply --index"),
-      "PR14 §B: commit-pr prompt includes the git apply --index consolidation recipe",
+      capturedPrompt.includes("git apply --3way --binary --index") &&
+        capturedPrompt.includes("diff --cached --binary"),
+      "PR14 §B: commit-pr prompt teaches the SAME recipe the mechanized path uses — stage first (git diff HEAD omits untracked files), --binary, --3way",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -409,8 +410,8 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     "PR14 §E: renderHandoffMarkdown lists missing workstreams",
   );
   assert(
-    md.includes("git apply --index"),
-    "PR14 §E: renderHandoffMarkdown includes the consolidation-recovery commands",
+    md.includes("git apply --3way --binary --index"),
+    "PR14 §E: renderHandoffMarkdown's consolidation recovery uses the same recipe as the mechanized path",
   );
 }
 

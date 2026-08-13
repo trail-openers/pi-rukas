@@ -317,11 +317,14 @@ export function renderHandoffMarkdown(state: WorkState): string {
       "# 1. Inspect each missing workstream's worktree — the developer's work is still there uncommitted:",
       ...missing.map((m) => `git -C .worktrees/issue-${issue}-${m.id} status --porcelain`),
       "",
-      "# 2. Apply the missing diffs to the integration branch:",
-      ...missing.map(
-        (m) =>
-          `git -C .worktrees/issue-${issue}-${m.id} diff HEAD | git apply --index    # in the integration tree`,
-      ),
+      "# 2. Apply the missing diffs to the integration branch. Stage inside the",
+      "#    worktree FIRST — `git diff HEAD` alone silently omits untracked new",
+      "#    files — and use --3way, which resolves two workstreams touching",
+      "#    different regions of one file instead of rejecting the second:",
+      ...missing.flatMap((m) => [
+        `git -C .worktrees/issue-${issue}-${m.id} add -A`,
+        `git -C .worktrees/issue-${issue}-${m.id} diff --cached --binary | git apply --3way --binary --index    # in the integration tree`,
+      ]),
       "",
       "# 3. Verify all workstreams' files now appear, then commit + push:",
       "git diff --name-only --cached",

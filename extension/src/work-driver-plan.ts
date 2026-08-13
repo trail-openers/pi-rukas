@@ -9,6 +9,10 @@
 import fs from "node:fs/promises";
 import { dispatchCore } from "./dispatch.ts";
 import { trace } from "./trace.ts";
+import { extractListField, sliceMarkdownSection } from "./work-driver-plan-parse.ts";
+
+// Re-exported: several modules read plan/spec markdown through this module.
+export { sliceMarkdownSection, splitOutsideParens } from "./work-driver-plan-parse.ts";
 import type { DispatchResult } from "./types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
@@ -434,36 +438,4 @@ export function countEnumeratedFindings(body: string): number {
     if (/^\s*(?:\d+[.)]\s+\S|[-*]\s+\[[ xX]\]\s*\S)/.test(line)) n += 1;
   }
   return n;
-}
-
-/**
- * Slice the markdown subsection following a given `## <name>` heading.
- * Returns text from the line after the heading up to (but not including)
- * the next top-level `## ` heading or end of input. Returns `undefined`
- * when the heading isn't present. JS regex has no `\Z`; this helper
- * gives the same effect with explicit string operations.
- */
-export function sliceMarkdownSection(text: string, name: string): string | undefined {
-  const headingRe = new RegExp(`^##\\s+${name}\\s*$`, "m");
-  const m = text.match(headingRe);
-  if (!m || m.index === undefined) return undefined;
-  const start = m.index + m[0].length;
-  const after = text.slice(start);
-  const nextMatch = after.match(/^##\s/m);
-  const body = nextMatch && nextMatch.index !== undefined ? after.slice(0, nextMatch.index) : after;
-  // A `---` rule between sections belongs to neither. It terminated nothing,
-  // so it rode along on the section above and surfaced verbatim in the park
-  // explanation a human reads ("Resolver's rationale: …\n\n---").
-  return body.replace(/\n\s*-{3,}\s*$/, "\n");
-}
-
-/** Extract `- key: a, b, c` or `- key: a` from a markdown sub-section. */
-function extractListField(body: string, keyPattern: string): string[] {
-  const re = new RegExp(`^\\s*[-*]\\s*${keyPattern}\\s*:\\s*(.+?)\\s*$`, "im");
-  const m = body.match(re);
-  if (!m) return [];
-  return (m[1] ?? "")
-    .split(/[,\n]/)
-    .map((s) => s.trim())
-    .filter(Boolean);
 }

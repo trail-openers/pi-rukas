@@ -86,6 +86,14 @@ Check the raw transcript under `~/.pi/agent/ensemble-runs/<date>/` before conclu
 
 ## Review gates
 
+### `commit-pr-incomplete-consolidation` — check the plan's `paths:` first
+
+Before assuming a workstream's work is genuinely missing, look at how the plan declared its paths. A qualified declaration — `src/config/data.rs (lines 21-44, function body only)` — used to be split on the inner comma into two fragments with unbalanced parentheses, which nothing downstream could normalise back into a path.
+
+That broke two gates in opposite directions: the plan-time overlap check compared the mangled strings, saw no collision and allowed a fan-out where every workstream edited one file; then the consolidation gate looked for those same mangled strings in the committed diff, never found them, and reported every such workstream MISSING *even after a correct integration*. Two of nine measured lantern cycles halted there. Commas inside parentheses are no longer separators.
+
+If the cap fires for real, the recovery commands now match what the driver itself does — stage inside the worktree first (`git diff HEAD` omits untracked new files), capture with `--binary`, apply with `--3way`. The old advice used `git diff HEAD | git apply --index`, which dropped new files and rejected any second workstream touching the same file.
+
 ### Reading a handoff
 
 Every handoff carries three things it previously withheld.
