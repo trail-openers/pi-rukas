@@ -390,8 +390,8 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     "explore-already-complete: recovery includes gh issue close",
   );
   assert(
-    !msg.includes("PI_ENSEMBLE_SPAWN_TIMEOUT_MS_DEVELOPER"),
-    "explore-already-complete: does NOT include the wrong 'longer cap' recovery",
+    !msg.includes("Discard the cycle and start over"),
+    "explore-already-complete: does NOT include the wrong 'discard and retry' recovery",
   );
   assert(
     !msg.includes("git add -p && git commit"),
@@ -404,7 +404,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     "renderHandoffMarkdown: explore-already-complete recovery includes gh issue close",
   );
   assert(
-    !md.includes("PI_ENSEMBLE_SPAWN_TIMEOUT_MS_DEVELOPER"),
+    !md.includes("Discard the cycle and start over"),
     "renderHandoffMarkdown: explore-already-complete does NOT include the wrong recovery",
   );
 }

@@ -204,8 +204,8 @@ assert(
       `handoff ${surface}: names the existing PR's head branch`,
     );
     assert(
-      !/PI_ENSEMBLE_SPAWN_TIMEOUT_MS_DEVELOPER/.test(text),
-      `handoff ${surface}: does NOT fall through to the generic "raise your spawn timeout" boilerplate`,
+      !/Discard the cycle and start over/.test(text),
+      `handoff ${surface}: does NOT fall through to the generic discard-and-retry boilerplate`,
     );
   }
 }

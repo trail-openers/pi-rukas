@@ -13,10 +13,12 @@ import type { RunningState } from "./progress.ts";
 
 export interface SpawnOptions {
   /**
-   * Hard cap on child wall-clock. Default 30 minutes (DEFAULT_SPAWN_TIMEOUT_MS).
-   * Critical: without a cap, a stalled model API call (Cerebras / Copilot /
-   * Anthropic — any provider) leaves the child hung forever and the parent's
-   * `await once(child, "exit")` never resolves.
+   * Hard cap on child wall-clock. Defaults to the runaway backstop
+   * (`SPAWN_BACKSTOP_MS`, 2 h) — deliberately far above any legitimate
+   * runtime, because liveness (`inactivityTimeoutMs`) is what actually
+   * detects a hang. Critical: without any cap, a stalled model API call
+   * (Cerebras / Copilot / Anthropic — any provider) leaves the child hung
+   * forever and the parent's `await once(child, "exit")` never resolves.
    *
    * NOT a PM-callable knob. No agent-facing dispatch tool schema exposes
    * `timeoutMs` — verified across dispatch_specialist, dispatch_parallel,

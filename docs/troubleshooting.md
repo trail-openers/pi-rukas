@@ -753,20 +753,28 @@ Without `--restart`, re-invoking `/work N` on a terminal-state file now emits a 
 
 `--restart` only wipes the driver's state file (`.pi/work-state/N.json`). Worktrees and feature branches from the prior cycle are NOT removed — the branch step will detect existing branches at runtime (ops checks out + resets, or ABORTs cleanly with the error). If you want a fully clean slate, also `rm -rf .worktrees/issue-N-*` and `git branch -D feature/issue-N-*` before re-running.
 
-### Per-role spawn timeouts (PR5)
+### `integration-verify-failed` — the consolidated tree does not build
 
-The driver uses per-role wall-clock caps for each dispatched subagent. Defaults reflect typical role runtime (developer is the slow one):
+`commit-pr` runs the project's `.pi/verify-cmd` against the **integrated** tree, between the commit and the push. Everything upstream saw one workstream in isolation: the develop gate ran inside a single worktree and adversarial reviewed a single worktree's diff. Two workstreams that each pass alone can still fail together — one renames or deletes what another still refers to — and that defect is *created* by integration, so integration is the only place it can be caught.
 
-| Role | Default cap | Env var override |
-|---|---|---|
-| `developer` | 90 min | `PI_ENSEMBLE_SPAWN_TIMEOUT_MS_DEVELOPER` |
-| `code-review-specialist` | 15 min | `PI_ENSEMBLE_SPAWN_TIMEOUT_MS_CODE_REVIEW_SPECIALIST` |
-| `adversarial-developer` | 15 min | `PI_ENSEMBLE_SPAWN_TIMEOUT_MS_ADVERSARIAL_DEVELOPER` |
-| `explore` | 15 min | `PI_ENSEMBLE_SPAWN_TIMEOUT_MS_EXPLORE` |
-| `ops` | 10 min | `PI_ENSEMBLE_SPAWN_TIMEOUT_MS_OPS` |
-| `project-manager` | 30 min | `PI_ENSEMBLE_SPAWN_TIMEOUT_MS_PROJECT_MANAGER` |
+When it fires, **nothing was pushed and no PR exists**. The failing output is in the plumb-report on the handoff. Typical cause: one workstream moved or removed a symbol another still calls. Fix the interaction and re-run.
 
-Env precedence: per-role override > umbrella `PI_ENSEMBLE_SPAWN_TIMEOUT_MS` > per-role default. Setting a per-role override is the cleanest fix when a `developer-timeout` cap-hit suggests the issue genuinely needs more wall-clock than the default 90 min.
+Unlike other `commit-pr` failures this does **not** fall back to the LLM ops dispatch. That fallback exists to absorb environment variance (an apply conflict, a rejected push); "this does not build" is a verdict, and letting ops push the identical tree would make the gate one that cannot fail.
+
+Projects with no `.pi/verify-cmd` skip the check entirely and are unaffected.
+
+### How a subagent's life is bounded
+
+Two mechanisms, and only one of them is meant to fire in normal operation.
+
+| Mechanism | Default | Env var | What it is for |
+|---|---|---|---|
+| Inactivity watchdog | 25 min of **zero stdout** | `PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS` (`0` disables) | The real hang detector. A healthy child emits an event at every turn/tool boundary, so silence — not slowness — is the signal. |
+| Runaway backstop | 2 h wall-clock | `PI_ENSEMBLE_SPAWN_TIMEOUT_MS` | Catches a child looping forever while still emitting events, which liveness cannot see. Nothing else should reach it. |
+
+This replaced a table of six per-role wall-clock caps. Those were raised twice — [#296](https://github.com/randomm/pi-ensemble/issues/296) and [#553](https://github.com/randomm/pi-ensemble/issues/553) — and both times the finding was the same: the number was too small for a *healthy* child. Provider speed varies by an order of magnitude, so a wall-clock number never means the same thing on two models, and the per-role table had already drifted out of sync with this documentation.
+
+**If a child hits the backstop**, treat it as a decomposition problem, not a budget one: two hours of continuous output without finishing means the workstream is too large or the child is looping. Split the issue, or take over manually.
 
 ### `ci` step timeout — CI runs > 10 min (PR15)
 

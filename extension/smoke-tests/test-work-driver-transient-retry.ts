@@ -327,8 +327,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     );
     assert(
       fail?.kind === "dispatch-failed" &&
-        (fail.errorTail ?? "").includes("PI_ENSEMBLE_SPAWN_TIMEOUT_MS_DEVELOPER"),
-      "#296 T4: errorTail names the per-role override knob",
+        (fail.errorTail ?? "").includes("PI_ENSEMBLE_SPAWN_TIMEOUT_MS") &&
+        !/PI_ENSEMBLE_SPAWN_TIMEOUT_MS_[A-Z]/.test(fail.errorTail ?? ""),
+      "#296 T4: errorTail names the one backstop knob, not a per-role one",
     );
     const capHit = (after?.eventLog ?? []).find((e) => e.kind === "cap-hit");
     assert(

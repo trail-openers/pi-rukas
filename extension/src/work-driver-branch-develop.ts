@@ -302,13 +302,12 @@ export async function runDevelop(
   const dispatch = ctx.dispatchFn ?? dispatchCore;
   const scratchAbs = scratchDir(ctx.repoRoot, ctx.issue);
   // PR4 Pattern 3: speculative just-in-time explore alongside each developer.
-  // Free in wall-clock (the developer always runs longer) but it doubles
-  // develop's fanout — M children become 2M, multiplied by the group
-  // concurrency. So: on at concurrency 1, off when groups run concurrently,
-  // and the env var wins either way.
-  const speculativeEnv = process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE;
-  const speculativeOn =
-    speculativeEnv === "0" ? true : speculativeEnv === "1" ? false : (ctx.parallelCycles ?? 1) <= 1;
+  // Free in wall-clock — the developer always runs longer — so it is simply
+  // on. It used to switch off whenever groups ran concurrently, to fit the
+  // old spawn cap of 12 that one develop step consumed by itself; with the
+  // cap sized above peak fanout that trade is gone, and degrading a cycle's
+  // context to save slots we now have is pure loss.
+  const speculativeOn = process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE !== "1";
   const verdicts: Array<{ id: string; ok: boolean }> = [];
   const branchEvents: typeof next.eventLog = [];
   // #382 — write-ahead. `develop` is the longest-running step in the cycle

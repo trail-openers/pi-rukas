@@ -11,9 +11,9 @@
  *   - `MAX_PARALLEL` (dispatch.ts) validates one tool call's array length.
  *
  * Actual fanout: `develop` starts 2M children (a developer AND a speculative
- * explore per workstream), M is bounded only by #290's ceiling, and parallel
- * groups multiply that again. At 3 groups × M=6 that is ~36 `pi --mode rpc`
- * processes, each with its own prompt dir, transcript and model session.
+ * explore per workstream), M is bounded only by #290's ceiling. Each is a
+ * `pi --mode rpc` process with its own prompt dir, transcript and model
+ * session, so the ceiling is a local-resource question — see `spawnCap`.
  *
  * This wraps `spawnSpecialist` itself rather than `startJob` — precisely
  * because the direct-spawn paths are the ones that need bounding. Excess
@@ -24,14 +24,31 @@
 import { trace } from "./trace.ts";
 
 /**
- * Concurrent children allowed. Default 12: a single M=6 develop step needs 6
- * (or 12 with speculative explores), so a lower cap would serialise one
- * cycle's own fanout and make the harness slower at concurrency 1.
+ * Concurrent children allowed.
+ *
+ * This bounds LOCAL processes — pids, file descriptors, memory. It is not a
+ * ration on provider capacity, and must never be used as one: a provider that
+ * is saturated says so itself, with a 429 and a `retry-after` that Pi's client
+ * waits out (`retry-config-check.ts` warns at startup when the host's
+ * `maxRetryDelayMs` is low enough to discard that instruction). Backpressure
+ * belongs to whoever has the information, and that is the provider.
+ *
+ * Sized above any single cycle's peak fanout so the cap can never serialise a
+ * step against itself. The peak is `develop`, at 2 children per workstream (a
+ * developer plus a speculative explore); at the MAX_WORKSTREAMS ceiling of 10
+ * that is 20, and `lens-review`'s six-way fanout is far below it. 64 leaves
+ * room for several cycles at that width while still catching a runaway.
+ *
+ * The previous value was 12, which one M=6 develop step consumed entirely —
+ * so a second concurrent cycle got zero slots and queued. That queueing was
+ * measured as "roles run ~2.4x slower under concurrency" and misread as
+ * provider contention; it was this FIFO.
+ *
  * `PI_ENSEMBLE_SPAWN_CAP=0` disables the semaphore entirely.
  */
 export function spawnCap(): number {
   const env = Number(process.env.PI_ENSEMBLE_SPAWN_CAP);
-  return Number.isFinite(env) && env >= 0 ? env : 12;
+  return Number.isFinite(env) && env >= 0 ? env : 64;
 }
 
 let active = 0;

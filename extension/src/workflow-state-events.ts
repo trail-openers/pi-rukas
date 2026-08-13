@@ -222,6 +222,7 @@ export type WorkEvent =
         // closed #577 with 1 of 3 workstreams' changes — root fix
         // lost from main).
         | "commit-pr-incomplete-consolidation"
+        | "integration-verify-failed"
         // PR17 — emitted by the driver-side outcome verification gate
         // (verifyStepOutcome) when a step's claimed outcome doesn't match
         // executed evidence: develop claimed done but no worktree has any

@@ -5,8 +5,9 @@
  * Extracted from work-driver.ts (issue #171 file-size hygiene). The
  * driver executes the consolidation + commit + push + PR-creation
  * recipe directly (PR19) instead of narrating it to an LLM ops dispatch;
- * `runCommitPr` falls back to an LLM ops dispatch on any mechanized
- * `{ok: false}` return.
+ * `runCommitPr` falls back to an LLM ops dispatch on a mechanized
+ * `{ok: false}` return -- EXCEPT a `terminal` one, which is a verdict the
+ * fallback has no standing to overturn (see `mechanizedCommitPr`).
  */
 
 import { exec } from "node:child_process";
@@ -21,12 +22,23 @@ import { renderAssumptions } from "./work-driver-intent.ts";
 import { parsePrNumber } from "./work-driver-lens.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
 import { inlineCommitPrPrompt } from "./work-driver-prompts-late.ts";
+import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyConsolidation, verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { appendEvent } from "./workflow-state.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 const execp = promisify(exec);
+
+/**
+ * Wall-clock for the verify run against the consolidated tree. This is the
+ * project's FAST suite, not the full one — it exists to catch "the
+ * combination does not build", which is quick to discover. Default 15 min.
+ */
+function integrationVerifyTimeoutMs(): number {
+  const env = Number(process.env.PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS);
+  return Number.isFinite(env) && env > 0 ? env : 15 * 60_000;
+}
 
 /**
  * PR19 — Mechanized commit-pr: the driver executes the consolidation +
@@ -57,9 +69,15 @@ const execp = promisify(exec);
  *   4. Push; `gh pr create --body-file`; parse the PR number from the
  *      URL gh prints.
  *
- * ANY failure returns `{ok: false, reason}` — the caller emits a
+ * Most failures return `{ok: false, reason}` — the caller emits a
  * plumb-report and falls back to the LLM ops dispatch (judgmental
- * recovery), whose behaviour is unchanged from PR14. Success appends
+ * recovery), whose behaviour is unchanged from PR14. The exception is
+ * `terminal: true`, set when the CONSOLIDATED tree fails the project's
+ * verify command: the fallback exists to absorb environment variance (an
+ * apply conflict, a rejected push), and "this does not build" is a fact
+ * rather than variance. Falling back there would let ops push the same
+ * broken tree, making the gate one that cannot fail — #328's shape.
+ * Success appends
  * the same `step-started` + `dispatch-completed` event shapes the
  * dispatch path produces (role "driver", summary carrying `pr: <N>`),
  * so parsePrNumber + both downstream gates run identically for both
@@ -69,7 +87,7 @@ export async function mechanizedCommitPr(
   ctx: DriverContext,
   state: WorkState,
   now: number,
-): Promise<{ ok: true; state: WorkState } | { ok: false; reason: string }> {
+): Promise<{ ok: true; state: WorkState } | { ok: false; reason: string; terminal?: boolean }> {
   const execFn = ctx.verifyExecFn ?? execp;
   const ps = state.pipelineState;
   const branchName = ps.branchName;
@@ -118,6 +136,11 @@ export async function mechanizedCommitPr(
       commitBody,
       mode: "create",
       requireAllNonEmpty: true,
+      // The first time anything compiles the COMBINATION of the workstreams.
+      // Absent `.pi/verify-cmd` leaves this undefined and the gate skips.
+      verifyCmd: await verifyCmdFor(ctx.repoRoot),
+      verifyExecFn: ctx.verifyExecFn,
+      verifyTimeoutMs: integrationVerifyTimeoutMs(),
     });
     if (!res.ok) {
       return {
@@ -125,6 +148,12 @@ export async function mechanizedCommitPr(
         reason: res.conflictPatch
           ? `${res.reason} (patch preserved at ${res.conflictPatch})`
           : res.reason,
+        // A tree that does not build is a verdict, not the environment
+        // variance the LLM fallback exists to absorb. Handing it on would
+        // make the gate one that cannot fail: it blocks the mechanized path
+        // and the ops dispatch commits and pushes the same broken tree
+        // anyway — #328's shape, in a new place.
+        terminal: res.failure === "verify",
       };
     }
     if (res.empty) {
@@ -241,6 +270,29 @@ async function runCommitPrLocked(
     const mech = await mechanizedCommitPr(ctx, state, now);
     if (mech.ok) {
       next = mech.state;
+    } else if (mech.terminal) {
+      // The consolidated tree does not build. The fallback exists to absorb
+      // environment variance, not to overrule a verdict — letting ops commit
+      // and push the same tree would make this a gate that cannot fail, and
+      // the six lenses would then review something that was never compiled.
+      trace(`work-driver: commit-pr halted, consolidated tree failed verify: ${mech.reason}`);
+      return appendEvent(
+        state,
+        {
+          kind: "plumb-report",
+          at: Date.now(),
+          step: "commit-pr",
+          role: "driver",
+          body: mech.reason,
+        },
+        {
+          kind: "cap-hit",
+          at: Date.now(),
+          cap: "integration-verify-failed",
+          reviewRound: state.pipelineState.reviewRound,
+          nextStep: "handoff",
+        },
+      );
     } else {
       trace(`work-driver: mechanized commit-pr fell back to ops dispatch: ${mech.reason}`);
       preDispatch = appendEvent(state, {

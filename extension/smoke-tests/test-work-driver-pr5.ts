@@ -307,7 +307,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     "renderHandoffUserMessage: surfaces the manual gh-comment recovery command",
   );
   assert(
-    msg.includes("developer subagent hit its wall-clock cap"),
+    msg.includes("developer subagent hit the wall-clock backstop"),
     "renderHandoffUserMessage: explainCap output appears in body",
   );
   assert(msg.includes("feature/issue-553-fix"), "renderHandoffUserMessage: surfaces branch name");
@@ -318,8 +318,15 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     "renderHandoffUserMessage: lists modified files",
   );
   assert(
-    msg.includes("PI_ENSEMBLE_SPAWN_TIMEOUT_MS_DEVELOPER=5400000"),
-    "renderHandoffUserMessage: recovery #2 names per-role timeout env var",
+    msg.includes("# 2. Discard the cycle and start over"),
+    "renderHandoffUserMessage: recovery #2 is 'discard and start over'",
+  );
+  // The per-role cap is gone (one runaway backstop replaces six numbers), so
+  // the old "retry with a longer cap" step is gone with it — it advised a knob
+  // that no longer exists, and it duplicated step 3's command verbatim.
+  assert(
+    !/PI_ENSEMBLE_SPAWN_TIMEOUT_MS_[A-Z]/.test(msg),
+    "renderHandoffUserMessage: no per-role timeout env var is advertised",
   );
   assert(
     msg.includes("rm /repo/lantern/.pi/work-state/553.json"),
@@ -369,8 +376,12 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   );
   assert(md.includes("### Inspect further"), "renderHandoffMarkdown: 'Inspect further' footer");
   assert(
-    md.includes("PI_ENSEMBLE_SPAWN_TIMEOUT_MS_DEVELOPER"),
-    "renderHandoffMarkdown: surfaces per-role timeout env in recovery #2",
+    md.includes("# 2. Discard the cycle and start over"),
+    "renderHandoffMarkdown: recovery #2 is 'discard and start over'",
+  );
+  assert(
+    !/PI_ENSEMBLE_SPAWN_TIMEOUT_MS_[A-Z]/.test(md),
+    "renderHandoffMarkdown: no per-role timeout env var is advertised",
   );
 }
 

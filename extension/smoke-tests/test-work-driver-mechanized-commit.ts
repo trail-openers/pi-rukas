@@ -155,7 +155,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           if (cmd.startsWith("git rev-parse ")) return { stdout: "base123\n" };
           if (cmd.startsWith("git fetch origin")) return { stdout: "" };
           if (cmd.startsWith("git worktree add")) return { stdout: "" };
-          if (cmd === "git status --porcelain") {
+          if (cmd.startsWith("git status --porcelain")) {
             // #393 — worktree paths now come from mechanized branch setup
             // (`.worktrees/issue-994/<workstream>`), not from the ops reply,
             // so key on the workstream id rather than the old /wta,/wtb,/wtc
@@ -169,9 +169,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           if (cmd.startsWith("git rev-list --count base123")) return { stdout: "0\n" };
           if (cmd.startsWith("git rev-list --count origin/")) return { stdout: "1\n" };
           if (cmd.startsWith("git add -- ")) return { stdout: "" };
-          if (cmd === "git diff --cached")
+          if (cmd.startsWith("git diff --cached"))
             return { stdout: "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n" };
-          if (cmd.startsWith("git apply --index")) return { stdout: "" };
+          if (cmd.startsWith("git apply")) return { stdout: "" };
           if (cmd.startsWith("git commit")) return { stdout: "" };
           if (cmd.startsWith("git push")) return { stdout: "" };
           if (cmd.startsWith("gh pr create"))
@@ -209,8 +209,8 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           "M1: PR number parsed from gh pr create URL and written to pipelineState",
         );
         assert(
-          calls.filter((c) => c.startsWith("git apply --index")).length === 3,
-          "M1: all 3 sibling worktrees' staged diffs applied at repoRoot (3× git apply --index)",
+          calls.filter((c) => c.startsWith("git apply")).length === 3,
+          "M1: all 3 sibling worktrees' staged diffs applied at repoRoot (3× git apply)",
         );
         assert(
           calls.some((c) => c.startsWith("git push")) &&
@@ -247,7 +247,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           if (cmd.startsWith("git rev-parse ")) return { stdout: "base123\n" };
           if (cmd.startsWith("git fetch origin")) return { stdout: "" };
           if (cmd.startsWith("git worktree add")) return { stdout: "" };
-          if (cmd === "git status --porcelain") {
+          if (cmd.startsWith("git status --porcelain")) {
             const cwd = o?.cwd ?? "";
             if (/-task-[abc]$/.test(cwd)) return { stdout: " M src/x.rs\n" };
             return { stdout: "" };
@@ -255,8 +255,8 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           if (cmd.startsWith("git rev-list --count base123")) return { stdout: "0\n" };
           if (cmd.startsWith("git rev-list --count origin/")) return { stdout: "1\n" };
           if (cmd.startsWith("git add -- ")) return { stdout: "" };
-          if (cmd === "git diff --cached") return { stdout: "diff --git a/x b/x\n+new\n" };
-          if (cmd.startsWith("git apply --index")) {
+          if (cmd.startsWith("git diff --cached")) return { stdout: "diff --git a/x b/x\n+new\n" };
+          if (cmd.startsWith("git apply")) {
             const err = new Error("patch does not apply") as Error & { stderr?: string };
             err.stderr = "error: patch failed: src/x.rs:1";
             throw err;
@@ -313,7 +313,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
           if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
           if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-996\n" };
-          if (cmd === "git status --porcelain") {
+          if (cmd.startsWith("git status --porcelain")) {
             const cwd = o?.cwd ?? "";
             if (cwd.endsWith("/wtb")) return { stdout: "" }; // task-b clean
             if (cwd.endsWith("/wta") || cwd.endsWith("/wtc")) return { stdout: " M src/x.rs\n" };
@@ -322,8 +322,8 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           if (cmd.startsWith("git rev-list --count base123")) return { stdout: "0\n" };
           if (cmd.startsWith("git rev-list --count origin/")) return { stdout: "1\n" };
           if (cmd.startsWith("git add -- ")) return { stdout: "" };
-          if (cmd === "git diff --cached") return { stdout: "diff --git a/x b/x\n+new\n" };
-          if (cmd.startsWith("git apply --index")) return { stdout: "" };
+          if (cmd.startsWith("git diff --cached")) return { stdout: "diff --git a/x b/x\n+new\n" };
+          if (cmd.startsWith("git apply")) return { stdout: "" };
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
           if (cmd.startsWith("git diff --name-only origin/"))
             return { stdout: "src/a.rs\nsrc/b.rs\nsrc/c.rs\n" };

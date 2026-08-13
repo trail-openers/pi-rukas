@@ -101,12 +101,15 @@ export async function buildCompletionEvent(
   // flushed an error-stop message. The errorTail names the budget and the
   // override knob so the operator-facing explanation is accurate.
   if (result.killCause) {
-    const roleEnv = `PI_ENSEMBLE_SPAWN_TIMEOUT_MS_${role.toUpperCase().replaceAll("-", "_")}`;
     const detail =
       result.killCause === "abort"
         ? "[pi-ensemble] cancelled (abort signal)"
         : `[pi-ensemble] killed after ${result.killBudgetMs}ms ${result.killCause}` +
-          ` (override: ${result.killCause === "timeout" ? roleEnv : "PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS"})`;
+          ` (override: ${
+            result.killCause === "timeout"
+              ? "PI_ENSEMBLE_SPAWN_TIMEOUT_MS"
+              : "PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS"
+          })`;
     return {
       kind: "dispatch-failed",
       step,

@@ -46,9 +46,13 @@ async function withCap<T>(cap: string, fn: () => Promise<T>): Promise<T> {
   }
 }
 
+// 12 was the old default, and one M=6 develop step (2 children per workstream)
+// consumed all of it — so a second concurrent cycle got zero slots and queued.
+// The cap bounds local pids; the provider rations its own capacity via 429 +
+// retry-after. See test-spawn-bounds.ts for the full canary.
 assert(
-  spawnCap() === 12,
-  "default cap is 12 — an M=6 develop step needs 6, or 12 with speculatives",
+  spawnCap() === 64,
+  `default cap is 64 — above any single cycle's peak fanout (got ${spawnCap()})`,
 );
 
 // ------------------------------------------------------------- the cap holds

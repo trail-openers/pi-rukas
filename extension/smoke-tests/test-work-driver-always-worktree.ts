@@ -189,17 +189,17 @@ const INTEGRATE_BASE = {
   const execFn: ExecFn = async (cmd, o) => {
     const cwd = o?.cwd ?? "";
     calls.push({ cmd, cwd });
-    if (cmd === "git status --porcelain") {
+    if (cmd.startsWith("git status --porcelain")) {
       return { stdout: cwd === REPO ? "" : " M src/a.ts\n" };
     }
-    if (cmd === "git diff --cached") return { stdout: "diff --git a/a b/a\n+x\n" };
+    if (cmd.startsWith("git diff --cached")) return { stdout: "diff --git a/a b/a\n+x\n" };
     return { stdout: "" };
   };
   const res = await integrate(execFn, { ...INTEGRATE_BASE, mode: "create" });
   assert(res.ok && !res.empty, "integrate: clean repoRoot + dirty worktree consolidates");
 
   const checkoutIdx = calls.findIndex((c) => c.cmd.startsWith("git checkout -B"));
-  const applyIdx = calls.findIndex((c) => c.cmd.startsWith("git apply --index"));
+  const applyIdx = calls.findIndex((c) => c.cmd.startsWith("git apply"));
   const commitIdx = calls.findIndex((c) => c.cmd.startsWith("git commit"));
   const pushIdx = calls.findIndex((c) => c.cmd.startsWith("git push"));
   assert(
@@ -211,7 +211,7 @@ const INTEGRATE_BASE = {
     "integrate: checkout -B → apply → commit → push, in that order",
   );
   assert(
-    calls.some((c) => c.cmd === "git diff --cached" && c.cwd !== REPO),
+    calls.some((c) => c.cmd.startsWith("git diff --cached") && c.cwd !== REPO),
     "integrate: the slice is captured FROM the worktree, not from repoRoot",
   );
 }
@@ -221,11 +221,11 @@ const INTEGRATE_BASE = {
   // shipped, issue closed, root fix lost). commit-pr must refuse it.
   const execFn: ExecFn = async (cmd, o) => {
     const cwd = o?.cwd ?? "";
-    if (cmd === "git status --porcelain") {
+    if (cmd.startsWith("git status --porcelain")) {
       if (cwd === REPO) return { stdout: "" };
       return { stdout: cwd.endsWith("b") ? "" : " M src/a.ts\n" };
     }
-    if (cmd === "git diff --cached") return { stdout: "diff --git a/a b/a\n+x\n" };
+    if (cmd.startsWith("git diff --cached")) return { stdout: "diff --git a/a b/a\n+x\n" };
     return { stdout: "" };
   };
   const worktrees = { a: "/repo/.worktrees/a", b: "/repo/.worktrees/b" };
@@ -250,9 +250,9 @@ const INTEGRATE_BASE = {
   // Apply conflicts must surface the patch path so the operator can inspect it.
   const execFn: ExecFn = async (cmd, o) => {
     const cwd = o?.cwd ?? "";
-    if (cmd === "git status --porcelain") return { stdout: cwd === REPO ? "" : " M src/a.ts\n" };
-    if (cmd === "git diff --cached") return { stdout: "diff --git a/a b/a\n+x\n" };
-    if (cmd.startsWith("git apply --index")) throw new Error("patch does not apply");
+    if (cmd.startsWith("git status --porcelain")) return { stdout: cwd === REPO ? "" : " M src/a.ts\n" };
+    if (cmd.startsWith("git diff --cached")) return { stdout: "diff --git a/a b/a\n+x\n" };
+    if (cmd.startsWith("git apply")) throw new Error("patch does not apply");
     return { stdout: "" };
   };
   const res = await integrate(execFn, { ...INTEGRATE_BASE, mode: "create" });
@@ -269,8 +269,8 @@ const INTEGRATE_BASE = {
   const execFn: ExecFn = async (cmd, o) => {
     calls.push(cmd);
     const cwd = o?.cwd ?? "";
-    if (cmd === "git status --porcelain") return { stdout: cwd === REPO ? "" : " M src/a.ts\n" };
-    if (cmd === "git diff --cached") return { stdout: "diff --git a/a b/a\n+x\n" };
+    if (cmd.startsWith("git status --porcelain")) return { stdout: cwd === REPO ? "" : " M src/a.ts\n" };
+    if (cmd.startsWith("git diff --cached")) return { stdout: "diff --git a/a b/a\n+x\n" };
     return { stdout: "" };
   };
   await integrate(execFn, { ...INTEGRATE_BASE, mode: "followup" });

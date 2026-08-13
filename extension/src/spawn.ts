@@ -72,7 +72,7 @@ import {
   inactivityTimeoutMs,
   makeRunId,
   reconcileObservedCounts,
-  roleTimeoutMs,
+  spawnBackstopMs,
   transcriptPathFor,
   willRetryAfter,
 } from "./spawn-support.ts";
@@ -359,12 +359,12 @@ async function spawnSpecialistInner(
     appendStderr(d);
   });
 
-  // Always cap wall-clock — see DEFAULT_SPAWN_TIMEOUT_MS comment. A stalled
-  // child without a timeout hangs the parent indefinitely (observed in the
-  // wild: overnight stuck session). #296: the cap is a generous outer bound;
-  // the inactivity watchdog below detects true hangs much earlier without
-  // killing children that are streaming legitimate long work.
-  const timeoutMs = opts.timeoutMs ?? roleTimeoutMs(spec.role);
+  // Always cap wall-clock — see SPAWN_BACKSTOP_MS. A stalled child without a
+  // timeout hangs the parent indefinitely (observed in the wild: overnight
+  // stuck session). The backstop only catches runaway loops; the inactivity
+  // watchdog below is what detects true hangs, and it does so without a view
+  // on how fast the child's model happens to be.
+  const timeoutMs = opts.timeoutMs ?? spawnBackstopMs();
   let timedOut = false;
   const timeout = setTimeout(() => {
     timedOut = true;
