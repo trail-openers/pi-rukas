@@ -753,6 +753,14 @@ Without `--restart`, re-invoking `/work N` on a terminal-state file now emits a 
 
 `--restart` only wipes the driver's state file (`.pi/work-state/N.json`). Worktrees and feature branches from the prior cycle are NOT removed — the branch step will detect existing branches at runtime (ops checks out + resets, or ABORTs cleanly with the error). If you want a fully clean slate, also `rm -rf .worktrees/issue-N-*` and `git branch -D feature/issue-N-*` before re-running.
 
+### `lens-fix-not-integrated` — the fix never reached the branch
+
+A lens-fix round ran but its output did not land: either the integration failed (a dirty repo root, an apply conflict, a git error) or the fixer wrote nothing in any worktree. The cycle now halts here.
+
+It used to continue. The failure was recorded in `plumbReports` rather than the event log *specifically* so the log tail would stay `adversarial-approved` and routing would carry on — which meant the one consumer that could have acted on it never saw it. The next round then re-read `origin/<base>..origin/<branch>`, which had not moved, and re-reported the identical findings at escalating severity until the round cap fired. Measured on lantern #686: two full review rounds after the driver had already logged that it refused to integrate, with the whole review budget spent on a defect that was already solved on disk. Same shape on #673 and #677.
+
+**The fix may still be on disk.** Check `git -C .worktrees/issue-<N>-<id> status` before re-running — the developer's work is usually there, uncommitted.
+
 ### `integration-verify-failed` — the consolidated tree does not build
 
 `commit-pr` runs the project's `.pi/verify-cmd` against the **integrated** tree, between the commit and the push. Everything upstream saw one workstream in isolation: the develop gate ran inside a single worktree and adversarial reviewed a single worktree's diff. Two workstreams that each pass alone can still fail together — one renames or deletes what another still refers to — and that defect is *created* by integration, so integration is the only place it can be caught.

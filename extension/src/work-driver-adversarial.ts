@@ -347,16 +347,37 @@ export async function runAdversarial(
       const result = inWorktree
         ? await integrateLensFix(execFn, ctx, psFix, fixWorktrees)
         : await commitLensFixChanges(ctx.repoRoot, psFix.reviewRound, execFn);
-      if (result.error) {
-        // Surface git failures as plumb-report so the operator can intervene.
-        // Record in pipelineState.plumbReports instead of event log so the
-        // tail remains "adversarial-approved" and nextStep() routes correctly.
+      if (!result.committed) {
+        // The fix did not reach the branch — either integration failed
+        // (`result.error`) or every worktree was clean, which means the fixer
+        // wrote nothing at all and is silent by construction.
+        //
+        // Either way the next lens-review round is pointless: it re-reads
+        // `origin/<base>..origin/<branch>`, which has not moved, and re-reports
+        // the identical findings at escalating severity until the round cap
+        // fires on a defect that may well already be solved on disk. Measured
+        // on lantern #686: two full rounds after the driver had already logged
+        // that it refused to integrate, and #673/#677 the same shape.
+        //
+        // This used to be recorded in `plumbReports` rather than the event log
+        // specifically so the tail would stay "adversarial-approved" and
+        // routing would continue — i.e. the failure was hidden from the one
+        // consumer that could have acted on it. Halt instead, and say why.
+        const detail = result.error ?? "produced no changes in any worktree";
         next.pipelineState.plumbReports.push({
           step: "adversarial",
           role: "driver",
-          body: `lens-fix ${result.error}`,
+          body: `lens-fix ${detail}`,
           at: Date.now(),
         });
+        next = appendEvent(next, {
+          kind: "cap-hit",
+          at: Date.now(),
+          cap: "lens-fix-not-integrated",
+          reviewRound: psFix.reviewRound,
+          nextStep: "handoff",
+        });
+        return next;
       }
       // `integrate()` already pushed; only the legacy repoRoot path needs this.
       if (result.committed && !result.pushed) {

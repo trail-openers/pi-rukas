@@ -118,6 +118,8 @@ export function explainCap(
     }
     case "integration-verify-failed":
       return "the consolidated tree failed the project's verify command, so nothing was pushed. Each workstream passed its own develop gate in its own worktree; the combination does not build — which is a defect integration CREATED, and the only place it can be caught. The failing output is in the plumb-report above. Recover by fixing the interaction (typically one workstream renamed or moved something another still refers to) and re-running";
+    case "lens-fix-not-integrated":
+      return "the lens-fix round did not reach the branch — either the integration failed or the fixer wrote nothing — so the cycle halted rather than reviewing again. The next round would have re-read an unchanged branch and re-reported the identical findings until the round cap fired, which is what burned whole review budgets on already-solved defects. The git detail is in the plumb-report above; the fix may still be sitting uncommitted in the worktree, so check `git -C .worktrees/... status` before re-running";
     case "commit-pr-incomplete-consolidation": {
       const missing = state.pipelineState.incompleteConsolidation ?? [];
       const which =

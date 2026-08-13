@@ -247,6 +247,13 @@ export async function runLens(
   }
 
   if (summary.verdict === "APPROVED") {
+    // Deliberately NO cap-hit. The round cap exists to stop a fix loop that is
+    // not converging; a review that just approved has converged, and appending
+    // a cap here made `nextStep` route an APPROVED cycle to handoff instead of
+    // `ci`. Rounds 1-2 finding issues and round 3 approving is the ordinary
+    // success shape, so this made the review gate one that cannot PASS — the
+    // mirror of #328's gate that cannot fail, and introduced by #457's fix for
+    // handoffs blaming the wrong gate.
     next = appendEvent(next, { kind: "lens-approved", at: Date.now(), jobId, round });
   } else if (summary.verdict === "ISSUES_FOUND" || summary.verdict === "CRITICAL_ISSUES_FOUND") {
     next = appendEvent(next, {
@@ -257,6 +264,17 @@ export async function runLens(
       findings: JSON.stringify(summary.findings.slice(0, 50)),
       verdict: summary.verdict,
     });
+    // The round cap and the review wall clock route to handoff from `nextStep`,
+    // which is a PURE function of state and cannot append. So nothing recorded
+    // WHY, and four renderers defaulted the missing cap to "adversarial-loop":
+    // measured across 53 handoffs, 23 said "the adversarial gate ran its
+    // 3-round internal loop and could not reach APPROVED" and 14 of those had
+    // `Last step: lens-review` with adversarial approving every round — 26% of
+    // all handoffs pointing the operator at the wrong gate.
+    //
+    // Only this branch. Findings outstanding is the one state where the loop
+    // would otherwise go round again, so it is the one state a cap describes.
+    next = appendReviewCapHit(next, round);
   } else {
     // REVIEW_INCOMPLETE — at least one lens failed all retries. Treat as a
     // halt that needs human attention rather than continuing the fix loop
@@ -273,19 +291,10 @@ export async function runLens(
       reviewRound: round,
       nextStep: "handoff",
     });
+    // No round cap on top of this one either: it already halts, and a second
+    // cap-hit became the log tail, so the operator was told the loop ran out
+    // of rounds when a lens had actually failed every retry.
   }
-
-  // The round cap and the review wall clock route to handoff from `nextStep`,
-  // which is a PURE function of state and cannot append. So nothing recorded
-  // WHY, and four renderers defaulted the missing cap to "adversarial-loop":
-  // measured across 53 handoffs, 23 said "the adversarial gate ran its 3-round
-  // internal loop and could not reach APPROVED" and 14 of those had
-  // `Last step: lens-review` with adversarial approving every round. That is
-  // 26% of all handoffs pointing the operator at the wrong gate.
-  //
-  // Emitted here, where the round has just been recorded, against the same
-  // `reviewRound` value `nextStep` will read.
-  next = appendReviewCapHit(next, round);
 
   return next;
 }
