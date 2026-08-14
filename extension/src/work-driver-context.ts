@@ -88,9 +88,10 @@ export const REVIEW_WALL_CLOCK_MS = 90 * 60 * 1000;
  *    Step-back (informational) and the terminal steps (handoff, merged)
  *    fit here.
  *
- * The verdict paths (adversarial-rejected → cap-hit handoff, lens
- * round-cap → handoff) are unchanged — those route correctly already.
- * This table only governs dispatch-failed at the step level.
+ * The verdict paths (adversarial-rejected → cap-hit handoff, the lens
+ * round cap → whatever destination `appendReviewCapHit` recorded on the
+ * event) are unchanged — those route correctly already. This table only
+ * governs dispatch-failed at the step level.
  */
 export type StepFailurePolicy = "HALT" | "RETRY_ONCE" | "DEGRADED_OK";
 
@@ -253,9 +254,13 @@ export function nextStep(state: WorkState): WorkStep | "done" {
   // Terminal short-circuits.
   if (ps.currentStep === "merged" || ps.currentStep === "handoff") return "done";
 
-  // Cap-hit routes to either handoff or step-back regardless of which step
-  // emitted the cap-hit event. The driver records the next-step decision in
-  // the cap-hit event itself.
+  // A cap-hit routes to `handoff`, `step-back` or `ci`, regardless of which
+  // step emitted it: the driver records the decision in the event itself, so
+  // this stays a lookup rather than a second place that can disagree. `ci` is
+  // the round cap's non-critical exit (see `appendReviewCapHit`) — a review
+  // that ran out of rounds with the adversarial gate approving and its residual
+  // findings posted goes on to CI and the merge-authority gate, instead of
+  // parking work a human then judges merge-worthy anyway.
   if (lastEvent?.kind === "cap-hit") return lastEvent.nextStep;
 
   // Adversarial verdict routes the next step.
@@ -280,6 +285,13 @@ export function nextStep(state: WorkState): WorkStep | "done" {
   // Lens-review verdict routes.
   if (lastEvent?.kind === "lens-approved") return "ci";
   if (lastEvent?.kind === "lens-issues-found") {
+    // A capped review never reaches here: `appendReviewCapHit` appends a
+    // cap-hit AFTER the lens-issues-found event, and the cap-hit branch above
+    // is what routes it — including to "ci" for a round cap on a non-critical
+    // verdict whose findings were disclosed on the PR. These two checks are
+    // the uncapped fallback, and both must stay pessimistic: a tail that
+    // somehow reached the cap without a cap-hit recorded has nothing that says
+    // where it should go, and "stop" is the only safe answer to that.
     if (ps.reviewRound >= MAX_REVIEW_ROUNDS) return "handoff";
     if (ps.reviewCapStartedAt && Date.now() - ps.reviewCapStartedAt > REVIEW_WALL_CLOCK_MS) {
       return "handoff";

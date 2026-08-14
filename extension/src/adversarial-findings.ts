@@ -31,6 +31,24 @@ export function carriedAdversarialFindings(eventLog: readonly WorkEvent[]): stri
   return undefined;
 }
 
+/**
+ * Whether the adversarial gate's most recent verdict was an approval.
+ *
+ * Reads backwards and stops at the first verdict of either kind: a cycle that
+ * looped through lens-fix ran the gate more than once, and only the latest
+ * verdict describes the diff as it now stands. No verdict at all is NOT an
+ * approval — the round-cap routing that consults this must not read silence as
+ * a pass.
+ */
+export function adversarialGateApproved(eventLog: readonly WorkEvent[]): boolean {
+  for (let i = eventLog.length - 1; i >= 0; i--) {
+    const kind = eventLog[i]?.kind;
+    if (kind === "adversarial-approved") return true;
+    if (kind === "adversarial-rejected") return false;
+  }
+  return false;
+}
+
 /** Render for a PR body. Empty string when there is nothing to say. */
 export function renderCarriedFindings(findings: string | undefined): string {
   if (!findings?.trim()) return "";

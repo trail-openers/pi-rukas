@@ -783,7 +783,7 @@ When the driver halts intentionally on a load-bearing failure (rather than crash
 | `step-back-revise-spec` | PR12 — `runStepBack` fired (lens-review fix loop kept flagging the same shape across rounds — spec-level problem fingerprint). The @explore SDD analysis identified which of the six SDD elements (outcomes / scope / constraints / prior decisions / task breakdown / verification) is underspecified, and produced a proposed revision. | Read the proposed revision (surfaced in the handoff body): `cat tmp/issue-N/handoff-comment.md`. Apply the revision via `/plan N` (or `gh issue edit N`). Restart the cycle: `/work N --restart`. The `--restart` flag wipes the prior state file so the fresh cycle reads the revised spec. |
 | `commit-pr-incomplete-consolidation` | PR14 — multi-workstream cycles run N developers in N worktrees with uncommitted changes; ops's commit-pr step is supposed to consolidate ALL of them onto the integration branch. The post-dispatch gate found files from one or more workstreams missing from the committed diff — ops drifted and committed a partial slice. Pre-PR14 the partial diff shipped silently (v0.12.13 /work 577 closed an issue with 1 of 3 workstreams' changes — root fix lost from main). | Each missing workstream's work is still uncommitted in its worktree: `git -C .worktrees/issue-N-<id> status --porcelain`. Apply each missing diff to the integration tree: `git -C .worktrees/issue-N-<id> diff HEAD \| git apply --index`. Verify (`git diff --name-only --cached`), commit, push. Or restart: `rm .pi/work-state/N.json && /work N --restart`. The handoff comment quotes paste-and-run-ready commands for each missing workstream. |
 | `adversarial-loop` | `adversarial_loop` ran its 3-round internal fix loop and could not reach APPROVED. For N>1 multi-workstream cycles, the aggregate-rejected case (any per-workstream adversarial REJECTED) also fires this cap, with per-workstream findings tagged `[workstream <id>]`. | Read the rejection findings; if phantom, merge manually; if real, take over the worktree to fix or split the work. |
-| `round-cap` | Lens-review hit its 3-round cap with findings still open — review loop didn't converge. | Inspect the latest `lens-issues-found` event in `eventLog`; if findings cluster around a theme, that's a spec-level problem (consider revising the issue body before re-running). |
+| `round-cap` | Lens-review hit its 3-round cap with findings still open — review loop didn't converge. Reaching handoff means the verdict was `CRITICAL_ISSUES_FOUND`, the adversarial gate had not approved, or the findings could not be posted to the PR; otherwise the cap routes to `ci` instead (see "A `round-cap` cycle reached CI instead of parking"). | Inspect the latest `lens-issues-found` event in `eventLog`; if findings cluster around a theme, that's a spec-level problem (consider revising the issue body before re-running). |
 | `wall-clock` | Lens-review fix loop exceeded the 90-minute wall-clock cap. | Same as `round-cap` — inspect findings, decide whether to retry or take over. |
 | `ci-retry` | CI failed `MAX_CI_RETRIES` times in a row (default 2 → 3 attempts total). Either CI is permanently broken for this branch, or develop keeps producing the same failure. | Read CI logs (URL in the handoff `ci-status` event); fix manually, or `rm .pi/work-state/N.json && pi` to re-run from scratch. |
 
@@ -868,6 +868,25 @@ The cap is unchanged and still fails closed: a body that is *still* empty (or st
 That event deliberately carries **no `killCause`**: nothing was killed, the driver simply stopped waiting, and the child may still be running. Tagging it as a kill would also make it the newest kill in the log, so `killDetail()` would report the handoff's own bound instead of the kill that actually ended the cycle — burying the cause under the report of it.
 
 **If the fallback also fails** (no `gh`, unauthenticated, network down), the handoff record is still written: `handoff-emitted` carries `handoffBodyPath`, and the in-chat `HANDOFF DISPATCH INCOMPLETE` banner prints the verbatim `gh ... comment --body-file <path>` command to run by hand.
+### A `round-cap` cycle reached CI instead of parking
+
+**Symptom.** `.pi/work-state/<issue>.json` shows `cap-hit{cap:"round-cap", nextStep:"ci"}` and the cycle carried on to Step 8 rather than stopping at handoff. The PR carries a comment headed *"Six-pass review — findings still open at the round cap"*.
+
+**This is intended.** The round cap used to park every capped review. Measured on one overnight run, two of six outcomes died that way (`.pi/work-state/457.json` and `680.json`); a human then judged #457 merge-as-is and #680's PR merged unchanged. Each park cost a re-run plus operator time for a diff that was fine.
+
+A round cap now routes to `ci` only when all of the following hold, and parks at handoff otherwise:
+
+- the verdict is `ISSUES_FOUND` — a `CRITICAL_ISSUES_FOUND` tail always parks;
+- the adversarial gate's latest verdict was an approval;
+- the residual findings were successfully posted to the PR. If `gh pr comment` fails, or no PR number was captured, the cycle parks and a `plumb-report` says which — a PR that silently swallows three rounds of unresolved findings is worse than a park.
+
+The **wall-clock** cap (90 min) is unchanged and still parks: a review that ran out of time says nothing about how small the remaining findings are.
+
+**It still will not merge for you.** The cycle reaches `runMerged`'s gate as usual — default-deny, needing both an operator grant and executed `gh` evidence — and then a round cap that routed to `ci` holds the merge *on top of that*, however permissively the grant is worded. So the cycle parks as `awaiting-human-merge` with `mergeHold.unresolvedReviewFindings`, PR open, CI run, findings posted.
+
+That hold is deliberate and not redundant with the grant. Every grant this gate honours is conditioned on the quality gates having been met — this repo's own reads *"If all project quality gates have been met (code reviews, CI, linters, type checks etc)"* — and a review loop that exhausted its rounds with findings outstanding is precisely the gate that was not met. Deciding it on the event rather than on the wording keeps behaviour uniform: a project cannot opt into merging unreviewed work by phrasing its doctrine more loosely than it meant to.
+
+**What to do.** Read the PR comment. The findings are severity-ordered, worst first, and none has been fixed. Decide them, then merge by hand or push a fix to the branch.
 
 ## Multi-issue `/work` — how grouping is decided (PR16+)
 

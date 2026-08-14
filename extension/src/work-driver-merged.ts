@@ -28,6 +28,7 @@ import { detectMainline, restoreCheckout } from "./work-driver-git.ts";
 import { withIntegrationLock } from "./work-driver-integrate.ts";
 import {
   gatherMergeEvidence,
+  heldByUnresolvedReview,
   mergeAuthorityEnabled,
   resolveMergeAuthority,
 } from "./work-driver-merge-authority.ts";
@@ -332,7 +333,8 @@ export async function runMerged(
     const evidence = authority.granted
       ? await gatherMergeEvidence(execFnAuth, ctx.repoRoot, prNumber)
       : undefined;
-    if (!authority.granted || !evidence?.ok) {
+    const routedRoundCap = heldByUnresolvedReview(state.eventLog);
+    if (!authority.granted || !evidence?.ok || routedRoundCap) {
       trace(
         `work-driver: merge held — authority=${authority.source}, evidence=${evidence?.reason ?? "not gathered"}`,
       );
@@ -347,6 +349,7 @@ export async function runMerged(
             ...(authority.quote ? { authorityQuote: authority.quote } : {}),
             ...(evidence?.reason ? { evidenceReason: evidence.reason } : {}),
             ...(evidence?.inconclusive?.length ? { inconclusive: evidence.inconclusive } : {}),
+            ...(routedRoundCap ? { unresolvedReviewFindings: true } : {}),
           },
         },
       };

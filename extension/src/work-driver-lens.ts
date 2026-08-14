@@ -19,13 +19,10 @@ import { writeFindings } from "./memory-write.ts";
 import { resolveReviewThreshold } from "./review-threshold.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
-import {
-  type DriverContext,
-  MAX_REVIEW_ROUNDS,
-  REVIEW_WALL_CLOCK_MS,
-} from "./work-driver-context.ts";
+import type { DriverContext } from "./work-driver-context.ts";
 import { readAllMergedDiffs } from "./work-driver-diff.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
+import { appendReviewCapHit } from "./work-driver-lens-cap.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
 import { DOCTRINE_FILES, type DoctrineDoc, judgePolicy } from "./work-driver-policy.ts";
 import { inlineLensFixPrompt } from "./work-driver-prompts-late.ts";
@@ -256,25 +253,27 @@ export async function runLens(
     // handoffs blaming the wrong gate.
     next = appendEvent(next, { kind: "lens-approved", at: Date.now(), jobId, round });
   } else if (summary.verdict === "ISSUES_FOUND" || summary.verdict === "CRITICAL_ISSUES_FOUND") {
+    const findingsBlob = JSON.stringify(summary.findings.slice(0, 50));
     next = appendEvent(next, {
       kind: "lens-issues-found",
       at: Date.now(),
       jobId,
       round,
-      findings: JSON.stringify(summary.findings.slice(0, 50)),
+      findings: findingsBlob,
       verdict: summary.verdict,
     });
-    // The round cap and the review wall clock route to handoff from `nextStep`,
-    // which is a PURE function of state and cannot append. So nothing recorded
-    // WHY, and four renderers defaulted the missing cap to "adversarial-loop":
-    // measured across 53 handoffs, 23 said "the adversarial gate ran its
-    // 3-round internal loop and could not reach APPROVED" and 14 of those had
-    // `Last step: lens-review` with adversarial approving every round — 26% of
-    // all handoffs pointing the operator at the wrong gate.
+    // The round cap and the review wall clock are decided — and now ROUTED —
+    // by `appendReviewCapHit`. `nextStep` is a PURE function of state and
+    // cannot append, so nothing used to record WHY, and four renderers
+    // defaulted the missing cap to "adversarial-loop": measured across 53
+    // handoffs, 23 said "the adversarial gate ran its 3-round internal loop and
+    // could not reach APPROVED" and 14 of those had `Last step: lens-review`
+    // with adversarial approving every round — 26% of all handoffs pointing the
+    // operator at the wrong gate.
     //
     // Only this branch. Findings outstanding is the one state where the loop
     // would otherwise go round again, so it is the one state a cap describes.
-    next = appendReviewCapHit(next, round);
+    next = await appendReviewCapHit(ctx, next, round, summary.verdict, findingsBlob);
   } else {
     // REVIEW_INCOMPLETE — at least one lens failed all retries. Treat as a
     // halt that needs human attention rather than continuing the fix loop
@@ -447,34 +446,4 @@ export async function runLensFix(
 function lensWorktree(ctx: DriverContext, state: WorkState): string {
   const wt = state.pipelineState.worktrees ?? {};
   return wt.default ?? wt[Object.keys(wt)[0] ?? ""] ?? ctx.repoRoot;
-}
-
-/**
- * Record the review cap that is about to route this cycle to handoff.
- *
- * `nextStep` decides the routing and cannot write; this writes the reason and
- * leaves the routing exactly where it was. The two read the same fields, so
- * they cannot disagree about whether a cap fired.
- */
-function appendReviewCapHit(state: WorkState, round: number): WorkState {
-  const ps = state.pipelineState;
-  if (round >= MAX_REVIEW_ROUNDS) {
-    return appendEvent(state, {
-      kind: "cap-hit",
-      at: Date.now(),
-      cap: "round-cap",
-      reviewRound: round,
-      nextStep: "handoff",
-    });
-  }
-  if (ps.reviewCapStartedAt && Date.now() - ps.reviewCapStartedAt > REVIEW_WALL_CLOCK_MS) {
-    return appendEvent(state, {
-      kind: "cap-hit",
-      at: Date.now(),
-      cap: "wall-clock",
-      reviewRound: round,
-      nextStep: "handoff",
-    });
-  }
-  return state;
 }

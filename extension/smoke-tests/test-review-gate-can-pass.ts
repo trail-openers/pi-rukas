@@ -186,7 +186,7 @@ const roundCap: WorkEvent = {
   // behavioural assertion above cannot see WHERE the cap came from.
   const approvedIdx = lens.indexOf('summary.verdict === "APPROVED"');
   const issuesIdx = lens.indexOf('kind: "lens-issues-found"');
-  const capIdx = lens.indexOf("appendReviewCapHit(next, round)");
+  const capIdx = lens.indexOf("appendReviewCapHit(");
   const incompleteIdx = lens.indexOf('cap: "review-incomplete"');
   assert(
     approvedIdx >= 0 && issuesIdx >= 0 && capIdx >= 0 && incompleteIdx >= 0,
@@ -197,7 +197,7 @@ const roundCap: WorkEvent = {
     "canary: appendReviewCapHit is called inside the ISSUES_FOUND branch only — it ran unconditionally",
   );
   assert(
-    (lens.match(/appendReviewCapHit\(next, round\)/g) ?? []).length === 1,
+    (lens.match(/appendReviewCapHit\(/g) ?? []).length === 1,
     "...exactly once, so no branch can pick up a second cap",
   );
 }

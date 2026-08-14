@@ -201,6 +201,11 @@ export interface PipelineState {
     evidenceReason?: string;
     /** Required checks reporting `skipped`/`neutral` — green to GitHub, not to us. */
     inconclusive?: string[];
+    /**
+     * The review round cap routed this cycle to `ci` with findings still
+     * outstanding, so the merge is held however permissive the grant is.
+     */
+    unresolvedReviewFindings?: boolean;
   };
   planQuality?: {
     findingsCount: number;

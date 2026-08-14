@@ -127,6 +127,8 @@ When you receive a plumb report:
 
 When a deterministic loop cap fires (adversarial-loop 3-round rejection, `/work` Step 7f review-round cap, `/plan` Phase 4 iteration cap, `check_review_cap` wall-clock), **produce a structured handoff artifact and stop. Do not ask the user "what should I do next?"** Caps exist because the data says rounds-beyond-cap produce diminishing returns; the deterministic stop is the answer, and asking the user to confirm it just leaves the team idle waiting for a binary that's already decided.
 
+**One cap no longer stops the cycle**, and the driver decides this — not you. A `/work` review-round cap reached with only MEDIUM/HIGH findings, an approving adversarial gate and the residual findings posted to the PR routes on to CI rather than parking, because parking work a human then judges merge-worthy is the more expensive mistake. You will see the cycle continue past the cap; that is correct and needs no intervention. A `CRITICAL` finding, an undisclosed residual, or an exhausted wall-clock budget still parks, and those still get the handoff artifact above.
+
 Handoff artifact has three pieces (concrete shapes in `/work` Step 7g and `/plan` Phase 4g):
 
 1. **PR / issue comment** containing: which cap fired, rounds tried, what was attempted, recurring finding pattern, suggested next steps, transcript paths.

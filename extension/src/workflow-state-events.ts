@@ -258,8 +258,17 @@ export type WorkEvent =
         | `verify-failed:${WorkStep}`
         | `step-failed:${WorkStep}`;
       reviewRound: number;
-      /** What the driver will do next — either "handoff" (terminal) or "step-back" (Step 7h). */
-      nextStep: "handoff" | "step-back";
+      /**
+       * What the driver will do next: "handoff" (terminal), "step-back"
+       * (Step 7h), or "ci" (Step 8).
+       *
+       * "ci" exists for one cap only — a `round-cap` on a non-critical verdict
+       * whose residual findings were posted to the PR. Every other cap that
+       * fires is a reason to stop; that one was parking work a human then
+       * merged unchanged. See `work-driver-lens-cap.ts` for why the other caps
+       * did not move with it.
+       */
+      nextStep: "handoff" | "step-back" | "ci";
     }
   | {
       kind: "plumb-report";

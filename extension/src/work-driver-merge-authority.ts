@@ -36,6 +36,7 @@ import {
   type PolicyJudgeFn,
   askPolicy,
 } from "./work-driver-policy.ts";
+import type { WorkEvent } from "./workflow-state.ts";
 
 /** Shell executor, matching `DriverContext.verifyExecFn`. */
 type ExecFn = (
@@ -309,4 +310,28 @@ export function mergeHoldAction(authority: MergeAuthority, prNumber: number | un
   return authority.granted
     ? `check the failing/incomplete required checks on ${pr}, then merge`
     : `review and merge ${pr} yourself (agent merging is not permitted in this project)`;
+}
+
+/**
+ * Did the review round cap route this cycle here with findings outstanding?
+ *
+ * A round cap that routed to `ci` reaches the merge gate carrying review
+ * findings nobody resolved. Every grant this module honours is conditioned on
+ * the quality gates having been met — this repo's own reads *"If all project
+ * quality gates have been met (code reviews, CI, linters, type checks etc)"* —
+ * and a review loop that exhausted its rounds with findings open is precisely
+ * the gate that was not met. Deciding on the event rather than on the wording
+ * keeps behaviour uniform: a project cannot opt into merging unreviewed work by
+ * phrasing its doctrine more loosely than it meant to.
+ *
+ * This costs the cycle nothing that routing to `ci` bought it. The PR exists,
+ * CI ran, and the residual findings are posted on it — the operator gets a
+ * reviewable PR instead of a re-run. It simply is not merged for them.
+ *
+ * A separate exported predicate rather than a clause inside the guard, so the
+ * decision can be tested directly; inlined, the only available check was a grep
+ * for the guard's own source text.
+ */
+export function heldByUnresolvedReview(eventLog: WorkEvent[]): boolean {
+  return eventLog.some((e) => e.kind === "cap-hit" && e.cap === "round-cap" && e.nextStep === "ci");
 }
