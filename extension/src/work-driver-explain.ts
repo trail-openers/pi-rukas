@@ -104,7 +104,7 @@ export function explainCap(
       const failed = state.pipelineState.emptyBodyIssues ?? [];
       const which =
         failed.length > 0 ? failed.map((f) => `#${f.issue}`).join(", ") : "one or more issues";
-      return `\`gh issue view\` returned empty/error for ${which} — the driver cannot reliably classify work that hasn't been read. Most likely causes: gh version with projectCards GraphQL deprecation, gh extension hijacking stdout, expired auth (\`gh auth status\`), or network. Fix the gh setup and re-run /work; the body fetch is a load-bearing pre-condition`;
+      return `\`gh issue view\` returned empty/error for ${which} on every attempt (the fetch is retried with backoff, so a one-off blip is already ruled out) — the driver cannot reliably classify work that hasn't been read. Most likely causes: gh version with projectCards GraphQL deprecation, gh extension hijacking stdout, expired auth (\`gh auth status\`), or a persistent network fault. Fix the gh setup and re-run /work; the body fetch is a load-bearing pre-condition`;
     }
     case "step-back-revise-spec": {
       const sb = [...state.eventLog]

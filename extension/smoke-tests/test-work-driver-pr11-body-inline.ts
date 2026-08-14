@@ -246,7 +246,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         empty.some((e) => e.issue === 862),
       "PR11 §C: emptyBodyIssues lists exactly the failed fetches (#861, #862)",
     );
-    assert(fetchCount === 3, "PR11 §C: fetcher called once per requested issue");
+    // #700 — the two empty bodies are retried to the cap before the halt;
+    // the one that answered is fetched once. See test-explore-body-retry.ts.
+    assert(fetchCount === 7, "PR11 §C: fetcher called once per issue, retried for the empty ones");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

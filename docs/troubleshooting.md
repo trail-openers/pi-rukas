@@ -846,6 +846,18 @@ If your project's CI genuinely takes longer than 30 min, either raise `PI_ENSEMB
 
 The `inlineCiPrompt` also carries a bounded poll-fallback recipe (`gh run view --json status`) so ops has something to reach for if `gh run watch` fails outright.
 
+### A cycle died on `explore-bodies-empty` seconds after starting
+
+**Symptom.** The cycle ends within a second of `step-started`, with `cap-hit{cap:"explore-bodies-empty", nextStep:"handoff"}` and no dispatch of any kind. The issue reads fine in the browser, and `gh issue view <N>` works when you run it by hand. Recovering it costs a `--restart` plus clearing the `needs-human-attention` label.
+
+**Cause.** One `gh issue view` hit a transient network failure — a connection reset, a severed response — and the body fetch had no retry. The handoff text even listed "network" among the likely causes; the failure mode was anticipated and never retried. The cap-hit is terminal by construction: the step router's retry branches key off `dispatch-failed` events, and a `cap-hit` tail gets zero.
+
+**Fix (shipped).** Each issue-body fetch now gets **3 attempts** with the standard transient backoff, and each attempt carries a **45-second deadline** — Node's `exec` has no default timeout, so before this a stalled call could block the cycle indefinitely rather than fail fast. Empty stdout is retried like a rejection, because a truncated response is indistinguishable from a genuinely empty issue until you ask again.
+
+The cap is unchanged and still fails closed: a body that is *still* empty (or still failing) after the last attempt parks the cycle exactly as before, and the recorded reason now says "on every attempt" so it is clear the retries happened. If you see this cap now, the problem is real — check `gh auth status && gh --version`, and see the `explore-bodies-empty` row in the cap table above.
+
+`PI_ENSEMBLE_TRANSIENT_RETRY=0` (the existing escape hatch) restores single-attempt behaviour; `PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS` tunes the wait between attempts.
+
 ## Multi-issue `/work` — how grouping is decided (PR16+)
 
 ### Behavior

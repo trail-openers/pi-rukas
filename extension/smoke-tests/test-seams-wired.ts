@@ -208,5 +208,24 @@ for (const seam of SEAMS) {
   );
 }
 
+// ------------------------- the production fetch default carries its deadline
+//
+// Every explore smoke test injects `ctx.issueBodyFetcherFn`, so the default the
+// driver actually ships with is exercised by none of them. That is the same
+// blind spot this file exists for: a refactor swapping the default for a
+// fetcher without `timeout:` would restore the unbounded `gh issue view` that
+// killed cycle #700, and the whole suite would still pass.
+{
+  const explore = readFileSync(path.join(SRC, "work-driver-explore.ts"), "utf8");
+  assert(
+    /ctx\.issueBodyFetcherFn \?\? fetchIssueBodyViaGh/.test(explore),
+    "runExplore's fetch default is fetchIssueBodyViaGh — the fetcher that carries a deadline",
+  );
+  assert(
+    /export function fetchIssueBodyViaGh[\s\S]{0,400}?timeout: ISSUE_BODY_TIMEOUT_MS/.test(explore),
+    "...and that fetcher sets a per-attempt timeout, so no unbounded gh call reaches production",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

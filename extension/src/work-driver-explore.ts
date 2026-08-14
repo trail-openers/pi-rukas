@@ -13,6 +13,11 @@ import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import {
+  jitteredMs,
+  transientRetryBackoffMs,
+  transientRetryEnabled,
+} from "./work-driver-failure-taxonomy.ts";
+import {
   intentResolutionEnabled,
   parseNormalisedSpec,
   reconcileVerdict,
@@ -29,6 +34,94 @@ import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent, writeDispatchArtifact } from "./workflow-state.ts";
 
 const execp = promisify(exec);
+
+/**
+ * Per-attempt deadline for one `gh issue view`.
+ *
+ * Node's `exec` has NO default timeout, so a call that stalls on a half-open
+ * connection blocks the cycle indefinitely — and retries without a deadline
+ * only cover the failures that fail fast, leaving the expensive class
+ * uncovered. 45s is generous: a `gh issue view` that has not answered by then
+ * is not going to.
+ */
+export const ISSUE_BODY_TIMEOUT_MS = 45_000;
+
+/** Attempts per issue body, including the first. */
+const ISSUE_BODY_ATTEMPTS = 3;
+
+type IssueBodyExec = (
+  cmd: string,
+  opts: { cwd: string; maxBuffer: number; timeout: number },
+) => Promise<{ stdout: string }>;
+
+/**
+ * The production issue-body fetch. `execFn` is injected by the smoke test so
+ * the per-attempt deadline is asserted rather than assumed.
+ */
+export function fetchIssueBodyViaGh(
+  issue: number,
+  cwd: string,
+  execFn: IssueBodyExec = execp,
+): Promise<{ stdout: string }> {
+  return execFn(`gh issue view ${issue}`, {
+    cwd,
+    maxBuffer: 256 * 1024,
+    timeout: ISSUE_BODY_TIMEOUT_MS,
+  });
+}
+
+/**
+ * Fetch one issue body, retrying a transient failure.
+ *
+ * A live cycle for issue #700 died 56 ms after step-started —
+ * cap-hit `explore-bodies-empty`, before any dispatch ran — because a single
+ * `gh issue view` hit a connection reset. Nothing was wrong with the issue;
+ * the operator had to `--restart` and clear a `needs-human-attention` label.
+ *
+ * The retry belongs HERE, around the fetch and before the cap is appended:
+ * `work-driver-step-router.ts` gives a `cap-hit` tail zero retries (its retry
+ * branches are gated on `dispatch-failed*`), so a cap-hit is terminal by
+ * construction.
+ *
+ * Empty stdout is retried as well as a rejection — a severed or truncated
+ * response yields empty output, indistinguishable from a genuinely empty issue
+ * until we have asked again.
+ *
+ * The cap itself is unchanged and still fails closed: a body that is still
+ * empty (or still failing) after the last attempt is returned/thrown as-is and
+ * halts the cycle.
+ */
+export async function fetchIssueBodyWithRetry(
+  fetchBody: (issue: number, cwd: string) => Promise<{ stdout: string }>,
+  issue: number,
+  cwd: string,
+  opts: { attempts?: number; sleep?: (ms: number) => Promise<void>; rand?: () => number } = {},
+): Promise<{ stdout: string }> {
+  const attempts = transientRetryEnabled() ? (opts.attempts ?? ISSUE_BODY_ATTEMPTS) : 1;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let lastError: unknown;
+  let lastEmpty: { stdout: string } | undefined;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const result = await fetchBody(issue, cwd);
+      if (result.stdout.trim()) return result;
+      lastEmpty = result;
+      lastError = undefined;
+      trace(`work-driver: gh issue view ${issue} returned empty stdout (${attempt}/${attempts})`);
+    } catch (err) {
+      lastError = err;
+      lastEmpty = undefined;
+      trace(
+        `work-driver: gh issue view ${issue} failed (${attempt}/${attempts}): ${(err as Error).message?.slice(0, 200)}`,
+      );
+    }
+    if (attempt < attempts) {
+      await sleep(jitteredMs(transientRetryBackoffMs() * attempt, 0, opts.rand ?? Math.random));
+    }
+  }
+  if (lastError !== undefined) throw lastError;
+  return lastEmpty ?? { stdout: "" };
+}
 
 /**
  * Step 1 — Read the issue and project context.
@@ -67,19 +160,25 @@ export async function runExplore(
   // pointed at the cached artifact path). The bodies are then inlined
   // into the explore prompt — agent has the body content directly and
   // doesn't need to read files or trust the "driver is fetching in
-  // parallel" instruction. Wall-clock impact: ~1-2 s (the parallel-
-  // fetch dispatch overlap was never that large).
+  // parallel" instruction. Wall-clock impact: ~1-2 s on the happy path
+  // (the parallel-fetch dispatch overlap was never that large), and up to
+  // ~150 s per issue when every attempt fails — three 45 s deadlines plus
+  // backoff — before the halt below fires. That worst case is bounded on
+  // purpose: pre-fix the fetch carried NO deadline at all and could block
+  // the step indefinitely.
   //
   // PR11 §C empty-body halt also moves above the dispatch — if any
   // fetch returns empty stdout, we halt BEFORE wasting tokens on the
-  // explore dispatch.
-  const fetchBody =
-    ctx.issueBodyFetcherFn ??
-    ((n: number, cwd: string) => execp(`gh issue view ${n}`, { cwd, maxBuffer: 256 * 1024 }));
-  const bodySettled = await Promise.allSettled(issues.map((n) => fetchBody(n, ctx.repoRoot)));
+  // explore dispatch. That halt is terminal, so each fetch gets a bounded
+  // retry with a per-attempt deadline first (see fetchIssueBodyWithRetry).
+  const fetchBody = ctx.issueBodyFetcherFn ?? fetchIssueBodyViaGh;
+  const bodySettled = await Promise.allSettled(
+    issues.map((n) => fetchIssueBodyWithRetry(fetchBody, n, ctx.repoRoot)),
+  );
 
-  // PR11 — track per-issue fetch outcome. Any empty/failed body is a
-  // pre-condition failure for the cycle: explore can't reliably classify
+  // PR11 — track per-issue fetch outcome. A body still empty or still
+  // failing AFTER the retries is a pre-condition failure: explore can't
+  // reliably classify
   // work that hasn't been read. Live evidence (v10r 2026-06-25 / PR #483):
   // 4 of 5 empty bodies cascaded silently into wrong-issue work landing
   // on main. Strict halt — operator gets a clear remediation message and
@@ -107,7 +206,7 @@ export async function runExplore(
         emptyBodyIssues.push({
           issue: n,
           reason:
-            "gh issue view returned empty stdout (possible projectCards GraphQL deprecation, gh extension hijack, or auth lapse)",
+            "gh issue view returned empty stdout on every attempt (possible projectCards GraphQL deprecation, gh extension hijack, or auth lapse)",
         });
         continue;
       }
@@ -135,8 +234,11 @@ export async function runExplore(
       bodiesForPrompt.push({ issue: n, body: inlineBody, truncated });
     } else if (result?.status === "rejected") {
       const reason = (result.reason as Error).message?.slice(0, 200) ?? "(no error message)";
-      trace(`work-driver: gh issue view ${n} failed: ${reason}`);
-      emptyBodyIssues.push({ issue: n, reason: `gh issue view rejected: ${reason}` });
+      trace(`work-driver: gh issue view ${n} failed after every attempt: ${reason}`);
+      emptyBodyIssues.push({
+        issue: n,
+        reason: `gh issue view rejected on every attempt: ${reason}`,
+      });
     }
   }
 
