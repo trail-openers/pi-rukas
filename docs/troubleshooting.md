@@ -840,7 +840,7 @@ This replaced a table of six per-role wall-clock caps. Those were raised twice �
 
 The `ci` step dispatches `ops` to run `gh run watch <id>`, which blocks until CI completes. Pre-PR15 this inherited ops' 10-min default, so any CI run exceeding 10 min SIGTERM'd mid-watch and routed through `step-failed:ci` handoff (3× this session on lantern's ~15-min pipeline).
 
-PR15 gives `ci` its own 30-min cap (30 × 60000 ms). Override via `PI_ENSEMBLE_CI_WATCH_TIMEOUT_MS` (milliseconds). Only the `ci` step's `ops` dispatch uses this cap — every other `ops` invocation (commit-pr, handoff, merged) still uses the 10-min ops default.
+PR15 gives `ci` its own 30-min cap (30 × 60000 ms). Override via `PI_ENSEMBLE_CI_WATCH_TIMEOUT_MS` (milliseconds). The per-role ops default this sentence used to name no longer exists — every other `ops` dispatch is bounded only by the two mechanisms in the table above, except `handoff`, which has its own bound (next entry).
 
 If your project's CI genuinely takes longer than 30 min, either raise `PI_ENSEMBLE_CI_WATCH_TIMEOUT_MS` or accept the handoff — inspect the CI run in the browser, then either fix + push or manually merge as appropriate.
 
@@ -857,6 +857,17 @@ The `inlineCiPrompt` also carries a bounded poll-fallback recipe (`gh run view -
 The cap is unchanged and still fails closed: a body that is *still* empty (or still failing) after the last attempt parks the cycle exactly as before, and the recorded reason now says "on every attempt" so it is clear the retries happened. If you see this cap now, the problem is real — check `gh auth status && gh --version`, and see the `explore-bodies-empty` row in the cap table above.
 
 `PI_ENSEMBLE_TRANSIENT_RETRY=0` (the existing escape hatch) restores single-attempt behaviour; `PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS` tunes the wait between attempts.
+### The handoff took half an hour to post one comment
+
+**Symptom.** `/work-status` (or `.pi/work-state/<issue>.json`) shows a handoff dispatch with a huge `ms` — e.g. `dispatch-completed handoff ops:handoff ms=1547126`, 25.8 minutes — at the very end of a cycle that produced no code. The comment eventually landed; the run just spent the time.
+
+**Why.** The handoff is the last step and pure reporting: the markdown body is written to `tmp/issue-<N>/handoff-comment.md` before the dispatch, so the ops child only runs `gh <pr|issue> comment --body-file` and `gh <pr|issue> edit --add-label`. Nothing bounded that child. The inactivity watchdog kills on *silence*, and a child that keeps thinking is never silent; the 2 h runaway backstop is far past caring.
+
+**Fix (shipped).** The driver waits 8 minutes for that dispatch and then stops waiting, records `dispatch-failed` on `ops:handoff` with an `errorTail` naming the bound, and posts the same body file plus the same label itself via in-process `gh`. The bound is safe precisely because it destroys nothing — the fallback produces the same artefact, minus the parsed comment URL. Override with `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` (milliseconds).
+
+That event deliberately carries **no `killCause`**: nothing was killed, the driver simply stopped waiting, and the child may still be running. Tagging it as a kill would also make it the newest kill in the log, so `killDetail()` would report the handoff's own bound instead of the kill that actually ended the cycle — burying the cause under the report of it.
+
+**If the fallback also fails** (no `gh`, unauthenticated, network down), the handoff record is still written: `handoff-emitted` carries `handoffBodyPath`, and the in-chat `HANDOFF DISPATCH INCOMPLETE` banner prints the verbatim `gh ... comment --body-file <path>` command to run by hand.
 
 ## Multi-issue `/work` — how grouping is decided (PR16+)
 

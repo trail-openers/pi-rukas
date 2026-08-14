@@ -92,17 +92,22 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
   const path = await import("node:path");
   const SRC = path.resolve(import.meta.dirname, "..", "src");
 
-  // `handoff` is where the operator finds out what happened. When its dispatch
-  // is killed the operator gets NOTHING — no comment, no label, no artefact.
-  // That happened twice in one overnight run, once after three retries, against
-  // a 15-minute override while the `ops` role default is 30. The override dates
-  // from when this dispatch only posted a gh comment; it now writes artefacts,
-  // posts to the issue or PR, and applies a label.
+  // `handoff` is where the operator finds out what happened, so this file used
+  // to assert the dispatch carried NO timeout override at all: a killed handoff
+  // had left the operator with nothing — no comment, no label, no artefact —
+  // twice in one overnight run. Unbounded is not the property that was wanted,
+  // though. It is what let lantern #626 spend 25.8 min posting a comment whose
+  // body was already on disk. The property that was wanted is that the artefact
+  // survives the dispatch, and `test-handoff-bounded.ts` asserts THAT
+  // behaviourally — bound exceeded and dispatch thrown both still produce
+  // `handoff-emitted` via the in-process `gh` path.
+  //
+  // So the bound is back, and what is checked here is the thing that makes it
+  // safe: the fallback the bound hands off to must still exist.
   const handoff = readFileSync(path.join(SRC, "work-driver-handoff.ts"), "utf8");
-  const override = handoff.match(/label:\s*"ops:handoff",\s*timeoutMs:\s*([\d*\s_]+)/);
   assert(
-    override === null,
-    `canary: the handoff dispatch no longer carries a shortened timeout override${override ? ` (found ${override[1]?.trim()})` : ""} — it inherits the ops budget`,
+    /gh \$\{objType\} comment/.test(handoff) && /--add-label needs-human-attention/.test(handoff),
+    "the handoff still posts the comment and applies the label in-process when the dispatch does not",
   );
 
   // And the inactivity watchdog is deliberately UNCHANGED. It fires on 25

@@ -63,10 +63,12 @@ export function dispatchCore(
         signal,
         onProgress: hooks.onProgress,
         onStdin: hooks.onStdin,
-        // PR5: per-call timeout override. Used by runHandoff to cap the
-        // gh-comment ops dispatch at 3 min (the body file is on disk; ops
-        // just runs two CLI invocations — the ops 10-min role default
-        // would be too generous).
+        // Per-call override of the runaway backstop, for a dispatch whose work
+        // is enumerable enough to bound. Two live callers, each with its
+        // rationale at the definition: `ciWatchTimeoutMs`
+        // (work-driver-stepback-ci.ts — `gh run watch` blocks for a real CI
+        // run) and `handoffDispatchTimeoutMs` (work-driver-handoff.ts — a park
+        // comment is a few gh calls and a markdown render).
         timeoutMs: opts.timeoutMs,
       }),
   });

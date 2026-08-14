@@ -4,7 +4,8 @@
  * Extracted from work-driver.ts (issue #171 file-size hygiene). Renders
  * the handoff markdown body (work-driver-handoff-markdown.ts), dispatches
  * @ops to post it + apply the needs-human-attention label, and falls back
- * to an in-process `gh` call on any dispatch/parse failure.
+ * to an in-process `gh` call on any dispatch failure, parse failure, or
+ * dispatch that outlives `handoffDispatchTimeoutMs()`.
  */
 
 import { exec } from "node:child_process";
@@ -21,6 +22,38 @@ import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 const execp = promisify(exec);
+
+/** Resolution of the ops handoff dispatch when it outlived its bound. */
+const BOUND_EXCEEDED = Symbol("handoff-bound-exceeded");
+
+/**
+ * How long the driver waits for the ops handoff dispatch.
+ *
+ * This is NOT one of the six per-role wall-clock caps this project deleted
+ * (spawn-support.ts `SPAWN_BACKSTOP_MS`). Those bounded open-ended work whose
+ * duration is a function of the model, and every kill DESTROYED the work — the
+ * finding both times they were raised was that the number was too small for a
+ * healthy child. Neither property holds here. The handoff child's job is
+ * enumerable: the markdown body is already on disk, so it runs
+ * `gh <pr|issue> comment --body-file` and `gh <pr|issue> edit --add-label` and
+ * reports the URL. And exceeding the bound destroys nothing — the in-process
+ * `gh` fallback below posts the identical file and applies the identical
+ * label, so the bound costs at most the parsed comment URL.
+ *
+ * The number: six real handoffs in this repo's `.pi/work-state` completed in
+ * 6.7 s - 17.8 s. Eight minutes is ~27x the slowest of those, and leaves room
+ * for one long thinking-heavy turn (#296: a 3-min cap SIGTERM'd this very
+ * recovery path). Nothing bounded it before — lantern #626's handoff
+ * `dispatch-completed` at 1547126 ms (25.8 min) never went silent, so the
+ * inactivity watchdog could not see it, and the 2 h runaway backstop is 5x
+ * further out again.
+ *
+ * Override: `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` (ms).
+ */
+export function handoffDispatchTimeoutMs(): number {
+  const env = Number(process.env.PI_ENSEMBLE_HANDOFF_TIMEOUT_MS);
+  return Number.isFinite(env) && env > 0 ? env : 8 * 60_000;
+}
 
 /**
  * Step 7g — Emit cap-hit handoff artifact.
@@ -69,14 +102,11 @@ export async function runHandoff(
   }
 
   // Dispatch @ops to post the comment + apply the label. The body file is
-  // already on disk; ops just runs two `gh` invocations — but its LLM
-  // turns are not free: a thinking-heavy model needs 10+ min for a single
-  // turn, and PR5's tight 3-min budget SIGTERM'd the RECOVERY path itself
-  // (#296, lantern 592/595/596: exit-143 kills at exactly 180000ms). 15 min
-  // gives one long turn headroom; the in-process gh fallback below still
-  // takes over on any failure, so the user never silently loses the
-  // artefact.
+  // already on disk; ops just runs two `gh` invocations. Bounded by
+  // handoffDispatchTimeoutMs() — see there for why a bound is safe here when
+  // the deleted per-role caps were not, and why the number is what it is.
   const dispatch = ctx.dispatchFn ?? dispatchCore;
+  const boundMs = handoffDispatchTimeoutMs();
   const startedAt = Date.now();
   const prNumber = state.pipelineState.prNumber;
   const target = prNumber ? `pr #${prNumber}` : `issue #${ctx.issue}`;
@@ -87,21 +117,44 @@ export async function runHandoff(
     scratchDir(ctx.repoRoot, ctx.issue),
   );
   let opsReplyText = "";
+  // Two enforcement points, deliberately: `timeoutMs` makes spawn SIGTERM the
+  // real child so an abandoned handoff agent is not left running, and the race
+  // is what frees the DRIVER. Only the race can be relied on — an injected
+  // dispatchFn, a wedged job wrapper or a child that ignores the signal all
+  // leave the promise pending, which is the shape that cost #626 26 minutes.
+  let boundTimer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const res = await dispatch(
-      ctx.pi,
-      { role: "ops", prompt },
-      // No shortened override: handoff is the TERMINAL step, and when its
-      // dispatch is killed the operator gets nothing at all — no comment, no
-      // label, no artefact. That happened twice in one overnight run, once
-      // after three retries. The 15-min cap dates from when this only posted a
-      // gh comment; it now writes artefacts, posts to the issue or PR, and
-      // applies a label. It inherits the ops budget.
-      { label: "ops:handoff" },
-    );
-    opsReplyText = res.text ?? "";
-    const completionEvent = await buildCompletionEvent(ctx, "handoff", "ops", "ops:handoff", res);
-    next = appendEvent(next, completionEvent);
+    const bound = new Promise<typeof BOUND_EXCEEDED>((resolve) => {
+      boundTimer = setTimeout(() => resolve(BOUND_EXCEEDED), boundMs);
+      boundTimer.unref?.();
+    });
+    const res = await Promise.race([
+      dispatch(ctx.pi, { role: "ops", prompt }, { label: "ops:handoff", timeoutMs: boundMs }),
+      bound,
+    ]);
+    if (res === BOUND_EXCEEDED) {
+      trace(`work-driver: handoff ops dispatch exceeded ${boundMs}ms — using in-process gh`);
+      next = appendEvent(next, {
+        kind: "dispatch-failed",
+        step: "handoff",
+        role: "ops",
+        jobId: "unknown",
+        label: "ops:handoff",
+        ms: Date.now() - startedAt,
+        at: Date.now(),
+        // Deliberately NO `killCause`. Nothing was killed — the driver stopped
+        // waiting and took the fallback, and the child may still be running.
+        // Tagging this as a kill would also make it the newest kill in the log,
+        // so `killDetail()` would report the handoff's own bound instead of the
+        // kill that actually ended the cycle — burying the cause under the
+        // report of it. The errorTail below already says what happened.
+        errorTail: `handoff ops dispatch exceeded its ${boundMs}ms bound (PI_ENSEMBLE_HANDOFF_TIMEOUT_MS); the in-process gh fallback posted the comment instead`,
+      });
+    } else {
+      opsReplyText = res.text ?? "";
+      const completionEvent = await buildCompletionEvent(ctx, "handoff", "ops", "ops:handoff", res);
+      next = appendEvent(next, completionEvent);
+    }
   } catch (err) {
     trace(`work-driver: handoff ops dispatch threw: ${(err as Error).message}`);
     next = appendEvent(next, {
@@ -114,6 +167,8 @@ export async function runHandoff(
       at: Date.now(),
       errorTail: (err as Error).message?.slice(-200),
     });
+  } finally {
+    if (boundTimer) clearTimeout(boundTimer);
   }
 
   let commentUrl = parseHandoffCommentUrl(opsReplyText);
