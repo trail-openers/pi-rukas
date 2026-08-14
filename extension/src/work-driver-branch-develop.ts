@@ -301,13 +301,14 @@ export async function runDevelop(
 
   const dispatch = ctx.dispatchFn ?? dispatchCore;
   const scratchAbs = scratchDir(ctx.repoRoot, ctx.issue);
-  // PR4 Pattern 3: speculative just-in-time explore alongside each developer.
-  // Free in wall-clock — the developer always runs longer — so it is simply
-  // on. It used to switch off whenever groups ran concurrently, to fit the
-  // old spawn cap of 12 that one develop step consumed by itself; with the
-  // cap sized above peak fanout that trade is gone, and degrading a cycle's
-  // context to save slots we now have is pure loss.
-  const speculativeOn = process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE !== "1";
+  // Speculative explore alongside each developer — OPT-IN. It hands findings over through a
+  // scratch file the developer prompt names, and measured over a day of live cycles that hand-off
+  // never once completed: the developer reads the path 3-7s in, the file landed 14-130s later,
+  // every access ENOENT — 397k-956k tokens per child that nothing consumed. Nor was it free, as
+  // this comment used to claim: `allSettled` below resolves at max(developer, speculative), and it
+  // won 6 of 23 measured branches (1425s, 1252s of it on one). Kept because awaiting it and
+  // inlining its findings into the developer prompt — no file, no race — is worth measuring.
+  const speculativeOn = process.env.PI_ENSEMBLE_SPECULATIVE_EXPLORE === "1";
   const verdicts: Array<{ id: string; ok: boolean }> = [];
   const branchEvents: typeof next.eventLog = [];
   // #382 — write-ahead. `develop` is the longest-running step in the cycle
@@ -332,11 +333,9 @@ export async function runDevelop(
       const developerLabel = ids.length > 1 ? `developer[${id}]` : "developer";
       const speculativeContextPath = path.join(scratchAbs, `speculative-${id}.md`);
       try {
-        // Fire developer + (optional) speculative explore CONCURRENTLY.
-        // The explore writes its findings to a scratch file before
-        // returning so the developer can consult it mid-flight (the
-        // developer prompt names the path explicitly). Promise.allSettled
-        // ensures one failing doesn't abort the other.
+        // Fire developer + (optional) speculative explore CONCURRENTLY;
+        // allSettled so one failing does not abort the other. On the race
+        // that makes the scratch hand-off useless, see the knob above.
         // #422 — prior memory about the files this workstream will touch.
         // Never fatal: any vipune problem degrades to an empty brief.
         const brief = await buildMemoryBrief(ws?.paths ?? [], {

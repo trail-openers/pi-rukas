@@ -197,7 +197,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   assert(md.includes("/tmp/foo/explore.json"), "renderHandoffMarkdown: transcript paths verbatim");
 }
 
-// 14. PR4 — Pattern 3 (speculative explore) fires alongside developer.
+// 14. Speculative explore is OFF by default — develop dispatches ONE child.
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-spec-"));
   try {
@@ -225,7 +225,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     await writeState(dir, s);
 
     const seenLabels: string[] = [];
-    const seenPromptHints: string[] = [];
+    let developerPrompt = "";
     const ctx: DriverContext = {
       pi: makeFakePi().pi,
       repoRoot: dir,
@@ -233,42 +233,37 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       issueBodyFetcherFn: mockIssueBodyOk,
       dispatchFn: async (_pi, spec, opts) => {
         seenLabels.push(opts?.label ?? spec.role);
-        // Capture whether the developer prompt mentions the speculative
-        // context file (proves the developer knows where to look mid-flight).
         if (opts?.label === "developer" || opts?.label?.startsWith("developer[")) {
-          if (
-            spec.prompt.includes("speculative-default.md") ||
-            spec.prompt.includes("speculative-")
-          ) {
-            seenPromptHints.push("developer-knows-about-speculative");
-          }
+          developerPrompt = spec.prompt;
         }
-        // Halt after the develop step's parallel dispatches.
-        if (seenLabels.length >= 3) {
-          throw new Error("smoke: halting after develop step's Promise.all");
+        // Halt on the step after develop: with the explore opted out, develop
+        // makes exactly ONE dispatch, so a second label means develop is done.
+        if (seenLabels.length >= 2) {
+          throw new Error("smoke: halting after develop step");
         }
         return mkResult({ role: spec.role, text: `mock ${spec.role} output` });
       },
     };
     await runWorkDriver(ctx);
 
-    // Single-workstream develop should have fired BOTH developer AND
-    // speculative explore concurrently (Promise.allSettled).
-    assert(seenLabels.includes("developer"), "Pattern 3 (N=1): developer dispatched");
+    // The developer measurably never read the scratch file the explore wrote
+    // (ENOENT on every access, across a full day of live cycles), so the
+    // default is one child per workstream and the prompt promises nothing.
+    assert(seenLabels.includes("developer"), "default: developer dispatched");
     assert(
-      seenLabels.includes("explore:speculative"),
-      "Pattern 3 (N=1): speculative explore dispatched alongside developer",
+      !seenLabels.includes("explore:speculative"),
+      "canary: speculative explore NOT dispatched by default — it is opt-in",
     );
     assert(
-      seenPromptHints.includes("developer-knows-about-speculative"),
-      "Pattern 3 (N=1): developer prompt names the speculative-context.md scratch path",
+      !developerPrompt.includes("speculative-"),
+      "canary: default developer prompt names no speculative scratch path — nothing writes one",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
-// 15. PR4 — speculative explore CAN be disabled via env opt-out.
+// 15. Speculative explore CAN be turned on via env opt-in.
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-no-spec-"));
   try {
@@ -294,31 +289,40 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     };
     await writeState(dir, s);
 
-    const prev = process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE;
-    process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE = "1";
+    const prev = process.env.PI_ENSEMBLE_SPECULATIVE_EXPLORE;
+    process.env.PI_ENSEMBLE_SPECULATIVE_EXPLORE = "1";
     try {
       const seenLabels: string[] = [];
+      let developerPrompt = "";
       const ctx: DriverContext = {
         pi: makeFakePi().pi,
         repoRoot: dir,
         issue: 701,
         dispatchFn: async (_pi, spec, opts) => {
           seenLabels.push(opts?.label ?? spec.role);
-          if (seenLabels.length >= 2) {
-            throw new Error("smoke: halting after develop step");
+          if (opts?.label === "developer" || opts?.label?.startsWith("developer[")) {
+            developerPrompt = spec.prompt;
+          }
+          // Two concurrent dispatches in develop when the explore is on.
+          if (seenLabels.length >= 3) {
+            throw new Error("smoke: halting after develop step's Promise.allSettled");
           }
           return mkResult({ role: spec.role, text: `mock ${spec.role} output` });
         },
       };
       await runWorkDriver(ctx);
-      assert(seenLabels.includes("developer"), "opt-out: developer dispatched");
+      assert(seenLabels.includes("developer"), "opt-in: developer dispatched");
       assert(
-        !seenLabels.includes("explore:speculative"),
-        "opt-out: speculative explore skipped under PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE=1",
+        seenLabels.includes("explore:speculative"),
+        "opt-in: speculative explore dispatched under PI_ENSEMBLE_SPECULATIVE_EXPLORE=1",
+      );
+      assert(
+        developerPrompt.includes("speculative-default.md"),
+        "opt-in: developer prompt names the speculative scratch path the explore writes",
       );
     } finally {
-      if (prev === undefined) process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE = undefined;
-      else process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE = prev;
+      if (prev === undefined) process.env.PI_ENSEMBLE_SPECULATIVE_EXPLORE = undefined;
+      else process.env.PI_ENSEMBLE_SPECULATIVE_EXPLORE = prev;
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });

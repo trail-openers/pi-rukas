@@ -80,9 +80,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 // precedence fix, R4 end-to-end cap-wiring integration tests.
 {
   const prevVerify = process.env.PI_ENSEMBLE_VERIFY;
-  const prevSpec = process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE;
   process.env.PI_ENSEMBLE_VERIFY = "1";
-  process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE = "1";
   const fsSync = await import("node:fs");
   try {
     // --- R1: one worktree's git-status error must NOT suppress the
@@ -361,8 +359,6 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     if (prevVerify === undefined) process.env.PI_ENSEMBLE_VERIFY = undefined;
     else process.env.PI_ENSEMBLE_VERIFY = prevVerify;
     process.env.PI_ENSEMBLE_VERIFY = "0";
-    if (prevSpec === undefined) process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE = undefined;
-    else process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE = prevSpec;
   }
 }
 

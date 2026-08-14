@@ -1309,7 +1309,7 @@ A doctrine-prose edit is not a failure; it appears in the verify notes as *"allo
 
 `/work N M P …` runs up to `PI_ENSEMBLE_PARALLEL_GROUPS` (default **3**) groups concurrently. Each group develops in its own `.worktrees/` tree, so the only shared resource is the repo root, and every operation that touches it — branch creation, patch integration, commit, push, `gh pr create`, the verify gates, lens-fix re-integration, `restoreCheckout`, worktree teardown — runs under a single integration lock. That lock is an in-process promise chain plus an `O_EXCL` lockfile under `.git/`, so a second `/work` invocation or a second Pi process on the same clone is also serialised.
 
-Child-process load is bounded by `PI_ENSEMBLE_SPAWN_CAP` (default 12), **not** by the group count: excess spawns queue FIFO. The speculative explore that normally accompanies each developer is switched off automatically when more than one cycle runs at once, halving develop's fanout.
+Child-process load is bounded by `PI_ENSEMBLE_SPAWN_CAP` (default 64), **not** by the group count: excess spawns queue FIFO. Each workstream's develop step spends one child — the developer; the speculative explore that used to accompany it is opt-in (`PI_ENSEMBLE_SPECULATIVE_EXPLORE=1`), so develop's default fanout is M, not 2M.
 
 Set `PI_ENSEMBLE_PARALLEL_WORK=0` for strictly sequential execution.
 
@@ -1347,6 +1347,14 @@ Escape hatch: `PI_ENSEMBLE_QUEUE_HALT_ON_FAILURE=1` restores the old halt-on-fir
 ### Why deterministic grouping rather than PM-narrated?
 
 The compiled driver's PR10 shortcut (v0.12.5–v0.12.14) bundled ALL issues into ONE PR without any judgment — that empirically failed 3× (vipune `memory-row`). PR15's retreat to strictly-sequential was safe but ignored real relatedness signal. PR16's grouping rules encode explicit heuristics (link markers, path overlap, subsystem tags) that produce reproducible partitions — same input → same groups, testable, no LLM budget, no drift between runs.
+
+### `develop` no longer spawns a second `explore:speculative` child
+
+**Symptom**: you expected an `explore:speculative` dispatch alongside each developer and see only `developer` in the scrollback and event log; or `PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE=1` appears to do nothing.
+
+**Fix**: nothing to fix — that is the default now. The speculative explore hands its findings over through a scratch file the developer prompt names, and measured across a full day of live cycles the hand-off never completed: the developer reads that path 3-7 seconds in, the file landed 14-130 seconds later, and every access returned `ENOENT`. It also was not free — `develop` resolves at `max(developer, speculative)` and the explore finished last on 6 of 23 measured branches, 1425s in total. It cost 397k-956k tokens per child for output nobody read.
+
+Set `PI_ENSEMBLE_SPECULATIVE_EXPLORE=1` to turn it back on; `PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE` is gone and setting it does nothing. If you want the context without the race, the version worth building is one that awaits the explore and inlines its findings into the developer prompt — no file, no race.
 
 ## Outcome-verification gates — `verify-failed:<step>` cap-hits (PR17+)
 

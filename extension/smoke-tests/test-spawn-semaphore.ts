@@ -9,9 +9,10 @@
  *     to it.
  *   - `MAX_PARALLEL` validates one tool call's array length.
  *
- * `develop` starts 2M children (developer + speculative explore per
- * workstream); parallel groups multiply that. At 3 groups x M=6 that is ~36
- * `pi --mode rpc` processes with nothing to stop them.
+ * `develop` starts M children (one developer per workstream), or 2M when the
+ * speculative explore is opted in with `PI_ENSEMBLE_SPECULATIVE_EXPLORE=1`;
+ * parallel groups multiply that. At 3 groups x M=6 that is 18, or 36 with the
+ * explore on — `pi --mode rpc` processes with nothing to stop them.
  */
 
 import {

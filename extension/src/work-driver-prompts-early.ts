@@ -361,11 +361,14 @@ export function inlineDevelopPrompt(
 }
 
 /**
- * Step 4 speculative explore prompt (PR4 Pattern 3 restoration). Runs in
- * Promise.all alongside the developer; writes its findings to a scratch
- * file the developer's prompt names. Returns a brief one-liner so the
- * dispatch event has a useful summary; the heavy content goes to the
- * scratch file so the dispatch report stays small.
+ * Step 4 speculative explore prompt. Opt-in only
+ * (`PI_ENSEMBLE_SPECULATIVE_EXPLORE=1`): it runs in `Promise.allSettled`
+ * alongside the developer and writes its findings to a scratch file the
+ * developer's prompt names, and measured live that file always landed after
+ * the developer had already looked for it — see the knob in
+ * `work-driver-branch-develop.ts`. Returns a brief one-liner so the dispatch
+ * event has a useful summary; the heavy content goes to the scratch file so
+ * the dispatch report stays small.
  */
 export function inlineSpeculativeExplorePrompt(
   issues: number[],

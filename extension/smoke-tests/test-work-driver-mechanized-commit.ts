@@ -83,9 +83,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 // the LLM dispatch never fires.
 {
   const prevVerify = process.env.PI_ENSEMBLE_VERIFY;
-  const prevSpec = process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE;
   process.env.PI_ENSEMBLE_VERIFY = "1";
-  process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE = "1";
 
   // Shared fixture bits for the 3-workstream shape.
   const PLAN_REPLY = `## Workstreams
@@ -362,8 +360,6 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     if (prevVerify === undefined) process.env.PI_ENSEMBLE_VERIFY = undefined;
     else process.env.PI_ENSEMBLE_VERIFY = prevVerify;
     process.env.PI_ENSEMBLE_VERIFY = "0";
-    if (prevSpec === undefined) process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE = undefined;
-    else process.env.PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE = prevSpec;
   }
 }
 

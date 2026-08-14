@@ -119,7 +119,6 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     await writeState(dir, s);
 
     let developerPrompt = "";
-    let speculativePrompt = "";
     const ctx: DriverContext = {
       pi: makeFakePi().pi,
       repoRoot: dir,
@@ -128,14 +127,11 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       issueBodyFetcherFn: mockIssueBodyOk,
       dispatchFn: async (_pi, spec, opts) => {
         if (opts?.label === "developer") developerPrompt = spec.prompt;
-        if (opts?.label === "explore:speculative") speculativePrompt = spec.prompt;
         if (opts?.label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
-        // Throw on any non-developer/non-speculative dispatch to halt the cycle.
+        // Throw on any non-developer dispatch to halt the cycle. Develop makes
+        // exactly one dispatch — the speculative explore is opt-in and unset.
         if (spec.role === "developer") {
           return mkResult({ role: "developer", text: "stub" });
-        }
-        if (spec.role === "explore" && opts?.label?.startsWith("explore:speculative")) {
-          return mkResult({ role: "explore", text: "stub" });
         }
         throw new Error(`halt: ${spec.role} / ${opts?.label}`);
       },
@@ -153,12 +149,6 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         !developerPrompt.includes("gh issue view 479"),
       "PR11 §B: developer prompt's re-fetch instruction targets active issue #476",
     );
-    if (speculativePrompt) {
-      assert(
-        speculativePrompt.includes("#476") && !speculativePrompt.includes("#479"),
-        "PR11 §B: speculative explore prompt also references active issue #476",
-      );
-    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

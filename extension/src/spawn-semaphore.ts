@@ -10,10 +10,11 @@
  *     and every adversarial child are invisible to it.
  *   - `MAX_PARALLEL` (dispatch.ts) validates one tool call's array length.
  *
- * Actual fanout: `develop` starts 2M children (a developer AND a speculative
- * explore per workstream), M is bounded only by #290's ceiling. Each is a
- * `pi --mode rpc` process with its own prompt dir, transcript and model
- * session, so the ceiling is a local-resource question — see `spawnCap`.
+ * Actual fanout: `develop` starts M children by default (one developer per
+ * workstream), up to 2M when the speculative explore is opted in with
+ * `PI_ENSEMBLE_SPECULATIVE_EXPLORE=1`; M is bounded only by #290's ceiling.
+ * Each is a `pi --mode rpc` process with its own prompt dir, transcript and
+ * model session, so the ceiling is a local-resource question — see `spawnCap`.
  *
  * This wraps `spawnSpecialist` itself rather than `startJob` — precisely
  * because the direct-spawn paths are the ones that need bounding. Excess
@@ -34,10 +35,12 @@ import { trace } from "./trace.ts";
  * belongs to whoever has the information, and that is the provider.
  *
  * Sized above any single cycle's peak fanout so the cap can never serialise a
- * step against itself. The peak is `develop`, at 2 children per workstream (a
- * developer plus a speculative explore); at the MAX_WORKSTREAMS ceiling of 10
- * that is 20, and `lens-review`'s six-way fanout is far below it. 64 leaves
- * room for several cycles at that width while still catching a runaway.
+ * step against itself. The peak is `develop`, at one child per workstream by
+ * default and two when the speculative explore is opted in; the cap stays
+ * sized for that 2-per-workstream ceiling — 20 at the MAX_WORKSTREAMS ceiling
+ * of 10 — so turning the knob on cannot make the cap the bottleneck.
+ * `lens-review`'s six-way fanout is far below it. 64 leaves room for several
+ * cycles at that width while still catching a runaway.
  *
  * The previous value was 12, which one M=6 develop step consumed entirely —
  * so a second concurrent cycle got zero slots and queued. That queueing was

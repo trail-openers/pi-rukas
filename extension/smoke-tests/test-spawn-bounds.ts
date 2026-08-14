@@ -25,8 +25,10 @@
  *    the host honours); this cap only ever bounded local pids.
  *
  * The compensation is gone too: `develop` used to switch speculative explore
- * OFF whenever groups ran concurrently, degrading a cycle's context to fit
- * under a cap we chose.
+ * OFF whenever groups ran concurrently, to fit under a cap we chose. The
+ * explore is now opt-in for an unrelated reason — measured live, the developer
+ * never once read the scratch file it writes — so the cap is sized for the
+ * 2-per-workstream ceiling the knob can still reach, not for the default.
  */
 
 import { readFileSync } from "node:fs";
@@ -134,9 +136,10 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
 // ------------------------------------- the cap bounds pids, not providers
 
 {
-  // The peak fanout of one cycle is `develop` at 2 children per workstream,
-  // against #290's MAX_WORKSTREAMS ceiling. A cap at or below that serialises
-  // a step against itself, which is exactly what 12 did at M=6.
+  // The peak fanout of one cycle is `develop` at 2 children per workstream —
+  // reachable whenever the speculative explore is opted in — against #290's
+  // MAX_WORKSTREAMS ceiling. A cap at or below that serialises a step against
+  // itself, which is exactly what 12 did at M=6.
   const PEAK_SINGLE_CYCLE_FANOUT = 2 * 10;
   assert(
     spawnCap() > PEAK_SINGLE_CYCLE_FANOUT,
@@ -163,7 +166,7 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
   );
 }
 
-// ------------------------- develop no longer degrades itself to save slots
+// -------------------------------- develop spends a second child only on ask
 
 {
   const develop = code("work-driver-branch-develop.ts");
@@ -171,9 +174,18 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     !/parallelCycles[^\n]*<=\s*1/.test(develop),
     "canary: speculative explore no longer switches off under concurrency — that compensated for the old cap",
   );
+  // This is a SPEND finding, not a slot finding. The cap has room for the
+  // second child; the measurement is that nobody read what it produced. The
+  // developer checks the scratch path 3-7s in, the explore lands it 14-130s
+  // later, and every measured access returned ENOENT — 397k-956k tokens per
+  // child buying nothing, on a step that the explore then WON 6 of 23 times.
   assert(
-    /PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE/.test(develop),
-    "...while the explicit opt-out remains for an operator who wants it",
+    !/PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE/.test(develop),
+    "canary: the skip-opt-out is gone — an unread child is not a default worth opting out of",
+  );
+  assert(
+    /PI_ENSEMBLE_SPECULATIVE_EXPLORE\s*===\s*"1"/.test(develop),
+    "canary: the speculative explore is opt-IN — default develop spends one child per workstream",
   );
 }
 
