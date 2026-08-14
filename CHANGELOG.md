@@ -8,6 +8,16 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.44](https://github.com/randomm/pi-ensemble/compare/v0.12.43...v0.12.44) (2026-08-14)
+
+
+### Bug Fixes
+
+* **#700:** retry the issue-body fetch, with a per-attempt deadline ([#471](https://github.com/randomm/pi-ensemble/issues/471)) ([180c94d](https://github.com/randomm/pi-ensemble/commit/180c94d0b988d90a74c70ccf4c57fbe5c8c8c686))
+* **review:** route a non-critical round cap to ci instead of parking ([#474](https://github.com/randomm/pi-ensemble/issues/474)) ([d1a9304](https://github.com/randomm/pi-ensemble/commit/d1a93042ac31eff88a489975149a02e213506393))
+* **work-driver:** bound the handoff dispatch, fall back to in-process gh ([#472](https://github.com/randomm/pi-ensemble/issues/472)) ([d045e7a](https://github.com/randomm/pi-ensemble/commit/d045e7acd0dd90ff05f9c538865dc700b86e1b36))
+* **work-driver:** make the develop speculative explore opt-in ([#470](https://github.com/randomm/pi-ensemble/issues/470)) ([13c1deb](https://github.com/randomm/pi-ensemble/commit/13c1deb62b477e6897a84d93a971037c379fa7d6))
+
 ## [0.12.43](https://github.com/randomm/pi-ensemble/compare/v0.12.42...v0.12.43) (2026-08-13)
 
 
