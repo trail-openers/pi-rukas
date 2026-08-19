@@ -31,8 +31,9 @@ set -eu
 # Phase 1 (root): docker socket fixup, then drop to vscode and re-exec.
 # -----------------------------------------------------------------------------
 if [ "$(id -u)" = "0" ]; then
-  # When the wrapper bind-mounts /var/run/docker.sock (PI_ENSEMBLE_DOCKER_SOCKET=1),
-  # the socket lands inside the container with whatever ownership the host
+  # The wrapper bind-mounts /var/run/docker.sock by default
+  # (opt out with PI_ENSEMBLE_NO_DOCKER_SOCKET=1). The socket lands
+  # inside the container with whatever ownership the host
   # exposes. On Docker Desktop / many Linux hosts that's root-owned, which
   # leaves the vscode user (UID 1000) unable to connect. Relaxing to 666 is
   # safe inside the container: the container is a single trust domain anyway

@@ -36,9 +36,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       util-linux \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/fdfind /usr/local/bin/fd
-# docker.io: CLI only (we never spawn the daemon inside the container — when
-# PI_ENSEMBLE_DOCKER_SOCKET=1 the wrapper bind-mounts the HOST docker socket,
-# and our CLI calls become sibling containers on the host daemon). Enables
+# docker.io: CLI only (we never spawn the daemon inside the container — the
+# wrapper bind-mounts the HOST docker socket by default,
+# unless opted out with PI_ENSEMBLE_NO_DOCKER_SOCKET=1, and
+# our CLI calls become sibling containers on the host daemon). Enables
 # docker-based MCP servers in .pi/mcp.json (e.g. `docker run -i some-db-mcp`).
 # util-linux: brings `setpriv` for the entrypoint's root → vscode drop.
 # ripgrep + fd-find: Pi's built-in rg/search tooling looks for `rg` and `fd`
@@ -200,8 +201,9 @@ WORKDIR /workspace
 ENV PI_ENSEMBLE_SANDBOX_MODE=1
 
 # Entrypoint runs as ROOT briefly to (a) seed the HF cache, (b) chmod the
-# host docker socket if bind-mounted (PI_ENSEMBLE_DOCKER_SOCKET=1), then
-# drops privileges to vscode via setpriv before exec'ing the user command.
+# host docker socket if bind-mounted (by default, unless opted out with
+# PI_ENSEMBLE_NO_DOCKER_SOCKET=1), then drops privileges to vscode via setpriv
+# before exec'ing the user command.
 # Keeping the entrypoint as root for these one-time fixups is safer than the
 # alternatives (sudoers carve-outs, GID guessing across host platforms).
 ENTRYPOINT ["/usr/local/bin/pi-ensemble-entrypoint"]

@@ -37,12 +37,6 @@ export interface WorktreeCreateOpts {
   name: string;
   /** Commit-ish the worktree starts at — the driver passes the resolved baseSha. */
   fromRef: string;
-  /**
-   * Create and check out this branch instead of detaching. The driver leaves
-   * this unset: development happens on a detached HEAD and the feature branch
-   * only ever exists at repoRoot, where integration happens.
-   */
-  branch?: string;
 }
 
 /**
@@ -55,10 +49,11 @@ export interface WorktreeCreateOpts {
 export async function worktreeCreate(execFn: ExecFn, opts: WorktreeCreateOpts): Promise<string> {
   const abs = worktreePath(opts.repoRoot, opts.name);
   await worktreeRemove(execFn, opts.repoRoot, opts.name, true).catch(() => undefined);
-  const target = opts.branch
-    ? `-B ${JSON.stringify(opts.branch)} ${JSON.stringify(abs)} ${JSON.stringify(opts.fromRef)}`
-    : `--detach ${JSON.stringify(abs)} ${JSON.stringify(opts.fromRef)}`;
-  await execFn(`git worktree add ${target}`, {
+  // Always detached at baseSha: a named branch in a worktree contradicts
+  // #287 (worktrees are the workstream's scratch space; the feature branch
+  // only ever exists at repoRoot, where integration happens) and breaks the
+  // invariant test-work-driver-always-worktree.ts enforces.
+  await execFn(`git worktree add --detach ${JSON.stringify(abs)} ${JSON.stringify(opts.fromRef)}`, {
     cwd: opts.repoRoot,
     maxBuffer: 1024 * 1024,
   });

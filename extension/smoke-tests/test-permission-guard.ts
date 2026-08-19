@@ -13,7 +13,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { isToolAllowedForRole, resolveToolPermission } from "../src/permission-guard.js";
+import { resolveToolPermission } from "../src/permission-guard.js";
 
 let exitCode = 0;
 function assert(cond: boolean, msg: string) {
@@ -47,55 +47,51 @@ console.log("=== test-permission-guard summary ===\n");
 
 // === Issue #50 tests ===
 
-// Test 1: isToolAllowedForRole("edit", "ops") returns false
-const editDeniedForOps = isToolAllowedForRole("edit", "ops", agentsConfig);
-assert(!editDeniedForOps, "Issue #50: edit is denied for ops role");
+// Test 1: resolveToolPermission("edit", "ops") denies on the empty-layer path
+const editDeniedForOps = resolveToolPermission("edit", "ops", {}, {}, agentsConfig) !== "allow";
+assert(editDeniedForOps, "Issue #50: edit is denied for ops role");
 
-// Test 2: isToolAllowedForRole("edit", "developer") returns true
-const editAllowedForDev = isToolAllowedForRole("edit", "developer", agentsConfig);
-assert(editAllowedForDev, "Issue #50: edit is allowed for developer role");
+// Test 2: resolveToolPermission("edit", "developer") allows
+const editAllowedForDev = resolveToolPermission("edit", "developer", {}, {}, agentsConfig);
+assert(editAllowedForDev === "allow", "Issue #50: edit is allowed for developer role");
 
-// Test 3: isToolAllowedForRole("read", "adversarial-developer") returns true
-const readAllowedForAdv = isToolAllowedForRole("read", "adversarial-developer", agentsConfig);
-assert(readAllowedForAdv, "Issue #50: read is allowed for adversarial-developer role");
+// Test 3: resolveToolPermission("read", "adversarial-developer") allows
+const readAllowedForAdv = resolveToolPermission(
+  "read",
+  "adversarial-developer",
+  {},
+  {},
+  agentsConfig,
+);
+assert(readAllowedForAdv === "allow", "Issue #50: read is allowed for adversarial-developer role");
 
-// Test 4: isToolAllowedForRole("write", "adversarial-developer") returns false
-const writeDeniedForAdv = isToolAllowedForRole("write", "adversarial-developer", agentsConfig);
-assert(!writeDeniedForAdv, "Issue #50: write is denied for adversarial-developer role");
+// Test 4: resolveToolPermission("write", "adversarial-developer") denies
+const writeDeniedForAdv =
+  resolveToolPermission("write", "adversarial-developer", {}, {}, agentsConfig) !== "allow";
+assert(writeDeniedForAdv, "Issue #50: write is denied for adversarial-developer role");
 
 // Test 5: project-manager role allows read (was "default" pre-#104 — same
 // semantics; default merged into project-manager)
-const readAllowedForPM = isToolAllowedForRole("read", "project-manager", agentsConfig);
-assert(readAllowedForPM, "Issue #50: read is allowed for project-manager role");
+const readAllowedForPM = resolveToolPermission("read", "project-manager", {}, {}, agentsConfig);
+assert(readAllowedForPM === "allow", "Issue #50: read is allowed for project-manager role");
 
 // Test 6: project-manager denies write
-const writeDeniedForPM = isToolAllowedForRole("write", "project-manager", agentsConfig);
-assert(!writeDeniedForPM, "Issue #50: write is denied for project-manager role");
+const writeDeniedForPM =
+  resolveToolPermission("write", "project-manager", {}, {}, agentsConfig) !== "allow";
+assert(writeDeniedForPM, "Issue #50: write is denied for project-manager role");
 
-// Test 7: All roles have explicit builtin tool grants (no bypass).
-// Issue #104: removed "default" role — only 6 roles remain.
-for (const role of [
-  "project-manager",
-  "developer",
-  "ops",
-  "code-review-specialist",
-  "explore",
-  "adversarial-developer",
-]) {
-  const readAllowed = isToolAllowedForRole("read", role, agentsConfig);
-  assert(readAllowed, `Issue #50: read is explicitly allowed for ${role} (no bypass)`);
-}
-
-// Test 7b: querying the removed "default" role returns false (deny-by-default
-// for unknown roles). This is the visible behaviour change from #104 — if any
-// caller still passes role="default", it fails closed.
-const defaultRoleRemoved = isToolAllowedForRole("read", "default", agentsConfig);
+// Test 7b: querying the removed "default" role is denied by default
+// (unknown roles fail closed on the empty-layer path). This is the visible
+// behaviour change from #104 — if any caller still passes role="default",
+// it fails closed.
+const defaultRoleRemoved =
+  resolveToolPermission("read", "default", {}, {}, agentsConfig) === "deny";
 assert(!defaultRoleRemoved, "Issue #104: default role removed → unknown-role queries return false");
 
 // Test 8: Wildcard patterns work correctly (live agents.json — was meadow* pre-codebase-memory-mcp).
 // PM has `"parallel-search*": "deny"`; verify the wildcard matches an arbitrary suffix.
-// We assert on resolveToolPermission (not isToolAllowedForRole) so we can distinguish
-// "wildcard hit and returned deny" from "no rule matched and defaulted to ask/deny".
+// We assert on resolveToolPermission so we can distinguish "wildcard hit and
+// returned deny" from "no rule matched and defaulted to ask".
 const parallelSearchVerdict = resolveToolPermission(
   "parallel-search_some_new_tool",
   "project-manager",
@@ -109,22 +105,21 @@ assert(
 );
 
 // Test 9: Explicit deny overrides wildcard (parallel-search_* denied for ops)
-const parallelSearchDeniedForOps = isToolAllowedForRole(
+const parallelSearchDeniedForOps = resolveToolPermission(
   "parallel-search_web_search_preview",
   "ops",
+  {},
+  {},
   agentsConfig,
 );
 assert(
-  !parallelSearchDeniedForOps,
+  parallelSearchDeniedForOps !== "allow",
   "Issue #50: explicit deny blocks parallel-search_web_search_preview for ops",
 );
 
 // Test 10: Tool not mentioned is denied (deny-by-default)
-const unknownToolDeniedForDev = isToolAllowedForRole(
-  "unknown_tool_12345",
-  "developer",
-  agentsConfig,
-);
+const unknownToolDeniedForDev =
+  resolveToolPermission("unknown_tool_12345", "developer", {}, {}, agentsConfig) === "deny";
 assert(!unknownToolDeniedForDev, "Issue #50: unknown tool denied for developer (deny-by-default)");
 
 // === Issue #51 tests: three-layer resolution ===

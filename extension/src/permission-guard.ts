@@ -197,24 +197,6 @@ export function resolveToolPermission(
   return "ask"; // No explicit rule → prompt in UI, deny in headless
 }
 
-export function isToolAllowedForRole(
-  toolName: string,
-  role: string,
-  agentsConfig: Record<string, { permission?: Record<string, string | Record<string, string>> }>,
-): boolean {
-  const roleConfig = agentsConfig[role];
-  if (!roleConfig?.permission) return false; // no config = deny
-
-  // Use shared helper: exact match first, then wildcard
-  const verdict = lookupPermission(roleConfig.permission, toolName);
-  if (verdict !== null) {
-    // "ask" treated as deny for subagents
-    return verdict === "allow";
-  }
-
-  return false; // not mentioned = deny (deny-by-default)
-}
-
 // Captured by registerPermissionGuard for the broker — set when the parent
 // Pi session starts; null in subagent mode (subagents never broker for anyone).
 // Use `makeBrokerDeps()` from outside this file to get the typed deps wrapper
