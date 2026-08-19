@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.45](https://github.com/randomm/pi-ensemble/compare/v0.12.44...v0.12.45) (2026-08-19)
+
+
+### Bug Fixes
+
+* **work-driver:** un-gate restoreCheckout on production merge ([#480](https://github.com/randomm/pi-ensemble/issues/480)) ([6d2f4e7](https://github.com/randomm/pi-ensemble/commit/6d2f4e73e955b8479366b0082b2114648f469e1b))
+
 ## [0.12.44](https://github.com/randomm/pi-ensemble/compare/v0.12.43...v0.12.44) (2026-08-14)
 
 
