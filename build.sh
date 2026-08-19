@@ -102,10 +102,19 @@ EOF
 EOF
   fi
 
+  # Tool-classification lists (single source of truth for both jq programs below;
+  # injected via --argjson so the PM-matrix and specialist branches cannot drift).
+  # NON_TOOL_KEYS is the superset used to filter the MCP line: the 13 named tools
+  # plus multiedit, websearch, bash, *, external_directory, mcp, vipune.
+  local TOOL_KEYS='["read","write","edit","rg","skill","webfetch","list","todowrite","task","taskctl","cancel_task","list_tasks","check_task"]'
+  local NON_TOOL_KEYS='["read","write","edit","rg","skill","webfetch","list","todowrite","task","taskctl","cancel_task","list_tasks","check_task","multiedit","websearch","bash","*","external_directory","mcp","vipune"]'
+
   # Extract capabilities for target agent(s) using jq
   if [[ -z "$AGENT_NAME" ]]; then
     # Full PM matrix - all agents
-    jq -r '
+    jq -r \
+      --argjson TOOL_KEYS "$TOOL_KEYS" \
+      --argjson NON_TOOL_KEYS "$NON_TOOL_KEYS" '
       .agent | to_entries[] |
       .key as $agent |
       .value.permission as $perm |
@@ -115,48 +124,15 @@ EOF
        else "@\($agent)" end) as $display |
 
       # Non-bash tool permissions that are "allow"
-      [
-        (if ($perm.read // "deny") == "allow" then "read" else empty end),
-        (if ($perm.write // "deny") == "allow" then "write" else empty end),
-        (if ($perm.edit // "deny") == "allow" then "edit" else empty end),
-        (if ($perm.rg // "deny") == "allow" then "rg" else empty end),
-        (if ($perm.skill // "deny") == "allow" then "skill" else empty end),
-        (if ($perm.webfetch // "deny") == "allow" then "webfetch" else empty end),
-        (if ($perm.list // "deny") == "allow" then "list" else empty end),
-        (if ($perm.todowrite // "deny") == "allow" then "todowrite" else empty end),
-        (if ($perm.task // "deny") == "allow" then "task" else empty end),
-        (if ($perm.taskctl // "deny") == "allow" then "taskctl" else empty end),
-        (if ($perm.cancel_task // "deny") == "allow" then "cancel_task" else empty end),
-        (if ($perm.list_tasks // "deny") == "allow" then "list_tasks" else empty end),
-        (if ($perm.check_task // "deny") == "allow" then "check_task" else empty end)
-      ] | map(select(. != "")) | join(", ") as $tools |
+      [$TOOL_KEYS[] | . as $k | ($perm | .[$k]) | select(type == "string") | select(. == "allow") | $k]
+      | join(", ") as $tools |
 
       # MCP tool permissions (anything not in the standard/infrastructure keys)
       [
         ($perm | to_entries[] | 
-          select(
-            .key != "read" and
-            .key != "write" and
-            .key != "edit" and
-            .key != "rg" and
-            .key != "skill" and
-            .key != "webfetch" and
-            .key != "list" and
-            .key != "todowrite" and
-            .key != "task" and
-            .key != "taskctl" and
-            .key != "cancel_task" and
-            .key != "list_tasks" and
-            .key != "check_task" and
-            .key != "multiedit" and
-            .key != "websearch" and
-            .key != "bash" and
-            .key != "*" and
-            .key != "external_directory" and
-            .key != "mcp" and
-            .key != "vipune" and
-            .value == "allow"
-          ) | 
+          select(([.key] | inside($NON_TOOL_KEYS)) | not) |
+          select(.value | type == "string") |
+          select(.value == "allow") |
           .key | gsub("\\*$"; "")
         )
       ] | sort | unique | join(", ") as $mcp_tools |
@@ -187,53 +163,22 @@ EOF
     fi
     
     jq -r \
-      --arg agent "$AGENT_NAME" '
+      --arg agent "$AGENT_NAME" \
+      --argjson TOOL_KEYS "$TOOL_KEYS" \
+      --argjson NON_TOOL_KEYS "$NON_TOOL_KEYS" '
       .agent[$agent] |
       .permission as $perm |
 
       # Non-bash tool permissions that are "allow"
-      [
-        (if ($perm.read // "deny") == "allow" then "read" else empty end),
-        (if ($perm.write // "deny") == "allow" then "write" else empty end),
-        (if ($perm.edit // "deny") == "allow" then "edit" else empty end),
-        (if ($perm.rg // "deny") == "allow" then "rg" else empty end),
-        (if ($perm.skill // "deny") == "allow" then "skill" else empty end),
-        (if ($perm.webfetch // "deny") == "allow" then "webfetch" else empty end),
-        (if ($perm.list // "deny") == "allow" then "list" else empty end),
-        (if ($perm.todowrite // "deny") == "allow" then "todowrite" else empty end),
-        (if ($perm.task // "deny") == "allow" then "task" else empty end),
-        (if ($perm.taskctl // "deny") == "allow" then "taskctl" else empty end),
-        (if ($perm.cancel_task // "deny") == "allow" then "cancel_task" else empty end),
-        (if ($perm.list_tasks // "deny") == "allow" then "list_tasks" else empty end),
-        (if ($perm.check_task // "deny") == "allow" then "check_task" else empty end)
-      ] | map(select(. != "")) | join(", ") as $tools |
+      [$TOOL_KEYS[] | . as $k | ($perm | .[$k]) | select(type == "string") | select(. == "allow") | $k]
+      | join(", ") as $tools |
 
       # MCP tool permissions (anything not in the standard/infrastructure keys)
       [
         ($perm | to_entries[] | 
-          select(
-            .key != "read" and
-            .key != "write" and
-            .key != "edit" and
-            .key != "rg" and
-            .key != "skill" and
-            .key != "webfetch" and
-            .key != "list" and
-            .key != "todowrite" and
-            .key != "task" and
-            .key != "taskctl" and
-            .key != "cancel_task" and
-            .key != "list_tasks" and
-            .key != "check_task" and
-            .key != "multiedit" and
-            .key != "websearch" and
-            .key != "bash" and
-            .key != "*" and
-            .key != "external_directory" and
-            .key != "mcp" and
-            .key != "vipune" and
-            .value == "allow"
-          ) | 
+          select(([.key] | inside($NON_TOOL_KEYS)) | not) |
+          select(.value | type == "string") |
+          select(.value == "allow") |
           .key | gsub("\\*$"; "")
         )
       ] | sort | unique | join(", ") as $mcp_tools |
