@@ -8,7 +8,7 @@
  * crash-resume idempotency. No real Pi spawn; all calls are mocked.
  */
 
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
@@ -18,6 +18,7 @@ import {
   executeAndVerifyMerge,
   mechanizedMerge,
 } from "../src/work-driver-merged-mechanized.ts";
+import { runMerged } from "../src/work-driver-merged.ts";
 import { inlineMergePrompt } from "../src/work-driver-prompts-late.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { type WorkState, initialState, readState, writeState } from "../src/workflow-state.ts";
@@ -104,10 +105,33 @@ function mkState(issue: number, pr: number, branch: string): WorkState {
   return s;
 }
 
+// mkState with baseSha + worktrees populated so runMerged's doctrine read
+// and post-merge worktree teardown are exercised (both keyed on those fields).
+function mkStateFull(
+  issue: number,
+  pr: number,
+  branch: string,
+  baseSha: string,
+  worktrees: Record<string, string>,
+): WorkState {
+  const s = initialState(issue, 1_000_000);
+  (s as any).pipelineState = {
+    ...s.pipelineState,
+    currentStep: "merged",
+    lastCompletedStep: "ci",
+    branchName: branch,
+    prNumber: pr,
+    baseSha,
+    worktrees,
+  };
+  return s;
+}
+
 process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
 process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_VERIFY = "0";
+process.env.PI_ENSEMBLE_MERGE_AUTHORITY = "0";
 setupSpawnGuard();
 
 // ---- deriveMergeMethod tests ----
@@ -259,6 +283,114 @@ setupSpawnGuard();
     !calls.some((c) => c.includes("git checkout")),
     "restoreCheckout: skips checkout when already on mainline",
   );
+}
+
+// ---- #476 — restoreCheckout reached on a successful merge ----
+//
+// The three unit blocks above call restoreCheckout directly, which pins the
+// command sequence but says nothing about REACHABILITY: the only production
+// caller (work-driver-merged.ts runMerged) used to gate on ctx.verifyExecFn,
+// a test-only seam neither production entry point sets, so on a real merge
+// the checkout was never restored, refs never pruned, and branch -d never
+// attempted.
+//
+// This block drives runMerged with `verifyExecFn` INJECTED as a recording
+// fake, so the full mechanized-merge → restoration flow runs: merge
+// succeeds, mergeSucceeded=true triggers the restoration block, and the
+// restoration is observed (fetch origin --prune / checkout / pull
+// --ff-only / branch -d) with a branch -d refusal landing in a `Checkout
+// restoration` plumb-report rather than halting the cycle.
+//
+// The literal production shape — `verifyExecFn` absent, so the driver's
+// `ctx.verifyExecFn ?? execp` fallback really resolves to the real executor
+// — is asserted in the -live sibling
+// test-work-driver-merged-mechanized-prod-restore-live.ts. It cannot run
+// offline: with the seam absent the executor is the real `execp`, which
+// shells out to git and gh, and the §1 offline set must stay network-free.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "mm-prod-restore-"));
+  try {
+    const calls: string[] = [];
+    const base = mkExec({
+      "gh repo view": {
+        stdout:
+          '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
+      },
+      // executeAndVerifyMerge checks `stdout.trim() === "MERGED"` on the
+      // plain-text `--jq '.state'` output — answer with the plain token.
+      "gh pr view": { stdout: "MERGED\n" },
+      "git fetch": { stdout: "" },
+      "git rev-parse": { stdout: "feature/issue-476\n" },
+      "git checkout": { stdout: "" },
+      "git pull": { stdout: "" },
+      // The refusal is the whole point of this block: the note path
+      // asserts a failed `branch -d` becomes a plumb-report, not a halt.
+      "git branch -d": { error: true, stderr: "not fully merged" },
+    });
+    // The recorder is the driver's executor: every command it issues is
+    // recorded, and any command the fakes above do not cover would touch
+    // the outside world in production — throw instead.
+    const recorder: VerifyExecFn = async (cmd, opts) => {
+      calls.push(cmd);
+      try {
+        return await base.fn(cmd, opts);
+      } catch (err) {
+        if (cmd.includes("git branch -d")) throw err;
+        throw new Error(`offline test: unmocked command: ${cmd}`);
+      }
+    };
+
+    const ctx: DriverContext = {
+      repoRoot: dir,
+      issue: 476,
+      pi: mkPi(),
+      // The recording fake stands in for the driver's executor — it is the
+      // same seam production's `ctx.verifyExecFn ?? execp` resolves through.
+      verifyExecFn: recorder,
+      issueBodyFetcherFn: async () => ({
+        stdout: "title:\ttest #476\nstate:\tOPEN\n\nbody",
+      }),
+      // The mechanized merge must succeed so the ops fallback dispatch
+      // (a real Pi spawn) is never attempted.
+      dispatchFn: async () => {
+        throw new Error("offline test: fallback dispatch should not be reached");
+      },
+    } as unknown as DriverContext;
+
+    const state = mkStateFull(476, 4761, "feature/issue-476", "HEAD", { task_b: "" });
+    const out = await runMerged(ctx, state, Date.now());
+
+    assert(
+      out.pipelineState.status === "merged",
+      "#476: mechanized merge succeeded → status='merged'",
+    );
+    // Restoration ran: the full sequence was attempted with the cycle's
+    // feature branch as the delete target.
+    assert(
+      calls.some((c) => c.includes("git fetch origin --prune")),
+      "#476: fetch origin --prune ran on the successful-merge path",
+    );
+    assert(
+      calls.some((c) => c.includes("git checkout")) &&
+        calls.some((c) => c.includes("git pull --ff-only")),
+      "#476: checkout + pull --ff-only ran on the successful-merge path",
+    );
+    const branchD = calls.find((c) => c.includes("git branch -d"));
+    assert(
+      branchD?.includes("feature/issue-476") === true,
+      "#476: branch -d targeted the cycle's feature branch",
+    );
+    // branch -d refusal (squash-merge SHA mismatch) is a note, not a halt.
+    const notes = out.eventLog.filter(
+      (e) => e.kind === "plumb-report" && /Checkout restoration: .*branch -d/.test(e.body),
+    );
+    assert(
+      notes.length >= 1,
+      "#476: branch -d refusal emitted as a plumb-report note (restoration reached)",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 // ---- mechanizedMerge integration tests ----

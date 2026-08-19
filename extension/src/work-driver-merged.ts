@@ -423,32 +423,35 @@ export async function runMerged(
   // short-circuits as already-done, restoration runs again.
   if (mergeSucceeded) {
     try {
-      const execFn = ctx.verifyExecFn;
-      if (execFn) {
-        const mainlineResult = await detectMainline(ctx.repoRoot, execFn);
-        if ("branch" in mainlineResult) {
-          // #289 — restoreCheckout runs `git checkout <mainline>` + `pull
-          // --ff-only` + `branch -d` at repoRoot. A sibling group mid-
-          // integrate would find itself moved onto mainline and commit
-          // there, so this takes the same lock as integration.
-          const restorationNotes = await withIntegrationLock(ctx.repoRoot, () =>
-            restoreCheckout(
-              ctx.repoRoot,
-              mainlineResult.branch,
-              state.pipelineState.branchName,
-              execFn,
-            ),
-          );
-          for (const note of restorationNotes) {
-            // Log restoration notes (informational — not errors).
-            next = appendEvent(next, {
-              kind: "plumb-report",
-              at: Date.now(),
-              step: "merged",
-              role: "driver",
-              body: `Checkout restoration: ${note}`,
-            });
-          }
+      // #476 — same seam resolution as mechanizedMerge (#380): the test-only
+      // injection is the preferred path when present, but production callers
+      // omit it and would have skipped restoration entirely, leaving the
+      // checkout on the merged feature branch with no prune and no local
+      // branch -d attempt.
+      const execFn = ctx.verifyExecFn ?? execp;
+      const mainlineResult = await detectMainline(ctx.repoRoot, execFn);
+      if ("branch" in mainlineResult) {
+        // #289 — restoreCheckout runs `git checkout <mainline>` + `pull
+        // --ff-only` + `branch -d` at repoRoot. A sibling group mid-
+        // integrate would find itself moved onto mainline and commit
+        // there, so this takes the same lock as integration.
+        const restorationNotes = await withIntegrationLock(ctx.repoRoot, () =>
+          restoreCheckout(
+            ctx.repoRoot,
+            mainlineResult.branch,
+            state.pipelineState.branchName,
+            execFn,
+          ),
+        );
+        for (const note of restorationNotes) {
+          // Log restoration notes (informational — not errors).
+          next = appendEvent(next, {
+            kind: "plumb-report",
+            at: Date.now(),
+            step: "merged",
+            role: "driver",
+            body: `Checkout restoration: ${note}`,
+          });
         }
       }
       // Clean up scratch dir on merged outcome.
