@@ -16,7 +16,12 @@ export { sliceMarkdownSection, splitOutsideParens } from "./work-driver-plan-par
 import type { DispatchResult } from "./types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
-import { type PathCollision, findPathCollisions } from "./work-driver-plan-paths.ts";
+import {
+  type PathCollision,
+  type TestSubjectSplit,
+  findPathCollisions,
+  findTestSubjectSplits,
+} from "./work-driver-plan-paths.ts";
 import { inlinePlanPrompt } from "./work-driver-prompts-early.ts";
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
@@ -109,12 +114,18 @@ export async function runPlan(
   let redispatched = false;
   if (planQualityEnabled() && reason) {
     trace(`work-driver: plan quality — ${reason}, re-dispatching once`);
+    const steer =
+      reason === "test-subject-split"
+        ? correctiveTestSubjectSplitSteer(findTestSubjectSplits(workstreams))
+        : correctivePlanSteer(
+            reason,
+            findingsCount,
+            Object.keys(workstreams).length,
+            findPathCollisions(workstreams),
+          );
     const retry = await dispatch(
       ctx.pi,
-      {
-        role: "explore",
-        prompt: `${prompt}\n\n${correctivePlanSteer(reason, findingsCount, Object.keys(workstreams).length, findPathCollisions(workstreams))}`,
-      },
+      { role: "explore", prompt: `${prompt}\n\n${steer}` },
       { label: "plan:corrective" },
     ).catch(() => undefined);
     if (retry) {
@@ -173,6 +184,9 @@ export function planQualityReason(
   // An empty list cannot overlap anything, so it is reported above as the more
   // specific diagnosis; by here every workstream has declared something.
   if (findPathCollisions(workstreams).length > 0) return "overlapping-paths";
+  // A test and the file it exercises in different worktrees can never meet:
+  // the split is an integration failure waiting to happen (#479, #483).
+  if (findTestSubjectSplits(workstreams).length > 0) return "test-subject-split";
   return undefined;
 }
 
@@ -214,6 +228,39 @@ export function correctivePlanSteer(
     "Every workstream MUST list the files it will touch — the driver uses that list to verify the committed diff",
     "actually contains each workstream's slice, and an empty list silently disables that check.",
     "Re-plan with a non-empty `paths:` and `out-of-scope:` for every workstream.",
+  ].join("\n");
+}
+
+/**
+ * The corrective steer for the test/subject split. Named separately from
+ * `correctivePlanSteer` because that function's contract takes a
+ * `PlanQualityReason` (the persisted value) and this one needs the split
+ * details; the dispatch site (runPlan) picks the right steer per reason.
+ */
+export function correctiveTestSubjectSplitSteer(splits: TestSubjectSplit[]): string {
+  const pairs =
+    splits.length > 0
+      ? splits.map(
+          (s) =>
+            `- \`${s.test}\` declared test \`${s.testPath}\`, which exercises \`${s.subjectPath}\` owned by \`${s.subject}\``,
+        )
+      : [];
+  return [
+    "## Corrective re-dispatch",
+    "",
+    "Your previous plan separated a test from the file it exercises:",
+    ...(pairs.length > 0
+      ? [...pairs, ""]
+      : [
+          "The plan has a workstream that is only test file(s) whose subject(s) live in another workstream.",
+          "",
+        ]),
+    "Each workstream gets its own worktree and its own developer, so a test and its subject in",
+    "different worktrees can never meet: each workstream passes its own develop gate against its own",
+    "tree, and the consolidated verify fails at commit-pr for the same reason the test was split.",
+    "Re-plan so every test stays in the SAME workstream as the file it exercises. A workstream that is",
+    "only test file(s) has no legitimate reading — move the test to its subject's workstream, or make",
+    "the test file's subject part of the same workstream.",
   ].join("\n");
 }
 

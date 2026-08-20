@@ -27,7 +27,11 @@ export const WORK_STATE_SCHEMA_VERSION = 1 as const;
  * Lives with the schema because it is persisted: `work-driver-plan.ts` decides
  * it, and `/work-status` and the handoff renderers read it back.
  */
-export type PlanQualityReason = "under-decomposed" | "empty-paths" | "overlapping-paths";
+export type PlanQualityReason =
+  | "under-decomposed"
+  | "empty-paths"
+  | "overlapping-paths"
+  | "test-subject-split";
 
 export interface PipelineState {
   /** Current step. Drives template selection and transition table. */
