@@ -8,6 +8,15 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.46](https://github.com/randomm/pi-ensemble/compare/v0.12.45...v0.12.46) (2026-08-20)
+
+
+### Bug Fixes
+
+* **#475:** refuse the worktree pre-remove when it would destroy unrecoverable work ([#497](https://github.com/randomm/pi-ensemble/issues/497)) ([b77b0e5](https://github.com/randomm/pi-ensemble/commit/b77b0e590eac3356cf699d8345a438486bca847c))
+* **#481:** provision nested dependency directories, and stop reporting empty ones as linked ([#494](https://github.com/randomm/pi-ensemble/issues/494)) ([24bf1de](https://github.com/randomm/pi-ensemble/commit/24bf1dec0e6342e7f65bdd00f2d58d5e9800341e))
+* **#483:** keep a test and its subject in the same workstream ([#496](https://github.com/randomm/pi-ensemble/issues/496)) ([5500b99](https://github.com/randomm/pi-ensemble/commit/5500b99d8294390d769710893a5e198dd3e1a511))
+
 ## [0.12.45](https://github.com/randomm/pi-ensemble/compare/v0.12.44...v0.12.45) (2026-08-19)
 
 
