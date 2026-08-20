@@ -155,9 +155,18 @@ Revise the issue body (`/plan`) and re-run with `--restart`.
 
 Development happens in a `git worktree`, which contains tracked files only — no `node_modules`, no virtualenv, no vendor tree. If your verify command needs them, it fails for a reason that has nothing to do with the change.
 
-pi-ensemble now provisions the worktree: it runs **`.pi/worktree-setup`** if you provide one (the reliable option — put `bun install`, `uv sync`, whatever your project needs, in it), and otherwise symlinks `node_modules`, `.venv` and `vendor` when they exist at the repo root and are gitignored. Build output (`target/`, `build/`, `dist/`) is never shared: concurrent workstreams writing one directory would serialise the fan-out.
+pi-ensemble now provisions the worktree: it runs **`.pi/worktree-setup`** if you provide one (the reliable option — put `bun install`, `uv sync`, whatever your project needs, in it), and otherwise symlinks `node_modules`, `.venv` and `vendor` when they exist and are gitignored. Discovery is not limited to the repo root: any depth-1 subdirectory that contains a manifest or lockfile (`package.json`, `bun.lock`, `Cargo.toml`, `pyproject.toml`, `go.mod`, `Gemfile`, …) is scanned for a nested `node_modules` — so a nested-package monorepo provisions without a hook (#481). An **empty** candidate directory is never linked or reported as a useful link, and a project with a lockfile but no findable tree gets a `problem` the branch step traces rather than a silent bare worktree. Build output (`target/`, `build/`, `dist/`) is never shared: concurrent workstreams writing one directory would serialise the fan-out.
 
 A verify failure that looks dependency-caused now says so in the handoff rather than implying the diff is at fault. If you see that, add `.pi/worktree-setup`.
+
+### The `.pi/worktree-setup` hook — contract
+
+The hook is the escape hatch for the inexpressible: anything the symlink allowlist cannot describe (multi-step installs, generated files, environment-specific paths) goes here. The contract the driver makes when invoking it:
+
+- **No arguments, no environment.** The hook is invoked as `sh <repoRoot>/.pi/worktree-setup` and must locate `repoRoot` itself — e.g. `git rev-parse --path-format=absolute --git-common-dir` (git ≥ 2.31), whose parent directory is the main checkout.
+- **`cwd` = the new worktree root.** `git worktree add --detach` has just run, so the hook sees a tree of tracked files only.
+- **The hook path skips the symlink loop entirely**, including the `.git/info/exclude` write that loop performs. If your hook creates a symlink (say, `ln -s $repo_root/extension/node_modules extension/node_modules`), it must write its own exclude entry to `$GIT_COMMON_DIR/info/exclude`, or the link surfaces as untracked in `git status --porcelain` and `stagePorcelainPaths` stages it into the PR.
+- **A non-zero exit is reported as `ProvisionResult.problem`** and traced at the branch step; the cycle continues (a bare worktree is the status quo, not a regression). A hook that cannot provision should exit 0 with a diagnostic to stderr, not fail the cycle.
 
 ### The plan step re-dispatches saying two workstreams claim the same file
 

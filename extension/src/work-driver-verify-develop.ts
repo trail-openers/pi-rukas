@@ -162,7 +162,7 @@ export async function verifyDevelopOutcome(
         // diff is at fault.
         const output = `${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.message ?? ""}`;
         const depsHint = looksLikeMissingDeps(output)
-          ? " — this looks like missing dependencies in the worktree rather than a defect in the diff; see .pi/worktree-setup"
+          ? " — this looks like missing dependencies in the worktree rather than a defect in the diff. Provisioning discovers `node_modules` at `repoRoot` and in depth-1 package dirs with a manifest/lockfile; if the tree is elsewhere or empty, add or fix `.pi/worktree-setup`"
           : "";
         failures.push(
           formatExecError(
