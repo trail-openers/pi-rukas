@@ -812,7 +812,26 @@ Fix: pass `--restart` to wipe the prior state file and start a fresh cycle.
 
 Without `--restart`, re-invoking `/work N` on a terminal-state file now emits a clear notify pointing at the recovery: *"`/work` for issue #N already terminated as <status>. To start a fresh cycle (e.g., after revising the issue via /plan), re-run with `--restart`..."*.
 
-`--restart` only wipes the driver's state file (`.pi/work-state/N.json`). Worktrees and feature branches from the prior cycle are NOT removed — the branch step will detect existing branches at runtime (ops checks out + resets, or ABORTs cleanly with the error). If you want a fully clean slate, also `rm -rf .worktrees/issue-N-*` and `git branch -D feature/issue-N-*` before re-running.
+`--restart` only wipes the driver's state file (`.pi/work-state/N.json`). Worktrees and feature branches from the prior cycle are NOT removed — the branch step reuses them at runtime: a leftover at the same path with no uncommitted work and no unpushed commits is removed and recreated (the common path, unchanged), but a leftover that HOLDS work is refused instead (see `worktree-dirty-preremove` below). If you want a fully clean slate, salvage any work first, then `git worktree remove --force -- .worktrees/issue-N-*` and `git branch -D feature/issue-N-*` before re-running.
+
+### `worktree-dirty-preremove` — the branch step refuses a worktree that holds uncommitted work (#475)
+
+**Symptom:** `/work N --restart` (or a fresh `/work N` over a surviving worktree directory) halts at step 3 (branch) with cap `step-failed:branch` and a plumb report reading *“refusing to force-remove existing worktree <path> — it holds unrecoverable work: …”*. No subagent ran; nothing was pushed.
+
+**Why:** the branch step pre-removes a same-named worktree before recreating it, so a resumed cycle is not wedged by its own leftover. But developers are instructed not to commit — a cycle that died mid-develop leaves its diff uncommitted in the worktree, not in the object database. The old `git worktree remove --force` destroyed that with no warning, and deleting unrecoverable work must never be the silent default. The check now runs before the remove: uncommitted files (`git status --porcelain` in the worktree) plus local commits ahead of the base (`git rev-list --count <base>..HEAD`).
+
+**Fix:** the work is still on disk — the path in the plumb report is the worktree itself.
+
+```bash
+git -C .worktrees/issue-N-<id> status        # what is uncommitted
+git -C .worktrees/issue-N-<id> diff          # the diff
+```
+
+- **Salvage it** — `git -C .worktrees/issue-N-<id> diff > /tmp/patch` (and review the diff before deciding), then remove the worktree and re-run: `git worktree remove --force -- .worktrees/issue-N-<id>` and `/work N --restart`.
+- **Commit it to a branch** instead, if the work is the branch itself: `git -C .worktrees/issue-N-<id> add -p && git commit`, then push from the worktree.
+- **Discard it deliberately** — `git worktree remove --force -- .worktrees/issue-N-<id>`, then re-run. (This is the one place `--force` is safe: you just read what it would destroy.)
+
+A leftover with no uncommitted work and no unpushed commits is still removed automatically — no action needed. The refusal only fires when something unrecoverable is present.
 
 ### `lens-fix-not-integrated` — the fix never reached the branch
 

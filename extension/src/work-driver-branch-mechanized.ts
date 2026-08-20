@@ -28,7 +28,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";
-import { worktreeCreate } from "./worktree.ts";
+import { DirtyWorktreeError, worktreeCreate } from "./worktree.ts";
 
 /**
  * Deterministic branch slug. Replaces the LLM-authored name, which produced
@@ -179,6 +179,11 @@ export interface MechanizedBranchResult {
  * workstream. Throws on any failure — the caller routes that to a
  * `dispatch-failed` on the branch step, which the router turns into a handoff.
  *
+ * `DirtyWorktreeError` (#475) is the one failure that must NOT fall back to
+ * the LLM ops dispatch: the ops branch prompt instructs `git worktree remove
+ * --force` for an existing worktree, so the fallback would destroy exactly
+ * the work the guard just refused to destroy. Refusing means refusing.
+ *
  * Deliberately does NOT touch repoRoot's checkout: no `checkout`, no `pull`.
  * `git fetch` is the sole repoRoot command and it mutates only refs, never the
  * working tree, so an operator's uncommitted work in the main checkout is
@@ -211,11 +216,22 @@ export async function mechanizedBranchSetup(
   const ids = workstreamIds.length > 0 ? workstreamIds : ["default"];
   const worktrees: Record<string, string> = {};
   for (const id of ids) {
-    worktrees[id] = await worktreeCreate(execFn, {
-      repoRoot,
-      name: `issue-${issue}-${id}`,
-      fromRef: baseSha,
-    });
+    try {
+      worktrees[id] = await worktreeCreate(execFn, {
+        repoRoot,
+        name: `issue-${issue}-${id}`,
+        fromRef: baseSha,
+      });
+    } catch (err) {
+      if (err instanceof DirtyWorktreeError) {
+        // The leftover work is the operator's to salvage — trace it, then
+        // re-throw so the caller REFUSES the ops fallback (which would
+        // destroy the same work) and routes to handoff.
+        trace(`work-driver: refusing pre-remove of dirty worktree for '${id}': ${err.message}`);
+        throw err;
+      }
+      throw err;
+    }
   }
   trace(
     `work-driver: mechanized branch setup — ${branchName} @ ${baseSha.slice(0, 8)} (${ids.length} worktree(s))`,

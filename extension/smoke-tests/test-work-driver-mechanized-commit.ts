@@ -142,6 +142,12 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           recursive: true,
         });
         const calls: string[] = [];
+        // #475 — the pre-create `inspectWorktreeForLoss` guard must find
+        // clean worktrees during branch setup, but the worktrees read dirty
+        // during develop (the developer "wrote" code). The discriminator:
+        // `git worktree add` runs LAST in the branch step (after all
+        // `git status` probes), so any `git status` call before the first
+        // `git worktree add` is a pre-create probe → return clean.
         const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
           calls.push(cmd);
           if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
@@ -152,13 +158,33 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           // fixture's "mechanized path completed cleanly" assertion then trips on.
           if (cmd.startsWith("git rev-parse ")) return { stdout: "base123\n" };
           if (cmd.startsWith("git fetch origin")) return { stdout: "" };
+          // #475 — the pre-remove guard (`inspectWorktreeForLoss`) checks for
+          // unrecoverable work before force-removing a same-path worktree.
+          // The driver's worktrees don't exist on disk in this fixture, so
+          // the guard finds nothing and the pre-remove proceeds; this stub
+          // models that by accepting the remove.
+          if (cmd.startsWith("git worktree remove")) return { stdout: "" };
           if (cmd.startsWith("git worktree add")) return { stdout: "" };
           if (cmd.startsWith("git status --porcelain")) {
             // #393 — worktree paths now come from mechanized branch setup
             // (`.worktrees/issue-994/<workstream>`), not from the ops reply,
             // so key on the workstream id rather than the old /wta,/wtb,/wtc
             // paths the LLM branch flow used to invent.
+            // #475 — during the branch step, the `inspectWorktreeForLoss`
+            // guard probes each worktree's `git status` BEFORE its
+            // `git worktree add`. The worktrees don't exist on disk in this
+            // fixture, so the guard finds nothing and the pre-remove
+            // proceeds. During develop/commit-pr, the developer "wrote"
+            // code, so the worktrees read dirty.
+            //
+            // Discriminator: count `git worktree add` calls already issued
+            // vs. total workstreams (3). If all 3 worktrees are created,
+            // we're past the branch step → return dirty. Otherwise → clean.
+            const worktreeAdds = calls.filter((c) =>
+              c.startsWith("git worktree add"),
+            ).length;
             const cwd = o?.cwd ?? "";
+            if (worktreeAdds < 3) return { stdout: "" };
             if (cwd.endsWith("-task-a")) return { stdout: " M src/a.rs\n" };
             if (cwd.endsWith("-task-b")) return { stdout: " M src/b.rs\n" };
             if (cwd.endsWith("-task-c")) return { stdout: "?? src/c.rs\n" };
@@ -238,15 +264,26 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         await (await import("node:fs/promises")).mkdir(path.join(dir, ".git", "info"), {
           recursive: true,
         });
+        const calls2: string[] = [];
         const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
+          calls2.push(cmd);
           if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
           if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-995\n" };
           // #393 — branch setup is mechanized unconditionally now.
           if (cmd.startsWith("git rev-parse ")) return { stdout: "base123\n" };
           if (cmd.startsWith("git fetch origin")) return { stdout: "" };
           if (cmd.startsWith("git worktree add")) return { stdout: "" };
+          // #475 — pre-remove guard: worktrees don't exist on disk, guard
+          // finds nothing, pre-remove proceeds.
+          if (cmd.startsWith("git worktree remove")) return { stdout: "" };
           if (cmd.startsWith("git status --porcelain")) {
+            // #475 — same discriminator as M1: clean during branch step
+            // (pre-create guard), dirty after all 3 worktrees are created.
+            const worktreeAdds = calls2.filter((c) =>
+              c.startsWith("git worktree add"),
+            ).length;
             const cwd = o?.cwd ?? "";
+            if (worktreeAdds < 3) return { stdout: "" };
             if (/-task-[abc]$/.test(cwd)) return { stdout: " M src/x.rs\n" };
             return { stdout: "" };
           }

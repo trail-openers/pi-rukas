@@ -13,15 +13,14 @@ import { dispatchCore } from "./dispatch.ts";
 import { buildMemoryBrief } from "./memory-brief.ts";
 import { trace } from "./trace.ts";
 import { mechanizedBranchSetup } from "./work-driver-branch-mechanized.ts";
+import { parseWorktreesBlock, runBranchViaOpsDispatch } from "./work-driver-branch-ops.ts";
+
+export { parseWorktreesBlock };
 import type { DriverContext } from "./work-driver-context.ts";
-import { parseBranchName } from "./work-driver-diff.ts";
-import { resolvedTheMainline } from "./work-driver-git.ts";
 import { cachedIssueTitle } from "./work-driver-integrate.ts";
-import { buildCompletionEvent, runSingleDispatch } from "./work-driver-merged.ts";
-import { sliceMarkdownSection } from "./work-driver-plan.ts";
+import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { findOpenPrForIssue, prPreflightEnabled } from "./work-driver-pr-preflight.ts";
 import {
-  inlineBranchPrompt,
   inlineDevelopPrompt,
   inlineSpeculativeExplorePrompt,
 } from "./work-driver-prompts-early.ts";
@@ -29,6 +28,7 @@ import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
+import { DirtyWorktreeError } from "./worktree.ts";
 
 const execp = promisify(exec);
 
@@ -121,6 +121,36 @@ export async function runBranch(
         },
       };
     } catch (err) {
+      // #475 — the ops fallback's branch prompt tells ops to
+      // `git worktree remove --force` an existing worktree, so falling back
+      // after a dirty-worktree refusal would destroy exactly the work the
+      // guard just protected. Refusal is a refusal: it goes to handoff via
+      // the step-failed:branch cap, with the finding in a plumb report the
+      // handoff comment renders.
+      if (err instanceof DirtyWorktreeError) {
+        trace(`work-driver: branch step refused — dirty worktree: ${err.message?.slice(0, 300)}`);
+        const started = appendEvent(
+          { ...state, pipelineState: { ...state.pipelineState, currentStep: "branch" } },
+          { kind: "step-started", step: "branch", at: now },
+        );
+        const withReport = {
+          ...started,
+          pipelineState: {
+            ...started.pipelineState,
+            plumbReports: [
+              ...(started.pipelineState.plumbReports ?? []),
+              { step: "branch" as const, role: "driver", body: err.message, at: Date.now() },
+            ],
+          },
+        };
+        return appendEvent(withReport, {
+          kind: "cap-hit",
+          at: Date.now(),
+          cap: "step-failed:branch",
+          reviewRound: state.pipelineState.reviewRound,
+          nextStep: "handoff",
+        });
+      }
       trace(
         `work-driver: mechanized branch setup fell back to ops dispatch: ${(err as Error).message?.slice(0, 200)}`,
       );
@@ -133,120 +163,7 @@ export async function runBranch(
       });
     }
   }
-  let next = await runSingleDispatch(ctx, base, "branch", "ops", "ops", now, () =>
-    inlineBranchPrompt(activeIssuesOf(base), workstreamIds, scratchDir(ctx.repoRoot, ctx.issue)),
-  );
-  const last = next.eventLog[next.eventLog.length - 1];
-  if (last?.kind !== "dispatch-completed") return next;
-  // Parse the ops reply for reference (used in mismatch plumb-report only).
-  const reportedBranch = parseBranchName(last.summary);
-  // #292 — resolve the actual branch from git, not from the subagent reply.
-  const execFn = ctx.verifyExecFn ?? execp;
-  let actualBranch: string | undefined;
-  try {
-    const { stdout } = await execFn("git rev-parse --abbrev-ref HEAD", {
-      cwd: ctx.repoRoot,
-      maxBuffer: 64 * 1024,
-    });
-    actualBranch = stdout.trim() || undefined;
-  } catch (err) {
-    trace(
-      `work-driver: git rev-parse --abbrev-ref HEAD failed: ${(err as Error).message?.slice(0, 200)}`,
-    );
-  }
-  // Determine the branch name: git-resolved (source of truth), fallback to
-  // parsed reply if git is unavailable.
-  const branch = actualBranch ?? reportedBranch;
-  if (await resolvedTheMainline(ctx.repoRoot, execFn, branch)) {
-    trace(
-      `work-driver: branch step resolved the mainline (${branch}) as the cycle branch — halting`,
-    );
-    return appendEvent(next, {
-      kind: "cap-hit",
-      at: Date.now(),
-      cap: "step-failed:branch",
-      reviewRound: next.pipelineState.reviewRound,
-      nextStep: "handoff",
-    });
-  }
-  // #292 — emit a plumb-report if reported-vs-actual mismatch.
-  if (actualBranch && reportedBranch && actualBranch !== reportedBranch) {
-    const body = [
-      "[ensemble:plumb]",
-      "category: scope-ambiguity",
-      "file: work-driver-branch-develop.ts:runBranch",
-      "question: ops reported branch name differs from the branch actually checked out.",
-      `reported: ${reportedBranch}`,
-      `actual (git rev-parse --abbrev-ref HEAD): ${actualBranch}`,
-      "The driver uses the git-resolved branch. Verify the ops dispatch executed the intended branch creation.",
-    ].join("\n");
-    next = appendEvent(next, {
-      kind: "plumb-report",
-      step: "branch",
-      role: "ops",
-      body,
-      at: now,
-    });
-  }
-  const ps: typeof next.pipelineState = { ...next.pipelineState };
-  if (branch) ps.branchName = branch;
-  // Parse worktree assignments (PR3 multi-workstream). For N=1 default
-  // workstream, ops doesn't create an actual worktree — driver records
-  // `{default: ctx.repoRoot}` so downstream Steps 4/5/7 use the same
-  // map-iteration code path uniformly. For N>1, ops returns a fenced
-  // `## Worktrees` block mapping workstream id → absolute path.
-  const worktrees =
-    workstreamIds.length > 1
-      ? parseWorktreesBlock(last.summary ?? "", ctx.repoRoot)
-      : { default: ctx.repoRoot };
-  ps.worktrees = worktrees;
-  // PR17 — record the base SHA the feature branch grew from. At this
-  // point the branch was just created and has zero commits, so HEAD at
-  // repoRoot IS the base. verifyStepOutcome diffs against this to prove
-  // develop produced real changes. Best-effort: a git failure leaves
-  // baseSha unset and the verifier falls back to porcelain-only checks.
-  try {
-    const { stdout } = await execFn("git rev-parse HEAD", {
-      cwd: ctx.repoRoot,
-      maxBuffer: 64 * 1024,
-    });
-    if (stdout.trim()) ps.baseSha = stdout.trim();
-  } catch (err) {
-    trace(
-      `work-driver: baseSha capture failed: ${(err as Error).message?.slice(0, 200)} (verify gate falls back to porcelain-only)`,
-    );
-  }
-  return { ...next, pipelineState: ps };
-}
-
-/**
- * Parse a fenced `## Worktrees` block from ops's branch reply.
- *
- * Expected format:
- *
- *   ## Worktrees
- *
- *   - task-a: /Users/dev/projects/foo/.worktrees/issue-553-task-a
- *   - task-b: /Users/dev/projects/foo/.worktrees/issue-553-task-b
- *
- * Lenient: accepts hyphens, asterisks, optional backticks around the
- * path. Returns `{}` if no block present — caller falls back to repo
- * root for the `default` workstream.
- */
-export function parseWorktreesBlock(text: string, repoRoot: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  const section = sliceMarkdownSection(text, "Worktrees");
-  if (section === undefined) return out;
-  const lineRe = /^\s*[-*]\s*([a-z0-9][a-z0-9_-]*)\s*:\s*`?([^\s`]+)`?\s*$/gim;
-  let m: RegExpExecArray | null;
-  // biome-ignore lint/suspicious/noAssignInExpressions: regex iteration idiom
-  while ((m = lineRe.exec(section))) {
-    const id = (m[1] ?? "").trim();
-    let p = (m[2] ?? "").trim();
-    if (!path.isAbsolute(p)) p = path.resolve(repoRoot, p);
-    if (id) out[id] = p;
-  }
-  return out;
+  return runBranchViaOpsDispatch(ctx, base, workstreamIds, now);
 }
 
 /**
