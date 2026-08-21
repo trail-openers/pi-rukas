@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.48](https://github.com/randomm/pi-ensemble/compare/v0.12.47...v0.12.48) (2026-08-21)
+
+
+### Bug Fixes
+
+* **#485,#486:** record the adversarial gate's outcome faithfully and retry infra failures per workstream ([#495](https://github.com/randomm/pi-ensemble/issues/495)) ([023917f](https://github.com/randomm/pi-ensemble/commit/023917f3e6cd00e73dca39b8de772df7f2a2c7cb))
+
 ## [0.12.47](https://github.com/randomm/pi-ensemble/compare/v0.12.46...v0.12.47) (2026-08-21)
 
 
