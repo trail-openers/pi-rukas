@@ -70,6 +70,17 @@ export function explainCap(
       const why = state.pipelineState.lensDiffError ?? "(no detail recorded)";
       return `The six-pass code review could not read the diff it is supposed to review: ${why}. The driver halted rather than approving. Before #384 an unreadable diff returned empty, and the empty-diff guard treated empty as approved — so a stale ref or a transient git error merged code that nothing had reviewed. Check that the branch is pushed and \`origin\` is current (\`git fetch origin --prune\`), then re-run.`;
     }
+    case "adversarial-infra-failure": {
+      const out = [...state.eventLog]
+        .reverse()
+        .find(
+          (e): e is Extract<WorkEvent, { kind: "adversarial-workstream-outcome" }> =>
+            e.kind === "adversarial-workstream-outcome" &&
+            (e.outcome === "infra-failure" || e.outcome === "dispatch-failed"),
+        );
+      const which = out ? `workstream ${out.workstreamId}` : "a workstream";
+      return `${which}'s adversarial loop failed on infrastructure and stayed failed after a retry with the provider-stated backoff — NO verdict exists for it, and that is not a review rejection. The other workstreams' completed reviews are preserved in the state file (adversarial-workstream-outcome events); recover by re-running /work, which re-enters the adversarial step and re-runs ONLY the workstream(s) that never produced a verdict`;
+    }
     case "awaiting-human-merge": {
       const hold = state.pipelineState.mergeHold;
       const pr = state.pipelineState.prNumber;

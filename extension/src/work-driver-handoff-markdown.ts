@@ -10,6 +10,10 @@
 import { killDetail } from "./kill-detail.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
 import { explainCap } from "./work-driver-explain.ts";
+import {
+  adversarialOutcomeSection,
+  adversarialRoundsLine,
+} from "./work-driver-handoff-adversarial.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
@@ -73,7 +77,7 @@ export function renderHandoffMarkdown(state: WorkState): string {
     "## ⏸ Cap hit — needs human attention",
     "",
     `**Cap**: ${capDescription}`,
-    roundsLine(state, capForExplain, reviewRound),
+    adversarialRoundsLine(state, capForExplain, reviewRound),
     `**Branch**: \`${branch}\``,
     `**Issues**: ${issuesHeader}`,
     `**State file**: \`.pi/work-state/${issue}.json\``,
@@ -82,7 +86,7 @@ export function renderHandoffMarkdown(state: WorkState): string {
     "",
     explain,
     "",
-    ...blockingFindingSection(state),
+    ...adversarialOutcomeSection(state),
     ...plumbReportSection(state),
     "### What was attempted",
     ...stepDurations.map((s) => s),
@@ -395,51 +399,6 @@ export function renderHandoffMarkdown(state: WorkState): string {
   );
 
   return lines.join("\n");
-}
-
-/**
- * Report the rounds that actually ran, for the cap that actually fired.
- *
- * `reviewRound` is the LENS counter. An adversarial cap reported it anyway, so
- * a cycle whose adversarial loop ran three full rounds told the human
- * `Rounds: 0 of 3` — lantern #664, verbatim. The reader's reasonable conclusion
- * is that nothing happened, when in fact three reviews and two fix rounds had.
- */
-function roundsLine(state: WorkState, cap: string | undefined, reviewRound: number): string {
-  if (cap === "adversarial-loop") {
-    for (let i = state.eventLog.length - 1; i >= 0; i--) {
-      const e = state.eventLog[i];
-      if (e?.kind === "adversarial-rejected") {
-        return `**Rounds**: ${e.rounds} adversarial round(s), all rejected`;
-      }
-    }
-    return "**Rounds**: adversarial loop ran, round count unrecorded";
-  }
-  return `**Rounds**: ${reviewRound} of 3 review rounds`;
-}
-
-/**
- * What the reviewer actually objected to.
- *
- * The handoff used to say only "the diff still has issues the
- * adversarial-developer flagged", which sends the reader to dig through
- * transcripts for the one thing they need. The findings are already on the
- * event; print them.
- */
-function blockingFindingSection(state: WorkState): string[] {
-  for (let i = state.eventLog.length - 1; i >= 0; i--) {
-    const e = state.eventLog[i];
-    if (e?.kind !== "adversarial-rejected") continue;
-    const findings = e.findings?.trim();
-    if (!findings) break;
-    return [
-      "### What the reviewer objected to",
-      "",
-      findings.length > 4000 ? `${findings.slice(0, 4000)}\n\n…(truncated)` : findings,
-      "",
-    ];
-  }
-  return [];
 }
 
 /**

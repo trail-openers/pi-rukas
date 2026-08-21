@@ -9,6 +9,8 @@
  * full schema doc (versioning, resumability, GitHub-is-the-bus).
  */
 
+import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
+
 /**
  * Linear step identifiers the driver walks. This union IS the definition of
  * the cycle — #393 deleted the prose flow that used to be its source. Add
@@ -124,6 +126,54 @@ export type WorkEvent =
       jobId: string;
       rounds: number;
       findings: string;
+    }
+  | {
+      /**
+       * #485 — one round of the adversarial loop, recorded verbatim from the
+       * loop's own round table (NOT recovered from reply prose). The gate's
+       * per-round decisions were previously recoverable only from the
+       * transcript (issue #478), and the one aggregate `rounds` field was
+       * guessed by `parseAdversarialRounds` — an infra failure in round 1
+       * reported as "3 rounds, all rejected".
+       *
+       * `verdictParsed: false` is a real state: the reviewer ran but wrote
+       * no readable VERDICT marker, and the status is the parser's safe
+       * default, not the reviewer's. The driver records it exactly so
+       * "this workstream was rejected" and "this workstream never produced
+       * a verdict" stay distinct from the state file.
+       */
+      kind: "adversarial-round";
+      at: number;
+      /** #486 — which workstream's loop ran this round. */
+      workstreamId?: string;
+      round: number;
+      status: "CRITICAL_ISSUES_FOUND" | "ISSUES_FOUND" | "MINOR_OBSERVATIONS" | "APPROVED";
+      verdictParsed: boolean;
+    }
+  | {
+      /**
+       * #485/#486 — the per-workstream terminal outcome of the adversarial
+       * loop, distinct from the aggregate verdict events:
+       *
+       *  - "approved" / "rejected" — a review completed and decided.
+       *  - "infra-failure" — a round's dispatch died; NO verdict exists.
+       *    Must never render as "all rejected" (issue #478).
+       *  - "dispatch-failed" — the loop itself threw before any review ran.
+       *  - "skipped-empty-diff" — #286 short-circuit; counts as a pass.
+       *
+       * Emitted per workstream on N>1 fan-outs so a partial failure
+       * (issue #486: one workstream's loop dies, siblings approved) records
+       * every sibling's outcome individually instead of discarding the
+       * approved ones under one aggregate rejection.
+       */
+      kind: "adversarial-workstream-outcome";
+      at: number;
+      workstreamId: string;
+      outcome: "approved" | "rejected" | "infra-failure" | "dispatch-failed" | "skipped-empty-diff";
+      /** Reviews executed for this workstream (0 when none ran). */
+      roundsExecuted: number;
+      /** Present for infra-failure / dispatch-failed — what the failure was. */
+      errorTail?: string;
     }
   | {
       kind: "lens-approved";
@@ -255,6 +305,13 @@ export type WorkEvent =
         // is cheap; approving on the absence of evidence is not.
         | "lens-diff-unreadable"
         | "existing-pr-detected"
+        // #486 — a workstream's adversarial loop failed on infrastructure
+        // every attempt (initial + per-workstream retries, taxonomy
+        // backoff honoured). Distinct from "adversarial-loop": NO review
+        // rejection exists, and the approved siblings' verdicts are
+        // preserved in the per-workstream outcome events — the operator
+        // parks knowing what was decided and what simply never ran.
+        | "adversarial-infra-failure"
         | `verify-failed:${WorkStep}`
         | `step-failed:${WorkStep}`;
       reviewRound: number;
@@ -418,40 +475,11 @@ export type WorkEvent =
         after?: string;
       }>;
     }
-  /**
-   * A memory was written, or refused. Emitted per attempt, not per success —
-   * the refusals are the interesting half, and a silent refusal is how the
-   * write path would go dead without anyone noticing.
-   */
-  | {
-      kind: "memory-write";
-      at: number;
-      outcome: "written" | "cap" | "refused" | "conflict" | "error";
-      /** Present on success. */
-      id?: string;
-      memoryType?: string;
-      /** Why, when the outcome is not `written`. */
-      detail?: string;
-    }
-  /**
-   * A memory brief was composed for a subagent prompt.
-   *
-   * `emptyBrief` is the load-bearing field. A retrieval leg that returns
-   * nothing, forever and silently, is the exact failure this project already
-   * shipped once — a 100% empty rate was invisible for the whole life of the
-   * feature because nothing recorded it.
-   */
-  | {
-      kind: "memory-inject";
-      at: number;
-      step: WorkStep;
-      /** Queries issued, so a leg that asks the wrong thing is diagnosable. */
-      queries: string[];
-      hits: number;
-      emptyBrief: boolean;
-      /** Ids injected, so a later citation can be matched back to this brief. */
-      ids?: string[];
-    };
+  // The memory events ("memory-write", "memory-inject") live in
+  // workflow-state-events-memory.ts — MemoryEventFragment. Split out for
+  // module-size hygiene (AGENTS.md §12); the union above is exhaustive,
+  // and nextStep() and the schema validator see the same closed type.
+  | MemoryEventFragment;
 
 /** Discriminator union of event kinds — useful for callers that switch on it. */
 export type WorkEventKind = WorkEvent["kind"];

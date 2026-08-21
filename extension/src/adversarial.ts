@@ -277,6 +277,8 @@ export async function runAdversarialLoop(
       usage,
       transcriptPath: lastTranscript,
       model: lastModel,
+      adversarialRounds: toRoundRecords(rounds),
+      roundsExecuted: round,
     });
   };
 
@@ -342,6 +344,7 @@ export async function runAdversarialLoop(
         usage,
         transcriptPath: lastTranscript,
         model: lastModel,
+        adversarialRounds: toRoundRecords(rounds),
       });
     }
     if (action === "reject") break;
@@ -387,6 +390,7 @@ export async function runAdversarialLoop(
     usage,
     transcriptPath: lastTranscript,
     model: lastModel,
+    adversarialRounds: toRoundRecords(rounds),
   });
 }
 
@@ -399,6 +403,20 @@ interface SynthesizeInput {
   model?: string;
   /** #298 — how the loop ended; see DispatchResult.loopOutcome. */
   loopOutcome?: DispatchResult["loopOutcome"];
+  /** #485 — per-round verdict records, threaded from the loop as data. */
+  adversarialRounds?: DispatchResult["adversarialRounds"];
+  /** #485 — total rounds executed when the loop exited with no verdict. */
+  roundsExecuted?: number;
+}
+
+function toRoundRecords(
+  rounds: Array<{ round: number; verdict: AdversarialVerdict; ms: number }>,
+): DispatchResult["adversarialRounds"] {
+  return rounds.map((r) => ({
+    round: r.round,
+    status: r.verdict.status,
+    verdictParsed: r.verdict.verdictParsed !== false,
+  }));
 }
 
 function synthesizeResult(i: SynthesizeInput): DispatchResult {
@@ -413,6 +431,8 @@ function synthesizeResult(i: SynthesizeInput): DispatchResult {
     model: i.model,
     transcriptPath: i.transcriptPath,
     loopOutcome: i.loopOutcome,
+    adversarialRounds: i.adversarialRounds,
+    roundsExecuted: i.roundsExecuted,
   };
 }
 

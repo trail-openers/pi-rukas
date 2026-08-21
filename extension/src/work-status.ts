@@ -125,6 +125,10 @@ function fmtEvent(e: WorkEvent): string {
       return `  adversarial-approved · ${e.rounds} round(s)`;
     case "adversarial-rejected":
       return `  adversarial-rejected · ${e.rounds} round(s)`;
+    case "adversarial-round":
+      return `  adversarial-round · round ${e.round} · ${e.status}${e.workstreamId ? ` · [${e.workstreamId}]` : ""}${e.verdictParsed ? "" : " · (unparsed — parser default, not a reviewer verdict)"}`;
+    case "adversarial-workstream-outcome":
+      return `  adversarial-workstream-outcome · [${e.workstreamId}] · ${e.outcome} · ${e.roundsExecuted} round(s)`;
     case "lens-approved":
       return `  lens-approved · round ${e.round}`;
     case "lens-issues-found":

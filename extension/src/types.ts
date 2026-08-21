@@ -92,6 +92,23 @@ export interface DispatchResult {
    * never be read as findings).
    */
   loopOutcome?: "approved" | "rejected" | "infra-failure";
+  /**
+   * #485 — the reviews the loop actually ran, with each round's parsed
+   * verdict (or its parse failure), plus the total rounds executed when the
+   * loop exited without a verdict (infra-failure / incomplete). Threaded
+   * from the loop as DATA instead of being recovered from the reply prose —
+   * `parseAdversarialRounds` guessing 3 from an infra-failure string was
+   * issue #478's "3 rounds, all rejected" handoff. The driver records
+   * these verbatim per workstream (`adversarial-round` events) so the gate
+   * is auditable from the state file without a transcript.
+   */
+  adversarialRounds?: Array<{
+    round: number;
+    status: AdversarialVerdictStatus;
+    verdictParsed: boolean;
+  }>;
+  /** Total review rounds executed; present when the loop exited with no verdict. */
+  roundsExecuted?: number;
   /** The budget (ms) that expired for killCause "timeout"/"inactivity". */
   killBudgetMs?: number;
   /**

@@ -258,6 +258,21 @@ export interface PipelineState {
    */
   transientRetryAttempts?: Partial<Record<WorkStep, number>>;
   /**
+   * #486 — per-workstream budget for infrastructure-transient failures
+   * INSIDE the adversarial fan-out (N>1). The driver-level RETRY_ONCE / #308
+   * router only reaches the single-workstream path and the all-branches-failed
+   * aggregate; a single workstream's loop dying on a provider error while
+   * siblings succeeded was terminal for the whole cycle (issue #478: 2 of 3
+   * approved workstreams discarded by one blip). `runAdversarial` consults
+   * this when re-entering a step it already fanned out (the previous run's
+   * `branches-converged` is in the event log): workstreams whose last
+   * outcome was infra-failure / dispatch-failed re-run — at most once,
+   * with the taxonomy's provider-stated backoff — while their outcomes are
+   * preserved so the aggregate keeps every approved verdict.
+   * Absent keys = 0 used.
+   */
+  adversarialTransientRetries?: Record<string, number>;
+  /**
    * PR5 — worktree snapshot captured by `runHandoff` before emitting
    * the handoff artefact. Lets the operator-facing surfaces
    * (renderHandoffUserMessage, renderTerminalStatus,

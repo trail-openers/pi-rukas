@@ -5,25 +5,33 @@
  * one `runAdversarialLoop` call per workstream, aggregates the verdict,
  * and — on approval following a lens-fix round — commits the fix via
  * work-driver-lens.ts's `commitLensFixChanges`.
+ *
+ * #485/#486 — the loop's per-round verdicts and the per-workstream outcome
+ * are now recorded as DATA (`adversarial-round` / `adversarial-workstream-
+ * outcome` events) rather than guessed from reply prose, and a transient
+ * failure in ONE workstream's loop is retried once (per-workstream budget,
+ * taxonomy backoff) while the other workstreams' approved verdicts are
+ * preserved in the event log either way.
  */
 
 import { exec } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
-import { runAdversarialLoop } from "./adversarial.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
-import type { DispatchResult } from "./types.ts";
+import {
+  ADVERSARIAL_PER_WS_MAX_RETRIES,
+  fanOutAdversarial,
+} from "./work-driver-adversarial-fanout.ts";
+import { reentryPassBatchSpan } from "./work-driver-adversarial-reentry.ts";
 import type { DriverContext } from "./work-driver-context.ts";
-import { fetchDiff } from "./work-driver-diff.ts";
 import { integrate, withIntegrationLock } from "./work-driver-integrate.ts";
 import { commitLensFixChanges } from "./work-driver-lens.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
 import type { ExecFn } from "./worktree.ts";
 
-import { buildCompletionEvent } from "./work-driver-merged.ts";
-import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
+import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 const execp = promisify(exec);
 
@@ -61,13 +69,6 @@ async function integrateLensFix(
   return { committed: true, pushed: true };
 }
 
-/** PR8 — extract round count from adversarial_loop's reply text. */
-function parseAdversarialRounds(text: string): number {
-  if (text.includes("after round 1")) return 1;
-  if (text.includes("after round 2")) return 2;
-  return 3;
-}
-
 /**
  * Step 5 — Adversarial gate.
  *
@@ -87,210 +88,143 @@ export async function runAdversarial(
   now: number,
 ): Promise<WorkState> {
   // PR8 — adversarial is the developer's tight-loop reviewer; it belongs
-  // INSIDE each workstream's worktree, not on a merged fanout diff. The
-  // pre-PR8 single-dispatch path computed the diff via fetchAllDiffs
-  // (per-workstream sections concatenated with `## workstream:` headers)
-  // and routed adversarial_loop's internal fix-developers to a single cwd.
-  // For N>1 this caused two failures empirically (/work 553 2026-06-24):
-  //   1. Reviewer flagged phantom CRITICALs that were cross-workstream
-  //      merge artifacts (e.g., "uses undefined setView" — defined in
-  //      sibling workstream's diff fragment).
-  //   2. Internal fix-loop's developer dispatched into ONE worktree,
-  //      fragmenting state further across the others — the loop spun 3
-  //      rounds chasing phantoms.
-  // PR8 fans out adversarial per workstream: N parallel adversarial_loop
-  // runs, each scoped to one worktree's diff + cwd. Mirrors the develop
-  // fanout structure (PR3). Aggregated verdict is the conjunction —
-  // any per-workstream rejection routes to handoff via the existing
-  // adversarial-rejected + cap-hit pattern.
+  // INSIDE each workstream's worktree, not on a merged fanout diff.
+  // Pre-PR8 the single-dispatch path reviewed a `## workstream:`-merged
+  // diff and dispatched its fix-developers into one worktree — phantom
+  // CRITICALs and fragmented state (/work 553). PR8 fans out one loop per
+  // workstream (N parallel, each scoped to one worktree's diff + cwd) and
+  // aggregates: any per-workstream rejection routes to handoff.
   const ids =
     Object.keys(state.pipelineState.workstreams ?? {}).length > 0
       ? Object.keys(state.pipelineState.workstreams ?? {})
       : ["default"];
 
+  // #486 — re-entry after an infra retry: the previous adversarial fan-out
+  // already recorded per-workstream outcomes in the event log. Only the
+  // workstreams whose last outcome was NO VERDICT (infra-failure /
+  // dispatch-failed) re-run; a workstream that produced a verdict
+  // (approved OR rejected) is final — re-running it would re-review work
+  // its reviewers already judged.
+  const priorOutcomes = new Map<string, string>();
+  for (const e of state.eventLog) {
+    if (e.kind === "adversarial-workstream-outcome") {
+      priorOutcomes.set(e.workstreamId, e.outcome);
+    }
+  }
+  const priorHadInfraFailure = [...priorOutcomes.values()].some((o) =>
+    ["infra-failure", "dispatch-failed"].includes(o),
+  );
+  // #485/#486 — the previous pass's per-workstream batch span (R1 splice),
+  // computed on the ORIGINAL event log: the fan-out and the nextStep()
+  // routing below both append events and the fan-out clobbers `currentStep`,
+  // so the span must be captured here.
+  const priorBatchSpan = priorHadInfraFailure ? reentryPassBatchSpan(state.eventLog) : null;
+  const retries = state.pipelineState.adversarialTransientRetries ?? {};
   let next: WorkState = {
     ...state,
     pipelineState: { ...state.pipelineState, currentStep: "adversarial" },
   };
-  next = appendEvent(next, { kind: "step-started", step: "adversarial", at: now });
-  if (ids.length > 1) {
+  // The re-emitted `step-started` / `branches-fanned-out` header marks the
+  // boundary of a fresh pass in the log; the re-entry pass does NOT
+  // re-emit them: re-emitting puts them outside the spliced span and a
+  // parked re-entry has to drop them again, which is what this pass's
+  // records-vs-header accounting exists for. `step-started` is
+  // informational (nothing routes on it); the re-entry pass's events are
+  // self-describing (they carry `step: "adversarial"`).
+  if (!priorHadInfraFailure) {
+    next = appendEvent(next, { kind: "step-started", step: "adversarial", at: now });
+    if (ids.length > 1) {
+      next = appendEvent(next, {
+        kind: "branches-fanned-out",
+        step: "adversarial",
+        workstreams: ids,
+        at: now,
+      });
+    }
+  }
+
+  // #485/#486 — the per-workstream fan-out (loop invocation, per-round
+  // verdict records, per-workstream infra retry) lives in the leaf module
+  // work-driver-adversarial-fanout.ts (AGENTS.md §12 file-size limit);
+  // this handler aggregates its outcomes into the verdict events below.
+  // The fan-out appends its batch AFTER `priorBatchSpan` was captured on
+  // the original log (that is why the span is computed here, before the
+  // call, not by the fan-out). On re-entry the header events are NOT
+  // re-appended (the `!priorHadInfraFailure` guard above): the re-entry
+  // pass's events start at the splice position, which is exactly where the
+  // fresh batch lands.
+  const {
+    next: fannedNext,
+    outcomes,
+    parked,
+    parkedInfra,
+  } = await fanOutAdversarial(ctx, next, ids, priorOutcomes, priorHadInfraFailure, priorBatchSpan);
+  next = fannedNext;
+  if (parked) {
     next = appendEvent(next, {
-      kind: "branches-fanned-out",
-      step: "adversarial",
-      workstreams: ids,
+      kind: "cap-hit",
       at: now,
+      cap: "adversarial-infra-failure",
+      reviewRound: state.pipelineState.reviewRound,
+      nextStep: "handoff",
     });
+    return next;
   }
-
-  type Outcome = {
-    id: string;
-    ok: boolean;
-    rounds: number;
-    /** #298 — true when the loop died on infrastructure (no verdict exists). */
-    infra?: boolean;
-    rejectionText?: string;
-    /** Non-blocking findings outstanding when this workstream passed. */
-    passFindings?: string;
-    completionEvent?: WorkEvent;
-    failureEvent?: WorkEvent;
-    branchEvent?: WorkEvent;
-  };
-  const outcomes: Outcome[] = await Promise.all(
-    ids.map(async (id): Promise<Outcome> => {
-      const cwd = state.pipelineState.worktrees?.[id] ?? ctx.repoRoot;
-      const label = ids.length > 1 ? `adversarial[${id}]` : "adversarial_loop";
-      const startedAt = Date.now();
-      const orchestratorJobId = makeRunId();
-      // Per-workstream diff: a single `git diff HEAD` from this worktree.
-      // Coherent because it captures exactly what ONE developer wrote on
-      // ONE branch. The cross-workstream merge happens later in
-      // commit-pr where ops integrates the per-workstream branches; this
-      // adversarial pass gates each workstream independently.
-      const diff = await fetchDiff(cwd);
-
-      // #286 — empty-diff short-circuit. A full adversarial reviewer spawn
-      // on an empty diff is pure waste (transcript-verified on lantern
-      // 2026-07-27: one spawn concluded "treat the empty diff as a
-      // legitimate no-op" after burning a complete review cycle). Lens
-      // review already has this guard (PR6); adversarial didn't. The
-      // PR17 hollow-diff develop gate fires BEFORE adversarial, so
-      // reaching here with all-empty diffs means a resumed/edge-case
-      // cycle — which is fine, the skip is the correct response.
-      const emptySkipDisabled = process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP === "0";
-      if (!emptySkipDisabled && !diff.trim()) {
-        trace(`work-driver: adversarial[${id}] skipped — empty diff`);
-        return {
-          id,
-          ok: true,
-          rounds: 0,
-          completionEvent: {
-            kind: "adversarial-skipped-empty-diff",
-            at: Date.now(),
-            workstreamId: id,
-          },
-          branchEvent:
-            ids.length > 1
-              ? {
-                  kind: "branch-completed",
-                  step: "adversarial",
-                  workstreamId: id,
-                  ok: true,
-                  ms: Date.now() - startedAt,
-                  at: Date.now(),
-                }
-              : undefined,
-        } as Outcome;
-      }
-
-      const loopFn = ctx.adversarialLoopFn ?? runAdversarialLoop;
-      let result: DispatchResult;
-      try {
-        result = await loopFn(
-          {
-            diff,
-            context:
-              ids.length > 1
-                ? `/work issue #${ctx.issue}: gating diff for workstream "${id}" before commit (Step 5).`
-                : `/work issue #${ctx.issue}: gating diff before commit (Step 5).`,
-            workCwd: cwd,
-            // Re-read before each round. Without this, rounds 2+ are prompted
-            // with the pre-fix diff and the reviewer has to notice for itself
-            // that its earlier objections were already addressed.
-            getDiff: () => fetchDiff(cwd),
-            // #278 — the reviewer judges the diff against what was ASKED FOR,
-            // not just against generic code quality. Absent on cycles resumed
-            // from older state files, which degrade to the previous behaviour.
-            issueBody: state.pipelineState.issueBodyArtifact,
-          },
-          // No AbortController plumbing in v1 — spawn-level timeouts
-          // in spawn.ts (per-role) bound the work.
-          new AbortController().signal,
-          orchestratorJobId,
-        );
-      } catch (err) {
-        const errMsg = (err as Error).message?.slice(-200);
-        return {
-          id,
-          ok: false,
-          rounds: 0,
-          failureEvent: {
-            kind: "dispatch-failed",
-            step: "adversarial",
-            role: "adversarial-loop",
-            jobId: orchestratorJobId,
-            label,
-            ms: Date.now() - startedAt,
-            at: Date.now(),
-            errorTail: errMsg,
-          },
-          branchEvent:
-            ids.length > 1
-              ? {
-                  kind: "branch-completed",
-                  step: "adversarial",
-                  workstreamId: id,
-                  ok: false,
-                  ms: Date.now() - startedAt,
-                  at: Date.now(),
-                  error: errMsg,
-                }
-              : undefined,
-        };
-      }
-      const completionEvent = await buildCompletionEvent(
-        ctx,
-        "adversarial",
-        "adversarial-loop",
-        label,
-        // #298 — a REJECTED verdict is a COMPLETED review, not a dispatch
-        // failure. Pre-#298 the loop's exitCode=1 recorded the verdict as
-        // dispatch-failed with the operator escalation menu as errorTail
-        // (verified in lantern 553.json / pi-ensemble 277.json).
-        result.loopOutcome === "rejected" ? { ...result, ok: true, exitCode: 0 } : result,
-      );
-      const ok = result.ok && !result.errorStop;
-      const rounds = parseAdversarialRounds(result.text);
-      return {
-        id,
-        ok,
-        rounds,
-        infra: !ok && result.loopOutcome === "infra-failure",
-        rejectionText: ok ? undefined : result.text,
-        // A pass that carried unresolved findings says so in its headline.
-        passFindings: ok && result.text?.includes("PASSED WITH FINDINGS") ? result.text : undefined,
-        completionEvent,
-        branchEvent:
-          ids.length > 1
-            ? {
-                kind: "branch-completed",
-                step: "adversarial",
-                workstreamId: id,
-                ok,
-                ms: Date.now() - startedAt,
-                at: Date.now(),
-              }
-            : undefined,
-      };
-    }),
-  );
-
-  // Append per-workstream events in deterministic order (dispatch-completed
-  // / dispatch-failed, then branch-completed for N>1).
-  const events: WorkEvent[] = [];
-  for (const o of outcomes) {
-    if (o.completionEvent) events.push(o.completionEvent);
-    if (o.failureEvent) events.push(o.failureEvent);
-    if (o.branchEvent) events.push(o.branchEvent);
-  }
-  next = appendEvent(next, ...events);
-
-  if (ids.length > 1) {
-    next = appendEvent(next, {
-      kind: "branches-converged",
-      step: "adversarial",
-      verdicts: outcomes.map((o) => ({ id: o.id, ok: o.ok })),
-      at: Date.now(),
-    });
+  if (parkedInfra) {
+    // #486 — a FIRST-pass workstream exhausted its per-workstream budget
+    // and never produced a verdict (W2: task-b permanently down, task-a/
+    // task-c approved). A permanent infra failure is NOT a rejection, and
+    // the step-level router cannot retry this (branches-converged declines
+    // when any workstream succeeded). Park with the distinct cap; the
+    // siblings' per-workstream outcomes remain in the event log.
+    // A genuine rejection coexisting (W3) is reported under cap
+    // 'adversarial-loop' with the infra shortfall named explicitly.
+    const infraShortfall = outcomes.filter((o) => o.infra || o.threw);
+    const names = infraShortfall.map((o) => o.id).join(", ");
+    trace(
+      `work-driver: adversarial per-workstream retry budget exhausted on first pass for [${names}] — parking`,
+    );
+    const noVerdict = new Set(infraShortfall.map((o) => o.id));
+    const rejectedReal = outcomes.filter((o) => !o.ok && !noVerdict.has(o.id));
+    const maxRounds = outcomes.reduce((acc, o) => Math.max(acc, o.rounds), 0);
+    const rejectedFindings = rejectedReal
+      .map((o) => {
+        const tag = ids.length > 1 ? `[workstream ${o.id}] ` : "";
+        return `${tag}${o.rejectionText ?? "(see dispatch-failed event)"}`;
+      })
+      .join("\n\n---\n\n");
+    const shortfallFindings = infraShortfall
+      .map(
+        () =>
+          "(never produced a verdict — infrastructure failure, NOT a review rejection; see dispatch-failed event)",
+      )
+      .join("\n\n---\n\n");
+    const findings = [rejectedFindings, shortfallFindings].filter(Boolean).join("\n\n---\n\n");
+    next = appendEvent(
+      next,
+      ...(rejectedReal.length > 0
+        ? [
+            {
+              kind: "adversarial-rejected" as const,
+              at: Date.now(),
+              jobId: makeRunId(),
+              rounds: maxRounds,
+              findings,
+            },
+          ]
+        : []),
+      {
+        kind: "cap-hit" as const,
+        at: Date.now(),
+        cap:
+          rejectedReal.length > 0
+            ? ("adversarial-loop" as const)
+            : ("adversarial-infra-failure" as const),
+        reviewRound: state.pipelineState.reviewRound,
+        nextStep: "handoff" as const,
+      },
+    );
+    return next;
   }
 
   // Aggregate verdict. ALL approved → adversarial-approved (nextStep routes
@@ -298,15 +232,17 @@ export async function runAdversarial(
   // (nextStep routes to handoff via the cap-hit). #298: failures that are
   // PURELY infrastructure (no verdict exists) append NO verdict events —
   // the dispatch-failed event stays the eventLog tail so the halt-cascade
-  // router's RETRY_ONCE branch re-runs the step (pre-#298 the synthesized
-  // cap-hit tail made that retry branch unreachable and every loop infra
-  // failure went straight to handoff).
+  // router's RETRY_ONCE branch re-runs the step.
   const maxRounds = outcomes.reduce((acc, o) => Math.max(acc, o.rounds), 0);
   const aggregateJobId = makeRunId();
   const failed = outcomes.filter((o) => !o.ok);
   if (failed.length === 0) {
-    // Non-blocking findings survive the pass. `PASSED WITH FINDINGS` is not
-    // `APPROVED`, and the difference has to reach the PR and the lens gate.
+    // #486 — non-blocking findings survive the pass. `PASSED WITH FINDINGS`
+    // is not `APPROVED`, and the difference has to reach the PR and the
+    // lens gate. They are CARRIED in the verdict event itself: the PR body
+    // (adversarial-findings.ts:carriedAdversarialFindings) reads `findings`
+    // off the latest `adversarial-approved` and renders undefined when the
+    // field is absent, so dropping the field would silently discard them.
     const carried = outcomes
       .map((o) => (o.passFindings?.trim() ? `### ${o.id}\n\n${o.passFindings.trim()}` : ""))
       .filter(Boolean)
@@ -353,14 +289,15 @@ export async function runAdversarial(
         // wrote nothing at all and is silent by construction.
         //
         // Either way the next lens-review round is pointless: it re-reads
-        // `origin/<base>..origin/<branch>`, which has not moved, and re-reports
-        // the identical findings at escalating severity until the round cap
-        // fires on a defect that may well already be solved on disk. Measured
-        // on lantern #686: two full rounds after the driver had already logged
-        // that it refused to integrate, and #673/#677 the same shape.
+        // `origin/<base>..origin/<branch>`, which has not moved, and
+        // re-reports the identical findings at escalating severity until the
+        // round cap fires on a defect that may well already be solved on
+        // disk. Measured on lantern #686: two full rounds after the driver
+        // had already logged that it refused to integrate, and #673/#677 the
+        // same shape.
         //
-        // This used to be recorded in `plumbReports` rather than the event log
-        // specifically so the tail would stay "adversarial-approved" and
+        // This used to be recorded in `plumbReports` rather than the event
+        // log specifically so the tail would stay "adversarial-approved" and
         // routing would continue — i.e. the failure was hidden from the one
         // consumer that could have acted on it. Halt instead, and say why.
         const detail = result.error ?? "produced no changes in any worktree";
@@ -401,18 +338,125 @@ export async function runAdversarial(
       }
     }
   } else if (failed.every((o) => o.infra) && ids.length === 1) {
-    // N>1 keeps the legacy aggregate below: its tail is branches-converged,
-    // which the RETRY_ONCE router doesn't intercept, so dropping the verdict
-    // events there would strand the cycle instead of retrying it.
+    // N=1 with a pure infra failure: no verdict exists. TWO-STATE design
+    // (#486):
+    //  - FIRST pass (no prior infra outcome on record): leave the
+    //    dispatch-failed event as the tail. `adversarial` is RETRY_ONCE
+    //    class, so the step-level router (work-driver-step-router.ts)
+    //    re-runs the step with the taxonomy's backoff — the machinery
+    //    that works for N=1. A transient blip is absorbed here; nothing
+    //    claims the gate rejected.
+    //  - Re-entry (this pass is a RETRY: the prior pass already recorded
+    //    an infra outcome, so `priorHadInfraFailure` is true): the failure
+    //    is permanent — the step-level retry is spent, and re-running the
+    //    loop in-step is also bounded by the per-workstream budget.
+    //    Park with the DISTINCT cap `adversarial-infra-failure`: #486
+    //    requires a permanent failure to be NAMED rather than left
+    //    looking like a bare dispatch failure (which explainCap would
+    //    render as the step failing, not as the gate's infra shortfall).
+    //    The siblings' per-workstream outcomes, recorded above, remain
+    //    in the state file instead of being discarded.
+    if (!priorHadInfraFailure) {
+      trace(
+        "work-driver: adversarial loop infrastructure failure (N=1) — leaving dispatch-failed tail for the RETRY_ONCE router",
+      );
+    } else {
+      const names = failed.map((o) => o.id).join(", ");
+      trace(
+        `work-driver: adversarial infra failure final for [${names}] — parking with cap 'adversarial-infra-failure' (no verdict exists; NOT a rejection)`,
+      );
+      // No header to strip on re-entry: the re-entry pass does not
+      // re-emit `step-started` / `branches-fanned-out` (see the
+      // header comment above), so this pass's events — the fresh
+      // dispatch-failed, the round records, the workstream-outcome —
+      // are already spliced into the log in place of the prior
+      // batch, and the cap-hit simply lands at the tail.
+      next = appendEvent(next, {
+        kind: "cap-hit",
+        at: Date.now(),
+        cap: "adversarial-infra-failure",
+        reviewRound: state.pipelineState.reviewRound,
+        nextStep: "handoff",
+      });
+    }
+  } else if (
+    failed.every((o) => o.infra || o.threw) &&
+    (ids.length === 1
+      ? // #298 — N=1 keeps the legacy contract: the driver-level RETRY_ONCE
+        // router re-runs the step while the budget holds; only after the
+        // router hands it back (retryAttempts exhausted) is the failure
+        // final, and it parks with the infra cap instead of the step-failed
+        // default — "no verdict exists" is not "the step failed".
+        (state.pipelineState.retryAttempts?.adversarial ?? 0) >= 1
+      : ids.length > 1
+        ? // #486 — re-entry: every failing workstream already has a
+          // preserved outcome from a prior run, this pass just re-attempted
+          // the infra-failed ones and they still have no verdict. The
+          // step-level router cannot retry this (its branches-converged scan
+          // declines when ANY workstream succeeded), and re-running inside
+          // runAdversarial is bounded by the per-workstream budget — nothing
+          // is left to retry. Park with a distinct cap: a permanent infra
+          // failure is NOT a rejection.
+          priorHadInfraFailure
+        : false)
+  ) {
+    // The N=1 two-state branch above already parked the re-entry pass;
+    // reaching here with priorHadInfraFailure means N>1 (or a mixed
+    // outcome) — park with the named cap, same shape.
+
+    const names = failed.map((o) => o.id).join(", ");
     trace(
-      "work-driver: adversarial loop infrastructure failure — leaving dispatch-failed tail for RETRY_ONCE router",
+      `work-driver: adversarial infra failure final for [${names}] — parking with cap 'adversarial-infra-failure' (no verdict exists; NOT a rejection)`,
     );
+    next = appendEvent(next, {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "adversarial-infra-failure",
+      reviewRound: state.pipelineState.reviewRound,
+      nextStep: "handoff",
+    });
+  } else if (
+    failed.some(
+      (o) => (o.infra || o.threw) && (retries[o.id] ?? 0) >= ADVERSARIAL_PER_WS_MAX_RETRIES,
+    )
+  ) {
+    // #486 — a workstream's per-workstream budget is exhausted and its
+    // siblings have real (rejected) verdicts, so the rejection path below
+    // must not also swallow the infra shortfall as a fake "rejected". Park
+    // the same way: the approved siblings' verdicts are already in the
+    // event log, and the cap says what actually happened.
+    const names = failed
+      .filter((o) => (o.infra || o.threw) && (retries[o.id] ?? 0) >= ADVERSARIAL_PER_WS_MAX_RETRIES)
+      .map((o) => o.id)
+      .join(", ");
+    trace(
+      `work-driver: adversarial per-workstream retry budget exhausted for [${names}] — parking`,
+    );
+    next = appendEvent(next, {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "adversarial-infra-failure",
+      reviewRound: state.pipelineState.reviewRound,
+      nextStep: "handoff",
+    });
   } else {
-    // Concatenate per-workstream rejection text (or dispatch-failure
-    // marker) into findings so the handoff renderer surfaces all of them.
+    // A genuine verdict (or a first-pass N>1 failure that the step-level
+    // router will retry wholesale) reached the aggregate. Concatenate
+    // per-workstream rejection text into findings so the handoff renderer
+    // surfaces all of them. #485: rounds are the count the loops actually
+    // executed — `|| 3` would be the guess that fabricated three rounds on
+    // a cycle whose first round's fixer died. #486: a workstream whose
+    // outcome is infra-failure / dispatch-failed contributed NO verdict, so
+    // its text is not a "rejection" — it is named as an explicit shortfall
+    // ("never produced a verdict") instead of being folded into the
+    // findings the handoff renders as what the reviewer objected to.
+    const noVerdict = new Set(failed.filter((o) => o.infra || o.threw).map((o) => o.id));
     const findings = failed
       .map((o) => {
         const tag = ids.length > 1 ? `[workstream ${o.id}] ` : "";
+        if (noVerdict.has(o.id)) {
+          return `${tag}(never produced a verdict — infrastructure failure, NOT a review rejection; see dispatch-failed event)`;
+        }
         return `${tag}${o.rejectionText ?? "(dispatch failed — see dispatch-failed event)"}`;
       })
       .join("\n\n---\n\n");
@@ -422,7 +466,7 @@ export async function runAdversarial(
         kind: "adversarial-rejected",
         at: Date.now(),
         jobId: aggregateJobId,
-        rounds: maxRounds || 3,
+        rounds: maxRounds,
         findings,
       },
       {
