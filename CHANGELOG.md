@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.47](https://github.com/randomm/pi-ensemble/compare/v0.12.46...v0.12.47) (2026-08-21)
+
+
+### Bug Fixes
+
+* **#502:** stamp the model config by content hash, not mtime and size ([#503](https://github.com/randomm/pi-ensemble/issues/503)) ([19b5e68](https://github.com/randomm/pi-ensemble/commit/19b5e682f73c2baceb0d7ae15cd87b6eec33bda1))
+
 ## [0.12.46](https://github.com/randomm/pi-ensemble/compare/v0.12.45...v0.12.46) (2026-08-20)
 
 
