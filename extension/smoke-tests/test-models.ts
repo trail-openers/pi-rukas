@@ -4,6 +4,9 @@
  * No Pi spawns; just exercises `resolveModel` under various env states.
  */
 
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
   clearAllOverrides,
   loadOverrides,
@@ -13,17 +16,33 @@ import {
 } from "../src/model-config.ts";
 import { resolveModel } from "../src/models.ts";
 
-// Use a throwaway config file for the test so we don't clobber the user's.
-process.env.PI_ENSEMBLE_MODELS_CONFIG = `/tmp/pi-ensemble-test-models-${process.pid}.json`;
+// Use a unique throwaway config file for the test so we don't clobber the
+// user's. A per-run mkdtemp dir is unique and cleaned up on exit (#502:
+// the old pid-suffixed /tmp path was shared across cancelled runs and host
+// restarts, so a stale fixture could be read instead of one this run wrote).
+const configDir = mkdtempSync(path.join(tmpdir(), "pi-ensemble-test-models-"));
+process.env.PI_ENSEMBLE_MODELS_CONFIG = path.join(configDir, "ensemble-models.json");
 await loadOverrides();
 await clearAllOverrides();
+// Best-effort cleanup on exit.
+process.on("exit", () => {
+  try {
+    rmSync(configDir, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
+});
 
 let exit = 0;
-function assert(cond: boolean, msg: string) {
+// On failure, print the actual resolved value so a red CI run is diagnosable
+// without re-running locally (bun 1.4.0 made process.env assignment semantics
+// differ from Node; the observed value is the only thing that pinpoints which).
+function assert(cond: boolean, msg: string, actual?: unknown) {
   if (cond) {
     console.log(`✓ ${msg}`);
   } else {
-    console.error(`✗ ${msg}`);
+    const detail = actual !== undefined ? ` (got ${JSON.stringify(actual)})` : "";
+    console.error(`✗ ${msg}${detail}`);
     exit = 1;
   }
 }
@@ -39,7 +58,7 @@ process.env.PI_ENSEMBLE_MODEL_ADVERSARIAL_DEVELOPER = undefined;
 // 1. No env, no override → Pi default
 {
   const r = resolveModel("developer");
-  assert(r.model === undefined && r.source === "default", "no env → Pi default");
+  assert(r.model === undefined && r.source === "default", "no env → Pi default", r);
 }
 
 // 2. Global env set → all roles pick it up
@@ -49,6 +68,7 @@ process.env.PI_ENSEMBLE_MODEL_ADVERSARIAL_DEVELOPER = undefined;
   assert(
     r.model === "cerebras/zai-glm-4.7" && r.source === "subagent-env",
     "PI_ENSEMBLE_SUBAGENT_MODEL applies to all roles",
+    r,
   );
 }
 
@@ -165,6 +185,7 @@ const savedSubProvider = process.env.PI_ENSEMBLE_SUBAGENT_PROVIDER;
   assert(
     r.source === "subagent-env" && r.model === "fallback/model",
     "PI_ENSEMBLE_PROVIDER_DEVELOPER alone falls through to subagent-env tier",
+    r,
   );
   process.env.PI_ENSEMBLE_PROVIDER_DEVELOPER = undefined;
   process.env.PI_ENSEMBLE_SUBAGENT_MODEL = undefined;
@@ -257,7 +278,11 @@ const savedSubProvider = process.env.PI_ENSEMBLE_SUBAGENT_PROVIDER;
   const cfgPath = process.env.PI_ENSEMBLE_MODELS_CONFIG ?? "";
   await fs.rm(cfgPath);
   const gone = resolveModel("developer");
-  assert(gone.source === "default" && gone.model === undefined, "#300: deleted file → defaults");
+  assert(
+    gone.source === "default" && gone.model === undefined,
+    "#300: deleted file → defaults",
+    gone,
+  );
   await fs.writeFile(
     cfgPath,
     JSON.stringify({ models: { __all__: { model: "vendor/model-v4" } } }),

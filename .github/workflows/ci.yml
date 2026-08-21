@@ -20,7 +20,12 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          # Pinned to a known-good exact version. `latest` broke CI with no
+          # repo change when bun 1.4.0 started stringifying
+          # `process.env.X = undefined` (issue #502). Toolchain upgrades are a
+          # deliberate, reviewed change: bump here, verify locally + in a
+          # throwaway branch, then merge.
+          bun-version: 1.3.13
 
       - name: Install jq (build.sh dependency)
         run: |

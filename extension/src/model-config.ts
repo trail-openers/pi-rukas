@@ -1,4 +1,5 @@
-import { readFileSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -33,13 +34,27 @@ interface PersistedConfig {
 let inMemory: Record<string, ModelChoice> = {};
 let loaded = false;
 /**
- * Disk snapshot stamp for cross-session freshness (#300). `getOverride`
- * stat()s the config file and re-reads when mtime/size moved, so a
+ * Disk snapshot for cross-session freshness (#300). `getOverride` reads
+ * the config file and re-parses when the file's content hash moved, so a
  * `/ensemble-model` switch in one pi session reaches every other live
  * session on its next spawn instead of never. `null` = file absent at
  * last check.
+ *
+ * Why a content hash instead of mtime+size (#502): on coarse-grained
+ * filesystems (e.g. CI's ext4 on a slow shared runner), two writes can
+ * land within one mtime tick AND produce the same byte size. A stat-only
+ * guard then silently skips the read, and the edit never takes effect —
+ * locally green, CI red, deterministically. mtime+size was fast and it
+ * worked on APFS; it did not work in general.
+ *
+ * Cost: one `readFileSync` + `createHash("sha256")` over a tiny file
+ * (the config is at most a few KB) on every `refreshIfChanged` call.
+ * That is the price of correctness on a file whose size is bounded by
+ * the number of roles (≤ 6) plus one global key. The config file is
+ * written by `persist()` at most once per `/ensemble-model` command —
+ * the hot path is read-only and the read is cheap.
  */
-let diskStamp: { mtimeMs: number; size: number } | null = null;
+let diskStamp: { hash: string } | null = null;
 const SPECIAL_DEFAULT_KEY = "__all__";
 
 function getConfigPath(): string {
@@ -65,10 +80,10 @@ function parseConfig(raw: string): Record<string, ModelChoice> {
  */
 function refreshIfChanged(): void {
   const file = getConfigPath();
-  let stat: { mtimeMs: number; size: number };
+  // File deleted → no overrides (matches `loadOverrides`'s catch behavior).
+  let raw: string;
   try {
-    const s = statSync(file);
-    stat = { mtimeMs: s.mtimeMs, size: s.size };
+    raw = readFileSync(file, "utf8");
   } catch {
     if (diskStamp !== null || !loaded) {
       inMemory = {};
@@ -77,10 +92,11 @@ function refreshIfChanged(): void {
     }
     return;
   }
-  if (diskStamp && diskStamp.mtimeMs === stat.mtimeMs && diskStamp.size === stat.size) return;
+  const h = createHash("sha256").update(raw).digest("hex");
+  if (diskStamp && diskStamp.hash === h) return;
   try {
-    inMemory = parseConfig(readFileSync(file, "utf8"));
-    diskStamp = stat;
+    inMemory = parseConfig(raw);
+    diskStamp = { hash: h };
     loaded = true;
   } catch {
     /* mid-write / malformed — keep last good snapshot, retry next call */
@@ -110,8 +126,7 @@ export async function loadOverrides(): Promise<void> {
     const file = getConfigPath();
     const raw = await fs.readFile(file, "utf8");
     inMemory = parseConfig(raw);
-    const s = statSync(file);
-    diskStamp = { mtimeMs: s.mtimeMs, size: s.size };
+    diskStamp = { hash: createHash("sha256").update(raw).digest("hex") };
   } catch {
     inMemory = {};
     diskStamp = null;
@@ -134,15 +149,13 @@ async function persist(): Promise<void> {
   const file = getConfigPath();
   await fs.mkdir(path.dirname(file), { recursive: true });
   const body: PersistedConfig = { models: { ...inMemory } };
-  await fs.writeFile(file, `${JSON.stringify(body, null, 2)}\n`, "utf8");
-  // Stamp our own write so the next getOverride doesn't re-read it, and a
-  // concurrent session's later write (different mtime) still triggers one.
-  try {
-    const s = statSync(file);
-    diskStamp = { mtimeMs: s.mtimeMs, size: s.size };
-  } catch {
-    diskStamp = null;
-  }
+  const raw = `${JSON.stringify(body, null, 2)}\n`;
+  await fs.writeFile(file, raw, "utf8");
+  // Stamp the bytes we just wrote so the next getOverride in this process
+  // does not re-read them, and a concurrent session's later write (different
+  // bytes) still triggers a re-read. The hash of the bytes is the canonical
+  // stamp — no stat() involved, so no mtime/size granularity assumption.
+  diskStamp = { hash: createHash("sha256").update(raw).digest("hex") };
 }
 
 export interface OverrideLookup {
