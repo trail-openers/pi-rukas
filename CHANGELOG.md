@@ -8,6 +8,15 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.49](https://github.com/randomm/pi-ensemble/compare/v0.12.48...v0.12.49) (2026-08-22)
+
+
+### Bug Fixes
+
+* **#508:** doctrine no longer prescribes issue-number-in-scope commit headers ([#510](https://github.com/randomm/pi-ensemble/issues/510)) ([50a713e](https://github.com/randomm/pi-ensemble/commit/50a713e90a1376f61667deb86b4ce2d3c4745d1b)), closes [#508](https://github.com/randomm/pi-ensemble/issues/508)
+* **work-driver:** a failed commit-pr fallback leaves repoRoot conflicted ([#509](https://github.com/randomm/pi-ensemble/issues/509)) ([34c90ad](https://github.com/randomm/pi-ensemble/commit/34c90ad0f7de5af2749befd750805ae358b48f40))
+* **work-driver:** grouping rule R4 joins on a scope tag that nearly ever ([#511](https://github.com/randomm/pi-ensemble/issues/511)) ([9424871](https://github.com/randomm/pi-ensemble/commit/94248718c85fceb1a5cd51e23c9429d09191c240))
+
 ## [0.12.48](https://github.com/randomm/pi-ensemble/compare/v0.12.47...v0.12.48) (2026-08-21)
 
 
