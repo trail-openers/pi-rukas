@@ -9,22 +9,33 @@
  * cap, entirely unmeasured, and the next edit would have pushed it over in
  * silence while the gate reported compliance.
  *
+ * The same gap reopened for **extensionless** files: `bin/pi-ensemble` (the
+ * Docker launch wrapper) is a shebang'd bash script with no extension, so an
+ * extension-matched scan never saw it — it sat at 542 lines, 42 over the cap,
+ * while CI reported compliance. #353 (Fedora/rootless podman support) plans to
+ * edit it, and every line it added would have pushed the file further over
+ * with the gate still green.
+ *
  * That is the same defect class this suite keeps finding elsewhere: a gate
  * whose scope is narrower than its stated contract, so its silence reads as
- * proof. The scan is now the whole repository.
+ * proof. The scan is now the whole repository, and shebang'd executables are
+ * in scope regardless of extension.
  *
- * **Source, not prose.** The limit is about code a human has to hold in their
- * head, so it covers `.ts`, `.sh` and workflow YAML. Markdown and JSON are
- * excluded deliberately, not by oversight: `docs/troubleshooting.md` is 1399
- * lines and should be, and a 500-line cap on documentation would produce a
- * wall of noise that trains everyone to set `PI_ENSEMBLE_SIZE_RATCHET=0`.
+ * **Source, not prose.** The limit is about code a person has to hold in their
+ * head, so it covers `.ts`, `.sh`, workflow YAML and extensionless executables.
+ * Markdown, JSON and data files are excluded deliberately, not by oversight:
+ * `docs/troubleshooting.md` is 1399 lines and should be, and a 500-line cap on
+ * documentation would produce a wall of noise that trains everyone to set
+ * `PI_ENSEMBLE_SIZE_RATCHET=0`. A shebang is the executable's declaration of
+ * "this is a program"; the execute bit alone is not (a generated data file
+ * marked +x is still data), so only `#!`-prefixed files count.
  *
  * **Proven in both directions.** A gate never observed to fail is worthless —
  * lantern's own file-size ratchet shipped with three separate fail-open bugs
  * that each passed CI green, including a counter incremented inside a piped
  * `while` loop, which lives in a subshell and is therefore always zero. So
  * this asserts not only that the repo is clean but that a deliberately
- * oversized fixture IS caught.
+ * oversized fixture IS caught — one with an extension, one extensionless.
  *
  * Escape hatch: `PI_ENSEMBLE_SIZE_RATCHET=0`.
  */
@@ -57,6 +68,22 @@ const EXCLUDED_DIRS = new Set([
   "skill", // vendored skill content
 ]);
 
+function isExecutableScript(file: string): boolean {
+  // An extensionless file is in scope only if it declares itself a program.
+  // The execute bit is deliberately NOT the test — it is set on generated
+  // data files and build output too, which are not code a person reads.
+  let st: ReturnType<typeof statSync>;
+  try {
+    st = statSync(file);
+  } catch {
+    return false;
+  }
+  if (!st.isFile()) return false;
+  if (SOURCE_EXTENSIONS.some((e) => file.endsWith(e))) return false;
+  const head = readFileSync(file, { maxBytes: 2 }).toString("utf8");
+  return head.startsWith("#!");
+}
+
 function listSourceFiles(dir: string): string[] {
   const out: string[] = [];
   let entries: string[];
@@ -77,6 +104,8 @@ function listSourceFiles(dir: string): string[] {
     if (st.isDirectory()) {
       out.push(...listSourceFiles(full));
     } else if (SOURCE_EXTENSIONS.some((e) => entry.endsWith(e)) && !entry.endsWith(".d.ts")) {
+      out.push(full);
+    } else if (isExecutableScript(full)) {
       out.push(full);
     }
   }
@@ -119,13 +148,24 @@ if (process.env.PI_ENSEMBLE_SIZE_RATCHET === "0") {
   try {
     writeFileSync(path.join(fixtureRoot, "fine.ts"), "x\n".repeat(10));
     writeFileSync(path.join(fixtureRoot, "toolong.sh"), "echo x\n".repeat(HARD_LIMIT + 1));
+    // Extensionless, shebang'd, oversized — the #493 gap class: an executable
+    // that the extension-matched scan was blind to.
+    const extensionless = path.join(fixtureRoot, "toolong-tool");
+    writeFileSync(extensionless, "#!/bin/sh\n".repeat(HARD_LIMIT + 1));
+    // Extensionless, no shebang — must NOT be in scope (data, not logic).
+    writeFileSync(path.join(fixtureRoot, "data-blob"), "x\n".repeat(HARD_LIMIT + 1));
     const found = findOversized(fixtureRoot);
+    const foundFiles = found.map((f) => f.file);
     assert(
-      found.length === 1 && found[0]?.file === "toolong.sh",
-      `canary: an oversized fixture IS caught (found ${JSON.stringify(found)}) — a gate never observed to fail is worthless`,
+      foundFiles.length === 2 && foundFiles.includes("toolong.sh") && foundFiles.includes("toolong-tool"),
+      `canary: oversized fixtures WITH and WITHOUT an extension are both caught (found ${JSON.stringify(foundFiles)}) — a gate never observed to fail is worthless`,
     );
-    // And a shell script is caught at all, which is the scope widening.
-    assert(found[0]?.lines === HARD_LIMIT + 1, `...with its real line count (${found[0]?.lines})`);
+    assert(!foundFiles.includes("data-blob"), `...and an extensionless non-shebang file is out of scope (data, not logic)`);
+    const byFile = new Map(found.map((f) => [f.file, f.lines]));
+    assert(
+      byFile.get("toolong.sh") === HARD_LIMIT + 1 && byFile.get("toolong-tool") === HARD_LIMIT + 1,
+      `...with their real line counts (sh=${byFile.get("toolong.sh")}, extensionless=${byFile.get("toolong-tool")})`,
+    );
   } finally {
     rmSync(fixtureRoot, { recursive: true, force: true });
   }
@@ -135,7 +175,7 @@ if (process.env.PI_ENSEMBLE_SIZE_RATCHET === "0") {
 
 const violations = findOversized(REPO_ROOT);
 if (violations.length === 0) {
-  assert(true, `every ${SOURCE_EXTENSIONS.join("/")} file in the repo is ≤ ${HARD_LIMIT} lines`);
+  assert(true, `every source file in the repo (${SOURCE_EXTENSIONS.join("/")} + shebang'd executables) is ≤ ${HARD_LIMIT} lines`);
 } else {
   for (const v of violations) {
     assert(false, `${v.file}: ${v.lines} lines (exceeds ${HARD_LIMIT}-line hard limit)`);
@@ -146,7 +186,7 @@ if (violations.length === 0) {
 // with a longer docstring.
 {
   const scanned = listSourceFiles(REPO_ROOT).map((f) => path.relative(REPO_ROOT, f));
-  for (const expected of ["install.sh", "build.sh", ".github/workflows/ci.yml"]) {
+  for (const expected of ["install.sh", "build.sh", ".github/workflows/ci.yml", "bin/pi-ensemble"]) {
     assert(
       scanned.includes(expected),
       `canary: ${expected} is in scope — it was invisible to the old extension/-only scan`,

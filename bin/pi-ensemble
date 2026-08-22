@@ -9,23 +9,13 @@
 #   - $HOME/.vipune/                       → /home/vscode/.vipune
 #       (cross-session project memory; preserves your accumulated vipune store)
 #   - $HOME/.pi/agent/ensemble-runs/       → /home/vscode/.pi/agent/ensemble-runs
-#       (transcripts; /runs browses these in both host AND sandbox sessions)
 #   - $HOME/.pi/agent/sessions/            → /home/vscode/.pi/agent/sessions
-#       (Pi conversation sessions; `pi-ensemble -r` finds previous sandbox
-#        sessions for the same project. NOTE: Pi scopes sessions by absolute
-#        project path, so host-mode `pi -r` sessions live in a DIFFERENT
-#        sub-bucket from sandbox-mode `pi-ensemble -r` sessions — they
-#        don't cross-resume, even with this bind-mount.)
-#   - $HOME/.pi/agent/ensemble-models.json → same path inside container
-#       (per-role subagent model picks)
-#   - $HOME/.config/mcp/mcp.json           → same path inside container (RO)
-#       (host install.sh writes this; codebase-memory-mcp wiring lives here)
-#   - $HOME/.config/gh/                    → same path inside container (RO)
-#       (gh auth — alternative is to pass GH_TOKEN env)
+#   - $HOME/.pi/agent/ensemble-models.json → same path (per-role model picks)
+#   - $HOME/.config/mcp/mcp.json           → same path (RO, from host install.sh)
+#   - $HOME/.config/gh/                    → same path (RO; gh auth — or set GH_TOKEN)
 #
-# Caches (codebase-memory-mcp index, ~/.bun, ~/.cargo, shell history) live in
-# named volumes (`pi-ensemble-cache`, `pi-ensemble-bun-cache`, etc.) shared
-# across projects.
+# Caches (~/.cache, ~/.bun, ~/.cargo, shell history) live in named volumes
+# shared across projects. Per-mount rationale: see build_mounts() below.
 #
 # Subcommands:
 #   (none)        Interactive `pi` session in the container (default)
@@ -102,30 +92,25 @@ ensure_image() {
 }
 
 build_mounts() {
-  # bash arrays via stdout — caller eval's. This is the cleanest way to assemble
-  # conditional -v flags without losing word boundaries.
+  # Assembles the -v flags; the caller eval's the NUL-separated output.
   #
-  # Design principle: the sandbox MUST NOT require the host to have
-  # pi-ensemble's toolchain installed. Docker is the only host prereq.
-  # Where the host happens to have existing state (vipune memories,
-  # ensemble-runs transcripts, etc.) we bind-mount it through to
-  # preserve continuity. Where the host has nothing, we fall back to
-  # named volumes so the container still gets persistent state across
-  # runs (just container-scoped instead of shared with host).
+  # Principle: the sandbox MUST NOT require the host to have pi-ensemble's
+  # toolchain installed (Docker is the only host prereq). Where the host has
+  # existing state (vipune memories, transcripts, model picks, gh auth, ...)
+  # we bind-mount it through for continuity; where the host has nothing we
+  # fall back to named volumes so the container still gets persistent,
+  # container-scoped state.
   local mounts=()
-  # Mount the project at its HOST ABSOLUTE PATH inside the container, not at
-  # /workspace. Why: Pi scopes sessions by absolute cwd, so a project at
-  # /Users/dev/projects/lantern running in host mode and the same project
-  # running in sandbox mode must share cwd to share the same sessions/<scope>
-  # bucket. Pre-#207 we mounted at /workspace and Pi inside the container
-  # cwd'd there, sending sandbox sessions for ALL projects into a single
-  # co-mingled `--workspace--` bucket — which broke `pi-ensemble -r`
-  # entirely (couldn't tell which session belonged to which project).
-  # Post-#207: host cwd == container cwd → session buckets match,
-  # per-project isolation restored, host↔sandbox cross-resume works.
+  # Mount the project at its HOST ABSOLUTE PATH, not /workspace: Pi scopes
+  # sessions by absolute cwd, so a project run in host mode and the same
+  # project in sandbox mode must share cwd to share the sessions/<scope>
+  # bucket. Pre-#207 we mounted at /workspace and every project's sandbox
+  # sessions co-mingled into one `--workspace--` bucket, breaking `pi-ensemble -r`.
+  # Post-#207: host cwd == container cwd → per-project isolation restored,
+  # host↔sandbox cross-resume works.
   mounts+=(-v "$PROJECT_ROOT:$PROJECT_ROOT:delegated")
 
-  # vipune — host bind-mount if present (preserves accumulated memories);
+  # vipune — bind-mount if present (preserves accumulated memories),
   # else named volume (persists across container runs).
   if [ -d "$HOME/.vipune" ]; then
     mounts+=(-v "$HOME/.vipune:/home/vscode/.vipune")
@@ -142,37 +127,29 @@ build_mounts() {
     mounts+=(-v pi-ensemble-runs:/home/vscode/.pi/agent/ensemble-runs)
   fi
 
-  # Pi sessions — `pi -r` reads these for resume. Bind-mount the host's
-  # sessions dir if it exists; else use a named volume so container
-  # sessions persist across container restarts. NOTE: Pi scopes sessions
-  # by absolute project path, and the same project mounts at /workspace
-  # inside the container vs. ~/projects/foo on the host — so host and
-  # sandbox sessions live in DIFFERENT sub-buckets and don't cross-
-  # resume. Within sandbox: `pi-ensemble -r` finds previous pi-ensemble
-  # sessions for the same project. Within host: `pi -r` finds previous
-  # host-mode sessions. Crossing modes is out of scope.
+  # Pi sessions — `pi -r` reads these. NOTE: Pi scopes sessions by absolute
+  # project path, and the same project can live at different paths on host
+  # vs. in the container — so host and sandbox sessions live in DIFFERENT
+  # sub-buckets and don't cross-resume. Within each mode: `pi -r` / `pi-ensemble -r`
+  # finds previous sessions for the same project.
   if [ -d "$HOME/.pi/agent/sessions" ]; then
     mounts+=(-v "$HOME/.pi/agent/sessions:/home/vscode/.pi/agent/sessions")
   else
     mounts+=(-v pi-ensemble-sessions:/home/vscode/.pi/agent/sessions)
   fi
 
-  # ensemble-models.json — pi-ensemble's per-role model picks. Bound RW
-  # (not :ro) so /ensemble-model inside the sandbox can update picks and
-  # those updates persist back to the host's ~/.pi/agent/ensemble-models.json
-  # (symmetric with the sessions/ bind from PR #206). Only bind if present
-  # on host; otherwise the container uses its own (defaults) and won't write.
+  # ensemble-models.json — per-role model picks. Bound RW (not :ro) so
+  # /ensemble-model inside the sandbox can update picks and persist them
+  # back to the host (symmetric with the sessions/ bind from PR #206).
+  # Only bound if present on host; otherwise the container uses its defaults.
   if [ -f "$HOME/.pi/agent/ensemble-models.json" ]; then
     mounts+=(-v "$HOME/.pi/agent/ensemble-models.json:/home/vscode/.pi/agent/ensemble-models.json")
   fi
 
-  # models.json — Pi's PROVIDER config (custom OpenAI-compatible endpoints
-  # like local-gpu, fieldbox, etc.). Without this bind, the container
-  # sees only Pi's built-in providers (anthropic, openai) — any custom
-  # provider the user added on host is invisible inside the sandbox.
-  # See PR #205 (regression fix). API keys interpolated from env vars
-  # (e.g. local-gpu' "apiKey": "$TRAIL_OPENERS_LLM_KEY") rely on the
-  # extended env-passthrough in build_env to surface those vars.
+  # models.json — Pi's PROVIDER config (custom OpenAI-compatible endpoints).
+  # Without this bind, custom providers added on host are invisible in the
+  # sandbox (PR #205 regression fix). API keys interpolated from env vars
+  # ("apiKey": "$TRAIL_OPENERS_LLM_KEY") rely on the env passthrough in build_env.
   if [ -f "$HOME/.pi/agent/models.json" ]; then
     mounts+=(-v "$HOME/.pi/agent/models.json:/home/vscode/.pi/agent/models.json:ro")
   fi
@@ -185,23 +162,19 @@ build_mounts() {
     mounts+=(-v "$HOME/.config/mcp/mcp.json:/home/vscode/.config/mcp/mcp.json:ro")
   fi
 
-  # gh auth — bind-mount as fallback. The primary auth channel is the
-  # GH_TOKEN env var (extracted via `gh auth token` on host; see
-  # build_env). gh inside the container honors GH_TOKEN first; the
-  # bind-mount is a belt-and-braces option for installations that
-  # configured gh without a token (e.g. SSO web flow only).
+  # gh auth — bind-mount fallback for installations configured without a
+  # token (e.g. SSO web flow only). Primary channel is the GH_TOKEN env
+  # extracted via `gh auth token` (see build_env); gh honors GH_TOKEN first.
   if [ -d "$HOME/.config/gh" ]; then
     mounts+=(-v "$HOME/.config/gh:/home/vscode/.config/gh:ro")
   fi
 
-  # Image directories — for drag-and-drop into Pi via @file syntax. Bind-
-  # mounted READ-ONLY at the host's absolute paths so a path pasted by the
-  # terminal (e.g. /Users/you/Downloads/screenshot.png) resolves inside.
-  # sandbox-fs-guard is also told about these via PI_ENSEMBLE_ALLOWED_ROOTS
-  # so the read tool doesn't block paths outside the project workspace.
-  # Default: $HOME/Downloads, $HOME/Desktop, $HOME/Pictures. Override via
-  # PI_ENSEMBLE_IMAGE_DIRS="dir1:dir2" (colon-separated, replaces default).
-  # Extend via PI_ENSEMBLE_EXTRA_IMAGE_DIRS="dir1:dir2" (appends).
+  # Image directories — drag-and-drop into Pi via @file syntax. Bound RO
+  # at the host's absolute paths so a path pasted by the terminal (e.g.
+  # /Users/you/Downloads/screenshot.png) resolves inside. sandbox-fs-guard
+  # is told about these via PI_ENSEMBLE_ALLOWED_ROOTS (see build_env).
+  # Default: $HOME/Downloads, $HOME/Desktop, $HOME/Pictures.
+  # PI_ENSEMBLE_IMAGE_DIRS replaces the default; PI_ENSEMBLE_EXTRA_IMAGE_DIRS appends.
   local default_image_dirs="$HOME/Downloads:$HOME/Desktop:$HOME/Pictures"
   local image_dirs_raw="${PI_ENSEMBLE_IMAGE_DIRS:-$default_image_dirs}"
   if [ -n "${PI_ENSEMBLE_EXTRA_IMAGE_DIRS-}" ]; then
@@ -214,36 +187,26 @@ build_mounts() {
     mounts+=(-v "$dir:$dir:ro")
   done
 
-  # Host docker socket — bind-mounted by default if Docker is running on
-  # the host, so docker-based MCP servers in .pi/mcp.json work transparently
-  # (the CLI inside the sandbox talks to the HOST docker daemon; spawned
-  # MCPs are SIBLING containers, visible in the host's `docker ps`). Opt
-  # out with PI_ENSEMBLE_NO_DOCKER_SOCKET=1 if you want the tighter sandbox.
-  # SECURITY: the docker socket grants root-equivalent host access from
-  # inside the sandbox, weakening the container fence. Consistent with the
-  # trust-mode philosophy from #215: pi-ensemble's container is the agent's
-  # runtime, not a meaningful security boundary — the user is the trust
-  # authority. See AGENTS.md "Permission model" section.
+  # Host docker socket — bind-mounted by default so docker-based MCP servers
+  # in .pi/mcp.json work transparently (spawned MCPs are SIBLING containers
+  # visible in the host's `docker ps`). Opt out with PI_ENSEMBLE_NO_DOCKER_SOCKET=1.
+  # SECURITY: the socket grants root-equivalent host access, weakening the
+  # container fence. Consistent with the trust-mode philosophy (#215): the
+  # user is the trust authority. See AGENTS.md "Permission model".
   if [ "${PI_ENSEMBLE_NO_DOCKER_SOCKET-}" = "1" ]; then
     :  # explicit opt-out — keep the tighter sandbox
   elif [ -S /var/run/docker.sock ]; then
     mounts+=(-v "/var/run/docker.sock:/var/run/docker.sock")
   fi
 
-  # SSH credentials — bind-mount ~/.ssh/ read-only AND forward the host's
-  # SSH_AUTH_SOCK (if set) so `ssh remote-host` inside the sandbox uses the
-  # same identities as host-mode pi. Mirrors the docker-socket transparency:
-  # the user shouldn't need a flag to make ssh work the way it does on host.
-  # Opt out with PI_ENSEMBLE_NO_SSH=1.
-  #
-  # RO mount means: known_hosts updates from inside the sandbox don't persist
-  # to host (acceptable trade-off — fresh host-key entries can be added on
-  # the host with `ssh -o StrictHostKeyChecking=accept-new ...`). Keys with
-  # strict file perms still work because the agent socket sidesteps file IO
-  # when SSH_AUTH_SOCK is set; if you have on-disk keys only (no agent), the
-  # UID mismatch between host (501 on macOS) and vscode (1000) may cause
-  # SSH's StrictModes to refuse them — workaround: start an ssh-agent on
-  # host (`eval $(ssh-agent) && ssh-add <key>`) before launching pi-ensemble.
+  # SSH credentials — bind-mount ~/.ssh/ RO AND forward the host's
+  # SSH_AUTH_SOCK so `ssh remote-host` uses the same identities as host-mode
+  # pi. Opt out with PI_ENSEMBLE_NO_SSH=1. Trade-offs: known_hosts updates
+  # from inside don't persist to host (fix on host with
+  # `ssh -o StrictHostKeyChecking=accept-new ...`); on-disk keys without an
+  # agent may hit StrictModes failures from the host-vs-vscode UID mismatch
+  # (macOS 501 vs 1000) — workaround: start an ssh-agent on host
+  # (`eval $(ssh-agent) && ssh-add <key>`) before launching pi-ensemble.
   if [ "${PI_ENSEMBLE_NO_SSH-}" = "1" ]; then
     :
   else
@@ -269,17 +232,13 @@ build_mounts() {
 
 build_env() {
   # Env passthrough — forward the host shell's FULL env into the sandbox
-  # EXCEPT vars on the blocklist (would conflict with the container's
-  # identity / paths) or already handled separately by the wrapper.
-  #
-  # Why wholesale-forward (post-#228): host-mode `pi` inherits the parent
-  # shell's env naturally; sandbox-mode should match that so `.pi/mcp.json`
-  # env-refs (`${VAR}` / `{env:VAR}`) Just Work. Same transparency principle
-  # as docker socket (#220) and SSH agent (#220/#227). The user is the trust
-  # authority; the container is the agent's runtime, not a meaningful
-  # security boundary. Per the feedback memory:
-  # "It needs to be completely transparent to the user that pi just happens
-  #  to run inside devcontainer".
+  # EXCEPT vars on the blocklist. Why wholesale-forward (post-#228): host-mode
+  # `pi` inherits the parent shell's env naturally; sandbox-mode should match
+  # so `.pi/mcp.json` env-refs (`${VAR}` / `{env:VAR}`) Just Work. Same
+  # transparency principle as the docker socket and SSH agent. The user is the
+  # trust authority; the container is the agent's runtime, not a meaningful
+  # security boundary (per feedback memory: "It needs to be completely
+  # transparent to the user that pi just happens to run inside devcontainer").
   #
   # Blocklist categories:
   #   - container-identity conflicts: PATH, HOME, SHELL, PWD, OLDPWD, USER,
@@ -287,15 +246,12 @@ build_env() {
   #   - shell internals: SHLVL, _
   #   - already wrapper-managed: SSH_AUTH_SOCK (re-set to /run/host-ssh-auth.sock
   #     by the dedicated block below), PI_ENSEMBLE_* (set explicitly farther down)
-  #   - host-only filesystem paths that break inside the container:
-  #       DOCKER_HOST — Colima / Podman / alt-docker set this to a path under
-  #       /Users/<u>/.colima/... that doesn't exist inside the sandbox. The
-  #       container has /var/run/docker.sock bind-mounted (post-#220); docker
-  #       CLI falls back to that default when DOCKER_HOST is unset. Forwarding
-  #       it intact = "failed to connect to docker API at <host-only-path>".
-  #   - locale: LC_* (container has its own)
-  #   - bash function exports: BASH_FUNC_* (don't translate cleanly across shells)
-  #   - system internals: __* (macOS Apple_PubSub_Socket_Render, __CF_USER_*, etc.)
+  #   - host-only paths that break inside: DOCKER_HOST — Colima / Podman set this
+  #     to a path under /Users/<u>/.colima/... that doesn't exist in the sandbox;
+  #     the container has /var/run/docker.sock bind-mounted and docker CLI falls
+  #     back to it when DOCKER_HOST is unset (else: "failed to connect to docker
+  #     API at <host-only-path>")
+  #   - locale (LC_*), bash function exports (BASH_FUNC_*), system internals (__*)
   local blocklist_exact=" PATH HOME SHELL PWD OLDPWD USER LOGNAME TMPDIR TEMP TMP SHLVL _ MAIL HOSTNAME SSH_AUTH_SOCK DOCKER_HOST "
   local envs=()
   # NUL-separated parsing (env -0) so multi-line env values stay intact.
