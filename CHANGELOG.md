@@ -8,6 +8,14 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.50](https://github.com/randomm/pi-ensemble/compare/v0.12.49...v0.12.50) (2026-08-22)
+
+
+### Bug Fixes
+
+* **#492:** classify lens-fix-not-integrated cause with git evidence ([#516](https://github.com/randomm/pi-ensemble/issues/516)) ([8045f88](https://github.com/randomm/pi-ensemble/commit/8045f88f483c534753cc17779edcba074593ce61)), closes [#492](https://github.com/randomm/pi-ensemble/issues/492)
+* **#499:** handoff recovery commands stage untracked files before diffing ([#514](https://github.com/randomm/pi-ensemble/issues/514)) ([5e16ed8](https://github.com/randomm/pi-ensemble/commit/5e16ed867365fbce1786f6602847a765c695fe3c)), closes [#499](https://github.com/randomm/pi-ensemble/issues/499)
+
 ## [0.12.49](https://github.com/randomm/pi-ensemble/compare/v0.12.48...v0.12.49) (2026-08-22)
 
 
