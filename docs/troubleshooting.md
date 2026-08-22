@@ -2,6 +2,31 @@
 
 Symptoms → causes → fixes. Most issues here come from running an older sandbox image; the first move on anything weird is usually `./install.sh` from the pi-ensemble repo to rebuild + refresh.
 
+## Platform support
+
+### `./install.sh` fails on Windows — bash parse errors, or a half-finished install
+
+**Symptom:** you read the platform line ("Tested on macOS; should work on Linux"), run `./install.sh` from a Windows terminal, and get either a bash parse error (`command not found`, `/usr/bin/env: 'bash'` not found) or a partially completed install — a symlink or two landed, then the script died — with no indication of what went wrong or what would actually work.
+
+**Cause:** native Windows is not supported. Every entrypoint is a bash script, the install works by symlinking skills / the extension / the CLI, and the sandbox bind-mounts the project at its host **absolute** path (Pi buckets sessions by absolute `cwd`) — a `C:\` path cannot satisfy that inside a Linux container. This is a structural mismatch, not a missing flag, so no Windows setting fixes it. (`install.sh` now refuses to proceed early on a non-Linux/non-Darwin kernel and points at WSL2 instead of proceeding to a partial install — see the fix below if you are on a newer checkout.)
+
+**Fix:**
+
+- **Use WSL2.** WSL2 (Windows Subsystem for Linux 2) is **expected to work but untested** — do not treat it as supported until someone has verified it end to end. The one real condition: **sandbox mode needs a Docker daemon reachable from WSL2** (Docker Desktop with WSL2 integration enabled, or an equivalent Docker Engine) to pull the published image. Without a Docker daemon you can still run **host mode** (`pi`) inside WSL2, which does not need the sandbox image.
+- **Do not attempt a native-Windows install.** There is no supported path.
+
+**Verification (the "expected to work" bar).** WSL2 is upgraded from "expected to work" to "supported" only once someone records a clean run: `./install.sh` completes, one sandbox image pull succeeds, one subagent dispatch runs, and `/mcp` shows the `codebase_memory` server. Record the configuration — repo location (`/home/...` vs `/mnt/c/...`, which interacts with the absolute-path mount premise) and the Docker variant.
+
+**Note on the prerequisites:** several tools have no native-Windows install path, which is part of why the platform is unsupported — `codebase-memory-mcp` installs by curl-to-bash, `parallel-cli` by a Homebrew tap, and `vipune` / `oo` by cargo from source. Under WSL2 (a Linux kernel running inside a Windows VM) all of these install normally.
+
+### `docker` / the sandbox image is unreachable from inside WSL2
+
+**Symptom:** on a WSL2 host, `./install.sh` gets past OS detection but the sandbox image pull fails, or `pi-ensemble` launches and the container can't start — `docker` commands report the daemon is unreachable.
+
+**Cause:** WSL2 is a separate Linux VM; the Docker daemon you want it to talk to lives on the Windows host (Docker Desktop) or must be its own Engine. A bare WSL2 distro has no Docker daemon, so the sandbox — which is a Docker container — has nothing to run in.
+
+**Fix:** enable Docker Desktop's **WSL2 integration** (Settings → Resources → Integrations → enable your distro), or run a Docker Engine inside the distro and start its daemon. Verify from inside WSL2: `docker version` shows both client and server, then `./install.sh` again so the image pull succeeds.
+
 ## Subagent silently "finished" but the worktree wasn't touched
 
 ### Symptom

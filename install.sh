@@ -29,6 +29,44 @@ ENSEMBLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI_AGENT_DIR="${PI_AGENT_DIR:-$HOME/.pi/agent}"
 EXT_DIR="$PI_AGENT_DIR/extensions"
 
+# ---- Platform guard (#491) ----------------------------------------------------
+#
+# Supported: macOS and Linux. WSL2 is expected to work but untested.
+# Refused: everything else — Git Bash / MSYS2 / Cygwin on native Windows,
+# and BSDs or other exotic Unixes. This guard is deliberately NEGATIVE (refuse
+# when uname -s is neither Linux nor Darwin) rather than a positive match on
+# MSYS*/MINGW*/CYGWIN*: a bash script can only run on Windows under Git Bash,
+# MSYS2, Cygwin or WSL, so a positive matchlist catches the closest-to-working
+# environments and misses every genuinely broken one. On Linux and macOS
+# uname -s is exactly "Linux" or "Darwin" (WSL2 reports "Linux"), so an exact
+# match on those two values is safe.
+#
+# Native PowerShell and cmd never reach this script at all — the shebang
+# excludes them — and are addressed by the README's platform statement alone;
+# this guard covers the shells that DO execute it but cannot complete.
+#
+# classify_os is a small named function taking the uname value so the
+# classification is testable in isolation (smoke test: test-os-guard.ts).
+classify_os() {
+  case "$1" in
+    Darwin) echo "supported" ;;
+    Linux)  echo "supported" ;;
+    *)      echo "unsupported" ;;
+  esac
+}
+
+UNAME_S="$(uname -s)"
+if [ "$(classify_os "$UNAME_S")" = "unsupported" ]; then
+  echo "!! This system's uname is '$UNAME_S'. pi-ensemble supports macOS and" >&2
+  echo "   Linux only: every entrypoint is a bash script, installation relies on" >&2
+  echo "   symlinks, and the sandbox mounts the project at the host's absolute" >&2
+  echo "   path — none of which work on native Windows." >&2
+  echo "   On Windows, use WSL2 (expected to work, untested); it needs Docker" >&2
+  echo "   (Docker Desktop with WSL2 integration, or an equivalent daemon) for" >&2
+  echo "   sandbox mode. See docs/troubleshooting.md → Platform support." >&2
+  exit 1
+fi
+
 echo "==> pi-ensemble install"
 echo "    ensemble dir: $ENSEMBLE_DIR"
 echo "    pi agent dir: $PI_AGENT_DIR"
@@ -98,6 +136,7 @@ fi
 
 # ---- 3. Symlink skills --------------------------------------------------------
 
+# first side effect: everything before this line only prints and checks
 mkdir -p "$PI_AGENT_DIR/skills"
 echo "==> Symlinking skills → $PI_AGENT_DIR/skills/"
 for d in "$ENSEMBLE_DIR/skill"/*; do

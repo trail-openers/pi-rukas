@@ -59,11 +59,11 @@ Required CLIs on `$PATH`. The role prompts assume all of these are installed —
 | [`bun`](https://bun.com) | Runtime for the extension (loads TS via `jiti`). |
 | `git` ≥ 2.20 | Worktrees, branches, diffs. |
 | [`gh`](https://cli.github.com/) | GitHub issue / PR / CI ops from inside `/work` and `/review`. |
-| [`vipune`](https://github.com/randomm/vipune) | Cross-session memory (fact + observation patterns). All agents call this. |
-| [`codebase-memory-mcp`](https://github.com/DeusData/codebase-memory-mcp) | Persistent knowledge-graph code indexer exposed as MCP. Powers `codebase_memory_search_code` / `trace_path` / `detect_changes` / `get_architecture` — pre-approved on the read-heavy roles. |
-| [`oo`](https://github.com/randomm/oo) | Context-efficient wrapper for chatty CLIs (git, gh). |
+| [`vipune`](https://github.com/randomm/vipune) | Cross-session memory (fact + observation patterns). All agents call this. (Cargo from source — no native-Windows install path.) |
+| [`codebase-memory-mcp`](https://github.com/DeusData/codebase-memory-mcp) | Persistent knowledge-graph code indexer exposed as MCP. Powers `codebase_memory_search_code` / `trace_path` / `detect_changes` / `get_architecture` — pre-approved on the read-heavy roles. (Installs by curl-to-bash — no native-Windows install path.) |
+| [`oo`](https://github.com/randomm/oo) | Context-efficient wrapper for chatty CLIs (git, gh). (Cargo from source — no native-Windows install path.) |
 | `jq` | Used by `build.sh` to assemble the capability matrix into the PM prompt. |
-| [`parallel-cli`](https://docs.parallel.ai/cli/overview) | Web search / fetch / deep research used by the `explore` role. `/research` and cross-web investigation depend on it. |
+| [`parallel-cli`](https://docs.parallel.ai/cli/overview) | Web search / fetch / deep research used by the `explore` role. `/research` and cross-web investigation depend on it. (Homebrew tap — no native-Windows install path.) |
 | [`pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter) | MCP bridge — Pi core has no native Model Context Protocol support, so **without the bridge no MCP server loads** (not just `codebase_memory`). Any other MCP server you add later needs it too. Sandbox users are unaffected: the image bakes the bridge in. |
 | [`ctx7`](https://context7.com) | Current third-party library documentation. Specialists run `ctx7 library <name>` → `ctx7 docs <id> <query>` to verify API shape. Free tier works without login. |
 
@@ -131,7 +131,7 @@ After install:
   ```
   The `/start` command does this for you on first use. The file watcher keeps it current after that. Indexed data lives in `~/.cache/codebase-memory-mcp/`.
 
-Tested on macOS; should work on Linux. Bun ≥ 1.2.20 and Node ≥ 22 (Pi's own requirement) are assumed.
+**Platform.** Supported: macOS and Linux. Native Windows is unsupported — every entrypoint is a bash script, the install is symlink-based, and the sandbox bind-mounts the project at the host's absolute path, which a `C:\` path cannot satisfy. WSL2 is **expected to work but untested** (not supported until someone verifies it end to end); sandbox mode additionally needs Docker (Docker Desktop with WSL2 integration, or an equivalent daemon) to pull the published image. Bun ≥ 1.2.20 and Node ≥ 22 (Pi's own requirement) are assumed.
 
 If you're security-conscious, you can also defer `ctx7` entirely; the `explore` role tries to call it but the rest of pi-ensemble works without it. The `developer` and `code-review-specialist` roles also benefit from current library docs.
 
