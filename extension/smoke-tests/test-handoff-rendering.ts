@@ -375,5 +375,105 @@ function commitPrConflictedState(): WorkState {
   );
 }
 
+// ---------------------------------------------------------------------------
+// #499 — the lossless consolidation recipe reaches BOTH handoff surfaces.
+//
+// The defect: `git diff HEAD` does not report untracked files, so a
+// workstream that created a NEW file loses it entirely when an operator
+// follows the in-chat recipe — while the GitHub body (`renderHandoffMarkdown`)
+// already printed the lossless shape (`add -A` → `diff --cached --binary |
+// git apply --3way --binary --index`). The two renderers disagreed and the
+// in-chat one was the lossy twin. #483's workstream had created a 204-line
+// test file that only `git status --porcelain` would have surfaced.
+//
+// The DoD evidence bullet: build a state with cap
+// `commit-pr-incomplete-consolidation` and one missing workstream, render
+// both surfaces, and assert the in-chat output stages before diffing (an
+// `add` step, or an explicit porcelain-derived command naming untracked
+// paths) and contains no bare `diff HEAD`.
+// ---------------------------------------------------------------------------
+{
+  const s = commitPrConflictedState();
+  // DoD shape: ONE missing workstream. The fixture's two workstreams
+  // (#500) are superseded here — the recipe assertions below count
+  // occurrences, and one workstream keeps the arithmetic unambiguous.
+  s.pipelineState.incompleteConsolidation = [
+    { id: "default", paths: ["extension/src/worktree-provision.ts (new)"] },
+  ];
+  // A clean repoRoot: step 1b's conflicted-tree block is a separate concern
+  // (#500) and its commands would muddy the lossless-recipe check.
+  s.pipelineState.commitPrRoot = {
+    branch: "feature/issue-481-worktree-provision",
+    unmergedPaths: [],
+    stagedCount: 0,
+    totalEntries: 0,
+    capturedAt: Date.now(),
+  };
+
+  const md = renderHandoffMarkdown(s, REPO);
+  const chat = renderHandoffUserMessage(s, REPO, `${REPO}/tmp/issue-481`);
+
+  for (const [name, out] of [
+    ["markdown", md],
+    ["chat", chat],
+  ] as const) {
+    const wt = `issue-${s.issue}-default`;
+
+    // 1. No bare `diff HEAD |` pipeline in the rendered recovery — it is the
+    //    lossy form: it omits untracked files. (diff --cached, diff --stat,
+    //    diff --name-only are fine and expected. Explanatory comments that
+    //    MENTION `diff HEAD` are fine; the assertion targets the command form.)
+    assert(
+      !/diff HEAD\s*\|/.test(out),
+      `${name} (#499): no bare 'diff HEAD |' pipeline — it silently drops untracked files`,
+    );
+
+    // 2. The recipe stages BEFORE diffing — `git add -A` inside the missing
+    //    workstream, then `git diff --cached --binary` piped to `git apply`.
+    //    The markdown renderer uses cwd-relative paths (`git -C .worktrees/…`);
+    //    the chat renderer uses absolute (`git -C <repoRoot>/.worktrees/…`).
+    //    Match on the worktree-qualified suffix common to both.
+    const wtSuffix = `.worktrees/${wt}`;
+    assert(
+      out.includes(`${wtSuffix} add -A`),
+      `${name} (#499): stages untracked files first — 'add -A' in the worktree`,
+    );
+    assert(
+      out.includes(`${wtSuffix} diff --cached --binary`),
+      `${name} (#499): diffs the staged tree, not HEAD`,
+    );
+    assert(
+      /diff --cached --binary\s*\|\s*git (?:-C \S+ )?apply --3way --binary --index/.test(out),
+      `${name} (#499): applies the staged diff losslessly (--3way --binary --index)`,
+    );
+
+    // 3. The recipe appears exactly once — one missing workstream, one
+    //    recipe. Prevents a renderer from quietly dropping one surface.
+    const addCount = out.split(`${wtSuffix} add -A`).length - 1;
+    assert(
+      addCount === 1,
+      `${name} (#499): the add step appears exactly once for the one missing workstream (got ${addCount})`,
+    );
+
+    // 4. The no-bare-diff assertion must not be vacuous: the recovery block
+    //    still carries the worktree apply commands at all.
+    assert(
+      /git (?:-C \S+ )?apply/.test(out),
+      `${name} (#499): ...and there IS an apply step, so the diff assertion is not vacuous`,
+    );
+  }
+
+  // 5. The surfaces agree on the recipe. Prefixes legitimately differ (chat
+  //    is `git -C <repoRoot>`, markdown is cwd-relative), so compare the
+  //    command after the prefix: both must use the same lossless pipeline
+  //    for the workstream's diff.
+  const chatRecipe = (chat.match(/\.worktrees[^\n]*add -A[^\n]*/g) ?? [])[0] ?? "";
+  const mdRecipe = (md.match(/\.worktrees[^\n]*add -A[^\n]*/g) ?? [])[0] ?? "";
+  assert(
+    chatRecipe.includes("add -A") && mdRecipe.includes("add -A"),
+    "#499: both surfaces stage before diffing (chat + markdown agree on the add step)",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

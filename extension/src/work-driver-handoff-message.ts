@@ -382,13 +382,16 @@ export function renderHandoffUserMessage(
             "",
           ]
         : []),
-      "  # 2. Apply each missing diff to the integration branch:",
-      ...missing.map(
-        (m) =>
-          `     git -C ${repoRoot}/.worktrees/issue-${issue}-${m.id} diff HEAD | git -C ${repoRoot} apply --index`,
-      ),
+      "  # 2. Apply each missing diff to the integration branch. Stage inside the",
+      "  #    worktree FIRST — `git diff HEAD` alone silently omits untracked new",
+      "  #    files — and use --3way, which resolves two workstreams touching",
+      "  #    different regions of one file instead of rejecting the second:",
+      ...missing.flatMap((m) => [
+        `     git -C ${repoRoot}/.worktrees/issue-${issue}-${m.id} add -A`,
+        `     git -C ${repoRoot}/.worktrees/issue-${issue}-${m.id} diff --cached --binary | git -C ${repoRoot} apply --3way --binary --index`,
+      ]),
       "",
-      "  # 3. Verify, commit, push:",
+      "  # 3. Verify all workstreams' files now appear, then commit + push:",
       `     git -C ${repoRoot} diff --name-only --cached`,
       `     git -C ${repoRoot} commit -m '<concise>'`,
       `     git -C ${repoRoot} push`,
