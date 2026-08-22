@@ -9,10 +9,33 @@
 
 import { killDetail } from "./kill-detail.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
+import { commitPrRootFactLines } from "./work-driver-commit-inspect.ts";
 import { MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { explainCap } from "./work-driver-explain.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
+
+/**
+ * #500 — the in-chat twin of `commitPrRootFacts` in
+ * work-driver-handoff-markdown.ts: what repoRoot actually holds when a
+ * commit-pr handoff fires. The fact lines come from `commitPrRootFactLines`
+ * (work-driver-commit-inspect.ts) — the shared single source — so the
+ * in-chat message and the GitHub body agree on the facts (branch, unmerged
+ * paths, staged count) and on the clearing command. Rendered only for the
+ * `commit-pr-incomplete-consolidation` cap — that is the cap whose recovery
+ * commands historically assumed a clean tree that did not exist.
+ */
+function commitPrRootLines(state: WorkState, repoRoot: string): string[] {
+  const ps = state.pipelineState;
+  const facts = commitPrRootFactLines(
+    ps.commitPrRoot,
+    ps.commitPrRootError,
+    `git -C ${repoRoot} `,
+    "  ",
+  );
+  if (facts.length === 0) return [];
+  return ["repoRoot state at commit-pr handoff:", ...facts];
+}
 
 /**
  * PR5 — operator-facing in-chat handoff message. Multi-line; produced
@@ -324,6 +347,16 @@ export function renderHandoffUserMessage(
     );
   } else if (cap === "commit-pr-incomplete-consolidation") {
     const missing = ps.incompleteConsolidation ?? [];
+    const root = ps.commitPrRoot;
+    const conflicted = (root?.unmergedPaths ?? []).length > 0;
+    // #500 — a placeholder branch (`HEAD`) in the recorded state means the
+    // inspection couldn't name the branch; `reset --hard HEAD` aborts a merge
+    // in progress WITHOUT clearing the index. Name the branch first.
+    const clearRoot = root
+      ? root.branch === "HEAD" || root.branch === "(detached or unknown)"
+        ? `git -C ${repoRoot} rev-parse --abbrev-ref HEAD   # name the branch, then: git -C ${repoRoot} reset --hard <branch>`
+        : `git -C ${repoRoot} reset --hard ${root.branch}`
+      : `git -C ${repoRoot} reset --hard HEAD`;
     lines.push(
       "",
       "Missing workstreams from the committed diff:",
@@ -332,11 +365,23 @@ export function renderHandoffUserMessage(
           `  ${m.id} — paths not in diff: ${m.paths.slice(0, 3).join(", ")}${m.paths.length > 3 ? "..." : ""}`,
       ),
       "",
+      ...commitPrRootLines(state, repoRoot),
+      "",
       "  # 1. Inspect each missing workstream's worktree:",
       ...missing.map(
         (m) => `     git -C ${repoRoot}/.worktrees/issue-${issue}-${m.id} status --porcelain`,
       ),
       "",
+      ...(conflicted
+        ? [
+            "  # 1b. repoRoot has unmerged paths — resolve or abort them first",
+            "  #     or step 2's `git apply` will refuse to run:",
+            `     git -C ${repoRoot} status`,
+            "     # resolve the conflicts by hand, then: git add <resolved-path>",
+            `     # (or discard the hand consolidation — DESTRUCTIVE): ${clearRoot}`,
+            "",
+          ]
+        : []),
       "  # 2. Apply each missing diff to the integration branch:",
       ...missing.map(
         (m) =>

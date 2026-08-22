@@ -16,16 +16,37 @@ import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
 export const WORK_STATE_SCHEMA_VERSION = 1 as const;
 
 /**
+ * #500 — the persisted shape of repoRoot's state at commit-pr handoff.
+ * Lives here (not in work-driver-commit-inspect.ts) because it is part of
+ * the persisted state contract: `PipelineState.commitPrRoot` holds it, and
+ * the data layer should not depend on the presentation/parsing module that
+ * merely renders it. All fields are best-effort: a `git status` that works
+ * but a `rev-parse` that does not yields a placeholder branch rather than a
+ * failure, because the unmerged paths are the load-bearing fact.
+ */
+export interface CommitPrRootState {
+  /** Current branch (`git rev-parse --abbrev-ref HEAD`); placeholder when unreadable. */
+  branch: string;
+  /** Porcelain column-1/2 status codes (`UU`, `AA`, `DD` — the unmerged set). */
+  unmergedPaths: string[];
+  /** Entries staged on BOTH columns (`MM`, ` M`, `A `, …) — untracked (`??`) excluded. */
+  stagedCount: number;
+  /** Total porcelain entries (staged + unstaged + untracked). */
+  totalEntries: number;
+  /** Epoch ms of the inspection. */
+  capturedAt: number;
+}
+
+/**
  * Pipeline snapshot — driver's "where are we" view, reconstructible from
  * eventLog but stored explicitly so reads are O(1). When the two diverge,
  * eventLog is authoritative; the driver should rebuild pipelineState from
  * scratch on read if it detects inconsistency.
  */
 /**
- * Why a plan earned one corrective re-dispatch.
- *
- * Lives with the schema because it is persisted: `work-driver-plan.ts` decides
- * it, and `/work-status` and the handoff renderers read it back.
+ * Why a plan earned one corrective re-dispatch. Lives with the schema because
+ * it is persisted: `work-driver-plan.ts` decides it, and `/work-status` and
+ * the handoff renderers read it back.
  */
 export type PlanQualityReason =
   | "under-decomposed"
@@ -226,6 +247,19 @@ export interface PipelineState {
    * every workstream's files appear in the diff.
    */
   incompleteConsolidation?: Array<{ id: string; paths: string[] }>;
+  /**
+   * #500 — repoRoot's ACTUAL state at the moment commit-pr completed, as
+   * recorded by `inspectCommitPrRoot`. The mechanized path records a clean
+   * tree on the feature branch; the LLM ops fallback records whatever the
+   * hand consolidation left — two `UU` paths and 8 staged files on issue
+   * #481's live cycle. The commit-pr handoff renderers read this to state
+   * facts instead of assuming the clean tree their recovery commands were
+   * written for. Absent when the inspection never ran or failed (see
+   * `commitPrRootError`).
+   */
+  commitPrRoot?: CommitPrRootState;
+  /** #500 — the git error, when the post-fallback inspection could not run. */
+  commitPrRootError?: string;
   /**
    * PR10 — multi-issue counterpart of `activeIssues`: issues filtered
    * out by `runExplore` because explore declared them complete or

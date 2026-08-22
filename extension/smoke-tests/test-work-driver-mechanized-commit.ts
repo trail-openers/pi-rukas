@@ -256,109 +256,60 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       }
     }
 
-    // M2 — mechanical failure (git apply conflict) → plumb-report +
-    // graceful fallback to the LLM ops dispatch.
+    // M2 and M3 moved to test-work-driver-mechanized-commit-fallback.ts
+    // (#507 file-size split: this file gained the M4 clip-title e2e case
+    // and would have exceeded the 500-line hard cap with M2+M3 in place).
+
+    // M4 — #507: over-budget title is clipped at a word boundary with an
+    // ellipsis. The captured `--title` and `git commit -m` first `-m` arg
+    // must be the same clipped value, asserted against hard-coded literals.
     {
-      const dir = mkdtempSync(path.join(tmpdir(), "mech-fallback-"));
+      const dir = mkdtempSync(path.join(tmpdir(), "mech-clip-"));
       try {
         await (await import("node:fs/promises")).mkdir(path.join(dir, ".git", "info"), {
           recursive: true,
         });
-        const calls2: string[] = [];
+        const calls: string[] = [];
+        const LONG_TITLE =
+          "fix: long issue title that exceeds the sixty-four code unit budget-TAIL";
+        assert(LONG_TITLE.length > 64, "M4: fixture title really is over budget");
+        const { clipTitle } = await import("../src/work-driver-commit.ts");
+        const expectedClipped = clipTitle(LONG_TITLE, 64);
+        assert(expectedClipped.length <= 64, "M4: clipped title is within budget");
+        assert(expectedClipped.endsWith("\u2026"), "M4: clipped title ends with ellipsis");
+        assert(!expectedClipped.includes("-TAIL"), "M4: sentinel tail is clipped away");
+
+        const longTitleBody = async (issue: number, _cwd: string) => ({
+          stdout: `title:\t${LONG_TITLE}\nstate:\tOPEN\n\nmock body for issue #${issue}`,
+        });
+
         const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
-          calls2.push(cmd);
+          calls.push(cmd);
           if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
-          if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-995\n" };
-          // #393 — branch setup is mechanized unconditionally now.
+          if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-997\n" };
           if (cmd.startsWith("git rev-parse ")) return { stdout: "base123\n" };
           if (cmd.startsWith("git fetch origin")) return { stdout: "" };
           if (cmd.startsWith("git worktree add")) return { stdout: "" };
-          // #475 — pre-remove guard: worktrees don't exist on disk, guard
-          // finds nothing, pre-remove proceeds.
           if (cmd.startsWith("git worktree remove")) return { stdout: "" };
           if (cmd.startsWith("git status --porcelain")) {
-            // #475 — same discriminator as M1: clean during branch step
-            // (pre-create guard), dirty after all 3 worktrees are created.
-            const worktreeAdds = calls2.filter((c) =>
-              c.startsWith("git worktree add"),
-            ).length;
+            const worktreeAdds = calls.filter((c) => c.startsWith("git worktree add")).length;
             const cwd = o?.cwd ?? "";
             if (worktreeAdds < 3) return { stdout: "" };
-            if (/-task-[abc]$/.test(cwd)) return { stdout: " M src/x.rs\n" };
+            if (cwd.endsWith("-task-a")) return { stdout: " M src/a.rs\n" };
+            if (cwd.endsWith("-task-b")) return { stdout: " M src/b.rs\n" };
+            if (cwd.endsWith("-task-c")) return { stdout: "?? src/c.rs\n" };
             return { stdout: "" };
           }
           if (cmd.startsWith("git rev-list --count base123")) return { stdout: "0\n" };
           if (cmd.startsWith("git rev-list --count origin/")) return { stdout: "1\n" };
           if (cmd.startsWith("git add -- ")) return { stdout: "" };
-          if (cmd.startsWith("git diff --cached")) return { stdout: "diff --git a/x b/x\n+new\n" };
-          if (cmd.startsWith("git apply")) {
-            const err = new Error("patch does not apply") as Error & { stderr?: string };
-            err.stderr = "error: patch failed: src/x.rs:1";
-            throw err;
-          }
-          if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
-          if (cmd.startsWith("git diff --name-only origin/"))
-            return { stdout: "src/a.rs\nsrc/b.rs\nsrc/c.rs\n" };
-          if (cmd.startsWith("gh pr view")) return { stdout: '{"state":"OPEN"}' };
-          return { stdout: "" };
-        };
-        const ctx: DriverContext = {
-          pi: makeFakePi().pi,
-          repoRoot: dir,
-          issue: 995,
-          issueBodyFetcherFn: mockIssueBodyOk,
-          verifyExecFn: exec,
-          adversarialLoopFn: async () =>
-            mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
-          dispatchFn: mkDispatchFn(dir, 995, { allowOpsCommitPr: true }),
-        };
-        await runWorkDriver(ctx).catch(() => {});
-        const after = await readState(dir, 995);
-        assert(
-          after?.eventLog.some(
-            (e) => e.kind === "plumb-report" && /fell back to the ops dispatch/.test(e.body),
-          ),
-          "M2: apply conflict → plumb-report explains the fallback",
-        );
-        assert(
-          after?.eventLog.some(
-            (e) =>
-              e.kind === "dispatch-completed" && e.role === "ops" && e.label === "ops:commit-pr",
-          ),
-          "M2: LLM ops:commit-pr dispatched as fallback after mechanized failure",
-        );
-        assert(
-          after?.pipelineState.prNumber === 556,
-          "M2: fallback path's pr: marker still parsed into pipelineState",
-        );
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-      }
-    }
-
-    // M3 — empty-worktree guard: one clean worktree → fallback with the
-    // no-uncommitted-work reason (the LLM/ops + downstream gates decide
-    // what to do; the mechanized path never ships a partial slice).
-    {
-      const dir = mkdtempSync(path.join(tmpdir(), "mech-empty-"));
-      try {
-        await (await import("node:fs/promises")).mkdir(path.join(dir, ".git", "info"), {
-          recursive: true,
-        });
-        const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
-          if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
-          if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-996\n" };
-          if (cmd.startsWith("git status --porcelain")) {
-            const cwd = o?.cwd ?? "";
-            if (cwd.endsWith("/wtb")) return { stdout: "" }; // task-b clean
-            if (cwd.endsWith("/wta") || cwd.endsWith("/wtc")) return { stdout: " M src/x.rs\n" };
-            return { stdout: "" };
-          }
-          if (cmd.startsWith("git rev-list --count base123")) return { stdout: "0\n" };
-          if (cmd.startsWith("git rev-list --count origin/")) return { stdout: "1\n" };
-          if (cmd.startsWith("git add -- ")) return { stdout: "" };
-          if (cmd.startsWith("git diff --cached")) return { stdout: "diff --git a/x b/x\n+new\n" };
+          if (cmd.startsWith("git diff --cached"))
+            return { stdout: "diff --git a/x b/x\n+new\n" };
           if (cmd.startsWith("git apply")) return { stdout: "" };
+          if (cmd.startsWith("git commit")) return { stdout: "" };
+          if (cmd.startsWith("git push")) return { stdout: "" };
+          if (cmd.startsWith("gh pr create"))
+            return { stdout: "https://github.com/owner/repo/pull/614\n" };
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
           if (cmd.startsWith("git diff --name-only origin/"))
             return { stdout: "src/a.rs\nsrc/b.rs\nsrc/c.rs\n" };
@@ -368,31 +319,46 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         const ctx: DriverContext = {
           pi: makeFakePi().pi,
           repoRoot: dir,
-          issue: 996,
-          issueBodyFetcherFn: mockIssueBodyOk,
+          issue: 997,
+          issueBodyFetcherFn: longTitleBody,
           verifyExecFn: exec,
           adversarialLoopFn: async () =>
             mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
-          dispatchFn: mkDispatchFn(dir, 996, { allowOpsCommitPr: true }),
+          dispatchFn: mkDispatchFn(dir, 997),
         };
         await runWorkDriver(ctx).catch(() => {});
-        const after = await readState(dir, 996);
+
+        const prCreateCmd = calls.find((c) => c.startsWith("gh pr create"));
+        const commitCmd = calls.find((c) => c.startsWith("git commit"));
+        assert(prCreateCmd !== undefined, "M4: gh pr create was executed");
+        assert(commitCmd !== undefined, "M4: git commit was executed");
+
+        const titleMatch = prCreateCmd?.match(/--title (".*?")/);
+        assert(titleMatch !== undefined, "M4: --title flag present in gh pr create");
+        const prTitle = titleMatch ? JSON.parse(titleMatch[1]) : "";
         assert(
-          after?.eventLog.some(
-            (e) => e.kind === "plumb-report" && /no uncommitted work/.test(e.body),
-          ),
-          "M3: clean worktree → mechanized path bails with the no-uncommitted-work reason",
+          prTitle === expectedClipped,
+          `M4: --title is the clipped value (${JSON.stringify(prTitle)} vs expected ${JSON.stringify(expectedClipped)})`,
+        );
+        assert(!prTitle.includes("-TAIL"), "M4: sentinel -TAIL is absent from --title");
+
+        const mMatches = commitCmd?.match(/-m (".*?")/g) ?? [];
+        assert(mMatches.length >= 1, "M4: git commit has at least one -m arg");
+        const commitTitle = mMatches.length > 0 ? JSON.parse(mMatches[0].replace("-m ", "")) : "";
+        assert(
+          commitTitle === expectedClipped,
+          `M4: git commit -m first arg is the clipped value (${JSON.stringify(commitTitle)} vs expected ${JSON.stringify(expectedClipped)})`,
+        );
+        assert(!commitTitle.includes("-TAIL"), "M4: sentinel -TAIL is absent from commit title");
+
+        assert(
+          prTitle === commitTitle,
+          "M4: --title and git commit -m use the same clipped value (one source, no divergence)",
         );
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
     }
-
-    // #393 deleted M4. It exercised PI_ENSEMBLE_MECHANIZE_OPS=0 — the knob
-    // that sent commit-pr straight to the LLM ops dispatch with no mechanized
-    // attempt. That knob restored the shape behind the #245/#253 silent merges
-    // and v0.12.13's partial consolidation, so the path it tested no longer
-    // exists. The LLM fallback ON MECHANIZED FAILURE is still covered by M2/M3.
   } finally {
     if (prevVerify === undefined) process.env.PI_ENSEMBLE_VERIFY = undefined;
     else process.env.PI_ENSEMBLE_VERIFY = prevVerify;
