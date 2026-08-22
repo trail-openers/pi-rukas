@@ -276,7 +276,7 @@ git worktree list
 # Create draft PR
 oo gh api repos/{owner}/{repo}/pulls \
   --method POST \
-  --field title="feat(#123): description" \
+  --field title="feat(scope): description" \
   --field body="Fixes #123" \
   --field draft=true \
   --field head="feature/branch-name" \
@@ -284,7 +284,7 @@ oo gh api repos/{owner}/{repo}/pulls \
 ```
 
 Or use the `pr` tool:
-- Create: `pr` tool (command: create, args: ["--draft", "--title", "feat(#123): description", "--body", "Fixes #123"])
+- Create: `pr` tool (command: create, args: ["--draft", "--title", "feat(scope): description", "--body", "Fixes #123"])
 - List checks: `pr` tool (command: checks, args: ["{PR_NUMBER}"])
 - Merge: `pr` tool (command: merge, args: ["{PR_NUMBER}", "--squash"])
 - Mark ready (remove draft): `pr` tool (command: ready, args: ["{PR_NUMBER}"])

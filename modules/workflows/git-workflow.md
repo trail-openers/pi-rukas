@@ -33,10 +33,14 @@
 
 **Commit Message Format:**
 ```
-feat(#123): add user authentication
+feat(auth): add user authentication
 
 Detailed description if needed.
+Link issue via `Closes #123` in the PR body.
 ```
+
+- Use an **alphabetic subsystem scope** (e.g. `fix(spawn):`, `feat(work):`); use a bare type (e.g. `fix:`) only where no subsystem applies.
+- NEVER put the issue number in the scope position — issue linkage flows through the PR body and the branch slug.
 
 **Commit Frequency:**
 - Commits every 2-3 logical changes

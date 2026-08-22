@@ -76,8 +76,8 @@ Use the `mcp_issue` tool with:
 
 ## PR Linking
 
-- Link PR to issue: `Fixes #123` in PR description
-- Include issue number in all commits: `feat(#123): description`
+- Link PR to issue: `Closes #123` in the PR body (the `Fixes #123` / `Resolves #123` keywords also work)
+- Commit subjects use an alphabetic subsystem scope (`feat(work): description`); NEVER put the issue number in the scope position — linkage flows through the PR body and the branch slug
 
 ## Issue Reading Fallback
 

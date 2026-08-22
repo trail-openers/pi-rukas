@@ -397,8 +397,10 @@ Surface transcript paths in your reply verbatim; let the user browse via `/runs`
 ### Conventional commits with issue numbers
 
 ```
-<type>(#<issue>|<scope>): <description>
+<type>(<scope>): <description>
 ```
+
+**Never put an issue number in the scope position.** Alphabetic subsystem scopes (`fix(spawn):`) are the prescribed form; a bare type (`fix:`) is used only where no subsystem applies. Issue linkage goes in the PR body via `Closes #N` / `Fixes #N` — the scope-position number is decorative (no parser reads it) and downstream changelog tooling mangles headers that carry one.
 
 Types: `feat` (MINOR post-1.0; PATCH pre-1.0) | `fix` (PATCH) | `refactor` | `docs` | `test` | `chore` | `ci` | `perf` | `feat!` / `fix!` (BREAKING — MAJOR post-1.0; MINOR pre-1.0).
 
@@ -548,7 +550,7 @@ The gate scans the **whole repository** — every `.ts`, `.sh` and workflow `.ym
 
 ### Commit messages
 
-- Conventional commits with issue scope (`feat(#123):`)
+- Conventional commits with an alphabetic subsystem scope (`feat(work):`), or a bare type (`fix:`) where no subsystem applies — issue linkage goes in the PR body via `Closes #N`
 - First line ≤ 72 chars; wrap body at ~72
 - "Why" in the body, not just "What" (the diff shows what changed)
 
@@ -611,7 +613,7 @@ CLI flags and event shapes change between Pi minor versions. The pin in `extensi
 3. **Pi compatibility is load-bearing** — pin is deliberate; bumps require live tests
 4. **4-day npm embargo** — applies to `extension/` deps via bunfig; recommend pinning for prerequisite CLIs too
 5. **PM never codes** — orchestrate via dispatch tools; the sticky preamble enforces this
-6. **Conventional commits + issue-driven** — `feat(#123): …`, branch `feature/issue-N-…`
+6. **Conventional commits + issue-driven** — alphabetic scopes like `feat(work): …`, branch `feature/issue-N-…`, issue linked via `Closes #N` in the PR body
 7. **Spike branches stay off main** — explicit human approval required for experimental merges
 8. **LLMs may squash-merge when gates pass** (see §9) — humans still hold approval authority on breaking changes and disputed PRs
 9. **200-PR test for docs** — endures or doesn't get written
