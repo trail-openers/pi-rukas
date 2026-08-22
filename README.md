@@ -5,7 +5,7 @@
 
 A multi-specialist orchestrator extension for [Pi](https://pi.dev) — the terminal AI coding agent. Spawns role-specialised child Pi processes in parallel, isolates them in git worktrees, runs a mandatory adversarial gate before commit, and gates merge on a six-pass code review (security, error handling, type safety, performance, architecture, simplicity).
 
-> **Status: alpha.** The interfaces work and the workflow runs end-to-end, but the API will change before `1.0`. Use on disposable repos until you've kicked the tires. Tested against pi `0.75.3`.
+> **Status: alpha.** The interfaces work and the workflow runs end-to-end, but the API will change before `1.0`. Use on disposable repos until you've kicked the tires. Tested against pi `0.75.3` (the dev-deps pin; the sandbox image ships `0.79.1` — see [Pi compatibility](#pi-compatibility), which carries the full list of sites asserting this claim).
 
 ## What you get
 
@@ -64,6 +64,7 @@ Required CLIs on `$PATH`. The role prompts assume all of these are installed —
 | [`oo`](https://github.com/randomm/oo) | Context-efficient wrapper for chatty CLIs (git, gh). |
 | `jq` | Used by `build.sh` to assemble the capability matrix into the PM prompt. |
 | [`parallel-cli`](https://docs.parallel.ai/cli/overview) | Web search / fetch / deep research used by the `explore` role. `/research` and cross-web investigation depend on it. |
+| [`pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter) | MCP bridge — Pi core has no native Model Context Protocol support, so **without the bridge no MCP server loads** (not just `codebase_memory`). Any other MCP server you add later needs it too. Sandbox users are unaffected: the image bakes the bridge in. |
 | [`ctx7`](https://context7.com) | Current third-party library documentation. Specialists run `ctx7 library <name>` → `ctx7 docs <id> <query>` to verify API shape. Free tier works without login. |
 
 ### Supply-chain setup (recommended one-time before installing)
@@ -102,6 +103,9 @@ brew install git gh jq                                                # macOS
 cargo install vipune
 cargo install double-o
 
+# pi-mcp-adapter (REQUIRED — Pi core has no native MCP; without the bridge no MCP server loads)
+pi install npm:pi-mcp-adapter
+
 # codebase-memory-mcp (REQUIRED — pi-ensemble's code-search doctrine depends on it)
 curl -fsSL https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh | bash
 # Installs the C binary at ~/.local/bin/codebase-memory-mcp (~250 MB; ships
@@ -120,7 +124,7 @@ npm install -g --ignore-scripts ctx7
 After install:
 
 - `vipune version` once to initialise `~/.vipune/`.
-- Run pi-ensemble's `./install.sh` from this repo. That script detects `codebase-memory-mcp` on your `PATH` (or in `~/.local/bin/`) and writes a `codebase_memory` entry to `~/.config/mcp/mcp.json` for pi-mcp-adapter to pick up. **You should not have to hand-edit any MCP config.** Re-running `./install.sh` is safe (idempotent merge — other MCP servers you configured by hand are preserved). Verify after `pi` restarts with `/mcp` — should list `codebase_memory` with 7 direct tools (`search_code`, `search_graph`, `trace_path`, `detect_changes`, `get_code_snippet`, `get_architecture`, `query_graph`).
+- Run pi-ensemble's `./install.sh` from this repo. That script detects `codebase-memory-mcp` on your `PATH` (or in `~/.local/bin/`) and writes a `codebase_memory` entry to `~/.config/mcp/mcp.json` for pi-mcp-adapter to pick up (the bridge installed in the [Install commands](#install-commands) block; full walkthrough in [Using MCP servers](#using-mcp-servers-per-host-or-per-project)). **You should not have to hand-edit any MCP config.** Re-running `./install.sh` is safe (idempotent merge — other MCP servers you configured by hand are preserved). Verify after `pi` restarts with `/mcp` — should list `codebase_memory` with 7 direct tools (`search_code`, `search_graph`, `trace_path`, `detect_changes`, `get_code_snippet`, `get_architecture`, `query_graph`).
 - One-shot index every project the first time pi opens there:
   ```
   mcp({tool: "codebase_memory_index_repository", args: '{"repo_path": "."}'})
@@ -347,7 +351,9 @@ Pi has no built-in Model Context Protocol support — MCP is provided by a bridg
 pi install npm:pi-mcp-adapter
 ```
 
-`pi install` drops the bridge into `~/.pi/agent/extensions/`, where pi-ensemble's auto-forward picks it up for subagents automatically. Bridges installed outside the canonical location can be added via `PI_ENSEMBLE_USER_EXTENSION=<abs-path or npm:ref>`.
+(Already done as part of the [Prerequisites install commands](#install-commands)? Skip to Step 2.)
+
+`pi install npm:<pkg>` installs into the flat npm project under `~/.pi/agent/npm/node_modules/` (NOT the `extensions/` dir, which is only used for git/local installs) — verified against pi `0.79.1`, so treat a pi version bump as a deliberate re-verification. Pi's own package manager loads it at runtime via the `pi.extensions` manifest in the package's package.json — **in the parent session**. For subagents, pi-ensemble's auto-forward (`discoverInstalledExtensions`) reads only the `extensions/` layout, so an npm-layout install is NOT forwarded to subagents: either install the bridge git/local into `~/.pi/agent/extensions/` (auto-forwarded), or set `PI_ENSEMBLE_USER_EXTENSION=<abs-path or npm:ref>` to forward it explicitly. If `/mcp` shows no MCP tools inside a subagent, this is the usual cause. This step covers the bridge install; the bridge itself is a generic prerequisite — any MCP server you add later (Step 2 onward) depends on it.
 
 ### Step 2 — Define MCP servers (bridge config, 4 tiers)
 
@@ -541,7 +547,7 @@ The 28 modules under `modules/` (vipune memory patterns, output standards, async
 
 ## Pi compatibility
 
-pi-ensemble depends on Pi's CLI flags, JSON event stream shape, and `ExtensionAPI` surface. The current sandbox image ships pi `0.79.1`; the host-mode dev-deps pin `@earendil-works/pi-coding-agent` to `~0.75.3` so a Pi minor bump is a deliberate update.
+pi-ensemble depends on Pi's CLI flags, JSON event stream shape, and `ExtensionAPI` surface. The current sandbox image ships pi `0.79.1`; the host-mode dev-deps pin `@earendil-works/pi-coding-agent` to `~0.75.3` so a Pi minor bump is a deliberate update. The sandbox version is a hand-maintained claim (the image's `npm install -g` is unpinned) and is asserted at exactly three prose sites — the README "Status" line, `.devcontainer/Dockerfile` (pi-mcp-adapter comment), and this section; update all three when the image's pi changes.
 
 When updating Pi:
 1. Check the [pi-mono releases](https://github.com/badlogic/pi-mono/releases).

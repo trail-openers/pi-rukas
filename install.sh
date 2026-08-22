@@ -27,6 +27,7 @@ done
 
 ENSEMBLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI_AGENT_DIR="${PI_AGENT_DIR:-$HOME/.pi/agent}"
+EXT_DIR="$PI_AGENT_DIR/extensions"
 
 echo "==> pi-ensemble install"
 echo "    ensemble dir: $ENSEMBLE_DIR"
@@ -121,10 +122,30 @@ fi
 
 # ---- 5. Register the extension with Pi ---------------------------------------
 
-mkdir -p "$PI_AGENT_DIR/extensions"
-ext_target="$PI_AGENT_DIR/extensions/pi-ensemble"
+mkdir -p "$EXT_DIR"
+ext_target="$EXT_DIR/pi-ensemble"
 ln -sfn "$ENSEMBLE_DIR/extension" "$ext_target"
 echo "==> Registered extension at $ext_target"
+
+# Bridge check — the load-bearing rationale (Pi core has no native MCP, so
+# without pi-mcp-adapter NO MCP server loads) lives in the Dockerfile
+# post-install check; this site differs in two site-specific ways: it WARNS
+# rather than fails (install.sh is warn-only, never a hard gate), and it
+# tests BOTH install layouts — `pi install npm:` lands in
+# $PI_AGENT_DIR/npm/node_modules/, git/local installs in $EXT_DIR — so a
+# correctly-installed user is not warned. (Mirror of the Dockerfile build
+# gate — keep the two in sync.)
+if [ ! -e "$PI_AGENT_DIR/npm/node_modules/pi-mcp-adapter" ] \
+   && [ ! -e "$EXT_DIR/pi-mcp-adapter" ]; then
+  echo ""
+  echo "!! pi-mcp-adapter not found in $PI_AGENT_DIR/npm/node_modules/"
+  echo "   (pi install npm: layout) or $EXT_DIR (git/local layout)"
+  echo "   — Pi core has no native MCP, so without the bridge"
+  echo "   NO MCP server loads (including codebase_memory)."
+  echo "   Install it with: pi install npm:pi-mcp-adapter   (README → Prerequisites)"
+  echo "   and re-run ./install.sh."
+  echo ""
+fi
 
 # ---- 6. Register codebase-memory-mcp with pi-mcp-adapter ---------------------
 #
@@ -289,8 +310,7 @@ fi
 # `timeoutMs` of exactly 180000 (#236), and `maxRetryDelayMs` of exactly 10000
 # (the value documented above). Any other value is preserved.
 
-PI_AGENT_DIR_INSTALL="${PI_AGENT_DIR:-$HOME/.pi/agent}"
-PI_SETTINGS="$PI_AGENT_DIR_INSTALL/settings.json"
+PI_SETTINGS="$PI_AGENT_DIR/settings.json"
 RETRY_TIMEOUT_MS=600000
 RETRY_MAX_DELAY_MS=60000   # Pi's own default; see the note above before lowering
 RETRY_BAD_MAX_DELAY_MS=10000   # our own past footprint, repaired on sight
