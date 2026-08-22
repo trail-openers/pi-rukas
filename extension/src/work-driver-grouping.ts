@@ -32,7 +32,13 @@
  *        merged it. (#312 — bare word "independent" removed due to
  *        high false-positive rate in prose).
  *   R4 — Subsystem tag prefix in title: [frontend], [docs], etc.
- *        Same-prefix issues group together, absent R3.
+ *        Same-prefix issues group together, absent R3. A bracket tag
+ *        is explicit human curation and unions on its own; a
+ *        conventional-commit scope (`fix(spawn): …`) is boilerplate in
+ *        this repository, so a bare scope match no longer unions — it
+ *        unions only when corroborated by an R1 link marker between
+ *        the pair, R2 path overlap ≥ 0.5, or the tag appearing in
+ *        bracket form rather than as a scope. (#501)
  *   R5 — Default: separate groups.
  *
  * Guardrails after grouping:
@@ -98,6 +104,13 @@ export function groupIssues(
   if (activeIssues.length === 0) {
     return { groups: {}, fanout: { mode: "parallel", concurrencyCap: 1 }, notes };
   }
+  // Structural corroboration record for R4: which pairs R1/R2 actually unioned.
+  // #501 — tracking these as note strings would couple R4's union DECISION to
+  // the human-readable note format of two other rules; a cosmetic rename in
+  // R1's note would silently disable R4's corroboration detection.
+  const pairKey = (a: number, b: number) => `${Math.min(a, b)}|${Math.max(a, b)}`;
+  const r1Pairs = new Set<string>();
+  const r2Pairs = new Set<string>();
   if (activeIssues.length === 1) {
     // Single-issue path: return one "default" group. Callers usually
     // shouldn't reach groupIssues for K=1, but return sanely if they do.
@@ -171,6 +184,16 @@ export function groupIssues(
     parent.set(ra, rb);
     return true;
   }
+  /**
+   * #501 — did this pair end up in one component, by any rule? Used for
+   * corroboration notes: R4 may find its pair already merged by R1/R2 and
+   * still be the rule whose corroboration licensed a *bare-scope* match,
+   * which the operator needs to see even though `union` itself is a no-op.
+   */
+  function alreadyGrouped(a: number, b: number): boolean {
+    if (splitIssues.has(a) || splitIssues.has(b)) return false;
+    return find(a) === find(b);
+  }
 
   // R1 — Explicit link markers: depends-on / companion-to / blocks /
   // blocked-by. Directed edge → union both ends.
@@ -188,6 +211,7 @@ export function groupIssues(
       const other = Number.parseInt(m[1] ?? "", 10);
       if (Number.isFinite(other) && parent.has(other) && other !== n && union(n, other)) {
         notes.push(`R1 link: #${n} ↔ #${other}`);
+        r1Pairs.add(pairKey(n, other));
       }
     }
     linkRe.lastIndex = 0;
@@ -243,6 +267,7 @@ export function groupIssues(
       const jaccard = union_ === 0 ? 0 : inter / union_;
       if (jaccard >= 0.5 && union(a, b)) {
         notes.push(`R2 path-overlap: #${a} ↔ #${b} (jaccard=${jaccard.toFixed(2)})`);
+        r2Pairs.add(pairKey(a, b));
       }
     }
   }
@@ -250,33 +275,73 @@ export function groupIssues(
   // R4 — Subsystem tag prefix in title. Title is expected on the first
   // non-empty line of the body (gh issue view format). Match `[tag]` at
   // the start.
-  const tagByIssue = new Map<number, string>();
+  // #376 — `[tag]` at the head of a title is structurally impossible for a
+  // /plan-authored issue, which mandates `feat: ` / `fix: ` / `EPIC: `
+  // prefixes. But the subsystem is already there, as the conventional-commit
+  // scope: `fix(work-driver): …`. Read that too rather than asking anyone to
+  // change how titles are written.
+  // #501 — a bracket tag is explicit human curation and unions on its own.
+  // A conventional-commit scope match is boilerplate in this repository —
+  // `work-driver` is the modal scope among /work-eligible issues, so a bare
+  // scope match confirms boilerplate rather than discovering structure. A
+  // scope match now unions only when corroborated by an R1 link marker
+  // between the pair or R2 path overlap ≥ 0.5; an uncorroborated scope match
+  // is declined and noted rather than silently joined.
+  // #501 — accumulated so the O(N²) per-pair "declined" notes collapse into
+  // one summary per tag in the plumb report; the loop body pushes pairs,
+  // not notes.
+  const r4Declined = new Map<string, string[]>();
+  const tagByIssue = new Map<number, { tag: string; bracket: boolean }>();
   for (const n of activeIssues) {
     const body = bodiesByIssue[n] ?? "";
     const firstLine = body.split("\n").find((l) => l.trim().length > 0) ?? "";
     const bracket = firstLine.match(/^(?:title:\s*)?\[([a-z0-9_-]+)\]\s/i);
-    // #376 — `[tag]` at the head of a title is structurally impossible for a
-    // /plan-authored issue, which mandates `feat: ` / `fix: ` / `EPIC: `
-    // prefixes. But the subsystem is already there, as the conventional-commit
-    // scope: `fix(work-driver): …`. Read that too rather than asking anyone to
-    // change how titles are written.
     const scope = firstLine.match(
       /^(?:title:\s*)?(?:feat|fix|chore|docs|test|refactor|perf|ci|build|style)!?\(([a-z0-9_.-]+)\)!?\s*:/i,
     );
     const tag = bracket?.[1] ?? scope?.[1];
-    if (tag) tagByIssue.set(n, tag.toLowerCase());
+    if (tag) tagByIssue.set(n, { tag: tag.toLowerCase(), bracket: bracket !== null });
   }
   for (let i = 0; i < activeIssues.length; i++) {
     for (let j = i + 1; j < activeIssues.length; j++) {
       const a = activeIssues[i];
       const b = activeIssues[j];
       if (a === undefined || b === undefined) continue;
-      const ta = tagByIssue.get(a);
-      const tb = tagByIssue.get(b);
-      if (ta && tb && ta === tb && union(a, b)) {
-        notes.push(`R4 subsystem: #${a} ↔ #${b} (tag=[${ta}])`);
+      const ea = tagByIssue.get(a);
+      const eb = tagByIssue.get(b);
+      if (!ea || !eb || ea.tag !== eb.tag) continue;
+      const corroborations: string[] = [];
+      if (ea.bracket && eb.bracket) corroborations.push("bracket tag");
+      if (r1Pairs.has(pairKey(a, b))) corroborations.push("R1 link");
+      if (r2Pairs.has(pairKey(a, b))) corroborations.push("R2 path-overlap");
+      if (corroborations.length === 0) {
+        r4Declined.set(ea.tag, [...(r4Declined.get(ea.tag) ?? []), `#${a} ↔ #${b}`]);
+        continue;
+      }
+      // Record the corroboration whenever the pair ends up in one component —
+      // including when a corroborating rule (R1/R2) already merged them and
+      // union() is a no-op. The note still documents that the scope match
+      // would NOT have unioned on its own.
+      if (union(a, b) || alreadyGrouped(a, b)) {
+        notes.push(
+          `R4 subsystem: #${a} ↔ #${b} (tag=[${ea.tag}]) corroborated: ${corroborations.join(", ")}`,
+        );
+      } else {
+        // Split-blocked: union() refused and alreadyGrouped() is false by
+        // construction for split issues, so the pair was evaluated, corroborated,
+        // and declined — noted explicitly so the log is complete rather than
+        // silently skipping the case.
+        notes.push(`R4 skipped: #${a} ↔ #${b} (tag=[${ea.tag}]) — corroborated but split-blocked`);
       }
     }
+  }
+  // One summary note per tag instead of O(N²) per-pair notes: for the modal
+  // scope, N bare-scope issues would otherwise dominate the plumb report with
+  // N² notes that all say the same thing.
+  for (const [tag, pairs] of r4Declined) {
+    notes.push(
+      `R4 declined: ${pairs.length} pair${pairs.length === 1 ? "" : "s"} (tag=[${tag}]) — uncorroborated scope match: ${pairs.join(", ")}`,
+    );
   }
 
   // Collect union-find components.

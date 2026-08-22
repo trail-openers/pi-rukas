@@ -113,23 +113,62 @@ assert(
   assert(r4 === undefined, "different conventional-commit scopes are not unioned");
 }
 {
+  // #501 — a bare conventional-commit-scope match no longer unions on its
+  // own; it is declined and noted instead.
   const res = groupIssues([1, 2], {
     1: "title: fix(work-driver): first thing\n\nbody",
     2: "title: fix(work-driver): second thing\n\nbody",
   });
   assert(
-    (res.notes.find((x) => x.startsWith("R4 subsystem:")) ?? "").includes("work-driver"),
-    "R4 reads the conventional-commit scope — /plan titles can never carry a leading [tag]",
+    Object.keys(res.groups).length === 2,
+    "#501: bare scope match does NOT union — two singleton groups",
+  );
+  const declined = res.notes.find((x) => x.startsWith("R4 declined:") && x.includes("#1 ↔ #2"));
+  assert(
+    declined !== undefined && declined.includes("tag=[work-driver]"),
+    "#501: R4 declined note names the tag for an uncorroborated scope match",
+  );
+  assert(
+    !res.notes.some((x) => x.startsWith("R4 subsystem:")),
+    "#501: no R4 union note when the scope match is uncorroborated",
   );
 }
 {
+  // #501 — scope match corroborated by R2 path overlap ≥ 0.5 still unions,
+  // and the note names the corroboration.
+  const res = groupIssues([1, 2], {
+    1: "title: fix(work-driver): first thing\n\nTouches extension/src/foo.ts and extension/src/bar.ts",
+    2: "title: fix(work-driver): second thing\n\nTouches extension/src/foo.ts and extension/src/bar.ts",
+  });
+  assert(Object.keys(res.groups).length === 1, "#501: scope + R2 overlap unions into one group");
+  const r4 = res.notes.find((x) => x.startsWith("R4 subsystem:"));
+  assert(
+    r4 !== undefined && r4.includes("R2 path-overlap"),
+    "#501: R4 note names the corroboration that licensed the union",
+  );
+}
+{
+  // #501 — scope match corroborated by an R1 link marker still unions.
+  const res = groupIssues([1, 2], {
+    1: "title: fix(work-driver): first thing\n\nDepends-on: #2",
+    2: "title: fix(work-driver): second thing\n\nbody",
+  });
+  assert(Object.keys(res.groups).length === 1, "#501: scope + R1 link unions into one group");
+  assert(
+    (res.notes.find((x) => x.startsWith("R4 subsystem:")) ?? "").includes("R1 link"),
+    "#501: R4 note names the R1 corroboration",
+  );
+}
+{
+  // #501 — a bracket tag is explicit human curation and unions on its own.
   const res = groupIssues([1, 2], {
     1: "title: [frontend] one\n\nbody",
     2: "title: [frontend] two\n\nbody",
   });
+  assert(Object.keys(res.groups).length === 1, "#501: bracket tag unions on its own");
   assert(
-    (res.notes.find((x) => x.startsWith("R4 subsystem:")) ?? "").includes("frontend"),
-    "the original [tag] form still works (no regression)",
+    (res.notes.find((x) => x.startsWith("R4 subsystem:")) ?? "").includes("bracket tag"),
+    "#501: R4 note names the bracket-tag corroboration",
   );
 }
 
@@ -189,9 +228,38 @@ assert(
     r4.every((x) => !x.includes("#287")),
     "a split-blocked union is NOT reported as having fired",
   );
+  const declined = res.notes.filter((x) => x.startsWith("R4 declined:"));
   assert(
-    r4.some((x) => x.includes("#366") && x.includes("#368")),
-    "...while the union that did happen still is",
+    declined.length === 1,
+    "#501: one summary note for the three uncorroborated scope pairs (not three per-pair notes)",
+  );
+  assert(
+    declined[0] !== undefined &&
+      declined[0].includes("tag=[work-driver]") &&
+      declined[0].includes("#287 ↔ #366") &&
+      declined[0].includes("#287 ↔ #368") &&
+      declined[0].includes("#366 ↔ #368"),
+    "#501: the summary names the tag and every declined pair",
+  );
+  assert(
+    declined.every((x) => x.includes("tag=[work-driver]")),
+    "#501: each declined note names the shared scope",
+  );
+}
+{
+  // #501 — the incident pair on its own: #366 ↔ #368 share the
+  // `work-driver` scope but are disjoint changes; before the fix R4
+  // joined them into one PR, and one issue's defect cost the other a
+  // cycle. They must land in separate groups now.
+  const res = groupIssues([366, 368], bodies);
+  assert(
+    Object.keys(res.groups).length === 2,
+    "#501: #366 ↔ #368 (shared work-driver scope, disjoint changes) → two groups",
+  );
+  const declined = res.notes.find((x) => x.startsWith("R4 declined:") && x.includes("#366 ↔ #368"));
+  assert(
+    declined !== undefined && declined.includes("tag=[work-driver]"),
+    "#501: R4 declined note names the pair and the tag",
   );
 }
 
