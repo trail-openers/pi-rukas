@@ -173,8 +173,28 @@ export function explainCap(
       );
       return `${base}.${rootBlurb}`;
     }
-    case "lens-fix-not-integrated":
-      return "the lens-fix round did not reach the branch — either the integration failed or the fixer wrote nothing — so the cycle halted rather than reviewing again. The next round would have re-read an unchanged branch and re-reported the identical findings until the round cap fired, which is what burned whole review budgets on already-solved defects. The git detail is in the plumb-report above; the fix may still be sitting uncommitted in the worktree, so check `git -C .worktrees/... status` before re-running";
+    case "lens-fix-not-integrated": {
+      // #492 — the cap-hit itself carries the cause and the git evidence
+      // that establishes it, plus the worktree the driver inspected. Read
+      // the latest such cap from the log; an absent detail (pre-#492 state
+      // files) falls back to naming the worktree from the recorded map.
+      const hit = [...state.eventLog]
+        .reverse()
+        .find(
+          (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
+            e.kind === "cap-hit" && e.cap === "lens-fix-not-integrated",
+        );
+      const worktree = hit?.lensWorktreePath ?? state.pipelineState.worktrees?.default;
+      const cause =
+        hit?.evidence ??
+        (hit
+          ? "(no git evidence recorded — this cycle predates #492's cause classification)"
+          : "(no lens-fix-not-integrated cap recorded in the event log)");
+      const where = worktree
+        ? `The worktree inspected was \`${worktree}\` (\`git -C ${worktree} status\`).`
+        : "The inspected worktree path was not recorded.";
+      return `the lens-fix round did not reach the branch — ${cause}. ${where} The cycle halted rather than reviewing again, because the next round would have re-read an unchanged branch and re-reported the identical findings until the round cap fired, which is what burned whole review budgets on already-solved defects. If the fix is still on disk, commit and push it there and re-run; if nothing exists, the findings were likely false positives and should be adjudicated before re-running`;
+    }
   }
   // PR17 — `verify-failed:<step>`: the driver-side outcome gate found
   // the step's claimed result isn't backed by executed evidence. The

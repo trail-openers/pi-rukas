@@ -6,12 +6,9 @@
  * and — on approval following a lens-fix round — commits the fix via
  * work-driver-lens.ts's `commitLensFixChanges`.
  *
- * #485/#486 — the loop's per-round verdicts and the per-workstream outcome
- * are now recorded as DATA (`adversarial-round` / `adversarial-workstream-
- * outcome` events) rather than guessed from reply prose, and a transient
- * failure in ONE workstream's loop is retried once (per-workstream budget,
- * taxonomy backoff) while the other workstreams' approved verdicts are
- * preserved in the event log either way.
+ * #492 — when a lens-fix never reaches the branch, the cap-hit carries the
+ * CAUSE ("no diff produced" vs "a diff existed but integration failed")
+ * and the git evidence that establishes it, plus the worktree inspected.
  */
 
 import { exec } from "node:child_process";
@@ -26,7 +23,7 @@ import {
 import { reentryPassBatchSpan } from "./work-driver-adversarial-reentry.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { integrate, withIntegrationLock } from "./work-driver-integrate.ts";
-import { commitLensFixChanges } from "./work-driver-lens.ts";
+import { commitLensFixChanges, lensWorktree } from "./work-driver-lens.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -267,11 +264,8 @@ export async function runAdversarial(
       const execFn = ctx.verifyExecFn ?? execp;
       const psFix = state.pipelineState;
       const fixWorktrees = psFix.worktrees ?? {};
-      // #287 — development always happens in a worktree, so this is normally
-      // true; the check stays as a defensive read of the ACTUAL worktree map
-      // rather than an assumption about it. (#393 removed the env knob that
-      // used to gate it, which restored the pre-#287 repoRoot-as-dev-tree
-      // shape.)
+      // #287 — development always happens in a worktree, so this is
+      // normally true; defensive read of the actual worktree map.
       const inWorktree = Object.values(fixWorktrees).some(
         (p) => path.resolve(p) !== path.resolve(ctx.repoRoot),
       );
@@ -284,36 +278,57 @@ export async function runAdversarial(
         ? await integrateLensFix(execFn, ctx, psFix, fixWorktrees)
         : await commitLensFixChanges(ctx.repoRoot, psFix.reviewRound, execFn);
       if (!result.committed) {
-        // The fix did not reach the branch — either integration failed
-        // (`result.error`) or every worktree was clean, which means the fixer
-        // wrote nothing at all and is silent by construction.
-        //
-        // Either way the next lens-review round is pointless: it re-reads
-        // `origin/<base>..origin/<branch>`, which has not moved, and
-        // re-reports the identical findings at escalating severity until the
-        // round cap fires on a defect that may well already be solved on
-        // disk. Measured on lantern #686: two full rounds after the driver
-        // had already logged that it refused to integrate, and #673/#677 the
-        // same shape.
-        //
-        // This used to be recorded in `plumbReports` rather than the event
-        // log specifically so the tail would stay "adversarial-approved" and
-        // routing would continue — i.e. the failure was hidden from the one
-        // consumer that could have acted on it. Halt instead, and say why.
-        const detail = result.error ?? "produced no changes in any worktree";
-        next.pipelineState.plumbReports.push({
-          step: "adversarial",
-          role: "driver",
-          body: `lens-fix ${detail}`,
-          at: Date.now(),
-        });
+        // The fix did not reach the branch. #492 — "did not reach" used to
+        // be the end of the story: both causes — the fixer wrote nothing
+        // and a diff existed but integration failed — parked with the same
+        // cap and no evidence, and the handoff told the operator to guess
+        // between them. They require opposite responses, so the cause is
+        // now established with git and carried on the cap-hit itself.
+        // The next round would be pointless either way: it re-reads an
+        // unchanged branch and re-reports identical findings until the
+        // round cap fires. Pre-#492 this lived only in `plumbReports`
+        // (hidden from routing); halt instead, and say why.
+        const fixTree = inWorktree ? lensWorktree(ctx, state) : ctx.repoRoot;
+        const cause = result.error
+          ? `a diff existed but staging or integration failed (${result.error})`
+          : "the fixer produced no diff — the inspected worktree was clean";
+        if (result.error) {
+          // The structural-failure half: a diff existed, and it may still
+          // be sitting in the worktree — it deserves a plumb-report.
+          next.pipelineState.plumbReports.push({
+            step: "adversarial",
+            role: "driver",
+            body: `lens-fix ${cause} — worktree inspected: ${fixTree}`,
+            at: Date.now(),
+          });
+        }
+        // Establish the no-diff classification with git rather than
+        // asserting it, and name the tree we checked — the #448 cwd defect
+        // was exactly "we looked in the wrong tree".
+        let evidence = result.error ?? "";
+        if (!evidence) {
+          try {
+            const { stdout: statusOut } = await execFn("git status --porcelain", {
+              cwd: fixTree,
+              maxBuffer: 64 * 1024,
+            });
+            evidence = statusOut.trim()
+              ? `git status --porcelain at ${fixTree} reported entries that were not stageable:\n${statusOut.trim().slice(0, 200)}`
+              : `git status --porcelain at ${fixTree} was empty`;
+          } catch (err) {
+            evidence = `git status --porcelain failed at ${fixTree}: ${(err as Error).message?.slice(0, 200)}`;
+          }
+        }
         next = appendEvent(next, {
           kind: "cap-hit",
           at: Date.now(),
           cap: "lens-fix-not-integrated",
           reviewRound: psFix.reviewRound,
           nextStep: "handoff",
+          lensWorktreePath: fixTree,
+          evidence,
         });
+        trace(`work-driver: lens-fix not integrated — ${cause} (${evidence})`);
         return next;
       }
       // `integrate()` already pushed; only the legacy repoRoot path needs this.

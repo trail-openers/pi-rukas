@@ -4,16 +4,18 @@
  * (#171, AGENTS.md §12 file-size limit).
  *
  * Covers: Issue #305 sections 47/48: no-op lens-fix produces no empty commit + new untracked file gets committed.
+ * Plus #492 section 49: a no-op lens-fix's cap-hit carries the "no diff produced" classification,
+ * the git evidence that establishes it, and the worktree path it inspected.
  *
  * No real Pi spawn happens; all dispatchCore calls are mocked.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
-import { initialState, writeState } from "../src/workflow-state.ts";
+import { initialState, readState, writeState } from "../src/workflow-state.ts";
 import { mkLensSummary, setupSpawnGuard } from "./test-helpers.ts";
 
 let exit = 0;
@@ -86,7 +88,8 @@ setupSpawnGuard();
     const { exec } = await import("node:child_process");
     const execp = promisify(exec);
 
-    // Real git repo with a committed feature branch.
+    // Real git repo with a committed feature branch, plus a separate
+    // worktree (so the driver's inWorktree branch is exercised).
     await execp("git init -q", { cwd: dir });
     await execp('git config user.email "t@t" && git config user.name "T"', {
       cwd: dir,
@@ -104,6 +107,8 @@ setupSpawnGuard();
       cwd: dir,
       shell: "/bin/bash",
     });
+    const wt = path.join(dir, ".wt");
+    await execp(`git worktree add --detach ${JSON.stringify(wt)} HEAD`, { cwd: dir });
 
     // Record the commit count BEFORE lens-fix.
     const { stdout: beforeLog } = await execp("git rev-list --count origin/main..HEAD", {
@@ -119,7 +124,7 @@ setupSpawnGuard();
         ...s.pipelineState,
         currentStep: "lens-fix",
         lastCompletedStep: "commit-pr",
-        worktrees: { default: dir },
+        worktrees: { default: wt },
         workstreams: {
           default: { id: "default", scope: "test", paths: [], outOfScope: [] },
         },
@@ -196,6 +201,147 @@ setupSpawnGuard();
       afterCount === beforeCount,
       `no empty commit after no-change lens-fix (before=${beforeCount}, after=${afterCount})`,
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// 49. Issue #492 — a lens-fix that produces nothing is classified as such.
+//
+// The `lens-fix-not-integrated` cap used to conflate two causes — "the fixer
+// wrote nothing" vs "a diff existed but integration failed" — and the
+// handoff told the operator to guess between them. This test drives the
+// no-diff half through the real driver: the fixer writes nothing, the
+// adversarial gate approves, and the cap-hit that fires must carry the
+// no-diff classification, the git evidence that establishes it, and the
+// worktree path it inspected.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-lens-no-diff-"));
+  try {
+    const fs = await import("node:fs/promises");
+    const { promisify } = await import("node:util");
+    const { exec } = await import("node:child_process");
+    const execp = promisify(exec);
+
+    // Real git repo: bare origin + worktree (the lens-fix tree) + repoRoot
+    // (the integration point, on the feature branch). `.git/info/exclude`
+    // keeps the driver's own state file out of integrate()'s dirty preflight
+    // — the worktree shares the main repo's .git, so one write covers both.
+    const origin = path.join(dir, "origin.git");
+    const root = path.join(dir, "root");
+    const wt = path.join(dir, "wt");
+    await execp("git init -q --bare --initial-branch=main origin.git", { cwd: dir });
+    await execp("git init -q --initial-branch=main root", { cwd: dir });
+    await execp('git config user.email "t@t" && git config user.name "T"', {
+      cwd: root,
+      shell: "/bin/bash",
+    });
+    writeFileSync(path.join(dir, "root", ".git", "info", "exclude"), "\n.pi/\n");
+    await fs.writeFile(path.join(root, "base.txt"), "hello\n");
+    await execp("git add base.txt && git commit -q -m initial", { cwd: root, shell: "/bin/bash" });
+    await execp("git remote add origin " + JSON.stringify(origin), { cwd: root });
+    await execp("git push -q -u origin main", { cwd: root });
+    await execp("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", {
+      cwd: root,
+    });
+    await execp("git checkout -qb feature/lens-no-diff", { cwd: root });
+    await fs.writeFile(path.join(root, "feature.txt"), "ok\n");
+    await execp("git add feature.txt && git commit -q -m 'feature'", {
+      cwd: root,
+      shell: "/bin/bash",
+    });
+    await execp("git push -q -u origin feature/lens-no-diff", { cwd: root });
+    await execp("git worktree add --detach " + JSON.stringify(wt) + " HEAD", { cwd: root });
+
+    let s = initialState(492, 1_000_000);
+    s = {
+      ...s,
+      pipelineState: {
+        ...s.pipelineState,
+        currentStep: "lens-fix",
+        lastCompletedStep: "commit-pr",
+        worktrees: { default: wt },
+        workstreams: {
+          default: { id: "default", scope: "test", paths: [], outOfScope: [] },
+        },
+        branchName: "feature/lens-no-diff",
+        prNumber: 4920,
+        reviewRound: 1,
+      },
+      eventLog: [
+        {
+          kind: "lens-issues-found" as const,
+          at: 2_000_000,
+          jobId: "j-lens-1",
+          round: 1,
+          findings: JSON.stringify([
+            {
+              lens: "SIMPLICITY",
+              severity: "MEDIUM",
+              path: "feature.txt",
+              line: 1,
+              title: "trivial",
+              description: "nothing to fix",
+              suggestion: "leave as is",
+            },
+          ]),
+          verdict: "ISSUES_FOUND" as const,
+        },
+      ],
+    };
+    await writeState(root, s);
+
+    const ctx: DriverContext = {
+      pi: makeFakePi().pi,
+      repoRoot: root,
+      issue: 492,
+      issueBodyFetcherFn: mockIssueBodyOk,
+      dispatchFn: async (_pi, spec, opts) => {
+        // lens-fix: do NOT modify any files (the fixer produced no diff).
+        if (opts?.label?.startsWith("developer:lens-fix")) {
+          return mkResult({ role: "developer", ok: true, text: "No changes needed." });
+        }
+        if (opts?.label === "ops:handoff") {
+          return mkResult({ role: "ops", text: "Posted." });
+        }
+        throw new Error(`unexpected dispatch: ${spec.role} / ${opts?.label}`);
+      },
+      adversarialLoopFn: async () => {
+        return mkResult({
+          role: "adversarial-loop",
+          ok: true,
+          loopOutcome: "approved",
+          text: "Adversarial APPROVED.",
+        });
+      },
+      lensReviewFn: async () => mkLensSummary({ verdict: "APPROVED" }),
+    };
+
+    await runWorkDriver(ctx).catch(() => {});
+
+    const after = await readState(root, 492);
+    const cap = [...(after?.eventLog ?? [])].reverse().find(
+      (e) => e.kind === "cap-hit" && e.cap === "lens-fix-not-integrated",
+    );
+    assert(
+      cap !== undefined,
+      "a no-diff lens-fix parks with the lens-fix-not-integrated cap",
+    );
+    if (cap && cap.kind === "cap-hit") {
+      assert(
+        (cap.evidence ?? "").includes("git status --porcelain") &&
+          (cap.evidence ?? "").includes("was empty"),
+        `the cap carries the git evidence that the worktree was clean (got: ${cap.evidence})`,
+      );
+      assert(
+        cap.lensWorktreePath === wt,
+        `the cap names the worktree it inspected (got: ${cap.lensWorktreePath})`,
+      );
+      assert(
+        (after?.pipelineState.plumbReports ?? []).length === 0,
+        "a no-diff outcome is NOT an integration failure — it carries no plumb-report",
+      );
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

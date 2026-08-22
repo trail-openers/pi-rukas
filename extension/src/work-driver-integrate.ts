@@ -194,10 +194,35 @@ export interface IntegrateOpts {
   verifyTimeoutMs?: number;
 }
 
+/**
+ * #492 — which worktrees produced no diff, keyed by workstream id.
+ *
+ * The value is the worktree path itself: that IS the git evidence an operator
+ * inspects (`git -C <path> status`). Naming the exact path is what lets the
+ * cap say "the fixer produced no diff in `<path>`" instead of "integration
+ * failed or the fixer wrote nothing — pick one."
+ */
+export type NoDiff = Record<string, string>;
+
 export type IntegrateResult =
-  | { ok: true; workstreams: string[]; empty: false }
-  /** Nothing to integrate — every worktree was clean. Not an error. */
-  | { ok: true; workstreams: []; empty: true }
+  | {
+      ok: true;
+      workstreams: string[];
+      empty: false;
+      /** #492 — worktrees that were clean at stage time (the fixer/developer
+       *  produced no diff there). Set only when at least one worktree was
+       *  clean, so a caller can tell "this one wrote nothing" apart from the
+       *  workstreams that did ship. */
+      noDiff?: NoDiff;
+    }
+  /**
+   * Nothing to integrate — every worktree was clean. Not an error.
+   *
+   * #492 — `noDiff` names the worktree(s) that produced no diff, so the
+   *  lens-fix caller can surface "the fixer produced no diff in `<path>`"
+   *  rather than collapsing it into the generic "integration failed" reading.
+   */
+  | { ok: true; workstreams: []; empty: true; noDiff: NoDiff }
   | {
       ok: false;
       reason: string;
@@ -295,6 +320,12 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
     //    is what captures untracked new files — `git diff HEAD` alone misses
     //    them, which silently dropped whole files pre-PR19.
     const applied: string[] = [];
+    // #492 — which worktrees produced no diff, keyed by workstream id. The
+    // value is the worktree PATH: that is the git evidence an operator
+    // inspects (`git -C <path> status`), and naming it is what lets the cap
+    // say "the fixer wrote nothing in `<path>`" instead of "integration
+    // failed or the fixer wrote nothing — pick one".
+    const noDiff: NoDiff = {};
     for (const id of ids) {
       const wt = worktrees[id];
       if (!wt) continue;
@@ -304,6 +335,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       // rather than inferred from a diff that may be empty for other reasons.
       const staged = await stagePorcelainPaths(execFn, wt);
       if (staged === 0) {
+        noDiff[id] = wt;
         if (opts.requireAllNonEmpty) {
           await restoreRoot();
           return {
@@ -326,6 +358,10 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
           await restoreRoot();
           return { ok: false, reason: `worktree '${id}' staged diff came back empty` };
         }
+        // Staged N paths yet the cached diff is empty — classify it as a
+        // clean worktree rather than an integration error, for the same
+        // reason as the `staged === 0` branch above.
+        noDiff[id] = wt;
         continue;
       }
       const patchFile = path.join(opts.scratchDir, `integrate-${id}.patch`);
@@ -364,7 +400,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       }
       applied.push(id);
     }
-    if (applied.length === 0) return { ok: true, workstreams: [], empty: true };
+    if (applied.length === 0) return { ok: true, workstreams: [], empty: true, noDiff };
 
     // 4. Commit.
     await execFn(
@@ -436,7 +472,12 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
         );
       }
     }
-    return { ok: true, workstreams: applied, empty: false };
+    return {
+      ok: true,
+      workstreams: applied,
+      empty: false,
+      noDiff: Object.keys(noDiff).length > 0 ? noDiff : undefined,
+    };
   } catch (err) {
     const e = err as Error & { stderr?: string };
     // Anything that threw mid-integration leaves the same half-applied tree a

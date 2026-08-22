@@ -439,11 +439,15 @@ export async function runLensFix(
  * never looked. Having one resolver is what keeps them from drifting apart
  * again.
  *
+ * #492 — exported so the adversarial gate's lens-fix integration path names
+ * the SAME tree it inspects and reports: the cap's handoff text and the
+ * smoke tests must point at the worktree the driver actually checked.
+ *
  * Falls back to repoRoot when no worktree is recorded — a cycle whose
  * mechanized branch setup fell back develops there, and the fix belongs
  * wherever the work is.
  */
-function lensWorktree(ctx: DriverContext, state: WorkState): string {
+export function lensWorktree(ctx: DriverContext, state: WorkState): string {
   const wt = state.pipelineState.worktrees ?? {};
   return wt.default ?? wt[Object.keys(wt)[0] ?? ""] ?? ctx.repoRoot;
 }

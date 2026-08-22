@@ -221,6 +221,12 @@ export type WorkEvent =
       kind: "cap-hit";
       at: number;
       /**
+       * #492 — the worktree the lens-fix driver inspected, named so the
+       * handoff tells the operator WHERE to look (`git -C <worktree>
+       * status`) instead of "a worktree".
+       */
+      lensWorktreePath?: string;
+      /**
        * Which cap fired. Covers the handoff-doctrine caps plus the
        * "ci-retry" cap added in PR2 after the live-test infinite-loop bug:
        * ci-status:failure → develop → adversarial → review → ci → ... had no
@@ -315,6 +321,13 @@ export type WorkEvent =
         | `verify-failed:${WorkStep}`
         | `step-failed:${WorkStep}`;
       reviewRound: number;
+      /**
+       * #492 — the git evidence that establishes WHICH failure mode
+       * produced this cap-hit, verbatim from the command that established
+       * it. On `lens-fix-not-integrated` it distinguishes "the fixer
+       * wrote nothing" from "a diff existed but integration failed".
+       */
+      evidence?: string;
       /**
        * What the driver will do next: "handoff" (terminal), "step-back"
        * (Step 7h), or "ci" (Step 8).
