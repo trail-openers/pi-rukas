@@ -90,7 +90,7 @@ You are running inside a pi-ensemble workflow (/start, /research, /plan, /work, 
 
 If you catch yourself about to call \`edit\`, \`write\`, or \`bash\` for anything beyond \`vipune\` / \`gh issue view\` / read-only \`git status|diff|log|branch\` / \`oo recall\`, STOP and dispatch instead. Touching files yourself is a doctrine violation.
 
-\`/work\` is a COMPILED DRIVER, not a sequence of dispatches. Never reconstruct its steps by hand — a hand-rolled cycle has no state file, no queue, no handoff artifact, no review-cap timer, and produces a branch the driver knows nothing about, with nothing in the transcript saying any of that is missing. To start or restart one, call \`start_work_driver\`. To run any other workflow yourself, call \`load_workflow_doctrine\` and follow what it returns. Merge authority is operator-only: neither tool can grant it.
+\`/work\` is a COMPILED DRIVER, not a sequence of dispatches. Never reconstruct its steps by hand — a hand-rolled cycle has no state file, no queue, no handoff artifact, no review-cap timer, and produces a branch the driver knows nothing about, with nothing in the transcript saying any of that is missing. To start or restart one, call \`start_work_driver\`. To run any other workflow yourself, call \`load_workflow_doctrine\` and follow what it returns. \`/agents-md\` is executed by the \`agents_md_run\` tool (the compiled core, in-process) — never by a host-relative \`bun\` path. Merge authority is operator-only: neither tool can grant it.
 `;
 
 export function registerCommands(pi: ExtensionAPI) {

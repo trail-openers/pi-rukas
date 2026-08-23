@@ -9,14 +9,9 @@
  * codepath was not entered" is a real, asserted property: a no-op update never
  * calls it.
  *
- * ## Wiring
- *
- * A small, dependency-free CLI (`bin/agents-md`-shaped `runAgentsMd`) plus the
- * exported functions. The `/agents-md` prompt body drives this CLI through
- * bash; the PM never edits the file by hand. The interactive "show the diff,
- * then ask" and the headless "show diff, write nothing" branches live in the
- * prompt layer, NOT here — this layer is deterministic and returns a
- * structured result so the prompt layer can render the diff and ask.
+ * Wiring: a small CLI (`runAgentsMd`) plus the exported verb functions and
+ * `runWrap` (the I/O shell of the brownfield `no-markers` wrap). The prompt
+ * layer renders diffs and asks; this layer is deterministic.
  */
 
 import { readFileSync, statSync, writeFileSync } from "node:fs";
@@ -33,6 +28,7 @@ import {
 } from "./ledger.ts";
 import { MARKER_VERSION, parseMarkers, presentIds, sectionContent } from "./markers.ts";
 import { commandsBody, environmentBody, gatesBody, omissionFor, renderAgent } from "./renderer.ts";
+import { WrapError, isInsertionsOnly, wrapBytes, wrapLedgerRows } from "./wrap.ts";
 
 export type Verb = "create" | "update" | "check";
 
@@ -90,9 +86,8 @@ export interface VerbResult {
 
 function fileState(fs: AgentsMdFs, file: string): FileState {
   if (!fs.stat(file)) return "no-file";
-  const content = fs.readFile(file);
   try {
-    return presentIds(content).length > 0 ? "has-markers" : "no-markers";
+    return presentIds(fs.readFile(file)).length > 0 ? "has-markers" : "no-markers";
   } catch {
     // Markers present but corrupt — treat as has-markers; the verb will refuse.
     return "has-markers";
@@ -106,7 +101,29 @@ function fileState(fs: AgentsMdFs, file: string): FileState {
 const DEFAULT_PREAMBLE =
   "# AGENTS.md\n\n<!-- pi-ensemble:agents-md:managed — the sections below are maintained by /agents-md; edits between the markers are preserved on update. -->\n";
 
-export function createAgent(root: string, file: string, fs: AgentsMdFs = DEFAULT_FS): VerbResult {
+function omissionRows(facts: DetectedFacts, today: string): LedgerRow[] {
+  const rows: LedgerRow[] = [];
+  for (const id of ["quality-gates", "commands", "environment"] as const) {
+    const reason = omissionFor(facts, id);
+    if (reason) rows.push({ key: `omit:${id}`, value: reason, provenance: "auto", date: today });
+  }
+  return rows;
+}
+
+/**
+ * Verb signatures carry `dryRun` as the LAST param (after `fs`) on purpose:
+ * the idempotency test passes its `FsOps` stub positionally as the third
+ * argument, so a param inserted before `fs` would break it. `dryRun: true`
+ * computes the full plan (including `newBytes`) but never calls `fs.writeFile`.
+ * For `check` the param is a no-op (it never writes) — it exists for
+ * signature uniformity.
+ */
+export function createAgent(
+  root: string,
+  file: string,
+  fs: AgentsMdFs = DEFAULT_FS,
+  dryRun = false,
+): VerbResult {
   if (fs.stat(file)) {
     // create refuses to touch an existing file — the operator must use update
     // or a brownfield wrap, which is an explicit decision, not a side effect.
@@ -118,9 +135,9 @@ export function createAgent(root: string, file: string, fs: AgentsMdFs = DEFAULT
   }
   const facts = detectFacts(root);
   const today = fs.today?.() ?? new Date().toISOString().slice(0, 10);
-  const ledger = initialLedger(facts, today);
+  const ledger = omissionRows(facts, today);
   const bytes = renderAgent({ facts, ledger, preamble: DEFAULT_PREAMBLE, version: MARKER_VERSION });
-  fs.writeFile(file, bytes);
+  if (!dryRun) fs.writeFile(file, bytes);
   return {
     verb: "create",
     plan: {
@@ -135,11 +152,17 @@ export function createAgent(root: string, file: string, fs: AgentsMdFs = DEFAULT
   };
 }
 
-export function updateAgent(root: string, file: string, fs: AgentsMdFs = DEFAULT_FS): VerbResult {
+export function updateAgent(
+  root: string,
+  file: string,
+  fs: AgentsMdFs = DEFAULT_FS,
+  dryRun = false,
+): VerbResult {
   const state = fileState(fs, file);
   if (state === "no-file") {
-    return createAgent(root, file, fs);
+    return createAgent(root, file, fs, dryRun);
   }
+  if (state === "no-markers") return runWrap(root, file, fs, dryRun);
   const current = fs.readFile(file);
   let parsed: string[];
   try {
@@ -169,7 +192,7 @@ export function updateAgent(root: string, file: string, fs: AgentsMdFs = DEFAULT
 
   // 2. Merge the ledger once on the CURRENT bytes: keep operator rows,
   //    supersede changed auto rows, and record any new omissions.
-  const auto = currentAutoRows(facts, today);
+  const auto = omissionRows(facts, today);
   const existingLedger = parseExistingLedger(current);
   if (existingLedger === undefined) {
     return {
@@ -209,7 +232,8 @@ export function updateAgent(root: string, file: string, fs: AgentsMdFs = DEFAULT
   // The single write codepath. A no-op update (wouldWrite false) never enters
   // this — which is exactly what the idempotency test asserts by stubbing
   // writeFile to throw. createAgent writes unconditionally (file absent).
-  if (wouldWrite) {
+  // dryRun skips it even when wouldWrite is true.
+  if (wouldWrite && !dryRun) {
     fs.writeFile(file, bytes);
   }
   return {
@@ -234,7 +258,9 @@ export function checkAgent(
   file: string,
   opts: { deep?: boolean } = {},
   fs: AgentsMdFs = DEFAULT_FS,
+  dryRun = false,
 ): VerbResult {
+  void dryRun; // check never writes; the param exists for signature uniformity.
   if (!fs.stat(file)) {
     return { verb: "check", error: "AGENTS.md does not exist", exitCode: 2 };
   }
@@ -253,23 +279,6 @@ export function checkAgent(
 }
 
 // ---------------------------------------------------------------- helpers
-
-function omissionRows(facts: DetectedFacts, today: string): LedgerRow[] {
-  const rows: LedgerRow[] = [];
-  for (const id of ["quality-gates", "commands", "environment"] as const) {
-    const reason = omissionFor(facts, id);
-    if (reason) rows.push({ key: `omit:${id}`, value: reason, provenance: "auto", date: today });
-  }
-  return rows;
-}
-
-function initialLedger(facts: DetectedFacts, today: string): LedgerRow[] {
-  return omissionRows(facts, today);
-}
-
-function currentAutoRows(facts: DetectedFacts, today: string): LedgerRow[] {
-  return omissionRows(facts, today);
-}
 
 function mergeOmissionRows(
   merged: LedgerRow[],
@@ -335,6 +344,87 @@ function gateCommandsFrom(content: string): string[] {
 }
 
 export { fileState };
+
+// ----------------------------------------------------------------- the wrap
+// The brownfield `no-markers` branch of `updateAgent`: the file exists, has no
+// pi-ensemble markers, and the wrap inserts marker pairs around the sections
+// the core can re-derive and appends the ones it can, leaving every original
+// line in place (insertions-only). `runWrap` is the I/O shell over the pure
+// `wrapBytes`. Exit codes: ambiguity → 1 (finding; the PM runs the
+// numbered-list protocol); a reword/delete or nothing classifiable → 2 (the
+// wrap's insertions-only construction makes a reword unreachable — the guard
+// catches a regression).
+
+export function runWrap(root: string, file: string, fs: AgentsMdFs, dryRun: boolean): VerbResult {
+  const current = fs.readFile(file);
+  const facts = detectFacts(root);
+  const today = fs.today?.() ?? new Date().toISOString().slice(0, 10);
+
+  const bodies: { id: string; body: string }[] = [];
+  const omitted: { id: string; reason: string }[] = [];
+  for (const { id, body } of [
+    { id: "quality-gates", body: gatesBody(facts) },
+    { id: "commands", body: commandsBody(facts) },
+    { id: "environment", body: environmentBody(facts) },
+  ] as const) {
+    if (typeof body === "string") bodies.push({ id, body });
+    else omitted.push({ id, reason: body.omit });
+  }
+
+  const ledger = wrapLedgerRows(today, omitted);
+  let bytes: string;
+  try {
+    bytes = wrapBytes(current, facts, bodies, ledger).bytes;
+  } catch (e) {
+    if (e instanceof WrapError) {
+      // Ambiguity is a finding (exit 1) — the operator can still decide per
+      // section via the numbered-list protocol. Any other wrap refusal is a
+      // hard refuse (exit 2).
+      return {
+        verb: "update",
+        error: e.message,
+        exitCode: /ambiguous classification/.test(e.message) ? 1 : 2,
+      };
+    }
+    throw e;
+  }
+
+  // Insertions-only guard: every non-blank original line survives verbatim,
+  // in order, as a subsequence of the wrapped bytes. (The wrap's construction
+  // makes this unreachable; the check catches a regression.)
+  if (!isInsertionsOnly(current, bytes)) {
+    return {
+      verb: "update",
+      error: "wrap would reword or delete an original line — refusing",
+      exitCode: 2,
+    };
+  }
+
+  const wouldWrite = bytes !== current;
+  if (wouldWrite && !dryRun) {
+    fs.writeFile(file, bytes);
+  }
+  return {
+    verb: "update",
+    plan: {
+      state: "no-markers",
+      newBytes: bytes,
+      oldBytes: current,
+      wouldWrite,
+      managedIds: parseMarkersSafe(bytes),
+      omitted: omittedSections(facts),
+    },
+    exitCode: 0,
+  };
+}
+
+function parseMarkersSafe(bytes: string): string[] {
+  try {
+    return presentIds(bytes);
+  } catch {
+    return [];
+  }
+}
 
 /**
  * CLI entry for the `/agents-md` prompt body.

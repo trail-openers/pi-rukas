@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerAdversarialTool } from "./adversarial.ts";
+import { registerAgentsMdTools } from "./agents-md-tool.ts";
 import { registerAsyncJobsLifecycle } from "./async-jobs.ts";
 import { registerCommands } from "./commands.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
@@ -54,6 +55,10 @@ export default async function (pi: ExtensionAPI) {
   // #408 — PM can start the compiled driver instead of hand-rolling it. Must
   // follow registerCommands: the doctrine tool reads the same prompt bodies.
   registerWorkTools(pi);
+  // #526 — /agents-md delivery: the core is called in-process, never via a
+  // host-relative path. Must follow registerWorkTools: the tool reuses
+  // work-entry's resolveRepoRoot.
+  registerAgentsMdTools(pi);
   registerRunsCommand(pi);
   registerModelPicker(pi);
   registerAsyncJobsLifecycle(pi);

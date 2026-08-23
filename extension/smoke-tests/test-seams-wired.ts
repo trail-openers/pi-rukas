@@ -98,6 +98,21 @@ const SEAMS: Seam[] = [
     },
     canary: { symbol: "warnIfRetryConfigTooLow", importer: "index.ts" },
   },
+  {
+    // #524 shipped the whole src/agents-md/ core wired by nothing — the prose
+    // command body told PM to shell out to a host-relative path that does not
+    // exist outside this repo. #526's agents-md-tool.ts is the in-process
+    // delivery; this canary pins the shared import line so the core cannot
+    // ship unwired a third time.
+    file: "agents-md/agents-md.ts",
+    pending: {},
+    testOnly: {
+      fileState: "the pure state classifier, asserted directly",
+      runAgentsMd: "script-mode CLI entry (process.exit); the tool calls the verbs directly",
+      runWrap: "the no-markers wrap I/O shell, called only by updateAgent within this module",
+    },
+    canary: { symbol: "createAgent", importer: "agents-md-tool.ts" },
+  },
 ];
 
 /**

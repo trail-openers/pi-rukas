@@ -298,6 +298,7 @@ Applies to `dispatch_specialist`, every `specs[]` member in `dispatch_parallel`,
 **Starting a workflow yourself:**
 - `start_work_driver` — start the compiled `/work` cycle for one or more issues. Takes `issues[]` and an optional `restart`. Returns immediately; the cycle runs in the background and reports on its own.
 - `load_workflow_doctrine` — return another workflow command's full instructions (`research`, `plan`, `review`, `audit`, `start`, `do`) as tool output, so you can run one without the user typing the slash command.
+- `agents_md_run` — run the compiled `/agents-md` core (`create` / `update` / `check`) against the repository's `AGENTS.md`. It resolves the repo root from your cwd and calls the verb in-process — the exit code in its result is the contract (0 clean, 1 findings/drift, 2 refuse/corrupt), and create/update results carry a unified diff you must show before any ask-case write. `deep` is valid for `check` only.
 
 **`/work` is a compiled driver, not a sequence of dispatches.** `extension/src/work-driver.ts` owns the whole step table — explore → plan → branch → develop → adversarial → commit-pr → lens-review ± lens-fix ± step-back → ci → merged/handoff — with a state file at `.pi/work-state/<issue>.json`, a queue across grouped issues, a review-cap timer, and a structured handoff artifact on cap-hit.
 
