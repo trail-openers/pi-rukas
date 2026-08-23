@@ -74,6 +74,7 @@ export const SLASH_COMMANDS = [
   "review",
   "audit",
   "do",
+  "agents-md",
 ] as const;
 export type SlashCommand = (typeof SLASH_COMMANDS)[number];
 
@@ -291,6 +292,8 @@ function descriptionFor(name: SlashCommand): string {
       return "[<path> | <path>=<scope> ...] — Audit repo/path against its own standards (derive from docs/config/examples, not hard-coded)";
     case "do":
       return "<description> — Orchestrate free-form work via PM (no GitHub issue required; counterpart to /work)";
+    case "agents-md":
+      return "<create|update|check> [--deep] — Idempotently manage the marker-managed sections of this repo's AGENTS.md (pure renderer, byte-preserving outside markers)";
   }
 }
 

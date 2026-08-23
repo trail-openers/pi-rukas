@@ -48,7 +48,15 @@ import { launchWork, parseWorkArgs, resolveRepoRoot } from "./work-entry.ts";
  * array erases them. The assertion below keeps it honest if the command list
  * ever grows.
  */
-const DOCTRINE_COMMANDS = ["start", "research", "plan", "review", "audit", "do"] as const;
+const DOCTRINE_COMMANDS = [
+  "start",
+  "research",
+  "plan",
+  "review",
+  "audit",
+  "do",
+  "agents-md",
+] as const;
 
 // Fails to compile if a new slash command is added without deciding whether it
 // belongs here. `work` is the sole deliberate omission.
@@ -129,6 +137,7 @@ export function registerWorkTools(pi: ExtensionAPI) {
           Type.Literal("review"),
           Type.Literal("audit"),
           Type.Literal("do"),
+          Type.Literal("agents-md"),
         ],
         { description: "Which workflow's instructions to load." },
       ),

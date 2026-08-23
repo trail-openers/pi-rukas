@@ -87,12 +87,12 @@ registerWorkTools(fakePi);
   const doctrine = tools.find((t) => t.name === "load_workflow_doctrine");
   const nameParam = doctrine?.parameters.properties?.name as { anyOf?: Array<{ const?: string }> };
   const allowed = (nameParam?.anyOf ?? []).map((v) => v.const).filter(Boolean) as string[];
-  assert(allowed.length === 6, `six workflows are loadable: ${allowed.join(", ")}`);
+  assert(allowed.length === 7, `seven workflows are loadable: ${allowed.join(", ")}`);
   assert(
     !allowed.includes("work"),
     "canary: /work is NOT loadable as prose — handing PM its body invites the hand-rolling this prevents",
   );
-  for (const expected of ["research", "plan", "review", "audit", "start", "do"]) {
+  for (const expected of ["research", "plan", "review", "audit", "start", "do", "agents-md"]) {
     assert(allowed.includes(expected), `  /${expected} is reachable`);
   }
 }
