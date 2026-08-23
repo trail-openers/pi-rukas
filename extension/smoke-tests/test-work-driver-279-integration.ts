@@ -160,7 +160,7 @@ try {
         "and emits no widening-scan event",
       );
     } finally {
-      if (prev === undefined) process.env.PI_ENSEMBLE_WIDENING_SCAN = undefined;
+      if (prev === undefined) delete process.env.PI_ENSEMBLE_WIDENING_SCAN;
       else process.env.PI_ENSEMBLE_WIDENING_SCAN = prev;
     }
   }
@@ -279,7 +279,7 @@ try {
       );
       assert(dispatches.length === 1, "and the ops CI watch runs as it did pre-#279");
     } finally {
-      if (prev === undefined) process.env.PI_ENSEMBLE_VERIFY_FULL = undefined;
+      if (prev === undefined) delete process.env.PI_ENSEMBLE_VERIFY_FULL;
       else process.env.PI_ENSEMBLE_VERIFY_FULL = prev;
     }
   }

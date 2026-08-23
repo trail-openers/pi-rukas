@@ -420,7 +420,7 @@ assert(fallthrough === "ask", "Issue #168: catch-all `*: ask` fires when no wild
       "L8: PI_ENSEMBLE_SANDBOX_MODE=1 also skips session_start handler (no decisions cache load)",
     );
   } finally {
-    if (prev === undefined) process.env.PI_ENSEMBLE_SANDBOX_MODE = undefined;
+    if (prev === undefined) delete process.env.PI_ENSEMBLE_SANDBOX_MODE;
     else process.env.PI_ENSEMBLE_SANDBOX_MODE = prev;
   }
 }
@@ -437,9 +437,9 @@ assert(fallthrough === "ask", "Issue #168: catch-all `*: ask` fires when no wild
   const savedTrust = process.env.PI_ENSEMBLE_TRUST_MODE;
   // Clear all three before each case to start from a clean slate.
   const reset = () => {
-    process.env.PI_ENSEMBLE_SANDBOX_MODE = undefined;
-    process.env.PI_ENSEMBLE_STRICT_PERMISSIONS = undefined;
-    process.env.PI_ENSEMBLE_TRUST_MODE = undefined;
+    delete process.env.PI_ENSEMBLE_SANDBOX_MODE;
+    delete process.env.PI_ENSEMBLE_STRICT_PERMISSIONS;
+    delete process.env.PI_ENSEMBLE_TRUST_MODE;
   };
   try {
     const { isInTrustMode } = await import("../src/permission-guard.js");
@@ -483,11 +483,11 @@ assert(fallthrough === "ask", "Issue #168: catch-all `*: ask` fires when no wild
       "L9: sandbox env wins over STRICT_PERMISSIONS (sandbox is structurally trusted regardless)",
     );
   } finally {
-    if (savedSandbox === undefined) process.env.PI_ENSEMBLE_SANDBOX_MODE = undefined;
+    if (savedSandbox === undefined) delete process.env.PI_ENSEMBLE_SANDBOX_MODE;
     else process.env.PI_ENSEMBLE_SANDBOX_MODE = savedSandbox;
-    if (savedStrict === undefined) process.env.PI_ENSEMBLE_STRICT_PERMISSIONS = undefined;
+    if (savedStrict === undefined) delete process.env.PI_ENSEMBLE_STRICT_PERMISSIONS;
     else process.env.PI_ENSEMBLE_STRICT_PERMISSIONS = savedStrict;
-    if (savedTrust === undefined) process.env.PI_ENSEMBLE_TRUST_MODE = undefined;
+    if (savedTrust === undefined) delete process.env.PI_ENSEMBLE_TRUST_MODE;
     else process.env.PI_ENSEMBLE_TRUST_MODE = savedTrust;
   }
 }

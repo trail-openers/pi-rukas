@@ -418,7 +418,7 @@ const COMPLETE = (parkReason: string) =>
   try {
     assert(!intentResolutionEnabled(), "PI_ENSEMBLE_INTENT=0 disables intent resolution");
   } finally {
-    if (prev === undefined) process.env.PI_ENSEMBLE_INTENT = undefined;
+    if (prev === undefined) delete process.env.PI_ENSEMBLE_INTENT;
     else process.env.PI_ENSEMBLE_INTENT = prev;
   }
   assert(intentResolutionEnabled(), "and it is ON by default");

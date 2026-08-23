@@ -100,7 +100,7 @@ const cls = (providerMessage: string) =>
       "PI_ENSEMBLE_RATE_LIMIT_BURST_MAX_S lowers the boundary",
     );
   } finally {
-    if (prev === undefined) process.env.PI_ENSEMBLE_RATE_LIMIT_BURST_MAX_S = undefined;
+    if (prev === undefined) delete process.env.PI_ENSEMBLE_RATE_LIMIT_BURST_MAX_S;
     else process.env.PI_ENSEMBLE_RATE_LIMIT_BURST_MAX_S = prev;
   }
 }

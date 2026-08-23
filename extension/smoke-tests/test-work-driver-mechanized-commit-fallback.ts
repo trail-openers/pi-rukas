@@ -238,7 +238,7 @@ const mkDispatchFn =
       }
     }
   } finally {
-    if (prevVerify === undefined) process.env.PI_ENSEMBLE_VERIFY = undefined;
+    if (prevVerify === undefined) delete process.env.PI_ENSEMBLE_VERIFY;
     else process.env.PI_ENSEMBLE_VERIFY = prevVerify;
     process.env.PI_ENSEMBLE_VERIFY = "0";
   }

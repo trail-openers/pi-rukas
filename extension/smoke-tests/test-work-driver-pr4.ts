@@ -321,7 +321,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         "opt-in: developer prompt names the speculative scratch path the explore writes",
       );
     } finally {
-      if (prev === undefined) process.env.PI_ENSEMBLE_SPECULATIVE_EXPLORE = undefined;
+      if (prev === undefined) delete process.env.PI_ENSEMBLE_SPECULATIVE_EXPLORE;
       else process.env.PI_ENSEMBLE_SPECULATIVE_EXPLORE = prev;
     }
   } finally {

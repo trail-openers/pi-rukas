@@ -322,7 +322,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       assert(/PI_ENSEMBLE_VERIFY=0/.test(text), "explainCap verify-failed: names the escape hatch");
     }
   } finally {
-    if (prevVerify === undefined) process.env.PI_ENSEMBLE_VERIFY = undefined;
+    if (prevVerify === undefined) delete process.env.PI_ENSEMBLE_VERIFY;
     else process.env.PI_ENSEMBLE_VERIFY = prevVerify;
     // Restore the top-of-file default for any code that runs after.
     process.env.PI_ENSEMBLE_VERIFY = "0";
