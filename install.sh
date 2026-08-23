@@ -83,17 +83,28 @@ check_cmd() {
 }
 
 # Hard dependencies — install will continue but tools will fail at runtime.
-check_cmd pi           "bun add -g @earendil-works/pi-coding-agent"
-check_cmd git          "OS package manager"
-check_cmd gh           "brew install gh"
-check_cmd jq           "brew install jq"
-check_cmd vipune       "cargo install vipune  (https://github.com/randomm/vipune)"
-check_cmd oo           "cargo install double-o  (https://github.com/randomm/oo)"
+# Single source for the preflight set: each entry is "name:hint". The
+# prerequisite-drift gate (smoke-tests/test-prerequisite-drift.ts) parses this
+# array and cross-checks it against the README Prerequisites section and the
+# .devcontainer/Dockerfile global installs — a tool added here must also be
+# named in the README (or covered by an exception in that test).
+REQUIRED_CLIS=(
+  "pi:bun add -g @earendil-works/pi-coding-agent"
+  "git:OS package manager"
+  "gh:brew install gh"
+  "jq:brew install jq"
+  "vipune:cargo install vipune  (https://github.com/randomm/vipune)"
+  "oo:cargo install double-o  (https://github.com/randomm/oo)"
+  "parallel-cli:npm install -g parallel-web-cli   (or: brew install parallel-web/tap/parallel-cli — then: parallel-cli login)"
+  "ctx7:npm install -g ctx7  (free tier works without login; Node.js >= 18)"
+)
+for entry in "${REQUIRED_CLIS[@]}"; do
+  check_cmd "${entry%%:*}" "${entry#*:}"
+done
+
 # codebase-memory-mcp is not preflighted here — it's an MCP server loaded by
-# pi-mcp-adapter, not a CLI on PATH. See README → Using MCP servers + the
-# codebase-memory-mcp install at https://github.com/DeusData/codebase-memory-mcp
-check_cmd parallel-cli "npm install -g parallel-web-cli   (or: brew install parallel-web/tap/parallel-cli — then: parallel-cli login)"
-check_cmd ctx7         "npm install -g ctx7  (free tier works without login; Node.js >= 18)"
+# pi-mcp-adapter, not a CLI on PATH. See README → Using MCP servers +
+# https://github.com/DeusData/codebase-memory-mcp
 
 if [ ${#missing[@]} -gt 0 ]; then
   echo ""
@@ -116,9 +127,8 @@ PI_ENSEMBLE_BASE="$ENSEMBLE_DIR" PROMPTS_DIR="$ENSEMBLE_DIR/dist/prompts" \
 # Older installer revisions symlinked pi-prompts/ into ~/.pi/agent/prompts/,
 # which made Pi auto-discover them as file-based templates AND our extension
 # also register the same slash-command names — a collision that showed the
-# user two entries in autocomplete. The extension is the single source of
-# truth; it reads pi-prompts/*.md directly from this repo. Clean up any stale
-# symlinks left over from previous installs.
+# user two entries in autocomplete. Clean up any stale symlinks left over
+# from previous installs.
 if [ -d "$PI_AGENT_DIR/prompts" ]; then
   for name in start.md research.md plan.md work.md review.md; do
     target="$PI_AGENT_DIR/prompts/$name"
@@ -214,13 +224,12 @@ fi
 # PATH-portability: we write the BINARY NAME (not the resolved absolute
 # path) so the same mcp.json works in both host AND sandbox-container
 # contexts. Node's child_process.spawn falls back to $PATH for any
-# non-absolute first-arg. Host has `~/.local/bin/codebase-memory-mcp`
-# on PATH (per upstream installer); container has `/usr/local/bin/
-# codebase-memory-mcp` (per .devcontainer/Dockerfile). Same key,
-# different binary location, no mcp.json rewrite needed at container
-# entry. This matches pi-mcp-adapter's own README idiom (`"command":
-# "npx"` everywhere). PR #200 shipped absolute paths and the sandbox
-# couldn't spawn the host path; this fix makes mcp.json portable.
+# non-absolute first-arg. Host has `~/.local/bin/codebase-memory-mcp` on
+# PATH (per upstream installer); container has `/usr/local/bin/
+# codebase-memory-mcp` (per .devcontainer/Dockerfile). Same key, different
+# binary location, no mcp.json rewrite needed at container entry.
+# PR #200 shipped absolute paths and the sandbox couldn't spawn the host
+# path; this fix makes mcp.json portable.
 CBM_BIN=""
 if command -v codebase-memory-mcp >/dev/null 2>&1; then
   CBM_BIN="codebase-memory-mcp"   # PATH-relative name (see comment above)
