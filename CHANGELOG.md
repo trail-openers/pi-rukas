@@ -8,6 +8,18 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.52](https://github.com/randomm/pi-ensemble/compare/v0.12.51...v0.12.52) (2026-08-23)
+
+
+### Features
+
+* **agents-md:** idempotent AGENTS.md command with pure renderer and marker-safe splice ([#524](https://github.com/randomm/pi-ensemble/issues/524)) ([7b47907](https://github.com/randomm/pi-ensemble/commit/7b479074b0c145325dd6365c9876befc3a394f4e))
+
+
+### Bug Fixes
+
+* **agents-md:** wire agents_md_run tool for host-repo delivery + brownfield wrap ([#527](https://github.com/randomm/pi-ensemble/issues/527)) ([f2c86da](https://github.com/randomm/pi-ensemble/commit/f2c86dafc4cfd3857eddbfdb96c18316bd6ce5e1)), closes [#526](https://github.com/randomm/pi-ensemble/issues/526)
+
 ## [0.12.51](https://github.com/randomm/pi-ensemble/compare/v0.12.50...v0.12.51) (2026-08-23)
 
 
