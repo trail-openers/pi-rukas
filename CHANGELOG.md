@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.51](https://github.com/randomm/pi-ensemble/compare/v0.12.50...v0.12.51) (2026-08-23)
+
+
+### Bug Fixes
+
+* **#504:** replace process.env.X = undefined with delete for bun 1.4 compat ([#520](https://github.com/randomm/pi-ensemble/issues/520)) ([2ab483b](https://github.com/randomm/pi-ensemble/commit/2ab483b450eb391a19a7cc7edbdfd4de1e5ff780)), closes [#504](https://github.com/randomm/pi-ensemble/issues/504)
+
 ## [0.12.50](https://github.com/randomm/pi-ensemble/compare/v0.12.49...v0.12.50) (2026-08-22)
 
 
