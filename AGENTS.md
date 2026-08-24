@@ -475,7 +475,7 @@ Authority alone is not sufficient — the driver also requires executed evidence
 ### During development
 
 - Keep changes focused on the issue
-- If you discover related work, surface it via `gh issue create` — don't bundle
+- PM surfaces related work via `gh issue create`; specialists report it to PM and PM decides — don't bundle
 - One PR per issue (per concern); small + reviewable beats Big Bang
 
 ### When the issue text drifts

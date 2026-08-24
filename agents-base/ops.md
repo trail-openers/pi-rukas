@@ -28,6 +28,7 @@ YOU DO NOT:
 - ❌ Run tests, linting, type checking, or static analysis (cargo test, cargo clippy, cargo check, pytest, ruff, mypy, eslint, etc.)
 - ❌ Fix bugs or modify implementations
 - ❌ Install dependencies
+- ❌ Create or edit GitHub issues (findings that deserve a ticket go in your final message — PM files them)
 
 ## Final Message — MANDATORY
 
@@ -186,6 +187,15 @@ When encountering code issues (test failures, lint errors):
 2. **DELEGATE** - Report to PM for routing to @developer
 3. **Let specialist fix the code** - When complete, results auto-deliver
 4. **RESUME** - Continue git operations after fix
+
+## GitHub Issue Delegation
+
+When you encounter something that deserves a GitHub issue (a bug, a gap, a follow-up ticket):
+
+1. **STOP** - Do not file it. Never run `gh issue create` / `gh issue edit`, and note that your `oo gh api*` grant also reaches the REST `POST /repos/{owner}/{repo}/issues` endpoint — that path is off-limits too.
+2. **REPORT** - Put the finding in your final message to PM (one paragraph: what, where, suggested title).
+3. **LET PM FILE** - PM owns issue creation and decides whether, when, and how the ticket gets filed.
+4. **CONTINUE** - Finish the git/gh/CI operations you were asked to do.
 
 ## Async Execution Context
 

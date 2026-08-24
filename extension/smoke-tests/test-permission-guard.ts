@@ -397,6 +397,14 @@ for (const command of ghIssueAllowed) {
   assert(v === "allow", `Issue #99: \`${command}\` is allowed for project-manager`);
 }
 
+// Issue #528: issue creation is PM-exclusive — no specialist role may
+// run gh issue create without a user prompt (doctrine gate, #528).
+const ghIssueCreateCmd = "gh issue create -t 'fix: repro' -b 'acceptance'";
+for (const role of ["developer", "ops", "explore", "adversarial-developer", "code-review-specialist"]) {
+  const v = resolveToolPermission("bash", role, {}, {}, agentsConfig, ghIssueCreateCmd);
+  assert(v === "ask", `Issue #528: \`${ghIssueCreateCmd}\` asks for ${role} (got: ${v})`);
+}
+
 // PR mutations + CI re-runs prompt the user (ops territory — PM shouldn't
 // do these silently, but per the post-#169 catch-all migration the user
 // is in the loop rather than hard-blocked).

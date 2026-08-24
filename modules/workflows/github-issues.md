@@ -4,11 +4,19 @@
 
 **CRITICAL: NO WORK WITHOUT GITHUB ISSUES**
 - EVERY development task must be linked to a GitHub issue
-- Create issues BEFORE any code work begins
 - Use issue numbers in branch names and commit messages
 - REFUSE any work without proper issue tracking
 
 **Research/analysis tasks**: Skip issue creation (no code changes)
+
+### Who creates issues
+
+Issue creation is **PM-only**. This module is composed into both the project-manager and developer prompts, so act by role:
+
+- **Project manager (PM)**: the sole owner of issue creation. For non-trivial work, create issues via `/plan` Phase 5 (the quality-gated path). Trivial tickets (single file, no contract change, no new external surface) may be created inline with the bare `gh issue` create verb — see the tool-access line in `project-manager.md` for the exact command. **Mid-cycle `gh issue edit` of an existing issue body stays ungated** — refinements and corrections go in the body, not a new ticket.
+- **Developer (and every specialist)**: you do NOT create or edit GitHub issues. Before starting work, **verify a GitHub issue exists** for the task. If none does, **report the missing issue in your final message** — PM files it. Do not open a ticket yourself.
+
+PM runs `gh` directly — a backend-agnostic `ticket` tool (see [#98](https://github.com/randomm/pi-ensemble/issues/98)) will eventually replace these `gh` bash entries; until then, PM runs `gh` bare.
 
 ## Issue Creation Template
 
@@ -27,44 +35,52 @@
 [Specific functional requirements and success criteria]
 ```
 
-## Issue Creation Command
+## Issue Creation Command (PM only)
 
-**Use the `issue` tool — backend-agnostic (works with gh, jira, glab, az):**
+PM creates issues by running `gh` directly. Pass the body via `--body-file` to avoid shell-quoting pitfalls in multi-line or backtick-laden bodies (write the body to a file using the template above):
 
-Use the `mcp_issue` tool with:
-- `command`: `create`
-- `args`: `["--title", "fix: description", "--body", "### Task Description\n..."]`
+```bash
+gh issue create --title "fix: description" --body-file tmp/issue-body.md
+```
 
-**Why the tool, not bash**: The `issue` tool routes through `ISSUE_BACKEND` (default: gh) so the same agent prompt works across GitHub, Jira, GitLab, and Azure DevOps projects.
+**Specialists (developer, ops, explore, reviewers)**: do NOT run issue-creation commands. Verify the issue exists, then report a missing one to PM in your final message.
 
-**Quoting note**: When constructing args, pass `--title` and `--body` as separate array elements. Single quotes and backticks in body text are safe since they're passed as array elements, not shell-interpolated.
+## GitHub Issue Command Reference (bare `gh`)
 
-## Issue Tool Command Reference
+All issue mutations run as bare `gh` commands (run `gh`, not `oo gh` — bare keeps raw output for `| jq` pipelines). Mutation verbs (`create`, `edit`, `close`, `reopen`) are **PM-only** per the role split above; read verbs (`view`, `list`, `comment`) are shared.
 
-**Comment on an issue** — args format depends on backend:
-- `command`: `comment`
-- `args` (gh backend, default): `["<issue-number>", "--body", "your comment text"]`
-- `args` (jira/glab/az backends): `["<issue-number>", "your comment text"]`
+**Comment on an issue:**
 
-> **Why the difference**: The `gh` CLI requires a `--body` flag; Jira, GitLab, and Azure backends use the second positional argument as the comment text directly.
+```bash
+gh issue comment <issue-number> --body "your comment text"
+```
 
-**Close an issue:**
-- `command`: `close`
-- `args`: `["<issue-number>"]`
+**Close an issue (PM only):**
 
-**Reopen an issue:**
-- `command`: `reopen`
-- `args`: `["<issue-number>"]`
+```bash
+gh issue close <issue-number>
+```
+
+**Reopen an issue (PM only):**
+
+```bash
+gh issue reopen <issue-number>
+```
 
 **View an issue:**
-- `command`: `view`
-- `args`: `["<issue-number>"]`
+
+```bash
+gh issue view <issue-number>
+```
 
 **List issues:**
-- `command`: `list`
-- `args`: `["--limit", "15"]` or `["--state", "closed", "--limit", "5"]`
 
-**Create an issue:** See "Issue Creation Command" section above for the full create example.
+```bash
+gh issue list --limit 15
+gh issue list --state closed --limit 5
+```
+
+**Create an issue (PM only):** See the "Issue Creation Command (PM only)" section above.
 
 ## Task Type Classification
 
