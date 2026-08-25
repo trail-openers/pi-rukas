@@ -13,7 +13,12 @@ import { commitPrRootFactLines } from "./work-driver-commit-inspect.ts";
 import { MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { explainCap } from "./work-driver-explain.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
-import type { WorkEvent, WorkState } from "./workflow-state.ts";
+import {
+  type WorkEvent,
+  type WorkState,
+  filesPresentFromConsolidation,
+  missingWorkstreamsFromConsolidation,
+} from "./workflow-state.ts";
 
 /**
  * #500 — the in-chat twin of `commitPrRootFacts` in
@@ -346,7 +351,12 @@ export function renderHandoffUserMessage(
       `     rm ${repoRoot}/.pi/work-state/${issue}.json`,
     );
   } else if (cap === "commit-pr-incomplete-consolidation") {
-    const missing = ps.incompleteConsolidation ?? [];
+    const missing = missingWorkstreamsFromConsolidation(ps.incompleteConsolidation);
+    // #540 — the PRESENT side of the verdict, mirrored from the markdown
+    // renderer: the committed file list the gate recorded next to the
+    // missing list. Absent on pre-#540 state files (the field was a bare
+    // array then) — say nothing rather than render a hollow line.
+    const filesPresent = filesPresentFromConsolidation(ps.incompleteConsolidation);
     const root = ps.commitPrRoot;
     const conflicted = (root?.unmergedPaths ?? []).length > 0;
     // #500 — a placeholder branch (`HEAD`) in the recorded state means the
@@ -359,6 +369,12 @@ export function renderHandoffUserMessage(
       : `git -C ${repoRoot} reset --hard HEAD`;
     lines.push(
       "",
+      ...(filesPresent.length > 0
+        ? [
+            `Committed (the present side of the consolidation verdict): ${filesPresent.length} file(s) — ${filesPresent.slice(0, 5).join(", ")}${filesPresent.length > 5 ? ` … and ${filesPresent.length - 5} more` : ""}`,
+            "",
+          ]
+        : []),
       "Missing workstreams from the committed diff:",
       ...missing.map(
         (m) =>

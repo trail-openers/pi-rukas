@@ -75,14 +75,20 @@ import { WORK_STATE_SCHEMA_VERSION, type WorkState } from "./workflow-state-sche
 
 export type { WorkStep, WorkEvent, WorkEventKind } from "./workflow-state-events.ts";
 export { WORK_STATE_SCHEMA_VERSION } from "./workflow-state-schema.ts";
+export type {
+  ConsolidationVerdict,
+  IncompleteConsolidation,
+} from "./workflow-state-consolidation.ts";
+export type { CommitPrRootState } from "./workflow-state-schema.ts";
 export type { PipelineState, WorkState } from "./workflow-state-schema.ts";
 export {
+  filesPresentFromConsolidation,
   initialState,
   appendEvent,
   detectInconsistencies,
+  missingWorkstreamsFromConsolidation,
   WORK_STEPS,
 } from "./workflow-state-schema.ts";
-
 /**
  * Resolve the project-local state directory. We anchor on `cwd` rather than
  * the worktree path because state must live at the project root so

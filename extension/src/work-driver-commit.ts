@@ -31,22 +31,12 @@ import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyConsolidation, verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { appendEvent } from "./workflow-state.ts";
-import type { WorkState } from "./workflow-state.ts";
+import type { ConsolidationVerdict, IncompleteConsolidation, WorkState } from "./workflow-state.ts";
 
 const execp = promisify(exec);
 
-// #507 — clip a PR title / commit subject to a code-unit budget at a word
-// boundary, with a single U+2026 ellipsis. The PR title feeds BOTH `git
-// commit -m` and `gh pr create --title`, and under squash-merge the title
-// becomes the commit subject on main — a mid-word cut reaches CHANGELOG.md
-// and release notes by two routes. The budget is 64, not 72: the subject
-// convention is ≤ 72 chars and GitHub's squash-merge appends
-// ` (#<prNumber>)` (8 code units, unknown at title-construction time).
-//
-// No lone surrogate is ever produced in the output: a cut that would leave a
-// high half dangling (the pair straddles the cut, or the cut lands on the
-// high half with its low half in the prefix) is backed off one code unit so
-// the pair is dropped whole rather than split.
+// #507 — clip a PR title to a code-unit budget at a word boundary.
+// Budget 64 (not 72): GitHub squash-merge appends ` (#<N>)`.
 export function clipTitle(raw: string, budget: number): string {
   if (raw.length <= budget) return raw;
   let cut = budget - 1; // reserve one code unit for the ellipsis
@@ -422,26 +412,29 @@ async function runCommitPrLocked(
       pipelineState: { ...next.pipelineState, prNumber },
     };
   }
-  // PR14 — post-dispatch consolidation gate. For N>1 cycles, verify the
-  // committed diff includes files from EVERY workstream's `paths` list.
-  // If any workstream's paths are entirely absent from the diff, ops
-  // committed a partial slice — halt with cap-hit so the operator can
-  // investigate before the merge step ships the partial work.
-  //
-  // Defense in depth: the new prompt instructions explicitly tell ops
-  // to consolidate all worktrees and verify before committing, but
-  // doctrine alone isn't enough — the v0.12.13 incident merged 1 of 3
-  // workstreams as a "successful" cycle.
+  // PR14 + #540 — post-dispatch consolidation gate (subsumption-aware,
+  // both-sides report). Defense in depth: the v0.12.13 incident merged
+  // 1 of 3 workstreams as a "successful" cycle.
   const consolidationCheck = await verifyConsolidation(ctx, next);
   if (consolidationCheck.missing.length > 0) {
     trace(
       `work-driver: commit-pr partial-consolidation detected — missing workstreams: ${consolidationCheck.missing.map((m) => m.id).join(", ")}`,
     );
+    const verdicts: ConsolidationVerdict[] = consolidationCheck.verdicts
+      .filter((v) => v.status !== "complete")
+      .map((v) =>
+        v.status === "uncovered"
+          ? { id: v.id, status: "uncovered" as const, uncoveredPaths: v.uncoveredPaths }
+          : { id: v.id, status: "unverifiable" as const, reason: v.reason },
+      );
     next = {
       ...next,
       pipelineState: {
         ...next.pipelineState,
-        incompleteConsolidation: consolidationCheck.missing,
+        incompleteConsolidation: {
+          verdicts,
+          filesPresent: consolidationCheck.filesPresent,
+        },
       },
     };
     next = appendEvent(next, {

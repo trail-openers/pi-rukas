@@ -1,16 +1,17 @@
 /**
- * /work workflow state — pipeline snapshot + top-level state shape, plus
- * pure (no-fs) helpers that operate on in-memory `WorkState`.
- *
- * `PipelineState` (the reconstructed-on-read snapshot of "where are we
- * right now") and `WorkState` (the top-level state-file shape). Split out
- * of `workflow-state.ts` for module-size hygiene (AGENTS.md §12) —
- * re-exported from there so external consumers' import paths are
- * unaffected. See `workflow-state.ts` for the full schema doc (versioning,
- * resumability, GitHub-is-the-bus).
+ * /work workflow state — pipeline snapshot + top-level state shape / types.
+ * Split out of `workflow-state.ts` (AGENTS.md §12 file-size limit).
  */
 
 import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
+
+export {
+  filesPresentFromConsolidation,
+  type IncompleteConsolidation,
+  type ConsolidationVerdict,
+  missingWorkstreamsFromConsolidation,
+} from "./workflow-state-consolidation.ts";
+import type { IncompleteConsolidation } from "./workflow-state-consolidation.ts";
 
 /** Current schema version. Bump on breaking changes. */
 export const WORK_STATE_SCHEMA_VERSION = 1 as const;
@@ -57,10 +58,6 @@ export interface CommitPrRootState {
  * Pipeline snapshot — the driver's "where are we" view, reconstructible
  * from eventLog but stored explicitly for O(1) reads. When the two
  * diverge, eventLog is authoritative.
- */
-/**
- * Why a plan earned one corrective re-dispatch. Persisted: `work-driver-plan.ts`
- * decides it, `/work-status` and the handoff renderers read it back.
  */
 export type PlanQualityReason =
   | "under-decomposed"
@@ -244,15 +241,15 @@ export interface PipelineState {
     reason?: PlanQualityReason;
   };
   /**
-   * PR14 — per-workstream "missing from committed diff" list. Populated
-   * by `runCommitPr`'s post-dispatch consolidation gate when the
-   * integration branch's diff (vs origin/main) doesn't include files
-   * from one or more workstreams' `paths`. Drives the operator-facing
-   * handoff body — each entry names which workstream's slice didn't
-   * land. Absent for N=1 cycles and for happy-path N>1 cycles where
-   * every workstream's files appear in the diff.
+   * PR14 (extended by #540) — the subsumption-aware consolidation verdict,
+   * recording BOTH sides of the gate: `verdicts` (which workstreams are NOT
+   * covered by the committed diff) + `filesPresent` (what actually
+   * shipped). Single writer: `runCommitPr`'s gate. The `Array` union member
+   * is the pre-#540 shape — legacy state files must keep reading; the
+   * validator (workflow-state-validate.ts) accepts both shapes.
    */
-  incompleteConsolidation?: Array<{ id: string; paths: string[] }>;
+  incompleteConsolidation?: IncompleteConsolidation | Array<{ id: string; paths: string[] }>;
+
   /**
    * #500 — repoRoot's ACTUAL state at the moment commit-pr completed, as
    * recorded by `inspectCommitPrRoot`. The mechanized path records a clean

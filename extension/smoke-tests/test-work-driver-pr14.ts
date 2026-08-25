@@ -16,7 +16,14 @@ import { explainCap } from "../src/work-driver-explain.ts";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
-import { appendEvent, initialState, readState, writeState } from "../src/workflow-state.ts";
+import {
+  appendEvent,
+  filesPresentFromConsolidation,
+  initialState,
+  missingWorkstreamsFromConsolidation,
+  readState,
+  writeState,
+} from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -336,11 +343,23 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       capHit !== undefined,
       "PR14 §D: consolidation gate synthesises cap-hit when files from a workstream are missing from the committed diff",
     );
-    const missing = after?.pipelineState.incompleteConsolidation ?? [];
+    const missing = missingWorkstreamsFromConsolidation(
+      after?.pipelineState.incompleteConsolidation,
+    );
     const missingIds = missing.map((m) => m.id).sort();
     assert(
       JSON.stringify(missingIds) === JSON.stringify(["observability", "prompt-reorder"]),
       `PR14 §D: incompleteConsolidation lists prompt-reorder + observability (got: ${JSON.stringify(missingIds)})`,
+    );
+    // #540 — both sides recorded: the missing verdicts AND the committed
+    // file list (what actually shipped), so the handoff renders present +
+    // missing.
+    const filesPresent = filesPresentFromConsolidation(
+      after?.pipelineState.incompleteConsolidation,
+    );
+    assert(
+      filesPresent.includes("selfhost/app-config/lantern.toml"),
+      `PR14 §D (#540): filesPresent records the committed file list (got: ${JSON.stringify(filesPresent)})`,
     );
     assert(
       after?.pipelineState.status === "handoff",
@@ -361,13 +380,23 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       currentStep: "handoff",
       status: "handoff",
       branchName: "feature/issue-577-multi",
-      incompleteConsolidation: [
-        {
-          id: "prompt-reorder",
-          paths: ["selfhost/app-config/prompts/strategy-research.md"],
-        },
-        { id: "observability", paths: ["src/cron/mod.rs"] },
-      ],
+      // #540 — current shape: verdicts (the missing side) + filesPresent
+      // (the present side of the consolidation verdict).
+      incompleteConsolidation: {
+        verdicts: [
+          {
+            id: "prompt-reorder",
+            status: "uncovered",
+            uncoveredPaths: ["selfhost/app-config/prompts/strategy-research.md"],
+          },
+          {
+            id: "observability",
+            status: "uncovered",
+            uncoveredPaths: ["src/cron/mod.rs"],
+          },
+        ],
+        filesPresent: ["selfhost/app-config/lantern.toml"],
+      },
     },
   };
   s = appendEvent(s, {
@@ -408,6 +437,23 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   assert(
     md.includes("prompt-reorder") && md.includes("observability"),
     "PR14 §E: renderHandoffMarkdown lists missing workstreams",
+  );
+  // #540 — all three renderers render the PRESENT side too (filesPresent),
+  // not just the missing list.
+  assert(
+    /Committed \(the present side of the consolidation verdict\)/.test(md) &&
+      md.includes("selfhost/app-config/lantern.toml"),
+    "PR14 §E: renderHandoffMarkdown renders the present side (filesPresent)",
+  );
+  assert(
+    /Committed \(the present side of the consolidation verdict\)/.test(msg) &&
+      msg.includes("selfhost/app-config/lantern.toml"),
+    "PR14 §E: renderHandoffUserMessage renders the present side (filesPresent)",
+  );
+  assert(
+    /committed diff contains 1 file/.test(explanation) &&
+      explanation.includes("selfhost/app-config/lantern.toml"),
+    "PR14 §E: explainCap renders the present side (filesPresent)",
   );
   assert(
     md.includes("git apply --3way --binary --index"),

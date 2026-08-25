@@ -12,7 +12,13 @@ import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
 import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { type ParkReason, explainPark } from "./work-driver-intent.ts";
 import { explainMergeHold } from "./work-driver-merge-authority.ts";
-import type { WorkEvent, WorkState, WorkStep } from "./workflow-state.ts";
+import {
+  type WorkEvent,
+  type WorkState,
+  type WorkStep,
+  filesPresentFromConsolidation,
+  missingWorkstreamsFromConsolidation,
+} from "./workflow-state.ts";
 
 /**
  * PR5 — single source of truth mapping a cap-hit `cap` value to an
@@ -129,9 +135,24 @@ export function explainCap(
       return `explore stepped back and identified a spec-level gap in **${elem}** — the lens-review fix loop kept flagging the same shape across rounds (MAST 41.77% — spec-level problem fingerprint). The handoff body includes a proposed revision. After updating the issue (via /plan or \`gh issue edit\`), re-run with \`/work N --restart\` to start a fresh cycle against the revised spec`;
     }
     case "commit-pr-incomplete-consolidation": {
-      const missing = state.pipelineState.incompleteConsolidation ?? [];
+      const missing = missingWorkstreamsFromConsolidation(
+        state.pipelineState.incompleteConsolidation,
+      );
       const which =
         missing.length > 0 ? missing.map((m) => m.id).join(", ") : "one or more workstreams";
+      // #540 — the PRESENT side of the verdict: what the committed diff
+      // actually contains, so the operator can tell a true partial commit
+      // (files present, one workstream's slice absent) from a hollow
+      // commit (an empty committed diff). Absent on pre-#540 state files
+      // (the field was a bare array then) — say nothing rather than
+      // render a hollow list.
+      const filesPresent = filesPresentFromConsolidation(
+        state.pipelineState.incompleteConsolidation,
+      );
+      const presentBlurb =
+        filesPresent.length > 0
+          ? ` The committed diff contains ${filesPresent.length} file(s): ${filesPresent.slice(0, 5).join(", ")}${filesPresent.length > 5 ? ` and ${filesPresent.length - 5} more` : ""} — the missing workstreams' files are the difference.`
+          : "";
       // #500 — the recorded repoRoot state, when the inspection ran. The
       // pre-#500 silence (nothing recorded, nothing rendered) is the defect:
       // a conflicted root wedges every later cycle at integrate()'s
@@ -144,7 +165,7 @@ export function explainCap(
         state.pipelineState.commitPrRootError,
         "the recovery commands below apply as-is",
       );
-      return `commit-pr's post-dispatch consolidation gate detected that the committed diff is missing files from these workstreams: ${which}. Ops committed a partial slice — the developers' work in the missing worktrees is uncommitted on disk. Pre-PR14 this would have merged silently (v0.12.13 /work 577 closed an issue with 1 of 3 workstreams' changes shipped). The driver halted before merge; recover by collecting the missing diffs from \`.worktrees/issue-N-<id>\` and re-running, or take over the integration manually.${rootBlurb}`;
+      return `commit-pr's post-dispatch consolidation gate detected that the committed diff is missing files from these workstreams: ${which}. Ops committed a partial slice — the developers' work in the missing worktrees is uncommitted on disk. Pre-PR14 this would have merged silently (v0.12.13 /work 577 closed an issue with 1 of 3 workstreams' changes shipped). The driver halted before merge; recover by collecting the missing diffs from \`.worktrees/issue-N-<id>\` and re-running, or take over the integration manually.${presentBlurb}${rootBlurb}`;
     }
     case "verify-failed:commit-pr": {
       // #500 — the outcome gate fires on the same commit-pr step as the

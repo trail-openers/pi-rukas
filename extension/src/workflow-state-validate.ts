@@ -73,6 +73,20 @@ export const KNOWN_EVENT_KINDS: readonly unknown[] = [
 /** `pipelineState.status` vocabulary. */
 export const KNOWN_STATUSES: readonly unknown[] = ["running", "merged", "handoff", "aborted"];
 
+/**
+ * #540 — `pipelineState.incompleteConsolidation.verdicts[].status`
+ * vocabulary. Legacy PR14 entries carry no `status` field at all (they
+ * identify themselves by `paths`); the validator tolerates the absent-
+ * status + `paths` shape and refuses everything else it does not
+ * recognize — the same "extend the union, don't smuggle a field" rule
+ * this module applies to event kinds and steps.
+ */
+export const KNOWN_CONSOLIDATION_STATUSES: readonly unknown[] = [
+  "complete",
+  "uncovered",
+  "unverifiable",
+];
+
 /** `cap-hit.nextStep` vocabulary. */
 const CAP_HIT_NEXT_STEPS: readonly unknown[] = ["handoff", "step-back", "ci"];
 
@@ -109,6 +123,64 @@ export function validateDiscriminants(state: unknown): string[] {
     }
     if (!KNOWN_STATUSES.includes(ps.status)) {
       out.push(`pipelineState.status has unknown value ${JSON.stringify(ps.status)}`);
+    }
+    if (ps.incompleteConsolidation !== undefined) {
+      const ic = ps.incompleteConsolidation;
+      if (Array.isArray(ic)) {
+        ic.forEach((e, i) => {
+          const v = e as Record<string, unknown> | null;
+          if (typeof v !== "object" || v === null) {
+            out.push(`pipelineState.incompleteConsolidation[${i}] is not an object`);
+          } else if (typeof v.id !== "string") {
+            out.push(`pipelineState.incompleteConsolidation[${i}].id is missing or not a string`);
+          }
+        });
+      } else if (typeof ic !== "object" || ic === null) {
+        out.push("pipelineState.incompleteConsolidation is not an object or array");
+      } else {
+        const ico = ic as Record<string, unknown>;
+        const verdicts = ico.verdicts;
+        if (verdicts === undefined) {
+          out.push("pipelineState.incompleteConsolidation has no verdicts field");
+        } else if (!Array.isArray(verdicts)) {
+          out.push("pipelineState.incompleteConsolidation.verdicts is not an array");
+        } else {
+          verdicts.forEach((v, i) => {
+            const e = v as Record<string, unknown> | null;
+            if (typeof e !== "object" || e === null) {
+              out.push(`pipelineState.incompleteConsolidation.verdicts[${i}] is not an object`);
+              return;
+            }
+            if (e.status === undefined) {
+              if (!Array.isArray(e.paths)) {
+                out.push(
+                  `pipelineState.incompleteConsolidation.verdicts[${i}] has neither status nor paths`,
+                );
+              }
+              return;
+            }
+            if (!KNOWN_CONSOLIDATION_STATUSES.includes(e.status)) {
+              out.push(
+                `pipelineState.incompleteConsolidation.verdicts[${i}].status has unknown value ${JSON.stringify(e.status)}`,
+              );
+              return;
+            }
+            if (e.status === "uncovered" && !Array.isArray(e.uncoveredPaths)) {
+              out.push(
+                `pipelineState.incompleteConsolidation.verdicts[${i}].uncoveredPaths is missing or not an array (required when status is 'uncovered')`,
+              );
+            }
+            if (e.status === "unverifiable" && typeof e.reason !== "string") {
+              out.push(
+                `pipelineState.incompleteConsolidation.verdicts[${i}].reason is missing or not a string (required when status is 'unverifiable')`,
+              );
+            }
+          });
+          if (ico.filesPresent !== undefined && !Array.isArray(ico.filesPresent)) {
+            out.push("pipelineState.incompleteConsolidation.filesPresent is not an array");
+          }
+        }
+      }
     }
   }
 

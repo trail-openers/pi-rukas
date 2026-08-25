@@ -17,7 +17,12 @@ import {
 } from "./work-driver-handoff-adversarial.ts";
 import { commitPrFallbackPlumbSection, commitPrRootFacts } from "./work-driver-handoff-commitpr.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
-import type { WorkEvent, WorkState } from "./workflow-state.ts";
+import {
+  type WorkEvent,
+  type WorkState,
+  filesPresentFromConsolidation,
+  missingWorkstreamsFromConsolidation,
+} from "./workflow-state.ts";
 
 /**
  * Build the cap-hit handoff markdown body.
@@ -326,7 +331,13 @@ export function renderHandoffMarkdown(state: WorkState): string {
       `rm .pi/work-state/${issue}.json`,
     );
   } else if (capForExplain === "commit-pr-incomplete-consolidation") {
-    const missing = ps.incompleteConsolidation ?? [];
+    const missing = missingWorkstreamsFromConsolidation(ps.incompleteConsolidation);
+    // #540 — the PRESENT side of the verdict: the committed file list the
+    // gate recorded next to the missing list. Rendered ABOVE the missing
+    // workstream list so the operator sees what shipped before what was
+    // flagged. Absent on pre-#540 state files (the field was a bare array
+    // then) — say nothing rather than render a hollow section.
+    const filesPresent = filesPresentFromConsolidation(ps.incompleteConsolidation);
     const root = ps.commitPrRoot;
     const conflicted = (root?.unmergedPaths ?? []).length > 0;
     // #500 — a placeholder branch means `reset --hard HEAD` would abort a
@@ -336,6 +347,15 @@ export function renderHandoffMarkdown(state: WorkState): string {
         ? "git rev-parse --abbrev-ref HEAD   # name the branch, then: git reset --hard <branch>"
         : `git reset --hard ${root.branch}`
       : "git reset --hard HEAD";
+    if (filesPresent.length > 0) {
+      const shown = filesPresent.slice(0, 10);
+      lines.push(
+        "### Committed (the present side of the consolidation verdict)",
+        "",
+        `- ${filesPresent.length} file(s) in the committed diff: ${shown.join(", ")}${filesPresent.length > 10 ? ` … and ${filesPresent.length - 10} more` : ""}`,
+        "",
+      );
+    }
     lines.push(
       "# 1. Inspect each missing workstream's worktree — the developer's work is still there uncommitted:",
       ...missing.map((m) => `git -C .worktrees/issue-${issue}-${m.id} status --porcelain`),

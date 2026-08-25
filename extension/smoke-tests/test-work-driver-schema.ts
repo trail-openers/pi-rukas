@@ -428,6 +428,42 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   );
 }
 
+// 3b. #540 — the consolidation verdict shape: current {verdicts, filesPresent}
+// accepted with `status` discriminant validated (#533's rule); pre-#540 bare
+// array stays readable; malformed shapes refuse, naming the field.
+{
+  const icFindings = (ic: unknown) =>
+    validateDiscriminants({
+      ...initialState(540, 1000),
+      pipelineState: { ...initialState(540, 1000).pipelineState, incompleteConsolidation: ic },
+    } as unknown as Record<string, unknown>);
+  const good = icFindings({
+    verdicts: [{ id: "a", status: "uncovered", uncoveredPaths: ["src/a.ts"] }, { id: "b", status: "complete" }],
+    filesPresent: ["src/a.ts"],
+  });
+  assert(good.length === 0, "#540: validator accepts {verdicts, filesPresent} with valid discriminants");
+  assert(icFindings([{ id: "a", paths: ["src/a.ts"] }]).length === 0,
+    "#540: the pre-#540 array shape is accepted (legacy state files stay readable)");
+  const badPresent = icFindings({ verdicts: [], filesPresent: { not: "an array" } });
+  assert(badPresent.length === 1 && badPresent[0].includes("filesPresent"),
+    "#540: a non-array filesPresent refuses reconstruction and names the field");
+  const badStatus = icFindings({ verdicts: [{ id: "a", status: "mystery", uncoveredPaths: [] }], filesPresent: [] });
+  assert(badStatus.length === 1 && badStatus[0].includes("status has unknown value"),
+    "#540: an unknown verdict status refuses reconstruction");
+  const badUncovered = icFindings({ verdicts: [{ id: "a", status: "uncovered" }], filesPresent: [] });
+  assert(badUncovered.length === 1 && badUncovered[0].includes("uncoveredPaths"),
+    "#540: an uncovered verdict without uncoveredPaths refuses reconstruction");
+  const goodUnverifiable = icFindings({ verdicts: [{ id: "a", status: "unverifiable", reason: "no declared paths" }], filesPresent: [] });
+  assert(goodUnverifiable.length === 0,
+    "#540: an unverifiable verdict WITH reason is accepted");
+  const badUnverifiable = icFindings({ verdicts: [{ id: "a", status: "unverifiable" }], filesPresent: [] });
+  assert(badUnverifiable.length === 1 && badUnverifiable[0].includes("reason"),
+    "#540: an unverifiable verdict without reason refuses reconstruction");
+  const noVerdicts = icFindings({ filesPresent: [] });
+  assert(noVerdicts.length === 1 && noVerdicts[0].includes("verdicts"),
+    "#540: the current shape without a verdicts field refuses reconstruction");
+}
+
 // 4. #534 — buildCompletionEvent attaches usage when DispatchResult.usage is
 // in scope and omits it otherwise. Minimal stub; no spawn, no disk.
 {

@@ -13,7 +13,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
-import { verifyCmdFor, verifyStepOutcome } from "../src/work-driver-verify.ts";
+import {
+  verifyCmdFor,
+  verifyConsolidation,
+  verifyStepOutcome,
+} from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
 
 /**
@@ -320,6 +324,150 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         "explainCap verify-failed:develop: names the gate + surfaces the evidence lines",
       );
       assert(/PI_ENSEMBLE_VERIFY=0/.test(text), "explainCap verify-failed: names the escape hatch");
+    }
+
+    // --- F5 (#540): verifyConsolidation coverage rule (full-set subsumption) ---
+    //
+    // Coverage rule: a workstream W is COVERED iff for EVERY declared path p
+    // of W: p is in the committed diff, OR p is declared by a sibling S whose
+    // ENTIRE declared path set is present in the committed diff. A partial
+    // sibling cannot cover another workstream's path. Cap fires iff some
+    // workstream is not covered.
+    //
+    // These use a REAL git repo so `git diff --name-only origin/main..HEAD`
+    // produces actual output (baseline commit = origin/main; committed files
+    // = the feature-branch diff).
+    {
+      const fs = await import("node:fs/promises");
+      const { exec: execChild } = await import("node:child_process");
+      const { promisify: promisifyUtil } = await import("node:util");
+      const execp2 = promisifyUtil(execChild);
+
+      const mkGitRepo = async (dir: string, committedFiles: string[]) => {
+        await execp2("git init -q", { cwd: dir });
+        await execp2('git config user.email "t@t" && git config user.name "T"', {
+          cwd: dir,
+          shell: "/bin/bash",
+        });
+        await fs.writeFile(path.join(dir, ".gitkeep"), "\n");
+        await execp2("git add . && git commit -q -m baseline", {
+          cwd: dir,
+          shell: "/bin/bash",
+        });
+        await execp2("git update-ref refs/remotes/origin/main HEAD", { cwd: dir });
+        await execp2("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", {
+          cwd: dir,
+        });
+        await execp2("git checkout -qb feature/issue-540-test", { cwd: dir });
+        for (const f of committedFiles) {
+          const fp = path.join(dir, f);
+          await fs.mkdir(path.dirname(fp), { recursive: true });
+          await fs.writeFile(fp, `content of ${f}\n`);
+        }
+        if (committedFiles.length > 0) {
+          await execp2("git add . && git commit -q -m 'committed work'", {
+            cwd: dir,
+            shell: "/bin/bash",
+          });
+        }
+      };
+
+      const mkConsolidationState = (workstreams: Record<string, WorkState["pipelineState"]["workstreams"][string]>) => {
+        let s = initialState(540, 1_000_000);
+        s = {
+          ...s,
+          pipelineState: {
+            ...s.pipelineState,
+            branchName: "feature/issue-540-test",
+            worktrees: Object.fromEntries(
+              Object.keys(workstreams).map((id) => [id, `/tmp/fake-${id}`]),
+            ),
+            workstreams,
+          },
+        };
+        return s;
+      };
+
+      const wsA = (paths: string[]) => ({ id: "a", scope: "task-a", paths, outOfScope: [] });
+      const wsB = (paths: string[]) => ({ id: "b", scope: "task-b", paths, outOfScope: [] });
+
+      // F5.1 + F5.2 — commit={a.ts,b.ts} → both covered (B's full set present,
+      // A's own paths present) → no missing.
+      {
+        const dir = mkdtempSync(path.join(tmpdir(), "f5-covered-"));
+        try {
+          await mkGitRepo(dir, ["src/a.ts", "src/b.ts"]);
+          const state = mkConsolidationState({ a: wsA(["src/a.ts", "src/b.ts"]), b: wsB(["src/b.ts"]) });
+          const ctx: DriverContext = { pi: makeFakePi().pi, repoRoot: dir, issue: 540 };
+          const res = await verifyConsolidation(ctx, state);
+          assert(
+            res.missing.length === 0,
+            `F5.1/F5.2: both paths committed → both covered (got: ${JSON.stringify(res.missing)})`,
+          );
+          assert(
+            JSON.stringify(res.filesPresent.sort()) === JSON.stringify(["src/a.ts", "src/b.ts"]),
+            `F5.1: filesPresent records the committed file list (got: ${JSON.stringify(res.filesPresent)})`,
+          );
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
+
+      // F5.3 — commit={b.ts} only: B covered (own full set present), A NOT
+      // covered (a.ts absent; B's full set {b.ts} does not cover a.ts).
+      // Cap fires naming A — the false-pass direction must NOT be allowed.
+      {
+        const dir = mkdtempSync(path.join(tmpdir(), "f5-partial-"));
+        try {
+          await mkGitRepo(dir, ["src/b.ts"]);
+          const state = mkConsolidationState({ a: wsA(["src/a.ts", "src/b.ts"]), b: wsB(["src/b.ts"]) });
+          const ctx: DriverContext = { pi: makeFakePi().pi, repoRoot: dir, issue: 540 };
+          const res = await verifyConsolidation(ctx, state);
+          assert(
+            res.missing.length === 1 && res.missing[0].id === "a",
+            `F5.3: partial sibling cannot cover — A not covered (got: ${JSON.stringify(res.missing)})`,
+          );
+          assert(
+            !res.missing.some((m) => m.id === "b"),
+            "F5.3: B is covered (b.ts in diff) — not flagged missing",
+          );
+          const aVerdict = res.verdicts.find((v) => v.id === "a");
+          assert(
+            aVerdict?.status === "uncovered" &&
+              JSON.stringify(aVerdict.uncoveredPaths) === JSON.stringify(["src/a.ts"]),
+            `F5.3: A's verdict names exactly the uncovered path (got: ${JSON.stringify(aVerdict)})`,
+          );
+          const bVerdict = res.verdicts.find((v) => v.id === "b");
+          assert(
+            bVerdict?.status === "complete",
+            `F5.3: B's verdict is complete (got: ${JSON.stringify(bVerdict)})`,
+          );
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
+
+      // F5.4 — empty diff → all workstreams missing.
+      {
+        const dir = mkdtempSync(path.join(tmpdir(), "f5-empty-"));
+        try {
+          await mkGitRepo(dir, []);
+          const state = mkConsolidationState({ a: wsA(["src/a.ts", "src/b.ts"]), b: wsB(["src/b.ts"]) });
+          const ctx: DriverContext = { pi: makeFakePi().pi, repoRoot: dir, issue: 540 };
+          const res = await verifyConsolidation(ctx, state);
+          const ids = res.missing.map((m) => m.id).sort();
+          assert(
+            JSON.stringify(ids) === JSON.stringify(["a", "b"]),
+            `F5.4: empty diff → all missing (got: ${JSON.stringify(ids)})`,
+          );
+          assert(
+            res.filesPresent.length === 0,
+            "F5.4: empty diff → empty filesPresent",
+          );
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
     }
   } finally {
     if (prevVerify === undefined) delete process.env.PI_ENSEMBLE_VERIFY;
