@@ -12,6 +12,7 @@ import { renderLensFindings } from "./lens-findings-render.ts";
 import { commitPrRootFactLines } from "./work-driver-commit-inspect.ts";
 import { MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { explainCap } from "./work-driver-explain.ts";
+import { commitPrDirtyRootStep } from "./work-driver-handoff-commitpr.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 import {
   type WorkEvent,
@@ -383,6 +384,7 @@ export function renderHandoffUserMessage(
       "",
       ...commitPrRootLines(state, repoRoot),
       "",
+      ...commitPrDirtyRootStep(root, "  ", `     git -C ${repoRoot} `),
       "  # 1. Inspect each missing workstream's worktree:",
       ...missing.map(
         (m) => `     git -C ${repoRoot}/.worktrees/issue-${issue}-${m.id} status --porcelain`,

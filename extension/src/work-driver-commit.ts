@@ -22,7 +22,12 @@ import {
   inspectCommitPrRoot,
 } from "./work-driver-commit-inspect.ts";
 import type { DriverContext } from "./work-driver-context.ts";
-import { cachedIssueTitle, integrate, withIntegrationLock } from "./work-driver-integrate.ts";
+import {
+  type IntegrateResult,
+  cachedIssueTitle,
+  integrate,
+  withIntegrationLock,
+} from "./work-driver-integrate.ts";
 import { renderAssumptions } from "./work-driver-intent.ts";
 import { parsePrNumber } from "./work-driver-lens.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
@@ -31,7 +36,12 @@ import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyConsolidation, verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { appendEvent } from "./workflow-state.ts";
-import type { ConsolidationVerdict, IncompleteConsolidation, WorkState } from "./workflow-state.ts";
+import type {
+  CommitPrFallbackCause,
+  ConsolidationVerdict,
+  IncompleteConsolidation,
+  WorkState,
+} from "./workflow-state.ts";
 
 const execp = promisify(exec);
 
@@ -83,6 +93,20 @@ function commitPrRootFieldsOf(r: CommitPrRootInspect): {
     : { commitPrRoot: undefined, commitPrRootError: r.error };
 }
 
+// #539 — the fallback-cause vocabulary lives ONCE in workflow-state-events.ts
+// (the event type that persists it) and is imported above; re-declaring it
+// here is the duplication M1's review flagged. Re-exported for the
+// mechanizedCommitPr return type below.
+export type { CommitPrFallbackCause } from "./workflow-state-events.ts";
+
+/** #539 — the structured cause, or `undefined` when integrate() did not
+ * fail. Reads `res.failure` (the discriminator), never re-parses `reason` —
+ * the catch-all turns any Error into `e.stderr ?? e.message`. */
+function causeFromIntegrateFailure(res: IntegrateResult): CommitPrFallbackCause | undefined {
+  if (res.ok) return undefined;
+  return res.failure === "dirty-repoRoot" ? "dirty-repoRoot" : "other";
+}
+
 /**
  * Wall-clock for the verify run against the consolidated tree. This is the
  * project's FAST suite, not the full one — it exists to catch "the
@@ -96,51 +120,32 @@ function integrationVerifyTimeoutMs(): number {
 /**
  * PR19 — Mechanized commit-pr: the driver executes the consolidation +
  * commit + push + PR-creation recipe that `inlineCommitPrPrompt`
- * previously NARRATED to an LLM ops dispatch.
- *
- * Why: every worst-class incident in the harness's history (#245/#253
- * silent merges, v0.12.13 shipping 1-of-3 workstreams) was LLM ops
- * improvising these fully-enumerable operations, and the cd-chain /
- * permission-cache friction class (~22 fixes, vipune memory-row) exists
- * only because an LLM emits the shell. Direct execution deletes the
- * failure source instead of detecting its failures — verifyConsolidation
- * and verifyStepOutcome remain in place downstream as the unchanged
- * correctness oracle.
- *
- * Recipe (mirrors the PR14 prompt, plus one improvement: worktree
- * slices are staged with `git add` before capture, so untracked new
- * files are included — `git diff HEAD` alone silently missed them):
- *
- *   1. Ensure repoRoot is checked out on the integration branch.
- *   2. Per worktree: verify uncommitted work exists (empty → bail to
- *      LLM fallback); for sibling worktrees stage + capture
- *      `git diff --cached` → `git apply --index` at repoRoot; for the
- *      repoRoot-as-worktree case stage porcelain paths directly.
- *   3. Commit with a templated message (issue title from the cached
- *      body artifact; `Fixes #N` per active issue; `Companion to`
- *      lines for dropped issues).
- *   4. Push; `gh pr create --body-file`; parse the PR number from the
- *      URL gh prints.
- *
- * Most failures return `{ok: false, reason}` — the caller emits a
- * plumb-report and falls back to the LLM ops dispatch (judgmental
- * recovery), whose behaviour is unchanged from PR14. The exception is
+ * previously NARRATED to an LLM ops dispatch. Every worst-class incident in
+ * the harness's history (#245/#253 silent merges, v0.12.13 shipping 1-of-3
+ * workstreams) was LLM ops improvising these fully-enumerable operations;
+ * direct execution deletes the failure source instead of detecting its
+ * failures. Recipe: ensure repoRoot is on the integration branch; per
+ * worktree verify uncommitted work, stage + capture `git diff --cached`
+ * (staging first is what includes untracked new files), `git apply --index`
+ * at repoRoot; commit with a templated message; push; `gh pr create`
+ * `--head <branch>`; parse the PR number. Most failures return
+ * `{ok: false, reason}` — the caller emits a plumb-report and falls back to
+ * the LLM ops dispatch (judgmental recovery). The exception is
  * `terminal: true`, set when the CONSOLIDATED tree fails the project's
- * verify command: the fallback exists to absorb environment variance (an
- * apply conflict, a rejected push), and "this does not build" is a fact
- * rather than variance. Falling back there would let ops push the same
- * broken tree, making the gate one that cannot fail — #328's shape.
- * Success appends
- * the same `step-started` + `dispatch-completed` event shapes the
- * dispatch path produces (role "driver", summary carrying `pr: <N>`),
- * so parsePrNumber + both downstream gates run identically for both
- * paths.
+ * verify command: the fallback exists to absorb environment variance, and
+ * "this does not build" is a fact rather than variance — #328's shape.
+ * Success appends the same `step-started` + `dispatch-completed` event
+ * shapes the dispatch path produces (role "driver", summary carrying
+ * `pr: <N>`), so parsePrNumber + both downstream gates run identically.
  */
 export async function mechanizedCommitPr(
   ctx: DriverContext,
   state: WorkState,
   now: number,
-): Promise<{ ok: true; state: WorkState } | { ok: false; reason: string; terminal?: boolean }> {
+): Promise<
+  | { ok: true; state: WorkState }
+  | { ok: false; reason: string; terminal?: boolean; fallbackCause?: CommitPrFallbackCause }
+> {
   const execFn = ctx.verifyExecFn ?? execp;
   const ps = state.pipelineState;
   const branchName = ps.branchName;
@@ -199,6 +204,9 @@ export async function mechanizedCommitPr(
       verifyExecFn: ctx.verifyExecFn,
       verifyTimeoutMs: integrationVerifyTimeoutMs(),
     });
+    // #539 — the structured cause travels with the result: integrate()
+    // KNOWS why it failed; a reader re-parsing `reason` would be guessing.
+    const fallbackCause = causeFromIntegrateFailure(res);
     if (!res.ok) {
       return {
         ok: false,
@@ -211,6 +219,7 @@ export async function mechanizedCommitPr(
         // and the ops dispatch commits and pushes the same broken tree
         // anyway — #328's shape, in a new place.
         terminal: res.failure === "verify",
+        fallbackCause,
       };
     }
     if (res.empty) {
@@ -218,6 +227,7 @@ export async function mechanizedCommitPr(
         ok: false,
         reason:
           "every worktree was clean — no uncommitted work to consolidate (developer may not have written)",
+        fallbackCause,
       };
     }
     // #378 — when the intent resolver filled gaps with defensible defaults,
@@ -289,6 +299,10 @@ export async function mechanizedCommitPr(
     const e = err as Error & { stderr?: string };
     return {
       ok: false,
+      // #539 — a thrown error (ENOENT, signal kill, an uncaught apply
+      // stderr) is NOT an integrate() verdict: no structured cause, so
+      // "other" is the honest label rather than a regex over the message.
+      fallbackCause: "other",
       reason: `${(e.stderr ?? e.message ?? "unknown error").toString().trim().slice(0, 300)}`,
     };
   }
@@ -367,6 +381,9 @@ async function runCommitPrLocked(
         step: "commit-pr",
         role: "driver",
         body: `Mechanized commit-pr fell back to the ops dispatch: ${mech.reason}. Note: the repo root may contain partially staged consolidation from the mechanized attempt — verify with \`git status\` before re-applying patches.`,
+        // #539 — the writer's own structured observation; the renderer
+        // prefers this over re-deriving the cause from the recorded state.
+        fallbackCause: mech.fallbackCause,
       });
     }
   }

@@ -124,6 +124,30 @@ export function validateDiscriminants(state: unknown): string[] {
     if (!KNOWN_STATUSES.includes(ps.status)) {
       out.push(`pipelineState.status has unknown value ${JSON.stringify(ps.status)}`);
     }
+    // #539 review — the untyped cast in `readState` is the only runtime gate
+    // for the record, so check it here: `commitPrRoot`, when present, must
+    // be a complete `CommitPrRootState`. A partial object (a hand edit or a
+    // corrupt write) would otherwise flow to the handoff renderers' arithmetic
+    // as if every field were present, and render a confident wrong number.
+    if (ps.commitPrRoot !== undefined) {
+      const r = ps.commitPrRoot;
+      if (typeof r !== "object" || r === null) {
+        out.push("pipelineState.commitPrRoot is not an object");
+      } else {
+        const ro = r as Record<string, unknown>;
+        if (typeof ro.branch !== "string" || Array.isArray(ro.branch)) {
+          out.push("pipelineState.commitPrRoot.branch is missing or not a string");
+        }
+        if (!Array.isArray(ro.unmergedPaths)) {
+          out.push("pipelineState.commitPrRoot.unmergedPaths is missing or not an array");
+        }
+        for (const field of ["stagedCount", "totalEntries", "capturedAt"] as const) {
+          if (typeof ro[field] !== "number" || !Number.isFinite(ro[field] as number)) {
+            out.push(`pipelineState.commitPrRoot.${field} is missing or not a finite number`);
+          }
+        }
+      }
+    }
     if (ps.incompleteConsolidation !== undefined) {
       const ic = ps.incompleteConsolidation;
       if (Array.isArray(ic)) {

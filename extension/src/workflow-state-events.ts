@@ -11,6 +11,7 @@
 
 import type { WideningFinding } from "./invariant-scan.ts";
 import type { DispatchUsage } from "./types.ts";
+import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 
 /**
@@ -19,6 +20,10 @@ import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
  * a step here and the discriminator carries through every event type that
  * names a step. Removing a step is a breaking change → schema bump.
  */
+// #539 — the commit-pr fallback-cause vocabulary (M1) lives in the
+// sibling events-memory fragment module, next to its other pure
+// event-type fragment: single definition, writer imports it from there.
+export type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 export type WorkStep =
   | "explore" // Step 1 — read issue + recon (gh + @explore)
   | "plan" // Step 2 — PM decomposes (no dispatch — pure PM judgment, may collapse)
@@ -357,6 +362,9 @@ export type WorkEvent =
       role: string;
       /** Free-text structural decision body (PM-readable). */
       body: string;
+      /** #539 — machine-readable commit-pr fallback cause (single writer:
+       * runCommitPrLocked), vocabulary in workflow-state-events-commitpr.ts. */
+      fallbackCause?: CommitPrFallbackCause;
     }
   | {
       kind: "step-back-triggered";

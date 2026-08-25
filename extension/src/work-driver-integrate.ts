@@ -228,13 +228,13 @@ export type IntegrateResult =
       reason: string;
       conflictPatch?: string;
       /**
-       * Set when the CONSOLIDATED tree failed the project's verify command.
-       * Callers must not launder this into a judgmental retry: the LLM
-       * commit-pr fallback exists to absorb environment variance (an apply
-       * conflict, a rejected push), and a tree that does not build is a
-       * verdict. Treating them alike makes the gate one that cannot fail.
+       * #539 — structured failure discriminator (alongside the pre-existing
+       * `verify`): how the integration actually failed. `reason` is free
+       * text and the commit-pr caller's catch-all mangles it (any `Error`
+       * becomes `e.stderr ?? e.message`), so cause readers MUST read this,
+       * never re-parse `reason`.
        */
-      failure?: "verify";
+      failure?: "dirty-repoRoot" | "apply" | "verify";
     };
 
 /**
@@ -289,6 +289,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
         .join(", ");
       return {
         ok: false,
+        failure: "dirty-repoRoot",
         reason: `repo root has uncommitted changes, refusing to integrate onto ${branchName}: ${files}. Commit, stash, or discard them — integration would otherwise sweep them into the PR.`,
       };
     }
@@ -392,6 +393,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
           notAttempted.length > 0 ? ` Not attempted: ${notAttempted.join(", ")}.` : "";
         return {
           ok: false,
+          failure: "apply",
           reason:
             `git apply failed for workstream '${id}': ${(e.stderr ?? e.message ?? "").toString().trim().slice(0, 200)}.` +
             `${skipped} repoRoot restored to ${originalRef}.`,

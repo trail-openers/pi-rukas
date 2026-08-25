@@ -73,7 +73,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { WORK_STATE_SCHEMA_VERSION, type WorkState } from "./workflow-state-schema.ts";
 
-export type { WorkStep, WorkEvent, WorkEventKind } from "./workflow-state-events.ts";
+export type {
+  WorkStep,
+  WorkEvent,
+  WorkEventKind,
+  CommitPrFallbackCause,
+} from "./workflow-state-events.ts";
 export { WORK_STATE_SCHEMA_VERSION } from "./workflow-state-schema.ts";
 export type {
   ConsolidationVerdict,

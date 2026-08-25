@@ -1,22 +1,14 @@
 #!/usr/bin/env bun
 /**
- * #398 — what the handoff actually says to the operator.
+ * #398 — what the handoff actually says to the operator. **No test anywhere
+ * asserted on rendered handoff content**, which is why this shipped:
+ * `intent-park` inherited a `developer-timeout` recovery block and told the
+ * operator (live, #337) to retry a timeout that never happened and run
+ * `git push -u origin (branch not captured)` — a placeholder in a command.
  *
- * **No test anywhere asserted on rendered handoff content**, which is why this
- * shipped: `intent-park` fires in `explore`, before the branch step — no
- * branch, no worktree, no PR, nothing written — and it inherited a recovery
- * block written for `developer-timeout`. A real run on #337 told the operator
- * to retry a timeout that never happened, keep worktree changes that did not
- * exist, and run:
- *
- *     git push -u origin (branch not captured)
- *
- * — a literal placeholder inside a copy-pasteable command.
- *
- * The `&&` assertions are not cosmetic. These lines land in the Pi chat via
- * `sendUserMessage`, and per `modules/core/oo-command-runner.md:107-125` the
- * permission matcher cannot wildcard a chained shape, so every unique chain
- * re-prompts the operator.
+ * The `&&` assertions are not cosmetic: these lines land in the Pi chat, and
+ * the permission matcher cannot wildcard a chained shape, so every unique
+ * chain re-prompts the operator.
  */
 
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
@@ -189,6 +181,7 @@ function commitPrConflictedState(): WorkState {
       ],
       // #500 — the recorded repoRoot state at commit-pr handoff.
       commitPrRoot: {
+        // Note: mutated per-variant by the sections below.
         branch: "feature/issue-481-worktree-provision",
         unmergedPaths: [
           "extension/src/worktree-provision.ts",
@@ -239,34 +232,19 @@ function commitPrConflictedState(): WorkState {
   // The chat renderer prefixes commands with `git -C <repoRoot>`, so the
   // regex must allow for that prefix between `git` and the subcommand.
   const clearingCmd = /git (?:-C \S+ )?(?:reset --hard|checkout --theirs)/;
-  assert(
-    clearingCmd.test(md),
-    "markdown: carries a clearing command for the conflicted state",
-  );
-  assert(
-    clearingCmd.test(chat),
-    "chat: carries a clearing command for the conflicted state",
-  );
+  assert(clearingCmd.test(md), "markdown: carries a clearing command for the conflicted state");
+  assert(clearingCmd.test(chat), "chat: carries a clearing command for the conflicted state");
 
   // The handoff must state the branch.
   assert(
     md.includes("feature/issue-481-worktree-provision"),
     "markdown: states the recorded branch",
   );
-  assert(
-    chat.includes("feature/issue-481-worktree-provision"),
-    "chat: states the recorded branch",
-  );
+  assert(chat.includes("feature/issue-481-worktree-provision"), "chat: states the recorded branch");
 
   // The staged count must be present.
-  assert(
-    /8 staged|staged-but-uncommitted: 8/.test(md),
-    "markdown: states the staged count",
-  );
-  assert(
-    /8 staged|staged-but-uncommitted: 8/.test(chat),
-    "chat: states the staged count",
-  );
+  assert(/8 staged|staged-but-uncommitted: 8/.test(md), "markdown: states the staged count");
+  assert(/8 staged|staged-but-uncommitted: 8/.test(chat), "chat: states the staged count");
 
   // The recovery commands must be valid against the conflicted state:
   // the unmerged-paths warning must appear before the git apply commands.
@@ -326,82 +304,112 @@ function commitPrConflictedState(): WorkState {
   }
 }
 
-// #500 — the clean-tree variant: no unmerged paths, the recovery commands
-// apply as-is and the handoff says the tree is clean.
+// #500 (clean-tree variant) + #539 (the "tree is clean" lie): zero
+// unmerged, zero staged, 12 untracked leftovers (the exact #533/#534 shape)
+// must NOT render the clean framing — name the count, order `git status`
+// first, warn the paths may belong to another cycle, commit ONLY the patch
+// paths. The zero-entries variant must still say clean. Both surfaces.
 {
+  const variants = [
+    { totalEntries: 0, expectClean: true, tag: "clean root" },
+    { totalEntries: 12, expectClean: false, tag: "#539 untracked dirt" },
+  ] as const;
+  for (const v of variants) {
+    const s = commitPrConflictedState();
+    s.pipelineState.commitPrRoot = {
+      branch: "feature/issue-481-worktree-provision",
+      unmergedPaths: [],
+      stagedCount: 0,
+      totalEntries: v.totalEntries,
+      capturedAt: Date.now(),
+    };
+    const outs = [
+      ["markdown", renderHandoffMarkdown(s, REPO)],
+      ["chat", renderHandoffUserMessage(s, REPO, `${REPO}/tmp/issue-481`)],
+    ] as const;
+    for (const [name, out] of outs) {
+      if (v.expectClean) {
+        assert(/clean|as-is/.test(out), `${name} (${v.tag}): says the tree is clean`);
+        assert(
+          !/unmerged paths \(\d+\)/.test(out),
+          `${name} (${v.tag}): does not claim unmerged paths`,
+        );
+      } else {
+        assert(
+          !/The tree is clean|apply as-is/.test(out),
+          `${name} (${v.tag}): does NOT claim the tree is clean`,
+        );
+        assert(/NOT clean|not clean/i.test(out), `${name} (${v.tag}): says not clean`);
+        assert(/12 untracked/.test(out), `${name} (${v.tag}): names the untracked count (12)`);
+        assert(/git status/.test(out), `${name} (${v.tag}): orders a git status first`);
+        assert(
+          /another cycle/.test(out) && /\.pi\/work-state\//.test(out),
+          `${name} (${v.tag}): warns the paths may belong to another cycle (check .pi/work-state/)`,
+        );
+        assert(
+          /ONLY the applied patch paths/.test(out),
+          `${name} (${v.tag}): recovery commits ONLY the applied patch paths`,
+        );
+      }
+    }
+  }
+  // The inline cap blurb (explainCap → "What this cap means") must not claim
+  // "apply as-is" on the dirty variant either — the same blind spot inline.
   const s = commitPrConflictedState();
   s.pipelineState.commitPrRoot = {
     branch: "feature/issue-481-worktree-provision",
     unmergedPaths: [],
     stagedCount: 0,
-    totalEntries: 0,
+    totalEntries: 12,
     capturedAt: Date.now(),
   };
-  const md = renderHandoffMarkdown(s, REPO);
-  const chat = renderHandoffUserMessage(s, REPO, `${REPO}/tmp/issue-481`);
+  const capSection = renderHandoffMarkdown(s, REPO).split("###")[1] ?? "";
   assert(
-    /clean|as-is/.test(md),
-    "markdown (clean root): says the tree is clean and commands apply as-is",
+    !/apply as-is/.test(capSection),
+    "markdown (#539): the cap blurb does not claim 'apply as-is'",
   );
   assert(
-    /clean|as-is/.test(chat),
-    "chat (clean root): says the tree is clean and commands apply as-is",
-  );
-  assert(
-    !/unmerged paths \(\d+\)/.test(md),
-    "markdown (clean root): does not claim unmerged paths",
+    /NOT clean|12 untracked/.test(capSection),
+    "markdown (#539): the cap blurb names the dirty state",
   );
 }
 
-// #500 — the inspection-failed variant: the handoff says the state is unknown
-// and tells the operator to run git status first.
+// #500 — the inspection-failed variant: the handoff says the state is
+// unknown and tells the operator to run git status first.
 {
   const s = commitPrConflictedState();
   s.pipelineState.commitPrRoot = undefined;
   s.pipelineState.commitPrRootError = "git status exited 128: not a git repository";
-  const md = renderHandoffMarkdown(s, REPO);
-  const chat = renderHandoffUserMessage(s, REPO, `${REPO}/tmp/issue-481`);
+  for (const [name, out] of [
+    ["markdown", renderHandoffMarkdown(s, REPO)],
+    ["chat", renderHandoffUserMessage(s, REPO, `${REPO}/tmp/issue-481`)],
+  ] as const) {
+    assert(
+      /inspection failed/.test(out),
+      `${name} (inspection failed): says the inspection failed`,
+    );
+  }
   assert(
-    /inspection failed/.test(md),
-    "markdown (inspection failed): says the inspection failed",
-  );
-  assert(
-    /git status/.test(md),
+    /git status/.test(renderHandoffMarkdown(s, REPO)),
     "markdown (inspection failed): tells the operator to run git status first",
-  );
-  assert(
-    /inspection failed/.test(chat),
-    "chat (inspection failed): says the inspection failed",
   );
 }
 
-// ---------------------------------------------------------------------------
 // #499 — the lossless consolidation recipe reaches BOTH handoff surfaces.
-//
-// The defect: `git diff HEAD` does not report untracked files, so a
-// workstream that created a NEW file loses it entirely when an operator
-// follows the in-chat recipe — while the GitHub body (`renderHandoffMarkdown`)
-// already printed the lossless shape (`add -A` → `diff --cached --binary |
-// git apply --3way --binary --index`). The two renderers disagreed and the
-// in-chat one was the lossy twin. #483's workstream had created a 204-line
-// test file that only `git status --porcelain` would have surfaced.
-//
-// The DoD evidence bullet: build a state with cap
-// `commit-pr-incomplete-consolidation` and one missing workstream, render
-// both surfaces, and assert the in-chat output stages before diffing (an
-// `add` step, or an explicit porcelain-derived command naming untracked
-// paths) and contains no bare `diff HEAD`.
-// ---------------------------------------------------------------------------
+// `git diff HEAD` omits untracked files, so a workstream that created a NEW
+// file is lost when an operator follows the in-chat recipe; #483's
+// workstream had created a 204-line test file only `git status --porcelain`
+// would have surfaced. Both surfaces must stage first (`add -A`), diff the
+// staged tree and apply losslessly, with no bare `diff HEAD |` pipeline.
 {
   const s = commitPrConflictedState();
-  // DoD shape: ONE missing workstream. The fixture's two workstreams
-  // (#500) are superseded here — the recipe assertions below count
-  // occurrences, and one workstream keeps the arithmetic unambiguous.
+  // ONE missing workstream: the recipe assertions count occurrences, so one
+  // workstream keeps the arithmetic unambiguous.
   s.pipelineState.incompleteConsolidation = [
     { id: "default", paths: ["extension/src/worktree-provision.ts (new)"] },
   ];
-  // A clean repoRoot: step 1b's conflicted-tree block is a separate concern
-  // (#500) and its commands would muddy the lossless-recipe check.
+  // Clean repoRoot so step 1b's conflicted-tree block does not muddy the
+  // lossless-recipe check.
   s.pipelineState.commitPrRoot = {
     branch: "feature/issue-481-worktree-provision",
     unmergedPaths: [],

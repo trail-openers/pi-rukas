@@ -414,6 +414,25 @@ const withInFlight = (over: Partial<WorkState> = {}): WorkState => {
       validateDiscriminants(running as unknown).some((f) => f.includes("not-a-real-kind")),
       "...but the same unknown kind in a RUNNING file is a finding for the resume path",
     );
+
+    // #539 review — the untyped-cast reader: a partial `commitPrRoot` object
+    // (hand edit or corrupt write) must be refused at read, not flow into the
+    // handoff renderers' arithmetic as if complete.
+    const root = (over: Record<string, unknown>) =>
+      validateDiscriminants({
+        ...initialState(539, 1000),
+        pipelineState: { ...initialState(539, 1000).pipelineState, commitPrRoot: over },
+      } as unknown as Record<string, unknown>);
+    const completeRoot = { branch: "feature/issue-539", unmergedPaths: [], stagedCount: 0, totalEntries: 0, capturedAt: 1 };
+    assert(root(completeRoot).length === 0, "validateDiscriminants accepts a complete commitPrRoot");
+    for (const [field, over] of [
+      ["pipelineState.commitPrRoot.totalEntries", { ...completeRoot, totalEntries: undefined }],
+      ["pipelineState.commitPrRoot.stagedCount", { ...completeRoot, stagedCount: "0" }],
+      ["pipelineState.commitPrRoot.capturedAt", { ...completeRoot, capturedAt: null }],
+      ["pipelineState.commitPrRoot.branch", { ...completeRoot, branch: 42 }],
+      ["pipelineState.commitPrRoot.unmergedPaths", { ...completeRoot, unmergedPaths: "none" }],
+    ] as Array<[string, Record<string, unknown>]>)
+      assert(root(over).some((f) => f.includes(field)), `partial ${field} is refused at read and names the field`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

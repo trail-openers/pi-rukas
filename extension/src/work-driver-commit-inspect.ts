@@ -200,6 +200,17 @@ export function commitPrRootFactLines(
           `${prefix}git reset --hard ${root.branch}`,
         );
       }
+    } else if (root.totalEntries > 0) {
+      // #539 — untracked leftovers (`??`) count in `totalEntries` but in
+      // neither `stagedCount` nor `unmergedPaths`, so pre-#539 this was the
+      // clean-tree branch: "The tree is clean — the recovery commands below
+      // apply as-is" rendered on exactly the tree shape that wedged #533/#534
+      // at integrate()'s dirty preflight. Say what is actually there and
+      // route the operator to `git status` first.
+      lines.push(
+        "",
+        `${indent}${root.totalEntries - root.stagedCount} untracked/unstaged file(s) — the tree is NOT clean. Run \`${prefix}git status\` first: the dirty paths may belong to another cycle (check \`.pi/work-state/\` before discarding), and the recovery commands below commit ONLY the applied patch paths.`,
+      );
     } else {
       lines.push("", `${indent}The tree is clean — the recovery commands below apply as-is.`);
     }
@@ -216,12 +227,37 @@ export function commitPrRootFactLines(
  * cap's "clear it" phrasing).
  */
 export function commitPrRootBlurb(
-  root: { branch: string; stagedCount: number; unmergedPaths: string[] } | undefined,
+  // #539 — documented intentional loosening of `CommitPrRootState`: `totalEntries`
+  // is optional here because pre-#539 state files record the same shape
+  // without it, and a missing field reads as "cleanness unknown" (the
+  // honest answer) rather than a second "clean" claim. The canonical type
+  // stays one interface (workflow-state-schema.ts); the `?` is the only
+  // divergence, and it is written out so a future addition to
+  // `CommitPrRootState` reaches this parameter too.
+  root:
+    | (Omit<CommitPrRootState, "capturedAt" | "totalEntries"> & {
+        totalEntries?: number;
+      })
+    | undefined,
   err: string | undefined,
   noConflictTail: string,
 ): string {
   if (root) {
-    return ` repoRoot is on \`${root.branch}\` with ${root.stagedCount} staged file(s)${root.unmergedPaths.length > 0 ? ` and ${root.unmergedPaths.length} UNMERGED path(s) (${root.unmergedPaths.join(", ")})` : ""} — ${root.unmergedPaths.length > 0 ? "resolve those conflicts (the handoff body names each path and the clearing command) before any `git apply` will run" : noConflictTail}.`;
+    // #539 — the untracked-dirt blind spot: with `totalEntries > 0` and
+    // nothing staged/unmerged, the root is NOT clean even though the staged
+    // count says 0. A missing `totalEntries` (pre-#539 state) says "unknown",
+    // never "clean".
+    const untracked =
+      root.totalEntries !== undefined
+        ? root.totalEntries - root.stagedCount - root.unmergedPaths.length
+        : 0;
+    const dirtyTail =
+      untracked > 0
+        ? `${untracked} untracked/unstaged file(s) remain (the tree is NOT clean) — run \`git status\` before re-applying patches`
+        : root.totalEntries === undefined
+          ? "cleanness of unstaged/untracked files unknown — run `git status` before re-applying patches"
+          : noConflictTail;
+    return ` repoRoot is on \`${root.branch}\` with ${root.stagedCount} staged file(s)${root.unmergedPaths.length > 0 ? ` and ${root.unmergedPaths.length} UNMERGED path(s) (${root.unmergedPaths.join(", ")})` : ""}${untracked > 0 ? ` and ${untracked} untracked entr${untracked === 1 ? "y" : "ies"} (the tree is NOT clean — run \`git status\` first)` : ""} — ${root.unmergedPaths.length > 0 ? "resolve those conflicts (the handoff body names each path and the clearing command) before any `git apply` will run" : dirtyTail}.`;
   }
   return err
     ? ` The repoRoot state inspection failed (${err}) — run \`git status\` before the recovery commands.`

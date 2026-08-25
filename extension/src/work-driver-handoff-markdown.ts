@@ -15,7 +15,11 @@ import {
   adversarialOutcomeSection,
   adversarialRoundsLine,
 } from "./work-driver-handoff-adversarial.ts";
-import { commitPrFallbackPlumbSection, commitPrRootFacts } from "./work-driver-handoff-commitpr.ts";
+import {
+  commitPrDirtyRootStep,
+  commitPrFallbackPlumbSection,
+  commitPrRootFacts,
+} from "./work-driver-handoff-commitpr.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 import {
   type WorkEvent,
@@ -357,6 +361,7 @@ export function renderHandoffMarkdown(state: WorkState): string {
       );
     }
     lines.push(
+      ...commitPrDirtyRootStep(root, "", ""),
       "# 1. Inspect each missing workstream's worktree — the developer's work is still there uncommitted:",
       ...missing.map((m) => `git -C .worktrees/issue-${issue}-${m.id} status --porcelain`),
       "",
