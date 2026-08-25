@@ -203,14 +203,35 @@ export async function mechanizedBranchSetup(
   // throw, which `runBranch` catches and demotes to the LLM ops fallback —
   // so a group silently loses mechanized setup for a transient lock. Groups
   // starting together all want the same ref, so one shared in-flight fetch
-  // serves them all.
-  await sharedFetch(execFn, repoRoot, mainline);
-  const { stdout: shaOut } = await execFn(`git rev-parse ${JSON.stringify(`origin/${mainline}`)}`, {
-    cwd: repoRoot,
-    maxBuffer: 64 * 1024,
-  });
-  const baseSha = shaOut.trim();
-  if (!baseSha) throw new Error(`could not resolve origin/${mainline} to a commit`);
+  // serves them all. #533 — a FAILED fetch must not throw: the base SHA
+  // resolution below falls back to the local mainline ref, and a fetch that
+  // is down (an SSH auth window) is exactly the env variance the fallback
+  // chain is for. Only an unreadable base SHA (no local or remote mainline)
+  // throws.
+  try {
+    await sharedFetch(execFn, repoRoot, mainline);
+  } catch (err) {
+    trace(
+      `work-driver: fetch of origin/${mainline} failed — proceeding from local refs: ${(err as Error).message?.slice(0, 160)}`,
+    );
+  }
+  const sha = async (ref: string) => {
+    const { stdout } = await execFn(`git rev-parse --verify --quiet ${JSON.stringify(ref)}`, {
+      cwd: repoRoot,
+      maxBuffer: 64 * 1024,
+    });
+    return stdout.trim();
+  };
+  let baseSha = await sha(`origin/${mainline}`).catch(() => "");
+  // Same catch as the origin probe: a failing `rev-parse` throws, and when
+  // BOTH refs are missing the raw git error would otherwise escape instead
+  // of the legible message below.
+  if (!baseSha) baseSha = await sha(`refs/heads/${mainline}`).catch(() => "");
+  if (!baseSha) {
+    throw new Error(
+      `could not resolve ${mainline} to a commit (no origin/${mainline} after fetch, no refs/heads/${mainline})`,
+    );
+  }
 
   const branchName = branchSlug(issues, issueTitle);
   const ids = workstreamIds.length > 0 ? workstreamIds : ["default"];

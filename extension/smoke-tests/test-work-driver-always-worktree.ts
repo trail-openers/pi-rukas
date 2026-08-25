@@ -95,7 +95,7 @@ assert(
 {
   const { calls, execFn } = recorder({
     "git symbolic-ref": "origin/main\n",
-    'git rev-parse "origin/main"': "deadbeefcafe\n",
+    "git rev-parse --verify --quiet ": "deadbeefcafe\n",
   });
   const out = await mechanizedBranchSetup(execFn, REPO, 287, [287], [], "always worktree");
 
@@ -135,7 +135,7 @@ assert(
 {
   const { calls, execFn } = recorder({
     "git symbolic-ref": "origin/main\n",
-    'git rev-parse "origin/main"': "base1\n",
+    "git rev-parse --verify --quiet ": "base1\n",
   });
   const out = await mechanizedBranchSetup(execFn, REPO, 553, [553], ["task-a", "task-b"], "multi");
   assert(
@@ -152,13 +152,71 @@ assert(
 {
   const { execFn } = recorder({
     "git symbolic-ref": "origin/main\n",
-    'git rev-parse "origin/main"': "\n", // unresolvable base
+    "git rev-parse --verify --quiet ": "\n", // unresolvable: no origin ref
   });
   let threw = false;
   await mechanizedBranchSetup(execFn, REPO, 1, [1], [], "x").catch(() => {
     threw = true;
   });
-  assert(threw, "unresolvable base SHA throws so the caller can route to a handoff");
+  assert(threw, "unresolvable base SHA (no origin ref AND no local mainline) throws so the caller can route to a handoff");
+}
+
+// #533 — a failed fetch no longer throws: the base SHA falls back to the
+// LOCAL mainline ref. The live #533 cycle parked at verify-failed:develop
+// because the ops fallback (triggered by this throw) created worktrees that
+// were never provisioned — only `worktreeCreate` runs `provisionWorktree` —
+// so the develop gate died on a bare tree and the handoff blamed the
+// `.pi/worktree-setup` hook for a path the hook was never on. An SSH auth
+// window is exactly the env variance the local-ref fallback is for.
+{
+  const { calls, execFn } = recorder({
+    "git symbolic-ref": "origin/main\n",
+    "git fetch": "!THROW!Permission denied (publickey)",
+    "git rev-parse --verify --quiet ": "deadbeefcafe\n",
+  });
+  const out = await mechanizedBranchSetup(execFn, REPO, 533, [533], [], "survive fetch failure");
+  assert(
+    out.baseSha === "deadbeefcafe",
+    "a failed fetch still resolves the base when origin/<mainline> exists — the local-ref fallback is a second chance, not a replacement",
+  );
+  assert(
+    calls.some((c) => c.cmd.startsWith("git fetch")),
+    "the fetch is attempted (a fresh origin/main is still preferred)",
+  );
+}
+{
+  // #533 — the live failure: fetch down, origin/<mainline> unresolvable
+  // (stale/absent), local mainline healthy. Old code threw and handed the
+  // branch step to the ops fallback, which created worktrees that were never
+  // provisioned (only `worktreeCreate` runs `provisionWorktree`) — the
+  // develop gate then died on the bare tree and the handoff blamed the
+  // `.pi/worktree-setup` hook for a path the hook was never on.
+  const { execFn } = recorder({
+    "git symbolic-ref": "origin/main\n",
+    "git fetch": "!THROW!Permission denied (publickey)",
+    // origin/<mainline> resolves to nothing; refs/heads/main resolves.
+    // The recorder matches by PREFIX, and the two sha() calls use the same
+    // prefix up to the ref — so distinguish them by making the FIRST
+    // `--verify --quiet` call return "" and the second return the local sha.
+    // Simplest: let the recorder return different values per call.
+  });
+  let calls2 = 0;
+  const execFn2: ExecFn = async (cmd, o) => {
+    calls2 += 1;
+    if (cmd.startsWith("git symbolic-ref")) return { stdout: "origin/main\n" };
+    if (cmd.startsWith("git fetch")) throw new Error("Permission denied (publickey)");
+    if (cmd.includes("--verify --quiet")) {
+      const isOrigin = cmd.includes("origin/main");
+      return { stdout: isOrigin ? "\n" : "localbase123\n" };
+    }
+    return { stdout: "" };
+  };
+  const out2 = await mechanizedBranchSetup(execFn2, REPO, 533, [533], [], "fetch down");
+  assert(
+    out2.baseSha === "localbase123",
+    "a failed fetch with an unresolvable origin ref falls back to the LOCAL mainline ref — the mechanized path survives instead of handing the branch step to the (unprovisioned) ops fallback",
+  );
+  void calls2;
 }
 
 // --------------------------------------------------------------- integrate

@@ -1,0 +1,121 @@
+#!/bin/sh
+# worktree-setup — provision a /work worktree with its dependency tree.
+#
+# Invoked by worktree-provision.ts as: sh <repoRoot>/.pi/worktree-setup
+#   cwd = the new worktree root, no args, no env.
+#
+# `git worktree add --detach` materialises tracked files only, so
+# `extension/node_modules` is absent and the develop gate
+# (`cd extension && bunx tsc --noEmit`) dies with
+# "Cannot find module '@earendil-works/pi-coding-agent'". We symlink the
+# real tree from the main checkout instead of `bun install`-ing a second
+# ~269 MB copy — the tree is read-mostly and safe to share.
+#
+# The worktree also needs `dist/prompts/standard/` (role prompts assembled
+# by `bun run build`, gitignored, never materialised by `worktree add`).
+# spawnSpecialist reads <worktree>/dist/prompts/standard/<role>.md, so the
+# offline smoke suite dies with ENOENT on its first real spawn (test-cancel)
+# without it. We generate it IN THE WORKTREE — see the build section below.
+#
+# Contract:
+#   - idempotent (safe to re-run; never clobbers an existing link, build is
+#     regenerable)
+#   - exits 0 harmlessly when the source tree does not exist (fresh clone,
+#     not installed yet) — a missing tree is the status quo, not a failure
+#   - any other failure: loud diagnostic + non-zero exit (reported as a
+#     `problem` by the driver; silent failure would be invisible)
+#   - output well under 1 MB (build output suppressed; only failures shown)
+
+set -eu
+
+die() {
+  echo "worktree-setup: ERROR: $*" >&2
+  exit 1
+}
+
+# The hook knows no repoRoot — locate the main checkout from the worktree.
+# `--git-common-dir` resolves to the main repo's .git even from a linked
+# worktree; its dirname is repoRoot. Requires git >= 2.31.
+git_common_dir=$(git rev-parse --path-format=absolute --git-common-dir) \
+  || die "cannot resolve --git-common-dir from $(pwd) (need git >= 2.31?)"
+[ -d "$git_common_dir" ] || die "git common dir $git_common_dir not found"
+repo_root=${git_common_dir%/.git}
+[ -d "$repo_root/extension" ] \
+  || die "$repo_root does not look like the pi-ensemble checkout (no extension/)"
+
+src="$repo_root/extension/node_modules"
+dst="$PWD/extension/node_modules"
+
+if [ ! -d "$src" ]; then
+  echo "worktree-setup: $src not found; leaving worktree un-provisioned"
+  exit 0
+fi
+
+# Idempotency: a correct link is a no-op; anything else we did not create
+# (a real dir, a broken/stale link) must not be clobbered — fail loudly.
+if [ -L "$dst" ]; then
+  [ "$(readlink "$dst")" = "$src" ] \
+    || die "$dst is a link to $(readlink "$dst"), not $src"
+  echo "worktree-setup: $dst already linked; nothing to do"
+else
+  if [ -e "$dst" ]; then
+    die "$dst exists and is not a link to $src; not clobbering"
+  fi
+  mkdir -p "$PWD/extension" \
+    || die "cannot create $PWD/extension"
+  ln -s "$src" "$dst" \
+    || die "symlink $dst -> $src failed"
+  # Cheap proof the link resolves to a real tree.
+  [ -d "$dst" ] || die "symlink $dst does not resolve to a directory"
+
+  # Keep the link out of `git status`. worktree-provision.ts writes this for
+  # its own symlinks, but the hook path skips that loop entirely — and
+  # .gitignore patterns ending in / match directories, not symlinks, so the
+  # link would surface as untracked and stagePorcelainPaths would stage it.
+  exclude="$git_common_dir/info/exclude"
+  mkdir -p "$git_common_dir/info" || die "cannot create $git_common_dir/info"
+  have=$(grep -cxF 'extension/node_modules' "$exclude" 2>/dev/null) || have=0
+  if [ "$have" = 0 ]; then
+    {
+      # Newline before the entry if the file's last byte is not already one.
+      last=$(tail -c 1 "$exclude" 2>/dev/null) || last=""
+      [ -z "$last" ] && echo ""
+      echo "extension/node_modules"
+    } >> "$exclude" || die "cannot append to $exclude"
+  fi
+  echo "worktree-setup: linked $dst -> $src"
+fi
+
+# Generate dist/prompts/standard/ IN THIS WORKTREE.
+#
+# Do NOT symlink dist/ from the main checkout: worktree-provision.ts's
+# NEVER_SHARED list excludes it deliberately — build.sh writes there, and a
+# shared write-heavy directory would serialise parallel workstreams and
+# overwrite the main checkout's prompts. Generating locally is cheap (~1s)
+# and idempotent: build.sh overwrites its own outputs.
+#
+# The build is chatty; suppress its normal output but surface failures.
+# build.sh derives input/output paths from its own location UNLESS
+# PI_ENSEMBLE_BASE is set, and the root package.json "build" script
+# hardcodes PI_ENSEMBLE_BASE=$PWD — so run it with cwd = THIS WORKTREE.
+# (Running it from the main checkout would overwrite the main checkout's
+# dist/, which the NEVER_SHARED rule exists to prevent.)
+if ! build_out=$( (builtin cd "$PWD" && bun run build) 2>&1 ); then
+  echo "worktree-setup: ERROR: bun run build failed (ran in $PWD):" >&2
+  printf '%s\n' "$build_out" | tail -20 >&2
+  exit 1
+fi
+[ -f "$PWD/dist/prompts/standard/explore.md" ] \
+  || die "build ran but $PWD/dist/prompts/standard/explore.md is missing"
+
+# dist/ is already covered by the tracked .gitignore ("dist/prompts/"), so
+# the generated prompts never surface in `git status --porcelain`. Confirm
+# anyway — the hook path skips the info/exclude writing the symlink loop
+# performs, so this is the only check that the build output stays clean.
+if git -C "$PWD" status --porcelain -- dist/ 2>/dev/null | grep -q .; then
+  echo "worktree-setup: ERROR: git status shows untracked entries under dist/:" >&2
+  git -C "$PWD" status --porcelain -- dist/ >&2
+  exit 1
+fi
+
+echo "worktree-setup: built dist/prompts/standard/ in worktree"

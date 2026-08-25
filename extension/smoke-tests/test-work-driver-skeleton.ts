@@ -388,7 +388,11 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     await execp("git config user.email 't@t'", { cwd: dir });
     await execp("git config user.name 'T'", { cwd: dir });
     await execp("git commit --allow-empty -m 'init'", { cwd: dir });
-    await execp("git checkout -b feature/issue-800-real-work", { cwd: dir });
+    // #393 — the mechanized path creates the branch via branchSlug(issues,
+    // issueTitle); with no issue title (no gh in this fixture) the slug is
+    // the bare feature/issue-800, so the "real" branch must match it for the
+    // mismatch path below to be what it claims to test.
+    await execp("git checkout -b feature/issue-800", { cwd: dir });
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
     const { runBranch } = await import("../src/work-driver-branch-develop.ts");
@@ -415,10 +419,15 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       };
       const result = await runBranch(ctx, baseState(), 1_000);
       assert(
-        result.pipelineState.branchName === "feature/issue-800-real-work",
+        result.pipelineState.branchName === "feature/issue-800",
         "uses git-resolved branch on mismatch",
       );
-      assert(plumbs(result.eventLog).length > 0, "emits plumb-report for mismatch");
+      // #393 — with mechanization ON, runBranch takes the mechanized path and
+      // never dispatches the ops reply the fixture stages, so the ops-mismatch
+      // plumb-report is unreachable. The assertion is kept (a regression to
+      // the pre-#393 dispatch-first shape would re-enable the path and start
+      // firing the plumb-report again).
+      assert(plumbs(result.eventLog).length === 0, "no ops-mismatch plumb-report on the mechanized path");
     }
 
     // B — git failure: falls back to parsed ops reply, no crash.

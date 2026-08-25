@@ -7,6 +7,16 @@
  * `runBranch` calls this after `mechanizedBranchSetup` throws something
  * other than `DirtyWorktreeError` — the recovery path #287 kept
  * deliberately: absorbing environment variance, not an opt-out.
+ *
+ * #533 — this path does NOT provision the worktrees it records: only
+ * `worktreeCreate` (the mechanized path) calls `provisionWorktree`, and the
+ * ops prompt only tells ops to `git worktree add`. A worktree without
+ * `node_modules` fails the develop gate with module-not-found errors even
+ * though the diff is fine, and the handoff's "add or fix `.pi/worktree-setup`"
+ * advice then blames a hook that was never on the code path. The fallback is
+ * an env-variance recovery, not an opt-out of provisioning — if it fires, run
+ * the project's `.pi/worktree-setup` hook (or the symlink loop's equivalent)
+ * in each worktree before the develop step.
  */
 
 import { exec } from "node:child_process";

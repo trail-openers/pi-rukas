@@ -218,10 +218,14 @@ const REPO = "/repo";
 const WT = path.join(REPO, ".worktrees", "issue-475-default");
 
 // ------- mechanizedBranchSetup re-throws the refusal for a dirty leftover
+// (#533: a failed fetch must not divert the refusal — the origin ref still
+// resolves, and the DirtyWorktreeError must reach runBranch, not the ops
+// fallback)
 {
   const { calls, execFn } = recorder({
     "git symbolic-ref": "origin/main\n",
-    'git rev-parse "origin/main"': "deadbeef\n",
+    "git rev-parse --verify --quiet ": "deadbeef\n", // origin/<mainline> resolves
+    "git fetch": "!THROW!Permission denied (publickey)",
     "git status --porcelain": " M src/wip.ts\n",
     "git rev-list --count": "0\n",
   });
@@ -246,7 +250,7 @@ const WT = path.join(REPO, ".worktrees", "issue-475-default");
 {
   const { calls, execFn } = recorder({
     "git symbolic-ref": "origin/main\n",
-    'git rev-parse "origin/main"': "deadbeef\n",
+    "git rev-parse --verify --quiet ": "deadbeef\n", // origin/<mainline> resolves
     "git status --porcelain": "\n",
     "git rev-list --count": "0\n",
   });
@@ -282,7 +286,7 @@ function branchCtx(execFn: ExecFn): DriverContext {
   // would destroy the same work) — it routes to handoff via step-failed:branch.
   const { execFn } = recorder({
     "git symbolic-ref": "origin/main\n",
-    'git rev-parse "origin/main"': "deadbeef\n",
+    "git rev-parse --verify --quiet ": "deadbeef\n",
     "git status --porcelain": " M src/wip.ts\n",
     "git rev-list --count": "0\n",
     "gh pr list": "[]\n",
@@ -308,7 +312,7 @@ function branchCtx(execFn: ExecFn): DriverContext {
   // Clean leftover: no refusal, no cap — the mechanized path completes.
   const { execFn } = recorder({
     "git symbolic-ref": "origin/main\n",
-    'git rev-parse "origin/main"': "deadbeef\n",
+    "git rev-parse --verify --quiet ": "deadbeef\n",
     "git status --porcelain": "\n",
     "git rev-list --count": "0\n",
     "gh pr list": "[]\n",
