@@ -32,6 +32,7 @@ import {
   REVIEW_WALL_CLOCK_MS,
   STEP_ORDINAL,
 } from "./work-driver-context.ts";
+import { formatCycleTotal } from "./work-driver-cycle-total.ts";
 import { explainCap } from "./work-driver-explain.ts";
 import { humanActionFor, readQueueSummary } from "./work-queue.ts";
 import { discoverAllCycles, renderCycleIndex } from "./work-status-index.ts";
@@ -96,7 +97,15 @@ function fmtTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(2)}M`;
 }
 
-/** Sum elapsed-ms across all dispatch-completed events for a given step. */
+/**
+ * Per-step totals from the event log: elapsed-ms across all
+ * dispatch-completed events, plus tokens (input+output+cacheRead+
+ * cacheWrite) when the completion events carry usage. #534 — `tokens` was
+ * a documented v2 reservation (the `void fmtTokens;` line below); it is
+ * populated now, matching the async-jobs-report.ts totalTokens definition.
+ * Dispatches without usage (pre-#534 state files) leave the column absent
+ * rather than printing a misleading zero.
+ */
 function stepTotals(events: WorkEvent[]): Record<string, { ms: number; tokens?: number }> {
   const out: Record<string, { ms: number; tokens?: number }> = {};
   for (const e of events) {
@@ -104,6 +113,13 @@ function stepTotals(events: WorkEvent[]): Record<string, { ms: number; tokens?: 
     if (!out[e.step]) out[e.step] = { ms: 0 };
     const slot = out[e.step];
     if (slot) slot.ms += e.ms;
+    const usage = (
+      e as { usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } }
+    ).usage;
+    const t = usage
+      ? (usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0)
+      : 0;
+    if (slot && t > 0) slot.tokens = (slot.tokens ?? 0) + t;
   }
   return out;
 }
@@ -220,8 +236,11 @@ export function renderRunningStatus(state: WorkState, repoRoot: string): string 
   if (Object.keys(totals).length > 0) {
     lines.push("", "step durations:");
     for (const [step, t] of Object.entries(totals)) {
-      lines.push(`  ${step.padEnd(14)} ${fmtElapsed(t.ms)}`);
+      const tokens = t.tokens && t.tokens > 0 ? ` · ${fmtTokens(t.tokens)} tokens` : "";
+      lines.push(`  ${step.padEnd(14)} ${fmtElapsed(t.ms)}${tokens}`);
     }
+    const cycleTotal = formatCycleTotal(state.eventLog);
+    if (cycleTotal) lines.push(`  ${"(cycle total)".padEnd(14)}${cycleTotal}`);
   }
 
   if (state.eventLog.length > 0) {
@@ -237,7 +256,6 @@ export function renderRunningStatus(state: WorkState, repoRoot: string): string 
   lines.push("");
   lines.push(`state file: ${path.join(workStateDir(repoRoot), `${state.issue}.json`)}`);
 
-  void fmtTokens; // reserved for v2 per-step token column
   return lines.join("\n");
 }
 
@@ -309,13 +327,17 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
     );
   }
 
-  // Per-step durations.
+  // Per-step durations + the cycle total (one shared helper so the
+  // scrollback, handoff markdown and this surface always agree — #534).
   const totals = stepTotals(state.eventLog);
   if (Object.keys(totals).length > 0) {
     lines.push("", "Step durations:");
     for (const [step, t] of Object.entries(totals)) {
-      lines.push(`  ${step.padEnd(14)} ${fmtElapsed(t.ms)}`);
+      const tokens = t.tokens && t.tokens > 0 ? ` · ${fmtTokens(t.tokens)} tokens` : "";
+      lines.push(`  ${step.padEnd(14)} ${fmtElapsed(t.ms)}${tokens}`);
     }
+    const cycleTotal = formatCycleTotal(state.eventLog);
+    if (cycleTotal) lines.push(`  ${"(cycle total)".padEnd(14)}${cycleTotal}`);
   }
 
   // Last 5 events.

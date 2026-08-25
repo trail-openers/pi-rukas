@@ -12,6 +12,8 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { nextStep } from "../src/work-driver-context.ts";
+import { buildCompletionEvent } from "../src/work-driver-merged.ts";
+import type { DispatchResult, DispatchUsage } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { validateDiscriminants } from "../src/workflow-state-validate.ts";
@@ -94,6 +96,25 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     const afterAppend = await readState(dir, issue);
     assert(afterAppend?.eventLog.length === 1, "appendEvent persists exactly one event");
     assert(afterAppend?.eventLog[0]?.kind === "step-started", "appended event has expected kind");
+
+    // #534 — usage on dispatch events round-trips; absent stays absent.
+    const usage = { input: 100, output: 20, cacheRead: 400, cacheWrite: 10, cost: 0.123, turns: 3 };
+    state = appendEvent(state, { kind: "dispatch-completed", step: "explore", role: "explore", jobId: "job-usage-rt", label: "explore", ok: true, ms: 1234, at: 1600, summary: "ok", usage });
+    state = appendEvent(state, { kind: "dispatch-failed", step: "develop", role: "developer", jobId: "job-usage-fail", label: "developer:ws-1", ms: 5678, at: 1700, errorTail: "exit 1", usage: { ...usage, input: 50, cost: 0.05 } });
+    state = appendEvent(state, { kind: "dispatch-failed-provider", step: "adversarial", role: "adversarial-developer", jobId: "job-usage-prov", label: "adversarial", ms: 9000, at: 1800, providerMessage: "timeout", usage: { ...usage, output: 0 } });
+    state = appendEvent(state, { kind: "dispatch-failed", step: "branch", role: "ops", jobId: "job-no-usage", label: "ops:branch", ms: 100, at: 1900, errorTail: "git pull --ff-only failed" });
+    await writeState(dir, state);
+    const withUsageEv = await readState(dir, issue);
+    const completedEv = withUsageEv?.eventLog.find((e) => e.kind === "dispatch-completed" && e.jobId === "job-usage-rt");
+    assert(completedEv?.kind === "dispatch-completed" && completedEv.usage?.input === 100 && completedEv.usage.output === 20 &&
+      completedEv.usage.cacheRead === 400 && completedEv.usage.cacheWrite === 10 && completedEv.usage.cost === 0.123 && completedEv.usage.turns === 3,
+      "dispatch-completed usage round-trips through writeState/readState");
+    const failedEv = withUsageEv?.eventLog.find((e) => e.kind === "dispatch-failed" && e.jobId === "job-usage-fail");
+    assert(failedEv?.kind === "dispatch-failed" && failedEv.usage?.input === 50, "dispatch-failed usage round-trips");
+    const providerEv = withUsageEv?.eventLog.find((e) => e.kind === "dispatch-failed-provider" && e.jobId === "job-usage-prov");
+    assert(providerEv?.kind === "dispatch-failed-provider" && providerEv.usage?.output === 0, "dispatch-failed-provider usage round-trips");
+    const noUsageEv = withUsageEv?.eventLog.find((e) => e.kind === "dispatch-failed" && e.jobId === "job-no-usage");
+    assert(noUsageEv?.kind === "dispatch-failed" && noUsageEv.usage === undefined, "absent usage stays absent (no zero synthesis) on round-trip");
 
     // Schema-version mismatch must reject loudly.
     const file = workStateFile(dir, issue);
@@ -405,6 +426,35 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     capPos.length === 1 && capPos[0].includes("eventLog[0].nextStep") && capPos[0].includes("bogus"),
     "unknown cap-hit.nextStep names the field and the value",
   );
+}
+
+// 4. #534 — buildCompletionEvent attaches usage when DispatchResult.usage is
+// in scope and omits it otherwise. Minimal stub; no spawn, no disk.
+{
+  const ctx = { repoRoot: "/tmp", issue: 534 } as Parameters<typeof buildCompletionEvent>[0];
+  const usage: DispatchUsage = { input: 1000, output: 250, cacheRead: 5000, cacheWrite: 100, cost: 1.23, turns: 4 };
+  const base: DispatchResult = { role: "developer", ok: true, text: "done", toolUses: [], ms: 1000, exitCode: 0 };
+
+  const ok = await buildCompletionEvent(ctx, "develop", "developer", "dev", { ...base, usage });
+  assert(ok.kind === "dispatch-completed" && ok.usage?.input === 1000 && ok.usage?.cacheRead === 5000,
+    "success WITH usage → dispatch-completed carries it");
+
+  const noU = await buildCompletionEvent(ctx, "develop", "developer", "dev", base);
+  assert(noU.kind === "dispatch-completed" && noU.usage === undefined,
+    "success WITHOUT usage → omitted, not zero-synthesised");
+
+  const fail = await buildCompletionEvent(ctx, "develop", "developer", "dev", { ...base, ok: false, exitCode: 1, usage });
+  assert(fail.kind === "dispatch-failed" && fail.usage?.output === 250,
+    "process failure WITH usage → dispatch-failed carries flushed spend");
+
+  const prov = await buildCompletionEvent(ctx, "adversarial", "adversarial-developer", "adv",
+    { ...base, errorStop: { reason: "error", message: "terminated" }, usage });
+  assert(prov.kind === "dispatch-failed-provider" && prov.usage?.cost === 1.23,
+    "errorStop WITH usage → dispatch-failed-provider carries it");
+
+  const killed = await buildCompletionEvent(ctx, "ci", "ops", "ops:ci", { ...base, killCause: "timeout", killBudgetMs: 600_000, usage });
+  assert(killed.kind === "dispatch-failed" && killed.usage?.turns === 4,
+    "killCause WITH usage → dispatch-failed carries flushed usage");
 }
 
 console.log(`\nexit ${exit}`);

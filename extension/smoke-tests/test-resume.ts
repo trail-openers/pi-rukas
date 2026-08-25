@@ -318,6 +318,8 @@ const withInFlight = (over: Partial<WorkState> = {}): WorkState => {
           outcome: "parked" as const,
           reason: "cap intent-park:underspecified",
           humanAction: "add acceptance criteria to #901",
+          tokens: 123_456,
+          cost: 0.87,
         },
       ],
       merged: 0,
@@ -334,6 +336,10 @@ const withInFlight = (over: Partial<WorkState> = {}): WorkState => {
     assert(
       back?.entries[0]?.humanAction === "add acceptance criteria to #901",
       "...and so does the human action for each parked group",
+    );
+    assert(
+      back?.entries[0]?.tokens === 123_456 && back?.entries[0]?.cost === 0.87,
+      "the optional per-group tokens/cost survive the queue-summary round-trip",
     );
 
     // The index is what the operator actually reads the next morning.

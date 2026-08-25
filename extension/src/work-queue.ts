@@ -57,6 +57,15 @@ export interface QueueEntry {
   failedStep?: string;
   /** What the operator has to do. Never "it failed"; always an action. */
   humanAction?: string;
+  /**
+   * Raw token sum across the group's dispatch-completed and dispatch-failed*
+   * events (input+output+cacheRead+cacheWrite, matching async-jobs-report's
+   * totalTokens). Optional because the field is new and older
+   * queue-summary.json files predate it.
+   */
+  tokens?: number;
+  /** Cost in USD, when the total is priced. Never estimated when unknown. */
+  cost?: number;
 }
 
 export interface QueueSummary {

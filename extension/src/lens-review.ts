@@ -15,7 +15,7 @@ import {
   renderSummary,
 } from "./lens-review-format.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
-import type { DispatchResult } from "./types.ts";
+import type { DispatchResult, DispatchUsage } from "./types.ts";
 import { jitteredMs } from "./work-driver-failure-taxonomy.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -97,6 +97,12 @@ export interface LensRunResult {
    * looked — see `lensProducedEvidence`.
    */
   summary?: string;
+  /**
+   * #534 — the child's tokens/cost. Previously discarded (the per-lens
+   * `result.usage` was dropped here); carried so the driver can fold the
+   * six-lens pass's spend into the cycle total at the emission point.
+   */
+  usage?: DispatchUsage;
 }
 
 export interface LensReviewSummary {
@@ -106,6 +112,14 @@ export interface LensReviewSummary {
   lenses: LensRunResult[];
   /** Deduplicated, precedence-ordered list. */
   findings: Finding[];
+  /**
+   * #534 — raw sum of `usage` across all six lenses, summed as-is with no
+   * per-lens dedup (matching the retry-double-count-is-accepted rule the
+   * rest of the driver uses). Undefined when every lens was blocked, so
+   * the emission site can distinguish "the review spent nothing" from
+   * "the review spent zero tokens".
+   */
+  usage?: DispatchUsage;
 }
 
 function piSkillsDir(): string {
@@ -318,6 +332,9 @@ export async function runLensReview(opts: {
         attempts,
         blocked: true,
         parseError: lastError ?? "unknown failure",
+        // #534 — a failed lens still flushes usage from whatever turns
+        // completed before it died; count it like any other dispatch-failed.
+        usage: result?.usage,
       };
     }
 
@@ -335,6 +352,8 @@ export async function runLensReview(opts: {
       model: result.model,
       transcriptPath: result.transcriptPath,
       parseError: skipped > 0 ? `${skipped} malformed report_finding call(s) skipped` : undefined,
+      // #534 — was previously dropped at this return; the cycle total needs it.
+      usage: result.usage,
     };
   });
 
@@ -346,12 +365,34 @@ export async function runLensReview(opts: {
   const all = [...lensResults.flatMap((r) => r.findings), ...(opts.extraFindings ?? [])];
   const deduped = dedupeFindings(all);
   const verdict = computeVerdict(deduped, lensResults, opts.threshold);
+  // #534 — raw sum across lenses (no dedup, matching the retry rule).
+  // `turns` is not meaningful at the aggregate level; keep it as the sum
+  // of the parts' turns since the cycle total is what gets rendered and
+  // no consumer interprets the aggregate's turn count.
+  const usageUsages = lensResults
+    .map((r) => r.usage)
+    .filter((u): u is DispatchUsage => u !== undefined);
+  const usage =
+    usageUsages.length > 0
+      ? usageUsages.reduce(
+          (acc, u) => ({
+            input: acc.input + u.input,
+            output: acc.output + u.output,
+            cacheRead: acc.cacheRead + u.cacheRead,
+            cacheWrite: acc.cacheWrite + u.cacheWrite,
+            cost: acc.cost + u.cost,
+            turns: acc.turns + u.turns,
+          }),
+          { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+        )
+      : undefined;
   return {
     verdict,
     totalFindings: deduped.length,
     bySeverity: bySeverityCounts(deduped),
     lenses: lensResults,
     findings: deduped,
+    usage,
   };
 }
 

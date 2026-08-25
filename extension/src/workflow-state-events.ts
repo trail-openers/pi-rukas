@@ -9,6 +9,8 @@
  * full schema doc (versioning, resumability, GitHub-is-the-bus).
  */
 
+import type { WideningFinding } from "./invariant-scan.ts";
+import type { DispatchUsage } from "./types.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 
 /**
@@ -76,6 +78,8 @@ export type WorkEvent =
        */
       summary?: string;
       artifactPath?: string;
+      /** #534 — tokens/cost the child actually consumed (see `withUsage`). */
+      usage?: DispatchUsage;
     }
   | {
       kind: "dispatch-failed-provider";
@@ -88,6 +92,8 @@ export type WorkEvent =
       /** Provider's error message captured from the synthetic stopReason: "error". */
       providerMessage?: string;
       transcriptPath?: string;
+      /** #534 — tokens flushed before the provider-error stop. */
+      usage?: DispatchUsage;
     }
   | {
       kind: "dispatch-failed";
@@ -102,6 +108,8 @@ export type WorkEvent =
       errorTail?: string;
       /** Structured kill-cause from pi-ensemble self-kill (timeout/inactivity/abort). */
       killCause?: "timeout" | "inactivity" | "abort";
+      /** #534 — tokens flushed before the process-level failure. */
+      usage?: DispatchUsage;
     }
   | {
       kind: "adversarial-approved";
@@ -471,22 +479,7 @@ export type WorkEvent =
       kind: "widening-scan";
       at: number;
       /** Findings from the scan (empty list = no widening detected). */
-      findings: Array<{
-        file: string;
-        line?: number;
-        kind:
-          | "option-widening-rust"
-          | "option-widening-ts"
-          | "optional-property"
-          | "removed-readonly"
-          | "type-erasure"
-          | "removed-assert"
-          | "removed-pub"
-          | "removed-mut"
-          | "generic-widening";
-        before?: string;
-        after?: string;
-      }>;
+      findings: WideningFinding[];
     }
   // The memory events ("memory-write", "memory-inject") live in
   // workflow-state-events-memory.ts — MemoryEventFragment. Split out for

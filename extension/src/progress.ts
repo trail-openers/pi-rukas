@@ -88,8 +88,25 @@ export function formatElapsed(ms: number): string {
 }
 
 /**
+ * Cache hit rate as a compact percent string ("78%"), or undefined when it
+ * cannot be computed. #534 — half the provider fleet reports cacheRead=0
+ * structurally (no prompt caching), so the guards are load-bearing, not
+ * cosmetic: cacheRead must be > 0 (never render "0%" for a provider that
+ * simply doesn't cache) and the denominator must be > 0 (a turn that sent
+ * nothing is no signal).
+ */
+export function cacheHitRate(u: { input: number; cacheRead: number }): string | undefined {
+  if (u.cacheRead <= 0 || u.input < 0) return undefined;
+  const denom = u.cacheRead + u.input;
+  if (denom <= 0) return undefined;
+  return `${Math.round((u.cacheRead / denom) * 100)}%`;
+}
+
+/**
  * One-line usage summary: `2 turns · 4.2s · ↑3.1k ↓890 R12k W4k $0.0021 · model`.
- * Only includes fields that have non-zero values.
+ * Only includes fields that have non-zero values. The cache hit rate
+ * (R/(R+↑)) appears right after the cacheRead figure when it is computable;
+ * providers without prompt caching show no rate at all.
  */
 export function formatUsage(state: RunningState): string {
   const u = state.usage;
@@ -98,7 +115,11 @@ export function formatUsage(state: RunningState): string {
   parts.push(formatElapsed(state.elapsedMs));
   if (u.input) parts.push(`↑${formatTokens(u.input)}`);
   if (u.output) parts.push(`↓${formatTokens(u.output)}`);
-  if (u.cacheRead) parts.push(`R${formatTokens(u.cacheRead)}`);
+  if (u.cacheRead) {
+    parts.push(`R${formatTokens(u.cacheRead)}`);
+    const rate = cacheHitRate(u);
+    if (rate) parts.push(rate);
+  }
   if (u.cacheWrite) parts.push(`W${formatTokens(u.cacheWrite)}`);
   if (u.cost) parts.push(`$${u.cost.toFixed(4)}`);
   if (state.model) parts.push(state.model);

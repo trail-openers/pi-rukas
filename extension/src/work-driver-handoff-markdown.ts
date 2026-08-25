@@ -9,66 +9,15 @@
 
 import { killDetail } from "./kill-detail.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
-import { commitPrRootFactLines } from "./work-driver-commit-inspect.ts";
+import { formatCycleTotal } from "./work-driver-cycle-total.ts";
 import { explainCap } from "./work-driver-explain.ts";
 import {
   adversarialOutcomeSection,
   adversarialRoundsLine,
 } from "./work-driver-handoff-adversarial.ts";
+import { commitPrFallbackPlumbSection, commitPrRootFacts } from "./work-driver-handoff-commitpr.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
-
-/**
- * #500 — the ops-fallback plumb-report's hedge ("repo root may contain
- * partially staged consolidation"). Unlike `plumbReportSection` (which
- * renders `pipelineState.plumbReports`, kept OUT of the event log so it
- * doesn't change the tail `nextStep()` routes on), the commit-pr
- * ops-fallback plumb-report IS an event-log entry — and pre-#500 nothing
- * rendered it, leaving the DoD ("the hedge is rendered into the handoff
- * body") unmet.
- */
-function commitPrFallbackPlumbSection(state: WorkState, cap: string | undefined): string[] {
-  if (
-    cap !== "commit-pr-incomplete-consolidation" &&
-    cap !== "verify-failed:commit-pr" &&
-    cap !== "integration-verify-failed"
-  ) {
-    return [];
-  }
-  const report = [...state.eventLog]
-    .reverse()
-    .find(
-      (e): e is Extract<WorkEvent, { kind: "plumb-report" }> =>
-        e.kind === "plumb-report" && e.step === "commit-pr",
-    );
-  if (!report) return [];
-  return ["### commit-pr fallback note", "", `> ${report.body}`, ""];
-}
-
-/**
- * #500 — the recorded repoRoot state at commit-pr handoff. Facts from
- * `commitPrRootFactLines` — the single source the in-chat twin uses — so
- * the two surfaces cannot drift. Gated on the commit-pr caps: rendering the
- * clearing commands for some other cap's handoff would be the "wrong
- * commands for the cap" class #398's rewrites existed to eliminate.
- */
-function commitPrRootFacts(state: WorkState, cap: string | undefined): string[] {
-  if (
-    cap !== "commit-pr-incomplete-consolidation" &&
-    cap !== "verify-failed:commit-pr" &&
-    cap !== "integration-verify-failed"
-  ) {
-    return [];
-  }
-  const facts = commitPrRootFactLines(
-    state.pipelineState.commitPrRoot,
-    state.pipelineState.commitPrRootError,
-    "",
-    "",
-  );
-  if (facts.length === 0) return [];
-  return ["### repoRoot state at commit-pr handoff", "", ...facts, ""];
-}
 
 /**
  * Build the cap-hit handoff markdown body.
@@ -130,6 +79,12 @@ export function renderHandoffMarkdown(state: WorkState): string {
     "## ⏸ Cap hit — needs human attention",
     "",
     `**Cap**: ${capDescription}`,
+    // #534 — cycle cost so far, same shared helper as the terminal
+    // scrollback line and /work-status so all three surfaces agree.
+    // Omitted (not rendered as "0") when no event carries usage.
+    ...(formatCycleTotal(state.eventLog)
+      ? [`**Tokens**: ${formatCycleTotal(state.eventLog).trim()}`]
+      : []),
     adversarialRoundsLine(state, capForExplain, reviewRound),
     `**Branch**: \`${branch}\``,
     `**Issues**: ${issuesHeader}`,

@@ -11,6 +11,7 @@
 
 import {
   type RunningState,
+  cacheHitRate,
   emptyRunningState,
   extractToolHint,
   formatElapsed,
@@ -133,6 +134,30 @@ assert(formatElapsed(75_000) === "1m15s", "minutes+seconds combined");
   assert(text.includes("zai-glm-4.7"), "formatUsage includes model");
   assert(!text.includes("R0"), "zero cacheRead omitted");
   assert(!text.includes("W0"), "zero cacheWrite omitted");
+  assert(!text.includes("%"), "no cache hit rate when cacheRead is 0 (provider without prompt caching)");
+}
+
+// 3b. #534 — cache hit rate: R/(R+↑), rendered only when computable.
+{
+  assert(cacheHitRate({ input: 1000, cacheRead: 4500 }) === "82%", "rate = cacheRead/(cacheRead+input)");
+  assert(cacheHitRate({ input: 0, cacheRead: 500 }) === "100%", "all reads hit (cold-prefix-only turn)");
+  assert(cacheHitRate({ input: 1000, cacheRead: 0 }) === undefined, "cacheRead=0 → nothing (never '0%')");
+  assert(cacheHitRate({ input: 0, cacheRead: 0 }) === undefined, "0+0 denominator guard → nothing");
+  assert(cacheHitRate({ input: -1, cacheRead: 5 }) === undefined, "negative input guard → nothing");
+  assert(cacheHitRate({ input: 100, cacheRead: 100 }) === "50%", "50/50 split → '50%'");
+
+  const s: RunningState = {
+    role: "developer",
+    turns: 3,
+    toolUses: 2,
+    usage: { input: 200, output: 100, cacheRead: 3800, cacheWrite: 0, cost: 0, turns: 3 },
+    elapsedMs: 1200,
+    done: true,
+    ok: true,
+  };
+  const text = formatUsage(s);
+  assert(text.includes("R3.8k"), "cacheRead still rendered");
+  assert(text.includes("95%"), "rate rendered next to the R figure (3800/(3800+200))");
 }
 
 // 5. renderSingle — shows running spinner + current action

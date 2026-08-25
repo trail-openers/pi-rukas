@@ -27,6 +27,7 @@ import { runSingleDispatch } from "./work-driver-merged.ts";
 import { DOCTRINE_FILES, type DoctrineDoc, judgePolicy } from "./work-driver-policy.ts";
 import { inlineLensFixPrompt } from "./work-driver-prompts-late.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
+import { withUsage } from "./workflow-state-events-usage.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 /**
@@ -210,17 +211,23 @@ export async function runLens(
     });
   }
 
-  next = appendEvent(next, {
-    kind: "dispatch-completed",
-    step: "lens-review",
-    role: "code-review-specialist",
-    jobId,
-    label: `lens-review×6 (round ${round})`,
-    ok: true,
-    ms: Date.now() - startedAt,
-    at: Date.now(),
-    summary: `verdict=${summary.verdict}; findings=${summary.totalFindings}`,
-  });
+  next = appendEvent(
+    next,
+    withUsage(
+      {
+        kind: "dispatch-completed",
+        step: "lens-review",
+        role: "code-review-specialist",
+        jobId,
+        label: `lens-review×6 (round ${round})`,
+        ok: true,
+        ms: Date.now() - startedAt,
+        at: Date.now(),
+        summary: `verdict=${summary.verdict}; findings=${summary.totalFindings}`,
+      },
+      summary.usage,
+    ),
+  );
 
   // #422 — persist what the review found, deterministically. Candidates only,
   // capped, and never fatal: a memory problem must not affect a cycle whose

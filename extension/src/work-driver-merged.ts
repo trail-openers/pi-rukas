@@ -1,17 +1,10 @@
 /**
  * work-driver-merged — Step 9 (merged) handler + the generic single-
- * dispatch helper + merge-reply parsing + dispatch-completion event
- * builder.
+ * dispatch helper + merge-reply parsing + dispatch-completion event builder.
  *
- * Extracted from work-driver.ts (issue #171 file-size hygiene).
- * `buildCompletionEvent` is the shared DispatchResult → WorkEvent mapper
- * every step handler calls after a dispatch. `runSingleDispatch` is the
- * generic "append step-started → dispatch one subagent → append
- * completion event" helper every simple step body (branch, lens-fix,
- * step-back, ci, merged) is built on. `parseMergeCommit` + `runMerged`
- * are the Step 9 pair. All four land together as the "merged step" leaf
- * cluster since runMerged is itself just a runSingleDispatch call plus
- * parseMergeCommit.
+ * `buildCompletionEvent` maps DispatchResult → WorkEvent; `runSingleDispatch`
+ * is the generic step body (branch, lens-fix, step-back, ci, merged);
+ * `parseMergeCommit` + `runMerged` are the Step 9 pair.
  */
 
 import { exec } from "node:child_process";
@@ -37,6 +30,7 @@ import { DOCTRINE_FILES, type DoctrineDoc, judgePolicy } from "./work-driver-pol
 import { inlineMergePrompt } from "./work-driver-prompts-late.ts";
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { activeIssuesOf, scratchDir, teardownWorkspaceTmp } from "./work-driver-workspace.ts";
+import { withUsage } from "./workflow-state-events-usage.ts";
 import {
   type WorkState,
   type WorkStep,
@@ -120,44 +114,53 @@ export async function buildCompletionEvent(
     const attribution = la
       ? ` · last output: ${la.kind} ${Math.round(la.agoMs / 1000)}s before the kill, after ${la.linesSeen} line(s)`
       : "";
-    return {
-      kind: "dispatch-failed",
-      step,
-      role,
-      jobId,
-      label,
-      ms: result.ms,
-      at,
-      exitCode: result.exitCode ?? null,
-      errorTail: `${detail}${attribution}`,
-      killCause: result.killCause,
-    };
+    return withUsage(
+      {
+        kind: "dispatch-failed",
+        step,
+        role,
+        jobId,
+        label,
+        ms: result.ms,
+        at,
+        exitCode: result.exitCode ?? null,
+        errorTail: `${detail}${attribution}`,
+        killCause: result.killCause,
+      },
+      result.usage,
+    );
   }
   if (result.errorStop) {
-    return {
-      kind: "dispatch-failed-provider",
-      step,
-      role,
-      jobId,
-      label,
-      ms: result.ms,
-      at,
-      providerMessage: result.errorStop.message,
-      transcriptPath: result.transcriptPath,
-    };
+    return withUsage(
+      {
+        kind: "dispatch-failed-provider",
+        step,
+        role,
+        jobId,
+        label,
+        ms: result.ms,
+        at,
+        providerMessage: result.errorStop.message,
+        transcriptPath: result.transcriptPath,
+      },
+      result.usage,
+    );
   }
   if (!result.ok) {
-    return {
-      kind: "dispatch-failed",
-      step,
-      role,
-      jobId,
-      label,
-      ms: result.ms,
-      at,
-      exitCode: result.exitCode ?? null,
-      errorTail: result.text?.slice(-200),
-    };
+    return withUsage(
+      {
+        kind: "dispatch-failed",
+        step,
+        role,
+        jobId,
+        label,
+        ms: result.ms,
+        at,
+        exitCode: result.exitCode ?? null,
+        errorTail: result.text?.slice(-200),
+      },
+      result.usage,
+    );
   }
 
   // ABORT detection (PR2): the subagent's PROCESS exited 0 but it
@@ -168,17 +171,20 @@ export async function buildCompletionEvent(
   // as dispatch-failed so the driver's existing fail-path halts cleanly.
   const abortLine = parseAbort(result.text);
   if (abortLine) {
-    return {
-      kind: "dispatch-failed",
-      step,
-      role,
-      jobId,
-      label,
-      ms: result.ms,
-      at,
-      exitCode: result.exitCode ?? null,
-      errorTail: abortLine.slice(0, 500),
-    };
+    return withUsage(
+      {
+        kind: "dispatch-failed",
+        step,
+        role,
+        jobId,
+        label,
+        ms: result.ms,
+        at,
+        exitCode: result.exitCode ?? null,
+        errorTail: abortLine.slice(0, 500),
+      },
+      result.usage,
+    );
   }
 
   // Successful completion. Spill large text bodies to a claim-check
@@ -192,19 +198,22 @@ export async function buildCompletionEvent(
   } else {
     summary = text;
   }
-  return {
-    kind: "dispatch-completed",
-    step,
-    role,
-    jobId,
-    label,
-    ok: true,
-    ms: result.ms,
-    at,
-    transcriptPath: result.transcriptPath,
-    summary,
-    artifactPath,
-  };
+  return withUsage(
+    {
+      kind: "dispatch-completed",
+      step,
+      role,
+      jobId,
+      label,
+      ok: true,
+      ms: result.ms,
+      at,
+      transcriptPath: result.transcriptPath,
+      summary,
+      artifactPath,
+    },
+    result.usage,
+  );
 }
 
 /**
@@ -240,18 +249,10 @@ export async function runSingleDispatch(
   const jobId = begun.jobId;
   let result: DispatchResult;
   try {
-    // PR15 — per-call timeout override (routed through dispatchCore's
-    // existing timeoutMs support that PR5 added for the 3-min handoff-ops
-    // path). runCi uses this to lift the 10-min ops default up to 30 min
-    // (env-overridable) since `gh run watch` blocks until CI completes
-    // and CI runs regularly exceed 10 min. Empirical: 3× ops-CI-poll
-    // timeouts this session before PR15.
+    // PR15 — per-call timeout override (3-min default; runCi lifts it to 30).
     result = await dispatch(
       ctx.pi,
-      // `cwd` matters for any step whose work lives somewhere other than the
-      // integration point. Without it `spawn.ts` falls back to the Pi process's
-      // own directory, so a lens-fix developer edited repoRoot while the driver
-      // staged from the worktree — see the lens-fix call site.
+      // `cwd` matters when work lives elsewhere (lens-fix: worktree, not repoRoot).
       { role, prompt: buildPrompt(), ...(opts?.cwd ? { cwd: opts.cwd } : {}) },
       { label, timeoutMs: opts?.timeoutMs },
     );
@@ -304,16 +305,13 @@ export async function runMerged(
   let preDispatch = state;
   let mergeSucceeded = false;
 
-  // #380 — two independent gates, both defaulting to "no". Merging is the one
-  // irreversible act in the cycle and had neither: no authority check existed
-  // anywhere in src/, and the decision to merge came from a substring in an
-  // ops child's reply. A cycle that reaches here has a green PR; it does NOT
-  // automatically have permission to merge it.
+  // #380 — two independent gates, both defaulting to "no". Merging is the
+  // one irreversible act in the cycle and had neither; a green PR ≠ permission.
   if (mergeAuthorityEnabled()) {
     const execFnAuth = ctx.verifyExecFn ?? execp;
     // #406 — doctrine is read at the BASE commit, never from the working tree.
-    // This step runs after `commit-pr` integrated the developer's patches, so
-    // an AGENTS.md read from disk here would include any grant a subagent just
+    // This step runs after commit-pr integrated the developer's patches, so an
+    // AGENTS.md read from disk here would include any grant a subagent just
     // wrote for itself. Reading at base makes such a patch inert without
     // forbidding it: honest AGENTS.md changes still ship in the PR.
     const docs: DoctrineDoc[] = [];

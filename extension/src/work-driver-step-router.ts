@@ -16,6 +16,7 @@ import * as lifecycle from "./lifecycle-events.ts";
 import { trace } from "./trace.ts";
 import { STEP_FAILURE_POLICY } from "./work-driver-context.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import { dispatchTokens } from "./work-driver-cycle-total.ts";
 import {
   classifyFailureCause,
   failureCauseReason,
@@ -142,12 +143,15 @@ export async function routeStepOutcome(
     } else {
       // Sum tokens from any dispatch-completed events that fired during
       // this step. Approximate but useful — exact accounting per step
-      // would require time-window filtering of usage events.
+      // would require time-window filtering of usage events. #534 — now
+      // backed by the usage field on the completion events themselves
+      // (raw sum, retries as separate rows, matching the cycle total);
+      // undefined when the event carried no usage (older state files),
+      // which the scrollback line omits rather than rendering as 0.
       let totalTokens: number | undefined;
-      if (lastEvent?.kind === "dispatch-completed" && lastEvent.summary !== undefined) {
-        // Driver-owned dispatches don't surface usage on the completion
-        // event; leave undefined and let the per-dispatch line carry it.
-        totalTokens = undefined;
+      if (lastEvent?.kind === "dispatch-completed") {
+        const t = dispatchTokens(lastEvent);
+        if (t > 0) totalTokens = t;
       }
       // #297/#299 — successful completion resets BOTH retry budgets
       // (per-attempt semantics: a later step-back re-entry gets a fresh

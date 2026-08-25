@@ -16,6 +16,7 @@ import {
   renderQueueSummary,
   runWorkQueue,
 } from "../src/work-queue.ts";
+import { renderStatus } from "../src/work-status.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -41,7 +42,7 @@ const groups = (n: number): IssueGroup[] =>
 function mkState(
   issue: number,
   status: WorkState["pipelineState"]["status"],
-  opts: { cap?: string; providerMessage?: string; recovered?: boolean } = {},
+  opts: { cap?: string; providerMessage?: string; recovered?: boolean; withUsage?: boolean } = {},
 ): WorkState {
   const eventLog: WorkState["eventLog"] = [];
   if (opts.providerMessage) {
@@ -83,7 +84,13 @@ function mkState(
     schemaVersion: 1,
     issue,
     // biome-ignore lint/suspicious/noExplicitAny: only the fields the queue reads matter
-    pipelineState: { status, currentStep: "develop", lastCompletedStep: "branch" } as any,
+    // biome-ignore lint/suspicious/noExplicitAny: only the fields the queue reads matter
+    pipelineState: {
+      status,
+      currentStep: "develop",
+      lastCompletedStep: "branch",
+      inFlightJobIds: [],
+    } as any,
     eventLog,
     // biome-ignore lint/suspicious/noExplicitAny: partial fixture
   } as any;
