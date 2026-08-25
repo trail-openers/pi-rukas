@@ -8,10 +8,13 @@
  * No real Pi spawn happens; all dispatchCore calls are mocked.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { nextStep } from "../src/work-driver-context.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
+import { runWorkDriver } from "../src/work-driver.ts";
+import { validateDiscriminants } from "../src/workflow-state-validate.ts";
 import {
   WORK_STATE_SCHEMA_VERSION,
   type WorkState,
@@ -29,6 +32,12 @@ function assert(cond: boolean, msg: string) {
     console.error(`✗ ${msg}`);
     exit = 1;
   }
+}
+// #533 — nextStep now returns a discriminated result; this helper keeps
+// the transition-table assertions readable.
+function stepOf(state: WorkState): string {
+  const d = nextStep(state);
+  return d.kind === "step" ? d.step : d.kind;
 }
 
 // #297 — transient retries are exercised by dedicated tests below; zero the
@@ -119,7 +128,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   // — but the loop calls runStep("explore") first, which appends events. The
   // next-step decision happens AFTER the step. So on a fresh state with no
   // events, the linear table for explore is plan.
-  assert(nextStep(base) === "plan", "fresh state at explore advances to plan");
+  assert(stepOf(base) === "plan", "fresh state at explore advances to plan");
 
   // Adversarial-approved with lastCompletedStep="develop" → commit-pr.
   // PR2: routing reads `lastCompletedStep` instead of `currentStep` (which
@@ -136,7 +145,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   };
   s = appendEvent(s, { kind: "adversarial-approved", at: 2000, jobId: "j1", rounds: 1 });
   assert(
-    nextStep(s) === "commit-pr",
+    stepOf(s) === "commit-pr",
     "adversarial-approved with lastCompletedStep=develop routes to commit-pr",
   );
 
@@ -151,7 +160,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     eventLog: [{ kind: "adversarial-approved", at: 2000, jobId: "j2", rounds: 1 }],
   };
   assert(
-    nextStep(s) === "lens-review",
+    stepOf(s) === "lens-review",
     "adversarial-approved with lastCompletedStep=lens-fix re-enters lens-review",
   );
 
@@ -170,7 +179,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       },
     ],
   };
-  assert(nextStep(s) === "lens-fix", "lens-issues-found within cap routes to lens-fix");
+  assert(stepOf(s) === "lens-fix", "lens-issues-found within cap routes to lens-fix");
 
   // lens-issues-found, round 3 → handoff (round cap).
   s = {
@@ -187,7 +196,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       },
     ],
   };
-  assert(nextStep(s) === "handoff", "lens-issues-found at round cap routes to handoff");
+  assert(stepOf(s) === "handoff", "lens-issues-found at round cap routes to handoff");
 
   // lens-issues-found, wall-clock cap exceeded → handoff.
   s = {
@@ -209,7 +218,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       },
     ],
   };
-  assert(nextStep(s) === "handoff", "lens-issues-found past wall-clock cap routes to handoff");
+  assert(stepOf(s) === "handoff", "lens-issues-found past wall-clock cap routes to handoff");
 
   // cap-hit event with nextStep="step-back" — driver honours the embedded route.
   s = {
@@ -225,7 +234,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       },
     ],
   };
-  assert(nextStep(s) === "step-back", "cap-hit event nextStep=step-back is honoured");
+  assert(stepOf(s) === "step-back", "cap-hit event nextStep=step-back is honoured");
 
   // CI success → merged.
   s = {
@@ -233,7 +242,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     pipelineState: { ...base.pipelineState, currentStep: "ci" },
     eventLog: [{ kind: "ci-status", at: 5000, status: "success" }],
   };
-  assert(nextStep(s) === "merged", "ci-status success routes to merged");
+  assert(stepOf(s) === "merged", "ci-status success routes to merged");
 
   // CI failure with ciRetryCount under cap → develop (re-fix).
   s = {
@@ -242,7 +251,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     eventLog: [{ kind: "ci-status", at: 5000, status: "failure" }],
   };
   assert(
-    nextStep(s) === "develop",
+    stepOf(s) === "develop",
     "ci-status failure with ciRetryCount=1 (<MAX_CI_RETRIES) routes to develop",
   );
 
@@ -255,7 +264,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     eventLog: [{ kind: "ci-status", at: 5000, status: "failure" }],
   };
   assert(
-    nextStep(s) === "handoff",
+    stepOf(s) === "handoff",
     "ci-status failure with ciRetryCount>=MAX_CI_RETRIES routes to handoff",
   );
 
@@ -264,13 +273,138 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     ...base,
     pipelineState: { ...base.pipelineState, currentStep: "merged", status: "merged" },
   };
-  assert(nextStep(s) === "done", "merged status returns done");
+  assert(stepOf(s) === "done", "merged status returns done");
 
   s = {
     ...base,
     pipelineState: { ...base.pipelineState, currentStep: "handoff", status: "handoff" },
   };
-  assert(nextStep(s) === "done", "handoff status returns done");
+  assert(stepOf(s) === "done", "handoff status returns done");
+
+  // #533 — the transition table's answer is a discriminated result, not a
+  // bare union: an unknown currentStep is its own member so the driver
+  // halts naming the field instead of spinning to the safety counter.
+  assert(
+    nextStep(initialState(1, 1000)).kind === "step" &&
+      nextStep(initialState(1, 1000)).step === "plan",
+    "nextStep returns the discriminated step member on a fresh state",
+  );
+  assert(
+    JSON.stringify(nextStep(s)).includes('"done"'),
+    "nextStep returns the done member on a terminal state",
+  );
+  const unknownStep = initialState(1, 1000);
+  unknownStep.pipelineState = { ...unknownStep.pipelineState, currentStep: "not-a-step" } as never;
+  assert(
+    nextStep(unknownStep).kind === "unknown-step" &&
+      (nextStep(unknownStep) as { value: unknown }).value === "not-a-step",
+    "nextStep names the unknown currentStep instead of returning undefined",
+  );
+
+  // #533 — the validator: a clean state yields no findings.
+  assert(
+    validateDiscriminants(initialState(1, 1000)).length === 0,
+    "validateDiscriminants accepts a clean state",
+  );
+}
+
+// 3. #533 — canary: unknown discriminants refuse reconstruction.
+{
+  // Unknown eventLog[0].kind: schemaVersion 1 passes the version check, so
+  // the halt must come from the kind check, not the version check.
+  const canary = initialState(533, 1000);
+  const findings = validateDiscriminants({
+    ...canary,
+    eventLog: [{ kind: "not-a-real-kind", at: 1 }],
+  } as unknown as Record<string, unknown>);
+  assert(findings.length === 1, "unknown eventLog[0].kind produces exactly one finding");
+  assert(findings[0].includes("not-a-real-kind"), "finding names the unknown kind");
+  assert(findings[0].includes("0"), "finding names the eventLog index");
+  assert(
+    !findings[0].includes("schemaVersion"),
+    "finding is NOT the version check (contrast with section 1)",
+  );
+
+  // The resume path refuses before any dispatch. The message reuses the
+  // halt idiom of the inconsistency path: field + value first, then
+  // inspect-or-rm recovery.
+  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-discriminant-"));
+  try {
+    mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
+    await writeState(dir, {
+      ...initialState(533, 1000),
+      eventLog: [{ kind: "not-a-real-kind", at: 1 }],
+    } as unknown as WorkState);
+    const sent: string[] = [];
+    const labels: string[] = [];
+    await runWorkDriver({
+      pi: { sendUserMessage: (c: unknown) => sent.push(String(c)) } as never,
+      repoRoot: dir,
+      issue: 533,
+      issueBodyFetcherFn: async () => ({ stdout: "title:\tt\nstate:\tOPEN\n\nbody" }),
+      dispatchFn: async (_pi, spec) => {
+        labels.push(spec.role);
+        return {
+          role: spec.role,
+          ok: false,
+          text: "",
+          toolUses: [],
+          ms: 1,
+          exitCode: 1,
+          transcriptPath: "/tmp/stub.json",
+        } as never;
+      },
+    } as DriverContext);
+    assert(labels.length === 0, "the driver HALTS — no dispatch is paid for on an unknown kind");
+    const halt = sent.find((m) => /halted on issue #533/.test(m));
+    assert(halt !== undefined, "the halt message reaches the operator");
+    assert(
+      halt !== undefined && halt.includes("not-a-real-kind"),
+      "halt message names the unknown value",
+    );
+    assert(halt !== undefined && halt.includes("eventLog[0].kind"), "halt message names the field");
+    assert(
+      halt !== undefined && /rm to start fresh/.test(halt) && /git work is unaffected/.test(halt),
+      "halt message carries the inspect-or-rm recovery (the #284-291 idiom)",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // Each of the four pipelineState field positions, unknown value in each.
+  // Each pipelineState field position, and each WorkStep-typed event field
+  // position: unknown value in, finding naming the field out.
+  const pipelinePositions: Array<[string, Record<string, unknown>]> = [
+    ["pipelineState.currentStep", { currentStep: "wibble" }],
+    ["pipelineState.status", { status: "zombie" }],
+    ["pipelineState.lastCompletedStep", { lastCompletedStep: "quux" }],
+  ];
+  for (const [field, over] of pipelinePositions) {
+    const findings2 = validateDiscriminants({
+      ...initialState(533, 1000),
+      pipelineState: { ...initialState(533, 1000).pipelineState, ...over },
+    } as unknown as Record<string, unknown>);
+    assert(
+      findings2.length === 1 && findings2[0].includes(field),
+      `unknown ${field} names the field in its finding`,
+    );
+  }
+  const stepEvent = validateDiscriminants({
+    ...initialState(533, 1000),
+    eventLog: [{ kind: "step-started", step: "not-a-step", at: 1 }],
+  } as unknown as Record<string, unknown>);
+  assert(
+    stepEvent.length === 1 && stepEvent[0].includes("eventLog[0].step") && stepEvent[0].includes("not-a-step"),
+    "unknown eventLog[0].step names the field and the value",
+  );
+  const capPos = validateDiscriminants({
+    ...initialState(533, 1000),
+    eventLog: [{ kind: "cap-hit", at: 1, cap: "round-cap", reviewRound: 3, nextStep: "bogus" }],
+  } as unknown as Record<string, unknown>);
+  assert(
+    capPos.length === 1 && capPos[0].includes("eventLog[0].nextStep") && capPos[0].includes("bogus"),
+    "unknown cap-hit.nextStep names the field and the value",
+  );
 }
 
 console.log(`\nexit ${exit}`);

@@ -16,14 +16,30 @@ import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
 export const WORK_STATE_SCHEMA_VERSION = 1 as const;
 
 /**
- * #500 — the persisted shape of repoRoot's state at commit-pr handoff.
- * Lives here (not in work-driver-commit-inspect.ts) because it is part of
- * the persisted state contract: `PipelineState.commitPrRoot` holds it, and
- * the data layer should not depend on the presentation/parsing module that
- * merely renders it. All fields are best-effort: a `git status` that works
- * but a `rev-parse` that does not yields a placeholder branch rather than a
- * failure, because the unmerged paths are the load-bearing fact.
+ * The WorkStep vocabulary as a runtime value. The union type is the source
+ * of truth for TS callers; this tuple exists so runtime readers (the #533
+ * discriminant validator) can test membership — types are erased by the
+ * untyped cast in `readState`, which is exactly why the validator needs it.
  */
+export const WORK_STEPS: readonly WorkStep[] = [
+  "explore",
+  "plan",
+  "branch",
+  "develop",
+  "adversarial",
+  "commit-pr",
+  "lens-review",
+  "lens-fix",
+  "step-back",
+  "handoff",
+  "ci",
+  "merged",
+];
+
+/** #500 — the persisted shape of repoRoot's state at commit-pr handoff.
+ * Part of the persisted state contract; all fields are best-effort — an
+ * unmerged tree is the load-bearing fact, so a failing `rev-parse` yields
+ * a placeholder rather than an error. */
 export interface CommitPrRootState {
   /** Current branch (`git rev-parse --abbrev-ref HEAD`); placeholder when unreadable. */
   branch: string;
@@ -38,15 +54,13 @@ export interface CommitPrRootState {
 }
 
 /**
- * Pipeline snapshot — driver's "where are we" view, reconstructible from
- * eventLog but stored explicitly so reads are O(1). When the two diverge,
- * eventLog is authoritative; the driver should rebuild pipelineState from
- * scratch on read if it detects inconsistency.
+ * Pipeline snapshot — the driver's "where are we" view, reconstructible
+ * from eventLog but stored explicitly for O(1) reads. When the two
+ * diverge, eventLog is authoritative.
  */
 /**
- * Why a plan earned one corrective re-dispatch. Lives with the schema because
- * it is persisted: `work-driver-plan.ts` decides it, and `/work-status` and
- * the handoff renderers read it back.
+ * Why a plan earned one corrective re-dispatch. Persisted: `work-driver-plan.ts`
+ * decides it, `/work-status` and the handoff renderers read it back.
  */
 export type PlanQualityReason =
   | "under-decomposed"
@@ -178,17 +192,10 @@ export interface PipelineState {
    */
   integration?: { integratedAt?: number; reintegrations?: number };
   /**
-   * #290 — plan-step decomposition quality. `findingsCount` is the count of
-   * enumerated findings in the issue body; `reason` records which structural
-   * rule fired (if any) and `redispatched` whether the one corrective
-   * re-dispatch was spent. Absent on cycles predating the gate.
-   */
-  /**
-   * #378 — the resolved intent for this cycle: what the issue is actually
-   * asking for, checked against the code and the world, plus the verdict the
-   * driver routed on. Absent when intent resolution is disabled or the
-   * resolver returned no `## Spec` block (the legacy verdict router then
-   * applies). The full artifact is also written to
+   * #378 — the resolved intent: what the issue is actually asking for,
+   * checked against the code and the world, plus the verdict the driver
+   * routed on. Absent when intent resolution is disabled or the resolver
+   * returned no `## Spec` block. The full artifact is also written to
    * `.pi/work-state/<issue>/spec.txt` for inspection.
    */
   normalisedSpec?: {
@@ -204,10 +211,9 @@ export interface PipelineState {
     rationale: string;
   };
   /**
-   * #380 — why the cycle stopped at the merge step. Two independent gates,
-   * both defaulting to "no": whether anyone permitted an agent to merge in
-   * this project, and whether `gh` reports the required checks actually
-   * passed. Absent unless the merge was held.
+   * #380 — why the cycle stopped at the merge step: merge authority
+   * (citation-verified grant) and executed `gh` evidence, both defaulting
+   * to "no". Absent unless the merge was held.
    */
   /**
    * #384 — why lens-review could not read the diff, when it could not. The
@@ -441,14 +447,10 @@ export function initialState(issue: number, now: number = Date.now()): WorkState
 }
 
 /**
- * Append an event AND patch pipelineState in one atomic write. The driver
- * uses this for every transition — `appendEvent(state, evt)` returns the
- * updated state but does NOT persist; callers `await writeState(...)`
- * after batching their event(s) + pipelineState mutation.
- *
- * Why not auto-persist: some transitions emit multiple events at once
- * (e.g., dispatch-completed + adversarial-approved); persisting between
- * them would expose intermediate states to a concurrent reader.
+ * Append an event (and patch pipelineState on the caller's side) in one
+ * atomic state update. Does NOT persist — callers `await writeState(...)`
+ * after batching their event(s) + pipelineState mutation; persisting
+ * between events would expose intermediate states to a concurrent reader.
  */
 export function appendEvent(state: WorkState, ...events: WorkEvent[]): WorkState {
   return {
@@ -459,12 +461,9 @@ export function appendEvent(state: WorkState, ...events: WorkEvent[]): WorkState
 
 /**
  * Detect inconsistency: pipelineState says we have in-flight jobs but the
- * eventLog has no matching dispatch-started. Or pipelineState.currentStep
- * doesn't match the last step-started in the log. The driver calls this
- * on resume to decide whether the file is trustworthy.
- *
- * Returns an array of human-readable inconsistencies, empty if state is
- * coherent. Caller decides whether to halt or repair.
+ * eventLog has no matching dispatch-started; or pipelineState.currentStep
+ * disagrees with the last step-started. The driver calls this on resume;
+ * returns human-readable inconsistencies, empty if coherent.
  */
 export function detectInconsistencies(state: WorkState): string[] {
   const out: string[] = [];

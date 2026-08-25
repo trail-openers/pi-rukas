@@ -77,6 +77,7 @@ import { routeStepOutcome } from "./work-driver-step-router.ts";
 import { runCi, runStepBack } from "./work-driver-stepback-ci.ts";
 import { scratchDir, setupWorkspaceTmp, teardownWorkspaceTmp } from "./work-driver-workspace.ts";
 import * as workWidget from "./work-widget.ts";
+import { validateDiscriminants } from "./workflow-state-validate.ts";
 import {
   type WorkState,
   type WorkStep,
@@ -277,6 +278,25 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
     }
   }
 
+  // #533 — refuse to reconstruct on an unrecognised discriminant. Applied on
+  // the RESUME path only: `readState` stays permissive so a terminal state
+  // file (merged/handoff/aborted) with an unknown event kind still renders in
+  // /work-status — a parked cycle's history must stay observable. A
+  // `running` file that fails this check is refused before any dispatch or
+  // resume, first line naming the field and the value.
+  if (state.pipelineState.status === "running") {
+    const unknowns = validateDiscriminants(state);
+    if (unknowns.length > 0) {
+      const detail = unknowns.map((u) => `  - ${u}`).join("\n");
+      trace(`work-driver: state discriminant validation failed for issue ${ctx.issue}:\n${detail}`);
+      notifyAgent(
+        ctx.pi,
+        `pi-ensemble /work driver halted on issue #${ctx.issue}: state file carries an unrecognised value.\n${detail}\nInspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json or rm to start fresh (your git work is unaffected; only the workflow tracker state is removed).`,
+      );
+      return { started: false, reason: "state-file discriminant validation failed" };
+    }
+  }
+
   // Detect a half-written state (resume hazard). v1 policy: refuse to
   // resume cleanly; surface to user and halt.
   const inconsistencies = detectInconsistencies(state);
@@ -408,14 +428,35 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
     // lens-fix" (PR #239 routed on currentStep which was already wrong).
     const completedStep = state.pipelineState.currentStep;
     const decision = nextStep(state);
-    if (decision === "done") break;
-    if (decision !== state.pipelineState.currentStep) {
+    if (decision.kind === "done") break;
+    // #533 — a state whose `currentStep` is not a WorkStep is not something
+    // the driver can route. Halt naming the field and value, reusing the
+    // inspect-or-rm idiom of the inconsistency halt above; the 64-iteration
+    // safety counter below is no longer the failure surface.
+    if (decision.kind === "unknown-step") {
+      trace(
+        `work-driver: unknown step value ${JSON.stringify(decision.value)} for issue ${ctx.issue}`,
+      );
+      state = {
+        ...state,
+        pipelineState: { ...state.pipelineState, status: "aborted" },
+      };
+      await writeState(ctx.repoRoot, state);
+      notifyAgent(
+        ctx.pi,
+        `pi-ensemble /work driver halted on issue #${ctx.issue}: pipelineState.currentStep has unknown value ${JSON.stringify(decision.value)}. ` +
+          `Inspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json or rm to start fresh (your git work is unaffected; only the workflow tracker state is removed).`,
+      );
+      return { started: true };
+    }
+    const decisionStep = decision.step;
+    if (decisionStep !== state.pipelineState.currentStep) {
       state = {
         ...state,
         pipelineState: {
           ...state.pipelineState,
           lastCompletedStep: completedStep,
-          currentStep: decision,
+          currentStep: decisionStep,
         },
       };
       await writeState(ctx.repoRoot, state);

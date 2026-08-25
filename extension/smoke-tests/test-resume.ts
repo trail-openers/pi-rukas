@@ -36,6 +36,7 @@ import {
 import { runWorkDriver } from "../src/work-driver.ts";
 import { readQueueSummary, writeQueueSummary } from "../src/work-queue.ts";
 import { renderCycleIndex } from "../src/work-status-index.ts";
+import { validateDiscriminants } from "../src/workflow-state-validate.ts";
 import {
   type WorkState,
   detectInconsistencies,
@@ -352,6 +353,60 @@ const withInFlight = (over: Partial<WorkState> = {}): WorkState => {
     assert(
       !/never started/.test(renderCycleIndex([], 1000)),
       "and says nothing when there is no queue history (no phantom line)",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ------------------------------------- terminal files stay observable
+
+{
+  // #533 — the discriminant validator is RESUME-path-only. A TERMINAL state
+  // file (merged/handoff/aborted) with an unknown event kind must still load:
+  // a parked cycle's history has to stay observable, and a future additive
+  // event kind on a terminal file must not stop /work-status from rendering.
+  const dir = mkdtempSync(path.join(tmpdir(), "pi-533-terminal-"));
+  try {
+    const s = initialState(720, 1_000_000);
+    const terminal = {
+      ...s,
+      pipelineState: {
+        ...s.pipelineState,
+        currentStep: "merged" as const,
+        status: "merged" as const,
+      },
+      eventLog: [
+        { kind: "step-started", step: "explore", at: 1 },
+        { kind: "merged", at: 2, prNumber: 42 },
+        // An unknown kind — e.g. an additive event written by a newer build.
+        { kind: "not-a-real-kind", at: 3 },
+      ],
+    } as unknown as WorkState;
+    await writeState(dir, terminal);
+
+    const loaded = await readState(dir, 720);
+    assert(loaded !== undefined, "readState loads a TERMINAL file with an unknown kind (no throw)");
+    assert(
+      loaded !== undefined && loaded.pipelineState.status === "merged",
+      "...and /work-status can still render its history",
+    );
+    assert(
+      validateDiscriminants(loaded as unknown).length === 1 &&
+        validateDiscriminants(loaded as unknown)[0].includes("not-a-real-kind"),
+      "the resume-path validator still NAMES the unknown kind (refuse, don't drop)",
+    );
+
+    // The contrast: a `running` file with the same unknown kind is what the
+    // resume path refuses. Same file contents, different status — different
+    // reader. (The driver-level refuse is asserted in test-work-driver-schema.ts.)
+    const running = {
+      ...s,
+      eventLog: [{ kind: "not-a-real-kind", at: 3 }],
+    } as unknown as WorkState;
+    assert(
+      validateDiscriminants(running as unknown).some((f) => f.includes("not-a-real-kind")),
+      "...but the same unknown kind in a RUNNING file is a finding for the resume path",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

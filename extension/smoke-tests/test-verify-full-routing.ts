@@ -34,6 +34,11 @@ function assert(cond: boolean, msg: string) {
     exit = 1;
   }
 }
+// #533 — nextStep returns a discriminated result; unwrap for comparisons.
+const stepOf = (s: WorkState): string => {
+  const d = nextStep(s);
+  return d.kind === "step" ? d.step : d.kind;
+};
 
 const atCi = (tail: WorkEvent, ciRetryCount = 1): WorkState =>
   ({
@@ -58,7 +63,7 @@ const verifyFull = (status: "success" | "failure"): WorkEvent =>
 // ------------------------------------------------------------- the canary
 
 {
-  const step = nextStep(atCi(verifyFull("failure")));
+  const step = stepOf(atCi(verifyFull("failure")));
   assert(
     step !== "merged",
     `canary: a FAILING verify-full does not route to merged (got "${step}") — it did, on every cycle`,
@@ -73,7 +78,7 @@ const verifyFull = (status: "success" | "failure"): WorkEvent =>
 
 {
   assert(
-    nextStep(atCi(verifyFull("success"))) === "merged",
+    stepOf(atCi(verifyFull("success"))) === "merged",
     "a PASSING verify-full still routes to merged — the fix must not stall the happy path",
   );
 }
@@ -86,8 +91,8 @@ const verifyFull = (status: "success" | "failure"): WorkEvent =>
   // the same policy for both.
   const ciFail = { kind: "ci-status", at: 1, status: "failure" } as unknown as WorkEvent;
   for (const count of [0, 1, MAX_CI_RETRIES, MAX_CI_RETRIES + 1]) {
-    const viaCi = nextStep(atCi(ciFail, count));
-    const viaFull = nextStep(atCi(verifyFull("failure"), count));
+    const viaCi = stepOf(atCi(ciFail, count));
+    const viaFull = stepOf(atCi(verifyFull("failure"), count));
     assert(
       viaCi === viaFull,
       `at ciRetryCount=${count} both failure signals route the same way (ci-status→${viaCi}, verify-full→${viaFull})`,
@@ -99,7 +104,7 @@ const verifyFull = (status: "success" | "failure"): WorkEvent =>
   // And the cap still terminates. A permanently failing verification must not
   // spin develop → adversarial → lens → ci forever.
   assert(
-    nextStep(atCi(verifyFull("failure"), MAX_CI_RETRIES)) === "handoff",
+    stepOf(atCi(verifyFull("failure"), MAX_CI_RETRIES)) === "handoff",
     "canary: at the retry cap a failing verify-full parks rather than looping",
   );
 }

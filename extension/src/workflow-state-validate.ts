@@ -1,0 +1,138 @@
+/**
+ * workflow-state-validate — discriminant validation for /work state files.
+ *
+ * #533 — the reader used to hit an unrecognised event kind or step value and
+ * silently carry it: `readState` passed an untyped cast, `nextStep`'s linear
+ * table returned `undefined` on an unknown `currentStep`, and the while-loop's
+ * 64-iteration safety counter fired with a generic message naming no field.
+ *
+ * dsh's persistence rule (DeepSeek Harness, 2026-08-13): a reader hitting an
+ * unrecognized event type MUST refuse to reconstruct rather than silently
+ * drop. This module is pi-ensemble's half of that rule — one validator that
+ * checks every discriminant at read:
+ *
+ *   - `eventLog[].kind`
+ *   - `pipelineState.currentStep`
+ *   - `pipelineState.status`
+ *   - `pipelineState.lastCompletedStep`
+ *   - every `WorkStep`-typed event field: `step-started.step`,
+ *     `dispatch-started.step`, `dispatch-completed.step`,
+ *     `dispatch-failed-provider.step`, `dispatch-failed.step`,
+ *     `plumb-report.step`, `branches-fanned-out.step`,
+ *     `branch-completed.step`, `branches-converged.step`,
+ *     `memory-inject.step`, plus `cap-hit.nextStep`.
+ *
+ * **Resume-path-only.** The driver (`runWorkDriver`) runs the validator on
+ * every read; `/work-status`, the queue and other renderers do NOT. A
+ * TERMINAL state file (merged/handoff/aborted) with an unknown kind must
+ * still load — a parked cycle's history has to stay observable, and a future
+ * additive event kind on a terminal file must not stop `/work-status` from
+ * rendering. The versioning doc in `workflow-state.ts` pre-resolved the
+ * consequence: schemaVersion stays 1 — a bump would break every live file on
+ * upgrade, contradicting the documented "rm to start fresh" recovery story.
+ */
+
+import type { WorkStep } from "./workflow-state-events.ts";
+import { WORK_STATE_SCHEMA_VERSION, WORK_STEPS } from "./workflow-state-schema.ts";
+
+/**
+ * Known event kinds. The union type is the source of the vocabulary; this
+ * tuple exists only so the validator can test membership (types are erased
+ * at runtime).
+ */
+export const KNOWN_EVENT_KINDS: readonly unknown[] = [
+  "step-started",
+  "dispatch-started",
+  "dispatch-completed",
+  "dispatch-failed-provider",
+  "dispatch-failed",
+  "adversarial-approved",
+  "adversarial-rejected",
+  "adversarial-round",
+  "adversarial-workstream-outcome",
+  "adversarial-skipped-empty-diff",
+  "lens-approved",
+  "lens-issues-found",
+  "lens-skipped-empty-diff",
+  "cap-hit",
+  "plumb-report",
+  "step-back-triggered",
+  "step-back-completed",
+  "handoff-emitted",
+  "ci-status",
+  "merged",
+  "branches-fanned-out",
+  "branch-completed",
+  "branches-converged",
+  "verify-full-status",
+  "widening-scan",
+  "memory-write",
+  "memory-inject",
+];
+
+/** `pipelineState.status` vocabulary. */
+export const KNOWN_STATUSES: readonly unknown[] = ["running", "merged", "handoff", "aborted"];
+
+/** `cap-hit.nextStep` vocabulary. */
+const CAP_HIT_NEXT_STEPS: readonly unknown[] = ["handoff", "step-back", "ci"];
+
+/**
+ * Human-readable findings; empty when every discriminant is a known value.
+ * Each finding names the field AND the offending value — the driver halts
+ * on a non-empty result and the message surfaces verbatim.
+ */
+export function validateDiscriminants(state: unknown): string[] {
+  const out: string[] = [];
+  if (typeof state !== "object" || state === null) {
+    return ["state file is not an object"];
+  }
+  const s = state as Record<string, unknown>;
+
+  if (s.schemaVersion !== WORK_STATE_SCHEMA_VERSION) {
+    return [`schemaVersion=${String(s.schemaVersion)} (expected ${WORK_STATE_SCHEMA_VERSION})`];
+  }
+
+  const ps = s.pipelineState as Record<string, unknown> | null | undefined;
+  if (typeof ps !== "object" || ps === null) {
+    out.push("pipelineState is missing or not an object");
+  } else {
+    if (!WORK_STEPS.includes(ps.currentStep as WorkStep)) {
+      out.push(`pipelineState.currentStep has unknown value ${JSON.stringify(ps.currentStep)}`);
+    }
+    if (
+      ps.lastCompletedStep !== undefined &&
+      !WORK_STEPS.includes(ps.lastCompletedStep as WorkStep)
+    ) {
+      out.push(
+        `pipelineState.lastCompletedStep has unknown value ${JSON.stringify(ps.lastCompletedStep)}`,
+      );
+    }
+    if (!KNOWN_STATUSES.includes(ps.status)) {
+      out.push(`pipelineState.status has unknown value ${JSON.stringify(ps.status)}`);
+    }
+  }
+
+  const log = s.eventLog;
+  if (!Array.isArray(log)) {
+    out.push("eventLog is missing or not an array");
+  } else {
+    log.forEach((entry, i) => {
+      const e = entry as Record<string, unknown> | null | undefined;
+      if (typeof e !== "object" || e === null) {
+        out.push(`eventLog[${i}] is not an object`);
+        return;
+      }
+      if (!KNOWN_EVENT_KINDS.includes(e.kind)) {
+        out.push(`eventLog[${i}].kind has unknown value ${JSON.stringify(e.kind)}`);
+        return; // an unrecognised kind's other fields are not worth parsing
+      }
+      if ("step" in e && e.step !== undefined && !WORK_STEPS.includes(e.step as WorkStep)) {
+        out.push(`eventLog[${i}].step has unknown value ${JSON.stringify(e.step)}`);
+      }
+      if (e.kind === "cap-hit" && !CAP_HIT_NEXT_STEPS.includes(e.nextStep)) {
+        out.push(`eventLog[${i}].nextStep has unknown value ${JSON.stringify(e.nextStep)}`);
+      }
+    });
+  }
+  return out;
+}

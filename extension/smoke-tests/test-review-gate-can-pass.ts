@@ -49,6 +49,11 @@ function assert(cond: boolean, msg: string) {
     exit = 1;
   }
 }
+// #533 — nextStep returns a discriminated result; unwrap for comparisons.
+function stepOf(s: WorkState): string {
+  const d = nextStep(s);
+  return d.kind === "step" ? d.step : d.kind;
+}
 
 const SRC = path.resolve(import.meta.dirname, "..", "src");
 const code = (f: string) =>
@@ -162,8 +167,8 @@ const roundCap: WorkEvent = {
       `canary: an APPROVED round 3 emits NO cap-hit (log: ${JSON.stringify(kinds)}) — it emitted round-cap, and that parked every successful cycle`,
     );
     assert(
-      nextStep(after) === "ci",
-      `canary: and the state runLens actually produced routes to ci (got ${nextStep(after)})`,
+      stepOf(after) === "ci",
+      `canary: and the state runLens actually produced routes to ci (got ${stepOf(after)})`,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -174,8 +179,7 @@ const roundCap: WorkEvent = {
   // The consequence, pinned separately: a cap-hit on top of an approval WOULD
   // redirect it. This is what makes the emission above load-bearing.
   assert(
-    nextStep(stateWith([approved])) === "ci" &&
-      nextStep(stateWith([approved, roundCap])) === "handoff",
+    stepOf(stateWith([approved])) === "ci" && stepOf(stateWith([approved, roundCap])) === "handoff",
     "routing consequence: an approval routes to ci, an approval plus a cap-hit routes to handoff",
   );
 }
@@ -237,7 +241,7 @@ const roundCap: WorkEvent = {
       // biome-ignore lint/suspicious/noExplicitAny: partial fixture
     } as any,
   ]);
-  assert(nextStep(capped) === "handoff", "a lens-fix-not-integrated cap routes to handoff");
+  assert(stepOf(capped) === "handoff", "a lens-fix-not-integrated cap routes to handoff");
   const why = explainCap("lens-fix-not-integrated", capped);
   assert(
     why.length > 0 && !/^the cycle halted without recording/.test(why),

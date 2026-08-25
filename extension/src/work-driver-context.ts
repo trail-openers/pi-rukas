@@ -15,7 +15,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { LensReviewSummary } from "./lens-review.ts";
 import type { DispatchResult } from "./types.ts";
-import type { WorkState, WorkStep } from "./workflow-state.ts";
+import { KNOWN_STATUSES } from "./workflow-state-validate.ts";
+import { WORK_STEPS, type WorkState, type WorkStep } from "./workflow-state.ts";
 
 /**
  * Display ordinal for the user-facing "step N/9" badge in scrollback /
@@ -245,14 +246,39 @@ export interface DriverContext {
   }) => Promise<LensReviewSummary>;
 }
 
+/**
+ * #533 — the transition table's answer, made total. Pre-#533 an unknown
+ * `pipelineState.currentStep` reached the linear table's `Record<WorkStep, …>`
+ * lookup, got `undefined`, and the driver loop's 64-iteration safety counter
+ * fired with a message naming no field. The unknown case is now its own
+ * member: the driver halts naming `pipelineState.currentStep`, and a loop
+ * that spins can only do so by repeatedly RUNNING a real step, which the
+ * safety counter still bounds.
+ */
+export type StepDecision =
+  | { kind: "step"; step: WorkStep }
+  | { kind: "done" }
+  | { kind: "unknown-step"; value: unknown };
+
 /** Decide the next step from the current step + just-appended events. */
-export function nextStep(state: WorkState): WorkStep | "done" {
+export function nextStep(state: WorkState): StepDecision {
   const ps = state.pipelineState;
-  if (ps.status !== "running") return "done";
+  if (ps.status !== "running") return { kind: "done" };
   const lastEvent = state.eventLog[state.eventLog.length - 1];
 
+  // #533 — the driver's pre-loop validator (validateDiscriminants) refuses to
+  // resume a `running` state on an unknown currentStep/status, so these checks
+  // are the in-memory backstop: an unknown value is a distinct answer, not a
+  // `Record` lookup miss.
+  if (!WORK_STEPS.includes(ps.currentStep as WorkStep)) {
+    return { kind: "unknown-step", value: ps.currentStep };
+  }
+  if (!KNOWN_STATUSES.includes(ps.status)) {
+    return { kind: "unknown-step", value: ps.status };
+  }
+
   // Terminal short-circuits.
-  if (ps.currentStep === "merged" || ps.currentStep === "handoff") return "done";
+  if (ps.currentStep === "merged" || ps.currentStep === "handoff") return { kind: "done" };
 
   // A cap-hit routes to `handoff`, `step-back` or `ci`, regardless of which
   // step emitted it: the driver records the decision in the event itself, so
@@ -261,7 +287,7 @@ export function nextStep(state: WorkState): WorkStep | "done" {
   // that ran out of rounds with the adversarial gate approving and its residual
   // findings posted goes on to CI and the merge-authority gate, instead of
   // parking work a human then judges merge-worthy anyway.
-  if (lastEvent?.kind === "cap-hit") return lastEvent.nextStep;
+  if (lastEvent?.kind === "cap-hit") return { kind: "step", step: lastEvent.nextStep };
 
   // Adversarial verdict routes the next step.
   if (lastEvent?.kind === "adversarial-approved") {
@@ -273,17 +299,19 @@ export function nextStep(state: WorkState): WorkStep | "done" {
     // lens-review, skipping commit-pr. PR2 routes on lastCompletedStep:
     //  - From "develop" → "commit-pr" (the happy path after first dev).
     //  - From "lens-fix" → "lens-review" (re-verify the fix loop).
-    return ps.lastCompletedStep === "develop" ? "commit-pr" : "lens-review";
+    return ps.lastCompletedStep === "develop"
+      ? { kind: "step", step: "commit-pr" }
+      : { kind: "step", step: "lens-review" };
   }
   if (lastEvent?.kind === "adversarial-rejected") {
     // adversarial_loop already did 3 internal rounds and STILL rejected →
     // this is a cap-hit. The driver emits the cap-hit event in the same
     // transition; the cap-hit branch above handles routing.
-    return "handoff";
+    return { kind: "step", step: "handoff" };
   }
 
   // Lens-review verdict routes.
-  if (lastEvent?.kind === "lens-approved") return "ci";
+  if (lastEvent?.kind === "lens-approved") return { kind: "step", step: "ci" };
   if (lastEvent?.kind === "lens-issues-found") {
     // A capped review never reaches here: `appendReviewCapHit` appends a
     // cap-hit AFTER the lens-issues-found event, and the cap-hit branch above
@@ -292,15 +320,15 @@ export function nextStep(state: WorkState): WorkStep | "done" {
     // the uncapped fallback, and both must stay pessimistic: a tail that
     // somehow reached the cap without a cap-hit recorded has nothing that says
     // where it should go, and "stop" is the only safe answer to that.
-    if (ps.reviewRound >= MAX_REVIEW_ROUNDS) return "handoff";
+    if (ps.reviewRound >= MAX_REVIEW_ROUNDS) return { kind: "step", step: "handoff" };
     if (ps.reviewCapStartedAt && Date.now() - ps.reviewCapStartedAt > REVIEW_WALL_CLOCK_MS) {
-      return "handoff";
+      return { kind: "step", step: "handoff" };
     }
-    return "lens-fix";
+    return { kind: "step", step: "lens-fix" };
   }
 
   // Step-back completes → emit handoff with the spec analysis attached.
-  if (lastEvent?.kind === "step-back-completed") return "handoff";
+  if (lastEvent?.kind === "step-back-completed") return { kind: "step", step: "handoff" };
 
   // A failing full verification is a failing verification.
   //
@@ -316,27 +344,28 @@ export function nextStep(state: WorkState): WorkStep | "done" {
   // events mean different things, and `verify-full-status` carries the
   // `evidenceTail` that says what actually broke.
   if (lastEvent?.kind === "verify-full-status" && lastEvent.status === "failure") {
-    if ((ps.ciRetryCount ?? 0) >= MAX_CI_RETRIES) return "handoff";
-    return "develop";
+    if ((ps.ciRetryCount ?? 0) >= MAX_CI_RETRIES) return { kind: "step", step: "handoff" };
+    return { kind: "step", step: "develop" };
   }
 
   // CI outcomes.
   if (lastEvent?.kind === "ci-status") {
-    if (lastEvent.status === "success") return "merged";
+    if (lastEvent.status === "success") return { kind: "step", step: "merged" };
     if (lastEvent.status === "failure") {
       // The re-fix loop. Cap at MAX_CI_RETRIES so a permanently-failing CI
       // (e.g., branch step ABORTed and no PR exists for CI to watch — see
       // issue #553) can't spin develop → adversarial → review → ci forever.
       // The runCi step body bumps ciRetryCount when it appends the
       // ci-status event; this check just routes on the post-bump value.
-      if ((ps.ciRetryCount ?? 0) >= MAX_CI_RETRIES) return "handoff";
-      return "develop";
+      if ((ps.ciRetryCount ?? 0) >= MAX_CI_RETRIES) return { kind: "step", step: "handoff" };
+      return { kind: "step", step: "develop" };
     }
     // "pending" — caller decides whether to poll again; for v1 we just stay.
-    return "ci";
+    return { kind: "step", step: "ci" };
   }
 
-  // Linear happy-path transitions when no special event fired.
+  // Linear happy-path transitions when no special event fired. The lookup
+  // can no longer miss: `ps.currentStep` was membership-checked above.
   const linear: Record<WorkStep, WorkStep> = {
     explore: "plan",
     plan: "branch",
@@ -351,5 +380,5 @@ export function nextStep(state: WorkState): WorkStep | "done" {
     ci: "merged",
     merged: "merged",
   };
-  return linear[ps.currentStep];
+  return { kind: "step", step: linear[ps.currentStep] };
 }

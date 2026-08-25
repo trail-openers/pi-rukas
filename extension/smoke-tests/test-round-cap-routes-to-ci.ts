@@ -42,6 +42,11 @@ function assert(cond: boolean, msg: string) {
     exit = 1;
   }
 }
+// #533 — nextStep returns a discriminated result; unwrap for comparisons.
+function stepOf(s: WorkState): string {
+  const d = nextStep(s);
+  return d.kind === "step" ? d.step : d.kind;
+}
 
 const execFileP = promisify(execFile);
 const execP = promisify(exec);
@@ -163,8 +168,8 @@ await withRepo(async (repo) => {
     `the round cap still fires and is still named (got ${cap?.cap})`,
   );
   assert(
-    nextStep(after) === "ci",
-    `canary: a round-capped ISSUES_FOUND with adversarial approved routes to ci (got ${nextStep(after)}) — it parked two of six overnight outcomes`,
+    stepOf(after) === "ci",
+    `canary: a round-capped ISSUES_FOUND with adversarial approved routes to ci (got ${stepOf(after)}) — it parked two of six overnight outcomes`,
   );
   assert(
     ghCalls.some((c) => /^gh pr comment 1\b/.test(c)),
@@ -186,8 +191,8 @@ await withRepo(async (repo) => {
     Date.now(),
   );
   assert(
-    capOf(after)?.cap === "round-cap" && nextStep(after) === "handoff",
-    `invariant: a CRITICAL_ISSUES_FOUND tail still parks at handoff (got ${nextStep(after)})`,
+    capOf(after)?.cap === "round-cap" && stepOf(after) === "handoff",
+    `invariant: a CRITICAL_ISSUES_FOUND tail still parks at handoff (got ${stepOf(after)})`,
   );
   assert(
     ghCalls.length === 0,
@@ -208,8 +213,8 @@ await withRepo(async (repo) => {
     Date.now(),
   );
   assert(
-    capOf(after)?.cap === "wall-clock" && nextStep(after) === "handoff",
-    `invariant: the wall-clock cap still parks (cap ${capOf(after)?.cap}, next ${nextStep(after)})`,
+    capOf(after)?.cap === "wall-clock" && stepOf(after) === "handoff",
+    `invariant: the wall-clock cap still parks (cap ${capOf(after)?.cap}, next ${stepOf(after)})`,
   );
 });
 
@@ -229,8 +234,8 @@ await withRepo(async (repo) => {
     Date.now(),
   );
   assert(
-    nextStep(after) === "handoff",
-    `canary: round cap AND wall-clock exceeded parks — it does not route to ci (next ${nextStep(after)})`,
+    stepOf(after) === "handoff",
+    `canary: round cap AND wall-clock exceeded parks — it does not route to ci (next ${stepOf(after)})`,
   );
 });
 
@@ -250,8 +255,8 @@ await withRepo(async (repo) => {
   };
   const after = await runLens(ctx, stateAt(2), Date.now());
   assert(
-    nextStep(after) === "handoff",
-    `invariant: an undisclosed residual parks instead of routing to ci (got ${nextStep(after)})`,
+    stepOf(after) === "handoff",
+    `invariant: an undisclosed residual parks instead of routing to ci (got ${stepOf(after)})`,
   );
   assert(
     after.eventLog.some((e) => e.kind === "plumb-report" && /could not post/.test(e.body)),

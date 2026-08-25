@@ -76,7 +76,12 @@ import { WORK_STATE_SCHEMA_VERSION, type WorkState } from "./workflow-state-sche
 export type { WorkStep, WorkEvent, WorkEventKind } from "./workflow-state-events.ts";
 export { WORK_STATE_SCHEMA_VERSION } from "./workflow-state-schema.ts";
 export type { PipelineState, WorkState } from "./workflow-state-schema.ts";
-export { initialState, appendEvent, detectInconsistencies } from "./workflow-state-schema.ts";
+export {
+  initialState,
+  appendEvent,
+  detectInconsistencies,
+  WORK_STEPS,
+} from "./workflow-state-schema.ts";
 
 /**
  * Resolve the project-local state directory. We anchor on `cwd` rather than
