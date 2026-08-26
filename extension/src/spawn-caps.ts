@@ -26,6 +26,7 @@ import { type LoopDetector, createLoopDetector, loopDetectorEnabled } from "./lo
 import type { PiContentBlock } from "./pi-event-shapes.ts";
 import type { LoopObserver } from "./progress.ts";
 import { TokenBudgetTracker } from "./spawn-support.ts";
+import { turnNudgeEnabled, turnNudgeText, turnNudgeThreshold } from "./turn-nudge.ts";
 import type { DispatchResult } from "./types.ts";
 
 /** The shared kill: SIGTERM + 5s SIGKILL escalation. */
@@ -126,6 +127,12 @@ export interface CapSession {
   loopEvidence(): { tool: string; count: number } | undefined;
   /** #543 (spawn#6) test seam — the fingerprint the armed kill is tracking. */
   loopArmedFingerprint(): string | undefined;
+  /** #546 AC4 — the soft turn-count nudge (undefined when off, when there is
+   * no `onSteer` seam, or when no `turns` counter was provided). No-op safe.
+   * Called from `spawn.ts` on every assistant turn end. Fires at most once
+   * per dispatch, at the first turn ≥ `turnNudgeAt()`. Steer-only: it never
+   * contributes to `killCause`. */
+  turnNudge?: (turn: number) => void;
   /** The single structured kill cause, by priority (loop first). */
   killCause(): DispatchResult["killCause"];
   /** Tear down the grace-window timers (call in the finally block). */
@@ -144,6 +151,13 @@ export interface CapSessionOpts {
   inactivityKilled: () => boolean;
   aborted: () => boolean;
   capKillGraceMs: number;
+  /**
+   * #546 AC4 — the soft turn-count nudge's turn counter. `spawn.ts` passes
+   * `() => runningState.turns`; absent (or `turnNudgeAt() === 0`) makes the
+   * nudge inert. Defined on the interface so callers and tests construct the
+   * same opts shape; the implementation treats absence as off.
+   */
+  turns?: () => number;
   /**
    * #543 H1 — grace-window kill race: set the moment the child's exit is
    * OBSERVED (before `once(child, "exit")` resolves, so the poll cannot slip
@@ -213,6 +227,35 @@ export function createCapSession(opts: CapSessionOpts): CapSession {
         )
       : undefined;
   const tokenBudgetTracker = tracker;
+
+  // #546 AC4 — the soft turn-count nudge (opt-in, `turnNudgeAt() > 0`).
+  // Steer-only: it never kills, so it is exempt from the #543 capsOn gating
+  // (ops-role children get it too — a long ops run is where a status line is
+  // cheapest to write) and from the loop detector's independent toggle.
+  // `onSteer` is undefined for callers without a job (lens / adversarial
+  // children bypass the registry), which keeps the nudge a no-op there.
+  let turnNudged = false;
+  const turnNudge =
+    opts.onSteer && opts.turns
+      ? (turn: number): void => {
+          if (turnNudged) return;
+          // Read the env var directly (not via turnNudgeAt) so the closure
+          // sees the CURRENT value at call time. turnNudgeAt() reads
+          // process.env.PI_ENSEMBLE_TURN_NUDGE at module scope, which Bun's
+          // TS transpiler can hoist into a stale snapshot captured at
+          // construction time — a per-call read here is the same pattern
+          // loopDetectorEnabled() already uses.
+          const threshold = turnNudgeThreshold();
+          if (threshold === 0 || turn < threshold) return;
+          turnNudged = true;
+          try {
+            opts.onSteer?.(turnNudgeText(turn), "driver-turn-nudge");
+          } catch {
+            /* child already gone — the nudge is soft; nothing else to do */
+          }
+        }
+      : undefined;
+
   const budgetGracePoll =
     capsOn && graceMs > 0 && tokenBudgetTracker
       ? setInterval(() => tokenBudgetTracker.poll(), 500)
@@ -253,6 +296,7 @@ export function createCapSession(opts: CapSessionOpts): CapSession {
     loopKilled: () => loopKilled,
     loopEvidence: () => loopEvidenceAtKill,
     loopArmedFingerprint: () => (loopKillArmed ? armedFingerprint : undefined),
+    turnNudge,
     killCause: () =>
       resolveKillCause({
         loopKilled,

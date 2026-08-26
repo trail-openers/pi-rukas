@@ -302,6 +302,7 @@ async function spawnSpecialistInner(
     aborted: () => aborted,
     capKillGraceMs: capKillGraceMs(),
     childExited: () => childExited,
+    turns: () => runningState.turns,
   });
 
   // Inactivity watchdog state (#296): ANY stdout line counts as life —
@@ -342,6 +343,7 @@ async function spawnSpecialistInner(
       // #543 F6 — check the token budget on every assistant turn end.
       caps.tokenBudgetTracker?.check(Date.now());
       caps.tokenBudgetTracker?.onMessageEnd(Date.now());
+      caps.turnNudge?.(runningState.turns);
       opts.onProgress?.({ ...runningState, usage: { ...runningState.usage } });
     }
     // Retain only the two events collapseEvents actually reads (the latest

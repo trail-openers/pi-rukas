@@ -45,11 +45,20 @@ interface SteerDetails {
  *   - "pm-tool"              — the PM's dispatch_steer tool (the original path).
  *   - "driver-loop-detector" — the work-driver's loop-detector cap (#543 F1).
  *   - "driver-budget"        — the work-driver's token-budget cap (#543 F6).
+ *   - "driver-turn-nudge"    — the #546 AC4 soft turn-count nudge (opt-in via
+ *                              PI_ENSEMBLE_TURN_NUDGE=1; the ~80-turn reminder
+ *                              that long-dispatch mid-stream deaths are cheap
+ *                              to recover from if the child writes a status
+ *                              summary before it ends).
  *
  * The PM tool path passes "pm-tool"; the driver's caps pass the other two.
  * The tag is informational — it tells the operator WHY the child was nudged.
  */
-export type SteerSource = "pm-tool" | "driver-loop-detector" | "driver-budget";
+export type SteerSource =
+  | "pm-tool"
+  | "driver-loop-detector"
+  | "driver-budget"
+  | "driver-turn-nudge";
 
 /**
  * The driver-callable steer core (#543 F2).

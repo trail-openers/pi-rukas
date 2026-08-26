@@ -155,6 +155,64 @@ function describeOutcome(result: DispatchResult): { status: string; bodyPrefix: 
   return { status: `FAILED (exit ${result.exitCode ?? "?"})`, bodyPrefix: null };
 }
 
+/**
+ * #546 — mid-stream truncation of a long dispatch.
+ *
+ * Three subagents died mid-stream during the #543/#544 session (a 95-min
+ * silent reviewer, a 159-turn fix developer, a 231-turn lens-mediums fix
+ * developer). Each ended exit 0 whose final assistant text was a
+ * tool-narration line — "Now editing the file…" — so the report read like
+ * partial success and recovery cost a full re-dispatch until a human
+ * noticed. The three deaths are the calibration: every healthy short run
+ * ends with a structured summary (output-standards.md: "Task complete" /
+ * "Status:" line), so a narration-shaped tail on a long run is the tell.
+ * The heuristic is intentionally conservative: a false positive costs one
+ * "verify on disk" line, a false negative reproduces the failure.
+ */
+export const TRUNCATION_TURN_THRESHOLD = 80;
+
+// The completion shapes a healthy subagent's final text contains
+// (output-standards.md § Subagent Output Contract): a "Task complete" status
+// line, a "Status:" line, or an explicit test-gate verdict. Matched on the
+// whole text because a structured report can carry the completion line
+// several lines above its trailing sections.
+const COMPLETION_MARKER_RE = /task complete|\bstatus:|all tests pass|offline gate/i;
+
+/**
+ * True when the final text contains a completion marker. Matched on the
+ * whole text (not just the last line) because a structured report can end
+ * with a trailing "Key findings:" or similar after the "Task complete" line.
+ */
+export function looksLikeCompletion(text: string): boolean {
+  if (!text || !text.trim()) return false;
+  // Scan every line. A healthy subagent's final text contains a
+  // completion-shaped line ("Task complete" / "Status:" / "All tests pass" /
+  // "Offline gate"). A truncated run's final text is a tool-narration line
+  // with no completion marker anywhere.
+  return COMPLETION_MARKER_RE.test(text);
+}
+
+/**
+ * True when a run that ended without an explicit kill/provider failure looks
+ * truncated mid-narration: more than {@link TRUNCATION_TURN_THRESHOLD} turns
+ * and a final line that is not completion-shaped. The caller owns conditions
+ * (a) and (b) — no killCause, no errorStop — this predicate is (b)+(c).
+ */
+export function isTruncatedNarration(text: string, turns: number): boolean {
+  if (turns <= TRUNCATION_TURN_THRESHOLD) return false;
+  return !looksLikeCompletion(text);
+}
+
+/**
+ * The tag a truncated long run earns. Suggests the resume-from-disk pattern
+ * the three #546 recoveries proved: survey git status/log in the target
+ * worktree, classify done/missing/broken, and resume with the full contract
+ * — not a blind re-run, which discards the on-disk work.
+ */
+function truncationBadge(result: DispatchResult): string {
+  return ` — POSSIBLY-TRUNCATED: final text is a tool-narration line at ${result.usage?.turns ?? 0} turns with no completion summary. Verify on-disk state (git status/log in the target worktree) before re-dispatching: survey disk, classify done/missing/broken, resume with the full contract rather than a blind re-run.`;
+}
+
 export function formatSingleReport(jobId: string, label: string, result: DispatchResult): string {
   const turns = result.usage?.turns ?? 0;
   const elapsed = fmtElapsed(result.ms);
@@ -164,7 +222,17 @@ export function formatSingleReport(jobId: string, label: string, result: Dispatc
   // See DispatchResult.errorStop and DispatchResult.killCause.
   const { status, bodyPrefix } = describeOutcome(result);
 
-  const head = `[ensemble:async] Subagent \`${label}\` (job ${jobId}) ${status} — ${turns} turns, ${elapsed}${fmtObservedWork(result)}${fmtUsage(result)}`;
+  // #546 — a clean exit (no killCause, no errorStop) whose long run ended on a
+  // narration-shaped tail is a warning, never a failure: the run's own
+  // evidence (exit 0, no error) stays intact, the badge only adds what to do.
+  const truncated =
+    !result.killCause &&
+    !result.errorStop &&
+    result.text !== undefined &&
+    result.text.trim().length > 0 &&
+    isTruncatedNarration(result.text, turns);
+
+  const head = `[ensemble:async] Subagent \`${label}\` (job ${jobId}) ${status} — ${turns} turns, ${elapsed}${fmtObservedWork(result)}${fmtUsage(result)}${truncated ? truncationBadge(result) : ""}`;
   let body = result.text?.trim() || "(no output)";
   if (bodyPrefix) {
     body = [
@@ -227,7 +295,15 @@ export function formatBatchReport(input: BatchReportInput): string {
     const body = bodyPrefix
       ? [bodyPrefix, ...(text ? ["", text] : [])].join("\n")
       : text || "(no output)";
-    return `=== ${m.label} (job ${m.jobId}) — ${status} · ${turns} turns · ${elapsed}${fmtObservedWork(m.result)}${fmtUsage(m.result)} ===\n${body}`;
+    // #546 — the same truncation tag the single-job report earns, so a
+    // narration-tail child cannot hide inside a batch.
+    const truncated =
+      !m.result.killCause &&
+      !m.result.errorStop &&
+      text !== "" &&
+      isTruncatedNarration(text, turns);
+    const badge = truncated ? truncationBadge(m.result) : "";
+    return `=== ${m.label} (job ${m.jobId}) — ${status} · ${turns} turns · ${elapsed}${fmtObservedWork(m.result)}${fmtUsage(m.result)}${badge} ===\n${body}`;
   });
   const footer = "---\nYou started this async batch earlier. Continue the workflow.";
   return `${head}\n\n${sections.join("\n\n")}\n\n${footer}`;
