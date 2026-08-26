@@ -111,7 +111,11 @@ function assert(cond: boolean, msg: string) {
 {
   const SRC = path.resolve(import.meta.dirname, "..", "src");
   const read = (f: string) => readFileSync(path.join(SRC, f), "utf8");
-  for (const f of ["work-driver-handoff-markdown.ts", "work-driver-prompts-late.ts"]) {
+  // #544 — the recovery recipe now lives in the SHARED decision module
+  // (work-driver-handoff-recovery.ts), consumed by both surfaces; the md
+  // presenter is kept in the list so a presenter that inlines its own
+  // copy (bypassing the shared decision) still trips the canary.
+  for (const f of ["work-driver-handoff-recovery.ts", "work-driver-prompts-late.ts"]) {
     const src = read(f);
     assert(
       /git apply --3way --binary/.test(src),

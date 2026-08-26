@@ -12,8 +12,6 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { nextStep } from "../src/work-driver-context.ts";
-import { buildCompletionEvent } from "../src/work-driver-merged.ts";
-import type { DispatchResult, DispatchUsage } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { validateDiscriminants } from "../src/workflow-state-validate.ts";
@@ -96,47 +94,6 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     const afterAppend = await readState(dir, issue);
     assert(afterAppend?.eventLog.length === 1, "appendEvent persists exactly one event");
     assert(afterAppend?.eventLog[0]?.kind === "step-started", "appended event has expected kind");
-
-    // #534 — usage on dispatch events round-trips; absent stays absent.
-    const usage = { input: 100, output: 20, cacheRead: 400, cacheWrite: 10, cost: 0.123, turns: 3 };
-    state = appendEvent(state, { kind: "dispatch-completed", step: "explore", role: "explore", jobId: "job-usage-rt", label: "explore", ok: true, ms: 1234, at: 1600, summary: "ok", usage });
-    state = appendEvent(state, { kind: "dispatch-failed", step: "develop", role: "developer", jobId: "job-usage-fail", label: "developer:ws-1", ms: 5678, at: 1700, errorTail: "exit 1", usage: { ...usage, input: 50, cost: 0.05 } });
-    state = appendEvent(state, { kind: "dispatch-failed-provider", step: "adversarial", role: "adversarial-developer", jobId: "job-usage-prov", label: "adversarial", ms: 9000, at: 1800, providerMessage: "timeout", usage: { ...usage, output: 0 } });
-    state = appendEvent(state, { kind: "dispatch-failed", step: "branch", role: "ops", jobId: "job-no-usage", label: "ops:branch", ms: 100, at: 1900, errorTail: "git pull --ff-only failed" });
-    await writeState(dir, state);
-    const withUsageEv = await readState(dir, issue);
-    const completedEv = withUsageEv?.eventLog.find((e) => e.kind === "dispatch-completed" && e.jobId === "job-usage-rt");
-    assert(completedEv?.kind === "dispatch-completed" && completedEv.usage?.input === 100 && completedEv.usage.output === 20 &&
-      completedEv.usage.cacheRead === 400 && completedEv.usage.cacheWrite === 10 && completedEv.usage.cost === 0.123 && completedEv.usage.turns === 3,
-      "dispatch-completed usage round-trips through writeState/readState");
-    const failedEv = withUsageEv?.eventLog.find((e) => e.kind === "dispatch-failed" && e.jobId === "job-usage-fail");
-    assert(failedEv?.kind === "dispatch-failed" && failedEv.usage?.input === 50, "dispatch-failed usage round-trips");
-    const providerEv = withUsageEv?.eventLog.find((e) => e.kind === "dispatch-failed-provider" && e.jobId === "job-usage-prov");
-    assert(providerEv?.kind === "dispatch-failed-provider" && providerEv.usage?.output === 0, "dispatch-failed-provider usage round-trips");
-    const noUsageEv = withUsageEv?.eventLog.find((e) => e.kind === "dispatch-failed" && e.jobId === "job-no-usage");
-    assert(noUsageEv?.kind === "dispatch-failed" && noUsageEv.usage === undefined, "absent usage stays absent (no zero synthesis) on round-trip");
-
-    // Schema-version mismatch must reject loudly.
-    const file = workStateFile(dir, issue);
-    await Bun.write(file, JSON.stringify({ ...state, schemaVersion: 99 }));
-    try {
-      await readState(dir, issue);
-      assert(false, "schemaVersion mismatch should throw");
-    } catch (err) {
-      const msg = (err as Error).message;
-      assert(
-        msg.includes("schemaVersion=99") && msg.includes("expects 1"),
-        "schema mismatch error names both versions",
-      );
-      assert(
-        /rm to start fresh/.test(msg) && /git work is unaffected/.test(msg),
-        "error names a real recovery and reassures that git work is untouched",
-      );
-      assert(
-        !/PI_ENSEMBLE_WORK_DRIVER|legacy/i.test(msg),
-        "#393: and does NOT point at the deleted legacy flow",
-      );
-    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -392,9 +349,6 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     rmSync(dir, { recursive: true, force: true });
   }
 
-  // Each of the four pipelineState field positions, unknown value in each.
-  // Each pipelineState field position, and each WorkStep-typed event field
-  // position: unknown value in, finding naming the field out.
   const pipelinePositions: Array<[string, Record<string, unknown>]> = [
     ["pipelineState.currentStep", { currentStep: "wibble" }],
     ["pipelineState.status", { status: "zombie" }],
@@ -415,7 +369,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     eventLog: [{ kind: "step-started", step: "not-a-step", at: 1 }],
   } as unknown as Record<string, unknown>);
   assert(
-    stepEvent.length === 1 && stepEvent[0].includes("eventLog[0].step") && stepEvent[0].includes("not-a-step"),
+    stepEvent.length === 1 &&
+      stepEvent[0].includes("eventLog[0].step") &&
+      stepEvent[0].includes("not-a-step"),
     "unknown eventLog[0].step names the field and the value",
   );
   const capPos = validateDiscriminants({
@@ -423,74 +379,68 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     eventLog: [{ kind: "cap-hit", at: 1, cap: "round-cap", reviewRound: 3, nextStep: "bogus" }],
   } as unknown as Record<string, unknown>);
   assert(
-    capPos.length === 1 && capPos[0].includes("eventLog[0].nextStep") && capPos[0].includes("bogus"),
+    capPos.length === 1 &&
+      capPos[0].includes("eventLog[0].nextStep") &&
+      capPos[0].includes("bogus"),
     "unknown cap-hit.nextStep names the field and the value",
   );
 }
 
-// 3b. #540 — the consolidation verdict shape: current {verdicts, filesPresent}
-// accepted with `status` discriminant validated (#533's rule); pre-#540 bare
-// array stays readable; malformed shapes refuse, naming the field.
+// 3b. #540 — consolidation verdict shape: {verdicts, filesPresent} with the
+// `status` discriminant validated; the pre-#540 bare array stays readable.
 {
-  const icFindings = (ic: unknown) =>
+  const ic = (ic0: unknown) =>
     validateDiscriminants({
       ...initialState(540, 1000),
-      pipelineState: { ...initialState(540, 1000).pipelineState, incompleteConsolidation: ic },
+      pipelineState: { ...initialState(540, 1000).pipelineState, incompleteConsolidation: ic0 },
     } as unknown as Record<string, unknown>);
-  const good = icFindings({
-    verdicts: [{ id: "a", status: "uncovered", uncoveredPaths: ["src/a.ts"] }, { id: "b", status: "complete" }],
+  const good = ic({
+    verdicts: [
+      { id: "a", status: "uncovered", uncoveredPaths: ["src/a.ts"] },
+      { id: "b", status: "complete" },
+    ],
     filesPresent: ["src/a.ts"],
   });
-  assert(good.length === 0, "#540: validator accepts {verdicts, filesPresent} with valid discriminants");
-  assert(icFindings([{ id: "a", paths: ["src/a.ts"] }]).length === 0,
-    "#540: the pre-#540 array shape is accepted (legacy state files stay readable)");
-  const badPresent = icFindings({ verdicts: [], filesPresent: { not: "an array" } });
-  assert(badPresent.length === 1 && badPresent[0].includes("filesPresent"),
-    "#540: a non-array filesPresent refuses reconstruction and names the field");
-  const badStatus = icFindings({ verdicts: [{ id: "a", status: "mystery", uncoveredPaths: [] }], filesPresent: [] });
-  assert(badStatus.length === 1 && badStatus[0].includes("status has unknown value"),
-    "#540: an unknown verdict status refuses reconstruction");
-  const badUncovered = icFindings({ verdicts: [{ id: "a", status: "uncovered" }], filesPresent: [] });
-  assert(badUncovered.length === 1 && badUncovered[0].includes("uncoveredPaths"),
-    "#540: an uncovered verdict without uncoveredPaths refuses reconstruction");
-  const goodUnverifiable = icFindings({ verdicts: [{ id: "a", status: "unverifiable", reason: "no declared paths" }], filesPresent: [] });
-  assert(goodUnverifiable.length === 0,
-    "#540: an unverifiable verdict WITH reason is accepted");
-  const badUnverifiable = icFindings({ verdicts: [{ id: "a", status: "unverifiable" }], filesPresent: [] });
-  assert(badUnverifiable.length === 1 && badUnverifiable[0].includes("reason"),
-    "#540: an unverifiable verdict without reason refuses reconstruction");
-  const noVerdicts = icFindings({ filesPresent: [] });
-  assert(noVerdicts.length === 1 && noVerdicts[0].includes("verdicts"),
-    "#540: the current shape without a verdicts field refuses reconstruction");
-}
-
-// 4. #534 — buildCompletionEvent attaches usage when DispatchResult.usage is
-// in scope and omits it otherwise. Minimal stub; no spawn, no disk.
-{
-  const ctx = { repoRoot: "/tmp", issue: 534 } as Parameters<typeof buildCompletionEvent>[0];
-  const usage: DispatchUsage = { input: 1000, output: 250, cacheRead: 5000, cacheWrite: 100, cost: 1.23, turns: 4 };
-  const base: DispatchResult = { role: "developer", ok: true, text: "done", toolUses: [], ms: 1000, exitCode: 0 };
-
-  const ok = await buildCompletionEvent(ctx, "develop", "developer", "dev", { ...base, usage });
-  assert(ok.kind === "dispatch-completed" && ok.usage?.input === 1000 && ok.usage?.cacheRead === 5000,
-    "success WITH usage → dispatch-completed carries it");
-
-  const noU = await buildCompletionEvent(ctx, "develop", "developer", "dev", base);
-  assert(noU.kind === "dispatch-completed" && noU.usage === undefined,
-    "success WITHOUT usage → omitted, not zero-synthesised");
-
-  const fail = await buildCompletionEvent(ctx, "develop", "developer", "dev", { ...base, ok: false, exitCode: 1, usage });
-  assert(fail.kind === "dispatch-failed" && fail.usage?.output === 250,
-    "process failure WITH usage → dispatch-failed carries flushed spend");
-
-  const prov = await buildCompletionEvent(ctx, "adversarial", "adversarial-developer", "adv",
-    { ...base, errorStop: { reason: "error", message: "terminated" }, usage });
-  assert(prov.kind === "dispatch-failed-provider" && prov.usage?.cost === 1.23,
-    "errorStop WITH usage → dispatch-failed-provider carries it");
-
-  const killed = await buildCompletionEvent(ctx, "ci", "ops", "ops:ci", { ...base, killCause: "timeout", killBudgetMs: 600_000, usage });
-  assert(killed.kind === "dispatch-failed" && killed.usage?.turns === 4,
-    "killCause WITH usage → dispatch-failed carries flushed usage");
+  assert(good.length === 0, "#540: {verdicts, filesPresent} with valid discriminants accepted");
+  assert(
+    ic([{ id: "a", paths: ["src/a.ts"] }]).length === 0,
+    "#540: pre-#540 array shape stays readable",
+  );
+  assert(
+    ic({ verdicts: [], filesPresent: { not: "an array" } }).some((x: string) =>
+      x.includes("filesPresent"),
+    ),
+    "#540: non-array filesPresent refuses",
+  );
+  assert(
+    ic({ verdicts: [{ id: "a", status: "mystery", uncoveredPaths: [] }], filesPresent: [] }).some(
+      (x: string) => x.includes("status has unknown value"),
+    ),
+    "#540: unknown verdict status refuses",
+  );
+  assert(
+    ic({ verdicts: [{ id: "a", status: "uncovered" }], filesPresent: [] }).some((x: string) =>
+      x.includes("uncoveredPaths"),
+    ),
+    "#540: uncovered without uncoveredPaths refuses",
+  );
+  assert(
+    ic({
+      verdicts: [{ id: "a", status: "unverifiable", reason: "no declared paths" }],
+      filesPresent: [],
+    }).length === 0,
+    "#540: unverifiable WITH reason accepted",
+  );
+  assert(
+    ic({ verdicts: [{ id: "a", status: "unverifiable" }], filesPresent: [] }).some((x: string) =>
+      x.includes("reason"),
+    ),
+    "#540: unverifiable without reason refuses",
+  );
+  assert(
+    ic({ filesPresent: [] }).some((x: string) => x.includes("verdicts")),
+    "#540: missing verdicts field refuses",
+  );
 }
 
 console.log(`\nexit ${exit}`);

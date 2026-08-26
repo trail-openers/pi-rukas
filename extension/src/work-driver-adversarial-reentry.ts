@@ -25,10 +25,11 @@
  */
 
 import type { DispatchResult } from "./types.ts";
+import type {} from "./work-driver-adversarial-fanout.ts";
 import type {
   AdversarialOutcome,
   AdversarialRoundRecord,
-} from "./work-driver-adversarial-fanout.ts";
+} from "./work-driver-adversarial-types.ts";
 import { classifyFailureCause } from "./work-driver-failure-taxonomy.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
 

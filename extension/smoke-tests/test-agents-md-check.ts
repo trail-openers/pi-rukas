@@ -13,12 +13,12 @@
  * No LLM. Each check is a filesystem / shell boolean.
  */
 
-import { mkdtempSync, rmSync, statSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { checkAgent, type AgentsMdFs } from "../src/agents-md/agents-md.ts";
-import { renderSection } from "../src/agents-md/markers.ts";
+import { type AgentsMdFs, checkAgent } from "../src/agents-md/agents-md.ts";
 import { EXIT_CLEAN, EXIT_FINDINGS, EXIT_REFUSE } from "../src/agents-md/check.ts";
+import { renderSection } from "../src/agents-md/markers.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -54,7 +54,10 @@ function mkFs(): AgentsMdFs {
   const clean =
     "# T\n" +
     renderSection("quality-gates", "- **g** — `bun run test`") +
-    renderSection("decision-ledger", "| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |");
+    renderSection(
+      "decision-ledger",
+      "| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |",
+    );
   writeFileSync(path.join(tmp, "clean.md"), clean);
   const r = checkAgent(tmp, path.join(tmp, "clean.md"), {}, mkFs());
   assert(r.check?.code === EXIT_CLEAN, `clean file → exit ${EXIT_CLEAN} (got ${r.check?.code})`);
@@ -65,10 +68,16 @@ function mkFs(): AgentsMdFs {
   const stale =
     "# T\n" +
     renderSection("quality-gates", "- see `gone-file.ts` for details") +
-    renderSection("decision-ledger", "| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |");
+    renderSection(
+      "decision-ledger",
+      "| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |",
+    );
   writeFileSync(path.join(tmp, "stale.md"), stale);
   const r = checkAgent(tmp, path.join(tmp, "stale.md"), {}, mkFs());
-  assert(r.check?.code === EXIT_FINDINGS, `stale path → exit ${EXIT_FINDINGS} (got ${r.check?.code})`);
+  assert(
+    r.check?.code === EXIT_FINDINGS,
+    `stale path → exit ${EXIT_FINDINGS} (got ${r.check?.code})`,
+  );
   assert(
     r.check?.findings.some((f) => f.kind === "stale-path" && f.message.includes("gone-file.ts")),
     "...with the exact stale-path finding",
@@ -82,14 +91,20 @@ function mkFs(): AgentsMdFs {
   const cmds =
     "# T\n" +
     renderSection("quality-gates", "- **g** — `bun run test`") +
-    renderSection("commands", "| kind | command |\n| --- | --- |\n| gate | `definitely-not-a-real-cmd-xyz` |") +
+    renderSection(
+      "commands",
+      "| kind | command |\n| --- | --- |\n| gate | `definitely-not-a-real-cmd-xyz` |",
+    ) +
     renderSection(
       "decision-ledger",
       "| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |",
     );
   writeFileSync(path.join(tmp, "cmds.md"), cmds);
   const r = checkAgent(tmp, path.join(tmp, "cmds.md"), {}, mkFs());
-  assert(r.check?.code === EXIT_FINDINGS, `commands-section gate → exit ${EXIT_FINDINGS} (got ${r.check?.code})`);
+  assert(
+    r.check?.code === EXIT_FINDINGS,
+    `commands-section gate → exit ${EXIT_FINDINGS} (got ${r.check?.code})`,
+  );
   assert(
     r.check?.findings.some(
       (f) => f.kind === "missing-command" && f.message.includes("definitely-not-a-real-cmd-xyz"),
@@ -115,7 +130,9 @@ function mkFs(): AgentsMdFs {
     `metacharacter gate → exit ${EXIT_FINDINGS} (got ${r.check?.code})`,
   );
   assert(
-    r.check?.findings.some((f) => f.kind === "invalid-shell" && f.message.includes("echo a; echo b")),
+    r.check?.findings.some(
+      (f) => f.kind === "invalid-shell" && f.message.includes("echo a; echo b"),
+    ),
     "...with the invalid-shell finding naming the metacharacter line",
   );
 }
@@ -126,7 +143,10 @@ function mkFs(): AgentsMdFs {
     "# T\n<!-- pi-ensemble:agents-md:begin a v1 -->\nbody\n<!-- pi-ensemble:agents-md:end b -->\n";
   writeFileSync(path.join(tmp, "corrupt.md"), corrupt);
   const r = checkAgent(tmp, path.join(tmp, "corrupt.md"), {}, mkFs());
-  assert(r.check?.code === EXIT_REFUSE, `corrupt markers → exit ${EXIT_REFUSE} (got ${r.check?.code})`);
+  assert(
+    r.check?.code === EXIT_REFUSE,
+    `corrupt markers → exit ${EXIT_REFUSE} (got ${r.check?.code})`,
+  );
   assert(r.check?.corrupt === true, "...flagged as corrupt");
 }
 

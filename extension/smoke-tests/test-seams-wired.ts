@@ -113,6 +113,33 @@ const SEAMS: Seam[] = [
     },
     canary: { symbol: "createAgent", importer: "agents-md-tool.ts" },
   },
+  {
+    // #543 F3a — the crash-resume re-attach seam ships as default-off
+    // infrastructure. `resolveReattach` / `reattachArgs` / `reattachPrompt`
+    // have no production caller yet (the resume step does not record
+    // `transcriptPath` on `dispatch-started`); they are wired when the
+    // resume path learns to re-attach a surviving session instead of
+    // re-dispatching. Flag default-off (PI_ENSEMBLE_SESSION_REATTACH=0),
+    // so the seam is inert on every real cycle until then.
+    file: "work-driver-resume.ts",
+    pending: {
+      resolveReattach: "#543 F3a — the crash-resume path will call it",
+      reattachArgs: "#543 F3a — the crash-resume path will call it",
+      reattachPrompt: "#543 F3a — the crash-resume path will call it",
+    },
+    testOnly: {
+      // #543 F3a — the re-attach floor + fan-out guard + the write-ahead
+      // dispatch markers ship with no production caller yet (the crash-resume
+      // path re-dispatches for now); exercised by test-session-reattach.ts /
+      // test-resume.ts.
+      sessionReattachEnabled: "#543 F3a — flag reader; test-asserted only",
+      FAN_OUT_STEPS: "#543 F3a — re-attach exclusion set; test-asserted only",
+      REATTACH_GRANT_FLOOR_MS: "#543 F3a — re-attach grant floor; test-asserted only",
+      mintJobId: "resume plumbing — jobId minting; exercised by test-resume.ts",
+      markDispatchStarted: "resume plumbing — write-ahead dispatch-started; exercised by test-resume.ts",
+    },
+    canary: { symbol: "beginDispatch", importer: "work-driver-explore.ts" },
+  },
 ];
 
 /**

@@ -26,6 +26,12 @@ const WHY: Record<string, string> = {
   inactivity:
     "produced no output at all for the watchdog window — a genuine hang, or a provider stall that outlasted every retry",
   abort: "was cancelled",
+  // #543 — the F1 loop detector and F6 token budget are OUR caps, distinct
+  // from a wall-clock timeout: a repeating call was detected structurally,
+  // so "split the work" does not apply (re-issuing the same prompt loops again).
+  loop: "was looped on — it repeated the same tool call after normalisation, so the harness killed it before it burned more budget; changing approach (not retrying) is the fix",
+  "token-budget":
+    "crossed its token budget — a cost cap, not a provider fault; the budget is PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>, not the inactivity knob",
 };
 
 /**

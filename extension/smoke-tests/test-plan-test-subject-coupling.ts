@@ -19,12 +19,12 @@
  * be more code and a worse outcome.
  */
 
+import { findTestSubjectSplits } from "../src/work-driver-plan-paths.ts";
 import {
   correctivePlanSteer,
   correctiveTestSubjectSplitSteer,
   planQualityReason,
 } from "../src/work-driver-plan.ts";
-import { findTestSubjectSplits } from "../src/work-driver-plan-paths.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -89,12 +89,13 @@ const OK_FINDINGS = 2;
   // but the test must still be about a file in another workstream (by stem
   // token match or by the subject's path appearing in the test path).
   assert(
-    findTestSubjectSplits(ws({ a: ["src/mystery.ts"], b: ["smoke-tests/test-mystery-extra.ts"] })).length ===
-      1,
+    findTestSubjectSplits(ws({ a: ["src/mystery.ts"], b: ["smoke-tests/test-mystery-extra.ts"] }))
+      .length === 1,
     "canary: a test-only workstream whose stem names the subject is flagged even when the test is not `test-<subject>.ts`",
   );
   assert(
-    findTestSubjectSplits(ws({ a: ["build.sh"], b: ["smoke-tests/test-anything.ts"] })).length === 0,
+    findTestSubjectSplits(ws({ a: ["build.sh"], b: ["smoke-tests/test-anything.ts"] })).length ===
+      0,
     "canary: a test-only workstream whose test does NOT name any other workstream's file is NOT flagged (no legitimate reading of the split)",
   );
 }
@@ -132,7 +133,8 @@ const OK_FINDINGS = 2;
   // Anti-false-positive canaries: the naming inference is a WORD match, not
   // a substring, and a self-named file is not a split.
   assert(
-    findTestSubjectSplits(ws({ a: ["src/foo.ts"], b: ["smoke-tests/test-foobar.ts"] })).length === 0,
+    findTestSubjectSplits(ws({ a: ["src/foo.ts"], b: ["smoke-tests/test-foobar.ts"] })).length ===
+      0,
     "canary: a stem PREFIX (foo vs foobar) is not a split — one test module exercising several subjects is legitimate",
   );
   // The vipune-seam-live case: the test's stem DOES name the subject

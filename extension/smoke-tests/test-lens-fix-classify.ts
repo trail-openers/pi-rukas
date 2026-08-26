@@ -155,10 +155,7 @@ try {
         /default/.test(r.reason),
         `B: the failure names the offending workstream (got "${r.reason}")`,
       );
-      assert(
-        r.reason.length > 0,
-        `B: the failure carries a non-empty reason (got "${r.reason}")`,
-      );
+      assert(r.reason.length > 0, `B: the failure carries a non-empty reason (got "${r.reason}")`);
     }
     // repoRoot must be restored, not left half-applied (the #287 invariant).
     const { stdout: dirt } = await git(f.repo, ["status", "--porcelain"]);

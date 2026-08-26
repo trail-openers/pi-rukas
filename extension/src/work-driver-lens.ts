@@ -22,7 +22,8 @@ import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { readAllMergedDiffs } from "./work-driver-diff.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
-import { appendReviewCapHit } from "./work-driver-lens-cap.ts";
+import { lensCapKillEvent } from "./work-driver-lens-capkill.ts";
+import { applyLensVerdict } from "./work-driver-lens-verdicts.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
 import { DOCTRINE_FILES, type DoctrineDoc, judgePolicy } from "./work-driver-policy.ts";
 import { inlineLensFixPrompt } from "./work-driver-prompts-late.ts";
@@ -73,20 +74,13 @@ export async function runLens(
   };
   next = appendEvent(next, { kind: "step-started", step: "lens-review", at: now });
 
-  // PR11 — lens-review runs POST-commit, when the developer's work is
-  // already committed on the feature branch. `git diff HEAD` (what
-  // fetchAllDiffs uses) is empty at this point — the changes are IN
-  // HEAD, not against it. Pre-PR11 the empty-diff guard fired on every
-  // successful cycle (34 ms lens-review skip → code merged without six-
-  // pass review). fetchAllMergedDiffs uses `git diff origin/<base>..HEAD`
-  // which correctly returns the integrated diff. runAdversarial still
-  // uses fetchAllDiffs because adversarial runs PRE-commit (uncommitted
-  // diff in the worktree is the right input there).
-  // #384 — read the diff in a form that can say "I could not tell". The
-  // plain read returned "" on every git failure, and the guard below treats
-  // an empty diff as APPROVED — so a stale ref, a transient git error or a
-  // maxBuffer overrun on a large diff all merged code unreviewed. Same defect
-  // class as the `ci-status:` substring #380 removed from the merge step.
+  // PR11 — lens-review runs POST-commit: `git diff HEAD` is empty at this
+  // point (the changes are IN HEAD), so fetchAllMergedDiffs uses
+  // `git diff origin/<base>..HEAD` (runAdversarial still uses
+  // fetchAllDiffs — adversarial runs PRE-commit, uncommitted diff).
+  // #384 — the read can say "I could not tell": a plain read returned ""
+  // on every git failure and the guard below treated an empty diff as
+  // APPROVED (stale ref / transient error / maxBuffer → unreviewed merge).
   const diffResult = await readAllMergedDiffs(ps.worktrees ?? {}, ctx.repoRoot, ps.branchName);
   if (!diffResult.ok) {
     trace(`work-driver: lens-review — diff unreadable: ${diffResult.reason}`);
@@ -195,9 +189,20 @@ export async function runLens(
   trace(`work-driver: lens-review — blocking severity ${thresholdDecision.severity}`);
   const threshold = thresholdDecision.severity;
 
+  // #543 F4(g) — a cap-killed lens child is a dispatch-failure of that
+  // child (see work-driver-lens-capkill.ts): the driver emits the event so
+  // the step router + F5 checkpoint + handoff see the structured cause.
   let summary: Awaited<ReturnType<typeof reviewFn>>;
   try {
     summary = await reviewFn({ diff, context, cwd, evidence, extraFindings, threshold });
+    const capKillEvent = lensCapKillEvent(
+      summary,
+      jobId,
+      round,
+      Date.now() - startedAt,
+      Date.now(),
+    );
+    if (capKillEvent) next = appendEvent(next, capKillEvent);
   } catch (err) {
     return appendEvent(next, {
       kind: "dispatch-failed",
@@ -209,6 +214,31 @@ export async function runLens(
       at: Date.now(),
       errorTail: (err as Error).message?.slice(-200),
     });
+  }
+
+  // #543 F5 — persist what the review actually observed. The lens
+  // children's per-lens verdicts (lens / status / findings count) are
+  // the "sibling verdicts" a REVIEW_INCOMPLETE handoff must preserve:
+  // one loop-killed lens is not a silent 1-of-6 loss, so the other
+  // five's outcomes are recorded on pipelineState before the cap-hit
+  // fires and the handoff renders them. Additive — the event log
+  // (tail-invariance, #533) is untouched; this is a snapshot like
+  // handoffSnapshot, and the handoff renderers read it when the
+  // REVIEW_INCOMPLETE / review-incomplete cap fires.
+  if (summary.lenses && summary.lenses.length > 0) {
+    const lensVerdicts = summary.lenses.map((l) => ({
+      lens: l.lens,
+      ok: l.ok,
+      blocked: l.blocked,
+      findings: l.findings.length,
+    }));
+    next = {
+      ...next,
+      pipelineState: {
+        ...next.pipelineState,
+        lensReviewSummary: { round, verdict: summary.verdict, lenses: lensVerdicts },
+      },
+    };
   }
 
   next = appendEvent(
@@ -250,57 +280,7 @@ export async function runLens(
     }
   }
 
-  if (summary.verdict === "APPROVED") {
-    // Deliberately NO cap-hit. The round cap exists to stop a fix loop that is
-    // not converging; a review that just approved has converged, and appending
-    // a cap here made `nextStep` route an APPROVED cycle to handoff instead of
-    // `ci`. Rounds 1-2 finding issues and round 3 approving is the ordinary
-    // success shape, so this made the review gate one that cannot PASS — the
-    // mirror of #328's gate that cannot fail, and introduced by #457's fix for
-    // handoffs blaming the wrong gate.
-    next = appendEvent(next, { kind: "lens-approved", at: Date.now(), jobId, round });
-  } else if (summary.verdict === "ISSUES_FOUND" || summary.verdict === "CRITICAL_ISSUES_FOUND") {
-    const findingsBlob = JSON.stringify(summary.findings.slice(0, 50));
-    next = appendEvent(next, {
-      kind: "lens-issues-found",
-      at: Date.now(),
-      jobId,
-      round,
-      findings: findingsBlob,
-      verdict: summary.verdict,
-    });
-    // The round cap and the review wall clock are decided — and now ROUTED —
-    // by `appendReviewCapHit`. `nextStep` is a PURE function of state and
-    // cannot append, so nothing used to record WHY, and four renderers
-    // defaulted the missing cap to "adversarial-loop": measured across 53
-    // handoffs, 23 said "the adversarial gate ran its 3-round internal loop and
-    // could not reach APPROVED" and 14 of those had `Last step: lens-review`
-    // with adversarial approving every round — 26% of all handoffs pointing the
-    // operator at the wrong gate.
-    //
-    // Only this branch. Findings outstanding is the one state where the loop
-    // would otherwise go round again, so it is the one state a cap describes.
-    next = await appendReviewCapHit(ctx, next, round, summary.verdict, findingsBlob);
-  } else {
-    // REVIEW_INCOMPLETE — at least one lens failed all retries. Treat as a
-    // halt that needs human attention rather than continuing the fix loop
-    // against a partial review. Standing doctrine: never silently downgrade
-    // a six-pass to a five-pass.
-    next = appendEvent(next, {
-      kind: "cap-hit",
-      at: Date.now(),
-      // Not "adversarial-loop" — a copy-paste that made `explainCap` tell the
-      // operator the adversarial gate could not reach APPROVED, for a state
-      // where the adversarial gate had approved and the LENS review came back
-      // incomplete.
-      cap: "review-incomplete",
-      reviewRound: round,
-      nextStep: "handoff",
-    });
-    // No round cap on top of this one either: it already halts, and a second
-    // cap-hit became the log tail, so the operator was told the loop ran out
-    // of rounds when a lens had actually failed every retry.
-  }
+  next = await applyLensVerdict(summary, jobId, round, ctx, next);
 
   return next;
 }

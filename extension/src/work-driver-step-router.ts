@@ -13,7 +13,9 @@
  */
 
 import * as lifecycle from "./lifecycle-events.ts";
+import type { RoleName } from "./roles.ts";
 import { trace } from "./trace.ts";
+import { capKilledString } from "./work-driver-cap-killed.ts";
 import { STEP_FAILURE_POLICY } from "./work-driver-context.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { dispatchTokens } from "./work-driver-cycle-total.ts";
@@ -25,6 +27,7 @@ import {
   transientRetryBackoffMs,
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
+import type { CapEvidence } from "./workflow-state-cap.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
 import { type WorkState, type WorkStep, appendEvent, writeState } from "./workflow-state.ts";
 
@@ -239,18 +242,60 @@ export async function routeStepOutcome(
         // #308 — use structured killCause for cap detection instead of
         // regex-matching errorTail. A timeout self-kill is a deliberate
         // budget cap; it should NEVER be retried.
-        const isTimeout = (tail as { killCause?: string }).killCause === "timeout";
+        const killCause = (tail as { killCause?: string }).killCause;
+        // #543 — a loop / token-budget self-kill parks with the fixed-literal
+        // cap (`loop-detected` / `token-budget`) INSTEAD of `step-failed:<step>`.
+        // It is not a provider fault and must never be retried (the HALT branch
+        // already refuses retry: `shouldRetry` is false, so the #308 retry block
+        // above never ran). The fixed literal (no `'<role>'` suffix) + the
+        // `role` field is what F4(f) requires; explainCap reads capEvidence for
+        // the trigger detail.
+        const capKilled = tail.kind === "dispatch-failed" ? capKilledString(tail) : undefined;
         const cap =
-          step === "develop" && isTimeout
+          capKilled ??
+          (step === "develop" && killCause === "timeout"
             ? ("developer-timeout" as const)
-            : (`step-failed:${step}` as const);
-        state = appendEvent(state, {
+            : (`step-failed:${step}` as const));
+        const capEvent: Extract<WorkEvent, { kind: "cap-hit" }> = {
           kind: "cap-hit",
           at: Date.now(),
           cap,
           reviewRound: state.pipelineState.reviewRound,
           nextStep: "handoff",
-        });
+        };
+        if (capEvent.cap === "loop-detected" || capEvent.cap === "token-budget") {
+          capEvent.role = (tail as { role?: RoleName }).role;
+          // #543 F4(j) — the operator-facing explanation of WHAT looped (or
+          // how much was spent) lives on `pipelineState.capEvidence`. The
+          // structured evidence is already on the dispatch-failed event (the
+          // loopEvidence / tokenBudget fields), so persist it here, at the
+          // moment the cap-hit is emitted. Without this write, `explainCap`
+          // renders the fallback sentence for every real cap kill — the
+          // exact dead-seam shape the reviewer flagged.
+          // The evidence fields exist on the `dispatch-failed` member of the
+          // union only — narrow first, so the read is structural, not a
+          // widened property access on both members.
+          const df = tail.kind === "dispatch-failed" ? tail : undefined;
+          const ev: CapEvidence | undefined =
+            capEvent.cap === "loop-detected"
+              ? df?.loopEvidence
+                ? { kind: "loop", tool: df.loopEvidence.tool, count: df.loopEvidence.count }
+                : undefined
+              : df?.tokenBudget
+                ? {
+                    kind: "token-budget",
+                    budgetTokens: df.tokenBudget.budget,
+                    usedTokens: df.tokenBudget.used,
+                  }
+                : undefined;
+          if (ev) {
+            state = {
+              ...state,
+              pipelineState: { ...state.pipelineState, capEvidence: ev },
+            };
+          }
+        }
+        state = appendEvent(state, capEvent);
         // Set currentStep='handoff' but LEAVE status='running' so the
         // loop re-enters and runs runHandoff. runHandoff's final block
         // sets status based on the cap shape (mid-flight failure →

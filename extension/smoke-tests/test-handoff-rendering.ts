@@ -142,23 +142,12 @@ for (const [name, render] of [
   );
 }
 
-// ---------------------------------------------------------------------------
-// #500 — commit-pr-incomplete-consolidation with recorded repoRoot state.
-//
-// The pre-#500 handoff for this cap rendered recovery commands that assumed a
-// clean tree, while the live #481 cycle left repoRoot with two UU paths and
-// eight staged files. The test renders the handoff for a state whose
-// pipelineState records unmerged paths and asserts the body names those paths
-// and carries a clearing command.
-// ---------------------------------------------------------------------------
-
-/** A cycle that parked at commit-pr with a conflicted repoRoot.
- *
- * The eventLog carries the ops-fallback plumb-report — the driver writes it
- * when the mechanized path falls back — so the #500 DoD bullet ("the hedge is
- * rendered into the handoff body") is exercised by an unconditional assertion
- * below rather than a conditional that could silently skip.
- */
+// #500 — commit-pr-incomplete-consolidation with recorded repoRoot state:
+// the live #481 cycle left repoRoot with two UU paths and eight staged
+// files, and the pre-#500 handoff rendered recovery commands that assumed a
+// clean tree. The fixture's eventLog carries the ops-fallback plumb-report
+// so the "hedge rendered" assertion below is unconditional.
+/** A cycle that parked at commit-pr with a conflicted repoRoot. */
 function commitPrConflictedState(): WorkState {
   return {
     schemaVersion: 1,
@@ -257,11 +246,8 @@ function commitPrConflictedState(): WorkState {
     "chat: warns about the unmerged paths before the git apply commands",
   );
 
-  // The ops-fallback plumb-report's hedge ("repo root may contain partially
-  // staged") is rendered into the handoff body — the fixture's eventLog
-  // carries the plumb-report the driver writes on fallback, so this
-  // assertion is unconditional: a renderer that drops the hedge fails the
-  // gate instead of passing silently behind an `if (plumb)` guard.
+  // The plumb-report's hedge is rendered unconditionally — a renderer that
+  // drops it fails the gate instead of passing silently behind `if (plumb)`.
   assert(
     s.eventLog.some((e) => e.kind === "plumb-report"),
     "#500: fixture carries the ops-fallback plumb-report",
@@ -271,12 +257,8 @@ function commitPrConflictedState(): WorkState {
     "markdown: renders the plumb-report hedge into the handoff body",
   );
 
-  // No `&&`-chained shell commands anywhere. (The existing recovery commands
-  // use `|` pipes for `git diff | git apply` — a shell pipeline that runs as
-  // one command, not a `&&` chain that re-prompts the operator. The #398
-  // check for the intent-park cap uses `|` in the regex because that cap has
-  // no pipe commands; the commit-pr cap's recovery commands pre-date #398
-  // and use pipes by design.)
+  // No `&&`-chained shell commands anywhere. The recovery's `|` pipes are
+  // by design (one pipeline command, not a re-prompting `&&` chain).
   for (const [name, out] of [
     ["markdown", md],
     ["chat", chat],
@@ -289,9 +271,8 @@ function commitPrConflictedState(): WorkState {
       chained.length === 0,
       `${name} (#500): no &&-chained commands (${chained[0]?.trim() ?? "none"})`,
     );
-    // The `|` exemption is by design (git diff | git apply), but the
-    // exemption must not be vacuous: every piped shell line must be the
-    // expected pipeline shape, and there must be shell lines at all.
+    // Every piped shell line must be the expected pipeline shape (the
+    // exemption must not be vacuous), and shell lines must exist at all.
     const pipeLines = shellLines.filter((l) => l.includes("|"));
     assert(
       pipeLines.every((l) => /git (?:-C \S+ )?diff[^|]*\|[^|]*git (?:-C \S+ )?apply/.test(l)),
@@ -483,5 +464,6 @@ function commitPrConflictedState(): WorkState {
   );
 }
 
+// ---------------------------------------------------------------------------
 console.log(`\nexit ${exit}`);
 process.exit(exit);

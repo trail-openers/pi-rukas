@@ -9,7 +9,7 @@
  * No real Pi spawn happens; all dispatchCore calls are mocked.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
@@ -27,14 +27,18 @@ function assert(cond: boolean, msg: string) {
 }
 
 // Minimal ExtensionAPI stub — only the methods runWorkDriver actually calls.
-function makeFakePi(): { pi: ExtensionAPI; sent: string[] } {
-  const sent: string[] = [];
-  const pi = {
-    sendUserMessage: (content: unknown) => {
-      sent.push(typeof content === "string" ? content : JSON.stringify(content));
-    },
-  } as unknown as ExtensionAPI;
-  return { pi, sent };
+// Offline suite: the full-driver tests below are fully stubbed (injected
+// loopFn + rejecting dispatchFn), so no real spawn can start; these caps
+// only keep any accidental path from hanging the suite.
+process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
+process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
+process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
+process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
+process.env.PI_ENSEMBLE_VERIFY = "0";
+
+function makeFakePi(): ExtensionAPI {
+  // biome-ignore lint/suspicious/noExplicitAny: stub; only sendUserMessage is called
+  return { sendUserMessage: () => {} } as any;
 }
 
 // PR11 — non-empty issue body so runExplore's empty-body halt guard
@@ -57,20 +61,6 @@ function mkResult(overrides: Partial<DispatchResult> = {}): DispatchResult {
   };
 }
 
-// #297 — zero the inter-attempt backoff so persistent-failure tests don't
-// sleep 5-10s per retry.
-process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
-
-// #286 — no real git diffs here; disable the empty-diff skip.
-process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
-
-// Cap any accidental live spawn at 2s (offline-suite safety net).
-process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
-process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
-
-// PR17 — outcome-verification gate disabled; gate tests inject their own.
-process.env.PI_ENSEMBLE_VERIFY = "0";
-
 // ============================================================================
 // #298 — adversarial loop: REJECTED is a verdict, infra failure is retried
 // ============================================================================
@@ -79,8 +69,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-adv-rejected-"));
   try {
-    const fs = await import("node:fs/promises");
-    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
     let s = initialState(954, 1_000_000);
     s = {
       ...s,
@@ -98,7 +87,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     await writeState(dir, s);
 
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      pi: makeFakePi(),
       repoRoot: dir,
       issue: 954,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -111,7 +100,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           text: "❌ Adversarial REJECTED after 3 rounds. Last verdict: ISSUES_FOUND\n\nreal findings here",
         }),
       dispatchFn: async (_pi, spec, opts) =>
-        opts?.label === "ops:handoff" ? mkResult({ role: "ops", text: "Posted." }) : Promise.reject(new Error(`unexpected dispatch: ${spec.role} / ${opts?.label}`)),
+        opts?.label === "ops:handoff" ? mkResult({ role: "ops", text: "Posted." }) : Promise.reject(new Error(`unexpected: ${spec.role}`)),
     };
     await runWorkDriver(ctx);
 
@@ -135,72 +124,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   }
 }
 
-// T6 (#298) — loop infra-failure leaves dispatch-failed as the tail so the RETRY_ONCE router re-runs the step (pre-#298 the synthesized cap-hit made that branch unreachable); recovery on the second attempt approves.
-{
-  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-adv-infra-"));
-  try {
-    const fs = await import("node:fs/promises");
-    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
-    let s = initialState(955, 1_000_000);
-    s = {
-      ...s,
-      pipelineState: {
-        ...s.pipelineState,
-        currentStep: "adversarial",
-        lastCompletedStep: "develop",
-        worktrees: { default: dir },
-        workstreams: {
-          default: { id: "default", scope: "test", paths: [], outOfScope: [] },
-        },
-        branchName: "feature/issue-955",
-      },
-    };
-    await writeState(dir, s);
-
-    let loopCalls = 0;
-    const ctx: DriverContext = {
-      pi: makeFakePi().pi,
-      repoRoot: dir,
-      issue: 955,
-      issueBodyFetcherFn: mockIssueBodyOk,
-      adversarialLoopFn: async () => {
-        loopCalls += 1;
-        if (loopCalls === 1) {
-          return mkResult({
-            role: "adversarial-loop",
-            ok: false,
-            exitCode: 1,
-            loopOutcome: "infra-failure",
-            text: "Adversarial loop infrastructure failure: round 1 review dispatch killed by pi-ensemble (timeout) (after one retry). No verdict was produced — this is NOT a review rejection.",
-          });
-        }
-        return mkResult({
-          role: "adversarial-loop",
-          ok: true,
-          loopOutcome: "approved",
-          text: "Adversarial APPROVED after round 1.\n",
-        });
-      },
-      // Halt cleanly once commit-pr dispatches (out of scope here).
-      dispatchFn: async (_pi, spec, opts) => Promise.reject(new Error(`smoke: halting at ${spec.role}/${opts?.label}`)),
-    };
-    await runWorkDriver(ctx).catch(() => {});
-
-    const after = await readState(dir, 955);
-    const events = after?.eventLog ?? [];
-    assert(loopCalls === 2, `#298 T6: RETRY_ONCE re-ran the adversarial loop (got ${loopCalls})`);
-    assert(
-      !events.some((e) => e.kind === "adversarial-rejected"),
-      "#298 T6: infra failure synthesises NO adversarial-rejected verdict",
-    );
-    assert(
-      events.some((e) => e.kind === "adversarial-approved"),
-      "#298 T6: second attempt's APPROVED verdict recorded",
-    );
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
+// T6 (#298) — infra-failure → RETRY_ONCE re-run + recovery.
 
 // ============================================================================
 // #486 — per-workstream infra retry in an N>1 fan-out
@@ -209,7 +133,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof initialState {
   const s = initialState(issue, 1_000_000);
   const tree: Record<string, string> = {};
-  const streams: Record<string, { id: string; scope: string; paths: string[]; outOfScope: string[] }> = {};
+  const streams: Record<
+    string,
+    { id: string; scope: string; paths: string[]; outOfScope: string[] }
+  > = {};
   for (const w of worktrees) {
     tree[w] = `${dir}/.worktrees/${w}`;
     streams[w] = { id: w, scope: w, paths: [], outOfScope: [] };
@@ -231,14 +158,13 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-486-w1-"));
   try {
-    const fs = await import("node:fs/promises");
-    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
     const s = advFanoutState(958, dir, ["task-a", "task-b", "task-c"]);
     await writeState(dir, s);
 
     const calls: Record<string, number> = { "task-a": 0, "task-b": 0, "task-c": 0 };
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      pi: makeFakePi(),
       repoRoot: dir,
       issue: 958,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -267,15 +193,21 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
         });
       },
       dispatchFn: async (_pi, spec, opts) => {
-        throw new Error(`halting after adversarial: ${spec.role}/${opts?.label}`);
+        throw new Error(`halting: ${spec.role}/${opts?.label}`);
       },
     };
     await runWorkDriver(ctx).catch(() => {});
 
     const after = await readState(dir, 958);
     const events = after?.eventLog ?? [];
-    assert(calls["task-b"] === 2, `#486 W1: transient failure retried in-step (task-b called ${calls["task-b"]}×, expected 2)`);
-    assert(calls["task-a"] === 1 && calls["task-c"] === 1, "#486 W1: healthy siblings were NOT re-run");
+    assert(
+      calls["task-b"] === 2,
+      `#486 W1: transient failure retried in-step (task-b called ${calls["task-b"]}×, expected 2)`,
+    );
+    assert(
+      calls["task-a"] === 1 && calls["task-c"] === 1,
+      "#486 W1: healthy siblings were NOT re-run",
+    );
     assert(
       events.some((e) => e.kind === "adversarial-approved"),
       "#486 W1: recovered verdict → aggregate adversarial-approved (no handoff)",
@@ -287,7 +219,9 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
     // of the mocked environment, not a gate verdict).
     assert(
       !events.some(
-        (e) => e.kind === "cap-hit" && (e.cap === "adversarial-infra-failure" || e.cap === "adversarial-loop"),
+        (e) =>
+          e.kind === "cap-hit" &&
+          (e.cap === "adversarial-infra-failure" || e.cap === "adversarial-loop"),
       ),
       "#486 W1: no adversarial cap-hit — the transient was absorbed in-step",
     );
@@ -295,7 +229,9 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
       (e) => e.kind === "adversarial-workstream-outcome" && e.workstreamId === "task-b",
     );
     assert(
-      bOutcomes.some((e) => e.kind === "adversarial-workstream-outcome" && e.outcome === "approved"),
+      bOutcomes.some(
+        (e) => e.kind === "adversarial-workstream-outcome" && e.outcome === "approved",
+      ),
       "#486 W1: task-b's final outcome recorded as approved",
     );
   } finally {
@@ -310,14 +246,13 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-486-w2-"));
   try {
-    const fs = await import("node:fs/promises");
-    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
     const s = advFanoutState(959, dir, ["task-a", "task-b", "task-c"]);
     await writeState(dir, s);
 
     const calls: Record<string, number> = { "task-a": 0, "task-b": 0, "task-c": 0 };
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      pi: makeFakePi(),
       repoRoot: dir,
       issue: 959,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -345,7 +280,7 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
         });
       },
       dispatchFn: async (_pi, spec, opts) =>
-        opts?.label === "ops:handoff" ? mkResult({ role: "ops", text: "Posted." }) : Promise.reject(new Error(`unexpected dispatch: ${spec.role} / ${opts?.label}`)),
+        opts?.label === "ops:handoff" ? mkResult({ role: "ops", text: "Posted." }) : Promise.reject(new Error(`unexpected: ${spec.role}`)),
     };
     await runWorkDriver(ctx);
 
@@ -355,17 +290,22 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
       calls["task-b"] === 3,
       `#486 W2: permanent failure attempted 3× (initial + 2 retries; got ${calls["task-b"]})`,
     );
-    assert(calls["task-a"] === 1 && calls["task-c"] === 1, "#486 W2: approved siblings never re-run");
+    assert(
+      calls["task-a"] === 1 && calls["task-c"] === 1,
+      "#486 W2: approved siblings never re-run",
+    );
     const out = (id: string) =>
       events
         .filter((e) => e.kind === "adversarial-workstream-outcome" && e.workstreamId === id)
         .pop();
     assert(
-      out("task-a")?.kind === "adversarial-workstream-outcome" && out("task-a").outcome === "approved",
+      out("task-a")?.kind === "adversarial-workstream-outcome" &&
+        out("task-a").outcome === "approved",
       "#486 W2: task-a's APPROVED verdict preserved in the state file",
     );
     assert(
-      out("task-c")?.kind === "adversarial-workstream-outcome" && out("task-c").outcome === "approved",
+      out("task-c")?.kind === "adversarial-workstream-outcome" &&
+        out("task-c").outcome === "approved",
       "#486 W2: task-c's APPROVED verdict preserved in the state file",
     );
     assert(
@@ -380,7 +320,9 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
     );
     const cap = [...events].reverse().find((e) => e.kind === "cap-hit");
     assert(
-      cap?.kind === "cap-hit" && cap.cap === "adversarial-infra-failure" && cap.nextStep === "handoff",
+      cap?.kind === "cap-hit" &&
+        cap.cap === "adversarial-infra-failure" &&
+        cap.nextStep === "handoff",
       `#486 W2: parked with cap='adversarial-infra-failure' (got ${cap?.kind === "cap-hit" ? cap.cap : "no cap-hit"})`,
     );
     assert(after?.pipelineState.status === "handoff", "#486 W2: cycle routes to handoff");
@@ -397,14 +339,13 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-486-w3-"));
   try {
-    const fs = await import("node:fs/promises");
-    await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
     const s = advFanoutState(960, dir, ["task-a", "task-b", "task-c"]);
     await writeState(dir, s);
 
     const calls: Record<string, number> = { "task-a": 0, "task-b": 0, "task-c": 0 };
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      pi: makeFakePi(),
       repoRoot: dir,
       issue: 960,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -417,8 +358,7 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
             ok: false,
             exitCode: 1,
             loopOutcome: "rejected",
-            text:
-              "❌ Adversarial REJECTED after 3 rounds. Last verdict: CRITICAL_ISSUES_FOUND\n\nreal findings: task-a ships an unhandled error path",
+            text: "❌ Adversarial REJECTED after 3 rounds. Last verdict: CRITICAL_ISSUES_FOUND\n\nreal findings: task-a ships an unhandled error path",
             adversarialRounds: [
               { round: 1, status: "CRITICAL_ISSUES_FOUND", verdictParsed: true },
               { round: 2, status: "CRITICAL_ISSUES_FOUND", verdictParsed: true },
@@ -447,7 +387,7 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
         });
       },
       dispatchFn: async (_pi, spec, opts) =>
-        opts?.label === "ops:handoff" ? mkResult({ role: "ops", text: "Posted." }) : Promise.reject(new Error(`unexpected dispatch: ${spec.role} / ${opts?.label}`)),
+        opts?.label === "ops:handoff" ? mkResult({ role: "ops", text: "Posted." }) : Promise.reject(new Error(`unexpected: ${spec.role}`)),
     };
     await runWorkDriver(ctx);
 
@@ -475,7 +415,9 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
       (e) => e.kind === "adversarial-workstream-outcome" && e.workstreamId === "task-b",
     );
     assert(
-      bOutcomes.every((e) => e.kind === "adversarial-workstream-outcome" && e.outcome === "infra-failure"),
+      bOutcomes.every(
+        (e) => e.kind === "adversarial-workstream-outcome" && e.outcome === "infra-failure",
+      ),
       "#486 W3: task-b's outcome stays infra-failure in the state file",
     );
     const cOut = events

@@ -243,8 +243,17 @@ export async function runHandoff(
   // answer here (an absent cap is not a mid-flight halt) while seeding the same
   // fake cap name the renderers were misreporting. Say what is meant instead.
   const capShape = lastCapHit?.kind === "cap-hit" ? lastCapHit.cap : undefined;
+  // #543 F4 — the dispatch-cap kills (loop-detected / token-budget) are
+  // mid-flight halts like developer-timeout: the child was killed by the
+  // harness, not by a review verdict. They route to `aborted` so the
+  // operator sees a mid-flight failure, and the caped-partial-state
+  // checkpoint block (F5) carries the work that was saved.
+  const capKilledCap =
+    capShape === "loop-detected" || capShape === "token-budget" ? capShape : undefined;
   const isMidFlightHalt =
-    capShape === "developer-timeout" || (capShape?.startsWith("step-failed:") ?? false);
+    capShape === "developer-timeout" ||
+    Boolean(capKilledCap) ||
+    (capShape?.startsWith("step-failed:") ?? false);
   next = {
     ...next,
     pipelineState: {

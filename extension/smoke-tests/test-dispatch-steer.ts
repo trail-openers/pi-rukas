@@ -11,7 +11,9 @@
  * filed separately when the live setup catches a real running child).
  */
 
+import { childHandles, jobs } from "../src/async-jobs-registry.ts";
 import { formatSingleReport } from "../src/async-jobs.ts";
+import { steerChild } from "../src/dispatch-steer.ts";
 import { type LifecycleDetails, emitSteered, formatLine } from "../src/lifecycle-events.ts";
 import type { DispatchResult } from "../src/types.ts";
 
@@ -22,6 +24,167 @@ function assert(cond: boolean, msg: string) {
     console.error(`✗ ${msg}`);
     exit = 1;
   }
+}
+
+// #543 F2 — a synthetic stdin that records the RPC lines written to it.
+// spawn.ts / the tool only ever call `.write(text)` on these, so a minimal
+// stub (not a real Writable) is the right shape: it captures synchronously and
+// can throw synchronously to simulate EPIPE.
+function makeStdin(opts: { fail?: boolean } = {}): { write: (s: string) => void; lines: string[] } {
+  const lines: string[] = [];
+  return {
+    lines,
+    write(s: string) {
+      if (opts.fail) throw new Error("write EPIPE");
+      lines.push(s);
+    },
+  };
+}
+
+// 0. F2 — steerChild: the stdin line is exactly the JSON steer envelope.
+{
+  const stdin = makeStdin();
+  childHandles.set("j-f2", { stdin: stdin as never, label: "developer", role: "developer" });
+  const r = steerChild("j-f2", "stop and report status", "driver-budget");
+  assert(r.delivered === true, "steerChild: delivered for a live direct jobId");
+  assert(r.label === "developer", "steerChild: returns the steered child's label");
+  assert(
+    stdin.lines.length === 1 &&
+      JSON.stringify(JSON.parse(stdin.lines[0])) ===
+        JSON.stringify({ type: "steer", message: "stop and report status" }) &&
+      stdin.lines[0] ===
+        JSON.stringify({ type: "steer", message: "stop and report status" }) + "\n",
+    "steerChild: the stdin line is exactly the {type:'steer', message} envelope",
+  );
+  assert(stdin.lines[0].endsWith("\n"), "steerChild: the RPC line is newline-terminated");
+  childHandles.delete("j-f2");
+}
+
+// 0b. F2 — steerChild: EPIPE on a dead handle returns delivered:false, no throw.
+{
+  const dead = makeStdin({ fail: true });
+  childHandles.set("j-dead", { stdin: dead as never, label: "developer", role: "developer" });
+  let threw = false;
+  let r: ReturnType<typeof steerChild> | undefined;
+  try {
+    r = steerChild("j-dead", "hello", "driver-loop-detector");
+  } catch {
+    threw = true;
+  }
+  assert(!threw, "steerChild: EPIPE does not throw");
+  assert(r?.delivered === false, "steerChild: EPIPE → delivered:false");
+  assert(r?.reason === "write EPIPE", "steerChild: EPIPE → reason carries the write error");
+  childHandles.delete("j-dead");
+}
+
+// 0c. F2 — steerChild: no such job → delivered:false reason 'no-such-job'.
+{
+  const r = steerChild("j-ghost", "hello", "pm-tool");
+  assert(
+    r.delivered === false && r.reason === "no-such-job",
+    "steerChild: unknown jobId → no-such-job",
+  );
+}
+
+// 0d. F2 — steerChild: orchestrator-shaped jobId resolves to the active inner child.
+{
+  const inner = makeStdin();
+  const jobId = "orch-f2";
+  jobs.set(jobId, {
+    kind: "single",
+    jobId,
+    role: "adversarial-loop",
+    label: "adversarial_loop",
+    startedAt: Date.now(),
+    abort: new AbortController(),
+    ownerKind: "driver",
+    isOrchestrator: true,
+    activeChild: {
+      role: "adversarial-developer",
+      label: "adversarial-developer",
+      deckKey: "k",
+      stdin: inner as never,
+      startedAt: Date.now(),
+    },
+  });
+  const r = steerChild(jobId, "refocus", "pm-tool");
+  assert(r.delivered === true, "steerChild: orchestrator jobId resolves to active inner child");
+  assert(
+    r.label === "adversarial-developer",
+    "steerChild: orchestrator steer reports the inner child label",
+  );
+  assert(
+    inner.lines.length === 1 &&
+      JSON.stringify(JSON.parse(inner.lines[0])) ===
+        JSON.stringify({ type: "steer", message: "refocus" }) &&
+      inner.lines[0] === JSON.stringify({ type: "steer", message: "refocus" }) + "\n",
+    "steerChild: orchestrator steer writes the envelope to the inner child's stdin",
+  );
+  jobs.delete(jobId);
+}
+
+// 0e. F2 — steerChild: orchestrator between rounds → 'between-rounds', no throw.
+{
+  const jobId = "orch-f2-idle";
+  jobs.set(jobId, {
+    kind: "single",
+    jobId,
+    role: "adversarial-loop",
+    label: "adversarial_loop",
+    startedAt: Date.now(),
+    abort: new AbortController(),
+    ownerKind: "driver",
+    isOrchestrator: true,
+  });
+  const r = steerChild(jobId, "refocus", "pm-tool");
+  assert(
+    r.delivered === false && r.reason === "between-rounds",
+    "steerChild: orchestrator between rounds → between-rounds",
+  );
+  jobs.delete(jobId);
+}
+
+// 0f. F2 — the lifecycle 'steered' line is tagged with the source.
+{
+  const tagged: LifecycleDetails = {
+    kind: "steered",
+    jobId: "x",
+    label: "developer",
+    role: "developer",
+    steerMessage: "wrap up now",
+    steerSource: "driver-budget",
+  };
+  const line = formatLine(tagged);
+  assert(line.includes("[driver-budget]"), "steered line tags the source (driver-budget)");
+  assert(line.includes("⤳ steered developer"), "steered line keeps the label");
+
+  // The PM tool path omits the source → the line is byte-identical to pre-#543.
+  const pm: LifecycleDetails = {
+    kind: "steered",
+    jobId: "x",
+    label: "developer",
+    role: "developer",
+    steerMessage: "wrap up now",
+  };
+  const pmLine = formatLine(pm);
+  assert(!pmLine.includes("["), "pm-tool steer (no source) renders no source tag");
+  assert(
+    pmLine === '▸ ensemble: ⤳ steered developer · "wrap up now"',
+    "pm-tool steer line is byte-identical to the pre-#543 shape",
+  );
+
+  const loop: LifecycleDetails = {
+    kind: "steered",
+    jobId: "x",
+    label: "code-review-specialist",
+    role: "code-review-specialist",
+    steerMessage: "stop the repeated grep",
+    steerSource: "driver-loop-detector",
+  };
+  assert(
+    formatLine(loop).includes("[driver-loop-detector]"),
+    "loop-detector steer tags the source",
+  );
 }
 
 // 1. formatLine handles all five lifecycle kinds.

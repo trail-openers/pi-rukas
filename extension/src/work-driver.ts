@@ -56,6 +56,7 @@ import { trace } from "./trace.ts";
 import { runAdversarial } from "./work-driver-adversarial.ts";
 import { checkAttentionLabel } from "./work-driver-attention.ts";
 import { runBranch, runDevelop } from "./work-driver-branch-develop.ts";
+import { checkpointCapedDispatch } from "./work-driver-cap-checkpoint.ts";
 import { runCommitPr } from "./work-driver-commit.ts";
 import { type DriverContext, STEP_ORDINAL, nextStep } from "./work-driver-context.ts";
 import { countPriorStepStarts } from "./work-driver-diff.ts";
@@ -420,6 +421,10 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
     // this loop iteration should re-enter without reaching nextStep().
     const routed = await routeStepOutcome(ctx, state, step, stepOrd, stepRound, stepStartedAt);
     state = routed.state;
+    // #543 F5 — driver-owned checkpoint after a dispatch-cap kill. Must stay
+    // BEFORE the `routed.retry` continue so a retried step never checkpoints
+    // the same kill twice. Never throws; failure degrades to the uncommitted.
+    state = await checkpointCapedDispatch(ctx, state, step);
     if (routed.retry) continue;
 
     // Capture which step just completed BEFORE the nextStep transition

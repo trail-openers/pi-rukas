@@ -157,10 +157,15 @@ if (process.env.PI_ENSEMBLE_SIZE_RATCHET === "0") {
     const found = findOversized(fixtureRoot);
     const foundFiles = found.map((f) => f.file);
     assert(
-      foundFiles.length === 2 && foundFiles.includes("toolong.sh") && foundFiles.includes("toolong-tool"),
+      foundFiles.length === 2 &&
+        foundFiles.includes("toolong.sh") &&
+        foundFiles.includes("toolong-tool"),
       `canary: oversized fixtures WITH and WITHOUT an extension are both caught (found ${JSON.stringify(foundFiles)}) — a gate never observed to fail is worthless`,
     );
-    assert(!foundFiles.includes("data-blob"), `...and an extensionless non-shebang file is out of scope (data, not logic)`);
+    assert(
+      !foundFiles.includes("data-blob"),
+      `...and an extensionless non-shebang file is out of scope (data, not logic)`,
+    );
     const byFile = new Map(found.map((f) => [f.file, f.lines]));
     assert(
       byFile.get("toolong.sh") === HARD_LIMIT + 1 && byFile.get("toolong-tool") === HARD_LIMIT + 1,
@@ -175,7 +180,10 @@ if (process.env.PI_ENSEMBLE_SIZE_RATCHET === "0") {
 
 const violations = findOversized(REPO_ROOT);
 if (violations.length === 0) {
-  assert(true, `every source file in the repo (${SOURCE_EXTENSIONS.join("/")} + shebang'd executables) is ≤ ${HARD_LIMIT} lines`);
+  assert(
+    true,
+    `every source file in the repo (${SOURCE_EXTENSIONS.join("/")} + shebang'd executables) is ≤ ${HARD_LIMIT} lines`,
+  );
 } else {
   for (const v of violations) {
     assert(false, `${v.file}: ${v.lines} lines (exceeds ${HARD_LIMIT}-line hard limit)`);
@@ -186,7 +194,12 @@ if (violations.length === 0) {
 // with a longer docstring.
 {
   const scanned = listSourceFiles(REPO_ROOT).map((f) => path.relative(REPO_ROOT, f));
-  for (const expected of ["install.sh", "build.sh", ".github/workflows/ci.yml", "bin/pi-ensemble"]) {
+  for (const expected of [
+    "install.sh",
+    "build.sh",
+    ".github/workflows/ci.yml",
+    "bin/pi-ensemble",
+  ]) {
     assert(
       scanned.includes(expected),
       `canary: ${expected} is in scope — it was invisible to the old extension/-only scan`,

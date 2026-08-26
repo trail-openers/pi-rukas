@@ -3,6 +3,8 @@
  * Split out of `workflow-state.ts` (AGENTS.md §12 file-size limit).
  */
 
+import type { Verdict } from "./lens-review.ts";
+import type { CapEvidence, CapedPartialState } from "./workflow-state-cap.ts";
 import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
 
 export {
@@ -37,10 +39,8 @@ export const WORK_STEPS: readonly WorkStep[] = [
   "merged",
 ];
 
-/** #500 — the persisted shape of repoRoot's state at commit-pr handoff.
- * Part of the persisted state contract; all fields are best-effort — an
- * unmerged tree is the load-bearing fact, so a failing `rev-parse` yields
- * a placeholder rather than an error. */
+export type { CapedPartialState, CapEvidence } from "./workflow-state-cap.ts";
+
 export interface CommitPrRootState {
   /** Current branch (`git rev-parse --abbrev-ref HEAD`); placeholder when unreadable. */
   branch: string;
@@ -210,11 +210,10 @@ export interface PipelineState {
   /**
    * #380 — why the cycle stopped at the merge step: merge authority
    * (citation-verified grant) and executed `gh` evidence, both defaulting
-   * to "no". Absent unless the merge was held.
-   */
-  /**
-   * #384 — why lens-review could not read the diff, when it could not. The
-   * git error verbatim, so the operator does not have to reproduce it.
+   * to "no". Absent unless the merge was held. `mergeHold` below carries
+   * the structured record; `lensDiffError` (#384) names the git error when
+   * lens-review could not read the diff it is supposed to review, so the
+   * operator does not have to reproduce it.
    */
   lensDiffError?: string;
   mergeHold?: {
@@ -241,34 +240,29 @@ export interface PipelineState {
     reason?: PlanQualityReason;
   };
   /**
-   * PR14 (extended by #540) — the subsumption-aware consolidation verdict,
-   * recording BOTH sides of the gate: `verdicts` (which workstreams are NOT
-   * covered by the committed diff) + `filesPresent` (what actually
-   * shipped). Single writer: `runCommitPr`'s gate. The `Array` union member
-   * is the pre-#540 shape — legacy state files must keep reading; the
-   * validator (workflow-state-validate.ts) accepts both shapes.
+   * PR14/#540 — the subsumption-aware consolidation verdict: `verdicts`
+   * (workstreams NOT covered by the committed diff) + `filesPresent` (what
+   * shipped). Single writer: `runCommitPr`'s gate. The `Array` member is
+   * the pre-#540 shape — legacy files must keep reading; the validator
+   * accepts both.
    */
   incompleteConsolidation?: IncompleteConsolidation | Array<{ id: string; paths: string[] }>;
 
   /**
-   * #500 — repoRoot's ACTUAL state at the moment commit-pr completed, as
-   * recorded by `inspectCommitPrRoot`. The mechanized path records a clean
-   * tree on the feature branch; the LLM ops fallback records whatever the
-   * hand consolidation left — two `UU` paths and 8 staged files on issue
-   * #481's live cycle. The commit-pr handoff renderers read this to state
-   * facts instead of assuming the clean tree their recovery commands were
-   * written for. Absent when the inspection never ran or failed (see
-   * `commitPrRootError`).
+   * #500 — repoRoot's ACTUAL state when commit-pr completed (mechanized:
+   * clean tree on the branch; LLM-ops fallback: whatever the hand
+   * consolidation left). The handoff renderers read it to state facts
+   * instead of assuming the clean tree. Absent when the inspection never
+   * ran or failed (`commitPrRootError`).
    */
   commitPrRoot?: CommitPrRootState;
   /** #500 — the git error, when the post-fallback inspection could not run. */
   commitPrRootError?: string;
   /**
-   * PR10 — multi-issue counterpart of `activeIssues`: issues filtered
-   * out by `runExplore` because explore declared them complete or
-   * ambiguous. Surfaced in handoff renderers + PR body so the operator
-   * sees WHICH issues were dropped and WHY. Empty for single-issue
-   * cycles and for older state files.
+   * PR10 — the issues that did NOT make the active set, with the
+   * per-issue verdict and the reason explore gave. Surfaced in handoff
+   * renderers + PR body so the operator sees WHICH issues were dropped
+   * and WHY. Empty for single-issue cycles and for older state files.
    */
   droppedIssues?: Array<{
     issue: number;
@@ -295,20 +289,39 @@ export interface PipelineState {
    */
   transientRetryAttempts?: Partial<Record<WorkStep, number>>;
   /**
-   * #486 — per-workstream budget for infrastructure-transient failures
-   * INSIDE the adversarial fan-out (N>1). The driver-level RETRY_ONCE / #308
-   * router only reaches the single-workstream path and the all-branches-failed
-   * aggregate; a single workstream's loop dying on a provider error while
-   * siblings succeeded was terminal for the whole cycle (issue #478: 2 of 3
-   * approved workstreams discarded by one blip). `runAdversarial` consults
-   * this when re-entering a step it already fanned out (the previous run's
-   * `branches-converged` is in the event log): workstreams whose last
-   * outcome was infra-failure / dispatch-failed re-run — at most once,
-   * with the taxonomy's provider-stated backoff — while their outcomes are
-   * preserved so the aggregate keeps every approved verdict.
-   * Absent keys = 0 used.
+   * #486 — per-workstream budget for infra-transient failures INSIDE the
+   * adversarial fan-out (N>1): the driver-level RETRY_ONCE/#308 router only
+   * reaches the single-workstream path, so one loop dying on a provider
+   * error with siblings approved was terminal for the whole cycle (#478).
+   * On re-entry, workstreams whose last outcome was no-verdict re-run — at
+   * most once — while the aggregate keeps the approved verdicts. Absent
+   * keys = 0 used.
    */
   adversarialTransientRetries?: Record<string, number>;
+  /**
+   * #543 F5 — the most recent six-pass review's per-lens outcomes, persisted
+   * by `runLens` so a REVIEW_INCOMPLETE handoff can render the completed
+   * lenses' verdicts (one loop-killed lens is not a silent 1-of-6 loss).
+   * `verdict` is the closed `Verdict` union from lens-review.ts (type-only
+   * import; no cycle — lens-review does not import the state schema).
+   * Additive; absent on pre-#543 state files / before the first review.
+   */
+  lensReviewSummary?: {
+    round: number;
+    verdict: Verdict;
+    lenses: Array<{ lens: string; ok: boolean; blocked: boolean; findings: number }>;
+  };
+  /**
+   * #543 — the most recent cap kill's trigger evidence (F1 loop / F6
+   * token-budget), on pipelineState per the #533 tail-invariance rule.
+   * Type: workflow-state-cap.ts (§12).
+   */
+  capEvidence?: CapEvidence;
+  /**
+   * #543 F5 — the driver-owned checkpoint taken when the cap kill fired
+   * (committed work / remaining paths / status file). Absent until then.
+   */
+  capedPartialState?: CapedPartialState;
   /**
    * PR5 — worktree snapshot captured by `runHandoff` before emitting
    * the handoff artefact. Lets the operator-facing surfaces
@@ -392,105 +405,27 @@ export interface WorkState {
    * did neither.
    */
   owner?: { pid: number; at: number };
-  /** Primary issue number this /work cycle targets — anchors the state-file path
-   * (`.pi/work-state/<issue>.json`) and the feature branch name. For multi-issue
-   * cycles (PR10 `/work N M P`) this is the FIRST issue in `issues`; readers
-   * that need the full list should consult `issues` and fall back to `[issue]`
-   * when absent (back-compat with pre-PR10 state files).
+  /**
+   * Primary issue number — anchors the state-file path (`.pi/work-state/
+   * <issue>.json`) + branch name. PR10: first of `issues` (the full list
+   * passed to `/work N M P`); readers fall back to `[issue]` (pre-PR10).
    */
   issue: number;
-  /**
-   * PR10 — all issue numbers passed to `/work`. Absent for single-issue cycles
-   * and for state files written before PR10; readers MUST fall back to
-   * `[WorkState.issue]` in that case. The first entry equals `WorkState.issue`.
-   */
   issues?: number[];
   /** Epoch ms when the cycle started. */
   startedAt: number;
   /** Latest write; for "did the user just nudge this?" UX heuristics. */
   updatedAt: number;
   /**
-   * Optional pointers to other GitHub artefacts (plan issue, parent PR,
-   * etc.). Reserved for inter-command composition; v1 driver does not read
-   * these. GitHub-is-the-bus axiom.
+   * Pointers to other GitHub artefacts (plan issue, parent PR). Reserved for
+   * inter-command composition; the v1 driver does not read these.
    */
   upstreamRefs?: Array<{ kind: "plan-issue" | "parent-pr" | "other"; ref: string }>;
   pipelineState: PipelineState;
   eventLog: WorkEvent[];
 }
 
-/**
- * Build an initial state for a fresh /work cycle. Caller must `writeState`
- * to persist.
- */
-export function initialState(issue: number, now: number = Date.now()): WorkState {
-  return {
-    schemaVersion: WORK_STATE_SCHEMA_VERSION,
-    resumable: false,
-    issue,
-    startedAt: now,
-    updatedAt: now,
-    pipelineState: {
-      currentStep: "explore",
-      inFlightJobIds: [],
-      worktrees: {},
-      reviewRound: 0,
-      ciRetryCount: 0,
-      plumbReports: [],
-      status: "running",
-    },
-    eventLog: [],
-  };
-}
-
-/**
- * Append an event (and patch pipelineState on the caller's side) in one
- * atomic state update. Does NOT persist — callers `await writeState(...)`
- * after batching their event(s) + pipelineState mutation; persisting
- * between events would expose intermediate states to a concurrent reader.
- */
-export function appendEvent(state: WorkState, ...events: WorkEvent[]): WorkState {
-  return {
-    ...state,
-    eventLog: [...state.eventLog, ...events],
-  };
-}
-
-/**
- * Detect inconsistency: pipelineState says we have in-flight jobs but the
- * eventLog has no matching dispatch-started; or pipelineState.currentStep
- * disagrees with the last step-started. The driver calls this on resume;
- * returns human-readable inconsistencies, empty if coherent.
- */
-export function detectInconsistencies(state: WorkState): string[] {
-  const out: string[] = [];
-  const lastStepStarted = [...state.eventLog]
-    .reverse()
-    .find((e): e is Extract<WorkEvent, { kind: "step-started" }> => e.kind === "step-started");
-  if (lastStepStarted && lastStepStarted.step !== state.pipelineState.currentStep) {
-    // Allow forward drift — pipelineState moved ahead of the last step-started
-    // (rare but legal for PM-judgment steps that collapse without emitting).
-    // Backward drift is the bug we care about.
-    // For v1 we just report; callers can decide.
-    out.push(
-      `pipelineState.currentStep=${state.pipelineState.currentStep} but last step-started was ${lastStepStarted.step}`,
-    );
-  }
-  // Every inFlightJobId should have a dispatch-started in the log without a
-  // matching dispatch-completed / dispatch-failed*.
-  for (const jobId of state.pipelineState.inFlightJobIds) {
-    const started = state.eventLog.find(
-      (e) =>
-        (e.kind === "dispatch-started" ||
-          e.kind === "dispatch-completed" ||
-          e.kind === "dispatch-failed" ||
-          e.kind === "dispatch-failed-provider") &&
-        "jobId" in e &&
-        e.jobId === jobId,
-    );
-    if (!started) {
-      out.push(`pipelineState.inFlightJobIds includes ${jobId} but log has no record of it`);
-    }
-  }
-  return out;
-}
+// The state constructors/mutators (`initialState`, `appendEvent`,
+// `detectInconsistencies`) live in `workflow-state-update.ts` — split for
+// module-size hygiene (AGENTS.md §12); `workflow-state.ts` re-exports them
+// so existing imports keep working unchanged.

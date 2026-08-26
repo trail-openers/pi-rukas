@@ -11,6 +11,8 @@
 
 import type { RunningState } from "./progress.ts";
 
+import type { SteerSource } from "./dispatch-steer.ts";
+
 export interface SpawnOptions {
   /**
    * Hard cap on child wall-clock. Defaults to the runaway backstop
@@ -73,6 +75,18 @@ export interface SpawnOptions {
    * MUST handle EPIPE / closed-stream errors gracefully.
    */
   onStdin?: (stdin: import("node:stream").Writable) => void;
+  /**
+   * #543 F2/F6 — steer callback for driver-owned caps. Called with the steer
+   * message and source tag when the token budget (F6) — or, in the future, the
+   * loop-detector (F1) — needs to nudge a running child. spawn writes the
+   * `{type:"steer",message}` RPC envelope directly (no jobId lookup needed) and
+   * emits the lifecycle 'steered' entry tagged with `source`.
+   *
+   * `dispatchCore` wires this to the job's `jobId` so the steer reaches the
+   * right child in the scrollback; direct callers (lens/adversarial) omit it
+   * and the steer is skipped (budget default-OFF makes it a no-op for them).
+   */
+  onSteer?: (message: string, source: SteerSource) => void;
 }
 
 // Pi event shape (Pi 0.75.3) — emitted by `--mode rpc` to stdout as JSONL.

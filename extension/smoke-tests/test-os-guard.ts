@@ -42,7 +42,10 @@ function assert(cond: boolean, msg: string) {
  * extracted from the source, and a faked `exit` so the refusal path can be
  * exercised without killing the shell.
  */
-function classify(unameValue: string): { code: "supported" | "unsupported"; exitCode: number | null } {
+function classify(unameValue: string): {
+  code: "supported" | "unsupported";
+  exitCode: number | null;
+} {
   // Extract the function body from the script verbatim, then drive it.
   const script = readFileSync(INSTALL_SH, "utf8");
   const fnMatch = script.match(/^classify_os\(\) \{[\s\S]*?^\}\n/m);
@@ -134,7 +137,10 @@ function classify(unameValue: string): { code: "supported" | "unsupported"; exit
     "guard fires before the stale-symlink cleanup loop",
   );
   const exitIdx = script.indexOf("exit 1", guardIdx);
-  assert(guardIdx !== -1 && exitIdx !== -1 && exitIdx < sideEffectIdx, "guard exits with status 1 on refusal");
+  assert(
+    guardIdx !== -1 && exitIdx !== -1 && exitIdx < sideEffectIdx,
+    "guard exits with status 1 on refusal",
+  );
 }
 
 // ---------------------------------------------- the guard's own comments

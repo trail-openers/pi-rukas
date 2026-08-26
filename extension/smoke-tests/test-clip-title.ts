@@ -54,7 +54,8 @@ eq(
   "63 a's + ' word' → the space at index 63 is the boundary → 63 a's + ellipsis",
 );
 
-const title = "fix: the mechanized PR title is clipped mid-word at seventy-two chars and ships as the commit subject";
+const title =
+  "fix: the mechanized PR title is clipped mid-word at seventy-two chars and ships as the commit subject";
 assert(title.length > 64, "fixture sanity: the long title really is over budget");
 const clipped = clipTitle(title, 64);
 eq(clipped.length, 64, "result is exactly the budget long (word boundary + ellipsis)");
@@ -68,7 +69,11 @@ assert(clipped.slice(-1) === "\u2026", "last code unit is the ellipsis");
 assert(!clipped.includes("commit subject"), "the tail beyond the boundary is absent");
 
 // budget+1: one over the pass-through line
-eq(clipTitle("b".repeat(64) + "w", 64), "b".repeat(63) + "…", "65-char single token: degenerate mid-word cut at 63 + ellipsis");
+eq(
+  clipTitle("b".repeat(64) + "w", 64),
+  "b".repeat(63) + "…",
+  "65-char single token: degenerate mid-word cut at 63 + ellipsis",
+);
 eq(
   clipTitle("c".repeat(63) + " " + "d".repeat(20), 64),
   "c".repeat(63) + "…",
@@ -122,8 +127,10 @@ assert(
 );
 assert(
   surrogateResult.charCodeAt(surrogateResult.length - 2) !== 0xdead &&
-    !(surrogateResult.charCodeAt(surrogateResult.length - 2) >= 0xd800 &&
-      surrogateResult.charCodeAt(surrogateResult.length - 2) <= 0xdbff),
+    !(
+      surrogateResult.charCodeAt(surrogateResult.length - 2) >= 0xd800 &&
+      surrogateResult.charCodeAt(surrogateResult.length - 2) <= 0xdbff
+    ),
   "surrogate-at-cut: no lone high surrogate at the end (rule 8)",
 );
 assert(surrogateResult.endsWith("\u2026"), "surrogate-at-cut: ends with ellipsis");
@@ -135,7 +142,11 @@ assert(surrogateResult.endsWith("\u2026"), "surrogate-at-cut: ends with ellipsis
 // CUT position (low half) and backs off: 62 a's + ellipsis.
 const straddling = "a".repeat(62) + "\u{1F600}" + "x";
 const straddlingResult = clipTitle(straddling, 64);
-eq(straddlingResult, "a".repeat(62) + "…", "straddling pair: high at cut-1 + low at cut → back off, pair dropped whole");
+eq(
+  straddlingResult,
+  "a".repeat(62) + "…",
+  "straddling pair: high at cut-1 + low at cut → back off, pair dropped whole",
+);
 
 // Surrogate pair with a word boundary BEFORE it (so rule 5 fires, not rule 6):
 // "word " (5) + 55 a's + emoji pair = 5 + 55 + 2 = 62 <= 64? No: pad to exceed.
@@ -154,7 +165,10 @@ eq(
 // prefix = first 62 chars = "ab" + emoji + 58 a's, no trailing space.
 const pairInPrefix = "ab" + "\u{1F600}" + "a".repeat(60) + " tail";
 const pairInPrefixResult = clipTitle(pairInPrefix, 64);
-assert(pairInPrefixResult.includes("\u{1F600}"), "pair-in-prefix: the emoji survives intact inside the clipped title");
+assert(
+  pairInPrefixResult.includes("\u{1F600}"),
+  "pair-in-prefix: the emoji survives intact inside the clipped title",
+);
 assert(pairInPrefixResult.endsWith("\u2026"), "pair-in-prefix: ends with ellipsis");
 assert(pairInPrefixResult.length === 64, "pair-in-prefix: budget-long");
 

@@ -5,6 +5,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { startJob } from "./async-jobs.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
+import { runLensChild } from "./lens-review-child.ts";
 import {
   LENSES,
   type LensName,
@@ -14,12 +15,10 @@ import {
   lensPromptFor,
   renderSummary,
 } from "./lens-review-format.ts";
-import { makeRunId, spawnSpecialist } from "./spawn.ts";
+import { makeRunId } from "./spawn.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
-import { jitteredMs } from "./work-driver-failure-taxonomy.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const LENS_REPORTER_PATH = path.join(__dirname, "lens-reporter.ts");
 
 /**
  * Six-pass code review — fan out to one `code-review-specialist` child per
@@ -34,6 +33,8 @@ const LENS_REPORTER_PATH = path.join(__dirname, "lens-reporter.ts");
 
 export { LENSES, extractFindings, dedupeFindings, renderSummary };
 export type { LensName };
+export type LensDef = (typeof LENSES)[number];
+export const LENS_REPORTER_PATH = path.join(__dirname, "lens-reporter.ts");
 
 export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
 export type Verdict =
@@ -83,6 +84,17 @@ export interface LensRunResult {
   findings: Finding[];
   model?: string;
   transcriptPath?: string;
+  /** #543 — the dispatch-cap kill cause when the lens child was cap-killed
+   * (loop detector / token budget). A cap-killed lens is NOT retried: an
+   * SIGTERM'd looped child is a non-zero exit, and without this guard the
+   * retry below would undo the kill up to MAX_LENS_ATTEMPTS times. */
+  killCause?: DispatchResult["killCause"];
+  /** #543 — the F1 streak evidence at a loop kill, threaded so the
+   * driver's capEvidence write has the tool + count to render. */
+  loopEvidence?: { tool: string; count: number };
+  /** #543 — the F6 budget + used tokens at a token-budget kill, threaded
+   * for the same reason. */
+  tokenBudget?: { budget: number; used: number };
   /** Set when the child failed to spawn or returned non-zero. */
   parseError?: string;
   /** Number of spawn attempts made for this lens (1 = no retries; up to
@@ -110,6 +122,13 @@ export interface LensReviewSummary {
   totalFindings: number;
   bySeverity: Record<Severity, number>;
   lenses: LensRunResult[];
+  /** #543 — a dispatch-cap kill (loop / token-budget) hit one of the lens
+   * children; the driver emits the fixed-literal cap-hit from this. */
+  capKill?: DispatchResult["killCause"];
+  /** #543 — the structured trigger evidence for the cap kill, carried
+   * from the killed lens's DispatchResult so the driver can persist it
+   * on `pipelineState.capEvidence` (F4(j)). */
+  capKillEvidence?: { tool: string; count: number } | { budget: number; used: number };
   /** Deduplicated, precedence-ordered list. */
   findings: Finding[];
   /**
@@ -251,111 +270,9 @@ export async function runLensReview(opts: {
     dispatchDeck.updateBatchProgress(batchKey, completedLenses);
   };
 
-  const promises = LENSES.map(async (lens): Promise<LensRunResult> => {
-    const skillPath = path.join(skillsDir, lens.skill);
-    const prompt = lensPromptFor(lens, opts.diff, context, opts.evidence);
-    const tag = lens.name.toLowerCase().replaceAll("_", "-");
-    // Per-lens deck key. The dispatch deck (#117) is now the single live
-    // surface — there used to be a parallel onUpdate callback rendering an
-    // inline tool block, but the deck displays the same data so the inline
-    // path was duplicative (#119).
-    const deckKey = `${runId}/${tag}`;
-    dispatchDeck.startEntry(deckKey, {
-      label: `code-review-specialist[${tag}]`,
-      role: "code-review-specialist",
-      tag,
-      batchKey,
-    });
-
-    // Retry loop (#3). Up to MAX_LENS_ATTEMPTS attempts on transient
-    // failure (spawn error OR non-zero exit). User abort (opts.signal)
-    // breaks out immediately — that's the operator saying stop, not a
-    // transient failure. Backoff between retries gives the provider /
-    // local process spawner room to recover.
-    let attempts = 0;
-    let result: DispatchResult | undefined;
-    let lastError: string | undefined;
-    while (attempts < MAX_LENS_ATTEMPTS) {
-      attempts++;
-      if (opts.signal?.aborted) {
-        lastError = "aborted by user";
-        break;
-      }
-      try {
-        result = await spawnSpecialist(
-          { role: "code-review-specialist", prompt, cwd: opts.cwd },
-          {
-            runId,
-            tag,
-            // Pin to this lens's skill + load the report_finding tool. `--no-extensions`
-            // (set in spawn.ts) disables auto-discovery; `--extension <path>` still
-            // loads explicit paths, so the reporter is the only extension in the child.
-            extraArgs: ["--no-skills", "--skill", skillPath, "--extension", LENS_REPORTER_PATH],
-            // No timeoutMs override — inherits per-role default from
-            // spawn.ts:roleTimeoutMs(spec.role). For code-review-specialist
-            // that's 15 min (PR5 — was a 30 min global pre-PR5).
-            signal: opts.signal,
-            onProgress: (state) => dispatchDeck.updateEntry(deckKey, state),
-          },
-        );
-        if (result.ok) {
-          lastError = undefined;
-          break; // success
-        }
-        lastError = `attempt ${attempts}/${MAX_LENS_ATTEMPTS}: exit ${result.exitCode ?? "?"}`;
-      } catch (err) {
-        lastError = `attempt ${attempts}/${MAX_LENS_ATTEMPTS}: spawn failed: ${(err as Error).message}`;
-      }
-      // Backoff before next retry (skipped on last attempt to keep total
-      // wall-clock bounded).
-      if (attempts < MAX_LENS_ATTEMPTS) {
-        // Jittered, not flat. Six lenses fail in lockstep whenever the cause
-        // is a provider blip — which is the common case — so a fixed delay
-        // retries all six at the same instant, i.e. a self-inflicted
-        // thundering herd against the endpoint that just rate-limited us.
-        // Reuses the driver's canonical jitter (#366) rather than adding a
-        // second formula.
-        await new Promise((r) => setTimeout(r, jitteredMs(LENS_RETRY_BACKOFF_MS)));
-      }
-    }
-
-    dispatchDeck.clearEntry(deckKey);
-    bumpBatch();
-
-    // All attempts failed (or user aborted) — lens is blocked, no findings.
-    if (!result || !result.ok) {
-      return {
-        lens: lens.name,
-        ok: false,
-        ms: result?.ms ?? 0,
-        findings: [],
-        attempts,
-        blocked: true,
-        parseError: lastError ?? "unknown failure",
-        // #534 — a failed lens still flushes usage from whatever turns
-        // completed before it died; count it like any other dispatch-failed.
-        usage: result?.usage,
-      };
-    }
-
-    const { findings, skipped } = extractFindings(result.toolUses, lens.name);
-    return {
-      lens: lens.name,
-      ok: result.ok,
-      ms: result.ms,
-      findings,
-      attempts,
-      blocked: false,
-      // The prompt asks for a closing summary. Keeping it is what lets a
-      // silent lens be told apart from a clean one.
-      summary: result.text?.trim() || undefined,
-      model: result.model,
-      transcriptPath: result.transcriptPath,
-      parseError: skipped > 0 ? `${skipped} malformed report_finding call(s) skipped` : undefined,
-      // #534 — was previously dropped at this return; the cycle total needs it.
-      usage: result.usage,
-    };
-  });
+  const promises = LENSES.map((lens) =>
+    runLensChild({ lens, runId, skillsDir, context, opts, bumpBatch }),
+  );
 
   const lensResults = await Promise.all(promises);
   dispatchDeck.clearBatchEntry(batchKey);
@@ -386,6 +303,10 @@ export async function runLensReview(opts: {
           { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
         )
       : undefined;
+  // #543 — a dispatch-cap kill on any lens child (loop detector / token
+  // budget) is surfaced on the summary so the driver emits the fixed-literal
+  // cap-hit (F4g) instead of a silent 1-of-6 loss.
+  const capKill = capKillSummary(lensResults);
   return {
     verdict,
     totalFindings: deduped.length,
@@ -393,6 +314,32 @@ export async function runLensReview(opts: {
     lenses: lensResults,
     findings: deduped,
     usage,
+    ...capKill,
+  };
+}
+
+/**
+ * #543 — the cap-kill tail of the lens summary: which lens child was
+ * killed (loop / token-budget) and its structured trigger evidence, so
+ * the driver can persist `capEvidence`. Split from runLensReview
+ * (AGENTS.md §12 file-size limit).
+ */
+function capKillSummary(
+  lensResults: LensRunResult[],
+): Pick<LensReviewSummary, "capKill" | "capKillEvidence"> {
+  const capKillLens = lensResults.find(
+    (r) => r.killCause === "loop" || r.killCause === "token-budget",
+  );
+  const capKill = capKillLens?.killCause;
+  const capKillEvidence =
+    capKillLens?.killCause === "loop" && capKillLens.loopEvidence
+      ? capKillLens.loopEvidence
+      : capKillLens?.killCause === "token-budget" && capKillLens.tokenBudget
+        ? capKillLens.tokenBudget
+        : undefined;
+  return {
+    ...(capKill ? { capKill } : {}),
+    ...(capKillEvidence ? { capKillEvidence } : {}),
   };
 }
 
@@ -405,7 +352,7 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
     parameters: Type.Object({
       diff: Type.String({
         description:
-          "The full PR diff to review. Fetch once with `gh pr diff <N>` or `git diff main...feature/...` and reuse — do not re-fetch per lens.",
+          "The full PR diff to review. Fetch once with `gh pr diff <N>` or `git diff main...feature/...` and reuse — do NOT re-fetch per lens.",
       }),
       context: Type.Optional(
         Type.String({

@@ -9,9 +9,9 @@
  * ledger — and asserts the bytes stay under 32 KiB, with headroom.
  */
 
-import { detectFacts, type Command } from "../src/agents-md/detect.ts";
-import { renderAgent } from "../src/agents-md/renderer.ts";
+import type { Command, detectFacts } from "../src/agents-md/detect.ts";
 import type { LedgerRow } from "../src/agents-md/ledger.ts";
+import { renderAgent } from "../src/agents-md/renderer.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -33,16 +33,38 @@ const facts: ReturnType<typeof detectFacts> = {
   ciWorkflows: ["ci.yml", "release.yml", "image.yml"],
   notes: [],
   commands: [
-    "test", "lint", "check", "format", "typecheck", "build",
-    "test:unit", "test:integration", "lint:ci", "build:release",
-    "dev", "start", "stop", "migrate", "seed", "backup", "restore",
-    "deploy:staging", "deploy:prod", "clean", "audit",
+    "test",
+    "lint",
+    "check",
+    "format",
+    "typecheck",
+    "build",
+    "test:unit",
+    "test:integration",
+    "lint:ci",
+    "build:release",
+    "dev",
+    "start",
+    "stop",
+    "migrate",
+    "seed",
+    "backup",
+    "restore",
+    "deploy:staging",
+    "deploy:prod",
+    "clean",
+    "audit",
   ].map((name, i): Command => ({ name, command: `bun run ${name}`, kind: "test", runner: "bun" })),
 };
 
 // A populated ledger: auto rows plus several operator rows.
 const ledger: LedgerRow[] = [
-  { key: "omit:environment", value: "no recognised manifest was detected", provenance: "auto", date: "2026-01-01" },
+  {
+    key: "omit:environment",
+    value: "no recognised manifest was detected",
+    provenance: "auto",
+    date: "2026-01-01",
+  },
   { key: "deploy-target", value: "prod-eu", provenance: "asked", date: "2026-01-02" },
   { key: "merge-strategy", value: "squash", provenance: "asked", date: "2026-01-03" },
   { key: "ci-provider", value: "github-actions", provenance: "auto", date: "2026-01-04" },

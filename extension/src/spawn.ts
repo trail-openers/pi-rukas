@@ -57,6 +57,7 @@ import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
 import { emptyRunningState, ingestEvent } from "./progress.ts";
 import { excludeToolsFor } from "./role-tools.ts";
 import { ROLES, type RoleName, isRoleName } from "./roles.ts";
+import { type CapSession, capKillAttribution, createCapSession } from "./spawn-caps.ts";
 import { collapseEvents } from "./spawn-collapse-events.ts";
 import {
   applyUserExtension,
@@ -69,6 +70,7 @@ import {
   assertLiveSpawnAllowed,
   buildChildArgs,
   buildCwdHint,
+  capKillGraceMs,
   getPiInvocation,
   inactivityTimeoutMs,
   makeRunId,
@@ -268,6 +270,40 @@ async function spawnSpecialistInner(
     }
   };
 
+  // #543 F1/F6 — dispatch caps (loop detector + token budget). The cap
+  // session (spawn-caps.ts) owns the per-spawn detector/tracker state, the
+  // grace-window timers and the killCause priority (loop > inactivity >
+  // timeout > token-budget > abort — the most specific wins). Created
+  // BEFORE `createInterface` below because the line handler references
+  // `caps` on the first stdout line: a `const caps` initialized after the
+  // attach would be in the TDZ for any early line (ReferenceError).
+  let timedOut = false;
+  let inactivityKilled = false;
+  let aborted = false;
+  // #543 H1 — grace-window kill race: observed EXITS (exit + 'close') set
+  // childExited immediately, before the `once(child, "exit")` await below
+  // can resolve. The guard relies on the `exit` event's ordering (it fires
+  // before the process is reaped); `close` is belt-and-braces — it fires
+  // only after `exit`, once stdio is fully drained.
+  let childExited = false;
+  child.on("exit", () => {
+    childExited = true;
+  });
+  child.on("close", () => {
+    childExited = true;
+  });
+  const caps: CapSession = createCapSession({
+    role: spec.role,
+    child,
+    onSteer: opts.onSteer,
+    totalTokens: () => runningState.totalTokens,
+    timedOut: () => timedOut,
+    inactivityKilled: () => inactivityKilled,
+    aborted: () => aborted,
+    capKillGraceMs: capKillGraceMs(),
+    childExited: () => childExited,
+  });
+
   // Inactivity watchdog state (#296): ANY stdout line counts as life —
   // parseable or not. Checked on a coarse interval below.
   let lastActivityAt = Date.now();
@@ -293,7 +329,19 @@ async function spawnSpecialistInner(
     }
     // Stream into the running state. ingestEvent returns true only when an
     // assistant turn completed (the right cadence to surface to the user).
-    if (ingestEvent(runningState, parsed as Parameters<typeof ingestEvent>[1], start)) {
+    // #543 F1 — pass the full block list to the loop detector (ops-role
+    // children are exempt: the cap session returns no observer for them).
+    if (
+      ingestEvent(
+        runningState,
+        parsed as Parameters<typeof ingestEvent>[1],
+        start,
+        caps.loopObserver,
+      )
+    ) {
+      // #543 F6 — check the token budget on every assistant turn end.
+      caps.tokenBudgetTracker?.check(Date.now());
+      caps.tokenBudgetTracker?.onMessageEnd(Date.now());
       opts.onProgress?.({ ...runningState, usage: { ...runningState.usage } });
     }
     // Retain only the two events collapseEvents actually reads (the latest
@@ -320,9 +368,10 @@ async function spawnSpecialistInner(
   // timeout hangs the parent indefinitely (observed in the wild: overnight
   // stuck session). The backstop only catches runaway loops; the inactivity
   // watchdog below is what detects true hangs, and it does so without a view
-  // on how fast the child's model happens to be.
+  // on how fast the child's model happens to be. `timedOut` / `inactivityKilled`
+  // / `aborted` are declared with the cap session above (the session reads
+  // them by closure, so they must exist before `createCapSession` runs).
   const timeoutMs = opts.timeoutMs ?? spawnBackstopMs();
-  let timedOut = false;
   const timeout = setTimeout(() => {
     timedOut = true;
     child.kill("SIGTERM");
@@ -334,7 +383,6 @@ async function spawnSpecialistInner(
   // poll — half the budget, clamped to [250ms, 30s] so production budgets
   // poll cheaply and short test budgets still fire promptly.
   const inactivityMs = inactivityTimeoutMs();
-  let inactivityKilled = false;
   const inactivityPoll =
     inactivityMs > 0
       ? setInterval(
@@ -352,7 +400,6 @@ async function spawnSpecialistInner(
 
   // Propagate Pi's user-cancel (Esc) signal: kill the child so the tool
   // execute promise resolves and Pi un-stuck immediately.
-  let aborted = false;
   const onAbort = () => {
     aborted = true;
     child.kill("SIGTERM");
@@ -372,6 +419,7 @@ async function spawnSpecialistInner(
   } finally {
     clearTimeout(timeout);
     if (inactivityPoll) clearInterval(inactivityPoll);
+    caps.cleanup();
     opts.signal?.removeEventListener("abort", onAbort);
     // Best-effort cleanup of the temp prompt file; ignore errors.
     fs.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
@@ -407,19 +455,17 @@ async function spawnSpecialistInner(
     exitCode,
     stderr,
   );
+  // #543 F1/F6 — the cap-kill stderr lines + killCause + structured trigger
+  // evidence (loopEvidence / tokenBudget) follow #296's structured-kill
+  // contract, resolved by priority in spawn-caps.ts's capKillAttribution.
+  capKillAttribution(caps, spec, runningState.totalTokens, appendStderr, result);
   result.transcriptPath = transcriptPath;
   result.modelSource = modelChoice.source;
-  // Structured kill-cause (#296): downstream classification branches on this
-  // BEFORE errorStop/exitCode so self-kills are never blamed on the provider.
-  if (timedOut) {
-    result.killCause = "timeout";
-    result.killBudgetMs = timeoutMs;
-  } else if (inactivityKilled) {
-    result.killCause = "inactivity";
-    result.killBudgetMs = inactivityMs;
-  } else if (aborted) {
-    result.killCause = "abort";
-  }
+  // The cap-kill cause + evidence were already resolved above (capKillAttribution,
+  // after the stderr lines are appended). The wall-clock budgets for the
+  // timeout/inactivity kills are set HERE — only meaningful for those causes.
+  if (result.killCause === "timeout") result.killBudgetMs = timeoutMs;
+  if (result.killCause === "inactivity") result.killBudgetMs = inactivityMs;
   // A killed child never completed its assignment, whatever its exit code.
   if (result.killCause) {
     result.ok = false;

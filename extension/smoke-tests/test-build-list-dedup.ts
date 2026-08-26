@@ -118,9 +118,7 @@ function isRefactored(): boolean {
  * capability function.
  */
 function extractArray(name: string): string[] {
-  const m = body.match(
-    new RegExp(`(?:^|\\s)(?:local\\s+)?${name}='(\\[.*?])'\\s*$`, "m"),
-  );
+  const m = body.match(new RegExp(`(?:^|\\s)(?:local\\s+)?${name}='(\\[.*?])'\\s*$`, "m"));
   if (!m) return [];
   const parsed = JSON.parse(m[1]) as unknown;
   return Array.isArray(parsed) ? (parsed as string[]) : [];
@@ -130,9 +128,7 @@ if (isRefactored()) {
   // ---------------------- refactored: single-line array literals (task-a)
 
   for (const name of ["TOOL_KEYS", "NON_TOOL_KEYS"]) {
-    const m = body.match(
-      new RegExp(`(?:^|\\s)(?:local\\s+)?${name}='\\[[^\\n]*\\]'\\s*$`, "m"),
-    );
+    const m = body.match(new RegExp(`(?:^|\\s)(?:local\\s+)?${name}='\\[[^\\n]*\\]'\\s*$`, "m"));
     assert(m !== null, `${name} is a single-line array literal in build.sh`);
   }
 
@@ -196,7 +192,8 @@ if (isRefactored()) {
 // renamed the literal shapes. Prove the matchers see what they claim to see
 // by running them against the known shapes.
 {
-  const sample = '        (if ($perm.read // "deny") == "allow" then "read" else empty end),\n            .key != "read" and\n';
+  const sample =
+    '        (if ($perm.read // "deny") == "allow" then "read" else empty end),\n            .key != "read" and\n';
   assert(
     sample.split("\n").filter((l) => l.includes('then "read" else empty end')).length === 1 &&
       sample.split("\n").filter((l) => l.includes('.key != "read"')).length === 1,

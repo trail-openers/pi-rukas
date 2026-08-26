@@ -427,7 +427,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       // plumb-report is unreachable. The assertion is kept (a regression to
       // the pre-#393 dispatch-first shape would re-enable the path and start
       // firing the plumb-report again).
-      assert(plumbs(result.eventLog).length === 0, "no ops-mismatch plumb-report on the mechanized path");
+      assert(
+        plumbs(result.eventLog).length === 0,
+        "no ops-mismatch plumb-report on the mechanized path",
+      );
     }
 
     // B — git failure: falls back to parsed ops reply, no crash.

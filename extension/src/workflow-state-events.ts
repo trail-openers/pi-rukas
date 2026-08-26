@@ -9,10 +9,11 @@
  * full schema doc (versioning, resumability, GitHub-is-the-bus).
  */
 
-import type { WideningFinding } from "./invariant-scan.ts";
+import type { RoleName } from "./roles.ts";
 import type { DispatchUsage } from "./types.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
+import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
 
 /**
  * Linear step identifiers the driver walks. This union IS the definition of
@@ -63,6 +64,8 @@ export type WorkEvent =
       /** Label (e.g., "developer[task-A]") for batches. */
       label: string;
       at: number;
+      /** #543 F3a — the child's session file (Pi transcript); re-attach key. Optional for back-compat. */
+      transcriptPath?: string;
     }
   | {
       kind: "dispatch-completed";
@@ -111,8 +114,15 @@ export type WorkEvent =
       /** Process-level failure (non-zero exit), distinct from provider-error. */
       exitCode?: number | null;
       errorTail?: string;
-      /** Structured kill-cause from pi-ensemble self-kill (timeout/inactivity/abort). */
-      killCause?: "timeout" | "inactivity" | "abort";
+      /** Structured self-kill cause (#296; #543 adds loop/token-budget). */
+      killCause?: "timeout" | "inactivity" | "abort" | "loop" | "token-budget";
+      /** #543 — the F1 streak evidence at a loop kill (tool + count); the
+       * step router persists it on `pipelineState.capEvidence` at the
+       * cap-hit so `explainCap` can render WHAT looped. */
+      loopEvidence?: { tool: string; count: number };
+      /** #543 — the F6 budget + used tokens at a token-budget kill; same
+       * purpose as `loopEvidence`. Absent for every other killCause. */
+      tokenBudget?: { budget: number; used: number };
       /** #534 — tokens flushed before the process-level failure. */
       usage?: DispatchUsage;
     }
@@ -331,8 +341,15 @@ export type WorkEvent =
         // preserved in the per-workstream outcome events — the operator
         // parks knowing what was decided and what simply never ran.
         | "adversarial-infra-failure"
+        // #543 — fixed literals (NOT `'<role>'` template shapes): a per-role
+        // suffix would smuggle a cap the #533 canary doesn't know. Which role's
+        // child was killed is carried in the new `role` field + capEvidence.
+        | "loop-detected"
+        | "token-budget"
         | `verify-failed:${WorkStep}`
         | `step-failed:${WorkStep}`;
+      /** #543 — which role's child was cap-killed (loop/token-budget caps). */
+      role?: RoleName;
       reviewRound: number;
       /**
        * #492 — the git evidence that establishes WHICH failure mode
@@ -470,29 +487,11 @@ export type WorkEvent =
       /** Tail of the command output for the handoff/comment body. */
       evidenceTail?: string;
     }
-  | {
-      /**
-       * Issue #279 — type-widening scan results.
-       *
-       * The deterministic scanner (invariant-scan.ts fires before
-       * lens-review, capturing compiler-enforced invariants being
-       * removed or weakened. Findings are injected into the lens
-       * context with framing "the ARCHITECTURE lens must answer: what
-       * invariant did this widening remove, and what now guarantees it?"
-       *
-       * Routes-only — does not fail the cycle. The precision of these
-       * patterns is measured via fixture tests; the ARCHITECTURE lens
-       * decides whether each finding is a real problem or benign.
-       */
-      kind: "widening-scan";
-      at: number;
-      /** Findings from the scan (empty list = no widening detected). */
-      findings: WideningFinding[];
-    }
-  // The memory events ("memory-write", "memory-inject") live in
-  // workflow-state-events-memory.ts — MemoryEventFragment. Split out for
-  // module-size hygiene (AGENTS.md §12); the union above is exhaustive,
-  // and nextStep() and the schema validator see the same closed type.
+  // The widening-scan event lives in workflow-state-events-widening.ts
+  // (AGENTS.md §12 module-size hygiene, same seam as the memory events
+  // below); the union stays exhaustive, and nextStep() and the schema
+  // validator see the same closed type.
+  | WideningScanEvent
   | MemoryEventFragment;
 
 /** Discriminator union of event kinds — useful for callers that switch on it. */

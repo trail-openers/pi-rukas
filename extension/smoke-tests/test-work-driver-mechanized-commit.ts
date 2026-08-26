@@ -180,9 +180,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
             // Discriminator: count `git worktree add` calls already issued
             // vs. total workstreams (3). If all 3 worktrees are created,
             // we're past the branch step → return dirty. Otherwise → clean.
-            const worktreeAdds = calls.filter((c) =>
-              c.startsWith("git worktree add"),
-            ).length;
+            const worktreeAdds = calls.filter((c) => c.startsWith("git worktree add")).length;
             const cwd = o?.cwd ?? "";
             if (worktreeAdds < 3) return { stdout: "" };
             if (cwd.endsWith("-task-a")) return { stdout: " M src/a.rs\n" };
@@ -303,8 +301,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           if (cmd.startsWith("git rev-list --count base123")) return { stdout: "0\n" };
           if (cmd.startsWith("git rev-list --count origin/")) return { stdout: "1\n" };
           if (cmd.startsWith("git add -- ")) return { stdout: "" };
-          if (cmd.startsWith("git diff --cached"))
-            return { stdout: "diff --git a/x b/x\n+new\n" };
+          if (cmd.startsWith("git diff --cached")) return { stdout: "diff --git a/x b/x\n+new\n" };
           if (cmd.startsWith("git apply")) return { stdout: "" };
           if (cmd.startsWith("git commit")) return { stdout: "" };
           if (cmd.startsWith("git push")) return { stdout: "" };

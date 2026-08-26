@@ -62,7 +62,7 @@
  * loop and cannot regress silently.
  */
 
-import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 
 let exit = 0;
@@ -86,7 +86,8 @@ const PREDICATE =
 // A negation marker occurring BEFORE the pattern in the same line turns a
 // citation into a prohibition. Matched case-insensitively against the raw
 // line; the `❌` bullet is the doctrine's own prohibition marker.
-const NEGATION = /never|don'?t|do\s+not|avoid|must\s+not|should\s+not|prohibit|forbid|don't|❌|\bn[o]\b|\bnot\b/i;
+const NEGATION =
+  /never|don'?t|do\s+not|avoid|must\s+not|should\s+not|prohibit|forbid|don't|❌|\bn[o]\b|\bnot\b/i;
 
 /** True if the line prescribes (rather than prohibits) the numeric scope form. */
 function isPrescription(line: string): boolean {
@@ -114,13 +115,7 @@ function walk(dir: string, out: string[] = []): string[] {
 
 const files = [
   ...["modules", "agents-base", "pi-prompts", "docs"].flatMap((d) => walk(path.join(ROOT, d))),
-  ...[
-    "AGENTS.md",
-    "README.md",
-    "CONTRIBUTING.md",
-    "install.sh",
-    "bin/pi-ensemble",
-  ]
+  ...["AGENTS.md", "README.md", "CONTRIBUTING.md", "install.sh", "bin/pi-ensemble"]
     .map((f) => path.join(ROOT, f))
     .filter((f) => existsSync(f)),
 ];
@@ -160,7 +155,7 @@ assert(files.length > 10, `the scan covers the doctrine set (${files.length} fil
     "- feat(#123): description",
     "- Include issue number in all commits: `feat(#123): description`",
     "Use this commit format: feat(#123): description",
-    "git commit -m \"feat(#N): description\"",
+    'git commit -m "feat(#N): description"',
     "| `feat(#123): description` |",
   ];
   for (const bad of knownBad) {

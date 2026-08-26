@@ -31,7 +31,7 @@ import {
 import { detectFacts } from "../src/agents-md/detect.ts";
 import { parseMarkers, sectionContent } from "../src/agents-md/markers.ts";
 import { commandsBody, environmentBody, gatesBody } from "../src/agents-md/renderer.ts";
-import { isInsertionsOnly, WrapError, classifySections, wrapBytes } from "../src/agents-md/wrap.ts";
+import { WrapError, classifySections, isInsertionsOnly, wrapBytes } from "../src/agents-md/wrap.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -85,8 +85,6 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
     ...overrides,
   };
 }
-
-
 
 // ------------------------------------------------------- 1. dryRun wrap plan
 

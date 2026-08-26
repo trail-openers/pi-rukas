@@ -110,7 +110,9 @@ assert(
 // (ops.md's refusal rule quotes the verb inside "Never run ...").
 const NEGATION = /(do not|never|must not|❌|do NOT|Do not)/i;
 function isAllowedLine(line: string): boolean {
-  return NEGATION.test(line) || line.trimStart().startsWith("gh ") || line.trimStart().startsWith("`");
+  return (
+    NEGATION.test(line) || line.trimStart().startsWith("gh ") || line.trimStart().startsWith("`")
+  );
 }
 const violations = hits
   .filter((h) => !ALLOWLIST.includes(h.file))
@@ -130,9 +132,7 @@ assert(
 // command line (starts with `gh `), e.g. the PM-only command block.
 for (const f of MUST_BE_ABSENT) {
   const content = readFileSync(path.join(ROOT, f), "utf8");
-  const lines = content
-    .split("\n")
-    .filter((l) => l.includes("gh issue create"));
+  const lines = content.split("\n").filter((l) => l.includes("gh issue create"));
   const positive = lines.filter((l) => !isAllowedLine(l));
   assert(
     positive.length === 0,

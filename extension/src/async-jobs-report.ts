@@ -113,6 +113,19 @@ function describeOutcome(result: DispatchResult): { status: string; bodyPrefix: 
   if (result.killCause === "abort") {
     return { status: "FAILED (cancelled: abort signal)", bodyPrefix: null };
   }
+  // #543 — the F1/F6 cap kills are self-inflicted, reported distinctly from a
+  // provider failure (the same five-way ordering the timeout/inactivity/abort
+  // kills follow). A looped/budgeted child was killed BY the harness, so the
+  // headline must not read as a provider fault or a bad prompt.
+  if (result.killCause === "loop") {
+    return {
+      status: "FAILED (self-killed: loop detected)",
+      bodyPrefix: null,
+    };
+  }
+  if (result.killCause === "token-budget") {
+    return { status: "FAILED (self-killed: token budget crossed)", bodyPrefix: null };
+  }
   if (result.errorStop && isRateLimit429Msg(result.errorStop.message)) {
     // #366's distinction, not a second one. A per-minute token bucket and a
     // 24-hour quota exhaustion arrive as the same status code and differ only

@@ -270,8 +270,11 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     "#501: no group contains more than one of the three",
   );
   assert(
-    r4Declined.notes.some((n) =>
-      n.startsWith("R4 declined:") && n.includes("tag=[work-driver]") && n.includes("#1100 ↔ #1101"),
+    r4Declined.notes.some(
+      (n) =>
+        n.startsWith("R4 declined:") &&
+        n.includes("tag=[work-driver]") &&
+        n.includes("#1100 ↔ #1101"),
     ),
     "#501: declined summary names the tag and each pair",
   );
@@ -287,8 +290,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     "#501: bare scope + R2 path overlap ≥ 0.5 → one group",
   );
   assert(
-    r4Corroborated.notes.some((n) =>
-      n.startsWith("R4 subsystem: #1110 ↔ #1111 (tag=[spawn])") && n.includes("R2 path-overlap"),
+    r4Corroborated.notes.some(
+      (n) =>
+        n.startsWith("R4 subsystem: #1110 ↔ #1111 (tag=[spawn])") && n.includes("R2 path-overlap"),
     ),
     "#501: R4 note names the corroboration",
   );
@@ -309,8 +313,8 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     "#501: split-blocked corroborated pair stays two singletons",
   );
   assert(
-    r4SplitBlocked.notes.some((n) =>
-      n.startsWith("R4 skipped: #1120 ↔ #1121 (tag=[spawn])") && n.includes("split-blocked"),
+    r4SplitBlocked.notes.some(
+      (n) => n.startsWith("R4 skipped: #1120 ↔ #1121 (tag=[spawn])") && n.includes("split-blocked"),
     ),
     "#501: corroborated-but-split-blocked pair produces an R4 skipped note",
   );

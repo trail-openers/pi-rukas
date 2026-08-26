@@ -423,8 +423,17 @@ const withInFlight = (over: Partial<WorkState> = {}): WorkState => {
         ...initialState(539, 1000),
         pipelineState: { ...initialState(539, 1000).pipelineState, commitPrRoot: over },
       } as unknown as Record<string, unknown>);
-    const completeRoot = { branch: "feature/issue-539", unmergedPaths: [], stagedCount: 0, totalEntries: 0, capturedAt: 1 };
-    assert(root(completeRoot).length === 0, "validateDiscriminants accepts a complete commitPrRoot");
+    const completeRoot = {
+      branch: "feature/issue-539",
+      unmergedPaths: [],
+      stagedCount: 0,
+      totalEntries: 0,
+      capturedAt: 1,
+    };
+    assert(
+      root(completeRoot).length === 0,
+      "validateDiscriminants accepts a complete commitPrRoot",
+    );
     for (const [field, over] of [
       ["pipelineState.commitPrRoot.totalEntries", { ...completeRoot, totalEntries: undefined }],
       ["pipelineState.commitPrRoot.stagedCount", { ...completeRoot, stagedCount: "0" }],
@@ -432,7 +441,10 @@ const withInFlight = (over: Partial<WorkState> = {}): WorkState => {
       ["pipelineState.commitPrRoot.branch", { ...completeRoot, branch: 42 }],
       ["pipelineState.commitPrRoot.unmergedPaths", { ...completeRoot, unmergedPaths: "none" }],
     ] as Array<[string, Record<string, unknown>]>)
-      assert(root(over).some((f) => f.includes(field)), `partial ${field} is refused at read and names the field`);
+      assert(
+        root(over).some((f) => f.includes(field)),
+        `partial ${field} is refused at read and names the field`,
+      );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

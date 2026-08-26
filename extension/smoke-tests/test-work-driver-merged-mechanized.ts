@@ -313,8 +313,7 @@ setupSpawnGuard();
     const calls: string[] = [];
     const base = mkExec({
       "gh repo view": {
-        stdout:
-          '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
+        stdout: '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
       },
       // executeAndVerifyMerge checks `stdout.trim() === "MERGED"` on the
       // plain-text `--jq '.state'` output — answer with the plain token.

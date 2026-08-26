@@ -63,22 +63,30 @@ const repoRoot = process.cwd();
 const remote = execSync("git config --get remote.origin.url", {
   cwd: repoRoot,
   stdio: "pipe",
-}).toString().trim();
+})
+  .toString()
+  .trim();
 const runningFromBranch = execSync("git rev-parse --abbrev-ref HEAD", {
   cwd: repoRoot,
   stdio: "pipe",
-}).toString().trim();
+})
+  .toString()
+  .trim();
 const runningFromSha = execSync("git rev-parse HEAD", {
   cwd: repoRoot,
   stdio: "pipe",
-}).toString().trim();
+})
+  .toString()
+  .trim();
 // The PR for the commit we're running from is always merged — we're on
 // its branch. This is what lets the mechanized merge short-circuit.
 const prNumber = Number(
   execSync(`gh pr view ${runningFromSha} --json number --jq .number`, {
     cwd: repoRoot,
     stdio: "pipe",
-  }).toString().trim(),
+  })
+    .toString()
+    .trim(),
 );
 
 const dir = mkdtempSync(path.join(tmpdir(), "mm-prod-restore-live-"));
@@ -156,7 +164,9 @@ try {
     "#476 live: branch -d refusal emitted as a plumb-report note (restoration reached)",
   );
   assert(
-    git("branch --list " + featureBranch).trim().includes(featureBranch),
+    git("branch --list " + featureBranch)
+      .trim()
+      .includes(featureBranch),
     "#476 live: branch -d refusal left the local branch in place (no -D escalation)",
   );
 } catch (err) {

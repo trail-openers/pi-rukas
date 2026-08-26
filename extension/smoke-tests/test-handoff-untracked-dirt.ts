@@ -90,12 +90,18 @@ function commitPrConflictedState(): WorkState {
 
   // The recovery block must say "run git status first" and carry the
   // sweep-safe instruction.
-  assert(/git status/.test(md), "markdown (untracked dirt): tells the operator to run git status first");
+  assert(
+    /git status/.test(md),
+    "markdown (untracked dirt): tells the operator to run git status first",
+  );
   assert(
     /commit ONLY the applied patch paths/i.test(md),
     "markdown (untracked dirt): carries the sweep-safe commit instruction",
   );
-  assert(/git status/.test(chat), "chat (untracked dirt): tells the operator to run git status first");
+  assert(
+    /git status/.test(chat),
+    "chat (untracked dirt): tells the operator to run git status first",
+  );
   assert(
     /commit ONLY the applied patch paths/i.test(chat),
     "chat (untracked dirt): carries the sweep-safe commit instruction",

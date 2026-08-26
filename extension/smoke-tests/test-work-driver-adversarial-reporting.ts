@@ -167,7 +167,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     );
     const rejected2 = events.filter((e) => e.kind === "adversarial-rejected");
     const advCap = events.find(
-      (e) => e.kind === "cap-hit" && (e.cap === "adversarial-infra-failure" || e.cap === "adversarial-loop"),
+      (e) =>
+        e.kind === "cap-hit" &&
+        (e.cap === "adversarial-infra-failure" || e.cap === "adversarial-loop"),
     );
     assert(
       advDispatchFailed !== undefined &&
@@ -236,7 +238,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       `#485 R2: both rounds' verdicts recorded in the event log (got ${rounds.length})`,
     );
     const seq = rounds
-      .filter((e): e is Extract<(typeof events)[number], { kind: "adversarial-round" }> => e.kind === "adversarial-round")
+      .filter(
+        (e): e is Extract<(typeof events)[number], { kind: "adversarial-round" }> =>
+          e.kind === "adversarial-round",
+      )
       .map((e) => `${e.round}:${e.status}`)
       .join(", ");
     assert(

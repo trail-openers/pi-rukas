@@ -98,6 +98,19 @@ export function classifyFailureCause(tail: {
   if (tail.killCause === "abort") {
     return { cause: "self-killed:abort", shouldRetry: false, maxRetries: 0 };
   }
+  // #543 — loop + token-budget self-kills sit in the killCause block, after
+  // 'abort' and BEFORE the 429 family (the #296 order: structured killCause
+  // wins). A looped/budgeted child is NOT a provider fault — the generic
+  // 'non-zero exit, no structured signal' fallback below returns
+  // shouldRetry:true, which is the OPPOSITE of the intent: an SIGTERM'd
+  // looped child is a non-zero exit, so without this branch the cap is undone
+  // by a retry. shouldRetry FALSE, maxRetries 0.
+  if (tail.killCause === "loop") {
+    return { cause: "self-killed:loop", shouldRetry: false, maxRetries: 0 };
+  }
+  if (tail.killCause === "token-budget") {
+    return { cause: "self-killed:token-budget", shouldRetry: false, maxRetries: 0 };
+  }
 
   // 429 rate-limit. #366 — read the delay the provider actually asked for
   // instead of treating every 429 as permanently fatal. A per-minute token
@@ -164,6 +177,10 @@ export function failureCauseReason(tail: {
       return "killed by pi-ensemble (inactivity watchdog)";
     case "self-killed:abort":
       return "cancelled (abort signal)";
+    case "self-killed:loop":
+      return "killed by pi-ensemble (loop detected — the same tool call repeated; retrying would loop again)";
+    case "self-killed:token-budget":
+      return "killed by pi-ensemble (token budget crossed — a cost cap, not a provider fault)";
     case "rate-limited:429":
       return "provider rate-limited (429), no retry delay stated — halting rather than guessing how long to wait";
     case "rate-limited:burst":
@@ -199,6 +216,10 @@ export function failureCauseReasonForClass(
       return "killed by pi-ensemble (inactivity watchdog)";
     case "self-killed:abort":
       return "cancelled (abort signal)";
+    case "self-killed:loop":
+      return "killed by pi-ensemble (loop detected — the same tool call repeated; retrying would loop again)";
+    case "self-killed:token-budget":
+      return "killed by pi-ensemble (token budget crossed — a cost cap, not a provider fault)";
     case "rate-limited:429":
       return "provider rate-limited (429), no retry delay stated — halting rather than guessing how long to wait";
     case "rate-limited:burst":

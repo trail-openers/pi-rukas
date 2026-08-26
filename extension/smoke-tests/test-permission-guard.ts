@@ -400,7 +400,13 @@ for (const command of ghIssueAllowed) {
 // Issue #528: issue creation is PM-exclusive — no specialist role may
 // run gh issue create without a user prompt (doctrine gate, #528).
 const ghIssueCreateCmd = "gh issue create -t 'fix: repro' -b 'acceptance'";
-for (const role of ["developer", "ops", "explore", "adversarial-developer", "code-review-specialist"]) {
+for (const role of [
+  "developer",
+  "ops",
+  "explore",
+  "adversarial-developer",
+  "code-review-specialist",
+]) {
   const v = resolveToolPermission("bash", role, {}, {}, agentsConfig, ghIssueCreateCmd);
   assert(v === "ask", `Issue #528: \`${ghIssueCreateCmd}\` asks for ${role} (got: ${v})`);
 }

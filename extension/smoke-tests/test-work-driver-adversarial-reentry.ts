@@ -5,25 +5,18 @@
  * (seeded, as the driver's post-step persistence would leave it), task-b
  * approved — the fresh batch splices over nothing (first pass). The
  * re-entry (runAdversarial again, same state) must run ONLY task-a once
- * and REPLACE the first pass's per-workstream records (R1): each
- * workstream's `adversarial-workstream-outcome` / round records appear
- * exactly once — the stale first-pass records are gone. No offline test
- * drove a re-entry before this one — the splice was an insert, not a
- * replace, and the first pass's records sat duplicated in the log.
+ * and REPLACE the first pass's per-workstream records (R1): each workstream
+ * appears exactly once — the stale first-pass records are gone.
  *
- * Uses runAdversarial directly: in a full cycle the first-pass
- * `adversarial-infra-failure` cap-hit hands the cycle off to a human
- * (`needs-human-attention`), so an in-process driver re-entry would be
- * refused by the entry gate before ever reaching the step. The re-entry
- * itself (the splice under test) is exactly what runAdversarial does when
- * the operator re-runs the step.
+ * Uses runAdversarial directly: a first-pass cap-hit hands the cycle off to a
+ * human, so an in-process driver re-entry would be refused by the entry gate.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { DriverContext } from "../src/work-driver-context.ts";
 import { runAdversarial } from "../src/work-driver-adversarial.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
 import type { WorkEvent } from "../src/workflow-state.ts";
 
@@ -67,7 +60,10 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
     const s = initialState(961, 1_000_000);
     const tree: Record<string, string> = {};
-    const streams: Record<string, { id: string; scope: string; paths: string[]; outOfScope: string[] }> = {};
+    const streams: Record<
+      string,
+      { id: string; scope: string; paths: string[]; outOfScope: string[] }
+    > = {};
     for (const w of ["task-a", "task-b"]) {
       tree[w] = `${dir}/.worktrees/${w}`;
       streams[w] = { id: w, scope: w, paths: [], outOfScope: [] };
@@ -79,10 +75,8 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
       worktrees: tree,
       workstreams: streams,
       branchName: "feature/issue-961",
-      // Seeded as the driver's post-step persistence would leave it after a
-      // first pass (1 initial + 2 in-step retries = 3): without a spent
-      // budget the first pass would retry task-a in-step twice instead of
-      // parking, and the re-entry would re-run it three more times.
+      // Seeded as post-step persistence would leave it (1 initial + 2 in-step
+      // retries = 3): without a spent budget the first pass would retry in-step.
       adversarialTransientRetries: { "task-a": 3 },
     };
     await writeState(dir, s);
@@ -137,10 +131,8 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     const firstPassLogLen = after.eventLog.length;
 
     // RE-ENTRY — the operator re-runs the step. The spent budget parks it
-    // again without re-running any loop; the parked outcome's log must keep
-    // the first pass's records (exactly one outcome per workstream, one
-    // round record) plus its own cap-hit, with no duplicated or stale batch
-    // (R1/W1 — the prior batch's records are not re-appended).
+    // again without re-running any loop; the log must keep the first pass's
+    // records plus its own cap-hit (R1/W1).
     state = after;
     after = await runAdversarial(ctx, state, Date.now());
     const fresh = after.eventLog.slice(firstPassLogLen);
@@ -190,9 +182,8 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
 
 // W1R-recover — the re-entry RECOVERY: the budget is NOT spent (a fresh
 // transient window), task-a's loop recovers on the re-entry pass. The fresh
-// batch must replace the first pass's records (R1) and the stale
-// infra-failure outcome must not sit side-by-side with the fresh APPROVED
-// (W1).
+// batch must replace the first pass's records (R1); the stale infra-failure
+// must not sit side-by-side with the fresh APPROVED (W1).
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-486-w1rr-"));
   try {
@@ -200,7 +191,10 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
     const s = initialState(962, 1_000_000);
     const tree: Record<string, string> = {};
-    const streams: Record<string, { id: string; scope: string; paths: string[]; outOfScope: string[] }> = {};
+    const streams: Record<
+      string,
+      { id: string; scope: string; paths: string[]; outOfScope: string[] }
+    > = {};
     for (const w of ["task-a", "task-b"]) {
       tree[w] = `${dir}/.worktrees/${w}`;
       streams[w] = { id: w, scope: w, paths: [], outOfScope: [] };
@@ -360,18 +354,11 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     rmSync(dir, { recursive: true, force: true });
   }
 }
-// W2' (#486) — task-b fails PERMANENTLY on the FIRST pass in a way the
-// in-step retry does NOT classify as transient (quota window: the taxonomy
-// says shouldRetry=false, so no in-step retry is spent and the per-
-// workstream budget stays at 0). The named-cap contract still holds: the
-// gate parks under `adversarial-infra-failure`, never a rejection. This is
-// the branch W2's provider-severed failure never exercises: W2 burns its
-// budget on retried transients, W2' does not — the `!isTransient(o)` half
-// of the `exhaustedNoVerdict` predicate.
-//
-// Drives runAdversarial directly (like W1R): the parked gate routes to
-// handoff before any dispatch, so the driver's commit-pr / handoff steps
-// are irrelevant to the assertion under test.
+// W2' (#486) — task-b fails PERMANENTLY on the FIRST pass in a way the in-step
+// retry does NOT classify as transient (shouldRetry=false, so no in-step retry
+// is spent and the per-workstream budget stays at 0). The named-cap contract
+// still holds: the gate parks under `adversarial-infra-failure`, never a
+// rejection. Drives runAdversarial directly (like W1R).
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-486-w2b-"));
   try {
@@ -379,7 +366,10 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
     const s = initialState(963, 1_000_000);
     const tree: Record<string, string> = {};
-    const streams: Record<string, { id: string; scope: string; paths: string[]; outOfScope: string[] }> = {};
+    const streams: Record<
+      string,
+      { id: string; scope: string; paths: string[]; outOfScope: string[] }
+    > = {};
     for (const w of ["task-a", "task-b"]) {
       tree[w] = `${dir}/.worktrees/${w}`;
       streams[w] = { id: w, scope: w, paths: [], outOfScope: [] };
@@ -412,9 +402,11 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
             text: "Adversarial loop infrastructure failure: Provider request error: Server requested 86399s retry delay (max: 60s). 429 status code. No verdict was produced — this is NOT a review rejection.",
             roundsExecuted: 1,
             // The real loop threads errorStop on every infra failure; the
-            // taxonomy classifies from it (quota-window here: not retryable
-            // in-step).
-            errorStop: { reason: "error", message: "Server requested 86399s retry delay (max: 60s). 429 status code." },
+            // taxonomy classifies from it (quota-window here: not retryable).
+            errorStop: {
+              reason: "error",
+              message: "Server requested 86399s retry delay (max: 60s). 429 status code.",
+            },
           });
         }
         return mkResult({
@@ -449,12 +441,15 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
         .filter((e) => e.kind === "adversarial-workstream-outcome" && e.workstreamId === id)
         .pop();
     assert(
-      out("task-a")?.kind === "adversarial-workstream-outcome" && out("task-a").outcome === "approved",
+      out("task-a")?.kind === "adversarial-workstream-outcome" &&
+        out("task-a").outcome === "approved",
       "#486 W2': task-a's APPROVED verdict preserved in the event log",
     );
     const cap = [...events].reverse().find((e) => e.kind === "cap-hit");
     assert(
-      cap?.kind === "cap-hit" && cap.cap === "adversarial-infra-failure" && cap.nextStep === "handoff",
+      cap?.kind === "cap-hit" &&
+        cap.cap === "adversarial-infra-failure" &&
+        cap.nextStep === "handoff",
       `#486 W2': parked with cap='adversarial-infra-failure' (got ${cap?.kind === "cap-hit" ? cap.cap : "no cap-hit"})`,
     );
     // Budget never spent — the park came from `!isTransient`, not budget.
@@ -466,6 +461,10 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+// #543 F4(e) — no-retry-on-loop-kill (the loop / token-budget cap-kill
+// cases) lives in test-work-driver-cap-kill-no-retry.ts, split for module
+// size hygiene (AGENTS.md §12).
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

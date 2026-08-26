@@ -150,6 +150,11 @@ export function inlineLensFixPrompt(findings: string, scratchDirAbs: string): st
     "  - Run local quality gates before declaring complete.",
     "  - Do NOT touch unrelated code.",
     "  - The driver will commit the changes after your dispatch completes.",
+    // #543 F5 — same seam-commit clause as the develop prompt: the driver's
+    // cap-checkpoint (F5(2)) commits the worktree at natural seams, so a
+    // cap kill never leaves only a failure message. Read-only roles get no
+    // such line; this one is the developer (write-gated off, worktree cwd).
+    "  - Commit your work in the worktree at natural seams (a clean build, a passing test suite). Do NOT push — the driver owns the branch.",
     "",
     "Findings (JSON-encoded array of {path, line, severity, title, suggestion}):",
     "```json",

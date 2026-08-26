@@ -12,10 +12,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type DriverContext, nextStep } from "../src/work-driver-context.ts";
+import { explainCap } from "../src/work-driver-explain.ts";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { parseHandoffCommentUrl } from "../src/work-driver-handoff.ts";
 import { parsePrNumber } from "../src/work-driver-lens.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
+import { validateDiscriminants } from "../src/workflow-state-validate.ts";
 import { appendEvent, initialState, writeState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -366,6 +368,109 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     round: 3,
   });
   assert(completed3.includes("(round 3)"), "step-completed: round=3 suffix shown");
+}
+
+// #543 F4(h) — nextStep routing of the cap strings → test-work-driver-f4-routing.ts (split for the 500-line gate).
+
+// #543 F4(f) — the fixed-literal cap strings pass the #533 canary; a
+// fabricated `loop-detected:<anything>` / `token-budget:<anything>` suffix
+// is REJECTED (the role travels in the separate `role` field).
+{
+  const base = {
+    schemaVersion: 1,
+    resumable: false,
+    issue: 543,
+    startedAt: 1,
+    updatedAt: 2,
+    pipelineState: {
+      currentStep: "handoff",
+      status: "handoff",
+      inFlightJobIds: [],
+      worktrees: {},
+      reviewRound: 1,
+      plumbReports: [],
+    },
+    eventLog: [],
+  };
+  for (const cap of ["loop-detected", "token-budget"]) {
+    const ok = validateDiscriminants({
+      ...base,
+      eventLog: [{ kind: "cap-hit", at: 2, cap, reviewRound: 1, nextStep: "handoff" }],
+    });
+    assert(ok.length === 0, `validateDiscriminants accepts the fixed literal ${cap}`);
+  }
+  for (const cap of [
+    "loop-detected:developer",
+    "token-budget:task-b",
+    "step-failed-543",
+  ] as const) {
+    const bad = validateDiscriminants({
+      ...base,
+      eventLog: [{ kind: "cap-hit", at: 2, cap, reviewRound: 1, nextStep: "handoff" }],
+    });
+    assert(
+      bad.some((b) => b.includes(".cap")),
+      `validateDiscriminants REJECTS fabricated cap ${cap}: ${bad[0] ?? "(no finding)"}`,
+    );
+  }
+  // A valid template cap still passes (precise, not a blanket no-go).
+  const tpl = validateDiscriminants({
+    ...base,
+    eventLog: [
+      { kind: "cap-hit", at: 2, cap: "step-failed:develop", reviewRound: 1, nextStep: "handoff" },
+    ],
+  });
+  assert(tpl.length === 0, "validateDiscriminants still accepts the step-failed:<step> template");
+
+  // #543 (H3/M1) — capEvidence field requirements are KIND-CONDITIONAL: the
+  // loop evidence's story is the repeat count; the token-budget evidence's
+  // story is the budget arithmetic. Pre-fix, `count` was demanded for EVERY
+  // kind (a real token-budget record would be rejected) and a token-budget
+  // record without the arithmetic was accepted. Both directions asserted.
+  const withEvidence = (ce: Record<string, unknown>) =>
+    validateDiscriminants({
+      ...base,
+      pipelineState: { ...base.pipelineState, capEvidence: ce },
+    });
+
+  // The REAL token-budget shape (as written by capKillAttribution /
+  // work-driver-adversarial-capkill.ts): budgetTokens + usedTokens, NO count.
+  const budget = withEvidence({
+    kind: "token-budget",
+    budgetTokens: 200_000,
+    usedTokens: 210_400,
+  });
+  assert(
+    budget.length === 0,
+    `H3: real token-budget shape is VALID (got: ${budget[0] ?? "(none)"})`,
+  );
+
+  // The real loop shape: count + tool, no budget fields.
+  const loop = withEvidence({ kind: "loop", tool: "bash", count: 12 });
+  assert(
+    loop.length === 0,
+    `H3: real loop shape (count/tool) is VALID (got: ${loop[0] ?? "(none)"})`,
+  );
+
+  // A token-budget record WITHOUT the budget arithmetic is REJECTED.
+  const budgetMissing = withEvidence({ kind: "token-budget" });
+  assert(
+    budgetMissing.some((b) => b.includes("budgetTokens")) &&
+      budgetMissing.some((b) => b.includes("usedTokens")),
+    `H3: token-budget WITHOUT budgetTokens/usedTokens is REJECTED: ${budgetMissing.join("; ")}`,
+  );
+
+  // A loop record WITHOUT count is REJECTED.
+  const loopNoCount = withEvidence({ kind: "loop", tool: "bash" });
+  assert(
+    loopNoCount.some((b) => b.includes("count")),
+    `H3: loop WITHOUT count is REJECTED: ${loopNoCount.join("; ")}`,
+  );
+
+  // A loop record with a count still validates (AND-without-count parity):
+  // count is required for loop, but a loop record is valid WITH it.
+  const loopWithCount = withEvidence({ kind: "loop", tool: "bash", count: 10 });
+  assert(loopWithCount.length === 0, "H3: loop with count is valid");
 }
 
 console.log(`\nexit ${exit}`);

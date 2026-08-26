@@ -72,6 +72,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { WORK_STATE_SCHEMA_VERSION, type WorkState } from "./workflow-state-schema.ts";
+import { appendEvent, detectInconsistencies, initialState } from "./workflow-state-update.ts";
 
 export type {
   WorkStep,
@@ -85,15 +86,14 @@ export type {
   IncompleteConsolidation,
 } from "./workflow-state-consolidation.ts";
 export type { CommitPrRootState } from "./workflow-state-schema.ts";
+export type { CapEvidence, CapedPartialState } from "./workflow-state-schema.ts";
 export type { PipelineState, WorkState } from "./workflow-state-schema.ts";
 export {
   filesPresentFromConsolidation,
-  initialState,
-  appendEvent,
-  detectInconsistencies,
   missingWorkstreamsFromConsolidation,
   WORK_STEPS,
 } from "./workflow-state-schema.ts";
+export { appendEvent, detectInconsistencies, initialState } from "./workflow-state-update.ts";
 /**
  * Resolve the project-local state directory. We anchor on `cwd` rather than
  * the worktree path because state must live at the project root so

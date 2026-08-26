@@ -13,11 +13,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
-import {
-  verifyCmdFor,
-  verifyConsolidation,
-  verifyStepOutcome,
-} from "../src/work-driver-verify.ts";
+import { verifyCmdFor, verifyConsolidation, verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
 
 /**
@@ -372,7 +368,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         }
       };
 
-      const mkConsolidationState = (workstreams: Record<string, WorkState["pipelineState"]["workstreams"][string]>) => {
+      const mkConsolidationState = (
+        workstreams: Record<string, WorkState["pipelineState"]["workstreams"][string]>,
+      ) => {
         let s = initialState(540, 1_000_000);
         s = {
           ...s,
@@ -397,7 +395,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         const dir = mkdtempSync(path.join(tmpdir(), "f5-covered-"));
         try {
           await mkGitRepo(dir, ["src/a.ts", "src/b.ts"]);
-          const state = mkConsolidationState({ a: wsA(["src/a.ts", "src/b.ts"]), b: wsB(["src/b.ts"]) });
+          const state = mkConsolidationState({
+            a: wsA(["src/a.ts", "src/b.ts"]),
+            b: wsB(["src/b.ts"]),
+          });
           const ctx: DriverContext = { pi: makeFakePi().pi, repoRoot: dir, issue: 540 };
           const res = await verifyConsolidation(ctx, state);
           assert(
@@ -420,7 +421,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         const dir = mkdtempSync(path.join(tmpdir(), "f5-partial-"));
         try {
           await mkGitRepo(dir, ["src/b.ts"]);
-          const state = mkConsolidationState({ a: wsA(["src/a.ts", "src/b.ts"]), b: wsB(["src/b.ts"]) });
+          const state = mkConsolidationState({
+            a: wsA(["src/a.ts", "src/b.ts"]),
+            b: wsB(["src/b.ts"]),
+          });
           const ctx: DriverContext = { pi: makeFakePi().pi, repoRoot: dir, issue: 540 };
           const res = await verifyConsolidation(ctx, state);
           assert(
@@ -452,7 +456,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         const dir = mkdtempSync(path.join(tmpdir(), "f5-empty-"));
         try {
           await mkGitRepo(dir, []);
-          const state = mkConsolidationState({ a: wsA(["src/a.ts", "src/b.ts"]), b: wsB(["src/b.ts"]) });
+          const state = mkConsolidationState({
+            a: wsA(["src/a.ts", "src/b.ts"]),
+            b: wsB(["src/b.ts"]),
+          });
           const ctx: DriverContext = { pi: makeFakePi().pi, repoRoot: dir, issue: 540 };
           const res = await verifyConsolidation(ctx, state);
           const ids = res.missing.map((m) => m.id).sort();
@@ -460,10 +467,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
             JSON.stringify(ids) === JSON.stringify(["a", "b"]),
             `F5.4: empty diff → all missing (got: ${JSON.stringify(ids)})`,
           );
-          assert(
-            res.filesPresent.length === 0,
-            "F5.4: empty diff → empty filesPresent",
-          );
+          assert(res.filesPresent.length === 0, "F5.4: empty diff → empty filesPresent");
         } finally {
           rmSync(dir, { recursive: true, force: true });
         }

@@ -66,6 +66,14 @@ export interface LifecycleDetails {
   /** Steer message (truncated for scrollback) — set for kind="steered" only. */
   steerMessage?: string;
   /**
+   * #543 F2 — who sent the steer. The PM `dispatch_steer` tool is the original
+   * source ("pm-tool"); the work-driver's own caps steer with "driver-loop-detector"
+   * (F1) and "driver-budget" (F6). Rendered as a trailing tag so the scrollback
+   * line shows WHY the child was nudged without opening the state file.
+   * Omitted for pm-tool steers to keep the pre-#543 line byte-identical.
+   */
+  steerSource?: string;
+  /**
    * Step ordinal for step-* kinds (1-indexed). Pair with stepTotal to render
    * "step 5/9". Plain dispatches omit both.
    */
@@ -199,9 +207,17 @@ export function emitErrored(
 }
 
 /** Emit a steer scrollback entry (#153). The `message` is truncated for display
- *  but the full payload was delivered to the child via RPC stdin separately. */
-export function emitSteered(jobId: string, label: string, role: string, message: string): void {
-  emit({ kind: "steered", jobId, label, role, steerMessage: message });
+ *  but the full payload was delivered to the child via RPC stdin separately.
+ *  `source` (#543 F2) tags the steering actor; the PM tool path omits it so the
+ *  line renders exactly as before. */
+export function emitSteered(
+  jobId: string,
+  label: string,
+  role: string,
+  message: string,
+  source?: string,
+): void {
+  emit({ kind: "steered", jobId, label, role, steerMessage: message, steerSource: source });
 }
 
 /**
@@ -362,7 +378,8 @@ export function formatLine(d: LifecycleDetails): string {
     case "steered": {
       const msg = (d.steerMessage ?? "").replaceAll(/\s+/g, " ").trim();
       const truncated = msg.length > 80 ? `${msg.slice(0, 79)}…` : msg;
-      return `▸ ensemble: ⤳ steered ${d.label} · "${truncated}"`;
+      const source = d.steerSource ? ` [${d.steerSource}]` : "";
+      return `▸ ensemble: ⤳ steered ${d.label}${source} · "${truncated}"`;
     }
     case "step-started": {
       const ordinal = d.stepNumber && d.stepTotal ? `${d.stepNumber}/${d.stepTotal} ` : "";

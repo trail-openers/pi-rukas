@@ -22,8 +22,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
-import { readState } from "../src/workflow-state.ts";
 import type { WorkEvent } from "../src/workflow-state-events.ts";
+import { readState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -184,9 +184,7 @@ const mkDispatchFn =
         assert(
           after?.eventLog.some(
             (e) =>
-              e.kind === "plumb-report" &&
-              e.step === "commit-pr" &&
-              e.fallbackCause === "other",
+              e.kind === "plumb-report" && e.step === "commit-pr" && e.fallbackCause === "other",
           ),
           "M2: apply failure → plumb-report carries fallbackCause=other (no structured cause)",
         );
@@ -323,17 +321,14 @@ const mkDispatchFn =
           (e): e is Extract<WorkEvent, { kind: "plumb-report" }> =>
             e.kind === "plumb-report" && e.step === "commit-pr",
         );
-        assert(
-          plumb !== undefined,
-          "M4: dirty repoRoot → plumb-report exists",
-        );
+        assert(plumb !== undefined, "M4: dirty repoRoot → plumb-report exists");
         assert(
           plumb !== undefined && plumb.body.includes("leftover/untracked-file.txt"),
           "M4: plumb-report names the dirty path(s) from the integrate refusal",
         );
         assert(
           plumb?.fallbackCause === "dirty-repoRoot",
-          "M4: plumb-report carries fallbackCause=\"dirty-repoRoot\" (typed against the WorkEvent contract)",
+          'M4: plumb-report carries fallbackCause="dirty-repoRoot" (typed against the WorkEvent contract)',
         );
         assert(
           after?.eventLog.some(

@@ -320,13 +320,10 @@ setupSpawnGuard();
     await runWorkDriver(ctx).catch(() => {});
 
     const after = await readState(root, 492);
-    const cap = [...(after?.eventLog ?? [])].reverse().find(
-      (e) => e.kind === "cap-hit" && e.cap === "lens-fix-not-integrated",
-    );
-    assert(
-      cap !== undefined,
-      "a no-diff lens-fix parks with the lens-fix-not-integrated cap",
-    );
+    const cap = [...(after?.eventLog ?? [])]
+      .reverse()
+      .find((e) => e.kind === "cap-hit" && e.cap === "lens-fix-not-integrated");
+    assert(cap !== undefined, "a no-diff lens-fix parks with the lens-fix-not-integrated cap");
     if (cap && cap.kind === "cap-hit") {
       assert(
         (cap.evidence ?? "").includes("git status --porcelain") &&

@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { startBatch, startJob } from "./async-jobs.ts";
 import { type RetryNotice, withProviderBackoff } from "./dispatch-retry.ts";
+import { steerChild } from "./dispatch-steer.ts";
 import { ROLE_NAMES } from "./roles.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import { trace } from "./trace.ts";
@@ -63,6 +64,13 @@ export function dispatchCore(
         signal,
         onProgress: hooks.onProgress,
         onStdin: hooks.onStdin,
+        // #543 F6 — the driver's token-budget cap steers the child through
+        // steerChild (the F2 seam) so the lifecycle 'steered' entry is tagged
+        // "driver-budget". The job id is known here (hooks.jobId), so the
+        // steer resolves to this child's stdin handle.
+        onSteer: (message, source) => {
+          steerChild(hooks.jobId, message, source);
+        },
         // Per-call override of the runaway backstop, for a dispatch whose work
         // is enumerable enough to bound. Two live callers, each with its
         // rationale at the definition: `ciWatchTimeoutMs`

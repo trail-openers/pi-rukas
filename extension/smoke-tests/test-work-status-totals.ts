@@ -26,10 +26,7 @@ function assert(cond: boolean, msg: string) {
 }
 
 /** Minimal state file shaped like the real one (status renderer needs inFlightJobIds). */
-function mkState(
-  status: WorkState["pipelineState"]["status"],
-  cap?: string,
-): WorkState {
+function mkState(status: WorkState["pipelineState"]["status"], cap?: string): WorkState {
   const eventLog: WorkState["eventLog"] = [
     {
       kind: "dispatch-completed",

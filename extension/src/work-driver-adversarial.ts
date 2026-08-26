@@ -16,19 +16,20 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
+import { capHitForCapKill } from "./work-driver-adversarial-capkill.ts";
+import { fanOutAdversarial } from "./work-driver-adversarial-fanout.ts";
+import { reentryPassBatchSpan } from "./work-driver-adversarial-reentry.ts";
 import {
   ADVERSARIAL_PER_WS_MAX_RETRIES,
-  fanOutAdversarial,
-} from "./work-driver-adversarial-fanout.ts";
-import { reentryPassBatchSpan } from "./work-driver-adversarial-reentry.ts";
+  type AdversarialOutcome,
+} from "./work-driver-adversarial-types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { integrate, withIntegrationLock } from "./work-driver-integrate.ts";
 import { commitLensFixChanges, lensWorktree } from "./work-driver-lens.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
+import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
-
-import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 const execp = promisify(exec);
 
@@ -67,41 +68,26 @@ async function integrateLensFix(
 }
 
 /**
- * Step 5 — Adversarial gate.
- *
- * Calls `runAdversarialLoop` directly (exported from adversarial.ts). The
- * loop does its own 3-round internal cycle; the driver wraps the whole
- * thing in one dispatch event and routes on the synthesized verdict in the
- * result text.
- *
- * The driver-owned adversarial dispatch goes through async-jobs's startJob
- * with `ownerKind:"driver"` + `skipDeck:true` so the per-round dispatch
- * deck entries owned by `runAdversarialLoop` remain the user-visible UI.
- * No double-deck.
+ * Step 5 — Adversarial gate. Fans out one `runAdversarialLoop` per
+ * workstream (each scoped to one worktree's diff + cwd), aggregates the
+ * verdict, and — on approval following a lens-fix round — commits the fix.
  */
 export async function runAdversarial(
   ctx: DriverContext,
   state: WorkState,
   now: number,
 ): Promise<WorkState> {
-  // PR8 — adversarial is the developer's tight-loop reviewer; it belongs
-  // INSIDE each workstream's worktree, not on a merged fanout diff.
-  // Pre-PR8 the single-dispatch path reviewed a `## workstream:`-merged
-  // diff and dispatched its fix-developers into one worktree — phantom
-  // CRITICALs and fragmented state (/work 553). PR8 fans out one loop per
-  // workstream (N parallel, each scoped to one worktree's diff + cwd) and
+  // PR8 — adversarial belongs INSIDE each workstream's worktree, not on a
+  // merged fanout diff. Fans out one loop per workstream (N parallel) and
   // aggregates: any per-workstream rejection routes to handoff.
   const ids =
     Object.keys(state.pipelineState.workstreams ?? {}).length > 0
       ? Object.keys(state.pipelineState.workstreams ?? {})
       : ["default"];
 
-  // #486 — re-entry after an infra retry: the previous adversarial fan-out
-  // already recorded per-workstream outcomes in the event log. Only the
-  // workstreams whose last outcome was NO VERDICT (infra-failure /
-  // dispatch-failed) re-run; a workstream that produced a verdict
-  // (approved OR rejected) is final — re-running it would re-review work
-  // its reviewers already judged.
+  // #486 — re-entry after an infra retry: only workstreams whose last
+  // outcome was NO VERDICT (infra-failure / dispatch-failed) re-run; a
+  // workstream that produced a verdict is final.
   const priorOutcomes = new Map<string, string>();
   for (const e of state.eventLog) {
     if (e.kind === "adversarial-workstream-outcome") {
@@ -112,9 +98,7 @@ export async function runAdversarial(
     ["infra-failure", "dispatch-failed"].includes(o),
   );
   // #485/#486 — the previous pass's per-workstream batch span (R1 splice),
-  // computed on the ORIGINAL event log: the fan-out and the nextStep()
-  // routing below both append events and the fan-out clobbers `currentStep`,
-  // so the span must be captured here.
+  // captured on the ORIGINAL event log (the fan-out clobbers `currentStep`).
   const priorBatchSpan = priorHadInfraFailure ? reentryPassBatchSpan(state.eventLog) : null;
   const retries = state.pipelineState.adversarialTransientRetries ?? {};
   let next: WorkState = {
@@ -142,14 +126,8 @@ export async function runAdversarial(
 
   // #485/#486 — the per-workstream fan-out (loop invocation, per-round
   // verdict records, per-workstream infra retry) lives in the leaf module
-  // work-driver-adversarial-fanout.ts (AGENTS.md §12 file-size limit);
-  // this handler aggregates its outcomes into the verdict events below.
-  // The fan-out appends its batch AFTER `priorBatchSpan` was captured on
-  // the original log (that is why the span is computed here, before the
-  // call, not by the fan-out). On re-entry the header events are NOT
-  // re-appended (the `!priorHadInfraFailure` guard above): the re-entry
-  // pass's events start at the splice position, which is exactly where the
-  // fresh batch lands.
+  // work-driver-adversarial-fanout.ts (AGENTS.md §12); this handler
+  // aggregates its outcomes into the verdict events below.
   const {
     next: fannedNext,
     outcomes,
@@ -168,19 +146,31 @@ export async function runAdversarial(
     return next;
   }
   if (parkedInfra) {
-    // #486 — a FIRST-pass workstream exhausted its per-workstream budget
-    // and never produced a verdict (W2: task-b permanently down, task-a/
-    // task-c approved). A permanent infra failure is NOT a rejection, and
-    // the step-level router cannot retry this (branches-converged declines
-    // when any workstream succeeded). Park with the distinct cap; the
-    // siblings' per-workstream outcomes remain in the event log.
-    // A genuine rejection coexisting (W3) is reported under cap
-    // 'adversarial-loop' with the infra shortfall named explicitly.
+    // #486 — a FIRST-pass workstream exhausted its per-workstream budget and
+    // never produced a verdict. A permanent infra failure is NOT a rejection;
+    // park with the distinct cap, siblings' outcomes in the event log.
     const infraShortfall = outcomes.filter((o) => o.infra || o.threw);
     const names = infraShortfall.map((o) => o.id).join(", ");
     trace(
       `work-driver: adversarial per-workstream retry budget exhausted on first pass for [${names}] — parking`,
     );
+    // #543 — F4(g): a cap kill (loop / token-budget) parks with its own
+    // fixed-literal cap INSTEAD of the generic infra cap. The two are
+    // distinct events; the fixed literal (no role suffix) + role field is
+    // what F4(f) requires.
+    const capKill = infraShortfall
+      .map((o) => capHitForCapKill(o, state.pipelineState.reviewRound))
+      .find(Boolean);
+    if (capKill) {
+      next = appendEvent(next, capKill.event);
+      if (capKill.evidence) {
+        next = {
+          ...next,
+          pipelineState: { ...next.pipelineState, capEvidence: capKill.evidence },
+        };
+      }
+      return next;
+    }
     const noVerdict = new Set(infraShortfall.map((o) => o.id));
     const rejectedReal = outcomes.filter((o) => !o.ok && !noVerdict.has(o.id));
     const maxRounds = outcomes.reduce((acc, o) => Math.max(acc, o.rounds), 0);
@@ -278,16 +268,10 @@ export async function runAdversarial(
         ? await integrateLensFix(execFn, ctx, psFix, fixWorktrees)
         : await commitLensFixChanges(ctx.repoRoot, psFix.reviewRound, execFn);
       if (!result.committed) {
-        // The fix did not reach the branch. #492 — "did not reach" used to
-        // be the end of the story: both causes — the fixer wrote nothing
-        // and a diff existed but integration failed — parked with the same
-        // cap and no evidence, and the handoff told the operator to guess
-        // between them. They require opposite responses, so the cause is
-        // now established with git and carried on the cap-hit itself.
-        // The next round would be pointless either way: it re-reads an
-        // unchanged branch and re-reports identical findings until the
-        // round cap fires. Pre-#492 this lived only in `plumbReports`
-        // (hidden from routing); halt instead, and say why.
+        // The fix did not reach the branch. #492 — the cause (no diff vs
+        // integration failed) is established with git and carried on the
+        // cap-hit itself; the next round would re-read an unchanged branch
+        // and re-report identical findings, so halt and say why.
         const fixTree = inWorktree ? lensWorktree(ctx, state) : ctx.repoRoot;
         const cause = result.error
           ? `a diff existed but staging or integration failed (${result.error})`
@@ -355,22 +339,9 @@ export async function runAdversarial(
   } else if (failed.every((o) => o.infra) && ids.length === 1) {
     // N=1 with a pure infra failure: no verdict exists. TWO-STATE design
     // (#486):
-    //  - FIRST pass (no prior infra outcome on record): leave the
-    //    dispatch-failed event as the tail. `adversarial` is RETRY_ONCE
-    //    class, so the step-level router (work-driver-step-router.ts)
-    //    re-runs the step with the taxonomy's backoff — the machinery
-    //    that works for N=1. A transient blip is absorbed here; nothing
-    //    claims the gate rejected.
-    //  - Re-entry (this pass is a RETRY: the prior pass already recorded
-    //    an infra outcome, so `priorHadInfraFailure` is true): the failure
-    //    is permanent — the step-level retry is spent, and re-running the
-    //    loop in-step is also bounded by the per-workstream budget.
-    //    Park with the DISTINCT cap `adversarial-infra-failure`: #486
-    //    requires a permanent failure to be NAMED rather than left
-    //    looking like a bare dispatch failure (which explainCap would
-    //    render as the step failing, not as the gate's infra shortfall).
-    //    The siblings' per-workstream outcomes, recorded above, remain
-    //    in the state file instead of being discarded.
+    // #486 — N=1 two-state: FIRST pass leaves the dispatch-failed tail for
+    // the RETRY_ONCE router; re-entry (priorHadInfraFailure) is permanent —
+    // park with the DISTINCT cap `adversarial-infra-failure` (NOT a rejection).
     if (!priorHadInfraFailure) {
       trace(
         "work-driver: adversarial loop infrastructure failure (N=1) — leaving dispatch-failed tail for the RETRY_ONCE router",
@@ -380,12 +351,24 @@ export async function runAdversarial(
       trace(
         `work-driver: adversarial infra failure final for [${names}] — parking with cap 'adversarial-infra-failure' (no verdict exists; NOT a rejection)`,
       );
-      // No header to strip on re-entry: the re-entry pass does not
-      // re-emit `step-started` / `branches-fanned-out` (see the
-      // header comment above), so this pass's events — the fresh
-      // dispatch-failed, the round records, the workstream-outcome —
-      // are already spliced into the log in place of the prior
-      // batch, and the cap-hit simply lands at the tail.
+      // #543 — F4(g): a cap kill (loop / token-budget) parks with its own
+      // fixed-literal cap INSTEAD of the generic infra cap.
+      const capKill = failed
+        .map((o) => capHitForCapKill(o, state.pipelineState.reviewRound))
+        .find(Boolean);
+      if (capKill) {
+        next = appendEvent(next, capKill.event);
+        if (capKill.evidence) {
+          next = {
+            ...next,
+            pipelineState: { ...next.pipelineState, capEvidence: capKill.evidence },
+          };
+        }
+        return next;
+      }
+      // No header to strip on re-entry (the re-entry pass does not
+      // re-emit step-started / branches-fanned-out); the cap-hit lands at
+      // the tail.
       next = appendEvent(next, {
         kind: "cap-hit",
         at: Date.now(),
@@ -436,10 +419,8 @@ export async function runAdversarial(
     )
   ) {
     // #486 — a workstream's per-workstream budget is exhausted and its
-    // siblings have real (rejected) verdicts, so the rejection path below
-    // must not also swallow the infra shortfall as a fake "rejected". Park
-    // the same way: the approved siblings' verdicts are already in the
-    // event log, and the cap says what actually happened.
+    // siblings have real (rejected) verdicts; the rejection path must not
+    // swallow the infra shortfall as a fake "rejected". Park the same way.
     const names = failed
       .filter((o) => (o.infra || o.threw) && (retries[o.id] ?? 0) >= ADVERSARIAL_PER_WS_MAX_RETRIES)
       .map((o) => o.id)
@@ -455,16 +436,10 @@ export async function runAdversarial(
       nextStep: "handoff",
     });
   } else {
-    // A genuine verdict (or a first-pass N>1 failure that the step-level
-    // router will retry wholesale) reached the aggregate. Concatenate
-    // per-workstream rejection text into findings so the handoff renderer
-    // surfaces all of them. #485: rounds are the count the loops actually
-    // executed — `|| 3` would be the guess that fabricated three rounds on
-    // a cycle whose first round's fixer died. #486: a workstream whose
-    // outcome is infra-failure / dispatch-failed contributed NO verdict, so
-    // its text is not a "rejection" — it is named as an explicit shortfall
-    // ("never produced a verdict") instead of being folded into the
-    // findings the handoff renders as what the reviewer objected to.
+    // A genuine verdict (or a first-pass N>1 failure the step-level router
+    // will retry wholesale) reached the aggregate. Concatenate rejection text
+    // into findings; #486: a workstream with no verdict is named as an
+    // explicit shortfall, not folded into the findings.
     const noVerdict = new Set(failed.filter((o) => o.infra || o.threw).map((o) => o.id));
     const findings = failed
       .map((o) => {

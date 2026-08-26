@@ -12,6 +12,7 @@
  * updating roughly once per child turn.
  */
 
+import type { PiContentBlock } from "./pi-event-shapes.ts";
 import type { DispatchUsage } from "./types.ts";
 
 export interface RunningState {
@@ -37,6 +38,16 @@ export interface RunningState {
   lastText?: string;
   /** Running cumulative usage stats. */
   usage: DispatchUsage;
+  /**
+   * #543 F6 — cumulative tokens consumed (input + output + cacheRead +
+   * cacheWrite), accumulated on every assistant `message_end`. This is the
+   * BUDGET quantity: per-turn input already includes the full context, so the
+   * running sum is a cumulative-context budget by construction. `usage.cost`
+   * is the displayed metric, NOT this — the budget bounds context-driven spend,
+   * not dollars. Tracked here (not recomputed) so spawn's live usage path and
+   * the budget check read the same number.
+   */
+  totalTokens: number;
   /** Model in use (populated after first assistant message). */
   model?: string;
   /** ms since spawn began. */
@@ -66,6 +77,7 @@ export function emptyRunningState(role: string, tag?: string): RunningState {
     turns: 0,
     toolUses: 0,
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+    totalTokens: 0,
     elapsedMs: 0,
     done: false,
   };
@@ -77,6 +89,17 @@ export function formatTokens(count: number): string {
   if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
   if (count < 1_000_000) return `${Math.round(count / 1000)}k`;
   return `${(count / 1_000_000).toFixed(1)}M`;
+}
+
+/**
+ * #543 F6 — the exact wrap-up message the child reads when its token budget is
+ * crossed. It does NOT claim in-flight work is complete (per progress.ts's #299
+ * note the assistant turn carrying a toolCall completes BEFORE the tool
+ * executes), and it tells the child to finish + report status — the driver then
+ * kills after the grace window if the child does not settle.
+ */
+export function budgetSteerText(used: number, budget: number): string {
+  return `you have consumed ${formatTokens(used)} tokens, exceeding your budget of ${formatTokens(budget)}. Stop what you are doing, finish the current step, and write your status (done / remaining / current state) to your final report now. Do not start new work.`;
 }
 
 export function formatElapsed(ms: number): string {
@@ -239,7 +262,25 @@ function truncateHint(s: string): string {
  * advanced the state in a way worth emitting onProgress about
  * (i.e. a new assistant turn ended).
  */
-export function ingestEvent(state: RunningState, event: ProgressEvent, startMs: number): boolean {
+/**
+ * F1 loop-detection observer (#543). Called from `ingestEvent` for every
+ * assistant `message_end` with the FULL content block list (not just the
+ * last toolCall — a single turn can carry two identical bash calls and
+ * each must count). The caller (spawn.ts) creates one detector per spawn
+ * and passes this callback; when absent the detector is inert.
+ *
+ * `turnIndex` is the 0-indexed assistant turn number (state.turns AFTER
+ * the increment for this event), so the detector's `turnRange` evidence
+ * is aligned with `RunningState.turns`.
+ */
+export type LoopObserver = (blocks: PiContentBlock[], turnIndex: number) => void;
+
+export function ingestEvent(
+  state: RunningState,
+  event: ProgressEvent,
+  startMs: number,
+  loopObserver?: LoopObserver,
+): boolean {
   state.elapsedMs = Date.now() - startMs;
   // #299 — STALE heartbeat refreshes on ANY child event, not just assistant
   // turn ends. The assistant message carrying a toolCall completes BEFORE
@@ -260,6 +301,12 @@ export function ingestEvent(state: RunningState, event: ProgressEvent, startMs: 
     state.usage.cacheWrite += msg.usage.cacheWrite ?? 0;
     state.usage.cost += msg.usage.cost?.total ?? 0;
     state.usage.turns = state.turns;
+    // #543 F6 — running cumulative total, the token-budget quantity.
+    state.totalTokens +=
+      (msg.usage.input ?? 0) +
+      (msg.usage.output ?? 0) +
+      (msg.usage.cacheRead ?? 0) +
+      (msg.usage.cacheWrite ?? 0);
   }
   // Find the latest tool call name + assistant text in this turn.
   let latestToolName: string | undefined;
@@ -279,5 +326,11 @@ export function ingestEvent(state: RunningState, event: ProgressEvent, startMs: 
   // extractable hint — keeps deck snapshot honest).
   if (latestToolName) state.lastToolHint = latestToolHint;
   if (latestText) state.lastText = latestText;
+  // F1 (#543): hand the full block list to the loop detector. The observer
+  // is a no-op when the loop detector is disabled (master switch off, or
+  // ops-role child) — spawn.ts simply doesn't pass one.
+  if (loopObserver && msg.content) {
+    loopObserver(msg.content as PiContentBlock[], state.turns);
+  }
   return true;
 }

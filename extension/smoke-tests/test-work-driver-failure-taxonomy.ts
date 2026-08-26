@@ -11,7 +11,12 @@
 
 import { formatSingleReport } from "../src/async-jobs.ts";
 import { isRateLimit429Msg } from "../src/types.ts";
-import { classifyFailureCause, failureCauseReason } from "../src/work-driver-failure-taxonomy.ts";
+import {
+  classifyFailureCause,
+  failureCauseReason,
+  failureCauseReasonForClass,
+} from "../src/work-driver-failure-taxonomy.ts";
+import { buildCompletionEvent } from "../src/work-driver-merged.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -45,9 +50,7 @@ process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
 // adversarial / lens steps without injecting a loopFn. Cap any such
 // accidental live spawn at 2s so the suite stays deterministic and fast.
 process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
-process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
-
-// PR17 — the outcome-verification gate is disabled globally here; dedicated
+process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000"; // PR17 — the outcome-verification gate is disabled globally here; dedicated
 // gate tests re-enable it with an injected verifyExecFn.
 process.env.PI_ENSEMBLE_VERIFY = "0";
 

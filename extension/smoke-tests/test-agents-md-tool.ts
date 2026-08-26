@@ -17,7 +17,7 @@
  *   - the unified diff in the report is insertions-only for a create
  */
 
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -85,7 +85,9 @@ const run = (raw: Record<string, unknown>) =>
   wrote = readFileSync(AGENTS, "utf8");
   const d = r.details;
   assert(d.verb === "create" && d.exitCode === 0, "create → { verb: create, exitCode: 0 }");
-  const plan = d.plan as { newBytes: string; oldBytes: string; wouldWrite: boolean; managedIds: string[] } | undefined;
+  const plan = d.plan as
+    | { newBytes: string; oldBytes: string; wouldWrite: boolean; managedIds: string[] }
+    | undefined;
   assert(plan !== undefined, "create details carry a plan");
   assert(plan?.wouldWrite === true, "create plan: wouldWrite is true");
   assert(plan?.oldBytes === "", "create plan: oldBytes is the empty string");
@@ -130,7 +132,10 @@ const run = (raw: Record<string, unknown>) =>
 {
   const r = await run({ verb: "update" });
   const plan = r.details.plan as { wouldWrite: boolean; newBytes: string } | undefined;
-  assert(r.details.exitCode === 0 && plan?.wouldWrite === false, "idempotent update: no-op, exit 0");
+  assert(
+    r.details.exitCode === 0 && plan?.wouldWrite === false,
+    "idempotent update: no-op, exit 0",
+  );
   assert(r.content[0]?.text.includes("no-op (already current)"), "no-op report says so");
 }
 
@@ -138,7 +143,9 @@ const run = (raw: Record<string, unknown>) =>
 
 {
   const r = await run({ verb: "check" });
-  const c = r.details.check as { code: number; findings: { kind: string; message: string }[]; corrupt: boolean } | undefined;
+  const c = r.details.check as
+    | { code: number; findings: { kind: string; message: string }[]; corrupt: boolean }
+    | undefined;
   assert(r.details.verb === "check", "check details carry the verb");
   assert(c !== undefined, "check details carry the full CheckResult");
   assert(c?.code === 0, `clean fixture → check code 0 (got ${c?.code})`);
@@ -147,17 +154,29 @@ const run = (raw: Record<string, unknown>) =>
   assert(r.content[0]?.text === "clean", "clean check renders 'clean'");
 
   // A stale reference → findings, one line per finding.
-  writeFileSync(AGENTS, `# T\n\nsee \`gone.ts\` for the rest\n\n<!-- pi-ensemble:agents-md:begin decision-ledger v1 -->\n| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |\n<!-- pi-ensemble:agents-md:end decision-ledger -->\n`);
+  writeFileSync(
+    AGENTS,
+    `# T\n\nsee \`gone.ts\` for the rest\n\n<!-- pi-ensemble:agents-md:begin decision-ledger v1 -->\n| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |\n<!-- pi-ensemble:agents-md:end decision-ledger -->\n`,
+  );
   const r2 = await run({ verb: "check" });
   const c2 = r2.details.check as { code: number; findings: { kind: string; message: string }[] };
   assert(r2.details.exitCode === 1 && c2.code === 1, "stale path → exit 1");
-  assert(c2.findings.some((f) => f.kind === "stale-path" && f.message.includes("gone.ts")), "check finding names the stale path");
-  assert(r2.content[0]?.text.split("\n").length >= 1 && r2.content[0]?.text.includes("stale-path"), "check report is one line per finding");
+  assert(
+    c2.findings.some((f) => f.kind === "stale-path" && f.message.includes("gone.ts")),
+    "check finding names the stale path",
+  );
+  assert(
+    r2.content[0]?.text.split("\n").length >= 1 && r2.content[0]?.text.includes("stale-path"),
+    "check report is one line per finding",
+  );
 
   // no-file case: check absent, error present.
   rmSync(AGENTS);
   const r3 = await run({ verb: "check" });
-  assert(r3.details.error !== undefined && r3.details.check === undefined, "check on a missing file: error present, check absent");
+  assert(
+    r3.details.error !== undefined && r3.details.check === undefined,
+    "check on a missing file: error present, check absent",
+  );
   assert(r3.details.exitCode === 2, "check on a missing file → exit 2");
   assert(r3.content[0]?.text.includes("error"), "…and the report renders the error");
 }
@@ -185,7 +204,10 @@ const run = (raw: Record<string, unknown>) =>
   const r = await run({ verb: "update" });
   const plan = r.details.plan as { oldBytes: string } | undefined;
   assert(plan !== undefined, "update from a subdirectory still resolves the repo");
-  assert(readFileSync(AGENTS, "utf8") === plan?.oldBytes, "…against the repo-root AGENTS.md, not cwd-relative");
+  assert(
+    readFileSync(AGENTS, "utf8") === plan?.oldBytes,
+    "…against the repo-root AGENTS.md, not cwd-relative",
+  );
 }
 
 rmSync(tmp, { recursive: true, force: true });

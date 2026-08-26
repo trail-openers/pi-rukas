@@ -188,6 +188,28 @@ export async function runAdversarialLoop(
         headline: "cancelled (abort signal)",
       };
     }
+    // #543 — loop / token-budget self-kills (F4d: four-site parity with
+    // the taxonomy). NOT a provider fault, so shouldRetry=false — a looped or
+    // budgeted child retried would just loop again, and the #486 in-step
+    // retry (`isTransientAdversarialOutcome` reads shouldRetry) must not spend
+    // its budget on it.
+    if (r.killCause === "loop") {
+      return {
+        cause: "self-killed:loop",
+        shouldRetry: false,
+        maxRetries: 0,
+        headline:
+          "killed by pi-ensemble (loop detected) — the same tool call repeated; retrying would loop again",
+      };
+    }
+    if (r.killCause === "token-budget") {
+      return {
+        cause: "self-killed:token-budget",
+        shouldRetry: false,
+        maxRetries: 0,
+        headline: "killed by pi-ensemble (token budget crossed) — a cost cap, not a provider fault",
+      };
+    }
 
     // 429 rate-limit — detected from errorStop.message.
     if (r.errorStop && isRateLimit429Msg(r.errorStop.message)) {
@@ -279,6 +301,12 @@ export async function runAdversarialLoop(
       model: lastModel,
       adversarialRounds: toRoundRecords(rounds),
       roundsExecuted: round,
+      // #543 — thread a loop / token-budget cap kill through the synthesized
+      // loop result so the fan-out aggregate (work-driver-adversarial.ts) can
+      // park with the fixed-literal cap INSTEAD of the generic infra cap.
+      ...(r.killCause === "loop" || r.killCause === "token-budget"
+        ? { killCause: r.killCause }
+        : {}),
     });
   };
 
@@ -407,6 +435,8 @@ interface SynthesizeInput {
   adversarialRounds?: DispatchResult["adversarialRounds"];
   /** #485 — total rounds executed when the loop exited with no verdict. */
   roundsExecuted?: number;
+  /** #543 — a loop / token-budget self-kill, threaded so the cap path can distinguish it. */
+  killCause?: DispatchResult["killCause"];
 }
 
 function toRoundRecords(
@@ -433,6 +463,7 @@ function synthesizeResult(i: SynthesizeInput): DispatchResult {
     loopOutcome: i.loopOutcome,
     adversarialRounds: i.adversarialRounds,
     roundsExecuted: i.roundsExecuted,
+    ...(i.killCause ? { killCause: i.killCause } : {}),
   };
 }
 

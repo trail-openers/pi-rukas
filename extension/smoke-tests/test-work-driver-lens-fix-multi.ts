@@ -10,12 +10,12 @@
  * No real Pi spawn happens; all dispatchCore calls are mocked.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { runWorkDriver } from "../src/work-driver.ts";
 import { __resetIntegrationLock } from "../src/work-driver-integrate.ts";
+import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
 import { mkLensSummary, setupSpawnGuard } from "./test-helpers.ts";
 
@@ -46,9 +46,7 @@ function lensIssuesFoundEvent(title: string, description: string) {
     at: 2_000_000,
     jobId: "j-lens-1",
     round: 1,
-    findings: JSON.stringify([{
-      lens: "SECURITY", severity: "MEDIUM", path: "feature.txt", line: 1, title, description,
-    }]),
+    findings: JSON.stringify([{ lens: "SECURITY", severity: "MEDIUM", path: "feature.txt", line: 1, title, description }]),
     verdict: "ISSUES_FOUND" as const,
   };
 }
@@ -149,7 +147,7 @@ setupSpawnGuard();
 
     const capturedDiffs: string[] = [];
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      pi: makeFakePi(),
       repoRoot: dir,
       issue: 309,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -275,7 +273,7 @@ setupSpawnGuard();
     await writeState(dir, s);
 
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      pi: makeFakePi(),
       repoRoot: dir,
       issue: 310,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -428,7 +426,7 @@ setupSpawnGuard();
     }) as typeof realExec;
 
     const ctx: DriverContext = {
-      pi: makeFakePi().pi,
+      pi: makeFakePi(),
       repoRoot: root,
       issue: 493,
       issueBodyFetcherFn: mockIssueBodyOk,
@@ -457,9 +455,9 @@ setupSpawnGuard();
     await runWorkDriver(ctx).catch(() => {});
 
     const after = await readState(root, 493);
-    const cap = [...(after?.eventLog ?? [])].reverse().find(
-      (e) => e.kind === "cap-hit" && e.cap === "lens-fix-not-integrated",
-    );
+    const cap = [...(after?.eventLog ?? [])]
+      .reverse()
+      .find((e) => e.kind === "cap-hit" && e.cap === "lens-fix-not-integrated");
     assert(
       cap !== undefined,
       "a staging-failure lens-fix parks with the lens-fix-not-integrated cap",
@@ -471,8 +469,7 @@ setupSpawnGuard();
       // reading) must not be used for an integration failure.
       const reports = after?.pipelineState.plumbReports ?? [];
       assert(
-        reports.length === 1 &&
-          (reports[0].body ?? "").includes("staging or integration failed"),
+        reports.length === 1 && (reports[0].body ?? "").includes("staging or integration failed"),
         "the integration failure is surfaced as a plumb-report (not flattened into the cap only)",
       );
       assert(

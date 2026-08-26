@@ -82,7 +82,13 @@ export interface DispatchResult {
    * MUST branch on this before errorStop/exitCode — a self-kill is never a
    * provider failure and must never be reported as one.
    */
-  killCause?: "timeout" | "inactivity" | "abort";
+  /**
+   * #543 — "loop" = the F1 loop detector killed a repeating (tool, args) call;
+   * "token-budget" = the F6 cumulative token budget was crossed. Both are
+   * self-inflicted caps, never a provider fault — a looped/budgeted child is
+   * retried exactly zero times (unlike "inactivity", which is a genuine hang).
+   */
+  killCause?: "timeout" | "inactivity" | "abort" | "loop" | "token-budget";
   /**
    * #298 — set only on the SYNTHESIZED adversarial-loop result (role
    * "adversarial-loop"): "rejected" is a COMPLETED reviewer verdict (must be
@@ -111,6 +117,18 @@ export interface DispatchResult {
   roundsExecuted?: number;
   /** The budget (ms) that expired for killCause "timeout"/"inactivity". */
   killBudgetMs?: number;
+  /**
+   * #543 — set when killCause is "loop". The structured trigger evidence the
+   * F1 detector had at kill time: the tool name and the streak count.
+   * `buildCompletionEvent` uses this so the state-file errorTail names WHAT
+   * looped, not just the cause. Absent for every other killCause.
+   */
+  loopEvidence?: { tool: string; count: number };
+  /**
+   * #543 — set when killCause is "token-budget". The F6 budget + the
+   * cumulative tokens observed at the kill. Absent for every other killCause.
+   */
+  tokenBudget?: { budget: number; used: number };
   /**
    * What the child last emitted before we killed it. Present only on a kill.
    *
@@ -193,6 +211,10 @@ export type DispatchFailureCause =
   /** #366 — spend cap. Waiting genuinely does not help. */
   | "rate-limited:quota-terminal"
   | "provider-severed"
+  /** #543 — the F1 loop detector ended the child; a repeating call is not a provider fault. */
+  | "self-killed:loop"
+  /** #543 — the F6 cumulative token budget was crossed; spend cap, not a provider fault. */
+  | "self-killed:token-budget"
   | "crashed"
   | "crashed-unknown";
 

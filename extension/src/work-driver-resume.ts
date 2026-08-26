@@ -36,6 +36,7 @@
  * pre-flight, already-merged tolerance).
  */
 
+import { existsSync } from "node:fs";
 import { trace } from "./trace.ts";
 import { type WorkState, type WorkStep, writeState } from "./workflow-state.ts";
 
@@ -43,6 +44,113 @@ import { type WorkState, type WorkStep, writeState } from "./workflow-state.ts";
 export function resumeEnabled(): boolean {
   const v = process.env.PI_ENSEMBLE_RESUME;
   return v !== "0" && v !== "false";
+}
+
+// ---------------------------------------------------------------------------
+// #543 F3a — session re-attach (capability, DEFAULT-OFF).
+//
+// A child is already spawned with `--session <transcriptPath>` and that path is
+// on `DispatchResult`. On a crash-resume, instead of always re-dispatching from
+// scratch, we MAY re-attach the surviving session with `--mode rpc
+// --session <transcriptPath>` + a "continue from your checkpoint" prompt. That
+// is only safe for SINGLE-DISPATCH steps (explore/plan/ops/handoff/policy-judge)
+// where there is exactly one child and its transcript. For FAN-OUT steps
+// (develop/lens/adversarial) re-attaching one child of N is an unhandled state,
+// so those re-dispatch. F3a FAILS OPEN: absent transcript, flag off, or a
+// re-attach spawn failure → re-dispatch from scratch.
+//
+// `PI_ENSEMBLE_SESSION_REATTACH=1` opts in; at ship it defaults OFF (=0).
+// ---------------------------------------------------------------------------
+
+/** F3a escape hatch: PI_ENSEMBLE_SESSION_REATTACH=1 enables re-attach.
+ * Pending: #543 F3a — the crash-resume path (classifyRunningState + a future
+ * re-attach dispatch helper) is the intended caller; the F3a seam is shipped
+ * as default-off infrastructure (PI_ENSEMBLE_SESSION_REATTACH=0, no
+ * production caller, no dispatch-started transcriptPath wiring yet) so it
+ * cannot change behaviour. Wired when the resume step learns to call
+ * resolveReattach/reattachArgs/reattachPrompt for a single-dispatch step.
+ */
+export function sessionReattachEnabled(): boolean {
+  return process.env.PI_ENSEMBLE_SESSION_REATTACH === "1";
+}
+
+/**
+ * FAN-OUT steps — a step that dispatches MULTIPLE children. Re-attaching one
+ * child of a fan-out is an unhandled state (the siblings are gone), so these
+ * always re-dispatch. develop (N workstreams), lens-review (6 lenses), and
+ * adversarial (per-workstream loops) all fan out.
+ */
+export const FAN_OUT_STEPS: ReadonlySet<WorkStep> = new Set<WorkStep>([
+  "develop",
+  "lens-review",
+  "lens-fix",
+  "adversarial",
+]);
+
+/** The floor on a re-attach grant: never less than 5 minutes. Deliberate
+ * grace: a re-attaching child re-reads its own session (compaction / token
+ * catch-up) before it can do useful work, so a grant tighter than this floor
+ * would kill it before it speaks — the #296 false-positive shape. */
+export const REATTACH_GRANT_FLOOR_MS = 5 * 60_000;
+
+/**
+ * Decide whether a crashed single-dispatch step should re-attach its surviving
+ * session rather than re-dispatch from scratch.
+ *
+ * Returns `{ mode: "reattach", args }` only when ALL of: the feature is on,
+ * the step is NOT a fan-out, the in-flight dispatch carried a transcript path,
+ * and that file exists on disk. Everything else is `{ mode: "re-dispatch" }`
+ * (fail-open) — a missing transcript or a fan-out step re-dispatches.
+ *
+ * Pending: #543 F3a — no production caller yet; the resume step does not
+ * currently record `transcriptPath` on `dispatch-started`, so this returns
+ * `re-dispatch` for every state file that reaches it today.
+ */
+export function resolveReattach(
+  step: WorkStep,
+  inFlight: { jobId: string; transcriptPath?: string }[],
+  now: number,
+  originalTimeoutMs?: number,
+  dispatchStartedAt?: number,
+  opts: { fs?: { existsSync: (p: string) => boolean } } = {},
+): { mode: "re-dispatch" } | { mode: "reattach"; transcriptPath: string; grantMs: number } {
+  if (!sessionReattachEnabled()) return { mode: "re-dispatch" };
+  if (FAN_OUT_STEPS.has(step)) return { mode: "re-dispatch" };
+  // Single-dispatch steps record exactly one in-flight job. A fan-out that
+  // somehow reaches here has N; refuse to pick one.
+  if (inFlight.length !== 1) return { mode: "re-dispatch" };
+  const transcriptPath = inFlight[0]?.transcriptPath;
+  if (!transcriptPath) return { mode: "re-dispatch" };
+  const exists = (opts.fs?.existsSync ?? existsSync)(transcriptPath);
+  if (!exists) return { mode: "re-dispatch" };
+  // Grant = original timeout minus elapsed since dispatch-started, clamped to
+  // the 5-min floor. Without an original timeout we fall back to the floor.
+  let grantMs = REATTACH_GRANT_FLOOR_MS;
+  if (originalTimeoutMs !== undefined && dispatchStartedAt !== undefined) {
+    grantMs = Math.max(REATTACH_GRANT_FLOOR_MS, originalTimeoutMs - (now - dispatchStartedAt));
+  }
+  return { mode: "reattach", transcriptPath, grantMs };
+}
+
+/**
+ * The child arg suffix for a re-attach spawn: `--session <transcriptPath>`.
+ *
+ * `--mode rpc` is already on every child (CHILD_ARGS_BASE), so a re-attach is
+ * the same spawn with the SAME `--session` path (Pi resumes the existing
+ * session file) instead of a fresh transcript path. Exported as a pure
+ * function so the offline test asserts the args array without spawning.
+ */
+export function reattachArgs(transcriptPath: string): string[] {
+  return ["--session", transcriptPath];
+}
+
+/**
+ * The prompt sent to a re-attached session: it resumes from its own
+ * transcript (its prior turns are already in context), so the prompt tells it
+ * to continue from its checkpoint rather than re-state the task.
+ */
+export function reattachPrompt(step: WorkStep, role: string): string {
+  return `[resume] Your Pi process was restarted mid-dispatch on step '${step}' (role ${role}). Your prior transcript is loaded in this session. Continue from your checkpoint: finish the work you were doing and produce the same final report you would have, as if the restart had not happened. Do not re-do completed work.`;
 }
 
 /**
@@ -56,7 +164,12 @@ export function mintJobId(step: WorkStep, label: string, at: number): string {
   return `${step}:${label}:${process.pid}:${at}`;
 }
 
-/** Record the intent to dispatch, so a crash mid-flight is visible on disk. */
+/** Record the intent to dispatch, so a crash mid-flight is visible on disk.
+ *  `transcriptPath` (#543 F3a) is the child's session file — recorded at dispatch
+ *  time so a crash-resume can re-attach the surviving session instead of
+ *  re-dispatching from scratch. It is optional: steps that don't know the path
+ *  up front (the child mints it inside spawn) leave it unset and F3a fails open
+ *  to re-dispatch. */
 export function markDispatchStarted(
   state: WorkState,
   step: WorkStep,
@@ -64,6 +177,7 @@ export function markDispatchStarted(
   label: string,
   jobId: string,
   at: number,
+  transcriptPath?: string,
 ): WorkState {
   return {
     ...state,
@@ -73,7 +187,10 @@ export function markDispatchStarted(
       ...state.pipelineState,
       inFlightJobIds: [...state.pipelineState.inFlightJobIds, jobId],
     },
-    eventLog: [...state.eventLog, { kind: "dispatch-started", step, role, label, jobId, at }],
+    eventLog: [
+      ...state.eventLog,
+      { kind: "dispatch-started", step, role, label, jobId, at, transcriptPath },
+    ],
   };
 }
 
@@ -96,10 +213,11 @@ export async function beginDispatch(
   role: string,
   label: string,
   at: number,
+  transcriptPath?: string,
 ): Promise<{ state: WorkState; jobId: string }> {
   const jobId = mintJobId(step, label, at);
   if (!resumeEnabled()) return { state, jobId };
-  const next = markDispatchStarted(state, step, role, label, jobId, at);
+  const next = markDispatchStarted(state, step, role, label, jobId, at, transcriptPath);
   await writeState(repoRoot, next);
   return { state: next, jobId };
 }

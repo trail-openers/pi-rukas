@@ -158,7 +158,10 @@ assert(
   await mechanizedBranchSetup(execFn, REPO, 1, [1], [], "x").catch(() => {
     threw = true;
   });
-  assert(threw, "unresolvable base SHA (no origin ref AND no local mainline) throws so the caller can route to a handoff");
+  assert(
+    threw,
+    "unresolvable base SHA (no origin ref AND no local mainline) throws so the caller can route to a handoff",
+  );
 }
 
 // #533 — a failed fetch no longer throws: the base SHA falls back to the

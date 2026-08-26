@@ -22,13 +22,18 @@
  * throw is what makes "no-op" a real, observable property rather than a claim.
  */
 
-import { mkdtempSync, rmSync, statSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { renderAgent } from "../src/agents-md/renderer.ts";
+import {
+  type AgentsMdFs,
+  checkAgent,
+  createAgent,
+  updateAgent,
+} from "../src/agents-md/agents-md.ts";
+import { EXIT_CLEAN, EXIT_FINDINGS } from "../src/agents-md/check.ts";
 import { detectFacts } from "../src/agents-md/detect.ts";
-import { createAgent, updateAgent, checkAgent, type AgentsMdFs } from "../src/agents-md/agents-md.ts";
-import { EXIT_FINDINGS, EXIT_CLEAN } from "../src/agents-md/check.ts";
+import { renderAgent } from "../src/agents-md/renderer.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -62,7 +67,10 @@ function buildFixture(): void {
   );
   // bun.lock marks the package manager as bun (a real, not guessed, fact).
   writeFileSync(path.join(tmp, "bun.lock"), "{ lockfileVersion: 1 }");
-  writeFileSync(path.join(tmp, ".github", "workflows", "ci.yml"), "name: CI\njobs:\n  test:\n    steps: []\n");
+  writeFileSync(
+    path.join(tmp, ".github", "workflows", "ci.yml"),
+    "name: CI\njobs:\n  test:\n    steps: []\n",
+  );
   writeFileSync(path.join(tmp, "src", "index.ts"), "export const x = 1;\n");
 }
 buildFixture();
@@ -91,12 +99,21 @@ let A: string;
   const fs = mkFs();
   const res = createAgent(tmp, AGENTS, fs);
   A = fs.readFile(AGENTS);
-  assert(res.exitCode === 0 && res.plan?.wouldWrite === true, "create writes a fresh file (wouldWrite)");
+  assert(
+    res.exitCode === 0 && res.plan?.wouldWrite === true,
+    "create writes a fresh file (wouldWrite)",
+  );
   assert(res.plan?.managedIds.includes("quality-gates"), "create emits the quality-gates section");
   assert(res.plan?.managedIds.includes("commands"), "create emits the commands section");
   assert(res.plan?.managedIds.includes("environment"), "create emits the environment section");
-  assert(res.plan?.managedIds.includes("decision-ledger"), "create emits the decision-ledger section");
-  assert(A.includes("bun run test") && A.includes("bun run lint"), "create emits the detected commands");
+  assert(
+    res.plan?.managedIds.includes("decision-ledger"),
+    "create emits the decision-ledger section",
+  );
+  assert(
+    A.includes("bun run test") && A.includes("bun run lint"),
+    "create emits the detected commands",
+  );
 }
 
 // ------------------------------------ pure render is byte-identical on re-run
@@ -106,7 +123,10 @@ let A: string;
   const input = { facts, ledger: [], preamble: "# T\n", version: 1 };
   const b1 = Buffer.from(renderAgent(input), "utf8");
   const b2 = Buffer.from(renderAgent({ ...input, facts: detectFacts(tmp) }), "utf8");
-  assert(Buffer.compare(b1, b2) === 0, "pure render: two renders of the same input are Buffer.equals");
+  assert(
+    Buffer.compare(b1, b2) === 0,
+    "pure render: two renders of the same input are Buffer.equals",
+  );
 }
 
 // --------------------------- update #1 → WRITE CODEPATH NOT ENTERED, still A
@@ -130,7 +150,10 @@ let A: string;
   } catch (e) {
     updateErr = (e as Error).message;
   }
-  assert(!threw && writes === 0, "update #1: the writeFile codepath was NOT entered (stub never called)");
+  assert(
+    !threw && writes === 0,
+    "update #1: the writeFile codepath was NOT entered (stub never called)",
+  );
   assert(fs.readFile(AGENTS) === A, "update #1: bytes are still A (unchanged)");
   assert(updateErr === "", "update #1: no error surfaced");
 }
@@ -141,13 +164,19 @@ let A: string;
   rmSync(path.join(tmp, ".github", "workflows", "ci.yml"));
   const fs = mkFs();
   const res = checkAgent(tmp, AGENTS, {}, fs);
-  assert(res.check?.code === EXIT_FINDINGS, `after deleting ci.yml, check exits ${EXIT_FINDINGS} (got ${res.check?.code})`);
+  assert(
+    res.check?.code === EXIT_FINDINGS,
+    `after deleting ci.yml, check exits ${EXIT_FINDINGS} (got ${res.check?.code})`,
+  );
   assert(
     res.check?.findings.some((f) => f.kind === "stale-path" && f.message.includes("ci.yml")),
     "check reports the exact stale finding (the deleted CI workflow)",
   );
   // Restore so the rest of the lifecycle is on a known state.
-  writeFileSync(path.join(tmp, ".github", "workflows", "ci.yml"), "name: CI\njobs:\n  test:\n    steps: []\n");
+  writeFileSync(
+    path.join(tmp, ".github", "workflows", "ci.yml"),
+    "name: CI\njobs:\n  test:\n    steps: []\n",
+  );
   const resClean = checkAgent(tmp, AGENTS, {}, fs);
   assert(resClean.check?.code === EXIT_CLEAN, "with ci.yml restored, check is clean (0)");
 }
@@ -157,7 +186,10 @@ let A: string;
 let B: string;
 {
   // A real environment change: add a script to package.json.
-  const pkg = JSON.parse(readFileSync(path.join(tmp, "package.json"), "utf8")) as Record<string, unknown>;
+  const pkg = JSON.parse(readFileSync(path.join(tmp, "package.json"), "utf8")) as Record<
+    string,
+    unknown
+  >;
   (pkg.scripts as Record<string, string>).typecheck = "bunx tsc --noEmit";
   writeFileSync(path.join(tmp, "package.json"), JSON.stringify(pkg, null, 2));
 
@@ -166,7 +198,10 @@ let B: string;
   B = fs.readFile(AGENTS);
   assert(res.plan?.wouldWrite === true, "update #2 (after env change): wouldWrite is true");
   assert(B !== A, "update #2: bytes changed to B (a real update)");
-  assert(B.includes("bun run typecheck"), "update #2: B contains the newly-detected command (bun run typecheck)");
+  assert(
+    B.includes("bun run typecheck"),
+    "update #2: B contains the newly-detected command (bun run typecheck)",
+  );
 }
 
 // -------------------------------------------- update #3 → no-op, bytes B

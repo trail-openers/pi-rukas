@@ -340,6 +340,11 @@ export function inlineDevelopPrompt(
     `  1. ${fetchInstr}`,
     "  2. Implement the change end-to-end in the current branch. Run local quality gates (typecheck, lint, tests as the project defines them).",
     "  3. Do NOT commit. Do NOT push. Leave the changes uncommitted in the working directory — ops commits in Step 6 after the adversarial gate.",
+    // #543 F5 — the driver's checkpoint (F5(2)) commits the worktree at the
+    // natural seams the child made during its run, so a cap kill never
+    // leaves only a failure message. Committing at natural seams is what
+    // makes those seams exist; the driver only stages what is there.
+    "  3a. Commit your work in the worktree at natural seams (a clean build, a passing test suite). Do NOT push — the driver owns the branch and ops owns the push in Step 6.",
     "  4. End your reply with a `## Touched files` section listing every file you changed and a one-line `## Summary`.",
     "",
     "Discourage drive-by edits; only touch files in scope.",
