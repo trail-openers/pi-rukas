@@ -3,9 +3,8 @@
  * Smoke test for mechanized merge + checkout restoration (issue #323).
  *
  * Covers: deriveMergeMethod, executeAndVerifyMerge, mechanizedMerge,
- * restoreCheckout, inlineMergePrompt with mergeMethod parameter,
- * and the merged step's full flow including fallback dispatch and
- * crash-resume idempotency. No real Pi spawn; all calls are mocked.
+ * restoreCheckout, inlineMergePrompt with mergeMethod parameter, and
+ * runMerged's restoration reachability (#476). No real Pi spawn; mocked.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -20,9 +19,9 @@ import {
 } from "../src/work-driver-merged-mechanized.ts";
 import { runMerged } from "../src/work-driver-merged.ts";
 import { inlineMergePrompt } from "../src/work-driver-prompts-late.ts";
-import { runWorkDriver } from "../src/work-driver.ts";
-import { type WorkState, initialState, readState, writeState } from "../src/workflow-state.ts";
+import type { WorkState } from "../src/workflow-state.ts";
 import { setupSpawnGuard } from "./test-helpers.ts";
+import { mkStateMerged } from "./work-driver-merged-fixtures.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -31,19 +30,6 @@ function assert(cond: boolean, msg: string) {
     console.error(`✗ ${msg}`);
     exit = 1;
   }
-}
-
-function mkResult(overrides: Partial<DispatchResult> = {}): DispatchResult {
-  return {
-    role: "explore",
-    ok: true,
-    text: "stub",
-    toolUses: [],
-    ms: 100,
-    exitCode: 0,
-    transcriptPath: "/tmp/stub.json",
-    ...overrides,
-  };
 }
 
 function mkPi(): ExtensionAPI {
@@ -93,40 +79,6 @@ function mkCtx(
   } as DriverContext;
 }
 
-function mkState(issue: number, pr: number, branch: string): WorkState {
-  const s = initialState(issue, 1_000_000);
-  (s as any).pipelineState = {
-    ...s.pipelineState,
-    currentStep: "merged",
-    lastCompletedStep: "ci",
-    branchName: branch,
-    prNumber: pr,
-  };
-  return s;
-}
-
-// mkState with baseSha + worktrees populated so runMerged's doctrine read
-// and post-merge worktree teardown are exercised (both keyed on those fields).
-function mkStateFull(
-  issue: number,
-  pr: number,
-  branch: string,
-  baseSha: string,
-  worktrees: Record<string, string>,
-): WorkState {
-  const s = initialState(issue, 1_000_000);
-  (s as any).pipelineState = {
-    ...s.pipelineState,
-    currentStep: "merged",
-    lastCompletedStep: "ci",
-    branchName: branch,
-    prNumber: pr,
-    baseSha,
-    worktrees,
-  };
-  return s;
-}
-
 process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
 process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
@@ -137,65 +89,54 @@ setupSpawnGuard();
 // ---- deriveMergeMethod tests ----
 
 {
-  const { fn } = mkExec({
-    "gh repo view": {
-      stdout: '{"squashMergeAllowed":true,"mergeCommitAllowed":true,"rebaseMergeAllowed":true}',
+  // Table: repo-view settings → derived method or fallback. Covers the full
+  // priority ladder (squash > merge > rebase), the all-false and all-null
+  // fallbacks, and the gh-throws fallback.
+  const cases: { settings: string; err?: boolean; label: string; want: string }[] = [
+    {
+      settings: '{"squashMergeAllowed":true,"mergeCommitAllowed":true,"rebaseMergeAllowed":true}',
+      label: "squash preferred when all allowed",
+      want: "squash",
     },
-  });
-  const r = await deriveMergeMethod(fn, "/fake");
-  assert(
-    "method" in r && r.method === "squash",
-    "deriveMergeMethod: squash preferred when all allowed",
-  );
-}
-{
-  const { fn } = mkExec({
-    "gh repo view": {
-      stdout: '{"squashMergeAllowed":false,"mergeCommitAllowed":true,"rebaseMergeAllowed":true}',
+    {
+      settings: '{"squashMergeAllowed":false,"mergeCommitAllowed":true,"rebaseMergeAllowed":true}',
+      label: "squash false, merge true → merge",
+      want: "merge",
     },
-  });
-  const r = await deriveMergeMethod(fn, "/fake");
-  assert(
-    "method" in r && r.method === "merge",
-    "deriveMergeMethod: squash false, merge true → merge",
-  );
-}
-{
-  const { fn } = mkExec({
-    "gh repo view": {
-      stdout: '{"squashMergeAllowed":false,"mergeCommitAllowed":false,"rebaseMergeAllowed":true}',
+    {
+      settings: '{"squashMergeAllowed":false,"mergeCommitAllowed":false,"rebaseMergeAllowed":true}',
+      label: "squash+merge false, rebase true → rebase",
+      want: "rebase",
     },
-  });
-  const r = await deriveMergeMethod(fn, "/fake");
-  assert(
-    "method" in r && r.method === "rebase",
-    "deriveMergeMethod: squash+merge false, rebase true → rebase",
-  );
-}
-{
-  const { fn } = mkExec({
-    "gh repo view": {
-      stdout: '{"squashMergeAllowed":false,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
+    {
+      settings: '{"squashMergeAllowed":false,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
+      label: "all false → fallback",
+      want: "fallback",
     },
-  });
-  const r = await deriveMergeMethod(fn, "/fake");
-  assert("fallback" in r && r.fallback === true, "deriveMergeMethod: all false → fallback");
-}
-{
-  const { fn } = mkExec({
-    "gh repo view": {
-      stdout: '{"squashMergeAllowed":null,"mergeCommitAllowed":null,"rebaseMergeAllowed":null}',
+    {
+      settings: '{"squashMergeAllowed":null,"mergeCommitAllowed":null,"rebaseMergeAllowed":null}',
+      label: "all null → fallback",
+      want: "fallback",
     },
-  });
-  const r = await deriveMergeMethod(fn, "/fake");
-  assert("fallback" in r && r.fallback === true, "deriveMergeMethod: all null → fallback");
-}
-{
-  const { fn } = mkExec({
-    "gh repo view": { error: true, stderr: "network error" },
-  });
-  const r = await deriveMergeMethod(fn, "/fake");
-  assert("fallback" in r && r.fallback === true, "deriveMergeMethod: gh throws → fallback");
+    {
+      settings: "",
+      err: true,
+      label: "gh throws → fallback",
+      want: "fallback",
+    },
+  ];
+  for (const c of cases) {
+    const { fn } = mkExec(
+      c.err ? { "gh repo view": { error: true, stderr: "network error" } }
+        : { "gh repo view": { stdout: c.settings } },
+    );
+    const r = await deriveMergeMethod(fn, "/fake");
+    assert(
+      c.want === "fallback" ? "fallback" in r && r.fallback === true
+        : "method" in r && r.method === c.want,
+      `deriveMergeMethod: ${c.label}`,
+    );
+  }
 }
 
 // ---- executeAndVerifyMerge tests ----
@@ -218,12 +159,20 @@ setupSpawnGuard();
   );
 }
 {
+  // Permanent gh failure (404-style "not found") on both pre-check and
+  // post-verify: gh cannot resolve the PR at all, so this is NOT the
+  // transient transport blip #356's merged-with-warning behaviour covers.
+  // It must return ok:false so runMerged emits the plumb-report and falls
+  // back to the LLM ops dispatch rather than reporting a false success.
   const { fn } = mkExec({
     "gh pr view": { error: true, stderr: "not found" },
     "gh pr merge": { stdout: "Merged" },
   });
   const r = await executeAndVerifyMerge(123, "squash", fn, "/fake");
-  assert("ok" in r && r.ok === false, "executeAndVerifyMerge: pre-check fails → error");
+  assert(
+    "ok" in r && r.ok === false && /permanent gh error/.test(r.reason),
+    "executeAndVerifyMerge: permanent post-verify failure → ok:false (NOT merged-with-warning)",
+  );
 }
 
 // ---- inlineMergePrompt tests ----
@@ -287,26 +236,19 @@ setupSpawnGuard();
 
 // ---- #476 — restoreCheckout reached on a successful merge ----
 //
-// The three unit blocks above call restoreCheckout directly, which pins the
-// command sequence but says nothing about REACHABILITY: the only production
-// caller (work-driver-merged.ts runMerged) used to gate on ctx.verifyExecFn,
-// a test-only seam neither production entry point sets, so on a real merge
-// the checkout was never restored, refs never pruned, and branch -d never
-// attempted.
+// The unit blocks above pin the command sequence but say nothing about
+// REACHABILITY: runMerged used to gate restoration on ctx.verifyExecFn, a
+// test-only seam neither production entry point sets, so on a real merge
+// the checkout was never restored, refs never pruned, branch -d never
+// attempted. This block drives runMerged with verifyExecFn injected as a
+// recording fake: merge succeeds, restoration is observed (fetch origin
+// --prune / checkout / pull --ff-only / branch -d), and a branch -d refusal
+// lands in a `Checkout restoration` plumb-report rather than halting.
 //
-// This block drives runMerged with `verifyExecFn` INJECTED as a recording
-// fake, so the full mechanized-merge → restoration flow runs: merge
-// succeeds, mergeSucceeded=true triggers the restoration block, and the
-// restoration is observed (fetch origin --prune / checkout / pull
-// --ff-only / branch -d) with a branch -d refusal landing in a `Checkout
-// restoration` plumb-report rather than halting the cycle.
-//
-// The literal production shape — `verifyExecFn` absent, so the driver's
-// `ctx.verifyExecFn ?? execp` fallback really resolves to the real executor
-// — is asserted in the -live sibling
-// test-work-driver-merged-mechanized-prod-restore-live.ts. It cannot run
-// offline: with the seam absent the executor is the real `execp`, which
-// shells out to git and gh, and the §1 offline set must stay network-free.
+// The literal production shape — verifyExecFn absent, so the driver's
+// `ctx.verifyExecFn ?? execp` fallback resolves to the real executor — is
+// asserted in the -live sibling test-work-driver-merged-mechanized-prod-restore-live.ts,
+// which cannot run offline (real execp shells out to git/gh).
 {
   const dir = mkdtempSync(path.join(tmpdir(), "mm-prod-restore-"));
   try {
@@ -322,8 +264,8 @@ setupSpawnGuard();
       "git rev-parse": { stdout: "feature/issue-476\n" },
       "git checkout": { stdout: "" },
       "git pull": { stdout: "" },
-      // The refusal is the whole point of this block: the note path
-      // asserts a failed `branch -d` becomes a plumb-report, not a halt.
+      // The refusal is the point: a failed `branch -d` must become a
+      // plumb-report, not a halt.
       "git branch -d": { error: true, stderr: "not fully merged" },
     });
     // The recorder is the driver's executor: every command it issues is
@@ -339,32 +281,27 @@ setupSpawnGuard();
       }
     };
 
-    const ctx: DriverContext = {
+    // mkCtx supplies mergeGrant + issueBodyFetcherFn; only repoRoot and the
+    // dispatchFn differ from that helper's defaults here.
+    const ctx = mkCtx(476, recorder, {
       repoRoot: dir,
-      issue: 476,
-      pi: mkPi(),
-      // The recording fake stands in for the driver's executor — it is the
-      // same seam production's `ctx.verifyExecFn ?? execp` resolves through.
-      verifyExecFn: recorder,
-      issueBodyFetcherFn: async () => ({
-        stdout: "title:\ttest #476\nstate:\tOPEN\n\nbody",
-      }),
-      // The mechanized merge must succeed so the ops fallback dispatch
-      // (a real Pi spawn) is never attempted.
       dispatchFn: async () => {
+        // The mechanized merge must succeed so the ops fallback dispatch
+        // (a real Pi spawn) is never attempted.
         throw new Error("offline test: fallback dispatch should not be reached");
       },
-    } as unknown as DriverContext;
+    });
 
-    const state = mkStateFull(476, 4761, "feature/issue-476", "HEAD", { task_b: "" });
+    const state = mkStateMerged(476, 4761, "feature/issue-476", {
+      baseSha: "HEAD",
+      worktrees: { task_b: "" },
+    });
     const out = await runMerged(ctx, state, Date.now());
 
     assert(
       out.pipelineState.status === "merged",
       "#476: mechanized merge succeeded → status='merged'",
     );
-    // Restoration ran: the full sequence was attempted with the cycle's
-    // feature branch as the delete target.
     assert(
       calls.some((c) => c.includes("git fetch origin --prune")),
       "#476: fetch origin --prune ran on the successful-merge path",
@@ -379,7 +316,6 @@ setupSpawnGuard();
       branchD?.includes("feature/issue-476") === true,
       "#476: branch -d targeted the cycle's feature branch",
     );
-    // branch -d refusal (squash-merge SHA mismatch) is a note, not a halt.
     const notes = out.eventLog.filter(
       (e) => e.kind === "plumb-report" && /Checkout restoration: .*branch -d/.test(e.body),
     );
@@ -395,11 +331,9 @@ setupSpawnGuard();
 // ---- mechanizedMerge integration tests ----
 
 {
-  // #393 — this used to assert that PI_ENSEMBLE_MECHANIZE_OPS=0 short-circuits
-  // mechanized merge. That knob is deleted: it restored the LLM-narrated merge
-  // that caused the #245/#253 silent merges. What replaces it is the assertion
-  // that there is NO opt-out left — mechanization is attempted unconditionally,
-  // and the only way past it is a genuine failure.
+  // #393 — the PI_ENSEMBLE_MECHANIZE_OPS=0 opt-out is deleted (it restored
+  // the LLM-narrated merge behind the #245/#253 silent merges). Assert there
+  // is NO knob left: mechanization is attempted unconditionally.
   const r = await mechanizedMerge(
     { repoRoot: "/fake", issue: 100, pi: mkPi() } as DriverContext,
     { pipelineState: { prNumber: 999 } } as unknown as WorkState,
@@ -410,6 +344,8 @@ setupSpawnGuard();
   );
 }
 {
+  // Happy path: squash derived from repo settings; first `gh pr view`
+  // (pre-merge check) not-merged, second (post-merge verify) MERGED.
   const dir = mkdtempSync(path.join(tmpdir(), "mm-ok-"));
   try {
     let vc = 0;
