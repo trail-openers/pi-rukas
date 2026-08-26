@@ -70,7 +70,11 @@ export async function verifyConsolidation(
   }
   let diffNames = "";
   try {
-    const { stdout } = await execp(`git diff --name-only origin/${base}..HEAD`, {
+    // #451 — name the integration branch explicitly. Under worktree isolation
+    // the repo root sits on mainline; bare `..HEAD` would compare mainline
+    // against itself and return empty (passing the gate unconditionally).
+    const branch = state.pipelineState.branchName ?? "HEAD";
+    const { stdout } = await execp(`git diff --name-only origin/${base}..${branch}`, {
       cwd: ctx.repoRoot,
       maxBuffer: 1024 * 1024,
     });
@@ -188,7 +192,8 @@ function verifyGateEnabled(): boolean {
  *
  *   commit-pr —
  *     (a) commits exist on the branch: `git rev-list --count
- *         origin/<base>..HEAD` > 0 at repoRoot.
+ *         origin/<base>..<branchName>` > 0 at repoRoot (#451 — the branch
+ *         is named explicitly so the gate works regardless of repo-root checkout).
  *     (b) the parsed PR number resolves via `gh pr view`. When ops
  *         forgot the `pr: <N>` marker, fall back to `gh pr list
  *         --head <branch>` and ADOPT the number into pipelineState
@@ -268,7 +273,13 @@ export async function verifyStepOutcome(
     base = mainline.branch;
   }
   try {
-    const { stdout } = await execFn(`git rev-list --count origin/${base}..HEAD`, {
+    // #451 — name the integration branch explicitly. `origin/<branchName>`
+    // requires the branch to be pushed, which it is at commit-pr time (ops
+    // pushes before opening the PR). Using the local ref name (not
+    // `origin/<branch>`) because the commit-pr gate can run before push in
+    // some edge cases; the local ref is what the cycle created.
+    const branch = state.pipelineState.branchName ?? "HEAD";
+    const { stdout } = await execFn(`git rev-list --count origin/${base}..${branch}`, {
       cwd: ctx.repoRoot,
       maxBuffer: 64 * 1024,
     });

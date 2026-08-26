@@ -129,10 +129,24 @@ export async function runBranchViaOpsDispatch(
   }
   const ps: typeof next.pipelineState = { ...next.pipelineState };
   if (branch) ps.branchName = branch;
-  ps.worktrees =
-    workstreamIds.length > 1
-      ? parseWorktreesBlock(last.summary ?? "", ctx.repoRoot)
-      : { default: ctx.repoRoot };
+  // #451 — ALWAYS parse the `## Worktrees` block when the ops reply carries
+  // one, N=1 included. The `{ default: ctx.repoRoot }` entry is a LAST-RESORT
+  // cwd: under the worktree-isolation epic the repo root is no longer checked
+  // out on the feature branch, so a `fetchDiff` scoped to it would compare the
+  // mainline against itself and an adversarial review of it would trivially
+  // approve (the per-worktree `git diff HEAD` semantics are documented on
+  // `fetchDiff` in work-driver-diff.ts). The ops prompt asks for worktrees
+  // under `.worktrees/` for N=1 too, so a block is expected even in the
+  // degenerate case.
+  const parsedWorktrees = parseWorktreesBlock(last.summary ?? "", ctx.repoRoot);
+  if (Object.keys(parsedWorktrees).length > 0) {
+    ps.worktrees = parsedWorktrees;
+  } else {
+    trace(
+      `work-driver: branch ops reply carried no ## Worktrees block — N=${workstreamIds.length === 0 ? 1 : workstreamIds.length} cycle runs on the repoRoot checkout (last-resort cwd); the repo root's checkout matters until a real worktree exists`,
+    );
+    ps.worktrees = { default: ctx.repoRoot };
+  }
   try {
     const { stdout } = await execFn("git rev-parse HEAD", {
       cwd: ctx.repoRoot,

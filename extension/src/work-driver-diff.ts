@@ -27,6 +27,19 @@ const execp = promisify(exec);
  * HEAD` covers both) so the orchestrator's subagents work against the
  * actual worktree state.
  *
+ * #451 — the bare `git diff HEAD` is DELIBERATE pre-commit semantics, not
+ * a ref-resolution bug. `fetchDiff` is always per-worktree (`cwd` is one
+ * of the cycle's worktrees, or the last-resort repoRoot fallback recorded
+ * by the branch step): adversarial review runs pre-commit, and
+ * `integrate()` never leaves uncommitted work behind in a worktree, so
+ * "working tree vs its own HEAD" is exactly the uncommitted developer
+ * work to review. The load-bearing discipline is which cwd the caller
+ * scopes it to — a worktree, never the repo root once it leaves the
+ * feature branch (the branch-step fallbacks carry their own notes). That
+ * is what the grep canary in test-work-driver-diff-head-canary.ts
+ * protects: no new bare `git diff HEAD` in a REPO-ROOT verification or
+ * diff-fetch path, and this per-worktree call stays documented.
+ *
  * Failure modes return "":
  *  - cwd is undefined (no worktree resolved yet — early steps before
  *    branch creation)

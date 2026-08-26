@@ -221,6 +221,10 @@ export async function verifyDevelopOutcome(
   }
 
   // --- Product smoke command gate (PR277) ---
+  // #451 — runs in the first changed worktree, not at ctx.repoRoot.
+  // Under worktree isolation the repo root sits on mainline; running the
+  // smoke there would exercise the wrong tree. The worktree has the
+  // developer's changes and its provisioned dependencies.
   if (process.env.PI_ENSEMBLE_SMOKE !== "0") {
     let smokeCmd: string | undefined;
     try {
@@ -231,9 +235,10 @@ export async function verifyDevelopOutcome(
       // No smoke-cmd file — not a failure, just a note
     }
     if (smokeCmd) {
+      const smokeCwd = changedWorktrees[0] ?? ctx.repoRoot;
       try {
         await execFn(smokeCmd, {
-          cwd: ctx.repoRoot,
+          cwd: smokeCwd,
           timeout: verifyTimeoutMs(),
           maxBuffer: 4 * 1024 * 1024,
         });
@@ -242,8 +247,8 @@ export async function verifyDevelopOutcome(
         failures.push(
           formatExecError(
             e,
-            `smoke: command \`${smokeCmd}\` exceeded its ${Math.round(verifyTimeoutMs() / 60000)}-min timeout`,
-            `smoke: command \`${smokeCmd}\` failed`,
+            `smoke: command \`${smokeCmd}\` exceeded its ${Math.round(verifyTimeoutMs() / 60000)}-min timeout in ${smokeCwd}`,
+            `smoke: command \`${smokeCmd}\` failed in ${smokeCwd}`,
           ),
         );
       }
