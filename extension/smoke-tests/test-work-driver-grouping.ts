@@ -387,12 +387,23 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     else process.env.PI_ENSEMBLE_PARALLEL_GROUPS = priorCap;
   }
 
-  // And with the shipped default, two groups run one after the other.
-  const fanoutDefault = groupIssues([1, 2], { 1: "body A", 2: "body B" });
-  assert(
-    fanoutDefault.fanout.mode === "sequential",
-    "fanout: at the shipped default, K=2 is sequential — every autonomous merge on record ran alone",
-  );
+  // And with the shipped default (1), two groups run one after the other.
+  // The default's VALUE is covered in test-serialise-cycles.ts; this assertion
+  // is about MODE DERIVATION at cap=1 and must not depend on ambient env —
+  // a host exporting PI_ENSEMBLE_PARALLEL_GROUPS (e.g. =3) would otherwise
+  // break the offline gate for every /work develop verify.
+  const priorCapDefault = process.env.PI_ENSEMBLE_PARALLEL_GROUPS;
+  process.env.PI_ENSEMBLE_PARALLEL_GROUPS = "1";
+  try {
+    const fanoutDefault = groupIssues([1, 2], { 1: "body A", 2: "body B" });
+    assert(
+      fanoutDefault.fanout.mode === "sequential",
+      "fanout: at the shipped default, K=2 is sequential — every autonomous merge on record ran alone",
+    );
+  } finally {
+    if (priorCapDefault === undefined) delete process.env.PI_ENSEMBLE_PARALLEL_GROUPS;
+    else process.env.PI_ENSEMBLE_PARALLEL_GROUPS = priorCapDefault;
+  }
 
   // Group id convention — group-a, group-b, ... in order.
   const twoGroups = groupIssues([1000, 2000], { 1000: "unrelated", 2000: "also unrelated" });
