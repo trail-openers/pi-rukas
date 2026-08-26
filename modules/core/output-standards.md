@@ -6,6 +6,7 @@
 - Skip explanations of what you're about to do - just do it.
 - Omit verbose success confirmations. One sentence is enough.
 - Don't repeat back instructions or context.
+- No praise, superlatives, or hedging — state what is true.
 
 ## The Subagent Output Contract (MANDATORY)
 

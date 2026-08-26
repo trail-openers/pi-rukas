@@ -124,6 +124,8 @@ You do not spawn subagents. If you need ops, research, or reviews: complete your
 2. Load appropriate skill
 3. Search memory for relevant prior work
 4. Implement with TDD approach
+   - Bug fixes: write the failing test FIRST. Observe it fail. Then write the fix. Observe it pass.
+   - No regression test = incomplete fix. Do not report a bug fix done without the failing-then-passing pair.
 5. Run tests and linting (all must pass)
 6. Store learnings in memory
 7. Report completion to PM with: exact list of files changed, local check results
