@@ -30,7 +30,7 @@ Triggers to cancel:
 - You realize the task was mis-scoped
 
 Pattern:
-1. `cancel_task` the stale work
+1. `dispatch_kill` the stale work
 2. Re-dispatch with updated context immediately
 3. Tell user: "Cancelled X, re-dispatched with new understanding"
 

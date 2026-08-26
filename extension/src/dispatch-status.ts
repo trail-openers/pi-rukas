@@ -3,6 +3,58 @@ import { Type } from "@sinclair/typebox";
 import { type JobStatusRow, jobStatusSnapshot, killJob } from "./async-jobs.ts";
 
 /**
+ * Structural poll-guard (#364 FIX 1).
+ *
+ * Settled jobs are deleted from the registry immediately with no retained
+ * completion timestamp, so the robust poll signal is jobId-set equality
+ * between consecutive calls within a time window: a completion shrinks the
+ * set, a new dispatch grows it — either resets the guard; an identical
+ * consecutive call (nothing changed) is a poll. The first/legitimate
+ * pre-completion check always passes.
+ *
+ * Decision is factored out into exported helpers so it is unit-testable
+ * without a live job registry.
+ */
+
+const POLL_WINDOW_MS = 90_000;
+let lastPollAt = 0;
+let lastPollKey = "";
+
+/** Stable key for the in-flight jobId set — order-insensitive. */
+export function jobSetKey(rows: Pick<JobStatusRow, "jobId">[]): string {
+  return rows
+    .map((r) => r.jobId)
+    .sort()
+    .join(",");
+}
+
+export interface StatusCallVerdict {
+  polling: boolean;
+}
+
+/**
+ * Decide whether a status call with the given rows is a poll: the in-flight
+ * set is identical to the previous call AND the calls are within the poll
+ * window. A set that grew or shrank (new dispatch / completion) resets the
+ * guard. A change to the empty set resets it too — the next non-empty call
+ * is a fresh, legitimate check.
+ */
+export function classifyStatusCall(
+  rows: Pick<JobStatusRow, "jobId">[],
+  now: number,
+  last: { at: number; key: string },
+): StatusCallVerdict {
+  if (rows.length === 0) return { polling: false };
+  const key = jobSetKey(rows);
+  const polling = key === last.key && now - last.at < POLL_WINDOW_MS;
+  return { polling };
+}
+
+const POLL_STEER =
+  "⛔ You are polling. END YOUR TURN NOW. The report auto-delivers " +
+  "as [ensemble:async] and resumes you; you lose nothing by stopping.";
+
+/**
  * Strictly metadata view of in-flight async jobs. The parent agent should call
  * this when it suspects work is still running before declaring a workflow done.
  * Returns counts + jobIds + elapsed; NEVER any transcript content (invariant).
@@ -12,13 +64,23 @@ export function registerDispatchStatusTool(pi: ExtensionAPI) {
     name: "dispatch_status",
     label: "Async Dispatch Status",
     description:
-      "List in-flight async subagents (jobId, role, elapsed, batch info). Use this before declaring a workflow done to confirm no children are still running. Metadata only — never includes transcript content.",
+      "List in-flight async subagents (jobId, role, elapsed, batch info). Call AT MOST ONCE — a single pre-completion sanity check, or once before dispatch_kill. NEVER in a loop or to 'wait': completed subagents auto-deliver a [ensemble:async] report that resumes you. Metadata only — never includes transcript content.",
     parameters: Type.Object({}),
     async execute() {
       const rows = jobStatusSnapshot();
+      const now = Date.now();
+      const { polling } = classifyStatusCall(rows, now, { at: lastPollAt, key: lastPollKey });
+      lastPollAt = now;
+      lastPollKey = jobSetKey(rows);
+      if (polling) {
+        return {
+          content: [{ type: "text", text: POLL_STEER }],
+          details: { count: rows.length, rows, polling: true },
+        };
+      }
       return {
         content: [{ type: "text", text: renderStatus(rows) }],
-        details: { count: rows.length, rows },
+        details: { count: rows.length, rows, polling: false },
       };
     },
   });

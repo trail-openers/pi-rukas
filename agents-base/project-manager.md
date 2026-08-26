@@ -309,7 +309,7 @@ Applies to `dispatch_specialist`, every `specs[]` member in `dispatch_parallel`,
 **A refused start is information, not an obstacle.** `start_work_driver` refuses when the issue is labelled `needs-human-attention` (a previous cycle handed it off for a human, and re-running it unchanged reproduces the same handoff), or when a cycle for one of its issues is already live in this session. In both cases the answer is to surface the refusal to the user, not to route around it.
 
 **Status, peek, steer, cancellation:**
-- `dispatch_status` — list in-flight jobs (jobId, role, elapsed). Always call before declaring a workflow done.
+- `dispatch_status` — list in-flight jobs (jobId, role, elapsed). Call **at most once** — a single sanity check before declaring a workflow done, or once before `dispatch_kill`. NEVER in a loop or to "wait": completed subagents auto-deliver a `[ensemble:async]` report that resumes you.
 - `dispatch_peek [jobId]` — inspect what a subagent is currently doing: turns, last tool, truncated last assistant text snippet. Use this when the **user** asks "what's developer doing right now?" / "what's happening?" — quote the peeked state rather than guessing or fabricating. Omit `jobId` to peek every in-flight job. NEVER reads the raw transcript.
 - `dispatch_steer <jobId> "<message>"` — inject a course-correction message into a running subagent. Use ONLY at exceptional decision points where observation (typically via `dispatch_peek`) suggests the agent is stuck or lost:
   - Run has gone long but turns are still climbing, and the agent appears to be in a rabbit hole (e.g., investigating something out of the original scope).
@@ -347,7 +347,7 @@ Opt out of subagent escalation entirely (debugging only): `PI_ENSEMBLE_DISABLE_S
 
 **Anti-patterns:**
 - ❌ Calling `read_file` on a transcript path — context bloat, invariant violation.
-- ❌ Spinning in a "still waiting?" loop — end your turn, Pi will wake you on report arrival.
+- ❌ Spinning in a "still waiting?" loop — end your turn, Pi will wake you on report arrival. This includes re-calling `dispatch_status` to check the same in-flight set: it is capped, and a repeated identical call returns a hard steer.
 - ❌ Declaring "all done" with open jobs in `dispatch_status`.
 
 ### Dispatch Patterns

@@ -248,5 +248,109 @@ clearJobsForTesting();
   assert(r.details.killed === false, "details.killed is false for an unknown job");
 }
 
+// 7. Poll-guard (FIX 1, #364): unit-level tests for classifyStatusCall +
+//    jobSetKey — no live job registry needed.
+{
+  const { classifyStatusCall, jobSetKey } = await import("../src/dispatch-status.ts");
+
+  // jobSetKey: order-insensitive, stable string.
+  assert(jobSetKey([{ jobId: "a" }, { jobId: "b" }]) === "a,b", "jobSetKey sorts jobId alphabetically");
+  assert(jobSetKey([{ jobId: "b" }, { jobId: "a" }]) === "a,b", "jobSetKey is order-insensitive");
+  assert(jobSetKey([]) === "", "jobSetKey of empty set is empty string");
+
+  // classifyStatusCall: first call (last.key="", last.at=0) is never a poll.
+  const rowsA = [{ jobId: "j1" }];
+  assert(
+    classifyStatusCall(rowsA, 1000, { at: 0, key: "" }).polling === false,
+    "first call is never a poll (fresh state)",
+  );
+
+  // Same set within window → poll.
+  assert(
+    classifyStatusCall(rowsA, 2000, { at: 1000, key: "j1" }).polling === true,
+    "same set within 90s window is a poll",
+  );
+
+  // Same set outside window → not a poll.
+  assert(
+    classifyStatusCall(rowsA, 100_000, { at: 1000, key: "j1" }).polling === false,
+    "same set outside 90s window is not a poll",
+  );
+
+  // Different set (new job added) → not a poll (set grew).
+  const rowsAB = [{ jobId: "j1" }, { jobId: "j2" }];
+  assert(
+    classifyStatusCall(rowsAB, 2000, { at: 1000, key: "j1" }).polling === false,
+    "set change (grew) resets the guard — not a poll",
+  );
+
+  // Different set (job removed) → not a poll (set shrank).
+  const rowsEmpty = [];
+  assert(
+    classifyStatusCall(rowsEmpty, 2000, { at: 1000, key: "j1" }).polling === false,
+    "empty set never triggers poll steer",
+  );
+
+  // After empty reset, a new non-empty call is fresh (key differs). 
+  assert(
+    classifyStatusCall(rowsA, 3000, { at: 2000, key: "" }).polling === false,
+    "new non-empty set after empty reset is not a poll",
+  );
+}
+
+// 8. Poll-guard: end-to-end via the registered tool (repeat same set → steer).
+{
+  const { pi } = makePiStub();
+  const { jobId } = startJob(pi, {
+    label: "developer",
+    role: "developer",
+    work: neverSettlingWork(),
+  });
+
+  // First call: normal status.
+  const r1 = await call(statusTool);
+  assert(r1.details.polling === false, "first call after dispatch: polling=false");
+  assert(r1.details.count === 1, "first call returns normal status (count=1)");
+
+  // Second call immediately: same set → poll steer.
+  const r2 = await call(statusTool);
+  assert(r2.details.polling === true, "second consecutive call: polling=true");
+  assert(
+    r2.content[0]?.text.includes("You are polling"),
+    "poll steer text is returned",
+  );
+  assert(
+    r2.content[0]?.text.includes("END YOUR TURN NOW"),
+    "poll steer instructs to end the turn",
+  );
+  assert(
+    r2.content[0]?.text.includes("[ensemble:async]"),
+    "poll steer names the auto-delivery mechanism",
+  );
+
+  // Set changes (job removed from registry) → next call is fresh.
+  clearJobsForTesting(); // simulates the job settling and being deleted
+  const r3 = await call(statusTool);
+  // After drain, empty set → not a poll, normal status.
+  assert(r3.details.polling === false, "call after set change: polling=false");
+  assert(r3.content[0]?.text === "no async subagents running", "post-drain call renders empty status");
+
+  // After drain, a new dispatch → fresh call (key changed from empty).
+  const { jobId2 } = startJob(pi, {
+    label: "explore",
+    role: "explore",
+    work: neverSettlingWork(),
+  });
+  const r4 = await call(statusTool);
+  assert(r4.details.polling === false, "new dispatch after drain: polling=false");
+  assert(r4.details.count === 1, "new dispatch renders normal status");
+  assert(
+    r4.content[0]?.text?.startsWith("1 async slot(s) in flight:"),
+    "new dispatch shows in-flight header",
+  );
+  assert(r4.details.rows !== undefined, "new dispatch carries row details");
+  clearJobsForTesting();
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

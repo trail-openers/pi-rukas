@@ -2,37 +2,40 @@
 
 ## ⛔ CRITICAL: NEVER POLL
 
-**Results auto-deliver.** When a task completes, the result appears in your context automatically. You do NOT call check_task to get results.
+**Results auto-deliver.** When a task completes, the result arrives in your context automatically as an `[ensemble:async]` report. You do NOT call dispatch_status to get results.
 
 ### The Anti-Pattern (NEVER DO THIS)
 ```
 dispatch task A, B, C, D, E
-check_task A  ← WRONG
-check_task B  ← WRONG
-check_task C  ← WRONG
-... repeat ...  ← VERY WRONG
+dispatch_status  ← WRONG
+dispatch_status  ← WRONG
+dispatch_status  ← WRONG
+... repeat ...   ← VERY WRONG
 ```
 
 ### The Correct Pattern
 ```
 dispatch task A, B, C, D, E
-continue other work OR tell user "dispatched 5 tasks, results incoming"
-[results auto-arrive when ready]
+end your turn (or proceed with other parallel work)
+[the [ensemble:async] report arrives when ready and resumes you]
 summarize results for user
 ```
 
-## check_task: Almost Never
+The correct pattern is **dispatch → end turn → resume on `[ensemble:async]`**. Ending your turn with jobs in flight loses nothing: the report resumes you automatically.
 
-- **Do NOT call check_task in loops** — ever, for any reason
-- **Do NOT call check_task "just to see"** — results auto-deliver
-- **Do NOT call check_task after dispatching** — just continue working
-- Only valid use: once before cancelling, to confirm task is still running
+## dispatch_status: Almost Never
+
+- **Do NOT call dispatch_status in loops** — ever, for any reason
+- **Do NOT call dispatch_status "just to see"** — results auto-deliver
+- **Do NOT call dispatch_status after dispatching** — just end your turn
+- **The only valid use:** a single check before dispatch_kill, to confirm the job is still running (at most once, never in a loop)
 
 ## Task Lifecycle Management
 
 When new information makes a running task obsolete:
-1. `cancel_task` to stop the stale task (returns status: cancelled/not_found/already_completed)
-2. Re-launch with updated context in the new task prompt
+1. `dispatch_status` once to confirm the job is still running
+2. `dispatch_kill` the stale job by jobId (reports whether the job was found and signalled)
+3. Re-launch with updated context in the new task prompt
 
 Do not leave stale tasks running. Cancel and replace promptly.
 

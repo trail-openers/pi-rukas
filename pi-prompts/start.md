@@ -50,7 +50,7 @@ argument-hint: ""
 
    From the summary, carry into step 6: each parked group's issue numbers and its `humanAction`, the groups under `notStarted`, and how long ago `at` was. A summary from last week is history, not this morning's queue — say which.
 
-6. **Wait for the explore dispatch** (step 3) to return, then synthesise step 4's raw output + step 5's driver state + explore's summary into the one readiness line. On timeout (120 seconds) or incomplete explore response, apply the Reconnaissance Doctrine timeout and resilience fallback.
+6. **End your turn after step 4's and step 5's reads — do NOT wait or poll.** The explore dispatch's `[ensemble:async]` report auto-delivers when it completes and resumes you; **then** synthesise step 4's raw output + step 5's driver state + explore's summary into the one readiness line. Never spin on `dispatch_status`. If the report is incomplete or missing its eight-field summary, re-dispatch explore once (Reconnaissance Doctrine resilience fallback) and end your turn again.
 
 7. **Store findings**: `vipune add '<project identity, current state, conventions, gotchas>'` (single bash call; quoted argument).
 
@@ -69,6 +69,7 @@ This is NOT a report — you are confirming readiness.
 ## Principles
 
 - **Parallel first** — explore dispatch (step 3) and direct reads (steps 4 and 5) run concurrently in the same PM turn.
+- **End the turn, don't wait** — a dispatch's `[ensemble:async]` report resumes you; the only legitimate `dispatch_status` call is the single pre-`dispatch_kill` check.
 - Build on existing knowledge, don't repeat what's in memory.
 - Discover, don't assume.
 - Focus on what enables productivity.
