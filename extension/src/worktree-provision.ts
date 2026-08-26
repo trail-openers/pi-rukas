@@ -284,7 +284,15 @@ export async function provisionWorktree(
   worktreeAbs: string,
 ): Promise<ProvisionResult> {
   const hook = path.join(repoRoot, WORKTREE_SETUP_HOOK);
-  if (await isDirectory(path.dirname(hook)).then(() => fileExists(hook))) {
+  const hookExists = await isDirectory(path.dirname(hook)).then(() => fileExists(hook));
+  // #545 — an unreadable repoRoot is not a provisioning failure; it means
+  // the worktree was never actually created (e.g. the `ExecFn` is a test
+  // fixture that never materialises the directory). Skip provisioning and
+  // report via: "none" so the caller's `worktreeCreate` still returns.
+  if (!(await isDirectory(repoRoot))) {
+    return { via: "none", linked: [] };
+  }
+  if (hookExists) {
     try {
       await execFn(`sh ${JSON.stringify(hook)}`, {
         cwd: worktreeAbs,

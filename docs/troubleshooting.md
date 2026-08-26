@@ -858,6 +858,45 @@ git -C .worktrees/issue-N-<id> diff          # the diff
 
 A leftover with no uncommitted work and no unpushed commits is still removed automatically — no action needed. The refusal only fires when something unrecoverable is present.
 
+### Stale worktrees from terminal cycles — bulk cleanup
+
+**Symptom:** `git worktree list` shows many `.worktrees/issue-N-*` directories from cycles that parked, aborted or handed off. Each one the next cycle for the same issue refuses (the pre-remove guard above), and `git worktree add` / `remove` operations slow down in the presence of the clutter — 30+ leftover worktrees were measured to cause this on one host before they were swept.
+
+**Why they accumulate.** A worktree is only torn down when a cycle merges cleanly (the `merged` step runs `git worktree remove --force` + `git worktree prune` under the integration lock). Every other terminal outcome — `handoff`, `aborted`, a crash mid-dispatch — keeps its worktree on purpose, because the diff is the only copy of a developer's uncommitted work. That is the right default for one; it becomes clutter for a dozen.
+
+**Which ones are safe to remove.** A worktree is safe to bulk-remove when its cycle is **terminal AND the work inside is gone or committed**: the state file at `.pi/work-state/<issue>.json` has `pipelineState.status` of `handoff` or `aborted` (not `running`), and the worktree itself is clean (no uncommitted files, no local commits ahead of its base). A `running` state file with a live owner pid is a cycle that is still in flight — do not touch it. A terminal state file whose worktree holds uncommitted work is a refusal case, not a cleanup case: salvage first (see above).
+
+**The recipe** (run from the repo root, one issue at a time):
+
+```bash
+# 1. What exists, and what each holds
+git worktree list
+
+# 2. Is the cycle terminal? (status: handoff | aborted is safe; running is not)
+cat .pi/work-state/540.json
+
+# 3. Is the worktree clean? (empty output = safe to remove)
+git -C .worktrees/issue-540-task-a status --porcelain
+git -C .worktrees/issue-540-task-a rev-list --count origin/main..HEAD
+
+# 4. Salvage anything worth keeping (the diff, if any)
+git -C .worktrees/issue-540-task-a diff > /tmp/issue-540-task-a.patch
+
+# 5. Remove the worktree and prune its administrative record
+git worktree remove --force -- .worktrees/issue-540-task-a
+git worktree prune
+```
+
+Repeat per issue. The `--force` in step 5 is safe *only after* step 3 confirmed the tree is clean — the same rule as the single-worktree case above. `git worktree prune` (step 5, second command) drops the administrative record for any whose directory is already gone.
+
+**What is NOT safe to bulk-remove:**
+
+- A worktree whose state file says `status: running` and whose `owner.pid` is alive (the cycle is in flight).
+- A worktree that holds uncommitted work, even if its cycle is terminal — that is the `worktree-dirty-preremove` case; salvage or commit it first.
+- A worktree for an issue whose state file is missing — the state file may have been `rm`'d by an operator without removing the worktree, so the terminal-status check above cannot be applied. Inspect the worktree directly (`git -C .worktrees/issue-N-<id> status` and `git -C .worktrees/issue-N-<id> log --oneline -5`) before deciding.
+
+There is no built-in bulk-cleanup command. The recipe above is the documented path; a one-liner is tempting but the per-worktree check is what makes it safe, and skipping it is how a clean sweep becomes a data loss.
+
 ### `lens-fix-not-integrated` — the fix never reached the branch
 
 A lens-fix round ran but its output did not land: either the integration failed (a dirty repo root, an apply conflict, a git error) or the fixer wrote nothing in any worktree. The cycle now halts here.

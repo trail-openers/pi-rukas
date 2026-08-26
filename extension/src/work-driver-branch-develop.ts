@@ -25,10 +25,12 @@ import {
   inlineSpeculativeExplorePrompt,
 } from "./work-driver-prompts-early.ts";
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
+
+import { salvageKnownDirtyWorktrees } from "./work-driver-branch-salvage.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
-import { DirtyWorktreeError } from "./worktree.ts";
+import { DirtyWorktreeError, gitErrorDetail } from "./worktree.ts";
 
 const execp = promisify(exec);
 
@@ -78,6 +80,12 @@ export async function runBranch(
       });
     }
   }
+  // #545 — a dirty leftover of the SAME issue is salvaged to the cycle's
+  // scratch dir before the refusal (the driver already owns the scratch
+  // lifecycle: cleaned on `merged`, kept on handoff for inspection). A
+  // salvage failure degrades to the pre-#545 refusal text; the refusal
+  // itself is unchanged — a dirty leftover always goes to handoff.
+  const salvageScratch = scratchDir(ctx.repoRoot, ctx.issue);
   // #287 — mechanized, always-worktree branch setup. Development never
   // happens at repoRoot: every workstream (including the degenerate N=1
   // `default`) gets a detached worktree, and repoRoot is touched only by
@@ -121,6 +129,12 @@ export async function runBranch(
         },
       };
     } catch (err) {
+      // #545 — a NON-dirty mechanized failure used to fall back to the ops
+      // dispatch with only a trace line and a bare `step-failed:branch` cap
+      // downstream: no plumb report, no git stderr in the event log, and the
+      // 3-second #540 abort had no WHY in the handoff. Plumb the actual git
+      // error BEFORE deciding the fallback, so either outcome names the cause.
+      const errDetail = gitErrorDetail(err);
       // #475 — the ops fallback's branch prompt tells ops to
       // `git worktree remove --force` an existing worktree, so falling back
       // after a dirty-worktree refusal would destroy exactly the work the
@@ -133,13 +147,44 @@ export async function runBranch(
           { ...state, pipelineState: { ...state.pipelineState, currentStep: "branch" } },
           { kind: "step-started", step: "branch", at: now },
         );
+        // #545 — salvage the dirty worktrees this cycle ALREADY knows about
+        // (state.pipelineState.worktrees, populated by a prior branch step —
+        // the `--restart` shape: the state file survives the wipe, the
+        // worktrees it created still do). The refusal below keeps each on
+        // disk; the operator gets the salvage location in the plumb report.
+        // The refused path itself is salvaged too when it belongs to this
+        // cycle (name prefix `issue-<N>`), even though a crashed branch
+        // step never recorded it in the state — `worktrees` is written only
+        // after `worktreeCreate` succeeds for every workstream.
+        const refusedPath = (err as { finding?: { path?: string } }).finding?.path;
+        const salvageTargets = {
+          ...(state.pipelineState.worktrees ?? {}),
+          ...(refusedPath?.startsWith(path.join(ctx.repoRoot, ".worktrees", `issue-${ctx.issue}`))
+            ? { refused: refusedPath }
+            : {}),
+        };
+        const salvageNote = await salvageKnownDirtyWorktrees(
+          execFnMech,
+          salvageTargets,
+          salvageScratch,
+        ).catch((salvErr) => {
+          trace(
+            `work-driver: salvage failed (non-fatal): ${(salvErr as Error).message?.slice(0, 200)}`,
+          );
+          return "";
+        });
         const withReport = {
           ...started,
           pipelineState: {
             ...started.pipelineState,
             plumbReports: [
               ...(started.pipelineState.plumbReports ?? []),
-              { step: "branch" as const, role: "driver", body: err.message, at: Date.now() },
+              {
+                step: "branch" as const,
+                role: "driver",
+                body: `${err.message}${salvageNote ? `\n${salvageNote}` : ""}`,
+                at: Date.now(),
+              },
             ],
           },
         };
@@ -152,15 +197,29 @@ export async function runBranch(
         });
       }
       trace(
-        `work-driver: mechanized branch setup fell back to ops dispatch: ${(err as Error).message?.slice(0, 200)}`,
+        `work-driver: mechanized branch setup fell back to ops dispatch: ${errDetail.slice(0, 200)}`,
       );
-      base = appendEvent(base, {
-        kind: "plumb-report",
-        at: Date.now(),
-        step: "branch",
-        role: "driver",
-        body: `Mechanized branch setup failed, falling back to the ops dispatch: ${(err as Error).message?.slice(0, 300)}`,
-      });
+      base = {
+        ...appendEvent(base, {
+          kind: "plumb-report",
+          at: Date.now(),
+          step: "branch",
+          role: "driver",
+          body: `Mechanized branch setup failed (git error: ${errDetail.slice(0, 300)}), falling back to the ops dispatch: ${(err as Error).message?.slice(0, 300)}`,
+        }),
+        pipelineState: {
+          ...base.pipelineState,
+          plumbReports: [
+            ...(base.pipelineState.plumbReports ?? []),
+            {
+              step: "branch" as const,
+              role: "driver",
+              body: `Mechanized branch setup failed (git error: ${errDetail.slice(0, 300)})`,
+              at: Date.now(),
+            },
+          ],
+        },
+      };
     }
   }
   return runBranchViaOpsDispatch(ctx, base, workstreamIds, now);

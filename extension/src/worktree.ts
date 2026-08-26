@@ -31,6 +31,22 @@ export function worktreePath(repoRoot: string, name: string): string {
   return path.join(repoRoot, ".worktrees", name);
 }
 
+/**
+ * #545 — the machine-readable git error behind a failed command.
+ *
+ * The production `ExecFn` is `promisify(exec)`, whose rejection carries
+ * `stderr` (the actual git output, e.g. `fatal: cannot lock ref…` or
+ * `fatal: '…' already exists`); its `message` is that stderr wrapped in
+ * `Command failed: <cmd>` + a newline. Read stderr first and trim the
+ * command wrapper out of the fallback, so a plumb report names the CAUSE
+ * instead of a bare `step-failed:branch`.
+ */
+export function gitErrorDetail(err: unknown): string {
+  const e = err as Error & { stderr?: string };
+  const raw = (e.stderr ?? e.message ?? "unknown error").toString();
+  return raw.replace(/^\s*Command failed:\s*.*\n?/s, "").trim();
+}
+
 export interface WorktreeCreateOpts {
   repoRoot: string;
   /** Directory name under `.worktrees/`, e.g. `issue-287-default`. */
@@ -50,7 +66,35 @@ export interface WorktreeCreateOpts {
  * (#475). The force-remove destroyed it with no warning, and deleting
  * unrecoverable work must never be the silent default.
  */
-export class DirtyWorktreeError extends Error {}
+export class DirtyWorktreeError extends Error {
+  /** The absolute worktree path and what it holds — the plumb report and the
+   * #545 same-issue salvage use this instead of re-scanning the name. */
+  readonly finding: DirtyWorktreeFinding;
+
+  constructor(finding: DirtyWorktreeFinding) {
+    super(DirtyWorktreeError.messageFor(finding));
+    this.name = "DirtyWorktreeError";
+    this.finding = finding;
+  }
+
+  static messageFor(finding: DirtyWorktreeFinding): string {
+    const fromRef =
+      finding.unpushedCommitCount > 0 ? ` (unpushed commits: ${finding.unpushedCommitCount})` : "";
+    const parts = [
+      `refusing to force-remove existing worktree ${finding.path} — it holds unrecoverable work:`,
+      finding.uncommittedFiles.length > 0
+        ? `${finding.uncommittedFiles.length} uncommitted file(s): ${finding.uncommittedFiles
+            .slice(0, 8)
+            .join(", ")}${finding.uncommittedFiles.length > 8 ? ", …" : ""}`
+        : "",
+      fromRef,
+    ].filter(Boolean);
+    parts.push(
+      "Inspect the worktree (`git status`, `git diff`), salvage the work (e.g. `git diff > patch` or commit it to a branch), then remove it (`git worktree remove --force -- <path>`) and re-run.",
+    );
+    return parts.join(" ");
+  }
+}
 
 export interface DirtyWorktreeFinding {
   path: string;
@@ -130,33 +174,57 @@ export async function inspectWorktreeForLoss(
  */
 export async function worktreeCreate(execFn: ExecFn, opts: WorktreeCreateOpts): Promise<string> {
   const abs = worktreePath(opts.repoRoot, opts.name);
+  // #545 — the mechanism that killed the #540 restart: `worktree add` itself
+  // refuses against ANY leftover worktree of the same cycle (e.g. the
+  // cycle's OWN dead siblings from a parked run, all named
+  // `issue-<N>-<id>`). Inspect what's attached first so a dirty one becomes
+  // a refusal WITH salvage instead of a bare `fatal: ... already exists`
+  // error. A clean foreign leftover is still handled by `worktree add`'s
+  // own path-exists error — unchanged.
+  const issuePrefix = opts.name.split("-").slice(0, 2).join("-");
+  const siblingDirty = await findDirtySameIssueLeftover(
+    execFn,
+    opts.repoRoot,
+    opts.fromRef,
+    issuePrefix,
+    opts.name,
+  );
+  if (siblingDirty) {
+    throw new DirtyWorktreeError(siblingDirty);
+  }
   const leftover = await inspectWorktreeForLoss(execFn, opts.repoRoot, abs, opts.fromRef);
   if (leftover) {
-    const parts = [
-      `refusing to force-remove existing worktree ${leftover.path} — it holds unrecoverable work:`,
-      leftover.uncommittedFiles.length > 0
-        ? `${leftover.uncommittedFiles.length} uncommitted file(s): ${leftover.uncommittedFiles
-            .slice(0, 8)
-            .join(", ")}${leftover.uncommittedFiles.length > 8 ? ", …" : ""}`
-        : "",
-      leftover.unpushedCommitCount > 0
-        ? `${leftover.unpushedCommitCount} local commit(s) ahead of ${opts.fromRef}`
-        : "",
-    ].filter(Boolean);
-    parts.push(
-      "Inspect the worktree (`git status`, `git diff`), salvage the work (e.g. `git diff > patch` or commit it to a branch), then remove it (`git worktree remove --force -- <path>`) and re-run.",
-    );
-    throw new DirtyWorktreeError(parts.join(" "));
+    throw new DirtyWorktreeError(leftover);
   }
   await worktreeRemove(execFn, opts.repoRoot, opts.name, true).catch(() => undefined);
   // Always detached at baseSha: a named branch in a worktree contradicts
   // #287 (worktrees are the workstream's scratch space; the feature branch
   // only ever exists at repoRoot, where integration happens) and breaks the
   // invariant test-work-driver-always-worktree.ts enforces.
-  await execFn(`git worktree add --detach ${JSON.stringify(abs)} ${JSON.stringify(opts.fromRef)}`, {
-    cwd: opts.repoRoot,
-    maxBuffer: 1024 * 1024,
-  });
+  const add = async () =>
+    execFn(`git worktree add --detach ${JSON.stringify(abs)} ${JSON.stringify(opts.fromRef)}`, {
+      cwd: opts.repoRoot,
+      maxBuffer: 1024 * 1024,
+    });
+  try {
+    await add();
+  } catch (err) {
+    // #545 — the raw git error is the one thing the operator needs to see
+    // (which path already exists, which lock held). `git worktree add`
+    // prints its reason to stderr; the `ExecFn` contract carries it as
+    // `stderr` when the executor captured it. Wrap in a fresh Error so
+    // downstream consumers (the plumb-report's `gitErrorDetail`) can read
+    // the detail even if the original was a non-Error (a number, a string,
+    // a process exit code — `promisify(exec)` is one of the legitimate
+    // rejection shapes and doesn't carry `.message` the same way).
+    const e = err as Error & { stderr?: string };
+    const detail = (e.stderr ?? "").toString().trim();
+    const originalMsg = e.message ?? String(err);
+    const msg = detail && !originalMsg.includes(detail) ? `${originalMsg}\n${detail}` : originalMsg;
+    const wrapped = new Error(`worktreeCreate: ${opts.name} failed: ${msg}`);
+    wrapped.cause = err;
+    throw wrapped;
+  }
   // A worktree with only tracked files cannot run the project's own commands:
   // every gitignored dependency directory is absent, and the develop step runs
   // the verify command in here. Never throws — a bare worktree is what shipped
@@ -179,6 +247,48 @@ export async function worktreeRemove(
     cwd: repoRoot,
     maxBuffer: 256 * 1024,
   });
+}
+
+/**
+ * #545 — `git worktree add` refuses against any leftover worktree of the
+ * same cycle (not just the one at the target path). Find attached
+ * worktrees with the same issue prefix that hold work a force-remove would
+ * destroy. An unreadable `git worktree list` returns undefined: the
+ * refusal then happens the pre-#545 way (the raw git error, now plumbed
+ * via `gitErrorDetail`), which is the safe degradation.
+ */
+export async function findDirtySameIssueLeftover(
+  execFn: ExecFn,
+  repoRoot: string,
+  fromRef: string,
+  issuePrefix: string,
+  selfName: string,
+): Promise<DirtyWorktreeFinding | undefined> {
+  let list: string;
+  try {
+    ({ stdout: list } = await execFn("git worktree list --porcelain", {
+      cwd: repoRoot,
+      maxBuffer: 1024 * 1024,
+    }));
+  } catch {
+    return undefined;
+  }
+  const wtMarker = `.worktrees${path.sep}${issuePrefix}`;
+  for (const line of list.split("\n")) {
+    const l = line.trim();
+    if (!l.startsWith("worktree ")) continue;
+    const wtPath = l.slice("worktree ".length);
+    if (!wtPath.includes(wtMarker)) continue;
+    // Skip the cycle's own target — that's handled by `inspectWorktreeForLoss`
+    // below (a clean leftover is removed, a dirty one is a #475 refusal).
+    const wtName = path.basename(wtPath);
+    if (wtName === selfName) continue;
+    const finding = await inspectWorktreeForLoss(execFn, repoRoot, wtPath, fromRef).catch(
+      () => undefined,
+    );
+    if (finding) return finding;
+  }
+  return undefined;
 }
 
 /** Drop administrative records for worktrees whose directories are gone. */
