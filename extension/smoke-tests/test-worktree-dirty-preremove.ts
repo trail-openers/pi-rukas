@@ -19,6 +19,12 @@
  * unpushed commits is removed as before. Verified twice — with real git
  * (the load-bearing evidence) and with an injected exec (the refusal must not
  * fall back to the LLM path).
+ *
+ * #536 — `worktreeCreate` now returns `{ path, provision }` so the branch
+ * step can emit a `worktree-provisioned` event per workstream. The common-path
+ * canary here is updated to assert on `result.path` (the prior `created ===
+ * wt` shape). The injected `runBranch` clean-path case adds an assertion that
+ * a `worktree-provisioned` event lands in the event log.
  */
 
 import { execFile } from "node:child_process";
@@ -162,12 +168,18 @@ try {
       "inspect: a worktree with no uncommitted work and no unpushed commits is CLEAN",
     );
 
-    const created = await worktreeCreate(realExec, {
+    // #536: worktreeCreate now returns { path, provision } — update the
+    // canary assertion and verify that `provision` carries the outcome.
+    const result = await worktreeCreate(realExec, {
       repoRoot: repo,
       name: "issue-475-default",
       fromRef: baseSha,
     });
-    assert(created === wt, "canary: the clean leftover is removed and recreated as today");
+    assert(result.path === wt, "canary: the clean leftover is removed and recreated as today (result.path)");
+    assert(
+      result.provision !== undefined && ["hook", "symlink", "none"].includes(result.provision.via),
+      "canary: worktreeCreate returns the provision result alongside the path",
+    );
     const { stdout } = await git(wt, ["rev-parse", "HEAD"]);
     assert(
       stdout.trim() === baseSha,
@@ -260,6 +272,10 @@ const WT = path.join(REPO, ".worktrees", "issue-475-default");
     "mechanizedBranchSetup: a clean leftover is removed and recreated as today",
   );
   assert(
+    out.provisions.default !== undefined,
+    "#536: mechanizedBranchSetup includes the provision result for each workstream",
+  );
+  assert(
     calls.some((c) => c.cmd.startsWith("git worktree remove --force")),
     "the pre-remove still runs for the clean case — idempotency preserved",
   );
@@ -306,6 +322,11 @@ function branchCtx(execFn: ExecFn): DriverContext {
     out !== undefined,
     "the refusal does not throw out of runBranch — the cycle is parked, not crashed",
   );
+  // No worktree-provisioned event: the branch step never reached provisioning.
+  assert(
+    !out?.eventLog.some((e) => e.kind === "worktree-provisioned"),
+    "#536: no worktree-provisioned event when the branch step routes to handoff before provisioning",
+  );
 }
 
 {
@@ -325,6 +346,20 @@ function branchCtx(execFn: ExecFn): DriverContext {
   assert(
     !out?.eventLog.some((e) => e.kind === "cap-hit"),
     "no cap fires on the common path — no behaviour change",
+  );
+  // #536 — a worktree-provisioned event must appear in the log for each
+  // workstream the mechanized path creates.
+  const provEvent = out?.eventLog.find((e) => e.kind === "worktree-provisioned");
+  assert(
+    provEvent?.kind === "worktree-provisioned" &&
+      provEvent.worktreeId === "default" &&
+      provEvent.worktreePath === WT,
+    "#536: runBranch emits a worktree-provisioned event for the default workstream",
+  );
+  const validOutcomes = ["hook-ran", "hook-failed", "symlink", "none"];
+  assert(
+    provEvent?.kind === "worktree-provisioned" && validOutcomes.includes(provEvent.outcome),
+    "#536: the worktree-provisioned outcome is a recognised non-ops value",
   );
 }
 

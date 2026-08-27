@@ -29,6 +29,7 @@ import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { salvageKnownDirtyWorktrees } from "./work-driver-branch-salvage.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
+import { makeWorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 import { DirtyWorktreeError, gitErrorDetail } from "./worktree.ts";
 
@@ -119,10 +120,21 @@ export async function runBranch(
         at: Date.now(),
         summary: `Mechanized branch setup: ${setup.branchName} @ ${setup.baseSha.slice(0, 8)} off origin/${setup.mainline}; ${Object.keys(setup.worktrees).length} worktree(s).`,
       });
+      // #536 — per-workstream provision event for targeted depsHint in verify-develop.
+      let withProvisions = done;
+      for (const [id, cwd] of Object.entries(setup.worktrees)) {
+        const pr = setup.provisions[id];
+        if (pr) {
+          withProvisions = appendEvent(
+            withProvisions,
+            makeWorktreeProvisionedEvent(id, cwd, pr.via, pr.problem),
+          );
+        }
+      }
       return {
-        ...done,
+        ...withProvisions,
         pipelineState: {
-          ...done.pipelineState,
+          ...withProvisions.pipelineState,
           branchName: setup.branchName,
           baseSha: setup.baseSha,
           worktrees: setup.worktrees,

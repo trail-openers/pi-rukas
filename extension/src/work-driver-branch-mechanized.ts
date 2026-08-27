@@ -29,6 +29,7 @@ import path from "node:path";
 import { trace } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";
 import { DirtyWorktreeError, worktreeCreate } from "./worktree.ts";
+import type { ProvisionResult } from "./worktree.ts";
 
 /**
  * Deterministic branch slug. Replaces the LLM-authored name, which produced
@@ -172,6 +173,8 @@ export interface MechanizedBranchResult {
   baseSha: string;
   mainline: string;
   worktrees: Record<string, string>;
+  /** Per-workstream provisioning outcome, keyed by workstream id. */
+  provisions: Record<string, ProvisionResult>;
 }
 
 /**
@@ -236,13 +239,16 @@ export async function mechanizedBranchSetup(
   const branchName = branchSlug(issues, issueTitle);
   const ids = workstreamIds.length > 0 ? workstreamIds : ["default"];
   const worktrees: Record<string, string> = {};
+  const provisions: Record<string, ProvisionResult> = {};
   for (const id of ids) {
     try {
-      worktrees[id] = await worktreeCreate(execFn, {
+      const created = await worktreeCreate(execFn, {
         repoRoot,
         name: `issue-${issue}-${id}`,
         fromRef: baseSha,
       });
+      worktrees[id] = created.path;
+      provisions[id] = created.provision;
     } catch (err) {
       if (err instanceof DirtyWorktreeError) {
         // The leftover work is the operator's to salvage — trace it, then
@@ -257,5 +263,5 @@ export async function mechanizedBranchSetup(
   trace(
     `work-driver: mechanized branch setup — ${branchName} @ ${baseSha.slice(0, 8)} (${ids.length} worktree(s))`,
   );
-  return { branchName, baseSha, mainline, worktrees };
+  return { branchName, baseSha, mainline, worktrees, provisions };
 }

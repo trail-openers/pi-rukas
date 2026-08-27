@@ -18,7 +18,8 @@
 
 import path from "node:path";
 import { trace } from "./trace.ts";
-import { provisionWorktree } from "./worktree-provision.ts";
+import { type ProvisionResult, provisionWorktree } from "./worktree-provision.ts";
+export type { ProvisionResult } from "./worktree-provision.ts";
 
 /** Shell executor, matching `DriverContext.verifyExecFn`. */
 export type ExecFn = (
@@ -158,7 +159,19 @@ export async function inspectWorktreeForLoss(
 }
 
 /**
- * Create a worktree, returning its absolute path.
+ * The resolved path and provisioning outcome from `worktreeCreate`.
+ *
+ * Split out so callers can record the provision state in the event log
+ * (for machine-readable diagnostics) without coupling the low-level
+ * worktree helper to the state machine.
+ */
+export interface WorktreeCreateResult {
+  path: string;
+  provision: ProvisionResult;
+}
+
+/**
+ * Create a worktree, returning its absolute path and provisioning outcome.
  *
  * Idempotent by construction: an existing worktree at the same path is removed
  * first. A resumed cycle must not fail because its own previous attempt left a
@@ -172,7 +185,10 @@ export async function inspectWorktreeForLoss(
  * would destroy the same work through the same `--force` — routing the cycle
  * to handoff. A clean leftover is removed as before.
  */
-export async function worktreeCreate(execFn: ExecFn, opts: WorktreeCreateOpts): Promise<string> {
+export async function worktreeCreate(
+  execFn: ExecFn,
+  opts: WorktreeCreateOpts,
+): Promise<WorktreeCreateResult> {
   const abs = worktreePath(opts.repoRoot, opts.name);
   // #545 — the mechanism that killed the #540 restart: `worktree add` itself
   // refuses against ANY leftover worktree of the same cycle (e.g. the
@@ -233,7 +249,7 @@ export async function worktreeCreate(execFn: ExecFn, opts: WorktreeCreateOpts): 
   if (provisioned.problem) {
     trace(`worktree: ${opts.name} provisioning incomplete — ${provisioned.problem}`);
   }
-  return abs;
+  return { path: abs, provision: provisioned };
 }
 
 export async function worktreeRemove(

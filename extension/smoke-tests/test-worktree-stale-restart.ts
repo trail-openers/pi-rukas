@@ -277,6 +277,15 @@ try {
     body.includes("cannot lock ref"),
     "the plumb report carries the ACTUAL git error — the handoff names WHY, not a bare step-failed",
   );
+  // #536 — the ops-fallback path does not call provisionWorktree; a
+  // worktree-provisioned event with ops-fallback-unprovisioned must appear
+  // for each worktree so the develop gate gives the right depsHint.
+  const provEvent1 = out?.eventLog.find((e) => e.kind === "worktree-provisioned");
+  assert(
+    provEvent1?.kind === "worktree-provisioned" &&
+      provEvent1.outcome === "ops-fallback-unprovisioned",
+    "#536: ops-fallback path emits worktree-provisioned with ops-fallback-unprovisioned",
+  );
 }
 
 {
@@ -328,6 +337,14 @@ try {
   assert(
     wtCalls.every((c) => !c.cmd.startsWith("git diff HEAD")),
     "salvage does not copy work from a foreign worktree",
+  );
+  // #536 — the ops-fallback path (foreign dirty worktree falls back to ops)
+  // emits worktree-provisioned with ops-fallback-unprovisioned.
+  const provEvent3 = out?.eventLog.find((e) => e.kind === "worktree-provisioned");
+  assert(
+    provEvent3?.kind === "worktree-provisioned" &&
+      provEvent3.outcome === "ops-fallback-unprovisioned",
+    "#536: ops-fallback (foreign-dirty case) emits worktree-provisioned with ops-fallback-unprovisioned",
   );
 }
 } finally {

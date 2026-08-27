@@ -30,6 +30,7 @@ import { buildCompletionEvent, runSingleDispatch } from "./work-driver-merged.ts
 import { sliceMarkdownSection } from "./work-driver-plan.ts";
 import { inlineBranchPrompt } from "./work-driver-prompts-early.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
+import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 const execp = promisify(exec);
@@ -158,5 +159,19 @@ export async function runBranchViaOpsDispatch(
       `work-driver: baseSha capture failed: ${(err as Error).message?.slice(0, 200)} (verify gate falls back to porcelain-only)`,
     );
   }
-  return { ...next, pipelineState: ps };
+  // Emit `worktree-provisioned` events for every worktree the ops dispatch
+  // created so the develop gate can name the ACTUAL cause ("ops-fallback path
+  // never runs provisionWorktree") rather than giving generic hook advice.
+  let stateWithProvisions: WorkState = { ...next, pipelineState: ps };
+  for (const [id, cwd] of Object.entries(ps.worktrees ?? {})) {
+    const provEvent: WorktreeProvisionedEvent = {
+      kind: "worktree-provisioned",
+      at: Date.now(),
+      worktreeId: id,
+      worktreePath: cwd,
+      outcome: "ops-fallback-unprovisioned",
+    };
+    stateWithProvisions = appendEvent(stateWithProvisions, provEvent);
+  }
+  return stateWithProvisions;
 }

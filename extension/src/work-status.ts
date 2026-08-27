@@ -188,6 +188,8 @@ function fmtEvent(e: WorkEvent): string {
       return e.emptyBrief
         ? `  memory-inject · ${e.step} · EMPTY BRIEF · ${e.queries.length} quer${e.queries.length === 1 ? "y" : "ies"}`
         : `  memory-inject · ${e.step} · ${e.hits} hit(s)`;
+    case "worktree-provisioned":
+      return `  worktree-provisioned · [${e.worktreeId}] · ${e.outcome}${e.problem ? ` · ${e.problem.slice(0, 60)}` : ""}`;
   }
 }
 

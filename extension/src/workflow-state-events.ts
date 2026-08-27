@@ -13,6 +13,7 @@ import type { RoleName } from "./roles.ts";
 import type { DispatchUsage } from "./types.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
+import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
 
 /**
@@ -487,12 +488,12 @@ export type WorkEvent =
       /** Tail of the command output for the handoff/comment body. */
       evidenceTail?: string;
     }
-  // The widening-scan event lives in workflow-state-events-widening.ts
-  // (AGENTS.md §12 module-size hygiene, same seam as the memory events
-  // below); the union stays exhaustive, and nextStep() and the schema
-  // validator see the same closed type.
+  // The widening-scan, memory, and provision events live in their own
+  // fragment modules (AGENTS.md §12 module-size hygiene). The union stays
+  // exhaustive: nextStep() and the schema validator see the same closed type.
   | WideningScanEvent
-  | MemoryEventFragment;
+  | MemoryEventFragment
+  | WorktreeProvisionedEvent;
 
 /** Discriminator union of event kinds — useful for callers that switch on it. */
 export type WorkEventKind = WorkEvent["kind"];

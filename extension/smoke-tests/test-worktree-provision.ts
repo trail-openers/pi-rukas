@@ -444,6 +444,8 @@ async function makeWorktreeFixture(root: string, name: string): Promise<string> 
       Object.values(setup.worktrees).length === 1,
       "...and the worktree is created by worktreeCreate, which provisions it (the hook/symlink path that the ops fallback skips)",
     );
+    // #536 — provisions map is populated alongside worktrees.
+    assert(["hook", "symlink", "none"].includes(setup.provisions["task-a"]?.via ?? ""), "#536: mechanizedBranchSetup populates provisions with a valid via value");
     // Neither resolvable: stub returns empty stdout for
     // `rev-parse --verify --quiet` (the code's contract for a missing ref).
     // No local `main`: switch to `trunk`, then `update-ref -d refs/heads/main`
