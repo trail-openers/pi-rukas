@@ -146,6 +146,10 @@ export function renderHandoffMarkdown(state: WorkState): string {
         ...shown.map((f) => `    - \`${f}\``),
       );
     }
+    if (snap.retainedWorktrees?.length) {
+      lines.push("- retained worktrees:", ...snap.retainedWorktrees.map((wt) => `    - \`${wt}\``));
+      lines.push("");
+    }
     lines.push("");
   }
 

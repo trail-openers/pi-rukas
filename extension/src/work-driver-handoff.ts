@@ -19,6 +19,7 @@ import { renderHandoffMarkdown } from "./work-driver-handoff-markdown.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { inlineHandoffOpsPrompt } from "./work-driver-prompts-late.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
+import { runWorktreeTeardown } from "./work-driver-worktree-sweep.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 const execp = promisify(exec);
@@ -85,6 +86,20 @@ export async function runHandoff(
     state.pipelineState.branchName,
     state.pipelineState.worktrees,
   );
+  // In-cycle teardown: purge build artifacts and retain worktrees as needed.
+  // Guarded by PI_ENSEMBLE_WORKTREE_TEARDOWN=0.
+  // Wrapped in try/catch: teardown must never prevent a handoff from completing.
+  if (process.env.PI_ENSEMBLE_WORKTREE_TEARDOWN !== "0") {
+    try {
+      const retained = await runWorktreeTeardown({
+        repoRoot: ctx.repoRoot,
+        state,
+      });
+      snap.retainedWorktrees = retained;
+    } catch (err) {
+      trace(`work-driver: worktree teardown failed (non-fatal): ${err}`);
+    }
+  }
   next = {
     ...next,
     pipelineState: { ...next.pipelineState, handoffSnapshot: snap },

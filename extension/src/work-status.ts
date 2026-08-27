@@ -315,6 +315,9 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
           ...shown.map((f) => `    ${f}`),
         );
       }
+      if (snap.retainedWorktrees?.length) {
+        lines.push("  retained worktrees:", ...snap.retainedWorktrees.map((wt) => `    ${wt}`));
+      }
     }
   }
 
@@ -329,8 +332,7 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
     );
   }
 
-  // Per-step durations + the cycle total (one shared helper so the
-  // scrollback, handoff markdown and this surface always agree — #534).
+  // Per-step durations + cycle total (#534 shared helper).
   const totals = stepTotals(state.eventLog);
   if (Object.keys(totals).length > 0) {
     lines.push("", "Step durations:");

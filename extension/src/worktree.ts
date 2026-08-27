@@ -54,6 +54,8 @@ export interface WorktreeCreateOpts {
   name: string;
   /** Commit-ish the worktree starts at — the driver passes the resolved baseSha. */
   fromRef: string;
+  /** Worktree names that should be retained (not pre-removed) during creation. */
+  retainedNames?: string[];
 }
 
 /**
@@ -79,6 +81,10 @@ export class DirtyWorktreeError extends Error {
   }
 
   static messageFor(finding: DirtyWorktreeFinding): string {
+    // If the worktree is being retained, return a retention message.
+    if (finding.retained === true) {
+      return `refusing to pre-remove retained worktree ${finding.path} — it is in the retained names set`;
+    }
     const fromRef =
       finding.unpushedCommitCount > 0 ? ` (unpushed commits: ${finding.unpushedCommitCount})` : "";
     const parts = [
@@ -101,6 +107,8 @@ export interface DirtyWorktreeFinding {
   path: string;
   uncommittedFiles: string[];
   unpushedCommitCount: number;
+  /** True when the worktree is being retained (not removed) due to being in the retained names set. */
+  retained?: boolean;
 }
 
 /**
@@ -190,6 +198,25 @@ export async function worktreeCreate(
   opts: WorktreeCreateOpts,
 ): Promise<WorktreeCreateResult> {
   const abs = worktreePath(opts.repoRoot, opts.name);
+  // If the worktree name is in the retainedNames set, refuse to pre-remove.
+  if (opts.retainedNames?.includes(opts.name)) {
+    trace(`worktree: ${opts.name} is in retainedNames, skipping pre-remove`);
+    // Check if the worktree exists and is dirty to provide a proper error.
+    const leftover = await inspectWorktreeForLoss(execFn, opts.repoRoot, abs, opts.fromRef);
+    if (leftover) {
+      // If it's dirty, throw the existing error.
+      throw new DirtyWorktreeError(leftover);
+    }
+    // If it's clean, we still refuse to remove, but we need to throw an error
+    // to signal that the worktree should not be removed. We'll create a
+    // DirtyWorktreeError with retained set to true.
+    throw new DirtyWorktreeError({
+      path: abs,
+      uncommittedFiles: [],
+      unpushedCommitCount: 0,
+      retained: true,
+    });
+  }
   // #545 — the mechanism that killed the #540 restart: `worktree add` itself
   // refuses against ANY leftover worktree of the same cycle (e.g. the
   // cycle's OWN dead siblings from a parked run, all named

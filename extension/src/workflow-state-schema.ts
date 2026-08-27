@@ -346,6 +346,9 @@ export interface PipelineState {
     headSha: string;
     /** Epoch ms when the snapshot was captured. */
     capturedAt: number;
+    /** Worktrees that were not removed because they contained uncommitted
+     * work or were retained by the sweep. */
+    retainedWorktrees?: string[];
   };
   /**
    * Epoch ms when the 90-min wall-clock cap was started. Persists across
