@@ -47,8 +47,8 @@
  *     approach the adversarial convergence wall (vipune `memory-row`
  *     empirical ceiling: > 3 issues in one bundle collapsed 3×).
  *     Excess splits into per-issue singletons.
- *   - K > MAX_PARALLEL_GROUPS (2) triggers "sequential" fanout mode
- *     for the remainder (matches worktree cherry-pick ceiling from
+ *   - K > MAX_PARALLEL_GROUPS_DEFAULT (3) triggers "sequential" fanout
+ *     mode for the remainder (matches worktree cherry-pick ceiling from
  *     vipune `memory-row`).
  *
  * Output shape matches `parseWorkstreams`: `Record<groupId, {id, scope,
@@ -57,17 +57,21 @@
  * `Object.keys(workstreams)` unchanged.
  */
 export const MAX_ISSUES_PER_GROUP = 3;
-// Cycles run ONE at a time by default. This reverses a previous judgement, on
-// this repo's own record: parallelism was defaulted to 3 because "strict
-// sequentiality is what made /work slow enough to be a standing complaint",
-// which is sound in the abstract and wrong here. Measured across 69 terminal
-// cycles, every one of the 10 autonomous merges ran with zero other cycles in
-// flight — no exception — while concurrent cycles ran ~2.4x slower per role
-// (pushing developers past the inactivity watchdog and ops past its cap) and
-// destroyed each other through the shared repo-root integration point in 2 of
-// the 4 lantern cycles that reached commit-pr. A cycle that never merges is not
-// fast. `PI_ENSEMBLE_PARALLEL_GROUPS` still opts back in.
-export const MAX_PARALLEL_GROUPS_DEFAULT = 1;
+// Three concurrent groups by default. This REVERSES the v0.12.41 default-1
+// decision (operator decision 2026-08-26). The original measurement (69
+// terminal cycles, every autonomous merge ran alone, concurrent cycles ~2.4x
+// slower per role) was sound at the time but predates two structural changes:
+//   - #544 shipped capability-preserving dispatch caps (loop detector, typed
+//     kill causes) — the unbounded slow-dispatch behaviour that let concurrent
+//     cycles degrade each other is structurally different now.
+//   - Every workstream develops in its own detached worktree under .worktrees/
+//     and patches are applied under a single integration lock (in-process
+//     promise chain + O_EXCL lockfile), eliminating the shared repo-root
+//     contention that destroyed 2 of 4 lantern cycles at commit-pr.
+// The sequential default (1) was judged too conservative: a 6-group queue ran
+// entirely sequential under cap=1 (session 2026-08-26). `PI_ENSEMBLE_PARALLEL_GROUPS`
+// still overrides in either direction; `PI_ENSEMBLE_PARALLEL_WORK=0` hard-forces 1.
+export const MAX_PARALLEL_GROUPS_DEFAULT = 3;
 
 /**
  * The concurrency the queue will actually use. Exported so anything that must

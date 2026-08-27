@@ -1,23 +1,21 @@
 #!/usr/bin/env bun
 /**
- * Concurrent cycles do not finish. Serialise them.
+ * The default is 3 concurrent groups. This reverses the v0.12.41 default-1
+ * decision (operator decision 2026-08-26). The original measurement (69
+ * terminal cycles, every autonomous merge ran alone, concurrent cycles ~2.4x
+ * slower per role) was sound at the time but predates two structural changes:
+ *   - #544 shipped capability-preserving dispatch caps (loop detector, typed
+ *     kill causes) — the unbounded slow-dispatch behaviour that made concurrent
+ *     cycles degrade each other is structurally different now.
+ *   - Every workstream develops in its own detached worktree under .worktrees/
+ *     and patches are applied under a single integration lock (in-process
+ *     promise chain + O_EXCL lockfile), eliminating the shared repo-root
+ *     contention that destroyed 2 of 4 lantern cycles at commit-pr.
+ * The sequential default (1) was judged too conservative for current operator
+ * workflow: a 6-group queue ran entirely sequential under cap=1.
  *
- * Measured across 69 terminal cycles in the durable session store and 29 state
- * files: **every one of the 10 autonomous merges ran with zero other cycles in
- * flight.** No exception. Cycles that ran alongside another were ~2.4× slower
- * per role — which is what pushes a developer past the 25-minute inactivity
- * watchdog and `ops` past its cap — and two of the four lantern cycles that
- * reached commit-pr were destroyed by each other through the shared repo-root
- * integration point rather than by anything wrong with their own work.
- *
- * This reverses a previous judgement, deliberately. The old default of 3 was
- * chosen because "strict sequentiality is what made /work slow enough to be a
- * standing complaint", and 3 sat inside a band other tools use. That reasoning
- * was sound in the abstract and is contradicted by this repo's own record: a
- * cycle that never merges is not fast.
- *
- * The knob still exists. An operator who wants concurrency sets
- * `PI_ENSEMBLE_PARALLEL_GROUPS`; what changes is which way the default leans.
+ * The knob still exists. An operator who wants strict sequentiality sets
+ * `PI_ENSEMBLE_PARALLEL_GROUPS=1`; what changes is which way the default leans.
  */
 
 import {
@@ -55,13 +53,13 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
 
 {
   assert(
-    MAX_PARALLEL_GROUPS_DEFAULT === 1,
-    `canary: cycles run one at a time by default (got ${MAX_PARALLEL_GROUPS_DEFAULT}) — every autonomous merge on record had zero concurrent cycles`,
+    MAX_PARALLEL_GROUPS_DEFAULT === 3,
+    `canary: three concurrent groups by default (got ${MAX_PARALLEL_GROUPS_DEFAULT}) — operator decision 2026-08-26 reverting v0.12.41's sequential default`,
   );
   assert(
     withEnv({ PI_ENSEMBLE_PARALLEL_GROUPS: undefined, PI_ENSEMBLE_PARALLEL_WORK: undefined }, () =>
       resolvedParallelGroups(),
-    ) === 1,
+    ) === 3,
     "...and that is what the queue actually resolves with no env set",
   );
 }
@@ -80,8 +78,8 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     "...and the pre-existing hard-off switch still wins",
   );
   assert(
-    withEnv({ PI_ENSEMBLE_PARALLEL_GROUPS: "not-a-number" }, () => resolvedParallelGroups()) === 1,
-    "a garbage value falls back to the default rather than to NaN",
+    withEnv({ PI_ENSEMBLE_PARALLEL_GROUPS: "not-a-number" }, () => resolvedParallelGroups()) === 3,
+    "a garbage value falls back to the default (3) rather than to NaN",
   );
 }
 
@@ -111,10 +109,10 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
   );
 
   // And the inactivity watchdog is deliberately UNCHANGED. It fires on 25
-  // minutes of total silence, which only became too tight because concurrency
-  // made every role ~2.4x slower. Serialising removes that; weakening a genuine
-  // hang detector to accommodate a cause we just fixed would be the wrong
-  // repair.
+  // minutes of total silence. The structural fixes (#544 dispatch caps +
+  // worktree isolation) remove the contention that made it bite; weakening a
+  // genuine hang detector to accommodate causes we already fixed would be the
+  // wrong repair.
   const support = readFileSync(path.join(SRC, "spawn-support.ts"), "utf8");
   assert(
     /return 25 \* 60_000;/.test(support),
