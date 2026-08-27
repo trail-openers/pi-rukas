@@ -89,6 +89,8 @@ export type WorkEvent =
       artifactPath?: string;
       /** #534 — tokens/cost the child actually consumed (see `withUsage`). */
       usage?: DispatchUsage;
+      /** #456 — per-lens lens-review timings; additive, old state files load unchanged. */
+      lensTimings?: Array<{ lens: string; startMs: number; ms: number }>;
     }
   | {
       kind: "dispatch-failed-provider";
@@ -204,6 +206,8 @@ export type WorkEvent =
       at: number;
       jobId: string;
       round: number;
+      /** #456 — sub-threshold findings retained on an APPROVED verdict (same shape as `lens-issues-found`). */
+      findings?: string;
     }
   | {
       kind: "lens-issues-found";
@@ -216,13 +220,9 @@ export type WorkEvent =
     }
   | {
       /**
-       * PR6 — runLens skipped child dispatch because the diff was empty.
-       * Lens children hallucinate findings against unrelated files when
-       * given empty context (#533 PERFORMANCE findings in
-       * src/web/sweep_stats.rs on an empty diff for a devDep bump that
-       * was already merged). Paired with a synthesised `lens-approved`
-       * so the driver's nextStep advances normally; the standalone event
-       * preserves the audit trail.
+       * PR6 — runLens skipped child dispatch (empty diff); paired with a
+       * synthesised `lens-approved` so the driver advances. Avoids #533
+       * hallucinated findings on empty context.
        */
       kind: "lens-skipped-empty-diff";
       at: number;

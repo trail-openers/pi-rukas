@@ -63,6 +63,15 @@ export function spawnSlotStats(): { active: number; queued: number; cap: number 
 }
 
 /**
+ * #456 — the wait-trace message. Exported so the format is a tested
+ * contract rather than an inline literal; `queued` is the number of spawns
+ * already in the FIFO ahead of this one.
+ */
+export function lensWaitTraceMessage(queued: number): string {
+  return `spawn-semaphore: lens waited behind ${queued} queued spawn(s)`;
+}
+
+/**
  * Run `fn` holding one spawn slot, queueing FIFO when the cap is reached.
  *
  * The slot is released in `finally`, so a throwing child frees its slot —
@@ -75,6 +84,11 @@ export async function withSpawnSlot<T>(fn: () => Promise<T>): Promise<T> {
   if (active >= cap) {
     if (waiting.length === 0) {
       trace(`spawn-semaphore: cap ${cap} reached — queueing`);
+    } else {
+      // #456 — a lens waiting behind already-queued spawns is the exact
+      // shape whose wall-clock is otherwise indistinguishable from
+      // lens-per-contamination slowness. Trace it.
+      trace(lensWaitTraceMessage(waiting.length));
     }
     await new Promise<void>((resolve) => waiting.push(resolve));
   }

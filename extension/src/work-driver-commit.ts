@@ -31,6 +31,7 @@ import {
 import { renderAssumptions } from "./work-driver-intent.ts";
 import { parsePrNumber } from "./work-driver-lens.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
+import { renderLensFindingsSection } from "./work-driver-pr-sections.ts";
 import { inlineCommitPrPrompt } from "./work-driver-prompts-late.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyConsolidation, verifyStepOutcome } from "./work-driver-verify.ts";
@@ -245,6 +246,7 @@ export async function mechanizedCommitPr(
       ...workstreamLines,
       assumptionsBlock,
       renderCarriedFindings(carriedAdversarialFindings(state.eventLog)),
+      renderLensFindingsSection(state.eventLog),
     ]
       .filter((l) => l !== "")
       .join("\n");

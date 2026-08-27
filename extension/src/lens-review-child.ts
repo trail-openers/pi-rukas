@@ -33,6 +33,9 @@ export async function runLensChild(opts: {
 }): Promise<LensRunResult> {
   const { lens, runId, skillsDir, context, bumpBatch } = opts;
   const runOpts = opts.opts;
+  // #456 — the moment this lens began dispatching, so a serialised pass
+  // (spawn cap 1) is diagnosable: sequential startMs mean queueing.
+  const startMs = Date.now();
   const skillPath = path.join(skillsDir, lens.skill);
   const prompt = lensPromptFor(lens, runOpts.diff, context, runOpts.evidence);
   const tag = lens.name.toLowerCase().replaceAll("_", "-");
@@ -115,6 +118,7 @@ export async function runLensChild(opts: {
       lens: lens.name,
       ok: false,
       ms: result?.ms ?? 0,
+      startMs,
       findings: [],
       attempts,
       blocked: true,
@@ -137,6 +141,7 @@ export async function runLensChild(opts: {
     lens: lens.name,
     ok: result.ok,
     ms: result.ms,
+    startMs,
     findings,
     attempts,
     blocked: false,

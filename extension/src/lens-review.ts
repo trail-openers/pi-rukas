@@ -81,6 +81,13 @@ export interface LensRunResult {
   lens: LensName;
   ok: boolean;
   ms: number;
+  /**
+   * #456 — wall-clock when this lens's dispatch began. Persisted via
+   * `dispatch-completed.lensTimings`; sequential startMs across a pass are
+   * the fingerprint of spawn-semaphore queueing (cap 1), distinct from a
+   * slow-by-contamination pass.
+   */
+  startMs: number;
   findings: Finding[];
   model?: string;
   transcriptPath?: string;

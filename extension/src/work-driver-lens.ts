@@ -50,6 +50,22 @@ export function parsePrNumber(text: string | undefined): number | undefined {
 }
 
 /**
+ * #456 — project a lens pass down to the per-lens timings persisted on the
+ * `dispatch-completed` event. Pure so the shape is a tested contract:
+ * sequential startMs across a pass (spawn cap 1) are the fingerprint of
+ * semaphore queueing, distinct from a pass slowed by a contaminated diff.
+ */
+export function lensTimingsOf(
+  lenses: Array<{ lens: unknown; startMs?: number; ms: number }>,
+): Array<{ lens: string; startMs: number; ms: number }> {
+  return lenses.map((l) => ({
+    lens: String(l.lens),
+    startMs: l.startMs ?? 0,
+    ms: l.ms,
+  }));
+}
+
+/**
  * Step 7 — Six-pass lens review.
  *
  * Calls `runLensReview` (exported from lens-review.ts) directly. The
@@ -254,6 +270,8 @@ export async function runLens(
         ms: Date.now() - startedAt,
         at: Date.now(),
         summary: `verdict=${summary.verdict}; findings=${summary.totalFindings}`,
+        // #456 — per-lens timing persisted so a slow round is diagnosable.
+        lensTimings: summary.lenses.length > 0 ? lensTimingsOf(summary.lenses) : undefined,
       },
       summary.usage,
     ),

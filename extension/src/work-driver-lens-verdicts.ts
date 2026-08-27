@@ -35,7 +35,18 @@ export async function applyLensVerdict(
     // success shape, so this made the review gate one that cannot PASS — the
     // mirror of #328's gate that cannot fail, and introduced by #457's fix for
     // handoffs blaming the wrong gate.
-    state = appendEvent(state, { kind: "lens-approved", at: Date.now(), jobId, round });
+    state = appendEvent(state, {
+      kind: "lens-approved",
+      at: Date.now(),
+      jobId,
+      round,
+      // #456 — `computeVerdict` partitions rather than filters: sub-threshold
+      // findings are retained even at APPROVED and were silently discarded
+      // here. Carry them in the same shape as `lens-issues-found` so "the
+      // lenses found nothing" stays distinct from "found sub-threshold and
+      // kept no record".
+      findings: JSON.stringify(summary.findings.slice(0, 50)),
+    });
   } else if (summary.verdict === "ISSUES_FOUND" || summary.verdict === "CRITICAL_ISSUES_FOUND") {
     const findingsBlob = JSON.stringify(summary.findings.slice(0, 50));
     state = appendEvent(state, {
