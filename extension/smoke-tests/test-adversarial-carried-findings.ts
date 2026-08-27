@@ -14,6 +14,7 @@
  */
 
 import { carriedAdversarialFindings, renderCarriedFindings } from "../src/adversarial-findings.ts";
+import { inlineCommitPrPrompt } from "../src/work-driver-prompts-late.ts";
 import type { WorkEvent } from "../src/workflow-state-events.ts";
 
 let exit = 0;
@@ -93,6 +94,41 @@ const FINDING = "extract_metadata false-match on ' | assumption:' — sanitize.r
     "canary: nothing to say renders NOTHING — a clean cycle's PR body is unchanged",
   );
   assert(renderCarriedFindings("  ") === "", "...whitespace too");
+}
+
+// ------------------------------------------------------------ testing both paths produce the section
+
+{
+  // Test fallback path — inlineCommitPrPrompt extracts findings from eventLog
+  const scratchDir = "/tmp/issue-455";
+  const prompt = inlineCommitPrPrompt(
+    [455], // issues
+    [], // droppedIssues
+    {}, // worktrees
+    {}, // workstreams
+    "main", // branchName
+    undefined, // normalisedSpec
+    [approved(FINDING)], // eventLog — carries the adversarial findings
+    scratchDir, // scratchDirAbs
+  );
+  
+  // Verify the fallback prompt includes the carried findings section
+  assert(
+    prompt.includes("## Adversarial review"),
+    "fallback prompt includes carried findings section header",
+  );
+  assert(
+    prompt.includes(FINDING),
+    "fallback prompt includes the carried finding text",
+  );
+  assert(
+    /did not\s+block/i.test(prompt),
+    "fallback prompt says findings did not block",
+  );
+  assert(
+    prompt.includes("CRITICAL_ISSUES_FOUND"),
+    "fallback prompt names what would have blocked",
+  );
 }
 
 console.log(`\nexit ${exit}`);

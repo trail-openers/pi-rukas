@@ -11,8 +11,7 @@
  * The fixtures below are what a real backlog actually contains: a full spec, a
  * one-line human bug report, an issue contradicted by the code, an issue
  * already implemented, and a reply that drifted off-format entirely.
- */
-
+*/
 import {
   type NormalisedSpec,
   explainPark,
@@ -22,6 +21,7 @@ import {
   reconcileVerdict,
   renderAssumptions,
 } from "../src/work-driver-intent.ts";
+import { inlineCommitPrPrompt } from "../src/work-driver-prompts-late.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -32,14 +32,12 @@ function assert(cond: boolean, msg: string) {
     exit = 1;
   }
 }
-
 const resolve = (t: string) => {
   const p = parseNormalisedSpec(t);
   return p ? reconcileVerdict(p) : undefined;
 };
 
 // ------------------------------------------------ a well-formed spec
-
 const WELL_FORMED = `
 INTENT-VERDICT: proceed
 
@@ -84,7 +82,6 @@ The issue names concrete files that exist and the behaviour matches the code.
 }
 
 // ------------------------------------- a one-line human bug report
-
 {
   // The shape that matters most: no structure at all. The resolver must park
   // rather than invent deliverables.
@@ -115,10 +112,7 @@ would produce a confident change to the wrong thing.
     /add acceptance criteria/.test(parkAction("underspecified", 42)),
     "the human action is specific, not 'inspect the state file'",
   );
-}
-
-// ---------------------------------- contradicted by the code
-
+}// ---------------------------------- contradicted by the code
 {
   // The highest-value signal this step can produce.
   const s = resolve(`
@@ -141,9 +135,7 @@ The issue describes behaviour that was changed in #366. It is stale.
     s?.evidence.some((e) => e.verdict === "contradicted"),
     "the contradicting evidence is retained for the handoff",
   );
-}
-
-{
+}{
   // The resolver is an LLM and can contradict itself. Evidence wins — ignoring
   // a recorded contradiction is exactly how a wrong bug report gets built.
   const s = resolve(`
@@ -167,7 +159,6 @@ Fix the thing.
 }
 
 // ---------------------------------------- already implemented / too large
-
 {
   const s = resolve(
     "INTENT-VERDICT: park\nPARK-REASON: already-implemented\n\n## Spec\n\n### Intent\nAlready done.\n",
@@ -184,19 +175,16 @@ Fix the thing.
 }
 
 // ------------------------------------------------- silence is not permission
-
 {
   // The inversion. Pre-#378, `work-driver-plan.ts` defaulted a missing verdict
   // to NEEDS_WORK, so an agent that simply forgot the token got code written.
   const s = resolve("## Spec\n\n### Intent\nSomething.\n\n### Deliverables\n- d1: do it\n");
   assert(s?.verdict === "park", "a MISSING verdict parks — silence is not permission");
   assert(s?.parkReason === "underspecified", "and carries an honest default reason");
-}
-{
+}{
   const s = resolve("INTENT-VERDICT: banana\n\n## Spec\n\n### Intent\nx\n");
   assert(s?.verdict === "park", "an unparseable verdict parks");
-}
-{
+}{
   // A reply with no Spec block at all returns undefined, so runExplore falls
   // back to the legacy router rather than parking every cycle on drift.
   assert(
@@ -206,7 +194,6 @@ Fix the thing.
 }
 
 // ------------------------------------------------------- assumptions
-
 {
   const s = resolve(`
 INTENT-VERDICT: proceed-with-assumptions
@@ -233,6 +220,29 @@ Add a retry.
     /Retry 3 times/.test(block),
     "the assumption text reaches review — otherwise 'proceed-with-assumptions' is not honest",
   );
+  
+  // Test fallback path includes assumptions via inlineCommitPrPrompt
+  const scratchDir = "/tmp/issue-455";
+  const prompt = inlineCommitPrPrompt(
+    [455], // issues
+    [], // droppedIssues
+    {}, // worktrees
+    {}, // workstreams
+    "main", // branchName
+    s, // normalisedSpec
+    [], // eventLog
+    scratchDir, // scratchDirAbs
+  );
+  
+  // Verify the fallback prompt includes the assumptions section
+  assert(
+    prompt.includes("## Assumptions made"),
+    "fallback prompt includes assumptions section header",
+  );
+  assert(
+    prompt.includes("Retry 3 times"),
+    "fallback prompt includes the assumption text",
+  );
 }
 {
   // Recording assumptions while claiming a plain `proceed` understates what
@@ -254,6 +264,9 @@ Add a retry.
     "no assumptions → no block (no empty section in the PR body)",
   );
 }
+
+console.log(`\nexit ${exit}`);
+process.exit(exit);
 
 // ------------------------------- #397: evidence verdicts as LLMs write them
 
@@ -411,7 +424,6 @@ const COMPLETE = (parkReason: string) =>
 }
 
 // ------------------------------------------------------------ escape hatch
-
 {
   const prev = process.env.PI_ENSEMBLE_INTENT;
   process.env.PI_ENSEMBLE_INTENT = "0";

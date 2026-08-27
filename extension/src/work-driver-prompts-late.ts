@@ -1,4 +1,10 @@
 import type { MergeMethod } from "./work-driver-merged-mechanized.ts";
+import {
+  assumptionsBlockOf,
+  carriedFindingsSectionOf,
+  companionLinesOf,
+  fixesLinesOf,
+} from "./work-driver-pr-body-definition.ts";
 
 /**
  * /work driver — inline prompt builders for the late pipeline steps.
@@ -47,6 +53,10 @@ export function inlineCommitPrPrompt(
   worktrees: Record<string, string>,
   workstreams: Record<string, { id: string; scope: string; paths: string[]; outOfScope: string[] }>,
   branchName: string,
+  normalisedSpec:
+    | import("./work-driver-pr-body-definition.ts").PipelineStateNormalisedSpec
+    | undefined,
+  eventLog: readonly import("./workflow-state-events.ts").WorkEvent[],
   scratchDirAbs: string,
 ): string {
   const headline = issues.length === 1 ? `issue #${issues[0]}` : `issues #${issues.join(", #")}`;
@@ -55,6 +65,7 @@ export function inlineCommitPrPrompt(
     issues.length === 1
       ? `body MUST include \`Fixes #${issues[0]}\` so merge auto-closes the issue.`
       : `body MUST include ONE \`Fixes #N\` line per active issue (\`${issues.map((n) => `Fixes #${n}`).join("\\n")}\`) so merge auto-closes them all.`;
+  const companionLines = companionLinesOf(droppedIssues).join("\\n");
   const droppedNote =
     droppedIssues.length > 0
       ? [
@@ -66,6 +77,8 @@ export function inlineCommitPrPrompt(
           ),
         ]
       : [];
+  const assumptionsBlock = assumptionsBlockOf(normalisedSpec);
+  const carriedFindings = carriedFindingsSectionOf(eventLog);
 
   // PR14 — multi-workstream cycles need explicit consolidation. Each
   // worktree has its own uncommitted slice of the work (developer prompt
@@ -114,7 +127,7 @@ export function inlineCommitPrPrompt(
       "",
       `  4. \`git commit -m "<concise subject>"\` with a meaningful message. Body should reference all active issues + summarise the ${ids.length} workstreams' contributions.`,
       `  5. \`git push -u origin ${branchName}\`.`,
-      `  6. \`gh pr create --title "<title>" --body "...\\n\\n${fixesLines}"\` — ${fixesNote}`,
+      `  6. \`gh pr create --title "<title>" --body "...\\n\\n${fixesLines}${companionLines ? `\\n${companionLines}` : ""}\\n\\n${assumptionsBlock}\\n\\n${carriedFindings}"\` — ${fixesNote}`,
       "  7. End your reply with `pr: <PR-number>` so the driver can capture it.",
       ...droppedNote,
       "",
@@ -133,7 +146,7 @@ export function inlineCommitPrPrompt(
     "     **If the tree is dirty with untracked residue** from a prior cycle or a sibling's in-flight work: do NOT sweep it. Stage ONLY the applied patch paths, commit ONLY those — never bare `git commit` after `add -A`. The dirty paths may belong to another cycle; check `.pi/work-state/` before discarding.",
     '  3. `git commit -m "<concise subject>"` with a meaningful message. Body should reference the active issue(s).',
     `  4. \`git push -u origin ${branchName}\`.`,
-    `  5. \`gh pr create --title \"<title>\" --body \"...\\n\\n${fixesLines}\"\` — ${fixesNote}`,
+    `  5. \`gh pr create --title \"<title>\" --body \"...\\n\\n${fixesLines}${companionLines ? `\\n${companionLines}` : ""}\\n\\n${assumptionsBlock}\\n\\n${carriedFindings}\"\` — ${fixesNote}`,
     "  6. End your reply with `pr: <PR-number>` so the driver can capture it.",
     ...droppedNote,
     "",

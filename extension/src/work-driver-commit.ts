@@ -14,7 +14,6 @@ import { exec } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { carriedAdversarialFindings, renderCarriedFindings } from "./adversarial-findings.ts";
 import { trace } from "./trace.ts";
 import {
   type CommitPrRootInspect,
@@ -31,6 +30,12 @@ import {
 import { renderAssumptions } from "./work-driver-intent.ts";
 import { parsePrNumber } from "./work-driver-lens.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
+import {
+  assumptionsBlockOf,
+  carriedFindingsSectionOf,
+  companionLinesOf,
+  fixesLinesOf,
+} from "./work-driver-pr-body-definition.ts";
 import { renderLensFindingsSection } from "./work-driver-pr-sections.ts";
 import { inlineCommitPrPrompt } from "./work-driver-prompts-late.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
@@ -99,7 +104,6 @@ function commitPrRootFieldsOf(r: CommitPrRootInspect): {
 // here is the duplication M1's review flagged. Re-exported for the
 // mechanizedCommitPr return type below.
 export type { CommitPrFallbackCause } from "./workflow-state-events.ts";
-
 /** #539 — the structured cause, or `undefined` when integrate() did not
  * fail. Reads `res.failure` (the discriminator), never re-parses `reason` —
  * the catch-all turns any Error into `e.stderr ?? e.message`. */
@@ -119,25 +123,9 @@ function integrationVerifyTimeoutMs(): number {
 }
 
 /**
- * PR19 — Mechanized commit-pr: the driver executes the consolidation +
- * commit + push + PR-creation recipe that `inlineCommitPrPrompt`
- * previously NARRATED to an LLM ops dispatch. Every worst-class incident in
- * the harness's history (#245/#253 silent merges, v0.12.13 shipping 1-of-3
- * workstreams) was LLM ops improvising these fully-enumerable operations;
- * direct execution deletes the failure source instead of detecting its
- * failures. Recipe: ensure repoRoot is on the integration branch; per
- * worktree verify uncommitted work, stage + capture `git diff --cached`
- * (staging first is what includes untracked new files), `git apply --index`
- * at repoRoot; commit with a templated message; push; `gh pr create`
- * `--head <branch>`; parse the PR number. Most failures return
- * `{ok: false, reason}` — the caller emits a plumb-report and falls back to
- * the LLM ops dispatch (judgmental recovery). The exception is
- * `terminal: true`, set when the CONSOLIDATED tree fails the project's
- * verify command: the fallback exists to absorb environment variance, and
- * "this does not build" is a fact rather than variance — #328's shape.
- * Success appends the same `step-started` + `dispatch-completed` event
- * shapes the dispatch path produces (role "driver", summary carrying
- * `pr: <N>`), so parsePrNumber + both downstream gates run identically.
+ * PR19 — Mechanized commit-pr: consolidation + commit + push + PR-creation
+ * executed directly. Falls back to LLM ops dispatch on `{ok: false}` unless
+ * `terminal` (verify failure — #328). See AGENTS.md §7 for history.
  */
 export async function mechanizedCommitPr(
   ctx: DriverContext,
@@ -235,9 +223,8 @@ export async function mechanizedCommitPr(
     // those assumptions belong where review happens. `proceed-with-assumptions`
     // is only honest if the assumptions are visible; buried in a state file
     // they may as well not exist.
-    const assumptionsBlock = ps.normalisedSpec
-      ? renderAssumptions(ps.normalisedSpec as Parameters<typeof renderAssumptions>[0])
-      : "";
+    const assumptionsBlock = assumptionsBlockOf(ps.normalisedSpec);
+    const carriedFindings = carriedFindingsSectionOf(state.eventLog);
     const prBody = [
       "Automated by pi-ensemble /work driver (mechanized commit-pr).",
       "",
@@ -245,7 +232,7 @@ export async function mechanizedCommitPr(
       ...companionLines,
       ...workstreamLines,
       assumptionsBlock,
-      renderCarriedFindings(carriedAdversarialFindings(state.eventLog)),
+      carriedFindings,
       renderLensFindingsSection(state.eventLog),
     ]
       .filter((l) => l !== "")
@@ -337,17 +324,8 @@ async function runCommitPrLocked(
 ): Promise<WorkState> {
   let next: WorkState | undefined;
   let preDispatch = state;
-  // PR19 — mechanized commit-pr. Consolidation + commit + push + PR
-  // creation are fully enumerable operations; every worst-class incident
-  // (#245/#253 silent merges, v0.12.13 partial consolidation) was an LLM
-  // ops dispatch improvising them. The driver now executes the recipe
-  // directly; the LLM ops dispatch remains as fallback when the
-  // mechanized path hits something judgmental (apply conflict, push
-  // rejection, unexpected repo state) — that env variance is exactly
-  // what the LLM absorbs well. #393 removed the knob that forced the LLM path
-  // outright: an opt-out restores the shape that caused #245/#253's silent
-  // merges and v0.12.13's partial consolidation. The fallback below is
-  // recovery from a failed attempt, which is a different thing.
+  // PR19 — mechanized commit-pr. The LLM ops dispatch remains as
+  // fallback for judgmental recovery (apply conflict, push rejection).
   {
     const mech = await mechanizedCommitPr(ctx, state, now);
     if (mech.ok) {
@@ -402,6 +380,8 @@ async function runCommitPrLocked(
         preDispatch.pipelineState.worktrees ?? {},
         preDispatch.pipelineState.workstreams ?? {},
         preDispatch.pipelineState.branchName ?? "(branch not captured — set in Step 3)",
+        preDispatch.pipelineState.normalisedSpec,
+        preDispatch.eventLog,
         scratchDir(ctx.repoRoot, ctx.issue),
       ),
     );
