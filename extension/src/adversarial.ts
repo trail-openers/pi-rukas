@@ -13,6 +13,19 @@ import { ADVERSARIAL_TRANSIENT_MAX_RETRIES, isRateLimit429Msg } from "./types.ts
 const MAX_ROUNDS = 3;
 
 /**
+ * Wall-clock budget for all retry attempts in a single adversarial phase.
+ * When elapsed time reaches this limit no further retries start, preventing
+ * a repeated watchdog kill from consuming its full attempt budget.
+ * Set 0 to disable. Override: PI_ENSEMBLE_ADVERSARIAL_PHASE_BUDGET_MS.
+ * Default: 30 min.
+ */
+export function adversarialPhaseBudgetMs(): number {
+  const env = Number(process.env.PI_ENSEMBLE_ADVERSARIAL_PHASE_BUDGET_MS);
+  if (Number.isFinite(env) && env >= 0) return env;
+  return 30 * 60_000;
+}
+
+/**
  * Async adversarial gate.
  *
  * The orchestrator does sequential rounds internally (adversarial → developer
@@ -261,15 +274,19 @@ export async function runAdversarialLoop(
     prompt: string,
     cwd?: string,
   ): Promise<DispatchResult> => {
+    const phaseStart = Date.now();
     let current = await runPhase(role, tag, prompt, cwd);
     accumulate(current);
     let cls = classifyDispatchOutcome(current);
     if (cls.cause === "success" || signal.aborted) return current;
     if (!cls.shouldRetry || cls.maxRetries === 0) return current;
 
-    // Retry up to maxRetries for this cause.
+    // Retry up to maxRetries, subject to the aggregate wall-clock budget.
+    const budget = adversarialPhaseBudgetMs();
     for (let attempt = 1; attempt <= cls.maxRetries; attempt++) {
       if (signal.aborted) return current;
+      // Budget exhausted — stop retrying before starting another watchdog window.
+      if (budget > 0 && Date.now() - phaseStart >= budget) return current;
       const retry = await runPhase(
         role,
         `${tag}-retry${attempt > 1 ? `-${attempt}` : ""}`,
