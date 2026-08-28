@@ -68,7 +68,7 @@ git(repo, ["push", "-q", "-u", "origin", "feature/issue-279"]);
 function baseState() {
   const s = initialState(279);
   s.pipelineState.worktrees = { default: worktree };
-  s.pipelineState.branchName = "feature/issue-279";
+  s.pipelineState.branchName = "feature/issue-279-ci-sentinel";
   return s;
 }
 
@@ -169,6 +169,7 @@ try {
 
   function ciCtx(execImpl: (cmd: string, o?: { cwd?: string }) => Promise<{ stdout: string }>) {
     const dispatches: string[] = [];
+    const prompts: string[] = [];
     const execCalls: Array<{ cmd: string; cwd?: string }> = [];
     const ctx = {
       pi: fakePi,
@@ -178,8 +179,9 @@ try {
         execCalls.push({ cmd, cwd: o?.cwd });
         return execImpl(cmd, o);
       },
-      dispatchFn: async () => {
+      dispatchFn: async (_pi: unknown, spec: { prompt: string }) => {
         dispatches.push("ops:ci");
+        prompts.push(spec.prompt);
         return {
           role: "ops",
           ok: true,
@@ -191,13 +193,13 @@ try {
       },
       // biome-ignore lint/suspicious/noExplicitAny: partial context is sufficient
     } as any as DriverContext;
-    return { ctx, dispatches, execCalls };
+    return { ctx, dispatches, prompts, execCalls };
   }
 
   {
     // Absent config → skipped, and VISIBLY so. A silent skip is the "fast
     // green, full unrun" failure this tier exists to make impossible.
-    const { ctx, dispatches } = ciCtx(async () => ({ stdout: "" }));
+    const { ctx, dispatches, prompts } = ciCtx(async () => ({ stdout: "" }));
     const out = await runCi(ctx, baseState(), Date.now());
     const ev = out.eventLog.find((e) => e.kind === "verify-full-status");
     assert(
@@ -205,6 +207,21 @@ try {
       "no .pi/verify-cmd-full → verify-full-status: skipped (visible, not silent)",
     );
     assert(dispatches.length === 1, "and the ops CI watch still runs");
+    assert(
+      prompts[0]?.includes("feature/issue-279-ci-sentinel") && !prompts[0]?.includes("<branch>"),
+      "#284: CI prompt carries the captured branch name and no placeholder",
+    );
+
+    const missingBranch = baseState();
+    missingBranch.pipelineState.branchName = undefined;
+    const missing = ciCtx(async () => ({ stdout: "" }));
+    await runCi(missing.ctx, missingBranch, Date.now());
+    assert(
+      missing.prompts[0]?.includes(
+        "branch not captured — discover via `git branch --show-current`",
+      ) && !missing.prompts[0]?.includes("<branch>"),
+      "#284: missing branch is an explicit discovery instruction, not a placeholder",
+    );
   }
 
   // From here on the config file exists.

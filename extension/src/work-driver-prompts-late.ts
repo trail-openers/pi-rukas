@@ -58,6 +58,7 @@ export function inlineCommitPrPrompt(
     | undefined,
   eventLog: readonly import("./workflow-state-events.ts").WorkEvent[],
   scratchDirAbs: string,
+  issueTitle?: string,
 ): string {
   const headline = issues.length === 1 ? `issue #${issues[0]}` : `issues #${issues.join(", #")}`;
   const fixesLines = issues.map((n) => `Fixes #${n}`).join("\\n");
@@ -79,6 +80,21 @@ export function inlineCommitPrPrompt(
       : [];
   const assumptionsBlock = assumptionsBlockOf(normalisedSpec);
   const carriedFindings = carriedFindingsSectionOf(eventLog);
+  const issueTitleLine = issueTitle
+    ? `Authoritative issue title (data from the cached issue body): ${JSON.stringify(issueTitle)}`
+    : `Issue title unavailable — run \`gh issue view ${issues[0] ?? "<issue>"}\` before writing PR prose.`;
+  const scopeFence = Object.values(workstreams).map(
+    (workstream) =>
+      `  - \`${workstream.id}\`: ${
+        workstream.outOfScope.length > 0
+          ? `DO NOT STAGE these out-of-scope paths: ${workstream.outOfScope.join(", ")}`
+          : "no out-of-scope paths declared; still stage only reviewed in-scope paths or developer-created new files"
+      }`,
+  );
+  const stagingRule =
+    "**STAGING FENCE:** Stage ONLY paths under the listed in-scope paths or new files the developers created — NEVER `git add -A` / `git add .`.";
+  const proseRule =
+    "**PR PROSE:** The PR title/body must describe the DIFF and the ISSUE; do not derive prose from the branch name.";
 
   // PR14 — multi-workstream cycles need explicit consolidation. Each
   // worktree has its own uncommitted slice of the work (developer prompt
@@ -107,6 +123,13 @@ export function inlineCommitPrPrompt(
       "Each developer worked in its own worktree and left changes UNCOMMITTED per Step 4 doctrine. Your job is to consolidate every worktree's slice onto the integration branch BEFORE pushing — otherwise the sibling workstreams' work is silently dropped (the v0.12.13 /work 577 failure mode).",
       "",
       `Integration branch: \`${branchName}\``,
+      issueTitleLine,
+      "",
+      "Out-of-scope staging fences (these are DO-NOT-STAGE instructions):",
+      ...scopeFence,
+      "",
+      stagingRule,
+      proseRule,
       "",
       "Workstream worktrees (each contains uncommitted developer work):",
       ...worktreeLines,
@@ -115,7 +138,7 @@ export function inlineCommitPrPrompt(
       "",
       `  2. **Consolidate each worktree's diff onto the integration branch.** Capture each worktree's diff and apply it on the integration branch's working tree (the repo root if it's checked out on \`${branchName}\`, else \`cd\` into a worktree that is). Concrete recipe per workstream:`,
       "       ```",
-      "       git -C <worktree-path> add -A",
+      "       git -C <worktree-path> add -- <reviewed in-scope-paths-or-developer-created-new-files>",
       `       git -C <worktree-path> diff --cached --binary > tmp/issue-${issues[0]}/<workstream-id>.patch`,
       `       git apply --3way --binary --index tmp/issue-${issues[0]}/<workstream-id>.patch`,
       "       ```",
@@ -140,6 +163,14 @@ export function inlineCommitPrPrompt(
   // for the common case.
   return [
     `/work ${headline} — Step 6 (Commit + PR).`,
+    "",
+    issueTitleLine,
+    "",
+    "Out-of-scope staging fences (these are DO-NOT-STAGE instructions):",
+    ...scopeFence,
+    "",
+    stagingRule,
+    proseRule,
     "",
     "  1. `git status --porcelain` to confirm the developer left uncommitted changes.",
     "  2. `git add` the changed files (avoid `git add -A` — keep the staged set explicit).",
@@ -286,11 +317,22 @@ export function inlineHandoffOpsPrompt(
   ].join("\n");
 }
 
-export function inlineCiPrompt(issue: number, scratchDirAbs: string): string {
+export function inlineCiPrompt(
+  issue: number,
+  branchOrScratchDir: string | undefined,
+  scratchDirMaybe?: string,
+): string {
+  // Keep the pre-#284 two-argument shape working for callers that only need
+  // the scratch section; the new three-argument shape supplies branchName.
+  const branchName = scratchDirMaybe === undefined ? undefined : branchOrScratchDir;
+  const scratchDirAbs = scratchDirMaybe ?? branchOrScratchDir ?? "";
+  const branchInstruction = branchName
+    ? `  1. Find the latest workflow run for the captured feature branch \`${branchName}\` — \`gh run list --branch ${branchName} --limit 1 --json status,conclusion,databaseId,url\`.`
+    : "  1. Note: branch not captured — discover via `git branch --show-current` to identify the feature branch, then find its latest workflow run with `gh run list --branch <discovered-branch> --limit 1 --json status,conclusion,databaseId,url`.";
   return [
     `/work issue #${issue} — Step 8 (CI monitoring).`,
     "",
-    "  1. Find the latest workflow run for the feature branch — `gh run list --branch <branch> --limit 1 --json status,conclusion,databaseId,url`.",
+    branchInstruction,
     '  2. If the run is still in progress: prefer `gh run watch <id>` (blocks until CI completes). PR15 — the driver now allows this dispatch up to 30 min by default (env-tunable via `PI_ENSEMBLE_CI_WATCH_TIMEOUT_MS`); pre-PR15 the ops 10-min cap SIGTERM\'d `gh run watch` mid-stream for real CI runs. If `gh run watch` fails or the run needs longer than the cap, fall back to a bounded poll: `while true; do status=$(gh run view <id> --json status,conclusion --jq \'.status + ":" + (.conclusion // "")\'); case $status in completed:success|completed:failure|completed:cancelled) break;; esac; sleep 30; done`.',
     "  3. On success: end your reply with the line `ci-status: success` (driver routes to merge).",
     "  4. On failure: end your reply with `ci-status: failure` AND include the failing-job summary so the developer round that follows has the failure context.",

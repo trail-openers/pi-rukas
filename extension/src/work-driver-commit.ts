@@ -368,6 +368,7 @@ async function runCommitPrLocked(
     }
   }
   if (next === undefined) {
+    const issueTitle = await cachedIssueTitle(preDispatch);
     next = await runSingleDispatch(ctx, preDispatch, "commit-pr", "ops", "ops:commit-pr", now, () =>
       // PR14 — thread worktrees + workstreams + branchName into the prompt
       // so ops knows to consolidate every worktree's uncommitted changes
@@ -383,6 +384,7 @@ async function runCommitPrLocked(
         preDispatch.pipelineState.normalisedSpec,
         preDispatch.eventLog,
         scratchDir(ctx.repoRoot, ctx.issue),
+        issueTitle,
       ),
     );
   }

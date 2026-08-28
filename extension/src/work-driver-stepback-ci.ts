@@ -244,7 +244,8 @@ export async function runCi(ctx: DriverContext, state: WorkState, now: number): 
     "ops",
     "ops:ci",
     now,
-    () => inlineCiPrompt(ctx.issue, scratchDir(ctx.repoRoot, ctx.issue)),
+    () =>
+      inlineCiPrompt(ctx.issue, next.pipelineState.branchName, scratchDir(ctx.repoRoot, ctx.issue)),
     { timeoutMs: ciWatchTimeoutMs() },
   );
   // Parse the just-appended dispatch-completed event for a structured status

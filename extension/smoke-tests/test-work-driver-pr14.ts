@@ -92,6 +92,8 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   try {
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    const issueBodyArtifact = path.join(dir, "issue-body.txt");
+    await fs.writeFile(issueBodyArtifact, "title:\tmock issue #577\n");
     let capturedPrompt = "";
     let s = initialState(577, 1_000_000);
     s = {
@@ -101,6 +103,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         currentStep: "commit-pr",
         lastCompletedStep: "adversarial",
         branchName: "feature/issue-577-multi",
+        issueBodyArtifact,
         worktrees: {
           "prompt-reorder": `${dir}/.worktrees/issue-577-prompt-reorder`,
           observability: `${dir}/.worktrees/issue-577-observability`,
@@ -111,19 +114,19 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
             id: "prompt-reorder",
             scope: "reorder write-sweep step",
             paths: ["selfhost/app-config/prompts/strategy-research.md"],
-            outOfScope: [],
+            outOfScope: ["src/unrelated.rs"],
           },
           observability: {
             id: "observability",
             scope: "WARN log on missing SWP file",
             paths: ["src/cron/mod.rs"],
-            outOfScope: [],
+            outOfScope: ["docs/unrelated.md"],
           },
           "config-tweak": {
             id: "config-tweak",
             scope: "raise max_iterations",
             paths: ["selfhost/app-config/lantern.toml"],
-            outOfScope: [],
+            outOfScope: [".github/workflows/unrelated.yml"],
           },
         },
       },
@@ -168,6 +171,18 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       "PR14 §B: commit-pr prompt names the integration branch",
     );
     assert(
+      capturedPrompt.includes("src/unrelated.rs") &&
+        capturedPrompt.includes("docs/unrelated.md") &&
+        capturedPrompt.includes(".github/workflows/unrelated.yml") &&
+        capturedPrompt.includes("mock issue #577"),
+      "#284: commit-pr prompt lists out-of-scope paths and cached issue title",
+    );
+    assert(
+      /stage ONLY paths under the listed in-scope paths or new files/i.test(capturedPrompt) &&
+        /NEVER `git add -A` \/ `git add \.`/i.test(capturedPrompt),
+      "#284: multi-worktree prompt forbids blanket staging",
+    );
+    assert(
       /staged set includes files from ALL.*workstreams/i.test(capturedPrompt),
       "PR14 §B: commit-pr prompt includes the verify-all-workstreams check",
     );
@@ -187,6 +202,8 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   try {
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+    const issueBodyArtifact = path.join(dir, "issue-body.txt");
+    await fs.writeFile(issueBodyArtifact, "title:\tmock issue #580\n");
     let capturedPrompt = "";
     let s = initialState(580, 1_000_000);
     s = {
@@ -196,9 +213,15 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         currentStep: "commit-pr",
         lastCompletedStep: "adversarial",
         branchName: "feature/issue-580",
+        issueBodyArtifact,
         worktrees: { default: dir },
         workstreams: {
-          default: { id: "default", scope: "fix it", paths: ["src/foo.ts"], outOfScope: [] },
+          default: {
+            id: "default",
+            scope: "fix it",
+            paths: ["src/foo.ts"],
+            outOfScope: ["src/other.ts"],
+          },
         },
       },
     };
@@ -235,6 +258,15 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     assert(
       capturedPrompt.includes("feature/issue-580"),
       "PR14 §A: N=1 prompt names the integration branch",
+    );
+    assert(
+      capturedPrompt.includes("src/other.ts") && capturedPrompt.includes("mock issue #580"),
+      "#284: N=1 prompt lists the out-of-scope path and cached issue title",
+    );
+    assert(
+      /stage ONLY paths under the listed in-scope paths or new files/i.test(capturedPrompt) &&
+        /NEVER `git add -A` \/ `git add \.`/i.test(capturedPrompt),
+      "#284: N=1 prompt forbids blanket staging",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
