@@ -1,15 +1,5 @@
 #!/usr/bin/env bun
-/**
- * Smoke test for permission-guard tool_call interceptor.
- *
- * Tests the three-layer config resolution without spawning Pi children.
- * Verifies:
- *   - Builtin tools are no longer bypassed (issue #50)
- *   - Three-layer resolution: project > global > agents.json > deny (issue #51)
- *   - Explicit builtin tool grants per role (issue #50)
- *   - Default role when PI_ENSEMBLE_ROLE is unset (issue #50)
- *   - Wildcard patterns work correctly
- */
+/** Smoke test for permission-guard's three-layer resolution. */
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -43,15 +33,11 @@ try {
   process.exit(1);
 }
 
-console.log("=== test-permission-guard summary ===\n");
-
 // === Issue #50 tests ===
 
-// Test 1: resolveToolPermission("edit", "ops") denies on the empty-layer path
 const editDeniedForOps = resolveToolPermission("edit", "ops", {}, {}, agentsConfig) !== "allow";
 assert(editDeniedForOps, "Issue #50: edit is denied for ops role");
 
-// Test 2: resolveToolPermission("edit", "developer") allows
 const editAllowedForDev = resolveToolPermission("edit", "developer", {}, {}, agentsConfig);
 assert(editAllowedForDev === "allow", "Issue #50: edit is allowed for developer role");
 
@@ -104,7 +90,6 @@ assert(
   "Issue #50: wildcard pattern works (parallel-search* matches arbitrary suffix for PM, resolves to deny)",
 );
 
-// Test 9: Explicit deny overrides wildcard (parallel-search_* denied for ops)
 const parallelSearchDeniedForOps = resolveToolPermission(
   "parallel-search_web_search_preview",
   "ops",
@@ -117,12 +102,11 @@ assert(
   "Issue #50: explicit deny blocks parallel-search_web_search_preview for ops",
 );
 
-// Test 10: Tool not mentioned is denied (deny-by-default)
 const unknownToolDeniedForDev =
   resolveToolPermission("unknown_tool_12345", "developer", {}, {}, agentsConfig) === "deny";
 assert(!unknownToolDeniedForDev, "Issue #50: unknown tool denied for developer (deny-by-default)");
 
-// === Issue #51 tests: three-layer resolution ===
+// === Issue #51 tests ===
 
 const emptyProject: {
   roles: Record<string, { permission?: Record<string, "allow" | "deny" | "ask"> }>;
@@ -411,9 +395,6 @@ for (const role of [
   assert(v === "ask", `Issue #528: \`${ghIssueCreateCmd}\` asks for ${role} (got: ${v})`);
 }
 
-// PR mutations + CI re-runs prompt the user (ops territory — PM shouldn't
-// do these silently, but per the post-#169 catch-all migration the user
-// is in the loop rather than hard-blocked).
 const ghOpsAsked = [
   "gh pr create",
   "gh pr merge 42",
@@ -423,10 +404,29 @@ const ghOpsAsked = [
 ];
 for (const command of ghOpsAsked) {
   const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
-  assert(
-    v === "ask",
-    `Issue #99: \`${command}\` prompts the user for project-manager (ops territory)`,
-  );
+  assert(v === "ask", `Issue #99: \`${command}\` prompts for project-manager`);
+}
+
+// === Issue #341 tests: ops GitHub permissions ===
+const opsPermissionCases: Array<[string, "allow" | "ask"]> = [
+  ["oo gh api repos/randomm/pi-ensemble/issues/341", "ask"],
+  ["oo gh api repos/randomm/pi-ensemble/pulls/42", "ask"],
+  ["oo gh api repos/randomm/pi-ensemble/actions/runs/12345", "ask"],
+  ["oo gh pr close 42", "allow"],
+  ["oo gh pr merge 42", "allow"],
+  ["oo gh issue list --state open", "allow"],
+  ["oo gh pr list --state open", "allow"],
+  ["oo gh run list --branch main --limit 3", "allow"],
+  ["oo gh run view 12345", "allow"],
+  ["oo gh run watch 12345", "allow"],
+  ["gh run list --branch main --limit 3", "allow"],
+  ["gh run view 12345", "allow"],
+  ["gh run watch 12345", "allow"],
+  ["oo gh repo view randomm/pi-ensemble", "ask"],
+];
+for (const [command, expected] of opsPermissionCases) {
+  const v = resolveToolPermission("bash", "ops", {}, {}, agentsConfig, command);
+  assert(v === expected, `Issue #341: ops \`${command}\` resolves to ${expected} (got: ${v})`);
 }
 
 // Ghost `issue` / `pr` / `ci` tool grants are gone — those tool names resolve
