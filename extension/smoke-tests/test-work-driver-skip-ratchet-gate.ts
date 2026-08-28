@@ -439,7 +439,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
                 if (cmd === "git status --porcelain") return { stdout: "M src/test.ts\n" };
                 if (cmd.includes("verify-cmd")) return { stdout: "ok\n" };
                 if (cmd.startsWith("git diff"))
-                  return { stdout: '+#[ignore]\n+it.skip("test");\n' }; // Skip markers but ratchet disabled
+                  return { stdout: '-it("deleted test");\n+#[ignore]\n+it.skip("test");\n' }; // Both ratchets disabled
                 return { stdout: "" };
               };
               const ctxRatchetDisabled: DriverContext = {

@@ -8,7 +8,12 @@
  * No real Pi spawn happens; all dispatchCore calls are mocked.
  */
 
-import { SKIP_MARKERS, countSkipMarkersInDiffLine } from "../src/work-driver-skip-ratchet.ts";
+import {
+  SKIP_MARKERS,
+  TEST_BLOCK_MARKERS,
+  countMarkersInDiffLine,
+  countSkipMarkersInDiffLine,
+} from "../src/work-driver-skip-ratchet.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -207,6 +212,55 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       );
     }
   }
+}
+
+// #307 — the same scanner handles test-block markers with a caller-supplied
+// marker set, retaining the skip-ratchet scanner's comment and string filtering.
+{
+  assert(
+    countMarkersInDiffLine('+it("one"); test("two"); describe("three")', TEST_BLOCK_MARKERS) === 3,
+    "#307: JavaScript test-block markers are counted from a supplied marker set",
+  );
+
+  assert(
+    countMarkersInDiffLine('+#[test] fn works() { def test_helper(): pass }', TEST_BLOCK_MARKERS) === 2,
+    "#307: Rust and Python test-block markers are counted",
+  );
+
+  assert(
+    countMarkersInDiffLine('+def test_login(): pass; def test_logout(): pass', TEST_BLOCK_MARKERS) === 2,
+    "#307: multiple Python test-block markers on one line are counted",
+  );
+
+  assert(
+    countMarkersInDiffLine('-value = 1  # def test_removed():', TEST_BLOCK_MARKERS) === 0,
+    "#307: Python test-block markers in trailing comments are excluded",
+  );
+
+  assert(
+    countMarkersInDiffLine('+;', [""]) === 0,
+    "#307: empty caller-supplied markers do not stall the scanner",
+  );
+
+  assert(
+    countMarkersInDiffLine('+// it(\'comment\'); console.log("test(")', TEST_BLOCK_MARKERS) === 0,
+    "#307: test-block markers in comments and strings are excluded",
+  );
+
+  assert(
+    countMarkersInDiffLine('+it.skip("not a test-block marker")', TEST_BLOCK_MARKERS) === 0,
+    "#307: skip markers are not counted unless included in the supplied marker set",
+  );
+
+  assert(
+    countMarkersInDiffLine('+input.split(",")', TEST_BLOCK_MARKERS) === 0,
+    "#307: identifier suffixes such as split( do not match the it( marker",
+  );
+
+  assert(
+    countMarkersInDiffLine('+it("standalone")', TEST_BLOCK_MARKERS) === 1,
+    "#307: standalone it( remains a test-block marker",
+  );
 }
 
 console.log(`\nexit ${exit}`);

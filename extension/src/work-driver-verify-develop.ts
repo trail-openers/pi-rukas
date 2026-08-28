@@ -16,7 +16,11 @@ import {
   protectedPathsEnabled,
   protectedPathsIn,
 } from "./work-driver-doctrine.ts";
-import { countSkipMarkersInDiffLine } from "./work-driver-skip-ratchet.ts";
+import {
+  TEST_BLOCK_MARKERS,
+  countMarkersInDiffLine,
+  countSkipMarkersInDiffLine,
+} from "./work-driver-skip-ratchet.ts";
 import { readFirstConfigLine, verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -33,6 +37,13 @@ function verifyTimeoutMs(): number {
 const VALID_SHA_RE = /^[0-9a-f]{40}$/;
 function isValidSha(s: string | undefined): s is string {
   return typeof s === "string" && VALID_SHA_RE.test(s);
+}
+
+/** #307 — maximum number of net-removed test blocks tolerated in a diff. */
+function testDeleteTolerance(): number {
+  const env = Number(process.env.PI_ENSEMBLE_TEST_DELETE_TOLERANCE);
+  if (!Number.isFinite(env) || env < 0) return 0;
+  return Math.floor(env);
 }
 
 /** PR338 — format an exec error with bounded output tail. */
@@ -255,17 +266,29 @@ export async function verifyDevelopOutcome(
       if (!diffContent) continue;
 
       let netIncrease = 0;
+      let netTestBlockDeletion = 0;
       const lines = diffContent.split("\n");
       for (const line of lines) {
+        // Diff file headers are not source lines. Do not let a marker in a
+        // filename influence either ratchet.
+        if (line.startsWith("+++") || line.startsWith("---")) continue;
         if (line.startsWith("+")) {
           netIncrease += countSkipMarkersInDiffLine(line);
+          netTestBlockDeletion -= countMarkersInDiffLine(line, TEST_BLOCK_MARKERS);
         } else if (line.startsWith("-")) {
           netIncrease -= countSkipMarkersInDiffLine(line);
+          netTestBlockDeletion += countMarkersInDiffLine(line, TEST_BLOCK_MARKERS);
         }
       }
       if (netIncrease > 0) {
         failures.push(
           `diff adds ${netIncrease} skipped-test marker(s) — a skipped test is a disabled gate`,
+        );
+      }
+      const tolerance = testDeleteTolerance();
+      if (netTestBlockDeletion > tolerance) {
+        failures.push(
+          `diff removes ${netTestBlockDeletion} test block(s), beyond the tolerance of ${tolerance} — a shrinking test suite is a disabled gate`,
         );
       }
     }

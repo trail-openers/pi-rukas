@@ -30,17 +30,24 @@ export const SKIP_MARKERS = [
   "t.Skip(",
 ] as const;
 
+/** Test declaration markers used by the test-deletion ratchet (#307). */
+export const TEST_BLOCK_MARKERS = ["it(", "test(", "describe(", "#[test]", "def test_"] as const;
+
 /**
- * Count skip markers in a single diff line (including the leading +/-
- * indicator). Returns the number of markers found, excluding those
+ * Count markers in a single diff line (including the leading +/- indicator).
+ * Returns the number of markers found, excluding those
  * inside comments or string literals.
  *
  * Single-pass: walks the line once, tracking quote-state and a running
  * backslash counter for O(1) escape detection.
  *
  * Comment exclusion: filters full-line comments (`//`, `/*`, `*`, `#`),
- * line-leading block comments, trailing `//` comments, and Rust attributes
- * like `#[ignore]` (NOT treated as comments).
+ * line-leading block comments, trailing `//` and `#` comments, and Rust
+ * attributes like `#[ignore]` (NOT treated as comments).
+ *
+ * Markers ending in `_` are treated as declaration prefixes, so a marker such
+ * as `def test_` may be followed by the test function name. Other markers
+ * retain the word-boundary guard used by the skip-ratchet scanner.
  *
  * Known limitations (single-line analysis, `git diff -U0` yields fragments):
  *
@@ -60,7 +67,7 @@ export const SKIP_MARKERS = [
  *   Adding an `inBlockComment` state is intentionally deferred — the added
  *   complexity costs more than the rare case is worth.
  */
-export function countSkipMarkersInDiffLine(line: string): number {
+export function countMarkersInDiffLine(line: string, markers: readonly string[]): number {
   // Remove the leading +/- and leading whitespace.
   const trimmed = line.slice(1).trimStart();
 
@@ -122,6 +129,11 @@ export function countSkipMarkersInDiffLine(line: string): number {
       if (ch === "/" && trimmed[pos + 1] === "/") {
         break;
       }
+      // A # outside a string starts a Python/shell comment, except for Rust
+      // attributes such as #[test] and #[ignore].
+      if (ch === "#" && trimmed[pos + 1] !== "[") {
+        break;
+      }
 
       // Check for string starts.
       if (ch === '"') {
@@ -131,17 +143,25 @@ export function countSkipMarkersInDiffLine(line: string): number {
       } else if (ch === "`") {
         inBacktick = true;
       } else {
-        // Check for any skip marker.
+        // Check for any configured marker.
         let matchedMarker = false;
-        for (const marker of SKIP_MARKERS) {
+        for (const marker of markers) {
+          // Empty markers match every position and never advance the scanner.
+          if (marker.length === 0) continue;
           if (trimmed.startsWith(marker, pos)) {
-            // Word-boundary guard: reject if the character after the marker
-            // is an identifier character. Prevents false positives like
-            // `pytest.mark.skipif` matching `pytest.mark.skip`, or
+            // Word-boundary guard: reject identifier-based markers when the
+            // character before or after the marker is an identifier character.
+            // This prevents `input.split(` from matching the short `it(` marker,
+            // as well as `pytest.mark.skipif` matching `pytest.mark.skip` and
             // `@DisabledOnOs` matching `@Disabled`.
+            const beforeCh = pos > 0 ? trimmed[pos - 1] : undefined;
             const afterPos = pos + marker.length;
             const nextCh = afterPos < trimmed.length ? trimmed[afterPos] : undefined;
-            if (nextCh !== undefined && /[A-Za-z0-9_]/.test(nextCh)) {
+            const isIdentifierMarker = /^[A-Za-z0-9_$]/.test(marker);
+            if (isIdentifierMarker && beforeCh !== undefined && /[A-Za-z0-9_$]/.test(beforeCh)) {
+              continue; // word-boundary not met; try next marker
+            }
+            if (nextCh !== undefined && /[A-Za-z0-9_]/.test(nextCh) && !marker.endsWith("_")) {
               continue; // word-boundary not met; try next marker
             }
             count++;
@@ -159,4 +179,9 @@ export function countSkipMarkersInDiffLine(line: string): number {
   }
 
   return count;
+}
+
+/** Count the skip-ratchet markers using the shared diff-line scanner. */
+export function countSkipMarkersInDiffLine(line: string): number {
+  return countMarkersInDiffLine(line, SKIP_MARKERS);
 }
