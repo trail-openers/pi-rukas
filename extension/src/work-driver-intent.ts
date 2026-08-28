@@ -27,6 +27,11 @@
  */
 
 import { trace } from "./trace.ts";
+import {
+  contradictionAssumptions,
+  loadBearingContradictions,
+  supportingContradictions,
+} from "./work-driver-intent-criticality.ts";
 import { sliceMarkdownSection } from "./work-driver-plan.ts";
 
 /** Why a cycle refused to write code. Machine-readable so the queue can act. */
@@ -340,7 +345,7 @@ export function specIsComplete(spec: NormalisedSpec): boolean {
     spec.deliverables.length > 0 &&
     spec.acceptanceCriteria.length > 0 &&
     spec.evidence.some((e) => e.verdict === "confirmed") &&
-    !spec.evidence.some((e) => e.verdict === "contradicted") &&
+    loadBearingContradictions(spec).length === 0 &&
     blockingQuestions(spec.openQuestions).length === 0
   );
 }
@@ -396,9 +401,27 @@ export function reconcileVerdict(spec: NormalisedSpec): NormalisedSpec {
     }
     return spec;
   }
-  if (spec.evidence.some((e) => e.verdict === "contradicted")) {
-    trace("work-driver: intent — evidence contradicts a proceed verdict, parking");
+  const supporting = supportingContradictions(spec);
+  if (loadBearingContradictions(spec).length > 0) {
+    trace("work-driver: intent — load-bearing evidence contradicts a proceed verdict, parking");
     return { ...spec, verdict: "park", parkReason: "contradicted-by-code" };
+  }
+  // Peripheral contradictions are retained as assumptions rather than
+  // overriding the resolver's actionable decision. A contradicted row can be
+  // stale without making the requested change impossible to build.
+  if (supporting.length > 0) {
+    trace(
+      `work-driver: intent — ${supporting.length} supporting contradiction(s) attached as assumptions`,
+    );
+    const existing = new Set(spec.assumptions.map((a) => `${a.text}\u0000${a.basis}`));
+    const added = contradictionAssumptions(supporting).filter(
+      (a) => !existing.has(`${a.text}\u0000${a.basis}`),
+    );
+    return {
+      ...spec,
+      verdict: "proceed-with-assumptions",
+      assumptions: [...spec.assumptions, ...added],
+    };
   }
   // The symmetric question, which nothing used to ask: a `proceed` has to be a
   // decision ABOUT something. An empty spec that says proceed is exactly the

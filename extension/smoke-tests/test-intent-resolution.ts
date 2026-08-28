@@ -136,25 +136,25 @@ The issue describes behaviour that was changed in #366. It is stale.
     "the contradicting evidence is retained for the handoff",
   );
 }{
-  // The resolver is an LLM and can contradict itself. Evidence wins — ignoring
-  // a recorded contradiction is exactly how a wrong bug report gets built.
+  // The resolver is an LLM and can contradict itself. A load-bearing
+  // contradiction wins — ignoring one is exactly how a wrong bug report gets built.
   const s = resolve(`
 INTENT-VERDICT: proceed
 
 ## Spec
 
 ### Intent
-Fix the thing.
+Fix the thing in src/a.ts.
 
 ### Deliverables
 - d1: change it [paths: src/a.ts]
 
 ### Evidence
-- the described function does not exist — src/a.ts — contradicted
+- src/a.ts does not exist — src/a.ts — contradicted
 `);
   assert(
     s?.verdict === "park" && s.parkReason === "contradicted-by-code",
-    "a 'proceed' claimed alongside contradicting evidence is overridden to park",
+    "a 'proceed' claimed alongside a load-bearing contradiction is overridden to park",
   );
 }
 
