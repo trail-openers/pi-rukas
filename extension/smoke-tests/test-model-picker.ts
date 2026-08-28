@@ -9,16 +9,35 @@
  *   - buildModelItems shape (sentinel ordering, provider grouping, sort)
  *   - encodeModelValue / parseModelValue round-trip (handles slashes in model
  *     IDs correctly — e.g. `local-gpu|Qwen/Qwen3.6-35B-A3B-FP8`)
+ *
+ * Host-config isolation: model-picker.ts imports model-config.ts, whose
+ * clearAllOverrides()/persist() write `~/.pi/agent/ensemble-models.json`.
+ * A bare import used to leave the module chain pointed at the REAL config,
+ * so running this test (which happens in every /work verify cycle) could
+ * wipe the operator's subagent model config. As in test-models.ts /
+ * test-model-config-same-tick.ts, we redirect PI_ENSEMBLE_MODELS_CONFIG to a
+ * mkdtemp dir BEFORE the import — dynamic import, because ES imports hoist.
  */
 
-import type { PiModel } from "../src/list-models.ts";
-import type { ModelChoice } from "../src/model-config.ts";
-import {
-  buildModelItems,
-  buildRoleItems,
-  encodeModelValue,
-  parseModelValue,
-} from "../src/model-picker.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+const configDir = mkdtempSync(path.join(tmpdir(), "pi-ensemble-test-model-picker-"));
+process.env.PI_ENSEMBLE_MODELS_CONFIG = path.join(configDir, "ensemble-models.json");
+// Best-effort cleanup on exit.
+process.on("exit", () => {
+  try {
+    rmSync(configDir, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
+});
+
+const mp = await import("../src/model-picker.ts");
+const { buildModelItems, buildRoleItems, encodeModelValue, parseModelValue } = mp;
+type PiModel = (typeof import("../src/list-models.ts"))["PiModel"];
+type ModelChoice = (typeof import("../src/model-config.ts"))["ModelChoice"];
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
