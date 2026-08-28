@@ -1500,6 +1500,30 @@ After the `develop` step (when every branch claims success) and after the `commi
 - At least one worktree has a real diff — uncommitted porcelain entries, or commits ahead of the `baseSha` recorded at the branch step. All worktrees empty = the claim was hollow.
 - The project's **verify command** exits 0 in each changed worktree.
 
+#### Scope fan-out: the developer changed too many files
+
+**Symptom:** The develop step ends with `verify-failed:develop` even though the developer reported success. The handoff evidence names an out-of-scope path, or says that the workstream changed more files than its plan declared.
+
+**Cause:** The gate compares the changed-file set in each workstream's worktree with the plan's `paths` and `outOfScope` entries. It reads both porcelain changes (including untracked files) and committed changes ahead of the branch-step `baseSha`, so a developer cannot avoid the check by committing locally. An `outOfScope` path is a hard violation: exact paths and descendants of an `outOfScope` directory prefix fail immediately. Otherwise, a workstream with declared paths is allowed up to:
+
+```
+max(declared path count × 3, 6)
+```
+
+For example, one declared path permits at most six changed files; eleven files in that workstream fails with a scope-fanout message. The factor and minimum are tunable with `PI_ENSEMBLE_SCOPE_FANOUT_FACTOR` and `PI_ENSEMBLE_SCOPE_FANOUT_MIN`. A file below a declared directory path counts as being under that path, so adding a new file in that directory does not create a false alarm. A workstream with an empty `paths` list skips this check and records a note; legacy/default workstreams must not be treated as if they declared one path.
+
+This is a deterministic post-develop check, not an LLM judgment. It catches an over-broad decomposition before adversarial review spends time on the work. A failure uses the existing `verify-failed:develop` cap and records the offending paths and counts in `pipelineState.verifyEvidence`.
+
+**Fix:** Read the evidence in the handoff or `.pi/work-state/<issue>.json`, then inspect the workstream that failed:
+
+```bash
+git -C .worktrees/issue-<N>-<workstream> status --porcelain
+git -C .worktrees/issue-<N>-<workstream> diff --name-only
+git -C .worktrees/issue-<N>-<workstream> diff --name-only <base-sha>..HEAD
+```
+
+Remove or move changes that violate the workstream's `outOfScope` fence. If the work is genuinely broader than the plan, split the workstream or revise the plan before restarting `/work <N>`. The gate is enabled by default; for a one-off, reviewed recovery you can restore the pre-gate behavior with `PI_ENSEMBLE_SCOPE_GATE=0`. Disabling it does not make an out-of-scope change safe — it only skips the deterministic check.
+
 **commit-pr:**
 - Commits exist on the branch: `git rev-list --count origin/<base>..HEAD` > 0.
 - The parsed PR number resolves via `gh pr view`. If ops forgot the `pr: <N>` marker, the gate tries `gh pr list --head <branch>` and **adopts** the found number (bonus repair — pre-PR17 a missing marker silently degraded handoff/CI targeting).

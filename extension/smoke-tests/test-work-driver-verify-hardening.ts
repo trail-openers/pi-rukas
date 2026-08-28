@@ -3,7 +3,7 @@
  * Smoke test for the /work driver, split out of test-work-driver.ts
  * (#171, AGENTS.md §12 file-size limit).
  *
- * Covers: PR18: gate hardening — R1 note-suppression, R6 verify-cmd precedence, R4 end-to-end cap-wiring.
+ * Covers: PR18: gate hardening — R1 note-suppression, R6 verify-cmd precedence, R4 end-to-end cap-wiring; #285 scope/fanout.
  *
  * No real Pi spawn happens; all dispatchCore calls are mocked.
  */
@@ -352,6 +352,139 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           "R4c: adopted PR number written back to pipelineState.prNumber (bonus repair wired)",
         );
       } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    // --- #285: deterministic develop scope/fanout gate ---
+    {
+      const dir = mkdtempSync(path.join(tmpdir(), "verify-scope-"));
+      const previousScopeEnv = {
+        gate: process.env.PI_ENSEMBLE_SCOPE_GATE,
+        factor: process.env.PI_ENSEMBLE_SCOPE_FANOUT_FACTOR,
+        minimum: process.env.PI_ENSEMBLE_SCOPE_FANOUT_MIN,
+      };
+      let files = ["src/private/secret.ts"];
+      let committedFiles: string[] = [];
+      const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+        if (cmd === "git status --porcelain") {
+          return { stdout: files.map((file) => ` M ${file}`).join("\n") };
+        }
+        if (cmd.startsWith("git rev-list --count")) {
+          return { stdout: files.length > 0 || committedFiles.length > 0 ? "1\n" : "0\n" };
+        }
+        if (cmd.startsWith("git diff --name-only")) {
+          return { stdout: committedFiles.join("\n") };
+        }
+        return { stdout: "" };
+      };
+      const stateFor = (paths: string[], outOfScope: string[] = []) => {
+        const state = initialState(998, 1000);
+        return {
+          ...state,
+          pipelineState: {
+            ...state.pipelineState,
+            baseSha: "a".repeat(40),
+            worktrees: { "task-a": dir },
+            workstreams: { "task-a": { id: "task-a", scope: "scope test", paths, outOfScope } },
+          },
+        };
+      };
+      const ctx: DriverContext = {
+        pi: makeFakePi().pi,
+        repoRoot: dir,
+        issue: 998,
+        verifyExecFn: exec,
+      };
+      try {
+        Reflect.deleteProperty(process.env, "PI_ENSEMBLE_SCOPE_GATE");
+        Reflect.deleteProperty(process.env, "PI_ENSEMBLE_SCOPE_FANOUT_FACTOR");
+        Reflect.deleteProperty(process.env, "PI_ENSEMBLE_SCOPE_FANOUT_MIN");
+
+        const outOfScope = await verifyStepOutcome(
+          ctx,
+          stateFor(["src/foo.ts"], ["src/private"]),
+          "develop",
+        );
+        assert(
+          !outOfScope.ok &&
+            outOfScope.failures.some((failure) => /out-of-scope path src\/private/.test(failure)),
+          "#285: outOfScope path prefix fails develop verification",
+        );
+
+        files = ["src/cron/wiki_state.rs", ...Array.from({ length: 10 }, (_, i) => `src/x${i}.rs`)];
+        const fanout = await verifyStepOutcome(
+          ctx,
+          stateFor(["src/cron/wiki_state.rs"]),
+          "develop",
+        );
+        assert(
+          !fanout.ok && fanout.failures.some((failure) => /scope fanout: 11 files/.test(failure)),
+          "#285: eleven changed files versus one declared path fails fanout verification",
+        );
+
+        files = [];
+        committedFiles = ["src/private/committed.ts"];
+        const committed = await verifyStepOutcome(
+          ctx,
+          stateFor(["src/foo.ts"], ["src/private"]),
+          "develop",
+        );
+        assert(
+          !committed.ok &&
+            committed.failures.some((failure) =>
+              /out-of-scope path src\/private\/committed/.test(failure),
+            ),
+          "#285: committed base diff paths are included in scope verification",
+        );
+        committedFiles = [];
+
+        files = ["src/feature/new.ts"];
+        assert(
+          (await verifyStepOutcome(ctx, stateFor(["src/feature"]), "develop")).ok,
+          "#285: a file below a declared directory path passes",
+        );
+
+        files = ["src/one.ts", "src/two.ts", "src/three.ts"];
+        process.env.PI_ENSEMBLE_SCOPE_FANOUT_FACTOR = "1";
+        process.env.PI_ENSEMBLE_SCOPE_FANOUT_MIN = "1";
+        const tuned = await verifyStepOutcome(
+          ctx,
+          stateFor(["src/one.ts", "src/two.ts"]),
+          "develop",
+        );
+        assert(
+          !tuned.ok && tuned.failures.some((failure) => /scope fanout/.test(failure)),
+          "#285: factor and minimum environment tunables are respected",
+        );
+
+        files = ["src/legacy.ts"];
+        const empty = await verifyStepOutcome(ctx, stateFor([]), "develop");
+        assert(
+          empty.ok && empty.notes.some((note) => /scope fanout check skipped/.test(note)),
+          "#285: empty declared paths skip fanout with a note",
+        );
+
+        process.env.PI_ENSEMBLE_SCOPE_GATE = "0";
+        const disabled = await verifyStepOutcome(
+          ctx,
+          stateFor(["src/foo.ts"], ["src/private"]),
+          "develop",
+        );
+        assert(
+          disabled.ok && disabled.notes.some((note) => /PI_ENSEMBLE_SCOPE_GATE=0/.test(note)),
+          "#285: scope gate kill-switch restores previous behavior",
+        );
+      } finally {
+        if (previousScopeEnv.gate === undefined)
+          Reflect.deleteProperty(process.env, "PI_ENSEMBLE_SCOPE_GATE");
+        else process.env.PI_ENSEMBLE_SCOPE_GATE = previousScopeEnv.gate;
+        if (previousScopeEnv.factor === undefined)
+          Reflect.deleteProperty(process.env, "PI_ENSEMBLE_SCOPE_FANOUT_FACTOR");
+        else process.env.PI_ENSEMBLE_SCOPE_FANOUT_FACTOR = previousScopeEnv.factor;
+        if (previousScopeEnv.minimum === undefined)
+          Reflect.deleteProperty(process.env, "PI_ENSEMBLE_SCOPE_FANOUT_MIN");
+        else process.env.PI_ENSEMBLE_SCOPE_FANOUT_MIN = previousScopeEnv.minimum;
         rmSync(dir, { recursive: true, force: true });
       }
     }

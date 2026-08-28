@@ -46,6 +46,43 @@ function testDeleteTolerance(): number {
   return Math.floor(env);
 }
 
+/** #285 — escape hatch for the deterministic develop scope/fanout gate. */
+function scopeGateEnabled(): boolean {
+  const value = process.env.PI_ENSEMBLE_SCOPE_GATE;
+  return value !== "0" && value !== "false";
+}
+
+/** #285 — maximum changed files allowed per declared path, by default. */
+function scopeFanoutFactor(): number {
+  const value = Number(process.env.PI_ENSEMBLE_SCOPE_FANOUT_FACTOR);
+  if (!Number.isFinite(value) || value < 0) return 3;
+  return value;
+}
+
+/** #285 — minimum changed files that trigger a fanout failure. */
+function scopeFanoutMinimum(): number {
+  const value = Number(process.env.PI_ENSEMBLE_SCOPE_FANOUT_MIN);
+  if (!Number.isFinite(value) || value < 0) return 6;
+  return Math.floor(value);
+}
+
+/** Normalise a plan path before exact or directory-prefix comparison. */
+function normaliseScopePath(raw: string): string {
+  return raw
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\s*\([^()]*\)\s*$/, "")
+    .replace(/^[`*\s]+|[`*\s]+$/g, "")
+    .replace(/^\.\//, "")
+    .replace(/^\/+|\/+$/g, "")
+    .trim();
+}
+
+/** A file is covered by a declaration when it is that path or below it. */
+function matchesScopePath(file: string, declared: string): boolean {
+  return file === declared || file.startsWith(`${declared}/`);
+}
+
 /** PR338 — format an exec error with bounded output tail. */
 function formatExecError(
   e: Error & { stdout?: string; stderr?: string; killed?: boolean },
@@ -131,12 +168,17 @@ export async function verifyDevelopOutcome(
   // protected-path gate below sees the whole change set rather than one
   // worktree's slice of it.
   const touchedPaths: string[] = [];
+  // #285 — retain the same changed-file set per workstream for the scope
+  // fence. Status covers uncommitted and untracked files; the base diff adds
+  // files a developer committed in its worktree.
+  const changedPathsByWorkstream = new Map<string, Set<string>>();
   // PR18 (R1): track per-worktree assessability so one erroring worktree
   // doesn't suppress the hollow-diff check for all others.
   let assessedCount = 0;
   for (const [id, cwd] of Object.entries(worktrees)) {
     let changed = false;
     let assessed = false;
+    const changedPaths = new Set<string>();
     try {
       const { stdout } = await execFn("git status --porcelain", {
         cwd,
@@ -144,7 +186,9 @@ export async function verifyDevelopOutcome(
       });
       assessed = true;
       if (stdout.trim().length > 0) changed = true;
-      touchedPaths.push(...porcelainPaths(stdout));
+      const statusPaths = porcelainPaths(stdout);
+      touchedPaths.push(...statusPaths);
+      for (const file of statusPaths) changedPaths.add(normaliseScopePath(file));
     } catch (err) {
       notes.push(`git status failed in ${id} (${(err as Error).message?.slice(0, 100)})`);
     }
@@ -167,13 +211,60 @@ export async function verifyDevelopOutcome(
           cwd,
           maxBuffer: 4 * 1024 * 1024,
         });
-        touchedPaths.push(...stdout.split("\n").filter((l) => l.trim().length > 0));
+        const diffPaths = stdout.split("\n").filter((l) => l.trim().length > 0);
+        touchedPaths.push(...diffPaths);
+        for (const file of diffPaths) changedPaths.add(normaliseScopePath(file));
       } catch {
         // Same as above — an absent baseSha in this worktree is not evidence.
       }
     }
     if (assessed) assessedCount++;
+    changedPathsByWorkstream.set(id, changedPaths);
     if (changed) changedWorktrees.push(cwd);
+  }
+
+  // --- Scope/fanout gate (#285) ---
+  //
+  // This is intentionally separate from the hollow-diff check: a changed
+  // worktree can prove that a developer wrote code while still showing that
+  // the workstream's decomposition was too broad. An empty paths list has no
+  // declared boundary to measure, so preserve legacy/default behaviour and
+  // report the skipped check instead of inventing one.
+  if (!scopeGateEnabled()) {
+    notes.push("PI_ENSEMBLE_SCOPE_GATE=0 — develop scope/fanout gate disabled");
+  } else {
+    for (const [id, changedPaths] of changedPathsByWorkstream) {
+      const workstream = state.pipelineState.workstreams?.[id];
+      const declaredPaths = (workstream?.paths ?? [])
+        .map(normaliseScopePath)
+        .filter((p) => p.length > 0);
+      const outOfScope = (workstream?.outOfScope ?? [])
+        .map(normaliseScopePath)
+        .filter((p) => p.length > 0);
+      const changedFiles = [...changedPaths].sort();
+      const outOfScopeHits = changedFiles.filter((file) =>
+        outOfScope.some((declared) => matchesScopePath(file, declared)),
+      );
+      for (const file of outOfScopeHits) {
+        failures.push(`developer touched out-of-scope path ${file} — declared fence violated`);
+      }
+      if (declaredPaths.length === 0) {
+        notes.push(`scope fanout check skipped for ${id} — workstream has no declared paths`);
+        continue;
+      }
+      const limit = Math.max(declaredPaths.length * scopeFanoutFactor(), scopeFanoutMinimum());
+      if (changedFiles.length > limit) {
+        const undeclaredFiles = changedFiles.filter(
+          (file) => !declaredPaths.some((declared) => matchesScopePath(file, declared)),
+        );
+        const listedFiles = (undeclaredFiles.length > 0 ? undeclaredFiles : changedFiles).join(
+          ", ",
+        );
+        failures.push(
+          `scope fanout: ${changedFiles.length} files changed vs ${declaredPaths.length} declared — likely mis-decomposition; split the work or update the plan. Files: ${listedFiles}`,
+        );
+      }
+    }
   }
 
   // --- Protected-path gate (#406) ---
