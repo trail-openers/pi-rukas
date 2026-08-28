@@ -127,19 +127,21 @@ This is prompt-layer doctrine, not mechanical enforcement. It is the weakest enf
 
 **Pre-Work Branch Creation (preconditions are MANDATORY, in this order):**
 
-1. **Identify mainline.** Default `main`; for repos using `master`/`develop`/`trunk`, detect via:
+1. **Identify mainline.** Default `main`; for repos using `master`/`develop`/`trunk`, detect with a bare read call (no command substitution):
    ```bash
-   MAINLINE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
-   MAINLINE=${MAINLINE:-main}
+   git symbolic-ref refs/remotes/origin/HEAD
    ```
-2. **Verify clean working tree** before branching:
+   The output is `refs/remotes/origin/<mainline>`. If it errors or is unset, the mainline is `main`.
+2. **Verify clean working tree** with a bare read call:
    ```bash
-   test -z "$(git status --porcelain)" || { echo "ABORT: dirty working tree"; exit 1; }
+   git status --porcelain
    ```
-   If dirty → ABORT and surface to PM. Do NOT branch off uncommitted state.
-3. **Fetch and fast-forward the mainline:**
+   Non-empty output → ABORT and surface to PM. Do NOT branch off uncommitted state.
+3. **Fetch and fast-forward the mainline** — three separate bare calls, no `&&` chains:
    ```bash
-   git fetch origin && git checkout "$MAINLINE" && git pull --ff-only origin "$MAINLINE"
+   git fetch origin
+   git checkout <mainline>
+   git pull --ff-only origin <mainline>
    ```
    `--ff-only` is mandatory — if the mainline diverged (rare but possible after a rebase or force-push upstream), ABORT and surface to PM. Never create a surprise merge commit.
 4. **Branch from there:**
@@ -154,7 +156,7 @@ This is prompt-layer doctrine, not mechanical enforcement. It is the weakest enf
 If any precondition (1-3) fails, do NOT proceed to step 4. Surface the failure to PM verbatim with the exact error output so PM can decide whether to ask the user or course-correct.
 
 **Pre-Commit Verification:**
-1. Check NOT on mainline: `git branch --show-current` (compare against the `$MAINLINE` discovered above).
+1. Check NOT on mainline: `git branch --show-current` (compare against the mainline identified in step 1 above).
 2. If on mainline → STOP, create feature branch first.
 
 ## Kamal Deployment
@@ -188,9 +190,14 @@ You can deploy applications using Kamal (Docker-based deployment tool).
 
 **ALWAYS use `gh run watch` - NO polling**
 
+Two separate bare tool calls — no variable, no command substitution:
+
 ```bash
-run_id=$(gh run list --limit 1 --json databaseId -q '.[0].databaseId')
-gh run watch $run_id
+# Step 1: find the newest run on the current branch (note the run ID from the output)
+gh run list --limit 1 --branch main --json databaseId
+
+# Step 2: watch it (use the run ID from step 1)
+gh run watch <run-id>
 ```
 
 ## Code Issue Delegation
@@ -227,12 +234,9 @@ Before creating worktrees, ensure setup:
 ```bash
 # Create .worktrees directory if it doesn't exist
 mkdir -p .worktrees
-
-# Add to .gitignore if not already there  
-if ! grep -q "^\\.worktrees/" .gitignore 2>/dev/null; then
-  echo ".worktrees/" >> .gitignore
-fi
 ```
+
+Then check `git status --porcelain` — if untracked `.worktrees/` shows up, add `.worktrees/` to `.gitignore` via a file edit (delegate to @developer, or confirm it is already covered by `.git/info/exclude`). One line in the ignore file beats a shell `if` + `echo >>` chain.
 
 ### Create Worktree
 
@@ -249,7 +253,7 @@ git worktree add .worktrees/issue-XXX -b feature/issue-XXX
 **Full example:**
 ```bash
 # 1. Setup (if first time)
-mkdir -p .worktrees && echo ".worktrees/" >> .gitignore
+mkdir -p .worktrees
 
 # 2. Create worktree for issue #263
 git worktree add .worktrees/issue-263 -b feature/issue-263
@@ -298,14 +302,14 @@ git worktree list
 ## PR Management
 
 ```bash
-# Create draft PR
-oo gh api repos/{owner}/{repo}/pulls \
-  --method POST \
-  --field title="feat(scope): description" \
-  --field body="Fixes #123" \
-  --field draft=true \
-  --field head="feature/branch-name" \
-  --field base="main"
+# Create draft PR — long or multi-line bodies go through --body-file (see Scratch hygiene above),
+# never inline --field body. Short single-line bodies may use --field.
+gh pr create \
+  --draft \
+  --title "feat(scope): description" \
+  --body "Fixes #123" \
+  --head "feature/branch-name" \
+  --base "main"
 ```
 
 Or use the `pr` tool:

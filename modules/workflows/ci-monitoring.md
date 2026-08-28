@@ -4,15 +4,20 @@
 
 **ALWAYS use `gh run watch` for live monitoring - NO polling**
 
+Two separate bare tool calls — no variable, no command substitution:
+
 ```bash
-# After pushing, get workflow run ID
-run_id=$(gh run list --limit 1 --json databaseId -q '.[0].databaseId')
+# Step 1: find the newest run on the current branch (note the run ID from the output)
+gh run list --limit 1 --branch main --json databaseId
 
-# PRIMARY METHOD: Real-time watch
-gh run watch $run_id
+# Step 2: watch it (use the run ID from step 1)
+gh run watch <run-id>
+```
 
-# For failure details
-gh run view $run_id --log-failed
+For failure details:
+
+```bash
+gh run view <run-id> --log-failed
 ```
 
 ## FORBIDDEN Patterns

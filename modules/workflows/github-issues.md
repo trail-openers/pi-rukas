@@ -47,7 +47,7 @@ gh issue create --title "fix: description" --body-file tmp/issue-body.md
 
 ## GitHub Issue Command Reference (bare `gh`)
 
-All issue mutations run as bare `gh` commands (run `gh`, not `oo gh` — bare keeps raw output for `| jq` pipelines). Mutation verbs (`create`, `edit`, `close`, `reopen`) are **PM-only** per the role split above; read verbs (`view`, `list`, `comment`) are shared.
+All issue mutations run as bare `gh` commands (run `gh`, not `oo gh` — `oo` compresses or indexes output >4 KB, which loses the raw issue body PM needs to decide). Mutation verbs (`create`, `edit`, `close`, `reopen`) are **PM-only** per the role split above; read verbs (`view`, `list`, `comment`) are shared.
 
 **Comment on an issue:**
 
@@ -101,23 +101,31 @@ Use `oo gh issue view` for reading issue content. If it fails with `repository.i
 
 ### Single Issue Fallback
 
-To use the fallback command, derive values:
-- `{owner}` and `{repo}`: from `oo git remote get-url origin`
-- `{number}`: the actual issue number in the error context
+Two separate bare tool calls — no command substitution, no pipe. Pipelines and `$(…)` shapes break the `oo` runner (its indexing path replaces JSON with a recall-hint line) and can prompt the permission matcher, which cannot wildcard chained shapes — the two-step shape keeps every call clean and the raw output readable.
 
-```bash
-oo gh api repos/{owner}/{repo}/issues/{number} | jq -r '.body'
-```
+1. Derive `{owner}` and `{repo}` from the remote URL (read the URL, then extract the owner and repo segments yourself):
 
-REST endpoint `/repos/{owner}/{repo}/issues/{number}` avoids GraphQL `projectCards` deprecation. Note: This endpoint may return PR data—validate `.pull_request` is absent/null when strict issue-only scope is required. Use `jq -r '.body'` to extract issue body text.
+   ```bash
+   git remote get-url origin
+   ```
+
+2. Fetch the issue with the REST endpoint (run bare, not `oo gh api` — bare returns the full JSON, which you then read directly):
+
+   ```bash
+   gh api repos/{owner}/{repo}/issues/{number}
+   ```
+
+REST endpoint `/repos/{owner}/{repo}/issues/{number}` avoids GraphQL `projectCards` deprecation. The issue body is the `body` field in the JSON response. Note: this endpoint may return PR data—validate `pull_request` is absent/null when strict issue-only scope is required.
 
 ### Multiple Issues Pattern
 
-For multiple issues, use the list endpoint with filtering:
+For multiple issues, two separate bare tool calls:
 
-```bash
-OWNER_REPO=$(oo git remote get-url origin | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')
-oo gh api repos/$OWNER_REPO/issues -f state=open -f per_page=100 | jq -r '.[] | "\(.number): \(.title)"'
-```
+1. Derive `{owner}` and `{repo}` from `git remote get-url origin` (same as above).
+2. List open issues:
 
-This avoids `&&` chaining and for-loop+jq pitfalls. Use for listing issues when `oo gh issue list` encounters `projectCards` deprecation errors.
+   ```bash
+   gh api repos/{owner}/{repo}/issues -f state=open -f per_page=100
+   ```
+
+Read the JSON response and extract `number` + `title` per entry from the tool result — no `jq` pipe needed. Use for listing issues when `gh issue list` encounters `projectCards` deprecation errors.
