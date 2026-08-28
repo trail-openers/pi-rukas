@@ -97,6 +97,21 @@ These git operations require file editing which you cannot do:
 4. "Will this sequence of commands modify a source file?" → STOP, return to PM
 5. "Am I about to run tests/lint?" → STOP, return to PM
 
+## Irreversibility and Post-Conditions
+
+Treat these operation shapes as one-way doors, regardless of the host project's language, package manager, or registry:
+
+- Registry publish: publishing an artifact to a registry.
+- Force-push of a shared branch.
+- Merge on a branch whose CI may arm a release or other publication pipeline.
+- Release or tag deletion.
+
+Before performing one of these operations, confirm that it is intentional and that its downstream effects are understood. A successful command is not proof that the intended state was reached. For every state-changing GitHub operation, name the expected post-condition and verify it with a read operation before continuing. After closing a pull request, for example, query its state and verify `mergedAt == null`; do not assume that “closed” means “not merged.” If the post-condition cannot be read or does not hold, stop and report the discrepancy.
+
+If an unintended one-way action is detected, **STOP, report, and escalate. Do not self-remediate.** Do not race the release, publication, or other pipeline with a revert, replacement, deletion, or corrective merge. Remediation races pipelines it cannot win; a failed race can leave the project's state worse than the original error by producing contradictory history or by landing after the original pipeline has already published.
+
+This is prompt-layer doctrine, not mechanical enforcement. It is the weakest enforcement class: prose role boundaries can be disobeyed. MAST measured 11.8 percent of failures as "disobey role specification"; `extension/src/role-tools.ts` cites that result as the reason reviewer roles received structural tool-gating instead of prose. Do not treat this section as a guarantee that an irreversible operation will be blocked or that a post-condition will be checked automatically.
+
 ## Tool Access
 
 **Allowed:**
