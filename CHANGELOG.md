@@ -8,6 +8,44 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.53](https://github.com/randomm/pi-ensemble/compare/v0.12.52...v0.12.53) (2026-08-28)
+
+
+### Features
+
+* **deck:** per-cycle cost roll-up with cache hit rate ([#538](https://github.com/randomm/pi-ensemble/issues/538)) ([173d46e](https://github.com/randomm/pi-ensemble/commit/173d46e4a2ef00e1da4843adee8463d226aa9a5b))
+* **ops:** add irreversibility and post-condition doctrine to ops prompt ([#565](https://github.com/randomm/pi-ensemble/issues/565)) ([569d8a0](https://github.com/randomm/pi-ensemble/commit/569d8a0fdeaeffa64b470bdfd2633c0ac918372f)), closes [#344](https://github.com/randomm/pi-ensemble/issues/344)
+* **prompts:** gate issue creation on PM role with doctrine canary ([#529](https://github.com/randomm/pi-ensemble/issues/529)) ([723e875](https://github.com/randomm/pi-ensemble/commit/723e87591a4d9297f857906c74d3e33859cfebdb))
+* **test:** ratchet against deleted test blocks ([#563](https://github.com/randomm/pi-ensemble/issues/563)) ([c8f5676](https://github.com/randomm/pi-ensemble/commit/c8f56767a3c62d59d2528dc7419a411776736284))
+* **work:** capability-preserving dispatch caps — loop detector, steer seam, typed cap causes ([#544](https://github.com/randomm/pi-ensemble/issues/544)) ([cbb2f5a](https://github.com/randomm/pi-ensemble/commit/cbb2f5ae4f6f5a5801a8c933f02782f068c4ebc1))
+* **work:** clean up stale worktrees and build artifacts at run end ([#560](https://github.com/randomm/pi-ensemble/issues/560)) ([a5ff182](https://github.com/randomm/pi-ensemble/commit/a5ff182de3d19c8d5552fdeccd5b8f4f6ea3c715))
+* **work:** consolidation gate — subsumption-aware verdict, both-sides report ([#541](https://github.com/randomm/pi-ensemble/issues/541)) ([d092d02](https://github.com/randomm/pi-ensemble/commit/d092d0257cafcdeb7e703de1dc081bacf27b1534))
+* **work:** persist lens findings, per-lens timing, and surface in PR ([#456](https://github.com/randomm/pi-ensemble/issues/456)) ([#561](https://github.com/randomm/pi-ensemble/issues/561)) ([bc16697](https://github.com/randomm/pi-ensemble/commit/bc16697a51f0f3adffa349a45a87d1fe9e4cbaf5))
+* **work:** revert MAX_PARALLEL_GROUPS_DEFAULT to 3 ([#547](https://github.com/randomm/pi-ensemble/issues/547)) ([#556](https://github.com/randomm/pi-ensemble/issues/556)) ([9791171](https://github.com/randomm/pi-ensemble/commit/9791171d9c9246dbf234494dc6f5b54bd2286816))
+* **work:** scope-fanout gate — fail develop verification on declared-path violations ([#576](https://github.com/randomm/pi-ensemble/issues/576)) ([ef2a57c](https://github.com/randomm/pi-ensemble/commit/ef2a57c69e9c4faef9f6e24b5c6783d4bd8082e7))
+* **work:** validate state-file discriminants at read; name unknown steps in the loop ([#533](https://github.com/randomm/pi-ensemble/issues/533)) ([#537](https://github.com/randomm/pi-ensemble/issues/537)) ([ef690d3](https://github.com/randomm/pi-ensemble/commit/ef690d33cab82abe4479c48638140c8ebea17c74))
+
+
+### Bug Fixes
+
+* **adversarial:** enforce wall-clock budget in phase retry loop ([#357](https://github.com/randomm/pi-ensemble/issues/357)) ([#557](https://github.com/randomm/pi-ensemble/issues/557)) ([cf04954](https://github.com/randomm/pi-ensemble/commit/cf04954009362eadf563eb0fc64b27002edbce51))
+* **agents:** remove ops blanket gh api grant, add explicit PR mutations ([#341](https://github.com/randomm/pi-ensemble/issues/341)) ([#567](https://github.com/randomm/pi-ensemble/issues/567)) ([fec2579](https://github.com/randomm/pi-ensemble/commit/fec25795b794c65096ce36fa2b37c81a93a70a30))
+* **dispatch:** prevent PM async status polling loops ([#553](https://github.com/randomm/pi-ensemble/issues/553)) ([1f7a0ff](https://github.com/randomm/pi-ensemble/commit/1f7a0ff72b9f958753e829035d43b10a987f0130))
+* **dispatch:** tag possible mid-stream truncation and nudge long runs ([#555](https://github.com/randomm/pi-ensemble/issues/555)) ([d1b2813](https://github.com/randomm/pi-ensemble/commit/d1b2813ad1cf22e69c26185cb26653d5619c0ef3))
+* **modules:** developer.md bug-fix TDD ritual - failing test… ([#549](https://github.com/randomm/pi-ensemble/issues/549)) ([32ef469](https://github.com/randomm/pi-ensemble/commit/32ef469eeba829fce32c8c1fac68c55d25b7bfc0))
+* **modules:** replace command-substitution and piped recipes in ops CI + issue-fallback doctrine ([#343](https://github.com/randomm/pi-ensemble/issues/343)) ([#575](https://github.com/randomm/pi-ensemble/issues/575)) ([e0956c0](https://github.com/randomm/pi-ensemble/commit/e0956c094b0f41fde506e70d73eb734acc0604bf))
+* **ops:** ground CI branch selection and fallback staging fences ([#564](https://github.com/randomm/pi-ensemble/issues/564)) ([dbe8373](https://github.com/randomm/pi-ensemble/commit/dbe83735caee6916609b982176c074d93842b4a1))
+* **ops:** resolve lens findings — qualitative rationale, explicit terminal state ([#344](https://github.com/randomm/pi-ensemble/issues/344)) ([#568](https://github.com/randomm/pi-ensemble/issues/568)) ([d0cac87](https://github.com/randomm/pi-ensemble/commit/d0cac871e1e7fc1e34cbafba6c89c34546c66861))
+* **test:** isolate model-picker test from the real ensemble-models.json ([#569](https://github.com/randomm/pi-ensemble/issues/569)) ([b097efd](https://github.com/randomm/pi-ensemble/commit/b097efd1b97d08f2ed43153edf02fd45d742d9b9))
+* **test:** pin the fanout mode-derivation assertion to an explicit cap ([#548](https://github.com/randomm/pi-ensemble/issues/548)) ([bba1499](https://github.com/randomm/pi-ensemble/commit/bba1499f2f06a7836235b8b3f2f7e6eb638e0da2))
+* **work:** branch-step diagnostics — trace the ops-fallback… ([#558](https://github.com/randomm/pi-ensemble/issues/558)) ([8b226a5](https://github.com/randomm/pi-ensemble/commit/8b226a54e58b1c7e0977de52b3688eb6243b07bf))
+* **work:** carry assumptions and adversarial findings through commit-pr fallback ([#455](https://github.com/randomm/pi-ensemble/issues/455)) ([#562](https://github.com/randomm/pi-ensemble/issues/562)) ([99aea28](https://github.com/randomm/pi-ensemble/commit/99aea28c055340a043c7c6b248e71c374f8c3097))
+* **work:** commit-pr fallback cause, dirty-preflight plumb, untracked-dirt handoff truth ([#542](https://github.com/randomm/pi-ensemble/issues/542)) ([7fb03d9](https://github.com/randomm/pi-ensemble/commit/7fb03d9be759f4f460b2fbe97c4c8a6f467b9ca5))
+* **work:** honor proceed-with-assumptions unless a load-bearing claim is contradicted ([#577](https://github.com/randomm/pi-ensemble/issues/577)) ([f2e6316](https://github.com/randomm/pi-ensemble/commit/f2e6316540fb00a1473865820728dd6dbf8b6d31)), closes [#574](https://github.com/randomm/pi-ensemble/issues/574)
+* **work:** post-merge verification transient failure returns success-with-warning-note ([#551](https://github.com/randomm/pi-ensemble/issues/551)) ([24ff952](https://github.com/randomm/pi-ensemble/commit/24ff952f7c0c0fc8c783d3383a3a43ede1928e28))
+* **work:** provision worktrees — commit the hook, survive failed fetch ([#535](https://github.com/randomm/pi-ensemble/issues/535)) ([d4ce76f](https://github.com/randomm/pi-ensemble/commit/d4ce76f0175f8c0a4a06f479edf31c72952a75c8))
+* **work:** recover stale same-issue worktrees at branch setup ([#552](https://github.com/randomm/pi-ensemble/issues/552)) ([56342d0](https://github.com/randomm/pi-ensemble/commit/56342d0f7b71f4671f202738ebc93b05f4153cbf))
+
 ## [0.12.52](https://github.com/randomm/pi-ensemble/compare/v0.12.51...v0.12.52) (2026-08-23)
 
 
