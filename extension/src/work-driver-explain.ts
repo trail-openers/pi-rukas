@@ -83,6 +83,21 @@ export function explainCap(
       const used = budgetEv ? ` (spent ${Math.round(budgetEv.usedTokens).toLocaleString()})` : "";
       return `a subagent crossed its cumulative token budget${budget}${used} — a cost cap, not a provider fault (override: PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>). The budget bounds context-driven spend; raise it only if the work genuinely needs the context, or re-dispatch with a tighter prompt so it fits`;
     }
+    case "repeat-finding-seam": {
+      // #280 §B — same finding shape across ≥3 files is a missing-seam
+      // signal, not N independent defects. Patching each instance would
+      // entrench the duplication; explore is dispatched to analyse which
+      // spec element under-specifies the shared behaviour.
+      const hit = [...state.eventLog]
+        .reverse()
+        .find(
+          (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
+            e.kind === "cap-hit" && e.cap === "repeat-finding-seam",
+        );
+      const evidence =
+        hit?.evidence ?? "the lens found the same finding shape across multiple files";
+      return `lens-review round 1 flagged a repeating-seam pattern: ${evidence}. This is a missing-seam signal, not N independent defects. The driver dispatched @explore to analyse which spec element (outcomes / scope boundaries / constraints / prior decisions / task breakdown / verification criteria) under-specifies the shared behaviour. Patching each instance would entrench the duplication rather than surface the root cause. Review explore's SDD analysis and revise the issue before re-running /work`;
+    }
     case "explore-already-complete":
       return "explore concluded this issue is already done (e.g., satisfied by a prior PR or merged earlier). The driver halted before branch/develop ran — no code was written. Close the issue if you agree, or re-run /work with additional context if you believe there IS work to do";
     case "intent-park": {

@@ -128,7 +128,7 @@ function assert(cond: boolean, msg: string) {
   }
   // And the driver's own path agrees with what it tells the operator to do.
   assert(
-    /git apply --3way --binary/.test(read("work-driver-integrate.ts")),
+    /git apply --3way --binary/.test(read("work-driver-cherry-pick.ts")),
     "the mechanized path uses the same recipe it documents",
   );
 }

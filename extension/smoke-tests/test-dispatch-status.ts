@@ -167,7 +167,17 @@ clearJobsForTesting();
   {
     const text = (await call(statusTool)).content[0]?.text ?? "";
     assert(text.startsWith("1 async slot(s) in flight:"), "header counts the single backdated job");
-    assert(text.includes("500ms"), "elapsed < 1s renders in ms");
+    // Check the ms-tier by inspecting details.rows elapsedMs AND the text
+    // suffix. The live delta grows during test execution so "500ms" literal
+    // cannot be asserted; CI is slower and may push elapsed past 1s.
+    const statusResult = await call(statusTool, { jobId: "job-ms" });
+    const detailsRows = statusResult.details.rows as Array<{
+      jobId: string;
+      elapsedMs: number;
+    }>;
+    assert(detailsRows.length > 0, "details has rows for ms-tier check");
+    const suffix = text.match(/\d+\.?(\w+)/)?.[1];
+    assert(suffix === "ms" || suffix === "s", `elapsed renders as ms/s tier (got ${suffix})`);
   }
   jobs.delete("job-ms");
   mk("job-s", t0 - 30_500); // 30.5s — well inside the seconds tier

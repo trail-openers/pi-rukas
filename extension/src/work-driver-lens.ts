@@ -12,9 +12,11 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { carriedAdversarialFindings } from "./adversarial-findings.ts";
+import { detectRepeatSeam } from "./detect-repeat-seam.ts";
 import { type WideningFinding, scanTypeWidening } from "./invariant-scan.ts";
 import { buildEvidence, runClaimScan } from "./lens-evidence.ts";
 import { runLensReview } from "./lens-review.ts";
+import { appendGuardWriteEvents, runGuardMemoryWrites } from "./lens-vipune-write.ts";
 import { writeFindings } from "./memory-write.ts";
 import { resolveReviewThreshold } from "./review-threshold.ts";
 import { makeRunId } from "./spawn.ts";
@@ -129,6 +131,15 @@ export async function runLens(
       at: Date.now(),
       findings: widenings,
     });
+    const guardWrites = await runGuardMemoryWrites(
+      widenings,
+      ctx.issue,
+      ctx.repoRoot,
+      ctx.gvwmWriteFn,
+    );
+    for (const ev of appendGuardWriteEvents(guardWrites)) {
+      next = appendEvent(next, ev);
+    }
   }
 
   // PR6 — empty-diff guard. Lens children hallucinate findings against
@@ -299,6 +310,35 @@ export async function runLens(
   }
 
   next = await applyLensVerdict(summary, jobId, round, ctx, next);
+
+  // #280 §B — round-1 seam escalation: detectRepeatSeam fires, route to
+  // step-back (SDD analysis). Round ≥2 unchanged.
+  const seamEscalationEnabled = process.env.PI_ENSEMBLE_SEAM_ESCALATION !== "0";
+  if (
+    seamEscalationEnabled &&
+    round === 1 &&
+    (summary.verdict === "ISSUES_FOUND" || summary.verdict === "CRITICAL_ISSUES_FOUND") &&
+    summary.findings.length > 0
+  ) {
+    const seam = detectRepeatSeam(summary.findings);
+    if (seam) {
+      // theme includes lens + pattern so downstream tests can verify it
+      next = appendEvent(next, {
+        kind: "step-back-triggered",
+        at: Date.now(),
+        theme: `${seam.lens}::${seam.normalisedTitle}`,
+      });
+      next = appendEvent(next, {
+        kind: "cap-hit",
+        at: Date.now(),
+        cap: "repeat-finding-seam",
+        reviewRound: round,
+        nextStep: "step-back",
+        evidence: `repeat-finding-seam detected: ${seam.fileCount} files share the same ${seam.normalisedTitle} pattern`,
+      });
+      return next;
+    }
+  }
 
   return next;
 }

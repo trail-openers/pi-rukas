@@ -1597,3 +1597,35 @@ If you see repeated fallbacks in the plumb-reports, the reason string says why; 
 ### Escape hatch
 
 There is no way to force the LLM ops dispatch. #393 deleted `PI_ENSEMBLE_MECHANIZE_OPS=0`, because every worst-class incident in this harness's history — #245/#253 silent merges, v0.12.13 shipping 1 of 3 workstreams — was LLM ops improvising exactly the operations mechanization now executes. The LLM path still runs as a **fallback when mechanization fails**, which is recovery from environment variance rather than an opt-out; a plumb-report records every such fallback so you can see it happened.
+
+## Invariant-removal guard memories (#280 C)
+
+### What it does
+
+When the widening scan (invariant-scan.ts) fires during lens-review, the driver writes ONE vipune guard memory per (file, symbol) for each type-widening finding. The guard memory reads:
+
+```
+[invariant-removal] <basename>: constraint <before> → <after> removed in issue #N; verify what now guarantees the old invariant before writing code that exploits the widened type.
+```
+
+The memory is typed `guard`, stored as `candidate` (invisible to default reads), and a plumb-report is emitted so the handoff renderers can name the structural decision.
+
+### Why it exists
+
+When a compiler-enforced invariant dies (e.g. `T` → `Option<T>`, removed `readonly`, widened to `any`), the fact that it was load-bearing vanishes with it. The memory substrate (vipune) now records what invariant died so future cycles know what to verify before writing code that exploits the widened type.
+
+### What it looks like in the log
+
+- `widening-scan` event carrying the raw findings
+- `memory-write` event per finding (outcome: written / error)
+- `plumb-report` event per successful write
+
+### Escape hatches
+
+- `PI_ENSEMBLE_INVARIANT_MEMORY=0` — restores today's behaviour (no guard writes)
+- `PI_ENSEMBLE_WIDENING_SCAN=0` — disables the widening scan entirely, which also prevents guard writes
+
+### Troubleshooting
+
+- **No guard memories written** — check that `PI_ENSEMBLE_INVARIANT_MEMORY` is not set to `0`, and that the widening scan found findings (check the `widening-scan` event). If vipune is not installed, `defaultVipuneWrite` returns empty silently — the guard write is additive value, not structural.
+- **Duplicate guard memories across cycles** — dedup is per-cycle, not cross-cycle. If the same widening fires across multiple cycles, each writes its own guard. A future improvement could add cross-cycle dedup.

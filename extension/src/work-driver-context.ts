@@ -244,6 +244,13 @@ export interface DriverContext {
     cwd?: string;
     signal?: AbortSignal;
   }) => Promise<LensReviewSummary>;
+  /**
+   * #280 — optional injection point for tests: replace the vipune write
+   * function used by the invariant-removal guard-memory path. Production
+   * callers omit this; the default shells out to `vipune add`. Tests
+   * inject a fake to assert on argv without forking vipune.
+   */
+  gvwmWriteFn?: (text: string, opts: { cwd: string; issue: number }) => Promise<{ id?: string }>;
 }
 
 /**
