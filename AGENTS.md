@@ -136,7 +136,7 @@ The runtime `ExtensionAPI` surface. `@earendil-works/pi-coding-agent` is a devDe
 
 ### The uncovered risk: runtime drift
 
-The actual risk is the runtime Pi version advancing while the pin sits still. The only detector is `test-pi-shape-live.ts`, but it is gated on a deliberate pin bump — so if nobody bumps the pin, the check never runs and drift accumulates silently. Bumping the pin once does not close this systemic gap; it must stay current. Note that the live test only spawns a trivial no-tool child, so it validates `agent_end`, `message_end`, `usage`, `model`, and text-block shapes, but does NOT exercise `toolCall` (`id`/`name`/`arguments`) or `tool_execution_start` (`toolName`/`args`) — those shapes remain unverified by the detector even when it passes.
+The actual risk is the runtime Pi version advancing while the pin sits still. The only detector is `test-pi-shape-live.ts`, but it is gated on a deliberate pin bump — so if nobody bumps the pin, the check never runs and drift accumulates silently. Bumping the pin once does not close this systemic gap; it must stay current. The live test spawns a single child that invokes a tool and verifies the event shapes (`agent_end`, `message_end.message.role/usage`, `model`, `text` blocks, `toolCall` (`id`/`name`/`arguments`), `tool_execution_start` (`toolName`/`args`)) we depend on. It also asserts **tool-roster integrity**: every tool the extension registers must be present in the live child's toolset, so a provider-side silent drop (the #571 class) fails the test instead of surfacing as missing tools in production.
 
 ### Shapes we depend on
 
@@ -161,7 +161,7 @@ Don't assume these are stable across Pi versions — verify when bumping:
 4. Record the validated version in AGENTS.md § 4 (update the "Currently validated against" line near the top of this section). Do NOT edit released CHANGELOG entries — those are historical records.
 5. PR with the bump + smoke-test evidence.
 
-When Pi changes a shape we depend on (this has happened: `tool_use` → `toolCall`), the offline smoke tests won't catch it — `test-pi-shape-live.ts` is the only detector, but it does not exercise tool-call shapes, so this class of break would slip through today ([#319](https://github.com/randomm/pi-ensemble/issues/319)).
+When Pi changes a shape we depend on (this has happened: `tool_use` → `toolCall`), the offline smoke tests won't catch it — `test-pi-shape-live.ts` is the only detector. Since #319 it exercises tool-call shapes (`toolCall` blocks, `tool_execution_start`) and tool-roster integrity, so a rename or a silently dropped registered tool now fails the gate.
 
 ---
 
