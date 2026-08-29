@@ -91,11 +91,16 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 # -----------------------------------------------------------------------------
 
 # Pi (per https://pi.dev/docs/latest/quickstart)
-# The unpinned install resolves to whatever is latest at build time — the
-# version claimed in the pi-mcp-adapter comment below and in README ("Status"
-# line + Pi compatibility section) is a hand-maintained claim; re-check all
-# three when the built image's pi changes.
-RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+# Pinned to the install floor (same value as README's host-mode install line
+# and install.sh's MIN_PI_VERSION; test-prerequisite-drift.ts keeps them in
+# sync). 0.84.4 is the first release containing the extension-message-order
+# fix — 0.84.3 shipped a live bug that broke /work message-order validation.
+# Bumping the floor is a one-line change here plus the two prose sites noted
+# below; a newer deliberate version is acceptable but must be re-verified.
+# The version claimed in the pi-mcp-adapter comment below and in README's
+# Pi-compatibility section must match this line; re-check both when the built
+# image's pi changes.
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.84.4
 
 # ctx7 — current library docs
 RUN npm install -g --ignore-scripts ctx7 || true
@@ -169,8 +174,8 @@ RUN cd ${PI_ENSEMBLE_DIR}/extension && bun install --frozen-lockfile
 # project under ~/.pi/agent/npm/node_modules/ (NOT the extensions/ dir, which
 # is only used for git/local installs); Pi's own package manager then loads
 # it at runtime via the `pi.extensions` manifest in the package's package.json.
-# Verified against pi 0.79.1 (see the version note at the pi install line
-# above; also asserted in README → "Status" + Pi compatibility): `pi install
+# Verified against pi 0.84.4 (see the version note at the pi install line
+# above; also asserted in README's Pi-compatibility section): `pi install
 # npm:pi-mcp-adapter` + the node_modules layout below. Bumping pi is a
 # deliberate update per AGENTS.md § 5 — re-verify this check when the pin
 # changes. (This path literal is the build-side mirror of install.sh §5's
