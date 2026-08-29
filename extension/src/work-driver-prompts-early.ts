@@ -104,6 +104,9 @@ export function inlineExplorePrompt(
     // swamped. Pure semantic at 0.0 is the only mode whose score means anything.
     "  2. `vipune search '<keywords-from-issue-title>' --no-hybrid --recency 0.0 --limit 5` for prior decisions,",
     "     and `vipune search '<same>' --memory-type guard --no-hybrid --recency 0.0 --limit 5` for traps,",
+    // #280 C — guard memories about type-invariant removals; the widening scan
+    // writes one per (file, symbol) so the explore agent should look for them.
+    "  2b. `vipune search 'invariant-removal <basename>' --memory-type guard --no-hybrid --recency 0.0 --limit 3` for guard memories about recent constraint removals (invariant-removal scan),",
     "  3. `codebase_memory_search_code({query: '<concept>'})` for existing relevant code.",
     "",
     "Return a STRUCTURED summary the work-driver can route on:",

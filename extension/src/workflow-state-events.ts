@@ -345,6 +345,9 @@ export type WorkEvent =
         // child was killed is carried in the new `role` field + capEvidence.
         | "loop-detected"
         | "token-budget"
+        // #280 §B — round-1 repeat-finding seam detection. Same finding
+        // shape across ≥3 files → step-back (SDD spec-gap analysis).
+        | "repeat-finding-seam"
         | `verify-failed:${WorkStep}`
         | `step-failed:${WorkStep}`;
       /** #543 — which role's child was cap-killed (loop/token-budget caps). */
