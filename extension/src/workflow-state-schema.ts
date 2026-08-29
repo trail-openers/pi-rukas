@@ -270,6 +270,13 @@ export interface PipelineState {
     reason: string;
   }>;
   /**
+   * #453 — per-workstream commit SHAs set after integrate cherry-picks
+   * the developer's commits onto the feature branch. Keyed by workstream
+   * id so resume can skip workstreams already applied. Absent on state
+   * files written before this field existed; readers treat absent as `{}`.
+   */
+  commitShas?: Record<string, string>;
+  /**
    * PR5 — per-step retry budget for RETRY_ONCE-classified steps
    * (adversarial, lens-review). Driver's halt-cascade router increments
    * on dispatch-failed; once `>= 1` the next failure routes to handoff

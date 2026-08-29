@@ -80,10 +80,13 @@ export async function fanOutAdversarial(
     const label = ids.length > 1 ? `adversarial[${id}]` : "adversarial_loop";
     const startedAt = Date.now();
     const orchestratorJobId = makeRunId();
-    // Per-workstream diff: a single `git diff HEAD` from this worktree —
-    // exactly what ONE developer wrote. The cross-workstream merge happens
-    // later in commit-pr; this gate judges each workstream independently.
-    const diff = await fetchDiff(cwd);
+    // Per-workstream diff: `git diff <baseSha>..HEAD` from this worktree
+    // — exactly what ONE developer committed. After a developer commit
+    // (post-#453) `git diff HEAD` is empty (HEAD IS the commit), so we
+    // diff against the detach point. Without baseSha we fall back to
+    // `git diff HEAD` (pre-commit semantics for uncommitted work).
+    const baseSha = state.pipelineState.baseSha;
+    const diff = await fetchDiff(cwd, baseSha);
 
     // #286 — empty-diff short-circuit (a full reviewer spawn on an empty
     // diff is pure waste; lens review has had this guard since PR6).
@@ -132,7 +135,7 @@ export async function fanOutAdversarial(
           // Re-read before each round. Without this, rounds 2+ are prompted
           // with the pre-fix diff and the reviewer has to notice for itself
           // that its earlier objections were already addressed.
-          getDiff: () => fetchDiff(cwd),
+          getDiff: () => fetchDiff(cwd, baseSha),
           // #278 — the reviewer judges the diff against what was ASKED FOR,
           // not just against generic code quality. Absent on cycles resumed
           // from older state files, which degrade to the previous behaviour.

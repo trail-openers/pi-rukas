@@ -23,6 +23,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
+import { cherryPickWorkstreams } from "./work-driver-cherry-pick.ts";
 import { stagePorcelainPaths } from "./work-driver-stage.ts";
 import type { WorkState } from "./workflow-state-schema.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -172,6 +173,11 @@ export interface IntegrateOpts {
    */
   requireAllNonEmpty?: boolean;
   /**
+   * #453 — pre-existing commit SHAs from a prior attempt (resume).
+   * Used by the cherry-pick path to skip workstreams already applied.
+   */
+  commitShas?: Record<string, string>;
+  /**
    * The project's verify command, run against the CONSOLIDATED tree between
    * the commit and the push.
    *
@@ -214,6 +220,9 @@ export type IntegrateResult =
        *  clean, so a caller can tell "this one wrote nothing" apart from the
        *  workstreams that did ship. */
       noDiff?: NoDiff;
+      /** #453 — cherry-picked commit SHAs, keyed by workstream id. Set when
+       *  the cherry-pick path ran (one or more worktrees had commits). */
+      commitShas?: Record<string, string>;
     }
   /**
    * Nothing to integrate — every worktree was clean. Not an error.
@@ -317,102 +326,216 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       });
     }
 
-    // 3. Transplant each worktree's slice. Staging inside the worktree first
-    //    is what captures untracked new files — `git diff HEAD` alone misses
-    //    them, which silently dropped whole files pre-PR19.
-    const applied: string[] = [];
-    // #492 — which worktrees produced no diff, keyed by workstream id. The
-    // value is the worktree PATH: that is the git evidence an operator
-    // inspects (`git -C <path> status`), and naming it is what lets the cap
-    // say "the fixer wrote nothing in `<path>`" instead of "integration
-    // failed or the fixer wrote nothing — pick one".
+    // 3. Cherry-pick developer commits from each worktree onto the branch.
+    //    Worktrees are detached at baseSha; the developer committed in each.
+    //    The only way to reach those commits is by SHA — hence cherry-pick.
+    //
+    //    Resume-safe: if a SHA is already on the integration branch, it is
+    //    skipped silently. A resumed cycle knows what was done from
+    //    `commitShas`.
+    //
+    //    Fallback: if a worktree has no commits ahead of baseSha, fall back
+    //    to patch-transplant (pre-#453 behaviour) for uncommitted changes.
+    const cherryApplied: string[] = [];
+    const cherryPickShas: Record<string, string> = {};
+    // #492 — worktrees with no diff, keyed by workstream id.
     const noDiff: NoDiff = {};
-    for (const id of ids) {
-      const wt = worktrees[id];
-      if (!wt) continue;
-      // Porcelain, not the staged diff, is the emptiness signal: it is what
-      // says "this developer wrote nothing", and it is checked before any
-      // staging so a worktree that produced no work is identified as such
-      // rather than inferred from a diff that may be empty for other reasons.
-      const staged = await stagePorcelainPaths(execFn, wt);
-      if (staged === 0) {
-        noDiff[id] = wt;
-        if (opts.requireAllNonEmpty) {
-          await restoreRoot();
+
+    // First pass: collect commit SHAs from worktrees that have commits ahead.
+    const shaWorktrees: Record<string, string> = {};
+    const emptyWorkstreams: string[] = [];
+    // Skip cherry-pick if baseSha is unavailable (e.g. followup mode).
+    // Fall back to patch-transplant for uncommitted changes in that case.
+    if (opts.baseSha) {
+      for (const id of ids) {
+        const wt = worktrees[id];
+        if (!wt) continue;
+        try {
+          const { stdout } = await execFn(
+            `git rev-list --count ${JSON.stringify(opts.baseSha)}..HEAD`,
+            { cwd: wt, maxBuffer: 64 * 1024 },
+          );
+          const ahead = Number.parseInt(stdout.trim(), 10);
+          if (Number.isFinite(ahead) && ahead > 0) {
+            const { stdout: shaOut } = await execFn("git rev-parse HEAD", {
+              cwd: wt,
+              maxBuffer: 64 * 1024,
+            });
+            const sha = shaOut.trim();
+            if (sha) {
+              cherryPickShas[id] = sha;
+              shaWorktrees[id] = wt;
+              continue;
+            }
+          }
+        } catch {
+          // Worktree might not have baseSha in history — treat as empty.
+        }
+        emptyWorkstreams.push(id);
+      }
+    } else {
+      // No baseSha — mark all as empty (patch fallback).
+      for (const id of ids) {
+        if (worktrees[id]) emptyWorkstreams.push(id);
+      }
+    }
+
+    // Cherry-pick the batch.
+    if (Object.keys(shaWorktrees).length > 0) {
+      const entries = await cherryPickWorkstreams(execFn, {
+        repoRoot,
+        branchName,
+        worktrees: shaWorktrees,
+        commitShas: opts.commitShas ?? {},
+        scratchDir: opts.scratchDir,
+      });
+
+      if (entries.length === 0) {
+        // Either all skipped (already on branch) or a conflict aborted.
+        const cherryShasCount = Object.keys(cherryPickShas).length;
+        const skippedCount = entries.filter((e) => e.status === "skipped").length;
+        if (cherryShasCount === 0) {
+          // No worktrees had commits — fall through to patch fallback.
+        } else if (skippedCount < cherryShasCount) {
+          // Conflict: the batch was aborted and branch restored.
           return {
             ok: false,
-            reason: `worktree '${id}' has no uncommitted work — nothing to consolidate (developer may not have written). Refusing to ship a partial consolidation.`,
+            failure: "apply",
+            reason: `cherry-pick conflict — the batch was aborted and repoRoot was restored to ${originalRef}.`,
           };
         }
-        trace(`work-driver: integrate — workstream '${id}' produced no diff, skipping`);
-        continue;
-      }
-      // `--binary` is not optional: without it a blob is emitted as the
-      // textual placeholder `Binary files a/x and b/x differ`, which
-      // `git apply` refuses. One icon or fixture blob aborted the run.
-      const { stdout: patch } = await execFn("git diff --cached --binary", {
-        cwd: wt,
-        maxBuffer: 8 * 1024 * 1024,
-      });
-      if (!patch.trim()) {
-        if (opts.requireAllNonEmpty) {
-          await restoreRoot();
-          return { ok: false, reason: `worktree '${id}' staged diff came back empty` };
+        // All skipped (already on branch) — treat as empty, but still
+        // mark the workstreams as applied so resume knows they contributed.
+        for (const id of Object.keys(shaWorktrees)) {
+          const wt = worktrees[id];
+          if (wt) {
+            cherryApplied.push(id);
+            noDiff[id] = wt;
+          }
         }
-        // Staged N paths yet the cached diff is empty — classify it as a
-        // clean worktree rather than an integration error, for the same
-        // reason as the `staged === 0` branch above.
-        noDiff[id] = wt;
-        continue;
+      } else {
+        // Cherry-picks succeeded — record SHAs.
+        for (const entry of entries) {
+          if (entry.status === "cherry-picked") {
+            // Find the workstream id for this entry.
+            for (const [id, wt] of Object.entries(shaWorktrees)) {
+              if (wt === worktrees[id]) {
+                cherryApplied.push(id);
+                break;
+              }
+            }
+          }
+        }
       }
-      const patchFile = path.join(opts.scratchDir, `integrate-${id}.patch`);
-      await fs.mkdir(path.dirname(patchFile), { recursive: true });
-      await fs.writeFile(patchFile, patch, "utf8");
-      try {
-        // `--3way` rather than a plain index apply. Worktrees share this
-        // repo's object database, so the blobs a 3-way merge needs are always
-        // present — and that is what lets two workstreams edit different
-        // regions of one shared registry/barrel file. A plain `--index` apply
-        // rejects the second patch outright, because the first workstream
-        // already moved the context it expects. At N=10 workstreams that
-        // collision is close to certain.
-        await execFn(`git apply --3way --binary ${JSON.stringify(patchFile)}`, {
-          cwd: repoRoot,
-          maxBuffer: 1024 * 1024,
-        });
-      } catch (err) {
-        const e = err as Error & { stderr?: string };
-        // A 3-way apply that still fails is a genuine content conflict: two
-        // workstreams changed the same lines. Stop here — the tree now holds
-        // conflict markers, so attempting the rest would report conflicts
-        // that are ours, not theirs — but say plainly what was skipped, and
-        // put repoRoot back before returning.
-        const notAttempted = ids.slice(ids.indexOf(id) + 1);
-        await restoreRoot();
-        const skipped =
-          notAttempted.length > 0 ? ` Not attempted: ${notAttempted.join(", ")}.` : "";
-        return {
-          ok: false,
-          failure: "apply",
-          reason:
-            `git apply failed for workstream '${id}': ${(e.stderr ?? e.message ?? "").toString().trim().slice(0, 200)}.` +
-            `${skipped} repoRoot restored to ${originalRef}.`,
-          conflictPatch: patchFile,
-        };
-      }
-      applied.push(id);
     }
-    if (applied.length === 0) return { ok: true, workstreams: [], empty: true, noDiff };
 
-    // 4. Commit.
-    await execFn(
-      `git commit -m ${JSON.stringify(opts.commitTitle)} -m ${JSON.stringify(opts.commitBody)}`,
-      { cwd: repoRoot, maxBuffer: 256 * 1024 },
-    );
+    // Fallback: patch-transplant for worktrees without commits.
+    // If cherryApplied has entries and there are no emptyWorkstreams,
+    // check if there are ANY staged changes across all worktrees.
+    // This handles the follow-up case where the same worktree has both
+    // an already-applied commit (cherry-pick skip) AND new uncommitted
+    // changes that need patching.
+    const patchApplied: string[] = [];
+    if (emptyWorkstreams.length > 0) {
+      for (const id of emptyWorkstreams) {
+        const wt = worktrees[id];
+        if (!wt) continue;
+        const staged = await stagePorcelainPaths(execFn, wt);
+        if (staged === 0) {
+          noDiff[id] = wt;
+          if (opts.requireAllNonEmpty) {
+            await restoreRoot();
+            return {
+              ok: false,
+              reason: `worktree '${id}' has no uncommitted work — nothing to consolidate.`,
+            };
+          }
+          continue;
+        }
+        const { stdout: patch } = await execFn("git diff --cached --binary", {
+          cwd: wt,
+          maxBuffer: 8 * 1024 * 1024,
+        });
+        if (!patch.trim()) {
+          noDiff[id] = wt;
+          continue;
+        }
+        const patchFile = path.join(opts.scratchDir, `integrate-${id}.patch`);
+        await fs.mkdir(path.dirname(patchFile), { recursive: true });
+        await fs.writeFile(patchFile, patch, "utf8");
+        try {
+          await execFn(`git apply --3way --binary ${JSON.stringify(patchFile)}`, {
+            cwd: repoRoot,
+            maxBuffer: 1024 * 1024,
+          });
+          patchApplied.push(id);
+        } catch (err) {
+          const e = err as Error & { stderr?: string };
+          const notAttempted = emptyWorkstreams.slice(emptyWorkstreams.indexOf(id) + 1);
+          await restoreRoot();
+          const skipped =
+            notAttempted.length > 0 ? ` Not attempted: ${notAttempted.join(", ")}.` : "";
+          return {
+            ok: false,
+            failure: "apply",
+            reason:
+              `git apply failed for workstream '${id}': ${(e.stderr ?? e.message ?? "").toString().trim().slice(0, 200)}.` +
+              `${skipped} repoRoot restored to ${originalRef}.`,
+            conflictPatch: patchFile,
+          };
+        }
+      }
+    }
+    cherryApplied.push(...patchApplied);
 
-    // 5. Verify the CONSOLIDATED tree before it becomes a PR. See `verifyCmd`.
+    // Commit any staged changes (from cherry-pick or patch apply).
+    // Cherry-pick uses --no-commit to batch all SHAs, then we commit once.
+    // Patch-apply already commits as part of git apply, so this is a no-op
+    // if only patch was used, but required when cherry-pick was used.
+    const { stdout: hasStaged } = await execFn("git diff --cached --name-only", {
+      cwd: repoRoot,
+      maxBuffer: 64 * 1024,
+    });
+    if (hasStaged.trim()) {
+      await execFn(
+        `git commit -m ${JSON.stringify(opts.commitTitle)} -m ${JSON.stringify(opts.commitBody)}`,
+        { cwd: repoRoot, maxBuffer: 256 * 1024 },
+      );
+    }
+
+    // Determine which workstreams actually produced output.
+    const appliedWorkstreams = cherryApplied.length > 0 ? cherryApplied : patchApplied;
+    // Check if cherry-picked workstreams were all no-ops.
+    // For followup mode without baseSha, skip this check (staged changes
+    // indicate work was done).
+    if (opts.baseSha) {
+      const { stdout: headAhead } = await execFn(
+        `git rev-list --count ${JSON.stringify(opts.baseSha)}..HEAD`,
+        { cwd: repoRoot, maxBuffer: 64 * 1024 },
+      );
+      const ahead = Number.parseInt(headAhead.trim(), 10);
+      if (!Number.isFinite(ahead) || ahead === 0) {
+        // No commits ahead — every cherry-pick was a no-op or there was
+        // nothing to do. Return empty rather than a spurious success.
+        return { ok: true, workstreams: [], empty: true, noDiff };
+      }
+    } else {
+      // No baseSha — check if there are actually staged changes (patch fallback).
+      // If there are no staged changes and no cherry-picked work, it's empty.
+      if (appliedWorkstreams.length === 0) {
+        const { stdout: hasStaged } = await execFn("git diff --cached --name-only", {
+          cwd: repoRoot,
+          maxBuffer: 64 * 1024,
+        });
+        if (!hasStaged.trim()) {
+          return { ok: true, workstreams: [], empty: true, noDiff };
+        }
+      }
+    }
+
+    // 4. Verify the CONSOLIDATED tree before it becomes a PR. See `verifyCmd`.
     //    Rolling back on failure is safe: the worktrees still hold every
-    //    workstream's staged work — they are only advanced past it after a
+    //    workstream's commit — they are only advanced past it after a
     //    successful push, below.
     if (opts.verifyCmd) {
       const verifyExec = opts.verifyExecFn ?? execFn;
@@ -439,29 +562,25 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       }
     }
 
-    // 6. Push.
+    // 5. Push.
     await execFn(`git push -u origin ${JSON.stringify(branchName)}`, {
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
     });
 
-    // Advance each worktree to the commit its work just became.
+    // Advance each cherry-picked worktree to the new HEAD.
     //
-    // Without this the worktree keeps the slice staged, so the NEXT
-    // integration re-captures the same patch — which either fails to apply
-    // (already present) or re-commits stale content. That is precisely how a
-    // lens-fix round would have silently shipped the pre-fix version.
-    //
-    // `reset --hard` is safe here specifically because everything porcelain
-    // listed was staged and applied a moment ago: the commit is a superset of
-    // the worktree's state, so nothing can be lost.
+    // Without this the worktree keeps the developer's commit, so the NEXT
+    // integration would re-cherry-pick the same SHA — which either fails
+    // (already on branch) or creates a duplicate. Reset `--hard` to the
+    // integration branch HEAD so the worktree is clean for the next round.
     const { stdout: newHead } = await execFn("git rev-parse HEAD", {
       cwd: repoRoot,
       maxBuffer: 64 * 1024,
     });
     const headSha = newHead.trim();
     if (headSha) {
-      for (const id of applied) {
+      for (const id of appliedWorkstreams) {
         const wt = worktrees[id];
         if (!wt) continue;
         await execFn(`git reset --hard ${JSON.stringify(headSha)}`, {
@@ -476,9 +595,10 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
     }
     return {
       ok: true,
-      workstreams: applied,
+      workstreams: appliedWorkstreams,
       empty: false,
       noDiff: Object.keys(noDiff).length > 0 ? noDiff : undefined,
+      commitShas: Object.keys(cherryPickShas).length > 0 ? cherryPickShas : undefined,
     };
   } catch (err) {
     const e = err as Error & { stderr?: string };

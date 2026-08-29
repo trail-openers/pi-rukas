@@ -148,6 +148,12 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         // `git worktree add` runs LAST in the branch step (after all
         // `git status` probes), so any `git status` call before the first
         // `git worktree add` is a pre-create probe → return clean.
+        // #453 — SHA values for cherry-pick simulation.
+        const WORKTREE_SHA = {
+          "-task-a": "aaa111aaa111aaa111aaa111aaa111aaa111aa",
+          "-task-b": "bbb222bbb222bbb222bbb222bbb222bbb222bbbb",
+          "-task-c": "ccc333ccc333ccc333ccc333ccc333ccc333cccc",
+        };
         const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
           calls.push(cmd);
           if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
@@ -193,6 +199,25 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           if (cmd.startsWith("git add -- ")) return { stdout: "" };
           if (cmd.startsWith("git diff --cached"))
             return { stdout: "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n" };
+          // #453 — cherry-pick: return worktree-specific SHAs for SHA extraction.
+          if (cmd === "git rev-parse HEAD" && o?.cwd) {
+            if (o.cwd.endsWith("-task-a")) return { stdout: WORKTREE_SHA["-task-a"] + "\n" };
+            if (o.cwd.endsWith("-task-b")) return { stdout: WORKTREE_SHA["-task-b"] + "\n" };
+            if (o.cwd.endsWith("-task-c")) return { stdout: WORKTREE_SHA["-task-c"] + "\n" };
+          }
+          if (cmd.startsWith("git cherry-pick")) return { stdout: "" };
+          // Tree hash check (isCommitOnBranch): return DIFFERENT hashes to
+          // ensure cherry-pick doesn't skip (different tree = not on branch).
+          if (cmd.startsWith("git cat-file -p")) {
+            // HEAD on the integration branch has a different tree than dev commits.
+            if (cmd.endsWith(" git cat-file -p HEAD"))
+              return { stdout: "tree head1head1head1head1head1head1head1head1\nauthor T\n" };
+            // Developer commits have unique trees.
+            const devSha = cmd.match(/git cat-file -p ([0-9a-f]+)/)?.[1];
+            const hash = (devSha ?? "abc").slice(0, 8);
+            return { stdout: `tree ${hash}${hash.toUpperCase().padEnd(16, "x")}deadbeefdeadbeef\nauthor T\n` };
+          }
+          if (cmd.startsWith("git cherry-pick")) return { stdout: "" };
           if (cmd.startsWith("git apply")) return { stdout: "" };
           if (cmd.startsWith("git commit")) return { stdout: "" };
           if (cmd.startsWith("git push")) return { stdout: "" };
@@ -231,8 +256,8 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           "M1: PR number parsed from gh pr create URL and written to pipelineState",
         );
         assert(
-          calls.filter((c) => c.startsWith("git apply")).length === 3,
-          "M1: all 3 sibling worktrees' staged diffs applied at repoRoot (3× git apply)",
+          calls.filter((c) => c.startsWith("git cherry-pick")).length === 3,
+          "M1: all 3 sibling worktrees' commits cherry-picked at repoRoot (3× git cherry-pick)",
         );
         assert(
           calls.some((c) => c.startsWith("git push")) &&
@@ -360,6 +385,107 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     if (prevVerify === undefined) delete process.env.PI_ENSEMBLE_VERIFY;
     else process.env.PI_ENSEMBLE_VERIFY = prevVerify;
     process.env.PI_ENSEMBLE_VERIFY = "0";
+  }
+}
+
+// M5 — #453 cherry-pick integration: verify commitShas are recorded.
+// Uses real git against a throwaway repo (similar to test-work-driver-integrate-realgit.ts).
+{
+  const { execFile } = await import("node:child_process");
+  const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const path = await import("node:path");
+  const { promisify } = await import("node:util");
+
+  const execFileP = promisify(execFile);
+  const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
+  const realRoot = mkdtempSync(path.default.join(tmpdir(), "mech-cherry-"));
+  const originDir = path.default.join(realRoot, "origin.git");
+  const repoDir = path.default.join(realRoot, "repo");
+  const scratchDir = path.default.join(realRoot, "scratch");
+  try {
+    await (await import("node:fs")).mkdirSync(path.default.join(repoDir, ".git", "info"), {
+      recursive: true,
+    });
+    // Create a bare origin.
+    await execFileP("git", ["init", "--bare", "--initial-branch=main", originDir]);
+    // Create a repo with one commit on main.
+    await execFileP("git", ["init", "--initial-branch=main", repoDir]);
+    await git(repoDir, ["config", "user.email", "t@example.com"]);
+    await git(repoDir, ["config", "user.name", "T"]);
+    writeFileSync(path.default.join(repoDir, "base.txt"), "base\n");
+    await git(repoDir, ["add", "."]);
+    await git(repoDir, ["commit", "-q", "-m", "base"]);
+    await git(repoDir, ["remote", "add", "origin", originDir]);
+    await git(repoDir, ["push", "-q", "-u", "origin", "main"]);
+
+    // Mechanized branch setup.
+    const { mechanizedBranchSetup } = await import("../src/work-driver-branch-mechanized.ts");
+    const { integrate } = await import("../src/work-driver-integrate.ts");
+    type ExecFn = (cmd: string, o?: { cwd?: string; maxBuffer?: number }) => Promise<{
+      stdout: string;
+    }>;
+    const realExec: ExecFn = async (cmd, o) => {
+      const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
+        cwd: o?.cwd,
+        maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
+      });
+      return { stdout };
+    };
+
+    const setup = await mechanizedBranchSetup(
+      realExec,
+      repoDir,
+      453,
+      [453],
+      ["task-a"],
+      "SHA recording test",
+    );
+    const wt = setup.worktrees["task-a"] ?? "";
+
+    // Developer commits in the worktree.
+    writeFileSync(path.default.join(wt, "feature.txt"), "feature\n");
+    await git(wt, ["add", "."]);
+    await git(wt, ["commit", "-q", "-m", "add feature.txt"]);
+    const { stdout: shaOut } = await git(wt, ["rev-parse", "HEAD"]);
+    const devSha = shaOut.trim();
+    assert(devSha.length === 40, "M5: developer commit SHA is 40 chars");
+
+    // Integrate — cherry-pick path (no pre-existing commitShas for first attempt).
+    const res = await integrate(realExec, {
+      repoRoot: repoDir,
+      branchName: setup.branchName,
+      baseSha: setup.baseSha,
+      worktrees: setup.worktrees,
+      scratchDir: scratchDir,
+      commitTitle: "feat(#453): task-a",
+      commitBody: "Fixes #453",
+      mode: "create",
+      requireAllNonEmpty: true,
+    });
+    assert(res.ok && !res.empty, `M5: cherry-pick integration succeeded (${JSON.stringify(res)})`);
+    // Verify commitShas is recorded in the result.
+    assert(
+      res.commitShas !== undefined,
+      "M5: commitShas is recorded in integrate result",
+    );
+    assert(
+      res.commitShas?.["task-a"] === devSha,
+      "M5: commitShas maps task-a to the developer's SHA",
+    );
+    // Verify the commit landed on the branch.
+    const { stdout: headAhead } = await git(repoDir, [
+      "rev-list",
+      "--count",
+      `${setup.baseSha}..HEAD`,
+    ]);
+    assert(
+      headAhead.trim() === "1",
+      "M5: exactly one commit ahead of baseSha (cherry-picked)",
+    );
+    console.log("✓ M5: cherry-pick SHA recording verified");
+  } finally {
+    rmSync(realRoot, { recursive: true, force: true });
   }
 }
 
