@@ -71,6 +71,23 @@ registerWorkTools(fakePi);
     /operator-only|cannot be requested/i.test(work?.description ?? ""),
     "the description says merge authority is not available here",
   );
+  const descText = work?.description ?? "";
+  assert(
+    /do not poll|do not run .*work-status/i.test(descText),
+    "the description contains anti-polling language",
+  );
+  assert(
+    !/blocks until|blocks the cycle/i.test(descText),
+    "the description does NOT claim blocking behavior (the tool returns a launch notification)",
+  );
+  assert(
+    /state file|work-state/i.test(descText),
+    "the anti-polling directive names .pi/work-state/ as the file not to poll",
+  );
+  assert(
+    /steer|background/i.test(descText),
+    "the description correctly communicates the async / background nature",
+  );
 
   // The source must force it off rather than merely omit it: `parseWorkArgs`
   // reads `--merge`, and an issues array is stringified into that same parser.

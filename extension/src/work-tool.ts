@@ -73,7 +73,7 @@ export function registerWorkTools(pi: ExtensionAPI) {
     name: "start_work_driver",
     label: "Start /work Cycle",
     description:
-      "Start the compiled /work driver for one or more GitHub issues — the same pipeline the /work slash command runs (explore → plan → branch → develop → adversarial → commit-pr → lens-review → ci → merged/handoff), with its state file, queue, handoff artifact and review-cap timer. Returns immediately; the cycle runs in the background and reports progress on its own. Check outcomes with /work-status, not by polling. NEVER reconstruct these steps by hand with dispatch tools — a hand-rolled cycle has none of the above guarantees. Merge authority is operator-only and cannot be requested here.",
+      "Start the compiled /work driver for one or more GitHub issues — the same pipeline the /work slash command runs (explore → plan → branch → develop → adversarial → commit-pr → lens-review → ci → merged/handoff), with its state file, queue, handoff artifact and review-cap timer. This tool returns a launch notification; the cycle runs in the background and delivers its outcome via a steer message. Do not poll .pi/work-state/ or run /work-status to check progress; the steer arriving in your session is the result, not this notification. NEVER reconstruct these steps by hand with dispatch tools — a hand-rolled cycle has none of the above guarantees. Merge authority is operator-only and cannot be requested here.",
     parameters: Type.Object({
       issues: Type.Array(Type.Integer({ minimum: 1 }), {
         minItems: 1,
@@ -111,8 +111,8 @@ export function registerWorkTools(pi: ExtensionAPI) {
 
       lines.push(
         "",
-        "The cycle is running in the background. Do not re-dispatch its steps yourself:",
-        "progress arrives on its own, and `/work-status` shows the state file at any time.",
+        "This is a launch notification — the cycle runs in the background. Wait for a steer message with the outcome; that steer is the result, not this notification. Do not poll .pi/work-state/ or run /work-status.",
+        "Do not re-dispatch its steps yourself:",
         "Merge authority was NOT granted — the cycle will open its PR and park unless the",
         "project's AGENTS.md grants it.",
       );
