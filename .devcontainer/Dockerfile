@@ -91,11 +91,11 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 # -----------------------------------------------------------------------------
 
 # Pi (per https://pi.dev/docs/latest/quickstart)
-# The unpinned install resolves to whatever is latest at build time — the
-# version claimed in the pi-mcp-adapter comment below and in README ("Status"
+# Pinned to the install floor 0.84.4 (install-preflight.sh MIN_PI_VERSION).
+# The version claimed in the pi-mcp-adapter comment below and in README ("Status"
 # line + Pi compatibility section) is a hand-maintained claim; re-check all
 # three when the built image's pi changes.
-RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.84.4
 
 # ctx7 — current library docs
 RUN npm install -g --ignore-scripts ctx7 || true
@@ -169,7 +169,7 @@ RUN cd ${PI_ENSEMBLE_DIR}/extension && bun install --frozen-lockfile
 # project under ~/.pi/agent/npm/node_modules/ (NOT the extensions/ dir, which
 # is only used for git/local installs); Pi's own package manager then loads
 # it at runtime via the `pi.extensions` manifest in the package's package.json.
-# Verified against pi 0.79.1 (see the version note at the pi install line
+# Verified against pi 0.84.4 (see the version note at the pi install line
 # above; also asserted in README → "Status" + Pi compatibility): `pi install
 # npm:pi-mcp-adapter` + the node_modules layout below. Bumping pi is a
 # deliberate update per AGENTS.md § 5 — re-verify this check when the pin

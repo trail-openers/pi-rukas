@@ -17,6 +17,10 @@
  *              row parsing, so prose and formatting stay free to change).
  *   reverse  — every global install in .devcontainer/Dockerfile names either
  *              a REQUIRED_CLIS entry or an EXCEPTIONS key.
+ *   versions — every install surface that declares a pi version (install.sh
+ *              MIN_PI_VERSION, README install line, Dockerfile global install
+ *              pin) declares one, and none is below the install floor (#578;
+ *              the #571 incident is the failure this exists to catch).
  *
  * EXCEPTIONS is a Record<string, string> following the NOT_FOR_PM shape
  * (test-pm-tool-permissions.ts): an entry is a decision, not an oversight.
@@ -32,7 +36,7 @@
  * Escape hatch: PI_ENSEMBLE_PREREQ_DRIFT=0.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
@@ -69,6 +73,14 @@ const EXCEPTIONS: Record<string, string> = {
   // names — this keeps the reverse direction from flagging a false drift.
   "@earendil-works/pi-coding-agent":
     "npm package name — installs the `pi` binary already in REQUIRED_CLIS",
+  // #578 pins the Dockerfile pi install to the install floor with a semver
+  // tag; parseDockerInstalls keeps the full tagged name (it does not strip
+  // versions, since other tools version differently). Same package as the
+  // untagged entry above. The version-level cross-site consistency is
+  // asserted below (parsePiFloors) — this entry keeps the NAME-level reverse
+  // direction from flagging a false drift.
+  "@earendil-works/pi-coding-agent@0.84.4":
+    "npm package name with the #578 floor pin — installs the `pi` binary already in REQUIRED_CLIS",
   // cargo installs the package `double-o`; the binary is `oo` (REQUIRED_CLIS).
   "double-o": "cargo package name — installs the `oo` binary already in REQUIRED_CLIS",
   // npm installs the package `parallel-web-cli`; the binary is `parallel-cli`
@@ -171,6 +183,65 @@ export function parseDockerInstalls(dockerfile: string): { name: string; line: n
   return [...out.entries()].map(([name, line]) => ({ name, line }));
 }
 
+/**
+ * Pi version floors declared by each install surface, by source. A site
+ * that declares no floor at all is returned as "" — that is the drift this
+ * gate exists to catch (the #571 incident: an unpinned install resolved to
+ * a release shipping a live bug, eleven hours before the fix landed).
+ *
+ * The install.sh floor lives in install-preflight.sh (sourced by install.sh,
+ * #578) — task-a adds that file; until it lands, an install.sh that has not
+ * yet been touched by the pinning work is read as having no floor, and the
+ * cross-site comparison below degrades to "each present pin is parseable".
+ * The fixture (fixtures/prerequisite-drift/install-preflight.sh) carries the
+ * same `MIN_PI_VERSION=` line, so the canary exercises the full path.
+ */
+export function parsePiFloors(sources: {
+  installSh: string;
+  readme: string;
+  dockerfile: string;
+}): { installSh: string; readme: string; dockerfile: string } {
+  // install.sh / install-preflight.sh: a MIN_PI_VERSION assignment.
+  const m = sources.installSh.match(/\bMIN_PI_VERSION="?([0-9][0-9a-z.+-]*)"?/);
+  // README: an install-command line naming the pi package with an @version
+  // suffix. Scanning raw lines keeps the prose free to reflow.
+  const r = sources.readme.match(
+    /@earendil-works\/pi-coding-agent@([0-9][0-9a-z.+-]*)/,
+  );
+  // Dockerfile: the pi global-install line, same package-name shape as the
+  // README. The name-level reverse gate (EXCEPTIONS) covers the
+  // package-vs-binary question; this is the version on that line.
+  const d = sources.dockerfile.match(
+    /@earendil-works\/pi-coding-agent@([0-9][0-9a-z.+-]*)/,
+  );
+  return {
+    installSh: m ? m[1] : "",
+    readme: r ? r[1] : "",
+    dockerfile: d ? d[1] : "",
+  };
+}
+
+/**
+ * Compare two dotted version strings numerically; -1/0/1, or null if
+ * either side is not a plain dotted-numeric version. MAJOR.MINOR.PATCH is
+ * pi's release grammar, so per-field numeric compare is a correct compare
+ * without pre-release handling — no Bun/Node dependency needed.
+ */
+export function compareVersions(a: string, b: string): number | null {
+  const split = (s: string) => s.split(/[.+-]/).map((p) => Number(p));
+  const x = split(a);
+  const y = split(b);
+  if (x.some((n) => !Number.isFinite(n)) || y.some((n) => !Number.isFinite(n))) {
+    return null;
+  }
+  const len = Math.max(x.length, y.length);
+  for (let i = 0; i < len; i++) {
+    const p = (x[i] ?? 0) - (y[i] ?? 0);
+    if (p !== 0) return p > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
 // ---------------------------------------------------------------- the gate
 
 if (process.env.PI_ENSEMBLE_PREREQ_DRIFT === "0") {
@@ -235,6 +306,62 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
   );
 }
 
+{
+  // Version-floor consistency (#578): every install surface that declares a
+  // pi version must agree with the install floor. The #571 incident is why
+  // this exists — an unpinned install resolved to a release shipping a live
+  // bug eleven hours before the fix landed. Unpinned forms are the drift
+  // this gate catches; a site declaring no floor at all fails.
+  //
+  // install.sh declares the floor either inline or in install-preflight.sh
+  // (sourced by install.sh, #578 — task-a adds that file). In this
+  // workstream's standalone worktree the floor file is not yet present,
+  // so the install-side floor is absent and the cross-site compare degrades
+  // to "each present pin parses". The canary fixture below exercises the
+  // full three-source path (floor + two pins) against the same exported
+  // parsePiFloors/compareVersions, so the compare logic is proven even
+  // before task-a's file lands; post-integration all three real sources
+  // are present and the full assertion runs.
+  const installShFloors = [read("install.sh")];
+  const preflightPath = path.join(REPO_ROOT, "install-preflight.sh");
+  if (existsSync(preflightPath)) installShFloors.push(read("install-preflight.sh"));
+  const floors = parsePiFloors({
+    installSh: installShFloors.join("\n"),
+    readme: read("README.md"),
+    dockerfile: read(".devcontainer/Dockerfile"),
+  });
+  if (existsSync(preflightPath)) {
+    assert(
+      floors.installSh !== "",
+      `install.sh (or install-preflight.sh it sources) declares MIN_PI_VERSION (got: unpinned — the #571 known-bug window is why this gate exists)`,
+    );
+  }
+  assert(
+    floors.readme !== "",
+    "README install line pins a pi version (unpinned — pin the floor @0.x.y on the install command)",
+  );
+  assert(
+    floors.dockerfile !== "",
+    "Dockerfile pi global install pins a version (unpinned — pin the floor @0.x.y on the RUN npm install -g line)",
+  );
+  if (floors.installSh && floors.readme && floors.dockerfile) {
+    const cmp = compareVersions(floors.readme, floors.installSh);
+    assert(
+      cmp !== null && cmp >= 0,
+      `README pi pin ${floors.readme} is at or above the install floor ${floors.installSh}${
+        cmp === null ? " (unparseable version)" : cmp < 0 ? " (below floor)" : ""
+      }`,
+    );
+    const cmpD = compareVersions(floors.dockerfile, floors.installSh);
+    assert(
+      cmpD !== null && cmpD >= 0,
+      `Dockerfile pi pin ${floors.dockerfile} is at or above the install floor ${floors.installSh}${
+        cmpD === null ? " (unparseable version)" : cmpD < 0 ? " (below floor)" : ""
+      }`,
+    );
+  }
+}
+
 // ---------------------------------------------------------------- the gate CAN fail
 
 {
@@ -257,13 +384,21 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
 
   const fDocker = parseDockerInstalls(fixtureDocker);
   // The fixture Dockerfile names mystery-tool (reverse drift) plus the
-  // required tools.
+  // required tools (the pi pin is excepted at the version-task canary pin).
   assert(
     fDocker.some((d) => d.name === "mystery-tool"),
     "canary fixture: Dockerfile names mystery-tool",
   );
   const fRequiredSet = new Set(fRequired);
-  const fReverseUnknown = fDocker.filter((d) => !fRequiredSet.has(d.name));
+  const fExceptedSet = new Set([
+    // The fixture's pinned pi package name — excepted by the same
+    // name-vs-binary reasoning as the real @earendil-works/pi-coding-agent
+    // entry, at the fixture's above-floor canary pin.
+    "@earendil-works/pi-coding-agent@0.99.0",
+  ]);
+  const fReverseUnknown = fDocker.filter(
+    (d) => !fRequiredSet.has(d.name) && !fExceptedSet.has(d.name),
+  );
   assert(
     fReverseUnknown.length === 1 && fReverseUnknown[0].name === "mystery-tool",
     `canary: reverse direction flags exactly the unexplained tool — ${JSON.stringify(fReverseUnknown)}`,
@@ -274,6 +409,53 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
     fForwardMissing.length === 1 && fForwardMissing[0] === "jq",
     `canary: forward direction flags exactly the drifted tool — ${JSON.stringify(fForwardMissing)}`,
   );
+
+  // Version gate canary — all three sources present but diverged:
+  //   install.sh floor 0.84.4 (fixture install-preflight.sh), README pins
+  //   0.84.3 (below floor → must flag), Dockerfile pins 0.99.0 (above floor
+  //   → must NOT flag). The same exported parsePiFloors/compareVersions the
+  //   real check uses are exercised, so a regression in either function
+  //   fails here before it fails on the real (pinned) tree.
+  const fFloors = parsePiFloors({
+    installSh: read(path.relative(REPO_ROOT, path.join(FIXTURES, "install-preflight.sh"))),
+    readme: fixtureReadme,
+    dockerfile: fixtureDocker,
+  });
+  assert(
+    fFloors.installSh === "0.84.4",
+    `canary fixture: install floor parses as 0.84.4 (got: ${JSON.stringify(fFloors.installSh)})`,
+  );
+  assert(
+    fFloors.readme === "0.84.3",
+    `canary fixture: README pin parses as 0.84.3 (got: ${JSON.stringify(fFloors.readme)})`,
+  );
+  assert(
+    fFloors.dockerfile === "0.99.0",
+    `canary fixture: Dockerfile pin parses as 0.99.0 (got: ${JSON.stringify(fFloors.dockerfile)})`,
+  );
+  const fCmpReadme = compareVersions(fFloors.readme, fFloors.installSh);
+  assert(
+    fCmpReadme !== null && fCmpReadme < 0,
+    "canary: below-floor README pin is detected (below floor)",
+  );
+  const fCmpDocker = compareVersions(fFloors.dockerfile, fFloors.installSh);
+  assert(
+    fCmpDocker !== null && fCmpDocker > 0,
+    "canary: above-floor Dockerfile pin is detected (above floor)",
+  );
+
+  // Unpinned forms must fail, not pass silently: a surface with no pi pin
+  // anywhere parses to "" and the version gate asserts it is non-empty.
+  const fUnpinned = parsePiFloors({ installSh: fixtureInstall, readme: "", dockerfile: "" });
+  assert(
+    fUnpinned.readme === "" && fUnpinned.dockerfile === "" && fUnpinned.installSh === "",
+    "canary: unpinned surfaces parse as empty (the drift the gate flags)",
+  );
+
+  // compareVersions edge cases: equal versions are 0; non-dotted input is
+  // null (never silently treated as 0).
+  assert(compareVersions("0.84.4", "0.84.4") === 0, "canary: equal versions compare 0");
+  assert(compareVersions("0.84.4", "garbage") === null, "canary: unparseable version compares null");
 }
 
 console.log(exit === 0 ? "\nAll prerequisite-drift checks passed." : "\nFAILED");

@@ -73,6 +73,13 @@ echo "    pi agent dir: $PI_AGENT_DIR"
 
 # ---- 0. Preflight: required CLIs ---------------------------------------------
 
+# Pi has a version floor (single source: install-preflight.sh, #578) — the
+# other required CLIs are presence-only. The helpers are sourced, not
+# inlined, so test-pi-min-version.ts can drive the version logic against
+# faked `pi --version` output the same way test-os-guard.ts drives
+# classify_os.
+source "$ENSEMBLE_DIR/install-preflight.sh"
+
 missing=()
 check_cmd() {
   local cmd="$1"
@@ -82,6 +89,11 @@ check_cmd() {
   fi
 }
 
+# pi is special-cased: presence is not enough, the installed version must
+# meet the floor (source: install-preflight.sh, #578). The REQUIRED_CLIS
+# entry keeps the pinned install hint and the drift-gate's forward name
+# check; the below-floor case is reported separately because it needs an
+# upgrade hint, not an install one.
 # Hard dependencies — install will continue but tools will fail at runtime.
 # Single source for the preflight set: each entry is "name:hint". The
 # prerequisite-drift gate (smoke-tests/test-prerequisite-drift.ts) parses this
@@ -89,7 +101,7 @@ check_cmd() {
 # .devcontainer/Dockerfile global installs — a tool added here must also be
 # named in the README (or covered by an exception in that test).
 REQUIRED_CLIS=(
-  "pi:bun add -g @earendil-works/pi-coding-agent"
+  "pi:bun add -g @earendil-works/pi-coding-agent@${MIN_PI_VERSION}"
   "git:OS package manager"
   "gh:brew install gh"
   "jq:brew install jq"
@@ -98,6 +110,19 @@ REQUIRED_CLIS=(
   "parallel-cli:npm install -g parallel-web-cli   (or: brew install parallel-web/tap/parallel-cli — then: parallel-cli login)"
   "ctx7:npm install -g ctx7  (free tier works without login; Node.js >= 18)"
 )
+
+PI_STATUS="$(pi_preflight_status)"
+case "$PI_STATUS" in
+  old:*)
+    echo "!! ${PI_STATUS#old:}"
+    echo "   Upgrade with: bun add -g @earendil-works/pi-coding-agent@${MIN_PI_VERSION}"
+    ;;
+  unparseable:*)
+    echo "!! pi --version returned unparsable output: '${PI_STATUS#unparseable:}'"
+    echo "   pi-ensemble cannot verify the minimum version (${MIN_PI_VERSION}) — refusing to assume latest; re-run ./install.sh after fixing the pi install."
+    ;;
+esac
+
 for entry in "${REQUIRED_CLIS[@]}"; do
   check_cmd "${entry%%:*}" "${entry#*:}"
 done
@@ -176,25 +201,7 @@ ext_target="$EXT_DIR/pi-ensemble"
 ln -sfn "$ENSEMBLE_DIR/extension" "$ext_target"
 echo "==> Registered extension at $ext_target"
 
-# Bridge check — the load-bearing rationale (Pi core has no native MCP, so
-# without pi-mcp-adapter NO MCP server loads) lives in the Dockerfile
-# post-install check; this site differs in two site-specific ways: it WARNS
-# rather than fails (install.sh is warn-only, never a hard gate), and it
-# tests BOTH install layouts — `pi install npm:` lands in
-# $PI_AGENT_DIR/npm/node_modules/, git/local installs in $EXT_DIR — so a
-# correctly-installed user is not warned. (Mirror of the Dockerfile build
-# gate — keep the two in sync.)
-if [ ! -e "$PI_AGENT_DIR/npm/node_modules/pi-mcp-adapter" ] \
-   && [ ! -e "$EXT_DIR/pi-mcp-adapter" ]; then
-  echo ""
-  echo "!! pi-mcp-adapter not found in $PI_AGENT_DIR/npm/node_modules/"
-  echo "   (pi install npm: layout) or $EXT_DIR (git/local layout)"
-  echo "   — Pi core has no native MCP, so without the bridge"
-  echo "   NO MCP server loads (including codebase_memory)."
-  echo "   Install it with: pi install npm:pi-mcp-adapter   (README → Prerequisites)"
-  echo "   and re-run ./install.sh."
-  echo ""
-fi
+pi_bridge_warn "$PI_AGENT_DIR"
 
 # ---- 6. Register codebase-memory-mcp with pi-mcp-adapter ---------------------
 #
@@ -332,25 +339,15 @@ fi
 #
 # `maxRetryDelayMs` restored to Pi's own default of 60000. It had been lowered
 # to 10000 on the reasoning that "with 3 retries, the old value added 3 x 60s
-# of backoff". That reasoning was wrong, in a way worth recording so it is not
-# repeated:
-#
-#   * It is a CEILING, not a delay. Pi's own backoff is
-#     `min(0.5 * 2 ** retryIndex, 8) * 1000` — capped at 8s, i.e. always below
-#     even the 10s ceiling. Raising it to 60000 adds no wall-clock at all
-#     unless a provider explicitly asks us to wait longer.
-#   * It does nothing about thundering herds. It does not spread retries; it
-#     only decides which provider instructions to discard.
-#   * When it discards one, nothing waits. The throw happens inside
-#     `getRetryDelayMs` while COMPUTING the next delay, before any sleep is
-#     reached — so the `maxRetries` budget is never consumed either.
-#
-# Its sole effect, therefore, was to throw away a provider's `retry-after`
-# whenever that exceeded 10s. Providers routinely ask for 59-60s. Measured on
-# one run: three parallel research children and two /work developers all died
-# on `Server requested 59s retry delay (max: 10s). 429 status code`, having
-# gathered ~305k characters of research between them, which was discarded and
-# re-fetched. At 60000 the same 429 is slept through and the work survives.
+# of backoff". That reasoning was wrong: `maxRetryDelayMs` is a CEILING, not
+# a delay — Pi's own backoff is `min(0.5 * 2 ** retryIndex, 8) * 1000`,
+# capped at 8s, always below the old 10s ceiling — so lowering it changed
+# nothing except that a provider's explicit `retry-after` (routinely 59-60s)
+# was discarded without waiting at all. One measured run: three parallel
+# research children and two /work developers all died on
+# `Server requested 59s retry delay (max: 10s). 429 status code` having
+# gathered ~305k characters between them; at 60000 the same 429 is slept
+# through and the work survives.
 #
 # Idempotent + non-clobbering: writes the block only when
 # `retry.provider.timeoutMs` is absent (or null). Two exceptions, both our own

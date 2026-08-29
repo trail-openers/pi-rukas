@@ -5,7 +5,7 @@
 
 A multi-specialist orchestrator extension for [Pi](https://pi.dev) — the terminal AI coding agent. Spawns role-specialised child Pi processes in parallel, isolates them in git worktrees, runs a mandatory adversarial gate before commit, and gates merge on a six-pass code review (security, error handling, type safety, performance, architecture, simplicity).
 
-> **Status: alpha.** The interfaces work and the workflow runs end-to-end, but the API will change before `1.0`. Use on disposable repos until you've kicked the tires. Tested against pi `0.75.3` (the dev-deps pin; the sandbox image ships `0.79.1` — see [Pi compatibility](#pi-compatibility), which carries the full list of sites asserting this claim).
+> **Status: alpha.** The interfaces work and the workflow runs end-to-end, but the API will change before `1.0`. Use on disposable repos until you've kicked the tires. Tested against pi `0.84.4` (the install floor; the sandbox image ships `0.84.4` — see [Pi compatibility](#pi-compatibility), which carries the full list of sites asserting this claim).
 
 ## What you get
 
@@ -90,7 +90,7 @@ Copy-pasteable. All installs use the latest version your package manager allows 
 
 ```bash
 # Pi (per https://pi.dev/docs/latest/quickstart)
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.84.4
 
 # bun (≥ 1.2.20)
 curl -fsSL https://bun.com/install | bash
@@ -353,7 +353,7 @@ pi install npm:pi-mcp-adapter
 
 (Already done as part of the [Prerequisites install commands](#install-commands)? Skip to Step 2.)
 
-`pi install npm:<pkg>` installs into the flat npm project under `~/.pi/agent/npm/node_modules/` (NOT the `extensions/` dir, which is only used for git/local installs) — verified against pi `0.79.1`, so treat a pi version bump as a deliberate re-verification. Pi's own package manager loads it at runtime via the `pi.extensions` manifest in the package's package.json — **in the parent session**. For subagents, pi-ensemble's auto-forward (`discoverInstalledExtensions`) reads only the `extensions/` layout, so an npm-layout install is NOT forwarded to subagents: either install the bridge git/local into `~/.pi/agent/extensions/` (auto-forwarded), or set `PI_ENSEMBLE_USER_EXTENSION=<abs-path or npm:ref>` to forward it explicitly. If `/mcp` shows no MCP tools inside a subagent, this is the usual cause. This step covers the bridge install; the bridge itself is a generic prerequisite — any MCP server you add later (Step 2 onward) depends on it.
+`pi install npm:<pkg>` installs into the flat npm project under `~/.pi/agent/npm/node_modules/` (NOT the `extensions/` dir, which is only used for git/local installs) — verified against pi `0.84.4`, so treat a pi version bump as a deliberate re-verification. Pi's own package manager loads it at runtime via the `pi.extensions` manifest in the package's package.json — **in the parent session**. For subagents, pi-ensemble's auto-forward (`discoverInstalledExtensions`) reads only the `extensions/` layout, so an npm-layout install is NOT forwarded to subagents: either install the bridge git/local into `~/.pi/agent/extensions/` (auto-forwarded), or set `PI_ENSEMBLE_USER_EXTENSION=<abs-path or npm:ref>` to forward it explicitly. If `/mcp` shows no MCP tools inside a subagent, this is the usual cause. This step covers the bridge install; the bridge itself is a generic prerequisite — any MCP server you add later (Step 2 onward) depends on it.
 
 ### Step 2 — Define MCP servers (bridge config, 4 tiers)
 
@@ -547,7 +547,7 @@ The 28 modules under `modules/` (vipune memory patterns, output standards, async
 
 ## Pi compatibility
 
-pi-ensemble depends on Pi's CLI flags, JSON event stream shape, and `ExtensionAPI` surface. The current sandbox image ships pi `0.79.1`; the host-mode dev-deps pin `@earendil-works/pi-coding-agent` to `~0.75.3` so a Pi minor bump is a deliberate update. The sandbox version is a hand-maintained claim (the image's `npm install -g` is unpinned) and is asserted at exactly three prose sites — the README "Status" line, `.devcontainer/Dockerfile` (pi-mcp-adapter comment), and this section; update all three when the image's pi changes.
+pi-ensemble depends on Pi's CLI flags, JSON event stream shape, and `ExtensionAPI` surface. The current sandbox image ships pi `0.84.4`; the host-mode dev-deps pin `@earendil-works/pi-coding-agent` to `~0.84.4` so a Pi minor bump is a deliberate update. The sandbox version is a hand-maintained claim (the image's `npm install -g` is pinned to 0.84.4) and is asserted at exactly three prose sites — the README "Status" line, `.devcontainer/Dockerfile` (pi-mcp-adapter comment), and this section; update all three when the image's pi changes.
 
 When updating Pi:
 1. Check the [pi-mono releases](https://github.com/badlogic/pi-mono/releases).
