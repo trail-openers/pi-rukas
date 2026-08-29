@@ -132,6 +132,18 @@ export function explainCap(
           : "";
       return `${base}${skipped} All the work is done and pushed — only the merge is held.`;
     }
+    case "cross-group-conflict": {
+      const hit = [...state.eventLog]
+        .reverse()
+        .find(
+          (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
+            e.kind === "cap-hit" && e.cap === "cross-group-conflict",
+        );
+      const ev = hit?.evidence ?? "";
+      const siblingMatch = ev.match(/issue #(\d+)/);
+      const siblingIssue = siblingMatch ? siblingMatch[1] : "(see evidence)";
+      return `this cycle's declared paths overlap with issue #${siblingIssue}'s active claim — two cycles cannot edit the same files in parallel. The overlapping paths are in the event log evidence field. Coordinate with the other cycle's owner or re-plan with disjoint file sets.`;
+    }
     case "existing-pr-detected": {
       const pr = state.pipelineState.existingPr;
       const via =

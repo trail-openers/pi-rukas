@@ -25,6 +25,7 @@ import {
   resolveMergeAuthority,
 } from "./work-driver-merge-authority.ts";
 import { type MergeMethod, mechanizedMerge } from "./work-driver-merged-mechanized.ts";
+import { releaseClaim } from "./work-driver-path-claims.ts";
 import { DOCTRINE_FILES, type DoctrineDoc, judgePolicy } from "./work-driver-policy.ts";
 import { inlineMergePrompt } from "./work-driver-prompts-late.ts";
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
@@ -319,6 +320,12 @@ export async function runMerged(
     });
   }
 
+  // #571 — release the path claim on successful merge.
+  try {
+    await releaseClaim(ctx.repoRoot, ctx.issue);
+  } catch {
+    /* best-effort; merge must always succeed regardless */
+  }
   return {
     ...next,
     pipelineState: { ...next.pipelineState, currentStep: "merged", status: "merged" },

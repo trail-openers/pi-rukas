@@ -335,13 +335,11 @@ export type WorkEvent =
         // is cheap; approving on the absence of evidence is not.
         | "lens-diff-unreadable"
         | "existing-pr-detected"
-        // #486 — a workstream's adversarial loop failed on infrastructure
-        // every attempt (initial + per-workstream retries, taxonomy
-        // backoff honoured). Distinct from "adversarial-loop": NO review
-        // rejection exists, and the approved siblings' verdicts are
-        // preserved in the per-workstream outcome events — the operator
-        // parks knowing what was decided and what simply never ran.
+        // #486 — infra-failure: adversarial loop failed on infra every attempt.
         | "adversarial-infra-failure"
+        // #571 — sibling cycle holds a path claim; overlap detected at plan
+        // time. Two cycles cannot edit the same files in parallel.
+        | "cross-group-conflict"
         // #543 — fixed literals (NOT `'<role>'` template shapes): a per-role
         // suffix would smuggle a cap the #533 canary doesn't know. Which role's
         // child was killed is carried in the new `role` field + capEvidence.

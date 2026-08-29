@@ -16,6 +16,7 @@ export { sliceMarkdownSection, splitOutsideParens } from "./work-driver-plan-par
 import type { DispatchResult } from "./types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
+import { checkAndRegisterClaims, crossGroupConflictsEnabled } from "./work-driver-path-claims.ts";
 import {
   type PathCollision,
   type TestSubjectSplit,
@@ -142,6 +143,12 @@ export async function runPlan(
     }
   }
 
+  // #571 — cross-group claim check. Detect path overlaps with sibling cycles
+  // BEFORE registering. Parking early costs one plan dispatch, not a full
+  // develop/adversarial/commit-pr burn. Extracted to a helper (line budget).
+  if (crossGroupConflictsEnabled()) {
+    next = await checkAndRegisterClaims(ctx, next, workstreams);
+  }
   if (Object.keys(workstreams).length === 0) {
     workstreams.default = {
       id: "default",

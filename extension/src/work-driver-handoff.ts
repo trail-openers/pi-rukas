@@ -17,6 +17,7 @@ import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { renderHandoffMarkdown } from "./work-driver-handoff-markdown.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
+import { releaseClaim } from "./work-driver-path-claims.ts";
 import { inlineHandoffOpsPrompt } from "./work-driver-prompts-late.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { runWorktreeTeardown } from "./work-driver-worktree-sweep.ts";
@@ -246,6 +247,12 @@ export async function runHandoff(
     labelApplied,
     handoffBodyPath,
   });
+  // #571 — release the path claim so sibling cycles can proceed.
+  try {
+    await releaseClaim(ctx.repoRoot, ctx.issue);
+  } catch {
+    /* best-effort; handoff must always emit regardless */
+  }
   // Set terminal status from the most recent cap-hit's cap shape:
   //   - step-failed:<step> or developer-timeout → 'aborted' (the
   //     halt-cascade router synthesised this; mid-flight failure)
