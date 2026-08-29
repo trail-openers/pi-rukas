@@ -95,7 +95,7 @@ try {
     writeFileSync(path.join(wt, "new-file.txt"), "untracked work\n");
 
     const scratch = path.join(repo, "tmp", "issue-540");
-    const note = await salvageKnownDirtyWorktrees(realExec, { "task-a": wt }, scratch);
+    const note = await salvageKnownDirtyWorktrees(realExec, { "task-a": wt }, scratch, "");
     const salvageDir = path.join(scratch, "salvage", "issue-540-task-a");
     assert(note.includes(salvageDir), "salvage: a note names the salvage location");
     const patch = readFileSync(path.join(salvageDir, "salvage.patch"), "utf8");
@@ -128,7 +128,7 @@ try {
     // The state's worktrees map for issue 540 names only issue-540 worktrees;
     // the foreign issue-999 worktree is not in the map, so it is not
     // salvaged — the #475 refusal still protects it.
-    const note = await salvageKnownDirtyWorktrees(realExec, {}, scratch);
+    const note = await salvageKnownDirtyWorktrees(realExec, {}, scratch, "");
     assert(
       note === "",
       "a worktree NOT in the state's worktrees map is not salvaged — salvage only touches what the state knows about",
@@ -173,7 +173,7 @@ try {
     await git(repo, ["worktree", "add", "-q", "--detach", wt, baseSha]);
 
     const scratch = path.join(repo, "tmp", "issue-540");
-    const note = await salvageKnownDirtyWorktrees(realExec, { default: wt }, scratch);
+    const note = await salvageKnownDirtyWorktrees(realExec, { default: wt }, scratch, "");
     assert(note === "", "a clean same-issue worktree is skipped — no spurious salvage");
   }
 } finally {
