@@ -337,11 +337,10 @@ export async function readAllMergedDiffs(
     const diff = await fetchAllDiffs(worktrees, repoRoot, baseSha);
     return { ok: true, diff, empty: !diff.trim() };
   }
-  return {
-    ok: true,
-    diff: "",
-    empty: true,
-  };
+  // No branch and no worktrees: we cannot read a diff, so fail closed.
+  // A confirmed-empty diff (branch exists, nothing ahead) is different —
+  // it means there is genuinely nothing to review.
+  return { ok: false, reason: "no branch name and no worktrees to diff" };
 }
 
 /**
