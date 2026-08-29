@@ -220,7 +220,7 @@ const passing = (name: string) => ({ name, state: "SUCCESS", bucket: "pass", isR
   try {
     assert(!mergeAuthorityEnabled(), "PI_ENSEMBLE_MERGE_AUTHORITY=0 restores pre-#380 behaviour");
   } finally {
-    if (prev === undefined) delete process.env.PI_ENSEMBLE_MERGE_AUTHORITY;
+    if (prev === undefined) process.env.PI_ENSEMBLE_MERGE_AUTHORITY = undefined;
     else process.env.PI_ENSEMBLE_MERGE_AUTHORITY = prev;
   }
   assert(mergeAuthorityEnabled(), "and the gate is ON by default");

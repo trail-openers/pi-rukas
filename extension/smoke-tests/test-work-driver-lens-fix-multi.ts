@@ -46,7 +46,9 @@ function lensIssuesFoundEvent(title: string, description: string) {
     at: 2_000_000,
     jobId: "j-lens-1",
     round: 1,
-    findings: JSON.stringify([{ lens: "SECURITY", severity: "MEDIUM", path: "feature.txt", line: 1, title, description }]),
+    findings: JSON.stringify([
+      { lens: "SECURITY", severity: "MEDIUM", path: "feature.txt", line: 1, title, description },
+    ]),
     verdict: "ISSUES_FOUND" as const,
   };
 }
@@ -379,7 +381,7 @@ setupSpawnGuard();
     writeFileSync(path.join(dir, "root", ".git", "info", "exclude"), "\n.pi/\n");
     await fs.writeFile(path.join(root, "base.txt"), "hello\n");
     await execp("git add base.txt && git commit -q -m initial", { cwd: root, shell: "/bin/bash" });
-    await execp("git remote add origin " + JSON.stringify(origin), { cwd: root });
+    await execp(`git remote add origin ${JSON.stringify(origin)}`, { cwd: root });
     await execp("git push -q -u origin main", { cwd: root });
     await execp("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", {
       cwd: root,
@@ -391,7 +393,7 @@ setupSpawnGuard();
       shell: "/bin/bash",
     });
     await execp("git push -q -u origin feature/lens-stage-fail", { cwd: root });
-    await execp("git worktree add --detach " + JSON.stringify(wt) + " HEAD", { cwd: root });
+    await execp(`git worktree add --detach ${JSON.stringify(wt)} HEAD`, { cwd: root });
 
     let s = initialState(493, 1_000_000);
     s = {

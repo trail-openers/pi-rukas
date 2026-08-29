@@ -263,7 +263,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     assert(branchAttempts === 1, `#297 T3: opt-out → no retry (got ${branchAttempts})`);
     assert(after?.pipelineState.status === "aborted", "#297 T3: opt-out halts immediately");
   } finally {
-    if (prev === undefined) delete process.env.PI_ENSEMBLE_TRANSIENT_RETRY;
+    if (prev === undefined) process.env.PI_ENSEMBLE_TRANSIENT_RETRY = undefined;
     else process.env.PI_ENSEMBLE_TRANSIENT_RETRY = prev;
     rmSync(dir, { recursive: true, force: true });
   }

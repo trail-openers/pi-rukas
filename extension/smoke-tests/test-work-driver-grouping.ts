@@ -383,7 +383,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     const fanoutBig = groupIssues([1, 2, 3, 4, 5], { 1: "a", 2: "b", 3: "c", 4: "d", 5: "e" });
     assert(fanoutBig.fanout.mode === "sequential", "fanout: K > cap → sequential mode");
   } finally {
-    if (priorCap === undefined) delete process.env.PI_ENSEMBLE_PARALLEL_GROUPS;
+    if (priorCap === undefined) process.env.PI_ENSEMBLE_PARALLEL_GROUPS = undefined;
     else process.env.PI_ENSEMBLE_PARALLEL_GROUPS = priorCap;
   }
 
@@ -401,7 +401,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       "fanout: at the shipped default (cap=3), K=2 is parallel",
     );
   } finally {
-    if (priorCapDefault === undefined) delete process.env.PI_ENSEMBLE_PARALLEL_GROUPS;
+    if (priorCapDefault === undefined) process.env.PI_ENSEMBLE_PARALLEL_GROUPS = undefined;
     else process.env.PI_ENSEMBLE_PARALLEL_GROUPS = priorCapDefault;
   }
 

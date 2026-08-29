@@ -42,7 +42,7 @@ async function withCap<T>(cap: string, fn: () => Promise<T>): Promise<T> {
     return await fn();
   } finally {
     __resetSpawnSemaphore();
-    if (prev === undefined) delete process.env.PI_ENSEMBLE_SPAWN_CAP;
+    if (prev === undefined) process.env.PI_ENSEMBLE_SPAWN_CAP = undefined;
     else process.env.PI_ENSEMBLE_SPAWN_CAP = prev;
   }
 }

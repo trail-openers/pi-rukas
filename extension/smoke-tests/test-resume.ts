@@ -237,7 +237,7 @@ const withInFlight = (over: Partial<WorkState> = {}): WorkState => {
       "once the dispatch settles the marker is cleared, so a finished step is not resumed",
     );
   } finally {
-    delete process.env.PI_ENSEMBLE_VERIFY;
+    process.env.PI_ENSEMBLE_VERIFY = undefined;
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -296,7 +296,7 @@ const withInFlight = (over: Partial<WorkState> = {}): WorkState => {
       "re-entry starts at the step that was in flight, not at the beginning",
     );
   } finally {
-    delete process.env.PI_ENSEMBLE_VERIFY;
+    process.env.PI_ENSEMBLE_VERIFY = undefined;
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -469,7 +469,7 @@ const withInFlight = (over: Partial<WorkState> = {}): WorkState => {
   try {
     assert(!resumeEnabled(), "PI_ENSEMBLE_RESUME=0 restores the pre-#382 behaviour");
   } finally {
-    if (prev === undefined) delete process.env.PI_ENSEMBLE_RESUME;
+    if (prev === undefined) process.env.PI_ENSEMBLE_RESUME = undefined;
     else process.env.PI_ENSEMBLE_RESUME = prev;
   }
   assert(resumeEnabled(), "and resume is ON by default");

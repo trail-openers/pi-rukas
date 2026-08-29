@@ -16,6 +16,9 @@ import type { WorkState, WorkStep } from "./workflow-state.ts";
 
 const execp = promisify(exec);
 
+/** Validate a git SHA before shell interpolation. */
+const VALID_BASEDIFF_SHA_RE = /^[0-9a-f]{40}$/;
+
 /**
  * Resolve a diff for the given working directory.
  *
@@ -28,14 +31,20 @@ const execp = promisify(exec);
  * actual worktree state.
  *
  * #451 — the bare `git diff HEAD` is DELIBERATE pre-commit semantics, not
- * a ref-resolution bug. `fetchDiff` is always per-worktree (`cwd` is one
- * of the cycle's worktrees, or the last-resort repoRoot fallback recorded
- * by the branch step): adversarial review runs pre-commit, and
- * `integrate()` never leaves uncommitted work behind in a worktree, so
- * "working tree vs its own HEAD" is exactly the uncommitted developer
- * work to review. The load-bearing discipline is which cwd the caller
- * scopes it to — a worktree, never the repo root once it leaves the
- * feature branch (the branch-step fallbacks carry their own notes). That
+ * a ref-resolution bug, and is the fallback for backwards compatibility.
+ * The preferred primary path when `baseSha` is provided is
+ * `git diff baseSha..HEAD`, which captures committed changes — without
+ * this, once the developer commits their work `git diff HEAD` returns
+ * empty and adversarial would trivially approve (#453). Logic:
+ *   1. If baseSha is a valid 40-char hex SHA, try `git diff baseSha..HEAD`.
+ *      If the result is non-empty, return it — this is the committed work.
+ *   2. Fall back to `git diff HEAD` for uncommitted changes (pre-commit
+ *      compat, or when baseSha is absent / the baseSha range is empty).
+ *
+ * `fetchDiff` is always per-worktree (`cwd` is one of the cycle's
+ * worktrees, or the last-resort repoRoot fallback recorded by the branch
+ * step). The load-bearing discipline is which cwd the caller scopes it to —
+ * a worktree, never the repo root once it leaves the feature branch. That
  * is what the grep canary in test-work-driver-diff-head-canary.ts
  * protects: no new bare `git diff HEAD` in a REPO-ROOT verification or
  * diff-fetch path, and this per-worktree call stays documented.
@@ -46,16 +55,39 @@ const execp = promisify(exec);
  *  - cwd isn't a git repo
  *  - `git diff` returned non-zero or threw (e.g., permissions)
  *
- * The subagent prompts already include the cwd; an empty-diff result
- * lets adversarial / lens-review hint correctly ("nothing changed, no
- * review needed"). The hard cap on diff size (1 MiB) prevents a runaway
- * worktree state from bloating the dispatch prompt — pi-ai providers
- * have their own context limits and a 1 MB diff is already a red flag.
+ * The hard cap on diff size (1 MiB) prevents a runaway worktree state
+ * from bloating the dispatch prompt.
  */
-export async function fetchDiff(cwd: string | undefined): Promise<string> {
+export async function fetchDiff(cwd: string | undefined, baseSha?: string): Promise<string> {
   if (!cwd) return "";
+  // #453 — try committed diff first when baseSha is available and valid.
+  // `git diff baseSha..HEAD` shows everything the developer committed,
+  // which `git diff HEAD` misses once the working tree is clean.
+  if (baseSha && VALID_BASEDIFF_SHA_RE.test(baseSha)) {
+    try {
+      const { stdout } = await execp(`git diff ${baseSha}..HEAD`, {
+        cwd,
+        maxBuffer: 1024 * 1024,
+      });
+      if (stdout.trim()) return stdout;
+    } catch (err) {
+      trace(
+        `work-driver: fetchDiff(${cwd}, baseSha..HEAD) failed: ${(err as Error).message?.slice(
+          0,
+          200,
+        )}`,
+      );
+    }
+  }
+  // Fallback: uncommitted diff — DELIBERATE pre-commit semantics for callers
+  // without a baseSha and for the case where baseSha..HEAD is empty
+  // (developer hasn't committed yet).
   try {
-    const { stdout } = await execp("git diff HEAD", {
+    // Prefer `git diff <baseSha>..HEAD` when baseSha is available — this
+    // captures committed work. Without baseSha, fall back to `git diff HEAD`
+    // (uncommitted changes only), which is correct for pre-commit scenarios.
+    const diffRange = baseSha ? `${JSON.stringify(baseSha)}..HEAD` : "HEAD";
+    const { stdout } = await execp(`git diff ${diffRange}`, {
       cwd,
       maxBuffer: 1024 * 1024, // 1 MiB cap
     });
@@ -70,10 +102,10 @@ export async function fetchDiff(cwd: string | undefined): Promise<string> {
  * PR3 multi-worktree variant of `fetchDiff`. Resolves the diff(s) for
  * the current /work cycle's workstreams:
  *
- *  - N=1 (default workstream): single `git diff HEAD` from the recorded
- *    worktree path, OR `ctx.repoRoot` as fallback when the worktrees
- *    map is empty (the B2 cwd-fallback, restored to working order by
- *    populating the map in Step 3 — single-task /work writes
+ *  - N=1 (default workstream): single `git diff <baseSha>..HEAD` from the
+ *    recorded worktree path, OR `ctx.repoRoot` as fallback when the
+ *    worktrees map is empty (the B2 cwd-fallback, restored to working
+ *    order by populating the map in Step 3 — single-task /work writes
  *    `{default: ctx.repoRoot}`).
  *
  *  - N>1: one diff per worktree, concatenated with `## workstream: <id>`
@@ -86,14 +118,18 @@ export async function fetchDiff(cwd: string | undefined): Promise<string> {
  * returns what it has plus a `[... truncated for size]` marker so
  * downstream prompts don't silently lose context.
  */
-async function fetchAllDiffs(worktrees: Record<string, string>, repoRoot: string): Promise<string> {
+async function fetchAllDiffs(
+  worktrees: Record<string, string>,
+  repoRoot: string,
+  baseSha?: string,
+): Promise<string> {
   const ids = Object.keys(worktrees);
   // N=1 path — the structural fix for B2. With Step 3 populating the
   // worktrees map (default → repoRoot for single-task), `worktrees[id]`
   // is always a string, never undefined.
   if (ids.length <= 1) {
     const cwd = ids.length === 1 ? worktrees[ids[0] ?? ""] : repoRoot;
-    return fetchDiff(cwd ?? repoRoot);
+    return fetchDiff(cwd ?? repoRoot, baseSha);
   }
   // N>1: gather all per-workstream diffs FIRST, then decide whether to
   // emit headers. PR7 — when every body is empty (e.g., all three
@@ -107,7 +143,7 @@ async function fetchAllDiffs(worktrees: Record<string, string>, repoRoot: string
   for (const id of ids) {
     const wt = worktrees[id];
     if (!wt) continue;
-    fetched.push({ id, body: await fetchDiff(wt) });
+    fetched.push({ id, body: await fetchDiff(wt, baseSha) });
   }
   if (fetched.every((f) => !f.body.trim())) return "";
 
@@ -285,22 +321,26 @@ export async function readAllMergedDiffs(
   worktrees: Record<string, string>,
   repoRoot: string,
   branchName?: string,
+  baseSha?: string,
 ): Promise<IntegratedDiff> {
   // With a branch name the integrated read is authoritative in BOTH
   // directions: a confirmed-empty diff means no commits ahead of base, which
   // no per-worktree read can contradict, and a failure means we do not know.
   if (branchName) return readIntegratedDiff(repoRoot, branchName);
-  // No branch name at lens-review means the branch step never recorded one —
-  // an abnormal state, not an empty diff. #393 deleted the per-worktree
-  // fallback that used to run here: under always-worktree the worktrees stay
-  // DETACHED at baseSha, so `git diff origin/<base>..HEAD` read from inside
-  // one is empty BY CONSTRUCTION. The fallback could only ever return
-  // "nothing to review", which is exactly the inference #384 established must
-  // never be drawn from an absent answer.
-  void worktrees;
+  // N>1 per-worktree diff path: each worktree's diff is relative to its own
+  // baseSha (the detatch point), so we can read committed work with
+  // `git diff <baseSha>..HEAD`. Without baseSha we fall back to `git diff
+  // HEAD` (uncommitted work only), which is correct for pre-commit
+  // scenarios but would return empty after a developer commit.
+  const ids = Object.keys(worktrees);
+  if (ids.length > 0) {
+    const diff = await fetchAllDiffs(worktrees, repoRoot, baseSha);
+    return { ok: true, diff, empty: !diff.trim() };
+  }
   return {
-    ok: false,
-    reason: "no branch name recorded on the cycle, so there is no integrated diff to review",
+    ok: true,
+    diff: "",
+    empty: true,
   };
 }
 

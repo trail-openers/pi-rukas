@@ -323,7 +323,7 @@ const mkDispatchFn =
         );
         assert(plumb !== undefined, "M4: dirty repoRoot → plumb-report exists");
         assert(
-          plumb !== undefined && plumb.body.includes("leftover/untracked-file.txt"),
+          plumb?.body.includes("leftover/untracked-file.txt"),
           "M4: plumb-report names the dirty path(s) from the integrate refusal",
         );
         assert(
@@ -342,7 +342,7 @@ const mkDispatchFn =
       }
     }
   } finally {
-    if (prevVerify === undefined) delete process.env.PI_ENSEMBLE_VERIFY;
+    if (prevVerify === undefined) process.env.PI_ENSEMBLE_VERIFY = undefined;
     else process.env.PI_ENSEMBLE_VERIFY = prevVerify;
     process.env.PI_ENSEMBLE_VERIFY = "0";
   }

@@ -42,15 +42,15 @@ eq(clipTitle("", 64), "", "empty passes through unchanged");
 // whitespace is at index 64, which is AFTER cut=63) → degenerate path,
 // cut at 63 + ellipsis.
 eq(
-  clipTitle("a".repeat(64) + " word", 64),
-  "a".repeat(63) + "…",
+  clipTitle(`${"a".repeat(64)} word`, 64),
+  `${"a".repeat(63)}…`,
   "pinned literal: 64 a's + ' word' → no boundary at or before cut → 63 a's + ellipsis",
 );
 // The symmetric case where the space IS the cut: 63 a's + " word" (68 units).
 // cut=63 lands ON the space → boundary found, prefix 63 a's, ellipsis.
 eq(
-  clipTitle("a".repeat(63) + " word", 64),
-  "a".repeat(63) + "…",
+  clipTitle(`${"a".repeat(63)} word`, 64),
+  `${"a".repeat(63)}…`,
   "63 a's + ' word' → the space at index 63 is the boundary → 63 a's + ellipsis",
 );
 
@@ -70,19 +70,19 @@ assert(!clipped.includes("commit subject"), "the tail beyond the boundary is abs
 
 // budget+1: one over the pass-through line
 eq(
-  clipTitle("b".repeat(64) + "w", 64),
-  "b".repeat(63) + "…",
+  clipTitle(`${"b".repeat(64)}w`, 64),
+  `${"b".repeat(63)}…`,
   "65-char single token: degenerate mid-word cut at 63 + ellipsis",
 );
 eq(
-  clipTitle("c".repeat(63) + " " + "d".repeat(20), 64),
-  "c".repeat(63) + "…",
+  clipTitle(`${"c".repeat(63)} ${"d".repeat(20)}`, 64),
+  `${"c".repeat(63)}…`,
   "budget+1 with a boundary: last space at index 63, prefix 63 c's, ellipsis",
 );
 
 // trailing whitespace before the cut
 eq(
-  clipTitle("word " + "x".repeat(70) + "  ", 64),
+  clipTitle(`word ${"x".repeat(70)}  `, 64),
   "word…",
   "trailing whitespace before the cut is trimmed (boundary at the space, prefix non-empty)",
 );
@@ -91,12 +91,12 @@ eq(
 
 eq(
   clipTitle("z".repeat(100), 64),
-  "z".repeat(63) + "…",
+  `${"z".repeat(63)}…`,
   "unbreakable 100-char token: cut at 63 + ellipsis (the only case allowed to cut a word)",
 );
 eq(
   clipTitle("q".repeat(65), 64),
-  "q".repeat(63) + "…",
+  `${"q".repeat(63)}…`,
   "unbreakable 65-char token: same rule, budget-1 cut",
 );
 
@@ -107,7 +107,7 @@ eq(
 // 5 spaces + 70 a's = 75 > 64, so cut = 63 → 5 spaces + 58 a's + ellipsis.
 eq(
   clipTitle(" ".repeat(5) + "a".repeat(70), 64),
-  " ".repeat(5) + "a".repeat(58) + "…",
+  `${" ".repeat(5) + "a".repeat(58)}…`,
   "leading spaces: the only boundary trims empty → degenerate cut of the a-run",
 );
 
@@ -117,7 +117,7 @@ eq(
 // emoji + x = 62 + 2 + 1 = 65 > 64. No whitespace at all → degenerate path,
 // and rule 4 must back off the cut so the pair is not split (a high half at
 // cut-1 would dangle in the prefix).
-const surrogateAtCut = "e".repeat(62) + "\u{1F600}" + "x";
+const surrogateAtCut = `${"e".repeat(62)}\u{1F600}x`;
 const surrogateResult = clipTitle(surrogateAtCut, 64);
 // 62 e's + pair + x = 65. cut=63 falls inside the pair → backs off to 62 →
 // 62 e's + ellipsis.
@@ -140,11 +140,11 @@ assert(surrogateResult.endsWith("\u2026"), "surrogate-at-cut: ends with ellipsis
 // cut=63 — the check reads index 62, the HIGH half, and does not back off,
 // so slice(0,63) leaves the high surrogate dangling. Rule 4 now checks the
 // CUT position (low half) and backs off: 62 a's + ellipsis.
-const straddling = "a".repeat(62) + "\u{1F600}" + "x";
+const straddling = `${"a".repeat(62)}\u{1F600}x`;
 const straddlingResult = clipTitle(straddling, 64);
 eq(
   straddlingResult,
-  "a".repeat(62) + "…",
+  `${"a".repeat(62)}…`,
   "straddling pair: high at cut-1 + low at cut → back off, pair dropped whole",
 );
 
@@ -154,7 +154,7 @@ eq(
 // "word " + 58 a's + emoji = 65 > 64 → cut=63, pair is at 62,63 → backs off to 62,
 // last whitespace is index 4, prefix "word" → "word…".
 eq(
-  clipTitle("word " + "a".repeat(58) + "\u{1F600}", 64),
+  clipTitle(`word ${"a".repeat(58)}\u{1F600}`, 64),
   "word…",
   "surrogate pair inside the word: word boundary before it wins, ellipsis after 'word'",
 );
@@ -163,7 +163,7 @@ eq(
 // "ab" + emoji + 60 a's + " tail" → 2+2+60+5 = 69 > 64; cut=63; pair at 2,3
 // is inside the prefix; last whitespace at 62 (the space before "tail");
 // prefix = first 62 chars = "ab" + emoji + 58 a's, no trailing space.
-const pairInPrefix = "ab" + "\u{1F600}" + "a".repeat(60) + " tail";
+const pairInPrefix = `ab\u{1F600}${"a".repeat(60)} tail`;
 const pairInPrefixResult = clipTitle(pairInPrefix, 64);
 assert(
   pairInPrefixResult.includes("\u{1F600}"),
@@ -180,7 +180,7 @@ assert(pairInPrefixResult.length === 64, "pair-in-prefix: budget-long");
 // The pair is at indices 58,59. cut=63 falls INSIDE... let's just assert the
 // invariants rather than derive: budget-long, ends with ellipsis, no lone
 // high surrogate at the end.
-const fixture = "a".repeat(58) + "\u{1F600}" + "b".repeat(10);
+const fixture = `${"a".repeat(58)}\u{1F600}${"b".repeat(10)}`;
 assert(fixture.length === 70, "surrogate fixture sanity: 58 + 2 + 10 = 70");
 const degeneratePair = clipTitle(fixture, 64);
 assert(degeneratePair.length === 64, "surrogate degenerate: budget-long");

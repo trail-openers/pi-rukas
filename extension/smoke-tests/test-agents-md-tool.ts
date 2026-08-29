@@ -99,8 +99,8 @@ const run = (raw: Record<string, unknown>) =>
   // The report carries the CLI-style summary AND the diff.
   assert(r.content[0]?.text.includes("would write"), "create report says 'would write'");
   assert(r.content[0]?.text.includes("bun run test"), "create report names a detected command");
-  const plusLines = r.content[0]!.text.split("\n").filter((l) => l.startsWith("+"));
-  const minusLines = r.content[0]!.text.split("\n").filter((l) => l.startsWith("-"));
+  const plusLines = r.content[0]?.text.split("\n").filter((l) => l.startsWith("+"));
+  const minusLines = r.content[0]?.text.split("\n").filter((l) => l.startsWith("-"));
   assert(plusLines.length > 0, "create diff has insertion lines");
   assert(minusLines.length === 0, "create diff is insertions-only");
 }
@@ -156,7 +156,7 @@ const run = (raw: Record<string, unknown>) =>
   // A stale reference → findings, one line per finding.
   writeFileSync(
     AGENTS,
-    `# T\n\nsee \`gone.ts\` for the rest\n\n<!-- pi-ensemble:agents-md:begin decision-ledger v1 -->\n| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |\n<!-- pi-ensemble:agents-md:end decision-ledger -->\n`,
+    "# T\n\nsee `gone.ts` for the rest\n\n<!-- pi-ensemble:agents-md:begin decision-ledger v1 -->\n| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |\n<!-- pi-ensemble:agents-md:end decision-ledger -->\n",
   );
   const r2 = await run({ verb: "check" });
   const c2 = r2.details.check as { code: number; findings: { kind: string; message: string }[] };

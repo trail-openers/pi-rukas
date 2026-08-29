@@ -160,7 +160,7 @@ function fakePi(): { sentMessages: SentMessage[]; pi: Parameters<typeof attach>[
   emitDispatched("muted", "developer", "developer");
   emitCompleted("muted", "developer", "developer", 1000, 100);
   assert(sentMessages.length === 0, "quiet env var prevents sendMessage");
-  delete process.env.PI_ENSEMBLE_QUIET_LIFECYCLE;
+  process.env.PI_ENSEMBLE_QUIET_LIFECYCLE = undefined;
   emitDispatched("audible", "developer", "developer");
   assert(sentMessages.length === 1, "emits resume when env var unset");
   detach();

@@ -251,7 +251,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     const approved = events.find((e) => e.kind === "adversarial-approved");
     assert(
       approved?.kind === "adversarial-approved" && approved.rounds === 2,
-      `#485 R2: aggregate rounds = 2 (the count the loop reported, not a guess)`,
+      "#485 R2: aggregate rounds = 2 (the count the loop reported, not a guess)",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

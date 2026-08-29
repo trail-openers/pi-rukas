@@ -164,7 +164,7 @@ if (process.env.PI_ENSEMBLE_SIZE_RATCHET === "0") {
     );
     assert(
       !foundFiles.includes("data-blob"),
-      `...and an extensionless non-shebang file is out of scope (data, not logic)`,
+      "...and an extensionless non-shebang file is out of scope (data, not logic)",
     );
     const byFile = new Map(found.map((f) => [f.file, f.lines]));
     assert(

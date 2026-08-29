@@ -26,15 +26,11 @@
 
 import { mock } from "bun:test";
 
-import {
-  createLoopDetector,
-  loopDetectorEnabled,
-  loopSteerText,
-} from "../src/loop-detector.ts";
-import { capKillGraceMs } from "../src/spawn-support.ts";
+import { createLoopDetector, loopDetectorEnabled, loopSteerText } from "../src/loop-detector.ts";
 import type { LoopDetectionEvent, LoopDetector } from "../src/loop-detector.ts";
 import type { PiContentBlock } from "../src/pi-event-shapes.ts";
 import { createCapSession } from "../src/spawn-caps.ts";
+import { capKillGraceMs } from "../src/spawn-support.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

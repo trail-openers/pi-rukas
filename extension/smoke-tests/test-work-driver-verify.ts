@@ -474,7 +474,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       }
     }
   } finally {
-    if (prevVerify === undefined) delete process.env.PI_ENSEMBLE_VERIFY;
+    if (prevVerify === undefined) process.env.PI_ENSEMBLE_VERIFY = undefined;
     else process.env.PI_ENSEMBLE_VERIFY = prevVerify;
     // Restore the top-of-file default for any code that runs after.
     process.env.PI_ENSEMBLE_VERIFY = "0";

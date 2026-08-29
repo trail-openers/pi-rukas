@@ -53,7 +53,7 @@ function makeStdin(opts: { fail?: boolean } = {}): { write: (s: string) => void;
       JSON.stringify(JSON.parse(stdin.lines[0])) ===
         JSON.stringify({ type: "steer", message: "stop and report status" }) &&
       stdin.lines[0] ===
-        JSON.stringify({ type: "steer", message: "stop and report status" }) + "\n",
+        `${JSON.stringify({ type: "steer", message: "stop and report status" })}\n`,
     "steerChild: the stdin line is exactly the {type:'steer', message} envelope",
   );
   assert(stdin.lines[0].endsWith("\n"), "steerChild: the RPC line is newline-terminated");
@@ -117,7 +117,7 @@ function makeStdin(opts: { fail?: boolean } = {}): { write: (s: string) => void;
     inner.lines.length === 1 &&
       JSON.stringify(JSON.parse(inner.lines[0])) ===
         JSON.stringify({ type: "steer", message: "refocus" }) &&
-      inner.lines[0] === JSON.stringify({ type: "steer", message: "refocus" }) + "\n",
+      inner.lines[0] === `${JSON.stringify({ type: "steer", message: "refocus" })}\n`,
     "steerChild: orchestrator steer writes the envelope to the inner child's stdin",
   );
   jobs.delete(jobId);

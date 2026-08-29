@@ -35,13 +35,13 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import type { DispatchResult } from "../src/types.ts";
 import { runBranch } from "../src/work-driver-branch-develop.ts";
 import { salvageKnownDirtyWorktrees } from "../src/work-driver-branch-salvage.ts";
-import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { initialState } from "../src/workflow-state.ts";
 import { DirtyWorktreeError, type ExecFn, worktreeCreate } from "../src/worktree.ts";
@@ -109,10 +109,7 @@ try {
       "untracked.txt manifests the new files — the diff alone would have lost them",
     );
     const copied = readFileSync(path.join(salvageDir, "files", "new-file.txt"), "utf8");
-    assert(
-      copied === "untracked work\n",
-      "the untracked file CONTENT is copied, not just listed",
-    );
+    assert(copied === "untracked work\n", "the untracked file CONTENT is copied, not just listed");
     const { stdout } = await git(wt, ["status", "--porcelain"]);
     assert(stdout.length > 0, "the worktree is still on disk — salvage never destroys");
   }
@@ -134,7 +131,10 @@ try {
       "a worktree NOT in the state's worktrees map is not salvaged — salvage only touches what the state knows about",
     );
     const { stdout } = await git(wtForeign, ["status", "--porcelain"]);
-    assert(stdout.length > 0, "the foreign worktree is untouched — salvage only touches what the state knows about");
+    assert(
+      stdout.length > 0,
+      "the foreign worktree is untouched — salvage only touches what the state knows about",
+    );
   }
 
   // ------------- the #540 shape: a dirty SAME-issue sibling refuses worktreeCreate
@@ -157,7 +157,8 @@ try {
       (e: unknown) => e as Error & { finding?: { path?: string } },
     );
     assert(
-      foreignErr instanceof DirtyWorktreeError && foreignErr.finding.path.endsWith("issue-540-task-b"),
+      foreignErr instanceof DirtyWorktreeError &&
+        foreignErr.finding.path.endsWith("issue-540-task-b"),
       "a dirty same-issue sibling worktree refuses the cycle's own worktreeCreate (#540 shape)",
     );
     assert(
@@ -197,11 +198,13 @@ function recorder(overrides: Record<string, string>, targetWt?: string) {
   const execFn: ExecFn = async (cmd, o) => {
     // The worktree's own git. The cycle's target path is clean (doesn't
     // exist yet); all other worktrees are dirty.
-    if (o?.cwd && o.cwd.includes(".worktrees/")) {
+    if (o?.cwd?.includes(".worktrees/")) {
       const isTarget = targetWt !== undefined && o.cwd === targetWt;
       if (!isTarget) wtCalls.push({ cmd });
-      if (cmd.startsWith("git status --porcelain")) return { stdout: isTarget ? "\n" : " M src/wip.ts\n" };
-      if (cmd.startsWith("git diff HEAD")) return { stdout: "diff --git a/src/wip.ts b/src/wip.ts\n+salvage\n" };
+      if (cmd.startsWith("git status --porcelain"))
+        return { stdout: isTarget ? "\n" : " M src/wip.ts\n" };
+      if (cmd.startsWith("git diff HEAD"))
+        return { stdout: "diff --git a/src/wip.ts b/src/wip.ts\n+salvage\n" };
       if (cmd.startsWith("git ls-files --others")) return { stdout: "" };
       if (cmd.startsWith("git rev-parse")) return { stdout: "deadbeef\n" };
       if (cmd.startsWith("git rev-list")) return { stdout: "0\n" };
@@ -214,7 +217,8 @@ function recorder(overrides: Record<string, string>, targetWt?: string) {
       }
       return { stdout: "" };
     }
-    if (cmd.startsWith("git worktree list")) return { stdout: overrides["git worktree list"] ?? "" };
+    if (cmd.startsWith("git worktree list"))
+      return { stdout: overrides["git worktree list"] ?? "" };
     for (const [prefix, stdout] of Object.entries(overrides)) {
       if (cmd.startsWith(prefix)) {
         if (stdout.startsWith("!THROW!")) throw new Error(stdout.slice(7));
@@ -253,100 +257,109 @@ function branchCtx(execFn: ExecFn): DriverContext {
 }
 
 try {
-{
-  // #545 incident #1: a NON-dirty mechanized failure (worktree add refused
-  // against a foreign leftover) used to fall back to ops with a bare
-  // step-failed cap and NO plumb report. Now the plumb-report carries the
-  // actual git error — the handoff names WHY.
-  const wtForeign = `${REPO}/.worktrees/issue-999-leftover`;
-  const targetWt = `${REPO}/.worktrees/issue-540-default`;
-  const { execFn } = recorder({
-    "git rev-parse --verify --quiet ": "deadbeef\n",
-    "git worktree add": `!THROW!fatal: cannot lock ref 'refs/heads/x': already exists\n`,
-    "git worktree list": `worktree ${wtForeign}\nHEAD deadbeef\ndetached\n`,
-  }, targetWt);
-  const out = await runBranch(branchCtx(execFn), initialState(540), 1000).catch(() => undefined);
-  const plumbEvent = out?.eventLog.find((e) => e.kind === "plumb-report");
-  const plumbField = out?.pipelineState.plumbReports?.find((r) => r.step === "branch");
-  assert(
-    Boolean(plumbEvent || plumbField),
-    "a non-dirty mechanized failure produces a plumb report (event log OR pipelineState)",
-  );
-  const body = plumbEvent?.body ?? plumbField?.body ?? "";
-  assert(
-    body.includes("cannot lock ref"),
-    "the plumb report carries the ACTUAL git error — the handoff names WHY, not a bare step-failed",
-  );
-  // #536 — the ops-fallback path does not call provisionWorktree; a
-  // worktree-provisioned event with ops-fallback-unprovisioned must appear
-  // for each worktree so the develop gate gives the right depsHint.
-  const provEvent1 = out?.eventLog.find((e) => e.kind === "worktree-provisioned");
-  assert(
-    provEvent1?.kind === "worktree-provisioned" &&
-      provEvent1.outcome === "ops-fallback-unprovisioned",
-    "#536: ops-fallback path emits worktree-provisioned with ops-fallback-unprovisioned",
-  );
-}
+  {
+    // #545 incident #1: a NON-dirty mechanized failure (worktree add refused
+    // against a foreign leftover) used to fall back to ops with a bare
+    // step-failed cap and NO plumb report. Now the plumb-report carries the
+    // actual git error — the handoff names WHY.
+    const wtForeign = `${REPO}/.worktrees/issue-999-leftover`;
+    const targetWt = `${REPO}/.worktrees/issue-540-default`;
+    const { execFn } = recorder(
+      {
+        "git rev-parse --verify --quiet ": "deadbeef\n",
+        "git worktree add": `!THROW!fatal: cannot lock ref 'refs/heads/x': already exists\n`,
+        "git worktree list": `worktree ${wtForeign}\nHEAD deadbeef\ndetached\n`,
+      },
+      targetWt,
+    );
+    const out = await runBranch(branchCtx(execFn), initialState(540), 1000).catch(() => undefined);
+    const plumbEvent = out?.eventLog.find((e) => e.kind === "plumb-report");
+    const plumbField = out?.pipelineState.plumbReports?.find((r) => r.step === "branch");
+    assert(
+      Boolean(plumbEvent || plumbField),
+      "a non-dirty mechanized failure produces a plumb report (event log OR pipelineState)",
+    );
+    const body = plumbEvent?.body ?? plumbField?.body ?? "";
+    assert(
+      body.includes("cannot lock ref"),
+      "the plumb report carries the ACTUAL git error — the handoff names WHY, not a bare step-failed",
+    );
+    // #536 — the ops-fallback path does not call provisionWorktree; a
+    // worktree-provisioned event with ops-fallback-unprovisioned must appear
+    // for each worktree so the develop gate gives the right depsHint.
+    const provEvent1 = out?.eventLog.find((e) => e.kind === "worktree-provisioned");
+    assert(
+      provEvent1?.kind === "worktree-provisioned" &&
+        provEvent1.outcome === "ops-fallback-unprovisioned",
+      "#536: ops-fallback path emits worktree-provisioned with ops-fallback-unprovisioned",
+    );
+  }
 
-{
-  // A dirty SAME-issue sibling: the refusal routes to handoff via
-  // step-failed:branch (unchanged #475 semantics), and the plumb report
-  // names the dirty sibling's path.
-  const targetWt = `${REPO}/.worktrees/issue-540-default`;
-  const wtSibling = `${REPO}/.worktrees/issue-540-task-b`;
-  const { execFn, wtCalls } = recorder({
-    "git rev-parse --verify --quiet ": "deadbeef\n",
-    "git worktree list": `worktree ${wtSibling}\nHEAD deadbeef\ndetached\n`,
-  }, targetWt);
-  const out = await runBranch(branchCtx(execFn), initialState(540), 1000).catch(() => undefined);
-  const cap = out?.eventLog.find((e) => e.kind === "cap-hit");
-  assert(
-    cap?.kind === "cap-hit" && cap.cap === "step-failed:branch" && cap.nextStep === "handoff",
-    "a dirty same-issue sibling still routes to handoff via step-failed:branch (#475 unchanged)",
-  );
-  const report = out?.pipelineState.plumbReports?.find((r) => r.step === "branch");
-  assert(
-    Boolean(report?.body.includes(wtSibling)),
-    "the plumb report names the ABSOLUTE path of the dirty sibling",
-  );
-  assert(
-    wtCalls.some((c) => c.cmd.startsWith("git status --porcelain")),
-    "salvage inspected the dirty sibling via its own git (attempted salvage.patch)",
-  );
-}
+  {
+    // A dirty SAME-issue sibling: the refusal routes to handoff via
+    // step-failed:branch (unchanged #475 semantics), and the plumb report
+    // names the dirty sibling's path.
+    const targetWt = `${REPO}/.worktrees/issue-540-default`;
+    const wtSibling = `${REPO}/.worktrees/issue-540-task-b`;
+    const { execFn, wtCalls } = recorder(
+      {
+        "git rev-parse --verify --quiet ": "deadbeef\n",
+        "git worktree list": `worktree ${wtSibling}\nHEAD deadbeef\ndetached\n`,
+      },
+      targetWt,
+    );
+    const out = await runBranch(branchCtx(execFn), initialState(540), 1000).catch(() => undefined);
+    const cap = out?.eventLog.find((e) => e.kind === "cap-hit");
+    assert(
+      cap?.kind === "cap-hit" && cap.cap === "step-failed:branch" && cap.nextStep === "handoff",
+      "a dirty same-issue sibling still routes to handoff via step-failed:branch (#475 unchanged)",
+    );
+    const report = out?.pipelineState.plumbReports?.find((r) => r.step === "branch");
+    assert(
+      Boolean(report?.body.includes(wtSibling)),
+      "the plumb report names the ABSOLUTE path of the dirty sibling",
+    );
+    assert(
+      wtCalls.some((c) => c.cmd.startsWith("git status --porcelain")),
+      "salvage inspected the dirty sibling via its own git (attempted salvage.patch)",
+    );
+  }
 
-{
-  // A dirty FOREIGN leftover: the cycle proceeds (the foreign worktree is
-  // not the cycle's target and not a same-issue sibling), and the plumb
-  // report is absent — no refusal, no salvage.
-  const wtForeign = `${REPO}/.worktrees/issue-999-default`;
-  const targetWt2 = `${REPO}/.worktrees/issue-540-default`;
-  const { execFn, wtCalls } = recorder({
-    "git rev-parse --verify --quiet ": "deadbeef\n",
-    "git worktree add": `!THROW!fatal: cannot lock ref 'refs/heads/x': already exists\n`,
-    "git worktree list": `worktree ${wtForeign}\nHEAD deadbeef\ndetached\n`,
-  }, targetWt2);
-  const out = await runBranch(branchCtx(execFn), initialState(540), 1000).catch(() => undefined);
-  // The foreign dirty worktree does NOT trigger a refusal — the cycle
-  // falls back to the ops dispatch (recovery path), not handoff.
-  const cap = out?.eventLog.find((e) => e.kind === "cap-hit");
-  assert(
-    cap === undefined,
-    "a foreign dirty worktree does NOT refuse the cycle — the ops fallback handles it",
-  );
-  assert(
-    wtCalls.every((c) => !c.cmd.startsWith("git diff HEAD")),
-    "salvage does not copy work from a foreign worktree",
-  );
-  // #536 — the ops-fallback path (foreign dirty worktree falls back to ops)
-  // emits worktree-provisioned with ops-fallback-unprovisioned.
-  const provEvent3 = out?.eventLog.find((e) => e.kind === "worktree-provisioned");
-  assert(
-    provEvent3?.kind === "worktree-provisioned" &&
-      provEvent3.outcome === "ops-fallback-unprovisioned",
-    "#536: ops-fallback (foreign-dirty case) emits worktree-provisioned with ops-fallback-unprovisioned",
-  );
-}
+  {
+    // A dirty FOREIGN leftover: the cycle proceeds (the foreign worktree is
+    // not the cycle's target and not a same-issue sibling), and the plumb
+    // report is absent — no refusal, no salvage.
+    const wtForeign = `${REPO}/.worktrees/issue-999-default`;
+    const targetWt2 = `${REPO}/.worktrees/issue-540-default`;
+    const { execFn, wtCalls } = recorder(
+      {
+        "git rev-parse --verify --quiet ": "deadbeef\n",
+        "git worktree add": `!THROW!fatal: cannot lock ref 'refs/heads/x': already exists\n`,
+        "git worktree list": `worktree ${wtForeign}\nHEAD deadbeef\ndetached\n`,
+      },
+      targetWt2,
+    );
+    const out = await runBranch(branchCtx(execFn), initialState(540), 1000).catch(() => undefined);
+    // The foreign dirty worktree does NOT trigger a refusal — the cycle
+    // falls back to the ops dispatch (recovery path), not handoff.
+    const cap = out?.eventLog.find((e) => e.kind === "cap-hit");
+    assert(
+      cap === undefined,
+      "a foreign dirty worktree does NOT refuse the cycle — the ops fallback handles it",
+    );
+    assert(
+      wtCalls.every((c) => !c.cmd.startsWith("git diff HEAD")),
+      "salvage does not copy work from a foreign worktree",
+    );
+    // #536 — the ops-fallback path (foreign dirty worktree falls back to ops)
+    // emits worktree-provisioned with ops-fallback-unprovisioned.
+    const provEvent3 = out?.eventLog.find((e) => e.kind === "worktree-provisioned");
+    assert(
+      provEvent3?.kind === "worktree-provisioned" &&
+        provEvent3.outcome === "ops-fallback-unprovisioned",
+      "#536: ops-fallback (foreign-dirty case) emits worktree-provisioned with ops-fallback-unprovisioned",
+    );
+  }
 } finally {
   rmSync(injectedRoot, { recursive: true, force: true });
 }

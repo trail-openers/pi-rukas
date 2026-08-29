@@ -100,16 +100,16 @@ try {
   const mainline = git("rev-parse --abbrev-ref --symbolic-full-name @{u}");
   // Point origin/<mainline> at the cloned HEAD so detectMainline resolves
   // via `git symbolic-ref refs/remotes/origin/HEAD` — no network.
-  git("update-ref refs/remotes/" + mainline + " " + git("rev-parse HEAD"));
-  git("symbolic-ref refs/remotes/origin/HEAD refs/remotes/" + mainline);
+  git(`update-ref refs/remotes/${mainline} ${git("rev-parse HEAD")}`);
+  git(`symbolic-ref refs/remotes/origin/HEAD refs/remotes/${mainline}`);
 
   // The cycle's feature branch: a divergent commit, checked out — the
   // checkout state a real merge leaves behind.
   const featureBranch = "feature/issue-476-live";
-  git("checkout -qb " + featureBranch);
+  git(`checkout -qb ${featureBranch}`);
   git("commit -q --allow-empty -m feature");
   // Stand-in for `git push -u origin <branch>` (no network).
-  git("update-ref refs/remotes/" + featureBranch + " " + git("rev-parse HEAD"));
+  git(`update-ref refs/remotes/${featureBranch} ${git("rev-parse HEAD")}`);
 
   const s = initialState(476, 1_000_000);
   (s as unknown as { pipelineState: Record<string, unknown> }).pipelineState = {
@@ -164,9 +164,7 @@ try {
     "#476 live: branch -d refusal emitted as a plumb-report note (restoration reached)",
   );
   assert(
-    git("branch --list " + featureBranch)
-      .trim()
-      .includes(featureBranch),
+    git(`branch --list ${featureBranch}`).trim().includes(featureBranch),
     "#476 live: branch -d refusal left the local branch in place (no -D escalation)",
   );
 } catch (err) {

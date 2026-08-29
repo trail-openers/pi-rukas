@@ -239,7 +239,7 @@ setupSpawnGuard();
     writeFileSync(path.join(dir, "root", ".git", "info", "exclude"), "\n.pi/\n");
     await fs.writeFile(path.join(root, "base.txt"), "hello\n");
     await execp("git add base.txt && git commit -q -m initial", { cwd: root, shell: "/bin/bash" });
-    await execp("git remote add origin " + JSON.stringify(origin), { cwd: root });
+    await execp(`git remote add origin ${JSON.stringify(origin)}`, { cwd: root });
     await execp("git push -q -u origin main", { cwd: root });
     await execp("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", {
       cwd: root,
@@ -251,7 +251,7 @@ setupSpawnGuard();
       shell: "/bin/bash",
     });
     await execp("git push -q -u origin feature/lens-no-diff", { cwd: root });
-    await execp("git worktree add --detach " + JSON.stringify(wt) + " HEAD", { cwd: root });
+    await execp(`git worktree add --detach ${JSON.stringify(wt)} HEAD`, { cwd: root });
 
     let s = initialState(492, 1_000_000);
     s = {

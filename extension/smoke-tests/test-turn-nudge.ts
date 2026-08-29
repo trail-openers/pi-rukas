@@ -28,8 +28,8 @@
  * (when a job is attached to carry the lifecycle line).
  */
 
+import type { SteerSource } from "../src/dispatch-steer.ts";
 import { createCapSession } from "../src/spawn-caps.ts";
-import { type SteerSource } from "../src/dispatch-steer.ts";
 import { TURN_NUDGE_AT, turnNudgeAt, turnNudgeEnabled, turnNudgeText } from "../src/turn-nudge.ts";
 
 let exit = 0;
@@ -110,16 +110,25 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
 {
   const t = turnNudgeText(TURN_NUDGE_AT);
   assert(t.includes("80"), "steer text names the turn count");
-  assert(
-    /status/i.test(t) && /now/i.test(t),
-    "steer text asks for a status write NOW",
-  );
+  assert(/status/i.test(t) && /now/i.test(t), "steer text asks for a status write NOW");
   assert(/close to done/i.test(t), "steer text is conditional ('if you are close to done')");
-  assert(!/stop what you are doing/i.test(t), "steer text does NOT tell the child to stop (that is the budget)");
-  assert(!/do not start new work/i.test(t), "steer text does NOT forbid continuing (it is a reminder, not a cap)");
-  assert(!/(^|[^a-z])complete([^a-z]|$)/i.test(t), "steer text does not claim the work is complete (as a verdict)");
+  assert(
+    !/stop what you are doing/i.test(t),
+    "steer text does NOT tell the child to stop (that is the budget)",
+  );
+  assert(
+    !/do not start new work/i.test(t),
+    "steer text does NOT forbid continuing (it is a reminder, not a cap)",
+  );
+  assert(
+    !/(^|[^a-z])complete([^a-z]|$)/i.test(t),
+    "steer text does not claim the work is complete (as a verdict)",
+  );
   const t120 = turnNudgeText(120);
-  assert(t120.includes("120"), "steer text uses the ACTUAL turn count when the threshold is overridden");
+  assert(
+    t120.includes("120"),
+    "steer text uses the ACTUAL turn count when the threshold is overridden",
+  );
 }
 
 // 4. CapSession: with the nudge OFF (ship default), the nudge is inert even
@@ -194,10 +203,7 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     "steer is tagged with the driver-turn-nudge source (scrollback shows WHY)",
   );
   assert(steers[0].text === turnNudgeText(80), "steer text is turnNudgeText(actual turn)");
-  assert(
-    session.killCause() === undefined,
-    "steer-only: the nudge contributes NO killCause",
-  );
+  assert(session.killCause() === undefined, "steer-only: the nudge contributes NO killCause");
   session.cleanup();
 }
 
@@ -342,7 +348,10 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     turns: () => 80,
   });
   withEnv({ PI_ENSEMBLE_TURN_NUDGE: "1", PI_ENSEMBLE_DISPATCH_CAPS: "0" }, () => {
-    assert(capsOff.turnNudge !== undefined, "nudge survives PI_ENSEMBLE_DISPATCH_CAPS=0 (it is not a cap)");
+    assert(
+      capsOff.turnNudge !== undefined,
+      "nudge survives PI_ENSEMBLE_DISPATCH_CAPS=0 (it is not a cap)",
+    );
     capsOff.turnNudge?.(80);
     assert(steers === 1, "nudge fires with the master switch off");
   });
@@ -362,10 +371,16 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     turns: () => 80,
   });
   withEnv({ PI_ENSEMBLE_TURN_NUDGE: "1" }, () => {
-    assert(opsRole.turnNudge !== undefined, "nudge applies to ops-role children too (no cap exemption)");
+    assert(
+      opsRole.turnNudge !== undefined,
+      "nudge applies to ops-role children too (no cap exemption)",
+    );
     opsRole.turnNudge?.(80);
     assert(steers === 1, "nudge fires for an ops-role child");
-    assert(opsRole.loopObserver === undefined, "ops-role still has no loop observer (the #543 exemption is intact)");
+    assert(
+      opsRole.loopObserver === undefined,
+      "ops-role still has no loop observer (the #543 exemption is intact)",
+    );
   });
   opsRole.cleanup();
 }

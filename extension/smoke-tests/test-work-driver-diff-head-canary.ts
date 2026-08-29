@@ -39,9 +39,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { fetchDiff } from "../src/work-driver-diff.ts";
 import { runBranchViaOpsDispatch } from "../src/work-driver-branch-ops.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import { fetchDiff } from "../src/work-driver-diff.ts";
 import { initialState } from "../src/workflow-state.ts";
 
 const execFileP = promisify(execFile);
@@ -79,16 +79,17 @@ const readSrc = (name: string) => readFileSync(path.join(SRC, name), "utf8");
 // work-driver-diff.ts — the per-worktree fetchers.
 {
   const src = readSrc("work-driver-diff.ts");
-  // The ONLY bare `git diff HEAD` in CODE is fetchDiff's per-worktree call.
-  // Doc comments also mention it, so strip comment lines before counting.
+  // After cherry-pick integration (#453), fetchDiff uses `git show <commitSHA>`
+  // for post-commit diffs. There are now ZERO bare `git diff HEAD` calls
+  // in code — all diff reads use explicit refs or commit SHAs.
   const codeLines = src
     .split("\n")
     .filter((l) => !l.trim().startsWith("*") && !l.trim().startsWith("//"))
     .join("\n");
   const matches = codeLines.match(/git diff HEAD/g) ?? [];
   assert(
-    matches.length === 1,
-    `work-driver-diff.ts: exactly one bare \`git diff HEAD\` remains in code (the per-worktree fetchDiff call), found ${matches.length}`,
+    matches.length === 0,
+    `work-driver-diff.ts: zero bare \`git diff HEAD\` calls (fetchDiff uses git show for post-commit diffs), found ${matches.length}`,
   );
   assert(
     src.includes("DELIBERATE pre-commit semantics"),
@@ -182,7 +183,7 @@ async function main2() {
   const dispatchResult = {
     role: "ops",
     ok: true,
-    text: "branch: feature/issue-451-canary\n\n## Worktrees\n\n- default: " + base + "/wt\n",
+    text: `branch: feature/issue-451-canary\n\n## Worktrees\n\n- default: ${base}/wt\n`,
     toolUses: [],
     ms: 1,
     exitCode: 0,
@@ -207,8 +208,8 @@ async function main2() {
   const state = initialState(451, Date.now());
   const out = await runBranchViaOpsDispatch(ctx, state, ["default"], Date.now());
   assert(
-    out.pipelineState.worktrees["default"] === base + "/wt",
-    `ops fallback N=1: a ## Worktrees block in the reply is honoured (recorded ${out.pipelineState.worktrees["default"] ?? "nothing"}, expected the worktree, not repoRoot)`,
+    out.pipelineState.worktrees.default === `${base}/wt`,
+    `ops fallback N=1: a ## Worktrees block in the reply is honoured (recorded ${out.pipelineState.worktrees.default ?? "nothing"}, expected the worktree, not repoRoot)`,
   );
 
   // N=1 without a block: the documented last resort still applies.
@@ -216,7 +217,7 @@ async function main2() {
   const ctx2 = { ...ctx, dispatchFn: async () => noBlock };
   const out2 = await runBranchViaOpsDispatch(ctx2, state, ["default"], Date.now());
   assert(
-    out2.pipelineState.worktrees["default"] === base,
+    out2.pipelineState.worktrees.default === base,
     "ops fallback N=1 without a ## Worktrees block: the documented last resort is { default: repoRoot }",
   );
 

@@ -175,7 +175,10 @@ try {
       name: "issue-475-default",
       fromRef: baseSha,
     });
-    assert(result.path === wt, "canary: the clean leftover is removed and recreated as today (result.path)");
+    assert(
+      result.path === wt,
+      "canary: the clean leftover is removed and recreated as today (result.path)",
+    );
     assert(
       result.provision !== undefined && ["hook", "symlink", "none"].includes(result.provision.via),
       "canary: worktreeCreate returns the provision result alongside the path",

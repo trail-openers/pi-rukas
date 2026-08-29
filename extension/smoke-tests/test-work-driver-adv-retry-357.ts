@@ -35,9 +35,9 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { ADVERSARIAL_PER_WS_MAX_RETRIES } from "../src/work-driver-adversarial-types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
-import { ADVERSARIAL_PER_WS_MAX_RETRIES } from "../src/work-driver-adversarial-types.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -112,7 +112,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   );
 
   if (saved !== undefined) process.env.PI_ENSEMBLE_ADVERSARIAL_PHASE_BUDGET_MS = saved;
-  else delete process.env.PI_ENSEMBLE_ADVERSARIAL_PHASE_BUDGET_MS;
+  else process.env.PI_ENSEMBLE_ADVERSARIAL_PHASE_BUDGET_MS = undefined;
 }
 
 // ============================================================================

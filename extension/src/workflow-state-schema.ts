@@ -270,6 +270,13 @@ export interface PipelineState {
     reason: string;
   }>;
   /**
+   * #453 — per-workstream commit SHAs set after integrate cherry-picks
+   * the developer's commits onto the feature branch. Keyed by workstream
+   * id so resume can skip workstreams already applied. Absent on state
+   * files written before this field existed; readers treat absent as `{}`.
+   */
+  commitShas?: Record<string, string>;
+  /**
    * PR5 — per-step retry budget for RETRY_ONCE-classified steps
    * (adversarial, lens-review). Driver's halt-cascade router increments
    * on dispatch-failed; once `>= 1` the next failure routes to handoff
@@ -369,6 +376,14 @@ export interface PipelineState {
    * origin/<default-branch> when absent.
    */
   baseSha?: string;
+  /**
+   * #453 — per-workstream applied SHAs for crash-safe resume. Maps
+   * workstream id → SHA that has been cherry-picked onto the integration
+   * branch. Updated as each SHA lands during cherry-pick integration.
+   * On crash-resume, workstreams whose id+sha match an entry here are
+   * skipped. Absent on pre-#453 state files; readers treat absent as {}.
+   */
+  appliedShas?: Record<string, string>;
   /**
    * PR17 — evidence captured by the outcome-verification gate
    * (verifyStepOutcome) when a `verify-failed:<step>` cap fires. Each

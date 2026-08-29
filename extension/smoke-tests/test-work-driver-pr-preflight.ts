@@ -158,7 +158,7 @@ assert(
     );
     assert(!halted, "runBranch: PI_ENSEMBLE_PR_PREFLIGHT=0 disables the check");
   } finally {
-    if (prev === undefined) delete process.env.PI_ENSEMBLE_PR_PREFLIGHT;
+    if (prev === undefined) process.env.PI_ENSEMBLE_PR_PREFLIGHT = undefined;
     else process.env.PI_ENSEMBLE_PR_PREFLIGHT = prev;
   }
 }

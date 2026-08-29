@@ -267,7 +267,7 @@ function mkState(
       "PI_ENSEMBLE_QUEUE_HALT_ON_FAILURE=1 restores halt-on-first-failure",
     );
   } finally {
-    if (prev === undefined) delete process.env.PI_ENSEMBLE_QUEUE_HALT_ON_FAILURE;
+    if (prev === undefined) process.env.PI_ENSEMBLE_QUEUE_HALT_ON_FAILURE = undefined;
     else process.env.PI_ENSEMBLE_QUEUE_HALT_ON_FAILURE = prev;
   }
 }

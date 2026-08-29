@@ -136,7 +136,8 @@ const SEAMS: Seam[] = [
       FAN_OUT_STEPS: "#543 F3a — re-attach exclusion set; test-asserted only",
       REATTACH_GRANT_FLOOR_MS: "#543 F3a — re-attach grant floor; test-asserted only",
       mintJobId: "resume plumbing — jobId minting; exercised by test-resume.ts",
-      markDispatchStarted: "resume plumbing — write-ahead dispatch-started; exercised by test-resume.ts",
+      markDispatchStarted:
+        "resume plumbing — write-ahead dispatch-started; exercised by test-resume.ts",
     },
     canary: { symbol: "beginDispatch", importer: "work-driver-explore.ts" },
   },

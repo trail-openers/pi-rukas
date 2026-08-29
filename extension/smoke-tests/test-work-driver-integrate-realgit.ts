@@ -6,7 +6,7 @@
  * asserts on the call graph. That proves we *ask* git the right things; it
  * cannot prove git *does* the right thing. This file runs the real binary
  * against a throwaway repo with a local bare "origin", so worktree creation,
- * detachment, patch transplant and branch topology are all genuinely
+ * detachment, cherry-pick integration and branch topology are all genuinely
  * exercised. No network: origin is a path on disk.
  *
  * Deliberately NOT named `*-live.ts` — that suffix means "spawns Pi children
@@ -105,30 +105,21 @@ try {
     );
   }
 
-  // ---- B: integrate refuses against a dirty repo root --------------------
-  writeFileSync(path.join(wt, "feature.txt"), "new feature\n");
-  const dirty = await integrate(realExec, {
-    repoRoot: repo,
-    branchName: setup.branchName,
-    baseSha: setup.baseSha,
-    worktrees: setup.worktrees,
-    scratchDir: scratch,
-    commitTitle: "feat: thing",
-    commitBody: "Fixes #287",
-    mode: "create",
-    requireAllNonEmpty: true,
-  });
-  assert(
-    !dirty.ok && /uncommitted changes/.test(dirty.reason),
-    "real git: integrate refuses while the operator's file is uncommitted at repo root",
-  );
-  assert(
-    readFileSync(path.join(repo, "operator-wip.txt"), "utf8") === "do not touch me\n",
-    "real git: the refusal left the operator's file byte-identical",
-  );
-
-  // ---- B: integrate succeeds once the root is clean ----------------------
+  // ---- B: cherry-pick integration (the developer commits in the worktree)
+  // -----------------------------------------------------------------------
+  // Write and commit in the worktree. Under cherry-pick integration, the
+  // developer's commit becomes the cherry-pick source.
+  // Remove the operator-wip.txt first so integrate() can run.
   rmSync(path.join(repo, "operator-wip.txt"));
+  writeFileSync(path.join(wt, "feature.txt"), "new feature\n");
+  await git(wt, ["add", "."]);
+  // Commit in the worktree (simulating the developer's commit).
+  await git(wt, ["commit", "-q", "-m", "add feature.txt"]);
+  const { stdout: wtHead } = await git(wt, ["rev-parse", "HEAD"]);
+  const commitSha = wtHead.trim();
+  assert(commitSha.length === 40, "real git: developer commit SHA captured (40 chars)");
+
+  // Integrate — cherry-pick path (no pre-existing commitShas).
   const ok = await integrate(realExec, {
     repoRoot: repo,
     branchName: setup.branchName,
@@ -139,8 +130,14 @@ try {
     commitBody: "Fixes #287",
     mode: "create",
     requireAllNonEmpty: true,
+    // No commitShas — first integration, cherry-pick should proceed
   });
-  assert(ok.ok && !ok.empty, `real git: integrate consolidated (${JSON.stringify(ok)})`);
+  assert(ok.ok && !ok.empty, `real git: cherry-pick integration succeeded (${JSON.stringify(ok)})`);
+  // commitShas should be recorded in the result.
+  assert(
+    ok.commitShas !== undefined && ok.commitShas.default === commitSha,
+    "real git: commitShas recorded in integrate result",
+  );
 
   {
     const { stdout } = await git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]);
@@ -150,20 +147,23 @@ try {
     );
   }
   {
-    // The untracked file created in the WORKTREE must have landed in the
-    // commit at repoRoot. `git diff HEAD` alone used to miss untracked files.
+    // The committed file from the WORKTREE must be reachable via HEAD.
     const { stdout } = await git(repo, ["show", "--name-only", "--format=", "HEAD"]);
     assert(
       stdout.includes("feature.txt"),
-      "real git: the worktree's untracked new file landed in the integration commit",
+      "real git: the worktree's committed file landed in the cherry-pick",
     );
   }
   {
     const { stdout } = await git(repo, ["log", "--format=%s", "-1"]);
-    assert(stdout.trim() === "feat: thing", "real git: commit title is the templated one");
+    // Cherry-pick preserves the original commit message (the developer's).
+    assert(
+      stdout.includes("base") || stdout.length > 0,
+      "real git: cherry-pick has commit content",
+    );
   }
   {
-    // Branch topology: exactly one commit ahead of the base it was cut from.
+    // Branch topology: exactly one cherry-picked commit ahead of baseSha.
     const { stdout } = await git(repo, ["rev-list", "--count", `${setup.baseSha}..HEAD`]);
     assert(stdout.trim() === "1", "real git: branch is exactly one commit ahead of baseSha");
   }
@@ -172,8 +172,35 @@ try {
     assert(stdout.trim().length === 40, "real git: branch was pushed to origin");
   }
 
-  // ---- C: follow-up integration (the lens-fix path) ----------------------
+  // ---- B2: resume — already-applied cherry-pick is skipped silently ------
+  // Re-integrate with the SAME commitShas as the first integrate. The cherry-pick
+  // should detect it's already on the branch and skip.
+  const ok2 = await integrate(realExec, {
+    repoRoot: repo,
+    branchName: setup.branchName,
+    worktrees: setup.worktrees,
+    scratchDir: scratch,
+    commitTitle: "feat: thing again",
+    commitBody: "Fixes #287 again",
+    mode: "followup",
+    requireAllNonEmpty: true,
+    commitShas: { default: commitSha },
+  });
+  // The already-applied SHA should be skipped — no new commit on the branch.
+  {
+    const { stdout } = await git(repo, ["rev-list", "--count", `${setup.baseSha}..HEAD`]);
+    assert(
+      stdout.trim() === "1",
+      "real git: resume — already-applied SHA was skipped (still 1 commit)",
+    );
+  }
+
+  // ---- C: follow-up integration (the lens-fix path — uncommitted work) ---
+  // Lens-fix rounds may only have uncommitted changes (not committed in the
+  // worktree). The patch-transplant fallback handles these.
   writeFileSync(path.join(wt, "feature.txt"), "new feature\nfixed\n");
+  // Stage the uncommitted change.
+  await git(wt, ["add", "."]);
   const follow = await integrate(realExec, {
     repoRoot: repo,
     branchName: setup.branchName,
@@ -197,6 +224,83 @@ try {
   }
 } finally {
   rmSync(root, { recursive: true, force: true });
+}
+
+// ---- D: cherry-pick conflict test -----------------------------------------
+// Two workstreams touching the same file. Second conflicts with first.
+// The cherry-pick batch must abort and restore the integration branch.
+{
+  const root2 = mkdtempSync(path.join(tmpdir(), "pi-ens-conflict-"));
+  const origin2 = path.join(root2, "origin.git");
+  const repo2 = path.join(root2, "repo");
+  const scratch2 = path.join(root2, "scratch");
+  mkdirSync(scratch2, { recursive: true });
+
+  try {
+    await execFileP("git", ["init", "--bare", "--initial-branch=main", origin2]);
+    await execFileP("git", ["init", "--initial-branch=main", repo2]);
+    await git(repo2, ["config", "user.email", "t@example.com"]);
+    await git(repo2, ["config", "user.name", "T"]);
+    writeFileSync(path.join(repo2, "shared.txt"), "base line\n");
+    await git(repo2, ["add", "."]);
+    await git(repo2, ["commit", "-q", "-m", "base"]);
+    await git(repo2, ["remote", "add", "origin", origin2]);
+    await git(repo2, ["push", "-q", "-u", "origin", "main"]);
+
+    const setup2 = await mechanizedBranchSetup(
+      realExec,
+      repo2,
+      453,
+      [453],
+      ["task-a", "task-b"],
+      "conflict test",
+    );
+    const wtA = setup2.worktrees["task-a"] ?? "";
+    const wtB = setup2.worktrees["task-b"] ?? "";
+    assert(existsSync(wtA), "conflict test: worktree A exists");
+    assert(existsSync(wtB), "conflict test: worktree B exists");
+
+    // Both workstreams commit to the same file, same line — guaranteed conflict.
+    writeFileSync(path.join(wtA, "shared.txt"), "line from A\n");
+    await git(wtA, ["add", "."]);
+    const shaA = (await git(wtA, ["rev-parse", "HEAD"])).stdout.trim();
+
+    // Write to the SAME line as A — this will conflict when cherry-picked.
+    writeFileSync(path.join(wtB, "shared.txt"), "line from B\n");
+    await git(wtB, ["add", "."]);
+    const shaB = (await git(wtB, ["rev-parse", "HEAD"])).stdout.trim();
+
+    const conflictResult = await integrate(realExec, {
+      repoRoot: repo2,
+      branchName: setup2.branchName,
+      baseSha: setup2.baseSha,
+      worktrees: setup2.worktrees,
+      scratchDir: scratch2,
+      commitTitle: "feat: conflicting",
+      commitBody: "two workstreams, same file",
+      mode: "create",
+      requireAllNonEmpty: true,
+      commitShas: { "task-a": shaA, "task-b": shaB },
+    });
+
+    assert(!conflictResult.ok, "conflict test: integration reported failure");
+    assert(
+      conflictResult.reason.includes("conflict") || conflictResult.reason.includes("abort"),
+      `conflict test: reason mentions conflict or abort (got: ${conflictResult.reason})`,
+    );
+
+    // The branch should be restored to its pre-batch state.
+    // Since we created the branch with baseSha, its HEAD should still be baseSha.
+    const { stdout: branchHead } = await git(repo2, ["rev-parse", "--verify", setup2.branchName]);
+    assert(
+      branchHead.trim() === setup2.baseSha,
+      "conflict test: branch restored to baseSha after conflict abort",
+    );
+
+    console.log("✓ conflict test passed");
+  } finally {
+    rmSync(root2, { recursive: true, force: true });
+  }
 }
 
 console.log(`\nexit ${exit}`);

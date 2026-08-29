@@ -8,7 +8,7 @@
  * No real Pi spawn happens; all dispatchCore calls are mocked.
  */
 
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { nextStep } from "../src/work-driver-context.ts";
@@ -94,6 +94,54 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     const afterAppend = await readState(dir, issue);
     assert(afterAppend?.eventLog.length === 1, "appendEvent persists exactly one event");
     assert(afterAppend?.eventLog[0]?.kind === "step-started", "appended event has expected kind");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// 1b. #453 — commitShas/appliedShas are additive: recorded SHAs round-trip
+// through writeState/readState, and a pre-#453 state file (fields absent on
+// disk) still loads under schemaVersion 1 with the fields reading as absent
+// (callers treat absent as {}). No schemaVersion bump — the version check in
+// readState is the only version gate, so the stripped file passes it.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-453-"));
+  try {
+    const issue = 453;
+    const recorded = initialState(issue, 1000);
+    recorded.pipelineState.commitShas = { "task-a": "aaa111", "task-b": "bbb222" };
+    recorded.pipelineState.appliedShas = { "task-a": "aaa111" };
+    await writeState(dir, recorded);
+    const withFields = await readState(dir, issue);
+    assert(
+      withFields?.pipelineState.commitShas?.["task-b"] === "bbb222" &&
+        withFields?.pipelineState.appliedShas?.["task-a"] === "aaa111",
+      "#453: commitShas/appliedShas round-trip through writeState/readState",
+    );
+
+    // A pre-#453 build never wrote the fields: strip them from the on-disk
+    // JSON and assert the file still loads with the fields reading as absent.
+    const file = workStateFile(dir, issue);
+    const onDisk = JSON.parse(readFileSync(file, "utf8")) as {
+      pipelineState: Record<string, unknown>;
+    };
+    onDisk.pipelineState.commitShas = undefined;
+    onDisk.pipelineState.appliedShas = undefined;
+    writeFileSync(file, `${JSON.stringify(onDisk, null, 2)}\n`);
+    const legacy = await readState(dir, issue);
+    assert(legacy !== undefined, "#453: pre-#453 state file (fields absent) still loads");
+    assert(
+      legacy !== undefined &&
+        legacy.pipelineState.commitShas === undefined &&
+        legacy.pipelineState.appliedShas === undefined,
+      "#453: absent fields read as undefined (readers treat absent as {})",
+    );
+    assert(
+      legacy !== undefined &&
+        legacy.schemaVersion === WORK_STATE_SCHEMA_VERSION &&
+        legacy.pipelineState.currentStep === "explore",
+      "#453: legacy file's remaining fields are untouched",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -336,11 +384,8 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     assert(labels.length === 0, "the driver HALTS — no dispatch is paid for on an unknown kind");
     const halt = sent.find((m) => /halted on issue #533/.test(m));
     assert(halt !== undefined, "the halt message reaches the operator");
-    assert(
-      halt !== undefined && halt.includes("not-a-real-kind"),
-      "halt message names the unknown value",
-    );
-    assert(halt !== undefined && halt.includes("eventLog[0].kind"), "halt message names the field");
+    assert(halt?.includes("not-a-real-kind"), "halt message names the unknown value");
+    assert(halt?.includes("eventLog[0].kind"), "halt message names the field");
     assert(
       halt !== undefined && /rm to start fresh/.test(halt) && /git work is unaffected/.test(halt),
       "halt message carries the inspect-or-rm recovery (the #284-291 idiom)",

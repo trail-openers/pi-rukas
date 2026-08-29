@@ -422,7 +422,7 @@ async function seedAdversarialState(
     } finally {
       // Restore env.
       if (origSkip === undefined) {
-        delete process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP;
+        process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = undefined;
       } else {
         process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = origSkip;
       }

@@ -39,10 +39,7 @@ const worktree = mkdtempSync(path.join(tmpdir(), "451-smoke-wt-"));
 try {
   fsSync.mkdirSync(path.join(repoRoot, ".pi"), { recursive: true });
   fsSync.writeFileSync(path.join(repoRoot, ".pi", "verify-cmd"), "echo ok\n");
-  fsSync.writeFileSync(
-    path.join(repoRoot, ".pi", "smoke-cmd"),
-    "# product smoke\nbun run smoke\n",
-  );
+  fsSync.writeFileSync(path.join(repoRoot, ".pi", "smoke-cmd"), "# product smoke\nbun run smoke\n");
   let s = initialState(1010, 1011);
   s = {
     ...s,
@@ -70,18 +67,12 @@ try {
     },
   };
   const gate = await verifyStepOutcome(ctx, s, "develop");
-  assert(
-    gate.ok,
-    "#451: smoke-cmd in worktree passes gate (smoke succeeds)",
-  );
+  assert(gate.ok, "#451: smoke-cmd in worktree passes gate (smoke succeeds)");
   assert(
     smokeCwd === worktree,
     `#451: smoke command cwd is the changed worktree (got ${smokeCwd}, expected ${worktree})`,
   );
-  assert(
-    smokeCwd !== repoRoot,
-    "#451: smoke command cwd is NOT repoRoot",
-  );
+  assert(smokeCwd !== repoRoot, "#451: smoke command cwd is NOT repoRoot");
 } finally {
   rmSync(repoRoot, { recursive: true, force: true });
   rmSync(worktree, { recursive: true, force: true });

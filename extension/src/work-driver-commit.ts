@@ -187,6 +187,8 @@ export async function mechanizedCommitPr(
       commitBody,
       mode: "create",
       requireAllNonEmpty: true,
+      // #453 — pass pre-existing commitShas so cherry-pick skips already-applied.
+      commitShas: ps.commitShas,
       // The first time anything compiles the COMBINATION of the workstreams.
       // Absent `.pi/verify-cmd` leaves this undefined and the gate skips.
       verifyCmd: await verifyCmdFor(ctx.repoRoot),
@@ -275,12 +277,15 @@ export async function mechanizedCommitPr(
       at: Date.now(),
       summary: `Mechanized commit-pr: consolidated ${ids.length} worktree(s), committed, pushed ${branchName}, opened PR.\npr: ${prNumber}`,
     });
+    // #453 — persist cherry-picked commit SHAs so resume can skip them.
+    const commitShas = res.commitShas;
     const commitPrRootFields = commitPrRootFieldsOf(rootState);
     next = {
       ...next,
       pipelineState: {
         ...next.pipelineState,
         ...commitPrRootFields,
+        ...(commitShas ? { commitShas } : {}),
       },
     };
     return { ok: true, state: next };

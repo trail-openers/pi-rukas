@@ -108,7 +108,7 @@ try {
     );
     if (r.ok && r.empty) {
       assert(
-        r.noDiff && Object.keys(r.noDiff).length === 1 && r.noDiff["default"] === f.wt,
+        r.noDiff && Object.keys(r.noDiff).length === 1 && r.noDiff.default === f.wt,
         `A: the no-diff worktree is named as its ACTUAL path the operator can inspect (expected "${f.wt}", got ${JSON.stringify(r.noDiff)})`,
       );
     }

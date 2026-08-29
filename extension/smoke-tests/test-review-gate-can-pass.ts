@@ -194,11 +194,7 @@ const roundCap: WorkEvent = {
   const constIdx = lens.indexOf('REVIEW_INCOMPLETE_CAP = "review-incomplete"');
   const fallbackIdx = lens.indexOf("capKilled ?? REVIEW_INCOMPLETE_CAP");
   assert(
-    approvedIdx >= 0 &&
-      issuesIdx >= 0 &&
-      capIdx >= 0 &&
-      constIdx >= 0 &&
-      fallbackIdx >= 0,
+    approvedIdx >= 0 && issuesIdx >= 0 && capIdx >= 0 && constIdx >= 0 && fallbackIdx >= 0,
     "all five landmarks are present in work-driver-lens-verdicts.ts (incl. the named REVIEW_INCOMPLETE_CAP const + its bare `??` fallback)",
   );
   assert(

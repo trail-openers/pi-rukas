@@ -415,7 +415,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
                 "PR277: PI_ENSEMBLE_SMOKE=0 disables smoke gate (failing smoke is ignored) and emits disabled note",
               );
             } finally {
-              if (prevSmoke === undefined) delete process.env.PI_ENSEMBLE_SMOKE;
+              if (prevSmoke === undefined) process.env.PI_ENSEMBLE_SMOKE = undefined;
               else process.env.PI_ENSEMBLE_SMOKE = prevSmoke;
               rmSync(path.join(dir, ".pi", "smoke-cmd"), { force: true });
             }
@@ -456,7 +456,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
                 "PR277: PI_ENSEMBLE_SKIP_RATCHET=0 disables skip-ratchet gate and emits disabled note",
               );
             } finally {
-              if (prevRatchet === undefined) delete process.env.PI_ENSEMBLE_SKIP_RATCHET;
+              if (prevRatchet === undefined) process.env.PI_ENSEMBLE_SKIP_RATCHET = undefined;
               else process.env.PI_ENSEMBLE_SKIP_RATCHET = prevRatchet;
             }
           } finally {
@@ -464,14 +464,14 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           }
         }
       } finally {
-        if (prevSkipRatchet === undefined) delete process.env.PI_ENSEMBLE_SKIP_RATCHET;
+        if (prevSkipRatchet === undefined) process.env.PI_ENSEMBLE_SKIP_RATCHET = undefined;
         else process.env.PI_ENSEMBLE_SKIP_RATCHET = prevSkipRatchet;
-        if (prevSmoke === undefined) delete process.env.PI_ENSEMBLE_SMOKE;
+        if (prevSmoke === undefined) process.env.PI_ENSEMBLE_SMOKE = undefined;
         else process.env.PI_ENSEMBLE_SMOKE = prevSmoke;
       }
     }
   } finally {
-    if (prevVerify === undefined) delete process.env.PI_ENSEMBLE_VERIFY;
+    if (prevVerify === undefined) process.env.PI_ENSEMBLE_VERIFY = undefined;
     else process.env.PI_ENSEMBLE_VERIFY = prevVerify;
     process.env.PI_ENSEMBLE_VERIFY = "0";
   }

@@ -267,7 +267,7 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
     // lands.
     let lastBatchIdx = -1;
     for (let i = after.eventLog.length - 1; i >= 0; i--) {
-      const k = after.eventLog[i]!.kind;
+      const k = after.eventLog[i]?.kind;
       if (
         k === "dispatch-completed" ||
         k === "dispatch-failed" ||

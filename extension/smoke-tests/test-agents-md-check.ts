@@ -51,13 +51,10 @@ function mkFs(): AgentsMdFs {
 // A valid, clean file: references only paths that exist in the fixture root.
 {
   writeFileSync(path.join(tmp, "src"), "x");
-  const clean =
-    "# T\n" +
-    renderSection("quality-gates", "- **g** — `bun run test`") +
-    renderSection(
-      "decision-ledger",
-      "| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |",
-    );
+  const clean = `# T\n${renderSection("quality-gates", "- **g** — `bun run test`")}${renderSection(
+    "decision-ledger",
+    "| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |",
+  )}`;
   writeFileSync(path.join(tmp, "clean.md"), clean);
   const r = checkAgent(tmp, path.join(tmp, "clean.md"), {}, mkFs());
   assert(r.check?.code === EXIT_CLEAN, `clean file → exit ${EXIT_CLEAN} (got ${r.check?.code})`);
@@ -65,13 +62,10 @@ function mkFs(): AgentsMdFs {
 
 // A file that references a path that no longer exists → findings → 1.
 {
-  const stale =
-    "# T\n" +
-    renderSection("quality-gates", "- see `gone-file.ts` for details") +
-    renderSection(
-      "decision-ledger",
-      "| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |",
-    );
+  const stale = `# T\n${renderSection("quality-gates", "- see `gone-file.ts` for details")}${renderSection(
+    "decision-ledger",
+    "| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |",
+  )}`;
   writeFileSync(path.join(tmp, "stale.md"), stale);
   const r = checkAgent(tmp, path.join(tmp, "stale.md"), {}, mkFs());
   assert(
@@ -88,17 +82,13 @@ function mkFs(): AgentsMdFs {
 // still visible to check: its first token must be on PATH. This is the
 // coverage fix — a commands-section-only gate must not be silently skipped.
 {
-  const cmds =
-    "# T\n" +
-    renderSection("quality-gates", "- **g** — `bun run test`") +
-    renderSection(
-      "commands",
-      "| kind | command |\n| --- | --- |\n| gate | `definitely-not-a-real-cmd-xyz` |",
-    ) +
-    renderSection(
-      "decision-ledger",
-      "| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |",
-    );
+  const cmds = `# T\n${renderSection("quality-gates", "- **g** — `bun run test`")}${renderSection(
+    "commands",
+    "| kind | command |\n| --- | --- |\n| gate | `definitely-not-a-real-cmd-xyz` |",
+  )}${renderSection(
+    "decision-ledger",
+    "| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |",
+  )}`;
   writeFileSync(path.join(tmp, "cmds.md"), cmds);
   const r = checkAgent(tmp, path.join(tmp, "cmds.md"), {}, mkFs());
   assert(
@@ -116,13 +106,10 @@ function mkFs(): AgentsMdFs {
 // A gate line with shell metacharacters is reported (invalid-shell), never
 // parsed or executed → findings → 1.
 {
-  const unsafe =
-    "# T\n" +
-    renderSection("quality-gates", "- **evil** — `echo a; echo b` | `true`\n- **safe** — `true`") +
-    renderSection(
-      "decision-ledger",
-      "| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |",
-    );
+  const unsafe = `# T\n${renderSection("quality-gates", "- **evil** — `echo a; echo b` | `true`\n- **safe** — `true`")}${renderSection(
+    "decision-ledger",
+    "| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |",
+  )}`;
   writeFileSync(path.join(tmp, "unsafe.md"), unsafe);
   const r = checkAgent(tmp, path.join(tmp, "unsafe.md"), {}, mkFs());
   assert(

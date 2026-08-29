@@ -246,10 +246,18 @@ const INTEGRATE_BASE = {
 }
 
 {
+  // #453 — stateful rev-list mock: first call returns "0" (patch fallback),
+  // second call returns "1" (post-commit check). Parity trick works across
+  // multiple integrate() invocations in this file.
+  let _revListN = 0;
   const calls: Array<{ cmd: string; cwd: string }> = [];
   const execFn: ExecFn = async (cmd, o) => {
     const cwd = o?.cwd ?? "";
     calls.push({ cmd, cwd });
+    if (cmd.startsWith("git rev-list --count")) {
+      _revListN++;
+      return { stdout: _revListN % 2 === 1 ? "0\n" : "1\n" };
+    }
     if (cmd.startsWith("git status --porcelain")) {
       return { stdout: cwd === REPO ? "" : " M src/a.ts\n" };
     }
@@ -280,8 +288,15 @@ const INTEGRATE_BASE = {
 {
   // A partial consolidation is the v0.12.13 incident (1 of 3 workstreams
   // shipped, issue closed, root fix lost). commit-pr must refuse it.
+  // #453 — stateful rev-list: first call → "0" (patch fallback), rest → "1".
+  // Counter starts at 0 so the first increment makes it 1 → "0", then 2 → "1".
+  let _r2 = 0;
   const execFn: ExecFn = async (cmd, o) => {
     const cwd = o?.cwd ?? "";
+    if (cmd.startsWith("git rev-list --count")) {
+      _r2++;
+      return { stdout: _r2 === 1 ? "0\n" : "1\n" };
+    }
     if (cmd.startsWith("git status --porcelain")) {
       if (cwd === REPO) return { stdout: "" };
       return { stdout: cwd.endsWith("b") ? "" : " M src/a.ts\n" };

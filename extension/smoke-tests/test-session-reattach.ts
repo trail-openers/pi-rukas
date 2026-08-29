@@ -37,7 +37,7 @@ const absent = { existsSync: (_p: string) => false };
 
 // 1. Flag OFF → re-dispatch, even with a transcript present.
 {
-  delete process.env.PI_ENSEMBLE_SESSION_REATTACH;
+  process.env.PI_ENSEMBLE_SESSION_REATTACH = undefined;
   const r = resolveReattach(
     "explore",
     [{ jobId: "j1", transcriptPath: TS }],
@@ -194,7 +194,7 @@ const absent = { existsSync: (_p: string) => false };
 }
 
 // Restore the env for the rest of the suite.
-delete process.env.PI_ENSEMBLE_SESSION_REATTACH;
+process.env.PI_ENSEMBLE_SESSION_REATTACH = undefined;
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

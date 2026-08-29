@@ -104,6 +104,9 @@ export function inlineExplorePrompt(
     // swamped. Pure semantic at 0.0 is the only mode whose score means anything.
     "  2. `vipune search '<keywords-from-issue-title>' --no-hybrid --recency 0.0 --limit 5` for prior decisions,",
     "     and `vipune search '<same>' --memory-type guard --no-hybrid --recency 0.0 --limit 5` for traps,",
+    // #280 C — guard memories about type-invariant removals; the widening scan
+    // writes one per (file, symbol) so the explore agent should look for them.
+    "  2b. `vipune search 'invariant-removal <basename>' --memory-type guard --no-hybrid --recency 0.0 --limit 3` for guard memories about recent constraint removals (invariant-removal scan),",
     "  3. `codebase_memory_search_code({query: '<concept>'})` for existing relevant code.",
     "",
     "Return a STRUCTURED summary the work-driver can route on:",
@@ -339,12 +342,11 @@ export function inlineDevelopPrompt(
   lines.push(
     `  1. ${fetchInstr}`,
     "  2. Implement the change end-to-end in the current branch. Run local quality gates (typecheck, lint, tests as the project defines them).",
-    "  3. Do NOT commit. Do NOT push. Leave the changes uncommitted in the working directory — ops commits in Step 6 after the adversarial gate.",
-    // #543 F5 — the driver's checkpoint (F5(2)) commits the worktree at the
-    // natural seams the child made during its run, so a cap kill never
-    // leaves only a failure message. Committing at natural seams is what
-    // makes those seams exist; the driver only stages what is there.
-    "  3a. Commit your work in the worktree at natural seams (a clean build, a passing test suite). Do NOT push — the driver owns the branch and ops owns the push in Step 6.",
+    // #543 F5 — the driver's checkpoint commits the worktree at the natural
+    // seams the child made during its run, so a cap kill never leaves only
+    // a failure message. Committing at natural seams is what makes those
+    // seams exist; the driver only stages what is there.
+    "  3. Commit your work in the worktree at natural seams (a clean build, a passing test suite). Do NOT push — the driver owns the branch and ops owns the push in Step 6.",
     "  4. End your reply with a `## Touched files` section listing every file you changed and a one-line `## Summary`.",
     "",
     "Discourage drive-by edits; only touch files in scope.",

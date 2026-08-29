@@ -162,7 +162,7 @@ assert(
       "PI_ENSEMBLE_MAX_WORKSTREAMS tunes the ceiling",
     );
   } finally {
-    if (prev === undefined) delete process.env.PI_ENSEMBLE_MAX_WORKSTREAMS;
+    if (prev === undefined) process.env.PI_ENSEMBLE_MAX_WORKSTREAMS = undefined;
     else process.env.PI_ENSEMBLE_MAX_WORKSTREAMS = prev;
   }
 }

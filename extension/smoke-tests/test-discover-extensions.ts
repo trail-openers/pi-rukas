@@ -73,7 +73,7 @@ await fs.symlink(realSrc, path.join(extDir, "symlinked-bridge"));
 const prevAgentDir = process.env.PI_AGENT_DIR;
 const prevDisable = process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD;
 process.env.PI_AGENT_DIR = piAgentDir;
-delete process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD;
+process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD = undefined;
 
 const result = discoverInstalledExtensions("test");
 console.log("forwarded:", result);
@@ -103,7 +103,7 @@ const optedOut = discoverInstalledExtensions("test");
 assert(optedOut.length === 0, "PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD=1 returns empty list");
 
 // Missing extensions/ directory falls through cleanly
-delete process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD;
+process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD = undefined;
 const emptyAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-ensemble-discover-empty-"));
 process.env.PI_AGENT_DIR = emptyAgentDir;
 const noDir = discoverInstalledExtensions("test");
@@ -111,9 +111,9 @@ assert(noDir.length === 0, "missing extensions/ dir returns empty list (no crash
 await fs.rm(emptyAgentDir, { recursive: true, force: true });
 
 // Restore env
-if (prevAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+if (prevAgentDir === undefined) process.env.PI_AGENT_DIR = undefined;
 else process.env.PI_AGENT_DIR = prevAgentDir;
-if (prevDisable === undefined) delete process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD;
+if (prevDisable === undefined) process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD = undefined;
 else process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD = prevDisable;
 
 await fs.rm(piAgentDir, { recursive: true, force: true });

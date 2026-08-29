@@ -115,7 +115,7 @@ assert(
   "wrapped bytes: the machine section's content survives inside its span",
 );
 assert(
-  wrapped.includes("## Merge rules\n\n" + DOCTRINE),
+  wrapped.includes(`## Merge rules\n\n${DOCTRINE}`),
   "wrapped bytes: the doctrine section is byte-identical",
 );
 assert(isInsertionsOnly(ORIGINAL, wrapped), "wrapped bytes: the diff is insertions-only");
@@ -127,7 +127,7 @@ assert(
 );
 const ledgerBody = sectionContent(wrapped, "decision-ledger") ?? "";
 assert(
-  ledgerBody.includes("| brownfield-wrap | wrapped | [auto:" + FIXED_DATE + "] |"),
+  ledgerBody.includes(`| brownfield-wrap | wrapped | [auto:${FIXED_DATE}] |`),
   "wrapped bytes: the ledger has a non-empty [auto] wrap row",
 );
 assert(

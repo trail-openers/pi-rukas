@@ -23,8 +23,8 @@
  */
 
 import path from "node:path";
-import { runBranch } from "../src/work-driver-branch-develop.ts";
 import type { DispatchResult } from "../src/types.ts";
+import { runBranch } from "../src/work-driver-branch-develop.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { initialState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
@@ -127,9 +127,7 @@ function branchCtx(execFn: ExecFn, dispatchFn?: () => Promise<DispatchResult>): 
   );
   const pev = provEvents[0];
   assert(
-    pev?.kind === "worktree-provisioned" &&
-      pev.worktreeId === "default" &&
-      pev.worktreePath === WT,
+    pev?.kind === "worktree-provisioned" && pev.worktreeId === "default" && pev.worktreePath === WT,
     "the event names the correct workstream id and path",
   );
   const mechanizedOutcomes = ["hook-ran", "hook-failed", "symlink", "none"];
@@ -156,14 +154,12 @@ function branchCtx(execFn: ExecFn, dispatchFn?: () => Promise<DispatchResult>): 
   ].join("\n");
 
   const { execFn, noopDispatch } = opsFallbackRecorder(opsReplyWithBlock);
-  const out = await runBranch(
-    branchCtx(execFn, noopDispatch),
-    initialState(536),
-    1000,
-  ).catch((e) => {
-    console.error("fixture 2a threw:", (e as Error).message);
-    return undefined;
-  });
+  const out = await runBranch(branchCtx(execFn, noopDispatch), initialState(536), 1000).catch(
+    (e) => {
+      console.error("fixture 2a threw:", (e as Error).message);
+      return undefined;
+    },
+  );
 
   const provEvents2a = out?.eventLog.filter((e) => e.kind === "worktree-provisioned") ?? [];
   assert(
@@ -179,10 +175,7 @@ function branchCtx(execFn: ExecFn, dispatchFn?: () => Promise<DispatchResult>): 
   const pathEvent = provEvents2a.find(
     (e) => e.kind === "worktree-provisioned" && e.worktreePath === worktreePath,
   );
-  assert(
-    pathEvent !== undefined,
-    "the event names the absolute path from the ## Worktrees block",
-  );
+  assert(pathEvent !== undefined, "the event names the absolute path from the ## Worktrees block");
 }
 
 // ------------------------------------------------------------- fixture 2b
@@ -190,14 +183,12 @@ function branchCtx(execFn: ExecFn, dispatchFn?: () => Promise<DispatchResult>): 
 {
   const opsReplyNoBlock = "Branch feature/issue-536 created.";
   const { execFn, noopDispatch } = opsFallbackRecorder(opsReplyNoBlock);
-  const out = await runBranch(
-    branchCtx(execFn, noopDispatch),
-    initialState(536),
-    1000,
-  ).catch((e) => {
-    console.error("fixture 2b threw:", (e as Error).message);
-    return undefined;
-  });
+  const out = await runBranch(branchCtx(execFn, noopDispatch), initialState(536), 1000).catch(
+    (e) => {
+      console.error("fixture 2b threw:", (e as Error).message);
+      return undefined;
+    },
+  );
 
   const provEvents2b = out?.eventLog.filter((e) => e.kind === "worktree-provisioned") ?? [];
   assert(
@@ -249,10 +240,7 @@ function branchCtx(execFn: ExecFn, dispatchFn?: () => Promise<DispatchResult>): 
     .filter((e) => e.kind === "worktree-provisioned")
     .map((e) => (e.kind === "worktree-provisioned" ? e.worktreeId : ""))
     .sort();
-  assert(
-    ids3.join(",") === "task-a,task-b",
-    "both workstream ids appear in the provision events",
-  );
+  assert(ids3.join(",") === "task-a,task-b", "both workstream ids appear in the provision events");
   const paths3 = provEvents3
     .filter((e) => e.kind === "worktree-provisioned")
     .map((e) => (e.kind === "worktree-provisioned" ? e.worktreePath : ""));

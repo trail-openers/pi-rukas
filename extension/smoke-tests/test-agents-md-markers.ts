@@ -148,10 +148,10 @@ const input =
 
 {
   // Nested: a begin inside another open span.
-  const nested =
+  const nested = `${
     renderSection("a", "x").replace("<!-- pi-ensemble:agents-md:end a -->", "") +
-    renderSection("b", "y") +
-    "<!-- pi-ensemble:agents-md:end a -->\n";
+    renderSection("b", "y")
+  }<!-- pi-ensemble:agents-md:end a -->\n`;
   assert(
     throws(() => parseMarkers(nested)),
     "nested markers → MarkerError, not silent pass",
@@ -215,7 +215,7 @@ const input =
     "strict-captured begin v3 + strict-missed end v2 → MarkerError",
   );
   assert(
-    err !== undefined && err.includes("mis-versioned"),
+    err?.includes("mis-versioned"),
     "...and the diagnostic names the mis-versioned marker (not an orphan pairing)",
   );
 

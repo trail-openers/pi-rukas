@@ -20,8 +20,8 @@
  * arithmetic and the inertness; the live suite proves the end-to-end kill.
  */
 
-import { budgetSteerText, emptyRunningState, formatTokens, ingestEvent } from "../src/progress.ts";
 import type { PiContentBlock } from "../src/pi-event-shapes.ts";
+import { budgetSteerText, emptyRunningState, formatTokens, ingestEvent } from "../src/progress.ts";
 import { createCapSession, resolveKillCause } from "../src/spawn-caps.ts";
 import {
   capKillGraceMs,
@@ -221,7 +221,6 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
   );
 }
 
-
 // ---------------------------------------------------------------------------
 // #543 C1 — killCause priority: a budget-killed child that ALSO tripped the
 // wall-clock backstop is a token-budget kill, NOT a timeout. The attribution
@@ -329,11 +328,14 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     exited = true;
     // Wait for the 500ms poll to fire.
     await new Promise((r) => setTimeout(r, 700));
-    assert(!session.tokenBudgetTracker?.killed, "H1: child self-exited before grace → tracker NOT killed");
+    assert(
+      !session.tokenBudgetTracker?.killed,
+      "H1: child self-exited before grace → tracker NOT killed",
+    );
     eq(child.killed, [], "H1: no kill signal sent to a self-exiting child");
     assert(session.killCause() === undefined, "H1: killCause stays undefined (ok=true semantics)");
   } finally {
-    delete process.env.PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER;
+    process.env.PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER = undefined;
     session.cleanup();
   }
 }
@@ -367,17 +369,25 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     });
   } finally {
     globalThis.setInterval = origSetInterval;
-    delete process.env.PI_ENSEMBLE_DISPATCH_CAPS;
+    process.env.PI_ENSEMBLE_DISPATCH_CAPS = undefined;
   }
   assert(session.loopObserver === undefined, "H2: master switch off → no loop observer");
-  assert(session.tokenBudgetTracker === undefined, "H2: master switch off → no token-budget tracker");
+  assert(
+    session.tokenBudgetTracker === undefined,
+    "H2: master switch off → no token-budget tracker",
+  );
   assert(timersCreated === 0, `H2: master switch off → NO new setInterval (got ${timersCreated})`);
   // Feed a 20-repeat identical stream through the session's ingest path.
   // loopObserver is undefined so observe is a no-op; assert nothing changed.
-  const blocks: PiContentBlock[] = [{ type: "toolCall", id: "x", name: "bash", arguments: '{"command":"git log"}' }];
+  const blocks: PiContentBlock[] = [
+    { type: "toolCall", id: "x", name: "bash", arguments: '{"command":"git log"}' },
+  ];
   for (let turn = 0; turn < 20; turn++) session.loopObserver?.(blocks, turn);
   assert(!session.loopKilled(), "H2: 20-repeats through an inert session → not loop-killed");
-  assert(session.killCause() === undefined, "H2: 20-repeats through an inert session → no killCause");
+  assert(
+    session.killCause() === undefined,
+    "H2: 20-repeats through an inert session → no killCause",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -406,20 +416,29 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     const observe = session.loopObserver!;
     // 10 identical calls → kill arms (count reaches LOOP_KILL_AT=10).
     for (let turn = 0; turn < 10; turn++) {
-      observe([{ type: "toolCall", id: "x", name: "bash", arguments: '{"command":"git log --oneline"}' }], turn);
+      observe(
+        [{ type: "toolCall", id: "x", name: "bash", arguments: '{"command":"git log --oneline"}' }],
+        turn,
+      );
     }
     assert(!session.loopKilled(), "spawn#6: kill armed but grace window open");
     eq(child.killed, [], "spawn#6: no signal before grace elapses");
     // A DISTINCT message_end arrives (the loop ended).
-    observe([{ type: "toolCall", id: "x", name: "bash", arguments: '{"command":"cargo test"}' }], 10);
+    observe(
+      [{ type: "toolCall", id: "x", name: "bash", arguments: '{"command":"cargo test"}' }],
+      10,
+    );
     // Wait 700ms (the poll fires at 500ms) — the grace clock was reset by
     // the distinct fingerprint, so the kill must NOT fire.
     await new Promise((r) => setTimeout(r, 700));
-    assert(!session.loopKilled(), "spawn#6: distinct message_end reset the grace clock — kill deferred");
+    assert(
+      !session.loopKilled(),
+      "spawn#6: distinct message_end reset the grace clock — kill deferred",
+    );
     eq(child.killed, [], "spawn#6: no kill signal after the distinct message_end");
     session.cleanup();
   } finally {
-    delete process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS;
+    process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS = undefined;
     session?.cleanup();
   }
 }

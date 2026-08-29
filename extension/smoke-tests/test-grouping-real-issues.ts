@@ -125,7 +125,7 @@ assert(
   );
   const declined = res.notes.find((x) => x.startsWith("R4 declined:") && x.includes("#1 ↔ #2"));
   assert(
-    declined !== undefined && declined.includes("tag=[work-driver]"),
+    declined?.includes("tag=[work-driver]"),
     "#501: R4 declined note names the tag for an uncorroborated scope match",
   );
   assert(
@@ -143,7 +143,7 @@ assert(
   assert(Object.keys(res.groups).length === 1, "#501: scope + R2 overlap unions into one group");
   const r4 = res.notes.find((x) => x.startsWith("R4 subsystem:"));
   assert(
-    r4 !== undefined && r4.includes("R2 path-overlap"),
+    r4?.includes("R2 path-overlap"),
     "#501: R4 note names the corroboration that licensed the union",
   );
 }
@@ -234,8 +234,7 @@ assert(
     "#501: one summary note for the three uncorroborated scope pairs (not three per-pair notes)",
   );
   assert(
-    declined[0] !== undefined &&
-      declined[0].includes("tag=[work-driver]") &&
+    declined[0]?.includes("tag=[work-driver]") &&
       declined[0].includes("#287 ↔ #366") &&
       declined[0].includes("#287 ↔ #368") &&
       declined[0].includes("#366 ↔ #368"),
@@ -258,7 +257,7 @@ assert(
   );
   const declined = res.notes.find((x) => x.startsWith("R4 declined:") && x.includes("#366 ↔ #368"));
   assert(
-    declined !== undefined && declined.includes("tag=[work-driver]"),
+    declined?.includes("tag=[work-driver]"),
     "#501: R4 declined note names the pair and the tag",
   );
 }

@@ -18,11 +18,11 @@
  */
 
 import {
+  TRUNCATION_TURN_THRESHOLD,
   formatBatchReport,
   formatSingleReport,
   isTruncatedNarration,
   looksLikeCompletion,
-  TRUNCATION_TURN_THRESHOLD,
 } from "../src/async-jobs-report.ts";
 import type { DispatchResult } from "../src/types.ts";
 
@@ -51,19 +51,26 @@ function assert(cond: boolean, msg: string) {
   assert(looksLikeCompletion(testsPass) === true, "'All tests pass' matches");
   assert(looksLikeCompletion(gate) === true, "'Offline gate' matches");
   assert(looksLikeCompletion("") === false, "empty text is not a completion");
-  assert(
-    looksLikeCompletion("  \n\n  ") === false,
-    "whitespace-only text is not a completion",
-  );
+  assert(looksLikeCompletion("  \n\n  ") === false, "whitespace-only text is not a completion");
 
-  assert(isTruncatedNarration("Task complete: x", 100) === false, "a run that completed is not truncated");
-  assert(isTruncatedNarration("Now editing the file", 100) === true, "narration ending mid-line IS truncated");
-  assert(isTruncatedNarration("", TRUNCATION_TURN_THRESHOLD) === false, "no text, no false positive at the threshold");
+  assert(
+    isTruncatedNarration("Task complete: x", 100) === false,
+    "a run that completed is not truncated",
+  );
+  assert(
+    isTruncatedNarration("Now editing the file", 100) === true,
+    "narration ending mid-line IS truncated",
+  );
+  assert(
+    isTruncatedNarration("", TRUNCATION_TURN_THRESHOLD) === false,
+    "no text, no false positive at the threshold",
+  );
 }
 
 // ------------------------------------------------------- the report tag
 
-const narration = "Now applying the patch to work-driver-lens.ts (edits[].oldText must match exactly).\n";
+const narration =
+  "Now applying the patch to work-driver-lens.ts (edits[].oldText must match exactly).\n";
 
 const result = (over: Partial<DispatchResult> & { turns?: number }): DispatchResult => {
   const turns = over.turns ?? 100;
@@ -85,7 +92,10 @@ const result = (over: Partial<DispatchResult> & { turns?: number }): DispatchRes
   // AC1 — long run, narration-shaped tail: tagged, and it says what to do.
   const longTruncated = result({ text: narration });
   const report = formatSingleReport("j1", "developer", longTruncated);
-  assert(report.includes("POSSIBLY-TRUNCATED"), "AC1: long narration-tail run is tagged POSSIBLY-TRUNCATED");
+  assert(
+    report.includes("POSSIBLY-TRUNCATED"),
+    "AC1: long narration-tail run is tagged POSSIBLY-TRUNCATED",
+  );
   assert(report.includes("Verify on-disk state"), "the tag carries the verify-on-disk instruction");
   assert(
     /survey disk state/.test(report) || /resume/i.test(report),
@@ -120,7 +130,10 @@ const result = (over: Partial<DispatchResult> & { turns?: number }): DispatchRes
 {
   // The false-positive guards: the heuristic must stay conservative.
   const shortReport = formatSingleReport("j2", "developer", result({ text: narration, turns: 10 }));
-  assert(!shortReport.includes("POSSIBLY-TRUNCATED"), "canary: short narration-tail run (10 turns) is NOT tagged");
+  assert(
+    !shortReport.includes("POSSIBLY-TRUNCATED"),
+    "canary: short narration-tail run (10 turns) is NOT tagged",
+  );
 
   const complete = result({
     text: "Task complete: truncation detector\n\n## Summary\nDone.",
@@ -139,7 +152,10 @@ const result = (over: Partial<DispatchResult> & { turns?: number }): DispatchRes
       turns: 200,
     });
     const r = formatSingleReport(`j-${cause}`, "developer", killed);
-    assert(!r.includes("POSSIBLY-TRUNCATED"), `canary: killCause=${cause} reports its own cause, never the truncation tag`);
+    assert(
+      !r.includes("POSSIBLY-TRUNCATED"),
+      `canary: killCause=${cause} reports its own cause, never the truncation tag`,
+    );
   }
 
   const errored = result({

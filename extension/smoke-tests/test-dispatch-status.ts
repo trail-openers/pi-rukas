@@ -254,7 +254,10 @@ clearJobsForTesting();
   const { classifyStatusCall, jobSetKey } = await import("../src/dispatch-status.ts");
 
   // jobSetKey: order-insensitive, stable string.
-  assert(jobSetKey([{ jobId: "a" }, { jobId: "b" }]) === "a,b", "jobSetKey sorts jobId alphabetically");
+  assert(
+    jobSetKey([{ jobId: "a" }, { jobId: "b" }]) === "a,b",
+    "jobSetKey sorts jobId alphabetically",
+  );
   assert(jobSetKey([{ jobId: "b" }, { jobId: "a" }]) === "a,b", "jobSetKey is order-insensitive");
   assert(jobSetKey([]) === "", "jobSetKey of empty set is empty string");
 
@@ -291,7 +294,7 @@ clearJobsForTesting();
     "empty set never triggers poll steer",
   );
 
-  // After empty reset, a new non-empty call is fresh (key differs). 
+  // After empty reset, a new non-empty call is fresh (key differs).
   assert(
     classifyStatusCall(rowsA, 3000, { at: 2000, key: "" }).polling === false,
     "new non-empty set after empty reset is not a poll",
@@ -315,14 +318,8 @@ clearJobsForTesting();
   // Second call immediately: same set → poll steer.
   const r2 = await call(statusTool);
   assert(r2.details.polling === true, "second consecutive call: polling=true");
-  assert(
-    r2.content[0]?.text.includes("You are polling"),
-    "poll steer text is returned",
-  );
-  assert(
-    r2.content[0]?.text.includes("END YOUR TURN NOW"),
-    "poll steer instructs to end the turn",
-  );
+  assert(r2.content[0]?.text.includes("You are polling"), "poll steer text is returned");
+  assert(r2.content[0]?.text.includes("END YOUR TURN NOW"), "poll steer instructs to end the turn");
   assert(
     r2.content[0]?.text.includes("[ensemble:async]"),
     "poll steer names the auto-delivery mechanism",
@@ -333,7 +330,10 @@ clearJobsForTesting();
   const r3 = await call(statusTool);
   // After drain, empty set → not a poll, normal status.
   assert(r3.details.polling === false, "call after set change: polling=false");
-  assert(r3.content[0]?.text === "no async subagents running", "post-drain call renders empty status");
+  assert(
+    r3.content[0]?.text === "no async subagents running",
+    "post-drain call renders empty status",
+  );
 
   // After drain, a new dispatch → fresh call (key changed from empty).
   const { jobId2 } = startJob(pi, {

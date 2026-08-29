@@ -109,7 +109,8 @@ setupSpawnGuard();
       want: "rebase",
     },
     {
-      settings: '{"squashMergeAllowed":false,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
+      settings:
+        '{"squashMergeAllowed":false,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
       label: "all false → fallback",
       want: "fallback",
     },
@@ -127,12 +128,14 @@ setupSpawnGuard();
   ];
   for (const c of cases) {
     const { fn } = mkExec(
-      c.err ? { "gh repo view": { error: true, stderr: "network error" } }
+      c.err
+        ? { "gh repo view": { error: true, stderr: "network error" } }
         : { "gh repo view": { stdout: c.settings } },
     );
     const r = await deriveMergeMethod(fn, "/fake");
     assert(
-      c.want === "fallback" ? "fallback" in r && r.fallback === true
+      c.want === "fallback"
+        ? "fallback" in r && r.fallback === true
         : "method" in r && r.method === c.want,
       `deriveMergeMethod: ${c.label}`,
     );

@@ -18,11 +18,8 @@
  */
 
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { type VerifyExecFn } from "../src/work-driver-git.ts";
-import {
-  executeAndVerifyMerge,
-  mechanizedMerge,
-} from "../src/work-driver-merged-mechanized.ts";
+import type { VerifyExecFn } from "../src/work-driver-git.ts";
+import { executeAndVerifyMerge, mechanizedMerge } from "../src/work-driver-merged-mechanized.ts";
 import { setupSpawnGuard } from "./test-helpers.ts";
 import { mkStateMerged } from "./work-driver-merged-fixtures.ts";
 
@@ -298,10 +295,7 @@ function mkExec(
     return { stdout: "" };
   };
   const r = await executeAndVerifyMerge(42, "squash", fn, "/fake");
-  assert(
-    "ok" in r && r.ok === false,
-    "#356: permanent 404/not-found post-verify → ok:false",
-  );
+  assert("ok" in r && r.ok === false, "#356: permanent 404/not-found post-verify → ok:false");
 }
 
 {
@@ -322,10 +316,7 @@ function mkExec(
     return { stdout: "" };
   };
   const r = await mechanizedMerge(mkCtx(100, fn), mkStateMerged(100, 42, "feature/issue-100"));
-  assert(
-    r.ok === false,
-    "#356: mechanizedMerge — permanent post-verify → ok:false (ops fallback)",
-  );
+  assert(r.ok === false, "#356: mechanizedMerge — permanent post-verify → ok:false (ops fallback)");
   assert(
     r.ok === false && /HTTP 401/.test(r.reason),
     "#356: mechanizedMerge permanent failure reason carries the gh error",

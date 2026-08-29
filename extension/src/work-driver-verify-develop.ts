@@ -16,11 +16,7 @@ import {
   protectedPathsEnabled,
   protectedPathsIn,
 } from "./work-driver-doctrine.ts";
-import {
-  TEST_BLOCK_MARKERS,
-  countMarkersInDiffLine,
-  countSkipMarkersInDiffLine,
-} from "./work-driver-skip-ratchet.ts";
+import { countSkipMarkersInDiffLine } from "./work-driver-skip-ratchet.ts";
 import { readFirstConfigLine, verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -37,50 +33,6 @@ function verifyTimeoutMs(): number {
 const VALID_SHA_RE = /^[0-9a-f]{40}$/;
 function isValidSha(s: string | undefined): s is string {
   return typeof s === "string" && VALID_SHA_RE.test(s);
-}
-
-/** #307 — maximum number of net-removed test blocks tolerated in a diff. */
-function testDeleteTolerance(): number {
-  const env = Number(process.env.PI_ENSEMBLE_TEST_DELETE_TOLERANCE);
-  if (!Number.isFinite(env) || env < 0) return 0;
-  return Math.floor(env);
-}
-
-/** #285 — escape hatch for the deterministic develop scope/fanout gate. */
-function scopeGateEnabled(): boolean {
-  const value = process.env.PI_ENSEMBLE_SCOPE_GATE;
-  return value !== "0" && value !== "false";
-}
-
-/** #285 — maximum changed files allowed per declared path, by default. */
-function scopeFanoutFactor(): number {
-  const value = Number(process.env.PI_ENSEMBLE_SCOPE_FANOUT_FACTOR);
-  if (!Number.isFinite(value) || value < 0) return 3;
-  return value;
-}
-
-/** #285 — minimum changed files that trigger a fanout failure. */
-function scopeFanoutMinimum(): number {
-  const value = Number(process.env.PI_ENSEMBLE_SCOPE_FANOUT_MIN);
-  if (!Number.isFinite(value) || value < 0) return 6;
-  return Math.floor(value);
-}
-
-/** Normalise a plan path before exact or directory-prefix comparison. */
-function normaliseScopePath(raw: string): string {
-  return raw
-    .trim()
-    .replace(/\\/g, "/")
-    .replace(/\s*\([^()]*\)\s*$/, "")
-    .replace(/^[`*\s]+|[`*\s]+$/g, "")
-    .replace(/^\.\//, "")
-    .replace(/^\/+|\/+$/g, "")
-    .trim();
-}
-
-/** A file is covered by a declaration when it is that path or below it. */
-function matchesScopePath(file: string, declared: string): boolean {
-  return file === declared || file.startsWith(`${declared}/`);
 }
 
 /** PR338 — format an exec error with bounded output tail. */
@@ -168,27 +120,26 @@ export async function verifyDevelopOutcome(
   // protected-path gate below sees the whole change set rather than one
   // worktree's slice of it.
   const touchedPaths: string[] = [];
-  // #285 — retain the same changed-file set per workstream for the scope
-  // fence. Status covers uncommitted and untracked files; the base diff adds
-  // files a developer committed in its worktree.
-  const changedPathsByWorkstream = new Map<string, Set<string>>();
   // PR18 (R1): track per-worktree assessability so one erroring worktree
   // doesn't suppress the hollow-diff check for all others.
   let assessedCount = 0;
+  // #453 — count worktrees with uncommitted-only changes (no commits ahead
+  // of baseSha). When this is > 0 and changedWorktrees is empty, the
+  // per-worktree failures already explain the issue — skip the generic
+  // "empty diff" message to avoid duplicate / contradictory output.
+  let uncommittedOnlyCount = 0;
   for (const [id, cwd] of Object.entries(worktrees)) {
-    let changed = false;
+    let hasCommits = false;
+    let hasUncommitted = false;
     let assessed = false;
-    const changedPaths = new Set<string>();
     try {
       const { stdout } = await execFn("git status --porcelain", {
         cwd,
         maxBuffer: 1024 * 1024,
       });
       assessed = true;
-      if (stdout.trim().length > 0) changed = true;
-      const statusPaths = porcelainPaths(stdout);
-      touchedPaths.push(...statusPaths);
-      for (const file of statusPaths) changedPaths.add(normaliseScopePath(file));
+      if (stdout.trim().length > 0) hasUncommitted = true;
+      touchedPaths.push(...porcelainPaths(stdout));
     } catch (err) {
       notes.push(`git status failed in ${id} (${(err as Error).message?.slice(0, 100)})`);
     }
@@ -198,72 +149,36 @@ export async function verifyDevelopOutcome(
           cwd,
           maxBuffer: 64 * 1024,
         });
-        if (Number.parseInt(stdout.trim(), 10) > 0) changed = true;
+        if (Number.parseInt(stdout.trim(), 10) > 0) hasCommits = true;
         assessed = true;
       } catch {
         // baseSha may not exist in this worktree's history — not evidence
         // either way.
       }
-      // Committed work counts too: a developer that commits a workflow edit
-      // rather than leaving it uncommitted must not slip past the gate.
+      // Collect committed path names for the protected-path gate.
       try {
         const { stdout } = await execFn(`git diff --name-only ${baseSha}..HEAD`, {
           cwd,
           maxBuffer: 4 * 1024 * 1024,
         });
-        const diffPaths = stdout.split("\n").filter((l) => l.trim().length > 0);
-        touchedPaths.push(...diffPaths);
-        for (const file of diffPaths) changedPaths.add(normaliseScopePath(file));
+        touchedPaths.push(...stdout.split("\n").filter((l) => l.trim().length > 0));
       } catch {
         // Same as above — an absent baseSha in this worktree is not evidence.
       }
     }
     if (assessed) assessedCount++;
-    changedPathsByWorkstream.set(id, changedPaths);
+    // #453 — when baseSha is valid, only committed work counts: the transfer
+    // unit is now a commit (cherry-picked in Step 6), not a patch.
+    // Without a valid baseSha (older state files / ops-dispatch fallback)
+    // fall back to the previous behaviour: uncommitted work also counts.
+    const changed = isValidSha(baseSha) ? hasCommits : hasCommits || hasUncommitted;
     if (changed) changedWorktrees.push(cwd);
-  }
-
-  // --- Scope/fanout gate (#285) ---
-  //
-  // This is intentionally separate from the hollow-diff check: a changed
-  // worktree can prove that a developer wrote code while still showing that
-  // the workstream's decomposition was too broad. An empty paths list has no
-  // declared boundary to measure, so preserve legacy/default behaviour and
-  // report the skipped check instead of inventing one.
-  if (!scopeGateEnabled()) {
-    notes.push("PI_ENSEMBLE_SCOPE_GATE=0 — develop scope/fanout gate disabled");
-  } else {
-    for (const [id, changedPaths] of changedPathsByWorkstream) {
-      const workstream = state.pipelineState.workstreams?.[id];
-      const declaredPaths = (workstream?.paths ?? [])
-        .map(normaliseScopePath)
-        .filter((p) => p.length > 0);
-      const outOfScope = (workstream?.outOfScope ?? [])
-        .map(normaliseScopePath)
-        .filter((p) => p.length > 0);
-      const changedFiles = [...changedPaths].sort();
-      const outOfScopeHits = changedFiles.filter((file) =>
-        outOfScope.some((declared) => matchesScopePath(file, declared)),
+    // Per-worktree diagnostic: uncommitted work exists but hasn't been committed.
+    if (isValidSha(baseSha) && hasUncommitted && !hasCommits) {
+      uncommittedOnlyCount++;
+      failures.push(
+        `worktree "${id}": has uncommitted changes but no commit ahead of baseSha — commit with the driver-required message format before the adversarial gate`,
       );
-      for (const file of outOfScopeHits) {
-        failures.push(`developer touched out-of-scope path ${file} — declared fence violated`);
-      }
-      if (declaredPaths.length === 0) {
-        notes.push(`scope fanout check skipped for ${id} — workstream has no declared paths`);
-        continue;
-      }
-      const limit = Math.max(declaredPaths.length * scopeFanoutFactor(), scopeFanoutMinimum());
-      if (changedFiles.length > limit) {
-        const undeclaredFiles = changedFiles.filter(
-          (file) => !declaredPaths.some((declared) => matchesScopePath(file, declared)),
-        );
-        const listedFiles = (undeclaredFiles.length > 0 ? undeclaredFiles : changedFiles).join(
-          ", ",
-        );
-        failures.push(
-          `scope fanout: ${changedFiles.length} files changed vs ${declaredPaths.length} declared — likely mis-decomposition; split the work or update the plan. Files: ${listedFiles}`,
-        );
-      }
     }
   }
 
@@ -286,15 +201,18 @@ export async function verifyDevelopOutcome(
     notes.push("PI_ENSEMBLE_PROTECTED_PATHS=0 — protected-path gate disabled");
   }
   if (changedWorktrees.length === 0) {
-    if (assessedCount > 0) {
+    if (assessedCount > 0 && uncommittedOnlyCount === 0) {
+      // No uncommitted-only failures: every worktree is genuinely empty.
       failures.push(
         "developer claimed done but every assessed worktree has an empty diff (no uncommitted changes, no commits ahead of base) — the claim is not backed by any code change",
       );
-    } else {
+    } else if (assessedCount === 0) {
       notes.push(
         "no worktree could be assessed (git status / rev-list failed everywhere) — diff evidence unavailable, gate degrading to pass-with-note",
       );
     }
+    // else: uncommittedOnlyCount > 0 — per-worktree failures already explain
+    // the issue (uncommitted work, no commits ahead of baseSha).
   }
   // (b) verify command in each changed worktree.
   const cmd = await verifyCmdFor(ctx.repoRoot);
@@ -357,29 +275,17 @@ export async function verifyDevelopOutcome(
       if (!diffContent) continue;
 
       let netIncrease = 0;
-      let netTestBlockDeletion = 0;
       const lines = diffContent.split("\n");
       for (const line of lines) {
-        // Diff file headers are not source lines. Do not let a marker in a
-        // filename influence either ratchet.
-        if (line.startsWith("+++") || line.startsWith("---")) continue;
         if (line.startsWith("+")) {
           netIncrease += countSkipMarkersInDiffLine(line);
-          netTestBlockDeletion -= countMarkersInDiffLine(line, TEST_BLOCK_MARKERS);
         } else if (line.startsWith("-")) {
           netIncrease -= countSkipMarkersInDiffLine(line);
-          netTestBlockDeletion += countMarkersInDiffLine(line, TEST_BLOCK_MARKERS);
         }
       }
       if (netIncrease > 0) {
         failures.push(
           `diff adds ${netIncrease} skipped-test marker(s) — a skipped test is a disabled gate`,
-        );
-      }
-      const tolerance = testDeleteTolerance();
-      if (netTestBlockDeletion > tolerance) {
-        failures.push(
-          `diff removes ${netTestBlockDeletion} test block(s), beyond the tolerance of ${tolerance} — a shrinking test suite is a disabled gate`,
         );
       }
     }

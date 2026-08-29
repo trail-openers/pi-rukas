@@ -100,7 +100,9 @@ function mkResult(overrides: Partial<DispatchResult> = {}): DispatchResult {
           text: "❌ Adversarial REJECTED after 3 rounds. Last verdict: ISSUES_FOUND\n\nreal findings here",
         }),
       dispatchFn: async (_pi, spec, opts) =>
-        opts?.label === "ops:handoff" ? mkResult({ role: "ops", text: "Posted." }) : Promise.reject(new Error(`unexpected: ${spec.role}`)),
+        opts?.label === "ops:handoff"
+          ? mkResult({ role: "ops", text: "Posted." })
+          : Promise.reject(new Error(`unexpected: ${spec.role}`)),
     };
     await runWorkDriver(ctx);
 
@@ -280,7 +282,9 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
         });
       },
       dispatchFn: async (_pi, spec, opts) =>
-        opts?.label === "ops:handoff" ? mkResult({ role: "ops", text: "Posted." }) : Promise.reject(new Error(`unexpected: ${spec.role}`)),
+        opts?.label === "ops:handoff"
+          ? mkResult({ role: "ops", text: "Posted." })
+          : Promise.reject(new Error(`unexpected: ${spec.role}`)),
     };
     await runWorkDriver(ctx);
 
@@ -387,7 +391,9 @@ function advFanoutState(issue: number, dir: string, worktrees: string[]): typeof
         });
       },
       dispatchFn: async (_pi, spec, opts) =>
-        opts?.label === "ops:handoff" ? mkResult({ role: "ops", text: "Posted." }) : Promise.reject(new Error(`unexpected: ${spec.role}`)),
+        opts?.label === "ops:handoff"
+          ? mkResult({ role: "ops", text: "Posted." })
+          : Promise.reject(new Error(`unexpected: ${spec.role}`)),
     };
     await runWorkDriver(ctx);
 

@@ -22,10 +22,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import {
-  verifyConsolidation,
-  verifyStepOutcome,
-} from "../src/work-driver-verify.ts";
+import { verifyConsolidation, verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
 
 const execFileP = promisify(execFile);
@@ -103,12 +100,15 @@ async function testCommitPrGate() {
       issue: 451,
       issueBodyFetcherFn: () => ({ stdout: "canary test" }),
       // Use real exec — we want git commands to run against the fixture.
-      verifyExecFn: async (cmd: string, opts?: { cwd?: string; timeout?: number; maxBuffer?: number }) => {
-        const { stdout, stderr } = await execFileP(
-          "/bin/sh",
-          ["-c", cmd],
-          { cwd: opts?.cwd, timeout: opts?.timeout, maxBuffer: opts?.maxBuffer ?? 64 * 1024 },
-        );
+      verifyExecFn: async (
+        cmd: string,
+        opts?: { cwd?: string; timeout?: number; maxBuffer?: number },
+      ) => {
+        const { stdout, stderr } = await execFileP("/bin/sh", ["-c", cmd], {
+          cwd: opts?.cwd,
+          timeout: opts?.timeout,
+          maxBuffer: opts?.maxBuffer ?? 64 * 1024,
+        });
         if (stderr.includes("fatal:")) throw new Error(stderr);
         return { stdout };
       },
@@ -180,12 +180,15 @@ async function testCommitPrGatePasses() {
       repoRoot: repo,
       issue: 453,
       issueBodyFetcherFn: () => ({ stdout: "canary pass test" }),
-      verifyExecFn: async (cmd: string, opts?: { cwd?: string; timeout?: number; maxBuffer?: number }) => {
-        const { stdout, stderr } = await execFileP(
-          "/bin/sh",
-          ["-c", cmd],
-          { cwd: opts?.cwd, timeout: opts?.timeout, maxBuffer: opts?.maxBuffer ?? 64 * 1024 },
-        );
+      verifyExecFn: async (
+        cmd: string,
+        opts?: { cwd?: string; timeout?: number; maxBuffer?: number },
+      ) => {
+        const { stdout, stderr } = await execFileP("/bin/sh", ["-c", cmd], {
+          cwd: opts?.cwd,
+          timeout: opts?.timeout,
+          maxBuffer: opts?.maxBuffer ?? 64 * 1024,
+        });
         if (stderr.includes("fatal:")) throw new Error(stderr);
         return { stdout };
       },
@@ -219,8 +222,18 @@ async function testConsolidationZeroCommits() {
         branchName: branch,
         worktrees: { default: root },
         workstreams: {
-          default: { id: "default", scope: "task", paths: ["extension/src/foo.ts"], outOfScope: [] },
-          "task-b": { id: "task-b", scope: "task b", paths: ["extension/src/bar.ts"], outOfScope: [] },
+          default: {
+            id: "default",
+            scope: "task",
+            paths: ["extension/src/foo.ts"],
+            outOfScope: [],
+          },
+          "task-b": {
+            id: "task-b",
+            scope: "task b",
+            paths: ["extension/src/bar.ts"],
+            outOfScope: [],
+          },
         },
       },
     };
@@ -292,8 +305,18 @@ async function testConsolidationWithCommits() {
         branchName: branch,
         worktrees: { default: repo },
         workstreams: {
-          default: { id: "default", scope: "task", paths: ["extension/src/foo.ts"], outOfScope: [] },
-          "task-b": { id: "task-b", scope: "task b", paths: ["extension/src/bar.ts"], outOfScope: [] },
+          default: {
+            id: "default",
+            scope: "task",
+            paths: ["extension/src/foo.ts"],
+            outOfScope: [],
+          },
+          "task-b": {
+            id: "task-b",
+            scope: "task b",
+            paths: ["extension/src/bar.ts"],
+            outOfScope: [],
+          },
         },
       },
     };
