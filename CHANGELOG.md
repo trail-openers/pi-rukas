@@ -8,6 +8,16 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.54](https://github.com/randomm/pi-ensemble/compare/v0.12.53...v0.12.54) (2026-08-29)
+
+
+### Bug Fixes
+
+* **install:** pin the Pi CLI to a minimum version across all install surfaces ([#581](https://github.com/randomm/pi-ensemble/issues/581)) ([e830272](https://github.com/randomm/pi-ensemble/commit/e830272ebf6a3f2328b0122b61be945db61ba851))
+* **smoke-tests:** widen test-pi-shape-live to cover toolCall and tool_execution_start shapes ([#579](https://github.com/randomm/pi-ensemble/issues/579)) ([b5fa327](https://github.com/randomm/pi-ensemble/commit/b5fa327b3cc745083b3799182b87e16845f4b1be)), closes [#319](https://github.com/randomm/pi-ensemble/issues/319)
+* **test:** update test-worktree-stale-restart.ts for fromRef parameter ([#584](https://github.com/randomm/pi-ensemble/issues/584)) ([c5f9ac5](https://github.com/randomm/pi-ensemble/commit/c5f9ac55e164e730072d0af2a663de128fe23fb1))
+* **work:** prevent cross-group file ownership conflicts ([#571](https://github.com/randomm/pi-ensemble/issues/571)) ([#583](https://github.com/randomm/pi-ensemble/issues/583)) ([5c7f3d0](https://github.com/randomm/pi-ensemble/commit/5c7f3d0063774981f0b0dc4c8c7290210e95bfdc))
+
 ## [0.12.53](https://github.com/randomm/pi-ensemble/compare/v0.12.52...v0.12.53) (2026-08-28)
 
 
