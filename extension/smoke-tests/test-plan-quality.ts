@@ -11,10 +11,12 @@
 
 import {
   correctivePlanSteer,
+  planQualityReason,
+} from "../src/work-driver-plan-helpers.ts";
+import {
   countEnumeratedFindings,
   maxWorkstreams,
   parseWorkstreams,
-  planQualityReason,
 } from "../src/work-driver-plan.ts";
 import { inlinePlanPrompt } from "../src/work-driver-prompts-early.ts";
 

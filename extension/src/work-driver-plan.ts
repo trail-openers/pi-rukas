@@ -13,10 +13,17 @@ import { extractListField, sliceMarkdownSection } from "./work-driver-plan-parse
 
 // Re-exported: several modules read plan/spec markdown through this module.
 export { sliceMarkdownSection, splitOutsideParens } from "./work-driver-plan-parse.ts";
+import { transcriptPathFor } from "./spawn-support.ts";
 import type { DispatchResult } from "./types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { checkAndRegisterClaims, crossGroupConflictsEnabled } from "./work-driver-path-claims.ts";
+import {
+  correctivePlanSteer,
+  correctiveTestSubjectSplitSteer,
+  countFindingsForCycle,
+  planQualityEnabled,
+} from "./work-driver-plan-helpers.ts";
 import {
   type PathCollision,
   type TestSubjectSplit,
@@ -66,10 +73,22 @@ export async function runPlan(
   const dispatch = ctx.dispatchFn ?? dispatchCore;
   const startedAt = Date.now();
   const prompt = inlinePlanPrompt(activeIssuesOf(state), scratchDir(ctx.repoRoot, ctx.issue));
+  // #573 — derive transcript path BEFORE beginDispatch so crash-resume can
+  // locate the surviving session file. Single dispatch: seq=undefined.
+  const planRunId = `plan:explore:${process.pid}:${startedAt}`;
+  const planTranscript = transcriptPathFor("explore", planRunId);
   // #382 — write-ahead: persist the intent to dispatch BEFORE awaiting, so a
   // process death inside the dispatch window is visible on disk rather than
   // leaving the file at the previous step boundary still claiming `running`.
-  const begun = await beginDispatch(ctx.repoRoot, next, "plan", "explore", "plan", startedAt);
+  const begun = await beginDispatch(
+    ctx.repoRoot,
+    next,
+    "plan",
+    "explore",
+    "plan",
+    startedAt,
+    planTranscript,
+  );
   next = begun.state;
   let result: DispatchResult;
   try {
@@ -167,108 +186,18 @@ export async function runPlan(
   };
 }
 
-/** #290 escape hatch: PI_ENSEMBLE_PLAN_QUALITY=0 disables the re-dispatch (doctrine stays). */
-export function planQualityEnabled(): boolean {
-  const v = process.env.PI_ENSEMBLE_PLAN_QUALITY;
-  return v !== "0" && v !== "false";
-}
-
-/**
- * Which plan-quality rule was violated, if any. Both are structural: an
- * under-decomposed plan produces a sprawling diff, and a workstream with no
- * declared paths disables `verifyConsolidation`'s oracle for that slice
- * (`work-driver-verify.ts` skips workstreams with `paths.length === 0`).
- */
+/** Which plan-quality rule was violated, if any. Structural check. */
 export function planQualityReason(
   workstreams: Record<string, { paths: string[] }>,
   findingsCount: number,
 ): PlanQualityReason | undefined {
   const ids = Object.keys(workstreams);
   if (findingsCount >= 3 && ids.length === 1) return "under-decomposed";
-  if (ids.length > 0 && ids.some((id) => (workstreams[id]?.paths.length ?? 0) === 0)) {
+  if (ids.length > 0 && ids.some((id) => (workstreams[id]?.paths.length ?? 0) === 0))
     return "empty-paths";
-  }
-  // An empty list cannot overlap anything, so it is reported above as the more
-  // specific diagnosis; by here every workstream has declared something.
   if (findPathCollisions(workstreams).length > 0) return "overlapping-paths";
-  // A test and the file it exercises in different worktrees can never meet:
-  // the split is an integration failure waiting to happen (#479, #483).
   if (findTestSubjectSplits(workstreams).length > 0) return "test-subject-split";
   return undefined;
-}
-
-/** The corrective steer appended to the second plan dispatch. */
-export function correctivePlanSteer(
-  reason: PlanQualityReason,
-  findingsCount: number,
-  workstreamCount: number,
-  collisions: PathCollision[] = [],
-): string {
-  if (reason === "overlapping-paths") {
-    return [
-      "## Corrective re-dispatch",
-      "",
-      "Two workstreams in your previous plan declared the same file:",
-      ...collisions.map((c) => `- \`${c.a}\` and \`${c.b}\` both claim ${c.path}`),
-      "",
-      "Each workstream gets its own worktree and its own developer, running in parallel, so two",
-      "workstreams sharing a file means two developers editing it at once — which surfaces later as a",
-      "merge conflict the driver cannot resolve. Re-plan so every file belongs to exactly ONE workstream:",
-      "either move the shared file into whichever workstream genuinely owns it, or merge the two",
-      "workstreams if they cannot be separated.",
-    ].join("\n");
-  }
-  if (reason === "under-decomposed") {
-    return [
-      "## Corrective re-dispatch",
-      "",
-      `Your previous plan produced ${workstreamCount} workstream(s) for an issue body containing ${findingsCount} enumerated findings.`,
-      "That is under-decomposed. Two findings share a workstream ONLY when they require edits to THE SAME FILES —",
-      "conceptual relatedness is not a reason. Re-plan: map each finding to its own workstream unless the file sets",
-      "genuinely overlap, and list anything you are deliberately not doing under `Deferred:`.",
-    ].join("\n");
-  }
-  return [
-    "## Corrective re-dispatch",
-    "",
-    "At least one workstream in your previous plan declared no `paths:`.",
-    "Every workstream MUST list the files it will touch — the driver uses that list to verify the committed diff",
-    "actually contains each workstream's slice, and an empty list silently disables that check.",
-    "Re-plan with a non-empty `paths:` and `out-of-scope:` for every workstream.",
-  ].join("\n");
-}
-
-/**
- * The corrective steer for the test/subject split. Named separately from
- * `correctivePlanSteer` because that function's contract takes a
- * `PlanQualityReason` (the persisted value) and this one needs the split
- * details; the dispatch site (runPlan) picks the right steer per reason.
- */
-export function correctiveTestSubjectSplitSteer(splits: TestSubjectSplit[]): string {
-  const pairs =
-    splits.length > 0
-      ? splits.map(
-          (s) =>
-            `- \`${s.test}\` declared test \`${s.testPath}\`, which exercises \`${s.subjectPath}\` owned by \`${s.subject}\``,
-        )
-      : [];
-  return [
-    "## Corrective re-dispatch",
-    "",
-    "Your previous plan separated a test from the file it exercises:",
-    ...(pairs.length > 0
-      ? [...pairs, ""]
-      : [
-          "The plan has a workstream that is only test file(s) whose subject(s) live in another workstream.",
-          "",
-        ]),
-    "Each workstream gets its own worktree and its own developer, so a test and its subject in",
-    "different worktrees can never meet: each workstream passes its own develop gate against its own",
-    "tree, and the consolidated verify fails at commit-pr for the same reason the test was split.",
-    "Re-plan so every test stays in the SAME workstream as the file it exercises. A workstream that is",
-    "only test file(s) has no legitimate reading — move the test to its subject's workstream, or make",
-    "the test file's subject part of the same workstream.",
-  ].join("\n");
 }
 
 /**
@@ -276,36 +205,6 @@ export function correctiveTestSubjectSplitSteer(splits: TestSubjectSplit[]): str
  * artifact the explore step cached. Returns 0 when unavailable — the gate then
  * cannot fire on the findings rule, which is the correct conservative
  * behaviour for a body we could not read.
- */
-async function countFindingsForCycle(ctx: DriverContext, state: WorkState): Promise<number> {
-  const artifact = state.pipelineState.issueBodyArtifact;
-  if (!artifact) return 0;
-  try {
-    return countEnumeratedFindings(await fs.readFile(artifact, "utf8"));
-  } catch (err) {
-    trace(
-      `work-driver: plan quality could not read issue body artifact: ${(err as Error).message?.slice(0, 120)}`,
-    );
-    return 0;
-  }
-}
-
-/**
- * PR6 — Parse the explore reply for a `VERDICT: <kind>` token.
- *
- * Lenient on shape: tolerates `VERDICT: X`, `**VERDICT:** X`, leading
- * whitespace, any case. First match wins so a verbatim quote of the
- * prompt text further down in the reply doesn't override the verdict
- * declared at the top. Returns null on missing or unknown verdicts —
- * `runExplore` treats null as "agent skipped the heading, proceed as
- * NEEDS_WORK" rather than halting. The structural fix is opt-in
- * robustness, not a hard contract break.
- *
- * Empirical case (#533 cascade): explore declared "Task complete:
- * Issue #533 — ALREADY COMPLETED" in prose at the top of its reply
- * but lacked the `VERDICT:` heading, so the driver had nothing to
- * route on. With this parser + the prompt update, future already-
- * complete declarations carry a parseable token.
  */
 export type ExploreVerdict = "NEEDS_WORK" | "ALREADY_COMPLETE" | "NEEDS_CLARIFICATION";
 

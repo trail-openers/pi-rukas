@@ -22,7 +22,7 @@
  * more code and a worse outcome.
  */
 
-import { correctivePlanSteer, planQualityReason } from "../src/work-driver-plan.ts";
+import { correctivePlanSteer, planQualityReason } from "../src/work-driver-plan-helpers.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

@@ -20,11 +20,8 @@
  */
 
 import { findTestSubjectSplits } from "../src/work-driver-plan-paths.ts";
-import {
-  correctivePlanSteer,
-  correctiveTestSubjectSplitSteer,
-  planQualityReason,
-} from "../src/work-driver-plan.ts";
+import { correctivePlanSteer, correctiveTestSubjectSplitSteer } from "../src/work-driver-plan-helpers.ts";
+import { planQualityReason } from "../src/work-driver-plan.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

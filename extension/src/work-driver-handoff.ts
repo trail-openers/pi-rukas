@@ -13,12 +13,14 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { dispatchCore } from "./dispatch.ts";
+import { transcriptPathFor } from "./spawn-support.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { renderHandoffMarkdown } from "./work-driver-handoff-markdown.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
 import { inlineHandoffOpsPrompt } from "./work-driver-prompts-late.ts";
+import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { runWorktreeTeardown } from "./work-driver-worktree-sweep.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -132,6 +134,20 @@ export async function runHandoff(
     handoffBodyPath,
     scratchDir(ctx.repoRoot, ctx.issue),
   );
+  // #573 — derive transcript path BEFORE beginDispatch so crash-resume can
+  // locate the surviving session file. Single dispatch: seq=undefined.
+  const handoffRunId = `handoff:ops:${process.pid}:${startedAt}`;
+  const handoffTranscript = transcriptPathFor("ops", handoffRunId);
+  // #382 — write-ahead: persist the intent to dispatch BEFORE awaiting.
+  const begun = await beginDispatch(
+    ctx.repoRoot,
+    next,
+    "handoff",
+    "ops",
+    "handoff",
+    startedAt,
+    handoffTranscript,
+  );
   let opsReplyText = "";
   // Two enforcement points, deliberately: `timeoutMs` makes spawn SIGTERM the
   // real child so an abandoned handoff agent is not left running, and the race
@@ -148,6 +164,7 @@ export async function runHandoff(
       dispatch(ctx.pi, { role: "ops", prompt }, { label: "ops:handoff", timeoutMs: boundMs }),
       bound,
     ]);
+    next = clearDispatch(next, begun.jobId);
     if (res === BOUND_EXCEEDED) {
       trace(`work-driver: handoff ops dispatch exceeded ${boundMs}ms — using in-process gh`);
       next = appendEvent(next, {
@@ -173,7 +190,7 @@ export async function runHandoff(
     }
   } catch (err) {
     trace(`work-driver: handoff ops dispatch threw: ${(err as Error).message}`);
-    next = appendEvent(next, {
+    next = appendEvent(clearDispatch(next, begun.jobId), {
       kind: "dispatch-failed",
       step: "handoff",
       role: "ops",

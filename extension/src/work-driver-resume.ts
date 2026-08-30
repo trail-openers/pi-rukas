@@ -314,3 +314,18 @@ export function explainRefusal(issue: number, ownerPid: number): string {
 export function explainResume(issue: number, step: WorkStep, lost: number): string {
   return `pi-ensemble: /work for issue #${issue} is resuming at \`${step}\` — the previous run died with ${lost} dispatch(es) in flight. Completed steps are not re-run; only \`${step}\` is re-entered. Its prior child process and whatever it had done are gone, so the step starts over rather than continuing mid-flight.`;
 }
+
+// ---------------------------------------------------------------------------
+// #573 — attempt to re-attach the surviving session and continue from its
+// checkpoint. Called from the crash-resume path (classifyRunningState →
+// resume) when resolveReattach reports { mode: "reattach" }.
+//
+// The surviving child was already spawned with `--session <transcriptPath>`
+// and `--mode rpc`. We re-invoke the same binary with the SAME `--session`
+// path (Pi resumes the existing session file) and send the resume prompt
+// via stdin. If it succeeds, return the result; if it fails, return null
+// and the caller falls back to fresh re-dispatch.
+//
+// `spawnReattach` is injected by the smoke test so the offline suite
+// asserts reattach behaviour without launching a real Pi child.
+// ---------------------------------------------------------------------------

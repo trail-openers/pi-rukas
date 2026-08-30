@@ -88,6 +88,7 @@ export function renderHandoffUserMessage(
   const fileCount = snap ? snap.unstagedCount + snap.stagedCount : 0;
   const prTag = ps.prNumber ? `PR #${ps.prNumber}` : "no PR created";
   const target = ps.prNumber ? `pr ${ps.prNumber}` : `issue ${issue}`;
+  const at = new Date().toISOString();
 
   const lines: string[] = [];
 

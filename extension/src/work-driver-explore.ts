@@ -9,6 +9,7 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { dispatchCore } from "./dispatch.ts";
+import { transcriptPathFor } from "./spawn-support.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
@@ -275,8 +276,20 @@ export async function runExplore(
     bodiesForPrompt,
     useIntent,
   );
+  // #573 — derive transcript path BEFORE beginDispatch so crash-resume can
+  // locate the surviving session file. Single dispatch: seq=undefined.
+  const exploreRunId = `explore:explore:${process.pid}:${startedAt}`;
+  const exploreTranscript = transcriptPathFor("explore", exploreRunId);
   // #382 — write-ahead before the await; see work-driver-resume.ts.
-  const begun = await beginDispatch(ctx.repoRoot, next, "explore", "explore", "explore", startedAt);
+  const begun = await beginDispatch(
+    ctx.repoRoot,
+    next,
+    "explore",
+    "explore",
+    "explore",
+    startedAt,
+    exploreTranscript,
+  );
   next = begun.state;
   const dispatchSettled = await Promise.allSettled([
     dispatch(ctx.pi, { role: "explore", prompt }, { label: "explore" }),

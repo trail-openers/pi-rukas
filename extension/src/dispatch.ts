@@ -4,6 +4,7 @@ import { startBatch, startJob } from "./async-jobs.ts";
 import { type RetryNotice, withProviderBackoff } from "./dispatch-retry.ts";
 import { steerChild } from "./dispatch-steer.ts";
 import { ROLE_NAMES } from "./roles.ts";
+import { transcriptPathFor } from "./spawn-support.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
@@ -53,6 +54,12 @@ export function dispatchCore(
   opts: { label?: string; skipDeck?: boolean; timeoutMs?: number } = {},
 ): Promise<DispatchResult> {
   const stripped = stripModelOverride(spec);
+  // #573 — derive the transcript path BEFORE dispatch so crash-resume can
+  // locate the surviving session file. The driver calls beginDispatch with
+  // this path; the spawn-side runId (from spec.runId or freshly minted) is
+  // what actually determines the file that Pi writes.
+  const runId = stripped.runId ?? makeRunId();
+  const transcriptPath = transcriptPathFor(stripped.role, runId);
   const label = opts.label ?? stripped.role;
   const handle = startJob(pi, {
     label,

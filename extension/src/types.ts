@@ -3,6 +3,12 @@ export interface DispatchSpec {
   prompt: string;
   cwd?: string;
   /**
+   * #573 — caller-supplied runId so the transcript path can be derived BEFORE
+   * spawn, allowing crash-resume to locate the surviving session file.
+   * spawn.ts mints a new runId when this is absent (default behaviour unchanged).
+   */
+  runId?: string;
+  /**
    * Short tag (≤16 chars) disambiguating same-role parallel members in the
    * live dispatch deck (#136). Used by dispatch_parallel only — single
    * dispatch_specialist calls render with the bare role and ignore this.
