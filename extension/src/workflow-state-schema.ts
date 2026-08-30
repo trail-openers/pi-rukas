@@ -395,6 +395,13 @@ export interface PipelineState {
   verifyEvidence?: { step: WorkStep; failures: string[]; at: number };
   /** Terminal status. "running" while active; flips on `merged` or `handoff`. */
   status: "running" | "merged" | "handoff" | "aborted";
+  /**
+   * #580 — ISO timestamp of the last terminal in-chat delivery (merged text,
+   * handoff message, etc.). Written write-ahead, BEFORE `notifyAgent` fires.
+   * The delivery site refuses to send if the current state already carries it.
+   * Absent on pre-#580 state files; readers treat absent as "not yet delivered".
+   */
+  handoffDeliveredAt?: string;
 }
 
 /**
