@@ -9,7 +9,16 @@ import { join, resolve } from "node:path";
 import { promises as fs } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { resolveSweepTarget, decideSweepAction, executeSweepAction, SweepAction, SweepTargetResult, SweepTargetError, runWorktreeSweep, runWorktreeTeardown } from "../src/work-driver-worktree-sweep.ts";
+import {
+  resolveSweepTarget,
+  decideSweepAction,
+  executeSweepAction,
+  SweepAction,
+  SweepTargetResult,
+  SweepTargetError,
+  runWorktreeSweep,
+  runWorktreeTeardown,
+} from "../src/work-driver-worktree-sweep.ts";
 import { processAlive } from "../src/work-driver-resume.ts";
 
 const execAsync = promisify(execFile);
@@ -92,7 +101,9 @@ async function testResolveSweepTarget() {
   const worktreeName = "issue-1-test";
   const worktreeDir = join(testWorktreesDir, worktreeName);
   await fs.mkdir(worktreeDir, { recursive: true });
-  await execAsync("git", ["worktree", "add", "--detach", worktreeDir, "HEAD"], { cwd: testRepoRoot });
+  await execAsync("git", ["worktree", "add", "--detach", worktreeDir, "HEAD"], {
+    cwd: testRepoRoot,
+  });
 
   const result3 = resolveSweepTarget(testRepoRoot, worktreeDir);
   assertTrue(result3.ok, "valid .worktrees child should be accepted");
@@ -125,7 +136,10 @@ async function testResolveSweepTarget() {
 
 async function testDecideSweepAction() {
   console.log("\nTesting decideSweepAction...");
-  const mockExecFn = async (cmd: string, opts?: { cwd?: string; timeout?: number; maxBuffer?: number; shell?: string }) => {
+  const mockExecFn = async (
+    cmd: string,
+    opts?: { cwd?: string; timeout?: number; maxBuffer?: number; shell?: string },
+  ) => {
     return { stdout: "", stderr: undefined };
   };
 
@@ -136,14 +150,14 @@ async function testDecideSweepAction() {
     pipelineState: {
       currentStep: "develop",
       branchName: "test-branch",
-      worktrees: {}
+      worktrees: {},
     },
-    eventLog: []
+    eventLog: [],
   } as any;
   const target1 = {
     ok: true,
     realPath: "/fake/path",
-    name: "issue-1-test"
+    name: "issue-1-test",
   } as SweepTargetResult;
   const opts1 = {
     state: state1,
@@ -151,7 +165,7 @@ async function testDecideSweepAction() {
     selfPid: 99999, // Different from owner pid
     liveCycles: new Set([1]),
     launchingCycleIssue: 2, // Different issue
-    execFn: mockExecFn
+    execFn: mockExecFn,
   };
   try {
     const action1 = await decideSweepAction(opts1);
@@ -168,14 +182,14 @@ async function testDecideSweepAction() {
     pipelineState: {
       currentStep: "develop",
       branchName: "test-branch",
-      worktrees: {}
+      worktrees: {},
     },
-    eventLog: []
+    eventLog: [],
   } as any;
   const target2 = {
     ok: true,
     realPath: "/fake/path",
-    name: "issue-1-test"
+    name: "issue-1-test",
   } as SweepTargetResult;
   const opts2 = {
     state: state2,
@@ -183,7 +197,7 @@ async function testDecideSweepAction() {
     selfPid: 99999,
     liveCycles: new Set([1]), // Issue 1 is live
     launchingCycleIssue: 2, // Different issue
-    execFn: mockExecFn
+    execFn: mockExecFn,
   };
   try {
     const action2 = await decideSweepAction(opts2);
@@ -201,16 +215,14 @@ async function testDecideSweepAction() {
       currentStep: "handoff",
       branchName: "test-branch",
       worktrees: {},
-      mergeHold: true // Indicates awaiting-human-merge
+      mergeHold: true, // Indicates awaiting-human-merge
     },
-    eventLog: [
-      { kind: "cap-hit", cap: "awaiting-human-merge" }
-    ]
+    eventLog: [{ kind: "cap-hit", cap: "awaiting-human-merge" }],
   } as any;
   const target3 = {
     ok: true,
     realPath: "/fake/path",
-    name: "issue-1-test"
+    name: "issue-1-test",
   } as SweepTargetResult;
   const opts3 = {
     state: state3,
@@ -218,7 +230,7 @@ async function testDecideSweepAction() {
     selfPid: 99999,
     liveCycles: new Set(),
     launchingCycleIssue: 2,
-    execFn: mockExecFn
+    execFn: mockExecFn,
   };
   const action3 = await decideSweepAction(opts3);
   assertTrue(action3.type === "purge", "should purge for awaiting-human-merge");
@@ -232,14 +244,14 @@ async function testDecideSweepAction() {
     pipelineState: {
       currentStep: "merged",
       branchName: "test-branch",
-      worktrees: {}
+      worktrees: {},
     },
-    eventLog: []
+    eventLog: [],
   } as any;
   const target4 = {
     ok: true,
     realPath: "/fake/path",
-    name: "issue-1-test"
+    name: "issue-1-test",
   } as SweepTargetResult;
   const opts4 = {
     state: state4,
@@ -247,7 +259,10 @@ async function testDecideSweepAction() {
     selfPid: 99999,
     liveCycles: new Set(),
     launchingCycleIssue: 2,
-    execFn: async (cmd: string, opts?: { cwd?: string; timeout?: number; maxBuffer?: number; shell?: string }) => {
+    execFn: async (
+      cmd: string,
+      opts?: { cwd?: string; timeout?: number; maxBuffer?: number; shell?: string },
+    ) => {
       // Mock git fetch to succeed
       if (cmd.includes("fetch")) {
         return { stdout: "", stderr: undefined };
@@ -261,7 +276,7 @@ async function testDecideSweepAction() {
         return { stdout: "", stderr: undefined };
       }
       return { stdout: "", stderr: undefined };
-    }
+    },
   };
   const action4 = await decideSweepAction(opts4);
   assertTrue(action4.type === "remove", "should remove for work provably on remote");
@@ -275,14 +290,14 @@ async function testDecideSweepAction() {
     pipelineState: {
       currentStep: "develop",
       branchName: "test-branch",
-      worktrees: {}
+      worktrees: {},
     },
-    eventLog: []
+    eventLog: [],
   } as any;
   const target5 = {
     ok: true,
     realPath: "/fake/path",
-    name: "issue-1-test"
+    name: "issue-1-test",
   } as SweepTargetResult;
   const opts5 = {
     state: state5,
@@ -290,7 +305,7 @@ async function testDecideSweepAction() {
     selfPid: 99999,
     liveCycles: new Set(),
     launchingCycleIssue: 2,
-    execFn: mockExecFn
+    execFn: mockExecFn,
   };
   const action5 = await decideSweepAction(opts5);
   assertTrue(action5.type === "purge", "should purge for fallback");
@@ -313,11 +328,14 @@ async function testExecuteSweepAction() {
   const target = {
     ok: true,
     realPath: "/fake/path",
-    name: "issue-1-test"
+    name: "issue-1-test",
   } as SweepTargetResult;
   const actionPurge = { type: "purge", target } as SweepAction;
   let calledWith: { cwd?: string } | null = null;
-  const mockExecFn2 = async (cmd: string, opts?: { cwd?: string; timeout?: number; maxBuffer?: number; shell?: string }) => {
+  const mockExecFn2 = async (
+    cmd: string,
+    opts?: { cwd?: string; timeout?: number; maxBuffer?: number; shell?: string },
+  ) => {
     calledWith = opts;
     if (cmd === "git clean -fdX") {
       return { stdout: "", stderr: undefined };
@@ -332,7 +350,10 @@ async function testExecuteSweepAction() {
   // Test runs git worktree remove --force for remove
   const actionRemove = { type: "remove", target } as SweepAction;
   let calledWith2: { cwd?: string } | null = null;
-  const mockExecFn3 = async (cmd: string, opts?: { cwd?: string; timeout?: number; maxBuffer?: number; shell?: string }) => {
+  const mockExecFn3 = async (
+    cmd: string,
+    opts?: { cwd?: string; timeout?: number; maxBuffer?: number; shell?: string },
+  ) => {
     calledWith2 = opts;
     if (cmd.startsWith("git worktree remove --force")) {
       return { stdout: "", stderr: undefined };
@@ -354,7 +375,7 @@ async function testRunWorktreeSweep() {
     launchingCycleIssue: 1,
     liveCycles: new Set(),
     execFn: async () => ({ stdout: "", stderr: undefined }),
-    enabled: false
+    enabled: false,
   });
   assertFalse(result1.ran, "should not run when disabled");
   assertEquals(result1.checked, 0, "checked should be 0");
@@ -375,15 +396,15 @@ async function testRunWorktreeTeardown() {
     pipelineState: {
       currentStep: "handoff",
       branchName: "test-branch",
-      worktrees: {}
+      worktrees: {},
     },
-    eventLog: []
+    eventLog: [],
   } as any;
   const result1 = await runWorktreeTeardown({
     repoRoot: testRepoRoot,
     state,
     execFn: async () => ({ stdout: "", stderr: undefined }),
-    enabled: false
+    enabled: false,
   });
   assertEquals(result1.length, 0, "should return empty array when disabled");
 

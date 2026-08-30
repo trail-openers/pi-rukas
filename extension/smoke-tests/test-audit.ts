@@ -45,7 +45,20 @@ function makePi() {
     sendUserMessage: (msg) => {
       rec.sentMessages.push(typeof msg === "string" ? msg : JSON.stringify(msg));
     },
-  } satisfies Pick<ExtensionAPI, "registerTool" | "registerCommand" | "on" | "sendUserMessage">;
+    // stripPmTools calls getAllTools — mock returns a minimal toolset so the
+    // security boundary code path can execute without crashing.
+    getAllTools: () =>
+      [
+        { name: "read" },
+        { name: "bash" },
+        { name: "edit" },
+        { name: "write" },
+      ] as unknown as import("@earendil-works/pi-coding-agent").RegisteredTool[],
+    setActiveTools: () => undefined,
+  } satisfies Pick<
+    ExtensionAPI,
+    "registerTool" | "registerCommand" | "on" | "sendUserMessage" | "getAllTools" | "setActiveTools"
+  >;
   return { pi, rec };
 }
 

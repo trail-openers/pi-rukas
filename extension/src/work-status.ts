@@ -36,6 +36,7 @@ import { formatCycleTotal } from "./work-driver-cycle-total.ts";
 import { explainCap } from "./work-driver-explain.ts";
 import { humanActionFor, readQueueSummary } from "./work-queue.ts";
 import { discoverAllCycles, renderCycleIndex } from "./work-status-index.ts";
+import { isIssueNumberArg, resolveJobId } from "./work-status-jobid.ts";
 import { type WorkEvent, type WorkState, readState, workStateDir } from "./workflow-state.ts";
 
 const execp = promisify(exec);
@@ -423,60 +424,60 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
 /** Register the `/work-status` command. Pi calls this from `index.ts:registerCommands`. */
 export function registerWorkStatusCommand(pi: ExtensionAPI): void {
   pi.registerCommand("work-status", {
-    description:
-      "[<issue>] [--json] — Inspect the /work driver's state for the given issue (auto-resolved if omitted)",
+    description: "[<issue>|<jobId>] [--json] — Inspect /work driver state.",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
-      const tokens = args.trim().split(/\s+/).filter(Boolean);
-      const wantJson = tokens.includes("--json");
-      const issueArg = tokens.find((t) => /^\d+$/.test(t));
+      const wantJson = args.includes("--json");
+      const issueArg = args.split(/\s+/).filter((t) => t !== "--json")[0];
       const repoRoot = await resolveRepoRoot(ctx.cwd);
 
+      // Resolve arg → issue number.
       let issue: number | undefined;
       if (issueArg) {
-        issue = Number.parseInt(issueArg, 10);
-      } else {
-        // #382 — with no issue argument and more than one cycle on disk, show
-        // the INDEX. `discoverAllCycles` and `renderCycleIndex` were written
-        // for exactly this and had no caller anywhere in src/, so after a
-        // multi-issue queue run the operator could only inspect one cycle at
-        // a time and had no way to see which groups never started at all.
-        if (!wantJson) {
-          const all = await discoverAllCycles(repoRoot);
-          if (all.length > 1) {
-            const lastQueue = await readQueueSummary(repoRoot);
-            ctx.ui.notify(
-              renderCycleIndex(
-                all,
-                Date.now(),
-                lastQueue
-                  ? {
-                      at: lastQueue.at,
-                      parked: lastQueue.parked,
-                      notStarted: lastQueue.notStarted,
-                    }
-                  : undefined,
-              ),
-              "info",
-            );
+        if (isIssueNumberArg(issueArg)) {
+          issue = Number.parseInt(issueArg, 10);
+        } else {
+          const resolved = resolveJobId(repoRoot, issueArg);
+          if (resolved === undefined) {
+            ctx.ui.notify("pi-ensemble /work-status: jobId not found. Pass issue #.", "info");
             return;
           }
+          issue = resolved;
         }
-        issue = await discoverActiveIssue(repoRoot);
-        if (issue === undefined) {
+      } else if (!wantJson) {
+        // #382 — >1 cycle: show index.
+        const all = await discoverAllCycles(repoRoot);
+        if (all.length > 1) {
+          const last = await readQueueSummary(repoRoot);
           ctx.ui.notify(
-            `pi-ensemble: no /work state files found in ${workStateDir(repoRoot)}. Pass an explicit issue number: /work-status <N>.`,
+            renderCycleIndex(
+              all,
+              Date.now(),
+              last ? { at: last.at, parked: last.parked, notStarted: last.notStarted } : undefined,
+            ),
             "info",
           );
           return;
         }
+        issue = await discoverActiveIssue(repoRoot);
+        if (issue === undefined) {
+          ctx.ui.notify("pi-ensemble: no /work state found. Pass <N> or <jobId>.", "info");
+          return;
+        }
+      } else {
+        ctx.ui.notify(
+          "pi-ensemble /work-status --json: no issue or jobId. Pass <N> --json or <jobId> --json.",
+          "info",
+        );
+        return;
       }
 
+      // Read and display state.
       let state: WorkState | undefined;
       try {
-        state = await readState(repoRoot, issue);
+        state = await readState(repoRoot, issue as number);
       } catch (err) {
         ctx.ui.notify(
-          `pi-ensemble /work-status: failed to read state for issue #${issue}: ${(err as Error).message}`,
+          `pi-ensemble /work-status: read error for #${issue}: ${(err as Error).message}`,
           "error",
         );
         trace(`work-status: readState failed: ${(err as Error).message}`);
@@ -484,17 +485,15 @@ export function registerWorkStatusCommand(pi: ExtensionAPI): void {
       }
       if (!state) {
         ctx.ui.notify(
-          `pi-ensemble /work-status: no state file for issue #${issue} (expected at ${path.join(workStateDir(repoRoot), `${issue}.json`)}).`,
+          `pi-ensemble /work-status: no state for #${issue} at ${path.join(workStateDir(repoRoot), `${issue}.json`)}.`,
           "info",
         );
         return;
       }
-
-      if (wantJson) {
-        ctx.ui.notify(JSON.stringify(state, null, 2), "info");
-        return;
-      }
-      ctx.ui.notify(renderStatus(state, repoRoot), "info");
+      ctx.ui.notify(
+        wantJson ? JSON.stringify(state, null, 2) : renderStatus(state, repoRoot),
+        "info",
+      );
     },
   });
 }

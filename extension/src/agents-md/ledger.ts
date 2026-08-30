@@ -67,6 +67,8 @@ export function parseLedger(body: string): LedgerRow[] {
   for (const line of body.split("\n")) {
     const t = line.trim();
     if (t === "") continue;
+    // Skip HTML comment lines (begin/end markers, when the body includes them).
+    if (/^<!--/.test(t)) continue;
     // Skip the header row and the separator row.
     if (/^\| key \|/.test(t)) continue;
     if (/^\|\s*-{2,}/.test(t)) continue;
@@ -105,7 +107,12 @@ export function upsertRow(rows: LedgerRow[], row: LedgerRow): LedgerRow[] {
 }
 
 /**
- * Merge new auto-derived rows over the existing ledger.
+ * Merge new auto-derived rows over the existing ledger. Also collapses
+ * duplicate keys: if the existing ledger has multiple rows with the same key
+ * (which can happen when a manual edit creates a duplicate), only the first
+ * is kept. This is how `update` repairs a check-1 (duplicate-ledger-key)
+ * finding: the next write collapses the dups, and a subsequent check-0
+ * confirms.
  *
  * The rules:
  *   - an existing `asked` row is NEVER overwritten by an `auto` row (sticky).
@@ -117,7 +124,18 @@ export function upsertRow(rows: LedgerRow[], row: LedgerRow): LedgerRow[] {
  * The `asked` row wins on a key collision: the human decision is the record.
  */
 export function mergeAutoRows(existing: LedgerRow[], auto: LedgerRow[]): LedgerRow[] {
-  const out = existing.slice();
+  // 1. Collapse duplicate keys: first occurrence wins.
+  const seen = new Set<string>();
+  const collapsed: LedgerRow[] = [];
+  for (const r of existing) {
+    if (!r) continue;
+    if (seen.has(r.key)) continue; // duplicate — skip
+    seen.add(r.key);
+    collapsed.push({ ...r });
+  }
+
+  // 2. Merge auto rows over the collapsed ledger.
+  const out = collapsed;
   for (const a of auto) {
     const i = out.findIndex((r) => r.key === a.key);
     if (i === -1) {
@@ -154,4 +172,20 @@ export function driftWarnings(
     }
   }
   return out;
+}
+
+/**
+ * Merge omission rows into the existing ledger. Each omission becomes a row
+ * with key `omit:<id>` and the omission reason as value, provenance auto.
+ */
+export function mergeOmissionRows(
+  merged: LedgerRow[],
+  omitted: { id: string; reason: string }[],
+  today: string,
+): LedgerRow[] {
+  return omitted.reduce(
+    (out, o) =>
+      upsertRow(out, { key: `omit:${o.id}`, value: o.reason, provenance: "auto", date: today }),
+    merged,
+  );
 }

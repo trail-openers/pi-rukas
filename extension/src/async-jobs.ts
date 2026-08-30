@@ -6,6 +6,8 @@ import {
   MAX_JOBS,
   type SingleJobState,
   childHandles,
+  clearJobIssues,
+  getJobIssues,
   jobs,
   newJobId,
 } from "./async-jobs-registry.ts";
@@ -26,6 +28,7 @@ import { type DispatchResult, isRateLimit429Msg } from "./types.ts";
 export { formatSingleReport } from "./async-jobs-report.ts";
 export {
   getChildHandle,
+  getJobIssues,
   getOrchestratorActiveChild,
   isOrchestratorJob,
   markOrchestrator,
@@ -182,6 +185,7 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
     (result) => {
       jobs.delete(jobId);
       childHandles.delete(jobId);
+      clearJobIssues(jobId);
       if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
       // Five-way: ok / killCause / 429 / FAILED-PROVIDER-ERROR / process-exit-failed.
       // #309/#314 — killCause (#296) wins over errorStop. A self-kill is NOT a
@@ -245,6 +249,7 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
     (err: Error) => {
       jobs.delete(jobId);
       childHandles.delete(jobId);
+      clearJobIssues(jobId);
       if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
       lifecycle.emitFailed(jobId, input.label, input.role, Date.now() - state.startedAt);
       sessionAutosave.recordOutcome(false);

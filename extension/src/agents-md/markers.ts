@@ -233,6 +233,46 @@ export function appendSection(text: string, id: string, body: string): string {
   return `${text}${prefix}${begin}\n${cleanBody}${end}\n`;
 }
 
+/**
+ * Insert a new managed section after a target section.
+ *
+ * The new section is inserted AFTER the end marker of the section with id
+ * `targetId`. The insertion seam is at `target.endMarkerEnd`: everything
+ * from that point onward is copied verbatim. This satisfies the invariant
+ * that bytes after the insertion seam are untouched.
+ *
+ * When `targetId` is absent from the document, falls back to `appendSection`
+ * (append-at-end). Throws MarkerError if `id` already exists.
+ *
+ * This is the function the scaffold post-pass uses to insert boilerplate
+ * sections after the `environment` section during has-markers updates.
+ */
+export function insertSectionAfter(
+  text: string,
+  id: string,
+  body: string,
+  targetId: string,
+): string {
+  const { spans } = parseMarkers(text);
+  if (spans.some((s) => s.id === id)) {
+    throw new MarkerError(`section id "${id}" already exists; use splice to update it`);
+  }
+  const cleanBody = body.endsWith("\n") ? body : `${body}\n`;
+  const begin = markerIdLine(id, "begin", MARKER_VERSION);
+  const end = markerIdLine(id, "end");
+  const target = spans.find((s) => s.id === targetId);
+
+  if (target) {
+    // Insert after the target's end marker.
+    const prefix = text.length === 0 || text[target.endMarkerEnd] === "\n" ? "" : "\n";
+    return `${
+      text.slice(0, target.endMarkerEnd) + prefix + begin
+    }\n${cleanBody}${end}\n${text.slice(target.endMarkerEnd)}`;
+  }
+  // Target absent — append-at-end.
+  return appendSection(text, id, body);
+}
+
 /** Build the marker pair + body as standalone text (for a fresh file). */
 export function renderSection(id: string, body: string): string {
   const cleanBody = body.endsWith("\n") ? body : `${body}\n`;

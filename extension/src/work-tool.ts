@@ -33,10 +33,12 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { setJobIssues } from "./async-jobs-registry.ts";
+import { startJob } from "./async-jobs.ts";
 import { type SlashCommand, expandArgs, loadPromptBody } from "./commands.ts";
 import { armPmMode } from "./pm-mode.ts";
 import { trace } from "./trace.ts";
-import { launchWork, parseWorkArgs, resolveRepoRoot } from "./work-entry.ts";
+import { parseWorkArgs, resolveRepoRoot, runDriver } from "./work-entry.ts";
 
 /**
  * Commands whose body is prose for the main agent. `work` is excluded because
@@ -101,24 +103,37 @@ export function registerWorkTools(pi: ExtensionAPI) {
 
       armPmMode();
       const repoRoot = await resolveRepoRoot(ctx.cwd);
-      const lines: string[] = [];
-      const launch = await launchWork(pi, {
-        repoRoot,
-        invocation,
-        sink: { notify: (t) => lines.push(t) },
-      });
-      trace(`start_work_driver → ${launch.mode} for #${launch.issues.join(", #")}`);
 
-      lines.push(
-        "",
-        "This is a launch notification — the cycle runs in the background. Wait for a steer message with the outcome; that steer is the result, not this notification. Do not poll .pi/work-state/ or run /work-status.",
-        "Do not re-dispatch its steps yourself:",
-        "Merge authority was NOT granted — the cycle will open its PR and park unless the",
-        "project's AGENTS.md grants it.",
-      );
+      const handle = startJob(pi, {
+        label: "work-driver",
+        role: "work-driver",
+        skipDeck: true,
+        work: (signal, hooks) =>
+          runDriver(pi, { repoRoot, invocation, sink: { notify: (t) => trace(t) } }),
+      });
+
+      setJobIssues(handle.jobId, params.issues);
+
+      const issueText =
+        params.issues.length === 1
+          ? `issue #${params.issues[0]}`
+          : `issues #${params.issues.join(", #")}`;
+
+      trace(`start_work_driver → job ${handle.jobId} for ${issueText}`);
+
       return {
-        content: [{ type: "text", text: lines.join("\n") }],
-        details: { started: true, mode: launch.mode, issues: launch.issues, mergeGrant: false },
+        content: [
+          {
+            type: "text",
+            text: `pi-ensemble: /work driver started for ${issueText} (jobId: ${handle.jobId}). A structured report will be delivered via steer when complete. Merge authority was NOT granted — the cycle will open its PR and park unless the project's AGENTS.md grants it. Do not poll .pi/work-state/ or run /work-status to check progress.`,
+          },
+        ],
+        details: {
+          started: true,
+          jobId: handle.jobId,
+          issues: parsed.issues,
+          mergeGrant: false,
+        },
       };
     },
   });

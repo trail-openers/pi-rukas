@@ -28,6 +28,15 @@ import {
 } from "./ledger.ts";
 import { MARKER_VERSION, parseMarkers, presentIds, sectionContent } from "./markers.ts";
 import { commandsBody, environmentBody, gatesBody, omissionFor, renderAgent } from "./renderer.ts";
+import {
+  type ScaffoldOpts,
+  computeScaffold,
+  operatorChoicesLedgerRows,
+  renderOperatorChoices,
+  runScaffoldPostPass,
+  runWrapScaffold,
+} from "./scaffold.ts";
+import { makeUpdateAgent } from "./update-agent.ts";
 import { WrapError, isInsertionsOnly, wrapBytes, wrapLedgerRows } from "./wrap.ts";
 
 export type Verb = "create" | "update" | "check";
@@ -74,6 +83,8 @@ export interface Plan {
   omitted: { id: string; reason: string }[];
   /** A drift warning if an operator row no longer matches the derivation. */
   drift?: string;
+  /** Scaffolded boilerplate section ids (scaffolded:<id> ledger rows). */
+  scaffoldedIds?: string[];
 }
 
 export interface VerbResult {
@@ -117,13 +128,30 @@ function omissionRows(facts: DetectedFacts, today: string): LedgerRow[] {
  * computes the full plan (including `newBytes`) but never calls `fs.writeFile`.
  * For `check` the param is a no-op (it never writes) — it exists for
  * signature uniformity.
+ *
+ * `opts` sits between `fs` and `dryRun` (positional 4). When `opts` is a
+ * boolean, it is treated as `dryRun` to preserve existing callers.
  */
 export function createAgent(
   root: string,
   file: string,
   fs: AgentsMdFs = DEFAULT_FS,
-  dryRun = false,
+  opts: ScaffoldOpts | boolean = {},
+  dryRunParam?: boolean,
 ): VerbResult {
+  // Handle legacy 4-positional call: createAgent(root, file, fs, true)
+  // where `true` was dryRun.
+  let effectiveOpts: ScaffoldOpts;
+  let effectiveDryRun: boolean;
+  if (typeof opts === "boolean") {
+    effectiveOpts = {};
+    effectiveDryRun = opts;
+  } else {
+    effectiveOpts = opts;
+    effectiveDryRun = dryRunParam ?? false;
+  }
+  const scaffold = effectiveOpts.scaffold ?? false;
+  const answers = effectiveOpts.answers;
   if (fs.stat(file)) {
     // create refuses to touch an existing file — the operator must use update
     // or a brownfield wrap, which is an explicit decision, not a side effect.
@@ -135,9 +163,41 @@ export function createAgent(
   }
   const facts = detectFacts(root);
   const today = fs.today?.() ?? new Date().toISOString().slice(0, 10);
-  const ledger = omissionRows(facts, today);
-  const bytes = renderAgent({ facts, ledger, preamble: DEFAULT_PREAMBLE, version: MARKER_VERSION });
-  if (!dryRun) fs.writeFile(file, bytes);
+  let ledger = omissionRows(facts, today);
+
+  // Scaffold post-pass: compute boilerplate sections and optional operator-choices.
+  let factIds = new Set<string>(["quality-gates", "commands", "environment", "decision-ledger"]);
+  let scaffoldedIds: string[] = [];
+  let bytes = renderAgent({ facts, ledger, preamble: DEFAULT_PREAMBLE, version: MARKER_VERSION });
+
+  if (scaffold) {
+    const scaffoldResult = computeScaffold(factIds, { scaffold: true, answers });
+    // Add operator-choices ledger rows.
+    if (answers) {
+      ledger = [...ledger, ...operatorChoicesLedgerRows(answers, today)];
+    }
+    // Re-render with updated ledger.
+    bytes = renderAgent({ facts, ledger, preamble: DEFAULT_PREAMBLE, version: MARKER_VERSION });
+    // Run post-pass: append boilerplate after the managed sections.
+    const post = runScaffoldPostPass(bytes, scaffoldResult, false);
+    if (post.bytes !== bytes) {
+      bytes = post.bytes;
+      scaffoldedIds = post.scaffoldedIds;
+      factIds = new Set([...factIds, ...post.scaffoldedIds]);
+    }
+  }
+
+  if (!effectiveDryRun) {
+    try {
+      fs.writeFile(file, bytes);
+    } catch (err) {
+      return {
+        verb: "create",
+        error: `write FAILED: ${(err as Error).message}`,
+        exitCode: 1,
+      };
+    }
+  }
   return {
     verb: "create",
     plan: {
@@ -147,111 +207,13 @@ export function createAgent(
       wouldWrite: true,
       managedIds: presentIds(bytes),
       omitted: omittedSections(facts),
+      scaffoldedIds: scaffoldedIds.length ? scaffoldedIds : undefined,
     },
     exitCode: 0,
   };
 }
 
-export function updateAgent(
-  root: string,
-  file: string,
-  fs: AgentsMdFs = DEFAULT_FS,
-  dryRun = false,
-): VerbResult {
-  const state = fileState(fs, file);
-  if (state === "no-file") {
-    return createAgent(root, file, fs, dryRun);
-  }
-  if (state === "no-markers") return runWrap(root, file, fs, dryRun);
-  const current = fs.readFile(file);
-  let parsed: string[];
-  try {
-    parsed = presentIds(current);
-  } catch (e) {
-    return {
-      verb: "update",
-      error: `refusing to update corrupt markers: ${(e as Error).message}`,
-      exitCode: 2,
-    };
-  }
-  const facts = detectFacts(root);
-  const today = fs.today?.() ?? new Date().toISOString().slice(0, 10);
-
-  // The three fact-derived bodies — the same pure helpers the fresh-file
-  // builder uses, so the two cannot drift apart.
-  const updates = new Map<string, string>();
-  const omitted: { id: string; reason: string }[] = [];
-  for (const [id, body] of [
-    ["quality-gates", gatesBody(facts)],
-    ["commands", commandsBody(facts)],
-    ["environment", environmentBody(facts)],
-  ] as const) {
-    if (typeof body === "string") updates.set(id, body);
-    else omitted.push({ id, reason: body.omit });
-  }
-
-  // 2. Merge the ledger once on the CURRENT bytes: keep operator rows,
-  //    supersede changed auto rows, and record any new omissions.
-  const auto = omissionRows(facts, today);
-  const existingLedger = parseExistingLedger(current);
-  if (existingLedger === undefined) {
-    return {
-      verb: "update",
-      error: "refusing to update corrupt markers: decision-ledger has a malformed row",
-      exitCode: 2,
-    };
-  }
-  const merged = mergeOmissionRows(mergeAutoRows(existingLedger, auto), omitted, today);
-  const drift = driftWarnings(existingLedger, auto);
-
-  // 3. Single-pass rebuild: the markers are parsed ONCE from the original
-  //    bytes and every managed span is resolved up front, so there is no
-  //    shifting-index problem — the output is built in document order, copying
-  //    original bytes verbatim everywhere except the managed content of the
-  //    sections being updated (the #253 invariant: bytes outside a managed
-  //    span are never touched).
-  const { spans } = parseMarkers(current);
-  const spanById = new Map(spans.map((s) => [s.id, s]));
-  const ledgerSpan = spanById.get("decision-ledger");
-  const ledgerBody = renderLedger(merged);
-  const parts: string[] = [];
-  let cursor = 0;
-  for (const span of spans) {
-    let body: string | undefined;
-    if (span.id === "decision-ledger" && ledgerSpan) body = ledgerBody;
-    else if (span.id !== "decision-ledger") body = updates.get(span.id);
-    if (body === undefined) continue; // content unchanged — copy verbatim
-    parts.push(current.slice(cursor, span.contentStart));
-    parts.push(body.endsWith("\n") ? body : `${body}\n`);
-    cursor = span.contentEnd;
-  }
-  parts.push(current.slice(cursor));
-  const bytes = parts.join("");
-
-  const wouldWrite = bytes !== current;
-  // The single write codepath. A no-op update (wouldWrite false) never enters
-  // this — which is exactly what the idempotency test asserts by stubbing
-  // writeFile to throw. createAgent writes unconditionally (file absent).
-  // dryRun skips it even when wouldWrite is true.
-  if (wouldWrite && !dryRun) {
-    fs.writeFile(file, bytes);
-  }
-  return {
-    verb: "update",
-    plan: {
-      state,
-      newBytes: bytes,
-      oldBytes: current,
-      wouldWrite,
-      managedIds: parsed,
-      omitted: omittedSections(facts),
-      drift: drift.length
-        ? drift.map((d) => `${d.key}: "${d.asked}" → derives "${d.derived}"`).join("; ")
-        : undefined,
-    },
-    exitCode: 0,
-  };
-}
+export const updateAgent = makeUpdateAgent(createAgent, runWrap, omissionRows);
 
 export function checkAgent(
   root: string,
@@ -355,7 +317,16 @@ export { fileState };
 // wrap's insertions-only construction makes a reword unreachable — the guard
 // catches a regression).
 
-export function runWrap(root: string, file: string, fs: AgentsMdFs, dryRun: boolean): VerbResult {
+export function runWrap(
+  root: string,
+  file: string,
+  fs: AgentsMdFs,
+  dryRun: boolean,
+  opts?: {
+    scaffoldBodies?: { id: string; body: string }[];
+    answers?: import("./scaffold.ts").OperatorAnswers;
+  },
+): VerbResult {
   const current = fs.readFile(file);
   const facts = detectFacts(root);
   const today = fs.today?.() ?? new Date().toISOString().slice(0, 10);
@@ -374,7 +345,7 @@ export function runWrap(root: string, file: string, fs: AgentsMdFs, dryRun: bool
   const ledger = wrapLedgerRows(today, omitted);
   let bytes: string;
   try {
-    bytes = wrapBytes(current, facts, bodies, ledger).bytes;
+    bytes = wrapBytes(current, facts, bodies, ledger, opts?.scaffoldBodies).bytes;
   } catch (e) {
     if (e instanceof WrapError) {
       // Ambiguity is a finding (exit 1) — the operator can still decide per
@@ -400,9 +371,32 @@ export function runWrap(root: string, file: string, fs: AgentsMdFs, dryRun: bool
     };
   }
 
+  // Scaffold post-pass: append boilerplate after the wrapped output.
+  let scaffoldedIds: string[] = [];
+  if (opts?.scaffoldBodies) {
+    const wrapIds = parseMarkersSafe(bytes);
+    const scaffoldResult = computeScaffold(new Set(wrapIds), {
+      scaffold: true,
+      answers: opts.answers,
+    });
+    const post = runWrapScaffold(bytes, scaffoldResult);
+    if (post.bytes !== bytes) {
+      bytes = post.bytes;
+      scaffoldedIds = post.scaffoldedIds;
+    }
+  }
+
   const wouldWrite = bytes !== current;
   if (wouldWrite && !dryRun) {
-    fs.writeFile(file, bytes);
+    try {
+      fs.writeFile(file, bytes);
+    } catch (err) {
+      return {
+        verb: "update",
+        error: `write FAILED: ${(err as Error).message}`,
+        exitCode: 1,
+      };
+    }
   }
   return {
     verb: "update",
@@ -412,6 +406,7 @@ export function runWrap(root: string, file: string, fs: AgentsMdFs, dryRun: bool
       oldBytes: current,
       wouldWrite,
       managedIds: parseMarkersSafe(bytes),
+      scaffoldedIds: scaffoldedIds.length ? scaffoldedIds : undefined,
       omitted: omittedSections(facts),
     },
     exitCode: 0,
@@ -466,7 +461,7 @@ export function runAgentsMd(argv: string[]): number {
     return r.exitCode;
   }
   if (verb === "check") {
-    const c = r.check;
+    const c = (r as VerbResult).check;
     if (!c) {
       console.error("error: no check result");
       return 2;

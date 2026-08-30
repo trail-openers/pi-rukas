@@ -36,8 +36,8 @@ process.on("exit", () => {
 
 const mp = await import("../src/model-picker.ts");
 const { buildModelItems, buildRoleItems, encodeModelValue, parseModelValue } = mp;
-type PiModel = (typeof import("../src/list-models.ts"))["PiModel"];
-type ModelChoice = (typeof import("../src/model-config.ts"))["ModelChoice"];
+type PiModel = typeof import("../src/list-models.ts")["PiModel"];
+type ModelChoice = typeof import("../src/model-config.ts")["ModelChoice"];
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

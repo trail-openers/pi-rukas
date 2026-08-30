@@ -52,6 +52,13 @@ Use the **`agents_md_run` tool**:
 agents_md_run(verb: "create" | "update" | "check",
               deep?: boolean,      // check only; rejected with a structured
                                    // error on create/update
+              scaffold?: boolean,  // append 5 static boilerplate sections
+              answers?: {           // operator interview answers (4 Qs)
+                coverageThreshold?: string,
+                reviewBlockingSeverity?: string,
+                mergeAuthority?: string,
+                projectConstraints?: string,
+              },
               dryRun?: boolean)    // plan is computed, no write is performed
 ```
 
@@ -59,7 +66,7 @@ The tool resolves the repo root itself; you pass no paths. The result is
 structured — do not parse prose:
 
 - `create`/`update` results: `exitCode` plus
-  `plan: { state, newBytes, oldBytes, wouldWrite, managedIds, omitted, drift }`
+  `plan: { state, newBytes, oldBytes, wouldWrite, managedIds, omitted, drift, scaffoldedIds }`
 - `check` results: `exitCode` plus
   `check: { code, findings: [{kind, message}[]], corrupt }` — on the
   `no-file` case `check` is absent and `error` is present; render `error`
@@ -135,37 +142,66 @@ Rules:
 
 ---
 
+## Greenfield interview (before tool call)
+
+When `scaffold: true` is passed to a `create` (no-file) verb, the tool
+applies the scaffold post-pass, which appends 5 static boilerplate sections
+and optionally an `operator-choices` section (from interview answers).
+
+Ask these 4 questions BEFORE calling the tool:
+
+1. **Coverage threshold** — what test coverage is required? (default: omit)
+2. **Review-blocking severity** — which severity blocks merge? (default: omit)
+3. **Merge authority** — who/what can merge PRs? (default: omit)
+4. **Project-specific constraints** — any additional rules? (default: omit)
+
+Protocol:
+- 2–4 options per question, default is the lowest-consequence choice
+- If the operator is absent (headless), see the headless clause
+- Unanswered → section not created, no invented defaults
+- Answered → `operator-choices` section + `[asked:operator]` ledger rows
+
+---
+
 ## The headless clause (no UI)
 
 If there is no interactive UI (headless / `pi -p` / a driver dispatch):
-- **Do not call the tool** for any ask-case (a `create`/`update` with
-  `plan.wouldWrite: true`). `check` is read-only and may run headless.
-- **Assume the default** for each question the interactive run would have
-  asked, and record each assumed answer as an `[asked:operator,<date>]`
-  ledger row tagged as an assumption in its value (e.g. `value: "omit
-  (headless-assumed)"`) — in the file, once the write happens in an
-  interactive session.
-- **Show the diff.** Run the verb with `dryRun: true` and surface the
-  rendered diff from the tool result.
-- **Write nothing.** A headless run must not auto-adopt a human file. Stop
-  after showing the diff and report that the run is gated on a human — the
-  tool's exit-code contract is 0/1/2 and carries no "gated" code, so the
-  gating decision is yours, made by this clause.
+- **`dryRun` is always permitted** — this is a carve-out from the no-write
+  rule. `dryRun: true` computes the full plan and is safe to call headless.
+- **Show the advisory diff.** Run the verb with `dryRun: true` and surface
+  the rendered diff. For scaffolded creates, the diff assumes defaults for
+  the 4 interview questions.
+- **Write nothing.** A headless run must not auto-adopt a human file or
+  write any assumed-answer ledger rows. The `operator-choices` section and
+  `[asked:operator]` rows are NEVER written headless.
+- **Re-ask next interactive run.** Report that the run is gated on a human.
+  The next interactive session will re-ask the 4 interview questions and
+  produce the real write.
 
 Never auto-adopt a brownfield file headless.
 
 ---
 
-## Brownfield adoption = WRAPPING ONLY
+## Brownfield adoption = WRAPPING ONLY, plus scaffold-append when scaffold is set
 
 For a file that exists but has no markers, the ONLY permitted change is to
-**wrap**: the tool parses the existing `## ` sections, classifies each as
-`machine` (facts the core can re-derive: commands, environment) /
-`doctrine` (human rules, taste, machine-read sentences like merge authority) /
-`add` (a managed section that is absent), and produces a per-section plan. The
-default plan is **doctrine-untouched**: every existing section is left exactly
-where it is, with its heading and bytes intact; the core inserts its marker
-pairs and appends only the managed sections it can derive.
+**wrap** (doctrine-untouched) **plus scaffold-append when scaffold is set**:
+
+**Wrap** (always permitted): the tool parses the existing `## ` sections,
+classifies each as `machine` (facts the core can re-derive: commands,
+environment) / `doctrine` (human rules, taste, machine-read sentences like
+merge authority) / `add` (a managed section that is absent), and produces a
+per-section plan. The default plan is **doctrine-untouched**: every existing
+section is left exactly where it is, with its heading and bytes intact; the
+core inserts its marker pairs and appends only the managed sections it can
+derive.
+
+**Scaffold-append** (when `scaffold: true`): after the wrap, 5 static
+boilerplate sections are appended. These are universal text — language
+specifics come from the managed fact sections. The refusal condition becomes
+`machineByLine.size === 0 && appended.length === 0 && scaffoldBodies.length === 0`
+so a repo with no machine sections can still wrap if scaffold boilerplate
+will be appended.
 
 Assert, before the write: the diff in the tool result is
 **insertions-only** (new marker lines + appended managed sections). No line

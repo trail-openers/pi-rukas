@@ -11,7 +11,7 @@
  * The fixtures below are what a real backlog actually contains: a full spec, a
  * one-line human bug report, an issue contradicted by the code, an issue
  * already implemented, and a reply that drifted off-format entirely.
-*/
+ */
 import {
   type NormalisedSpec,
   explainPark,
@@ -112,7 +112,7 @@ would produce a confident change to the wrong thing.
     /add acceptance criteria/.test(parkAction("underspecified", 42)),
     "the human action is specific, not 'inspect the state file'",
   );
-}// ---------------------------------- contradicted by the code
+} // ---------------------------------- contradicted by the code
 {
   // The highest-value signal this step can produce.
   const s = resolve(`
@@ -135,7 +135,8 @@ The issue describes behaviour that was changed in #366. It is stale.
     s?.evidence.some((e) => e.verdict === "contradicted"),
     "the contradicting evidence is retained for the handoff",
   );
-}{
+}
+{
   // The resolver is an LLM and can contradict itself. A load-bearing
   // contradiction wins — ignoring one is exactly how a wrong bug report gets built.
   const s = resolve(`
@@ -181,10 +182,12 @@ Fix the thing in src/a.ts.
   const s = resolve("## Spec\n\n### Intent\nSomething.\n\n### Deliverables\n- d1: do it\n");
   assert(s?.verdict === "park", "a MISSING verdict parks — silence is not permission");
   assert(s?.parkReason === "underspecified", "and carries an honest default reason");
-}{
+}
+{
   const s = resolve("INTENT-VERDICT: banana\n\n## Spec\n\n### Intent\nx\n");
   assert(s?.verdict === "park", "an unparseable verdict parks");
-}{
+}
+{
   // A reply with no Spec block at all returns undefined, so runExplore falls
   // back to the legacy router rather than parking every cycle on drift.
   assert(
@@ -220,7 +223,7 @@ Add a retry.
     /Retry 3 times/.test(block),
     "the assumption text reaches review — otherwise 'proceed-with-assumptions' is not honest",
   );
-  
+
   // Test fallback path includes assumptions via inlineCommitPrPrompt
   const scratchDir = "/tmp/issue-455";
   const prompt = inlineCommitPrPrompt(
@@ -233,16 +236,13 @@ Add a retry.
     [], // eventLog
     scratchDir, // scratchDirAbs
   );
-  
+
   // Verify the fallback prompt includes the assumptions section
   assert(
     prompt.includes("## Assumptions made"),
     "fallback prompt includes assumptions section header",
   );
-  assert(
-    prompt.includes("Retry 3 times"),
-    "fallback prompt includes the assumption text",
-  );
+  assert(prompt.includes("Retry 3 times"), "fallback prompt includes the assumption text");
 }
 {
   // Recording assumptions while claiming a plain `proceed` understates what

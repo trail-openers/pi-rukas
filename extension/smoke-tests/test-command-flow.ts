@@ -52,6 +52,16 @@ function makePi() {
     sendUserMessage: (msg: string) => rec.sentMessages.push(msg),
     sendMessage: (_msg: string) => undefined,
     getCommands: () => [],
+    // stripPmTools calls getAllTools — mock returns a minimal toolset so the
+    // security boundary code path can execute without crashing.
+    getAllTools: () =>
+      [
+        { name: "read" },
+        { name: "bash" },
+        { name: "edit" },
+        { name: "write" },
+      ] as unknown as import("@earendil-works/pi-coding-agent").RegisteredTool[],
+    setActiveTools: () => undefined,
   };
   return { pi, rec };
 }

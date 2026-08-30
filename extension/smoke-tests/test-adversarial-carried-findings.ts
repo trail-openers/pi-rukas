@@ -111,24 +111,15 @@ const FINDING = "extract_metadata false-match on ' | assumption:' — sanitize.r
     [approved(FINDING)], // eventLog — carries the adversarial findings
     scratchDir, // scratchDirAbs
   );
-  
+
   // Verify the fallback prompt includes the carried findings section
   assert(
     prompt.includes("## Adversarial review"),
     "fallback prompt includes carried findings section header",
   );
-  assert(
-    prompt.includes(FINDING),
-    "fallback prompt includes the carried finding text",
-  );
-  assert(
-    /did not\s+block/i.test(prompt),
-    "fallback prompt says findings did not block",
-  );
-  assert(
-    prompt.includes("CRITICAL_ISSUES_FOUND"),
-    "fallback prompt names what would have blocked",
-  );
+  assert(prompt.includes(FINDING), "fallback prompt includes the carried finding text");
+  assert(/did not\s+block/i.test(prompt), "fallback prompt says findings did not block");
+  assert(prompt.includes("CRITICAL_ISSUES_FOUND"), "fallback prompt names what would have blocked");
 }
 
 console.log(`\nexit ${exit}`);

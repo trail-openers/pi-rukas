@@ -167,6 +167,7 @@ export function wrapBytes(
   facts: DetectedFacts,
   bodies: { id: string; body: string }[],
   ledger: LedgerRow[],
+  scaffoldBodies?: { id: string; body: string }[],
 ): WrapResult {
   void facts;
   const sections = classifySections(original);
@@ -190,7 +191,13 @@ export function wrapBytes(
   );
   const appended = bodies.filter((b) => !wrappedIds.has(b.id));
 
-  if (machineByLine.size === 0 && appended.length === 0) {
+  // Wrap refusal: no machine sections, no derivable bodies, and no scaffold
+  // sections to append. When scaffold is enabled (scaffoldBodies.length > 0),
+  // the refusal is lifted because boilerplate will be appended. This is the
+  // Shape C hybrid design: boilerplate sections live outside markers and the
+  // wrap refuses only when nothing at all can be produced.
+  const scaffoldCount = scaffoldBodies?.length ?? 0;
+  if (machineByLine.size === 0 && appended.length === 0 && scaffoldCount === 0) {
     throw new WrapError(
       "no section is classifiable as machine and no managed section is derivable — refusing to wrap",
     );

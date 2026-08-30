@@ -45,7 +45,10 @@ const spec = (over: Partial<NormalisedSpec> = {}): NormalisedSpec => ({
   ...over,
 });
 
-const contradicted = (claim: string, source = "extension/src/work-driver-intent.ts:1"): SpecEvidence => ({
+const contradicted = (
+  claim: string,
+  source = "extension/src/work-driver-intent.ts:1",
+): SpecEvidence => ({
   claim,
   source,
   verdict: "contradicted",
@@ -84,7 +87,9 @@ for (const incident of incidents) {
   const resolved = reconcileVerdict(
     spec({
       intent: incident.intent,
-      deliverables: [{ id: "d1", description: "implement the requested behavior", paths: [incident.path] }],
+      deliverables: [
+        { id: "d1", description: "implement the requested behavior", paths: [incident.path] },
+      ],
       evidence: [contradicted(incident.claim, `${incident.path}:1`)],
     }),
   );
@@ -155,7 +160,11 @@ for (const incident of incidents) {
     ],
     evidence: [
       contradicted("the issue's old example value is already checked elsewhere"),
-      { claim: "the retry ceiling warning is unimplemented", source: "extension/src/retry-config-check.ts:1", verdict: "confirmed" },
+      {
+        claim: "the retry ceiling warning is unimplemented",
+        source: "extension/src/retry-config-check.ts:1",
+        verdict: "confirmed",
+      },
     ],
   });
   assert(specIsComplete(supporting), "specIsComplete ignores a supporting contradiction");

@@ -77,7 +77,7 @@ function statusOf(versionOverride: string): string {
   `;
   return execFileSync("bash", ["-c", code], {
     encoding: "utf8",
-    env: { ...process.env, PI_VER_OVERRIDE: versionOverride, "__PI_TEST_SET": "1" },
+    env: { ...process.env, PI_VER_OVERRIDE: versionOverride, __PI_TEST_SET: "1" },
   }).trim();
 }
 
@@ -99,7 +99,10 @@ function statusOfMissingPi(): string {
 }
 
 const minVersion = parseMinVersion();
-assert(minVersion !== null, "install-preflight.sh declares MIN_PI_VERSION (single source of truth)");
+assert(
+  minVersion !== null,
+  "install-preflight.sh declares MIN_PI_VERSION (single source of truth)",
+);
 assert(
   minVersion === "0.84.4",
   `floor is 0.84.4 per the #578 operator decision (got ${minVersion ?? "none"})`,
@@ -148,10 +151,7 @@ if (minVersion === null) {
   ];
   for (const [version, expected] of cases) {
     const got = statusOf(version);
-    assert(
-      got.startsWith(expected),
-      `pi "${version}" → ${expected}… (got "${got}")`,
-    );
+    assert(got.startsWith(expected), `pi "${version}" → ${expected}… (got "${got}")`);
   }
 
   // A below-floor status must NAME the floor and the reason — an upgrade
@@ -177,19 +177,13 @@ if (minVersion === null) {
   assert(got === "missing", `missing pi → "missing" (got "${got}")`);
 
   const hint = installSrc.match(/"pi:([^"]*pi-coding-agent@\$\{MIN_PI_VERSION\})"/);
-  assert(
-    hint !== null,
-    "REQUIRED_CLIS carries a pi entry (the missing-case install hint)",
-  );
+  assert(hint !== null, "REQUIRED_CLIS carries a pi entry (the missing-case install hint)");
   if (hint) {
     assert(
       hint[1].endsWith("@${MIN_PI_VERSION}"),
       `the install hint installs the pinned floor via MIN_PI_VERSION, not unpinned latest (got "${hint[1]}")`,
     );
-    assert(
-      !/@latest\b/.test(hint[1]),
-      "the install hint never installs @latest",
-    );
+    assert(!/@latest\b/.test(hint[1]), "the install hint never installs @latest");
   }
 }
 
@@ -201,14 +195,16 @@ if (minVersion === null) {
     "install.sh calls pi_preflight_status and binds it to PI_STATUS",
   );
   assert(
-    installSrc.includes('old:*'),
+    installSrc.includes("old:*"),
     "install.sh handles the below-floor status with an upgrade branch",
   );
   assert(
     /unparseable:\*/.test(installSrc),
     "install.sh handles the unparseable status with a fail-closed branch",
   );
-  const upgradeIdx = installSrc.search(/Upgrade with: bun add -g @earendil-works\/pi-coding-agent@\$\{MIN_PI_VERSION\}/);
+  const upgradeIdx = installSrc.search(
+    /Upgrade with: bun add -g @earendil-works\/pi-coding-agent@\$\{MIN_PI_VERSION\}/,
+  );
   assert(
     upgradeIdx !== -1,
     "install.sh's upgrade hint installs the pinned floor via MIN_PI_VERSION, not a hardcoded value",

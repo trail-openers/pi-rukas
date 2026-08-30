@@ -205,15 +205,11 @@ export function parsePiFloors(sources: {
   const m = sources.installSh.match(/\bMIN_PI_VERSION="?([0-9][0-9a-z.+-]*)"?/);
   // README: an install-command line naming the pi package with an @version
   // suffix. Scanning raw lines keeps the prose free to reflow.
-  const r = sources.readme.match(
-    /@earendil-works\/pi-coding-agent@([0-9][0-9a-z.+-]*)/,
-  );
+  const r = sources.readme.match(/@earendil-works\/pi-coding-agent@([0-9][0-9a-z.+-]*)/);
   // Dockerfile: the pi global-install line, same package-name shape as the
   // README. The name-level reverse gate (EXCEPTIONS) covers the
   // package-vs-binary question; this is the version on that line.
-  const d = sources.dockerfile.match(
-    /@earendil-works\/pi-coding-agent@([0-9][0-9a-z.+-]*)/,
-  );
+  const d = sources.dockerfile.match(/@earendil-works\/pi-coding-agent@([0-9][0-9a-z.+-]*)/);
   return {
     installSh: m ? m[1] : "",
     readme: r ? r[1] : "",
@@ -455,7 +451,10 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
   // compareVersions edge cases: equal versions are 0; non-dotted input is
   // null (never silently treated as 0).
   assert(compareVersions("0.84.4", "0.84.4") === 0, "canary: equal versions compare 0");
-  assert(compareVersions("0.84.4", "garbage") === null, "canary: unparseable version compares null");
+  assert(
+    compareVersions("0.84.4", "garbage") === null,
+    "canary: unparseable version compares null",
+  );
 }
 
 console.log(exit === 0 ? "\nAll prerequisite-drift checks passed." : "\nFAILED");

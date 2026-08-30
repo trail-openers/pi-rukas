@@ -35,6 +35,7 @@ import {
   createAgent,
   updateAgent,
 } from "./agents-md/agents-md.ts";
+import type { OperatorAnswers } from "./agents-md/scaffold.ts";
 import { trace } from "./trace.ts";
 import { resolveRepoRoot } from "./work-entry.ts";
 
@@ -56,9 +57,41 @@ export function registerAgentsMdTools(pi: ExtensionAPI) {
             "check only: actually execute the gate commands (potentially long-running — 60s timeout each). Rejected on create/update.",
         }),
       ),
+      scaffold: Type.Optional(
+        Type.Boolean({
+          description:
+            "append 5 static boilerplate sections (minimalist-engineering, git-workflow, documentation-policy, issue-driven-development, code-review-doctrine) outside markers. For create: appends to the fresh file. For update: inserts after the environment section.",
+        }),
+      ),
+      answers: Type.Optional(
+        Type.Object(
+          {
+            coverageThreshold: Type.Optional(Type.String()),
+            reviewBlockingSeverity: Type.Optional(Type.String()),
+            mergeAuthority: Type.Optional(Type.String()),
+            projectConstraints: Type.Optional(Type.String()),
+          },
+          {
+            description:
+              "Operator answers from the interview (4 questions). Produces an operator-choices section + [asked:operator] ledger rows.",
+          },
+        ),
+      ),
+      dryRun: Type.Optional(
+        Type.Boolean({
+          description:
+            "compute the full plan (including newBytes) but never write. Fixes the promised-but-unimplemented dryRun param.",
+        }),
+      ),
     }),
     async execute(_id, raw, _signal, _onUpdate, ctx: ExtensionContext) {
-      const params = raw as { verb: Verb; deep?: boolean };
+      const params = raw as {
+        verb: Verb;
+        deep?: boolean;
+        scaffold?: boolean;
+        answers?: OperatorAnswers;
+        dryRun?: boolean;
+      };
       const verb = params.verb;
       if (verb !== "check" && params.deep === true) {
         return {
@@ -73,12 +106,25 @@ export function registerAgentsMdTools(pi: ExtensionAPI) {
       }
       const repoRoot = await resolveRepoRoot(ctx.cwd);
       const file = `${repoRoot}/AGENTS.md`;
+      const fsOps = defaultRepoFs();
       const result: VerbResult =
         verb === "create"
-          ? createAgent(repoRoot, file, defaultRepoFs())
+          ? createAgent(
+              repoRoot,
+              file,
+              fsOps,
+              { scaffold: params.scaffold, answers: params.answers },
+              params.dryRun,
+            )
           : verb === "update"
-            ? updateAgent(repoRoot, file, defaultRepoFs())
-            : checkAgent(repoRoot, file, { deep: params.deep ?? false }, defaultRepoFs());
+            ? updateAgent(
+                repoRoot,
+                file,
+                fsOps,
+                { scaffold: params.scaffold, answers: params.answers },
+                params.dryRun,
+              )
+            : checkAgent(repoRoot, file, { deep: params.deep ?? false }, fsOps, params.dryRun);
       trace(`agents_md_run(${verb}${params.deep ? " --deep" : ""}) → exit ${result.exitCode}`);
       const details: Record<string, unknown> = { verb, exitCode: result.exitCode };
       if (result.plan) details.plan = result.plan;

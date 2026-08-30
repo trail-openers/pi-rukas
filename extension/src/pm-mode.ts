@@ -27,6 +27,10 @@ let pmModeActive = false;
  * three times would otherwise queue the full 53K-char doctrine three times.
  * Once PM mode is already active the sticky preamble is doing its job and the
  * full doctrine adds nothing.
+ *
+ * Tool stripping (setActiveTools) is handled by `stripPmTools` in commands.ts,
+ * called immediately after armPmMode in every caller.  This separation keeps
+ * pm-mode.ts free of ExtensionAPI dependencies.
  */
 export function armPmMode(): void {
   if (!pmModeActive) doctrineFirstTurnPending = true;

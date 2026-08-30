@@ -53,6 +53,67 @@ import { renderQueueSummary, runWorkQueue } from "./work-queue.ts";
 import { registerWorkStatusCommand } from "./work-status.ts";
 import { readState } from "./workflow-state.ts";
 
+// Captured by /ensemble-debug so the operator can verify what setActiveTools
+// removed from the PM's active set.
+let _pmModeStripInfo: { total: number; removed: number; names: string[] } | null = null;
+
+/**
+ * Filter out write-capable tools from the active set.
+ *
+ * Called once when PM mode first arms (slash command or tool).  Uses
+ * `setActiveTools` which has REPLACE semantics — must pass the FULL filtered
+ * list from `getAllTools()` so extension tools survive.
+ *
+ * Only `edit` and `write` are stripped; all read-only builtins (read, bash,
+ * grep, find, ls) and all extension tools remain active.
+ *
+ * Mechanism-layer enforcement (#13 — AGENTS.md §13 gotcha). If
+ * `pi.setActiveTools()` throws or silently fails, PM retains write tools
+ * — a complete bypass of this mechanism. The try/catch below traces the
+ * failure so the operator sees the mechanism is broken. The error is NOT
+ * suppressed: this IS the security boundary.
+ */
+export function stripPmTools(pi: ExtensionAPI): void {
+  const FORBIDDEN = new Set(["edit", "write"]);
+
+  let total = 0;
+  let names: string[] = [];
+  let allowed: string[] = [];
+  let removed: string[] = [];
+
+  try {
+    const allTools = pi.getAllTools();
+    total = allTools.length;
+    names = allTools.map((t) => t.name);
+    allowed = names.filter((n) => !FORBIDDEN.has(n));
+    removed = names.filter((n) => FORBIDDEN.has(n));
+
+    pi.setActiveTools(allowed);
+  } catch (err) {
+    // CRITICAL: do NOT suppress — this is the mechanism-layer security
+    // boundary. If it fails, the operator must know.
+    const msg = `PM mode: setActiveTools FAILED — strip did NOT take (PM still has write tools): ${(err as Error).message}`;
+    trace(msg);
+    // Leave _pmModeStripInfo as null so debug output reflects the failure.
+    return;
+  }
+
+  if (removed.length > 0) {
+    _pmModeStripInfo = { total, removed: removed.length, names: removed };
+    trace(
+      `PM mode: removed ${removed.length} tool(s) from ${total} active tools: ${removed.join(", ")}`,
+    );
+  } else {
+    _pmModeStripInfo = { total, removed: 0, names: [] };
+    trace(`PM mode: no write tools to remove from ${total} active tools`);
+  }
+}
+
+/** Test-only accessor for the strip result. */
+export function getPmModeStripInfo(): typeof _pmModeStripInfo {
+  return _pmModeStripInfo;
+}
+
 const execp = promisify(exec);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -151,6 +212,7 @@ export function registerCommands(pi: ExtensionAPI) {
           // PM stays in reporter mode so user-visible progress messages
           // emitted by the driver via notifyAgent land cleanly.
           armPmMode();
+          stripPmTools(pi);
           await launchWork(pi, {
             repoRoot: await resolveRepoRoot(ctx.cwd),
             invocation: parsed,
@@ -183,6 +245,7 @@ export function registerCommands(pi: ExtensionAPI) {
           return;
         }
         armPmMode();
+        stripPmTools(pi);
         trace(
           `/${name} → sendUserMessage (${expanded.length} chars); PM doctrine armed + PM mode sticky`,
         );
@@ -217,11 +280,22 @@ export function registerCommands(pi: ExtensionAPI) {
                     : "Pi default";
         return `  ${role.padEnd(24)} ← ${m}   [${src}]`;
       });
+      const stripInfo = _pmModeStripInfo;
+      const pmModeLine = isPmModeActive()
+        ? stripInfo
+          ? `active (sticky preamble injected every turn; removed ${stripInfo.removed} tool(s): ${stripInfo.names.join(", ") || "none"})`
+          : "active (sticky preamble injected every turn; strip not yet performed)"
+        : "idle";
       const lines = [
         `prompts dir:      ${PI_PROMPTS_DIR}`,
         `PM prompt file:   ${PM_PROMPT_FILE}`,
-        `PM mode:          ${isPmModeActive() ? "active (sticky preamble injected every turn)" : "idle"}`,
+        `PM mode:          ${pmModeLine}`,
         `PM first-turn doctrine pending: ${peekDoctrinePending()}`,
+        ...(stripInfo
+          ? [
+              `PM tools stripped:  ${stripInfo.removed} from ${stripInfo.total} active: ${stripInfo.names.join(", ") || "(none)"}`,
+            ]
+          : []),
         "commands:         /start /research /plan /work /review /audit /runs /ensemble-model /ensemble-debug",
         "tools:            dispatch_specialist, dispatch_parallel, adversarial_loop, dispatch_lens_review (all async),",
         "                  dispatch_status, dispatch_kill, dispatch_peek, dispatch_steer, check_review_cap",

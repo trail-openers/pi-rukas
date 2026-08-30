@@ -181,3 +181,30 @@ export function isOrchestratorJob(jobId: string): boolean {
   if (!state || state.kind !== "single") return false;
   return state.isOrchestrator === true;
 }
+
+/**
+ * Job-issue mapping — associates a jobId with the GitHub issue(s) it is
+ * running for. Populated by the work driver so `/work-status <jobId>`
+ * can resolve a running cycle back to its state file on disk.
+ * Keyed by jobId → issue numbers; a single jobId may drive multiple
+ * issue groups internally, but for /work-status we only need the primary.
+ *
+ * Lives here alongside the job-state map so lookups are O(1) and
+ * consistent with the registry's ownership model.
+ */
+const jobIssues = new Map<string, number[]>();
+
+/** Associate a jobId with the issue(s) it is running for. */
+export function setJobIssues(jobId: string, issues: number[]): void {
+  jobIssues.set(jobId, issues);
+}
+
+/** Look up the issue number(s) for a running job. Returns undefined when unknown. */
+export function getJobIssues(jobId: string): number[] | undefined {
+  return jobIssues.get(jobId);
+}
+
+/** Remove a jobId from the issue mapping. Called in the job settle path. */
+export function clearJobIssues(jobId: string): void {
+  jobIssues.delete(jobId);
+}

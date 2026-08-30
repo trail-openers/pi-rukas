@@ -1,15 +1,8 @@
 #!/usr/bin/env bun
 /**
- * A worktree with no dependencies cannot run the project's own commands:
- * `git worktree add --detach` materialises tracked files only, so the
- * develop gate needs the gitignored dep tree linked in. #481: the symlink
- * loop looked at `repoRoot` only and reported a USEFUL link for an EMPTY
- * gitignored `node_modules/` at the root, while the real tree at
- * `extension/node_modules` was never linked. The fix scans depth-1 package
- * directories, skips empty candidates, and sets `ProvisionResult.problem`
- * when a lockfile-bearing project has no usable tree. The `check-ignore`
- * probe goes through the injected `execFn` so its three exit states are
- * each observable.
+ * Tests `worktree-provision.ts`: symlink loops that link gitignored dep trees
+ * into detached worktrees. #481: the original only linked `node_modules`
+ * at repoRoot (empty), missing nested trees. #536: provisions tracking.
  */
 
 import { exec } from "node:child_process";
@@ -445,7 +438,10 @@ async function makeWorktreeFixture(root: string, name: string): Promise<string> 
       "...and the worktree is created by worktreeCreate, which provisions it (the hook/symlink path that the ops fallback skips)",
     );
     // #536 — provisions map is populated alongside worktrees.
-    assert(["hook", "symlink", "none"].includes(setup.provisions["task-a"]?.via ?? ""), "#536: mechanizedBranchSetup populates provisions with a valid via value");
+    assert(
+      ["hook", "symlink", "none"].includes(setup.provisions["task-a"]?.via ?? ""),
+      "#536: mechanizedBranchSetup populates provisions with a valid via value",
+    );
     // Neither resolvable: stub returns empty stdout for
     // `rev-parse --verify --quiet` (the code's contract for a missing ref).
     // No local `main`: switch to `trunk`, then `update-ref -d refs/heads/main`

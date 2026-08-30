@@ -223,27 +223,33 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   );
 
   assert(
-    countMarkersInDiffLine('+#[test] fn works() { def test_helper(): pass }', TEST_BLOCK_MARKERS) === 2,
+    countMarkersInDiffLine(
+      "+#[test] fn works() { def test_helper(): pass }",
+      TEST_BLOCK_MARKERS,
+    ) === 2,
     "#307: Rust and Python test-block markers are counted",
   );
 
   assert(
-    countMarkersInDiffLine('+def test_login(): pass; def test_logout(): pass', TEST_BLOCK_MARKERS) === 2,
+    countMarkersInDiffLine(
+      "+def test_login(): pass; def test_logout(): pass",
+      TEST_BLOCK_MARKERS,
+    ) === 2,
     "#307: multiple Python test-block markers on one line are counted",
   );
 
   assert(
-    countMarkersInDiffLine('-value = 1  # def test_removed():', TEST_BLOCK_MARKERS) === 0,
+    countMarkersInDiffLine("-value = 1  # def test_removed():", TEST_BLOCK_MARKERS) === 0,
     "#307: Python test-block markers in trailing comments are excluded",
   );
 
   assert(
-    countMarkersInDiffLine('+;', [""]) === 0,
+    countMarkersInDiffLine("+;", [""]) === 0,
     "#307: empty caller-supplied markers do not stall the scanner",
   );
 
   assert(
-    countMarkersInDiffLine('+// it(\'comment\'); console.log("test(")', TEST_BLOCK_MARKERS) === 0,
+    countMarkersInDiffLine("+// it('comment'); console.log(\"test(\")", TEST_BLOCK_MARKERS) === 0,
     "#307: test-block markers in comments and strings are excluded",
   );
 

@@ -134,7 +134,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
             // Developer commits have unique trees.
             const devSha = cmd.match(/git cat-file -p ([0-9a-f]+)/)?.[1];
             const hash = (devSha ?? "abc").slice(0, 8);
-            return { stdout: `tree ${hash}${hash.toUpperCase().padEnd(16, "x")}deadbeefdeadbeef\nauthor T\n` };
+            return {
+              stdout: `tree ${hash}${hash.toUpperCase().padEnd(16, "x")}deadbeefdeadbeef\nauthor T\n`,
+            };
           }
           if (cmd.startsWith("git apply")) return { stdout: "" };
           if (cmd.startsWith("git commit")) return { stdout: "" };
@@ -229,11 +231,12 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         await git(repoDir, ["push", "-q", "-u", "origin", "main"]);
 
         // Mechanized branch setup.
-        const { mechanizedBranchSetup } = await import(
-          "../src/work-driver-branch-mechanized.ts"
-        );
+        const { mechanizedBranchSetup } = await import("../src/work-driver-branch-mechanized.ts");
         const { integrate } = await import("../src/work-driver-integrate.ts");
-        type ExecFn = (cmd: string, o?: { cwd?: string; maxBuffer?: number }) => Promise<{
+        type ExecFn = (
+          cmd: string,
+          o?: { cwd?: string; maxBuffer?: number },
+        ) => Promise<{
           stdout: string;
         }>;
         const realExec: ExecFn = async (cmd, o) => {
@@ -279,10 +282,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           `M5: cherry-pick integration succeeded (${JSON.stringify(res)})`,
         );
         // Verify commitShas is recorded in the result.
-        assert(
-          res.commitShas !== undefined,
-          "M5: commitShas is recorded in integrate result",
-        );
+        assert(res.commitShas !== undefined, "M5: commitShas is recorded in integrate result");
         assert(
           res.commitShas?.["task-a"] === devSha,
           "M5: commitShas maps task-a to the developer's SHA",
@@ -293,10 +293,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           "--count",
           `${setup.baseSha}..HEAD`,
         ]);
-        assert(
-          headAhead.trim() === "1",
-          "M5: exactly one commit ahead of baseSha (cherry-picked)",
-        );
+        assert(headAhead.trim() === "1", "M5: exactly one commit ahead of baseSha (cherry-picked)");
         console.log("✓ M5: cherry-pick SHA recording verified");
       } finally {
         rmSync(realRoot, { recursive: true, force: true });
