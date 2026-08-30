@@ -185,7 +185,7 @@ export async function launchWork(
     const soleIssue = issues[0];
     if (soleIssue === undefined) return { mode: "single", issues: [] };
     sink.notify(
-      `pi-ensemble:driver-event v1 kind=work-start issue=${soleIssue} at=${new Date().toISOString()}\npi-ensemble: /work driver running for issue #${soleIssue}${restartTag}. State in .pi/work-state/${soleIssue}.json — inspect it any time with /work-status.`,
+      `pi-ensemble: /work driver running for issue #${soleIssue}${restartTag}. State in .pi/work-state/${soleIssue}.json — inspect it any time with /work-status.`,
     );
     // Register this cycle in the job registry so /work-status <jobId> can
     // resolve it back to its issue number(s). #591 fix — the tool path
@@ -206,7 +206,7 @@ export async function launchWork(
           try {
             await notifyAgent(
               pi,
-              `pi-ensemble:driver-event v1 kind=crash issue=${soleIssue} at=${new Date().toISOString()}\npi-ensemble: /work driver crashed on issue #${soleIssue}: ${(err as Error).message}. Inspect .pi/work-state/${soleIssue}.json (or run /work-status ${soleIssue}). The cycle's own state is intact — your git work is untouched.`,
+              `pi-ensemble: /work driver crashed on issue #${soleIssue}: ${(err as Error).message}. Inspect .pi/work-state/${soleIssue}.json (or run /work-status ${soleIssue}). The cycle's own state is intact — your git work is untouched.`,
             );
           } catch {
             /* nothing we can do */
@@ -232,7 +232,7 @@ export async function launchWork(
 
   // Multi-issue path — analyze + group + iterate, all in the background.
   sink.notify(
-    `pi-ensemble:driver-event v1 kind=group-start issue=${issues.join(", ")} at=${new Date().toISOString()}\npi-ensemble: analyzing ${issues.length} issues (#${issues.join(", #")}) for grouping…`,
+    `pi-ensemble: analyzing ${issues.length} issues (#${issues.join(", #")}) for grouping…`,
   );
   void (async () => {
     const bodiesByIssue = await fetchIssueBodies(repoRoot, issues);
@@ -244,7 +244,7 @@ export async function launchWork(
     try {
       notifyAgent(
         pi,
-        `pi-ensemble:driver-event v1 kind=group-result issue=${issues.join(", ")} at=${new Date().toISOString()}\npi-ensemble: /work grouping decided K=${groupList.length} group(s) — ${summary}${notesLine}\n${resolvedParallelGroups() > 1 ? `Running up to ${concurrency} cycle(s) concurrently` : "Running cycles sequentially"}${restartTag}; a failed group parks and the queue continues.`,
+        `pi-ensemble: /work grouping decided K=${groupList.length} group(s) — ${summary}${notesLine}\n${resolvedParallelGroups() > 1 ? `Running up to ${concurrency} cycle(s) concurrently` : "Running cycles sequentially"}${restartTag}; a failed group parks and the queue continues.`,
       );
     } catch {
       /* nothing we can do */
@@ -300,10 +300,7 @@ export async function launchWork(
     // Wait for all group cycles to complete.
     await Promise.all(completionPromises);
     try {
-      notifyAgent(
-        pi,
-        `pi-ensemble:driver-event v1 kind=queue-summary issue=${issues.join(", ")} at=${new Date().toISOString()}\n${renderQueueSummary(summaryResult)}`,
-      );
+      notifyAgent(pi, renderQueueSummary(summaryResult));
     } catch {
       /* nothing we can do */
     }
@@ -372,7 +369,7 @@ export async function runDriver(
       return makeResult(false, "No issues to process.", startMs);
     }
     sink.notify(
-      `pi-ensemble:driver-event v1 kind=work-start issue=${soleIssue} at=${new Date().toISOString()}\npi-ensemble: /work driver running for issue #${soleIssue}${restartTag}. State in .pi/work-state/${soleIssue}.json — inspect it any time with /work-status.`,
+      `pi-ensemble: /work driver running for issue #${soleIssue}${restartTag}. State in .pi/work-state/${soleIssue}.json — inspect it any time with /work-status.`,
     );
     try {
       await runSingleIssue(pi, repoRoot, soleIssue, restart, mergeGrant);
@@ -394,7 +391,7 @@ export async function runDriver(
 
   // Multi-issue path — analyze + group + iterate.
   sink.notify(
-    `pi-ensemble:driver-event v1 kind=group-start issue=${issues.join(", ")} at=${new Date().toISOString()}\npi-ensemble: analyzing ${issues.length} issues (#${issues.join(", #")}) for grouping…`,
+    `pi-ensemble: analyzing ${issues.length} issues (#${issues.join(", #")}) for grouping…`,
   );
   const concurrency = Math.min(resolvedParallelGroups(), issues.length);
   const summary = `work-driver (grouped) for ${issues.length} issues (repoRoot=${repoRoot})`;
@@ -403,7 +400,7 @@ export async function runDriver(
   try {
     await notifyAgent(
       pi,
-      `pi-ensemble:driver-event v1 kind=group-result issue=${issues.join(", ")} at=${new Date().toISOString()}\npi-ensemble: /work grouping decided K=grouped ${issues.length} issue(s)\n${resolvedParallelGroups() > 1 ? `Running up to ${concurrency} cycle(s) concurrently` : "Running cycles sequentially"}${restartTag}; a failed group parks and the queue continues.`,
+      `pi-ensemble: /work grouping decided K=grouped ${issues.length} issue(s)\n${resolvedParallelGroups() > 1 ? `Running up to ${concurrency} cycle(s) concurrently` : "Running cycles sequentially"}${restartTag}; a failed group parks and the queue continues.`,
     );
   } catch {
     /* nothing we can do */
