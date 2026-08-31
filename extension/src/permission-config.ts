@@ -17,7 +17,7 @@ const __dirname = path.dirname(new URL(import.meta.url).pathname);
 
 // Type definitions
 export type PermVerdict = "allow" | "deny" | "ask";
-type PermPattern = Record<string, PermVerdict | Record<string, PermVerdict>>;
+export type PermPattern = Record<string, PermVerdict | Record<string, PermVerdict>>;
 export type RoleConfig = Record<string, { permission?: PermPattern }>;
 
 const MAX_CONFIG_FILE_SIZE = 1 * 1024 * 1024; // 1MB
@@ -44,18 +44,13 @@ export function resolveAgentsJsonPath(): string {
 
 // agents.json ships with the repo, so ENOENT is unexpected and should warn.
 // In contrast, project/global config ENOENT is silent (user may not have created them).
-export function loadAgentsJson(): Record<
-  string,
-  { permission?: Record<string, string | Record<string, string>> }
-> {
+export function loadAgentsJson(): Record<string, { permission?: PermPattern }> {
   const agentsPath = resolveAgentsJsonPath();
   try {
     const raw = readFileSync(agentsPath, "utf8");
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return {};
-    const obj = parsed as {
-      agent?: Record<string, { permission?: Record<string, string | Record<string, string>> }>;
-    };
+    const obj = parsed as { agent?: Record<string, { permission?: PermPattern }> };
     return obj.agent ?? {};
   } catch (err) {
     const msg = `pi-ensemble permission-guard: failed to load agents.json from ${agentsPath} (${err}) — non-builtin tools will require interactive approval (or be blocked in headless mode)`;

@@ -41,7 +41,7 @@ import {
   loadProjectConfig,
   resolveAgentsJsonPath,
 } from "./permission-config.ts";
-import type { PermVerdict, RoleConfig } from "./permission-config.ts";
+import type { PermPattern, PermVerdict, RoleConfig } from "./permission-config.ts";
 import {
   MAX_CACHED_DECISIONS,
   bashPatternMatches,
@@ -57,13 +57,14 @@ import {
   persistDecisions,
 } from "./permission-decision-cache.ts";
 import { registerSubagentGuard } from "./permission-subagent-guard.ts";
+import { registerPmBashGuard } from "./pm-bash-guard.ts";
 import { ROLE_NAMES } from "./roles.js";
 import { trace } from "./trace.js";
 
 // Re-export the public surface that used to live directly in this file —
 // callers (spawn.ts, index.ts, smoke tests) import these from
 // "./permission-guard.ts" and must keep working unchanged.
-export type { PermVerdict, RoleConfig };
+export type { PermPattern, PermVerdict, RoleConfig };
 export { findProjectConfigPath, loadAgentsJson, resolveAgentsJsonPath };
 export { extractCommandPrefix, tokenizeForPrefix };
 export {
@@ -151,7 +152,7 @@ export function resolveToolPermission(
   role: string,
   project: RoleConfig,
   global: RoleConfig,
-  agents: Record<string, { permission?: Record<string, string | Record<string, string>> }>,
+  agents: Record<string, { permission?: PermPattern }>,
   bashCommand?: string,
 ): PermVerdict {
   // Helper to check a single config
@@ -266,7 +267,15 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
   // `gh api` POST-to-issues-collection second door) is gated behind
   // start_plan_driver (#598); the driver files via direct execp and never
   // passes through this hook.
+  // Mode-independent guards: registered BEFORE the sandbox short-circuit,
+  // the subagent branch, and the trust-mode early return in the main handler.
+  // A hook placed after any of those would, in practice, never run.
   registerIssueCreationGuard(pi);
+  // #600 — PM bash allowlist guard: fires in ALL modes (trust, strict,
+  // headless, sandbox) for consistency. PM-only: gated on isPmModeActive
+  // inside the hook; registered here (the parent path) only — subagent
+  // processes go through registerSubagentGuard and never see it.
+  registerPmBashGuard(pi);
 
   // Sandbox-mode short-circuit (PR #197). Inside the Docker sandbox (set by
   // the `pi-ensemble` wrapper / .devcontainer.json) the container fence IS

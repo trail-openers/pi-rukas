@@ -20,7 +20,6 @@
           "vipune list *": "allow",
           "vipune doctor*": "allow",
           "vipune version*": "allow",
-          "export PROJECT_ID=*": "allow",
           "tee*": "allow",
           "jq*": "allow",
           "uuidgen*": "allow",
