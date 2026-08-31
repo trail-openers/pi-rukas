@@ -8,6 +8,23 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.55](https://github.com/randomm/pi-ensemble/compare/v0.12.54...v0.12.55) (2026-08-31)
+
+
+### Features
+
+* **dispatch:** resume interrupted provider turns from checkpoint ([#595](https://github.com/randomm/pi-ensemble/issues/595)) ([5c9f4ca](https://github.com/randomm/pi-ensemble/commit/5c9f4ca70af4a3699b0782b3a9d49ca575dfb046))
+* **permissions:** mode-independent PM bash allowlist guard ([#601](https://github.com/randomm/pi-ensemble/issues/601)) ([b316f3e](https://github.com/randomm/pi-ensemble/commit/b316f3e8c158f13c811c45b557f454189d92017f))
+* **plan:** compiled plan driver that gates issue creation behind /plan ([#599](https://github.com/randomm/pi-ensemble/issues/599)) ([a62d402](https://github.com/randomm/pi-ensemble/commit/a62d402f3f94048209c7408145f6c2851f522182)), closes [#598](https://github.com/randomm/pi-ensemble/issues/598)
+* **pm:** strip edit/write via setActiveTools when PM mode is active ([#593](https://github.com/randomm/pi-ensemble/issues/593)) ([4d98efd](https://github.com/randomm/pi-ensemble/commit/4d98efde7706ce33bea9fb8e9b4f52d6d2811210))
+* **work:** seam escalation + invariant guard memory ([#280](https://github.com/randomm/pi-ensemble/issues/280)) ([#585](https://github.com/randomm/pi-ensemble/issues/585)) ([c2fa545](https://github.com/randomm/pi-ensemble/commit/c2fa5453fbb4d419b1fcdfae60186622aa26383e))
+
+
+### Bug Fixes
+
+* **work:** guard handoff delivery against re-send + driver-event envelope ([#580](https://github.com/randomm/pi-ensemble/issues/580)) ([#596](https://github.com/randomm/pi-ensemble/issues/596)) ([5330c2a](https://github.com/randomm/pi-ensemble/commit/5330c2a987cef4e66f0a0fa389be92ca0f07183a))
+* **work:** strengthen anti-polling language in start_work_driver ([#586](https://github.com/randomm/pi-ensemble/issues/586)) ([3cba355](https://github.com/randomm/pi-ensemble/commit/3cba3555d16b08e782923360632ffffe5cf90617))
+
 ## [0.12.54](https://github.com/randomm/pi-ensemble/compare/v0.12.53...v0.12.54) (2026-08-29)
 
 
