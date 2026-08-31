@@ -407,9 +407,12 @@ assert(fallthrough === "ask", "Issue #168: catch-all `*: ask` fires when no wild
     handlers.length = 0;
     registerPermissionGuard(fakeApi);
     const toolCallHandlers = handlers.filter((h) => h.event === "tool_call");
+    // In sandbox mode the legacy permission handler is not registered, but the
+    // mode-independent issue-creation guard IS (registered ahead of the sandbox
+    // short-circuit, per issue #598). So exactly one tool_call handler remains.
     assert(
-      toolCallHandlers.length === 0,
-      "L8: PI_ENSEMBLE_SANDBOX_MODE=1 short-circuits registerPermissionGuard — no tool_call handler registered",
+      toolCallHandlers.length === 1,
+      `L8: PI_ENSEMBLE_SANDBOX_MODE=1 short-circuits the legacy permission handler — only the issue-creation guard remains (${toolCallHandlers.length} tool_call handler(s))`,
     );
 
     // session_start is also a guard concern (decisions cache load).

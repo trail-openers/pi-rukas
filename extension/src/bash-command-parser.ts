@@ -406,3 +406,40 @@ export function discardsUncommittedWork(command: string): string | undefined {
     hit("clean\\s+[^;&|]*(?:-[a-zA-Z]*f|--force)")
   );
 }
+
+/**
+ * Does this command create a GitHub issue (or a REST POST that does)?
+ *
+ * The mode-independent issue-creation guard (#598) calls this ahead of every
+ * trust/sandbox bypass, exactly like `discardsUncommittedWork`: the
+ * permission layers answer "may this role run gh?" — yes — and the self-
+ * judged triviality test that used to gate creation had no oracle. The
+ * shapes must all be caught, on the same scan-not-anchor + strip-quoted terms:
+ *
+ *   - `gh issue create …` (with or without the `oo` prefix, chained after
+ *     `cd x && …` or any other command),
+ *   - `gh api repos/{o}/{r}/issues` — gh api defaults to POST when body
+ *     fields (`-f`) are present, so a "read" that isn't actually a read is a
+ *     second door into issue creation. Blocked unless the command EXPLICITLY
+ *     says `--method GET`; a GET on a SPECIFIC issue (`…/issues/123`) is a
+ *     read and stays open.
+ *
+ * Quoted segments are stripped first, so `echo "gh issue create"` or a PR
+ * comment that merely mentions the verb is not blocked.
+ */
+export function createsGitHubIssue(command: string): string | undefined {
+  const c = stripQuotedSegments(command);
+  const GH = "(?:^|[;&|]|\\s)(?:oo\\s+)?gh\\s+";
+  const issueCreate = new RegExp(`${GH}issue\\s+create(?:\\s|$)`).exec(c);
+  if (issueCreate?.[0]) return issueCreate[0].trim();
+  // REST door: `gh api` on the issues COLLECTION. A trailing segment
+  // (specific issue) or an explicit `--method GET` makes it a read.
+  const apiMatch = new RegExp(`${GH}api\\s+(repos/[^\\s]+)`).exec(c);
+  const endpoint = apiMatch?.[1] ?? "";
+  const targetsIssues = /\/issues(?:[?&?#\s]|$)/.test(endpoint);
+  if (targetsIssues) {
+    const rest = c.slice(apiMatch?.index ?? 0);
+    if (!/\s--method\s+GET\b/.test(rest)) return (apiMatch?.[0] ?? "").trim();
+  }
+  return undefined;
+}

@@ -11,12 +11,12 @@
 
 ### Who creates issues
 
-Issue creation is **PM-only**. This module is composed into both the project-manager and developer prompts, so act by role:
+Issue creation is **compiled**. This module is composed into both the project-manager and developer prompts, so act by role:
 
-- **Project manager (PM)**: the sole owner of issue creation. For non-trivial work, create issues via `/plan` Phase 5 (the quality-gated path). Trivial tickets (single file, no contract change, no new external surface) may be created inline with the bare `gh issue` create verb — see the tool-access line in `project-manager.md` for the exact command. **Mid-cycle `gh issue edit` of an existing issue body stays ungated** — refinements and corrections go in the body, not a new ticket.
-- **Developer (and every specialist)**: you do NOT create or edit GitHub issues. Before starting work, **verify a GitHub issue exists** for the task. If none does, **report the missing issue in your final message** — PM files it. Do not open a ticket yourself.
+- **Project manager (PM)**: the sole owner of issue creation, exercised through the `start_plan_driver` tool (the compiled /plan driver). Call it with `dryRun: true` first, show the spec + gap dispositions to the operator, and on confirmation re-call without `dryRun`. Direct `gh issue create` is structurally refused for every role in every mode — the mode-independent guard's refusal names the tool to use instead. **Mid-cycle `gh issue edit` of an existing issue body stays ungated** — refinements and corrections go in the body, not a new ticket.
+- **Developer (and every specialist)**: you do NOT create or edit GitHub issues. Before starting work, **verify a GitHub issue exists** for the task. If none does, **report the missing issue in your final message** — PM files it via `start_plan_driver`. Do not open a ticket yourself; the guard will refuse, and a specialist filing its own ticket is scope-creep even if it did not.
 
-PM runs `gh` directly — a backend-agnostic `ticket` tool (see [#98](https://github.com/randomm/pi-ensemble/issues/98)) will eventually replace these `gh` bash entries; until then, PM runs `gh` bare.
+PM runs `gh` directly for the read/lifecycle verbs — the `start_plan_driver` tool (not a hypothetical `ticket` tool) owns creation now; see [#98](https://github.com/randomm/pi-ensemble/issues/98) for the original RFC.
 
 ## Issue Creation Template
 
@@ -35,15 +35,11 @@ PM runs `gh` directly — a backend-agnostic `ticket` tool (see [#98](https://gi
 [Specific functional requirements and success criteria]
 ```
 
-## Issue Creation Command (PM only)
+## Issue Creation (PM only, compiled)
 
-PM creates issues by running `gh` directly. Pass the body via `--body-file` to avoid shell-quoting pitfalls in multi-line or backtick-laden bodies (write the body to a file using the template above):
+PM creates issues exclusively via the `start_plan_driver` tool. It runs the five-phase pipeline (classify → mechanical inventory → type-specialised investigation → draft → adversarial gap gate) and files through its own child-process exec (the driver's own `gh issue` create run in a child process, which is exempt from the mode-independent guard by construction). `dryRun: true` returns the structured spec without filing; the operator's confirmation is the seam between the two calls.
 
-```bash
-gh issue create --title "fix: description" --body-file tmp/issue-body.md
-```
-
-**Specialists (developer, ops, explore, reviewers)**: do NOT run issue-creation commands. Verify the issue exists, then report a missing one to PM in your final message.
+**Specialists (developer, ops, explore, reviewers)**: do NOT run issue-creation commands (the mode-independent guard refuses them in every mode, for every role). Verify the issue exists, then report a missing one to PM in your final message.
 
 ## GitHub Issue Command Reference (bare `gh`)
 

@@ -16,6 +16,7 @@
 import { type Socket, createConnection } from "node:net";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { discardsUncommittedWork } from "./bash-command-parser.ts";
+import { registerIssueCreationGuard } from "./issue-creation-guard.ts";
 import type { PermissionRequest } from "./permission-broker.ts";
 import { loadAgentsJson, loadGlobalConfig, loadProjectConfig } from "./permission-config.ts";
 import { resolveToolPermission } from "./permission-guard.ts";
@@ -34,6 +35,13 @@ export function registerSubagentGuard(pi: ExtensionAPI): void {
   // whatever the trust level — the container fence and the operator's trust
   // both protect the HOST, and neither protects the developer's own diff.
   registerDestructiveGitGuard(pi);
+  // #598 — same mode-independence for the second un-gated door: PM filed
+  // three non-trivial issues inline in one session (#591/#592/#594) through a
+  // self-judged "triviality test" with no oracle. A subagent that discovers a
+  // missing ticket must report it to PM, not open the door itself. The guard
+  // is shared with the parent guard (permission-guard.ts) so both layers
+  // stay byte-identical.
+  registerIssueCreationGuard(pi);
 
   // Sandbox mode short-circuit (PR #197). When pi-ensemble runs inside the
   // Docker sandbox (`pi-ensemble` wrapper sets PI_ENSEMBLE_SANDBOX_MODE=1),

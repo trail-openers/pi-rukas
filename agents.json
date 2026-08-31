@@ -39,7 +39,7 @@
           "oo git shortlog *": "allow",
           "oo git rev-list *": "allow",
           "oo git for-each-ref *": "allow",
-          "gh issue create*": "allow",
+          "gh issue create*": "deny",
           "gh issue list*": "allow",
           "gh issue view*": "allow",
           "gh issue edit*": "allow",
@@ -130,6 +130,7 @@
         "check_review_cap": "allow",
         "adversarial_loop": "allow",
         "start_work_driver": "allow",
+        "start_plan_driver": "allow",
         "load_workflow_doctrine": "allow",
         "agents_md_run": "allow",
         "task": {

@@ -1,19 +1,19 @@
 #!/usr/bin/env bun
 /**
- * Doctrine canary: `gh issue create` is PM-only.
+ * Doctrine canary: issue creation is compiled, and the doctrine says so.
  *
- * Issue #528 gates issue creation on spec quality and routes it through a
- * single owner (PM). The canary pins that doctrine against future drift:
- * the verb `gh issue create` must appear only in the allowlisted files
- * (project-manager.md, plan.md, and the PM-only command block in
- * github-issues.md), and must not appear as a positive prose prescription
- * in the files that task-b (ops.md) and task-c (github-issues.md) gate.
+ * #528 gated issue creation on spec quality and routed it through a single
+ * owner (PM). #598 made that gate structural: creation is compiled into the
+ * `start_plan_driver` tool, `pi-prompts/plan.md` is deleted, and direct
+ * `gh issue create` is structurally denied for every role in every mode. The
+ * canary pins the doctrine against drift: the verb `gh issue create` must
+ * appear only in the allowlisted files (project-manager.md, and the
+ * PM-only command block in github-issues.md), and only as a negation or a
+ * fenced command line — never as a positive prose prescription outside them.
  *
  * AGENTS.md is deliberately NOT scanned: it is host-project-specific (auto-loaded
- * by Pi when cwd is inside the repo), not part of the composed role prompt, and its
- * issue-creation reference at L478 ("PM surfaces related work via `gh issue create`")
- * was role-scoped by this PR (#528). See the MUST_BE_ABSENT note below for the
- * negation exception in ops.md.
+ * by Pi when cwd is inside the repo), not part of the composed role prompt. See
+ * the MUST_BE_ABSENT note below for the negation exception in ops.md.
  *
  * Non-vacuity: if the grep pattern rots to zero matches the test fails
  * rather than passing silently.
@@ -35,13 +35,12 @@ const ROOT = path.resolve(import.meta.dirname, "..", "..");
 
 /**
  * Files where `gh issue create` is legitimately present (data, not logic).
- * github-issues.md carries the real PM-only command in its creation section
- * (that section is explicitly "PM only"; composed into both PM and developer
- * prompts, the role split above keeps specialists from acting on it).
+ * project-manager.md names the verb inside the structural-denial doctrine
+ * ("Direct `gh issue create` is structurally denied…"); github-issues.md
+ * keeps the same shape in its creation section.
  */
 const ALLOWLIST = [
   "agents-base/project-manager.md",
-  "pi-prompts/plan.md",
   "modules/workflows/github-issues.md",
 ];
 
@@ -95,23 +94,30 @@ for (const f of files) {
   });
 }
 
-// Non-vacuity: the two known allowlisted sites must still be found
+// Non-vacuity: the known allowlisted sites must still be found, and plan.md
+// (deleted in #598) must be gone — if it reappears, the prose body is
+// back and the compiled-driver replacement is half-reproduced.
 assert(hits.length > 0, `scan found ${hits.length} occurrence(s) of "gh issue create"`);
 assert(
   hits.some((h) => h.file === "agents-base/project-manager.md"),
-  "non-vacuity: project-manager.md still contains the verb",
+  "non-vacuity: project-manager.md still names the verb (in the denial doctrine)",
 );
 assert(
-  hits.some((h) => h.file === "pi-prompts/plan.md"),
-  "non-vacuity: plan.md still contains the verb",
+  !hits.some((h) => h.file === "pi-prompts/plan.md"),
+  "canary: pi-prompts/plan.md is deleted — the 473-line prose body is replaced by start_plan_driver",
 );
 
 // Every hit outside the allowlist must be a negation or fenced-code line
-// (ops.md's refusal rule quotes the verb inside "Never run ...").
-const NEGATION = /(do not|never|must not|❌|do NOT|Do not)/i;
+// (ops.md's refusal rule quotes the verb inside "Never run ..."). #598's
+// structural denial adds a third allowed shape: the verb quoted inside a
+// backticked phrase ("`gh issue create` is structurally denied").
+const NEGATION = /(do not|never|must not|❌|do NOT|Do not|denied|denies|refused|refuses|gated)/i;
 function isAllowedLine(line: string): boolean {
   return (
-    NEGATION.test(line) || line.trimStart().startsWith("gh ") || line.trimStart().startsWith("`")
+    NEGATION.test(line) ||
+    line.includes("`gh issue create`") ||
+    line.trimStart().startsWith("gh ") ||
+    line.trimStart().startsWith("`")
   );
 }
 const violations = hits

@@ -45,6 +45,7 @@ function makeStub(): ExtensionAPI & {
     { name: "check_review_cap", description: "Check review round cap" },
     { name: "dispatch_lens_review", description: "Run six-pass lens review" },
     { name: "start_work_driver", description: "Start the compiled /work driver" },
+    { name: "start_plan_driver", description: "Start the compiled /plan driver" },
     { name: "load_workflow_doctrine", description: "Load workflow doctrine text" },
     { name: "agents_md_run", description: "Manage AGENTS.md" },
     // Companion tools registered in child processes — still in the stub
@@ -124,6 +125,7 @@ function makeStub(): ExtensionAPI & {
     "check_review_cap",
     "dispatch_lens_review",
     "start_work_driver",
+    "start_plan_driver",
     "load_workflow_doctrine",
     "agents_md_run",
     "report_finding",

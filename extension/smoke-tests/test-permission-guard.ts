@@ -7,12 +7,8 @@ import { resolveToolPermission } from "../src/permission-guard.js";
 
 let exitCode = 0;
 function assert(cond: boolean, msg: string) {
-  if (cond) {
-    console.log(`✓ ${msg}`);
-  } else {
-    console.error(`✗ ${msg}`);
-    exitCode = 1;
-  }
+  console.log(`${cond ? "✓" : "✗"} ${msg}`);
+  if (!cond) exitCode = 1;
 }
 
 let agentsConfig: Record<
@@ -108,13 +104,12 @@ assert(!unknownToolDeniedForDev, "Issue #50: unknown tool denied for developer (
 
 // === Issue #51 tests ===
 
-const emptyProject: {
-  roles: Record<string, { permission?: Record<string, "allow" | "deny" | "ask"> }>;
-} = { roles: {} };
-const emptyGlobal: typeof emptyProject = { roles: {} };
+type RoleCfg = { roles: Record<string, { permission?: Record<string, "allow" | "deny" | "ask"> }> };
+const emptyProject: RoleCfg = { roles: {} };
+const emptyGlobal = { roles: {} };
 
 // Test 11: Project config overrides agents.json
-const projectOverride: typeof emptyProject = {
+const projectOverride: RoleCfg = {
   roles: {
     developer: {
       permission: {
@@ -364,7 +359,9 @@ for (const command of ["git status", "git branch", "oo git log"]) {
 // Bare gh for ticket CRUD (oo wrapping breaks gh issue / gh api | jq usage).
 
 const ghIssueAllowed = [
-  "gh issue create -t 'foo' -b 'bar'",
+  // #598 — `gh issue create` is no longer in this list: it is now denied for
+  // PM (the mode-independent guard in issue-creation-guard.ts is the
+  // structural enforcement; the agents.json deny is the config-layer mirror).
   "gh issue list --limit 15",
   "gh issue list --state open --label bug",
   "gh issue view 123",
@@ -381,9 +378,17 @@ for (const command of ghIssueAllowed) {
   assert(v === "allow", `Issue #99: \`${command}\` is allowed for project-manager`);
 }
 
-// Issue #528: issue creation is PM-exclusive — no specialist role may
-// run gh issue create without a user prompt (doctrine gate, #528).
+// #598: issue creation is denied for PM (the mode-independent guard is the
+// structural enforcement; the agents.json deny is the config-layer mirror).
+// Specialists never had the grant; the guard covers them too.
 const ghIssueCreateCmd = "gh issue create -t 'fix: repro' -b 'acceptance'";
+{
+  const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, ghIssueCreateCmd);
+  assert(
+    v === "deny",
+    `#598: \`${ghIssueCreateCmd}\` is denied for project-manager (got: ${v})`,
+  );
+}
 for (const role of [
   "developer",
   "ops",
@@ -392,7 +397,7 @@ for (const role of [
   "code-review-specialist",
 ]) {
   const v = resolveToolPermission("bash", role, {}, {}, agentsConfig, ghIssueCreateCmd);
-  assert(v === "ask", `Issue #528: \`${ghIssueCreateCmd}\` asks for ${role} (got: ${v})`);
+  assert(v !== "allow", `#598: \`${ghIssueCreateCmd}\` is NOT allowed for ${role} (got: ${v})`);
 }
 
 const ghOpsAsked = [
@@ -477,22 +482,17 @@ for (const command of ghPrCiMutationAsked) {
 }
 
 // Chained commands fall through to the role's catch-all (`*: ask` for PM,
-// default "ask" for the others). The parent prompts the user with the full
-// command visible — even if every chain segment is individually allow-listed
-// we still ask because the chain shape itself could hide intent. The cache
-// side refuses to wildcard injection-vector commands (see bashPatternMatches),
-// so "Allow always" stores only the exact hash; a *different* chain reshapes
-// and re-prompts. The user is the trust boundary, not the matcher (#188+).
-const chainedShouldAsk = [
+// #188: chained commands always prompt — the chain shape could hide intent even
+// if every segment is individually allow-listed. User is the trust boundary, not the matcher.
+for (const c of [
   "git status && git branch",
   "git status; git branch",
   "git status | head -5",
   "gh issue list | grep open",
   "cd /tmp && git status",
-];
-for (const command of chainedShouldAsk) {
-  const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, command);
-  assert(v === "ask", `Issue #102+#188: chained \`${command}\` prompts the user (PM catch-all)`);
+]) {
+  const v = resolveToolPermission("bash", "project-manager", {}, {}, agentsConfig, c);
+  assert(v === "ask", `#102+#188: chained \`${c}\` prompts (PM catch-all)`);
 }
 
 console.log("\n=== test-permission-guard summary ===");

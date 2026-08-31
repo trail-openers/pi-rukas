@@ -169,13 +169,23 @@ assert(rec.beforeAgentStartHandlers.length === 1, "exactly one before_agent_star
 // Verify pi-prompts files exist. #393 removed "work" — /work is the compiled
 // driver and has no prompt file; a stale work.md would be documentation that
 // reads as authoritative while matching nothing the driver actually does.
-for (const name of ["start", "research", "plan", "review", "do"]) {
+// #598 removed "plan" the same way: the 473-line /plan body is replaced by
+// the start_plan_driver tool, and /plan is now a thin alias (asserted below).
+for (const name of ["start", "research", "review", "do"]) {
   const file = path.join(PI_PROMPTS, `${name}.md`);
   const exists = await fs
     .stat(file)
     .then(() => true)
     .catch(() => false);
   assert(exists, `pi-prompts/${name}.md exists`);
+}
+{
+  // The deletion itself: plan.md must be gone, or the prose body is back.
+  const gone = await fs
+    .stat(path.join(PI_PROMPTS, "plan.md"))
+    .then(() => false)
+    .catch(() => true);
+  assert(gone, "pi-prompts/plan.md is deleted (#598) — start_plan_driver replaces it");
 }
 const pmExists = await fs
   .stat(PM_PROMPT)

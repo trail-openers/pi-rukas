@@ -19,6 +19,14 @@
  * `start_work_driver` is the real gap, because `/work` is not prose: it is a
  * compiled state machine that must actually be invoked.
  *
+ * `plan` is the SECOND compiled driver exclusion (#598). It used to be loadable
+ * prose: PM could hand itself the 473-line /plan body and re-implement the
+ * pipeline by hand — which is exactly what it did to file three non-trivial
+ * issues inline in one session (#591/#592/#594). Issue creation is now gated
+ * behind the `start_plan_driver` tool (plan-tool.ts), and the /plan slash
+ * command is a thin alias that tells PM to call it. Handing PM the prose body
+ * would reopen the door this module exists to close.
+ *
  * **There is no `merge` parameter, deliberately.** `--merge` is one of two
  * `AuthoritySource`s and the only one bypassing the #406/#407 policy judge. An
  * LLM-settable boolean there is a cycle granting itself merge authority. Merge
@@ -50,22 +58,16 @@ import { parseWorkArgs, resolveRepoRoot, runDriver } from "./work-entry.ts";
  * array erases them. The assertion below keeps it honest if the command list
  * ever grows.
  */
-const DOCTRINE_COMMANDS = [
-  "start",
-  "research",
-  "plan",
-  "review",
-  "audit",
-  "do",
-  "agents-md",
-] as const;
+const DOCTRINE_COMMANDS = ["start", "research", "review", "audit", "do", "agents-md"] as const;
 
 // Fails to compile if a new slash command is added without deciding whether it
-// belongs here. `work` is the sole deliberate omission.
+// belongs here. `work` and `plan` are the two deliberate omissions: each is a
+// compiled driver (start_work_driver / start_plan_driver) whose prose body,
+// handed to PM, invites the hand-rolling the tools exist to stop.
 const _doctrineCoversEveryProseCommand: Exclude<
   SlashCommand,
   (typeof DOCTRINE_COMMANDS)[number]
-> extends "work"
+> extends "work" | "plan"
   ? true
   : never = true;
 void _doctrineCoversEveryProseCommand;
@@ -142,13 +144,12 @@ export function registerWorkTools(pi: ExtensionAPI) {
     name: "load_workflow_doctrine",
     label: "Load Workflow Doctrine",
     description:
-      "Return the full instructions for a pi-ensemble workflow command (research, plan, review, audit, start, do) as text, so you can follow them without the user having to type the slash command. Use this when you need to run one of these workflows yourself. For /work use start_work_driver instead — it is a compiled driver, not prose.",
+      "Return the full instructions for a pi-ensemble workflow command (research, review, audit, start, do) as text, so you can follow them without the user having to type the slash command. Use this when you need to run one of these workflows yourself. For /work use start_work_driver and for /plan use start_plan_driver — both are compiled drivers, not prose, and their bodies are deliberately not loadable here.",
     parameters: Type.Object({
       name: Type.Union(
         [
           Type.Literal("start"),
           Type.Literal("research"),
-          Type.Literal("plan"),
           Type.Literal("review"),
           Type.Literal("audit"),
           Type.Literal("do"),

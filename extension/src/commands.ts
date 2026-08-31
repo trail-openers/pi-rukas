@@ -151,7 +151,7 @@ You are running inside a pi-ensemble workflow (/start, /research, /plan, /work, 
 
 If you catch yourself about to call \`edit\`, \`write\`, or \`bash\` for anything beyond \`vipune\` / \`gh issue view\` / read-only \`git status|diff|log|branch\` / \`oo recall\`, STOP and dispatch instead. Touching files yourself is a doctrine violation.
 
-\`/work\` is a COMPILED DRIVER, not a sequence of dispatches. Never reconstruct its steps by hand — a hand-rolled cycle has no state file, no queue, no handoff artifact, no review-cap timer, and produces a branch the driver knows nothing about, with nothing in the transcript saying any of that is missing. To start or restart one, call \`start_work_driver\`. To run any other workflow yourself, call \`load_workflow_doctrine\` and follow what it returns. \`/agents-md\` is executed by the \`agents_md_run\` tool (the compiled core, in-process) — never by a host-relative \`bun\` path. Merge authority is operator-only: neither tool can grant it.
+\`/work\` is a COMPILED DRIVER, not a sequence of dispatches. Never reconstruct its steps by hand — a hand-rolled cycle has no state file, no queue, no handoff artifact, no review-cap timer, and produces a branch the driver knows nothing about, with nothing in the transcript saying any of that is missing. To start or restart one, call \`start_work_driver\`. \`/plan\` is compiled too: issue creation is gated behind \`start_plan_driver\` — call it with dryRun:true, show the spec to the operator, re-call without dryRun on confirmation. Direct \`gh issue create\` (and \`gh api\` POST to the issues collection) is refused for every role in every mode; the refusal names the tool to use instead. To run any other workflow yourself, call \`load_workflow_doctrine\` and follow what it returns. \`/agents-md\` is executed by the \`agents_md_run\` tool (the compiled core, in-process) — never by a host-relative \`bun\` path. Merge authority is operator-only: neither driver can grant it.
 `;
 
 export function registerCommands(pi: ExtensionAPI) {
@@ -173,6 +173,18 @@ export function registerCommands(pi: ExtensionAPI) {
         // background — the handler kicks it off and returns immediately so the
         // user can interact with the chat while it works. Every other command
         // is prompt-orchestrated and takes the sendUserMessage path below.
+        // #598 — /plan is a thin alias, not a prose body. The 473-line body is
+        // gone; the pipeline is compiled into start_plan_driver (plan-tool.ts)
+        // and issue creation is structurally gated behind it. Pointing PM at the
+        // tool here is the only thing left for the command to do.
+        if (name === "plan") {
+          armPmMode();
+          stripPmTools(pi);
+          const alias = `/plan is now a thin alias for the compiled plan driver. To create a GitHub issue, call the \`start_plan_driver\` tool with the descriptor${args ? ` ("${args}")` : ""}. Call it with dryRun:true first, show the spec + gap dispositions to the operator, and on their confirmation re-call with dryRun omitted to file. Direct \`gh issue create\` is structurally refused — the refusal will name this tool.`;
+          trace(`/plan → alias message (${alias.length} chars); PM doctrine armed`);
+          notifyAgent(pi, alias);
+          return;
+        }
         // #393 deleted the flag that used to bypass the driver: it fell back
         // to a prose flow with no state file and none of the verification
         // gates, which is the whole class of failure the driver replaced.

@@ -32,6 +32,7 @@ import {
   matchBashSubcommand,
   tokenizeForPrefix,
 } from "./bash-command-parser.ts";
+import { registerIssueCreationGuard } from "./issue-creation-guard.ts";
 import type { BrokerDeps, PermissionRequest } from "./permission-broker.ts";
 import {
   findProjectConfigPath,
@@ -255,6 +256,18 @@ export function makeBrokerDeps(): BrokerDeps | null {
 }
 
 export function registerPermissionGuard(pi: ExtensionAPI): void {
+  // Mode-independent issue-creation guard: registered BEFORE the sandbox
+  // short-circuit, the subagent-mode firewall, and the trust-mode bypass in
+  // the tool_call handler — following the registerDestructiveGitGuard
+  // precedent (permission-subagent-guard.ts). A hook placed after any of
+  // those would, in practice, never run: sandbox mode short-circuits this
+  // entire function and trust mode (the default on an interactive host)
+  // short-circuits the handler itself. Direct `gh issue create` (and the
+  // `gh api` POST-to-issues-collection second door) is gated behind
+  // start_plan_driver (#598); the driver files via direct execp and never
+  // passes through this hook.
+  registerIssueCreationGuard(pi);
+
   // Sandbox-mode short-circuit (PR #197). Inside the Docker sandbox (set by
   // the `pi-ensemble` wrapper / .devcontainer.json) the container fence IS
   // the trust boundary. No per-call prompts, no broker, no overlay loading.
@@ -265,6 +278,7 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
     trace("permission-guard: PI_ENSEMBLE_SANDBOX_MODE=1 — bypassing all tool gating");
     return;
   }
+
   // Subagent-mode firewall: when spawn.ts forwards pi-ensemble into a subagent
   // it also sets PI_ENSEMBLE_SUBAGENT_MODE=1. The subagent's pi-ensemble load
   // should ONLY register the permission-guard (no dispatch tools, no slash

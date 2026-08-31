@@ -73,9 +73,15 @@ assert(
 );
 
 {
+  // Every tool the extension registers must be resolvable in the PM map: it
+  // must be granted (the default is "ask", which prompts on every call — and
+  // hard-denies in headless `pi -p`), listed in NOT_FOR_PM with a reason, or
+  // STRUCTURALLY DENIED as a tool name (`perm[t] === "deny"`). The last case
+  // is #598: `gh issue create` became deny for PM; a deny is a deliberate
+  // structural refusal, not a stale grant.
   const ungranted = [...registered]
     .filter((t) => !(t in NOT_FOR_PM))
-    .filter((t) => perm[t] !== "allow");
+    .filter((t) => perm[t] !== "allow" && perm[t] !== "deny");
   assert(
     ungranted.length === 0,
     `every registered tool is allowed for PM${
@@ -100,11 +106,14 @@ assert(
   // The allowlist must not rot the other way: a grant for a tool that no longer
   // exists is dead config that hides a typo in a real one.
   const known = new Set([...registered, ...Object.keys(NOT_FOR_PM)]);
-  const orphans = Object.keys(perm).filter(
-    (k) =>
-      (k.startsWith("dispatch_") || k.endsWith("_loop") || k === "check_review_cap") &&
-      !known.has(k),
-  );
+  // A grant for a tool that no longer exists is dead config that hides a typo
+  // in a real one. Tool-shaped keys are the ones that follow the dispatch /
+  // loop / check_review_cap naming; everything else (write, edit, webfetch, `*`,
+  // the bash subcommand allowlist, and the #598 `gh issue create*` deny) is a
+  // permission entry for a Pi builtin or a bash subcommand, not a tool grant.
+  const toolShaped = (k: string) =>
+    k.startsWith("dispatch_") || k.endsWith("_loop") || k === "check_review_cap";
+  const orphans = Object.keys(perm).filter((k) => toolShaped(k) && !known.has(k));
   assert(
     orphans.length === 0,
     `no grant names a tool that is not registered${orphans.length ? ` — stale: ${orphans.join(", ")}` : ""}`,

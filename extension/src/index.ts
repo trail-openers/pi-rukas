@@ -13,6 +13,7 @@ import * as lifecycle from "./lifecycle-events.ts";
 import { loadOverrides } from "./model-config.ts";
 import { registerModelPicker } from "./model-picker.ts";
 import { registerPermissionGuard } from "./permission-guard.ts";
+import { registerPlanTool } from "./plan-tool.ts";
 import { warnIfRetryConfigTooLow } from "./retry-config-check.ts";
 import { registerCheckReviewCapTool } from "./review-cap.ts";
 import { pruneOldRuns, registerRunsCommand } from "./runs.ts";
@@ -59,6 +60,10 @@ export default async function (pi: ExtensionAPI) {
   // host-relative path. Must follow registerWorkTools: the tool reuses
   // work-entry's resolveRepoRoot.
   registerAgentsMdTools(pi);
+  // #598 — issue creation is gated behind the compiled plan driver. The guard
+  // (issue-creation-guard.ts) is registered inside registerPermissionGuard
+  // below; this is the "thing to call instead" half of that gate.
+  registerPlanTool(pi);
   registerRunsCommand(pi);
   registerModelPicker(pi);
   registerAsyncJobsLifecycle(pi);
