@@ -265,9 +265,6 @@ Add a retry.
   );
 }
 
-console.log(`\nexit ${exit}`);
-process.exit(exit);
-
 // ------------------------------- #397: evidence verdicts as LLMs write them
 
 {
@@ -288,11 +285,15 @@ process.exit(exit);
 }
 {
   const s = resolve(
-    "INTENT-VERDICT: proceed\n\n## Spec\n\n### Intent\nx\n\n### Deliverables\n- d1: do it\n\n### Evidence\n- a — src/a.ts:1 — **contradicted**\n",
+    "INTENT-VERDICT: proceed\n\n## Spec\n\n### Intent\nFix the thing in src/a.ts.\n\n### Deliverables\n- d1: change it [paths: src/a.ts]\n\n### Evidence\n- src/a.ts does not exist — src/a.ts — **contradicted**\n",
+  );
+  assert(
+    s?.evidence[0]?.verdict === "contradicted",
+    "a BOLDED `**contradicted**` parses as contradicted",
   );
   assert(
     s?.verdict === "park" && s.parkReason === "contradicted-by-code",
-    "a BOLDED `**contradicted**` still overrides a proceed — the contradiction rule keeps working",
+    "a BOLDED `**contradicted**` on a deliverable path parks — the contradiction rule keeps working",
   );
 }
 

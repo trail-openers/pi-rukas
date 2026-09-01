@@ -19,6 +19,12 @@ import {
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
 import {
+  deleteSpecArtifact,
+  persistSpecArtifact,
+  readSpecArtifact,
+  resolveIntentVerdict,
+} from "./work-driver-intent-artifact.ts";
+import {
   intentResolutionEnabled,
   parseNormalisedSpec,
   reconcileVerdict,
@@ -291,6 +297,12 @@ export async function runExplore(
     exploreTranscript,
   );
   next = begun.state;
+  // #594 — delete the prior cycle's spec artifact before dispatch (best-effort,
+  // trace on failure). Gated on useIntent: the artifact is only used on the
+  // intent path, so on the legacy path (PI_ENSEMBLE_INTENT=0 or N>1) leave it.
+  if (useIntent) {
+    await deleteSpecArtifact(ctx.repoRoot, ctx.issue);
+  }
   const dispatchSettled = await Promise.allSettled([
     dispatch(ctx.pi, { role: "explore", prompt }, { label: "explore" }),
   ]).then((arr) => arr[0]);
@@ -329,44 +341,38 @@ export async function runExplore(
   const event = await buildCompletionEvent(ctx, "explore", "explore", "explore", exploreDispatch);
   next = appendEvent(clearDispatch(next, begun.jobId), event);
 
-  // A dispatch that FAILED has no reply to route on, and the verdict router
-  // below would read its empty text as "explore said nothing" — emitting a
-  // cap-hit that overrides the `dispatch-failed` tail the step router
-  // classifies. Two timed-out explores (lantern #686, #693) were reported to the
-  // operator as "this issue does not say enough to build from"; both issues
-  // were fine. Leave the failure as the tail and let the router judge it.
+  // A dispatch that FAILED has no reply to route on (lantern #686/#693).
   if (event.kind !== "dispatch-completed") return next;
 
-  // PR6 + PR10 — verdict router. For N=1, the existing
-  // parseExploreVerdict path is unchanged. For N>1, parse per-issue
-  // verdicts and split into activeIssues (NEEDS_WORK) + droppedIssues
-  // (ALREADY_COMPLETE / NEEDS_CLARIFICATION). If ALL issues are
-  // dropped, synthesise an aggregate cap-hit (PR6 path); otherwise
-  // continue with the activeIssues subset.
   const responseText = exploreDispatch.text ?? "";
 
-  // #378 — intent resolution. The resolver worked out what is actually being
-  // asked and checked it against the code and the world; route on that rather
-  // than on a single classification token. Falls through to the pre-#378
-  // router when no `## Spec` block came back, so an older prompt or a drifting
-  // agent degrades to the previous behaviour instead of parking everything.
+  // #378 + #594 — intent resolution. Route on the resolved spec; when the
+  // prose does not parse (or only to the parser's default park), the
+  // persisted spec artifact wins. An explicit prose park always wins.
+  // See work-driver-intent-artifact.ts for the full precedence rule.
   if (useIntent) {
     const parsed = parseNormalisedSpec(responseText);
-    if (parsed) {
-      const spec = reconcileVerdict(parsed);
+    // Always read the artifact and let `resolveIntentVerdict` apply the
+    // precedence rule — the "explicit prose park wins" invariant lives in
+    // one place (work-driver-intent-artifact.ts), not in an inline guard.
+    const artifact = await readSpecArtifact(ctx.repoRoot, ctx.issue);
+    const { spec, source } = resolveIntentVerdict(parsed, artifact);
+    // Reconcile the chosen spec: a `proceed` with contradictions is
+    // parked, a `proceed` with assumptions is promoted, an `underspecified`
+    // park may be refuted by a complete spec. This runs on the WINNER
+    // (prose or artifact), so the reconciliation logic is identical
+    // regardless of which channel won the precedence rule.
+    const finalSpec = spec ? reconcileVerdict(spec) : undefined;
+    if (finalSpec !== undefined) {
       next = {
         ...next,
-        pipelineState: { ...next.pipelineState, normalisedSpec: spec },
+        pipelineState: { ...next.pipelineState, normalisedSpec: finalSpec },
       };
-      try {
-        await writeDispatchArtifact(ctx.repoRoot, ctx.issue, "spec", JSON.stringify(spec, null, 2));
-      } catch (err) {
-        trace(`work-driver: could not persist spec artifact: ${(err as Error).message}`);
-      }
+      await persistSpecArtifact(ctx.repoRoot, ctx.issue, finalSpec);
       trace(
-        `work-driver: intent verdict=${spec.verdict}${spec.parkReason ? ` (${spec.parkReason})` : ""}, ${spec.deliverables.length} deliverable(s)`,
+        `work-driver: intent verdict=${finalSpec.verdict}${finalSpec.parkReason ? ` (${finalSpec.parkReason})` : ""}, ${finalSpec.deliverables.length} deliverable(s) (source: ${source})`,
       );
-      if (spec.verdict === "park") {
+      if (finalSpec.verdict === "park") {
         return appendEvent(next, {
           kind: "cap-hit",
           at: Date.now(),
@@ -377,7 +383,9 @@ export async function runExplore(
       }
       return next;
     }
-    trace("work-driver: no `## Spec` block in the explore reply — using the legacy verdict router");
+    // spec === undefined: no parse AND no valid artifact. Fall through to
+    // the legacy router below (fires the no-signal cap-hit on the intent path).
+    trace("work-driver: no `## Spec` block and no valid artifact — legacy verdict router");
   }
 
   if (issues.length === 1) {
