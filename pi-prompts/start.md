@@ -32,11 +32,11 @@ argument-hint: ""
 
 4. **Current state of work** — run these directly IN THE SAME PM TURN as step 3's dispatch (one bash call each, all in parallel):
    - `oo git log --oneline -10`
-   - `gh issue list --limit 15`
-   - `gh pr list`
-   - `gh run list --branch main --limit 3`
    - `oo git shortlog -sn --no-merges`
    - `oo git for-each-ref --sort=-committerdate refs/heads --format='%(HEAD) %(refname:short) %(committerdate:relative)'`
+   - Forge state — pick by the detected forge (`git remote get-url origin` host: `github.com` → GitHub, `gitlab.com` → GitLab, otherwise skip these and note "forge undetected"), one bash call each:
+     - GitHub: `gh issue list --limit 15`, `gh pr list`, `gh run list --branch main --limit 3`
+     - GitLab: `glab issue list --limit 15`, `glab mr list`, `glab ci list --limit 3`
 
    These are read-only — no dispatch, no subagent spawn, no GLM summarisation dependency. The output is yours to synthesise in step 6.
 

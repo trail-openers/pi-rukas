@@ -167,7 +167,7 @@ assert(files.length > 10, `the scan covers the doctrine set (${files.length} fil
 
 // The fixed doctrine teaches the rule by warning against the pattern. Those
 // warning lines must not trip the gate — including the real line from
-// modules/workflows/github-issues.md, cited here verbatim.
+// modules/workflows/issue-workflow.md, cited here verbatim.
 {
   const knownGood = [
     "- NEVER put the issue number in the scope position — issue linkage flows through the PR body and the branch slug.",

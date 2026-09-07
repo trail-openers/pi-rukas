@@ -1,5 +1,5 @@
 ---
-description: Orchestrate free-form work via PM (no GitHub issue required; counterpart to /work)
+description: Orchestrate free-form work via PM (no tracker issue required; counterpart to /work)
 argument-hint: "<description of what to do>"
 ---
 
@@ -13,11 +13,11 @@ If $ARGUMENTS is empty, ask the user to describe the work in one or two sentence
 
 ## When to use /do vs /work
 
-- **`/work N`** — issue-driven deterministic compiled driver. Use when a GitHub issue exists. Gets resumable state file, structured cap-hits, and the full step machine (explore → plan → branch → develop → adversarial → commit-pr → lens-review → ci → merged).
+- **`/work N`** — issue-driven deterministic compiled driver. Use when a tracker issue exists. Gets resumable state file, structured cap-hits, and the full step machine (explore → plan → branch → develop → adversarial → commit-pr → lens-review → ci → merged).
 - **`/do <description>`** — PM-driven, no compiled driver. Use when:
   - You want to act on lens-review findings from a `/review` you just ran (read the findings from scrollback, dispatch developer to fix them, re-review, report)
   - You want to fix a small thing without filing an issue ("fix the typo in README.md line 47")
-  - You're working with a community-submitted PR that isn't backed by an issue in your tracker
+  - You're working with a community-submitted PR that isn't backed by an issue in your tracker (either forge)
   - You're chaining multiple short tasks ("rebase the branch, then bump the changelog")
 
 ## Role
@@ -51,7 +51,7 @@ This is NOT the deterministic state machine that `/work` runs. Pick the steps th
 
 6. **Lens review (optional).** For non-trivial diffs, dispatch `dispatch_lens_review` against the PR diff. Fix-loop on findings via re-dispatch developer with the lens output.
 
-7. **CI watch (optional).** If the project has CI and a PR was opened, dispatch `ops` to watch `gh run watch` and report back.
+7. **CI watch (optional).** If the project has CI and a PR was opened, dispatch `ops` to watch it and report back — per forge: GitHub: `gh run watch`, GitLab: poll `glab ci status` (or the latest pipeline via `glab ci view`) until a terminal state (`success`, `failed`, `canceled`, `skipped` or `manual`).
 
 8. **Report back.** Concise summary of what was done. PR URL if one was opened. Open questions if any.
 
@@ -63,7 +63,7 @@ This is NOT the deterministic state machine that `/work` runs. Pick the steps th
 | State file | `.pi/work-state/<N>.json` | none |
 | Resumability | yes (re-running /work N picks up where it left off) | no (each invocation is a fresh ask) |
 | Cap-hits | structured events (`cap-hit`, halt-cascade router, etc.) | inline PM judgement; you decide when to stop and surface |
-| Handoff | structured GitHub comment with recovery commands | chat-side prose summary |
+| Handoff | structured tracker comment with recovery commands | chat-side prose summary |
 | Quality gates | target project's `AGENTS.md` (read on subagent dispatch) | target project's `AGENTS.md` — same |
 | Merge policy | target project's `AGENTS.md` | target project's `AGENTS.md` — same |
 

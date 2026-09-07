@@ -41,7 +41,7 @@ See `modules/core/codebase-memory-mcp.md` for the full doctrine on which `codeba
 ## JSON Parsing
 
 Use `jq` for structured data:
-- Parse API responses: `gh api ... | jq '.items[]'`
+- Parse API responses: `gh api ... | jq '.items[]'` (GitHub) or `glab api ... --output json | jq '.[]'` (GitLab — note: `--output json`, never `--json`)
 - Extract fields: `jq -r '.name'`
 
 ## File Operations

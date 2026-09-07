@@ -8,7 +8,7 @@
  * `gh issue create` is structurally denied for every role in every mode. The
  * canary pins the doctrine against drift: the verb `gh issue create` must
  * appear only in the allowlisted files (project-manager.md, and the
- * PM-only command block in github-issues.md), and only as a negation or a
+ * PM-only command block in issue-workflow.md), and only as a negation or a
  * fenced command line — never as a positive prose prescription outside them.
  *
  * AGENTS.md is deliberately NOT scanned: it is host-project-specific (auto-loaded
@@ -36,25 +36,25 @@ const ROOT = path.resolve(import.meta.dirname, "..", "..");
 /**
  * Files where `gh issue create` is legitimately present (data, not logic).
  * project-manager.md names the verb inside the structural-denial doctrine
- * ("Direct `gh issue create` is structurally denied…"); github-issues.md
+ * ("Direct `gh issue create` is structurally denied…"); issue-workflow.md
  * keeps the same shape in its creation section.
  */
 const ALLOWLIST = [
   "agents-base/project-manager.md",
-  "modules/workflows/github-issues.md",
+  "modules/workflows/issue-workflow.md",
 ];
 
 /**
  * Files where `gh issue create` must be absent as a positive prose
  * prescription. ops.md's refusal rule legitimately quotes the verb inside a
- * negation ("Never run `gh issue create`"), and github-issues.md carries the
+ * negation ("Never run `gh issue create`"), and issue-workflow.md carries the
  * real PM-only command inside a fenced code block. Any other occurrence is
  * drift and fails the canary.
  */
 const MUST_BE_ABSENT = [
   "agents-base/ops.md",
   "agents-base/developer.md",
-  "modules/workflows/github-issues.md",
+  "modules/workflows/issue-workflow.md",
 ];
 
 function walk(dir: string, out: string[] = []): string[] {

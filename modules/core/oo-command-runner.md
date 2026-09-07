@@ -12,7 +12,7 @@ These commands ALWAYS use `oo` — no judgment call, no exceptions:
 
 They produce 50+ lines of output that bloat your context and the dispatch report PM ultimately reads. Bare is wasteful even when allowlisted — `oo` compresses to `✓ cargo test (47 passed)` while preserving failures verbatim.
 
-The nuanced "Wrap with oo / Run bare" doctrine below covers everything ELSE — `git status`, `gh issue view`, `jq` pipes, single-line reads.
+The nuanced "Wrap with oo / Run bare" doctrine below covers everything ELSE — `git status`, `gh issue view`, `glab issue view`, `jq` pipes, single-line reads.
 
 ## When to use `oo` (other commands)
 
@@ -29,10 +29,11 @@ The nuanced "Wrap with oo / Run bare" doctrine below covers everything ELSE — 
 - `git branch --show-current` / `git worktree list` / `git rev-parse HEAD` — one line each
 - `git remote -v` / `git tag` / `git config --get user.email` — short reads
 - `gh issue view <N>` / `gh issue list --limit N` / `gh search issues …` — the agent needs the *content* (titles, body, URLs); not a "8 issues" summary
-- `gh api repos/.../issues/N` — when piped to `jq`, oo's indexing path breaks the pipeline (oo replaces the JSON with a recall-hint summary line). Always bare for `gh api | jq` patterns.
+- `glab issue view <N>` / `glab issue list --limit N` — same rule on GitLab; the content is the decision input
+- `gh api repos/.../issues/N` — when piped to `jq`, oo's indexing path breaks the pipeline (oo replaces the JSON with a recall-hint summary line). Always bare for `gh api | jq` and `glab api | jq` patterns.
 - `vipune`, `jq`, `head`, `tail`, `wc` — already context-efficient by design (codebase-memory-mcp tools are MCP, not bash; same principle)
 
-**Why `oo` is wrong for `gh issue …`**: oo's "passthrough" tier (≤4 KB) does nothing useful for already-bounded gh queries. For larger queries (e.g. unlimited `gh issue list`), oo's "indexed" tier replaces the output with `(indexed 8 KiB → use 'oo recall')`, forcing a follow-up `oo recall <query>` round-trip that may not surface what the agent needs. PM reads issue bodies and lists to make decisions; substituting a compression summary loses the information the agent's deciding from.
+**Why `oo` is wrong for `gh issue …` / `glab issue …`**: oo's "passthrough" tier (≤4 KB) does nothing useful for already-bounded issue queries (either forge). For larger queries (e.g. unlimited `gh issue list` / `glab issue list`), oo's "indexed" tier replaces the output with `(indexed 8 KiB → use 'oo recall')`, forcing a follow-up `oo recall <query>` round-trip that may not surface what the agent needs. PM reads issue bodies and lists to make decisions; substituting a compression summary loses the information the agent's deciding from.
 
 ## Output Behavior
 
@@ -144,7 +145,7 @@ gh pr list --json number,title
 
 ## Prefer `oo`-wrapped commands
 
-Your allowlist heavily uses `oo` as the canonical wrapper for git / gh / npm / cargo. **Bare `git commit`, `gh pr view`, `npm install` are NOT in your allowlist — they will prompt the user.** `oo git commit`, `oo gh pr view`, `oo npm install` ARE allow-listed and pass through silently. The wrapper does nothing semantically different (oo just compresses verbose output) — the user is the one who allow-listed `oo X` patterns specifically.
+Your allowlist heavily uses `oo` as the canonical wrapper for git / gh / glab / npm / cargo. **Bare `git commit`, `gh pr view`, `glab mr view`, `npm install` are NOT in your allowlist — they will prompt the user.** `oo git commit`, `oo gh pr view`, `oo glab mr view`, `oo npm install` ARE allow-listed and pass through silently. The wrapper does nothing semantically different (oo just compresses verbose output) — the user is the one who allow-listed `oo X` patterns specifically.
 
 Quick reference for the commands most often confused:
 
@@ -154,7 +155,9 @@ Quick reference for the commands most often confused:
 | `git push origin …`| `oo git push origin …`  | `git push origin …`|
 | `git diff HEAD~1`  | `oo git diff HEAD~1`    | `git diff HEAD~1`  |
 | `gh pr view 123`   | `oo gh pr view 123` *or* the native `pr` tool if your role has it | `gh pr view 123` |
+| `glab mr view 123` | `oo glab mr view 123` *or* the native `pr` tool if your role has it | `glab mr view 123` |
 | `gh pr create …`   | `oo gh pr create …`     | `gh pr create …`   |
+| `glab mr create …` | `oo glab mr create …`   | `glab mr create …`   |
 | `cargo build`      | `oo cargo build`        | `cargo build`      |
 | `npm test`         | `oo npm test`           | `npm test`         |
 
@@ -187,13 +190,13 @@ Retrying a command 4 times with permutations to get past `(no output)` is wasted
 
 ## GitHub Issue Reading Fallback
 
-Use this fallback only when `oo gh issue view` fails with `repository.issue.projectCards` deprecation errors. Do NOT fallback for auth/network/rate limit errors.
+Use this fallback only when `oo gh issue view` fails with `repository.issue.projectCards` deprecation errors. Do NOT fallback for auth/network/rate limit errors. (GitHub-only — `glab issue view` has no such deprecation failure mode.)
 
 ### Single Issue Fallback
 
 To use the fallback command, derive values:
-- `{owner}` and `{repo}`: from `git remote get-url origin`
-- `{number}`: the actual issue number in the error context
+- `{owner}` and `{repo}`: from `git remote get-url origin` (works for both `git@github.com:…` and `git@gitlab.com:…` remote shapes)
+- `{number}`: the actual issue number (GitHub) / iid (GitLab) in the error context
 
 ```bash
 oo gh api repos/{owner}/{repo}/issues/{number} | jq -r '.body'
@@ -206,11 +209,11 @@ REST endpoint `/repos/{owner}/{repo}/issues/{number}` avoids GraphQL `projectCar
 For multiple issues, use the list endpoint with filtering:
 
 ```bash
-OWNER_REPO=$(git remote get-url origin | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')
-oo gh api repos/$OWNER_REPO/issues -f state=open -f per_page=100 | jq -r '.[] | "\(.number): \(.title)"'
+OWNER_REPO=$(git remote get-url origin | sed -E 's#(git@github.com:|https://github.com/|git@gitlab.com:|https://gitlab.com/)##; s#\.git$##')
+oog gh api repos/$OWNER_REPO/issues -f state=open -f per_page=100 | jq -r '.[] | "\(.number): \(.title)"'
 ```
 
-This avoids `&&` chaining and for-loop+jq pitfalls. Use for listing issues when `oo gh issue list` encounters `projectCards` deprecation errors.
+This avoids `&&` chaining and for-loop+jq pitfalls. Use for listing issues when `oo gh issue list` encounters `projectCards` deprecation errors. The same `OWNER_REPO` derivation feeds `glab` via `glab -R $OWNER_REPO` on GitLab. Note: Glab has no `projectCards` failure mode — on GitLab, `glab issue list --state opened --output json` is the direct equivalent (state values differ: `opened`/`closed`, not `open`/`closed`).
 
 ## Piping `oo gh api` to `jq`
 

@@ -396,6 +396,8 @@ Surface transcript paths in your reply verbatim; let the user browse via `/runs`
 
 ## 9. Git workflow
 
+Forge note: this section describes this repo's own workflow, and this repo lives on GitHub — so `gh` commands and `PR` are used throughout. A project on GitLab gets the same doctrine with `gh` swapped for `glab` and PR for MR.
+
 ### Conventional commits with issue numbers
 
 ```
@@ -453,9 +455,9 @@ chore/...                             # tooling / config (no issue required)
 
 Experimental architectural work lives on a feature branch and does NOT merge to main without explicit human approval. Stack spikes on top of foundational PRs if needed; rebase onto fresh main after the foundation merges.
 
-### LLMs are allowed to squash merge PRs
+### LLMs are allowed to squash merge PRs/MRs
 
-If all project quality gates have been met (code reviews, CI, linters, type checks etc) LLMs / agents are allowed to squash merge PRs.
+If all project quality gates have been met (code reviews, CI, linters, type checks etc) LLMs / agents are allowed to squash merge PRs (GitLab: MRs).
 
 **This sentence is load-bearing, not decorative.** Since #380 the `/work` driver reads this file at the `merged` step and refuses to merge without an explicit grant like the heading above. Deleting or softening it turns auto-merge off for this repo; an unquoted prohibition anywhere in this file (of the `never merge` / `do not merge` / `automerge: false` shape) turns it off regardless of the grant. Other projects opt in the same way, or per-run with `/work <issue> --merge`; with neither, `/work` opens the PR and parks as `awaiting-human-merge`.
 
@@ -477,12 +479,12 @@ Authority alone is not sufficient — the driver also requires executed evidence
 ### During development
 
 - Keep changes focused on the issue
-- PM surfaces related work via `gh issue create`; specialists report it to PM and PM decides — don't bundle
+- PM surfaces related work via the forge CLI (`gh issue create` on GitHub, `glab issue create` on GitLab); specialists report it to PM and PM decides — don't bundle
 - One PR per issue (per concern); small + reviewable beats Big Bang
 
 ### When the issue text drifts
 
-Refinements/corrections to a research issue go in the **body** via `gh issue edit --body-file`, not as comments. Comments get buried. Comments are for progress notes, not design corrections.
+Refinements/corrections to a research issue go in the **body** (`gh issue edit --body-file` on GitHub; GitLab has no issue-edit subcommand — `glab api -X PUT projects/:id/issues/:iid` with the new body), not as comments. Comments get buried. Comments are for progress notes, not design corrections.
 
 ---
 

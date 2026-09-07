@@ -6,7 +6,7 @@ modules/core/codebase-memory-mcp.md
 modules/core/oo-command-runner.md
 modules/core/output-standards.md
 modules/core/token-economy.md
-modules/workflows/github-issues.md
+modules/workflows/issue-workflow.md
 modules/workflows/quality-gates.md
 modules/domains/scope-boundaries.md
 modules/workflows/parallel-worktrees.md

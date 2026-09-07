@@ -1,10 +1,12 @@
 # Git Workflow Standards
 
-## SSH-Only GitHub Access
+## SSH-Only Forge Access
 
-- **ALWAYS use SSH protocol**: `git@github.com:user/repo.git`
-- **NEVER use HTTPS**: No `https://github.com` URLs for git operations
-- Use `gh` CLI exclusively for GitHub interactions
+- **ALWAYS use SSH protocol** for git remote URLs, on any forge:
+  - GitHub: `git@github.com:user/repo.git`
+  - GitLab: `git@gitlab.com:user/repo.git`
+- **NEVER use HTTPS**: No `https://github.com` / `https://gitlab.com` URLs for git operations
+- Use the forge CLI exclusively for forge interactions: `gh` on GitHub, `glab` on GitLab
 
 ## Branch Strategy
 
@@ -56,8 +58,7 @@ Link issue via `Closes #123` in the PR body.
 
 ## Single-User Environment
 
-This OpenCode setup uses ONE gh CLI user for all operations:
-- Same user creates PRs, reviews code, and merges
-- `gh pr review --approve` works normally
-- `gh pr merge` works normally
+This OpenCode setup uses ONE forge CLI user for all operations (the same `gh`/`glab` identity throughout):
+- Same user creates PRs/MRs, reviews code, and merges
+- PR/MR review and merge commands work normally (`gh pr review --approve` / `glab mr approve`)
 - No approval "sync" delays

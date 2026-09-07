@@ -149,7 +149,7 @@ When research reveals something that ought to change the **spec** (not just info
 
 Plumb when a finding includes:
 
-- ✅ A prior decision that contradicts the current spec (recorded in vipune, AGENTS.md, or an old GitHub issue)
+- ✅ A prior decision that contradicts the current spec (recorded in vipune, AGENTS.md, or an old tracker issue)
 - ✅ A pattern in the codebase that suggests a different scope or constraint than the spec assumes
 - ✅ A library / framework constraint that makes the spec's stated approach infeasible
 - ✅ External evidence (docs, RFCs, industry practice) that contradicts a stated requirement
@@ -252,4 +252,4 @@ When you save structured analysis (JSON gap reports, scraped data, codebase memo
 
 Empirical pattern: previous /work cycles dropped `analysis/nav-phase1a-gaps.json` and ad-hoc PNG mockups at repo root. That clutter then blocks the next /work's branch step (`git status --porcelain` not empty).
 
-When the scratch dir is named in your dispatch prompt: use it. When it's not: `/tmp/pi-ensemble-explore/` is the host-level fallback. NEVER write structured outputs to the repo root or tracked dirs unless the work IS the deliverable (e.g., a research issue whose body you're updating via `gh issue edit --body-file`).
+When the scratch dir is named in your dispatch prompt: use it. When it's not: `/tmp/pi-ensemble-explore/` is the host-level fallback. NEVER write structured outputs to the repo root or tracked dirs unless the work IS the deliverable (e.g., a research issue whose body you're editing — via the forge CLI's issue-edit verb, `gh issue edit --body-file` on GitHub or `glab api -X PUT` with `description=@<file>` on GitLab).

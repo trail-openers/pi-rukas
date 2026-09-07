@@ -43,9 +43,9 @@ Tell subagents explicitly:
 - "Return: file paths and line numbers only"
 - "Return: yes/no with one-line rationale"
 
-## The GitHub Issue Exception
+## The Issue Exception
 
-Creating GitHub issues is the ONE thing you do yourself. Context loss in delegation is too high — issue titles, descriptions, labels, and linking require your full understanding.
+Creating issues (on any forge — GitHub or GitLab) is the ONE thing you do yourself. Context loss in delegation is too high — issue titles, descriptions, labels, and linking require your full understanding.
 
 ## Memory Offloading
 

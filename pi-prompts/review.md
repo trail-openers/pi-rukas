@@ -9,6 +9,8 @@ argument-hint: "[#PR | path | latest N | (empty = full codebase)]"
 
 If no scope was provided above, this command defaults to a full-codebase review (Mode 2) after confirming with the user.
 
+**Forge detection (run once, before any scoped step)**: the forge CLI depends on the repo's forge — inspect `git remote get-url origin`: `github.com` → GitHub (`gh`), `gitlab.com` → GitLab (`glab`). An unrecognized host → ask the user which forge CLI to use, or fall back to the bare `git diff` commands below (which are forge-agnostic). Use the corresponding CLI in every step of this body.
+
 ---
 
 ## Role
@@ -29,11 +31,12 @@ This is **not** the `/work` review loop — this is a standalone review service.
 
 Match strictly:
 
-- **`#NUMBER`** (e.g. `#456`) → PR by number:
+- **`#NUMBER`** (e.g. `#456`) → PR/MR by number:
   ```bash
-  gh pr diff "$NUMBER"
+  gh pr diff "$NUMBER"      # GitHub
+  glab mr diff "$NUMBER"    # GitLab
   ```
-  Use the output as the `diff` payload.
+  Use the output of the matching command as the `diff` payload.
 
 - **Path with `/` or a file extension** (e.g. `src/auth/` or `src/auth.ts`) → directory or file:
   ```bash
@@ -41,14 +44,15 @@ Match strictly:
   ```
   If the diff is empty (no changes vs main), fall back to reading the file(s) and prefacing the payload with `--- FILE: <path> ---\n` blocks so the lenses know they're reviewing static code, not a diff.
 
-- **`latest N` or `latest N PRs`** (e.g. `latest 2`, `latest 3 PRs`) → N most recent PRs:
+- **`latest N` or `latest N PRs`** (e.g. `latest 2`, `latest 3 PRs`) → N most recent PRs/MRs:
   ```bash
-  gh pr list --limit "$N" --state all --json number,title
+  gh pr list --limit "$N" --state all --json number,title   # GitHub
+  glab mr list --limit "$N" --state all                     # GitLab
   ```
-  Then `gh pr diff <number>` for each. Concatenate the diffs with `=== PR #X — <title> ===\n` separators.
+  Then `gh pr diff <number>` (GitHub) or `glab mr diff <number>` (GitLab) for each. Concatenate the diffs with `=== PR #X — <title> ===\n` separators.
 
 - **Anything else** (ambiguous text, bare numbers, etc.) → ask the user once to clarify, with these examples:
-  > Could you specify the scope? Use `#NUMBER` for a PR, a path like `src/auth/` for a directory/file, or `latest 2 PRs` for recent ones.
+  > Could you specify the scope? Use `#NUMBER` for a PR/MR, a path like `src/auth/` for a directory/file, or `latest 2 PRs` for recent ones.
 
   If still ambiguous after one clarification, abort: "Unable to determine review scope."
 

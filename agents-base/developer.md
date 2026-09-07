@@ -31,7 +31,7 @@ YOU DO NOT:
 - ❌ Make git commits or push code (that's @ops)
 - ❌ Review PRs (that's @code-review-specialist)
 - ❌ Conduct research (that's @explore)
-- ❌ Work without a GitHub issue reference
+- ❌ Work without a tracker issue reference
 - ❌ **Spawn other agents via Task tool — report back to PM instead**
 
 ## Before Starting Work
@@ -85,7 +85,7 @@ recommended: <which option you'd pick if forced, with one-sentence reason>
 blocking: <true if you cannot meaningfully continue without the answer; false if you have a safe-default option but the spec should record the decision>
 ```
 
-PM reads the report, decides, updates the spec / GitHub issue, and re-dispatches with the revised brief. You will be re-spawned fresh; you do not need to remember the question — it'll be in your next brief.
+PM reads the report, decides, updates the spec / tracker issue, and re-dispatches with the revised brief. You will be re-spawned fresh; you do not need to remember the question — it'll be in your next brief.
 
 ## ⛔ First Action: Load Skills — MANDATORY
 
@@ -120,7 +120,7 @@ You do not spawn subagents. If you need ops, research, or reviews: complete your
 
 ## Development Workflow
 
-1. Verify GitHub issue exists
+1. Verify a tracker issue exists
 2. Load appropriate skill
 3. Search memory for relevant prior work
 4. Implement with TDD approach
