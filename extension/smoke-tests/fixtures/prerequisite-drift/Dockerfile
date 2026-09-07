@@ -9,3 +9,7 @@ FROM debian:stable-slim
 RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.99.0
 RUN apt-get install -y git
 RUN npm install -g mystery-tool
+# gh via apt-get — the forge OR-gate canary: the real Dockerfile installs gh
+# via apt and glab via a piped curl one-liner; this line keeps that shape
+# (and the apt-get rule in parseDockerInstalls) exercised by the canary.
+RUN apt-get install -y gh

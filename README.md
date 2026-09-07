@@ -58,7 +58,7 @@ Required CLIs on `$PATH`. The role prompts assume all of these are installed —
 | [Pi](https://pi.dev) | The terminal coding agent this extends. |
 | [`bun`](https://bun.com) | Runtime for the extension (loads TS via `jiti`). |
 | `git` ≥ 2.20 | Worktrees, branches, diffs. |
-| [`gh`](https://cli.github.com/) | GitHub issue / PR / CI ops from inside `/work` and `/review`. |
+| Forge CLI (`gh` / `glab`) | Forge issue / PR / CI ops from inside `/work` and `/review` — `gh` (https://cli.github.com/) for GitHub, `glab` (https://gitlab.com/-/project/7110207/-/blob/main/docs/installation.md) for GitLab. Install at least one; both is fine. |
 | [`vipune`](https://github.com/randomm/vipune) | Cross-session memory (fact + observation patterns). All agents call this. (Cargo from source — no native-Windows install path.) |
 | [`codebase-memory-mcp`](https://github.com/DeusData/codebase-memory-mcp) | Persistent knowledge-graph code indexer exposed as MCP. Powers `codebase_memory_search_code` / `trace_path` / `detect_changes` / `get_architecture` — pre-approved on the read-heavy roles. (Installs by curl-to-bash — no native-Windows install path.) |
 | [`oo`](https://github.com/randomm/oo) | Context-efficient wrapper for chatty CLIs (git, gh). (Cargo from source — no native-Windows install path.) |
@@ -95,9 +95,13 @@ npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.84.4
 # bun (≥ 1.2.20)
 curl -fsSL https://bun.com/install | bash
 
-# git, gh, jq — your OS package manager
-brew install git gh jq                                                # macOS
-# sudo apt install git gh jq                                          # Debian/Ubuntu
+# git, jq — your OS package manager; the forge CLI (gh and/or glab) the same way
+brew install git jq gh                                                # macOS (gh)
+# sudo apt install git jq gh                                          # Debian/Ubuntu (gh)
+
+# glab — GitLab forge CLI: brew install --no-quarantine glab (macOS); see
+# https://gitlab.com/gitlab-org/cli for the Linux one-liner (officially
+# distributed via a curl-piped install script, same as the bun line above).
 
 # vipune, oo — cargo from source (Rust toolchain required)
 cargo install vipune

@@ -61,6 +61,15 @@ RUN install -m 0755 -d /etc/apt/keyrings \
     && apt-get update && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
+# glab — GitLab CLI. Installed via the upstream install script (gitlab-org/cli)
+# rather than a pinned deb: the deb is version-stamped per release, so pinning
+# it here would require a version update every upstream release; the script
+# always installs the current release, which is what the forge CLI needs for
+# dual-forge support (#608). Same supply-chain posture as the bun/curl installs
+# below.
+RUN curl -fsSL https://gitlab.com/gitlab-org/cli/-/raw/main/docs/installation.sh | bash \
+    && command -v glab
+
 # -----------------------------------------------------------------------------
 # 3. Node 22 (NodeSource) + bun (latest)
 # -----------------------------------------------------------------------------

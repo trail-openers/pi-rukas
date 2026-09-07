@@ -31,20 +31,18 @@ EXT_DIR="$PI_AGENT_DIR/extensions"
 
 # ---- Platform guard (#491) ----------------------------------------------------
 #
-# Supported: macOS and Linux. WSL2 is expected to work but untested.
+# Supported: macOS and Linux (WSL2 expected to work, untested).
 # Refused: everything else — Git Bash / MSYS2 / Cygwin on native Windows,
-# and BSDs or other exotic Unixes. This guard is deliberately NEGATIVE (refuse
-# when uname -s is neither Linux nor Darwin) rather than a positive match on
-# MSYS*/MINGW*/CYGWIN*: a bash script can only run on Windows under Git Bash,
-# MSYS2, Cygwin or WSL, so a positive matchlist catches the closest-to-working
-# environments and misses every genuinely broken one. On Linux and macOS
-# uname -s is exactly "Linux" or "Darwin" (WSL2 reports "Linux"), so an exact
-# match on those two values is safe.
+# BSDs, etc. Deliberately NEGATIVE (refuse when uname -s is neither Linux
+# nor Darwin) rather than a positive match on MSYS*/MINGW*/CYGWIN*:
+# a bash script can only run on Windows under those environments, so a
+# positive matchlist catches the closest-to-working and misses every
+# genuinely broken one. On Linux and macOS uname -s is exactly "Linux"
+# or "Darwin", so an exact match on those two values is safe.
 #
 # Native PowerShell and cmd never reach this script at all — the shebang
 # excludes them — and are addressed by the README's platform statement alone;
 # this guard covers the shells that DO execute it but cannot complete.
-#
 # classify_os is a small named function taking the uname value so the
 # classification is testable in isolation (smoke test: test-os-guard.ts).
 classify_os() {
@@ -90,20 +88,18 @@ check_cmd() {
 }
 
 # pi is special-cased: presence is not enough, the installed version must
-# meet the floor (source: install-preflight.sh, #578). The REQUIRED_CLIS
-# entry keeps the pinned install hint and the drift-gate's forward name
-# check; the below-floor case is reported separately because it needs an
-# upgrade hint, not an install one.
-# Hard dependencies — install will continue but tools will fail at runtime.
+# meet the floor (source: install-preflight.sh, #578); the below-floor case
+# is reported separately because it needs an upgrade hint, not an install one.
+#
+# Hard dependencies — install continues but tools will fail at runtime.
 # Single source for the preflight set: each entry is "name:hint". The
-# prerequisite-drift gate (smoke-tests/test-prerequisite-drift.ts) parses this
-# array and cross-checks it against the README Prerequisites section and the
-# .devcontainer/Dockerfile global installs — a tool added here must also be
-# named in the README (or covered by an exception in that test).
+# prerequisite-drift gate (smoke-tests/test-prerequisite-drift.ts) parses
+# this array and cross-checks it against the README Prerequisites section
+# and the .devcontainer/Dockerfile global installs.
 REQUIRED_CLIS=(
   "pi:bun add -g @earendil-works/pi-coding-agent@${MIN_PI_VERSION}"
   "git:OS package manager"
-  "gh:brew install gh"
+  "forge:brew install gh (GitHub) or brew install --no-quarantine glab (GitLab) — checked below" 
   "jq:brew install jq"
   "vipune:cargo install vipune  (https://github.com/randomm/vipune)"
   "oo:cargo install double-o  (https://github.com/randomm/oo)"
@@ -126,6 +122,16 @@ esac
 for entry in "${REQUIRED_CLIS[@]}"; do
   check_cmd "${entry%%:*}" "${entry#*:}"
 done
+
+# Forge CLI — dual-forge support (#608): pi-ensemble works against GitHub
+# (gh) or GitLab (glab), so require gh OR glab rather than gh exclusively.
+# The "forge" entry in REQUIRED_CLIS above is a pseudo-name (nothing named
+# `forge` is probed); this is the real check — warn-not-fail, by the same
+# token as the missing[] block below (the user may install the CLI later).
+if ! command -v gh >/dev/null 2>&1 && ! command -v glab >/dev/null 2>&1; then
+  echo "!! Neither gh nor glab found — forge operations (issues, PRs, CI) will fail at runtime."
+  echo "   Install one: brew install gh (GitHub) or brew install --no-quarantine glab (GitLab)"
+fi
 
 # codebase-memory-mcp is not preflighted here — it's an MCP server loaded by
 # pi-mcp-adapter, not a CLI on PATH. See README → Using MCP servers +
@@ -152,8 +158,7 @@ PI_ENSEMBLE_BASE="$ENSEMBLE_DIR" PROMPTS_DIR="$ENSEMBLE_DIR/dist/prompts" \
 # Older installer revisions symlinked pi-prompts/ into ~/.pi/agent/prompts/,
 # which made Pi auto-discover them as file-based templates AND our extension
 # also register the same slash-command names — a collision that showed the
-# user two entries in autocomplete. Clean up any stale symlinks left over
-# from previous installs.
+# user two entries in autocomplete. Clean up any stale symlinks.
 if [ -d "$PI_AGENT_DIR/prompts" ]; then
   for name in start.md research.md plan.md work.md review.md; do
     target="$PI_AGENT_DIR/prompts/$name"
@@ -205,38 +210,17 @@ pi_bridge_warn "$PI_AGENT_DIR"
 
 # ---- 6. Register codebase-memory-mcp with pi-mcp-adapter ---------------------
 #
-# codebase-memory-mcp ships its own install script that writes MCP configs for
-# Claude Code / Codex / OpenCode — but NOT for pi-mcp-adapter (which is what
-# Pi uses). pi-mcp-adapter reads (precedence-ordered):
-#   1. ~/.config/mcp/mcp.json   (user-global, preferred)
-#   2. <PI_AGENT_DIR>/mcp.json  (Pi global override)
-#   3. .mcp.json                (project-scoped)
-#   4. .pi/mcp.json             (Pi project override)
-#
-# Without an entry in one of these, `/mcp` shows "0/0 servers, 0 tools" and
-# every dispatched subagent fails the first codebase_memory_* call. pi-ensemble
-# DOES depend on codebase-memory-mcp (see modules/core/codebase-memory-mcp.md)
-# so we wire it explicitly into the user-global config — idempotent, merge-
-# safe with other MCP servers the user already configured.
-#
-# Server-key is `codebase_memory` (underscore, not the binary's hyphenated
-# package name) so pi-mcp-adapter's formatToolName produces tool names that
-# match our doctrine exactly: `codebase_memory_search_code`, `_trace_path`,
-# `_detect_changes`, etc. The seven read-side tools are surfaced via
-# directTools so per-tool agents.json permissions work. Admin tools
-# (index_repository, delete_project, manage_adr, index_status, list_projects,
-# ingest_traces) stay behind the proxy `mcp` tool, gated by `"mcp": "ask"|
-# "allow"` per role.
-
-# PATH-portability: we write the BINARY NAME (not the resolved absolute
-# path) so the same mcp.json works in both host AND sandbox-container
-# contexts. Node's child_process.spawn falls back to $PATH for any
-# non-absolute first-arg. Host has `~/.local/bin/codebase-memory-mcp` on
-# PATH (per upstream installer); container has `/usr/local/bin/
-# codebase-memory-mcp` (per .devcontainer/Dockerfile). Same key, different
-# binary location, no mcp.json rewrite needed at container entry.
-# PR #200 shipped absolute paths and the sandbox couldn't spawn the host
-# path; this fix makes mcp.json portable.
+# codebase-memory-mcp ships its own install script that writes MCP configs
+# for Claude Code / Codex / OpenCode — but NOT for pi-mcp-adapter (what Pi
+# uses). pi-mcp-adapter reads (precedence-ordered): ~/.config/mcp/mcp.json,
+# <PI_AGENT_DIR>/mcp.json, .mcp.json, .pi/mcp.json. Without an entry, /mcp
+# shows "0/0 servers" and every dispatched subagent fails the first
+# codebase_memory_* call. We wire it into the user-global config — idempotent,
+# merge-safe. Server-key is `codebase_memory` (underscore) so formatToolName
+# produces doctrine-matching tool names; the seven read-side tools are
+# surfaced via directTools. PATH-portability: we write the BINARY NAME (not
+# the absolute path) so the same mcp.json works in host AND sandbox contexts
+# (PR #200 shipped absolute paths; the sandbox couldn't spawn the host path).
 CBM_BIN=""
 if command -v codebase-memory-mcp >/dev/null 2>&1; then
   CBM_BIN="codebase-memory-mcp"   # PATH-relative name (see comment above)
