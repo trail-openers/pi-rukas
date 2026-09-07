@@ -67,6 +67,16 @@ async function main() {
     const cmd = forgeCommands.prCreateCmd("github", "T", "branch", "/tmp/b", "main");
     assert(cmd.includes("--head main...branch"), `got ${cmd}`);
   });
+  await check("labelCreateCmd uses gh label create --force", () => {
+    const cmd = forgeCommands.labelCreateCmd("github", "needs-human-attention", "FFAA00");
+    assert(cmd === "gh label create needs-human-attention --color FFAA00 --force", `got ${cmd}`);
+  });
+  await check("labelAddCmd/labelRemoveCmd use --add-label/--remove-label on edit", () => {
+    const add = forgeCommands.labelAddCmd("github", "issue", 42, "needs-human-attention");
+    assert(add === "gh issue edit 42 --add-label needs-human-attention", `got ${add}`);
+    const rm = forgeCommands.labelRemoveCmd("github", "issue", 42, "needs-human-attention");
+    assert(rm === "gh issue edit 42 --remove-label needs-human-attention", `got ${rm}`);
+  });
 
   // ── Issue operations ────────────────────────────────────────────────────
   console.log("issues:");
@@ -84,6 +94,25 @@ async function main() {
       assert(issue.labels.length === 1 && issue.labels[0].name === "bug", "labels");
       assert(issue.author === "janni", `author ${issue.author}`);
       assert(calls.length === 1 && calls[0]!.includes("--json"), "cmd shape");
+    });
+  }
+
+  // ── Issue create (temp file body) ──────────────────────────────────────
+  {
+    const { fn, calls } = mkExec({
+      "gh issue create": { stdout: JSON.stringify(GH_ISSUE) },
+    });
+    const forge = createForge(det, { execFn: fn });
+    await check("issueCreate passes --title and --body-file (temp path)", async () => {
+      const issue = await forge.issueCreate("A new issue", "the body");
+      assert(issue.number === 42, "round-tripped");
+      const cmd = calls.find((c) => c.includes("gh issue create"));
+      assert(cmd !== undefined, `no create cmd: ${calls}`);
+      assert(cmd!.includes("--title "), `--title: ${cmd}`);
+      assert(cmd!.includes("A new issue"), `--title value: ${cmd}`);
+      const file = cmd!.replace(/.*--body-file\s+/, "");
+      assert(file.startsWith("/"), `not a temp path: ${file}`);
+      assert(!file.includes("the body"), "body must not be inlined in the command");
     });
   }
 
@@ -181,6 +210,23 @@ async function main() {
       assert(cmd !== undefined, "no merge cmd");
       assert(cmd!.includes("--squash"), `no --squash: ${cmd}`);
       assert(cmd!.includes("--delete-branch"), `no --delete-branch: ${cmd}`);
+    });
+  }
+
+  // ── PR create (temp file body) ──────────────────────────────────────────
+  {
+    const { fn, calls } = mkExec({
+      "gh pr create": { stdout: JSON.stringify(GH_PR) },
+    });
+    const forge = createForge(det, { execFn: fn });
+    await check("prCreate passes --head base...branch and --body-file", async () => {
+      const pr = await forge.prCreate("A PR", "feature/issue-17-x", "the PR body", "main");
+      assert(pr.number === 17, "round-tripped");
+      const cmd = calls.find((c) => c.includes("gh pr create"));
+      assert(cmd !== undefined, `no create cmd: ${calls}`);
+      assert(cmd!.includes("--head main...feature/issue-17-x"), `--head: ${cmd}`);
+      const file = cmd!.replace(/.*--body-file\s+/, "");
+      assert(file.startsWith("/"), `not a temp path: ${file}`);
     });
   }
 
@@ -333,37 +379,56 @@ async function main() {
   // ── Labels ──────────────────────────────────────────────────────────────
   console.log("labels:");
   {
-    const { fn } = mkExec({
+    const { fn, calls } = mkExec({
       "gh label create": { stdout: JSON.stringify({ name: "new-label", id: 5, color: "00ff00" }) },
-    });
-    const forge = createForge(det, { execFn: fn });
-    await check("labelCreate returns the label", async () => {
-      const label = await forge.labelCreate("new-label", "00ff00");
-      assert(label !== undefined, "label");
-      assert(label!.name === "new-label", `name ${label!.name}`);
-      assert(label!.id === 5, `id ${label!.id}`);
-    });
-  }
-  {
-    const { fn, calls } = mkExec({
       "gh issue edit 42 --add-label": { stdout: "" },
-    });
-    const forge = createForge(det, { execFn: fn });
-    await check("labelAdd uses --add-label", async () => {
-      await forge.labelAdd("issue", 42, "bug");
-      const cmd = calls.find((c) => c.includes("--add-label"));
-      assert(cmd !== undefined, "no add-label cmd");
-    });
-  }
-  {
-    const { fn, calls } = mkExec({
       "gh issue edit 42 --remove-label": { stdout: "" },
     });
     const forge = createForge(det, { execFn: fn });
+    await check("labelCreate returns the label and uses --force (idempotent)", async () => {
+      const label = await forge.labelCreate("new-label", "00ff00");
+      assert(label!.name === "new-label", `name ${label!.name}`);
+      assert(label!.id === 5, `id ${label!.id}`);
+      const cmd = calls.find((c) => c.includes("gh label create"));
+      assert(cmd?.includes("--force"), `idempotency: ${cmd}`);
+    });
+    await check("labelAdd uses --add-label", async () => {
+      await forge.labelAdd("issue", 42, "bug");
+      assert(calls.some((c) => c.includes("--add-label")), "no add-label cmd");
+    });
     await check("labelRemove uses --remove-label", async () => {
       await forge.labelRemove("issue", 42, "bug");
-      const cmd = calls.find((c) => c.includes("--remove-label"));
-      assert(cmd !== undefined, "no remove-label cmd");
+      assert(calls.some((c) => c.includes("--remove-label")), "no remove-label cmd");
+    });
+  }
+
+  // ── Attention-gate label lifecycle (needs-human-attention) ──────────────
+  // Mirrors work-driver-handoff.ts: create-if-missing (error swallowed) →
+  // add to the target → read back via issueView. Same lifecycle for PRs.
+  console.log("attention-gate label lifecycle:");
+  {
+    const { fn, calls } = mkExec({
+      "gh label create": { stdout: "{}" },
+      "gh issue edit 42 --add-label": { stdout: "" },
+      "gh mr edit 17 --add-label": { stdout: "" },
+      "gh issue view 42": {
+        stdout: JSON.stringify({ ...GH_ISSUE, labels: [{ name: "needs-human-attention" }] }),
+      },
+    });
+    const forge = createForge(det, { execFn: fn });
+    // 1. Create-if-missing (the handoff swallows "already exists").
+    await forge.labelCreate("needs-human-attention", "FFAA00");
+    // 2. Add to both the issue (attention-gate target) and the PR.
+    await forge.labelAdd("issue", 42, "needs-human-attention");
+    await forge.labelAdd("mr", 17, "needs-human-attention");
+    await check("create-if-missing, add to issue AND mr, read back on issue", async () => {
+      assert(calls.some((c) => c.includes("gh label create") && c.includes("--force")), `create: ${calls}`);
+      assert(calls.some((c) => c.includes("gh issue edit 42 --add-label")), `issue add: ${calls}`);
+      assert(calls.some((c) => c.includes("gh mr edit 17 --add-label")), `mr add: ${calls}`);
+      // 3. Read back — the attention gate (work-driver-attention.ts) reads
+      //    the issue's labels to decide refuse/proceed.
+      const names = (await forge.issueView(42)).labels.map((l) => l.name);
+      assert(names.includes("needs-human-attention"), `labels: ${names}`);
     });
   }
 

@@ -29,6 +29,8 @@ import {
   GL_MR,
   GL_MR_CHECKING,
   GL_MR_VIEW,
+  GL_PIPELINE_DONE,
+  GL_PIPELINE_RUNNING,
   GL_PROJECT,
   glDetection,
   mkExec,
@@ -95,17 +97,25 @@ async function main() {
     assert(cmd.includes("-X PUT"), `got ${cmd}`);
     assert(cmd.includes("remove_labels=bug"), `remove_labels: ${cmd}`);
   });
+  await check("labelCreateCmd uses glab api -X POST /labels", () => {
+    const cmd = forgeCommands.labelCreateCmd("gitlab", "needs-human-attention", "FFAA00");
+    assert(cmd.includes("-X POST"), `got ${cmd}`);
+    assert(cmd.includes("/projects/:id/labels"), `path: ${cmd}`);
+    assert(cmd.includes("name=needs-human-attention"), `name: ${cmd}`);
+  });
+  await check("issueCreateCmd passes description as @file", () => {
+    const cmd = forgeCommands.issueCreateCmd("gitlab", "T", "/tmp/b");
+    assert(cmd.includes("@/tmp/b"), `description=@file: ${cmd}`);
+  });
 
   // ── Issue operations ────────────────────────────────────────────────────
   console.log("issues:");
   {
-    const { fn } = mkExec({
+    const { fn, calls } = mkExec({
       "glab issue view 42": {
-        stdout: JSON.stringify({
-          ...GL_ISSUE,
-          labels: [{ name: "bug", color: "d73a4a" }],
-        }),
+        stdout: JSON.stringify({ ...GL_ISSUE, labels: [{ name: "bug", color: "d73a4a" }] }),
       },
+      "glab api -X PUT": { stdout: JSON.stringify(GL_ISSUE) },
     });
     const forge = createForge(det, { execFn: fn });
     await check("issueView normalizes iid→number, description→body, opened→OPEN", async () => {
@@ -117,13 +127,6 @@ async function main() {
       assert(issue.labels[0]!.name === "bug", `labels ${issue.labels[0]!.name}`);
       assert(issue.author === "janni", `author ${issue.author}`);
     });
-  }
-
-  {
-    const { fn, calls } = mkExec({
-      "glab api -X PUT": { stdout: JSON.stringify(GL_ISSUE) },
-    });
-    const forge = createForge(det, { execFn: fn });
     await check("issueEdit uses glab api -X PUT with description=@file", async () => {
       const issue = await forge.issueEdit(42, "edited");
       assert(issue.number === 42, "round-tripped");
@@ -138,25 +141,34 @@ async function main() {
       "glab api --method POST": {
         stdout: JSON.stringify({ id: 99, body: "a comment", created_at: "2026-09-03T00:00:00Z" }),
       },
+      "glab issue list --search": { stdout: JSON.stringify([GL_ISSUE]) },
     });
     const forge = createForge(det, { execFn: fn });
     await check("issueComment uses POST .../notes", async () => {
       const out = await forge.issueComment(42, "a comment");
       assert(out.includes("id"), `got ${out}`);
-      const cmd = calls.find((c) => c.includes("/projects/:id/issues/42/notes"));
-      assert(cmd !== undefined, `no notes cmd: ${calls}`);
+      assert(calls.some((c) => c.includes("/projects/:id/issues/42/notes")), `no notes: ${calls}`);
+    });
+    await check("issueSearch returns an array", async () => {
+      const issues = await forge.issueSearch("bug");
+      assert(issues.length === 1 && issues[0]!.number === 42, `len ${issues.length}`);
     });
   }
 
   {
-    const { fn } = mkExec({
-      "glab issue list --search": { stdout: JSON.stringify([GL_ISSUE]) },
+    const { fn, calls } = mkExec({
+      "glab issue create": { stdout: JSON.stringify(GL_ISSUE) },
     });
     const forge = createForge(det, { execFn: fn });
-    await check("issueSearch returns an array", async () => {
-      const issues = await forge.issueSearch("bug");
-      assert(issues.length === 1, `len ${issues.length}`);
-      assert(issues[0]!.number === 42, "first");
+    await check("issueCreate passes -t title and description=@file", async () => {
+      const issue = await forge.issueCreate("A new issue", "the body");
+      assert(issue.number === 42, "round-tripped");
+      const cmd = calls.find((c) => c.includes("glab issue create"));
+      assert(cmd !== undefined, `no create cmd: ${calls}`);
+      assert(cmd!.includes("-t "), `--title: ${cmd}`);
+      assert(cmd!.includes("A new issue"), `--title value: ${cmd}`);
+      assert(cmd!.includes("-d @"), `description=@file: ${cmd}`);
+      assert(!cmd!.includes("the body"), "body must not be inlined in the command");
     });
   }
 
@@ -180,6 +192,8 @@ async function main() {
   {
     const { fn, calls } = mkExec({
       "glab mr create branch": { stdout: JSON.stringify(GL_MR) },
+      "glab mr merge 17": { stdout: "Merged !17" },
+      "glab mr diff 17": { stdout: "diff --git a/foo b/foo" },
     });
     const forge = createForge(det, { execFn: fn });
     await check("mrCreate uses positional source + --target-branch", async () => {
@@ -190,13 +204,6 @@ async function main() {
       assert(cmd!.includes("--target-branch main"), `--target-branch: ${cmd}`);
       assert(cmd!.includes("--description-file"), `--description-file: ${cmd}`);
     });
-  }
-
-  {
-    const { fn, calls } = mkExec({
-      "glab mr merge 17": { stdout: "Merged !17" },
-    });
-    const forge = createForge(det, { execFn: fn });
     await check("mrMerge ALWAYS passes --auto-merge=false (SAFETY)", async () => {
       const out = await forge.prMerge(17);
       assert(out.includes("Merged"), `got ${out}`);
@@ -204,13 +211,6 @@ async function main() {
       assert(cmd !== undefined, `no merge cmd: ${calls}`);
       assert(cmd!.includes("--auto-merge=false"), `SAFETY: missing --auto-merge=false: ${cmd}`);
     });
-  }
-
-  {
-    const { fn } = mkExec({
-      "glab mr diff 17": { stdout: "diff --git a/foo b/foo" },
-    });
-    const forge = createForge(det, { execFn: fn });
     await check("mrDiff returns the diff text", async () => {
       const diff = await forge.prDiff(17);
       assert(diff.includes("diff --git"), `got ${diff}`);
@@ -234,105 +234,65 @@ async function main() {
   }
 
   // ── Merge readiness (GitLab composition) ────────────────────────────────
+  // Each case gets its own exec fake; the MR payload is the variable.
   console.log("merge readiness (GitLab):");
-  {
+  const readinessCase = async (
+    label: string,
+    mrPayload: Record<string, unknown> | { error: true; stderr: string },
+    expect: { ok: boolean; readiness?: string; reasonIncludes?: string },
+  ) => {
     const { fn } = mkExec({
-      "glab api /projects/:id/merge_requests/17": { stdout: JSON.stringify(GL_MR) },
+      "glab api /projects/:id/merge_requests/17": {
+        ...("error" in mrPayload ? { error: true, stderr: mrPayload.stderr } : { stdout: JSON.stringify(mrPayload) }),
+      },
       "glab api /projects/:id/pipelines/5001/jobs": { stdout: JSON.stringify(GL_JOBS) },
     });
     const forge = createForge(det, { execFn: fn });
-    await check("readiness CLEAN when can_be_merged + no conflicts + approvals=0", async () => {
+    await check(label, async () => {
       const result = await forge.mergeReadiness(17);
-      assert(result.ok, `ok: ${result.ok ? "" : result.reason}`);
-      if (result.ok) {
-        assert(result.readiness === "CLEAN", `readiness ${result.readiness}`);
-        assert(result.detail.includes("can_be_merged"), `detail ${result.detail}`);
+      if (expect.ok === false) {
+        assert(result.ok === false, `should fail: ${JSON.stringify(result)}`);
+        if (expect.reasonIncludes && !result.ok) {
+          assert(result.reason.includes(expect.reasonIncludes), `reason ${result.reason}`);
+        }
+      } else {
+        assert(result.ok, `ok: ${result.ok ? "" : result.reason}`);
+        if (result.ok && expect.readiness) {
+          assert(result.readiness === expect.readiness, `readiness ${result.readiness}`);
+        }
       }
     });
-  }
-
-  {
-    const { fn } = mkExec({
-      "glab api /projects/:id/merge_requests/17": { stdout: JSON.stringify(GL_MR_CHECKING) },
-    });
-    const forge = createForge(det, { execFn: fn });
-    await check("readiness UNKNOWN when detailed_merge_status=checking", async () => {
-      const result = await forge.mergeReadiness(17);
-      assert(result.ok, `ok: ${result.ok ? "" : result.reason}`);
-      if (result.ok) {
-        assert(result.readiness === "UNKNOWN", `readiness ${result.readiness}`);
-      }
-    });
-  }
-
-  {
-    const conflicted = { ...GL_MR, detailed_merge_status: "has_conflicts", has_conflicts: true };
-    const { fn } = mkExec({
-      "glab api /projects/:id/merge_requests/17": { stdout: JSON.stringify(conflicted) },
-    });
-    const forge = createForge(det, { execFn: fn });
-    await check("readiness DIRTY when has_conflicts", async () => {
-      const result = await forge.mergeReadiness(17);
-      assert(result.ok, `ok: ${result.ok ? "" : result.reason}`);
-      if (result.ok) assert(result.readiness === "DIRTY", `readiness ${result.readiness}`);
-    });
-  }
-
-  {
-    const blocked = {
-      ...GL_MR,
-      detailed_merge_status: "blocked_by_discussions",
-      blocking_discussions_resolved: false,
-    };
-    const { fn } = mkExec({
-      "glab api /projects/:id/merge_requests/17": { stdout: JSON.stringify(blocked) },
-    });
-    const forge = createForge(det, { execFn: fn });
-    await check("readiness fails closed when discussions unresolved + status blocked", async () => {
-      const result = await forge.mergeReadiness(17);
-      // blocked_by_discussions → DIRTY, but blocking_discussions_resolved=false
-      // contradicts it → fail closed.
-      assert(result.ok === false, `should fail: ${JSON.stringify(result)}`);
-    });
-  }
-
-  {
-    const missingField = { ...GL_MR };
-    delete (missingField as Record<string, unknown>).approvals_left;
-    const { fn } = mkExec({
-      "glab api /projects/:id/merge_requests/17": { stdout: JSON.stringify(missingField) },
-    });
-    const forge = createForge(det, { execFn: fn });
-    await check("readiness fails closed when approvals_left missing", async () => {
-      const result = await forge.mergeReadiness(17);
-      assert(result.ok === false, `should fail: ${JSON.stringify(result)}`);
-      if (!result.ok) assert(result.reason.includes("approvals_left"), `reason ${result.reason}`);
-    });
-  }
-
-  {
-    const unknownStatus = { ...GL_MR, detailed_merge_status: "brand_new_state" };
-    const { fn } = mkExec({
-      "glab api /projects/:id/merge_requests/17": { stdout: JSON.stringify(unknownStatus) },
-    });
-    const forge = createForge(det, { execFn: fn });
-    await check("readiness fails closed on unmapped detailed_merge_status", async () => {
-      const result = await forge.mergeReadiness(17);
-      assert(result.ok === false, `should fail: ${JSON.stringify(result)}`);
-      if (!result.ok) assert(result.reason.includes("brand_new_state"), `reason ${result.reason}`);
-    });
-  }
-
-  {
-    const { fn } = mkExec({
-      "glab api /projects/:id/merge_requests/17": { error: true, stderr: "404 Not Found" },
-    });
-    const forge = createForge(det, { execFn: fn });
-    await check("readiness fails closed on API error", async () => {
-      const result = await forge.mergeReadiness(17);
-      assert(result.ok === false, "should fail");
-    });
-  }
+  };
+  await readinessCase("readiness CLEAN (can_be_merged + no conflicts + approvals=0)", GL_MR, {
+    ok: true,
+    readiness: "CLEAN",
+  });
+  await readinessCase("readiness UNKNOWN (checking)", GL_MR_CHECKING, {
+    ok: true,
+    readiness: "UNKNOWN",
+  });
+  await readinessCase("readiness DIRTY (has_conflicts)", {
+    ...GL_MR,
+    detailed_merge_status: "has_conflicts",
+    has_conflicts: true,
+  }, { ok: true, readiness: "DIRTY" });
+  await readinessCase("readiness fails closed (discussions unresolved + status blocked)", {
+    ...GL_MR,
+    detailed_merge_status: "blocked_by_discussions",
+    blocking_discussions_resolved: false,
+  }, { ok: false });
+  await readinessCase("readiness fails closed (approvals_left missing)", (() => {
+    const m = { ...GL_MR };
+    delete (m as Record<string, unknown>).approvals_left;
+    return m;
+  })(), { ok: false, reasonIncludes: "approvals_left" });
+  await readinessCase("readiness fails closed (unmapped detailed_merge_status)", {
+    ...GL_MR,
+    detailed_merge_status: "brand_new_state",
+  }, { ok: false, reasonIncludes: "brand_new_state" });
+  await readinessCase("readiness fails closed (API error)", { error: true, stderr: "404 Not Found" }, {
+    ok: false,
+  });
 
   // ── composeGlReadiness (direct, table-driven) ───────────────────────────
   console.log("composeGlReadiness table:");
@@ -347,32 +307,78 @@ async function main() {
   ];
   for (const [status, conflicts, discussions, approvals, expected] of cases) {
     await check(`  ${status} → ${expected}`, () => {
+      let threw: string | undefined;
+      let readiness: string | undefined;
       try {
-        const result = composeGlReadiness({
+        readiness = composeGlReadiness({
           detailed_merge_status: status,
           has_conflicts: conflicts,
           blocking_discussions_resolved: discussions,
           approvals_left: approvals,
           state: "opened",
-        });
-        if (expected === "FAIL") {
-          // composeGlReadiness throws on contradiction/unknown
-          throw new Error("should have thrown");
-        }
-        assert(result.readiness === expected, `got ${result.readiness}`);
+        }).readiness;
       } catch (e) {
-        if (expected === "FAIL") {
-          // Expected to throw — verify the error message is reasonable
-          const msg = (e as Error).message;
-          if (status === "unknown_state") {
-            assert(msg.includes("unmapped"), `wrong error: ${msg}`);
-          } else if (status === "blocked_by_discussions") {
-            assert(msg.includes("blocking_discussions_resolved"), `wrong error: ${msg}`);
-          }
-        } else {
-          throw e;
-        }
+        threw = (e as Error).message;
       }
+      if (expected === "FAIL") {
+        assert(threw !== undefined, "should have thrown");
+        if (status === "unknown_state") assert(threw!.includes("unmapped"), `wrong: ${threw}`);
+        if (status === "blocked_by_discussions") {
+          assert(threw!.includes("blocking_discussions_resolved"), `wrong: ${threw}`);
+        }
+      } else {
+        assert(readiness === expected, `got ${readiness}`);
+      }
+    });
+  }
+
+  // ── CI watch (GitLab polling loop) ──────────────────────────────────────
+  // Terminal statuses are success/failed/canceled/skipped/manual — verify a
+  // non-`success` terminal is also recognized (the loop must not treat
+  // `failed` as still-running).
+  console.log("ci watch (GitLab):");
+  {
+    const { fn } = mkExec({
+      "glab api /projects/:id/pipelines/901": { stdout: JSON.stringify(GL_PIPELINE_DONE) },
+    });
+    const forge = createForge(det, { execFn: fn });
+    await check("ciWatch returns terminal on first poll (status=success)", async () => {
+      const result = await forge.ciWatch(901, { pollMs: 1, timeoutMs: 1000 });
+      assert(result.ok && result.terminal && !result.timedOut, "terminal on first poll");
+      assert(result.run?.status === "SUCCESS", `status ${result.run?.status}`);
+      assert(result.run?.headBranch === "feature/issue-17-x", `ref ${result.run?.headBranch}`);
+    });
+  }
+  {
+    const failed = { ...GL_PIPELINE_DONE, status: "failed" };
+    const { fn } = mkExec({
+      "glab api /projects/:id/pipelines/901": { stdout: JSON.stringify(failed) },
+    });
+    const forge = createForge(det, { execFn: fn });
+    await check("ciWatch treats status=failed as terminal", async () => {
+      const result = await forge.ciWatch(901, { pollMs: 1, timeoutMs: 1000 });
+      assert(result.ok && result.terminal, "terminal");
+      assert(result.run?.status === "FAILED", `status ${result.run?.status}`);
+    });
+  }
+  {
+    const { fn } = mkExec({
+      "glab api /projects/:id/pipelines/901": { stdout: JSON.stringify(GL_PIPELINE_RUNNING) },
+    });
+    const forge = createForge(det, { execFn: fn });
+    let nowMs = 0;
+    await check("ciWatch polls with injected clock and times out", async () => {
+      const result = await forge.ciWatch(901, {
+        pollMs: 1000,
+        timeoutMs: 2500,
+        now: () => nowMs,
+        sleep: async (ms: number) => {
+          nowMs += ms;
+        },
+      });
+      assert(result.ok && !result.terminal && result.timedOut, "timed out");
+      assert(result.run?.status === "RUNNING", `status ${result.run?.status}`);
+      assert(nowMs >= 2000, `clock advanced (got ${nowMs})`);
     });
   }
 
@@ -380,24 +386,58 @@ async function main() {
   console.log("labels:");
   {
     const { fn, calls } = mkExec({
+      "glab api -X POST": { stdout: JSON.stringify({ name: "new-label", color: "00ff00" }) },
       "glab api -X PUT": { stdout: "" },
     });
     const forge = createForge(det, { execFn: fn });
+    await check("labelCreate POSTs to /projects/:id/labels", async () => {
+      const label = await forge.labelCreate("new-label", "00ff00");
+      assert(label?.name === "new-label", `name ${label?.name}`);
+      assert(calls.some((c) => c.includes("/projects/:id/labels")), `no POST labels: ${calls}`);
+    });
     await check("labelAdd uses add_labels (auto-creates missing)", async () => {
       await forge.labelAdd("issue", 42, "new-label");
-      const cmd = calls.find((c) => c.includes("add_labels=new-label"));
-      assert(cmd !== undefined, `no add_labels: ${calls}`);
+      assert(calls.some((c) => c.includes("add_labels=new-label")), `no add_labels: ${calls}`);
     });
-  }
-  {
-    const { fn, calls } = mkExec({
-      "glab api -X PUT": { stdout: "" },
-    });
-    const forge = createForge(det, { execFn: fn });
     await check("labelRemove uses remove_labels", async () => {
       await forge.labelRemove("issue", 42, "old-label");
-      const cmd = calls.find((c) => c.includes("remove_labels=old-label"));
-      assert(cmd !== undefined, `no remove_labels: ${calls}`);
+      assert(calls.some((c) => c.includes("remove_labels=old-label")), `no remove_labels: ${calls}`);
+    });
+  }
+
+  // ── Attention-gate label lifecycle (needs-human-attention) ──────────────
+  // Same lifecycle as the GitHub test: create (POST /labels) → add via
+  // add_labels PUT → read back via issueView.
+  console.log("attention-gate label lifecycle:");
+  {
+    const { fn, calls } = mkExec({
+      "glab api -X POST": { stdout: "{}" },
+      "glab api -X PUT": { stdout: "" },
+      "glab issue view 42": {
+        stdout: JSON.stringify({ ...GL_ISSUE, labels: [{ name: "needs-human-attention" }] }),
+      },
+    });
+    const forge = createForge(det, { execFn: fn });
+    // 1. Create via POST /projects/:id/labels.
+    await forge.labelCreate("needs-human-attention", "FFAA00");
+    // 2. Add to both the issue (attention-gate target) and the MR via PUT.
+    await forge.labelAdd("issue", 42, "needs-human-attention");
+    await forge.labelAdd("mr", 17, "needs-human-attention");
+    await check("create, add to issue AND mr, read back on issue", async () => {
+      assert(calls.some((c) => c.includes("-X POST") && c.includes("/projects/:id/labels")), `create: ${calls}`);
+      assert(
+        calls.some((c) => c.includes("add_labels=needs-human-attention") && c.includes("/issues/42")),
+        `issue add: ${calls}`,
+      );
+      assert(
+        calls.some(
+          (c) => c.includes("add_labels=needs-human-attention") && c.includes("/merge_requests/17"),
+        ),
+        `mr add: ${calls}`,
+      );
+      // 3. Read back — the attention gate reads the issue's labels.
+      const names = (await forge.issueView(42)).labels.map((l) => l.name);
+      assert(names.includes("needs-human-attention"), `labels: ${names}`);
     });
   }
 
@@ -423,10 +463,7 @@ async function main() {
   console.log("mappers:");
   await check("mapGlIssue throws on missing iid", () => {
     try {
-      mapGlIssue({ title: "x", description: "y", state: "opened", web_url: "u" } as Record<
-        string,
-        unknown
-      >);
+      mapGlIssue({ title: "x", description: "y", state: "opened", web_url: "u" } as Record<string, unknown>);
       throw new Error("should have thrown");
     } catch (e) {
       assert((e as Error).message.includes("iid"), `wrong error: ${(e as Error).message}`);

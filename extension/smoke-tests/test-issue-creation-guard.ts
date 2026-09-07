@@ -8,14 +8,21 @@
  * `createsIssue` predicate here. The predicate has four bypass shapes
  * that each actually appeared (or were one `&&` away):
  *
- *   - the `oo` prefix (ops holds an `oo gh …` grant; PM runs `gh` bare),
+ *   - the `oo` prefix (ops holds an `oo gh …` / `oo glab …` grants; PM runs
+ *     both bare),
  *   - chained commands (`cd x && gh issue create`),
- *   - the REST door: `gh api repos/o/r/issues` — gh api DEFAULTS TO POST when
- *     body fields are passed, so a "read" without `--method GET` is a write,
+ *   - the gh REST door: `gh api repos/o/r/issues` — gh api DEFAULTS TO POST
+ *     when body fields are passed, so a "read" without `--method GET` is a
+ *     write,
+ *   - the glab REST door: `glab api /projects/i/issues` — method-AWARE:
+ *     glab api does NOT default to POST, so only an EXPLICIT POST (`-X POST`,
+ *     `--method POST`) or body fields (`-f`/`-F`/`--field`) are a write;
+ *     an unqualified call or an explicit GET stays open,
  *   - quoted mentions (`echo "gh issue create"` must NOT be blocked — it
  *     creates nothing).
  *
- * The predicate runs on the QUOTE-STRIPPED command, scan-not-anchor, exactly
+ * The predicate is forge-agnostic (#611): the same two doors for `gh` and
+ * `glab`, running on the QUOTE-STRIPPED command, scan-not-anchor, exactly
  * like `discardsUncommittedWork`.
  */
 
@@ -46,6 +53,20 @@ for (const cmd of [
   "gh api repos/o/r/issues -f title=x -f body=y",
   "oo gh api repos/o/r/issues -f title=t",
   "curl x; gh api repos/o/r/issues -f title=t",
+  // The glab verb door — same four shapes as gh (bare, oo, chained, quoted
+  // arguments).
+  "glab issue create --title t",
+  "oo glab issue create -t x",
+  "cd x && glab issue create --title t",
+  "glab issue list; glab issue create --title t",
+  // The glab REST door — blocked only when the command EXPLICITLY posts: an
+  // explicit POST method or body fields (glab converts `-f`/`-F`/`--field`
+  // into a write). Unlike gh api, glab api does NOT default to POST.
+  "glab api /projects/123/issues -X POST -f title=x",
+  "glab api /projects/123/issues --method POST -f title=x",
+  "oo glab api /projects/123/issues -f title=t",
+  "curl x; glab api /projects/123/issues -F body=y",
+  "glab api /projects/123/issues --field title=x",
 ]) {
   assert(createsIssue(cmd) !== undefined, `canary: blocked — ${cmd}`);
 }
@@ -74,6 +95,27 @@ for (const cmd of [
   // Unrelated gh verbs.
   "gh pr list",
   "gh pr create --title x --body-file y.md",
+  // The glab REST door: glab api does NOT default to POST the way gh api
+  // does, so the read shapes stay open — the door is method-aware.
+  // Unqualified: a read.
+  "glab api /projects/123/issues",
+  // Explicit GET: a read.
+  "glab api /projects/123/issues --method GET -f state=opened",
+  "glab api /projects/123/issues -X GET",
+  // A SPECIFIC issue via REST is a read, not the collection write.
+  "glab api /projects/123/issues/456",
+  // glab issue reads stay open.
+  "glab issue list --limit 15",
+  "glab issue view 123",
+  "glab issue edit 123 --description-file x.md",
+  "glab issue comment 123 -m hi",
+  // MR verbs are not the issue door.
+  "glab mr create --title x --description-file y.md",
+  // Quoted mentions of the glab verb create nothing.
+  "echo \"glab issue create\"",
+  // Non-issue glab REST endpoints stay open.
+  "glab api /projects/123/mr/42",
+  "glab api user",
 ]) {
   assert(createsIssue(cmd) === undefined, `allowed — ${cmd}`);
 }
