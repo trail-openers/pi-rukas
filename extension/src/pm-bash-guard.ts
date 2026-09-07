@@ -71,7 +71,7 @@ export function registerPmBashGuard(pi: ExtensionAPI): void {
     return {
       block: true,
       reason:
-        'PM may only run bash commands on its agents.json allowlist (or none matched — including injection chains like "&&", "|", ";" and backticks). This command is not on the list. Dispatch implementation and git/mutation work to specialists instead (dispatch_specialist to ops for git/gh mutations, developer for code); only allowlisted read-only commands may run directly.',
+        'PM may only run bash commands on its agents.json allowlist (or none matched — including injection chains like "&&", "|", ";" and backticks). This command is not on the list. Dispatch implementation and git/mutation work to specialists instead (dispatch_specialist to ops for git and forge-CLI (gh/glab) mutations, developer for code); only allowlisted read-only commands may run directly.',
     };
   });
 }

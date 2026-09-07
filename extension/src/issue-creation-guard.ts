@@ -33,7 +33,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createsGitHubIssue } from "./bash-command-parser.ts";
+import { createsIssue } from "./bash-command-parser.ts";
 import { trace } from "./trace.ts";
 
 /** Opt-out for an operator who genuinely wants to file tickets by hand. */
@@ -51,12 +51,12 @@ export function registerIssueCreationGuard(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, _ctx) => {
     if (event.toolName !== "bash") return;
     const command = (event.input as { command?: string })?.command ?? "";
-    const creating = createsGitHubIssue(command);
+    const creating = createsIssue(command);
     if (!creating) return;
     trace(`issue-creation-guard: BLOCKED issue creation (mode-independent) — ${creating}`);
     return {
       block: true,
-      reason: `Issue creation is gated. Use the start_plan_driver tool (or the /plan flow) instead of running \`${creating}\` directly — it runs the adversarial gap gate, the user-confirmation seam, and files via the driver's own exec path, which is exempt from this hook by construction. \`gh issue edit\` on an existing issue stays open.`,
+      reason: `Issue creation is gated. Use the start_plan_driver tool (or the /plan flow) instead of running \`${creating}\` directly — it runs the adversarial gap gate, the user-confirmation seam, and files via the driver's own exec path, which is exempt from this hook by construction. Editing an existing issue via your forge CLI (gh or glab) stays open.`,
     };
   });
 }

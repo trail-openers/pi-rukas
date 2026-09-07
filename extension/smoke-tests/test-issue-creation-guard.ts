@@ -5,7 +5,7 @@
  * PM filed three non-trivial issues inline in one session (#591, #592, #594)
  * through a self-judged "triviality test" with no oracle. The fix is the
  * mode-independent `tool_call` hook in issue-creation-guard.ts plus the
- * `createsGitHubIssue` predicate here. The predicate has four bypass shapes
+ * `createsIssue` predicate here. The predicate has four bypass shapes
  * that each actually appeared (or were one `&&` away):
  *
  *   - the `oo` prefix (ops holds an `oo gh …` grant; PM runs `gh` bare),
@@ -19,7 +19,7 @@
  * like `discardsUncommittedWork`.
  */
 
-import { createsGitHubIssue } from "../src/bash-command-parser.ts";
+import { createsIssue } from "../src/bash-command-parser.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -47,7 +47,7 @@ for (const cmd of [
   "oo gh api repos/o/r/issues -f title=t",
   "curl x; gh api repos/o/r/issues -f title=t",
 ]) {
-  assert(createsGitHubIssue(cmd) !== undefined, `canary: blocked — ${cmd}`);
+  assert(createsIssue(cmd) !== undefined, `canary: blocked — ${cmd}`);
 }
 
 // -------------------------------------------------- and it does not overreach
@@ -75,7 +75,7 @@ for (const cmd of [
   "gh pr list",
   "gh pr create --title x --body-file y.md",
 ]) {
-  assert(createsGitHubIssue(cmd) === undefined, `allowed — ${cmd}`);
+  assert(createsIssue(cmd) === undefined, `allowed — ${cmd}`);
 }
 
 // -------------------- the hook is registered BEFORE the trust-mode bypass

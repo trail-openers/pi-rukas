@@ -27,7 +27,7 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const { matchBashSubcommand, createsGitHubIssue } = await import("../src/bash-command-parser.ts");
+const { matchBashSubcommand, createsIssue } = await import("../src/bash-command-parser.ts");
 const { loadAgentsJson, resolveAgentsJsonPath } = await import("../src/permission-config.ts");
 const { armPmMode, resetPmMode } = await import("../src/pm-mode.ts");
 const { registerPmBashGuard } = await import("../src/pm-bash-guard.ts");
@@ -146,7 +146,7 @@ assert(
   "this guard allows gh api broadly (the issue guard owns the POST-to-issues door)",
 );
 assert(
-  createsGitHubIssue("gh api repos/o/r/issues -f title=x") !== undefined,
+  createsIssue("gh api repos/o/r/issues -f title=x") !== undefined,
   "the issue-creation guard still catches the REST POST-to-issues door",
 );
 
