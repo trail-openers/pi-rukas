@@ -64,6 +64,28 @@ const BRIEF = "Prior memory: #394 calibrated the retrieval floor; do not re-deri
   );
 }
 
+// ---------------------------------------- #621: commit instructions present
+
+{
+  const prompt = inlineDevelopPrompt([621], "/tmp/scratch", ws, undefined, undefined, undefined);
+  assert(
+    prompt.includes("git add -A"),
+    "#621: inlineDevelopPrompt contains explicit `git add -A` (AC2 — commit instruction is now actionable, not just a 'natural seams' phrasing)",
+  );
+  assert(
+    /git commit -m/.test(prompt),
+    "#621: inlineDevelopPrompt contains explicit `git commit -m` (AC2)",
+  );
+  assert(
+    /Do NOT push/i.test(prompt),
+    "#621: inlineDevelopPrompt still says 'Do NOT push' (push is still @ops's job)",
+  );
+  assert(
+    /uncommitted.*REJECT|REJECT.*uncommitted/i.test(prompt),
+    "#621: inlineDevelopPrompt states uncommitted-only work WILL BE REJECTED (AC2 — the verify gate requirement is explicit, not implied)",
+  );
+}
+
 // ----------------------------------------- N>1 is unchanged, framing included
 
 {

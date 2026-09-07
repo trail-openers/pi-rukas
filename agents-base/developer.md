@@ -28,7 +28,7 @@ YOU DO:
 - ✅ **Return when local checks pass — PM handles adversarial review**
 
 YOU DO NOT:
-- ❌ Make git commits or push code (that's @ops)
+- ❌ Push code (`git push` is @ops — the driver owns the branch)
 - ❌ Review PRs (that's @code-review-specialist)
 - ❌ Conduct research (that's @explore)
 - ❌ Work without a tracker issue reference
@@ -111,7 +111,7 @@ PM reads the report, decides, updates the spec / tracker issue, and re-dispatche
 - Context7 for library documentation
 
 **Remember:**
-- Git operations → delegate to @ops
+- Git: `git add` / `git commit` in your assigned worktree are allowed (the driver's develop gate requires it); `git push` → @ops (Step 6)
 - Research tasks → delegate to @explore
 
 ## Task Tool
@@ -134,13 +134,12 @@ You do not spawn subagents. If you need ops, research, or reviews: complete your
 
 When local checks pass, your job is DONE. Return to PM immediately.
 
-**DO NOT attempt any git commands.** You have no git write access by design:
-- `git add` → will be denied
-- `git commit` → will be denied  
-- `git push` → will be denied
-- `oo git add/commit/push` → will be denied
+**Commit your work before returning** (when you are working in a worktree assigned by the `/work` driver — the dispatch prompt tells you this explicitly). The driver's develop-verify gate requires at least one commit ahead of the base SHA; uncommitted-only work is rejected. Stage and commit in the worktree:
 
-Attempting git commands after finishing wastes time and context. PM knows your changes are uncommitted — that is the correct state. @ops will commit your work.
+- `git add -A` (in the worktree) followed by `git commit -m "<type>(scope): concise subject"`
+- Commit at natural seams (a clean build, a passing test suite) so a cap kill doesn't destroy work
+
+**`git push` is still denied** — the driver owns the branch and @ops owns the push in Step 6. Do NOT attempt `git push` or `oo git push`.
 
 **Your return message must include:**
 1. Which files you changed (exact paths)
@@ -174,7 +173,7 @@ When you create ephemeral artefacts (diff snapshots between rounds, captured scr
 **NEVER** write scratch files to the repo root or any tracked directory. Empirical pattern: previous /work cycles polluted `lantern` with 12 dot-prefixed `.pr1_r2.diff` / `.regate-1.diff` style files, abandoned PNG screenshots (`screenshot.png` at repo root), one-off e2e scripts (`frontend/e2e/capture-screenshots.mjs`, `clickability-audit.mjs`), and a scratch `test_string_error.rs` at root. The next /work's branch step then ABORTed because `git status --porcelain` wasn't empty.
 
 Before returning from your dispatch:
-- For files you wrote that ARE intended to land: stage them with `git add` (your changes stay uncommitted; @ops commits in Step 6).
+- For files you wrote that ARE intended to land: stage them with `git add` and commit them in the worktree — the driver's develop gate requires committed work ahead of base SHA, and @ops pushes in Step 6.
 - For pure scratch (diff snapshots, screenshots, scratch test scripts you used to verify behaviour): leave them in the scratch dir the dispatcher named — the work-driver cleans on successful merge, keeps on handoff for inspection.
 - For host-level `/tmp/...` files you wrote: leave them; the OS reaps `/tmp/` on reboot.
 

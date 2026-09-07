@@ -3,10 +3,11 @@
  * #475 — worktreeCreate's pre-remove must not silently destroy uncommitted work.
  *
  * `worktreeCreate` force-removes an existing worktree at the same path so a
- * resumed cycle is not wedged by its own leftover. But the develop step
- * instructs developers not to commit, so a cycle that died mid-develop leaves
- * its diff uncommitted in the worktree — not in the object database,
- * unrecoverable. The force-remove destroyed it with no warning.
+ * resumed cycle is not wedged by its own leftover. A developer IS supposed
+ * to commit in the worktree per #453/#621, but a cycle that died
+ * mid-implementation — before the commit — still leaves its diff uncommitted
+ * in the worktree: not in the object database, unrecoverable. The
+ * force-remove destroyed it with no warning.
  *
  * Now: `inspectWorktreeForLoss` checks the leftover BEFORE the remove
  * (porcelain + commits ahead of the base). Dirty → `DirtyWorktreeError`

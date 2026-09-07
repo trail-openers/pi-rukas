@@ -3,12 +3,13 @@
  * dispatch-cap kill (#543 F5).
  *
  * Children are structurally write-gated (lens/adversarial/explore per
- * role-tools.ts #238) or forbidden to commit (developer: "Do NOT
- * commit" — ops commits in Step 6). So after a cap kill the DRIVER
- * performs the checkpoint: read-only inspection of the worktree, a
- * bounded stage+commit, and an authored status file. The handoff
- * renderers read the resulting `capedPartialState` (recorded on
- * pipelineState) to state what was saved.
+ * role-tools.ts #238). A developer is allowed to commit in their worktree
+ * (the develop gate requires it — see #453 and #621), but a cap kill can
+ * still fire mid-implementation, before the developer has committed. So
+ * after a cap kill the DRIVER performs the checkpoint: read-only inspection
+ * of the worktree, a bounded stage+commit, and an authored status file.
+ * The handoff renderers read the resulting `capedPartialState` (recorded
+ * on pipelineState) to state what was saved.
  *
  * The checkpoint NEVER throws: a git failure degrades to
  * `tree: "dirty-uncommitted"` (the status quo), and a status-file write

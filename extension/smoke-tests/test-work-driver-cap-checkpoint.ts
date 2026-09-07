@@ -2,9 +2,11 @@
 /**
  * #543 F5 — the driver-owned checkpoint (M5/M6) after a dispatch-cap kill.
  *
- * A cap-killed child never commits (developer: "Do NOT commit"; lens /
- * adversarial / explore: structurally write-gated per role-tools.ts #238).
- * The driver stages + commits the worktree, authors `status-<role>.md` in
+ * A cap-killed child may not yet have committed (a developer is allowed to
+ * commit in their worktree per #453/#621, but a cap kill can fire mid-
+ * implementation, before the commit; lens / adversarial / explore are
+ * structurally write-gated per role-tools.ts #238). The driver stages +
+ * commits the worktree, authors `status-<role>.md` in
  * the scratch dir, and records `capedPartialState`. This test exercises the
  * two behaviours the round-1 findings pinned:
  *

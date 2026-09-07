@@ -5,8 +5,7 @@
  * and `WorkEvent` (the append-only, typed event-log entries the driver
  * writes on every state transition). Split out of `workflow-state.ts` for
  * module-size hygiene (AGENTS.md §12) — re-exported from there so external
- * consumers' import paths are unaffected. See `workflow-state.ts` for the
- * full schema doc (versioning, resumability, GitHub-is-the-bus).
+ * consumers' import paths are unaffected.
  */
 
 import type { RoleName } from "./roles.ts";
@@ -14,6 +13,7 @@ import type { DispatchUsage } from "./types.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
+import type { SafetyNetCommitEvent } from "./workflow-state-events-safety-net.ts";
 import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
 
 /**
@@ -489,12 +489,12 @@ export type WorkEvent =
       /** Tail of the command output for the handoff/comment body. */
       evidenceTail?: string;
     }
-  // The widening-scan, memory, and provision events live in their own
-  // fragment modules (AGENTS.md §12 module-size hygiene). The union stays
+  // Fragment events (AGENTS.md §12 module-size hygiene). The union stays
   // exhaustive: nextStep() and the schema validator see the same closed type.
   | WideningScanEvent
   | MemoryEventFragment
-  | WorktreeProvisionedEvent;
+  | WorktreeProvisionedEvent
+  | SafetyNetCommitEvent;
 
 /** Discriminator union of event kinds — useful for callers that switch on it. */
 export type WorkEventKind = WorkEvent["kind"];

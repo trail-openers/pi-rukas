@@ -120,7 +120,7 @@ export function inlineCommitPrPrompt(
     return [
       `/work ${headline} — Step 6 (Commit + PR). **Multi-workstream cycle** — ${ids.length} workstreams.`,
       "",
-      "Each developer worked in its own worktree and left changes UNCOMMITTED per Step 4 doctrine. Your job is to consolidate every worktree's slice onto the integration branch BEFORE pushing — otherwise the sibling workstreams' work is silently dropped (the v0.12.13 /work 577 failure mode).",
+      "Each developer worked in its own worktree and committed the work there per Step 4 doctrine. Your job is to consolidate every worktree's committed slice onto the integration branch BEFORE pushing — otherwise the sibling workstreams' work is silently dropped (the v0.12.13 /work 577 failure mode).",
       "",
       `Integration branch: \`${branchName}\``,
       issueTitleLine,
@@ -131,10 +131,10 @@ export function inlineCommitPrPrompt(
       stagingRule,
       proseRule,
       "",
-      "Workstream worktrees (each contains uncommitted developer work):",
+      "Workstream worktrees (each contains the developer's committed slice):",
       ...worktreeLines,
       "",
-      `  1. **Verify each worktree has uncommitted work.** Run \`git -C <path> status --porcelain | head\` for each of the ${ids.length} worktrees. If any worktree shows clean status (no uncommitted changes), the developer didn't write — STOP, report which workstream, and DO NOT proceed.`,
+      `  1. **Verify each worktree has commits ahead of the integration base.** For each of the ${ids.length} worktrees, run \`git -C <path> log --oneline ${branchName}..HEAD | head\`. If any workstream's log is empty, either the developer did not write OR the developer did not commit — STOP, report which workstream, and DO NOT proceed. A clean \`status --porcelain\` is EXPECTED here (committed work), not a failure signal.`,
       "",
       `  2. **Consolidate each worktree's diff onto the integration branch.** Capture each worktree's diff and apply it on the integration branch's working tree (the repo root if it's checked out on \`${branchName}\`, else \`cd\` into a worktree that is). Concrete recipe per workstream:`,
       "       ```",
@@ -193,12 +193,15 @@ export function inlineLensFixPrompt(findings: string, scratchDirAbs: string): st
     "  - Make the minimal change per finding. Group by file.",
     "  - Run local quality gates before declaring complete.",
     "  - Do NOT touch unrelated code.",
-    "  - The driver will commit the changes after your dispatch completes.",
     // #543 F5 — same seam-commit clause as the develop prompt: the driver's
     // cap-checkpoint (F5(2)) commits the worktree at natural seams, so a
     // cap kill never leaves only a failure message. Read-only roles get no
     // such line; this one is the developer (write-gated off, worktree cwd).
-    "  - Commit your work in the worktree at natural seams (a clean build, a passing test suite). Do NOT push — the driver owns the branch.",
+    // #621 — same explicit git command + gate-requirement wording as
+    // inlineDevelopPrompt: the lens-fix worktree is the same tree the
+    // develop gate (and later the adversarial diff) reads, so committed
+    // work is what the downstream steps expect.
+    '  - Commit your work in the worktree at natural seams (a clean build, a passing test suite): run `git add -A` followed by `git commit -m "<type>(scope): concise subject"`. The driver\'s gate REJECTS uncommitted-only work — no commit ahead of base SHA means the step fails. Do NOT push — the driver owns the branch.',
     "",
     "Findings (JSON-encoded array of {path, line, severity, title, suggestion}):",
     "```json",

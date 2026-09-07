@@ -27,10 +27,11 @@ import {
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 
 import { salvageKnownDirtyWorktrees } from "./work-driver-branch-salvage.ts";
+import { applySafetyNet } from "./work-driver-safety-net.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { makeWorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
-import { type WorkState, appendEvent } from "./workflow-state.ts";
+import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 import { DirtyWorktreeError, gitErrorDetail } from "./worktree.ts";
 
 const execp = promisify(exec);
@@ -453,6 +454,17 @@ export async function runDevelop(
       verdicts,
       at: Date.now(),
     });
+  }
+  // #622 — mechanical auto-commit safety net. Fires when a developer left
+  // uncommitted work in their worktree (no commits ahead of baseSha) after
+  // a successful dispatch. The verify gate would reject such a worktree
+  // ("has uncommitted changes but no commit ahead of baseSha"); the safety
+  // net commits the work driver-side so the gate passes. Skipped when the
+  // worktree already has commits ahead of baseSha (developer committed
+  // correctly) or when the worktree is clean (nothing to commit).
+  // Escape hatch: PI_ENSEMBLE_SAFETY_NET_COMMIT=0 disables it.
+  if (verdicts.every((v) => v.ok)) {
+    next = await applySafetyNet(ctx, next);
   }
   // PR17 — outcome verification gate. Only when every branch claims
   // success (failed branches already route through the dispatch-failed

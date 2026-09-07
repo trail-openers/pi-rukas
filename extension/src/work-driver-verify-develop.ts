@@ -229,7 +229,13 @@ export async function verifyDevelopOutcome(
     if (isValidSha(baseSha) && hasUncommitted && !hasCommits) {
       uncommittedOnlyCount++;
       failures.push(
-        `worktree "${id}": has uncommitted changes but no commit ahead of baseSha — commit with the driver-required message format before the adversarial gate`,
+        // #621 — actionable text: the driver no longer prescribes a commit
+        // message format (the developer commits in their own worktree with
+        // their own conventional-commit subject); what matters is that the
+        // work is committed ahead of baseSha before the adversarial gate
+        // runs. The old wording referenced a message format that never
+        // existed — the developer's own subject is fine.
+        `worktree "${id}": has uncommitted changes but no commit ahead of baseSha — run \`git add -A && git commit -m \"<type>(scope): concise subject\"\` in the worktree before completing the develop step`,
       );
     }
   }

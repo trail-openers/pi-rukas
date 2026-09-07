@@ -346,7 +346,12 @@ export function inlineDevelopPrompt(
     // seams the child made during its run, so a cap kill never leaves only
     // a failure message. Committing at natural seams is what makes those
     // seams exist; the driver only stages what is there.
-    "  3. Commit your work in the worktree at natural seams (a clean build, a passing test suite). Do NOT push — the driver owns the branch and ops owns the push in Step 6.",
+    // #621 — the develop-verify gate (work-driver-verify-develop.ts) REQUIRES
+    // at least one commit ahead of baseSha; uncommitted-only work is rejected.
+    // Make the exact commands explicit so smaller models don't drift off the
+    // commit step under long-context constraint decay (issue #622 covers the
+    // mechanical safety net as defense-in-depth).
+    '  3. Commit your work in the worktree at natural seams (a clean build, a passing test suite): run `git add -A` followed by `git commit -m "<type>(scope): concise subject"`. The verify gate REJECTS uncommitted-only work — no commit ahead of base SHA means the develop step fails. Do NOT push — the driver owns the branch and ops owns the push in Step 6.',
     "  4. End your reply with a `## Touched files` section listing every file you changed and a one-line `## Summary`.",
     "",
     "Discourage drive-by edits; only touch files in scope.",

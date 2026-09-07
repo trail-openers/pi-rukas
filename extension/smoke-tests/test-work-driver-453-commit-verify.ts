@@ -129,9 +129,23 @@ async function mkCommittedWorktree(): Promise<{ root: string; wt: string; baseSh
       const failures: string[] = [];
       const notes: string[] = [];
       await verifyDevelopOutcome(mkCtx(execFn), s, execFn, failures, notes);
+      const uncommittedFailure = failures.find((f) =>
+        /uncommitted changes but no commit/.test(f),
+      );
       assert(
-        failures.some((f) => /uncommitted changes but no commit/.test(f)),
+        Boolean(uncommittedFailure),
         "#453 verify: uncommitted-only worktree with valid baseSha fails with 'no commit' message",
+      );
+      // #621 (AC3) — the error message is actionable: it tells the developer
+      // the exact commands to run, and does not reference a phantom
+      // "driver-required message format" that never existed.
+      assert(
+        uncommittedFailure !== undefined && uncommittedFailure.includes("git add -A && git commit"),
+        "#621 verify error message: names the exact `git add -A && git commit` fix",
+      );
+      assert(
+        uncommittedFailure !== undefined && !uncommittedFailure.includes("driver-required message format"),
+        "#621 verify error message: no longer references a phantom 'driver-required message format'",
       );
       assert(
         !failures.some((f) => /empty diff/.test(f)),
