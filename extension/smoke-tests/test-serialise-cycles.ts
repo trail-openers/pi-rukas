@@ -101,11 +101,14 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
   // `handoff-emitted` via the in-process `gh` path.
   //
   // So the bound is back, and what is checked here is the thing that makes it
-  // safe: the fallback the bound hands off to must still exist.
+  // safe: the fallback the bound hands off to must still exist. Post-#612
+  // the fallback routes through the forge adapter (issueComment + labelCreate
+  // + labelAdd) rather than raw `gh` exec.
   const handoff = readFileSync(path.join(SRC, "work-driver-handoff.ts"), "utf8");
   assert(
-    /gh \$\{objType\} comment/.test(handoff) && /--add-label needs-human-attention/.test(handoff),
-    "the handoff still posts the comment and applies the label in-process when the dispatch does not",
+    /forge\.issueComment/.test(handoff) && /forge\.labelCreate/.test(handoff) &&
+      /forge\.labelAdd/.test(handoff),
+    "the handoff still posts the comment and applies the label in-process when the dispatch does not (via the forge adapter)",
   );
 
   // And the inactivity watchdog is deliberately UNCHANGED. It fires on 25

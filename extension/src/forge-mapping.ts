@@ -88,6 +88,20 @@ export function mapGhIssue(raw: Record<string, unknown>): NormalizedIssue {
   };
 }
 
+/**
+ * Like `mapGhIssue` but falls back to the known issue number when the
+ * response lacks a `number` field (e.g. a bare `gh issue view` without
+ * `--json` fields, or a test fake that omits it).
+ */
+export function mapGhIssueWithNumber(
+  raw: Record<string, unknown>,
+  fallback: number,
+): NormalizedIssue {
+  const r = { ...raw };
+  if (r.number === undefined || r.number === null) r.number = fallback;
+  return mapGhIssue(r);
+}
+
 /** glab `issue view --output json` (snake_case) → NormalizedIssue. */
 export function mapGlIssue(raw: Record<string, unknown>): NormalizedIssue {
   const labels = Array.isArray(raw.labels) ? (raw.labels as unknown[]).map(mapGlIssueLabel) : [];
@@ -134,6 +148,20 @@ export function mapGhPr(raw: Record<string, unknown>): NormalizedPullRequest {
     createdAt: str(raw.createdAt),
     updatedAt: str(raw.updatedAt),
   };
+}
+
+/**
+ * Like `mapGhPr` but falls back to the known PR number when the response
+ * lacks a `number` field (e.g. a bare `gh pr view` without `--json` fields,
+ * or a test fake that omits it).
+ */
+export function mapGhPrWithNumber(
+  raw: Record<string, unknown>,
+  fallback: number,
+): NormalizedPullRequest {
+  const r = { ...raw };
+  if (r.number === undefined || r.number === null) r.number = fallback;
+  return mapGhPr(r);
 }
 
 /** glab `mr view --output json` (snake_case) → NormalizedPullRequest. */
@@ -270,4 +298,111 @@ export function mapGlRepo(raw: Record<string, unknown>): NormalizedRepo {
     mergeMethod,
     squashOption,
   };
+}
+
+/**
+ * Build a minimal NormalizedPullRequest from a plain-text PR URL response.
+ * Used as a fallback when `gh pr create` returns a URL instead of JSON.
+ */
+export function makeMinimalPr(parsed: { number: number; url?: string }): NormalizedPullRequest {
+  return {
+    number: parsed.number,
+    title: "",
+    body: "",
+    state: "" as NormalizedPullRequest["state"],
+    url: parsed.url ?? "",
+    headRefName: undefined,
+    baseRefName: undefined,
+    author: undefined,
+    mergeable: null,
+    mergeStateStatus: null,
+    labels: [],
+    createdAt: undefined,
+    updatedAt: undefined,
+  };
+}
+
+/**
+ * Parse a PR number from a forge response that may be JSON or plain text.
+ *
+ * The adapter issues `gh pr create --json number,title,state,url` which
+ * returns JSON. But the pre-migration driver issued `gh pr create` (no
+ * `--json`) which returns a plain URL. This helper handles both shapes:
+ *   - JSON: `JSON.parse(stdout).number`
+ *   - Plain text URL: regex `/pull/(\d+)/` or `/-/merge_requests/(\d+)/`
+ */
+export function parsePrNumberFromResponse(
+  stdout: string,
+): { number: number; url?: string } | undefined {
+  // Try JSON first.
+  try {
+    const parsed = JSON.parse(stdout) as Record<string, unknown>;
+    const n = parsed.number ?? parsed.iid;
+    if (typeof n === "number" && Number.isFinite(n)) {
+      return {
+        number: n,
+        url:
+          typeof parsed.url === "string"
+            ? parsed.url
+            : typeof parsed.web_url === "string"
+              ? parsed.web_url
+              : undefined,
+      };
+    }
+    return undefined;
+  } catch {
+    // Not JSON — try plain-text URL extraction.
+  }
+  const ghMatch = stdout.match(/\/pull\/(\d+)/);
+  if (ghMatch?.[1]) return { number: Number.parseInt(ghMatch[1], 10) };
+  const glMatch = stdout.match(/-\/merge_requests\/(\d+)/);
+  if (glMatch?.[1]) return { number: Number.parseInt(glMatch[1], 10) };
+  return undefined;
+}
+
+/** Parse a plain-text state string (e.g. `"OPEN"`, `"MERGED"`) into a NormalizedPullRequest. */
+export function parsePlainTextPr(stdout: string, number: number): NormalizedPullRequest {
+  const state = stdout.trim().toUpperCase();
+  return {
+    number,
+    title: "",
+    body: "",
+    state: state as NormalizedPullRequest["state"],
+    url: "",
+    headRefName: undefined,
+    baseRefName: undefined,
+    author: undefined,
+    mergeable: null,
+    mergeStateStatus: null,
+    labels: [],
+    createdAt: undefined,
+    updatedAt: undefined,
+  };
+}
+
+/** Parse a plain-text body string into a NormalizedIssue. */
+export function parsePlainTextIssue(stdout: string, number: number): NormalizedIssue {
+  return {
+    number,
+    title: "",
+    body: stdout,
+    state: "" as NormalizedIssue["state"],
+    url: "",
+    author: undefined,
+    labels: [],
+    createdAt: undefined,
+    updatedAt: undefined,
+  };
+}
+
+/** Parse stdout as a JSON object. Throws on non-JSON. */
+export function asRecord(stdout: string): Record<string, unknown> {
+  return JSON.parse(stdout) as Record<string, unknown>;
+}
+
+/** Parse stdout as a JSON array. Throws on non-array JSON. */
+export function asArray(stdout: string): unknown[] {
+  const parsed = JSON.parse(stdout || "[]");
+  if (!Array.isArray(parsed)) throw new Error(`forge: expected a JSON array, got ${typeof parsed}`);
+  return parsed;
 }

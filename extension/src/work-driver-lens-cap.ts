@@ -44,6 +44,7 @@ import {
   MAX_REVIEW_ROUNDS,
   REVIEW_WALL_CLOCK_MS,
 } from "./work-driver-context.ts";
+import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -98,10 +99,17 @@ async function discloseResidualFindings(
   try {
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, body, "utf8");
-    await (ctx.verifyExecFn ?? execp)(
-      `gh pr comment ${prNumber} --body-file ${JSON.stringify(file)}`,
-      { cwd: ctx.repoRoot, maxBuffer: 256 * 1024 },
-    );
+    // The adapter has no PR-comment method (S2 named issue-comment, not
+    // PR-comment), so this is one of the sites that stays a direct command:
+    // the GitHub-shaped one the test suite pins, with the GitLab MR-note
+    // equivalent as the forge-agnostic sibling.
+    const execFn = ctx.verifyExecFn ?? execp;
+    const forge = await forgeForCycle(ctx, execFn);
+    const cmd =
+      forge?.forge === "gitlab"
+        ? `glab mr note ${prNumber} --body-file ${JSON.stringify(file)}`
+        : `gh pr comment ${prNumber} --body-file ${JSON.stringify(file)}`;
+    await execFn(cmd, { cwd: ctx.repoRoot, maxBuffer: 256 * 1024 });
     return { ok: true };
   } catch (err) {
     return { ok: false, reason: (err as Error).message?.slice(0, 200) ?? "unknown error" };

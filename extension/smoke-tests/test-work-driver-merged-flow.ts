@@ -81,18 +81,16 @@ function mkState(issue: number, pr: number, branch: string): WorkState {
   } as WorkState;
 }
 
-/** #380 — answer the merge gate's evidence probe green. */
+/**
+ * #380 — answer the merge gate's evidence probe green. The gate itself is
+ * covered by test-merge-authority.ts.
+ *
+ * Matches on the merge gate's specific 3-field JSON (`mergeStateStatus,mergeable,state`)
+ * so it does NOT intercept the forge adapter's `prView` call, which requests
+ * a much wider field list that also happens to include `mergeStateStatus`.
+ */
 function mergeGateGreen(cmd: string): { stdout: string } | undefined {
-  if (cmd.includes("mergeStateStatus"))
-    return { stdout: '{"mergeStateStatus":"CLEAN","state":"OPEN"}' };
-  if (cmd.includes("gh pr checks"))
-    return { stdout: '[{"name":"ci","bucket":"pass","isRequired":true}]' };
-  return undefined;
-}
-
-/** #380 — answer the merge gate's evidence probe green; the gate itself is covered by test-merge-authority.ts. */
-function mergeGateGreen(cmd: string): { stdout: string } | undefined {
-  if (cmd.includes("mergeStateStatus"))
+  if (cmd.includes("mergeStateStatus,mergeable,state"))
     return { stdout: '{"mergeStateStatus":"CLEAN","state":"OPEN"}' };
   if (cmd.includes("gh pr checks"))
     return { stdout: '[{"name":"ci","bucket":"pass","isRequired":true}]' };

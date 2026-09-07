@@ -199,3 +199,19 @@ export function repoSettingsCmd(forge: ForgeType): string {
   }
   return "glab api /projects/:id --output json";
 }
+
+// ── CI run fetch ──────────────────────────────────────────────────────────────
+
+/** One CI-run fetch (the ciWatch loop body + the direct ciRun call). */
+export function ciRunOnce(
+  execFn: (cmd: string, opts?: { cwd?: string; maxBuffer?: number }) => Promise<{ stdout: string }>,
+  forge: ForgeType,
+  cwd: string,
+  owner: string,
+  repo: string,
+  id: number,
+): Promise<string> {
+  const cmd =
+    forge === "github" ? `gh api /repos/${owner}/${repo}/actions/runs/${id}` : pipelineViewCmd(id);
+  return execFn(cmd, { cwd, maxBuffer: 512 * 1024 }).then(({ stdout }) => stdout);
+}

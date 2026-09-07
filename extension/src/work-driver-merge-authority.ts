@@ -30,6 +30,7 @@
  * in both directions.
  */
 
+import type { VerifyExecFn } from "./work-driver-git.ts";
 import {
   type DoctrineDoc,
   MERGE_POLICY_QUESTION,
@@ -39,10 +40,7 @@ import {
 import type { WorkEvent } from "./workflow-state.ts";
 
 /** Shell executor, matching `DriverContext.verifyExecFn`. */
-type ExecFn = (
-  cmd: string,
-  opts?: { cwd?: string; timeout?: number; maxBuffer?: number; shell?: string },
-) => Promise<{ stdout: string; stderr?: string }>;
+type ExecFn = VerifyExecFn;
 
 export type AuthoritySource =
   | "agents-md"
@@ -147,13 +145,17 @@ export async function gatherMergeEvidence(
   repoRoot: string,
   prNumber: number,
 ): Promise<MergeEvidence> {
-  let state: { mergeStateStatus?: string; mergeable?: string; state?: string };
+  let state: { mergeStateStatus?: string; state?: string };
   try {
     const { stdout } = await execFn(
       `gh pr view ${prNumber} --json mergeStateStatus,mergeable,state`,
       { cwd: repoRoot, maxBuffer: 256 * 1024 },
     );
-    state = JSON.parse(stdout);
+    const parsed = JSON.parse(stdout);
+    state = {
+      mergeStateStatus: parsed.mergeStateStatus,
+      state: parsed.state,
+    };
   } catch (err) {
     return {
       ok: false,

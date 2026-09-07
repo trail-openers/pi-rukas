@@ -251,6 +251,14 @@ export interface DriverContext {
    * inject a fake to assert on argv without forking vipune.
    */
   gvwmWriteFn?: (text: string, opts: { cwd: string; issue: number }) => Promise<{ id?: string }>;
+  /**
+   * #612 S4 task-b — optional injection point for tests: replace the forge
+   * adapter used by `runHandoff`'s in-process gh fallback. Production
+   * callers omit this; the driver resolves a fresh `Forge` via
+   * `handoffForge` (work-driver-handoff.ts). Tests inject a fake to drive
+   * the fallback path without a real `gh` binary.
+   */
+  forge?: import("./forge.ts").Forge;
 }
 
 /**

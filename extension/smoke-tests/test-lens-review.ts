@@ -9,6 +9,7 @@
  */
 
 import {
+  LENS_REVIEW_DIFF_DESCRIPTION,
   type Finding,
   type LensName,
   computeVerdict,
@@ -350,6 +351,28 @@ function lensResult(
       "Re-dispatch dispatch_lens_review to retry, or override and proceed despite the incomplete review",
     ),
     "blocked-lens banner states the available user choices without external doc references",
+  );
+}
+
+// #612 — the diff parameter's description is forge-agnostic on purpose.
+// The pre-#612 text told the operator `gh pr diff <N>`, GitHub-only. The
+// description is the only prompt text the tool registration carries, and it
+// used to be unreachable by any test (the registration happens inside
+// registerLensReviewTool, which needs a live ExtensionAPI). Exporting it as a
+// named const is what makes this assertion possible.
+{
+  assert(
+    !/gh pr diff/.test(LENS_REVIEW_DIFF_DESCRIPTION) ||
+      LENS_REVIEW_DIFF_DESCRIPTION.includes("glab"),
+    "#612: the diff description no longer hard-codes the GitHub-only 'gh pr diff' without naming the gitlab equivalent",
+  );
+  assert(
+    LENS_REVIEW_DIFF_DESCRIPTION.includes("glab mr diff"),
+    "#612: the diff description names the gitlab equivalent (glab mr diff)",
+  );
+  assert(
+    LENS_REVIEW_DIFF_DESCRIPTION.includes("do NOT re-fetch per lens"),
+    "#612: the 'fetch once and reuse' instruction is preserved",
   );
 }
 

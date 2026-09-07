@@ -18,6 +18,7 @@ import {
   transientRetryBackoffMs,
   transientRetryEnabled,
 } from "./work-driver-failure-taxonomy.ts";
+import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import {
   deleteSpecArtifact,
   persistSpecArtifact,
@@ -42,20 +43,10 @@ import { type WorkState, appendEvent, writeDispatchArtifact } from "./workflow-s
 
 const execp = promisify(exec);
 
-/**
- * Per-attempt deadline for one `gh issue view`.
- *
- * Node's `exec` has NO default timeout, so a call that stalls on a half-open
- * connection blocks the cycle indefinitely — and retries without a deadline
- * only cover the failures that fail fast, leaving the expensive class
- * uncovered. 45s is generous: a `gh issue view` that has not answered by then
- * is not going to.
- */
+/** Per-attempt deadline for one `gh issue view` (45 s). */
 export const ISSUE_BODY_TIMEOUT_MS = 45_000;
-
 /** Attempts per issue body, including the first. */
 const ISSUE_BODY_ATTEMPTS = 3;
-
 type IssueBodyExec = (
   cmd: string,
   opts: { cwd: string; maxBuffer: number; timeout: number },
@@ -64,16 +55,30 @@ type IssueBodyExec = (
 /**
  * The production issue-body fetch. `execFn` is injected by the smoke test so
  * the per-attempt deadline is asserted rather than assumed.
+ *
+ * Routed through the forge adapter (S4 of epic #608, #612): the adapter is
+ * built on the SAME injected seam with the per-attempt deadline carried in
+ * `execOpts`. On a GitHub remote the adapter runs `gh issue view N` through
+ * that seam. The body is rendered as `"<title>\n\n<body>"` — the `gh issue
+ * view` plain-text shape the grouping and handoff renderers consume.
  */
 export function fetchIssueBodyViaGh(
   issue: number,
   cwd: string,
   execFn: IssueBodyExec = execp,
 ): Promise<{ stdout: string }> {
-  return execFn(`gh issue view ${issue}`, {
-    cwd,
-    maxBuffer: 256 * 1024,
-    timeout: ISSUE_BODY_TIMEOUT_MS,
+  const exec = (cmd: string, opts?: { cwd?: string; maxBuffer?: number; timeout?: number }) =>
+    execFn(cmd, opts as { cwd: string; maxBuffer: number; timeout: number });
+  return forgeForCycle({ repoRoot: cwd }, exec, new Map(), {
+    execOpts: { timeout: ISSUE_BODY_TIMEOUT_MS, maxBuffer: 256 * 1024 },
+  }).then(async (f) => {
+    if (!f) {
+      // Forge undetermined — fail closed: the retry loop treats a rejection
+      // as a failed attempt and the empty-body cap still parks the cycle.
+      throw new Error("forge undetermined — cannot fetch issue body");
+    }
+    const d = await f.issueView(issue);
+    return { stdout: `${d.title}\n\n${d.body}` };
   });
 }
 

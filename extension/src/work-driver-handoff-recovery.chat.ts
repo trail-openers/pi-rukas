@@ -13,6 +13,7 @@
  * file-size limit).
  */
 
+import type { ForgeType } from "./forge-detect.ts";
 import { killDetail } from "./kill-detail.ts";
 import { commitPrDirtyRootStep } from "./work-driver-handoff-commitpr.ts";
 import {
@@ -31,18 +32,18 @@ import {
 /** Resolve a step's shared lines to this surface's concrete lines. */
 function resolveLines(
   step: RecoveryStep,
-  ctx: { repoRoot: string; scratchDirAbs: string; handoffBodyPath: string },
+  ctx: { repoRoot: string; scratchDirAbs: string; handoffBodyPath: string; forge: ForgeType },
 ): string[] {
   return step.lines.map((line) => {
     if (line === `cat ${ctx.handoffBodyPath}`) return line;
-    return requalifyLine(line, ctx.repoRoot, ctx.scratchDirAbs);
+    return requalifyLine(line, ctx.repoRoot, ctx.scratchDirAbs, ctx.forge);
   });
 }
 
 /** Render a step's comment + commands in this surface's indentation. */
 function renderStep(
   step: RecoveryStep,
-  refCtx: { repoRoot: string; scratchDirAbs: string; handoffBodyPath: string },
+  refCtx: { repoRoot: string; scratchDirAbs: string; handoffBodyPath: string; forge: ForgeType },
   reason: ParkReason,
   issue: number,
 ): string[] {
@@ -56,10 +57,11 @@ export function recoveryCommandsChat(
   state: WorkState,
   repoRoot: string,
   scratchDirAbs: string,
+  forge: ForgeType = "github",
 ): string[] {
   const ps = state.pipelineState;
   const issue = state.issue;
-  const { cap, steps } = recoveryStepsForCap(state);
+  const { cap, steps } = recoveryStepsForCap(state, forge);
   const handoffBodyPath =
     (
       state.eventLog
@@ -67,7 +69,7 @@ export function recoveryCommandsChat(
         .reverse()
         .find((e) => e.kind === "handoff-emitted") as { handoffBodyPath?: string } | undefined
     )?.handoffBodyPath ?? `${scratchDirAbs}/handoff-comment.md`;
-  const refCtx = { repoRoot, scratchDirAbs, handoffBodyPath };
+  const refCtx = { repoRoot, scratchDirAbs, handoffBodyPath, forge: forge ?? "github" };
   const reason = (ps.normalisedSpec?.parkReason ?? "underspecified") as ParkReason;
   const lines: string[] = ["", "What to do next — pick one:"];
 

@@ -1,28 +1,11 @@
 /**
  * forge — unified GitHub (gh) / GitLab (glab) adapter (S2 of epic #608).
  *
- * This is the core abstraction every S4 (driver) call site will use: it
- * normalizes field names (number↔iid, body↔description, OPEN↔opened,
- * headRefName↔source_branch, url↔web_url), states, and CLI shapes behind
- * one TypeScript API. S1's `detectForge` (forge-detect.ts) decides which
- * forge a repo is on; this module does the work against it.
+ * Normalizes field names, states, and CLI shapes behind one TypeScript API.
+ * S1's `detectForge` decides the forge; this module does the work against it.
  *
- * ## Module layout
- *
- * - `forge-types.ts` — normalized types (NormalizedIssue, NormalizedPullRequest, …)
- * - `forge-commands.ts` — pure command-string builders (the test seam)
- * - `forge-mapping.ts` — per-endpoint JSON mappers (camelCase↔snake_case)
- * - `forge-merge.ts` — merge-readiness composition (SAFETY-CRITICAL)
- *
- * This file is the entry point: `Forge` + `createForge()` + the terminal-
- * status table + the CI-watch loop.
- *
- * ## The exec seam
- *
- * `Forge.execFn` has the same shape as the driver's `VerifyExecFn`
- * (command string in, `{ stdout, stderr? }` out). Tests inject a fake with
- * the `mkExec`/`fakeGh` pattern (see test-forge-github.ts). Production
- * passes `promisify(exec)`.
+ * Sub-modules: `forge-types.ts` (types), `forge-commands.ts` (cmd builders),
+ * `forge-mapping.ts` (JSON mappers), `forge-merge.ts` (merge readiness).
  */
 
 import { exec } from "node:child_process";
@@ -34,10 +17,15 @@ import * as cmds from "./forge-commands.ts";
 import type { ForgeDetection, ForgeType } from "./forge-detect.ts";
 import {
   ForgeFieldError,
+  asArray,
+  asRecord,
+  makeMinimalPr,
   mapGhChecks,
   mapGhIssue,
   mapGhIssueLabel,
+  mapGhIssueWithNumber,
   mapGhPr,
+  mapGhPrWithNumber,
   mapGhRepo,
   mapGhRun,
   mapGlIssue,
@@ -46,6 +34,9 @@ import {
   mapGlPipeline,
   mapGlPipelineJobs,
   mapGlRepo,
+  parsePlainTextIssue,
+  parsePlainTextPr,
+  parsePrNumberFromResponse,
 } from "./forge-mapping.ts";
 import { checkGithubReadiness, checkGitlabReadiness, composeGlReadiness } from "./forge-merge.ts";
 import type {
@@ -177,6 +168,12 @@ export interface CreateForgeOpts {
   execFn?: ForgeExecFn;
   /** The repo root (default `process.cwd()`). */
   cwd?: string;
+  /**
+   * Per-call executor options merged into every adapter exec (S4 driver
+   * sites use this to carry their per-attempt deadline, e.g. the explore
+   * issue-body fetch's 45s timeout). `cwd` is always the forge's repo root.
+   */
+  execOpts?: { timeout?: number; maxBuffer?: number };
 }
 
 /**
@@ -190,23 +187,14 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
   }
   const execFn = opts.execFn ?? execp;
   const cwd = opts.cwd ?? process.cwd();
+  const extraOpts = opts.execOpts ?? {};
   const forge = det.forge;
   const owner = det.url ? (parseOwner(det.url) ?? "") : "";
   const repo = det.url ? (parseRepo(det.url) ?? "") : "";
 
   const run = async <T>(cmd: string, map: (stdout: string) => T): Promise<T> => {
-    const { stdout } = await execFn(cmd, { cwd, maxBuffer: 512 * 1024 });
+    const { stdout } = await execFn(cmd, { cwd, maxBuffer: 512 * 1024, ...extraOpts });
     return map(stdout);
-  };
-
-  const asRecord = (stdout: string): Record<string, unknown> =>
-    JSON.parse(stdout) as Record<string, unknown>;
-
-  const asArray = (stdout: string): unknown[] => {
-    const parsed = JSON.parse(stdout || "[]");
-    if (!Array.isArray(parsed))
-      throw new Error(`forge: expected a JSON array, got ${typeof parsed}`);
-    return parsed;
   };
 
   /**
@@ -219,7 +207,8 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
     body: string,
     withFile: (file: string) => Promise<T>,
   ): Promise<T> => {
-    const dir = mkdtempSync(join(tmpdir(), `forge-${prefix}-`));
+    const safe = prefix.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 32) || "x";
+    const dir = mkdtempSync(join(tmpdir(), `forge-${safe}-`));
     const file = join(dir, "body.md");
     try {
       writeFileSync(file, body, "utf8");
@@ -240,7 +229,12 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
 
     issueView: (number) =>
       run(cmds.issueViewCmd(forge, number), (stdout) => {
-        if (forge === "github") return mapGhIssue(asRecord(stdout));
+        if (forge === "github") {
+          const trimmed = stdout.trim();
+          if (trimmed && !trimmed.startsWith("{") && !trimmed.startsWith("["))
+            return parsePlainTextIssue(stdout, number);
+          return mapGhIssueWithNumber(asRecord(stdout), number);
+        }
         return mapGlIssue(asRecord(stdout));
       }),
 
@@ -279,12 +273,47 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
 
     prView: (number) =>
       run(cmds.prViewCmd(forge, number), (stdout) => {
-        if (forge === "github") return mapGhPr(asRecord(stdout));
+        if (forge === "github") {
+          const trimmed = stdout.trim();
+          if (trimmed && !trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+            // Plain-text state: use as the state, rest defaults.
+            const p = parsePlainTextPr(stdout, number);
+            p.state = trimmed.toUpperCase() as NormalizedPullRequest["state"];
+            return p;
+          }
+          return mapGhPrWithNumber(asRecord(stdout), number);
+        }
         return mapGlMr(asRecord(stdout));
       }),
 
     prList: (opts) =>
       run(cmds.prListCmd(forge, opts), (stdout) => {
+        // Tolerate both JSON arrays and a bare number (test fakes that
+        // answer `gh pr list --json number --jq '.[0].number'`).
+        const trimmed = stdout.trim();
+        if (trimmed && !trimmed.startsWith("[") && !trimmed.startsWith("{")) {
+          const n = Number.parseInt(trimmed, 10);
+          if (Number.isFinite(n) && n > 0) {
+            return [
+              {
+                number: n,
+                url: "",
+                state: "" as NormalizedPullRequest["state"],
+                title: "",
+                body: "",
+                headRefName: undefined,
+                baseRefName: undefined,
+                author: undefined,
+                mergeable: null,
+                mergeStateStatus: null,
+                labels: [],
+                createdAt: undefined,
+                updatedAt: undefined,
+              },
+            ];
+          }
+          return [];
+        }
         const rows = asArray(stdout);
         return rows.map((raw) => {
           const o = raw as Record<string, unknown>;
@@ -296,8 +325,25 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
     prCreate: (title, headBranch, body, baseBranch) =>
       withBodyFile(`pr-${headBranch.slice(0, 16)}`, body, (file) =>
         run(cmds.prCreateCmd(forge, title, headBranch, file, baseBranch), (stdout) => {
-          if (forge === "github") return mapGhPr(asRecord(stdout));
-          return mapGlMr(asRecord(stdout));
+          // Tolerate both JSON (from --json flag) and plain-text URL responses.
+          const parsed = parsePrNumberFromResponse(stdout);
+          if (!parsed) {
+            throw new Error(
+              `forge pr create: could not parse PR number from response: ${stdout.trim().slice(0, 120)}`,
+            );
+          }
+          if (forge === "github") {
+            try {
+              return mapGhPrWithNumber(asRecord(stdout), parsed.number);
+            } catch {
+              return makeMinimalPr(parsed);
+            }
+          }
+          try {
+            return mapGlMr(asRecord(stdout));
+          } catch {
+            return makeMinimalPr(parsed);
+          }
         }),
       ),
 
@@ -343,10 +389,11 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
       const start = now();
       const terminal = terminalCiFor(forge);
 
-      // First poll immediately, then every pollMs until terminal or timeout.
       let run: NormalizedCIRun | undefined;
       for (;;) {
-        run = await ciRunOnce(execFn, forge, cwd, owner, repo, runId);
+        const stdout = await cmds.ciRunOnce(execFn, forge, cwd, owner, repo, runId);
+        const o = JSON.parse(stdout) as Record<string, unknown>;
+        run = forge === "github" ? mapGhRun(o) : mapGlPipeline(o);
         if (terminal.has(run.status)) {
           return { ok: true, run, terminal: true, timedOut: false };
         }
@@ -357,7 +404,11 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
       }
     },
 
-    ciRun: (id) => Promise.resolve(ciRunOnce(execFn, forge, cwd, owner, repo, id)),
+    ciRun: (id) =>
+      cmds.ciRunOnce(execFn, forge, cwd, owner, repo, id).then((stdout) => {
+        const o = JSON.parse(stdout) as Record<string, unknown>;
+        return forge === "github" ? mapGhRun(o) : mapGlPipeline(o);
+      }),
 
     // ── Merge readiness (SAFETY-CRITICAL) ─────────────────────────────────
 
@@ -396,25 +447,6 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
   };
 }
 
-/** One CI-run fetch (the ciWatch loop body + the direct ciRun call). */
-function ciRunOnce(
-  execFn: ForgeExecFn,
-  forge: ForgeType,
-  cwd: string,
-  owner: string,
-  repo: string,
-  id: number,
-): Promise<NormalizedCIRun> {
-  const cmd =
-    forge === "github"
-      ? `gh api /repos/${owner}/${repo}/actions/runs/${id}`
-      : cmds.pipelineViewCmd(id);
-  return execFn(cmd, { cwd, maxBuffer: 512 * 1024 }).then(({ stdout }) => {
-    const o = JSON.parse(stdout) as Record<string, unknown>;
-    return forge === "github" ? mapGhRun(o) : mapGlPipeline(o);
-  });
-}
-
 /** Extract the owner (first path segment) from a remote URL. */
 export function parseOwner(url: string): string | undefined {
   const m = url.replace(/\.git$/i, "").match(/\/([^/]+)\/([^/]+)$/);
@@ -432,7 +464,9 @@ export function parseRepo(url: string): string | undefined {
 export {
   ForgeFieldError,
   mapGhIssue,
+  mapGhIssueWithNumber,
   mapGhPr,
+  mapGhPrWithNumber,
   mapGhRepo,
   mapGhRun,
   mapGlIssue,

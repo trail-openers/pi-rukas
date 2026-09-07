@@ -7,6 +7,7 @@
  * `gh pr comment` / `gh issue comment`.
  */
 
+import type { ForgeType } from "./forge-detect.ts";
 import { killDetail } from "./kill-detail.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
 import { capedPartialStateLines } from "./work-driver-caped-state.ts";
@@ -35,7 +36,7 @@ import type { WorkEvent, WorkState } from "./workflow-state.ts";
  * Pure function — no I/O, no Pi calls — so it's testable from a smoke
  * with a synthetic state file.
  */
-export function renderHandoffMarkdown(state: WorkState): string {
+export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): string {
   const ps = state.pipelineState;
   const issue = state.issue;
   const capHit = [...state.eventLog].reverse().find((e) => e.kind === "cap-hit");
@@ -230,7 +231,7 @@ export function renderHandoffMarkdown(state: WorkState): string {
   // cap-shaped recovery commands rather than the wrong "git push what's
   // there" / "longer cap" set. The cap → commands mapping lives in
   // work-driver-handoff-recovery.md.ts (split for module-size hygiene).
-  lines.push(...recoveryCommandsMarkdown(state));
+  lines.push(...recoveryCommandsMarkdown(state, forge));
 
   if (transcripts.length > 0) {
     lines.push("### Transcripts (last 5)", ...transcripts, "");

@@ -36,6 +36,18 @@ export type { LensName };
 export type LensDef = (typeof LENSES)[number];
 export const LENS_REPORTER_PATH = path.join(__dirname, "lens-reporter.ts");
 
+/**
+ * #612 — the diff parameter's description, forge-agnostic on purpose.
+ * The pre-#612 text told the operator `gh pr diff <N>`, which is GitHub
+ * only (on GitLab the same operation is `glab mr diff <N>`). The driver
+ * assembles the diff itself and passes it in, so the instruction to the
+ * operator is to fetch it ONCE (however their forge spells it) and reuse.
+ * Exported so the wording is assertable offline (the tool registration is
+ * the only place it lives, and no test reached it before).
+ */
+export const LENS_REVIEW_DIFF_DESCRIPTION =
+  "The full PR/MR diff to review. Fetch it once with your forge CLI (e.g. `gh pr diff <N>` or `glab mr diff <N>`) or `git diff main...feature/...` and reuse — do NOT re-fetch per lens.";
+
 export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
 export type Verdict =
   | "APPROVED"
@@ -357,10 +369,7 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
     description:
       "Fan out the six mandatory code-review lenses (SECURITY, ERROR_HANDLING, TYPE_SAFETY, PERFORMANCE, ARCHITECTURE, SIMPLICITY) in parallel as an async job. Returns a job handle immediately; ONE consolidated verdict + dedup'd findings arrives as a [ensemble:async] user message when all 6 lenses finish. End your turn after dispatching.",
     parameters: Type.Object({
-      diff: Type.String({
-        description:
-          "The full PR diff to review. Fetch once with `gh pr diff <N>` or `git diff main...feature/...` and reuse — do NOT re-fetch per lens.",
-      }),
+      diff: Type.String({ description: LENS_REVIEW_DIFF_DESCRIPTION }),
       context: Type.Optional(
         Type.String({
           description: "1-3 sentence description of what changed and why; passed to every lens.",

@@ -14,6 +14,7 @@
  * file-size limit).
  */
 
+import type { ForgeType } from "./forge-detect.ts";
 import { killDetail } from "./kill-detail.ts";
 import { commitPrDirtyRootStep } from "./work-driver-handoff-commitpr.ts";
 import { type RecoveryStep, recoveryStepsForCap } from "./work-driver-handoff-recovery.ts";
@@ -26,10 +27,10 @@ import {
 
 const EMPTY_STEP: RecoveryStep = { section: "review-incomplete", comment: [], lines: [] };
 
-export function recoveryCommandsMarkdown(state: WorkState): string[] {
+export function recoveryCommandsMarkdown(state: WorkState, forge: ForgeType = "github"): string[] {
   const ps = state.pipelineState;
   const issue = state.issue;
-  const { cap, steps } = recoveryStepsForCap(state);
+  const { cap, steps } = recoveryStepsForCap(state, forge ?? "github");
   const reason = (ps.normalisedSpec?.parkReason ?? "underspecified") as ParkReason;
   const lines: string[] = ["### Concrete recovery commands", "", "Pick one:", "", "```bash"];
 
