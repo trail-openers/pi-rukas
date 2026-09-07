@@ -249,7 +249,9 @@ for (const seam of SEAMS) {
   // #609 — forge-detect.ts is S1 of epic #608. Its production caller is
   // forge.ts (S2), not yet shipped. Declared pending so the module-level
   // orphan check does not fail on it until forge.ts lands.
-  const PENDING_PRODUCTION_CALLER = new Set(["forge-detect.ts"]);
+  // #610 — forge.ts is S2. Its production caller is work-driver (S4 #612),
+  // not yet shipped. Declared pending for the same reason.
+  const PENDING_PRODUCTION_CALLER = new Set(["forge-detect.ts", "forge.ts"]);
   const orphans: string[] = [];
   for (const f of allFiles) {
     if (declared.has(f.name) || f.name === "index.ts" || f.name === "types.ts") continue;
