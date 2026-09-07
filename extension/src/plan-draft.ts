@@ -12,11 +12,29 @@
 
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
+import { detectForge } from "./forge-detect.ts";
+import { type Forge, createForge } from "./forge.ts";
 import { EPIC_SUB_ISSUE_DEPTH_LIMIT, type PlanType, planTitle } from "./plan-types.ts";
 import type { MemoryHit } from "./vipune.ts";
 import { vipuneSearch } from "./vipune.ts";
 
 const execp = promisify(exec);
+
+/**
+ * Resolve the forge adapter for the plan-draft inventory step
+ * (#612 S4 task-b). `PI_ENSEMBLE_FORGE=none` refuses; unknown detection
+ * falls back to raw `gh` (pre-migration behaviour).
+ */
+async function planDraftForge(repoRoot: string): Promise<Forge | undefined> {
+  if (process.env.PI_ENSEMBLE_FORGE === "none") return undefined;
+  try {
+    const det = await detectForge(repoRoot, {});
+    if (det.forge === "unknown") return undefined;
+    return createForge(det, { cwd: repoRoot });
+  } catch {
+    return undefined;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Phase 1 — mechanical inventory
@@ -46,6 +64,7 @@ export interface MechanicalInventory {
 export async function mechanicalInventory(
   repoRoot: string,
   descriptor: string,
+  forgeOverride?: Forge,
 ): Promise<MechanicalInventory> {
   const keywords = descriptor
     .replace(/[()]/g, " ")
@@ -59,15 +78,18 @@ export async function mechanicalInventory(
 
   const related: MechanicalInventory["related"] = [];
   const errors: string[] = [];
-  try {
-    const { stdout } = await execp(
-      `gh issue list --search '${terms.replace(/'/g, "")}' --state all --limit 10 --json number,title,state`,
-      { cwd: repoRoot, maxBuffer: 1024 * 1024 },
-    );
-    const rows = JSON.parse(stdout) as Array<{ number: number; title: string; state: string }>;
-    for (const r of rows) related.push({ number: r.number, title: r.title, state: r.state });
-  } catch (err) {
-    errors.push(`gh issue list: ${(err as Error).message.split("\n")[0]}`);
+  // #612 S4 task-b — forge adapter. The adapter's `issueSearch` drops the
+  // `--state all --limit 10` qualifiers the raw command carried; the
+  // adapter's default list shape is what S2 normalizes across forges.
+  // A forge that cannot be resolved yields an empty related list (no error).
+  const forge = forgeOverride ?? (await planDraftForge(repoRoot));
+  if (forge) {
+    try {
+      const rows = await forge.issueSearch(terms.replace(/'/g, ""));
+      for (const r of rows) related.push({ number: r.number, title: r.title, state: r.state });
+    } catch (err) {
+      errors.push(`forge issueSearch: ${(err as Error).message.split("\n")[0]}`);
+    }
   }
   return { memory, related, errors };
 }

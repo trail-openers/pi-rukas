@@ -16,6 +16,8 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import { forgeForCycle } from "./work-driver-forge-ctx.ts";
+import type { VerifyExecFn } from "./work-driver-git.ts";
 import { detectMainline } from "./work-driver-git.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
 import type { ConsolidationVerdict } from "./workflow-state-consolidation.ts";
@@ -194,9 +196,9 @@ function verifyGateEnabled(): boolean {
  *     (a) commits exist on the branch: `git rev-list --count
  *         origin/<base>..<branchName>` > 0 at repoRoot (#451 — the branch
  *         is named explicitly so the gate works regardless of repo-root checkout).
- *     (b) the parsed PR number resolves via `gh pr view`. When ops
- *         forgot the `pr: <N>` marker, fall back to `gh pr list
- *         --head <branch>` and ADOPT the number into pipelineState
+ *     (b) the parsed PR number resolves via the forge adapter. When ops
+ *         forgot the `pr: <N>` marker, fall back to a head-branch PR
+ *         list and ADOPT the number into pipelineState
  *         (bonus repair — pre-PR17 a missing marker degraded handoff
  *         targeting). No PR found at all = the "opened a PR" claim was
  *         hollow.
@@ -207,7 +209,7 @@ function verifyGateEnabled(): boolean {
  * erroring at repoRoot) are notes, not failures — same no-false-alarm
  * stance as verifyConsolidation.
  */
-/** The fields of `gh pr view --json state,headRefName` this gate reads. */
+/** The fields of the forge `prView` result this gate reads. */
 export interface PrView {
   state?: string;
   headRefName?: string;
@@ -300,19 +302,21 @@ export async function verifyStepOutcome(
     // before declaring failure (bonus repair for handoff targeting).
     const branch = state.pipelineState.branchName;
     if (branch) {
-      try {
-        const { stdout } = await execFn(
-          `gh pr list --head ${JSON.stringify(branch)} --json number --jq '.[0].number'`,
-          { cwd: ctx.repoRoot, maxBuffer: 64 * 1024 },
-        );
-        const n = Number.parseInt(stdout.trim(), 10);
-        if (Number.isFinite(n) && n > 0) {
-          adoptedPrNumber = n;
-          prToCheck = n;
-          notes.push(`ops omitted the pr: marker; resolved PR #${n} via gh pr list --head`);
+      const forge = await forgeForCycle(ctx, execFn);
+      if (forge) {
+        try {
+          const prs = await forge.prList({ sourceBranch: branch });
+          const n = prs[0]?.number;
+          if (n !== undefined && Number.isFinite(n) && n > 0) {
+            adoptedPrNumber = n;
+            prToCheck = n;
+            notes.push(
+              `ops omitted the pr: marker; resolved PR #${n} via forge prList by head branch`,
+            );
+          }
+        } catch {
+          // forge unavailable or no PR — the check below reports it.
         }
-      } catch {
-        // gh unavailable or no PR — the check below reports it.
       }
     }
     if (prToCheck === undefined) {
@@ -328,17 +332,19 @@ export async function verifyStepOutcome(
     // valid one. Bind it to the branch instead: that is driver-computed, and
     // `gh pr create --head` opened the PR against exactly it.
     let view: PrView | undefined;
-    try {
-      const { stdout } = await execFn(`gh pr view ${prToCheck} --json state,headRefName`, {
-        cwd: ctx.repoRoot,
-        maxBuffer: 256 * 1024,
-      });
-      view = JSON.parse(stdout) as PrView;
-    } catch (err) {
-      const e = err as Error & { stderr?: string };
-      failures.push(
-        `PR #${prToCheck} does not resolve via \`gh pr view\`: ${(e.stderr ?? e.message ?? "").slice(0, 200)}`,
-      );
+    const forge = await forgeForCycle(ctx, execFn);
+    if (forge) {
+      try {
+        const pr = await forge.prView(prToCheck);
+        view = { state: pr.state, headRefName: pr.headRefName };
+      } catch (err) {
+        const e = err as Error & { stderr?: string };
+        failures.push(
+          `PR #${prToCheck} does not resolve via the forge adapter: ${(e.stderr ?? e.message ?? "").slice(0, 200)}`,
+        );
+      }
+    } else {
+      failures.push(`PR #${prToCheck} cannot be verified: forge undetermined for this repo`);
     }
     if (view !== undefined) {
       const identity = judgePrIdentity(state.pipelineState.branchName, view);

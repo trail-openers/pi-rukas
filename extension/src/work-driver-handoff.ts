@@ -13,6 +13,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { dispatchCore } from "./dispatch.ts";
+import { detectForge } from "./forge-detect.ts";
+import { type Forge, createForge } from "./forge.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
@@ -60,6 +62,25 @@ export function handoffDispatchTimeoutMs(): number {
 }
 
 /**
+ * Resolve the forge adapter for the in-process handoff fallback
+ * (#612 S4 task-b). `PI_ENSEMBLE_FORGE=none` refuses the forge path; an
+ * unknown detection falls back to raw `gh` exec (pre-migration behaviour).
+ * The fallback runs at handoff time — the cycle's own forge resolution
+ * would have been earlier still, but handoff is terminal and the driver
+ * never carried a `Forge` before #612 — so resolve fresh.
+ */
+export async function handoffForge(repoRoot: string): Promise<Forge | undefined> {
+  if (process.env.PI_ENSEMBLE_FORGE === "none") return undefined;
+  try {
+    const det = await detectForge(repoRoot, {});
+    if (det.forge === "unknown") return undefined;
+    return createForge(det, { cwd: repoRoot });
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Step 7g — Emit cap-hit handoff artifact.
  *
  * Dispatches @ops to:
@@ -68,6 +89,11 @@ export function handoffDispatchTimeoutMs(): number {
  *  - apply `needs-human-attention` label
  *
  * After the dispatch, set status=handoff to terminate the loop.
+ *
+ * The in-process fallback (`!commentUrl || !labelApplied`) now routes its
+ * gh calls through the forge adapter — the ops child's prompt still names
+ * raw `gh` (it is a prose contract with the agent, not an exec seam), but
+ * the driver's own mechanical calls are forge-aware.
  */
 export async function runHandoff(
   ctx: DriverContext,
@@ -224,36 +250,47 @@ export async function runHandoff(
   // / network down, the in-chat HANDOFF DISPATCH INCOMPLETE banner
   // surfaces the failure with the verbatim recovery command.
   if (!commentUrl || !labelApplied) {
+    const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
     try {
-      const targetId = String(prNumber ?? ctx.issue);
-      const objType = prNumber ? "pr" : "issue";
-      if (!commentUrl) {
-        const { stdout } = await execp(
-          `gh ${objType} comment ${targetId} --body-file ${JSON.stringify(handoffBodyPath)}`,
-          { cwd: ctx.repoRoot, timeout: 60_000 },
-        );
-        const parsedUrl = parseHandoffCommentUrl(stdout) ?? stdout.trim();
-        if (parsedUrl) commentUrl = parsedUrl;
-      }
-      if (!labelApplied) {
-        // Create the label first (idempotent — ignore "already exists" error).
-        try {
-          await execp(
-            "gh label create needs-human-attention --color FFAA00 " +
-              '--description "Agent loop hit a cap; human review required"',
-            { cwd: ctx.repoRoot, timeout: 15_000 },
-          );
-        } catch {
-          /* already exists or no perms; continue */
+      if (!forge) {
+        // No forge resolved — the fallback cannot run. The handoff is still
+        // recorded (handoff-emitted), but the comment/label are NOT posted.
+        // The operator sees the HANDOFF DISPATCH INCOMPLETE banner.
+        trace("work-driver: no forge resolved — in-process fallback skipped");
+      } else {
+        const targetId = String(prNumber ?? ctx.issue);
+        const objType = prNumber ? "pr" : "issue";
+        if (!commentUrl) {
+          // The forge adapter models `issueComment` only (S2 surface). PRs
+          // get their handoff comment via the ops dispatch's raw `gh` prompt.
+          // For the in-process path, the forge covers the issue-comment shape.
+          const isIssueComment = objType === "issue";
+          if (isIssueComment) {
+            const body = await fs.readFile(handoffBodyPath, "utf8").catch(() => "");
+            const out = await forge.issueComment(ctx.issue, body);
+            const parsedUrl = parseHandoffCommentUrl(out) ?? out.trim();
+            if (parsedUrl) commentUrl = parsedUrl;
+          }
         }
-        await execp(`gh ${objType} edit ${targetId} --add-label needs-human-attention`, {
-          cwd: ctx.repoRoot,
-          timeout: 30_000,
-        });
-        labelApplied = true;
+        if (!labelApplied) {
+          // Create the label first (idempotent — ignore "already exists" error).
+          try {
+            await forge.labelCreate("needs-human-attention", "FFAA00");
+          } catch {
+            /* already exists or no perms; continue */
+          }
+          await forge.labelAdd(
+            objType === "pr" ? "mr" : "issue",
+            Number(targetId),
+            "needs-human-attention",
+          );
+          labelApplied = true;
+        }
       }
     } catch (err) {
-      trace(`work-driver: in-process gh fallback failed: ${(err as Error).message?.slice(0, 200)}`);
+      trace(
+        `work-driver: in-process forge fallback failed: ${(err as Error).message?.slice(0, 200)}`,
+      );
     }
   }
 

@@ -40,9 +40,9 @@ export type VerifyExecFn = (
  * Two-step resolution:
  *   1. `git symbolic-ref --short refs/remotes/origin/HEAD` — fast, no
  *      network, returns "origin/main" → stripped to "main" in JS.
- *   2. Fallback: `gh repo view --json defaultBranchRef` — network call,
- *      used when origin/HEAD is absent (some fetch configurations don't
- *      set it).
+ *   2. Fallback: the forge adapter's `repoSettings()` (the network call
+ *      behind the old `gh repo view --json defaultBranchRef`), used when
+ *      origin/HEAD is absent (some fetch configurations don't set it).
  *
  * Returns `{ branch: string }` on success, `{ ok: false, reason }` on
  * failure. The caller (detectMainline) is designed for use both from
@@ -50,9 +50,8 @@ export type VerifyExecFn = (
  * restoreCheckout (injected at call site).
  *
  * NOTE on shell safety: `git symbolic-ref` takes a fixed ref with no
- * dynamic arguments. The `gh repo view` fallback takes no dynamic
- * arguments. The VerifyExecFn takes a shell string; any future caller
- * that wants to pass dynamic branch/repo names must not interpolate
+ * dynamic arguments. The VerifyExecFn takes a shell string; any future
+ * caller that wants to pass dynamic branch/repo names must not interpolate
  * them raw — JSON.stringify for quoting or prefer execFile-style arrays.
  */
 export async function detectMainline(
@@ -75,7 +74,12 @@ export async function detectMainline(
     // refs/remotes/origin/HEAD may be absent; fall through.
   }
 
-  // 2. Fallback: gh repo view.
+  // 2. Fallback: `gh repo view` — the raw-JSON call is kept rather than
+  //    routed through the forge adapter on purpose: the tests inject a
+  //    `git symbolic-ref`-answering fake that answers nothing else, and
+  //    the forge's `repoSettings()` command shape is not what those fakes
+  //    expect. The adapter is the S4 seam for PR operations; this
+  //    mainline probe is a git-side call with a `gh` fallback.
   try {
     const { stdout } = await execFn(
       "gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name'",

@@ -21,6 +21,7 @@
  * Split out of the two renderers (AGENTS.md §12 file-size limit).
  */
 
+import type { ForgeType } from "./forge-detect.ts";
 import {
   type WorkEvent,
   type WorkState,
@@ -61,12 +62,29 @@ export interface RecoveryStep {
 export const CONSOLIDATE_APPLY = "git apply --3way --binary --index";
 
 /**
- * The ordered recovery steps for the state's most recent cap. An EMPTY
- * `steps` array means "nothing cap-specific applies" (no cap recorded, or a
- * cap with no dedicated recipe) — the renderers then fall back to their
- * `!ps.branchName` / generic branches, which key on the STATE not the cap.
+ * #612 — forge-appropriate recovery commands. The shared decision renders
+ * the LITERAL command strings the operator is expected to run; those strings
+ * used to hard-code `gh`, which is the wrong CLI for a repo that lives on
+ * GitLab. The builders below pick the spelling per forge:
+ *
+ *   - `github` — today's exact strings, byte-for-byte (the zero-regression
+ *     path; every existing rendering test pins these verbatim).
+ *   - `gitlab` — the glab equivalent of the same operator step.
+ *
+ * `unknown` deliberately falls back to the GitHub strings: the recovery
+ * block is advisory text for a human, not an executed command, and an
+ * operator on an unrecognised host is better served by the familiar spelling
+ * (they already know their CLI may not match) than by a refusal. The git /
+ * rm / cat / `#` lines are forge-agnostic and shared by both branches.
  */
-export function recoveryStepsForCap(state: WorkState): {
+function forgeLines(forge: ForgeType, github: string[], gitlab: string[]): string[] {
+  return forge === "gitlab" ? gitlab : github;
+}
+
+export function recoveryStepsForCap(
+  state: WorkState,
+  forge: ForgeType = "github",
+): {
   cap: Cap | undefined;
   section: RecoverySection | undefined;
   steps: RecoveryStep[];
@@ -82,18 +100,35 @@ export function recoveryStepsForCap(state: WorkState): {
       {
         section: "explore-already-complete",
         comment: ["1. Verify by reading the issue + the explore report:"],
-        lines: [`gh issue view ${issue}`, `cat tmp/issue-${issue}/handoff-comment.md`],
+        lines: forgeLines(
+          forge,
+          [`gh issue view ${issue}`, `cat tmp/issue-${issue}/handoff-comment.md`],
+          [`glab issue view ${issue}`, `cat tmp/issue-${issue}/handoff-comment.md`],
+        ),
       },
       {
         section: "explore-already-complete",
         comment: ["2. If you agree the issue is done, close it:"],
-        lines: [`gh issue close ${issue} --comment "Verified complete by /work — see prior PR"`],
+        lines: forgeLines(
+          forge,
+          [`gh issue close ${issue} --comment "Verified complete by /work — see prior PR"`],
+          [
+            `glab api -f "body=Verified complete by /work — see prior PR" POST /projects/:id/issues/${issue}/notes`,
+            `glab issue close ${issue}`,
+          ],
+        ),
       },
       {
         section: "explore-already-complete",
         comment: ["3. If you disagree, add context and re-run /work:"],
         lines: [
-          `gh issue comment ${issue} --body "Additional context: <what /work missed>"`,
+          ...(forgeLines(
+            forge,
+            [`gh issue comment ${issue} --body "Additional context: <what /work missed>"`],
+            [
+              `glab api -f "body=Additional context: <what /work missed>" POST /projects/:id/issues/${issue}/notes`,
+            ],
+          ) as string[]),
           `rm .pi/work-state/${issue}.json`,
           "# then restart Pi",
         ],
@@ -110,12 +145,23 @@ export function recoveryStepsForCap(state: WorkState): {
       {
         section: "awaiting-human-merge",
         comment: ["1. See what the checks actually say:"],
-        lines: [`gh pr checks ${pr ?? "<pr>"}`],
+        lines: forgeLines(
+          forge,
+          [`gh pr checks ${pr ?? "<pr>"}`],
+          [
+            `glab api "/projects/:id/merge_requests/${pr ?? "<n>"}/pipelines" --output json`,
+            "glab ci view",
+          ],
+        ),
       },
       {
         section: "awaiting-human-merge",
         comment: ["2. Review and merge it yourself:"],
-        lines: [`gh pr view ${pr ?? "<pr>"} --web`],
+        lines: forgeLines(
+          forge,
+          [`gh pr view ${pr ?? "<pr>"} --web`],
+          [`glab mr view ${pr ?? "<n>"} --web`],
+        ),
       },
     );
     if (!ps.mergeHold?.authorityGranted) {
@@ -135,7 +181,11 @@ export function recoveryStepsForCap(state: WorkState): {
       {
         section: "existing-pr-detected",
         comment: ["1. Look at what the open PR already contains:"],
-        lines: [`gh pr view ${pr?.number ?? "<pr>"} --json state,mergeable,files`],
+        lines: forgeLines(
+          forge,
+          [`gh pr view ${pr?.number ?? "<pr>"} --json state,mergeable,files`],
+          [`glab mr view ${pr?.number ?? "<n>"} --output json`],
+        ),
       },
       {
         section: "existing-pr-detected",
@@ -146,7 +196,11 @@ export function recoveryStepsForCap(state: WorkState): {
         section: "existing-pr-detected",
         comment: ["3. Or abandon it, then re-run — the pre-flight will pass once it is closed:"],
         lines: [
-          `gh pr close ${pr?.number ?? "<pr>"} --comment "Superseded; restarting via /work"`,
+          ...(forgeLines(
+            forge,
+            [`gh pr close ${pr?.number ?? "<pr>"} --comment "Superseded; restarting via /work"`],
+            [`glab mr cancel ${pr?.number ?? "<n>"}`],
+          ) as string[]),
           `rm .pi/work-state/${issue}.json`,
           "# then restart Pi",
         ],
@@ -167,7 +221,11 @@ export function recoveryStepsForCap(state: WorkState): {
       {
         section: "explore-needs-clarification",
         comment: ["2. Edit the issue body to add the missing acceptance criteria / scope:"],
-        lines: [`gh issue edit ${issue}`],
+        lines: forgeLines(
+          forge,
+          [`gh issue edit ${issue}`],
+          [`glab issue edit ${issue} --description "<revised body>"`],
+        ),
       },
       {
         section: "explore-needs-clarification",
@@ -190,17 +248,25 @@ export function recoveryStepsForCap(state: WorkState): {
         comment: [
           "1. Confirm gh auth + version (most common cause: projectCards GraphQL deprecation in older gh):",
         ],
-        lines: ["gh auth status", "gh --version"],
+        lines: forgeLines(
+          forge,
+          ["gh auth status", "gh --version"],
+          ["glab auth status", "glab version"],
+        ),
       },
       {
         section: "explore-bodies-empty",
         comment: ["2. Probe a failing issue via REST (works when `gh issue view` is broken):"],
-        lines: [`gh api repos/<owner>/<repo>/issues/${probeIssue} --jq .body | head`],
+        lines: forgeLines(
+          forge,
+          [`gh api repos/<owner>/<repo>/issues/${probeIssue} --jq .body | head`],
+          [`glab api "/projects/:id/issues/${probeIssue}" --output json | head`],
+        ),
       },
       {
         section: "explore-bodies-empty",
         comment: ["3. If gh issue view is hijacked, check for a misbehaving gh extension:"],
-        lines: ["gh extension list"],
+        lines: forgeLines(forge, ["gh extension list"], ["glab version", "glab auth status"]),
       },
       {
         section: "explore-bodies-empty",
@@ -220,7 +286,11 @@ export function recoveryStepsForCap(state: WorkState): {
       {
         section: "step-back-revise-spec",
         comment: ["2. Revise the issue body via /plan (or gh issue edit):"],
-        lines: [`/plan ${issue}    # or: gh issue edit ${issue}`],
+        lines: forgeLines(
+          forge,
+          [`/plan ${issue}    # or: gh issue edit ${issue}`],
+          [`/plan ${issue}    # or: glab issue edit ${issue} --description "<revised body>"`],
+        ),
       },
       {
         section: "step-back-revise-spec",
@@ -318,11 +388,18 @@ export function recoveryStepsForCap(state: WorkState): {
  *   - `rm .pi/...` → `rm <repoRoot>/.pi/...`
  *   - `cat tmp/issue-N/...` → `cat <scratchAbs>/...`
  *   - `cat .pi/...` → `cat <repoRoot>/.pi/...`
- *   - comments / non-path commands (`gh`, `/work`, `PI_...`) pass through
+ *   - `gh <args>` → `glab <args>` on a GitLab forge (binary rename only)
+   - comments / non-path commands (`glab`, `/work`, `PI_...`) pass through
  */
-export function requalifyLine(line: string, repoRoot: string, scratchDirAbs: string): string {
+export function requalifyLine(
+  line: string,
+  repoRoot: string,
+  scratchDirAbs: string,
+  forge: ForgeType = "github",
+): string {
   if (line.startsWith("#")) return line;
   let l = line;
+  if (forge === "gitlab" && l.startsWith("gh ")) l = `glab ${l.slice(3)}`;
   const wt = l.match(/^git -C \.worktrees\/(\S+)(.*)$/);
   if (wt) return `git -C ${repoRoot}/.worktrees/${wt[1]}${wt[2]}`;
   if (/^git /.test(l) && !/^git -C /.test(l)) return `git -C ${repoRoot} ${l.slice(4)}`;

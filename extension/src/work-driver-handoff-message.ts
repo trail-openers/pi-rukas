@@ -7,6 +7,7 @@
  * full operator-facing summary via `pi.sendUserMessage`.
  */
 
+import type { ForgeType } from "./forge-detect.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
 import { capedPartialStateLines } from "./work-driver-caped-state.ts";
 import { commitPrRootFactLines } from "./work-driver-commit-inspect.ts";
@@ -58,6 +59,7 @@ export function renderHandoffUserMessage(
   state: WorkState,
   repoRoot: string,
   scratchDirAbs: string,
+  forge?: ForgeType,
 ): string {
   const ps = state.pipelineState;
   const issue = state.issue;
@@ -222,6 +224,6 @@ export function renderHandoffUserMessage(
   // wrong (nothing was written; no work to push). Surface cap-shaped
   // recovery commands instead. The cap → commands mapping lives in
   // work-driver-handoff-recovery.chat.ts (split for module-size hygiene).
-  lines.push(...recoveryCommandsChat(state, repoRoot, scratchDirAbs));
+  lines.push(...recoveryCommandsChat(state, repoRoot, scratchDirAbs, forge));
   return lines.join("\n");
 }

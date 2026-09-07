@@ -21,6 +21,7 @@ import {
   inspectCommitPrRoot,
 } from "./work-driver-commit-inspect.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import {
   type IntegrateResult,
   cachedIssueTitle,
@@ -247,16 +248,19 @@ export async function mechanizedCommitPr(
     // HEAD between our push and this call would have its branch opened as our
     // PR — with our title and body. The lock makes that impossible; the flag
     // makes it impossible even if the lock is ever wrong.
-    const { stdout: prOut } = await execFn(
-      `gh pr create --head ${JSON.stringify(branchName)} --title ${JSON.stringify(title)} --body-file ${JSON.stringify(prBodyFile)}`,
-      { cwd: ctx.repoRoot, maxBuffer: 256 * 1024 },
-    );
-    const prMatch = prOut.match(/\/pull\/(\d+)/);
-    const prNumber = prMatch?.[1] ? Number.parseInt(prMatch[1], 10) : undefined;
+    const forge = await forgeForCycle(ctx, execFn);
+    if (!forge) {
+      return {
+        ok: false,
+        reason: "forge not determined for this repo — cannot open the PR",
+      };
+    }
+    const created = await forge.prCreate(title, branchName, "", prBodyFile);
+    const prNumber = created.number;
     if (prNumber === undefined || !Number.isFinite(prNumber)) {
       return {
         ok: false,
-        reason: `gh pr create succeeded but no PR number was parseable from its output (${prOut.trim().slice(0, 120)})`,
+        reason: `forge pr create succeeded but returned no PR number (url=${(created.url ?? "").slice(0, 120)})`,
       };
     }
     // 5. Emit the same event shapes the dispatch path produces so the
@@ -457,7 +461,7 @@ async function runCommitPrLocked(
   // number resolving via gh). Runs only when the consolidation gate
   // passed — one cap per failure, most-specific wins. Bonus repair: when
   // ops forgot the `pr: <N>` marker but the PR exists, the gate adopts
-  // the number resolved via `gh pr list --head` so handoff/ci target
+  // the number resolved via the forge PR list by head branch so handoff/ci target
   // the right PR (pre-PR17 a missing marker silently degraded both).
   const gate = await verifyStepOutcome(ctx, next, "commit-pr");
   if (gate.adoptedPrNumber !== undefined) {

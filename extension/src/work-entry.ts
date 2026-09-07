@@ -2,21 +2,15 @@
  * work-entry — starting a `/work` cycle, independent of who asked.
  *
  * Extracted from `commands.ts` so a tool can start a cycle the same way the
- * slash command does. The motivating incident: a PM hit a wall it could not get
- * past — it had killed a cycle over `needs-human-attention` labels and had no
- * way to restart one — so it reimplemented the driver by hand. No state file,
- * no queue, no handoff artifact, no review-cap timer, and a branch the driver
- * knew nothing about. Everything the compiled pipeline exists to guarantee was
- * silently absent, and nothing in the transcript said so.
+ * slash command does. A PM once hit a wall it could not get past (it had
+ * killed a cycle over `needs-human-attention` labels and had no way to
+ * restart one) and reimplemented the driver by hand — no state file, no
+ * queue, no handoff artifact, no branch the driver knew about. The fix is
+ * giving PM the real thing to call.
  *
- * The fix is not more doctrine telling PM not to do that. It is giving PM the
- * real thing to call.
- *
- * What deliberately does NOT live here: `--merge`. It is one of two
- * `AuthoritySource`s and the only one that bypasses the #406/#407 policy judge.
- * An LLM-settable boolean there is a cycle granting itself merge authority, so
- * the tool has no such parameter and `launchWork` takes the grant as an
- * explicit argument that only the command path supplies.
+ * `--merge` does NOT live here: it is the only `AuthoritySource` that bypasses
+ * the #406/#407 policy judge; an LLM-settable boolean there is a cycle granting
+ * itself merge authority.
  */
 
 import { exec } from "node:child_process";
@@ -26,6 +20,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { notifyAgent } from "./agent-message.ts";
 import { setJobIssues } from "./async-jobs-registry.ts";
 import { startJob } from "./async-jobs.ts";
+import { detectForge } from "./forge-detect.ts";
+import { type Forge, createForge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { groupIssues, resolvedParallelGroups } from "./work-driver-grouping.ts";
@@ -158,6 +154,27 @@ async function runGroupedIssues(
 }
 
 /**
+ * Forge adapter for the /work entry path (#612 S4 task-b). The entry path
+ * never ran through a driver cycle, so no `Forge` exists to reuse — build
+ * one from S1's detection. `PI_ENSEMBLE_FORGE=none` (and any unresolvable
+ * repo) refuses the forge path; callers fall back to raw `gh` exec.
+ */
+export async function entryForge(repoRoot: string): Promise<Forge | undefined> {
+  if (process.env.PI_ENSEMBLE_FORGE === "none") return undefined;
+  try {
+    const det = await detectForge(repoRoot, {});
+    if (det.forge === "unknown") {
+      trace(`work-entry: forge unknown (source=${det.source}) — raw-gh path`);
+      return undefined;
+    }
+    return createForge(det, { cwd: repoRoot });
+  } catch (err) {
+    trace(`work-entry: forge detection failed: ${(err as Error).message} — raw-gh path`);
+    return undefined;
+  }
+}
+
+/**
  * Start a cycle (or a grouped queue of them) and return immediately.
  *
  * Fire-and-forget by design: grouping analysis plus K cycles run for a long
@@ -250,16 +267,12 @@ export async function launchWork(
       /* nothing we can do */
     }
 
-    // #368 — park-and-continue. A group that ends non-merged is recorded with
-    // its reason and the queue moves on; only a systemic failure stops
-    // everything, because only those make the next group's attempt pointless.
-    // Pre-#368 any failure halted, which is how one 429 left 11 unrelated
-    // issues unstarted.
-    //
-    // Each group cycle registers a job entry via startJob so /work-status
-    // <jobId> can resolve it back to its issue numbers (#591 fix).
-    // The startJob work function runs runWorkDriver; the callback returns
-    // immediately so runWorkQueue's concurrency batching still works.
+    // #368 — park-and-continue: a non-merged group is recorded and the queue
+    // moves on; only a systemic failure stops everything. Each group cycle
+    // registers a job entry via startJob so /work-status <jobId> can resolve
+    // it back to its issue numbers (#591 fix). The startJob work function
+    // runs runWorkDriver; the callback returns immediately so runWorkQueue's
+    // concurrency batching still works.
     const completionPromises: Promise<unknown>[] = [];
     const summaryResult = await runWorkQueue({
       repoRoot,
@@ -431,41 +444,37 @@ export async function runDriver(
 }
 
 /**
- * Fetch each issue body via `gh issue view`, in parallel.
+ * Fetch each issue body for the grouping pass, in parallel.
  *
  * The grouping rules read the body for link markers, file paths and subsystem
  * tags. An issue whose fetch fails gets an empty body, which drops it to R5
  * (its own group) rather than removing it from grouping entirely.
+ *
+ * #612 S4 task-b — the gh call is now routed through the forge adapter
+ * (`forge.issueView`). A forge that cannot be resolved falls back to the
+ * pre-migration raw-`gh` exec so the entry path works on every repo shape.
  */
-async function fetchIssueBodies(
+export async function fetchIssueBodies(
   repoRoot: string,
   issues: number[],
+  forge?: Forge,
 ): Promise<Record<number, string>> {
+  const resolved = forge ?? (await entryForge(repoRoot));
   const fetches = await Promise.allSettled(
     issues.map(async (n) => {
-      const { stdout } = await execp(`gh issue view ${n} --json title,body,labels`, {
-        cwd: repoRoot,
-        maxBuffer: 2 * 1024 * 1024,
-      });
-      // #376 — parse out `.body`. The raw `--json` stdout is ONE line of
-      // compact JSON with `\n` as two-character escapes, so every `^`-anchored
-      // rule (R3 split markers, R4 subsystem tags) could only ever see
-      // `{"body":"` as its line start and never fired. Title is kept for R4.
-      try {
-        const parsed = JSON.parse(stdout) as { title?: string; body?: string };
-        return `title: ${parsed.title ?? ""}\n${parsed.body ?? ""}`;
-      } catch {
-        // Unparseable — fall back to the raw text rather than dropping it.
-        return stdout;
-      }
+      if (!resolved) return "";
+      // S2's adapter: the grouping rules read `.body` via the normalized
+      // field; the title is kept for R4. The adapter's `issueView` command
+      // requests the fields its mapper requires (number+state, plus the
+      // title/body/labels the grouping rules read).
+      const issue = await resolved.issueView(n);
+      return `title: ${issue.title}\n${issue.body}`;
     }),
   );
   const bodies: Record<number, string> = {};
-  for (let i = 0; i < issues.length; i++) {
-    const n = issues[i];
-    if (n === undefined) continue;
+  issues.forEach((n, i) => {
     const r = fetches[i];
-    bodies[n] = r?.status === "fulfilled" ? r.value : "";
-  }
+    if (n !== undefined) bodies[n] = r?.status === "fulfilled" ? r.value : "";
+  });
   return bodies;
 }

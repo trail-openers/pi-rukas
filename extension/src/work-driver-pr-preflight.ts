@@ -25,12 +25,7 @@
  */
 
 import { trace } from "./trace.ts";
-
-/** Shell executor, matching `DriverContext.verifyExecFn` so callers pass theirs straight through. */
-type ExecFn = (
-  cmd: string,
-  opts?: { cwd?: string; timeout?: number; maxBuffer?: number; shell?: string },
-) => Promise<{ stdout: string; stderr?: string }>;
+import type { VerifyExecFn } from "./work-driver-git.ts";
 
 /** An open PR the driver believes already covers this cycle's issue. */
 export interface ExistingPr {
@@ -40,7 +35,7 @@ export interface ExistingPr {
   matchedBy: "body" | "branch";
 }
 
-/** Shape of the `gh pr list --json number,headRefName,body` rows we consume. */
+/** Shape of the normalized PR rows we consume (forge adapter rows). */
 export interface PrListRow {
   number: number;
   headRefName?: string;
@@ -103,10 +98,17 @@ export function matchPrForIssue(prs: PrListRow[], issue: number): ExistingPr | u
  * duplicate is one wasted cycle, the cost of a false halt is every cycle.
  */
 export async function findOpenPrForIssue(
-  execFn: ExecFn,
+  execFn: VerifyExecFn,
   repoRoot: string,
   issue: number,
 ): Promise<ExistingPr | undefined> {
+  // NOTE: this site stays a direct command rather than going through the
+  // forge adapter because the test suite pins the `gh pr list` command
+  // string and the raw-JSON row shape (which does not include `body`,
+  // the field `matchPrForIssue` reads). The forge adapter's `prList` does
+  // not request `body` in its `--json` field list, so routing through it
+  // would break the body-signal half of the matcher. The S4 spec for this
+  // file does not name a forge method for this site either.
   let stdout: string;
   try {
     ({ stdout } = await execFn(

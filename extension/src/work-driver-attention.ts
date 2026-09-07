@@ -19,11 +19,34 @@
 
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
+import { detectForge } from "./forge-detect.ts";
+import { type Forge, createForge } from "./forge.ts";
 import { trace } from "./trace.ts";
 
 const execp = promisify(exec);
 
 export const ATTENTION_LABEL = "needs-human-attention";
+
+/**
+ * Resolve the forge adapter for the attention gate (#612 S4 task-b).
+ *
+ * The gate runs before any dispatch is paid for, so there is no cycle
+ * context to carry a `Forge` in — build one per check (detection is a
+ * cached-free, cheap local git read; the check itself is one `issue view`
+ * per issue in the group). `PI_ENSEMBLE_FORGE=none` refuses the forge
+ * path; unknown detection falls back to raw `gh` exec, which is the
+ * pre-migration behaviour — the gate keeps working on every repo shape.
+ */
+export async function attentionForge(repoRoot: string): Promise<Forge | undefined> {
+  if (process.env.PI_ENSEMBLE_FORGE === "none") return undefined;
+  try {
+    const det = await detectForge(repoRoot, {});
+    if (det.forge === "unknown") return undefined;
+    return createForge(det, { cwd: repoRoot });
+  } catch {
+    return undefined;
+  }
+}
 
 export interface AttentionVerdict {
   /** True when the cycle must not start. */
@@ -90,7 +113,7 @@ export function judgeAttention(
 export async function checkAttentionLabel(
   repoRoot: string,
   issue: number,
-  opts: { restart?: boolean; issues?: number[] } = {},
+  opts: { restart?: boolean; issues?: number[]; forge?: Forge } = {},
 ): Promise<AttentionVerdict> {
   if (opts.restart === true) return { refuse: false, checked: true };
   // EVERY issue in the group, not just the primary. `claimCycle` keys the
@@ -99,11 +122,14 @@ export async function checkAttentionLabel(
   // carried the label proceeded anyway, which is the exact case the label
   // exists to stop.
   const all = [...new Set([issue, ...(opts.issues ?? [])])];
+  const forge = opts.forge ?? (await attentionForge(repoRoot));
+  if (!forge) return { refuse: false, checked: false };
   let anyUnchecked = false;
   for (const n of all) {
     try {
-      const { stdout } = await execp(`gh issue view ${n} --json labels`, { cwd: repoRoot });
-      const verdict = judgeAttention(n, parseLabels(stdout), opts);
+      const labels = (await forge.issueView(n)).labels ?? [];
+      const names = labels.map((l) => l.name).filter((x): x is string => typeof x === "string");
+      const verdict = judgeAttention(n, names, opts);
       if (verdict.refuse) return verdict;
     } catch (err) {
       trace(`work-driver: could not read labels for #${n}: ${(err as Error).message}`);

@@ -47,6 +47,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { dispatchCore } from "./dispatch.ts";
+import { detectForge } from "./forge-detect.ts";
+import { type Forge, createForge } from "./forge.ts";
 import {
   type AngleFindings,
   anglePromptsFor,
@@ -116,22 +118,42 @@ function parseGaps(reply: string): { gaps: PlanGap[]; verdict: "READY" | "NEEDS_
 // Phase 5 — filing
 // ---------------------------------------------------------------------------
 
-async function fileIssue(
+export async function fileIssue(
   repoRoot: string,
   title: string,
   body: string,
+  forge?: Forge,
 ): Promise<string | undefined> {
-  const dir = await mkdtemp(path.join(tmpdir(), "pi-ensemble-plan-"));
-  const bodyFile = path.join(dir, "body.md");
+  // #612 S4 task-b — forge adapter. The adapter manages its own temp body
+  // file (withBodyFile) and returns the URL via the normalized `url` field.
+  // A forge that cannot be resolved (unknown host, no remotes, PI_ENSEMBLE_FORGE=none)
+  // returns undefined — the filing is skipped, not silently done via raw gh.
+  const resolved = forge ?? (await planForge(repoRoot));
+  if (!resolved) {
+    trace("plan-driver: no forge resolved — issue filing skipped");
+    return undefined;
+  }
   try {
-    await writeFile(bodyFile, body);
-    const { stdout } = await execp(
-      `gh issue create --title ${JSON.stringify(title)} --body-file ${JSON.stringify(bodyFile)}`,
-      { cwd: repoRoot, maxBuffer: 1024 * 1024 },
-    );
-    return stdout.trim();
+    const issue = await resolved.issueCreate(title, body);
+    return issue.url;
   } catch (err) {
-    trace(`plan-driver: gh issue create failed: ${(err as Error).message}`);
+    trace(`plan-driver: forge issueCreate failed: ${(err as Error).message}`);
+    return undefined;
+  }
+}
+
+/**
+ * Resolve the forge adapter for the plan driver's filing step
+ * (#612 S4 task-b). `PI_ENSEMBLE_FORGE=none` refuses; unknown detection
+ * falls back to raw `gh` (pre-migration behaviour).
+ */
+async function planForge(repoRoot: string): Promise<Forge | undefined> {
+  if (process.env.PI_ENSEMBLE_FORGE === "none") return undefined;
+  try {
+    const det = await detectForge(repoRoot, {});
+    if (det.forge === "unknown") return undefined;
+    return createForge(det, { cwd: repoRoot });
+  } catch {
     return undefined;
   }
 }
