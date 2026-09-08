@@ -31,7 +31,7 @@ const ANGLES: Record<PlanType, Angle[]> = {
     {
       name: "affected-code",
       build: ({ descriptor }) =>
-        `Identify the files, functions and call sites affected by this bug: "${descriptor}". For each, capture exact path:line, the function/component name, and why it is in-scope. Use codebase_memory_search_code. Return affected[] + references + gaps.`,
+        `Identify the files, functions and call sites affected by this bug: "${descriptor}". For each, capture the file path plus the function or component name, and why it is in-scope. Do NOT capture exact line numbers — they rot before /work; name the symbol. Use codebase_memory_search_code. Return affected[] + references + gaps.`,
     },
     {
       name: "test-surface",
@@ -51,7 +51,7 @@ const ANGLES: Record<PlanType, Angle[]> = {
       name: "interfaces-and-contracts",
       build: ({ descriptor, codeIdentifiers }) => {
         if (codeIdentifiers.length === 0) return undefined;
-        return `Map the type contracts, data shapes and API boundaries this feature touches: "${descriptor}". Function signatures to implement or conform to, structures passed in/out, external contracts. Candidate identifiers: ${codeIdentifiers.join(", ")}. Include typed references where possible (path/file.ts:NN — exported interface X). Return contracts[] + dataShapes[] + references (file paths, no colons).`;
+        return `Map the contract boundaries this feature touches: "${descriptor}". For each boundary: which module, which exported interface, and what crosses it (inputs, outputs, invariants). Name the boundary only — the implementer reads the current code during /work; the contract boundary is what the plan must commit to. Candidate identifiers: ${codeIdentifiers.join(", ")}. Return contracts[] + dataShapes[] + references (file paths and interface names, no line numbers).`;
       },
     },
     {

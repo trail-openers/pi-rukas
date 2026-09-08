@@ -27,20 +27,18 @@
  *   Phase 3 Draft      — the driver assembles the structured body
  *                        [plan-draft.ts: draftSpec]
  *   Phase 4 Gap gate   — one adversarial-developer dispatch per round;
- *                        CRITICAL/HIGH get ONE corrective round, then the
- *                        iteration cap ROUTES (D2, direct precedent: /work's
- *                        lens round cap): zero CRITICAL/HIGH remaining →
- *                        file with the residual MEDIUM/LOW gaps disclosed in
- *                        a "## Residual gap-gate findings" section;
- *                        CRITICAL or HIGH remain → do not file, surface to
- *                        the operator. The cap reason is a DISCRIMINATED
- *                        value (D1) so the operator-visible text names the
- *                        ACTUAL cause instead of claiming "unresolved
- *                        CRITICAL/HIGH gaps remain" when a MEDIUM-only
- *                        NEEDS_ITERATION verdict burned the iterations.
- *                        An ABSENT verdict with CRITICAL/HIGH gaps routes to
- *                        NEEDS_ITERATION (D3, verdictParsed — the adversarial
- *                        gate's #664 fix did the same).
+ *                        CRITICAL-only terminal rule (#664 transposed):
+ *                        CRITICAL gets ONE corrective round, HIGH no longer
+ *                        triggers re-drafting (the gate is non-deterministic
+ *                        on identical input — "fix the gaps and re-run" is
+ *                        not convergent). The cap ROUTES (D2): zero CRITICAL
+ *                        remaining → file with residual HIGH/MEDIUM/LOW
+ *                        disclosed in the existing "## Residual gap-gate
+ *                        findings" section; CRITICAL remains → surface.
+ *                        Cap reason is DISCRIMINATED (D1): residual-high /
+ *                        residual-medium-low both route to file; unresolved-
+ *                        blocking means CRITICAL remains. ABSENT verdict with
+ *                        CRITICAL → NEEDS_ITERATION (D3, verdictParsed).
  *                        PI_ENSEMBLE_PLAN_GAP_GATE=0 skips for chore/spike.
  *   Phase 5 File       — the forge adapter's issueCreate (child process,
  *                        exempt from the tool_call guard by construction,
@@ -86,11 +84,10 @@ export function setPlanDispatch(fn: PlanDispatchFn | null): void {
   _dispatchOverride = fn;
 }
 import {
-  type GapGateParse,
-  capRouted,
-  evaluateGapGate,
+  type GapGateLoopResult,
   parseGaps,
   residualGapsSection,
+  runGapGateLoop,
 } from "./plan-gaps.ts";
 import {
   type PlanDriverInput,
@@ -147,7 +144,20 @@ export function gapGatePrompt(
       ? `PM has already established these decisions and facts (DO NOT re-raise them as gaps; citing them is only valid if you can show the spec contradicts them):\n${renderPriorContext(priorContext)}\n${priorContextHasVipune(priorContext) ? `${VIPUNE_PRECEDENCE_NOTE}\n\n` : ""}`
       : "";
   const tail =
-    "For each gap, output ONE line starting with the marker GAP: followed by the severity (CRITICAL: cannot proceed; HIGH: implementer will be confused or wrong; MEDIUM: nice-to-have clarification; LOW: cosmetic), an em dash, a short description, then — proposed resolution: with the proposed resolution. Example: GAP: CRITICAL — no failure-mode acceptance criterion — proposed resolution: add a criterion for the retry path. Never write a severity word on its own line — prose mentioning CRITICAL/HIGH/MEDIUM/LOW does not create a gap unless the line starts with GAP:. Each resolution must be ONE of: (a) an additional research dispatch, (b) a sharper acceptance criterion to add, or (c) an Open Question. End your reply with a single line exactly of the form:\nVERDICT: READY  (zero CRITICAL/HIGH gaps)\nor\nVERDICT: NEEDS_ITERATION";
+    "Severity is keyed to WHO must decide. For each gap, output ONE line starting with the marker GAP: followed by the severity, an em dash, a short description, then — proposed resolution: with the proposed resolution. The severity scale:\n" +
+    "CRITICAL: the spec commits to two things that contradict, or the stated approach cannot work — building from it produces WRONG behaviour\n" +
+    "HIGH: a decision the operator must make because the implementer cannot — a scope boundary, a policy, or a choice between designs with different consequences\n" +
+    "MEDIUM: a clarification that changes how the work is organised, not what gets built\n" +
+    "LOW: cosmetic\n\n" +
+    "Scope Discipline. Do NOT file a gap, at ANY severity, for:\n" +
+    "- a value or constant the implementer will pick (resolved against live code during /work)\n" +
+    "- an exact API or method signature (the implementer reads the current code)\n" +
+    "- an error type or error shape (same: the existing types say it)\n" +
+    "- a field list derivable from an existing type\n" +
+    "- a test-harness mechanic (mock flags, grep needles, variable usage)\n" +
+    "- exact line numbers anywhere (they rot; name the SYMBOL)\n" +
+    "- restating a decision the spec already makes once\n\n" +
+    "Example: GAP: CRITICAL — the spec commits to both a retry cap of 3 and an infinite retry on quota errors — proposed resolution: name which wins. Never write a severity word on its own line — prose mentioning CRITICAL/HIGH/MEDIUM/LOW does not create a gap unless the line starts with GAP:. Each resolution must be ONE of: (a) an additional research dispatch, (b) a sharper acceptance criterion to add, or (c) an Open Question. End your reply with a single line exactly of the form:\nVERDICT: READY  (zero CRITICAL gaps)\nor\nVERDICT: NEEDS_ITERATION";
   return `${head}${spec}${sum}${prior}${tail}`;
 }
 
@@ -313,11 +323,10 @@ export async function runPlanPipeline(
   );
 
   // Phase 4 — gap gate (mandatory except chore/spike + escape hatch).
-  // The cap ROUTES (D2): zero CRITICAL/HIGH remaining at the cap → file
-  // with the residual MEDIUM/LOW disclosed; CRITICAL/HIGH remain → surface.
-  // The cap reason is DISCRIMINATED (D1): the operator-visible text names
-  // the ACTUAL cause instead of claiming "unresolved CRITICAL/HIGH gaps
-  // remain" when a MEDIUM-only NEEDS_ITERATION verdict burned the rounds.
+  // CRITICAL-only terminal rule (#664 transposed): the cap ROUTES (D2):
+  // zero CRITICAL → file with residual disclosed; CRITICAL remains →
+  // surface. Cap reason DISCRIMINATED (D1): residual-high / residual-
+  // medium-low both route to file; unresolved-blocking means CRITICAL.
   const gapGateEnabled = !(
     (type === "chore" || type === "spike") &&
     process.env.PI_ENSEMBLE_PLAN_GAP_GATE === "0"
@@ -326,45 +335,28 @@ export async function runPlanPipeline(
   let capHit = false;
   let capReason: PlanResult["capReason"];
   let residualForDisclosure: PlanGap[] = [];
-  let lastParse: GapGateParse | undefined;
 
   if (gapGateEnabled) {
-    let iterations = 0;
-    let ready = false;
-    while (iterations < GAP_GATE_MAX_ITERATIONS && !ready) {
-      iterations++;
-      const gate = await dispatch(
-        pi,
-        { role: "adversarial-developer", prompt: gapGatePrompt(body, findings, priorContext) },
-        { label: `plan-gap-gate-${iterations}` },
-      );
-      if (!gate.ok || gate.errorStop) {
-        // The gate never ran. We cannot assert a spec is clean when nothing
-        // reviewed it — this is the same failure class D3 closes for an
-        // absent verdict, two branches away ("gate never ran → pass" instead
-        // of "verdict absent → pass"). Do NOT file: set capHit + the
-        // discriminated capReason and surface to the operator with the gate's
-        // failure reason, matching the all-angles-failed halt (which bails
-        // before draftSpec for the same reason) and the cap-surface shape.
-        trace(
-          `plan-driver: gap gate dispatch failed (iteration ${iterations}) — gate unavailable, not filing`,
-        );
-        capHit = true;
-        capReason = "gate-unavailable";
-        break;
-      }
-      lastParse = parseGaps(gate.text);
-      gaps = lastParse.gaps;
-      const evald = evaluateGapGate(lastParse, iterations, GAP_GATE_MAX_ITERATIONS);
-      ready = evald.ready;
-      if (!ready && evald.corrective) {
-        for (const g of evald.blocking) {
-          // Bug 3 (#606): gaps from this round are carried into the re-draft
-          // with the reviewer's proposed resolution attached and tagged so
-          // draftSpec renders them as `status: resolved` (the spec now states
-          // the decision, re-reviewed next round), not the old hard-coded
-          // `status: pending`.
-          g.status = "resolved";
+    // Phase 4 — the gap-gate loop (extracted to plan-gaps.ts: runGapGateLoop).
+    // Two fixes from the CRITICAL-only terminal rule follow-up:
+    // 1. NO-OP ROUND ELIMINATED: corrective fires only when blocking is
+    //    non-empty (CRITICAL present); zero CRITICAL → straight to cap/file.
+    // 2. UNION DISCLOSURE: non-blocking findings accumulate across rounds
+    //    (deduped by exact description string), so the residual section
+    //    discloses the union, not just the last round.
+    const loopResult: GapGateLoopResult = await runGapGateLoop(
+      (spec, opts) => dispatch(pi, spec, opts),
+      () => gapGatePrompt(body, findings, priorContext),
+      GAP_GATE_MAX_ITERATIONS,
+      (blocking: PlanGap[]) => {
+        // Bug 3 (#606): blocking (CRITICAL) gaps are carried into the
+        // re-draft with the reviewer's proposed resolution attached and
+        // tagged so draftSpec renders them as `status: resolved` (the spec
+        // now states the decision, re-reviewed next round). The status is
+        // read on a COPY (the loop passes `{ ...g, status: "resolved" }
+        // objects — status is readonly on PlanGap), never by mutating the
+        // parsed original, which also lives in the residual union.
+        for (const g of blocking) {
           openQuestions.push(`resolved: ${g.description} — proposed resolution: ${g.resolution}`);
         }
         ({ title, body } = draftSpec(
@@ -377,25 +369,12 @@ export async function runPlanPipeline(
           depth,
           directives,
         ));
-      } else if (!ready) {
-        capHit = true;
-        // D2 + D1: at the cap, the routing policy (plan-gaps.ts: capRouted)
-        // decides file-vs-surface, and the REASON is discriminated so the
-        // operator-visible text names the ACTUAL cause.
-        const route = capRouted(evald.blocking);
-        capReason = route === "file" ? "residual-medium-low" : "unresolved-blocking";
-        if (route === "file") {
-          residualForDisclosure = gaps;
-        }
-      }
-    }
-    // D3: an ABSENT verdict with only MEDIUM/LOW gaps records that the
-    // verdict was missing so it can be surfaced (READY is acceptable for
-    // MEDIUM/LOW-only — but the operator should know the gate did not
-    // explicitly say so).
-    if (lastParse && !lastParse.verdictParsed && !capHit) {
-      capReason = "verdict-absent";
-    }
+      },
+    );
+    gaps = loopResult.gaps;
+    capHit = loopResult.capHit;
+    capReason = loopResult.capReason;
+    residualForDisclosure = loopResult.residualForDisclosure;
   }
 
   // D2: when the cap routed to filing, the spec that gets filed carries the
@@ -409,8 +388,8 @@ export async function runPlanPipeline(
   const resolvedGaps = gapGateEnabled ? gaps : [];
 
   // Phase 5 — file (unless dryRun OR the cap routed to surface). D2: when
-  // the cap routed to "surface" (CRITICAL/HIGH remaining), do NOT file —
-  // surface to the operator. D7: the filing failure is DISCRIMINATED and
+  // the cap routed to "surface" (CRITICAL remaining — the CRITICAL-only
+  // terminal rule, #664 transposed), do NOT file — surface to the operator. D7: the filing failure is DISCRIMINATED and
   // carried on the result; the operator-visible text (plan-tool.ts) surfaces
   // the reason including the forge stderr, without requiring PI_ENSEMBLE_DEBUG.
   let issueUrl: string | undefined;
@@ -421,12 +400,12 @@ export async function runPlanPipeline(
     filingFailure = fr.failure;
   } else if (!dryRun && capReason === "unresolved-blocking") {
     // Deliberate skip, not a failure: the gap-gate cap routed to surface
-    // (CRITICAL/HIGH gaps remain), so the spec is NOT filed by policy.
-    // Its own reason — nothing failed to resolve here.
+    // (CRITICAL gaps remain — CRITICAL-only blocks; HIGH findings travel
+    // in the residual disclosure instead), so the spec is NOT filed by
+    // policy. Its own reason — nothing failed to resolve here.
     filingFailure = {
       reason: "cap-surface",
-      detail:
-        "the gap gate cap routed to surface (CRITICAL/HIGH gaps remain) — not filed by policy",
+      detail: "the gap gate cap routed to surface (CRITICAL gaps remain) — not filed by policy",
     };
   } else if (!dryRun && capReason === "gate-unavailable") {
     // Deliberate skip, not a filing failure: the gap-gate dispatch itself
@@ -462,6 +441,7 @@ export async function runPlanPipeline(
     issueUrl,
     capHit: capHit || undefined,
     capReason,
+    residualForDisclosure: residualForDisclosure.length > 0 ? residualForDisclosure : undefined,
     filingFailure,
   };
 }

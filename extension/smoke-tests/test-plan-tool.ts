@@ -65,7 +65,7 @@ function __responses(
       ok: true,
       text:
         gateReplyOverride ??
-        "GAP: CRITICAL — missing acceptance criterion for the failure mode — proposed resolution: add a criterion for the retry path\nGAP: HIGH — no out-of-scope boundary named — proposed resolution: name the out-of-scope files\nVERDICT: NEEDS_ITERATION",
+        "GAP: CRITICAL — missing acceptance criterion for the failure mode — proposed resolution: add a criterion for the retry path\nVERDICT: NEEDS_ITERATION",
       toolUses: [],
       ms: 1,
       exitCode: 0,
@@ -196,13 +196,16 @@ async function invoke(params: Record<string, unknown>) {
   const gates = calls.filter((c) => c.startsWith("adversarial-developer:"));
   assert(
     gates.length === 2,
-    `Phase 4: gap gate ran and iterated once on CRITICAL/HIGH (gate dispatches: ${gates.length})`,
+    `Phase 4: gap gate ran and iterated once on CRITICAL (gate dispatches: ${gates.length})`,
   );
   assert(
     details.capHit === true,
     "Phase 4: the second iteration cap hit is surfaced (stub re-raises the same gaps)",
   );
-  assert((details.gapCount ?? 0) >= 2, `gaps returned with severity: ${details.gapCount}`);
+  assert(
+    (details.gapCount ?? 0) >= 1,
+    `gaps returned with severity: ${details.gapCount}`,
+  );
   // Bug 3 (#606): the round-2 gate child receives the re-draft, and the
   // round-1 blocking gaps it carries render as `status: resolved`.
   assert(

@@ -25,10 +25,12 @@ import { trace } from "./trace.ts";
  * empty url, all-angles-failed skip) and the forge stderr reached only a
  * trace() call behind PI_ENSEMBLE_DEBUG=1.
  *
- * `cap-surface` is the DELIBERATE-SKIP case: at the gap-gate iteration cap
- * with CRITICAL/HIGH gaps remaining, the spec is NOT filed by policy (it is
- * surfaced to the operator). Nothing failed to resolve, so it must NOT
- * reuse `forge-unresolved`.
+ * `cap-surface` is the DELIBERATE-SKIP case: the gap-gate cap routed to
+ * surface because unresolved CRITICAL gaps remain (CRITICAL-only terminal
+ * rule, #664 transposed — HIGH findings travel in the residual disclosure
+ * instead, so they do NOT route to surface). The spec is NOT filed by
+ * policy (it is surfaced to the operator). Nothing failed to resolve, so it
+ * must NOT reuse `forge-unresolved`.
  */
 export interface FilingFailure {
   reason:
