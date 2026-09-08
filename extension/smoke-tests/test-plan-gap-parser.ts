@@ -27,7 +27,11 @@ import {
   PRIOR_CONTEXT_CHILD_PROMPT_CAP,
   renderPriorContext,
 } from "../src/plan-draft.ts";
-import { parseGaps, parseGapsForTest, setPlanDispatch } from "../src/plan-driver.ts";
+import { parseGapsForTest, setPlanDispatch } from "../src/plan-driver.ts";
+import { parseGaps as parseGapsFromDriver } from "../src/plan-gaps.ts";
+// The gap-gate parsing logic lives in plan-gaps.ts (split from plan-driver.ts).
+// Bind under the original name so all call sites below stay unchanged.
+const parseGaps = parseGapsFromDriver;
 import { planTitle } from "../src/plan-types.ts";
 
 let exit = 0;
@@ -47,16 +51,19 @@ function assert(cond: boolean, msg: string) {
   // unparseable replies so a future parse change is a conscious decision.
   const clean = parseGapsForTest("No issues found.\nVERDICT: READY");
   assert(clean.verdict === "READY", "parseGaps: explicit READY verdict");
+  assert(clean.verdictParsed === true, "parseGaps: verdictParsed is true when a verdict line is present");
   const silent = parseGapsForTest("looks good, nothing to flag");
   assert(
     silent.verdict === "READY" && silent.gaps.length === 1 && silent.gaps[0]?.severity === "MEDIUM",
     "parseGaps: missing verdict defaults to READY with the MEDIUM fallback gap",
   );
+  assert(silent.verdictParsed === false, "parseGaps: verdictParsed is false when no verdict line present");
   const prose = parseGapsForTest("- CRITICAL — something important is missing\nVERDICT: NEEDS_ITERATION");
   assert(
     prose.verdict === "NEEDS_ITERATION" && prose.gaps.length === 1 && prose.gaps[0]?.severity === "MEDIUM",
     "parseGaps: bare severity lines without GAP: markers do NOT parse as gaps (fallback only)",
   );
+  assert(prose.verdictParsed === true, "parseGaps: verdictParsed true when NEEDS_ITERATION verdict present");
 }
 
 // --------------------------------------- unit: parseGaps (GAP: markers only)
@@ -172,34 +179,78 @@ function assert(cond: boolean, msg: string) {
 }
 
 {
-  // D7: operator-supplied typed fields take precedence over specialist output.
+  // D4: operator-supplied typed fields take precedence over specialist output.
+  // All five heading forms must parse: plain, ##, ===, **, and === with parenthetical.
   const directives = parseOperatorDirectives(
     "ACCEPTANCE CRITERIA:\n- the tool registers\n- dryRun never files\n\nPITFALLS:\n- a child killed mid-flight reports toolUses: []\n\nOUT OF SCOPE:\n- the /work driver is unchanged",
   );
-  assert(directives.acceptanceCriteria.length === 2, "D7: ACCEPTANCE CRITERIA block → 2 typed items");
+  assert(directives.acceptanceCriteria.length === 2, "D4: ACCEPTANCE CRITERIA block → 2 typed items (plain heading)");
   assert(directives.acceptanceCriteria[0] === "the tool registers", "first acceptance criterion verbatim");
-  assert(directives.pitfalls.length === 1, "D7: PITFALLS block → 1 typed item");
-  assert(directives.outOfScope.length === 1, "D7: OUT OF SCOPE block → 1 typed item");
+  assert(directives.pitfalls.length === 1, "D4: PITFALLS block → 1 typed item (plain heading)");
+  assert(directives.outOfScope.length === 1, "D4: OUT OF SCOPE block → 1 typed item (plain heading)");
   const free = parseOperatorDirectives("just some prior context fact");
   assert(
     free.acceptanceCriteria.length === 0 && free.pitfalls.length === 0 && free.outOfScope.length === 0,
-    "D7: context without recognized headings stays pure prior context",
+    "D4: context without recognized headings stays pure prior context",
   );
   const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
   const { body } = draftSpec("feature", "descriptor", [], [], [], [], 0, directives);
   const acSection = body.slice(body.indexOf("## Acceptance criteria"), body.indexOf("## References"));
   assert(
     acSection.includes("the tool registers") && acSection.includes("dryRun never files"),
-    "D7: operator ACCEPTANCE CRITERIA block reaches the typed Acceptance criteria section",
+    "D4: operator ACCEPTANCE CRITERIA block reaches the typed Acceptance criteria section",
   );
   const oos = body.slice(body.indexOf("## Out of scope"));
-  assert(oos.includes("the /work driver is unchanged"), "D7: operator OUT OF SCOPE block reaches the Out of scope section");
+  assert(oos.includes("the /work driver is unchanged"), "D4: operator OUT OF SCOPE block reaches the Out of scope section");
   const edge = body.slice(body.indexOf("## Edge cases"));
   assert(
     edge.includes("a child killed mid-flight reports toolUses: []"),
-    "D7: operator PITFALLS block reaches the Edge cases section",
+    "D4: operator PITFALLS block reaches the Edge cases section",
   );
   void NO_DIRS;
+}
+
+// --------------------------------- D4: all five heading forms
+
+{
+  // === ACCEPTANCE CRITERIA === — the operator's most common heading form.
+  // The trailing === must be consumed by the heading regex, not leaked into
+  // the section as an item (negative canary below pins this).
+  const eq = parseOperatorDirectives("=== ACCEPTANCE CRITERIA ===\n- criterion one\n- criterion two");
+  assert(eq.acceptanceCriteria.length === 2, `D4: '=== ACCEPTANCE CRITERIA ===' parses (${eq.acceptanceCriteria.length} items)`);
+  assert(eq.acceptanceCriteria[0] === "criterion one", "D4: === heading: first item verbatim");
+
+  // **ACCEPTANCE CRITERIA** — bold markdown
+  const bold = parseOperatorDirectives("**ACCEPTANCE CRITERIA**\n- criterion bold");
+  assert(bold.acceptanceCriteria.length === 1, `D4: '**ACCEPTANCE CRITERIA**' parses (${bold.acceptanceCriteria.length} items)`);
+  assert(bold.acceptanceCriteria[0] === "criterion bold", "D4: ** heading: item verbatim");
+
+  // === ACCEPTANCE CRITERIA (use verbatim) === — parenthetical inside ===
+  const paren = parseOperatorDirectives("=== ACCEPTANCE CRITERIA (use verbatim) ===\n- verbatim item");
+  assert(paren.acceptanceCriteria.length === 1, `D4: '=== ACCEPTANCE CRITERIA (use verbatim) ===' parses (${paren.acceptanceCriteria.length} items)`);
+  assert(paren.acceptanceCriteria[0] === "verbatim item", "D4: parenthetical heading: item verbatim");
+
+  // ## ACCEPTANCE CRITERIA — hash heading (already worked before D4, pin it)
+  const hash = parseOperatorDirectives("## ACCEPTANCE CRITERIA\n- hash item");
+  assert(hash.acceptanceCriteria.length === 1, `D4: '## ACCEPTANCE CRITERIA' parses (${hash.acceptanceCriteria.length} items)`);
+
+  // *PITFALLS* — single-asterisk italic (was silently dropped before D4)
+  const italic = parseOperatorDirectives("*PITFALLS*\n- italic pitfall");
+  assert(italic.pitfalls.length === 1, `D4: '*PITFALLS*' parses (${italic.pitfalls.length} items)`);
+  assert(italic.pitfalls[0] === "italic pitfall", "D4: * heading: item verbatim");
+
+  // === OUT OF SCOPE === — same form for a different section
+  const eqOos = parseOperatorDirectives("=== OUT OF SCOPE ===\n- oos item");
+  assert(eqOos.outOfScope.length === 1, `D4: '=== OUT OF SCOPE ===' parses (${eqOos.outOfScope.length} items)`);
+
+  // Negative canary: the trailing === must NOT be captured as an item.
+  // (If the regex didn't consume the right wrapper, '===' would appear as
+  // the first 'item' — the old shape.)
+  assert(!eq.acceptanceCriteria.some((s) => s === "===" || s === "*" || s.includes("===")), "D4 canary: trailing wrapper chars are not captured as items");
+
+  // Negative canary: a line that is NOT a heading must not trigger a section
+  const notHeading = parseOperatorDirectives("the acceptance criteria are listed below\n- this is prose, not a heading");
+  assert(notHeading.acceptanceCriteria.length === 0, "D4 canary: prose mentioning 'acceptance criteria' does NOT create a section");
 }
 
 {
@@ -441,3 +492,6 @@ function assert(cond: boolean, msg: string) {
   else process.env.PI_ENSEMBLE_PLAN_GAP_GATE = savedGate;
   setPlanDispatch(null);
 }
+
+console.log(`\nexit ${exit}`);
+process.exit(exit);

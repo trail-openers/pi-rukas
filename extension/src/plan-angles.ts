@@ -6,7 +6,7 @@
  * Split out of plan-draft.ts to keep each module under the 500-line hard
  * limit (AGENTS.md §12).
  */
-import { renderPriorContext } from "./plan-draft.ts";
+import { VIPUNE_PRECEDENCE_NOTE, priorContextHasVipune, renderPriorContext } from "./plan-draft.ts";
 import { PLAN_ITEM_KINDS } from "./plan-reporter.ts";
 import type { PlanType } from "./plan-types.ts";
 
@@ -130,9 +130,11 @@ function buildAnglePrompt(
   // renderPriorContext shares the 2000-char cap with the gap-gate prompt and
   // adds a truncation marker. draftSpec (the FILED body) renders priorContext
   // uncapped (D2), so the full operator context still reaches the filed spec.
+  // D6: the precedence note is appended when any prior entry is vipune-sourced
+  // (a prior snapshot — may be stale; live context wins on conflict).
   const prior =
     priorContext.length > 0
-      ? `PM has already established (DO NOT re-investigate):\n${renderPriorContext(priorContext)}\n\n`
+      ? `PM has already established (DO NOT re-investigate):\n${renderPriorContext(priorContext)}\n${priorContextHasVipune(priorContext) ? `${VIPUNE_PRECEDENCE_NOTE}\n\n` : ""}`
       : "";
   const taskLine = `INVESTIGATION (angle: ${angle.name}, ticket type: ${type})\n\n${prior}${task}\n\n`;
   return `${taskLine}${PLAN_REPORTER_PROMPT}\nWhen you have finished all tool calls, write a SHORT prose summary (2-4 sentences) of what you confirmed. The tool calls are the record; the prose is only a human-readable summary.`;

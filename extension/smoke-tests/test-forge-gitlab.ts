@@ -1,40 +1,8 @@
-/**
- * test-forge-gitlab.ts — offline smoke test for the GitLab (glab) path of
- * the forge adapter (S2 of epic #608).
- *
- * Covers every operation for the GitLab forge with mocked `glab` CLI output:
- *   - field mapping (iid, description, opened, source_branch, web_url — snake_case)
- *   - issue view/create/edit/comment/search
- *   - MR view/list/create/merge/diff/checks
- *   - merge readiness (detailed_merge_status composition + fail-closed)
- *   - label ops (add_labels/remove_labels on PUT)
- *   - repo settings (merge_method + squash_option enum derivation)
- *   - command-string invariants (SAFETY-CRITICAL: --auto-merge=false)
- *
- * Run: cd extension && bun run smoke-tests/test-forge-gitlab.ts
- */
+// test-forge-gitlab.ts — GitLab (glab) forge path, offline smoke test (epic #608 S2).
+// Direct-mapper + parsePrNumberFromResponse shape tests: test-forge-mapping-shapes.ts.
 
-import {
-  composeGlReadiness,
-  createForge,
-  forgeCommands,
-  mapGlIssue,
-  mapGlMr,
-  mapGlPipelineJobs,
-  mapGlRepo,
-} from "../src/forge.ts";
-import {
-  GL_ISSUE,
-  GL_JOBS,
-  GL_MR,
-  GL_MR_CHECKING,
-  GL_MR_VIEW,
-  GL_PIPELINE_DONE,
-  GL_PIPELINE_RUNNING,
-  GL_PROJECT,
-  glDetection,
-  mkExec,
-} from "./forge-fixtures.ts";
+import { composeGlReadiness, createForge, forgeCommands } from "../src/forge.ts";
+import { GL_ISSUE, GL_JOBS, GL_MR, GL_MR_CHECKING, GL_MR_VIEW, GL_PIPELINE_DONE, GL_PIPELINE_RUNNING, GL_PROJECT, glDetection, mkExec } from "./forge-fixtures.ts";
 
 let exitCode = 0;
 function check(name: string, fn: () => void | Promise<void>) {
@@ -169,6 +137,51 @@ async function main() {
       assert(cmd!.includes("A new issue"), `--title value: ${cmd}`);
       assert(cmd!.includes("-d @"), `description=@file: ${cmd}`);
       assert(!cmd!.includes("the body"), "body must not be inlined in the command");
+    });
+  }
+
+  {
+    // glab issue create (no --output json) prints a BARE URL line on stdout —
+    // the same defect class this branch fixes on the GitHub path: the mapper
+    // must tolerate the plain-URL shape, not only JSON.
+    const { fn } = mkExec({
+      "glab issue create": { stdout: "https://gitlab.com/acme/widget/-/issues/42\n" },
+    });
+    const forge = createForge(det, { execFn: fn });
+    await check("issueCreate maps a plain-URL stdout (number 42, full url)", async () => {
+      const issue = await forge.issueCreate("A new issue", "the body");
+      assert(issue.number === 42, `number ${issue.number}`);
+      assert(issue.url === "https://gitlab.com/acme/widget/-/issues/42", `url ${issue.url}`);
+    });
+    // JSON tolerance: when stdout IS JSON, the mapGlIssue path must still work.
+    const { fn: fnJson } = mkExec({
+      "glab issue create": { stdout: JSON.stringify(GL_ISSUE) },
+    });
+    const forgeJson = createForge(det, { execFn: fnJson });
+    await check("issueCreate still maps JSON stdout via mapGlIssue", async () => {
+      const issue = await forgeJson.issueCreate("A new issue", "the body");
+      assert(issue.number === 42, `number ${issue.number}`);
+      assert(issue.title === "A GitLab issue", `title ${issue.title}`);
+      assert(issue.state === "OPEN", `state ${issue.state}`);
+      assert(issue.body === "the issue body", `body ${issue.body}`);
+    });
+    // A non-URL, non-JSON stdout must reject — NOT map silently to number 0.
+    const { fn: fnGarbage } = mkExec({
+      "glab issue create": { stdout: "some other output\n" },
+    });
+    const forgeGarbage = createForge(det, { execFn: fnGarbage });
+    await check("issueCreate rejects (no silent number=0) on non-URL, non-JSON stdout", async () => {
+      let rejected: Error | undefined;
+      try {
+        await forgeGarbage.issueCreate("A new issue", "the body");
+      } catch (e) {
+        rejected = e as Error;
+      }
+      assert(rejected !== undefined, "should have thrown");
+      assert(
+        rejected!.message.includes("could not parse"),
+        `wrong error: ${rejected!.message}`,
+      );
     });
   }
 
@@ -459,32 +472,8 @@ async function main() {
     });
   }
 
-  // ── Mappers (direct) ────────────────────────────────────────────────────
-  console.log("mappers:");
-  await check("mapGlIssue throws on missing iid", () => {
-    try {
-      mapGlIssue({ title: "x", description: "y", state: "opened", web_url: "u" } as Record<string, unknown>);
-      throw new Error("should have thrown");
-    } catch (e) {
-      assert((e as Error).message.includes("iid"), `wrong error: ${(e as Error).message}`);
-    }
-  });
-  await check("mapGlMr normalizes", () => {
-    const mr = mapGlMr(GL_MR as Record<string, unknown>);
-    assert(mr.number === 17, "number");
-    assert(mr.headRefName === "feature/issue-17-x", "head");
-    assert(mr.baseRefName === "main", "base");
-    assert(mr.state === "OPEN", "state");
-  });
-  await check("mapGlPipelineJobs uppercases status", () => {
-    const jobs = mapGlPipelineJobs(GL_JOBS as unknown);
-    assert(jobs[0]!.state === "SUCCESS", `state ${jobs[0]!.state}`);
-  });
-  await check("mapGlRepo derives squash from method", () => {
-    const r = mapGlRepo(GL_PROJECT as Record<string, unknown>);
-    assert(r.squashMergeAllowed === true, "squash");
-    assert(r.mergeCommitAllowed === false, "merge");
-  });
+  // (direct mapper tests + parsePrNumberFromResponse shape/anchor cases
+  //  live in test-forge-mapping-shapes.ts — split at the 500-line seam)
 
   console.log("");
   if (exitCode !== 0) {

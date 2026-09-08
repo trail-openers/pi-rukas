@@ -26,196 +26,51 @@
  *                        [plan-draft.ts: anglePromptsFor]
  *   Phase 3 Draft      — the driver assembles the structured body
  *                        [plan-draft.ts: draftSpec]
- *   Phase 4 Gap gate   — one adversarial-developer dispatch; CRITICAL/HIGH
- *                        get ONE corrective round, then the cap is hit and
- *                        the residual gaps travel with the spec.
+ *   Phase 4 Gap gate   — one adversarial-developer dispatch per round;
+ *                        CRITICAL/HIGH get ONE corrective round, then the
+ *                        iteration cap ROUTES (D2, direct precedent: /work's
+ *                        lens round cap): zero CRITICAL/HIGH remaining →
+ *                        file with the residual MEDIUM/LOW gaps disclosed in
+ *                        a "## Residual gap-gate findings" section;
+ *                        CRITICAL or HIGH remain → do not file, surface to
+ *                        the operator. The cap reason is a DISCRIMINATED
+ *                        value (D1) so the operator-visible text names the
+ *                        ACTUAL cause instead of claiming "unresolved
+ *                        CRITICAL/HIGH gaps remain" when a MEDIUM-only
+ *                        NEEDS_ITERATION verdict burned the iterations.
+ *                        An ABSENT verdict with CRITICAL/HIGH gaps routes to
+ *                        NEEDS_ITERATION (D3, verdictParsed — the adversarial
+ *                        gate's #664 fix did the same).
  *                        PI_ENSEMBLE_PLAN_GAP_GATE=0 skips for chore/spike.
- *   Phase 5 File       — `gh issue create --body-file` via execp (child
- *                        process, exempt from the tool_call guard by
- *                        construction, exactly like work-driver-commit's
- *                        `gh pr create`).
+ *   Phase 5 File       — the forge adapter's issueCreate (child process,
+ *                        exempt from the tool_call guard by construction,
+ *                        exactly like work-driver-commit's `gh pr create`).
+ *                        A filing failure carries a DISCRIMINATED reason on
+ *                        the result (D7) — forge-unresolved, create-error
+ *                        (with the forge stderr), empty-url — plus the
+ *                        deliberate-skip case for the all-angles-failed halt.
  *
  * dryRun is the confirmation seam: `dryRun: true` returns the spec + gaps
  * without filing; PM shows it to the operator; on confirmation the driver
  * is re-called with `dryRun` omitted.
  */
 
-import { exec } from "node:child_process";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { dispatchCore } from "./dispatch.ts";
-import { detectForge } from "./forge-detect.ts";
-import { type Forge, createForge } from "./forge.ts";
 import {
   type AngleFindings,
+  VIPUNE_PRECEDENCE_NOTE,
+  VIPUNE_PRIOR_SOURCE,
   anglePromptsFor,
   codeIdentifiersIn,
   draftSpec,
   extractPlanItems,
   mechanicalInventory,
   parseOperatorDirectives,
+  priorContextHasVipune,
   renderPriorContext,
 } from "./plan-draft.ts";
-import {
-  type PlanDriverInput,
-  type PlanGap,
-  type PlanResult,
-  type PlanType,
-  classifyPlanType,
-  planTitle,
-} from "./plan-types.ts";
-import { trace } from "./trace.ts";
-
-const execp = promisify(exec);
-const GAP_GATE_MAX_ITERATIONS = 2;
-
-/**
- * Companion-extension path for the plan Phase-2 children (report_plan_item).
- * Follows LENS_REPORTER_PATH / POLICY_REPORTER_PATH exactly.
- */
-const PLAN_REPORTER_PATH = path.join(__dirname, "plan-reporter.ts");
-
-/**
- * The extra args the Phase-2 investigation children run with: no skills
- * (the exploration tools are in the role prompt; skills would just add cost)
- * + the plan-reporter extension that registers report_plan_item.
- */
-const PLAN_EXTRA_ARGS: string[] = ["--no-skills", "--extension", PLAN_REPORTER_PATH];
-
-// ---------------------------------------------------------------------------
-// Phase 4 — adversarial gap gate
-// ---------------------------------------------------------------------------
-
-function gapGatePrompt(
-  body: string,
-  findings: AngleFindings[],
-  priorContext: { source: string; fact: string }[],
-): string {
-  const summary = findings
-    .map((x) => {
-      const n = x.toolUses.filter((i) => typeof i === "object").length;
-      return `- ${x.name}: ${x.ok ? (n > 0 ? `ran (${n} structured item${n === 1 ? "" : "s"})` : "ran (no structured items)") : "skipped/failed"}`;
-    })
-    .join("\n");
-  const head =
-    "GAP DETECTION: review this draft spec and find what is missing, under-specified, ambiguous or unverifiable.\n\n";
-  const spec = `DRAFT SPEC:\n${body}\n\n`;
-  const sum = `PHASE 2 FINDINGS SUMMARY:\n${summary}\n\n`;
-  // #633: the gate child is one reviewer — the prior-context block is capped
-  // at the render site via renderPriorContext. The filed body carries the
-  // full uncapped inventory (draftSpec, D2), only the CHILD prompt gets the cap.
-  const prior =
-    priorContext.length > 0
-      ? `PM has already established these decisions and facts (DO NOT re-raise them as gaps; citing them is only valid if you can show the spec contradicts them):\n${renderPriorContext(priorContext)}\n\n`
-      : "";
-  const tail =
-    "For each gap, output ONE line starting with the marker GAP: followed by the severity (CRITICAL: cannot proceed; HIGH: implementer will be confused or wrong; MEDIUM: nice-to-have clarification; LOW: cosmetic), an em dash, a short description, then — proposed resolution: with the proposed resolution. Example: GAP: CRITICAL — no failure-mode acceptance criterion — proposed resolution: add a criterion for the retry path. Never write a severity word on its own line — prose mentioning CRITICAL/HIGH/MEDIUM/LOW does not create a gap unless the line starts with GAP:. Each resolution must be ONE of: (a) an additional research dispatch, (b) a sharper acceptance criterion to add, or (c) an Open Question. End your reply with a single line exactly of the form:\nVERDICT: READY  (zero CRITICAL/HIGH gaps)\nor\nVERDICT: NEEDS_ITERATION";
-  return `${head}${spec}${sum}${prior}${tail}`;
-}
-
-/**
- * Parse a gap-gate reply. Only lines starting with the `GAP:` marker create
- * gaps — bare severity words in prose (the reviewer's legend, a clean bill of
- * health, this prompt's own examples) must NOT parse as findings. The
- * marker format is `GAP: <SEVERITY> — <description> — proposed resolution: <r>`
- * (em dash or hyphen separators; the resolution segment is optional, in which
- * case the default placeholder applies).
- */
-export function parseGaps(reply: string): {
-  gaps: PlanGap[];
-  verdict: "READY" | "NEEDS_ITERATION";
-} {
-  const lines = reply.split("\n");
-  const gaps: PlanGap[] = [];
-  const gapRe = /^\s*GAP:\s*(CRITICAL|HIGH|MEDIUM|LOW)\b[—–-]?\s*(.*)$/i;
-  for (const line of lines) {
-    const m = line.match(gapRe);
-    if (!m) continue;
-    const rest = (m[2] ?? "").trim();
-    const resMatch = rest.match(/[—–-]?\s*proposed resolution:\s*(.+)$/i);
-    const resolution = resMatch?.[1]?.trim() ?? "address during /work plan phase";
-    const description = (resMatch ? rest.slice(0, resMatch.index) : rest).trim();
-    if (!description) continue;
-    gaps.push({
-      severity: (m[1] ?? "MEDIUM").toUpperCase() as PlanGap["severity"],
-      description: description.slice(0, 300),
-      resolution,
-    });
-  }
-  const verdictLine = [...lines].reverse().find((l) => /verdict\s*[:—-]/i.test(l)) ?? "";
-  const verdict: "READY" | "NEEDS_ITERATION" = /needs[_ ]iteration/i.test(verdictLine)
-    ? "NEEDS_ITERATION"
-    : "READY";
-  if (gaps.length === 0) {
-    return {
-      gaps: [
-        { severity: "MEDIUM", description: "no structured gaps parsed", resolution: "proceed" },
-      ],
-      verdict,
-    };
-  }
-  return { gaps, verdict };
-}
-
-/**
- * Export seam for tests: `parseGaps` is module-private (the gap gate has no
- * other injection point — the driver runs it directly on the gate child's
- * reply), so the smoke test reaches it through this alias.
- */
-export function parseGapsForTest(reply: string) {
-  return parseGaps(reply);
-}
-
-// ---------------------------------------------------------------------------
-// Phase 5 — filing
-// ---------------------------------------------------------------------------
-
-export async function fileIssue(
-  repoRoot: string,
-  title: string,
-  body: string,
-  forge?: Forge,
-): Promise<string | undefined> {
-  // #612 S4 task-b — forge adapter. The adapter manages its own temp body
-  // file (withBodyFile) and returns the URL via the normalized `url` field.
-  // A forge that cannot be resolved (unknown host, no remotes, PI_ENSEMBLE_FORGE=none)
-  // returns undefined — the filing is skipped, not silently done via raw gh.
-  const resolved = forge ?? (await planForge(repoRoot));
-  if (!resolved) {
-    trace("plan-driver: no forge resolved — issue filing skipped");
-    return undefined;
-  }
-  try {
-    const issue = await resolved.issueCreate(title, body);
-    return issue.url;
-  } catch (err) {
-    trace(`plan-driver: forge issueCreate failed: ${(err as Error).message}`);
-    return undefined;
-  }
-}
-
-/**
- * Resolve the forge adapter for the plan driver's filing step
- * (#612 S4 task-b). `PI_ENSEMBLE_FORGE=none` refuses; unknown detection
- * falls back to raw `gh` (pre-migration behaviour).
- */
-async function planForge(repoRoot: string): Promise<Forge | undefined> {
-  if (process.env.PI_ENSEMBLE_FORGE === "none") return undefined;
-  try {
-    const det = await detectForge(repoRoot, {});
-    if (det.forge === "unknown") return undefined;
-    return createForge(det, { cwd: repoRoot });
-  } catch {
-    return undefined;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// runPlanPipeline
-// ---------------------------------------------------------------------------
+import { type FilingFailure, fileIssue, getPlanForge, planForgeFor } from "./plan-filing.ts";
 
 /**
  * The dispatch seam, injectable so the smoke test can drive the pipeline with
@@ -230,6 +85,75 @@ let _dispatchOverride: PlanDispatchFn | null = null;
 export function setPlanDispatch(fn: PlanDispatchFn | null): void {
   _dispatchOverride = fn;
 }
+import {
+  type GapGateParse,
+  capRouted,
+  evaluateGapGate,
+  parseGaps,
+  residualGapsSection,
+} from "./plan-gaps.ts";
+import {
+  type PlanDriverInput,
+  type PlanGap,
+  type PlanResult,
+  classifyPlanType,
+  planTitle,
+} from "./plan-types.ts";
+import { trace } from "./trace.ts";
+
+const GAP_GATE_MAX_ITERATIONS = 2;
+
+/**
+ * Companion-extension path for the plan Phase-2 children (report_plan_item).
+ * Follows LENS_REPORTER_PATH / POLICY_REPORTER_PATH exactly.
+ */
+const PLAN_REPORTER_PATH = `${__dirname}/plan-reporter.ts`;
+
+/**
+ * The extra args the Phase-2 investigation children run with: no skills
+ * (the exploration tools are in the role prompt; skills would just add cost)
+ * + the plan-reporter extension that registers report_plan_item.
+ */
+const PLAN_EXTRA_ARGS: string[] = ["--no-skills", "--extension", PLAN_REPORTER_PATH];
+
+// ---------------------------------------------------------------------------
+// Phase 4 — adversarial gap gate (parsing + routing in plan-gaps.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * The gap-gate reviewer prompt. Carries the prior context (capped at the
+ * render site via renderPriorContext — #633: the gate child is one reviewer,
+ * the filed body carries the full uncapped inventory) and — since the vipune
+ * tag (D6) — the explicit precedence note whenever any prior entry is
+ * vipune-sourced: a vipune entry is a prior snapshot and may be stale.
+ */
+export function gapGatePrompt(
+  body: string,
+  findings: AngleFindings[],
+  priorContext: { source: string; fact: string }[],
+): string {
+  const summary = findings
+    .map((x) => {
+      const n = x.toolUses.filter((i) => typeof i === "object").length;
+      return `- ${x.name}: ${x.ok ? (n > 0 ? `ran (${n} structured item${n === 1 ? "" : "s"})` : "ran (no structured items)") : "skipped/failed"}`;
+    })
+    .join("\n");
+  const head =
+    "GAP DETECTION: review this draft spec and find what is missing, under-specified, ambiguous or unverifiable.\n\n";
+  const spec = `DRAFT SPEC:\n${body}\n\n`;
+  const sum = `PHASE 2 FINDINGS SUMMARY:\n${summary}\n\n`;
+  const prior =
+    priorContext.length > 0
+      ? `PM has already established these decisions and facts (DO NOT re-raise them as gaps; citing them is only valid if you can show the spec contradicts them):\n${renderPriorContext(priorContext)}\n${priorContextHasVipune(priorContext) ? `${VIPUNE_PRECEDENCE_NOTE}\n\n` : ""}`
+      : "";
+  const tail =
+    "For each gap, output ONE line starting with the marker GAP: followed by the severity (CRITICAL: cannot proceed; HIGH: implementer will be confused or wrong; MEDIUM: nice-to-have clarification; LOW: cosmetic), an em dash, a short description, then — proposed resolution: with the proposed resolution. Example: GAP: CRITICAL — no failure-mode acceptance criterion — proposed resolution: add a criterion for the retry path. Never write a severity word on its own line — prose mentioning CRITICAL/HIGH/MEDIUM/LOW does not create a gap unless the line starts with GAP:. Each resolution must be ONE of: (a) an additional research dispatch, (b) a sharper acceptance criterion to add, or (c) an Open Question. End your reply with a single line exactly of the form:\nVERDICT: READY  (zero CRITICAL/HIGH gaps)\nor\nVERDICT: NEEDS_ITERATION";
+  return `${head}${spec}${sum}${prior}${tail}`;
+}
+
+// ---------------------------------------------------------------------------
+// runPlanPipeline
+// ---------------------------------------------------------------------------
 
 export async function runPlanPipeline(
   pi: ExtensionAPI,
@@ -244,7 +168,12 @@ export async function runPlanPipeline(
   // Phase 1
   const inv = await mechanicalInventory(repoRoot, descriptor);
   const priorContext: { source: string; fact: string }[] = [
-    ...inv.memory.map((h) => ({ source: "vipune", fact: h.content.slice(0, 200) })),
+    // D6: vipune hits are tagged distinctly — they are snapshots saved
+    // during a PREVIOUS planning run and may be stale (the blocked-session
+    // feedback loop; transcript mtsnbz8b). The precedence note in the
+    // angle/gap-gate prompts (VIPUNE_PRECEDENCE_NOTE) makes the live
+    // context-param entries and live code win on conflict.
+    ...inv.memory.map((h) => ({ source: VIPUNE_PRIOR_SOURCE, fact: h.content.slice(0, 200) })),
     ...inv.related
       .slice(0, 5)
       .map((r) => ({ source: `issue #${r.number} (${r.state})`, fact: r.title })),
@@ -339,7 +268,9 @@ export async function runPlanPipeline(
   // "none" with fallback strings everywhere (the epics with the gap gate off
   // by default were the worst case). Halt before draftSpec/fileIssue instead;
   // the operator sees WHY (all angles returned prose-only or schema-invalid
-  // calls), not an empty spec.
+  // calls), not an empty spec. D7: the early return carries the
+  // `skipped-all-angles-failed` reason so the operator-visible text can say
+  // "filing was deliberately skipped" rather than "filing failed".
   const withItems = findings.filter((f) => f.toolUses.length > 0).length;
   if (findings.length > 0 && withItems === 0) {
     trace(
@@ -360,6 +291,10 @@ export async function runPlanPipeline(
       filed: false,
       issueUrl: undefined,
       capHit: true,
+      filingFailure: {
+        reason: "skipped-all-angles-failed",
+        detail: `all ${findings.length} angles produced zero structured items — filing was deliberately skipped (not a forge failure)`,
+      },
     };
   }
 
@@ -377,13 +312,21 @@ export async function runPlanPipeline(
     directives,
   );
 
-  // Phase 4 — gap gate (mandatory except chore/spike + escape hatch)
+  // Phase 4 — gap gate (mandatory except chore/spike + escape hatch).
+  // The cap ROUTES (D2): zero CRITICAL/HIGH remaining at the cap → file
+  // with the residual MEDIUM/LOW disclosed; CRITICAL/HIGH remain → surface.
+  // The cap reason is DISCRIMINATED (D1): the operator-visible text names
+  // the ACTUAL cause instead of claiming "unresolved CRITICAL/HIGH gaps
+  // remain" when a MEDIUM-only NEEDS_ITERATION verdict burned the rounds.
   const gapGateEnabled = !(
     (type === "chore" || type === "spike") &&
     process.env.PI_ENSEMBLE_PLAN_GAP_GATE === "0"
   );
   let gaps: PlanGap[] = [];
   let capHit = false;
+  let capReason: PlanResult["capReason"];
+  let residualForDisclosure: PlanGap[] = [];
+  let lastParse: GapGateParse | undefined;
 
   if (gapGateEnabled) {
     let iterations = 0;
@@ -396,17 +339,26 @@ export async function runPlanPipeline(
         { label: `plan-gap-gate-${iterations}` },
       );
       if (!gate.ok || gate.errorStop) {
+        // The gate never ran. We cannot assert a spec is clean when nothing
+        // reviewed it — this is the same failure class D3 closes for an
+        // absent verdict, two branches away ("gate never ran → pass" instead
+        // of "verdict absent → pass"). Do NOT file: set capHit + the
+        // discriminated capReason and surface to the operator with the gate's
+        // failure reason, matching the all-angles-failed halt (which bails
+        // before draftSpec for the same reason) and the cap-surface shape.
         trace(
-          `plan-driver: gap gate dispatch failed (iteration ${iterations}); proceeding with unresolved gate`,
+          `plan-driver: gap gate dispatch failed (iteration ${iterations}) — gate unavailable, not filing`,
         );
+        capHit = true;
+        capReason = "gate-unavailable";
         break;
       }
-      const parsed = parseGaps(gate.text);
-      gaps = parsed.gaps;
-      const blocking = gaps.filter((g) => g.severity === "CRITICAL" || g.severity === "HIGH");
-      ready = parsed.verdict === "READY" && blocking.length === 0;
-      if (!ready && iterations < GAP_GATE_MAX_ITERATIONS) {
-        for (const g of blocking) {
+      lastParse = parseGaps(gate.text);
+      gaps = lastParse.gaps;
+      const evald = evaluateGapGate(lastParse, iterations, GAP_GATE_MAX_ITERATIONS);
+      ready = evald.ready;
+      if (!ready && evald.corrective) {
+        for (const g of evald.blocking) {
           // Bug 3 (#606): gaps from this round are carried into the re-draft
           // with the reviewer's proposed resolution attached and tagged so
           // draftSpec renders them as `status: resolved` (the spec now states
@@ -427,16 +379,68 @@ export async function runPlanPipeline(
         ));
       } else if (!ready) {
         capHit = true;
+        // D2 + D1: at the cap, the routing policy (plan-gaps.ts: capRouted)
+        // decides file-vs-surface, and the REASON is discriminated so the
+        // operator-visible text names the ACTUAL cause.
+        const route = capRouted(evald.blocking);
+        capReason = route === "file" ? "residual-medium-low" : "unresolved-blocking";
+        if (route === "file") {
+          residualForDisclosure = gaps;
+        }
       }
+    }
+    // D3: an ABSENT verdict with only MEDIUM/LOW gaps records that the
+    // verdict was missing so it can be surfaced (READY is acceptable for
+    // MEDIUM/LOW-only — but the operator should know the gate did not
+    // explicitly say so).
+    if (lastParse && !lastParse.verdictParsed && !capHit) {
+      capReason = "verdict-absent";
     }
   }
 
+  // D2: when the cap routed to filing, the spec that gets filed carries the
+  // residual disclosure. Append it HERE, before fileIssue, so the single
+  // filing pass below sees the final body.
+  const finalBody =
+    residualForDisclosure.length > 0
+      ? `${body}\n\n${residualGapsSection(residualForDisclosure)}`
+      : body;
+
   const resolvedGaps = gapGateEnabled ? gaps : [];
 
-  // Phase 5
+  // Phase 5 — file (unless dryRun OR the cap routed to surface). D2: when
+  // the cap routed to "surface" (CRITICAL/HIGH remaining), do NOT file —
+  // surface to the operator. D7: the filing failure is DISCRIMINATED and
+  // carried on the result; the operator-visible text (plan-tool.ts) surfaces
+  // the reason including the forge stderr, without requiring PI_ENSEMBLE_DEBUG.
   let issueUrl: string | undefined;
-  if (!dryRun) {
-    issueUrl = await fileIssue(repoRoot, title, body);
+  let filingFailure: FilingFailure | undefined;
+  if (!dryRun && capReason !== "unresolved-blocking" && capReason !== "gate-unavailable") {
+    const fr = await fileIssue(title, finalBody, getPlanForge() ?? (() => planForgeFor(repoRoot)));
+    issueUrl = fr.url;
+    filingFailure = fr.failure;
+  } else if (!dryRun && capReason === "unresolved-blocking") {
+    // Deliberate skip, not a failure: the gap-gate cap routed to surface
+    // (CRITICAL/HIGH gaps remain), so the spec is NOT filed by policy.
+    // Its own reason — nothing failed to resolve here.
+    filingFailure = {
+      reason: "cap-surface",
+      detail:
+        "the gap gate cap routed to surface (CRITICAL/HIGH gaps remain) — not filed by policy",
+    };
+  } else if (!dryRun && capReason === "gate-unavailable") {
+    // Deliberate skip, not a filing failure: the gap-gate dispatch itself
+    // failed, so NO REVIEWER EVER SAW THE SPEC. The spec is not filed because
+    // we cannot assert it is clean — the same posture as all-angles-failed
+    // (which bails before draftSpec for the same reason) and D3 (an absent
+    // verdict must not silently pass). Its own reason: the gap gate was
+    // unavailable; the operator re-runs start_plan_driver after the cause is
+    // addressed (the spec above is still valid to review).
+    filingFailure = {
+      reason: "gate-unavailable",
+      detail:
+        "the gap-gate dispatch failed — no reviewer ever saw the spec, so it was not filed (re-run start_plan_driver after the gate failure is addressed)",
+    };
   }
 
   // #633: report BOTH how many angles were dispatched and how many produced
@@ -445,21 +449,32 @@ export async function runPlanPipeline(
   // halts for now still surfaces the count when it fires).
   const structuredCount = findings.filter((f) => f.toolUses.length > 0).length;
   trace(
-    `plan-driver: type=${type} angles=${findings.length} structured=${structuredCount} gaps=${gaps.length} filed=${!!issueUrl} dryRun=${!!dryRun}`,
+    `plan-driver: type=${type} angles=${findings.length} structured=${structuredCount} gaps=${gaps.length} filed=${!!issueUrl} dryRun=${!!dryRun} capReason=${capReason ?? "none"}`,
   );
 
   return {
     type,
     title,
-    spec: body,
+    spec: finalBody,
     gaps: resolvedGaps,
     priorContext: priorContext.slice(0, 15),
     filed: !!issueUrl,
     issueUrl,
     capHit: capHit || undefined,
+    capReason,
+    filingFailure,
   };
 }
 
 // Re-export for consumers that import from plan-driver.ts
 export { classifyPlanType, planTitle } from "./plan-types.ts";
 export { codeIdentifiersIn, draftSpec } from "./plan-draft.ts";
+
+/**
+ * Export seam for tests: `parseGaps` is module-private to the gap gate (the
+ * driver runs it directly on the gate child's reply — the parsing logic now
+ * lives in plan-gaps.ts). The smoke test reaches it through this alias.
+ */
+export function parseGapsForTest(reply: string) {
+  return parseGaps(reply);
+}

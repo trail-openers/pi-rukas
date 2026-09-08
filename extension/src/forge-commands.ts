@@ -24,9 +24,18 @@ export function issueViewCmd(forge: ForgeType, number: number): string {
   return `glab issue view ${number} --output json`;
 }
 
+/**
+ * `gh issue create` does NOT support `--json` (verified: `gh issue create
+ * --help` — the flag list has no `--json`). On success gh prints the created
+ * issue's URL as a single plain-text line to stdout. The mapper in `forge.ts`
+ * (`issueCreate`) parses that line into a NormalizedIssue via
+ * `parsePrNumberFromResponse` (which handles both `/issues/N` and
+ * `/-/merge_requests/N` URL shapes, and also tolerates a JSON payload for
+ * forward-compat with a `gh` release that adds `--json` to create).
+ */
 export function issueCreateCmd(forge: ForgeType, title: string, bodyFile: string): string {
   if (forge === "github")
-    return `gh issue create --title ${shq(title)} --body-file ${shq(bodyFile)} --json number,title,body,state,url`;
+    return `gh issue create --title ${shq(title)} --body-file ${shq(bodyFile)}`;
   // glab issue create takes the description as a literal string. The file
   // content is expanded by the caller (the forge object reads the file and
   // passes the content); the `-d` value here is the *expanded* content.
@@ -77,6 +86,14 @@ export function prListCmd(
   return `glab mr list${stateFlag}${source} --output json`;
 }
 
+/**
+ * `gh pr create` does NOT support `--json` (verified: `gh pr create --help`
+ * — no `--json` in the flag list, and the doc text explicitly states
+ * "Upon success, the URL of the created pull request will be printed").
+ * The mapper in `forge.ts` (`prCreate`) already handles the plain-text URL
+ * shape via `parsePrNumberFromResponse` + `makeMinimalPr`; the trailing
+ * `makeMinimalPr` fallback fills in `url` from the parsed value.
+ */
 export function prCreateCmd(
   forge: ForgeType,
   title: string,
@@ -86,7 +103,7 @@ export function prCreateCmd(
 ): string {
   if (forge === "github") {
     const head = baseBranch ? `${shq(baseBranch)}...${shq(headBranch)}` : shq(headBranch);
-    return `gh pr create --title ${shq(title)} --head ${head} --body-file ${shq(bodyFile)} --json number,title,state,url`;
+    return `gh pr create --title ${shq(title)} --head ${head} --body-file ${shq(bodyFile)}`;
   }
   // GitLab: NO --head flag — the source branch is positional, and the
   // target is `--target-branch`.

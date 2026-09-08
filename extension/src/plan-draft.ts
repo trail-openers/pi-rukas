@@ -159,6 +159,13 @@ export function extractPlanItems(toolUses: unknown[], angleName: string): PlanIt
 /**
  * Parse operator-supplied typed fields out of the `context` param (D7).
  * Headings: ACCEPTANCE CRITERIA, PITFALLS (or EDGE CASES), OUT OF SCOPE.
+ *
+ * D4: accept `#`, `=`, `*`, and backtick wrappers on both sides of the
+ * heading keyword, plus an optional trailing parenthetical (operators write
+ * "=== ACCEPTANCE CRITERIA ===", "**ACCEPTANCE CRITERIA**",
+ * "\"\"\"ACCEPTANCE CRITERIA\"\"\"", or "=== ACCEPTANCE CRITERIA (use verbatim) ==="
+ * — the old regex silently dropped every one of these and the bullets under
+ * them never reached the typed field). The keyword itself is unchanged.
  */
 export function parseOperatorDirectives(context: string | undefined): OperatorDirectives {
   const out: OperatorDirectives = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
@@ -167,8 +174,16 @@ export function parseOperatorDirectives(context: string | undefined): OperatorDi
   for (const raw of context.split("\n")) {
     const line = raw.trim();
     if (!line) continue;
+    // D4 heading regex: optional left wrapper (`#`, `=`, `*`, backtick —
+    // any of them, repeated), the keyword, an optional colon (for the
+    // plain "ACCEPTANCE CRITERIA:" form), an optional trailing
+    // parenthetical like `(use verbatim)`, an optional right wrapper, and
+    // any residual text (which, when non-empty, becomes the first item —
+    // e.g. a one-line heading+item like "PITFALLS: the retry path").
+    // The right wrapper is a SEPARATE token so `=== X ===` is consumed
+    // (== 2) before any residual text is captured.
     const m = line.match(
-      /^(?:#+\s*)?(ACCEPTANCE[\s-]*CRITERIA|PITFALLS|EDGE[\s-]*CASES|OUT[\s-]*OF[\s-]*SCOPE)\s*[:：]?\s*(.*)$/i,
+      /^(?:[#=*`]+\s*)?(ACCEPTANCE[\s-]*CRITERIA|PITFALLS|EDGE[\s-]*CASES|OUT[\s-]*OF[\s-]*SCOPE)\s*[:：]?\s*(?:\([^)]*\))?\s*(?:[#=*`]+\s*)?(.*)$/i,
     );
     if (m) {
       const name = (m[1] ?? "").toUpperCase();
@@ -237,6 +252,64 @@ const DEPTH_LIMIT_NOTE =
 /** Max items rendered per typed section — generous enough for a real spec (D2). */
 const SECTION_MAX_ITEMS = 20;
 
+/**
+ * D6: the source tag for vipune-sourced prior-context entries.
+ *
+ * A blocked planning session naturally saves its spec to vipune; the next
+ * run retrieves that stale copy, and the gap gate can raise a CRITICAL over a
+ * "contradiction" between the operator's CURRENT context and their own
+ * two-runs-old snapshot (FIELD-CONFIRMED in transcript mtsnbz8b — the same
+ * vipune entry "ebfa12c1" quoted its own prior ACs into the next round's
+ * gap-gate prompt). The tag makes the entry's provenance visible to the
+ * reviewer, and the precedence instruction (VIPUNE_PRECEDENCE_NOTE) tells
+ * both the Phase-2 angle children and the gap gate that a vipune entry is a
+ * prior snapshot, not live authority.
+ */
+export const VIPUNE_PRIOR_SOURCE = "vipune (prior snapshot — may be stale)";
+
+/**
+ * D6: the explicit precedence instruction rendered into BOTH the angle
+ * prompts (plan-angles.ts: buildAnglePrompt) and the gap-gate prompt
+ * (plan-driver.ts: gapGatePrompt) whenever prior context contains vipune
+ * entries. On conflict between a vipune-sourced entry and a context-param
+ * entry or live code, the LIVE context wins: vipune entries are from a
+ * previous run and may be stale.
+ */
+export const VIPUNE_PRECEDENCE_NOTE =
+  "PRECEDENCE: entries tagged with a vipune source are snapshots saved during a previous planning run and MAY BE STALE. On conflict between a vipune-sourced entry and a context-param entry or live code, the LIVE context (context param / current code) wins — do not raise a gap for a vipune entry that conflicts with live context, and do not let a stale vipune entry contradict the operator's current instructions.";
+
+export function priorContextHasVipune(priorContext: { source: string; fact: string }[]): boolean {
+  return priorContext.some((p) => p.source.startsWith("vipune"));
+}
+
+/**
+ * D5: the Technical-context line for one angle — a per-kind COUNT of its
+ * structured items plus the angle's prose summary, NEVER the item text.
+ *
+ * The old shape rendered every structured item here AND again in its typed
+ * section (the same item twice, with the copies drifting — one copy citing a
+ * file at :95 and another at :89). The prose summary is already extracted
+ * below; promote it from fallback to the line's second half, so the typed
+ * sections remain the single record of the item text.
+ */
+export function techContextLine(x: {
+  name: string;
+  text: string;
+  toolUses: { kind: string }[];
+}): string {
+  const byKind = new Map<string, number>();
+  for (const i of x.toolUses) byKind.set(i.kind, (byKind.get(i.kind) ?? 0) + 1);
+  const counts = [...byKind.entries()].map(([k, n]) => `${n} ${k}`).join(", ");
+  const prose = x.text
+    .trim()
+    .split("\n")
+    .filter((l) => l.trim())
+    .slice(0, 4)
+    .join("; ");
+  const summary = prose || "(no prose summary)";
+  return `- **${x.name}**: ${counts ? `${counts}; ` : ""}${summary}`;
+}
+
 // #633 SIMPLICITY-lens note: the references fallback (REF_RE prose file-path scan)
 // SURVIVES where the sub-issue prose fallback does not. A file-path regex over prose
 // is a narrow, high-precision pattern — it matches only tokens that look like code
@@ -263,25 +336,9 @@ export function draftSpec(
     "none — cold start (no prior /research or session context)",
   );
 
-  // Technical context: structured items per ok angle (the record); the prose
-  // summary is the FALLBACK only when an angle made no tool calls.
-  const angleLines = findings
-    .filter((x) => x.ok)
-    .map((x) => {
-      const shown = x.toolUses
-        .map((i) => i.text)
-        .slice(0, SECTION_MAX_ITEMS)
-        .join("; ");
-      const prose = x.text
-        .trim()
-        .split("\n")
-        .filter((l) => l.trim())
-        .slice(0, 4)
-        .join("; ");
-      return `- **${x.name}**: ${
-        shown.length > 0 ? shown : prose.length > 0 ? prose : "see findings"
-      }`;
-    });
+  // Technical context: per-kind COUNT + the angle's prose summary (D5) —
+  // never the item text (the typed sections are the single record of it).
+  const angleLines = findings.filter((x) => x.ok).map((x) => techContextLine(x));
   const techContext =
     angleLines.length > 0
       ? angleLines.join("\n")

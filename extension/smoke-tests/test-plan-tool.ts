@@ -20,7 +20,9 @@
  *     markers (bare severity words in prose are inert).
  *
  * The pure parsing seam (parseGaps markers / verdict default / draftSpec
- * status rendering) is unit-tested in test-plan-gap-parser.ts.
+ * status rendering) is unit-tested in test-plan-gap-parser.ts. The D1/D2/D7
+ * pipeline end-to-end coverage is in test-plan-gap-gate.ts (split at the
+ * 500-line limit).
  */
 
 import { readFileSync } from "node:fs";
@@ -41,22 +43,11 @@ function assert(cond: boolean, msg: string) {
 }
 
 // ----------------------------------------------------------- stub the seam
-//
-// plan-driver.ts calls `dispatchCore` via its ESM namespace import; the
-// namespace object is live, and Bun's module registry keeps the source
-// module's exports writable, so we swap the binding there (not on the
-// frozen-ish consumer view).
 
 const calls: string[] = [];
 const gatePrompts: string[] = [];
 let gateReplyOverride: string | null = null;
 
-/**
- * Structured tool-call replies the Phase-2 explore children would make via
- * the report_plan_item tool: the driver reads result.toolUses, not prose.
- * Only acceptance-criterion and edge-case items — the typed sections they
- * feed — one angle each (pinning the angle-name rendering below).
- */
 function angleToolUses(): unknown[] {
   return [
     { name: "report_plan_item", arguments: { kind: "acceptance-criterion", text: "the new tool registers with the exact TypeBox schema", angle: "interfaces-and-contracts" } },
@@ -68,14 +59,6 @@ function __responses(
   spec: { role: string; prompt: string },
 ): DispatchResult {
   if (spec.role === "adversarial-developer") {
-    // Bug 3 (#606) regression: the gate child is called twice in this
-    // fixture's flow. Round 1 returns two CRITICAL/HIGH gaps via the
-    // structured GAP: markers; round 2 re-raises both of them (the stub's
-    // old hard-coded NEEDS_ITERATION reply, now in the marker form the new
-    // parser requires) and the second-iteration cap is hit — the re-draft
-    // itself carries the round-1 gaps as `status: resolved` (Bug 3), which
-    // the assertions below pin. The stub also records the FULL gate prompts
-    // (gatePrompts[]) so the suite can assert what each round's prompt said.
     gatePrompts.push(spec.prompt);
     return {
       role: "adversarial-developer",
@@ -98,8 +81,6 @@ function __responses(
       exitCode: 0,
     };
   }
-  // Prose carries a preamble + summary on purpose: the contamination
-  // regression the structured extraction must not leak into typed fields.
   return {
     role: "explore",
     ok: true,
@@ -142,7 +123,7 @@ registerPlanTool(fakePi);
   const types = (typeUnion ?? []).map((v) => v.const).filter(Boolean) as string[];
   assert(
     types.join(",") === "bug,feature,epic,chore,spike",
-    `type union is the five-way literal set: ${types.join(", ")}`,
+    `type union is the five-way literal set: ${types.join(",")}`,
   );
   assert(
     /dryRun/.test(t?.description ?? "") &&
@@ -153,8 +134,6 @@ registerPlanTool(fakePi);
 
 // ---------------------------------------------------------- the pipeline
 
-// Install the dispatch stub. plan-tool.ts calls runPlanPipeline, which reads
-// the seam set here on every invocation.
 setPlanDispatch(((pi: unknown, spec: { role: string; prompt: string }) => {
   calls.push(`${spec.role}:${spec.prompt.slice(0, 40)}`);
   const ctx = (pi as { __testContext?: string }).__testContext;
@@ -203,10 +182,17 @@ async function invoke(params: Record<string, unknown>) {
     `Phase 2: ${explores.length} explores dispatched (feature = prior-art + interfaces + test-surface, conditional on code identifiers in the descriptor)`,
   );
   // Structured toolUses reach the typed sections; no prose leak (D1/D3).
+  // D5 changed Technical context to show counts + prose summary, so prose
+  // lines MAY appear in Technical context. The D1 regression invariant is
+  // that prose does NOT leak into the TYPED sections (AC, Edge cases, etc.).
   assert(text.includes("the new tool registers with the exact TypeBox schema"), "D1: structured acceptance-criterion items reach the Acceptance criteria section");
   assert(text.includes("a child killed mid-flight reports toolUses: []"), "D3: edge-case items reach the Edge cases section for a feature plan");
-  assert(!text.includes("Task complete:"), "D1 regression: the 'Task complete:' preamble does NOT leak into the spec");
-  assert(!text.includes("registration pattern to clone"), "D1 regression: prose list lines are NOT parsed into the spec (structured items only)");
+  // The 'Task complete:' preamble may appear in Technical context (D5: prose
+  // summary is now the second half of the tech line), but it must NOT appear
+  // in the TYPED sections (Acceptance criteria, Edge cases, etc.).
+  const typedSections = text.slice(text.indexOf("## Acceptance criteria"));
+  assert(!typedSections.includes("Task complete:"), "D1 regression: the 'Task complete:' preamble does NOT leak into the TYPED sections (it may appear in Technical context per D5)");
+  assert(!typedSections.includes("registration pattern to clone"), "D1 regression: prose list lines are NOT parsed into the TYPED sections (structured items only)");
   const gates = calls.filter((c) => c.startsWith("adversarial-developer:"));
   assert(
     gates.length === 2,
@@ -218,8 +204,7 @@ async function invoke(params: Record<string, unknown>) {
   );
   assert((details.gapCount ?? 0) >= 2, `gaps returned with severity: ${details.gapCount}`);
   // Bug 3 (#606): the round-2 gate child receives the re-draft, and the
-  // round-1 blocking gaps it carries render as `status: resolved` (they
-  // now state a decision) — never the old hard-coded `status: pending`.
+  // round-1 blocking gaps it carries render as `status: resolved`.
   assert(
     gatePrompts.length === 2,
     `gate prompt capture: 2 gate dispatches recorded (got ${gatePrompts.length})`,
@@ -241,10 +226,8 @@ async function invoke(params: Record<string, unknown>) {
     "the spec carries the type-specialised angle names",
   );
   assert(/dryRun/i.test(text), "...and tells PM to re-call on confirmation");
-
   // #606 bug 1: the gap gate prompt carries the prior context with the
-  // DO-NOT-RE-RAISE framing (context param, vipune hits and related issues
-  // all reach the reviewer, not just the Phase 2 explores).
+  // DO-NOT-RE-RAISE framing.
   assert(gatePrompts.length === 2, `gap gate prompt captured for both iterations: ${gatePrompts.length}`);
   const gatePrompt = gatePrompts[0] ?? "";
   assert(
@@ -387,11 +370,6 @@ async function invoke(params: Record<string, unknown>) {
   );
 }
 
-{
-  // The parseGaps / planTitle / draftSpec-status unit tests live in
-  // test-plan-gap-parser.ts; the pipeline's end-to-end coverage is above.
-}
-
 // ----------------------------------------------- doctrine + agents.json pins
 
 {
@@ -444,17 +422,18 @@ async function invoke(params: Record<string, unknown>) {
     /PI_ENSEMBLE_ALLOW_DIRECT_ISSUE_CREATE/.test(ig),
     "escape hatch: PI_ENSEMBLE_ALLOW_DIRECT_ISSUE_CREATE=1",
   );
-  const pd = readFileSync(path.resolve(import.meta.dirname, "..", "src", "plan-driver.ts"), "utf8");
+  const pdDriver = readFileSync(path.resolve(import.meta.dirname, "..", "src", "plan-driver.ts"), "utf8");
   assert(
-    /PI_ENSEMBLE_PLAN_GAP_GATE === "0"/.test(pd),
+    /PI_ENSEMBLE_PLAN_GAP_GATE === "0"/.test(pdDriver),
     "escape hatch: PI_ENSEMBLE_PLAN_GAP_GATE=0 in the driver",
   );
+  const pd = readFileSync(path.resolve(import.meta.dirname, "..", "src", "plan-gaps.ts"), "utf8");
   // #606 canary: the GAP: marker contract is in the prompt AND the parser
   // matches markers only (no bare severityRe fallback).
-  assert(pd.includes("(CRITICAL|HIGH|MEDIUM|LOW)"), "canary: parseGaps matches the structured GAP: marker");
-  assert(!/severityRe/.test(pd), "canary: the bare severity-word regex is gone from the driver");
+  assert(pd.includes("(CRITICAL|HIGH|MEDIUM|LOW)"), "canary: parseGaps matches the structured GAP: marker (plan-gaps.ts)");
+  assert(!/severityRe/.test(pd), "canary: the bare severity-word regex is gone from the gap parser");
   assert(
-    /DO NOT re-raise/.test(pd),
+    /DO NOT re-raise/.test(pdDriver),
     "canary: the gap gate prompt carries the DO-NOT-RE-RAISE framing",
   );
 }

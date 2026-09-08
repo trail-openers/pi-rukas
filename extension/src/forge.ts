@@ -13,12 +13,15 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { GH_TERMINAL_CI, GL_TERMINAL_CI, terminalCiFor } from "./forge-ci-terminal.ts";
+import { ciRun as ciRunImpl, ciWatch as ciWatchImpl } from "./forge-ci.ts";
 import * as cmds from "./forge-commands.ts";
 import type { ForgeDetection, ForgeType } from "./forge-detect.ts";
 import {
   ForgeFieldError,
   asArray,
   asRecord,
+  makeMinimalIssue,
   makeMinimalPr,
   mapGhChecks,
   mapGhIssue,
@@ -27,11 +30,9 @@ import {
   mapGhPr,
   mapGhPrWithNumber,
   mapGhRepo,
-  mapGhRun,
   mapGlIssue,
   mapGlIssueLabel,
   mapGlMr,
-  mapGlPipeline,
   mapGlPipelineJobs,
   mapGlRepo,
   parsePlainTextIssue,
@@ -106,43 +107,6 @@ export interface Forge {
   repoSettings(): Promise<NormalizedRepo>;
 }
 
-// ── Terminal CI statuses ──────────────────────────────────────────────────
-
-/**
- * Terminal statuses for CI-watch, normalized to uppercase.
- *
- * - GitHub Actions run conclusions (uppercase after mapping): SUCCESS,
- *   FAILURE, CANCELED, NEUTRAL, SKIPPED, TIMED_OUT, STOPPED.
- * - GitLab pipeline terminal statuses (per the epic spec): SUCCESS, FAILED,
- *   CANCELED, SKIPPED, MANUAL. (GitLab's `manual` is terminal because the
- *   pipeline is waiting for a human trigger, not a bot.)
- *
- * The watch loop polls until the run/pipeline status lands in this set, or
- * the 30-minute cap fires.
- */
-export const GH_TERMINAL_CI: ReadonlySet<string> = new Set([
-  "COMPLETED",
-  "FAILURE",
-  "CANCELED",
-  "CANCELLED",
-  "NEUTRAL",
-  "SKIPPED",
-  "TIMED_OUT",
-  "STOPPED",
-]);
-
-export const GL_TERMINAL_CI: ReadonlySet<string> = new Set([
-  "SUCCESS",
-  "FAILED",
-  "CANCELED",
-  "SKIPPED",
-  "MANUAL",
-]);
-
-export function terminalCiFor(forge: ForgeType): ReadonlySet<string> {
-  return forge === "gitlab" ? GL_TERMINAL_CI : GH_TERMINAL_CI;
-}
-
 export interface CiWatchOpts {
   /** Poll interval in ms (default 30_000). */
   pollMs?: number;
@@ -157,9 +121,6 @@ export interface CiWatchOpts {
 export type CiWatchResult =
   | { ok: true; run: NormalizedCIRun; terminal: boolean; timedOut: false }
   | { ok: true; run: NormalizedCIRun | undefined; terminal: false; timedOut: true };
-
-const DEFAULT_POLL_MS = 30_000;
-const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 
 // ── The Forge object ─────────────────────────────────────────────────────
 
@@ -241,8 +202,39 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
     issueCreate: (title, body) =>
       withBodyFile(`create-${title.slice(0, 16)}`, body, (file) =>
         run(cmds.issueCreateCmd(forge, title, file), (stdout) => {
-          if (forge === "github") return mapGhIssue(asRecord(stdout));
-          return mapGlIssue(asRecord(stdout));
+          if (forge === "github") {
+            // `gh issue create` has no `--json` — it prints the created issue's URL
+            // as plain text. `parsePrNumberFromResponse` handles both the plain
+            // URL and a JSON payload (forward-compat with a future `gh` that adds
+            // `--json` to create). A non-URL, non-JSON stdout must reject, NOT map
+            // silently to number 0.
+            const parsed = parsePrNumberFromResponse(stdout);
+            if (!parsed) {
+              throw new Error(
+                `forge issue create: could not parse issue number from response: ${stdout
+                  .trim()
+                  .slice(0, 120)}`,
+              );
+            }
+            return makeMinimalIssue(parsed);
+          }
+          // `glab issue create` (no --output json) prints the created issue's
+          // URL as plain text — the same shape the GitHub path handles above.
+          // Its own `prCreate` sibling on this forge already tolerates BOTH
+          // shapes (JSON or bare URL); this path must agree.
+          const parsedGl = parsePrNumberFromResponse(stdout);
+          if (!parsedGl) {
+            throw new Error(
+              `forge issue create: could not parse issue number from response: ${stdout
+                .trim()
+                .slice(0, 120)}`,
+            );
+          }
+          try {
+            return mapGlIssue(asRecord(stdout));
+          } catch {
+            return makeMinimalIssue(parsedGl);
+          }
         }),
       ),
 
@@ -380,35 +372,9 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
 
     // ── CI ────────────────────────────────────────────────────────────────
 
-    ciWatch: async (runId, watchOpts) => {
-      const pollMs = watchOpts?.pollMs ?? DEFAULT_POLL_MS;
-      const timeoutMs = watchOpts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-      const now = watchOpts?.now ?? Date.now;
-      const sleep =
-        watchOpts?.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-      const start = now();
-      const terminal = terminalCiFor(forge);
+    ciWatch: (runId, watchOpts) => ciWatchImpl(execFn, forge, cwd, owner, repo, runId, watchOpts),
 
-      let run: NormalizedCIRun | undefined;
-      for (;;) {
-        const stdout = await cmds.ciRunOnce(execFn, forge, cwd, owner, repo, runId);
-        const o = JSON.parse(stdout) as Record<string, unknown>;
-        run = forge === "github" ? mapGhRun(o) : mapGlPipeline(o);
-        if (terminal.has(run.status)) {
-          return { ok: true, run, terminal: true, timedOut: false };
-        }
-        if (now() - start >= timeoutMs) {
-          return { ok: true, run, terminal: false, timedOut: true };
-        }
-        await sleep(pollMs);
-      }
-    },
-
-    ciRun: (id) =>
-      cmds.ciRunOnce(execFn, forge, cwd, owner, repo, id).then((stdout) => {
-        const o = JSON.parse(stdout) as Record<string, unknown>;
-        return forge === "github" ? mapGhRun(o) : mapGlPipeline(o);
-      }),
+    ciRun: (id) => ciRunImpl(execFn, forge, cwd, owner, repo, id),
 
     // ── Merge readiness (SAFETY-CRITICAL) ─────────────────────────────────
 
@@ -488,3 +454,4 @@ export type {
 } from "./forge-types.ts";
 export * as forgeCommands from "./forge-commands.ts";
 export type { ForgeType, ForgeDetection } from "./forge-detect.ts";
+export { GL_TERMINAL_CI, GH_TERMINAL_CI, terminalCiFor } from "./forge-ci-terminal.ts";

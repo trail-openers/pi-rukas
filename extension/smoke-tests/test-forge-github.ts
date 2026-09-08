@@ -23,7 +23,6 @@ import {
   GH_PR,
   GH_REPO,
   GH_RUN_DONE,
-  GH_RUN_RUNNING,
   ghDetection,
   mkExec,
 } from "./forge-fixtures.ts";
@@ -77,6 +76,122 @@ async function main() {
     const rm = forgeCommands.labelRemoveCmd("github", "issue", 42, "needs-human-attention");
     assert(rm === "gh issue edit 42 --remove-label needs-human-attention", `got ${rm}`);
   });
+
+  // ── Create commands must NOT carry --json (gh create has no --json flag) ─
+  // gh issue create and gh pr create print the created object's URL as plain
+  // text. Appending --json makes gh exit non-zero — the dual-forge S4
+  // migration pattern-matched the create commands against the read commands
+  // and broke every issue filing on GitHub since that merge.
+  console.log("create commands (no --json) and canaries (with --json):");
+  await check("issueCreateCmd('github', …) does NOT contain --json", () => {
+    const cmd = forgeCommands.issueCreateCmd("github", "T", "/tmp/b");
+    assert(cmd.startsWith("gh issue create"), `got ${cmd}`);
+    assert(!cmd.includes("--json"), `must not carry --json: ${cmd}`);
+  });
+  await check("prCreateCmd('github', …) does NOT contain --json", () => {
+    const cmd = forgeCommands.prCreateCmd("github", "T", "branch", "/tmp/b", "main");
+    assert(cmd.startsWith("gh pr create"), `got ${cmd}`);
+    assert(!cmd.includes("--json"), `must not carry --json: ${cmd}`);
+  });
+  // Canary — these READ commands DO carry --json (proves the fix is not
+  // over-applied to the whole forge-commands module). A regression in any of
+  // them means the create-command fix accidentally stripped --json from a read.
+  for (const [label, cmd] of [
+    ["issueViewCmd", forgeCommands.issueViewCmd("github", 42)],
+    ["issueSearchCmd", forgeCommands.issueSearchCmd("github", "bug")],
+    ["prViewCmd", forgeCommands.prViewCmd("github", 17)],
+    ["prListCmd", forgeCommands.prListCmd("github")],
+    ["prChecksCmd", forgeCommands.prChecksCmd("github", 17)],
+    ["repoSettingsCmd", forgeCommands.repoSettingsCmd("github")],
+  ] as const) {
+    await check(`canary: ${label}('github', …) STILL contains --json`, () => {
+      assert(cmd.includes("--json"), `regressed: ${cmd}`);
+    });
+  }
+
+  // gh issue create prints the created URL as a plain line on stdout; the
+  // adapter must map that line into a NormalizedIssue, deriving `number` from
+  // the trailing path segment. A mapper that expects JSON here is a bug.
+  console.log("create plain-text URL mapping:");
+  {
+    const { fn } = mkExec({
+      "gh issue create": { stdout: "https://github.com/acme/widget/issues/42\n" },
+    });
+    const forge = createForge(det, { execFn: fn });
+    await check("issueCreate maps a plain-text URL stdout (number 42, full url)", async () => {
+      const issue = await forge.issueCreate("A new issue", "the body");
+      assert(issue.number === 42, `expected 42, got ${issue.number}`);
+      assert(issue.url === "https://github.com/acme/widget/issues/42", `url: ${issue.url}`);
+    });
+  }
+  {
+    const { fn } = mkExec({
+      "gh issue create": { stdout: "\n  https://github.com/acme/widget/issues/99\n  \n" },
+    });
+    const forge = createForge(det, { execFn: fn });
+    await check("issueCreate tolerates surrounding whitespace/blank lines", async () => {
+      const issue = await forge.issueCreate("A new issue", "the body");
+      assert(issue.number === 99, `expected 99, got ${issue.number}`);
+      assert(issue.url === "https://github.com/acme/widget/issues/99", `url: ${issue.url}`);
+    });
+  }
+  {
+    const { fn } = mkExec({
+      "gh pr create": { stdout: "https://github.com/acme/widget/pull/17\n" },
+    });
+    const forge = createForge(det, { execFn: fn });
+    await check("prCreate maps a plain-text URL stdout (number 17, full url)", async () => {
+      const pr = await forge.prCreate("A PR", "feature/issue-17-x", "the PR body", "main");
+      assert(pr.number === 17, `expected 17, got ${pr.number}`);
+      assert(pr.url === "https://github.com/acme/widget/pull/17", `url: ${pr.url}`);
+    });
+  }
+  {
+    const { fn } = mkExec({
+      "gh pr create": { stdout: "\n\nhttps://github.com/acme/widget/pull/77\t\n" },
+    });
+    const forge = createForge(det, { execFn: fn });
+    await check("prCreate tolerates surrounding whitespace and trailing tab", async () => {
+      const pr = await forge.prCreate("A PR", "feature/issue-17-x", "the PR body", "main");
+      assert(pr.number === 77, `expected 77, got ${pr.number}`);
+      assert(pr.url === "https://github.com/acme/widget/pull/77", `url: ${pr.url}`);
+    });
+  }
+  // Non-URL, non-JSON stdout (an error string that somehow reached the
+  // mapper) must reject — NOT silently map to number 0.
+  async function rejectsOnNonUrl(forge: ReturnType<typeof createForge>, label: string) {
+    let threw = false;
+    let got: unknown = undefined;
+    try {
+      await (label === "issue"
+        ? forge.issueCreate("A new issue", "the body")
+        : forge.prCreate("A PR", "feature/issue-17-x", "the PR body", "main"));
+    } catch {
+      threw = true;
+    }
+    assert(threw, `expected rejection, got: ${JSON.stringify(got)}`);
+    if (!threw && got && typeof got === "object" && "number" in got) {
+      assert((got as { number: number }).number !== 0, "must not map to number 0");
+    }
+  }
+  {
+    const { fn } = mkExec({
+      "gh issue create": { stdout: "HTTP Error 401: bad credentials\n" },
+    });
+    const forge = createForge(det, { execFn: fn });
+    await check("issueCreate rejects (no silent number=0) when stdout is not a URL", async () =>
+      rejectsOnNonUrl(forge, "issue"),
+    );
+  }
+  {
+    const { fn } = mkExec({
+      "gh pr create": { stdout: "HTTP Error 403: permission denied\n" },
+    });
+    const forge = createForge(det, { execFn: fn });
+    await check("prCreate rejects (no silent number=0) when stdout is not a URL", async () =>
+      rejectsOnNonUrl(forge, "pr"),
+    );
+  }
 
   // ── Issue operations ────────────────────────────────────────────────────
   console.log("issues:");
@@ -245,136 +360,9 @@ async function main() {
     });
   }
 
-  {
-    const { fn } = mkExec({
-      "gh api /repos/acme/widget/actions/runs/901": {
-        // First call: running; second call: completed.
-        stdout: JSON.stringify(GH_RUN_DONE),
-      },
-    });
-    const forge = createForge(det, { execFn: fn });
-    await check("ciWatch returns terminal on first poll", async () => {
-      const result = await forge.ciWatch(901, { pollMs: 1, timeoutMs: 1000 });
-      assert(result.ok, "ok");
-      assert(result.terminal, "terminal");
-      assert(!result.timedOut, "not timed out");
-      assert(result.run !== undefined, "run present");
-      assert(result.run!.status === "COMPLETED", `status ${result.run!.status}`);
-      assert(result.run!.conclusion === "SUCCESS", `conclusion ${result.run!.conclusion}`);
-    });
-  }
+  // CI watch + CI run are covered by smoke-tests/test-forge-ci-watch.ts
 
-  {
-    const { fn } = mkExec({
-      "gh api /repos/acme/widget/actions/runs/901": { stdout: JSON.stringify(GH_RUN_RUNNING) },
-    });
-    const forge = createForge(det, { execFn: fn });
-    let nowMs = 0;
-    const sleep = async (_ms: number) => {
-      nowMs += _ms;
-    };
-    await check("ciWatch times out at the cap", async () => {
-      const result = await forge.ciWatch(901, {
-        pollMs: 1000,
-        timeoutMs: 2500,
-        now: () => nowMs,
-        sleep,
-      });
-      assert(result.ok, "ok");
-      assert(!result.terminal, "not terminal");
-      assert(result.timedOut, "timed out");
-      assert(result.run !== undefined, "run present");
-      assert(result.run!.status === "IN_PROGRESS", `status ${result.run!.status}`);
-    });
-  }
-
-  // ── CI run ──────────────────────────────────────────────────────────────
-  {
-    const { fn } = mkExec({
-      "gh api /repos/acme/widget/actions/runs/901": { stdout: JSON.stringify(GH_RUN_DONE) },
-    });
-    const forge = createForge(det, { execFn: fn });
-    await check("ciRun returns the normalized run", async () => {
-      const run = await forge.ciRun(901);
-      assert(run.id === 901, `id ${run.id}`);
-      assert(run.status === "COMPLETED", `status ${run.status}`);
-      assert(run.conclusion === "SUCCESS", `conclusion ${run.conclusion}`);
-      assert(run.headBranch === "feature/issue-17-x", `head ${run.headBranch}`);
-    });
-  }
-
-  // ── Merge readiness (GitHub) ────────────────────────────────────────────
-  console.log("merge readiness (GitHub):");
-  {
-    const { fn } = mkExec({
-      "gh pr view 17": { stdout: JSON.stringify(GH_PR) },
-      "gh pr checks 17": { stdout: JSON.stringify(GH_CHECKS) },
-    });
-    const forge = createForge(det, { execFn: fn });
-    await check("readiness CLEAN when mergeStateStatus=CLEAN + all pass", async () => {
-      const result = await forge.mergeReadiness(17);
-      assert(result.ok, `ok: ${result.ok ? "" : result.reason}`);
-      if (result.ok) {
-        assert(result.readiness === "CLEAN", `readiness ${result.readiness}`);
-      }
-    });
-  }
-
-  {
-    const blocked = { ...GH_PR, mergeStateStatus: "BLOCKED" };
-    const { fn } = mkExec({
-      "gh pr view 17": { stdout: JSON.stringify(blocked) },
-      "gh pr checks 17": { stdout: JSON.stringify(GH_CHECKS) },
-    });
-    const forge = createForge(det, { execFn: fn });
-    await check("readiness fails closed on BLOCKED", async () => {
-      const result = await forge.mergeReadiness(17);
-      assert(result.ok === false, "should fail");
-      if (!result.ok) assert(result.reason.includes("BLOCKED"), `reason ${result.reason}`);
-    });
-  }
-
-  {
-    const failing = [
-      { name: "ci", state: "completed", bucket: "fail", isRequired: true },
-      { name: "lint", state: "completed", bucket: "pass", isRequired: true },
-    ];
-    const { fn } = mkExec({
-      "gh pr view 17": { stdout: JSON.stringify(GH_PR) },
-      "gh pr checks 17": { stdout: JSON.stringify(failing) },
-    });
-    const forge = createForge(det, { execFn: fn });
-    await check("readiness DIRTY when a required check fails", async () => {
-      const result = await forge.mergeReadiness(17);
-      assert(result.ok, "ok");
-      if (result.ok) assert(result.readiness === "DIRTY", `readiness ${result.readiness}`);
-    });
-  }
-
-  {
-    const { fn } = mkExec({
-      "gh pr view 17": { stdout: JSON.stringify(GH_PR) },
-      "gh pr checks 17": { error: true, stderr: "no checks" },
-    });
-    const forge = createForge(det, { execFn: fn });
-    await check("readiness fails closed when checks unreadable", async () => {
-      const result = await forge.mergeReadiness(17);
-      assert(result.ok === false, "should fail");
-    });
-  }
-
-  {
-    const closed = { ...GH_PR, state: "CLOSED" };
-    const { fn } = mkExec({
-      "gh pr view 17": { stdout: JSON.stringify(closed) },
-    });
-    const forge = createForge(det, { execFn: fn });
-    await check("readiness fails closed when PR not OPEN", async () => {
-      const result = await forge.mergeReadiness(17);
-      assert(result.ok === false, "should fail");
-      if (!result.ok) assert(result.reason.includes("CLOSED"), `reason ${result.reason}`);
-    });
-  }
+  // Merge readiness (GitHub) is covered by test-forge-merge-readiness.ts
 
   // ── Labels ──────────────────────────────────────────────────────────────
   console.log("labels:");

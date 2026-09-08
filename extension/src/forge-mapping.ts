@@ -303,6 +303,11 @@ export function mapGlRepo(raw: Record<string, unknown>): NormalizedRepo {
 /**
  * Build a minimal NormalizedPullRequest from a plain-text PR URL response.
  * Used as a fallback when `gh pr create` returns a URL instead of JSON.
+ *
+ * `parsed.url` is optional because `parsePrNumberFromResponse` extracts it
+ * only when the response is JSON (the plain-text URL shape only carries the
+ * number, not the full URL); the caller can post-fill `url` from the
+ * trimmed stdout if it wants the full URL on the result.
  */
 export function makeMinimalPr(parsed: { number: number; url?: string }): NormalizedPullRequest {
   return {
@@ -316,6 +321,25 @@ export function makeMinimalPr(parsed: { number: number; url?: string }): Normali
     author: undefined,
     mergeable: null,
     mergeStateStatus: null,
+    labels: [],
+    createdAt: undefined,
+    updatedAt: undefined,
+  };
+}
+
+/**
+ * Build a minimal NormalizedIssue from a plain-text issue URL response.
+ * Used when `gh issue create` returns a URL (it has no `--json` flag).
+ * Mirror of `makeMinimalPr`; the issue shape has no mergeable/mergeStateStatus.
+ */
+export function makeMinimalIssue(parsed: { number: number; url?: string }): NormalizedIssue {
+  return {
+    number: parsed.number,
+    title: "",
+    body: "",
+    state: "" as NormalizedIssue["state"],
+    url: parsed.url ?? "",
+    author: undefined,
     labels: [],
     createdAt: undefined,
     updatedAt: undefined,
@@ -353,10 +377,17 @@ export function parsePrNumberFromResponse(
   } catch {
     // Not JSON — try plain-text URL extraction.
   }
-  const ghMatch = stdout.match(/\/pull\/(\d+)/);
-  if (ghMatch?.[1]) return { number: Number.parseInt(ghMatch[1], 10) };
-  const glMatch = stdout.match(/-\/merge_requests\/(\d+)/);
-  if (glMatch?.[1]) return { number: Number.parseInt(glMatch[1], 10) };
+  // Plain-text URL shapes: the URL is the trimmed line, but the capture must
+  // stop at `#` (anchor fragments like `#discussion_r123`) or whitespace so
+  // the caller carries a CLEAN url, not the fragment-carrying prose.
+  const ghPull = stdout.match(/https?:\/\/[^\s#]+\/pull\/(\d+)/);
+  if (ghPull?.[1]) return { number: Number.parseInt(ghPull[1], 10), url: ghPull[0] };
+  const ghIssue = stdout.match(/https?:\/\/[^\s#]+\/issues\/(\d+)/);
+  if (ghIssue?.[1]) return { number: Number.parseInt(ghIssue[1], 10), url: ghIssue[0] };
+  const glMr = stdout.match(/https?:\/\/[^\s#]+-\/merge_requests\/(\d+)/);
+  if (glMr?.[1]) return { number: Number.parseInt(glMr[1], 10), url: glMr[0] };
+  const glIssue = stdout.match(/https?:\/\/[^\s#]+-\/issues\/(\d+)/);
+  if (glIssue?.[1]) return { number: Number.parseInt(glIssue[1], 10), url: glIssue[0] };
   return undefined;
 }
 
