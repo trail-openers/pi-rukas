@@ -51,6 +51,19 @@ const calls: string[] = [];
 const gatePrompts: string[] = [];
 let gateReplyOverride: string | null = null;
 
+/**
+ * Structured tool-call replies the Phase-2 explore children would make via
+ * the report_plan_item tool: the driver reads result.toolUses, not prose.
+ * Only acceptance-criterion and edge-case items — the typed sections they
+ * feed — one angle each (pinning the angle-name rendering below).
+ */
+function angleToolUses(): unknown[] {
+  return [
+    { name: "report_plan_item", arguments: { kind: "acceptance-criterion", text: "the new tool registers with the exact TypeBox schema", angle: "interfaces-and-contracts" } },
+    { name: "report_plan_item", arguments: { kind: "edge-case", text: "a child killed mid-flight reports toolUses: [] — the driver must not parse its prose as findings", angle: "reproduction-surface" } },
+  ];
+}
+
 function __responses(
   spec: { role: string; prompt: string },
 ): DispatchResult {
@@ -85,11 +98,13 @@ function __responses(
       exitCode: 0,
     };
   }
+  // Prose carries a preamble + summary on purpose: the contamination
+  // regression the structured extraction must not leak into typed fields.
   return {
     role: "explore",
     ok: true,
-    text: "- extension/src/plan-driver.ts:42 — existing seam for the pipeline\n- extension/src/work-tool.ts:70 — the registration pattern to clone",
-    toolUses: [],
+    text: "Task complete: investigated the work area.\n\n- extension/src/plan-driver.ts:42 — existing seam for the pipeline\n- extension/src/work-tool.ts:70 — the registration pattern to clone",
+    toolUses: angleToolUses(),
     ms: 1,
     exitCode: 0,
   };
@@ -187,6 +202,11 @@ async function invoke(params: Record<string, unknown>) {
     explores.length >= 2,
     `Phase 2: ${explores.length} explores dispatched (feature = prior-art + interfaces + test-surface, conditional on code identifiers in the descriptor)`,
   );
+  // Structured toolUses reach the typed sections; no prose leak (D1/D3).
+  assert(text.includes("the new tool registers with the exact TypeBox schema"), "D1: structured acceptance-criterion items reach the Acceptance criteria section");
+  assert(text.includes("a child killed mid-flight reports toolUses: []"), "D3: edge-case items reach the Edge cases section for a feature plan");
+  assert(!text.includes("Task complete:"), "D1 regression: the 'Task complete:' preamble does NOT leak into the spec");
+  assert(!text.includes("registration pattern to clone"), "D1 regression: prose list lines are NOT parsed into the spec (structured items only)");
   const gates = calls.filter((c) => c.startsWith("adversarial-developer:"));
   assert(
     gates.length === 2,
@@ -330,16 +350,18 @@ async function invoke(params: Record<string, unknown>) {
 
 {
   // Epic depth limit: depth >= 3 → no sub-issues section, note present.
+  const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
   const findings = [
     {
       name: "decomposition-surface",
       ok: true,
       text: "- first sub-task line one\n- second sub-task line two",
+      toolUses: [],
     },
   ];
-  const under = draftSpec("epic", "epic descriptor", findings, [], [], [], 1);
+  const under = draftSpec("epic", "epic descriptor", findings, [], [], [], 1, NO_DIRS);
   assert(/## Sub-issues/.test(under.body), "depth 1: sub-issues section present");
-  const at = draftSpec("epic", "epic descriptor", findings, [], [], [], 3);
+  const at = draftSpec("epic", "epic descriptor", findings, [], [], [], 3, NO_DIRS);
   assert(
     !/## Sub-issues/.test(at.body),
     "depth 3: sub-issues section replaced by the minimal body",
@@ -352,11 +374,12 @@ async function invoke(params: Record<string, unknown>) {
   const spike = draftSpec(
     "spike",
     "spike descriptor",
-    [{ name: "scoping", ok: true, text: "- a decision by Friday" }],
+    [{ name: "scoping", ok: true, text: "- a decision by Friday", toolUses: [] }],
     [],
     [],
     [],
     0,
+    NO_DIRS,
   );
   assert(
     /Expected deliverable/.test(spike.body),

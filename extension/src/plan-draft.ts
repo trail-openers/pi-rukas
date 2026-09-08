@@ -8,12 +8,16 @@
  * Split out of plan-driver.ts to keep each module under the 500-line hard
  * limit (AGENTS.md §12). Phase 0 (classify) lives in plan-types.ts; phases
  * 4-5 (gap gate + filing) + the orchestrator live in plan-driver.ts.
+ *
+ * Phase 2's children report items via the `report_plan_item` tool
+ * (plan-reporter.ts); this module reads structured items from
+ * `result.toolUses` — no line-splitting prose (D1-D8 fix).
  */
-
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { detectForge } from "./forge-detect.ts";
 import { type Forge, createForge } from "./forge.ts";
+import { PLAN_ITEM_KINDS } from "./plan-reporter.ts";
 import { EPIC_SUB_ISSUE_DEPTH_LIMIT, type PlanType, planTitle } from "./plan-types.ts";
 import type { MemoryHit } from "./vipune.ts";
 import { vipuneSearch } from "./vipune.ts";
@@ -96,124 +100,12 @@ export async function mechanicalInventory(
 
 // ---------------------------------------------------------------------------
 // Phase 2 — type-specialised investigation (parallel explore)
+//
+// The per-ticket-type angle table + prompt construction live in
+// plan-angles.ts (kept out of this file by the 500-line hard limit).
 // ---------------------------------------------------------------------------
 
-export interface Angle {
-  name: string;
-  /** undefined angle prompt = the angle is conditional; decided per run. */
-  build: (ctx: {
-    type: PlanType;
-    descriptor: string;
-    priorContext: { source: string; fact: string }[];
-    codeIdentifiers: string[];
-  }) => string | undefined;
-}
-
-const ANGLES: Record<PlanType, Angle[]> = {
-  bug: [
-    {
-      name: "reproduction-surface",
-      build: ({ descriptor }) =>
-        `Determine concrete steps to reproduce this bug: "${descriptor}". Find: the error messages and logs relevant to it (codebase_memory_search_code + git log), environment specifics that matter, flakiness factors, and the existing test cases that should have caught it. Return findings + evidence + confidence + gaps.`,
-    },
-    {
-      name: "affected-code",
-      build: ({ descriptor }) =>
-        `Identify the files, functions and call sites affected by this bug: "${descriptor}". For each, capture exact path:line, the function/component name, and why it is in-scope. Use codebase_memory_search_code. Return affected[] + references + gaps.`,
-    },
-    {
-      name: "test-surface",
-      build: ({ descriptor }) =>
-        `Catalogue the existing tests near the work area for this bug: "${descriptor}". List file paths + key test names to extend or that are missing, golden-fixture candidates, and coverage gaps the fix should close. Return existingTests[] + goldenFixtureCandidates[] + coverageGaps[].`,
-    },
-  ],
-  feature: [
-    {
-      name: "prior-art",
-      build: ({ descriptor, codeIdentifiers }) => {
-        if (codeIdentifiers.length === 0) return undefined;
-        return `Look for prior art for this feature: "${descriptor}". Check existing implementations and patterns with codebase_memory_search_code (candidate identifiers: ${codeIdentifiers.join(", ")}). Return priorArt[] (source, summary, reuse opportunity) + conventions[] + gaps.`;
-      },
-    },
-    {
-      name: "interfaces-and-contracts",
-      build: ({ descriptor, codeIdentifiers }) => {
-        if (codeIdentifiers.length === 0) return undefined;
-        return `Map the type contracts, data shapes and API boundaries this feature touches: "${descriptor}". Function signatures to implement or conform to, structures passed in/out, external contracts. Candidate identifiers: ${codeIdentifiers.join(", ")}. Include typed references where possible (path/file.ts:NN — exported interface X). Return contracts[] + dataShapes[] + references (file paths, no colons).`;
-      },
-    },
-    {
-      name: "test-surface",
-      build: ({ descriptor }) =>
-        `Catalogue the existing tests near the work area for this feature: "${descriptor}". File paths + key test names to extend, golden-fixture candidates, coverage gaps to close. Return existingTests[] + goldenFixtureCandidates[] + coverageGaps[].`,
-    },
-  ],
-  epic: [
-    {
-      name: "decomposition-surface",
-      build: ({ descriptor }) =>
-        `Break this epic into natural sub-issues: "${descriptor}". For each: a title proposal, a brief scope, dependencies on other sub-issues, and a suggested ordering. Return subIssues[] (title, scope, deps, order).`,
-    },
-    {
-      name: "success-criteria",
-      build: ({ descriptor }) =>
-        `How do we know this epic is done? "${descriptor}". Outcome metrics, user-visible behaviour, technical milestones. Return criteria[] (type, description, measurement).`,
-    },
-  ],
-  chore: [
-    {
-      name: "scope-validation",
-      build: ({ descriptor }) =>
-        `Is this actually a chore vs a feature/bug in disguise? "${descriptor}". What is the smallest viable change? What scope-creep risks exist that should be split into separate tickets? Return isChore + smallestViableChange + scopeCreepRisks[].`,
-    },
-    {
-      name: "affected-files",
-      build: ({ descriptor }) =>
-        `List the files this chore will touch: "${descriptor}". For each: path + change type (rename/refactor/delete/config-bump). Return affected[].`,
-    },
-  ],
-  spike: [
-    {
-      name: "scoping",
-      build: ({ descriptor }) =>
-        `Scope this spike: "${descriptor}". What is the time-box, the expected deliverable (a decision, prototype or write-up — NOT shipped code), and the success criteria? Return timebox + deliverable + successCriteria.`,
-    },
-  ],
-};
-
-export function anglePromptsFor(
-  type: PlanType,
-  descriptor: string,
-  priorContext: { source: string; fact: string }[],
-  codeIdentifiers: string[],
-): { name: string; prompt: string }[] {
-  return ANGLES[type]
-    .map((a) => ({
-      name: a.name,
-      prompt: buildAnglePrompt(a, type, descriptor, priorContext, codeIdentifiers),
-    }))
-    .filter((x) => x.prompt !== undefined)
-    .map((x) => ({ name: x.name, prompt: x.prompt as string }));
-}
-
-function buildAnglePrompt(
-  angle: Angle,
-  type: PlanType,
-  descriptor: string,
-  priorContext: { source: string; fact: string }[],
-  codeIdentifiers: string[],
-): string | undefined {
-  const task = angle.build({ type, descriptor, priorContext, codeIdentifiers });
-  if (!task) return undefined;
-  const prior =
-    priorContext.length > 0
-      ? `PM has already established (DO NOT re-investigate):\n${priorContext
-          .map((p) => `- [${p.source}] ${p.fact}`)
-          .join("\n")}\n\n`
-      : "";
-  const taskLine = `INVESTIGATION (angle: ${angle.name}, ticket type: ${type})\n\n${prior}${task}\n\n`;
-  return `${taskLine}Be compact: return your findings as a tight bulleted list of the facts you confirmed, with file:line evidence where you have it. No preamble.`;
-}
+export { anglePromptsFor, type Angle } from "./plan-angles.ts";
 
 // ---------------------------------------------------------------------------
 // Phase 3 — draft synthesis (driver assembles the body)
@@ -223,29 +115,135 @@ export interface AngleFindings {
   name: string;
   ok: boolean;
   text: string;
+  /** Structured items from this angle's tool calls (empty = zero valid calls). */
+  toolUses: PlanItemKind[];
+}
+
+export interface PlanItemKind {
+  kind: string;
+  text: string;
+  angle: string;
+}
+
+export type PlanItemKindName = (typeof PLAN_ITEM_KINDS)[number];
+
+export interface OperatorDirectives {
+  acceptanceCriteria: string[];
+  pitfalls: string[];
+  outOfScope: string[];
+}
+
+/**
+ * Extract report_plan_item calls from an angle's tool_uses (the structured
+ * record — the prose reply is only a human-readable summary). Follows the
+ * lens-review / policy-judge precedent: read result.toolUses, no text
+ * parsing. Schema-invalid items (unknown kind, empty text) are dropped.
+ */
+export function extractPlanItems(toolUses: unknown[], angleName: string): PlanItemKind[] {
+  const out: PlanItemKind[] = [];
+  for (const tu of toolUses) {
+    if (!tu || typeof tu !== "object") continue;
+    const t = tu as { name?: string; arguments?: unknown };
+    if (t.name !== "report_plan_item" || !t.arguments || typeof t.arguments !== "object") continue;
+    const a = t.arguments as Record<string, unknown>;
+    const kind = typeof a.kind === "string" ? a.kind : "";
+    if (!(PLAN_ITEM_KINDS as readonly string[]).includes(kind)) continue;
+    const text = typeof a.text === "string" ? a.text.trim() : "";
+    if (!text) continue;
+    const angle = typeof a.angle === "string" && a.angle.trim() ? a.angle.trim() : angleName;
+    out.push({ kind: kind as PlanItemKindName, text, angle });
+  }
+  return out;
+}
+
+/**
+ * Parse operator-supplied typed fields out of the `context` param (D7).
+ * Headings: ACCEPTANCE CRITERIA, PITFALLS (or EDGE CASES), OUT OF SCOPE.
+ */
+export function parseOperatorDirectives(context: string | undefined): OperatorDirectives {
+  const out: OperatorDirectives = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
+  if (!context || !context.trim()) return out;
+  let target: keyof OperatorDirectives | null = null;
+  for (const raw of context.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    const m = line.match(
+      /^(?:#+\s*)?(ACCEPTANCE[\s-]*CRITERIA|PITFALLS|EDGE[\s-]*CASES|OUT[\s-]*OF[\s-]*SCOPE)\s*[:：]?\s*(.*)$/i,
+    );
+    if (m) {
+      const name = (m[1] ?? "").toUpperCase();
+      target = name.startsWith("ACCEPTANCE")
+        ? "acceptanceCriteria"
+        : name.startsWith("OUT")
+          ? "outOfScope"
+          : "pitfalls";
+      const rest = (m[2] ?? "").trim();
+      if (rest) out[target].push(rest);
+      continue;
+    }
+    if (!target) continue;
+    const bullet = line.replace(/^[-*\d.)\s]+/, "").trim();
+    if (bullet) out[target].push(bullet);
+  }
+  return out;
 }
 
 function sectionBullets(items: string[], fallback: string): string {
-  const clean = items.filter((s) => s.trim().length > 0);
+  const clean = [...new Set(items.map((s) => s.trim()))].filter((s) => s.length > 0);
   return clean.length > 0 ? clean.map((s) => `- ${s}`).join("\n") : `- ${fallback}`;
 }
 
-function extractLines(findings: AngleFindings, minLen = 8): string[] {
-  if (!findings.ok) return [];
-  return findings.text
-    .split("\n")
-    .map((l) => l.replace(/^[-*\d.)\s]+/, "").trim())
-    .filter((l) => l.length >= minLen && !/^(output|return|use|note:)/i.test(l));
+function itemsByKind(findings: AngleFindings[], kind: PlanItemKindName): PlanItemKind[] {
+  return findings.flatMap((f) => f.toolUses).filter((i) => i.kind === kind);
+}
+
+/**
+ * The prior-context block rendered into CHILD prompts (Phase-2 angles, gap
+ * gate). Capped at ~2000 chars TOTAL (not per item): with the 200-char clip
+ * removed for the FILED BODY (D2), the full operator context now reaches
+ * every child prompt, 3-8 angle children and up to 2 gap-gate rounds.
+ * draftSpec (the filed body) renders priorContext uncapped — this cap exists
+ * only at the child-prompt render site. A truncation marker makes the clip
+ * visible rather than silently dropping facts.
+ */
+export const PRIOR_CONTEXT_CHILD_PROMPT_CAP = 2000;
+
+export function renderPriorContext(priorContext: { source: string; fact: string }[]): string {
+  if (priorContext.length === 0) return "";
+  const lines = priorContext.map((p) => `- [${p.source}] ${p.fact}`);
+  const rendered = lines.join("\n");
+  if (rendered.length <= PRIOR_CONTEXT_CHILD_PROMPT_CAP) return rendered;
+  const kept: string[] = [];
+  let soFar = 0;
+  for (const line of lines) {
+    const cost = soFar === 0 ? line.length : line.length + 1;
+    if (soFar + cost > PRIOR_CONTEXT_CHILD_PROMPT_CAP) break;
+    kept.push(line);
+    soFar += cost;
+  }
+  return `${kept.join("\n")}\n- [truncated] ${lines.length - kept.length} prior context item(s) omitted for child-prompt size (full inventory is in the filed body)`;
 }
 
 function epicSubIssues(findings: AngleFindings[]): string[] {
-  const decompose = findings.find((f) => f.name === "decomposition-surface" && f.ok);
-  const lines = decompose ? extractLines(decompose, 6) : [];
-  return lines.map((l, i) => `- [ ] #N — ${l} (sub-issue ${i + 1})`);
+  const subs = itemsByKind(findings, "sub-issue");
+  // no prose fallback — the driver halts on all-angles-failed before reaching here
+  if (subs.length === 0) return [];
+  return subs.map((s, i) => `- [ ] #N — ${s.text} (sub-issue ${i + 1}, from ${s.angle})`);
 }
 
 const DEPTH_LIMIT_NOTE =
   "- spec depth limit reached — run start_plan_driver with this descriptor for the full spec";
+
+/** Max items rendered per typed section — generous enough for a real spec (D2). */
+const SECTION_MAX_ITEMS = 20;
+
+// #633 SIMPLICITY-lens note: the references fallback (REF_RE prose file-path scan)
+// SURVIVES where the sub-issue prose fallback does not. A file-path regex over prose
+// is a narrow, high-precision pattern — it matches only tokens that look like code
+// paths, not free lines. The sub-issue fallback line-split ANY prose line >= 6 chars
+// into checkboxes; this one cannot. Structured reference items take precedence; the
+// scan is only a fallback when an angle made zero `report_plan_item` reference calls.
+const REF_RE = /\b[\w./-]+\.(?:ts|tsx|js|rs|go|py|md)\b/g;
 
 export function draftSpec(
   type: PlanType,
@@ -255,45 +253,78 @@ export function draftSpec(
   openQuestions: string[],
   outOfScope: string[],
   depth: number,
+  directives: OperatorDirectives,
 ): { title: string; body: string } {
   const title = planTitle(descriptor, type);
 
+  // D2: no clipping of operator context; the inventory is not capped at 8.
   const ctx = sectionBullets(
-    priorContext.slice(0, 8).map((p) => `${p.fact} [${p.source}]`),
+    priorContext.map((p) => `${p.fact} [${p.source}]`),
     "none — cold start (no prior /research or session context)",
   );
 
+  // Technical context: structured items per ok angle (the record); the prose
+  // summary is the FALLBACK only when an angle made no tool calls.
   const angleLines = findings
     .filter((x) => x.ok)
-    .map((x) => `- **${x.name}**: ${extractLines(x, 6).slice(0, 4).join(" ") || "see findings"}`);
+    .map((x) => {
+      const shown = x.toolUses
+        .map((i) => i.text)
+        .slice(0, SECTION_MAX_ITEMS)
+        .join("; ");
+      const prose = x.text
+        .trim()
+        .split("\n")
+        .filter((l) => l.trim())
+        .slice(0, 4)
+        .join("; ");
+      return `- **${x.name}**: ${
+        shown.length > 0 ? shown : prose.length > 0 ? prose : "see findings"
+      }`;
+    });
   const techContext =
     angleLines.length > 0
       ? angleLines.join("\n")
       : "- (no code-named investigation angles ran for this descriptor)";
 
-  const testLines = findings
-    .filter((x) => x.name === "test-surface" && x.ok)
-    .flatMap((x) => extractLines(x));
+  // Acceptance criteria — operator directives first, then structured items
+  // from ALL angles (D1: the Test surface section no longer double-uses lines).
+  const acItems = [
+    ...directives.acceptanceCriteria,
+    ...itemsByKind(findings, "acceptance-criterion").map((i) => i.text),
+  ].slice(0, SECTION_MAX_ITEMS);
+
+  // Test surface: structured test-surface-item items from ALL angles.
   const testSurface = sectionBullets(
-    testLines,
+    itemsByKind(findings, "test-surface-item")
+      .map((i) => i.text)
+      .slice(0, SECTION_MAX_ITEMS),
     "catalogue the tests near the work area in Phase 2",
   );
 
-  const referenceLines = [
-    ...new Set(
-      findings.flatMap((x) => x.text.match(/\b[\w./-]+\.(?:ts|tsx|js|rs|go|py|md)\b/g) ?? []),
-    ),
-  ].slice(0, 8);
+  // References: structured reference items first; fallback to a prose
+  // file-path scan only when none were reported (silence-detection precedent).
+  const refItems = itemsByKind(findings, "reference")
+    .map((i) => i.text)
+    .slice(0, SECTION_MAX_ITEMS);
+  const proseRefs = [...new Set(findings.flatMap((x) => x.text.match(REF_RE) ?? []))].slice(0, 8);
+  const referenceLines =
+    refItems.length > 0
+      ? refItems
+      : proseRefs.map((r) => `${r} — existing pattern or affected surface; verify before editing`);
   const references = sectionBullets(
-    referenceLines.map((r) => `${r} — existing pattern or affected surface; verify before editing`),
+    referenceLines,
     "run `codebase_memory_search_code` over the descriptor's identifiers during /work",
   );
 
-  const edgeLines = findings
-    .filter((x) => (x.name === "risk-surface" || x.name === "reproduction-surface") && x.ok)
-    .flatMap((x) => extractLines(x))
-    .slice(0, 6);
-  const edgeCases = sectionBullets(edgeLines, "none surfaced by the investigation angles");
+  // D3 fix: edge cases come from the "edge-case" kind across ALL angles (the
+  // old filter matched a nonexistent "risk-surface" angle name). Operator
+  // pitfalls take precedence.
+  const edgeItems = [
+    ...directives.pitfalls,
+    ...itemsByKind(findings, "edge-case").map((i) => i.text),
+  ].slice(0, SECTION_MAX_ITEMS);
+  const edgeCases = sectionBullets(edgeItems, "none surfaced by the investigation angles");
 
   const depthLimit = depth >= EPIC_SUB_ISSUE_DEPTH_LIMIT ? `\n${DEPTH_LIMIT_NOTE}\n` : "";
 
@@ -302,17 +333,28 @@ export function draftSpec(
       ? `\n## Sub-issues\n\n${epicSubIssues(findings).join("\n") || "- (decomposition not available)"}\n`
       : "";
 
+  const oosAll = [
+    ...directives.outOfScope,
+    ...itemsByKind(findings, "out-of-scope").map((i) => i.text),
+    ...outOfScope,
+  ];
+
+  // Spike's deliverable section reuses the scoping angle's items; the
+  // non-spike acceptance-criteria section is built from acItems above.
   const acSection =
     type === "spike"
       ? `## Expected deliverable (NOT code — a decision or proof of concept)\n\n${sectionBullets(
-          findings.filter((x) => x.name === "scoping" && x.ok).flatMap((x) => extractLines(x)),
+          findings
+            .filter((x) => x.name === "scoping" && x.ok)
+            .flatMap((x) => x.toolUses)
+            .map((i) => i.text)
+            .slice(0, SECTION_MAX_ITEMS),
           "a decision or proof of concept — not shipped code",
         )}\n`
       : `## Acceptance criteria\n\n${sectionBullets(
-          [...angleLines.slice(0, 0), ...testLines.slice(0, 3), ...edgeLines.slice(0, 2)],
+          acItems,
           "derive the testable outcomes from the investigation findings before /work",
         )}\n`;
-
   const openQ =
     openQuestions.length > 0
       ? openQuestions
@@ -323,10 +365,9 @@ export function draftSpec(
           .join("\n")
       : "- (none)";
   const oos =
-    outOfScope.length > 0
-      ? outOfScope.map((s) => `- ${s}`).join("\n")
+    oosAll.length > 0
+      ? oosAll.map((s) => `- ${s}`).join("\n")
       : "- everything not named in the sections above";
-
   const body = `## Context & motivation
 
 Descriptor: ${descriptor}

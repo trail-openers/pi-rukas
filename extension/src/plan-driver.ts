@@ -54,7 +54,10 @@ import {
   anglePromptsFor,
   codeIdentifiersIn,
   draftSpec,
+  extractPlanItems,
   mechanicalInventory,
+  parseOperatorDirectives,
+  renderPriorContext,
 } from "./plan-draft.ts";
 import {
   type PlanDriverInput,
@@ -69,6 +72,19 @@ import { trace } from "./trace.ts";
 const execp = promisify(exec);
 const GAP_GATE_MAX_ITERATIONS = 2;
 
+/**
+ * Companion-extension path for the plan Phase-2 children (report_plan_item).
+ * Follows LENS_REPORTER_PATH / POLICY_REPORTER_PATH exactly.
+ */
+const PLAN_REPORTER_PATH = path.join(__dirname, "plan-reporter.ts");
+
+/**
+ * The extra args the Phase-2 investigation children run with: no skills
+ * (the exploration tools are in the role prompt; skills would just add cost)
+ * + the plan-reporter extension that registers report_plan_item.
+ */
+const PLAN_EXTRA_ARGS: string[] = ["--no-skills", "--extension", PLAN_REPORTER_PATH];
+
 // ---------------------------------------------------------------------------
 // Phase 4 — adversarial gap gate
 // ---------------------------------------------------------------------------
@@ -78,16 +94,22 @@ function gapGatePrompt(
   findings: AngleFindings[],
   priorContext: { source: string; fact: string }[],
 ): string {
-  const summary = findings.map((x) => `- ${x.name}: ${x.ok ? "ran" : "skipped/failed"}`).join("\n");
+  const summary = findings
+    .map((x) => {
+      const n = x.toolUses.filter((i) => typeof i === "object").length;
+      return `- ${x.name}: ${x.ok ? (n > 0 ? `ran (${n} structured item${n === 1 ? "" : "s"})` : "ran (no structured items)") : "skipped/failed"}`;
+    })
+    .join("\n");
   const head =
     "GAP DETECTION: review this draft spec and find what is missing, under-specified, ambiguous or unverifiable.\n\n";
   const spec = `DRAFT SPEC:\n${body}\n\n`;
   const sum = `PHASE 2 FINDINGS SUMMARY:\n${summary}\n\n`;
+  // #633: the gate child is one reviewer — the prior-context block is capped
+  // at the render site via renderPriorContext. The filed body carries the
+  // full uncapped inventory (draftSpec, D2), only the CHILD prompt gets the cap.
   const prior =
     priorContext.length > 0
-      ? `PM has already established these decisions and facts (DO NOT re-raise them as gaps; citing them is only valid if you can show the spec contradicts them):\n${priorContext
-          .map((p) => `- [${p.source}] ${p.fact}`)
-          .join("\n")}\n\n`
+      ? `PM has already established these decisions and facts (DO NOT re-raise them as gaps; citing them is only valid if you can show the spec contradicts them):\n${renderPriorContext(priorContext)}\n\n`
       : "";
   const tail =
     "For each gap, output ONE line starting with the marker GAP: followed by the severity (CRITICAL: cannot proceed; HIGH: implementer will be confused or wrong; MEDIUM: nice-to-have clarification; LOW: cosmetic), an em dash, a short description, then — proposed resolution: with the proposed resolution. Example: GAP: CRITICAL — no failure-mode acceptance criterion — proposed resolution: add a criterion for the retry path. Never write a severity word on its own line — prose mentioning CRITICAL/HIGH/MEDIUM/LOW does not create a gap unless the line starts with GAP:. Each resolution must be ONE of: (a) an additional research dispatch, (b) a sharper acceptance criterion to add, or (c) an Open Question. End your reply with a single line exactly of the form:\nVERDICT: READY  (zero CRITICAL/HIGH gaps)\nor\nVERDICT: NEEDS_ITERATION";
@@ -227,10 +249,16 @@ export async function runPlanPipeline(
       .slice(0, 5)
       .map((r) => ({ source: `issue #${r.number} (${r.state})`, fact: r.title })),
   ];
+  // D7: operator-supplied typed fields (ACCEPTANCE CRITERIA / PITFALLS /
+  // OUT OF SCOPE blocks in the context param) take precedence over
+  // specialist output for those fields — parsed once, threaded to draftSpec.
+  const directives = parseOperatorDirectives(context);
   if (context && context.trim().length > 0) {
     for (const line of context.trim().split("\n")) {
       if (line.trim())
-        priorContext.push({ source: "context param", fact: line.trim().slice(0, 200) });
+        // D2: no 200-char clipping of operator context — the operator is the
+        // authority and the inventory renders it verbatim.
+        priorContext.push({ source: "context param", fact: line.trim() });
     }
   }
 
@@ -272,7 +300,11 @@ export async function runPlanPipeline(
     );
   }
 
-  // Phase 2
+  // Phase 2 — the children run with the plan-reporter extension (the
+  // report_plan_item tool) so the driver reads structured items from
+  // result.toolUses instead of line-splitting prose. The duplicate-risk
+  // child and the gap-gate child do NOT get the reporter — they return a
+  // single marker-line reply, not a list of items.
   const codeIds = codeIdentifiersIn(descriptor);
   const angles = anglePromptsFor(type, descriptor, priorContext, codeIds);
   const findings: AngleFindings[] = await Promise.all(
@@ -280,10 +312,56 @@ export async function runPlanPipeline(
       dispatch(
         pi,
         { role: "explore", prompt: a.prompt },
-        { label: `plan-${a.name}`.slice(0, 24) },
-      ).then((r) => ({ name: a.name, ok: r.ok && !r.errorStop, text: r.text })),
+        { label: `plan-${a.name}`.slice(0, 24), extraArgs: PLAN_EXTRA_ARGS },
+      ).then((r) => {
+        const toolUses = r.toolUses; // #633: DispatchResult declares toolUses: unknown[] (non-optional) — the ?? [] guarded nothing
+        // Structured-first (D8, fail-closed): an angle is "ok" only when the
+        // dispatch succeeded AND it produced at least one structured item. An
+        // angle that returned prose-only contributed nothing to the typed
+        // sections — its summary may still show in Technical context as a
+        // fallback, but it does not count as a completed angle.
+        const ok = r.ok && !r.errorStop && toolUses.length > 0;
+        return {
+          name: a.name,
+          ok,
+          text: r.text,
+          toolUses: extractPlanItems(toolUses, a.name),
+        };
+      }),
     ),
   );
+
+  // #633 aggregate all-angles-failed guard (fail-closed): each angle fails
+  // closed individually (ok requires toolUses.length > 0), but if EVERY
+  // dispatched angle produced zero structured items — all prose-only or
+  // schema-invalid calls — every typed section silently falls back and the
+  // pipeline would file a ticket reading "(decomposition not available)" /
+  // "none" with fallback strings everywhere (the epics with the gap gate off
+  // by default were the worst case). Halt before draftSpec/fileIssue instead;
+  // the operator sees WHY (all angles returned prose-only or schema-invalid
+  // calls), not an empty spec.
+  const withItems = findings.filter((f) => f.toolUses.length > 0).length;
+  if (findings.length > 0 && withItems === 0) {
+    trace(
+      `plan-driver: ALL ${findings.length} angles produced zero structured items (prose-only or schema-invalid calls) — halting, no spec filed`,
+    );
+    const angleNames = findings.map((f) => f.name).join(", ");
+    const spec = `(spec not drafted — all investigation angles returned zero structured items)\n\nDispatched angles: ${angleNames}\n\nEach angle returned either prose only (no report_plan_item tool calls) or schema-invalid calls only. This usually means the reporter extension was not loaded, or the model did not make the tool calls. Re-run start_plan_driver — the investigation children are re-dispatched; if this recurs, check the plan-reporter extension registration (PLAN_REPORTER_PATH).`;
+    const title = planTitle(descriptor, type);
+    trace(
+      `plan-driver: type=${type} angles=${findings.length} structured=${withItems} gaps=0 filed=false dryRun=${!!dryRun} ALL-ANGLES-FAILED`,
+    );
+    return {
+      type,
+      title,
+      spec,
+      gaps: [],
+      priorContext: priorContext.slice(0, 15),
+      filed: false,
+      issueUrl: undefined,
+      capHit: true,
+    };
+  }
 
   // Phase 3
   const openQuestions: string[] = [];
@@ -296,6 +374,7 @@ export async function runPlanPipeline(
     openQuestions,
     outOfScope,
     depth,
+    directives,
   );
 
   // Phase 4 — gap gate (mandatory except chore/spike + escape hatch)
@@ -344,6 +423,7 @@ export async function runPlanPipeline(
           openQuestions,
           outOfScope,
           depth,
+          directives,
         ));
       } else if (!ready) {
         capHit = true;
@@ -359,8 +439,13 @@ export async function runPlanPipeline(
     issueUrl = await fileIssue(repoRoot, title, body);
   }
 
+  // #633: report BOTH how many angles were dispatched and how many produced
+  // structured items — `angles=` alone read as "3 angles ran" even when all
+  // three returned prose-only (the all-angles-failed case the guard above
+  // halts for now still surfaces the count when it fires).
+  const structuredCount = findings.filter((f) => f.toolUses.length > 0).length;
   trace(
-    `plan-driver: type=${type} angles=${findings.length} gaps=${gaps.length} filed=${!!issueUrl} dryRun=${!!dryRun}`,
+    `plan-driver: type=${type} angles=${findings.length} structured=${structuredCount} gaps=${gaps.length} filed=${!!issueUrl} dryRun=${!!dryRun}`,
   );
 
   return {

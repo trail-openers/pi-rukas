@@ -44,6 +44,7 @@ const NOT_FOR_PM: Record<string, string> = {
   // these and must not be granted them.
   report_finding: "lens-reporter.ts — registered inside each lens-review child",
   report_policy: "policy-reporter.ts — registered inside the merge-policy judge child",
+  report_plan_item: "plan-reporter.ts — registered inside each /plan Phase-2 investigation child",
 };
 
 // Every `pi.registerTool({ name: "…" })` in the extension.

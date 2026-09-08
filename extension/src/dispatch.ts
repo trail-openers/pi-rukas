@@ -51,7 +51,7 @@ export function stripModelOverride(spec: DispatchSpec): DispatchSpec {
 export function dispatchCore(
   pi: ExtensionAPI,
   spec: DispatchSpec,
-  opts: { label?: string; skipDeck?: boolean; timeoutMs?: number } = {},
+  opts: { label?: string; skipDeck?: boolean; timeoutMs?: number; extraArgs?: string[] } = {},
 ): Promise<DispatchResult> {
   const stripped = stripModelOverride(spec);
   // #573 — derive the transcript path BEFORE dispatch so crash-resume can
@@ -85,6 +85,10 @@ export function dispatchCore(
         // run) and `handoffDispatchTimeoutMs` (work-driver-handoff.ts — a park
         // comment is a few gh calls and a markdown render).
         timeoutMs: opts.timeoutMs,
+        // Companion-extension plumbing (lens-reporter / policy-reporter /
+        // plan-reporter precedent): the plan driver pins its Phase-2 children
+        // to the report_plan_item tool via `--no-skills --extension <path>`.
+        extraArgs: opts.extraArgs,
       }),
   });
   return handle.completion;

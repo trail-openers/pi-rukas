@@ -138,9 +138,10 @@ function renderPlanResult(r: PlanResult, dryRun: boolean): string {
           .map((p) => `- [${p.source}] ${p.fact}`)
           .join("\n")
       : "- (none — cold start)";
-  const cap = r.capHit
-    ? "\n\nGAP GATE CAP HIT: after the iteration cap, unresolved CRITICAL/HIGH gaps remain. They are listed below and must be resolved with the operator before /work."
-    : "";
+  const cap =
+    r.capHit && r.gaps.length > 0
+      ? "\n\nGAP GATE CAP HIT: after the iteration cap, unresolved CRITICAL/HIGH gaps remain. They are listed below and must be resolved with the operator before /work."
+      : "";
   return `${head}
 
 Title: ${r.title}
