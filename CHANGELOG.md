@@ -8,6 +8,23 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.56](https://github.com/trail-openers/pi-rukas/compare/v0.12.55...v0.12.56) (2026-09-08)
+
+
+### Features
+
+* **forge:** add forge detection module for dual-forge support ([#616](https://github.com/trail-openers/pi-rukas/issues/616)) ([afb6097](https://github.com/trail-openers/pi-rukas/commit/afb6097585294cfca51d790b3405b264e5602ac0)), closes [#609](https://github.com/trail-openers/pi-rukas/issues/609)
+* **forge:** add glab guard and permission patterns ([#617](https://github.com/trail-openers/pi-rukas/issues/617)) ([22dd0c3](https://github.com/trail-openers/pi-rukas/commit/22dd0c3faba641f13c2b7a6a4cd9e00c0b80edd3)), closes [#611](https://github.com/trail-openers/pi-rukas/issues/611)
+* **forge:** forge adapter layer (forge.ts) ([#619](https://github.com/trail-openers/pi-rukas/issues/619)) ([c27957c](https://github.com/trail-openers/pi-rukas/commit/c27957ca287099df8315d0cad338137da214998f)), closes [#610](https://github.com/trail-openers/pi-rukas/issues/610)
+* **rename:** atomic identity rename pi-ensemble → pi-rukas ([#628](https://github.com/trail-openers/pi-rukas/issues/628)) ([9e84be1](https://github.com/trail-openers/pi-rukas/commit/9e84be1f411f9f1aedc21bef8cc79b99d144ea92))
+
+
+### Bug Fixes
+
+* **plan:** gap-gate parser treats absence summaries as literal gaps ([#632](https://github.com/trail-openers/pi-rukas/issues/632)) ([83aa0dd](https://github.com/trail-openers/pi-rukas/commit/83aa0ddf0909f6c23efddf3df377a4e8dabf8d7c))
+* **work:** developer commit doctrine + safety net ([#625](https://github.com/trail-openers/pi-rukas/issues/625)) ([b8af99d](https://github.com/trail-openers/pi-rukas/commit/b8af99deac753c4bb9bbccc12be4c9aa332a0537))
+* **work:** restore intent verdict from spec artifact with strict validation ([#603](https://github.com/trail-openers/pi-rukas/issues/603)) ([bdaf15e](https://github.com/trail-openers/pi-rukas/commit/bdaf15e58fbbc7570cc3098935af273b34a0eb1f))
+
 ## [0.12.55](https://github.com/randomm/pi-ensemble/compare/v0.12.54...v0.12.55) (2026-08-31)
 
 
