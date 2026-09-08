@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# pi-ensemble container entrypoint.
+# pi-rukas container entrypoint.
 #
 # Runs as root briefly to do one-time fixups that need it (currently just
 # relaxing the host docker socket perms when bind-mounted), then drops to
@@ -63,7 +63,7 @@ if [ "$(id -u)" = "0" ]; then
     if [ -S "${SSH_AUTH_SOCK}" ]; then
       chmod 666 "${SSH_AUTH_SOCK}" 2>/dev/null || true
     else
-      echo "pi-ensemble: SSH_AUTH_SOCK=${SSH_AUTH_SOCK} is not a usable socket (likely a Docker Desktop on macOS bind-mount quirk); unsetting so SSH falls back to ~/.ssh/ on-disk keys." >&2
+      echo "pi-rukas: SSH_AUTH_SOCK=${SSH_AUTH_SOCK} is not a usable socket (likely a Docker Desktop on macOS bind-mount quirk); unsetting so SSH falls back to ~/.ssh/ on-disk keys." >&2
       unset SSH_AUTH_SOCK
     fi
   fi

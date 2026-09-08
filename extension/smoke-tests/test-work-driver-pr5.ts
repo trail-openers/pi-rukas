@@ -179,7 +179,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
             exitCode: 143,
             killCause: "timeout",
             killBudgetMs: 1_800_000,
-            text: "[pi-ensemble] killed after 1800000ms timeout",
+            text: "[pi-rukas] killed after 1800000ms timeout",
           });
         }
         // Speculative explore returns ok so the develop-step fanout

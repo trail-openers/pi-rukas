@@ -88,7 +88,7 @@ async function spawnSpecialistInner(
   // file path and appends file contents to its default safety prompt. This
   // both keeps Pi's tool-use guidance intact and avoids stuffing 15K through
   // argv.
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-ensemble-"));
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-rukas-"));
   const tmpPromptFile = path.join(tmpDir, `${spec.role}.md`);
   await fs.writeFile(tmpPromptFile, systemPrompt);
 
@@ -124,7 +124,7 @@ async function spawnSpecialistInner(
   let permSocketPath: string | undefined;
   let broker: BrokerHandle | undefined;
   if (subagentGuardEnabled) {
-    permSocketPath = path.join(os.tmpdir(), `pi-ensemble-perm-${runId}-${spec.role}.sock`);
+    permSocketPath = path.join(os.tmpdir(), `pi-rukas-perm-${runId}-${spec.role}.sock`);
     const deps = makeBrokerDeps();
     if (deps) {
       broker = startBroker(permSocketPath, deps);
@@ -409,13 +409,13 @@ async function spawnSpecialistInner(
   }
 
   if (timedOut) {
-    appendStderr(`\n[pi-ensemble] killed after ${timeoutMs}ms timeout`);
+    appendStderr(`\n[pi-rukas] killed after ${timeoutMs}ms timeout`);
   }
   if (inactivityKilled) {
-    appendStderr(`\n[pi-ensemble] killed after ${inactivityMs}ms inactivity`);
+    appendStderr(`\n[pi-rukas] killed after ${inactivityMs}ms inactivity`);
   }
   if (aborted) {
-    appendStderr("\n[pi-ensemble] cancelled by user (Esc)");
+    appendStderr("\n[pi-rukas] cancelled by user (Esc)");
   }
 
   // Final flat string from the ring buffer (bounded; no SlowFlatten on the

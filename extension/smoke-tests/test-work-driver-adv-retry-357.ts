@@ -194,7 +194,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           // The outer fanout sees it as provider-severed (no errorStop) and
           // applies its transient retry budget (ADVERSARIAL_PER_WS_MAX_RETRIES).
           killCause: "inactivity",
-          text: "Adversarial loop infrastructure failure: round 1 review dispatch killed by pi-ensemble (inactivity watchdog). No verdict was produced — this is NOT a review rejection.",
+          text: "Adversarial loop infrastructure failure: round 1 review dispatch killed by pi-rukas (inactivity watchdog). No verdict was produced — this is NOT a review rejection.",
           roundsExecuted: 1,
         });
       },

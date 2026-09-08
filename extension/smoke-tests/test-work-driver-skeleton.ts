@@ -336,7 +336,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     // .git/info/exclude has the /tmp/ line
     const exclude = await fs.readFile(path.join(dir, ".git", "info", "exclude"), "utf8");
     assert(/^\/tmp\/?\s*$/m.test(exclude), ".git/info/exclude gains /tmp/ entry");
-    assert(exclude.includes("# pi-ensemble"), "exclude entry carries banner comment");
+    assert(exclude.includes("# pi-rukas"), "exclude entry carries banner comment");
 
     // Idempotent: second call doesn't duplicate the entry.
     await setupWorkspaceTmp(dir, 999);

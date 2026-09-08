@@ -77,7 +77,7 @@ function capKillState(repoRoot: string, issue: number): ReturnType<typeof initia
         at: Date.now(),
         exitCode: 143,
         killCause: "loop" as const,
-        errorTail: "killed by pi-ensemble (loop)",
+        errorTail: "killed by pi-rukas (loop)",
       },
     ],
   };
@@ -191,7 +191,7 @@ const fakePi = { sendUserMessage: () => {} } as unknown as ExtensionAPI;
           at: Date.now(),
           exitCode: 143,
           killCause: "token-budget" as const,
-          errorTail: "killed by pi-ensemble (token budget)",
+          errorTail: "killed by pi-rukas (token budget)",
         },
       ],
     };

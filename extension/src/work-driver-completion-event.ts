@@ -70,14 +70,14 @@ export async function buildCompletionEvent(
   if (result.killCause) {
     let detail: string;
     if (result.killCause === "abort") {
-      detail = "[pi-ensemble] cancelled (abort signal)";
+      detail = "[pi-rukas] cancelled (abort signal)";
     } else if (result.killCause === "loop") {
       const ev = result.loopEvidence;
       const what = ev
         ? `${ev.tool} × ${ev.count} (normalised args)`
         : "the same tool call after normalisation";
       detail =
-        `[pi-ensemble] killed on loop — it kept re-issuing ${what}` +
+        `[pi-rukas] killed on loop — it kept re-issuing ${what}` +
         ` (override: ${overrideEnvForKillCause(result.killCause)})`;
     } else if (result.killCause === "token-budget") {
       const tb = result.tokenBudget;
@@ -85,11 +85,11 @@ export async function buildCompletionEvent(
         ? `${Math.round(tb.used).toLocaleString()} of ${Math.round(tb.budget).toLocaleString()} tokens`
         : "its cumulative token budget";
       detail =
-        `[pi-ensemble] killed on token-budget — ${budgetClause}` +
+        `[pi-rukas] killed on token-budget — ${budgetClause}` +
         ` (override: ${overrideEnvForKillCause(result.killCause)})`;
     } else {
       detail =
-        `[pi-ensemble] killed after ${result.killBudgetMs}ms ${result.killCause}` +
+        `[pi-rukas] killed after ${result.killBudgetMs}ms ${result.killCause}` +
         ` (override: ${overrideEnvForKillCause(result.killCause)})`;
     }
     // Attribute the silence, not just the budget. `linesSeen: 0` means the

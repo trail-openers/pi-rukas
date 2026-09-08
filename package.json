@@ -1,18 +1,18 @@
 {
-  "name": "pi-ensemble-workspace",
+  "name": "pi-rukas-workspace",
   "version": "0.12.55",
   "private": true,
-  "description": "Workspace for the pi-ensemble Pi extension and its supporting prompt build pipeline.",
+  "description": "Workspace for the pi-rukas Pi extension and its supporting prompt build pipeline.",
   "license": "Apache-2.0",
   "author": "Janni Turunen",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/randomm/pi-ensemble.git"
+    "url": "git+https://github.com/trail-openers/pi-rukas.git"
   },
   "bugs": {
-    "url": "https://github.com/randomm/pi-ensemble/issues"
+    "url": "https://github.com/trail-openers/pi-rukas/issues"
   },
-  "homepage": "https://github.com/randomm/pi-ensemble#readme",
+  "homepage": "https://github.com/trail-openers/pi-rukas#readme",
   "scripts": {
     "install:all": "./install.sh",
     "build": "PI_ENSEMBLE_BASE=$PWD PROMPTS_DIR=$PWD/dist/prompts ./build.sh standard",

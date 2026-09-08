@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@randomm/pi-ensemble",
+      "name": "@trail-openers/pi-rukas",
       "dependencies": {
         "@sinclair/typebox": "^0.32.0",
       },

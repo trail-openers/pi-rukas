@@ -132,7 +132,7 @@ const issuesFound: WorkEvent = {
     jobId: "k",
     killCause: "timeout",
     errorTail:
-      "[pi-ensemble] killed after 1868000ms timeout (override: PI_ENSEMBLE_SPAWN_TIMEOUT_MS)",
+      "[pi-rukas] killed after 1868000ms timeout (override: PI_ENSEMBLE_SPAWN_TIMEOUT_MS)",
     // biome-ignore lint/suspicious/noExplicitAny: partial fixture
   } as any;
   const detail = killDetail(mkState({}, [killed])).join("\n");

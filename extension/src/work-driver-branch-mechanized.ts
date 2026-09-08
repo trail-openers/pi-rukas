@@ -135,7 +135,7 @@ async function ensureGitExcludeInner(repoRoot: string, lines: string[]): Promise
     if (missing.length === 0) return;
     await fs.mkdir(path.dirname(excludePath), { recursive: true });
     const sep = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
-    const body = `${existing}${sep}# pi-ensemble /work driver\n${missing.join("\n")}\n`;
+    const body = `${existing}${sep}# pi-rukas /work driver\n${missing.join("\n")}\n`;
     const tmp = `${excludePath}.${process.pid}.tmp`;
     await fs.writeFile(tmp, body, "utf8");
     await fs.rename(tmp, excludePath);

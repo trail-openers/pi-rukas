@@ -284,7 +284,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
             role: "ops",
             ok: false,
             exitCode: 1,
-            text: "[pi-ensemble] killed after 600000ms timeout",
+            text: "[pi-rukas] killed after 600000ms timeout",
           });
         }
         if (opts?.label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });

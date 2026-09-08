@@ -1,18 +1,18 @@
 # syntax=docker/dockerfile:1.6
 #
-# pi-ensemble sandboxed runtime
+# pi-rukas sandboxed runtime
 # =============================
 #
-# A devcontainer-style image that bakes in every CLI pi-ensemble's role
+# A devcontainer-style image that bakes in every CLI pi-rukas's role
 # prompts assume on $PATH. The container fence IS the trust boundary —
 # inside, PI_ENSEMBLE_SANDBOX_MODE=1 disables all per-call permission gating
 # (see extension/src/permission-guard.ts). State that should survive across
 # sessions (vipune memories, ensemble-models.json, transcripts, MCP config)
-# is bind-mounted from the host by the wrapper script bin/pi-ensemble — see
+# is bind-mounted from the host by the wrapper script bin/pi-rukas — see
 # that script + .devcontainer/devcontainer.json for the mount shape.
 #
-# Build:  docker build -t randomm/pi-ensemble:latest .devcontainer/
-# Launch: pi-ensemble    (from any project root on the host)
+# Build:  docker build -t ghcr.io/trail-openers/pi-rukas:latest .devcontainer/
+# Launch: pi-rukas    (from any project root on the host)
 
 ARG VARIANT=ubuntu-24.04
 FROM mcr.microsoft.com/devcontainers/base:${VARIANT}
@@ -129,7 +129,7 @@ RUN curl -fsSL https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/ma
 
 # parallel-cli — web research tool for the @explore role. Subcommands:
 # search / fetch / research run|poll. Auth via PARALLEL_API_KEY env (auto-
-# forwarded by bin/pi-ensemble). Linux install path per
+# forwarded by bin/pi-rukas). Linux install path per
 # https://github.com/parallel-web/parallel-web-tools. Soft-fail consistent
 # with ctx7 above so an upstream npm hiccup doesn't break the whole image
 # build; @explore's prompt surfaces the missing-binary case to the user
@@ -147,11 +147,11 @@ RUN curl -fsSL https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/ma
 RUN npm install -g parallel-web-cli || true
 
 # -----------------------------------------------------------------------------
-# 6. Copy pi-ensemble repo + run install.sh
+# 6. Copy pi-rukas repo + run install.sh
 #    Layout chosen so the repo is read-only image content; user state lives
 #    in volumes (bind-mounted by the wrapper / devcontainer.json).
 # -----------------------------------------------------------------------------
-ENV PI_ENSEMBLE_DIR=/opt/pi-ensemble
+ENV PI_ENSEMBLE_DIR=/opt/pi-rukas
 COPY --chown=vscode:vscode . ${PI_ENSEMBLE_DIR}
 
 # Drop to vscode user for state setup — install.sh creates symlinks under
@@ -217,7 +217,7 @@ RUN cd ${PI_ENSEMBLE_DIR} && ./install.sh || true
 # /opt/hf-cache-seed/ AND copied into the vscode user's standard HF cache
 # location. The entrypoint script seeds the named-volume cache from
 # /opt/hf-cache-seed/ on container start, so users with existing
-# pi-ensemble-cache volumes don't need to `pi-ensemble prune` after the
+# pi-ensemble-cache volumes don't need to `pi-rukas prune` after the
 # upgrade — first launch of the new image automatically populates.
 USER root
 RUN pip3 install --no-cache-dir --break-system-packages "huggingface_hub>=0.20"
@@ -235,8 +235,8 @@ RUN if [ -d /home/vscode/.cache/huggingface ]; then \
 
 # Entrypoint: seed ~/.cache/huggingface from the image's /opt/hf-cache-seed
 # if the user's mounted cache is empty (handles named-volume masking).
-COPY --chown=vscode:vscode .devcontainer/entrypoint.sh /usr/local/bin/pi-ensemble-entrypoint
-RUN chmod +x /usr/local/bin/pi-ensemble-entrypoint
+COPY --chown=vscode:vscode .devcontainer/entrypoint.sh /usr/local/bin/pi-rukas-entrypoint
+RUN chmod +x /usr/local/bin/pi-rukas-entrypoint
 
 # -----------------------------------------------------------------------------
 # 9. Workspace + sandbox-mode env + entrypoint
@@ -250,8 +250,8 @@ ENV PI_ENSEMBLE_SANDBOX_MODE=1
 # before exec'ing the user command.
 # Keeping the entrypoint as root for these one-time fixups is safer than the
 # alternatives (sudoers carve-outs, GID guessing across host platforms).
-ENTRYPOINT ["/usr/local/bin/pi-ensemble-entrypoint"]
+ENTRYPOINT ["/usr/local/bin/pi-rukas-entrypoint"]
 
 # Default: drop the user into `pi` directly. The wrapper script overrides via
-# `pi-ensemble shell` for a bash prompt instead.
+# `pi-rukas shell` for a bash prompt instead.
 CMD ["pi"]

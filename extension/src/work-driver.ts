@@ -130,7 +130,7 @@ export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> 
   if (!claimed.ok) {
     notifyAgent(
       ctx.pi,
-      `pi-ensemble: /work for issue #${ctx.issue} refused — issue #${claimed.conflictIssue} is already being worked by the cycle for #${claimed.heldByCycle} in this session. Two drivers on one branch interleave commits and produce a PR nobody can review. Wait for it to finish, or check /work-status.`,
+      `pi-rukas: /work for issue #${ctx.issue} refused — issue #${claimed.conflictIssue} is already being worked by the cycle for #${claimed.heldByCycle} in this session. Two drivers on one branch interleave commits and produce a PR nobody can review. Wait for it to finish, or check /work-status.`,
     );
     return {
       started: false,
@@ -166,7 +166,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
     const at = new Date().toISOString();
     notifyAgent(
       ctx.pi,
-      `pi-ensemble:driver-event v1 kind=refused issue=${ctx.issue} at=${at}\npi-ensemble: /work for issue #${ctx.issue} already terminated as ${terminalStatus}. To start a fresh cycle (e.g., after revising the issue via /plan), re-run with --restart:\n  /work ${ctx.issue} --restart\nOr rm ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json manually. The prior cycle's event log is preserved in the state file until you restart or remove it.`,
+      `pi-rukas:driver-event v1 kind=refused issue=${ctx.issue} at=${at}\npi-rukas: /work for issue #${ctx.issue} already terminated as ${terminalStatus}. To start a fresh cycle (e.g., after revising the issue via /plan), re-run with --restart:\n  /work ${ctx.issue} --restart\nOr rm ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json manually. The prior cycle's event log is preserved in the state file until you restart or remove it.`,
     );
     return { started: false, reason: `already terminated as ${terminalStatus}` };
   }
@@ -206,7 +206,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
       const at = new Date().toISOString();
       notifyAgent(
         ctx.pi,
-        `pi-ensemble:driver-event v1 kind=refused issue=${ctx.issue} at=${at}\n${explainRefusal(ctx.issue, verdict.ownerPid)}`,
+        `pi-rukas:driver-event v1 kind=refused issue=${ctx.issue} at=${at}\n${explainRefusal(ctx.issue, verdict.ownerPid)}`,
       );
       return {
         started: false,
@@ -227,7 +227,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
       const at = new Date().toISOString();
       notifyAgent(
         ctx.pi,
-        `pi-ensemble:driver-event v1 kind=resume issue=${ctx.issue} at=${at}\n${explainResume(ctx.issue, verdict.step, verdict.jobIds.length)}`,
+        `pi-rukas:driver-event v1 kind=resume issue=${ctx.issue} at=${at}\n${explainResume(ctx.issue, verdict.step, verdict.jobIds.length)}`,
       );
 
       // #573 — reattach attempt.
@@ -255,7 +255,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
       trace(`work-driver: state discriminant validation failed for issue ${ctx.issue}:\n${detail}`);
       notifyAgent(
         ctx.pi,
-        `pi-ensemble /work driver halted on issue #${ctx.issue}: state file carries an unrecognised value.\n${detail}\nInspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json or rm to start fresh (your git work is unaffected; only the workflow tracker state is removed).`,
+        `pi-rukas /work driver halted on issue #${ctx.issue}: state file carries an unrecognised value.\n${detail}\nInspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json or rm to start fresh (your git work is unaffected; only the workflow tracker state is removed).`,
       );
       return { started: false, reason: "state-file discriminant validation failed" };
     }
@@ -268,7 +268,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
     trace(`work-driver: state inconsistencies detected for issue ${ctx.issue}:\n  - ${detail}`);
     notifyAgent(
       ctx.pi,
-      `pi-ensemble /work driver halted on issue #${ctx.issue}: state-file inconsistencies detected.\n  - ${detail}\nInspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json or rm to start fresh (your git work is unaffected; only the workflow tracker state is removed).`,
+      `pi-rukas /work driver halted on issue #${ctx.issue}: state-file inconsistencies detected.\n  - ${detail}\nInspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json or rm to start fresh (your git work is unaffected; only the workflow tracker state is removed).`,
     );
     return { started: false, reason: "state-file inconsistencies detected" };
   }
@@ -294,7 +294,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
       await writeState(ctx.repoRoot, state);
       notifyAgent(
         ctx.pi,
-        `pi-ensemble /work driver aborted on issue #${ctx.issue}: transition safety limit reached. ` +
+        `pi-rukas /work driver aborted on issue #${ctx.issue}: transition safety limit reached.` +
           `Inspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json for the state.`,
       );
       // The cycle ran and then aborted — its state file is the real outcome.
@@ -332,7 +332,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
         );
         notifyAgent(
           ctx.pi,
-          `pi-ensemble /work driver halted: step "${err.step}" is not implemented in this build. This is a bug — the state file at .pi/work-state/ has the full cycle for the report.`,
+          `pi-rukas /work driver halted: step "${err.step}" is not implemented in this build. This is a bug — the state file at .pi/work-state/ has the full cycle for the report.`,
         );
         // The cycle ran and then aborted — its state file is the real outcome.
         return { started: true };
@@ -355,7 +355,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
       );
       notifyAgent(
         ctx.pi,
-        `pi-ensemble /work driver aborted on step "${step}" for issue #${ctx.issue}: ` +
+        `pi-rukas /work driver aborted on step "${step}" for issue #${ctx.issue}: ` +
           `${(err as Error).message}`,
       );
       // The cycle ran and then aborted — its state file is the real outcome.
@@ -387,7 +387,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
       await writeState(ctx.repoRoot, state);
       notifyAgent(
         ctx.pi,
-        `pi-ensemble:driver-event v1 kind=crash issue=${ctx.issue} at=${new Date().toISOString()}\npi-ensemble /work driver halted on issue #${ctx.issue}: pipelineState.currentStep has unknown value ${JSON.stringify(decision.value)}. ` +
+        `pi-rukas:driver-event v1 kind=crash issue=${ctx.issue} at=${new Date().toISOString()}\npi-rukas /work driver halted on issue #${ctx.issue}: pipelineState.currentStep has unknown value ${JSON.stringify(decision.value)}. ` +
           `Inspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json or rm to start fresh.`,
       );
       return { started: true };
@@ -419,7 +419,7 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
   // #580 — write-ahead guard: write handoffDeliveredAt before notifyAgent so
   // a crash between write and send does not cause re-delivery on restart.
   if (final === "merged") {
-    notifyAgent(ctx.pi, `pi-ensemble /work for issue #${ctx.issue} — MERGED ✓`);
+    notifyAgent(ctx.pi, `pi-rukas /work for issue #${ctx.issue} — MERGED ✓`);
   } else if (final === "handoff" || final === "aborted") {
     if (!state.pipelineState.handoffDeliveredAt) {
       const msg = renderHandoffUserMessage(

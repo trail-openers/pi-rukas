@@ -43,7 +43,7 @@ let integrationChain: Promise<unknown> = Promise.resolve();
 const LOCK_STALE_MS = 30 * 60 * 1000;
 
 function lockPath(repoRoot: string): string {
-  return path.join(repoRoot, ".git", "pi-ensemble-integration.lock");
+  return path.join(repoRoot, ".git", "pi-rukas-integration.lock");
 }
 
 async function acquireLockfile(repoRoot: string): Promise<() => Promise<void>> {

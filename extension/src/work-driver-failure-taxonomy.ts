@@ -172,15 +172,15 @@ export function failureCauseReason(tail: {
   const cls = classifyFailureCause(tail);
   switch (cls.cause) {
     case "self-killed:timeout":
-      return "killed by pi-ensemble (wall-clock timeout)";
+      return "killed by pi-rukas (wall-clock timeout)";
     case "self-killed:inactivity":
-      return "killed by pi-ensemble (inactivity watchdog)";
+      return "killed by pi-rukas (inactivity watchdog)";
     case "self-killed:abort":
       return "cancelled (abort signal)";
     case "self-killed:loop":
-      return "killed by pi-ensemble (loop detected — the same tool call repeated; retrying would loop again)";
+      return "killed by pi-rukas (loop detected — the same tool call repeated; retrying would loop again)";
     case "self-killed:token-budget":
-      return "killed by pi-ensemble (token budget crossed — a cost cap, not a provider fault)";
+      return "killed by pi-rukas (token budget crossed — a cost cap, not a provider fault)";
     case "rate-limited:429":
       return "provider rate-limited (429), no retry delay stated — halting rather than guessing how long to wait";
     case "rate-limited:burst":
@@ -211,15 +211,15 @@ export function failureCauseReasonForClass(
 ): string {
   switch (cls.cause) {
     case "self-killed:timeout":
-      return "killed by pi-ensemble (wall-clock timeout)";
+      return "killed by pi-rukas (wall-clock timeout)";
     case "self-killed:inactivity":
-      return "killed by pi-ensemble (inactivity watchdog)";
+      return "killed by pi-rukas (inactivity watchdog)";
     case "self-killed:abort":
       return "cancelled (abort signal)";
     case "self-killed:loop":
-      return "killed by pi-ensemble (loop detected — the same tool call repeated; retrying would loop again)";
+      return "killed by pi-rukas (loop detected — the same tool call repeated; retrying would loop again)";
     case "self-killed:token-budget":
-      return "killed by pi-ensemble (token budget crossed — a cost cap, not a provider fault)";
+      return "killed by pi-rukas (token budget crossed — a cost cap, not a provider fault)";
     case "rate-limited:429":
       return "provider rate-limited (429), no retry delay stated — halting rather than guessing how long to wait";
     case "rate-limited:burst":

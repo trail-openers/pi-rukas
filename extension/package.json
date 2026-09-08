@@ -1,5 +1,5 @@
 {
-  "name": "@randomm/pi-ensemble",
+  "name": "@trail-openers/pi-rukas",
   "version": "0.12.55",
   "description": "Multi-specialist orchestrator extension for Pi — parallel worktree-isolated dispatch, adversarial gate, six-pass code review.",
   "keywords": [
@@ -14,13 +14,13 @@
   "author": "Janni Turunen",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/randomm/pi-ensemble.git",
+    "url": "git+https://github.com/trail-openers/pi-rukas.git",
     "directory": "extension"
   },
   "bugs": {
-    "url": "https://github.com/randomm/pi-ensemble/issues"
+    "url": "https://github.com/trail-openers/pi-rukas/issues"
   },
-  "homepage": "https://github.com/randomm/pi-ensemble#readme",
+  "homepage": "https://github.com/trail-openers/pi-rukas#readme",
   "type": "module",
   "main": "src/index.ts",
   "engines": {

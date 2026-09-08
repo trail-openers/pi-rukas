@@ -198,7 +198,7 @@ if (violations.length === 0) {
     "install.sh",
     "build.sh",
     ".github/workflows/ci.yml",
-    "bin/pi-ensemble",
+    "bin/pi-rukas",
   ]) {
     assert(
       scanned.includes(expected),

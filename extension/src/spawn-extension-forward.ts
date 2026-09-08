@@ -32,7 +32,7 @@ export function applyUserExtension(childArgs: string[], role: string): void {
 // pi-ensemble's own package name. Used by discoverInstalledExtensions to skip
 // forwarding ourselves into subagents — otherwise a subagent could call
 // dispatch_specialist and recursively spawn another subagent.
-const PI_ENSEMBLE_PACKAGE_NAME = "@randomm/pi-ensemble";
+const PI_ENSEMBLE_PACKAGE_NAME = "@trail-openers/pi-rukas";
 
 /**
  * Resolve the absolute path to pi-ensemble's extension directory for the

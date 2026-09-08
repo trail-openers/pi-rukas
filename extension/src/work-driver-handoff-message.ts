@@ -96,14 +96,12 @@ export function renderHandoffUserMessage(
 
   // #580 — machine-readable envelope line so the PM can distinguish real
   // driver emissions from model-side imitation. First line, before body.
-  lines.push(
-    `pi-ensemble:driver-event v1 kind=handoff issue=${issue} at=${new Date().toISOString()}`,
-  );
+  lines.push(`pi-rukas:driver-event v1 kind=handoff issue=${issue} at=${new Date().toISOString()}`);
 
   // 1. Banner when GitHub posting failed.
   if (!commentUrl || !labelApplied) {
     lines.push(
-      `⚠ pi-ensemble /work for issue #${issue} — HANDOFF DISPATCH INCOMPLETE`,
+      `⚠ pi-rukas /work for issue #${issue} — HANDOFF DISPATCH INCOMPLETE`,
       "",
       "The handoff body was generated but the GitHub-side post FAILED:",
       `  - comment posted: ${commentUrl ? `[ok] ${commentUrl}` : "[FAILED] NOT posted"}`,
@@ -127,7 +125,7 @@ export function renderHandoffUserMessage(
     allIssues.length === 1 ? `issue #${issue}` : `issues #${allIssues.join(", #")}`;
   // 2. Standard handoff sections.
   lines.push(
-    `pi-ensemble /work for ${headerIssues} — HANDOFF (needs human attention)`,
+    `pi-rukas /work for ${headerIssues} — HANDOFF (needs human attention)`,
     "",
     `Why: ${why}`,
     `Last step: ${ps.lastCompletedStep ?? ps.currentStep}${ps.reviewRound > 0 ? ` · review round ${ps.reviewRound}/${MAX_REVIEW_ROUNDS}` : ""}`,

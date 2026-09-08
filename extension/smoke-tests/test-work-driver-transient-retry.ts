@@ -322,7 +322,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     );
     assert(
       fail?.kind === "dispatch-failed" &&
-        /\[pi-ensemble\] killed after 5400000ms timeout/.test(fail.errorTail ?? ""),
+        /\[pi-rukas\] killed after 5400000ms timeout/.test(fail.errorTail ?? ""),
       "#296 T4: kill-cause produces the self-kill errorTail naming the budget",
     );
     assert(

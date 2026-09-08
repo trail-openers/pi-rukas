@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# pi-ensemble — launch pi inside the sandboxed Docker container.
+# pi-rukas — launch pi inside the sandboxed Docker container.
 #
 # The container fence IS the trust boundary: inside, all permission gating is
 # disabled (PI_ENSEMBLE_SANDBOX_MODE=1) so the user is never prompted for a
@@ -23,7 +23,7 @@
 #                 session for this project. Forwarded as a flag, not a
 #                 subcommand.
 #   shell         Drop into bash inside the container
-#   rebuild       Rebuild the pi-ensemble image
+#   rebuild       Rebuild the pi-rukas image
 #   stop          Stop the running container for this project
 #   prune         Remove named volumes (DESTROYS sandbox caches — vipune/runs/
 #                 sessions stay safe because they're bind-mounted from host)
@@ -33,18 +33,18 @@
 
 set -euo pipefail
 
-IMAGE="${PI_ENSEMBLE_IMAGE:-ghcr.io/randomm/pi-ensemble:latest}"
+IMAGE="${PI_ENSEMBLE_IMAGE:-ghcr.io/trail-openers/pi-rukas:latest}"
 PROJECT_ROOT="$(cd "$(pwd)" && pwd -P)"
 PROJECT_NAME="$(basename "$PROJECT_ROOT" | tr -c 'A-Za-z0-9._-' '-' | head -c 40)"
-# Project-hash so concurrent `pi-ensemble` calls in DIFFERENT projects get
+# Project-hash so concurrent `pi-rukas` calls in DIFFERENT projects get
 # distinct container-name prefixes. Same-project concurrency relies on the
 # RUN_SUFFIX below, not this hash.
 PROJECT_HASH="$(printf '%s' "$PROJECT_ROOT" | shasum -a 256 | cut -c1-12)"
 # BASE_NAME identifies the project; CONTAINER_NAME identifies the specific
-# `pi-ensemble` invocation. The RUN_SUFFIX lets two terminals open sessions
+# `pi-rukas` invocation. The RUN_SUFFIX lets two terminals open sessions
 # in the same project without colliding on the docker --name flag. The
 # stop/status/logs subcommands enumerate `${BASE_NAME}-*` to find sessions.
-BASE_NAME="pi-ensemble-${PROJECT_NAME}-${PROJECT_HASH}"
+BASE_NAME="pi-rukas-${PROJECT_NAME}-${PROJECT_HASH}"
 RUN_SUFFIX="$(head -c 4 /dev/urandom | xxd -p)"
 CONTAINER_NAME="${BASE_NAME}-${RUN_SUFFIX}"
 
@@ -57,7 +57,7 @@ require_docker() {
   if ! command -v docker >/dev/null 2>&1; then
     cat >&2 <<EOF
 !! Docker not found on PATH.
-   pi-ensemble (sandbox mode) needs Docker Desktop, Colima, or another
+   pi-rukas (sandbox mode) needs Docker Desktop, Colima, or another
    docker-compatible runtime. Install one of:
      - Docker Desktop  https://docker.com
      - Colima (macOS)  brew install colima && colima start
@@ -85,7 +85,7 @@ ensure_image() {
   if docker pull "$IMAGE"; then
     return
   fi
-  echo "==> Pull failed. Falling back to local build from pi-ensemble repo..."
+  echo "==> Pull failed. Falling back to local build from pi-rukas repo..."
   local repo_dir
   repo_dir="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$0")")/.." && pwd)"
   docker build -t "$IMAGE" -f "$repo_dir/.devcontainer/Dockerfile" "$repo_dir"
@@ -94,7 +94,7 @@ ensure_image() {
 build_mounts() {
   # Assembles the -v flags; the caller eval's the NUL-separated output.
   #
-  # Principle: the sandbox MUST NOT require the host to have pi-ensemble's
+  # Principle: the sandbox MUST NOT require the host to have pi-rukas's
   # toolchain installed (Docker is the only host prereq). Where the host has
   # existing state (vipune memories, transcripts, model picks, gh auth, ...)
   # we bind-mount it through for continuity; where the host has nothing we
@@ -105,7 +105,7 @@ build_mounts() {
   # sessions by absolute cwd, so a project run in host mode and the same
   # project in sandbox mode must share cwd to share the sessions/<scope>
   # bucket. Pre-#207 we mounted at /workspace and every project's sandbox
-  # sessions co-mingled into one `--workspace--` bucket, breaking `pi-ensemble -r`.
+  # sessions co-mingled into one `--workspace--` bucket, breaking `pi-rukas -r`.
   # Post-#207: host cwd == container cwd → per-project isolation restored,
   # host↔sandbox cross-resume works.
   mounts+=(-v "$PROJECT_ROOT:$PROJECT_ROOT:delegated")
@@ -130,7 +130,7 @@ build_mounts() {
   # Pi sessions — `pi -r` reads these. NOTE: Pi scopes sessions by absolute
   # project path, and the same project can live at different paths on host
   # vs. in the container — so host and sandbox sessions live in DIFFERENT
-  # sub-buckets and don't cross-resume. Within each mode: `pi -r` / `pi-ensemble -r`
+  # sub-buckets and don't cross-resume. Within each mode: `pi -r` / `pi-rukas -r`
   # finds previous sessions for the same project.
   if [ -d "$HOME/.pi/agent/sessions" ]; then
     mounts+=(-v "$HOME/.pi/agent/sessions:/home/vscode/.pi/agent/sessions")
@@ -206,7 +206,7 @@ build_mounts() {
   # `ssh -o StrictHostKeyChecking=accept-new ...`); on-disk keys without an
   # agent may hit StrictModes failures from the host-vs-vscode UID mismatch
   # (macOS 501 vs 1000) — workaround: start an ssh-agent on host
-  # (`eval $(ssh-agent) && ssh-add <key>`) before launching pi-ensemble.
+  # (`eval $(ssh-agent) && ssh-add <key>`) before launching pi-rukas.
   if [ "${PI_ENSEMBLE_NO_SSH-}" = "1" ]; then
     :
   else
@@ -428,12 +428,12 @@ cmd_stop() {
   local matches
   matches="$(docker ps --format '{{.Names}}' | grep -E "^${BASE_NAME}-" || true)"
   if [ -z "$matches" ]; then
-    echo "No running pi-ensemble container for $PROJECT_ROOT"
+    echo "No running pi-rukas container for $PROJECT_ROOT"
     return
   fi
   local count
   count=$(printf '%s\n' "$matches" | wc -l | tr -d ' ')
-  echo "Stopping $count pi-ensemble container(s) for $PROJECT_ROOT:"
+  echo "Stopping $count pi-rukas container(s) for $PROJECT_ROOT:"
   printf '%s\n' "$matches" | while IFS= read -r name; do
     docker stop "$name"
   done
@@ -460,14 +460,14 @@ cmd_logs() {
   matches="$(docker ps --format '{{.Names}}' | grep -E "^${BASE_NAME}-" || true)"
   count=$(printf '%s' "$matches" | grep -c . || true)
   if [ "$count" -eq 0 ]; then
-    echo "No running pi-ensemble container for $PROJECT_ROOT" >&2
+    echo "No running pi-rukas container for $PROJECT_ROOT" >&2
     exit 1
   fi
   if [ "$count" -eq 1 ]; then
     docker logs -f "$matches"
     return
   fi
-  echo "Multiple pi-ensemble containers running for $PROJECT_ROOT:" >&2
+  echo "Multiple pi-rukas containers running for $PROJECT_ROOT:" >&2
   printf '%s\n' "$matches" | sed 's/^/  /' >&2
   echo "Specify one: docker logs -f <name>" >&2
   exit 1
@@ -478,7 +478,7 @@ cmd_status() {
   local matches
   matches="$(docker ps --format '{{.Names}}\t{{.Status}}' | grep -E "^${BASE_NAME}-" || true)"
   if [ -z "$matches" ]; then
-    echo "No running pi-ensemble container for $PROJECT_ROOT"
+    echo "No running pi-rukas container for $PROJECT_ROOT"
     return
   fi
   printf 'NAMES\tSTATUS\n%s\n' "$matches"

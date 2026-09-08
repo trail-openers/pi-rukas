@@ -44,9 +44,9 @@ await writePkg(path.join(extDir, "pi-claude-auth"), {
   pi: { extensions: ["dist/index.js"] },
 });
 
-// (b) pi-ensemble itself — must be skipped to avoid recursive spawn
+// (b) pi-rukas itself — must be skipped to avoid recursive spawn
 await writePkg(path.join(extDir, "pi-ensemble"), {
-  name: "@randomm/pi-ensemble",
+  name: "@trail-openers/pi-rukas",
   version: "0.11.0",
   pi: { extensions: ["dist/index.js"] },
 });

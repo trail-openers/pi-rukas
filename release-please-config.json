@@ -7,7 +7,7 @@
   "bump-patch-for-minor-pre-major": true,
   "packages": {
     ".": {
-      "package-name": "@randomm/pi-ensemble",
+      "package-name": "@trail-openers/pi-rukas",
       "changelog-path": "CHANGELOG.md",
       "extra-files": [
         "extension/package.json"

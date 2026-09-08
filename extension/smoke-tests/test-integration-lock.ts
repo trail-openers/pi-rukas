@@ -91,7 +91,7 @@ try {
     });
     assert(ran, "a throwing integration releases the lock for the next group");
     assert(
-      !existsSync(path.join(root, ".git", "pi-ensemble-integration.lock")),
+      !existsSync(path.join(root, ".git", "pi-rukas-integration.lock")),
       "the lockfile is removed even when the critical section throws",
     );
   }
@@ -115,7 +115,7 @@ try {
 
   {
     __resetIntegrationLock();
-    const lockFile = path.join(root, ".git", "pi-ensemble-integration.lock");
+    const lockFile = path.join(root, ".git", "pi-rukas-integration.lock");
     let sawLock = false;
     await withIntegrationLock(root, async () => {
       sawLock = existsSync(lockFile);
@@ -128,7 +128,7 @@ try {
     // A stale lockfile must be swept, not deadlocked on — a crashed Pi
     // process would otherwise block integration forever.
     __resetIntegrationLock();
-    const lockFile = path.join(root, ".git", "pi-ensemble-integration.lock");
+    const lockFile = path.join(root, ".git", "pi-rukas-integration.lock");
     writeFileSync(lockFile, JSON.stringify({ pid: 999999, at: Date.now() - 60 * 60 * 1000 }));
     let ran = false;
     await withIntegrationLock(root, async () => {
@@ -140,7 +140,7 @@ try {
   {
     // A corrupt lockfile must not deadlock either.
     __resetIntegrationLock();
-    const lockFile = path.join(root, ".git", "pi-ensemble-integration.lock");
+    const lockFile = path.join(root, ".git", "pi-rukas-integration.lock");
     writeFileSync(lockFile, "not json at all");
     let ran = false;
     await withIntegrationLock(root, async () => {

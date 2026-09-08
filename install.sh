@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# pi-ensemble installer — idempotent.
+# pi-rukas installer — idempotent.
 #
 # 1. Builds the per-role system prompts from manifests/ + modules/ + agents-base/.
 # 2. Symlinks skill/ into ~/.pi/agent/skills/ (Claude-Agent-Skills compatible).
@@ -55,7 +55,7 @@ classify_os() {
 
 UNAME_S="$(uname -s)"
 if [ "$(classify_os "$UNAME_S")" = "unsupported" ]; then
-  echo "!! This system's uname is '$UNAME_S'. pi-ensemble supports macOS and" >&2
+  echo "!! This system's uname is '$UNAME_S'. pi-rukas supports macOS and" >&2
   echo "   Linux only: every entrypoint is a bash script, installation relies on" >&2
   echo "   symlinks, and the sandbox mounts the project at the host's absolute" >&2
   echo "   path — none of which work on native Windows." >&2
@@ -65,7 +65,7 @@ if [ "$(classify_os "$UNAME_S")" = "unsupported" ]; then
   exit 1
 fi
 
-echo "==> pi-ensemble install"
+echo "==> pi-rukas install"
 echo "    ensemble dir: $ENSEMBLE_DIR"
 echo "    pi agent dir: $PI_AGENT_DIR"
 
@@ -115,7 +115,7 @@ case "$PI_STATUS" in
     ;;
   unparseable:*)
     echo "!! pi --version returned unparsable output: '${PI_STATUS#unparseable:}'"
-    echo "   pi-ensemble cannot verify the minimum version (${MIN_PI_VERSION}) — refusing to assume latest; re-run ./install.sh after fixing the pi install."
+    echo "   pi-rukas cannot verify the minimum version (${MIN_PI_VERSION}) — refusing to assume latest; re-run ./install.sh after fixing the pi install."
     ;;
 esac
 
@@ -123,7 +123,7 @@ for entry in "${REQUIRED_CLIS[@]}"; do
   check_cmd "${entry%%:*}" "${entry#*:}"
 done
 
-# Forge CLI — dual-forge support (#608): pi-ensemble works against GitHub
+# Forge CLI — dual-forge support (#608): pi-rukas works against GitHub
 # (gh) or GitLab (glab), so require gh OR glab rather than gh exclusively.
 # The "forge" entry in REQUIRED_CLIS above is a pseudo-name (nothing named
 # `forge` is probed); this is the real check — warn-not-fail, by the same
@@ -165,7 +165,7 @@ if [ -d "$PI_AGENT_DIR/prompts" ]; then
     if [ -L "$target" ]; then
       link_dest="$(readlink "$target")"
       case "$link_dest" in
-        *pi-ensemble/pi-prompts/*)
+        *pi-rukas/pi-prompts/*)
           echo "==> Removing stale prompt symlink: $target"
           rm -f "$target"
           ;;
@@ -202,7 +202,7 @@ fi
 # ---- 5. Register the extension with Pi ---------------------------------------
 
 mkdir -p "$EXT_DIR"
-ext_target="$EXT_DIR/pi-ensemble"
+ext_target="$EXT_DIR/pi-rukas"
 ln -sfn "$ENSEMBLE_DIR/extension" "$ext_target"
 echo "==> Registered extension at $ext_target"
 
@@ -274,10 +274,10 @@ if [ -n "$CBM_BIN" ]; then
 else
   cat <<'CBM_HINT'
 ==> codebase-memory-mcp binary not found on \$PATH or at ~/.local/bin/.
-    pi-ensemble's code-search doctrine assumes this tool is available.
+    pi-rukas's code-search doctrine assumes this tool is available.
     Install per upstream — typical one-liner:
       curl -fsSL https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh | bash
-    After installing, re-run ./install.sh from pi-ensemble to wire it into
+    After installing, re-run ./install.sh from pi-rukas to wire it into
     pi-mcp-adapter (user-global config at ~/.config/mcp/mcp.json).
 CBM_HINT
 fi
@@ -392,7 +392,7 @@ fi
 
 # ---- 7. Sandbox-mode setup (PR #197) ----------------------------------------
 #
-# `pi-ensemble` (the wrapper) launches a Docker-sandboxed runtime where ALL
+# `pi-rukas` (the wrapper) launches a Docker-sandboxed runtime where ALL
 # per-call permission gating is disabled (PI_ENSEMBLE_SANDBOX_MODE=1). The
 # container fence IS the trust boundary — host filesystem is protected by
 # container isolation; host state we want to preserve (vipune memory,
@@ -401,7 +401,7 @@ fi
 # This block is OPTIONAL — if Docker isn't installed, host-mode `pi` still
 # works with the legacy permission system. The user picks which to invoke.
 
-PI_ENSEMBLE_IMAGE="${PI_ENSEMBLE_IMAGE:-ghcr.io/randomm/pi-ensemble:latest}"
+PI_ENSEMBLE_IMAGE="${PI_ENSEMBLE_IMAGE:-ghcr.io/trail-openers/pi-rukas:latest}"
 
 # Image acquisition: prefer `docker pull` (GHCR publishes on every merge to
 # main via .github/workflows/publish-image.yml), fall back to local build
@@ -436,11 +436,11 @@ if command -v docker >/dev/null 2>&1; then
       echo "   Re-run \`./install.sh\` after fixing. Host-mode \`pi\` still works."
     fi
 
-    # Symlink bin/pi-ensemble into ~/.local/bin/ (creating if missing).
+    # Symlink bin/pi-rukas into ~/.local/bin/ (creating if missing).
     local_bin="$HOME/.local/bin"
     mkdir -p "$local_bin"
-    ln -sfn "$ENSEMBLE_DIR/bin/pi-ensemble" "$local_bin/pi-ensemble"
-    echo "==> Symlinked: $local_bin/pi-ensemble -> $ENSEMBLE_DIR/bin/pi-ensemble"
+    ln -sfn "$ENSEMBLE_DIR/bin/pi-rukas" "$local_bin/pi-rukas"
+    echo "==> Symlinked: $local_bin/pi-rukas -> $ENSEMBLE_DIR/bin/pi-rukas"
 
     case ":$PATH:" in
       *":$local_bin:"*) ;;
@@ -456,7 +456,7 @@ if command -v docker >/dev/null 2>&1; then
   fi
 else
   echo "==> Docker not found — skipping sandbox mode setup."
-  echo "    To enable the sandboxed \`pi-ensemble\` runtime later, install Docker"
+  echo "    To enable the sandboxed \`pi-rukas\` runtime later, install Docker"
   echo "    (Docker Desktop / Colima / OrbStack), then re-run \`./install.sh\`."
   echo "    Host-mode \`pi\` (with the legacy permission system) works regardless."
 fi
@@ -466,7 +466,7 @@ cat <<EOF
 ==> Install complete.
 
 Next steps:
-  - **Sandboxed mode (recommended)**: in any git repo, run \`pi-ensemble\`
+  - **Sandboxed mode (recommended)**: in any git repo, run \`pi-rukas\`
     to launch Pi inside a Docker container. Zero permission prompts inside.
     Your host \`~/.vipune/\` and \`~/.pi/agent/ensemble-runs/\` are bind-
     mounted in, so memories and transcripts survive across host + container.

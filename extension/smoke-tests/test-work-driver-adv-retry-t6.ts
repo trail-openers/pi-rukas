@@ -85,7 +85,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
             ok: false,
             exitCode: 1,
             loopOutcome: "infra-failure",
-            text: "Adversarial loop infrastructure failure: round 1 review dispatch killed by pi-ensemble (timeout) (after one retry). No verdict was produced — this is NOT a review rejection.",
+            text: "Adversarial loop infrastructure failure: round 1 review dispatch killed by pi-rukas (timeout) (after one retry). No verdict was produced — this is NOT a review rejection.",
           });
         }
         return mkResult({

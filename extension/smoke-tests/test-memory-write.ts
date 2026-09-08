@@ -168,7 +168,7 @@ function assert(cond: boolean, msg: string) {
 // ------------------------------------- the value instrument, on the live store
 
 {
-  const s = await readMemoryStats("randomm/pi-ensemble");
+  const s = await readMemoryStats("trail-openers/pi-rukas");
   if (!s) {
     console.log("… no live vipune store — skipping the value-instrument check");
   } else {

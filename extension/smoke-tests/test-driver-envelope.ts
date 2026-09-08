@@ -173,7 +173,7 @@ function assert(cond: boolean, msg: string) {
   const firstLine = msg.split("\n")[0];
 
   assert(
-    firstLine.startsWith("pi-ensemble:driver-event v1 kind=handoff issue=580 at="),
+    firstLine.startsWith("pi-rukas:driver-event v1 kind=handoff issue=580 at="),
     "renderHandoffUserMessage: first line is driver-event envelope",
   );
   assert(
@@ -224,7 +224,7 @@ function assert(cond: boolean, msg: string) {
   const firstLine = msg.split("\n")[0];
 
   assert(
-    firstLine.startsWith("pi-ensemble:driver-event v1 kind=handoff issue=580 at="),
+    firstLine.startsWith("pi-rukas:driver-event v1 kind=handoff issue=580 at="),
     "multi-issue: envelope names primary issue",
   );
 }

@@ -11,8 +11,25 @@
  * to the prompt body.
  */
 
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
 import { renderMemoryPanel, resolveProject } from "../src/memory-panel.ts";
 import type { MemoryStats } from "../src/memory-stats.ts";
+
+const execp = promisify(exec);
+
+/** The owner/repo slug the current git remote reduces to, or nothing. */
+async function expectedSlugFromRemote(): Promise<string | undefined> {
+  try {
+    const { stdout } = await execp("git config --get remote.origin.url", { cwd: process.cwd() });
+    const url = stdout.trim();
+    if (!url) return undefined;
+    const match = url.match(/[:/]([^/:]+\/[^/]+?)(?:\.git)?$/);
+    return match?.[1];
+  } catch {
+    return undefined;
+  }
+}
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -24,7 +41,7 @@ function assert(cond: boolean, msg: string) {
 }
 
 const stats = (o: Partial<MemoryStats>): MemoryStats => ({
-  project: "randomm/pi-ensemble",
+  project: "trail-openers/pi-rukas",
   rows: 100,
   byStatus: { active: 100 },
   byType: { decision: 60, fix: 40 },
@@ -101,9 +118,14 @@ const stats = (o: Partial<MemoryStats>): MemoryStats => ({
   );
   process.env.VIPUNE_PROJECT = "";
   const fromGit = await resolveProject(process.cwd());
+  // The slug is derived from the ACTUAL git remote rather than hardcoded, so
+  // the test passes whether the remote is still `randomm/pi-ensemble` (the
+  // GitHub transfer has not happened yet) or has become `trail-openers/pi-rukas`.
+  // Both reduce to `owner/repo` via the same regex `resolveProject` uses.
+  const expectedSlug = await expectedSlugFromRemote();
   assert(
-    fromGit === "randomm/pi-ensemble",
-    `falls back to the git remote, reduced to owner/repo (got ${fromGit})`,
+    expectedSlug !== undefined && fromGit === expectedSlug,
+    `falls back to the git remote, reduced to owner/repo (got ${fromGit}, expected ${expectedSlug})`,
   );
   assert(
     (await resolveProject("/")) === undefined,

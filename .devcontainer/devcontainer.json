@@ -1,5 +1,5 @@
 {
-  "name": "pi-ensemble",
+  "name": "pi-rukas",
   "build": {
     "dockerfile": "Dockerfile",
     "context": ".."
@@ -25,7 +25,7 @@
     "PI_ENSEMBLE_SANDBOX_MODE": "1",
     "HISTFILE": "/commandhistory/.bash_history"
   },
-  "//2": "Forward provider API keys + GH token from the host shell. The terminal-native bin/pi-ensemble wrapper does ADDITIONAL pattern-based forwarding of any *_API_KEY / *_LLM_KEY var; that's not portable to devcontainer.json's static remoteEnv shape, so devcontainer users should add custom-provider tokens here by editing the file.",
+  "//2": "Forward provider API keys + GH token from the host shell. The terminal-native bin/pi-rukas wrapper does ADDITIONAL pattern-based forwarding of any *_API_KEY / *_LLM_KEY var; that's not portable to devcontainer.json's static remoteEnv shape, so devcontainer users should add custom-provider tokens here by editing the file.",
   "remoteEnv": {
     "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}",
     "CEREBRAS_API_KEY": "${localEnv:CEREBRAS_API_KEY}",
@@ -45,7 +45,7 @@
   "//3": "v1 ships without an egress firewall — the container can reach any network. Filed as follow-up: ship init-firewall.sh + --cap-add=NET_ADMIN.",
   "runArgs": [],
   "//4": "If a user opens this from VS Code / Cursor, they get a terminal at /workspace with `pi` ready to invoke.",
-  "postCreateCommand": "echo 'pi-ensemble container ready. Type `pi` to launch the orchestrator. Run /start in any project.'",
+  "postCreateCommand": "echo 'pi-rukas container ready. Type `pi` to launch the orchestrator. Run /start in any project.'",
   "customizations": {
     "vscode": {
       "settings": {

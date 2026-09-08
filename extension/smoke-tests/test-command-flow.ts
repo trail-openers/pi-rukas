@@ -101,7 +101,7 @@ function makeCtx(cwd: string = process.cwd()) {
  * crash-report lines land at nondeterministic points and would otherwise make
  * every hardcoded count below a race (#360).
  */
-const promptMessages = () => rec.sentMessages.filter((m) => !m.startsWith("pi-ensemble:"));
+const promptMessages = () => rec.sentMessages.filter((m) => !m.startsWith("pi-rukas:"));
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

@@ -19,7 +19,7 @@ export async function finalizeCycle(
   if (final === "merged") {
     notifyAgent(
       ctx.pi,
-      `pi-ensemble:driver-event v1 kind=merged issue=${ctx.issue} at=${at}\npi-ensemble /work for issue #${ctx.issue} — MERGED ✓`,
+      `pi-rukas:driver-event v1 kind=merged issue=${ctx.issue} at=${at}\npi-rukas /work for issue #${ctx.issue} — MERGED ✓`,
     );
   } else if (final === "handoff" || final === "aborted") {
     notifyAgent(

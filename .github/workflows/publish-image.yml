@@ -1,6 +1,6 @@
 name: publish-image
 
-# Builds + publishes the pi-ensemble sandbox image to GHCR so users running
+# Builds + publishes the pi-rukas sandbox image to GHCR so users running
 # `./install.sh` on fresh hosts can pull a pre-built image instead of
 # rebuilding from scratch (rebuild on a slow host: 10–30 min; pull on
 # broadband: ~10–20s).
@@ -20,7 +20,7 @@ on:
     paths:
       - '.devcontainer/**'
       - 'extension/**'
-      - 'bin/pi-ensemble'
+      - 'bin/pi-rukas'
       - 'install.sh'
       - 'agents-base/**'
       - 'modules/**'
@@ -60,10 +60,10 @@ jobs:
         id: tags
         run: |
           owner_lc="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
-          tags="ghcr.io/${owner_lc}/pi-ensemble:latest"
-          tags="${tags},ghcr.io/${owner_lc}/pi-ensemble:sha-${GITHUB_SHA::12}"
+          tags="ghcr.io/${owner_lc}/pi-rukas:latest"
+          tags="${tags},ghcr.io/${owner_lc}/pi-rukas:sha-${GITHUB_SHA::12}"
           if [ "${{ github.event_name }}" = "release" ]; then
-            tags="${tags},ghcr.io/${owner_lc}/pi-ensemble:${{ github.event.release.tag_name }}"
+            tags="${tags},ghcr.io/${owner_lc}/pi-rukas:${{ github.event.release.tag_name }}"
           fi
           echo "tags=${tags}" >> "$GITHUB_OUTPUT"
 
