@@ -23,6 +23,13 @@ export interface PlanGap {
   severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
   description: string;
   resolution: string;
+  /**
+   * Bug 3 (#606): whether this gap is still open. Gaps carried into a
+   * round-2 re-draft's Open Questions section are re-reviewed against the
+   * revised spec — they render as `status: resolved` there — while fresh
+   * findings from the reviewer stay `pending`.
+   */
+  status?: "pending" | "resolved";
 }
 
 export interface PlanResult {

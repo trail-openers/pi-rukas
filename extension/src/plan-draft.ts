@@ -315,7 +315,12 @@ export function draftSpec(
 
   const openQ =
     openQuestions.length > 0
-      ? openQuestions.map((q) => `- **${q}** — decision owner: PM; status: pending`).join("\n")
+      ? openQuestions
+          .map((q) => {
+            const status = /^resolved:\s*/i.test(q) ? "resolved" : "pending";
+            return `- **${q.replace(/^resolved:\s*/i, "")}** — decision owner: PM; status: ${status}`;
+          })
+          .join("\n")
       : "- (none)";
   const oos =
     outOfScope.length > 0
