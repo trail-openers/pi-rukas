@@ -14,13 +14,16 @@
  *   - `PI_ENSEMBLE_PLAN_GAP_GATE=0` skips Phase 4 for chore/spike types,
  *   - epic sub-issues at depth >= 3 get a minimal body + the depth-limit note,
  *   - the doctrine set no longer includes "plan", and agents.json denies
- *     PM's `gh issue create` while granting `start_plan_driver`.
+ *     PM's `gh issue create` while granting `start_plan_driver`,
+ *   - #606: the gap gate prompt threads the prior context with the
+ *     DO-NOT-RE-RAISE framing, and parseGaps matches only structured GAP:
+ *     markers (bare severity words in prose are inert).
  */
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { codeIdentifiersIn, draftSpec } from "../src/plan-draft.ts";
-import { setPlanDispatch } from "../src/plan-driver.ts";
+import { parseGaps, setPlanDispatch } from "../src/plan-driver.ts";
 import { registerPlanTool } from "../src/plan-tool.ts";
 import { type PlanType, classifyPlanType, planTitle } from "../src/plan-types.ts";
 import type { DispatchResult } from "../src/types.ts";
@@ -42,13 +45,18 @@ function assert(cond: boolean, msg: string) {
 // frozen-ish consumer view).
 
 const calls: string[] = [];
+const gatePrompts: string[] = [];
+let gateReplyOverride: string | null = null;
 
 function __responses(spec: { role: string; prompt: string }): DispatchResult {
   if (spec.role === "adversarial-developer") {
+    gatePrompts.push(spec.prompt);
     return {
       role: "adversarial-developer",
       ok: true,
-      text: "CRITICAL — missing acceptance criterion for the failure mode\nHIGH — no out-of-scope boundary named\nVERDICT: NEEDS_ITERATION",
+      text:
+        gateReplyOverride ??
+        "GAP: CRITICAL — missing acceptance criterion for the failure mode — proposed resolution: add a criterion for the retry path\nGAP: HIGH — no out-of-scope boundary named — proposed resolution: name the out-of-scope files\nVERDICT: NEEDS_ITERATION",
       toolUses: [],
       ms: 1,
       exitCode: 0,
@@ -119,15 +127,19 @@ registerPlanTool(fakePi);
 
 // Install the dispatch stub. plan-tool.ts calls runPlanPipeline, which reads
 // the seam set here on every invocation.
-setPlanDispatch(((_pi: unknown, spec: { role: string; prompt: string }) => {
+setPlanDispatch(((pi: unknown, spec: { role: string; prompt: string }) => {
   calls.push(`${spec.role}:${spec.prompt.slice(0, 40)}`);
-  return Promise.resolve(__responses(spec));
+  const ctx = (pi as { __testContext?: string }).__testContext;
+  return Promise.resolve(__responses({ ...spec, prompt: ctx ? `${ctx}\n${spec.prompt}` : spec.prompt }));
 }) as never);
 
 const FAKE_PI = {
   // biome-ignore lint/suspicious/noExplicitAny: dispatchCore is stubbed; the driver never touches pi otherwise
   registerTool: () => {},
 } as any;
+
+/** #606: a context-param fact threaded through to the gap gate prompt. */
+const CONTEXT_FACT = "use the existing dispatch seam for the gate reviewer";
 
 const FAKE_CTX = { cwd: process.cwd() } as never;
 
@@ -145,6 +157,7 @@ async function invoke(params: Record<string, unknown>) {
   // dryRun:true — the confirmation seam. No filing, no gh call.
   const { details, text } = await invoke({
     descriptor: "add a start_plan_driver tool for the plan pipeline in extension",
+    context: CONTEXT_FACT,
     dryRun: true,
   });
   assert(details.filed === false, "dryRun: filed is false — nothing was created");
@@ -175,6 +188,43 @@ async function invoke(params: Record<string, unknown>) {
     "the spec carries the type-specialised angle names",
   );
   assert(/dryRun/i.test(text), "...and tells PM to re-call on confirmation");
+
+  // #606 bug 1: the gap gate prompt carries the prior context with the
+  // DO-NOT-RE-RAISE framing (context param, vipune hits and related issues
+  // all reach the reviewer, not just the Phase 2 explores).
+  assert(gatePrompts.length === 2, `gap gate prompt captured for both iterations: ${gatePrompts.length}`);
+  const gatePrompt = gatePrompts[0] ?? "";
+  assert(
+    gatePrompt.includes(CONTEXT_FACT),
+    "gap gate prompt: the context-param fact reaches the gate reviewer",
+  );
+  assert(
+    /DO NOT re-raise/i.test(gatePrompt),
+    "gap gate prompt: the DO-NOT-RE-RAISE framing is present",
+  );
+  assert(
+    /must be preceded by the GAP: marker|Never write a severity word on its own line/.test(gatePrompt),
+    "gap gate prompt: the GAP: marker contract is specified",
+  );
+  gatePrompts.length = 0;
+}
+
+{
+  // #606 bug 2 (e2e): a clean reply — severity words in prose only, zero GAP:
+  // markers — must fall through to the MEDIUM fallback, not parse pseudo-gaps.
+  gateReplyOverride =
+    "Overall the spec is solid. I considered CRITICAL and HIGH findings but found none; no MEDIUM or LOW items warrant a gap either.\nVERDICT: READY";
+  const { details, text } = await invoke({
+    descriptor: "add a start_plan_driver tool for the plan pipeline in extension",
+    dryRun: true,
+  });
+  gateReplyOverride = null;
+  assert(
+    details.gapCount === 1 &&
+      /no structured gaps parsed/.test(text),
+    "severity words in prose are NOT parsed as gaps (structured GAP: markers only; fallback gap only)",
+  );
+  assert(details.capHit !== true, "READY verdict with no blocking gaps: no cap hit");
 }
 
 {
@@ -286,6 +336,39 @@ async function invoke(params: Record<string, unknown>) {
   assert(t.startsWith("feat: "), `title prefix: ${t}`);
 }
 
+// --------------------------------------- unit: parseGaps (GAP: markers only)
+
+{
+  // Structured markers parse with the reviewer's own resolution carried through.
+  const r1 = parseGaps(
+    "GAP: CRITICAL — no failure-mode criterion — proposed resolution: add the retry criterion\nGAP: HIGH — boundary unnamed\nVERDICT: NEEDS_ITERATION",
+  );
+  assert(r1.gaps.length === 2, `two GAP: markers parse: ${r1.gaps.length}`);
+  assert(r1.gaps[0]?.severity === "CRITICAL", "severity comes from the marker");
+  assert(r1.gaps[0]?.resolution === "add the retry criterion", "reviewer's resolution flows through");
+  assert(r1.gaps[1]?.resolution === "address during /work plan phase", "absent resolution keeps the default placeholder");
+  assert(r1.verdict === "NEEDS_ITERATION", "last verdict line wins");
+
+  // Hyphen separator and prose severity words that must NOT parse.
+  const r2 = parseGaps(
+    "In summary: 0 CRITICAL, 2 HIGH gaps found overall. The HIGH items are listed below.\nGAP: LOW - cosmetic heading nit - proposed resolution: retitle\nVERDICT: READY",
+  );
+  assert(r2.gaps.length === 1, `prose severity words do NOT parse (1 GAP: line only): ${r2.gaps.length}`);
+  assert(r2.gaps[0]?.severity === "LOW", "hyphen separator accepted");
+  assert(r2.verdict === "READY", "READY verdict parsed");
+
+  // The prompt's own example line is inert: it never begins with GAP:.
+  const r3 = parseGaps(
+    "Example: GAP: CRITICAL — no failure-mode acceptance criterion — proposed resolution: add a criterion\nVERDICT: NEEDS_ITERATION",
+  );
+  assert(r3.gaps.length === 1, "the word 'Example:' before GAP: does not match (marker must be at line start)");
+
+  // No markers at all: the MEDIUM fallback, whatever the verdict says.
+  const r4 = parseGaps("Looks fine to me.\nVERDICT: READY");
+  assert(r4.gaps.length === 1 && r4.gaps[0]?.description === "no structured gaps parsed", "no-marker reply falls to the MEDIUM fallback");
+  assert(r4.gaps[0]?.severity === "MEDIUM", "fallback gap is MEDIUM");
+}
+
 // ----------------------------------------------- doctrine + agents.json pins
 
 {
@@ -342,6 +425,18 @@ async function invoke(params: Record<string, unknown>) {
   assert(
     /PI_ENSEMBLE_PLAN_GAP_GATE === "0"/.test(pd),
     "escape hatch: PI_ENSEMBLE_PLAN_GAP_GATE=0 in the driver",
+  );
+  // #606 canary: the GAP: marker contract is in the prompt AND the parser
+  // matches markers only (no bare severityRe fallback).
+  assert(
+    /GAP:\s*\(CRITICAL\|HIGH\|MEDIUM\|LOW\)/.test(pd),
+    "canary: parseGaps matches the structured GAP: marker",
+  );
+  assert(
+  assert(!/severityRe/.test(pd), "canary: the bare severity-word regex is gone from the driver");
+  assert(
+    /DO NOT re-raise/.test(pd),
+    "canary: the gap gate prompt carries the DO-NOT-RE-RAISE framing",
   );
 }
 

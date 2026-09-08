@@ -73,31 +73,55 @@ const GAP_GATE_MAX_ITERATIONS = 2;
 // Phase 4 — adversarial gap gate
 // ---------------------------------------------------------------------------
 
-function gapGatePrompt(body: string, findings: AngleFindings[]): string {
+function gapGatePrompt(
+  body: string,
+  findings: AngleFindings[],
+  priorContext: { source: string; fact: string }[],
+): string {
   const summary = findings.map((x) => `- ${x.name}: ${x.ok ? "ran" : "skipped/failed"}`).join("\n");
   const head =
     "GAP DETECTION: review this draft spec and find what is missing, under-specified, ambiguous or unverifiable.\n\n";
   const spec = `DRAFT SPEC:\n${body}\n\n`;
   const sum = `PHASE 2 FINDINGS SUMMARY:\n${summary}\n\n`;
+  const prior =
+    priorContext.length > 0
+      ? `PM has already established these decisions and facts (DO NOT re-raise them as gaps; citing them is only valid if you can show the spec contradicts them):\n${priorContext
+          .map((p) => `- [${p.source}] ${p.fact}`)
+          .join("\n")}\n\n`
+      : "";
   const tail =
-    "For each gap, classify severity (CRITICAL: cannot proceed; HIGH: implementer will be confused or wrong; MEDIUM: nice-to-have clarification; LOW: cosmetic) and propose ONE resolution: (a) an additional research dispatch, (b) a sharper acceptance criterion to add, or (c) an Open Question. End your reply with a single line exactly of the form:\nVERDICT: READY  (zero CRITICAL/HIGH gaps)\nor\nVERDICT: NEEDS_ITERATION";
-  return `${head}${spec}${sum}${tail}`;
+    "For each gap, output ONE line starting with the marker GAP: followed by the severity (CRITICAL: cannot proceed; HIGH: implementer will be confused or wrong; MEDIUM: nice-to-have clarification; LOW: cosmetic), an em dash, a short description, then — proposed resolution: with the proposed resolution. Example: GAP: CRITICAL — no failure-mode acceptance criterion — proposed resolution: add a criterion for the retry path. Never write a severity word on its own line — prose mentioning CRITICAL/HIGH/MEDIUM/LOW does not create a gap unless the line starts with GAP:. Each resolution must be ONE of: (a) an additional research dispatch, (b) a sharper acceptance criterion to add, or (c) an Open Question. End your reply with a single line exactly of the form:\nVERDICT: READY  (zero CRITICAL/HIGH gaps)\nor\nVERDICT: NEEDS_ITERATION";
+  return `${head}${spec}${sum}${prior}${tail}`;
 }
 
-function parseGaps(reply: string): { gaps: PlanGap[]; verdict: "READY" | "NEEDS_ITERATION" } {
+/**
+ * Parse a gap-gate reply. Only lines starting with the `GAP:` marker create
+ * gaps — bare severity words in prose (the reviewer's legend, a clean bill of
+ * health, this prompt's own examples) must NOT parse as findings. The
+ * marker format is `GAP: <SEVERITY> — <description> — proposed resolution: <r>`
+ * (em dash or hyphen separators; the resolution segment is optional, in which
+ * case the default placeholder applies).
+ */
+export function parseGaps(reply: string): {
+  gaps: PlanGap[];
+  verdict: "READY" | "NEEDS_ITERATION";
+} {
   const lines = reply.split("\n");
   const gaps: PlanGap[] = [];
-  const severityRe = /\b(CRITICAL|HIGH|MEDIUM|LOW)\b/i;
+  const gapRe = /^\s*GAP:\s*(CRITICAL|HIGH|MEDIUM|LOW)\b[—–-]?\s*(.*)$/i;
   for (const line of lines) {
-    const m = line.match(severityRe);
-    const text = line.replace(/^[-*\d.)\s]+/, "").trim();
-    if (m && text.length > 12 && !/verdict/i.test(line)) {
-      gaps.push({
-        severity: (m[1] ?? "MEDIUM").toUpperCase() as PlanGap["severity"],
-        description: text.slice(0, 300),
-        resolution: "address during /work plan phase",
-      });
-    }
+    const m = line.match(gapRe);
+    if (!m) continue;
+    const rest = (m[2] ?? "").trim();
+    const resMatch = rest.match(/[—–-]?\s*proposed resolution:\s*(.+)$/i);
+    const resolution = resMatch?.[1]?.trim() ?? "address during /work plan phase";
+    const description = (resMatch ? rest.slice(0, resMatch.index) : rest).trim();
+    if (!description) continue;
+    gaps.push({
+      severity: (m[1] ?? "MEDIUM").toUpperCase() as PlanGap["severity"],
+      description: description.slice(0, 300),
+      resolution,
+    });
   }
   const verdictLine = [...lines].reverse().find((l) => /verdict\s*[:—-]/i.test(l)) ?? "";
   const verdict: "READY" | "NEEDS_ITERATION" = /needs[_ ]iteration/i.test(verdictLine)
@@ -280,7 +304,7 @@ export async function runPlanPipeline(
       iterations++;
       const gate = await dispatch(
         pi,
-        { role: "adversarial-developer", prompt: gapGatePrompt(body, findings) },
+        { role: "adversarial-developer", prompt: gapGatePrompt(body, findings, priorContext) },
         { label: `plan-gap-gate-${iterations}` },
       );
       if (!gate.ok || gate.errorStop) {
