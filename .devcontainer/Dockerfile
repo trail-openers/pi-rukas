@@ -61,13 +61,19 @@ RUN install -m 0755 -d /etc/apt/keyrings \
     && apt-get update && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
-# glab — GitLab CLI. Installed via the upstream install script (gitlab-org/cli)
-# rather than a pinned deb: the deb is version-stamped per release, so pinning
-# it here would require a version update every upstream release; the script
-# always installs the current release, which is what the forge CLI needs for
-# dual-forge support (#608). Same supply-chain posture as the bun/curl installs
-# below.
-RUN curl -fsSL https://gitlab.com/gitlab-org/cli/-/raw/main/docs/installation.sh | bash \
+# glab — GitLab CLI. Installed via the latest release deb from GitLab's
+# release assets. The install script (docs/installation.sh) was removed from
+# the repo (404), so we resolve the latest version via the GitLab API and
+# download the deb directly. This avoids pinning a version in the Dockerfile
+# while still getting the current release (what the forge CLI needs for
+# dual-forge support, #608). Same supply-chain posture as the bun/curl
+# installs below.
+RUN GLAB_VERSION=$(curl -fsSL "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/releases" \
+      | jq -r '.[0].tag_name' | sed 's/^v//') \
+    && curl -fsSL "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_linux_amd64.deb" \
+       -o /tmp/glab.deb \
+    && dpkg -i /tmp/glab.deb \
+    && rm /tmp/glab.deb \
     && command -v glab
 
 # -----------------------------------------------------------------------------
