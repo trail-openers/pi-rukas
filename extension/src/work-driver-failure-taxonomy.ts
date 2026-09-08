@@ -17,7 +17,7 @@ import {
 
 /**
  * #297 — max INFRASTRUCTURE-TRANSIENT retries per step on HALT-class
- * steps. Pre-#297, a single transient (provider error-stop, pi-ensemble
+ * steps. Pre-#297, a single transient (provider error-stop, pi-rukas
  * timeout kill) anywhere in a multi-hour cycle aborted the whole cycle —
  * the amplifier behind the month-long "failing more than getting work
  * done" regression. Semantic failures (subagent completed but the work
@@ -87,7 +87,7 @@ export function classifyFailureCause(tail: {
   /** #366 — provider-requested wait, when it stated one. */
   waitMs?: number;
 } {
-  // Structured killCause (#296) — pi-ensemble itself ended the child.
+  // Structured killCause (#296) — pi-rukas itself ended the child.
   // MUST be checked first; a self-kill is never a provider failure.
   if (tail.killCause === "timeout") {
     return { cause: "self-killed:timeout", shouldRetry: false, maxRetries: 0 };

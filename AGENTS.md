@@ -1,8 +1,8 @@
-# Agent Guidelines for pi-ensemble
+# Agent Guidelines for pi-rukas
 
 This document is auto-loaded by Pi when any agent works inside this repo. It establishes the rules, conventions, and project-specific constraints all development work follows. Read once; apply throughout.
 
-> ℹ️ **Recursive context.** pi-ensemble both *uses* Pi (when you, the agent, run inside it) and *configures* Pi (its actual purpose — building role prompts and an orchestrator extension). When this file says "the agent", it means *you*, the one reading this. When it says "subagents" / "role prompts" / "specialists", it means pi-ensemble's product surface.
+> ℹ️ **Recursive context.** pi-rukas both *uses* Pi (when you, the agent, run inside it) and *configures* Pi (its actual purpose — building role prompts and an orchestrator extension). When this file says "the agent", it means *you*, the one reading this. When it says "subagents" / "role prompts" / "specialists", it means pi-rukas's product surface.
 
 ---
 
@@ -47,7 +47,7 @@ The fix loop is bounded, and what happens at the bound depends on severity. A `C
 
 ## 2. Two change paths (READ FIRST before editing)
 
-pi-ensemble has **two distinct codebases** that need different handling. Misidentifying the path is the #1 source of confusion.
+pi-rukas has **two distinct codebases** that need different handling. Misidentifying the path is the #1 source of confusion.
 
 ### Path A — Extension TypeScript (`extension/src/*.ts`)
 
@@ -73,9 +73,9 @@ pi-ensemble has **two distinct codebases** that need different handling. Misiden
 ### Path D — Sandbox image (`.devcontainer/`, image-baked tools)
 
 - Sandbox Docker image: source in `.devcontainer/Dockerfile` + `.devcontainer/entrypoint.sh`.
-- Image is auto-published to GHCR (`ghcr.io/randomm/pi-ensemble:latest` + `sha-<commit>` + `vX.Y.Z` on release) by `.github/workflows/publish-image.yml` on every merge to main that touches image-baked files.
+- Image is auto-published to GHCR (`ghcr.io/trail-openers/pi-rukas:latest` + `sha-<commit>` + `vX.Y.Z` on release) by `.github/workflows/publish-image.yml` on every merge to main that touches image-baked files.
 - Users run `./install.sh` → pulls the published image (~10-20s). Local builds happen only on pull failure or with `--build`.
-- Workflow path-filter list (`.devcontainer/**`, `extension/**`, `bin/pi-ensemble`, `install.sh`, `agents-base/**`, `modules/**`, `manifests/**`, `agents.json`, `build.sh`) covers everything that ends up in the image; PRs touching only docs / plan files don't trigger a republish.
+- Workflow path-filter list (`.devcontainer/**`, `extension/**`, `bin/pi-rukas`, `install.sh`, `agents-base/**`, `modules/**`, `manifests/**`, `agents.json`, `build.sh`) covers everything that ends up in the image; PRs touching only docs / plan files don't trigger a republish.
 - Contributors do NOT need to manually `docker build` + push; the workflow handles it.
 
 ---
@@ -99,7 +99,7 @@ Each module's responsibilities are documented in the jsdoc header of its source 
 
 **Permission model — trust mode is the default.**
 
-pi-ensemble's `permission-guard.ts` runs in one of three states. The active state is decided by `isInTrustMode(hasUI)`:
+pi-rukas's `permission-guard.ts` runs in one of three states. The active state is decided by `isInTrustMode(hasUI)`:
 
 | State | Trigger | Behavior |
 |---|---|---|
@@ -107,13 +107,13 @@ pi-ensemble's `permission-guard.ts` runs in one of three states. The active stat
 | **Strict** | `PI_ENSEMBLE_STRICT_PERMISSIONS=1` in interactive mode | Legacy 3-layer verdict resolution (`.pi/permissions.json` project → `~/.pi/agent/permissions.json` global → `agents.json`), prompts on `ask`, caches "Allow always" / "Deny always" in `.pi/decisions.json`. |
 | **Headless safety** | `!hasUI` (e.g. `pi -p`) | Verdict resolution runs as in strict mode, but `ask` hard-denies (no human to consent). Safety boundary for automation contexts. |
 
-*Why trust mode is the default in interactive host:* pi-ensemble running as the user's own UID has no agent-tool-layer gate that can meaningfully constrain a misbehaving subagent — same FS / network / credential access as the user. Per-call prompts at runtime volumes (~30/minute) become theatre: rubber-stamped or ignored. Sandbox is the path for confined execution.
+*Why trust mode is the default in interactive host:* pi-rukas running as the user's own UID has no agent-tool-layer gate that can meaningfully constrain a misbehaving subagent — same FS / network / credential access as the user. Per-call prompts at runtime volumes (~30/minute) become theatre: rubber-stamped or ignored. Sandbox is the path for confined execution.
 
-*The sandbox is transparent to host capabilities by default.* The wrapper bind-mounts the host docker socket (so `.pi/mcp.json` docker-based MCPs Just Work), `~/.ssh/` + `SSH_AUTH_SOCK` (so outbound SSH uses the same identities as host), AND forwards the **full host shell env** into the container (so `.pi/mcp.json` env-refs `${VAR}` / `{env:VAR}` resolve identically to host-mode `pi`). All three weaken the container-fence-as-trust-boundary story (#200 / #215) — together they mean the sandbox is the agent's runtime, not the user's security boundary. This is by design and consistent with trust mode: the user IS the trust authority. Opt out with `PI_ENSEMBLE_NO_DOCKER_SOCKET=1` / `PI_ENSEMBLE_NO_SSH=1` for tighter isolation. Env-forwarding has a static blocklist (PATH, HOME, SHELL, locale, etc. — see README env-vars table); to keep a specific var out, `unset` it before launching pi-ensemble.
+*The sandbox is transparent to host capabilities by default.* The wrapper bind-mounts the host docker socket (so `.pi/mcp.json` docker-based MCPs Just Work), `~/.ssh/` + `SSH_AUTH_SOCK` (so outbound SSH uses the same identities as host), AND forwards the **full host shell env** into the container (so `.pi/mcp.json` env-refs `${VAR}` / `{env:VAR}` resolve identically to host-mode `pi`). All three weaken the container-fence-as-trust-boundary story (#200 / #215) — together they mean the sandbox is the agent's runtime, not the user's security boundary. This is by design and consistent with trust mode: the user IS the trust authority. Opt out with `PI_ENSEMBLE_NO_DOCKER_SOCKET=1` / `PI_ENSEMBLE_NO_SSH=1` for tighter isolation. Env-forwarding has a static blocklist (PATH, HOME, SHELL, locale, etc. — see README env-vars table); to keep a specific var out, `unset` it before launching pi-rukas.
 
-*Subagents* (developer, ops, explore, code-review-specialist, adversarial-developer): when parent is in trust mode, `spawn.ts` propagates `PI_ENSEMBLE_TRUST_MODE=1` to the child env and skips the per-spawn broker socket. When parent is in strict / headless mode, the subagent's pi-ensemble extension is forwarded via `--extension` so the subagent guard can escalate `ask` verdicts to the parent over a Unix socket. Either way: **the role's system prompt is the actual behavioral guidance**; the runtime gate is either off (trust) or a soft fence (strict).
+*Subagents* (developer, ops, explore, code-review-specialist, adversarial-developer): when parent is in trust mode, `spawn.ts` propagates `PI_ENSEMBLE_TRUST_MODE=1` to the child env and skips the per-spawn broker socket. When parent is in strict / headless mode, the subagent's pi-rukas extension is forwarded via `--extension` so the subagent guard can escalate `ask` verdicts to the parent over a Unix socket. Either way: **the role's system prompt is the actual behavioral guidance**; the runtime gate is either off (trust) or a soft fence (strict).
 
-*Extension auto-forward to subagents*: `discoverInstalledExtensions` in `extension/src/spawn.ts` scans `~/.pi/agent/extensions/` (or `$PI_AGENT_DIR/extensions`) and re-injects every installed extension into the subagent via `--extension <real-path>`, except pi-ensemble itself (matched by `package.json.name === "@randomm/pi-ensemble"` to prevent recursive spawn). This means `pi-claude-auth` (Anthropic Claude Code identity headers) and MCP bridges like `pi-mcp-adapter` reach subagents automatically once installed in the canonical location — no env-var wiring needed.
+*Extension auto-forward to subagents*: `discoverInstalledExtensions` in `extension/src/spawn.ts` scans `~/.pi/agent/extensions/` (or `$PI_AGENT_DIR/extensions`) and re-injects every installed extension into the subagent via `--extension <real-path>`, except pi-rukas itself (matched by `package.json.name === "@trail-openers/pi-rukas"` to prevent recursive spawn). This means `pi-claude-auth` (Anthropic Claude Code identity headers) and MCP bridges like `pi-mcp-adapter` reach subagents automatically once installed in the canonical location — no env-var wiring needed.
 
 For extensions outside the canonical install location (dev-mode, monorepo paths), `PI_ENSEMBLE_USER_EXTENSION` is still honoured as an additional forwarded extension. To disable auto-forward entirely (restoring the pre-#88 "subagents inherit nothing" behaviour), set `PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD=1`. MCP server-side credentials remain the real capability boundary regardless.
 
@@ -225,11 +225,11 @@ This is real doctrine, not a hint. The PM exists to orchestrate; specialists exi
 
 PM can use `read`, `vipune`, `gh issue view`, and read-only `git status/diff/log/branch`. PM CANNOT use `edit`, `write`, or arbitrary bash.
 
-For PM behaviour rules (allowed tools, bash allowlist, bare-vs-`oo`, ticket lifecycle, subagent model-routing constraints), see `agents-base/project-manager.md` + `modules/core/*.md` — those are baked into the PM role prompt by `bun run build` and reach every PM session at runtime. This file (AGENTS.md) is loaded only when an agent's cwd is inside pi-ensemble; runtime PM doctrine belongs in the role prompt, not here.
+For PM behaviour rules (allowed tools, bash allowlist, bare-vs-`oo`, ticket lifecycle, subagent model-routing constraints), see `agents-base/project-manager.md` + `modules/core/*.md` — those are baked into the PM role prompt by `bun run build` and reach every PM session at runtime. This file (AGENTS.md) is loaded only when an agent's cwd is inside pi-rukas; runtime PM doctrine belongs in the role prompt, not here.
 
 **Role identity at the permission layer** (issue #104): the parent Pi session resolves to role `project-manager` directly — `permission-guard.ts` falls back to `"project-manager"` when `PI_ENSEMBLE_ROLE` is unset. There is no separate `default` role. Subagents get `developer` / `ops` / `explore` / `code-review-specialist` / `adversarial-developer` via `spawn.ts` setting `PI_ENSEMBLE_ROLE`. Six roles total; the parent is always one of them (project-manager).
 
-This rule does NOT apply when an agent works on pi-ensemble itself (this repo's TypeScript). Then the agent IS a developer. The PM rule applies when running inside a `/work` cycle.
+This rule does NOT apply when an agent works on pi-rukas itself (this repo's TypeScript). Then the agent IS a developer. The PM rule applies when running inside a `/work` cycle.
 
 **Prompt grounding:** Operational prompts must carry the authoritative context for the action — the issue title and body plus the current diff for branch and PR prose, explicit in-scope and out-of-scope paths for staging, and the captured branch name for CI — so agents never infer facts from branch names or unresolved placeholders.
 
@@ -241,7 +241,7 @@ This rule does NOT apply when an agent works on pi-ensemble itself (this repo's 
 
 **Reviewer subagents (post-#238) have structural write/edit/multiedit gating**: `spawn.ts` passes `--exclude-tools write,edit,multiedit` to children whose role is `explore`, `adversarial-developer`, or `code-review-specialist`. Doctrine still describes the intent in role prompts, but the runtime now enforces it — Flue/LangGraph research established prompt-level role boundaries leak under load (MAST 11.8% "disobey role specification"). Executor roles (developer, ops) and the parent process are NOT gated; parent-process gating is part of the deferred Option C track (issue #237). See `extension/src/role-tools.ts` for the per-role exclude map.
 
-**Scratch hygiene convention** (PR2 post-#553 fold-in). pi-ensemble's /work cycles produce ephemeral artefacts that subagents historically dropped at the repo root (diff snapshots between adversarial rounds, captured screenshots, one-off verification scripts, analysis JSON, PR-body files passed to `gh pr create --body-file`). On lantern issue #553's live run, accumulated debris from earlier cycles caused the next /work's branch step to ABORT on a dirty `git status --porcelain`. The convention going forward:
+**Scratch hygiene convention** (PR2 post-#553 fold-in). pi-rukas's /work cycles produce ephemeral artefacts that subagents historically dropped at the repo root (diff snapshots between adversarial rounds, captured screenshots, one-off verification scripts, analysis JSON, PR-body files passed to `gh pr create --body-file`). On lantern issue #553's live run, accumulated debris from earlier cycles caused the next /work's branch step to ABORT on a dirty `git status --porcelain`. The convention going forward:
 
 - Project-local scratch: **`<repo>/tmp/issue-<N>/`** (created by the driver on cycle start; `tmp/` added to `.git/info/exclude` per-clone — NOT committed `.gitignore` — so the project shape stays untouched).
 - Host-level fallback: `/tmp/pi-ensemble-<role>/` when no project tmp dir is named.
@@ -302,7 +302,7 @@ Measured across 253 loops recovered from the durable session store: 49 ended REJ
 
 Now: mid-loop every unresolved verdict still earns a fix round (they produce real fixes), and at the last round **only `CRITICAL_ISSUES_FOUND` blocks**. Everything else passes, and the outstanding findings travel — to the PR body via `adversarial-findings.ts`, and into the six-lens review's context, where the gate that *does* apply the project's configurable threshold (`resolveReviewThreshold`) can weigh them with the issue, the lenses and the whole branch in view. Passing a finding on is not discarding it; that distinction is what keeps this from being a rubber stamp. The vocabulary now lives in exactly one place and `test-adversarial-verdict.ts` fails if the code and the composed prompt disagree, or if the built prompt states its menu more than once.
 
-Three supporting defects fixed with it: the diff was computed once and re-sent to every round (the reviewer noticed itself — *"the diff's original bugs were already fixed in the working tree"*); the fix-developer got the reviewer's entire reply as "findings" with no diff, no issue and no prior rounds; and `readMarker` used a non-global `match`, so the FIRST `VERDICT:` in a reply won rather than the last. The issue body now reaches both halves of the loop, which closes [#278](https://github.com/randomm/pi-ensemble/issues/278) — on #664 an explicit constraint ("reuse `parse_assumptions`") went unflagged for three rounds because nobody in the loop could see it.
+Three supporting defects fixed with it: the diff was computed once and re-sent to every round (the reviewer noticed itself — *"the diff's original bugs were already fixed in the working tree"*); the fix-developer got the reviewer's entire reply as "findings" with no diff, no issue and no prior rounds; and `readMarker` used a non-global `match`, so the FIRST `VERDICT:` in a reply won rather than the last. The issue body now reaches both halves of the loop, which closes [#278](https://github.com/trail-openers/pi-rukas/issues/278) — on #664 an explicit constraint ("reuse `parse_assumptions`") went unflagged for three rounds because nobody in the loop could see it.
 
 *Four gates that could corrupt main (v0.12.38 audit).* A ten-agent audit of the pipeline found these on the **happy path**, not the error path.
 
@@ -336,7 +336,7 @@ Three supporting defects fixed with it: the diff was computed once and re-sent t
 
 **`plumbReports` is rendered.** Written in two places on lens-fix git failures, read in none, with the write site's own comment saying the operator should see them "in handoff". They are deliberately kept out of the event log because appending there would change the tail that `nextStep()` routes on — so the handoff renderer reads the field directly. They matter precisely because the cycle continued: a lens-fix whose push failed means the PR under review does not contain the fix.
 
-*Worktrees need more than tracked files (#445, #481).* `git worktree add --detach` gives you tracked files and nothing else, and the develop step runs the project's verify command inside that tree — so every gitignored dependency directory is missing. How badly that bites is language-dependent, which is why it survived: Rust rebuilds from scratch (minutes per worktree per cycle, but it works), while a Node/bun command fails outright. #445 added `worktree-provision.ts` but its discovery looked only at `repoRoot`, so pi-ensemble itself — whose tree is at `extension/node_modules` — could not dogfood `/work` on itself: an empty gitignored `node_modules/` at the root was linked and reported as a useful link while the real nested tree was never linked (#479 parked on exactly this). #481 made discovery scan depth-1 package directories (manifests/lockfiles), skip empty candidates, and set `ProvisionResult.problem` when a lockfile-bearing project has no findable tree — pi-ensemble now provisions without a per-clone hook.
+*Worktrees need more than tracked files (#445, #481).* `git worktree add --detach` gives you tracked files and nothing else, and the develop step runs the project's verify command inside that tree — so every gitignored dependency directory is missing. How badly that bites is language-dependent, which is why it survived: Rust rebuilds from scratch (minutes per worktree per cycle, but it works), while a Node/bun command fails outright. #445 added `worktree-provision.ts` but its discovery looked only at `repoRoot`, so pi-rukas itself — whose tree is at `extension/node_modules` — could not dogfood `/work` on itself: an empty gitignored `node_modules/` at the root was linked and reported as a useful link while the real nested tree was never linked (#479 parked on exactly this). #481 made discovery scan depth-1 package directories (manifests/lockfiles), skip empty candidates, and set `ProvisionResult.problem` when a lockfile-bearing project has no findable tree — pi-rukas now provisions without a per-clone hook.
 
 `worktree-provision.ts` runs `.pi/worktree-setup` if the project provides one — no guessing, and anything the allowlist cannot express goes there. The hook receives no arguments and no environment and runs with `cwd` = the new worktree, so it must locate `repoRoot` itself (`git rev-parse --path-format=absolute --git-common-dir`); the hook path skips the symlink loop — including the `info/exclude` write — so a hook that symlinks must write its own exclude entry or `stagePorcelainPaths` stages the link into the PR (see `docs/troubleshooting.md` → "The `.pi/worktree-setup` hook — contract"). Otherwise provisioning symlinks `node_modules`, `.venv`, `vendor` that are gitignored and non-empty, discovered at `repoRoot` **and** in depth-1 package directories (a depth-1 dir containing any manifest/lockfile — `package.json`, `bun.lock`, `Cargo.toml`, `pyproject.toml`, `go.mod`, `Gemfile`, … — is scanned for a nested `node_modules`; #481). An empty candidate is never linked or reported as a useful link, and a lockfile-bearing project with no findable tree gets a `problem` the branch step traces. Build output — `target/`, `build/`, `dist/` — is deliberately excluded: sharing one write-heavy directory across a fan-out would serialise the parallel workstreams that always-worktree (#287) exists to enable. Provisioning never fails the branch step; a bare worktree is what shipped before, so a failure is the status quo and is traced and reported rather than thrown. A verify failure whose output matches the familiar dependency signatures now says so instead of implying the diff is at fault.
 
@@ -344,7 +344,7 @@ Three supporting defects fixed with it: the diff was computed once and re-sent t
 
 *This repo's develop gate is now the real §1 gate.* With no `.pi/verify-cmd`, `verifyCmdFor` fell through to `npm run test` — three smoke tests out of ~120, no typecheck, no lint. The gate that proves a developer's diff builds was proving almost nothing. `.pi/verify-cmd` now runs `tsc --noEmit`, `bun run check` and the full offline suite; `.pi/verify-cmd-full` remains the deeper second tier the ci step runs once.
 
-*Throughput, measured (v0.12.41).* An operator complaint — "/work doesn't finish work" — measured against 69 terminal cycles in the durable session store and 29 state files. **15 merged, 22%**; pi-ensemble 59%, lantern 12% (last autonomous merge 26 June), infra-one and vipune 0. **Every one of the 10 autonomous merges ran with zero other cycles in flight, N=1, median 78.5 lines and 18.2 minutes.** Nothing outside that shape has ever merged. v0.12.41 moved `MAX_PARALLEL_GROUPS_DEFAULT` from 3 → 1 on this measurement: concurrency was the strongest predictor of failure, every role ran ~2.4× slower with another cycle in flight, and two of the four lantern cycles that reached commit-pr were destroyed by each other through the shared repo root.
+*Throughput, measured (v0.12.41).* An operator complaint — "/work doesn't finish work" — measured against 69 terminal cycles in the durable session store and 29 state files. **15 merged, 22%**; pi-rukas 59%, lantern 12% (last autonomous merge 26 June), infra-one and vipune 0. **Every one of the 10 autonomous merges ran with zero other cycles in flight, N=1, median 78.5 lines and 18.2 minutes.** Nothing outside that shape has ever merged. v0.12.41 moved `MAX_PARALLEL_GROUPS_DEFAULT` from 3 → 1 on this measurement: concurrency was the strongest predictor of failure, every role ran ~2.4× slower with another cycle in flight, and two of the four lantern cycles that reached commit-pr were destroyed by each other through the shared repo root.
 
 **Default reverted to 3 concurrent groups (#547).** `MAX_PARALLEL_GROUPS_DEFAULT` moves 1 → 3, reversing the v0.12.41 default-1 decision. Three structural changes since that measurement remove its driving causes: `#544` shipped capability-preserving dispatch caps (loop detector, typed kill causes), eliminating the unbounded slow-dispatch behaviour that made concurrent cycles degrade each other; every workstream now develops in its own detached worktree under `.worktrees/` with patches applied under a single integration lock (in-process promise chain + `O_EXCL` lockfile), serialising the cross-process contention that drove the shared-repo-root collisions; and an operator decision (2026-08-26) — a 6-group queue ran sequential under cap=1, and the sequential default was too conservative for current workflow. `PI_ENSEMBLE_PARALLEL_GROUPS` still overrides. `PI_ENSEMBLE_PARALLEL_WORK=0` disables parallelism entirely.
 
@@ -568,7 +568,7 @@ GLM-4.x / 5.x emits literal `{type: "text", text: "None"}` blocks between tool c
 
 ### 🚨 PM trying to code
 
-The sticky preamble injection (`commands.ts:PM_STICKY_PREAMBLE`) is prompt-layer enforcement. Mechanism-layer enforcement (strip edit/write tools via `setActiveTools`) is tracked in [#26](https://github.com/randomm/pi-ensemble/issues/26). If you see the PM reach for `edit` / `write` / `bash` (beyond vipune/git-read-only), the sticky preamble didn't land — file a bug.
+The sticky preamble injection (`commands.ts:PM_STICKY_PREAMBLE`) is prompt-layer enforcement. Mechanism-layer enforcement (strip edit/write tools via `setActiveTools`) is tracked in [#26](https://github.com/trail-openers/pi-rukas/issues/26). If you see the PM reach for `edit` / `write` / `bash` (beyond vipune/git-read-only), the sticky preamble didn't land — file a bug.
 
 ### 🚨 AGENTS.md re-read habit
 
@@ -610,7 +610,7 @@ CLI flags and event shapes change between Pi minor versions. The pin in `extensi
 
 ---
 
-## Summary — pi-ensemble at a Glance
+## Summary — pi-rukas at a Glance
 
 1. **Quality gates BLOCKING** — tsc + biome + 57 offline smoke tests pass locally before push
 2. **Two change paths** — extension code (no build) vs modular prompt layer (`bun run build` required, commit `dist/`)

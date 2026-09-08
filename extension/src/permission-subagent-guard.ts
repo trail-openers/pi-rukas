@@ -1,6 +1,6 @@
 /**
  * Subagent-mode permission guard. Runs INSIDE spawned Pi subagents (when
- * PI_ENSEMBLE_SUBAGENT_MODE=1 + pi-ensemble forwarded via --extension by
+ * PI_ENSEMBLE_SUBAGENT_MODE=1 + pi-rukas forwarded via --extension by
  * spawn.ts). Same 3-tier resolution as the parent guard, but `ask` verdicts
  * escalate to the parent over a Unix socket (PI_ENSEMBLE_PERM_SOCKET) instead
  * of prompting locally (subagents have no UI). Split out of
@@ -8,7 +8,7 @@
  * (AGENTS.md §12) — registerPermissionGuard is the sole caller.
  *
  * Recursion firewall: spawn.ts + index.ts together ensure subagent-mode
- * pi-ensemble registers ONLY this guard — no dispatch tools, no slash
+ * pi-rukas registers ONLY this guard — no dispatch tools, no slash
  * commands. So a subagent's permission decisions can't trigger further
  * subagent spawns.
  */
@@ -43,13 +43,13 @@ export function registerSubagentGuard(pi: ExtensionAPI): void {
   // stay byte-identical.
   registerIssueCreationGuard(pi);
 
-  // Sandbox mode short-circuit (PR #197). When pi-ensemble runs inside the
-  // Docker sandbox (`pi-ensemble` wrapper sets PI_ENSEMBLE_SANDBOX_MODE=1),
+  // Sandbox mode short-circuit (PR #197). When pi-rukas runs inside the
+  // Docker sandbox (`pi-rukas` wrapper sets PI_ENSEMBLE_SANDBOX_MODE=1),
   // the container fence IS the trust boundary. Every tool call passes
   // through with no per-call gating, no socket broker, no overlay loading.
   // This is the structural fix for the prompt-flood UX problem: the user
   // moves into a sandboxed container instead of rubber-stamping prompts
-  // they no longer read. See bin/pi-ensemble + .devcontainer/.
+  // they no longer read. See bin/pi-rukas + .devcontainer/.
   if (process.env.PI_ENSEMBLE_SANDBOX_MODE === "1") {
     trace("subagent-guard: PI_ENSEMBLE_SANDBOX_MODE=1 — bypassing all tool gating");
     return;

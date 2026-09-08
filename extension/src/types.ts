@@ -82,7 +82,7 @@ export interface DispatchResult {
     message?: string;
   };
   /**
-   * Set when pi-ensemble itself ended the child (#296): "timeout" = per-role
+   * Set when pi-rukas itself ended the child (#296): "timeout" = per-role
    * wall-clock cap, "inactivity" = no child stdout for the inactivity window,
    * "abort" = user cancel / driver abort propagated. Downstream classification
    * MUST branch on this before errorStop/exitCode — a self-kill is never a

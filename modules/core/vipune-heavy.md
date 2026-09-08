@@ -102,7 +102,7 @@ Use this:
 - To retrieve mid-session: `vipune search '...' --recency 0.9 --memory-type observation`
 - Cross-session knowledge (decisions, conventions, gotchas) → `fact`/`procedure`/`guard` with `--status active`.
 
-**Session autosave (opt-in).** When `PI_ENSEMBLE_AUTOSAVE=1` is set, pi-ensemble writes a deterministic session-summary memory to vipune at `session_shutdown`. Complements, doesn't replace, your explicit `vipune add` calls during the session.
+**Session autosave (opt-in).** When `PI_ENSEMBLE_AUTOSAVE=1` is set, pi-rukas writes a deterministic session-summary memory to vipune at `session_shutdown`. Complements, doesn't replace, your explicit `vipune add` calls during the session.
 
 ## Single-quote safety — non-negotiable
 
@@ -136,7 +136,7 @@ vipune list --limit 50
 # memory, write a new one with `--supersedes <id>`, which preserves the original.
 ```
 
-**One atomic fact per `vipune add` call.** For the full doctrine (deep search recipes, failure-mode catalogue, all examples), load the bundled skill via `--skill <skills-dir>/vipune` (pi-ensemble installs it to `~/.pi/agent/skills/vipune`).
+**One atomic fact per `vipune add` call.** For the full doctrine (deep search recipes, failure-mode catalogue, all examples), load the bundled skill via `--skill <skills-dir>/vipune` (pi-rukas installs it to `~/.pi/agent/skills/vipune`).
 
 ## Writing a memory others can actually find
 

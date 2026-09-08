@@ -127,7 +127,7 @@ function mkFs(): AgentsMdFs {
 // A file whose markers cannot be parsed → refuse → 2.
 {
   const corrupt =
-    "# T\n<!-- pi-ensemble:agents-md:begin a v1 -->\nbody\n<!-- pi-ensemble:agents-md:end b -->\n";
+    "# T\n<!-- pi-rukas:agents-md:begin a v1 -->\nbody\n<!-- pi-rukas:agents-md:end b -->\n";
   writeFileSync(path.join(tmp, "corrupt.md"), corrupt);
   const r = checkAgent(tmp, path.join(tmp, "corrupt.md"), {}, mkFs());
   assert(

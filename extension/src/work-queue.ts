@@ -234,7 +234,7 @@ export function humanActionFor(reason: string, primary: number): string {
 /** Render the end-of-queue report. One entry per group; no per-step noise. */
 export function renderQueueSummary(s: QueueSummary): string {
   const lines = [
-    `pi-ensemble: /work queue finished — ${s.merged} merged, ${s.parked} parked${
+    `pi-rukas: /work queue finished — ${s.merged} merged, ${s.parked} parked${
       s.refused > 0 ? `, ${s.refused} did not start` : ""
     }${s.notStarted.length > 0 ? `, ${s.notStarted.length} never reached` : ""}`,
   ];

@@ -439,7 +439,7 @@ export function registerWorkStatusCommand(pi: ExtensionAPI): void {
         } else {
           const resolved = resolveJobId(repoRoot, issueArg);
           if (resolved === undefined) {
-            ctx.ui.notify("pi-ensemble /work-status: jobId not found. Pass issue #.", "info");
+            ctx.ui.notify("pi-rukas /work-status: jobId not found. Pass issue #.", "info");
             return;
           }
           issue = resolved;
@@ -461,12 +461,12 @@ export function registerWorkStatusCommand(pi: ExtensionAPI): void {
         }
         issue = await discoverActiveIssue(repoRoot);
         if (issue === undefined) {
-          ctx.ui.notify("pi-ensemble: no /work state found. Pass <N> or <jobId>.", "info");
+          ctx.ui.notify("pi-rukas: no /work state found. Pass <N> or <jobId>.", "info");
           return;
         }
       } else {
         ctx.ui.notify(
-          "pi-ensemble /work-status --json: no issue or jobId. Pass <N> --json or <jobId> --json.",
+          "pi-rukas /work-status --json: no issue or jobId. Pass <N> --json or <jobId> --json.",
           "info",
         );
         return;
@@ -478,7 +478,7 @@ export function registerWorkStatusCommand(pi: ExtensionAPI): void {
         state = await readState(repoRoot, issue as number);
       } catch (err) {
         ctx.ui.notify(
-          `pi-ensemble /work-status: read error for #${issue}: ${(err as Error).message}`,
+          `pi-rukas /work-status: read error for #${issue}: ${(err as Error).message}`,
           "error",
         );
         trace(`work-status: readState failed: ${(err as Error).message}`);
@@ -486,7 +486,7 @@ export function registerWorkStatusCommand(pi: ExtensionAPI): void {
       }
       if (!state) {
         ctx.ui.notify(
-          `pi-ensemble /work-status: no state for #${issue} at ${path.join(workStateDir(repoRoot), `${issue}.json`)}.`,
+          `pi-rukas /work-status: no state for #${issue} at ${path.join(workStateDir(repoRoot), `${issue}.json`)}.`,
           "info",
         );
         return;

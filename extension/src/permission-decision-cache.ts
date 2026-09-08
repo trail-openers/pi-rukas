@@ -106,7 +106,7 @@ export function evictOldest(
   for (const [k, v] of sorted.slice(0, max)) map.set(k, v);
 }
 
-// Tool names that have been removed from pi-ensemble but may still appear in
+// Tool names that have been removed from pi-rukas but may still appear in
 // older `.pi/decisions.json` files. Loading them is harmless but they bloat
 // the cache and confuse `/runs`-style introspection. Add a tool here when it
 // is removed; entries here are cleaned out of the cache on session_start.
@@ -196,11 +196,11 @@ export function persistDecisions(
       chmodSync(decisionsPath, 0o600);
     } catch (err) {
       trace(
-        `pi-ensemble permission-guard: chmod ${decisionsPath} failed (${err}) — file may have incorrect permissions`,
+        `pi-rukas permission-guard: chmod ${decisionsPath} failed (${err}) — file may have incorrect permissions`,
       );
     }
   } catch (err) {
-    const msg = `pi-ensemble permission-guard: failed to persist decisions (${err})`;
+    const msg = `pi-rukas permission-guard: failed to persist decisions (${err})`;
     console.warn(msg);
     trace(msg);
 
@@ -239,14 +239,14 @@ export function loadPersistedDecisions(
     for (const [key, val] of Object.entries(parsed)) {
       if (key.length > DECISION_KEY_MAX_LENGTH) {
         trace(
-          `pi-ensemble permission-guard: skipping over-length decision key: ${key.slice(0, 50)}...`,
+          `pi-rukas permission-guard: skipping over-length decision key: ${key.slice(0, 50)}...`,
         );
         droppedMalformed++;
         continue;
       }
       const shape = classifyDecisionKey(key);
       if (shape === "stale-tool") {
-        trace(`pi-ensemble permission-guard: dropping stale tool decision: ${key}`);
+        trace(`pi-rukas permission-guard: dropping stale tool decision: ${key}`);
         droppedStale++;
         continue;
       }
@@ -255,19 +255,19 @@ export function loadPersistedDecisions(
         // are tied to a literal input string. They never match a future
         // invocation that differs by a single character — dead weight that
         // bloats the cache without providing matches.
-        trace(`pi-ensemble permission-guard: dropping old-format decision: ${key.slice(0, 50)}`);
+        trace(`pi-rukas permission-guard: dropping old-format decision: ${key.slice(0, 50)}`);
         droppedOldFormat++;
         continue;
       }
       if (shape === "unsafe-pattern") {
         trace(
-          `pi-ensemble permission-guard: skipping unsafe bash wildcard decision key: ${key.slice(0, 50)}...`,
+          `pi-rukas permission-guard: skipping unsafe bash wildcard decision key: ${key.slice(0, 50)}...`,
         );
         droppedMalformed++;
         continue;
       }
       if (shape === "invalid") {
-        trace(`pi-ensemble permission-guard: skipping invalid decision key: ${key.slice(0, 50)}`);
+        trace(`pi-rukas permission-guard: skipping invalid decision key: ${key.slice(0, 50)}`);
         droppedMalformed++;
         continue;
       }
@@ -296,7 +296,7 @@ export function loadPersistedDecisions(
       // we don't repeatedly re-evaluate the same stale entries.
       persistDecisions(decisions);
       console.info(
-        `pi-ensemble permission-guard: loaded ${loaded} decisions; dropped ${dropped} (` +
+        `pi-rukas permission-guard: loaded ${loaded} decisions; dropped ${dropped} (` +
           `${droppedMalformed} malformed, ${droppedOldFormat} old-format, ${droppedStale} stale-tool)`,
       );
     } else {
@@ -310,18 +310,18 @@ export function loadPersistedDecisions(
         return;
       }
       if (code === "EACCES") {
-        const msg = `pi-ensemble permission-guard: cannot read decisions file (${err})`;
+        const msg = `pi-rukas permission-guard: cannot read decisions file (${err})`;
         console.warn(msg);
         return;
       }
     }
     if (err instanceof SyntaxError) {
-      const msg = `pi-ensemble permission-guard: decisions file is not valid JSON (${err.message})`;
+      const msg = `pi-rukas permission-guard: decisions file is not valid JSON (${err.message})`;
       console.warn(msg);
       return;
     }
     // Other errors: trace for debugging
-    trace(`pi-ensemble permission-guard: error loading decisions (${err})`);
+    trace(`pi-rukas permission-guard: error loading decisions (${err})`);
   }
 }
 

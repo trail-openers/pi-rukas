@@ -83,12 +83,12 @@ export function capKillAttribution(
   if (caps.loopKilled()) {
     const ev = caps.loopEvidence();
     appendStderr(
-      `\n[pi-ensemble] killed: loop detected (${ev?.tool ?? "unknown"} repeated ${ev?.count ?? 0} times after normalization; override: PI_ENSEMBLE_DISPATCH_CAPS / PI_ENSEMBLE_CAP_KILL_GRACE_MS)`,
+      `\n[pi-rukas] killed: loop detected (${ev?.tool ?? "unknown"} repeated ${ev?.count ?? 0} times after normalization; override: PI_ENSEMBLE_DISPATCH_CAPS / PI_ENSEMBLE_CAP_KILL_GRACE_MS)`,
     );
   }
   if (caps.tokenBudgetTracker?.killed) {
     appendStderr(
-      `\n[pi-ensemble] killed: token budget exceeded (${totalTokens} tokens used; override: PI_ENSEMBLE_TOKEN_BUDGET_${spec.role.toUpperCase()})`,
+      `\n[pi-rukas] killed: token budget exceeded (${totalTokens} tokens used; override: PI_ENSEMBLE_TOKEN_BUDGET_${spec.role.toUpperCase()})`,
     );
   }
   const killCause = caps.killCause();

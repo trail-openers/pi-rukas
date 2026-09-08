@@ -1,7 +1,14 @@
-# pi-ensemble
+# pi-rukas
 
-[![CI](https://github.com/randomm/pi-ensemble/actions/workflows/ci.yml/badge.svg)](https://github.com/randomm/pi-ensemble/actions/workflows/ci.yml)
+<img align="right" width="220" src="assets/pirukas.png" alt="pirukas">
+
+[![CI](https://github.com/trail-openers/pi-rukas/actions/workflows/ci.yml/badge.svg)](https://github.com/trail-openers/pi-rukas/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
+## Why pi-rukas?
+
+pirukas is Estonian for pie — golden yeast dough wrapped around savory fillings, from a Slavic root meaning feast. Split it after pi and you get the agent it's built on plus the dish it's named after.
+Is it a backronym? Technically, Pie Is Ready — Users Keep Adding Steps. But honestly, rukas isn't a word. Stop trying to expand it. The pie is the meaning.
 
 A multi-specialist orchestrator extension for [Pi](https://pi.dev) — the terminal AI coding agent. Spawns role-specialised child Pi processes in parallel, isolates them in git worktrees, runs a mandatory adversarial gate before commit, and gates merge on a six-pass code review (security, error handling, type safety, performance, architecture, simplicity).
 
@@ -110,10 +117,10 @@ cargo install double-o
 # pi-mcp-adapter (REQUIRED — Pi core has no native MCP; without the bridge no MCP server loads)
 pi install npm:pi-mcp-adapter
 
-# codebase-memory-mcp (REQUIRED — pi-ensemble's code-search doctrine depends on it)
+# codebase-memory-mcp (REQUIRED — pi-rukas's code-search doctrine depends on it)
 curl -fsSL https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh | bash
 # Installs the C binary at ~/.local/bin/codebase-memory-mcp (~250 MB; ships
-# embedded Nomic embeddings — no API keys needed). pi-ensemble's install.sh
+# embedded Nomic embeddings — no API keys needed). pi-rukas's install.sh
 # will register it with pi-mcp-adapter automatically (see step "After install"
 # below — no manual MCP config edits required).
 
@@ -128,7 +135,7 @@ npm install -g --ignore-scripts ctx7
 After install:
 
 - `vipune version` once to initialise `~/.vipune/`.
-- Run pi-ensemble's `./install.sh` from this repo. That script detects `codebase-memory-mcp` on your `PATH` (or in `~/.local/bin/`) and writes a `codebase_memory` entry to `~/.config/mcp/mcp.json` for pi-mcp-adapter to pick up (the bridge installed in the [Install commands](#install-commands) block; full walkthrough in [Using MCP servers](#using-mcp-servers-per-host-or-per-project)). **You should not have to hand-edit any MCP config.** Re-running `./install.sh` is safe (idempotent merge — other MCP servers you configured by hand are preserved). Verify after `pi` restarts with `/mcp` — should list `codebase_memory` with 7 direct tools (`search_code`, `search_graph`, `trace_path`, `detect_changes`, `get_code_snippet`, `get_architecture`, `query_graph`).
+- Run pi-rukas's `./install.sh` from this repo. That script detects `codebase-memory-mcp` on your `PATH` (or in `~/.local/bin/`) and writes a `codebase_memory` entry to `~/.config/mcp/mcp.json` for pi-mcp-adapter to pick up (the bridge installed in the [Install commands](#install-commands) block; full walkthrough in [Using MCP servers](#using-mcp-servers-per-host-or-per-project)). **You should not have to hand-edit any MCP config.** Re-running `./install.sh` is safe (idempotent merge — other MCP servers you configured by hand are preserved). Verify after `pi` restarts with `/mcp` — should list `codebase_memory` with 7 direct tools (`search_code`, `search_graph`, `trace_path`, `detect_changes`, `get_code_snippet`, `get_architecture`, `query_graph`).
 - One-shot index every project the first time pi opens there:
   ```
   mcp({tool: "codebase_memory_index_repository", args: '{"repo_path": "."}'})
@@ -137,23 +144,23 @@ After install:
 
 **Platform.** Supported: macOS and Linux. Native Windows is unsupported — every entrypoint is a bash script, the install is symlink-based, and the sandbox bind-mounts the project at the host's absolute path, which a `C:\` path cannot satisfy. WSL2 is **expected to work but untested** (not supported until someone verifies it end to end); sandbox mode additionally needs Docker (Docker Desktop with WSL2 integration, or an equivalent daemon) to pull the published image. Bun ≥ 1.2.20 and Node ≥ 22 (Pi's own requirement) are assumed.
 
-If you're security-conscious, you can also defer `ctx7` entirely; the `explore` role tries to call it but the rest of pi-ensemble works without it. The `developer` and `code-review-specialist` roles also benefit from current library docs.
+If you're security-conscious, you can also defer `ctx7` entirely; the `explore` role tries to call it but the rest of pi-rukas works without it. The `developer` and `code-review-specialist` roles also benefit from current library docs.
 
 ## Quickstart
 
 ```bash
-git clone https://github.com/randomm/pi-ensemble.git
-cd pi-ensemble
+git clone https://github.com/trail-openers/pi-rukas.git
+cd pi-rukas
 ./install.sh
 ```
 
-The installer builds the role prompts, symlinks the bundled skills into `~/.pi/agent/skills/`, installs the extension's deps, registers the extension with Pi, **pulls the sandbox Docker image from `ghcr.io/randomm/pi-ensemble:latest`** (~10-20s on broadband; falls back to a local build if the pull fails), and symlinks the `pi-ensemble` wrapper into `~/.local/bin/`. Pass `--build` if you're iterating on the Dockerfile and want to force a local build; pass `--pull-only` to hard-fail when the registry is unreachable.
+The installer builds the role prompts, symlinks the bundled skills into `~/.pi/agent/skills/`, installs the extension's deps, registers the extension with Pi, **pulls the sandbox Docker image from `ghcr.io/trail-openers/pi-rukas:latest`** (~10-20s on broadband; falls back to a local build if the pull fails), and symlinks the `pi-rukas` wrapper into `~/.local/bin/`. Pass `--build` if you're iterating on the Dockerfile and want to force a local build; pass `--pull-only` to hard-fail when the registry is unreachable.
 
 Verify (sandbox mode, recommended):
 
 ```bash
 cd ~/some/git/repo
-pi-ensemble
+pi-rukas
 # pi launches inside a Docker container with PI_ENSEMBLE_SANDBOX_MODE=1.
 # Zero permission prompts inside; vipune + transcripts bind-mounted from host.
 > /ensemble-debug
@@ -172,7 +179,7 @@ pi
 
 ## Sandboxed mode (recommended)
 
-`pi-ensemble` launches Pi inside a Docker container where the container fence IS the trust boundary — no per-call permission prompts. Host state that should survive across sessions is bind-mounted in; container-local caches use named volumes.
+`pi-rukas` launches Pi inside a Docker container where the container fence IS the trust boundary — no per-call permission prompts. Host state that should survive across sessions is bind-mounted in; container-local caches use named volumes.
 
 **What's mounted where:**
 
@@ -180,9 +187,9 @@ pi
 |---|---|---|---|
 | `$PWD` (the project) | same absolute path | bind | Workspace. Mounted at the host's absolute path (not `/workspace`) so Pi's session-scope buckets match host-mode `pi`. |
 | `~/.vipune/` | same | bind / volume fallback | Cross-session project memory. If host has none, a named volume `pi-ensemble-vipune` is used. |
-| `~/.pi/agent/sessions/` | same | bind / volume fallback | Pi conversation sessions — drives `pi-ensemble -r`. |
+| `~/.pi/agent/sessions/` | same | bind / volume fallback | Pi conversation sessions — drives `pi-rukas -r`. |
 | `~/.pi/agent/ensemble-runs/` | same | bind / volume fallback | Subagent transcripts (`/runs` slash command). |
-| `~/.pi/agent/ensemble-models.json` | same | bind (ro) | pi-ensemble per-role model picks. |
+| `~/.pi/agent/ensemble-models.json` | same | bind (ro) | pi-rukas per-role model picks. |
 | `~/.pi/agent/models.json` | same | bind (ro) | Pi PROVIDER config (anthropic / openai / local-gpu / fieldbox / etc.). |
 | `~/.config/mcp/mcp.json` | same | bind (ro) | pi-mcp-adapter config (codebase-memory-mcp wiring + your other MCP servers). |
 | `~/.config/gh/` | same | bind (ro) | gh CLI config (fallback; primary auth is `GH_TOKEN` extracted from `gh auth token` and forwarded as env). |
@@ -191,37 +198,37 @@ pi
 | — | `~/.cargo/` | named volume `pi-ensemble-cargo-cache` | cargo download cache. |
 | — | `/commandhistory` | named volume `pi-ensemble-history` | shell history. |
 
-**Cross-mode persistence:** vipune memories, transcripts, sessions, model picks, MCP config, and gh auth all share state between host-mode `pi` and sandbox-mode `pi-ensemble` (same bind-mount targets, same Pi scope-bucket keys post-#207). Container-local caches (above) don't — they're container-scoped and survive container restarts via named volumes, but the host runs against its own caches.
+**Cross-mode persistence:** vipune memories, transcripts, sessions, model picks, MCP config, and gh auth all share state between host-mode `pi` and sandbox-mode `pi-rukas` (same bind-mount targets, same Pi scope-bucket keys post-#207). Container-local caches (above) don't — they're container-scoped and survive container restarts via named volumes, but the host runs against its own caches.
 
 **Wrapper subcommands:**
 
 | Command | What it does |
 |---|---|
-| `pi-ensemble` | Interactive `pi` session in the container (default) |
-| `pi-ensemble -r` | `pi -r` passthrough — resume a previous sandbox session for this project (see note on cross-mode resume below) |
-| `pi-ensemble shell` | Drop into bash inside the container |
-| `pi-ensemble rebuild` | Rebuild the pi-ensemble image (after pulling new pi-ensemble code) |
-| `pi-ensemble stop` | Stop all running containers for this project (multi-session safe) |
-| `pi-ensemble prune` | Remove sandbox caches (bind-mounted host state is NOT touched) |
-| `pi-ensemble logs` | Tail container logs (errors with a name list if multiple sessions are running) |
-| `pi-ensemble status` | Show all running containers for this project |
+| `pi-rukas` | Interactive `pi` session in the container (default) |
+| `pi-rukas -r` | `pi -r` passthrough — resume a previous sandbox session for this project (see note on cross-mode resume below) |
+| `pi-rukas shell` | Drop into bash inside the container |
+| `pi-rukas rebuild` | Rebuild the pi-rukas image (after pulling new pi-rukas code) |
+| `pi-rukas stop` | Stop all running containers for this project (multi-session safe) |
+| `pi-rukas prune` | Remove sandbox caches (bind-mounted host state is NOT touched) |
+| `pi-rukas logs` | Tail container logs (errors with a name list if multiple sessions are running) |
+| `pi-rukas status` | Show all running containers for this project |
 
-> **Multiple concurrent sessions.** Each `pi-ensemble` invocation gets its own container (per-invocation random suffix on the name). You can run several sessions in the same project simultaneously — e.g., long-form work in one terminal, a quick investigation in another. Bind-mounted state (`sessions/`, vipune, `models.json`) is concurrency-safe at the storage layer. `pi-ensemble stop` stops them all; `pi-ensemble status` lists them all.
+> **Multiple concurrent sessions.** Each `pi-rukas` invocation gets its own container (per-invocation random suffix on the name). You can run several sessions in the same project simultaneously — e.g., long-form work in one terminal, a quick investigation in another. Bind-mounted state (`sessions/`, vipune, `models.json`) is concurrency-safe at the storage layer. `pi-rukas stop` stops them all; `pi-rukas status` lists them all.
 
-> **Session resume note.** Pi scopes sessions by absolute project path. The same project at `~/projects/foo` on the host mounts at `/workspace` inside the container, so host-mode `pi -r` sessions and sandbox-mode `pi-ensemble -r` sessions live in different scope buckets and don't cross-resume — even though both modes share `~/.pi/agent/sessions/` via bind-mount. Within a single mode, resume works as expected.
+> **Session resume note.** Pi scopes sessions by absolute project path. The same project at `~/projects/foo` on the host mounts at `/workspace` inside the container, so host-mode `pi -r` sessions and sandbox-mode `pi-rukas -r` sessions live in different scope buckets and don't cross-resume — even though both modes share `~/.pi/agent/sessions/` via bind-mount. Within a single mode, resume works as expected.
 
 **Why a sandbox.** Models emit novel command shapes constantly — chained pipes, new git subcommands, novel paths. Gating every call with a yes/no prompt produces ~30 prompts/minute, which trains users to rubber-stamp and degrades attention on prompts that DO matter (anti-protection). Sandbox mode moves the trust boundary from per-call gating to the container fence: full filesystem isolation from the host, all tools allowed inside. The image bakes in every CLI the role prompts assume on `$PATH` (Pi, bun, node, git, gh, vipune, oo, codebase-memory-mcp, ctx7).
 
 **What v1 does NOT include.** The container has unrestricted network egress for v1. A follow-up (see issues) adds an init-firewall.sh + `--cap-add=NET_ADMIN` allowlist for `api.anthropic.com`, `github.com`, npm/pypi/crates.io, parallel.ai, ctx7. Until then, the sandbox protects your filesystem but not your network.
 
-**Symlink-traversal mitigation.** Even Anthropic's reference devcontainer had a symlink-traversal escape (CVE-2026-39861, fixed Apr 2026). pi-ensemble ships with `extension/src/sandbox-fs-guard.ts` that canonicalizes any filesystem path argument and rejects ones pointing outside `/workspace`.
+**Symlink-traversal mitigation.** Even Anthropic's reference devcontainer had a symlink-traversal escape (CVE-2026-39861, fixed Apr 2026). pi-rukas ships with `extension/src/sandbox-fs-guard.ts` that canonicalizes any filesystem path argument and rejects ones pointing outside `/workspace`.
 
-**Host mode is still available.** `pi` continues to work for users who don't have Docker, prefer the legacy UX, or are iterating on pi-ensemble itself. Per-call permission gating is OFF in interactive host mode by default — when pi-ensemble runs as your own UID outside a sandbox, there is no agent-tool-layer gate that can meaningfully constrain a misbehaving subagent (it has the same FS / network / credential access as you). The honest position: you trust the agent, or you don't run it. Set `PI_ENSEMBLE_STRICT_PERMISSIONS=1` to restore the legacy ask-flow if you actively want prompts back. Headless mode (`pi -p`) still hard-denies novel commands — no human to consent means the deny is meaningful.
+**Host mode is still available.** `pi` continues to work for users who don't have Docker, prefer the legacy UX, or are iterating on pi-rukas itself. Per-call permission gating is OFF in interactive host mode by default — when pi-rukas runs as your own UID outside a sandbox, there is no agent-tool-layer gate that can meaningfully constrain a misbehaving subagent (it has the same FS / network / credential access as you). The honest position: you trust the agent, or you don't run it. Set `PI_ENSEMBLE_STRICT_PERMISSIONS=1` to restore the legacy ask-flow if you actively want prompts back. Headless mode (`pi -p`) still hard-denies novel commands — no human to consent means the deny is meaningful.
 
 **Reaching hosts that live on your mesh network / LAN.** The container's resolver doesn't see Mesh VPN mesh DNS or your `/etc/hosts`. If you've registered an OpenAI-compatible LLM gateway at `http://fieldbox:8080` (or similar) in your `~/.pi/agent/models.json`, the wrapper teaches the container's resolver via `--add-host` so the hostname works inside. The default registration covers `fieldbox:192.0.2.10`. Override or extend via env:
 
 ```bash
-PI_ENSEMBLE_HOST_ALIASES="fieldbox:192.0.2.10,myserver:192.0.2.20" pi-ensemble
+PI_ENSEMBLE_HOST_ALIASES="fieldbox:192.0.2.10,myserver:192.0.2.20" pi-rukas
 ```
 
 Comma-separated `name:ip` pairs. The IPs must be reachable from the host (the container's network rides the host's stack via Docker bridge); Mesh VPN-only hostnames work as long as your host can route to the mesh network IP.
@@ -234,10 +241,10 @@ Add or replace image dirs via env:
 
 ```bash
 # Add (keeps default + appends)
-PI_ENSEMBLE_EXTRA_IMAGE_DIRS="$HOME/Documents/screenshots" pi-ensemble
+PI_ENSEMBLE_EXTRA_IMAGE_DIRS="$HOME/Documents/screenshots" pi-rukas
 
 # Replace entirely
-PI_ENSEMBLE_IMAGE_DIRS="$HOME/work-images" pi-ensemble
+PI_ENSEMBLE_IMAGE_DIRS="$HOME/work-images" pi-rukas
 ```
 
 For your provider to actually use the image, `~/.pi/agent/models.json` must mark the model as multimodal: `"input": ["text", "image"]`. Built-in providers (Anthropic / OpenAI / Google) know vision capabilities natively; custom OpenAI-compatible providers (e.g. fieldbox's Qwen3.6) need the explicit hint.
@@ -247,7 +254,7 @@ For your provider to actually use the image, `~/.pi/agent/models.json` must mark
 - **Docker socket** — if Docker is running on the host, `/var/run/docker.sock` is bind-mounted into the sandbox. MCP servers in `.pi/mcp.json` that launch via `docker run` Just Work; spawned containers are sibling containers on the host's daemon (not nested), visible in your host's `docker ps`.
 - **SSH** — `~/.ssh/` is bind-mounted read-only and the host's `$SSH_AUTH_SOCK` (if set) is forwarded. Inside the sandbox, `ssh remote-host` uses the same identities as host-mode pi.
 
-**Security trade-off (named explicitly):** the docker socket grants root-equivalent host access from inside the sandbox; SSH agent access lets the sandbox impersonate any identity loaded in your agent. Both weaken the container-fence-as-trust-boundary story (#200 / #215). Consistent with pi-ensemble's design: the sandbox is the agent's runtime, not the user's security boundary. Opt out with `PI_ENSEMBLE_NO_DOCKER_SOCKET=1` and/or `PI_ENSEMBLE_NO_SSH=1` if you want the tighter sandbox (docker-based MCPs / outbound SSH stop working under these opt-outs).
+**Security trade-off (named explicitly):** the docker socket grants root-equivalent host access from inside the sandbox; SSH agent access lets the sandbox impersonate any identity loaded in your agent. Both weaken the container-fence-as-trust-boundary story (#200 / #215). Consistent with pi-rukas's design: the sandbox is the agent's runtime, not the user's security boundary. Opt out with `PI_ENSEMBLE_NO_DOCKER_SOCKET=1` and/or `PI_ENSEMBLE_NO_SSH=1` if you want the tighter sandbox (docker-based MCPs / outbound SSH stop working under these opt-outs).
 
 ## How it works
 
@@ -265,17 +272,17 @@ Tools (all async via push-callback — tools return a `{ jobId }` immediately; t
 | `dispatch_lens_review` | Six-pass code review — fans out six children, each pinned to its lens skill. Findings come back as native `report_finding` tool calls (schema-validated by Pi inside the child), deduped by `(path, line, title)`, precedence-merged, turned into a verdict. |
 | `dispatch_status` | List in-flight async jobs (jobId, role, elapsed). Metadata only — never transcript content. |
 | `dispatch_kill <jobId>` | Abort a running subagent or batch. |
-| `dispatch_peek <jobId>` | Bounded, read-only introspection of a running subagent — last assistant text + last tool call ([#21](https://github.com/randomm/pi-ensemble/issues/21)). |
-| `dispatch_steer <jobId> <message>` | Inject a mid-flight steer into a running subagent via Pi's `--mode rpc` stdin channel — for exceptional rescue only (long-elapsed, stuck-looking) ([#152](https://github.com/randomm/pi-ensemble/issues/152)). |
-| `start_work_driver <issues[]>` | Start the compiled `/work` driver — the same pipeline the slash command runs, with its state file, queue, handoff artifact and review-cap timer. Returns immediately. Exists so PM restarts a real cycle instead of reconstructing one by hand; merge authority is operator-only and has no parameter here ([#408](https://github.com/randomm/pi-ensemble/issues/408)). |
+| `dispatch_peek <jobId>` | Bounded, read-only introspection of a running subagent — last assistant text + last tool call ([#21](https://github.com/trail-openers/pi-rukas/issues/21)). |
+| `dispatch_steer <jobId> <message>` | Inject a mid-flight steer into a running subagent via Pi's `--mode rpc` stdin channel — for exceptional rescue only (long-elapsed, stuck-looking) ([#152](https://github.com/trail-openers/pi-rukas/issues/152)). |
+| `start_work_driver <issues[]>` | Start the compiled `/work` driver — the same pipeline the slash command runs, with its state file, queue, handoff artifact and review-cap timer. Returns immediately. Exists so PM restarts a real cycle instead of reconstructing one by hand; merge authority is operator-only and has no parameter here ([#408](https://github.com/trail-openers/pi-rukas/issues/408)). |
 | `load_workflow_doctrine <name>` | Return a workflow command's full instructions (`research`, `plan`, `review`, `audit`, `start`, `do`) as tool output, so PM can run one without the user typing the slash command. `/work` is deliberately excluded — it is a compiled driver, not prose. |
-| `check_review_cap <key>` | Wall-clock cap helper for `/work` Step 7 fix loop — returns ok/exceeded against a 90-min budget so the PM stops doom-loops ([#4](https://github.com/randomm/pi-ensemble/issues/4)). |
+| `check_review_cap <key>` | Wall-clock cap helper for `/work` Step 7 fix loop — returns ok/exceeded against a 90-min budget so the PM stops doom-loops ([#4](https://github.com/trail-openers/pi-rukas/issues/4)). |
 
 Per-child transcripts are saved to `~/.pi/agent/ensemble-runs/<date>/<runId>-<role>[-<tag>].json` — replay with `pi --session <path>` or browse via `/runs`. The user inspects these; orchestrating agents do NOT read them (the dispatch tool's report is the bounded summary by design).
 
 ## Configuring subagent models
 
-You probably want a smarter model for the PM and a faster one for the specialists. The main agent (the `pi` you launch) is configured via Pi's own `--model` flag or settings. Subagent model choice is **user-authority-only** — the orchestrating agent cannot route a dispatch to a different provider on its own (see [#92](https://github.com/randomm/pi-ensemble/issues/92): jurisdiction routing is a data-residency / compliance decision, not an agent concern). Resolution order:
+You probably want a smarter model for the PM and a faster one for the specialists. The main agent (the `pi` you launch) is configured via Pi's own `--model` flag or settings. Subagent model choice is **user-authority-only** — the orchestrating agent cannot route a dispatch to a different provider on its own (see [#92](https://github.com/trail-openers/pi-rukas/issues/92): jurisdiction routing is a data-residency / compliance decision, not an agent concern). Resolution order:
 
 1. `/ensemble-model` per-role choice (saved to `~/.pi/agent/ensemble-models.json`)
 2. `/ensemble-model` all-subagents default (same file)
@@ -283,11 +290,11 @@ You probably want a smarter model for the PM and a faster one for the specialist
 4. `PI_ENSEMBLE_SUBAGENT_MODEL` env var (global fallback for subagents), optionally paired with `PI_ENSEMBLE_SUBAGENT_PROVIDER`
 5. Pi default (lowest)
 
-Run `/ensemble-model` inside Pi to pick interactively from your authenticated provider catalog. Add new built-in providers (Anthropic, GitHub Copilot, OpenAI, etc.) via Pi's `/login` — `pi-ensemble` picks them up automatically.
+Run `/ensemble-model` inside Pi to pick interactively from your authenticated provider catalog. Add new built-in providers (Anthropic, GitHub Copilot, OpenAI, etc.) via Pi's `/login` — `pi-rukas` picks them up automatically.
 
 ### Adding a custom OpenAI-compatible provider
 
-For self-hosted vLLM, an internal LLM endpoint, or any third-party OpenAI Chat-Completions–compatible API, register it once in Pi's own config and `pi-ensemble` will route subagents through it like any other provider.
+For self-hosted vLLM, an internal LLM endpoint, or any third-party OpenAI Chat-Completions–compatible API, register it once in Pi's own config and `pi-rukas` will route subagents through it like any other provider.
 
 **Step 1 — register the provider in `~/.pi/agent/models.json`** (create the file if it doesn't exist; merge with existing `providers` block if it does):
 
@@ -340,14 +347,14 @@ Compat flags worth knowing:
 - *Main agent for one specific project*: drop the same `defaultProvider`/`defaultModel` snippet into `./.pi/settings.json` at the project root. Pi reads project-local config and overrides the user-global default when invoked from there.
 - *Subagents*: run `/ensemble-model` inside Pi — the custom provider appears under its own section in the picker. Pick a role + model and the choice persists as `{provider, model}` in `~/.pi/agent/ensemble-models.json`. Alternatively set `PI_ENSEMBLE_PROVIDER_<ROLE>=my-vllm` + `PI_ENSEMBLE_MODEL_<ROLE>=vendor/model-name` per role, or the `PI_ENSEMBLE_SUBAGENT_*` pair for all subagents.
 
-`pi-ensemble` passes `--provider <name>` ahead of `--model <id>` to each spawned subagent when a provider is configured, so Pi disambiguates the model ID against your registered providers rather than only its built-in catalog.
+`pi-rukas` passes `--provider <name>` ahead of `--model <id>` to each spawned subagent when a provider is configured, so Pi disambiguates the model ID against your registered providers rather than only its built-in catalog.
 
 ## Using MCP servers (per-host or per-project)
 
-Pi has no built-in Model Context Protocol support — MCP is provided by a bridge extension. pi-ensemble's job is to forward that bridge to subagents and to gate access per role. Two independent layers are at play:
+Pi has no built-in Model Context Protocol support — MCP is provided by a bridge extension. pi-rukas's job is to forward that bridge to subagents and to gate access per role. Two independent layers are at play:
 
 1. **Which MCP servers exist** — owned by the bridge (e.g. [`pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter)). The bridge merges its own 4-tier config; project-local files override host-global ones.
-2. **Which pi-ensemble role may reach them** — owned by pi-ensemble's permission overlay. 3-tier merge; project-local files override host-global ones.
+2. **Which pi-rukas role may reach them** — owned by pi-rukas's permission overlay. 3-tier merge; project-local files override host-global ones.
 
 ### Step 1 — Install the bridge
 
@@ -357,7 +364,7 @@ pi install npm:pi-mcp-adapter
 
 (Already done as part of the [Prerequisites install commands](#install-commands)? Skip to Step 2.)
 
-`pi install npm:<pkg>` installs into the flat npm project under `~/.pi/agent/npm/node_modules/` (NOT the `extensions/` dir, which is only used for git/local installs) — verified against pi `0.84.4`, so treat a pi version bump as a deliberate re-verification. Pi's own package manager loads it at runtime via the `pi.extensions` manifest in the package's package.json — **in the parent session**. For subagents, pi-ensemble's auto-forward (`discoverInstalledExtensions`) reads only the `extensions/` layout, so an npm-layout install is NOT forwarded to subagents: either install the bridge git/local into `~/.pi/agent/extensions/` (auto-forwarded), or set `PI_ENSEMBLE_USER_EXTENSION=<abs-path or npm:ref>` to forward it explicitly. If `/mcp` shows no MCP tools inside a subagent, this is the usual cause. This step covers the bridge install; the bridge itself is a generic prerequisite — any MCP server you add later (Step 2 onward) depends on it.
+`pi install npm:<pkg>` installs into the flat npm project under `~/.pi/agent/npm/node_modules/` (NOT the `extensions/` dir, which is only used for git/local installs) — verified against pi `0.84.4`, so treat a pi version bump as a deliberate re-verification. Pi's own package manager loads it at runtime via the `pi.extensions` manifest in the package's package.json — **in the parent session**. For subagents, pi-rukas's auto-forward (`discoverInstalledExtensions`) reads only the `extensions/` layout, so an npm-layout install is NOT forwarded to subagents: either install the bridge git/local into `~/.pi/agent/extensions/` (auto-forwarded), or set `PI_ENSEMBLE_USER_EXTENSION=<abs-path or npm:ref>` to forward it explicitly. If `/mcp` shows no MCP tools inside a subagent, this is the usual cause. This step covers the bridge install; the bridge itself is a generic prerequisite — any MCP server you add later (Step 2 onward) depends on it.
 
 ### Step 2 — Define MCP servers (bridge config, 4 tiers)
 
@@ -376,7 +383,7 @@ The bridge also supports an `imports` array that auto-adopts servers already con
 
 #### `command:` portability between host and sandbox
 
-The same `~/.config/mcp/mcp.json` is read by both host-mode `pi` and sandbox-mode `pi-ensemble` (the wrapper bind-mounts the host file into the container). For server entries to work in BOTH contexts, use **PATH-relative `command:` values** — a bare binary name or `npx -y <package>`. Node's `spawn` resolves non-absolute `command:` values via `$PATH` at MCP-spawn time, so the same entry resolves to `~/.local/bin/foo` on host and `/usr/local/bin/foo` (or wherever) inside the sandbox.
+The same `~/.config/mcp/mcp.json` is read by both host-mode `pi` and sandbox-mode `pi-rukas` (the wrapper bind-mounts the host file into the container). For server entries to work in BOTH contexts, use **PATH-relative `command:` values** — a bare binary name or `npx -y <package>`. Node's `spawn` resolves non-absolute `command:` values via `$PATH` at MCP-spawn time, so the same entry resolves to `~/.local/bin/foo` on host and `/usr/local/bin/foo` (or wherever) inside the sandbox.
 
 ```jsonc
 // ✅ Portable — works on host AND in sandbox
@@ -387,7 +394,7 @@ The same `~/.config/mcp/mcp.json` is read by both host-mode `pi` and sandbox-mod
 { "command": "/Users/dev/.local/bin/codebase-memory-mcp" }
 ```
 
-If a server's binary doesn't exist inside the sandbox container, you have two options: extend `.devcontainer/Dockerfile` to install it, or scope that server to host-mode only by placing the entry in `~/.pi/agent/mcp.json` (Tier 2) and adding it to the bind-mount exclude list in `bin/pi-ensemble`.
+If a server's binary doesn't exist inside the sandbox container, you have two options: extend `.devcontainer/Dockerfile` to install it, or scope that server to host-mode only by placing the entry in `~/.pi/agent/mcp.json` (Tier 2) and adding it to the bind-mount exclude list in `bin/pi-rukas`.
 
 #### Tool-surface modes: `directTools`
 
@@ -402,7 +409,7 @@ Example: a server named `staging-db` with `directTools: true` and a `list_schema
 
 Either mode works with the ask-by-default prompt UX described below — pick based on how much per-tool granularity you want in your `$PWD/.pi/decisions.json` audit trail. Read-only safety (e.g. `--access-mode=restricted` for `crystaldba/postgres-mcp`) is enforced at the MCP server level regardless of the surface mode.
 
-### Step 3 — Grant role access (pi-ensemble permission overlay, 3 tiers)
+### Step 3 — Grant role access (pi-rukas permission overlay, 3 tiers)
 
 The shipped baseline gives **project-manager** an "ask-by-default" catch-all (`"*": "ask"`) — so the first call to any tool that isn't on an explicit allow- or deny-list (the `mcp` gateway, per-server direct tools like `<server>_<action>`, etc.) prompts you:
 
@@ -418,7 +425,7 @@ For finer control (narrower wildcards, host-wide overrides, role overrides), the
 |---|---|---|
 | 1 | `$PWD/.pi/permissions.json` | Per-project (highest precedence) |
 | 2 | `~/.pi/agent/permissions.json` | Per-host |
-| 3 | `<pi-ensemble repo>/agents.json` | Shipped baseline (this is what `mcp*: ask` lives in) |
+| 3 | `<pi-rukas repo>/agents.json` | Shipped baseline (this is what `mcp*: ask` lives in) |
 
 Per-project example — grant `mcp` to developer in *this* project only, while leaving the host default unchanged:
 
@@ -437,8 +444,8 @@ Wildcard precedence (`permission-guard.ts:lookupPermission`): exact match → lo
 
 ### Security notes
 
-- Read-only guarantees for database access must come from the MCP server's own credentials (restricted DB user, read-only role). pi-ensemble gates *who can call the tool*, not *what the tool can do*.
-- Subagents are spawned with `--no-extensions`, so pi-ensemble's permission interceptor doesn't run inside them — only role prompts constrain. The bridge IS still forwarded (so subagents have MCP access), but the deny doesn't fire in-child. If you don't want a role calling MCP, omit the grant from the role's prompt doctrine and from any project/global overlay; the subagent simply won't have a reason to call it.
+- Read-only guarantees for database access must come from the MCP server's own credentials (restricted DB user, read-only role). pi-rukas gates *who can call the tool*, not *what the tool can do*.
+- Subagents are spawned with `--no-extensions`, so pi-rukas's permission interceptor doesn't run inside them — only role prompts constrain. The bridge IS still forwarded (so subagents have MCP access), but the deny doesn't fire in-child. If you don't want a role calling MCP, omit the grant from the role's prompt doctrine and from any project/global overlay; the subagent simply won't have a reason to call it.
 - `PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD=1` opts out of auto-forwarding entirely (subagents inherit nothing — disables pi-claude-auth, MCP bridges, etc.). `PI_ENSEMBLE_USER_EXTENSION` is independent of this flag; when set, that one extension is always forwarded.
 
 ## Configuration & paths
@@ -459,8 +466,8 @@ All optional. Defaults are reasonable for typical use.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PI_ENSEMBLE_QUIET_STATUS` | unset | Set to `1` to disable the live dispatch deck — one footer status row per in-flight subagent ([#117](https://github.com/randomm/pi-ensemble/issues/117)). |
-| `PI_ENSEMBLE_QUIET_LIFECYCLE` | unset | Set to `1` to disable scrollback lifecycle markers (`▸ ensemble: dispatched / ✓ finished / ✗ failed`) ([#118](https://github.com/randomm/pi-ensemble/issues/118)). |
+| `PI_ENSEMBLE_QUIET_STATUS` | unset | Set to `1` to disable the live dispatch deck — one footer status row per in-flight subagent ([#117](https://github.com/trail-openers/pi-rukas/issues/117)). |
+| `PI_ENSEMBLE_QUIET_LIFECYCLE` | unset | Set to `1` to disable scrollback lifecycle markers (`▸ ensemble: dispatched / ✓ finished / ✗ failed`) ([#118](https://github.com/trail-openers/pi-rukas/issues/118)). |
 | `PI_ENSEMBLE_SPAWN_TIMEOUT_MS` | `7200000` (2 h) | Runaway backstop per spawned subagent — catches a child looping forever while still emitting output. Liveness (`PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS`) is the real hang detector; this should never fire in normal operation. Operator/CI override — not settable by the agent. |
 | `PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS` | `1500000` (25 min) | Kill a child after this long with **zero stdout**. Model-speed-independent, so it is the primary hang detector. `0` disables. |
 | `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` | `480000` (8 min) | How long the `/work` driver waits for the handoff `ops` dispatch — the one that posts the park comment and applies `needs-human-attention`. Its body file is already on disk, so on timeout the driver posts it via in-process `gh` instead; the bound costs nothing but the parsed comment URL. |
@@ -477,7 +484,7 @@ All optional. Defaults are reasonable for typical use.
 | `PI_ENSEMBLE_PROVIDER_<ROLE>` | unset | Per-role provider override, paired with the corresponding `_MODEL_` var. Same naming rule. |
 | `PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD` | unset | Set to `1` to opt out of auto-forwarding installed extensions to subagents (subagents inherit nothing — disables pi-claude-auth, MCP bridges, etc.). |
 | `PI_ENSEMBLE_USER_EXTENSION` | unset | Absolute path or `npm:<pkg>` ref of an extra extension to forward to subagents, on top of the auto-discovered list. |
-| `PI_ENSEMBLE_AUTOSAVE` | unset | Set to `1` to opt into a deterministic session summary written to `vipune` on session quit ([#23](https://github.com/randomm/pi-ensemble/issues/23)). Pure local extract — no LLM call. Off by default. |
+| `PI_ENSEMBLE_AUTOSAVE` | unset | Set to `1` to opt into a deterministic session summary written to `vipune` on session quit ([#23](https://github.com/trail-openers/pi-rukas/issues/23)). Pure local extract — no LLM call. Off by default. |
 
 **Outcome verification (PR17+):**
 
@@ -507,7 +514,7 @@ All optional. Defaults are reasonable for typical use.
 | `PI_ENSEMBLE_MERGE_AUTHORITY` | `1` | Set to `0` to disable the merge gate and restore the previous behaviour, where the driver merged whenever an ops child's reply contained `ci-status: success`. Default ON — merging requires **both** an explicit grant (a recognised sentence in the project's `AGENTS.md`, or `/work N --merge`) **and** executed evidence from `gh` (`mergeStateStatus` + `gh pr checks`, with `skipped`/`neutral` required checks treated as NOT passing). It fails closed: an unreadable `gh` blocks the merge. With no grant the PR is opened and the cycle parks as `awaiting-human-merge`. |
 | `PI_ENSEMBLE_INTENT` | `1` | Set to `0` to disable intent resolution and restore the single-token explore verdict. Default ON — the driver resolves what an issue is actually asking for from **any** body (a full spec, a paragraph, a one-line bug report), grounds it against the code and the world, and then decides: proceed, proceed-with-assumptions, or **park** without writing code. A missing or unreadable verdict parks; silence is never permission. |
 
-**Sandbox mode (`pi-ensemble` wrapper):**
+**Sandbox mode (`pi-rukas` wrapper):**
 
 | Variable | Set by | Purpose |
 |---|---|---|
@@ -516,7 +523,7 @@ All optional. Defaults are reasonable for typical use.
 | `PI_ENSEMBLE_HOST_ALIASES` | user | Comma-separated `name:ip` pairs the wrapper passes as `--add-host`. Default: `fieldbox:192.0.2.10`. Use to teach the container's resolver about Mesh VPN / LAN hostnames not in DNS. |
 | `PI_ENSEMBLE_EXTRA_ENV` | user (deprecated) | Pre-#228 escape hatch for forwarding specific env vars. No longer needed — the wrapper now forwards the **entire host shell env** by default (less a small conflict-blocklist; see below). Kept as a no-op so existing shell rc lines don't break. |
 | `PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD` | user (debugging) | `1` disables the subagent permission-broker socket. Redundant in sandbox / interactive host where the guard already short-circuits; meaningful only under `PI_ENSEMBLE_STRICT_PERMISSIONS=1`. |
-| `PI_ENSEMBLE_STRICT_PERMISSIONS` | user (host mode) | `1` restores the legacy per-call ask-flow in interactive host mode. Default OFF — pi-ensemble does not enforce per-call permissions in interactive host mode (no real boundary exists; prompts are theatre at runtime volumes). Use this only if you want prompts back. |
+| `PI_ENSEMBLE_STRICT_PERMISSIONS` | user (host mode) | `1` restores the legacy per-call ask-flow in interactive host mode. Default OFF — pi-rukas does not enforce per-call permissions in interactive host mode (no real boundary exists; prompts are theatre at runtime volumes). Use this only if you want prompts back. |
 | `PI_ENSEMBLE_TRUST_MODE` | internal (spawn.ts) | `1` propagated from parent to subagent when parent is in trust mode. Mirror of `PI_ENSEMBLE_SANDBOX_MODE` for the interactive-host case. Not a user-facing knob. |
 | `PI_ENSEMBLE_NO_DOCKER_SOCKET` | user (opt-out) | `1` skips the default docker-socket bind-mount. By default the wrapper mounts `/var/run/docker.sock` so `.pi/mcp.json` docker-based MCPs Just Work; setting this disables that. Grants root-equivalent host access in the default-on case — weakens the sandbox fence. |
 | `PI_ENSEMBLE_NO_SSH` | user (opt-out) | `1` skips the default `~/.ssh/` bind-mount + `SSH_AUTH_SOCK` forwarding. By default the wrapper makes `ssh remote-host` work inside the sandbox the same way it does on host. Setting this disables outbound SSH from the sandbox. |
@@ -551,7 +558,7 @@ The 28 modules under `modules/` (vipune memory patterns, output standards, async
 
 ## Pi compatibility
 
-pi-ensemble depends on Pi's CLI flags, JSON event stream shape, and `ExtensionAPI` surface. The current sandbox image ships pi `0.84.4`; the host-mode dev-deps pin `@earendil-works/pi-coding-agent` to `~0.84.4` so a Pi minor bump is a deliberate update. The sandbox version is a hand-maintained claim (the image's `npm install -g` is pinned to 0.84.4) and is asserted at exactly three prose sites — the README "Status" line, `.devcontainer/Dockerfile` (pi-mcp-adapter comment), and this section; update all three when the image's pi changes.
+pi-rukas depends on Pi's CLI flags, JSON event stream shape, and `ExtensionAPI` surface. The current sandbox image ships pi `0.84.4`; the host-mode dev-deps pin `@earendil-works/pi-coding-agent` to `~0.84.4` so a Pi minor bump is a deliberate update. The sandbox version is a hand-maintained claim (the image's `npm install -g` is pinned to 0.84.4) and is asserted at exactly three prose sites — the README "Status" line, `.devcontainer/Dockerfile` (pi-mcp-adapter comment), and this section; update all three when the image's pi changes.
 
 When updating Pi:
 1. Check the [pi-mono releases](https://github.com/badlogic/pi-mono/releases).

@@ -11,6 +11,8 @@
  * answer the value question from data the CLI refuses to surface.
  */
 
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
 import { readMemoryStats, renderMemoryStats } from "../src/memory-stats.ts";
 import {
   type FindingLike,
@@ -20,6 +22,21 @@ import {
   validMetadata,
   writeFindings,
 } from "../src/memory-write.ts";
+
+const execp = promisify(exec);
+
+/** The owner/repo slug the current git remote reduces to, or nothing. */
+async function expectedSlugFromRemote(): Promise<string | undefined> {
+  try {
+    const { stdout } = await execp("git config --get remote.origin.url", { cwd: process.cwd() });
+    const url = stdout.trim();
+    if (!url) return undefined;
+    const match = url.match(/[:/]([^/:]+\/[^/]+?)(?:\.git)?$/);
+    return match?.[1];
+  } catch {
+    return undefined;
+  }
+}
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -61,7 +78,7 @@ function assert(cond: boolean, msg: string) {
 // ------------------------------------------- metadata cannot corrupt the read
 
 {
-  const good = { src: "pi-ensemble", issue: 422, file: "a.ts", kind: "lens-finding" };
+  const good = { src: "pi-rukas", issue: 422, file: "a.ts", kind: "lens-finding" };
   assert(validMetadata(good), "a well-formed metadata object validates");
   assert(validMetadata({ ...good, cycle: "2" }), "...with an optional cycle");
 
@@ -94,7 +111,7 @@ function assert(cond: boolean, msg: string) {
 
   const out = await writeFindings(
     findings,
-    { src: "pi-ensemble", issue: 422, kind: "lens-finding", cycle: "1" },
+    { src: "pi-rukas", issue: 422, kind: "lens-finding", cycle: "1" },
     { cwd: "/repo", execFn: fakeExec },
   );
 
@@ -145,7 +162,7 @@ function assert(cond: boolean, msg: string) {
   };
   const out = await writeFindings(
     [{ path: "a.ts", title: "t", severity: "LOW" }],
-    { src: "pi-ensemble", issue: 1, kind: "lens-finding" },
+    { src: "pi-rukas", issue: 1, kind: "lens-finding" },
     { cwd: "/r", execFn: conflictExec as never },
   );
   assert(out[0]?.outcome === "conflict", "an exit-2 conflict is reported as a conflict");
@@ -156,7 +173,7 @@ function assert(cond: boolean, msg: string) {
   };
   const err = await writeFindings(
     [{ path: "a.ts", title: "t", severity: "LOW" }],
-    { src: "pi-ensemble", issue: 1, kind: "lens-finding" },
+    { src: "pi-rukas", issue: 1, kind: "lens-finding" },
     { cwd: "/r", execFn: throwExec as never },
   );
   assert(
@@ -168,7 +185,11 @@ function assert(cond: boolean, msg: string) {
 // ------------------------------------- the value instrument, on the live store
 
 {
-  const s = await readMemoryStats("trail-openers/pi-rukas");
+  // The slug is derived from the ACTUAL git remote rather than hardcoded, so
+  // the test passes whether the remote is still `randomm/pi-ensemble` (the
+  // GitHub transfer has not happened yet) or has become `trail-openers/pi-rukas`.
+  const slug = await expectedSlugFromRemote();
+  const s = await readMemoryStats(slug ?? "no-such-project-xyz");
   if (!s) {
     console.log("… no live vipune store — skipping the value-instrument check");
   } else {

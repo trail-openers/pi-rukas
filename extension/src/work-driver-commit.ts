@@ -229,7 +229,7 @@ export async function mechanizedCommitPr(
     const assumptionsBlock = assumptionsBlockOf(ps.normalisedSpec);
     const carriedFindings = carriedFindingsSectionOf(state.eventLog);
     const prBody = [
-      "Automated by pi-ensemble /work driver (mechanized commit-pr).",
+      "Automated by pi-rukas /work driver (mechanized commit-pr).",
       "",
       ...fixesLines,
       ...companionLines,

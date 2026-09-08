@@ -16,7 +16,7 @@ Issue creation is **compiled**. This module is composed into both the project-ma
 - **Project manager (PM)**: the sole owner of issue creation, exercised through the `start_plan_driver` tool (the compiled /plan driver). Call it with `dryRun: true` first, show the spec + gap dispositions to the operator, and on confirmation re-call without `dryRun`. Direct `gh issue create` is structurally refused for every role in every mode — the mode-independent guard's refusal names the tool to use instead. **Mid-cycle `gh issue edit` of an existing issue body stays ungated** — refinements and corrections go in the body, not a new ticket.
 - **Developer (and every specialist)**: you do NOT create or edit GitHub issues. Before starting work, **verify a GitHub issue exists** for the task. If none does, **report the missing issue in your final message** — PM files it via `start_plan_driver`. Do not open a ticket yourself; the guard will refuse, and a specialist filing its own ticket is scope-creep even if it did not.
 
-PM runs `gh` directly for the read/lifecycle verbs — the `start_plan_driver` tool (not a hypothetical `ticket` tool) owns creation now; see [#98](https://github.com/randomm/pi-ensemble/issues/98) for the original RFC.
+PM runs `gh` directly for the read/lifecycle verbs — the `start_plan_driver` tool (not a hypothetical `ticket` tool) owns creation now; see [#98](https://github.com/trail-openers/pi-rukas/issues/98) for the original RFC.
 
 ## Issue Creation Template
 

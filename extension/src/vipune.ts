@@ -1,5 +1,5 @@
 /**
- * vipune — the single seam between pi-ensemble and the memory CLI.
+ * vipune — the single seam between pi-rukas and the memory CLI.
  *
  * Everything here is calibrated against measurements of the real binary, not
  * against its documentation. Two facts drive the whole design and neither is
@@ -364,7 +364,7 @@ async function run(
  *   AND of both          → 5/5 positives, 0/5 negatives
  *
  * The floor cannot separate these on its own for a structural reason: every
- * guard in a pi-ensemble store is *about a pi-ensemble filename*, so any
+ * guard in a pi-rukas store is *about a pi-rukas filename*, so any
  * plausible basename is semantically near all of them. Cosine cannot tell
  * "this guard is about THIS file" from "about SOME file in this project";
  * BM25 can, because it only ranks a row first on a literal token match.

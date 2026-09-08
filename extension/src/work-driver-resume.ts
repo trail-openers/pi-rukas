@@ -307,12 +307,12 @@ export function clearForResume(state: WorkState): WorkState {
 
 /** Operator-facing message for a refused re-entry. */
 export function explainRefusal(issue: number, ownerPid: number): string {
-  return `pi-ensemble: /work for issue #${issue} is already running in process ${ownerPid}. Two drivers on one branch interleave commits and produce a PR nobody can review, so this invocation is refusing rather than joining. If that process is gone, its state file will say so once it exits — or remove .pi/work-state/${issue}.json to force a fresh cycle.`;
+  return `pi-rukas: /work for issue #${issue} is already running in process ${ownerPid}. Two drivers on one branch interleave commits and produce a PR nobody can review, so this invocation is refusing rather than joining. If that process is gone, its state file will say so once it exits — or remove .pi/work-state/${issue}.json to force a fresh cycle.`;
 }
 
 /** Operator-facing message for a resumed cycle. */
 export function explainResume(issue: number, step: WorkStep, lost: number): string {
-  return `pi-ensemble: /work for issue #${issue} is resuming at \`${step}\` — the previous run died with ${lost} dispatch(es) in flight. Completed steps are not re-run; only \`${step}\` is re-entered. Its prior child process and whatever it had done are gone, so the step starts over rather than continuing mid-flight.`;
+  return `pi-rukas: /work for issue #${issue} is resuming at \`${step}\` — the previous run died with ${lost} dispatch(es) in flight. Completed steps are not re-run; only \`${step}\` is re-entered. Its prior child process and whatever it had done are gone, so the step starts over rather than continuing mid-flight.`;
 }
 
 // ---------------------------------------------------------------------------

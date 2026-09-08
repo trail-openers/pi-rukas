@@ -1,5 +1,5 @@
 /**
- * pi-ensemble permission interceptor — owns the `tool_call` hook that
+ * pi-rukas permission interceptor — owns the `tool_call` hook that
  * decides allow/deny/ask for every tool the parent agent invokes.
  *
  * Two concerns live here today (refactor tracker: #171 — bash-command
@@ -190,7 +190,7 @@ export function resolveToolPermission(
       }
       // Invalid verdict: treat as deny and log
       trace(
-        `pi-ensemble permission-guard: invalid verdict '${verdict}' for tool ${toolName}, treating as deny`,
+        `pi-rukas permission-guard: invalid verdict '${verdict}' for tool ${toolName}, treating as deny`,
       );
       return "deny";
     }
@@ -208,7 +208,7 @@ let parentCtx: any = null;
 let brokerDepsFactory: (() => BrokerDeps) | null = null;
 
 /**
- * Trust mode — pi-ensemble does NOT enforce per-call permissions when there's
+ * Trust mode — pi-rukas does NOT enforce per-call permissions when there's
  * no boundary worth enforcing. Three cases:
  *
  *   1. Sandbox (PI_ENSEMBLE_SANDBOX_MODE=1) — container fence isolates; we
@@ -278,7 +278,7 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
   registerPmBashGuard(pi);
 
   // Sandbox-mode short-circuit (PR #197). Inside the Docker sandbox (set by
-  // the `pi-ensemble` wrapper / .devcontainer.json) the container fence IS
+  // the `pi-rukas` wrapper / .devcontainer.json) the container fence IS
   // the trust boundary. No per-call prompts, no broker, no overlay loading.
   // The parent Pi session has no UI gating, the user types in the TUI
   // directly. agents.json entries become inert at runtime (still rendered
@@ -288,8 +288,8 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
     return;
   }
 
-  // Subagent-mode firewall: when spawn.ts forwards pi-ensemble into a subagent
-  // it also sets PI_ENSEMBLE_SUBAGENT_MODE=1. The subagent's pi-ensemble load
+  // Subagent-mode firewall: when spawn.ts forwards pi-rukas into a subagent
+  // it also sets PI_ENSEMBLE_SUBAGENT_MODE=1. The subagent's pi-rukas load
   // should ONLY register the permission-guard (no dispatch tools, no slash
   // commands) — index.ts handles the registration firewall; here we install a
   // minimal tool_call handler that escalates `ask` verdicts to the parent
@@ -299,7 +299,7 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
     return;
   }
   // Parent Pi sessions don't set PI_ENSEMBLE_ROLE — only spawn.ts sets it for
-  // subagent child processes (spec.role). In pi-ensemble's design the parent
+  // subagent child processes (spec.role). In pi-rukas's design the parent
   // process IS the orchestrator (project-manager), so resolve to that role at
   // the permission layer when no explicit role is set. There is no separate
   // "default" role anymore (issue #104) — the doctrine layer already aliased
@@ -356,7 +356,7 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
         req.toolName === "bash" && req.bashCommand
           ? req.bashCommand.slice(0, 60)
           : `(${req.toolName})`;
-      const message = `pi-ensemble [${req.role}] (subagent): ${req.toolName} ${argsPreview}`;
+      const message = `pi-rukas [${req.role}] (subagent): ${req.toolName} ${argsPreview}`;
       const promptOptions =
         req.toolName === "bash"
           ? [
@@ -438,7 +438,7 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
       } catch {
         argsPreview = "[args]";
       }
-      const message = `pi-ensemble [${role}]: ${event.toolName} ${argsPreview}`;
+      const message = `pi-rukas [${role}]: ${event.toolName} ${argsPreview}`;
 
       let promptOptions: string[];
       if (event.toolName === "bash") {
@@ -456,7 +456,7 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
       try {
         choice = await ctx.ui.select(message, promptOptions);
       } catch (err) {
-        trace(`pi-ensemble permission-guard: ctx.ui.select failed for ${event.toolName} (${err})`);
+        trace(`pi-rukas permission-guard: ctx.ui.select failed for ${event.toolName} (${err})`);
         return { block: true, reason: `Tool '${event.toolName}' denied (UI error)` };
       }
 

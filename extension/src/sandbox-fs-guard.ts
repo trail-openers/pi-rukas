@@ -1,5 +1,5 @@
 /**
- * Sandbox FS guard — symlink-traversal mitigation for `pi-ensemble` sandbox mode.
+ * Sandbox FS guard — symlink-traversal mitigation for `pi-rukas` sandbox mode.
  *
  * Background: even Anthropic's reference devcontainer for Claude Code shipped a
  * symlink-traversal escape (CVE-2026-39861, fixed in 2.1.64). The pattern: a
@@ -33,7 +33,7 @@ import { trace } from "./trace.js";
 
 // Sandbox workspace root inside the container — the primary in-bounds dir.
 //
-// Read from PI_ENSEMBLE_WORKSPACE_ROOT env, set by bin/pi-ensemble wrapper
+// Read from PI_ENSEMBLE_WORKSPACE_ROOT env, set by bin/pi-rukas wrapper
 // to the project's host absolute path (e.g. /Users/dev/projects/lantern)
 // so Pi's session-bucket scoping matches host mode (#207). Falls back to
 // `/workspace` for users running the image directly via `docker run`
@@ -141,7 +141,7 @@ export function checkSandboxFsArgs(
         extras.length > 0 ? `${workspaceRoot} (or any of: ${extras.join(", ")})` : workspaceRoot;
       return {
         ok: false,
-        reason: `Path '${value}' resolves outside the sandbox workspace. The sandbox-fs-guard permits paths under ${allowed}. For images outside these roots, either drop them into the project first OR set PI_ENSEMBLE_EXTRA_IMAGE_DIRS to include their parent directory before launching pi-ensemble.`,
+        reason: `Path '${value}' resolves outside the sandbox workspace. The sandbox-fs-guard permits paths under ${allowed}. For images outside these roots, either drop them into the project first OR set PI_ENSEMBLE_EXTRA_IMAGE_DIRS to include their parent directory before launching pi-rukas.`,
       };
     }
   }

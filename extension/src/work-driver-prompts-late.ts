@@ -41,7 +41,7 @@ export function scratchHygieneSection(scratchDirAbs: string): string {
     `  ${scratchDirAbs}`,
     "",
     "Do NOT write scratch to the repo root or any tracked directory. Acceptable",
-    "alternatives are `/tmp/pi-ensemble/...` (host-level). When this dispatch",
+    "alternatives are `/tmp/pi-rukas/...` (host-level). When this dispatch",
     "ends, leave the scratch dir in place — the work-driver removes it on a",
     "successful merge and keeps it on handoff for the user to inspect.",
   ].join("\n");

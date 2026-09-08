@@ -252,4 +252,4 @@ When you save structured analysis (JSON gap reports, scraped data, codebase memo
 
 Empirical pattern: previous /work cycles dropped `analysis/nav-phase1a-gaps.json` and ad-hoc PNG mockups at repo root. That clutter then blocks the next /work's branch step (`git status --porcelain` not empty).
 
-When the scratch dir is named in your dispatch prompt: use it. When it's not: `/tmp/pi-ensemble-explore/` is the host-level fallback. NEVER write structured outputs to the repo root or tracked dirs unless the work IS the deliverable (e.g., a research issue whose body you're editing — via the forge CLI's issue-edit verb, `gh issue edit --body-file` on GitHub or `glab api -X PUT` with `description=@<file>` on GitLab).
+When the scratch dir is named in your dispatch prompt: use it. When it's not: `/tmp/pi-rukas-explore/` is the host-level fallback. NEVER write structured outputs to the repo root or tracked dirs unless the work IS the deliverable (e.g., a research issue whose body you're editing — via the forge CLI's issue-edit verb, `gh issue edit --body-file` on GitHub or `glab api -X PUT` with `description=@<file>` on GitLab).

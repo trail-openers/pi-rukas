@@ -168,7 +168,7 @@ Before starting work:
 When you create ephemeral artefacts (diff snapshots between rounds, captured screenshots, one-off verification scripts, JSON analysis outputs), write them under:
 
 - The path the dispatcher names in your prompt (e.g. `<repo>/tmp/issue-<N>/`) when one is provided, **OR**
-- `/tmp/pi-ensemble-dev/` for host-level scratch when no project tmp dir is named
+- `/tmp/pi-rukas-dev/` for host-level scratch when no project tmp dir is named
 
 **NEVER** write scratch files to the repo root or any tracked directory. Empirical pattern: previous /work cycles polluted `lantern` with 12 dot-prefixed `.pr1_r2.diff` / `.regate-1.diff` style files, abandoned PNG screenshots (`screenshot.png` at repo root), one-off e2e scripts (`frontend/e2e/capture-screenshots.mjs`, `clickability-audit.mjs`), and a scratch `test_string_error.rs` at root. The next /work's branch step then ABORTed because `git status --porcelain` wasn't empty.
 

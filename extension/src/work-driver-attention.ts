@@ -86,7 +86,7 @@ export function judgeAttention(
     refuse: true,
     checked: true,
     message: [
-      `pi-ensemble: /work for issue #${issue} refused — it is labelled \`${ATTENTION_LABEL}\`.`,
+      `pi-rukas: /work for issue #${issue} refused — it is labelled \`${ATTENTION_LABEL}\`.`,
       "",
       "A previous cycle hit the review cap and handed this off for a human to look at.",
       "Re-running it unchanged reproduces the same handoff: same issue body, same cap.",

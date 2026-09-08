@@ -1,11 +1,11 @@
-# pi-ensemble docs
+# pi-rukas docs
 
 Specifications + policy docs for `/audit` (Epic #31) plus a troubleshooting guide for the sandboxed runtime.
 
 ## Operator docs
 
 ### [troubleshooting.md](troubleshooting.md)
-Symptom → cause → fix entries for the most common `pi-ensemble` sandbox issues: `MCP: 0/N servers`, `gh` 401 inside container, custom LLM endpoints unreachable, custom provider missing from `/ensemble-model`, vipune embedding 404, fd/rg auto-download at boot, session-resume picker failures, named-volume cleanup. Each entry links the PR that addressed it. First stop when something weird happens — usually `./install.sh` fixes it.
+Symptom → cause → fix entries for the most common `pi-rukas` sandbox issues: `MCP: 0/N servers`, `gh` 401 inside container, custom LLM endpoints unreachable, custom provider missing from `/ensemble-model`, vipune embedding 404, fd/rg auto-download at boot, session-resume picker failures, named-volume cleanup. Each entry links the PR that addressed it. First stop when something weird happens — usually `./install.sh` fixes it.
 
 ## `/audit` Command Documentation
 
@@ -19,7 +19,7 @@ The master specification for the `/audit` command. This document defines:
 - Failure handling and fallback behavior
 - v1/v2 boundaries
 
-**Status**: Active — `/audit` ships in pi-ensemble alpha. v2 boundary work tracked separately under Epic #31.
+**Status**: Active — `/audit` ships in pi-rukas alpha. v2 boundary work tracked separately under Epic #31.
 
 ### [audit-vipune-policy.md](audit-vipune-policy.md)
 Explicit vipune usage policy for `/audit`. This document defines:
@@ -70,4 +70,4 @@ For the latest implementation progress, see the GitHub issues.
 
 ## Contact
 
-For questions or feedback on the `/audit` command, see the parent pi-ensemble repository at [github.com/randomm/pi-ensemble](https://github.com/randomm/pi-ensemble).
+For questions or feedback on the `/audit` command, see the parent pi-rukas repository at [github.com/trail-openers/pi-rukas](https://github.com/trail-openers/pi-rukas).

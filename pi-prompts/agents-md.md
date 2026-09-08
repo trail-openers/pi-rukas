@@ -32,7 +32,7 @@ yourself:
 | State | Meaning | Action |
 |-------|---------|--------|
 | `no-file` | no `AGENTS.md` | `create` is automatic (reads + a create-when-absent write); show the diff, write |
-| `no-markers` | file exists but has no pi-ensemble markers | **brownfield wrap** (see below) — WRAPPING ONLY |
+| `no-markers` | file exists but has no pi-rukas markers | **brownfield wrap** (see below) — WRAPPING ONLY |
 | `has-markers` | managed sections present | `update` (no-op when current) |
 | `markers-stale` | managed sections present but drift detected | `update` to re-derive; show diff, ask |
 | `ambiguous-corruption` | markers present but unparseable (nested/dup/mismatch/orphan) | **STOP.** Report the corruption verbatim. Never guess a repair.

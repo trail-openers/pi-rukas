@@ -3,7 +3,7 @@
  *
  * The operator's condition for keeping memory on is *"as long as it provides
  * value to agents."* That is only a condition if it can be checked, and until
- * now it could not be: nothing in pi-ensemble recorded whether an injected
+ * now it could not be: nothing in pi-rukas recorded whether an injected
  * memory was read, ignored or contradicted.
  *
  * vipune maintains the answer and surfaces none of it. `retrieval_count` and
@@ -17,7 +17,7 @@
  * seam": the seam spawns a binary that cannot answer this question, and opening
  * the database `mode=ro` cannot alter a byte of it.
  *
- * Measured on the live store for `randomm/pi-ensemble`: 111 rows (103 active,
+ * Measured on the live store for `randomm/pi-rukas`: 111 rows (103 active,
  * 2 candidate, 6 superseded), 1186 retrievals, max 31, and only 8 rows never
  * retrieved. The corpus is heavily used — just not by this harness, which
  * contributes none of those reads. That number is the baseline this is meant to

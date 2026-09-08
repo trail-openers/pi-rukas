@@ -6,7 +6,7 @@
  * threading landed).
  *
  * The structured kill-cause (#296; #543 adds loop/token-budget) wins
- * over everything: a child pi-ensemble itself killed is OUR failure,
+ * over everything: a child pi-rukas itself killed is OUR failure,
  * never a provider failure. The errorTail names the trigger + the
  * override knob for every cause: wall-clock ms for
  * timeout/inactivity, the streak evidence for loop, the budget + used

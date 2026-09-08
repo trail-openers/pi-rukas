@@ -70,18 +70,18 @@ const input =
   const out = splice(input, "quality-gates", newBody);
 
   // Only the managed section's content changed. Every other byte is identical.
-  const before = out.slice(0, out.indexOf("<!-- pi-ensemble:agents-md:begin quality-gates"));
+  const before = out.slice(0, out.indexOf("<!-- pi-rukas:agents-md:begin quality-gates"));
   assert(
-    before === input.slice(0, input.indexOf("<!-- pi-ensemble:agents-md:begin quality-gates")),
+    before === input.slice(0, input.indexOf("<!-- pi-rukas:agents-md:begin quality-gates")),
     "#253: hand-written prose BEFORE the first managed pair is byte-identical",
   );
 
   // The region between the quality-gates end marker and the next managed begin
   // (the human section + foreign pair) must be byte-identical.
-  const startOfHuman = input.indexOf("<!-- pi-ensemble:agents-md:end quality-gates -->");
-  const outStartOfHuman = out.indexOf("<!-- pi-ensemble:agents-md:end quality-gates -->");
-  const nextManagedBegin = input.indexOf("<!-- pi-ensemble:agents-md:begin decision-ledger");
-  const outNextManagedBegin = out.indexOf("<!-- pi-ensemble:agents-md:begin decision-ledger");
+  const startOfHuman = input.indexOf("<!-- pi-rukas:agents-md:end quality-gates -->");
+  const outStartOfHuman = out.indexOf("<!-- pi-rukas:agents-md:end quality-gates -->");
+  const nextManagedBegin = input.indexOf("<!-- pi-rukas:agents-md:begin decision-ledger");
+  const outNextManagedBegin = out.indexOf("<!-- pi-rukas:agents-md:begin decision-ledger");
   const betweenIn = input.slice(startOfHuman, nextManagedBegin);
   const betweenOut = out.slice(outStartOfHuman, outNextManagedBegin);
   assert(
@@ -90,8 +90,8 @@ const input =
   );
 
   // Everything after the last managed pair (the closing notes) is identical.
-  const lastEndIn = input.lastIndexOf("<!-- pi-ensemble:agents-md:end decision-ledger -->");
-  const lastEndOut = out.lastIndexOf("<!-- pi-ensemble:agents-md:end decision-ledger -->");
+  const lastEndIn = input.lastIndexOf("<!-- pi-rukas:agents-md:end decision-ledger -->");
+  const lastEndOut = out.lastIndexOf("<!-- pi-rukas:agents-md:end decision-ledger -->");
   assert(
     input.slice(lastEndIn) === out.slice(lastEndOut),
     "#253: hand-written prose AFTER the last managed pair is byte-identical",
@@ -139,7 +139,7 @@ const input =
     "a second append appends in order",
   );
   assert(
-    withTwo.endsWith("<!-- pi-ensemble:agents-md:end decision-ledger -->\n"),
+    withTwo.endsWith("<!-- pi-rukas:agents-md:end decision-ledger -->\n"),
     "...ending on a complete marker pair",
   );
 }
@@ -149,9 +149,9 @@ const input =
 {
   // Nested: a begin inside another open span.
   const nested = `${
-    renderSection("a", "x").replace("<!-- pi-ensemble:agents-md:end a -->", "") +
+    renderSection("a", "x").replace("<!-- pi-rukas:agents-md:end a -->", "") +
     renderSection("b", "y")
-  }<!-- pi-ensemble:agents-md:end a -->\n`;
+  }<!-- pi-rukas:agents-md:end a -->\n`;
   assert(
     throws(() => parseMarkers(nested)),
     "nested markers → MarkerError, not silent pass",
@@ -166,21 +166,21 @@ const input =
 
   // Mismatched: begin a, end b.
   const mismatch =
-    "<!-- pi-ensemble:agents-md:begin a v1 -->\nbody\n<!-- pi-ensemble:agents-md:end b -->\n";
+    "<!-- pi-rukas:agents-md:begin a v1 -->\nbody\n<!-- pi-rukas:agents-md:end b -->\n";
   assert(
     throws(() => parseMarkers(mismatch)),
     "mismatched begin/end ids → MarkerError",
   );
 
   // Orphan begin: begin with no end.
-  const orphanBegin = "<!-- pi-ensemble:agents-md:begin a v1 -->\nbody\n";
+  const orphanBegin = "<!-- pi-rukas:agents-md:begin a v1 -->\nbody\n";
   assert(
     throws(() => parseMarkers(orphanBegin)),
     "begin with no matching end → MarkerError",
   );
 
   // Orphan end: end with no begin.
-  const orphanEnd = "<!-- pi-ensemble:agents-md:end a -->\n";
+  const orphanEnd = "<!-- pi-rukas:agents-md:end a -->\n";
   assert(
     throws(() => parseMarkers(orphanEnd)),
     "end with no matching begin → MarkerError",
@@ -189,7 +189,7 @@ const input =
 
 // splice must not silently "succeed" on a corrupt file either
 {
-  const corrupt = "<!-- pi-ensemble:agents-md:begin a v1 -->\nbody\n"; // orphan begin
+  const corrupt = "<!-- pi-rukas:agents-md:begin a v1 -->\nbody\n"; // orphan begin
   let threw = false;
   try {
     splice(corrupt, "a", "new");
@@ -209,7 +209,7 @@ const input =
 
 {
   const v3begin =
-    "<!-- pi-ensemble:agents-md:begin x v3 -->\nq\n<!-- pi-ensemble:agents-md:end x v2 -->\n";
+    "<!-- pi-rukas:agents-md:begin x v3 -->\nq\n<!-- pi-rukas:agents-md:end x v2 -->\n";
   const err = throwsCorrupt(
     v3begin,
     "strict-captured begin v3 + strict-missed end v2 → MarkerError",
@@ -222,52 +222,52 @@ const input =
   // The other strict-missed END shapes, so the invariant holds for the class,
   // not just the one probe that motivated it.
   throwsCorrupt(
-    "<!-- pi-ensemble:agents-md:begin x v99 -->\nq\n<!-- pi-ensemble:agents-md:end x v2 -->\n",
+    "<!-- pi-rukas:agents-md:begin x v99 -->\nq\n<!-- pi-rukas:agents-md:end x v2 -->\n",
     "begin v99 + end v2 → MarkerError",
   );
   throwsCorrupt(
-    "<!-- pi-ensemble:agents-md:begin x v1 -->\nq\n<!-- pi-ensemble:agents-md:end x v2 -->\n",
+    "<!-- pi-rukas:agents-md:begin x v1 -->\nq\n<!-- pi-rukas:agents-md:end x v2 -->\n",
     "begin v1 + end v2 → MarkerError",
   );
   throwsCorrupt(
-    "<!-- pi-ensemble:agents-md:begin x v2 -->\nq\n<!-- pi-ensemble:agents-md:end x v2 -->\n",
+    "<!-- pi-rukas:agents-md:begin x v2 -->\nq\n<!-- pi-rukas:agents-md:end x v2 -->\n",
     "begin v2 + end v2 (both strict-missed on the end) → MarkerError",
   );
   throwsCorrupt(
-    "<!-- pi-ensemble:agents-md:end a v2 -->\n",
+    "<!-- pi-rukas:agents-md:end a v2 -->\n",
     "orphan END with a version → MarkerError",
   );
   throwsCorrupt(
-    "<!-- pi-ensemble:agents-md:begin a v1 -->\nq\n<!-- pi-ensemble:agents-md:end b v3 -->\n",
+    "<!-- pi-rukas:agents-md:begin a v1 -->\nq\n<!-- pi-rukas:agents-md:end b v3 -->\n",
     "mismatched ids + versioned END → MarkerError",
   );
   throwsCorrupt(
-    "<!-- pi-ensemble:agents-md:begin x v1 -->\nq\n<!-- pi-ensemble:agents-md:end x\nv9 -->\n",
+    "<!-- pi-rukas:agents-md:begin x v1 -->\nq\n<!-- pi-rukas:agents-md:end x\nv9 -->\n",
     "END split across two physical lines → MarkerError",
   );
 
   // The shapes that used to vanish silently before the tripwire existed.
   throwsCorrupt(
-    "<!-- pi-ensemble:agents-md:begin x -->\nq\n<!-- pi-ensemble:agents-md:end x -->\n",
+    "<!-- pi-rukas:agents-md:begin x -->\nq\n<!-- pi-rukas:agents-md:end x -->\n",
     "begin missing its version → MarkerError",
   );
   throwsCorrupt(
-    "<!-- pi-ensemble:agents-md:begin x v1 -->\nq\n<!-- pi-ensemble:agents-md:end x junk -->\n",
+    "<!-- pi-rukas:agents-md:begin x v1 -->\nq\n<!-- pi-rukas:agents-md:end x junk -->\n",
     "end with trailing junk → MarkerError",
   );
   throwsCorrupt(
-    "<!-- pi-ensemble:agents-md:begin a.b v1 -->\nq\n<!-- pi-ensemble:agents-md:end a.b -->\n",
+    "<!-- pi-rukas:agents-md:begin a.b v1 -->\nq\n<!-- pi-rukas:agents-md:end a.b -->\n",
     "id with a dot → MarkerError",
   );
   throwsCorrupt(
-    "<!-- pi-ensemble:agents-md:begin QUALITY v1 -->\nq\n<!-- pi-ensemble:agents-md:end QUALITY -->\n",
+    "<!-- pi-rukas:agents-md:begin QUALITY v1 -->\nq\n<!-- pi-rukas:agents-md:end QUALITY -->\n",
     "uppercase id → MarkerError",
   );
 
   // Valid shapes must keep parsing — the tripwire must not over-catch.
   const valid =
-    "<!-- pi-ensemble:agents-md:begin a v1 -->\nq\n<!-- pi-ensemble:agents-md:end a -->\n" +
-    "<!-- pi-ensemble:agents-md:begin b v1 -->\nq\n<!-- pi-ensemble:agents-md:end b -->\n";
+    "<!-- pi-rukas:agents-md:begin a v1 -->\nq\n<!-- pi-rukas:agents-md:end a -->\n" +
+    "<!-- pi-rukas:agents-md:begin b v1 -->\nq\n<!-- pi-rukas:agents-md:end b -->\n";
   const ids = presentIds(valid);
   assert(ids.join(",") === "a,b", "valid multi-pair file still parses cleanly");
 }

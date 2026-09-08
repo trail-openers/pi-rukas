@@ -1,14 +1,22 @@
 /**
- * markers — the parse / validate / splice primitives for pi-ensemble's
+ * markers — the parse / validate / splice primitives for pi-rukas's
  * AGENTS.md managed sections.
  *
  * ## The invariant this whole file exists to hold
  *
  * A marker pair is the ONLY place the renderer may change bytes:
  *
- *     <!-- pi-ensemble:agents-md:begin <id> v1 -->
+ *     <!-- pi-rukas:agents-md:begin <id> v1 -->
  *     …managed content…
- *     <!-- pi-ensemble:agents-md:end <id> -->
+ *     <!-- pi-rukas:agents-md:end <id> -->
+ *
+ * Legacy repos renamed from pi-ensemble carry `pi-ensemble:agents-md:`
+ * marker pairs (see the dual-prefix smoke test). Emission uses the new
+ * `pi-rukas:` prefix; both prefixes are recognised by the parser, and a
+ * mixed file parses every recognised pair byte-for-byte — never dropping a
+ * pair, never re-encoding a pair it recognised (a re-splice of a legacy pair
+ * preserves its original prefix, so an operator's file is never rewritten
+ * behind their back).
  *
  * `splice` reconstructs the file as `text[:contentStart] + body +
  * text[contentEnd:]`. Everything before the first content byte and after the
@@ -35,8 +43,14 @@ export const MARKER_VERSION = 1;
 export const SECTION_IDS = ["quality-gates", "commands", "environment", "decision-ledger"] as const;
 export type SectionId = (typeof SECTION_IDS)[number];
 
-const BEGIN_RE = /<!--\s*pi-ensemble:agents-md:begin\s+([a-z][a-z0-9-]*)\s+v(\d+)\s*-->/g;
-const END_RE = /<!--\s*pi-ensemble:agents-md:end\s+([a-z][a-z0-9-]*)\s*-->/g;
+// Dual-prefix (#630, rename epic #626): emission uses the new pi-rukas
+// prefix; both prefixes parse, so legacy pi-ensemble: pairs in renamed
+// user repos survive byte-for-byte. The prefix is not captured — a pair's
+// identity is its id + position, and splice preserves each pair's original
+// marker bytes verbatim.
+const BEGIN_RE =
+  /<!--\s*(?:pi-rukas|pi-ensemble):agents-md:begin\s+([a-z][a-z0-9-]*)\s+v(\d+)\s*-->/g;
+const END_RE = /<!--\s*(?:pi-rukas|pi-ensemble):agents-md:end\s+([a-z][a-z0-9-]*)\s*-->/g;
 /**
  * The LOOSE form of every marker occurrence — begin or end, any id shape, any
  * version shape. Used as a corruption tripwire: if the loose scan finds more
@@ -47,7 +61,7 @@ const END_RE = /<!--\s*pi-ensemble:agents-md:end\s+([a-z][a-z0-9-]*)\s*-->/g;
  * an orphan while its BEGIN is invisible, so a mis-versioned pair must throw,
  * not vanish.
  */
-const LOOSE_RE = /<!--\s*pi-ensemble:agents-md:(begin|end)\b[^>]*-->/g;
+const LOOSE_RE = /<!--\s*(?:pi-rukas|pi-ensemble):agents-md:(begin|end)\b[^>]*-->/g;
 
 /**
  * The byte range of a single managed section, plus its markers.
@@ -83,8 +97,8 @@ export interface ParsedMarkers {
 
 function markerIdLine(id: string, kind: "begin" | "end", version?: number): string {
   return version === undefined
-    ? `<!-- pi-ensemble:agents-md:${kind} ${id} -->`
-    : `<!-- pi-ensemble:agents-md:${kind} ${id} v${version} -->`;
+    ? `<!-- pi-rukas:agents-md:${kind} ${id} -->`
+    : `<!-- pi-rukas:agents-md:${kind} ${id} v${version} -->`;
 }
 
 /**

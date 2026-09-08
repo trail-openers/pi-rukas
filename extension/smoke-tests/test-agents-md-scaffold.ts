@@ -201,7 +201,7 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
   const content = fs.readFile(AGENTS);
   assert(content.includes("# Minimalist Engineering"), "update --scaffold: boilerplate present");
   // Boilerplate is AFTER the environment section (which is inside markers).
-  const envEnd = content.indexOf("<!-- pi-ensemble:agents-md:end environment -->");
+  const envEnd = content.indexOf("<!-- pi-rukas:agents-md:end environment -->");
   const minimalStart = content.indexOf("# Minimalist Engineering");
   assert(minimalStart > envEnd, "update --scaffold: boilerplate inserted after environment");
 }
@@ -344,7 +344,7 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
 
 {
   const text =
-    "# T\n<!-- pi-ensemble:agents-md:begin quality-gates v1 -->\n- test\n<!-- pi-ensemble:agents-md:end quality-gates -->\n<!-- pi-ensemble:agents-md:begin environment v1 -->\n- env\n<!-- pi-ensemble:agents-md:end environment -->\n<!-- pi-ensemble:agents-md:begin decision-ledger v1 -->\n| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |\n<!-- pi-ensemble:agents-md:end decision-ledger -->\n";
+    "# T\n<!-- pi-rukas:agents-md:begin quality-gates v1 -->\n- test\n<!-- pi-rukas:agents-md:end quality-gates -->\n<!-- pi-rukas:agents-md:begin environment v1 -->\n- env\n<!-- pi-rukas:agents-md:end environment -->\n<!-- pi-rukas:agents-md:begin decision-ledger v1 -->\n| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |\n<!-- pi-rukas:agents-md:end decision-ledger -->\n";
   const scaffoldResult = {
     sections: [{ id: "minimalist-engineering", body: "# Minimalist Engineering\n\nSimple code." }],
     operatorChoicesBody: undefined,
@@ -353,12 +353,12 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
   const post = runScaffoldPostPass(text, scaffoldResult, true);
   assert(post.bytes.includes("# Minimalist Engineering"), "post-pass: boilerplate present");
   // The boilerplate should be inserted after the environment end marker.
-  const envEndIdx = post.bytes.indexOf("<!-- pi-ensemble:agents-md:end environment -->");
+  const envEndIdx = post.bytes.indexOf("<!-- pi-rukas:agents-md:end environment -->");
   const minimalIdx = post.bytes.indexOf("# Minimalist Engineering");
   assert(minimalIdx > envEndIdx, "post-pass: boilerplate after environment section");
   // Existing bytes after environment are preserved.
   const decisionLedgerStart = post.bytes.indexOf(
-    "<!-- pi-ensemble:agents-md:begin decision-ledger v1 -->",
+    "<!-- pi-rukas:agents-md:begin decision-ledger v1 -->",
   );
   assert(decisionLedgerStart > envEndIdx, "post-pass: decision-ledger still after environment");
   // wouldWrite: false when no new sections.

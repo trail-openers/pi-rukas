@@ -8,7 +8,7 @@
  *
  * dsh's persistence rule (DeepSeek Harness, 2026-08-13): a reader hitting an
  * unrecognized event type MUST refuse to reconstruct rather than silently
- * drop. This module is pi-ensemble's half of that rule — one validator that
+ * drop. This module is pi-rukas's half of that rule — one validator that
  * checks every discriminant at read:
  *
  *   - `eventLog[].kind`

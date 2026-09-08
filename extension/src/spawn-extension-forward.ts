@@ -20,7 +20,7 @@ export function applyUserExtension(childArgs: string[], role: string): void {
   const isNpmRef = userExt.startsWith("npm:");
   const isAbsPath = userExt.startsWith("/") || userExt.startsWith("~");
   if (!isNpmRef && !isAbsPath) {
-    const msg = `pi-ensemble: PI_ENSEMBLE_USER_EXTENSION='${userExt}' rejected (must start with 'npm:' or be an absolute path) — MCP extension will NOT be loaded`;
+    const msg = `pi-rukas: PI_ENSEMBLE_USER_EXTENSION='${userExt}' rejected (must start with 'npm:' or be an absolute path) — MCP extension will NOT be loaded`;
     console.warn(msg);
     trace(`spawn[${role}]: ${msg}`);
   } else {
@@ -29,13 +29,13 @@ export function applyUserExtension(childArgs: string[], role: string): void {
   }
 }
 
-// pi-ensemble's own package name. Used by discoverInstalledExtensions to skip
+// pi-rukas's own package name. Used by discoverInstalledExtensions to skip
 // forwarding ourselves into subagents — otherwise a subagent could call
 // dispatch_specialist and recursively spawn another subagent.
 const PI_ENSEMBLE_PACKAGE_NAME = "@trail-openers/pi-rukas";
 
 /**
- * Resolve the absolute path to pi-ensemble's extension directory for the
+ * Resolve the absolute path to pi-rukas's extension directory for the
  * subagent permission-guard forward. Walks up from this module file
  * (`extension/src/spawn-extension-forward.ts`) to the `extension/` dir, then
  * realpathSyncs to follow the install symlink (`~/.pi/agent/extensions/pi-
@@ -69,7 +69,7 @@ export function piEnsembleExtensionPath(): string | undefined {
  *  - Skip entries without a readable `package.json`.
  *  - Skip entries whose `package.json` has no `pi.extensions` manifest (not
  *    a Pi extension — e.g. stray directories, half-installed packages).
- *  - Skip pi-ensemble itself by package name (prevents recursive spawn).
+ *  - Skip pi-rukas itself by package name (prevents recursive spawn).
  *  - Resolve through `realpathSync` because `~/.pi/agent/extensions/<name>`
  *    is typically a symlink to the source checkout.
  */

@@ -356,7 +356,7 @@ function renderTranscript(file: RunFile, parsed: ParsedTranscript): string {
 
 export function registerRunsCommand(pi: ExtensionAPI) {
   pi.registerCommand("runs", {
-    description: "Browse recent pi-ensemble subagent runs (or `/runs all`, `/runs prune [N]`)",
+    description: "Browse recent pi-rukas subagent runs (or `/runs all`, `/runs prune [N]`)",
     handler: async (args, ctx) => {
       const rootDir = process.env.PI_ENSEMBLE_RUNS_DIR ?? ENSEMBLE_DIR_DEFAULT;
       const trimmed = args.trim().toLowerCase();
@@ -458,8 +458,8 @@ async function pickBatch(
     const total = allBatches.length;
     const shownTo = Math.min(offset + limit, total);
     const title = showAll
-      ? `pi-ensemble runs · all ${total}`
-      : `pi-ensemble runs · ${offset + 1}–${shownTo} of ${total}`;
+      ? `pi-rukas runs · all ${total}`
+      : `pi-rukas runs · ${offset + 1}–${shownTo} of ${total}`;
 
     const pick = await ctx.ui.select(title, [...labels, ...sentinels]);
     if (!pick) return undefined;

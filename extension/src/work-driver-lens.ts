@@ -294,7 +294,7 @@ export async function runLens(
   if (summary.findings.length > 0) {
     const written = await writeFindings(
       summary.findings.map((f) => ({ path: f.path, title: f.title, severity: f.severity })),
-      { src: "pi-ensemble", issue: ctx.issue, kind: "lens-finding", cycle: String(round) },
+      { src: "pi-rukas", issue: ctx.issue, kind: "lens-finding", cycle: String(round) },
       { cwd: ctx.repoRoot, timeoutMs: 8000 },
     );
     for (const w of written) {

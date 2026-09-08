@@ -1,4 +1,4 @@
-# Contributing to pi-ensemble
+# Contributing to pi-rukas
 
 Thanks for the interest. This is an alpha-status project — the API will change
 before 1.0, and the maintainer (one person, hobby cadence) reserves the right
@@ -7,8 +7,8 @@ to redirect any contribution toward the project's existing shape.
 ## Dev setup
 
 ```bash
-git clone https://github.com/randomm/pi-ensemble.git
-cd pi-ensemble
+git clone https://github.com/trail-openers/pi-rukas.git
+cd pi-rukas
 ./install.sh
 ```
 
@@ -60,7 +60,7 @@ CI runs the offline tests on every push and PR. Live tests run on the dev machin
 
 ### The role model
 
-pi-ensemble has exactly **six roles** (issue #104):
+pi-rukas has exactly **six roles** (issue #104):
 
 | Role | Used by | Set via |
 |---|---|---|
@@ -138,12 +138,12 @@ The PM role's allowlist is the reference implementation of this rule
 - The bridge lives in `~/.pi/agent/extensions/` and is auto-forwarded to subagents by `discoverInstalledExtensions` in `extension/src/spawn.ts` — no env var needed
 - For dev-mode bridges outside the standard install dir, `PI_ENSEMBLE_USER_EXTENSION=/abs/path` or `npm:<pkg>` is appended on top of the auto-forward list
 - Add tool name or pattern with verdict to `agents.json` under `agent.<role>.permission` (e.g., `"postgres_*": "allow"`)
-- `extension/src/permission-guard.ts` enforces at runtime in the **top-level session only** (interceptor on every tool call). Subagents run with `--no-extensions`, so pi-ensemble's own enforcement is not loaded inside them — the role's system prompt is the only thing keeping each subagent in its lane. Hard confinement comes from MCP server-side credentials or Pi's built-in checks, not pi-ensemble.
+- `extension/src/permission-guard.ts` enforces at runtime in the **top-level session only** (interceptor on every tool call). Subagents run with `--no-extensions`, so pi-rukas's own enforcement is not loaded inside them — the role's system prompt is the only thing keeping each subagent in its lane. Hard confinement comes from MCP server-side credentials or Pi's built-in checks, not pi-rukas.
 - If you have [pi-permissions](https://github.com/randomm/pi-permissions) installed, it enforces interactively at the top-level session
 - Run `bun run build` to regenerate role-specific prompts
 - Set `PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD=1` to opt out of auto-forwarding (debugging only — disables identity headers and MCP in subagents)
 
-**Security caveat for MCP tools**: read-only guarantees must be enforced at the MCP server level. For database access, use DB credentials with restricted permissions. pi-permissions and pi-ensemble's interceptor control who can call a tool, not what the tool can do.
+**Security caveat for MCP tools**: read-only guarantees must be enforced at the MCP server level. For database access, use DB credentials with restricted permissions. pi-permissions and pi-rukas's interceptor control who can call a tool, not what the tool can do.
 
 ### Major extension modules
 
@@ -216,7 +216,7 @@ yourself), add the package name to `minimumReleaseAgeExcludes` in
 
 ## Pi compatibility
 
-pi-ensemble depends on Pi's CLI flags, JSON event stream shape, and
+pi-rukas depends on Pi's CLI flags, JSON event stream shape, and
 `ExtensionAPI` surface. We pin `@earendil-works/pi-coding-agent` to a tight
 range in `extension/devDependencies` so a Pi minor bump is a deliberate
 update, not silent drift.
@@ -235,7 +235,7 @@ When updating the pin:
 
 When Pi changes a shape we depend on (this has happened — `tool_use` →
 `toolCall`), the offline smoke tests won't catch it. Run `bun run
-smoke-tests/test-pi-shape-live.ts` ([#7](https://github.com/randomm/pi-ensemble/issues/7))
+smoke-tests/test-pi-shape-live.ts` ([#7](https://github.com/trail-openers/pi-rukas/issues/7))
 after every Pi pin bump — it spawns a trivial PONG child and asserts
 the load-bearing event shapes (`agent_end`, `message_end.message.role/usage`,
 content-block `type`, assistant `model`) we depend on.

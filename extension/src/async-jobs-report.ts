@@ -216,7 +216,7 @@ function truncationBadge(result: DispatchResult): string {
 export function formatSingleReport(jobId: string, label: string, result: DispatchResult): string {
   const turns = result.usage?.turns ?? 0;
   const elapsed = fmtElapsed(result.ms);
-  // Five-way status: killCause (#296) is checked first — pi-ensemble's own
+  // Five-way status: killCause (#296) is checked first — pi-rukas's own
   // kill is never a provider failure. Then 429 rate-limit. Then errorStop
   // (provider error-stop, transport severance). Then process-level FAILED.
   // See DispatchResult.errorStop and DispatchResult.killCause.

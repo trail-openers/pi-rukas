@@ -12,7 +12,7 @@
  * Scope: this file gates **spawned subagents** (developer, ops, explore,
  * adversarial-developer, code-review-specialist). The parent Pi session
  * (which acts as PM when invoked via a /work slash command, but also acts
- * as a generic developer when the user iterates on pi-ensemble itself) is
+ * as a generic developer when the user iterates on pi-rukas itself) is
  * NOT gated here — its containment is via doctrine + the user's own
  * supervision, and structural per-step gating arrives with Option D
  * (checkpointed /work). Adding `--exclude-tools` to the parent would break
@@ -20,7 +20,7 @@
  *
  * Why exclude-list, not allow-list: Pi keeps adding tools (ctx7,
  * codebase_memory_*, dispatch_*). An exhaustive per-role allow-list would
- * drift the moment Pi or pi-ensemble adds a tool. Exclude-list only names
+ * drift the moment Pi or pi-rukas adds a tool. Exclude-list only names
  * what we KNOW should not be on a role — much more stable.
  *
  * What we exclude per role:

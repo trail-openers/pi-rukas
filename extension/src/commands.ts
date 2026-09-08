@@ -143,7 +143,7 @@ export type SlashCommand = (typeof SLASH_COMMANDS)[number];
 
 const PM_STICKY_PREAMBLE = `# PM mode — orchestration only
 
-You are running inside a pi-ensemble workflow (/start, /research, /plan, /work, /review, /audit, /do). Even though Pi has read, edit, write, and bash tools registered, you MUST NOT use edit, write, or non-vipune/git-read-only bash for implementation work. Implementation, tests, debugging, commits, deployment — ALL of it belongs to subagents:
+You are running inside a pi-rukas workflow (/start, /research, /plan, /work, /review, /audit, /do). Even though Pi has read, edit, write, and bash tools registered, you MUST NOT use edit, write, or non-vipune/git-read-only bash for implementation work. Implementation, tests, debugging, commits, deployment — ALL of it belongs to subagents:
 
 - Implementation, tests, debugging, file edits → \`dispatch_specialist\` with role \`developer\` (then \`adversarial_loop\` to gate the diff)
 - Git ops, commits, PRs, branch creation, deployment → \`dispatch_specialist\` with role \`ops\`
@@ -216,7 +216,7 @@ export function registerCommands(pi: ExtensionAPI) {
           }
           if (!ctx.isIdle()) {
             ctx.ui.notify(
-              "pi-ensemble: agent is busy — try /work again when idle, or use /steer for an inline nudge",
+              "pi-rukas: agent is busy — try /work again when idle, or use /steer for an inline nudge",
               "warning",
             );
             return;
@@ -238,7 +238,7 @@ export function registerCommands(pi: ExtensionAPI) {
           body = await loadPromptBody(name);
         } catch (err) {
           trace(`/${name} FAILED to load body: ${(err as Error).message}`);
-          ctx.ui.notify(`pi-ensemble: ${(err as Error).message}`, "error");
+          ctx.ui.notify(`pi-rukas: ${(err as Error).message}`, "error");
           return;
         }
         let expanded = expandArgs(body, args);
@@ -251,7 +251,7 @@ export function registerCommands(pi: ExtensionAPI) {
         }
         if (!ctx.isIdle()) {
           ctx.ui.notify(
-            `pi-ensemble: agent is busy — try /${name} again when idle, or use /steer for an inline nudge`,
+            `pi-rukas: agent is busy — try /${name} again when idle, or use /steer for an inline nudge`,
             "warning",
           );
           return;
@@ -267,7 +267,7 @@ export function registerCommands(pi: ExtensionAPI) {
   }
 
   pi.registerCommand("ensemble-debug", {
-    description: "pi-ensemble introspection: registered commands, prompts, and model config",
+    description: "pi-rukas introspection: registered commands, prompts, and model config",
     handler: async (_args, ctx) => {
       const overrides = getAllOverrides();
       const globalOverride = overrides[GLOBAL_KEY];

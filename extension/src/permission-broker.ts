@@ -1,18 +1,18 @@
 /**
  * Permission broker — parent-side socket server that handles `ask` verdicts
- * escalated from subagent pi-ensemble guards.
+ * escalated from subagent pi-rukas guards.
  *
  * Architecture (the "subagent permission" feature):
  *
  *   parent Pi process                  subagent Pi process
  *   ─────────────────                   ────────────────────
- *   pi-ensemble (parent mode)          pi-ensemble (subagent mode,
+ *   pi-rukas (parent mode)            pi-rukas (subagent mode,
  *     - permission-guard                 PI_ENSEMBLE_SUBAGENT_MODE=1)
  *     - permission-broker (this file)    - permission-guard only
  *     - everything else
  *
  *   spawn.ts creates a per-spawn Unix socket at
- *   /tmp/pi-ensemble-perm-<runId>.sock; passes the path via the
+ *   /tmp/pi-rukas-perm-<runId>.sock; passes the path via the
  *   PI_ENSEMBLE_PERM_SOCKET env var; starts a broker that listens on it.
  *
  *   Subagent guard on `ask` verdict:
@@ -58,7 +58,7 @@ export interface PermissionVerdict {
 }
 
 /**
- * Broker dependencies — the parent's pi-ensemble extension injects these.
+ * Broker dependencies — the parent's pi-rukas extension injects these.
  * `cachedLookup` and `persistDecision` reuse the existing decisions Map +
  * persistDecisions write-through from permission-guard.ts so the cache is
  * shared between parent prompts and subagent prompts.

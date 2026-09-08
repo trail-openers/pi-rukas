@@ -1,13 +1,13 @@
 ---
 name: vipune
 description: >
-  pi-ensemble's bundled vipune memory doctrine — full reference for using the
+  pi-rukas's bundled vipune memory doctrine — full reference for using the
   vipune CLI as a project-scoped semantic memory store. Encodes the 5-type
   memory taxonomy (fact, preference, procedure, guard, observation), the
   active/candidate status split as the long-term/short-term mechanism,
   freshness verification before acting on recalled memories, conflict
   handling via --supersedes, periodic consolidation reflexes, the hard
-  prohibition on storing secrets, and pi-ensemble-specific framing
+  prohibition on storing secrets, and pi-rukas-specific framing
   (multi-agent shared DB, session autosave). Use this skill whenever
   starting a project task; before delegating work; before making
   architectural decisions; after task completion; when the user mentions
@@ -17,11 +17,11 @@ description: >
   smarter than the last without context bloat or memory rot.
 ---
 
-# Vipune memory skill (pi-ensemble bundled)
+# Vipune memory skill (pi-rukas bundled)
 
-> **Source-of-truth note.** This is pi-ensemble's project-bundled vipune doctrine. It was originally adapted from a personal Claude Code skill, but the bundled version is the canonical reference for pi-ensemble going forward. The role-sized derivative modules at `modules/core/vipune-{light,baseline,heavy}.md` are proper subsets of this skill — when they diverge, the skill is right and the modules need a resync. See the procedure-type memory `"sync pi-ensemble vipune modules"` for the workflow.
+> **Source-of-truth note.** This is pi-rukas's project-bundled vipune doctrine. It was originally adapted from a personal Claude Code skill, but the bundled version is the canonical reference for pi-rukas going forward. The role-sized derivative modules at `modules/core/vipune-{light,baseline,heavy}.md` are proper subsets of this skill — when they diverge, the skill is right and the modules need a resync. See the procedure-type memory `"sync pi-rukas vipune modules"` for the workflow.
 
-Vipune is a CLI semantic memory store with project scoping, hybrid search, and typed memories — the authoritative persistent memory layer for every pi-ensemble session.
+Vipune is a CLI semantic memory store with project scoping, hybrid search, and typed memories — the authoritative persistent memory layer for every pi-rukas session.
 
 Codebases evolve, conventions accumulate, the user corrects the agent on things, and constraints get discovered together. None of that should be re-learned session by session. Vipune is the durable layer that prevents repeating mistakes and re-paving ground already walked.
 
@@ -237,7 +237,7 @@ These bands apply to **semantic mode only** (`--no-hybrid --recency 0.0`). A hyb
 - When recalling subagent context, search: *`vipune search "..." --recency 0.9 --memory-type observation`*.
 - Cross-session knowledge (architectural decisions, conventions, gotchas) → `--memory-type fact`/`procedure`/`guard` with `--status active`.
 
-**Session autosave.** When `PI_ENSEMBLE_AUTOSAVE=1` is set, pi-ensemble writes a deterministic session-summary memory to vipune at `session_shutdown` (dispatch counts, outcomes, elapsed, cwd). This is opt-in and best-effort — it complements but does NOT replace explicit `vipune add` calls during the session for specific decisions and findings.
+**Session autosave.** When `PI_ENSEMBLE_AUTOSAVE=1` is set, pi-rukas writes a deterministic session-summary memory to vipune at `session_shutdown` (dispatch counts, outcomes, elapsed, cwd). This is opt-in and best-effort — it complements but does NOT replace explicit `vipune add` calls during the session for specific decisions and findings.
 
 **Single-quote safety — non-negotiable.** Use single quotes for `vipune add`. Double quotes execute shell substitutions and are a real RCE risk inside agent workflows:
 

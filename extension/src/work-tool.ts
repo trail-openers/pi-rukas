@@ -127,7 +127,7 @@ export function registerWorkTools(pi: ExtensionAPI) {
         content: [
           {
             type: "text",
-            text: `pi-ensemble: /work driver started for ${issueText} (jobId: ${handle.jobId}). A structured report will be delivered via steer when complete. Merge authority was NOT granted — the cycle will open its PR and park unless the project's AGENTS.md grants it. Do not poll .pi/work-state/ or run /work-status to check progress.`,
+            text: `pi-rukas: /work driver started for ${issueText} (jobId: ${handle.jobId}). A structured report will be delivered via steer when complete. Merge authority was NOT granted — the cycle will open its PR and park unless the project's AGENTS.md grants it. Do not poll .pi/work-state/ or run /work-status to check progress.`,
           },
         ],
         details: {
@@ -144,7 +144,7 @@ export function registerWorkTools(pi: ExtensionAPI) {
     name: "load_workflow_doctrine",
     label: "Load Workflow Doctrine",
     description:
-      "Return the full instructions for a pi-ensemble workflow command (research, review, audit, start, do) as text, so you can follow them without the user having to type the slash command. Use this when you need to run one of these workflows yourself. For /work use start_work_driver and for /plan use start_plan_driver — both are compiled drivers, not prose, and their bodies are deliberately not loadable here.",
+      "Return the full instructions for a pi-rukas workflow command (research, review, audit, start, do) as text, so you can follow them without the user having to type the slash command. Use this when you need to run one of these workflows yourself. For /work use start_work_driver and for /plan use start_plan_driver — both are compiled drivers, not prose, and their bodies are deliberately not loadable here.",
     parameters: Type.Object({
       name: Type.Union(
         [

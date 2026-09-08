@@ -110,7 +110,7 @@ function fileState(fs: AgentsMdFs, file: string): FileState {
  * it is the ONE byte of generated prose, and everything after it is managed.
  */
 const DEFAULT_PREAMBLE =
-  "# AGENTS.md\n\n<!-- pi-ensemble:agents-md:managed — the sections below are maintained by /agents-md; edits between the markers are preserved on update. -->\n";
+  "# AGENTS.md\n\n<!-- pi-rukas:agents-md:managed — the sections below are maintained by /agents-md; edits between the markers are preserved on update. -->\n";
 
 function omissionRows(facts: DetectedFacts, today: string): LedgerRow[] {
   const rows: LedgerRow[] = [];
@@ -309,7 +309,7 @@ export { fileState };
 
 // ----------------------------------------------------------------- the wrap
 // The brownfield `no-markers` branch of `updateAgent`: the file exists, has no
-// pi-ensemble markers, and the wrap inserts marker pairs around the sections
+// pi-rukas markers, and the wrap inserts marker pairs around the sections
 // the core can re-derive and appends the ones it can, leaving every original
 // line in place (insertions-only). `runWrap` is the I/O shell over the pure
 // `wrapBytes`. Exit codes: ambiguity → 1 (finding; the PM runs the

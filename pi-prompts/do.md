@@ -76,4 +76,4 @@ Same as `/work`. Subagents should write ephemeral artefacts (diff snapshots betw
 - **Be conservative on scope.** `/do` doesn't have the issue-body fence that `/work` does. If you find yourself touching files outside the apparent scope, stop and ask.
 - **Bias to surface, not absorb.** When the work hits a judgement call (which branch to target, whether to merge to main directly, which fix to prefer when adversarial has two options), surface to the user instead of guessing.
 - **Adversarial is non-negotiable.** Don't commit code that hasn't passed `adversarial_loop`. Same rule as `/work`.
-- **Per-project AGENTS.md is the source of truth** for quality gates (test commands, lint commands, type-check commands) and merge policy. Read it via the subagent — don't hardcode pi-ensemble's gates.
+- **Per-project AGENTS.md is the source of truth** for quality gates (test commands, lint commands, type-check commands) and merge policy. Read it via the subagent — don't hardcode pi-rukas's gates.

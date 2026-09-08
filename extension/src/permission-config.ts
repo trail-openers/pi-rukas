@@ -23,7 +23,7 @@ export type RoleConfig = Record<string, { permission?: PermPattern }>;
 const MAX_CONFIG_FILE_SIZE = 1 * 1024 * 1024; // 1MB
 
 // Resolve the path to the repo's agents.json regardless of how the extension
-// was loaded. The standard install symlinks ~/.pi/agent/extensions/pi-ensemble
+// was loaded. The standard install symlinks ~/.pi/agent/extensions/pi-rukas
 // at the repo's `extension/` directory, so `import.meta.url` may be either
 // the real file path or the symlink path depending on the Node/jiti symlink
 // policy. realpathSync collapses the difference; `../..` then walks from
@@ -53,7 +53,7 @@ export function loadAgentsJson(): Record<string, { permission?: PermPattern }> {
     const obj = parsed as { agent?: Record<string, { permission?: PermPattern }> };
     return obj.agent ?? {};
   } catch (err) {
-    const msg = `pi-ensemble permission-guard: failed to load agents.json from ${agentsPath} (${err}) — non-builtin tools will require interactive approval (or be blocked in headless mode)`;
+    const msg = `pi-rukas permission-guard: failed to load agents.json from ${agentsPath} (${err}) — non-builtin tools will require interactive approval (or be blocked in headless mode)`;
     console.warn(msg);
     trace(msg);
     return {};
@@ -66,7 +66,7 @@ function loadConfigFile(configPath: string, label: string): RoleConfig {
 
     // Enforce max file size to prevent DoS
     if (raw.length > MAX_CONFIG_FILE_SIZE) {
-      const msg = `pi-ensemble permission-guard: ${label} config exceeds ${MAX_CONFIG_FILE_SIZE} bytes, skipping`;
+      const msg = `pi-rukas permission-guard: ${label} config exceeds ${MAX_CONFIG_FILE_SIZE} bytes, skipping`;
       console.warn(msg);
       return {};
     }
@@ -83,18 +83,18 @@ function loadConfigFile(configPath: string, label: string): RoleConfig {
         return {};
       }
       if (code === "EACCES" || code === "EPERM") {
-        const msg = `pi-ensemble permission-guard: cannot read ${label} config (${err})`;
+        const msg = `pi-rukas permission-guard: cannot read ${label} config (${err})`;
         console.warn(msg);
         return {};
       }
     }
     if (err instanceof SyntaxError) {
-      const msg = `pi-ensemble permission-guard: ${label} config is not valid JSON (${err.message})`;
+      const msg = `pi-rukas permission-guard: ${label} config is not valid JSON (${err.message})`;
       console.warn(msg);
       return {};
     }
     // Other errors: trace for debugging
-    trace(`pi-ensemble permission-guard: error loading ${label} config (${err})`);
+    trace(`pi-rukas permission-guard: error loading ${label} config (${err})`);
     return {};
   }
 }
@@ -134,12 +134,12 @@ export function loadProjectConfig(): RoleConfig {
         return {};
       }
       if (code === "EACCES" || code === "EPERM") {
-        const msg = `pi-ensemble permission-guard: cannot read project config (${err})`;
+        const msg = `pi-rukas permission-guard: cannot read project config (${err})`;
         console.warn(msg);
         return {};
       }
     }
-    trace(`pi-ensemble permission-guard: error loading project config (${err})`);
+    trace(`pi-rukas permission-guard: error loading project config (${err})`);
     return {};
   }
 }

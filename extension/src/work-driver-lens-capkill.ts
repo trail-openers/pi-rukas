@@ -43,7 +43,7 @@ export function lensCapKillEvent(
     // on exitCode; `killCause` remains the authoritative signal.
     exitCode: 143,
     killCause: capKill,
-    errorTail: `killed by pi-ensemble (${capKill === "loop" ? "loop detected" : "token budget crossed"}) — self-inflicted cap, not a provider fault`,
+    errorTail: `killed by pi-rukas (${capKill === "loop" ? "loop detected" : "token budget crossed"}) — self-inflicted cap, not a provider fault`,
     usage: summary.usage,
     ...(ev && capKill === "loop" && "tool" in ev
       ? { loopEvidence: { tool: ev.tool, count: ev.count } }

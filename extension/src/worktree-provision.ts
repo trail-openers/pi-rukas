@@ -10,8 +10,8 @@
  *
  *   - Rust: `cargo check` rebuilds from scratch. It works. It costs minutes,
  *     per worktree, per cycle.
- *   - Node/bun: the command fails outright. pi-ensemble's own verify command
- *     needs `extension/node_modules`, which is gitignored — so pi-ensemble
+ *   - Node/bun: the command fails outright. pi-rukas's own verify command
+ *     needs `extension/node_modules`, which is gitignored — so pi-rukas
  *     dogfooding `/work` on itself could not pass its own develop gate until
  *     #481 made discovery look below `repoRoot`.
  *
@@ -29,7 +29,7 @@
  *      are gitignored and non-empty, discovered by scanning one level of
  *      package directories for manifests/lockfiles (`extension/`, `pkg/`,
  *      …) as well as `repoRoot` itself. #481: the scan is what lets a
- *      nested-package monorepo — pi-ensemble itself — provision without a
+ *      nested-package monorepo — pi-rukas itself — provision without a
  *      per-clone hook, and it is what stops an EMPTY `node_modules/` at
  *      `repoRoot` from being linked and reported as a useful link.
  *

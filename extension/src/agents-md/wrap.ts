@@ -1,7 +1,7 @@
 /**
  * wrap — the brownfield wrap: bytes in → wrapped bytes out. Pure.
  *
- * A repo that already has an `AGENTS.md` written by humans (no pi-ensemble
+ * A repo that already has an `AGENTS.md` written by humans (no pi-rukas
  * markers) cannot be `create`d (the verb refuses an existing file) and cannot
  * be `update`d in place (there are no marker spans to splice). The wrap is
  * the third option: leave every original line exactly where it is, insert
@@ -150,11 +150,13 @@ export function classifySections(original: string): WrapSection[] {
   return sections;
 }
 
+// Emission uses the new pi-rukas prefix (#630); legacy pi-ensemble: pairs
+// in brownfield files stay doctrine and are left byte-for-byte untouched.
 function markerBegin(id: string): string {
-  return `<!-- pi-ensemble:agents-md:begin ${id} v${MARKER_VERSION} -->`;
+  return `<!-- pi-rukas:agents-md:begin ${id} v${MARKER_VERSION} -->`;
 }
 function markerEnd(id: string): string {
-  return `<!-- pi-ensemble:agents-md:end ${id} -->`;
+  return `<!-- pi-rukas:agents-md:end ${id} -->`;
 }
 
 /**

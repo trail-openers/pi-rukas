@@ -1,21 +1,28 @@
 #!/usr/bin/env bun
 /**
- * Dual-prefix scaffold round-trip (rename #627).
+ * Dual-prefix scaffold round-trip (rename #630, epic #626).
  *
- * The rename emits new pi-rukas:agents-md markers but legacy user repos
- * carry pi-ensemble:agents-md pairs. The scaffold primitives (parse, splice,
- * render) must handle both prefixes without corrupting recognised pairs.
+ * Emission uses the new pi-rukas:agents-md markers; legacy user repos that
+ * went through the pi-ensemble era carry pi-ensemble:agents-md pairs. The
+ * scaffold primitives (parse, splice, render) must handle BOTH prefixes
+ * without corrupting recognised pairs — a mixed file parses every
+ * recognised pair and never silently drops one, and splicing a legacy pair
+ * preserves its original prefix (an operator's file is never re-encoded
+ * behind their back).
  *
  * This test loads the dual-prefix fixture and verifies:
- *   1. A mixed file is either parsed (post-rename regex) or surfaced via
- *      the LOOSE_RE tripwire (pre-rename) — never silently dropped.
- *   2. Each old pi-ensemble pair parses and splices cleanly; splicing one
- *      pair leaves sibling old pairs byte-for-byte.
- *   3. renderSection's output round-trips through parse+splice.
- *
- * The assertions are written to pass both pre- and post-rename: the
- * pre-rename regex only recognises pi-ensemble: (so pi-rukas: pairs are
- * surfaced via the tripwire), the post-rename regex recognises both.
+ *   1. The fixture contains both prefixes.
+ *   2. A mixed file parses cleanly — every pair recognised, no tripwire.
+ *   3. Each legacy pi-ensemble pair parses and splices cleanly; splicing one
+ *      pair leaves sibling pairs (legacy AND current) byte-for-byte, and the
+ *      spliced pair KEEPS its pi-ensemble prefix.
+ *   4. The current pi-rukas pair parses and splices cleanly, keeping its
+ *      prefix.
+ *   5. renderSection emits the CURRENT prefix and round-trips through
+ *      parse + splice.
+ *   6. A stray pair under EITHER prefix with a shape the strict regexes do
+ *      not accept still trips the LOOSE_RE corruption tripwire — the
+ *      dual-prefix parser must not have widened the corruption detection.
  */
 
 import { readFileSync } from "node:fs";
@@ -38,14 +45,14 @@ const text = readFileSync(fixturePath, "utf8");
 
 assert(
   text.includes("pi-ensemble:agents-md:begin quality-gates"),
-  "dual-prefix fixture: contains an old pi-ensemble pair",
+  "dual-prefix fixture: contains a legacy pi-ensemble pair",
 );
 assert(
   text.includes("pi-rukas:agents-md:begin commands"),
-  "dual-prefix fixture: contains a new pi-rukas pair",
+  "dual-prefix fixture: contains a current pi-rukas pair",
 );
 
-// --- 2. Mixed file: either parsed (post-rename) or tripwired (pre-rename).
+// --- 2. Mixed file parses cleanly: every pair recognised, no tripwire.
 
 let mixedError: Error | null = null;
 let mixedSpans: { id: string }[] = [];
@@ -54,71 +61,66 @@ try {
 } catch (e) {
   mixedError = e as Error;
 }
+assert(mixedError === null, "dual-prefix: mixed file parses (both prefixes recognised)");
 assert(
-  mixedError === null || /corrupt or mis-versioned marker/.test(mixedError.message),
-  "dual-prefix: mixed file is either parsed (post-rename) or surfaced via LOOSE_RE (pre-rename) — never silently dropped",
+  JSON.stringify(mixedSpans.map((s) => s.id).sort()) ===
+    JSON.stringify(["commands", "environment", "quality-gates"]),
+  "dual-prefix: all three pairs recognised (got " +
+    JSON.stringify(mixedSpans.map((s) => s.id).sort()) +
+    ")",
 );
 
-// --- 3. Isolate old-prefix pairs; parse + splice each, verify prefix binding.
+// --- 3. Splice a legacy pair: content updates, legacy prefix preserved,
+//        sibling pairs (legacy AND current) byte-for-byte.
 
-const oldOnly = text.replace(/<!--\s*pi-rukas:agents-md:[^\n]*-->\n/g, "");
-const { spans } = parseMarkers(oldOnly);
-const ids = spans.map((s) => s.id).sort();
+const splicedLegacy = splice(text, "quality-gates", "- **test** — `bun run test` (updated)\n");
 assert(
-  JSON.stringify(ids) === JSON.stringify(["environment", "quality-gates"]),
-  `dual-prefix: old-prefix pairs parse to expected ids (got ${JSON.stringify(ids)})`,
-);
-for (const id of ["quality-gates", "environment"]) {
-  const span = spans.find((s) => s.id === id);
-  if (!span) continue;
-  const slice = oldOnly.slice(span.beginMarkerStart, span.endMarkerEnd);
-  assert(
-    slice.includes(`pi-ensemble:agents-md:begin ${id}`),
-    `dual-prefix: ${id} section uses the pi-ensemble prefix in source bytes`,
-  );
-}
-const spliced = splice(oldOnly, "quality-gates", "- **test** — `bun run test` (updated)\n");
-assert(
-  spliced.includes("- **test** — `bun run test` (updated)"),
-  "dual-prefix: splice updates old-prefix section content",
+  splicedLegacy.includes("- **test** — `bun run test` (updated)"),
+  "dual-prefix: splice updates legacy pair content",
 );
 assert(
-  spliced.includes("pi-ensemble:agents-md:end environment"),
-  "dual-prefix: splice leaves sibling old-prefix pairs byte-for-byte",
+  splicedLegacy.includes("pi-ensemble:agents-md:begin quality-gates"),
+  "dual-prefix: spliced legacy pair KEEPS its pi-ensemble prefix (never re-encoded)",
 );
-
-// --- 4. Isolate new-prefix pair: either parsed (post-rename) or tripwired (pre-rename).
-
-const newOnly = text.replace(/<!--\s*pi-ensemble:agents-md:[^\n]*-->\n/g, "");
-let newSpans: { id: string }[] = [];
-let newError: Error | null = null;
-try {
-  newSpans = parseMarkers(newOnly).spans;
-} catch (e) {
-  newError = e as Error;
-}
-const recognised = newSpans.some((s) => s.id === "commands");
 assert(
-  recognised === true ||
-    (newError === null && newSpans.length === 0) ||
-    (newError !== null && /corrupt or mis-versioned marker/.test(newError.message)),
-  "dual-prefix: pi-rukas pair is either parsed (post-rename), silently zero-spans (pre-rename), or surfaced via LOOSE_RE — never silently spliced",
+  splicedLegacy.includes("pi-rukas:agents-md:begin commands v1"),
+  "dual-prefix: sibling current pair survives byte-for-byte",
 );
-if (recognised) {
-  const splicedNew = splice(newOnly, "commands", "| kind | command | (updated)\n");
-  assert(
-    splicedNew.includes("(updated)"),
-    "dual-prefix: pi-rukas pair splices cleanly once recognised (post-rename)",
-  );
-}
+assert(
+  splicedLegacy.includes("pi-ensemble:agents-md:end environment"),
+  "dual-prefix: sibling legacy pair survives byte-for-byte",
+);
+assert(
+  splicedLegacy.includes("<!-- pi-rukas:agents-md:end commands -->"),
+  "dual-prefix: sibling current end marker survives byte-for-byte",
+);
 
-// --- 5. renderSection output round-trips through parse + splice.
+// --- 4. Splice the current pair: prefix preserved, legacy siblings untouched.
+
+const splicedCurrent = splice(text, "commands", "| kind | command | (updated)\n");
+assert(
+  splicedCurrent.includes("(updated)"),
+  "dual-prefix: current pair splices cleanly",
+);
+assert(
+  splicedCurrent.includes("pi-rukas:agents-md:begin commands v1"),
+  "dual-prefix: current pair keeps its pi-rukas prefix",
+);
+assert(
+  splicedCurrent.includes("pi-ensemble:agents-md:begin quality-gates"),
+  "dual-prefix: legacy pair untouched by a current-pair splice",
+);
+
+// --- 5. renderSection emits the CURRENT prefix and round-trips.
 
 const rendered = renderSection("decision-ledger", "| key | value | provenance |\n");
 assert(
-  rendered.includes("pi-ensemble:agents-md:begin decision-ledger v1") ||
-    rendered.includes("pi-rukas:agents-md:begin decision-ledger v1"),
-  "renderSection: emits a recognised prefix (pi-ensemble pre-rename, pi-rukas post-rename)",
+  rendered.includes("pi-rukas:agents-md:begin decision-ledger v1"),
+  "renderSection: emits the current pi-rukas prefix",
+);
+assert(
+  !rendered.includes("pi-ensemble:agents-md:"),
+  "renderSection: never emits the legacy prefix",
 );
 const { spans: reParsed } = parseMarkers(rendered);
 assert(
@@ -130,6 +132,27 @@ assert(
   reSpliced.includes("(re-spliced)"),
   "renderSection: emitted pair splices cleanly",
 );
+
+// --- 6. The corruption tripwire still fires under either prefix — the
+//        dual-prefix parser did not widen the corruption detection.
+
+const strayLegacy = "<!-- pi-ensemble:agents-md:begin x -->\nq\n<!-- pi-ensemble:agents-md:end x -->\n";
+let legacyTripwired = false;
+try {
+  parseMarkers(strayLegacy);
+} catch (e) {
+  legacyTripwired = e instanceof Error && /corrupt or mis-versioned marker/.test(e.message);
+}
+assert(legacyTripwired, "tripwire: stray legacy-pair shape still throws MarkerError");
+
+const strayCurrent = "<!-- pi-rukas:agents-md:begin x -->\nq\n<!-- pi-rukas:agents-md:end x -->\n";
+let currentTripwired = false;
+try {
+  parseMarkers(strayCurrent);
+} catch (e) {
+  currentTripwired = e instanceof Error && /corrupt or mis-versioned marker/.test(e.message);
+}
+assert(currentTripwired, "tripwire: stray current-pair shape still throws MarkerError");
 
 console.log(exit === 0 ? "\nAll dual-prefix checks passed." : "\nFAILED");
 process.exit(exit);

@@ -25,7 +25,7 @@ import * as workWidget from "./work-widget.ts";
 
 export default async function (pi: ExtensionAPI) {
   trace("extension activated");
-  // Subagent-mode firewall: when pi-ensemble is forwarded INTO a spawned
+  // Subagent-mode firewall: when pi-rukas is forwarded INTO a spawned
   // subagent (by spawn.ts setting PI_ENSEMBLE_SUBAGENT_MODE=1), register
   // ONLY the permission-guard. No dispatch tools, no slash commands, no
   // model picker, no auto-save — those are parent-orchestrator concerns
@@ -43,7 +43,7 @@ export default async function (pi: ExtensionAPI) {
   // Load persisted model overrides BEFORE any spawn can ask for a model.
   await loadOverrides();
   // The whole retry story assumes a provider's `retry-after` is honoured. That
-  // depends on a setting pi-ensemble does not own, so say so when it is not.
+  // depends on a setting pi-rukas does not own, so say so when it is not.
   void warnIfRetryConfigTooLow();
   registerDispatchTools(pi);
   registerDispatchStatusTool(pi);

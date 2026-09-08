@@ -175,14 +175,14 @@ export async function runAdversarialLoop(
     maxRetries: number;
     headline: string;
   } => {
-    // killCause (#296) — pi-ensemble itself ended the child. Must check first.
+    // killCause (#296) — pi-rukas itself ended the child. Must check first.
     if (r.killCause === "timeout") {
       return {
         cause: "self-killed:timeout",
         shouldRetry: false,
         maxRetries: 0,
         headline:
-          "killed by pi-ensemble (wall-clock timeout) — budget exhausted, retrying cannot help",
+          "killed by pi-rukas (wall-clock timeout) — budget exhausted, retrying cannot help",
       };
     }
     if (r.killCause === "inactivity") {
@@ -190,7 +190,7 @@ export async function runAdversarialLoop(
         cause: "self-killed:inactivity",
         shouldRetry: true,
         maxRetries: 1,
-        headline: "killed by pi-ensemble (inactivity watchdog)",
+        headline: "killed by pi-rukas (inactivity watchdog)",
       };
     }
     if (r.killCause === "abort") {
@@ -212,7 +212,7 @@ export async function runAdversarialLoop(
         shouldRetry: false,
         maxRetries: 0,
         headline:
-          "killed by pi-ensemble (loop detected) — the same tool call repeated; retrying would loop again",
+          "killed by pi-rukas (loop detected) — the same tool call repeated; retrying would loop again",
       };
     }
     if (r.killCause === "token-budget") {
@@ -220,7 +220,7 @@ export async function runAdversarialLoop(
         cause: "self-killed:token-budget",
         shouldRetry: false,
         maxRetries: 0,
-        headline: "killed by pi-ensemble (token budget crossed) — a cost cap, not a provider fault",
+        headline: "killed by pi-rukas (token budget crossed) — a cost cap, not a provider fault",
       };
     }
 

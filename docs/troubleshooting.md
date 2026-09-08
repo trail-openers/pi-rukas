@@ -1,6 +1,6 @@
-# pi-ensemble troubleshooting
+# pi-rukas troubleshooting
 
-Symptoms → causes → fixes. Most issues here come from running an older sandbox image; the first move on anything weird is usually `./install.sh` from the pi-ensemble repo to rebuild + refresh.
+Symptoms → causes → fixes. Most issues here come from running an older sandbox image; the first move on anything weird is usually `./install.sh` from the pi-rukas repo to rebuild + refresh.
 
 ## Platform support
 
@@ -21,7 +21,7 @@ Symptoms → causes → fixes. Most issues here come from running an older sandb
 
 ### `docker` / the sandbox image is unreachable from inside WSL2
 
-**Symptom:** on a WSL2 host, `./install.sh` gets past OS detection but the sandbox image pull fails, or `pi-ensemble` launches and the container can't start — `docker` commands report the daemon is unreachable.
+**Symptom:** on a WSL2 host, `./install.sh` gets past OS detection but the sandbox image pull fails, or `pi-rukas` launches and the container can't start — `docker` commands report the daemon is unreachable.
 
 **Cause:** WSL2 is a separate Linux VM; the Docker daemon you want it to talk to lives on the Windows host (Docker Desktop) or must be its own Engine. A bare WSL2 distro has no Docker daemon, so the sandbox — which is a Docker container — has nothing to run in.
 
@@ -42,7 +42,7 @@ This is **independent of the LLM backend**: across recent runs, Anthropic Claude
 ### Fix
 
 ```bash
-cd ~/.config/opencode/pi-ensemble && git pull && ./install.sh
+cd ~/.config/opencode/pi-rukas && git pull && ./install.sh
 ```
 
 Post-#236 (retuned by #295), `install.sh` writes `retry.provider` defaults into `~/.pi/agent/settings.json` (10 min per request, 3 retries with backoff). If you have non-default settings you want to keep, they're preserved — install.sh only writes the retry block when it's missing, with one exception: the old #236 value of exactly `180000` (3 min) is recognized as our own footprint and repaired to the new default.
@@ -75,11 +75,11 @@ Keep `maxRetries * timeoutMs` comfortably below the per-role wall-clock caps in 
 
 **Do not lower `maxRetryDelayMs`.** It is a *ceiling* on a provider's `retry-after`, not a delay we add. Pi's own backoff is `min(0.5 * 2 ** i, 8) * 1000`, capped at 8s, so raising the ceiling costs no wall-clock unless a provider explicitly asks us to wait longer. Its only effect is deciding which provider instructions to discard — and when it discards one, **nothing waits at all**: the throw happens inside `getRetryDelayMs` while computing the next delay, before any sleep, so the `maxRetries` budget is never even consumed.
 
-pi-ensemble shipped `10000` here for several releases on the mistaken reasoning that it "added 3 x 60s of backoff". Providers routinely ask for 59-60s, so every real throttle became a hard failure. Measured on one run: three parallel `/research` children and two `/work` developers all died on `Server requested 59s retry delay (max: 10s). 429 status code`, having gathered ~305k characters of research between them, all discarded. `install.sh` now repairs a value of exactly `10000` on sight — including on hosts where `timeoutMs` was already set, which previously skipped the whole block and so were never fixed.
+pi-rukas shipped `10000` here for several releases on the mistaken reasoning that it "added 3 x 60s of backoff". Providers routinely ask for 59-60s, so every real throttle became a hard failure. Measured on one run: three parallel `/research` children and two `/work` developers all died on `Server requested 59s retry delay (max: 10s). 429 status code`, having gathered ~305k characters of research between them, all discarded. `install.sh` now repairs a value of exactly `10000` on sight — including on hosts where `timeoutMs` was already set, which previously skipped the whole block and so were never fixed.
 
 If you have deliberately chosen a value below 60s, it is preserved; the extension traces a warning at startup instead, visible in `/ensemble-debug`.
 
-PRs: [#236](https://github.com/randomm/pi-ensemble/pull/236), [#295](https://github.com/randomm/pi-ensemble/issues/295)
+PRs: [#236](https://github.com/trail-openers/pi-rukas/pull/236), [#295](https://github.com/trail-openers/pi-rukas/issues/295)
 
 ## Dispatch reports
 
@@ -142,7 +142,7 @@ Two independent guards now: the queue refuses to interpret a state file at all w
 A kill now reports the shape of the silence, not just the budget:
 
 ```
-[pi-ensemble] killed after 1500000ms inactivity (override: PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS)
+[pi-rukas] killed after 1500000ms inactivity (override: PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS)
   · last output: toolCall 1500s before the kill, after 412 line(s)
 ```
 
@@ -180,7 +180,7 @@ Revise the issue body (`/plan`) and re-run with `--restart`.
 
 Development happens in a `git worktree`, which contains tracked files only — no `node_modules`, no virtualenv, no vendor tree. If your verify command needs them, it fails for a reason that has nothing to do with the change.
 
-pi-ensemble now provisions the worktree: it runs **`.pi/worktree-setup`** if you provide one (the reliable option — put `bun install`, `uv sync`, whatever your project needs, in it), and otherwise symlinks `node_modules`, `.venv` and `vendor` when they exist and are gitignored. Discovery is not limited to the repo root: any depth-1 subdirectory that contains a manifest or lockfile (`package.json`, `bun.lock`, `Cargo.toml`, `pyproject.toml`, `go.mod`, `Gemfile`, …) is scanned for a nested `node_modules` — so a nested-package monorepo provisions without a hook (#481). An **empty** candidate directory is never linked or reported as a useful link, and a project with a lockfile but no findable tree gets a `problem` the branch step traces rather than a silent bare worktree. Build output (`target/`, `build/`, `dist/`) is never shared: concurrent workstreams writing one directory would serialise the fan-out.
+pi-rukas now provisions the worktree: it runs **`.pi/worktree-setup`** if you provide one (the reliable option — put `bun install`, `uv sync`, whatever your project needs, in it), and otherwise symlinks `node_modules`, `.venv` and `vendor` when they exist and are gitignored. Discovery is not limited to the repo root: any depth-1 subdirectory that contains a manifest or lockfile (`package.json`, `bun.lock`, `Cargo.toml`, `pyproject.toml`, `go.mod`, `Gemfile`, …) is scanned for a nested `node_modules` — so a nested-package monorepo provisions without a hook (#481). An **empty** candidate directory is never linked or reported as a useful link, and a project with a lockfile but no findable tree gets a `problem` the branch step traces rather than a silent bare worktree. Build output (`target/`, `build/`, `dist/`) is never shared: concurrent workstreams writing one directory would serialise the fan-out.
 
 A verify failure that looks dependency-caused now says so in the handoff rather than implying the diff is at fault. If you see that, add `.pi/worktree-setup`.
 
@@ -254,7 +254,7 @@ The branch step recorded whatever branch `repoRoot` was on, and that value becom
 
 ## Permissions
 
-### Host-mode pi-ensemble is asking me to approve every command
+### Host-mode pi-rukas is asking me to approve every command
 
 **Symptom:** Running `pi` (host mode, no sandbox) in an interactive terminal: every novel bash / tool call prompts "Allow once / Allow always / Deny once / Deny always". Within a few minutes, dozens of prompts. Unusable.
 
@@ -271,9 +271,9 @@ unset PI_ENSEMBLE_STRICT_PERMISSIONS
 exec $SHELL -l   # re-source rc
 ```
 
-Relaunch `pi` — no more prompts. The agent runs as your UID with your credentials; that's the deal in interactive host mode. Use `pi-ensemble` (sandbox) if you want confined execution.
+Relaunch `pi` — no more prompts. The agent runs as your UID with your credentials; that's the deal in interactive host mode. Use `pi-rukas` (sandbox) if you want confined execution.
 
-PR: [#215](https://github.com/randomm/pi-ensemble/pull/215)
+PR: [#215](https://github.com/trail-openers/pi-rukas/pull/215)
 
 ### Headless `pi -p` hard-denies all novel commands
 
@@ -283,7 +283,7 @@ PR: [#215](https://github.com/randomm/pi-ensemble/pull/215)
 
 **Fix:** Either (a) widen the allowlist in `.pi/permissions.json` for that project, (b) run inside the sandbox where there's no per-call gating, or (c) if you genuinely need an unrestricted automated run, prepend `PI_ENSEMBLE_SANDBOX_MODE=1 pi -p ...` — but understand this disables ALL guard layers and should ONLY be used in a context already sandboxed by other means (Docker, VM).
 
-PR: [#215](https://github.com/randomm/pi-ensemble/pull/215)
+PR: [#215](https://github.com/trail-openers/pi-rukas/pull/215)
 
 ## Image acquisition
 
@@ -291,25 +291,25 @@ PR: [#215](https://github.com/randomm/pi-ensemble/pull/215)
 
 **Symptom:** Running `./install.sh` on a fresh host (or after `docker system prune`) takes 10-30 minutes. Output shows `cargo install vipune`, `cargo install double-o`, `npm install -g ...`, the Rust toolchain compiling.
 
-**Cause:** You're on an `install.sh` from before #219 — pre-#219 the script always built the image locally. Post-#219 it pulls a pre-built multi-arch image from `ghcr.io/randomm/pi-ensemble:latest` (built + published on every merge to main).
+**Cause:** You're on an `install.sh` from before #219 — pre-#219 the script always built the image locally. Post-#219 it pulls a pre-built multi-arch image from `ghcr.io/trail-openers/pi-rukas:latest` (built + published on every merge to main).
 
-**Fix:** Pull the latest pi-ensemble repo + rerun install.
+**Fix:** Pull the latest pi-rukas repo + rerun install.
 
 ```bash
-cd ~/.config/opencode/pi-ensemble && git pull && ./install.sh
+cd ~/.config/opencode/pi-rukas && git pull && ./install.sh
 ```
 
 The pull should finish in ~10-20s on broadband. If it falls back to a local build, see the next entry.
 
-PR: [#219](https://github.com/randomm/pi-ensemble/pull/219)
+PR: [#219](https://github.com/trail-openers/pi-rukas/pull/219)
 
-### `docker pull ghcr.io/randomm/pi-ensemble:latest` returns `denied`
+### `docker pull ghcr.io/trail-openers/pi-rukas:latest` returns `denied`
 
 **Symptom:** `./install.sh` reports `Pull failed; building locally from this checkout instead.` Inside that pull attempt: `Error response from daemon: denied`.
 
 **Cause:** The GHCR package is private. By default, GHCR packages start private until the repo owner flips them to public.
 
-**Fix (if you own the repo):** GitHub → Profile → Packages → `pi-ensemble` → Package settings → Change visibility → Public.
+**Fix (if you own the repo):** GitHub → Profile → Packages → `pi-rukas` (owner `trail-openers`) → Package settings → Change visibility → Public.
 
 **Fix (if you don't own the repo, but have a GitHub account):** Authenticate to GHCR with a personal access token that has `read:packages`.
 
@@ -318,7 +318,7 @@ gh auth token | docker login ghcr.io -u USERNAME --password-stdin
 ./install.sh
 ```
 
-PR: [#219](https://github.com/randomm/pi-ensemble/pull/219)
+PR: [#219](https://github.com/trail-openers/pi-rukas/pull/219)
 
 ### Forcing a local build (Dockerfile development)
 
@@ -336,41 +336,41 @@ Skips the registry pull, builds directly from your checkout. Takes 10-30 minutes
 
 ### `MCP: 0/N servers` — codebase_memory not connected
 
-**Symptom:** Inside `pi-ensemble`, the bottom status line shows `MCP: 0/1 servers` (or 0/N). `/mcp` reports no servers connected. Subagents fail any `codebase_memory_*` tool call.
+**Symptom:** Inside `pi-rukas`, the bottom status line shows `MCP: 0/1 servers` (or 0/N). `/mcp` reports no servers connected. Subagents fail any `codebase_memory_*` tool call.
 
-**Cause:** pi-mcp-adapter reads `~/.config/mcp/mcp.json` (Tier 1). `install.sh` writes this file with the codebase_memory entry, but if you never ran `./install.sh` (or ran it before pi-ensemble shipped this wiring), the file is missing or empty.
+**Cause:** pi-mcp-adapter reads `~/.config/mcp/mcp.json` (Tier 1). `install.sh` writes this file with the codebase_memory entry, but if you never ran `./install.sh` (or ran it before pi-rukas shipped this wiring), the file is missing or empty.
 
-**Fix:** `cd ~/.config/opencode/pi-ensemble && ./install.sh`. Validate with `jq '.mcpServers | keys' ~/.config/mcp/mcp.json` — should list `codebase_memory`. Restart the sandbox.
+**Fix:** `cd ~/.config/opencode/pi-rukas && ./install.sh`. Validate with `jq '.mcpServers | keys' ~/.config/mcp/mcp.json` — should list `codebase_memory`. Restart the sandbox.
 
-PR: [#196](https://github.com/randomm/pi-ensemble/pull/196)
+PR: [#196](https://github.com/trail-openers/pi-rukas/pull/196)
 
 ### `gh issue list` returns "HTTP 401: Requires authentication" inside container
 
-**Symptom:** Inside `pi-ensemble`, `gh` commands that hit the GitHub API return 401. Outside the container on the host, the same commands work fine.
+**Symptom:** Inside `pi-rukas`, `gh` commands that hit the GitHub API return 401. Outside the container on the host, the same commands work fine.
 
 **Cause:** macOS `gh auth login` stores the token in Keychain, not in `~/.config/gh/hosts.yml`. The container's bind-mount of `~/.config/gh/` brings the config dir but not the keychain-stored token.
 
 **Fix:** The wrapper extracts the token via `gh auth token` on the host and forwards it as `GH_TOKEN` env into the container. If you're seeing 401, check the host: `gh auth status` should report you authenticated. If you're using a personal access token directly, export it as `GH_TOKEN` in your shell so the wrapper forwards it explicitly.
 
-PR: [#203](https://github.com/randomm/pi-ensemble/pull/203)
+PR: [#203](https://github.com/trail-openers/pi-rukas/pull/203)
 
 ### Custom LLM endpoint (e.g. `fieldbox`) returns "connection refused" or "no such host"
 
-**Symptom:** A custom provider (configured in `~/.pi/agent/models.json` with `baseUrl: "http://fieldbox:8080/v1"`) works from host-mode `pi` but fails inside `pi-ensemble`.
+**Symptom:** A custom provider (configured in `~/.pi/agent/models.json` with `baseUrl: "http://fieldbox:8080/v1"`) works from host-mode `pi` but fails inside `pi-rukas`.
 
 **Cause:** The container's resolver doesn't see your `/etc/hosts`, Mesh VPN mesh DNS, or your home network. The hostname `fieldbox` doesn't resolve.
 
 **Fix:** Set `PI_ENSEMBLE_HOST_ALIASES` before launching:
 
 ```bash
-PI_ENSEMBLE_HOST_ALIASES="fieldbox:192.0.2.10,myserver:192.0.2.20" pi-ensemble
+PI_ENSEMBLE_HOST_ALIASES="fieldbox:192.0.2.10,myserver:192.0.2.20" pi-rukas
 ```
 
 Comma-separated `name:ip` pairs. The IP must be reachable from the host (the container's network rides the host's stack via Docker bridge).
 
 Default already includes `fieldbox:192.0.2.10` — set the var if your fieldbox is elsewhere or you need additional hosts.
 
-PR: [#204](https://github.com/randomm/pi-ensemble/pull/204)
+PR: [#204](https://github.com/trail-openers/pi-rukas/pull/204)
 
 ### Custom provider missing from `/ensemble-model` picker
 
@@ -378,13 +378,13 @@ PR: [#204](https://github.com/randomm/pi-ensemble/pull/204)
 
 **Cause:** Wrapper bind-mounts `~/.pi/agent/models.json:ro` (post-#205). If you're on an older wrapper version, custom providers aren't visible inside the container.
 
-**Fix:** `./install.sh` from pi-ensemble repo to refresh the wrapper. If after that the provider's API requests fail with `401`, check that the api key env var is exported in your shell rc — post-#228 the wrapper forwards the full host shell env, so any exported var (regardless of name) reaches the container.
+**Fix:** `./install.sh` from pi-rukas repo to refresh the wrapper. If after that the provider's API requests fail with `401`, check that the api key env var is exported in your shell rc — post-#228 the wrapper forwards the full host shell env, so any exported var (regardless of name) reaches the container.
 
-PR: [#205](https://github.com/randomm/pi-ensemble/pull/205), [#228](https://github.com/randomm/pi-ensemble/pull/228)
+PR: [#205](https://github.com/trail-openers/pi-rukas/pull/205), [#228](https://github.com/trail-openers/pi-rukas/pull/228)
 
 ### `MCP error -32000: Connection closed` for env-driven docker MCPs
 
-**Symptom:** `.pi/mcp.json` defines an MCP server like `docker run -i --rm -e DATABASE_URI crystaldba/postgres-mcp` with `"env": { "DATABASE_URI": "${SOME_DB_URI}" }`. Works on host-mode `pi`; fails in `pi-ensemble` with `MCP error -32000: Connection closed`. The MCP server process exits within milliseconds.
+**Symptom:** `.pi/mcp.json` defines an MCP server like `docker run -i --rm -e DATABASE_URI crystaldba/postgres-mcp` with `"env": { "DATABASE_URI": "${SOME_DB_URI}" }`. Works on host-mode `pi`; fails in `pi-rukas` with `MCP error -32000: Connection closed`. The MCP server process exits within milliseconds.
 
 **Diagnose (inside the sandbox):**
 
@@ -399,38 +399,38 @@ If empty: the var isn't reaching the sandbox.
 **Fix:** Refresh.
 
 ```bash
-cd ~/.config/opencode/pi-ensemble && git pull && ./install.sh
+cd ~/.config/opencode/pi-rukas && git pull && ./install.sh
 ```
 
-Post-#228 the wrapper forwards the entire host shell env (less a small conflict-blocklist — see README env-vars table). Any var you `export` in your shell rc reaches the sandbox. Verify post-refresh: `pi-ensemble shell` → `echo "$SOME_DB_URI"` prints the URI.
+Post-#228 the wrapper forwards the entire host shell env (less a small conflict-blocklist — see README env-vars table). Any var you `export` in your shell rc reaches the sandbox. Verify post-refresh: `pi-rukas shell` → `echo "$SOME_DB_URI"` prints the URI.
 
-PR: [#228](https://github.com/randomm/pi-ensemble/pull/228)
+PR: [#228](https://github.com/trail-openers/pi-rukas/pull/228)
 
 ### `vipune search` returns "Failed to download embedding model … 404"
 
-**Symptom:** Inside `pi-ensemble`, `vipune search` errors with `Configuration error: Failed to download embedding model 'BAAI/bge-small-en-v1.5': request error: http status: 404`. Suggests `huggingface-cli download …`.
+**Symptom:** Inside `pi-rukas`, `vipune search` errors with `Configuration error: Failed to download embedding model 'BAAI/bge-small-en-v1.5': request error: http status: 404`. Suggests `huggingface-cli download …`.
 
 **Cause:** vipune downloads the embedding model on first semantic-search call. Its HTTP client 404s on the pinned revision (URLs work via `curl` — likely a redirect/User-Agent quirk).
 
 **Fix:** The image pre-fetches the model into `/opt/hf-cache-seed/` and the entrypoint seeds the named cache volume from there on first start. If you're seeing the 404, your image is stale: `./install.sh` to rebuild. Verify the seed is present:
 
 ```bash
-docker run --rm randomm/pi-ensemble:latest ls /opt/hf-cache-seed/hub/models--BAAI--bge-small-en-v1.5/snapshots
+docker run --rm trail-openers/pi-rukas:latest ls /opt/hf-cache-seed/hub/models--BAAI--bge-small-en-v1.5/snapshots
 ```
 
 Should list the pinned revision SHA.
 
-PR: [#205](https://github.com/randomm/pi-ensemble/pull/205)
+PR: [#205](https://github.com/trail-openers/pi-rukas/pull/205)
 
 ### "fd not found. Downloading..." / "ripgrep not found. Downloading..." at startup
 
-**Symptom:** First few lines after `pi-ensemble` boot show Pi auto-downloading `fd` and `rg` into `~/.pi/agent/bin/`. Adds ~10s of boot time + requires network.
+**Symptom:** First few lines after `pi-rukas` boot show Pi auto-downloading `fd` and `rg` into `~/.pi/agent/bin/`. Adds ~10s of boot time + requires network.
 
 **Cause:** Image is stale (pre-#203). Modern image bakes both binaries in via apt.
 
-**Fix:** `./install.sh` to rebuild. Verify: `docker run --rm randomm/pi-ensemble:latest which fd rg` → `/usr/local/bin/fd` + `/usr/bin/rg`.
+**Fix:** `./install.sh` to rebuild. Verify: `docker run --rm trail-openers/pi-rukas:latest which fd rg` → `/usr/local/bin/fd` + `/usr/bin/rg`.
 
-PR: [#203](https://github.com/randomm/pi-ensemble/pull/203)
+PR: [#203](https://github.com/trail-openers/pi-rukas/pull/203)
 
 ## Docker-based MCP servers
 
@@ -443,12 +443,12 @@ PR: [#203](https://github.com/randomm/pi-ensemble/pull/203)
 **Fix:** Refresh.
 
 ```bash
-cd ~/.config/opencode/pi-ensemble && git pull && ./install.sh
+cd ~/.config/opencode/pi-rukas && git pull && ./install.sh
 ```
 
-Then relaunch `pi-ensemble` (no env vars) and `/mcp` should show the docker-based MCP servers connected. Spawned MCP containers are siblings on the host's daemon — visible in the host's `docker ps`.
+Then relaunch `pi-rukas` (no env vars) and `/mcp` should show the docker-based MCP servers connected. Spawned MCP containers are siblings on the host's daemon — visible in the host's `docker ps`.
 
-PR: [#220](https://github.com/randomm/pi-ensemble/pull/220)
+PR: [#220](https://github.com/trail-openers/pi-rukas/pull/220)
 
 ### `docker: permission denied while trying to connect to the Docker daemon socket`
 
@@ -459,12 +459,12 @@ PR: [#220](https://github.com/randomm/pi-ensemble/pull/220)
 **Fix:** Rebuild the image.
 
 ```bash
-cd ~/.config/opencode/pi-ensemble && ./install.sh
+cd ~/.config/opencode/pi-rukas && ./install.sh
 ```
 
-Verify post-rebuild: `pi-ensemble shell` → `ls -la /var/run/docker.sock` shows `srw-rw-rw-`.
+Verify post-rebuild: `pi-rukas shell` → `ls -la /var/run/docker.sock` shows `srw-rw-rw-`.
 
-PR: [#216](https://github.com/randomm/pi-ensemble/pull/216)
+PR: [#216](https://github.com/trail-openers/pi-rukas/pull/216)
 
 ### I want a tighter sandbox — disable docker socket access
 
@@ -480,7 +480,7 @@ export PI_ENSEMBLE_NO_DOCKER_SOCKET=1
 
 Note: docker-based MCPs in `.pi/mcp.json` will stop working under this opt-out.
 
-PR: [#220](https://github.com/randomm/pi-ensemble/pull/220)
+PR: [#220](https://github.com/trail-openers/pi-rukas/pull/220)
 
 ## SSH from inside the sandbox
 
@@ -494,7 +494,7 @@ Outbound `ssh` then fails with `Permission denied (publickey,...)` even though y
 
 **Cause:** Two sub-cases:
 
-1. **Stale wrapper (pre-#220).** The wrapper didn't bind-mount `~/.ssh/` or forward `$SSH_AUTH_SOCK`. Fix: `cd ~/.config/opencode/pi-ensemble && git pull && ./install.sh`.
+1. **Stale wrapper (pre-#220).** The wrapper didn't bind-mount `~/.ssh/` or forward `$SSH_AUTH_SOCK`. Fix: `cd ~/.config/opencode/pi-rukas && git pull && ./install.sh`.
 2. **Broken agent forward (pre-#227).** Wrapper attempted the forward but Docker created an empty **directory** at `/run/host-ssh-auth.sock` instead of a usable socket — common on macOS Docker Desktop where the host's `$SSH_AUTH_SOCK` is a launchd-managed path Docker can't bind-mount cleanly. SSH then loops on "Error connecting to agent" even though on-disk keys at `~/.ssh/` would work. **Post-#227 the entrypoint detects this and unsets `SSH_AUTH_SOCK`** so SSH falls back to your on-disk keys cleanly. Refresh with `./install.sh`.
 
 **Diagnose your case (inside the sandbox):**
@@ -508,17 +508,17 @@ ls -la ~/.ssh/                              # on-disk keys + known_hosts + confi
 **Fix:**
 
 ```bash
-cd ~/.config/opencode/pi-ensemble && git pull && ./install.sh
+cd ~/.config/opencode/pi-rukas && git pull && ./install.sh
 ```
 
-Then relaunch `pi-ensemble`. Inside, `ssh-add -l` either lists your forwarded identities (working forward) or reports "Could not open a connection to your authentication agent" CLEANLY (broken forward → fell back to disk keys). `ssh remote-host` should succeed via one path or the other.
+Then relaunch `pi-rukas`. Inside, `ssh-add -l` either lists your forwarded identities (working forward) or reports "Could not open a connection to your authentication agent" CLEANLY (broken forward → fell back to disk keys). `ssh remote-host` should succeed via one path or the other.
 
-**If you have no SSH agent running on the host:** start one before launching pi-ensemble so a forwardable agent socket exists:
+**If you have no SSH agent running on the host:** start one before launching pi-rukas so a forwardable agent socket exists:
 
 ```bash
 eval "$(ssh-agent -s)"
 ssh-add ~/.ssh/id_ed25519   # or whichever key
-pi-ensemble
+pi-rukas
 ```
 
 **On-disk keys + UID mismatch (macOS edge case):** the wrapper mounts `~/.ssh/` RO so keys are visible inside, BUT SSH's `StrictModes` may refuse keys whose host UID (501 on macOS) doesn't match the container's vscode UID (1000). Workaround: use ssh-agent (above) — the agent socket bypasses file-perm checks.
@@ -529,7 +529,7 @@ pi-ensemble
 ssh -o IdentityAgent=none -i ~/.ssh/<your-key> user@host
 ```
 
-PRs: [#220](https://github.com/randomm/pi-ensemble/pull/220), [#227](https://github.com/randomm/pi-ensemble/pull/227)
+PRs: [#220](https://github.com/trail-openers/pi-rukas/pull/220), [#227](https://github.com/trail-openers/pi-rukas/pull/227)
 
 ### I want a tighter sandbox — disable SSH credentials access
 
@@ -545,7 +545,7 @@ export PI_ENSEMBLE_NO_SSH=1
 
 Note: outbound SSH from inside the sandbox will stop working — including agent operations that ssh to remotes (e.g. `git push` over ssh, deploy scripts).
 
-PR: [#220](https://github.com/randomm/pi-ensemble/pull/220)
+PR: [#220](https://github.com/trail-openers/pi-rukas/pull/220)
 
 ## Web research
 
@@ -558,14 +558,14 @@ PR: [#220](https://github.com/randomm/pi-ensemble/pull/220)
 **Fix:** Rebuild the image.
 
 ```bash
-cd ~/.config/opencode/pi-ensemble && ./install.sh
+cd ~/.config/opencode/pi-rukas && ./install.sh
 ```
 
-Verify post-rebuild: `pi-ensemble shell` → `which parallel-cli` returns a path; `parallel-cli --version` prints; `parallel-cli search "test"` returns structured results (requires `PARALLEL_API_KEY` exported on host — auto-forwarded by the wrapper).
+Verify post-rebuild: `pi-rukas shell` → `which parallel-cli` returns a path; `parallel-cli --version` prints; `parallel-cli search "test"` returns structured results (requires `PARALLEL_API_KEY` exported on host — auto-forwarded by the wrapper).
 
 If you don't have a parallel.ai account, @explore degrades to telling you to set up one. There's no other web-search path baked into the role — webfetch / Context7 are documented as unreliable for real-time data.
 
-PR: [#218](https://github.com/randomm/pi-ensemble/pull/218)
+PR: [#218](https://github.com/trail-openers/pi-rukas/pull/218)
 
 ## Vision / images
 
@@ -581,19 +581,19 @@ PR: [#218](https://github.com/randomm/pi-ensemble/pull/218)
 
 ### Dropped image rejected by sandbox-fs-guard
 
-**Symptom:** After dragging an image into the `pi-ensemble` session and prefixing `@`, Pi's `read` tool errors with `"Path '/Users/.../Downloads/foo.png' resolves outside the sandbox workspace"`.
+**Symptom:** After dragging an image into the `pi-rukas` session and prefixing `@`, Pi's `read` tool errors with `"Path '/Users/.../Downloads/foo.png' resolves outside the sandbox workspace"`.
 
 **Cause:** The image lives outside the project workspace and outside the wrapper's default image-dir list (`$HOME/Downloads`, `$HOME/Desktop`, `$HOME/Pictures`).
 
 **Fix:** Add the dir to `PI_ENSEMBLE_EXTRA_IMAGE_DIRS` before launching, OR move/copy the image into your project workspace.
 
 ```bash
-PI_ENSEMBLE_EXTRA_IMAGE_DIRS="$HOME/Documents/screenshots" pi-ensemble
+PI_ENSEMBLE_EXTRA_IMAGE_DIRS="$HOME/Documents/screenshots" pi-rukas
 ```
 
 The wrapper bind-mounts each listed dir RO and tells `sandbox-fs-guard` to permit reads under those roots.
 
-PR: [#213](https://github.com/randomm/pi-ensemble/pull/213)
+PR: [#213](https://github.com/trail-openers/pi-rukas/pull/213)
 
 ### Image attached but model says "I can't see images"
 
@@ -611,57 +611,57 @@ PR: [#213](https://github.com/randomm/pi-ensemble/pull/213)
 }
 ```
 
-PR: [#213](https://github.com/randomm/pi-ensemble/pull/213)
+PR: [#213](https://github.com/trail-openers/pi-rukas/pull/213)
 
 ## Session resume
 
-### `pi-ensemble -r` opens the picker but selecting a session does nothing
+### `pi-rukas -r` opens the picker but selecting a session does nothing
 
-**Symptom:** `pi-ensemble -r` shows the resume picker with sessions listed. Selecting one returns "No session selected" or fails silently. Or: the picker shows sessions from many projects and your specific one is hard to find.
+**Symptom:** `pi-rukas -r` shows the resume picker with sessions listed. Selecting one returns "No session selected" or fails silently. Or: the picker shows sessions from many projects and your specific one is hard to find.
 
 **Cause (pre-#207):** Pi keys sessions by absolute `cwd`. The old wrapper mounted projects at `/workspace`, so sandbox sessions for ALL projects co-mingled in a single `~/.pi/agent/sessions/--workspace--/` bucket. Selecting a session whose original `cwd` was a host path (`/Users/…/projects/foo`) failed to load because that path didn't exist inside the container.
 
-**Fix:** `./install.sh` to refresh the wrapper. Post-#207, the wrapper mounts your project at its host absolute path inside the container — same `cwd` as host mode, so session buckets align. `pi-ensemble -r` from any project shows sessions for that project only, and host-mode `pi -r` sessions are visible too (and vice versa).
+**Fix:** `./install.sh` to refresh the wrapper. Post-#207, the wrapper mounts your project at its host absolute path inside the container — same `cwd` as host mode, so session buckets align. `pi-rukas -r` from any project shows sessions for that project only, and host-mode `pi -r` sessions are visible too (and vice versa).
 
 **Pre-fix sessions:** anything written to `~/.pi/agent/sessions/--workspace--/` before #207 is orphaned in that bucket. To resume one you specifically need, `pi --session <uuid>` from inside the container (it will search across scopes).
 
-PR: [#207](https://github.com/randomm/pi-ensemble/pull/207)
+PR: [#207](https://github.com/trail-openers/pi-rukas/pull/207)
 
 ### Container hostnames change between sandbox runs
 
-**Symptom:** Container names like `pi-ensemble-lantern--8cbaf2dccfbd-a1b2c3d4` appear in `docker ps`. New name each launch.
+**Symptom:** Container names like `pi-rukas-lantern-8cbaf2dccfbd-a1b2c3d4` appear in `docker ps`. New name each launch.
 
-**Cause:** Wrapper composes the container name as `pi-ensemble-<project>-<project-hash>-<run-suffix>`. The project-hash disambiguates DIFFERENT projects (avoiding collisions in `docker ps`). The 8-hex run-suffix disambiguates concurrent sessions in the SAME project. Not a bug.
+**Cause:** Wrapper composes the container name as `pi-rukas-<project>-<project-hash>-<run-suffix>`, where the project-hash is a 12-hex `sha256` prefix of the project's absolute path and the 8-hex run-suffix is random per invocation. The project-hash disambiguates DIFFERENT projects (avoiding collisions in `docker ps`). The 8-hex run-suffix disambiguates concurrent sessions in the SAME project. Not a bug.
 
-**Not a fix:** The name doesn't affect functionality — only how containers show up in `docker ps`. `pi-ensemble stop` enumerates all containers matching the project's `<base>-*` prefix and stops them. `pi-ensemble status` lists all of them.
+**Not a fix:** The name doesn't affect functionality — only how containers show up in `docker ps`. `pi-rukas stop` enumerates all containers matching the project's `<base>-*` prefix and stops them. `pi-rukas status` lists all of them.
 
-### `docker: Error response from daemon: Conflict. The container name "/pi-ensemble-..." is already in use`
+### `docker: Error response from daemon: Conflict. The container name "/pi-rukas-..." is already in use`
 
-**Symptom:** Trying to start a second `pi-ensemble` in the same project errors with a name-conflict from docker.
+**Symptom:** Trying to start a second `pi-rukas` in the same project errors with a name-conflict from docker.
 
 **Cause:** Pre-#217 the container name was deterministic per project, so two concurrent sessions in the same project collided on `docker run --name`.
 
-**Fix:** Pull + rebuild — `cd ~/.config/opencode/pi-ensemble && git pull && ./install.sh`. Post-#217 each `pi-ensemble` invocation gets a unique 8-hex run-suffix; concurrent sessions in the same project Just Work.
+**Fix:** Pull + rebuild — `cd ~/.config/opencode/pi-rukas && git pull && ./install.sh`. Post-#217 each `pi-rukas` invocation gets a unique 8-hex run-suffix; concurrent sessions in the same project Just Work.
 
-PR: [#217](https://github.com/randomm/pi-ensemble/pull/217)
+PR: [#217](https://github.com/trail-openers/pi-rukas/pull/217)
 
 ## State + caches
 
-### `pi-ensemble prune` warning about volumes "in use"
+### `pi-rukas prune` warning about volumes "in use"
 
-**Symptom:** Running `pi-ensemble prune` errors with `volume is in use` for `pi-ensemble-cache` etc.
+**Symptom:** Running `pi-rukas prune` errors with `volume is in use` for `pi-ensemble-cache` etc. (volume names keep the historical `pi-ensemble-` prefix for backwards compatibility).
 
-**Cause:** Another `pi-ensemble` session is currently running and holding the named volume.
+**Cause:** Another `pi-rukas` session is currently running and holding the named `pi-ensemble-*` volume.
 
-**Fix:** Exit running `pi-ensemble` sessions (the wrapper uses `docker run --rm` so they're gone on exit) then re-run `prune`. Use `docker ps` to find still-running containers.
+**Fix:** Exit running `pi-rukas` sessions (the wrapper uses `docker run --rm` so they're gone on exit) then re-run `prune`. Use `docker ps` to find still-running containers.
 
 ### Bind-mounted host state showing up in container as `root`-owned
 
-**Symptom:** Files written by `pi-ensemble` end up on the host owned by `root` instead of your user.
+**Symptom:** Files written by `pi-rukas` end up on the host owned by `root` instead of your user.
 
 **Cause:** This shouldn't happen — the image's `vscode` user has UID 1000, the wrapper does NOT use `--user root`. If you see this, you're likely running an old image (pre-#200) or a custom Dockerfile derivative that switched users.
 
-**Fix:** `./install.sh` to rebuild the official image. Verify: `docker run --rm randomm/pi-ensemble:latest id` → `uid=1000(vscode)`.
+**Fix:** `./install.sh` to rebuild the official image. Verify: `docker run --rm trail-openers/pi-rukas:latest id` → `uid=1000(vscode)`.
 
 ## Diagnostics
 
@@ -670,7 +670,7 @@ PR: [#217](https://github.com/randomm/pi-ensemble/pull/217)
 ```bash
 docker run --rm \
   -v "$HOME/.pi/agent/models.json:/home/vscode/.pi/agent/models.json:ro" \
-  randomm/pi-ensemble:latest \
+  trail-openers/pi-rukas:latest \
   jq '.providers | keys' /home/vscode/.pi/agent/models.json
 ```
 
@@ -681,7 +681,7 @@ Should print your provider keys. If it prints `null` or the file is missing, the
 ```bash
 docker run --rm \
   -e "TRAIL_OPENERS_LLM_KEY=$TRAIL_OPENERS_LLM_KEY" \
-  randomm/pi-ensemble:latest \
+  trail-openers/pi-rukas:latest \
   bash -c 'env | grep -E "(API|LLM)_KEY" | head -5'
 ```
 
@@ -689,7 +689,7 @@ Inside the wrapper-spawned container, the same env vars are auto-forwarded by pa
 
 ### See what the wrapper actually does
 
-`pi-ensemble shell` drops you into bash inside the container with all the same mounts + env. From there:
+`pi-rukas shell` drops you into bash inside the container with all the same mounts + env. From there:
 
 ```bash
 env | sort                       # what env was forwarded
@@ -703,16 +703,16 @@ cat ~/.config/mcp/mcp.json        # MCP server config
 `./install.sh` is the right first move for almost everything. It:
 
 - Rebuilds the image (cache-fast unless prereqs changed)
-- Refreshes the `~/.local/bin/pi-ensemble` symlink
+- Refreshes the `~/.local/bin/pi-rukas` symlink
 - Re-writes `~/.config/mcp/mcp.json` with the current codebase-memory-mcp wiring
 - Validates that codebase-memory-mcp is reachable on PATH
 
 If after `./install.sh` something still doesn't work, capture:
 
-1. `pi-ensemble --version` (or the wrapper file path: `which pi-ensemble`)
-2. `docker images randomm/pi-ensemble --format '{{.Repository}}:{{.Tag}} {{.CreatedSince}} {{.Size}}'`
+1. `pi-rukas --version` (or the wrapper file path: `which pi-rukas`)
+2. `docker images trail-openers/pi-rukas --format '{{.Repository}}:{{.Tag}} {{.CreatedSince}} {{.Size}}'`
 3. The exact failing command + error message
-4. Open an issue at <https://github.com/randomm/pi-ensemble/issues>.
+4. Open an issue at <https://github.com/trail-openers/pi-rukas/issues>.
 
 ## `/work` driver state recovery
 
@@ -721,12 +721,12 @@ If after `./install.sh` something still doesn't work, capture:
 `/work N` says it can't start, or halts immediately with a message like:
 
 ```
-pi-ensemble /work driver halted on issue #N: state-file inconsistencies detected.
+pi-rukas /work driver halted on issue #N: state-file inconsistencies detected.
   - pipelineState.inFlightJobIds includes <jobId> but log has no record of it
 Inspect <project>/.pi/work-state/N.json or rm to start fresh (your git work is unaffected; only the workflow tracker state is removed).
 ```
 
-Or you get a loud schema-version error when re-invoking `/work` after upgrading pi-ensemble:
+Or you get a loud schema-version error when re-invoking `/work` after upgrading pi-rukas:
 
 ```
 work-state: <path> has schemaVersion=2 but this build expects 1. This /work cycle was started under a different driver version. …
@@ -739,7 +739,7 @@ Since this PR, `/work` runs through a compiled state-machine driver (`extension/
 The state file is the durable contract that lets the driver know which step is current, what dispatches have completed, and which caps have already fired. Two situations can leave it in a state the driver refuses to run against:
 
 1. **Mid-flight crash**: Pi got killed (process exit, machine reboot, OOM) while a dispatch was in flight. The eventLog has a `dispatch-started` without a matching `dispatch-completed`. The driver detects the orphan jobId on resume and halts rather than fabricating a result.
-2. **Schema version mismatch**: you upgraded pi-ensemble between `/work` invocations, and the saved state-file's `schemaVersion` no longer matches what the new driver expects. We never auto-migrate state silently.
+2. **Schema version mismatch**: you upgraded pi-rukas between `/work` invocations, and the saved state-file's `schemaVersion` no longer matches what the new driver expects. We never auto-migrate state silently.
 
 ### Fix
 
@@ -924,7 +924,7 @@ Two mechanisms, and only one of them is meant to fire in normal operation.
 | Inactivity watchdog | 25 min of **zero stdout** | `PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS` (`0` disables) | The real hang detector. A healthy child emits an event at every turn/tool boundary, so silence — not slowness — is the signal. |
 | Runaway backstop | 2 h wall-clock | `PI_ENSEMBLE_SPAWN_TIMEOUT_MS` | Catches a child looping forever while still emitting events, which liveness cannot see. Nothing else should reach it. |
 
-This replaced a table of six per-role wall-clock caps. Those were raised twice — [#296](https://github.com/randomm/pi-ensemble/issues/296) and [#553](https://github.com/randomm/pi-ensemble/issues/553) — and both times the finding was the same: the number was too small for a *healthy* child. Provider speed varies by an order of magnitude, so a wall-clock number never means the same thing on two models, and the per-role table had already drifted out of sync with this documentation.
+This replaced a table of six per-role wall-clock caps. Those were raised twice — [#296](https://github.com/trail-openers/pi-rukas/issues/296) and [#553](https://github.com/trail-openers/pi-rukas/issues/553) — and both times the finding was the same: the number was too small for a *healthy* child. Provider speed varies by an order of magnitude, so a wall-clock number never means the same thing on two models, and the per-role table had already drifted out of sync with this documentation.
 
 **If a child hits the backstop**, treat it as a decomposition problem, not a budget one: two hours of continuous output without finishing means the workstream is too large or the child is looping. Split the issue, or take over manually.
 
@@ -1151,7 +1151,7 @@ Retrieval that injects a guard into an agent's prompt therefore requires **both*
 | agreement alone | 5/5 | 0/5 |
 | **both (AND)** | **5/5** | **0/5** |
 
-The floor cannot separate these by itself for a structural reason: every guard in this store is *about a pi-ensemble filename*, so any plausible basename is semantically near all of them. Cosine cannot tell "about THIS file" from "about SOME file here"; BM25 can, because it only ranks a row first on a literal token match.
+The floor cannot separate these by itself for a structural reason: every guard in this store is *about a pi-rukas filename*, so any plausible basename is semantically near all of them. Cosine cannot tell "about THIS file" from "about SOME file here"; BM25 can, because it only ranks a row first on a literal token match.
 
 Three upstream issues are worked around rather than fixed here — [vipune#177](https://github.com/randomm/vipune/issues/177) (exit code 2 means both "conflict detected" and "you typed the flags wrong"; only stdout separates them), [#178](https://github.com/randomm/vipune/issues/178) (`memory_type` and `status` are settable and filterable but returned by no command, so a supersede cannot read back the type it must preserve), and [#179](https://github.com/randomm/vipune/issues/179) (retrieval telemetry is maintained but unreadable, so candidate promotion has no measured signal).
 
@@ -1163,13 +1163,13 @@ Set `PI_ENSEMBLE_NOTIFY_CMD` to any command. The message arrives on **stdin** an
 
 ```bash
 # macOS desktop notification
-export PI_ENSEMBLE_NOTIFY_CMD='terminal-notifier -title "pi-ensemble" -message "$PI_ENSEMBLE_NOTIFY_MESSAGE"'
+export PI_ENSEMBLE_NOTIFY_CMD='terminal-notifier -title "pi-rukas" -message "$PI_ENSEMBLE_NOTIFY_MESSAGE"'
 
 # macOS, no extra install
 export PI_ENSEMBLE_NOTIFY_CMD='osascript -e "display notification \"$PI_ENSEMBLE_NOTIFY_MESSAGE\""'
 
 # Linux
-export PI_ENSEMBLE_NOTIFY_CMD='notify-send "pi-ensemble" "$PI_ENSEMBLE_NOTIFY_MESSAGE"'
+export PI_ENSEMBLE_NOTIFY_CMD='notify-send "pi-rukas" "$PI_ENSEMBLE_NOTIFY_MESSAGE"'
 
 # Anything that reads stdin — Slack, ntfy.sh, a log
 export PI_ENSEMBLE_NOTIFY_CMD='curl -sS -d @- https://ntfy.sh/your-topic'
@@ -1392,7 +1392,7 @@ A lens assigns a finding's severity — that is its judgment. Which severity is 
 
 > Six-pass review findings are blocking at MEDIUM severity and above.
 
-That is pi-ensemble's own sentence, and since this change it is read rather than merely written down. Say something equivalent in your own `AGENTS.md` to move the bar. Rules:
+That is pi-rukas's own sentence, and since this change it is read rather than merely written down. Say something equivalent in your own `AGENTS.md` to move the bar. Rules:
 
 - **No `AGENTS.md`, or one that never mentions review severity, is the normal case** — you get the default, `MEDIUM`. This deliberately differs from merge authority, which fails closed and denies when doctrine is silent. Configuration falls back to a default; authority does not.
 - **Loosening requires a verified citation.** The judge must quote the sentence, and the driver checks that sentence exists in the file — the #407 mechanism, reused unchanged. A fabricated sentence cannot raise your bar.
@@ -1452,7 +1452,7 @@ Set `PI_ENSEMBLE_PARALLEL_WORK=0` for strictly sequential execution.
 If a group's cycle terminates as anything other than `merged`, the queue **parks that group and carries on**. At the end you get one report:
 
 ```
-pi-ensemble: /work queue finished — 4 merged, 1 parked
+pi-rukas: /work queue finished — 4 merged, 1 parked
   ✓ group-a (#561) — merged
   ⏸ group-b (#562, #563) — cap round-cap at lens-review
       → review the findings on #562's PR — the fix loop did not converge

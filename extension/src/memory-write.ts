@@ -47,7 +47,7 @@ export const MAX_MEMORY_CHARS = 300;
 
 /** Metadata every driver write carries. Validated before the binary is reached. */
 export interface MemoryMetadata extends Record<string, unknown> {
-  src: "pi-ensemble";
+  src: "pi-rukas";
   issue: number;
   file: string;
   kind: "lens-finding";
@@ -64,7 +64,7 @@ export interface MemoryMetadata extends Record<string, unknown> {
 export function validMetadata(m: unknown): m is MemoryMetadata {
   if (!m || typeof m !== "object") return false;
   const r = m as Record<string, unknown>;
-  if (r.src !== "pi-ensemble" || r.kind !== "lens-finding") return false;
+  if (r.src !== "pi-rukas" || r.kind !== "lens-finding") return false;
   if (typeof r.issue !== "number" || !Number.isFinite(r.issue)) return false;
   if (typeof r.file !== "string" || r.file.length === 0) return false;
   if (r.cycle !== undefined && typeof r.cycle !== "string") return false;
@@ -114,7 +114,7 @@ export interface WriteOutcome {
  */
 export async function writeFindings(
   findings: readonly FindingLike[],
-  meta: { src: "pi-ensemble"; issue: number; kind: "lens-finding"; cycle?: string },
+  meta: { src: "pi-rukas"; issue: number; kind: "lens-finding"; cycle?: string },
   opts: VipuneOpts & { memoryType?: MemoryType },
 ): Promise<WriteOutcome[]> {
   const out: WriteOutcome[] = [];

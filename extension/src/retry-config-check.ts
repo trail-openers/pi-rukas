@@ -4,7 +4,7 @@
  * The harness's whole failure story assumes it does. `work-driver-failure-
  * taxonomy.ts` reads the `retry-after` a provider sends and waits it out; the
  * step router retries on that basis. All of that is downstream of one setting
- * in the operator's personal `~/.pi/agent/settings.json`, which pi-ensemble
+ * in the operator's personal `~/.pi/agent/settings.json`, which pi-rukas
  * does not set and cannot see from the code.
  *
  * Measured, on a real run: with `maxRetryDelayMs: 10000`, three parallel
@@ -67,7 +67,7 @@ export function judgeRetryConfig(settings: unknown): RetryConfigVerdict {
     maxRetryDelayMs: value,
     tooLow: true,
     warning: [
-      `pi-ensemble: retry.provider.maxRetryDelayMs is ${Math.round(value / 1000)}s in`,
+      `pi-rukas: retry.provider.maxRetryDelayMs is ${Math.round(value / 1000)}s in`,
       "~/.pi/agent/settings.json. Providers routinely ask for 59-60s on a 429, and a delay",
       "above this ceiling is discarded WITHOUT waiting — the retry budget is never used.",
       `Set it to ${SAFE_MAX_RETRY_DELAY_MS / 1000}s (Pi's default) or remove the key.`,
