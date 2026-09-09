@@ -308,6 +308,7 @@ export async function runPlanPipeline(
   let capHit = false;
   let capReason: PlanResult["capReason"];
   let residualForDisclosure: PlanGap[] = [];
+  let rawUnparsedHead: string | undefined;
 
   // The carried CRITICAL decisions from the last corrective re-draft — what
   // round 2's SCOPED VERIFICATION verifies (set in onCorrective below).
@@ -407,6 +408,7 @@ export async function runPlanPipeline(
     capHit = loopResult.capHit;
     capReason = loopResult.capReason;
     residualForDisclosure = loopResult.residualForDisclosure;
+    rawUnparsedHead = loopResult.rawUnparsedHead;
   }
 
   // D2: when the cap routed to filing, the spec that gets filed carries the
@@ -426,34 +428,36 @@ export async function runPlanPipeline(
   // the reason including the forge stderr, without requiring PI_ENSEMBLE_DEBUG.
   let issueUrl: string | undefined;
   let filingFailure: FilingFailure | undefined;
-  if (!dryRun && capReason !== "unresolved-blocking" && capReason !== "gate-unavailable") {
-    const fr = await timed("filing", () =>
-      fileIssue(title, finalBody, getPlanForge() ?? (() => planForgeFor(repoRoot))),
-    );
-    issueUrl = fr.url;
-    filingFailure = fr.failure;
-  } else if (!dryRun && capReason === "unresolved-blocking") {
-    // Deliberate skip, not a failure: the gap-gate cap routed to surface
-    // (CRITICAL gaps remain — CRITICAL-only blocks; HIGH findings travel
-    // in the residual disclosure instead), so the spec is NOT filed by
-    // policy. Its own reason — nothing failed to resolve here.
+  // The cap-based skips set filingFailure REGARDLESS of dryRun: they are
+  // policy, and the NOT-FILEABLE head + FILING STATUS must render on a dry
+  // run too (hiding a halt behind dryRun is the #647 C1 defect).
+  if (capReason === "review-unparseable") {
+    // Fail closed: nothing was reviewed, so nothing files. The raw head
+    // travels so parser-vs-prompt drift is diagnosable, never silent.
+    filingFailure = {
+      reason: "review-unparseable",
+      detail: `the gap-gate review could not be parsed (no structured findings and no verdict, after one strict retry) — the spec was NOT reviewed and was not filed. Re-run start_plan_driver to retry the gate. Raw reviewer output head: ${rawUnparsedHead ?? "(unavailable)"}`,
+    };
+  } else if (capReason === "unresolved-blocking") {
+    // Deliberate skip: CRITICAL gaps remain (CRITICAL-only blocks; HIGH
+    // travels in the residual disclosure) — not filed by policy.
     filingFailure = {
       reason: "cap-surface",
       detail: "the gap gate cap routed to surface (CRITICAL gaps remain) — not filed by policy",
     };
-  } else if (!dryRun && capReason === "gate-unavailable") {
-    // Deliberate skip, not a filing failure: the gap-gate dispatch itself
-    // failed, so NO REVIEWER EVER SAW THE SPEC. The spec is not filed because
-    // we cannot assert it is clean — the same posture as all-angles-failed
-    // (which bails before draftSpec for the same reason) and D3 (an absent
-    // verdict must not silently pass). Its own reason: the gap gate was
-    // unavailable; the operator re-runs start_plan_driver after the cause is
-    // addressed (the spec above is still valid to review).
+  } else if (capReason === "gate-unavailable") {
+    // Deliberate skip: the gate dispatch failed — no reviewer saw the spec.
     filingFailure = {
       reason: "gate-unavailable",
       detail:
         "the gap-gate dispatch failed — no reviewer ever saw the spec, so it was not filed (re-run start_plan_driver after the gate failure is addressed)",
     };
+  } else if (!dryRun) {
+    const fr = await timed("filing", () =>
+      fileIssue(title, finalBody, getPlanForge() ?? (() => planForgeFor(repoRoot))),
+    );
+    issueUrl = fr.url;
+    filingFailure = fr.failure;
   }
 
   // #633: report BOTH how many angles were dispatched and how many produced

@@ -284,8 +284,11 @@ async function invoke(params: Record<string, unknown>) {
 }
 
 {
-  // #606 bug 2 (e2e): a clean reply — severity words in prose only, zero GAP:
-  // markers — must fall through to the MEDIUM fallback, not parse pseudo-gaps.
+  // #606 bug 2 (e2e): a clean reply — severity words in prose only, zero
+  // GAP: markers, a parsed READY verdict — is a GENUINE clean: zero gaps,
+  // dispositions render '(none)'. (The old synthetic MEDIUM fallback is
+  // deleted — a zero-marker NO-verdict reply is now the review-unparseable
+  // fail-closed path, covered in test-plan-gate-unparseable.ts.)
   gateReplyOverride =
     "Overall the spec is solid. I considered CRITICAL and HIGH findings but found none; no MEDIUM or LOW items warrant a gap either.\nVERDICT: READY";
   const { details, text } = await invoke({
@@ -294,9 +297,8 @@ async function invoke(params: Record<string, unknown>) {
   });
   gateReplyOverride = null;
   assert(
-    details.gapCount === 1 &&
-      /no structured gaps parsed/.test(text),
-    "severity words in prose are NOT parsed as gaps (structured GAP: markers only; fallback gap only)",
+    details.gapCount === 0 && /=== GAP DISPOSITIONS ===\n- \(none\)/.test(text),
+    "severity words in prose are NOT parsed as gaps — a READY reply with zero markers is a clean '(none)'",
   );
   assert(details.capHit !== true, "READY verdict with no blocking gaps: no cap hit");
 }

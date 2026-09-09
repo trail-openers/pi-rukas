@@ -190,6 +190,9 @@ function renderPlanResult(r: PlanResult, dryRun: boolean): string {
     } else if (r.capReason === "gate-unavailable") {
       cap =
         "\n\nGAP GATE UNAVAILABLE: the gap-gate dispatch itself failed, so no reviewer ever saw the spec. It was NOT filed — the spec above is still valid to review, but re-run start_plan_driver after the gate failure is addressed (see the FILING STATUS below).";
+    } else if (r.capReason === "review-unparseable") {
+      cap =
+        "\n\nGAP GATE REVIEW UNPARSEABLE: the reviewer replied, but its output carried no structured findings and no verdict — even after one strict-contract retry. The spec was NOT reviewed and is NOT fileable (distinct from a clean review, which renders '(none)' below). Re-run start_plan_driver to retry the gate.";
     } else {
       cap = "\n\nGAP GATE CAP HIT: the iteration cap was reached. See the gap dispositions below.";
     }
@@ -207,7 +210,8 @@ function renderPlanResult(r: PlanResult, dryRun: boolean): string {
       f.reason === "gate-unavailable" ||
       f.reason === "needs-clarification" ||
       f.reason === "draft-invalid" ||
-      f.reason === "duplicate-risk"
+      f.reason === "duplicate-risk" ||
+      f.reason === "review-unparseable"
     ) {
       // Deliberate skip (not a failure): the cap routed to surface (a
       // CRITICAL gap remains — CRITICAL-only blocks, #664 transposed; HIGH

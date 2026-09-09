@@ -30,6 +30,7 @@
  *     strategy.
  */
 import type { PlanGap } from "./plan-types.ts";
+import { trace } from "./trace.ts";
 
 /** One verdict the gap gate can yield for a parsed reviewer reply. */
 export type GapGateVerdict = "READY" | "NEEDS_ITERATION";
@@ -101,15 +102,14 @@ export function parseGaps(reply: string): GapGateParse {
   const verdictParsed = typeof verdictLine === "string";
   const verdict: GapGateVerdict =
     verdictParsed && /needs[_ ]iteration/i.test(verdictLine) ? "NEEDS_ITERATION" : "READY";
-  if (gaps.length === 0) {
-    return {
-      gaps: [
-        { severity: "MEDIUM", description: "no structured gaps parsed", resolution: "proceed" },
-      ],
-      verdict,
-      verdictParsed,
-    };
-  }
+  // Zero gaps is returned HONESTLY (operator bug report, 2026-09-09): the
+  // old synthetic `[MEDIUM] no structured gaps parsed → proceed` gap
+  // collapsed "reviewed, clean" and "review unreadable" onto one severity
+  // ladder — and under CRITICAL-only blocking, an unparseable review was
+  // structurally guaranteed to pass (it fired twice in six fixture rounds;
+  // both escapes filed real contradictions). Severity describes the SPEC;
+  // parse success describes the REVIEW — the loop now distinguishes them
+  // via `verdictParsed` (see runGapGateLoop's unreviewed branch).
   return { gaps, verdict, verdictParsed };
 }
 
@@ -214,13 +214,27 @@ export type GapGateLoopCapReason =
   | "residual-high"
   | "unresolved-blocking"
   | "verdict-absent"
-  | "gate-unavailable";
+  | "gate-unavailable"
+  /**
+   * The reviewer's dispatch SUCCEEDED but its reply carried neither a GAP:
+   * line nor a verdict (or a bare NEEDS_ITERATION with nothing to iterate
+   * on) — after one strict-contract retry. Nothing was reviewed; the spec
+   * must not file. Distinct from gate-unavailable (dispatch failed) and
+   * from a genuine clean (VERDICT: READY parsed, zero gaps).
+   */
+  | "review-unparseable";
 
 export interface GapGateLoopResult {
   gaps: PlanGap[];
   capHit: boolean;
   capReason?: GapGateLoopCapReason;
   residualForDisclosure: PlanGap[];
+  /**
+   * The head of the raw reply that could not be parsed (review-unparseable
+   * only) — a parse failure is a signal about the parser or the reviewer
+   * prompt, and discarding it silently means the bug recurs indefinitely.
+   */
+  rawUnparsedHead?: string;
 }
 
 /**
@@ -277,6 +291,10 @@ export async function runGapGateLoop(
   let capReason: GapGateLoopCapReason | undefined;
   let lastGaps: PlanGap[] = [];
   let lastParse: GapGateParse | undefined;
+  let rawUnparsedHead: string | undefined;
+  // One strict-contract retry per LOOP (not per round): most parse misses
+  // are format drift, and one retry is far cheaper than a bad filing.
+  let unparseableRetryUsed = false;
   // Problem 2: accumulate non-blocking findings across rounds (union, deduped
   // by exact description string only — no fuzzy matching).
   const seenDescriptions = new Set<string>();
@@ -284,7 +302,7 @@ export async function runGapGateLoop(
 
   while (iterations < maxIterations && !ready) {
     iterations++;
-    const gate = await dispatch(
+    let gate = await dispatch(
       { role: "adversarial-developer", prompt: makeGatePrompt(iterations) },
       { label: `plan-gap-gate-${iterations}` },
     );
@@ -294,6 +312,47 @@ export async function runGapGateLoop(
       break;
     }
     lastParse = parseGaps(gate.text);
+
+    // REVIEW-UNPARSEABLE (fail closed — operator bug report 2026-09-09):
+    // zero GAP: lines AND (no verdict line, or a bare NEEDS_ITERATION with
+    // nothing to iterate on) means NOTHING WAS REVIEWED — that is a fact
+    // about the review, not a finding about the spec, and it must never
+    // ride the severity ladder to a pass. Retry once with a strict output
+    // contract; a second miss stops the loop with its own cap reason.
+    // (Zero gaps + a parsed READY verdict is a GENUINE clean and falls
+    // through to evaluateGapGate as before.)
+    const unreviewed = (p: GapGateParse) =>
+      p.gaps.length === 0 && (!p.verdictParsed || p.verdict === "NEEDS_ITERATION");
+    if (unreviewed(lastParse)) {
+      if (!unparseableRetryUsed) {
+        unparseableRetryUsed = true;
+        trace(
+          `plan-gaps: round ${iterations} reply unparseable (no gaps, verdictParsed=${lastParse.verdictParsed}) — one strict-contract retry; raw head: ${gate.text.slice(0, 200).replace(/\n/g, " \\n ")}`,
+        );
+        gate = await dispatch(
+          {
+            role: "adversarial-developer",
+            prompt: `${makeGatePrompt(iterations)}\n\nSTRICT OUTPUT CONTRACT (your previous reply could not be parsed): output ONLY lines that start with "GAP: " plus the final VERDICT line — no headings, no prose between them. If you found no gaps at all, reply with exactly one line: VERDICT: READY`,
+          },
+          { label: `plan-gap-gate-${iterations}r` },
+        );
+        if (!gate.ok || gate.errorStop) {
+          capHit = true;
+          capReason = "gate-unavailable";
+          break;
+        }
+        lastParse = parseGaps(gate.text);
+      }
+      if (unreviewed(lastParse)) {
+        capHit = true;
+        capReason = "review-unparseable";
+        rawUnparsedHead = gate.text.slice(0, 300);
+        trace(
+          `plan-gaps: review unparseable after retry — not filing (raw head: ${rawUnparsedHead.replace(/\n/g, " \\n ")})`,
+        );
+        break;
+      }
+    }
     lastGaps = lastParse.gaps;
 
     // Problem 2: accumulate non-blocking findings (CRITICAL travels via the
@@ -367,5 +426,6 @@ export async function runGapGateLoop(
     capHit,
     capReason,
     residualForDisclosure,
+    ...(rawUnparsedHead !== undefined ? { rawUnparsedHead } : {}),
   };
 }

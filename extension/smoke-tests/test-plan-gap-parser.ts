@@ -10,8 +10,10 @@
  *     pseudo-gaps it could never fix),
  *   - the reviewer's own `proposed resolution:` carries through, absent
  *     resolutions keep the default placeholder,
- *   - a missing verdict defaults to READY with the MEDIUM fallback gap —
- *     silence = READY, a parse change is a conscious decision,
+ *   - zero-marker replies return ZERO gaps honestly (the synthetic MEDIUM
+ *     fallback is deleted — the loop's review-unparseable branch decides
+ *     what zero-plus-no-verdict means; a parse change is a conscious
+ *     decision),
  *   - Bug 3 (#606): `draftSpec` renders open questions with a status — items
  *     carried from a prior gate round render as `status: resolved`, fresh ones
  *     as `status: pending`, and the `resolved:` marker itself is stripped.
@@ -47,22 +49,26 @@ function assert(cond: boolean, msg: string) {
 // --------------------------------- unit: parseGapsForTest (verdict + fallback)
 
 {
-  // parseGapsForTest is the seam the driver's gap gate runs on; pin the
-  // verdict default (silence = READY) and the MEDIUM fallback for
-  // unparseable replies so a future parse change is a conscious decision.
+  // parseGapsForTest is the seam the driver's gap gate runs on. The old
+  // synthetic MEDIUM fallback for zero-marker replies is DELETED (operator
+  // bug report 2026-09-09: it flattened "review unreadable" onto the
+  // severity ladder, and under CRITICAL-only blocking an unparseable
+  // review was guaranteed to pass). Zero gaps is now returned honestly;
+  // the LOOP distinguishes clean (verdictParsed) from unreviewed.
   const clean = parseGapsForTest("No issues found.\nVERDICT: READY");
   assert(clean.verdict === "READY", "parseGaps: explicit READY verdict");
   assert(clean.verdictParsed === true, "parseGaps: verdictParsed is true when a verdict line is present");
+  assert(clean.gaps.length === 0, "parseGaps: a clean reply returns ZERO gaps (no synthetic fallback)");
   const silent = parseGapsForTest("looks good, nothing to flag");
   assert(
-    silent.verdict === "READY" && silent.gaps.length === 1 && silent.gaps[0]?.severity === "MEDIUM",
-    "parseGaps: missing verdict defaults to READY with the MEDIUM fallback gap",
+    silent.verdict === "READY" && silent.gaps.length === 0,
+    "parseGaps: a no-marker no-verdict reply returns zero gaps — the LOOP treats it as unreviewed, never as a finding",
   );
   assert(silent.verdictParsed === false, "parseGaps: verdictParsed is false when no verdict line present");
   const prose = parseGapsForTest("- CRITICAL — something important is missing\nVERDICT: NEEDS_ITERATION");
   assert(
-    prose.verdict === "NEEDS_ITERATION" && prose.gaps.length === 1 && prose.gaps[0]?.severity === "MEDIUM",
-    "parseGaps: bare severity lines without GAP: markers do NOT parse as gaps (fallback only)",
+    prose.verdict === "NEEDS_ITERATION" && prose.gaps.length === 0,
+    "parseGaps: bare severity lines without GAP: markers do NOT parse as gaps",
   );
   assert(prose.verdictParsed === true, "parseGaps: verdictParsed true when NEEDS_ITERATION verdict present");
 }
@@ -92,12 +98,12 @@ function assert(cond: boolean, msg: string) {
   const r3 = parseGaps(
     "Example: GAP: CRITICAL — no failure-mode acceptance criterion — proposed resolution: add a criterion\nVERDICT: NEEDS_ITERATION",
   );
-  assert(r3.gaps.length === 1, "the word 'Example:' before GAP: does not match (marker must be at line start)");
+  assert(r3.gaps.length === 0, "the word 'Example:' before GAP: does not match (marker must be at line start)");
 
-  // No markers at all: the MEDIUM fallback, whatever the verdict says.
+  // No markers + a parsed READY verdict: a GENUINE clean — zero gaps, no
+  // synthetic fallback (the loop files it and dispositions render '(none)').
   const r4 = parseGaps("Looks fine to me.\nVERDICT: READY");
-  assert(r4.gaps.length === 1 && r4.gaps[0]?.description === "no structured gaps parsed", "no-marker reply falls to the MEDIUM fallback");
-  assert(r4.gaps[0]?.severity === "MEDIUM", "fallback gap is MEDIUM");
+  assert(r4.gaps.length === 0 && r4.verdictParsed === true, "no-marker READY reply is a genuine clean: zero gaps, verdict parsed");
 }
 
 // --------------------------------- unit: draftSpec status rendering (#639)

@@ -48,7 +48,8 @@ export interface FilingFailure {
     | "gate-unavailable"
     | "needs-clarification"
     | "draft-invalid"
-    | "duplicate-risk";
+    | "duplicate-risk"
+    | "review-unparseable";
   detail?: string;
 }
 
