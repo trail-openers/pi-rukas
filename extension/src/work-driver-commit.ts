@@ -21,6 +21,7 @@ import {
   inspectCommitPrRoot,
 } from "./work-driver-commit-inspect.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import {
   type IntegrateResult,
@@ -34,9 +35,11 @@ import { runSingleDispatch } from "./work-driver-merged.ts";
 import {
   assumptionsBlockOf,
   carriedFindingsSectionOf,
+  clipTitle,
   companionLinesOf,
   fixesLinesOf,
 } from "./work-driver-pr-body-definition.ts";
+import { findOpenPrForBranch } from "./work-driver-pr-preflight.ts";
 import { renderLensFindingsSection } from "./work-driver-pr-sections.ts";
 import { inlineCommitPrPrompt } from "./work-driver-prompts-late.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
@@ -52,39 +55,9 @@ import type {
 
 const execp = promisify(exec);
 
-// #507 — clip a PR title to a code-unit budget at a word boundary.
-// Budget 64 (not 72): GitHub squash-merge appends ` (#<N>)`.
-export function clipTitle(raw: string, budget: number): string {
-  if (raw.length <= budget) return raw;
-  let cut = budget - 1; // reserve one code unit for the ellipsis
-  // Rule 4 — never leave a dangling high surrogate: if the cut falls between
-  // the two halves of a surrogate pair (high half at cut-1 in the prefix, low
-  // half at cut in the dropped tail), step the cut back so the pair is cut
-  // whole. The high half can only sit at cut-1 when the low half sits at
-  // cut, so checking the cut position for a low surrogate is sufficient.
-  if (cut < raw.length) {
-    const at = raw.charCodeAt(cut);
-    const before = raw.charCodeAt(cut - 1);
-    if (
-      (at >= 0xdc00 && at <= 0xdfff && before >= 0xd800 && before <= 0xdbff) ||
-      (at >= 0xd800 && at <= 0xdbff)
-    ) {
-      cut -= 1;
-    }
-  }
-  // Rule 5 — last whitespace at or before cut; prefix after trimEnd must be
-  // non-empty (a boundary at index 0 would otherwise yield a bare ellipsis).
-  for (let i = cut; i >= 0; i--) {
-    const ch = raw.charAt(i);
-    if (/\s/.test(ch) && raw.slice(0, i).trimEnd().length > 0) {
-      return `${raw.slice(0, i).trimEnd()}\u2026`;
-    }
-  }
-  // Rule 6 — no breakable boundary (a single unbreakable token over budget).
-  // The one case where a word is cut mid-way: the alternative is an empty
-  // title, which is worse. `cut` was already backed off the pair in rule 4.
-  return `${raw.slice(0, cut)}\u2026`;
-}
+// clipTitle (#507) lives with the PR text builders in
+// work-driver-pr-body-definition.ts; re-exported for existing consumers.
+export { clipTitle } from "./work-driver-pr-body-definition.ts";
 
 /**
  * #500 — the `commitPrRoot` / `commitPrRootError` record fields for both
@@ -153,6 +126,39 @@ export async function mechanizedCommitPr(
   }
   const startedAt = Date.now();
   try {
+    // RE-ENTRY GUARD (census 2026-09-09): a resume that re-enters commit-pr
+    // after a crash-past-prCreate used to run integrate() again — whose
+    // `checkout -B` resets the branch to base — and then prCreate a second
+    // PR (gated only by the push rejection). An open PR whose head is this
+    // exact branch means the previous attempt completed: short-circuit with
+    // the found number; the verify gate after commit-pr still checks
+    // commits-ahead + PR resolution. Fails open on an unreadable gh.
+    const existingPr = await findOpenPrForBranch(execFn, ctx.repoRoot, branchName);
+    if (existingPr !== undefined) {
+      trace(
+        `work-driver: commit-pr re-entry — open PR #${existingPr} already heads ${branchName}; integrate/prCreate skipped`,
+      );
+      const rootState = await inspectCommitPrRoot(execFn, ctx.repoRoot);
+      let next = appendEvent(
+        { ...state, pipelineState: { ...state.pipelineState, currentStep: "commit-pr" } },
+        { kind: "step-started", step: "commit-pr", at: now },
+      );
+      next = appendEvent(
+        next,
+        synthesizeDriverCompletion({
+          step: "commit-pr",
+          label: "driver:commit-pr",
+          summary: `Mechanized commit-pr RE-ENTRY: open PR #${existingPr} already heads ${branchName} — consolidation previously completed; integrate/prCreate skipped.\npr: ${existingPr}`,
+          startedAt,
+          now: Date.now(),
+        }),
+      );
+      next = {
+        ...next,
+        pipelineState: { ...next.pipelineState, ...commitPrRootFieldsOf(rootState) },
+      };
+      return { ok: true, state: next };
+    }
     const rawTitle = await cachedIssueTitle(state);
     const title =
       rawTitle !== null && rawTitle !== undefined
@@ -270,17 +276,19 @@ export async function mechanizedCommitPr(
       { ...state, pipelineState: { ...state.pipelineState, currentStep: "commit-pr" } },
       { kind: "step-started", step: "commit-pr", at: now },
     );
-    next = appendEvent(next, {
-      kind: "dispatch-completed",
-      step: "commit-pr",
-      role: "driver",
-      jobId: "mechanized",
-      label: "driver:commit-pr",
-      ok: true,
-      ms: Date.now() - startedAt,
-      at: Date.now(),
-      summary: `Mechanized commit-pr: consolidated ${ids.length} worktree(s), committed, pushed ${branchName}, opened PR.\npr: ${prNumber}`,
-    });
+    // Via the shared builder (work-driver-events.ts): unique jobId — the
+    // old inline literal "mechanized" appeared twice per fan-out cycle,
+    // making jobId useless as a correlation key (census 2026-09-09).
+    next = appendEvent(
+      next,
+      synthesizeDriverCompletion({
+        step: "commit-pr",
+        label: "driver:commit-pr",
+        summary: `Mechanized commit-pr: consolidated ${ids.length} worktree(s), committed, pushed ${branchName}, opened PR.\npr: ${prNumber}`,
+        startedAt,
+        now: Date.now(),
+      }),
+    );
     // #453 — persist cherry-picked commit SHAs so resume can skip them.
     const commitShas = res.commitShas;
     const commitPrRootFields = commitPrRootFieldsOf(rootState);

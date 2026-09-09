@@ -17,6 +17,7 @@ import { parseWorktreesBlock, runBranchViaOpsDispatch } from "./work-driver-bran
 
 export { parseWorktreesBlock };
 import type { DriverContext } from "./work-driver-context.ts";
+import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { cachedIssueTitle } from "./work-driver-integrate.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { findOpenPrForIssue, prPreflightEnabled } from "./work-driver-pr-preflight.ts";
@@ -110,17 +111,19 @@ export async function runBranch(
         { ...state, pipelineState: { ...state.pipelineState, currentStep: "branch" } },
         { kind: "step-started", step: "branch", at: now },
       );
-      const done = appendEvent(started, {
-        kind: "dispatch-completed",
-        step: "branch",
-        role: "driver",
-        jobId: "mechanized",
-        label: "driver:branch",
-        ok: true,
-        ms: 0,
-        at: Date.now(),
-        summary: `Mechanized branch setup: ${setup.branchName} @ ${setup.baseSha.slice(0, 8)} off origin/${setup.mainline}; ${Object.keys(setup.worktrees).length} worktree(s).`,
-      });
+      // Via the shared builder (work-driver-events.ts): unique jobId — the
+      // old inline literal "mechanized" appeared twice per fan-out cycle,
+      // making jobId useless as a correlation key (census 2026-09-09).
+      const done = appendEvent(
+        started,
+        synthesizeDriverCompletion({
+          step: "branch",
+          label: "driver:branch",
+          summary: `Mechanized branch setup: ${setup.branchName} @ ${setup.baseSha.slice(0, 8)} off origin/${setup.mainline}; ${Object.keys(setup.worktrees).length} worktree(s).`,
+          startedAt: now,
+          now: Date.now(),
+        }),
+      );
       // #536 — per-workstream provision event for targeted depsHint in verify-develop.
       let withProvisions = done;
       for (const [id, cwd] of Object.entries(setup.worktrees)) {

@@ -135,3 +135,35 @@ export async function findOpenPrForIssue(
   }
   return matchPrForIssue(rows, issue);
 }
+
+/**
+ * Exact-branch re-entry check for `mechanizedCommitPr` (census 2026-09-09):
+ * an OPEN PR whose head IS this cycle's branch means a previous attempt
+ * already consolidated, pushed and opened the PR — re-running `integrate()`
+ * would `checkout -B` the branch back to base and `prCreate` a duplicate.
+ * Distinct from `findOpenPrForIssue` (fuzzy issue/branch matching, used
+ * before any dispatch is paid): this one is exact and runs at the seam that
+ * actually creates the PR. Fails OPEN (undefined) on any gh/JSON error —
+ * the push non-fast-forward rejection remains the backstop.
+ */
+export async function findOpenPrForBranch(
+  execFn: VerifyExecFn,
+  repoRoot: string,
+  branchName: string,
+): Promise<number | undefined> {
+  try {
+    const { stdout } = await execFn(
+      `gh pr list --state open --head ${JSON.stringify(branchName)} --json number --limit 5`,
+      { cwd: repoRoot, maxBuffer: 1024 * 1024 },
+    );
+    const parsed: unknown = JSON.parse(stdout || "[]");
+    if (!Array.isArray(parsed)) return undefined;
+    const n = (parsed[0] as { number?: unknown } | undefined)?.number;
+    return typeof n === "number" && Number.isFinite(n) ? n : undefined;
+  } catch (err) {
+    trace(
+      `pr-preflight: gh pr list --head failed, proceeding: ${(err as Error).message?.slice(0, 200)}`,
+    );
+    return undefined;
+  }
+}

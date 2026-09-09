@@ -91,3 +91,37 @@ export function carriedFindingsSectionOf(eventLog: readonly WorkEvent[]): string
   const findings = carriedAdversarialFindings(eventLog);
   return renderCarriedFindings(findings);
 }
+
+// #507 — clip a PR title to a code-unit budget at a word boundary.
+// Budget 64 (not 72): GitHub squash-merge appends ` (#<N>)`.
+export function clipTitle(raw: string, budget: number): string {
+  if (raw.length <= budget) return raw;
+  let cut = budget - 1; // reserve one code unit for the ellipsis
+  // Rule 4 — never leave a dangling high surrogate: if the cut falls between
+  // the two halves of a surrogate pair (high half at cut-1 in the prefix, low
+  // half at cut in the dropped tail), step the cut back so the pair is cut
+  // whole. The high half can only sit at cut-1 when the low half sits at
+  // cut, so checking the cut position for a low surrogate is sufficient.
+  if (cut < raw.length) {
+    const at = raw.charCodeAt(cut);
+    const before = raw.charCodeAt(cut - 1);
+    if (
+      (at >= 0xdc00 && at <= 0xdfff && before >= 0xd800 && before <= 0xdbff) ||
+      (at >= 0xd800 && at <= 0xdbff)
+    ) {
+      cut -= 1;
+    }
+  }
+  // Rule 5 — last whitespace at or before cut; prefix after trimEnd must be
+  // non-empty (a boundary at index 0 would otherwise yield a bare ellipsis).
+  for (let i = cut; i >= 0; i--) {
+    const ch = raw.charAt(i);
+    if (/\s/.test(ch) && raw.slice(0, i).trimEnd().length > 0) {
+      return `${raw.slice(0, i).trimEnd()}\u2026`;
+    }
+  }
+  // Rule 6 — no breakable boundary (a single unbreakable token over budget).
+  // The one case where a word is cut mid-way: the alternative is an empty
+  // title, which is worse. `cut` was already backed off the pair in rule 4.
+  return `${raw.slice(0, cut)}\u2026`;
+}

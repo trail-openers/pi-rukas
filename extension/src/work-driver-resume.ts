@@ -31,9 +31,11 @@
  *
  * Resume granularity is the STEP, not the dispatch — the child process is
  * gone and its work with it. That is sound because every step is
- * dispatch-then-verify and the verify gates catch partial work; `commit-pr`
- * and `merged` additionally carry their own idempotency (#362's PR
- * pre-flight, already-merged tolerance).
+ * dispatch-then-verify and the verify gates catch partial work; `branch`
+ * carries the issue-level PR pre-flight (#362, runBranch), `commit-pr` an
+ * exact-branch re-entry guard (findOpenPrForBranch — a prior push+prCreate
+ * short-circuits instead of duplicating), and `merged` already-merged
+ * tolerance.
  */
 
 import { existsSync } from "node:fs";

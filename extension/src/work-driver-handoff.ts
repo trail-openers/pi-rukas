@@ -25,7 +25,7 @@ import { inlineHandoffOpsPrompt } from "./work-driver-prompts-late.ts";
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { runWorktreeTeardown } from "./work-driver-worktree-sweep.ts";
-import { type WorkState, appendEvent } from "./workflow-state.ts";
+import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
 const execp = promisify(exec);
 
@@ -230,7 +230,12 @@ export async function runHandoff(
     if (boundTimer) clearTimeout(boundTimer);
   }
 
-  let commentUrl = parseHandoffCommentUrl(opsReplyText);
+  // RE-ENTRY DEDUPE (census 2026-09-09): a crash after the comment posted
+  // but before the enclosing writeState left the file at "running"; resume
+  // re-entered handoff and posted a SECOND comment. A prior handoff-emitted
+  // event with a commentUrl is proof of delivery — reuse it (the label
+  // re-application below stays: gh --add-label is idempotent server-side).
+  let commentUrl = parseHandoffCommentUrl(opsReplyText) ?? priorHandoffCommentUrl(next.eventLog);
   // #408 — this used to be `/label.*needs-human-attention/i.test(opsReplyText)`,
   // which matches "I could not apply the label needs-human-attention" just as
   // happily as a success. It recorded the label as applied, skipped the
@@ -353,6 +358,22 @@ export function parseHandoffCommentUrl(text: string | undefined): string | undef
   if (!text) return undefined;
   const m = text.match(/https:\/\/github\.com\/[^\s)>]+#issuecomment-\d+/);
   return m?.[0];
+}
+
+/**
+ * The comment URL a PREVIOUS handoff attempt already delivered, if any —
+ * the re-entry dedupe key (census 2026-09-09: a crash between the comment
+ * post and the enclosing writeState re-posted a duplicate on resume). Pure;
+ * newest event wins.
+ */
+export function priorHandoffCommentUrl(eventLog: readonly WorkEvent[]): string | undefined {
+  const prior = [...eventLog]
+    .reverse()
+    .find(
+      (e): e is Extract<WorkEvent, { kind: "handoff-emitted" }> => e.kind === "handoff-emitted",
+    );
+  const url = prior?.commentUrl;
+  return typeof url === "string" && url.length > 0 ? url : undefined;
 }
 
 /**
