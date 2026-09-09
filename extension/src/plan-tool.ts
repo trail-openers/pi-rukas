@@ -200,6 +200,10 @@ function renderPlanResult(r: PlanResult, dryRun: boolean): string {
       filingStatus = `\n\n=== FILING STATUS ===\nFiling did not complete. Reason: ${f.reason}${f.detail ? ` — ${f.detail}` : ""}. The spec above is still valid to review and can be re-run after the cause is addressed.`;
     }
   }
+  const timingsLine =
+    r.timings && r.timings.length > 0
+      ? `\n\n=== TIMINGS ===\n${r.timings.map((t) => `${t.phase} ${fmtMs(t.ms)}`).join(" · ")}`
+      : "";
   return `${head}
 
 Title: ${r.title}
@@ -212,7 +216,14 @@ ${r.spec}
 ${gaps}
 
 === PRIOR CONTEXT ATTRIBUTION ===
-${prior}${cap}${filingStatus}`;
+${prior}${cap}${filingStatus}${timingsLine}`;
+}
+
+/** Human-readable duration: sub-minute in seconds, else m+s. */
+function fmtMs(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m${s % 60 ? `${s % 60}s` : ""}`;
 }
 
 function resultDetails(r: PlanResult, dryRun: boolean): Record<string, unknown> {
@@ -229,5 +240,6 @@ function resultDetails(r: PlanResult, dryRun: boolean): Record<string, unknown> 
   if (r.issueUrl) d.issueUrl = r.issueUrl;
   if (r.capReason) d.capReason = r.capReason;
   if (r.filingFailure) d.filingFailure = r.filingFailure;
+  if (r.timings) d.timings = r.timings;
   return d;
 }

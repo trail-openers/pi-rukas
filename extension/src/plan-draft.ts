@@ -83,26 +83,26 @@ export async function mechanicalInventory(
     .filter((w) => w.length >= 4 && !/^(the|and|with|from|into|that|this|which|when)\b/i.test(w))
     .slice(0, 4);
   const terms = keywords.length > 0 ? keywords.join(" ") : descriptor.slice(0, 60);
-
-  const res = await vipuneSearch(terms, { cwd: repoRoot, limit: 5 });
-  const memory = res.kind === "hits" ? res.hits : [];
-
-  const related: MechanicalInventory["related"] = [];
-  const errors: string[] = [];
-  // #612 S4 task-b — forge adapter. The adapter's `issueSearch` drops the
-  // `--state all --limit 10` qualifiers the raw command carried; the
-  // adapter's default list shape is what S2 normalizes across forges.
-  // A forge that cannot be resolved yields an empty related list (no error).
-  const forge = forgeOverride ?? (await planDraftForge(repoRoot));
-  if (forge) {
-    try {
-      const rows = await forge.issueSearch(terms.replace(/'/g, ""));
-      for (const r of rows) related.push({ number: r.number, title: r.title, state: r.state });
-    } catch (err) {
-      errors.push(`forge issueSearch: ${(err as Error).message.split("\n")[0]}`);
-    }
-  }
-  return { memory, related, errors };
+  // #612 S4 task-b — forge adapter (an unresolvable forge yields an empty
+  // related list, no error). The two legs share no data — concurrent.
+  const [res, forgeSide] = await Promise.all([
+    vipuneSearch(terms, { cwd: repoRoot, limit: 5 }),
+    (async () => {
+      const related: MechanicalInventory["related"] = [];
+      const errors: string[] = [];
+      const forge = forgeOverride ?? (await planDraftForge(repoRoot));
+      if (forge) {
+        try {
+          const rows = await forge.issueSearch(terms.replace(/'/g, ""));
+          for (const r of rows) related.push({ number: r.number, title: r.title, state: r.state });
+        } catch (err) {
+          errors.push(`forge issueSearch: ${(err as Error).message.split("\n")[0]}`);
+        }
+      }
+      return { related, errors };
+    })(),
+  ]);
+  return { memory: res.kind === "hits" ? res.hits : [], ...forgeSide };
 }
 
 // ---------------------------------------------------------------------------

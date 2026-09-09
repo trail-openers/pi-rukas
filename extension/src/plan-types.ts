@@ -24,6 +24,19 @@ export type PlanType = (typeof PLAN_TYPES)[number];
  */
 export const EPIC_SUB_ISSUE_DEPTH_LIMIT = 3;
 
+/**
+ * One phase's wall-clock cost, recorded by the driver. The operator's
+ * "20–30 minutes per ticket" report was structural inference until these
+ * existed (outputs/spec-driven-plan-driver-gap.md §7 next-step #1) —
+ * per-phase durations are what any further pipeline cut must be argued
+ * from. Phases: inventory, investigate (duplicate-risk + angles barrier),
+ * gap-gate (all rounds), filing, total.
+ */
+export interface PlanPhaseTiming {
+  phase: string;
+  ms: number;
+}
+
 export interface PlanGap {
   severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
   description: string;
@@ -101,6 +114,8 @@ export interface PlanResult {
    * type, and vice versa.
    */
   filingFailure?: FilingFailure;
+  /** Per-phase wall-clock durations, always present on a completed run. */
+  timings?: PlanPhaseTiming[];
 }
 
 export interface PlanDriverInput {

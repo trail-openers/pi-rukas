@@ -1629,3 +1629,17 @@ When a compiler-enforced invariant dies (e.g. `T` → `Option<T>`, removed `read
 
 - **No guard memories written** — check that `PI_ENSEMBLE_INVARIANT_MEMORY` is not set to `0`, and that the widening scan found findings (check the `widening-scan` event). If vipune is not installed, `defaultVipuneWrite` returns empty silently — the guard write is additive value, not structural.
 - **Duplicate guard memories across cycles** — dedup is per-cycle, not cross-cycle. If the same widening fires across multiple cycles, each writes its own guard. A future improvement could add cross-cycle dedup.
+
+## /plan pipeline latency and timeouts
+
+### What changed
+
+The `/plan` driver (`start_plan_driver`) used to serialize four dispatch barriers per ticket: mechanical inventory (three serial awaits) → duplicate-risk explore → angle fan-out → 1–2 gap-gate rounds — the structural origin of the 20–30-minute-per-ticket experience (see `outputs/spec-driven-plan-driver-gap.md` §4). Now:
+
+- The duplicate-risk check and the investigation angles dispatch as **one parallel barrier** (`plan-investigate.ts`); the HIGH-risk hard stop applies after the barrier and still refuses to file.
+- Every plan child is bounded at **8 minutes** (`PLAN_DISPATCH_TIMEOUT_MS`) instead of the 2-hour spawn backstop, and runs with `cwd` pinned to the repo root.
+- The tool result ends with a `=== TIMINGS ===` line (per-phase wall clock: inventory / investigate / gap-gate / filing / total).
+
+### A plan child hit the 8-minute bound
+
+The dispatch is killed and routed through paths that already existed: an angle fails closed (`ok=false`; if ALL angles fail, the pipeline halts with `skipped-all-angles-failed` and files nothing), a timed-out duplicate-risk child yields no risk verdict (traced, pipeline proceeds), and a timed-out gap-gate reviewer routes `gate-unavailable` (spec NOT filed — no reviewer saw it; re-run `start_plan_driver`). A child that repeatedly times out usually means a hung tool call or a suspended host (see "Host suspend is not a provider failure" in AGENTS.md §7) — check the per-phase timings line to see which phase ate the budget.

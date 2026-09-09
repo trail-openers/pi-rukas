@@ -19,11 +19,15 @@
  *
  *   Phase 0 Classify   — regex on the descriptor (or the `type` param)
  *                        [plan-types.ts]
- *   Phase 1 Inventory  — vipune + `gh issue list` run by the driver; one
- *                        explore dispatch for duplicate risk
+ *   Phase 1 Inventory  — vipune + `gh issue list` run by the driver
  *                        [plan-draft.ts: mechanicalInventory]
- *   Phase 2 Investigate — type-specialised explore set, all in parallel
- *                        [plan-draft.ts: anglePromptsFor]
+ *   Phase 1b+2 Investigate — the duplicate-risk explore AND the
+ *                        type-specialised angle set dispatch as ONE parallel
+ *                        barrier (the duplicate check used to serially block
+ *                        the fan-out for a result consumed only as a
+ *                        HIGH/not-HIGH boolean); the HIGH-risk hard stop
+ *                        applies after the barrier, before draft/gate/file
+ *                        [plan-investigate.ts: runInvestigation]
  *   Phase 3 Draft      — the driver assembles the structured body
  *                        [plan-draft.ts: draftSpec]
  *   Phase 4 Gap gate   — one adversarial-developer dispatch per round;
@@ -51,6 +55,11 @@
  * dryRun is the confirmation seam: `dryRun: true` returns the spec + gaps
  * without filing; PM shows it to the operator; on confirmation the driver
  * is re-called with `dryRun` omitted.
+ *
+ * Every phase is timed (PlanResult.timings) — the operator's 20–30-minute
+ * report was structural inference until now; per-phase durations turn the
+ * cost debate into measurement (research next-step #1,
+ * outputs/spec-driven-plan-driver-gap.md §7).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -59,16 +68,19 @@ import {
   type AngleFindings,
   VIPUNE_PRECEDENCE_NOTE,
   VIPUNE_PRIOR_SOURCE,
-  anglePromptsFor,
   codeIdentifiersIn,
   draftSpec,
-  extractPlanItems,
   mechanicalInventory,
   parseOperatorDirectives,
   priorContextHasVipune,
   renderPriorContext,
 } from "./plan-draft.ts";
 import { type FilingFailure, fileIssue, getPlanForge, planForgeFor } from "./plan-filing.ts";
+import {
+  PLAN_DISPATCH_TIMEOUT_MS,
+  PLAN_MARKER_CHILD_ARGS,
+  runInvestigation,
+} from "./plan-investigate.ts";
 
 /**
  * The dispatch seam, injectable so the smoke test can drive the pipeline with
@@ -93,6 +105,7 @@ import {
 import {
   type PlanDriverInput,
   type PlanGap,
+  type PlanPhaseTiming,
   type PlanResult,
   classifyPlanType,
   planTitle,
@@ -101,19 +114,6 @@ import { type ResolvedDecision, buildResolvedDecisions } from "./plan-writeback.
 import { trace } from "./trace.ts";
 
 const GAP_GATE_MAX_ITERATIONS = 2;
-
-/**
- * Companion-extension path for the plan Phase-2 children (report_plan_item).
- * Follows LENS_REPORTER_PATH / POLICY_REPORTER_PATH exactly.
- */
-const PLAN_REPORTER_PATH = `${__dirname}/plan-reporter.ts`;
-
-/**
- * The extra args the Phase-2 investigation children run with: no skills
- * (the exploration tools are in the role prompt; skills would just add cost)
- * + the plan-reporter extension that registers report_plan_item.
- */
-const PLAN_EXTRA_ARGS: string[] = ["--no-skills", "--extension", PLAN_REPORTER_PATH];
 
 // ---------------------------------------------------------------------------
 // Phase 4 — adversarial gap gate (parsing + routing in plan-gaps.ts)
@@ -178,8 +178,24 @@ export async function runPlanPipeline(
   const type = classifyPlanType(descriptor, input.type);
   const depth = input.depth ?? 0;
 
+  // Per-phase wall-clock record (research next-step #1: measure, then cut).
+  const timings: PlanPhaseTiming[] = [];
+  const pipelineStart = Date.now();
+  const timed = async <T>(phase: string, fn: () => Promise<T>): Promise<T> => {
+    const t0 = Date.now();
+    try {
+      return await fn();
+    } finally {
+      timings.push({ phase, ms: Date.now() - t0 });
+    }
+  };
+  const finishTimings = (): PlanPhaseTiming[] => [
+    ...timings,
+    { phase: "total", ms: Date.now() - pipelineStart },
+  ];
+
   // Phase 1
-  const inv = await mechanicalInventory(repoRoot, descriptor);
+  const inv = await timed("inventory", () => mechanicalInventory(repoRoot, descriptor));
   const priorContext: { source: string; fact: string }[] = [
     // D6: vipune hits are tagged distinctly — they are snapshots saved
     // during a PREVIOUS planning run and may be stale (the blocked-session
@@ -204,79 +220,33 @@ export async function runPlanPipeline(
     }
   }
 
-  // Phase 1b — duplicate-risk discovery. The mechanical inventory is only a
-  // mechanical scan: it cannot see semantic overlap a different title hides,
-  // so the risk call always goes to an explore (the one Phase-1 dispatch the
-  // prose flow defined).
-  let duplicateRisk: { level: string; rationale: string } | undefined;
-  {
-    const dup = await dispatch(
-      pi,
-      {
-        role: "explore",
-        prompt: [
-          // SECURITY (six-lens re-review, PR #640): the descriptor is
-          // untrusted operator input (the second child-prompt surface that
-          // interpolates it raw — the angle prompts were framed in #640,
-          // this one was missed). Prompt-level mitigation, not a boundary —
-          // the same constant as the angle and gap-gate prompts, one copy.
-          `${DESCRIPTOR_DATA_FRAMING}DUPLICATE RISK CHECK for a proposed ${type} ticket: "${descriptor}".`,
-          `Mechanical scan found: ${
-            inv.related.map((r) => `#${r.number} (${r.state}) ${r.title}`).join("; ") ||
-            "no related issues"
-          }.`,
-          "Assess whether filing this ticket would duplicate existing work — check open + recently closed issues (gh issue list --state all --search '<keyword>' --limit 10) and vipune.",
-          "Return a short verdict: DUPLICATE_RISK: high|medium|low|none plus 2-3 sentences of rationale with issue numbers.",
-        ].join(" "),
-      },
-      { label: "plan-duplicate-risk" },
+  // Phase 1b + Phase 2 — ONE parallel barrier (plan-investigate.ts): the
+  // duplicate-risk explore and the type-specialised angle set dispatch
+  // together; wall clock is the slowest child, not their sum. The HIGH-risk
+  // hard stop applies AFTER the barrier — semantics unchanged (a HIGH
+  // verdict still refuses to file); the only trade is that on HIGH the
+  // angle tokens are already spent, and HIGH is the rare case.
+  const codeIds = codeIdentifiersIn(descriptor);
+  const {
+    duplicateRisk,
+    findings,
+  }: { duplicateRisk?: { level: string; rationale: string }; findings: AngleFindings[] } =
+    await timed("investigate", () =>
+      runInvestigation(dispatch, pi, {
+        type,
+        descriptor,
+        repoRoot,
+        inv,
+        priorContext,
+        codeIdentifiers: codeIds,
+      }),
     );
-    if (dup.ok) {
-      const m = dup.text.match(/DUPLICATE_RISK\s*[:—-]\s*(high|medium|low|none)/i);
-      duplicateRisk = {
-        level: m ? (m[1] ?? "medium").toLowerCase() : "medium",
-        rationale: dup.text.slice(0, 400),
-      };
-      trace(`plan-driver: duplicateRisk=${duplicateRisk.level}`);
-    }
-  }
 
   if (duplicateRisk && duplicateRisk.level === "high") {
     throw new Error(
       `duplicate risk HIGH — the inventory shows likely duplicate work (${duplicateRisk.rationale.slice(0, 200)}). Do not file; reconcile with the existing issue(s) first.`,
     );
   }
-
-  // Phase 2 — the children run with the plan-reporter extension (the
-  // report_plan_item tool) so the driver reads structured items from
-  // result.toolUses instead of line-splitting prose. The duplicate-risk
-  // child and the gap-gate child do NOT get the reporter — they return a
-  // single marker-line reply, not a list of items.
-  const codeIds = codeIdentifiersIn(descriptor);
-  const angles = anglePromptsFor(type, descriptor, priorContext, codeIds);
-  const findings: AngleFindings[] = await Promise.all(
-    angles.map((a) =>
-      dispatch(
-        pi,
-        { role: "explore", prompt: a.prompt },
-        { label: `plan-${a.name}`.slice(0, 24), extraArgs: PLAN_EXTRA_ARGS },
-      ).then((r) => {
-        const toolUses = r.toolUses; // #633: DispatchResult declares toolUses: unknown[] (non-optional) — the ?? [] guarded nothing
-        // Structured-first (D8, fail-closed): an angle is "ok" only when the
-        // dispatch succeeded AND it produced at least one structured item. An
-        // angle that returned prose-only contributed nothing to the typed
-        // sections — its summary may still show in Technical context as a
-        // fallback, but it does not count as a completed angle.
-        const ok = r.ok && !r.errorStop && toolUses.length > 0;
-        return {
-          name: a.name,
-          ok,
-          text: r.text,
-          toolUses: extractPlanItems(toolUses, a.name),
-        };
-      }),
-    ),
-  );
 
   // #633 aggregate all-angles-failed guard (fail-closed): each angle fails
   // closed individually (ok requires toolUses.length > 0), but if EVERY
@@ -313,6 +283,7 @@ export async function runPlanPipeline(
         reason: "skipped-all-angles-failed",
         detail: `all ${findings.length} angles produced zero structured items — filing was deliberately skipped (not a forge failure)`,
       },
+      timings: finishTimings(),
     };
   }
 
@@ -353,63 +324,73 @@ export async function runPlanPipeline(
     // 2. UNION DISCLOSURE: non-blocking findings accumulate across rounds
     //    (deduped by exact description string), so the residual section
     //    discloses the union, not just the last round.
-    const loopResult: GapGateLoopResult = await runGapGateLoop(
-      (spec, opts) => dispatch(pi, spec, opts),
-      () => gapGatePrompt(body, findings, priorContext),
-      GAP_GATE_MAX_ITERATIONS,
-      (blocking: PlanGap[]) => {
-        // PR #640: resolve destinations here, splice in draftSpec (single site).
-        // Catch is WIDE: covers destination-resolution + re-draft; cause preserves stack.
-        let computed: ResolvedDecision[] = [];
-        let writebackMap: Map<string, string[]> | null = null;
-        let writtenOutcomes: { applied: boolean; heading: string }[] = [];
-        try {
-          ({ decisions: computed, writebackMap: writebackMap } = buildResolvedDecisions(
-            blocking,
-            type,
-          ));
-          const redraft = draftSpec(
-            type,
-            descriptor,
-            findings,
-            priorContext,
-            openQuestions,
-            outOfScope,
-            depth,
-            directives,
-            computed,
-            writebackMap,
-          );
-          // Re-draft RETURN: marked decisions (writtenBack from the splice,
-          // not predicted). Body/title re-assigned for round 2.
-          ({ title, body } = redraft);
-          writtenOutcomes = redraft.resolvedDecisions.map((d) => ({
-            applied: d.writtenBack ?? false,
-            heading: d.writebackHeading ?? "(no destination — status open)",
-          }));
-        } catch (e) {
-          // Disclosure: names what was computed before the throw.
-          const disclosed = computed.length
-            ? computed
-                .map((d, i) => {
-                  const o = writtenOutcomes[i];
-                  const s = o
-                    ? o.applied
-                      ? `• written back to ${o.heading}: ${d.description} → ${d.resolution}`
-                      : `• NOT written back (open, decision owner operator): ${d.description} → ${d.resolution}`
-                    : `• not yet applied: ${d.description} → ${d.resolution}`;
-                  return s;
-                })
-                .join("\n")
-            : "(no decisions computed — the throw preceded the re-draft)";
-          const err = e instanceof Error ? e : new Error(String(e));
-          const msg = err.message;
-          throw new Error(
-            `corrective re-draft failed AFTER computing ${computed.length} carried gap decision(s) (the writeback decisions are disclosed here so the loss is visible):\n${disclosed}\noriginal error: ${msg}`,
-            { cause: err },
-          );
-        }
-      },
+    const loopResult: GapGateLoopResult = await timed("gap-gate", () =>
+      runGapGateLoop(
+        // The gate child gets the same bounds as every plan child: cwd
+        // pinned to the repo root, the 8-min timeout instead of the 2-hour
+        // backstop, and --no-skills (a marker-line reviewer, no reporter).
+        (spec, opts) =>
+          dispatch(
+            pi,
+            { ...spec, cwd: repoRoot },
+            { ...opts, timeoutMs: PLAN_DISPATCH_TIMEOUT_MS, extraArgs: PLAN_MARKER_CHILD_ARGS },
+          ),
+        () => gapGatePrompt(body, findings, priorContext),
+        GAP_GATE_MAX_ITERATIONS,
+        (blocking: PlanGap[]) => {
+          // PR #640: resolve destinations here, splice in draftSpec (single site).
+          // Catch is WIDE: covers destination-resolution + re-draft; cause preserves stack.
+          let computed: ResolvedDecision[] = [];
+          let writebackMap: Map<string, string[]> | null = null;
+          let writtenOutcomes: { applied: boolean; heading: string }[] = [];
+          try {
+            ({ decisions: computed, writebackMap: writebackMap } = buildResolvedDecisions(
+              blocking,
+              type,
+            ));
+            const redraft = draftSpec(
+              type,
+              descriptor,
+              findings,
+              priorContext,
+              openQuestions,
+              outOfScope,
+              depth,
+              directives,
+              computed,
+              writebackMap,
+            );
+            // Re-draft RETURN: marked decisions (writtenBack from the splice,
+            // not predicted). Body/title re-assigned for round 2.
+            ({ title, body } = redraft);
+            writtenOutcomes = redraft.resolvedDecisions.map((d) => ({
+              applied: d.writtenBack ?? false,
+              heading: d.writebackHeading ?? "(no destination — status open)",
+            }));
+          } catch (e) {
+            // Disclosure: names what was computed before the throw.
+            const disclosed = computed.length
+              ? computed
+                  .map((d, i) => {
+                    const o = writtenOutcomes[i];
+                    const s = o
+                      ? o.applied
+                        ? `• written back to ${o.heading}: ${d.description} → ${d.resolution}`
+                        : `• NOT written back (open, decision owner operator): ${d.description} → ${d.resolution}`
+                      : `• not yet applied: ${d.description} → ${d.resolution}`;
+                    return s;
+                  })
+                  .join("\n")
+              : "(no decisions computed — the throw preceded the re-draft)";
+            const err = e instanceof Error ? e : new Error(String(e));
+            const msg = err.message;
+            throw new Error(
+              `corrective re-draft failed AFTER computing ${computed.length} carried gap decision(s) (the writeback decisions are disclosed here so the loss is visible):\n${disclosed}\noriginal error: ${msg}`,
+              { cause: err },
+            );
+          }
+        },
+      ),
     );
     gaps = loopResult.gaps;
     capHit = loopResult.capHit;
@@ -435,7 +416,9 @@ export async function runPlanPipeline(
   let issueUrl: string | undefined;
   let filingFailure: FilingFailure | undefined;
   if (!dryRun && capReason !== "unresolved-blocking" && capReason !== "gate-unavailable") {
-    const fr = await fileIssue(title, finalBody, getPlanForge() ?? (() => planForgeFor(repoRoot)));
+    const fr = await timed("filing", () =>
+      fileIssue(title, finalBody, getPlanForge() ?? (() => planForgeFor(repoRoot))),
+    );
     issueUrl = fr.url;
     filingFailure = fr.failure;
   } else if (!dryRun && capReason === "unresolved-blocking") {
@@ -483,6 +466,7 @@ export async function runPlanPipeline(
     capReason,
     residualForDisclosure: residualForDisclosure.length > 0 ? residualForDisclosure : undefined,
     filingFailure,
+    timings: finishTimings(),
   };
 }
 
