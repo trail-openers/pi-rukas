@@ -1678,3 +1678,8 @@ Zero findings survived deterministic verification. The artifact is still written
 ### "all angles produced zero report_research_claim calls"
 
 The retrieval children returned prose only — usually the research-reporter extension did not load (check `RESEARCH_REPORTER_PATH`) or the model made no tool calls. Nothing was filed or written; re-run `start_research_driver`.
+
+### Deep and adoption tiers
+
+- `deep` = standard retrieval + ONE scoped entailment dispatch: a reviewer opens each cited source and judges per-claim support (`full`/`partial`/`none`/`unreachable`), annotated in the artifact rows. A `none` verdict demotes the finding out of the verified count (annotation never upgrades). If the reviewer dispatch fails, the artifact carries an explicit "Entailment pass unavailable" banner — absent annotations are never presented as clean.
+- `adoption` = the OSS decision memo for "should we adopt X": fixed signals/alternatives/integration-fit angles plus ONE synthesis dispatch whose RECOMMENDATION and COMPARISON sections embed verbatim in the memo. A failed synthesis leaves "(synthesis unavailable — decide from the signals…)" — the driver never fabricates a recommendation.

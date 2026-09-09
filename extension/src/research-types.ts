@@ -17,11 +17,17 @@ import type { PlanPhaseTiming } from "./plan-types.ts";
 import { RESEARCH_CLAIM_KINDS } from "./research-reporter.ts";
 
 /**
- * PR-1 ships quick + standard; deep (entailment pass) and adoption
- * (decision-memo mode) land in the follow-up PR and extend this union.
+ * quick = 1 angle + liveness; standard = derived angle set + full
+ * deterministic verification; deep = standard + ONE scoped LLM entailment
+ * pass (explicit, never silent — FaithJudge <72% F1); adoption = the
+ * OSS-adoption decision-memo mode (fixed signal/alternatives/fit angles +
+ * a synthesis child whose recommendation is embedded in the memo artifact).
  */
-export const RESEARCH_TIERS = ["quick", "standard"] as const;
+export const RESEARCH_TIERS = ["quick", "standard", "deep", "adoption"] as const;
 export type ResearchTier = (typeof RESEARCH_TIERS)[number];
+
+/** Deep-tier entailment verdict for one claim (absent = never judged). */
+export type ClaimSupport = "full" | "partial" | "none" | "unreachable";
 
 export type ResearchClaimKind = (typeof RESEARCH_CLAIM_KINDS)[number];
 
@@ -56,6 +62,13 @@ export interface ResearchClaim {
   staleness: "stable" | "fast-moving";
   angle: string;
   verification: ClaimVerification;
+  /**
+   * Deep tier only: does the cited source actually support the claim?
+   * Annotation, never a silent upgrade — a "none" additionally excludes
+   * the finding from the abstention count (a claim its own source does not
+   * support is not a verified finding).
+   */
+  support?: ClaimSupport;
 }
 
 export interface AngleRun {
@@ -101,6 +114,8 @@ export interface ResearchResult {
    */
   abstained: boolean;
   halt?: { reason: ResearchHaltReason; detail: string };
+  /** Deep tier: whether the entailment pass ran ("unavailable" = dispatch failed; claims stay unannotated). */
+  entailment?: "ran" | "unavailable";
   timings: PlanPhaseTiming[];
 }
 

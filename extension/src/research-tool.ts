@@ -22,13 +22,22 @@ export function registerResearchTool(pi: ExtensionAPI) {
     name: "start_research_driver",
     label: "Start /research Driver",
     description:
-      "Run the compiled /research pipeline: memory inventory → parallel angle retrieval (structured report_research_claim calls) → deterministic verification (URL liveness + commit-pinned code grounding) → a dated artifact + provenance sidecar under <repo>/outputs/ → a typed vipune row with supersession. Tiers: quick (1 angle, liveness only) or standard (default; web + docs + codebase-if-code-named angles, full deterministic verification). Pass your own angle prompts via `angles` to override the derived set; the driver stops at the artifact — presenting, digging deeper and deciding plan-relevance stay with you in the conversation. Zero verified findings still writes an honest abstention artifact.",
+      "Run the compiled /research pipeline: memory inventory → parallel angle retrieval (structured report_research_claim calls) → deterministic verification (URL liveness + commit-pinned code grounding) → a dated artifact + provenance sidecar under <repo>/outputs/ → a typed vipune row with supersession. Tiers: quick (1 angle, liveness only), standard (default; web + docs + codebase-if-code-named angles, full deterministic verification), deep (standard + ONE scoped LLM entailment pass annotating per-claim source support), adoption (OSS-adoption decision memo: signals/alternatives/integration-fit angles + a synthesis child whose recommendation embeds in the memo — use for 'should we adopt X' topics). Pass your own angle prompts via `angles` to override the derived set; the driver stops at the artifact — presenting, digging deeper and deciding plan-relevance stay with you in the conversation. Zero verified findings still writes an honest abstention artifact.",
     parameters: Type.Object({
       topic: Type.String({ description: "The research topic — one or two sentences." }),
       tier: Type.Optional(
-        Type.Union([Type.Literal("quick"), Type.Literal("standard")], {
-          description: "Depth tier (default standard). quick = 1 angle + liveness only.",
-        }),
+        Type.Union(
+          [
+            Type.Literal("quick"),
+            Type.Literal("standard"),
+            Type.Literal("deep"),
+            Type.Literal("adoption"),
+          ],
+          {
+            description:
+              "Depth tier (default standard). quick = 1 angle + liveness only; deep = + one entailment reviewer pass; adoption = OSS-adoption decision memo.",
+          },
+        ),
       ),
       angles: Type.Optional(
         Type.Array(Type.String(), {
@@ -46,7 +55,7 @@ export function registerResearchTool(pi: ExtensionAPI) {
     async execute(_id, raw, _signal, _onUpdate, ctx: ExtensionContext) {
       const params = raw as {
         topic: string;
-        tier?: "quick" | "standard";
+        tier?: "quick" | "standard" | "deep" | "adoption";
         angles?: string[];
         context?: string;
       };
@@ -93,6 +102,10 @@ function renderResearchResult(r: ResearchResult): string {
   const head = r.abstained
     ? `RESEARCH COMPLETE — NO RELIABLY VERIFIED FINDINGS. An honest abstention artifact records what was checked: ${r.artifactPath}`
     : `RESEARCH COMPLETE — artifact: ${r.artifactPath}`;
+  const entailNote =
+    r.entailment === "unavailable"
+      ? "\nNOTE: the deep-tier entailment pass was UNAVAILABLE (reviewer dispatch failed) — support annotations are absent, not clean."
+      : "";
   const contra =
     contradictions.length > 0
       ? `\n\n=== CONTRADICTIONS (surface these to the operator) ===\n${contradictions.map(claimLine).join("\n")}`
@@ -103,7 +116,7 @@ function renderResearchResult(r: ResearchResult): string {
     r.memory.outcome === "written" || r.memory.outcome === "superseded"
       ? `memory: ${r.memory.outcome} (candidate row${r.memory.id ? ` ${r.memory.id}` : ""})`
       : `memory: ${r.memory.outcome}${r.memory.detail ? ` — ${r.memory.detail}` : ""}`;
-  return `${head}
+  return `${head}${entailNote}
 Provenance: ${r.provenancePath} · pinned commit: ${r.pinnedCommit}
 
 === SUMMARY ===
@@ -135,6 +148,7 @@ function resultDetails(r: ResearchResult): Record<string, unknown> {
     pinnedCommit: r.pinnedCommit,
     claimCount: r.claims.length,
     abstained: r.abstained,
+    entailment: r.entailment,
     memory: r.memory,
     halt: r.halt,
     timings: r.timings,

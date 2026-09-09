@@ -41,9 +41,34 @@ function frame(name: string, task: string): ResearchAngle {
 }
 
 /**
+ * The adoption tier's fixed trio — the "no product ships the full dated
+ * adoption memo" whitespace (report §2): security/health signals,
+ * alternatives, and this-repo integration fit.
+ */
+function adoptionAngles(topic: string): ResearchAngle[] {
+  return [
+    frame(
+      "adoption-signals",
+      `Collect the OSS-adoption signals for: "${topic}". Report each as kind "signal" with its source URL: OpenSSF Scorecard score (or its absence), Socket/Snyk-style supply-chain indicators, release cadence over the last 12 months (commits/releases, NOT star counts), latest release age vs a 4-day supply-chain embargo, license, maintainer count / bus factor, and any recent CVEs or yanked releases.`,
+    ),
+    frame(
+      "adoption-alternatives",
+      `Identify 2-4 credible alternatives to: "${topic}". For each, report findings covering: what it is, its one-line trade-off against the candidate, and the same headline health signal where quickly checkable. Include the do-nothing/build-in-house option when it is credible.`,
+    ),
+    frame(
+      "adoption-fit",
+      `Establish how "${topic}" would integrate with THIS repository: read the manifests (package.json / Cargo.toml / etc.), the existing dependency set and the code that would touch it (codebase_memory_search_code). Report findings for: where it would be used, what it would replace or overlap with, install/runtime constraints (supply-chain embargo compatibility, platform support), and code claims as \`path#symbol\` sources so the driver can pin them.`,
+    ),
+  ];
+}
+
+/**
  * Derive the angle set. PM-supplied prompts win (framed, named custom-N);
- * otherwise: quick = 1 web angle; standard = web + docs, + codebase iff the
- * topic names code (codeIdentifiers non-empty).
+ * otherwise: quick = 1 web angle; standard AND deep = web + docs, +
+ * codebase iff the topic names code (deep differs downstream — the
+ * entailment pass — not in retrieval width, per the report: more fan-out
+ * has measured diminishing returns, verification is where depth pays);
+ * adoption = the fixed memo trio.
  */
 export function anglesForTier(
   tier: ResearchTier,
@@ -57,6 +82,7 @@ export function anglesForTier(
       .slice(0, MAX_RESEARCH_ANGLES)
       .map((p, i) => frame(`custom-${i + 1}`, `${p}\n\nTopic: "${topic}".`));
   }
+  if (tier === "adoption") return adoptionAngles(topic);
 
   const web = frame(
     "web-current",

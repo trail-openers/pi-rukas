@@ -34,10 +34,17 @@ import {
   priorContextHasVipune,
   renderPriorContext,
 } from "./plan-draft.ts";
-import { PLAN_DISPATCH_TIMEOUT_MS } from "./plan-investigate.ts";
+import { PLAN_DISPATCH_TIMEOUT_MS, PLAN_MARKER_CHILD_ARGS } from "./plan-investigate.ts";
 import type { PlanPhaseTiming } from "./plan-types.ts";
 import { anglesForTier } from "./research-angles.ts";
-import { resolveArtifactPaths, slugify, writeArtifact } from "./research-artifact.ts";
+import {
+  type MemoSections,
+  memoSynthesisPrompt,
+  parseMemoSections,
+  resolveArtifactPaths,
+  slugify,
+  writeArtifact,
+} from "./research-artifact.ts";
 import { writeResearchMemory } from "./research-memory.ts";
 import {
   type AngleRun,
@@ -50,7 +57,10 @@ import {
 } from "./research-types.ts";
 import {
   type FetchLike,
+  entailableClaims,
+  entailmentPrompt,
   isVerifiedFinding,
+  parseClaimSupport,
   pinnedCommit,
   verifyClaims,
 } from "./research-verify.ts";
@@ -203,10 +213,64 @@ export async function runResearchPipeline(
 
   // Phase 3 — deterministic verification, driver-side.
   const commit = await pinnedCommit(execFn, repoRoot);
-  const verified = await timed("verify", () =>
-    verifyClaims(claims, repoRoot, execFn, deps.fetchFn),
-  );
+  let verified = await timed("verify", () => verifyClaims(claims, repoRoot, execFn, deps.fetchFn));
+
+  // Phase 3b — deep tier only: ONE scoped entailment dispatch. Annotation,
+  // never a silent upgrade; a "none" verdict demotes the finding out of the
+  // abstention count (research-verify.ts: isVerifiedFinding).
+  let entailment: ResearchResult["entailment"];
+  if (tier === "deep") {
+    const targets = entailableClaims(verified);
+    if (targets.length === 0) {
+      entailment = "ran"; // nothing to entail is a completed pass, not a failure
+    } else {
+      const reviewer = await timed("entail", () =>
+        dispatch(
+          pi,
+          { role: "explore", prompt: entailmentPrompt(targets), cwd: repoRoot },
+          {
+            label: "research-entailment",
+            timeoutMs: RESEARCH_DISPATCH_TIMEOUT_MS,
+            extraArgs: PLAN_MARKER_CHILD_ARGS,
+          },
+        ),
+      );
+      if (reviewer.ok && !reviewer.errorStop) {
+        entailment = "ran";
+        const verdicts = parseClaimSupport(reviewer.text, targets.length);
+        const bySlot = new Map(targets.map((c, i) => [c, verdicts.get(i + 1)]));
+        verified = verified.map((c) => {
+          const support = bySlot.get(c);
+          return support ? { ...c, support } : c;
+        });
+      } else {
+        // The artifact says so explicitly — absence of annotations must
+        // never read as "everything checked out".
+        entailment = "unavailable";
+      }
+    }
+  }
   const abstained = !verified.some(isVerifiedFinding);
+
+  // Phase 3c — adoption tier only: ONE synthesis dispatch whose
+  // recommendation/comparison sections embed VERBATIM in the memo. The
+  // child sees only the verified claims; a failed synthesis leaves the
+  // memo's decision to the operator — the driver never fabricates one.
+  let memo: MemoSections | undefined;
+  if (tier === "adoption") {
+    const synth = await timed("memo", () =>
+      dispatch(
+        pi,
+        { role: "explore", prompt: memoSynthesisPrompt(topic, verified), cwd: repoRoot },
+        {
+          label: "research-memo-synthesis",
+          timeoutMs: RESEARCH_DISPATCH_TIMEOUT_MS,
+          extraArgs: PLAN_MARKER_CHILD_ARGS,
+        },
+      ),
+    );
+    memo = synth.ok && !synth.errorStop ? parseMemoSections(synth.text) : {};
+  }
 
   // Phase 4 — artifact + provenance.
   let artifactPath: string | undefined;
@@ -225,6 +289,8 @@ export async function runResearchPipeline(
           claims: verified,
           abstained,
           provenanceBasename: path.basename(p.provenancePath),
+          entailment,
+          memo,
         },
         p,
       );
@@ -269,6 +335,7 @@ export async function runResearchPipeline(
     artifactPath,
     provenancePath,
     abstained,
+    entailment,
     memory,
     timings: finishTimings(),
   };

@@ -18,7 +18,7 @@ The deterministic spine of research is compiled: the `start_research_driver` too
 Your judgement covers what the driver deliberately does not:
 
 1. **Scope the question.** Ask clarifying questions only if scope/depth would materially change the angles.
-2. **Choose the tier**: `quick` for a "what is X" lookup (1 angle, liveness only); `standard` (default) for real investigations.
+2. **Choose the tier**: `quick` for a "what is X" lookup (1 angle, liveness only); `standard` (default) for real investigations; `deep` when claim fidelity matters enough to pay one extra reviewer pass (per-claim source-support annotations); `adoption` for "should we adopt X" questions (fixed signals/alternatives/fit angles + a decision memo with an embedded recommendation and comparison table).
 3. **Choose the angles** — optional. The driver derives a sound default set (web/current + docs + codebase when the topic names code). Pass your own `angles` array only when you know a sharper cut (e.g. one angle per competitor, or a specific subsystem focus).
 4. **Thread session context** — pass established facts via `context` so the children dig deeper instead of re-walking known ground.
 
