@@ -31,7 +31,7 @@
 
 import { MarkerError } from "./markers.ts";
 
-export type LedgerProvenance = "auto" | "asked";
+export type LedgerProvenance = "auto" | "asked" | "detected";
 
 export interface LedgerRow {
   key: string;
@@ -40,7 +40,33 @@ export interface LedgerRow {
   date: string; // YYYY-MM-DD, the day the row was written
 }
 
-const ROW_RE = /^\|\s*([^\s|][^|]*?)\s*\|\s*(\S[^|]*?)\s*\|\s*\[(auto|asked)(?::([^\]]*))?\]\s*\|$/;
+const ROW_RE =
+  /^\|\s*([^\s|][^|]*?)\s*\|\s*(\S[^|]*?)\s*\|\s*\[(auto|asked|detected)(?::([^\]]*))?\]\s*\|$/;
+
+/**
+ * Per-provenance prefix-strip map for `parseLedger`. `asked` rows carry an
+ * `operator,` prefix before the date; `detected` rows carry `agent,`. An
+ * explicit map keyed by provenance kind — NOT a single generalised regex —
+ * keeps an `asked` row from being stripped with the `detected` prefix or
+ * vice versa: each kind recovers only its own date token.
+ */
+const PROVENANCE_PREFIX: Record<"asked" | "detected", string> = {
+  asked: "operator,",
+  detected: "agent,",
+};
+
+/**
+ * The bare (comma-less) prefix token each non-auto provenance renders after
+ * the kind — `asked:operator` and `detected:agent`. Used to detect the
+ * dateless corruption shape: a row like `[detected:agent]` has
+ * `provExtra === "agent"` (the bare token, no comma, no date). `renderRow`
+ * never emits one, so its presence in a file is a hand-edit or a buggy
+ * writer and must be refused — not silently parsed with date `"agent"`.
+ */
+const PROVENANCE_BARE_TOKEN: Record<"asked" | "detected", string> = {
+  asked: "operator",
+  detected: "agent",
+};
 
 /** Render the ledger section body (table) from rows, in the given order. */
 export function renderLedger(rows: LedgerRow[]): string {
@@ -49,9 +75,27 @@ export function renderLedger(rows: LedgerRow[]): string {
   return [header, ...body].join("\n");
 }
 
-/** Render a single row as one table line. */
+/**
+ * Render a single row as one table line.
+ *
+ * The date contract is asymmetric by design: `detected` rows REQUIRE a date
+ * (an agent-derived fact with no timestamp is a programmer error — throw, do
+ * not guess). `auto` and `asked` rows tolerate an empty date (existing
+ * behaviour unchanged): an `auto` row is re-derivable so its date is a
+ * convenience, and an `asked` row's date records when it was asked.
+ */
 export function renderRow(r: LedgerRow): string {
-  const prov = r.provenance === "asked" ? `asked:operator,${r.date}` : `auto:${r.date}`;
+  if (r.provenance === "detected" && r.date === "") {
+    throw new MarkerError(
+      `detected ledger row "${r.key}" requires a date (a detected fact is agent-derived and must be timestamped)`,
+    );
+  }
+  const prov =
+    r.provenance === "asked"
+      ? `asked:operator,${r.date}`
+      : r.provenance === "detected"
+        ? `detected:agent,${r.date}`
+        : `auto:${r.date}`;
   return `| ${r.key} | ${r.value} | [${prov}] |`;
 }
 
@@ -61,6 +105,10 @@ export function renderRow(r: LedgerRow): string {
  * malformed row — the ledger must not silently drop a decision it cannot
  * read, or the next render would "forget" it and re-ask (or re-derive) the
  * very thing an operator already settled.
+ *
+ * A `detected` row with an empty date is corruption (the render side refuses
+ * to emit one, so its presence means a hand-edit or a buggy writer) and is
+ * refused the same way any malformed row is — never a guess.
  */
 export function parseLedger(body: string): LedgerRow[] {
   const rows: LedgerRow[] = [];
@@ -79,8 +127,26 @@ export function parseLedger(body: string): LedgerRow[] {
     const provKind = (m[3] ?? "") as LedgerProvenance;
     const provExtra = m[4];
     let date = "";
-    if (provExtra) {
-      date = provExtra.replace(/^operator,/, "").trim();
+    if (provExtra !== undefined && provExtra !== "") {
+      // Strip the kind's own prefix (operator, / agent,) via the per-provenance
+      // map. `auto` rows have no prefix — the extra is the date itself.
+      const prefix =
+        provKind === "asked"
+          ? PROVENANCE_PREFIX.asked
+          : provKind === "detected"
+            ? PROVENANCE_PREFIX.detected
+            : "";
+      date = provExtra.startsWith(prefix)
+        ? provExtra.slice(prefix.length).trim()
+        : provExtra.trim();
+    }
+    // A dateless non-auto row is a corruption shape the renderer never emits
+    // (`[detected:agent]` / `[asked:operator]` carry the bare token, no comma,
+    // no date). It must be refused, not parsed with the token as a "date".
+    const bareToken =
+      provKind === "asked" ? PROVENANCE_BARE_TOKEN.asked : PROVENANCE_BARE_TOKEN.detected;
+    if (provKind !== "auto" && (date === "" || date === bareToken)) {
+      throw new MarkerError(`malformed ledger row (${provKind} row missing date): ${t}`);
     }
     rows.push({
       key: (m[1] ?? "").trim(),
@@ -143,7 +209,7 @@ export function mergeAutoRows(existing: LedgerRow[], auto: LedgerRow[]): LedgerR
     } else {
       const cur = out[i];
       if (!cur) continue;
-      if (cur.provenance === "asked") continue; // sticky — never auto-overwrite
+      if (cur.provenance === "asked" || cur.provenance === "detected") continue; // sticky — never auto-overwrite
       if (cur.value !== a.value) {
         out[i] = { ...a }; // value changed → supersede
       }

@@ -22,6 +22,7 @@
  * sections are emitted OUTSIDE markers (doctrine, operator-owned).
  */
 
+import type { DetectedFacts } from "./detect.ts";
 import type { LedgerRow } from "./ledger.ts";
 import { MARKER_VERSION, appendSection, insertSectionAfter } from "./markers.ts";
 
@@ -38,9 +39,44 @@ export interface OperatorAnswers {
   projectConstraints?: string;
 }
 
+/**
+ * The B1↔B2 seam. B2 will call `updateAgent` with a `DetectedFacts`-shaped
+ * value produced by its own agent dispatch, converted and fed here; B1
+ * defines and tests the seam standalone, with hand-built facts. No new
+ * wire-format type in this ticket — the existing `DetectedFacts` is used
+ * directly.
+ *
+ * - `facts` — when supplied on an `update`, the three fact sections
+ *   (quality-gates, commands, environment) are built from THIS via the
+ *   existing `gatesBody`/`commandsBody`/`environmentBody` functions instead
+ *   of a fresh `detectFacts()` call. Resulting section rows are stamped
+ *   `[detected:agent,<today>]`.
+ * - `codeStyleBullets` — feeds the code-style section (`codeStyleBody`).
+ *
+ * `agentOverride` is only honoured on the has-markers `update` path. It
+ * NEVER reaches the create/wrap paths (they don't receive it).
+ */
+export interface AgentOverride {
+  facts?: DetectedFacts;
+  codeStyleBullets?: string[];
+}
+
 export interface ScaffoldOpts {
   scaffold?: boolean;
   answers?: OperatorAnswers;
+  /**
+   * Caller-supplied facts (B2 seam). When `facts` is set on update, the fact
+   * sections are derived from it instead of `detectFacts()`.
+   */
+  agentOverride?: AgentOverride;
+  /**
+   * Explicit refresh: when true AND `agentOverride` is supplied, every section
+   * whose existing ledger row is `[detected:agent,...]` is DIRECTLY replaced
+   * (bypassing `mergeAutoRows`). Without it, a supplied `agentOverride` is
+   * used only for first-time population — it never overwrites a section that
+   * already carries a `[detected:agent,...]` row.
+   */
+  refresh?: boolean;
 }
 
 // ---------------------------------------------------------------- boilerplate

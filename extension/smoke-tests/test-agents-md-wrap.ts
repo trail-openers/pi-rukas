@@ -325,6 +325,76 @@ function stat(p: string): boolean {
   );
 }
 
+// ----------------------------- 9. code-style brownfield wrap classification
+//
+// A `## Code Style` heading with a dense bullet list (≥1 bullet, no table,
+// ≤15 non-empty lines) is `machine` and wraps. A prose-only `## Code Style`
+// body is `ambiguous` → the numbered-list protocol (exit 1). A 16-line bullet
+// body or a table-containing body is also `ambiguous`. This mirrors the
+// word-set + shape-check pattern the other 3 managed ids already use.
+{
+  // (a) bullet body → machine.
+  const machineCs =
+    "# F\n\n## Code Style\n\n- Use named exports\n- No `any` — use `unknown`\n- Wrap bodies at 72 cols\n";
+  rmSync(AGENTS);
+  writeFileSync(AGENTS, machineCs);
+  const resCs = updateAgent(tmp, AGENTS, mkFs({ writeFile: () => {} }), true);
+  assert(resCs.exitCode === 0, "code-style bullet body: wraps (exit 0)");
+  assert(
+    parseMarkers(resCs.plan?.newBytes ?? "")
+      .spans.map((s) => s.id)
+      .includes("code-style"),
+    "code-style bullet body: the section is wrapped in marker pairs",
+  );
+  assert(
+    (resCs.plan?.newBytes ?? "").includes("- Use named exports"),
+    "code-style bullet body: the original bullet survives inside its span",
+  );
+
+  // (b) prose-only body → ambiguous (numbered-list protocol, exit 1).
+  const proseCs = "# F\n\n## Code Style\n\nWe prefer a minimalist approach to everything.\nSimplicity wins in every case.\n";
+  rmSync(AGENTS);
+  writeFileSync(AGENTS, proseCs);
+  const resProse = updateAgent(tmp, AGENTS, mkFs({ writeFile: () => {} }), true);
+  assert(resProse.exitCode === 1, "code-style prose body: ambiguous (exit 1)");
+  assert(
+    /ambiguous classification.*Code Style/.test(resProse.error ?? ""),
+    "code-style prose body: the error names the ambiguous section",
+  );
+
+  // (c) 16-line bullet body → ambiguous (exceeds the ≤15 non-empty cap).
+  const longCs =
+    "# F\n\n## Code Style\n\n" +
+    Array.from({ length: 16 }, (_, i) => `- rule ${i + 1}`).join("\n") +
+    "\n";
+  rmSync(AGENTS);
+  writeFileSync(AGENTS, longCs);
+  const resLong = updateAgent(tmp, AGENTS, mkFs({ writeFile: () => {} }), true);
+  assert(resLong.exitCode === 1, "code-style 16-line body: ambiguous (exit 1)");
+
+  // (d) table-containing body → ambiguous (no `| ... |` lines allowed).
+  const tableCs =
+    "# F\n\n## Code Style\n\n| rule | detail |\n| --- | --- |\n| a | b |\n";
+  rmSync(AGENTS);
+  writeFileSync(AGENTS, tableCs);
+  const resTable = updateAgent(tmp, AGENTS, mkFs({ writeFile: () => {} }), true);
+  assert(resTable.exitCode === 1, "code-style table body: ambiguous (exit 1)");
+
+  // (e) a `## Code Style`-like heading that merely resembles the id — "Style"
+  //     alone — is NOT the managed id (id-gating), and a prose body under it
+  //     stays doctrine rather than tripping ambiguity.
+  const conv =
+    "# F\n\n## Commands\n\n| kind | command |\n| --- | --- |\n| test | `vitest` |\n\n## Style\n\nWe prefer a minimalist approach to everything.\n";
+  rmSync(AGENTS);
+  writeFileSync(AGENTS, conv);
+  const resConv = updateAgent(tmp, AGENTS, mkFs({ writeFile: () => {} }), true);
+  assert(resConv.exitCode === 0, "'## Style' (not the managed id) with prose: wraps (exit 0)");
+  assert(
+    (resConv.plan?.newBytes ?? "").includes("## Style"),
+    "'## Style': the doctrine section survives (id-gating: not 'code-style')",
+  );
+}
+
 rmSync(tmp, { recursive: true, force: true });
 
 console.log(exit === 0 ? "\nAll wrap checks passed." : "\nFAILED");

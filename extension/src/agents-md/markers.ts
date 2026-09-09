@@ -40,7 +40,13 @@
 export const MARKER_VERSION = 1;
 
 /** The managed section ids this renderer knows. */
-export const SECTION_IDS = ["quality-gates", "commands", "environment", "decision-ledger"] as const;
+export const SECTION_IDS = [
+  "quality-gates",
+  "commands",
+  "environment",
+  "code-style",
+  "decision-ledger",
+] as const;
 export type SectionId = (typeof SECTION_IDS)[number];
 
 // Dual-prefix (#630, rename epic #626): emission uses the new pi-rukas

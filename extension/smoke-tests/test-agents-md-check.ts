@@ -137,6 +137,37 @@ function mkFs(): AgentsMdFs {
   assert(r.check?.corrupt === true, "...flagged as corrupt");
 }
 
+// An empty code-style managed section (a hand-edited file with an empty
+// marker pair) already triggers the GENERIC empty-section guard in runChecks
+// step 2 — no new check.ts code is needed for the new managed id.
+//
+// Note: empty-section is a *finding* (exit 1), not a corruption refuse — the
+// parse succeeds (the pair is well-formed), so `runChecks` reports the
+// empty-section finding and exits with the findings code, exactly as it does
+// for the other three managed ids today.
+{
+  const emptyCs =
+    "# T\n" +
+    renderSection("environment", "- Manifest: package.json") +
+    "<!-- pi-rukas:agents-md:begin code-style v1 -->\n<!-- pi-rukas:agents-md:end code-style -->\n" +
+    renderSection(
+      "decision-ledger",
+      "| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |",
+    );
+  writeFileSync(path.join(tmp, "empty-cs.md"), emptyCs);
+  const r = checkAgent(tmp, path.join(tmp, "empty-cs.md"), {}, mkFs());
+  assert(
+    r.check?.code === EXIT_FINDINGS,
+    `empty code-style section → exit ${EXIT_FINDINGS} (got ${r.check?.code})`,
+  );
+  assert(
+    r.check?.findings.some(
+      (f) => f.kind === "empty-section" && f.message.includes("code-style"),
+    ),
+    "...with the generic empty-section finding naming code-style",
+  );
+}
+
 rmSync(tmp, { recursive: true, force: true });
 
 console.log(exit === 0 ? "\nAll check exit-code checks passed." : "\nFAILED");

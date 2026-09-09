@@ -73,7 +73,7 @@ export interface WrapResult {
   wrapped: WrapSection[];
 }
 
-const MANAGED_IDS = ["quality-gates", "commands", "environment"] as const;
+const MANAGED_IDS = ["quality-gates", "commands", "environment", "code-style"] as const;
 
 /** Map a heading's words to a managed section id, or undefined. */
 export function headingToId(heading: string): string | undefined {
@@ -92,6 +92,7 @@ export function headingToId(heading: string): string | undefined {
   if (words.length === 1 && (words[0] === "commands" || words[0] === "command")) return "commands";
   if (words.length === 1 && (words[0] === "environment" || words[0] === "environments"))
     return "environment";
+  if (words[0] === "code" && words[1] === "style") return "code-style";
   return undefined;
 }
 
@@ -105,6 +106,15 @@ function contentMatchesId(id: string, text: string): boolean {
   }
   if (id === "environment") {
     return /-\s+Manifest:\s+`/.test(text);
+  }
+  if (id === "code-style") {
+    // A dense bullet list, no table, short — the shape codeStyleBody emits.
+    const lines = text.split("\n");
+    const nonEmpty = lines.filter((l) => l.trim() !== "");
+    if (nonEmpty.length === 0 || nonEmpty.length > 15) return false;
+    if (nonEmpty.some((l) => /\|.*\|/.test(l))) return false; // table syntax
+    if (!nonEmpty.some((l) => /^[-*]\s+/.test(l.trim()))) return false; // needs ≥1 bullet
+    return true;
   }
   return false;
 }

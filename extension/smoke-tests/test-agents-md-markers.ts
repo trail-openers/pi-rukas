@@ -22,6 +22,7 @@
 import {
   MarkerError,
   appendSection,
+  insertSectionAfter,
   parseMarkers,
   presentIds,
   renderSection,
@@ -270,6 +271,68 @@ const input =
     "<!-- pi-rukas:agents-md:begin b v1 -->\nq\n<!-- pi-rukas:agents-md:end b -->\n";
   const ids = presentIds(valid);
   assert(ids.join(",") === "a,b", "valid multi-pair file still parses cleanly");
+}
+
+// ------------------------------------------------------------ code-style id
+//
+// The new managed id `code-style` must flow through the same parse / splice /
+// insert primitives as the existing ids, without touching the tripwire regexes
+// (the id charset `[a-z0-9-]` already admits it).
+
+{
+  const codeStyleBody = "- No `# type: ignore`\n- Prefer named exports\n";
+  const withCodeStyle =
+    "# T\n" +
+    renderSection("quality-gates", managedBody) +
+    renderSection("environment", "- Manifest: `package.json`\n") +
+    renderSection("code-style", codeStyleBody) +
+    renderSection(
+      "decision-ledger",
+      "| key | value | provenance |\n| --- | --- | --- |\n| x | y | [auto:2026-01-01] |",
+    );
+
+  // presentIds lists the new id between environment and decision-ledger.
+  assert(
+    presentIds(withCodeStyle).join(",") ===
+      "quality-gates,environment,code-style,decision-ledger",
+    "code-style: presentIds lists the new id in document order",
+  );
+
+  // sectionContent round-trips the body.
+  assert(
+    sectionContent(withCodeStyle, "code-style") === codeStyleBody,
+    "code-style: sectionContent returns the managed body",
+  );
+
+  // A re-splice of the code-style section is byte-identical and leaves the
+  // ledger untouched.
+  const re = splice(withCodeStyle, "code-style", codeStyleBody);
+  assert(re === withCodeStyle, "code-style: re-splice with the same body is byte-identical");
+  assert(
+    sectionContent(re, "decision-ledger") === sectionContent(withCodeStyle, "decision-ledger"),
+    "code-style: the ledger is untouched by the code-style re-splice",
+  );
+
+  // insertSectionAfter places a code-style pair AFTER the environment end marker
+  // and BEFORE the decision-ledger begin marker.
+  const before =
+    "# T\n" +
+    renderSection("quality-gates", managedBody) +
+    renderSection("environment", "- Manifest: `package.json`\n") +
+    renderSection(
+      "decision-ledger",
+      "| key | value | provenance |\n| --- | --- | --- |\n| x | y | [auto:2026-01-01] |",
+    );
+  const inserted = insertSectionAfter(before, "code-style", codeStyleBody, "environment");
+  const envEnd = inserted.indexOf("<!-- pi-rukas:agents-md:end environment -->");
+  const csBegin = inserted.indexOf("<!-- pi-rukas:agents-md:begin code-style");
+  const dlBegin = inserted.indexOf("<!-- pi-rukas:agents-md:begin decision-ledger");
+  assert(csBegin > envEnd, "code-style insert: the pair lands AFTER the environment end marker");
+  assert(csBegin < dlBegin, "code-style insert: the pair lands BEFORE decision-ledger");
+  assert(
+    presentIds(inserted).join(",") === "quality-gates,environment,code-style,decision-ledger",
+    "code-style insert: the pair is a well-formed managed section",
+  );
 }
 
 function throws(fn: () => unknown): boolean {

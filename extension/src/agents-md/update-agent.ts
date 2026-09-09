@@ -17,10 +17,18 @@ import {
   mergeOmissionRows,
   parseLedger,
   renderLedger,
+  upsertRow,
 } from "./ledger.ts";
-import { MARKER_VERSION, parseMarkers, presentIds } from "./markers.ts";
-import { commandsBody, environmentBody, gatesBody } from "./renderer.ts";
 import {
+  MARKER_VERSION,
+  insertSectionAfter,
+  parseMarkers,
+  presentIds,
+  sectionContent,
+} from "./markers.ts";
+import { codeStyleBody, commandsBody, environmentBody, gatesBody } from "./renderer.ts";
+import {
+  type AgentOverride,
   SCAFFOLD_HEADING_MAP,
   type ScaffoldOpts,
   computeScaffold,
@@ -210,8 +218,25 @@ export function makeUpdateAgent(
       };
     }
 
-    const facts = detectFacts(root);
     const today = fs.today?.() ?? new Date().toISOString().slice(0, 10);
+    const existingLedger = parseExistingLedger(current);
+    if (existingLedger === undefined) {
+      return {
+        verb: "update",
+        error: "refusing to update corrupt markers: decision-ledger has a malformed row",
+        exitCode: 2,
+      };
+    }
+
+    // The B1↔B2 seam: when `agentOverride.facts` is supplied, the three fact
+    // sections are built from it via the EXISTING gatesBody/commandsBody/
+    // environmentBody functions (the same functions a rich-manifest project
+    // already uses) INSTEAD of a fresh detectFacts(). The resulting section
+    // rows get [detected:agent,<today>] provenance. When absent, fall back to
+    // detectFacts(root) exactly as before.
+    const agentOverride: AgentOverride | undefined = effectiveOpts.agentOverride;
+    const useOverride = agentOverride?.facts !== undefined;
+    const facts = useOverride ? (agentOverride.facts as DetectedFacts) : detectFacts(root);
 
     // Fact-derived bodies for managed sections.
     const updates = new Map<string, string>();
@@ -225,29 +250,23 @@ export function makeUpdateAgent(
       else omitted.push({ id, reason: body.omit });
     }
 
-    // Merge ledger.
-    const auto = omissionRowsFn(facts, today);
-    const existingLedger = parseExistingLedger(current);
-    if (existingLedger === undefined) {
-      return {
-        verb: "update",
-        error: "refusing to update corrupt markers: decision-ledger has a malformed row",
-        exitCode: 2,
-      };
-    }
-    const merged = mergeOmissionRows(mergeAutoRows(existingLedger, auto), omitted, today);
-    const drift = driftWarnings(existingLedger, auto);
+    // The code-style section (agent-derived, plain bullets — it has no
+    // omission concept, so it is never added to `omitted`).
+    const codeStyleOut = agentOverride?.codeStyleBullets
+      ? codeStyleBody(agentOverride.codeStyleBullets)
+      : undefined;
+    if (codeStyleOut !== undefined) updates.set("code-style", codeStyleOut);
 
-    // Single-pass rebuild from markers.
+    // Build the body splices FIRST (no ledger yet). This gives us the
+    // post-update file bytes that the omission re-derivation below uses.
+    // The splice loop rewrites only spans present in the file; the code-style
+    // pair is inserted explicitly after it (first-time insertion, Item 2).
     const { spans } = parseMarkers(current);
-    const ledgerSpan = spans.find((s) => s.id === "decision-ledger");
-    const ledgerBody = renderLedger(merged);
     const parts: string[] = [];
     let cursor = 0;
     for (const span of spans) {
       let body: string | undefined;
-      if (span.id === "decision-ledger" && ledgerSpan) body = ledgerBody;
-      else if (span.id !== "decision-ledger") body = updates.get(span.id);
+      if (span.id !== "decision-ledger") body = updates.get(span.id);
       if (body === undefined) continue;
       parts.push(current.slice(cursor, span.contentStart));
       parts.push(body.endsWith("\n") ? body : `${body}\n`);
@@ -255,6 +274,105 @@ export function makeUpdateAgent(
     }
     parts.push(current.slice(cursor));
     let bytes = parts.join("");
+
+    // First-time code-style insertion: the splice loop above only REWRITES
+    // spans already present in the file. When code-style content is supplied
+    // but the file has no existing code-style span, explicitly insert it after
+    // the environment section (the same primitive the scaffold post-pass uses).
+    // Absent bullets → no pair, no omission row (handled above).
+    if (codeStyleOut !== undefined && !spans.some((s) => s.id === "code-style")) {
+      bytes = insertSectionAfter(bytes, "code-style", codeStyleOut, "environment");
+    }
+
+    // --- Merge ledger. ---
+    const FACT_IDS = ["quality-gates", "commands", "environment"] as const;
+    // The `auto` parameter to mergeAutoRows is the omission rows for the
+    // NON-detected ids. The filter is the Item-4 omission suppression (the
+    // churn-loop fix): it keys off the EXISTING ledger's provenance for the
+    // section id itself — an id that already carries a [detected:agent] row
+    // has its omit:<id> row dropped so it is never re-stamped with today's
+    // date. This is what makes a routine update on a no-manifest fixture
+    // (whose ledger already carries [detected:agent] rows from a prior
+    // agentOverride call) upsert ZERO omit:* rows, even across a date
+    // rollover. The filter keys off the section id (quality-gates /
+    // commands / environment), NEVER off the omit:<id> rows (auto-provenance
+    // by construction — filtering those would be a no-op).
+    const detectedAgentIds = new Set(
+      existingLedger.filter((r) => r.provenance === "detected").map((r) => r.key),
+    );
+    const auto = omissionRowsFn(facts, today).filter(
+      (r) => !detectedAgentIds.has(r.key.slice("omit:".length)),
+    );
+    let merged = mergeAutoRows(existingLedger, auto);
+
+    // Item 5 (refresh) + Item 3 (first-time population). For each fact section
+    // that agentOverride is writing (a body, not an omission): with
+    // refresh:true the [detected:agent] row is DIRECTLY replaced (bypassing
+    // mergeAutoRows' sticky rule, which would otherwise keep the old row when
+    // the value is unchanged); without refresh the row is populated only for
+    // ids that do NOT yet carry a [detected:agent,...] row. Sections that are
+    // [auto,...] or [asked,...] are NEVER touched (provenance checked before
+    // acting). A no-op — new body byte-identical (post trailing-newline
+    // normalisation) to the existing section — keeps the existing row and its
+    // date (no churn).
+    if (useOverride) {
+      for (const id of FACT_IDS) {
+        const body = updates.get(id);
+        if (body === undefined) continue; // omitted → no detected row
+        const spliceForm = body.endsWith("\n") ? body : `${body}\n`;
+        const existing = existingLedger.find((r) => r.key === id);
+        const isDetected = existing?.provenance === "detected";
+        if (effectiveOpts.refresh === true) {
+          if (!isDetected) continue; // refresh only touches [detected:agent] rows
+          const existingBody = sectionContent(current, id);
+          const sameValue =
+            existingBody !== undefined &&
+            (existingBody.endsWith("\n") ? existingBody : `${existingBody}\n`) === spliceForm;
+          if (sameValue) continue; // byte-identical → keep row + date, no churn
+          merged = upsertRow(merged, {
+            key: id,
+            value: "agent",
+            provenance: "detected",
+            date: today,
+          });
+        } else if (!isDetected && existing?.provenance === undefined) {
+          // First-time population: id has no existing ledger row at all.
+          merged = upsertRow(merged, {
+            key: id,
+            value: "agent",
+            provenance: "detected",
+            date: today,
+          });
+        }
+        // else: an existing [auto] row (rich manifest) or [detected] row
+        // without refresh is left alone — first-time-only, never overwrite.
+      }
+    }
+
+    // Add the omission rows for ids that are NOT agent-detected (Item 4
+    // suppression). The `omitted` array (built from the agentOverride facts
+    // when supplied) is filtered to exclude any id that has a [detected:agent]
+    // row — the operator is not told a section is omitted when it is
+    // agent-derived. The plan's `omitted` field reflects the same filter.
+    const omittedForLedger = omitted.filter((o) => !detectedAgentIds.has(o.id));
+    merged = mergeOmissionRows(merged, omittedForLedger, today);
+    const drift = driftWarnings(existingLedger, auto);
+
+    // Render the ledger back into the managed section of the spliced bytes.
+    const { spans: spans2 } = parseMarkers(bytes);
+    const ledgerSpan2 = spans2.find((s) => s.id === "decision-ledger");
+    const ledgerBody = renderLedger(merged);
+    const parts2: string[] = [];
+    let cursor2 = 0;
+    for (const span of spans2) {
+      if (span.id === "decision-ledger" && ledgerSpan2) {
+        parts2.push(bytes.slice(cursor2, span.contentStart));
+        parts2.push(ledgerBody.endsWith("\n") ? ledgerBody : `${ledgerBody}\n`);
+        cursor2 = span.contentEnd;
+      }
+    }
+    parts2.push(bytes.slice(cursor2));
+    bytes = parts2.join("");
 
     // Scaffold post-pass: detect boilerplate headings for idempotency.
     const existingIds = new Set(parsed);
@@ -297,7 +415,7 @@ export function makeUpdateAgent(
         oldBytes: current,
         wouldWrite,
         managedIds: parsed,
-        omitted: omitted.map((o) => ({ id: o.id, reason: o.reason })),
+        omitted: omittedForLedger.map((o) => ({ id: o.id, reason: o.reason })),
         drift: drift.length
           ? drift.map((d) => `${d.key}: "${d.asked}" → derives "${d.derived}"`).join("; ")
           : undefined,

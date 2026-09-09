@@ -35,7 +35,13 @@ import { type LedgerRow, renderLedger } from "./ledger.ts";
 import { renderSection } from "./markers.ts";
 
 /** The fixed section order. Omitted sections leave a gap, not a reflow. */
-const SECTION_ORDER = ["quality-gates", "commands", "environment", "decision-ledger"] as const;
+const SECTION_ORDER = [
+  "quality-gates",
+  "commands",
+  "environment",
+  "code-style",
+  "decision-ledger",
+] as const;
 
 /**
  * The single source of truth for omission reasons, keyed by managed section
@@ -95,6 +101,21 @@ export const FACT_SECTIONS: {
   { id: "commands", body: commandsBody },
   { id: "environment", body: environmentBody },
 ];
+
+/**
+ * Pure body for the `code-style` managed section: a dense bullet list built
+ * from a plain string[]. This section is agent-derived, not manifest-derived,
+ * so it has no omission concept — `codeStyleBody` returns `undefined` (never
+ * an empty string) when `bullets` is empty or absent, so no empty marker pair
+ * can be emitted. The rendered body is a bare bullet list (no per-section
+ * heading line), matching the other fact-section bodies, and satisfies the
+ * wrap's code-style classification predicate: ≥1 bullet line, no table line,
+ * ≤15 non-empty lines.
+ */
+export function codeStyleBody(bullets?: string[]): string | undefined {
+  if (!bullets || bullets.length === 0) return undefined;
+  return bullets.map((b) => `- ${b}`).join("\n");
+}
 
 export interface RenderInput {
   facts: DetectedFacts;
