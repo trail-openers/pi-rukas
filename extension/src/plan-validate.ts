@@ -144,3 +144,77 @@ export function validateDraft(
   }
   return { ok: problems.length === 0, problems };
 }
+
+// ---------------------------------------------------------------------------
+// Body budget — specs must fit the forge (vipune session, 2026-09-09: four
+// consecutive filings hit GitHub's 65,536-char wall, including a
+// quarter-scope ticket that passed its gap gate — body size scales with
+// INVESTIGATION volume, not feature complexity, and nothing budgeted it).
+// ---------------------------------------------------------------------------
+
+/** GitHub's issue-body cap. GitLab's is larger; one conservative limit serves both. */
+export const FORGE_BODY_MAX = 65536;
+
+/**
+ * The render budget: headroom under the cap for the residual-disclosure
+ * append and corrective-round writeback bullets that land AFTER drafting.
+ */
+export const BODY_BUDGET = FORGE_BODY_MAX - 4096;
+
+export interface RenderBudget {
+  maxItemsPerSection: number;
+  itemClipChars: number;
+}
+
+/**
+ * Stage 0 is the DEFAULT render (a >400-char "item" is an essay — the
+ * reporter prompt demands one self-contained item); stage 1 is compaction.
+ * Hardcoded, deterministic, no env knobs.
+ */
+export const RENDER_BUDGETS: readonly RenderBudget[] = [
+  { maxItemsPerSection: 20, itemClipChars: 400 },
+  { maxItemsPerSection: 10, itemClipChars: 220 },
+];
+
+/** Clip one rendered item with a visible marker. Fallback strings are never items. */
+export function clipItem(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/** Per-`## heading` char counts — the halt detail's "what to trim" map. */
+export function bodySectionBreakdown(body: string): string {
+  const parts = body.split(/^## /m);
+  const rows: string[] = [];
+  if ((parts[0] ?? "").length > 0) rows.push(`(preamble): ${parts[0]?.length ?? 0} chars`);
+  for (const p of parts.slice(1)) {
+    const heading = (p.split("\n")[0] ?? "").trim();
+    rows.push(`${heading}: ${p.length + 3} chars`);
+  }
+  return rows.join("; ");
+}
+
+export type FittedDraft<T extends { body: string }> =
+  | { result: T; budget: RenderBudget; compacted: boolean }
+  | { tooLarge: true; size: number; breakdown: string };
+
+/**
+ * Try stage 0; over BODY_BUDGET → re-render at stage 1; still over →
+ * tooLarge (the caller halts with the breakdown — e.g. an operator context
+ * so large no compaction can fit it, which is the operator's call to trim).
+ * Pure: at most two cheap string re-renders, byte-deterministic.
+ */
+export function fitDraftToBudget<T extends { body: string }>(
+  draftAt: (budget: RenderBudget) => T,
+): FittedDraft<T> {
+  const stage0 = RENDER_BUDGETS[0] as RenderBudget;
+  const first = draftAt(stage0);
+  if (first.body.length <= BODY_BUDGET) return { result: first, budget: stage0, compacted: false };
+  const stage1 = RENDER_BUDGETS[1] as RenderBudget;
+  const second = draftAt(stage1);
+  if (second.body.length <= BODY_BUDGET) return { result: second, budget: stage1, compacted: true };
+  return {
+    tooLarge: true,
+    size: second.body.length,
+    breakdown: bodySectionBreakdown(second.body),
+  };
+}

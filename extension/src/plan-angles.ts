@@ -152,7 +152,7 @@ const PLAN_REPORTER_PROMPT = [
   "## How to report items — STRUCTURED, not prose",
   "For each structured item you identify, call the `report_plan_item` tool ONCE (one call per item, never batched; never as prose or JSON in your reply — only the tool calls count). Fields:",
   `  - kind: one of ${PLAN_ITEM_KINDS.map((k) => `"${k}"`).join(" | ")}`,
-  "  - text: the item — one complete, self-contained item (no bullet marker, no preamble, no heading)",
+  "  - text: the item — ONE complete, self-contained sentence (two at most), at most ~400 characters. Name symbols and paths; never paste code blocks, diffs or essays — the driver clips longer items and the clipped tail is LOST. No bullet marker, no preamble, no heading.",
   "  - angle: your angle name (omit if not applicable)",
   "Kind meanings: acceptance-criterion = a testable outcome; test-surface-item = an existing test to extend or a missing one to add (file + name); edge-case = a pitfall, failure mode or boundary condition the implementer must handle; sub-issue = one sub-ticket of this EPIC (title + brief scope) — for EPIC type only, and only when your angle's prompt chartered sub-issue emission to you (for epics that is the decomposition-surface angle); reference = a file/pattern already in the work area (path + why it matters); out-of-scope = something this ticket must NOT do. If you found nothing of a kind, do not call it for that kind.",
 ].join("\n");

@@ -121,6 +121,8 @@ export interface PlanResult {
    * fixture run, 2026-09-09). Present only when at least one angle failed.
    */
   failedAngles?: { name: string; detail: string }[];
+  /** True when the body was compacted to fit the forge's 65,536-char limit. */
+  compacted?: boolean;
   /** Per-phase wall-clock durations, always present on a completed run. */
   timings?: PlanPhaseTiming[];
 }

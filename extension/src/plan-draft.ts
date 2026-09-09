@@ -23,9 +23,11 @@ import { EPIC_SUB_ISSUE_DEPTH_LIMIT, type PlanType, planTitle } from "./plan-typ
 import {
   AC_FALLBACK,
   REFERENCES_FALLBACK,
+  type RenderBudget,
   SPIKE_DELIVERABLE_FALLBACK,
   SUB_ISSUES_FALLBACK,
   TEST_SURFACE_FALLBACK,
+  clipItem,
 } from "./plan-validate.ts";
 import {
   type ResolvedDecision,
@@ -313,11 +315,9 @@ export function techContextLine(x: {
 }
 
 // #633 SIMPLICITY-lens note: the references fallback (REF_RE prose file-path scan)
-// SURVIVES where the sub-issue prose fallback does not. A file-path regex over prose
-// is a narrow, high-precision pattern — it matches only tokens that look like code
-// paths, not free lines. The sub-issue fallback line-split ANY prose line >= 6 chars
-// into checkboxes; this one cannot. Structured reference items take precedence; the
-// scan is only a fallback when an angle made zero `report_plan_item` reference calls.
+// SURVIVES where the sub-issue prose fallback does not: a file-path regex is
+// narrow and high-precision. Structured reference items take precedence; the
+// scan fires only when an angle made zero reference calls.
 const REF_RE = /\b[\w./-]+\.(?:ts|tsx|js|rs|go|py|md)\b/g;
 
 export function draftSpec(
@@ -329,26 +329,22 @@ export function draftSpec(
   outOfScope: string[],
   depth: number,
   directives: OperatorDirectives,
-  /**
-   * #639 DECISION B: the structured record of carried gap-gate decisions
-   * (the separate parameter). `openQuestions` stays `string[]` for
-   * GENUINELY OPEN questions; resolved decisions come from here, never from
-   * a string-prefix test of the question text (the old resolved-prefix
-   * renderer is deleted — the prefix is dead). See plan-writeback.ts.
-   */
+  // #639 DECISION B: carried gap-gate decisions travel structured here;
+  // `openQuestions` stays genuinely-open strings (see plan-writeback.ts).
   resolvedDecisions: ResolvedDecision[],
-  /**
-   * The writeback heading → resolution bullet map for this round's carried
-   * decisions (plan-writeback.ts: buildResolvedDecisions). This is the
-   * SINGLE splice site (six-lens re-review, PR #640, ARCHITECTURE lens —
-   * the dead onCorrective splice is gone): draftSpec rebuilds the body from
-   * scratch and applies the writeback HERE, once. The splice outcomes are
-   // reported back so the returned decisions' writtenBack flags are PRODUCED
-   * BY the write, not predicted before it.
-   */
+  // The writeback heading → bullets map. draftSpec is the SINGLE splice
+  // site (PR #640): it rebuilds the body and applies the writeback once,
+  // reporting outcomes so writtenBack is PRODUCED by the write.
   writebackMap?: Map<string, string[]>,
+  // Render budget (plan-validate.ts): per-section item cap + item clip.
+  // ANGLE items clip; operator directive lines and fallbacks never do
+  // (operator authority, D2) — they count toward the budget and the
+  // tooLarge halt covers the extreme.
+  budget?: RenderBudget,
 ): { title: string; body: string; resolvedDecisions: ResolvedDecision[] } {
   const title = planTitle(descriptor, type);
+  const cap = budget?.maxItemsPerSection ?? SECTION_MAX_ITEMS;
+  const clip = (s: string) => clipItem(s, budget?.itemClipChars ?? 400);
 
   // D2: no clipping of operator context; the inventory is not capped at 8.
   const ctx = sectionBullets(
@@ -356,14 +352,11 @@ export function draftSpec(
     "none — cold start (no prior /research or session context)",
   );
 
-  // Technical context: per-kind COUNT + the angle's prose summary (D5) —
-  // never the item text (the typed sections are the single record of it).
-  // A FAILED angle renders its hole explicitly (vipune fixture run: a
-  // timed-out angle used to vanish from the body, so /work never knew a
-  // third of the investigation was missing).
+  // Technical context: per-kind COUNT + prose summary (D5), never item
+  // text. A FAILED angle renders its hole explicitly (vipune fixture run).
   const angleLines = findings.map((x) =>
     x.ok
-      ? techContextLine(x)
+      ? clip(techContextLine(x))
       : `- **${x.name}**: (${x.failure ?? "failed"} — NOT investigated; treat this surface as unverified)`,
   );
   const techContext =
@@ -375,8 +368,8 @@ export function draftSpec(
   // from ALL angles (D1: the Test surface section no longer double-uses lines).
   const acItems = [
     ...directives.acceptanceCriteria,
-    ...itemsByKind(findings, "acceptance-criterion").map((i) => i.text),
-  ].slice(0, SECTION_MAX_ITEMS);
+    ...itemsByKind(findings, "acceptance-criterion").map((i) => clip(i.text)),
+  ].slice(0, cap);
 
   // An operator TEST SURFACE directive REPLACES the angle items (unlike
   // ACs, which prepend) — "exactly: none" must not be diluted (C2).
@@ -385,16 +378,16 @@ export function draftSpec(
     opTestSurface.length > 0
       ? opTestSurface
       : itemsByKind(findings, "test-surface-item")
-          .map((i) => i.text)
-          .slice(0, SECTION_MAX_ITEMS),
+          .map((i) => clip(i.text))
+          .slice(0, cap),
     TEST_SURFACE_FALLBACK,
   );
 
   // References: structured reference items first; fallback to a prose
   // file-path scan only when none were reported (silence-detection precedent).
   const refItems = itemsByKind(findings, "reference")
-    .map((i) => i.text)
-    .slice(0, SECTION_MAX_ITEMS);
+    .map((i) => clip(i.text))
+    .slice(0, cap);
   const proseRefs = [...new Set(findings.flatMap((x) => x.text.match(REF_RE) ?? []))].slice(0, 8);
   const referenceLines =
     refItems.length > 0
@@ -407,20 +400,26 @@ export function draftSpec(
   // pitfalls take precedence.
   const edgeItems = [
     ...directives.pitfalls,
-    ...itemsByKind(findings, "edge-case").map((i) => i.text),
-  ].slice(0, SECTION_MAX_ITEMS);
+    ...itemsByKind(findings, "edge-case").map((i) => clip(i.text)),
+  ].slice(0, cap);
   const edgeCases = sectionBullets(edgeItems, "none surfaced by the investigation angles");
 
   const depthLimit = depth >= EPIC_SUB_ISSUE_DEPTH_LIMIT ? `\n${DEPTH_LIMIT_NOTE}\n` : "";
 
+  // Sub-issue COUNT is never budget-capped (a pinned "EXACTLY N" must
+  // survive compaction); only the per-item text clips.
   const subIssues =
     type === "epic" && depth < EPIC_SUB_ISSUE_DEPTH_LIMIT
-      ? `\n## Sub-issues\n\n${epicSubIssues(findings).join("\n") || `- ${SUB_ISSUES_FALLBACK}`}\n`
+      ? `\n## Sub-issues\n\n${
+          epicSubIssues(findings)
+            .map((s) => clip(s))
+            .join("\n") || `- ${SUB_ISSUES_FALLBACK}`
+        }\n`
       : "";
 
   const oosAll = [
     ...directives.outOfScope,
-    ...itemsByKind(findings, "out-of-scope").map((i) => i.text),
+    ...itemsByKind(findings, "out-of-scope").map((i) => clip(i.text)),
     ...outOfScope,
   ];
 
@@ -435,8 +434,8 @@ export function draftSpec(
             ...findings
               .filter((x) => x.name === "scoping" && x.ok)
               .flatMap((x) => x.toolUses)
-              .map((i) => i.text),
-          ].slice(0, SECTION_MAX_ITEMS),
+              .map((i) => clip(i.text)),
+          ].slice(0, cap),
           SPIKE_DELIVERABLE_FALLBACK,
         )}\n`
       : `## Acceptance criteria\n\n${sectionBullets(acItems, AC_FALLBACK)}\n`;

@@ -406,12 +406,23 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
   const catchIdx = src.indexOf("catch (e) {", buildIdx);
   assert(catchIdx > 0, "ERROR_HANDLING: the catch block exists");
   const catchBlock = src.slice(catchIdx, catchIdx + 2000);
+  // The disclosure builder was extracted to plan-driver-halt.ts (body-budget
+  // PR, 500-line seam); the driver's catch delegates to it, and the cause +
+  // disclosure pins follow the extraction.
   assert(
-    catchBlock.includes("{ cause: err }"),
+    catchBlock.includes("throw correctiveRedraftError("),
+    "ERROR_HANDLING: the catch throws via the extracted disclosure builder",
+  );
+  const haltSrc = readFileSync(
+    resolve(import.meta.dirname, "..", "src", "plan-driver-halt.ts"),
+    "utf8",
+  );
+  assert(
+    haltSrc.includes("{ cause: err }"),
     "ERROR_HANDLING: the catch uses the Error cause option (original stack preserved)",
   );
   assert(
-    catchBlock.includes("carried gap decision(s)"),
+    haltSrc.includes("carried gap decision(s)"),
     "ERROR_HANDLING: the thrown message names the carried gap decisions (disclosure)",
   );
   // Integration: the corrective round fires and the pipeline completes.

@@ -49,7 +49,8 @@ export interface FilingFailure {
     | "needs-clarification"
     | "draft-invalid"
     | "duplicate-risk"
-    | "review-unparseable";
+    | "review-unparseable"
+    | "body-too-large";
   detail?: string;
 }
 

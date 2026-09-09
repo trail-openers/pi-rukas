@@ -48,6 +48,7 @@ import {
   mechanicalInventory,
   parseOperatorDirectives,
 } from "./plan-draft.ts";
+import { correctiveRedraftError, haltResult } from "./plan-driver-halt.ts";
 import { type FilingFailure, fileIssue, getPlanForge, planForgeFor } from "./plan-filing.ts";
 import { type CarriedCritical, gapGatePrompt, gapGateVerifyPrompt } from "./plan-gate-prompt.ts";
 import {
@@ -56,13 +57,15 @@ import {
   runInvestigation,
 } from "./plan-investigate.ts";
 import { precheckDescriptor } from "./plan-precheck.ts";
-import { parsePinnedSubIssueCount, validateDraft } from "./plan-validate.ts";
+import {
+  FORGE_BODY_MAX,
+  fitDraftToBudget,
+  parsePinnedSubIssueCount,
+  validateDraft,
+} from "./plan-validate.ts";
 
-/**
- * The dispatch seam, injectable so the smoke test can drive the pipeline with
- * a stubbed `dispatchCore` (ESM namespaces are not mutable in Bun — this is
- * the `FsOps`-style DI the agents-md core uses for the same reason).
- */
+// The dispatch seam, injectable for tests (ESM namespaces are not mutable
+// in Bun — the FsOps-style DI the agents-md core uses too).
 export type PlanDispatchFn = typeof dispatchCore;
 
 let _dispatchOverride: PlanDispatchFn | null = null;
@@ -124,26 +127,23 @@ export async function runPlanPipeline(
     { phase: "total", ms: Date.now() - pipelineStart },
   ];
 
-  // Phase 0b — deterministic under-specification triage (plan-precheck.ts),
-  // BEFORE any dispatch or inventory work; fires only on the strongest
-  // signal, so a legitimately terse descriptor is never blocked.
+  // Phase 0b — deterministic under-specification triage (plan-precheck.ts)
+  // BEFORE any dispatch; fires only on the strongest signal.
   const pre = precheckDescriptor(type, descriptor, context);
   if (!pre.ok) {
     trace(`plan-driver: precheck fired — descriptor too thin, no dispatch paid (type=${type})`);
-    return {
+    return haltResult({
       type,
       title: planTitle(descriptor, type),
       spec: `(spec not drafted — the descriptor is too thin to ground an investigation)\n\nAnswer these and re-run start_plan_driver with a fuller descriptor or a context param:\n${pre.questions.map((q) => `- ${q}`).join("\n")}`,
-      gaps: [],
       priorContext: [],
-      filed: false,
-      filingFailure: {
+      failure: {
         reason: "needs-clarification",
         detail:
           "the descriptor is under the word floor with no code identifier and no context param — investigation was deliberately skipped before any dispatch",
       },
       timings: finishTimings(),
-    };
+    });
   }
 
   // Phase 1. ORDER IS LOAD-BEARING (vipune fixture run): renderPriorContext
@@ -151,9 +151,7 @@ export async function runPlanPipeline(
   // authority (D2) — come FIRST; vipune snapshots are the droppable tail.
   const inv = await timed("inventory", () => mechanicalInventory(repoRoot, descriptor));
   const priorContext: { source: string; fact: string }[] = [];
-  // D7: operator-supplied typed fields (ACCEPTANCE CRITERIA / PITFALLS /
-  // OUT OF SCOPE blocks in the context param) take precedence over
-  // specialist output for those fields — parsed once, threaded to draftSpec.
+  // D7: operator typed blocks override specialist output for their fields.
   const directives = parseOperatorDirectives(context);
   if (context && context.trim().length > 0) {
     for (const line of context.trim().split("\n")) {
@@ -209,20 +207,18 @@ export async function runPlanPipeline(
     // operator gets the rationale AND the recovery path (acknowledge the
     // named issue via the context param; the risk child reads it and a
     // reconciled issue cannot raise the risk above medium).
-    return {
+    return haltResult({
       type,
       title: planTitle(descriptor, type),
       spec: `(spec not drafted — duplicate risk HIGH)\n\nRationale from the risk check:\n${duplicateRisk.rationale}\n\nIf this ticket deliberately reverses or extends the named issue, re-run start_plan_driver with a context param acknowledging it (e.g. "this deliberately reverses #103 because …") — an acknowledged issue is reconciled, not a duplicate. Full rationale: /runs → plan-duplicate-risk.`,
-      gaps: [],
-      priorContext: priorContext.slice(0, 15),
-      filed: false,
-      filingFailure: {
+      priorContext,
+      failure: {
         reason: "duplicate-risk",
         detail: `duplicate risk HIGH — ${duplicateRisk.rationale.slice(0, 300)}`,
       },
-      failedAngles: failedAngles.length > 0 ? failedAngles : undefined,
+      failedAngles,
       timings: finishTimings(),
-    };
+    });
   }
 
   // #633 aggregate all-angles-failed guard (fail-closed): if EVERY angle
@@ -241,38 +237,63 @@ export async function runPlanPipeline(
     trace(
       `plan-driver: type=${type} angles=${findings.length} structured=${withItems} gaps=0 filed=false dryRun=${!!dryRun} ALL-ANGLES-FAILED`,
     );
-    return {
+    return haltResult({
       type,
       title,
       spec,
-      gaps: [],
-      priorContext: priorContext.slice(0, 15),
-      filed: false,
-      issueUrl: undefined,
+      priorContext,
       capHit: true,
-      filingFailure: {
+      failure: {
         reason: "skipped-all-angles-failed",
         detail: `all ${findings.length} angles produced zero structured items — filing was deliberately skipped (not a forge failure)`,
       },
-      failedAngles: failedAngles.length > 0 ? failedAngles : undefined,
+      failedAngles,
       timings: finishTimings(),
-    };
+    });
   }
 
-  // Phase 3
+  // Phase 3 — draft WITHIN the forge body budget (vipune session: four
+  // filings hit the 65,536-char wall after clean gates; plan-validate.ts
+  // owns the stage-0/compaction/tooLarge policy).
   const openQuestions: string[] = [];
   const outOfScope: string[] = [];
-  let { title, body } = draftSpec(
-    type,
-    descriptor,
-    findings,
-    priorContext,
-    openQuestions,
-    outOfScope,
-    depth,
-    directives,
-    [],
+  const fitted = fitDraftToBudget((b) =>
+    draftSpec(
+      type,
+      descriptor,
+      findings,
+      priorContext,
+      openQuestions,
+      outOfScope,
+      depth,
+      directives,
+      [],
+      undefined,
+      b,
+    ),
   );
+  if ("tooLarge" in fitted) {
+    trace(`plan-driver: body too large even after compaction (${fitted.size} chars) — halting`);
+    return haltResult({
+      type,
+      title: planTitle(descriptor, type),
+      spec: `(spec not rendered — the drafted body is ${fitted.size} chars even after compaction; the forge caps issue bodies at ${FORGE_BODY_MAX})\n\nPer-section sizes: ${fitted.breakdown}\n\nTrim the dominant section's source (usually the context param) and re-run start_plan_driver.`,
+      priorContext,
+      failure: {
+        reason: "body-too-large",
+        detail: `the drafted body is ${fitted.size} chars after maximum compaction; the forge caps bodies at ${FORGE_BODY_MAX}. Per-section sizes: ${fitted.breakdown}`,
+      },
+      failedAngles,
+      timings: finishTimings(),
+    });
+  }
+  const chosenBudget = fitted.budget;
+  const compacted = fitted.compacted;
+  let { title, body } = fitted.result;
+  if (compacted) {
+    trace(`plan-driver: body compacted to fit the forge limit (${body.length} chars)`);
+    body += `\n\n> Compacted to fit the forge's ${FORGE_BODY_MAX}-char body limit (per-section items capped at ${chosenBudget.maxItemsPerSection}, item text clipped at ${chosenBudget.itemClipChars} chars); full findings live in the run transcripts (/runs).`;
+  }
 
   // Phase 3b — deterministic body validation (plan-validate.ts), BEFORE the
   // gate: a draft whose load-bearing sections fell back to placeholders
@@ -283,20 +304,18 @@ export async function runPlanPipeline(
   });
   if (!draftCheck.ok) {
     trace(`plan-driver: draft validation failed — ${draftCheck.problems.join("; ")}`);
-    return {
+    return haltResult({
       type,
       title,
       spec: body,
-      gaps: [],
-      priorContext: priorContext.slice(0, 15),
-      filed: false,
-      filingFailure: {
+      priorContext,
+      failure: {
         reason: "draft-invalid",
         detail: `the drafted body failed deterministic validation, so it was not reviewed or filed: ${draftCheck.problems.join("; ")}. Re-run start_plan_driver (the angles are re-dispatched), or supply the missing content via the context param (e.g. an ACCEPTANCE CRITERIA block).`,
       },
-      failedAngles: failedAngles.length > 0 ? failedAngles : undefined,
+      failedAngles,
       timings: finishTimings(),
-    };
+    });
   }
 
   // Phase 4 — gap gate: bug/feature/epic only. Chore/spike are
@@ -315,18 +334,12 @@ export async function runPlanPipeline(
   let lastCarried: CarriedCritical[] = [];
 
   if (gapGateEnabled) {
-    // Phase 4 — the gap-gate loop (extracted to plan-gaps.ts: runGapGateLoop).
-    // Two fixes from the CRITICAL-only terminal rule follow-up:
-    // 1. NO-OP ROUND ELIMINATED: corrective fires only when blocking is
-    //    non-empty (CRITICAL present); zero CRITICAL → straight to cap/file.
-    // 2. UNION DISCLOSURE: non-blocking findings accumulate across rounds
-    //    (deduped by exact description string), so the residual section
-    //    discloses the union, not just the last round.
+    // Phase 4 — the gap-gate loop (plan-gaps.ts: runGapGateLoop; no-op
+    // rounds eliminated; residual union disclosed across rounds).
     const loopResult: GapGateLoopResult = await timed("gap-gate", () =>
       runGapGateLoop(
-        // The gate child gets the same bounds as every plan child: cwd
-        // pinned to the repo root, the 30-min timeout instead of the 2-hour
-        // backstop, and --no-skills (a marker-line reviewer, no reporter).
+        // Same bounds as every plan child: cwd pinned, 30-min timeout,
+        // --no-skills (marker-line reviewer, no reporter).
         (spec, opts) =>
           dispatch(
             pi,
@@ -352,6 +365,8 @@ export async function runPlanPipeline(
               blocking,
               type,
             ));
+            // Same budget as the fitted round-1 draft: deterministic across
+            // rounds, and the round-2 body stays under the forge limit.
             const redraft = draftSpec(
               type,
               descriptor,
@@ -363,6 +378,7 @@ export async function runPlanPipeline(
               directives,
               computed,
               writebackMap,
+              chosenBudget,
             );
             // Re-draft RETURN: marked decisions (writtenBack from the splice,
             // not predicted). Body/title re-assigned for round 2.
@@ -380,26 +396,9 @@ export async function runPlanPipeline(
               heading: d.writebackHeading ?? "Open Questions",
             }));
           } catch (e) {
-            // Disclosure: names what was computed before the throw.
-            const disclosed = computed.length
-              ? computed
-                  .map((d, i) => {
-                    const o = writtenOutcomes[i];
-                    const s = o
-                      ? o.applied
-                        ? `• written back to ${o.heading}: ${d.description} → ${d.resolution}`
-                        : `• NOT written back (open, decision owner operator): ${d.description} → ${d.resolution}`
-                      : `• not yet applied: ${d.description} → ${d.resolution}`;
-                    return s;
-                  })
-                  .join("\n")
-              : "(no decisions computed — the throw preceded the re-draft)";
-            const err = e instanceof Error ? e : new Error(String(e));
-            const msg = err.message;
-            throw new Error(
-              `corrective re-draft failed AFTER computing ${computed.length} carried gap decision(s) (the writeback decisions are disclosed here so the loss is visible):\n${disclosed}\noriginal error: ${msg}`,
-              { cause: err },
-            );
+            // Disclosure: names what was computed before the throw
+            // (builder in plan-driver-halt.ts).
+            throw correctiveRedraftError(computed, writtenOutcomes, e);
           }
         },
       ),
@@ -482,6 +481,7 @@ export async function runPlanPipeline(
     residualForDisclosure: residualForDisclosure.length > 0 ? residualForDisclosure : undefined,
     filingFailure,
     failedAngles: failedAngles.length > 0 ? failedAngles : undefined,
+    compacted: compacted || undefined,
     timings: finishTimings(),
   };
 }

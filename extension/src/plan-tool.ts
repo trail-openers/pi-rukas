@@ -211,7 +211,8 @@ function renderPlanResult(r: PlanResult, dryRun: boolean): string {
       f.reason === "needs-clarification" ||
       f.reason === "draft-invalid" ||
       f.reason === "duplicate-risk" ||
-      f.reason === "review-unparseable"
+      f.reason === "review-unparseable" ||
+      f.reason === "body-too-large"
     ) {
       // Deliberate skip (not a failure): the cap routed to surface (a
       // CRITICAL gap remains — CRITICAL-only blocks, #664 transposed; HIGH
@@ -231,6 +232,9 @@ function renderPlanResult(r: PlanResult, dryRun: boolean): string {
     r.failedAngles && r.failedAngles.length > 0
       ? `\n\n=== INVESTIGATION STATUS ===\n${r.failedAngles.length} angle(s) FAILED — their surface is uninvestigated:\n${r.failedAngles.map((a) => `- ${a.name}: ${a.detail}`).join("\n")}`
       : "";
+  const compactedNote = r.compacted
+    ? "\n\nCOMPACTED: the body was deterministically compacted to fit the forge's 65,536-char limit (a disclosure line inside the body says how; full findings live in the run transcripts)."
+    : "";
   const timingsLine =
     r.timings && r.timings.length > 0
       ? `\n\n=== TIMINGS ===\n${r.timings.map((t) => `${t.phase} ${fmtMs(t.ms)}`).join(" · ")}`
@@ -247,7 +251,7 @@ ${r.spec}
 ${gaps}
 
 === PRIOR CONTEXT ATTRIBUTION ===
-${prior}${investigation}${cap}${filingStatus}${timingsLine}`;
+${prior}${investigation}${cap}${filingStatus}${compactedNote}${timingsLine}`;
 }
 
 /** Human-readable duration: sub-minute in seconds, else m+s. */
@@ -272,6 +276,7 @@ function resultDetails(r: PlanResult, dryRun: boolean): Record<string, unknown> 
   if (r.capReason) d.capReason = r.capReason;
   if (r.filingFailure) d.filingFailure = r.filingFailure;
   if (r.failedAngles) d.failedAngles = r.failedAngles;
+  if (r.compacted) d.compacted = true;
   if (r.timings) d.timings = r.timings;
   return d;
 }
