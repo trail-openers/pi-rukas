@@ -46,7 +46,7 @@ export function registerPlanTool(pi: ExtensionAPI) {
     name: "start_plan_driver",
     label: "Start /plan Driver",
     description:
-      "Run the compiled /plan pipeline (classify → inventory → type-specialised investigation → draft → adversarial gap gate → file) and file the resulting GitHub issue. This is the ONLY way to create a GitHub issue: direct `gh issue create` (and `gh api` POST to the issues collection) is structurally refused for every role in every mode — the refusal names this tool. Call with dryRun:true FIRST to return { spec, gaps, priorContext, filed:false } without filing; show the spec + gap dispositions to the operator, and on their confirmation re-call with dryRun omitted to file. The result includes issueUrl on success. Epic sub-issues at depth >= 3 get a minimal body with a depth-limit note. Gap gate: PI_ENSEMBLE_PLAN_GAP_GATE=0 skips it for chore/spike types only. Non-resumable: a failed run is re-run, not resumed.",
+      "Run the compiled /plan pipeline (classify → inventory → type-specialised investigation → draft → adversarial gap gate → file) and file the resulting GitHub issue. This is the ONLY way to create a GitHub issue: direct `gh issue create` (and `gh api` POST to the issues collection) is structurally refused for every role in every mode — the refusal names this tool. Call with dryRun:true FIRST to return { spec, gaps, priorContext, filed:false } without filing; show the spec + gap dispositions to the operator, and on their confirmation re-call with dryRun omitted to file. The result includes issueUrl on success. Epic sub-issues at depth >= 3 get a minimal body with a depth-limit note. Gap gate: runs for bug/feature/epic; chore/spike get deterministic validation only. A too-thin descriptor (below the word floor, no code identifier, no context) returns needs-clarification questions without dispatching anything — answer them and re-call. Non-resumable: a failed run is re-run, not resumed.",
     parameters: Type.Object({
       descriptor: Type.String({
         description: "Ticket descriptor — one or two sentences describing the intended change.",
@@ -188,13 +188,19 @@ function renderPlanResult(r: PlanResult, dryRun: boolean): string {
   let filingStatus = "";
   if (!dryRun && !r.filed && r.filingFailure) {
     const f = r.filingFailure;
-    if (f.reason === "cap-surface" || f.reason === "gate-unavailable") {
-      // Deliberate skip (not a failure): either the cap routed to surface
-      // (a CRITICAL gap remains — CRITICAL-only blocks, #664 transposed;
-      // HIGH findings travel in the residual disclosure instead, so they
-      // are listed in the residual section) or the gap gate never ran (no
-      // reviewer saw the spec — re-run after the gate failure is addressed).
-      // The spec is not filed by policy; no forging happened to diagnose.
+    if (
+      f.reason === "cap-surface" ||
+      f.reason === "gate-unavailable" ||
+      f.reason === "needs-clarification" ||
+      f.reason === "draft-invalid"
+    ) {
+      // Deliberate skip (not a failure): the cap routed to surface (a
+      // CRITICAL gap remains — CRITICAL-only blocks, #664 transposed; HIGH
+      // findings travel in the residual disclosure instead), the gap gate
+      // never ran (no reviewer saw the spec — re-run after the gate failure
+      // is addressed), the deterministic precheck asked for clarification
+      // before any dispatch, or the drafted body failed deterministic
+      // validation. The spec is not filed by policy; no forging happened.
       filingStatus = `\n\n=== FILING STATUS ===\nNot filed (by policy): ${f.detail}`;
     } else {
       filingStatus = `\n\n=== FILING STATUS ===\nFiling did not complete. Reason: ${f.reason}${f.detail ? ` — ${f.detail}` : ""}. The spec above is still valid to review and can be re-run after the cause is addressed.`;

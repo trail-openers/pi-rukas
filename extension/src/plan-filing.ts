@@ -31,6 +31,12 @@ import { trace } from "./trace.ts";
  * instead, so they do NOT route to surface). The spec is NOT filed by
  * policy (it is surfaced to the operator). Nothing failed to resolve, so it
  * must NOT reuse `forge-unresolved`.
+ *
+ * `needs-clarification` and `draft-invalid` are the two DETERMINISTIC
+ * skips: the pre-dispatch under-specification triage (plan-precheck.ts)
+ * returned targeted questions instead of investigating, or the drafted
+ * body failed mechanical validation (plan-validate.ts) before the gap gate
+ * ever saw it. Both are policy skips, not failures.
  */
 export interface FilingFailure {
   reason:
@@ -39,7 +45,9 @@ export interface FilingFailure {
     | "empty-url"
     | "skipped-all-angles-failed"
     | "cap-surface"
-    | "gate-unavailable";
+    | "gate-unavailable"
+    | "needs-clarification"
+    | "draft-invalid";
   detail?: string;
 }
 

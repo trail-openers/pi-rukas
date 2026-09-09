@@ -263,7 +263,11 @@ export type GapGateDispatch = (
 
 export async function runGapGateLoop(
   dispatch: GapGateDispatch,
-  makeGatePrompt: () => string,
+  // The 1-based round number: round 1 is the full GAP DETECTION review;
+  // round 2 (fires only after a CRITICAL corrective re-draft) is the
+  // SCOPED VERIFICATION of the carried resolutions (plan-gate-prompt.ts —
+  // multi-round full re-review measurably adds noise, arXiv:2603.16244).
+  makeGatePrompt: (iteration: number) => string,
   maxIterations: number,
   onCorrective: (blocking: PlanGap[]) => void,
 ): Promise<GapGateLoopResult> {
@@ -281,7 +285,7 @@ export async function runGapGateLoop(
   while (iterations < maxIterations && !ready) {
     iterations++;
     const gate = await dispatch(
-      { role: "adversarial-developer", prompt: makeGatePrompt() },
+      { role: "adversarial-developer", prompt: makeGatePrompt(iterations) },
       { label: `plan-gap-gate-${iterations}` },
     );
     if (!gate.ok || gate.errorStop) {

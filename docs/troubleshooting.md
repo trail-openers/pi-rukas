@@ -1643,3 +1643,15 @@ The `/plan` driver (`start_plan_driver`) used to serialize four dispatch barrier
 ### A plan child hit the 8-minute bound
 
 The dispatch is killed and routed through paths that already existed: an angle fails closed (`ok=false`; if ALL angles fail, the pipeline halts with `skipped-all-angles-failed` and files nothing), a timed-out duplicate-risk child yields no risk verdict (traced, pipeline proceeds), and a timed-out gap-gate reviewer routes `gate-unavailable` (spec NOT filed — no reviewer saw it; re-run `start_plan_driver`). A child that repeatedly times out usually means a hung tool call or a suspended host (see "Host suspend is not a provider failure" in AGENTS.md §7) — check the per-phase timings line to see which phase ate the budget.
+
+### "Not filed (by policy): the descriptor is under the word floor…" (needs-clarification)
+
+The deterministic pre-triage (`plan-precheck.ts`) fired: the descriptor is below the word floor AND names no code identifier AND no `context` param was supplied — the strongest under-specification signal, and the defect class the research base ranks first among spec defects. Nothing was dispatched; the result lists targeted questions. Answer them by re-running `start_plan_driver` with a fuller descriptor or a `context` param. Any ONE of the three signals (enough words, a file/symbol name, a context param) passes the check, so a legitimately terse descriptor that names code is never blocked.
+
+### "Not filed (by policy): the drafted body failed deterministic validation" (draft-invalid)
+
+`plan-validate.ts` halted the draft before the gap gate: bug/feature drafts need a non-fallback Acceptance criteria section (otherwise the issue is not /work-consumable), and an epic needs an actual sub-issue decomposition of sane size. This is the partial-junk case the all-angles-failed guard cannot see (some angle items arrived, but not the load-bearing ones). Re-run (the angles are re-dispatched), or supply the missing content directly via the `context` param (e.g. an `ACCEPTANCE CRITERIA` block — operator directives satisfy the check).
+
+### Chore/spike tickets skip the adversarial gap gate
+
+By design (no env knob): chore/spike are low-blast-radius and deterministic validation is their gate. The old `PI_ENSEMBLE_PLAN_GAP_GATE` variable is deleted and inert. Bug/feature/epic always run the gate; its round 2 (fires only on CRITICAL) is a scoped verification of the carried resolutions, not a second full review — multi-round full re-review of the same artifact measurably adds false positives (arXiv:2603.16244).

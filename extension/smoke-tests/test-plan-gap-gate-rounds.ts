@@ -119,6 +119,29 @@ installForgeStub();
     `CRITICAL-STILL-ITERATES: capReason is unresolved-blocking (got ${r1.capReason})`,
   );
 
+  // Round 2 is a SCOPED VERIFICATION of the carried CRITICAL resolutions,
+  // not a second full review (plan-gate-prompt.ts: multi-round full
+  // re-review measurably adds noise — arXiv:2603.16244). Round 1 stays the
+  // full GAP DETECTION prompt.
+  const round1 = gatePrompts[gatePromptsBefore] ?? "";
+  const round2 = gatePrompts[gatePromptsBefore + 1] ?? "";
+  assert(
+    round1.includes("GAP DETECTION") && !round1.includes("VERIFICATION ROUND"),
+    "SCOPED-R2: round 1 is the full GAP DETECTION prompt",
+  );
+  assert(
+    round2.includes("VERIFICATION ROUND") && !round2.includes("GAP DETECTION"),
+    "SCOPED-R2: round 2 is the scoped VERIFICATION prompt, not a re-review",
+  );
+  assert(
+    round2.includes("no failure-mode criterion"),
+    "SCOPED-R2: the carried CRITICAL gap description is named in the verification prompt",
+  );
+  assert(
+    round2.includes("RE-DRAFTED SPEC"),
+    "SCOPED-R2: the verification prompt carries the re-drafted body",
+  );
+
   setPlanDispatch(null);
 }
 

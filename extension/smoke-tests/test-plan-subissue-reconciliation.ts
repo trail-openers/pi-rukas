@@ -261,9 +261,6 @@ function epicBody(findings: Parameters<typeof draftSpec>[2]) {
 // angle) so the file stays under the 500-line limit.
 
 {
-  const savedGate = process.env.PI_ENSEMBLE_PLAN_GAP_GATE;
-  process.env.PI_ENSEMBLE_PLAN_GAP_GATE = "0";
-
   setPlanDispatch(((pi: unknown, spec: { role: string; prompt: string }) => {
     if (spec.role === "adversarial-developer") {
       return Promise.resolve({
@@ -324,8 +321,6 @@ function epicBody(findings: Parameters<typeof draftSpec>[2]) {
   );
 
   // Cleanup
-  if (savedGate === undefined) delete process.env.PI_ENSEMBLE_PLAN_GAP_GATE;
-  else process.env.PI_ENSEMBLE_PLAN_GAP_GATE = savedGate;
   setPlanDispatch(null);
 }
 

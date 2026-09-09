@@ -20,6 +20,7 @@ import { type Forge, createForge } from "./forge.ts";
 import { epicSubIssues } from "./plan-angles.ts";
 import { PLAN_ITEM_KINDS } from "./plan-reporter.ts";
 import { EPIC_SUB_ISSUE_DEPTH_LIMIT, type PlanType, planTitle } from "./plan-types.ts";
+import { AC_FALLBACK, SUB_ISSUES_FALLBACK } from "./plan-validate.ts";
 import {
   type ResolvedDecision,
   applyWritebackToBody,
@@ -415,7 +416,7 @@ export function draftSpec(
 
   const subIssues =
     type === "epic" && depth < EPIC_SUB_ISSUE_DEPTH_LIMIT
-      ? `\n## Sub-issues\n\n${epicSubIssues(findings).join("\n") || "- (decomposition not available)"}\n`
+      ? `\n## Sub-issues\n\n${epicSubIssues(findings).join("\n") || `- ${SUB_ISSUES_FALLBACK}`}\n`
       : "";
 
   const oosAll = [
@@ -436,10 +437,7 @@ export function draftSpec(
             .slice(0, SECTION_MAX_ITEMS),
           "a decision or proof of concept — not shipped code",
         )}\n`
-      : `## Acceptance criteria\n\n${sectionBullets(
-          acItems,
-          "derive the testable outcomes from the investigation findings before /work",
-        )}\n`;
+      : `## Acceptance criteria\n\n${sectionBullets(acItems, AC_FALLBACK)}\n`;
   const oos =
     oosAll.length > 0
       ? oosAll.map((s) => `- ${s}`).join("\n")

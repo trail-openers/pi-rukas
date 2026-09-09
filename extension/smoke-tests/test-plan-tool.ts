@@ -11,7 +11,8 @@
  *     the operator-confirmation seam — and a dry run NEVER files,
  *   - the five-phase pipeline executes in order: classify → mechanical
  *     inventory → type-specialised investigation → draft → gap gate → file,
- *   - `PI_ENSEMBLE_PLAN_GAP_GATE=0` skips Phase 4 for chore/spike types,
+ *   - chore/spike never dispatch the Phase-4 gate (deterministic validation
+ *     is their gate; the old PI_ENSEMBLE_PLAN_GAP_GATE knob is deleted),
  *   - epic sub-issues at depth >= 3 get a minimal body + the depth-limit note,
  *   - the doctrine set no longer includes "plan", and agents.json denies
  *     PM's `gh issue create` while granting `start_plan_driver`,
@@ -301,8 +302,8 @@ async function invoke(params: Record<string, unknown>) {
 }
 
 {
-  // PI_ENSEMBLE_PLAN_GAP_GATE=0 + chore → no gate dispatch.
-  process.env.PI_ENSEMBLE_PLAN_GAP_GATE = "0";
+  // Chore never dispatches the LLM gap gate (deterministic validation is
+  // its gate — no env knob; the old PI_ENSEMBLE_PLAN_GAP_GATE is deleted).
   const { details, text } = await invoke({
     descriptor: "bump the extension dependency pin and tidy the lockfile",
     dryRun: true,
@@ -310,23 +311,22 @@ async function invoke(params: Record<string, unknown>) {
   assert(details.type === "chore", "chore classification from trigger words");
   assert(
     !calls.some((c) => c.startsWith("adversarial-developer:")),
-    "Phase 4 skipped for chore under PI_ENSEMBLE_PLAN_GAP_GATE=0",
+    "Phase 4 never runs for chore (deterministic validation only, no env knob)",
   );
   assert(details.capHit !== true, "no cap hit (the gate did not run)");
   assert(/chore/.test(text), "result carries the chore type");
-  delete process.env.PI_ENSEMBLE_PLAN_GAP_GATE;
 }
 
 {
-  // PI_ENSEMBLE_PLAN_GAP_GATE=0 does NOT skip for non-chore/spike types.
-  process.env.PI_ENSEMBLE_PLAN_GAP_GATE = "0";
+  // The gate always runs for feature (no env var can turn it off).
+  process.env.PI_ENSEMBLE_PLAN_GAP_GATE = "0"; // must be inert — the knob is deleted
   await invoke({
     descriptor: "implement a new start_plan_driver tool with a five-phase pipeline",
     dryRun: true,
   });
   assert(
     calls.some((c) => c.startsWith("adversarial-developer:")),
-    "gate still runs for feature types even with the escape hatch (it only exempts chore/spike)",
+    "gate runs unconditionally for feature types (the deleted env var is inert)",
   );
   delete process.env.PI_ENSEMBLE_PLAN_GAP_GATE;
 }
@@ -462,17 +462,21 @@ async function invoke(params: Record<string, unknown>) {
   );
   const pdDriver = readFileSync(path.resolve(import.meta.dirname, "..", "src", "plan-driver.ts"), "utf8");
   assert(
-    /PI_ENSEMBLE_PLAN_GAP_GATE === "0"/.test(pdDriver),
-    "escape hatch: PI_ENSEMBLE_PLAN_GAP_GATE=0 in the driver",
+    !/PI_ENSEMBLE_PLAN_GAP_GATE/.test(pdDriver),
+    "canary: the PI_ENSEMBLE_PLAN_GAP_GATE knob is deleted from the driver (chore/spike skip the gate unconditionally)",
   );
   const pd = readFileSync(path.resolve(import.meta.dirname, "..", "src", "plan-gaps.ts"), "utf8");
   // #606 canary: the GAP: marker contract is in the prompt AND the parser
   // matches markers only (no bare severityRe fallback).
   assert(pd.includes("(CRITICAL|HIGH|MEDIUM|LOW)"), "canary: parseGaps matches the structured GAP: marker (plan-gaps.ts)");
   assert(!/severityRe/.test(pd), "canary: the bare severity-word regex is gone from the gap parser");
+  const pgp = readFileSync(
+    path.resolve(import.meta.dirname, "..", "src", "plan-gate-prompt.ts"),
+    "utf8",
+  );
   assert(
-    /DO NOT re-raise/.test(pdDriver),
-    "canary: the gap gate prompt carries the DO-NOT-RE-RAISE framing",
+    /DO NOT re-raise/.test(pgp),
+    "canary: the gap gate prompt carries the DO-NOT-RE-RAISE framing (plan-gate-prompt.ts)",
   );
 }
 

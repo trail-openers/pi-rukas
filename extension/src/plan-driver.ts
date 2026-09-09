@@ -19,6 +19,11 @@
  *
  *   Phase 0 Classify   — regex on the descriptor (or the `type` param)
  *                        [plan-types.ts]
+ *   Phase 0b Precheck  — deterministic under-specification triage BEFORE
+ *                        any dispatch: a descriptor under the word floor
+ *                        with no code identifier and no context returns
+ *                        targeted questions instead of burning the fan-out
+ *                        [plan-precheck.ts]
  *   Phase 1 Inventory  — vipune + `gh issue list` run by the driver
  *                        [plan-draft.ts: mechanicalInventory]
  *   Phase 1b+2 Investigate — the duplicate-risk explore AND the
@@ -30,27 +35,24 @@
  *                        [plan-investigate.ts: runInvestigation]
  *   Phase 3 Draft      — the driver assembles the structured body
  *                        [plan-draft.ts: draftSpec]
- *   Phase 4 Gap gate   — one adversarial-developer dispatch per round;
- *                        CRITICAL-only terminal rule (#664 transposed):
- *                        CRITICAL gets ONE corrective round, HIGH no longer
- *                        triggers re-drafting (the gate is non-deterministic
- *                        on identical input — "fix the gaps and re-run" is
- *                        not convergent). The cap ROUTES (D2): zero CRITICAL
- *                        remaining → file with residual HIGH/MEDIUM/LOW
- *                        disclosed in the existing "## Residual gap-gate
- *                        findings" section; CRITICAL remains → surface.
- *                        Cap reason is DISCRIMINATED (D1): residual-high /
- *                        residual-medium-low both route to file; unresolved-
- *                        blocking means CRITICAL remains. ABSENT verdict with
- *                        CRITICAL → NEEDS_ITERATION (D3, verdictParsed).
- *                        PI_ENSEMBLE_PLAN_GAP_GATE=0 skips for chore/spike.
+ *   Phase 3b Validate  — deterministic body validation BEFORE the gate:
+ *                        load-bearing sections must not be fallback
+ *                        placeholders (a junk draft never pays a reviewer
+ *                        dispatch, and never reaches the forge)
+ *                        [plan-validate.ts]
+ *   Phase 4 Gap gate   — bug/feature/epic only (chore/spike are
+ *                        low-blast-radius: deterministic validation is
+ *                        their gate — no env knob, better defaults). One
+ *                        adversarial-developer dispatch per round; the
+ *                        CRITICAL-only terminal rule, cap routing (D1/D2)
+ *                        and verdict-absence handling (D3) live in
+ *                        plan-gaps.ts; round 2 is a SCOPED VERIFICATION of
+ *                        the carried CRITICAL resolutions, not a second
+ *                        full review [plan-gate-prompt.ts].
  *   Phase 5 File       — the forge adapter's issueCreate (child process,
- *                        exempt from the tool_call guard by construction,
- *                        exactly like work-driver-commit's `gh pr create`).
- *                        A filing failure carries a DISCRIMINATED reason on
- *                        the result (D7) — forge-unresolved, create-error
- *                        (with the forge stderr), empty-url — plus the
- *                        deliberate-skip case for the all-angles-failed halt.
+ *                        exempt from the tool_call guard by construction).
+ *                        Failures carry a DISCRIMINATED reason (D7)
+ *                        [plan-filing.ts].
  *
  * dryRun is the confirmation seam: `dryRun: true` returns the spec + gaps
  * without filing; PM shows it to the operator; on confirmation the driver
@@ -66,21 +68,21 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { dispatchCore } from "./dispatch.ts";
 import {
   type AngleFindings,
-  VIPUNE_PRECEDENCE_NOTE,
   VIPUNE_PRIOR_SOURCE,
   codeIdentifiersIn,
   draftSpec,
   mechanicalInventory,
   parseOperatorDirectives,
-  priorContextHasVipune,
-  renderPriorContext,
 } from "./plan-draft.ts";
 import { type FilingFailure, fileIssue, getPlanForge, planForgeFor } from "./plan-filing.ts";
+import { type CarriedCritical, gapGatePrompt, gapGateVerifyPrompt } from "./plan-gate-prompt.ts";
 import {
   PLAN_DISPATCH_TIMEOUT_MS,
   PLAN_MARKER_CHILD_ARGS,
   runInvestigation,
 } from "./plan-investigate.ts";
+import { precheckDescriptor } from "./plan-precheck.ts";
+import { validateDraft } from "./plan-validate.ts";
 
 /**
  * The dispatch seam, injectable so the smoke test can drive the pipeline with
@@ -95,7 +97,6 @@ let _dispatchOverride: PlanDispatchFn | null = null;
 export function setPlanDispatch(fn: PlanDispatchFn | null): void {
   _dispatchOverride = fn;
 }
-import { DESCRIPTOR_DATA_FRAMING } from "./plan-angles.ts";
 import {
   type GapGateLoopResult,
   parseGaps,
@@ -115,54 +116,9 @@ import { trace } from "./trace.ts";
 
 const GAP_GATE_MAX_ITERATIONS = 2;
 
-// ---------------------------------------------------------------------------
-// Phase 4 — adversarial gap gate (parsing + routing in plan-gaps.ts)
-// ---------------------------------------------------------------------------
-
-/**
- * The gap-gate reviewer prompt. Carries the prior context (capped at the
- * render site via renderPriorContext — #633: the gate child is one reviewer,
- * the filed body carries the full uncapped inventory) and — since the vipune
- * tag (D6) — the explicit precedence note whenever any prior entry is
- * vipune-sourced: a vipune entry is a prior snapshot and may be stale.
- */
-export function gapGatePrompt(
-  body: string,
-  findings: AngleFindings[],
-  priorContext: { source: string; fact: string }[],
-): string {
-  const summary = findings
-    .map((x) => {
-      const n = x.toolUses.filter((i) => typeof i === "object").length;
-      return `- ${x.name}: ${x.ok ? (n > 0 ? `ran (${n} structured item${n === 1 ? "" : "s"})` : "ran (no structured items)") : "skipped/failed"}`;
-    })
-    .join("\n");
-  const head =
-    "GAP DETECTION: review this draft spec and find what is missing, under-specified, ambiguous or unverifiable.\n\n";
-  // PR #640 SECURITY: descriptor interpolated verbatim; prompt-level mitigation only, not a boundary.
-  const spec = `${DESCRIPTOR_DATA_FRAMING}DRAFT SPEC:\n${body}\n\n`;
-  const sum = `PHASE 2 FINDINGS SUMMARY:\n${summary}\n\n`;
-  const prior =
-    priorContext.length > 0
-      ? `PM has already established these decisions and facts (DO NOT re-raise them as gaps; citing them is only valid if you can show the spec contradicts them):\n${renderPriorContext(priorContext)}\n${priorContextHasVipune(priorContext) ? `${VIPUNE_PRECEDENCE_NOTE}\n\n` : ""}`
-      : "";
-  const tail =
-    "Severity is keyed to WHO must decide. For each gap, output ONE line starting with the marker GAP: followed by the severity, an em dash, a short description, then — proposed resolution: with the proposed resolution. The severity scale:\n" +
-    "CRITICAL: the spec commits to two things that contradict, or the stated approach cannot work — building from it produces WRONG behaviour\n" +
-    "HIGH: a decision the operator must make because the implementer cannot — a scope boundary, a policy, or a choice between designs with different consequences\n" +
-    "MEDIUM: a clarification that changes how the work is organised, not what gets built\n" +
-    "LOW: cosmetic\n\n" +
-    "Scope Discipline. Do NOT file a gap, at ANY severity, for:\n" +
-    "- a value or constant the implementer will pick (resolved against live code during /work)\n" +
-    "- an exact API or method signature (the implementer reads the current code)\n" +
-    "- an error type or error shape (same: the existing types say it)\n" +
-    "- a field list derivable from an existing type\n" +
-    "- a test-harness mechanic (mock flags, grep needles, variable usage)\n" +
-    "- exact line numbers anywhere (they rot; name the SYMBOL)\n" +
-    "- restating a decision the spec already makes once\n\n" +
-    "Example: GAP: CRITICAL — the spec commits to both a retry cap of 3 and an infinite retry on quota errors — proposed resolution: name which wins. Never write a severity word on its own line — prose mentioning CRITICAL/HIGH/MEDIUM/LOW does not create a gap unless the line starts with GAP:. Each resolution must be ONE of: (a) an additional research dispatch, (b) a sharper acceptance criterion to add, or (c) an Open Question. End your reply with a single line exactly of the form:\nVERDICT: READY  (zero CRITICAL gaps)\nor\nVERDICT: NEEDS_ITERATION";
-  return `${head}${spec}${sum}${prior}${tail}`;
-}
+// Phase-4 prompts (round-1 review + round-2 scoped verification) live in
+// plan-gate-prompt.ts; re-exported here for the existing consumers.
+export { gapGatePrompt } from "./plan-gate-prompt.ts";
 
 // ---------------------------------------------------------------------------
 // runPlanPipeline
@@ -193,6 +149,28 @@ export async function runPlanPipeline(
     ...timings,
     { phase: "total", ms: Date.now() - pipelineStart },
   ];
+
+  // Phase 0b — deterministic under-specification triage (plan-precheck.ts),
+  // BEFORE any dispatch or inventory work; fires only on the strongest
+  // signal, so a legitimately terse descriptor is never blocked.
+  const pre = precheckDescriptor(type, descriptor, context);
+  if (!pre.ok) {
+    trace(`plan-driver: precheck fired — descriptor too thin, no dispatch paid (type=${type})`);
+    return {
+      type,
+      title: planTitle(descriptor, type),
+      spec: `(spec not drafted — the descriptor is too thin to ground an investigation)\n\nAnswer these and re-run start_plan_driver with a fuller descriptor or a context param:\n${pre.questions.map((q) => `- ${q}`).join("\n")}`,
+      gaps: [],
+      priorContext: [],
+      filed: false,
+      filingFailure: {
+        reason: "needs-clarification",
+        detail:
+          "the descriptor is under the word floor with no code identifier and no context param — investigation was deliberately skipped before any dispatch",
+      },
+      timings: finishTimings(),
+    };
+  }
 
   // Phase 1
   const inv = await timed("inventory", () => mechanicalInventory(repoRoot, descriptor));
@@ -302,19 +280,40 @@ export async function runPlanPipeline(
     [],
   );
 
-  // Phase 4 — gap gate (mandatory except chore/spike + escape hatch).
-  // CRITICAL-only terminal rule (#664 transposed): the cap ROUTES (D2):
-  // zero CRITICAL → file with residual disclosed; CRITICAL remains →
-  // surface. Cap reason DISCRIMINATED (D1): residual-high / residual-
-  // medium-low both route to file; unresolved-blocking means CRITICAL.
-  const gapGateEnabled = !(
-    (type === "chore" || type === "spike") &&
-    process.env.PI_ENSEMBLE_PLAN_GAP_GATE === "0"
-  );
+  // Phase 3b — deterministic body validation (plan-validate.ts), BEFORE the
+  // gate: a draft whose load-bearing sections fell back to placeholders
+  // never pays a reviewer dispatch and never reaches the forge.
+  const draftCheck = validateDraft(type, body, depth);
+  if (!draftCheck.ok) {
+    trace(`plan-driver: draft validation failed — ${draftCheck.problems.join("; ")}`);
+    return {
+      type,
+      title,
+      spec: body,
+      gaps: [],
+      priorContext: priorContext.slice(0, 15),
+      filed: false,
+      filingFailure: {
+        reason: "draft-invalid",
+        detail: `the drafted body failed deterministic validation, so it was not reviewed or filed: ${draftCheck.problems.join("; ")}. Re-run start_plan_driver (the angles are re-dispatched), or supply the missing content via the context param (e.g. an ACCEPTANCE CRITERIA block).`,
+      },
+      timings: finishTimings(),
+    };
+  }
+
+  // Phase 4 — gap gate: bug/feature/epic only. Chore/spike are
+  // low-blast-radius and their gate is the deterministic validation above —
+  // no env knob (operator decision 2026-09-09: fewer knobs, better
+  // defaults; this also removes run-to-run gate variance for those types).
+  const gapGateEnabled = type !== "chore" && type !== "spike";
   let gaps: PlanGap[] = [];
   let capHit = false;
   let capReason: PlanResult["capReason"];
   let residualForDisclosure: PlanGap[] = [];
+
+  // The carried CRITICAL decisions from the last corrective re-draft — what
+  // round 2's SCOPED VERIFICATION verifies (set in onCorrective below).
+  let lastCarried: CarriedCritical[] = [];
 
   if (gapGateEnabled) {
     // Phase 4 — the gap-gate loop (extracted to plan-gaps.ts: runGapGateLoop).
@@ -335,7 +334,13 @@ export async function runPlanPipeline(
             { ...spec, cwd: repoRoot },
             { ...opts, timeoutMs: PLAN_DISPATCH_TIMEOUT_MS, extraArgs: PLAN_MARKER_CHILD_ARGS },
           ),
-        () => gapGatePrompt(body, findings, priorContext),
+        // Round 1: full GAP DETECTION review. Round 2 (fires only after a
+        // CRITICAL corrective re-draft): SCOPED VERIFICATION of the carried
+        // resolutions — not a second full review (plan-gate-prompt.ts).
+        (iteration) =>
+          iteration <= 1 || lastCarried.length === 0
+            ? gapGatePrompt(body, findings, priorContext)
+            : gapGateVerifyPrompt(body, lastCarried),
         GAP_GATE_MAX_ITERATIONS,
         (blocking: PlanGap[]) => {
           // PR #640: resolve destinations here, splice in draftSpec (single site).
@@ -366,6 +371,14 @@ export async function runPlanPipeline(
             writtenOutcomes = redraft.resolvedDecisions.map((d) => ({
               applied: d.writtenBack ?? false,
               heading: d.writebackHeading ?? "(no destination — status open)",
+            }));
+            // What round 2's scoped verification will check (writtenBack
+            // produced by the splice, never predicted).
+            lastCarried = redraft.resolvedDecisions.map((d) => ({
+              description: d.description,
+              resolution: d.resolution,
+              writtenBack: d.writtenBack ?? false,
+              heading: d.writebackHeading ?? "Open Questions",
             }));
           } catch (e) {
             // Disclosure: names what was computed before the throw.

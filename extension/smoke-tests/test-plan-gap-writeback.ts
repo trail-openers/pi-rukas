@@ -34,9 +34,14 @@
  * one place).
  */
 
+import { draftSpec } from "../src/plan-draft.ts";
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
 import { GAP_RESOLUTION_PLACEHOLDER } from "../src/plan-gaps.ts";
-import { applyWritebackToBody, appendBulletsToSection } from "../src/plan-writeback.ts";
+import {
+  applyWritebackToBody,
+  appendBulletsToSection,
+  buildResolvedDecisions,
+} from "../src/plan-writeback.ts";
 import {
   forgeStub,
   gatePrompts,
@@ -263,23 +268,46 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
   // Residual finding 3: for type spike the default writeback destination is
   // the "Expected deliverable" section (the spike analogue of Acceptance
   // criteria — spikes render no "Acceptance criteria" heading).
-  const replies = [
-    "GAP: CRITICAL the deliverable is undefined — proposed resolution: name the decision the spike must reach in the Expected deliverable section\nVERDICT: NEEDS_ITERATION",
-    "GAP: LOW cosmetic nit — proposed resolution: retitle\nVERDICT: READY",
-  ];
-  forgeStub.created.length = 0;
-  forgeStub.mode = "ok";
-  gatePrompts.length = 0;
-  setPlanDispatch(makeDispatchStub(replies) as never);
-
-  const r = await runPlanPipeline(
-    {} as never,
-    { descriptor: "investigate the feasibility of a new sandbox approach", dryRun: true },
-    process.cwd(),
+  //
+  // Spikes no longer dispatch the gap gate at all (deterministic validation
+  // is their gate — the chore/spike no-gate policy), so the corrective round
+  // cannot be driven through the pipeline for a spike. The invariant being
+  // pinned is the writeback DESTINATION, which lives in plan-writeback.ts +
+  // draftSpec — drive those directly with a CRITICAL gap shaped like the
+  // old gate reply.
+  const { decisions, writebackMap } = buildResolvedDecisions(
+    [
+      {
+        severity: "CRITICAL",
+        description: "the deliverable is undefined",
+        resolution: "name the decision the spike must reach in the Expected deliverable section",
+      },
+    ],
+    "spike",
+  );
+  const redraft = draftSpec(
+    "spike",
+    "investigate the feasibility of a new sandbox approach",
+    [
+      {
+        name: "scoping",
+        ok: true,
+        text: "scoped the spike",
+        toolUses: [
+          { kind: "acceptance-criterion", text: "a decision by Friday", angle: "scoping" },
+        ],
+      },
+    ],
+    [],
+    [],
+    [],
+    0,
+    { acceptanceCriteria: [], pitfalls: [], outOfScope: [] },
+    decisions,
+    writebackMap,
   );
 
-  const body = r.spec;
-  assert(r.type === "spike", `spike: classified as spike (got ${r.type})`);
+  const body = redraft.body;
   const edge = sectionOf(body, "Expected deliverable", "References");
   const oq = sectionOf(body, "Open Questions", "Out of scope");
   assert(
@@ -294,8 +322,6 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
     /status: resolved/.test(oq),
     "spike branch: the written-back (spike) decision renders status: resolved",
   );
-
-  setPlanDispatch(null);
 }
 
 // ------------------- unit: the shared splice helper (single implementation)
