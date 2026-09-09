@@ -125,6 +125,8 @@ export interface AngleFindings {
   text: string;
   /** Structured items from this angle's tool calls (empty = zero valid calls). */
   toolUses: PlanItemKind[];
+  /** Why the angle is not ok (timeout/provider/prose-only) — rendered, never hidden. */
+  failure?: string;
 }
 
 export interface PlanItemKind {
@@ -134,12 +136,6 @@ export interface PlanItemKind {
 }
 
 export type PlanItemKindName = (typeof PLAN_ITEM_KINDS)[number];
-
-export interface OperatorDirectives {
-  acceptanceCriteria: string[];
-  pitfalls: string[];
-  outOfScope: string[];
-}
 
 /**
  * Extract report_plan_item calls from an angle's tool_uses (the structured
@@ -164,52 +160,10 @@ export function extractPlanItems(toolUses: unknown[], angleName: string): PlanIt
   return out;
 }
 
-/**
- * Parse operator-supplied typed fields out of the `context` param (D7).
- * Headings: ACCEPTANCE CRITERIA, PITFALLS (or EDGE CASES), OUT OF SCOPE.
- *
- * D4: accept `#`, `=`, `*`, and backtick wrappers on both sides of the
- * heading keyword, plus an optional trailing parenthetical (operators write
- * "=== ACCEPTANCE CRITERIA ===", "**ACCEPTANCE CRITERIA**",
- * "\"\"\"ACCEPTANCE CRITERIA\"\"\"", or "=== ACCEPTANCE CRITERIA (use verbatim) ==="
- * — the old regex silently dropped every one of these and the bullets under
- * them never reached the typed field). The keyword itself is unchanged.
- */
-export function parseOperatorDirectives(context: string | undefined): OperatorDirectives {
-  const out: OperatorDirectives = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
-  if (!context || !context.trim()) return out;
-  let target: keyof OperatorDirectives | null = null;
-  for (const raw of context.split("\n")) {
-    const line = raw.trim();
-    if (!line) continue;
-    // D4 heading regex: optional left wrapper (`#`, `=`, `*`, backtick —
-    // any of them, repeated), the keyword, an optional colon (for the
-    // plain "ACCEPTANCE CRITERIA:" form), an optional trailing
-    // parenthetical like `(use verbatim)`, an optional right wrapper, and
-    // any residual text (which, when non-empty, becomes the first item —
-    // e.g. a one-line heading+item like "PITFALLS: the retry path").
-    // The right wrapper is a SEPARATE token so `=== X ===` is consumed
-    // (== 2) before any residual text is captured.
-    const m = line.match(
-      /^(?:[#=*`]+\s*)?(ACCEPTANCE[\s-]*CRITERIA|PITFALLS|EDGE[\s-]*CASES|OUT[\s-]*OF[\s-]*SCOPE)\s*[:：]?\s*(?:\([^)]*\))?\s*(?:[#=*`]+\s*)?(.*)$/i,
-    );
-    if (m) {
-      const name = (m[1] ?? "").toUpperCase();
-      target = name.startsWith("ACCEPTANCE")
-        ? "acceptanceCriteria"
-        : name.startsWith("OUT")
-          ? "outOfScope"
-          : "pitfalls";
-      const rest = (m[2] ?? "").trim();
-      if (rest) out[target].push(rest);
-      continue;
-    }
-    if (!target) continue;
-    const bullet = line.replace(/^[-*\d.)\s]+/, "").trim();
-    if (bullet) out[target].push(bullet);
-  }
-  return out;
-}
+// parseOperatorDirectives + OperatorDirectives live in plan-directives.ts
+// (the operator's trusted typed channel); re-exported for existing consumers.
+import type { OperatorDirectives } from "./plan-directives.ts";
+export { type OperatorDirectives, parseOperatorDirectives } from "./plan-directives.ts";
 
 function sectionBullets(items: string[], fallback: string): string {
   const clean = [...new Set(items.map((s) => s.trim()))].filter((s) => s.length > 0);
@@ -238,20 +192,51 @@ export function itemsByKind(findings: AngleFindings[], kind: PlanItemKindName): 
  */
 export const PRIOR_CONTEXT_CHILD_PROMPT_CAP = 2000;
 
+/**
+ * The smallest clip worth keeping. Below this the fragment carries no
+ * meaning, so the item is counted omitted instead.
+ */
+const PRIOR_CONTEXT_MIN_CLIP = 80;
+
 export function renderPriorContext(priorContext: { source: string; fact: string }[]): string {
   if (priorContext.length === 0) return "";
   const lines = priorContext.map((p) => `- [${p.source}] ${p.fact}`);
   const rendered = lines.join("\n");
   if (rendered.length <= PRIOR_CONTEXT_CHILD_PROMPT_CAP) return rendered;
+  // CLIP TO FIT, never drop whole (vipune fixture run, 2026-09-09): the old
+  // loop skipped any line that did not fit in the remaining budget, so a
+  // single oversized operator context line — the ONE input the driver
+  // treats as authority — was dropped ENTIRELY and the children planned
+  // from stale vipune snapshots instead. An item longer than the remaining
+  // budget now keeps its head (down to PRIOR_CONTEXT_MIN_CLIP chars);
+  // whatever still cannot fit is counted, and the marker names both.
   const kept: string[] = [];
   let soFar = 0;
+  let clipped = 0;
+  let omitted = 0;
   for (const line of lines) {
-    const cost = soFar === 0 ? line.length : line.length + 1;
-    if (soFar + cost > PRIOR_CONTEXT_CHILD_PROMPT_CAP) break;
-    kept.push(line);
-    soFar += cost;
+    const sep = soFar === 0 ? 0 : 1;
+    if (soFar + sep + line.length <= PRIOR_CONTEXT_CHILD_PROMPT_CAP) {
+      kept.push(line);
+      soFar += sep + line.length;
+      continue;
+    }
+    const budget = PRIOR_CONTEXT_CHILD_PROMPT_CAP - soFar - sep;
+    if (budget >= PRIOR_CONTEXT_MIN_CLIP) {
+      kept.push(`${line.slice(0, budget - 1)}…`);
+      soFar = PRIOR_CONTEXT_CHILD_PROMPT_CAP;
+      clipped++;
+    } else {
+      omitted++;
+    }
   }
-  return `${kept.join("\n")}\n- [truncated] ${lines.length - kept.length} prior context item(s) omitted for child-prompt size (full inventory is in the filed body)`;
+  const parts = [
+    clipped > 0 ? `${clipped} item(s) clipped` : "",
+    omitted > 0 ? `${omitted} item(s) omitted` : "",
+  ]
+    .filter(Boolean)
+    .join(" and ");
+  return `${kept.join("\n")}\n- [truncated] ${parts} for child-prompt size (full inventory is in the filed body)`;
 }
 
 // #639: epicSubIssues is in plan-angles.ts (the natural home for the epic
@@ -367,7 +352,14 @@ export function draftSpec(
 
   // Technical context: per-kind COUNT + the angle's prose summary (D5) —
   // never the item text (the typed sections are the single record of it).
-  const angleLines = findings.filter((x) => x.ok).map((x) => techContextLine(x));
+  // A FAILED angle renders its hole explicitly (vipune fixture run: a
+  // timed-out angle used to vanish from the body, so /work never knew a
+  // third of the investigation was missing).
+  const angleLines = findings.map((x) =>
+    x.ok
+      ? techContextLine(x)
+      : `- **${x.name}**: (${x.failure ?? "failed"} — NOT investigated; treat this surface as unverified)`,
+  );
   const techContext =
     angleLines.length > 0
       ? angleLines.join("\n")

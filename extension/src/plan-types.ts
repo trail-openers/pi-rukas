@@ -114,6 +114,13 @@ export interface PlanResult {
    * type, and vice versa.
    */
   filingFailure?: FilingFailure;
+  /**
+   * Investigation angles whose dispatch failed or returned nothing usable
+   * (timeout, provider error, prose-only). Disclosed in the result text and
+   * the drafted body — a killed child must never vanish silently (vipune
+   * fixture run, 2026-09-09). Present only when at least one angle failed.
+   */
+  failedAngles?: { name: string; detail: string }[];
   /** Per-phase wall-clock durations, always present on a completed run. */
   timings?: PlanPhaseTiming[];
 }

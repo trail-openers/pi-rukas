@@ -74,7 +74,7 @@ const defaultExec: ExecFn = async (cmd, opts) => {
   return { stdout: String(stdout), stderr: String(stderr) };
 };
 
-/** Same bound as the plan children — single source of the 8-min number. */
+/** Same bound as the plan children — single source of the 30-min number. */
 export const RESEARCH_DISPATCH_TIMEOUT_MS = PLAN_DISPATCH_TIMEOUT_MS;
 
 /** Companion-extension path (report_research_claim), plan-reporter pattern. */

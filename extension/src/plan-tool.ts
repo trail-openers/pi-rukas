@@ -124,11 +124,19 @@ export function registerPlanTool(pi: ExtensionAPI) {
 }
 
 function renderPlanResult(r: PlanResult, dryRun: boolean): string {
-  const head = dryRun
-    ? "PLAN DRY-RUN (nothing filed). Show this spec to the operator; on their confirmation re-call start_plan_driver with dryRun omitted to file."
-    : r.filed
-      ? `PLAN FILED — ${r.issueUrl}`
-      : "PLAN COMPLETED — filing failed or was blocked; see the FILING STATUS section below. The spec is still valid to review.";
+  // The head must NEVER invite filing a halted draft (vipune fixture run,
+  // C1: a draft-invalid halt on a dryRun rendered as a clean pass and the
+  // head said "re-call with dryRun omitted to file" — the session read it
+  // as the gate approving a spec with zero acceptance criteria). Any
+  // filingFailure means the spec is not fileable as-is, dryRun or not.
+  const halted = !r.filed && !!r.filingFailure;
+  const head = halted
+    ? `PLAN ${dryRun ? "DRY-RUN — " : ""}NOT FILEABLE AS-IS (${r.filingFailure?.reason}). Nothing was filed${dryRun ? ", and re-calling without dryRun would NOT file this spec either" : ""} — see the FILING STATUS section below before showing this to the operator.`
+    : dryRun
+      ? "PLAN DRY-RUN (nothing filed). Show this spec to the operator; on their confirmation re-call start_plan_driver with dryRun omitted to file."
+      : r.filed
+        ? `PLAN FILED — ${r.issueUrl}`
+        : "PLAN COMPLETED — filing failed or was blocked; see the FILING STATUS section below. The spec is still valid to review.";
   const gaps =
     r.gaps.length > 0
       ? r.gaps.map((g) => `- [${g.severity}] ${g.description} → ${g.resolution}`).join("\n")
@@ -157,8 +165,11 @@ function renderPlanResult(r: PlanResult, dryRun: boolean): string {
   // section, which also uses the union — the old last-round-only list
   // could omit a round-1 finding the body discloses (2-round
   // CRITICAL-then-HIGH case).
+  // The old `&& r.gaps.length > 0` guard made gate-unavailable — whose
+  // parse yields ZERO gaps — invisible on a dryRun. capHit alone earns the
+  // block (vipune fixture run, C1 follow-up).
   let cap = "";
-  if (r.capHit && r.gaps.length > 0) {
+  if (r.capHit) {
     // The inline list renders the SAME union as the filed body's residual
     // section, through the SAME single truncation (truncateForDisclosure) —
     // the two render sites cannot drift (lens review, PR #637 finding 1;
@@ -184,9 +195,12 @@ function renderPlanResult(r: PlanResult, dryRun: boolean): string {
     }
   }
   // D7: the filing failure reason is DISCRIMINATED and surfaced — the
-  // forge stderr (when there is one) reaches the operator without PI_ENSEMBLE_DEBUG.
+  // forge stderr (when there is one) reaches the operator without
+  // PI_ENSEMBLE_DEBUG. Rendered on dryRun too (C1): the halt reasons are
+  // set BEFORE filing would happen, and hiding them behind !dryRun is what
+  // made a rejected draft look like a clean pass.
   let filingStatus = "";
-  if (!dryRun && !r.filed && r.filingFailure) {
+  if (!r.filed && r.filingFailure) {
     const f = r.filingFailure;
     if (
       f.reason === "cap-surface" ||
@@ -206,6 +220,12 @@ function renderPlanResult(r: PlanResult, dryRun: boolean): string {
       filingStatus = `\n\n=== FILING STATUS ===\nFiling did not complete. Reason: ${f.reason}${f.detail ? ` — ${f.detail}` : ""}. The spec above is still valid to review and can be re-run after the cause is addressed.`;
     }
   }
+  // Failed investigation angles surface HERE too, not only inside the spec
+  // body — the operator must see the hole without reading the whole draft.
+  const investigation =
+    r.failedAngles && r.failedAngles.length > 0
+      ? `\n\n=== INVESTIGATION STATUS ===\n${r.failedAngles.length} angle(s) FAILED — their surface is uninvestigated:\n${r.failedAngles.map((a) => `- ${a.name}: ${a.detail}`).join("\n")}`
+      : "";
   const timingsLine =
     r.timings && r.timings.length > 0
       ? `\n\n=== TIMINGS ===\n${r.timings.map((t) => `${t.phase} ${fmtMs(t.ms)}`).join(" · ")}`
@@ -222,7 +242,7 @@ ${r.spec}
 ${gaps}
 
 === PRIOR CONTEXT ATTRIBUTION ===
-${prior}${cap}${filingStatus}${timingsLine}`;
+${prior}${investigation}${cap}${filingStatus}${timingsLine}`;
 }
 
 /** Human-readable duration: sub-minute in seconds, else m+s. */
@@ -246,6 +266,7 @@ function resultDetails(r: PlanResult, dryRun: boolean): Record<string, unknown> 
   if (r.issueUrl) d.issueUrl = r.issueUrl;
   if (r.capReason) d.capReason = r.capReason;
   if (r.filingFailure) d.filingFailure = r.filingFailure;
+  if (r.failedAngles) d.failedAngles = r.failedAngles;
   if (r.timings) d.timings = r.timings;
   return d;
 }

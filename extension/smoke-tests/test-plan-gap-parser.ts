@@ -463,8 +463,12 @@ function assert(cond: boolean, msg: string) {
   // The last item (line 29) should be dropped — the marker says so.
   const truncatedCount = longItems.length - (long.match(/- \[context param\] prior context line/g) ?? []).length;
   assert(truncatedCount > 0, `long: ${truncatedCount} item(s) truncated`);
+  // Post-disclosure-fix marker format: "N item(s) clipped and M item(s)
+  // omitted" (an item that fits partially is CLIPPED to the remaining
+  // budget rather than dropped whole — the clipped line still counts as
+  // kept above, so truncatedCount is the fully-omitted tail).
   assert(
-    long.includes(`${truncatedCount} prior context item(s) omitted`),
+    long.includes(`${truncatedCount} item(s) omitted`),
     "long: the marker states how many items were omitted",
   );
   // Items are preserved in order (the first N fit, the rest are dropped).

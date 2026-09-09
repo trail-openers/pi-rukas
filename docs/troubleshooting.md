@@ -1637,10 +1637,10 @@ When a compiler-enforced invariant dies (e.g. `T` → `Option<T>`, removed `read
 The `/plan` driver (`start_plan_driver`) used to serialize four dispatch barriers per ticket: mechanical inventory (three serial awaits) → duplicate-risk explore → angle fan-out → 1–2 gap-gate rounds — the structural origin of the 20–30-minute-per-ticket experience (see `outputs/spec-driven-plan-driver-gap.md` §4). Now:
 
 - The duplicate-risk check and the investigation angles dispatch as **one parallel barrier** (`plan-investigate.ts`); the HIGH-risk hard stop applies after the barrier and still refuses to file.
-- Every plan child is bounded at **8 minutes** (`PLAN_DISPATCH_TIMEOUT_MS`) instead of the 2-hour spawn backstop, and runs with `cwd` pinned to the repo root.
+- Every plan child is bounded at **30 minutes** (`PLAN_DISPATCH_TIMEOUT_MS`) instead of the 2-hour spawn backstop, and runs with `cwd` pinned to the repo root. (Initially 8 minutes; raised 2026-09-09 after a live fixture run killed two heavy investigation angles at exactly 8m00s under concurrent load — killing a child loses its whole context, and the operator's historical floor for agent runs is 30 min.)
 - The tool result ends with a `=== TIMINGS ===` line (per-phase wall clock: inventory / investigate / gap-gate / filing / total).
 
-### A plan child hit the 8-minute bound
+### A plan child hit the 30-minute bound
 
 The dispatch is killed and routed through paths that already existed: an angle fails closed (`ok=false`; if ALL angles fail, the pipeline halts with `skipped-all-angles-failed` and files nothing), a timed-out duplicate-risk child yields no risk verdict (traced, pipeline proceeds), and a timed-out gap-gate reviewer routes `gate-unavailable` (spec NOT filed — no reviewer saw it; re-run `start_plan_driver`). A child that repeatedly times out usually means a hung tool call or a suspended host (see "Host suspend is not a provider failure" in AGENTS.md §7) — check the per-phase timings line to see which phase ate the budget.
 
@@ -1660,7 +1660,7 @@ By design (no env knob): chore/spike are low-blast-radius and deterministic vali
 
 ### What it is
 
-`/research` runs through `start_research_driver` (`extension/src/research-driver.ts`): memory inventory → one parallel barrier of angle children (each reporting structured claims via the `report_research_claim` companion tool) → deterministic verification → a dated artifact + provenance sidecar → one typed vipune candidate row. PM keeps judgement (tier, angle choice, the conversation after the artifact). Every child is bounded at 8 minutes and pinned to the repo root.
+`/research` runs through `start_research_driver` (`extension/src/research-driver.ts`): memory inventory → one parallel barrier of angle children (each reporting structured claims via the `report_research_claim` companion tool) → deterministic verification → a dated artifact + provenance sidecar → one typed vipune candidate row. PM keeps judgement (tier, angle choice, the conversation after the artifact). Every child is bounded at 30 minutes (shared `PLAN_DISPATCH_TIMEOUT_MS` bound) and pinned to the repo root.
 
 ### Where the artifact lands
 

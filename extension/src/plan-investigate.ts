@@ -31,16 +31,21 @@ import { trace } from "./trace.ts";
 export type InvestigateDispatch = typeof dispatchCore;
 
 /**
- * Per-dispatch bound for every plan child. Without it a plan child runs
- * under the global 2-hour spawn backstop — a hung angle or gate reviewer
- * stalls the whole ticket. 8 minutes is generous for the largest observed
- * angle (a codebase investigation) while keeping the worst case bounded.
- * One constant, no env knob (operator decision 2026-09-09: fewer knobs,
- * better defaults). Timeout routing reuses paths that already exist:
- * angle → fail-closed (ok=false), duplicate-risk → undefined risk + trace,
- * gap gate → gate-unavailable.
+ * Per-dispatch bound for every plan child (the research driver aliases it
+ * too). Without it a plan child runs under the global 2-hour spawn
+ * backstop — a hung angle or gate reviewer stalls the whole ticket.
+ *
+ * 30 minutes (operator decision 2026-09-09, revising the initial 8): the
+ * live vipune fixture run killed two heavy investigation angles at exactly
+ * 8m00s under concurrent load, and killing a child loses its whole
+ * context — the operator's historical floor for agent runs is 30 min. The
+ * bound exists only to beat the 2-hour backstop, not to police normal
+ * variance. One constant, no env knob. Timeout routing reuses paths that
+ * already exist: angle → fail-closed (ok=false, disclosed in the result
+ * and the drafted body), duplicate-risk → undefined risk + trace, gap
+ * gate → gate-unavailable.
  */
-export const PLAN_DISPATCH_TIMEOUT_MS = 8 * 60_000;
+export const PLAN_DISPATCH_TIMEOUT_MS = 30 * 60_000;
 
 /**
  * Companion-extension path for the Phase-2 children (report_plan_item).
@@ -98,12 +103,26 @@ export function duplicateRiskPrompt(
   ].join(" ");
 }
 
-/** Parse the duplicate-risk child's marker line (absent marker → medium). */
+/**
+ * Parse the duplicate-risk child's marker line (absent marker → medium).
+ *
+ * Two hardenings from the live vipune fixture run (verified 2026-09-09):
+ * the reply often ECHOES the prompt's template ("DUPLICATE_RISK:
+ * high|medium|low|none") before the real verdict, and a first-match parse
+ * read the echoed "high" as a HIGH hard-stop. A verdict immediately
+ * followed by `|` is the menu, not a verdict, and the LAST real marker
+ * wins (the verdict line closes the reply). The rationale is taken from
+ * AROUND the matched marker rather than a blind head-slice, so the
+ * operator sees the reasoning, not the child's task restatement.
+ */
 export function parseDuplicateRisk(text: string): DuplicateRisk {
-  const m = text.match(/DUPLICATE_RISK\s*[:—-]\s*(high|medium|low|none)/i);
+  const re = /DUPLICATE_RISK\s*[:—-]\s*(high|medium|low|none)\b(?!\s*\|)/gi;
+  let last: RegExpExecArray | undefined;
+  for (const m of text.matchAll(re)) last = m;
+  if (!last) return { level: "medium", rationale: text.slice(0, 400) };
   return {
-    level: m ? (m[1] ?? "medium").toLowerCase() : "medium",
-    rationale: text.slice(0, 400),
+    level: (last[1] ?? "medium").toLowerCase(),
+    rationale: text.slice(last.index, last.index + 400),
   };
 }
 
@@ -158,11 +177,23 @@ export async function runInvestigation(
         // Structured-first (D8, fail-closed): an angle is "ok" only when the
         // dispatch succeeded AND it produced at least one structured item.
         const ok = r.ok && !r.errorStop && toolUses.length > 0;
+        // Disclosure (vipune fixture run, C3/C5): a failed angle used to
+        // vanish silently from the drafted body and the result. The failure
+        // reason travels on the finding so both render sites can show the
+        // hole (a timed-out child exits 143 under the timeout above).
+        const failure = ok
+          ? undefined
+          : !r.ok
+            ? `dispatch failed or timed out (exit ${r.exitCode ?? "?"}${r.exitCode === 143 ? " — killed at the dispatch bound" : ""})`
+            : r.errorStop
+              ? "provider error mid-stream"
+              : "returned no structured items (prose only)";
         return {
           name: a.name,
           ok,
           text: r.text,
           toolUses: extractPlanItems(toolUses, a.name),
+          failure,
         };
       }),
     ),

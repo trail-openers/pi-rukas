@@ -172,19 +172,11 @@ export async function runPlanPipeline(
     };
   }
 
-  // Phase 1
+  // Phase 1. ORDER IS LOAD-BEARING (vipune fixture run): renderPriorContext
+  // clips at a fixed budget, so the operator's context-param entries — the
+  // authority (D2) — come FIRST; vipune snapshots are the droppable tail.
   const inv = await timed("inventory", () => mechanicalInventory(repoRoot, descriptor));
-  const priorContext: { source: string; fact: string }[] = [
-    // D6: vipune hits are tagged distinctly — they are snapshots saved
-    // during a PREVIOUS planning run and may be stale (the blocked-session
-    // feedback loop; transcript mtsnbz8b). The precedence note in the
-    // angle/gap-gate prompts (VIPUNE_PRECEDENCE_NOTE) makes the live
-    // context-param entries and live code win on conflict.
-    ...inv.memory.map((h) => ({ source: VIPUNE_PRIOR_SOURCE, fact: h.content.slice(0, 200) })),
-    ...inv.related
-      .slice(0, 5)
-      .map((r) => ({ source: `issue #${r.number} (${r.state})`, fact: r.title })),
-  ];
+  const priorContext: { source: string; fact: string }[] = [];
   // D7: operator-supplied typed fields (ACCEPTANCE CRITERIA / PITFALLS /
   // OUT OF SCOPE blocks in the context param) take precedence over
   // specialist output for those fields — parsed once, threaded to draftSpec.
@@ -197,6 +189,14 @@ export async function runPlanPipeline(
         priorContext.push({ source: "context param", fact: line.trim() });
     }
   }
+  priorContext.push(
+    ...inv.related
+      .slice(0, 5)
+      .map((r) => ({ source: `issue #${r.number} (${r.state})`, fact: r.title })),
+    // D6: vipune hits are tagged as prior snapshots (may be stale); the
+    // precedence note in the child prompts makes live context win on conflict.
+    ...inv.memory.map((h) => ({ source: VIPUNE_PRIOR_SOURCE, fact: h.content.slice(0, 200) })),
+  );
 
   // Phase 1b + Phase 2 — ONE parallel barrier (plan-investigate.ts): the
   // duplicate-risk explore and the type-specialised angle set dispatch
@@ -220,23 +220,23 @@ export async function runPlanPipeline(
       }),
     );
 
+  // Disclosed downstream (result text, details, drafted body) — a killed
+  // child must never vanish silently (vipune fixture run, C3).
+  const failedAngles = findings
+    .filter((f) => !f.ok)
+    .map((f) => ({ name: f.name, detail: f.failure ?? "failed" }));
+
   if (duplicateRisk && duplicateRisk.level === "high") {
     throw new Error(
-      `duplicate risk HIGH — the inventory shows likely duplicate work (${duplicateRisk.rationale.slice(0, 200)}). Do not file; reconcile with the existing issue(s) first.`,
+      `duplicate risk HIGH — the inventory shows likely duplicate work (${duplicateRisk.rationale.slice(0, 300)}). Do not file; reconcile with the existing issue(s) first (full rationale: /runs → plan-duplicate-risk).`,
     );
   }
 
-  // #633 aggregate all-angles-failed guard (fail-closed): each angle fails
-  // closed individually (ok requires toolUses.length > 0), but if EVERY
-  // dispatched angle produced zero structured items — all prose-only or
-  // schema-invalid calls — every typed section silently falls back and the
-  // pipeline would file a ticket reading "(decomposition not available)" /
-  // "none" with fallback strings everywhere (the epics with the gap gate off
-  // by default were the worst case). Halt before draftSpec/fileIssue instead;
-  // the operator sees WHY (all angles returned prose-only or schema-invalid
-  // calls), not an empty spec. D7: the early return carries the
-  // `skipped-all-angles-failed` reason so the operator-visible text can say
-  // "filing was deliberately skipped" rather than "filing failed".
+  // #633 aggregate all-angles-failed guard (fail-closed): if EVERY angle
+  // produced zero structured items, every typed section would silently fall
+  // back — halt before draftSpec/fileIssue with the discriminated
+  // `skipped-all-angles-failed` reason instead ("deliberately skipped",
+  // never "filing failed").
   const withItems = findings.filter((f) => f.toolUses.length > 0).length;
   if (findings.length > 0 && withItems === 0) {
     trace(
@@ -261,6 +261,7 @@ export async function runPlanPipeline(
         reason: "skipped-all-angles-failed",
         detail: `all ${findings.length} angles produced zero structured items — filing was deliberately skipped (not a forge failure)`,
       },
+      failedAngles: failedAngles.length > 0 ? failedAngles : undefined,
       timings: finishTimings(),
     };
   }
@@ -297,6 +298,7 @@ export async function runPlanPipeline(
         reason: "draft-invalid",
         detail: `the drafted body failed deterministic validation, so it was not reviewed or filed: ${draftCheck.problems.join("; ")}. Re-run start_plan_driver (the angles are re-dispatched), or supply the missing content via the context param (e.g. an ACCEPTANCE CRITERIA block).`,
       },
+      failedAngles: failedAngles.length > 0 ? failedAngles : undefined,
       timings: finishTimings(),
     };
   }
@@ -326,7 +328,7 @@ export async function runPlanPipeline(
     const loopResult: GapGateLoopResult = await timed("gap-gate", () =>
       runGapGateLoop(
         // The gate child gets the same bounds as every plan child: cwd
-        // pinned to the repo root, the 8-min timeout instead of the 2-hour
+        // pinned to the repo root, the 30-min timeout instead of the 2-hour
         // backstop, and --no-skills (a marker-line reviewer, no reporter).
         (spec, opts) =>
           dispatch(
@@ -479,6 +481,7 @@ export async function runPlanPipeline(
     capReason,
     residualForDisclosure: residualForDisclosure.length > 0 ? residualForDisclosure : undefined,
     filingFailure,
+    failedAngles: failedAngles.length > 0 ? failedAngles : undefined,
     timings: finishTimings(),
   };
 }

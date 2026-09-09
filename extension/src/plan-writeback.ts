@@ -37,21 +37,32 @@ import { GAP_RESOLUTION_PLACEHOLDER } from "./plan-gaps.ts";
 import type { PlanGap, PlanType } from "./plan-types.ts";
 
 /**
- * The headings a carried resolution may name as its writeback destination,
- * in match order. No heading shares a prefix with another, so first-match in
- * list order is unambiguous. The spike "Expected deliverable" heading is
- * matched by the same entry as "Acceptance criteria" (residual gap-gate
- * finding 3, #639: the spike analogue of Acceptance criteria is the default
- * destination for spike types).
+ * The headings a carried resolution may name as its writeback destination.
+ * The winner is the entry whose match occurs EARLIEST IN THE RESOLUTION
+ * TEXT — not array order (vipune fixture run, C4: array-order matching
+ * routed "…acceptance criterion … remove the contradictory test surface
+ * language" to Test surface because that entry sat earlier in the list,
+ * and the bullet rendered falsely "resolved" under the wrong heading).
+ *
+ * The AC entry matches the SINGULAR "acceptance criterion" too — the gate
+ * prompt's own resolution template says "(b) a sharper acceptance
+ * criterion to add", so template-conformant resolutions used to match
+ * nothing and fall to branch 3 (never applied). Hyphenated forms are
+ * accepted throughout. The spike "Expected deliverable" heading is matched
+ * by the same entry as "Acceptance criteria" (residual gap-gate finding 3,
+ * #639); "Sub-issues" is writable for epics — a heading absent from the
+ * rendered body (non-epic types) simply reports not-applied and the bullet
+ * renders status open, per Decision A branch 1.
  */
 const WRITABLE_SECTIONS: { heading: string; re: RegExp }[] = [
-  { heading: "Out of scope", re: /out of scope/i },
-  { heading: "Test surface", re: /test surface/i },
-  { heading: "Edge cases", re: /edge cases/i },
+  { heading: "Out of scope", re: /out[ -]of[ -]scope/i },
+  { heading: "Test surface", re: /test[ -]surface/i },
+  { heading: "Edge cases", re: /edge[ -]cases/i },
   { heading: "References", re: /references/i },
+  { heading: "Sub-issues", re: /sub[ -]issues?/i },
   {
     heading: "Acceptance criteria",
-    re: /acceptance criteria|expected deliverable/i,
+    re: /acceptance criteri(?:a|on)|expected deliverable/i,
   },
 ];
 
@@ -143,15 +154,24 @@ export interface SpliceOutcome {
  * only works because of its wording; this ordering makes branch 1
  * unconditional.
  *
- * Matching rule (residual finding 1): case-insensitive containment of one
- * of the rendered section headings; the FIRST heading found in the
- * resolution text wins, in WRITABLE_SECTIONS order. A resolution naming a
- * heading that is not renderable falls to branch 1.
+ * Matching rule (revised, vipune fixture run C4): case-insensitive
+ * containment of one of the rendered section headings; the heading whose
+ * match occurs at the EARLIEST POSITION in the resolution text wins — a
+ * resolution's primary destination is what it names first, and later
+ * mentions ("…and remove the contradictory test surface language") are
+ * commentary. A resolution naming a heading that is not renderable falls
+ * to branch 1.
  */
 export function destinationFor(gap: PlanGap, type: PlanType): WritebackDestination | null {
   const resolution = gap.resolution;
   if (!resolution || resolution === GAP_RESOLUTION_PLACEHOLDER) return null;
-  const named = WRITABLE_SECTIONS.find((s) => s.re.test(resolution));
+  let named: { heading: string; index: number } | null = null;
+  for (const s of WRITABLE_SECTIONS) {
+    const m = s.re.exec(resolution);
+    if (m && (named === null || m.index < named.index)) {
+      named = { heading: s.heading, index: m.index };
+    }
+  }
   if (!named) return null;
   const heading =
     named.heading === "Acceptance criteria" ? defaultDestinationHeading(type) : named.heading;
