@@ -154,5 +154,83 @@ try {
 }
 assert(currentTripwired, "tripwire: stray current-pair shape still throws MarkerError");
 
+// ------------------------------------------------------ 7. Ruby greenfield fixture
+
+{
+  const rubyPath = path.join(import.meta.dirname, "fixtures", "agents-md", "ruby-greenfield-agents-md.md");
+  const rubyText = readFileSync(rubyPath, "utf8");
+  assert(
+    rubyText.includes("pi-rukas:agents-md:begin quality-gates"),
+    "ruby-greenfield fixture: contains a quality-gates pair",
+  );
+  assert(
+    rubyText.includes("pi-rukas:agents-md:begin code-style"),
+    "ruby-greenfield fixture: contains a code-style pair",
+  );
+  assert(
+    rubyText.includes("Gemfile"),
+    "ruby-greenfield fixture: references Gemfile as the manifest",
+  );
+  assert(
+    rubyText.includes("[detected:agent,2026-01-01]"),
+    "ruby-greenfield fixture: ledger carries [detected:agent] rows",
+  );
+  // The fixture must parse cleanly (no corruption tripwire).
+  let rubyParsed: { id: string }[] = [];
+  let rubyErr: Error | null = null;
+  try {
+    rubyParsed = parseMarkers(rubyText).spans;
+  } catch (e) {
+    rubyErr = e as Error;
+  }
+  assert(rubyErr === null, "ruby-greenfield fixture: parses cleanly (no tripwire)");
+  const rubyIds = rubyParsed.map((s) => s.id).sort();
+  assert(
+    rubyIds.includes("quality-gates") && rubyIds.includes("commands") && rubyIds.includes("environment") && rubyIds.includes("code-style") && rubyIds.includes("decision-ledger"),
+    "ruby-greenfield fixture: all 5 managed sections recognised",
+  );
+}
+
+// --------------------------------------- 8. Rich manifest, no code-style fixture
+
+{
+  const richPath = path.join(import.meta.dirname, "fixtures", "agents-md", "rich-manifest-no-codestyle-agents-md.md");
+  const richText = readFileSync(richPath, "utf8");
+  assert(
+    richText.includes("pi-rukas:agents-md:begin quality-gates"),
+    "rich-manifest-no-codestyle fixture: contains a quality-gates pair",
+  );
+  assert(
+    !richText.includes("pi-rukas:agents-md:begin code-style"),
+    "rich-manifest-no-codestyle fixture: does NOT contain a code-style pair (the trigger case)",
+  );
+  assert(
+    richText.includes("package.json"),
+    "rich-manifest-no-codestyle fixture: references package.json as the manifest",
+  );
+  assert(
+    richText.includes("[auto:2026-01-01]"),
+    "rich-manifest-no-codestyle fixture: ledger carries [auto] rows (not [detected:agent])",
+  );
+  // The fixture must parse cleanly.
+  let richParsed: { id: string }[] = [];
+  let richErr: Error | null = null;
+  try {
+    richParsed = parseMarkers(richText).spans;
+  } catch (e) {
+    richErr = e as Error;
+  }
+  assert(richErr === null, "rich-manifest-no-codestyle fixture: parses cleanly (no tripwire)");
+  const richIds = richParsed.map((s) => s.id);
+  assert(
+    richIds.includes("quality-gates") && richIds.includes("commands") && richIds.includes("environment") && richIds.includes("decision-ledger"),
+    "rich-manifest-no-codestyle fixture: the 3 fact sections + ledger are recognised",
+  );
+  assert(
+    !richIds.includes("code-style"),
+    "rich-manifest-no-codestyle fixture: code-style is NOT among the parsed ids",
+  );
+}
+
 console.log(exit === 0 ? "\nAll dual-prefix checks passed." : "\nFAILED");
 process.exit(exit);

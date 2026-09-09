@@ -23,7 +23,35 @@ export interface Command {
   name: string; // human label
   command: string; // the exact shell line that goes into AGENTS.md
   kind: "test" | "lint" | "format" | "typecheck" | "build";
-  runner: string; // bun | npm | cargo | go | uv | make
+  /**
+   * bun | npm | cargo | go | uv | make — REQUIRED by every manifest-derived
+   * `from*()` helper (they always know their runner), but OPTIONAL on the
+   * type: B2's `agentFactsToDetectedFacts` emits agent-supplied commands with
+   * no runner (the wire format carries none), and the renderer never reads
+   * this field. Never synthesize a value — "never a guess".
+   */
+  runner?: string;
+}
+
+/**
+ * The B2 wire format: the shape a read-only explore child reports via the
+ * `report_facts` companion tool (facts-reporter.ts), before conversion into
+ * B1's `DetectedFacts`. Mirrors `DetectedFacts` minus the fields the agent
+ * cannot know — no `runner`, no `notes` (the renderer never reads either).
+ * `ciWorkflows` carries RAW FILENAMES ONLY (e.g. "ci.yml"); the
+ * `.github/workflows/` prefix is applied by `environmentBody` at render time,
+ * never here.
+ */
+export interface AgentFacts {
+  language?: string;
+  packageManager?: string;
+  /** The manifest file the agent found, e.g. "Gemfile". */
+  manifest?: string;
+  commands?: Array<Pick<Command, "name" | "command" | "kind">>;
+  /** Dense, specific bullets — exact shell lines, not prose. */
+  codeStyleBullets?: string[];
+  /** RAW workflow filenames only ("ci.yml"), never prefixed. */
+  ciWorkflows?: string[];
 }
 
 export interface DetectedFacts {
@@ -231,6 +259,84 @@ export function detectFacts(root: string): DetectedFacts {
     ciWorkflows,
     notes: ["no recognised manifest (package.json / Cargo.toml / go.mod / pyproject.toml)"],
   };
+}
+
+/**
+ * Convert the B2 wire format (`AgentFacts`) into B1's `DetectedFacts`.
+ *
+ * Total and lossless: for EVERY `AgentFacts` input — including one with all
+ * fields absent — it returns a well-formed `DetectedFacts` and throws nothing.
+ * The mapping is field-by-field and copies each present field through
+ * unchanged; absent fields become `undefined` (scalar) or `[]` (arrays), never
+ * a guess. `commands` are copied through without adding a `runner` (the wire
+ * format carries none and the renderer does not read it), and `ciWorkflows`
+ * are copied through as RAW filenames — the `.github/workflows/` prefix is
+ * applied by `environmentBody` (renderer.ts), never here.
+ *
+ * The caller feeds the result into B1's `agentOverride.facts` parameter. B2
+ * never touches `updateAgent`/`renderAgent` internals directly.
+ */
+export function agentFactsToDetectedFacts(f: AgentFacts): DetectedFacts {
+  return {
+    manifest: f.manifest,
+    runner: undefined,
+    packageManager: f.packageManager,
+    language: f.language,
+    commands: f.commands ?? [],
+    ciWorkflows: f.ciWorkflows ?? [],
+    notes: [],
+  };
+}
+
+/**
+ * Extract the agent's reported facts from a dispatch's `toolUses` channel —
+ * the fails-closed twin of `extractPolicyAnswer` (work-driver-policy.ts).
+ *
+ * Scans `toolUses` for `report_facts` calls and returns the arguments of the
+ * LAST call whose shape validates as `AgentFacts`. Returns `undefined` — not a
+ * partial or invented value — when:
+ *   - `toolUses` is empty (no tool calls at all),
+ *   - the child called some other tool (e.g. `report_finding`) but never
+ *     `report_facts`, or
+ *   - a `report_facts` call's arguments are malformed (e.g. `commands` is a
+ *     string, not an array of `{name,command,kind}`). A malformed call is
+ *     discarded, not coerced — mirroring `extractPolicyAnswer` dropping an
+ *     out-of-schema verdict rather than forcing it through.
+ *
+ * `undefined` from this function is the caller's "no facts, never a guess"
+ * signal: it means the caller proceeds with NO `agentOverride` at all
+ * (falling back to B1's deterministic/omission behavior), exactly as an absent
+ * `report_policy` call maps to a denied verdict.
+ */
+export function extractAgentFacts(toolUses: readonly unknown[]): AgentFacts | undefined {
+  const isKw = (x: unknown): x is string =>
+    typeof x === "string" &&
+    (x === "test" || x === "lint" || x === "format" || x === "typecheck" || x === "build");
+  const isObj = (v: unknown): v is Record<string, unknown> =>
+    typeof v === "object" && v !== null && !Array.isArray(v);
+  const isStrArr = (v: unknown): v is string[] =>
+    Array.isArray(v) && v.every((x) => typeof x === "string");
+  const isCmd = (c: unknown): c is Pick<Command, "name" | "command" | "kind"> => {
+    if (!isObj(c)) return false;
+    return typeof c.name === "string" && typeof c.command === "string" && isKw(c.kind);
+  };
+
+  const shape = (o: Record<string, unknown>): boolean =>
+    (o.language === undefined || typeof o.language === "string") &&
+    (o.packageManager === undefined || typeof o.packageManager === "string") &&
+    (o.manifest === undefined || typeof o.manifest === "string") &&
+    (o.ciWorkflows === undefined || isStrArr(o.ciWorkflows)) &&
+    (o.codeStyleBullets === undefined || isStrArr(o.codeStyleBullets)) &&
+    (o.commands === undefined || (Array.isArray(o.commands) && o.commands.every(isCmd)));
+
+  let found: AgentFacts | undefined;
+  for (const tu of toolUses) {
+    if (!isObj(tu) || tu.name !== "report_facts") continue;
+    const args = tu.arguments;
+    if (!isObj(args) || !shape(args)) continue;
+    found = args as AgentFacts;
+  }
+  return found;
 }
 
 function hasSourceFile(root: string, exts: string[]): boolean {

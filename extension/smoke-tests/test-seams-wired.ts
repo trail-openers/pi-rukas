@@ -251,7 +251,20 @@ for (const seam of SEAMS) {
   // orphan check does not fail on it until forge.ts lands.
   // #610 — forge.ts is S2. Its production caller is work-driver (S4 #612),
   // not yet shipped. Declared pending for the same reason.
-  const PENDING_PRODUCTION_CALLER = new Set(["forge-detect.ts", "forge.ts"]);
+  const PENDING_PRODUCTION_CALLER = new Set([
+    "forge-detect.ts",
+    "forge.ts",
+    // #660 B2 — companion extension loaded via --extension at dispatch time
+    // (FACTS_EXTRA_ARGS in the /agents-md pre-pass), not via a static import.
+    // Same pattern as policy-reporter.ts / lens-reporter.ts / plan-reporter.ts,
+    // which are also not in this set because they have no named exports
+    // imported by tests. facts-reporter.ts DOES have named exports
+    // (agentFactsToDetectedFacts, extractAgentFacts, FACTS_EXTRA_ARGS) that
+    // the test files import, so the orphan check flags it. The production
+    // caller is the /agents-md pre-pass dispatch (pi-prompts/agents-md.md),
+    // which loads it via FACTS_EXTRA_ARGS — not a static import.
+    "facts-reporter.ts",
+  ]);
   const orphans: string[] = [];
   for (const f of allFiles) {
     if (declared.has(f.name) || f.name === "index.ts" || f.name === "types.ts") continue;

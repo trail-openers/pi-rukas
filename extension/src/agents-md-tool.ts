@@ -35,7 +35,8 @@ import {
   createAgent,
   updateAgent,
 } from "./agents-md/agents-md.ts";
-import type { OperatorAnswers } from "./agents-md/scaffold.ts";
+import { type AgentFacts, agentFactsToDetectedFacts } from "./agents-md/detect.ts";
+import type { AgentOverride, OperatorAnswers, ScaffoldOpts } from "./agents-md/scaffold.ts";
 import { trace } from "./trace.ts";
 import { resolveRepoRoot } from "./work-entry.ts";
 
@@ -83,6 +84,58 @@ export function registerAgentsMdTools(pi: ExtensionAPI) {
             "compute the full plan (including newBytes) but never write. Fixes the promised-but-unimplemented dryRun param.",
         }),
       ),
+      agentOverride: Type.Optional(
+        Type.Object(
+          {
+            facts: Type.Optional(
+              Type.Object(
+                {
+                  language: Type.Optional(Type.String()),
+                  packageManager: Type.Optional(Type.String()),
+                  manifest: Type.Optional(Type.String()),
+                  commands: Type.Optional(
+                    Type.Array(
+                      Type.Object({
+                        name: Type.String(),
+                        command: Type.String(),
+                        kind: Type.Union([
+                          Type.Literal("test"),
+                          Type.Literal("lint"),
+                          Type.Literal("format"),
+                          Type.Literal("typecheck"),
+                          Type.Literal("build"),
+                        ]),
+                      }),
+                    ),
+                  ),
+                  codeStyleBullets: Type.Optional(Type.Array(Type.String())),
+                  ciWorkflows: Type.Optional(Type.Array(Type.String())),
+                },
+                {
+                  description:
+                    "Agent-derived facts (AgentFacts wire format). Pass the raw AgentFacts from the pre-pass report_facts call; the tool converts to DetectedFacts internally. ciWorkflows must be RAW FILENAMES ONLY (e.g. 'ci.yml') — the .github/workflows/ prefix is applied by the renderer, never here.",
+                },
+              ),
+            ),
+            codeStyleBullets: Type.Optional(
+              Type.Array(Type.String(), {
+                description:
+                  "Dense, specific code-style bullets (not prose). Feeds the code-style managed section.",
+              }),
+            ),
+          },
+          {
+            description:
+              "Caller-supplied agent-derived facts + code-style bullets (the B1↔B2 seam). When `facts` is set on update, the fact sections (quality-gates, commands, environment) are built from it instead of a fresh detectFacts(). Only honoured on the has-markers update path — never on create/wrap.",
+          },
+        ),
+      ),
+      refresh: Type.Optional(
+        Type.Boolean({
+          description:
+            "Explicit refresh: when true AND agentOverride is supplied, every section whose existing ledger row is [detected:agent,...] is DIRECTLY replaced (bypassing the first-time-only rule). Without it, a supplied agentOverride is used only for first-time population. Refresh goes through the same ask-before-write flow (dryRun first, show diff, operator confirms) — never automatic.",
+        }),
+      ),
     }),
     async execute(_id, raw, _signal, _onUpdate, ctx: ExtensionContext) {
       const params = raw as {
@@ -91,6 +144,11 @@ export function registerAgentsMdTools(pi: ExtensionAPI) {
         scaffold?: boolean;
         answers?: OperatorAnswers;
         dryRun?: boolean;
+        agentOverride?: {
+          facts?: AgentFacts;
+          codeStyleBullets?: string[];
+        };
+        refresh?: boolean;
       };
       const verb = params.verb;
       if (verb !== "check" && params.deep === true) {
@@ -107,23 +165,30 @@ export function registerAgentsMdTools(pi: ExtensionAPI) {
       const repoRoot = await resolveRepoRoot(ctx.cwd);
       const file = `${repoRoot}/AGENTS.md`;
       const fsOps = defaultRepoFs();
+      // Build the ScaffoldOpts with the B1↔B2 agentOverride seam. The tool
+      // receives the raw AgentFacts wire format and converts it to
+      // DetectedFacts here — the PM never imports the conversion function.
+      const scaffoldOpts: ScaffoldOpts = {
+        scaffold: params.scaffold,
+        answers: params.answers,
+      };
+      if (params.agentOverride) {
+        const ov: AgentOverride = {};
+        if (params.agentOverride.facts) {
+          ov.facts = agentFactsToDetectedFacts(params.agentOverride.facts);
+        }
+        if (params.agentOverride.codeStyleBullets) {
+          ov.codeStyleBullets = params.agentOverride.codeStyleBullets;
+        }
+        scaffoldOpts.agentOverride = ov;
+        if (params.refresh !== undefined) scaffoldOpts.refresh = params.refresh;
+      }
+
       const result: VerbResult =
         verb === "create"
-          ? createAgent(
-              repoRoot,
-              file,
-              fsOps,
-              { scaffold: params.scaffold, answers: params.answers },
-              params.dryRun,
-            )
+          ? createAgent(repoRoot, file, fsOps, scaffoldOpts, params.dryRun)
           : verb === "update"
-            ? updateAgent(
-                repoRoot,
-                file,
-                fsOps,
-                { scaffold: params.scaffold, answers: params.answers },
-                params.dryRun,
-              )
+            ? updateAgent(repoRoot, file, fsOps, scaffoldOpts, params.dryRun)
             : checkAgent(repoRoot, file, { deep: params.deep ?? false }, fsOps, params.dryRun);
       trace(`agents_md_run(${verb}${params.deep ? " --deep" : ""}) → exit ${result.exitCode}`);
       const details: Record<string, unknown> = { verb, exitCode: result.exitCode };

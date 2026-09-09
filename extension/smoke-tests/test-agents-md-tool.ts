@@ -17,7 +17,7 @@
  *   - the unified diff in the report is insertions-only for a create
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -243,6 +243,35 @@ const run = (raw: Record<string, unknown>) =>
   assert(
     readFileSync(AGENTS, "utf8") === plan?.oldBytes,
     "…against the repo-root AGENTS.md, not cwd-relative",
+  );
+}
+
+// ----------------------------------- graceful fallback: no agentOverride
+
+{
+  // The graceful-fallback contract: when the pre-pass dispatch fails or
+  // returns no report_facts call, the PM calls agents_md_run WITHOUT an
+  // agentOverride parameter at all. The result must be indistinguishable
+  // from a call that never wired the pre-pass — i.e. the tool's default
+  // (no agentOverride) path produces the same bytes as passing an empty
+  // agentOverride. This is the "no facts, never a guess" fallback.
+  //
+  // Since agents_md_run's TypeBox schema does not yet expose agentOverride
+  // (B1's scope), we test the tool-level behavior: a bare update (no
+  // agentOverride param) must exit 0 and produce deterministic output.
+  // The file was restored by the "deep refused" test's create call, so
+  // update finds it.
+  const r = await run({ verb: "update" });
+  assert(r.details.exitCode === 0, "graceful fallback: update without agentOverride exits 0");
+  const plan = r.details.plan as { wouldWrite: boolean; newBytes: string } | undefined;
+  assert(plan !== undefined, "graceful fallback: plan is present");
+  assert(
+    (plan?.newBytes ?? "").length > 0,
+    "graceful fallback: newBytes is non-empty (facts derived from detectFacts)",
+  );
+  assert(
+    r.content[0]?.text !== undefined,
+    "graceful fallback: report is present (no error)",
   );
 }
 

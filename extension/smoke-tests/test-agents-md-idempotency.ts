@@ -275,5 +275,175 @@ let B: string;
 
 rmSync(tmp, { recursive: true, force: true });
 
+// ------------------------------------ agentOverride idempotency (B2 pre-pass)
+
+{
+  // A separate temp dir: NO manifest on disk (so detectFacts finds nothing).
+  // The B2 pre-pass dispatch would supply facts via agentOverride. Re-running
+  // the same agentOverride (as a re-dispatch would) must be a no-op.
+  const noManifestDir = mkdtempSync(path.join(tmpdir(), "pi-ens-agentsmd-idem-nomanifest-"));
+  const noManifestAgents = path.join(noManifestDir, "AGENTS.md");
+
+  // Seed: a has-markers file (the update path requires existing markers).
+  const seed = [
+    "# T",
+    "<!-- pi-rukas:agents-md:begin quality-gates v1 -->",
+    "- **stub** — `placeholder`",
+    "<!-- pi-rukas:agents-md:end quality-gates -->",
+    "<!-- pi-rukas:agents-md:begin commands v1 -->",
+    "| kind | command |",
+    "| --- | --- |",
+    "| test | `placeholder` |",
+    "<!-- pi-rukas:agents-md:end commands -->",
+    "<!-- pi-rukas:agents-md:begin environment v1 -->",
+    "- CI: no `.github/workflows/` detected",
+    "<!-- pi-rukas:agents-md:end environment -->",
+    "<!-- pi-rukas:agents-md:begin decision-ledger v1 -->",
+    "| key | value | provenance |",
+    "| --- | --- | --- |",
+    "| k | v | [auto:2026-01-01] |",
+    "<!-- pi-rukas:agents-md:end decision-ledger -->",
+    "",
+  ].join("\n");
+  writeFileSync(noManifestAgents, seed);
+
+  const agentFacts = {
+    manifest: "package.json",
+    runner: undefined,
+    packageManager: "bun",
+    language: "typescript",
+    commands: [
+      { name: "bun test", command: "bun test", kind: "test" as const, runner: "bun" },
+    ],
+    ciWorkflows: ["ci.yml"],
+    notes: [],
+  };
+  const codeStyleBullets = ["Use bun for all JS/TS work", "Run the full test suite before push"];
+
+  // Call 1: first agentOverride (populates the fact sections + code-style).
+  const fs1 = mkFs({ today: () => "2026-01-01" });
+  const r1 = updateAgent(noManifestDir, noManifestAgents, fs1, {
+    agentOverride: { facts: agentFacts, codeStyleBullets },
+  });
+  const after1 = fs1.readFile(noManifestAgents);
+  assert(r1.exitCode === 0, "agentOverride idempotency #1: exit 0");
+  assert(r1.plan?.wouldWrite === true, "agentOverride idempotency #1: wouldWrite is true");
+
+  // Call 2: SAME agentOverride, LATER date. Must be byte-identical (no-op).
+  // This is B2's idempotency contract: re-dispatching the pre-pass and
+  // re-passing the same AgentFacts must not churn the ledger or the Code
+  // Style section.
+  const fs2 = mkFs({ today: () => "2026-09-09" });
+  const r2 = updateAgent(noManifestDir, noManifestAgents, fs2, {
+    agentOverride: { facts: agentFacts, codeStyleBullets },
+  });
+  const after2 = fs2.readFile(noManifestAgents);
+  assert(r2.exitCode === 0, "agentOverride idempotency #2: exit 0");
+  assert(
+    r2.plan?.wouldWrite === false,
+    "agentOverride idempotency #2: wouldWrite is false (same facts → no-op)",
+  );
+  assert(
+    Buffer.from(after2, "utf8").equals(Buffer.from(after1, "utf8")),
+    "agentOverride idempotency #2: byte-identical across date rollover (no churn)",
+  );
+  assert(
+    r2.plan?.omitted.length === 0,
+    "agentOverride idempotency #2: ZERO omitted (no omit:* rows upserted)",
+  );
+
+  rmSync(noManifestDir, { recursive: true, force: true });
+}
+
+// ------------------------------------ agentOverride: Ruby greenfield (B2 pre-pass)
+
+{
+  // A separate temp dir: NO package.json, NO Cargo.toml, NO go.mod, NO
+  // pyproject.toml — so detectFacts(root).manifest is undefined. This is the
+  // exact shape the B2 pre-pass dispatch exists for: the agent supplies the
+  // facts via agentOverride because detection can't derive them.
+  const rubyDir = mkdtempSync(path.join(tmpdir(), "pi-ens-agentsmd-ruby-"));
+  const rubyAgents = path.join(rubyDir, "AGENTS.md");
+
+  const seed = [
+    "# Ruby Greenfield",
+    "<!-- pi-rukas:agents-md:begin quality-gates v1 -->",
+    "- **stub** — `placeholder`",
+    "<!-- pi-rukas:agents-md:end quality-gates -->",
+    "<!-- pi-rukas:agents-md:begin commands v1 -->",
+    "| kind | command |",
+    "| --- | --- |",
+    "| test | `placeholder` |",
+    "<!-- pi-rukas:agents-md:end commands -->",
+    "<!-- pi-rukas:agents-md:begin environment v1 -->",
+    "- CI: no `.github/workflows/` detected",
+    "<!-- pi-rukas:agents-md:end environment -->",
+    "<!-- pi-rukas:agents-md:begin decision-ledger v1 -->",
+    "| key | value | provenance |",
+    "| --- | --- | --- |",
+    "| k | v | [auto:2026-01-01] |",
+    "<!-- pi-rukas:agents-md:end decision-ledger -->",
+    "",
+  ].join("\n");
+  writeFileSync(rubyAgents, seed);
+
+  const rubyFacts = {
+    manifest: "Gemfile",
+    runner: undefined,
+    packageManager: "ruby",
+    language: "ruby",
+    commands: [
+      { name: "bundle test", command: "bundle exec rspec", kind: "test" as const, runner: "bundle" },
+      { name: "bundle rubocop", command: "bundle exec rubocop", kind: "lint" as const, runner: "bundle" },
+      { name: "bundle build", command: "bundle exec rake build", kind: "build" as const, runner: "bundle" },
+    ],
+    ciWorkflows: ["ci.yml", "publish.yml"],
+    notes: [],
+  };
+
+  const fs = mkFs({ today: () => "2026-01-02" });
+  const res = updateAgent(rubyDir, rubyAgents, fs, {
+    agentOverride: {
+      facts: rubyFacts,
+      codeStyleBullets: ["Frozen string literals required", "RuboCop defaults, no custom config"],
+    },
+  });
+  const content = fs.readFile(rubyAgents);
+  assert(res.exitCode === 0, "agentOverride (ruby): exit 0");
+  assert(res.plan?.wouldWrite === true, "agentOverride (ruby): wouldWrite is true");
+  assert(
+    content.includes("- **bundle test** — `bundle exec rspec`"),
+    "agentOverride (ruby): quality-gates built from override facts",
+  );
+  assert(
+    content.includes("| test | `bundle exec rspec` |"),
+    "agentOverride (ruby): commands built from override facts",
+  );
+  assert(
+    content.includes("- Manifest: `Gemfile`"),
+    "agentOverride (ruby): environment built from override facts",
+  );
+  assert(
+    content.includes(".github/workflows/ci.yml"),
+    "agentOverride (ruby): ciWorkflows rendered with .github/workflows/ prefix (applied by renderer)",
+  );
+  assert(
+    content.includes("<!-- pi-rukas:agents-md:begin code-style v1 -->"),
+    "agentOverride (ruby): code-style pair inserted",
+  );
+  assert(
+    content.includes("- Frozen string literals required"),
+    "agentOverride (ruby): code-style bullets rendered",
+  );
+  const { sectionContentWithEnd } = await import("../src/agents-md/markers.ts");
+  const ledgerBody = sectionContentWithEnd(content, "decision-ledger") ?? "";
+  assert(
+    ledgerBody.includes("[detected:agent,2026-01-02]"),
+    "agentOverride (ruby): ledger rows stamped [detected:agent,2026-01-02]",
+  );
+
+  rmSync(rubyDir, { recursive: true, force: true });
+}
+
 console.log(exit === 0 ? "\nAll idempotency checks passed." : "\nFAILED");
 process.exit(exit);

@@ -44,6 +44,97 @@ against an uncommitted baseline. Surface that; let the operator decide.
 
 ---
 
+## Pre-pass: dispatch an explore child for agent-derived facts
+
+Before calling `agents_md_run` with `create` or `update`, **first check the
+trigger condition** and, if it fires, dispatch a read-only explore-role child
+to produce `AgentFacts`.
+
+### Trigger condition
+
+Dispatch the pre-pass **when either**:
+1. The repo has **no recognised manifest** (`package.json`, `Cargo.toml`,
+   `go.mod`, or `pyproject.toml` at the root) — i.e. `detectFacts(root)`
+   would return `manifest: undefined` (Ruby/Gemfile, true greenfield,
+   unrecognised ecosystems), **OR**
+2. The current `AGENTS.md` has **no `code-style` managed section** (no
+   `<!-- pi-rukas:agents-md:begin code-style v1 -->` marker pair).
+
+**Skip the dispatch entirely** only when BOTH conditions are false: the
+manifest is recognised AND the code-style section already exists.
+
+### The dispatch
+
+Use `dispatch_specialist` with `role: "explore"` (structurally denied
+write/edit via role-tools). The prompt should demand **dense, specific**
+facts — exact shell lines, not narrative. Reference the `oo/AGENTS.md`
+quality bar: exact command lines, no filler.
+
+The dispatch prompt must include:
+
+> You have the `report_facts` tool. Read the repository's source files,
+> build system, CI workflows, and any existing style documentation to derive
+> the project's facts. Call `report_facts` EXACTLY ONCE with the facts you
+> found. Rules:
+> - `commands`: exact shell lines (the command that goes into AGENTS.md),
+>   each with `kind` (test|lint|format|typecheck|build) and a `name` label.
+> - `ciWorkflows`: RAW FILENAMES ONLY (e.g. "ci.yml") — do NOT include the
+>   `.github/workflows/` prefix; the renderer applies it.
+> - `codeStyleBullets`: dense, specific bullets (exact rules, no prose).
+>   Each bullet is one concrete rule, not a paragraph.
+> - `language`, `packageManager`, `manifest`: only if you can confirm them
+>   from files in the repo. Do not guess.
+
+**Companion extension load (FACTS_EXTRA_ARGS)**: the dispatch must pass
+`--no-skills --extension <facts-reporter-path>` as extra args to the child,
+where `<facts-reporter-path>` is the path to `extension/src/facts-reporter.ts`
+(relative to the Pi extension install dir). This follows the exact pattern of
+`PLAN_EXTRA_ARGS` in `plan-investigate.ts`. The child sees both its role
+prompt AND the `report_facts` tool.
+
+### Scoping rule (rich-manifest repos)
+
+When the repo **has** a recognised manifest (`detectFacts(root).manifest`
+≠ `undefined`) AND the only reason the dispatch fires is that the code-style
+section is absent: the caller passes **only `codeStyleBullets`** into
+`agentOverride`. The child's `commands`/`manifest`/`language`/`packageManager`
+fields are **ignored** for the fact sections — this prevents a routine
+code-style-only dispatch from silently converting a rich project's
+`[auto,...]` provenance rows to `[detected:agent,...]`.
+
+### Refresh framing
+
+When the operator triggers a refresh (e.g. `/agents-md update --refresh` or
+an explicit "refresh the agent-derived sections" request), re-dispatch the
+**same** pre-pass with a prompt framed for refresh:
+
+> You have the `report_facts` tool. Re-read the repository's current state
+> and report updated facts via `report_facts` (exactly once call). Only the
+> sections that were previously agent-derived (`[detected:agent,...]` ledger
+> rows) will be re-written; sections with `[auto,...]` or `[asked:operator,...]`
+> provenance are never overwritten. Report all fields you can derive; the
+> provenance gate in the tool handles which ones actually land.
+
+After conversion, call `agents_md_run` with `update`, the new
+`agentOverride`, and `refresh: true`. This goes through the **same**
+ask-before-write flow (dryRun first, show the real diff, operator confirms).
+
+### Graceful failure
+
+If the pre-pass dispatch **fails**, **times out**, or returns **no
+`report_facts` tool call** (i.e. the child's `toolUses` array contains no entry
+with `name === "report_facts"`), treat it exactly like
+`extractPolicyAnswer`'s absent-call handling: **proceed by calling
+`agents_md_run` WITHOUT an `agentOverride` parameter at all**. This falls
+back entirely to B1's existing deterministic/omission behavior.
+
+A **partial** `report_facts` call (e.g. `codeStyleBullets` present but
+`commands` absent) applies **only the populated fields** — the conversion
+function's total/lossless contract handles absent fields as
+undefined/empty naturally. A partial reply is not a failure.
+
+---
+
 ## Call the tool
 
 Use the **`agents_md_run` tool**:
@@ -59,11 +150,23 @@ agents_md_run(verb: "create" | "update" | "check",
                 mergeAuthority?: string,
                 projectConstraints?: string,
               },
-              dryRun?: boolean)    // plan is computed, no write is performed
+              dryRun?: boolean,     // plan is computed, no write is performed
+              agentOverride?: {     // B1↔B2 seam (update only): agent-derived facts
+                facts?: AgentFacts, // raw wire format (language?, packageManager?,
+                                    //   manifest?, commands?, codeStyleBullets?,
+                                    //   ciWorkflows?) — converted internally
+                codeStyleBullets?: string[], // dense bullets for code-style section
+              },
+              refresh?: boolean)    // update only: when true + agentOverride,
+                                    // directly replace [detected:agent] sections
 ```
 
-The tool resolves the repo root itself; you pass no paths. The result is
-structured — do not parse prose:
+The tool resolves the repo root itself; you pass no paths. The `agentOverride`
+parameter (when supplied) carries the raw `AgentFacts` from the pre-pass —
+the tool converts it to `DetectedFacts` internally. You pass the wire format
+directly; no conversion function call is needed.
+
+The result is structured — do not parse prose:
 
 - `create`/`update` results: `exitCode` plus
   `plan: { state, newBytes, oldBytes, wouldWrite, managedIds, omitted, drift, scaffoldedIds }`
@@ -72,6 +175,8 @@ structured — do not parse prose:
   `no-file` case `check` is absent and `error` is present; render `error`
 - a `dryRun: true` create/update returns the full plan (including `newBytes`)
   without writing anything
+- `agentOverride` is only honoured on the has-markers `update` path; it is
+  silently ignored on create and no-markers (wrap) paths
 
 The tool also renders a human-readable summary in its `text` output: for
 create/update, the CLI-style report (would-write vs no-op, managed ids,
