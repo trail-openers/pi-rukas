@@ -2,43 +2,38 @@
 /**
  * Prerequisite-drift gate — #489.
  *
- * Three sources describe pi-ensemble's prerequisites and disagree:
- * README Prerequisites, install.sh REQUIRED_CLIS, Dockerfile global
- * installs. The gate compares the SETS (not counts) so docs may reflow
- * freely and only a genuinely missing or unexplained name fails.
+ * Three sources describe pi-ensemble's prerequisites and disagree: README Prerequisites, install.sh
+ * REQUIRED_CLIS, Dockerfile global installs. The gate compares the SETS (not counts) so docs may
+ * reflow freely and only a genuinely missing or unexplained name fails.
  *
  * Directions:
- *   forward  — every REQUIRED_CLIS name appears in the README Prerequisites
- *              section (presence check, not table parsing).
- *   reverse  — every Dockerfile global install is a REQUIRED_CLIS entry or
- *              an EXCEPTIONS key.
- *   OR gates — the forge CLI (gh OR glab, #608) is satisfied by EITHER
- *              binary on either surface; `parseDockerInstalls` recognises
- *              forge CLIs via apt-get and piped curl one-liners.
- *   versions — every install surface that declares a pi version declares
- *              one, and none is below the install floor (#578; the #571
- *              incident is the failure this exists to catch).
+ *   forward  — every REQUIRED_CLIS name appears in the README Prerequisites section (presence check,
+ *              not table parsing).
+ *   reverse  — every Dockerfile global install is a REQUIRED_CLIS entry or an EXCEPTIONS key.
+ *   OR gates — the forge CLI (gh OR glab, #608) is satisfied by EITHER binary on either surface;
+ *              `parseDockerInstalls` recognises forge CLIs via apt-get and piped curl one-liners.
+ *   versions — every install surface that declares a pi version declares one, and none is below the
+ *              install floor (#578; the #571 incident is the failure this exists to catch).
  *
- * EXCEPTIONS is a Record<string, string> (NOT_FOR_PM shape): an entry is a
- * decision, not an oversight. Delete an entry as its docs issue lands.
+ * EXCEPTIONS is a Record<string, string> (NOT_FOR_PM shape): an entry is a decision, not an
+ * oversight. Delete an entry as its docs issue lands.
  *
- * Proven in both directions (AGENTS.md §12): a static fixture pair where
- * one side declares a tool the other omits is flagged by the SAME exported
- * functions the real check uses.
+ * Proven in both directions (AGENTS.md §12): a static fixture pair where one side declares a tool
+ * the other omits is flagged by the SAME exported functions the real check uses.
  *
  * Escape hatch: PI_ENSEMBLE_PREREQ_DRIFT=0.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { checkGlabArchNeutrality, runGlabArchCanaries } from "./lib/glab-arch-check.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const FIXTURES = path.resolve(import.meta.dirname, "fixtures", "prerequisite-drift");
 
 /**
- * Tools deliberately outside the check, each with the reason. Keyed by the
- * name as it appears in the sources. Delete an entry as the referenced
- * docs issue lands.
+ * Tools deliberately outside the check, each with the reason. Keyed by the name as it appears in
+ * the sources. Delete an entry as the referenced docs issue lands.
  */
 const EXCEPTIONS: Record<string, string> = {
   // In the Dockerfile (pi install npm:) but absent from the README table.
@@ -58,9 +53,8 @@ const EXCEPTIONS: Record<string, string> = {
   "pi-coding-agent": "npm package name — installs the `pi` binary already in REQUIRED_CLIS",
   "@earendil-works/pi-coding-agent":
     "npm package name — installs the `pi` binary already in REQUIRED_CLIS",
-  // #578 floor pin on the Dockerfile pi install. parseDockerInstalls keeps
-  // the full tagged name (doesn't strip versions). Version-level consistency
-  // is asserted separately (parsePiFloors); this entry keeps the NAME-level
+  // #578 floor pin on the Dockerfile pi install. parseDockerInstalls keeps the full tagged name;
+  // version consistency is asserted separately (parsePiFloors) — this entry keeps the NAME-level
   // reverse direction from flagging a false drift.
   "@earendil-works/pi-coding-agent@0.84.4":
     "npm package name with the #578 floor pin — installs the `pi` binary already in REQUIRED_CLIS",
@@ -85,9 +79,9 @@ function read(rel: string): string {
 }
 
 /**
- * REQUIRED_CLIS names in install.sh. Each element is "name:hint" — the
- * name is between the opening quote and the FIRST colon. One element per
- * line, so this is plain line scanning. Exported for the canary fixture.
+ * REQUIRED_CLIS names in install.sh. Each element is "name:hint" — the name is between the opening
+ * quote and the FIRST colon. One element per line, so this is plain line scanning.
+ * Exported for the canary fixture.
  */
 export function parseRequiredClis(installSh: string): string[] {
   const lines = installSh.split("\n");
@@ -107,10 +101,9 @@ export function parseRequiredClis(installSh: string): string[] {
 }
 
 /**
- * README Prerequisites section: `## Prerequisites` to the next `## `.
- * Spans the `### Install commands` sub-sections so a name in a code block
- * counts as "named" and table reformatting stays free. Exported for the
- * canary fixture.
+ * README Prerequisites section: `## Prerequisites` to the next `## `. Spans the `### Install
+ * commands` sub-sections so a name in a code block counts as "named" and table reformatting stays
+ * free. Exported for the canary fixture.
  */
 export function readmePrerequisitesSection(readme: string): string {
   const lines = readme.split("\n");
@@ -121,10 +114,9 @@ export function readmePrerequisitesSection(readme: string): string {
 }
 
 /**
- * Global installs in the Dockerfile — lines that put a tool on PATH.
- * Recognised: npm global, cargo, pi install npm:, and forge CLIs (gh/glab)
- * via apt-get or piped curl (#608). Comment lines, other apt packages,
- * and the pip artifact puller are excluded. Exported for the canary.
+ * Global installs in the Dockerfile — lines that put a tool on PATH. Recognised: npm global, cargo,
+ * pi install npm:, and forge CLIs (gh/glab) via apt-get or piped curl (#608). Comment lines, other
+ * apt packages, and the pip artifact puller are excluded. Exported for the canary.
  */
 export function parseDockerInstalls(dockerfile: string): { name: string; line: number }[] {
   const out = new Map<string, number>(); // name → first line (1-based)
@@ -148,28 +140,29 @@ export function parseDockerInstalls(dockerfile: string): { name: string; line: n
     // cargo install <pkg> — cargo package name == binary name here.
     const c = t.match(/\bcargo install\s+(\S+)/);
     if (c && !(c[1] as string).startsWith("-")) names.push(c[1] as string);
-    // Forge CLIs via a piped curl one-liner (e.g. glab's official install
-    // script, #608). Recognised by the `glab` marker on the line (the
-    // piped URL is generic — `installation.sh` — and doesn't name the
-    // binary), so a Dockerfile that pipes in glab without ever naming it
-    // elsewhere would otherwise be invisible to the reverse direction.
-    // Scoped to glab only: gh's official channel is its apt repo (the
-    // apt-get rule below); glab's ONLY channel is the piped script.
+    // Forge CLIs via a piped curl one-liner (e.g. glab's official install script, #608).
+    // Recognised by the `glab` marker on the line (the piped URL is generic — `installation.sh` —
+    // and doesn't name the binary), so a Dockerfile that pipes in glab without ever naming it
+    // elsewhere would otherwise be invisible to the reverse direction. Scoped to glab only:
+    // gh's official channel is its apt repo (the apt-get rule below); glab's ONLY channel is
+    // the piped script.
     if (/\bglab\b/.test(t)) {
       for (const m of t.matchAll(/curl[^&|;]*\|\s*(?:bash|sh)[^&|;]*/g)) {
         if (m[0]) names.push("glab");
       }
     }
-    // Forge CLIs via apt-get install -y gh / glab (OR semantics, #608):
-    // install.sh's forge check is satisfied by EITHER binary, so the
-    // reverse direction accepts either here. Scoped to gh/glab — other
-    // apt packages are OS system packages, out of scope by design.
+    // Forge CLIs via apt-get install -y gh / glab (OR semantics, #608): install.sh's forge
+    // check is satisfied by EITHER binary, so the reverse direction accepts either here.
+    // Scoped to gh/glab — other apt packages are OS system packages, out of scope by design.
     const a = t.match(/apt-get install -y[^&|;]*/);
     if (a) {
       for (const tok of (a[0] as string).split(/\s+/).slice(3)) {
         if (tok === "gh" || tok === "glab") names.push(tok);
       }
     }
+    // glab .deb download by asset name (no dpkg/curl co-occurrence needed — the URL lives on a
+    // continuation line; see lib/glab-arch-check.ts).
+    if (checkGlabArchNeutrality(t).matched) names.push("glab");
     for (const raw of names) {
       if (raw === "npm" || raw === "npm@latest") continue; // npm self-update, not a prerequisite
       if (!out.has(raw)) out.set(raw, i + 1);
@@ -179,10 +172,9 @@ export function parseDockerInstalls(dockerfile: string): { name: string; line: n
 }
 
 /**
- * Pi version floors declared by each install surface. A site that declares
- * no floor returns "" — the drift this gate exists to catch (#571). The
- * install.sh floor lives in install-preflight.sh (sourced, #578); the
- * fixture carries the same line so the canary exercises the full path.
+ * Pi version floors declared by each install surface. A site that declares no floor returns "" —
+ * the drift this gate exists to catch (#571). The install.sh floor lives in install-preflight.sh
+ * (sourced, #578); the fixture carries the same line so the canary exercises the full path.
  */
 export function parsePiFloors(sources: {
   installSh: string;
@@ -204,10 +196,9 @@ export function parsePiFloors(sources: {
 }
 
 /**
- * Compare two dotted version strings numerically; -1/0/1, or null if
- * either is not a plain dotted-numeric version. MAJOR.MINOR.PATCH is
- * pi's release grammar, so per-field numeric compare is correct without
- * pre-release handling.
+ * Compare two dotted version strings numerically; -1/0/1, or null if either is not a plain
+ * dotted-numeric version. MAJOR.MINOR.PATCH is pi's release grammar, so per-field numeric
+ * compare is correct without pre-release handling.
  */
 export function compareVersions(a: string, b: string): number | null {
   const split = (s: string) => s.split(/[.+-]/).map((p) => Number(p));
@@ -250,8 +241,8 @@ const required = new Set(installNames);
 const excepted = new Set(Object.keys(EXCEPTIONS));
 
 {
-  // Forward: every REQUIRED_CLIS name is named in the README Prerequisites
-  // section. Presence, not table parsing — formatting is free to change.
+  // Forward: every REQUIRED_CLIS name is named in the README Prerequisites section. Presence, not
+  // table parsing — formatting is free to change.
   const missing = installNames.filter((n) => !readmeSection.includes(n));
   assert(
     missing.length === 0,
@@ -264,11 +255,10 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
 }
 
 {
-  // Reverse: every Dockerfile global install is either required or excepted.
-  // Forge CLIs (gh/glab) map to the `forge` pseudo-name in REQUIRED_CLIS;
-  // they are accepted here only when the OR-gate is actually declared (the
-  // dedicated block below asserts that) — remove the gate and gh/glab
-  // become unexplained again.
+  // Reverse: every Dockerfile global install is either required or excepted. Forge CLIs
+  // (gh/glab) map to the `forge` pseudo-name in REQUIRED_CLIS; they are accepted here
+  // only when the OR-gate is actually declared (the dedicated block below asserts that)
+  // — remove the gate and gh/glab become unexplained again.
   const hasForgeGate = installNames.includes("forge");
   const unknown = dockerInstalls.filter((d) => {
     if (required.has(d.name) || excepted.has(d.name)) return false;
@@ -286,12 +276,10 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
 }
 
 {
-  // Forge OR-gate (#608): the forge CLI (gh OR glab) must be present on
-  // BOTH surfaces. install.sh side: `forge` in REQUIRED_CLIS is the
-  // declaration; the real check is the `command -v gh`/`command -v glab`
-  // pair (a check probing only gh would silently pass while the issue's
-  // AC — "accepts a system with only glab" — is violated). Dockerfile
-  // side: at least one of gh/glab must appear as a global install.
+  // Forge OR-gate (#608): the forge CLI (gh OR glab) must be present on BOTH surfaces.
+  // install.sh: `forge` in REQUIRED_CLIS is the declaration; the real check is the
+  // `command -v gh`/`command -v glab` pair. Dockerfile: at least one of gh/glab must
+  // appear as a global install.
   const installSh = read("install.sh");
   const requiredHasForge = installNames.includes("forge");
   const forgeBlockOk = /command -v gh[\s\S]{0,200}?command -v glab|command -v glab[\s\S]{0,200}?command -v gh/.test(installSh);
@@ -306,6 +294,21 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
       forgeInDocker.length === 0 ? " — neither found: the sandbox image would have no forge CLI" : ""
     }`,
   );
+  // Arch-neutrality scan (#645): every glab .deb line in the real Dockerfile
+  // must be a substitution form (containing `$`), not a hard amd64/arm64 pin.
+  const badGlab = read(".devcontainer/Dockerfile").split("\n").filter((l) => {
+    const r = checkGlabArchNeutrality(l);
+    return r.matched && !r.ok;
+  });
+  assert(
+    badGlab.length === 0,
+    `Dockerfile glab .deb line is arch-neutral (${badGlab.length ? "hard-pinned arch found: " + badGlab.map((l) => l.trim().slice(0, 60)).join(" | ") : "no hardcoded amd64/arm64 pins"})`,
+  );
+  assert(
+    dockerInstalls.some((d) => d.name === "glab"),
+    "Dockerfile installs glab specifically (the #608 OR-gate must not be satisfied by gh alone — the silent pass this closes)",
+  );
+  exit = Math.max(exit, runGlabArchCanaries(parseDockerInstalls));
 }
 
 {
@@ -371,7 +374,6 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
   const fixtureInstall = read(path.relative(REPO_ROOT, path.join(FIXTURES, "install.sh")));
   const fixtureReadme = read(path.relative(REPO_ROOT, path.join(FIXTURES, "README.md")));
   const fixtureDocker = read(path.relative(REPO_ROOT, path.join(FIXTURES, "Dockerfile")));
-
   const fRequired = parseRequiredClis(fixtureInstall);
   assert(
     fRequired.length === 3,
@@ -486,9 +488,7 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
     fUnpinned.readme === "" && fUnpinned.dockerfile === "" && fUnpinned.installSh === "",
     "canary: unpinned surfaces parse as empty (the drift the gate flags)",
   );
-
-  // compareVersions edge cases: equal versions are 0; non-dotted input is
-  // null (never silently treated as 0).
+  // compareVersions edge cases: equal versions are 0; non-dotted input is null (never silently 0).
   assert(compareVersions("0.84.4", "0.84.4") === 0, "canary: equal versions compare 0");
   assert(
     compareVersions("0.84.4", "garbage") === null,
