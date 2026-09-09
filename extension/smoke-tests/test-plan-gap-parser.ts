@@ -33,6 +33,7 @@ import { parseGaps as parseGapsFromDriver } from "../src/plan-gaps.ts";
 // Bind under the original name so all call sites below stay unchanged.
 const parseGaps = parseGapsFromDriver;
 import { planTitle } from "../src/plan-types.ts";
+import { GAP_RESOLUTION_PLACEHOLDER } from "../src/plan-gaps.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -99,39 +100,104 @@ function assert(cond: boolean, msg: string) {
   assert(r4.gaps[0]?.severity === "MEDIUM", "fallback gap is MEDIUM");
 }
 
-// --------------------------------- unit: draftSpec status rendering (Bug 3)
+// --------------------------------- unit: draftSpec status rendering (#639)
 
 {
-  // Bug 3 (#606): draftSpec renders open questions with a status. Items the
-  // driver carries from a prior gate round are prefixed `resolved:` and
-  // render as `status: resolved`; plain strings stay `status: pending`.
+  // #639 DECISION B (replaces the Bug 3 #606 block, which pinned the
+  // string-prefix behaviour that is now deleted): draftSpec renders carried
+  // gap decisions from the STRUCTURED resolvedDecisions parameter — a
+  // written-back decision renders `status: resolved`, an unwritten one
+  // renders `status: open` with `decision owner: operator` — while genuinely
+  // open questions (string[]) stay `status: pending` with the PM as decision
+  // owner. The `resolved:` string prefix is DEAD: the prefix test is gone
+  // from the renderer, so a plain open question that literally begins
+  // "resolved: " renders pending, not resolved (the canary below).
   const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
+  // Six-lens re-review (PR #640): the writtenBack flag is now PRODUCED BY
+  // the write (markWrittenDecisions reads the SpliceOutcome list), not
+  // predicted before it. The test must pass a writebackMap for the
+  // "written back" case — the map is what the single splice site in
+  // draftSpec applies, and the flag is set only if the splice lands.
   const withResolved = draftSpec(
     "feature",
     "descriptor",
     [],
     [],
-    ["resolved: missing acceptance criterion — proposed resolution: sharper criterion", "a fresh open question"],
+    ["a fresh open question"],
     [],
     0,
     NO_DIRS,
+    [
+      {
+        description: "missing acceptance criterion",
+        resolution: "sharper criterion added to Acceptance criteria",
+        writebackHeading: "Acceptance criteria",
+      },
+    ],
+    new Map([["Acceptance criteria", ["sharper criterion added to Acceptance criteria"]]]),
+  );
+  const oqSection = withResolved.body.slice(withResolved.body.indexOf("## Open Questions"));
+  assert(
+    /status: resolved/.test(oqSection),
+    "draftSpec: a written-back carried decision renders status: resolved",
   );
   assert(
-    /status: resolved/.test(withResolved.body),
-    "draftSpec: carried gate items render as status: resolved",
+    /status: pending/.test(oqSection),
+    "draftSpec: genuinely open questions still render as status: pending",
   );
   assert(
-    /status: pending/.test(withResolved.body),
-    "draftSpec: fresh open questions still render as status: pending",
+    oqSection.includes("missing acceptance criterion"),
+    "draftSpec: the carried decision's description renders in Open Questions",
+  );
+  const unwritten = draftSpec(
+    "feature",
+    "descriptor",
+    [],
+    [],
+    [],
+    [],
+    0,
+    NO_DIRS,
+    [
+      {
+        description: "the boundary is unnamed",
+        writtenBack: false,
+        resolution: GAP_RESOLUTION_PLACEHOLDER,
+      },
+    ],
+  );
+  const oq2 = unwritten.body.slice(unwritten.body.indexOf("## Open Questions"));
+  assert(
+    /status: open/.test(oq2),
+    "draftSpec: an unwritten carried decision (placeholder resolution) renders status: open",
   );
   assert(
-    !/resolved: missing acceptance criterion/.test(withResolved.body),
-    "draftSpec: the resolved: marker itself is stripped from the rendered question",
+    /decision owner: operator/.test(oq2),
+    "draftSpec: the unwritten decision names the operator as decision owner",
   );
-  const plain = draftSpec("feature", "descriptor", [], [], ["no prefix, just a question"], [], 0, NO_DIRS);
+  // Canary: the `resolved:` string prefix is DEAD. A plain open question that
+  // literally begins "resolved: " must NOT render as status: resolved — the
+  // old /\^resolved:\\s*\/i test is gone; status now comes only from the
+  // structured parameter.
+  const prefixDead = draftSpec(
+    "feature",
+    "descriptor",
+    [],
+    [],
+    ["resolved: looks like a marker but is just an open question"],
+    [],
+    0,
+    NO_DIRS,
+    [],
+  );
+  const oq3 = prefixDead.body.slice(prefixDead.body.indexOf("## Open Questions"));
   assert(
-    !/status: resolved/.test(plain.body) && /status: pending/.test(plain.body),
-    "draftSpec: no prefix → no resolved rendering (backward compatible)",
+    !/status: resolved/.test(oq3),
+    "canary: a 'resolved:'-prefixed plain open question does NOT render resolved (prefix is dead)",
+  );
+  assert(
+    /status: pending/.test(oq3),
+    "canary: the prefix-laden plain question renders pending",
   );
 }
 
@@ -194,7 +260,7 @@ function assert(cond: boolean, msg: string) {
     "D4: context without recognized headings stays pure prior context",
   );
   const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
-  const { body } = draftSpec("feature", "descriptor", [], [], [], [], 0, directives);
+  const { body } = draftSpec("feature", "descriptor", [], [], [], [], 0, directives, []);
   const acSection = body.slice(body.indexOf("## Acceptance criteria"), body.indexOf("## References"));
   assert(
     acSection.includes("the tool registers") && acSection.includes("dryRun never files"),
@@ -281,6 +347,7 @@ function assert(cond: boolean, msg: string) {
     [],
     1,
     NO_DIRS,
+    [],
   );
   const subSection = body.slice(body.indexOf("## Sub-issues"));
   assert(
@@ -312,6 +379,7 @@ function assert(cond: boolean, msg: string) {
     [],
     1,
     NO_DIRS,
+    [],
   );
   const proseSection = prose.body.slice(prose.body.indexOf("## Sub-issues"));
   assert(
@@ -348,6 +416,7 @@ function assert(cond: boolean, msg: string) {
     [],
     0,
     NO_DIRS,
+    [],
   );
   const edgeSection = body.slice(body.indexOf("## Edge cases"));
   assert(
@@ -407,91 +476,15 @@ function assert(cond: boolean, msg: string) {
   //    draftSpec renders priorContext uncapped — this test confirms the cap
   //    is at the CHILD-PROMPT render site only, not at the filed body.
   const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
-  const { body } = draftSpec("feature", "descriptor", [], longItems, [], [], 0, NO_DIRS);
+  const { body } = draftSpec("feature", "descriptor", [], longItems, [], [], 0, NO_DIRS, []);
   const ctxSection = body.slice(body.indexOf("## Prior context inventory"), body.indexOf("## Technical context"));
   assert(ctxSection.includes("prior context line 0"), "draftSpec: first long item in filed body");
   assert(ctxSection.includes("prior context line 29"), "draftSpec: last long item (line 29) in filed body — full uncapped context");
   assert(!ctxSection.includes("[truncated]"), "draftSpec: no truncation marker in the filed body (full context)");
 }
 
-// --------------------------------------------------- #633 Fix 1: all-angles-failed guard
-
-// The aggregate all-angles-failed guard is a PIPELINE-level invariant, so it
-// needs the dispatch seam. test-plan-tool.ts owns the main pipeline test; this
-// block exercises the guard in isolation with a minimal spike descriptor (one
-// angle) so the file stays under the 500-line limit.
-
-{
-  // The all-angles-failed guard is exercised via the dispatch seam directly
-  // (runPlanPipeline + setPlanDispatch); no tool registration is needed.
-  const savedGate = process.env.PI_ENSEMBLE_PLAN_GAP_GATE;
-  process.env.PI_ENSEMBLE_PLAN_GAP_GATE = "0";
-
-  setPlanDispatch(((pi: unknown, spec: { role: string; prompt: string }) => {
-    if (spec.role === "adversarial-developer") {
-      return Promise.resolve({
-        role: "adversarial-developer",
-        ok: true,
-        text: "VERDICT: READY",
-        toolUses: [],
-        ms: 1,
-        exitCode: 0,
-      } as never);
-    }
-    if (spec.prompt.includes("DUPLICATE RISK CHECK")) {
-      return Promise.resolve({
-        role: "explore",
-        ok: true,
-        text: "DUPLICATE_RISK: none — no overlapping open work",
-        toolUses: [],
-        ms: 1,
-        exitCode: 0,
-      } as never);
-    }
-    // Phase 2 angle: prose-only, zero structured items
-    return Promise.resolve({
-      role: "explore",
-      ok: true,
-      text: "I investigated the scoping question but could not produce structured items.",
-      toolUses: [],
-      ms: 1,
-      exitCode: 0,
-    } as never);
-  }) as never);
-
-  // Import runPlanPipeline directly (it's exported from plan-driver.ts).
-  const { runPlanPipeline } = await import("../src/plan-driver.ts");
-  // biome-ignore lint/suspicious/noExplicitAny: minimal pi stub
-  const piStub = {} as any;
-  const result = await runPlanPipeline(piStub, {
-    descriptor: "spike: investigate the feasibility of a new approach",
-    dryRun: true,
-  }, process.cwd());
-
-  assert(result.filed === false, "Fix 1: all-angles-failed → not filed");
-  assert(result.capHit === true, "Fix 1: all-angles-failed → capHit is true (distinct signal)");
-  assert(
-    /zero structured items/i.test(result.spec),
-    "Fix 1: the spec text explains WHY (all angles returned zero structured items)",
-  );
-  assert(
-    !result.spec.includes("## Acceptance criteria") && !result.spec.includes("## Sub-issues"),
-    "Fix 1: no typed sections rendered (the spec is the failure message, not a draft spec)",
-  );
-  assert(
-    /report_plan_item|plan-reporter/i.test(result.spec),
-    "Fix 1: the failure message names the likely cause (reporter extension not loaded)",
-  );
-  assert(
-    /scoping/i.test(result.spec),
-    "Fix 1: the dispatched angle name (scoping) is named in the failure message",
-  );
-
-  // Cleanup
-  if (savedGate === undefined) delete process.env.PI_ENSEMBLE_PLAN_GAP_GATE;
-  else process.env.PI_ENSEMBLE_PLAN_GAP_GATE = savedGate;
-  setPlanDispatch(null);
-}
+// The all-angles-failed guard test is in test-plan-subissue-reconciliation.ts
+// (moved here from this file to stay under the 500-line limit).
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

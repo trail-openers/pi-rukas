@@ -28,20 +28,16 @@ export interface PlanGap {
   severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
   description: string;
   resolution: string;
-  /**
-   * Bug 3 (#606): whether this gap is still open. Gaps carried into a
-   * round-2 re-draft's Open Questions section are re-reviewed against the
-   * revised spec — they render as `status: resolved` there — while fresh
-   * findings from the reviewer stay `pending`.
-   *
-   * Readonly so the invariant is expressed in the type (lens review, PR
-   * #637 finding 3): the gap-gate loop carries blocking gaps into a
-   * re-draft as `{ ...g, status: "resolved" }` COPIES, never by mutating
-   * the parsed original — the same object also lives in `lastGaps` and
-   * (for the round-1 case) in the residual union, and mutating it would
-   * rewrite the union's copy in place.
-   */
-  readonly status?: "pending" | "resolved";
+  // #639 DECISION B: the old optional `status` field ("pending" | "resolved",
+  // Bug 3 #606) is DELETED. It had ZERO consumers: the only writer was the
+  // gap-gate loop's `{ ...g, status: "resolved" }` copy, and the only
+  // "reader" was a string-prefix regex on the rendered question — nothing
+  // ever read the field. The copy-on-carry invariant that readonly existed to
+  // express (the spread-copy in runGapGateLoop) existed ONLY to protect this
+  // field, so deleting it makes the invariant unnecessary rather than
+  // losing it. Resolved-decision rendering now comes from the structured
+  // `resolvedDecisions` parameter to draftSpec (plan-writeback.ts), never
+  // from a field on the gap itself.
 }
 
 export interface PlanResult {

@@ -5,6 +5,10 @@
  * Split out of plan-driver.ts at the same seam as forge-ci.ts / plan-draft.ts
  * (the 500-line hard limit, AGENTS.md §12). Owns:
  *
+ *   - the GAP_RESOLUTION_PLACEHOLDER sentinel, exported for plan-writeback.ts
+ *     to key branch-3 detection on the EXACT string parseGaps assigns (the
+ *     edge-case pitfall: re-spelling the literal would silently flip the
+ *     branch when the parser's placeholder changes),
  *   - `parseGaps`: the reviewer-reply parser (GAP: markers only, verdict
  *     line, and — since this split — a `verdictParsed` flag that keeps an
  *     ABSENT verdict from silently passing as READY when CRITICAL gaps
@@ -29,6 +33,16 @@ import type { PlanGap } from "./plan-types.ts";
 
 /** One verdict the gap gate can yield for a parsed reviewer reply. */
 export type GapGateVerdict = "READY" | "NEEDS_ITERATION";
+
+/**
+ * The resolution text parseGaps assigns when a GAP: line carries no
+ * "proposed resolution:" segment. Exported (single source) so the Decision-A
+ * writeback (plan-writeback.ts) compares against the EXACT sentinel instead
+ * of re-spelling the literal — a parser-side change to the placeholder would
+ * otherwise silently flip branch 3 (open, decision owner operator, body
+ * unmodified) to a writeback.
+ */
+export const GAP_RESOLUTION_PLACEHOLDER = "address during /work plan phase";
 
 export interface GapGateParse {
   gaps: PlanGap[];
@@ -66,7 +80,7 @@ export function parseGaps(reply: string): GapGateParse {
     if (!m) continue;
     const rest = (m[2] ?? "").trim();
     const resMatch = rest.match(/[—–-]?\s*proposed resolution:\s*(.+)$/i);
-    const resolution = resMatch?.[1]?.trim() ?? "address during /work plan phase";
+    const resolution = resMatch?.[1]?.trim() ?? GAP_RESOLUTION_PLACEHOLDER;
     const description = (resMatch ? rest.slice(0, resMatch.index) : rest).trim();
     if (!description) continue;
     gaps.push({
@@ -300,11 +314,14 @@ export async function runGapGateLoop(
       // empty array, push nothing to openQuestions, and call draftSpec again
       // producing a byte-identical body — a provably useless second round.
       // Go straight to the cap/file path instead.
-      // The carried copies are NEW objects (status is readonly on PlanGap):
-      // the originals in lastGaps / allNonBlocking are never mutated, so the
-      // re-review round and the residual union see the gaps exactly as the
-      // reviewer wrote them.
-      onCorrective(evald.blocking.map((g) => ({ ...g, status: "resolved" as const })));
+      // #639 DECISION B: the blocking gaps are passed through PLAIN (no
+      // field tagging, no copy). The old spread-copy of the gap with its
+      // resolved marker attached existed ONLY to protect that marker field
+      // from mutation — a field with zero consumers — and is deleted with
+      // it (the decision record is the structured resolvedDecisions parameter
+      // draftSpec takes, built by the caller's onCorrective closure via
+      // plan-writeback.ts).
+      onCorrective(evald.blocking);
     } else if (!ready) {
       // Two cases reach here:
       // (a) at the cap (corrective is false) — the iteration budget is

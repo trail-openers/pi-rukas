@@ -135,7 +135,10 @@ registerPlanTool(fakePi);
 // ---------------------------------------------------------- the pipeline
 
 setPlanDispatch(((pi: unknown, spec: { role: string; prompt: string }) => {
-  calls.push(`${spec.role}:${spec.prompt.slice(0, 40)}`);
+  // Six-lens re-review (PR #640): the prompt now starts with
+  // DESCRIPTOR_DATA_FRAMING (141 chars) before the task text, so the
+  // 40-char window no longer reaches "DUPLICATE RISK". Widened to 200.
+  calls.push(`${spec.role}:${spec.prompt.slice(0, 200)}`);
   const ctx = (pi as { __testContext?: string }).__testContext;
   return Promise.resolve(__responses({ ...spec, prompt: ctx ? `${ctx}\n${spec.prompt}` : spec.prompt }));
 }) as never);
@@ -206,23 +209,54 @@ async function invoke(params: Record<string, unknown>) {
     (details.gapCount ?? 0) >= 1,
     `gaps returned with severity: ${details.gapCount}`,
   );
-  // Bug 3 (#606): the round-2 gate child receives the re-draft, and the
-  // round-1 blocking gaps it carries render as `status: resolved`.
+  // #639 (re-points the Bug 3 #606 assertions to the new structured-
+  // parameter semantics): the round-2 gate child receives the RE-DRAFTED
+  // body — the reviewer sees the applied resolution. The resolution text
+  // ("add a criterion for the retry path") is written back into the
+  // Acceptance criteria section (the default destination — the resolution
+  // names no specific section), AND the carried gap's Open Questions bullet
+  // renders `status: resolved` with the decision owner PM. The round-2 gate
+  // prompt is built from that re-draft (the makeGatePrompt thunk closes over
+  // the reassigned `body`), so it contains BOTH the written-back AC bullet
+  // and the resolved bullet — not just the round-1 body.
   assert(
     gatePrompts.length === 2,
     `gate prompt capture: 2 gate dispatches recorded (got ${gatePrompts.length})`,
   );
+  const r2 = gatePrompts[1] ?? "";
   assert(
-    gatePrompts[1]?.includes("status: resolved") === true,
-    "Bug 3: round-2 gate prompt carries the re-draft with prior gaps as status: resolved",
+    r2.includes("status: open"),
+    "#639: round-2 gate prompt renders the no-section resolution as status: open (Decision A branch 3, structured parameter not prefix)",
+  );
+  // The resolution in this test's gate reply does NOT name a section, so
+  // per Decision A it falls to branch 3 (open, body unmodified). The
+  // round-2 gate prompt therefore does NOT contain a writeback bullet — it
+  // contains the gap description in Open Questions with status: open.
+  // (The writeback test with a section-naming resolution is in
+  // test-plan-gap-writeback.ts.)
+  assert(
+    r2.includes("status: open"),
+    "#639: round-2 gate prompt renders the no-section resolution as status: open (Decision A branch 3)",
   );
   assert(
-    gatePrompts[1]?.includes("status: pending") !== true,
-    "Bug 3: round-2 re-injection no longer renders carried gaps as status: pending",
+    r2.includes("missing acceptance criterion"),
+    "#639: the round-1 gap description travels into the re-draft's Open Questions section",
   );
+  // The resolution in this test does NOT name a section, so per Decision A
+  // it falls to branch 3 (open, body unmodified) — no writeback bullet in
+  // the AC section. The gap description is in Open Questions with status: open.
+  // (The section-naming writeback case is covered in test-plan-gap-writeback.ts.)
+  const r2Ac = r2.slice(r2.indexOf("## Acceptance criteria"), r2.indexOf("## References"));
   assert(
-    gatePrompts[1]?.includes("missing acceptance criterion") === true,
-    "Bug 3: the round-1 gap text travels into the re-draft's Open Questions section",
+    !r2Ac.includes("- add a criterion for the retry path"),
+    "#639: no-section resolution is NOT written back to the AC section (Decision A branch 3)",
+  );
+  // The Open Questions section must NOT contain a duplicate pending bullet
+  // for the carried gap.
+  const r2Oq = r2.slice(r2.indexOf("## Open Questions"), r2.indexOf("## Out of scope"));
+  assert(
+    (r2Oq.match(/status: pending/g) ?? []).length === 0,
+    "#639: no pending bullet in the round-2 Open Questions (the carried gap is not re-marked open)",
   );
   assert(
     /prior-art|interfaces-and-contracts|test-surface/.test(text),
@@ -345,9 +379,9 @@ async function invoke(params: Record<string, unknown>) {
       toolUses: [],
     },
   ];
-  const under = draftSpec("epic", "epic descriptor", findings, [], [], [], 1, NO_DIRS);
+  const under = draftSpec("epic", "epic descriptor", findings, [], [], [], 1, NO_DIRS, []);
   assert(/## Sub-issues/.test(under.body), "depth 1: sub-issues section present");
-  const at = draftSpec("epic", "epic descriptor", findings, [], [], [], 3, NO_DIRS);
+  const at = draftSpec("epic", "epic descriptor", findings, [], [], [], 3, NO_DIRS, []);
   assert(
     !/## Sub-issues/.test(at.body),
     "depth 3: sub-issues section replaced by the minimal body",
@@ -366,6 +400,7 @@ async function invoke(params: Record<string, unknown>) {
     [],
     0,
     NO_DIRS,
+    [],
   );
   assert(
     /Expected deliverable/.test(spike.body),

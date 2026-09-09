@@ -17,8 +17,15 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { detectForge } from "./forge-detect.ts";
 import { type Forge, createForge } from "./forge.ts";
+import { epicSubIssues } from "./plan-angles.ts";
 import { PLAN_ITEM_KINDS } from "./plan-reporter.ts";
 import { EPIC_SUB_ISSUE_DEPTH_LIMIT, type PlanType, planTitle } from "./plan-types.ts";
+import {
+  type ResolvedDecision,
+  applyWritebackToBody,
+  markWrittenDecisions,
+  renderOpenQuestions,
+} from "./plan-writeback.ts";
 import type { MemoryHit } from "./vipune.ts";
 import { vipuneSearch } from "./vipune.ts";
 
@@ -208,7 +215,14 @@ function sectionBullets(items: string[], fallback: string): string {
   return clean.length > 0 ? clean.map((s) => `- ${s}`).join("\n") : `- ${fallback}`;
 }
 
-function itemsByKind(findings: AngleFindings[], kind: PlanItemKindName): PlanItemKind[] {
+/**
+ * #639: the plain cross-angle aggregation (flatMap + filter, NO dedupe) the
+ * non-sub-issue kinds legitimately pool through. Exported for the
+ * reconciliation canary (test-plan-subissue-reconciliation.ts): the shared
+ * normalisation helper must NOT leak into this helper — the Test surface /
+ * References sections keep aggregating identical items across angles.
+ */
+export function itemsByKind(findings: AngleFindings[], kind: PlanItemKindName): PlanItemKind[] {
   return findings.flatMap((f) => f.toolUses).filter((i) => i.kind === kind);
 }
 
@@ -239,12 +253,8 @@ export function renderPriorContext(priorContext: { source: string; fact: string 
   return `${kept.join("\n")}\n- [truncated] ${lines.length - kept.length} prior context item(s) omitted for child-prompt size (full inventory is in the filed body)`;
 }
 
-function epicSubIssues(findings: AngleFindings[]): string[] {
-  const subs = itemsByKind(findings, "sub-issue");
-  // no prose fallback — the driver halts on all-angles-failed before reaching here
-  if (subs.length === 0) return [];
-  return subs.map((s, i) => `- [ ] #N — ${s.text} (sub-issue ${i + 1}, from ${s.angle})`);
-}
+// #639: epicSubIssues is in plan-angles.ts (the natural home for the epic
+// angle charter); imported below where it's used in draftSpec.
 
 const DEPTH_LIMIT_NOTE =
   "- spec depth limit reached — run start_plan_driver with this descriptor for the full spec";
@@ -327,7 +337,25 @@ export function draftSpec(
   outOfScope: string[],
   depth: number,
   directives: OperatorDirectives,
-): { title: string; body: string } {
+  /**
+   * #639 DECISION B: the structured record of carried gap-gate decisions
+   * (the separate parameter). `openQuestions` stays `string[]` for
+   * GENUINELY OPEN questions; resolved decisions come from here, never from
+   * a string-prefix test of the question text (the old resolved-prefix
+   * renderer is deleted — the prefix is dead). See plan-writeback.ts.
+   */
+  resolvedDecisions: ResolvedDecision[],
+  /**
+   * The writeback heading → resolution bullet map for this round's carried
+   * decisions (plan-writeback.ts: buildResolvedDecisions). This is the
+   * SINGLE splice site (six-lens re-review, PR #640, ARCHITECTURE lens —
+   * the dead onCorrective splice is gone): draftSpec rebuilds the body from
+   * scratch and applies the writeback HERE, once. The splice outcomes are
+   // reported back so the returned decisions' writtenBack flags are PRODUCED
+   * BY the write, not predicted before it.
+   */
+  writebackMap?: Map<string, string[]>,
+): { title: string; body: string; resolvedDecisions: ResolvedDecision[] } {
   const title = planTitle(descriptor, type);
 
   // D2: no clipping of operator context; the inventory is not capped at 8.
@@ -412,19 +440,14 @@ export function draftSpec(
           acItems,
           "derive the testable outcomes from the investigation findings before /work",
         )}\n`;
-  const openQ =
-    openQuestions.length > 0
-      ? openQuestions
-          .map((q) => {
-            const status = /^resolved:\s*/i.test(q) ? "resolved" : "pending";
-            return `- **${q.replace(/^resolved:\s*/i, "")}** — decision owner: PM; status: ${status}`;
-          })
-          .join("\n")
-      : "- (none)";
   const oos =
     oosAll.length > 0
       ? oosAll.map((s) => `- ${s}`).join("\n")
       : "- everything not named in the sections above";
+
+  // Placeholder Open Questions section ("- (none)"): the real content is
+  // rendered LAST — after the splice and markWrittenDecisions — because
+  // writtenBack is produced by the write, not predicted before it.
   const body = `## Context & motivation
 
 Descriptor: ${descriptor}
@@ -453,12 +476,25 @@ ${edgeCases}
 
 ## Open Questions
 
-${openQ}
+- (none)
 
 ## Out of scope
 
 ${oos}
 ${subIssues}${depthLimit}`;
 
-  return { title, body: body.replace(/\n{3,}/g, "\n\n") };
+  // PR #640: single splice site (the dead onCorrective splice is gone).
+  // Splice → collapse → render Open Questions from marked decisions →
+  // replace placeholder. A heading that did not survive rendering
+  // renders status: open (the loss is visible, never a false resolved).
+  const { body: spliced, outcomes } = applyWritebackToBody(body, writebackMap ?? new Map());
+  const collapsed = spliced.replace(/\n{3,}/g, "\n\n");
+  const markedDecisions = markWrittenDecisions(resolvedDecisions, outcomes);
+  const openQ = renderOpenQuestions(openQuestions, markedDecisions);
+  const finalBody = collapsed.replace(
+    "## Open Questions\n\n- (none)\n",
+    `## Open Questions\n\n${openQ}\n`,
+  );
+
+  return { title, body: finalBody, resolvedDecisions: markedDecisions };
 }

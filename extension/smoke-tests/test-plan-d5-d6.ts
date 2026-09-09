@@ -72,7 +72,7 @@ function assert(cond: boolean, msg: string) {
   const findings = [
     { name: "test-angle", ok: true, text: "Confirmed the tool registers correctly. The child kill path is exercised.", toolUses: items },
   ];
-  const { body } = draftSpec("feature", "descriptor", findings, [], [], [], 0, NO_DIRS);
+  const { body } = draftSpec("feature", "descriptor", findings, [], [], [], 0, NO_DIRS, []);
   const techSection = body.slice(body.indexOf("## Technical context"), body.indexOf("## Acceptance criteria"));
   const acSection = body.slice(body.indexOf("## Acceptance criteria"), body.indexOf("## References"));
   const edgeSection = body.slice(body.indexOf("## Edge cases"));
