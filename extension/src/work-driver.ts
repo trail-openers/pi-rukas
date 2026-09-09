@@ -412,6 +412,20 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
   // Cleanup scratch dir on success only — handoff/aborted keep the dir
   // so the user can inspect artifacts from failures.
   const final = state.pipelineState.status;
+  // A loop that ends with status still "running" is a driver bug of the
+  // awaiting-human-merge class (a transition answered "done" while a
+  // routing decision was pending). It must never again be invisible: 25
+  // cycles on this host sat in that shape with no comment, no label, no
+  // notification.
+  if (final === "running") {
+    trace(
+      `work-driver: ANOMALY — loop exited with status "running" for issue ${ctx.issue} (currentStep=${state.pipelineState.currentStep})`,
+    );
+    notifyAgent(
+      ctx.pi,
+      `pi-rukas /work driver ended its loop for issue #${ctx.issue} with status still "running" — this is a driver bug; the cycle did NOT terminalize. Inspect ${workStateDir(ctx.repoRoot)}/${ctx.issue}.json and report the event tail.`,
+    );
+  }
   if (final === "merged") {
     await teardownWorkspaceTmp(ctx.repoRoot, ctx.issue);
   }

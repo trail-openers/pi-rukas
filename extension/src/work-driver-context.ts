@@ -292,9 +292,6 @@ export function nextStep(state: WorkState): StepDecision {
     return { kind: "unknown-step", value: ps.status };
   }
 
-  // Terminal short-circuits.
-  if (ps.currentStep === "merged" || ps.currentStep === "handoff") return { kind: "done" };
-
   // A cap-hit routes to `handoff`, `step-back` or `ci`, regardless of which
   // step emitted it: the driver records the decision in the event itself, so
   // this stays a lookup rather than a second place that can disagree. `ci` is
@@ -302,7 +299,21 @@ export function nextStep(state: WorkState): StepDecision {
   // that ran out of rounds with the adversarial gate approving and its residual
   // findings posted goes on to CI and the merge-authority gate, instead of
   // parking work a human then judges merge-worthy anyway.
+  //
+  // ORDER IS LOAD-BEARING: this check runs BEFORE the terminal
+  // short-circuits below. runMerged's merge-hold sets currentStep="merged"
+  // and appends `cap-hit{awaiting-human-merge, nextStep:"handoff"}` — with
+  // the old order the short-circuit answered "done" first, the loop exited
+  // with status still "running", and the declared handoff never ran: no
+  // comment, no label, no operator notification, and the queue read the
+  // cycle as "still running". Measured: 25 of 240 cycles (10.4%) on this
+  // host were stuck in exactly that shape, and 0 of 221 post-schema cycles
+  // ever terminalized cleanly through the merge gate.
   if (lastEvent?.kind === "cap-hit") return { kind: "step", step: lastEvent.nextStep };
+
+  // Terminal short-circuits (genuine terminals only — a trailing cap-hit
+  // always carries its own routing and is handled above).
+  if (ps.currentStep === "merged" || ps.currentStep === "handoff") return { kind: "done" };
 
   // Adversarial verdict routes the next step.
   if (lastEvent?.kind === "adversarial-approved") {
