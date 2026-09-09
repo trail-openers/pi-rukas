@@ -40,6 +40,29 @@ export const AC_FALLBACK =
 /** The Sub-issues fallback draftSpec renders when no decomposition exists. */
 export const SUB_ISSUES_FALLBACK = "(decomposition not available)";
 
+/** The Test-surface fallback (single-sourced here so the validator's scan
+ * cannot silently drift from what draftSpec renders — same rule as
+ * AC_FALLBACK). */
+export const TEST_SURFACE_FALLBACK = "catalogue the tests near the work area in Phase 2";
+
+/** The References fallback draftSpec renders when no reference exists. */
+export const REFERENCES_FALLBACK =
+  "run `codebase_memory_search_code` over the descriptor's identifiers during /work";
+
+/** The spike Expected-deliverable fallback. */
+export const SPIKE_DELIVERABLE_FALLBACK = "a decision or proof of concept — not shipped code";
+
+/**
+ * A count the operator pinned ("EXACTLY 5 sub-issues") in the descriptor
+ * or context. Deterministic; undefined when no pin (or an insane one).
+ */
+export function parsePinnedSubIssueCount(text: string): number | undefined {
+  const m = text.match(/exactly\s+(\d+)\s+sub[- ]?issues?/i);
+  if (!m) return undefined;
+  const n = Number(m[1]);
+  return n >= 1 && n <= EPIC_SUB_ISSUE_MAX ? n : undefined;
+}
+
 /**
  * Sanity ceiling for an epic's sub-issue count — SECTION_MAX_ITEMS-sized;
  * a decomposition past it is a runaway angle, not a plan.
@@ -58,7 +81,19 @@ function sliceSection(body: string, heading: string): string | undefined {
   return m?.[1];
 }
 
-export function validateDraft(type: PlanType, body: string, depth: number): DraftValidation {
+export interface ValidateOpts {
+  /** True when the operator supplied a context param / directives. */
+  operatorSupplied?: boolean;
+  /** A sub-issue count the operator pinned ("EXACTLY 5 sub-issues"). */
+  pinnedSubIssues?: number;
+}
+
+export function validateDraft(
+  type: PlanType,
+  body: string,
+  depth: number,
+  opts: ValidateOpts = {},
+): DraftValidation {
   const problems: string[] = [];
   if (type === "bug" || type === "feature") {
     const ac = sliceSection(body, "Acceptance criteria");
@@ -80,7 +115,31 @@ export function validateDraft(type: PlanType, body: string, depth: number): Draf
         problems.push(
           `the epic decomposed into ${n} sub-issues (ceiling ${EPIC_SUB_ISSUE_MAX}) — a decomposition this wide is a runaway angle, not a plan; split the epic descriptor instead`,
         );
+      } else if (opts.pinnedSubIssues !== undefined && n !== opts.pinnedSubIssues) {
+        // C5 (vipune fixture run): five test rounds produced 9→10→8→3
+        // sub-issues against a pinned "EXACTLY 5" and nothing checked.
+        problems.push(
+          `the operator pinned EXACTLY ${opts.pinnedSubIssues} sub-issues and the decomposition produced ${n} — re-run (the pin is threaded into the decomposition angle), or drop the pin from the descriptor/context`,
+        );
       }
+    }
+  }
+  if (type === "spike" && opts.operatorSupplied) {
+    // C2 (vipune fixture run): a spike has no gap gate by design, so with
+    // operator input in play the deterministic bar is the only bar — a
+    // deliverable or test-surface section still showing scaffold strings
+    // means the operator's instructions never landed.
+    const deliverable = sliceSection(body, "Expected deliverable");
+    if (deliverable?.includes(SPIKE_DELIVERABLE_FALLBACK)) {
+      problems.push(
+        "the spike's Expected deliverable section is the fallback placeholder despite operator-supplied context — the scoping angle produced nothing and the operator's input never landed",
+      );
+    }
+    const ts = sliceSection(body, "Test surface");
+    if (ts?.includes(TEST_SURFACE_FALLBACK)) {
+      problems.push(
+        "the spike's Test surface section is the fallback placeholder despite operator-supplied context — state the intended test surface via a TEST SURFACE block in the context param",
+      );
     }
   }
   return { ok: problems.length === 0, problems };

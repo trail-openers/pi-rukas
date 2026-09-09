@@ -15,53 +15,27 @@
  * refused for every role in every mode, so the only way left to file a
  * ticket is this driver or a human typing the command themselves.
  *
- * Phase compilation (mechanical vs dispatched):
+ * Phase compilation (each phase's detail lives in its module's header):
  *
- *   Phase 0 Classify   — regex on the descriptor (or the `type` param)
- *                        [plan-types.ts]
- *   Phase 0b Precheck  — deterministic under-specification triage BEFORE
- *                        any dispatch: a descriptor under the word floor
- *                        with no code identifier and no context returns
- *                        targeted questions instead of burning the fan-out
- *                        [plan-precheck.ts]
- *   Phase 1 Inventory  — vipune + `gh issue list` run by the driver
- *                        [plan-draft.ts: mechanicalInventory]
- *   Phase 1b+2 Investigate — the duplicate-risk explore AND the
- *                        type-specialised angle set dispatch as ONE parallel
- *                        barrier (the duplicate check used to serially block
- *                        the fan-out for a result consumed only as a
- *                        HIGH/not-HIGH boolean); the HIGH-risk hard stop
- *                        applies after the barrier, before draft/gate/file
- *                        [plan-investigate.ts: runInvestigation]
- *   Phase 3 Draft      — the driver assembles the structured body
- *                        [plan-draft.ts: draftSpec]
- *   Phase 3b Validate  — deterministic body validation BEFORE the gate:
- *                        load-bearing sections must not be fallback
- *                        placeholders (a junk draft never pays a reviewer
- *                        dispatch, and never reaches the forge)
- *                        [plan-validate.ts]
- *   Phase 4 Gap gate   — bug/feature/epic only (chore/spike are
- *                        low-blast-radius: deterministic validation is
- *                        their gate — no env knob, better defaults). One
- *                        adversarial-developer dispatch per round; the
- *                        CRITICAL-only terminal rule, cap routing (D1/D2)
- *                        and verdict-absence handling (D3) live in
- *                        plan-gaps.ts; round 2 is a SCOPED VERIFICATION of
- *                        the carried CRITICAL resolutions, not a second
- *                        full review [plan-gate-prompt.ts].
- *   Phase 5 File       — the forge adapter's issueCreate (child process,
- *                        exempt from the tool_call guard by construction).
- *                        Failures carry a DISCRIMINATED reason (D7)
- *                        [plan-filing.ts].
+ *   0  Classify [plan-types.ts] · 0b Precheck — deterministic
+ *      under-specification triage before ANY dispatch [plan-precheck.ts]
+ *   1  Inventory — vipune + `gh issue list`, driver-run [plan-draft.ts]
+ *   1b+2 Investigate — duplicate-risk explore + type-specialised angles as
+ *      ONE parallel barrier; the HIGH-risk stop applies after the barrier
+ *      and returns a structured `duplicate-risk` result (never a throw)
+ *      [plan-investigate.ts]
+ *   3  Draft [plan-draft.ts: draftSpec] · 3b Validate — deterministic body
+ *      validation BEFORE the gate [plan-validate.ts]
+ *   4  Gap gate — bug/feature/epic only; CRITICAL-only terminal rule,
+ *      D1/D2/D3 routing in plan-gaps.ts; round 2 is a SCOPED VERIFICATION
+ *      [plan-gate-prompt.ts]
+ *   5  File — forge issueCreate; DISCRIMINATED failures (D7)
+ *      [plan-filing.ts]
  *
  * dryRun is the confirmation seam: `dryRun: true` returns the spec + gaps
  * without filing; PM shows it to the operator; on confirmation the driver
- * is re-called with `dryRun` omitted.
- *
- * Every phase is timed (PlanResult.timings) — the operator's 20–30-minute
- * report was structural inference until now; per-phase durations turn the
- * cost debate into measurement (research next-step #1,
- * outputs/spec-driven-plan-driver-gap.md §7).
+ * is re-called with `dryRun` omitted. Every phase is timed
+ * (PlanResult.timings — measure, then cut).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -82,7 +56,7 @@ import {
   runInvestigation,
 } from "./plan-investigate.ts";
 import { precheckDescriptor } from "./plan-precheck.ts";
-import { validateDraft } from "./plan-validate.ts";
+import { parsePinnedSubIssueCount, validateDraft } from "./plan-validate.ts";
 
 /**
  * The dispatch seam, injectable so the smoke test can drive the pipeline with
@@ -205,6 +179,9 @@ export async function runPlanPipeline(
   // verdict still refuses to file); the only trade is that on HIGH the
   // angle tokens are already spent, and HIGH is the rare case.
   const codeIds = codeIdentifiersIn(descriptor);
+  // C5: an operator-pinned sub-issue count ("EXACTLY 5 sub-issues") is
+  // threaded into the decomposition angle AND asserted by validateDraft.
+  const pinnedSubIssues = parsePinnedSubIssueCount(`${descriptor}\n${context ?? ""}`);
   const {
     duplicateRisk,
     findings,
@@ -217,6 +194,7 @@ export async function runPlanPipeline(
         inv,
         priorContext,
         codeIdentifiers: codeIds,
+        pinnedSubIssues,
       }),
     );
 
@@ -227,9 +205,24 @@ export async function runPlanPipeline(
     .map((f) => ({ name: f.name, detail: f.failure ?? "failed" }));
 
   if (duplicateRisk && duplicateRisk.level === "high") {
-    throw new Error(
-      `duplicate risk HIGH — the inventory shows likely duplicate work (${duplicateRisk.rationale.slice(0, 300)}). Do not file; reconcile with the existing issue(s) first (full rationale: /runs → plan-duplicate-risk).`,
-    );
+    // C6: a structured not-filed result instead of a bare throw — the
+    // operator gets the rationale AND the recovery path (acknowledge the
+    // named issue via the context param; the risk child reads it and a
+    // reconciled issue cannot raise the risk above medium).
+    return {
+      type,
+      title: planTitle(descriptor, type),
+      spec: `(spec not drafted — duplicate risk HIGH)\n\nRationale from the risk check:\n${duplicateRisk.rationale}\n\nIf this ticket deliberately reverses or extends the named issue, re-run start_plan_driver with a context param acknowledging it (e.g. "this deliberately reverses #103 because …") — an acknowledged issue is reconciled, not a duplicate. Full rationale: /runs → plan-duplicate-risk.`,
+      gaps: [],
+      priorContext: priorContext.slice(0, 15),
+      filed: false,
+      filingFailure: {
+        reason: "duplicate-risk",
+        detail: `duplicate risk HIGH — ${duplicateRisk.rationale.slice(0, 300)}`,
+      },
+      failedAngles: failedAngles.length > 0 ? failedAngles : undefined,
+      timings: finishTimings(),
+    };
   }
 
   // #633 aggregate all-angles-failed guard (fail-closed): if EVERY angle
@@ -284,7 +277,10 @@ export async function runPlanPipeline(
   // Phase 3b — deterministic body validation (plan-validate.ts), BEFORE the
   // gate: a draft whose load-bearing sections fell back to placeholders
   // never pays a reviewer dispatch and never reaches the forge.
-  const draftCheck = validateDraft(type, body, depth);
+  const draftCheck = validateDraft(type, body, depth, {
+    operatorSupplied: !!context?.trim(),
+    pinnedSubIssues,
+  });
   if (!draftCheck.ok) {
     trace(`plan-driver: draft validation failed — ${draftCheck.problems.join("; ")}`);
     return {

@@ -23,7 +23,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { dispatchCore } from "./dispatch.ts";
 import { DESCRIPTOR_DATA_FRAMING } from "./plan-angles.ts";
 import type { AngleFindings, MechanicalInventory } from "./plan-draft.ts";
-import { anglePromptsFor, extractPlanItems } from "./plan-draft.ts";
+import { anglePromptsFor, extractPlanItems, renderPriorContext } from "./plan-draft.ts";
 import type { PlanType } from "./plan-types.ts";
 import { trace } from "./trace.ts";
 
@@ -86,19 +86,32 @@ export interface InvestigationResult {
  * call goes to an explore. SECURITY (six-lens re-review, PR #640): the
  * descriptor is untrusted operator input — the same DESCRIPTOR_DATA_FRAMING
  * constant as the angle and gap-gate prompts, one copy.
+ *
+ * REVERSAL vocabulary (vipune fixture run, C6): a CLOSED issue whose work
+ * LANDED is prior art or a reversal target, never duplicate work — the old
+ * prompt hard-blocked a deliberate reversal of a completed decision with no
+ * path to filing. And the operator's context is threaded in so an explicit
+ * acknowledgment ("this deliberately reverses #103") deterministically
+ * reaches the risk child — the no-knob override path.
  */
 export function duplicateRiskPrompt(
   type: PlanType,
   descriptor: string,
   inv: MechanicalInventory,
+  priorContext: { source: string; fact: string }[] = [],
 ): string {
+  const prior =
+    priorContext.length > 0
+      ? ` PM has already established: ${renderPriorContext(priorContext)} — if this context explicitly acknowledges an issue as prior art or a deliberate reversal, that issue is RECONCILED and must not raise the risk above medium.`
+      : "";
   return [
     `${DESCRIPTOR_DATA_FRAMING}DUPLICATE RISK CHECK for a proposed ${type} ticket: "${descriptor}".`,
     `Mechanical scan found: ${
       inv.related.map((r) => `#${r.number} (${r.state}) ${r.title}`).join("; ") ||
       "no related issues"
-    }.`,
+    }.${prior}`,
     "Assess whether filing this ticket would duplicate existing work — check open + recently closed issues (gh issue list --state all --search '<keyword>' --limit 10) and vipune.",
+    "high means DUPLICATE: an OPEN issue (or closed-but-unlanded work) already covers this scope. A CLOSED issue whose work landed is prior art or a REVERSAL target, not a duplicate — report medium at most and NAME the issue so the spec can reference it.",
     "Return a short verdict: DUPLICATE_RISK: high|medium|low|none plus 2-3 sentences of rationale with issue numbers.",
   ].join(" ");
 }
@@ -142,14 +155,25 @@ export async function runInvestigation(
     inv: MechanicalInventory;
     priorContext: { source: string; fact: string }[];
     codeIdentifiers: string[];
+    pinnedSubIssues?: number;
   },
 ): Promise<InvestigationResult> {
   const { type, descriptor, repoRoot, inv, priorContext, codeIdentifiers } = args;
-  const angles = anglePromptsFor(type, descriptor, priorContext, codeIdentifiers);
+  const angles = anglePromptsFor(
+    type,
+    descriptor,
+    priorContext,
+    codeIdentifiers,
+    args.pinnedSubIssues,
+  );
 
   const duplicatePromise = dispatch(
     pi,
-    { role: "explore", prompt: duplicateRiskPrompt(type, descriptor, inv), cwd: repoRoot },
+    {
+      role: "explore",
+      prompt: duplicateRiskPrompt(type, descriptor, inv, priorContext),
+      cwd: repoRoot,
+    },
     {
       label: "plan-duplicate-risk",
       timeoutMs: PLAN_DISPATCH_TIMEOUT_MS,

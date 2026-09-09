@@ -20,7 +20,13 @@ import { type Forge, createForge } from "./forge.ts";
 import { epicSubIssues } from "./plan-angles.ts";
 import { PLAN_ITEM_KINDS } from "./plan-reporter.ts";
 import { EPIC_SUB_ISSUE_DEPTH_LIMIT, type PlanType, planTitle } from "./plan-types.ts";
-import { AC_FALLBACK, SUB_ISSUES_FALLBACK } from "./plan-validate.ts";
+import {
+  AC_FALLBACK,
+  REFERENCES_FALLBACK,
+  SPIKE_DELIVERABLE_FALLBACK,
+  SUB_ISSUES_FALLBACK,
+  TEST_SURFACE_FALLBACK,
+} from "./plan-validate.ts";
 import {
   type ResolvedDecision,
   applyWritebackToBody,
@@ -372,12 +378,16 @@ export function draftSpec(
     ...itemsByKind(findings, "acceptance-criterion").map((i) => i.text),
   ].slice(0, SECTION_MAX_ITEMS);
 
-  // Test surface: structured test-surface-item items from ALL angles.
+  // An operator TEST SURFACE directive REPLACES the angle items (unlike
+  // ACs, which prepend) — "exactly: none" must not be diluted (C2).
+  const opTestSurface = directives.testSurface ?? [];
   const testSurface = sectionBullets(
-    itemsByKind(findings, "test-surface-item")
-      .map((i) => i.text)
-      .slice(0, SECTION_MAX_ITEMS),
-    "catalogue the tests near the work area in Phase 2",
+    opTestSurface.length > 0
+      ? opTestSurface
+      : itemsByKind(findings, "test-surface-item")
+          .map((i) => i.text)
+          .slice(0, SECTION_MAX_ITEMS),
+    TEST_SURFACE_FALLBACK,
   );
 
   // References: structured reference items first; fallback to a prose
@@ -390,10 +400,7 @@ export function draftSpec(
     refItems.length > 0
       ? refItems
       : proseRefs.map((r) => `${r} — existing pattern or affected surface; verify before editing`);
-  const references = sectionBullets(
-    referenceLines,
-    "run `codebase_memory_search_code` over the descriptor's identifiers during /work",
-  );
+  const references = sectionBullets(referenceLines, REFERENCES_FALLBACK);
 
   // D3 fix: edge cases come from the "edge-case" kind across ALL angles (the
   // old filter matched a nonexistent "risk-surface" angle name). Operator
@@ -419,15 +426,18 @@ export function draftSpec(
 
   // Spike's deliverable section reuses the scoping angle's items; the
   // non-spike acceptance-criteria section is built from acItems above.
+  // Spike deliverable: operator ACs lead here too (C2).
   const acSection =
     type === "spike"
       ? `## Expected deliverable (NOT code — a decision or proof of concept)\n\n${sectionBullets(
-          findings
-            .filter((x) => x.name === "scoping" && x.ok)
-            .flatMap((x) => x.toolUses)
-            .map((i) => i.text)
-            .slice(0, SECTION_MAX_ITEMS),
-          "a decision or proof of concept — not shipped code",
+          [
+            ...directives.acceptanceCriteria,
+            ...findings
+              .filter((x) => x.name === "scoping" && x.ok)
+              .flatMap((x) => x.toolUses)
+              .map((i) => i.text),
+          ].slice(0, SECTION_MAX_ITEMS),
+          SPIKE_DELIVERABLE_FALLBACK,
         )}\n`
       : `## Acceptance criteria\n\n${sectionBullets(acItems, AC_FALLBACK)}\n`;
   const oos =

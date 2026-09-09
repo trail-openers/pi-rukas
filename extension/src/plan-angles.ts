@@ -19,6 +19,8 @@ export interface Angle {
     descriptor: string;
     priorContext: { source: string; fact: string }[];
     codeIdentifiers: string[];
+    /** Operator-pinned sub-issue count (epic decomposition only, C5). */
+    pinnedSubIssues?: number;
   }) => string | undefined;
 }
 
@@ -89,8 +91,12 @@ const ANGLES: Record<PlanType, Angle[]> = {
       // cross-angle duplicates on exact normalised text and attributes the
       // surviving copy to this chartered angle.
       name: "decomposition-surface",
-      build: ({ descriptor }) =>
-        `Break this epic into natural sub-issues: "${descriptor}". For each, report a sub-issue item via the report_plan_item tool (kind "sub-issue"): a title proposal, a brief scope, dependencies on other sub-issues, and a suggested ordering. Return subIssues[] (title, scope, deps, order).`,
+      build: ({ descriptor, pinnedSubIssues }) =>
+        `Break this epic into natural sub-issues: "${descriptor}". ${
+          pinnedSubIssues !== undefined
+            ? `The operator pinned EXACTLY ${pinnedSubIssues} sub-issues — produce exactly ${pinnedSubIssues}, no more, no fewer (merge or split until the count matches). `
+            : ""
+        }For each, report a sub-issue item via the report_plan_item tool (kind "sub-issue"): a title proposal, a brief scope, dependencies on other sub-issues, and a suggested ordering. Return subIssues[] (title, scope, deps, order).`,
     },
     {
       // #639 DEFECT 1 (Cause 1b): the epic's sub-issue section is the
@@ -131,11 +137,12 @@ export function anglePromptsFor(
   descriptor: string,
   priorContext: { source: string; fact: string }[],
   codeIdentifiers: string[],
+  pinnedSubIssues?: number,
 ): { name: string; prompt: string }[] {
   return ANGLES[type]
     .map((a) => ({
       name: a.name,
-      prompt: buildAnglePrompt(a, type, descriptor, priorContext, codeIdentifiers),
+      prompt: buildAnglePrompt(a, type, descriptor, priorContext, codeIdentifiers, pinnedSubIssues),
     }))
     .filter((x) => x.prompt !== undefined)
     .map((x) => ({ name: x.name, prompt: x.prompt as string }));
@@ -156,8 +163,9 @@ function buildAnglePrompt(
   descriptor: string,
   priorContext: { source: string; fact: string }[],
   codeIdentifiers: string[],
+  pinnedSubIssues?: number,
 ): string | undefined {
-  const task = angle.build({ type, descriptor, priorContext, codeIdentifiers });
+  const task = angle.build({ type, descriptor, priorContext, codeIdentifiers, pinnedSubIssues });
   if (!task) return undefined;
   // #633: cap the prior-context block at the child-prompt render site only —
   // renderPriorContext shares the 2000-char cap with the gap-gate prompt and

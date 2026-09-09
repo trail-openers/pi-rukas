@@ -206,7 +206,8 @@ function renderPlanResult(r: PlanResult, dryRun: boolean): string {
       f.reason === "cap-surface" ||
       f.reason === "gate-unavailable" ||
       f.reason === "needs-clarification" ||
-      f.reason === "draft-invalid"
+      f.reason === "draft-invalid" ||
+      f.reason === "duplicate-risk"
     ) {
       // Deliberate skip (not a failure): the cap routed to surface (a
       // CRITICAL gap remains — CRITICAL-only blocks, #664 transposed; HIGH

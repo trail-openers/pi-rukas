@@ -47,7 +47,8 @@ export interface FilingFailure {
     | "cap-surface"
     | "gate-unavailable"
     | "needs-clarification"
-    | "draft-invalid";
+    | "draft-invalid"
+    | "duplicate-risk";
   detail?: string;
 }
 

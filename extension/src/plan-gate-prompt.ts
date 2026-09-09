@@ -50,7 +50,7 @@ export function gapGatePrompt(
     "GAP DETECTION: review this draft spec and find what is missing, under-specified, ambiguous or unverifiable.\n\n";
   // PR #640 SECURITY: descriptor interpolated verbatim; prompt-level mitigation only, not a boundary.
   const spec = `${DESCRIPTOR_DATA_FRAMING}DRAFT SPEC:\n${body}\n\n`;
-  const sum = `PHASE 2 FINDINGS SUMMARY:\n${summary}\n\n`;
+  const sum = `PHASE 2 FINDINGS SUMMARY:\n${summary}\nAn angle marked skipped/failed means that surface is UNINVESTIGATED — a missing investigation is not evidence of absence; weigh gaps touching that surface accordingly.\n\n`;
   const prior =
     priorContext.length > 0
       ? `PM has already established these decisions and facts (DO NOT re-raise them as gaps; citing them is only valid if you can show the spec contradicts them):\n${renderPriorContext(priorContext)}\n${priorContextHasVipune(priorContext) ? `${VIPUNE_PRECEDENCE_NOTE}\n\n` : ""}`

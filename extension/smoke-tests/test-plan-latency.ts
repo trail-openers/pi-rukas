@@ -169,19 +169,24 @@ const DESCRIPTOR = "add a start_plan_driver latency probe in extension/src/plan-
 }
 
 {
-  // The HIGH-risk hard stop survives the barrier move: still refuses to file.
+  // The HIGH-risk hard stop survives the barrier move: still refuses to
+  // file — now as a STRUCTURED result (reason duplicate-risk) carrying the
+  // rationale and the recovery path, never a bare throw.
   seen.length = 0;
   angleStarted = false;
   dupLevel = "high";
-  let threw = "";
-  try {
-    await runPlanPipeline(FAKE_PI, { descriptor: DESCRIPTOR, dryRun: true }, REPO_ROOT);
-  } catch (e) {
-    threw = (e as Error).message;
-  }
+  const r = await runPlanPipeline(FAKE_PI, { descriptor: DESCRIPTOR, dryRun: true }, REPO_ROOT);
   assert(
-    /duplicate risk HIGH/.test(threw),
-    `HIGH duplicate risk still hard-stops after the barrier (got: ${threw.slice(0, 60) || "no throw"})`,
+    r.filed === false && r.filingFailure?.reason === "duplicate-risk",
+    `HIGH duplicate risk still refuses to file, as a structured result (got reason ${r.filingFailure?.reason})`,
+  );
+  assert(
+    /duplicate risk HIGH/.test(r.filingFailure?.detail ?? ""),
+    "...whose detail carries the rationale",
+  );
+  assert(
+    /re-run start_plan_driver with a context param acknowledging/.test(r.spec),
+    "...and whose spec text names the recovery path (acknowledge via context)",
   );
 }
 
