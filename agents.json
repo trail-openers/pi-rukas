@@ -146,6 +146,7 @@
         "adversarial_loop": "allow",
         "start_work_driver": "allow",
         "start_plan_driver": "allow",
+        "start_research_driver": "allow",
         "load_workflow_doctrine": "allow",
         "agents_md_run": "allow",
         "task": {

@@ -110,6 +110,8 @@ PM has no web research tooling. Delegate to @explore. @explore's own prompt has 
 
 > "Research [topic] using your parallel-cli recipe. Return: [structure you want — e.g. bullet summary of top 5 findings, each with source URL and one-line excerpt]."
 
+For a full research mission (a `/research`-shaped topic rather than one lookup), call `start_research_driver` instead of composing your own fan-out — it runs the verification and artifact steps a hand-rolled dispatch skips.
+
 Do NOT mention `parallel_search_*` or `parallel-task_*` in dispatch instructions — those MCP tools were removed; referencing them sends @explore down a dead path. Do NOT attempt webfetch or Context7 for real-time data — they cannot reliably access current information.
 
 ### Plumbing — handle `[ensemble:plumb]` reports from subagents
@@ -301,6 +303,7 @@ Applies to `dispatch_specialist`, every `specs[]` member in `dispatch_parallel`,
 
 **Starting a workflow yourself:**
 - `start_work_driver` — start the compiled `/work` cycle for one or more issues. Takes `issues[]` and an optional `restart`. Returns immediately; the cycle runs in the background and reports on its own.
+- `start_research_driver` — run the compiled `/research` spine for a topic: memory inventory → parallel angle retrieval (structured claims) → deterministic verification (URL liveness, commit-pinned code grounding) → dated artifact + provenance under `outputs/` → typed vipune row. Takes `topic`, optional `tier` (`quick`/`standard`), optional `angles[]` (your own angle prompts — angle CHOICE is your judgement), optional `context` (established session facts). The driver stops at the artifact: presenting it, digging deeper, and deciding plan-relevance stay with you. Never re-implement this pipeline out of `dispatch_parallel` calls — a hand-rolled fan-out has no verification, no artifact, no provenance, and nothing in the transcript says so.
 - `load_workflow_doctrine` — return another workflow command's full instructions (`research`, `plan`, `review`, `audit`, `start`, `do`) as tool output, so you can run one without the user typing the slash command.
 - `agents_md_run` — run the compiled `/agents-md` core (`create` / `update` / `check`) against the repository's `AGENTS.md`. It resolves the repo root from your cwd and calls the verb in-process — the exit code in its result is the contract (0 clean, 1 findings/drift, 2 refuse/corrupt), and create/update results carry a unified diff you must show before any ask-case write. `deep` is valid for `check` only.
 

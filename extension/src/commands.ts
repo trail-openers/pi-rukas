@@ -367,7 +367,7 @@ function descriptionFor(name: SlashCommand): string {
     case "start":
       return "Initialise session: load project memory, check git state, report what's open";
     case "research":
-      return "<topic> — Multi-pronged research using web, codebase, and memory in parallel";
+      return "<topic> — Compiled research: parallel angles → verification → dated artifact + provenance (start_research_driver)";
     case "plan":
       return "<bug|feature|epic|chore|spike description> — Create a well-structured GitHub issue";
     case "work":

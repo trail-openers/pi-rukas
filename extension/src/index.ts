@@ -14,6 +14,7 @@ import { loadOverrides } from "./model-config.ts";
 import { registerModelPicker } from "./model-picker.ts";
 import { registerPermissionGuard } from "./permission-guard.ts";
 import { registerPlanTool } from "./plan-tool.ts";
+import { registerResearchTool } from "./research-tool.ts";
 import { warnIfRetryConfigTooLow } from "./retry-config-check.ts";
 import { registerCheckReviewCapTool } from "./review-cap.ts";
 import { pruneOldRuns, registerRunsCommand } from "./runs.ts";
@@ -64,6 +65,10 @@ export default async function (pi: ExtensionAPI) {
   // (issue-creation-guard.ts) is registered inside registerPermissionGuard
   // below; this is the "thing to call instead" half of that gate.
   registerPlanTool(pi);
+  // /research's deterministic spine is compiled (research-driver.ts); the
+  // /research prose body now instructs PM to call this tool. Judgement
+  // (angle choice, the post-artifact conversation) stays with PM.
+  registerResearchTool(pi);
   registerRunsCommand(pi);
   registerModelPicker(pi);
   registerAsyncJobsLifecycle(pi);

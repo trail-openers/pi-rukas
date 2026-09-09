@@ -1655,3 +1655,26 @@ The deterministic pre-triage (`plan-precheck.ts`) fired: the descriptor is below
 ### Chore/spike tickets skip the adversarial gap gate
 
 By design (no env knob): chore/spike are low-blast-radius and deterministic validation is their gate. The old `PI_ENSEMBLE_PLAN_GAP_GATE` variable is deleted and inert. Bug/feature/epic always run the gate; its round 2 (fires only on CRITICAL) is a scoped verification of the carried resolutions, not a second full review — multi-round full re-review of the same artifact measurably adds false positives (arXiv:2603.16244).
+
+## /research — the compiled research spine
+
+### What it is
+
+`/research` runs through `start_research_driver` (`extension/src/research-driver.ts`): memory inventory → one parallel barrier of angle children (each reporting structured claims via the `report_research_claim` companion tool) → deterministic verification → a dated artifact + provenance sidecar → one typed vipune candidate row. PM keeps judgement (tier, angle choice, the conversation after the artifact). Every child is bounded at 8 minutes and pinned to the repo root.
+
+### Where the artifact lands
+
+`<repo>/outputs/research-<slug>.md` plus `research-<slug>.provenance.md`. The driver adds `outputs/` to `.git/info/exclude` (per-clone, same mechanism as the `tmp/` scratch convention) so an untracked artifact can never dirty a later /work cycle's clean-tree check — the project's own `.gitignore` is never edited; committing artifacts is the operator's call. A re-run on the same topic gets a `-2` suffix, never a silent overwrite.
+
+### Verification classes (provenance legend)
+
+- URL sources: `live` / `dead` (confident 404/410-class absence) / `unreachable` (403/429/405 bot-filters, timeouts — the page refusing automation still exists).
+- Code sources (`path` or `path#symbol`): `grounded` / `ungrounded` against the pinned commit (`git rev-parse HEAD`, recorded in the artifact header); a check that could not run leaves the claim `unchecked` rather than condemning it.
+
+### "NO RELIABLY VERIFIED FINDINGS" (abstention)
+
+Zero findings survived deterministic verification. The artifact is still written — it records what was checked so the next attempt starts further ahead. This is the honest output, not an error: re-run with sharper `angles` or more `context` rather than lowering the bar.
+
+### "all angles produced zero report_research_claim calls"
+
+The retrieval children returned prose only — usually the research-reporter extension did not load (check `RESEARCH_REPORTER_PATH`) or the model made no tool calls. Nothing was filed or written; re-run `start_research_driver`.
