@@ -76,3 +76,88 @@ export function readEnumMarker<T extends string>(
   if (!hit) return undefined;
   return allowed.find((a) => a.toLowerCase() === hit);
 }
+
+/**
+ * MARKER_CONTRACTS — the declared registry of every PROSE marker the
+ * drivers route on (seam audit 2026-09-09; the research's "declared
+ * contract" P1, sized to this repo: a self-documenting table the canary
+ * test walks, not JSON-schema machinery — the tool-call seams
+ * (report_policy, report_finding, report_plan_item, report_research_claim)
+ * are already TypeBox-validated in-process and are deliberately absent).
+ *
+ * Each row names the token, its canonical values (or a shape description
+ * for open values), the module that routes on it, and what that consumer
+ * does on ABSENCE — the axis every marker bug in this repo's history has
+ * lived on. test-marker-contracts.ts enforces: every row's consumer exists
+ * and contains the token, every enum value appears in the consumer's
+ * source, and the known marker-consuming modules all appear here — a new
+ * hand-rolled parser fails the gate.
+ */
+export interface MarkerContract {
+  token: string;
+  values: readonly string[] | string;
+  consumer: string;
+  onAbsence: string;
+}
+
+export const MARKER_CONTRACTS: readonly MarkerContract[] = [
+  {
+    token: "VERDICT",
+    values: ["CRITICAL_ISSUES_FOUND", "ISSUES_FOUND", "MINOR_OBSERVATIONS", "APPROVED"],
+    consumer: "adversarial-verdict.ts",
+    onAbsence:
+      "verdictParsed=false → fix round mid-loop, `incomplete` at the terminal round (never pass, never reject)",
+  },
+  {
+    token: "ci-status",
+    values: ["success", "failure", "pending"],
+    consumer: "work-driver-stepback-ci.ts",
+    onAbsence:
+      "treated as failure (#553 — burns the ci-retry cap rather than idling); executed gh evidence can demote a success, never promote",
+  },
+  {
+    token: "INTENT-VERDICT",
+    values: ["proceed", "proceed-with-assumptions", "park"],
+    consumer: "work-driver-intent.ts",
+    onAbsence: "park with verdictSource=default (#378 — silence is not permission to build)",
+  },
+  {
+    token: "PARK-REASON",
+    values: [
+      "underspecified",
+      "contradicted-by-code",
+      "already-implemented",
+      "too-large",
+      "premise-unsound",
+    ],
+    consumer: "work-driver-intent.ts",
+    onAbsence:
+      "underspecified with parkReasonSource=default (#404 — an invented reason must never license building)",
+  },
+  {
+    token: "DUPLICATE_RISK",
+    values: ["high", "medium", "low", "none"],
+    consumer: "plan-investigate.ts",
+    onAbsence:
+      "medium (proceed; only high stops) — LAST real marker wins and the echoed `high|medium|low|none` menu is ignored",
+  },
+  {
+    token: "GAP",
+    values: "CRITICAL|HIGH|MEDIUM|LOW — <description> — proposed resolution: <r>",
+    consumer: "plan-gaps.ts",
+    onAbsence:
+      "zero gaps, honestly; zero gaps with no VERDICT line is review-unparseable → one strict retry, then fail closed (never files)",
+  },
+  {
+    token: "CLAIM-SUPPORT",
+    values: ["full", "partial", "none", "unreachable"],
+    consumer: "research-verify.ts",
+    onAbsence: "claim stays unannotated (absence is not a verdict; annotation never upgrades)",
+  },
+  {
+    token: "pr",
+    values: "<PR number> (`pr: <N>` line)",
+    consumer: "work-driver-lens.ts",
+    onAbsence: "undefined — downstream gates that need the PR fail their own checks",
+  },
+];

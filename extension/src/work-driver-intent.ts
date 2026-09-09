@@ -26,6 +26,7 @@
  * are never required — that is the whole point.
  */
 
+import { readMarker } from "./reply-markers.ts";
 import { trace } from "./trace.ts";
 import {
   contradictionAssumptions,
@@ -155,16 +156,13 @@ function bullets(section: string | undefined): string[] {
  * default then flowed into a decision (#404). Both forms are accepted; bold
  * and heading markers are tolerated, as they are on every sibling parser.
  */
-function readToken(text: string, token: string, value: RegExp): string | undefined {
-  const v = value.source;
-  const inline = text.match(new RegExp(`${token}:\\s*\\**\\s*${v}\\b`, "i"));
-  if (inline?.[1]) return inline[1].toLowerCase();
-  // Heading form: the token on its own line, the value on the next.
-  const heading = text.match(
-    new RegExp(`^#{1,6}\\s*\\**\\s*${token}\\s*\\**\\s*$\\n+\\s*\\**\\s*${v}\\b`, "im"),
-  );
-  return heading?.[1]?.toLowerCase();
-}
+// The private `readToken` duplicate is DELETED (seam audit 2026-09-09): it
+// was strictly weaker than reply-markers.ts's shared reader — FIRST match
+// instead of LAST (the exact defect readMarker was built to fix: a resolver
+// musing about a verdict had its musing read as the verdict), a mandatory
+// colon, and no post-value bold tolerance. `readMarker` keeps the heading
+// form (#404) and is wider on every axis, so parseable-today stays
+// parseable and the provenance semantics below are unchanged.
 
 /**
  * Parse the resolver's reply into a normalised spec.
@@ -177,7 +175,7 @@ export function parseNormalisedSpec(text: string): NormalisedSpec | undefined {
   const section = sliceMarkdownSection(text, "Spec");
   if (section === undefined) return undefined;
 
-  const rawVerdict = readToken(text, "INTENT-VERDICT", /(proceed-with-assumptions|proceed|park)/);
+  const rawVerdict = readMarker(text, "INTENT-VERDICT", /(proceed-with-assumptions|proceed|park)/);
   // No parseable verdict → park. This inverts the pre-#378 default, where a
   // missing token meant NEEDS_WORK and silence became permission to build.
   const verdict: IntentVerdict =
@@ -185,7 +183,7 @@ export function parseNormalisedSpec(text: string): NormalisedSpec | undefined {
       ? (rawVerdict as IntentVerdict)
       : "park";
 
-  const rawReason = readToken(text, "PARK-REASON", /([a-z-]+)/);
+  const rawReason = readMarker(text, "PARK-REASON", /([a-z-]+)/);
   const parkReason = PARK_REASONS.find((r) => r === rawReason);
 
   const intent = (sliceSubsection(section, "Intent") ?? "").trim().split("\n")[0] ?? "";
