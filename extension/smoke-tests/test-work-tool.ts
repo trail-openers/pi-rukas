@@ -141,6 +141,10 @@ registerWorkTools(fakePi);
     /Merge authority is operator-only/.test(preamble),
     "...and that neither tool can grant merge authority",
   );
+  assert(
+    /start_research_driver/.test(preamble),
+    "...and names start_research_driver for research missions (a hand-rolled explore fan-out skips verification/artifact/provenance with nothing in the transcript saying so)",
+  );
   // The pre-existing rule forbade editing files, not reimplementing the
   // pipeline — which is exactly the gap PM walked through.
   assert(
