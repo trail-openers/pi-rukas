@@ -92,6 +92,29 @@ const run = (raw: Record<string, unknown>) =>
   assert(plan?.wouldWrite === true, "create plan: wouldWrite is true");
   assert(plan?.oldBytes === "", "create plan: oldBytes is the empty string");
   assert(plan?.newBytes === wrote, "create plan: newBytes are the bytes actually written");
+  // The create/no-file path scaffolds by default (post-#649 flip): a bare
+  // create (no scaffold param) carries all 7 boilerplate sections.
+  const planWithScaffold = d.plan as
+    | {
+        newBytes: string;
+        oldBytes: string;
+        wouldWrite: boolean;
+        managedIds: string[];
+        scaffoldedIds?: string[];
+      }
+    | undefined;
+  assert(
+    planWithScaffold?.scaffoldedIds?.length === 7,
+    `create plan: 7 scaffold sections by default (got ${planWithScaffold?.scaffoldedIds?.length})`,
+  );
+  assert(
+    wrote.includes("# Context7 Protocol") && wrote.includes("# Testing Standards"),
+    "create: the written file carries the 2 new boilerplate sections",
+  );
+  assert(
+    wrote.includes("≥80%"),
+    "create: unanswered coverage renders the ≥80% default in Testing Standards",
+  );
   assert(
     plan?.managedIds.includes("quality-gates") && plan?.managedIds.includes("decision-ledger"),
     "create plan: managed ids include the fact sections and the ledger",
@@ -125,6 +148,19 @@ const run = (raw: Record<string, unknown>) =>
   assert(plan?.newBytes !== before, "update plan: newBytes differ from oldBytes");
   assert(readFileSync(AGENTS, "utf8") === plan?.newBytes, "update wrote the planned bytes");
   assert(r.content[0]?.text.includes("bun run typecheck"), "update diff shows the new command");
+  // The has-markers update path stays scaffold-OPT-IN: with no scaffold param
+  // the update must NOT add boilerplate sections.
+  const planUpdate = d.plan as { scaffoldedIds?: string[] } | undefined;
+  assert(
+    planUpdate?.scaffoldedIds === undefined,
+    "update plan: scaffoldedIds is undefined (scaffold is opt-in for update)",
+  );
+  const afterUpdate = readFileSync(AGENTS, "utf8");
+  assert(
+    (afterUpdate.match(/# Minimalist Engineering/g) ?? []).length ===
+      (before.match(/# Minimalist Engineering/g) ?? []).length,
+    "update: no new boilerplate headings were added (still the scaffolded set from create)",
+  );
 }
 
 // ------------------------------------------------------------------ no-op update

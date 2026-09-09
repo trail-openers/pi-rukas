@@ -1,11 +1,17 @@
 /**
  * scaffold — boilerplate section templates and the scaffold post-pass.
  *
- * A greenfield `create --scaffold` appends 5 static boilerplate sections
- * (minimalist-engineering, git-workflow, documentation-policy,
- * issue-driven-development, code-review-doctrine) OUTSIDE the managed
- * markers. The sections are universal text — language specifics live in the
- * managed fact sections (quality-gates, commands, environment).
+ * A greenfield `create` (scaffold is ON by default on the create/no-file
+ * path) appends 7 boilerplate sections (minimalist-engineering, git-workflow,
+ * documentation-policy, issue-driven-development, code-review-doctrine,
+ * context7-protocol, testing-standards) OUTSIDE the managed markers. The
+ * sections are universal text — language specifics live in the managed fact
+ * sections (quality-gates, commands, environment).
+ *
+ * Six of the seven bodies are static array literals; `testing-standards`
+ * alone is answer-aware: `computeScaffold` renders it from
+ * `opts.answers.coverageThreshold` (the operator's stated threshold, or the
+ * ≥80% opinionated default when unanswered).
  *
  * On a brownfield update, the scaffold post-pass runs AFTER the rebuild and
  * inserts missing boilerplate sections via `appendSection`'s `after` param
@@ -39,19 +45,25 @@ export interface ScaffoldOpts {
 
 // ---------------------------------------------------------------- boilerplate
 
-/** Heading name → section id for the five boilerplate sections.
+/** Heading name → section id for the seven boilerplate sections.
  * Used by update-agent.ts detectExistingBoilerplate to map file headings
- * to managed section ids (avoids duplicating the mapping). */
+ * to managed section ids (avoids duplicating the mapping). A heading missing
+ * from this map breaks update-path idempotency: the section would be
+ * re-inserted on every run. */
 export const SCAFFOLD_HEADING_MAP: Map<string, string> = new Map([
   ["Minimalist Engineering", "minimalist-engineering"],
   ["Git Workflow", "git-workflow"],
   ["Documentation Policy", "documentation-policy"],
   ["Issue-Driven Development", "issue-driven-development"],
   ["Code Review Doctrine", "code-review-doctrine"],
+  ["Context7 Protocol", "context7-protocol"],
+  ["Testing Standards", "testing-standards"],
 ]);
 
-/** The five static boilerplate sections, in document order. */
-const SCAFFOLD_BODIES: { id: string; body: string }[] = [
+/** The static boilerplate sections (all except the answer-aware
+ * `testing-standards` body), in document order. Exported so the quality
+ * test can assert per-section density budgets against the registered body. */
+export const SCAFFOLD_BODIES: { id: string; body: string }[] = [
   {
     id: "minimalist-engineering",
     body: [
@@ -150,7 +162,48 @@ const SCAFFOLD_BODIES: { id: string; body: string }[] = [
       "- ❌ No suppressions in the diff",
     ].join("\n"),
   },
+  {
+    id: "context7-protocol",
+    body: [
+      "# Context7 Protocol",
+      "",
+      "Before writing ANY code, check Context7 for current documentation:",
+      "- Library APIs and syntax",
+      "- Framework patterns and best practices",
+      "- Configuration options",
+      "",
+      "Training data is often months out of date. Context7 provides",
+      "authoritative, up-to-date docs. Skip it for the project's own code",
+      "standard-library features, or meta-questions about the project.",
+    ].join("\n"),
+  },
 ];
+
+/** The opinionated default coverage threshold the Testing Standards section
+ * renders when the interview's coverage question was never answered. */
+const DEFAULT_COVERAGE_THRESHOLD = "≥80%";
+
+/**
+ * The Testing Standards body — the ONE answer-aware scaffold section. It
+ * states the coverage threshold exactly once: the operator's stated value
+ * when the interview answered it, the opinionated default otherwise.
+ * Pure: a function of the (possibly absent) answer alone.
+ */
+export function testingStandardsBody(coverageThreshold?: string): string {
+  const threshold = coverageThreshold ?? DEFAULT_COVERAGE_THRESHOLD;
+  return [
+    "# Testing Standards",
+    "",
+    "- TDD preferred: write the failing test first, then the minimal",
+    "  implementation that passes it; refactor with the tests green.",
+    `- Coverage threshold: **${threshold}** for new code.`,
+    "- Coverage for lower-risk areas (documentation, config, formatting)",
+    "  may be lower; the threshold is the floor for logic, not a target for",
+    "  boilerplate.",
+    "- A bug fix ships with its regression test — a fix without a test that",
+    "  failed first is an incomplete fix.",
+  ].join("\n");
+}
 
 // ------------------------------------------------------------------- ledger
 
@@ -167,10 +220,16 @@ function scaffoldedLedgerRow(id: string, date: string): LedgerRow {
 /**
  * Operator-choices body for the scaffold. Rendered as a bullet list; always
  * ends with a newline for splice symmetry.
+ *
+ * `omitCoverage` suppresses the coverage bullet: once the answer-aware
+ * Testing Standards section carries the threshold, it is the SOLE statement
+ * of the value in the file, and the operator-choices section must not
+ * duplicate it. The `[asked:operator]` ledger row is unaffected (it records
+ * what was asked, not where the value is stated).
  */
-export function renderOperatorChoices(answers: OperatorAnswers): string {
+export function renderOperatorChoices(answers: OperatorAnswers, omitCoverage = false): string {
   const rows: string[] = [];
-  if (answers.coverageThreshold)
+  if (answers.coverageThreshold && !omitCoverage)
     rows.push(`- **Coverage threshold:** ${answers.coverageThreshold}`);
   if (answers.reviewBlockingSeverity)
     rows.push(`- **Review-blocking severity:** ${answers.reviewBlockingSeverity}`);
@@ -234,13 +293,17 @@ export interface ScaffoldResult {
  *
  * `existingIds` is the set of section ids already present (from markers or
  * wrap append output). Sections already present are skipped — idempotency:
- * a second `--scaffold` run adds nothing.
+ * a second `--scaffold` run adds nothing (the answer-aware Testing Standards
+ * body included: once present, it is not re-rendered even if the answer
+ * changes later).
  */
 export function computeScaffold(existingIds: Set<string>, opts?: ScaffoldOpts): ScaffoldResult {
   const sections: { id: string; body: string }[] = [];
   const ledgerRows: LedgerRow[] = [];
   let operatorChoicesBody: string | undefined;
   const date = new Date().toISOString().slice(0, 10);
+  const answers = opts?.answers;
+  const coverage = answers?.coverageThreshold;
 
   for (const { id, body } of SCAFFOLD_BODIES) {
     if (existingIds.has(id)) continue;
@@ -248,8 +311,15 @@ export function computeScaffold(existingIds: Set<string>, opts?: ScaffoldOpts): 
     ledgerRows.push(scaffoldedLedgerRow(id, date));
   }
 
-  if (opts?.answers) {
-    const answers = opts.answers;
+  // The answer-aware section: rendered from opts.answers (the operator's
+  // stated threshold, or the opinionated default), in document position
+  // after the static bodies. Skipped when already present, like the rest.
+  if (!existingIds.has("testing-standards")) {
+    sections.push({ id: "testing-standards", body: testingStandardsBody(coverage) });
+    ledgerRows.push(scaffoldedLedgerRow("testing-standards", date));
+  }
+
+  if (answers) {
     const hasAny =
       answers.coverageThreshold ||
       answers.reviewBlockingSeverity ||
@@ -258,7 +328,13 @@ export function computeScaffold(existingIds: Set<string>, opts?: ScaffoldOpts): 
     if (hasAny) {
       const operatorRows = operatorChoicesLedgerRows(answers, date);
       ledgerRows.push(...operatorRows);
-      operatorChoicesBody = renderOperatorChoices(answers);
+      // Mutual exclusion: the threshold value is stated exactly once —
+      // in the Testing Standards section. When that section is present
+      // (fresh create, or an update that still inserts it), the
+      // operator-choices section suppresses its coverage bullet; on an
+      // update where Testing Standards was already present (skipped above),
+      // the file already carries the value there, so suppress regardless.
+      operatorChoicesBody = renderOperatorChoices(answers, true);
     }
   }
 

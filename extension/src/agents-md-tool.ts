@@ -60,7 +60,7 @@ export function registerAgentsMdTools(pi: ExtensionAPI) {
       scaffold: Type.Optional(
         Type.Boolean({
           description:
-            "append 5 static boilerplate sections (minimalist-engineering, git-workflow, documentation-policy, issue-driven-development, code-review-doctrine) outside markers. For create: appends to the fresh file. For update: inserts after the environment section.",
+            "append 7 boilerplate sections (minimalist-engineering, git-workflow, documentation-policy, issue-driven-development, code-review-doctrine, context7-protocol, testing-standards) outside markers. ON BY DEFAULT for create on a no-file repo (pass false to opt out). For create: appends to the fresh file. For update: inserts after the environment section (opt-in there — defaults off).",
         }),
       ),
       answers: Type.Optional(
@@ -73,7 +73,7 @@ export function registerAgentsMdTools(pi: ExtensionAPI) {
           },
           {
             description:
-              "Operator answers from the interview (4 questions). Produces an operator-choices section + [asked:operator] ledger rows.",
+              "Operator answers from the interview (4 questions). Produces an operator-choices section + [asked:operator] ledger rows. coverageThreshold additionally drives the answer-aware Testing Standards section (unanswered → the ≥80% opinionated default is rendered there); when Testing Standards carries the value, the operator-choices section omits the coverage bullet.",
           },
         ),
       ),

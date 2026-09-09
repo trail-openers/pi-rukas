@@ -4,7 +4,7 @@
  *
  * Tests the full scaffold feature:
  *
- *   1. create --scaffold (no-file): managed sections + 5 boilerplate OUTSIDE
+ *   1. create --scaffold (no-file): managed sections + 7 boilerplate OUTSIDE
  *      markers + operator-choices section (when answers provided)
  *   2. create --scaffold dryRun: plan.newBytes includes boilerplate, writeFile NOT called
  *   3. update --scaffold (has-markers): boilerplate inserted after environment
@@ -22,7 +22,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { parseMarkers } from "../src/agents-md/markers.ts";
 import {
   type AgentsMdFs,
   checkAgent,
@@ -31,18 +30,18 @@ import {
   updateAgent,
 } from "../src/agents-md/agents-md.ts";
 import { EXIT_CLEAN, EXIT_FINDINGS } from "../src/agents-md/check.ts";
-import { parseMarkers, presentIds } from "../src/agents-md/markers.ts";
 import { parseLedger, renderLedger } from "../src/agents-md/ledger.ts";
+import { parseMarkers, presentIds } from "../src/agents-md/markers.ts";
 import { sectionContentWithEnd } from "../src/agents-md/markers.ts";
+import { commandsBody, environmentBody, gatesBody } from "../src/agents-md/renderer.ts";
 import {
   type OperatorAnswers,
   computeScaffold,
-  renderOperatorChoices,
   operatorChoicesLedgerRows,
+  renderOperatorChoices,
   runScaffoldPostPass,
   runWrapScaffold,
 } from "../src/agents-md/scaffold.ts";
-import { commandsBody, environmentBody, gatesBody } from "../src/agents-md/renderer.ts";
 import { WrapError, wrapBytes, wrapLedgerRows } from "../src/agents-md/wrap.ts";
 
 let exit = 0;
@@ -106,8 +105,8 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
   assert(res.plan?.wouldWrite === true, "create --scaffold: wouldWrite is true");
   assert(res.plan?.scaffoldedIds !== undefined, "create --scaffold: scaffoldedIds present");
   assert(
-    res.plan?.scaffoldedIds.length === 5,
-    `create --scaffold: 5 scaffolded ids (got ${res.plan?.scaffoldedIds.length})`,
+    res.plan?.scaffoldedIds.length === 7,
+    `create --scaffold: 7 scaffolded ids (got ${res.plan?.scaffoldedIds.length})`,
   );
   // Boilerplate is OUTSIDE markers.
   assert(
@@ -126,6 +125,18 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
   assert(
     content.includes("# Code Review Doctrine"),
     "create --scaffold: code-review-doctrine section present",
+  );
+  assert(content.includes("# Context7 Protocol"), "create --scaffold: context7-protocol present");
+  assert(content.includes("# Testing Standards"), "create --scaffold: testing-standards present");
+  // Unanswered coverage → the opinionated default in Testing Standards,
+  // stated exactly once (no operator-choices section exists here anyway).
+  assert(
+    content.includes("≥80%"),
+    "create --scaffold: unanswered coverage renders the ≥80% default",
+  );
+  assert(
+    (content.match(/≥80%/g) ?? []).length === 1,
+    "create --scaffold: the ≥80% default is stated exactly once",
   );
   // Managed sections are inside markers.
   const ids = presentIds(content);
@@ -159,6 +170,34 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
     "scaffold with answers: operator-choices section present",
   );
   assert(content.includes("80%+"), "scaffold with answers: coverage threshold recorded");
+  // Mutual exclusion: the threshold is stated in Testing Standards, and
+  // operator-choices must NOT duplicate it (no coverage bullet there).
+  const opChoicesIdx = content.indexOf("## Operator choices");
+  const testingIdx = content.indexOf("# Testing Standards");
+  const nextSection = content.indexOf("# ", testingIdx + 1);
+  const testingBody =
+    nextSection > testingIdx ? content.slice(testingIdx, nextSection) : content.slice(testingIdx);
+  assert(
+    testingBody.includes("80%+"),
+    "scaffold with answers: Testing Standards carries the answered threshold",
+  );
+  const opChoicesBody = opChoicesIdx >= 0 ? content.slice(opChoicesIdx, testingIdx) : "";
+  assert(
+    !opChoicesBody.includes("Coverage threshold"),
+    "scaffold with answers: operator-choices omits the coverage bullet",
+  );
+  // The threshold value is stated exactly once in the MANAGED + boilerplate
+  // text (the ledger is provenance: its operator:coverage row legitimately
+  // carries the value — that is not a second *statement* of the threshold).
+  const ledgerBegin = content.indexOf("<!-- pi-rukas:agents-md:begin decision-ledger");
+  const ledgerEnd =
+    content.indexOf("<!-- pi-rukas:agents-md:end decision-ledger -->") +
+    "<!-- pi-rukas:agents-md:end decision-ledger -->".length;
+  const managedPlusBoilerplate = content.slice(0, ledgerBegin) + content.slice(ledgerEnd);
+  assert(
+    (managedPlusBoilerplate.match(/80%\+/g) ?? []).length === 1,
+    "scaffold with answers: the threshold is stated exactly once in the managed + boilerplate text",
+  );
   assert(content.includes("MEDIUM"), "scaffold with answers: review-blocking severity recorded");
   // Ledger has [asked:operator] rows. (Slice via the parser, not a
   // hardcoded marker prefix — #627 dual-prefix rename.)
@@ -183,21 +222,27 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
     res.plan?.newBytes.includes("# Minimalist Engineering"),
     "scaffold dryRun: newBytes include boilerplate",
   );
-  assert(res.plan?.scaffoldedIds?.length === 5, "scaffold dryRun: scaffoldedIds computed in plan");
+  assert(res.plan?.scaffoldedIds?.length === 7, "scaffold dryRun: scaffoldedIds computed in plan");
 }
 
 // ===================================================== 4. update --scaffold (has-markers)
 
 {
   rmSync(AGENTS, { force: true });
-  // Start with a plain create (no scaffold).
+  // Start with a plain create (explicit scaffold OFF — the create default is
+  // now on, so opt out to exercise the "bare file, then scaffold via update"
+  // shape this block existed to test).
   const fs = mkFs();
-  createAgent(tmp, AGENTS, fs);
+  createAgent(tmp, AGENTS, fs, { scaffold: false });
   // Now update with scaffold.
   const res = updateAgent(tmp, AGENTS, fs, { scaffold: true });
   assert(res.exitCode === 0, "update --scaffold: exit 0");
   assert(res.plan?.wouldWrite === true, "update --scaffold: wouldWrite is true");
   assert(res.plan?.scaffoldedIds !== undefined, "update --scaffold: scaffoldedIds present");
+  assert(
+    res.plan?.scaffoldedIds.length === 7,
+    `update --scaffold: 7 scaffolded ids (got ${res.plan?.scaffoldedIds.length})`,
+  );
   const content = fs.readFile(AGENTS);
   assert(content.includes("# Minimalist Engineering"), "update --scaffold: boilerplate present");
   // Boilerplate is AFTER the environment section (which is inside markers).
@@ -328,19 +373,7 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
   assert(rows[0]?.provenance === "asked", "operator ledger: provenance is asked");
 }
 
-// ===================================================== 9. computeScaffold: skip already-present
-
-{
-  const existing = new Set(["minimalist-engineering", "git-workflow"]);
-  const result = computeScaffold(existing, { scaffold: true });
-  assert(result.sections.length === 3, "computeScaffold: 3 sections (skipped 2 existing)");
-  assert(
-    !result.sections.some((s) => s.id === "minimalist-engineering"),
-    "computeScaffold: existing ids skipped",
-  );
-}
-
-// ===================================================== 10. runScaffoldPostPass: after param inserts after environment
+// ===================================================== 9. runScaffoldPostPass: after param inserts after environment
 
 {
   const text =
@@ -367,7 +400,7 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
   assert(postEmpty.bytes === text, "post-pass empty: bytes unchanged");
 }
 
-// ===================================================== 11. idempotency: update --scaffold when already scaffolded
+// ===================================================== 10. idempotency: update --scaffold when already scaffolded
 
 {
   rmSync(AGENTS);
@@ -383,7 +416,7 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
   assert(res.plan?.wouldWrite === false, "idempotent scaffold update: wouldWrite is false");
 }
 
-// ===================================================== 12. wrap stays scaffold-free: no scaffold param = no boilerplate
+// ===================================================== 11. wrap stays scaffold-free: no scaffold param = no boilerplate
 
 {
   writeFileSync(
@@ -411,6 +444,33 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
   assert(
     !wrapped.bytes.includes("# Minimalist Engineering"),
     "wrap without scaffold: no boilerplate",
+  );
+}
+
+// ===================================================== 12. bare create default: scaffold ON, 7 sections
+
+{
+  rmSync(AGENTS, { force: true });
+  const fs = mkFs();
+  const res = createAgent(tmp, AGENTS, fs); // no opts at all
+  const content = fs.readFile(AGENTS);
+  assert(res.exitCode === 0, "bare create: exit 0");
+  assert(res.plan?.wouldWrite === true, "bare create: wouldWrite is true");
+  assert(
+    res.plan?.scaffoldedIds?.length === 7,
+    `bare create: scaffold defaults ON — 7 scaffolded ids (got ${res.plan?.scaffoldedIds?.length})`,
+  );
+  assert(content.includes("# Context7 Protocol"), "bare create: Context7 Protocol present");
+  assert(content.includes("# Testing Standards"), "bare create: Testing Standards present");
+  assert(content.includes("≥80%"), "bare create: unanswered coverage renders the ≥80% default");
+  // Explicit opt-out still works.
+  rmSync(AGENTS);
+  const resOff = createAgent(tmp, AGENTS, fs, { scaffold: false });
+  const contentOff = fs.readFile(AGENTS);
+  assert(resOff.plan?.scaffoldedIds === undefined, "scaffold: false: no scaffoldedIds");
+  assert(
+    !contentOff.includes("# Minimalist Engineering") && !contentOff.includes("# Testing Standards"),
+    "scaffold: false: no boilerplate sections",
   );
 }
 

@@ -52,7 +52,7 @@ Use the **`agents_md_run` tool**:
 agents_md_run(verb: "create" | "update" | "check",
               deep?: boolean,      // check only; rejected with a structured
                                    // error on create/update
-              scaffold?: boolean,  // append 5 static boilerplate sections
+              scaffold?: boolean,  // append 7 boilerplate sections (default ON for create)
               answers?: {           // operator interview answers (4 Qs)
                 coverageThreshold?: string,
                 reviewBlockingSeverity?: string,
@@ -144,13 +144,16 @@ Rules:
 
 ## Greenfield interview (before tool call)
 
-When `scaffold: true` is passed to a `create` (no-file) verb, the tool
-applies the scaffold post-pass, which appends 5 static boilerplate sections
+When `scaffold` is passed to a `create` (no-file) verb — or omitted, since
+scaffolding is ON BY DEFAULT for create — the tool
+applies the scaffold post-pass, which appends 7 boilerplate sections
+(6 static + the answer-aware `testing-standards`)
 and optionally an `operator-choices` section (from interview answers).
+Pass `scaffold: false` to create a plain managed-only file.
 
 Ask these 4 questions BEFORE calling the tool:
 
-1. **Coverage threshold** — what test coverage is required? (default: omit)
+1. **Coverage threshold** — what test coverage is required? (default: the Testing Standards section renders the ≥80% opinionated default)
 2. **Review-blocking severity** — which severity blocks merge? (default: omit)
 3. **Merge authority** — who/what can merge PRs? (default: omit)
 4. **Project-specific constraints** — any additional rules? (default: omit)
@@ -158,8 +161,8 @@ Ask these 4 questions BEFORE calling the tool:
 Protocol:
 - 2–4 options per question, default is the lowest-consequence choice
 - If the operator is absent (headless), see the headless clause
-- Unanswered → section not created, no invented defaults
-- Answered → `operator-choices` section + `[asked:operator]` ledger rows
+- Unanswered → the Testing Standards section renders the ≥80% opinionated default (the other 3 interview questions keep the omit-on-unanswered rule)
+- Answered → `operator-choices` section + `[asked:operator]` ledger rows (the coverage value itself lives ONLY in the Testing Standards section; operator-choices omits its coverage bullet)
 
 ---
 
@@ -169,8 +172,9 @@ If there is no interactive UI (headless / `pi -p` / a driver dispatch):
 - **`dryRun` is always permitted** — this is a carve-out from the no-write
   rule. `dryRun: true` computes the full plan and is safe to call headless.
 - **Show the advisory diff.** Run the verb with `dryRun: true` and surface
-  the rendered diff. For scaffolded creates, the diff assumes defaults for
-  the 4 interview questions.
+  the rendered diff. For scaffolded creates, the Testing Standards section
+  renders its ≥80% opinionated default coverage line; the other 3 interview
+  questions remain unanswered (no operator-choices section is written).
 - **Write nothing.** A headless run must not auto-adopt a human file or
   write any assumed-answer ledger rows. The `operator-choices` section and
   `[asked:operator]` rows are NEVER written headless.
@@ -196,8 +200,8 @@ section is left exactly where it is, with its heading and bytes intact; the
 core inserts its marker pairs and appends only the managed sections it can
 derive.
 
-**Scaffold-append** (when `scaffold: true`): after the wrap, 5 static
-boilerplate sections are appended. These are universal text — language
+**Scaffold-append** (when `scaffold: true`): after the wrap, 7 boilerplate
+sections are appended. These are universal text — language
 specifics come from the managed fact sections. The refusal condition becomes
 `machineByLine.size === 0 && appended.length === 0 && scaffoldBodies.length === 0`
 so a repo with no machine sections can still wrap if scaffold boilerplate

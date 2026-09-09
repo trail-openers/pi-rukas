@@ -114,6 +114,16 @@ let A: string;
     A.includes("bun run test") && A.includes("bun run lint"),
     "create emits the detected commands",
   );
+  // The create/no-file path scaffolds BY DEFAULT: a bare create (no opts)
+  // emits all 7 boilerplate sections outside the markers. (Post-#649 flip:
+  // previously opt-in; the update-path no-op invariants below are unchanged.)
+  assert(
+    res.plan?.scaffoldedIds !== undefined && res.plan?.scaffoldedIds.length === 7,
+    `bare create: 7 scaffold sections by default (got ${res.plan?.scaffoldedIds?.length})`,
+  );
+  assert(A.includes("# Context7 Protocol"), "bare create: Context7 Protocol section present");
+  assert(A.includes("# Testing Standards"), "bare create: Testing Standards section present");
+  assert(A.includes("≥80%"), "bare create: unanswered coverage renders the ≥80% default");
 }
 
 // ------------------------------------ pure render is byte-identical on re-run
@@ -156,6 +166,47 @@ let A: string;
   );
   assert(fs.readFile(AGENTS) === A, "update #1: bytes are still A (unchanged)");
   assert(updateErr === "", "update #1: no error surfaced");
+}
+
+// ----------------- update with scaffold: true on the 7-section file → no-op
+//
+// The bare create now emits 7 boilerplate sections by default; an explicit
+// second update with scaffold enabled must still be a true no-op because
+// all 7 ids are already present (detectExistingBoilerplate via the heading
+// map + skip-already-present in computeScaffold).
+
+{
+  let writes = 0;
+  let threw = false;
+  const fs = mkFs({
+    writeFile: () => {
+      writes++;
+      threw = true;
+      throw new Error("write codepath was entered on an idempotent scaffold update");
+    },
+  });
+  let updateErr = "";
+  try {
+    const res = updateAgent(tmp, AGENTS, fs, { scaffold: true });
+    updateErr = res.error ?? "";
+    assert(res.exitCode === 0, "update (scaffold: true) does not error");
+    assert(
+      res.plan?.wouldWrite === false,
+      "update (scaffold: true): wouldWrite is false (all 7 sections already present)",
+    );
+    assert(
+      res.plan?.scaffoldedIds === undefined,
+      "update (scaffold: true): scaffoldedIds is undefined (nothing inserted this call)",
+    );
+  } catch (e) {
+    updateErr = (e as Error).message;
+  }
+  assert(
+    !threw && writes === 0,
+    "update (scaffold: true): the writeFile codepath was NOT entered (stub never called)",
+  );
+  assert(fs.readFile(AGENTS) === A, "update (scaffold: true): bytes are still A (unchanged)");
+  assert(updateErr === "", "update (scaffold: true): no error surfaced");
 }
 
 // ----------------------------------- delete ci.yml → check exits 1 (stale)

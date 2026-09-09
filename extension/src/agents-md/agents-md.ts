@@ -150,7 +150,10 @@ export function createAgent(
     effectiveOpts = opts;
     effectiveDryRun = dryRunParam ?? false;
   }
-  const scaffold = effectiveOpts.scaffold ?? false;
+  // The create/no-file path scaffolds BY DEFAULT: a fresh AGENTS.md carries
+  // the universal doctrine sections. `scaffold: false` opts out; the
+  // has-markers update path (update-agent.ts) stays opt-in on its own.
+  const scaffold = effectiveOpts.scaffold ?? true;
   const answers = effectiveOpts.answers;
   if (fs.stat(file)) {
     // create refuses to touch an existing file — the operator must use update
