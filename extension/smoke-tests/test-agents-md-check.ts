@@ -168,6 +168,36 @@ function mkFs(): AgentsMdFs {
   );
 }
 
+// A BOILERPLATE span (marker-wrapped, emitted by the scaffold post-pass) that
+// the operator has emptied by hand triggers the SAME generic empty-section
+// guard — this is CORRECT, INTENTIONAL behavior (an emptied managed span is a
+// legitimate corruption signal), and check.ts needs NO code change for it:
+// the guard iterates parseMarkers(fileContent).spans without an id filter, so
+// it fires for any managed span the operator has emptied, boilerplate or
+// fact-section alike.
+{
+  const emptyBoilerplate =
+    "# T\n" +
+    renderSection("environment", "- Manifest: package.json") +
+    "<!-- pi-rukas:agents-md:begin minimalist-engineering v1 -->\n<!-- pi-rukas:agents-md:end minimalist-engineering -->\n" +
+    renderSection(
+      "decision-ledger",
+      "| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |",
+    );
+  writeFileSync(path.join(tmp, "empty-boilerplate.md"), emptyBoilerplate);
+  const r = checkAgent(tmp, path.join(tmp, "empty-boilerplate.md"), {}, mkFs());
+  assert(
+    r.check?.code === EXIT_FINDINGS,
+    `empty boilerplate span → exit ${EXIT_FINDINGS} (got ${r.check?.code})`,
+  );
+  assert(
+    r.check?.findings.some(
+      (f) => f.kind === "empty-section" && f.message.includes("minimalist-engineering"),
+    ),
+    "...with the generic empty-section finding naming the boilerplate id",
+  );
+}
+
 rmSync(tmp, { recursive: true, force: true });
 
 console.log(exit === 0 ? "\nAll check exit-code checks passed." : "\nFAILED");

@@ -4,8 +4,8 @@
  *
  * Tests the full scaffold feature:
  *
- *   1. create --scaffold (no-file): managed sections + 7 boilerplate OUTSIDE
- *      markers + operator-choices section (when answers provided)
+ *   1. create --scaffold (no-file): managed sections + 7 marker-wrapped
+ *      boilerplate spans + operator-choices span (when answers provided)
  *   2. create --scaffold dryRun: plan.newBytes includes boilerplate, writeFile NOT called
  *   3. update --scaffold (has-markers): boilerplate inserted after environment
  *   4. Idempotency: second --scaffold → writeFile stub throws for managed
@@ -31,8 +31,7 @@ import {
 } from "../src/agents-md/agents-md.ts";
 import { EXIT_CLEAN, EXIT_FINDINGS } from "../src/agents-md/check.ts";
 import { parseLedger, renderLedger } from "../src/agents-md/ledger.ts";
-import { parseMarkers, presentIds } from "../src/agents-md/markers.ts";
-import { sectionContentWithEnd } from "../src/agents-md/markers.ts";
+import { parseMarkers, presentIds, sectionContentWithEnd } from "../src/agents-md/markers.ts";
 import { commandsBody, environmentBody, gatesBody } from "../src/agents-md/renderer.ts";
 import {
   type OperatorAnswers,
@@ -56,6 +55,7 @@ function assert(cond: boolean, msg: string) {
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-ens-agentsmd-scaffold-"));
 const AGENTS = path.join(tmp, "AGENTS.md");
 const FIXED_DATE = "2026-01-01";
+const BOILERPLATE_IDS = ["minimalist-engineering", "git-workflow", "documentation-policy", "issue-driven-development", "code-review-doctrine", "context7-protocol", "testing-standards"];
 
 // Build a minimal fixture so detectFacts finds facts → managed sections render.
 mkdirSync(path.join(tmp, ".github", "workflows"), { recursive: true });
@@ -108,47 +108,13 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
     res.plan?.scaffoldedIds.length === 7,
     `create --scaffold: 7 scaffolded ids (got ${res.plan?.scaffoldedIds.length})`,
   );
-  // Boilerplate is OUTSIDE markers.
-  assert(
-    content.includes("# Minimalist Engineering"),
-    "create --scaffold: minimalist-engineering section present",
-  );
-  assert(content.includes("# Git Workflow"), "create --scaffold: git-workflow section present");
-  assert(
-    content.includes("# Documentation Policy"),
-    "create --scaffold: documentation-policy section present",
-  );
-  assert(
-    content.includes("# Issue-Driven Development"),
-    "create --scaffold: issue-driven-development section present",
-  );
-  assert(
-    content.includes("# Code Review Doctrine"),
-    "create --scaffold: code-review-doctrine section present",
-  );
-  assert(content.includes("# Context7 Protocol"), "create --scaffold: context7-protocol present");
-  assert(content.includes("# Testing Standards"), "create --scaffold: testing-standards present");
-  // Unanswered coverage → the opinionated default in Testing Standards,
-  // stated exactly once (no operator-choices section exists here anyway).
-  assert(
-    content.includes("≥80%"),
-    "create --scaffold: unanswered coverage renders the ≥80% default",
-  );
-  assert(
-    (content.match(/≥80%/g) ?? []).length === 1,
-    "create --scaffold: the ≥80% default is stated exactly once",
-  );
-  // Managed sections are inside markers.
+  assert(content.includes("≥80%"), "create --scaffold: unanswered coverage renders the ≥80% default");
+  assert((content.match(/≥80%/g) ?? []).length === 1, "create --scaffold: the ≥80% default is stated exactly once");
   const ids = presentIds(content);
-  assert(
-    ids.includes("quality-gates") && ids.includes("commands") && ids.includes("environment"),
-    "create --scaffold: managed sections inside markers",
-  );
-  // Operator-choices NOT created (no answers).
-  assert(
-    !content.includes("## Operator choices"),
-    "create --scaffold: no operator-choices without answers",
-  );
+  assert(ids.includes("quality-gates") && ids.includes("commands") && ids.includes("environment"), "create --scaffold: managed fact sections inside markers");
+  for (const id of BOILERPLATE_IDS) assert(ids.includes(id), `create --scaffold: ${id} is a marker-wrapped span`);
+
+  assert(!content.includes("## Operator choices"), "create --scaffold: no operator-choices without answers");
 }
 
 // ===================================================== 2. create --scaffold with answers
@@ -169,6 +135,7 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
     content.includes("## Operator choices"),
     "scaffold with answers: operator-choices section present",
   );
+  assert(presentIds(content).includes("operator-choices"), "scaffold with answers: operator-choices is a marker-wrapped span");
   assert(content.includes("80%+"), "scaffold with answers: coverage threshold recorded");
   // Mutual exclusion: the threshold is stated in Testing Standards, and
   // operator-choices must NOT duplicate it (no coverage bullet there).
@@ -186,9 +153,6 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
     !opChoicesBody.includes("Coverage threshold"),
     "scaffold with answers: operator-choices omits the coverage bullet",
   );
-  // The threshold value is stated exactly once in the MANAGED + boilerplate
-  // text (the ledger is provenance: its operator:coverage row legitimately
-  // carries the value — that is not a second *statement* of the threshold).
   const ledgerBegin = content.indexOf("<!-- pi-rukas:agents-md:begin decision-ledger");
   const ledgerEnd =
     content.indexOf("<!-- pi-rukas:agents-md:end decision-ledger -->") +
@@ -249,6 +213,10 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
   const envEnd = content.indexOf("<!-- pi-rukas:agents-md:end environment -->");
   const minimalStart = content.indexOf("# Minimalist Engineering");
   assert(minimalStart > envEnd, "update --scaffold: boilerplate inserted after environment");
+  // ...and each boilerplate span is marker-wrapped (begin/end pair present),
+  // not bare heading text appended outside the markers.
+  for (const id of BOILERPLATE_IDS) assert(presentIds(content).includes(id), `update --scaffold: ${id} is a marker-wrapped span`);
+
 }
 
 // ===================================================== 5. Idempotency: second scaffold → no-op

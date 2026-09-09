@@ -115,8 +115,11 @@ let A: string;
     "create emits the detected commands",
   );
   // The create/no-file path scaffolds BY DEFAULT: a bare create (no opts)
-  // emits all 7 boilerplate sections outside the markers. (Post-#649 flip:
-  // previously opt-in; the update-path no-op invariants below are unchanged.)
+  // emits all 7 boilerplate sections as marker-wrapped managed spans (each
+  // with its own begin/end marker pair — NOT bare text outside the markers).
+  // The update splice loop spares these spans because its `updates` Map holds
+  // only the fact-section ids. (Post-#649 flip: previously opt-in; the
+  // update-path no-op invariants below are unchanged.)
   assert(
     res.plan?.scaffoldedIds !== undefined && res.plan?.scaffoldedIds.length === 7,
     `bare create: 7 scaffold sections by default (got ${res.plan?.scaffoldedIds?.length})`,

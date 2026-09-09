@@ -205,9 +205,10 @@ export function wrapBytes(
 
   // Wrap refusal: no machine sections, no derivable bodies, and no scaffold
   // sections to append. When scaffold is enabled (scaffoldBodies.length > 0),
-  // the refusal is lifted because boilerplate will be appended. This is the
-  // Shape C hybrid design: boilerplate sections live outside markers and the
-  // wrap refuses only when nothing at all can be produced.
+  // the refusal is lifted because marker-wrapped boilerplate spans will be
+  // appended (they are marker-wrapped managed spans, not outside-marker
+  // text — see scaffold.ts for the design note). The wrap refuses only when
+  // nothing at all can be produced.
   const scaffoldCount = scaffoldBodies?.length ?? 0;
   if (machineByLine.size === 0 && appended.length === 0 && scaffoldCount === 0) {
     throw new WrapError(

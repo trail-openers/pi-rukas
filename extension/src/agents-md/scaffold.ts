@@ -4,9 +4,11 @@
  * A greenfield `create` (scaffold is ON by default on the create/no-file
  * path) appends 7 boilerplate sections (minimalist-engineering, git-workflow,
  * documentation-policy, issue-driven-development, code-review-doctrine,
- * context7-protocol, testing-standards) OUTSIDE the managed markers. The
- * sections are universal text — language specifics live in the managed fact
- * sections (quality-gates, commands, environment).
+ * context7-protocol, testing-standards) as MARKER-WRAPPED managed spans
+ * (via `appendSection`/`insertSectionAfter`, both of which emit a
+ * `<!-- pi-rukas:agents-md:begin <id> v1 -->` / `end` pair around the body).
+ * The sections are universal text — language specifics live in the managed
+ * fact sections (quality-gates, commands, environment).
  *
  * Six of the seven bodies are static array literals; `testing-standards`
  * alone is answer-aware: `computeScaffold` renders it from
@@ -18,8 +20,13 @@
  * (inserts after the environment section; falls back to append-at-end when
  * environment is absent).
  *
- * Design: Shape C (hybrid) — fact sections stay managed as today; boilerplate
- * sections are emitted OUTSIDE markers (doctrine, operator-owned).
+ * Design: Shape C (hybrid) — fact sections and boilerplate sections are both
+ * marker-wrapped. Stickiness is NOT "outside markers": the update splice loop
+ * (update-agent.ts) only rewrites spans whose id is in its `updates` Map, and
+ * that map holds only the fact-section ids (quality-gates, commands,
+ * environment, code-style). Boilerplate and operator-choices ids are never in
+ * the map, so a routine update spares their bytes even though they sit
+ * inside marker pairs.
  */
 
 import type { DetectedFacts } from "./detect.ts";
