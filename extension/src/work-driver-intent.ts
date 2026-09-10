@@ -26,6 +26,7 @@
  * are never required — that is the whole point.
  */
 
+import path from "node:path";
 import { readMarker } from "./reply-markers.ts";
 import { trace } from "./trace.ts";
 import {
@@ -215,6 +216,173 @@ export function parseNormalisedSpec(text: string): NormalisedSpec | undefined {
       : {}),
     rationale,
   };
+}
+
+/**
+ * #682 — recover a spec that the resolver offloaded to a scratch-dir file.
+ *
+ * A live cycle for issue #674 produced a complete, well-formed explore reply
+ * (bold/fenced INTENT-VERDICT: proceed-with-assumptions, full spec with 6
+ * deliverables, 6 acceptance criteria, 14 confirmed evidence rows) but the
+ * resolver offloaded the spec to a scratch file and kept only a summary
+ * inline. `parseNormalisedSpec` returns undefined for that shape (no `## Spec`
+ * heading), so the driver parked with a false `explore-needs-clarification`.
+ *
+ * This function is the recovery channel. It is gated on THREE conditions:
+ *   1. The reply has a parseable INTENT-VERDICT (via readMarker).
+ *   2. The reply has NO `## Spec` heading inline (parseNormalisedSpec would
+ *      have returned undefined).
+ *   3. The reply cites at least one file path that resolves under the cycle's
+ *      scratch dir (`scratchDirAbs`).
+ *
+ * When all three hold, it iterates cited candidates in order and returns the
+ * first file whose content parses via `parseNormalisedSpec`. An unreadable,
+ * missing, or unparseable file is skipped; a path that does NOT resolve under
+ * `scratchDirAbs` is skipped without being read. If no candidate yields a
+ * spec, the function returns undefined — the caller falls through to the
+ * legacy no-signal park unchanged.
+ *
+ * The file-reading seam is injected so tests can run hermetically (no real
+ * disk I/O) and the driver can use `fs.readFile`.
+ */
+export function recoverOffloadedSpec(
+  replyText: string,
+  scratchDirAbs: string,
+  repoRoot: string,
+  readFile: (absPath: string) => string | undefined,
+): NormalisedSpec | undefined {
+  // Gate 1: the reply must have a parseable INTENT-VERDICT.
+  // Without a verdict the fallback must not fire — the legacy router owns
+  // the no-verdict case and the no-signal cap-hit is the correct outcome.
+  const verdict = readMarker(replyText, "INTENT-VERDICT", /(proceed-with-assumptions|proceed|park)/);
+  if (!verdict) return undefined;
+
+  // Gate 2: the reply must NOT have an inline `## Spec` heading.
+  // If it does, parseNormalisedSpec would have succeeded already and the
+  // offload fallback must not fire (inline spec wins).
+  if (sliceMarkdownSection(replyText, "Spec") !== undefined) return undefined;
+
+  // Gate 3: extract cited file paths from the reply text.
+  // Resolvers cite paths in backtick-wrapped, bare, or prose forms.
+  // We look for path-like tokens that could be scratch files.
+  const candidates = extractCitedPaths(replyText, scratchDirAbs, repoRoot);
+  if (candidates.length === 0) return undefined;
+
+  // Iterate candidates in order; return the first that parses.
+  for (const absPath of candidates) {
+    let content: string | undefined;
+    try {
+      content = readFile(absPath);
+    } catch {
+      content = undefined;
+    }
+    if (content === undefined) continue;
+    const spec = parseNormalisedSpec(content);
+    if (spec !== undefined) return spec;
+  }
+  return undefined;
+}
+
+/**
+ * Extract file-path citations from a reply that resolve under `scratchDirAbs`.
+ *
+ * Resolvers cite offloaded specs in several shapes:
+ *   - backtick-wrapped: `tmp/issue-674/explore-report.md` or `/abs/path/report.md`
+ *   - bare: saved to scratch: tmp/issue-674/explore-report.md
+ *   - multiple: `.pi/work-state/674/report.md` AND `tmp/issue-674/report.md`
+ *
+ * The containment check is the security boundary: only paths that resolve
+ * under `scratchDirAbs` are returned. A `../` escape, a sibling cycle's tmp
+ * dir, or an absolute path elsewhere is excluded. The resolver is an LLM
+ * that controls the cited path, so this check is mandatory, not defensive.
+ *
+ * Returns absolute paths in citation order.
+ */
+function extractCitedPaths(replyText: string, scratchDirAbs: string, repoRoot: string): string[] {
+  const scratch = path.resolve(scratchDirAbs);
+  const root = path.resolve(repoRoot);
+  const results: string[] = [];
+  const seen = new Set<string>();
+
+  // Pattern 1: backtick-wrapped paths (most common in resolver replies).
+  // Matches: `tmp/issue-674/explore-report.md`, `/abs/path/report.md`,
+  // `./tmp/issue-674/report.md`
+  const backtickRe = /`([^`\s]+\.(?:md|txt|json|ts|py|rs|js|yml|yaml|toml))`/g;
+  for (const match of replyText.matchAll(backtickRe)) {
+    const candidate = match[1];
+    if (!candidate) continue;
+    const abs = resolveUnderScratch(candidate, scratch, root);
+    if (abs && !seen.has(abs)) {
+      seen.add(abs);
+      results.push(abs);
+    }
+  }
+
+  // Pattern 2: bare path tokens in prose ("saved to scratch: tmp/issue-674/report.md").
+  // Only matches tokens that look like a path ending in a known extension
+  // and contain at least one `/` (to exclude bare filenames like "report.md"
+  // that aren't citations). Must not be inside backticks (already captured above).
+  const proseRe = /(?<!`)([\w.\-\/]+\.(?:md|txt|json|ts|py|rs|js|yml|yaml|toml))(?!`)/g;
+  for (const match of replyText.matchAll(proseRe)) {
+    const candidate = match[1];
+    if (!candidate) continue;
+    // Require at least one path separator to exclude bare filenames.
+    if (!candidate.includes("/")) continue;
+    const abs = resolveUnderScratch(candidate, scratch, root);
+    if (abs && !seen.has(abs)) {
+      seen.add(abs);
+      results.push(abs);
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Resolve a cited path to an absolute path IF it resolves under `scratchDir`.
+ * Returns undefined if the path escapes the scratch dir.
+ *
+ * Resolution strategy (in order):
+ *   1. If the candidate is absolute, use it as-is (if under scratchDir).
+ *   2. If the candidate is relative, resolve it against BOTH the repo root
+ *      and the scratch dir, and return whichever lands under scratchDir.
+ *      This handles both "tmp/issue-674/report.md" (repo-relative) and
+ *      "report.md" (scratch-relative) citation styles.
+ *   3. A `../` escape or a path that resolves outside scratchDir is rejected.
+ */
+function resolveUnderScratch(
+  candidate: string,
+  scratchDir: string,
+  repoRoot: string,
+): string | undefined {
+  let abs: string;
+  if (path.isAbsolute(candidate)) {
+    abs = path.resolve(candidate);
+  } else {
+    // Try resolving against repo root first (the more common citation style:
+    // "tmp/issue-674/report.md" is repo-relative, not scratch-relative).
+    const fromRoot = path.resolve(repoRoot, candidate);
+    const fromScratch = path.resolve(scratchDir, candidate);
+    const rootIsUnder =
+      fromRoot === scratchDir || fromRoot.startsWith(scratchDir + path.sep);
+    const scratchIsUnder =
+      fromScratch === scratchDir || fromScratch.startsWith(scratchDir + path.sep);
+    if (rootIsUnder && !scratchIsUnder) {
+      abs = fromRoot;
+    } else if (scratchIsUnder && !rootIsUnder) {
+      abs = fromScratch;
+    } else if (rootIsUnder && scratchIsUnder) {
+      // Both resolve under scratch — prefer the repo-root resolution since
+      // that is the more common citation style.
+      abs = fromRoot;
+    } else {
+      return undefined;
+    }
+  }
+  // Final containment check: must be under scratchDir (not above, not sibling).
+  const rel = path.relative(scratchDir, abs);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) return undefined;
+  return abs;
 }
 
 /**
