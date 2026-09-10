@@ -25,7 +25,9 @@ import {
   readSpecArtifact,
   resolveIntentVerdict,
 } from "./work-driver-intent-artifact.ts";
+import { recoverOffloadedSpec } from "./work-driver-intent-offload.ts";
 import {
+  type NormalisedSpec,
   intentResolutionEnabled,
   parseNormalisedSpec,
   reconcileVerdict,
@@ -351,15 +353,11 @@ export async function runExplore(
 
   const responseText = exploreDispatch.text ?? "";
 
-  // #378 + #594 — intent resolution. Route on the resolved spec; when the
-  // prose does not parse (or only to the parser's default park), the
-  // persisted spec artifact wins. An explicit prose park always wins.
-  // See work-driver-intent-artifact.ts for the full precedence rule.
   if (useIntent) {
-    const parsed = parseNormalisedSpec(responseText);
-    // Always read the artifact and let `resolveIntentVerdict` apply the
-    // precedence rule — the "explicit prose park wins" invariant lives in
-    // one place (work-driver-intent-artifact.ts), not in an inline guard.
+    const parsed = await recoverOffloadedSpec(responseText, scratchDir(ctx.repoRoot, ctx.issue));
+    if (parsed !== undefined) {
+      trace("work-driver: intent — spec resolved (offload fallback or inline parse)");
+    }
     const artifact = await readSpecArtifact(ctx.repoRoot, ctx.issue);
     const { spec, source } = resolveIntentVerdict(parsed, artifact);
     // Reconcile the chosen spec: a `proceed` with contradictions is
@@ -388,8 +386,9 @@ export async function runExplore(
       }
       return next;
     }
-    // spec === undefined: no parse AND no valid artifact. Fall through to
-    // the legacy router below (fires the no-signal cap-hit on the intent path).
+    // spec === undefined: no inline parse, no offloaded file, no valid
+    // artifact. Fall through to the legacy router below (fires the
+    // no-signal cap-hit on the intent path).
     trace("work-driver: no `## Spec` block and no valid artifact — legacy verdict router");
   }
 

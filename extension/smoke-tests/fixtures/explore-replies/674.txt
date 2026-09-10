@@ -1,0 +1,48 @@
+Exploration/reconnaissance complete for issue #674.
+
+**INTENT-VERDICT: proceed-with-assumptions**
+
+Full structured report saved to scratch: `.pi/work-state/674/explore-report.md` (also copied to `tmp/issue-674/explore-report.md`).
+
+## Summary for the driver
+
+**Verdict markers:**
+```
+INTENT-VERDICT: proceed-with-assumptions
+PARK-REASON:
+```
+
+**Intent:** Fix the /work driver's handoff/park path three ways: (a) consolidate workstream worktree commits onto the feature branch before printing recovery instructions (or print accurate per-worktree paths+SHAs+cherry-pick commands when consolidation is infeasible — never the provably-empty `git -C <repoRoot>` block), (b) stop accumulating worktrees across terminal cycles, (c) retry the in-process forge handoff post (comment+label) with backoff before the "HANDOFF DISPATCH INCOMPLETE" banner.
+
+**Deliverables (6):**
+- d1: Pre-handoff worktree consolidation in runHandoff's pre-render window (reuse withIntegrationLock + orchestrateCherryPick; degrade to fallback on conflict)
+- d2: Worktree-aware recovery branch in `recoveryStepsForCap()` (shared by BOTH renderers; predicate must be worktrees-map-non-empty, not just `!branchName` — the real incident shape has branchName set but branch absent)
+- d3: captureWorktreeSnapshot records committed work (per-worktree HEAD SHA + commits-ahead-of-base; today porcelain-only so committed work reads 0/0/0)
+- d4: Terminal-exit worktree cleanup (remove state-file-keyed worktrees after consolidation or accurate reporting; prevent DirtyWorktreeError on same-issue re-run)
+- d5: Forge-post retry with bounded backoff (follow dispatch-retry.ts shape; idempotent with priorHandoffCommentUrl dedupe)
+- d6: Tests (synthetic-repo rendering canary, develop→verify-fails→handoff e2e, flaky-forge retry test, terminal-exit cleanup test)
+
+**Assumptions (5, each resolving a gap-gate finding):**
+1. Handoff consolidation SKIPS verifyCmd (work already failed verify; re-running blocks the preferred path)
+2. No no-push variant of integrate(); handoff calls orchestrateCherryPick directly so it does NOT push
+3. Cleanup removes ONLY worktrees keyed in pipelineState.worktrees (never orphans, never sibling cycles)
+4. Forge-post retry NOT crash-safe (existing priorHandoffCommentUrl dedupe covers it)
+5. Small fixed backoff (2 attempts) rather than provider-stated-delay classifier (forge is a local CLI)
+
+**Workstreams:** ONE ticket (items share work-driver-handoff.ts, so not cleanly separable per the issue's own scoping rule). Recommended decomposition: sequential — task-b (forge retry, small) → task-a (worktree consolidation + recovery + cleanup, large). task-a owns the pre-render window + recovery modules + sweep/finalize + schema; task-b owns only the forge-fallback block (or a small extracted module if parallel is preferred).
+
+**Key evidence (all confirmed against code):**
+- All 5 incident state files (.pi/work-state/{645,649,659,660,664}.json) match the described shape exactly: status=handoff, cap=verify-failed:develop, branchName set, 3 detached worktrees, handoffSnapshot all-zeros + retainedWorktrees
+- recoveryStepsForCap() returns EMPTY for verify-failed:develop → renderers fall into the generic `else` block (the defect)
+- captureWorktreeSnapshot is porcelain-only (committed work invisible)
+- runHandoff's pre-render window (captureWorktreeSnapshot + runWorktreeTeardown before renderHandoffMarkdown) is the confirmed insertion point
+- verify-failed:develop is the most common cap locally (27 of ~88) — this is the dominant handoff shape, not an edge case
+- No open duplicate (vipune be7c9afc)
+
+**Critical constraints for the plan:**
+- work-driver-handoff.ts is 474 lines (near the 500-line cap) — consolidation must be a small call into an existing/new module, not inline git plumbing
+- work-driver-integrate.ts is 492 lines (at the cap) — any addition there must be a new module
+- The shared-decision invariant (#398): the new recovery branch MUST land in work-driver-handoff-recovery.ts, not the renderers, or the two surfaces drift
+- Cleanup must honor vipune f4d5d41c hazards: never force-remove without consolidation/report, never sibling live cycles, gone is never authority for deletion
+
+Stored in project memory (vipune f7d376fe).
