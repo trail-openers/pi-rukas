@@ -103,6 +103,7 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
   // So the bound is back, and what is checked here is the thing that makes it
   // safe: the fallback the bound hands off to must still exist. Post-#612
   // the fallback routes through the forge adapter (issueComment + labelCreate
+<<<<<<< HEAD
   // + labelAdd) rather than raw `gh` exec.
   // #674 — the forge post was moved to work-driver-handoff-post.ts (file-size
   // hygiene). The canary reads the post module, not the handoff handler.
@@ -112,6 +113,20 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
       /forge\.labelCreate/.test(post) &&
       /forge\.labelAdd/.test(post),
     "the handoff still posts the comment and applies the label in-process when the dispatch does not (via the forge adapter)",
+=======
+  // + labelAdd) rather than raw `gh` exec. Post-#674 (item 3) the individual
+  // forge calls moved into work-driver-handoff-post-retry.ts (retry-with-backoff
+  // around the same three calls), so the seam this canary pins is that the
+  // handoff still drives the post via that module.
+  const handoff = readFileSync(path.join(SRC, "work-driver-handoff.ts"), "utf8");
+  const retry = readFileSync(path.join(SRC, "work-driver-handoff-post-retry.ts"), "utf8");
+  assert(
+    /postHandoffWithRetry/.test(handoff) &&
+      /forge\.issueComment/.test(retry) &&
+      /forge\.labelCreate/.test(retry) &&
+      /forge\.labelAdd/.test(retry),
+    "the handoff still posts the comment and applies the label in-process when the dispatch does not (via the forge adapter, with retry)",
+>>>>>>> 0163be6 (fix(work): retry handoff's GitHub post with backoff before the INCOMPLETE banner)
   );
 
   // And the inactivity watchdog is deliberately UNCHANGED. It fires on 25

@@ -14,11 +14,8 @@ import {
   workNotYetOnBranch,
 } from "./work-driver-handoff-consolidate.ts";
 import { renderHandoffMarkdown } from "./work-driver-handoff-markdown.ts";
-import {
-  captureCommittedWork,
-  makeHandoffEmittedEvent,
-  postHandoffToForge,
-} from "./work-driver-handoff-post.ts";
+import { captureCommittedWork, makeHandoffEmittedEvent } from "./work-driver-handoff-post.ts";
+import { postHandoffWithRetry } from "./work-driver-handoff-post-retry.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
 import { inlineHandoffOpsPrompt } from "./work-driver-prompts-late.ts";
@@ -232,37 +229,44 @@ export async function runHandoff(
   // about whether an agent's prose meant success. Narration cannot establish
   // that a side effect happened; performing it can.
   let labelApplied = false;
-  // PR5 in-process fallback. When the ops dispatch failed OR the
-  // commentUrl didn't parse out, the driver itself shells out `gh` —
-  // the body file is already on disk and no LLM is needed for two
-  // mechanical CLI invocations. Best-effort; if gh is missing / unauth'd
-  // / network down, the in-chat HANDOFF DISPATCH INCOMPLETE banner
-  // surfaces the failure with the verbatim recovery command.
+  // PR5 in-process fallback (item 3, #674 — with retry). When the ops
+  // dispatch failed OR the commentUrl didn't parse out, the driver itself
+  // posts via the forge adapter — the body file is already on disk and no
+  // LLM is needed for two mechanical CLI invocations. A transient API
+  // hiccup (rate limit, 5xx, network blip) no longer immediately becomes a
+  // manual-recovery task: postHandoffWithRetry waits out a jittered linear
+  // backoff and re-issues the failed call (up to 3 attempts total), and
+  // only after retries are exhausted does the in-chat HANDOFF DISPATCH
+  // INCOMPLETE banner surface the verbatim manual gh commands.
   if (!commentUrl || !labelApplied) {
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
-    if (!forge) {
-      // No forge resolved — the fallback cannot run. The handoff is still
-      // recorded (handoff-emitted), but the comment/label are NOT posted.
-      // The operator sees the HANDOFF DISPATCH INCOMPLETE banner.
-      trace("work-driver: no forge resolved — in-process fallback skipped");
-    } else {
-      // #674 item 3 — retry the post with backoff before the HANDOFF
-      // DISPATCH INCOMPLETE banner. A transient API hiccup (measured: two
-      // sessions' handoffs hit "[FAILED] NOT posted" on the first attempt
-      // and succeeded moments later) should not become a manual-recovery
-      // task when a short retry would likely succeed. Each attempt is
-      // idempotent: the label is created (ignore "already exists") and
-      // added (gh --add-label is idempotent server-side), and a crashed
-      // re-entry is deduped by priorHandoffCommentUrl before this point.
-      const posted = await postHandoffToForge({
-        forge,
-        issue: ctx.issue,
-        prNumber,
-        handoffBodyPath,
-        knownCommentUrl: commentUrl,
-      });
-      commentUrl = commentUrl ?? posted.commentUrl;
-      labelApplied = labelApplied || posted.labelApplied;
+    try {
+      if (!forge) {
+        // No forge resolved — the fallback cannot run. The handoff is still
+        // recorded (handoff-emitted), but the comment/label are NOT posted.
+        // The operator sees the HANDOFF DISPATCH INCOMPLETE banner.
+        trace("work-driver: no forge resolved — in-process fallback skipped");
+      } else {
+        const targetId = String(prNumber ?? ctx.issue);
+        const objType = prNumber ? "pr" : "issue";
+        const body = !commentUrl ? await fs.readFile(handoffBodyPath, "utf8").catch(() => "") : "";
+        const posted = await postHandoffWithRetry(forge, {
+          issue: ctx.issue,
+          body,
+          targetId: Number(targetId),
+          objType,
+          needsComment: !commentUrl && objType === "issue",
+          needsLabel: !labelApplied,
+        });
+        // The forge adapter models `issueComment` only (S2 surface). PRs
+        // get their handoff comment via the ops dispatch's raw `gh` prompt.
+        if (posted.commentUrl) commentUrl = posted.commentUrl;
+        if (posted.labelApplied) labelApplied = true;
+      }
+    } catch (err) {
+      trace(
+        `work-driver: in-process forge fallback failed: ${(err as Error).message?.slice(0, 200)}`,
+      );
     }
   }
   // #674 — carry the consolidation outcome into the handoff-emitted event so
