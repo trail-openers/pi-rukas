@@ -122,7 +122,9 @@ setPlanDispatch(((_pi: unknown, spec: { role: string; prompt: string }) => {
 
 const DESCRIPTOR = "add a start_plan_driver body budget in extension/src/plan-validate.ts";
 // Operator context sized so stage 0 (~48k of clipped items) overflows the
-// budget but stage 1 (~13k) fits — the compaction case.
+// budget but stage 1 (~13k) fits — the compaction case. (Sub-issue lines
+// render as text-budget + ~55 chars of checkbox/attribution structure,
+// which the 4k BODY_BUDGET headroom absorbs.)
 const MID_CONTEXT = Array.from({ length: 40 }, (_, i) => `fact ${i}: ${"c".repeat(600)}`).join("\n");
 
 {

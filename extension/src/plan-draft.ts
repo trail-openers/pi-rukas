@@ -408,13 +408,13 @@ export function draftSpec(
   const depthLimit = depth >= EPIC_SUB_ISSUE_DEPTH_LIMIT ? `\n${DEPTH_LIMIT_NOTE}\n` : "";
 
   // Sub-issue COUNT is never budget-capped (a pinned "EXACTLY N" must
-  // survive compaction); only the per-item text clips.
+  // survive compaction); only the per-item TEXT clips — epicSubIssues
+  // clips before decorating so the checkbox prefix and the
+  // "(sub-issue N, from angle)" attribution survive every budget stage.
   const subIssues =
     type === "epic" && depth < EPIC_SUB_ISSUE_DEPTH_LIMIT
       ? `\n## Sub-issues\n\n${
-          epicSubIssues(findings)
-            .map((s) => clip(s))
-            .join("\n") || `- ${SUB_ISSUES_FALLBACK}`
+          epicSubIssues(findings, clip).join("\n") || `- ${SUB_ISSUES_FALLBACK}`
         }\n`
       : "";
 

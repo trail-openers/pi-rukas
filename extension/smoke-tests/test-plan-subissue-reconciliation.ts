@@ -324,5 +324,56 @@ function epicBody(findings: Parameters<typeof draftSpec>[2]) {
   setPlanDispatch(null);
 }
 
+// -------- clip contract: text clips, structure survives (vipune round 9)
+
+{
+  // #658 regression: the render budget's clip used to apply to the DECORATED
+  // line, cutting mid-sentence and destroying the "(sub-issue N, from
+  // angle)" attribution this suite parses as a contract. The clip now
+  // applies to the sub-issue TEXT only, at every budget stage.
+  const { epicSubIssues } = await import("../src/plan-angles.ts");
+  const { clipItem, RENDER_BUDGETS } = await import("../src/plan-validate.ts");
+  const longText = `Telemetry pipeline rework — scope: ${"introduce a bounded queue and backpressure so slow sinks cannot stall capture, ".repeat(8)}Deps: none (telemetry is self-contained)`;
+  const findings = [
+    {
+      name: "decomposition-surface",
+      ok: true,
+      text: "",
+      toolUses: [{ kind: "sub-issue", text: longText, angle: "decomposition-surface" }],
+    },
+  ];
+  for (const budget of RENDER_BUDGETS) {
+    const [line] = epicSubIssues(findings, (t) => clipItem(t, budget.itemClipChars));
+    assert(
+      (line ?? "").startsWith("- [ ] #N — ") &&
+        (line ?? "").includes("…") &&
+        (line ?? "").endsWith("(sub-issue 1, from decomposition-surface)"),
+      `clip contract: prefix + clip marker + attribution all survive at itemClipChars=${budget.itemClipChars}`,
+    );
+    assert(
+      (line ?? "").length <= budget.itemClipChars + 60,
+      `clip contract: the decorated line is text-budget + fixed structure overhead (${(line ?? "").length})`,
+    );
+  }
+  // Dedup still keys on FULL text: two long items identical only within the
+  // clip window stay TWO sub-issues.
+  const twin = [
+    {
+      name: "decomposition-surface",
+      ok: true,
+      text: "",
+      toolUses: [
+        { kind: "sub-issue", text: `${"same head ".repeat(50)}tail A`, angle: "decomposition-surface" },
+        { kind: "sub-issue", text: `${"same head ".repeat(50)}tail B`, angle: "decomposition-surface" },
+      ],
+    },
+  ];
+  const twinLines = epicSubIssues(twin, (t) => clipItem(t, 220));
+  assert(
+    twinLines.length === 2,
+    "clip contract: dedup keys on full text — clip-window-identical items are not merged",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

@@ -198,8 +198,19 @@ function normaliseSubIssueText(t: string): string {
  * internal whitespace, lowercase — no fuzzy/semantic matching). On a
  * collision, the chartered angle's copy wins; emission order is preserved
  * and the running index renumbers 1..k over the deduped list.
+ *
+ * `clipText` (the render budget's item clip) applies to the sub-issue TEXT
+ * only, BEFORE decorating — the checkbox prefix and the `(sub-issue N,
+ * from angle)` attribution must survive any budget (vipune round 9: #658
+ * clipped the decorated line, cutting mid-sentence and destroying the
+ * attribution that test-plan-subissue-reconciliation.ts parses as a
+ * contract). Dedup keys on the FULL text so clipping never merges
+ * distinct sub-issues.
  */
-export function epicSubIssues(findings: AngleFindings[]): string[] {
+export function epicSubIssues(
+  findings: AngleFindings[],
+  clipText?: (s: string) => string,
+): string[] {
   const subs = findings.flatMap((f) => f.toolUses).filter((i) => i.kind === "sub-issue");
   if (subs.length === 0) return [];
   const byKey = new Map<string, (typeof subs)[number]>();
@@ -218,6 +229,7 @@ export function epicSubIssues(findings: AngleFindings[]): string[] {
     }
   }
   return [...byKey.values()].map(
-    (s, i) => `- [ ] #N — ${s.text} (sub-issue ${i + 1}, from ${s.angle})`,
+    (s, i) =>
+      `- [ ] #N — ${clipText ? clipText(s.text) : s.text} (sub-issue ${i + 1}, from ${s.angle})`,
   );
 }
