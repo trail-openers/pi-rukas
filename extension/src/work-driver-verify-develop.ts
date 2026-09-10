@@ -16,6 +16,7 @@ import {
   protectedPathsEnabled,
   protectedPathsIn,
 } from "./work-driver-doctrine.ts";
+import { couplesTo, isTestPath } from "./work-driver-plan-paths.ts";
 import {
   TEST_BLOCK_MARKERS,
   countMarkersInDiffLine,
@@ -165,7 +166,17 @@ export async function verifyDevelopOutcome(
   // doesn't suppress the hollow-diff check for all others.
   // #285 — per-worktree changed-paths map for scope/fanout gate.
   let assessedCount = 0;
-  const changedPathsByWorkstream = new Map<string, Set<string>>();
+  // #672 (sub-defect 1) — per-worktree changed-path attribution. Each id's
+  // Set is initialized BEFORE the accumulation loop so `.add()` writes into
+  // a live Set (the pre-fix code called `.get(id)?.add()` before any
+  // `.set()`, a silent no-op), and it is never overwritten with the
+  // cross-worktree cumulative `touchedPaths` union (the pre-fix post-loop
+  // `.set(id, new Set(touchedPaths))` made every id's Set an identical copy
+  // of the union of ALL worktrees' paths). `touchedPaths` stays cumulative
+  // — the #406 protected-path gate and the diagnostics rely on it.
+  const changedPathsByWorkstream = new Map<string, Set<string>>(
+    Object.keys(worktrees).map((id) => [id, new Set<string>()]),
+  );
   // #453 — count worktrees with uncommitted-only changes (no commits ahead
   // of baseSha). When this is > 0 and changedWorktrees is empty, the
   // per-worktree failures already explain the issue — skip the generic
@@ -184,8 +195,8 @@ export async function verifyDevelopOutcome(
       if (stdout.trim().length > 0) hasUncommitted = true;
       const statusPaths = porcelainPaths(stdout);
       touchedPaths.push(...statusPaths);
-      for (const file of statusPaths)
-        changedPathsByWorkstream.get(id)?.add(normaliseScopePath(file));
+      const ownSet = changedPathsByWorkstream.get(id);
+      if (ownSet) for (const file of statusPaths) ownSet.add(normaliseScopePath(file));
     } catch (err) {
       notes.push(`git status failed in ${id} (${(err as Error).message?.slice(0, 100)})`);
     }
@@ -209,8 +220,8 @@ export async function verifyDevelopOutcome(
         });
         const diffPaths = stdout.split("\n").filter((l) => l.trim().length > 0);
         touchedPaths.push(...diffPaths);
-        for (const file of diffPaths)
-          changedPathsByWorkstream.get(id)?.add(normaliseScopePath(file));
+        const ownSet = changedPathsByWorkstream.get(id);
+        if (ownSet) for (const file of diffPaths) ownSet.add(normaliseScopePath(file));
       } catch {
         // Same as above — an absent baseSha in this worktree is not evidence.
       }
@@ -224,7 +235,6 @@ export async function verifyDevelopOutcome(
     // fall back to the previous behaviour: uncommitted work also counts.
     const changed = isValidSha(baseSha) ? hasCommits : hasCommits || hasUncommitted;
     if (changed) changedWorktrees.push(cwd);
-    changedPathsByWorkstream.set(id, new Set([...touchedPaths.map(normaliseScopePath)]));
     // Per-worktree diagnostic: uncommitted work exists but hasn't been committed.
     if (isValidSha(baseSha) && hasUncommitted && !hasCommits) {
       uncommittedOnlyCount++;
@@ -269,8 +279,27 @@ export async function verifyDevelopOutcome(
   if (!scopeGateEnabled()) {
     notes.push("PI_ENSEMBLE_SCOPE_GATE=0 — develop scope/fanout gate disabled");
   } else {
+    // #672 (sub-defect 2) — the FENCE's permitted set is the union of ALL
+    // workstreams' declared paths in this plan, not just the current
+    // workstream's slice: a file legitimately owned by sibling B must not
+    // fail workstream A's undeclared-path check when A's worktree picked it
+    // up. Two things deliberately do NOT widen:
+    //   - the workstream's OWN `outOfScope` fence (an explicit do-not-touch
+    //     entry is a conflict the gate must catch even when a sibling
+    //     declares the same file), and
+    //   - the fanout DENOMINATOR (stays the workstream's own declared count
+    //     — widening it would raise how many files a single workstream may
+    //     touch, which the ticket forbids).
+    const workstreams = state.pipelineState.workstreams ?? {};
+    const planDeclaredPaths = new Set<string>();
+    for (const ws of Object.values(workstreams)) {
+      for (const p of ws?.paths ?? []) {
+        const n = normaliseScopePath(p);
+        if (n.length > 0) planDeclaredPaths.add(n);
+      }
+    }
     for (const [id, changedPaths] of changedPathsByWorkstream) {
-      const workstream = state.pipelineState.workstreams?.[id];
+      const workstream = workstreams[id];
       const declaredPaths = (workstream?.paths ?? [])
         .map(normaliseScopePath)
         .filter((p) => p.length > 0);
@@ -289,10 +318,23 @@ export async function verifyDevelopOutcome(
         continue;
       }
       const limit = Math.max(declaredPaths.length * scopeFanoutFactor(), scopeFanoutMinimum());
+      // #672 (sub-defect 3) — the test-file exception: a changed path that
+      // matches the existing `isTestPath` convention is fence-permitted when
+      // its INFERRED SUBJECT (via `couplesTo`) is in the plan-wide declared
+      // set. Inference-gated, not a blanket test-path exemption: an
+      // unrelated `test-bar.ts` whose stem names nothing declared still fails.
+      // The exception counts the file as declared for the fanout check —
+      // a test legitimately asked for alongside a declared subject must not
+      // inflate the changed-file count.
+      const isDeclaredOrExempt = (file: string): boolean =>
+        declaredPaths.some((declared) => matchesScopePath(file, declared)) ||
+        [...planDeclaredPaths].some((declared) => matchesScopePath(file, declared)) ||
+        (isTestPath(file) &&
+          [...planDeclaredPaths].some(
+            (declared) => !isTestPath(declared) && couplesTo(file, declared),
+          ));
+      const undeclaredFiles = changedFiles.filter((file) => !isDeclaredOrExempt(file));
       if (changedFiles.length > limit) {
-        const undeclaredFiles = changedFiles.filter(
-          (file) => !declaredPaths.some((declared) => matchesScopePath(file, declared)),
-        );
         const listedFiles = (undeclaredFiles.length > 0 ? undeclaredFiles : changedFiles).join(
           ", ",
         );

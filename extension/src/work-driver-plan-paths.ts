@@ -85,8 +85,16 @@ export function findPathCollisions(
   return collisions;
 }
 
-/** True when the basename looks like a test file, by naming convention only. */
-function isTestPath(path: string): boolean {
+/**
+ * True when the basename looks like a test file, by naming convention only.
+ *
+ * Exported for the develop-step scope gate (#672): the fence's test-file
+ * exception reuses this exact convention rather than inventing a parallel
+ * one. Deliberately JS/TS-named (`test-` prefix, `.test.`/`.spec.`
+ * extension) — the Rust `foo_tests.rs` convention is intentionally NOT
+ * covered; the exception stays as narrow as this heuristic is.
+ */
+export function isTestPath(path: string): boolean {
   const base = path.split("/").pop() ?? path;
   return /^(test[-_.]|[-_.]test[-_.])/i.test(base) || /\.(test|spec)\.[cm]?[jt]sx?$/.test(base);
 }
@@ -126,7 +134,7 @@ function isTestPath(path: string): boolean {
  * single subject, the inference finds no coupling and does not flag it, which
  * is the correct behaviour — the check must not collapse every plan into N=1.
  */
-function couplesTo(testPath: string, subjectPath: string): boolean {
+export function couplesTo(testPath: string, subjectPath: string): boolean {
   const testBase = testPath.split("/").pop() ?? testPath;
   const testStem = testBase.replace(/^test[-_.]/i, "").replace(/\.[^.]+$/, "");
   const stemTokens = new Set(
