@@ -1,33 +1,33 @@
 #!/usr/bin/env bun
 /**
- * Dual-prefix scaffold round-trip (rename #630, epic #626).
+ * Migration strip (ticket M2, companion to M1/#680).
  *
- * Emission uses the new pi-rukas:agents-md markers; legacy user repos that
- * went through the pi-ensemble era carry pi-ensemble:agents-md pairs. The
- * scaffold primitives (parse, splice, render) must handle BOTH prefixes
- * without corrupting recognised pairs — a mixed file parses every
- * recognised pair and never silently drops one, and splicing a legacy pair
- * preserves its original prefix (an operator's file is never re-encoded
- * behind their back).
+ * The marker-era dual-prefix test asserted that legacy `pi-ensemble:` marker
+ * pairs and current `pi-rukas:` pairs both parse and splice, preserving
+ * prefixes byte-for-byte. Under M2 the markers are deleted: the one-pass
+ * migration strip (`stripLegacyMarkers`) removes EXACTLY the recognised
+ * begin/end marker lines (both pi-rukas and pi-ensemble prefixes, any version
+ * shape) and the `:managed` preamble comment, preserving every other byte
+ * verbatim — and a second application is a byte-identical no-op.
  *
  * This test loads the dual-prefix fixture and verifies:
- *   1. The fixture contains both prefixes.
- *   2. A mixed file parses cleanly — every pair recognised, no tripwire.
- *   3. Each legacy pi-ensemble pair parses and splices cleanly; splicing one
- *      pair leaves sibling pairs (legacy AND current) byte-for-byte, and the
- *      spliced pair KEEPS its pi-ensemble prefix.
- *   4. The current pi-rukas pair parses and splices cleanly, keeping its
- *      prefix.
- *   5. renderSection emits the CURRENT prefix and round-trips through
- *      parse + splice.
- *   6. A stray pair under EITHER prefix with a shape the strict regexes do
- *      not accept still trips the LOOSE_RE corruption tripwire — the
- *      dual-prefix parser must not have widened the corruption detection.
+ *   1. The fixture contains both prefixes (pre-migration input).
+ *   2. The one-pass strip removes EXACTLY the 6 marker lines (3 pi-ensemble
+ *      + 3 pi-rukas begin/end pairs), leaving every other byte verbatim.
+ *   3. The strip result is idempotent: a second application is a no-op.
+ *   4. The `:managed` preamble comment is stripped in the same pass.
+ *   5. A foreign owner's comment block (`<!-- other-owner:... -->`) survives
+ *      byte-for-byte — the strip only touches pi-rukas/pi-ensemble pairs.
+ *
+ * The other two golden fixtures (ruby-greenfield, rich-manifest-no-codestyle)
+ * are exercised by test-agents-md-markers.ts (now a heading-detect test);
+ * the dual-prefix fixture is the ONLY one carrying the legacy pi-ensemble
+ * prefix, which is the property this file exists to pin.
  */
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { parseMarkers, renderSection, splice } from "../src/agents-md/markers.ts";
+import { stripLegacyMarkers } from "../src/agents-md/section-detect.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -38,10 +38,15 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const fixturePath = path.join(import.meta.dirname, "fixtures", "agents-md", "dual-prefix-agents-md.md");
+const fixturePath = path.join(
+  import.meta.dirname,
+  "fixtures",
+  "agents-md",
+  "dual-prefix-agents-md.md",
+);
 const text = readFileSync(fixturePath, "utf8");
 
-// --- 1. The fixture contains both prefixes.
+// --- 1. The fixture contains both prefixes (pre-migration input).
 
 assert(
   text.includes("pi-ensemble:agents-md:begin quality-gates"),
@@ -52,185 +57,154 @@ assert(
   "dual-prefix fixture: contains a current pi-rukas pair",
 );
 
-// --- 2. Mixed file parses cleanly: every pair recognised, no tripwire.
+// --- 2. The one-pass strip removes EXACTLY the 6 marker lines.
 
-let mixedError: Error | null = null;
-let mixedSpans: { id: string }[] = [];
-try {
-  mixedSpans = parseMarkers(text).spans;
-} catch (e) {
-  mixedError = e as Error;
-}
-assert(mixedError === null, "dual-prefix: mixed file parses (both prefixes recognised)");
+const stripped = stripLegacyMarkers(text);
+// Every recognised marker line (both prefixes, begin + end) is gone.
 assert(
-  JSON.stringify(mixedSpans.map((s) => s.id).sort()) ===
-    JSON.stringify(["commands", "environment", "quality-gates"]),
-  "dual-prefix: all three pairs recognised (got " +
-    JSON.stringify(mixedSpans.map((s) => s.id).sort()) +
-    ")",
+  !stripped.includes("pi-ensemble:agents-md:begin"),
+  "strip: no pi-ensemble begin line remains",
 );
-
-// --- 3. Splice a legacy pair: content updates, legacy prefix preserved,
-//        sibling pairs (legacy AND current) byte-for-byte.
-
-const splicedLegacy = splice(text, "quality-gates", "- **test** — `bun run test` (updated)\n");
+assert(!stripped.includes("pi-ensemble:agents-md:end"), "strip: no pi-ensemble end line remains");
+assert(!stripped.includes("pi-rukas:agents-md:begin"), "strip: no pi-rukas begin line remains");
+assert(!stripped.includes("pi-rukas:agents-md:end"), "strip: no pi-rukas end line remains");
+// Zero `<!--` bytes of any recognised shape remain in the managed regions.
+assert(!stripped.includes("agents-md:begin"), "strip: no `agents-md:begin` substring remains");
+assert(!stripped.includes("agents-md:end"), "strip: no `agents-md:end` substring remains");
 assert(
-  splicedLegacy.includes("- **test** — `bun run test` (updated)"),
-  "dual-prefix: splice updates legacy pair content",
-);
-assert(
-  splicedLegacy.includes("pi-ensemble:agents-md:begin quality-gates"),
-  "dual-prefix: spliced legacy pair KEEPS its pi-ensemble prefix (never re-encoded)",
-);
-assert(
-  splicedLegacy.includes("pi-rukas:agents-md:begin commands v1"),
-  "dual-prefix: sibling current pair survives byte-for-byte",
-);
-assert(
-  splicedLegacy.includes("pi-ensemble:agents-md:end environment"),
-  "dual-prefix: sibling legacy pair survives byte-for-byte",
-);
-assert(
-  splicedLegacy.includes("<!-- pi-rukas:agents-md:end commands -->"),
-  "dual-prefix: sibling current end marker survives byte-for-byte",
+  !stripped.includes("agents-md:managed"),
+  "strip: no `:managed` preamble remains (none in this fixture)",
 );
 
-// --- 4. Splice the current pair: prefix preserved, legacy siblings untouched.
-
-const splicedCurrent = splice(text, "commands", "| kind | command | (updated)\n");
+// Every non-marker byte survives verbatim. Rebuild the expected output by
+// deleting exactly the 6 marker lines from the input and compare byte-for-byte.
+const inputLines = text.split("\n");
+const isMarkerLine = (l: string) =>
+  /<!--\s*(?:pi-rukas|pi-ensemble):agents-md:(?:begin|end)\b.*-->/s.test(l.trim());
+const expectedLines = inputLines.filter((l) => !isMarkerLine(l));
 assert(
-  splicedCurrent.includes("(updated)"),
-  "dual-prefix: current pair splices cleanly",
-);
-assert(
-  splicedCurrent.includes("pi-rukas:agents-md:begin commands v1"),
-  "dual-prefix: current pair keeps its pi-rukas prefix",
-);
-assert(
-  splicedCurrent.includes("pi-ensemble:agents-md:begin quality-gates"),
-  "dual-prefix: legacy pair untouched by a current-pair splice",
+  stripped === expectedLines.join("\n"),
+  "strip: result is byte-identical to the input minus exactly the 6 marker lines",
 );
 
-// --- 5. renderSection emits the CURRENT prefix and round-trips.
+// The hand-written prose and section bodies are intact.
+assert(
+  stripped.includes("Hand-written prose survives byte-for-byte between managed sections."),
+  "strip: hand-written prose survives verbatim",
+);
+assert(stripped.includes("- **test** — `bun run test`"), "strip: the quality-gates body survives");
+assert(stripped.includes("| kind | command |"), "strip: the commands table survives");
+assert(stripped.includes("- Manifest: `package.json`"), "strip: the environment body survives");
 
-const rendered = renderSection("decision-ledger", "| key | value | provenance |\n");
+// --- 3. Idempotence: a second application is a byte-identical no-op.
+
 assert(
-  rendered.includes("pi-rukas:agents-md:begin decision-ledger v1"),
-  "renderSection: emits the current pi-rukas prefix",
-);
-assert(
-  !rendered.includes("pi-ensemble:agents-md:"),
-  "renderSection: never emits the legacy prefix",
-);
-const { spans: reParsed } = parseMarkers(rendered);
-assert(
-  reParsed.length === 1 && reParsed[0]?.id === "decision-ledger",
-  "renderSection: round-trips through parseMarkers",
-);
-const reSpliced = splice(rendered, "decision-ledger", "| key | value | provenance | (re-spliced)\n");
-assert(
-  reSpliced.includes("(re-spliced)"),
-  "renderSection: emitted pair splices cleanly",
+  stripLegacyMarkers(stripped) === stripped,
+  "strip: a second application is a no-op (idempotent)",
 );
 
-// --- 6. The corruption tripwire still fires under either prefix — the
-//        dual-prefix parser did not widen the corruption detection.
+// --- 4. The `:managed` preamble comment is stripped in the same pass.
 
-const strayLegacy = "<!-- pi-ensemble:agents-md:begin x -->\nq\n<!-- pi-ensemble:agents-md:end x -->\n";
-let legacyTripwired = false;
-try {
-  parseMarkers(strayLegacy);
-} catch (e) {
-  legacyTripwired = e instanceof Error && /corrupt or mis-versioned marker/.test(e.message);
-}
-assert(legacyTripwired, "tripwire: stray legacy-pair shape still throws MarkerError");
+const withPreamble =
+  "# T\n\n<!-- pi-rukas:agents-md:managed — the sections below are maintained -->\nbody\n";
+const p = stripLegacyMarkers(withPreamble);
+assert(!p.includes("agents-md:managed"), "strip: the :managed preamble comment is removed");
+assert(p.includes("body"), "strip: the body after the preamble survives");
+assert(
+  p === "# T\n\nbody\n",
+  "strip: preamble removal preserves surrounding bytes (no heading synthesis)",
+);
 
-const strayCurrent = "<!-- pi-rukas:agents-md:begin x -->\nq\n<!-- pi-rukas:agents-md:end x -->\n";
-let currentTripwired = false;
-try {
-  parseMarkers(strayCurrent);
-} catch (e) {
-  currentTripwired = e instanceof Error && /corrupt or mis-versioned marker/.test(e.message);
-}
-assert(currentTripwired, "tripwire: stray current-pair shape still throws MarkerError");
+// --- 5. A foreign owner's comment block survives byte-for-byte.
 
-// ------------------------------------------------------ 7. Ruby greenfield fixture
+const foreign =
+  "# T\n\n<!-- other-owner:begin notes v1 -->\nforeign managed content\n<!-- other-owner:end notes -->\n\n<!-- pi-rukas:agents-md:begin commands v1 -->\n| kind | command |\n<!-- pi-rukas:agents-md:end commands -->\n";
+const foreignOut = stripLegacyMarkers(foreign);
+assert(
+  foreignOut.includes("<!-- other-owner:begin notes v1 -->") &&
+    foreignOut.includes("foreign managed content") &&
+    foreignOut.includes("<!-- other-owner:end notes -->"),
+  "strip: a foreign owner's comment block survives byte-for-byte",
+);
+assert(
+  !foreignOut.includes("pi-rukas:agents-md:"),
+  "strip: the pi-rukas pair is removed while the foreign block is kept",
+);
+
+// --------------------------------------- 6. Ruby greenfield fixture (strip)
 
 {
-  const rubyPath = path.join(import.meta.dirname, "fixtures", "agents-md", "ruby-greenfield-agents-md.md");
+  const rubyPath = path.join(
+    import.meta.dirname,
+    "fixtures",
+    "agents-md",
+    "ruby-greenfield-agents-md.md",
+  );
   const rubyText = readFileSync(rubyPath, "utf8");
   assert(
     rubyText.includes("pi-rukas:agents-md:begin quality-gates"),
-    "ruby-greenfield fixture: contains a quality-gates pair",
+    "ruby-greenfield fixture: contains a quality-gates pair (pre-migration)",
+  );
+  const rubyStripped = stripLegacyMarkers(rubyText);
+  assert(
+    !rubyStripped.includes("agents-md:begin"),
+    "ruby-greenfield: strip removes all marker begin lines",
   );
   assert(
-    rubyText.includes("pi-rukas:agents-md:begin code-style"),
-    "ruby-greenfield fixture: contains a code-style pair",
+    !rubyStripped.includes("agents-md:end"),
+    "ruby-greenfield: strip removes all marker end lines",
   );
   assert(
-    rubyText.includes("Gemfile"),
-    "ruby-greenfield fixture: references Gemfile as the manifest",
+    rubyStripped.includes("| kind | command |"),
+    "ruby-greenfield: the commands table body survives",
   );
   assert(
-    rubyText.includes("[detected:agent,2026-01-01]"),
-    "ruby-greenfield fixture: ledger carries [detected:agent] rows",
+    rubyStripped.includes("- Manifest: `Gemfile`"),
+    "ruby-greenfield: the environment body survives",
   );
-  // The fixture must parse cleanly (no corruption tripwire).
-  let rubyParsed: { id: string }[] = [];
-  let rubyErr: Error | null = null;
-  try {
-    rubyParsed = parseMarkers(rubyText).spans;
-  } catch (e) {
-    rubyErr = e as Error;
-  }
-  assert(rubyErr === null, "ruby-greenfield fixture: parses cleanly (no tripwire)");
-  const rubyIds = rubyParsed.map((s) => s.id).sort();
+  // The in-file decision-ledger span's CONTENT (the legacy table) survives
+  // the strip verbatim (M1's job is to migrate it to the sidecar; M2 only
+  // removes the marker lines, never the ledger table bytes).
   assert(
-    rubyIds.includes("quality-gates") && rubyIds.includes("commands") && rubyIds.includes("environment") && rubyIds.includes("code-style") && rubyIds.includes("decision-ledger"),
-    "ruby-greenfield fixture: all 5 managed sections recognised",
+    rubyStripped.includes("[detected:agent,2026-01-01]"),
+    "ruby-greenfield: the in-file ledger table content survives the strip (M1 concern)",
   );
+  assert(stripLegacyMarkers(rubyStripped) === rubyStripped, "ruby-greenfield: strip is idempotent");
 }
 
-// --------------------------------------- 8. Rich manifest, no code-style fixture
+// --------------------------------------- 7. Rich manifest, no code-style fixture
 
 {
-  const richPath = path.join(import.meta.dirname, "fixtures", "agents-md", "rich-manifest-no-codestyle-agents-md.md");
+  const richPath = path.join(
+    import.meta.dirname,
+    "fixtures",
+    "agents-md",
+    "rich-manifest-no-codestyle-agents-md.md",
+  );
   const richText = readFileSync(richPath, "utf8");
   assert(
     richText.includes("pi-rukas:agents-md:begin quality-gates"),
-    "rich-manifest-no-codestyle fixture: contains a quality-gates pair",
+    "rich-manifest fixture: contains a quality-gates pair (pre-migration)",
+  );
+  const richStripped = stripLegacyMarkers(richText);
+  assert(
+    !richStripped.includes("agents-md:begin"),
+    "rich-manifest: strip removes all marker begin lines",
   );
   assert(
-    !richText.includes("pi-rukas:agents-md:begin code-style"),
-    "rich-manifest-no-codestyle fixture: does NOT contain a code-style pair (the trigger case)",
+    !richStripped.includes("agents-md:end"),
+    "rich-manifest: strip removes all marker end lines",
   );
   assert(
-    richText.includes("package.json"),
-    "rich-manifest-no-codestyle fixture: references package.json as the manifest",
+    richStripped.includes("- Manifest: `package.json`"),
+    "rich-manifest: the environment body survives",
   );
   assert(
-    richText.includes("[auto:2026-01-01]"),
-    "rich-manifest-no-codestyle fixture: ledger carries [auto] rows (not [detected:agent])",
+    richStripped.includes("[auto:2026-01-01]"),
+    "rich-manifest: the in-file ledger [auto] rows survive the strip",
   );
-  // The fixture must parse cleanly.
-  let richParsed: { id: string }[] = [];
-  let richErr: Error | null = null;
-  try {
-    richParsed = parseMarkers(richText).spans;
-  } catch (e) {
-    richErr = e as Error;
-  }
-  assert(richErr === null, "rich-manifest-no-codestyle fixture: parses cleanly (no tripwire)");
-  const richIds = richParsed.map((s) => s.id);
-  assert(
-    richIds.includes("quality-gates") && richIds.includes("commands") && richIds.includes("environment") && richIds.includes("decision-ledger"),
-    "rich-manifest-no-codestyle fixture: the 3 fact sections + ledger are recognised",
-  );
-  assert(
-    !richIds.includes("code-style"),
-    "rich-manifest-no-codestyle fixture: code-style is NOT among the parsed ids",
-  );
+  assert(stripLegacyMarkers(richStripped) === richStripped, "rich-manifest: strip is idempotent");
 }
 
-console.log(exit === 0 ? "\nAll dual-prefix checks passed." : "\nFAILED");
+console.log(exit === 0 ? "\nAll dual-prefix (migration strip) checks passed." : "\nFAILED");
 process.exit(exit);

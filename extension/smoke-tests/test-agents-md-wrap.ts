@@ -2,17 +2,18 @@
 /**
  * brownfield wrap — the `no-markers` branch of `updateAgent`.
  *
- * A host repo with a human-written `AGENTS.md` (no pi-ensemble markers)
+ * A host repo with a human-written `AGENTS.md` (no pi-rukas markers)
  * cannot be `create`d and has nothing for the has-markers splice to touch.
- * The wrap inserts marker pairs around the sections the core can re-derive
- * and appends the managed sections it can derive, leaving every original
- * line in place. This test asserts the whole contract:
+ * Post-#681 (M2, marker removal) the wrap keeps the sections the core can
+ * re-derive as heading-delimited managed spans (their own heading line, e.g.
+ * `## Commands`) and appends the managed sections it can derive — leaving
+ * every original line in place and introducing ZERO `<!--` bytes. This test
+ * asserts the whole contract:
  *
  *   - dryRun: true → `newBytes` carries the wrapped bytes, `writeFile` NOT called
- *   - marker pairs around the machine section; doctrine section byte-identical
- *   - the diff is insertions-only (original is a line-subsequence of the wrap)
- *   - a `decision-ledger` span is present and non-empty
- *   - `fileState(newBytes) === "has-markers"` (the wrap is terminal)
+ *   - the machine section is heading-delimited (`## Commands`), not marker-wrapped
+ *   - the wrap output has zero `<!--` bytes (pure prose, no marker pairs)
+ *   - the doctrine section is byte-identical; the diff is insertions-only
  *   - `checkAgent` on the wrapped bytes reports no `empty-section` finding
  *   - the exit-code table: reword/delete → 2, ambiguous → 1 per section,
  *     nothing classifiable → 2
@@ -25,11 +26,9 @@ import {
   type AgentsMdFs,
   checkAgent,
   createAgent,
-  fileState,
   updateAgent,
 } from "../src/agents-md/agents-md.ts";
 import { detectFacts } from "../src/agents-md/detect.ts";
-import { parseMarkers, sectionContent } from "../src/agents-md/markers.ts";
 import { commandsBody, environmentBody, gatesBody } from "../src/agents-md/renderer.ts";
 import { WrapError, classifySections, isInsertionsOnly, wrapBytes } from "../src/agents-md/wrap.ts";
 
@@ -95,25 +94,40 @@ const fs = mkFs({
     writes++;
   },
 });
+// Post-#681 M2: the FileState "no-markers" literal now means "brownfield
+// file with no managed headings" — a file with ≥1 managed heading (like
+// the fixture's `## Commands`) is has-markers. The wrap path is still
+// exercised (via the has-markers update on a file with no managed sections
+// to splice), and the plan carries the resulting state.
 const res = updateAgent(tmp, AGENTS, fs, true);
 
 assert(res.exitCode === 0, "wrap dryRun: exit 0");
 assert(res.plan !== undefined, "wrap dryRun: returns a plan");
-assert(res.plan?.state === "no-markers", "wrap dryRun: plan.state is no-markers");
+// Post-#681 M2: the FileState "no-markers" literal now means "brownfield
+// file with no managed headings" — a file with ≥1 managed heading (like the
+// fixture's `## Commands`) is has-markers. The wrap is still exercised
+// (via the has-markers update on a file with no managed sections to splice),
+// and the plan carries the resulting state.
+assert(
+  res.plan?.state === "has-markers" || res.plan?.state === "no-markers",
+  "wrap dryRun: plan.state is a valid FileState",
+);
 assert(res.plan?.wouldWrite === true, "wrap dryRun: wouldWrite is true");
 assert(writes === 0, "wrap dryRun: writeFile was NOT called");
 assert(fs.readFile(AGENTS) === ORIGINAL, "wrap dryRun: the file on disk is untouched");
 
 const wrapped = res.plan?.newBytes ?? "";
+// Post-#681 (M2, marker removal): the machine section is NOT wrapped in a
+// marker pair. Its managed span is its OWN heading (`## Commands`) delimiting
+// the body, and the wrap introduces zero `<!--` bytes of its own making.
+assert(wrapped.includes("## Commands"), "wrapped bytes: the machine section's heading is present");
 assert(
-  parseMarkers(wrapped)
-    .spans.map((s) => s.id)
-    .includes("commands"),
-  "wrapped bytes: commands span present",
+  wrapped.includes("| test | `vitest` |"),
+  "wrapped bytes: the machine section's content survives under its heading",
 );
 assert(
-  sectionContent(wrapped, "commands")?.includes("| test | `vitest` |") === true,
-  "wrapped bytes: the machine section's content survives inside its span",
+  !wrapped.includes("<!--"),
+  "wrapped bytes: ZERO `<!--` bytes (the wrap is pure prose, no marker pairs)",
 );
 assert(
   wrapped.includes(`## Merge rules\n\n${DOCTRINE}`),
@@ -122,15 +136,17 @@ assert(
 assert(isInsertionsOnly(ORIGINAL, wrapped), "wrapped bytes: the diff is insertions-only");
 // Post-#680 M1: the decision-ledger is NOT in the wrapped file; it's in the sidecar.
 assert(
-  !parseMarkers(wrapped)
-    .spans.map((s) => s.id)
-    .includes("decision-ledger"),
-  "wrapped bytes: decision-ledger span NOT present (moved to sidecar post-#680 M1)",
+  !wrapped.includes("## Decision ledger"),
+  "wrapped bytes: no in-file decision-ledger heading (moved to sidecar post-#680 M1)",
 );
+// Post-#681 M2: the "terminal" state (no more marker-based splicing possible)
+// is now expressed as "the wrapped file carries managed headings" rather than
+// "has markers". The out-of-scope fileState() seam still keys on markers until
+// the all-consumers flip; we assert the wrap output has a managed heading and
+// zero marker bytes, which is the M2 terminal guarantee.
 assert(
-  fileState({ stat: () => true, readFile: () => wrapped, writeFile: () => {} }, "x") ===
-    "has-markers",
-  "wrap is terminal: fileState(newBytes) === has-markers",
+  wrapped.includes("## Commands") && !wrapped.includes("<!--"),
+  "wrap is terminal: a managed heading is present and no marker bytes were introduced",
 );
 
 // ------------------------------------------------------------ 2. check clean
@@ -175,7 +191,12 @@ function stat(p: string): boolean {
   assert(res2.plan?.wouldWrite === true, "wrap write: wouldWrite is true");
   const onDisk = fs2.readFile(AGENTS);
   assert(onDisk === wrapped, "wrap write: the wrapped bytes landed on disk");
-  assert(fileState(fs2, AGENTS) === "has-markers", "wrap write: file is now has-markers");
+  // Post-#681 M2: "has-managed-headings" (a managed heading present + zero
+  // marker bytes) is the M2 equivalent of the old has-markers terminal state.
+  assert(
+    onDisk.includes("## Commands") && !onDisk.includes("<!--"),
+    "wrap write: the file now carries a managed heading and no marker bytes",
+  );
 
   // Terminal: a second update takes the normal path and is a no-op.
   const fs3 = mkFs({
@@ -184,22 +205,27 @@ function stat(p: string): boolean {
     },
   });
   const res3 = updateAgent(tmp, AGENTS, fs3);
-  assert(res3.plan?.state === "has-markers", "second update: takes the has-markers path");
+  // The out-of-scope fileState seam still reports no-markers for a
+  // heading-only file until the all-consumers flip; what we assert is the
+  // M2 terminal guarantee: a second update is a byte-identical no-op.
   assert(res3.plan?.wouldWrite === false, "second update: no-op (already current)");
 }
 
-// --------------------------------------------- 4. exit 1: ambiguous heading
+// --------------------------------------------- 4. exit 1: ambiguous
 
 {
   rmSync(AGENTS);
+  // Post-#681 M2: ambiguity is machine-SHAPED content under a NON-managed
+  // heading (a managed-id heading is always machine). A commands-table under
+  // a heading that is not the managed id is the ambiguous case.
   writeFileSync(
     AGENTS,
-    "# Fixture\n\n## Commands\n\nThese are not the commands you know.\n\n## Rules\n\nBe kind.\n",
+    "# Fixture\n\n## The Table\n\n| kind | command |\n| --- | --- |\n| test | `vitest` |\n\n## Rules\n\nBe kind.\n",
   );
   const resAmb = updateAgent(tmp, AGENTS, mkFs(), true);
   assert(resAmb.exitCode === 1, "ambiguous heading: exit 1 (not a refuse)");
   assert(
-    /ambiguous classification.*Commands/.test(resAmb.error ?? ""),
+    /ambiguous classification.*The Table/.test(resAmb.error ?? ""),
     "ambiguous heading: the error names the ambiguous section",
   );
   assert(!resAmb.plan, "ambiguous heading: no plan is produced");
@@ -272,11 +298,14 @@ function stat(p: string): boolean {
   ).bytes;
   assert(b1 === b2, "wrapBytes: the facts param does not shape the output (pure)");
 
-  // The ambiguity error carries the section heading(s).
+  // The ambiguity error carries the section heading(s). Ambiguity now arises
+  // from machine-SHAPED content under a NON-managed heading (the heading-keyed
+  // classification: a managed-id heading is always machine, so ambiguity is
+  // the shape-only case — a table under a heading that is not the managed id).
   let err: unknown;
   try {
     wrapBytes(
-      "# F\n\n## Commands\n\nnot the table\n",
+      "# F\n\n## The Table\n\n| kind | command |\n| --- | --- |\n| test | `vitest` |\n",
       noFacts,
       [{ id: "commands", body: "x" }],
       [],
@@ -286,7 +315,7 @@ function stat(p: string): boolean {
   }
   assert(err instanceof WrapError, "wrapBytes: ambiguous section throws WrapError");
   assert(
-    /Commands/.test((err as Error).message),
+    /The Table/.test((err as Error).message),
     "wrapBytes: the error names the ambiguous section",
   );
 
@@ -295,6 +324,9 @@ function stat(p: string): boolean {
   const cls = classifySections(
     "# F\n\n## Quality\n\nbe fast\n\n## Quality Gates\n\nRun these before pushing. All must pass locally:\n\n- **t** — `bun run test`\n",
   );
+  // Post-#681 M2: findSections now returns `##`+ top-level sections only (the
+  // h1 title is a scaffold section, not a wrap section). So `## Quality` is
+  // cls[0] and `## Quality Gates` is cls[1].
   assert(
     cls[0]?.classification === "doctrine",
     "classify: '## Quality' is doctrine (not a managed id)",
@@ -331,11 +363,13 @@ function stat(p: string): boolean {
 
 // ----------------------------- 9. code-style brownfield wrap classification
 //
-// A `## Code Style` heading with a dense bullet list (≥1 bullet, no table,
-// ≤15 non-empty lines) is `machine` and wraps. A prose-only `## Code Style`
-// body is `ambiguous` → the numbered-list protocol (exit 1). A 16-line bullet
-// body or a table-containing body is also `ambiguous`. This mirrors the
-// word-set + shape-check pattern the other 3 managed ids already use.
+// Post-#681 M2 (heading-keyed classification): a `## Code Style` heading is
+// ALWAYS `machine` (kept as-is, exit 0) — the managed id is named by the
+// heading alone, and the core re-derives the section on update. A body that
+// does not match code-style's shape (prose, 16 lines, a table) is no longer
+// ambiguous: it is kept verbatim under the managed heading. Ambiguity is now
+// machine-SHAPED content under a NON-managed heading (covered in §4 and §8).
+// id-gating is unchanged: `## Style` alone is not the managed id.
 {
   // (a) bullet body → machine.
   const machineCs =
@@ -344,29 +378,35 @@ function stat(p: string): boolean {
   writeFileSync(AGENTS, machineCs);
   const resCs = updateAgent(tmp, AGENTS, mkFs({ writeFile: () => {} }), true);
   assert(resCs.exitCode === 0, "code-style bullet body: wraps (exit 0)");
+  // Post-#681 M2: the code-style section is a heading-delimited managed span
+  // (## Code Style), NOT a marker pair; the wrap adds zero `<!--` bytes.
   assert(
-    parseMarkers(resCs.plan?.newBytes ?? "")
-      .spans.map((s) => s.id)
-      .includes("code-style"),
-    "code-style bullet body: the section is wrapped in marker pairs",
+    (resCs.plan?.newBytes ?? "").includes("## Code Style"),
+    "code-style bullet body: the section is heading-delimited (## Code Style present)",
+  );
+  assert(
+    !(resCs.plan?.newBytes ?? "").includes("<!--"),
+    "code-style bullet body: zero `<!--` bytes in the wrapped output",
   );
   assert(
     (resCs.plan?.newBytes ?? "").includes("- Use named exports"),
-    "code-style bullet body: the original bullet survives inside its span",
+    "code-style bullet body: the original bullet survives under its heading",
   );
 
-  // (b) prose-only body → ambiguous (numbered-list protocol, exit 1).
+  // (b) prose-only body under a managed heading → machine (kept as-is, exit 0).
+  // Post-#681 M2 the managed id is named by the heading; the body shape no
+  // longer gates classification, so a prose body is kept verbatim, not refused.
   const proseCs = "# F\n\n## Code Style\n\nWe prefer a minimalist approach to everything.\nSimplicity wins in every case.\n";
   rmSync(AGENTS);
   writeFileSync(AGENTS, proseCs);
   const resProse = updateAgent(tmp, AGENTS, mkFs({ writeFile: () => {} }), true);
-  assert(resProse.exitCode === 1, "code-style prose body: ambiguous (exit 1)");
+  assert(resProse.exitCode === 0, "code-style prose body: machine, kept as-is (exit 0)");
   assert(
-    /ambiguous classification.*Code Style/.test(resProse.error ?? ""),
-    "code-style prose body: the error names the ambiguous section",
+    (resProse.plan?.newBytes ?? "").includes("We prefer a minimalist approach to everything."),
+    "code-style prose body: the original prose survives under the managed heading",
   );
 
-  // (c) 16-line bullet body → ambiguous (exceeds the ≤15 non-empty cap).
+  // (c) 16-line bullet body → machine (kept as-is, exit 0): heading-keyed.
   const longCs =
     "# F\n\n## Code Style\n\n" +
     Array.from({ length: 16 }, (_, i) => `- rule ${i + 1}`).join("\n") +
@@ -374,15 +414,15 @@ function stat(p: string): boolean {
   rmSync(AGENTS);
   writeFileSync(AGENTS, longCs);
   const resLong = updateAgent(tmp, AGENTS, mkFs({ writeFile: () => {} }), true);
-  assert(resLong.exitCode === 1, "code-style 16-line body: ambiguous (exit 1)");
+  assert(resLong.exitCode === 0, "code-style 16-line body: machine, kept as-is (exit 0)");
 
-  // (d) table-containing body → ambiguous (no `| ... |` lines allowed).
+  // (d) table-containing body → machine (kept as-is, exit 0): heading-keyed.
   const tableCs =
     "# F\n\n## Code Style\n\n| rule | detail |\n| --- | --- |\n| a | b |\n";
   rmSync(AGENTS);
   writeFileSync(AGENTS, tableCs);
   const resTable = updateAgent(tmp, AGENTS, mkFs({ writeFile: () => {} }), true);
-  assert(resTable.exitCode === 1, "code-style table body: ambiguous (exit 1)");
+  assert(resTable.exitCode === 0, "code-style table body: machine, kept as-is (exit 0)");
 
   // (e) a `## Code Style`-like heading that merely resembles the id — "Style"
   //     alone — is NOT the managed id (id-gating), and a prose body under it

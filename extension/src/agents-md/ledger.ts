@@ -36,7 +36,14 @@
  * pure-render `Buffer.equals` idempotency assertion (see renderer.ts).
  */
 
-import { MarkerError } from "./markers.ts";
+import { SectionError } from "./section-detect.ts";
+
+// The ledger's corruption-refusal error type. Pre-#681 M2 this was `MarkerError`
+// (imported from the now-deleted markers.ts); the name was renamed to
+// `SectionError` because the ledger no longer validates HTML-comment markers —
+// it validates its own row format, and the "corruption is an error, never a
+// guess" invariant is carried over verbatim.
+const MarkerError = SectionError;
 
 export type LedgerProvenance = "auto" | "asked" | "detected";
 

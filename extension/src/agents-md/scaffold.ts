@@ -4,11 +4,11 @@
  * A greenfield `create` (scaffold is ON by default on the create/no-file
  * path) appends 7 boilerplate sections (minimalist-engineering, git-workflow,
  * documentation-policy, issue-driven-development, code-review-doctrine,
- * context7-protocol, testing-standards) as MARKER-WRAPPED managed spans
- * (via `appendSection`/`insertSectionAfter`, both of which emit a
- * `<!-- pi-rukas:agents-md:begin <id> v1 -->` / `end` pair around the body).
- * The sections are universal text — language specifics live in the managed
- * fact sections (quality-gates, commands, environment).
+ * context7-protocol, testing-standards) as HEADING-DELIMITED managed
+ * sections (via section-detect.ts `appendSection`/`insertSectionAfter`, which
+ * emit pure-prose `# Heading` + body text — no HTML comment markers of any
+ * kind). The sections are universal text — language specifics live in the
+ * managed fact sections (quality-gates, commands, environment).
  *
  * Six of the seven bodies are static array literals; `testing-standards`
  * alone is answer-aware: `computeScaffold` renders it from
@@ -16,22 +16,29 @@
  * ≥80% opinionated default when unanswered).
  *
  * On a brownfield update, the scaffold post-pass runs AFTER the rebuild and
- * inserts missing boilerplate sections via `appendSection`'s `after` param
- * (inserts after the environment section; falls back to append-at-end when
- * environment is absent).
+ * inserts missing boilerplate sections via `insertSectionAfter` (inserts
+ * after the heading-delimited environment section; falls back to
+ * append-at-end when environment is absent).
  *
  * Design: Shape C (hybrid) — fact sections and boilerplate sections are both
- * marker-wrapped. Stickiness is NOT "outside markers": the update splice loop
- * (update-agent.ts) only rewrites spans whose id is in its `updates` Map, and
- * that map holds only the fact-section ids (quality-gates, commands,
+ * heading-delimited. Stickiness is NOT "outside markers": the update splice
+ * loop (update-agent.ts) only rewrites sections whose id is in its `updates`
+ * Map, and that map holds only the fact-section ids (quality-gates, commands,
  * environment, code-style). Boilerplate and operator-choices ids are never in
  * the map, so a routine update spares their bytes even though they sit
- * inside marker pairs.
+ * inside heading-delimited managed sections.
  */
 
 import type { DetectedFacts } from "./detect.ts";
 import type { LedgerRow } from "./ledger.ts";
-import { MARKER_VERSION, appendSection, insertSectionAfter } from "./markers.ts";
+import { appendManagedSection, insertManagedSectionAfter } from "./section-detect.ts";
+
+// Post-#681 M2 the scaffold post-pass inserts heading-delimited sections
+// (section-detect.ts): a managed section is a heading-delimited block, and the
+// insertion seam is the heading boundary. The names below keep the call sites
+// readable as the marker-era names.
+const appendSection = appendManagedSection;
+const insertSectionAfter = insertManagedSectionAfter;
 
 // ------------------------------------------------------------------ types
 
@@ -394,8 +401,9 @@ export function computeScaffold(existingIds: Set<string>, opts?: ScaffoldOpts): 
  * sections are appended at end. The `after` param is `undefined`.
  *
  * For `update` (has-markers): `text` is the REBUILD OUTPUT (current file with
- * managed sections rebuilt), and boilerplate is inserted AFTER the `environment`
- * section (via `appendSection`'s `after` param). Falls back to append-at-end
+ * managed sections rebuilt), and boilerplate is inserted AFTER the
+ * `environment` section (via `insertSectionAfter`, which reads the
+ * heading-delimited environment section's end). Falls back to append-at-end
  * when environment is absent.
  *
  * Insertion happens AFTER the rebuild, positions computed from
@@ -414,22 +422,27 @@ export function runScaffoldPostPass(
 
   let result = text;
   const scaffoldedIds: string[] = [];
-  const afterId = isUpdatePath ? "environment" : undefined;
 
-  // First: append operator-choices section (if any).
+  // First: append operator-choices section (if any). Matches the pre-M2
+  // document order (fact sections, operator-choices, boilerplate) — the
+  // scaffold post-pass on the create path previously inserted operator-choices
+  // before the boilerplate, and the scaffold tests pin that order.
   if (scaffoldResult.operatorChoicesBody) {
     result = appendSection(result, "operator-choices", scaffoldResult.operatorChoicesBody);
   }
 
-  // Then: append each boilerplate section. Iterating in reverse so that
-  // insertSectionAfter (which always targets the same position right after
-  // `environment`) produces forward order — each new insertion lands before
-  // the ones already there, pushing earlier iterations further down.
-  for (const { id, body } of [...scaffoldResult.sections].reverse()) {
+  // Then: insert each boilerplate section IN DOCUMENT ORDER, each directly
+  // after the previous section (seam recomputed from current bytes every
+  // call). The first insertion uses the `environment` target when present
+  // (update path); when environment is absent it falls back to append-at-end.
+  // All subsequent insertions target the previously inserted section.
+  let afterId: string | undefined = isUpdatePath ? "environment" : undefined;
+  for (const { id, body } of scaffoldResult.sections) {
     result = afterId
       ? insertSectionAfter(result, id, body, afterId)
       : appendSection(result, id, body);
     scaffoldedIds.push(id);
+    afterId = id;
   }
 
   return { bytes: result, scaffoldedIds };

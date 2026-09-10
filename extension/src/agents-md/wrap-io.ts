@@ -9,15 +9,15 @@
 import type { AgentsMdFs, VerbResult } from "./agents-md.ts";
 import { detectFacts } from "./detect.ts";
 import { renderLedger } from "./ledger.ts";
-import { presentIds } from "./markers.ts";
 import { commandsBody, environmentBody, gatesBody, omissionFor } from "./renderer.ts";
 import { type OperatorAnswers, computeScaffold, runWrapScaffold } from "./scaffold.ts";
+import { presentManagedIds } from "./section-detect.ts";
 import { type SidecarPlan, sidecarDir, sidecarPath } from "./sidecar.ts";
 import { WrapError, isInsertionsOnly, wrapBytes, wrapLedgerRows } from "./wrap.ts";
 
 function parseMarkersSafe(bytes: string): string[] {
   try {
-    return presentIds(bytes);
+    return presentManagedIds(bytes);
   } catch {
     return [];
   }
@@ -130,6 +130,11 @@ export function runWrap(
   return {
     verb: "update",
     plan: {
+      // Under M2 the FileState "no-markers" literal means "brownfield file
+      // with no managed headings" (the wrap path). (The dispatch reached the
+      // wrap from the has-markers state when the file carried legacy marker
+      // lines that the strip resolved to managed headings — the resulting
+      // plan still records the brownfield wrap that produced these bytes.)
       state: "no-markers",
       newBytes: bytes,
       oldBytes: current,

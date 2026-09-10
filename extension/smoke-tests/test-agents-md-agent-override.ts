@@ -2,10 +2,10 @@
 /**
  * agent-override — the #659 B1 agentOverride/refresh seam.
  *
- * A no-manifest fixture (a hand-built has-markers file with NO detected
- * manifest) is updated with an agentOverride carrying facts + codeStyleBullets.
- * The 3 fact sections are built from the override via the existing
- * gatesBody/commandsBody/environmentBody, the code-style pair is inserted
+ * A no-manifest fixture (a heading-delimited file with NO detected manifest)
+ * is updated with an agentOverride carrying facts + codeStyleBullets. The 3
+ * fact sections are built from the override via the existing
+ * gatesBody/commandsBody/environmentBody, the code-style section is inserted
  * after the environment section, and the ledger rows are stamped
  * [detected:agent,today]. A second identical update (no agentOverride, no
  * refresh, LATER date) is byte-identical and upserts ZERO omit:* rows.
@@ -16,6 +16,11 @@
  * date; an identical body (post trailing-newline normalisation) is a no-op
  * (date unchanged). A rich-manifest fixture's [auto,...] rows are NEVER
  * touched by refresh.
+ *
+ * Post-#681 M2: the seed files are HEADING-DELIMITED (no HTML comment
+ * markers); the pre-M1 in-file decision-ledger span in block 2 exercises the
+ * one-pass migration strip (marker lines removed, ledger table rows migrated
+ * to the sidecar) on the first update.
  */
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -26,8 +31,9 @@ import {
   createAgent,
   updateAgent,
 } from "../src/agents-md/agents-md.ts";
-import { parseLedger } from "../src/agents-md/ledger.ts";
+import { parseLedger, parseLegacyMarkdownLedger } from "../src/agents-md/ledger.ts";
 import { gatesBody } from "../src/agents-md/renderer.ts";
+import { presentManagedIds, stripLegacyMarkers } from "../src/agents-md/section-detect.ts";
 import { sidecarPath } from "../src/agents-md/sidecar.ts";
 
 let exit = 0;
@@ -61,23 +67,27 @@ function mkFs(today: string): AgentsMdFs {
   const noManifestDir = mkdtempSync(path.join(tmpdir(), "pi-ens-agentsmd-nomanifest-"));
   const noManifestAgents = path.join(noManifestDir, "AGENTS.md");
 
-  // Hand-built has-markers file: 3 fact sections with non-empty bodies, a
-  // decision-ledger with a single auto row. NO manifest on disk, so
-  // detectFacts would derive no commands / no manifest → the sections would
-  // be omitted without an agentOverride.
+  // Hand-built heading-delimited file: 3 fact sections with non-empty bodies,
+  // plus an in-file decision-ledger (pre-M1 marker span with a single auto
+  // row). NO manifest on disk, so detectFacts would derive no commands / no
+  // manifest → the sections would be omitted without an agentOverride.
   const seedFile = [
     "# T",
-    "<!-- pi-rukas:agents-md:begin quality-gates v1 -->",
+    "",
+    "## Quality Gates",
+    "",
     "- **gate** — `some command`",
-    "<!-- pi-rukas:agents-md:end quality-gates -->",
-    "<!-- pi-rukas:agents-md:begin commands v1 -->",
+    "",
+    "## Commands",
+    "",
     "| kind | command |",
     "| --- | --- |",
     "| test | `some command` |",
-    "<!-- pi-rukas:agents-md:end commands -->",
-    "<!-- pi-rukas:agents-md:begin environment v1 -->",
+    "",
+    "## Environment",
+    "",
     "- CI: no `.github/workflows/` detected",
-    "<!-- pi-rukas:agents-md:end environment -->",
+    "",
     "<!-- pi-rukas:agents-md:begin decision-ledger v1 -->",
     "| key | value | provenance |",
     "| --- | --- | --- |",
@@ -121,17 +131,24 @@ function mkFs(today: string): AgentsMdFs {
     after1.includes("| test | `bun test` |"),
     "agentOverride #1: commands built from override facts",
   );
-  // Code-style pair is inserted (first-time) after the environment section.
-  assert(
-    after1.includes("<!-- pi-rukas:agents-md:begin code-style v1 -->"),
-    "agentOverride #1: code-style pair inserted",
-  );
-  const envEndIdx = after1.indexOf("<!-- pi-rukas:agents-md:end environment -->");
-  const csBeginIdx = after1.indexOf("<!-- pi-rukas:agents-md:begin code-style v1 -->");
-  assert(csBeginIdx > envEndIdx, "agentOverride #1: code-style inserted after environment");
+  // Code-style section is inserted (first-time) after the environment section.
+  assert(presentManagedIds(after1).includes("code-style"), "agentOverride #1: code-style section inserted");
+  const envIdx = after1.indexOf("## Environment");
+  const csIdx = after1.indexOf("## Code Style");
+  assert(csIdx > envIdx, "agentOverride #1: code-style inserted after environment");
   assert(
     after1.includes("- Use bun for all JS/TS work"),
     "agentOverride #1: code-style bullets rendered",
+  );
+  // The pre-M1 in-file decision-ledger is migrated to the sidecar and its
+  // marker span + table are stripped from the file (pure prose).
+  assert(
+    !after1.includes("<!--"),
+    "agentOverride #1: zero `<!--` bytes after migration (pure prose)",
+  );
+  assert(
+    !after1.includes("decision-ledger"),
+    "agentOverride #1: in-file decision-ledger span removed",
   );
   // Ledger rows are [detected:agent,today] for the 3 fact sections.
   // Post-#680 M1: the ledger is in the sidecar, not the in-file span.
@@ -193,25 +210,29 @@ function mkFs(today: string): AgentsMdFs {
 // ===================================================== 2. refresh semantics
 
 {
-  // A hand-built has-markers file whose ledger carries [auto,...] rows for
-  // the 3 fact sections (the rich-manifest shape). Refresh must NOT touch
-  // these rows — provenance is checked BEFORE acting.
+  // A hand-built heading-delimited file whose in-file (pre-M1) decision-ledger
+  // carries [auto,...] rows for the 3 fact sections (the rich-manifest shape).
+  // Refresh must NOT touch these rows — provenance is checked BEFORE acting.
   const richDir = mkdtempSync(path.join(tmpdir(), "pi-ens-agentsmd-rich-"));
   const richAgents = path.join(richDir, "AGENTS.md");
 
   const richSeed = [
     "# T",
-    "<!-- pi-rukas:agents-md:begin quality-gates v1 -->",
+    "",
+    "## Quality Gates",
+    "",
     "- **bun test** — `bun test`",
-    "<!-- pi-rukas:agents-md:end quality-gates -->",
-    "<!-- pi-rukas:agents-md:begin commands v1 -->",
+    "",
+    "## Commands",
+    "",
     "| kind | command |",
     "| --- | --- |",
     "| test | `bun test` |",
-    "<!-- pi-rukas:agents-md:end commands -->",
-    "<!-- pi-rukas:agents-md:begin environment v1 -->",
+    "",
+    "## Environment",
+    "",
     "- Manifest: `package.json`",
-    "<!-- pi-rukas:agents-md:end environment -->",
+    "",
     "<!-- pi-rukas:agents-md:begin decision-ledger v1 -->",
     "| key | value | provenance |",
     "| --- | --- | --- |",
@@ -223,15 +244,17 @@ function mkFs(today: string): AgentsMdFs {
   ].join("\n");
   writeFileSync(richAgents, richSeed);
 
-  // Verify the seed: [auto,...] rows for the 3 fact sections.
+  // Verify the seed: [auto,...] rows for the 3 fact sections (legacy
+  // markdown format inside the pre-M1 in-file span).
   const seeded = readFileSync(richAgents, "utf8");
-  // Post-#680 M1: the seed file has an in-file decision-ledger span (legacy
-  // markdown format). The update path migrates it to the sidecar. We need to
-  // check the sidecar after the update, not the in-file span.
-  // For the SEED verification (before any update), we use the legacy parser.
-  const { parseLegacyMarkdownLedger } = await import("../src/agents-md/ledger.ts");
-  const seededLedgerSpan = (await import("../src/agents-md/markers.ts")).sectionContentWithEnd(seeded, "decision-ledger") ?? "";
-  const seededParsed = parseLegacyMarkdownLedger(seededLedgerSpan);
+  // Strip the markers to reach the ledger table body, then parse the legacy
+  // format. The strip removes the begin/end lines; the table itself (no
+  // heading) is what parseLegacyMarkdownLedger reads.
+  const stripped = stripLegacyMarkers(seeded);
+  const lines = stripped.split("\n");
+  const tableStart = lines.findIndex((l) => /^\|\s*key\s*\|/.test(l));
+  const ledgerBody = tableStart >= 0 ? lines.slice(tableStart).join("\n") : "";
+  const seededParsed = parseLegacyMarkdownLedger(ledgerBody);
   const autoFactRows = seededParsed.filter(
     (r) =>
       ["quality-gates", "commands", "environment"].includes(r.key) && r.provenance === "auto",
@@ -295,17 +318,23 @@ function mkFs(today: string): AgentsMdFs {
   const expectedQgBody = typeof qgResult === "string" ? qgResult : "";
   const seedDetected = [
     "# T",
-    "<!-- pi-rukas:agents-md:begin quality-gates v1 -->",
+    "",
+    "## Quality Gates",
+    "",
     expectedQgBody,
-    "<!-- pi-rukas:agents-md:end quality-gates -->",
-    "<!-- pi-rukas:agents-md:begin decision-ledger v1 -->",
-    "| key | value | provenance |",
-    "| --- | --- | --- |",
-    "| quality-gates | agent | [detected:agent,2026-01-01] |",
-    "<!-- pi-rukas:agents-md:end decision-ledger -->",
     "",
   ].join("\n");
   writeFileSync(noManifestAgents2, seedDetected);
+
+  // Pre-populate the sidecar with a [detected:agent,2026-01-01] row so the
+  // refresh no-op check has an existing detected row to preserve (the
+  // in-file decision-ledger span was removed in the M1 refactor; the
+  // sidecar is now the sole source of the ledger).
+  const sPathPre = sidecarPath(noManifestDir2);
+  mkdirSync(path.dirname(sPathPre), { recursive: true });
+  writeFileSync(sPathPre, JSON.stringify([
+    { key: "quality-gates", value: "agent", provenance: "detected", date: "2026-01-01" },
+  ]));
 
   // Refresh with the SAME body (post normalisation) → the quality-gates row's
   // date is unchanged (no churn).

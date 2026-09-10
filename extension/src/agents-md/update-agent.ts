@@ -17,17 +17,10 @@ import {
   mergeAutoRows,
   mergeOmissionRows,
   parseLedger,
-  parseLegacyMarkdownLedger,
   renderLedger,
   upsertRow,
 } from "./ledger.ts";
-import {
-  MARKER_VERSION,
-  insertSectionAfter,
-  parseMarkers,
-  presentIds,
-  sectionContent,
-} from "./markers.ts";
+import { parseInFileLedger } from "./legacy-ledger.ts";
 import { codeStyleBody, commandsBody, environmentBody, gatesBody } from "./renderer.ts";
 import {
   type AgentOverride,
@@ -36,6 +29,15 @@ import {
   runScaffoldPostPass,
 } from "./scaffold.ts";
 import type { OperatorAnswers } from "./scaffold.ts";
+import {
+  appendManagedSection,
+  findManagedSections,
+  insertManagedSectionAfter,
+  presentManagedIds,
+  removeInFileLedgerBody,
+  spliceManagedSection,
+  stripLegacyMarkers,
+} from "./section-detect.ts";
 import { type SidecarPlan, sidecarDir, sidecarPath } from "./sidecar.ts";
 
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -85,32 +87,6 @@ type RunWrapFn = (
 /** Type for the omissionRows helper passed as dependency. */
 type OmissionRowsFn = (facts: DetectedFacts, today: string) => LedgerRow[];
 
-// ------------------------------------------------------------------ boilerplate detection
-
-// ------------------------------------------------------------------ parse ledger from current file
-
-/**
- * Parse the in-file decision-ledger span (pre-M1 legacy repos only).
- * Returns `{ rows, kind }` where kind is "absent" (no in-file span — normal
- * post-M1 shape), "ok" (valid rows read from the span), or "corrupt"
- * (malformed row → refuse the update, exit 2).
- */
-function parseInFileLedger(content: string): {
-  rows: LedgerRow[];
-  kind: "absent" | "ok" | "corrupt";
-} {
-  try {
-    const { spans } = parseMarkers(content);
-    const ledgerSpan = spans.find((s) => s.id === "decision-ledger");
-    if (!ledgerSpan) return { rows: [], kind: "absent" };
-    const ledgerBody = content.slice(ledgerSpan.contentStart, ledgerSpan.contentEnd);
-    // The in-file span uses the LEGACY markdown-table format (pre-M1).
-    return { rows: parseLegacyMarkdownLedger(ledgerBody), kind: "ok" };
-  } catch {
-    return { rows: [], kind: "corrupt" };
-  }
-}
-
 // ------------------------------------------------------------------ update verb
 
 /**
@@ -153,7 +129,23 @@ export function makeUpdateAgent(
       state = "no-file";
     } else {
       try {
-        state = presentIds(fs.readFile(file)).length > 0 ? "has-markers" : "no-markers";
+        // Post-#681 M2: discriminate on managed HEADINGS (with the legacy
+        // marker strip as tiebreaker), not on marker presence. A file with ≥1
+        // managed heading — or with no heading but a legacy marker line that
+        // post-strip resolves to one — takes the heading-splice path (strip +
+        // re-anchor + splice). A file with neither is brownfield → wrap.
+        const raw = fs.readFile(file);
+        const stripped = stripLegacyMarkers(raw);
+        // A legacy (pre-migration) file is one whose managed marker lines
+        // survive the strip (the strip removed pi-rukas/pi-ensemble marker
+        // lines from it). A file with neither managed headings nor managed
+        // marker lines is a true brownfield file → the wrap path.
+        const hadManagedMarkerLines =
+          stripped !== raw && /<!--\s*(?:pi-rukas|pi-ensemble):agents-md:/.test(raw);
+        state =
+          presentManagedIds(stripped).length > 0 || hadManagedMarkerLines
+            ? "has-markers"
+            : "no-markers";
       } catch {
         state = "has-markers"; // corrupt → treat as has-markers; verb will refuse
       }
@@ -164,6 +156,10 @@ export function makeUpdateAgent(
     }
 
     if (state === "no-markers") {
+      // True brownfield: no managed heading, no managed marker lines → the
+      // wrap path. (The legacy marker case is has-markers by construction:
+      // the state discrimination above already routes a file whose managed
+      // marker lines survive the strip to the heading-splice path.)
       const scaffoldBodies: { id: string; body: string }[] = [];
       if (effectiveOpts.scaffold) {
         const scaffoldResult = computeScaffold(new Set(), {
@@ -181,13 +177,21 @@ export function makeUpdateAgent(
     // --- has-markers path ---
     const current = fs.readFile(file);
 
+    // Post-#681 M2 migration: a legacy file that still carries HTML-comment
+    // markers (and no managed headings yet) is first reduced by the one-pass
+    // strip. The strip removes only the marker/`:managed` comment lines and
+    // preserves every other byte (including the in-file decision-ledger table,
+    // which M1 later migrates to the sidecar). The heading pipeline below then
+    // re-anchors the now-markerless spans by their (re-emitted) headings.
+    const stripped = stripLegacyMarkers(current);
+
     let parsed: string[];
     try {
-      parsed = presentIds(current);
+      parsed = presentManagedIds(stripped);
     } catch (e) {
       return {
         verb: "update",
-        error: `refusing to update corrupt markers: ${(e as Error).message}`,
+        error: `refusing to update corrupt managed sections: ${(e as Error).message}`,
         exitCode: 2,
       };
     }
@@ -200,7 +204,7 @@ export function makeUpdateAgent(
     // the sidecar rows, and the section is removed from the file. A corrupt
     // in-file ledger (malformed row) refuses the update (exit 2) — the same
     // refuse-or-die semantics as a corrupt sidecar.
-    const inFileLedgerSpan = parseInFileLedger(current);
+    const inFileLedgerSpan = parseInFileLedger(stripped);
     if (inFileLedgerSpan.kind === "corrupt") {
       return {
         verb: "update",
@@ -281,29 +285,53 @@ export function makeUpdateAgent(
 
     // Build the body splices FIRST (no ledger yet). This gives us the
     // post-update file bytes that the omission re-derivation below uses.
-    // The splice loop rewrites only spans present in the file; the code-style
-    // pair is inserted explicitly after it (first-time insertion, Item 2).
-    const { spans } = parseMarkers(current);
-    const parts: string[] = [];
-    let cursor = 0;
-    for (const span of spans) {
-      let body: string | undefined;
-      if (span.id !== "decision-ledger") body = updates.get(span.id);
-      if (body === undefined) continue;
-      parts.push(current.slice(cursor, span.contentStart));
-      parts.push(body.endsWith("\n") ? body : `${body}\n`);
-      cursor = span.contentEnd;
+    // Post-#681 M2: the splice is heading-based — each managed section is
+    // re-rendered under its (re-emitted) heading, preserving the heading line
+    // and every byte outside the section. The code-style section is inserted
+    // explicitly after the environment heading (first-time insertion, Item 2).
+    //
+    // After the one-pass strip, a legacy file's fact sections may have no
+    // heading (the markers carried the boundary, not a heading line). Re-emit
+    // the missing headings for sections we are about to splice (from `updates`)
+    // so the splice can re-anchor them. This is the heading re-anchoring the
+    // migration requires (the strip deliberately does not synthesise headings).
+    let currentBytes = stripped;
+    let spans = findManagedSections(currentBytes);
+    const presentIds = new Set(spans.map((s) => s.id));
+    // Re-emit headings for fact sections in `updates` that lack a heading.
+    // (The decision-ledger and code-style are handled separately below.)
+    for (const id of ["quality-gates", "commands", "environment"].reverse()) {
+      if (presentIds.has(id)) continue;
+      if (!updates.has(id)) continue;
+      const body = updates.get(id) ?? "";
+      const targetId =
+        id === "quality-gates" ? undefined : id === "commands" ? "quality-gates" : "commands";
+      currentBytes = targetId
+        ? insertManagedSectionAfter(currentBytes, id, body, targetId)
+        : appendManagedSection(currentBytes, id, body);
+      presentIds.add(id);
     }
-    parts.push(current.slice(cursor));
-    let bytes = parts.join("");
+    spans = findManagedSections(currentBytes);
+    let bytes = currentBytes;
+    // Splice in the SAME order the sections appear in the file: splice
+    // re-detects spans on the bytes it was given, so splicing an EARLIER
+    // section after a later one would re-detect it under the later section's
+    // (larger) span and silently eat its body.
+    for (const span of [...spans].sort((a, b) => a.headingLine - b.headingLine)) {
+      // The decision-ledger is not a managed heading section (it is a sidecar
+      // post-M1, or a legacy in-file span M1 migrates) — never re-emit it here.
+      const body = updates.get(span.id);
+      if (body === undefined) continue;
+      bytes = spliceManagedSection(bytes, span.id, body);
+    }
 
     // First-time code-style insertion: the splice loop above only REWRITES
-    // spans already present in the file. When code-style content is supplied
-    // but the file has no existing code-style span, explicitly insert it after
-    // the environment section (the same primitive the scaffold post-pass uses).
-    // Absent bullets → no pair, no omission row (handled above).
+    // sections already present in the file. When code-style content is
+    // supplied but the file has no existing code-style section, explicitly
+    // insert it after the environment section (the same primitive the scaffold
+    // post-pass uses). Absent bullets → no section, no omission row.
     if (codeStyleOut !== undefined && !spans.some((s) => s.id === "code-style")) {
-      bytes = insertSectionAfter(bytes, "code-style", codeStyleOut, "environment");
+      bytes = insertManagedSectionAfter(bytes, "code-style", codeStyleOut, "environment");
     }
 
     // --- Merge ledger. ---
@@ -346,10 +374,13 @@ export function makeUpdateAgent(
         const isDetected = existing?.provenance === "detected";
         if (effectiveOpts.refresh === true) {
           if (!isDetected) continue; // refresh only touches [detected:agent] rows
-          const existingBody = sectionContent(current, id);
+          // The stored body carries the blank-line-after-heading separator by
+          // convention (section-detect.ts) — compare both normalised shapes.
+          const stored = (
+            findManagedSections(stripped).find((s) => s.id === id)?.body ?? ""
+          ).replace(/^\n/, "");
           const sameValue =
-            existingBody !== undefined &&
-            (existingBody.endsWith("\n") ? existingBody : `${existingBody}\n`) === spliceForm;
+            (stored.endsWith("\n") ? stored : `${stored}\n`) === spliceForm || stored === body;
           if (sameValue) continue; // byte-identical → keep row + date, no churn
           merged = upsertRow(merged, {
             key: id,
@@ -380,12 +411,16 @@ export function makeUpdateAgent(
     merged = mergeOmissionRows(merged, omittedForLedger, today);
     const drift = driftWarnings(existingLedger, auto);
 
-    // Post-#680 M1: the ledger is NOT spliced back into the file. Instead,
-    // remove the in-file decision-ledger span if it is still present (pre-M1
-    // migration), and write the merged rows to the sidecar.
+    // Post-#680 M1: the ledger is NOT spliced back into the file — the merged
+    // rows are written to the sidecar below. A pre-M1 in-file decision-ledger
+    // span is migrated on this first update: its rows were read above and
+    // merged into the sidecar rows, and the now-legacy markdown table body
+    // (orphaned after the one-pass strip removed its marker lines) is
+    // removed from the file so it is not left behind as stray table text in
+    // the heading-based file. A purely heading-based file has no table to
+    // remove (removeInFileLedgerBody is a byte-identical no-op then).
     if (inFileLedgerSpan.kind === "ok") {
-      // Remove the in-file decision-ledger span from the spliced bytes.
-      bytes = removeInFileLedgerSpan(bytes);
+      bytes = removeInFileLedgerBody(bytes);
     }
 
     // Scaffold post-pass: detect boilerplate headings for idempotency.
@@ -416,7 +451,7 @@ export function makeUpdateAgent(
 
     // wouldWrite: true when EITHER file would change.
     const scaffoldAdded = scaffoldedIds.length > 0;
-    const fileWouldWrite = bytes !== current;
+    const fileWouldWrite = bytes !== stripped;
     const wouldWrite = effectiveOpts.scaffold
       ? scaffoldAdded || fileWouldWrite || sPlan.wouldWrite
       : fileWouldWrite || sPlan.wouldWrite;
@@ -442,7 +477,7 @@ export function makeUpdateAgent(
       plan: {
         state,
         newBytes: bytes,
-        oldBytes: current,
+        oldBytes: stripped,
         wouldWrite,
         managedIds: parsed,
         omitted: omittedForLedger.map((o) => ({ id: o.id, reason: o.reason })),
@@ -455,26 +490,4 @@ export function makeUpdateAgent(
       exitCode: 0,
     };
   };
-}
-
-/**
- * Remove the in-file `decision-ledger` marker span from `text` (pre-M1
- * migration). Returns `text` unchanged if the span is absent. The span is
- * removed including its begin/end marker lines and the content between them,
- * plus one trailing newline to keep the surrounding text clean.
- */
-function removeInFileLedgerSpan(text: string): string {
-  const { spans } = parseMarkers(text);
-  const span = spans.find((s) => s.id === "decision-ledger");
-  if (!span) return text;
-  // Remove from beginMarkerStart to endMarkerEnd (the full span including
-  // both marker lines). Also strip a trailing newline after endMarkerEnd to
-  // avoid a double-blank-line in the output.
-  let end = span.endMarkerEnd;
-  if (text[end] === "\n") end++;
-  // Strip a leading blank line before the begin marker if present (the span
-  // is typically preceded by a blank line in the rendered output).
-  let start = span.beginMarkerStart;
-  if (start > 0 && text[start - 1] === "\n") start--;
-  return text.slice(0, start) + text.slice(end);
 }

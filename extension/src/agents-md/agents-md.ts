@@ -19,7 +19,6 @@ import path from "node:path";
 import { type CheckResult, runChecks } from "./check.ts";
 import { type DetectedFacts, detectFacts } from "./detect.ts";
 import { type LedgerRow, parseLedger, renderLedger, upsertRow } from "./ledger.ts";
-import { MARKER_VERSION, parseMarkers, presentIds, sectionContent } from "./markers.ts";
 import { omissionFor, renderAgent } from "./renderer.ts";
 import {
   type ScaffoldOpts,
@@ -29,6 +28,12 @@ import {
   runScaffoldPostPass,
   runWrapScaffold,
 } from "./scaffold.ts";
+import {
+  findManagedSections,
+  managedSectionBody,
+  presentManagedIds,
+  stripLegacyMarkers,
+} from "./section-detect.ts";
 import { SIDECAR_RELATIVE_PATH, type SidecarPlan, sidecarDir, sidecarPath } from "./sidecar.ts";
 import { makeUpdateAgent } from "./update-agent.ts";
 import { runWrap } from "./wrap-io.ts";
@@ -102,10 +107,30 @@ export interface VerbResult {
 
 function fileState(fs: AgentsMdFs, file: string): FileState {
   if (!fs.stat(file)) return "no-file";
+  const raw = fs.readFile(file);
+  // Post-#681 M2: managed sections are identified by heading text (not
+  // HTML-comment markers), so the state discrimination is "has-managed-
+  // headings" — a file with ≥1 managed heading takes the heading-splice
+  // path, a file with none takes the brownfield wrap path. A file whose
+  // legacy marker lines survive the strip (i.e. a marker-era file with no
+  // heading yet) is has-markers: the update path strips them and re-anchors
+  // the now-markerless spans, rather than the wrap appending duplicates.
   try {
-    return presentIds(fs.readFile(file)).length > 0 ? "has-markers" : "no-markers";
+    const stripped = stripLegacyMarkers(raw);
+    // A true legacy (pre-migration) file is one whose managed marker lines
+    // survive the strip: the strip removed pi-rukas / pi-ensemble managed
+    // marker lines from it. A file with neither managed headings (after the
+    // strip) nor surviving managed marker lines is a true brownfield file
+    // → no-markers/wrap. A marker-era file that already has headings is
+    // has-markers by heading presence alone.
+    const ids = presentManagedIds(stripped);
+    const hasManagedHeadings = ids.length > 0;
+    const hadManagedMarkerLines =
+      stripped !== raw && /<!--\s*(?:pi-rukas|pi-ensemble):agents-md:/.test(raw);
+    if (hasManagedHeadings || hadManagedMarkerLines) return "has-markers";
+    return "no-markers";
   } catch {
-    // Markers present but corrupt — treat as has-markers; the verb will refuse.
+    // Corrupt structure — treat as has-markers; the verb will refuse.
     return "has-markers";
   }
 }
@@ -113,9 +138,10 @@ function fileState(fs: AgentsMdFs, file: string): FileState {
 /**
  * The default preamble for a freshly-created file. Kept deliberately minimal:
  * it is the ONE byte of generated prose, and everything after it is managed.
+ * Post-#681 M2: the `:managed` HTML-comment preamble is gone — the file is
+ * pure prose (headings + body only), so the preamble is just the title line.
  */
-const DEFAULT_PREAMBLE =
-  "# AGENTS.md\n\n<!-- pi-rukas:agents-md:managed — the sections below are maintained by /agents-md; edits between the markers are preserved on update. -->\n";
+const DEFAULT_PREAMBLE = "# AGENTS.md\n";
 
 function omissionRows(facts: DetectedFacts, today: string): LedgerRow[] {
   const rows: LedgerRow[] = [];
@@ -176,7 +202,10 @@ export function createAgent(
   // Scaffold post-pass: compute boilerplate sections and optional operator-choices.
   let factIds = new Set<string>(["quality-gates", "commands", "environment"]);
   let scaffoldedIds: string[] = [];
-  let bytes = renderAgent({ facts, preamble: DEFAULT_PREAMBLE, version: MARKER_VERSION });
+  // Post-#681 M2: renderAgent no longer takes a marker version — sections are
+  // heading-delimited, and the renderer's `version` param is a vestigial
+  // placeholder that is ignored.
+  let bytes = renderAgent({ facts, preamble: DEFAULT_PREAMBLE, version: 1 });
 
   if (scaffold) {
     const scaffoldResult = computeScaffold(factIds, { scaffold: true, answers });
@@ -225,7 +254,11 @@ export function createAgent(
       newBytes: bytes,
       oldBytes: "",
       wouldWrite: true,
-      managedIds: presentIds(bytes),
+      // Post-#681 M2: the managed ids are detected from the FINAL bytes (after
+      // the scaffold post-pass), so the plan reflects every managed heading in
+      // the rendered file (fact sections + scaffold sections), not just the
+      // fact sections renderAgent emitted on its own.
+      managedIds: presentManagedIds(bytes),
       omitted: omittedSections(facts),
       scaffoldedIds: scaffoldedIds.length ? scaffoldedIds : undefined,
       sidecar: sPlan,
@@ -248,13 +281,14 @@ export function checkAgent(
     return { verb: "check", error: "AGENTS.md does not exist", exitCode: 2 };
   }
   const content = fs.readFile(file);
-  // Gate commands can only be extracted from a file whose markers parse; a
-  // corrupt file is caught by runChecks below and refused (exit 2).
+  // Gate commands can only be extracted from a file whose managed headings
+  // resolve; a corrupt file (duplicate managed heading) is caught by runChecks
+  // below and refused (exit 2).
   let gateCommands: string[] = [];
   let hasManagedSections = false;
   try {
     gateCommands = gateCommandsFrom(content);
-    hasManagedSections = parseMarkers(content).spans.length > 0;
+    hasManagedSections = findManagedSections(content).length > 0;
   } catch {
     // Corruption — runChecks will catch it and return exit 2. Pass empty.
     gateCommands = [];
@@ -321,7 +355,7 @@ function omittedSections(facts: DetectedFacts): { id: string; reason: string }[]
 function gateCommandsFrom(content: string): string[] {
   const out: string[] = [];
   for (const id of ["quality-gates", "commands"] as const) {
-    const body = sectionContent(content, id);
+    const body = managedSectionBody(content, id);
     if (!body) continue;
     for (const m of body.matchAll(/`([^`]+)`/g)) {
       const line = m[1];

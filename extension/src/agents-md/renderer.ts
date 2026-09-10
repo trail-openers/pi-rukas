@@ -31,7 +31,7 @@
  */
 
 import type { DetectedFacts } from "./detect.ts";
-import { renderSection } from "./markers.ts";
+import { renderHeadingFor } from "./section-detect.ts";
 
 /** The fixed section order. Omitted sections leave a gap, not a reflow. */
 const SECTION_ORDER = ["quality-gates", "commands", "environment", "code-style"] as const;
@@ -99,8 +99,8 @@ export const FACT_SECTIONS: {
  * Pure body for the `code-style` managed section: a dense bullet list built
  * from a plain string[]. This section is agent-derived, not manifest-derived,
  * so it has no omission concept — `codeStyleBody` returns `undefined` (never
- * an empty string) when `bullets` is empty or absent, so no empty marker pair
- * can be emitted. The rendered body is a bare bullet list (no per-section
+ * an empty string) when `bullets` are empty or absent, so no empty heading +
+ * zero-body section can be emitted. The rendered body is a bare bullet list (no per-section
  * heading line), matching the other fact-section bodies, and satisfies the
  * wrap's code-style classification predicate: ≥1 bullet line, no table line,
  * ≤15 non-empty lines.
@@ -130,13 +130,24 @@ export interface RenderInput {
  * `ledger` parameter — the sidecar is written separately by the verb layer
  * (agents-md.ts / update-agent.ts), not by the pure renderer.
  */
+/**
+ * Render a managed fact section as a heading-delimited block (post-#681 M2):
+ * the exact heading line for the id, a blank line, the body, and a trailing
+ * newline. No HTML-comment markers — the section is identified by its
+ * heading text on re-read (section-detect.ts `findManagedSections`).
+ */
+export function renderSection(id: string, body: string): string {
+  const content = body.endsWith("\n") ? body.slice(0, -1) : body;
+  return `${renderHeadingFor(id)}\n\n${content}`;
+}
+
 export function renderAgent(input: RenderInput): string {
   const { facts, preamble, version } = input;
   void version;
 
   const parts: string[] = [];
   if (preamble.trim().length > 0) {
-    parts.push(`${preamble.replace(/\n$/, "")}\n`);
+    parts.push(preamble.replace(/\n+$/, ""));
   }
 
   for (const { id, body } of FACT_SECTIONS) {
@@ -145,5 +156,13 @@ export function renderAgent(input: RenderInput): string {
     // else omitted → recorded in the sidecar, not emitted
   }
 
-  return parts.join("\n");
+  // Sections are joined with a single blank line (\n\n) so each managed
+  // section is a heading-delimited block separated from its neighbour by
+  // exactly one blank line. Trailing blank lines are trimmed and NO final
+  // newline is appended: the body's own last line is the file's last line.
+  // (A file's trailing newline is a file convention, not a section boundary,
+  // and omitting it is what makes the first update-agent splice byte-
+  // identical to the render — the idempotency the ticket requires. The
+  // update-agent normalises the trailing newline on write if needed.)
+  return parts.join("\n\n").replace(/\n+$/, "");
 }

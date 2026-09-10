@@ -1,34 +1,33 @@
 #!/usr/bin/env bun
 /**
- * markers — the #253 regression, plus splice idempotence and corruption.
+ * section-detect + one-pass strip (ticket M2, companion to M1/#680).
  *
- * clud-bug #253: an AGENTS.md regenerator "updated" the file and deleted a
- * hand-written notary paragraph that lived OUTSIDE every marker pair, and
- * touched three unrelated files. The whole class of failure is "the tool
- * rewrote more than its own marker pairs". This test is the regression spec:
- * after an `update`-shaped splice, every byte of hand-written prose (before,
- * between, and after the managed pairs) and a SECOND OWNER's foreign marker
- * block must be byte-identical to the input. Only the managed section content
- * may change.
+ * The marker-era test exercised parseMarkers/splice/appendSection/
+ * insertSectionAfter/presentIds/sectionContent directly, including the
+ * #253 byte-preservation regression spec and the marker corruption shapes
+ * (orphan, nested, duplicate, mismatched, LOOSE_RE tripwire). Under M2 the
+ * markers are deleted: managed sections are identified by HEADING TEXT, and
+ * this test re-expresses the same invariants against the heading-based
+ * detector (section-detect.ts) and the one-pass migration strip
+ * (stripLegacyMarkers).
  *
- * The guarantee is structural, not accidental: `splice` reconstructs the file
- * as `text[:contentStart] + body + text[contentEnd:]`, so bytes outside the
- * managed content are copied straight through. This test proves it, and the
- * corruption cases prove the parser refuses to operate on a file it cannot
- * parse (a bad splice detected BEFORE writing is an error; after writing it is
- * data loss).
+ * The guarantee is the same structural one from #253: `spliceManagedSection`
+ * reconstructs the file as `heading + verbatim-separator + new body + verbatim
+ * rest`, so every byte of hand-written prose (before, between, and after the
+ * managed sections) and a SECOND OWNER's foreign comment block must be
+ * byte-identical to the input. Only the managed section content may change.
  */
 
 import {
-  MarkerError,
-  appendSection,
-  insertSectionAfter,
-  parseMarkers,
-  presentIds,
-  renderSection,
-  sectionContent,
-  splice,
-} from "../src/agents-md/markers.ts";
+  appendManagedSection,
+  findManagedSections,
+  insertManagedSectionAfter,
+  managedIdForHeading,
+  managedSectionBody,
+  presentManagedIds,
+  spliceManagedSection,
+  stripLegacyMarkers,
+} from "../src/agents-md/section-detect.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -39,26 +38,30 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
+// A heading-delimited managed section (post-M2 shape): heading + blank + body.
+const section = (heading: string, body: string) => `${heading}\n\n${body}`;
+
 const HAND_WRITTEN_BEFORE =
   "# Project Guide\n\nThis paragraph is the notary's.\nIt must survive any update, byte for byte.\n";
 const HAND_WRITTEN_BETWEEN =
   "\n## A human section between managed ones\n\nHand-written doctrine that a regenerator must not touch:\n- rule one\n- rule two\n";
 const HAND_WRITTEN_AFTER =
-  "\n## Closing notes\n\nThe end-of-file prose lives after the last marker.\n";
+  "\n## Closing notes\n\nThe end-of-file prose lives after the last section.\n";
 
-// A second owner's foreign marker block, different prefix, different id.
+// A second owner's foreign comment block, different prefix, different id.
 const FOREIGN =
   "<!-- other-owner:begin notes v1 -->\nforeign managed content\n<!-- other-owner:end notes -->\n";
 
-// Build a realistic brownfield file: prose + one managed pair + foreign pair + prose.
-const managedBody = "- **gate** — `bun run test`\n";
+// Build a realistic brownfield file: prose + one managed heading section +
+// foreign comment + prose.
+const managedBody = "- **gate** — `bun run test`";
 const input =
   HAND_WRITTEN_BEFORE +
-  renderSection("quality-gates", managedBody) +
+  section("## Quality Gates", managedBody) +
   HAND_WRITTEN_BETWEEN +
   FOREIGN +
-  renderSection(
-    "decision-ledger",
+  section(
+    "## Decision Ledger (legacy, in-file)",
     "| key | value | provenance |\n| --- | --- | --- |\n| x | y | [auto:2026-01-01] |",
   ) +
   HAND_WRITTEN_AFTER;
@@ -67,64 +70,72 @@ const input =
 
 {
   // A new body for the managed section — the "update".
-  const newBody = "- **gate** — `bun run test`\n- **gate** — `bun run check`\n";
-  const out = splice(input, "quality-gates", newBody);
+  const newBody = "- **gate** — `bun run test`\n- **gate** — `bun run check`";
+  const out = spliceManagedSection(input, "quality-gates", newBody);
 
-  // Only the managed section's content changed. Every other byte is identical.
-  const before = out.slice(0, out.indexOf("<!-- pi-rukas:agents-md:begin quality-gates"));
+  // Only the managed section's content changed. The hand-written prose BEFORE
+  // the first managed heading is byte-identical.
+  const before = out.slice(0, out.indexOf("## Quality Gates"));
   assert(
-    before === input.slice(0, input.indexOf("<!-- pi-rukas:agents-md:begin quality-gates")),
-    "#253: hand-written prose BEFORE the first managed pair is byte-identical",
+    before === input.slice(0, input.indexOf("## Quality Gates")),
+    "#253: hand-written prose BEFORE the first managed section is byte-identical",
   );
 
-  // The region between the quality-gates end marker and the next managed begin
-  // (the human section + foreign pair) must be byte-identical.
-  const startOfHuman = input.indexOf("<!-- pi-rukas:agents-md:end quality-gates -->");
-  const outStartOfHuman = out.indexOf("<!-- pi-rukas:agents-md:end quality-gates -->");
-  const nextManagedBegin = input.indexOf("<!-- pi-rukas:agents-md:begin decision-ledger");
-  const outNextManagedBegin = out.indexOf("<!-- pi-rukas:agents-md:begin decision-ledger");
-  const betweenIn = input.slice(startOfHuman, nextManagedBegin);
-  const betweenOut = out.slice(outStartOfHuman, outNextManagedBegin);
+  // The region between the quality-gates section and the next heading (the
+  // human section + foreign comment) must be byte-identical.
+  const startOfHuman = input.indexOf("## A human section");
+  const outStartOfHuman = out.indexOf("## A human section");
+  const nextManaged = input.indexOf("## Decision Ledger");
+  const outNextManaged = out.indexOf("## Decision Ledger");
+  const betweenIn = input.slice(startOfHuman, nextManaged);
+  const betweenOut = out.slice(outStartOfHuman, outNextManaged);
   assert(
     betweenIn === betweenOut,
-    "#253: hand-written prose AND the foreign owner block BETWEEN managed pairs are byte-identical",
+    "#253: hand-written prose AND the foreign owner block BETWEEN managed sections are byte-identical",
   );
 
-  // Everything after the last managed pair (the closing notes) is identical.
-  const lastEndIn = input.lastIndexOf("<!-- pi-rukas:agents-md:end decision-ledger -->");
-  const lastEndOut = out.lastIndexOf("<!-- pi-rukas:agents-md:end decision-ledger -->");
+  // Everything after the last managed section (the closing notes) is identical.
+  const lastIn = input.indexOf("## Closing notes");
+  const lastOut = out.indexOf("## Closing notes");
   assert(
-    input.slice(lastEndIn) === out.slice(lastEndOut),
-    "#253: hand-written prose AFTER the last managed pair is byte-identical",
+    input.slice(lastIn) === out.slice(lastOut),
+    "#253: hand-written prose AFTER the last managed section is byte-identical",
   );
 
-  // The managed content actually changed.
+  // The managed content actually changed. (managedSectionBody returns the
+  // caller-facing shape: leading blank separator + content + trailing
+  // newline; strip both to compare against the raw body.)
+  const splicedBody = (managedSectionBody(out, "quality-gates") ?? "")
+    .replace(/^\n/, "")
+    .replace(/\n$/, "");
   assert(
-    sectionContent(out, "quality-gates") === `${newBody}`,
+    splicedBody === newBody,
     "#253: and the managed section itself DID change (the update took effect)",
   );
 
-  // The foreign block still parses as absent from OUR markers, and is present verbatim.
+  // The foreign block content survives verbatim and is NOT mistaken for a
+  // managed section.
   assert(
     out.includes("foreign managed content"),
     "#253: the foreign owner's block content survives verbatim",
   );
   assert(
-    !presentIds(out).includes("notes"),
-    "#253: the foreign block's id is NOT mistaken for a pi-ensemble managed section",
+    !presentManagedIds(out).includes("notes"),
+    "#253: the foreign block's id is NOT mistaken for a managed section",
   );
 }
 
 // --------------------------------------------- splice-twice equals splice-once
 
 {
-  const a = splice(input, "quality-gates", "body-v1\n");
-  const b = splice(a, "quality-gates", "body-v1\n");
+  const a = spliceManagedSection(input, "quality-gates", "body-v1");
+  const b = spliceManagedSection(a, "quality-gates", "body-v1");
   assert(a === b, "splice applied twice with the same body equals applying it once");
-  // And the idempotent re-splice did not corrupt the other sections.
   assert(
-    sectionContent(b, "decision-ledger") === sectionContent(input, "decision-ledger"),
-    "...and the ledger section is untouched by the no-op re-splice",
+    (managedSectionBody(b, "quality-gates") ?? "")
+      .replace(/^\n/, "")
+      .replace(/\n$/, "") === "body-v1",
+    "...and the managed section holds the spliced body",
   );
 }
 
@@ -132,234 +143,195 @@ const input =
 
 {
   const fresh = "# T\n";
-  const withOne = appendSection(fresh, "commands", "- cmd\n");
-  assert(presentIds(withOne).join(",") === "commands", "appendSection adds a managed section");
-  const withTwo = appendSection(withOne, "decision-ledger", "| k | v | p |\n| --- | --- | --- |\n");
+  const withOne = appendManagedSection(fresh, "commands", "- cmd");
   assert(
-    presentIds(withTwo).join(",") === "commands,decision-ledger",
+    presentManagedIds(withOne).join(",") === "commands",
+    "appendManagedSection adds a managed section",
+  );
+  const withTwo = appendManagedSection(withOne, "environment", "- Manifest: `package.json`");
+  assert(
+    presentManagedIds(withTwo).join(",") === "commands,environment",
     "a second append appends in order",
   );
+  assert(withTwo.includes("## Commands"), "appended section carries its heading");
+  assert(withTwo.includes("## Environment"), "second appended section carries its heading");
+}
+
+// ------------------------------------------------------- heading-level boundary
+//
+// The load-bearing delimiter rule: a managed h1 section (a scaffold section
+// like "# Git Workflow") contains internal h2 sub-headings and does NOT end
+// at them — it ends at the next h1 (or EOF). A fact section emitted as ##
+// ends at the next ## or #, never at an internal ###. This is why the old
+// wrap.ts findSections (which split on /^##\s+/ only) was h1-blind.
+
+{
+  // An h1 scaffold section with internal h2 sub-headings (the concrete
+  // boundary condition from scaffold.ts SCAFFOLD_BODIES).
+  const h1Section = [
+    "# Git Workflow",
+    "",
+    "## Conventional commits",
+    "",
+    "<type>(<scope>): <description>",
+    "",
+    "## Branch protection",
+    "",
+    "- NO direct commits to main",
+  ].join("\n");
+  const file = `# Title\n\n${h1Section}\n\n# Next h1 section\n\nbody of next\n`;
+  const spans = findManagedSections(file);
+  const git = spans.find((s) => s.id === "git-workflow");
+  assert(git !== undefined, "h1 scaffold section is detected by its heading text");
+  assert(git?.level === 1, "git-workflow is detected as an h1 section");
   assert(
-    withTwo.endsWith("<!-- pi-rukas:agents-md:end decision-ledger -->\n"),
-    "...ending on a complete marker pair",
+    git?.body.includes("## Conventional commits") && git?.body.includes("## Branch protection"),
+    "h1 section CONTAINS its internal h2 sub-headings (the delimiter is level ≤ own)",
+  );
+  assert(
+    !git?.body.includes("# Next h1 section"),
+    "h1 section ends at the next h1 (does not swallow the following h1 section)",
+  );
+
+  // A ## fact section ends at the next ## or #, not at an internal ###.
+  const h2File = [
+    "## Commands",
+    "",
+    "### Sub detail",
+    "",
+    "| kind | command |",
+    "",
+    "## Environment",
+    "",
+    "- Manifest: `package.json`",
+  ].join("\n");
+  const h2Spans = findManagedSections(h2File);
+  const cmd = h2Spans.find((s) => s.id === "commands");
+  assert(cmd !== undefined, "## fact section is detected");
+  assert(cmd?.body.includes("### Sub detail"), "## section contains its internal ### sub-heading");
+  assert(!cmd?.body.includes("## Environment"), "## section ends at the next ##");
+  const env = h2Spans.find((s) => s.id === "environment");
+  assert(
+    env?.body.includes("- Manifest: `package.json`"),
+    "the following ## section is detected too",
+  );
+}
+
+// ------------------------------------------- heading-name → id exactness
+{
+  // Exact word-set matching only (the wrap.ts doctrine). Scoped so the
+  // heading-detection assertions below are isolated from the file-level state.
+  const _block = true; // block scope anchor
+  // Exact word-set matching only (the wrap.ts doctrine).
+  assert(
+    managedIdForHeading("## Quality Gates") === "quality-gates",
+    "'## Quality Gates' → quality-gates",
+  );
+  assert(
+    managedIdForHeading("## Quality Gates (blocking)") === undefined,
+    "'## Quality Gates (blocking)' is NOT quality-gates (word count)",
+  );
+  assert(
+    managedIdForHeading("## My Commands") === undefined,
+    "'## My Commands' is NOT commands (exact word set)",
+  );
+  assert(
+    managedIdForHeading("# Git Workflow") === "git-workflow",
+    "'# Git Workflow' → git-workflow (any level)",
+  );
+  assert(
+    managedIdForHeading("## Quality_Gates") === "quality-gates",
+    "word-separator tolerant (underscore)",
+  );
+  assert(managedIdForHeading("## quality gates") === "quality-gates", "case-insensitive");
+  assert(
+    managedIdForHeading("# Testing Standards") === "testing-standards",
+    "'# Testing Standards' → testing-standards",
   );
 }
 
 // ------------------------------------------------------------------ corruption
+//
+// The heading-era corruption: a DUPLICATE managed heading (the same id
+// appearing twice) is a structural refusal, never a silent pass.
 
 {
-  // Nested: a begin inside another open span.
-  const nested = `${
-    renderSection("a", "x").replace("<!-- pi-rukas:agents-md:end a -->", "") +
-    renderSection("b", "y")
-  }<!-- pi-rukas:agents-md:end a -->\n`;
-  assert(
-    throws(() => parseMarkers(nested)),
-    "nested markers → MarkerError, not silent pass",
-  );
-
-  // Duplicate id: two sections with the same id.
-  const dup = renderSection("a", "1") + renderSection("a", "2");
-  assert(
-    throws(() => parseMarkers(dup)),
-    "duplicate section id → MarkerError",
-  );
-
-  // Mismatched: begin a, end b.
-  const mismatch =
-    "<!-- pi-rukas:agents-md:begin a v1 -->\nbody\n<!-- pi-rukas:agents-md:end b -->\n";
-  assert(
-    throws(() => parseMarkers(mismatch)),
-    "mismatched begin/end ids → MarkerError",
-  );
-
-  // Orphan begin: begin with no end.
-  const orphanBegin = "<!-- pi-rukas:agents-md:begin a v1 -->\nbody\n";
-  assert(
-    throws(() => parseMarkers(orphanBegin)),
-    "begin with no matching end → MarkerError",
-  );
-
-  // Orphan end: end with no begin.
-  const orphanEnd = "<!-- pi-rukas:agents-md:end a -->\n";
-  assert(
-    throws(() => parseMarkers(orphanEnd)),
-    "end with no matching begin → MarkerError",
-  );
-}
-
-// splice must not silently "succeed" on a corrupt file either
-{
-  const corrupt = "<!-- pi-rukas:agents-md:begin a v1 -->\nbody\n"; // orphan begin
+  const dup = "# T\n\n## Commands\n\n| kind | command |\n\n## Commands\n\n| kind | command |";
   let threw = false;
   try {
-    splice(corrupt, "a", "new");
+    presentManagedIds(dup);
   } catch (e) {
-    threw = e instanceof MarkerError;
+    threw = e instanceof Error && /duplicate managed heading/.test(e.message);
   }
-  assert(threw, "splice refuses to act on a corrupt file (throws MarkerError)");
+  assert(threw, "duplicate managed heading → SectionError, not silent pass");
 }
 
-// ------------------------------------------------------------ tripwire shapes
+// ------------------------------------------------------------ one-pass strip
 //
-// The corruption tripwire's invariant: a marker-shaped token that neither
-// BEGIN_RE nor END_RE recognised must be refused, never silently accepted.
-// A mis-versioned END (trailing `v<N>`) is the load-bearing shape — if it
-// were accepted, a drift of this kind would be spliced around verbatim and
-// the corruption would be permanently invisible.
+// The migration transform removes EXACTLY the recognised managed marker
+// lines (both prefixes, begin/end, any version shape) and the `:managed`
+// preamble comment, preserving every other byte verbatim. Idempotent.
 
 {
-  const v3begin =
-    "<!-- pi-rukas:agents-md:begin x v3 -->\nq\n<!-- pi-rukas:agents-md:end x v2 -->\n";
-  const err = throwsCorrupt(
-    v3begin,
-    "strict-captured begin v3 + strict-missed end v2 → MarkerError",
+  const legacy =
+    "# T\n\n" +
+    "<!-- pi-rukas:agents-md:managed — preamble -->\n" +
+    "<!-- pi-rukas:agents-md:begin commands v1 -->\n" +
+    "| kind | command |\n" +
+    "<!-- pi-rukas:agents-md:end commands -->\n" +
+    "<!-- pi-ensemble:agents-md:begin environment v1 -->\n" +
+    "- Manifest: `Gemfile`\n" +
+    "<!-- pi-ensemble:agents-md:end environment -->\n" +
+    "<!-- other-owner:begin notes v1 -->\nforeign\n<!-- other-owner:end notes -->\n";
+  const stripped = stripLegacyMarkers(legacy);
+  assert(!stripped.includes("agents-md:begin"), "strip: no begin marker remains");
+  assert(!stripped.includes("agents-md:end"), "strip: no end marker remains");
+  assert(!stripped.includes("agents-md:managed"), "strip: no :managed preamble remains");
+  assert(stripped.includes("| kind | command |"), "strip: the commands body survives");
+  assert(stripped.includes("- Manifest: `Gemfile`"), "strip: the environment body survives");
+  assert(
+    stripped.includes("<!-- other-owner:begin notes v1 -->"),
+    "strip: a foreign owner's comment survives byte-for-byte",
   );
   assert(
-    err?.includes("mis-versioned"),
-    "...and the diagnostic names the mis-versioned marker (not an orphan pairing)",
+    stripLegacyMarkers(stripped) === stripped,
+    "strip: a second application is a no-op (idempotent)",
   );
-
-  // The other strict-missed END shapes, so the invariant holds for the class,
-  // not just the one probe that motivated it.
-  throwsCorrupt(
-    "<!-- pi-rukas:agents-md:begin x v99 -->\nq\n<!-- pi-rukas:agents-md:end x v2 -->\n",
-    "begin v99 + end v2 → MarkerError",
-  );
-  throwsCorrupt(
-    "<!-- pi-rukas:agents-md:begin x v1 -->\nq\n<!-- pi-rukas:agents-md:end x v2 -->\n",
-    "begin v1 + end v2 → MarkerError",
-  );
-  throwsCorrupt(
-    "<!-- pi-rukas:agents-md:begin x v2 -->\nq\n<!-- pi-rukas:agents-md:end x v2 -->\n",
-    "begin v2 + end v2 (both strict-missed on the end) → MarkerError",
-  );
-  throwsCorrupt(
-    "<!-- pi-rukas:agents-md:end a v2 -->\n",
-    "orphan END with a version → MarkerError",
-  );
-  throwsCorrupt(
-    "<!-- pi-rukas:agents-md:begin a v1 -->\nq\n<!-- pi-rukas:agents-md:end b v3 -->\n",
-    "mismatched ids + versioned END → MarkerError",
-  );
-  throwsCorrupt(
-    "<!-- pi-rukas:agents-md:begin x v1 -->\nq\n<!-- pi-rukas:agents-md:end x\nv9 -->\n",
-    "END split across two physical lines → MarkerError",
-  );
-
-  // The shapes that used to vanish silently before the tripwire existed.
-  throwsCorrupt(
-    "<!-- pi-rukas:agents-md:begin x -->\nq\n<!-- pi-rukas:agents-md:end x -->\n",
-    "begin missing its version → MarkerError",
-  );
-  throwsCorrupt(
-    "<!-- pi-rukas:agents-md:begin x v1 -->\nq\n<!-- pi-rukas:agents-md:end x junk -->\n",
-    "end with trailing junk → MarkerError",
-  );
-  throwsCorrupt(
-    "<!-- pi-rukas:agents-md:begin a.b v1 -->\nq\n<!-- pi-rukas:agents-md:end a.b -->\n",
-    "id with a dot → MarkerError",
-  );
-  throwsCorrupt(
-    "<!-- pi-rukas:agents-md:begin QUALITY v1 -->\nq\n<!-- pi-rukas:agents-md:end QUALITY -->\n",
-    "uppercase id → MarkerError",
-  );
-
-  // Valid shapes must keep parsing — the tripwire must not over-catch.
-  const valid =
-    "<!-- pi-rukas:agents-md:begin a v1 -->\nq\n<!-- pi-rukas:agents-md:end a -->\n" +
-    "<!-- pi-rukas:agents-md:begin b v1 -->\nq\n<!-- pi-rukas:agents-md:end b -->\n";
-  const ids = presentIds(valid);
-  assert(ids.join(",") === "a,b", "valid multi-pair file still parses cleanly");
 }
 
-// ------------------------------------------------------------ code-style id
-//
-// The new managed id `code-style` must flow through the same parse / splice /
-// insert primitives as the existing ids, without touching the tripwire regexes
-// (the id charset `[a-z0-9-]` already admits it).
+// --------------------------------------------------------------- code-style id
 
 {
-  const codeStyleBody = "- No `# type: ignore`\n- Prefer named exports\n";
-  const withCodeStyle =
-    "# T\n" +
-    renderSection("quality-gates", managedBody) +
-    renderSection("environment", "- Manifest: `package.json`\n") +
-    renderSection("code-style", codeStyleBody) +
-    renderSection(
-      "decision-ledger",
-      "| key | value | provenance |\n| --- | --- | --- |\n| x | y | [auto:2026-01-01] |",
-    );
-
-  // presentIds lists the new id between environment and decision-ledger.
+  const codeStyleBody = "- No `# type: ignore`\n- Prefer named exports";
+  // Canonical shape: sections separated by exactly one blank line, no trailing
+  // blank before the next heading (matching the renderAgent output shape).
+  const withCodeStyle = `# T\n\n${section("## Quality Gates", "- **gate** — `bun run test`")}\n\n${section("## Code Style", codeStyleBody)}`;
   assert(
-    presentIds(withCodeStyle).join(",") ===
-      "quality-gates,environment,code-style,decision-ledger",
-    "code-style: presentIds lists the new id in document order",
+    presentManagedIds(withCodeStyle).join(",") === "quality-gates,code-style",
+    "code-style: presentManagedIds lists the new id in document order",
   );
-
-  // sectionContent round-trips the body.
   assert(
-    sectionContent(withCodeStyle, "code-style") === codeStyleBody,
-    "code-style: sectionContent returns the managed body",
+    (managedSectionBody(withCodeStyle, "code-style") ?? "")
+      .replace(/^\n/, "")
+      .replace(/\n$/, "") === codeStyleBody,
+    "code-style: managedSectionBody returns the managed body",
   );
-
-  // A re-splice of the code-style section is byte-identical and leaves the
-  // ledger untouched.
-  const re = splice(withCodeStyle, "code-style", codeStyleBody);
+  const re = spliceManagedSection(withCodeStyle, "code-style", codeStyleBody);
   assert(re === withCodeStyle, "code-style: re-splice with the same body is byte-identical");
+  // insertManagedSectionAfter places a code-style section AFTER the
+  // environment heading and BEFORE the next managed heading.
+  const before = `# T\n\n${section("## Quality Gates", "- **gate** — `bun run test`")}\n\n${section("## Environment", "- Manifest: `package.json`")}\n\n${section("## Closing", "end")}`;
+  const inserted = insertManagedSectionAfter(before, "code-style", codeStyleBody, "environment");
+  const envIdx = inserted.indexOf("## Environment");
+  const csIdx = inserted.indexOf("## Code Style");
+  const closingIdx = inserted.indexOf("## Closing");
+  assert(csIdx > envIdx, "code-style insert: the section lands AFTER the environment heading");
+  assert(csIdx < closingIdx, "code-style insert: the section lands BEFORE the next heading");
   assert(
-    sectionContent(re, "decision-ledger") === sectionContent(withCodeStyle, "decision-ledger"),
-    "code-style: the ledger is untouched by the code-style re-splice",
-  );
-
-  // insertSectionAfter places a code-style pair AFTER the environment end marker
-  // and BEFORE the decision-ledger begin marker.
-  const before =
-    "# T\n" +
-    renderSection("quality-gates", managedBody) +
-    renderSection("environment", "- Manifest: `package.json`\n") +
-    renderSection(
-      "decision-ledger",
-      "| key | value | provenance |\n| --- | --- | --- |\n| x | y | [auto:2026-01-01] |",
-    );
-  const inserted = insertSectionAfter(before, "code-style", codeStyleBody, "environment");
-  const envEnd = inserted.indexOf("<!-- pi-rukas:agents-md:end environment -->");
-  const csBegin = inserted.indexOf("<!-- pi-rukas:agents-md:begin code-style");
-  const dlBegin = inserted.indexOf("<!-- pi-rukas:agents-md:begin decision-ledger");
-  assert(csBegin > envEnd, "code-style insert: the pair lands AFTER the environment end marker");
-  assert(csBegin < dlBegin, "code-style insert: the pair lands BEFORE decision-ledger");
-  assert(
-    presentIds(inserted).join(",") === "quality-gates,environment,code-style,decision-ledger",
-    "code-style insert: the pair is a well-formed managed section",
+    presentManagedIds(inserted).join(",") === "quality-gates,environment,code-style",
+    "code-style insert: the section is a well-formed managed section",
   );
 }
 
-function throws(fn: () => unknown): boolean {
-  try {
-    fn();
-    return false;
-  } catch (e) {
-    return e instanceof MarkerError;
-  }
-}
-
-function throwsCorrupt(input: string, msg: string): string | undefined {
-  try {
-    parseMarkers(input);
-    console.error(`✗ ${msg}`);
-    exit = 1;
-    return undefined;
-  } catch (e) {
-    if (e instanceof MarkerError) {
-      console.log(`✓ ${msg}`);
-      return e.message;
-    }
-    console.error(`✗ ${msg} (wrong error type: ${(e as Error).message})`);
-    exit = 1;
-    return undefined;
-  }
-}
-
-console.log(exit === 0 ? "\nAll marker checks passed." : "\nFAILED");
+console.log(exit === 0 ? "\nAll section-detect (heading) checks passed." : "\nFAILED");
 process.exit(exit);

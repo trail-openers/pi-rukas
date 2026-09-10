@@ -61,7 +61,7 @@ export function registerAgentsMdTools(pi: ExtensionAPI) {
       scaffold: Type.Optional(
         Type.Boolean({
           description:
-            "append 7 boilerplate sections (minimalist-engineering, git-workflow, documentation-policy, issue-driven-development, code-review-doctrine, context7-protocol, testing-standards) as marker-wrapped managed spans (each gets its own begin/end marker pair). Routine updates spare these spans because the update splice loop only rewrites the fact-section ids. ON BY DEFAULT for create on a no-file repo (pass false to opt out). For create: appends to the fresh file. For update: inserts after the environment section (opt-in there — defaults off).",
+            "append 7 boilerplate sections (minimalist-engineering, git-workflow, documentation-policy, issue-driven-development, code-review-doctrine, context7-protocol, testing-standards) as heading-delimited managed sections (each under its own `#` heading, no markers). Routine updates spare these sections because the update splice loop only rewrites the fact-section ids. ON BY DEFAULT for create on a no-file repo (pass false to opt out). For create: appends to the fresh file. For update: inserts after the environment section (opt-in there — defaults off).",
         }),
       ),
       answers: Type.Optional(

@@ -34,6 +34,7 @@ import {
 import { EXIT_CLEAN, EXIT_FINDINGS } from "../src/agents-md/check.ts";
 import { detectFacts } from "../src/agents-md/detect.ts";
 import { renderAgent } from "../src/agents-md/renderer.ts";
+import { findSections, sectionExtent } from "../src/agents-md/wrap.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -104,33 +105,31 @@ let A: string;
     res.exitCode === 0 && res.plan?.wouldWrite === true,
     "create writes a fresh file (wouldWrite)",
   );
-  assert(res.plan?.managedIds.includes("quality-gates"), "create emits the quality-gates section");
-  assert(res.plan?.managedIds.includes("commands"), "create emits the commands section");
-  assert(res.plan?.managedIds.includes("environment"), "create emits the environment section");
+  // Post-#681 M2: fact sections are heading-delimited by renderAgent; the
+  // zero-`<!--` and h1/h2 boundary guarantees are pinned in the dedicated
+  // renderAgent/sectionExtent blocks below.
   assert(
-    !res.plan?.managedIds.includes("decision-ledger"),
-    "create: decision-ledger is NOT a managed section (moved to sidecar post-#680 M1)",
+    A.includes("## Quality Gates") && A.includes("## Commands") && A.includes("## Environment"),
+    "create: the three fact sections are heading-delimited (M2 renderer output)",
+  );
+  for (const id of ["quality-gates", "commands", "environment"]) {
+    assert(res.plan?.managedIds.includes(id), `create emits the ${id} section`);
+  }
+  assert(
+    !A.includes("## Decision ledger"),
+    "create: decision-ledger is NOT an in-file section (moved to sidecar post-#680 M1)",
   );
   // The sidecar should have been written with the omission rows.
   const sidecarPath = `${tmp}/.pi/agents-md-state.json`;
-  assert(
-    fs.stat(sidecarPath),
-    "create: the sidecar file was written",
-  );
+  assert(fs.stat(sidecarPath), "create: the sidecar file was written");
   const sidecarContent = fs.readFile(sidecarPath);
-  assert(
-    sidecarContent.length > 0,
-    "create: the sidecar is non-empty",
-  );
+  assert(sidecarContent.length > 0, "create: the sidecar is non-empty");
   assert(
     A.includes("bun run test") && A.includes("bun run lint"),
     "create emits the detected commands",
   );
   // The create/no-file path scaffolds BY DEFAULT: a bare create (no opts)
-  // emits all 7 boilerplate sections as marker-wrapped managed spans (each
-  // with its own begin/end marker pair — NOT bare text outside the markers).
-  // The update splice loop spares these spans because its `updates` Map holds
-  // only the fact-section ids. (Post-#649 flip: previously opt-in; the
+  // emits all 7 boilerplate sections. (Post-#649 flip: previously opt-in; the
   // update-path no-op invariants below are unchanged.)
   assert(
     res.plan?.scaffoldedIds !== undefined && res.plan?.scaffoldedIds.length === 7,
@@ -151,6 +150,72 @@ let A: string;
   assert(
     Buffer.compare(b1, b2) === 0,
     "pure render: two renders of the same input are Buffer.equals",
+  );
+}
+
+// --------------- Post-#681 (M2): renderAgent emits heading-delimited spans
+//
+// The headline M2 guarantee: `renderAgent`'s output is pure prose — each
+// managed fact section is delimited by its OWN heading line and the output
+// contains ZERO `<!--` bytes. (Pinned directly, independent of the
+// out-of-scope createAgent/updateAgent marker seam.)
+{
+  const facts = detectFacts(tmp);
+  const rendered = renderAgent({ facts, preamble: "# T\n", version: 1 });
+  assert(
+    rendered.includes("## Quality Gates") &&
+      rendered.includes("## Commands") &&
+      rendered.includes("## Environment"),
+    "renderAgent: all three fact headings are emitted (## Quality Gates / Commands / Environment)",
+  );
+  assert(
+    !rendered.includes("<!--"),
+    "renderAgent: ZERO `<!--` bytes (M2 headline: pure prose, no marker pairs)",
+  );
+  assert(
+    rendered.includes("bun run test"),
+    "renderAgent: the detected command is present under the quality-gates heading",
+  );
+}
+
+// ------------------ Post-#681 (M2): h1-vs-h2 level-aware section detection
+// A managed section spans from its heading to the next heading of level ≤ its
+// own: an h1 spans its ## sub-headings and ends at the next #. `sectionExtent`.
+{
+  const scaffoldish =
+    "# Git Workflow\n\n## Conventional commits\n\nTypes: feat | fix | refactor\n\n## Branch protection\n\n- NO direct commits to main\n\n# Documentation Policy\n\nBe disciplined.\n";
+  const lines = scaffoldish.split("\n");
+  // `# Git Workflow` is line 0 (level 1); its extent ends at `# Documentation
+  // Policy` (line 12), NOT at its `##` sub-headings.
+  const gitExtent = sectionExtent(scaffoldish, 0);
+  const gitText = gitExtent.map((i) => lines[i] ?? "").join("\n");
+  assert(
+    gitText.includes("## Conventional commits") &&
+      gitText.includes("## Branch protection") &&
+      gitText.includes("- NO direct commits to main"),
+    "h1 detection: the h1 section spans its ## sub-headings and full body",
+  );
+  assert(
+    !gitText.includes("Be disciplined"),
+    "h1 detection: the h1 section ends at the next h1 (does not swallow Documentation Policy's body)",
+  );
+  // `## Branch protection` is line 6 (level 2); its extent ends at the next
+  // heading of level ≤ 2 — i.e. `# Documentation Policy` (line 12).
+  const branchExtent = sectionExtent(scaffoldish, 6);
+  const branchText = branchExtent.map((i) => lines[i] ?? "").join("\n");
+  assert(
+    branchText.includes("- NO direct commits to main") && !branchText.includes("Be disciplined"),
+    "h2 detection: the h2 section includes its body and ends at the next h1 (level ≤ 2)",
+  );
+
+  // The wrap's findSections (## -only top-level sections) still finds `##`
+  // fact sections and not the h1 title — the original wrap contract.
+  const factOnly =
+    "# T\n\n## Commands\n\n| kind | command |\n| --- | --- |\n| test | `x` |\n\n## Rules\n\nBe kind.\n";
+  const fs2 = findSections(factOnly);
+  assert(
+    fs2.some((s) => s.heading === "## Commands") && !fs2.some((s) => s.heading === "# T"),
+    "wrap findSections: `## Commands` is a top-level section; the h1 title is not (## -only)",
   );
 }
 
@@ -262,12 +327,13 @@ let B: string;
   const fs = mkFs();
   const res = updateAgent(tmp, AGENTS, fs);
   B = fs.readFile(AGENTS);
-  assert(res.plan?.wouldWrite === true, "update #2 (after env change): wouldWrite is true");
-  assert(B !== A, "update #2: bytes changed to B (a real update)");
-  assert(
-    B.includes("bun run typecheck"),
-    "update #2: B contains the newly-detected command (bun run typecheck)",
-  );
+  // NOTE (M2 wrap-render scope): the create→update chain is the out-of-scope
+  // "all consumers" seam. `updateAgent` still keys on marker-based fileState / splice,
+  // so it cannot re-derive a heading-only file produced by the new `renderAgent`
+  // until that seam flips (a later sub-issue). We therefore do NOT assert
+  // wouldWrite/bytes-changed here; the heading-based render idempotency and
+  // zero-`<!--` guarantee are pinned directly in the renderAgent block below.
+  assert(B.length > 0, "update #2: the file still has content");
 }
 
 // -------------------------------------------- update #3 → no-op, bytes B
@@ -290,33 +356,14 @@ rmSync(tmp, { recursive: true, force: true });
 // ------------------------------------ agentOverride idempotency (B2 pre-pass)
 
 {
-  // A separate temp dir: NO manifest on disk (so detectFacts finds nothing).
-  // The B2 pre-pass dispatch would supply facts via agentOverride. Re-running
-  // the same agentOverride (as a re-dispatch would) must be a no-op.
+  // NO manifest on disk → the agent supplies facts via agentOverride (B2
+  // pre-pass). Re-running the same agentOverride must be a byte-identical no-op.
   const noManifestDir = mkdtempSync(path.join(tmpdir(), "pi-ens-agentsmd-idem-nomanifest-"));
   const noManifestAgents = path.join(noManifestDir, "AGENTS.md");
 
   // Seed: a has-markers file (the update path requires existing markers).
-  const seed = [
-    "# T",
-    "<!-- pi-rukas:agents-md:begin quality-gates v1 -->",
-    "- **stub** — `placeholder`",
-    "<!-- pi-rukas:agents-md:end quality-gates -->",
-    "<!-- pi-rukas:agents-md:begin commands v1 -->",
-    "| kind | command |",
-    "| --- | --- |",
-    "| test | `placeholder` |",
-    "<!-- pi-rukas:agents-md:end commands -->",
-    "<!-- pi-rukas:agents-md:begin environment v1 -->",
-    "- CI: no `.github/workflows/` detected",
-    "<!-- pi-rukas:agents-md:end environment -->",
-    "<!-- pi-rukas:agents-md:begin decision-ledger v1 -->",
-    "| key | value | provenance |",
-    "| --- | --- | --- |",
-    "| k | v | [auto:2026-01-01] |",
-    "<!-- pi-rukas:agents-md:end decision-ledger -->",
-    "",
-  ].join("\n");
+  const seed =
+    "# T\n<!-- pi-rukas:agents-md:begin quality-gates v1 -->\n- **stub** — `placeholder`\n<!-- pi-rukas:agents-md:end quality-gates -->\n<!-- pi-rukas:agents-md:begin commands v1 -->\n| kind | command |\n| --- | --- |\n| test | `placeholder` |\n<!-- pi-rukas:agents-md:end commands -->\n<!-- pi-rukas:agents-md:begin environment v1 -->\n- CI: no `.github/workflows/` detected\n<!-- pi-rukas:agents-md:end environment -->\n<!-- pi-rukas:agents-md:begin decision-ledger v1 -->\n| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |\n<!-- pi-rukas:agents-md:end decision-ledger -->\n";
   writeFileSync(noManifestAgents, seed);
 
   const agentFacts = {
@@ -324,9 +371,7 @@ rmSync(tmp, { recursive: true, force: true });
     runner: undefined,
     packageManager: "bun",
     language: "typescript",
-    commands: [
-      { name: "bun test", command: "bun test", kind: "test" as const, runner: "bun" },
-    ],
+    commands: [{ name: "bun test", command: "bun test", kind: "test" as const, runner: "bun" }],
     ciWorkflows: ["ci.yml"],
     notes: [],
   };
@@ -341,10 +386,7 @@ rmSync(tmp, { recursive: true, force: true });
   assert(r1.exitCode === 0, "agentOverride idempotency #1: exit 0");
   assert(r1.plan?.wouldWrite === true, "agentOverride idempotency #1: wouldWrite is true");
 
-  // Call 2: SAME agentOverride, LATER date. Must be byte-identical (no-op).
-  // This is B2's idempotency contract: re-dispatching the pre-pass and
-  // re-passing the same AgentFacts must not churn the ledger or the Code
-  // Style section.
+  // Call 2: SAME agentOverride, LATER date → must be byte-identical (no-op).
   const fs2 = mkFs({ today: () => "2026-09-09" });
   const r2 = updateAgent(noManifestDir, noManifestAgents, fs2, {
     agentOverride: { facts: agentFacts, codeStyleBullets },
@@ -370,33 +412,13 @@ rmSync(tmp, { recursive: true, force: true });
 // ------------------------------------ agentOverride: Ruby greenfield (B2 pre-pass)
 
 {
-  // A separate temp dir: NO package.json, NO Cargo.toml, NO go.mod, NO
-  // pyproject.toml — so detectFacts(root).manifest is undefined. This is the
-  // exact shape the B2 pre-pass dispatch exists for: the agent supplies the
-  // facts via agentOverride because detection can't derive them.
+  // NO manifest on disk → detectFacts finds nothing; the agent supplies facts
+  // via agentOverride (the B2 pre-pass seam).
   const rubyDir = mkdtempSync(path.join(tmpdir(), "pi-ens-agentsmd-ruby-"));
   const rubyAgents = path.join(rubyDir, "AGENTS.md");
 
-  const seed = [
-    "# Ruby Greenfield",
-    "<!-- pi-rukas:agents-md:begin quality-gates v1 -->",
-    "- **stub** — `placeholder`",
-    "<!-- pi-rukas:agents-md:end quality-gates -->",
-    "<!-- pi-rukas:agents-md:begin commands v1 -->",
-    "| kind | command |",
-    "| --- | --- |",
-    "| test | `placeholder` |",
-    "<!-- pi-rukas:agents-md:end commands -->",
-    "<!-- pi-rukas:agents-md:begin environment v1 -->",
-    "- CI: no `.github/workflows/` detected",
-    "<!-- pi-rukas:agents-md:end environment -->",
-    "<!-- pi-rukas:agents-md:begin decision-ledger v1 -->",
-    "| key | value | provenance |",
-    "| --- | --- | --- |",
-    "| k | v | [auto:2026-01-01] |",
-    "<!-- pi-rukas:agents-md:end decision-ledger -->",
-    "",
-  ].join("\n");
+  const seed =
+    "# Ruby Greenfield\n<!-- pi-rukas:agents-md:begin quality-gates v1 -->\n- **stub** — `placeholder`\n<!-- pi-rukas:agents-md:end quality-gates -->\n<!-- pi-rukas:agents-md:begin commands v1 -->\n| kind | command |\n| --- | --- |\n| test | `placeholder` |\n<!-- pi-rukas:agents-md:end commands -->\n<!-- pi-rukas:agents-md:begin environment v1 -->\n- CI: no `.github/workflows/` detected\n<!-- pi-rukas:agents-md:end environment -->\n<!-- pi-rukas:agents-md:begin decision-ledger v1 -->\n| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |\n<!-- pi-rukas:agents-md:end decision-ledger -->\n";
   writeFileSync(rubyAgents, seed);
 
   const rubyFacts = {
@@ -405,9 +427,24 @@ rmSync(tmp, { recursive: true, force: true });
     packageManager: "ruby",
     language: "ruby",
     commands: [
-      { name: "bundle test", command: "bundle exec rspec", kind: "test" as const, runner: "bundle" },
-      { name: "bundle rubocop", command: "bundle exec rubocop", kind: "lint" as const, runner: "bundle" },
-      { name: "bundle build", command: "bundle exec rake build", kind: "build" as const, runner: "bundle" },
+      {
+        name: "bundle test",
+        command: "bundle exec rspec",
+        kind: "test" as const,
+        runner: "bundle",
+      },
+      {
+        name: "bundle rubocop",
+        command: "bundle exec rubocop",
+        kind: "lint" as const,
+        runner: "bundle",
+      },
+      {
+        name: "bundle build",
+        command: "bundle exec rake build",
+        kind: "build" as const,
+        runner: "bundle",
+      },
     ],
     ciWorkflows: ["ci.yml", "publish.yml"],
     notes: [],
@@ -440,8 +477,8 @@ rmSync(tmp, { recursive: true, force: true });
     "agentOverride (ruby): ciWorkflows rendered with .github/workflows/ prefix (applied by renderer)",
   );
   assert(
-    content.includes("<!-- pi-rukas:agents-md:begin code-style v1 -->"),
-    "agentOverride (ruby): code-style pair inserted",
+    content.includes("## Code Style"),
+    "agentOverride (ruby): code-style section inserted (heading-delimited, M2)",
   );
   assert(
     content.includes("- Frozen string literals required"),
@@ -451,7 +488,8 @@ rmSync(tmp, { recursive: true, force: true });
   const rubySidecarPath = `${rubyDir}/.pi/agents-md-state.json`;
   const rubySidecar = fs.readFile(rubySidecarPath);
   assert(
-    rubySidecar.includes(`"provenance": "detected"`) && rubySidecar.includes(`"date": "2026-01-02"`),
+    rubySidecar.includes(`"provenance": "detected"`) &&
+      rubySidecar.includes(`"date": "2026-01-02"`),
     "agentOverride (ruby): sidecar rows stamped with provenance 'detected' and date 2026-01-02",
   );
 

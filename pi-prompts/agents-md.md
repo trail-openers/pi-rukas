@@ -1,5 +1,5 @@
 ---
-description: Idempotently create / update / check the marker-managed sections of this repo's AGENTS.md via the agents_md_run tool. The tool runs a pure TypeScript renderer in-process; the file surgery is deterministic and byte-preserving for anything outside the managed markers.
+description: Idempotently create / update / check the heading-managed sections of this repo's AGENTS.md via the agents_md_run tool. The tool runs a pure TypeScript renderer in-process; the file surgery is deterministic and byte-preserving for anything outside the managed heading-delimited sections.
 argument-hint: "<create|update|check> [--deep]"
 ---
 
@@ -11,10 +11,10 @@ on real execution of the gate commands during `check` only.
 This command is executed by the **`agents_md_run` tool**, which runs the
 compiled TypeScript core (`extension/src/agents-md/`) in-process. The core is
 a pure-function renderer whose idempotency is *proven by a test* (double-render
-`Buffer.equals`), and whose splice touches **only** the bytes between its own
-marker pairs. Your job as the PM here is to call the tool, interpret its
-structured result, show the operator the diff it renders, and ask — not to
-edit the file yourself.
+`Buffer.equals`), and whose splice touches **only** the bytes inside its own
+managed heading-delimited sections. Your job as the PM here is to call the
+tool, interpret its structured result, show the operator the diff it renders,
+and ask — not to edit the file yourself.
 
 You MUST NOT hand-edit `AGENTS.md` for this command. Every byte change goes
 through the tool. This is the difference between a tool whose correctness is a
@@ -25,17 +25,17 @@ theorem and a tool whose correctness is a hope.
 ## The state machine
 
 Before doing anything, classify the target file (`<repoRoot>/AGENTS.md`). The
-`create`/`update` results carry `plan.state` (`no-file` / `no-markers` /
-`has-markers`) — use that when you already have a result, otherwise classify
-yourself:
+`create`/`update` results carry `plan.state` (`no-file` / `no-managed-headings`
+/ `has-managed-headings`) — use that when you already have a result, otherwise
+classify yourself:
 
 | State | Meaning | Action |
 |-------|---------|--------|
 | `no-file` | no `AGENTS.md` | `create` is automatic (reads + a create-when-absent write); show the diff, write |
-| `no-markers` | file exists but has no pi-rukas markers | **brownfield wrap** (see below) — WRAPPING ONLY |
-| `has-markers` | managed sections present | `update` (no-op when current) |
-| `markers-stale` | managed sections present but drift detected | `update` to re-derive; show diff, ask |
-| `ambiguous-corruption` | markers present but unparseable (nested/dup/mismatch/orphan) | **STOP.** Report the corruption verbatim. Never guess a repair.
+| `no-managed-headings` | file exists but has no pi-rukas managed section headings | **brownfield wrap** (see below) — WRAPPING ONLY |
+| `has-managed-headings` | managed heading-delimited sections present | `update` (no-op when current) |
+| `sections-stale` | managed sections present but drift detected | `update` to re-derive; show diff, ask |
+| `ambiguous-corruption` | a managed heading appears twice in the file (duplicate section) | **STOP.** Report the duplication verbatim. Never guess a repair.
 
 Then overlay the **git-dirty** state: if `git status --porcelain -- AGENTS.md`
 is non-empty, say so up front. The core never auto-resolves a dirty file — it
@@ -58,7 +58,7 @@ Dispatch the pre-pass **when either**:
    would return `manifest: undefined` (Ruby/Gemfile, true greenfield,
    unrecognised ecosystems), **OR**
 2. The current `AGENTS.md` has **no `code-style` managed section** (no
-   `<!-- pi-rukas:agents-md:begin code-style v1 -->` marker pair).
+   heading-delimited `code-style` section in the file).
 
 **Skip the dispatch entirely** only when BOTH conditions are false: the
 manifest is recognised AND the code-style section already exists.
@@ -175,8 +175,8 @@ The result is structured — do not parse prose:
   `no-file` case `check` is absent and `error` is present; render `error`
 - a `dryRun: true` create/update returns the full plan (including `newBytes`)
   without writing anything
-- `agentOverride` is only honoured on the has-markers `update` path; it is
-  silently ignored on create and no-markers (wrap) paths
+- `agentOverride` is only honoured on the has-managed-headings `update` path;
+  it is silently ignored on create and no-managed-headings (wrap) paths
 
 The tool also renders a human-readable summary in its `text` output: for
 create/update, the CLI-style report (would-write vs no-op, managed ids,
@@ -186,11 +186,12 @@ Read it; that IS the plan.
 
 **The exit code is the contract**:
 
-- `0` clean — markers valid, nothing referenced is missing
+- `0` clean — managed sections are well-formed, nothing referenced is missing
 - `1` findings / drift — the file parses, but a referenced path is gone, a
-  gate command's tool is off PATH, or a ledger row drifted from its derivation
-- `2` refuse / corrupt / invalid — unparseable markers, empty managed section,
-  or a `create` on an existing file
+  gate command's tool is off PATH, a managed section is empty (heading
+  present, zero body lines), or a ledger row drifted from its derivation
+- `2` refuse / corrupt / invalid — a managed heading is duplicated or
+  malformed, or a `create` on an existing file
 
 **`exitCode` 2 → stop.** Do not continue the verb. Report the reason and, for
 corruption, the exact message the result carries.
@@ -214,7 +215,8 @@ Everything else is **ask**:
   insert bytes the operator authored — show the unified diff from the tool
   result first, then ask for explicit go-ahead before calling the tool again
   (without `dryRun`) to perform the write.
-- a brownfield wrap (it inserts marker lines into a human file).
+- a brownfield wrap (it inserts new managed heading-delimited sections into a
+  human file).
 
 When you are going to ask, call the tool with `dryRun: true` first — the
 result carries the exact bytes that would be written, so the diff you show
@@ -293,8 +295,9 @@ Never auto-adopt a brownfield file headless.
 
 ## Brownfield adoption = WRAPPING ONLY, plus scaffold-append when scaffold is set
 
-For a file that exists but has no markers, the ONLY permitted change is to
-**wrap** (doctrine-untouched) **plus scaffold-append when scaffold is set**:
+For a file that exists but has no managed section headings, the ONLY
+permitted change is to **wrap** (doctrine-untouched) **plus scaffold-append
+when scaffold is set**:
 
 **Wrap** (always permitted): the tool parses the existing `## ` sections,
 classifies each as `machine` (facts the core can re-derive: commands,
@@ -302,8 +305,7 @@ environment) / `doctrine` (human rules, taste, machine-read sentences like
 merge authority) / `add` (a managed section that is absent), and produces a
 per-section plan. The default plan is **doctrine-untouched**: every existing
 section is left exactly where it is, with its heading and bytes intact; the
-core inserts its marker pairs and appends only the managed sections it can
-derive.
+core appends only the heading-delimited managed sections it can derive.
 
 **Scaffold-append** (when `scaffold: true`): after the wrap, 7 boilerplate
 sections are appended. These are universal text — language
@@ -313,7 +315,7 @@ so a repo with no machine sections can still wrap if scaffold boilerplate
 will be appended.
 
 Assert, before the write: the diff in the tool result is
-**insertions-only** (new marker lines + appended managed sections). No line
+**insertions-only** (appended managed heading-delimited sections). No line
 of the original file is deleted or reworded. If the plan would delete or
 rename anything — or the result reports a classification ambiguity — it is not
 a wrap you may take; stop and ask (the ambiguity result exits `1` with one
@@ -324,8 +326,8 @@ exits `2`).
 
 ## Refusals (never, under any verb)
 
-- ❌ Never edit bytes **outside** the marker pairs. The splice keeps the
-  original prefix and suffix verbatim; a diff that shows changes there is a
+- ❌ Never edit bytes **outside** the managed heading-delimited sections. The
+  splice keeps everything else verbatim; a diff that shows changes there is a
   bug, not a result.
 - ❌ Never rename a human heading.
 - ❌ Never delete a human section or line.
@@ -338,7 +340,8 @@ exits `2`).
 - ❌ No LLM fallback for content. A section the core cannot derive is **omitted**
   and recorded as an `[auto] section omitted: <reason>` row in the sidecar
   (`.pi/agents-md-state.json`) — never invented.
-- ❌ Never operate on unparseable markers. Corruption is a stop, not a guess.
+- ❌ Never operate on a file whose managed sections are duplicated or
+  malformed. A malformed structure is a stop, not a guess.
 - ❌ Never auto-adopt a brownfield file headless.
 - ❌ Never fall back to shelling out to the core (e.g. `bun
   extension/src/agents-md/agents-md.ts …`) — that path does not exist on host

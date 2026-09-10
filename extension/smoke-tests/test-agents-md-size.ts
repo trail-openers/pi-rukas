@@ -73,7 +73,7 @@ const ledger: LedgerRow[] = [
 const rendered = renderAgent({
   facts,
   ledger,
-  preamble: "# AGENTS.md\n\n<!-- pi-rukas:agents-md:managed -->\n",
+  preamble: "# AGENTS.md\n",
   version: 1,
 });
 

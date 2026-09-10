@@ -1,20 +1,25 @@
 #!/usr/bin/env bun
 /**
- * scaffold survival — hand-edit survival of marker-wrapped spans.
+ * scaffold survival — hand-edit survival of heading-delimited sections.
  *
- * The update splice loop (update-agent.ts) only rewrites spans whose id is
- * in its `updates` Map (fact-section ids quality-gates/commands/environment/
- * code-style), so a boilerplate or operator-choices span hand-edited by the
- * operator survives a routine (non-scaffold) update byte-for-byte even
- * though it sits INSIDE marker pairs. Proven via `sectionContent`
- * byte-equality, not `wouldWrite` (which collapses to `scaffoldAdded` on a
- * scaffold:true call and reflects nothing about the fact-section bytes).
+ * The update splice loop (update-agent.ts) only rewrites sections whose id
+ * is in its `updates` Map (fact-section ids quality-gates/commands/environment/
+ * code-style), so a boilerplate or operator-choices section hand-edited by
+ * the operator survives a routine (non-scaffold) update byte-for-byte even
+ * though it sits INSIDE a heading-delimited managed section. Proven via
+ * `managedSectionBody` byte-equality, not `wouldWrite` (which collapses to
+ * `scaffoldAdded` on a scaffold:true call and reflects nothing about the
+ * fact-section bytes).
  * The forcing update runs WITHOUT `scaffold: true` so the write path
  * actually runs.
  *
- * Split out from test-agents-md-scaffold.ts (the 500-line hard limit, AGENTS.md
- * §12) along the seam "existing scaffold behavior tests" vs "hand-edit
- * survival of marker-wrapped spans" (#664).
+ * Post-#681 M2: sections are heading-delimited (no HTML comment markers);
+ * the hand-edit is performed directly on the file bytes (replacing the
+ * section body between its heading and the next heading of level ≤ its own).
+ *
+ * Split out from test-agents-md-scaffold.ts (the 500-line hard limit,
+ * AGENTS.md §12) along the seam "existing scaffold behavior tests" vs
+ * "hand-edit survival of managed sections" (#664).
  */
 
 import {
@@ -32,7 +37,11 @@ import {
   createAgent,
   updateAgent,
 } from "../src/agents-md/agents-md.ts";
-import { presentIds, sectionContent, splice } from "../src/agents-md/markers.ts";
+import {
+  managedSectionBody,
+  presentManagedIds,
+  spliceManagedSection as spliceSectionBody,
+} from "../src/agents-md/section-detect.ts";
 import { type OperatorAnswers } from "../src/agents-md/scaffold.ts";
 
 let exit = 0;
@@ -87,26 +96,30 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
   };
 }
 
-// ===================================================== 1. boilerplate span
+// ===================================================== 1. boilerplate section
 
 {
   const fs = mkFs();
   createAgent(tmp, AGENTS, fs, { scaffold: true });
-  assert(presentIds(fs.readFile(AGENTS)).includes("minimalist-engineering"), "scaffold: minimalist-engineering is a marker-wrapped span");
-  const edited = splice(fs.readFile(AGENTS), "minimalist-engineering", "# Minimalist Engineering\n\nHand-edited by operator.\n");
+  assert(presentManagedIds(fs.readFile(AGENTS)).includes("minimalist-engineering"), "scaffold: minimalist-engineering is a heading-delimited section");
+  const edited = spliceSectionBody(
+    fs.readFile(AGENTS),
+    "minimalist-engineering",
+    "Hand-edited by operator.\n",
+  );
   writeFileSync(AGENTS, edited);
   rmSync(path.join(tmp, ".github", "workflows", "ci.yml"));
   const res = updateAgent(tmp, AGENTS, fs, {});
   assert(res.exitCode === 0, "hand-edit (boilerplate): the forcing update exits 0");
   assert(res.plan?.wouldWrite === true, "hand-edit (boilerplate): the forcing update genuinely wrote (ci.yml deletion is a real change)");
+  const boilerplateBody = managedSectionBody(fs.readFile(AGENTS), "minimalist-engineering");
   assert(
-    sectionContent(fs.readFile(AGENTS), "minimalist-engineering") ===
-      "# Minimalist Engineering\n\nHand-edited by operator.\n",
-    "hand-edit (boilerplate): the hand-edited span survives byte-for-byte",
+    boilerplateBody === "\nHand-edited by operator.\n",
+    `hand-edit (boilerplate): the hand-edited section survives byte-for-byte (got ${JSON.stringify(boilerplateBody)})`,
   );
 }
 
-// ===================================================== 2. operator-choices span
+// ===================================================== 2. operator-choices section
 
 {
   rmSync(AGENTS, { force: true });
@@ -117,21 +130,21 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
   const answers: OperatorAnswers = { coverageThreshold: "85%+", reviewBlockingSeverity: "HIGH" };
   const fs = mkFs();
   createAgent(tmp, AGENTS, fs, { scaffold: true, answers });
-  assert(presentIds(fs.readFile(AGENTS)).includes("operator-choices"), "scaffold + answers: operator-choices is a marker-wrapped span");
-  const edited = splice(
+  assert(presentManagedIds(fs.readFile(AGENTS)).includes("operator-choices"), "scaffold + answers: operator-choices is a heading-delimited section");
+  const edited = spliceSectionBody(
     fs.readFile(AGENTS),
     "operator-choices",
-    "## Operator choices\n\n- **Review-blocking severity:** CRITICALED\n",
+    "- **Review-blocking severity:** CRITICALED\n",
   );
   writeFileSync(AGENTS, edited);
   rmSync(path.join(tmp, ".github", "workflows", "ci.yml"));
   const res = updateAgent(tmp, AGENTS, fs, {});
   assert(res.exitCode === 0, "hand-edit (operator-choices): the forcing update exits 0");
   assert(res.plan?.wouldWrite === true, "hand-edit (operator-choices): the forcing update genuinely wrote");
+  const opBody = managedSectionBody(fs.readFile(AGENTS), "operator-choices");
   assert(
-    sectionContent(fs.readFile(AGENTS), "operator-choices") ===
-      "## Operator choices\n\n- **Review-blocking severity:** CRITICALED\n",
-    "hand-edit (operator-choices): the hand-edited span survives byte-for-byte",
+    opBody === "\n- **Review-blocking severity:** CRITICALED\n",
+    `hand-edit (operator-choices): the hand-edited section survives byte-for-byte (got ${JSON.stringify(opBody)})`,
   );
 }
 

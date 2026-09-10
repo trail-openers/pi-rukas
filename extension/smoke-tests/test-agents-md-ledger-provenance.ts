@@ -28,7 +28,12 @@ import {
   renderRow,
   upsertRow,
 } from "../src/agents-md/ledger.ts";
-import { MarkerError } from "../src/agents-md/markers.ts";
+import { SectionError } from "../src/agents-md/section-detect.ts";
+
+// Pre-#681 M2 the ledger's refusal error was `MarkerError` (from markers.ts,
+// now deleted). The name was renamed to SectionError; the type is the same
+// class the ledger throws, so the `instanceof` assertions below are unchanged.
+const MarkerError = SectionError;
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -80,11 +85,11 @@ function assert(cond: boolean, msg: string) {
   const detected: LedgerRow = { key: "k", value: "v", provenance: "detected", date: "2026-03-03" };
   const detectedFull = renderLedger([detected]);
   const detectedParsed = parseLedger(detectedFull);
-  assert(detectedParsed[0]?.provenance === "detected", "detected round-trip: provenance 'detected'");
   assert(
-    detectedParsed[0]?.date === "2026-03-03",
-    "detected round-trip: date recovered",
+    detectedParsed[0]?.provenance === "detected",
+    "detected round-trip: provenance 'detected'",
   );
+  assert(detectedParsed[0]?.date === "2026-03-03", "detected round-trip: date recovered");
   // Cross-check: an asked row must NOT be mis-parsed as detected, and a
   // detected row must NOT be mis-parsed as asked.
   assert(
@@ -123,12 +128,17 @@ function assert(cond: boolean, msg: string) {
   })();
   assert(!autoThrew, "renderRow(auto, '') does NOT throw (auto tolerates an empty date)");
   const autoObj = JSON.parse(autoLine) as Record<string, string>;
-  assert(autoObj.provenance === "auto" && autoObj.date === "", "renderRow(auto, '') emits provenance 'auto' with empty date");
+  assert(
+    autoObj.provenance === "auto" && autoObj.date === "",
+    "renderRow(auto, '') emits provenance 'auto' with empty date",
+  );
 
   // parseLedger on a dateless detected row → MarkerError.
   let parseThrew = false;
   try {
-    parseLedger(JSON.stringify([{ key: "k", value: "v", provenance: "detected", date: "" }]) + "\n");
+    parseLedger(
+      `${JSON.stringify([{ key: "k", value: "v", provenance: "detected", date: "" }])}\n`,
+    );
   } catch (e) {
     parseThrew = true;
     assert(e instanceof MarkerError, "parseLedger on dateless detected row throws MarkerError");
@@ -136,8 +146,13 @@ function assert(cond: boolean, msg: string) {
   assert(parseThrew, "parseLedger(detected row with empty date) THROWS (corruption is an error)");
 
   // A dateless auto row parses fine (asymmetry, both directions).
-  const autoParsed = parseLedger(JSON.stringify([{ key: "k", value: "v", provenance: "auto", date: "" }]) + "\n");
-  assert(autoParsed.length === 1 && autoParsed[0]?.provenance === "auto", "dateless auto row parses");
+  const autoParsed = parseLedger(
+    `${JSON.stringify([{ key: "k", value: "v", provenance: "auto", date: "" }])}\n`,
+  );
+  assert(
+    autoParsed.length === 1 && autoParsed[0]?.provenance === "auto",
+    "dateless auto row parses",
+  );
   assert(autoParsed[0]?.date === "", "dateless auto row: date is empty string");
 }
 
@@ -157,7 +172,10 @@ function assert(cond: boolean, msg: string) {
   ];
   const merged = mergeAutoRows(existing, auto);
   const row = merged.find((r) => r.key === "quality-gates");
-  assert(row?.provenance === "detected", "mergeAutoRows: a detected row is sticky (not auto-overwritten)");
+  assert(
+    row?.provenance === "detected",
+    "mergeAutoRows: a detected row is sticky (not auto-overwritten)",
+  );
   assert(row?.value === "agent", "mergeAutoRows: detected row keeps its original value");
   assert(row?.date === "2026-01-01", "mergeAutoRows: detected row keeps its original date");
 
@@ -165,11 +183,12 @@ function assert(cond: boolean, msg: string) {
   const autoExisting: LedgerRow[] = [
     { key: "k", value: "old", provenance: "auto", date: "2026-01-01" },
   ];
-  const autoNew: LedgerRow[] = [
-    { key: "k", value: "new", provenance: "auto", date: "2026-09-01" },
-  ];
+  const autoNew: LedgerRow[] = [{ key: "k", value: "new", provenance: "auto", date: "2026-09-01" }];
   const autoMerged = mergeAutoRows(autoExisting, autoNew);
-  assert(autoMerged.find((r) => r.key === "k")?.value === "new", "auto row: changed value is still superseded");
+  assert(
+    autoMerged.find((r) => r.key === "k")?.value === "new",
+    "auto row: changed value is still superseded",
+  );
 }
 
 // ------------------------------------------------------- 5. renderLedger over mixed
@@ -187,8 +206,16 @@ function assert(cond: boolean, msg: string) {
   // upsertRow is provenance-agnostic (keys by row key) — a detected upsert
   // replaces an existing row in place, preserving position.
   const before = [{ key: "c", value: "z", provenance: "detected", date: "2026-01-03" }];
-  const after = upsertRow(before, { key: "c", value: "z2", provenance: "detected", date: "2026-01-04" });
-  assert(after.length === 1 && after[0]?.date === "2026-01-04", "upsertRow replaces a detected row in place");
+  const after = upsertRow(before, {
+    key: "c",
+    value: "z2",
+    provenance: "detected",
+    date: "2026-01-04",
+  });
+  assert(
+    after.length === 1 && after[0]?.date === "2026-01-04",
+    "upsertRow replaces a detected row in place",
+  );
 }
 
 console.log(exit === 0 ? "\nAll ledger-provenance checks passed." : "\nFAILED");

@@ -23,7 +23,12 @@
 
 import type { LedgerRow } from "./ledger.ts";
 import { parseLedger } from "./ledger.ts";
-import { MarkerError } from "./markers.ts";
+import { SectionError } from "./section-detect.ts";
+
+// Pre-#681 M2 this was `MarkerError` (imported from the now-deleted
+// markers.ts). The sidecar's corruption-refusal error type was renamed to
+// `SectionError`; it is the same class the sidecar validation throws.
+const MarkerError = SectionError;
 
 export const SIDECAR_RELATIVE_PATH = ".pi/agents-md-state.json";
 
