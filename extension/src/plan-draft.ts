@@ -189,63 +189,16 @@ export function itemsByKind(findings: AngleFindings[], kind: PlanItemKindName): 
   return findings.flatMap((f) => f.toolUses).filter((i) => i.kind === kind);
 }
 
-/**
- * The prior-context block rendered into CHILD prompts (Phase-2 angles, gap
- * gate). Capped at ~2000 chars TOTAL (not per item): with the 200-char clip
- * removed for the FILED BODY (D2), the full operator context now reaches
- * every child prompt, 3-8 angle children and up to 2 gap-gate rounds.
- * draftSpec (the filed body) renders priorContext uncapped — this cap exists
- * only at the child-prompt render site. A truncation marker makes the clip
- * visible rather than silently dropping facts.
- */
-export const PRIOR_CONTEXT_CHILD_PROMPT_CAP = 2000;
-
-/**
- * The smallest clip worth keeping. Below this the fragment carries no
- * meaning, so the item is counted omitted instead.
- */
-const PRIOR_CONTEXT_MIN_CLIP = 80;
-
-export function renderPriorContext(priorContext: { source: string; fact: string }[]): string {
-  if (priorContext.length === 0) return "";
-  const lines = priorContext.map((p) => `- [${p.source}] ${p.fact}`);
-  const rendered = lines.join("\n");
-  if (rendered.length <= PRIOR_CONTEXT_CHILD_PROMPT_CAP) return rendered;
-  // CLIP TO FIT, never drop whole (vipune fixture run, 2026-09-09): the old
-  // loop skipped any line that did not fit in the remaining budget, so a
-  // single oversized operator context line — the ONE input the driver
-  // treats as authority — was dropped ENTIRELY and the children planned
-  // from stale vipune snapshots instead. An item longer than the remaining
-  // budget now keeps its head (down to PRIOR_CONTEXT_MIN_CLIP chars);
-  // whatever still cannot fit is counted, and the marker names both.
-  const kept: string[] = [];
-  let soFar = 0;
-  let clipped = 0;
-  let omitted = 0;
-  for (const line of lines) {
-    const sep = soFar === 0 ? 0 : 1;
-    if (soFar + sep + line.length <= PRIOR_CONTEXT_CHILD_PROMPT_CAP) {
-      kept.push(line);
-      soFar += sep + line.length;
-      continue;
-    }
-    const budget = PRIOR_CONTEXT_CHILD_PROMPT_CAP - soFar - sep;
-    if (budget >= PRIOR_CONTEXT_MIN_CLIP) {
-      kept.push(`${line.slice(0, budget - 1)}…`);
-      soFar = PRIOR_CONTEXT_CHILD_PROMPT_CAP;
-      clipped++;
-    } else {
-      omitted++;
-    }
-  }
-  const parts = [
-    clipped > 0 ? `${clipped} item(s) clipped` : "",
-    omitted > 0 ? `${omitted} item(s) omitted` : "",
-  ]
-    .filter(Boolean)
-    .join(" and ");
-  return `${kept.join("\n")}\n- [truncated] ${parts} for child-prompt size (full inventory is in the filed body)`;
-}
+// The child-prompt prior-context render (operator channel exempt from the
+// shared cap) lives in plan-prior-context.ts — re-exported for existing
+// consumers (plan-angles, plan-gate-prompt, plan-investigate,
+// research-driver). draftSpec (the FILED body) renders priorContext
+// uncapped (D2) — the caps exist only at the child-prompt render site.
+export {
+  OPERATOR_PRIOR_CONTEXT_CHILD_PROMPT_CAP,
+  PRIOR_CONTEXT_CHILD_PROMPT_CAP,
+  renderPriorContext,
+} from "./plan-prior-context.ts";
 
 // #639: epicSubIssues is in plan-angles.ts (the natural home for the epic
 // angle charter); imported below where it's used in draftSpec.

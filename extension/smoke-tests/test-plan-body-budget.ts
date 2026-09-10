@@ -149,9 +149,12 @@ const MID_CONTEXT = Array.from({ length: 40 }, (_, i) => `fact ${i}: ${"c".repea
     (gatePrompts[0] ?? "").includes("Compacted to fit the forge's"),
     "pipeline: the gap gate reviewed the COMPACTED body (what it approves is what files)",
   );
+  // Bounded by the compacted body + the child-prompt prior-context caps
+  // (12k operator + 2k rest, plan-prior-context.ts) + template slack — the
+  // operator channel is deliberately no longer clipped at 2k for children.
   assert(
-    (gatePrompts[0] ?? "").length < FORGE_BODY_MAX,
-    "pipeline: the gate prompt stays under the forge cap too (cost fix)",
+    (gatePrompts[0] ?? "").length < FORGE_BODY_MAX + 16_384,
+    "pipeline: the gate prompt is budget-bounded (compacted body + prior-context caps)",
   );
 
   // Byte-determinism: identical inputs → identical spec.

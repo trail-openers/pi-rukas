@@ -71,8 +71,12 @@ process.env.PI_ENSEMBLE_FORGE = "none";
 // ------------------------------------------ C2/C5: prior-context clipping
 
 {
+  // Non-operator source: "context param" entries are now EXEMPT from this
+  // cap (they render whole under their own 12k cap — pinned in
+  // test-plan-prior-context.ts); the clip-to-fit machinery is pinned here
+  // via the vipune channel it still governs.
   const bigFact = "x".repeat(3000);
-  const one = renderPriorContext([{ source: "context param", fact: bigFact }]);
+  const one = renderPriorContext([{ source: "vipune", fact: bigFact }]);
   assert(
     one.length <= PRIOR_CONTEXT_CHILD_PROMPT_CAP + 200,
     "clip: output stays near the cap",
@@ -83,8 +87,8 @@ process.env.PI_ENSEMBLE_FORGE = "none";
   );
   assert(/1 item\(s\) clipped/.test(one), "clip: the marker names the clipped count");
 
-  const first = { source: "context param", fact: "y".repeat(1950) };
-  const second = { source: "context param", fact: "z".repeat(500) };
+  const first = { source: "vipune", fact: "y".repeat(1950) };
+  const second = { source: "vipune", fact: "z".repeat(500) };
   const two = renderPriorContext([first, second]);
   assert(
     /item\(s\) omitted/.test(two) && !two.includes("zzzz"),

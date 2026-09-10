@@ -456,7 +456,7 @@ function assert(cond: boolean, msg: string) {
   const longItems: { source: string; fact: string }[] = [];
   for (let i = 0; i < 30; i++) {
     longItems.push({
-      source: "context param",
+      source: "vipune",
       fact: `prior context line ${i} — ${"x".repeat(100)} (padding to exceed the cap)`,
     });
   }
@@ -467,7 +467,7 @@ function assert(cond: boolean, msg: string) {
   assert(long.includes("[truncated]"), "long: truncation marker is present");
   assert(long.includes("prior context line 0"), "long: first item is preserved");
   // The last item (line 29) should be dropped — the marker says so.
-  const truncatedCount = longItems.length - (long.match(/- \[context param\] prior context line/g) ?? []).length;
+  const truncatedCount = longItems.length - (long.match(/- \[vipune\] prior context line/g) ?? []).length;
   assert(truncatedCount > 0, `long: ${truncatedCount} item(s) truncated`);
   // Post-disclosure-fix marker format: "N item(s) clipped and M item(s)
   // omitted" (an item that fits partially is CLIPPED to the remaining
