@@ -71,10 +71,11 @@ export function registerAgentsMdTools(pi: ExtensionAPI) {
             reviewBlockingSeverity: Type.Optional(Type.String()),
             mergeAuthority: Type.Optional(Type.String()),
             projectConstraints: Type.Optional(Type.String()),
+            projectIntent: Type.Optional(Type.String()),
           },
           {
             description:
-              "Operator answers from the interview (4 questions). Produces an operator-choices section + [asked:operator] ledger rows. coverageThreshold additionally drives the answer-aware Testing Standards section (unanswered → the ≥80% opinionated default is rendered there); when Testing Standards carries the value, the operator-choices section omits the coverage bullet.",
+              "Operator answers from the greenfield interview (5 questions). Produces an operator-choices section + [asked:operator] ledger rows. coverageThreshold additionally drives the answer-aware Testing Standards section (unanswered → the ≥80% opinionated default is rendered there); when Testing Standards carries the value, the operator-choices section omits the coverage bullet. projectIntent (the 5th question — project intent/tech-stack/best-practices in the operator's own words) lands EXCLUSIVELY in operator-choices with [asked:operator] provenance; unanswered → no bullet, no ledger row.",
           },
         ),
       ),
@@ -132,7 +133,7 @@ export function registerAgentsMdTools(pi: ExtensionAPI) {
           },
           {
             description:
-              "Caller-supplied agent-derived facts + code-style bullets (the B1↔B2 seam). When `facts` is set on update, the fact sections (quality-gates, commands, environment) are built from it instead of a fresh detectFacts(). Only honoured on the has-markers update path — never on create/wrap.",
+              "Caller-supplied agent-derived facts + code-style bullets (the B1↔B2 seam). When `facts` is set on update, the fact sections (quality-gates, commands, environment) are built from it instead of a fresh detectFacts(). The top-level codeStyleBullets/architectureBullets are also honoured on the greenfield CREATE path (rendered into the code-style / architecture-notes sections with [detected:agent] ledger rows); `facts` itself remains update-only.",
           },
         ),
       ),

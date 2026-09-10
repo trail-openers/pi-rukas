@@ -227,6 +227,14 @@ export function createAgent(
       scaffoldedIds = post.scaffoldedIds;
       factIds = new Set([...factIds, ...post.scaffoldedIds]);
     }
+    // The scaffold result's ledger rows (scaffolded:<id> for the boilerplate,
+    // detected:agent for caller-supplied code-style / architecture-notes
+    // sections, and the operator-choices rows) land in the sidecar. The
+    // operator-choices rows are merged by key via upsertRow so the
+    // operatorChoicesLedgerRows call above is not double-recorded.
+    for (const row of scaffoldResult.ledgerRows) {
+      ledger = upsertRow(ledger, row);
+    }
   }
 
   const sPath = sidecarPath(root);

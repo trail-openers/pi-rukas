@@ -320,20 +320,22 @@ const fs: AgentsMdFs = {
   );
   assert(
     protocolLine !== undefined &&
-      protocolLine.includes("the other 3 interview questions keep the omit-on-unanswered rule"),
-    "interview doctrine: the carve-out keeps omit-on-unanswered for the other 3 questions",
+      protocolLine.includes("the other 4 interview questions keep the omit-on-unanswered rule"),
+    "interview doctrine: the carve-out keeps omit-on-unanswered for the other 4 questions",
   );
-  // The other 3 questions still keep the omit-on-unanswered default.
+  // The other 4 questions still keep the omit-on-unanswered default (5 total
+  // questions; only coverage has a real default).
   const others = lines.filter((l) =>
     [
       "**Review-blocking severity**",
       "**Merge authority**",
       "**Project-specific constraints**",
+      "**Project intent & tech stack**",
     ].some((q) => l.includes(q)),
   );
   assert(
-    others.length === 3 && others.every((l) => l.includes("(default: omit)")),
-    "interview doctrine: the other 3 questions retain (default: omit)",
+    others.length === 4 && others.every((l) => l.includes("(default: omit)")),
+    "interview doctrine: the other 4 questions retain (default: omit)",
   );
 }
 

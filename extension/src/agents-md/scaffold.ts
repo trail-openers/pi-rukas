@@ -1,42 +1,24 @@
 /**
  * scaffold — boilerplate section templates and the scaffold post-pass.
  *
- * A greenfield `create` (scaffold is ON by default on the create/no-file
- * path) appends 7 boilerplate sections (minimalist-engineering, git-workflow,
- * documentation-policy, issue-driven-development, code-review-doctrine,
- * context7-protocol, testing-standards) as HEADING-DELIMITED managed
- * sections (via section-detect.ts `appendSection`/`insertSectionAfter`, which
- * emit pure-prose `# Heading` + body text — no HTML comment markers of any
- * kind). The sections are universal text — language specifics live in the
- * managed fact sections (quality-gates, commands, environment).
+ * Greenfield `create` appends 7 boilerplate sections as heading-delimited
+ * managed sections. Six bodies are static; `testing-standards` is answer-aware.
+ * The scaffold post-pass also inserts caller-supplied agent-derived bullet
+ * sections (code-style / architecture-notes) on the create/wrap path, reusing
+ * the same pure body builders as the has-markers update path.
  *
- * Six of the seven bodies are static array literals; `testing-standards`
- * alone is answer-aware: `computeScaffold` renders it from
- * `opts.answers.coverageThreshold` (the operator's stated threshold, or the
- * ≥80% opinionated default when unanswered).
- *
- * On a brownfield update, the scaffold post-pass runs AFTER the rebuild and
- * inserts missing boilerplate sections via `insertSectionAfter` (inserts
- * after the heading-delimited environment section; falls back to
- * append-at-end when environment is absent).
- *
- * Design: Shape C (hybrid) — fact sections and boilerplate sections are both
- * heading-delimited. Stickiness is NOT "outside markers": the update splice
- * loop (update-agent.ts) only rewrites sections whose id is in its `updates`
- * Map, and that map holds only the fact-section ids (quality-gates, commands,
- * environment, code-style). Boilerplate and operator-choices ids are never in
- * the map, so a routine update spares their bytes even though they sit
- * inside heading-delimited managed sections.
+ * Design: Shape C (hybrid) — fact and boilerplate sections are both
+ * heading-delimited; the update splice loop only rewrites fact-section ids,
+ * so boilerplate/operator-choices bytes are spared on routine updates.
  */
 
 import type { DetectedFacts } from "./detect.ts";
 import type { LedgerRow } from "./ledger.ts";
+import { architectureNotesBody, codeStyleBody } from "./renderer.ts";
 import { appendManagedSection, insertManagedSectionAfter } from "./section-detect.ts";
 
-// Post-#681 M2 the scaffold post-pass inserts heading-delimited sections
-// (section-detect.ts): a managed section is a heading-delimited block, and the
-// insertion seam is the heading boundary. The names below keep the call sites
-// readable as the marker-era names.
+// Post-#681 M2: the scaffold post-pass inserts heading-delimited sections;
+// these aliases keep call sites readable as the marker-era names.
 const appendSection = appendManagedSection;
 const insertSectionAfter = insertManagedSectionAfter;
 
@@ -51,6 +33,13 @@ export interface OperatorAnswers {
   mergeAuthority?: string;
   /** Project-specific constraints (free-form). */
   projectConstraints?: string;
+  /**
+   * 5th greenfield-interview question: project intent/tech-stack/best-practices
+   * in the operator's own words. Lands EXCLUSIVELY in operator-choices with
+   * [asked:operator] provenance — never in agent-derived sections. Unanswered
+   * → no bullet, no row (default-omit pattern).
+   */
+  projectIntent?: string;
 }
 
 /**
@@ -312,6 +301,11 @@ function scaffoldedLedgerRow(id: string, date: string): LedgerRow {
   };
 }
 
+/** The [detected:agent] row for caller-supplied bullet sections on create/wrap. */
+function agentDetectedLedgerRow(id: string, date: string): LedgerRow {
+  return { key: id, value: "agent", provenance: "detected", date };
+}
+
 /**
  * Operator-choices body for the scaffold: a bullet list that always ends
  * with a newline for splice symmetry. `omitCoverage` suppresses the
@@ -329,6 +323,7 @@ export function renderOperatorChoices(answers: OperatorAnswers, omitCoverage = f
   if (answers.mergeAuthority) rows.push(`- **Merge authority:** ${answers.mergeAuthority}`);
   if (answers.projectConstraints)
     rows.push(`- **Project-specific constraints:** ${answers.projectConstraints}`);
+  if (answers.projectIntent) rows.push(`- **Project intent & stack:** ${answers.projectIntent}`);
   return `## Operator choices\n\n${rows.join("\n")}\n`;
 }
 
@@ -342,6 +337,7 @@ export function operatorChoicesLedgerRows(answers: OperatorAnswers, date: string
     ["operator:review-blocking", answers.reviewBlockingSeverity],
     ["operator:merge-authority", answers.mergeAuthority],
     ["operator:constraints", answers.projectConstraints],
+    ["operator:intent", answers.projectIntent],
   ];
   return entries.flatMap(([key, value]) =>
     value === undefined ? [] : [{ key, value, provenance: "asked", date } as LedgerRow],
@@ -383,6 +379,30 @@ export function computeScaffold(existingIds: Set<string>, opts?: ScaffoldOpts): 
     ledgerRows.push(scaffoldedLedgerRow(id, date));
   }
 
+  // Agent-derived bullet sections (create/wrap path): caller-supplied
+  // codeStyleBullets/architectureBullets rendered via the SAME pure body
+  // builders the has-markers update path uses, so both emit identical bytes.
+  // [detected:agent] provenance: caller intent, never clobbered by routine
+  // updates. existingIds skip-if-present gate applies like testing-standards.
+  // agentOverride.facts is NOT consumed — only these two bullet fields.
+  const override = opts?.agentOverride;
+  const codeStyleOut = override?.codeStyleBullets
+    ? codeStyleBody(override.codeStyleBullets)
+    : undefined;
+  const archNotesOut = override?.architectureBullets
+    ? architectureNotesBody(override.architectureBullets)
+    : undefined;
+  // Unshift order: architecture-notes first, then code-style, so the final
+  // array is [code-style, architecture-notes, …] — the FACT_SECTIONS order.
+  if (archNotesOut !== undefined && !existingIds.has("architecture-notes")) {
+    sections.unshift({ id: "architecture-notes", body: archNotesOut });
+    ledgerRows.unshift(agentDetectedLedgerRow("architecture-notes", date));
+  }
+  if (codeStyleOut !== undefined && !existingIds.has("code-style")) {
+    sections.unshift({ id: "code-style", body: codeStyleOut });
+    ledgerRows.unshift(agentDetectedLedgerRow("code-style", date));
+  }
+
   // The answer-aware section: rendered from opts.answers (the operator's
   // stated threshold, or the opinionated default) + the agent-observed
   // testingNotes supplement (first-time population only), in document
@@ -392,7 +412,7 @@ export function computeScaffold(existingIds: Set<string>, opts?: ScaffoldOpts): 
   if (!existingIds.has("testing-standards")) {
     sections.push({
       id: "testing-standards",
-      body: testingStandardsBody(coverage, opts?.agentOverride?.testingNotes),
+      body: testingStandardsBody(coverage, override?.testingNotes),
     });
     ledgerRows.push(scaffoldedLedgerRow("testing-standards", date));
   }
@@ -402,7 +422,8 @@ export function computeScaffold(existingIds: Set<string>, opts?: ScaffoldOpts): 
       answers.coverageThreshold ||
       answers.reviewBlockingSeverity ||
       answers.mergeAuthority ||
-      answers.projectConstraints;
+      answers.projectConstraints ||
+      answers.projectIntent;
     if (hasAny) {
       const operatorRows = operatorChoicesLedgerRows(answers, date);
       ledgerRows.push(...operatorRows);
@@ -423,21 +444,8 @@ export function computeScaffold(existingIds: Set<string>, opts?: ScaffoldOpts): 
 
 /**
  * The scaffold post-pass: appends boilerplate sections (and optionally
- * operator-choices) to the rebuild output.
- *
- * For `create` (and wrap): `text` is the file content so far, and boilerplate
- * sections are appended at end. The `after` param is `undefined`.
- *
- * For `update` (has-markers): `text` is the REBUILD OUTPUT (current file with
- * managed sections rebuilt), and boilerplate is inserted AFTER the
- * `environment` section (via `insertSectionAfter`, which reads the
- * heading-delimited environment section's end). Falls back to append-at-end
- * when environment is absent.
- *
- * Insertion happens AFTER the rebuild, positions computed from
- * REBUILD-OUTPUT bytes (not pre-rebuild originals).
- *
- * Returns `{ bytes, scaffoldedIds }`.
+ * operator-choices) to the rebuild output. Create/wrap: appended at end.
+ * Update: inserted after the environment section. Returns { bytes, scaffoldedIds }.
  */
 export function runScaffoldPostPass(
   text: string,
@@ -451,19 +459,13 @@ export function runScaffoldPostPass(
   let result = text;
   const scaffoldedIds: string[] = [];
 
-  // First: append operator-choices section (if any). Matches the pre-M2
-  // document order (fact sections, operator-choices, boilerplate) — the
-  // scaffold post-pass on the create path previously inserted operator-choices
-  // before the boilerplate, and the scaffold tests pin that order.
+  // First: append operator-choices (if any), matching pre-M2 document order.
   if (scaffoldResult.operatorChoicesBody) {
     result = appendSection(result, "operator-choices", scaffoldResult.operatorChoicesBody);
   }
-
-  // Then: insert each boilerplate section IN DOCUMENT ORDER, each directly
-  // after the previous section (seam recomputed from current bytes every
-  // call). The first insertion uses the `environment` target when present
-  // (update path); when environment is absent it falls back to append-at-end.
-  // All subsequent insertions target the previously inserted section.
+  // Then: insert each boilerplate section in document order, each after the
+  // previous (seam recomputed from current bytes every call). The first uses
+  // `environment` when present (update path); all subsequent target the prior.
   let afterId: string | undefined = isUpdatePath ? "environment" : undefined;
   for (const { id, body } of scaffoldResult.sections) {
     result = afterId

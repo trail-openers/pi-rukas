@@ -69,6 +69,31 @@ section** (`code-style`, `architecture-notes`) **is absent**.
 manifest is recognised AND both the code-style and the architecture-notes
 sections already exist.
 
+**Bounded fallback (docless repo with filed issues)**: when the repo has
+**open GitHub issues** but **no manifest** AND **no planning docs** (no
+`docs/` directory with planning/architecture content) AND **no populated
+architecture-notes section**, you may skip the explore dispatch entirely and
+run the bounded read-only query yourself:
+
+```
+gh issue list --state open --limit 20 --json number,title,body
+```
+
+Read the **titles in full**; treat **bodies as truncated** to a reasonable
+character budget per issue (titles are the dense signal; a body is there to
+extract decisions from, not to quote at length). From the issues, extract
+**dense, specific decision bullets** in the same shape as the pre-pass's
+`architectureBullets` (module→responsibility, critical-path rules, stated
+intent/tech-stack choices — one concrete claim per bullet, no prose) and pass
+them **directly** into `agentOverride.architectureBullets` on the
+`agents_md_run` call. This path needs **no child dispatch**: the PM already
+ran the query itself. The gate (open issues exist AND no manifest AND no
+planning docs AND no populated architecture-notes) exists to avoid
+double-ingestion when docs or a manifest already provide the signal. A
+failing, empty, or unauthenticated `gh` call (no issues, no `gh`, no auth)
+degrades gracefully to the normal pre-pass path — it never blocks or aborts
+the /agents-md flow.
+
 ### The dispatch
 
 Use `dispatch_specialist` with `role: "explore"` (structurally denied
@@ -171,11 +196,12 @@ agents_md_run(verb: "create" | "update" | "check",
               deep?: boolean,      // check only; rejected with a structured
                                    // error on create/update
               scaffold?: boolean,  // append 7 boilerplate sections (default ON for create)
-              answers?: {           // operator interview answers (4 Qs)
+              answers?: {           // operator interview answers (5 Qs)
                 coverageThreshold?: string,
                 reviewBlockingSeverity?: string,
                 mergeAuthority?: string,
                 projectConstraints?: string,
+                projectIntent?: string,
               },
               dryRun?: boolean,     // plan is computed, no write is performed
               agentOverride?: {     // B1↔B2 seam (update only): agent-derived facts
@@ -296,18 +322,19 @@ applies the scaffold post-pass, which appends 7 boilerplate sections
 and optionally an `operator-choices` section (from interview answers).
 Pass `scaffold: false` to create a plain managed-only file.
 
-Ask these 4 questions BEFORE calling the tool:
+Ask these 5 questions BEFORE calling the tool:
 
 1. **Coverage threshold** — what test coverage is required? (default: the Testing Standards section renders the ≥80% opinionated default)
 2. **Review-blocking severity** — which severity blocks merge? (default: omit)
 3. **Merge authority** — who/what can merge PRs? (default: omit)
 4. **Project-specific constraints** — any additional rules? (default: omit)
+5. **Project intent & tech stack** — describe what this project is and any best-practices target in your own words (e.g. "Python project following 2026 best practices, FastAPI, async-first"). (default: omit)
 
 Protocol:
 - 2–4 options per question, default is the lowest-consequence choice
 - If the operator is absent (headless), see the headless clause
-- Unanswered → the Testing Standards section renders the ≥80% opinionated default (the other 3 interview questions keep the omit-on-unanswered rule)
-- Answered → `operator-choices` section + `[asked:operator]` ledger rows (the coverage value itself lives ONLY in the Testing Standards section; operator-choices omits its coverage bullet)
+- Unanswered → the Testing Standards section renders the ≥80% opinionated default (the other 4 interview questions keep the omit-on-unanswered rule)
+- Answered → `operator-choices` section + `[asked:operator]` ledger rows (the coverage value itself lives ONLY in the Testing Standards section; operator-choices omits its coverage bullet). The 5th answer (project intent) lands **exclusively** in operator-choices — never in architecture-notes or any agent-derived section
 
 ---
 
@@ -318,13 +345,15 @@ If there is no interactive UI (headless / `pi -p` / a driver dispatch):
   rule. `dryRun: true` computes the full plan and is safe to call headless.
 - **Show the advisory diff.** Run the verb with `dryRun: true` and surface
   the rendered diff. For scaffolded creates, the Testing Standards section
-  renders its ≥80% opinionated default coverage line; the other 3 interview
+  renders its ≥80% opinionated default coverage line; the other 4 interview
   questions remain unanswered (no operator-choices section is written).
 - **Write nothing.** A headless run must not auto-adopt a human file or
   write any assumed-answer ledger rows. The `operator-choices` section and
-  `[asked:operator]` rows are NEVER written headless.
+  `[asked:operator]` rows are NEVER written headless — this applies to the
+  5th question (project intent) exactly as it does to the other 3:
+  headless, no assumed answer, no bullet, no ledger row.
 - **Re-ask next interactive run.** Report that the run is gated on a human.
-  The next interactive session will re-ask the 4 interview questions and
+  The next interactive session will re-ask the 5 interview questions and
   produce the real write.
 
 Never auto-adopt a brownfield file headless.

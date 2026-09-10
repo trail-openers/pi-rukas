@@ -348,6 +348,69 @@ const run = (raw: Record<string, unknown>) =>
   );
 }
 
+// ----------------- create with codeStyleBullets/architectureBullets + 5th answers field (#697)
+
+{
+  // The create-path drop gap: agents_md_run create with an agentOverride
+  // carrying the two bullet fields must render both sections in the written
+  // file (with [detected:agent] sidecar rows), and the widened `answers`
+  // TypeBox param must accept the 5th field (projectIntent) landing in
+  // operator-choices only. Both in one call, at the tool seam.
+  rmSync(AGENTS, { force: true });
+  const cs = ["bun only — no npm in CI"];
+  const arch = ["extension/src — the runtime", "extension/src/agents-md — the /agents-md core"];
+  const r = await run({
+    verb: "create",
+    agentOverride: { codeStyleBullets: cs, architectureBullets: arch },
+    answers: { projectIntent: "pi-rukas: orchestration harness for pi subagents; TypeScript + Bun" },
+  });
+  const d = r.details;
+  assert(d.verb === "create" && d.exitCode === 0, "create + bullets + 5th answer: { verb: create, exitCode: 0 }");
+  const wrote = readFileSync(AGENTS, "utf8");
+  assert(wrote.includes("## Code Style"), "create + bullets: ## Code Style in plan.newBytes file");
+  assert(wrote.includes("## Architecture Notes"), "create + bullets: ## Architecture Notes in plan.newBytes file");
+  for (const b of [...cs, ...arch]) {
+    assert(wrote.includes(`- ${b}`), `create + bullets: bullet rendered: ${b}`);
+  }
+  // The 5th answers field: accepted by the widened TypeBox param and rendered
+  // in operator-choices with its dedicated bullet — never in an agent-derived
+  // section (provenance separation: operator-authored vs refresh-replaceable).
+  assert(wrote.includes("## Operator choices"), "create + 5th answer: operator-choices section present");
+  assert(
+    wrote.includes("- **Project intent & stack:** pi-rukas: orchestration harness for pi subagents"),
+    "create + 5th answer: the projectIntent bullet renders in operator-choices",
+  );
+  const archSection = wrote.slice(wrote.indexOf("## Architecture Notes"));
+  assert(
+    !archSection.includes("orchestration harness for pi subagents"),
+    "create + 5th answer: the operator's intent is ABSENT from architecture-notes",
+  );
+  // Sidecar rows: [detected:agent] for both bullet sections + [asked:operator]
+  // for the 5th answer, all distinct keys.
+  const sPath = path.join(tmp, ".pi", "agents-md-state.json");
+  const sRaw = JSON.parse(readFileSync(sPath, "utf8")) as { key: string; value: string; provenance: string; date: string }[];
+  const csRow = sRaw.find((x) => x.key === "code-style");
+  const archRow = sRaw.find((x) => x.key === "architecture-notes");
+  const intentRow = sRaw.find((x) => x.key === "operator:intent");
+  assert(csRow?.provenance === "detected" && csRow?.value === "agent", "create + bullets: code-style [detected:agent] sidecar row");
+  assert(archRow?.provenance === "detected" && archRow?.value === "agent", "create + bullets: architecture-notes [detected:agent] sidecar row");
+  assert(intentRow?.provenance === "asked", "create + 5th answer: operator:intent [asked:operator] sidecar row");
+  assert(
+    !sRaw.some((x) => x.key === "omit:code-style" || x.key === "omit:architecture-notes"),
+    "create + bullets: no omit: rows for the agent-derived sections",
+  );
+  // The widened param is OPTIONAL: a create without `answers` still exits 0
+  // and produces no operator-choices section (the default-omit pattern).
+  rmSync(AGENTS, { force: true });
+  const r2 = await run({ verb: "create" });
+  assert(r2.details.exitCode === 0, "create without answers: exit 0 (answers param is optional)");
+  const wrote2 = readFileSync(AGENTS, "utf8");
+  assert(
+    !wrote2.includes("## Operator choices"),
+    "create without answers: no operator-choices section (unanswered → absent)",
+  );
+}
+
 rmSync(tmp, { recursive: true, force: true });
 
 console.log(exit === 0 ? "\nAll tool checks passed." : "\nFAILED");
