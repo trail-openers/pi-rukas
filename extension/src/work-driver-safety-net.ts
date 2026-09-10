@@ -10,12 +10,21 @@
  * This module runs driver-side AFTER all developer dispatches complete
  * but BEFORE the verify gate. It checks each worktree for the specific
  * failure mode the verify gate would reject: uncommitted changes exist
- * but there are zero commits ahead of baseSha. When that condition
- * holds, it stages the porcelain paths (excluding driver artefacts under
- * `.pi/` and `tmp/`) and creates a driver-attributed commit.
+ * but there are zero commits ahead of the workstream's EFFECTIVE base. When
+ * that condition holds, it stages the porcelain paths (excluding driver
+ * artefacts under `.pi/` and `tmp/`) and creates a driver-attributed commit.
+ *
+ * #679 (task-evidence) — the safety net is no longer gated on the AGGREGATE
+ * verdict (`verdicts.every(v => v.ok)`). Its trigger is now a PER-WORKTREE
+ * evidence check, independent of any sibling's verdict, so a legitimate
+ * workstream's uncommitted work is still safety-netted even when a SIBLING
+ * is falsely-ok (the case-2c false-green shape). Each workstream's base is
+ * resolved from `pipelineState.workstreamBaseShas` (case 2b: a dependent
+ * workstream's effective base is its dependency's post-commit SHA) falling
+ * back to the global `baseSha`.
  *
  * The safety net NEVER fires when:
- *   - the worktree already has commits ahead of baseSha (AC2), or
+ *   - the worktree already has commits ahead of its effective base (AC2), or
  *   - the worktree is clean (AC3), or
  *   - the dispatch failed (the dispatch-failed HALT machinery handles it), or
  *   - `PI_ENSEMBLE_SAFETY_NET_COMMIT=0` is set (AC5).
@@ -44,6 +53,83 @@ function safetyNetEnabled(): boolean {
   return v !== "0" && v !== "false";
 }
 
+/** #679 — the global base is unusable as a fallback (older state files). */
+function isValidBaseSha(s: string | undefined): boolean {
+  return typeof s === "string" && /^[0-9a-f]{40}$/.test(s);
+}
+
+/**
+ * #679 (task-evidence) — resolve a workstream's EFFECTIVE base for the
+ * safety-net / verify re-gates. A dependent workstream's base is its
+ * dependency's post-commit SHA (persisted in `workstreamBaseShas` at
+ * deferred-worktree-creation time); every other workstream — and any
+ * workstream with no per-workstream entry — falls back to the global
+ * `baseSha`. Returns `undefined` when neither source is a valid SHA, in
+ * which case the caller skips the workstream (no evidence to act on).
+ */
+function effectiveBaseForWorkstream(
+  wsId: string,
+  workstreamBaseShas: Record<string, string> | undefined,
+  globalBaseSha: string | undefined,
+): string | undefined {
+  const per = workstreamBaseShas?.[wsId];
+  if (isValidBaseSha(per)) return per;
+  if (isValidBaseSha(globalBaseSha)) return globalBaseSha;
+  return undefined;
+}
+
+/**
+ * #679 (task-evidence) — is there ANY develop evidence to gate on?
+ *
+ * Replaces the old aggregate `verdicts.every(v => v.ok)` trigger that skipped
+ * the safety net AND the develop verify gate for the whole fanout when any
+ * single workstream failed. A fanout has evidence when at least one worktree
+ * has commits ahead of its effective base OR has uncommitted changes. Returns
+ * `true` conservatively (run the gates) when a worktree cannot be assessed —
+ * a gate is never suppressed on uncertainty. Never throws.
+ */
+export async function hasAnyWorktreeEvidence(
+  ctx: DriverContext,
+  state: WorkState,
+): Promise<boolean> {
+  const worktrees = state.pipelineState.worktrees ?? {};
+  const baseSha = state.pipelineState.baseSha;
+  const workstreamBaseShas = state.pipelineState.workstreamBaseShas;
+  const ids = Object.keys(worktrees);
+  if (ids.length === 0) return true; // nothing to gate on, but be conservative
+  for (const [wsId, cwd] of Object.entries(worktrees)) {
+    // Uncommitted changes anywhere → evidence, regardless of base validity.
+    try {
+      const { stdout } = await safetyNetExecp("git status --porcelain", {
+        cwd,
+        maxBuffer: 256 * 1024,
+      });
+      if (stdout.trim().length > 0) return true;
+    } catch {
+      // git status failed in this worktree — cannot assess; stay conservative.
+      return true;
+    }
+    const effectiveBase = effectiveBaseForWorkstream(wsId, workstreamBaseShas, baseSha);
+    if (!effectiveBase) continue; // no base → no commit evidence possible for this tree
+    try {
+      const { stdout } = await safetyNetExecp(`git rev-list --count ${effectiveBase}..HEAD`, {
+        cwd,
+        maxBuffer: 64 * 1024,
+      });
+      if (Number.parseInt(stdout.trim(), 10) > 0) return true;
+    } catch {
+      // Effective base not in this worktree's history — not evidence either way;
+      // move to the next worktree rather than conservatively bailing (a worktree
+      // whose base can't be resolved and that is clean has no evidence here).
+    }
+  }
+  // No worktree had uncommitted changes or commits ahead of its base. The
+  // fanout produced nothing — there is no diff evidence to gate on, so both
+  // gates are skipped (return false). The pre-#679 behaviour skipped on a
+  // single failed sibling; this skips ONLY when the whole fanout is empty.
+  return false;
+}
+
 /**
  * #622 — Apply the mechanical auto-commit safety net after all developer
  * dispatches complete.
@@ -66,12 +152,19 @@ export async function applySafetyNet(ctx: DriverContext, state: WorkState): Prom
 
   const worktrees = state.pipelineState.worktrees ?? {};
   const baseSha = state.pipelineState.baseSha;
-  const validBaseSha = /^[0-9a-f]{40}$/.test(baseSha ?? "");
-  if (!validBaseSha) {
-    // No valid baseSha (older state files / ops-dispatch fallback):
+  const workstreamBaseShas = state.pipelineState.workstreamBaseShas;
+  // #679 — no global baseSha is no longer a hard skip: a dependent workstream
+  // may still carry a valid per-workstream base (its dependency's post-commit
+  // SHA) in `workstreamBaseShas`. We resolve each workstream's effective base
+  // individually and skip ONLY the worktrees whose base is unresolvable.
+  const hasAnyBase =
+    isValidBaseSha(baseSha) ||
+    Object.values(workstreamBaseShas ?? {}).some((s) => isValidBaseSha(s));
+  if (!hasAnyBase) {
+    // No base anywhere (older state files / ops-dispatch fallback):
     // the verify gate uses the uncommitted-counts behaviour and the
     // safety net has nothing to commit against — skip.
-    trace("work-driver: safety net skipped — no valid baseSha");
+    trace("work-driver: safety net skipped — no valid baseSha (global or per-workstream)");
     return state;
   }
 
@@ -79,6 +172,13 @@ export async function applySafetyNet(ctx: DriverContext, state: WorkState): Prom
   const now = Date.now();
 
   for (const [wsId, cwd] of Object.entries(worktrees)) {
+    const effectiveBase = effectiveBaseForWorkstream(wsId, workstreamBaseShas, baseSha);
+    if (!effectiveBase) {
+      trace(
+        `work-driver: safety net skipped ${wsId} — no valid base (global or per-workstream) to compare against`,
+      );
+      continue;
+    }
     let dirty: string[] = [];
     let commitAhead = 0;
 
@@ -105,22 +205,28 @@ export async function applySafetyNet(ctx: DriverContext, state: WorkState): Prom
       continue;
     }
 
-    // (2) Check if worktree already has commits ahead of baseSha.
+    // (2) Check if worktree already has commits ahead of its EFFECTIVE base —
+    // the per-workstream effective base, not the global baseSha (#679). A
+    // dependent workstream's worktree was created from its dependency's
+    // post-commit SHA, so comparing against the global baseSha would
+    // miscount its commits ahead.
     try {
-      const { stdout } = await safetyNetExecp(`git rev-list --count ${baseSha}..HEAD`, {
+      const { stdout } = await safetyNetExecp(`git rev-list --count ${effectiveBase}..HEAD`, {
         cwd,
         maxBuffer: 64 * 1024,
       });
       commitAhead = Number.parseInt(stdout.trim(), 10) || 0;
     } catch {
-      // baseSha may not exist in this worktree's history — not evidence either way.
-      // Conservatively treat as 0 commits (fire the safety net if dirty).
+      // The effective base may not exist in this worktree's history — not
+      // evidence either way. Conservatively treat as 0 commits (fire the
+      // safety net if dirty).
     }
 
-    // (AC2) Already has commits ahead of baseSha → developer committed correctly → skip.
+    // (AC2) Already has commits ahead of its effective base → developer committed
+    // correctly → skip.
     if (commitAhead > 0) {
       trace(
-        `work-driver: safety net skipped ${wsId} — already has ${commitAhead} commit(s) ahead of baseSha`,
+        `work-driver: safety net skipped ${wsId} — already has ${commitAhead} commit(s) ahead of its base`,
       );
       continue;
     }

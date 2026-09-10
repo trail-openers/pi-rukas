@@ -232,6 +232,11 @@ export function inlinePlanPrompt(issues: number[], scratchDirAbs: string): strin
     "EVERY workstream MUST declare a non-empty `paths:`. The driver checks the committed diff against that list to prove each workstream's slice actually landed; an empty list silently disables that check for the slice.",
     "",
     "If single-workstream, ALWAYS use `### default` so the driver routes through the same code path uniformly.",
+    "",
+    "Optional per-workstream lines (N>1 plans that declare workstream ORDERING or integration coverage):",
+    "",
+    "  - `depends-on: <id>` — the workstream(s) this one builds on. The develop step defers this workstream's worktree until the referenced one commits, and sources it from that worktree's HEAD rather than the cycle's base. The graph must be a DAG: no workstream may depend on itself or on a chain that loops back to it. A reference to an undeclared id (or to a workstream folded away by the ceiling) is a plan-quality rejection.",
+    "  - `integration-test: <path>` — the consolidated-tree test that exercises this workstream TOGETHER with the workstream(s) it depends on. REQUIRED (plan-quality rejection otherwise) when two workstreams are interdependent through DIFFERENT files — i.e. one declares `depends-on: <other>` with a disjoint file set, or one's test file exercises the other's file. The line is a DECLARATION only: the develop step does not execute it; it exists so the plan records that integration coverage was required.",
     scratchHygieneSection(scratchDirAbs),
   ].join("\n");
 }
@@ -293,11 +298,35 @@ export function inlineBranchPrompt(
 export function inlineDevelopPrompt(
   issues: number[],
   scratchDirAbs: string,
-  workstream?: { id: string; scope: string; paths: string[]; outOfScope: string[] },
+  workstream?: {
+    id: string;
+    scope: string;
+    paths: string[];
+    outOfScope: string[];
+    /** #679 — optional; presence is informational (sibling injection), not a gate input. */
+    dependsOn?: string[];
+    /** #679 — optional; plan-quality declaration, never executed by the develop step. */
+    integrationTest?: string;
+  },
   workstreamId?: string,
   speculativeContextPath?: string,
   /** #422 — prior memory about the in-scope files, already rendered. */
   memoryBrief?: string,
+  /**
+   * #679 case 1 — the SIBLING workstreams this developer runs in parallel
+   * with, for the informational injection only. Gated on N>1 by the CALLER
+   * (runDevelop only passes this when `ids.length > 1` and the workstream
+   * is not `default`); the N=1 `default` path passes nothing and its prompt
+   * is byte-identical to the pre-#679 shape. Informational ONLY: the
+   * scope-fanout gate in work-driver-verify-develop.ts still uses the
+   * workstream's OWN declared `paths` list — never the sibling paths
+   * carried here.
+   */
+  siblingWorkstreams?: Array<{
+    id: string;
+    scope: string;
+    paths: string[];
+  }>,
 ): string {
   // PR11 — multi-issue cycles must show the developer the ACTIVE issues
   // (NEEDS_WORK subset after explore), not the primary cycle issue. The
@@ -334,6 +363,24 @@ export function inlineDevelopPrompt(
         : "Stay tightly focused on the scope; other workstreams handle the rest.",
       "",
     );
+    // #679 case 1 — sibling-injection: informational ONLY. The developer is
+    // told the ids + declared scope/paths of the OTHER parallel workstreams
+    // so a "duplicate implementation" (the case-1 failure shape: 3 of 4
+    // workstreams each independently implemented the ENTIRE feature) is at
+    // least VISIBLE to the developer as they work. This must NEVER extend
+    // the scope-fanout gate's declared-path list — that gate reads
+    // `workstream.paths` from state, not from this prompt text.
+    if (siblingWorkstreams && siblingWorkstreams.length > 0) {
+      lines.push(
+        "**Parallel workstreams (informational — your scope above is unchanged):**",
+        ...siblingWorkstreams.map(
+          (s) =>
+            `  - \`${s.id}\` — ${s.scope} — in-scope files: ${s.paths.join(", ") || "(derive from scope)"}`,
+        ),
+        "These other developers are working in their OWN worktrees in parallel. Do NOT implement their scope — each workstream's scope is exclusive. This list exists so you know what the SIBLING work is, not so you take it on.",
+        "",
+      );
+    }
   }
   const fetchInstr =
     issues.length === 1
@@ -384,7 +431,18 @@ export function inlineDevelopPrompt(
  */
 export function inlineSpeculativeExplorePrompt(
   issues: number[],
-  workstream: { id: string; scope: string; paths: string[]; outOfScope: string[] } | undefined,
+  workstream:
+    | {
+        id: string;
+        scope: string;
+        paths: string[];
+        outOfScope: string[];
+        /** #679 — optional; presence is informational (sibling injection), not a gate input. */
+        dependsOn?: string[];
+        /** #679 — optional; plan-quality declaration, never executed by the develop step. */
+        integrationTest?: string;
+      }
+    | undefined,
   contextPath: string,
   scratchDirAbs: string,
 ): string {

@@ -112,25 +112,26 @@ async function caseA_uncommittedOnly(): Promise<void> {
 
     // Check: commitSha is valid and the commit exists.
     if (snEvents.length === 1) {
-      assert(
-        /^[0-9a-f]{40}$/.test(snEvents[0].commitSha),
-        "(a) commitSha is a valid 40-char SHA",
-      );
+      assert(/^[0-9a-f]{40}$/.test(snEvents[0].commitSha), "(a) commitSha is a valid 40-char SHA");
       const { stdout: log } = await execFileP("git", ["-C", wt, "log", "--oneline", "-1"]);
       assert(
         log.includes("driver safety-net commit"),
         `(a) commit message is driver-attributed (got: ${log.trim()})`,
       );
-      assert(
-        snEvents[0].workstreamId === "default",
-        "(a) workstreamId is 'default'",
-      );
+      assert(snEvents[0].workstreamId === "default", "(a) workstreamId is 'default'");
       assert(
         snEvents[0].filesCommitted === 2,
         `(a) filesCommitted is 2 (got: ${snEvents[0].filesCommitted})`,
       );
       // Check the commit contains the right files.
-      const { stdout: files } = await execFileP("git", ["-C", wt, "show", "--name-only", "--format=", snEvents[0].commitSha]);
+      const { stdout: files } = await execFileP("git", [
+        "-C",
+        wt,
+        "show",
+        "--name-only",
+        "--format=",
+        snEvents[0].commitSha,
+      ]);
       assert(
         files.includes("developer-work.ts") && files.includes("another-file.ts"),
         "(a) commit contains the developer's uncommitted files",
@@ -138,7 +139,13 @@ async function caseA_uncommittedOnly(): Promise<void> {
     }
 
     // Check: the worktree now has a commit ahead of baseSha.
-    const { stdout: ahead } = await execFileP("git", ["-C", wt, "rev-list", "--count", `${baseSha}..HEAD`]);
+    const { stdout: ahead } = await execFileP("git", [
+      "-C",
+      wt,
+      "rev-list",
+      "--count",
+      `${baseSha}..HEAD`,
+    ]);
     assert(
       parseInt(ahead.trim(), 10) === 1,
       `(a) worktree has exactly 1 commit ahead of baseSha (got: ${ahead.trim()})`,
@@ -212,7 +219,10 @@ async function caseD_escapeHatch(): Promise<void> {
         (e): e is Extract<(typeof result.eventLog)[number], { kind: "safety-net-commit" }> =>
           e.kind === "safety-net-commit",
       );
-      assert(snEvents.length === 0, "(d) escape hatch PI_ENSEMBLE_SAFETY_NET_COMMIT=0 disables safety net");
+      assert(
+        snEvents.length === 0,
+        "(d) escape hatch PI_ENSEMBLE_SAFETY_NET_COMMIT=0 disables safety net",
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -248,7 +258,16 @@ async function caseF_multiWorkstream(): Promise<void> {
   try {
     // Create a second worktree at baseSha for task-b.
     const wtB = path.join(root, "wt-b");
-    await execFileP("git", ["-C", path.join(root, "repo"), "worktree", "add", "-q", "--detach", wtB, "HEAD"]);
+    await execFileP("git", [
+      "-C",
+      path.join(root, "repo"),
+      "worktree",
+      "add",
+      "-q",
+      "--detach",
+      wtB,
+      "HEAD",
+    ]);
 
     // task-a: uncommitted work (safety net should fire).
     writeFileSync(path.join(wtA, "task-a-file.ts"), "const a = 1;\n");
@@ -299,11 +318,15 @@ async function caseG_driverArtefactsExcluded(): Promise<void> {
     );
     assert(snEvents.length === 1, "(g) safety-net-commit event emitted");
     if (snEvents.length === 1) {
-      const { stdout: files } = await execFileP("git", ["-C", wt, "show", "--name-only", "--format=", snEvents[0].commitSha]);
-      assert(
-        files.includes("real-code.ts"),
-        "(g) real code file IS in the commit",
-      );
+      const { stdout: files } = await execFileP("git", [
+        "-C",
+        wt,
+        "show",
+        "--name-only",
+        "--format=",
+        snEvents[0].commitSha,
+      ]);
+      assert(files.includes("real-code.ts"), "(g) real code file IS in the commit");
       assert(
         !files.includes(".pi/") && !files.includes("state.json"),
         "(g) .pi/ artefact NOT in the commit",
@@ -318,6 +341,88 @@ async function caseG_driverArtefactsExcluded(): Promise<void> {
   }
 }
 
+// ------------- #679 (task-evidence) (h) dependent workstream: per-worktree base
+// A workstream B that depends-on A has its EFFECTIVE base set to A's post-commit
+// SHA (persisted in workstreamBaseShas at deferred-worktree-creation time). The
+// safety net must resolve B's base from that map (not the global baseSha) and
+// fire when B has uncommitted work and zero commits ahead of A's commit — even
+// though B's worktree is NOT at the global baseSha.
+async function caseH_perWorktreeBase_dependent(): Promise<void> {
+  const { root, wt, baseSha } = await mkBaseRepo();
+  try {
+    // Create a second worktree (B) at the global baseSha.
+    const wtB = path.join(root, "wt-b");
+    await execFileP("git", [
+      "-C",
+      path.join(root, "repo"),
+      "worktree",
+      "add",
+      "-q",
+      "--detach",
+      wtB,
+      "HEAD",
+    ]);
+
+    // A commits one commit ahead of the global base.
+    writeFileSync(path.join(wt, "a-file.ts"), "const a = 1;\n");
+    await execFileP("git", ["-C", wt, "add", "a-file.ts"]);
+    await execFileP("git", ["-C", wt, "commit", "-q", "-m", "feat: A commits"]);
+    const { stdout: aShaRaw } = await execFileP("git", ["-C", wt, "rev-parse", "HEAD"]);
+    const aSha = aShaRaw.trim();
+
+    // B has uncommitted work, zero commits ahead of its OWN base (A's commit).
+    writeFileSync(path.join(wtB, "b-file.ts"), "const b = 1;\n");
+
+    // B's effective base is A's post-commit SHA, NOT the global baseSha.
+    const state = makeState(679, { "task-a": wt, "task-b": wtB }, baseSha);
+    state.pipelineState.workstreamBaseShas = { "task-a": baseSha, "task-b": aSha };
+    const ctx = makeCtx(root, 679);
+    const result = await applySafetyNet(ctx, state);
+
+    const snEvents = result.eventLog.filter(
+      (e): e is Extract<(typeof result.eventLog)[number], { kind: "safety-net-commit" }> =>
+        e.kind === "safety-net-commit",
+    );
+    // A has 1 commit ahead of its base (baseSha) → skipped. B has uncommitted
+    // work and 0 commits ahead of its base (aSha) → safety net fires on B only.
+    assert(snEvents.length === 1, "(h) exactly one safety-net event (only for task-b)");
+    if (snEvents.length === 1) {
+      assert(
+        snEvents[0].workstreamId === "task-b",
+        `(h) safety net fired for task-b (got: ${snEvents[0].workstreamId})`,
+      );
+      const { stdout: files } = await execFileP("git", [
+        "-C",
+        wtB,
+        "show",
+        "--name-only",
+        "--format=",
+        snEvents[0].commitSha,
+      ]);
+      assert(
+        files.includes("b-file.ts"),
+        "(h) the safety-net commit contains B's uncommitted file",
+      );
+    }
+
+    // Now assert the base resolution actually used A's commit: after the
+    // safety net commits B's work, B has 1 commit ahead of aSha.
+    const { stdout: bAheadOfA } = await execFileP("git", [
+      "-C",
+      wtB,
+      "rev-list",
+      "--count",
+      `${aSha}..HEAD`,
+    ]);
+    assert(
+      parseInt(bAheadOfA.trim(), 10) === 1,
+      `(h) task-b has 1 commit ahead of its (A's) base (got: ${bAheadOfA.trim()})`,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 await caseA_uncommittedOnly();
 await caseB_alreadyCommitted();
 await caseC_noChanges();
@@ -325,6 +430,7 @@ await caseD_escapeHatch();
 await caseE_invalidBaseSha();
 await caseF_multiWorkstream();
 await caseG_driverArtefactsExcluded();
+await caseH_perWorktreeBase_dependent();
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

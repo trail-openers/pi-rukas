@@ -9,15 +9,10 @@
  * whether it decomposed well is worthless.
  */
 
-import {
-  correctivePlanSteer,
-  planQualityReason,
-} from "../src/work-driver-plan-helpers.ts";
-import {
-  countEnumeratedFindings,
-  maxWorkstreams,
-  parseWorkstreams,
-} from "../src/work-driver-plan.ts";
+// #679 — import from the canonical module (work-driver-plan.ts re-exports
+// the helpers; the stale duplicate copy was deleted — one function, one module).
+import { correctivePlanSteer, planQualityReason } from "../src/work-driver-plan.ts";
+import { countEnumeratedFindings, maxWorkstreams, parseWorkstreams } from "../src/work-driver-plan.ts";
 import { inlinePlanPrompt } from "../src/work-driver-prompts-early.ts";
 
 let exit = 0;
@@ -28,6 +23,106 @@ function assert(cond: boolean, msg: string) {
     console.error(`✗ ${msg}`);
     exit = 1;
   }
+}
+
+// ----------------------------------------- #679 — new PlanQualityReason values
+
+{
+  // Case 2(a): a depends-on reference to a non-existent workstream id
+  // raises invalid-dependency.
+  const wsWithDangling = {
+    "task-a": { paths: ["src/a.ts"], dependsOn: ["nonexistent"] },
+    "task-b": { paths: ["src/b.ts"] },
+  };
+  assert(
+    planQualityReason(wsWithDangling, 2) === "invalid-dependency",
+    "#679: a depends-on reference to a non-existent id → invalid-dependency",
+  );
+
+  // Self-reference is also invalid-dependency (not a cycle).
+  const wsSelfRef = {
+    "task-a": { paths: ["src/a.ts"], dependsOn: ["task-a"] },
+    "task-b": { paths: ["src/b.ts"] },
+  };
+  assert(
+    planQualityReason(wsSelfRef, 2) === "invalid-dependency",
+    "#679: a self depends-on (task-a depends on task-a) → invalid-dependency, not circular-dependency",
+  );
+
+  // Case 2(a): a direct cycle (A→B→A) raises circular-dependency.
+  const wsDirectCycle = {
+    "task-a": { paths: ["src/a.ts"], dependsOn: ["task-b"] },
+    "task-b": { paths: ["src/b.ts"], dependsOn: ["task-a"] },
+  };
+  assert(
+    planQualityReason(wsDirectCycle, 2) === "circular-dependency",
+    "#679: a direct A→B→A cycle → circular-dependency",
+  );
+
+  // Case 2(a): a transitive cycle (A→B→C→A) raises circular-dependency.
+  const wsTransitiveCycle = {
+    "task-a": { paths: ["src/a.ts"], dependsOn: ["task-c"] },
+    "task-b": { paths: ["src/b.ts"], dependsOn: ["task-a"] },
+    "task-c": { paths: ["src/c.ts"], dependsOn: ["task-b"] },
+  };
+  assert(
+    planQualityReason(wsTransitiveCycle, 3) === "circular-dependency",
+    "#679: a transitive A→B→C→A cycle → circular-dependency",
+  );
+
+  // A valid DAG (A→B, B→C) does NOT raise circular-dependency.
+  const wsValidDag = {
+    "task-a": { paths: ["src/a.ts"] },
+    "task-b": { paths: ["src/b.ts"], dependsOn: ["task-a"] },
+    "task-c": { paths: ["src/c.ts"], dependsOn: ["task-b"] },
+  };
+  // Note: task-b and task-c have depends-on but NO integration-test line,
+  // and their paths are disjoint from the dependency's paths → the case-3
+  // rule fires (interdependent-no-integration-test) BEFORE the cycle check
+  // is reached. To isolate the cycle check, add integration-test lines.
+  const wsValidDagWithIt = {
+    "task-a": { paths: ["src/a.ts"] },
+    "task-b": { paths: ["src/b.ts"], dependsOn: ["task-a"], integrationTest: "src/test-b.ts" },
+    "task-c": { paths: ["src/c.ts"], dependsOn: ["task-b"], integrationTest: "src/test-c.ts" },
+  };
+  assert(
+    planQualityReason(wsValidDagWithIt, 3) === undefined,
+    "#679: a valid DAG with integration-test lines passes all gates",
+  );
+
+  // Case 3: interdependent workstreams (different files) without an
+  // integration-test line → interdependent-no-integration-test.
+  const wsNoIt = {
+    "task-a": { paths: ["src/a.ts"] },
+    "task-b": { paths: ["src/b.ts"], dependsOn: ["task-a"] },
+  };
+  assert(
+    planQualityReason(wsNoIt, 2) === "interdependent-no-integration-test",
+    "#679: depends-on pair with disjoint paths and no integration-test → interdependent-no-integration-test",
+  );
+
+  // Case 3: the SAME pair WITH an integration-test line passes.
+  assert(
+    planQualityReason(
+      {
+        "task-a": { paths: ["src/a.ts"] },
+        "task-b": { paths: ["src/b.ts"], dependsOn: ["task-a"], integrationTest: "src/test-ab.ts" },
+      },
+      2,
+    ) === undefined,
+    "#679: the same pair WITH an integration-test line passes the gate",
+  );
+
+  // Disjoint workstreams with NO depends-on and NO test-subject coupling
+  // return undefined for all three new reasons.
+  const wsDisjoint = {
+    "task-a": { paths: ["src/a.ts"] },
+    "task-b": { paths: ["src/b.ts"] },
+  };
+  assert(
+    planQualityReason(wsDisjoint, 2) === undefined,
+    "#679: two independent workstreams with disjoint paths → no new reason fires",
+  );
 }
 
 // ------------------------------------------------- countEnumeratedFindings

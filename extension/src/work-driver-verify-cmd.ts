@@ -18,6 +18,76 @@ export function readFirstConfigLine(content: string): string | undefined {
 }
 
 /**
+ * #679 (task-evidence) — manifest-derived source-file classifier.
+ *
+ * The develop gate must tell "a workstream whose declared paths are source
+ * but which produced no source changes" (falsely green) from "a genuine
+ * docs-only workstream" (legitimately no source). It classifies files the
+ * SAME way the project's own verify-cmd / language detection already does:
+ * the language set is derived from the manifest signals `verifyCmdFor` already
+ * reads (Cargo.toml → Rust, package.json → JS/TS, go.mod → Go, pyproject /
+ * setup.py → Python). There is NO new independent classifier — the manifest
+ * presence here mirrors the manifest presence `verifyCmdFor` branches on.
+ * Absent any manifest, a plain extension-based default applies.
+ */
+
+/** File extensions treated as source, per detected language. */
+const SOURCE_EXT = {
+  rust: [".rs"],
+  js: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue"],
+  go: [".go"],
+  python: [".py"],
+  // Extension-based default when no manifest is present.
+  default: [".rs", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".py"],
+} as const;
+
+const isSourceExt = (file: string, sourceExts: string[]): boolean =>
+  sourceExts.some((ext) => file.endsWith(ext));
+
+/**
+ * #679 (task-evidence) — does a file path classify as source code, using the
+ * language set derived from the project's manifests (the same signals
+ * `verifyCmdFor` reads)? Exported so the develop gate and its tests share one
+ * classifier.
+ */
+export async function isSourcePath(file: string, repoRoot: string): Promise<boolean> {
+  const has = async (f: string) =>
+    fs
+      .access(path.join(repoRoot, f))
+      .then(() => true)
+      .catch(() => false);
+  const sources: string[] = [];
+  if (await has("Cargo.toml")) sources.push(...SOURCE_EXT.rust);
+  try {
+    if (await has("package.json")) sources.push(...SOURCE_EXT.js);
+  } catch {
+    // package.json unreadable — fall through; not a source signal either way.
+  }
+  if (await has("go.mod")) sources.push(...SOURCE_EXT.go);
+  if ((await has("pyproject.toml")) || (await has("setup.py"))) sources.push(...SOURCE_EXT.python);
+  if (sources.length === 0) sources.push(...SOURCE_EXT.default);
+  return isSourceExt(file, sources);
+}
+
+/**
+ * #679 (task-evidence) — do ANY of a workstream's declared paths classify as
+ * source? A docs-only workstream (declared `docs/*.md`) returns false, so its
+ * zero-commits / no-source-changes state is NOT penalised by the falsily-green
+ * check. Manifest-aware: the same `isSourcePath` predicate decides.
+ */
+export async function declaredPathsHaveSource(
+  declaredPaths: string[],
+  repoRoot: string,
+): Promise<boolean> {
+  const TRAILING_PAREN = /\s*\([^()]*\)\s*$/;
+  const normalised = declaredPaths
+    .map((p) => p.trim().replace(TRAILING_PAREN, ""))
+    .filter((p) => p.length > 0);
+  if (normalised.length === 0) return false;
+  return (await Promise.all(normalised.map((p) => isSourcePath(p, repoRoot)))).some((s) => s);
+}
+
+/**
  * PR17 — Discover the project's verify command (typecheck/test) for the
  * driver-side outcome-verification gate.
  *

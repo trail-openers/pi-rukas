@@ -97,6 +97,26 @@ export async function runBranchViaOpsDispatch(
       `work-driver: git rev-parse --abbrev-ref HEAD failed: ${(err as Error).message?.slice(0, 200)}`,
     );
   }
+  // #679 case 2(b) — the ops-fallback path does NOT support depends-on
+  // deferred worktree creation (the ops prompt creates all worktrees at
+  // baseSha, and the driver cannot defer them to runDevelop the way the
+  // mechanized path can). The depends-on declarations are still in
+  // pipelineState (from the plan step), so runDevelop's topological dispatch
+  // order and skip-cascade logic still apply — but the dependent workstreams'
+  // worktrees were already created at baseSha by the ops dispatch (NOT
+  // deferred), so the dependent workstream's developer builds on baseSha
+  // rather than the dependency's post-commit SHA. KNOWN LIMITATION of the
+  // ops-fallback path; the mechanized path (the default) supports depends-on
+  // fully. Traced here so the operator can see the limitation if the
+  // ops-fallback fires on a plan with depends-on declarations.
+  const dependsOnIds = Object.values(base.pipelineState.workstreams ?? {}).filter(
+    (ws) => ws?.dependsOn && ws.dependsOn.length > 0,
+  );
+  if (dependsOnIds.length > 0) {
+    trace(
+      `work-driver: ops-fallback branch path with ${dependsOnIds.length} depends-on workstream(s) — deferred worktree creation is NOT supported on this path; the dependent workstreams' worktrees were created at baseSha by the ops dispatch (the mechanized path supports depends-on fully)`,
+    );
+  }
   const branch = actualBranch ?? reportedBranch;
   if (await resolvedTheMainline(ctx.repoRoot, execFn, branch)) {
     trace(
@@ -141,6 +161,17 @@ export async function runBranchViaOpsDispatch(
   // degenerate case.
   const parsedWorktrees = parseWorktreesBlock(last.summary ?? "", ctx.repoRoot);
   if (Object.keys(parsedWorktrees).length > 0) {
+    // #679 case 2(b) — the ops-fallback path does NOT support depends-on
+    // deferred worktree creation: it records the worktrees the ops dispatch
+    // created (all at baseSha, per the ops prompt) and cannot defer them to
+    // runDevelop. The depends-on declarations are still in pipelineState
+    // (from the plan step), so runDevelop's topological dispatch order and
+    // skip-cascade logic still apply — but the dependent workstreams' worktrees
+    // were already created at baseSha by the ops dispatch (NOT deferred), so
+    // the dependent workstream's developer will build on baseSha rather than
+    // the dependency's post-commit SHA. This is a KNOWN LIMITATION of the
+    // ops-fallback path (documented here and in the branch prompt); the
+    // mechanized path (the default) supports depends-on fully.
     ps.worktrees = parsedWorktrees;
   } else {
     trace(

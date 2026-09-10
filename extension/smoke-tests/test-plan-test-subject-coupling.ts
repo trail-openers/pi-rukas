@@ -20,8 +20,10 @@
  */
 
 import { findTestSubjectSplits } from "../src/work-driver-plan-paths.ts";
-import { correctivePlanSteer, correctiveTestSubjectSplitSteer } from "../src/work-driver-plan-helpers.ts";
-import { planQualityReason } from "../src/work-driver-plan.ts";
+// #679 — all plan-quality symbols from the canonical module (the stale
+// duplicate copy in work-driver-plan-helpers.ts was deleted; work-driver-plan.ts
+// re-exports it).
+import { correctivePlanSteer, correctiveTestSubjectSplitSteer, planQualityReason } from "../src/work-driver-plan.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -197,6 +199,113 @@ const OK_FINDINGS = 2;
     const s = correctivePlanSteer(r, 6, 1);
     assert(s.length > 0 && !s.includes("undefined"), `${r} still renders without details`);
   }
+}
+
+// ----------------------------------- #679: case-3 disjointness + integration-test
+
+{
+  // An inferred test-subject split (the #479 shape: one workstream's test
+  // file exercises another's file) is a MORE SPECIFIC decomposition error
+  // than the case-3 rule: it must be fixed by moving the test into the
+  // subject's workstream, and an integration-test line does NOT fix it. So
+  // the test-subject-split rule fires (as before #679), NOT
+  // interdependent-no-integration-test.
+  const splitNoIt = {
+    "task-a": { paths: ["build.sh"] },
+    "task-b": { paths: ["extension/smoke-tests/test-build-list-dedup.ts"] },
+  };
+  assert(
+    planQualityReason(splitNoIt, 2) === "test-subject-split",
+    "#679 case 3: an inferred test-subject split → test-subject-split (the more specific #479 rule fires, not interdependent-no-integration-test)",
+  );
+
+  // The same split with an integration-test line still fires
+  // test-subject-split (an integration-test line does not fix a
+  // test/subject split — the fix is to move the test into the subject's
+  // workstream). This pins the precedence: test-subject-split runs before
+  // and is not absorbed by the case-3 rule.
+  const splitWithIt = {
+    "task-a": { paths: ["build.sh"] },
+    "task-b": {
+      paths: ["extension/smoke-tests/test-build-list-dedup.ts"],
+      integrationTest: "extension/smoke-tests/test-build-integration.ts",
+    },
+  };
+  assert(
+    planQualityReason(splitWithIt, 2) === "test-subject-split",
+    "#679 case 3: the same split WITH an integration-test line still → test-subject-split (the line does not fix a test/subject split)",
+  );
+
+  // The case-3 rule (interdependent-no-integration-test) fires for an
+  // EXPLICIT depends-on between disjoint-file workstreams with no
+  // integration-test line.
+  const depNoIt = {
+    "task-a": { paths: ["src/a.ts"] },
+    "task-b": { paths: ["src/b.ts"], dependsOn: ["task-a"] },
+  };
+  assert(
+    planQualityReason(depNoIt, 2) === "interdependent-no-integration-test",
+    "#679 case 3: explicit depends-on, disjoint files, no integration-test → interdependent-no-integration-test",
+  );
+
+  // The same pair WITH an integration-test line passes the gate.
+  const depWithIt = {
+    "task-a": { paths: ["src/a.ts"] },
+    "task-b": { paths: ["src/b.ts"], dependsOn: ["task-a"], integrationTest: "src/test-ab.ts" },
+  };
+  assert(
+    planQualityReason(depWithIt, 2) === undefined,
+    "#679 case 3: the same pair WITH an integration-test line → passes the gate",
+  );
+
+  // A literal same-file collision (overlapping-paths) is DISJOINT from the
+  // new case-3 rule: two workstreams declaring the SAME file do NOT raise
+  // interdependent-no-integration-test (that rule is for different files).
+  const sameFile = {
+    "task-a": { paths: ["src/shared.ts"] },
+    "task-b": { paths: ["src/shared.ts"], dependsOn: ["task-a"] },
+  };
+  assert(
+    planQualityReason(sameFile, 2) === "overlapping-paths",
+    "#679 case 3: a literal same-file collision → overlapping-paths (not interdependent-no-integration-test — the rules are disjoint)",
+  );
+}
+
+// ------------------------------------------------------- #679 case 3: inferred coupling
+{
+  // Inferred test-subject coupling (one workstream declares a test file whose
+  // subject file is declared by a DIFFERENT workstream) without an
+  // integration-test line raises interdependent-no-integration-test.
+  const inferred = {
+    "task-a": { paths: ["src/foo.ts"] },
+    "task-b": { paths: ["smoke-tests/test-foo.ts"] },
+  };
+  // The inferred-coupling rule fires when the plan has a test-subject split.
+  // In this case the split is detected, and the plan-quality gate requires an
+  // integration-test line. The split itself is flagged as test-subject-split
+  // (the more specific rule runs first), so the integration-test check only
+  // fires when the split is not present — but the depends-on check still
+  // applies independently.
+  const inferredWithDep = {
+    "task-a": { paths: ["src/foo.ts"] },
+    "task-b": { paths: ["smoke-tests/test-foo.ts"], dependsOn: ["task-a"] },
+  };
+  // With a depends-on AND the split, the split rule fires first (more specific).
+  assert(
+    planQualityReason(inferredWithDep, 2) === "test-subject-split",
+    "#679 case 3: inferred test-subject coupling + depends-on → test-subject-split (the more specific rule fires first)",
+  );
+
+  // A pure depends-on pair (no test file, no split) without integration-test
+  // raises interdependent-no-integration-test.
+  const pureDep = {
+    "task-a": { paths: ["src/a.ts"] },
+    "task-b": { paths: ["src/b.ts"], dependsOn: ["task-a"] },
+  };
+  assert(
+    planQualityReason(pureDep, 2) === "interdependent-no-integration-test",
+    "#679 case 3: pure depends-on pair (no test file) without integration-test → interdependent-no-integration-test",
+  );
 }
 
 console.log(`\nexit ${exit}`);

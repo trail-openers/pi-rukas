@@ -171,6 +171,16 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       after?.pipelineState.worktrees?.default === dir,
       "Step 3 populates worktrees.default = repoRoot for single-workstream cycle",
     );
+    // #679 case 2(b) — the default (independent) workstream IS present in
+    // worktrees after the branch step (it has no depends-on declaration, so
+    // its worktree is created at baseSha as before). A workstream that
+    // declares `depends-on` would be ABSENT from worktrees here (creation
+    // deferred to runDevelop, from the dependency's post-commit SHA) — that
+    // positive case is exercised by test-work-driver-workstreams.ts §10b.
+    assert(
+      after?.pipelineState.worktrees?.default !== undefined,
+      "#679: the default (independent) workstream IS present in worktrees after the branch step",
+    );
     const stepsStarted = (after?.eventLog ?? [])
       .filter((e): e is Extract<typeof e, { kind: "step-started" }> => e.kind === "step-started")
       .map((e) => e.step);

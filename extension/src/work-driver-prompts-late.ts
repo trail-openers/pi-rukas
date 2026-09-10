@@ -51,7 +51,19 @@ export function inlineCommitPrPrompt(
   issues: number[],
   droppedIssues: Array<{ issue: number; verdict: string; reason: string }>,
   worktrees: Record<string, string>,
-  workstreams: Record<string, { id: string; scope: string; paths: string[]; outOfScope: string[] }>,
+  workstreams: Record<
+    string,
+    {
+      id: string;
+      scope: string;
+      paths: string[];
+      outOfScope: string[];
+      /** #679 — optional; presence is informational, never read by this prompt. */
+      dependsOn?: string[];
+      /** #679 — optional; plan-quality declaration, never read by this prompt. */
+      integrationTest?: string;
+    }
+  >,
   branchName: string,
   normalisedSpec:
     | import("./work-driver-pr-body-definition.ts").PipelineStateNormalisedSpec

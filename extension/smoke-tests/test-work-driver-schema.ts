@@ -59,51 +59,34 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-smoke-"));
   try {
-    const issue = 547;
-    let state = initialState(issue, 1000);
+    const state = initialState(547, 1000);
     assert(
-      state.schemaVersion === WORK_STATE_SCHEMA_VERSION,
-      "initialState carries schemaVersion 1",
+      state.schemaVersion === WORK_STATE_SCHEMA_VERSION && state.resumable === false &&
+        state.pipelineState.currentStep === "explore" && state.pipelineState.status === "running" &&
+        state.eventLog.length === 0,
+      "initialState: schemaVersion 1, resumable=false, explore/running, empty eventLog",
     );
-    assert(state.resumable === false, "initialState is observational-only (resumable=false)");
-    assert(state.pipelineState.currentStep === "explore", "initialState starts at explore");
-    assert(state.pipelineState.status === "running", "initialState status=running");
-    assert(state.eventLog.length === 0, "initialState eventLog empty");
-
-    // Read non-existent state → undefined.
-    const missing = await readState(dir, issue);
-    assert(missing === undefined, "readState returns undefined for missing file");
-
-    // Persist, read back, verify identity.
+    assert(await readState(dir, 547) === undefined, "readState returns undefined for missing file");
     await writeState(dir, state);
-    const roundTripped = await readState(dir, issue);
-    assert(roundTripped !== undefined, "readState finds the file after writeState");
+    const rt = await readState(dir, 547);
     assert(
-      roundTripped?.pipelineState.currentStep === "explore",
-      "round-tripped state preserves currentStep",
+      rt !== undefined && rt?.pipelineState.currentStep === "explore" && rt?.issue === 547,
+      "writeState → readState round-trips currentStep + issue",
     );
-    assert(roundTripped?.issue === issue, "round-tripped state preserves issue");
-
-    // Append an event, persist, verify.
-    state = appendEvent(state, {
-      kind: "step-started",
-      step: "explore",
-      at: 1500,
-    });
-    await writeState(dir, state);
-    const afterAppend = await readState(dir, issue);
-    assert(afterAppend?.eventLog.length === 1, "appendEvent persists exactly one event");
-    assert(afterAppend?.eventLog[0]?.kind === "step-started", "appended event has expected kind");
+    await writeState(dir, appendEvent(state, { kind: "step-started", step: "explore", at: 1500 }));
+    const appended = await readState(dir, 547);
+    assert(
+      appended?.eventLog.length === 1 && appended?.eventLog[0]?.kind === "step-started",
+      "appendEvent persists exactly one event with the expected kind",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
-// 1b. #453 — commitShas/appliedShas are additive: recorded SHAs round-trip
-// through writeState/readState, and a pre-#453 state file (fields absent on
-// disk) still loads under schemaVersion 1 with the fields reading as absent
-// (callers treat absent as {}). No schemaVersion bump — the version check in
-// readState is the only version gate, so the stripped file passes it.
+// 1b. #453 — commitShas/appliedShas are additive: recorded SHAs round-trip,
+// and a pre-#453 state file (fields stripped from the on-disk JSON) still
+// loads under schemaVersion 1 with the fields reading as undefined.
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-453-"));
   try {
@@ -118,29 +101,62 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         withFields?.pipelineState.appliedShas?.["task-a"] === "aaa111",
       "#453: commitShas/appliedShas round-trip through writeState/readState",
     );
-
-    // A pre-#453 build never wrote the fields: strip them from the on-disk
-    // JSON and assert the file still loads with the fields reading as absent.
+    // Pre-#453 file: strip the fields from the on-disk JSON.
     const file = workStateFile(dir, issue);
-    const onDisk = JSON.parse(readFileSync(file, "utf8")) as {
-      pipelineState: Record<string, unknown>;
-    };
+    const onDisk = JSON.parse(readFileSync(file, "utf8")) as { pipelineState: Record<string, unknown> };
     onDisk.pipelineState.commitShas = undefined;
     onDisk.pipelineState.appliedShas = undefined;
     writeFileSync(file, `${JSON.stringify(onDisk, null, 2)}\n`);
     const legacy = await readState(dir, issue);
-    assert(legacy !== undefined, "#453: pre-#453 state file (fields absent) still loads");
     assert(
-      legacy !== undefined &&
-        legacy.pipelineState.commitShas === undefined &&
-        legacy.pipelineState.appliedShas === undefined,
-      "#453: absent fields read as undefined (readers treat absent as {})",
-    );
-    assert(
-      legacy !== undefined &&
+      legacy !== undefined && legacy.pipelineState.commitShas === undefined &&
+        legacy.pipelineState.appliedShas === undefined &&
         legacy.schemaVersion === WORK_STATE_SCHEMA_VERSION &&
         legacy.pipelineState.currentStep === "explore",
-      "#453: legacy file's remaining fields are untouched",
+      "#453: pre-#453 state file still loads; absent fields read as undefined; other fields untouched",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// 1c. #679 — dependsOn/integrationTest are additive: the new optional fields
+// round-trip through writeState/readState, and a pre-#679 state file (fields
+// stripped from the on-disk JSON) still loads with them reading as undefined.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-679-"));
+  try {
+    const recorded = initialState(679, 1000);
+    recorded.pipelineState.workstreams = {
+      "task-a": { id: "task-a", scope: "base", paths: ["src/a.ts"], outOfScope: [] },
+      "task-b": {
+        id: "task-b", scope: "depends on a", paths: ["src/b.ts"], outOfScope: [],
+        dependsOn: ["task-a"], integrationTest: "smoke-tests/test-int.ts",
+      },
+    };
+    await writeState(dir, recorded);
+    const wb = await readState(dir, 679);
+    assert(
+      wb?.pipelineState.workstreams?.["task-b"]?.dependsOn?.[0] === "task-a" &&
+        wb?.pipelineState.workstreams?.["task-b"]?.integrationTest === "smoke-tests/test-int.ts",
+      "#679: dependsOn/integrationTest round-trip through writeState/readState",
+    );
+    // Pre-#679 state file: strip the fields from the on-disk JSON.
+    const onDisk = JSON.parse(readFileSync(workStateFile(dir, 679), "utf8")) as {
+      pipelineState: Record<string, unknown>;
+    };
+    const ws = onDisk.pipelineState.workstreams as Record<string, Record<string, unknown>> | undefined;
+    if (ws) {
+      delete ws["task-b"].dependsOn;
+      delete ws["task-b"].integrationTest;
+    }
+    writeFileSync(workStateFile(dir, 679), `${JSON.stringify(onDisk, null, 2)}\n`);
+    const legacy = await readState(dir, 679);
+    assert(
+      legacy !== undefined &&
+        legacy?.pipelineState.workstreams?.["task-b"]?.dependsOn === undefined &&
+        legacy?.pipelineState.workstreams?.["task-b"]?.integrationTest === undefined,
+      "#679: pre-#679 state file (fields absent) still loads; absent fields read as undefined",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -150,24 +166,16 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 // 2. nextStep transitions.
 {
   const base = initialState(1, 1000);
-  // Fresh state with no events: stays at explore (linear table's explore→plan)
-  // — but the loop calls runStep("explore") first, which appends events. The
-  // next-step decision happens AFTER the step. So on a fresh state with no
-  // events, the linear table for explore is plan.
+  // A fresh state with no events stays at explore→plan (post-step decision).
   assert(stepOf(base) === "plan", "fresh state at explore advances to plan");
 
   // Adversarial-approved with lastCompletedStep="develop" → commit-pr.
   // PR2: routing reads `lastCompletedStep` instead of `currentStep` (which
-  // was clobbered to "adversarial" by runAdversarial). PR #239's check on
-  // currentStep was always false and silently routed every adversarial-
-  // approved to lens-review, skipping commit-pr. Confirmed live on #553.
+  // was clobbered to "adversarial" by runAdversarial; PR #239's currentStep
+  // check was always false and skipped commit-pr — confirmed live on #553).
   let s: WorkState = {
     ...base,
-    pipelineState: {
-      ...base.pipelineState,
-      currentStep: "adversarial",
-      lastCompletedStep: "develop",
-    },
+    pipelineState: { ...base.pipelineState, currentStep: "adversarial", lastCompletedStep: "develop" },
   };
   s = appendEvent(s, { kind: "adversarial-approved", at: 2000, jobId: "j1", rounds: 1 });
   assert(

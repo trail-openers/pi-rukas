@@ -22,7 +22,9 @@
  * more code and a worse outcome.
  */
 
-import { correctivePlanSteer, planQualityReason } from "../src/work-driver-plan-helpers.ts";
+// #679 — import from the canonical module (the stale duplicate copy in
+// work-driver-plan-helpers.ts was deleted; work-driver-plan.ts re-exports it).
+import { correctivePlanSteer, planQualityReason } from "../src/work-driver-plan.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

@@ -129,9 +129,7 @@ async function mkCommittedWorktree(): Promise<{ root: string; wt: string; baseSh
       const failures: string[] = [];
       const notes: string[] = [];
       await verifyDevelopOutcome(mkCtx(execFn), s, execFn, failures, notes);
-      const uncommittedFailure = failures.find((f) =>
-        /uncommitted changes but no commit/.test(f),
-      );
+      const uncommittedFailure = failures.find((f) => /uncommitted changes but no commit/.test(f));
       assert(
         Boolean(uncommittedFailure),
         "#453 verify: uncommitted-only worktree with valid baseSha fails with 'no commit' message",
@@ -144,7 +142,8 @@ async function mkCommittedWorktree(): Promise<{ root: string; wt: string; baseSh
         "#621 verify error message: names the exact `git add -A && git commit` fix",
       );
       assert(
-        uncommittedFailure !== undefined && !uncommittedFailure.includes("driver-required message format"),
+        uncommittedFailure !== undefined &&
+          !uncommittedFailure.includes("driver-required message format"),
         "#621 verify error message: no longer references a phantom 'driver-required message format'",
       );
       assert(
@@ -287,8 +286,179 @@ async function mainAdversarialCommittedDiff(): Promise<void> {
   }
 }
 
+// ------------- #679 (task-evidence): falsily-green evidence check -----------
+//
+// A workstream whose declared paths are source but which produced ZERO commits
+// ahead of its base AND no source changes is falsely green → records ok:false
+// (a per-worktree failure). A genuine docs-only workstream (declared paths are
+// entirely non-source, e.g. docs/*.md) is NOT penalised, even with zero commits.
+async function mainFalsilyGreen(): Promise<void> {
+  const tmpDir = mkdtempSync(path.join(tmpdir(), "verify-fg-"));
+  try {
+    // A JS project (package.json present) so the classifier is manifest-aware
+    // and classifies .ts/.js as source and .md as non-source.
+    writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ scripts: { test: "true" } }));
+
+    const mkCtx = (execFn: NonNullable<DriverContext["verifyExecFn"]>): DriverContext =>
+      ({
+        pi: makeFakePi(),
+        issue: 679,
+        repoRoot: tmpDir,
+        verifyExecFn: execFn,
+      }) as unknown as DriverContext;
+
+    const run = async (opts: {
+      worktrees: Record<string, string>;
+      workstreams: Record<
+        string,
+        { id: string; scope: string; paths: string[]; outOfScope: string[] }
+      >;
+      execFn: NonNullable<DriverContext["verifyExecFn"]>;
+      baseSha?: string;
+    }) => {
+      let s = initialState(679, 1000);
+      s = {
+        ...s,
+        pipelineState: {
+          ...s.pipelineState,
+          worktrees: opts.worktrees,
+          workstreams: opts.workstreams,
+          baseSha: opts.baseSha ?? VALID_SHA_40,
+        },
+      };
+      const failures: string[] = [];
+      const notes: string[] = [];
+      await verifyDevelopOutcome(mkCtx(opts.execFn), s, opts.execFn, failures, notes);
+      return { failures, notes };
+    };
+
+    // (1) Falsely green: declared source paths, uncommitted non-source work,
+    // zero commits ahead of base. The developer declared source but only did
+    // docs — falsely green.
+    {
+      const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+        if (cmd === "git status --porcelain")
+          return { stdout: " M docs/notes.md\n" }; // uncommitted docs
+        if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" }; // no commits
+        if (cmd.startsWith("git diff --name-only")) return { stdout: "" }; // no committed changes
+        return { stdout: "" };
+      };
+      const { failures } = await run({
+        worktrees: { "task-src": tmpDir },
+        workstreams: {
+          "task-src": {
+            id: "task-src",
+            scope: "add feature",
+            paths: ["src/foo.ts"],
+            outOfScope: [],
+          },
+        },
+        execFn,
+      });
+      assert(
+        failures.some((f) => /falsely green/.test(f)),
+        `#679 falsily-green: source-declared workstream with uncommitted non-source work + zero commits fails (failures: ${failures.join("; ")})`,
+      );
+    }
+
+    // (1b) Completely empty workstream (clean tree, 0 commits, source-declared)
+    // is the EXISTING "empty diff" case, NOT falsely-green — the developer
+    // produced nothing at all, which the generic empty-diff message catches.
+    {
+      const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+        if (cmd === "git status --porcelain") return { stdout: "" }; // clean tree
+        if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" }; // no commits
+        if (cmd.startsWith("git diff --name-only")) return { stdout: "" };
+        return { stdout: "" };
+      };
+      const { failures } = await run({
+        worktrees: { "task-empty": tmpDir },
+        workstreams: {
+          "task-empty": {
+            id: "task-empty",
+            scope: "add feature",
+            paths: ["src/foo.ts"],
+            outOfScope: [],
+          },
+        },
+        execFn,
+      });
+      assert(
+        !failures.some((f) => /falsely green/.test(f)),
+        `#679 falsily-green: completely empty workstream is NOT falsely-green (failures: ${failures.join("; ")})`,
+      );
+      assert(
+        failures.some((f) => /empty diff/.test(f)),
+        `#679 falsily-green: completely empty workstream gets the generic empty-diff message (failures: ${failures.join("; ")})`,
+      );
+    }
+
+    // (2) Docs-only workstream: declared paths are non-source → NOT penalised
+    // as falsely green. A genuine docs-only workstream may have uncommitted doc
+    // changes (legitimate non-source deliverable) and zero commits ahead of base;
+    // neither the falsily-green check nor the generic empty-diff message should
+    // fire against it.
+    {
+      const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+        if (cmd === "git status --porcelain") return { stdout: " M docs/guide.md\n" }; // uncommitted doc
+        if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" }; // no commits
+        if (cmd.startsWith("git diff --name-only")) return { stdout: "" };
+        return { stdout: "" };
+      };
+      const { failures } = await run({
+        worktrees: { "task-docs": tmpDir },
+        workstreams: {
+          "task-docs": {
+            id: "task-docs",
+            scope: "write docs",
+            paths: ["docs/guide.md"],
+            outOfScope: [],
+          },
+        },
+        execFn,
+      });
+      assert(
+        !failures.some((f) => /falsely green/.test(f)),
+        `#679 falsily-green: docs-only workstream (declared non-source) is NOT penalised (failures: ${failures.join("; ")})`,
+      );
+      assert(
+        !failures.some((f) => /uncommitted changes but no commit/.test(f)),
+        `#679 falsily-green: docs-only workstream with uncommitted docs is not flagged as uncommitted-only (failures: ${failures.join("; ")})`,
+      );
+      assert(
+        !failures.some((f) => /empty diff/.test(f)),
+        `#679 falsily-green: docs-only workstream does NOT trigger the generic empty-diff message (failures: ${failures.join("; ")})`,
+      );
+    }
+
+    // (3) Source workstream that DID commit → not falsely green.
+    {
+      const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+        if (cmd === "git status --porcelain") return { stdout: "" };
+        if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" }; // 1 commit
+        if (cmd.startsWith("git diff --name-only")) return { stdout: "src/foo.ts\n" };
+        return { stdout: "" };
+      };
+      const { failures } = await run({
+        worktrees: { "task-ok": tmpDir },
+        workstreams: {
+          "task-ok": { id: "task-ok", scope: "add feature", paths: ["src/foo.ts"], outOfScope: [] },
+        },
+        execFn,
+      });
+      assert(
+        !failures.some((f) => /falsely green/.test(f)),
+        `#679 falsily-green: source workstream with a real source commit is not penalised (failures: ${failures.join("; ")})`,
+      );
+    }
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 await mainFetchDiffBaseSha();
 await mainAdversarialCommittedDiff();
+await mainFalsilyGreen();
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

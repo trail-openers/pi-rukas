@@ -18,22 +18,29 @@ import type { DispatchResult } from "./types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { checkAndRegisterClaims, crossGroupConflictsEnabled } from "./work-driver-path-claims.ts";
+// #679 — the CANONICAL planQualityReason / correctivePlanSteer / steer builders
+// live in work-driver-plan-helpers.ts; this module re-exports them so existing
+// importers (smoke tests, cross-module consumers) keep their paths. The stale
+// duplicate copy that used to sit here was deleted — one function, one module.
+export {
+  correctivePlanSteer,
+  correctiveTestSubjectSplitSteer,
+  countEnumeratedFindings,
+  countFindingsForCycle,
+  planQualityEnabled,
+  planQualityReason,
+} from "./work-driver-plan-helpers.ts";
 import {
   correctivePlanSteer,
   correctiveTestSubjectSplitSteer,
   countFindingsForCycle,
   planQualityEnabled,
+  planQualityReason,
 } from "./work-driver-plan-helpers.ts";
-import {
-  type PathCollision,
-  type TestSubjectSplit,
-  findPathCollisions,
-  findTestSubjectSplits,
-} from "./work-driver-plan-paths.ts";
+import { findPathCollisions, findTestSubjectSplits } from "./work-driver-plan-paths.ts";
 import { inlinePlanPrompt } from "./work-driver-prompts-early.ts";
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
-import type { PlanQualityReason } from "./workflow-state-schema.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 /**
@@ -186,20 +193,6 @@ export async function runPlan(
   };
 }
 
-/** Which plan-quality rule was violated, if any. Structural check. */
-export function planQualityReason(
-  workstreams: Record<string, { paths: string[] }>,
-  findingsCount: number,
-): PlanQualityReason | undefined {
-  const ids = Object.keys(workstreams);
-  if (findingsCount >= 3 && ids.length === 1) return "under-decomposed";
-  if (ids.length > 0 && ids.some((id) => (workstreams[id]?.paths.length ?? 0) === 0))
-    return "empty-paths";
-  if (findPathCollisions(workstreams).length > 0) return "overlapping-paths";
-  if (findTestSubjectSplits(workstreams).length > 0) return "test-subject-split";
-  return undefined;
-}
-
 /**
  * Enumerated-finding count for this cycle's primary issue, read from the body
  * artifact the explore step cached. Returns 0 when unavailable — the gate then
@@ -302,12 +295,36 @@ export function parsePerIssueVerdicts(
  * the synthetic `default` workstream). Designed to never throw: a
  * malformed reply collapses to single-workstream rather than aborting
  * the cycle.
+ *
+ * #679 case 2(a) — also parses the optional `- depends-on: <id>` and
+ * `- integration-test: <path>` lines (tolerant of `depends_on:` / `Depends on:`
+ * / `Depends-on:` variants and comma-separated multi-dep, via the same
+ * `extractListField` + `splitOutsideParens` tolerance class as `paths:` /
+ * `out-of-scope:`). Both are OPTIONAL: a plan that omits them parses
+ * identically to the pre-#679 shape.
  */
-export function parseWorkstreams(
-  text: string,
-): Record<string, { id: string; scope: string; paths: string[]; outOfScope: string[] }> {
-  const out: Record<string, { id: string; scope: string; paths: string[]; outOfScope: string[] }> =
-    {};
+export function parseWorkstreams(text: string): Record<
+  string,
+  {
+    id: string;
+    scope: string;
+    paths: string[];
+    outOfScope: string[];
+    dependsOn?: string[];
+    integrationTest?: string;
+  }
+> {
+  const out: Record<
+    string,
+    {
+      id: string;
+      scope: string;
+      paths: string[];
+      outOfScope: string[];
+      dependsOn?: string[];
+      integrationTest?: string;
+    }
+  > = {};
   const section = sliceMarkdownSection(text, "Workstreams");
   if (section === undefined) return out;
   // Each workstream begins with a ### subheading. Slice between consecutive
@@ -335,11 +352,23 @@ export function parseWorkstreams(
     const bodyStart = h.index + h.length;
     const bodyEnd = headings[i + 1]?.index ?? section.length;
     const body = section.slice(bodyStart, bodyEnd);
+    // #679 case 2(a) — `depends-on` and `integration-test` are OPTIONAL lines.
+    // Tolerant of `depends_on:` / `Depends on:` / `Depends-on:` variants and
+    // comma-separated multi-dep (same `extractListField` + `splitOutsideParens`
+    // tolerance class as `paths:` / `out-of-scope:`). Self-references and
+    // dangling references are not dropped HERE — they surface as the
+    // `invalid-dependency` / `circular-dependency` plan-quality reasons in
+    // planQualityReason (the driver's one-shot corrective re-dispatch is the
+    // existing pattern; the planner gets a steer naming the fix).
+    const dependsOn = extractListField(body, "depends[- _]on");
+    const integrationTest = extractListField(body, "integration[- _]test")[0];
     const entry = {
       id: h.id,
       scope: h.scope,
       paths: extractListField(body, "paths"),
       outOfScope: extractListField(body, "out[- ]of[- ]scope"),
+      ...(dependsOn.length > 0 ? { dependsOn } : {}),
+      ...(integrationTest ? { integrationTest } : {}),
     };
     // #290 — ceiling. Each workstream becomes a worktree AND a developer
     // child, so M is a direct multiplier on process count; parallel groups
@@ -384,11 +413,3 @@ export function maxWorkstreams(): number {
  * thing you should ask. The count is compared against the workstream count
  * and nothing else.
  */
-export function countEnumeratedFindings(body: string): number {
-  let n = 0;
-  for (const line of body.split("\n")) {
-    if (/^\s{2,}/.test(line)) continue; // indented → sub-point of a finding
-    if (/^\s*(?:\d+[.)]\s+\S|[-*]\s+\[[ xX]\]\s*\S)/.test(line)) n += 1;
-  }
-  return n;
-}

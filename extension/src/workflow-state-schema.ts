@@ -6,6 +6,10 @@
 import type { Verdict } from "./lens-review.ts";
 import type { CapEvidence, CapedPartialState } from "./workflow-state-cap.ts";
 import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
+// #679 — the workstream shape + workstreamBaseShas type, split out of this
+// module (500-line gate). Re-exported so existing importers keep their paths.
+export type { Workstream, WorkstreamBaseShas } from "./workflow-state-schema-workstreams.ts";
+import type { Workstream, WorkstreamBaseShas } from "./workflow-state-schema-workstreams.ts";
 
 export {
   filesPresentFromConsolidation,
@@ -63,7 +67,22 @@ export type PlanQualityReason =
   | "under-decomposed"
   | "empty-paths"
   | "overlapping-paths"
-  | "test-subject-split";
+  | "test-subject-split"
+  // #679 — case 2(a): a `depends-on` reference naming a workstream the plan
+  // did not declare (including a self-reference, or a reference to an id
+  // folded away by the MAX_WORKSTREAMS ceiling).
+  | "invalid-dependency"
+  // #679 — case 2(a): the depends-on graph has a cycle (A→B→A, or the
+  // transitive A→B→C→A shape). Cycle detection lives ONLY in the
+  // plan-quality gate — once it passes, runDevelop's scheduler is guaranteed
+  // a DAG and needs no cycle handling of its own.
+  | "circular-dependency"
+  // #679 — case 3: workstreams are interdependent via DIFFERENT-FILE
+  // relationships (an explicit depends-on, or the #479 test-subject split) but
+  // the dependent workstream declares no `- integration-test: <path>` line
+  // naming a consolidated-tree test exercising both halves. Deliberately
+  // disjoint from overlapping-paths, which fires on the SAME file.
+  | "interdependent-no-integration-test";
 
 export interface PipelineState {
   /** Current step. Drives template selection and transition table. */
@@ -100,10 +119,7 @@ export interface PipelineState {
    * cleanly under the same `schemaVersion: 1`. Readers treat absent as
    * `{default: ...}` synthesised from the issue title.
    */
-  workstreams?: Record<
-    string,
-    { id: string; scope: string; paths: string[]; outOfScope: string[] }
-  >;
+  workstreams?: Record<string, Workstream>;
   /**
    * Path to a claim-check artifact holding the cached `gh issue view`
    * body fetched driver-side in Step 1 (Pattern 1 intra-step fanout).
@@ -119,6 +135,13 @@ export interface PipelineState {
    * `repoRoot` for the `default` workstream.
    */
   worktrees: Record<string, string>;
+  /**
+   * #679 — the per-workstream EFFECTIVE BASE: the commit the workstream's
+   * worktree was (or will be) created from. See WorkstreamBaseShas for the
+   * full contract (case 2(b) deferred worktree creation, safety-net / verify
+   * gate base resolution, back-compat with pre-#679 state files).
+   */
+  workstreamBaseShas?: WorkstreamBaseShas;
   /**
    * Last fetched diff hash — set after Step 5 / Step 7 fix passes. Lets the
    * user (or future code) detect "the diff hasn't changed between rounds"

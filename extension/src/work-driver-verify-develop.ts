@@ -3,7 +3,8 @@
  *
  * Extracted from work-driver-verify.ts (issue #338, file-size cap).
  * Checks diff evidence, verify command, skip-ratchet, and product smoke gates.
- * Import chain: work-driver-verify.ts → this file → work-driver-verify-cmd.ts (acyclic).
+ * Import chain: work-driver-verify.ts → this file → work-driver-verify-cmd.ts
+ * (acyclic). The #679 falsily-green check lives in work-driver-falsily-green.ts.
  */
 
 import fs from "node:fs/promises";
@@ -19,42 +20,24 @@ import {
   protectedPathsEnabled,
   protectedPathsIn,
 } from "./work-driver-doctrine.ts";
-import { couplesTo, isTestPath } from "./work-driver-plan-paths.ts";
+import { runFalsilyGreenCheck } from "./work-driver-falsily-green.ts";
+import { runScopeFanoutGate } from "./work-driver-scope-fanout.ts";
 import {
   TEST_BLOCK_MARKERS,
   countMarkersInDiffLine,
   countSkipMarkersInDiffLine,
 } from "./work-driver-skip-ratchet.ts";
-import { readFirstConfigLine, verifyCmdFor } from "./work-driver-verify-cmd.ts";
+import {
+  declaredPathsHaveSource,
+  readFirstConfigLine,
+  verifyCmdFor,
+} from "./work-driver-verify-cmd.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
-
-/** #285 — escape hatch for the deterministic develop scope/fanout gate. */
-function scopeGateEnabled(): boolean {
-  const value = process.env.PI_ENSEMBLE_SCOPE_GATE;
-  return value !== "0" && value !== "false";
-}
 
 /** #285 — normalise a scope path like git would spell it. */
 function normaliseScopePath(raw: string): string {
   return raw.trim().replace(/^\.\//, "").replace(/\/+$/, "");
-}
-
-/** #285 — check whether a file path matches a declared scope path. */
-function matchesScopePath(file: string, declared: string): boolean {
-  return file === declared || file.startsWith(`${declared}/`);
-}
-
-/** #285 — scope/fanout gate tunables (PI_ENSEMBLE_SCOPE_FANOUT_FACTOR/_MIN). */
-function scopeFanoutFactor(): number {
-  const value = Number(process.env.PI_ENSEMBLE_SCOPE_FANOUT_FACTOR);
-  if (!Number.isFinite(value) || value < 0) return 3;
-  return value;
-}
-function scopeFanoutMinimum(): number {
-  const value = Number(process.env.PI_ENSEMBLE_SCOPE_FANOUT_MIN);
-  if (!Number.isFinite(value) || value < 0) return 6;
-  return Math.floor(value);
 }
 
 /** PR17 — bounded wall-clock for the verify command (default 10 min). */
@@ -123,10 +106,42 @@ export async function verifyDevelopOutcome(
     Object.keys(worktrees).map((id) => [id, new Set<string>()]),
   );
   // #453 — count worktrees with uncommitted-only changes (no commits ahead
-  // of baseSha). When this is > 0 and changedWorktrees is empty, the
-  // per-worktree failures already explain the issue — skip the generic
-  // "empty diff" message to avoid duplicate / contradictory output.
+  // of baseSha). When > 0 and changedWorktrees is empty, the per-worktree
+  // failures already explain the issue — skip the generic "empty diff" message.
   let uncommittedOnlyCount = 0;
+  // #679 (task-evidence) — workstream ids whose declared paths are entirely
+  // non-source (docs-only). EXEMPT from the "uncommitted but no commit"
+  // failure (uncommitted work is a legitimate non-source deliverable) and from
+  // the generic "every worktree empty" message (absence of commits is expected).
+  const legitimateNonSourceWorkstreams = new Set<string>();
+  // #679 (task-evidence) — per-workstream base resolution. A dependent
+  // workstream's EFFECTIVE base is its dependency's post-commit SHA (persisted
+  // in `workstreamBaseShas`); every other workstream falls back to the global
+  // `baseSha`. The falsily-green check compares each worktree against THIS ref,
+  // not always the global base, so a dependent worktree whose base ≠ the global
+  // base is judged against the right ref.
+  const workstreamBaseShas = state.pipelineState.workstreamBaseShas;
+  const effectiveBaseFor = (wsId: string): string | undefined => {
+    const per = workstreamBaseShas?.[wsId];
+    if (isValidSha(per)) return per;
+    if (isValidSha(baseSha)) return baseSha;
+    return undefined;
+  };
+  // #679 (task-evidence) — per-workstream declared-source flag, computed once
+  // so BOTH the uncommitted-only suppression and the falsily-green check share
+  // the same classification (no repeated classifier calls).
+  const declaredSourceByWorkstream = new Map<string, boolean>();
+  const workstreamsMap = state.pipelineState.workstreams ?? {};
+  for (const [wsId, ws] of Object.entries(workstreamsMap)) {
+    try {
+      declaredSourceByWorkstream.set(
+        wsId,
+        await declaredPathsHaveSource(ws?.paths ?? [], ctx.repoRoot),
+      );
+    } catch {
+      declaredSourceByWorkstream.set(wsId, true); // uncertain → treat as source
+    }
+  }
   for (const [id, cwd] of Object.entries(worktrees)) {
     let hasCommits = false;
     let hasUncommitted = false;
@@ -177,16 +192,46 @@ export async function verifyDevelopOutcome(
     const changed = isValidSha(baseSha) ? hasCommits : hasCommits || hasUncommitted;
     if (changed) changedWorktrees.push(cwd);
     // Per-worktree diagnostic: uncommitted work exists but hasn't been committed.
+    // #679 (task-evidence) — a workstream whose declared paths are entirely
+    // non-source (docs-only) is NOT penalised for leaving its uncommitted work
+    // uncommitted: that uncommitted work IS the deliverable (a docs change),
+    // and the falsily-green check below handles the source case explicitly.
+    const isLegitNonSource = declaredSourceByWorkstream.get(id) === false;
     if (isValidSha(baseSha) && hasUncommitted && !hasCommits) {
-      uncommittedOnlyCount++;
-      // #621 — the developer commits in their own worktree with their own
-      // conventional-commit subject; what matters is that the work is
-      // committed ahead of baseSha before the adversarial gate runs.
-      failures.push(
-        `worktree "${id}": has uncommitted changes but no commit ahead of baseSha — run \`git add -A && git commit -m \"<type>(scope): concise subject\"\` in the worktree before completing the develop step`,
-      );
+      if (isLegitNonSource) {
+        legitimateNonSourceWorkstreams.add(id);
+        // Legitimate docs-only deliverable — no failure; the safety net will
+        // still commit it driver-side so the transfer unit is a real commit.
+      } else {
+        uncommittedOnlyCount++;
+        // #621 — the developer commits in their own worktree with their own
+        // conventional-commit subject; what matters is that the work is
+        // committed ahead of baseSha before the adversarial gate runs.
+        failures.push(
+          `worktree "${id}": has uncommitted changes but no commit ahead of baseSha — run \`git add -A && git commit -m \"<type>(scope): concise subject\"\` in the worktree before completing the develop step`,
+        );
+      }
     }
   }
+
+  // --- #679 (task-evidence) — per-worktree falsily-green evidence check ---
+  // Extracted to work-driver-falsily-green.ts (file-size cap). A workstream
+  // whose declared paths are source yet produced no source changes is falsely
+  // green; a genuine docs-only workstream is not penalised. Per-worktree, so
+  // one empty workstream no longer suppresses the evidence for the rest of
+  // the fanout. Populates `legitimateNonSourceWorkstreams` for the caller to
+  // suppress the generic empty-diff message for docs-only streams.
+  await runFalsilyGreenCheck(
+    execFn,
+    ctx.repoRoot,
+    worktrees,
+    workstreamBaseShas,
+    baseSha,
+    changedPathsByWorkstream,
+    declaredSourceByWorkstream,
+    legitimateNonSourceWorkstreams,
+    failures,
+  );
 
   // --- Protected-path gate (#406) ---
   //
@@ -207,85 +252,24 @@ export async function verifyDevelopOutcome(
     notes.push("PI_ENSEMBLE_PROTECTED_PATHS=0 — protected-path gate disabled");
   }
 
-  // --- Scope/fanout gate (#285) ---
-  //
-  // This is intentionally separate from the hollow-diff check: a changed
-  // worktree can prove that a developer wrote code while still showing that
-  // the workstream's decomposition was too broad. An empty paths list has no
-  // declared boundary to measure, so preserve legacy/default behaviour and
-  // report the skipped check instead of inventing one.
-  if (!scopeGateEnabled()) {
-    notes.push("PI_ENSEMBLE_SCOPE_GATE=0 — develop scope/fanout gate disabled");
-  } else {
-    // #672 (sub-defect 2) — the FENCE's permitted set is the union of ALL
-    // workstreams' declared paths in this plan, not just the current
-    // workstream's slice: a file legitimately owned by sibling B must not
-    // fail workstream A's undeclared-path check when A's worktree picked it
-    // up. Two things deliberately do NOT widen:
-    //   - the workstream's OWN `outOfScope` fence (an explicit do-not-touch
-    //     entry is a conflict the gate must catch even when a sibling
-    //     declares the same file), and
-    //   - the fanout DENOMINATOR (stays the workstream's own declared count
-    //     — widening it would raise how many files a single workstream may
-    //     touch, which the ticket forbids).
-    const workstreams = state.pipelineState.workstreams ?? {};
-    const planDeclaredPaths = new Set<string>();
-    for (const ws of Object.values(workstreams)) {
-      for (const p of ws?.paths ?? []) {
-        const n = normaliseScopePath(p);
-        if (n.length > 0) planDeclaredPaths.add(n);
-      }
-    }
-    for (const [id, changedPaths] of changedPathsByWorkstream) {
-      const workstream = workstreams[id];
-      const declaredPaths = (workstream?.paths ?? [])
-        .map(normaliseScopePath)
-        .filter((p) => p.length > 0);
-      const outOfScope = (workstream?.outOfScope ?? [])
-        .map(normaliseScopePath)
-        .filter((p) => p.length > 0);
-      const changedFiles = [...changedPaths].sort();
-      const outOfScopeHits = changedFiles.filter((file) =>
-        outOfScope.some((declared) => matchesScopePath(file, declared)),
-      );
-      for (const file of outOfScopeHits) {
-        failures.push(`developer touched out-of-scope path ${file} — declared fence violated`);
-      }
-      if (declaredPaths.length === 0) {
-        notes.push(`scope fanout check skipped for ${id} — workstream has no declared paths`);
-        continue;
-      }
-      const limit = Math.max(declaredPaths.length * scopeFanoutFactor(), scopeFanoutMinimum());
-      // #672 (sub-defect 3) — the test-file exception: a changed path that
-      // matches the existing `isTestPath` convention is fence-permitted when
-      // its INFERRED SUBJECT (via `couplesTo`) is in the plan-wide declared
-      // set. Inference-gated, not a blanket test-path exemption: an
-      // unrelated `test-bar.ts` whose stem names nothing declared still fails.
-      // The exception counts the file as declared for the fanout check —
-      // a test legitimately asked for alongside a declared subject must not
-      // inflate the changed-file count.
-      const isDeclaredOrExempt = (file: string): boolean =>
-        declaredPaths.some((declared) => matchesScopePath(file, declared)) ||
-        [...planDeclaredPaths].some((declared) => matchesScopePath(file, declared)) ||
-        (isTestPath(file) &&
-          [...planDeclaredPaths].some(
-            (declared) => !isTestPath(declared) && couplesTo(file, declared),
-          ));
-      const undeclaredFiles = changedFiles.filter((file) => !isDeclaredOrExempt(file));
-      if (changedFiles.length > limit) {
-        const listedFiles = (undeclaredFiles.length > 0 ? undeclaredFiles : changedFiles).join(
-          ", ",
-        );
-        failures.push(
-          `scope fanout: ${changedFiles.length} files changed vs ${declaredPaths.length} declared — likely mis-decomposition; split the work or update the plan. Files: ${listedFiles}`,
-        );
-      }
-    }
-  }
+  // --- Scope/fanout gate (#285) — extracted to work-driver-scope-fanout.ts ---
+  runScopeFanoutGate(
+    state.pipelineState.workstreams ?? {},
+    changedPathsByWorkstream,
+    failures,
+    notes,
+  );
 
   if (changedWorktrees.length === 0) {
-    if (assessedCount > 0 && uncommittedOnlyCount === 0) {
-      // No uncommitted-only failures: every worktree is genuinely empty.
+    // #679 (task-evidence) — if every assessed worktree is a legitimate
+    // docs-only stream (declared non-source), the absence of commits is not a
+    // hollow-diff failure: the work is a docs deliverable, and the safety net
+    // commits it. Suppress the generic message.
+    const allAssessedAreDocsOnly =
+      assessedCount > 0 &&
+      [...legitimateNonSourceWorkstreams].length === Object.keys(worktrees).length;
+    if (assessedCount > 0 && uncommittedOnlyCount === 0 && !allAssessedAreDocsOnly) {
+      // Every worktree is genuinely empty (no uncommitted, no commits).
       failures.push(
         "developer claimed done but every assessed worktree has an empty diff (no uncommitted changes, no commits ahead of base) — the claim is not backed by any code change",
       );
@@ -300,17 +284,14 @@ export async function verifyDevelopOutcome(
   // --- Verify command (b) — per-worktree, then the CONSOLIDATED tree ---
   // #669 — every gate before the consolidated run sees ONE workstream in
   // isolation, so a test in workstream X that asserts on a file owned by
-  // workstream Y cannot pass in X's tree (#645/#649, confirmed 5 times;
-  // the mirror — two workstreams touching the same file, where a line-cap
-  // overflow is only visible in the COMBINED state — is #659/#664).
-  // Per-worktree verify stays (out-of-scope touches, skip-ratchet
-  // violations and missing deps are per-worktree diagnostics the
-  // consolidated run cannot see), but it must never be the SOLE basis for
-  // rejecting a fanout: N>1 workstreams get one additional verify against
-  // a tree containing ALL of their commits, and per-worktree verify
-  // failures are downgraded to notes (evidence) whenever that consolidated
-  // run passes — the consolidated result is what decides whether a
-  // per-worktree failure was a cross-worktree artifact.
+  // workstream Y cannot pass in X's tree. Per-worktree verify stays (out-of-
+  // scope touches, skip-ratchet violations and missing deps are per-worktree
+  // diagnostics the consolidated run cannot see), but it must never be the
+  // SOLE basis for rejecting a fanout: N>1 workstreams get one additional
+  // verify against a tree containing ALL of their commits, and per-worktree
+  // verify failures are downgraded to notes whenever that consolidated run
+  // passes — the consolidated result is what decides whether a per-worktree
+  // failure was a cross-worktree artifact.
   const cmd = await verifyCmdFor(ctx.repoRoot);
   if (!cmd) {
     notes.push(

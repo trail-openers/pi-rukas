@@ -15,6 +15,7 @@
 import { anglePromptsFor } from "../src/plan-angles.ts";
 import { codeIdentifiersIn } from "../src/plan-draft.ts";
 import { gapGatePrompt } from "../src/plan-driver.ts";
+import { inlinePlanPrompt } from "../src/work-driver-prompts-early.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -129,6 +130,52 @@ function assert(cond: boolean, msg: string) {
     !(affected?.prompt ?? "").includes("path:line"),
     "angle: affected-code prompt no longer asks for 'exact path:line'",
   );
+}
+
+// -------------------------------------------------
+// #679 — the /work driver's inline plan prompt (work-driver-prompts-early.ts
+// `inlinePlanPrompt`, the seam the ticket names for the depends-on /
+// integration-test line-format assertions) must document BOTH new optional
+// workstream lines so the planner is actually told they exist.
+{
+  const p = inlinePlanPrompt([679], "/tmp/scratch");
+  // Both optional workstream lines are documented so the planner is told they
+  // exist (the task-prompt workstream's exact wording — leading dash, inline
+  // backticks — and task-dep's wording are equivalent; both carry the same
+  // contract, so the test asserts on the semantic content, not one worktree's
+  // exact punctuation).
+  assert(
+    /depends-on: <id>/i.test(p),
+    "plan-prompt: the `depends-on: <id>` line format is documented",
+  );
+  assert(
+    /integration-test: <path>/i.test(p),
+    "plan-prompt: the `integration-test: <path>` line format is documented",
+  );
+  assert(
+    /this workstream\(s\)/i.test(p) || /workstream\(s\)/i.test(p) || /multiple/i.test(p),
+    "plan-prompt: the depends-on line is documented (multi-dep supported)",
+  );
+  assert(
+    /REQUIRED/i.test(p) && /interdependent/i.test(p),
+    "plan-prompt: the integration-test line is documented as required for interdependent pairs",
+  );
+  assert(
+    /test file exercises the other's file/i.test(p) || /test file covers the other's subject file/i.test(p),
+    "plan-prompt: the inferred test-subject coupling is named as a trigger for the integration-test line",
+  );
+  assert(
+    /N>1/i.test(p),
+    "plan-prompt: both new lines are documented as N>1-only",
+  );
+  // The pre-existing contract lines are untouched.
+  assert(p.includes("- paths: <comma-separated touchpoint files>"), "plan-prompt: the paths line is still there");
+  assert(
+    p.includes("- out-of-scope: <comma-separated explicit exclusions — what NOT to touch>"),
+    "plan-prompt: the out-of-scope line is still there",
+  );
+  assert(/ENUMERATE/.test(p), "plan-prompt: the enumerate-first doctrine is still there");
+  assert(/Bias toward MORE workstreams/i.test(p), "plan-prompt: the more-workstreams bias is still there");
 }
 
 console.log(`\nexit ${exit}`);

@@ -1,8 +1,8 @@
 /**
  * work-driver-branch-develop — Step 3 (branch) + Step 4 (develop) handlers.
- * Extracted from work-driver.ts (issue #171 file-size hygiene). Grouped
- * together as natural pipeline-adjacent steps: branch creates the
- * worktree(s) develop then fans a developer into.
+ * Extracted from work-driver.ts (issue #171 file-size hygiene). Branch creates
+ * the worktree(s); develop fans a developer into each and runs the safety net
+ * + verify gate (re-gated per-worktree by #679 task-evidence).
  */
 import { exec } from "node:child_process";
 import path from "node:path";
@@ -12,6 +12,7 @@ import { buildMemoryBrief } from "./memory-brief.ts";
 import { trace } from "./trace.ts";
 import { mechanizedBranchSetup } from "./work-driver-branch-mechanized.ts";
 import { parseWorktreesBlock, runBranchViaOpsDispatch } from "./work-driver-branch-ops.ts";
+import { topologicalDispatchOrder } from "./work-driver-dep-scheduler.ts";
 
 export { parseWorktreesBlock };
 import type { DriverContext } from "./work-driver-context.ts";
@@ -25,8 +26,13 @@ import {
 } from "./work-driver-prompts-early.ts";
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 
+import {
+  type DevelopRunState,
+  makeRunOneWorkstream,
+  runDependentWorkstreams,
+} from "./work-develop-run.ts";
 import { salvageKnownDirtyWorktrees } from "./work-driver-branch-salvage.ts";
-import { applySafetyNet } from "./work-driver-safety-net.ts";
+import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import { makeWorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
@@ -61,10 +67,8 @@ export async function runBranch(
   // plumb-report into the ops dispatch below.
   let base = state;
   const execFnPre = ctx.verifyExecFn ?? execp;
-  // #362 — pre-flight BEFORE the dispatch. `--restart` wipes the state file
-  // but not GitHub, so without this the driver rebuilds an issue that already
-  // has an open PR and opens a second one (#358 orphaned by #359). Halting
-  // here costs zero tokens; halting after develop costs a whole cycle.
+  // #362 — pre-flight BEFORE the dispatch: `--restart` wipes the state file
+  // but not GitHub, so without this the driver would open a second PR.
   if (prPreflightEnabled()) {
     const existing = await findOpenPrForIssue(execFnPre, ctx.repoRoot, ctx.issue);
     if (existing) {
@@ -83,16 +87,26 @@ export async function runBranch(
   }
   // #545 — a dirty leftover of the SAME issue is salvaged to the cycle's
   // scratch dir before the refusal. A salvage failure degrades to the
-  // pre-#545 refusal text; the refusal itself is unchanged.
+  // pre-#545 refusal text.
   const salvageScratch = scratchDir(ctx.repoRoot, ctx.issue);
   // #287 — mechanized, always-worktree branch setup. Development never
-  // happens at repoRoot: every workstream gets a detached worktree, and
-  // repoRoot is touched only by `integrate()` at commit-pr. The LLM ops
-  // dispatch below remains as the fallback for env variance (recovery,
+  // happens at repoRoot: every workstream gets a detached worktree. The LLM
+  // ops dispatch below remains as the fallback for env variance (recovery,
   // not an opt-out).
   {
     const execFnMech = ctx.verifyExecFn ?? execp;
     try {
+      // #679 case 2(b) — build the depends-on map from the plan's
+      // workstreams so mechanizedBranchSetup can DEFER the dependent
+      // workstreams (their worktrees are created in runDevelop, from the
+      // dependency's post-commit SHA, not here at baseSha). For the N=1
+      // default path this is `{}` (the default workstream cannot declare
+      // depends-on), so the pre-#679 shape is byte-identical.
+      const wsMap = state.pipelineState.workstreams ?? {};
+      const dependsOnByWorkstream: Record<string, string[]> = {};
+      for (const [id, ws] of Object.entries(wsMap)) {
+        if (ws?.dependsOn && ws.dependsOn.length > 0) dependsOnByWorkstream[id] = ws.dependsOn;
+      }
       const setup = await mechanizedBranchSetup(
         execFnMech,
         ctx.repoRoot,
@@ -100,6 +114,7 @@ export async function runBranch(
         activeIssuesOf(state),
         workstreamIds,
         await cachedIssueTitle(state),
+        dependsOnByWorkstream,
       );
       const started = appendEvent(
         { ...state, pipelineState: { ...state.pipelineState, currentStep: "branch" } },
@@ -136,6 +151,14 @@ export async function runBranch(
           branchName: setup.branchName,
           baseSha: setup.baseSha,
           worktrees: setup.worktrees,
+          // #679 — record the per-workstream effective base as of the branch
+          // step. Every independent workstream maps to the global baseSha;
+          // dependent workstreams (deferred) are NOT in this map yet — their
+          // entry is added by runDevelop at deferred-creation time, when the
+          // dependency's post-commit SHA is known. Readers (applySafetyNet,
+          // verifyDevelopOutcome) fall back to the global baseSha for any
+          // workstream id absent from the map.
+          workstreamBaseShas: setup.workstreamBaseShas,
         },
       };
     } catch (err) {
@@ -236,30 +259,20 @@ export async function runBranch(
 /**
  * Step 4 — Implementation.
  *
- * PR3 restored multi-workstream parallelism (the "default to parallel"
- * doctrine PR #239 silently dropped). When Step 2 decomposed the issue
- * into N>1 workstreams, this step fans out N developers in parallel —
- * each in its own worktree — via Promise.all over driver-owned
- * `dispatchCore` calls (the same pattern that `runLensReview` uses).
- *
- * For N=1 (the `default` workstream synthesised by Step 2), the existing
- * `runSingleDispatch` path runs unchanged. Both paths populate the SAME
- * event log shape; downstream Steps 5 and 7 see a single coherent diff
- * via `fetchDiff` whether N=1 or N>1.
- *
- * Partial failures don't abort the join: each branch is try/catch'd
- * inside the `Promise.all`. Adversarial sees the aggregate; the
- * `branches-converged` event records which branches succeeded.
+ * PR3 restored multi-workstream parallelism: N>1 workstreams fan out N
+ * developers, each in its own worktree. #679 extends this to a
+ * topological-dispatch order (independent parallel + dependent sequential)
+ * and defers the dependent workstreams' worktree creation to after their
+ * dependency commits (case 2(b)). The core lives in runDevelopTopological
+ * (below); the per-workstream dispatch closure lives in work-develop-run.ts.
  */
 export async function runDevelop(
   ctx: DriverContext,
   state: WorkState,
   now: number,
 ): Promise<WorkState> {
-  const ids =
-    Object.keys(state.pipelineState.workstreams ?? {}).length > 0
-      ? Object.keys(state.pipelineState.workstreams ?? {})
-      : ["default"];
+  const workstreams = state.pipelineState.workstreams ?? {};
+  const ids = Object.keys(workstreams).length > 0 ? Object.keys(workstreams) : ["default"];
   // PR11 — thread the ACTIVE issue list (NEEDS_WORK subset after
   // explore) into developer + speculative-explore prompts. activeIssuesOf
   // falls back to [ctx.issue] for single-issue cycles.
@@ -281,17 +294,7 @@ export async function runDevelop(
   }
 
   const dispatch = ctx.dispatchFn ?? dispatchCore;
-  const scratchAbs = scratchDir(ctx.repoRoot, ctx.issue);
-  // Speculative explore alongside each developer — OPT-IN. It hands findings
-  // over through a scratch file the developer prompt names, and measured over
-  // a day of live cycles that hand-off never once completed: the developer
-  // reads the path 3-7s in, the file landed 14-130s later, every access
-  // ENOENT — 397k-956k tokens per child that nothing consumed. Kept because
-  // awaiting it and inlining its findings into the developer prompt (no
-  // file, no race) is worth measuring.
-  const speculativeOn = process.env.PI_ENSEMBLE_SPECULATIVE_EXPLORE === "1";
-  const verdicts: Array<{ id: string; ok: boolean }> = [];
-  const branchEvents: typeof next.eventLog = [];
+  const execFn = ctx.verifyExecFn ?? execp;
   // #382 — write-ahead. `develop` is the longest-running step and the
   // biggest crash window. One marker for the whole step: resume
   // granularity is the step, and a half-finished fan-out is re-entered
@@ -305,139 +308,116 @@ export async function runDevelop(
     Date.now(),
   );
   next = begun.state;
-  const results = await Promise.all(
-    ids.map(async (id) => {
-      const ws = state.pipelineState.workstreams?.[id];
-      const cwd = state.pipelineState.worktrees?.[id] ?? ctx.repoRoot;
-      const startedAt = Date.now();
-      const developerLabel = ids.length > 1 ? `developer[${id}]` : "developer";
-      const speculativeContextPath = path.join(scratchAbs, `speculative-${id}.md`);
-      try {
-        // Fire developer + (optional) speculative explore CONCURRENTLY;
-        // allSettled so one failing does not abort the other. On the race
-        // that makes the scratch hand-off useless, see the knob above.
-        // #422 — prior memory about the files this workstream will touch.
-        // Never fatal: any vipune problem degrades to an empty brief.
-        const brief = await buildMemoryBrief(ws?.paths ?? [], {
-          cwd: ctx.repoRoot,
-          timeoutMs: 8000,
-        });
-        next = appendEvent(next, {
-          kind: "memory-inject",
-          at: Date.now(),
-          step: "develop",
-          queries: brief.queries,
-          hits: brief.hits.length,
-          emptyBrief: brief.emptyBrief,
-          ids: brief.hits.map((h: { id: string }) => h.id),
-        });
-
-        const [developerSettled, speculativeSettled] = await Promise.allSettled([
-          dispatch(
-            ctx.pi,
-            {
-              role: "developer",
-              prompt: inlineDevelopPrompt(
-                activeIssues,
-                scratchAbs,
-                ws,
-                ids.length > 1 ? id : undefined,
-                speculativeOn ? speculativeContextPath : undefined,
-                brief.text,
-              ),
-              cwd,
-            },
-            { label: developerLabel },
-          ),
-          speculativeOn
-            ? dispatch(
-                ctx.pi,
-                {
-                  role: "explore",
-                  prompt: inlineSpeculativeExplorePrompt(
-                    activeIssues,
-                    ws,
-                    speculativeContextPath,
-                    scratchAbs,
-                  ),
-                  cwd,
-                },
-                { label: ids.length > 1 ? `explore:speculative[${id}]` : "explore:speculative" },
-              )
-            : Promise.resolve(null),
-        ]);
-        // Record the speculative outcome (best-effort observability;
-        // failure is non-fatal — the developer ran on whatever context
-        // Step 1's explore + the scratch file provided).
-        if (speculativeSettled.status === "fulfilled" && speculativeSettled.value !== null) {
-          const specEvent = await buildCompletionEvent(
-            ctx,
-            "develop",
-            "explore",
-            ids.length > 1 ? `explore:speculative[${id}]` : "explore:speculative",
-            speculativeSettled.value,
-          );
-          branchEvents.push(specEvent);
-        } else if (speculativeSettled.status === "rejected") {
-          trace(
-            `work-driver: speculative explore for workstream ${id} threw: ${(speculativeSettled.reason as Error).message?.slice(-200)}`,
-          );
-        }
-        if (developerSettled.status === "rejected") {
-          throw developerSettled.reason;
-        }
-        const res = developerSettled.value;
-        const ok = res.ok && !res.errorStop;
-        const completionEvent = await buildCompletionEvent(
-          ctx,
-          "develop",
-          "developer",
-          developerLabel,
-          res,
-        );
-        branchEvents.push(completionEvent);
-        if (ids.length > 1) {
-          branchEvents.push({
-            kind: "branch-completed",
-            step: "develop",
-            workstreamId: id,
-            ok,
-            ms: Date.now() - startedAt,
-            at: Date.now(),
-          });
-        }
-        verdicts.push({ id, ok });
-        return { id, ok };
-      } catch (err) {
-        const errMsg = (err as Error).message?.slice(0, 200);
-        branchEvents.push({
-          kind: "dispatch-failed",
-          step: "develop",
-          role: "developer",
-          jobId: "unknown",
-          label: developerLabel,
-          ms: Date.now() - startedAt,
-          at: Date.now(),
-          errorTail: errMsg,
-        });
-        if (ids.length > 1) {
-          branchEvents.push({
-            kind: "branch-completed",
-            step: "develop",
-            workstreamId: id,
-            ok: false,
-            ms: Date.now() - startedAt,
-            at: Date.now(),
-            error: errMsg,
-          });
-        }
-        verdicts.push({ id, ok: false });
-        return { id, ok: false };
-      }
-    }),
+  return runDevelopTopological(
+    ctx,
+    next,
+    ids,
+    workstreams,
+    activeIssues,
+    dispatch,
+    execFn,
+    now,
+    begun.jobId,
   );
-  void results;
+}
+
+/** #679 — topological-dispatch core of runDevelop (see work-develop-run.ts). */
+async function runDevelopTopological(
+  ctx: DriverContext,
+  initialState: WorkState,
+  ids: string[],
+  workstreams: NonNullable<WorkState["pipelineState"]["workstreams"]>,
+  activeIssues: number[],
+  dispatch: NonNullable<DriverContext["dispatchFn"]>,
+  execFn: NonNullable<DriverContext["verifyExecFn"]>,
+  now: number,
+  jobId: string,
+): Promise<WorkState> {
+  void now;
+  const begun = { jobId };
+  let next = initialState;
+  const scratchAbs = scratchDir(ctx.repoRoot, ctx.issue);
+  const verdicts: Array<{ id: string; ok: boolean }> = [];
+  const branchEvents: WorkEvent[] = [];
+  const dependsOnMap: Record<string, string[]> = {};
+  for (const [id, ws] of Object.entries(workstreams)) {
+    if (ws?.dependsOn && ws.dependsOn.length > 0) dependsOnMap[id] = ws.dependsOn;
+  }
+  const { independent, dependentOrdered } = topologicalDispatchOrder(ids, dependsOnMap);
+  const stateRef = { current: next };
+  const runOneWorkstream = makeRunOneWorkstream({
+    ctx,
+    activeIssues,
+    scratchAbs,
+    workstreams: workstreams as DevelopRunState["workstreams"],
+    ids,
+    dispatch,
+    verdicts,
+    branchEvents: branchEvents as WorkEvent[],
+    stateRef,
+  });
+  let worktrees = next.pipelineState.worktrees ?? {};
+  let workstreamBaseShas = next.pipelineState.workstreamBaseShas ?? {};
+  const globalBaseSha = next.pipelineState.baseSha;
+
+  const independentCwds = independent.map((id) => worktrees[id] ?? ctx.repoRoot);
+  const independentResults = await Promise.all(
+    independent.map(async (id, i) => runOneWorkstream(id, independentCwds[i] ?? ctx.repoRoot)),
+  );
+
+  // #679 — a workstream is “blocked” for its dependents when its dispatch
+  // failed OR when it produced NO commits ahead of its base (the case-2(c)
+  // falsely-ok shape): building a dependent worktree on a dependency that
+  // shipped nothing is the incoherent-tree failure this ticket fixes.
+  const failedOrSkipped = new Set<string>();
+  for (const r of independentResults) {
+    if (!r.ok) failedOrSkipped.add(r.id);
+  }
+  for (const id of independent) {
+    const cwd = worktrees[id] ?? ctx.repoRoot;
+    const base = workstreamBaseShas[id] ?? globalBaseSha;
+    if (typeof base === "string" && /^[0-9a-f]{40}$/.test(base)) {
+      try {
+        const { stdout } = await execFn(`git rev-list --count ${base}..HEAD`, {
+          cwd,
+          maxBuffer: 64 * 1024,
+        });
+        if (Number.parseInt(stdout.trim(), 10) === 0) failedOrSkipped.add(id);
+      } catch {
+        failedOrSkipped.add(id); // unresolvable → treat as blocked (fail-safe)
+      }
+    } else {
+      failedOrSkipped.add(id); // no valid base → treat as blocked (fail-safe)
+    }
+  }
+  const wtResult = await runDependentWorkstreams(
+    ctx,
+    dependentOrdered,
+    workstreams,
+    dependsOnMap,
+    failedOrSkipped,
+    verdicts,
+    branchEvents,
+    execFn,
+    worktrees,
+    workstreamBaseShas,
+    globalBaseSha,
+    ids,
+    runOneWorkstream,
+  );
+  worktrees = wtResult.worktrees;
+  workstreamBaseShas = wtResult.workstreamBaseShas;
+  next = stateRef.current;
+  void independentResults;
   next = appendEvent(clearDispatch(next, begun.jobId), ...branchEvents);
+  next = {
+    ...next,
+    pipelineState: {
+      ...next.pipelineState,
+      worktrees,
+      workstreamBaseShas: { ...workstreamBaseShas, ...next.pipelineState.workstreamBaseShas },
+    },
+  };
   if (ids.length > 1) {
     next = appendEvent(next, {
       kind: "branches-converged",
@@ -446,25 +426,28 @@ export async function runDevelop(
       at: Date.now(),
     });
   }
-  // #622 — mechanical auto-commit safety net. Fires when a developer left
-  // uncommitted work in their worktree (no commits ahead of baseSha) after
-  // a successful dispatch. The verify gate would reject such a worktree
-  // ("has uncommitted changes but no commit ahead of baseSha"); the safety
-  // net commits the work driver-side so the gate passes. Skipped when the
-  // worktree already has commits ahead of baseSha (developer committed
-  // correctly) or when the worktree is clean (nothing to commit).
-  // Escape hatch: PI_ENSEMBLE_SAFETY_NET_COMMIT=0 disables it.
-  if (verdicts.every((v) => v.ok)) {
+  // #679 (task-evidence) — the safety net and the develop verify gate are no
+  // longer gated on the AGGREGATE verdict `verdicts.every(v => v.ok)`. That
+  // old condition skipped BOTH gates for the whole fanout the moment any
+  // single workstream failed (or was falsely-ok). Both gates now run when there
+  // is ANY evidence to check: at least one worktree has commits ahead of its
+  // base OR has uncommitted changes — the same condition verifyDevelopOutcome
+  // itself computes per worktree.
+  const hasDevelopEvidence = await hasAnyWorktreeEvidence(ctx, next);
+  // #622 — mechanical auto-commit safety net. Fires per-worktree when a
+  // developer left uncommitted work in their worktree (no commits ahead of the
+  // workstream's effective base) after a successful dispatch. #679: independent
+  // of sibling verdicts — a falsely-ok sibling no longer suppresses the safety
+  // net for a legitimate uncommitted workstream. Escape hatch:
+  // PI_ENSEMBLE_SAFETY_NET_COMMIT=0 disables it.
+  if (hasDevelopEvidence) {
     next = await applySafetyNet(ctx, next);
   }
-  // PR17 — outcome verification gate. Only when every branch claims
-  // success (failed branches already route through the dispatch-failed
-  // HALT machinery); the gate exists to catch the OTHER case, where all
-  // claims are green but the evidence isn't: no diff anywhere, or the
-  // project's verify command (typecheck/test) fails on the produced
-  // code. Catching a broken build here saves the full adversarial →
-  // lens → CI round-trip that would otherwise discover it post-PR.
-  if (verdicts.every((v) => v.ok)) {
+  // PR17 — outcome verification gate. Runs whenever the fanout produced any
+  // evidence, not only when every branch claims success. The gate exists to
+  // catch the case where claims are green but the evidence isn't. #679: one
+  // failed workstream no longer skips the gate for the whole fanout.
+  if (hasDevelopEvidence) {
     const gate = await verifyStepOutcome(ctx, next, "develop");
     if (!gate.ok) {
       // #669 — a cherry-pick conflict during the develop-time consolidated
@@ -498,3 +481,12 @@ export async function runDevelop(
   }
   return next;
 }
+
+/**
+ * #679 — one dependent workstream: skip-cascade check → resolve the
+ * dependency's post-commit SHA → create the deferred worktree → dispatch.
+ * A dependent whose dependency failed/was skipped is itself skipped (no
+ * worktree, no dispatch) — recorded as `branch-completed` with `ok: false`
+ * and a reason. No baseSha fallback (building on baseSha when the dependency
+ * produced nothing is the incoherent-tree failure the ticket fixes).
+ */

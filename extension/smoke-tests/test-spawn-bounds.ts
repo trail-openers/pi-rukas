@@ -183,8 +183,9 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     !/PI_ENSEMBLE_SKIP_SPECULATIVE_EXPLORE/.test(develop),
     "canary: the skip-opt-out is gone — an unread child is not a default worth opting out of",
   );
+  const workDevelopRunSrc = readFileSync(path.join(__dirname, "../src/work-develop-run.ts"), "utf8");
   assert(
-    /PI_ENSEMBLE_SPECULATIVE_EXPLORE\s*===\s*"1"/.test(develop),
+    /PI_ENSEMBLE_SPECULATIVE_EXPLORE\s*===\s*"1"/.test(workDevelopRunSrc),
     "canary: the speculative explore is opt-IN — default develop spends one child per workstream",
   );
 }

@@ -173,6 +173,27 @@ export interface MechanizedBranchResult {
   baseSha: string;
   mainline: string;
   worktrees: Record<string, string>;
+  /**
+   * #679 case 2(b) — workstream ids whose worktree creation was DEFERRED to
+   * the develop step because they declare a non-empty `dependsOn`. The branch
+   * step creates worktrees for every INDEPENDENT workstream (and the first in
+   * each dependency chain) at baseSha as before; a dependent workstream's
+   * worktree is created in runDevelop after its dependency's developer
+   * dispatch commits, from the dependency's post-commit SHA. This map is
+   * EMPTY for the N=1 default path and for plans with no `dependsOn`
+   * declarations, so the pre-#679 shape is byte-identical.
+   */
+  deferredWorkstreams: string[];
+  /**
+   * #679 — the per-workstream EFFECTIVE BASE as of the branch step. Every
+   * workstream maps to the global baseSha at this point (the dependent
+   * workstreams' bases are not yet known — their worktrees don't exist
+   * yet); the map is populated so the state schema's `workstreamBaseShas`
+   * field is set consistently from the start, and runDevelop then UPDATES
+   * the dependent workstreams' entries to their dependency's post-commit SHA
+   * at deferred-creation time.
+   */
+  workstreamBaseShas: Record<string, string>;
   /** Per-workstream provisioning outcome, keyed by workstream id. */
   provisions: Record<string, ProvisionResult>;
 }
@@ -191,6 +212,14 @@ export interface MechanizedBranchResult {
  * `git fetch` is the sole repoRoot command and it mutates only refs, never the
  * working tree, so an operator's uncommitted work in the main checkout is
  * untouched and — unlike pre-#287 — no longer blocks the cycle at all.
+ *
+ * #679 case 2(b) — `dependsOnByWorkstream` is the per-workstream depends-on
+ * map from the caller's WorkState. A workstream with a non-empty entry is
+ * DEFERRED (its worktree is created later in runDevelop, from the dependency's
+ * post-commit SHA); an absent or empty entry means the workstream is
+ * independent and its worktree is created here at baseSha, as before. For the
+ * N=1 default path the map is `{}` (the default workstream cannot declare
+ * depends-on), so the pre-#679 shape is byte-identical.
  */
 export async function mechanizedBranchSetup(
   execFn: ExecFn,
@@ -199,6 +228,7 @@ export async function mechanizedBranchSetup(
   issues: number[],
   workstreamIds: string[],
   issueTitle: string | undefined,
+  dependsOnByWorkstream: Record<string, string[]> = {},
 ): Promise<MechanizedBranchResult> {
   await ensureWorktreesExcluded(execFn, repoRoot);
   const mainline = await detectMainline(execFn, repoRoot);
@@ -240,7 +270,27 @@ export async function mechanizedBranchSetup(
   const ids = workstreamIds.length > 0 ? workstreamIds : ["default"];
   const worktrees: Record<string, string> = {};
   const provisions: Record<string, ProvisionResult> = {};
+  const deferredWorkstreams: string[] = [];
+  const workstreamBaseShas: Record<string, string> = {};
+  // #679 case 2(b) — a workstream that declares a non-empty `dependsOn` is
+  // DEFERRED: its worktree is NOT created here. It is created in runDevelop
+  // after its dependency's developer dispatch commits, from the dependency's
+  // post-commit SHA (not baseSha), because the dependent's work must be
+  // built ON TOP of the dependency's work, not in parallel with it. The
+  // dependent's `workstreamBaseShas` entry is left UNPOPULATED here (it
+  // will be set by runDevelop at deferred-creation time); the reader falls
+  // back to the global baseSha until then, which is correct because the
+  // worktree doesn't exist yet and there's nothing to compare against.
+  // The plan-quality gate (planQualityReason) already guarantees the
+  // depends-on graph is a DAG (no cycles, no dangling references), so the
+  // topological dispatch in runDevelop is guaranteed to terminate.
   for (const id of ids) {
+    const deps = dependsOnByWorkstream?.[id];
+    if (deps && deps.length > 0) {
+      deferredWorkstreams.push(id);
+      continue;
+    }
+    workstreamBaseShas[id] = baseSha;
     try {
       const created = await worktreeCreate(execFn, {
         repoRoot,
@@ -261,7 +311,15 @@ export async function mechanizedBranchSetup(
     }
   }
   trace(
-    `work-driver: mechanized branch setup — ${branchName} @ ${baseSha.slice(0, 8)} (${ids.length} worktree(s))`,
+    `work-driver: mechanized branch setup — ${branchName} @ ${baseSha.slice(0, 8)} (${ids.length} workstream(s)${deferredWorkstreams.length ? `, ${deferredWorkstreams.length} worktree(s) deferred (depends-on)` : ""})`,
   );
-  return { branchName, baseSha, mainline, worktrees, provisions };
+  return {
+    branchName,
+    baseSha,
+    mainline,
+    worktrees,
+    deferredWorkstreams,
+    workstreamBaseShas,
+    provisions,
+  };
 }
