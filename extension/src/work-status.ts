@@ -13,9 +13,8 @@
  * as the legacy fallback.
  *
  * Inputs:
- *   /work-status               — auto-resolves the issue: if a state file
- *                                exists in the cwd's project, picks the
- *                                most-recently-updated one (running > recent).
+ *   /work-status               — auto-resolves the issue: the most
+ *                                recently-updated state file (running > recent).
  *   /work-status <issue>       — explicit issue number.
  *   /work-status N --json      — emit raw JSON (handy for piping to jq).
  */
@@ -34,7 +33,8 @@ import {
 } from "./work-driver-context.ts";
 import { formatCycleTotal } from "./work-driver-cycle-total.ts";
 import { explainCap } from "./work-driver-explain.ts";
-import { humanActionFor, readQueueSummary } from "./work-queue.ts";
+import { readQueueSummary } from "./work-queue-summary.ts";
+import { humanActionFor } from "./work-queue.ts";
 import { discoverAllCycles, renderCycleIndex } from "./work-status-index.ts";
 import { isIssueNumberArg, resolveJobId } from "./work-status-jobid.ts";
 import { type WorkEvent, type WorkState, readState, workStateDir } from "./workflow-state.ts";

@@ -34,7 +34,7 @@ import {
   resumeEnabled,
 } from "../src/work-driver-resume.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
-import { readQueueSummary, writeQueueSummary } from "../src/work-queue.ts";
+import { readQueueSummary, writeQueueSummary } from "../src/work-queue-summary.ts";
 import { renderCycleIndex } from "../src/work-status-index.ts";
 import { validateDiscriminants } from "../src/workflow-state-validate.ts";
 import {

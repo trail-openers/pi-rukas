@@ -98,6 +98,29 @@ registerWorkTools(fakePi);
   );
 }
 
+// ------------------------------------ the tool path groups BEFORE it reports
+
+{
+  // #676 — the tool path (runDriver via start_work_driver) used to emit a
+  // hardcoded, inaccurate pre-grouping placeholder ("K=grouped N issue(s)")
+  // before ever calling groupIssues. The canary: no placeholder in source,
+  // and the shared runner derives concurrency from the ACTUAL group count
+  // after grouping, not the raw issue count.
+  const src = readFileSync(path.resolve(import.meta.dirname, "..", "src", "work-entry.ts"), "utf8");
+  assert(
+    !src.includes("grouping decided K=grouped"),
+    "canary: no pre-grouping placeholder 'grouping decided K=grouped' remains in work-entry.ts",
+  );
+  assert(
+    (src.match(/grouping decided K=\$\{groupList\.length\} group\(s\)/g) ?? []).length >= 1,
+    "the accurate post-grouping format (K=<actual group count> group(s)) is emitted",
+  );
+  assert(
+    /Math\.min\(resolvedParallelGroups\(\),\s*groupList\.length\)/.test(src),
+    "concurrency is derived from the actual group count, not the raw issue count",
+  );
+}
+
 // ------------------------------------ the doctrine tool covers the prose set
 
 {
