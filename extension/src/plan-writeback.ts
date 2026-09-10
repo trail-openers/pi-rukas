@@ -37,6 +37,14 @@ import { GAP_RESOLUTION_PLACEHOLDER } from "./plan-gaps.ts";
 import type { PlanGap, PlanType } from "./plan-types.ts";
 
 /**
+ * Prefix on every spliced writeback bullet: a gate resolution rendered
+ * into a section must be attributable to the gate, never mistakable for
+ * an investigator-derived item (vipune round 9). markWrittenDecisions
+ * matches the marked form; decision records keep the raw resolution.
+ */
+export const GATE_RESOLUTION_MARKER = "(gate resolution) ";
+
+/**
  * The headings a carried resolution may name as its writeback destination.
  * The winner is the entry whose match occurs EARLIEST IN THE RESOLUTION
  * TEXT — not array order (vipune fixture run, C4: array-order matching
@@ -165,6 +173,16 @@ export interface SpliceOutcome {
 export function destinationFor(gap: PlanGap, type: PlanType): WritebackDestination | null {
   const resolution = gap.resolution;
   if (!resolution || resolution === GAP_RESOLUTION_PLACEHOLDER) return null;
+  // Edit-imperative resolutions ("delete X … and instead state Y") are
+  // instructions to EDIT the spec, not criteria — splicing them verbatim
+  // pastes meta-commentary into the section while the contradicted bullet
+  // remains (vipune rounds 8+9: '…delete the "less likely" phrasing' and
+  // 'delete "reproduce bit-for-bit…" … instead state…' both rendered as
+  // Acceptance-criteria bullets beside the text they contradicted).
+  // Deterministic string surgery on arbitrary bullets is fragile, so these
+  // route to Decision-A branch 1: status open, decision owner operator —
+  // fail closed to human review, disclosed, never silently spliced.
+  if (/\b(delete|remove|replace|reword|rewrite|instead)\b/i.test(resolution)) return null;
   let named: { heading: string; index: number } | null = null;
   for (const s of WRITABLE_SECTIONS) {
     const m = s.re.exec(resolution);
@@ -201,7 +219,10 @@ export function buildResolvedDecisions(
     });
     if (dest) {
       const existing = writebackMap.get(dest.heading) ?? [];
-      existing.push(g.resolution);
+      // Provenance marker: a spliced bullet must never read as an
+      // investigator-derived criterion (vipune round 9 mistook one for an
+      // AC). The decisions record above keeps the raw resolution.
+      existing.push(GATE_RESOLUTION_MARKER + g.resolution);
       writebackMap.set(dest.heading, existing);
     }
   }
@@ -232,7 +253,9 @@ export function markWrittenDecisions(
   return decisions.map((d) => {
     if (!d.writebackHeading) return { ...d, writtenBack: false };
     const list = appliedByHeading.get(d.writebackHeading) ?? [];
-    const idx = list.indexOf(d.resolution);
+    // The spliced bullet carries the provenance marker; the decision
+    // record keeps the raw resolution — match the marked form.
+    const idx = list.indexOf(GATE_RESOLUTION_MARKER + d.resolution);
     if (idx === -1) return { ...d, writtenBack: false };
     list.splice(idx, 1);
     return { ...d, writtenBack: true };
@@ -284,10 +307,17 @@ export function appendBulletsToSection(
     }
   }
   if (lastBullet === -1) return null;
-  const inserted = `${body.slice(0, start) + lines.slice(0, lastBullet + 1).join("\n")}\n${bullets
+  // The tail is rebuilt with a NORMALIZED boundary. The old concatenation
+  // carried no separator, so the first splice ate the section's trailing
+  // blank line and a second splice into the same section glued the next
+  // "## " heading straight onto the bullet ("…phrasing.## References" —
+  // vipune round 8) while still reporting applied:true.
+  const headPart = `${body.slice(0, start) + lines.slice(0, lastBullet + 1).join("\n")}\n${bullets
     .map((b) => `- ${b}`)
-    .join("\n")}${lines.slice(lastBullet + 1).join("\n")}${body.slice(end)}`;
-  return inserted;
+    .join("\n")}`;
+  const rest = (lines.slice(lastBullet + 1).join("\n") + body.slice(end)).replace(/^\n*/, "");
+  if (rest === "") return headPart;
+  return `${headPart}${rest.startsWith("## ") ? "\n\n" : "\n"}${rest}`;
 }
 
 function escapeRe(s: string): string {

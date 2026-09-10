@@ -107,10 +107,17 @@ process.env.PI_ENSEMBLE_FORGE = "none";
   );
   assert(
     destinationFor(
-      gap("sharpen the acceptance criterion and remove the contradictory test surface language"),
+      gap("sharpen the acceptance criterion and expand the test surface notes"),
       "feature",
     )?.heading === "Acceptance criteria",
     "C4: the heading matched EARLIEST in the text wins (not array order)",
+  );
+  assert(
+    destinationFor(
+      gap("sharpen the acceptance criterion and remove the contradictory test surface language"),
+      "feature",
+    ) === null,
+    "edit-verb guard: a resolution containing an edit imperative (remove) never splices",
   );
   assert(
     destinationFor(

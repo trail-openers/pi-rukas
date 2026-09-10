@@ -140,7 +140,7 @@ function assert(cond: boolean, msg: string) {
         writebackHeading: "Acceptance criteria",
       },
     ],
-    new Map([["Acceptance criteria", ["sharper criterion added to Acceptance criteria"]]]),
+    new Map([["Acceptance criteria", ["(gate resolution) sharper criterion added to Acceptance criteria"]]]),
   );
   const oqSection = withResolved.body.slice(withResolved.body.indexOf("## Open Questions"));
   assert(

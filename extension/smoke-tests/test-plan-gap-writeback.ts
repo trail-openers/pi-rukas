@@ -2,52 +2,32 @@
 /**
  * #639 DEFECT 2 — Decision-A writeback pipeline tests.
  *
- * The old onCorrective closure dropped the gap's status, string-prefixed the
- * resolution into openQuestions, and re-drafted; draftSpec then RE-DETERMINED
- * "resolved" via a string-prefix regex — a contradiction (the body still
- * contained the original text while the bullet claimed resolved). Decision A
- * makes the writeback real and three-branch:
- *
- *   1. body-applicable resolution (names no section, or the default
- *      Acceptance criteria) → the resolution text is appended as a NEW
- *      bullet to that section (outside Open Questions), and the Open
- *      Questions bullet renders `status: resolved` (decision owner PM).
- *   2. a resolution that explicitly names a DIFFERENT section → the bullet
- *      goes to that section.
- *   3. the parseGaps placeholder (or a resolution naming no renderable
- *      section) → the bullet renders `status: open` with
- *      `decision owner: operator`, and the body is NOT modified.
+ * Decision A makes the gap-gate writeback real and three-branch:
+ *   1. body-applicable resolution (no section named, or the default AC
+ *      section) → appended as a NEW bullet there (with the provenance
+ *      marker), Open Questions renders `status: resolved` (owner PM).
+ *   2. a resolution naming a DIFFERENT section → the bullet goes there.
+ *   3. placeholder, unrenderable section, or an EDIT-IMPERATIVE resolution
+ *      (delete/remove/replace/reword/rewrite/instead — vipune rounds 8+9)
+ *      → `status: open`, `decision owner: operator`, body NOT modified.
  *
  * The round-2 gate prompt must be built from the RE-DRAFTED body (the
- * reviewer sees the applied resolution) — the makeGatePrompt thunk closes
- * over the reassigned `body` binding in onCorrective; a refactor that moved
- * the re-draft into a local variable would silently break this AC.
- *
- * The single-round corrective shape only (GAP_GATE_MAX_ITERATIONS stays 2 —
- * the two-consecutive-corrective shape is unreachable and explicitly not a
- * required case, per the out-of-scope note).
- *
- * The seam wiring (makeDispatchStub / installForgeStub / gatePrompts /
- * forgeStub) lives in the shared plan-test-stubs.ts — the single copy both
- * gap-gate test files import (it used to be copied verbatim here from
- * test-plan-gap-gate-rounds.ts; a dispatch/forge shape change now updates
- * one place).
+ * makeGatePrompt thunk closes over the reassigned `body` in onCorrective).
+ * Single-round corrective shape only (GAP_GATE_MAX_ITERATIONS = 2). Seam
+ * wiring lives in the shared plan-test-stubs.ts.
  */
 
 import { draftSpec } from "../src/plan-draft.ts";
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
 import { GAP_RESOLUTION_PLACEHOLDER } from "../src/plan-gaps.ts";
 import {
-  applyWritebackToBody,
   appendBulletsToSection,
+  applyWritebackToBody,
   buildResolvedDecisions,
+  markWrittenDecisions,
+  renderOpenQuestions,
 } from "../src/plan-writeback.ts";
-import {
-  forgeStub,
-  gatePrompts,
-  installForgeStub,
-  makeDispatchStub,
-} from "./plan-test-stubs.ts";
+import { forgeStub, gatePrompts, installForgeStub, makeDispatchStub } from "./plan-test-stubs.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -57,9 +37,6 @@ function assert(cond: boolean, msg: string) {
     exit = 1;
   }
 }
-
-// ----------------------------------------------------------- stub the seams
-// (see plan-test-stubs.ts for the shared stub harness)
 
 installForgeStub();
 
@@ -97,11 +74,15 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
   const ac = sectionOf(body, "Acceptance criteria", "References");
   const oq = sectionOf(body, "Open Questions", "Out of scope");
   assert(
-    ac.includes("- add a criterion for the retry path to the Acceptance criteria section"),
-    "branch 1: the resolution text is a NEW bullet in the Acceptance criteria section",
+    ac.includes(
+      "- (gate resolution) add a criterion for the retry path to the Acceptance criteria section",
+    ),
+    "branch 1: the resolution text is a NEW bullet in the Acceptance criteria section (with the provenance marker)",
   );
   assert(
-    !oq.includes("- add a criterion for the retry path to the Acceptance criteria section"),
+    !oq.includes(
+      "- (gate resolution) add a criterion for the retry path to the Acceptance criteria section",
+    ),
     "branch 1: the resolution text is NOT a bullet in Open Questions (writeback is outside it)",
   );
   assert(
@@ -112,10 +93,7 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
     /status: resolved/.test(oq),
     "branch 1: the written-back decision renders status: resolved",
   );
-  assert(
-    !/status: open/.test(oq),
-    "branch 1: no status: open bullet for a written-back decision",
-  );
+  assert(!/status: open/.test(oq), "branch 1: no status: open bullet for a written-back decision");
   // The round-2 gate prompt is built from the re-drafted body: the reviewer
   // sees the applied resolution (not just the round-1 body).
   const r2 = gatePrompts[1] ?? "";
@@ -156,11 +134,11 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
   const ac = sectionOf(body, "Acceptance criteria", "References");
   const oq = sectionOf(body, "Open Questions", "Out of scope");
   assert(
-    edge.includes("- document the boundary in the Edge cases section"),
-    "branch 2: the named-section resolution is written to that section (Edge cases)",
+    edge.includes("- (gate resolution) document the boundary in the Edge cases section"),
+    "branch 2: the named-section resolution is written to that section (Edge cases, marked)",
   );
   assert(
-    !ac.includes("- document the boundary in the Edge cases section"),
+    !ac.includes("- (gate resolution) document the boundary in the Edge cases section"),
     "branch 2: the named-section resolution is NOT also written to Acceptance criteria",
   );
   assert(
@@ -311,7 +289,9 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
   const edge = sectionOf(body, "Expected deliverable", "References");
   const oq = sectionOf(body, "Open Questions", "Out of scope");
   assert(
-    edge.includes("- name the decision the spike must reach in the Expected deliverable section"),
+    edge.includes(
+      "- (gate resolution) name the decision the spike must reach in the Expected deliverable section",
+    ),
     "spike branch: the writeback goes to the Expected deliverable section (not the absent Acceptance criteria)",
   );
   assert(
@@ -335,12 +315,19 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
   // (NOT code — …)" line was matched differently by the two paths, and no
   // test called the re-apply path in isolation). The prefix-match with the
   // parenthetical lookahead is what the shared helper must keep.
-  const body = "## Expected deliverable (NOT code — a decision or proof of concept)\n\n- the decision to make\n\n## References\n\n- (none)\n";
-  const out = appendBulletsToSection(body, "Expected deliverable", ["the new deliverable criterion"]);
-  assert(out !== null, "shared helper: a parenthetical heading matches by prefix (the lookahead keeps the trailing text)");
+  const body =
+    "## Expected deliverable (NOT code — a decision or proof of concept)\n\n- the decision to make\n\n## References\n\n- (none)\n";
+  const out = appendBulletsToSection(body, "Expected deliverable", [
+    "the new deliverable criterion",
+  ]);
   assert(
-    out?.includes("- the decision to make\n- the new deliverable criterion\n## References") ?? false,
-    "shared helper: the new bullet is appended AFTER the section's last existing bullet (before the next heading)",
+    out !== null,
+    "shared helper: a parenthetical heading matches by prefix (the lookahead keeps the trailing text)",
+  );
+  assert(
+    out?.includes("- the decision to make\n- the new deliverable criterion\n\n## References") ??
+      false,
+    "shared helper: the new bullet is appended AFTER the last bullet, and the next heading keeps its blank line",
   );
   // applyWritebackToBody delegates to the same helper (one splice
   // implementation, one heading regex — a divergent re-implementation is
@@ -348,16 +335,16 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
   // (Six-lens re-review, PR #640: buildWritebackMap is deleted — the map is
   // built by buildResolvedDecisions in plan-writeback.ts; this unit test
   // constructs the map directly to pin the splice behaviour in isolation.)
-  const map = new Map<string, string[]>([
-    ["Expected deliverable", ["the re-applied criterion"]],
-  ]);
+  const map = new Map<string, string[]>([["Expected deliverable", ["the re-applied criterion"]]]);
   const { body: out2, outcomes } = applyWritebackToBody(body, map);
   assert(
     out2.includes("- the decision to make\n- the re-applied criterion"),
     "shared helper: applyWritebackToBody (the re-draft re-apply path) hits the parenthetical heading via the shared splice",
   );
   assert(
-    outcomes.length === 1 && outcomes[0]?.applied === true && outcomes[0]?.heading === "Expected deliverable",
+    outcomes.length === 1 &&
+      outcomes[0]?.applied === true &&
+      outcomes[0]?.heading === "Expected deliverable",
     "shared helper: the SpliceOutcome list reports the applied bullet (the flag is produced by the write)",
   );
   // A heading that did not survive rendering is reported as not applied (the
@@ -371,7 +358,10 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
     "shared helper: an absent heading is reported as not applied (SpliceOutcome.applied = false)",
   );
   const missingRaw = appendBulletsToSection(body, "Acceptance criteria", ["x"]);
-  assert(missingRaw === null, "shared helper: appendBulletsToSection returns null for an absent heading (no fabricated section)");
+  assert(
+    missingRaw === null,
+    "shared helper: appendBulletsToSection returns null for an absent heading (no fabricated section)",
+  );
 }
 
 // ------- ERROR_HANDLING (six-lens re-review, PR #640): re-draft throw disclosure
@@ -434,10 +424,75 @@ function sectionOf(body: string, heading: string, nextHeading: string): string {
   forgeStub.mode = "ok";
   gatePrompts.length = 0;
   setPlanDispatch(makeDispatchStub(replies) as never);
-  const r = await runPlanPipeline({} as never, { descriptor: DESCRIPTOR, dryRun: true }, process.cwd());
+  const r = await runPlanPipeline(
+    {} as never,
+    { descriptor: DESCRIPTOR, dryRun: true },
+    process.cwd(),
+  );
   assert(r.filed === false, "ERROR_HANDLING: dryRun does not file");
-  assert(gatePrompts.length === 2, `ERROR_HANDLING: two gate dispatches (got ${gatePrompts.length})`);
+  assert(
+    gatePrompts.length === 2,
+    `ERROR_HANDLING: two gate dispatches (got ${gatePrompts.length})`,
+  );
   setPlanDispatch(null);
+}
+
+// ---------------- round-8/9 defects: splice boundary + edit-verb guard
+
+{
+  // Round 8: two sequential splices glued "## References" onto the second
+  // bullet while reporting applied:true. Boundary is now normalized.
+  const body = "## Acceptance criteria\n\n- existing criterion\n\n## References\n\n- (none)\n";
+  const twice = applyWritebackToBody(
+    body,
+    new Map([["Acceptance criteria", ["first appended", "second appended"]]]),
+  );
+  assert(
+    twice.body.includes("- first appended\n- second appended\n\n## References"),
+    "splice boundary: two sequential splices keep the next heading intact with its blank line",
+  );
+  assert(
+    twice.outcomes.length === 2 && twice.outcomes.every((o) => o.applied),
+    "splice boundary: both splices report applied:true",
+  );
+
+  // Rounds 8+9: edit-imperative resolutions ("delete X … instead state Y")
+  // are edit instructions, not criteria → Decision-A branch 1, no splice.
+  const { decisions, writebackMap } = buildResolvedDecisions(
+    [
+      {
+        severity: "CRITICAL",
+        description: "AC4 contradicts the context",
+        resolution:
+          'delete "reproduce bit-for-bit" from the Acceptance criteria and instead state that rankings shift',
+      },
+    ],
+    "feature",
+  );
+  assert(
+    writebackMap.size === 0 && decisions[0]?.writebackHeading === undefined,
+    "edit-verb guard: an edit-imperative resolution never splices (no destination)",
+  );
+  const oqRender = renderOpenQuestions([], markWrittenDecisions(decisions, []));
+  assert(
+    /status: open/.test(oqRender) && /decision owner: operator/.test(oqRender),
+    "edit-verb guard: the decision renders status: open, decision owner operator (fail closed to human review)",
+  );
+  // A plain declarative resolution naming a section still splices.
+  const plain = buildResolvedDecisions(
+    [
+      {
+        severity: "CRITICAL",
+        description: "missing retry criterion",
+        resolution: "add a criterion for the retry path to the Acceptance criteria section",
+      },
+    ],
+    "feature",
+  );
+  assert(
+    plain.writebackMap.size === 1,
+    "edit-verb guard: plain declarative resolutions still splice (the guard is verb-scoped)",
+  );
 }
 
 console.log(`\nexit ${exit}`);
