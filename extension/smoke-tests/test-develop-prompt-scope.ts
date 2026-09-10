@@ -132,5 +132,99 @@ const BRIEF = "Prior memory: #394 calibrated the retrieval floor; do not re-deri
   assert(!noPaths.includes("undefined"), "...still no 'undefined'");
 }
 
+// ---------- #679 CASE 1: sibling-workstream injection for N>1 only ----------
+
+{
+  const a = {
+    id: "task-a",
+    scope: "Plan-prompt contract lines",
+    paths: ["extension/src/work-driver-prompts-early.ts"],
+    outOfScope: ["extension/src/work-driver-plan.ts"],
+  };
+  const b = {
+    id: "task-b",
+    scope: "Develop-prompt sibling injection",
+    paths: ["extension/src/work-driver-prompts-late.ts"],
+    outOfScope: [],
+  };
+
+  // The N>1 case: each developer is told what the SIBLING workstreams are
+  // (id, scope, declared paths) — informational only, NOT their scope.
+  const promptB = inlineDevelopPrompt([679], "/tmp/scratch", b, "task-b", undefined, undefined, [a]);
+  assert(/Sibling workstreams in this cycle/i.test(promptB), "#679: N>1 developer prompt names the sibling block");
+  assert(promptB.includes("task-a"), "#679: sibling id appears in the developer prompt");
+  assert(promptB.includes("Plan-prompt contract lines"), "#679: sibling scope appears in the developer prompt");
+  assert(
+    promptB.includes("extension/src/work-driver-prompts-early.ts"),
+    "#679: sibling declared paths appear in the developer prompt",
+  );
+  assert(
+    /informational only/i.test(promptB) && /NOT your scope/i.test(promptB),
+    "#679: the sibling block is framed as informational only (NOT your scope)",
+  );
+  assert(
+    promptB.includes("task-b") && /one of multiple developers/i.test(promptB),
+    "#679: the N>1 parallel framing + own workstream id are still present",
+  );
+
+  // The sibling workstream's own paths must NOT bleed into the receiver's
+  // scope: the receiver's in-scope file list is still its own, and the
+  // out-of-scope fence is unchanged.
+  assert(
+    /In-scope files: extension\/src\/work-driver-prompts-late\.ts/.test(promptB),
+    "#679: the receiver's in-scope file list is its own, not the sibling's",
+  );
+
+  // Symmetric: A also sees B.
+  const promptA = inlineDevelopPrompt([679], "/tmp/scratch", a, "task-a", undefined, undefined, [b]);
+  assert(promptA.includes("task-b"), "#679: symmetric — A's prompt names B");
+
+  // No siblings → no sibling block (same prompt as before the #679 change
+  // for this input). The driver only passes siblings for N>1 cycles.
+  const solo = inlineDevelopPrompt([679], "/tmp/scratch", a, "task-a", undefined, undefined, []);
+  assert(
+    !/Sibling workstreams in this cycle/i.test(solo),
+    "#679: an N>1-framed workstream with an empty sibling list gets no sibling block",
+  );
+
+  // A sibling listing that happens to include the receiver's own id is
+  // filtered out (defensive: the driver shouldn't pass it, but the prompt
+  // must not render the workstream as its own sibling).
+  const self = inlineDevelopPrompt([679], "/tmp/scratch", b, "task-b", undefined, undefined, [a, b]);
+  assert(
+    (self.match(/task-b/g) ?? []).length <= 2,
+    "#679: the workstream never lists itself as a sibling (self-entry filtered)",
+  );
+}
+
+// ---------- #679: N=1 `default` path stays byte-identical ------------------
+
+{
+  const before = inlineDevelopPrompt([664], "/tmp/scratch", ws, undefined, undefined, BRIEF, undefined);
+  assert(!/Sibling workstreams in this cycle/i.test(before), "#679: N=1 prompt has no sibling block");
+  // The N=1 prompt built with NO siblings passed is byte-identical to the
+  // pre-#679 shape: the sibling param is purely additive for N>1.
+  const noArg = inlineDevelopPrompt([664], "/tmp/scratch", ws, undefined, undefined, BRIEF);
+  assert(
+    before === noArg,
+    "#679: passing an undefined sibling list is byte-identical to omitting the arg (N=1 invariant)",
+  );
+  // And a N=1 prompt that somehow received a sibling list (defensive) stays
+  // silent: the gate is `parallel`, not the list's length.
+  const n1WithSiblings = inlineDevelopPrompt(
+    [664],
+    "/tmp/scratch",
+    ws,
+    undefined,
+    undefined,
+    BRIEF,
+    [{ id: "task-x", scope: "sibling scope", paths: ["src/x.ts"] }],
+  );
+  assert(
+    !/Sibling workstreams in this cycle/i.test(n1WithSiblings),
+    "#679: N=1 (no workstreamId) never shows the sibling block, even if one is passed",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

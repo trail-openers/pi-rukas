@@ -227,6 +227,10 @@ export function inlinePlanPrompt(issues: number[], scratchDirAbs: string): strin
     "- out-of-scope: <comma-separated explicit exclusions — what NOT to touch>",
     "```",
     "",
+    "Optional lines (N>1 cycles only — never on `### default`):",
+    "- `- depends-on: <id>` — this workstream builds on another workstream's committed work (comma-separated for multiple, e.g. `- depends-on: task-a, task-b`). Declare it ONLY when your changes genuinely cannot land independently of theirs — the driver serialises your dispatch behind the dependency and sources your worktree from its post-commit state.",
+    "- `- integration-test: <path>` — required whenever two workstreams are interdependent (one declares `depends-on`, or one's test file covers the other's subject file): name a consolidated-tree test exercising both halves together, so the combined result is verified as a whole.",
+    "",
     "For N>1 workstreams, repeat the `###` subheading per workstream (use short ids like `task-a`, `task-b`). The `out-of-scope` line is LOAD-BEARING — issue #553 polluted PR #556 with off-scope files because nothing told the developer what was OUT. Fence the scope explicitly even when you think it's obvious.",
     "",
     "EVERY workstream MUST declare a non-empty `paths:`. The driver checks the committed diff against that list to prove each workstream's slice actually landed; an empty list silently disables that check for the slice.",
@@ -298,6 +302,15 @@ export function inlineDevelopPrompt(
   speculativeContextPath?: string,
   /** #422 — prior memory about the in-scope files, already rendered. */
   memoryBrief?: string,
+  /**
+   * #679 CASE 1 — the OTHER workstreams in this cycle (id, scope, declared
+   * paths). Informational only: it tells this developer that sibling slices
+   * are landing in sibling worktrees so overlapping independent
+   * implementations become visible. It is NEVER merged into `workstream.paths`
+   * — the scope-fanout gate (work-driver-verify-develop.ts) keeps judging
+   * against this workstream's own declared paths only.
+   */
+  siblingWorkstreams?: Array<{ id: string; scope: string; paths: string[] }>,
 ): string {
   // PR11 — multi-issue cycles must show the developer the ACTIVE issues
   // (NEEDS_WORK subset after explore), not the primary cycle issue. The
@@ -318,6 +331,27 @@ export function inlineDevelopPrompt(
     // "you are one of several parallel developers" framing is genuinely
     // multi-workstream; the scope is not.
     const parallel = Boolean(workstreamId) && workstreamId !== "default";
+    // #679 CASE 1 — the sibling block is gated on the SAME `parallel` condition
+    // (N>1 AND not the synthesized default) so the N=1 default path stays
+    // byte-identical: no siblings exist there, and nothing is added to the
+    // prompt. The driver passes every other workstream in the cycle; the
+    // block is purely informational context about what is landing in sibling
+    // worktrees — it does not widen this dispatch's declared scope.
+    const siblings = (siblingWorkstreams ?? []).filter((s) => s.id !== workstream.id);
+    const siblingBlock =
+      parallel && siblings.length > 0
+        ? [
+            "",
+            "**Sibling workstreams in this cycle** (running in parallel in their own worktrees — informational only, NOT your scope: do NOT touch their files, and your scope-fanout gate is judged against YOUR declared paths above only):",
+            ...siblings.flatMap((s) => [
+              `- \`${s.id}\` — ${s.scope}`,
+              s.paths.length > 0
+                ? `    paths: ${s.paths.join(", ")}`
+                : "    paths: (derive from scope)",
+            ]),
+            "",
+          ]
+        : [];
     lines.push(
       parallel
         ? `**Workstream: \`${workstream.id}\`** — one of multiple developers running in parallel for this ${issues.length === 1 ? "issue" : "set of issues"}.`
@@ -329,6 +363,7 @@ export function inlineDevelopPrompt(
       // Prior memory sits directly under the file list because it is ABOUT
       // those files; separating them invites the reader to skip it.
       memoryBrief ?? "",
+      ...siblingBlock,
       workstream.outOfScope.length > 0
         ? `**OUT OF SCOPE — do NOT touch**: ${workstream.outOfScope.join(", ")}`
         : "Stay tightly focused on the scope; other workstreams handle the rest.",
