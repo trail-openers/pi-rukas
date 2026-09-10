@@ -1,11 +1,9 @@
 /**
  * work-driver-branch-develop — Step 3 (branch) + Step 4 (develop) handlers.
- *
  * Extracted from work-driver.ts (issue #171 file-size hygiene). Grouped
  * together as natural pipeline-adjacent steps: branch creates the
  * worktree(s) develop then fans a developer into.
  */
-
 import { exec } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -46,11 +44,11 @@ const execp = promisify(exec);
  * pipelineState once the dispatch returns so subsequent steps can compose
  * worktree paths and the PR URL.
  *
- * #292 — branchName is resolved from git, NOT from the ops reply. Pre-fix
- * the driver parsed branchName from the ops reply via parseBranchName and
- * stored it verbatim. On live issue #277 the ops subagent reported a branch
- * name unrelated to the issue, and the real work was on a different branch.
- * Now: `git rev-parse --abbrev-ref HEAD` is the source of truth. If the
+ * #292 — branchName is resolved from git, NOT from the ops reply.
+ * Pre-fix the driver parsed branchName from the ops reply via
+ * parseBranchName and stored it verbatim. On live issue #277 the ops
+ * subagent reported a branch name unrelated to the issue. Now:
+ * `git rev-parse --abbrev-ref HEAD` is the source of truth. If the
  * reported name disagrees, a plumb-report is emitted.
  */
 export async function runBranch(
@@ -84,18 +82,14 @@ export async function runBranch(
     }
   }
   // #545 — a dirty leftover of the SAME issue is salvaged to the cycle's
-  // scratch dir before the refusal (the driver already owns the scratch
-  // lifecycle: cleaned on `merged`, kept on handoff for inspection). A
-  // salvage failure degrades to the pre-#545 refusal text; the refusal
-  // itself is unchanged — a dirty leftover always goes to handoff.
+  // scratch dir before the refusal. A salvage failure degrades to the
+  // pre-#545 refusal text; the refusal itself is unchanged.
   const salvageScratch = scratchDir(ctx.repoRoot, ctx.issue);
   // #287 — mechanized, always-worktree branch setup. Development never
-  // happens at repoRoot: every workstream (including the degenerate N=1
-  // `default`) gets a detached worktree, and repoRoot is touched only by
-  // `integrate()` at commit-pr. #393 removed the two knobs that used to gate
-  // this — both restored the pre-#287 shape that swept stale repoRoot residue
-  // into a merged PR. The LLM ops dispatch below remains as the fallback for
-  // env variance, which is recovery, not an opt-out.
+  // happens at repoRoot: every workstream gets a detached worktree, and
+  // repoRoot is touched only by `integrate()` at commit-pr. The LLM ops
+  // dispatch below remains as the fallback for env variance (recovery,
+  // not an opt-out).
   {
     const execFnMech = ctx.verifyExecFn ?? execp;
     try {
@@ -111,9 +105,9 @@ export async function runBranch(
         { ...state, pipelineState: { ...state.pipelineState, currentStep: "branch" } },
         { kind: "step-started", step: "branch", at: now },
       );
-      // Via the shared builder (work-driver-events.ts): unique jobId — the
-      // old inline literal "mechanized" appeared twice per fan-out cycle,
-      // making jobId useless as a correlation key (census 2026-09-09).
+      // Via the shared builder (work-driver-events.ts): unique jobId —
+      // the old inline literal "mechanized" appeared twice per fan-out
+      // cycle, making jobId useless as a correlation key.
       const done = appendEvent(
         started,
         synthesizeDriverCompletion({
@@ -145,18 +139,16 @@ export async function runBranch(
         },
       };
     } catch (err) {
-      // #545 — a NON-dirty mechanized failure used to fall back to the ops
-      // dispatch with only a trace line and a bare `step-failed:branch` cap
-      // downstream: no plumb report, no git stderr in the event log, and the
-      // 3-second #540 abort had no WHY in the handoff. Plumb the actual git
-      // error BEFORE deciding the fallback, so either outcome names the cause.
+      // #545 — a NON-dirty mechanized failure used to fall back to the
+      // ops dispatch with only a trace line and a bare `step-failed:branch`
+      // cap downstream: no plumb report, no git stderr in the event log.
+      // Plumb the actual git error BEFORE deciding the fallback.
       const errDetail = gitErrorDetail(err);
       // #475 — the ops fallback's branch prompt tells ops to
-      // `git worktree remove --force` an existing worktree, so falling back
-      // after a dirty-worktree refusal would destroy exactly the work the
-      // guard just protected. Refusal is a refusal: it goes to handoff via
-      // the step-failed:branch cap, with the finding in a plumb report the
-      // handoff comment renders.
+      // `git worktree remove --force` an existing worktree, so falling
+      // back after a dirty-worktree refusal would destroy exactly the
+      // work the guard just protected. Refusal goes to handoff via the
+      // step-failed:branch cap.
       if (err instanceof DirtyWorktreeError) {
         trace(`work-driver: branch step refused — dirty worktree: ${err.message?.slice(0, 300)}`);
         const started = appendEvent(
@@ -245,17 +237,15 @@ export async function runBranch(
  * Step 4 — Implementation.
  *
  * PR3 restored multi-workstream parallelism (the "default to parallel"
- * doctrine PR #239 silently dropped). When Step 2
- * decomposed the issue into N>1 workstreams, this step fans out N
- * developers in parallel — each in its own worktree — via Promise.all
- * over driver-owned `dispatchCore` calls (the same pattern that
- * `runLensReview` uses for its 6 lens children).
+ * doctrine PR #239 silently dropped). When Step 2 decomposed the issue
+ * into N>1 workstreams, this step fans out N developers in parallel —
+ * each in its own worktree — via Promise.all over driver-owned
+ * `dispatchCore` calls (the same pattern that `runLensReview` uses).
  *
  * For N=1 (the `default` workstream synthesised by Step 2), the existing
- * `runSingleDispatch` path runs unchanged — N=1 isn't a special case,
- * just the degenerate one. Both paths populate the SAME event log shape;
- * downstream Steps 5 (adversarial) and 7 (lens-review) see a single
- * coherent diff via `fetchDiff` whether N=1 or N>1.
+ * `runSingleDispatch` path runs unchanged. Both paths populate the SAME
+ * event log shape; downstream Steps 5 and 7 see a single coherent diff
+ * via `fetchDiff` whether N=1 or N>1.
  *
  * Partial failures don't abort the join: each branch is try/catch'd
  * inside the `Promise.all`. Adversarial sees the aggregate; the
@@ -271,9 +261,8 @@ export async function runDevelop(
       ? Object.keys(state.pipelineState.workstreams ?? {})
       : ["default"];
   // PR11 — thread the ACTIVE issue list (NEEDS_WORK subset after
-  // explore) into developer + speculative-explore prompts, not the
-  // primary cycle issue. activeIssuesOf falls back to [ctx.issue] for
-  // single-issue cycles so existing behaviour is preserved.
+  // explore) into developer + speculative-explore prompts. activeIssuesOf
+  // falls back to [ctx.issue] for single-issue cycles.
   const activeIssues = activeIssuesOf(state);
 
   let next: WorkState = {
@@ -293,21 +282,20 @@ export async function runDevelop(
 
   const dispatch = ctx.dispatchFn ?? dispatchCore;
   const scratchAbs = scratchDir(ctx.repoRoot, ctx.issue);
-  // Speculative explore alongside each developer — OPT-IN. It hands findings over through a
-  // scratch file the developer prompt names, and measured over a day of live cycles that hand-off
-  // never once completed: the developer reads the path 3-7s in, the file landed 14-130s later,
-  // every access ENOENT — 397k-956k tokens per child that nothing consumed. Nor was it free, as
-  // this comment used to claim: `allSettled` below resolves at max(developer, speculative), and it
-  // won 6 of 23 measured branches (1425s, 1252s of it on one). Kept because awaiting it and
-  // inlining its findings into the developer prompt — no file, no race — is worth measuring.
+  // Speculative explore alongside each developer — OPT-IN. It hands findings
+  // over through a scratch file the developer prompt names, and measured over
+  // a day of live cycles that hand-off never once completed: the developer
+  // reads the path 3-7s in, the file landed 14-130s later, every access
+  // ENOENT — 397k-956k tokens per child that nothing consumed. Kept because
+  // awaiting it and inlining its findings into the developer prompt (no
+  // file, no race) is worth measuring.
   const speculativeOn = process.env.PI_ENSEMBLE_SPECULATIVE_EXPLORE === "1";
   const verdicts: Array<{ id: string; ok: boolean }> = [];
   const branchEvents: typeof next.eventLog = [];
-  // #382 — write-ahead. `develop` is the longest-running step in the cycle
-  // and the biggest crash window; covering only `runSingleDispatch` (which
-  // this fan-out does not use) would have left exactly that window uncovered.
-  // One marker for the whole step: resume granularity is the step, and a
-  // half-finished fan-out is re-entered wholesale.
+  // #382 — write-ahead. `develop` is the longest-running step and the
+  // biggest crash window. One marker for the whole step: resume
+  // granularity is the step, and a half-finished fan-out is re-entered
+  // wholesale.
   const begun = await beginDispatch(
     ctx.repoRoot,
     next,
@@ -479,7 +467,18 @@ export async function runDevelop(
   if (verdicts.every((v) => v.ok)) {
     const gate = await verifyStepOutcome(ctx, next, "develop");
     if (!gate.ok) {
-      trace(`work-driver: verify-failed:develop — ${gate.failures.join(" | ")}`);
+      // #669 — a cherry-pick conflict during the develop-time consolidated
+      // verify is a DECOMPOSITION error (two workstreams edited the same
+      // lines), not a verify failure: retrying the verify command cannot
+      // fix it. Route it to its own cap so the operator sees "the work is
+      // individually fine but the decomposition is incoherent" instead of
+      // being told the verify failed. The evidence (which apply failed,
+      // any preserved patch path) rides on the cap-hit's `evidence` field.
+      const conflictFailure = gate.failures.find((f) =>
+        /cherry-pick \/ apply conflict|could not combine the workstreams/.test(f),
+      );
+      const cap = conflictFailure ? "consolidated-verify-conflict" : "verify-failed:develop";
+      trace(`work-driver: ${cap} — ${gate.failures.join(" | ")}`);
       next = {
         ...next,
         pipelineState: {
@@ -490,9 +489,10 @@ export async function runDevelop(
       next = appendEvent(next, {
         kind: "cap-hit",
         at: Date.now(),
-        cap: "verify-failed:develop",
+        cap,
         reviewRound: next.pipelineState.reviewRound,
         nextStep: "handoff",
+        ...(conflictFailure ? { evidence: conflictFailure } : {}),
       });
     }
   }

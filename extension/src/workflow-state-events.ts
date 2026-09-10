@@ -1,13 +1,11 @@
 /**
  * /work workflow state — event-log types.
- *
- * `WorkStep` (the linear step identifiers the driver walks)
- * and `WorkEvent` (the append-only, typed event-log entries the driver
- * writes on every state transition). Split out of `workflow-state.ts` for
- * module-size hygiene (AGENTS.md §12) — re-exported from there so external
- * consumers' import paths are unaffected.
+ * `WorkStep` (the linear step identifiers the driver walks) and `WorkEvent`
+ * (the append-only, typed event-log entries the driver writes on every state
+ * transition). Split out of `workflow-state.ts` for module-size hygiene
+ * (AGENTS.md §12) — re-exported from there so consumers' import paths are
+ * unaffected.
  */
-
 import type { RoleName } from "./roles.ts";
 import type { DispatchUsage } from "./types.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
@@ -17,14 +15,13 @@ import type { SafetyNetCommitEvent } from "./workflow-state-events-safety-net.ts
 import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
 
 /**
- * Linear step identifiers the driver walks. This union IS the definition of
- * the cycle — #393 deleted the prose flow that used to be its source. Add
- * a step here and the discriminator carries through every event type that
- * names a step. Removing a step is a breaking change → schema bump.
+ * Linear step identifiers the driver walks. This union IS the definition
+ * of the cycle — #393 deleted the prose flow that used to be its source.
+ * Add a step here and the discriminator carries through every event type
+ * that names a step. Removing a step is a breaking change → schema bump.
  */
 // #539 — the commit-pr fallback-cause vocabulary (M1) lives in the
-// sibling events-memory fragment module, next to its other pure
-// event-type fragment: single definition, writer imports it from there.
+// sibling events-memory fragment module: single definition.
 export type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 export type WorkStep =
   | "explore" // Step 1 — read issue + recon (gh + @explore)
@@ -119,12 +116,10 @@ export type WorkEvent =
       errorTail?: string;
       /** Structured self-kill cause (#296; #543 adds loop/token-budget). */
       killCause?: "timeout" | "inactivity" | "abort" | "loop" | "token-budget";
-      /** #543 — the F1 streak evidence at a loop kill (tool + count); the
-       * step router persists it on `pipelineState.capEvidence` at the
-       * cap-hit so `explainCap` can render WHAT looped. */
+      /** #543 — the F1 streak evidence at a loop kill (tool + count);
+       * persisted on `pipelineState.capEvidence` so `explainCap` renders WHAT looped. */
       loopEvidence?: { tool: string; count: number };
-      /** #543 — the F6 budget + used tokens at a token-budget kill; same
-       * purpose as `loopEvidence`. Absent for every other killCause. */
+      /** #543 — the F6 budget + used tokens at a token-budget kill; same purpose as loopEvidence. */
       tokenBudget?: { budget: number; used: number };
       /** #534 — tokens flushed before the process-level failure. */
       usage?: DispatchUsage;
@@ -304,6 +299,11 @@ export type WorkEvent =
         | "commit-pr-incomplete-consolidation"
         | "lens-fix-not-integrated"
         | "integration-verify-failed"
+        // #669 — develop-time consolidation hit a real file-level conflict:
+        // two workstreams edited the same lines. Distinct from
+        // verify-failed:develop — the work may be individually fine; the
+        // decomposition is incoherent and needs re-planning, not a retry.
+        | "consolidated-verify-conflict"
         // PR17 — emitted by the driver-side outcome verification gate
         // (verifyStepOutcome) when a step's claimed outcome doesn't match
         // executed evidence: develop claimed done but no worktree has any

@@ -172,8 +172,14 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         );
 
         // Changed worktree + verify cmd FAILS → failure with output tail.
+        // The fake exec returns a dirty repoRoot (the consolidation preflight
+        // refuses), so no consolidation runs and the per-worktree verify
+        // failure is the verdict — the E0308 tail surfaces as a failure.
         const failExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
           if (cmd === "git status --porcelain") return { stdout: " M src/foo.ts\n" };
+          if (cmd.startsWith("git rev-parse HEAD"))
+            return { stdout: "b".repeat(40) + "\n" };
+          if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" };
           if (cmd === "run-verify") {
             const err = new Error("Command failed: run-verify") as Error & {
               stdout?: string;

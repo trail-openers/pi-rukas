@@ -111,6 +111,10 @@ const CAP_HIT_FIXED_LITERALS: readonly unknown[] = [
   "commit-pr-incomplete-consolidation",
   "lens-fix-not-integrated",
   "integration-verify-failed",
+  // #669 — develop-time consolidation hit a file-level conflict (two
+  // workstreams edited the same lines). A decomposition error, distinct
+  // from the generic verify-failed:develop template.
+  "consolidated-verify-conflict",
   "intent-park",
   "awaiting-human-merge",
   "lens-diff-unreadable",

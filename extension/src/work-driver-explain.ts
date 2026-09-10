@@ -247,6 +247,31 @@ export function explainCap(
       );
       return `${base}.${rootBlurb}`;
     }
+    case "consolidated-verify-conflict": {
+      // #669 — the develop-time consolidated verify (cherry-picking every
+      // workstream's commit onto the integration branch so the verify
+      // command sees the COMBINED tree) hit a real file-level conflict. The
+      // evidence (which cherry-pick / apply failed, and any preserved patch
+      // path) lives on the cap-hit's `evidence` field; the worktrees are the
+      // operator's inspection targets. Distinct from verify-failed:develop:
+      // the work may be individually fine — the decomposition put two
+      // workstreams onto the same lines, and that is a re-planning problem,
+      // not a retry-the-verify-command problem.
+      const hit = [...state.eventLog]
+        .reverse()
+        .find(
+          (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
+            e.kind === "cap-hit" && e.cap === "consolidated-verify-conflict",
+        );
+      const ev =
+        hit?.evidence ??
+        "(no conflict detail recorded — inspect the worktrees to see which files both workstreams edited)";
+      const wts = state.pipelineState.worktrees ?? {};
+      const wtList = Object.entries(wts)
+        .map(([id, p]) => `${id}: ${p}`)
+        .join(", ");
+      return `the develop step's consolidated verify could not combine the workstreams' commits into a single tree — a cherry-pick / patch-apply conflict means two workstreams edited the same lines, so the work is individually plausible but the decomposition is incoherent. ${ev} Worktrees: ${wtList || "(none recorded)"}. This is NOT the same as a verify failure: the fix is to re-split the work into non-overlapping file sets (or resolve the overlap by hand), not to retry the verify command`;
+    }
     case "lens-fix-not-integrated": {
       // #492 — the cap-hit itself carries the cause and the git evidence
       // that establishes it, plus the worktree the driver inspected. Read
