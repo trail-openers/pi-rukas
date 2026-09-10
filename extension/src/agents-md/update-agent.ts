@@ -3,9 +3,7 @@
  *
  * Reads the current file, parses markers, rebuilds managed sections from
  * project facts, runs the scaffold post-pass, and writes the new bytes back.
- *
- * Exported as a closure that receives external dependencies to avoid circular
- * imports with agents-md.ts.
+ * Exported as a closure with injected deps to avoid circular imports.
  */
 
 import type { AgentsMdFs } from "./agents-md.ts";
@@ -81,7 +79,11 @@ type RunWrapFn = (
   file: string,
   fs: AgentsMdFs,
   dryRunParam: boolean,
-  opts?: { scaffoldBodies?: { id: string; body: string }[]; answers?: OperatorAnswers },
+  opts?: {
+    scaffoldBodies?: { id: string; body: string }[];
+    answers?: OperatorAnswers;
+    agentOverride?: AgentOverride;
+  },
 ) => import("./agents-md.ts").VerbResult;
 
 /** Type for the omissionRows helper passed as dependency. */
@@ -156,21 +158,25 @@ export function makeUpdateAgent(
     }
 
     if (state === "no-markers") {
-      // True brownfield: no managed heading, no managed marker lines → the
-      // wrap path. (The legacy marker case is has-markers by construction:
-      // the state discrimination above already routes a file whose managed
-      // marker lines survive the strip to the heading-splice path.)
+      // True brownfield → the wrap path. (The legacy-marker case is
+      // has-markers by construction: the discrimination above routes a file
+      // whose marker lines survive the strip to the heading-splice path.)
       const scaffoldBodies: { id: string; body: string }[] = [];
       if (effectiveOpts.scaffold) {
+        // Threads agentOverride (incl. testingNotes) through so the wrap's
+        // second computation (with wrapped ids as existing) re-renders only
+        // sections wrapBytes didn't emit — first-time population, idempotent.
         const scaffoldResult = computeScaffold(new Set(), {
           scaffold: true,
           answers: effectiveOpts.answers,
+          agentOverride: effectiveOpts.agentOverride,
         });
         for (const s of scaffoldResult.sections) scaffoldBodies.push({ id: s.id, body: s.body });
       }
       return runWrapFn(root, file, fs, effectiveDryRun, {
         scaffoldBodies: scaffoldBodies.length ? scaffoldBodies : undefined,
         answers: effectiveOpts.answers,
+        agentOverride: effectiveOpts.agentOverride,
       }) as UpdateVerbResult;
     }
 
@@ -256,10 +262,9 @@ export function makeUpdateAgent(
 
     // The B1↔B2 seam: when `agentOverride.facts` is supplied, the three fact
     // sections are built from it via the EXISTING gatesBody/commandsBody/
-    // environmentBody functions (the same functions a rich-manifest project
-    // already uses) INSTEAD of a fresh detectFacts(). The resulting section
-    // rows get [detected:agent,<today>] provenance. When absent, fall back to
-    // detectFacts(root) exactly as before.
+    // environmentBody functions INSTEAD of a fresh detectFacts(). The resulting
+    // section rows get [detected:agent,<today>] provenance. When absent, fall
+    // back to detectFacts(root) exactly as before.
     const agentOverride: AgentOverride | undefined = effectiveOpts.agentOverride;
     const useOverride = agentOverride?.facts !== undefined;
     const facts = useOverride ? (agentOverride.facts as DetectedFacts) : detectFacts(root);
@@ -428,9 +433,12 @@ export function makeUpdateAgent(
     for (const id of detectExistingBoilerplate(current)) existingIds.add(id);
     let scaffoldedIds: string[] = [];
     if (effectiveOpts.scaffold) {
+      // agentOverride carries the testingNotes supplement (first-time
+      // population only — computeScaffold skips the section if present).
       const scaffoldResult = computeScaffold(existingIds, {
         scaffold: true,
         answers: effectiveOpts.answers,
+        agentOverride: effectiveOpts.agentOverride,
       });
       const post = runScaffoldPostPass(bytes, scaffoldResult, true);
       if (post.bytes !== bytes) {
@@ -464,11 +472,7 @@ export function makeUpdateAgent(
         }
         if (fileWouldWrite) fs.writeFile(file, bytes);
       } catch (err) {
-        return {
-          verb: "update",
-          error: `write FAILED: ${(err as Error).message}`,
-          exitCode: 1,
-        };
+        return { verb: "update", error: `write FAILED: ${(err as Error).message}`, exitCode: 1 };
       }
     }
 

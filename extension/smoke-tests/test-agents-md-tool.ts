@@ -276,6 +276,78 @@ const run = (raw: Record<string, unknown>) =>
   );
 }
 
+// ---------------- agentOverride carrying testingNotes (the #667 render thread)
+
+{
+  // The pre-pass (B2) reports testingNotes on the AgentFacts wire; the tool
+  // maps facts.testingNotes onto AgentOverride.testingNotes and the
+  // first-time scaffold population renders the "Project-specific" supplement
+  // after the static doctrine. A second run must be a no-op (the section is
+  // already present — the skip-if-present idempotency, never a refresh).
+  rmSync(AGENTS, { force: true });
+  const notes = [
+    "Unit tests in-module via #[cfg(test)]",
+    "Integration tests live in tests/ via assert_cmd",
+  ];
+  const r = await run({
+    verb: "create",
+    agentOverride: { facts: { testingNotes: notes } },
+  });
+  const d = r.details;
+  assert(d.verb === "create" && d.exitCode === 0, "create + testingNotes → { verb: create, exitCode: 0 }");
+  const wrote = readFileSync(AGENTS, "utf8");
+  assert(
+    wrote.includes("**Project-specific**"),
+    "create + testingNotes: the 'Project-specific' demarcation is rendered",
+  );
+  for (const n of notes) {
+    assert(wrote.includes(`- ${n}`), `create + testingNotes: bullet rendered verbatim: ${n}`);
+  }
+  // The static doctrine is unchanged (still present, before the supplement).
+  assert(
+    wrote.includes("- TDD preferred: write the failing test first, then the minimal"),
+    "create + testingNotes: the static TDD doctrine line is unchanged",
+  );
+  assert(
+    wrote.includes("≥80%") && wrote.indexOf("≥80%") < wrote.indexOf("**Project-specific**"),
+    "create + testingNotes: the coverage-threshold line precedes the supplement",
+  );
+
+  // Idempotency: a second update with DIFFERENT notes is a no-op — the
+  // section is already present, so the supplement is never re-rendered.
+  const r2 = await run({
+    verb: "update",
+    scaffold: true,
+    agentOverride: {
+      facts: { testingNotes: ["A completely different note that must not appear"] },
+    },
+  });
+  const p2 = r2.details.plan as {
+    wouldWrite: boolean;
+    newBytes: string;
+    scaffoldedIds?: string[];
+  } | undefined;
+  assert(
+    !p2?.scaffoldedIds?.includes("testing-standards"),
+    "update + new testingNotes: testing-standards NOT re-scaffolded (skip-if-present idempotency)",
+  );
+  assert(
+    !readFileSync(AGENTS, "utf8").includes("A completely different note that must not appear"),
+    "update + new testingNotes: the file is unchanged (notes never re-render a present section)",
+  );
+
+  // Graceful failure: create with NO agentOverride (the pre-pass failed /
+  // returned no report_facts call) renders the static doctrine exactly —
+  // no demarcation, byte-identical to the no-testingNotes rendering.
+  rmSync(AGENTS, { force: true });
+  const r3 = await run({ verb: "create" });
+  const wrote3 = readFileSync(AGENTS, "utf8");
+  assert(
+    !wrote3.includes("**Project-specific**"),
+    "create without agentOverride: no 'Project-specific' supplement (graceful failure)",
+  );
+}
+
 rmSync(tmp, { recursive: true, force: true });
 
 console.log(exit === 0 ? "\nAll tool checks passed." : "\nFAILED");

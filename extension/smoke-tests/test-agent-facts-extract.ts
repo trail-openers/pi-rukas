@@ -67,6 +67,18 @@ function assert(cond: boolean, msg: string) {
     extractAgentFacts(malformed3) === undefined,
     "(c) report_facts with null arguments → undefined",
   );
+
+  const malformed4 = [{ name: "report_facts", arguments: { testingNotes: [42] } }];
+  assert(
+    extractAgentFacts(malformed4) === undefined,
+    "(c) report_facts with a non-string testingNotes entry (a number) → undefined (whole call discarded)",
+  );
+
+  const malformed5 = [{ name: "report_facts", arguments: { testingNotes: "not-an-array" } }];
+  assert(
+    extractAgentFacts(malformed5) === undefined,
+    "(c) report_facts with testingNotes as a string (not an array) → undefined",
+  );
 }
 
 // ---------------------------------- (d) prose-only (no tool call) → undefined
@@ -107,6 +119,34 @@ function assert(cond: boolean, msg: string) {
   assert(out?.commands?.length === 1, "(valid) commands extracted");
   assert(out?.commands?.[0]?.runner === "bundle", "(valid) runner copied through");
   assert(out?.ciWorkflows?.[0] === "ci.yml", "(valid) ciWorkflows extracted (raw filename)");
+}
+
+// --------------------------------------------- valid call WITH testingNotes
+
+{
+  const withNotes = [
+    {
+      name: "report_facts",
+      arguments: {
+        language: "rust",
+        manifest: "Cargo.toml",
+        testingNotes: [
+          "Unit tests are colocated in-module via #[cfg(test)]",
+          "Integration tests live in tests/",
+        ],
+      },
+    },
+  ];
+  const out = extractAgentFacts(withNotes);
+  assert(out !== undefined, "(valid) a report_facts call WITH testingNotes is extracted");
+  assert(
+    out?.testingNotes?.length === 2,
+    "(valid) testingNotes extracted unchanged (both bullets)",
+  );
+  assert(
+    out?.testingNotes?.[0] === "Unit tests are colocated in-module via #[cfg(test)]",
+    "(valid) first testingNote preserved verbatim",
+  );
 }
 
 // ----------------------------------------------- partial call (some fields)

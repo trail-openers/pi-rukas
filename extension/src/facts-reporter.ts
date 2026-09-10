@@ -74,6 +74,13 @@ export interface AgentFacts {
   commands?: { name: string; command: string; kind: (typeof AGENT_FACTS_COMMAND_KINDS)[number] }[];
   /** Dense, specific bullets (exact shell lines / named rules), NOT prose. */
   codeStyleBullets?: string[];
+  /**
+   * Dense, specific bullets about the ACTUAL testing setup the agent observed
+   * (runner, coverage floor, test placement, test-count floor). NOT prose, NOT
+   * invented — only what was verified in the repo. Rendered as a supplement to
+   * the Testing Standards scaffold section (see scaffold.ts `testingStandardsBody`).
+   */
+  testingNotes?: string[];
   /** RAW workflow FILENAMES only (e.g. "ci.yml") — no `.github/workflows/` prefix. */
   ciWorkflows?: string[];
 }
@@ -124,6 +131,18 @@ const FACTS_PARAMETERS = Type.Object({
       { description: "Code-style rules as a dense bullet list. Omit if none are known." },
     ),
   ),
+  testingNotes: Type.Optional(
+    Type.Array(
+      Type.String({
+        description:
+          "One dense, specific bullet each about the ACTUAL testing setup the agent observed (test runner + coverage floor, in-module vs integration test placement, a test-count floor, an #[ignore]/skip convention). Exact values, no prose, no invention — only what was verified in the repo. Omit if none were observed.",
+      }),
+      {
+        description:
+          "Project-specific testing notes as dense bullets. Omit if none were observed — the Testing Standards section renders its static doctrine only.",
+      },
+    ),
+  ),
   ciWorkflows: Type.Optional(
     Type.Array(
       Type.String({
@@ -155,6 +174,8 @@ export default function (pi: ExtensionAPI) {
       if (cmds) parts.push(`${cmds} command(s)`);
       const bullets = Array.isArray(a.codeStyleBullets) ? a.codeStyleBullets.length : 0;
       if (bullets) parts.push(`${bullets} code-style bullet(s)`);
+      const notes = Array.isArray(a.testingNotes) ? a.testingNotes.length : 0;
+      if (notes) parts.push(`${notes} testing note(s)`);
       const flows = Array.isArray(a.ciWorkflows) ? a.ciWorkflows.length : 0;
       if (flows) parts.push(`${flows} CI workflow(s)`);
       return {

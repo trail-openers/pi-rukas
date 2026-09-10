@@ -67,8 +67,9 @@ manifest is recognised AND the code-style section already exists.
 
 Use `dispatch_specialist` with `role: "explore"` (structurally denied
 write/edit via role-tools). The prompt should demand **dense, specific**
-facts — exact shell lines, not narrative. Reference the `oo/AGENTS.md`
-quality bar: exact command lines, no filler.
+facts — exact shell lines, not narrative, plus the project's ACTUAL testing
+setup. Reference the `oo/AGENTS.md` quality bar: exact command lines, no
+filler.
 
 The dispatch prompt must include:
 
@@ -82,6 +83,13 @@ The dispatch prompt must include:
 >   `.github/workflows/` prefix; the renderer applies it.
 > - `codeStyleBullets`: dense, specific bullets (exact rules, no prose).
 >   Each bullet is one concrete rule, not a paragraph.
+> - `testingNotes`: dense, specific bullets about the ACTUAL testing setup
+>   you observed (test runner + coverage floor, in-module vs integration
+>   test placement, a test-count floor, a skip/`#[ignore]` convention).
+>   Exact values, no prose, no invention — only what you verified in the
+>   repo (CI config, test runner config files, test directory structure).
+>   Omit the field if none were observed — the Testing Standards section
+>   then renders its static doctrine only.
 > - `language`, `packageManager`, `manifest`: only if you can confirm them
 >   from files in the repo. Do not guess.
 
@@ -154,7 +162,7 @@ agents_md_run(verb: "create" | "update" | "check",
               agentOverride?: {     // B1↔B2 seam (update only): agent-derived facts
                 facts?: AgentFacts, // raw wire format (language?, packageManager?,
                                     //   manifest?, commands?, codeStyleBullets?,
-                                    //   ciWorkflows?) — converted internally
+                                    //   ciWorkflows?, testingNotes?) — converted internally
                 codeStyleBullets?: string[], // dense bullets for code-style section
               },
               refresh?: boolean)    // update only: when true + agentOverride,
@@ -164,7 +172,13 @@ agents_md_run(verb: "create" | "update" | "check",
 The tool resolves the repo root itself; you pass no paths. The `agentOverride`
 parameter (when supplied) carries the raw `AgentFacts` from the pre-pass —
 the tool converts it to `DetectedFacts` internally. You pass the wire format
-directly; no conversion function call is needed.
+directly; no conversion function call is needed. The `facts.testingNotes`
+field (when the pre-pass reported it) is appended as a clearly-demarcated
+"Project-specific" supplement to the Testing Standards section on FIRST-TIME
+scaffold population only (a create, or an update where the section is still
+absent) — it is never re-rendered, refreshed, or stamped with ledger
+provenance, and an absent field leaves the section byte-identical to the
+static doctrine.
 
 The result is structured — do not parse prose:
 

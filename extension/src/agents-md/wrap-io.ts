@@ -10,7 +10,12 @@ import type { AgentsMdFs, VerbResult } from "./agents-md.ts";
 import { detectFacts } from "./detect.ts";
 import { renderLedger } from "./ledger.ts";
 import { commandsBody, environmentBody, gatesBody, omissionFor } from "./renderer.ts";
-import { type OperatorAnswers, computeScaffold, runWrapScaffold } from "./scaffold.ts";
+import {
+  type AgentOverride,
+  type OperatorAnswers,
+  computeScaffold,
+  runWrapScaffold,
+} from "./scaffold.ts";
 import { presentManagedIds } from "./section-detect.ts";
 import { type SidecarPlan, sidecarDir, sidecarPath } from "./sidecar.ts";
 import { WrapError, isInsertionsOnly, wrapBytes, wrapLedgerRows } from "./wrap.ts";
@@ -47,6 +52,13 @@ export function runWrap(
   opts?: {
     scaffoldBodies?: { id: string; body: string }[];
     answers?: OperatorAnswers;
+    /**
+     * Threaded from update's no-markers branch: the agent-observed testingNotes
+     * supplement (first-time population only — the wrap's re-computation below
+     * skips any section already in the wrapped bytes, so a re-wrap of an
+     * already-scaffolded file is a byte-identical no-op).
+     */
+    agentOverride?: AgentOverride;
   },
 ): VerbResult {
   const current = fs.readFile(file);
@@ -93,6 +105,7 @@ export function runWrap(
     const scaffoldResult = computeScaffold(new Set(wrapIds), {
       scaffold: true,
       answers: opts.answers,
+      agentOverride: opts.agentOverride,
     });
     const post = runWrapScaffold(bytes, scaffoldResult);
     if (post.bytes !== bytes) {

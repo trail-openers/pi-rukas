@@ -208,7 +208,14 @@ export function createAgent(
   let bytes = renderAgent({ facts, preamble: DEFAULT_PREAMBLE, version: 1 });
 
   if (scaffold) {
-    const scaffoldResult = computeScaffold(factIds, { scaffold: true, answers });
+    // Thread the pre-pass agentOverride (incl. the testingNotes supplement —
+    // first-time population rides inside computeScaffold's skip-if-present
+    // idempotency) through to the scaffold post-pass on the create path.
+    const scaffoldResult = computeScaffold(factIds, {
+      scaffold: true,
+      answers,
+      agentOverride: effectiveOpts.agentOverride,
+    });
     // Add operator-choices ledger rows.
     if (answers) {
       ledger = [...ledger, ...operatorChoicesLedgerRows(answers, today)];

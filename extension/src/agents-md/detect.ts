@@ -50,6 +50,13 @@ export interface AgentFacts {
   commands?: Array<Pick<Command, "name" | "command" | "kind">>;
   /** Dense, specific bullets — exact shell lines, not prose. */
   codeStyleBullets?: string[];
+  /**
+   * Dense, specific bullets about the ACTUAL testing setup the agent observed
+   * (runner, coverage floor, test placement, test-count floor). NOT prose, NOT
+   * invented — only what was verified in the repo. Rendered as a supplement to
+   * the Testing Standards scaffold section.
+   */
+  testingNotes?: string[];
   /** RAW workflow filenames only ("ci.yml"), never prefixed. */
   ciWorkflows?: string[];
 }
@@ -327,6 +334,7 @@ export function extractAgentFacts(toolUses: readonly unknown[]): AgentFacts | un
     (o.manifest === undefined || typeof o.manifest === "string") &&
     (o.ciWorkflows === undefined || isStrArr(o.ciWorkflows)) &&
     (o.codeStyleBullets === undefined || isStrArr(o.codeStyleBullets)) &&
+    (o.testingNotes === undefined || isStrArr(o.testingNotes)) &&
     (o.commands === undefined || (Array.isArray(o.commands) && o.commands.every(isCmd)));
 
   let found: AgentFacts | undefined;

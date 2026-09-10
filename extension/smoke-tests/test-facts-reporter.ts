@@ -73,6 +73,7 @@ const full: Record<string, unknown> = {
   manifest: "Gemfile",
   commands: [{ name: "rspec", command: "bundle exec rspec", kind: "deploy" }],
   codeStyleBullets: ["Use rspec, not minitest"],
+  testingNotes: ["Uses rspec with a 70% coverage floor via simplecov"],
   ciWorkflows: ["ci.yml"],
 };
 assert.equal(
@@ -88,7 +89,24 @@ const valid = {
 assert.equal(
   Value.Check(schema, valid),
   true,
-  "a fully-populated call with a valid kind must pass",
+  "a fully-populated call with a valid kind must pass (including testingNotes)",
+);
+
+// testingNotes: a string[] is accepted; a non-string-array is rejected.
+assert.equal(
+  Value.Check(schema, { testingNotes: ["bullet1", "bullet2"] }),
+  true,
+  "testingNotes: string[] must pass schema validation",
+);
+assert.equal(
+  Value.Check(schema, { testingNotes: 42 }),
+  false,
+  "testingNotes: 42 (a number, not an array) must fail schema validation",
+);
+assert.equal(
+  Value.Check(schema, { testingNotes: [42] }),
+  false,
+  "testingNotes: [42] (an array of non-strings) must fail schema validation",
 );
 
 // ------------------------------------------------------------------ acceptance
@@ -117,6 +135,7 @@ const res = await tools[0]!.execute(
     manifest: "Gemfile",
     language: "ruby",
     commands: [{ name: "rspec", command: "bundle exec rspec", kind: "test" }],
+    testingNotes: ["Uses rspec with a 70% coverage floor via simplecov"],
   },
   new AbortController().signal,
   () => {},
@@ -131,11 +150,17 @@ assert.match(
 );
 assert.match(res.content[0]!.text, /manifest: Gemfile/, "ack text should mention the manifest");
 assert.match(res.content[0]!.text, /1 command\(s\)/, "ack text should mention the command count");
+assert.match(
+  res.content[0]!.text,
+  /1 testing note\(s\)/,
+  "ack text should mention the testing note count",
+);
 // details is a passthrough of the raw arguments — the caller reads these.
 assert.deepEqual(res.details, {
   manifest: "Gemfile",
   language: "ruby",
   commands: [{ name: "rspec", command: "bundle exec rspec", kind: "test" }],
+  testingNotes: ["Uses rspec with a 70% coverage floor via simplecov"],
 });
 
 // A minimal/empty call acks with "none populated" and empty-ish details.

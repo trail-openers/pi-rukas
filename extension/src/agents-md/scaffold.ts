@@ -66,13 +66,28 @@ export interface OperatorAnswers {
  *   of a fresh `detectFacts()` call. Resulting section rows are stamped
  *   `[detected:agent,<today>]`.
  * - `codeStyleBullets` — feeds the code-style section (`codeStyleBody`).
+ * - `testingNotes` — feeds the Testing Standards section as a "Project-specific"
+ *   supplement appended after the static doctrine (first-time population only,
+ *   guarded by the section's skip-if-present idempotency). Not a fact section,
+ *   so the TOOL maps `agentOverride.facts.testingNotes` onto this field.
  *
- * `agentOverride` is only honoured on the has-markers `update` path. It
- * NEVER reaches the create/wrap paths (they don't receive it).
+ * Honoured on create, wrap (no-markers), and has-markers update paths —
+ * gated by skip-if-present idempotency, not by a provenance ledger.
  */
 export interface AgentOverride {
   facts?: DetectedFacts;
   codeStyleBullets?: string[];
+  /**
+   * The agent-observed testing-setup bullets (the `testingNotes` wire field).
+   * Rendered as the "Project-specific" supplement of the Testing Standards
+   * section on FIRST-TIME population only: it rides inside the
+   * skip-if-present idempotency (`existingIds.has("testing-standards")`), so
+   * a second create/update never re-appends or churns it. No
+   * `[detected:agent,...]` ledger row, no refresh, no omission machinery —
+   * the static universal doctrine is never removed or altered, only
+   * supplemented.
+   */
+  testingNotes?: string[];
 }
 
 export interface ScaffoldOpts {
@@ -233,15 +248,32 @@ export const SCAFFOLD_BODIES: { id: string; body: string }[] = [
  * renders when the interview's coverage question was never answered. */
 const DEFAULT_COVERAGE_THRESHOLD = "≥80%";
 
+/** The cap on agent-observed testing bullets appended to the Testing
+ * Standards section. The static body is 10 lines; the supplement adds a
+ * blank line + a "Project-specific" bold lead-in + up to 5 bullets (≈2 lines
+ * each when wrapped) → ≤ ~20 lines total, so the ≤20-line per-section density
+ * gate (test-agents-md-scaffold-quality.ts) STAYS unchanged. Beyond the cap
+ * the bullets are silently truncated — the section never grows unbounded. */
+export const TESTING_NOTES_MAX = 5;
+
 /**
  * The Testing Standards body — the ONE answer-aware scaffold section. It
  * states the coverage threshold exactly once: the operator's stated value
- * when the interview answered it, the opinionated default otherwise.
- * Pure: a function of the (possibly absent) answer alone.
+ * when the interview answered it, the opinionated default otherwise. Pure: a
+ * function of the (possibly absent) answer and notes alone.
+ *
+ * `testingNotes` (the pre-pass agent's observed testing-setup bullets) is
+ * appended AFTER the static universal doctrine, clearly demarcated under a
+ * "Project-specific" bold lead-in — never a `##` sub-heading (the density
+ * test's `bodyLines()` stops at the first next heading, so a sub-heading
+ * would make the supplement invisible to the budget gate). The static
+ * doctrine is NEVER removed or altered — only supplemented. Absent/empty
+ * notes → byte-identical to the static-only body (no lead-in, no blank
+ * line): the supplement is purely additive.
  */
-export function testingStandardsBody(coverageThreshold?: string): string {
+export function testingStandardsBody(coverageThreshold?: string, testingNotes?: string[]): string {
   const threshold = coverageThreshold ?? DEFAULT_COVERAGE_THRESHOLD;
-  return [
+  const lines = [
     "# Testing Standards",
     "",
     "- TDD preferred: write the failing test first, then the minimal",
@@ -252,7 +284,12 @@ export function testingStandardsBody(coverageThreshold?: string): string {
     "  boilerplate.",
     "- A bug fix ships with its regression test — a fix without a test that",
     "  failed first is an incomplete fix.",
-  ].join("\n");
+  ];
+  const notes = (testingNotes ?? []).slice(0, TESTING_NOTES_MAX);
+  if (notes.length > 0) {
+    lines.push("", "**Project-specific**", ...notes.map((n) => `- ${n}`));
+  }
+  return lines.join("\n");
 }
 
 // ------------------------------------------------------------------- ledger
@@ -268,14 +305,12 @@ function scaffoldedLedgerRow(id: string, date: string): LedgerRow {
 }
 
 /**
- * Operator-choices body for the scaffold. Rendered as a bullet list; always
- * ends with a newline for splice symmetry.
- *
- * `omitCoverage` suppresses the coverage bullet: once the answer-aware
- * Testing Standards section carries the threshold, it is the SOLE statement
- * of the value in the file, and the operator-choices section must not
- * duplicate it. The `[asked:operator]` ledger row is unaffected (it records
- * what was asked, not where the value is stated).
+ * Operator-choices body for the scaffold: a bullet list that always ends
+ * with a newline for splice symmetry. `omitCoverage` suppresses the
+ * coverage bullet — once the answer-aware Testing Standards section carries
+ * the threshold, it is the SOLE statement of the value in the file (the
+ * `[asked:operator]` ledger row is unaffected: it records what was asked,
+ * not where the value is stated).
  */
 export function renderOperatorChoices(answers: OperatorAnswers, omitCoverage = false): string {
   const rows: string[] = [];
@@ -290,40 +325,19 @@ export function renderOperatorChoices(answers: OperatorAnswers, omitCoverage = f
 }
 
 /**
- * Ledger rows for the operator-choices section. Each carries
- * `[asked:operator,<date>]` so the ledger remembers what was provided.
+ * The `[asked:operator,<date>]` ledger row per ANSWERED operator choice —
+ * the ledger records what was asked, not where the value is stated.
  */
 export function operatorChoicesLedgerRows(answers: OperatorAnswers, date: string): LedgerRow[] {
-  const rows: LedgerRow[] = [];
-  if (answers.coverageThreshold)
-    rows.push({
-      key: "operator:coverage",
-      value: answers.coverageThreshold,
-      provenance: "asked",
-      date,
-    });
-  if (answers.reviewBlockingSeverity)
-    rows.push({
-      key: "operator:review-blocking",
-      value: answers.reviewBlockingSeverity,
-      provenance: "asked",
-      date,
-    });
-  if (answers.mergeAuthority)
-    rows.push({
-      key: "operator:merge-authority",
-      value: answers.mergeAuthority,
-      provenance: "asked",
-      date,
-    });
-  if (answers.projectConstraints)
-    rows.push({
-      key: "operator:constraints",
-      value: answers.projectConstraints,
-      provenance: "asked",
-      date,
-    });
-  return rows;
+  const entries: [string, string | undefined][] = [
+    ["operator:coverage", answers.coverageThreshold],
+    ["operator:review-blocking", answers.reviewBlockingSeverity],
+    ["operator:merge-authority", answers.mergeAuthority],
+    ["operator:constraints", answers.projectConstraints],
+  ];
+  return entries.flatMap(([key, value]) =>
+    value === undefined ? [] : [{ key, value, provenance: "asked", date } as LedgerRow],
+  );
 }
 
 // ------------------------------------------------------- scaffold result builder
@@ -362,10 +376,16 @@ export function computeScaffold(existingIds: Set<string>, opts?: ScaffoldOpts): 
   }
 
   // The answer-aware section: rendered from opts.answers (the operator's
-  // stated threshold, or the opinionated default), in document position
-  // after the static bodies. Skipped when already present, like the rest.
+  // stated threshold, or the opinionated default) + the agent-observed
+  // testingNotes supplement (first-time population only), in document
+  // position after the static bodies. Skipped when already present, like
+  // the rest — the supplement rides INSIDE the same skip, so a second
+  // create/update never re-appends or churns it.
   if (!existingIds.has("testing-standards")) {
-    sections.push({ id: "testing-standards", body: testingStandardsBody(coverage) });
+    sections.push({
+      id: "testing-standards",
+      body: testingStandardsBody(coverage, opts?.agentOverride?.testingNotes),
+    });
     ledgerRows.push(scaffoldedLedgerRow("testing-standards", date));
   }
 

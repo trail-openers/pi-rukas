@@ -131,6 +131,41 @@ const fs: AgentsMdFs = {
     console.log(`  Testing Standards body = ${lines} lines`);
     assert(lines <= 20, `Testing Standards body ≤ 20 lines (got ${lines})`);
   }
+
+  // testingNotes supplement (the #667 render workstream): the static doctrine
+  // is byte-identical when absent, and a populated supplement (≤5 bullets —
+  // the TESTING_NOTES_MAX cap) stays within the same 20-line per-section
+  // budget. The demarcation is a bold lead-in line, not a ## sub-heading, so
+  // the density gate's bodyLines() keeps measuring the full section.
+  assert(
+    testingStandardsBody("90%+", ["Integration tests live in tests/, unit tests colocated in-module"])
+      .startsWith(testingStandardsBody("90%+")),
+    "testingNotes: populated body starts byte-identical to the static doctrine",
+  );
+  const withNotes = testingStandardsBody("90%+", [
+    "Unit tests in-module via #[cfg(test)]",
+    "Integration tests in tests/ via assert_cmd",
+    "70% interim coverage floor via tarpaulin, 80% after VCR cassettes",
+    "~197 tests currently; do not reduce this count",
+    "Network-dependent tests marked #[ignore] with a reason",
+  ]);
+  const withNotesLines = withNotes.split("\n").length;
+  console.log(`  Testing Standards body (5 notes) = ${withNotesLines} lines`);
+  assert(withNotesLines <= 20, `Testing Standards body with 5 notes ≤ 20 lines (got ${withNotesLines})`);
+  assert(withNotes.includes("**Project-specific**"), "testingNotes: 'Project-specific' demarcation present");
+  assert(
+    withNotes.includes("- Network-dependent tests marked #[ignore] with a reason"),
+    "testingNotes: bullets appended after the static doctrine, verbatim",
+  );
+  // Graceful failure: absent / empty notes → byte-identical to the static body.
+  assert(
+    testingStandardsBody("90%+", undefined) === testingStandardsBody("90%+"),
+    "testingNotes: undefined → byte-identical to the static body",
+  );
+  assert(
+    testingStandardsBody("90%+", []) === testingStandardsBody("90%+"),
+    "testingNotes: empty [] → byte-identical to the static body",
+  );
 }
 
 // ------------------- (b) computeScaffold unit: answer-aware body + skip semantics
@@ -170,6 +205,33 @@ const fs: AgentsMdFs = {
   assert(
     !answered.operatorChoicesBody.includes("Coverage threshold"),
     "computeScaffold: operator-choices omits the coverage bullet when answered",
+  );
+
+  // The #667 testingNotes supplement threads via agentOverride.testingNotes:
+  // appended to the first-time rendered body, and skipped (never re-rendered)
+  // when the section is already present.
+  const withNotes = computeScaffold(new Set(), {
+    scaffold: true,
+    answers: { coverageThreshold: "60%" },
+    agentOverride: { testingNotes: ["Unit tests in-module via #[cfg(test)]", "Integration tests in tests/"] },
+  });
+  const withNotesBody =
+    withNotes.sections.find((s) => s.id === "testing-standards")?.body ?? "";
+  assert(
+    withNotesBody.startsWith(
+      testingStandardsBody("60%", ["Unit tests in-module via #[cfg(test)]", "Integration tests in tests/"]),
+    ) && withNotesBody.includes("**Project-specific**"),
+    "computeScaffold: testingNotes supplement appended after the static doctrine",
+  );
+  // A different set of notes must NOT re-render an already-present section.
+  const alreadyPresentWithNotes = computeScaffold(new Set(["testing-standards"]), {
+    scaffold: true,
+    answers: { coverageThreshold: "60%" },
+    agentOverride: { testingNotes: ["A completely different note"] },
+  });
+  assert(
+    !alreadyPresentWithNotes.sections.some((s) => s.id === "testing-standards"),
+    "computeScaffold: already-present Testing Standards is skipped even with fresh testingNotes",
   );
 
   // Skip is idempotent for the dynamic body too: already present → skipped,

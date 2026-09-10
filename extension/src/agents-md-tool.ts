@@ -180,6 +180,14 @@ export function registerAgentsMdTools(pi: ExtensionAPI) {
         if (params.agentOverride.codeStyleBullets) {
           ov.codeStyleBullets = params.agentOverride.codeStyleBullets;
         }
+        // The testingNotes wire field (facts.testingNotes) is the source of
+        // the Testing Standards "Project-specific" supplement. It is NOT a
+        // fact section — agentFactsToDetectedFacts never carries it — so the
+        // tool maps it onto AgentOverride.testingNotes, the field
+        // computeScaffold reads (first-time population only; the section's
+        // skip-if-present idempotency guards it).
+        const notes = params.agentOverride.facts?.testingNotes;
+        if (notes) ov.testingNotes = notes;
         scaffoldOpts.agentOverride = ov;
         if (params.refresh !== undefined) scaffoldOpts.refresh = params.refresh;
       }
