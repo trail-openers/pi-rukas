@@ -372,14 +372,15 @@ export function draftSpec(
   ].slice(0, cap);
 
   // An operator TEST SURFACE directive REPLACES the angle items (unlike
-  // ACs, which prepend) — "exactly: none" must not be diluted (C2).
+  // ACs, which prepend) — "exactly: none" must not be diluted (C2). The
+  // count cap applies to BOTH branches (round 9: an unterminated block
+  // swallowed trailing prose unbounded); operator text stays unclipped (D2).
   const opTestSurface = directives.testSurface ?? [];
   const testSurface = sectionBullets(
-    opTestSurface.length > 0
+    (opTestSurface.length > 0
       ? opTestSurface
-      : itemsByKind(findings, "test-surface-item")
-          .map((i) => clip(i.text))
-          .slice(0, cap),
+      : itemsByKind(findings, "test-surface-item").map((i) => clip(i.text))
+    ).slice(0, cap),
     TEST_SURFACE_FALLBACK,
   );
 

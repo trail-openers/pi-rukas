@@ -69,7 +69,7 @@ export function registerPlanTool(pi: ExtensionAPI) {
       context: Type.Optional(
         Type.String({
           description:
-            "Prior /research findings or session facts to treat as established (not re-investigated).",
+            "Prior /research findings or session facts to treat as established (not re-investigated). Typed directive blocks are the trusted channel: a heading (ACCEPTANCE CRITERIA, PITFALLS/EDGE CASES, OUT OF SCOPE, TEST SURFACE, DECOMPOSITION/SUB-ISSUES — plain, ##, ===, ** or *-wrapped, ':' optional) opens a block whose bulleted or contiguous lines become that section's items verbatim. A block ends at the next heading, an END fence ('TEST SURFACE END' or a bare END line; BEGIN fences are consumed, never items), or a blank line followed by a non-bullet line — trailing prose after a block stays plain context.",
         }),
       ),
       dryRun: Type.Optional(

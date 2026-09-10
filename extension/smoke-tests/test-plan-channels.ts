@@ -188,6 +188,107 @@ const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
   );
 }
 
+// --------------------------- directive-block grammar (vipune round 9)
+
+{
+  // The round-9 leak shape verbatim: fences must be delimiters, not
+  // bullets, and trailing prose must not land in the section.
+  const r9 = parseOperatorDirectives(
+    "TEST SURFACE:\nBEGIN\nnone — no code shipped\nEND\n\nThis spike investigates the block-extraction bug in vipune's chunker. It has trailing prose that previously leaked into the section wholesale.",
+  );
+  assert(
+    r9.testSurface?.length === 1 && r9.testSurface[0] === "none — no code shipped",
+    `grammar: BEGIN/END fences are delimiters; trailing prose never leaks (${JSON.stringify(r9.testSurface)})`,
+  );
+
+  // Keyword-attached fences: "TEST SURFACE BEGIN … TEST SURFACE END".
+  const kw = parseOperatorDirectives(
+    "TEST SURFACE BEGIN\n- exactly none\nTEST SURFACE END\ntrailing prose after the close",
+  );
+  assert(
+    kw.testSurface?.length === 1 && kw.testSurface[0] === "exactly none",
+    "grammar: keyword-attached BEGIN opens and END closes the block",
+  );
+
+  // Blank-line termination with bullet lookahead: spaced lists stay open,
+  // a trailing prose paragraph does not.
+  const spaced = parseOperatorDirectives("PITFALLS:\n- one\n\n- two\n\nplain trailing prose paragraph");
+  assert(
+    spaced.pitfalls.length === 2 && !spaced.pitfalls.some((s) => s.includes("trailing")),
+    "grammar: blank line + bullet continues the list; blank line + prose ends the block",
+  );
+
+  // Mid-prose keyword lines no longer hijack the open block.
+  const hijack = parseOperatorDirectives(
+    "ACCEPTANCE CRITERIA:\n- real item\nOut of scope for this round was the CLI surface.\nSub-issues should be created for each phase.",
+  );
+  assert(
+    hijack.outOfScope.length === 0 && hijack.decomposition?.length === 0,
+    "grammar: 'Out of scope for this round was…' / 'Sub-issues should…' do not open sections mid-prose",
+  );
+  assert(
+    hijack.acceptanceCriteria.length === 3,
+    "grammar: the prose lines stay items in the block the operator opened",
+  );
+
+  // Bullet-strip: whitespace after the marker is required.
+  const digits = parseOperatorDirectives(
+    "PITFALLS:\n- 42 is the answer\n3.14 pi approximation\n- 1) x\n-----BEGIN CERT-----data",
+  );
+  assert(
+    digits.pitfalls[0] === "42 is the answer" &&
+      digits.pitfalls[1] === "3.14 pi approximation" &&
+      digits.pitfalls[2] === "x" &&
+      digits.pitfalls[3] === "-----BEGIN CERT-----data",
+    `grammar: digit-leading prose and PEM-style lines survive; '- 1) x' double-strips (${JSON.stringify(digits.pitfalls)})`,
+  );
+}
+
+{
+  // Operator testSurface count cap: 21 directive items render as 20 (the
+  // section cap) — an unbounded leak can no longer flood the filed body.
+  const many = Array.from({ length: 21 }, (_, i) => `operator test item ${i}`);
+  const capped = draftSpec("feature", "d", [], [], [], [], 0, { ...NO_DIRS, testSurface: many }, []);
+  const ts = capped.body.slice(
+    capped.body.indexOf("## Test surface"),
+    capped.body.indexOf("## Edge cases"),
+  );
+  assert(
+    ts.includes("operator test item 19") && !ts.includes("operator test item 20"),
+    "cap: operator TEST SURFACE items are count-capped at the section cap (20)",
+  );
+  assert(!ts.includes("…"), "cap: operator test-surface text is never clipped (D2 — count cap only)");
+
+  // C2 replace semantics re-run through the fence form end-to-end.
+  const viaFence = parseOperatorDirectives("TEST SURFACE:\nBEGIN\nexactly none — no code shipped\nEND");
+  const fenceDraft = draftSpec(
+    "feature",
+    "d",
+    [
+      {
+        name: "test-surface",
+        ok: true,
+        text: "prose",
+        toolUses: [{ kind: "test-surface-item", text: "extend test-foo.ts", angle: "test-surface" }],
+      },
+    ],
+    [],
+    [],
+    [],
+    0,
+    { ...NO_DIRS, testSurface: viaFence.testSurface },
+    [],
+  );
+  const fenceTs = fenceDraft.body.slice(
+    fenceDraft.body.indexOf("## Test surface"),
+    fenceDraft.body.indexOf("## Edge cases"),
+  );
+  assert(
+    fenceTs.includes("exactly none — no code shipped") && !fenceTs.includes("extend test-foo.ts"),
+    "C2 via fences: a fenced TEST SURFACE block still REPLACES angle items",
+  );
+}
+
 // ------------------------------------------------- gate prompt note (C3)
 
 {
