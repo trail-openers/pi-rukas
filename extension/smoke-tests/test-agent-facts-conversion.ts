@@ -48,6 +48,9 @@ function assert(cond: boolean, msg: string) {
       "Use double-quoted symbols in frozen files",
       "No trailing whitespace",
     ],
+    architectureBullets: [
+      "src/foo.rb — the classifier: changes require corresponding tests",
+    ],
     ciWorkflows: ["ci.yml", "lint.yml"],
   };
   const out = agentFactsToDetectedFacts(input);
@@ -80,6 +83,14 @@ function assert(cond: boolean, msg: string) {
     "...asserted explicitly: no prefix anywhere in the converted ciWorkflows",
   );
   assert(Array.isArray(out.notes) && out.notes.length === 0, "notes is the empty array");
+  assert(
+    !("architectureBullets" in out) && out.architectureBullets === undefined,
+    "architectureBullets is DROPPED by the conversion (stays on the AgentFacts side only)",
+  );
+  assert(
+    !("codeStyleBullets" in out) && out.codeStyleBullets === undefined,
+    "codeStyleBullets is DROPPED by the conversion (stays on the AgentFacts side only)",
+  );
 }
 
 // ------------------------------------------------------------------- empty {}
@@ -104,12 +115,35 @@ function assert(cond: boolean, msg: string) {
 // -------------------------------------------------------------------- partial
 
 {
-  const out = agentFactsToDetectedFacts({ codeStyleBullets: ["One bullet"] });
+  const out = agentFactsToDetectedFacts({
+    codeStyleBullets: ["One bullet"],
+    architectureBullets: ["src/foo.ts — the critical path: changes require tests"],
+  });
   assert(out.manifest === undefined && out.language === undefined, "partial → unfilled scalars stay undefined");
   assert(out.commands.length === 0 && out.ciWorkflows.length === 0, "partial → absent arrays become []");
   assert(
     Array.isArray(out.notes) && out.notes.length === 0,
     "partial → notes [] (codeStyleBullets lives on the AgentOverride, not DetectedFacts)",
+  );
+  assert(
+    out.architectureBullets === undefined && !("architectureBullets" in out),
+    "partial → architectureBullets is DROPPED (never surfaces on DetectedFacts)",
+  );
+}
+
+// ----------------------- architectureBullets never surfaces on DetectedFacts
+
+{
+  const out = agentFactsToDetectedFacts({
+    architectureBullets: ["src/a.ts — role", "critical path: X, changes require Y"],
+  });
+  assert(
+    out.architectureBullets === undefined && !("architectureBullets" in out),
+    "an input carrying ONLY architectureBullets converts with the field dropped, never invented onto DetectedFacts",
+  );
+  assert(
+    out.manifest === undefined && out.commands.length === 0 && out.ciWorkflows.length === 0,
+    "dropping architectureBullets leaves the rest of DetectedFacts absent/empty, never a guess",
   );
 }
 

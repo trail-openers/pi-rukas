@@ -92,7 +92,13 @@ export interface WrapResult {
   wrapped: WrapSection[];
 }
 
-const MANAGED_IDS = ["quality-gates", "commands", "environment", "code-style"] as const;
+const MANAGED_IDS = [
+  "quality-gates",
+  "commands",
+  "environment",
+  "code-style",
+  "architecture-notes",
+] as const;
 
 /** A heading line: `#+` followed by a space and text. Captures the level. */
 const HEADING_RE = /^(#{1,6})\s+(.*)$/;
@@ -119,6 +125,7 @@ export function headingToId(heading: string): string | undefined {
   if (words.length === 1 && (words[0] === "environment" || words[0] === "environments"))
     return "environment";
   if (words[0] === "code" && words[1] === "style") return "code-style";
+  if (words[0] === "architecture" && words[1] === "notes") return "architecture-notes";
   return undefined;
 }
 
@@ -133,8 +140,9 @@ function contentMatchesId(id: string, text: string): boolean {
   if (id === "environment") {
     return /-\s+Manifest:\s+`/.test(text);
   }
-  if (id === "code-style") {
-    // A dense bullet list, no table, short — the shape codeStyleBody emits.
+  if (id === "code-style" || id === "architecture-notes") {
+    // A dense bullet list, no table, short — the shape codeStyleBody /
+    // architectureNotesBody emit.
     const lines = text.split("\n");
     const nonEmpty = lines.filter((l) => l.trim() !== "");
     if (nonEmpty.length === 0 || nonEmpty.length > 15) return false;

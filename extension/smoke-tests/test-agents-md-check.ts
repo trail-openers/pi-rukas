@@ -214,6 +214,37 @@ function writeSidecar(root: string, rows?: LedgerRow[]): void {
   );
 }
 
+// An empty architecture-notes section (heading present, zero body lines)
+// triggers the SAME generic empty-section guard — exit 1, finding names the id.
+{
+  const emptyArch = [
+    "# T",
+    "",
+    "## Environment",
+    "",
+    "- Manifest: package.json",
+    "",
+    "## Architecture Notes",
+    "",
+    "## Next Section",
+    "",
+    "body",
+  ].join("\n");
+  writeFileSync(path.join(tmp, "empty-arch.md"), emptyArch);
+  writeSidecar(tmp);
+  const r = checkAgent(tmp, path.join(tmp, "empty-arch.md"), {}, mkFs());
+  assert(
+    r.check?.code === EXIT_FINDINGS,
+    `empty architecture-notes section → exit ${EXIT_FINDINGS} (got ${r.check?.code})`,
+  );
+  assert(
+    r.check?.findings.some(
+      (f) => f.kind === "empty-section" && f.message.includes("architecture-notes"),
+    ),
+    "...with the generic empty-section finding naming architecture-notes",
+  );
+}
+
 // An empty h1 BOILERPLATE section (a hand-edited file emptied the body)
 // triggers the SAME generic empty-section guard.
 {

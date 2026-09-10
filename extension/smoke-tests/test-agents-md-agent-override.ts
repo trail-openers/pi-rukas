@@ -375,5 +375,72 @@ function mkFs(today: string): AgentsMdFs {
   rmSync(noManifestDir2, { recursive: true, force: true });
 }
 
+// ===================================================== 4. architectureBullets: insert + ledger + no omit churn + graceful absence
+
+{
+  const mkd = mkdtempSync(path.join(tmpdir(), "pi-ens-agentsmd-arch-"));
+  const agents = path.join(mkd, "AGENTS.md");
+  const seed = [
+    "# T", "", "## Quality Gates", "", "- **gate** — `some command`", "",
+    "## Commands", "", "| kind | command |", "| --- | --- |", "| test | `some command` |", "",
+    "## Environment", "", "- CI: no `.github/workflows/` detected", "",
+  ].join("\n");
+  writeFileSync(agents, seed);
+  const facts = {
+    manifest: "package.json", packageManager: "bun",
+    commands: [{ name: "bun test", command: "bun test", kind: "test" as const, runner: "bun" }],
+    ciWorkflows: [], notes: [],
+  };
+
+  // Call 1: facts + codeStyleBullets + architectureBullets.
+  const fs1 = mkFs("2026-01-01");
+  const r1 = updateAgent(mkd, agents, fs1, {
+    agentOverride: {
+      facts,
+      codeStyleBullets: ["Use bun"],
+      architectureBullets: ["src/auth.ts — token validation", "src/db.ts — Postgres pool"],
+    },
+  });
+  const after1 = fs1.readFile(agents);
+  assert(r1.exitCode === 0 && r1.plan?.wouldWrite === true, "arch #1: exit 0, wouldWrite");
+  assert(presentManagedIds(after1).includes("architecture-notes"), "arch #1: section inserted");
+  const csIdx = after1.indexOf("## Code Style");
+  const archIdx = after1.indexOf("## Architecture Notes");
+  assert(archIdx > csIdx, "arch #1: inserted after code-style");
+  assert(after1.includes("- src/auth.ts — token validation"), "arch #1: bullets rendered");
+  const sPath = sidecarPath(mkd);
+  const lg1 = parseLedger(fs1.readFile(sPath));
+  const archRow = lg1.find((r) => r.key === "architecture-notes");
+  assert(archRow?.provenance === "detected" && archRow?.date === "2026-01-01", "arch #1: [detected:agent] row");
+  assert(!lg1.some((r) => r.key.startsWith("omit:")), "arch #1: NO omit:* rows");
+
+  // Call 2: routine update, LATER date → byte-identical, no churn.
+  const fs2 = mkFs("2026-09-09");
+  const r2 = updateAgent(mkd, agents, fs2);
+  const after2 = fs2.readFile(agents);
+  assert(r2.exitCode === 0 && r2.plan?.wouldWrite === false, "arch #2: no-op");
+  assert(Buffer.from(after2, "utf8").equals(Buffer.from(after1, "utf8")), "arch #2: byte-identical");
+  const lg2 = parseLedger(fs2.readFile(sPath));
+  assert(lg2.find((r) => r.key === "architecture-notes")?.date === "2026-01-01", "arch #2: date unchanged");
+
+  // Graceful absence: NO architectureBullets → no section, no omission row.
+  const mkd2 = mkdtempSync(path.join(tmpdir(), "pi-ens-agentsmd-arch-absent-"));
+  const agents2 = path.join(mkd2, "AGENTS.md");
+  writeFileSync(agents2, seed);
+  const fs3 = mkFs("2026-01-01");
+  const r3 = updateAgent(mkd2, agents2, fs3, {
+    agentOverride: { facts, codeStyleBullets: ["Use bun"] },
+  });
+  const after3 = fs3.readFile(agents2);
+  assert(r3.exitCode === 0, "arch absent: exit 0");
+  assert(!presentManagedIds(after3).includes("architecture-notes"), "arch absent: NO section");
+  assert(presentManagedIds(after3).includes("code-style"), "arch absent: code-style still created");
+  const lg3 = parseLedger(fs3.readFile(sidecarPath(mkd2)));
+  assert(!lg3.some((r) => r.key === "omit:architecture-notes"), "arch absent: NO omit row");
+
+  rmSync(mkd, { recursive: true, force: true });
+  rmSync(mkd2, { recursive: true, force: true });
+}
+
 console.log(exit === 0 ? "\nAll agent-override checks passed." : "\nFAILED");
 process.exit(exit);

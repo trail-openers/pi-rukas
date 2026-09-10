@@ -376,20 +376,21 @@ rmSync(tmp, { recursive: true, force: true });
     notes: [],
   };
   const codeStyleBullets = ["Use bun for all JS/TS work", "Run the full test suite before push"];
+  const architectureBullets = ["src/auth.ts — token validation", "src/db.ts — Postgres pool"];
 
-  // Call 1: first agentOverride (populates the fact sections + code-style).
+  // Call 1: first agentOverride (facts + code-style + architecture-notes).
   const fs1 = mkFs({ today: () => "2026-01-01" });
   const r1 = updateAgent(noManifestDir, noManifestAgents, fs1, {
-    agentOverride: { facts: agentFacts, codeStyleBullets },
+    agentOverride: { facts: agentFacts, codeStyleBullets, architectureBullets },
   });
   const after1 = fs1.readFile(noManifestAgents);
   assert(r1.exitCode === 0, "agentOverride idempotency #1: exit 0");
   assert(r1.plan?.wouldWrite === true, "agentOverride idempotency #1: wouldWrite is true");
 
-  // Call 2: SAME agentOverride, LATER date → must be byte-identical (no-op).
+  // Call 2: SAME agentOverride, LATER date → byte-identical (no-op).
   const fs2 = mkFs({ today: () => "2026-09-09" });
   const r2 = updateAgent(noManifestDir, noManifestAgents, fs2, {
-    agentOverride: { facts: agentFacts, codeStyleBullets },
+    agentOverride: { facts: agentFacts, codeStyleBullets, architectureBullets },
   });
   const after2 = fs2.readFile(noManifestAgents);
   assert(r2.exitCode === 0, "agentOverride idempotency #2: exit 0");
@@ -492,7 +493,6 @@ rmSync(tmp, { recursive: true, force: true });
       rubySidecar.includes(`"date": "2026-01-02"`),
     "agentOverride (ruby): sidecar rows stamped with provenance 'detected' and date 2026-01-02",
   );
-
   rmSync(rubyDir, { recursive: true, force: true });
 }
 

@@ -57,6 +57,13 @@ export interface AgentFacts {
    * the Testing Standards scaffold section.
    */
   testingNotes?: string[];
+  /**
+   * Dense, specific bullets: module→responsibility mappings and critical-path
+   * rules (agent-derived, no DetectedFacts equivalent — stays on the
+   * AgentFacts side only, never copied by agentFactsToDetectedFacts).
+   */
+  architectureBullets?: string[];
+  /**
   /** RAW workflow filenames only ("ci.yml"), never prefixed. */
   ciWorkflows?: string[];
 }
@@ -335,6 +342,7 @@ export function extractAgentFacts(toolUses: readonly unknown[]): AgentFacts | un
     (o.ciWorkflows === undefined || isStrArr(o.ciWorkflows)) &&
     (o.codeStyleBullets === undefined || isStrArr(o.codeStyleBullets)) &&
     (o.testingNotes === undefined || isStrArr(o.testingNotes)) &&
+    (o.architectureBullets === undefined || isStrArr(o.architectureBullets)) &&
     (o.commands === undefined || (Array.isArray(o.commands) && o.commands.every(isCmd)));
 
   let found: AgentFacts | undefined;

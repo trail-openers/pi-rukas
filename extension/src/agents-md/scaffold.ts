@@ -88,6 +88,14 @@ export interface AgentOverride {
    * supplemented.
    */
   testingNotes?: string[];
+  /**
+   * Dense, specific bullets: module→responsibility mappings and critical-path
+   * rules. Feeds the architecture-notes managed section (agent-derived, not
+   * manifest-derived — no omission concept). Stays on the AgentFacts side
+   * only (never enters DetectedFacts or agentFactsToDetectedFacts), mirroring
+   * codeStyleBullets exactly.
+   */
+  architectureBullets?: string[];
 }
 
 export interface ScaffoldOpts {

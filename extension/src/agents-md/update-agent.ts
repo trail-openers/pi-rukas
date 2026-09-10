@@ -19,7 +19,13 @@ import {
   upsertRow,
 } from "./ledger.ts";
 import { parseInFileLedger } from "./legacy-ledger.ts";
-import { codeStyleBody, commandsBody, environmentBody, gatesBody } from "./renderer.ts";
+import {
+  architectureNotesBody,
+  codeStyleBody,
+  commandsBody,
+  environmentBody,
+  gatesBody,
+} from "./renderer.ts";
 import {
   type AgentOverride,
   type ScaffoldOpts,
@@ -288,6 +294,12 @@ export function makeUpdateAgent(
       : undefined;
     if (codeStyleOut !== undefined) updates.set("code-style", codeStyleOut);
 
+    // Architecture-notes (agent-derived, no omission concept — same as code-style).
+    const archNotesOut = agentOverride?.architectureBullets
+      ? architectureNotesBody(agentOverride.architectureBullets)
+      : undefined;
+    if (archNotesOut !== undefined) updates.set("architecture-notes", archNotesOut);
+
     // Build the body splices FIRST (no ledger yet). This gives us the
     // post-update file bytes that the omission re-derivation below uses.
     // Post-#681 M2: the splice is heading-based — each managed section is
@@ -339,19 +351,25 @@ export function makeUpdateAgent(
       bytes = insertManagedSectionAfter(bytes, "code-style", codeStyleOut, "environment");
     }
 
+    // First-time architecture-notes insertion: after code-style (fixed position).
+    // Re-detect spans (stale after code-style insert); fall back to environment.
+    if (archNotesOut !== undefined) {
+      const cur = findManagedSections(bytes);
+      if (!cur.some((s) => s.id === "architecture-notes")) {
+        bytes = insertManagedSectionAfter(
+          bytes,
+          "architecture-notes",
+          archNotesOut,
+          cur.some((s) => s.id === "code-style") ? "code-style" : "environment",
+        );
+      }
+    }
+
     // --- Merge ledger. ---
     const FACT_IDS = ["quality-gates", "commands", "environment"] as const;
-    // The `auto` parameter to mergeAutoRows is the omission rows for the
-    // NON-detected ids. The filter is the Item-4 omission suppression (the
-    // churn-loop fix): it keys off the EXISTING ledger's provenance for the
-    // section id itself — an id that already carries a [detected:agent] row
-    // has its omit:<id> row dropped so it is never re-stamped with today's
-    // date. This is what makes a routine update on a no-manifest fixture
-    // (whose ledger already carries [detected:agent] rows from a prior
-    // agentOverride call) upsert ZERO omit:* rows, even across a date
-    // rollover. The filter keys off the section id (quality-gates /
-    // commands / environment), NEVER off the omit:<id> rows (auto-provenance
-    // by construction — filtering those would be a no-op).
+    // architecture-notes gets [detected:agent] rows (same refresh + omission-suppression as facts).
+    const AGENT_DERIVED_IDS = ["architecture-notes"] as const;
+    // Item-4 omission suppression: filter omit rows for ids with [detected:agent] rows.
     const detectedAgentIds = new Set(
       existingLedger.filter((r) => r.provenance === "detected").map((r) => r.key),
     );
@@ -360,18 +378,10 @@ export function makeUpdateAgent(
     );
     let merged = mergeAutoRows(existingLedger, auto);
 
-    // Item 5 (refresh) + Item 3 (first-time population). For each fact section
-    // that agentOverride is writing (a body, not an omission): with
-    // refresh:true the [detected:agent] row is DIRECTLY replaced (bypassing
-    // mergeAutoRows' sticky rule, which would otherwise keep the old row when
-    // the value is unchanged); without refresh the row is populated only for
-    // ids that do NOT yet carry a [detected:agent,...] row. Sections that are
-    // [auto,...] or [asked,...] are NEVER touched (provenance checked before
-    // acting). A no-op — new body byte-identical (post trailing-newline
-    // normalisation) to the existing section — keeps the existing row and its
-    // date (no churn).
+    // Refresh (refresh:true) replaces [detected:agent] rows; first-time population
+    // populates only when no existing row. [auto]/[asked] rows are never touched.
     if (useOverride) {
-      for (const id of FACT_IDS) {
+      for (const id of [...FACT_IDS, ...AGENT_DERIVED_IDS]) {
         const body = updates.get(id);
         if (body === undefined) continue; // omitted → no detected row
         const spliceForm = body.endsWith("\n") ? body : `${body}\n`;
@@ -407,23 +417,12 @@ export function makeUpdateAgent(
       }
     }
 
-    // Add the omission rows for ids that are NOT agent-detected (Item 4
-    // suppression). The `omitted` array (built from the agentOverride facts
-    // when supplied) is filtered to exclude any id that has a [detected:agent]
-    // row — the operator is not told a section is omitted when it is
-    // agent-derived. The plan's `omitted` field reflects the same filter.
+    // Omission rows: filter out any id with a [detected:agent] row (Item 4 suppression).
     const omittedForLedger = omitted.filter((o) => !detectedAgentIds.has(o.id));
     merged = mergeOmissionRows(merged, omittedForLedger, today);
     const drift = driftWarnings(existingLedger, auto);
 
-    // Post-#680 M1: the ledger is NOT spliced back into the file — the merged
-    // rows are written to the sidecar below. A pre-M1 in-file decision-ledger
-    // span is migrated on this first update: its rows were read above and
-    // merged into the sidecar rows, and the now-legacy markdown table body
-    // (orphaned after the one-pass strip removed its marker lines) is
-    // removed from the file so it is not left behind as stray table text in
-    // the heading-based file. A purely heading-based file has no table to
-    // remove (removeInFileLedgerBody is a byte-identical no-op then).
+    // Migrate pre-M1 in-file ledger: remove the legacy table from the file.
     if (inFileLedgerSpan.kind === "ok") {
       bytes = removeInFileLedgerBody(bytes);
     }

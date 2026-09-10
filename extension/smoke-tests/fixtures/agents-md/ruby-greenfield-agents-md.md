@@ -39,6 +39,13 @@ Run these before pushing. All must pass locally:
 - Rake tasks: `Rake::Task` with `prereq` chains, never raw `sh`
 <!-- pi-rukas:agents-md:end code-style -->
 
+<!-- pi-rukas:agents-md:begin architecture-notes v1 -->
+- lib/services/ — domain services (one per bounded context, no cross-service imports)
+- lib/infrastructure/ — I/O boundary (DB, HTTP clients); the only layer allowed to call external SDKs
+- spec/support/ — RSpec shared contexts; changes here affect every example
+- critical path: lib/services/classifier.rb — changes require corresponding spec examples
+<!-- pi-rukas:agents-md:end architecture-notes -->
+
 <!-- pi-rukas:agents-md:begin decision-ledger v1 -->
 | key | value | provenance |
 | --- | --- | --- |

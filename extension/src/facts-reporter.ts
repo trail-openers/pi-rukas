@@ -81,6 +81,13 @@ export interface AgentFacts {
    * the Testing Standards scaffold section (see scaffold.ts `testingStandardsBody`).
    */
   testingNotes?: string[];
+  /**
+   * Dense, specific bullets mapping key source files/directories to their
+   * roles plus critical-path rules ("critical path: X, changes require Y").
+   * Stays on the AgentFacts side only — NOT part of DetectedFacts and NOT
+   * copied by `agentFactsToDetectedFacts` (same as `codeStyleBullets`).
+   */
+  architectureBullets?: string[];
   /** RAW workflow FILENAMES only (e.g. "ci.yml") — no `.github/workflows/` prefix. */
   ciWorkflows?: string[];
 }
@@ -143,6 +150,18 @@ const FACTS_PARAMETERS = Type.Object({
       },
     ),
   ),
+  architectureBullets: Type.Optional(
+    Type.Array(
+      Type.String({
+        description:
+          "One dense, specific bullet each: a source file/directory and its role (e.g. 'src/classify.rs — the critical path: changes require corresponding tests'). No prose paragraphs, no filler. Omit if the repo has no meaningful module structure.",
+      }),
+      {
+        description:
+          "Architecture notes as a dense bullet list (module → responsibility, critical-path rules). Omit if none are known.",
+      },
+    ),
+  ),
   ciWorkflows: Type.Optional(
     Type.Array(
       Type.String({
@@ -176,6 +195,8 @@ export default function (pi: ExtensionAPI) {
       if (bullets) parts.push(`${bullets} code-style bullet(s)`);
       const notes = Array.isArray(a.testingNotes) ? a.testingNotes.length : 0;
       if (notes) parts.push(`${notes} testing note(s)`);
+      const archBullets = Array.isArray(a.architectureBullets) ? a.architectureBullets.length : 0;
+      if (archBullets) parts.push(`${archBullets} architecture bullet(s)`);
       const flows = Array.isArray(a.ciWorkflows) ? a.ciWorkflows.length : 0;
       if (flows) parts.push(`${flows} CI workflow(s)`);
       return {

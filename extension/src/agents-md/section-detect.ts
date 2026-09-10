@@ -74,6 +74,7 @@ export const MANAGED_HEADING_TEXT: Record<string, string> = {
   commands: "## Commands",
   environment: "## Environment",
   "code-style": "## Code Style",
+  "architecture-notes": "## Architecture Notes",
   // scaffold boilerplate (# level — first line of each SCAFFOLD_BODIES body)
   "minimalist-engineering": "# Minimalist Engineering",
   "git-workflow": "# Git Workflow",
@@ -86,7 +87,7 @@ export const MANAGED_HEADING_TEXT: Record<string, string> = {
   "operator-choices": "## Operator choices",
 };
 
-/** All managed section ids (the 4 fact + 7 scaffold + operator-choices). */
+/** All managed section ids (the 5 fact + 7 scaffold + operator-choices). */
 export const MANAGED_IDS: string[] = Object.keys(MANAGED_HEADING_TEXT);
 
 /** The heading level (1-based # count) a managed id renders at. */
@@ -150,12 +151,20 @@ export function managedIdForHeading(heading: string): string | undefined {
   if (words.length === 1 && (words[0] === "environment" || words[0] === "environments"))
     return "environment";
   if (words[0] === "code" && words[1] === "style" && words.length === 2) return "code-style";
+  if (words[0] === "architecture" && words[1] === "notes" && words.length === 2)
+    return "architecture-notes";
   // The scaffold + operator-choices ids match on their exact word set, word
   // for word, against the rendered heading text. The length check excludes
   // the parenthetical "Quality Gates (blocking)" false-positive class by
   // construction (different word count than the 2-word "quality gates").
   for (const [id, text] of Object.entries(MANAGED_HEADING_TEXT)) {
-    if (id === "quality-gates" || id === "commands" || id === "environment" || id === "code-style")
+    if (
+      id === "quality-gates" ||
+      id === "commands" ||
+      id === "environment" ||
+      id === "code-style" ||
+      id === "architecture-notes"
+    )
       continue; // already handled above
     const t = HEADING_RE.exec(text.trim());
     if (!t) continue;

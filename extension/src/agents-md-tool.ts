@@ -123,6 +123,12 @@ export function registerAgentsMdTools(pi: ExtensionAPI) {
                   "Dense, specific code-style bullets (not prose). Feeds the code-style managed section.",
               }),
             ),
+            architectureBullets: Type.Optional(
+              Type.Array(Type.String(), {
+                description:
+                  "Dense, specific architecture bullets (module→responsibility mappings, critical-path rules). Feeds the architecture-notes managed section.",
+              }),
+            ),
           },
           {
             description:
@@ -147,6 +153,7 @@ export function registerAgentsMdTools(pi: ExtensionAPI) {
         agentOverride?: {
           facts?: AgentFacts;
           codeStyleBullets?: string[];
+          architectureBullets?: string[];
         };
         refresh?: boolean;
       };
@@ -188,6 +195,9 @@ export function registerAgentsMdTools(pi: ExtensionAPI) {
         // skip-if-present idempotency guards it).
         const notes = params.agentOverride.facts?.testingNotes;
         if (notes) ov.testingNotes = notes;
+        if (params.agentOverride.architectureBullets) {
+          ov.architectureBullets = params.agentOverride.architectureBullets;
+        }
         scaffoldOpts.agentOverride = ov;
         if (params.refresh !== undefined) scaffoldOpts.refresh = params.refresh;
       }

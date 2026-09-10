@@ -79,6 +79,18 @@ function assert(cond: boolean, msg: string) {
     extractAgentFacts(malformed5) === undefined,
     "(c) report_facts with testingNotes as a string (not an array) → undefined",
   );
+
+  const malformed6 = [{ name: "report_facts", arguments: { architectureBullets: 42 } }];
+  assert(
+    extractAgentFacts(malformed6) === undefined,
+    "(c) report_facts with architectureBullets: 42 (non-array) → undefined (discarded, not coerced)",
+  );
+
+  const malformed7 = [{ name: "report_facts", arguments: { architectureBullets: ["ok", 7] } }];
+  assert(
+    extractAgentFacts(malformed7) === undefined,
+    "(c) report_facts with a mixed-type architectureBullets array → undefined",
+  );
 }
 
 // ---------------------------------- (d) prose-only (no tool call) → undefined
@@ -157,6 +169,10 @@ function assert(cond: boolean, msg: string) {
       name: "report_facts",
       arguments: {
         codeStyleBullets: ["Use strict mode"],
+        architectureBullets: [
+          "src/index.ts — entrypoint: changes require a smoke run",
+          "critical path: parse step, changes require golden tests",
+        ],
         // commands/manifest/language all absent
       },
     },
@@ -164,6 +180,12 @@ function assert(cond: boolean, msg: string) {
   const out = extractAgentFacts(partial);
   assert(out !== undefined, "(partial) a partial call is NOT a failure — it is partial information");
   assert(out?.codeStyleBullets?.length === 1, "(partial) codeStyleBullets applied");
+  assert(
+    out?.architectureBullets?.length === 2 &&
+      out?.architectureBullets?.[0] ===
+        "src/index.ts — entrypoint: changes require a smoke run",
+    "(partial) architectureBullets carried through extractAgentFacts unchanged",
+  );
   assert(out?.commands === undefined, "(partial) absent commands stay undefined (not invented)");
   assert(out?.manifest === undefined, "(partial) absent manifest stays undefined");
 }

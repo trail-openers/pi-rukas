@@ -34,7 +34,13 @@ import type { DetectedFacts } from "./detect.ts";
 import { renderHeadingFor } from "./section-detect.ts";
 
 /** The fixed section order. Omitted sections leave a gap, not a reflow. */
-const SECTION_ORDER = ["quality-gates", "commands", "environment", "code-style"] as const;
+const SECTION_ORDER = [
+  "quality-gates",
+  "commands",
+  "environment",
+  "code-style",
+  "architecture-notes",
+] as const;
 
 /**
  * The single source of truth for omission reasons, keyed by managed section
@@ -106,6 +112,21 @@ export const FACT_SECTIONS: {
  * ≤15 non-empty lines.
  */
 export function codeStyleBody(bullets?: string[]): string | undefined {
+  if (!bullets || bullets.length === 0) return undefined;
+  return bullets.map((b) => `- ${b}`).join("\n");
+}
+
+/**
+ * Pure body for the `architecture-notes` managed section: a dense bullet list
+ * built from a plain string[]. Agent-derived (module→responsibility mappings
+ * and critical-path rules), not manifest-derived — no omission concept.
+ * Returns `undefined` (never an empty string) when `bullets` are empty or
+ * absent, so no empty heading + zero-body section can be emitted.
+ * Exact contract: `architectureNotesBody([]) === undefined`,
+ * `architectureNotesBody(undefined) === undefined`,
+ * `architectureNotesBody(["a","b"]) === "- a\n- b"`.
+ */
+export function architectureNotesBody(bullets?: string[]): string | undefined {
   if (!bullets || bullets.length === 0) return undefined;
   return bullets.map((b) => `- ${b}`).join("\n");
 }

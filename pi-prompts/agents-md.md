@@ -52,16 +52,22 @@ to produce `AgentFacts`.
 
 ### Trigger condition
 
-Dispatch the pre-pass **when either**:
+Dispatch the pre-pass **when any of these**:
 1. The repo has **no recognised manifest** (`package.json`, `Cargo.toml`,
    `go.mod`, or `pyproject.toml` at the root) — i.e. `detectFacts(root)`
    would return `manifest: undefined` (Ruby/Gemfile, true greenfield,
    unrecognised ecosystems), **OR**
 2. The current `AGENTS.md` has **no `code-style` managed section** (no
-   heading-delimited `code-style` section in the file).
+   heading-delimited `code-style` section in the file), **OR**
+3. The current `AGENTS.md` has **no `architecture-notes` managed section**
+   (no heading-delimited `architecture-notes` section in the file).
 
-**Skip the dispatch entirely** only when BOTH conditions are false: the
-manifest is recognised AND the code-style section already exists.
+In words: dispatch when the manifest is undefined **OR any agent-derived
+section** (`code-style`, `architecture-notes`) **is absent**.
+
+**Skip the dispatch entirely** only when ALL conditions are false: the
+manifest is recognised AND both the code-style and the architecture-notes
+sections already exist.
 
 ### The dispatch
 
@@ -90,6 +96,13 @@ The dispatch prompt must include:
 >   repo (CI config, test runner config files, test directory structure).
 >   Omit the field if none were observed — the Testing Standards section
 >   then renders its static doctrine only.
+> - `architectureBullets`: dense, specific bullets mapping key source
+>   files/directories to their roles plus critical-path rules (e.g.
+>   "src/classify.rs is the critical path — changes require corresponding
+>   tests"). One module→responsibility or rule per bullet, no prose
+>   paragraphs, and NO tables — bullets only. Omit the field entirely if
+>   the repo has no meaningful module structure (e.g. a single-file
+>   script); never fill it with generic filler.
 > - `language`, `packageManager`, `manifest`: only if you can confirm them
 >   from files in the repo. Do not guess.
 
@@ -103,12 +116,15 @@ prompt AND the `report_facts` tool.
 ### Scoping rule (rich-manifest repos)
 
 When the repo **has** a recognised manifest (`detectFacts(root).manifest`
-≠ `undefined`) AND the only reason the dispatch fires is that the code-style
-section is absent: the caller passes **only `codeStyleBullets`** into
-`agentOverride`. The child's `commands`/`manifest`/`language`/`packageManager`
-fields are **ignored** for the fact sections — this prevents a routine
-code-style-only dispatch from silently converting a rich project's
-`[auto,...]` provenance rows to `[detected:agent,...]`.
+≠ `undefined`) AND the only reason the dispatch fires is that one or more
+agent-derived sections are absent: the caller passes **only the missing
+section's bullets** into `agentOverride` — `codeStyleBullets` when the
+code-style section is absent, `architectureBullets` when the
+architecture-notes section is absent (both, when both are absent). The child's
+`commands`/`manifest`/`language`/`packageManager` fields are **ignored** for
+the fact sections — this prevents a routine agent-section-only dispatch from
+silently converting a rich project's `[auto,...]` provenance rows to
+`[detected:agent,...]`.
 
 ### Refresh framing
 
@@ -137,9 +153,12 @@ with `name === "report_facts"`), treat it exactly like
 back entirely to B1's existing deterministic/omission behavior.
 
 A **partial** `report_facts` call (e.g. `codeStyleBullets` present but
-`commands` absent) applies **only the populated fields** — the conversion
-function's total/lossless contract handles absent fields as
-undefined/empty naturally. A partial reply is not a failure.
+`commands` absent, or `architectureBullets` absent because the repo has no
+meaningful module structure) applies **only the populated fields** — the
+conversion function's total/lossless contract handles absent fields as
+undefined/empty naturally. A partial reply is not a failure: an absent
+`architectureBullets` means the section is simply not created (no marker
+pair, no omission row, no filler), never force-populated.
 
 ---
 
@@ -162,8 +181,13 @@ agents_md_run(verb: "create" | "update" | "check",
               agentOverride?: {     // B1↔B2 seam (update only): agent-derived facts
                 facts?: AgentFacts, // raw wire format (language?, packageManager?,
                                     //   manifest?, commands?, codeStyleBullets?,
-                                    //   ciWorkflows?, testingNotes?) — converted internally
-                codeStyleBullets?: string[], // dense bullets for code-style section
+                                    //   ciWorkflows?, testingNotes?, architectureBullets?)
+                                    //   — converted internally; codeStyleBullets/
+                                    //   architectureBullets stay on the AgentFacts side
+                                    //   (never on DetectedFacts)
+                codeStyleBullets?: string[],      // dense bullets for code-style section
+                architectureBullets?: string[],   // module→responsibility + critical-path
+                                                  // bullets for architecture-notes
               },
               refresh?: boolean)    // update only: when true + agentOverride,
                                     // directly replace [detected:agent] sections

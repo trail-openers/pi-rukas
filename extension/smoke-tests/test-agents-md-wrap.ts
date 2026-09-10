@@ -439,6 +439,56 @@ function stat(p: string): boolean {
   );
 }
 
+// ----------------------------- 10. architecture-notes brownfield wrap classification
+//
+// Same heading-keyed logic as code-style (section 9): a `## Architecture Notes`
+// heading is ALWAYS `machine` (kept as-is, exit 0). A table-shaped body under
+// that heading is also machine (heading-keyed). A `## Notes`-only heading is
+// NOT the managed id (id-gating).
+{
+  // (a) bullet body → machine.
+  const machineArch =
+    "# F\n\n## Architecture Notes\n\n- src/auth.ts — token validation middleware\n- src/db.ts — Postgres pool; the ONLY layer that touches the DB\n";
+  rmSync(AGENTS);
+  writeFileSync(AGENTS, machineArch);
+  const resArch = updateAgent(tmp, AGENTS, mkFs({ writeFile: () => {} }), true);
+  assert(resArch.exitCode === 0, "architecture-notes bullet body: wraps (exit 0)");
+  assert(
+    (resArch.plan?.newBytes ?? "").includes("## Architecture Notes"),
+    "architecture-notes: the section is heading-delimited (## Architecture Notes present)",
+  );
+  assert(
+    (resArch.plan?.newBytes ?? "").includes("- src/auth.ts — token validation middleware"),
+    "architecture-notes: the original bullet survives under its heading",
+  );
+
+  // (b) prose-only body under a managed heading → machine (kept as-is, exit 0).
+  const proseArch = "# F\n\n## Architecture Notes\n\nWe keep the service small and focused.\nSimplicity over cleverness.\n";
+  rmSync(AGENTS);
+  writeFileSync(AGENTS, proseArch);
+  const resProseArch = updateAgent(tmp, AGENTS, mkFs({ writeFile: () => {} }), true);
+  assert(resProseArch.exitCode === 0, "architecture-notes prose body: machine, kept as-is (exit 0)");
+
+  // (c) table-containing body → machine (kept as-is, exit 0): heading-keyed.
+  const tableArch = "# F\n\n## Architecture Notes\n\n| module | role |\n| --- | --- |\n| src/a.ts | auth |\n";
+  rmSync(AGENTS);
+  writeFileSync(AGENTS, tableArch);
+  const resTableArch = updateAgent(tmp, AGENTS, mkFs({ writeFile: () => {} }), true);
+  assert(resTableArch.exitCode === 0, "architecture-notes table body: machine, kept as-is (exit 0)");
+
+  // (d) id-gating: `## Notes` alone is NOT the managed id.
+  const convArch =
+    "# F\n\n## Commands\n\n| kind | command |\n| --- | --- |\n| test | `vitest` |\n\n## Notes\n\nSome freeform notes.\n";
+  rmSync(AGENTS);
+  writeFileSync(AGENTS, convArch);
+  const resConvArch = updateAgent(tmp, AGENTS, mkFs({ writeFile: () => {} }), true);
+  assert(resConvArch.exitCode === 0, "'## Notes' (not the managed id): wraps (exit 0)");
+  assert(
+    (resConvArch.plan?.newBytes ?? "").includes("## Notes"),
+    "'## Notes': the doctrine section survives (id-gating: not 'architecture-notes')",
+  );
+}
+
 rmSync(tmp, { recursive: true, force: true });
 
 console.log(exit === 0 ? "\nAll wrap checks passed." : "\nFAILED");

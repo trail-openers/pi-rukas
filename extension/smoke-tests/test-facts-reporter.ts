@@ -85,11 +85,15 @@ assert.equal(
 const valid = {
   ...full,
   commands: [{ name: "rspec", command: "bundle exec rspec", kind: "test" }],
+  architectureBullets: [
+    "src/facts-reporter.ts — the pre-pass wire contract",
+    "critical path: src/classify.ts — changes require corresponding tests",
+  ],
 };
 assert.equal(
   Value.Check(schema, valid),
   true,
-  "a fully-populated call with a valid kind must pass (including testingNotes)",
+  "a fully-populated call (including testingNotes and architectureBullets) with a valid kind must pass",
 );
 
 // testingNotes: a string[] is accepted; a non-string-array is rejected.
@@ -107,6 +111,19 @@ assert.equal(
   Value.Check(schema, { testingNotes: [42] }),
   false,
   "testingNotes: [42] (an array of non-strings) must fail schema validation",
+);
+
+// architectureBullets must be validated as string[] — a string (not an array)
+// is a schema violation, not coerced into an array.
+assert.equal(
+  Value.Check(schema, { architectureBullets: "prose paragraph, not bullets" }),
+  false,
+  "architectureBullets: 'prose' (string, not array) must fail schema validation",
+);
+assert.equal(
+  Value.Check(schema, { architectureBullets: ["a", 42] }),
+  false,
+  "architectureBullets with a non-string entry must fail schema validation",
 );
 
 // ------------------------------------------------------------------ acceptance
@@ -155,6 +172,11 @@ assert.match(
   /1 testing note\(s\)/,
   "ack text should mention the testing note count",
 );
+assert.doesNotMatch(
+  res.content[0]!.text,
+  /architecture bullet/,
+  "an absent architectureBullets must NOT appear in the ack parts",
+);
 // details is a passthrough of the raw arguments — the caller reads these.
 assert.deepEqual(res.details, {
   manifest: "Gemfile",
@@ -163,11 +185,66 @@ assert.deepEqual(res.details, {
   testingNotes: ["Uses rspec with a 70% coverage floor via simplecov"],
 });
 
+// A POPULATED architectureBullets array must show up in the ack (the ack is
+// the human-visible confirmation of what was recorded) and in details.
+const archRes = await tools[0]!.execute(
+  "id-3",
+  {
+    manifest: "Gemfile",
+    architectureBullets: ["src/a.ts — role", "critical path: X, changes require Y"],
+  },
+  new AbortController().signal,
+  () => {},
+  { cwd: "/tmp" },
+);
+assert.match(
+  archRes.content[0]!.text,
+  /2 architecture bullet\(s\)/,
+  "a populated architectureBullets ack must mention the count",
+);
+assert.deepEqual(archRes.details.architectureBullets, [
+  "src/a.ts — role",
+  "critical path: X, changes require Y",
+]);
+
+// A populated codeStyleBullets array must mention the count (existing branch).
+const styleRes = await tools[0]!.execute(
+  "id-4",
+  { codeStyleBullets: ["Use rspec"] },
+  new AbortController().signal,
+  () => {},
+  { cwd: "/tmp" },
+);
+assert.match(
+  styleRes.content[0]!.text,
+  /1 code-style bullet\(s\)/,
+  "a populated codeStyleBullets ack must mention the count",
+);
+
 // A minimal/empty call acks with "none populated" and empty-ish details.
 const empty = await tools[0]!.execute("id-2", {}, new AbortController().signal, () => {}, {
   cwd: "/tmp",
 });
 assert.match(empty.content[0]!.text, /none populated/, "an empty call should ack 'none populated'");
 assert.deepEqual(empty.details, {});
+
+// An empty architectureBullets array populates nothing — no count branch fires.
+const emptyArch = await tools[0]!.execute(
+  "id-5",
+  { architectureBullets: [] },
+  new AbortController().signal,
+  () => {},
+  { cwd: "/tmp" },
+);
+assert.match(
+  emptyArch.content[0]!.text,
+  /none populated/,
+  "an empty architectureBullets array should ack 'none populated'",
+);
+assert.doesNotMatch(
+  emptyArch.content[0]!.text,
+  /architecture bullet/,
+  "an empty architectureBullets array must not emit a count part",
+);
 
 console.log("✓ test-facts-reporter: all assertions passed");
