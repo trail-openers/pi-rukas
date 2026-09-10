@@ -16,11 +16,17 @@
  *      the signal: a three-basename query scored the target guard 0.6301, below
  *      any usable floor, where the basename alone scored 0.6513.
  *
- * The live half measures recall@K against the real corpus and is skipped when
- * vipune is absent — unless `PI_ENSEMBLE_VIPUNE_REQUIRED=1`, when it fails.
+ * The live half measures recall@K against a HERMETIC scratch store — a
+ * mkdtemp'd database seeded with a committed five-row fixture — so the result
+ * is identical on every host and never depends on the row count or contents
+ * of the real ~/.vipune/memories.db. It is skipped when vipune is absent —
+ * unless `PI_ENSEMBLE_VIPUNE_REQUIRED=1`, when it fails.
  */
 
 import { execFile } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { promisify } from "node:util";
 import { MAX_BRIEF_HITS, buildMemoryBrief, memoryQueriesFor } from "../src/memory-brief.ts";
 import { HYBRID_AGREEMENT } from "../src/vipune.ts";
@@ -139,7 +145,34 @@ function assert(cond: boolean, msg: string) {
   assert(none.emptyBrief && none.queries.length === 0, "no paths → no queries, no spawns");
 }
 
-// ------------------------------------------ recall@K against the real corpus
+// ------------------------------------------ recall@K against a seeded store
+//
+// The case used to query the REAL ~/.vipune/memories.db and assert a hit at
+// >= HYBRID_AGREEMENT. That assertion is brittle to corpus growth: on the
+// ~111-row store the calibrated top score for permission-guard.ts was
+// 0.076923; at 200+ rows it drifted to 0.074176 — 0.0008 under the bit — and
+// the gate failed on a store that had done nothing wrong. So the case now
+// seeds its own store, reusing the argv-prefix injection pattern from
+// test-vipune.ts's live section: mkdtempSync + `--db-path <tmp>/db
+// --project <name>` prepended via a wrapped execFn. The env-var pattern from
+// test-vipune-capability.ts (VIPUNE_DB_PATH / VIPUNE_PROJECT) is NOT used:
+// a live probe found it a no-op on some hosts (0 results vs 1 with the
+// explicit flag).
+//
+// The committed fixture: five DISTINCT claims, each about a different source
+// file, so the target is not trivially rank-1 by construction and
+// preferNewest's near-duplicate collapse has nothing to fold. Two of the
+// distractors are deliberately BM25-invisible to the query (they share no
+// token with it), so the agreement bit — not the store's shape — is what
+// admits the target. All five are `fact` so they are reachable unfiltered
+// and through --include-candidates alike.
+const FIXTURE: string[] = [
+  "permission-guard.ts: trust mode returns immediately from the tool_call handler — no verdict resolution",
+  "dispatch-deck.ts: render the dispatch list through pi-tui Text and SelectList widgets",
+  "spawn.ts: close the child stdin only when agent_end arrives with willRetry false",
+  "work-driver.ts: nextStep is a pure state transition — no handler may append to the event log",
+  "model-adapters.ts: filter literal None placeholder text emitted by the GLM family",
+];
 
 const haveVipune = await execFileAsync("sh", ["-c", "command -v vipune"])
   .then(() => true)
@@ -150,30 +183,91 @@ if (!haveVipune) {
   console.log(required ? "✗ vipune absent and REQUIRED" : "… vipune absent — skipping recall@K");
   if (required) exit = 1;
 } else {
-  // The file the sweep measured as the decisive case: filtered by type it is a
-  // false negative at 0.0385; unfiltered it is found at 0.076923.
-  const r = await buildMemoryBrief(["extension/src/permission-guard.ts"], {
-    cwd: process.cwd(),
+  const dir = mkdtempSync(path.join(tmpdir(), "memory-brief-live-"));
+  const db = path.join(dir, "m.db");
+  const base = ["--db-path", db, "--project", "hermetic-brief"];
+  const hermetic: import("../src/vipune.ts").VipuneOpts = {
+    cwd: dir,
     timeoutMs: 20_000,
-  });
-  assert(
-    !r.emptyBrief,
-    `recall@K: permission-guard.ts retrieves from the live corpus (${r.hits.length} hit(s))`,
-  );
-  assert(
-    r.hits.length <= MAX_BRIEF_HITS,
-    `...bounded at ${MAX_BRIEF_HITS} hits — injection cost, not recall, is the constraint`,
-  );
+    execFn: (file, args, opts) =>
+      execFileAsync(file, [...base, ...args], opts).then((x) => ({
+        stdout: String(x.stdout),
+        stderr: String(x.stderr),
+      })),
+  };
+  try {
+    // Seed sequentially: preferNewest tie-breaks on created_at, and a coarse
+    // clock could stamp two parallel adds in the same millisecond.
+    for (const row of FIXTURE) {
+      const seeded = await execFileAsync(
+        "vipune",
+        [...base, "add", row, "--memory-type", "fact", "--json"],
+      );
+      if (!seeded.stdout.includes("\"added\"")) {
+        console.error(`✗ fixture seeding failed for: ${row}`);
+        console.error(seeded.stdout);
+        exit = 1;
+      }
+    }
 
-  // And the negative: a file nothing has ever been written about must stay silent.
-  const silent = await buildMemoryBrief(["extension/src/zzz-nonexistent-module.ts"], {
-    cwd: process.cwd(),
-    timeoutMs: 20_000,
-  });
-  assert(
-    silent.emptyBrief,
-    "recall@K: a file with no memory yields silence, not the top of the ladder",
-  );
+    // The positive: the file the sweep measured as the decisive case. Through
+    // the full buildMemoryBrief path the seeded row is retrieved and its
+    // hybrid score lands exactly at the both-retrievers-rank-1 value.
+    const r = await buildMemoryBrief(["extension/src/permission-guard.ts"], hermetic);
+    assert(
+      !r.emptyBrief,
+      `recall@K: permission-guard.ts retrieves from the seeded store (${r.hits.length} hit(s))`,
+    );
+    assert(
+      (r.hits[0]?.similarity ?? 0) >= HYBRID_AGREEMENT,
+      `...at the agreement bit — measured ${r.hits[0]?.similarity}, the 0.076923 both-retrievers-rank-1 value`,
+    );
+    assert(
+      r.hits.length <= MAX_BRIEF_HITS,
+      `...bounded at ${MAX_BRIEF_HITS} hits — injection cost, not recall, is the constraint`,
+    );
+
+    // Anti-vacuity canary (positive): the brief must carry the fixture row
+    // itself, not any row at all. Delete the permission-guard.ts row from
+    // FIXTURE and this fails.
+    assert(
+      r.hits.some((h) => h.content.includes("permission-guard.ts")),
+      "...and the hit IS the seeded permission-guard.ts row (anti-vacuity canary)",
+    );
+
+    // And the negative: a file no fixture row mentions must stay silent.
+    // No BM25 token in the store matches it, so its top hybrid score is the
+    // dead-ladder ceiling 1/26 = 0.038462 — far below the agreement bit.
+    const silent = await buildMemoryBrief(["extension/src/zzz-nonexistent-module.ts"], hermetic);
+    assert(
+      silent.emptyBrief,
+      "recall@K: a file with no memory yields silence, not the top of the ladder",
+    );
+
+    // Anti-vacuity canary (negative): if anything in the store contained the
+    // literal string "zzz-nonexistent-module", this would fail — proving the
+    // silence above is the selection rule rejecting a match, not a broken
+    // store. Run vipuneSearch directly (buildMemoryBrief swallows the
+    // score on an empty brief) to assert the score itself.
+    const { vipuneSearch } = await import("../src/vipune.ts");
+    const raw = await vipuneSearch("zzz-nonexistent-module", {
+      ...hermetic,
+      hybrid: true,
+      recency: 0,
+    });
+    if (raw.kind !== "hits" || raw.hits.length === 0) {
+      console.error("✗ store unreachable for the negative canary — seeding or the seam broke");
+      exit = 1;
+    } else {
+      const top = Math.max(...raw.hits.map((h) => h.similarity));
+      assert(
+        top < HYBRID_AGREEMENT,
+        `...the store IS reachable, but its top hybrid score for the negative query stays below the bit (measured ${top})`,
+      );
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 console.log(`\nexit ${exit}`);
