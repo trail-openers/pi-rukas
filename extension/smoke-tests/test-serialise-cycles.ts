@@ -104,10 +104,13 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
   // safe: the fallback the bound hands off to must still exist. Post-#612
   // the fallback routes through the forge adapter (issueComment + labelCreate
   // + labelAdd) rather than raw `gh` exec.
-  const handoff = readFileSync(path.join(SRC, "work-driver-handoff.ts"), "utf8");
+  // #674 — the forge post was moved to work-driver-handoff-post.ts (file-size
+  // hygiene). The canary reads the post module, not the handoff handler.
+  const post = readFileSync(path.join(SRC, "work-driver-handoff-post.ts"), "utf8");
   assert(
-    /forge\.issueComment/.test(handoff) && /forge\.labelCreate/.test(handoff) &&
-      /forge\.labelAdd/.test(handoff),
+    /forge\.issueComment/.test(post) &&
+      /forge\.labelCreate/.test(post) &&
+      /forge\.labelAdd/.test(post),
     "the handoff still posts the comment and applies the label in-process when the dispatch does not (via the forge adapter)",
   );
 

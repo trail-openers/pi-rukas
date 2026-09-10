@@ -178,6 +178,20 @@ export function renderHandoffUserMessage(
       `  modified: ${shown.join(", ")}${snap.modifiedFiles.length > 5 ? ` ... and ${snap.modifiedFiles.length - 5} more` : ""}`,
     );
   }
+  // #674 — committed work on detached-HEAD worktrees: the porcelain-based
+  // counts above report 0 for this shape (clean tree, commits ahead of
+  // base). Name the work's true location (path + HEAD SHA + commits ahead)
+  // so the operator can see where the work actually is without having to
+  // discover it via `git worktree list`.
+  if (snap?.committedWork?.length) {
+    lines.push(
+      `  committed work in ${snap.committedWork.length} worktree(s) (the counts above are blind to this):`,
+      ...snap.committedWork.map(
+        (w) =>
+          `    ${w.path} — HEAD ${w.headSha.slice(0, 8)}, ${w.ahead} commit(s) ahead (workstream: ${w.worktreeId})`,
+      ),
+    );
+  }
   // #543 F5 — the driver-owned checkpoint block for loop/token-budget cap
   // kills, mirroring the markdown renderer (shared renderer, same facts).
   // Empty for every other cap and for pre-#543 state files.

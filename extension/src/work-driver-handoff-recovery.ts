@@ -39,7 +39,9 @@ export type RecoverySection =
   | "step-back-revise-spec"
   | "commit-pr-incomplete-consolidation"
   | "intent-park"
-  | "review-incomplete";
+  | "review-incomplete"
+  | "worktree-work-consolidated"
+  | "worktree-work-fallback";
 
 export interface RecoveryStep {
   /** The section this step belongs to (one of `RecoverySection`). */
@@ -94,6 +96,88 @@ export function recoveryStepsForCap(
   const capHit = [...state.eventLog].reverse().find((e) => e.kind === "cap-hit");
   const cap: Cap | undefined = capHit ? capHit.cap : undefined;
   const steps: RecoveryStep[] = [];
+
+  // #674 — worktree-aware recovery. When the cycle's work lives in
+  // committed work on detached-HEAD worktrees (the shape of the five parked
+  // cycles #645/#649/#659/#660/#664), the generic `git -C <repoRoot>
+  // status` / `add -p` / `push` block is provably wrong: the main checkout
+  // is empty, and the work is on the worktree detached HEADs. The predicate
+  // is the state — `handoffSnapshot.committedWork` non-empty — NOT the cap
+  // (the ticket explicitly scopes the fix to the handoff/recovery path, not
+  // to routing develop-parks to a different cap). When consolidation
+  // succeeded (the `handoff-consolidated` event is present), the branch
+  // genuinely contains the work and the printed `push` becomes true; when
+  // consolidation was infeasible, the per-worktree paths + HEAD SHAs +
+  // working cherry-pick commands are the honest recovery.
+  const committedWork = ps.handoffSnapshot?.committedWork;
+  if (cap !== undefined && committedWork && committedWork.length > 0 && ps.branchName) {
+    const consEvent = [...state.eventLog]
+      .reverse()
+      .find(
+        (e): e is Extract<WorkEvent, { kind: "handoff-consolidated" }> =>
+          e.kind === "handoff-consolidated",
+      );
+    if (consEvent) {
+      steps.push(
+        {
+          section: "worktree-work-consolidated",
+          comment: [
+            "1. The branch now contains the workstream work (consolidated by the driver before this handoff):",
+          ],
+          lines: [
+            `git -C .worktrees/issue-${issue}-${committedWork[0]?.worktreeId ?? "?"} status --porcelain   # each worktree should be clean (its commits are on the branch now)`,
+          ],
+        },
+        {
+          section: "worktree-work-consolidated",
+          comment: [
+            "2. Push the branch (the local branch was created at handoff time; it is not yet pushed):",
+          ],
+          lines: [`git push -u origin ${ps.branchName}`],
+        },
+        {
+          section: "worktree-work-consolidated",
+          comment: ["3. Or abandon the cycle and start over:"],
+          lines: [`rm .pi/work-state/${issue}.json`, `/work ${issue} --restart`],
+        },
+      );
+    } else {
+      steps.push(
+        {
+          section: "worktree-work-fallback",
+          comment: [
+            "1. The work lives in these worktrees (detached HEADs, commits ahead of the base):",
+          ],
+          lines: committedWork.map(
+            (w) =>
+              `git -C ${w.path} log --oneline -5   # HEAD ${w.headSha.slice(0, 8)} · ${w.ahead} commit(s) ahead`,
+          ),
+        },
+        {
+          section: "worktree-work-fallback",
+          comment: [
+            "2. Cherry-pick each worktree's commits onto the feature branch (run from the main checkout):",
+          ],
+          lines: [
+            `git checkout ${ps.branchName}`,
+            ...committedWork.flatMap((w) => [
+              `git cherry-pick ${w.headSha}   # worktree: ${w.path} (HEAD ${w.headSha.slice(0, 8)}, ${w.ahead} ahead)`,
+            ]),
+          ],
+        },
+        {
+          section: "worktree-work-fallback",
+          comment: ["3. Push the branch:"],
+          lines: [`git push -u origin ${ps.branchName}`],
+        },
+        {
+          section: "worktree-work-fallback",
+          comment: ["4. Or abandon the cycle and start over (the worktrees are preserved):"],
+          lines: [`rm .pi/work-state/${issue}.json`, `/work ${issue} --restart`],
+        },
+      );
+    }
+  }
 
   if (cap === "explore-already-complete") {
     steps.push(

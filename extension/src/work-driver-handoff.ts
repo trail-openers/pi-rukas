@@ -1,24 +1,24 @@
-/**
- * work-driver-handoff — Step 7g (handoff) handler.
- *
- * Extracted from work-driver.ts (issue #171 file-size hygiene). Renders
- * the handoff markdown body (work-driver-handoff-markdown.ts), dispatches
- * @ops to post it + apply the needs-human-attention label, and falls back
- * to an in-process `gh` call on any dispatch failure, parse failure, or
- * dispatch that outlives `handoffDispatchTimeoutMs()`.
- */
-
+/** work-driver-handoff — Step 7g (handoff) handler. #674: worktree consolidation + forge post retry. */
 import { exec } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { dispatchCore } from "./dispatch.ts";
-import { detectForge } from "./forge-detect.ts";
+import { type ForgeType, detectForge } from "./forge-detect.ts";
 import { type Forge, createForge } from "./forge.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import {
+  consolidateWorktreesToBranch,
+  workNotYetOnBranch,
+} from "./work-driver-handoff-consolidate.ts";
 import { renderHandoffMarkdown } from "./work-driver-handoff-markdown.ts";
+import {
+  captureCommittedWork,
+  makeHandoffEmittedEvent,
+  postHandoffToForge,
+} from "./work-driver-handoff-post.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
 import { inlineHandoffOpsPrompt } from "./work-driver-prompts-late.ts";
@@ -26,49 +26,14 @@ import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { runWorktreeTeardown } from "./work-driver-worktree-sweep.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
-
+import type { ExecFn } from "./worktree.ts";
 const execp = promisify(exec);
-
 /** Resolution of the ops handoff dispatch when it outlived its bound. */
 const BOUND_EXCEEDED = Symbol("handoff-bound-exceeded");
-
-/**
- * How long the driver waits for the ops handoff dispatch.
- *
- * This is NOT one of the six per-role wall-clock caps this project deleted
- * (spawn-support.ts `SPAWN_BACKSTOP_MS`). Those bounded open-ended work whose
- * duration is a function of the model, and every kill DESTROYED the work — the
- * finding both times they were raised was that the number was too small for a
- * healthy child. Neither property holds here. The handoff child's job is
- * enumerable: the markdown body is already on disk, so it runs
- * `gh <pr|issue> comment --body-file` and `gh <pr|issue> edit --add-label` and
- * reports the URL. And exceeding the bound destroys nothing — the in-process
- * `gh` fallback below posts the identical file and applies the identical
- * label, so the bound costs at most the parsed comment URL.
- *
- * The number: six real handoffs in this repo's `.pi/work-state` completed in
- * 6.7 s - 17.8 s. Eight minutes is ~27x the slowest of those, and leaves room
- * for one long thinking-heavy turn (#296: a 3-min cap SIGTERM'd this very
- * recovery path). Nothing bounded it before — nessie #626's handoff
- * `dispatch-completed` at 1547126 ms (25.8 min) never went silent, so the
- * inactivity watchdog could not see it, and the 2 h runaway backstop is 5x
- * further out again.
- *
- * Override: `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` (ms).
- */
 export function handoffDispatchTimeoutMs(): number {
   const env = Number(process.env.PI_ENSEMBLE_HANDOFF_TIMEOUT_MS);
   return Number.isFinite(env) && env > 0 ? env : 8 * 60_000;
 }
-
-/**
- * Resolve the forge adapter for the in-process handoff fallback
- * (#612 S4 task-b). `PI_ENSEMBLE_FORGE=none` refuses the forge path; an
- * unknown detection falls back to raw `gh` exec (pre-migration behaviour).
- * The fallback runs at handoff time — the cycle's own forge resolution
- * would have been earlier still, but handoff is terminal and the driver
- * never carried a `Forge` before #612 — so resolve fresh.
- */
 export async function handoffForge(repoRoot: string): Promise<Forge | undefined> {
   if (process.env.PI_ENSEMBLE_FORGE === "none") return undefined;
   try {
@@ -79,22 +44,7 @@ export async function handoffForge(repoRoot: string): Promise<Forge | undefined>
     return undefined;
   }
 }
-
-/**
- * Step 7g — Emit cap-hit handoff artifact.
- *
- * Dispatches @ops to:
- *  - render the handoff body (referencing the work-state file)
- *  - post `gh pr comment` (or `gh issue comment` if no PR yet)
- *  - apply `needs-human-attention` label
- *
- * After the dispatch, set status=handoff to terminate the loop.
- *
- * The in-process fallback (`!commentUrl || !labelApplied`) now routes its
- * gh calls through the forge adapter — the ops child's prompt still names
- * raw `gh` (it is a prose contract with the agent, not an exec seam), but
- * the driver's own mechanical calls are forge-aware.
- */
+/** Step 7g — Emit cap-hit handoff artifact. Dispatches @ops to: - render the handoff body (referencing the work-state file) - post `gh pr comment` (or `gh issue comment` if no PR yet) - apply `needs-human-attention` label After the dispatch, set status=handoff to terminate the loop. The in-process fallback (`!commentUrl || !labelApplied`) now routes its gh calls through the forge adapter — the ops child's prompt still names raw `gh` (it is a prose contract with the agent, not an exec seam), but the driver's own mechanical calls are forge-aware. */
 export async function runHandoff(
   ctx: DriverContext,
   state: WorkState,
@@ -105,7 +55,22 @@ export async function runHandoff(
     pipelineState: { ...state.pipelineState, currentStep: "handoff" },
   };
   next = appendEvent(next, { kind: "step-started", step: "handoff", at: now });
-
+  // #674 items 1+2 — consolidate the parked work BEFORE the snapshot, so
+  // the snapshot (and the recovery printed from it) describes the world the
+  // operator is actually left in. When a cycle parks at develop with
+  // committed work on detached-HEAD worktrees, moving it onto the feature
+  // branch here makes the branch genuinely contain the work and the printed
+  // `git status` / `push` instructions true; a consolidation failure
+  // degrades to the accurate per-worktree recovery (the worktrees are then
+  // retained by the teardown below). Must never throw — the handoff
+  // completes either way.
+  const consolidated =
+    process.env.PI_ENSEMBLE_HANDOFF_CONSOLIDATE === "0"
+      ? false
+      : await handoffConsolidateWorktrees(ctx, state);
+  if (consolidated) {
+    next = appendEvent(next, consolidated);
+  }
   // PR5: capture the worktree snapshot FIRST so handoff surfaces (in-chat
   // sendUserMessage, GitHub body, /work-status terminal) can answer
   // WHERE the work is without re-shelling git. Snapshot persists into
@@ -115,14 +80,37 @@ export async function runHandoff(
     state.pipelineState.branchName,
     state.pipelineState.worktrees,
   );
+  // #674 — `git status --porcelain` alone reports 0 files for committed work
+  // on detached-HEAD worktrees (clean tree, commits ahead of base) — the
+  // exact shape of the five parked cycles (#645/#649/#659/#660/#664). Record
+  // that committed work explicitly so the "Worktree state" section and the
+  // worktree-aware recovery print the work's true location instead of
+  // "0 file(s) modified".
+  await captureCommittedWork(snap, ctx.repoRoot, state.pipelineState);
   // In-cycle teardown: purge build artifacts and retain worktrees as needed.
   // Guarded by PI_ENSEMBLE_WORKTREE_TEARDOWN=0.
   // Wrapped in try/catch: teardown must never prevent a handoff from completing.
+  // #674 — the state passed to teardown carries a synthetic handoff-emitted
+  // tail (below) whose `status` is "running": the cycle has not reached its
+  // terminal status until this function returns. `runWorktreeTeardown`
+  // decides removal via `isWorkProvablyOnRemote`, which requires a terminal
+  // status — without the override, even a successful consolidation would
+  // leave every worktree behind (bug 2's accumulation). Without
+  // consolidation the work is NOT on the branch, so the check fails and the
+  // worktrees are retained (and named in the recovery printed from the
+  // snapshot). The override only ever upgrades a check from "not terminal"
+  // to "terminal": it cannot turn a false into a true for work that is not
+  // provably on the branch, because the fetch + HEAD + clean-tree checks
+  // still run against reality.
   if (process.env.PI_ENSEMBLE_WORKTREE_TEARDOWN !== "0") {
     try {
+      const terminalState = {
+        ...next,
+        pipelineState: { ...next.pipelineState, status: "handoff" as const },
+      };
       const retained = await runWorktreeTeardown({
         repoRoot: ctx.repoRoot,
-        state,
+        state: terminalState,
       });
       snap.retainedWorktrees = retained;
     } catch (err) {
@@ -133,7 +121,6 @@ export async function runHandoff(
     ...next,
     pipelineState: { ...next.pipelineState, handoffSnapshot: snap },
   };
-
   // Build the handoff markdown body. Now consumes handoffSnapshot via
   // the additive sections in renderHandoffMarkdown (PR5 refinements).
   const handoffMd = renderHandoffMarkdown(next);
@@ -144,7 +131,6 @@ export async function runHandoff(
   } catch (err) {
     trace(`work-driver: failed to write handoff body file: ${(err as Error).message}`);
   }
-
   // Dispatch @ops to post the comment + apply the label. The body file is
   // already on disk; ops just runs two `gh` invocations. Bounded by
   // handoffDispatchTimeoutMs() — see there for why a bound is safe here when
@@ -229,7 +215,6 @@ export async function runHandoff(
   } finally {
     if (boundTimer) clearTimeout(boundTimer);
   }
-
   // RE-ENTRY DEDUPE (census 2026-09-09): a crash after the comment posted
   // but before the enclosing writeState left the file at "running"; resume
   // re-entered handoff and posted a SECOND comment. A prior handoff-emitted
@@ -247,7 +232,6 @@ export async function runHandoff(
   // about whether an agent's prose meant success. Narration cannot establish
   // that a side effect happened; performing it can.
   let labelApplied = false;
-
   // PR5 in-process fallback. When the ops dispatch failed OR the
   // commentUrl didn't parse out, the driver itself shells out `gh` —
   // the body file is already on disk and no LLM is needed for two
@@ -256,56 +240,65 @@ export async function runHandoff(
   // surfaces the failure with the verbatim recovery command.
   if (!commentUrl || !labelApplied) {
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
-    try {
-      if (!forge) {
-        // No forge resolved — the fallback cannot run. The handoff is still
-        // recorded (handoff-emitted), but the comment/label are NOT posted.
-        // The operator sees the HANDOFF DISPATCH INCOMPLETE banner.
-        trace("work-driver: no forge resolved — in-process fallback skipped");
-      } else {
-        const targetId = String(prNumber ?? ctx.issue);
-        const objType = prNumber ? "pr" : "issue";
-        if (!commentUrl) {
-          // The forge adapter models `issueComment` only (S2 surface). PRs
-          // get their handoff comment via the ops dispatch's raw `gh` prompt.
-          // For the in-process path, the forge covers the issue-comment shape.
-          const isIssueComment = objType === "issue";
-          if (isIssueComment) {
-            const body = await fs.readFile(handoffBodyPath, "utf8").catch(() => "");
-            const out = await forge.issueComment(ctx.issue, body);
-            const parsedUrl = parseHandoffCommentUrl(out) ?? out.trim();
-            if (parsedUrl) commentUrl = parsedUrl;
-          }
-        }
-        if (!labelApplied) {
-          // Create the label first (idempotent — ignore "already exists" error).
-          try {
-            await forge.labelCreate("needs-human-attention", "FFAA00");
-          } catch {
-            /* already exists or no perms; continue */
-          }
-          await forge.labelAdd(
-            objType === "pr" ? "mr" : "issue",
-            Number(targetId),
-            "needs-human-attention",
-          );
-          labelApplied = true;
-        }
-      }
-    } catch (err) {
-      trace(
-        `work-driver: in-process forge fallback failed: ${(err as Error).message?.slice(0, 200)}`,
-      );
+    if (!forge) {
+      // No forge resolved — the fallback cannot run. The handoff is still
+      // recorded (handoff-emitted), but the comment/label are NOT posted.
+      // The operator sees the HANDOFF DISPATCH INCOMPLETE banner.
+      trace("work-driver: no forge resolved — in-process fallback skipped");
+    } else {
+      // #674 item 3 — retry the post with backoff before the HANDOFF
+      // DISPATCH INCOMPLETE banner. A transient API hiccup (measured: two
+      // sessions' handoffs hit "[FAILED] NOT posted" on the first attempt
+      // and succeeded moments later) should not become a manual-recovery
+      // task when a short retry would likely succeed. Each attempt is
+      // idempotent: the label is created (ignore "already exists") and
+      // added (gh --add-label is idempotent server-side), and a crashed
+      // re-entry is deduped by priorHandoffCommentUrl before this point.
+      const posted = await postHandoffToForge({
+        forge,
+        issue: ctx.issue,
+        prNumber,
+        handoffBodyPath,
+        knownCommentUrl: commentUrl,
+      });
+      commentUrl = commentUrl ?? posted.commentUrl;
+      labelApplied = labelApplied || posted.labelApplied;
     }
   }
-
-  next = appendEvent(next, {
-    kind: "handoff-emitted",
+  // #674 — carry the consolidation outcome into the handoff-emitted event so
+  // the renderers (chat + GitHub body + /work-status) can print either the
+  // branch-contains-the-work path (consolidated) or the accurate
+  // per-worktree fallback (consolidation infeasible). The `handoff-consolidated`
+  // event is the audit trail; the snapshot's `committedWork` field is the
+  // source the recovery renderers read for the per-worktree paths + SHAs.
+  const consEvent = next.eventLog
+    .slice()
+    .reverse()
+    .find(
+      (e): e is Extract<WorkEvent, { kind: "handoff-consolidated" }> =>
+        e.kind === "handoff-consolidated",
+    );
+  // #674 — carry the consolidation outcome into the handoff-emitted event so
+  // the renderers (chat + GitHub body + /work-status) can print either the
+  // branch-contains-the-work path (consolidated) or the accurate
+  // per-worktree fallback (consolidation infeasible). The `handoff-consolidated`
+  // event is the audit trail; the snapshot's `committedWork` field is the
+  // source the recovery renderers read for the per-worktree paths + SHAs.
+  const emitted = makeHandoffEmittedEvent({
     at: Date.now(),
     commentUrl,
     labelApplied,
     handoffBodyPath,
+    consolidated: consEvent !== undefined,
+    consolidatedBranch: consEvent?.branchName,
+    consolidatedWorkstreams: consEvent?.workstreams,
+    consolidationReason: consEvent
+      ? undefined
+      : snap.committedWork?.length
+        ? "consolidation infeasible (work remains on its worktree detached HEADs)"
+        : undefined,
   });
+  next = appendEvent(next, emitted);
   // #571 — release the path claim so sibling cycles can proceed.
   try {
     await releaseClaim(ctx.repoRoot, ctx.issue);
@@ -347,19 +340,51 @@ export async function runHandoff(
   );
   return next;
 }
-
-/**
- * Parse the GitHub comment URL the @ops handoff agent should have
- * surfaced in its reply. Looks for any github.com URL matching the
- * `*#issuecomment-<id>` shape (the canonical PR/issue comment URL).
- * Returns the first hit, or undefined when ops failed / didn't surface it.
- */
+/** #674 — consolidate the parked cycle's workstream work onto its feature branch BEFORE the handoff body is rendered (item 1+2 preferred fix direction). Delegates to work-driver-handoff-consolidate.ts for the actual integration (which runs under withIntegrationLock, respects integrate()'s dirty-repoRoot preflight, and degrades to a failure outcome rather than throwing). Returns the `handoff-consolidated` event to append, or undefined when consolidation was not possible (no branch, no work, no baseSha, dirty repoRoot, conflict, or git error). The caller degrades to the accurate per-worktree recovery in that case. */
+export async function handoffConsolidateWorktrees(
+  ctx: { repoRoot: string; issue: number },
+  state: WorkState,
+): Promise<WorkEvent | undefined> {
+  if (process.env.PI_ENSEMBLE_HANDOFF_CONSOLIDATE === "0") return undefined;
+  if (!state.pipelineState.branchName) return undefined;
+  const worktrees = state.pipelineState.worktrees ?? {};
+  if (Object.keys(worktrees).length === 0) return undefined;
+  // Re-entry guard: a second runHandoff (crash-resume re-post) must not
+  // re-consolidate work that is already on the local branch.
+  const notYet = await workNotYetOnBranch(
+    execp as unknown as ExecFn,
+    ctx.repoRoot,
+    state.pipelineState.branchName,
+    state.pipelineState.baseSha,
+    worktrees,
+  );
+  if (!notYet) {
+    trace("work-driver: handoff consolidation skipped — work already on the local branch");
+    return undefined;
+  }
+  const scratch = scratchDir(ctx.repoRoot, ctx.issue);
+  const result = await consolidateWorktreesToBranch(
+    { repoRoot: ctx.repoRoot, issue: ctx.issue, scratchDir: scratch },
+    state,
+  );
+  if (!result.ok) {
+    trace(`work-driver: handoff consolidation degraded: ${result.reason}`);
+    return undefined;
+  }
+  const branch = result.branchName ?? state.pipelineState.branchName;
+  if (!branch) return undefined; // no branchName — cannot consolidate
+  return {
+    kind: "handoff-consolidated",
+    at: Date.now(),
+    branchName: branch,
+    workstreams: result.workstreams ?? [],
+  };
+}
 export function parseHandoffCommentUrl(text: string | undefined): string | undefined {
   if (!text) return undefined;
   const m = text.match(/https:\/\/github\.com\/[^\s)>]+#issuecomment-\d+/);
   return m?.[0];
 }
-
 /**
  * The comment URL a PREVIOUS handoff attempt already delivered, if any —
  * the re-entry dedupe key (census 2026-09-09: a crash between the comment
@@ -375,7 +400,6 @@ export function priorHandoffCommentUrl(eventLog: readonly WorkEvent[]): string |
   const url = prior?.commentUrl;
   return typeof url === "string" && url.length > 0 ? url : undefined;
 }
-
 /**
  * PR5 — capture a snapshot of the worktree at handoff time. Lets the
  * operator-facing surfaces (in-chat sendUserMessage, /work-status

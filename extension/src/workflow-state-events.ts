@@ -7,7 +7,6 @@
  * module-size hygiene (AGENTS.md §12) — re-exported from there so external
  * consumers' import paths are unaffected.
  */
-
 import type { RoleName } from "./roles.ts";
 import type { DispatchUsage } from "./types.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
@@ -15,7 +14,6 @@ import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import type { SafetyNetCommitEvent } from "./workflow-state-events-safety-net.ts";
 import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
-
 /**
  * Linear step identifiers the driver walks. This union IS the definition of
  * the cycle — #393 deleted the prose flow that used to be its source. Add
@@ -39,7 +37,6 @@ export type WorkStep =
   | "handoff" // Step 7g — cap-hit handoff artifact (terminal: needs-human-attention)
   | "ci" // Step 8 — ops watches CI
   | "merged"; // Step 9 — merged + learnings stored (terminal: success)
-
 /**
  * Event log — append-only, typed. Driver appends one event per state
  * transition. The log is the audit trail; pipelineState is the derived
@@ -54,7 +51,6 @@ export type WorkEvent =
       kind: "step-started";
       step: WorkStep;
       at: number;
-      /** PM-judgment-shaped step like "plan" that collapses without dispatch sets this. */
       note?: string;
     }
   | {
@@ -62,10 +58,8 @@ export type WorkEvent =
       step: WorkStep;
       role: string;
       jobId: string;
-      /** Label (e.g., "developer[task-A]") for batches. */
       label: string;
       at: number;
-      /** #543 F3a — the child's session file (Pi transcript); re-attach key. Optional for back-compat. */
       transcriptPath?: string;
     }
   | {
@@ -77,7 +71,6 @@ export type WorkEvent =
       ok: boolean;
       ms: number;
       at: number;
-      /** Path to the per-spawn Pi session JSON; for user post-hoc inspection. */
       transcriptPath?: string;
       /**
        * Bounded text payload: the subagent's final assistant text (trimmed,
@@ -406,15 +399,23 @@ export type WorkEvent =
       /** GitHub URL of the handoff PR/issue comment. */
       commentUrl?: string;
       labelApplied: boolean;
-      /**
-       * Absolute path to the rich handoff markdown body the driver wrote
-       * (`tmp/issue-<N>/handoff-comment.md`). PR5: lets
-       * `renderHandoffUserMessage` produce the verbatim
-       * `gh issue comment <N> --body-file <path>` recovery command
-       * without re-deriving the path. Optional for back-compat with PR4
-       * events.
-       */
+      /** Path to the handoff markdown body (PR5; back-compat with PR4 events). */
       handoffBodyPath?: string;
+      /** #674 — true when the driver consolidated the work onto the branch before rendering. */
+      consolidated?: boolean;
+      /** #674 — the feature branch the work was consolidated onto (success only). */
+      consolidatedBranch?: string;
+      /** #674 — workstream ids whose committed work landed on the branch. */
+      consolidatedWorkstreams?: string[];
+      /** #674 — why consolidation degraded to the per-worktree fallback. */
+      consolidationReason?: string;
+    }
+  | {
+      kind: "handoff-consolidated";
+      at: number;
+      /** #674 — the feature branch the work was consolidated onto. */
+      branchName: string;
+      workstreams: string[];
     }
   | {
       kind: "ci-status";
@@ -495,6 +496,5 @@ export type WorkEvent =
   | MemoryEventFragment
   | WorktreeProvisionedEvent
   | SafetyNetCommitEvent;
-
 /** Discriminator union of event kinds — useful for callers that switch on it. */
 export type WorkEventKind = WorkEvent["kind"];

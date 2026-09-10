@@ -129,6 +129,34 @@ export function recoveryCommandsMarkdown(state: WorkState, forge: ForgeType = "g
     );
   }
 
+  // #674 — worktree-aware recovery. When the shared decision produced
+  // `worktree-work-*` steps (committed work on detached-HEAD worktrees),
+  // render ONLY those steps — the generic cap-specific block (if any) is
+  // provably wrong for this shape (the main checkout is empty; the work is
+  // on the worktree detached HEADs). The operator sees the accurate
+  // per-worktree path, not the generic main-checkout commands.
+  const worktreeStep = steps.find(
+    (s) => s.section === "worktree-work-consolidated" || s.section === "worktree-work-fallback",
+  );
+  if (worktreeStep) {
+    const isConsolidated = worktreeStep.section === "worktree-work-consolidated";
+    lines.push(
+      isConsolidated
+        ? "# The driver consolidated the workstream work onto the feature branch before this handoff."
+        : "# The driver could not consolidate the work (no local branch, or a cherry-pick conflict).",
+    );
+    for (const step of steps) {
+      if (step.section === worktreeStep.section) {
+        const comment = step.comment.map((c) =>
+          c === "1. Do this: <park-action>" ? `1. Do this: ${parkAction(reason, issue)}` : c,
+        );
+        lines.push("", ...comment.map((c) => `# ${c}`), ...step.lines);
+      }
+    }
+    lines.push("```", "");
+    return lines;
+  }
+
   if (steps.length > 0) {
     for (const step of steps) {
       const comment = step.comment.map((c) =>

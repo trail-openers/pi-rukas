@@ -4,22 +4,22 @@
  */
 
 import { assert } from "node:assert";
+import { execFile } from "node:child_process";
+import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { promises as fs } from "node:fs";
-import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { processAlive } from "../src/work-driver-resume.ts";
 import {
-  resolveSweepTarget,
+  type SweepAction,
+  SweepTargetError,
+  type SweepTargetResult,
   decideSweepAction,
   executeSweepAction,
-  SweepAction,
-  SweepTargetResult,
-  SweepTargetError,
+  resolveSweepTarget,
   runWorktreeSweep,
   runWorktreeTeardown,
 } from "../src/work-driver-worktree-sweep.ts";
-import { processAlive } from "../src/work-driver-resume.ts";
 
 const execAsync = promisify(execFile);
 
