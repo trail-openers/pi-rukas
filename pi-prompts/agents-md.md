@@ -110,9 +110,9 @@ an explicit "refresh the agent-derived sections" request), re-dispatch the
 
 > You have the `report_facts` tool. Re-read the repository's current state
 > and report updated facts via `report_facts` (exactly once call). Only the
-> sections that were previously agent-derived (`[detected:agent,...]` ledger
-> rows) will be re-written; sections with `[auto,...]` or `[asked:operator,...]`
-> provenance are never overwritten. Report all fields you can derive; the
+> sections that were previously agent-derived (provenance `detected` in the
+> sidecar at `.pi/agents-md-state.json`) will be re-written; sections with
+> `[auto,...]` or `[asked:operator,...]` provenance are never overwritten. Report all fields you can derive; the
 > provenance gate in the tool handles which ones actually land.
 
 After conversion, call `agents_md_run` with `update`, the new
@@ -232,7 +232,7 @@ options, the **default is the lowest-consequence choice**, and pressing Enter
 accepts the default:
 
 ```
-1. [DEFAULT] <lowest-consequence option — e.g. "omit the section and record it in the ledger">
+1. [DEFAULT] <lowest-consequence option — e.g. "omit the section and record it in the sidecar">
 2. <alternative A>
 3. <alternative B>
 ```
@@ -241,8 +241,8 @@ Rules:
 - The default MUST be the option that changes the fewest bytes and the least
   state (usually "omit + ledger row", never "write a guessed value").
 - Record the operator's answer **in the same transaction as the write** — the
-  answer becomes an `[asked:operator,<date>]` ledger row that the write splices
-  in, so the decision and its effect land together or not at all.
+  answer becomes an `[asked:operator,<date>]` row in the sidecar (`.pi/agents-md-state.json`)
+  that the write records, so the decision and its effect land together or not at all.
 - If the operator is absent (headless), see the headless clause.
 
 ---
@@ -336,8 +336,8 @@ exits `2`).
   runs the commands (subprocess execution, up to 60s each — potentially
   long-running), but only on explicit opt-in, and only for `check`.
 - ❌ No LLM fallback for content. A section the core cannot derive is **omitted**
-  and recorded as an `[auto] section omitted: <reason>` ledger row — never
-  invented.
+  and recorded as an `[auto] section omitted: <reason>` row in the sidecar
+  (`.pi/agents-md-state.json`) — never invented.
 - ❌ Never operate on unparseable markers. Corruption is a stop, not a guess.
 - ❌ Never auto-adopt a brownfield file headless.
 - ❌ Never fall back to shelling out to the core (e.g. `bun

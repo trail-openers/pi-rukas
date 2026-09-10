@@ -25,7 +25,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { detectFacts } from "./detect.ts";
-import { driftWarnings, parseLedger } from "./ledger.ts";
+import { type LedgerRow, driftWarnings } from "./ledger.ts";
 import { MarkerError, parseMarkers } from "./markers.ts";
 import { omissionFor } from "./renderer.ts";
 
@@ -77,11 +77,23 @@ export function isSafeGateCommand(line: string): boolean {
  * the commands section (both managed, both operator-editable). Each is checked
  * for its first token being on PATH. Lines containing shell metacharacters are
  * never parsed or executed — only reported (`invalid-shell`).
+ *
+ * `ledgerRows` (post-#680 M1) is the decision-ledger rows read from the
+ * sidecar at `.pi/agents-md-state.json` (see agents-md.ts `checkAgent` for
+ * how this is populated). When `ledgerRows` is `null`, the sidecar was
+ * missing or JSON-corrupt while AGENTS.md has managed sections — a defined,
+ * deterministic refusal state (exit 2, corrupt: true); the check never
+ * re-derives fresh provenance or silently loses an operator's `asked` row.
  */
 export function runChecks(
   root: string,
   fileContent: string,
-  opts: { gateCommands: string[]; deep?: boolean; deepTimeoutMs?: number } = { gateCommands: [] },
+  opts: {
+    gateCommands: string[];
+    deep?: boolean;
+    deepTimeoutMs?: number;
+    ledgerRows?: LedgerRow[] | null;
+  } = { gateCommands: [] },
 ): CheckResult {
   const findings: CheckFinding[] = [];
   const corrupt = false;
@@ -148,28 +160,29 @@ export function runChecks(
   }
 
   // 5. Ledger drift (warnings only — an operator's sticky choice stands).
-  const ledgerBody = extractSection(fileContent, "decision-ledger");
-  if (ledgerBody !== undefined) {
-    let rows: ReturnType<typeof parseLedger>;
-    try {
-      rows = parseLedger(ledgerBody);
-    } catch {
-      // A malformed ledger row is corruption we refuse to act on.
-      return {
-        code: EXIT_REFUSE,
-        findings: [
-          ...findings,
-          { kind: "empty-section", message: "decision-ledger has a malformed row" },
-        ],
-        corrupt: true,
-      };
-    }
-    for (const d of driftWarnings(rows, autoRows(root))) {
-      findings.push({
-        kind: "ledger-drift",
-        message: `ledger "${d.key}": operator chose "${d.asked}", repo now derives "${d.derived}" — review`,
-      });
-    }
+  // Post-#680 M1: the rows come from the sidecar, not the in-file span.
+  // `opts.ledgerRows === null` means the caller (checkAgent) found the sidecar
+  // missing or corrupt while AGENTS.md has managed sections → refuse (exit 2).
+  if (opts.ledgerRows === null) {
+    return {
+      code: EXIT_REFUSE,
+      findings: [
+        ...findings,
+        {
+          kind: "empty-section",
+          message:
+            "decision-ledger sidecar (.pi/agents-md-state.json) is missing or corrupt while AGENTS.md has managed sections",
+        },
+      ],
+      corrupt: true,
+    };
+  }
+  const rows = opts.ledgerRows ?? [];
+  for (const d of driftWarnings(rows, autoRows(root))) {
+    findings.push({
+      kind: "ledger-drift",
+      message: `ledger "${d.key}": operator chose "${d.asked}", repo now derives "${d.derived}" — review`,
+    });
   }
 
   // 6. --deep: actually run the gate commands. A failing command is a finding.
@@ -212,12 +225,6 @@ function autoRows(
     if (derived) rows.push({ key: `omit:${s}`, value: derived, provenance: "auto", date: "" });
   }
   return rows;
-}
-
-function extractSection(file: string, id: string): string | undefined {
-  const span = parseMarkers(file).spans.find((s) => s.id === id);
-  if (!span) return undefined;
-  return file.slice(span.contentStart, span.contentEnd).replace(/\n$/, "");
 }
 
 function firstToken(line: string): string {

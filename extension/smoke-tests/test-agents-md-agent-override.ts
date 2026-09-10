@@ -18,7 +18,7 @@
  * touched by refresh.
  */
 
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -27,8 +27,8 @@ import {
   updateAgent,
 } from "../src/agents-md/agents-md.ts";
 import { parseLedger } from "../src/agents-md/ledger.ts";
-import { sectionContentWithEnd } from "../src/agents-md/markers.ts";
 import { gatesBody } from "../src/agents-md/renderer.ts";
+import { sidecarPath } from "../src/agents-md/sidecar.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -50,6 +50,7 @@ function mkFs(today: string): AgentsMdFs {
         return false;
       }
     },
+    mkdir: (p) => mkdirSync(p, { recursive: true }),
     today: () => today,
   };
 }
@@ -133,12 +134,9 @@ function mkFs(today: string): AgentsMdFs {
     "agentOverride #1: code-style bullets rendered",
   );
   // Ledger rows are [detected:agent,today] for the 3 fact sections.
-  const ledgerBody1 = sectionContentWithEnd(after1, "decision-ledger") ?? "";
-  assert(
-    ledgerBody1.includes("[detected:agent,2026-01-01]"),
-    "agentOverride #1: ledger rows stamped [detected:agent,2026-01-01]",
-  );
-  const parsedLedger1 = parseLedger(ledgerBody1);
+  // Post-#680 M1: the ledger is in the sidecar, not the in-file span.
+  const sPath1 = sidecarPath(noManifestDir);
+  const parsedLedger1 = parseLedger(fs1.readFile(sPath1));
   const detectedIds = parsedLedger1.filter((r) => r.provenance === "detected").map((r) => r.key);
   // All 3 fact sections have bodies (manifest + non-empty commands) → all 3
   // get [detected:agent] rows. This is the shape the churn-loop acceptance
@@ -174,8 +172,8 @@ function mkFs(today: string): AgentsMdFs {
     r2.plan?.omitted.length === 0,
     "agentOverride #2 (routine): ZERO omitted (no omit:* rows upserted)",
   );
-  const ledgerBody2 = sectionContentWithEnd(after2, "decision-ledger") ?? "";
-  const parsedLedger2 = parseLedger(ledgerBody2);
+  const sPath2 = sidecarPath(noManifestDir);
+  const parsedLedger2 = parseLedger(fs2.readFile(sPath2));
   assert(
     parsedLedger2.every(
       (r) =>
@@ -227,8 +225,13 @@ function mkFs(today: string): AgentsMdFs {
 
   // Verify the seed: [auto,...] rows for the 3 fact sections.
   const seeded = readFileSync(richAgents, "utf8");
-  const seededLedger = sectionContentWithEnd(seeded, "decision-ledger") ?? "";
-  const seededParsed = parseLedger(seededLedger);
+  // Post-#680 M1: the seed file has an in-file decision-ledger span (legacy
+  // markdown format). The update path migrates it to the sidecar. We need to
+  // check the sidecar after the update, not the in-file span.
+  // For the SEED verification (before any update), we use the legacy parser.
+  const { parseLegacyMarkdownLedger } = await import("../src/agents-md/ledger.ts");
+  const seededLedgerSpan = (await import("../src/agents-md/markers.ts")).sectionContentWithEnd(seeded, "decision-ledger") ?? "";
+  const seededParsed = parseLegacyMarkdownLedger(seededLedgerSpan);
   const autoFactRows = seededParsed.filter(
     (r) =>
       ["quality-gates", "commands", "environment"].includes(r.key) && r.provenance === "auto",
@@ -260,8 +263,8 @@ function mkFs(today: string): AgentsMdFs {
   // The [auto] rows are NEVER touched by refresh — provenance checked BEFORE
   // acting. The fact sections are re-derived from the override, but the
   // ledger rows for the 3 fact sections stay [auto] (not [detected:agent]).
-  const afterRefreshLedger = sectionContentWithEnd(afterRefresh, "decision-ledger") ?? "";
-  const afterRefreshParsed = parseLedger(afterRefreshLedger);
+  const sPathRefresh = sidecarPath(richDir);
+  const afterRefreshParsed = parseLedger(fsRefresh.readFile(sPathRefresh));
   const factRowsAfter = afterRefreshParsed.filter((r) =>
     ["quality-gates", "commands", "environment"].includes(r.key),
   );
@@ -313,8 +316,8 @@ function mkFs(today: string): AgentsMdFs {
   });
   const afterSame = fsSame.readFile(noManifestAgents2);
   assert(rSame.exitCode === 0, "refresh no-op: exit 0");
-  const sameLedger = sectionContentWithEnd(afterSame, "decision-ledger") ?? "";
-  const sameParsed = parseLedger(sameLedger);
+  const sPathSame = sidecarPath(noManifestDir2);
+  const sameParsed = parseLedger(fsSame.readFile(sPathSame));
   const qgSame = sameParsed.find((r) => r.key === "quality-gates");
   assert(qgSame?.date === "2026-01-01", "refresh no-op: quality-gates date unchanged (no churn)");
   assert(qgSame?.provenance === "detected", "refresh no-op: quality-gates provenance still detected");
@@ -335,8 +338,8 @@ function mkFs(today: string): AgentsMdFs {
   assert(rDiff.exitCode === 0, "refresh diff: exit 0");
   assert(rDiff.plan?.wouldWrite === true, "refresh diff: wouldWrite is true (body changed)");
   assert(afterDiff.includes("- **b** — `b cmd`"), "refresh diff: section body replaced");
-  const diffLedger = sectionContentWithEnd(afterDiff, "decision-ledger") ?? "";
-  const diffParsed = parseLedger(diffLedger);
+  const sPathDiff = sidecarPath(noManifestDir2);
+  const diffParsed = parseLedger(fsDiff.readFile(sPathDiff));
   const qgDiff = diffParsed.find((r) => r.key === "quality-gates");
   assert(qgDiff?.date === "2026-07-01", "refresh diff: date bumped to today");
 

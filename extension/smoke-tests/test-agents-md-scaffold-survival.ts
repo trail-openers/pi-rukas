@@ -81,6 +81,7 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
         return false;
       }
     },
+    mkdir: (p) => mkdirSync(p, { recursive: true }),
     today: () => "2026-01-01",
     ...overrides,
   };

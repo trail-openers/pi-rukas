@@ -79,6 +79,7 @@ const fs: AgentsMdFs = {
       return false;
     }
   },
+  mkdir: (p) => mkdirSync(p, { recursive: true }),
   today: () => FIXED_DATE,
 };
 
@@ -88,20 +89,16 @@ const fs: AgentsMdFs = {
   const res = createAgent(tmp, AGENTS, fs);
   assert(res.exitCode === 0, "full-featured create: exit 0");
   const content = fs.readFile(AGENTS);
-  // Populated decision-ledger: several [asked:operator] rows spliced in just
-  // before the end marker, on top of the auto + scaffolded:<id> rows.
-  const ledgerEnd = content.indexOf("<!-- pi-rukas:agents-md:end decision-ledger -->");
-  const extraRows = [
-    "| deploy-target | prod-eu | [asked:2026-01-02] |",
-    "| merge-strategy | squash | [asked:2026-01-03] |",
-    "| ci-provider | github-actions | [auto:2026-01-04] |",
-  ].join("\n");
-  const final = `${content.slice(0, ledgerEnd)}${extraRows}\n${content.slice(ledgerEnd)}`;
-  fs.writeFile(AGENTS, final);
-
-  const lines = final.split("\n").length;
+  // Post-#680 M1: the decision-ledger is in the sidecar, not the in-file span.
+  // The sidecar was written by createAgent. The density test only cares about
+  // the line count of the rendered file (the sidecar doesn't affect that).
+  const lines = content.split("\n").length;
   console.log(`  full-featured rendered file = ${lines} lines`);
   assert(lines <= 550, `full-featured AGENTS.md total ≤ 550 lines (got ${lines})`);
+  // The sidecar should exist and be non-empty.
+  const sPath = `${tmp}/.pi/agents-md-state.json`;
+  assert(fs.stat(sPath), "full-featured: sidecar exists after create");
+  assert(fs.readFile(sPath).length > 0, "full-featured: sidecar is non-empty");
 
   // All 7 scaffold sections present.
   for (const heading of [
@@ -113,7 +110,7 @@ const fs: AgentsMdFs = {
     "# Context7 Protocol",
     "# Testing Standards",
   ]) {
-    assert(final.includes(heading), `full-featured: ${heading} present`);
+    assert(content.includes(heading), `full-featured: ${heading} present`);
   }
 }
 

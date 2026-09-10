@@ -18,7 +18,7 @@
  *     nothing classifiable → 2
  */
 
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -81,6 +81,7 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
         return false;
       }
     },
+    mkdir: (p) => mkdirSync(p, { recursive: true }),
     today: () => FIXED_DATE,
     ...overrides,
   };
@@ -119,16 +120,12 @@ assert(
   "wrapped bytes: the doctrine section is byte-identical",
 );
 assert(isInsertionsOnly(ORIGINAL, wrapped), "wrapped bytes: the diff is insertions-only");
+// Post-#680 M1: the decision-ledger is NOT in the wrapped file; it's in the sidecar.
 assert(
-  parseMarkers(wrapped)
+  !parseMarkers(wrapped)
     .spans.map((s) => s.id)
     .includes("decision-ledger"),
-  "wrapped bytes: decision-ledger span present",
-);
-const ledgerBody = sectionContent(wrapped, "decision-ledger") ?? "";
-assert(
-  ledgerBody.includes(`| brownfield-wrap | wrapped | [auto:${FIXED_DATE}] |`),
-  "wrapped bytes: the ledger has a non-empty [auto] wrap row",
+  "wrapped bytes: decision-ledger span NOT present (moved to sidecar post-#680 M1)",
 );
 assert(
   fileState({ stat: () => true, readFile: () => wrapped, writeFile: () => {} }, "x") ===
@@ -139,6 +136,13 @@ assert(
 // ------------------------------------------------------------ 2. check clean
 
 {
+  // Post-#680 M1: the check reads the sidecar for drift detection. The wrapped
+  // file has managed sections, so a sidecar must exist. Create one for the check.
+  mkdirSync(path.join(tmp, ".pi"), { recursive: true });
+  writeFileSync(
+    path.join(tmp, ".pi", "agents-md-state.json"),
+    JSON.stringify([{ key: "brownfield-wrap", value: "wrapped", provenance: "auto", date: FIXED_DATE }], null, 2) + "\n",
+  );
   const checkRes = checkAgent(
     tmp,
     AGENTS,

@@ -31,17 +31,10 @@
  */
 
 import type { DetectedFacts } from "./detect.ts";
-import { type LedgerRow, renderLedger } from "./ledger.ts";
 import { renderSection } from "./markers.ts";
 
 /** The fixed section order. Omitted sections leave a gap, not a reflow. */
-const SECTION_ORDER = [
-  "quality-gates",
-  "commands",
-  "environment",
-  "code-style",
-  "decision-ledger",
-] as const;
+const SECTION_ORDER = ["quality-gates", "commands", "environment", "code-style"] as const;
 
 /**
  * The single source of truth for omission reasons, keyed by managed section
@@ -119,7 +112,6 @@ export function codeStyleBody(bullets?: string[]): string | undefined {
 
 export interface RenderInput {
   facts: DetectedFacts;
-  ledger: LedgerRow[];
   /**
    * The operator/human-authored preamble that precedes all managed sections.
    * For a fresh file this is the file's title/intro; for a brownfield wrap it
@@ -132,13 +124,14 @@ export interface RenderInput {
 /**
  * The pure render: fixed section order, managed bodies, verbatim preamble.
  *
- * The decision-ledger body is rendered from the caller-supplied `ledger` (which
- * may already contain omission rows plus any operator rows). The ledger is
- * always emitted (even when empty) because its absence would itself be a
- * signal the file was never managed.
+ * The decision-ledger is NOT rendered into the file (post-#680 M1): its
+ * provenance, dates and omission rows live in the sidecar at
+ * `.pi/agents-md-state.json` (see ledger.ts), and `renderAgent` takes no
+ * `ledger` parameter — the sidecar is written separately by the verb layer
+ * (agents-md.ts / update-agent.ts), not by the pure renderer.
  */
 export function renderAgent(input: RenderInput): string {
-  const { facts, ledger, preamble, version } = input;
+  const { facts, preamble, version } = input;
   void version;
 
   const parts: string[] = [];
@@ -149,9 +142,8 @@ export function renderAgent(input: RenderInput): string {
   for (const { id, body } of FACT_SECTIONS) {
     const b = body(facts);
     if (typeof b === "string") parts.push(renderSection(id, b));
-    // else omitted → recorded in the ledger, not emitted
+    // else omitted → recorded in the sidecar, not emitted
   }
 
-  parts.push(renderSection("decision-ledger", renderLedger(ledger)));
   return parts.join("\n");
 }

@@ -24,7 +24,7 @@
  *                     (plus `error` when the verb refused).
  */
 
-import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import {
@@ -216,6 +216,7 @@ function defaultRepoFs(): AgentsMdFs {
         return false;
       }
     },
+    mkdir: (p) => mkdirSync(p, { recursive: true }),
     today: () => new Date().toISOString().slice(0, 10),
   };
 }
@@ -245,8 +246,17 @@ function renderReport(result: VerbResult, file: string): string {
     lines.push(`omitted: ${p.omitted.map((o) => `${o.id} (${o.reason})`).join(", ")}`);
   }
   if (p.drift) lines.push(`drift: ${p.drift}`);
+  // AGENTS.md diff
   const diff = unifiedDiff(p.oldBytes, p.newBytes);
   if (diff.length) lines.push("", diff);
+  // Sidecar diff (post-#680 M1: the decision-ledger lives here, not in the file)
+  if (p.sidecar?.wouldWrite) {
+    const sDiff = unifiedDiff(p.sidecar.oldBytes, p.sidecar.newBytes);
+    if (sDiff.length) {
+      lines.push(`\n--- sidecar: ${p.sidecar.path}`);
+      lines.push(sDiff);
+    }
+  }
   return lines.join("\n");
 }
 

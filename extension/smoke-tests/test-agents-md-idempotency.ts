@@ -87,6 +87,7 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
         return false;
       }
     },
+    mkdir: (p) => mkdirSync(p, { recursive: true }),
     today: () => FIXED_DATE,
     ...overrides,
   };
@@ -107,8 +108,19 @@ let A: string;
   assert(res.plan?.managedIds.includes("commands"), "create emits the commands section");
   assert(res.plan?.managedIds.includes("environment"), "create emits the environment section");
   assert(
-    res.plan?.managedIds.includes("decision-ledger"),
-    "create emits the decision-ledger section",
+    !res.plan?.managedIds.includes("decision-ledger"),
+    "create: decision-ledger is NOT a managed section (moved to sidecar post-#680 M1)",
+  );
+  // The sidecar should have been written with the omission rows.
+  const sidecarPath = `${tmp}/.pi/agents-md-state.json`;
+  assert(
+    fs.stat(sidecarPath),
+    "create: the sidecar file was written",
+  );
+  const sidecarContent = fs.readFile(sidecarPath);
+  assert(
+    sidecarContent.length > 0,
+    "create: the sidecar is non-empty",
   );
   assert(
     A.includes("bun run test") && A.includes("bun run lint"),
@@ -435,11 +447,12 @@ rmSync(tmp, { recursive: true, force: true });
     content.includes("- Frozen string literals required"),
     "agentOverride (ruby): code-style bullets rendered",
   );
-  const { sectionContentWithEnd } = await import("../src/agents-md/markers.ts");
-  const ledgerBody = sectionContentWithEnd(content, "decision-ledger") ?? "";
+  // Post-#680 M1: the ledger is in the sidecar, not the in-file span.
+  const rubySidecarPath = `${rubyDir}/.pi/agents-md-state.json`;
+  const rubySidecar = fs.readFile(rubySidecarPath);
   assert(
-    ledgerBody.includes("[detected:agent,2026-01-02]"),
-    "agentOverride (ruby): ledger rows stamped [detected:agent,2026-01-02]",
+    rubySidecar.includes(`"provenance": "detected"`) && rubySidecar.includes(`"date": "2026-01-02"`),
+    "agentOverride (ruby): sidecar rows stamped with provenance 'detected' and date 2026-01-02",
   );
 
   rmSync(rubyDir, { recursive: true, force: true });

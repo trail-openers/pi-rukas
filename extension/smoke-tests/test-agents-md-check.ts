@@ -1,24 +1,31 @@
 #!/usr/bin/env bun
 /**
  * check — exit-code fixtures for the deterministic staleness gate.
+ * Post-#680 M1: the decision-ledger lives in the sidecar at
+ * `.pi/agents-md-state.json`, not in the in-file span. The check reads the
+ * sidecar for drift detection; a missing or corrupt sidecar while AGENTS.md
+ * has managed sections is a defined refusal state (exit 2).
  *
  * The exit code is the contract: 0 clean, 1 findings/drift, 2 refuse/corrupt.
- * This test builds three fixture files in a temp dir and asserts each resolves
+ * This test builds fixture files in a temp dir and asserts each resolves
  * to the right code through the SAME `checkAgent` the CLI calls:
  *
  *   a clean file            → 0
  *   a file with a stale ref → 1  (referenced path no longer exists)
  *   a file with corrupt     → 2  (markers cannot be parsed)
+ *   missing sidecar + managed sections → 2 (defined refusal state)
+ *   corrupt sidecar + managed sections → 2 (defined refusal state)
  *
  * No LLM. Each check is a filesystem / shell boolean.
  */
 
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type AgentsMdFs, checkAgent } from "../src/agents-md/agents-md.ts";
 import { EXIT_CLEAN, EXIT_FINDINGS, EXIT_REFUSE } from "../src/agents-md/check.ts";
 import { renderSection } from "../src/agents-md/markers.ts";
+import { renderLedger, type LedgerRow } from "../src/agents-md/ledger.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -44,29 +51,38 @@ function mkFs(): AgentsMdFs {
         return false;
       }
     },
+    mkdir: (p) => mkdirSync(p, { recursive: true }),
     today: () => "2026-01-01",
   };
 }
 
+/** Write a minimal valid sidecar file at `<root>/.pi/agents-md-state.json`. */
+function writeSidecar(root: string, rows?: LedgerRow[]): void {
+  const dir = path.join(root, ".pi");
+  mkdirSync(dir, { recursive: true });
+  const defaultRows: LedgerRow[] = rows ?? [
+    { key: "k", value: "v", provenance: "auto", date: "2026-01-01" },
+  ];
+  writeFileSync(path.join(dir, "agents-md-state.json"), renderLedger(defaultRows));
+}
+
 // A valid, clean file: references only paths that exist in the fixture root.
+// Post-#680 M1: no in-file decision-ledger span; the sidecar carries the rows.
 {
-  writeFileSync(path.join(tmp, "src"), "x");
-  const clean = `# T\n${renderSection("quality-gates", "- **g** — `bun run test`")}${renderSection(
-    "decision-ledger",
-    "| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |",
-  )}`;
+  mkdirSync(path.join(tmp, "src"), { recursive: true });
+  writeFileSync(path.join(tmp, "src.txt"), "x");
+  const clean = `# T\n${renderSection("quality-gates", "- **g** — `bun run test`")}`;
   writeFileSync(path.join(tmp, "clean.md"), clean);
+  writeSidecar(tmp);
   const r = checkAgent(tmp, path.join(tmp, "clean.md"), {}, mkFs());
   assert(r.check?.code === EXIT_CLEAN, `clean file → exit ${EXIT_CLEAN} (got ${r.check?.code})`);
 }
 
 // A file that references a path that no longer exists → findings → 1.
 {
-  const stale = `# T\n${renderSection("quality-gates", "- see `gone-file.ts` for details")}${renderSection(
-    "decision-ledger",
-    "| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |",
-  )}`;
+  const stale = `# T\n${renderSection("quality-gates", "- see `gone-file.ts` for details")}`;
   writeFileSync(path.join(tmp, "stale.md"), stale);
+  writeSidecar(tmp);
   const r = checkAgent(tmp, path.join(tmp, "stale.md"), {}, mkFs());
   assert(
     r.check?.code === EXIT_FINDINGS,
@@ -79,17 +95,14 @@ function mkFs(): AgentsMdFs {
 }
 
 // A gate command hand-added to the commands section (not quality-gates) is
-// still visible to check: its first token must be on PATH. This is the
-// coverage fix — a commands-section-only gate must not be silently skipped.
+// still visible to check: its first token must be on PATH.
 {
   const cmds = `# T\n${renderSection("quality-gates", "- **g** — `bun run test`")}${renderSection(
     "commands",
     "| kind | command |\n| --- | --- |\n| gate | `definitely-not-a-real-cmd-xyz` |",
-  )}${renderSection(
-    "decision-ledger",
-    "| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |",
   )}`;
   writeFileSync(path.join(tmp, "cmds.md"), cmds);
+  writeSidecar(tmp);
   const r = checkAgent(tmp, path.join(tmp, "cmds.md"), {}, mkFs());
   assert(
     r.check?.code === EXIT_FINDINGS,
@@ -106,11 +119,9 @@ function mkFs(): AgentsMdFs {
 // A gate line with shell metacharacters is reported (invalid-shell), never
 // parsed or executed → findings → 1.
 {
-  const unsafe = `# T\n${renderSection("quality-gates", "- **evil** — `echo a; echo b` | `true`\n- **safe** — `true`")}${renderSection(
-    "decision-ledger",
-    "| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |",
-  )}`;
+  const unsafe = `# T\n${renderSection("quality-gates", "- **evil** — `echo a; echo b` | `true`\n- **safe** — `true`")}`;
   writeFileSync(path.join(tmp, "unsafe.md"), unsafe);
+  writeSidecar(tmp);
   const r = checkAgent(tmp, path.join(tmp, "unsafe.md"), {}, mkFs());
   assert(
     r.check?.code === EXIT_FINDINGS,
@@ -129,6 +140,7 @@ function mkFs(): AgentsMdFs {
   const corrupt =
     "# T\n<!-- pi-rukas:agents-md:begin a v1 -->\nbody\n<!-- pi-rukas:agents-md:end b -->\n";
   writeFileSync(path.join(tmp, "corrupt.md"), corrupt);
+  writeSidecar(tmp);
   const r = checkAgent(tmp, path.join(tmp, "corrupt.md"), {}, mkFs());
   assert(
     r.check?.code === EXIT_REFUSE,
@@ -138,23 +150,14 @@ function mkFs(): AgentsMdFs {
 }
 
 // An empty code-style managed section (a hand-edited file with an empty
-// marker pair) already triggers the GENERIC empty-section guard in runChecks
-// step 2 — no new check.ts code is needed for the new managed id.
-//
-// Note: empty-section is a *finding* (exit 1), not a corruption refuse — the
-// parse succeeds (the pair is well-formed), so `runChecks` reports the
-// empty-section finding and exits with the findings code, exactly as it does
-// for the other three managed ids today.
+// marker pair) triggers the GENERIC empty-section guard in runChecks step 2.
 {
   const emptyCs =
     "# T\n" +
     renderSection("environment", "- Manifest: package.json") +
-    "<!-- pi-rukas:agents-md:begin code-style v1 -->\n<!-- pi-rukas:agents-md:end code-style -->\n" +
-    renderSection(
-      "decision-ledger",
-      "| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |",
-    );
+    "<!-- pi-rukas:agents-md:begin code-style v1 -->\n<!-- pi-rukas:agents-md:end code-style -->\n";
   writeFileSync(path.join(tmp, "empty-cs.md"), emptyCs);
+  writeSidecar(tmp);
   const r = checkAgent(tmp, path.join(tmp, "empty-cs.md"), {}, mkFs());
   assert(
     r.check?.code === EXIT_FINDINGS,
@@ -168,23 +171,15 @@ function mkFs(): AgentsMdFs {
   );
 }
 
-// A BOILERPLATE span (marker-wrapped, emitted by the scaffold post-pass) that
-// the operator has emptied by hand triggers the SAME generic empty-section
-// guard — this is CORRECT, INTENTIONAL behavior (an emptied managed span is a
-// legitimate corruption signal), and check.ts needs NO code change for it:
-// the guard iterates parseMarkers(fileContent).spans without an id filter, so
-// it fires for any managed span the operator has emptied, boilerplate or
-// fact-section alike.
+// A BOILERPLATE span that the operator has emptied by hand triggers the SAME
+// generic empty-section guard.
 {
   const emptyBoilerplate =
     "# T\n" +
     renderSection("environment", "- Manifest: package.json") +
-    "<!-- pi-rukas:agents-md:begin minimalist-engineering v1 -->\n<!-- pi-rukas:agents-md:end minimalist-engineering -->\n" +
-    renderSection(
-      "decision-ledger",
-      "| key | value | provenance |\n| --- | --- | --- |\n| k | v | [auto:2026-01-01] |",
-    );
+    "<!-- pi-rukas:agents-md:begin minimalist-engineering v1 -->\n<!-- pi-rukas:agents-md:end minimalist-engineering -->\n";
   writeFileSync(path.join(tmp, "empty-boilerplate.md"), emptyBoilerplate);
+  writeSidecar(tmp);
   const r = checkAgent(tmp, path.join(tmp, "empty-boilerplate.md"), {}, mkFs());
   assert(
     r.check?.code === EXIT_FINDINGS,
@@ -196,6 +191,42 @@ function mkFs(): AgentsMdFs {
     ),
     "...with the generic empty-section finding naming the boilerplate id",
   );
+}
+
+// Post-#680 M1: missing sidecar while AGENTS.md has managed sections → exit 2.
+{
+  const missingSidecar = `# T\n${renderSection("quality-gates", "- **g** — `bun run test`")}`;
+  writeFileSync(path.join(tmp, "missing-sidecar.md"), missingSidecar);
+  // Ensure no sidecar exists for this root.
+  const r = checkAgent(tmp, path.join(tmp, "missing-sidecar.md"), {}, mkFs());
+  // Note: the sidecar written by writeSidecar(tmp) above exists, so this
+  // test would NOT trigger the missing-sidecar path. We need a separate root.
+  const tmp2 = mkdtempSync(path.join(tmpdir(), "pi-ens-agentsmd-check-missing-"));
+  writeFileSync(path.join(tmp2, "AGENTS.md"), missingSidecar);
+  const r2 = checkAgent(tmp2, path.join(tmp2, "AGENTS.md"), {}, mkFs());
+  assert(
+    r2.check?.code === EXIT_REFUSE,
+    `missing sidecar + managed sections → exit ${EXIT_REFUSE} (got ${r2.check?.code})`,
+  );
+  assert(r2.check?.corrupt === true, "...flagged as corrupt (missing sidecar)");
+  rmSync(tmp2, { recursive: true, force: true });
+}
+
+// Post-#680 M1: corrupt sidecar while AGENTS.md has managed sections → exit 2.
+{
+  const tmp3 = mkdtempSync(path.join(tmpdir(), "pi-ens-agentsmd-check-corrupt-"));
+  const corruptFile = `# T\n${renderSection("quality-gates", "- **g** — `bun run test`")}`;
+  writeFileSync(path.join(tmp3, "AGENTS.md"), corruptFile);
+  const dir = path.join(tmp3, ".pi");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, "agents-md-state.json"), "{ not valid json !!!");
+  const r = checkAgent(tmp3, path.join(tmp3, "AGENTS.md"), {}, mkFs());
+  assert(
+    r.check?.code === EXIT_REFUSE,
+    `corrupt sidecar + managed sections → exit ${EXIT_REFUSE} (got ${r.check?.code})`,
+  );
+  assert(r.check?.corrupt === true, "...flagged as corrupt (corrupt sidecar)");
+  rmSync(tmp3, { recursive: true, force: true });
 }
 
 rmSync(tmp, { recursive: true, force: true });

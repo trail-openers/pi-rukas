@@ -9,6 +9,7 @@
  */
 
 import type { AgentsMdFs } from "./agents-md.ts";
+import { detectExistingBoilerplate } from "./boilerplate-detect.ts";
 import { type DetectedFacts, detectFacts } from "./detect.ts";
 import {
   type LedgerRow,
@@ -16,6 +17,7 @@ import {
   mergeAutoRows,
   mergeOmissionRows,
   parseLedger,
+  parseLegacyMarkdownLedger,
   renderLedger,
   upsertRow,
 } from "./ledger.ts";
@@ -29,14 +31,14 @@ import {
 import { codeStyleBody, commandsBody, environmentBody, gatesBody } from "./renderer.ts";
 import {
   type AgentOverride,
-  SCAFFOLD_HEADING_MAP,
   type ScaffoldOpts,
   computeScaffold,
   runScaffoldPostPass,
 } from "./scaffold.ts";
 import type { OperatorAnswers } from "./scaffold.ts";
+import { type SidecarPlan, sidecarDir, sidecarPath } from "./sidecar.ts";
 
-import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 
 const DEFAULT_FS: AgentsMdFs = {
   readFile: (p) => readFileSync(p, "utf8"),
@@ -48,6 +50,7 @@ const DEFAULT_FS: AgentsMdFs = {
       return false;
     }
   },
+  mkdir: (p) => mkdirSync(p, { recursive: true }),
   today: () => new Date().toISOString().slice(0, 10),
 };
 
@@ -84,56 +87,27 @@ type OmissionRowsFn = (facts: DetectedFacts, today: string) => LedgerRow[];
 
 // ------------------------------------------------------------------ boilerplate detection
 
-/**
- * Scan the current file for existing boilerplate section headings so the
- * scaffold post-pass can detect already-present sections (idempotency).
- *
- * Matches headings flexibly — tolerates different heading levels (# vs ##),
- * optional whitespace after the hash, bolded hashes (**# Heading**), and
- * trailing parentheticals or notes. This is important because brownfield
- * files rarely conform to the exact "# Heading" format the scaffold emits.
- *
- * Uses SCAFFOLD_HEADING_MAP from scaffold.ts so the name↔id mapping lives
- * in one place (#593 #1).
- */
-function detectExistingBoilerplate(fileContent: string): Set<string> {
-  const ids = new Set<string>();
-  for (const line of fileContent.split("\n")) {
-    const trimmed = line.trim();
-    // Remove bold markers (**, __) and trailing whitespace/punctuation.
-    const clean = trimmed.replace(/^\*+|_+/g, "").trim();
-    for (const [name, id] of SCAFFOLD_HEADING_MAP) {
-      // Match # or ## or ###... followed by optional space and the name.
-      // The name is matched case-sensitively as a word boundary so "# Git
-      // Workflow (notes)" matches but "# GitOps" does not.
-      const re = new RegExp(
-        `^(#{1,6})\\s+${name.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&")}\\b`,
-        "i",
-      );
-      if (re.test(clean)) {
-        ids.add(id);
-        break; // this line matches a section — move to the next line
-      }
-    }
-  }
-  return ids;
-}
-
 // ------------------------------------------------------------------ parse ledger from current file
 
 /**
- * Parse the decision-ledger from the current file content.
- * Returns `undefined` if the ledger has a malformed row (corrupt markers).
+ * Parse the in-file decision-ledger span (pre-M1 legacy repos only).
+ * Returns `{ rows, kind }` where kind is "absent" (no in-file span — normal
+ * post-M1 shape), "ok" (valid rows read from the span), or "corrupt"
+ * (malformed row → refuse the update, exit 2).
  */
-function parseExistingLedger(content: string): LedgerRow[] | undefined {
+function parseInFileLedger(content: string): {
+  rows: LedgerRow[];
+  kind: "absent" | "ok" | "corrupt";
+} {
   try {
     const { spans } = parseMarkers(content);
     const ledgerSpan = spans.find((s) => s.id === "decision-ledger");
-    if (!ledgerSpan) return undefined;
+    if (!ledgerSpan) return { rows: [], kind: "absent" };
     const ledgerBody = content.slice(ledgerSpan.contentStart, ledgerSpan.contentEnd);
-    return parseLedger(ledgerBody);
+    // The in-file span uses the LEGACY markdown-table format (pre-M1).
+    return { rows: parseLegacyMarkdownLedger(ledgerBody), kind: "ok" };
   } catch {
-    return undefined;
+    return { rows: [], kind: "corrupt" };
   }
 }
 
@@ -219,13 +193,61 @@ export function makeUpdateAgent(
     }
 
     const today = fs.today?.() ?? new Date().toISOString().slice(0, 10);
-    const existingLedger = parseExistingLedger(current);
-    if (existingLedger === undefined) {
+
+    // Post-#680 M1: the decision-ledger lives in the sidecar, not the in-file
+    // span. A pre-M1 repo that still has an in-file decision-ledger section
+    // is MIGRATED on this first update: its rows are read once, merged into
+    // the sidecar rows, and the section is removed from the file. A corrupt
+    // in-file ledger (malformed row) refuses the update (exit 2) — the same
+    // refuse-or-die semantics as a corrupt sidecar.
+    const inFileLedgerSpan = parseInFileLedger(current);
+    if (inFileLedgerSpan.kind === "corrupt") {
       return {
         verb: "update",
         error: "refusing to update corrupt markers: decision-ledger has a malformed row",
         exitCode: 2,
       };
+    }
+
+    const sPath = sidecarPath(root);
+    const sExists = fs.stat(sPath);
+    let existingLedger: LedgerRow[] = [];
+    let sOld = "";
+    if (inFileLedgerSpan.rows.length > 0) {
+      // Migration: pre-M1 repo with an in-file decision-ledger span. Read the
+      // sidecar too (if present) and merge both into a single row set.
+      if (sExists) {
+        try {
+          const sidecarRows = parseLedger(fs.readFile(sPath));
+          // Merge in-file rows over sidecar rows (sidecar rows win on key
+          // collision — the sidecar is the newer store). In practice the
+          // in-file rows are a subset the sidecar already has, or they are
+          // rows the sidecar does not yet know about. Use upsertRow semantics:
+          // for each in-file row, upsert it into the sidecar row list.
+          let merged: LedgerRow[] = [...sidecarRows];
+          for (const row of inFileLedgerSpan.rows) merged = upsertRow(merged, row);
+          existingLedger = merged;
+        } catch {
+          // Corrupt sidecar alongside a valid in-file ledger: prefer the
+          // in-file rows (they are the legacy store); the sidecar will be
+          // overwritten with the in-file rows on write.
+          existingLedger = inFileLedgerSpan.rows;
+        }
+      } else {
+        existingLedger = inFileLedgerSpan.rows;
+      }
+      sOld = sExists ? fs.readFile(sPath) : "";
+    } else if (sExists) {
+      try {
+        existingLedger = parseLedger(fs.readFile(sPath));
+        sOld = fs.readFile(sPath);
+      } catch {
+        return {
+          verb: "update",
+          error: "refusing to update: decision-ledger sidecar is corrupt",
+          exitCode: 2,
+        };
+      }
     }
 
     // The B1↔B2 seam: when `agentOverride.facts` is supplied, the three fact
@@ -358,21 +380,13 @@ export function makeUpdateAgent(
     merged = mergeOmissionRows(merged, omittedForLedger, today);
     const drift = driftWarnings(existingLedger, auto);
 
-    // Render the ledger back into the managed section of the spliced bytes.
-    const { spans: spans2 } = parseMarkers(bytes);
-    const ledgerSpan2 = spans2.find((s) => s.id === "decision-ledger");
-    const ledgerBody = renderLedger(merged);
-    const parts2: string[] = [];
-    let cursor2 = 0;
-    for (const span of spans2) {
-      if (span.id === "decision-ledger" && ledgerSpan2) {
-        parts2.push(bytes.slice(cursor2, span.contentStart));
-        parts2.push(ledgerBody.endsWith("\n") ? ledgerBody : `${ledgerBody}\n`);
-        cursor2 = span.contentEnd;
-      }
+    // Post-#680 M1: the ledger is NOT spliced back into the file. Instead,
+    // remove the in-file decision-ledger span if it is still present (pre-M1
+    // migration), and write the merged rows to the sidecar.
+    if (inFileLedgerSpan.kind === "ok") {
+      // Remove the in-file decision-ledger span from the spliced bytes.
+      bytes = removeInFileLedgerSpan(bytes);
     }
-    parts2.push(bytes.slice(cursor2));
-    bytes = parts2.join("");
 
     // Scaffold post-pass: detect boilerplate headings for idempotency.
     const existingIds = new Set(parsed);
@@ -391,13 +405,29 @@ export function makeUpdateAgent(
       }
     }
 
-    // wouldWrite: when scaffold added nothing, file is already up-to-date.
+    // Sidecar write plan.
+    const sNew = renderLedger(merged);
+    const sPlan: SidecarPlan = {
+      path: sPath,
+      oldBytes: sOld,
+      newBytes: sNew,
+      wouldWrite: sNew !== sOld,
+    };
+
+    // wouldWrite: true when EITHER file would change.
     const scaffoldAdded = scaffoldedIds.length > 0;
-    const wouldWrite = effectiveOpts.scaffold ? scaffoldAdded : bytes !== current;
+    const fileWouldWrite = bytes !== current;
+    const wouldWrite = effectiveOpts.scaffold
+      ? scaffoldAdded || fileWouldWrite || sPlan.wouldWrite
+      : fileWouldWrite || sPlan.wouldWrite;
 
     if (wouldWrite && !effectiveDryRun) {
       try {
-        fs.writeFile(file, bytes);
+        if (sPlan.wouldWrite) {
+          fs.mkdir?.(sidecarDir(root));
+          fs.writeFile(sPath, sNew);
+        }
+        if (fileWouldWrite) fs.writeFile(file, bytes);
       } catch (err) {
         return {
           verb: "update",
@@ -420,8 +450,31 @@ export function makeUpdateAgent(
           ? drift.map((d) => `${d.key}: "${d.asked}" → derives "${d.derived}"`).join("; ")
           : undefined,
         scaffoldedIds: scaffoldedIds.length ? scaffoldedIds : undefined,
+        sidecar: sPlan,
       },
       exitCode: 0,
     };
   };
+}
+
+/**
+ * Remove the in-file `decision-ledger` marker span from `text` (pre-M1
+ * migration). Returns `text` unchanged if the span is absent. The span is
+ * removed including its begin/end marker lines and the content between them,
+ * plus one trailing newline to keep the surrounding text clean.
+ */
+function removeInFileLedgerSpan(text: string): string {
+  const { spans } = parseMarkers(text);
+  const span = spans.find((s) => s.id === "decision-ledger");
+  if (!span) return text;
+  // Remove from beginMarkerStart to endMarkerEnd (the full span including
+  // both marker lines). Also strip a trailing newline after endMarkerEnd to
+  // avoid a double-blank-line in the output.
+  let end = span.endMarkerEnd;
+  if (text[end] === "\n") end++;
+  // Strip a leading blank line before the begin marker if present (the span
+  // is typically preceded by a blank line in the rendered output).
+  let start = span.beginMarkerStart;
+  if (start > 0 && text[start - 1] === "\n") start--;
+  return text.slice(0, start) + text.slice(end);
 }

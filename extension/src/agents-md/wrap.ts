@@ -42,7 +42,7 @@
  */
 
 import type { DetectedFacts } from "./detect.ts";
-import { type LedgerRow, renderLedger } from "./ledger.ts";
+import type { LedgerRow } from "./ledger.ts";
 import { MARKER_VERSION } from "./markers.ts";
 
 /** A refusal from the wrap: the caller maps this to exit 2. */
@@ -173,15 +173,20 @@ function markerEnd(id: string): string {
  * Produce the wrapped bytes. Throws WrapError when:
  *   - any section is ambiguous (caller: exit 1 + a finding per section)
  *   - nothing is classifiable and nothing is derivable (caller: exit 2)
+ *
+ * `ledgerRows` is the caller's sidecar rows (post-#680 M1): the wrap NO LONGER
+ * renders them into the wrapped file — the decision-ledger is not appended
+ * in-file. The caller writes the sidecar separately via the verb layer.
  */
 export function wrapBytes(
   original: string,
   facts: DetectedFacts,
   bodies: { id: string; body: string }[],
-  ledger: LedgerRow[],
+  ledgerRows: unknown,
   scaffoldBodies?: { id: string; body: string }[],
 ): WrapResult {
   void facts;
+  void ledgerRows;
   const sections = classifySections(original);
   const lines = original.split("\n");
 
@@ -251,15 +256,12 @@ export function wrapBytes(
       markerEnd(b.id),
     );
   }
-  appendBlock.push(
-    markerBegin("decision-ledger"),
-    renderLedger(ledger),
-    markerEnd("decision-ledger"),
-  );
 
   let result = out.join("\n");
   if (!result.endsWith("\n")) result += "\n";
-  result += `\n${appendBlock.join("\n")}\n`;
+  if (appendBlock.length > 0) {
+    result += `\n${appendBlock.join("\n")}\n`;
+  }
 
   return {
     bytes: result,
@@ -271,10 +273,10 @@ export function wrapBytes(
 }
 
 /**
- * The ledger rows a wrap must emit: one `[auto]` row recording the wrap
- * itself (keeps the section non-empty for check's empty-section guard and
- * gives the ledger a home for subsequent operator answers) plus the standard
- * omission rows for managed sections detection could not derive.
+ * The sidecar rows a wrap must emit: one `[auto]` row recording the wrap
+ * itself (gives the sidecar a home for subsequent operator answers) plus the
+ * standard omission rows for managed sections detection could not derive.
+ * (Post-#680 M1: these go to the sidecar, not an in-file ledger section.)
  */
 export function wrapLedgerRows(
   today: string,

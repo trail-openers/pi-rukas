@@ -14,20 +14,13 @@
  * layer renders diffs and asks; this layer is deterministic.
  */
 
-import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { type CheckResult, runChecks } from "./check.ts";
 import { type DetectedFacts, detectFacts } from "./detect.ts";
-import {
-  type LedgerRow,
-  driftWarnings,
-  mergeAutoRows,
-  parseLedger,
-  renderLedger,
-  upsertRow,
-} from "./ledger.ts";
+import { type LedgerRow, parseLedger, renderLedger, upsertRow } from "./ledger.ts";
 import { MARKER_VERSION, parseMarkers, presentIds, sectionContent } from "./markers.ts";
-import { commandsBody, environmentBody, gatesBody, omissionFor, renderAgent } from "./renderer.ts";
+import { omissionFor, renderAgent } from "./renderer.ts";
 import {
   type ScaffoldOpts,
   computeScaffold,
@@ -36,8 +29,9 @@ import {
   runScaffoldPostPass,
   runWrapScaffold,
 } from "./scaffold.ts";
+import { SIDECAR_RELATIVE_PATH, type SidecarPlan, sidecarDir, sidecarPath } from "./sidecar.ts";
 import { makeUpdateAgent } from "./update-agent.ts";
-import { WrapError, isInsertionsOnly, wrapBytes, wrapLedgerRows } from "./wrap.ts";
+import { runWrap } from "./wrap-io.ts";
 
 export type Verb = "create" | "update" | "check";
 
@@ -46,6 +40,8 @@ export interface FsOps {
   readFile: (p: string) => string;
   writeFile: (p: string, bytes: string) => void;
   stat: (p: string) => boolean;
+  /** Create a directory (no-op if it exists). Used for the sidecar's parent dir. */
+  mkdir?: (p: string) => void;
 }
 
 export interface AgentsMdFs extends FsOps {
@@ -63,6 +59,7 @@ const DEFAULT_FS: AgentsMdFs = {
       return false;
     }
   },
+  mkdir: (p) => mkdirSync(p, { recursive: true }),
   today: () => new Date().toISOString().slice(0, 10),
 };
 
@@ -75,9 +72,9 @@ export interface Plan {
   newBytes: string;
   /** The current bytes ("" when no file). */
   oldBytes: string;
-  /** True when newBytes !== oldBytes, i.e. the write codepath would be entered. */
+  /** True when either file's bytes would change (AGENTS.md or the sidecar). */
   wouldWrite: boolean;
-  /** Managed section ids present after the operation. */
+  /** Managed section ids present after the operation (the rendered file's markers). */
   managedIds: string[];
   /** Omitted sections and why (for the operator to see). */
   omitted: { id: string; reason: string }[];
@@ -85,7 +82,15 @@ export interface Plan {
   drift?: string;
   /** Scaffolded boilerplate section ids (scaffolded:<id> ledger rows). */
   scaffoldedIds?: string[];
+  /**
+   * The sidecar (`.pi/agents-md-state.json`) write plan: its old/new bytes
+   * and whether it would change. Post-#680 M1: the decision-ledger rows
+   * live here, not in the rendered AGENTS.md.
+   */
+  sidecar: SidecarPlan;
 }
+
+export { SIDECAR_RELATIVE_PATH, sidecarPath };
 
 export interface VerbResult {
   verb: Verb;
@@ -169,9 +174,9 @@ export function createAgent(
   let ledger = omissionRows(facts, today);
 
   // Scaffold post-pass: compute boilerplate sections and optional operator-choices.
-  let factIds = new Set<string>(["quality-gates", "commands", "environment", "decision-ledger"]);
+  let factIds = new Set<string>(["quality-gates", "commands", "environment"]);
   let scaffoldedIds: string[] = [];
-  let bytes = renderAgent({ facts, ledger, preamble: DEFAULT_PREAMBLE, version: MARKER_VERSION });
+  let bytes = renderAgent({ facts, preamble: DEFAULT_PREAMBLE, version: MARKER_VERSION });
 
   if (scaffold) {
     const scaffoldResult = computeScaffold(factIds, { scaffold: true, answers });
@@ -179,8 +184,6 @@ export function createAgent(
     if (answers) {
       ledger = [...ledger, ...operatorChoicesLedgerRows(answers, today)];
     }
-    // Re-render with updated ledger.
-    bytes = renderAgent({ facts, ledger, preamble: DEFAULT_PREAMBLE, version: MARKER_VERSION });
     // Run post-pass: append boilerplate after the managed sections.
     const post = runScaffoldPostPass(bytes, scaffoldResult, false);
     if (post.bytes !== bytes) {
@@ -190,8 +193,22 @@ export function createAgent(
     }
   }
 
+  const sPath = sidecarPath(root);
+  const sOld = fs.stat(sPath) ? fs.readFile(sPath) : "";
+  const sNew = renderLedger(ledger);
+  const sPlan: SidecarPlan = {
+    path: sPath,
+    oldBytes: sOld,
+    newBytes: sNew,
+    wouldWrite: sNew !== sOld,
+  };
+
   if (!effectiveDryRun) {
     try {
+      if (sPlan.wouldWrite) {
+        fs.mkdir?.(sidecarDir(root));
+        fs.writeFile(sPath, sNew);
+      }
       fs.writeFile(file, bytes);
     } catch (err) {
       return {
@@ -211,6 +228,7 @@ export function createAgent(
       managedIds: presentIds(bytes),
       omitted: omittedSections(facts),
       scaffoldedIds: scaffoldedIds.length ? scaffoldedIds : undefined,
+      sidecar: sPlan,
     },
     exitCode: 0,
   };
@@ -233,13 +251,34 @@ export function checkAgent(
   // Gate commands can only be extracted from a file whose markers parse; a
   // corrupt file is caught by runChecks below and refused (exit 2).
   let gateCommands: string[] = [];
+  let hasManagedSections = false;
   try {
     gateCommands = gateCommandsFrom(content);
+    hasManagedSections = parseMarkers(content).spans.length > 0;
   } catch {
     // Corruption — runChecks will catch it and return exit 2. Pass empty.
     gateCommands = [];
   }
-  const result = runChecks(root, content, { gateCommands, deep: opts.deep });
+  // Post-#680 M1: the ledger rows live in the sidecar, not the in-file span.
+  // A missing sidecar while AGENTS.md has managed sections is a defined
+  // refusal state (exit 2) — never re-derive, never lose an asked row.
+  // A corrupt sidecar is the same. `hasManagedSections === false` (a file
+  // with no pi-rukas markers at all) means the sidecar is not required.
+  const sPath = sidecarPath(root);
+  const sState = fs.stat(sPath);
+  let ledgerRows: LedgerRow[] | null;
+  if (!hasManagedSections) {
+    ledgerRows = [] as LedgerRow[]; // no managed sections → no sidecar requirement
+  } else if (!sState) {
+    ledgerRows = null; // missing sidecar → refuse (exit 2), via runChecks
+  } else {
+    try {
+      ledgerRows = parseLedger(fs.readFile(sPath));
+    } catch {
+      ledgerRows = null; // corrupt sidecar → refuse (exit 2)
+    }
+  }
+  const result = runChecks(root, content, { gateCommands, deep: opts.deep, ledgerRows });
   return { verb: "check", check: result, exitCode: result.code };
 }
 
@@ -271,22 +310,6 @@ function omittedSections(facts: DetectedFacts): { id: string; reason: string }[]
 }
 
 /**
- * The current decision-ledger rows, or undefined when the section is malformed.
- * A corrupt ledger row MUST refuse the update (exit 2) — silently continuing
- * with an empty ledger would delete every `[asked:operator]` decision on the
- * next write.
- */
-function parseExistingLedger(bytes: string): LedgerRow[] | undefined {
-  const body = sectionContent(bytes, "decision-ledger");
-  if (body === undefined) return [];
-  try {
-    return parseLedger(body);
-  } catch {
-    return undefined;
-  }
-}
-
-/**
  * The exact gate-command shell lines currently in the quality-gates AND
  * commands sections. Both are managed and both are operator-editable, so a
  * hand-added command in either section must be visible to the deep check —
@@ -310,119 +333,7 @@ function gateCommandsFrom(content: string): string[] {
 
 export { fileState };
 
-// ----------------------------------------------------------------- the wrap
-// The brownfield `no-markers` branch of `updateAgent`: the file exists, has no
-// pi-rukas markers, and the wrap inserts marker pairs around the sections
-// the core can re-derive and appends the ones it can, leaving every original
-// line in place (insertions-only). `runWrap` is the I/O shell over the pure
-// `wrapBytes`. Exit codes: ambiguity → 1 (finding; the PM runs the
-// numbered-list protocol); a reword/delete or nothing classifiable → 2 (the
-// wrap's insertions-only construction makes a reword unreachable — the guard
-// catches a regression).
-
-export function runWrap(
-  root: string,
-  file: string,
-  fs: AgentsMdFs,
-  dryRun: boolean,
-  opts?: {
-    scaffoldBodies?: { id: string; body: string }[];
-    answers?: import("./scaffold.ts").OperatorAnswers;
-  },
-): VerbResult {
-  const current = fs.readFile(file);
-  const facts = detectFacts(root);
-  const today = fs.today?.() ?? new Date().toISOString().slice(0, 10);
-
-  const bodies: { id: string; body: string }[] = [];
-  const omitted: { id: string; reason: string }[] = [];
-  for (const { id, body } of [
-    { id: "quality-gates", body: gatesBody(facts) },
-    { id: "commands", body: commandsBody(facts) },
-    { id: "environment", body: environmentBody(facts) },
-  ] as const) {
-    if (typeof body === "string") bodies.push({ id, body });
-    else omitted.push({ id, reason: body.omit });
-  }
-
-  const ledger = wrapLedgerRows(today, omitted);
-  let bytes: string;
-  try {
-    bytes = wrapBytes(current, facts, bodies, ledger, opts?.scaffoldBodies).bytes;
-  } catch (e) {
-    if (e instanceof WrapError) {
-      // Ambiguity is a finding (exit 1) — the operator can still decide per
-      // section via the numbered-list protocol. Any other wrap refusal is a
-      // hard refuse (exit 2).
-      return {
-        verb: "update",
-        error: e.message,
-        exitCode: /ambiguous classification/.test(e.message) ? 1 : 2,
-      };
-    }
-    throw e;
-  }
-
-  // Insertions-only guard: every non-blank original line survives verbatim,
-  // in order, as a subsequence of the wrapped bytes. (The wrap's construction
-  // makes this unreachable; the check catches a regression.)
-  if (!isInsertionsOnly(current, bytes)) {
-    return {
-      verb: "update",
-      error: "wrap would reword or delete an original line — refusing",
-      exitCode: 2,
-    };
-  }
-
-  // Scaffold post-pass: append boilerplate after the wrapped output.
-  let scaffoldedIds: string[] = [];
-  if (opts?.scaffoldBodies) {
-    const wrapIds = parseMarkersSafe(bytes);
-    const scaffoldResult = computeScaffold(new Set(wrapIds), {
-      scaffold: true,
-      answers: opts.answers,
-    });
-    const post = runWrapScaffold(bytes, scaffoldResult);
-    if (post.bytes !== bytes) {
-      bytes = post.bytes;
-      scaffoldedIds = post.scaffoldedIds;
-    }
-  }
-
-  const wouldWrite = bytes !== current;
-  if (wouldWrite && !dryRun) {
-    try {
-      fs.writeFile(file, bytes);
-    } catch (err) {
-      return {
-        verb: "update",
-        error: `write FAILED: ${(err as Error).message}`,
-        exitCode: 1,
-      };
-    }
-  }
-  return {
-    verb: "update",
-    plan: {
-      state: "no-markers",
-      newBytes: bytes,
-      oldBytes: current,
-      wouldWrite,
-      managedIds: parseMarkersSafe(bytes),
-      scaffoldedIds: scaffoldedIds.length ? scaffoldedIds : undefined,
-      omitted: omittedSections(facts),
-    },
-    exitCode: 0,
-  };
-}
-
-function parseMarkersSafe(bytes: string): string[] {
-  try {
-    return presentIds(bytes);
-  } catch {
-    return [];
-  }
-}
+export { runWrap } from "./wrap-io.ts";
 
 /**
  * CLI entry for the `/agents-md` prompt body.

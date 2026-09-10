@@ -90,6 +90,7 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
         return false;
       }
     },
+    mkdir: (p) => mkdirSync(p, { recursive: true }),
     today: () => FIXED_DATE,
     ...overrides,
   };
@@ -153,22 +154,20 @@ function mkFs(overrides?: Partial<AgentsMdFs>): AgentsMdFs {
     !opChoicesBody.includes("Coverage threshold"),
     "scaffold with answers: operator-choices omits the coverage bullet",
   );
-  const ledgerBegin = content.indexOf("<!-- pi-rukas:agents-md:begin decision-ledger");
-  const ledgerEnd =
-    content.indexOf("<!-- pi-rukas:agents-md:end decision-ledger -->") +
-    "<!-- pi-rukas:agents-md:end decision-ledger -->".length;
-  const managedPlusBoilerplate = content.slice(0, ledgerBegin) + content.slice(ledgerEnd);
+  // Post-#680 M1: the decision-ledger is in the sidecar, not the in-file span.
+  // The threshold should be stated exactly once in the rendered file (no
+  // in-file ledger section to exclude).
   assert(
-    (managedPlusBoilerplate.match(/80%\+/g) ?? []).length === 1,
+    (content.match(/80%\+/g) ?? []).length === 1,
     "scaffold with answers: the threshold is stated exactly once in the managed + boilerplate text",
   );
   assert(content.includes("MEDIUM"), "scaffold with answers: review-blocking severity recorded");
-  // Ledger has [asked:operator] rows. (Slice via the parser, not a
-  // hardcoded marker prefix — #627 dual-prefix rename.)
-  const ledgerBody = sectionContentWithEnd(content, "decision-ledger") ?? "";
+  // Ledger has [asked:operator] rows in the sidecar.
+  const sPath = `${tmp}/.pi/agents-md-state.json`;
+  const sRows = parseLedger(fs.readFile(sPath));
   assert(
-    parseLedger(ledgerBody).some((r) => r.provenance === "asked"),
-    "scaffold with answers: [asked:operator] ledger rows present",
+    sRows.some((r) => r.provenance === "asked"),
+    "scaffold with answers: [asked:operator] sidecar rows present",
   );
 }
 
