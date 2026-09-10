@@ -151,6 +151,21 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
       lines.push("- retained worktrees:", ...snap.retainedWorktrees.map((wt) => `    - \`${wt}\``));
       lines.push("");
     }
+    // #674 — committed work on detached-HEAD worktrees: the porcelain-based
+    // counts above report 0 for this shape (clean tree, commits ahead of
+    // base). Name the work's true location (path + HEAD SHA + commits ahead)
+    // so the operator can see where the work actually is without having to
+    // discover it via `git worktree list`.
+    if (snap.committedWork?.length) {
+      lines.push(
+        "- committed work on detached-HEAD worktrees (the porcelain counts above are blind to this):",
+        ...snap.committedWork.map(
+          (w) =>
+            `    - \`${w.path}\` — HEAD \`${w.headSha.slice(0, 8)}\`, ${w.ahead} commit(s) ahead of base (workstream: ${w.worktreeId})`,
+        ),
+      );
+      lines.push("");
+    }
     lines.push("");
   }
 

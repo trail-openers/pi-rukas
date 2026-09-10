@@ -103,12 +103,18 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
   // So the bound is back, and what is checked here is the thing that makes it
   // safe: the fallback the bound hands off to must still exist. Post-#612
   // the fallback routes through the forge adapter (issueComment + labelCreate
-  // + labelAdd) rather than raw `gh` exec.
+  // + labelAdd) rather than raw `gh` exec. Post-#674 (item 3) the individual
+  // forge calls moved into work-driver-handoff-post-retry.ts (retry-with-backoff
+  // around the same three calls), so the seam this canary pins is that the
+  // handoff still drives the post via that module.
   const handoff = readFileSync(path.join(SRC, "work-driver-handoff.ts"), "utf8");
+  const retry = readFileSync(path.join(SRC, "work-driver-handoff-post-retry.ts"), "utf8");
   assert(
-    /forge\.issueComment/.test(handoff) && /forge\.labelCreate/.test(handoff) &&
-      /forge\.labelAdd/.test(handoff),
-    "the handoff still posts the comment and applies the label in-process when the dispatch does not (via the forge adapter)",
+    /postHandoffWithRetry/.test(handoff) &&
+      /forge\.issueComment/.test(retry) &&
+      /forge\.labelCreate/.test(retry) &&
+      /forge\.labelAdd/.test(retry),
+    "the handoff still posts the comment and applies the label in-process when the dispatch does not (via the forge adapter, with retry)",
   );
 
   // And the inactivity watchdog is deliberately UNCHANGED. It fires on 25

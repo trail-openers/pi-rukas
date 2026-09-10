@@ -148,10 +148,7 @@ function cappedState(issue: number) {
     const next = await runHandoff(ctx, cappedState(626), Date.now());
 
     const emitted = next.eventLog.find((e) => e.kind === "handoff-emitted");
-    assert(
-      emitted !== undefined,
-      "handoff-emitted is appended (the fallback ran)",
-    );
+    assert(emitted !== undefined, "handoff-emitted is appended (the fallback ran)");
     assert(
       emitted?.kind === "handoff-emitted" &&
         emitted.commentUrl === "https://github.com/acme/widget/issues/626#issuecomment-4242",
@@ -165,11 +162,11 @@ function cappedState(issue: number) {
     // The forge must have been called: issueComment (for the issue target),
     // labelCreate (idempotent create), and labelAdd("issue", 626, ...).
     const commentCall = calls.find((c) => c.method === "issueComment");
-    assert(commentCall !== undefined, "forge.issueComment was called (the comment was posted via the forge)");
     assert(
-      commentCall?.args[0] === 626,
-      "the comment targeted the issue number (626, no PR)",
+      commentCall !== undefined,
+      "forge.issueComment was called (the comment was posted via the forge)",
     );
+    assert(commentCall?.args[0] === 626, "the comment targeted the issue number (626, no PR)");
     const createCall = calls.find((c) => c.method === "labelCreate");
     assert(
       createCall !== undefined &&
@@ -253,8 +250,7 @@ function cappedState(issue: number) {
       "a healthy dispatch does NOT trigger the forge's issueComment (the URL was already parsed)",
     );
     assert(
-      calls.some((c) => c.method === "labelCreate") &&
-        calls.some((c) => c.method === "labelAdd"),
+      calls.some((c) => c.method === "labelCreate") && calls.some((c) => c.method === "labelAdd"),
       "the label IS applied mechanically (idempotent) even on a healthy dispatch",
     );
   } finally {

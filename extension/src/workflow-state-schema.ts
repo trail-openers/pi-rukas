@@ -356,6 +356,23 @@ export interface PipelineState {
     /** Worktrees that were not removed because they contained uncommitted
      * work or were retained by the sweep. */
     retainedWorktrees?: string[];
+    /**
+     * #674 — per-worktree COMMITTED work, captured by `runHandoff`.
+     *
+     * `captureWorktreeSnapshot` reads `git status --porcelain` only, so a
+     * developer's committed work on a detached-HEAD worktree (clean tree,
+     * N commits ahead of the base) reported 0 files / 0 staged / 0 unstaged
+     * — the exact shape of the five parked cycles (#645/#649/#659/#660/
+     * #664) whose recovery then printed main-checkout commands that showed
+     * nothing. This field records the truth: each worktree's HEAD SHA and
+     * how many commits it carries past the cycle's base, so the handoff
+     * renderers can name the work's actual location and the pre-handoff
+     * consolidation can know whether there is committed work to move.
+     *
+     * Optional — absent on pre-#674 state files and when the base SHA is
+     * unknown (readers treat absent as "no committed work recorded").
+     */
+    committedWork?: Array<{ worktreeId: string; path: string; headSha: string; ahead: number }>;
   };
   /**
    * Epoch ms when the 90-min wall-clock cap was started. Persists across

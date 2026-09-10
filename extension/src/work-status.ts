@@ -18,7 +18,6 @@
  *   /work-status <issue>       — explicit issue number.
  *   /work-status N --json      — emit raw JSON (handy for piping to jq).
  */
-
 import { exec } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -38,7 +37,6 @@ import { humanActionFor } from "./work-queue.ts";
 import { discoverAllCycles, renderCycleIndex } from "./work-status-index.ts";
 import { isIssueNumberArg, resolveJobId } from "./work-status-jobid.ts";
 import { type WorkEvent, type WorkState, readState, workStateDir } from "./workflow-state.ts";
-
 const execp = promisify(exec);
 
 /** Resolve project repo root via `git rev-parse --show-toplevel`. */
@@ -159,7 +157,9 @@ function fmtEvent(e: WorkEvent): string {
     case "step-back-completed":
       return `  step-back-completed · ${e.sddElement}`;
     case "handoff-emitted":
-      return `  handoff-emitted${e.commentUrl ? ` · ${e.commentUrl}` : ""}`;
+      return `  handoff-emitted${e.commentUrl ? ` · ${e.commentUrl}` : ""}${e.consolidated ? ` · onto ${e.consolidatedBranch ?? "?"}` : ""}`;
+    case "handoff-consolidated":
+      return `  handoff-consolidated · ${e.branchName} · ${e.workstreams.join(", ")}`;
     case "ci-status":
       return `  ci-status · ${e.status}${e.runUrl ? ` · ${e.runUrl}` : ""}`;
     case "merged":
