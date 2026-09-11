@@ -7,6 +7,18 @@ Specifications + policy docs for `/audit` (Epic #31) plus a troubleshooting guid
 ### [troubleshooting.md](troubleshooting.md)
 Symptom → cause → fix entries for the most common `pi-rukas` sandbox issues: `MCP: 0/N servers`, `gh` 401 inside container, custom LLM endpoints unreachable, custom provider missing from `/ensemble-model`, vipune embedding 404, fd/rg auto-download at boot, session-resume picker failures, named-volume cleanup. Each entry links the PR that addressed it. First stop when something weird happens — usually `./install.sh` fixes it.
 
+### [configuration.md](configuration.md)
+Full reference for the `PI_ENSEMBLE_*` environment variables (main, outcome-verification, and sandbox-mode tables) plus the Configuration & paths table of repo-internal and per-host file locations.
+
+### [sandbox.md](sandbox.md)
+Full detail on sandboxed mode: the bind-mount table, `pi-rukas` wrapper subcommands, cross-mode persistence, session resume, mesh network/host aliases, drag-and-drop images, and the docker-socket / SSH trade-off.
+
+### [mcp.md](mcp.md)
+MCP bridge walkthrough: installing `pi-mcp-adapter`, the 4-tier server config, `command:` portability between host and sandbox, `directTools` surface modes, the 3-tier pi-rukas role-permission overlay, and security notes.
+
+### [custom-providers.md](custom-providers.md)
+Adding a custom OpenAI-compatible provider: registering it in `~/.pi/agent/models.json`, compat flags, storing the API key, and the three usage modes (main agent, per-project, subagents).
+
 ## `/audit` Command Documentation
 
 ### [audit-spec.md](audit-spec.md)

@@ -402,7 +402,7 @@ If empty: the var isn't reaching the sandbox.
 cd ~/.config/opencode/pi-rukas && git pull && ./install.sh
 ```
 
-Post-#228 the wrapper forwards the entire host shell env (less a small conflict-blocklist — see README env-vars table). Any var you `export` in your shell rc reaches the sandbox. Verify post-refresh: `pi-rukas shell` → `echo "$SOME_DB_URI"` prints the URI.
+Post-#228 the wrapper forwards the entire host shell env (less a small conflict-blocklist — see [docs/configuration.md](configuration.md), env-vars table). Any var you `export` in your shell rc reaches the sandbox. Verify post-refresh: `pi-rukas shell` → `echo "$SOME_DB_URI"` prints the URI.
 
 PR: [#228](https://github.com/trail-openers/pi-rukas/pull/228)
 
