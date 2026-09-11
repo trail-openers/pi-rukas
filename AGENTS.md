@@ -170,8 +170,8 @@ When Pi changes a shape we depend on (this has happened: `tool_use` → `toolCal
 The extension's npm dependencies are guarded against zero-day supply-chain attacks (compromised maintainer publishes a malicious version, caught and yanked within hours).
 
 - `extension/bunfig.toml` sets `minimumReleaseAge = 345600` (4 days). Bun refuses anything published more recently. Requires bun ≥ 1.2.20.
-- `extension/.npmrc` mirrors this with `min-release-age=4` for npm / pnpm / yarn users. Requires npm ≥ 11.10.0.
-- `extension/package.json` declares the engines floor.
+- `extension/.npmrc` mirrors this with `min-release-age=4` as defense-in-depth for the npm fallback path that `install.sh` uses when bun is absent (requires npm ≥ 11.10.0). Because `extension/bun.lock` is the sole committed lockfile and CI uses `bun install --frozen-lockfile`, bun is the primary, reproducibility-guaranteed package manager; npm is a functional fallback that gets the same embargo protection but no lockfile-pinned reproducibility — with no committed `package-lock.json`, npm-resolved versions are embargo-bounded but not pinned to bun's tree. (pnpm 9.0+ honors the same `.npmrc` key, but `install.sh` has no pnpm/yarn fallback — npm-only is the real second path.)
+- `extension/package.json` declares the engines floor — the npm `>=11.10.0` floor is what makes `.npmrc`'s `min-release-age` actually enforceable on the fallback path.
 - `extension/bun.lock` is committed; CI uses `bun install --frozen-lockfile`.
 - **Only npm-registry installs** — no `github:` or `git+` URLs (they bypass the embargo).
 

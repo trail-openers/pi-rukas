@@ -200,12 +200,17 @@ version that's caught and yanked within hours).
 - **`extension/bunfig.toml`** sets `minimumReleaseAge = 345600` (4 days).
   Bun refuses to install any package version published more recently. Requires
   bun ≥ 1.2.20.
-- **`extension/.npmrc`** mirrors this with `min-release-age=4` and
-  `engine-strict=true` for npm / pnpm / yarn users. Requires npm ≥ 11.10.0.
-- **`extension/package.json`** declares the engines floor so older tools
-  refuse to install at all.
-- **Lockfile** (`extension/bun.lock`) is committed; CI uses
-  `bun install --frozen-lockfile`.
+- **Bun is the primary, reproducibility-guaranteed package manager** —
+  `extension/bun.lock` is the sole committed lockfile and CI uses
+  `bun install --frozen-lockfile`. **npm is a functional fallback** (the
+  `install.sh` installer runs `npm install` when bun is absent) that gets the
+  same embargo protection via `extension/.npmrc`'s `min-release-age=4` and
+  `engine-strict=true`, but **no lockfile-pinned reproducibility**: with no
+  committed `package-lock.json`, npm resolves its own unpinned dependency tree
+  — bounded by the 4-day embargo, but not guaranteed to match the versions
+  bun's `bun.lock` pins. The npm ≥ 11.10.0 engines floor in
+  `extension/package.json` is what makes `min-release-age` enforceable on that
+  fallback path.
 - **Only npm-registry installs** — no `github:` or `git+` URLs in the
   dependency graph. Adding one would defeat the embargo (release-age and
   engines checks don't apply to direct git installs).
