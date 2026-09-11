@@ -155,6 +155,17 @@ const SEAMS: Seam[] = [
     },
     canary: { symbol: "resolveIntentVerdict", importer: "work-driver-explore.ts" },
   },
+  {
+    // #709 — the short aboveEditor deck-row label. The pure builder is wired
+    // into buildDeckPromptItems by dispatch-deck.ts; declared test-only so a
+    // regression that unwires it (or drops the test) is visible at the gate.
+    file: "deck-prompt-label.ts",
+    pending: {},
+    testOnly: {
+      shortPromptLabel: "pure short-label builder; wired into dispatch-deck.ts, asserted directly",
+    },
+    canary: { symbol: "shortPromptLabel", importer: "dispatch-deck.ts" },
+  },
 ];
 
 /**

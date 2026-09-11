@@ -3,13 +3,13 @@
  * Selectable rows (#607 d1): a second widget above the editor with
  * keyboard-selectable rows; selecting a row opens ctx.ui.editor pre-filled
  * with a steer prompt for that job (source tag `deck-ui`).
- *
- * Opt-out: PI_ENSEMBLE_QUIET_STATUS=1 disables the deck entirely.
+ * Opt-out: PI_ENSEMBLE_QUIET_STATUS=1. Short labels: deck-prompt-label.ts (#709).
  */
 
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Container, SelectList, type TUI, Text, getKeybindings } from "@earendil-works/pi-tui";
+import { shortPromptLabel } from "./deck-prompt-label.ts";
 import * as deckInteractive from "./dispatch-deck-interactive.ts";
 import { type RunningState, emptyRunningState, formatElapsed } from "./progress.ts";
 import { trace } from "./trace.ts";
@@ -168,13 +168,12 @@ export function buildDeckPromptItems(
   const items: DeckPromptItem[] = entries.map((e) => ({
     key: e.key,
     value: encodeDeckPromptValue(e.key),
-    label: formatRow(e, now),
+    label: shortPromptLabel(e),
     steerPrompt: buildSteerPrompt(e, now),
   }));
   items.push(CANCEL_SENTINEL);
   return items;
 }
-
 function buildSteerPrompt(e: DeckEntry, now: number): string {
   const elapsed = formatElapsed(Math.max(0, now - e.startedAt));
   const tool = e.state.lastToolName ? ` (last tool: ${e.state.lastToolName})` : "";
@@ -348,7 +347,6 @@ function buildDeckPromptFactory(ctx: ExtensionContext) {
     return list;
   };
 }
-
 function findPromptItemByValue(value: string): DeckPromptItem | undefined {
   return parseDeckPromptValue(value)
     ? buildDeckPromptItems([...entries.values()]).find((it) => it.value === value)

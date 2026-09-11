@@ -3,7 +3,8 @@
  * Pure unit tests for the keyboard-selectable deck rows (#607 d1):
  *  - encodeDeckPromptValue / parseDeckPromptValue round-trip
  *  - buildDeckPromptItems shape (one row per entry + cancel sentinel)
- *  - DeckPromptItem label uses formatRow (icon + label + elapsed + tool)
+ *  - DeckPromptItem label is a SHORT form (entry label + key fragment, #709)
+ *    that does NOT duplicate the belowEditor formatRow line
  *  - steerPrompt is a ready-to-send steer with job context
  *  - setWidget is called with DECK_PROMPT_KEY and a factory function
  *  - empty deck → DECK_PROMPT_KEY widget is cleared (setWidget undefined)
@@ -22,6 +23,7 @@ import {
   clearEntry,
   detach,
   encodeDeckPromptValue,
+  formatRow,
   parseDeckPromptValue,
   reset,
   startEntry,
@@ -29,6 +31,7 @@ import {
   DECK_PROMPT_KEY,
   DECK_PROMPT_STEER_SOURCE,
 } from "../src/dispatch-deck.ts";
+import { shortPromptLabel } from "../src/deck-prompt-label.ts";
 import { type RunningState, emptyRunningState } from "../src/progress.ts";
 
 let exit = 0;
@@ -102,9 +105,17 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
     items[2]?.steerPrompt === "",
     "cancel sentinel has an empty steerPrompt",
   );
+  // #709 — DeckPromptItem.description stays undefined; the short label (not a
+  // description) is the row's only distinguishing content.
+  assert(
+    items[0]?.description === undefined && items[1]?.description === undefined,
+    "DeckPromptItem.description stays undefined (not populated by the fix)",
+  );
 }
 
-// 4. DeckPromptItem.label uses formatRow — icon + label + elapsed + tool.
+// 4. DeckPromptItem.label is the SHORT form (#709) — entry label + key
+// fragment, NOT the full belowEditor formatRow line. Anchored to the same
+// fixture the old block-4 assertions used (bash (#7), 2m14s).
 {
   const now = 2_000_000;
   const entries: DeckEntry[] = [
@@ -122,11 +133,86 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   ];
   const items = buildDeckPromptItems(entries, now);
   const label = items[0]?.label ?? "";
-  assert(label.startsWith("⏳"), "label starts with hourglass icon");
-  assert(label.includes("developer[task-A]"), "label includes entry label");
-  assert(label.includes("2m14s"), "label includes elapsed (2m14s)");
-  assert(label.includes("bash (#7)"), "label includes tool + count");
-  assert(!label.includes("STALE"), "fresh entry label does NOT include STALE");
+  assert(label.startsWith("developer[task-A]"), "short label starts with the entry label");
+  assert(label.includes("x"), "short label ends with the key fragment");
+  assert(!label.startsWith("⏳"), "short label does NOT start with the hourglass icon");
+  assert(!label.includes("2m14s"), "short label does NOT include elapsed time");
+  assert(!label.includes("bash"), "short label does NOT include the tool name");
+  assert(!label.includes("STALE"), "short label does NOT include the STALE badge");
+  // Non-duplication regression (#709): the aboveEditor short label must never
+  // be byte-identical to the belowEditor full status line.
+  assert(
+    label !== formatRow(entries[0]!, now),
+    "short label is NOT byte-identical to the belowEditor formatRow line",
+  );
+}
+
+// 4b. Multiple same-role entries stay distinguishable via the key fragment,
+// and the belowEditor full line is never duplicated by any prompt label.
+{
+  const now = 4_000_000;
+  const mk = (key: string, seq: number): DeckEntry => ({
+    key,
+    label: "developer[task-A]",
+    seq,
+    startedAt: now - 134_000,
+    state: makeState("developer", {
+      lastToolName: "bash",
+      toolUses: 7,
+      lastEventAt: now - 1000,
+    }),
+  });
+  const entries = [mk("df8a-1aaaa", 0), mk("df8a-2bbbb", 1)];
+  const items = buildDeckPromptItems(entries, now);
+  const [l0, l1] = [items[0]?.label ?? "", items[1]?.label ?? ""];
+  assert(l0 !== l1, "two same-role entries produce DISTINCT short labels");
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i]!;
+    assert(
+      (items[i]?.label ?? "") !== formatRow(e, now),
+      `prompt label ${i} is not byte-identical to the belowEditor line`,
+    );
+  }
+}
+
+// 4c. Empty entry.label → the entryLabel fallback (role / role[tag]) keeps
+// the short label non-empty; never a bare "· <key>".
+{
+  const items = buildDeckPromptItems(
+    [
+      {
+        key: "df8a-1xxxxx",
+        label: "",
+        seq: 0,
+        startedAt: 1,
+        state: makeState("explore"),
+      },
+      {
+        key: "df8a-2yyyyy",
+        label: "",
+        seq: 1,
+        startedAt: 1,
+        state: makeState("developer", { tag: "ux-web" }),
+      },
+    ],
+    5_000_000,
+  );
+  const l0 = items[0]?.label ?? "";
+  const l1 = items[1]?.label ?? "";
+  assert(l0.startsWith("explore · "), "empty label falls back to role before the key fragment");
+  assert(l1.startsWith("developer[ux-web] · "), "empty label falls back to role[tag] before the key fragment");
+  assert(!l0.startsWith("·"), "no bare '· <key>' when entry.label is empty");
+  assert(!l1.startsWith("·"), "no bare '· <key>' when entry.label is empty (tagged)");
+  assert(l0 !== l1, "two empty-label entries stay distinguishable via the key fragment");
+}
+
+// 4d. shortPromptLabel helper (deck-prompt-label.ts) — the pure form.
+{
+  const s = shortPromptLabel({ label: "", state: makeState("explore"), key: "df8a-1xxxxx" }); // 11-char key
+  assert(s.startsWith("explore · "), "shortPromptLabel: role fallback + key fragment");
+  assert(s.endsWith("…"), "shortPromptLabel: long key is truncated with an ellipsis");
+  const short = shortPromptLabel({ label: "ops", state: makeState("ops"), key: "df8a-1aa" }); // 8-char key
+  assert(short === "ops · df8a-1aa", "shortPromptLabel: short key stays whole (no ellipsis)");
 }
 
 // 5. DeckPromptItem.value round-trips through parseDeckPromptValue.
