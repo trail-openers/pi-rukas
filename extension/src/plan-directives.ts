@@ -37,10 +37,19 @@ export interface OperatorDirectives {
    * and readable by the pinned-count validator (C5).
    */
   decomposition?: string[];
+  /**
+   * NEVER CLAIM (or FORBIDDEN) block (#677) — the operator's verbatim
+   * forbidden phrases. Each item is one phrase; the post-filter drops
+   * any structured item whose normalised text contains the phrase as an
+   * exact normalised substring (disclosed, never silent), and the prompt
+   * seam threads the phrases verbatim into every angle and the gap-gate
+   * prompt. Same block-termination grammar as every other directive block.
+   */
+  neverClaim?: string[];
 }
 
 const KEYWORD =
-  "(ACCEPTANCE[\\s-]*CRITERIA|PITFALLS|EDGE[\\s-]*CASES|OUT[\\s-]*OF[\\s-]*SCOPE|TEST[\\s-]*SURFACE|DECOMPOSITION|SUB[\\s-]*ISSUES?)";
+  "(ACCEPTANCE[\\s-]*CRITERIA|PITFALLS|EDGE[\\s-]*CASES|OUT[\\s-]*OF[\\s-]*SCOPE|TEST[\\s-]*SURFACE|DECOMPOSITION|SUB[\\s-]*ISSUES?|NEVER[\\s-]*CLAIM|FORBIDDEN)";
 
 /**
  * A keyword line is a heading ONLY when the keyword (with optional
@@ -71,7 +80,9 @@ function channelFor(name: string): keyof OperatorDirectives {
         ? "testSurface"
         : up.startsWith("DECOMPOSITION") || up.startsWith("SUB")
           ? "decomposition"
-          : "pitfalls";
+          : up.startsWith("NEVER") || up.startsWith("FORBIDDEN")
+            ? "neverClaim"
+            : "pitfalls";
 }
 
 /**
@@ -92,7 +103,8 @@ function stripBullet(line: string): string {
 /**
  * Parse operator-supplied typed fields out of the `context` param (D7).
  * Headings: ACCEPTANCE CRITERIA, PITFALLS (or EDGE CASES), OUT OF SCOPE,
- * TEST SURFACE, DECOMPOSITION (or SUB-ISSUES). Grammar in the module header.
+ * TEST SURFACE, DECOMPOSITION (or SUB-ISSUES), NEVER CLAIM (or FORBIDDEN).
+ * Grammar in the module header.
  */
 export function parseOperatorDirectives(context: string | undefined): OperatorDirectives {
   const out: Required<OperatorDirectives> = {
@@ -101,6 +113,7 @@ export function parseOperatorDirectives(context: string | undefined): OperatorDi
     outOfScope: [],
     testSurface: [],
     decomposition: [],
+    neverClaim: [],
   };
   if (!context || !context.trim()) return out;
   const lines = context.split("\n");

@@ -1698,7 +1698,17 @@ Pre-fix (2026-09-10, vipune round 9): the prior-context block in every child pro
 
 ### Operator directive channels (the trusted path into a spec)
 
-Children treat everything quoted in a descriptor as untrusted data (prompt-injection defense), so instructions travel through typed `context` blocks instead: `ACCEPTANCE CRITERIA`, `PITFALLS`/`EDGE CASES`, `OUT OF SCOPE`, `TEST SURFACE` (REPLACES the angle-derived section — "exactly: none" stays exactly none), and `DECOMPOSITION`/`SUB-ISSUES` (epic constraints). "EXACTLY N sub-issues" anywhere in the descriptor or context is threaded into the decomposition angle and asserted by validation (mismatch → draft-invalid). Spikes have no gap gate, so when a context param was supplied, a spike draft still showing scaffold strings in its deliverable or Test-surface section halts as draft-invalid — the deterministic bar is the spike's only bar.
+Children treat everything quoted in a descriptor as untrusted data (prompt-injection defense), so instructions travel through typed `context` blocks instead: `ACCEPTANCE CRITERIA`, `PITFALLS`/`EDGE CASES`, `OUT OF SCOPE`, `TEST SURFACE` (REPLACES the angle-derived section — "exactly: none" stays exactly none), `DECOMPOSITION`/`SUB-ISSUES` (epic constraints), and `NEVER CLAIM` (or `FORBIDDEN`) — verbatim forbidden phrases (see below). "EXACTLY N sub-issues" anywhere in the descriptor or context is threaded into the decomposition angle and asserted by validation (mismatch → draft-invalid). Spikes have no gap gate, so when a context param was supplied, a spike draft still showing scaffold strings in its deliverable or Test-surface section halts as draft-invalid — the deterministic bar is the spike's only bar.
+
+### A child echoed a forbidden phrase back into a filed spec (NEVER CLAIM)
+
+The `NEVER CLAIM` (or `FORBIDDEN`) typed block in the `context` param declares verbatim phrases the operator has ruled out. Each phrase is one line in the block; the same grammar (heading → block terminator) applies as for every other directive. Three deterministic backstops run in sequence — the phrase never reaches a filed spec without being named in the disclosure:
+
+1. **Prompt backstop** — the phrases are threaded as a dedicated, uncapped block into every investigation angle prompt, the duplicate-risk prompt, and the gap-gate reviewer prompt. The block is structurally immune to any render cap (the prior-context inventory that renders the operator's ruling verbatim is the one render path that caps; this list is not).
+2. **Post-filter** — between investigation and drafting, any structured item whose normalised text (trim + collapse whitespace + lowercase) contains a forbidden phrase as an exact normalised substring is dropped. Dropped items are disclosed: a line in the drafted body (`> NEVER CLAIM filter disclosure — …`) names the matched phrase and the per-angle drop count, and the result details carry the disclosure. Paraphrases are NOT matched (measured: loose matching false-positives on the epic's own true invariants and correctly-negated restatements), so the filter is a verbatim-only backstop, not the primary mechanism.
+3. **Validation assertion** — `validateDraft` asserts no forbidden phrase appears in any generated section of the drafted body. The `## Prior context inventory` section is excluded (it re-renders the operator context verbatim and would always match by construction).
+
+If a phrase you declared in `NEVER CLAIM` still appears in a filed spec's body outside the Prior context inventory, the `validateDraft` assertion would have halted the run as `draft-invalid` — file a bug if you see it.
 
 ### "NOT FILEABLE AS-IS (review-unparseable)" — the gap gate fails closed on an unreadable review
 

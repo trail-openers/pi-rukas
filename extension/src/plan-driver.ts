@@ -1,41 +1,23 @@
 /**
  * plan-driver — the compiled five-phase /plan pipeline (orchestrator).
  *
- * /plan used to be a 473-line prose body sent into PM's context. PM was then
- * left to run the five phases by hand, with a self-judged "triviality test"
- * and no gate between that self-judgment and `gh issue create`. In one
- * session PM filed three non-trivial issues inline (#591, #592, #594) — no
- * adversarial gap gate, no user confirmation, no structured spec body for
- * /work to consume.
- *
- * This module is the same shape as the `start_work_driver` fix: a compiled
- * driver PM calls, not a prose flow PM re-implements. It replaces the /plan
- * body, and the mode-independent issue-creation guard (issue-creation-guard.ts)
- * is what makes the replacement safe: direct `gh issue create` bash is
- * refused for every role in every mode, so the only way left to file a
- * ticket is this driver or a human typing the command themselves.
+ * A compiled driver PM calls, not a prose flow PM re-implements. The
+ * mode-independent issue-creation guard (issue-creation-guard.ts) makes
+ * the replacement safe: direct `gh issue create` bash is refused for
+ * every role in every mode.
  *
  * Phase compilation (each phase's detail lives in its module's header):
- *
- *   0  Classify [plan-types.ts] · 0b Precheck — deterministic
- *      under-specification triage before ANY dispatch [plan-precheck.ts]
+ *   0  Classify [plan-types.ts] · 0b Precheck [plan-precheck.ts]
  *   1  Inventory — vipune + `gh issue list`, driver-run [plan-draft.ts]
- *   1b+2 Investigate — duplicate-risk explore + type-specialised angles as
- *      ONE parallel barrier; the HIGH-risk stop applies after the barrier
- *      and returns a structured `duplicate-risk` result (never a throw)
- *      [plan-investigate.ts]
- *   3  Draft [plan-draft.ts: draftSpec] · 3b Validate — deterministic body
- *      validation BEFORE the gate [plan-validate.ts]
- *   4  Gap gate — bug/feature/epic only; CRITICAL-only terminal rule,
- *      D1/D2/D3 routing in plan-gaps.ts; round 2 is a SCOPED VERIFICATION
- *      [plan-gate-prompt.ts]
- *   5  File — forge issueCreate; DISCRIMINATED failures (D7)
- *      [plan-filing.ts]
+ *   1b+2 Investigate — duplicate-risk + angles as ONE parallel barrier
+ *      [plan-investigate.ts] — includes the #677 NEVER CLAIM post-filter
+ *   3  Draft [plan-draft.ts] · 3b Validate [plan-validate.ts]
+ *   4  Gap gate — CRITICAL-only terminal rule [plan-gaps.ts]
+ *   5  File — forge issueCreate [plan-filing.ts]
  *
- * dryRun is the confirmation seam: `dryRun: true` returns the spec + gaps
- * without filing; PM shows it to the operator; on confirmation the driver
- * is re-called with `dryRun` omitted. Every phase is timed
- * (PlanResult.timings — measure, then cut).
+ * dryRun is the confirmation seam: `dryRun: true` returns the spec +
+ * gaps without filing; on confirmation the driver is re-called without
+ * dryRun. Every phase is timed (PlanResult.timings — measure, then cut).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -183,18 +165,23 @@ export async function runPlanPipeline(
   const {
     duplicateRisk,
     findings,
-  }: { duplicateRisk?: { level: string; rationale: string }; findings: AngleFindings[] } =
-    await timed("investigate", () =>
-      runInvestigation(dispatch, pi, {
-        type,
-        descriptor,
-        repoRoot,
-        inv,
-        priorContext,
-        codeIdentifiers: codeIds,
-        pinnedSubIssues,
-      }),
-    );
+    neverClaimDisclosure,
+  }: {
+    duplicateRisk?: { level: string; rationale: string };
+    findings: AngleFindings[];
+    neverClaimDisclosure: string[];
+  } = await timed("investigate", () =>
+    runInvestigation(dispatch, pi, {
+      type,
+      descriptor,
+      repoRoot,
+      inv,
+      priorContext,
+      codeIdentifiers: codeIds,
+      pinnedSubIssues,
+      forbiddenPhrases: directives.neverClaim,
+    }),
+  );
 
   // Disclosed downstream (result text, details, drafted body) — a killed
   // child must never vanish silently (vipune fixture run, C3).
@@ -294,6 +281,16 @@ export async function runPlanPipeline(
     trace(`plan-driver: body compacted to fit the forge limit (${body.length} chars)`);
     body += `\n\n> Compacted to fit the forge's ${FORGE_BODY_MAX}-char body limit (per-section items capped at ${chosenBudget.maxItemsPerSection}, item text clipped at ${chosenBudget.itemClipChars} chars); full findings live in the run transcripts (/runs).`;
   }
+  // #677 — the NEVER CLAIM post-filter disclosure, appended to the drafted
+  // body BEFORE validation (so the filed spec names what was dropped and
+  // why) and BEFORE the gate (so the reviewer sees the disclosure, not a
+  // silent absence). Empty when nothing was dropped — the body is
+  // unchanged, and there is nothing to disclose.
+  if (neverClaimDisclosure.length > 0) {
+    body += `\n\n> **NEVER CLAIM filter disclosure** — the operator's NEVER CLAIM block caused the following structured items to be dropped before drafting (exact normalised substring match, verbatim-only; paraphrases are not matched and were left in place):\n${neverClaimDisclosure
+      .map((d) => `> ${d}`)
+      .join("\n")}`;
+  }
 
   // Phase 3b — deterministic body validation (plan-validate.ts), BEFORE the
   // gate: a draft whose load-bearing sections fell back to placeholders
@@ -301,6 +298,7 @@ export async function runPlanPipeline(
   const draftCheck = validateDraft(type, body, depth, {
     operatorSupplied: !!context?.trim(),
     pinnedSubIssues,
+    forbiddenPhrases: directives.neverClaim,
   });
   if (!draftCheck.ok) {
     trace(`plan-driver: draft validation failed — ${draftCheck.problems.join("; ")}`);
@@ -351,7 +349,7 @@ export async function runPlanPipeline(
         // resolutions — not a second full review (plan-gate-prompt.ts).
         (iteration) =>
           iteration <= 1 || lastCarried.length === 0
-            ? gapGatePrompt(body, findings, priorContext)
+            ? gapGatePrompt(body, findings, priorContext, directives.neverClaim)
             : gapGateVerifyPrompt(body, lastCarried),
         GAP_GATE_MAX_ITERATIONS,
         (blocking: PlanGap[]) => {

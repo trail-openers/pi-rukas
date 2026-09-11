@@ -21,10 +21,12 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { dispatchCore } from "./dispatch.ts";
-import { DESCRIPTOR_DATA_FRAMING } from "./plan-angles.ts";
-import type { AngleFindings, MechanicalInventory } from "./plan-draft.ts";
-import { anglePromptsFor, extractPlanItems, renderPriorContext } from "./plan-draft.ts";
+import { DESCRIPTOR_DATA_FRAMING, anglePromptsFor } from "./plan-angles.ts";
+import type { AngleFindings, MechanicalInventory, PlanItemKind } from "./plan-draft.ts";
+import { extractPlanItems, renderPriorContext } from "./plan-draft.ts";
+import { forbiddenPhrasesBlock } from "./plan-prior-context.ts";
 import type { PlanType } from "./plan-types.ts";
+import { normalisePhrase } from "./plan-validate.ts";
 import { trace } from "./trace.ts";
 
 /** The dispatch seam (same shape as plan-driver's PlanDispatchFn). */
@@ -78,6 +80,73 @@ export interface InvestigationResult {
   /** Undefined when the duplicate-risk dispatch failed (ok=false). */
   duplicateRisk?: DuplicateRisk;
   findings: AngleFindings[];
+  /**
+   * #677: disclosure lines from the NEVER CLAIM post-filter (one per
+   * dropped angle, naming the matched phrase). Empty when nothing was
+   * dropped — the driver renders this into the drafted body and the
+   * result details, never silently.
+   */
+  neverClaimDisclosure: string[];
+}
+
+/**
+ * #677 — the deterministic NEVER CLAIM post-filter.
+ *
+ * DROPS any structured item whose normalised text contains a forbidden
+ * phrase as an EXACT normalised substring (trim + collapse internal
+ * whitespace + lowercase — the same normalisation as sub-issue
+ * reconciliation). Verbatim-only by design: loose matching was measured to
+ * false-positive on the epic's own true invariants and correctly-negated
+ * restatements, so it is out of scope. Dropped items are NEVER silent —
+ * the returned disclosure names every phrase that matched and the per-
+ * angle drop counts, and the driver threads it into the drafted body and
+ * the result details.
+ *
+ * The findings array is replaced (not mutated): the caller's original
+ * array is untouched, and the disclosure is the ONLY place the dropped
+ * items are accounted for — a filter that quietly shrinks toolUses
+ * without a disclosure line would be the exact anti-pattern #677 exists
+ * to prevent.
+ */
+export interface NeverClaimFilterResult {
+  findings: AngleFindings[];
+  /** Empty when nothing was dropped — the disclosure is a no-op then. */
+  disclosure: string[];
+  droppedCount: number;
+}
+
+export function applyNeverClaimFilter(
+  findings: AngleFindings[],
+  forbiddenPhrases: string[],
+): NeverClaimFilterResult {
+  const phrases = forbiddenPhrases.map(normalisePhrase).filter((p) => p.length > 0);
+  if (phrases.length === 0) return { findings, disclosure: [], droppedCount: 0 };
+  const disclosure: string[] = [];
+  let droppedCount = 0;
+  const out = findings.map((f) => {
+    const dropped: { kind: string; text: string; phrase: string }[] = [];
+    const kept: PlanItemKind[] = [];
+    for (const item of f.toolUses) {
+      const nItem = normalisePhrase(item.text);
+      const hit = phrases.find((p) => nItem.includes(p));
+      if (hit) {
+        dropped.push({ kind: item.kind, text: item.text, phrase: hit });
+        droppedCount++;
+      } else {
+        kept.push(item);
+      }
+    }
+    if (dropped.length > 0) {
+      for (const d of dropped) {
+        const shown = d.text.length > 80 ? `${d.text.slice(0, 79)}…` : d.text;
+        disclosure.push(
+          `NEVER CLAIM filter dropped ${dropped.length} item(s) from angle "${f.name}": matches the operator's forbidden phrase "${d.phrase}" (exact normalised substring). Dropped: [${d.kind}] ${shown}`,
+        );
+      }
+    }
+    return { ...f, toolUses: kept };
+  });
+  return { findings: out, disclosure, droppedCount };
 }
 
 /**
@@ -99,7 +168,9 @@ export function duplicateRiskPrompt(
   descriptor: string,
   inv: MechanicalInventory,
   priorContext: { source: string; fact: string }[] = [],
+  forbiddenPhrases?: string[],
 ): string {
+  const forbidden = forbiddenPhrasesBlock(forbiddenPhrases ?? []);
   const prior =
     priorContext.length > 0
       ? ` PM has already established: ${renderPriorContext(priorContext)} — if this context explicitly acknowledges an issue as prior art or a deliberate reversal, that issue is RECONCILED and must not raise the risk above medium.`
@@ -109,7 +180,7 @@ export function duplicateRiskPrompt(
     `Mechanical scan found: ${
       inv.related.map((r) => `#${r.number} (${r.state}) ${r.title}`).join("; ") ||
       "no related issues"
-    }.${prior}`,
+    }.${prior}${forbidden}`,
     "Assess whether filing this ticket would duplicate existing work — check open + recently closed issues (gh issue list --state all --search '<keyword>' --limit 10) and vipune.",
     "high means DUPLICATE: an OPEN issue (or closed-but-unlanded work) already covers this scope. A CLOSED issue whose work landed is prior art or a REVERSAL target, not a duplicate — report medium at most and NAME the issue so the spec can reference it.",
     "Return a short verdict: DUPLICATE_RISK: high|medium|low|none plus 2-3 sentences of rationale with issue numbers.",
@@ -156,6 +227,8 @@ export async function runInvestigation(
     priorContext: { source: string; fact: string }[];
     codeIdentifiers: string[];
     pinnedSubIssues?: number;
+    /** #677: the operator's verbatim forbidden phrases (NEVER CLAIM block). */
+    forbiddenPhrases?: string[];
   },
 ): Promise<InvestigationResult> {
   const { type, descriptor, repoRoot, inv, priorContext, codeIdentifiers } = args;
@@ -165,13 +238,14 @@ export async function runInvestigation(
     priorContext,
     codeIdentifiers,
     args.pinnedSubIssues,
+    args.forbiddenPhrases,
   );
 
   const duplicatePromise = dispatch(
     pi,
     {
       role: "explore",
-      prompt: duplicateRiskPrompt(type, descriptor, inv, priorContext),
+      prompt: duplicateRiskPrompt(type, descriptor, inv, priorContext, args.forbiddenPhrases),
       cwd: repoRoot,
     },
     {
@@ -223,7 +297,19 @@ export async function runInvestigation(
     ),
   );
 
-  const [dup, findings] = await Promise.all([duplicatePromise, anglesPromise]);
+  const [dup, rawFindings] = await Promise.all([duplicatePromise, anglesPromise]);
+
+  // #677 — the deterministic NEVER CLAIM post-filter, applied AFTER the
+  // barrier and BEFORE the driver's all-angles-failed guard (a dropped
+  // item that emptied an angle is the same as a failed angle for that
+  // guard's purposes, and the disclosure is the operator's only record
+  // of why). Verbatim-only, disclosed, never silent.
+  const filtered = applyNeverClaimFilter(rawFindings, args.forbiddenPhrases ?? []);
+  if (filtered.droppedCount > 0) {
+    trace(
+      `plan-investigate: NEVER CLAIM filter dropped ${filtered.droppedCount} item(s) across ${filtered.findings.length} angle(s)`,
+    );
+  }
 
   let duplicateRisk: DuplicateRisk | undefined;
   if (dup.ok) {
@@ -232,5 +318,9 @@ export async function runInvestigation(
   } else {
     trace("plan-driver: duplicate-risk dispatch failed — proceeding without a risk verdict");
   }
-  return { duplicateRisk, findings };
+  return {
+    duplicateRisk,
+    findings: filtered.findings,
+    neverClaimDisclosure: filtered.disclosure,
+  };
 }

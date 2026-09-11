@@ -37,6 +37,7 @@
 import { DESCRIPTOR_DATA_FRAMING } from "./plan-angles.ts";
 import type { AngleFindings } from "./plan-draft.ts";
 import { VIPUNE_PRECEDENCE_NOTE, priorContextHasVipune, renderPriorContext } from "./plan-draft.ts";
+import { forbiddenPhrasesBlock } from "./plan-prior-context.ts";
 
 /**
  * The round-1 gap-gate reviewer prompt. Carries the prior context (capped
@@ -50,6 +51,7 @@ export function gapGatePrompt(
   body: string,
   findings: AngleFindings[],
   priorContext: { source: string; fact: string }[],
+  forbiddenPhrases?: string[],
 ): string {
   const summary = findings
     .map((x) => {
@@ -66,6 +68,12 @@ export function gapGatePrompt(
     priorContext.length > 0
       ? `PM has already established these decisions and facts (DO NOT re-raise them as gaps; citing them is only valid if you can show the spec contradicts them):\n${renderPriorContext(priorContext)}\n${priorContextHasVipune(priorContext) ? `${VIPUNE_PRECEDENCE_NOTE}\n\n` : ""}`
       : "";
+  // #677: the forbidden-phrases block is a SEPARATE dedicated block, appended
+  // AFTER the capped prior-context render — structurally immune to any cap.
+  // The reviewer must not file a gap for the absence of a forbidden phrase
+  // (the operator ruled it out deliberately), but it must not be re-raised
+  // as a spec commitment either.
+  const forbidden = forbiddenPhrasesBlock(forbiddenPhrases ?? []);
   const tail =
     "Severity is keyed to WHO must decide. For each gap, output ONE line starting with the marker GAP: followed by the severity, an em dash, a short description, then — proposed resolution: with the proposed resolution. The severity scale:\n" +
     "CRITICAL: the spec commits to two things that contradict, or the spec is internally impossible — checkable from the spec text ALONE, no external fact required — building from it produces WRONG behaviour\n" +
@@ -83,7 +91,7 @@ export function gapGatePrompt(
     "- exact line numbers anywhere (they rot; name the SYMBOL)\n" +
     "- restating a decision the spec already makes once\n\n" +
     "Example: GAP: CRITICAL — the spec commits to both a retry cap of 3 and an infinite retry on quota errors — proposed resolution: name which wins. Example: UNGROUNDED: whether library BOSL2 exposes a screw() module — no spec-internal contradiction, and no world source you can verify against — reported as ungrounded, NOT as a gap. Never write a severity word on its own line — prose mentioning CRITICAL/HIGH/MEDIUM/LOW does not create a gap unless the line starts with GAP:; the same holds for UNGROUNDED: lines — the marker is what counts, and it counts as an UNVERIFIED classification, not a finding. Each resolution must be ONE of: (a) an additional research dispatch, (b) a sharper acceptance criterion to add, or (c) an Open Question. End your reply with a single line exactly of the form:\nVERDICT: READY  (zero CRITICAL gaps)\nor\nVERDICT: NEEDS_ITERATION";
-  return `${head}${spec}${sum}${prior}${tail}`;
+  return `${head}${spec}${sum}${prior}${forbidden}${tail}`;
 }
 
 /** One carried CRITICAL gap + what happened to its resolution. */

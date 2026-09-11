@@ -197,6 +197,7 @@ export function itemsByKind(findings: AngleFindings[], kind: PlanItemKindName): 
 export {
   OPERATOR_PRIOR_CONTEXT_CHILD_PROMPT_CAP,
   PRIOR_CONTEXT_CHILD_PROMPT_CAP,
+  forbiddenPhrasesBlock,
   renderPriorContext,
 } from "./plan-prior-context.ts";
 

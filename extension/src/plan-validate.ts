@@ -33,6 +33,39 @@
  */
 import { EPIC_SUB_ISSUE_DEPTH_LIMIT, type PlanType } from "./plan-types.ts";
 
+/**
+ * #677: normalise text the same way the NEVER CLAIM post-filter and
+ * sub-issue reconciliation do — trim, collapse internal whitespace,
+ * lowercase. Verbatim-only matching (exact normalised substring); fuzzy
+ * matching was measured to false-positive on correctly-negated
+ * restatements and the epic's own true invariants, so it is out of scope.
+ */
+export function normalisePhrase(t: string): string {
+  return t.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/**
+ * #677: a forbidden-phrase scan over a body, EXCLUDING the Prior-context
+ * inventory section — that section re-renders the operator context verbatim
+ * and would always match a phrase the operator themselves declared
+ * forbidden (by construction, it contains the "never claim X" ruling).
+ * Returns the phrases found in the generated sections.
+ */
+export function bodyContainsForbiddenPhrase(body: string, phrases: string[]): string[] {
+  if (phrases.length === 0) return [];
+  const parts = body.split(/^## /m);
+  // parts[0] is the preamble; the rest each start with their heading line.
+  const nonInventory = parts.slice(1).filter((p) => !/^Prior context inventory/m.test(p));
+  const hay = [...(parts[0] ? [parts[0]] : []), ...nonInventory].join("\n");
+  const nHay = normalisePhrase(hay);
+  const hits = new Set<string>();
+  for (const p of phrases) {
+    const np = normalisePhrase(p);
+    if (np && nHay.includes(np)) hits.add(p);
+  }
+  return [...hits];
+}
+
 /** The Acceptance-criteria fallback draftSpec renders when no AC exists. */
 export const AC_FALLBACK =
   "derive the testable outcomes from the investigation findings before /work";
@@ -86,6 +119,13 @@ export interface ValidateOpts {
   operatorSupplied?: boolean;
   /** A sub-issue count the operator pinned ("EXACTLY 5 sub-issues"). */
   pinnedSubIssues?: number;
+  /**
+   * #677: the operator's verbatim forbidden phrases (NEVER CLAIM block).
+   * Asserted absent from every GENERATED section of the body; the Prior-
+   * context inventory is excluded (it re-renders the operator context
+   * verbatim and always matches by construction).
+   */
+  forbiddenPhrases?: string[];
 }
 
 export function validateDraft(
@@ -95,6 +135,17 @@ export function validateDraft(
   opts: ValidateOpts = {},
 ): DraftValidation {
   const problems: string[] = [];
+  const forbidden = (opts.forbiddenPhrases ?? []).filter((p) => p.trim().length > 0);
+  if (forbidden.length > 0) {
+    const hits = bodyContainsForbiddenPhrase(body, forbidden);
+    if (hits.length > 0) {
+      problems.push(
+        `forbidden phrase(s) from the operator's NEVER CLAIM block appear in a generated section of the drafted body: ${hits
+          .map((h) => `"${h}"`)
+          .join(", ")} — the prior-context inventory is excluded from this scan by construction`,
+      );
+    }
+  }
   if (type === "bug" || type === "feature") {
     const ac = sliceSection(body, "Acceptance criteria");
     if (!ac || ac.includes(AC_FALLBACK)) {
