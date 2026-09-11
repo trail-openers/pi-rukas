@@ -232,6 +232,50 @@ export function clipItem(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
+/**
+ * #678: clip at the clip boundary, but if that point lands INSIDE a
+ * path-shaped token, back off to just before the token — a truncated path
+ * (`see exte…`) is worse than a missing one, because a /work implementer
+ * greps for a path that does not exist. No paths in the clip range → the
+ * output is byte-identical to `clipItem` (the issue's regression criterion).
+ */
+export function clipRef(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let cut = max - 1;
+  // A path-shaped token: word/dot/hyphen segments, at least one `/` OR a
+  // dotted name (foo.ts). The trailing `\b` makes the match end at a word
+  // boundary, so "plan-validate.ts" inside "extension/src/plan-validate.ts"
+  // matches on its own — the backoff loop below expands the token leftward
+  // across the slashes to the FULL path, so the whole "extension/src/..." is
+  // dropped, not just the "plan-validate.ts" suffix.
+  const PATH_TOKEN_RE = /[\w.-]+(?:\/[\w.-]+)*\.\w+\b/g;
+  // The left-edge of the current backoff, expanded across `/` segments:
+  // "...src/plan-validate.ts" → the start of "extension". Walks left while
+  // the char before the current position is a slash, consuming the segment
+  // before it; stops when the char before is not a slash (we're at the start
+  // of the full path, or the path begins the string).
+  const fullTokenStart = (s: number) => {
+    let i = s;
+    while (i > 0 && text[i - 1] === "/") {
+      i--; // consume the slash
+      let j = i - 1;
+      while (j >= 0 && /[\w.-]/.test(text.charAt(j))) j--;
+      i = j + 1; // consume the segment before the slash
+    }
+    return i;
+  };
+  for (const m of text.matchAll(PATH_TOKEN_RE)) {
+    const s = fullTokenStart(m.index ?? 0);
+    const e = (m.index ?? 0) + m[0].length;
+    if (e <= cut || s >= cut) continue; // whole or absent already — not the problem token
+    if (s < cut)
+      cut = s; // back off to before the straddling token
+    else break; // a token starting at/after cut is already fully absent
+  }
+  if (cut <= 0) cut = max - 1; // nothing but paths — fall back to the plain clip
+  return `${text.slice(0, cut).trimEnd()}…`;
+}
+
 /** Per-`## heading` char counts — the halt detail's "what to trim" map. */
 export function bodySectionBreakdown(body: string): string {
   const parts = body.split(/^## /m);

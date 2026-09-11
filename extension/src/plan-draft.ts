@@ -28,6 +28,7 @@ import {
   SUB_ISSUES_FALLBACK,
   TEST_SURFACE_FALLBACK,
   clipItem,
+  clipRef,
 } from "./plan-validate.ts";
 import {
   type ResolvedDecision,
@@ -350,9 +351,14 @@ export function draftSpec(
   );
 
   // References: structured reference items first; fallback to a prose
-  // file-path scan only when none were reported (silence-detection precedent).
+  // file-path scan only when none were reported (silence-detection
+  // precedent). The clip is path-boundary-aware (#678): a clip point
+  // landing mid-path renders a fragment a /work implementer would grep for
+  // and not find — a corrupted path is worse than a missing one, so
+  // clipRef backs off to the boundary before the straddling token.
+  // The proseRefs fallback (raw scan tokens + suffix) is untouched.
   const refItems = itemsByKind(findings, "reference")
-    .map((i) => clip(i.text))
+    .map((i) => clipRef(i.text, budget?.itemClipChars ?? 400))
     .slice(0, cap);
   const proseRefs = [...new Set(findings.flatMap((x) => x.text.match(REF_RE) ?? []))].slice(0, 8);
   const referenceLines =

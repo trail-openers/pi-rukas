@@ -20,8 +20,10 @@ import {
   RENDER_BUDGETS,
   bodySectionBreakdown,
   clipItem,
+  clipRef,
   fitDraftToBudget,
 } from "../src/plan-validate.ts";
+import { draftSpec } from "../src/plan-draft.ts";
 import { gatePrompts, installForgeStub } from "./plan-test-stubs.ts";
 
 let exit = 0;
@@ -45,6 +47,47 @@ function assert(cond: boolean, msg: string) {
     /Alpha: \d+ chars/.test(breakdown) && /Beta: \d+ chars/.test(breakdown),
     `breakdown names each section with sizes (${breakdown})`,
   );
+
+  // #678: path-boundary-aware clip. The issue's measured case: a ~450-char
+  // multi-path reference whose 400-boundary lands inside a path token — the
+  // old clip left a mid-path fragment; now the token is whole or absent, the
+  // … marker is retained, and the plain clipItem is untouched (other
+  // sections keep clipping exactly as before).
+  const longPath = "extension/src/plan-validate.ts";
+  const prefix = `see ${"a".repeat(364)} for the `;
+  const midPathRef = `${prefix}${longPath} for the TEST SURFACE and the budget stage table`;
+  assert(midPathRef.length === 455, "fixture: the reference is a ~450-char item");
+  assert(
+    midPathRef.slice(399, 400) !== " " && midPathRef.slice(0, 399).includes("extension/src/plan-va"),
+    "fixture: the 400-boundary lands INSIDE the path token",
+  );
+  // 400 stage: the path token (chars 377–405) STRADDLES the cut at 399 →
+  // dropped whole, marker retained (the issue's acceptance case).
+  const r400 = clipRef(midPathRef, 400);
+  assert(
+    r400.endsWith("…") && !r400.includes("extension") && r400.length === prefix.length,
+    `clipRef: clip point mid-path → path is DROPPED whole, marker retained (${r400.length} chars)`,
+  );
+  // 220 stage: the cut (219) lands BEFORE the path (377+) → the path is
+  // already entirely absent; the clip is byte-identical to clipItem.
+  const t220 = clipRef(midPathRef, 220);
+  assert(
+    t220 === clipItem(midPathRef, 220) && t220.endsWith("…") && !t220.includes("extension"),
+    `clipRef: 220 stage — path already absent, output byte-identical to clipItem (${t220.length} chars)`,
+  );
+  // A path WHOLLY before the boundary stays whole (only straddlers drop).
+  // Make the item long enough that the cut lands AFTER the path (not inside it).
+  const pathBefore = `see ${"c".repeat(250)} at extension/src/plan-draft.ts and also ${"d".repeat(200)}`;
+  const rpb = clipRef(pathBefore, 400);
+  assert(
+    rpb.includes("extension/src/plan-draft.ts") && rpb.endsWith("…"),
+    `clipRef: a path entirely before the clip point survives whole (${rpb.length} chars)`,
+  );
+  // No paths → byte-identical to clipItem (the regression criterion).
+  const noPath = "b".repeat(450);
+  assert(clipRef(noPath, 400) === clipItem(noPath, 400), "clipRef: no-path items clip byte-identical to clipItem (400)");
+  assert(clipRef(noPath, 220) === clipItem(noPath, 220), "clipRef: no-path items clip byte-identical to clipItem (220)");
+  assert(clipRef("short item", 400) === "short item", "clipRef: under the limit unchanged");
 
   // fitDraftToBudget stages.
   const small = fitDraftToBudget(() => ({ body: "tiny" }));
