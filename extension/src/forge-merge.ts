@@ -134,6 +134,33 @@ export function composeGlReadiness(mr: GlMrFields): { readiness: MergeReadiness;
 
 // ── Entry points (CLI-backed, one per forge) ─────────────────────────────
 
+/**
+ * Bounded wait for every merge-readiness `gh`/`glab` call. gh/glab REST
+ * calls are normally sub-second to a few seconds, so 30s gives generous
+ * headroom for a slow network while still catching a hung CLI (network
+ * stall, an interactive auth prompt the child cannot answer, a wedged
+ * credential helper). Mirrors `DEFAULT_TIMEOUT_MS` in vipune.ts.
+ *
+ * Without this bound a hang on this path — which gates the one
+ * irreversible act in a /work cycle — never returns: the driver does not
+ * fail closed, it fails to finish.
+ */
+export const READINESS_TIMEOUT_MS = 30_000;
+
+/**
+ * Name the failure of a readiness exec. Node's exec timeout kills the
+ * child with SIGTERM and rejects with `killed: true` and a frequently
+ * EMPTY message — `(err as Error).message` would render an empty tail in
+ * the reason. Detect `killed` first, mirroring vipune.ts.
+ */
+function readinessErrorReason(err: unknown, context: string): string {
+  const e = err as Error & { killed?: boolean; signal?: string | null };
+  if (e?.killed) {
+    return `${context} timed out after ${READINESS_TIMEOUT_MS}ms (SIGTERM)`;
+  }
+  return `${context}: ${e?.message?.slice(0, 160) ?? "unknown error"}`;
+}
+
 export interface ReadinessOpts {
   /** MaxBuffer for the underlying exec calls (default 256 KB, matching the driver). */
   maxBuffer?: number;
@@ -159,12 +186,16 @@ export async function checkGithubReadiness(
 
   let pr: ReturnType<typeof mapGhPr>;
   try {
-    const { stdout } = await execFn(prViewCmd("github", prNumber), { cwd: repoRoot, maxBuffer });
+    const { stdout } = await execFn(prViewCmd("github", prNumber), {
+      cwd: repoRoot,
+      maxBuffer,
+      timeout: READINESS_TIMEOUT_MS,
+    });
     pr = mapGhPr(JSON.parse(stdout) as Record<string, unknown>);
   } catch (err) {
     return {
       ok: false,
-      reason: `could not read PR state: ${(err as Error).message?.slice(0, 160)}`,
+      reason: readinessErrorReason(err, "could not read PR state"),
       checks: [],
     };
   }
@@ -248,14 +279,18 @@ async function safeGhChecks(
   maxBuffer: number,
 ): Promise<SafeChecks> {
   try {
-    const { stdout } = await execFn(prChecksCmd("github", prNumber), { cwd: repoRoot, maxBuffer });
+    const { stdout } = await execFn(prChecksCmd("github", prNumber), {
+      cwd: repoRoot,
+      maxBuffer,
+      timeout: READINESS_TIMEOUT_MS,
+    });
     const parsed: unknown = JSON.parse(stdout || "[]");
     if (!Array.isArray(parsed)) return { ok: false, reason: "checks rows not an array" };
     return { ok: true, checks: mapGhChecks(parsed) };
   } catch (err) {
     return {
       ok: false,
-      reason: `could not read PR checks: ${(err as Error).message?.slice(0, 160)}`,
+      reason: readinessErrorReason(err, "could not read PR checks"),
     };
   }
 }
@@ -290,12 +325,13 @@ export async function checkGitlabReadiness(
     const { stdout } = await execFn(`glab api /projects/:id/merge_requests/${mrIid}`, {
       cwd: repoRoot,
       maxBuffer,
+      timeout: READINESS_TIMEOUT_MS,
     });
     raw = JSON.parse(stdout) as Record<string, unknown>;
   } catch (err) {
     return {
       ok: false,
-      reason: `could not read MR state: ${(err as Error).message?.slice(0, 160)}`,
+      reason: readinessErrorReason(err, "could not read MR state"),
       checks: [],
     };
   }
@@ -326,6 +362,7 @@ export async function checkGitlabReadiness(
         {
           cwd: repoRoot,
           maxBuffer,
+          timeout: READINESS_TIMEOUT_MS,
         },
       );
       const jobs: unknown = JSON.parse(stdout || "[]");

@@ -15,13 +15,22 @@
 import type { ForgeDetection } from "../src/forge-detect.ts";
 import type { VerifyExecFn } from "../src/work-driver-git.ts";
 
-/** A `mkExec`-style command-substring fake, with a calls array. */
+/**
+ * A `mkExec`-style command-substring fake, with a calls array.
+ *
+ * `opts` records the exec options object passed to the fake per call,
+ * positionally aligned with `calls` (issue #636: tests need to observe
+ * the `timeout` applied at readiness call sites). The `calls` array keeps
+ * its string shape for the existing seven consumers.
+ */
 export function mkExec(
   o: Record<string, { stdout?: string; stderr?: string; error?: boolean }> = {},
-): { fn: VerifyExecFn; calls: string[] } {
+): { fn: VerifyExecFn; calls: string[]; opts: Array<Record<string, unknown> | undefined> } {
   const calls: string[] = [];
-  const fn: VerifyExecFn = async (cmd) => {
+  const opts: Array<Record<string, unknown> | undefined> = [];
+  const fn: VerifyExecFn = async (cmd, o2) => {
     calls.push(cmd);
+    opts.push(o2 as Record<string, unknown> | undefined);
     for (const [k, v] of Object.entries(o)) {
       if (cmd.includes(k)) {
         if (v.error) {
@@ -34,7 +43,7 @@ export function mkExec(
     }
     return { stdout: "" };
   };
-  return { fn, calls };
+  return { fn, calls, opts };
 }
 
 /** GitHub detection: github.com, owner/repo from the URL. */
