@@ -169,7 +169,7 @@ When local checks pass, your job is DONE. Return to PM immediately.
 - Type checking passing
 - No quality gate bypasses (#noqa, @ts-ignore, eslint-disable)
 - For Rust projects: run `oo cargo fmt --all` before returning
-- **All verbose-runner commands use the `oo` prefix** — `oo cargo test`, `oo cargo clippy`, `oo cargo build`, `oo bun test`, `oo npm test`, `oo pnpm test`, `oo yarn test`, `oo pytest`. These produce 50+ lines of output that bloat your context and the dispatch report PM ultimately reads. `oo` compresses them to `✓ cargo test (47 passed)` while preserving failures verbatim. You see the verdict, not the full transcript.
+- **All verbose-runner commands use the `oo` prefix** — `oo cargo test`, `oo cargo clippy`, `oo cargo build`, `oo bun test`, `oo npm test`, `oo pnpm test`, `oo yarn test`, `oo pytest`. These produce 50+ lines of output that bloat your context and the dispatch report PM ultimately reads. `oo` compresses them to `✓ cargo test (47 passed)` while preserving failures verbatim. You see the verdict, not the full transcript. A bare command starting with one of these runners is silently rewritten to its `oo`-prefixed form for developer/ops subagents in trust/sandbox mode by the pi-rukas extension (`oo-rewrite-guard`); the rewrite simply doesn't exist if you launched with `PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD=1` (the extension is not forwarded to subagents), where the prefix remains doctrine-only.
 
 ## Feature Branch Verification
 

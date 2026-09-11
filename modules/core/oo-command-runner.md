@@ -10,7 +10,7 @@ These commands ALWAYS use `oo` — no judgment call, no exceptions:
 - `oo pytest`, `oo uv run pytest`
 - `oo ruff`, `oo go test`, `oo cargo nextest`
 
-They produce 50+ lines of output that bloat your context and the dispatch report PM ultimately reads. Bare is wasteful even when allowlisted — `oo` compresses to `✓ cargo test (47 passed)` while preserving failures verbatim.
+They produce 50+ lines of output that bloat your context and the dispatch report PM ultimately reads. Bare is wasteful even when allowlisted — `oo` compresses to `✓ cargo test (47 passed)` while preserving failures verbatim. Bare commands that start a line with one of the 12 runners above are silently rewritten to `oo <cmd>` for developer/ops subagents in trust/sandbox mode by the pi-rukas extension (`oo-rewrite-guard`); if you run with `PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD=1` the extension is not forwarded to subagents and that rewrite does not exist — the prefix remains doctrine-only there.
 
 The nuanced "Wrap with oo / Run bare" doctrine below covers everything ELSE — `git status`, `gh issue view`, `glab issue view`, `jq` pipes, single-line reads.
 
