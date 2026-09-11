@@ -15,10 +15,11 @@
  * operator to `/runs`, which then told them there had been no tool calls.
  */
 
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { summariseTranscript } from "../src/runs.ts";
+import { buildViewerText, findTranscriptPath } from "../src/dispatch-deck-interactive.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -95,6 +96,83 @@ assert(
   parsed.assistantText.includes("Found the overflow tests"),
   "assistant prose still parses — the Anthropic branch was widened, not replaced",
 );
+
+// --- #607 d2: the deck transcript viewer reuses the /runs renderer ---
+// findTranscriptPath resolves a direct child's deck key (== jobId) to the
+// on-disk transcript by basename prefix; batch/orchestrator keys (containing
+// "/") and missing roots resolve to undefined.
+{
+  const vdir = mkdtempSync(path.join(os.tmpdir(), "runs-viewer-"));
+  const datedir = path.join(vdir, "2026-01-01");
+  mkdirSync(datedir);
+  // Direct child: basename starts with `<jobId>-`.
+  writeFileSync(
+    path.join(datedir, "abc123-developer.json"),
+    rows.map((r) => JSON.stringify(r)).join("\n"),
+  );
+  // An unrelated job in the same dir.
+  writeFileSync(path.join(datedir, "zzz999-explore.json"), "{}");
+  const found = await findTranscriptPath("abc123", vdir);
+  assert(
+    found === path.join(datedir, "abc123-developer.json"),
+    "findTranscriptPath resolves a direct child key to its transcript file",
+  );
+  assert(
+    (await findTranscriptPath("zzz999", vdir)) === path.join(datedir, "zzz999-explore.json"),
+    "findTranscriptPath resolves a different direct child key",
+  );
+  assert(
+    (await findTranscriptPath("runIdX/tag", vdir)) === undefined,
+    "findTranscriptPath: orchestrator-shaped keys (contain '/') are not resolvable",
+  );
+  assert(
+    (await findTranscriptPath("nope", vdir)) === undefined,
+    "findTranscriptPath: unknown key → undefined",
+  );
+}
+
+{
+  const missing = await findTranscriptPath(
+    "abc123",
+    path.join(os.tmpdir(), "definitely-not-here-xyz"),
+  );
+  assert(missing === undefined, "findTranscriptPath: missing root dir → undefined (no throw)");
+}
+
+// buildViewerText renders the same output as /runs' level-3 view for the
+// same file, and degrades to an explicit no-transcript note when the file
+// is absent.
+{
+  const vdir2 = mkdtempSync(path.join(os.tmpdir(), "runs-viewer2-"));
+  const datedir2 = path.join(vdir2, "2026-01-02");
+  mkdirSync(datedir2);
+  writeFileSync(
+    path.join(datedir2, "jobV-developer.json"),
+    rows.map((r) => JSON.stringify(r)).join("\n"),
+  );
+  const viewerText = await buildViewerText(
+    "jobV",
+    "developer",
+    { role: "developer", sizeBytes: 0 },
+    vdir2,
+  );
+  assert(viewerText.includes("# developer"), "viewer text has the /runs renderTranscript header");
+  assert(viewerText.includes("runId:   jobV"), "viewer text carries the run id");
+  assert(viewerText.includes("tool calls: 1"), "viewer text reports the parsed tool-call count");
+  assert(viewerText.includes("## final answer"), "viewer text has the final-answer section");
+  assert(
+    viewerText.includes("Found the overflow tests"),
+    "viewer text includes the assistant prose",
+  );
+  assert(viewerText.includes("Press Esc to close"), "viewer text is the read-only viewer footer");
+
+  const noFile = await buildViewerText("ghost", "ops", { role: "ops", sizeBytes: 0 }, vdir2);
+  assert(
+    noFile.includes("no transcript found"),
+    "absent transcript degrades to the no-transcript note",
+  );
+  assert(noFile.includes("job ghost"), "no-transcript note names the job");
+}
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

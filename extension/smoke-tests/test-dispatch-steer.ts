@@ -14,6 +14,7 @@
 import { childHandles, jobs } from "../src/async-jobs-registry.ts";
 import { formatSingleReport } from "../src/async-jobs.ts";
 import { steerChild } from "../src/dispatch-steer.ts";
+import { steerFromDeck, DECK_UI_STEER_SOURCE } from "../src/dispatch-deck-interactive.ts";
 import { type LifecycleDetails, emitSteered, formatLine } from "../src/lifecycle-events.ts";
 import type { DispatchResult } from "../src/types.ts";
 
@@ -378,6 +379,109 @@ function makeStdin(opts: { fail?: boolean } = {}): { write: (s: string) => void;
   assert(
     noMsgReport.includes("no error message captured"),
     "errored report degrades gracefully when pi-ai didn't surface a message",
+  );
+}
+
+// 6. #607 d3 — the deck-UI steer path (steerFromDeck) shares steerChild's core
+//    and failure shapes, and carries the deck-ui source tag in scrollback.
+{
+  // 6a. Live direct child: delivered, envelope written, tag is deck-ui.
+  const stdin = makeStdin();
+  childHandles.set("j-d3", { stdin: stdin as never, label: "developer", role: "developer" });
+  const notifies: string[] = [];
+  const ui = { notify: (msg: string) => notifies.push(msg) };
+  const r = await steerFromDeck(ui as never, "j-d3", "stop and report status");
+  assert(r.delivered === true, "steerFromDeck: delivered for a live direct jobId");
+  assert(
+    stdin.lines.length === 1 &&
+      JSON.stringify(JSON.parse(stdin.lines[0])) ===
+        JSON.stringify({ type: "steer", message: "stop and report status" }),
+    "steerFromDeck: the stdin line is the same {type:'steer', message} envelope as the PM tool",
+  );
+  assert(notifies.length === 0, "steerFromDeck: no warning notify on successful delivery");
+  childHandles.delete("j-d3");
+}
+
+{
+  // 6b. Unknown job: same no-such-job shape as the PM path + a warning notify.
+  const notifies: string[] = [];
+  const ui = { notify: (msg: string) => notifies.push(msg) };
+  const r = await steerFromDeck(ui as never, "j-ghost-d3", "hello");
+  assert(
+    r.delivered === false && r.reason === "no-such-job",
+    "steerFromDeck: unknown jobId → no-such-job",
+  );
+  assert(notifies.length === 1, "steerFromDeck: failed delivery surfaces a warning notify");
+  assert(notifies[0]?.includes("no-such-job"), "steerFromDeck: the warning names the reason");
+}
+
+{
+  // 6c. EPIPE on a dead handle: delivered:false, no throw, reason carried.
+  const dead = makeStdin({ fail: true });
+  childHandles.set("j-d3-dead", { stdin: dead as never, label: "developer", role: "developer" });
+  const ui = { notify: (_msg: string) => {} };
+  let threw = false;
+  let r: Awaited<ReturnType<typeof steerFromDeck>> | undefined;
+  try {
+    r = await steerFromDeck(ui as never, "j-d3-dead", "hello");
+  } catch {
+    threw = true;
+  }
+  assert(!threw, "steerFromDeck: EPIPE does not throw");
+  assert(r?.delivered === false, "steerFromDeck: EPIPE → delivered:false");
+  assert(r?.reason === "write EPIPE", "steerFromDeck: EPIPE → reason carries the write error");
+  childHandles.delete("j-d3-dead");
+}
+
+{
+  // 6d. Orchestrator between rounds → between-rounds (same shape as the PM path).
+  const jobId = "orch-d3-idle";
+  jobs.set(jobId, {
+    kind: "single",
+    jobId,
+    role: "adversarial-loop",
+    label: "adversarial_loop",
+    startedAt: Date.now(),
+    abort: new AbortController(),
+    ownerKind: "driver",
+    isOrchestrator: true,
+  });
+  const ui = { notify: (_msg: string) => {} };
+  const r = await steerFromDeck(ui as never, jobId, "refocus");
+  assert(
+    r.delivered === false && r.reason === "between-rounds",
+    "steerFromDeck: orchestrator between rounds → between-rounds",
+  );
+  jobs.delete(jobId);
+}
+
+// 7. #607 d3 — the deck-ui lifecycle line renders the source tag, while the
+//    pm-tool line stays byte-identical to pre-#543 (no tag).
+{
+  assert(DECK_UI_STEER_SOURCE === "deck-ui", "DECK_UI_STEER_SOURCE is 'deck-ui'");
+  const deck: LifecycleDetails = {
+    kind: "steered",
+    jobId: "x",
+    label: "developer",
+    role: "developer",
+    steerMessage: "wrap up now",
+    steerSource: "deck-ui",
+  };
+  const line = formatLine(deck);
+  assert(line.includes("[deck-ui]"), "steered line tags the deck-ui source");
+  assert(line.includes("⤳ steered developer"), "steered line keeps the label");
+  assert(line.includes('"wrap up now"'), "steered line includes the message");
+
+  const pm: LifecycleDetails = {
+    kind: "steered",
+    jobId: "x",
+    label: "developer",
+    role: "developer",
+    steerMessage: "wrap up now",
+  };
+  assert(
+    formatLine(pm) === '▸ ensemble: ⤳ steered developer · "wrap up now"',
+    "pm-tool steer line (no source) is byte-identical to the pre-#543 shape",
   );
 }
 

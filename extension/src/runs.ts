@@ -314,7 +314,13 @@ export async function summariseTranscript(file: string): Promise<ParsedTranscrip
   return out;
 }
 
-function renderTranscript(file: RunFile, parsed: ParsedTranscript): string {
+/**
+ * Render a parsed transcript as markdown for the read-only viewer
+ * (`ctx.ui.editor`, #607 d2). The same renderer the `/runs` command uses
+ * for its level-3 view — the deck viewer reuses it so both surfaces
+ * display identical output.
+ */
+export function renderTranscript(file: RunFile, parsed: ParsedTranscript): string {
   const lines: string[] = [];
   lines.push(`# ${file.role}${file.seq != null ? `-${file.seq}` : ""}`);
   lines.push(`runId:   ${file.runId}`);

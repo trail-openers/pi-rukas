@@ -58,7 +58,9 @@ export type SteerSource =
   | "pm-tool"
   | "driver-loop-detector"
   | "driver-budget"
-  | "driver-turn-nudge";
+  | "driver-turn-nudge"
+  /** #607 d3 — deck UI steer (user confirms a row in the interactive deck). */
+  | "deck-ui";
 
 /**
  * The driver-callable steer core (#543 F2).
