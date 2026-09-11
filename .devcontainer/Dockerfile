@@ -191,10 +191,16 @@ RUN cd ${PI_ENSEMBLE_DIR}/extension && bun install --frozen-lockfile
 # deliberate update per AGENTS.md § 5 — re-verify this check when the pin
 # changes. (This path literal is the build-side mirror of install.sh §5's
 # bridge check — keep them in sync.)
-RUN pi install npm:pi-mcp-adapter || true \
+# Pinned at 2.32.1 (last confirmed-clean release) per nicobailon/pi-mcp-adapter#547:
+# 2.33.0 pins its @modelcontextprotocol/client+core deps at pkg.pr.new preview-
+# tarball URLs, which npm 12's allow-remote=none default rejects with EALLOWREMOTE
+# (broke every publish-image build 2026-08-26 → 2026-09-11). Re-verify the pin
+# when #547 is resolved upstream. Mirrors the pi @0.84.4 floor-pin doctrine
+# above — asserted in extension/smoke-tests/test-dockerfile-pins.ts.
+RUN pi install npm:pi-mcp-adapter@2.32.1 || true \
     && test -d "$HOME/.pi/agent/npm/node_modules/pi-mcp-adapter" || { \
          echo "ERROR: pi-mcp-adapter is missing from the npm layout this image" \
-              "uses (we explicitly run 'pi install npm:pi-mcp-adapter'; the" \
+              "uses (we explicitly run 'pi install npm:pi-mcp-adapter@2.32.1'; the" \
               "git/local extensions/ layout install.sh also accepts is not a" \
               "valid install shape here)." >&2; \
          echo "ERROR: The MCP bridge is required for any MCP server to load in" \

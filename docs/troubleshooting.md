@@ -305,9 +305,9 @@ PR: [#219](https://github.com/trail-openers/pi-rukas/pull/219)
 
 ### `docker pull ghcr.io/trail-openers/pi-rukas:latest` returns `denied`
 
-**Symptom:** `./install.sh` reports `Pull failed; building locally from this checkout instead.` Inside that pull attempt: `Error response from daemon: denied`.
+**Symptom:** `./install.sh` reports `Pull failed; building locally from this checkout instead.` Inside that pull attempt: `Error response from daemon: denied` — or `unauthorized`, the daemon's other error string for the same private-package cause.
 
-**Cause:** The GHCR package is private. By default, GHCR packages start private until the repo owner flips them to public.
+**Cause:** The GHCR package is private. GHCR container packages default to private regardless of repo visibility — a public GitHub repo does **not** make its package public.
 
 **Fix (if you own the repo):** GitHub → Profile → Packages → `pi-rukas` (owner `trail-openers`) → Package settings → Change visibility → Public.
 

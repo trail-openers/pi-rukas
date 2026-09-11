@@ -36,13 +36,12 @@ const FIXTURES = path.resolve(import.meta.dirname, "fixtures", "prerequisite-dri
  * the sources. Delete an entry as the referenced docs issue lands.
  */
 const EXCEPTIONS: Record<string, string> = {
-  // In the Dockerfile (pi install npm:) but absent from the README table.
-  // #488 adds the README row; delete when it lands.
-  "pi-mcp-adapter": "MCP bridge — Pi core has no native MCP; README row lands in #488",
-  // MCP server binary loaded via pi-mcp-adapter, not a PATH CLI. Wired by
-  // install.sh step 6. Never a REQUIRED_CLIS entry.
-  "codebase-memory-mcp":
-    "MCP server binary, not a PATH CLI — preflighted by install.sh step 6 instead",
+  // Dockerfile install is pinned per nicobailon/pi-mcp-adapter#547: 2.33.0 pins its @modelcontextprotocol/* deps at
+  // pkg.pr.new tarball URLs, rejected by npm 12's allow-remote=none default (EALLOWREMOTE). parseDockerInstalls keeps
+  // the full name@version token, so the key must match the Dockerfile verbatim.
+  "pi-mcp-adapter@2.32.1": "MCP bridge, pinned at the last clean release per nicobailon/pi-mcp-adapter#547 (npm-12 EALLOWREMOTE)",
+  // MCP server binary loaded via pi-mcp-adapter, not a PATH CLI. Wired by install.sh step 6. Never a REQUIRED_CLIS entry.
+  "codebase-memory-mcp": "MCP server binary, not a PATH CLI — preflighted by install.sh step 6 instead",
   // In the README (extension runtime) but never in REQUIRED_CLIS: install.sh
   // uses bun/npm, so requiring it on PATH would warn most hosts. #488.
   bun: "declared in README as extension runtime, not preflighted on PATH — install.sh falls back to npm",
