@@ -9,9 +9,19 @@
  *   ▸ ensemble: ✓ developer finished · 2m31s · 14.3k tokens
  *   ▸ ensemble: ✗ developer failed · 2m31s · exit 1 — see report
  *
- * Uses pi.sendMessage with `display: true` (visible to user) but the message
- * type is custom and not declared as LLM-bound — Pi's `convertToLlm` does not
- * forward custom messages to the model. Zero context cost.
+ * #708 — uses pi.appendEntry + pi.registerEntryRenderer, NOT pi.sendMessage.
+ * The pre-#708 premise ("custom messages are not forwarded to the model —
+ * zero context cost") was false: Pi's convertToLlm case "custom" unconditionally
+ * converts every custom message to a user message with no excludeFromContext
+ * check, so every lifecycle line WAS injected into LLM context as a user
+ * message (and, on the steer path, mid-stream sends landed in the steering
+ * queue and broke tool-call adjacency). appendEntry writes a CustomEntry that
+ * does NOT participate in LLM context — zero context cost, as intended.
+ * Display is now renderer-driven (there is no display flag on entries): the
+ * registered EntryRenderer computes the line at render time via
+ * formatLine(entry.data) + applyTheme(...), so emit only persists structured
+ * data. If the renderer is never registered (older Pi, or entry API
+ * unavailable) lines are silently not shown — no error is raised.
  *
  * Lens-review and adversarial orchestrators emit only at the OVERALL
  * dispatch/complete/fail transition (not per child) — otherwise a six-pass
@@ -137,25 +147,45 @@ function isQuiet(): boolean {
   return process.env.PI_ENSEMBLE_QUIET_LIFECYCLE === "1";
 }
 
+type EntryRenderTheme = { fg: (style: string, text: string) => string };
+
+type EntryRenderFn = (
+  entry: { customType: string; data?: unknown },
+  options: { expanded: boolean },
+  theme: EntryRenderTheme,
+) => unknown;
+
+/**
+ * Compute the styled one-line display for a CustomEntry's data at render time.
+ * Exported (test-only in practice) so the offline suite can pin that the
+ * registered renderer's output is byte-identical to
+ * applyTheme(details, formatLine(details), theme).
+ */
+export function renderLifecycleEntryLine(data: unknown, theme: EntryRenderTheme): string {
+  const details = data as LifecycleDetails | undefined;
+  // applyTheme handles the missing-details path (dim render of the fallback
+  // line); formatLine is only reached when data is a well-shaped details
+  // object — an untyped entry.data is not a lifecycle payload.
+  const text = details ? formatLine(details) : "";
+  return applyTheme(details, text, theme);
+}
+
 export function attach(pi: ExtensionAPI): void {
   activePi = pi;
-  const piWithRenderer = pi as unknown as {
-    registerMessageRenderer?: (
-      type: string,
-      renderer: (
-        message: { content: string; details?: unknown },
-        options: unknown,
-        theme: { fg: (style: string, text: string) => string },
-      ) => unknown,
-    ) => void;
+  const piWithEntryApi = pi as unknown as {
+    registerEntryRenderer?: (type: string, renderer: EntryRenderFn) => void;
+    appendEntry?: (type: string, data?: unknown) => void;
   };
-  if (typeof piWithRenderer.registerMessageRenderer !== "function") {
-    trace("lifecycle-events: registerMessageRenderer unavailable; default render will be used");
+  if (typeof piWithEntryApi.registerEntryRenderer !== "function") {
+    // Older Pi without the entry-API pair: degrade to a silent no-op rather
+    // than throwing. In the entry model there is nothing to fall back to at
+    // emit time (appendEntry is the only write), so emit() also checks the
+    // guard and skips the appendEntry call entirely — no entry is persisted.
+    trace("lifecycle-events: registerEntryRenderer unavailable; lifecycle lines will not be shown");
     return;
   }
-  piWithRenderer.registerMessageRenderer(CUSTOM_TYPE, (message, _options, theme) => {
-    const details = message.details as LifecycleDetails | undefined;
-    const styled = applyTheme(details, message.content, theme);
+  piWithEntryApi.registerEntryRenderer(CUSTOM_TYPE, (entry, _options, theme) => {
+    const styled = renderLifecycleEntryLine(entry.data, theme);
     return new Text(styled, 0, 0);
   });
 }
@@ -328,17 +358,26 @@ export function emitStepRetry(
 
 function emit(details: LifecycleDetails): void {
   if (isQuiet()) return;
-  const text = formatLine(details);
   if (!activePi) return;
+  // Graceful-degradation mirror of the attach() guard: when the entry-API
+  // pair was unavailable, nothing was registered, so no entry may be
+  // persisted either (unregistered customType entries render nowhere and
+  // would only pollute the session store).
+  const piWithEntryApi = activePi as unknown as {
+    registerEntryRenderer?: (type: string, renderer: EntryRenderFn) => void;
+    appendEntry?: (type: string, data?: unknown) => void;
+  };
+  if (typeof piWithEntryApi.registerEntryRenderer !== "function") return;
+  if (typeof piWithEntryApi.appendEntry !== "function") {
+    trace("lifecycle-events: appendEntry unavailable; lifecycle line dropped");
+    return;
+  }
   try {
-    activePi.sendMessage({
-      customType: CUSTOM_TYPE,
-      content: text,
-      display: true,
-      details,
-    });
+    // No pre-formatted content slot: the renderer computes display text at
+    // render time from entry.data (see attach()).
+    piWithEntryApi.appendEntry(CUSTOM_TYPE, details);
   } catch (err) {
-    trace(`lifecycle-events: sendMessage failed: ${(err as Error).message}`);
+    trace(`lifecycle-events: appendEntry failed: ${(err as Error).message}`);
   }
 }
 
