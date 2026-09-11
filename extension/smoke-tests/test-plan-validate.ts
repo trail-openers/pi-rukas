@@ -16,7 +16,8 @@
 
 import { draftSpec } from "../src/plan-draft.ts";
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
-import { EPIC_SUB_ISSUE_MAX, validateDraft } from "../src/plan-validate.ts";
+import { applyNeverClaimFilter } from "../src/plan-investigate.ts";
+import { EPIC_SUB_ISSUE_MAX, bodyContainsForbiddenPhrase, validateDraft } from "../src/plan-validate.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -164,6 +165,137 @@ function findingsWith(items: { kind: string; text: string }[]) {
     [],
   );
   assert(validateDraft("chore", chore.body, 0).ok, "chore has no AC requirement");
+}
+
+// --------------------------------- NEVER CLAIM post-filter (#677, pre-draft)
+
+{
+  const forbidden = ["rankings are identical"];
+  const findings = [
+    {
+      name: "x",
+      ok: true,
+      text: "prose",
+      toolUses: [
+        { kind: "acceptance-criterion", text: "the rankings are identical to the old run", angle: "x" },
+        { kind: "acceptance-criterion", text: "the tool registers", angle: "x" },
+      ],
+    },
+  ];
+
+  // 1. Verbatim (normalised) echo → dropped, with a disclosure naming the
+  //    phrase, the item kind and the drop count.
+  const res = applyNeverClaimFilter(findings, forbidden);
+  assert(
+    res.droppedCount === 1 && res.findings[0].toolUses.length === 1 && res.findings[0].toolUses[0].text === "the tool registers",
+    "#677 filter: a verbatim-matching item is dropped; non-matching items survive",
+  );
+  assert(
+    res.disclosure.length === 1 &&
+      /NEVER CLAIM filter dropped 1 item\(s\) from angle "x"/.test(res.disclosure[0]) &&
+      res.disclosure[0].includes('forbidden phrase "rankings are identical"') &&
+      res.disclosure[0].includes("[acceptance-criterion]"),
+    `#677 filter: the disclosure names the phrase, kind and count (${res.disclosure[0]})`,
+  );
+  assert(
+    findings[0].toolUses.length === 2,
+    "#677 filter: the caller's original findings array is untouched (replaced, not mutated)",
+  );
+
+  // 2. A paraphrase (NOT verbatim — the round-9 class, 0/3 caught by design)
+  //    is NOT matched.
+  const paraphrase = applyNeverClaimFilter(
+    findingsWith([{ kind: "acceptance-criterion", text: "the rankings are exactly the same as before" }]),
+    forbidden,
+  );
+  assert(
+    paraphrase.droppedCount === 0 && paraphrase.disclosure.length === 0 && paraphrase.findings[0].toolUses.length === 1,
+    "#677 filter: a paraphrase ('exactly the same as before') is NOT matched — verbatim-only by design",
+  );
+
+  // 3. A different true-invariant phrase sharing words ('identical', 'exactly')
+  //    with the forbidden phrase is NOT dropped — over-matching guard.
+  const trueInvariant = applyNeverClaimFilter(
+    findingsWith([{ kind: "acceptance-criterion", text: "with alpha=0 the scores match today exactly" }]),
+    forbidden,
+  );
+  assert(
+    trueInvariant.droppedCount === 0 && trueInvariant.disclosure.length === 0,
+    "#677 filter: the epic's own true invariant ('scores match today exactly') is NOT dropped",
+  );
+
+  // Empty phrase list is a no-op passthrough.
+  const noop = applyNeverClaimFilter(findings, []);
+  assert(
+    noop.droppedCount === 0 && noop.disclosure.length === 0 && noop.findings.length === 1,
+    "#677 filter: no forbidden phrases → findings pass through unchanged",
+  );
+}
+
+// ------------------------------------- NEVER CLAIM validateDraft scan (#677)
+
+{
+  const forbidden = ["rankings are identical"];
+
+  // 4. The phrase appears ONLY inside '## Prior context inventory' (which
+  //    re-renders the operator context verbatim and always matches by
+  //    construction) → the generated body is clean.
+  const inventoryOnly = [
+    "## Context & motivation",
+    "",
+    "Descriptor: make hybrid the default",
+    "",
+    "## Prior context inventory",
+    "",
+    "- [context param] NEVER CLAIM:\n- rankings are identical",
+    "",
+    "## Acceptance criteria",
+    "",
+    "- the tool registers",
+  ].join("\n");
+  assert(
+    bodyContainsForbiddenPhrase(inventoryOnly, forbidden).length === 0,
+    "#677 validate: a phrase only inside the Prior context inventory is excluded from the scan",
+  );
+  assert(
+    validateDraft("feature", inventoryOnly, 0, { forbiddenPhrases: forbidden }).ok,
+    "#677 validate: inventory-only occurrence does not invalidate the draft",
+  );
+
+  // 5. The phrase appears in a genuinely GENERATED section → flagged, and the
+  //    problem names the phrase.
+  const generated = [
+    "## Context & motivation",
+    "",
+    "Descriptor: make hybrid the default",
+    "",
+    "## Prior context inventory",
+    "",
+    "- [context param] the operator's ruling on the ranking behaviour",
+    "",
+    "## Acceptance criteria",
+    "",
+    "- the rankings are identical to the previous release",
+  ].join("\n");
+  assert(
+    bodyContainsForbiddenPhrase(generated, forbidden).length === 1 &&
+      bodyContainsForbiddenPhrase(generated, forbidden)[0] === "rankings are identical",
+    "#677 validate: a phrase in a generated section is found by the scan",
+  );
+  const v = validateDraft("feature", generated, 0, { forbiddenPhrases: forbidden });
+  assert(
+    !v.ok &&
+      v.problems.some(
+        (p) => p.includes('"rankings are identical"') && p.includes("NEVER CLAIM"),
+      ),
+    `#677 validate: the generated-section occurrence invalidates the draft and names the phrase (${v.problems[0]})`,
+  );
+
+  // No forbidden phrases → the check is a no-op (existing drafts unaffected).
+  assert(
+    validateDraft("feature", generated, 0).ok && bodyContainsForbiddenPhrase(generated, []).length === 0,
+    "#677 validate: without forbidden phrases the scan is a no-op",
+  );
 }
 
 // -------------------------------------- pipeline: halt BEFORE the gap gate

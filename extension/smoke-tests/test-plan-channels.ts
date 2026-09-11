@@ -289,6 +289,71 @@ const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
   );
 }
 
+// ------------------- NEVER CLAIM grammar (vipune round 9, issue #677)
+
+{
+  // Colon form: each bulleted line is one verbatim forbidden phrase.
+  const d = parseOperatorDirectives(
+    "NEVER CLAIM:\n- rankings are identical\n- this change is a no-op\n\nPITFALLS:\n- the retry path",
+  );
+  assert(
+    d.neverClaim?.length === 2 &&
+      d.neverClaim[0] === "rankings are identical" &&
+      d.neverClaim[1] === "this change is a no-op",
+    `#677: NEVER CLAIM colon heading parses into the neverClaim channel (${JSON.stringify(d.neverClaim)})`,
+  );
+  assert(
+    d.pitfalls.length === 1 && d.pitfalls[0] === "the retry path",
+    "#677: the next heading terminates the NEVER CLAIM block (no leak into the next channel)",
+  );
+
+  // FORBIDDEN is the accepted alias for the same channel.
+  const f = parseOperatorDirectives("FORBIDDEN:\n- rankings are identical");
+  assert(
+    f.neverClaim?.length === 1 && f.neverClaim[0] === "rankings are identical",
+    "#677: FORBIDDEN heading feeds the same neverClaim channel",
+  );
+
+  // Fence form: BEGIN/END are delimiters, never items — same block-termination
+  // grammar as every other directive block.
+  const fence = parseOperatorDirectives("NEVER CLAIM:\nBEGIN\nrankings are identical\nEND\ntrailing prose after the close");
+  assert(
+    fence.neverClaim?.length === 1 &&
+      fence.neverClaim[0] === "rankings are identical" &&
+      !fence.neverClaim.some((p) => p.includes("BEGIN") || p.includes("END") || p.includes("trailing")),
+    `#677: fenced NEVER CLAIM block — fences are delimiters, trailing prose never leaks (${JSON.stringify(fence.neverClaim)})`,
+  );
+
+  // The phrasing that would false-positive must NOT open the channel.
+  const midProse = parseOperatorDirectives(
+    "ACCEPTANCE CRITERIA:\n- real item\nnever claim the fix is free to ship.\nForbidden to claim this in the docs.",
+  );
+  assert(
+    (midProse.neverClaim?.length ?? 0) === 0,
+    "#677: mid-prose 'never claim …' / 'Forbidden to …' lines do not open the channel",
+  );
+  assert(
+    midProse.acceptanceCriteria.length === 3,
+    "#677: the prose lines stay items in the block the operator opened",
+  );
+
+  // Prompt seam: the phrases are threaded VERBATIM into every angle prompt
+  // and the gap-gate prompt as a dedicated, cap-immune block.
+  const phrases = ["rankings are identical"];
+  const angle = anglePromptsFor("feature", "make hybrid the default", [], [], undefined, phrases).find(
+    (p) => p.name === "test-surface",
+  );
+  assert(
+    /FORBIDDEN PHRASES\b/.test(angle?.prompt ?? "") && (angle?.prompt ?? "").includes("FORBIDDEN: rankings are identical"),
+    "#677: the angle prompt carries the verbatim FORBIDDEN PHRASES block",
+  );
+  const gate = gapGatePrompt("body", [], [], phrases);
+  assert(
+    /FORBIDDEN PHRASES\b/.test(gate) && gate.includes("FORBIDDEN: rankings are identical"),
+    "#677: the gap-gate prompt carries the verbatim FORBIDDEN PHRASES block",
+  );
+}
+
 // ------------------------------------------------- gate prompt note (C3)
 
 {
