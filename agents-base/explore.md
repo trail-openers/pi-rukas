@@ -239,6 +239,23 @@ Run targeted vipune searches using `--hybrid` and appropriate `--recency` values
 
 **Step 3 — Return the structured summary ONLY.** No command output, no intermediate results.
 
+## /start synthesis sweep
+
+When dispatched for the `/start` session initialisation sweep, return **ONLY** the synthesis tier. Everything else the PM holds from its own cheap reads and from AGENTS.md — which Pi auto-loads into the PM's context — so re-deriving it here is pure duplication.
+
+**Facts the PM already holds — do NOT re-derive or re-report:**
+- Project identity, conventions, quality gates, and gotchas already documented in AGENTS.md (the static tier: project, conventions, quality_gates, gotchas-in-file)
+- Current branch state, open issues/PRs, recent commit activity, and CI health — the PM reads `git log`/`shortlog`/`for-each-ref` and the forge issue/PR/run lists itself, in the same turn
+
+**What you return — the synthesis tier only:**
+- `maturity:` a one-line judgment (where the project sits — early, consolidating, mature — grounded in the telemetry)
+- `gotchas:` pitfalls NOT yet in AGENTS.md — tribal knowledge the file doesn't carry. Omit this field entirely if there are none.
+- An architecture map / cross-file-dependency note, only where genuinely useful to orient the PM. Omit it when the project is small or obvious.
+
+**Budget (advisory):** keep the whole synthesis block to roughly a few hundred to a low-thousand tokens. Your reply echoes in the PM's history on every subsequent tool call, so a longer block pays for itself forever — when in doubt, shorter wins. Nothing enforces it — the budget is a prompt-level instruction only, and exceeding it is not an error.
+
+No raw output, no re-statement of the static tier, no prose narration.
+
 ## Delegation After Research
 
 Once complete:

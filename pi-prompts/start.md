@@ -28,17 +28,20 @@ argument-hint: ""
 
 3. **Context sweep** — dispatch explore specialist. **Do NOT wait for it before starting step 4** — explore and your own bash reads run concurrently.
    - Use the `dispatch_specialist` tool with `role: explore` and prompt:
-     "Run the /start intelligence sweep following your Structured Summary Contract. Return EXACTLY the eight-field structured summary: project, maturity, current_state, conventions, quality_gates, gotchas, open_work, ci_health. No raw output."
+     "Run the /start synthesis sweep following your `/start synthesis sweep` section. Return only the synthesis tier: the maturity one-line judgment, the gotchas not yet in AGENTS.md, and an architecture/cross-file-dependency note only where genuinely useful. Everything else you would otherwise report — project identity, conventions, quality gates, open work, CI health — I already hold from my own step-4/step-5 reads and from AGENTS.md, which is already in my context. No raw output."
 
 4. **Current state of work** — run these directly IN THE SAME PM TURN as step 3's dispatch (one bash call each, all in parallel):
    - `oo git log --oneline -10`
    - `oo git shortlog -sn --no-merges`
    - `oo git for-each-ref --sort=-committerdate refs/heads --format='%(HEAD) %(refname:short) %(committerdate:relative)'`
+   - `git log -1 --format=%cd -- AGENTS.md`
    - Forge state — pick by the detected forge (`git remote get-url origin` host: `github.com` → GitHub, `gitlab.com` → GitLab, otherwise skip these and note "forge undetected"), one bash call each:
      - GitHub: `gh issue list --limit 15`, `gh pr list`, `gh run list --branch main --limit 3`
      - GitLab: `glab issue list --limit 15`, `glab mr list`, `glab ci list --limit 3`
 
    These are read-only — no dispatch, no subagent spawn, no GLM summarisation dependency. The output is yours to synthesise in step 6.
+
+   **AGENTS.md staleness check** (reuses the output already read above — no new command). If the AGENTS.md read came back empty (the file is missing), or its commit date is older than the 10th-most-recent commit from the `oo git log --oneline -10` output above, note it in the readiness line and point the operator at the sibling `/agents-md` command to regenerate — check-and-pointer only, never run a regenerate yourself.
 
 5. **What `/work` left behind** — run these directly, one bash call each, alongside step 4:
    - `ls .pi/work-state/`
@@ -50,7 +53,7 @@ argument-hint: ""
 
    From the summary, carry into step 6: each parked group's issue numbers and its `humanAction`, the groups under `notStarted`, and how long ago `at` was. A summary from last week is history, not this morning's queue — say which.
 
-6. **End your turn after step 4's and step 5's reads — do NOT wait or poll.** The explore dispatch's `[ensemble:async]` report auto-delivers when it completes and resumes you; **then** synthesise step 4's raw output + step 5's driver state + explore's summary into the one readiness line. Never spin on `dispatch_status`. If the report is incomplete or missing its eight-field summary, re-dispatch explore once (Reconnaissance Doctrine resilience fallback) and end your turn again.
+6. **End your turn after step 4's and step 5's reads — do NOT wait or poll.** The explore dispatch's `[ensemble:async]` report auto-delivers when it completes and resumes you; **then** synthesise step 4's raw output + step 5's driver state + explore's synthesis tier into the one readiness line. Never spin on `dispatch_status`. If the report is incomplete or missing its synthesis tier (the maturity judgment, or the not-in-AGENTS.md gotchas), re-dispatch explore once (Reconnaissance Doctrine resilience fallback) and end your turn again.
 
 7. **Store findings**: `vipune add '<project identity, current state, conventions, gotchas>'` (single bash call; quoted argument).
 
