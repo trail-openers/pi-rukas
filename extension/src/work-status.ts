@@ -1,23 +1,4 @@
-/**
- * `/work-status` command (PR2 O4).
- *
- * Reads the workflow state file at `<repoRoot>/.pi/work-state/<issue>.json`
- * and renders a compact, terminal-friendly status snapshot via
- * `ctx.ui.notify`. Intended for the user's "I came back, where are we?"
- * moment without making them open the JSON.
- *
- * Mirrors Restate UI's "no progress in last hour" query semantics but
- * scoped to a single issue + session: a quick at-a-glance summary plus
- * the most recent few events, so the user can decide whether to
- * intervene, wait, or re-run /work
- * as the legacy fallback.
- *
- * Inputs:
- *   /work-status               — auto-resolves the issue: the most
- *                                recently-updated state file (running > recent).
- *   /work-status <issue>       — explicit issue number.
- *   /work-status N --json      — emit raw JSON (handy for piping to jq).
- */
+/** `/work-status` command (PR2 O4) — compact terminal-friendly status snapshot. */
 import { exec } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -174,6 +155,8 @@ function fmtEvent(e: WorkEvent): string {
     }
     case "lens-skipped-empty-diff":
       return `  lens-skipped-empty-diff · round ${e.round}`;
+    case "lens-fix-empty-resend":
+      return `  lens-fix-empty-resend · round ${e.round} · ${e.worktree}`;
     case "adversarial-skipped-empty-diff":
       return `  adversarial-skipped-empty-diff · workstream ${e.workstreamId}`;
     case "verify-full-status":

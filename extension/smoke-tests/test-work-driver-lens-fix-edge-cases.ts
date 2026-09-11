@@ -76,6 +76,12 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 // PR17 — the outcome-verification gate is disabled globally here; dedicated
 // gate tests re-enable it with an injected verifyExecFn.
 process.env.PI_ENSEMBLE_VERIFY = "0";
+// The #654 empty-diff tests reach handoff (the no-diff cap parks the cycle).
+// handoffForge() would otherwise resolve a real forge and attempt an in-process
+// `gh` post (no remote in the test repos). PI_ENSEMBLE_FORGE=none makes
+// handoffForge() return undefined, so the fallback is skipped (the handoff is
+// still recorded via the ops:handoff dispatch-completed event).
+process.env.PI_ENSEMBLE_FORGE = "none";
 
 setupSpawnGuard();
 

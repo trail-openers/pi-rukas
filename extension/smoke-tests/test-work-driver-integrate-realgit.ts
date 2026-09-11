@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { mechanizedBranchSetup } from "../src/work-driver-branch-mechanized.ts";
-import { integrate } from "../src/work-driver-integrate.ts";
+import { integrate, restoreRepoRoot, readDirtyPorcelain } from "../src/work-driver-integrate.ts";
 import type { ExecFn } from "../src/worktree.ts";
 
 const execFileP = promisify(execFile);
@@ -300,6 +300,121 @@ try {
     console.log("✓ conflict test passed");
   } finally {
     rmSync(root2, { recursive: true, force: true });
+  }
+}
+
+// ---- E: dirty-repoRoot shape — #654 task-c --------------------------------
+// A dirty repoRoot at lens-fix time must either restore (stash+pop tracked
+// dirt and retry) or park with the porcelain in evidence — never a bare
+// refusal string. This test exercises both the "safe to restore" and the
+// "untracked-only, not safely restorable" halves against real git.
+{
+  const root3 = mkdtempSync(path.join(tmpdir(), "pi-ens-dirty-root-"));
+  const origin3 = path.join(root3, "origin.git");
+  const repo3 = path.join(root3, "repo");
+  const scratch3 = path.join(root3, "scratch");
+  mkdirSync(scratch3, { recursive: true });
+
+  try {
+    await execFileP("git", ["init", "--bare", "--initial-branch=main", origin3]);
+    await execFileP("git", ["init", "--initial-branch=main", repo3]);
+    await git(repo3, ["config", "user.email", "t@example.com"]);
+    await git(repo3, ["config", "user.name", "T"]);
+    writeFileSync(path.join(repo3, "tracked.txt"), "base\n");
+    await git(repo3, ["add", "."]);
+    await git(repo3, ["commit", "-q", "-m", "base"]);
+    await git(repo3, ["remote", "add", "origin", origin3]);
+    await git(repo3, ["push", "-q", "-u", "origin", "main"]);
+
+    const setup3 = await mechanizedBranchSetup(realExec, repo3, 654, [654], [], "dirty root");
+    const wt3 = setup3.worktrees.default ?? "";
+    assert(existsSync(wt3), "dirty-root test: worktree exists");
+
+    // Simulate a lens-fix that modified the worktree.
+    writeFileSync(path.join(wt3, "fix.txt"), "fixed\n");
+    await git(wt3, ["add", "."]);
+
+    // E1: tracked-dirty repoRoot → restoreRepoRoot stashes and pops it back.
+    writeFileSync(path.join(repo3, "operator-wip.txt"), "do not touch me\n");
+    await git(repo3, ["add", "operator-wip.txt"]);
+    {
+      const dirt = await readDirtyPorcelain(realExec, repo3);
+      assert(dirt !== undefined, "dirty-root E1: readDirtyPorcelain finds tracked dirt");
+      if (dirt) {
+        const outcome = await restoreRepoRoot(realExec, repo3, dirt);
+        assert(
+          outcome.restored === true,
+          `dirty-root E1: restoreRepoRoot stashes and pops tracked dirt (got: ${JSON.stringify(outcome)})`,
+        );
+        // The operator's file must be back on disk.
+        assert(
+          existsSync(path.join(repo3, "operator-wip.txt")),
+          "dirty-root E1: the operator's tracked file survived the stash+pop",
+        );
+      }
+    }
+
+    // E2: untracked-only repoRoot → restoreRepoRoot refuses (not safely stashable).
+    {
+      // Clean up E1's file first (it was popped back, now untracked again).
+      await git(repo3, ["reset", "HEAD", "operator-wip.txt"]); // unstage if still staged
+      // Remove the tracked-modified file so we start clean.
+      await git(repo3, ["checkout", "--", "operator-wip.txt"]).catch(() => {});
+      // Now create ONLY an untracked file.
+      writeFileSync(path.join(repo3, "untracked-only.txt"), "untracked\n");
+      const dirt2 = await readDirtyPorcelain(realExec, repo3);
+      assert(dirt2 !== undefined, "dirty-root E2: readDirtyPorcelain finds untracked dirt");
+      if (dirt2) {
+        const outcome2 = await restoreRepoRoot(realExec, repo3, dirt2);
+        assert(
+          outcome2.restored === false && outcome2.reason !== undefined,
+          `dirty-root E2: restoreRepoRoot refuses untracked-only dirt (got: ${JSON.stringify(outcome2)})`,
+        );
+        assert(
+          (outcome2.reason ?? "").includes("untracked"),
+          "dirty-root E2: the refusal names the untracked shape",
+        );
+      }
+      // The untracked file must still be on disk (never touched).
+      assert(
+        existsSync(path.join(repo3, "untracked-only.txt")),
+        "dirty-root E2: the untracked file was not touched by restoreRepoRoot",
+      );
+    }
+
+    // E3: the full integrate() path — dirty repoRoot with tracked dirt is
+    // detected, and the IntegrateResult carries the porcelain for the
+    // lens-fix caller to act on.
+    {
+      // Reset to a clean state for this sub-test.
+      await git(repo3, ["clean", "-fd"]).catch(() => {});
+      await git(repo3, ["checkout", "--", "."]).catch(() => {});
+      // Create tracked dirt.
+      writeFileSync(path.join(repo3, "tracked-dirty.txt"), "dirty\n");
+      await git(repo3, ["add", "tracked-dirty.txt"]);
+      const dirtyResult = await integrate(realExec, {
+        repoRoot: repo3,
+        branchName: setup3.branchName,
+        worktrees: setup3.worktrees,
+        scratchDir: scratch3,
+        commitTitle: "fix(lens): round 1",
+        commitBody: "b",
+        mode: "followup",
+      });
+      assert(!dirtyResult.ok, "dirty-root E3: integrate() refuses a dirty repoRoot");
+      assert(
+        dirtyResult.failure === "dirty-repoRoot",
+        `dirty-root E3: the failure discriminator is 'dirty-repoRoot' (got: ${dirtyResult.failure})`,
+      );
+      assert(
+        dirtyResult.porcelain !== undefined && dirtyResult.porcelain.length > 0,
+        "dirty-root E3: the IntegrateResult carries the porcelain for restore-or-park",
+      );
+    }
+
+    console.log("✓ dirty-root test passed");
+  } finally {
+    rmSync(root3, { recursive: true, force: true });
   }
 }
 

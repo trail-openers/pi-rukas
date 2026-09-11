@@ -1,11 +1,7 @@
 /**
  * work-driver-integrate — #287 Part B: the ONLY path that writes to repoRoot.
- *
- * Under always-worktree, development happens in `.worktrees/issue-<N>-<id>`
- * and repoRoot is an integration point. `integrate()` consolidates every
- * worktree's slice onto the feature branch at repoRoot.
- *
- * Cherry-pick orchestration is extracted into work-driver-cherry-pick.ts.
+ * Under always-worktree, development happens in `.worktrees/issue-<N>-<id>` and
+ * repoRoot is an integration point. Cherry-pick: work-driver-cherry-pick.ts.
  */
 
 import fs from "node:fs/promises";
@@ -15,27 +11,12 @@ import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import { stagePorcelainPaths } from "./work-driver-stage.ts";
 import type { WorkState } from "./workflow-state-schema.ts";
 import type { ExecFn } from "./worktree.ts";
+import { sweepBranchHolders } from "./worktree.ts";
 
 /**
- * #289 — serialise every operation that touches repoRoot's checkout, index or
- * HEAD.
- *
- * `integrate()` below mutates all three. Two concurrent groups doing that
- * corrupt each other in ways that are silent rather than loud:
- *
- *   - `checkout -B` carries a dirty index ACROSS branches, so B's applied-but-
- *     uncommitted slice moves onto A's branch and A's commit ships B's code
- *     under A's `Fixes #N`;
- *   - `git apply --index` contends on `index.lock` and surfaces as a phantom
- *     "patch conflict", routing a healthy group to handoff;
- *   - `git rev-parse HEAD` after the commit can read a SIBLING's commit, and
- *     the worktree `reset --hard` that follows then destroys this group's work.
- *
- * Two layers, because one Pi process is not the whole story: `/work` is
- * fire-and-forget and `ctx.isIdle()` reports idle immediately after launch, so
- * a second `/work` — or a second Pi process on the same clone — can already
- * race today. The promise chain is the fast path within a process; the
- * lockfile is the cross-process backstop.
+ * #289 — serialise every operation that touches repoRoot's checkout, index
+ * or HEAD. Two layers: the promise chain (fast path within a process) and
+ * the lockfile (cross-process backstop). See test-integration-lock.ts.
  */
 let integrationChain: Promise<unknown> = Promise.resolve();
 
@@ -60,10 +41,8 @@ async function acquireLockfile(repoRoot: string): Promise<() => Promise<void>> {
       };
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
-        // Cannot create the lock at all (read-only .git, permissions). Fail
-        // OPEN: the in-process chain still serialises this process, and
-        // refusing to integrate would be a worse failure than a lock we
-        // could not take.
+        // Cannot create the lock at all (read-only .git, permissions).
+        // Fail OPEN: the in-process chain still serialises this process.
         trace(`integration-lock: lockfile unavailable, continuing: ${(err as Error).message}`);
         return async () => undefined;
       }
@@ -89,13 +68,7 @@ async function acquireLockfile(repoRoot: string): Promise<() => Promise<void>> {
   }
 }
 
-/**
- * Run `fn` holding the integration lock.
- *
- * The chain deliberately never inherits a prior rejection (`then(fn, fn)`) and
- * is re-armed with a swallowing `catch` — otherwise one failed integration
- * would poison every subsequent one for the life of the process.
- */
+/** Run `fn` holding the integration lock. Never inherits a prior rejection. */
 export function withIntegrationLock<T>(repoRoot: string, fn: () => Promise<T>): Promise<T> {
   const run = integrationChain.then(
     () => guarded(repoRoot, fn),
@@ -119,11 +92,7 @@ export function __resetIntegrationLock(): void {
   integrationChain = Promise.resolve();
 }
 
-/**
- * The issue title, from the body artifact the explore step cached. Used for
- * the deterministic branch slug and the commit/PR title. Falls back to
- * undefined so callers can supply their own generic text.
- */
+/** Issue title from the explore step's cached artifact; undefined on miss. */
 export async function cachedIssueTitle(state: WorkState): Promise<string | undefined> {
   const artifact = state.pipelineState.issueBodyArtifact;
   if (!artifact) return undefined;
@@ -161,19 +130,9 @@ export interface IntegrateOpts {
   commitShas?: Record<string, string>;
   /**
    * The project's verify command, run against the CONSOLIDATED tree between
-   * the commit and the push.
-   *
-   * Every gate before this one saw a single workstream in isolation: the
-   * develop gate ran inside one worktree, and adversarial reviewed one
-   * worktree's diff. Nothing had ever compiled the combination — the first
-   * build of the integrated tree happened at `ci`, after six lenses had
-   * already spent up to two hours reviewing it. Two workstreams that each
-   * verify alone can still fail together (one renames what the other calls),
-   * and that failure is created BY integration, so integration is where it
-   * has to be caught.
-   *
-   * Omitted (or absent from the project) means the check is skipped, exactly
-   * as before — a project with no verify command is not newly blocked.
+   * the commit and the push. Integration is the first place the combination
+   * is compiled — every prior gate saw one workstream in isolation. Omitted
+   * (or absent from the project) means the check is skipped, as before.
    */
   verifyCmd?: string;
   /** Executor for `verifyCmd`. Defaults to `execFn`; tests inject. */
@@ -183,12 +142,8 @@ export interface IntegrateOpts {
 }
 
 /**
- * #492 — which worktrees produced no diff, keyed by workstream id.
- *
- * The value is the worktree path itself: that IS the git evidence an operator
- * inspects (`git -C <path> status`). Naming the exact path is what lets the
- * cap say "the fixer produced no diff in `<path>`" instead of "integration
- * failed or the fixer wrote nothing — pick one."
+ * #492 — worktrees that produced no diff, keyed by id → worktree path.
+ * The path IS the git evidence an operator inspects (`git -C <path> status`).
  */
 export type NoDiff = Record<string, string>;
 
@@ -206,13 +161,7 @@ export type IntegrateResult =
        *  the cherry-pick path ran (one or more worktrees had commits). */
       commitShas?: Record<string, string>;
     }
-  /**
-   * Nothing to integrate — every worktree was clean. Not an error.
-   *
-   * #492 — `noDiff` names the worktree(s) that produced no diff, so the
-   *  lens-fix caller can surface "the fixer produced no diff in `<path>`"
-   *  rather than collapsing it into the generic "integration failed" reading.
-   */
+  /** Nothing to integrate — every worktree was clean. Not an error. #492. */
   | { ok: true; workstreams: []; empty: true; noDiff: NoDiff }
   | {
       ok: false;
@@ -220,24 +169,21 @@ export type IntegrateResult =
       conflictPatch?: string;
       /** #492 — worktrees that produced no diff (for handoff context). */
       noDiff?: NoDiff;
-      /**
-       * #539 — structured failure discriminator (alongside the pre-existing
-       * `verify`): how the integration actually failed. `reason` is free
-       * text and the commit-pr caller's catch-all mangles it (any `Error`
-       * becomes `e.stderr ?? e.message`), so cause readers MUST read this,
-       * never re-parse `reason`.
-       */
+      /** #539 — structured failure discriminator. Cause readers MUST read this, never re-parse `reason`. */
       failure?: "dirty-repoRoot" | "apply" | "verify";
+      /**
+       * #654 task-c — verbatim porcelain lines from the dirty preflight.
+       * Set only on dirty-repoRoot failure; the caller parks with THIS,
+       * not a bare refusal string.
+       */
+      porcelain?: string[];
     };
 
 /**
  * Consolidate every worktree onto the feature branch at repoRoot.
- *
- * Fails rather than forces at every step. In particular the dirty-repoRoot
- * preflight (#283's gate, relocated here from the branch step) runs before
- * `checkout -B`, because that command would otherwise silently carry an
- * operator's uncommitted work onto the feature branch — the incident-#602
- * shape, where stale repoRoot residue was swept into a merged PR.
+ * Fails rather than forces at every step. The dirty-repoRoot preflight runs
+ * before `checkout -B` so operator residue is never silently carried onto
+ * the feature branch (incident #602).
  */
 export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<IntegrateResult> {
   const { repoRoot, branchName, worktrees, mode } = opts;
@@ -245,8 +191,8 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
   // Where repoRoot was before we touched it. A failed integration must put it
   // back: the previous code returned from inside the apply loop with the
   // checkout already switched and 0..N-1 workstreams already in the index, so
-  // the operator found a half-applied feature branch and the NEXT cycle's
-  // dirty-repoRoot preflight refused to run at all.
+  // the operator found a half-applied branch; the NEXT cycle's dirty preflight
+  // would refuse to run at all.
   let originalRef: string | undefined;
   const restoreRoot = async () => {
     if (!originalRef) return;
@@ -264,14 +210,12 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
   };
   try {
     // 1. Preflight: repoRoot must be clean before we touch its checkout.
+    // `.worktrees/` is driver scaffolding, not operator residue (backstop for
+    // when .git/info/exclude write failed).
     const { stdout: rootStatus } = await execFn("git status --porcelain", {
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
     });
-    // `.worktrees/` is the driver's own scaffolding, not operator residue.
-    // `.git/info/exclude` normally hides it; this filter is the backstop for
-    // when that write failed, because treating it as dirt would block every
-    // integration forever.
     const rootDirt = rootStatus
       .split("\n")
       .filter((l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l));
@@ -284,11 +228,12 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
         ok: false,
         failure: "dirty-repoRoot",
         reason: `repo root has uncommitted changes, refusing to integrate onto ${branchName}: ${files}. Commit, stash, or discard them — integration would otherwise sweep them into the PR.`,
+        porcelain: rootDirt,
       };
     }
 
     // 2. Put repoRoot on the integration branch, remembering where it was.
-    //    A detached HEAD has no symbolic ref, so fall back to the raw sha.
+    //    Detached HEAD has no symbolic ref — fall back to the raw sha.
     originalRef = await execFn("git symbolic-ref --quiet --short HEAD", {
       cwd: repoRoot,
       maxBuffer: 64 * 1024,
@@ -304,15 +249,19 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
         { cwd: repoRoot, maxBuffer: 256 * 1024 },
       );
     } else {
+      // #654 — a clean worktree holding the branch blocks the checkout
+      // ("fatal: '<branch>' is already used by worktree at '…'"); a dirty
+      // one throws DirtyWorktreeError. Runs under withIntegrationLock.
+      await sweepBranchHolders(execFn, repoRoot, branchName);
       await execFn(`git checkout ${JSON.stringify(branchName)}`, {
         cwd: repoRoot,
         maxBuffer: 256 * 1024,
       });
     }
 
-    // 3. Orchestrated cherry-pick + patch fallback.
-    //    Encapsulated in work-driver-cherry-pick.ts to keep this file under
-    //    500 lines. See that module for the full orchestration logic.
+    // 3. Orchestrated cherry-pick + patch fallback (work-driver-cherry-pick.ts).
+    //    The patch-fallback rebases a followup-mode lens-fix patch onto the
+    //    branch's CURRENT head before applying it (#654 task-b).
     const orchResult = await orchestrateCherryPick(execFn, {
       repoRoot,
       branchName,
@@ -367,10 +316,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
     const patchApplied = orchResult.patchApplied;
     const noDiff = orchResult.noDiff;
 
-    // Commit any staged changes (from cherry-pick or patch apply).
-    // Cherry-pick uses --no-commit to batch all SHAs, then we commit once.
-    // Patch-apply already commits as part of git apply, so this is a no-op
-    // if only patch was used, but required when cherry-pick was used.
+    // Commit staged changes (cherry-pick uses --no-commit; patch-apply is a no-op).
     const { stdout: hasStaged } = await execFn("git diff --cached --name-only", {
       cwd: repoRoot,
       maxBuffer: 64 * 1024,
@@ -385,8 +331,6 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
     // Determine which workstreams actually produced output.
     const appliedWorkstreams = cherryApplied.length > 0 ? cherryApplied : patchApplied;
     // Check if cherry-picked workstreams were all no-ops.
-    // For followup mode without baseSha, skip this check (staged changes
-    // indicate work was done).
     if (opts.baseSha) {
       const { stdout: headAhead } = await execFn(
         `git rev-list --count ${JSON.stringify(opts.baseSha)}..HEAD`,
@@ -399,8 +343,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
         return { ok: true, workstreams: [], empty: true, noDiff };
       }
     } else {
-      // No baseSha — check if there are actually staged changes (patch fallback).
-      // If there are no staged changes and no cherry-picked work, it's empty.
+      // No baseSha — check if there are staged changes (patch fallback).
       if (appliedWorkstreams.length === 0) {
         const { stdout: hasStaged2 } = await execFn("git diff --cached --name-only", {
           cwd: repoRoot,
@@ -447,12 +390,9 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       maxBuffer: 1024 * 1024,
     });
 
-    // Advance each cherry-picked worktree to the new HEAD.
-    //
-    // Without this the worktree keeps the developer's commit, so the NEXT
-    // integration would re-cherry-pick the same SHA — which either fails
-    // (already on branch) or creates a duplicate. Reset `--hard` to the
-    // integration branch HEAD so the worktree is clean for the next round.
+    // Advance each cherry-picked worktree to the new HEAD — without this the
+    // worktree keeps the developer's commit and the NEXT integration would
+    // re-cherry-pick the same SHA (fails or creates a duplicate).
     const { stdout: newHead } = await execFn("git rev-parse HEAD", {
       cwd: repoRoot,
       maxBuffer: 64 * 1024,
@@ -489,4 +429,63 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       reason: (e.stderr ?? e.message ?? "unknown error").toString().trim().slice(0, 300),
     };
   }
+}
+
+/**
+ * #654 task-c — the dirty-repoRoot preflight as a reusable, single
+ * implementation (the issue's "single implementation, not a copy").
+ * Same filtering rule as `integrate()` — `.worktrees/` is driver scaffolding,
+ * not operator residue — so the two cannot drift.
+ * Returns `undefined` when repoRoot is clean (the common case).
+ */
+export async function readDirtyPorcelain(
+  execFn: ExecFn,
+  repoRoot: string,
+): Promise<string[] | undefined> {
+  const { stdout } = await execFn("git status --porcelain", {
+    cwd: repoRoot,
+    maxBuffer: 1024 * 1024,
+  });
+  const dirt = stdout.split("\n").filter((l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l));
+  return dirt.length > 0 ? dirt : undefined;
+}
+
+/**
+ * #654 task-c — the shared restore convention for the repoRoot checkout.
+ * Stash tracked dirt so a retry can integrate onto a clean tree, then pop it
+ * back so the operator's work is never lost. Untracked-only dirt is not
+ * safely stashable — the caller parks with the porcelain in evidence instead.
+ */
+export async function restoreRepoRoot(
+  execFn: ExecFn,
+  repoRoot: string,
+  porcelain: string[],
+): Promise<{ restored: boolean; reason?: string }> {
+  if (!porcelain.some((l) => l.trim().length > 0 && !l.startsWith("??"))) {
+    return {
+      restored: false,
+      reason:
+        "repo root has only untracked files — stashing is not safe for untracked work, so the cycle parks rather than risk dropping it",
+    };
+  }
+  try {
+    await execFn("git stash push -m pi-rukas-lens-fix-restore", {
+      cwd: repoRoot,
+      maxBuffer: 256 * 1024,
+    });
+  } catch (err) {
+    return {
+      restored: false,
+      reason: `git stash failed: ${(err as Error).message?.slice(0, 200)}`,
+    };
+  }
+  try {
+    await execFn("git stash pop", { cwd: repoRoot, maxBuffer: 256 * 1024 });
+  } catch (err) {
+    return {
+      restored: false,
+      reason: `git stash pop failed — the operator's work is in the stash (git stash list): ${(err as Error).message?.slice(0, 200)}`,
+    };
+  }
+  return { restored: true };
 }

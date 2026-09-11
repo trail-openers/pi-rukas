@@ -120,16 +120,7 @@ export type WorkEvent =
       at: number;
       jobId: string;
       rounds: number;
-      /**
-       * Non-blocking findings that were outstanding when the gate passed.
-       *
-       * Only `CRITICAL_ISSUES_FOUND` blocks the commit; `ISSUES_FOUND` and
-       * `MINOR_OBSERVATIONS` are documented as non-blocking and let the cycle
-       * proceed. They are carried here so `commit-pr` can put them in the PR
-       * body and the six-lens review can see them — passing a finding on is
-       * not the same as discarding it, and that distinction is what makes the
-       * relaxed terminal rule safe.
-       */
+      /** Non-blocking findings carried by the gate (see adversarial-findings.ts). */
       findings?: string;
     }
   | {
@@ -362,6 +353,17 @@ export type WorkEvent =
        * did not move with it.
        */
       nextStep: "handoff" | "step-back" | "ci";
+    }
+  | {
+      /** #654 — empty-diff re-dispatch marker (see runLensFix). */
+      kind: "lens-fix-empty-resend";
+      at: number;
+      jobId: string;
+      round: number;
+      /** The worktree the driver inspected and found clean. */
+      worktree: string;
+      /** The git evidence that established the no-diff classification. */
+      evidence: string;
     }
   | {
       kind: "plumb-report";

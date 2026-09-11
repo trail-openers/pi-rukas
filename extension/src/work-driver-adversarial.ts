@@ -24,7 +24,7 @@ import {
   type AdversarialOutcome,
 } from "./work-driver-adversarial-types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
-import { integrate, withIntegrationLock } from "./work-driver-integrate.ts";
+import { integrate, restoreRepoRoot, withIntegrationLock } from "./work-driver-integrate.ts";
 import { commitLensFixChanges, lensWorktree } from "./work-driver-lens.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
@@ -33,15 +33,7 @@ import type { ExecFn } from "./worktree.ts";
 
 const execp = promisify(exec);
 
-/**
- * #287 Part C — re-integrate a lens-fix made in a worktree.
- *
- * Mirrors `commitLensFixChanges`'s return shape so the caller's error and
- * push handling is unchanged, but routes through `integrate()` in "followup"
- * mode: the worktree's new diff is applied onto the feature branch at
- * repoRoot as an additional commit, then pushed, so the next lens-review
- * round and CI both see it.
- */
+/** #287 Part C — re-integrate a lens-fix made in a worktree. See #654 task-c. */
 async function integrateLensFix(
   execFn: ExecFn,
   ctx: DriverContext,
@@ -62,7 +54,41 @@ async function integrateLensFix(
       mode: "followup",
     }),
   );
-  if (!res.ok) return { committed: false, error: res.reason };
+  if (!res.ok) {
+    // #654 task-c — dirty-repoRoot: restore-or-park. The lock is still held
+    // (we're inside withIntegrationLock), so a retry is serialised. `restoreRepoRoot`
+    // stashes tracked dirt and pops it back; untracked-only dirt is not safely
+    // stashable, so it parks with the porcelain in evidence instead of retrying.
+    if (res.failure === "dirty-repoRoot" && res.porcelain) {
+      const outcome = await restoreRepoRoot(execFn, ctx.repoRoot, res.porcelain);
+      if (outcome.restored) {
+        const retry = await integrate(execFn, {
+          repoRoot: ctx.repoRoot,
+          branchName,
+          worktrees,
+          scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
+          commitTitle: `fix(lens): round ${round} review findings`,
+          commitBody: `Addresses six-pass review findings from round ${round}.`,
+          mode: "followup",
+        });
+        if (!retry.ok) {
+          return {
+            committed: false,
+            error: `restored repoRoot (stash+pop) but the retry still failed: ${retry.reason}`,
+          };
+        }
+        if (retry.empty) return { committed: false };
+        return { committed: true, pushed: true };
+      }
+      return {
+        committed: false,
+        error: `dirty repoRoot at lens-fix time, not safely restorable — ${outcome.reason}. Porcelain: ${res.porcelain
+          .slice(0, 5)
+          .join("; ")}`,
+      };
+    }
+    return { committed: false, error: res.reason };
+  }
   if (res.empty) return { committed: false };
   return { committed: true, pushed: true };
 }

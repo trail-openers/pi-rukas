@@ -16,6 +16,7 @@
  * these calls go through that seam.
  */
 
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import { trace } from "./trace.ts";
 import { type ProvisionResult, provisionWorktree } from "./worktree-provision.ts";
@@ -345,4 +346,96 @@ export async function worktreeList(execFn: ExecFn, repoRoot: string): Promise<st
     maxBuffer: 1024 * 1024,
   });
   return stdout;
+}
+
+/**
+ * #654 — the target branch for `git checkout <branch>` is held by another
+ * worktree. git refuses the checkout outright ("fatal: '<branch>' is
+ * already used by worktree at '<path>'") — the census found 2 cycles
+ * parking exactly on this string. The worktree machinery already knows how
+ * to remove clean holders safely; a DIRTY holder must never be force-removed
+ * (the #475 convention) — refuse with the existing `DirtyWorktreeError`.
+ *
+ * Called from `integrate()` in followup mode, BEFORE the checkout. A cycle
+ * whose own worktree map still holds the branch (a parked prior cycle's
+ * leftover, or a sibling group that hasn't torn down yet) blocks the
+ * checkout; removing the clean holder unblocks it mechanically. A dirty
+ * holder holds work that is not in the object database — force-removing it
+ * would be exactly the #475 incident, so the refusal carries the absolute
+ * path and the operator's salvage instructions.
+ *
+ * Returns true when the branch was held and is now free (a clean holder was
+ * removed); false when no holder exists (the normal case); throws
+ * `DirtyWorktreeError` when the holder holds uncommitted work or local
+ * commits. An unreadable `git worktree list` is treated as "no holder" —
+ * the checkout will then fail with the raw git error (plumbed via the
+ * existing catch in `integrate()`), which is the safe degradation: refusing
+ * the whole integration on a git error would be a worse failure.
+ */
+export async function sweepBranchHolders(
+  execFn: ExecFn,
+  repoRoot: string,
+  branchName: string,
+): Promise<boolean> {
+  const list = await worktreeList(execFn, repoRoot).catch(() => "");
+  const lines = list.split("\n");
+  let holderPath: string | undefined;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i]?.trim() ?? "";
+    if (l.startsWith("worktree ")) {
+      // The worktree line is followed by one or more attribute lines
+      // (e.g. "HEAD <sha>", "branch refs/heads/<name>", "detached"). The
+      // branch we care about is in the `branch` line, not the worktree line
+      // itself, so we must walk forward from each worktree marker.
+      const start = i;
+      let j = i + 1;
+      let found: string | undefined;
+      while (j < lines.length) {
+        const attr = lines[j]?.trim() ?? "";
+        if (attr.startsWith("worktree ")) break; // next worktree entry
+        if (attr === `branch refs/heads/${branchName}`) {
+          found = lines[start]?.slice("worktree ".length).trim();
+          break;
+        }
+        j++;
+      }
+      if (found !== undefined) {
+        holderPath = found;
+        break;
+      }
+    }
+  }
+  if (!holderPath) return false;
+  // The main working tree (repoRoot itself) is not a worktree that can be
+  // removed — if it's holding the branch, that's the normal state and there
+  // is nothing to sweep. macOS /tmp is a symlink to /private/tmp, so
+  // normalise both sides before comparing.
+  const holderResolved = (() => {
+    try {
+      return realpathSync(holderPath);
+    } catch {
+      return holderPath;
+    }
+  })();
+  const repoResolved = (() => {
+    try {
+      return realpathSync(repoRoot);
+    } catch {
+      return repoRoot;
+    }
+  })();
+  if (holderResolved === repoResolved) {
+    return false;
+  }
+  const finding = await inspectWorktreeForLoss(execFn, repoRoot, holderPath, "HEAD");
+  if (finding) {
+    throw new DirtyWorktreeError(finding);
+  }
+  // Clean holder — remove it so the checkout can proceed.
+  await execFn(`git worktree remove ${JSON.stringify(holderPath)}`, {
+    cwd: repoRoot,
+    maxBuffer: 256 * 1024,
+  });
+  trace(`worktree: removed clean holder ${holderPath} for branch ${branchName}`);
+  return true;
 }

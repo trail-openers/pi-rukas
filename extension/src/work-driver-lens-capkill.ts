@@ -53,3 +53,19 @@ export function lensCapKillEvent(
       : {}),
   };
 }
+
+/**
+ * #456 — project a lens pass down to the per-lens timings persisted on the
+ * `dispatch-completed` event. Pure so the shape is a tested contract:
+ * sequential startMs across a pass (spawn cap 1) are the fingerprint of
+ * semaphore queueing, distinct from a pass slowed by a contaminated diff.
+ */
+export function lensTimingsOf(
+  lenses: Array<{ lens: unknown; startMs?: number; ms: number }>,
+): Array<{ lens: string; startMs: number; ms: number }> {
+  return lenses.map((l) => ({
+    lens: String(l.lens),
+    startMs: l.startMs ?? 0,
+    ms: l.ms,
+  }));
+}

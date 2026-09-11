@@ -54,6 +54,9 @@ export const KNOWN_EVENT_KINDS: readonly unknown[] = [
   "lens-approved",
   "lens-issues-found",
   "lens-skipped-empty-diff",
+  // #654 — the empty-diff re-dispatch marker; no step field (it names the
+  // review round + worktree instead), so the validator's step check skips it.
+  "lens-fix-empty-resend",
   "cap-hit",
   "plumb-report",
   "step-back-triggered",

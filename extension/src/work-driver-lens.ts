@@ -1,13 +1,4 @@
-/**
- * work-driver-lens — Step 6 PR-number parsing + Step 7 (six-pass lens
- * review) + Step 7f (lens-fix) handlers.
- *
- * Extracted from work-driver.ts (issue #171 file-size hygiene).
- * `commitLensFixChanges` is called by both `runLensFix` (indirectly, via
- * the next adversarial round) and work-driver-adversarial.ts's
- * `runAdversarial` (directly, after approval) — it lives here since it's
- * lens-fix's commit step, not adversarial's.
- */
+/** work-driver-lens — Step 7 (lens review) + Step 7f (lens-fix) handlers. */
 
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
@@ -24,56 +15,21 @@ import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { readAllMergedDiffs } from "./work-driver-diff.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
-import { lensCapKillEvent } from "./work-driver-lens-capkill.ts";
+import { lensCapKillEvent, lensTimingsOf } from "./work-driver-lens-capkill.ts";
 import { applyLensVerdict } from "./work-driver-lens-verdicts.ts";
-import { runSingleDispatch } from "./work-driver-merged.ts";
+import { parsePrNumber, runSingleDispatch } from "./work-driver-merged.ts";
 import { DOCTRINE_FILES, type DoctrineDoc, judgePolicy } from "./work-driver-policy.ts";
-import { inlineLensFixPrompt } from "./work-driver-prompts-late.ts";
+import { inlineLensFixPrompt, scratchHygieneSection } from "./work-driver-prompts-late.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { withUsage } from "./workflow-state-events-usage.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
-/**
- * Parse `pr: <N>` from an ops commit-pr reply. Lenient — accepts
- * surrounding markdown emphasis (`**pr**: 556`), backticks (`pr: #556`,
- * `pr: \`#556\``), and the bare-or-`#`-prefixed number. Returns
- * `undefined` when no marker line is present (the dispatch may have
- * succeeded but ops forgot the marker — that's fine, runHandoff will
- * fall back to `gh issue comment`).
- */
 const execp = promisify(exec);
 
-export function parsePrNumber(text: string | undefined): number | undefined {
-  if (!text) return undefined;
-  const m = text.match(/^[ \t]*\*{0,2}pr\*{0,2}\s*:\s*`?#?(\d+)`?\s*$/im);
-  if (!m) return undefined;
-  const n = Number.parseInt(m[1] ?? "", 10);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
-}
+export { parsePrNumber } from "./work-driver-merged.ts";
+export { lensTimingsOf } from "./work-driver-lens-capkill.ts";
 
-/**
- * #456 — project a lens pass down to the per-lens timings persisted on the
- * `dispatch-completed` event. Pure so the shape is a tested contract:
- * sequential startMs across a pass (spawn cap 1) are the fingerprint of
- * semaphore queueing, distinct from a pass slowed by a contaminated diff.
- */
-export function lensTimingsOf(
-  lenses: Array<{ lens: unknown; startMs?: number; ms: number }>,
-): Array<{ lens: string; startMs: number; ms: number }> {
-  return lenses.map((l) => ({
-    lens: String(l.lens),
-    startMs: l.startMs ?? 0,
-    ms: l.ms,
-  }));
-}
-
-/**
- * Step 7 — Six-pass lens review.
- *
- * Calls `runLensReview` (exported from lens-review.ts) directly. The
- * function returns a structured LensReviewSummary with `verdict` we route
- * on. Bumps `reviewRound` and seeds `reviewCapStartedAt` on first entry.
- */
+/** Step 7 — six-pass lens review. Bumps reviewRound, seeds reviewCapStartedAt. */
 export async function runLens(
   ctx: DriverContext,
   state: WorkState,
@@ -343,19 +299,7 @@ export async function runLens(
   return next;
 }
 
-/**
- * Issue #305 — Mechanically commit lens-fix changes in the worktree.
- *
- * Called by runAdversarial after adversarial approves lens-fix changes.
- * Stages and commits any working-tree changes at ctx.repoRoot so the next
- * runLens (which reads committed state via `git diff origin/<base>..HEAD`) can
- * see the fix. If no changes exist (developer made no modifications), does
- * nothing — no empty commit.
- *
- * Returns { committed: true } if a commit was made, { committed: false }
- * if the working tree was clean, or { committed: false, error: <msg> } if
- * git failed.
- */
+/** #305 — commit lens-fix changes in the worktree (no empty commit). */
 export async function commitLensFixChanges(
   cwd: string,
   round: number,
@@ -424,19 +368,24 @@ export async function commitLensFixChanges(
   }
 }
 
-/**
- * Step 7f — Lens fix loop iteration. Dispatches @developer with the
- * findings from the last lens-issues-found event. The driver's transition
- * table routes lens-fix → adversarial → lens-review (or to handoff on cap-
- * hit per nextStep()).
- *
- * Issue #305 — after adversarial approves lens-fix changes, runAdversarial
- * mechanically commits the fix at ctx.repoRoot. This bridges the gap between
- * runLensFix (which edits the working tree) and runLens (which reads
- * committed state via `git diff origin/<base>..HEAD`). Without this commit,
- * the next lens round sees the same baseline and re-flags the same findings
- * at escalating severity.
- */
+/** #654 — count lens-fix-empty-resend events after this round's anchor. */
+export function countLensFixEmptyResends(events: readonly unknown[], reviewRound: number): number {
+  const lensIdx = events
+    .map((e, i) => ({ e, i }))
+    .filter(
+      ({ e }) =>
+        (e as { kind?: string }).kind === "lens-issues-found" &&
+        (e as { round?: number }).round === reviewRound,
+    )
+    .at(-1)?.i;
+  if (lensIdx === undefined) return 0;
+  let n = 0;
+  for (let i = lensIdx + 1; i < events.length; i++) {
+    if ((events[i] as { kind?: string }).kind === "lens-fix-empty-resend") n++;
+  }
+  return n;
+}
+
 export async function runLensFix(
   ctx: DriverContext,
   state: WorkState,
@@ -450,14 +399,69 @@ export async function runLensFix(
         e.kind === "lens-issues-found",
     );
   const findings = lastFinding?.findings ?? "(no prior findings recorded)";
+  // #654 — empty-diff shape: re-dispatch the fix ONCE with no-diff evidence
+  // before re-flagging identical findings at escalating severity.
+  const resends = countLensFixEmptyResends(state.eventLog, state.pipelineState.reviewRound);
+  const fixTree = lensWorktree(ctx, state);
+  let next = state;
+  if (resends > 0) {
+    // The worktree was already established clean by the #492 inspection in
+    // runAdversarial (that is what parked the cycle). Re-inspect for the
+    // re-dispatch's own evidence: if it is now dirty, the previous attempt
+    // left uncommitted work — commit it (that is what the prompt says), do
+    // not re-dispatch blindly.
+    let porcelain: string | undefined;
+    try {
+      const execFn = ctx.verifyExecFn ?? execp;
+      const { stdout } = await execFn("git status --porcelain", {
+        cwd: fixTree,
+        maxBuffer: 64 * 1024,
+      });
+      porcelain = stdout.trim();
+    } catch {
+      porcelain = undefined;
+    }
+    if (porcelain === undefined || porcelain.length > 0) {
+      // Dirty tree (or unreadable — fail open to the normal dispatch, which
+      // will integrate the uncommitted work through the existing gate). No
+      // re-dispatch needed.
+      trace(
+        `work-driver: lens-fix re-dispatch skipped — worktree ${fixTree} not clean (or unreadable)`,
+      );
+    } else {
+      const evidence = `git status --porcelain at ${fixTree} was empty`;
+      trace(`work-driver: lens-fix re-dispatch — worktree ${fixTree} clean after a no-diff fix`);
+      next = appendEvent(next, {
+        kind: "lens-fix-empty-resend",
+        at: Date.now(),
+        jobId: makeRunId(),
+        round: state.pipelineState.reviewRound,
+        worktree: fixTree,
+        evidence,
+      });
+    }
+  }
+  const isResend = next !== state;
+  const prompt = isResend
+    ? [
+        `RE-DISPATCH — the previous lens-fix dispatch wrote NO changes: git status --porcelain at the lens-fix worktree ${JSON.stringify(fixTree)} was empty.`,
+        `Either the findings are already resolved in the committed diff (in which case say so with \`nothing-to-fix: <one-line reason>\` and make no changes), or the previous attempt left uncommitted work in that tree that it never committed. Inspect the tree — \`git -C ${fixTree} status\` — and commit any uncommitted fix work there: \`git add -A\` followed by \`git commit -m "<type>(scope): concise subject"\`. Do NOT push.`,
+        "",
+        "Findings (JSON-encoded array of {path, line, severity, title, suggestion}):",
+        "```json",
+        findings,
+        "```",
+        scratchHygieneSection(scratchDir(ctx.repoRoot, ctx.issue)),
+      ].join("\n")
+    : inlineLensFixPrompt(findings, scratchDir(ctx.repoRoot, ctx.issue));
   return runSingleDispatch(
     ctx,
-    state,
+    next,
     "lens-fix",
     "developer",
     `developer:lens-fix-${state.pipelineState.reviewRound}`,
     now,
-    () => inlineLensFixPrompt(findings, scratchDir(ctx.repoRoot, ctx.issue)),
+    () => prompt,
     // Fix the code where the code IS. This dispatch carried no cwd, so the
     // child edited repoRoot while `integrateLensFix` staged from the worktree
     // nobody had touched — `stagePorcelainPaths` returned 0 and the loop
@@ -476,21 +480,10 @@ export async function runLensFix(
 }
 
 /**
- * The tree the lens gate works in.
- *
- * The review and the fix have to agree on this. They did not: `runLens`
- * resolved a worktree while the fix dispatch passed no `cwd` at all and landed
- * in the Pi process's directory, so the fix was written somewhere the driver
- * never looked. Having one resolver is what keeps them from drifting apart
- * again.
- *
- * #492 — exported so the adversarial gate's lens-fix integration path names
- * the SAME tree it inspects and reports: the cap's handoff text and the
- * smoke tests must point at the worktree the driver actually checked.
- *
- * Falls back to repoRoot when no worktree is recorded — a cycle whose
- * mechanized branch setup fell back develops there, and the fix belongs
- * wherever the work is.
+ * The tree the lens gate works in. The review and the fix must agree on this;
+ * one resolver keeps them from drifting apart. #492 — exported so the
+ * adversarial gate's lens-fix integration path names the SAME tree. Falls
+ * back to repoRoot when no worktree is recorded.
  */
 export function lensWorktree(ctx: DriverContext, state: WorkState): string {
   const wt = state.pipelineState.worktrees ?? {};
