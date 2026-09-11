@@ -151,6 +151,17 @@ async function spawnSpecialistInner(
 
   const childEnv: Record<string, string> = { ...process.env, PI_ENSEMBLE_ROLE: spec.role };
   Object.assign(childEnv, vipuneChildEnv());
+  // Interactive-git hang prevention (#605). These win over the inherited
+  // host env: a child that reaches an editor, sequence editor, terminal
+  // prompt, or full-screen pager (git rebase -i, bare git commit, any
+  // credential prompt, a paged diff) must never wait on a TTY it does not
+  // have — the inactivity watchdog would otherwise kill it 25 minutes later
+  // and misclassify the stall. `true` (the real no-op binary) over `:`
+  // (a shell builtin git cannot exec), per Aider's pattern.
+  childEnv.GIT_EDITOR = "true";
+  childEnv.GIT_SEQUENCE_EDITOR = "true";
+  childEnv.GIT_TERMINAL_PROMPT = "0";
+  childEnv.GIT_PAGER = "cat";
   if (subagentGuardEnabled) {
     childEnv.PI_ENSEMBLE_SUBAGENT_MODE = "1";
     if (permSocketPath) {

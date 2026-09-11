@@ -190,6 +190,12 @@ export function tokenizeForPrefix(command: string): string[] {
   return tokens;
 }
 
+// Git invocation prefix used by the working-tree predicates below: an
+// optional `oo` wrapper, `git`, optional `-C <path>`, then whitespace. The
+// predicates SCAN for this (not anchor it) so chained shapes
+// (`cd x && git …`) and `git -C <path> …` are all caught.
+const GIT = "(?:^|[;&|]|\\s)(?:oo\\s+)?git(?:\\s+-C\\s+\\S+)*\\s+";
+
 // Strip leading process-wrapper tokens and KEY=value env-var assignments.
 // Returns the remaining tokens — the "real" command after unwrapping.
 function stripLeadingWrappers(tokens: string[]): string[] {
@@ -281,15 +287,11 @@ export function extractCommandPrefix(command: string): string {
 // Match a concrete bash command against a nested subcommand allowlist
 // (e.g. agents.json's `permission.bash` { "vipune *": "allow", ... }).
 // Returns the verdict from the longest matching pattern, or the catch-all "*"
-// if present. Returns null if the allowlist has no matching entry.
+// if present. Null if no entry matches.
 //
-// Pattern semantics:
-//   - "pattern *" (trailing " *"): word-boundary prefix. `vipune *` matches
-//     `vipune` and `vipune add foo` but not `vipuneish`.
-//   - "pattern*"  (trailing "*" no space): loose prefix. `which*` matches
-//     `whichever`. Matches the long-standing convention in agents.json.
-//   - "pattern"    (no wildcard): exact match.
-// Most specific pattern wins (longest prefix). Catch-all "*" is checked last.
+// Pattern semantics: "pattern *" is a word-boundary prefix (`vipune *` matches
+// `vipune add foo` but not `vipuneish`); "pattern*" (no space) is a loose
+// prefix; a bare pattern is an exact match. Most specific wins.
 //
 // Refuses to match commands containing injection vectors OUTSIDE quoted
 // segments — those must always reach the interactive prompt. Quoted content
@@ -306,11 +308,9 @@ export function extractCommandPrefix(command: string): string {
  * prefix-based, so `"vipune update *"` grants every flag or none; there is no way
  * to permit `--status` (harmless promotion) while refusing `--text`. So the
  * refusal lives here, ahead of the allowlist, and holds even if a future edit
- * re-admits the verb.
- *
- * The harness repairs memory with `add --supersedes`, which preserves the
- * original row — the same reasoning as #406: an agent must not silently rewrite
- * the record it is judged against.
+ * re-admits the verb. The harness repairs memory with `add --supersedes`, which
+ * preserves the original row — an agent must not silently rewrite the record it
+ * is judged against.
  */
 export function isDestructiveMemoryWrite(command: string): boolean {
   const c = command.trim();
@@ -368,21 +368,17 @@ export function matchBashSubcommand(
  * wiped the uncommitted deliverable, and then "restored" it by re-applying an
  * older patch — silently reverting two reviewed defect fixes. It was caught
  * only because a diffstat line count looked wrong.
- *
  * Nothing anywhere stopped it. Gating is bypassed in trust mode (the default
  * on an interactive host), bypassed in sandbox mode, and explicitly allowed
  * even under strict opt-in by the `oo git *` catch-all in agents.json. So this
  * refusal cannot live in the allowlist — like `isDestructiveMemoryWrite`, it
  * sits ahead of it and holds regardless.
- *
- * Deliberately conservative, because the costs are asymmetric: a false
- * positive makes an agent pick another route, while a false negative destroys
- * work the harness has already paid a developer and a reviewer to produce.
- *
- * NOT included: `git stash`, which moves work aside recoverably (`git stash
- * list`), and `git reset` without `--hard`, which touches only the index.
- * Plain `git checkout <branch>` is also allowed — git itself refuses to switch
- * when that would clobber local modifications.
+ * Deliberately conservative: a false positive makes an agent pick another
+ * route, while a false negative destroys work the harness has already paid a
+ * developer and a reviewer to produce. NOT included: `git stash` (recoverable
+ * via `git stash list`), `git reset` without `--hard` (index only), and plain
+ * `git checkout <branch>` (git refuses to switch when that would clobber local
+ * modifications).
  */
 export function discardsUncommittedWork(command: string): string | undefined {
   // Compound commands are the norm (`cd x && git checkout .`), and `git -C
@@ -390,7 +386,6 @@ export function discardsUncommittedWork(command: string): string | undefined {
   // parsing a single leading verb. Quoted segments are stripped first, so a
   // command that merely MENTIONS one of these inside a message is not blocked.
   const c = stripQuotedSegments(command);
-  const GIT = "(?:^|[;&|]|\\s)(?:oo\\s+)?git(?:\\s+-C\\s+\\S+)*\\s+";
   const hit = (verb: string): string | undefined => new RegExp(GIT + verb).exec(c)?.[0]?.trim();
   return (
     // `git checkout .` / `-- <path>` / `-f` restores tracked files from the
@@ -405,6 +400,41 @@ export function discardsUncommittedWork(command: string): string | undefined {
     // files a developer just wrote.
     hit("clean\\s+[^;&|]*(?:-[a-zA-Z]*f|--force)")
   );
+}
+
+/**
+ * Does this command run an INTERACTIVE git command that can hang an agent
+ * child waiting on an editor or a terminal prompt it can never answer?
+ *
+ * Agent children have no TTY and no editor. `git rebase -i` waits for a
+ * sequence editor and a bare `git commit` waits for $EDITOR; each parks the
+ * child until the inactivity watchdog kills it and misclassifies the stall
+ * (Claude Code #158/#27136, Codex #6411, Aider #185, OpenHands #3660, Cline
+ * #8582). The env-var layer (GIT_EDITOR=true, GIT_SEQUENCE_EDITOR=true,
+ * GIT_TERMINAL_PROMPT=0, GIT_PAGER=cat in spawn.ts childEnv) is the primary
+ * defense; this predicate is the catch ahead of it inside
+ * `registerDestructiveGitGuard` (ahead of the trust/sandbox early-returns —
+ * in trust-mode children the env vars are the effective defense), mirroring
+ * `discardsUncommittedWork`: scan-not-anchor + `stripQuotedSegments`. Narrow:
+ * commit is refused ONLY when it supplies no message.
+ */
+export function rejectsInteractiveGit(command: string): string | undefined {
+  const c = stripQuotedSegments(command);
+  // `git rebase -i …` / `git rebase --interactive …`: catch the flag in the
+  // invocation's own argument span (up to the next shell operator).
+  const rebaseSpan = new RegExp(`${GIT}rebase(?:[\\s;&|]|$)[^;&|]*`).exec(c);
+  if (rebaseSpan?.[0]) {
+    const span = rebaseSpan[0];
+    if (/\s-i\b/.test(` ${span}`) || /\s--interactive\b/.test(` ${span}`)) return span.trim();
+  }
+  // Bare `git commit` (or with options) that carries no message on the line:
+  // if `-m` / `--message` / `--no-edit` / `-am` appear in the span the editor
+  // never opens.
+  const commitSpan = new RegExp(`${GIT}commit(?:[\\s;&|]|$)[^;&|]*`).exec(c);
+  if (commitSpan?.[0]) {
+    if (!/-m\b|--message\b|--no-edit\b|-am\b/.test(commitSpan[0])) return commitSpan[0].trim();
+  }
+  return undefined;
 }
 
 /**
@@ -447,23 +477,24 @@ export function createsIssue(command: string): string | undefined {
   // segment (specific issue) or an explicit `--method GET` makes it a read.
   const ghApiMatch = new RegExp(`${FORGE}api\\s+(repos/[^\\s]+)`).exec(c);
   const ghEndpoint = ghApiMatch?.[1] ?? "";
-  const ghTargetsIssues = /\/issues(?:[?&?#\s]|$)/.test(ghEndpoint);
-  if (ghTargetsIssues) {
-    const rest = c.slice(ghApiMatch?.index ?? 0);
+  if (ghApiMatch && /\/issues(?:[?&?#\s]|$)/.test(ghEndpoint)) {
+    const rest = c.slice(ghApiMatch.index);
     if (!/\s(?:--method|-X)\s+GET\b/.test(rest)) return (ghApiMatch?.[0] ?? "").trim();
   }
   // REST door, glab: `glab api` on the issues COLLECTION
   // (`/projects/{id}/issues`). glab api does NOT default to POST the way gh
-  // api does, so this door is method-aware: it is blocked only when the
-  // command EXPLICITLY posts. An unqualified call, or an explicit
-  // `--method`/`-X GET`, is a read and stays open.
+  // api does, so this door is method-aware: blocked only when the command
+  // EXPLICITLY posts. An unqualified call, or an explicit `--method`/`-X GET`,
+  // is a read.
   const glabApiMatch = new RegExp(`${FORGE}api\\s+(/projects/[^\\s]+)/issues(?:[?#\\s]|$)`).exec(c);
   if (glabApiMatch?.[0] !== undefined) {
     const rest = c.slice(glabApiMatch.index);
     const explicitGet = /\s(?:--method|-X)\s+GET\b/.test(rest);
-    const explicitPost = /\s(?:-X|-f|-F)\s+POST\b/.test(rest) || /\s--method\s+POST\b/.test(rest);
-    const bodyFields = /\s(?:-f|-F|--field)(?:=|\s)/.test(rest);
-    if (!explicitGet && (explicitPost || bodyFields)) return (glabApiMatch?.[0] ?? "").trim();
+    const posts =
+      /\s(?:-X|-f|-F)\s+POST\b/.test(rest) ||
+      /\s--method\s+POST\b/.test(rest) ||
+      /\s(?:-f|-F|--field)(?:=|\s)/.test(rest);
+    if (!explicitGet && posts) return glabApiMatch[0].trim();
   }
   return undefined;
 }

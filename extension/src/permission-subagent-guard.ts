@@ -15,7 +15,7 @@
 
 import { type Socket, createConnection } from "node:net";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { discardsUncommittedWork } from "./bash-command-parser.ts";
+import { discardsUncommittedWork, rejectsInteractiveGit } from "./bash-command-parser.ts";
 import { registerIssueCreationGuard } from "./issue-creation-guard.ts";
 import type { PermissionRequest } from "./permission-broker.ts";
 import { loadAgentsJson, loadGlobalConfig, loadProjectConfig } from "./permission-config.ts";
@@ -220,6 +220,14 @@ function registerDestructiveGitGuard(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, _ctx) => {
     if (event.toolName !== "bash") return;
     const command = (event.input as { command?: string })?.command ?? "";
+    const interactive = rejectsInteractiveGit(command);
+    if (interactive) {
+      trace(`subagent-guard: BLOCKED interactive git — ${interactive}`);
+      return {
+        block: true,
+        reason: `Refused: \`${interactive}\` waits on an editor or terminal prompt this child can never answer — it will hang until the inactivity watchdog kills it.\n\nNon-interactive alternatives: commit with the message on the line (\`git commit -m '…'\`); rewrite history non-interactively (\`git rebase <branch>\`); if a rebase is already in flight, drive it with \`git rebase --abort\` / \`--continue\` / \`--skip\`. Any rebase that needs reordering runs on the operator's machine — not here.`,
+      };
+    }
     const offending = discardsUncommittedWork(command);
     if (!offending) return;
     trace(`subagent-guard: BLOCKED destructive git — ${offending}`);
