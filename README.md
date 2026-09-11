@@ -54,7 +54,7 @@ Required CLIs on `$PATH`. The role prompts assume all of these are installed —
 | Forge CLI (`gh` / `glab`) | Forge issue / PR / CI ops — `gh` for GitHub, `glab` for GitLab. Install at least one; both is fine. |
 | [`vipune`](https://github.com/randomm/vipune) | Cross-session memory (fact + observation patterns). All agents call this. (Cargo from source.) |
 | [`codebase-memory-mcp`](https://github.com/DeusData/codebase-memory-mcp) | Knowledge-graph code indexer exposed as MCP — powers `codebase_memory_search_code` / `trace_path` / `detect_changes` / `get_architecture`. (curl-to-bash install.) |
-| [`oo`](https://github.com/randomm/oo) | Context-efficient wrapper for chatty CLIs (git, gh). (Cargo from source.) |
+| [`oo`](https://github.com/randomm/oo) | Context-efficient wrapper for chatty CLIs (git, gh). (Cargo from source. Pinned to floor `0.5.0`.) |
 | `jq` | Used by `build.sh` to assemble the capability matrix into the PM prompt. |
 | [`parallel-cli`](https://docs.parallel.ai/cli/overview) | Web search / fetch / deep research for the `explore` role. (Homebrew tap.) |
 | [`pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter) | MCP bridge — **without the bridge no MCP server loads**. Sandbox users are unaffected: the image bakes it in. |
@@ -90,7 +90,7 @@ brew install git jq gh                                                # macOS (g
 # https://gitlab.com/gitlab-org/cli for the Linux one-liner.
 
 # vipune, oo — cargo from source (Rust toolchain required)
-cargo install vipune && cargo install double-o
+cargo install vipune && cargo install double-o --version 0.5.0
 
 # pi-mcp-adapter (REQUIRED — Pi core has no native MCP; without the bridge no MCP server loads)
 pi install npm:pi-mcp-adapter

@@ -1,27 +1,12 @@
 #!/usr/bin/env bun
 /**
  * Prerequisite-drift gate — #489.
+ * Three sources describe pi-ensemble's prerequisites and disagree: README, install.sh, Dockerfile.
+ * The gate compares SETS (not counts) so docs may reflow freely.
  *
- * Three sources describe pi-ensemble's prerequisites and disagree: README Prerequisites, install.sh
- * REQUIRED_CLIS, Dockerfile global installs. The gate compares the SETS (not counts) so docs may
- * reflow freely and only a genuinely missing or unexplained name fails.
- *
- * Directions:
- *   forward  — every REQUIRED_CLIS name appears in the README Prerequisites section (presence check,
- *              not table parsing).
- *   reverse  — every Dockerfile global install is a REQUIRED_CLIS entry or an EXCEPTIONS key.
- *   OR gates — the forge CLI (gh OR glab, #608) is satisfied by EITHER binary on either surface;
- *              `parseDockerInstalls` recognises forge CLIs via apt-get and piped curl one-liners.
- *   versions — every install surface that declares a pi version declares one, and none is below the
- *              install floor (#578; the #571 incident is the failure this exists to catch).
- *
- * EXCEPTIONS is a Record<string, string> (NOT_FOR_PM shape): an entry is a decision, not an
- * oversight. Delete an entry as its docs issue lands.
- *
- * Proven in both directions (AGENTS.md §12): a static fixture pair where one side declares a tool
- * the other omits is flagged by the SAME exported functions the real check uses.
- *
- * Escape hatch: PI_ENSEMBLE_PREREQ_DRIFT=0.
+ * Directions: forward (REQUIRED_CLIS → README), reverse (Dockerfile → REQUIRED_CLIS/EXCEPTIONS),
+ * OR gates (forge CLI gh/glab), version floors (pi #578, oo #715).
+ * Proven in both directions via static fixtures (canary). Escape hatch: PI_ENSEMBLE_PREREQ_DRIFT=0.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -31,14 +16,9 @@ import { checkGlabArchNeutrality, runGlabArchCanaries } from "./lib/glab-arch-ch
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const FIXTURES = path.resolve(import.meta.dirname, "fixtures", "prerequisite-drift");
 
-/**
- * Tools deliberately outside the check, each with the reason. Keyed by the name as it appears in
- * the sources. Delete an entry as the referenced docs issue lands.
- */
+/** Tools deliberately outside the check, each with the reason. Delete an entry as its issue lands. */
 const EXCEPTIONS: Record<string, string> = {
-  // Dockerfile install is pinned per nicobailon/pi-mcp-adapter#547: 2.33.0 pins its @modelcontextprotocol/* deps at
-  // pkg.pr.new tarball URLs, rejected by npm 12's allow-remote=none default (EALLOWREMOTE). parseDockerInstalls keeps
-  // the full name@version token, so the key must match the Dockerfile verbatim.
+  // Pinned per nicobailon/pi-mcp-adapter#547 (npm-12 EALLOWREMOTE); parseDockerInstalls keeps the full name@version token.
   "pi-mcp-adapter@2.32.1": "MCP bridge, pinned at the last clean release per nicobailon/pi-mcp-adapter#547 (npm-12 EALLOWREMOTE)",
   // MCP server binary loaded via pi-mcp-adapter, not a PATH CLI. Wired by install.sh step 6. Never a REQUIRED_CLIS entry.
   "codebase-memory-mcp": "MCP server binary, not a PATH CLI — preflighted by install.sh step 6 instead",
@@ -78,9 +58,7 @@ function read(rel: string): string {
 }
 
 /**
- * REQUIRED_CLIS names in install.sh. Each element is "name:hint" — the name is between the opening
- * quote and the FIRST colon. One element per line, so this is plain line scanning.
- * Exported for the canary fixture.
+ * REQUIRED_CLIS names in install.sh ("name:hint" per line). Exported for the canary fixture.
  */
 export function parseRequiredClis(installSh: string): string[] {
   const lines = installSh.split("\n");
@@ -99,11 +77,7 @@ export function parseRequiredClis(installSh: string): string[] {
   return out;
 }
 
-/**
- * README Prerequisites section: `## Prerequisites` to the next `## `. Spans the `### Install
- * commands` sub-sections so a name in a code block counts as "named" and table reformatting stays
- * free. Exported for the canary fixture.
- */
+/** README Prerequisites section (## Prerequisites to next ##). Exported for the canary fixture. */
 export function readmePrerequisitesSection(readme: string): string {
   const lines = readme.split("\n");
   const start = lines.findIndex((l) => /^## Prerequisites\s*$/.test(l));
@@ -113,9 +87,7 @@ export function readmePrerequisitesSection(readme: string): string {
 }
 
 /**
- * Global installs in the Dockerfile — lines that put a tool on PATH. Recognised: npm global, cargo,
- * pi install npm:, and forge CLIs (gh/glab) via apt-get or piped curl (#608). Comment lines, other
- * apt packages, and the pip artifact puller are excluded. Exported for the canary.
+ * Global installs in the Dockerfile (npm global, cargo, pi install, forge CLIs). Exported for the canary.
  */
 export function parseDockerInstalls(dockerfile: string): { name: string; line: number }[] {
   const out = new Map<string, number>(); // name → first line (1-based)
@@ -170,35 +142,33 @@ export function parseDockerInstalls(dockerfile: string): { name: string; line: n
   return [...out.entries()].map(([name, line]) => ({ name, line }));
 }
 
-/**
- * Pi version floors declared by each install surface. A site that declares no floor returns "" —
- * the drift this gate exists to catch (#571). The install.sh floor lives in install-preflight.sh
- * (sourced, #578); the fixture carries the same line so the canary exercises the full path.
- */
+/** Pi version floors declared by each install surface ("" = unpinned, the drift this gate catches). */
 export function parsePiFloors(sources: {
   installSh: string;
   readme: string;
   dockerfile: string;
 }): { installSh: string; readme: string; dockerfile: string } {
-  // install.sh / install-preflight.sh: MIN_PI_VERSION assignment.
   const m = sources.installSh.match(/\bMIN_PI_VERSION="?([0-9][0-9a-z.+-]*)"?/);
-  // README: pi package with an @version suffix (raw-line scan keeps prose free).
   const r = sources.readme.match(/@earendil-works\/pi-coding-agent@([0-9][0-9a-z.+-]*)/);
-  // Dockerfile: same package-name shape; name-level reverse gate (EXCEPTIONS)
-  // covers the package-vs-binary question; this is the version on that line.
   const d = sources.dockerfile.match(/@earendil-works\/pi-coding-agent@([0-9][0-9a-z.+-]*)/);
-  return {
-    installSh: m ? m[1] : "",
-    readme: r ? r[1] : "",
-    dockerfile: d ? d[1] : "",
-  };
+  return { installSh: m ? m[1] : "", readme: r ? r[1] : "", dockerfile: d ? d[1] : "" };
 }
 
 /**
- * Compare two dotted version strings numerically; -1/0/1, or null if either is not a plain
- * dotted-numeric version. MAJOR.MINOR.PATCH is pi's release grammar, so per-field numeric
- * compare is correct without pre-release handling.
+ * oo version floors declared by each install surface (same contract as parsePiFloors).
  */
+export function parseOoFloors(s: {
+  installSh: string;
+  readme: string;
+  dockerfile: string;
+}): { installSh: string; readme: string; dockerfile: string } {
+  const m = s.installSh.match(/\bMIN_OO_VERSION="?([0-9][0-9a-z.+-]*)"?/);
+  const r = s.readme.match(/cargo install double-o --version ([0-9][0-9a-z.+-]*)/);
+  const d = s.dockerfile.match(/cargo install double-o --version ([0-9][0-9a-z.+-]*)/);
+  return { installSh: m ? m[1] : "", readme: r ? r[1] : "", dockerfile: d ? d[1] : "" };
+}
+
+/** Compare two dotted version strings numerically; -1/0/1, or null if either is not plain dotted-numeric. */
 export function compareVersions(a: string, b: string): number | null {
   const split = (s: string) => s.split(/[.+-]/).map((p) => Number(p));
   const x = split(a);
@@ -275,10 +245,7 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
 }
 
 {
-  // Forge OR-gate (#608): the forge CLI (gh OR glab) must be present on BOTH surfaces.
-  // install.sh: `forge` in REQUIRED_CLIS is the declaration; the real check is the
-  // `command -v gh`/`command -v glab` pair. Dockerfile: at least one of gh/glab must
-  // appear as a global install.
+  // Forge OR-gate (#608): both surfaces must declare a forge CLI (gh OR glab).
   const installSh = read("install.sh");
   const requiredHasForge = installNames.includes("forge");
   const forgeBlockOk = /command -v gh[\s\S]{0,200}?command -v glab|command -v glab[\s\S]{0,200}?command -v gh/.test(installSh);
@@ -365,6 +332,23 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
       }`,
     );
   }
+
+  // oo version-floor consistency (#715): same shape as the pi floor gate.
+  const ooFloors = parseOoFloors({
+    installSh: installShFloors.join("\n"),
+    readme: read("README.md"),
+    dockerfile: read(".devcontainer/Dockerfile"),
+  });
+  if (existsSync(preflightPath))
+    assert(ooFloors.installSh !== "", "install-preflight.sh declares MIN_OO_VERSION (unpinned — the #715 known-gap window is why this gate exists)");
+  assert(ooFloors.readme !== "", "README oo install line pins a version (unpinned — pin --version <floor>)");
+  assert(ooFloors.dockerfile !== "", "Dockerfile oo global install pins a version (unpinned — pin --version <floor>)");
+  if (ooFloors.installSh && ooFloors.readme && ooFloors.dockerfile) {
+    const ooCmp = compareVersions(ooFloors.readme, ooFloors.installSh);
+    assert(ooCmp !== null && ooCmp >= 0, `README oo pin ${ooFloors.readme} ≥ floor ${ooFloors.installSh}${ooCmp === null ? " (unparseable)" : ooCmp < 0 ? " (below floor)" : ""}`);
+    const ooCmpD = compareVersions(ooFloors.dockerfile, ooFloors.installSh);
+    assert(ooCmpD !== null && ooCmpD >= 0, `Dockerfile oo pin ${ooFloors.dockerfile} ≥ floor ${ooFloors.installSh}${ooCmpD === null ? " (unparseable)" : ooCmpD < 0 ? " (below floor)" : ""}`);
+  }
 }
 
 // ---------------------------------------------------------------- the gate CAN fail
@@ -396,7 +380,8 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
   const fRequiredSet = new Set(fRequired);
   // The fixture's pinned pi package name — excepted by the same
   // name-vs-binary reasoning as the real @earendil-works/pi-coding-agent.
-  const fExceptedSet = new Set(["@earendil-works/pi-coding-agent@0.99.0"]);
+  // double-o excepted: cargo package name for the `oo` binary (same as real EXCEPTIONS).
+  const fExceptedSet = new Set(["@earendil-works/pi-coding-agent@0.99.0", "double-o"]);
   // The fixture install.sh does NOT have the forge OR-gate, so `gh` from
   // the apt-get line is unexplained here — proving the reverse direction
   // correctly flags forge CLIs when the gate is absent.
@@ -487,6 +472,22 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
     fUnpinned.readme === "" && fUnpinned.dockerfile === "" && fUnpinned.installSh === "",
     "canary: unpinned surfaces parse as empty (the drift the gate flags)",
   );
+
+  // oo canary: fixture preflight floor 0.5.0; README 0.4.4 (below → flagged); Dockerfile 0.99.0 (above → NOT flagged).
+  const fOoFloors = parseOoFloors({
+    installSh: read(path.relative(REPO_ROOT, path.join(FIXTURES, "install-preflight.sh"))),
+    readme: fixtureReadme,
+    dockerfile: fixtureDocker,
+  });
+  assert(fOoFloors.installSh === "0.5.0", `canary: oo floor parses 0.5.0 (got ${JSON.stringify(fOoFloors.installSh)})`);
+  assert(fOoFloors.readme === "0.4.4", `canary: oo README pin parses 0.4.4 (got ${JSON.stringify(fOoFloors.readme)})`);
+  assert(fOoFloors.dockerfile === "0.99.0", `canary: oo Dockerfile pin parses 0.99.0 (got ${JSON.stringify(fOoFloors.dockerfile)})`);
+  const fOoCmpR = compareVersions(fOoFloors.readme, fOoFloors.installSh);
+  assert(fOoCmpR !== null && fOoCmpR < 0, "canary: below-floor oo README pin detected");
+  const fOoCmpD = compareVersions(fOoFloors.dockerfile, fOoFloors.installSh);
+  assert(fOoCmpD !== null && fOoCmpD > 0, "canary: above-floor oo Dockerfile pin detected");
+  const fOoUnpinned = parseOoFloors({ installSh: fixtureInstall, readme: "", dockerfile: "" });
+  assert(fOoUnpinned.readme === "" && fOoUnpinned.dockerfile === "" && fOoUnpinned.installSh === "", "canary: unpinned oo surfaces parse empty");
   // compareVersions edge cases: equal versions are 0; non-dotted input is null (never silently 0).
   assert(compareVersions("0.84.4", "0.84.4") === 0, "canary: equal versions compare 0");
   assert(

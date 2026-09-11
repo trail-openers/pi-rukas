@@ -102,7 +102,7 @@ REQUIRED_CLIS=(
   "forge:brew install gh (GitHub) or brew install --no-quarantine glab (GitLab) — checked below" 
   "jq:brew install jq"
   "vipune:cargo install vipune  (https://github.com/randomm/vipune)"
-  "oo:cargo install double-o  (https://github.com/randomm/oo)"
+  "oo:cargo install double-o --version ${MIN_OO_VERSION}  (https://github.com/randomm/oo)"
   "parallel-cli:npm install -g parallel-web-cli   (or: brew install parallel-web/tap/parallel-cli — then: parallel-cli login)"
   "ctx7:npm install -g ctx7  (free tier works without login; Node.js >= 18)"
 )
@@ -116,6 +116,18 @@ case "$PI_STATUS" in
   unparseable:*)
     echo "!! pi --version returned unparsable output: '${PI_STATUS#unparseable:}'"
     echo "   pi-rukas cannot verify the minimum version (${MIN_PI_VERSION}) — refusing to assume latest; re-run ./install.sh after fixing the pi install."
+    ;;
+esac
+
+OO_STATUS="$(oo_preflight_status)"
+case "$OO_STATUS" in
+  old:*)
+    echo "!! ${OO_STATUS#old:}"
+    echo "   Upgrade with: cargo install double-o --version ${MIN_OO_VERSION}"
+    ;;
+  unparseable:*)
+    echo "!! oo version returned unparsable output: '${OO_STATUS#unparseable:}'"
+    echo "   pi-rukas cannot verify the minimum version (${MIN_OO_VERSION}) — refusing to assume latest; re-run ./install.sh after fixing the oo install."
     ;;
 esac
 

@@ -29,6 +29,10 @@ set -o allexport
 # The floor. Bump in one place; the drift gate keeps the README + Dockerfile
 # in step.
 MIN_PI_VERSION=0.84.4
+# The oo (double-o) floor. 0.5.0 is the newest release that cleared the
+# 4-day embargo as of /work time (0.6.0 released 2026-09-10, only 1 day old
+# — pin it after 2026-09-14). See issue #715.
+MIN_OO_VERSION=0.5.0
 set +o allexport
 
 # Parse the MAJOR.MINOR.PATCH prefix of a `pi --version` output into three
@@ -124,6 +128,83 @@ pi_preflight_status() {
 pi_floor_ok() {
   local status
   status="$(pi_preflight_status)"
+  [ "$status" = "ok" ]
+}
+
+# Parse the MAJOR.MINOR.PATCH prefix of `oo version` output into three
+# globals: OO_VER_MAJOR, OO_VER_MINOR, OO_VER_PATCH.
+#
+# `oo version` prints "oo 0.5.0" — the binary name is the FIRST token, the
+# version is the SECOND. Anything after the version token is ignored.
+# Unparseable output returns 1 (OO_VER_* unset) — fails CLOSED.
+parse_oo_version() {
+  local tok
+  if [ -z "${1// /}" ]; then
+    unset OO_VER_MAJOR OO_VER_MINOR OO_VER_PATCH
+    return 1
+  fi
+  tok="$(printf '%s' "$1" | awk '{print $2}')"
+  if [[ ! "$tok" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    unset OO_VER_MAJOR OO_VER_MINOR OO_VER_PATCH
+    return 1
+  fi
+  IFS='.' read -r OO_VER_MAJOR OO_VER_MINOR OO_VER_PATCH <<<"$tok"
+  return 0
+}
+
+# Preflight status of the oo CLI against MIN_OO_VERSION. Prints exactly one
+# status line (same contract as pi_preflight_status):
+#
+#   "ok"                 — oo at or above the floor
+#   "missing"            — oo not on PATH
+#   "old:<reason>"       — oo present but below the floor
+#   "unparseable:<out>"  — `oo version` gave no parseable MAJOR.MINOR.PATCH
+#
+# Test seams: OO_BIN (default: oo), OO_VER_OVERRIDE.
+oo_preflight_status() {
+  local bin="${OO_BIN:-oo}"
+  local ver
+  if [ -n "${OO_VER_OVERRIDE+set}" ]; then
+    ver="$OO_VER_OVERRIDE"
+  else
+    if ! command -v "$bin" >/dev/null 2>&1; then
+      echo "missing"
+      return 0
+    fi
+    ver="$("$bin" version 2>/dev/null || true)"
+  fi
+
+  if ! parse_oo_version "$ver"; then
+    echo "unparseable:${ver}"
+    return 0
+  fi
+
+  local floor_major="${MIN_OO_VERSION%%.*}"
+  local floor_rest="${MIN_OO_VERSION#*.}"
+  local floor_minor="${floor_rest%%.*}"
+  local floor_patch="${floor_rest#*.}"
+
+  if [ "$((10#$OO_VER_MAJOR))" -gt "$floor_major" ]; then
+    echo "ok"; return 0
+  fi
+  if [ "$((10#$OO_VER_MAJOR))" -eq "$floor_major" ]; then
+    if [ "$((10#$OO_VER_MINOR))" -gt "$floor_minor" ]; then
+      echo "ok"; return 0
+    fi
+    if [ "$((10#$OO_VER_MINOR))" -eq "$floor_minor" ] \
+       && [ "$((10#$OO_VER_PATCH))" -ge "$floor_patch" ]; then
+      echo "ok"; return 0
+    fi
+  fi
+
+  echo "old:oo ${ver} is below the pi-ensemble minimum ${MIN_OO_VERSION} (0.3.1 lacks the npm/pnpm/yarn/bun test+build compression patterns added in 0.5.0 — see issue #715)"
+  return 0
+}
+
+# Convenience predicate: 0 = at or above the floor (and present), 1 = not.
+oo_floor_ok() {
+  local status
+  status="$(oo_preflight_status)"
   [ "$status" = "ok" ]
 }
 
