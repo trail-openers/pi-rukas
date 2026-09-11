@@ -8,7 +8,7 @@
  */
 import { VIPUNE_PRECEDENCE_NOTE, priorContextHasVipune, renderPriorContext } from "./plan-draft.ts";
 import type { AngleFindings } from "./plan-draft.ts";
-import { PLAN_ITEM_KINDS } from "./plan-reporter.ts";
+import { PLAN_ITEM_KINDS, REFERENCE_KIND_DEFS } from "./plan-reporter.ts";
 import type { PlanType } from "./plan-types.ts";
 
 export interface Angle {
@@ -153,8 +153,9 @@ const PLAN_REPORTER_PROMPT = [
   "For each structured item you identify, call the `report_plan_item` tool ONCE (one call per item, never batched; never as prose or JSON in your reply — only the tool calls count). Fields:",
   `  - kind: one of ${PLAN_ITEM_KINDS.map((k) => `"${k}"`).join(" | ")}`,
   "  - text: the item — ONE complete, self-contained sentence (two at most), at most ~400 characters. Name symbols and paths; never paste code blocks, diffs or essays — the driver clips longer items and the clipped tail is LOST. No bullet marker, no preamble, no heading.",
+  "GROUNDING: a `reference` kind item is ONLY a path your live tool calls (codebase_memory_search_code, rg, the filesystem) actually returned in THIS session. Never invent or guess a path in place of a reference item; if nothing exists, report the absence as one honest reference item (what you searched for + that no existing code was found) — never invent a path to stand in for it.",
   "  - angle: your angle name (omit if not applicable)",
-  "Kind meanings: acceptance-criterion = a testable outcome; test-surface-item = an existing test to extend or a missing one to add (file + name); edge-case = a pitfall, failure mode or boundary condition the implementer must handle; sub-issue = one sub-ticket of this EPIC (title + brief scope) — for EPIC type only, and only when your angle's prompt chartered sub-issue emission to you (for epics that is the decomposition-surface angle); reference = a file/pattern already in the work area (path + why it matters); out-of-scope = something this ticket must NOT do. If you found nothing of a kind, do not call it for that kind.",
+  `Kind meanings: acceptance-criterion = a testable outcome; test-surface-item = an existing test to extend or a missing one to add (file + name); edge-case = a pitfall, failure mode or boundary condition the implementer must handle; sub-issue = one sub-ticket of this EPIC (title + brief scope) — for EPIC type only, and only when your angle's prompt chartered sub-issue emission to you (for epics that is the decomposition-surface angle); ${REFERENCE_KIND_DEFS.reference}; out-of-scope = something this ticket must NOT do. If you found nothing of a kind, do not call it for that kind — EXCEPT the reference kind, whose absence IS one honest item: if you confirmed no existing code, emit exactly ONE reference item stating what you searched for and that no existing code was found (never invent a path to stand in for it)`,
 ].join("\n");
 
 function buildAnglePrompt(

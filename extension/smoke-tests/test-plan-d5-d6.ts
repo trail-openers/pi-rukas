@@ -25,6 +25,7 @@ import {
 } from "../src/plan-draft.ts";
 import { gapGatePrompt, parseGapsForTest } from "../src/plan-driver.ts";
 import { anglePromptsFor } from "../src/plan-angles.ts";
+import { REFERENCE_KIND_DEFS } from "../src/plan-reporter.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -156,6 +157,24 @@ function assert(cond: boolean, msg: string) {
   assert(
     angleNoVip2?.prompt.includes(VIPUNE_PRECEDENCE_NOTE) !== true,
     "D6: angle prompt does NOT include precedence note when no vipune entries",
+  );
+
+  // #638 (task-b): the shared PLAN_REPORTER_PROMPT "Kind meanings" block is a
+  // definitional copy of the reference kind — it must carry the grounding
+  // constraint (existence confirmed by a live tool call) and the honest-
+  // absence carve-out, not the old "already in the work area" framing.
+  const anyAngle = anglePrompts[0]?.prompt ?? "";
+  assert(
+    anyAngle.includes(REFERENCE_KIND_DEFS.reference),
+    "#638: angle prompt (PLAN_REPORTER_PROMPT copy) carries the grounded reference-kind definition",
+  );
+  assert(
+    !anyAngle.includes("a file/pattern already in the work area"),
+    "#638: the old reference framing ('already in the work area') is gone from the angle prompt",
+  );
+  assert(
+    /never invent a path/i.test(anyAngle),
+    "#638: the PLAN_REPORTER_PROMPT copy forbids inventing a path for the absence",
   );
 
   // 7. Canary: the old shape (no tag, no precedence) would have been caught.

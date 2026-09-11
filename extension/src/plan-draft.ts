@@ -267,11 +267,22 @@ export function techContextLine(x: {
   return `- **${x.name}**: ${counts ? `${counts}; ` : ""}${summary}`;
 }
 
-// #633 SIMPLICITY-lens note: the references fallback (REF_RE prose file-path scan)
-// SURVIVES where the sub-issue prose fallback does not: a file-path regex is
-// narrow and high-precision. Structured reference items take precedence; the
+// #633 SIMPLICITY-lens note: the references fallback (REF_RE prose file-path
+// scan) SURVIVES where the sub-issue prose fallback does not: a file-path regex
+// is narrow and high-precision. Structured reference items take precedence; the
 // scan fires only when an angle made zero reference calls.
 const REF_RE = /\b[\w./-]+\.(?:ts|tsx|js|rs|go|py|md)\b/g;
+
+/**
+ * #638 deliverable 3 (task-b): the REF_RE prose fallback renders as a TO-BE
+ * CREATED suggestion, never as confirmed existing code. The old suffix
+ * ("existing pattern or affected surface; verify before editing") labelled a
+ * path the angle merely named in prose as real code — on a repo where the
+ * code does not exist yet, an honest angle returns zero structured references,
+ * so the fallback is the DEFAULT path there and the fabricated label shipped.
+ */
+export const PROSE_REF_SUFFIX =
+  "suggested path from the angle's prose — NOT confirmed to exist; verify with codebase_memory_search_code before treating it as an existing file, or create it";
 
 export function draftSpec(
   type: PlanType,
@@ -344,9 +355,7 @@ export function draftSpec(
     .slice(0, cap);
   const proseRefs = [...new Set(findings.flatMap((x) => x.text.match(REF_RE) ?? []))].slice(0, 8);
   const referenceLines =
-    refItems.length > 0
-      ? refItems
-      : proseRefs.map((r) => `${r} — existing pattern or affected surface; verify before editing`);
+    refItems.length > 0 ? refItems : proseRefs.map((r) => `${r} — ${PROSE_REF_SUFFIX}`);
   const references = sectionBullets(referenceLines, REFERENCES_FALLBACK);
 
   // D3 fix: edge cases come from the "edge-case" kind across ALL angles (the

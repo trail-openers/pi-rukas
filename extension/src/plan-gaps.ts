@@ -9,10 +9,10 @@
  *     to key branch-3 detection on the EXACT string parseGaps assigns (the
  *     edge-case pitfall: re-spelling the literal would silently flip the
  *     branch when the parser's placeholder changes),
- *   - `parseGaps`: the reviewer-reply parser (GAP: markers only, verdict
- *     line, and — since this split — a `verdictParsed` flag that keeps an
- *     ABSENT verdict from silently passing as READY when CRITICAL gaps
- *     are present (D3)),
+ *   - `parseGaps`: the reviewer-reply parser (GAP: markers, UNGROUNDED:
+ *     third-outcome lines since #638, the verdict line, and — since this split —
+ *     a `verdictParsed` flag that keeps an ABSENT verdict from silently
+ *     passing as READY when CRITICAL gaps are present (D3)).
  *   - the iteration cap: `evaluateGapGate` decides READY / one corrective
  *     round / cap-hit, and `capRouted` applies the routing policy — the
  *     TERMINAL RULE is CRITICAL-only (direct precedent: /work's adversarial
@@ -47,6 +47,17 @@ export const GAP_RESOLUTION_PLACEHOLDER = "address during /work plan phase";
 
 export interface GapGateParse {
   gaps: PlanGap[];
+  /**
+   * #638: claims the reviewer classified as ungrounded — no spec-internal
+   * contradiction, no live code to check, no verifiable world source.
+   * These are NOT gaps: the marker vocabulary mirrors /work's intent gate
+   * (work-driver-intent.ts SpecEvidence: confirmed | contradicted |
+   * unverifiable — ungrounded is this gate's name for the same third
+   * state). They are parsed into their own channel so the review-unparseable
+   * branch in runGapGateLoop can distinguish "classified every claim as
+   * ungrounded and said READY" (a full review) from "said nothing".
+   */
+  ungrounded: string[];
   verdict: GapGateVerdict;
   /**
    * D3: true only when a parseable `VERDICT:` line was present in the reply.
@@ -75,8 +86,19 @@ export interface GapGateParse {
 export function parseGaps(reply: string): GapGateParse {
   const lines = reply.split("\n");
   const gaps: PlanGap[] = [];
+  const ungrounded: string[] = [];
   const gapRe = /^\s*GAP:\s*(CRITICAL|HIGH|MEDIUM|LOW)\b[—–-]?\s*(.*)$/i;
+  // #638: the third-outcome marker. Anchored on UNGROUNDED: (never a GAP:
+  // line, so the two markers are mutually exclusive by construction) and
+  // anchored at the line start the same way gapRe is, so bare "ungrounded"
+  // words in prose are inert — the same invariant the GAP: marker carries.
+  const ungroundedRe = /^\s*UNGROUNDED:\s*(?:—|–|-)?\s*(.+)$/i;
   for (const line of lines) {
+    const ug = line.match(ungroundedRe);
+    if (ug) {
+      ungrounded.push((ug[1] ?? "").trim());
+      continue;
+    }
     const m = line.match(gapRe);
     if (!m) continue;
     const rest = (m[2] ?? "").trim();
@@ -110,7 +132,7 @@ export function parseGaps(reply: string): GapGateParse {
   // both escapes filed real contradictions). Severity describes the SPEC;
   // parse success describes the REVIEW — the loop now distinguishes them
   // via `verdictParsed` (see runGapGateLoop's unreviewed branch).
-  return { gaps, verdict, verdictParsed };
+  return { gaps, ungrounded, verdict, verdictParsed };
 }
 
 /**
@@ -322,7 +344,9 @@ export async function runGapGateLoop(
     // (Zero gaps + a parsed READY verdict is a GENUINE clean and falls
     // through to evaluateGapGate as before.)
     const unreviewed = (p: GapGateParse) =>
-      p.gaps.length === 0 && (!p.verdictParsed || p.verdict === "NEEDS_ITERATION");
+      p.gaps.length === 0 &&
+      p.ungrounded.length === 0 &&
+      (!p.verdictParsed || p.verdict === "NEEDS_ITERATION");
     if (unreviewed(lastParse)) {
       if (!unparseableRetryUsed) {
         unparseableRetryUsed = true;
