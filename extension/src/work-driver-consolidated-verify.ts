@@ -12,6 +12,7 @@
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.js";
 import type { DriverContext } from "./work-driver-context.js";
+import { extractAttributedTail } from "./work-driver-exec-error.ts";
 
 export async function runConsolidatedVerify(
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
@@ -135,10 +136,18 @@ export async function runConsolidatedVerify(
     const applied =
       orchResult.cherryApplied.length > 0 ? orchResult.cherryApplied : orchResult.patchApplied;
     if (verifyFailure !== undefined) {
-      return {
-        status: "failed",
-        detail: verifyFailure.slice(-800) || "verify command exited non-zero",
-      };
+      // #723 — same attribution anchor as formatExecError: a bare `.slice(-800)`
+      // can splice a passing sub-command's tail onto a later failure.
+      const { tail, attributed } = extractAttributedTail(verifyFailure, 800);
+      if (!attributed && tail) {
+        trace("work-driver: consolidated verify tail is unattributed (no FAILED: marker found)");
+      }
+      const detail = tail
+        ? attributed
+          ? tail
+          : `${tail} (unattributed — best-effort tail)`
+        : "verify command exited non-zero";
+      return { status: "failed", detail };
     }
     return { status: "passed", applied };
   } catch (err) {

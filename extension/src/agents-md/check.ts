@@ -258,11 +258,22 @@ function firstToken(line: string): string {
   return t.replace(/^[\w.\/-]*\//, (m) => (m === "" ? "" : (m.split("/").pop() ?? "")));
 }
 
-/** Whether a command token is currently on PATH. */
+/**
+ * Whether a command token is currently on PATH.
+ *
+ * #723 — `env` is passed explicitly rather than relying on implicit
+ * inheritance: under Bun's `execFileSync` + `shell: "/bin/sh"` combination, a
+ * `process.env.PATH` mutation made AFTER the process started does not
+ * reliably reach the spawned shell unless `env` is passed on the call
+ * (confirmed by isolated repro under Bun 1.3.12 — see issue #723). Passing
+ * `env: process.env` reads the CURRENT value of `process.env` at call time,
+ * so an in-process PATH mutation (e.g. a test's PATH-shim technique) is
+ * honoured, while a genuinely-missing command still reports missing.
+ */
 export function commandAvailable(name: string): boolean {
   if (!name) return false;
   try {
-    execFileSync("command", ["-v", name], { stdio: "pipe", shell: "/bin/sh" });
+    execFileSync("command", ["-v", name], { stdio: "pipe", shell: "/bin/sh", env: process.env });
     return true;
   } catch {
     return false;
