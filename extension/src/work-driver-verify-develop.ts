@@ -20,6 +20,7 @@ import {
   protectedPathsEnabled,
   protectedPathsIn,
 } from "./work-driver-doctrine.ts";
+import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import { runFalsilyGreenCheck } from "./work-driver-falsily-green.ts";
 import { runScopeFanoutGate } from "./work-driver-scope-fanout.ts";
 import {
@@ -60,14 +61,26 @@ function testDeleteTolerance(): number {
   return Math.floor(env);
 }
 
-/** PR338 — format an exec error with bounded output tail. */
+/**
+ * PR338 — format an exec error with a bounded, attribution-aware output
+ * tail. #723 — anchors on the last sub-command's `FAILED: <file>` marker
+ * (see work-driver-exec-error.ts) so a combined multi-stage verify-cmd run
+ * never reports an earlier PASSING sub-command's output as the failure.
+ */
 function formatExecError(
   e: Error & { stdout?: string; stderr?: string; killed?: boolean },
   timeoutMsg: string,
   failMsg: string,
 ): string {
-  const tail = `${e.stdout ?? ""}\n${e.stderr ?? ""}`.trim().slice(-1500);
-  return e.killed ? timeoutMsg : `${failMsg}: ${tail || e.message?.slice(0, 300)}`;
+  const { tail, attributed } = extractAttributedTail(`${e.stdout ?? ""}\n${e.stderr ?? ""}`, 1500);
+  if (!attributed && tail)
+    trace("work-driver: exec error tail is unattributed (no FAILED: marker found)");
+  const suffix = tail
+    ? attributed
+      ? tail
+      : `${tail} (unattributed — best-effort tail)`
+    : undefined;
+  return e.killed ? timeoutMsg : `${failMsg}: ${suffix ?? e.message?.slice(0, 300)}`;
 }
 
 /**
