@@ -1,24 +1,33 @@
 /**
- * Live dispatch deck. Multi-line widget showing in-flight subagents (#117).
- * Selectable rows (#607 d1): a second widget above the editor with
- * keyboard-selectable rows; selecting a row opens ctx.ui.editor pre-filled
- * with a steer prompt for that job (source tag `deck-ui`).
- * Opt-out: PI_ENSEMBLE_QUIET_STATUS=1. Short labels: deck-prompt-label.ts (#709).
+ * Live dispatch deck (#117 / #607 / #709 / #729).
+ *
+ * The deck registers ONE widget — `ensemble:deck` — a composite Container
+ * of detail rows (belowEditor) followed by a keyboard-selectable
+ * SelectList. #729 collapsed the prior dual-projection design (a second
+ * aboveEditor SelectList that re-rendered the same entries with a different
+ * label format) into a single key, so the double-projection is
+ * structurally impossible rather than merely de-duplicated by label text.
+ *
+ * Selecting a row in the composite's SelectList confirms the job: a
+ * running job opens the steer prompt (`deck-ui` source tag); a settled
+ * job opens the read-only transcript viewer (#607 d2/d3).
+ *
+ * Opt-out: PI_ENSEMBLE_QUIET_STATUS=1.
+ *
+ * #709's "do not remove either widget" directive is superseded — the
+ * aboveEditor `ensemble:deck-prompt` widget was the source of the
+ * duplicate projection and was removed in #729.
  */
 
-import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { Container, SelectList, type TUI, Text, getKeybindings } from "@earendil-works/pi-tui";
-import { shortPromptLabel } from "./deck-prompt-label.ts";
+import type { ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import * as deckComposite from "./dispatch-deck-composite.ts";
 import * as deckInteractive from "./dispatch-deck-interactive.ts";
 import { type RunningState, emptyRunningState, formatElapsed } from "./progress.ts";
 import { trace } from "./trace.ts";
 
 const WIDGET_KEY = "ensemble:deck";
-const HINT_MAX = 50;
-const DECK_MAX_ROWS_DEFAULT = 20;
 const TICK_INTERVAL_MS = 1000;
-const DECK_PROMPT_MAX_VISIBLE = 12;
+const DECK_MAX_ROWS_DEFAULT = 20;
 
 function getDeckMaxRows(): number {
   const raw = process.env.PI_ENSEMBLE_DECK_MAX_ROWS;
@@ -45,31 +54,9 @@ export interface BatchDeckEntry {
   startedAt: number;
 }
 
-/** #607 d1 — one row of the keyboard-selectable deck. */
-export interface DeckPromptItem {
-  key: string;
-  value: string;
-  label: string;
-  steerPrompt: string;
-  description?: string;
-}
-
-export const DECK_PROMPT_KEY = "ensemble:deck-prompt";
 export const DECK_PROMPT_STEER_SOURCE = "deck-ui";
 export const DECK_PROMPT_CANCEL_KEY = "__deck_prompt::cancel__";
 
-const CANCEL_SENTINEL: DeckPromptItem = {
-  key: DECK_PROMPT_CANCEL_KEY,
-  value: encodeDeckPromptValue(DECK_PROMPT_CANCEL_KEY),
-  label: "── cancel ──",
-  steerPrompt: "",
-};
-
-let lastPromptItem: DeckPromptItem | undefined;
-let promptWidgetVisible = false;
-// JobIds that have settled (deck entry cleared) — confirmed rows route to
-// the transcript viewer instead of the steer prompt (#607 d2/d3).
-const settledJobs = new Set<string>();
 const entries = new Map<string, DeckEntry>();
 const batches = new Map<string, BatchDeckEntry>();
 let activeCtx: ExtensionContext | undefined;
@@ -77,6 +64,9 @@ let pendingRender = false;
 let insertionCounter = 0;
 let tickHandle: ReturnType<typeof setInterval> | undefined;
 let widgetVisible = false;
+// #607 d2/d3 — jobIds that have settled (deck entry cleared); confirmed
+// rows route to the transcript viewer instead of the steer prompt.
+const settledJobs = new Set<string>();
 
 function isQuiet(): boolean {
   return process.env.PI_ENSEMBLE_QUIET_STATUS === "1";
@@ -106,8 +96,6 @@ export function detach(): void {
   batches.clear();
   pendingRender = false;
   widgetVisible = false;
-  promptWidgetVisible = false;
-  lastPromptItem = undefined;
 }
 
 export interface StartEntryOpts {
@@ -144,51 +132,6 @@ export function clearEntry(key: string): void {
   settledJobs.add(key);
   scheduleRender();
   if (entries.size === 0 && batches.size === 0) stopTicker();
-}
-
-// =============================================================================
-// Selectable deck rows (#607 d1)
-// =============================================================================
-
-export function encodeDeckPromptValue(key: string): string {
-  return `deck::${key}`;
-}
-
-export function parseDeckPromptValue(value: string): string | undefined {
-  const prefix = "deck::";
-  if (!value.startsWith(prefix)) return undefined;
-  const key = value.slice(prefix.length);
-  return key.length > 0 ? key : undefined;
-}
-
-export function buildDeckPromptItems(
-  entries: readonly DeckEntry[],
-  now: number = Date.now(),
-): DeckPromptItem[] {
-  const items: DeckPromptItem[] = entries.map((e) => ({
-    key: e.key,
-    value: encodeDeckPromptValue(e.key),
-    label: shortPromptLabel(e),
-    steerPrompt: buildSteerPrompt(e, now),
-  }));
-  items.push(CANCEL_SENTINEL);
-  return items;
-}
-function buildSteerPrompt(e: DeckEntry, now: number): string {
-  const elapsed = formatElapsed(Math.max(0, now - e.startedAt));
-  const tool = e.state.lastToolName ? ` (last tool: ${e.state.lastToolName})` : "";
-  return `[deck-ui steer → ${e.label}, job ${e.key}]\nReply with a short status update (≤3 lines), then continue. Running ${elapsed}${tool}.`;
-}
-
-/** Deliver a steer to a deck row's job (`deck-ui` source; routes through the shared steer core). */
-export function steerDeckEntry(ctx: ExtensionUIContext, key: string, message: string): void {
-  void deckInteractive.steerFromDeck(ctx, key, message);
-}
-
-/** Test-only — purge selectable-prompt widget state. */
-export function resetPromptState(): void {
-  promptWidgetVisible = false;
-  lastPromptItem = undefined;
 }
 
 export interface StartBatchEntryOpts {
@@ -243,8 +186,7 @@ export function reset(): void {
   pendingRender = false;
   insertionCounter = 0;
   widgetVisible = false;
-  promptWidgetVisible = false;
-  lastPromptItem = undefined;
+  settledJobs.clear();
 }
 
 export function isTicking(): boolean {
@@ -277,88 +219,53 @@ function scheduleRender(): void {
 
 function renderNow(): void {
   if (!activeCtx) return;
-  const lines = buildLines();
-  if (lines.length > 0) renderPromptWidget();
-  try {
-    if (lines.length === 0) {
-      if (widgetVisible) {
+  if (buildLines().length === 0) {
+    if (widgetVisible) {
+      try {
         activeCtx.ui.setWidget(WIDGET_KEY, undefined);
-        widgetVisible = false;
-      }
-      if (promptWidgetVisible) {
-        activeCtx.ui.setWidget(DECK_PROMPT_KEY, undefined);
-        promptWidgetVisible = false;
-      }
-      return;
+      } catch {}
+      widgetVisible = false;
     }
-    const cap = getDeckMaxRows();
-    const visible = lines.slice(0, cap);
-    const overflow = Math.max(0, lines.length - cap);
-    activeCtx.ui.setWidget(
-      WIDGET_KEY,
-      (_tui: TUI, theme: Theme) => {
-        const c = new Container();
-        for (const line of visible) c.addChild(new Text(line, 1, 0));
-        if (overflow > 0) c.addChild(new Text(theme.fg("muted", `... (${overflow} more)`), 1, 0));
-        c.addChild(new Text("", 1, 0));
-        return c;
-      },
-      { placement: "belowEditor" },
-    );
+    return;
+  }
+  const factory = buildCompositeWidgetFactory(activeCtx);
+  try {
+    activeCtx.ui.setWidget(WIDGET_KEY, factory, { placement: "belowEditor" });
     widgetVisible = true;
   } catch (err) {
     trace(`dispatch-deck: setWidget failed: ${(err as Error).message}`);
   }
 }
 
-/** #607 d1 — returns a `SelectList` directly (#176: Container swallows keystrokes). */
-function buildDeckPromptFactory(ctx: ExtensionContext) {
-  return (_tui: TUI, theme: Theme) => {
-    const items = buildDeckPromptItems([...entries.values()]).map((it) => ({
-      value: it.value,
-      label: it.label,
-      description: it.description,
-    }));
-    const tl = {
-      selectedPrefix: (t: string) => theme.fg("accent", t),
-      selectedText: (t: string) => theme.bg("selectedBg", t),
-      description: (t: string) => theme.fg("dim", t),
-      scrollInfo: (t: string) => theme.fg("muted", t),
-      noMatch: (t: string) => theme.fg("muted", t),
-    };
-    const list = new SelectList(items, DECK_PROMPT_MAX_VISIBLE, tl, {
-      minPrimaryColumnWidth: 24,
-      maxPrimaryColumnWidth: 60,
-    });
-    list.onSelectionChange = (item: { value: string; label: string }) => {
-      lastPromptItem = findPromptItemByValue(item.value);
-      scheduleRender();
-    };
-    const kb = getKeybindings();
-    const orig = list.handleInput.bind(list);
-    list.handleInput = (data: string): void => {
-      if (kb.matches(data, "tui.select.confirm")) {
-        const cur = findPromptItemByValue(list.getSelectedItem()?.value ?? "");
-        if (cur && cur.key !== DECK_PROMPT_CANCEL_KEY) void onRowConfirm(ctx, cur.key);
-        return;
-      }
-      orig(data);
-    };
-    return list;
-  };
-}
-function findPromptItemByValue(value: string): DeckPromptItem | undefined {
-  return parseDeckPromptValue(value)
-    ? buildDeckPromptItems([...entries.values()]).find((it) => it.value === value)
-    : undefined;
+/** Build the single composite widget factory (detail rows + SelectList).
+ *  The detail rows render the deck's own `buildLines` projection (batch
+ *  aware, in seq order); the SelectList items come from the entries
+ *  accessor (job rows only — batch rows are not selectable jobs). */
+function buildCompositeWidgetFactory(ctx: ExtensionContext) {
+  return deckComposite.buildCompositeFactory(
+    buildLines,
+    () => [...entries.values()],
+    getDeckMaxRows(),
+    {
+      onRowConfirm: (key) => {
+        void onRowConfirm(ctx, key);
+      },
+      onSelectionChange: () => {
+        scheduleRender();
+      },
+    },
+  );
 }
 
-/** #607 d2/d3. Route a confirmed row: a running job opens the steer prompt; a settled job opens the read-only transcript viewer. */
+/** #607 d2/d3. Route a confirmed row. */
 async function onRowConfirm(ctx: ExtensionContext, key: string): Promise<void> {
   const entry = entries.get(key);
   if (!entry) return;
   if (!settledJobs.has(key)) {
-    const text = await ctx.ui.editor(`Steer ${entry.label}`, buildSteerPrompt(entry, Date.now()));
+    const text = await ctx.ui.editor(
+      `Steer ${entry.label}`,
+      deckComposite.buildSteerPrompt(entry, Date.now()),
+    );
     if (text === undefined) return;
     steerDeckEntry(ctx.ui, key, text);
     return;
@@ -368,31 +275,9 @@ async function onRowConfirm(ctx: ExtensionContext, key: string): Promise<void> {
     .catch((e: Error) => trace(`dispatch-deck: viewer error: ${e.message}`));
 }
 
-function renderPromptWidget(): void {
-  if (!activeCtx || isQuiet()) return;
-  if (entries.size === 0) {
-    if (promptWidgetVisible) {
-      try {
-        activeCtx.ui.setWidget(DECK_PROMPT_KEY, undefined);
-      } catch {}
-    }
-    promptWidgetVisible = false;
-    return;
-  }
-  const factory = buildDeckPromptFactory(activeCtx);
-  try {
-    activeCtx.ui.setWidget(
-      DECK_PROMPT_KEY,
-      ((tui: TUI, theme: Theme) => factory(tui, theme)) as unknown as (
-        tui: TUI,
-        theme: Theme,
-      ) => SelectList,
-      { placement: "aboveEditor" },
-    );
-    promptWidgetVisible = true;
-  } catch (err) {
-    trace(`dispatch-deck: prompt row setWidget failed: ${(err as Error).message}`);
-  }
+/** Deliver a steer to a deck row's job (`deck-ui` source; routes through the shared steer core). */
+export function steerDeckEntry(ctx: ExtensionUIContext, key: string, message: string): void {
+  void deckInteractive.steerFromDeck(ctx, key, message);
 }
 
 // =============================================================================
@@ -437,6 +322,8 @@ const STALE_THRESHOLD_MS = (() => {
   const env = Number(process.env.PI_ENSEMBLE_STALE_THRESHOLD_MS);
   return Number.isFinite(env) && env >= 1000 ? env : 15 * 60_000;
 })();
+
+const HINT_MAX = 50;
 
 function isStale(entry: { state: RunningState; startedAt: number }, now: number): boolean {
   const last = entry.state.lastEventAt ?? entry.startedAt;

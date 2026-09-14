@@ -156,15 +156,21 @@ const SEAMS: Seam[] = [
     canary: { symbol: "resolveIntentVerdict", importer: "work-driver-explore.ts" },
   },
   {
-    // #709 — the short aboveEditor deck-row label. The pure builder is wired
-    // into buildDeckPromptItems by dispatch-deck.ts; declared test-only so a
-    // regression that unwires it (or drops the test) is visible at the gate.
-    file: "deck-prompt-label.ts",
+    // #729 — the dispatch deck's single composite widget factory. Replaces
+    // the pre-#729 deck-prompt-label.ts + aboveEditor DECK_PROMPT_KEY widget
+    // with a belowEditor composite that renders ONE widget key. The pure
+    // builders are wired into renderNow by dispatch-deck.ts; declared
+    // test-only so a regression that unwires the composite is visible at
+    // the gate.
+    file: "dispatch-deck-composite.ts",
     pending: {},
     testOnly: {
-      shortPromptLabel: "pure short-label builder; wired into dispatch-deck.ts, asserted directly",
+      encodeDeckValue: "value encoder; exercised by test-dispatch-deck-interactive.ts",
+      parseDeckValue: "value decoder; exercised by test-dispatch-deck-interactive.ts",
+      buildDeckItems: "row builder; exercised by test-dispatch-deck-interactive.ts",
+      buildSteerPrompt: "steer prompt builder; exercised by test-dispatch-deck-interactive.ts",
     },
-    canary: { symbol: "shortPromptLabel", importer: "dispatch-deck.ts" },
+    canary: { symbol: "buildCompositeFactory", importer: "dispatch-deck.ts" },
   },
 ];
 
