@@ -21,7 +21,7 @@ import path from "node:path";
 import { trace } from "./trace.ts";
 import { type ProvisionResult, provisionWorktree } from "./worktree-provision.ts";
 export type { ProvisionResult } from "./worktree-provision.ts";
-export { salvageUncommittedWork } from "./worktree-salvage.ts";
+export { salvageUncommittedWork, salvageDirtyWorktree } from "./worktree-salvage.ts";
 
 /** Shell executor, matching `DriverContext.verifyExecFn`. */
 export type ExecFn = (
