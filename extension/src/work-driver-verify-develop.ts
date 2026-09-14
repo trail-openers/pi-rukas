@@ -5,11 +5,12 @@
  * Checks diff evidence, verify command, skip-ratchet, and product smoke gates.
  * Import chain: work-driver-verify.ts → this file → work-driver-verify-cmd.ts
  * (acyclic). The #679 falsily-green check lives in work-driver-falsily-green.ts.
+ * Exec-error formatting and verify-cmd gate helpers (timeout, path
+ * normaliser, tolerance) live in work-driver-verify-develop-helpers.ts.
  */
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { trace } from "./trace.ts";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { provisionDepsHint } from "./work-driver-deps-hint.ts";
@@ -20,7 +21,6 @@ import {
   protectedPathsEnabled,
   protectedPathsIn,
 } from "./work-driver-doctrine.ts";
-import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import { runFalsilyGreenCheck } from "./work-driver-falsily-green.ts";
 import { runScopeFanoutGate } from "./work-driver-scope-fanout.ts";
 import {
@@ -29,6 +29,13 @@ import {
   countSkipMarkersInDiffLine,
 } from "./work-driver-skip-ratchet.ts";
 import {
+  formatExecError,
+  normaliseScopePath,
+  testDeleteTolerance,
+  verifyTimeoutMs,
+} from "./work-driver-verify-develop-helpers.ts";
+
+import {
   declaredPathsHaveSource,
   readFirstConfigLine,
   verifyCmdFor,
@@ -36,51 +43,10 @@ import {
 import type { WorkState } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
 
-/** #285 — normalise a scope path like git would spell it. */
-function normaliseScopePath(raw: string) {
-  return raw.trim().replace(/^\.\//, "").replace(/\/+$/, "");
-}
-
-/** PR17 — bounded wall-clock for the verify command (default 10 min). */
-function verifyTimeoutMs() {
-  const env = Number(process.env.PI_ENSEMBLE_VERIFY_TIMEOUT_MS);
-  if (Number.isFinite(env) && env > 0) return env;
-  return 10 * 60_000;
-}
-
 /** PR338 — validate a git SHA before shell interpolation. */
 const VALID_SHA_RE = /^[0-9a-f]{40}$/;
 function isValidSha(s: string | undefined) {
   return typeof s === "string" && VALID_SHA_RE.test(s);
-}
-
-/** #307 — maximum number of net-removed test blocks tolerated in a diff. */
-function testDeleteTolerance() {
-  const env = Number(process.env.PI_ENSEMBLE_TEST_DELETE_TOLERANCE);
-  if (!Number.isFinite(env) || env < 0) return 0;
-  return Math.floor(env);
-}
-
-/**
- * PR338 — format an exec error with a bounded, attribution-aware output
- * tail. #723 — anchors on the last sub-command's `FAILED: <file>` marker
- * (see work-driver-exec-error.ts) so a combined multi-stage verify-cmd run
- * never reports an earlier PASSING sub-command's output as the failure.
- */
-function formatExecError(
-  e: Error & { stdout?: string; stderr?: string; killed?: boolean },
-  timeoutMsg: string,
-  failMsg: string,
-) {
-  const { tail, attributed } = extractAttributedTail(`${e.stdout ?? ""}\n${e.stderr ?? ""}`, 1500);
-  if (!attributed && tail)
-    trace("work-driver: exec error tail is unattributed (no FAILED: marker found)");
-  const suffix = tail
-    ? attributed
-      ? tail
-      : `${tail} (unattributed — best-effort tail)`
-    : undefined;
-  return e.killed ? timeoutMsg : `${failMsg}: ${suffix ?? e.message?.slice(0, 300)}`;
 }
 
 /**
