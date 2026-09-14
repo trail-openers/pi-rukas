@@ -155,9 +155,7 @@ try {
     "develop",
   );
   assert(
-    !siblingWidened.failures.some((failure) =>
-      /out-of-scope path src\/b\.ts/.test(failure),
-    ),
+    !siblingWidened.failures.some((failure) => /out-of-scope path src\/b\.ts/.test(failure)),
     "#672-2a: sibling-declared path is not an out-of-scope hit for workstream A",
   );
   assert(
@@ -189,12 +187,14 @@ try {
     }),
     "develop",
   );
-  const undecl = siblingUndeclared.failures.find((failure) =>
-    /scope fanout/.test(failure) && /vs 1 declared/.test(failure),
+  const undecl = siblingUndeclared.failures.find(
+    (failure) => /scope fanout/.test(failure) && /vs 1 declared/.test(failure),
   );
   assert(Boolean(undecl), "#672-2b: an undeclared file fails the gate");
-  assert(Boolean(undecl) && /scope fanout: 7 undeclared file\(s\)/.test(undecl),
-    "#724: fanout failure names the undeclared count (7), not the raw changed count");
+  assert(
+    Boolean(undecl) && /scope fanout: 7 undeclared file\(s\)/.test(undecl),
+    "#724: fanout failure names the undeclared count (7), not the raw changed count",
+  );
   assert(
     siblingUndeclared.failures.some((failure) => /src\/rogue\.ts/.test(failure)),
     "#672-2b: the failure names the undeclared file",
@@ -266,8 +266,8 @@ try {
     "#724: the coupled test file (test-foo.ts) is exempt and not named in the failure",
   );
   assert(
-    !testFileRogue.failures.some((failure) =>
-      /out-of-scope/.test(failure) && /test-rogue\.ts/.test(failure),
+    !testFileRogue.failures.some(
+      (failure) => /out-of-scope/.test(failure) && /test-rogue\.ts/.test(failure),
     ),
     "#672-3b: the failure is fanout/undeclared, not out-of-scope (fence semantics unchanged)",
   );
@@ -294,8 +294,18 @@ try {
   const numSibling = await verifyStepOutcome(
     ctx,
     stateFor({
-      "task-a": { id: "task-a", scope: "a", paths: ["src/a1.ts", "src/a2.ts", "src/a3.ts", "src/a4.ts", "src/a5.ts"], outOfScope: [] },
-      "task-b": { id: "task-b", scope: "b", paths: ["src/b1.ts", "src/b2.ts", "src/b3.ts"], outOfScope: [] },
+      "task-a": {
+        id: "task-a",
+        scope: "a",
+        paths: ["src/a1.ts", "src/a2.ts", "src/a3.ts", "src/a4.ts", "src/a5.ts"],
+        outOfScope: [],
+      },
+      "task-b": {
+        id: "task-b",
+        scope: "b",
+        paths: ["src/b1.ts", "src/b2.ts", "src/b3.ts"],
+        outOfScope: [],
+      },
     }),
     "develop",
   );
@@ -329,7 +339,12 @@ try {
     ctx,
     stateFor({
       "task-a": { id: "task-a", scope: "a", paths: ["src/a1.ts", "src/a2.ts"], outOfScope: [] },
-      "task-b": { id: "task-b", scope: "b", paths: ["src/b1.ts", "src/b2.ts", "src/b3.ts"], outOfScope: [] },
+      "task-b": {
+        id: "task-b",
+        scope: "b",
+        paths: ["src/b1.ts", "src/b2.ts", "src/b3.ts"],
+        outOfScope: [],
+      },
     }),
     "develop",
   );
