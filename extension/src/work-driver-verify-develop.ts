@@ -37,12 +37,12 @@ import type { WorkState } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
 
 /** #285 — normalise a scope path like git would spell it. */
-function normaliseScopePath(raw: string): string {
+function normaliseScopePath(raw: string) {
   return raw.trim().replace(/^\.\//, "").replace(/\/+$/, "");
 }
 
 /** PR17 — bounded wall-clock for the verify command (default 10 min). */
-function verifyTimeoutMs(): number {
+function verifyTimeoutMs() {
   const env = Number(process.env.PI_ENSEMBLE_VERIFY_TIMEOUT_MS);
   if (Number.isFinite(env) && env > 0) return env;
   return 10 * 60_000;
@@ -50,12 +50,12 @@ function verifyTimeoutMs(): number {
 
 /** PR338 — validate a git SHA before shell interpolation. */
 const VALID_SHA_RE = /^[0-9a-f]{40}$/;
-function isValidSha(s: string | undefined): s is string {
+function isValidSha(s: string | undefined) {
   return typeof s === "string" && VALID_SHA_RE.test(s);
 }
 
 /** #307 — maximum number of net-removed test blocks tolerated in a diff. */
-function testDeleteTolerance(): number {
+function testDeleteTolerance() {
   const env = Number(process.env.PI_ENSEMBLE_TEST_DELETE_TOLERANCE);
   if (!Number.isFinite(env) || env < 0) return 0;
   return Math.floor(env);
@@ -71,7 +71,7 @@ function formatExecError(
   e: Error & { stdout?: string; stderr?: string; killed?: boolean },
   timeoutMsg: string,
   failMsg: string,
-): string {
+) {
   const { tail, attributed } = extractAttributedTail(`${e.stdout ?? ""}\n${e.stderr ?? ""}`, 1500);
   if (!attributed && tail)
     trace("work-driver: exec error tail is unattributed (no FAILED: marker found)");
@@ -82,6 +82,7 @@ function formatExecError(
     : undefined;
   return e.killed ? timeoutMsg : `${failMsg}: ${suffix ?? e.message?.slice(0, 300)}`;
 }
+
 /**
  * Verify the develop step's outcome by checking executed evidence
  * in each worktree. Mutates `failures` and `notes` in place.
@@ -100,34 +101,36 @@ export async function verifyDevelopOutcome(
   const baseSha = state.pipelineState.baseSha;
   const changedWorktrees: string[] = [];
   // #406 — every path the developers touched, across all worktrees, so the
-  // protected-path gate below sees the whole change set, not one slice.
+  // protected-path gate below sees the whole change set rather than one
+  // worktree's slice of it.
   const touchedPaths: string[] = [];
   // #285 scope/fanout map + #453 uncommitted-only count (suppresses the
   // hollow-diff message when per-worktree failures already explain it).
   let assessedCount = 0;
   // #672 (sub-defect 1) — per-worktree changed-path attribution. Each id's
-  // Set is initialized BEFORE the accumulation loop (the pre-fix `.get(id)?.add()`
-  // was a silent no-op) and is never overwritten with the cross-worktree
-  // cumulative `touchedPaths` union (the pre-fix post-loop overwrite made every
-  // id's Set an identical copy of ALL worktrees' paths). `touchedPaths` stays
-  // cumulative — the #406 protected-path gate and the diagnostics rely on it.
+  // Set is initialized BEFORE the accumulation loop so `.add()` writes into
+  // a live Set (the pre-fix code called `.get(id)?.add()` before any `.set()`
+  // — a silent no-op), and it is never overwritten with the cross-worktree
+  // cumulative `touchedPaths` union (the pre-fix post-loop `.set(id, new Set(touchedPaths))`
+  // made every id's Set an identical copy of the union of ALL worktrees' paths).
+  // `touchedPaths` stays cumulative — the #406 gate and diagnostics rely on it.
   const changedPathsByWorkstream = new Map<string, Set<string>>(
     Object.keys(worktrees).map((id) => [id, new Set<string>()]),
   );
   // #453 — count worktrees with uncommitted-only changes (no commits ahead
   // of baseSha); when > 0 and changedWorktrees is empty, the per-worktree
-  // failures already explain the issue — skip the "empty diff" message.
+  // failures already explain the issue — skip the empty-diff message.
   let uncommittedOnlyCount = 0;
   // #679 (task-evidence) — workstream ids whose declared paths are entirely
-  // non-source (docs-only): exempt from the "uncommitted but no commit" failure
-  // (uncommitted work IS the deliverable) and from the generic empty-diff
-  // message (absence of commits is expected).
+  // non-source (docs-only), EXEMPT from the "uncommitted but no commit"
+  // failure (uncommitted work is a legitimate non-source deliverable) and
+  // from the generic "every worktree empty" message (no commits expected).
   const legitimateNonSourceWorkstreams = new Set<string>();
   // #679 (task-evidence) — per-workstream base resolution. A dependent
-  // workstream's EFFECTIVE base is its dependency's post-commit SHA (in
-  // `workstreamBaseShas`); every other falls back to the global `baseSha`.
-  // The falsily-green check compares each worktree against THIS ref, so a
-  // dependent whose base ≠ the global base is judged against the right ref.
+  // workstream's EFFECTIVE base is its dependency's post-commit SHA (persisted
+  // in `workstreamBaseShas`); every other workstream falls back to the global
+  // `baseSha`. The falsily-green check compares each worktree against THIS ref,
+  // so a dependent whose base ≠ the global base is judged against the right ref.
   const workstreamBaseShas = state.pipelineState.workstreamBaseShas;
   const effectiveBaseFor = (wsId: string): string | undefined => {
     const per = workstreamBaseShas?.[wsId];
@@ -170,10 +173,8 @@ export async function verifyDevelopOutcome(
     }
     // #725 — diff against THIS workstream's effective base, not the cycle-
     // global baseSha: a dependent's worktree is created from its dependency's
-    // post-commit SHA (#679), so a global-base diff spuriously includes every
-    // file the dependency committed — the #607 false positive. For
-    // independent workstreams (or N=1) the effective base equals the global
-    // baseSha, so this preserves their behaviour.
+    // post-commit SHA (#679), so a global-base diff spuriously includes the
+    // dependency's files — the #607 false positive.
     const effBase = effectiveBaseFor(id);
     if (isValidSha(effBase)) {
       try {
@@ -183,8 +184,15 @@ export async function verifyDevelopOutcome(
         });
         if (Number.parseInt(stdout.trim(), 10) > 0) hasCommits = true;
         assessed = true;
-      } catch {
-        // baseSha may not exist in this worktree's history — not evidence either way.
+      } catch (err) {
+        // #725 — an absent baseSha in this worktree's history is not evidence
+        // either way; but a base the code itself resolved and git could not
+        // read IS a degraded measurement — name the ref and error (#384).
+        if (effBase !== baseSha) {
+          notes.push(
+            `rev-list failed against effective base ${effBase} in ${id} — commit count unavailable, the worktree may be undercounted as changed (${(err as Error).message?.slice(0, 100)})`,
+          );
+        }
       }
       try {
         const { stdout } = await execFn(`git diff --name-only ${effBase}..HEAD`, {
@@ -200,27 +208,33 @@ export async function verifyDevelopOutcome(
       }
     }
     if (assessed) assessedCount++;
-    // #453 — with a valid baseSha only committed work counts (the transfer
-    // unit is a commit, cherry-picked in Step 6, not a patch); without one
-    // (older state files) uncommitted work also counts.
-    const changed = isValidSha(baseSha) ? hasCommits : hasCommits || hasUncommitted;
+    // #453 + #725 — the `changed` decision derives from the SAME ref the
+    // diff block tested (the effective base, not the global baseSha, which
+    // may be absent for a dependent with a valid workstreamBaseShas entry);
+    // the uncommitted fallback applies only when NO valid base exists (older
+    // state files).
+    const changed = isValidSha(effBase) ? hasCommits : hasCommits || hasUncommitted;
     if (changed) changedWorktrees.push(cwd);
     // Per-worktree diagnostic: uncommitted work exists but hasn't been committed.
-    // #679 (task-evidence) — a docs-only workstream (declared paths entirely
-    // non-source) is NOT penalised for leaving it uncommitted: that work IS
-    // the deliverable; the falsily-green check handles the source case.
+    // #679 (task-evidence) — a workstream whose declared paths are entirely
+    // non-source (docs-only) is NOT penalised for leaving its uncommitted work
+    // uncommitted: that uncommitted work IS the deliverable (a docs change),
+    // and the falsily-green check below handles the source case explicitly.
     const isLegitNonSource = declaredSourceByWorkstream.get(id) === false;
-    if (isValidSha(baseSha) && hasUncommitted && !hasCommits) {
+    if (isValidSha(effBase) && hasUncommitted && !hasCommits) {
       if (isLegitNonSource) {
         legitimateNonSourceWorkstreams.add(id);
         // Legitimate docs-only deliverable — no failure; the safety net will
         // still commit it driver-side so the transfer unit is a real commit.
       } else {
         uncommittedOnlyCount++;
-        // #621 — what matters is that the work is committed ahead of baseSha
-        // before the adversarial gate runs.
+        // #621 — the developer commits in their own worktree with their own
+        // conventional-commit subject; what matters is that the work is
+        // committed ahead of baseSha before the adversarial gate runs.
+        // #725 — name the ref this check actually tested (the effective base).
+        const ref = isValidSha(effBase) ? `base ${effBase}` : "baseSha";
         failures.push(
-          `worktree "${id}": has uncommitted changes but no commit ahead of baseSha — run \`git add -A && git commit -m \"<type>(scope): concise subject\"\` in the worktree before completing the develop step`,
+          `worktree "${id}": has uncommitted changes but no commit ahead of ${ref} — run \`git add -A && git commit -m \"<type>(scope): concise subject\"\` in the worktree before completing the develop step`,
         );
       }
     }
@@ -248,29 +262,28 @@ export async function verifyDevelopOutcome(
   // --- Protected-path gate (#406) ---
   // A cycle must not edit the files that decide whether its own work passes.
   // Policy prose (AGENTS.md, CLAUDE.md) is deliberately NOT halted here — it
-  // is neutralised instead, by reading doctrine at baseSha in the merge gate
-  // (this repo's own "docs ship with the PR" rule keeps working).
+  // is neutralised instead, by reading doctrine at baseSha in the merge gate —
+  // so that this repo's own "docs ship with the PR" rule keeps working.
   if (protectedPathsEnabled()) {
     const protectedHits = protectedPathsIn(touchedPaths);
     if (protectedHits.length > 0) failures.push(explainProtectedPaths(protectedHits));
     const prose = doctrineProsePathsIn(touchedPaths);
-    if (prose.length > 0)
+    if (prose.length > 0) {
       notes.push(
         `develop changed policy prose (${prose.join(", ")}) — allowed, and inert for this cycle: merge authority is read at the base commit, so a grant added here cannot take effect until an operator merges it`,
       );
+    }
   } else {
     notes.push("PI_ENSEMBLE_PROTECTED_PATHS=0 — protected-path gate disabled");
   }
 
   // --- Scope/fanout gate (#285) — extracted to work-driver-scope-fanout.ts ---
-  // #725 — each workstream's fence is evaluated against its OWN effective-
-  // base diff (above), with a dependsOn carve-out for paths a declared
-  // dependency owns (see work-driver-scope-fanout.ts): the cross-declaration
-  // contract (#572 — a file in exactly ONE workstream's paths and the
-  // OTHERS' outOfScope) is what keeps findPathCollisions from firing, so the
-  // fence honours it instead of failing every dependsOn cycle. A fence HIT is
-  // a decomposition problem, not an integration one: it is NOT routed to the
-  // consolidated-verify-conflict cap (only the cherry-pick conflict below is).
+  // #725 — each workstream's fence is evaluated against its OWN effective-base
+  // diff (above), with a dependsOn carve-out for paths a declared dependency
+  // owns (work-driver-scope-fanout.ts): the cross-declaration contract (#572)
+  // keeps findPathCollisions from firing. A fence HIT is a decomposition
+  // problem, not an integration one: NOT routed to the consolidated-verify-
+  // conflict cap (only the cherry-pick conflict below).
   runScopeFanoutGate(
     state.pipelineState.workstreams ?? {},
     changedPathsByWorkstream,
@@ -301,15 +314,15 @@ export async function verifyDevelopOutcome(
   }
   // --- Verify command (b) — per-worktree, then the CONSOLIDATED tree ---
   // #669 — every gate before the consolidated run sees ONE workstream in
-  // isolation, so a test in workstream X asserting on a file owned by Y
-  // cannot pass in X's tree. Per-worktree verify stays (out-of-scope
-  // touches, skip-ratchet violations and missing deps are per-worktree
+  // isolation, so a test in workstream X that asserts on a file owned by
+  // workstream Y cannot pass in X's tree. Per-worktree verify stays (out-of-
+  // scope touches, skip-ratchet violations and missing deps are per-worktree
   // diagnostics the consolidated run cannot see), but it must never be the
   // SOLE basis for rejecting a fanout: N>1 workstreams get one additional
   // verify against a tree containing ALL of their commits, and per-worktree
-  // failures are downgraded to notes whenever that consolidated run passes —
-  // the consolidated result decides whether a per-worktree failure was a
-  // cross-worktree artifact.
+  // verify failures are downgraded to notes whenever that consolidated run
+  // passes — the consolidated result is what decides whether a per-worktree
+  // failure was a cross-worktree artifact.
   const cmd = await verifyCmdFor(ctx.repoRoot);
   if (!cmd) {
     notes.push(
@@ -326,8 +339,9 @@ export async function verifyDevelopOutcome(
         // same shape as one that fails on a real defect; development happens
         // in a fresh worktree, so this is the likelier of the two when it
         // matches — say so rather than implying the diff is at fault. The
-        // consolidated run below decides whether this is a genuine per-worktree
-        // defect (kept as a failure) or a cross-worktree artifact (evidence).
+        // consolidated run below decides whether this is a genuine per-
+        // worktree defect (kept as a failure) or a cross-worktree artifact
+        // (downgraded to evidence).
         const output = `${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.message ?? ""}`;
         const depsHint = looksLikeMissingDeps(output) ? provisionDepsHint(state, cwd) : "";
         perWorktreeVerifyFailures.push(
@@ -340,9 +354,10 @@ export async function verifyDevelopOutcome(
       }
     }
     // The consolidated run. With N=1 there is nothing to consolidate — the
-    // single worktree IS the combined tree; N>1 (or the legacy default-map
-    // shape) needs a real consolidation to see the combination. A worktree
-    // with no commit ahead of baseSha contributes nothing (cannot be picked).
+    // single worktree IS the combined tree. N>1 (or the legacy default-map
+    // shape where the worktree is repoRoot itself) needs a real consolidation
+    // to see the combination. A worktree with no commit ahead of baseSha
+    // contributes nothing to the combined tree (it cannot be cherry-picked).
     const consolidationNeeded =
       changedWorktrees.length > 1 ||
       (changedWorktrees.length === 1 && changedWorktrees[0] !== ctx.repoRoot);
@@ -352,10 +367,11 @@ export async function verifyDevelopOutcome(
     if (!consolidationNeeded || !isValidSha(baseSha) || !hasNonRootWorktrees) {
       // No consolidation possible: the per-worktree results are the verdict.
       failures.push(...perWorktreeVerifyFailures);
-      if (consolidationNeeded)
+      if (consolidationNeeded) {
         notes.push(
           "consolidated verify skipped — no non-repoRoot worktrees with a valid baseSha to cherry-pick into a combined tree; per-worktree evidence is the verdict",
         );
+      }
     } else {
       const cons = await runConsolidatedVerify(execFn, {
         repoRoot: ctx.repoRoot,
@@ -370,11 +386,10 @@ export async function verifyDevelopOutcome(
         // #725 — "conflict" has TWO causes: a genuine cherry-pick / patch-apply
         // conflict (a decomposition error) and the repoRoot-dirty preflight
         // refusal (operator residue — #668/#714). Routed on the structured
-        // `kind`, not the detail prose; a dirty root is cleared with
-        // `git status`, not by re-splitting the plan.
+        // `kind`, not the detail prose; a dirty root is cleared with git status.
         if (cons.kind === "dirty-root") {
           failures.push(
-            `consolidated verify was refused — repoRoot is dirty (${cons.detail}). This is leftover residue from an earlier cycle, NOT a conflict between the workstreams' commits and NOT a verify failure: run \`git status\` at the repo root, clear the residue, and re-run the cycle`,
+            `consolidated verify was refused — repoRoot is dirty (${cons.detail}). Leftover residue from an earlier cycle, NOT a workstream conflict or verify failure: run \`git status\` at the repo root, clear the residue, and re-run the cycle`,
           );
         } else {
           failures.push(
@@ -393,9 +408,11 @@ export async function verifyDevelopOutcome(
       // The aggregation rule: a consolidated PASS downgrades every per-worktree
       // verify failure to evidence (cross-worktree artifacts — the #645 shape,
       // where a workstream's test reads a file only a sibling's commit
-      // supplies). A consolidated FAILURE keeps them as failures: a workstream
+      // supplies). A consolidated FAILURE (or a conflict that prevented the
+      // combined run from completing) keeps them as failures: a workstream
       // that fails alone while the combined run also fails has a genuine
-      // per-worktree defect the combined verdict cannot explain away.
+      // per-worktree defect the combined verdict cannot explain away, and the
+      // operator needs BOTH the per-worktree detail and the combined verdict.
       if (cons.status === "passed") {
         for (const f of perWorktreeVerifyFailures)
           notes.push(`per-worktree verify (evidence) — ${f}`);
@@ -408,10 +425,12 @@ export async function verifyDevelopOutcome(
   // --- Skip-ratchet gate (PR277) ---
   if (process.env.PI_ENSEMBLE_SKIP_RATCHET !== "0") {
     // F4: if baseSha is absent, note the weakened scope of the check
-    if (!baseSha)
+    if (!baseSha) {
       notes.push(
         "baseSha unavailable — skip-ratchet compared working tree against HEAD only; committed changes not inspected",
       );
+    }
+
     for (const cwd of changedWorktrees) {
       let diffContent = "";
       try {
@@ -461,9 +480,10 @@ export async function verifyDevelopOutcome(
   }
 
   // --- Product smoke command gate (PR277) ---
-  // #451 — runs in the first changed worktree, not at ctx.repoRoot: under
-  // worktree isolation the repo root sits on mainline, and running the smoke
-  // there would exercise the wrong tree.
+  // #451 — runs in the first changed worktree, not at ctx.repoRoot.
+  // Under worktree isolation the repo root sits on mainline; running the
+  // smoke there would exercise the wrong tree. The worktree has the
+  // developer's changes and its provisioned dependencies.
   if (process.env.PI_ENSEMBLE_SMOKE !== "0") {
     let smokeCmd: string | undefined;
     try {
