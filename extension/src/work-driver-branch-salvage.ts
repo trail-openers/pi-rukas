@@ -18,10 +18,8 @@
  * salvage must not turn a handoff into a crash.
  */
 
-import fs from "node:fs/promises";
-import path from "node:path";
 import { trace } from "./trace.ts";
-import { type ExecFn, inspectWorktreeForLoss } from "./worktree.ts";
+import { type ExecFn, inspectWorktreeForLoss, salvageUncommittedWork } from "./worktree.ts";
 
 async function salvageKnownDirtyWorktreesInner(
   execFn: ExecFn,
@@ -29,36 +27,11 @@ async function salvageKnownDirtyWorktreesInner(
   id: string,
   scratchAbs: string,
 ): Promise<string | undefined> {
-  const name = path.basename(wtPath);
   const finding = await inspectWorktreeForLoss(execFn, wtPath, wtPath, "HEAD").catch(
     () => undefined,
   );
   if (!finding) return undefined; // clean — nothing to salvage
-  const salvageDir = path.join(scratchAbs, "salvage", name);
-  await fs.mkdir(salvageDir, { recursive: true });
-  const { stdout: diff } = await execFn("git diff HEAD", {
-    cwd: wtPath,
-    maxBuffer: 1024 * 1024,
-  });
-  await fs.writeFile(path.join(salvageDir, "salvage.patch"), diff, "utf8");
-  const { stdout: untracked } = await execFn("git ls-files --others --exclude-standard", {
-    cwd: wtPath,
-    maxBuffer: 1024 * 1024,
-  });
-  await fs.writeFile(path.join(salvageDir, "untracked.txt"), untracked, "utf8");
-  for (const rel of untracked
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean)) {
-    const src = path.join(wtPath, rel);
-    const dest = path.join(salvageDir, "files", rel);
-    try {
-      await fs.mkdir(path.dirname(dest), { recursive: true });
-      await fs.cp(src, dest, { recursive: true });
-    } catch {
-      // best-effort per file; the manifest still names it
-    }
-  }
+  const salvageDir = await salvageUncommittedWork(execFn, wtPath, scratchAbs);
   return `Salvaged dirty worktree ${wtPath} (workstream '${id}') to ${salvageDir} (salvage.patch, untracked.txt, files/) — inspect it, then remove the worktree (\`git worktree remove --force -- ${wtPath}\`) and re-run.`;
 }
 

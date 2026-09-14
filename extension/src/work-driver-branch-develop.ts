@@ -12,6 +12,7 @@ import { buildMemoryBrief } from "./memory-brief.ts";
 import { trace } from "./trace.ts";
 import { mechanizedBranchSetup } from "./work-driver-branch-mechanized.ts";
 import { parseWorktreesBlock, runBranchViaOpsDispatch } from "./work-driver-branch-ops.ts";
+import { runBranchResiduePass } from "./work-driver-branch-residue.ts";
 import { topologicalDispatchOrder } from "./work-driver-dep-scheduler.ts";
 
 export { parseWorktreesBlock };
@@ -59,16 +60,20 @@ const execp = promisify(exec);
  */
 export async function runBranch(
   ctx: DriverContext,
-  state: WorkState,
+  incoming: WorkState,
   now: number,
 ): Promise<WorkState> {
-  const workstreamIds = Object.keys(state.pipelineState.workstreams ?? {});
+  const workstreamIds = Object.keys(incoming.pipelineState.workstreams ?? {});
   // Reassigned only when the mechanized path falls back, to carry its
   // plumb-report into the ops dispatch below.
-  let base = state;
+  let base = incoming;
   const execFnPre = ctx.verifyExecFn ?? execp;
+  // #545/#730 — the cycle's scratch dir, home of the dirty-worktree salvage
+  // (used by both the residue pass below and the refusal path further down).
+  const salvageScratch = scratchDir(ctx.repoRoot, ctx.issue);
   // #362 — pre-flight BEFORE the dispatch: `--restart` wipes the state file
   // but not GitHub, so without this the driver would open a second PR.
+  let state: WorkState = incoming;
   if (prPreflightEnabled()) {
     const existing = await findOpenPrForIssue(execFnPre, ctx.repoRoot, ctx.issue);
     if (existing) {
@@ -85,10 +90,13 @@ export async function runBranch(
       });
     }
   }
-  // #545 — a dirty leftover of the SAME issue is salvaged to the cycle's
-  // scratch dir before the refusal. A salvage failure degrades to the
-  // pre-#545 refusal text.
-  const salvageScratch = scratchDir(ctx.repoRoot, ctx.issue);
+  // #730 — same-issue worktree residue BEFORE the mechanized setup (the
+  // exact #540/#724 restart collision): adopts a clean leftover at the
+  // cycle's own target path, preserves (salvage patch + durable tag) any
+  // dirty leftover, removes what it can, and records what it did. The
+  // #475/#545 refusal is unchanged and still fires for residue this pass
+  // could not resolve; salvageScratch is also the #545 refusal's home.
+  state = await runBranchResiduePass(ctx, state, execFnPre, salvageScratch);
   // #287 — mechanized, always-worktree branch setup. Development never
   // happens at repoRoot: every workstream gets a detached worktree. The LLM
   // ops dispatch below remains as the fallback for env variance (recovery,

@@ -10,6 +10,7 @@ import type { RoleName } from "./roles.ts";
 import type { DispatchUsage } from "./types.ts";
 import type { AdversarialEventFragment } from "./workflow-state-events-adversarial.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
+import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-leftover.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import type { SafetyNetCommitEvent } from "./workflow-state-events-safety-net.ts";
@@ -420,18 +421,7 @@ export type WorkEvent =
       at: number;
     }
   | {
-      /**
-       * Issue #279 — verify-full tier status.
-       *
-       * The verify-full suite runs driver-side in the ci step BEFORE
-       * the ops gh-run-watch dispatch. Provides visibility into the
-       * "fast green, full unrun/red" gap that caused the vipune bug:
-       * the fast suite passed for ~2.5 months while the real-embedder
-       * tests sat behind #[ignore].
-       *
-       * "skipped" is emitted when `.pi/verify-cmd-full` is absent —
-       * silent absence would recreate the exact ambiguity this removes.
-       */
+      /** Issue #279 — verify-full tier status: driver-side, ci step. */
       kind: "verify-full-status";
       at: number;
       status: "success" | "failure" | "skipped";
@@ -440,11 +430,12 @@ export type WorkEvent =
       /** Tail of the command output for the handoff/comment body. */
       evidenceTail?: string;
     }
-  // Fragment events (AGENTS.md §12 module-size hygiene). The union stays
+  // Fragment events (AGENTS.md §12 module-size hygiene) — the union stays
   // exhaustive: nextStep() and the schema validator see the same closed type.
   | WideningScanEvent
   | MemoryEventFragment
   | WorktreeProvisionedEvent
-  | SafetyNetCommitEvent;
+  | SafetyNetCommitEvent
+  | WorktreeLeftoverHandledEvent;
 /** Discriminator union of event kinds — useful for callers that switch on it. */
 export type WorkEventKind = WorkEvent["kind"];
