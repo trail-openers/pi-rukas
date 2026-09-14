@@ -117,11 +117,6 @@ try {
     writeFileSync(path.join(wtBacktest, "a.txt"), "base\nmid-develop work\n");
     writeFileSync(path.join(wtBacktest, "new.txt"), "untracked work\n");
     // dirty: 2 commits ahead (the #728 hazard shape)
-    const commitAhead = async (wt: string, msg: string) => {
-      const { stdout } = await git(wt, ["rev-parse", "HEAD"]);
-      await git(repo, ["commit-tree", stdout.trim(), "-p", stdout.trim(), "-m", msg]);
-    };
-    await git(wtTests, ["rev-parse", "HEAD"]);
     // Two commits via the worktree's own index.
     writeFileSync(path.join(wtTests, "a.txt"), "base\ntest work 1\n");
     await git(wtTests, ["add", "."]);
@@ -129,10 +124,21 @@ try {
     writeFileSync(path.join(wtTests, "b.txt"), "more work\n");
     await git(wtTests, ["add", "."]);
     await git(wtTests, ["commit", "-q", "-m", "w2"]);
-    void commitAhead;
     const headOf = async (wt: string) => (await git(wt, ["rev-parse", "HEAD"])).stdout.trim();
     const testsHeadBefore = await headOf(wtTests);
-    const backtestDirtyBefore = await headOf(wtBacktest);
+
+    // The #724 incident shape is genuinely 2 commits ahead of the base —
+    // the durable-tag + preservation path must hold for a multi-commit
+    // worktree, not just a single dirty one. Assert it explicitly.
+    const { stdout: testsAheadCount } = await git(wtTests, [
+      "rev-list",
+      "--count",
+      `${baseSha}..HEAD`,
+    ]);
+    assert(
+      testsAheadCount.trim() === "2",
+      `the committed sibling really IS 2 commits ahead of the base (got ${testsAheadCount.trim()})`,
+    );
 
     // A concurrent cycle for a DIFFERENT issue owns its own worktrees.
     const wtForeign = path.join(repo, ".worktrees", "issue-725-default");
@@ -205,7 +211,6 @@ try {
       tagSha.trim() === testsHeadBefore,
       "the tag points at the worktree's pre-removal HEAD (the work is recoverable)",
     );
-    void backtestDirtyBefore;
     assert(!afterList.includes("issue-724-task-tests"), "the committed sibling is removed");
 
     // foreign issue: untouched — still attached, still dirty

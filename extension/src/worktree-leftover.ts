@@ -30,6 +30,7 @@
  * be handled there, not here).
  */
 
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import { trace } from "./trace.ts";
 import { provisionWorktree } from "./worktree-provision.ts";
@@ -37,7 +38,8 @@ import {
   type DirtyWorktreeFinding,
   type ExecFn,
   type ProvisionResult,
-  inspectWorktreeForLoss,
+  salvageUncommittedWork,
+  scanWorktrees,
   worktreePrune,
   worktreeRemove,
 } from "./worktree.ts";
@@ -68,9 +70,18 @@ export interface LeftoverAction {
   action: "adopt" | "removed";
   /** Durable references created for the removed work (empty for a clean removal). */
   refs: string[];
-  /** Scratch salvage dir when a dirty tree's diff was preserved. */
+  /**
+   * Scratch salvage dir when a dirty tree's diff was preserved. The
+   * sentinel `"(salvage-failed)"` marks a dirty tree whose salvage failed
+   * partway (the tree was still removed) so the event records the loss
+   * instead of looking identical to a clean removal.
+   */
   salvageDir?: string;
-  /** Set when the adopt fell back to removal (e.g. the tree was not at fromRef). */
+  /**
+   * Set when the adopted worktree's re-provisioning reported a problem
+   * (the tree is reused anyway — a provisioning failure is the status quo
+   * pre-#730 worktrees always had, so it is surfaced, not fatal).
+   */
   fallbackReason?: string;
 }
 
@@ -80,55 +91,38 @@ export interface LeftoverAction {
  * an unreadable list yields an empty result (the branch step then degrades
  * to the pre-#730 behaviour: the raw git error from `worktree add`, plumbed
  * as today), which is the safe direction: refusing to act, not acting wrong.
- *
- * The `excludeName` is the cycle's OWN target worktree for the workstream
- * being created — it is inspected by `worktreeCreate` itself (adopt or
- * clean pre-remove), so the sweep must not double-handle it.
  */
 export async function findSameIssueLeftovers(
   execFn: ExecFn,
   repoRoot: string,
   fromRef: string,
   issueNumbers: number[],
-  excludeName?: string,
 ): Promise<SameIssueLeftover[]> {
-  let list: string;
-  try {
-    ({ stdout: list } = await execFn("git worktree list --porcelain", {
-      cwd: repoRoot,
-      maxBuffer: 1024 * 1024,
-    }));
-  } catch {
-    return [];
-  }
   const prefixes = issueNumbers.map((n) => `.worktrees${path.sep}issue-${n}`);
-  const out: SameIssueLeftover[] = [];
-  for (const line of list.split("\n")) {
-    const l = line.trim();
-    if (!l.startsWith("worktree ")) continue;
-    const wtPath = l.slice("worktree ".length);
-    if (!prefixes.some((p) => wtPath.includes(p))) continue;
-    const name = path.basename(wtPath);
-    if (name === excludeName) continue;
-    const finding = await inspectWorktreeForLoss(execFn, repoRoot, wtPath, fromRef).catch(
-      () => undefined,
-    );
-    out.push({ path: wtPath, name, dirty: finding !== undefined, finding });
-  }
-  return out;
+  const hits = await scanWorktrees(execFn, repoRoot, fromRef, prefixes);
+  return hits.map((h) => ({
+    path: h.path,
+    name: h.name,
+    dirty: h.finding !== undefined,
+    finding: h.finding,
+  }));
 }
 
 /**
  * The salvage recipe for a dirty worktree that is about to be removed:
- * `git diff HEAD` + the untracked manifest + the untracked file contents
- * into `<scratch>/salvage/<name>/`, plus a durable TAG on the worktree's
- * HEAD when it carries commits (`fromRef` or a named branch).
+ * the uncommitted-work salvage (shared with the #545 salvage via
+ * `salvageUncommittedWork`) + a durable TAG on the worktree's HEAD when it
+ * carries commits (`fromRef` or a named branch).
  *
  * Preservation happens BEFORE the removal, never as a fallback: a tag on a
  * commit that no longer has a ref is impossible, so ordering is the whole
  * point. Returns the durable refs created and the salvage dir (when the
  * tree had uncommitted work). Returns `{ refs: [], salvageDir: undefined }`
  * for a clean tree — nothing to preserve.
+ *
+ * The `finding` is threaded in by the caller (the residue pass already
+ * inspected each leftover in `findSameIssueLeftovers`), so the tree is not
+ * re-scanned on the way out.
  */
 async function preserveBeforeRemoval(
   execFn: ExecFn,
@@ -136,46 +130,22 @@ async function preserveBeforeRemoval(
   wtPath: string,
   fromRef: string,
   scratch: string,
+  finding: DirtyWorktreeFinding | undefined,
 ): Promise<{ refs: string[]; salvageDir?: string }> {
-  const finding = await inspectWorktreeForLoss(execFn, repoRoot, wtPath, fromRef).catch(
-    () => undefined,
-  );
   const refs: string[] = [];
   let salvageDir: string | undefined;
   // Uncommitted work → salvage patch into the cycle's scratch dir.
   if (finding && finding.uncommittedFiles.length > 0) {
-    const salvageDirPath = path.join(scratch, "salvage", path.basename(wtPath));
     try {
-      const { stdout: diff } = await execFn("git diff HEAD", {
-        cwd: wtPath,
-        maxBuffer: 1024 * 1024,
-      });
-      const fs = await import("node:fs/promises");
-      await fs.mkdir(salvageDirPath, { recursive: true });
-      await fs.writeFile(path.join(salvageDirPath, "salvage.patch"), diff, "utf8");
-      const { stdout: untracked } = await execFn("git ls-files --others --exclude-standard", {
-        cwd: wtPath,
-        maxBuffer: 1024 * 1024,
-      });
-      await fs.writeFile(path.join(salvageDirPath, "untracked.txt"), untracked, "utf8");
-      for (const rel of untracked
-        .split("\n")
-        .map((l) => l.trim())
-        .filter(Boolean)) {
-        const src = path.join(wtPath, rel);
-        const dest = path.join(salvageDirPath, "files", rel);
-        try {
-          await fs.mkdir(path.dirname(dest), { recursive: true });
-          await fs.cp(src, dest, { recursive: true });
-        } catch {
-          // best-effort per file; the manifest still names it
-        }
-      }
-      salvageDir = salvageDirPath;
+      salvageDir = await salvageUncommittedWork(execFn, wtPath, scratch);
     } catch (err) {
+      // A partial salvage failure must NOT block the removal, but the loss
+      // must be visible in the machine-readable event (the operator asking
+      // "where did my uncommitted work go?" gets an answer).
       trace(
         `worktree-leftover: salvage of ${wtPath} failed (non-fatal): ${(err as Error).message?.slice(0, 200)}`,
       );
+      salvageDir = "(salvage-failed)";
     }
   }
   // Commits ahead of fromRef → a durable tag on the worktree's HEAD.
@@ -237,9 +207,20 @@ export async function handleSameIssueLeftovers(
   const leftovers = await findSameIssueLeftovers(execFn, repoRoot, fromRef, issueNumbers);
   const actions: LeftoverAction[] = [];
   const unresolved: string[] = [];
+  // Both sides of the adoption check resolved via `realpathSync` — macOS
+  // /tmp is a symlink to /private/tmp, and `worktreePath` may not agree
+  // with `git worktree list` on the canonical form. The same pattern as
+  // `sweepBranchHolders` in worktree.ts.
+  const resolvePath = (p: string) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
   for (const leftover of leftovers) {
     // Clean leftover at the cycle's target path → adopt (reuse knowingly).
-    if (!leftover.dirty && adoptable && leftover.path === adoptable) {
+    if (!leftover.dirty && adoptable && resolvePath(leftover.path) === resolvePath(adoptable)) {
       const provision = await provisionWorktree(execFn, repoRoot, leftover.path).catch((err) => {
         trace(
           `worktree-leftover: provisioning of adopted ${leftover.path} failed (non-fatal): ${(err as Error).message?.slice(0, 200)}`,
@@ -255,16 +236,23 @@ export async function handleSameIssueLeftovers(
       continue;
     }
     // Clean leftover, not adoptable → nothing to preserve, remove it.
-    // Dirty leftover → preserve first, then remove.
+    // Dirty leftover → preserve first, then remove. The finding is already
+    // in hand (the pass inspected it in findSameIssueLeftovers) — thread
+    // it through instead of re-scanning the tree about to be removed.
     const preserve = leftover.dirty
-      ? await preserveBeforeRemoval(execFn, repoRoot, leftover.path, fromRef, scratch).catch(
-          (err) => {
-            trace(
-              `worktree-leftover: preservation of ${leftover.path} failed: ${(err as Error).message?.slice(0, 200)}`,
-            );
-            return { refs: [] as string[] } as { refs: string[]; salvageDir?: string };
-          },
-        )
+      ? await preserveBeforeRemoval(
+          execFn,
+          repoRoot,
+          leftover.path,
+          fromRef,
+          scratch,
+          leftover.finding,
+        ).catch((err) => {
+          trace(
+            `worktree-leftover: preservation of ${leftover.path} failed: ${(err as Error).message?.slice(0, 200)}`,
+          );
+          return { refs: [] as string[], salvageDir: undefined as string | undefined };
+        })
       : { refs: [] as string[] };
     try {
       await worktreeRemove(execFn, repoRoot, leftover.name, true);

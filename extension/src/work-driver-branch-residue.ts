@@ -25,7 +25,7 @@
  */
 
 import { trace } from "./trace.ts";
-import { detectMainline } from "./work-driver-branch-mechanized.ts";
+import { detectMainline, resolveBaseSha } from "./work-driver-branch-mechanized.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { activeIssuesOf } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -49,15 +49,7 @@ export async function runBranchResiduePass(
   }
   try {
     const mainline = await detectMainline(execFn, ctx.repoRoot);
-    const sha = async (ref: string) => {
-      const { stdout } = await execFn(`git rev-parse --verify --quiet ${JSON.stringify(ref)}`, {
-        cwd: ctx.repoRoot,
-        maxBuffer: 64 * 1024,
-      });
-      return stdout.trim();
-    };
-    let fromRef = await sha(`origin/${mainline}`).catch(() => "");
-    if (!fromRef) fromRef = await sha(`refs/heads/${mainline}`).catch(() => "");
+    const fromRef = await resolveBaseSha(execFn, ctx.repoRoot, mainline);
     if (!fromRef) return state;
     const { actions, unresolved } = await handleSameIssueLeftovers(
       execFn,
@@ -69,7 +61,12 @@ export async function runBranchResiduePass(
     );
     if (actions.length === 0 && unresolved.length === 0) return state;
     const lines = actions.map((a) => {
-      const what = a.action === "adopt" ? "adopted (reused)" : "removed after preservation";
+      const what =
+        a.action === "adopt"
+          ? "adopted (reused)"
+          : a.leftover.dirty
+            ? "removed after preservation"
+            : "removed (clean, nothing to preserve)";
       const extra: string[] = [];
       if (a.salvageDir) extra.push(`salvage: ${a.salvageDir}`);
       if (a.refs.length > 0) extra.push(`durable refs: ${a.refs.join(", ")}`);
