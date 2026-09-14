@@ -10,6 +10,7 @@ import type { RoleName } from "./roles.ts";
 import type { DispatchUsage } from "./types.ts";
 import type { AdversarialEventFragment } from "./workflow-state-events-adversarial.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
+import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-leftover.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import type { SafetyNetCommitEvent } from "./workflow-state-events-safety-net.ts";
@@ -444,6 +445,7 @@ export type WorkEvent =
   // exhaustive: nextStep() and the schema validator see the same closed type.
   | WideningScanEvent
   | MemoryEventFragment
+  | WorktreeLeftoverHandledEvent
   | WorktreeProvisionedEvent
   | SafetyNetCommitEvent;
 /** Discriminator union of event kinds — useful for callers that switch on it. */

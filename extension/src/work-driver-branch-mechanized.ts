@@ -77,6 +77,35 @@ export async function detectMainline(execFn: ExecFn, repoRoot: string): Promise<
 }
 
 /**
+ * Resolve the mainline to a commit SHA, preferring `origin/<mainline>` over
+ * the local `refs/heads/<mainline>`. Returns `""` when neither ref exists
+ * (a repo that has no mainline commit — the caller decides how to degrade).
+ *
+ * Shared by `mechanizedBranchSetup` (throws on empty) and the #730
+ * residue pass (degrades to no-op on empty) — the origin→local fallback
+ * lives in one place.
+ */
+export async function resolveBaseSha(
+  execFn: ExecFn,
+  repoRoot: string,
+  mainline: string,
+): Promise<string> {
+  const sha = async (ref: string) => {
+    const { stdout } = await execFn(`git rev-parse --verify --quiet ${JSON.stringify(ref)}`, {
+      cwd: repoRoot,
+      maxBuffer: 64 * 1024,
+    });
+    return stdout.trim();
+  };
+  let baseSha = await sha(`origin/${mainline}`).catch(() => "");
+  // Same catch as the origin probe: a failing `rev-parse` throws, and when
+  // BOTH refs are missing the raw git error would otherwise escape instead
+  // of the legible message below.
+  if (!baseSha) baseSha = await sha(`refs/heads/${mainline}`).catch(() => "");
+  return baseSha;
+}
+
+/**
  * Keep `.worktrees/` out of the repo's own `git status`.
  *
  * Written to `.git/info/exclude` (per-clone) rather than `.gitignore`
@@ -248,18 +277,7 @@ export async function mechanizedBranchSetup(
       `work-driver: fetch of origin/${mainline} failed — proceeding from local refs: ${(err as Error).message?.slice(0, 160)}`,
     );
   }
-  const sha = async (ref: string) => {
-    const { stdout } = await execFn(`git rev-parse --verify --quiet ${JSON.stringify(ref)}`, {
-      cwd: repoRoot,
-      maxBuffer: 64 * 1024,
-    });
-    return stdout.trim();
-  };
-  let baseSha = await sha(`origin/${mainline}`).catch(() => "");
-  // Same catch as the origin probe: a failing `rev-parse` throws, and when
-  // BOTH refs are missing the raw git error would otherwise escape instead
-  // of the legible message below.
-  if (!baseSha) baseSha = await sha(`refs/heads/${mainline}`).catch(() => "");
+  const baseSha = await resolveBaseSha(execFn, repoRoot, mainline);
   if (!baseSha) {
     throw new Error(
       `could not resolve ${mainline} to a commit (no origin/${mainline} after fetch, no refs/heads/${mainline})`,

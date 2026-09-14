@@ -171,6 +171,8 @@ function fmtEvent(e: WorkEvent): string {
       return e.emptyBrief
         ? `  memory-inject · ${e.step} · EMPTY BRIEF · ${e.queries.length} quer${e.queries.length === 1 ? "y" : "ies"}`
         : `  memory-inject · ${e.step} · ${e.hits} hit(s)`;
+    case "worktree-leftover-handled":
+      return `  worktree-leftover-handled · ${e.path.split("/").pop()} · ${e.action}${e.refs.length ? ` · refs: ${e.refs.join(", ")}` : ""}${e.salvageDir ? ` · salvage: ${e.salvageDir}` : ""}`;
     case "worktree-provisioned":
       return `  worktree-provisioned · [${e.worktreeId}] · ${e.outcome}${e.problem ? ` · ${e.problem.slice(0, 60)}` : ""}`;
     case "safety-net-commit":
