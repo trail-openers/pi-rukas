@@ -32,7 +32,18 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DriverContext } from "../src/work-driver-context.ts";
+
+/**
+ * #725 review (TYPE_SAFETY) — a minimal structural stub for the pi handle
+ * the driver context needs, so the test avoids the `as unknown as
+ * ExtensionAPI` double-erasure (which would silently survive any future
+ * change to the `sendUserMessage` contract). The `as DriverContext["pi"]`
+ * cast is a one-step structural conformance assertion, not an erasure.
+ */
+type StubPi = Pick<ExtensionAPI, "sendUserMessage">;
+const stubPi: DriverContext["pi"] = { sendUserMessage: () => {} } as StubPi;
 import { runScopeFanoutGate } from "../src/work-driver-scope-fanout.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
@@ -56,9 +67,12 @@ const realExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
     });
     return { stdout };
   } catch (err) {
+    // Single cast: e IS the same object as err, so there is nothing a
+    // second cast on `err` could recover that `e.stderr` doesn't already
+    // carry — the middle `??` term was dead code.
     const e = err as Error & { stderr?: string; stdout?: string };
     e.stdout = e.stdout ?? "";
-    e.stderr = e.stderr ?? (err as unknown as { stderr?: string }).stderr ?? "";
+    e.stderr = e.stderr ?? "";
     throw e;
   }
 };
@@ -175,7 +189,7 @@ try {
       },
     };
     const ctx: DriverContext = {
-      pi: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
+      pi: stubPi,
       repoRoot: f.repo,
       issue: 607,
       verifyExecFn: realExec,
@@ -236,7 +250,7 @@ try {
       },
     };
     const ctx: DriverContext = {
-      pi: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
+      pi: stubPi,
       repoRoot: f.repo,
       issue: 725,
       verifyExecFn: realExec,
@@ -265,7 +279,14 @@ try {
     outOfScope: ["extension/src/deck.ts"],
     dependsOn: ["a"],
   };
-  const bNoDep = { ...bDep, dependsOn: undefined };
+  // A sibling with NO dependsOn field at all (constructed fresh rather than
+  // via `dependsOn: undefined`, which the type-widening detector flags).
+  const bNoDep = {
+    id: "b",
+    scope: "interactive",
+    paths: ["extension/src/interactive.ts"],
+    outOfScope: ["extension/src/deck.ts"],
+  };
   const changed = new Map([
     ["a", new Set(["extension/src/deck.ts"])],
     ["b", new Set(["extension/src/deck.ts"])],
@@ -362,7 +383,7 @@ try {
       },
     };
     const ctx: DriverContext = {
-      pi: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
+      pi: stubPi,
       repoRoot: f.repo,
       issue: 725,
       verifyExecFn: realExec,

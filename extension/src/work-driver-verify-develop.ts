@@ -367,12 +367,12 @@ export async function verifyDevelopOutcome(
         timeoutMs: verifyTimeoutMs(),
       });
       if (cons.status === "conflict") {
-        // #725 — "conflict" has TWO distinct causes: a genuine cherry-pick /
-        // patch-apply conflict between workstreams (a decomposition error) and
-        // the repoRoot-dirty preflight refusal (operator residue from a prior
-        // cycle — #668/#714). The operator needs those apart: a dirty root is
-        // cleared with `git status`, not by re-splitting the plan.
-        if (/repoRoot is dirty/.test(cons.detail)) {
+        // #725 — "conflict" has TWO causes: a genuine cherry-pick / patch-apply
+        // conflict (a decomposition error) and the repoRoot-dirty preflight
+        // refusal (operator residue — #668/#714). Routed on the structured
+        // `kind`, not the detail prose; a dirty root is cleared with
+        // `git status`, not by re-splitting the plan.
+        if (cons.kind === "dirty-root") {
           failures.push(
             `consolidated verify was refused — repoRoot is dirty (${cons.detail}). This is leftover residue from an earlier cycle, NOT a conflict between the workstreams' commits and NOT a verify failure: run \`git status\` at the repo root, clear the residue, and re-run the cycle`,
           );
