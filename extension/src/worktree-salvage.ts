@@ -1,26 +1,20 @@
 /**
- * worktree-salvage — #730 uncommitted-work salvage recipe.
+ * worktree-salvage — the salvage recipe for a dirty worktree being removed.
  *
- * Shared by the branch step's residue pass (`worktree-leftover.ts`,
- * `preserveBeforeRemoval`) and the #545 same-issue salvage
- * (`work-driver-branch-salvage.ts`): `git diff HEAD` + the untracked
- * manifest + the untracked file contents into `<scratch>/salvage/<name>/`.
- * One copy of "what must survive a forced worktree removal" so the two
- * sites cannot drift.
+ * Shared by the branch step's residue pass (`worktree-leftover.ts`) and the
+ * #545 same-issue salvage (`work-driver-branch-salvage.ts`):
+ * `salvageUncommittedWork` (git diff HEAD + the untracked manifest + the
+ * untracked file contents into `<scratch>/salvage/<name>/`) and
+ * `salvageDirtyWorktree` (that salvage + a durable tag on the worktree's
+ * HEAD when it carries commits). One copy of "what must survive a forced
+ * worktree removal" so the sites cannot drift.
  */
 
 import { cp, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ExecFn } from "./worktree.ts";
+import { trace } from "./trace.ts";
+import type { DirtyWorktreeFinding, ExecFn } from "./worktree.ts";
 
-/**
- * Salvage a dirty worktree's uncommitted work into
- * `<scratch>/salvage/<basename>/` (salvage.patch, untracked.txt, files/).
- *
- * Returns the salvage dir, or `undefined` when the tree had no uncommitted
- * work (a clean tree — nothing to salvage here; committed-ahead work is a
- * separate concern, handled by each caller).
- */
 export async function salvageUncommittedWork(
   execFn: ExecFn,
   wtPath: string,
@@ -52,4 +46,45 @@ export async function salvageUncommittedWork(
     }
   }
   return salvageDir;
+}
+
+export async function salvageDirtyWorktree(
+  execFn: ExecFn,
+  repoRoot: string,
+  wtPath: string,
+  fromRef: string,
+  scratch: string,
+  finding: DirtyWorktreeFinding | undefined,
+): Promise<{ refs: string[]; salvageDir?: string }> {
+  const refs: string[] = [];
+  let salvageDir: string | undefined;
+  if (finding && finding.uncommittedFiles.length > 0) {
+    try {
+      salvageDir = await salvageUncommittedWork(execFn, wtPath, scratch);
+    } catch (err) {
+      trace(
+        `worktree-salvage: salvage of ${wtPath} failed (non-fatal): ${(err as Error).message?.slice(0, 200)}`,
+      );
+      salvageDir = "(salvage-failed)";
+    }
+  }
+  if (finding && finding.unpushedCommitCount > 0) {
+    try {
+      const { stdout } = await execFn("git rev-parse HEAD", { cwd: wtPath, maxBuffer: 64 * 1024 });
+      const head = stdout.trim();
+      if (head) {
+        const tag = `pi-rukas-salvage/${path.basename(wtPath)}-${Date.now()}`;
+        await execFn(`git tag ${JSON.stringify(tag)} ${JSON.stringify(head)}`, {
+          cwd: repoRoot,
+          maxBuffer: 64 * 1024,
+        });
+        refs.push(`${tag} → ${head}`);
+      }
+    } catch (err) {
+      trace(
+        `worktree-salvage: tag for ${wtPath} failed (non-fatal): ${(err as Error).message?.slice(0, 200)}`,
+      );
+    }
+  }
+  return { refs, salvageDir };
 }

@@ -65,8 +65,8 @@ export async function runBranchResiduePass(
         a.action === "adopt"
           ? "adopted (reused)"
           : a.leftover.dirty
-            ? "removed after preservation"
-            : "removed (clean, nothing to preserve)";
+            ? "preserved (salvage patch and/or durable ref), then removed"
+            : "removed (clean — nothing to preserve)";
       const extra: string[] = [];
       if (a.salvageDir) extra.push(`salvage: ${a.salvageDir}`);
       if (a.refs.length > 0) extra.push(`durable refs: ${a.refs.join(", ")}`);
