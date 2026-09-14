@@ -419,10 +419,9 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           "develop",
         );
         assert(
-          !fanout.ok && fanout.failures.some((failure) => /scope fanout: 11 files/.test(failure)),
-          "#285: eleven changed files versus one declared path fails fanout verification",
+          !fanout.ok && fanout.failures.some((f) => /scope fanout: 10 undeclared/.test(f)),
+          "#285/#724: ten undeclared changed files versus one declared path fails fanout verification",
         );
-
         files = [];
         committedFiles = ["src/private/committed.ts"];
         const committed = await verifyStepOutcome(
@@ -438,14 +437,16 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           "#285: committed base diff paths are included in scope verification",
         );
         committedFiles = [];
-
         files = ["src/feature/new.ts"];
         assert(
           (await verifyStepOutcome(ctx, stateFor(["src/feature"]), "develop")).ok,
           "#285: a file below a declared directory path passes",
         );
-
-        files = ["src/one.ts", "src/two.ts", "src/three.ts"];
+        files = [
+          "src/one.ts",
+          "src/two.ts",
+          ...Array.from({ length: 8 }, (_, i) => `src/rogue${i}.ts`),
+        ];
         process.env.PI_ENSEMBLE_SCOPE_FANOUT_FACTOR = "1";
         process.env.PI_ENSEMBLE_SCOPE_FANOUT_MIN = "1";
         const tuned = await verifyStepOutcome(
@@ -454,8 +455,8 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           "develop",
         );
         assert(
-          !tuned.ok && tuned.failures.some((failure) => /scope fanout/.test(failure)),
-          "#285: factor and minimum environment tunables are respected",
+          !tuned.ok && tuned.failures.some((f) => /scope fanout: 8 undeclared/.test(f)),
+          "#285: factor and minimum environment tunables are respected (limit max(2*1,1)=2, 8>2)",
         );
 
         files = ["src/legacy.ts"];
@@ -464,7 +465,6 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           empty.ok && empty.notes.some((note) => /scope fanout check skipped/.test(note)),
           "#285: empty declared paths skip fanout with a note",
         );
-
         process.env.PI_ENSEMBLE_SCOPE_GATE = "0";
         const disabled = await verifyStepOutcome(
           ctx,
