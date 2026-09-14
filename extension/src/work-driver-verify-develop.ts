@@ -173,9 +173,20 @@ export async function verifyDevelopOutcome(
     } catch (err) {
       notes.push(`git status failed in ${id} (${(err as Error).message?.slice(0, 100)})`);
     }
-    if (isValidSha(baseSha)) {
+    // #725 — diff against THIS workstream's effective base, not the cycle-
+    // global baseSha. A dependent workstream's worktree is created FROM its
+    // dependency's post-commit SHA (#679), so a diff against the global base
+    // spuriously includes every file the dependency committed — including
+    // files the plan deliberately cross-declared into the dependent's
+    // outOfScope fence. #607's "developer touched out-of-scope path"
+    // false positive was exactly this. For an independent workstream (or
+    // N=1) the effective base equals the global baseSha, so this is
+    // behaviour-preserving there. Same effectiveBaseFor the falsily-green
+    // check already used.
+    const effBase = effectiveBaseFor(id);
+    if (isValidSha(effBase)) {
       try {
-        const { stdout } = await execFn(`git rev-list --count ${baseSha}..HEAD`, {
+        const { stdout } = await execFn(`git rev-list --count ${effBase}..HEAD`, {
           cwd,
           maxBuffer: 64 * 1024,
         });
@@ -185,7 +196,7 @@ export async function verifyDevelopOutcome(
         // baseSha may not exist in this worktree's history — not evidence either way.
       }
       try {
-        const { stdout } = await execFn(`git diff --name-only ${baseSha}..HEAD`, {
+        const { stdout } = await execFn(`git diff --name-only ${effBase}..HEAD`, {
           cwd,
           maxBuffer: 4 * 1024 * 1024,
         });
@@ -266,6 +277,15 @@ export async function verifyDevelopOutcome(
   }
 
   // --- Scope/fanout gate (#285) — extracted to work-driver-scope-fanout.ts ---
+  // #725 — each workstream's fence is evaluated against its OWN effective-
+  // base diff (above), with a dependsOn carve-out for paths a declared
+  // dependency owns (see work-driver-scope-fanout.ts): the cross-declaration
+  // contract (#572 — a file in exactly ONE workstream's paths and the
+  // OTHERS' outOfScope) is what keeps findPathCollisions from firing, so
+  // the fence honours it instead of failing every dependsOn cycle.
+  // A fence HIT is a decomposition problem, not an integration one: it is
+  // NOT routed to the consolidated-verify-conflict cap (only the
+  // cherry-pick / patch-apply conflict below is).
   runScopeFanoutGate(
     state.pipelineState.workstreams ?? {},
     changedPathsByWorkstream,
@@ -294,7 +314,6 @@ export async function verifyDevelopOutcome(
     // else: uncommittedOnlyCount > 0 — per-worktree failures already explain
     // the issue (uncommitted work, no commits ahead of baseSha).
   }
-  // --- Verify command (b) — per-worktree, then the CONSOLIDATED tree ---
   // #669 — every gate before the consolidated run sees ONE workstream in
   // isolation, so a test in workstream X that asserts on a file owned by
   // workstream Y cannot pass in X's tree. Per-worktree verify stays (out-of-
@@ -365,9 +384,23 @@ export async function verifyDevelopOutcome(
         timeoutMs: verifyTimeoutMs(),
       });
       if (cons.status === "conflict") {
-        failures.push(
-          `consolidated verify could not combine the workstreams' commits — cherry-pick / apply conflict (${cons.detail}). Two workstreams edited the same lines; the decomposition is incoherent, which is distinct from a verify failure`,
-        );
+        // #725 — runConsolidatedVerify emits "conflict" for TWO distinct
+        // causes: a genuine cherry-pick / patch-apply conflict between
+        // workstreams (a decomposition error) and the repoRoot-dirty
+        // preflight refusal (operator residue from a prior cycle — #668/
+        // #714). The operator needs those apart: a dirty root is cleared
+        // with `git status`, not by re-splitting the plan. The preflight's
+        // detail always names "repoRoot is dirty"; a genuine conflict's
+        // detail names the cherry-pick / apply failure.
+        if (/repoRoot is dirty/.test(cons.detail)) {
+          failures.push(
+            `consolidated verify was refused — repoRoot is dirty (${cons.detail}). This is leftover residue from an earlier cycle, NOT a conflict between the workstreams' commits and NOT a verify failure: run \`git status\` at the repo root, clear the residue, and re-run the cycle`,
+          );
+        } else {
+          failures.push(
+            `consolidated verify could not combine the workstreams' commits — cherry-pick / apply conflict (${cons.detail}). Two workstreams edited the same lines; the decomposition is incoherent, which is distinct from a verify failure`,
+          );
+        }
       } else if (cons.status === "failed") {
         failures.push(
           `verify command \`${cmd}\` failed on the CONSOLIDATED tree (all workstreams' changes combined): ${cons.detail}`,

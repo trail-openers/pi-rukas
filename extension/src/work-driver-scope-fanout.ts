@@ -7,6 +7,25 @@
  * prove a developer wrote code while still showing the decomposition was too
  * broad. An empty paths list has no declared boundary, so preserve legacy
  * behaviour and report the skipped check rather than inventing one.
+ *
+ * #725 — the fence's semantics on a dependsOn plan (documented decision):
+ * a workstream's `outOfScope` fence is evaluated against THAT workstream's
+ * own commits (the per-worktree diff against its effective base — see the
+ * caller's diff-collection loop), and a hit is EXEMPTED when the fenced
+ * path is declared in `paths` by a workstream in this one's `dependsOn`
+ * list. The plan step deliberately cross-declares each workstream's
+ * outOfScope to include the others' in-scope paths (#572 — a file appears
+ * in exactly ONE workstream's paths and the OTHERS' outOfScope); that
+ * contract is what keeps `findPathCollisions` (the structural "two
+ * developers editing the same file" check) firing for genuinely independent
+ * workstreams, so the plan step keeps cross-declaring and the fence honours
+ * it. A dependent workstream's worktree is created FROM its dependency's
+ * post-commit SHA (#679), so the dependency's files are legitimately baked
+ * into the dependent's tree — "inherited, unmodified" is not a fence
+ * violation; a dependent's OWN commit touching the dependency's file is,
+ * and still fails. The exemption is `dependsOn`-gated: a sibling with no
+ * dependency relation keeps the full fence. `findPathCollisions` is
+ * untouched.
  */
 
 import { couplesTo, isTestPath } from "./work-driver-plan-paths.ts";
@@ -44,12 +63,25 @@ function scopeFanoutMinimum(): number {
  * in place. The FENCE's permitted set is the union of ALL workstreams'
  * declared paths in this plan, not just the current workstream's slice
  * (#672 sub-defect 2). Two things deliberately do NOT widen: (1) the
- * workstream's OWN `outOfScope` fence, and (2) the fanout DENOMINATOR.
+ * workstream's OWN `outOfScope` fence — modulo the #725 dependsOn
+ * carve-out documented above — and (2) the fanout DENOMINATOR.
+ *
+ * #725 — `changedPathsByWorkstream` is each workstream's OWN effective-base
+ * diff (the caller resolves the per-workstream base from
+ * `workstreamBaseShas`), so a dependent workstream's inherited dependency
+ * commits never appear in its changed set.
  */
 export function runScopeFanoutGate(
   workstreams: Record<
     string,
-    { id: string; scope: string; paths: string[]; outOfScope: string[] } | undefined
+    | {
+        id: string;
+        scope: string;
+        paths: string[];
+        outOfScope: string[];
+        dependsOn?: string[];
+      }
+    | undefined
   >,
   changedPathsByWorkstream: Map<string, Set<string>>,
   failures: string[],
@@ -66,6 +98,24 @@ export function runScopeFanoutGate(
       if (n.length > 0) planDeclaredPaths.add(n);
     }
   }
+  // #725 — per-workstream, the union of the declared `paths` of the
+  // workstreams this one depends on. A path in this set is exempt from the
+  // outOfScope fence below: the cross-declaration contract (#572) puts it in
+  // the dependent's outOfScope, and the dependent's worktree legitimately
+  // contains it (created from the dependency's post-commit SHA).
+  const dependencyOwnedBy = new Map<string, Set<string>>();
+  for (const [id, ws] of Object.entries(workstreams)) {
+    const depIds = ws?.dependsOn ?? [];
+    if (depIds.length === 0) continue;
+    const owned = new Set<string>();
+    for (const depId of depIds) {
+      for (const p of workstreams[depId]?.paths ?? []) {
+        const n = normaliseScopePath(p);
+        if (n.length > 0) owned.add(n);
+      }
+    }
+    dependencyOwnedBy.set(id, owned);
+  }
   for (const [id, changedPaths] of changedPathsByWorkstream) {
     const workstream = workstreams[id];
     const declaredPaths = (workstream?.paths ?? [])
@@ -75,8 +125,16 @@ export function runScopeFanoutGate(
       .map(normaliseScopePath)
       .filter((p) => p.length > 0);
     const changedFiles = [...changedPaths].sort();
-    const outOfScopeHits = changedFiles.filter((file) =>
-      outOfScope.some((declared) => matchesScopePath(file, declared)),
+    // #725 — a hit is exempt when the fenced path is declared in `paths` by
+    // a workstream in this one's `dependsOn` list (the cross-declaration
+    // carve-out documented in the module header). The gate depends on
+    // `dependsOn`, not a blanket exemption: a sibling without a dependency
+    // relation touching the other's path still fails.
+    const dependencyOwned = dependencyOwnedBy.get(id);
+    const outOfScopeHits = changedFiles.filter(
+      (file) =>
+        outOfScope.some((declared) => matchesScopePath(file, declared)) &&
+        ![...(dependencyOwned ?? [])].some((declared) => matchesScopePath(file, declared)),
     );
     for (const file of outOfScopeHits) {
       failures.push(`developer touched out-of-scope path ${file} — declared fence violated`);
