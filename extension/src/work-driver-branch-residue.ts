@@ -61,12 +61,14 @@ export async function runBranchResiduePass(
     );
     if (actions.length === 0 && unresolved.length === 0) return state;
     const lines = actions.map((a) => {
+      // Honest prose, per case: a clean removal preserves nothing (there
+      // was nothing to preserve); a dirty removal preserved first.
       const what =
         a.action === "adopt"
           ? "adopted (reused)"
           : a.leftover.dirty
-            ? "removed after preservation"
-            : "removed (clean, nothing to preserve)";
+            ? "preserved (salvage patch and/or durable ref), then removed"
+            : "removed (clean — nothing to preserve)";
       const extra: string[] = [];
       if (a.salvageDir) extra.push(`salvage: ${a.salvageDir}`);
       if (a.refs.length > 0) extra.push(`durable refs: ${a.refs.join(", ")}`);

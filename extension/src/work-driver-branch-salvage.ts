@@ -19,7 +19,8 @@
  */
 
 import { trace } from "./trace.ts";
-import { type ExecFn, inspectWorktreeForLoss, salvageUncommittedWork } from "./worktree.ts";
+import { type ExecFn, inspectWorktreeForLoss } from "./worktree.ts";
+import { salvageUncommittedWork } from "./worktree-salvage.ts";
 
 async function salvageKnownDirtyWorktreesInner(
   execFn: ExecFn,

@@ -21,7 +21,7 @@ import path from "node:path";
 import { trace } from "./trace.ts";
 import { type ProvisionResult, provisionWorktree } from "./worktree-provision.ts";
 export type { ProvisionResult } from "./worktree-provision.ts";
-export { salvageUncommittedWork } from "./worktree-salvage.ts";
+export { salvageUncommittedWork, salvageDirtyWorktree } from "./worktree-salvage.ts";
 
 /** Shell executor, matching `DriverContext.verifyExecFn`. */
 export type ExecFn = (
@@ -226,6 +226,9 @@ export async function worktreeCreate(
   // a refusal WITH salvage instead of a bare `fatal: ... already exists`
   // error. A clean foreign leftover is still handled by `worktree add`'s
   // own path-exists error — unchanged.
+  // Shared seam (#730): the scan lives in `findDirtySameIssueLeftover` so
+  // the #730 residue pass (worktree-leftover.ts) and this guard cannot
+  // drift on which prefixes are "same issue".
   const issuePrefix = opts.name.split("-").slice(0, 2).join("-");
   const siblingDirty = await findDirtySameIssueLeftover(
     execFn,
