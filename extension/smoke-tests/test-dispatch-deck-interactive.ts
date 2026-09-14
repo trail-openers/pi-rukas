@@ -10,9 +10,9 @@
  * This test covers:
  *  - encodeDeckValue / parseDeckValue round-trip
  *  - buildDeckItems shape (one row per entry + cancel sentinel)
- *  - DeckItem.label IS the full formatRow line (the composite shows ONE
- *    projection, not two different label formats — #729's whole point)
- *  - steerPrompt is a ready-to-send steer with job context
+ *  - DeckItem.label IS the full formatRow line for that job (the
+ *    composite's SelectList mirrors the deck's buildLines rows, #729)
+ *  - buildSteerPrompt is a ready-to-send steer with job context
  *  - setWidget is called with EXACTLY ONE key ("ensemble:deck") and a
  *    factory function — the one-key invariant (#729 acceptance criterion)
  *  - empty deck → the single widget is cleared (setWidget undefined)
@@ -27,19 +27,21 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container } from "@earendil-works/pi-tui";
 import {
   type DeckEntry,
-  type DeckItem,
   attach,
-  buildDeckPromptItems,
   clearEntry,
   detach,
-  encodeDeckPromptValue,
   formatRow,
-  parseDeckPromptValue,
   reset,
   startEntry,
   DECK_PROMPT_CANCEL_KEY,
   DECK_PROMPT_STEER_SOURCE,
 } from "../src/dispatch-deck.ts";
+import {
+  buildDeckItems,
+  buildSteerPrompt,
+  encodeDeckValue,
+  parseDeckValue,
+} from "../src/dispatch-deck-composite.ts";
 import { type RunningState, emptyRunningState } from "../src/progress.ts";
 
 let exit = 0;
@@ -57,32 +59,31 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   return { ...base, ...opts, usage: { ...base.usage, ...(opts.usage ?? {}) } };
 }
 
-// 1. encodeDeckPromptValue / parseDeckPromptValue — round-trip.
-// (Re-exported from dispatch-deck-composite.ts via dispatch-deck.ts.)
+// 1. encodeDeckValue / parseDeckValue — round-trip.
 {
   const key = "df8a-7r";
-  const v = encodeDeckPromptValue(key);
-  assert(v === `deck::${key}`, "encodeDeckPromptValue prefixes with 'deck::'");
-  assert(parseDeckPromptValue(v) === key, "parseDeckPromptValue round-trips a real key");
+  const v = encodeDeckValue(key);
+  assert(v === `deck::${key}`, "encodeDeckValue prefixes with 'deck::'");
+  assert(parseDeckValue(v) === key, "parseDeckValue round-trips a real key");
 }
 
-// 2. parseDeckPromptValue rejects malformed values cleanly.
+// 2. parseDeckValue rejects malformed values cleanly.
 {
   assert(
-    parseDeckPromptValue("no-prefix") === undefined,
-    "parseDeckPromptValue: no prefix → undefined",
+    parseDeckValue("no-prefix") === undefined,
+    "parseDeckValue: no prefix → undefined",
   );
   assert(
-    parseDeckPromptValue("deck::") === undefined,
-    "parseDeckPromptValue: empty key after prefix → undefined",
+    parseDeckValue("deck::") === undefined,
+    "parseDeckValue: empty key after prefix → undefined",
   );
   assert(
-    parseDeckPromptValue("deck:::x") !== undefined,
-    "parseDeckPromptValue: key containing '::' is allowed (round-trips as-is)",
+    parseDeckValue("deck:::x") !== undefined,
+    "parseDeckValue: key containing '::' is allowed (round-trips as-is)",
   );
 }
 
-// 3. buildDeckPromptItems — one item per entry + cancel sentinel.
+// 3. buildDeckItems — one item per entry + cancel sentinel.
 {
   const now = 1_000_000;
   const entries: DeckEntry[] = [
@@ -101,7 +102,7 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
       state: makeState("explore"),
     },
   ];
-  const items = buildDeckPromptItems(entries, now);
+  const items = buildDeckItems(entries, now);
   assert(items.length === 3, "2 entries + 1 cancel sentinel → 3 items");
   assert(items[0]?.key === "a", "first item is entry 'a' (insertion order)");
   assert(items[1]?.key === "b", "second item is entry 'b'");
@@ -110,16 +111,11 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
     items[2]?.label === "── cancel ──",
     "cancel sentinel has the expected label",
   );
-  assert(
-    items[2]?.steerPrompt === "",
-    "cancel sentinel has an empty steerPrompt",
-  );
 }
 
-// 4. DeckItem.label IS the full formatRow line (#729 — ONE projection).
-// The pre-#729 "short label" (shortPromptLabel) is gone. The composite
-// shows the SAME text in the detail rows and the SelectList, so the
-// double-projection is structurally impossible.
+// 4. DeckItem.label IS the full formatRow line for that job (#729 — the
+// SelectList mirrors the deck's buildLines rows, so the operator sees one
+// projection, not two).
 {
   const now = 2_000_000;
   const entries: DeckEntry[] = [
@@ -135,7 +131,7 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
       }),
     },
   ];
-  const items = buildDeckPromptItems(entries, now);
+  const items = buildDeckItems(entries, now);
   const label = items[0]?.label ?? "";
   // #729: the label IS the formatRow line — the two projections are merged.
   assert(
@@ -162,7 +158,7 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
     }),
   });
   const entries = [mk("df8a-1aaaa", 0), mk("df8a-2bbbb", 1)];
-  const items = buildDeckPromptItems(entries, now);
+  const items = buildDeckItems(entries, now);
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i]!;
     assert(
@@ -172,7 +168,7 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   }
 }
 
-// 5. DeckItem.value round-trips through parseDeckPromptValue.
+// 5. DeckItem.value round-trips through parseDeckValue.
 {
   const entries: DeckEntry[] = [
     {
@@ -183,12 +179,12 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
       state: makeState("ops"),
     },
   ];
-  const items = buildDeckPromptItems(entries);
+  const items = buildDeckItems(entries);
   const value = items[0]?.value ?? "";
-  assert(parseDeckPromptValue(value) === "my-job", "item.value round-trips to the entry key");
+  assert(parseDeckValue(value) === "my-job", "item.value round-trips to the entry key");
 }
 
-// 6. steerPrompt is a ready-to-send steer with job context.
+// 6. buildSteerPrompt is a ready-to-send steer with job context.
 {
   const now = 3_000_000;
   const entries: DeckEntry[] = [
@@ -200,8 +196,7 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
       state: makeState("developer", { lastToolName: "grep", toolUses: 1 }),
     },
   ];
-  const items = buildDeckPromptItems(entries, now);
-  const prompt = items[0]?.steerPrompt ?? "";
+  const prompt = buildSteerPrompt(entries[0]!, now);
   assert(
     prompt.includes("[deck-ui steer → developer, job job-1]"),
     "steerPrompt names the target job and source",
@@ -334,9 +329,9 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   detach();
 }
 
-// 10. buildDeckPromptItems with empty entries → only the cancel sentinel.
+// 10. buildDeckItems with empty entries → only the cancel sentinel.
 {
-  const items = buildDeckPromptItems([]);
+  const items = buildDeckItems([]);
   assert(items.length === 1, "empty entries → 1 item (cancel sentinel)");
   assert(items[0]?.key === DECK_PROMPT_CANCEL_KEY, "only item is the cancel sentinel");
 }

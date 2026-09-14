@@ -237,16 +237,24 @@ function renderNow(): void {
   }
 }
 
-/** Build the single composite widget factory (detail rows + SelectList). */
+/** Build the single composite widget factory (detail rows + SelectList).
+ *  The detail rows render the deck's own `buildLines` projection (batch
+ *  aware, in seq order); the SelectList items come from the entries
+ *  accessor (job rows only — batch rows are not selectable jobs). */
 function buildCompositeWidgetFactory(ctx: ExtensionContext) {
-  return deckComposite.buildCompositeFactory(() => [...entries.values()], getDeckMaxRows(), {
-    onRowConfirm: (key) => {
-      void onRowConfirm(ctx, key);
+  return deckComposite.buildCompositeFactory(
+    buildLines,
+    () => [...entries.values()],
+    getDeckMaxRows(),
+    {
+      onRowConfirm: (key) => {
+        void onRowConfirm(ctx, key);
+      },
+      onSelectionChange: () => {
+        scheduleRender();
+      },
     },
-    onSelectionChange: () => {
-      scheduleRender();
-    },
-  });
+  );
 }
 
 /** #607 d2/d3. Route a confirmed row. */
@@ -271,13 +279,6 @@ async function onRowConfirm(ctx: ExtensionContext, key: string): Promise<void> {
 export function steerDeckEntry(ctx: ExtensionUIContext, key: string, message: string): void {
   void deckInteractive.steerFromDeck(ctx, key, message);
 }
-
-/** Re-exported for backward compat with the pre-#729 prompt API (now the
- *  composite's item builder; identical value/shape). */
-export const buildDeckPromptItems = deckComposite.buildDeckItems;
-export type DeckPromptItem = deckComposite.DeckItem;
-export const encodeDeckPromptValue = deckComposite.encodeDeckValue;
-export const parseDeckPromptValue = deckComposite.parseDeckValue;
 
 // =============================================================================
 // Row rendering
@@ -322,6 +323,8 @@ const STALE_THRESHOLD_MS = (() => {
   return Number.isFinite(env) && env >= 1000 ? env : 15 * 60_000;
 })();
 
+const HINT_MAX = 50;
+
 function isStale(entry: { state: RunningState; startedAt: number }, now: number): boolean {
   const last = entry.state.lastEventAt ?? entry.startedAt;
   return now - last >= STALE_THRESHOLD_MS;
@@ -333,7 +336,6 @@ function entryLabel(e: { label: string; state: RunningState }): string {
 
 function truncateHint(s: string): string {
   const oneLine = s.replaceAll(/\s+/g, " ").trim();
-  const HINT_MAX = 50;
   if (oneLine.length <= HINT_MAX) return oneLine;
   return `${oneLine.slice(0, HINT_MAX - 1).trimEnd()}…`;
 }

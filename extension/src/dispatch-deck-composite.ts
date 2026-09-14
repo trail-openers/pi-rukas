@@ -4,8 +4,11 @@
  * #729 collapsed the deck's two live regions (belowEditor detail deck +
  * aboveEditor SelectList) into ONE widget key, "ensemble:deck", so the
  * double-projection is structurally impossible. This module owns the
- * widget's factory: a Container of detail rows (buildLines output) followed
- * by the keyboard-selectable SelectList, both reading the same entries.
+ * widget's factory: a Container of detail rows (the deck's `buildLines`
+ * projection, batch-aware) followed by the keyboard-selectable SelectList.
+ * The rows render the `buildLines` output and the list's items come from
+ * the entries snapshot (job rows only — batch rows are not selectable
+ * jobs), so the operator sees one projection, not two.
  *
  * The composite returns a Container. pi-tui's focus model routes keys to
  * `tui.getFocusedComponent()`, which is the editor unless the composite
@@ -32,12 +35,11 @@ import type { DeckEntry } from "./dispatch-deck.ts";
 import { DECK_PROMPT_CANCEL_KEY, formatRow } from "./dispatch-deck.ts";
 import { formatElapsed } from "./progress.ts";
 
-/** One row of the composite's SelectList: full status line + steer prompt. */
+/** One row of the composite's SelectList: job key, encoded value, label. */
 export interface DeckItem {
   key: string;
   value: string;
   label: string;
-  steerPrompt: string;
   description?: string;
 }
 
@@ -55,10 +57,10 @@ export function parseDeckValue(value: string): string | undefined {
 }
 
 /**
- * Build the composite's SelectList rows. The label is the full detail row
- * (formatRow) — the same text that feeds the deck rows above the list.
- * This is intentional: the deck's detail rows and the picker's rows show
- * the same line so the operator sees ONE projection, not two. The
+ * Build the composite's SelectList rows. One item per job entry, plus the
+ * cancel sentinel. The label is the job's full `formatRow` line — the
+ * same text that appears in the deck's `buildLines` projection for that
+ * job (batch rows are not selectable and are not listed here). The
  * description carries the key fragment so same-role jobs stay
  * distinguishable when the list is long.
  */
@@ -71,13 +73,11 @@ export function buildDeckItems(
     value: encodeDeckValue(e.key),
     label: formatRow(e, now),
     description: keyFragment(e.key),
-    steerPrompt: buildSteerPrompt(e, now),
   }));
   items.push({
     key: DECK_PROMPT_CANCEL_KEY,
     value: encodeDeckValue(DECK_PROMPT_CANCEL_KEY),
     label: "── cancel ──",
-    steerPrompt: "",
   });
   return items;
 }
@@ -88,9 +88,10 @@ function keyFragment(key: string): string {
 }
 
 /**
- * The ready-to-send steer prompt for a row. Mirrors the format the
- * aboveEditor prompt used pre-#729 so downstream steer routing is
- * byte-identical.
+ * The ready-to-send steer prompt for a row.
+ * The steer prompt format is load-bearing — downstream steer routing
+ * parses this exact shape. Do not change the `[deck-ui steer → …]` prefix
+ * or the job-key line without updating the routing.
  */
 export function buildSteerPrompt(e: DeckEntry, now: number): string {
   const elapsed = formatElapsed(Math.max(0, now - e.startedAt));
@@ -109,8 +110,14 @@ export function buildSteerPrompt(e: DeckEntry, now: number): string {
  * The factory returns a Container. Pi's setWidget calls
  * `existing.dispose?.()` on the previous component; Container has no
  * dispose, so re-registration is a clean swap.
+ *
+ * `lines` is the deck's own `buildLines` projection (batch-aware, in seq
+ * order); `entries` feeds the SelectList (job rows only — batch rows are
+ * not selectable jobs). Both are called from the same snapshot so the two
+ * projections cannot split mid-render.
  */
 export function buildCompositeFactory(
+  lines: () => string[],
   entries: () => DeckEntry[],
   maxRows: number,
   handlers: {
@@ -119,11 +126,14 @@ export function buildCompositeFactory(
   },
 ): (tui: TUI, theme: Theme) => Component {
   return (tui: TUI, theme: Theme) => {
-    const list = buildSelectList(theme, entries(), handlers);
+    // One snapshot per render: rows and the list read the same entries
+    // so a mid-render update cannot split the two projections.
+    const snapshot = entries();
+    const list = buildSelectList(theme, snapshot, handlers);
     const container = new Container();
-    const lines = entries().map((e) => formatRow(e, Date.now()));
-    const visible = lines.slice(0, maxRows);
-    const overflow = Math.max(0, lines.length - maxRows);
+    const detailLines = lines();
+    const visible = detailLines.slice(0, maxRows);
+    const overflow = Math.max(0, detailLines.length - maxRows);
     for (const line of visible) container.addChild(new Text(line, 1, 0));
     if (overflow > 0) {
       container.addChild(new Text(theme.fg("muted", `... (${overflow} more)`), 1, 0));
