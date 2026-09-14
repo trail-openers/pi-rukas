@@ -358,11 +358,12 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
     "setWidget called with factory function (#232 — bypasses Pi's MAX_WIDGET_LINES=10 array cap)",
   );
   // Invoke the factory and count Container children: 2 entries + 1 trailing
-  // blank line (#143 presentation separator) = 3.
+  // blank line (#143 presentation separator) + 1 SelectList (#729 composite)
+  // = 4.
   const children = renderFactoryChildren(last?.content);
   assert(
-    children.length === 3,
-    "factory returns a Container with one Text per entry plus a trailing blank",
+    children.length === 4,
+    "factory returns a Container with one Text per entry + trailing blank + SelectList (#729)",
   );
   assert(last?.options?.placement === "belowEditor", "widget placement is 'belowEditor'");
   detach();
@@ -382,11 +383,12 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
 
   const last = calls[calls.length - 1];
   assert(typeof last?.content === "function", "overflow case still uses factory form");
-  // 20 entry rows + 1 overflow indicator + 1 trailing blank = 22 children.
+  // 20 entry rows + 1 overflow indicator + 1 trailing blank + 1 SelectList
+  // (#729 composite) = 23 children.
   const children = renderFactoryChildren(last?.content);
   assert(
-    children.length === 22,
-    `25 entries → 22 children (20 visible + overflow indicator + trailing blank); got ${children.length}`,
+    children.length === 23,
+    `25 entries → 23 children (20 visible + overflow indicator + trailing blank + SelectList); got ${children.length}`,
   );
   detach();
 }
