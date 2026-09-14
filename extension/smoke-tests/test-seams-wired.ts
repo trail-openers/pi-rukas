@@ -155,6 +155,23 @@ const SEAMS: Seam[] = [
     },
     canary: { symbol: "resolveIntentVerdict", importer: "work-driver-explore.ts" },
   },
+  {
+    // #729 — the dispatch deck's single composite widget factory. Replaces
+    // the pre-#729 deck-prompt-label.ts + aboveEditor DECK_PROMPT_KEY widget
+    // with a belowEditor composite that renders ONE widget key. The pure
+    // builders are wired into renderNow by dispatch-deck.ts; declared
+    // test-only so a regression that unwires the composite is visible at
+    // the gate.
+    file: "dispatch-deck-composite.ts",
+    pending: {},
+    testOnly: {
+      encodeDeckValue: "value encoder; exercised by test-dispatch-deck-interactive.ts",
+      parseDeckValue: "value decoder; exercised by test-dispatch-deck-interactive.ts",
+      buildDeckItems: "row builder; exercised by test-dispatch-deck-interactive.ts",
+      buildSteerPrompt: "steer prompt builder; exercised by test-dispatch-deck-interactive.ts",
+    },
+    canary: { symbol: "buildCompositeFactory", importer: "dispatch-deck.ts" },
+  },
 ];
 
 /**

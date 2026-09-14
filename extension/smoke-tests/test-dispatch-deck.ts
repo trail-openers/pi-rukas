@@ -17,7 +17,7 @@
  * detach are covered in test-dispatch-deck-lifecycle.ts (#171 file-size split).
  */
 
-import { SelectList } from "@earendil-works/pi-tui";
+import { Container } from "@earendil-works/pi-tui";
 import {
   type DeckEntry,
   attach,
@@ -74,23 +74,16 @@ function fakeCtx(): { calls: WidgetCall[]; ctx: Parameters<typeof attach>[0] } {
   return { calls, ctx };
 }
 
-// Minimal theme stub that the deck factory uses for row styling.
+// Minimal theme stub that the deck factory uses for muted-overflow text.
 // Returns the text unchanged so assertions can match plainly.
-const fakeTheme = {
-  fg: (_color: string, text: string) => text,
-  bg: (_color: string, text: string) => text,
-} as const;
+const fakeTheme = { fg: (_color: string, text: string) => text } as const;
 
-// #729: the single composite widget is a SelectList (returned directly, #176).
-// Invoke the factory and return its row count (items + cancel sentinel).
-function renderFactoryItems(content: unknown): unknown[] {
+// Invoke a factory and return its child count. Used by the deck-content
+// assertions post-#232 (factory form bypasses Pi's array-truncation cap).
+function renderFactoryChildren(content: WidgetContent): unknown[] {
   if (typeof content !== "function") return [];
-  const component = (content as (tui: unknown, theme: unknown) => unknown)(null, fakeTheme);
-  if (component instanceof SelectList) {
-    const items = (component as unknown as { items: unknown[] }).items;
-    return Array.isArray(items) ? items : [];
-  }
-  return [];
+  const component = content(null, fakeTheme);
+  return component instanceof Container ? component.children : [];
 }
 
 // 1. Insertion order is preserved in the snapshot.
@@ -349,8 +342,7 @@ function renderFactoryItems(content: unknown): unknown[] {
 }
 
 // 11. attach + scheduleRender → setWidget called with factory function +
-// belowEditor placement. Post-#729 the single composite widget is a SelectList
-// (keyboard-selectable rows + cancel sentinel) placed belowEditor.
+// belowEditor placement (#232 — factory form bypasses Pi's array truncation).
 {
   reset();
   const { calls, ctx } = fakeCtx();
@@ -363,31 +355,40 @@ function renderFactoryItems(content: unknown): unknown[] {
   assert(last?.key === "ensemble:deck", "setWidget called with 'ensemble:deck' key");
   assert(
     typeof last?.content === "function",
-    "setWidget called with factory function (SelectList)",
+    "setWidget called with factory function (#232 — bypasses Pi's MAX_WIDGET_LINES=10 array cap)",
   );
-  // 2 entry rows + 1 cancel sentinel = 3 items.
-  const items = renderFactoryItems(last?.content);
+  // Invoke the factory and count Container children: 2 entries + 1 trailing
+  // blank line (#143 presentation separator) + 1 SelectList (#729 composite)
+  // = 4.
+  const children = renderFactoryChildren(last?.content);
   assert(
-    items.length === 3,
-    `factory returns a SelectList with one item per entry plus the cancel sentinel (got ${items.length})`,
+    children.length === 4,
+    "factory returns a Container with one Text per entry + trailing blank + SelectList (#729)",
   );
   assert(last?.options?.placement === "belowEditor", "widget placement is 'belowEditor'");
   detach();
 }
 
-// 11b. #729 one-key invariant for this harness: exactly one distinct setWidget
-// key is registered (the deck key), no second ensemble-owned region.
+// 11b. Factory form caps at DECK_MAX_ROWS_DEFAULT (20) when exceeded, with
+// overflow indicator. Avoids a runaway 50-way fanout from dominating the screen.
 {
   reset();
   const { calls, ctx } = fakeCtx();
   attach(ctx);
-  startEntry("a", { label: "developer", role: "developer" });
+  // 25 entries — exceeds the default cap of 20.
+  for (let i = 0; i < 25; i++) {
+    startEntry(`e${i}`, { label: `developer-${i}`, role: "developer" });
+  }
   await new Promise((r) => setImmediate(r));
 
-  const distinctKeys = new Set(calls.map((c) => c.key));
+  const last = calls[calls.length - 1];
+  assert(typeof last?.content === "function", "overflow case still uses factory form");
+  // 20 entry rows + 1 overflow indicator + 1 trailing blank + 1 SelectList
+  // (#729 composite) = 23 children.
+  const children = renderFactoryChildren(last?.content);
   assert(
-    distinctKeys.size === 1 && distinctKeys.has("ensemble:deck"),
-    `exactly one distinct widget key registered (got ${[...distinctKeys].join(", ")})`,
+    children.length === 23,
+    `25 entries → 23 children (20 visible + overflow indicator + trailing blank + SelectList); got ${children.length}`,
   );
   detach();
 }

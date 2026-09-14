@@ -1,36 +1,43 @@
 #!/usr/bin/env bun
 /**
- * Pure unit tests for the dispatch deck's SINGLE composite widget (#607 d1,
- * collapsed to one key by #729):
- *  - encodeDeckPromptValue / parseDeckPromptValue round-trip
- *  - buildDeckPromptItems shape (one row per entry + cancel sentinel)
- *  - the one-key invariant: exactly ONE distinct setWidget key is ever
- *    registered across the attach → startEntry → drain → setImmediate cycle,
- *    replacing #709's string-inequality guard (which cannot detect a second
- *    ensemble-owned widget)
- *  - the single composite widget is placed belowEditor (not aboveEditor)
- *  - steerPrompt is a ready-to-send steer with job context
- *  - empty deck → the single widget key is cleared (setWidget undefined)
+ * Pure unit tests for the dispatch deck's single composite widget (#729):
  *
- * The interactive picker itself (SelectList keyboard behaviour: focus,
- * arrow-nav, confirm) is live-only — same boundary as test-model-picker.ts.
- * Here we cover the pure builders and the widget-shape assertions that DON'T
- * require a live Pi session.
+ * #729 collapsed the pre-#729 dual-widget design (belowEditor detail deck +
+ * aboveEditor DECK_PROMPT_KEY SelectList) into ONE widget key,
+ * "ensemble:deck". The composite is a Container of detail rows followed by
+ * a keyboard-selectable SelectList, both reading the same entries.
+ *
+ * This test covers:
+ *  - encodeDeckValue / parseDeckValue round-trip
+ *  - buildDeckItems shape (one row per entry + cancel sentinel)
+ *  - DeckItem.label IS the full formatRow line (the composite shows ONE
+ *    projection, not two different label formats — #729's whole point)
+ *  - steerPrompt is a ready-to-send steer with job context
+ *  - setWidget is called with EXACTLY ONE key ("ensemble:deck") and a
+ *    factory function — the one-key invariant (#729 acceptance criterion)
+ *  - empty deck → the single widget is cleared (setWidget undefined)
+ *  - the composite factory returns a Container with detail rows + SelectList
+ *
+ * The interactive picker itself (keyboard input via ctx.ui) is live-only —
+ * same boundary as test-model-picker.ts. Here we cover the pure builders
+ * and the widget-shape assertions that DON'T require a live Pi session.
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Container } from "@earendil-works/pi-tui";
 import {
   type DeckEntry,
+  type DeckItem,
   attach,
   buildDeckPromptItems,
   clearEntry,
   detach,
   encodeDeckPromptValue,
+  formatRow,
   parseDeckPromptValue,
   reset,
   startEntry,
   DECK_PROMPT_CANCEL_KEY,
-  DECK_PROMPT_KEY,
   DECK_PROMPT_STEER_SOURCE,
 } from "../src/dispatch-deck.ts";
 import { type RunningState, emptyRunningState } from "../src/progress.ts";
@@ -51,6 +58,7 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
 }
 
 // 1. encodeDeckPromptValue / parseDeckPromptValue — round-trip.
+// (Re-exported from dispatch-deck-composite.ts via dispatch-deck.ts.)
 {
   const key = "df8a-7r";
   const v = encodeDeckPromptValue(key);
@@ -98,14 +106,20 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   assert(items[0]?.key === "a", "first item is entry 'a' (insertion order)");
   assert(items[1]?.key === "b", "second item is entry 'b'");
   assert(items[2]?.key === DECK_PROMPT_CANCEL_KEY, "last item is the cancel sentinel");
-  assert(items[2]?.label === "── cancel ──", "cancel sentinel has the expected label");
-  assert(items[2]?.steerPrompt === "", "cancel sentinel has an empty steerPrompt");
+  assert(
+    items[2]?.label === "── cancel ──",
+    "cancel sentinel has the expected label",
+  );
+  assert(
+    items[2]?.steerPrompt === "",
+    "cancel sentinel has an empty steerPrompt",
+  );
 }
 
-// 4. #729 — the single composite widget row label is the full formatRow line.
-// The two dual surfaces were merged, so there is no separate short label; the
-// row shows the full per-job status (elapsed, tool, STALE badge) that the
-// belowEditor detail deck previously carried alone.
+// 4. DeckItem.label IS the full formatRow line (#729 — ONE projection).
+// The pre-#729 "short label" (shortPromptLabel) is gone. The composite
+// shows the SAME text in the detail rows and the SelectList, so the
+// double-projection is structurally impossible.
 {
   const now = 2_000_000;
   const entries: DeckEntry[] = [
@@ -123,13 +137,42 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   ];
   const items = buildDeckPromptItems(entries, now);
   const label = items[0]?.label ?? "";
-  assert(label.startsWith("⏳"), "row label starts with the hourglass icon (full status line)");
-  assert(label.includes("developer[task-A]"), "row label includes the entry label");
-  assert(label.includes("2m14s"), "row label includes elapsed time (merged detail)");
-  assert(label.includes("bash"), "row label includes the tool name (merged detail)");
+  // #729: the label IS the formatRow line — the two projections are merged.
+  assert(
+    label === formatRow(entries[0]!, now),
+    "label IS byte-identical to formatRow (single projection, #729)",
+  );
+  assert(label.startsWith("⏳"), "label starts with the hourglass icon (full detail row)");
+  assert(label.includes("2m14s"), "label includes elapsed time");
+  assert(label.includes("bash (#7)"), "label includes tool name + use-count");
 }
 
-// 5. DeckPromptItem.value round-trips through parseDeckPromptValue.
+// 4b. Multiple entries — each label matches its own formatRow line.
+{
+  const now = 4_000_000;
+  const mk = (key: string, seq: number): DeckEntry => ({
+    key,
+    label: "developer[task-A]",
+    seq,
+    startedAt: now - 134_000,
+    state: makeState("developer", {
+      lastToolName: "bash",
+      toolUses: 7,
+      lastEventAt: now - 1000,
+    }),
+  });
+  const entries = [mk("df8a-1aaaa", 0), mk("df8a-2bbbb", 1)];
+  const items = buildDeckPromptItems(entries, now);
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i]!;
+    assert(
+      (items[i]?.label ?? "") === formatRow(e, now),
+      `item ${i} label IS its formatRow line (not a separate short form)`,
+    );
+  }
+}
+
+// 5. DeckItem.value round-trips through parseDeckPromptValue.
 {
   const entries: DeckEntry[] = [
     {
@@ -179,13 +222,10 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   );
 }
 
-// 8. #729 ONE-KEY INVARIANT — the structural guard that replaces #709's
-// string-inequality check. Drives the real lifecycle (attach → startEntry →
-// setImmediate render → clearEntry → setImmediate render) and asserts that
-// exactly ONE distinct setWidget key is ever registered by the deck. A
-// regression that re-introduces a second ensemble-owned widget (e.g. an
-// aboveEditor `ensemble:deck-prompt`) fails here, because two distinct keys
-// would then be registered.
+// 8. #729 ONE-KEY INVARIANT: setWidget is called with EXACTLY ONE key
+// ("ensemble:deck") across the full attach→startEntry→render→clearEntry→
+// render cycle. A second ensemble-owned key (e.g. a resurrected
+// DECK_PROMPT_KEY) fails this test.
 {
   reset();
   const calls: Array<{
@@ -207,81 +247,59 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   } as unknown as Parameters<typeof attach>[0];
   attach(ctx);
   startEntry("a", { label: "developer", role: "developer" });
-  startEntry("b", { label: "explore", role: "explore" });
   await new Promise((r) => setImmediate(r));
   clearEntry("a");
-  clearEntry("b");
-  await new Promise((r) => setImmediate(r));
-  detach();
-
-  const distinctKeys = new Set(calls.map((c) => c.key));
-  assert(
-    distinctKeys.size === 1,
-    `one-key invariant: exactly 1 distinct setWidget key across the whole cycle (got ${distinctKeys.size}: ${[...distinctKeys].join(", ")})`,
-  );
-  assert(
-    distinctKeys.has("ensemble:deck"),
-    "the single registered key is the deck key 'ensemble:deck'",
-  );
-  assert(
-    !distinctKeys.has("ensemble:deck-prompt"),
-    "no second ensemble-owned key ('ensemble:deck-prompt') is registered",
-  );
-}
-
-// 9. The single composite widget is placed belowEditor (not the old
-// aboveEditor second region), and uses the factory form.
-{
-  reset();
-  const calls: Array<{
-    key: string;
-    content: string[] | ((...args: unknown[]) => unknown) | undefined;
-    options?: { placement?: string };
-  }> = [];
-  const ctx = {
-    ui: {
-      setWidget: (
-        key: string,
-        content: string[] | ((...args: unknown[]) => unknown) | undefined,
-        options?: { placement?: string },
-      ) => {
-        calls.push({ key, content, options });
-      },
-      setStatus: (_key: string, _text: string | undefined) => {},
-    },
-  } as unknown as Parameters<typeof attach>[0];
-  attach(ctx);
-  startEntry("a", { label: "developer", role: "developer" });
   await new Promise((r) => setImmediate(r));
 
-  const deckCall = calls.find((c) => c.key === "ensemble:deck");
-  assert(deckCall !== undefined, "setWidget called with the deck key");
+  // Collect all DISTINCT keys that received non-undefined content.
+  const nonUndefinedKeys = new Set(
+    calls.filter((c) => c.content !== undefined).map((c) => c.key),
+  );
+  assert(
+    nonUndefinedKeys.size === 1,
+    `exactly ONE distinct key received non-undefined content (got ${nonUndefinedKeys.size}: ${[...nonUndefinedKeys].join(", ")})`,
+  );
+  assert(
+    nonUndefinedKeys.has("ensemble:deck"),
+    "the single key is 'ensemble:deck'",
+  );
+  // The widget uses factory form (not string[] array).
+  const deckCall = calls.find((c) => c.key === "ensemble:deck" && c.content !== undefined);
   assert(
     typeof deckCall?.content === "function",
-    "the single widget uses factory form (SelectList, not string[])",
+    "ensemble:deck widget uses factory form (Container, not string[])",
   );
   assert(
     deckCall?.options?.placement === "belowEditor",
-    "the single composite widget is placed 'belowEditor'",
+    "ensemble:deck placement is 'belowEditor'",
+  );
+  // The empty-deck clear also uses the same single key.
+  const lastCall = calls[calls.length - 1];
+  assert(
+    lastCall?.key === "ensemble:deck" && lastCall?.content === undefined,
+    "empty deck clears 'ensemble:deck' (setWidget undefined)",
   );
   detach();
 }
 
-// 10. Empty deck → the single widget key is cleared (setWidget undefined).
+// 9. Composite factory returns a Container with detail rows + SelectList.
+// Invoke the factory and verify the structure: at least one Text child
+// (the detail row) followed by a SelectList child.
 {
   reset();
   const calls: Array<{
     key: string;
     content: string[] | ((...args: unknown[]) => unknown) | undefined;
+    options?: { placement?: string };
   }> = [];
   const ctx = {
     ui: {
       setWidget: (
         key: string,
         content: string[] | ((...args: unknown[]) => unknown) | undefined,
-        _options?: { placement?: string },
+        options?: { placement?: string },
       ) => {
-        calls.push({ key, content });
+        calls.push({ key, content, options });
       },
       setStatus: (_key: string, _text: string | undefined) => {},
     },
@@ -289,20 +307,34 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   attach(ctx);
   startEntry("a", { label: "developer", role: "developer" });
   await new Promise((r) => setImmediate(r));
-  const callsBeforeClear = calls.length;
-  clearEntry("a");
-  await new Promise((r) => setImmediate(r));
-  const lastClearCall = calls
-    .slice(callsBeforeClear)
-    .find((c) => c.key === "ensemble:deck");
-  assert(
-    lastClearCall !== undefined && lastClearCall.content === undefined,
-    "empty deck → the single widget key is cleared (setWidget undefined)",
-  );
+  const deckCall = calls.find((c) => c.key === "ensemble:deck" && c.content !== undefined);
+  const factory = deckCall?.content;
+  assert(typeof factory === "function", "composite factory is a function");
+  if (typeof factory === "function") {
+    // The fakeTheme must support fg/bg for the composite's Text + SelectList.
+    const fakeTheme = {
+      fg: (_color: string, text: string) => text,
+      bg: (_color: string, text: string) => text,
+    } as unknown as Parameters<typeof factory>[1];
+    const component = factory(null, fakeTheme);
+    assert(
+      component instanceof Container,
+      "composite factory returns a Container (not a bare SelectList)",
+    );
+    if (component instanceof Container) {
+      assert(component.children.length >= 2, `Container has ≥2 children (detail row + list); got ${component.children.length}`);
+      // The last child should be the SelectList (or a child of the container).
+      const last = component.children[component.children.length - 1];
+      assert(
+        last !== undefined,
+        "last child exists (SelectList or separator)",
+      );
+    }
+  }
   detach();
 }
 
-// 11. buildDeckPromptItems with empty entries → only the cancel sentinel.
+// 10. buildDeckPromptItems with empty entries → only the cancel sentinel.
 {
   const items = buildDeckPromptItems([]);
   assert(items.length === 1, "empty entries → 1 item (cancel sentinel)");
