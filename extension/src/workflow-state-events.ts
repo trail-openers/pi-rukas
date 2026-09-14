@@ -8,20 +8,21 @@
  */
 import type { RoleName } from "./roles.ts";
 import type { DispatchUsage } from "./types.ts";
+import type { AdversarialEventFragment } from "./workflow-state-events-adversarial.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import type { SafetyNetCommitEvent } from "./workflow-state-events-safety-net.ts";
 import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
+// #539 — the commit-pr fallback-cause vocabulary (M1) lives in the
+// sibling events-memory fragment module: single definition.
+export type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 /**
  * Linear step identifiers the driver walks. This union IS the definition
  * of the cycle — #393 deleted the prose flow that used to be its source.
  * Add a step here and the discriminator carries through every event type
  * that names a step. Removing a step is a breaking change → schema bump.
  */
-// #539 — the commit-pr fallback-cause vocabulary (M1) lives in the
-// sibling events-memory fragment module: single definition.
-export type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 export type WorkStep =
   | "explore" // Step 1 — read issue + recon (gh + @explore)
   | "plan" // Step 2 — PM decomposes (no dispatch — pure PM judgment, may collapse)
@@ -48,6 +49,7 @@ export type WorkEvent =
       at: number;
       note?: string;
     }
+  | AdversarialEventFragment
   | {
       kind: "dispatch-started";
       step: WorkStep;
@@ -114,69 +116,6 @@ export type WorkEvent =
       tokenBudget?: { budget: number; used: number };
       /** #534 — tokens flushed before the process-level failure. */
       usage?: DispatchUsage;
-    }
-  | {
-      kind: "adversarial-approved";
-      at: number;
-      jobId: string;
-      rounds: number;
-      /** Non-blocking findings carried by the gate (see adversarial-findings.ts). */
-      findings?: string;
-    }
-  | {
-      kind: "adversarial-rejected";
-      at: number;
-      jobId: string;
-      rounds: number;
-      findings: string;
-    }
-  | {
-      /**
-       * #485 — one round of the adversarial loop, recorded verbatim from the
-       * loop's own round table (NOT recovered from reply prose). The gate's
-       * per-round decisions were previously recoverable only from the
-       * transcript (issue #478), and the one aggregate `rounds` field was
-       * guessed by `parseAdversarialRounds` — an infra failure in round 1
-       * reported as "3 rounds, all rejected".
-       *
-       * `verdictParsed: false` is a real state: the reviewer ran but wrote
-       * no readable VERDICT marker, and the status is the parser's safe
-       * default, not the reviewer's. The driver records it exactly so
-       * "this workstream was rejected" and "this workstream never produced
-       * a verdict" stay distinct from the state file.
-       */
-      kind: "adversarial-round";
-      at: number;
-      /** #486 — which workstream's loop ran this round. */
-      workstreamId?: string;
-      round: number;
-      status: "CRITICAL_ISSUES_FOUND" | "ISSUES_FOUND" | "MINOR_OBSERVATIONS" | "APPROVED";
-      verdictParsed: boolean;
-    }
-  | {
-      /**
-       * #485/#486 — the per-workstream terminal outcome of the adversarial
-       * loop, distinct from the aggregate verdict events:
-       *
-       *  - "approved" / "rejected" — a review completed and decided.
-       *  - "infra-failure" — a round's dispatch died; NO verdict exists.
-       *    Must never render as "all rejected" (issue #478).
-       *  - "dispatch-failed" — the loop itself threw before any review ran.
-       *  - "skipped-empty-diff" — #286 short-circuit; counts as a pass.
-       *
-       * Emitted per workstream on N>1 fan-outs so a partial failure
-       * (issue #486: one workstream's loop dies, siblings approved) records
-       * every sibling's outcome individually instead of discarding the
-       * approved ones under one aggregate rejection.
-       */
-      kind: "adversarial-workstream-outcome";
-      at: number;
-      workstreamId: string;
-      outcome: "approved" | "rejected" | "infra-failure" | "dispatch-failed" | "skipped-empty-diff";
-      /** Reviews executed for this workstream (0 when none ran). */
-      roundsExecuted: number;
-      /** Present for infra-failure / dispatch-failed — what the failure was. */
-      errorTail?: string;
     }
   | {
       kind: "lens-approved";
@@ -286,6 +225,17 @@ export type WorkEvent =
         // verify-failed:develop — the work may be individually fine; the
         // decomposition is incoherent and needs re-planning, not a retry.
         | "consolidated-verify-conflict"
+        // #728 — consolidation dropped files: the branch's committed
+        // name-set (baseSha..HEAD) is missing paths that ARE present in a
+        // workstream's committed diff (cumulative baseSha..worktree-HEAD).
+        // The #723 incident: the HEAD-only cherry-pick staged 1 of 7 files
+        // and every downstream gate then verified the truncated tree as if
+        // it were the complete work. Distinct from cherry-pick conflict
+        // (the pick succeeded — it just picked too little) and from
+        // verify-failed:develop (the code was never defective; the diff was
+        // never assembled). The dropped paths live in capEvidence/evidence
+        // from the cherry-pick seam's `droppedPaths` diagnostic.
+        | "consolidation-incomplete"
         // PR17 — emitted by the driver-side outcome verification gate
         // (verifyStepOutcome) when a step's claimed outcome doesn't match
         // executed evidence: develop claimed done but no worktree has any

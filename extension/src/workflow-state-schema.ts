@@ -6,9 +6,12 @@
 import type { Verdict } from "./lens-review.ts";
 import type { CapEvidence, CapedPartialState } from "./workflow-state-cap.ts";
 import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
-// #679 — the workstream shape + workstreamBaseShas type, split out of this
-// module (500-line gate). Re-exported so existing importers keep their paths.
+// #679/#728 — the workstream shape, workstreamBaseShas type and the
+// consolidation-completeness record, split out of this module (500-line
+// gate). Re-exported so existing importers keep their paths.
 export type { Workstream, WorkstreamBaseShas } from "./workflow-state-schema-workstreams.ts";
+export type { ConsolidationCompleteness } from "./workflow-state-schema-consolidation-completeness.ts";
+import type { ConsolidationCompleteness } from "./workflow-state-schema-consolidation-completeness.ts";
 import type { Workstream, WorkstreamBaseShas } from "./workflow-state-schema-workstreams.ts";
 
 export {
@@ -45,18 +48,8 @@ export const WORK_STEPS: readonly WorkStep[] = [
 
 export type { CapedPartialState, CapEvidence } from "./workflow-state-cap.ts";
 
-export interface CommitPrRootState {
-  /** Current branch (`git rev-parse --abbrev-ref HEAD`); placeholder when unreadable. */
-  branch: string;
-  /** Porcelain column-1/2 status codes (`UU`, `AA`, `DD` — the unmerged set). */
-  unmergedPaths: string[];
-  /** Entries staged on BOTH columns (`MM`, ` M`, `A `, …) — untracked (`??`) excluded. */
-  stagedCount: number;
-  /** Total porcelain entries (staged + unstaged + untracked). */
-  totalEntries: number;
-  /** Epoch ms of the inspection. */
-  capturedAt: number;
-}
+export type { CommitPrRootState } from "./workflow-state-schema-commitpr-root.ts";
+import type { CommitPrRootState } from "./workflow-state-schema-commitpr-root.ts";
 
 /**
  * Pipeline snapshot — the driver's "where are we" view, reconstructible
@@ -270,6 +263,8 @@ export interface PipelineState {
    * accepts both.
    */
   incompleteConsolidation?: IncompleteConsolidation | Array<{ id: string; paths: string[] }>;
+  /** #728 (task-a) — see ConsolidationCompleteness (schema fragment). */
+  consolidationCompleteness?: ConsolidationCompleteness;
 
   /**
    * #500 — repoRoot's ACTUAL state when commit-pr completed (mechanized:
