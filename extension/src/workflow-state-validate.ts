@@ -118,6 +118,10 @@ const CAP_HIT_FIXED_LITERALS: readonly unknown[] = [
   // workstreams edited the same lines). A decomposition error, distinct
   // from the generic verify-failed:develop template.
   "consolidated-verify-conflict",
+  // #728 — consolidation dropped files (strict-subset stage, the #723
+  // incident shape): distinct from the conflict cap and the verify-failed:
+  // develop template. The dropped paths ride in the event's evidence.
+  "consolidation-incomplete",
   "intent-park",
   "awaiting-human-merge",
   "lens-diff-unreadable",
@@ -309,6 +313,32 @@ export function validateDiscriminants(state: unknown): string[] {
               out.push(`pipelineState.capEvidence.${field} is not a finite number`);
             }
           }
+        }
+      }
+    }
+    // #728 — `pipelineState.consolidationCompleteness`, when present, must
+    // carry the name-sets (arrays) the handoff renders verbatim: a partial
+    // or hand-edited record would otherwise render a confident wrong
+    // dropped-path list. `checkError` (the "could not verify" state) is
+    // optional and, when present, must be a string.
+    if (ps.consolidationCompleteness !== undefined) {
+      const cc = ps.consolidationCompleteness;
+      if (typeof cc !== "object" || cc === null) {
+        out.push("pipelineState.consolidationCompleteness is not an object");
+      } else {
+        const cco = cc as Record<string, unknown>;
+        for (const field of ["intended", "landed", "droppedPaths"] as const) {
+          const arr = cco[field];
+          if (!Array.isArray(arr)) {
+            out.push(`pipelineState.consolidationCompleteness.${field} is missing or not an array`);
+          } else if (arr.some((v) => typeof v !== "string")) {
+            out.push(
+              `pipelineState.consolidationCompleteness.${field} contains a non-string entry`,
+            );
+          }
+        }
+        if (cco.checkError !== undefined && typeof cco.checkError !== "string") {
+          out.push("pipelineState.consolidationCompleteness.checkError is not a string");
         }
       }
     }

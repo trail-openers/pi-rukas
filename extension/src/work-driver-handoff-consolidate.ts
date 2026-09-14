@@ -253,6 +253,29 @@ export async function consolidateWorktreesToBranch(
           reason: `patch-apply failed for workstream '${id}': ${reason} (patch preserved at ${patchFile}); the work remains in its worktree (per-worktree recovery below)`,
         };
       }
+      // #728 — the completeness gate (#723 class: the pick staged a subset
+      // and claimed success). This handoff path deliberately cannot hard-halt
+      // (work preservation), so it degrades to the honest recovery: the
+      // `handoff-consolidated` event (the "branch contains the work" claim)
+      // is only emitted on a COMPLETE consolidation, so an incomplete or
+      // unverifiable pick renders the accurate per-worktree recovery instead.
+      const comp = orch.completeness;
+      if (comp?.checkError) {
+        return {
+          ok: false as const,
+          reason: `consolidation completeness could not be verified (${comp.checkError.slice(0, 200)}); treating as unverifiable — the per-worktree recovery below names the work`,
+        };
+      }
+      if (comp?.droppedPaths && comp.droppedPaths.length > 0) {
+        return {
+          ok: false as const,
+          reason: `consolidation incomplete — ${comp.droppedPaths.length} path(s) intended but not on the branch (${comp.droppedPaths
+            .slice(0, 10)
+            .join(
+              ", ",
+            )}${comp.droppedPaths.length > 10 ? "…" : ""}); the work remains in its worktrees (per-worktree recovery below)`,
+        };
+      }
       const applied = [...orch.cherryApplied, ...orch.patchApplied];
       if (applied.length === 0) {
         // Every worktree had a clean tree and no committed work — the
