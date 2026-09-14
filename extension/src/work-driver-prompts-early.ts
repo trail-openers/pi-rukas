@@ -236,6 +236,8 @@ export function inlinePlanPrompt(issues: number[], scratchDirAbs: string): strin
     "Optional per-workstream lines (N>1 plans that declare workstream ORDERING or integration coverage):",
     "",
     "  - `depends-on: <id>` — the workstream(s) this one builds on. The develop step defers this workstream's worktree until the referenced one commits, and sources it from that worktree's HEAD rather than the cycle's base. The graph must be a DAG: no workstream may depend on itself or on a chain that loops back to it. A reference to an undeclared id (or to a workstream folded away by the ceiling) is a plan-quality rejection.",
+    "",
+    "Cross-declaration contract for N>1 workstreams: put every sibling workstream's `paths` files in your own `out-of-scope` line (and keep the contract symmetric). The driver's plan-quality gate rejects two workstreams claiming the same file, and the develop scope fence honours the cross-declaration — a `depends-on` workstream is exempted from its sibling's files for exactly that reason. Do not rely on the exemption for paths your workstream genuinely needs to edit; if two workstreams both need to edit a file, that is one workstream, not two.",
     "  - `integration-test: <path>` — the consolidated-tree test that exercises this workstream TOGETHER with the workstream(s) it depends on. REQUIRED (plan-quality rejection otherwise) when two workstreams are interdependent through DIFFERENT files — i.e. one declares `depends-on: <other>` with a disjoint file set, or one's test file exercises the other's file. The line is a DECLARATION only: the develop step does not execute it; it exists so the plan records that integration coverage was required.",
     scratchHygieneSection(scratchDirAbs),
   ].join("\n");

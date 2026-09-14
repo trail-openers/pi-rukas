@@ -28,7 +28,11 @@ export async function runConsolidatedVerify(
 ): Promise<
   | { status: "passed"; applied: string[] }
   | { status: "failed"; detail: string }
-  | { status: "conflict"; detail: string }
+  // #725 — the caller distinguishes a genuine cherry-pick / patch-apply
+  // conflict from a dirty-repoRoot preflight refusal via `kind`, not by
+  // regexing the `detail` prose (a reworded message used to silently
+  // re-route the refusal to the conflict cap).
+  | { status: "conflict"; detail: string; kind: "conflict" | "dirty-root" }
 > {
   const { repoRoot, baseSha, worktrees, scratchDir, verifyCmd, timeoutMs } = opts;
   // A scratch branch name no other step of the cycle ever creates. Deleted
@@ -75,6 +79,7 @@ export async function runConsolidatedVerify(
       trace("work-driver: consolidated verify — repoRoot dirty, refusing to consolidate");
       return {
         status: "conflict",
+        kind: "dirty-root",
         detail: `repoRoot is dirty (${rootDirt
           .slice(0, 5)
           .map((l) => l.slice(3))
@@ -111,6 +116,7 @@ export async function runConsolidatedVerify(
       await restoreRoot();
       return {
         status: "conflict",
+        kind: "conflict",
         detail:
           "cherry-pick conflict — two workstreams edited the same lines; the batch was aborted and repoRoot restored",
       };
@@ -120,6 +126,7 @@ export async function runConsolidatedVerify(
       await restoreRoot();
       return {
         status: "conflict",
+        kind: "conflict",
         detail: `patch-apply failed for workstream '${id}': ${reason}. Conflict patch preserved at ${patchFile}`,
       };
     }
@@ -157,6 +164,7 @@ export async function runConsolidatedVerify(
     );
     return {
       status: "conflict",
+      kind: "conflict",
       detail: `consolidation could not be performed: ${(err as Error).message?.slice(0, 200)}`,
     };
   }
