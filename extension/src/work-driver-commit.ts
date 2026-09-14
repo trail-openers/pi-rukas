@@ -15,6 +15,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { trace } from "./trace.ts";
+import { raiseConsolidationIncompleteCap } from "./work-driver-commit-completeness.ts";
 import {
   type CommitPrRootInspect,
   type CommitPrRootState,
@@ -52,13 +53,10 @@ import type {
   IncompleteConsolidation,
   WorkState,
 } from "./workflow-state.ts";
-
 const execp = promisify(exec);
-
 // clipTitle (#507) lives with the PR text builders in
 // work-driver-pr-body-definition.ts; re-exported for existing consumers.
 export { clipTitle } from "./work-driver-pr-body-definition.ts";
-
 /**
  * #500 — the `commitPrRoot` / `commitPrRootError` record fields for both
  * commit-pr paths (mechanized + ops fallback). One builder so the two
@@ -74,18 +72,15 @@ function commitPrRootFieldsOf(r: CommitPrRootInspect): {
 }
 
 // #539 — the fallback-cause vocabulary lives ONCE in workflow-state-events.ts
-// (the event type that persists it) and is imported above; re-declaring it
-// here is the duplication M1's review flagged. Re-exported for the
-// mechanizedCommitPr return type below.
+// (the event type that persists it) and is imported above; re-exported for
+// the mechanizedCommitPr return type below.
 export type { CommitPrFallbackCause } from "./workflow-state-events.ts";
 /** #539 — the structured cause, or `undefined` when integrate() did not
- * fail. Reads `res.failure` (the discriminator), never re-parses `reason` —
- * the catch-all turns any Error into `e.stderr ?? e.message`. */
+ * fail. Reads `res.failure` (the discriminator), never re-parses `reason`. */
 function causeFromIntegrateFailure(res: IntegrateResult): CommitPrFallbackCause | undefined {
   if (res.ok) return undefined;
   return res.failure === "dirty-repoRoot" ? "dirty-repoRoot" : "other";
 }
-
 /**
  * Wall-clock for the verify run against the consolidated tree. This is the
  * project's FAST suite, not the full one — it exists to catch "the
@@ -95,7 +90,6 @@ function integrationVerifyTimeoutMs(): number {
   const env = Number(process.env.PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS);
   return Number.isFinite(env) && env > 0 ? env : 15 * 60_000;
 }
-
 /**
  * PR19 — Mechanized commit-pr: consolidation + commit + push + PR-creation
  * executed directly. Falls back to LLM ops dispatch on `{ok: false}` unless
@@ -128,8 +122,8 @@ export async function mechanizedCommitPr(
   try {
     // RE-ENTRY GUARD (census 2026-09-09): a resume that re-enters commit-pr
     // after a crash-past-prCreate used to run integrate() again — whose
-    // `checkout -B` resets the branch to base — and then prCreate a second
-    // PR (gated only by the push rejection). An open PR whose head is this
+    // `checkout -B` resets the branch to base — and prCreate a second PR
+    // (gated only by the push rejection). An open PR whose head is this
     // exact branch means the previous attempt completed: short-circuit with
     // the found number; the verify gate after commit-pr still checks
     // commits-ahead + PR resolution. Fails open on an unreadable gh.
@@ -181,9 +175,9 @@ export async function mechanizedCommitPr(
     const commitBody = [...fixesLines, ...companionLines, ...workstreamLines].join("\n");
     // #287 — consolidation, commit and push all happen inside `integrate()`,
     // the single writer to repoRoot. It creates the branch at the recorded
-    // baseSha rather than at whatever repoRoot's HEAD is, and refuses to run
-    // against a dirty repoRoot (#283's gate, relocated here) so operator
-    // residue can never be swept into the PR — incident #602's shape.
+    // baseSha rather than at whatever repoRoot's HEAD is, and refuses a dirty
+    // repoRoot (#283's gate, relocated here) so operator residue can never
+    // be swept into the PR — incident #602's shape.
     const res = await integrate(execFn, {
       repoRoot: ctx.repoRoot,
       branchName,
@@ -212,8 +206,8 @@ export async function mechanizedCommitPr(
           ? `${res.reason} (patch preserved at ${res.conflictPatch})`
           : res.reason,
         // A tree that does not build is a verdict, not the environment
-        // variance the LLM fallback exists to absorb. Handing it on would
-        // make the gate one that cannot fail: it blocks the mechanized path
+        // variance the LLM fallback exists to absorb: handing it on would
+        // make the gate one that cannot fail — it blocks the mechanized path
         // and the ops dispatch commits and pushes the same broken tree
         // anyway — #328's shape, in a new place.
         terminal: res.failure === "verify",
@@ -229,8 +223,7 @@ export async function mechanizedCommitPr(
       };
     }
     // #378 — when the intent resolver filled gaps with defensible defaults,
-    // those assumptions belong where review happens. `proceed-with-assumptions`
-    // is only honest if the assumptions are visible; buried in a state file
+    // those assumptions belong where review happens; buried in a state file
     // they may as well not exist.
     const assumptionsBlock = assumptionsBlockOf(ps.normalisedSpec);
     const carriedFindings = carriedFindingsSectionOf(state.eventLog);
@@ -252,8 +245,7 @@ export async function mechanizedCommitPr(
     // `--head` is not optional under concurrency: without it gh infers the
     // head from repoRoot's CURRENT checkout, so a sibling group that moved
     // HEAD between our push and this call would have its branch opened as our
-    // PR — with our title and body. The lock makes that impossible; the flag
-    // makes it impossible even if the lock is ever wrong.
+    // PR. The flag makes that impossible even if the lock is ever wrong.
     const forge = await forgeForCycle(ctx, execFn);
     if (!forge) {
       return {
@@ -269,16 +261,16 @@ export async function mechanizedCommitPr(
         reason: `forge pr create succeeded but returned no PR number (url=${(created.url ?? "").slice(0, 120)})`,
       };
     }
-    // 5. Emit the same event shapes the dispatch path produces so the
-    // shared downstream (parsePrNumber + both gates) runs unchanged.
+    // 5. Emit the same event shapes the dispatch path produces so the shared
+    // downstream (parsePrNumber + both gates) runs unchanged.
     const rootState = await inspectCommitPrRoot(execFn, ctx.repoRoot);
     let next = appendEvent(
       { ...state, pipelineState: { ...state.pipelineState, currentStep: "commit-pr" } },
       { kind: "step-started", step: "commit-pr", at: now },
     );
-    // Via the shared builder (work-driver-events.ts): unique jobId — the
-    // old inline literal "mechanized" appeared twice per fan-out cycle,
-    // making jobId useless as a correlation key (census 2026-09-09).
+    // Via the shared builder (work-driver-events.ts): unique jobId — the old
+    // inline literal "mechanized" appeared twice per fan-out cycle, making
+    // jobId useless as a correlation key (census 2026-09-09).
     next = appendEvent(
       next,
       synthesizeDriverCompletion({
@@ -291,10 +283,8 @@ export async function mechanizedCommitPr(
     );
     // #453 — persist cherry-picked commit SHAs so resume can skip them.
     const commitShas = res.commitShas;
-    // #728 — persist the intended-vs-actual completeness diagnostic so the
-    // commit-pr gate (runCommitPr) can raise `consolidation-incomplete` and the
-    // handoff can render it. Absent when the cherry-pick path produced no
-    // committed work (patch-only) — the gate only runs when it is present.
+    // #728 — also persist the intended-vs-actual completeness diagnostic when
+    // the cherry-pick path produced one (see work-driver-commit-completeness.ts).
     const commitPrRootFields = commitPrRootFieldsOf(rootState);
     next = {
       ...next,
@@ -331,11 +321,11 @@ export async function runCommitPr(
   state: WorkState,
   now: number,
 ): Promise<WorkState> {
-  // #289 — one contiguous critical section per group. The span deliberately
-  // includes the LLM ops fallback (it mutates repoRoot exactly as the
-  // mechanized path does) and BOTH verify gates, which read repoRoot HEAD via
-  // `git rev-list` / `git diff --name-only` and would otherwise validate a
-  // sibling group's commits as this group's evidence.
+  // PR19 — one contiguous critical section per group: includes the LLM ops
+  // fallback (it mutates repoRoot exactly as the mechanized path does) and
+  // BOTH verify gates, which read repoRoot HEAD via `git rev-list` /
+  // `git diff --name-only` and would otherwise validate a sibling group's
+  // commits as this group's evidence.
   return withIntegrationLock(ctx.repoRoot, () => runCommitPrLocked(ctx, state, now));
 }
 
@@ -346,17 +336,17 @@ async function runCommitPrLocked(
 ): Promise<WorkState> {
   let next: WorkState | undefined;
   let preDispatch = state;
-  // PR19 — mechanized commit-pr. The LLM ops dispatch remains as
-  // fallback for judgmental recovery (apply conflict, push rejection).
+  // PR19 — mechanized commit-pr. The LLM ops dispatch remains as fallback
+  // for judgmental recovery (apply conflict, push rejection).
   {
     const mech = await mechanizedCommitPr(ctx, state, now);
     if (mech.ok) {
       next = mech.state;
     } else if (mech.terminal) {
-      // The consolidated tree does not build. The fallback exists to absorb
+      // The consolidated tree does not build: the fallback exists to absorb
       // environment variance, not to overrule a verdict — letting ops commit
       // and push the same tree would make this a gate that cannot fail, and
-      // the six lenses would then review something that was never compiled.
+      // the six lenses would review something that was never compiled.
       trace(`work-driver: commit-pr halted, consolidated tree failed verify: ${mech.reason}`);
       return appendEvent(
         state,
@@ -415,10 +405,8 @@ async function runCommitPrLocked(
   // #500 — the ops fallback consolidates repoRoot BY HAND; unlike the
   // mechanized path there is no guarantee what it leaves. Record the state
   // it actually left (unmerged paths, staged count, current branch) so the
-  // handoff renders facts rather than the assumption of a clean tree. A
-  // read failure records the failure, not a guess: a silent empty state
-  // would make the handoff's "clean" claim exactly the defect this ticket
-  // exists to close.
+  // handoff renders facts rather than the assumption of a clean tree. A read
+  // failure records the failure, not a guess.
   const execFn = ctx.verifyExecFn ?? execp;
   const rootState = await inspectCommitPrRoot(execFn, ctx.repoRoot);
   next = {
@@ -435,29 +423,11 @@ async function runCommitPrLocked(
       pipelineState: { ...next.pipelineState, prNumber },
     };
   }
-  // #728 — file-level consolidation completeness. The cherry-pick seam
-  // computes the union of each committed worktree's cumulative diff (what was
-  // INTENDED to stage) against what actually landed; `droppedPaths` non-empty
-  // names files that were meant to land but did not — the #723 shape, where a
-  // multi-commit worktree staged only its HEAD commit's files and silently
-  // dropped the earlier ones. The ops-fallback path leaves no such diagnostic,
-  // so this is absent there (the gate only runs when the mechanized path
-  // produced one). A `checkError` means the git read failed and the comparison
-  // could not run — the honest third state, NOT "complete", so it does not
-  // raise the cap on its own (it is recorded for the handoff).
-  const mechCompleteness = next.pipelineState.consolidationCompleteness;
-  if (mechCompleteness !== undefined && mechCompleteness.droppedPaths.length > 0) {
-    trace(
-      `work-driver: commit-pr consolidation incomplete — dropped paths: ${mechCompleteness.droppedPaths.join(", ")}`,
-    );
-    next = appendEvent(next, {
-      kind: "cap-hit",
-      at: Date.now(),
-      cap: "consolidation-incomplete",
-      reviewRound: next.pipelineState.reviewRound,
-      nextStep: "handoff",
-    });
-    return next;
+  // #728 — file-level consolidation completeness gate
+  // (work-driver-commit-completeness.ts): raises the `consolidation-incomplete`
+  // cap when the mechanized path recorded dropped paths.
+  if (next.pipelineState.consolidationCompleteness?.droppedPaths.length) {
+    return raiseConsolidationIncompleteCap(next);
   }
   // PR14 + #540 — post-dispatch consolidation gate (subsumption-aware,
   // both-sides report). Defense in depth: the v0.12.13 incident merged
