@@ -17,14 +17,11 @@
  * `checkError`, which callers treat as "unverifiable" — never complete.
  */
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
-
-/** Shape of `OrchestratedCherryPickResult["completeness"]` (defined here to avoid a circular import). */
-export interface ConsolidationCompleteness {
-  intended: string[];
-  landed: string[];
-  droppedPaths: string[];
-  checkError?: string;
-}
+// Single canonical definition of the completeness record — the schema
+// fragment (re-exported from workflow-state-schema.ts). Safe here: the
+// fragment module is a leaf (type-only fields, no imports), so no cycle.
+import type { ConsolidationCompleteness } from "./workflow-state-schema-consolidation-completeness.ts";
+export type { ConsolidationCompleteness } from "./workflow-state-schema-consolidation-completeness.ts";
 
 export async function measureConsolidationCompleteness(
   execFn: (cmd: string, o?: { cwd?: string; maxBuffer?: number }) => Promise<{ stdout: string }>,

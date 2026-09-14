@@ -32,6 +32,15 @@ interface CherryPickEntry {
   sha: string;
   /** `cherry-picked` when a new commit landed; `skipped` when already applied. */
   status: "cherry-picked" | "skipped";
+  /**
+   * #728 (task-c) — the workstream id of an entry picked via the HEAD-only
+   * fallback after a `rev-list` range read failed. Downstream completeness
+   * evidence can then distinguish "range read failed, fell back to HEAD"
+   * from "range read succeeded but the pick still dropped files" — the two
+   * have different causes and different remedies. Only set when the range
+   * read errored, never for a legitimately empty range.
+   */
+  rangeReadError?: { workstreamId: string; error: string };
 }
 /** Workstream ids ordered by the caller's iteration. */
 interface WorkstreamList {
@@ -106,11 +115,13 @@ export async function cherryPickWorkstreams(
   const { repoRoot, branchName, worktrees, commitShas, baseSha } = opts;
   const ids = Object.keys(worktrees);
   const entries: CherryPickEntry[] = [];
+  const rangeFellBack = new Map<string, { workstreamId: string; error: string }>();
   let conflictedAt: string | undefined;
   // #728 — resolve each workstream's committed range (parent→child) once so
   // every SHA is deduplicated and picked in order; a range read failure
   // degrades to the legacy HEAD-only pick for that workstream (traced).
   const ranges: Record<string, string[]> = {};
+  const rangeReadErrors = new Map<string, string>();
   for (const id of ids) {
     const wtPath = worktrees[id];
     if (!wtPath) continue;
@@ -126,8 +137,10 @@ export async function cherryPickWorkstreams(
           .map((l) => l.trim())
           .filter((l) => /^[0-9a-f]{7,}$/.test(l));
       } catch (err) {
+        const msg = (err as Error).message?.slice(0, 200) ?? "unknown";
+        rangeReadErrors.set(id, msg);
         trace(
-          `work-driver: cherry-pick — could not list range for '${id}', falling back to HEAD only: ${(err as Error).message?.slice(0, 200)}`,
+          `work-driver: cherry-pick — could not list range for '${id}', falling back to HEAD only: ${msg}`,
         );
       }
     }
@@ -138,6 +151,11 @@ export async function cherryPickWorkstreams(
       });
       const sha = stdout.trim();
       if (sha && sha.length >= 7) list = [sha];
+      // #728 (task-c) — a range-read failure degraded to the HEAD-only pick;
+      // record it so the completeness evidence (task-a) can name the cause
+      // instead of a bare dropped-path list.
+      const rangeErr = rangeReadErrors.get(id);
+      if (rangeErr) rangeFellBack.set(id, { workstreamId: id, error: rangeErr });
     }
     ranges[id] = list;
   }
@@ -152,7 +170,7 @@ export async function cherryPickWorkstreams(
         trace(
           `work-driver: cherry-pick — SHA ${sha.slice(0, 8)} for '${id}' already on branch, skipping`,
         );
-        entries.push({ sha, status: "skipped" });
+        entries.push({ sha, status: "skipped", rangeReadError: rangeFellBack.get(id) });
         continue;
       }
       // Also skip if the SHA matches an already-recorded `commitShas` entry
@@ -162,7 +180,7 @@ export async function cherryPickWorkstreams(
         trace(
           `work-driver: cherry-pick — SHA ${sha.slice(0, 8)} for '${id}' already recorded, skipping`,
         );
-        entries.push({ sha, status: "skipped" });
+        entries.push({ sha, status: "skipped", rangeReadError: rangeFellBack.get(id) });
         continue;
       }
       // Cherry-pick the SHA.
@@ -171,7 +189,7 @@ export async function cherryPickWorkstreams(
           cwd: repoRoot,
           maxBuffer: 8 * 1024 * 1024,
         });
-        entries.push({ sha, status: "cherry-picked" });
+        entries.push({ sha, status: "cherry-picked", rangeReadError: rangeFellBack.get(id) });
       } catch {
         // Cherry-pick failed — this is a conflict. Abort the batch and record
         // which workstream caused it.
