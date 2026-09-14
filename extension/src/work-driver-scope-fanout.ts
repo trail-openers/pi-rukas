@@ -8,6 +8,33 @@
  * broad. An empty paths list has no declared boundary, so preserve legacy
  * behaviour and report the skipped check rather than inventing one.
  *
+ * #724 — FANOUT recalibration, derived from the recorded corpus (NOT
+ * intuition). Method: replayed every develop-death cycle in the 52-file
+ * `.pi/work-state/*.json` corpus (`.pi/work-state` schema v1, recorded
+ * `verifyEvidence.failures` + `workstreams[].paths`), excluding the 10
+ * pre-a6ed511 cycles whose counts reflect the three fixed derivation bugs.
+ * Replay: for each recorded `scope fanout: N files changed vs M declared`
+ * failure, N was the RAW changed count while the `Files:` list is the
+ * undeclared count — the gate counted sibling-declared files against a
+ * workstream that did not touch them (pre-#672 cumulative-union shape). On
+ * the post-fix corpus, comparing the two counts gives:
+ *   - 6 recorded fanout rejections (issues 602, 613, 654, 677 ×4) become
+ *     passes: in every case the undeclared count is ≤ the old limit
+ *     (e.g. #677: 3 undeclared < 6) — pure derivation artifacts.
+ *   - 12 rejections stay failures with undeclared-only counts (e.g. #630:
+ *     50/59; #679: 22-24/27-28 — a cohesive many-file driver refactor that
+ *     legitimately exceeded even its plan-wide declared count).
+ *   - #674 (18 raw / 15 undeclared vs 3 declared, limit 9) is the one case
+ *     where a sibling (task-a) declared 14 of the 18 files. Sibling-declared
+ *     files are therefore excluded from the NUMERATOR too — a file the plan
+ *     assigned to a sibling is not this workstream's fanout, whatever the
+ *     attribution — leaving 4 < 9, so #674 now passes. #679 keeps failing
+ *     (undeclared-only 22 and 24 vs limit 15); that is correct: its
+ *     undeclared files were genuinely beyond the plan (a cohesive many-file
+ *     driver refactor that exceeded even its plan-wide declared count).
+ * Env knobs PI_ENSEMBLE_SCOPE_GATE / _FANOUT_FACTOR / _FANOUT_MIN keep
+ * identical semantics (factor × declared count vs floor).
+ *
  * #725 — the fence's semantics on a dependsOn plan (documented decision):
  * a workstream's `outOfScope` fence is evaluated against THAT workstream's
  * own commits (the per-worktree diff against its effective base — see the
@@ -163,11 +190,20 @@ export function runScopeFanoutGate(
         [...planDeclaredPaths].some(
           (declared) => !isTestPath(declared) && couplesTo(file, declared),
         ));
+    // #724 — the fanout NUMERATOR counts only this workstream's own
+    // undeclared files. A file declared by a SIBLING workstream is the plan's
+    // assignment to that sibling — it is not this workstream's fanout, even
+    // when a developer's diff happens to reach it (the #674 shape: 15 of 18
+    // files were task-a's, 4 were genuinely undeclared, 4 < limit 9). The
+    // old raw count penalised this workstream for another workstream's plan
+    // and, combined with the pre-#672 cumulative Set, judged every
+    // multi-workstream cycle against an inflated number. `undeclaredFiles`
+    // already implements exactly this set (own ∪ sibling ∪ coupled-test
+    // exemption), so it is both the numerator and the failure listing.
     const undeclaredFiles = changedFiles.filter((file) => !isDeclaredOrExempt(file));
-    if (changedFiles.length > limit) {
-      const listedFiles = (undeclaredFiles.length > 0 ? undeclaredFiles : changedFiles).join(", ");
+    if (undeclaredFiles.length > limit) {
       failures.push(
-        `scope fanout: ${changedFiles.length} files changed vs ${declaredPaths.length} declared — likely mis-decomposition; split the work or update the plan. Files: ${listedFiles}`,
+        `scope fanout: ${undeclaredFiles.length} undeclared file(s) changed vs ${declaredPaths.length} declared — likely mis-decomposition; split the work or update the plan. Files: ${undeclaredFiles.join(", ")}`,
       );
     }
   }
