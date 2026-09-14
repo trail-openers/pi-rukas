@@ -291,6 +291,10 @@ export async function mechanizedCommitPr(
     );
     // #453 — persist cherry-picked commit SHAs so resume can skip them.
     const commitShas = res.commitShas;
+    // #728 — persist the intended-vs-actual completeness diagnostic so the
+    // commit-pr gate (runCommitPr) can raise `consolidation-incomplete` and the
+    // handoff can render it. Absent when the cherry-pick path produced no
+    // committed work (patch-only) — the gate only runs when it is present.
     const commitPrRootFields = commitPrRootFieldsOf(rootState);
     next = {
       ...next,
@@ -298,6 +302,7 @@ export async function mechanizedCommitPr(
         ...next.pipelineState,
         ...commitPrRootFields,
         ...(commitShas ? { commitShas } : {}),
+        ...(res.completeness ? { consolidationCompleteness: res.completeness } : {}),
       },
     };
     return { ok: true, state: next };
@@ -429,6 +434,30 @@ async function runCommitPrLocked(
       ...next,
       pipelineState: { ...next.pipelineState, prNumber },
     };
+  }
+  // #728 — file-level consolidation completeness. The cherry-pick seam
+  // computes the union of each committed worktree's cumulative diff (what was
+  // INTENDED to stage) against what actually landed; `droppedPaths` non-empty
+  // names files that were meant to land but did not — the #723 shape, where a
+  // multi-commit worktree staged only its HEAD commit's files and silently
+  // dropped the earlier ones. The ops-fallback path leaves no such diagnostic,
+  // so this is absent there (the gate only runs when the mechanized path
+  // produced one). A `checkError` means the git read failed and the comparison
+  // could not run — the honest third state, NOT "complete", so it does not
+  // raise the cap on its own (it is recorded for the handoff).
+  const mechCompleteness = next.pipelineState.consolidationCompleteness;
+  if (mechCompleteness !== undefined && mechCompleteness.droppedPaths.length > 0) {
+    trace(
+      `work-driver: commit-pr consolidation incomplete — dropped paths: ${mechCompleteness.droppedPaths.join(", ")}`,
+    );
+    next = appendEvent(next, {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "consolidation-incomplete",
+      reviewRound: next.pipelineState.reviewRound,
+      nextStep: "handoff",
+    });
+    return next;
   }
   // PR14 + #540 — post-dispatch consolidation gate (subsumption-aware,
   // both-sides report). Defense in depth: the v0.12.13 incident merged

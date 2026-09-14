@@ -8,6 +8,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
+import type { ConsolidationCompleteness } from "./work-driver-completeness.ts";
 import { stagePorcelainPaths } from "./work-driver-stage.ts";
 import type { WorkState } from "./workflow-state-schema.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -160,6 +161,12 @@ export type IntegrateResult =
       /** #453 — cherry-picked commit SHAs, keyed by workstream id. Set when
        *  the cherry-pick path ran (one or more worktrees had commits). */
       commitShas?: Record<string, string>;
+      /** #728 — intended-vs-actual consolidation completeness (the union of
+       *  each committed worktree's cumulative diff vs. what landed). Set when
+       *  the cherry-pick path ran with committed work; `droppedPaths` non-empty
+       *  names files that were meant to land but did not. Absent when the
+       *  cherry-pick path did not run (patch-only) or nothing was committed. */
+      completeness?: ConsolidationCompleteness;
     }
   /** Nothing to integrate — every worktree was clean. Not an error. #492. */
   | { ok: true; workstreams: []; empty: true; noDiff: NoDiff }
@@ -418,6 +425,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       empty: false,
       noDiff: Object.keys(noDiff).length > 0 ? noDiff : undefined,
       commitShas: Object.keys(cherryPickShas).length > 0 ? cherryPickShas : undefined,
+      completeness: orchResult.completeness,
     };
   } catch (err) {
     const e = err as Error & { stderr?: string };
