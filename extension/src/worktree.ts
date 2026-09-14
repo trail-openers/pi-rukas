@@ -21,6 +21,7 @@ import path from "node:path";
 import { trace } from "./trace.ts";
 import { type ProvisionResult, provisionWorktree } from "./worktree-provision.ts";
 export type { ProvisionResult } from "./worktree-provision.ts";
+export { salvageUncommittedWork, salvageDirtyWorktree } from "./worktree-salvage.ts";
 
 /** Shell executor, matching `DriverContext.verifyExecFn`. */
 export type ExecFn = (
@@ -294,12 +295,60 @@ export async function worktreeRemove(
 }
 
 /**
+ * Scan `git worktree list` for ATTACHED worktrees whose path matches the
+ * given marker, skipping the `selfName` worktree (the cycle's own target).
+ * Returns all hits (clean and dirty) with their findings.
+ *
+ * Shared by `findDirtySameIssueLeftover` (returns the first dirty hit) and
+ * `findSameIssueLeftovers` (worktree-leftover.ts, returns all) so the
+ * porcelain parsing and the `inspectWorktreeForLoss` loop live in one place.
+ * An unreadable `git worktree list` returns an empty array — the safe
+ * direction for every caller (a #545 refusal degrades to the raw git error;
+ * a residue pass degrades to no-op).
+ */
+export async function scanWorktrees(
+  execFn: ExecFn,
+  repoRoot: string,
+  fromRef: string,
+  pathSubstrings: string[],
+  exclude?: string,
+): Promise<{ path: string; name: string; finding?: DirtyWorktreeFinding }[]> {
+  let list: string;
+  try {
+    ({ stdout: list } = await execFn("git worktree list --porcelain", {
+      cwd: repoRoot,
+      maxBuffer: 1024 * 1024,
+    }));
+  } catch {
+    return [];
+  }
+  const out: { path: string; name: string; finding?: DirtyWorktreeFinding }[] = [];
+  for (const line of list.split("\n")) {
+    const l = line.trim();
+    if (!l.startsWith("worktree ")) continue;
+    const wtPath = l.slice("worktree ".length);
+    if (!pathSubstrings.some((p) => wtPath.includes(p))) continue;
+    const name = path.basename(wtPath);
+    if (name === exclude) continue;
+    const finding = await inspectWorktreeForLoss(execFn, repoRoot, wtPath, fromRef).catch(
+      () => undefined,
+    );
+    out.push({ path: wtPath, name, finding });
+  }
+  return out;
+}
+
+/**
  * #545 — `git worktree add` refuses against any leftover worktree of the
  * same cycle (not just the one at the target path). Find attached
  * worktrees with the same issue prefix that hold work a force-remove would
  * destroy. An unreadable `git worktree list` returns undefined: the
  * refusal then happens the pre-#545 way (the raw git error, now plumbed
  * via `gitErrorDetail`), which is the safe degradation.
+ *
+ * Shared seam (#730): the scan lives in `scanWorktrees` so the #730
+ * residue pass (worktree-leftover.ts) and this guard cannot drift on which
+ * prefixes are "same issue".
  */
 export async function findDirtySameIssueLeftover(
   execFn: ExecFn,
@@ -308,29 +357,10 @@ export async function findDirtySameIssueLeftover(
   issuePrefix: string,
   selfName: string,
 ): Promise<DirtyWorktreeFinding | undefined> {
-  let list: string;
-  try {
-    ({ stdout: list } = await execFn("git worktree list --porcelain", {
-      cwd: repoRoot,
-      maxBuffer: 1024 * 1024,
-    }));
-  } catch {
-    return undefined;
-  }
   const wtMarker = `.worktrees${path.sep}${issuePrefix}`;
-  for (const line of list.split("\n")) {
-    const l = line.trim();
-    if (!l.startsWith("worktree ")) continue;
-    const wtPath = l.slice("worktree ".length);
-    if (!wtPath.includes(wtMarker)) continue;
-    // Skip the cycle's own target — that's handled by `inspectWorktreeForLoss`
-    // below (a clean leftover is removed, a dirty one is a #475 refusal).
-    const wtName = path.basename(wtPath);
-    if (wtName === selfName) continue;
-    const finding = await inspectWorktreeForLoss(execFn, repoRoot, wtPath, fromRef).catch(
-      () => undefined,
-    );
-    if (finding) return finding;
+  const hits = await scanWorktrees(execFn, repoRoot, fromRef, [wtMarker], selfName);
+  for (const hit of hits) {
+    if (hit.finding) return hit.finding;
   }
   return undefined;
 }
