@@ -34,11 +34,11 @@ interface CherryPickEntry {
   status: "cherry-picked" | "skipped";
   /**
    * #728 (task-c) — the workstream id of an entry picked via the HEAD-only
-   * fallback after a `rev-list` range read failed. Downstream completeness
-   * evidence can then distinguish "range read failed, fell back to HEAD"
-   * from "range read succeeded but the pick still dropped files" — the two
-   * have different causes and different remedies. Only set when the range
-   * read errored, never for a legitimately empty range.
+   * fallback after a `rev-list` range read failed. Recorded for the
+   * completeness-evidence consumer that will surface the range-fallback
+   * cause (follow-up: #728 task-d); not yet read by any gate in this
+   * commit. Only set when the range read errored, never for a legitimately
+   * empty range.
    */
   rangeReadError?: { workstreamId: string; error: string };
 }

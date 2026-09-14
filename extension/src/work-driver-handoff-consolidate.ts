@@ -266,7 +266,7 @@ export async function consolidateWorktreesToBranch(
           reason: `consolidation completeness could not be verified (${comp.checkError.slice(0, 200)}); treating as unverifiable — the per-worktree recovery below names the work`,
         };
       }
-      if (comp && comp.droppedPaths.length > 0) {
+      if (comp?.droppedPaths && comp.droppedPaths.length > 0) {
         return {
           ok: false as const,
           reason: `consolidation incomplete — ${comp.droppedPaths.length} path(s) intended but not on the branch (${comp.droppedPaths
