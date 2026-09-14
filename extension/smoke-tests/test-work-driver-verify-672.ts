@@ -130,8 +130,10 @@ try {
   // #672-2a — sibling-union widening (fence only): workstream A
   // touches a file legitimately declared by sibling B. The fence
   // must permit it; the fanout denominator stays A's own declared
-  // count, so 7 files changed vs 1 declared is still a fanout
-  // failure (option (a) semantics, issue #672 resolution).
+  // count. #724 — the numerator now counts only undeclared files:
+  // 7 changed files, 1 is sibling-declared (src/b.ts), so 6 undeclared.
+  // Limit = max(1*3, 6) = 6. 6 > 6 is false → PASS (boundary case).
+  // This is correct: the 6 extra files are within the factor tolerance.
   filesByWorktree = {
     "task-a": [
       "src/b.ts",
@@ -159,10 +161,8 @@ try {
     "#672-2a: sibling-declared path is not an out-of-scope hit for workstream A",
   );
   assert(
-    siblingWidened.failures.some((failure) =>
-      /scope fanout: 7 files changed vs 1 declared/.test(failure),
-    ),
-    "#672-2a: fanout denominator stays A's own declared count (option a)",
+    siblingWidened.ok,
+    "#672-2a/#724: 6 undeclared files (of 7 changed) vs limit 6 → pass (boundary case, within factor tolerance)",
   );
 
   // #672-2b — the widening is scoped to the union of declared paths,
@@ -189,12 +189,12 @@ try {
     }),
     "develop",
   );
-  assert(
-    siblingUndeclared.failures.some((failure) =>
-      /scope fanout/.test(failure) && /vs 1 declared/.test(failure),
-    ),
-    "#672-2b: an undeclared file fails the gate",
+  const undecl = siblingUndeclared.failures.find((failure) =>
+    /scope fanout/.test(failure) && /vs 1 declared/.test(failure),
   );
+  assert(Boolean(undecl), "#672-2b: an undeclared file fails the gate");
+  assert(Boolean(undecl) && /scope fanout: 7 undeclared file\(s\)/.test(undecl),
+    "#724: fanout failure names the undeclared count (7), not the raw changed count");
   assert(
     siblingUndeclared.failures.some((failure) => /src\/rogue\.ts/.test(failure)),
     "#672-2b: the failure names the undeclared file",
@@ -224,18 +224,24 @@ try {
 
   // #672-3b — the exception is inference-gated, not blanket:
   // an unrelated test-named file whose inferred subject is declared
-  // by no workstream must still fail. Uses 7 files (including the
+  // by no workstream must still fail. Uses 8 files (including the
   // uncoupled test) to exceed the default fanout minimum of 6, so the
   // gate fires and names the uncoupled test file.
+  // #724 — the 8th file (smoke-tests/test-foo.ts) is coupled to the
+  // declared subject src/foo.ts and is therefore exempt from the
+  // fanout numerator; the gate now counts undeclared files only, so
+  // the 7 non-exempt files exceed the minimum of 6.
   filesByWorktree = {
     "task-a": [
       "src/foo.ts",
       "smoke-tests/test-rogue.ts",
+      "smoke-tests/test-foo.ts",
       "src/x1.ts",
       "src/x2.ts",
       "src/x3.ts",
       "src/x4.ts",
       "src/x5.ts",
+      "src/x6.ts",
     ],
     "task-b": [],
   };
@@ -249,17 +255,89 @@ try {
   );
   assert(
     testFileRogue.failures.some((failure) => /scope fanout/.test(failure)),
-    "#672-3b: an uncoupled test-named file still fails the fence",
+    "#672-3b: an uncoupled test-named file still fails the gate (5 undeclared vs limit 6 — needs one more)",
   );
   assert(
     testFileRogue.failures.some((failure) => /test-rogue\.ts/.test(failure)),
     "#672-3b: the failure names the uncoupled test file",
   );
   assert(
+    testFileRogue.failures.every((failure) => !/test-foo\.ts/.test(failure)),
+    "#724: the coupled test file (test-foo.ts) is exempt and not named in the failure",
+  );
+  assert(
     !testFileRogue.failures.some((failure) =>
       /out-of-scope/.test(failure) && /test-rogue\.ts/.test(failure),
     ),
     "#672-3b: the failure is fanout/undeclared, not out-of-scope (fence semantics unchanged)",
+  );
+
+  // #724 — the fanout NUMERATOR: a sibling-declared file in this workstream's
+  // changed set must NOT count toward this workstream's fanout. #674 shape:
+  // task-b (3 declared) touches 8 files, 4 of which are task-a's declared
+  // files. 4 undeclared < limit max(3*3, 6)=9 → pass. (The raw count 8 < 9
+  // also passes here, so this case also asserts the message shape below via
+  // the sibling-heavy variant in #724-B.)
+  filesByWorktree = {
+    "task-a": [],
+    "task-b": [
+      "src/b1.ts",
+      "src/b2.ts",
+      "src/b3.ts",
+      "src/a1.ts",
+      "src/a2.ts",
+      "src/a3.ts",
+      "src/a4.ts",
+      "src/a5.ts",
+    ],
+  };
+  const numSibling = await verifyStepOutcome(
+    ctx,
+    stateFor({
+      "task-a": { id: "task-a", scope: "a", paths: ["src/a1.ts", "src/a2.ts", "src/a3.ts", "src/a4.ts", "src/a5.ts"], outOfScope: [] },
+      "task-b": { id: "task-b", scope: "b", paths: ["src/b1.ts", "src/b2.ts", "src/b3.ts"], outOfScope: [] },
+    }),
+    "develop",
+  );
+  assert(
+    numSibling.ok,
+    "#724-A: sibling-declared files do not count toward this workstream's fanout numerator",
+  );
+
+  // #724 — the gate must not be inert: 10 undeclared files vs 3 declared
+  // (limit 9) still fails, and the message reports the UNDECLARED count, not
+  // the raw changed count (10 + 2 sibling-declared = 12 raw).
+  filesByWorktree = {
+    "task-a": [],
+    "task-b": [
+      "src/b1.ts",
+      "src/rogue1.ts",
+      "src/rogue2.ts",
+      "src/rogue3.ts",
+      "src/rogue4.ts",
+      "src/rogue5.ts",
+      "src/rogue6.ts",
+      "src/rogue7.ts",
+      "src/rogue8.ts",
+      "src/rogue9.ts",
+      "src/rogue10.ts",
+      "src/a1.ts",
+      "src/a2.ts",
+    ],
+  };
+  const numInert = await verifyStepOutcome(
+    ctx,
+    stateFor({
+      "task-a": { id: "task-a", scope: "a", paths: ["src/a1.ts", "src/a2.ts"], outOfScope: [] },
+      "task-b": { id: "task-b", scope: "b", paths: ["src/b1.ts", "src/b2.ts", "src/b3.ts"], outOfScope: [] },
+    }),
+    "develop",
+  );
+  assert(
+    numInert.failures.some((failure) =>
+      /scope fanout: 10 undeclared file\(s\) changed vs 3 declared/.test(failure),
+    ),
+    "#724-B: the gate still fires on genuine fanout and reports the undeclared count (10), not raw (12)",
   );
 } finally {
   if (previousScopeEnv.gate === undefined)
