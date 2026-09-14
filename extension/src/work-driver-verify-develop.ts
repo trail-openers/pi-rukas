@@ -5,11 +5,12 @@
  * Checks diff evidence, verify command, skip-ratchet, and product smoke gates.
  * Import chain: work-driver-verify.ts → this file → work-driver-verify-cmd.ts
  * (acyclic). The #679 falsily-green check lives in work-driver-falsily-green.ts.
+ * Exec-error formatting and verify-cmd gate helpers (timeout, path
+ * normaliser, tolerance) live in work-driver-verify-develop-helpers.ts.
  */
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { trace } from "./trace.ts";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { provisionDepsHint } from "./work-driver-deps-hint.ts";
@@ -20,7 +21,6 @@ import {
   protectedPathsEnabled,
   protectedPathsIn,
 } from "./work-driver-doctrine.ts";
-import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import { runFalsilyGreenCheck } from "./work-driver-falsily-green.ts";
 import { runScopeFanoutGate } from "./work-driver-scope-fanout.ts";
 import {
@@ -29,6 +29,13 @@ import {
   countSkipMarkersInDiffLine,
 } from "./work-driver-skip-ratchet.ts";
 import {
+  formatExecError,
+  normaliseScopePath,
+  testDeleteTolerance,
+  verifyTimeoutMs,
+} from "./work-driver-verify-develop-helpers.ts";
+
+import {
   declaredPathsHaveSource,
   readFirstConfigLine,
   verifyCmdFor,
@@ -36,51 +43,10 @@ import {
 import type { WorkState } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
 
-/** #285 — normalise a scope path like git would spell it. */
-function normaliseScopePath(raw: string): string {
-  return raw.trim().replace(/^\.\//, "").replace(/\/+$/, "");
-}
-
-/** PR17 — bounded wall-clock for the verify command (default 10 min). */
-function verifyTimeoutMs(): number {
-  const env = Number(process.env.PI_ENSEMBLE_VERIFY_TIMEOUT_MS);
-  if (Number.isFinite(env) && env > 0) return env;
-  return 10 * 60_000;
-}
-
 /** PR338 — validate a git SHA before shell interpolation. */
 const VALID_SHA_RE = /^[0-9a-f]{40}$/;
-function isValidSha(s: string | undefined): s is string {
+function isValidSha(s: string | undefined) {
   return typeof s === "string" && VALID_SHA_RE.test(s);
-}
-
-/** #307 — maximum number of net-removed test blocks tolerated in a diff. */
-function testDeleteTolerance(): number {
-  const env = Number(process.env.PI_ENSEMBLE_TEST_DELETE_TOLERANCE);
-  if (!Number.isFinite(env) || env < 0) return 0;
-  return Math.floor(env);
-}
-
-/**
- * PR338 — format an exec error with a bounded, attribution-aware output
- * tail. #723 — anchors on the last sub-command's `FAILED: <file>` marker
- * (see work-driver-exec-error.ts) so a combined multi-stage verify-cmd run
- * never reports an earlier PASSING sub-command's output as the failure.
- */
-function formatExecError(
-  e: Error & { stdout?: string; stderr?: string; killed?: boolean },
-  timeoutMsg: string,
-  failMsg: string,
-): string {
-  const { tail, attributed } = extractAttributedTail(`${e.stdout ?? ""}\n${e.stderr ?? ""}`, 1500);
-  if (!attributed && tail)
-    trace("work-driver: exec error tail is unattributed (no FAILED: marker found)");
-  const suffix = tail
-    ? attributed
-      ? tail
-      : `${tail} (unattributed — best-effort tail)`
-    : undefined;
-  return e.killed ? timeoutMsg : `${failMsg}: ${suffix ?? e.message?.slice(0, 300)}`;
 }
 
 /**
@@ -109,30 +75,28 @@ export async function verifyDevelopOutcome(
   let assessedCount = 0;
   // #672 (sub-defect 1) — per-worktree changed-path attribution. Each id's
   // Set is initialized BEFORE the accumulation loop so `.add()` writes into
-  // a live Set (the pre-fix code called `.get(id)?.add()` before any
-  // `.set()`, a silent no-op), and it is never overwritten with the
-  // cross-worktree cumulative `touchedPaths` union (the pre-fix post-loop
-  // `.set(id, new Set(touchedPaths))` made every id's Set an identical copy
-  // of the union of ALL worktrees' paths). `touchedPaths` stays cumulative
-  // — the #406 protected-path gate and the diagnostics rely on it.
+  // a live Set (the pre-fix code called `.get(id)?.add()` before any `.set()`
+  // — a silent no-op), and it is never overwritten with the cross-worktree
+  // cumulative `touchedPaths` union (the pre-fix post-loop `.set(id, new Set(touchedPaths))`
+  // made every id's Set an identical copy of the union of ALL worktrees' paths).
+  // `touchedPaths` stays cumulative — the #406 gate and diagnostics rely on it.
   const changedPathsByWorkstream = new Map<string, Set<string>>(
     Object.keys(worktrees).map((id) => [id, new Set<string>()]),
   );
   // #453 — count worktrees with uncommitted-only changes (no commits ahead
-  // of baseSha). When > 0 and changedWorktrees is empty, the per-worktree
-  // failures already explain the issue — skip the generic "empty diff" message.
+  // of baseSha); when > 0 and changedWorktrees is empty, the per-worktree
+  // failures already explain the issue — skip the empty-diff message.
   let uncommittedOnlyCount = 0;
   // #679 (task-evidence) — workstream ids whose declared paths are entirely
-  // non-source (docs-only). EXEMPT from the "uncommitted but no commit"
-  // failure (uncommitted work is a legitimate non-source deliverable) and from
-  // the generic "every worktree empty" message (absence of commits is expected).
+  // non-source (docs-only), EXEMPT from the "uncommitted but no commit"
+  // failure (uncommitted work is a legitimate non-source deliverable) and
+  // from the generic "every worktree empty" message (no commits expected).
   const legitimateNonSourceWorkstreams = new Set<string>();
   // #679 (task-evidence) — per-workstream base resolution. A dependent
   // workstream's EFFECTIVE base is its dependency's post-commit SHA (persisted
   // in `workstreamBaseShas`); every other workstream falls back to the global
   // `baseSha`. The falsily-green check compares each worktree against THIS ref,
-  // not always the global base, so a dependent worktree whose base ≠ the global
-  // base is judged against the right ref.
+  // so a dependent whose base ≠ the global base is judged against the right ref.
   const workstreamBaseShas = state.pipelineState.workstreamBaseShas;
   const effectiveBaseFor = (wsId: string): string | undefined => {
     const per = workstreamBaseShas?.[wsId];
@@ -173,19 +137,31 @@ export async function verifyDevelopOutcome(
     } catch (err) {
       notes.push(`git status failed in ${id} (${(err as Error).message?.slice(0, 100)})`);
     }
-    if (isValidSha(baseSha)) {
+    // #725 — diff against THIS workstream's effective base, not the cycle-
+    // global baseSha: a dependent's worktree is created from its dependency's
+    // post-commit SHA (#679), so a global-base diff spuriously includes the
+    // dependency's files — the #607 false positive.
+    const effBase = effectiveBaseFor(id);
+    if (isValidSha(effBase)) {
       try {
-        const { stdout } = await execFn(`git rev-list --count ${baseSha}..HEAD`, {
+        const { stdout } = await execFn(`git rev-list --count ${effBase}..HEAD`, {
           cwd,
           maxBuffer: 64 * 1024,
         });
         if (Number.parseInt(stdout.trim(), 10) > 0) hasCommits = true;
         assessed = true;
-      } catch {
-        // baseSha may not exist in this worktree's history — not evidence either way.
+      } catch (err) {
+        // #725 — an absent baseSha in this worktree's history is not evidence
+        // either way; but a base the code itself resolved and git could not
+        // read IS a degraded measurement — name the ref and error (#384).
+        if (effBase !== baseSha) {
+          notes.push(
+            `rev-list failed against effective base ${effBase} in ${id} — commit count unavailable, the worktree may be undercounted as changed (${(err as Error).message?.slice(0, 100)})`,
+          );
+        }
       }
       try {
-        const { stdout } = await execFn(`git diff --name-only ${baseSha}..HEAD`, {
+        const { stdout } = await execFn(`git diff --name-only ${effBase}..HEAD`, {
           cwd,
           maxBuffer: 4 * 1024 * 1024,
         });
@@ -198,11 +174,12 @@ export async function verifyDevelopOutcome(
       }
     }
     if (assessed) assessedCount++;
-    // #453 — when baseSha is valid, only committed work counts: the transfer
-    // unit is now a commit (cherry-picked in Step 6), not a patch. Without a
-    // valid baseSha (older state files / ops-dispatch fallback) fall back to
-    // the previous behaviour: uncommitted work also counts.
-    const changed = isValidSha(baseSha) ? hasCommits : hasCommits || hasUncommitted;
+    // #453 + #725 — the `changed` decision derives from the SAME ref the
+    // diff block tested (the effective base, not the global baseSha, which
+    // may be absent for a dependent with a valid workstreamBaseShas entry);
+    // the uncommitted fallback applies only when NO valid base exists (older
+    // state files).
+    const changed = isValidSha(effBase) ? hasCommits : hasCommits || hasUncommitted;
     if (changed) changedWorktrees.push(cwd);
     // Per-worktree diagnostic: uncommitted work exists but hasn't been committed.
     // #679 (task-evidence) — a workstream whose declared paths are entirely
@@ -210,7 +187,7 @@ export async function verifyDevelopOutcome(
     // uncommitted: that uncommitted work IS the deliverable (a docs change),
     // and the falsily-green check below handles the source case explicitly.
     const isLegitNonSource = declaredSourceByWorkstream.get(id) === false;
-    if (isValidSha(baseSha) && hasUncommitted && !hasCommits) {
+    if (isValidSha(effBase) && hasUncommitted && !hasCommits) {
       if (isLegitNonSource) {
         legitimateNonSourceWorkstreams.add(id);
         // Legitimate docs-only deliverable — no failure; the safety net will
@@ -220,8 +197,10 @@ export async function verifyDevelopOutcome(
         // #621 — the developer commits in their own worktree with their own
         // conventional-commit subject; what matters is that the work is
         // committed ahead of baseSha before the adversarial gate runs.
+        // #725 — name the ref this check actually tested (the effective base).
+        const ref = isValidSha(effBase) ? `base ${effBase}` : "baseSha";
         failures.push(
-          `worktree "${id}": has uncommitted changes but no commit ahead of baseSha — run \`git add -A && git commit -m \"<type>(scope): concise subject\"\` in the worktree before completing the develop step`,
+          `worktree "${id}": has uncommitted changes but no commit ahead of ${ref} — run \`git add -A && git commit -m \"<type>(scope): concise subject\"\` in the worktree before completing the develop step`,
         );
       }
     }
@@ -247,7 +226,6 @@ export async function verifyDevelopOutcome(
   );
 
   // --- Protected-path gate (#406) ---
-  //
   // A cycle must not edit the files that decide whether its own work passes.
   // Policy prose (AGENTS.md, CLAUDE.md) is deliberately NOT halted here — it
   // is neutralised instead, by reading doctrine at baseSha in the merge gate —
@@ -266,6 +244,12 @@ export async function verifyDevelopOutcome(
   }
 
   // --- Scope/fanout gate (#285) — extracted to work-driver-scope-fanout.ts ---
+  // #725 — each workstream's fence is evaluated against its OWN effective-base
+  // diff (above), with a dependsOn carve-out for paths a declared dependency
+  // owns (work-driver-scope-fanout.ts): the cross-declaration contract (#572)
+  // keeps findPathCollisions from firing. A fence HIT is a decomposition
+  // problem, not an integration one: NOT routed to the consolidated-verify-
+  // conflict cap (only the cherry-pick conflict below).
   runScopeFanoutGate(
     state.pipelineState.workstreams ?? {},
     changedPathsByWorkstream,
@@ -365,9 +349,19 @@ export async function verifyDevelopOutcome(
         timeoutMs: verifyTimeoutMs(),
       });
       if (cons.status === "conflict") {
-        failures.push(
-          `consolidated verify could not combine the workstreams' commits — cherry-pick / apply conflict (${cons.detail}). Two workstreams edited the same lines; the decomposition is incoherent, which is distinct from a verify failure`,
-        );
+        // #725 — "conflict" has TWO causes: a genuine cherry-pick / patch-apply
+        // conflict (a decomposition error) and the repoRoot-dirty preflight
+        // refusal (operator residue — #668/#714). Routed on the structured
+        // `kind`, not the detail prose; a dirty root is cleared with git status.
+        if (cons.kind === "dirty-root") {
+          failures.push(
+            `consolidated verify was refused — repoRoot is dirty (${cons.detail}). Leftover residue from an earlier cycle, NOT a workstream conflict or verify failure: run \`git status\` at the repo root, clear the residue, and re-run the cycle`,
+          );
+        } else {
+          failures.push(
+            `consolidated verify could not combine the workstreams' commits — cherry-pick / apply conflict (${cons.detail}). Two workstreams edited the same lines; the decomposition is incoherent, which is distinct from a verify failure`,
+          );
+        }
       } else if (cons.status === "failed") {
         failures.push(
           `verify command \`${cmd}\` failed on the CONSOLIDATED tree (all workstreams' changes combined): ${cons.detail}`,
