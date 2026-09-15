@@ -1,8 +1,4 @@
-/**
- * work-driver-integrate — #287 Part B: the ONLY path that writes to repoRoot.
- * Under always-worktree, development happens in `.worktrees/issue-<N>-<id>` and
- * repoRoot is an integration point. Cherry-pick: work-driver-cherry-pick.ts.
- */
+/** #287 Part B — the ONLY path that writes to repoRoot. */
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -14,14 +10,7 @@ import type { WorkState } from "./workflow-state-schema.ts";
 import type { ExecFn } from "./worktree.ts";
 import { sweepBranchHolders } from "./worktree.ts";
 
-/**
- * #289 — serialise every operation that touches repoRoot's checkout, index
- * or HEAD. Two layers: the promise chain (fast path within a process) and
- * the lockfile (cross-process backstop). See test-integration-lock.ts.
- */
 let integrationChain: Promise<unknown> = Promise.resolve();
-
-/** How long a lockfile may sit before it is presumed abandoned. */
 const LOCK_STALE_MS = 30 * 60 * 1000;
 
 function lockPath(repoRoot: string): string {
@@ -116,18 +105,9 @@ export interface IntegrateOpts {
   commitTitle: string;
   commitBody: string;
   mode: "create" | "followup";
-  /**
-   * Fail if ANY workstream produced no diff, rather than consolidating the
-   * rest. commit-pr sets this: a silently-skipped workstream is how
-   * /work 577 shipped 1 of 3 slices and closed the issue with the root fix
-   * missing (v0.12.13). Lens-fix leaves it off — a fix round legitimately
-   * touches only the worktree that had findings.
-   */
+  /** #577 — fail if ANY workstream produced no diff (commit-pr sets this). */
   requireAllNonEmpty?: boolean;
-  /**
-   * #453 — pre-existing commit SHAs from a prior attempt (resume).
-   * Used by the cherry-pick path to skip workstreams already applied.
-   */
+  /** #453 — pre-existing commit SHAs from a prior attempt (resume). */
   commitShas?: Record<string, string>;
   /**
    * The project's verify command, run against the CONSOLIDATED tree between
@@ -158,18 +138,22 @@ export type IntegrateResult =
        *  clean, so a caller can tell "this one wrote nothing" apart from the
        *  workstreams that did ship. */
       noDiff?: NoDiff;
-      /** #453 — cherry-picked commit SHAs, keyed by workstream id. Set when
-       *  the cherry-pick path ran (one or more worktrees had commits). */
       commitShas?: Record<string, string>;
-      /** #728 — intended-vs-actual consolidation completeness (the union of
-       *  each committed worktree's cumulative diff vs. what landed). Set when
-       *  the cherry-pick path ran with committed work; `droppedPaths` non-empty
-       *  names files that were meant to land but did not. Absent when the
-       *  cherry-pick path did not run (patch-only) or nothing was committed. */
       completeness?: ConsolidationCompleteness;
     }
   /** Nothing to integrate — every worktree was clean. Not an error. #492. */
-  | { ok: true; workstreams: []; empty: true; noDiff: NoDiff }
+  | {
+      ok: true;
+      workstreams: [];
+      empty: true;
+      noDiff: NoDiff;
+      /** #749 — set when the empty outcome was established because every
+       *  workstream's committed work was already on the branch (tree-hash
+       *  dedup skip), NOT because nothing was produced. The integration
+       *  layer reads this discriminator rather than inferring emptiness
+       *  from a count. Absent on the genuinely-empty shape. */
+      skippedAlreadyOnBranch?: string[];
+    }
   | {
       ok: false;
       reason: string;
@@ -347,7 +331,16 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       if (!Number.isFinite(ahead) || ahead === 0) {
         // No commits ahead — every cherry-pick was a no-op or there was
         // nothing to do. Return empty rather than a spurious success.
-        return { ok: true, workstreams: [], empty: true, noDiff };
+        // #749 — carry the dedup discriminator: "nothing produced" vs
+        // "work exists and its content is already on the branch".
+        const skipped = orchResult.skippedAlreadyOnBranch ?? [];
+        return {
+          ok: true,
+          workstreams: [],
+          empty: true,
+          noDiff,
+          ...(skipped.length > 0 ? { skippedAlreadyOnBranch: skipped } : {}),
+        };
       }
     } else {
       // No baseSha — check if there are staged changes (patch fallback).
@@ -357,7 +350,14 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
           maxBuffer: 64 * 1024,
         });
         if (!hasStaged2.trim()) {
-          return { ok: true, workstreams: [], empty: true, noDiff };
+          const skipped = orchResult.skippedAlreadyOnBranch ?? [];
+          return {
+            ok: true,
+            workstreams: [],
+            empty: true,
+            noDiff,
+            ...(skipped.length > 0 ? { skippedAlreadyOnBranch: skipped } : {}),
+          };
         }
       }
     }

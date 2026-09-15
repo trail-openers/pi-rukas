@@ -6,9 +6,9 @@
  * and — on approval following a lens-fix round — commits the fix via
  * work-driver-lens.ts's `commitLensFixChanges`.
  *
- * #492 — when a lens-fix never reaches the branch, the cap-hit carries the
- * CAUSE ("no diff produced" vs "a diff existed but integration failed")
- * and the git evidence that establishes it, plus the worktree inspected.
+ * #492/#749 — when a lens-fix never reaches the branch, the cap-hit carries
+ * the CAUSE (committed-work detection via rev-list, not porcelain) and the
+ * git evidence that establishes it, plus the worktree inspected.
  */
 
 import { exec } from "node:child_process";
@@ -25,6 +25,11 @@ import {
 } from "./work-driver-adversarial-types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { integrate, restoreRepoRoot, withIntegrationLock } from "./work-driver-integrate.ts";
+import {
+  detectCommittedFix,
+  landCommittedFix,
+  noDiffEvidence,
+} from "./work-driver-lens-fix-commit.ts";
 import { commitLensFixChanges, lensWorktree } from "./work-driver-lens.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
@@ -55,10 +60,6 @@ async function integrateLensFix(
     }),
   );
   if (!res.ok) {
-    // #654 task-c — dirty-repoRoot: restore-or-park. The lock is still held
-    // (we're inside withIntegrationLock), so a retry is serialised. `restoreRepoRoot`
-    // stashes tracked dirt and pops it back; untracked-only dirt is not safely
-    // stashable, so it parks with the porcelain in evidence instead of retrying.
     if (res.failure === "dirty-repoRoot" && res.porcelain) {
       const outcome = await restoreRepoRoot(execFn, ctx.repoRoot, res.porcelain);
       if (outcome.restored) {
@@ -94,6 +95,101 @@ async function integrateLensFix(
 }
 
 /**
+ * #749 — committed-work-aware classification for the `!result.committed`
+ * branch. Returns the state after handling the committed-fix case (either
+ * proceeding without a cap, or parking with accurate evidence), or null
+ * when the result carried an integration error (the caller handles that).
+ */
+async function handleNoCommittedFix(
+  execFn: ExecFn,
+  ctx: DriverContext,
+  ps: PipelineState,
+  fixTree: string,
+  result: { committed: boolean; error?: string; pushed?: boolean },
+  stateIn: WorkState,
+): Promise<WorkState | null> {
+  let state = stateIn;
+  if (result.error) return null;
+  if (!ps.branchName) {
+    return appendEvent(state, {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "lens-fix-not-integrated",
+      reviewRound: ps.reviewRound,
+      nextStep: "handoff",
+      lensWorktreePath: fixTree,
+      evidence: `no committed fix and no branch name recorded — cannot measure committed work in ${fixTree}`,
+    });
+  }
+  const branchName = ps.branchName;
+  const fix = await detectCommittedFix(execFn, fixTree, branchName);
+  if (fix.status === "committed") {
+    if (fix.diffEmpty) {
+      trace(
+        "work-driver: lens-fix committed and already on the branch — proceeding to re-review (no cap)",
+      );
+      return null;
+    }
+    const landed = await landCommittedFix(execFn, ctx, ps, fixTree);
+    if (landed.ok) {
+      const sha = landed.sha;
+      let pushOk = true;
+      try {
+        await execFn(`git push origin ${JSON.stringify(branchName)}`, {
+          cwd: ctx.repoRoot,
+          maxBuffer: 1024 * 1024,
+        });
+      } catch {
+        pushOk = false;
+      }
+      if (!pushOk) {
+        state = {
+          ...state,
+          pipelineState: {
+            ...state.pipelineState,
+            plumbReports: [
+              ...state.pipelineState.plumbReports,
+              {
+                step: "adversarial",
+                role: "driver",
+                body: `lens-fix landed locally but the push failed — check the remote for ${branchName}`,
+                at: Date.now(),
+              },
+            ],
+          },
+        };
+      }
+      trace(
+        `work-driver: lens-fix committed fix ${sha.slice(0, 8)} landed on ${branchName} — proceeding to re-review`,
+      );
+      return null;
+    }
+    return appendEvent(state, {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "lens-fix-not-integrated",
+      reviewRound: ps.reviewRound,
+      nextStep: "handoff",
+      lensWorktreePath: fixTree,
+      evidence: `committed fix in ${fixTree} is NOT on branch ${branchName} and could not be landed: ${landed.error}`,
+    });
+  }
+  const evidence =
+    fix.status === "no-commits"
+      ? noDiffEvidence(fixTree, branchName, fix.count)
+      : `no committed fix and the count of commits ahead of ${branchName} in ${fixTree} could not be read (git error)`;
+  return appendEvent(state, {
+    kind: "cap-hit",
+    at: Date.now(),
+    cap: "lens-fix-not-integrated",
+    reviewRound: ps.reviewRound,
+    nextStep: "handoff",
+    lensWorktreePath: fixTree,
+    evidence,
+  });
+}
+
+/**
  * Step 5 — Adversarial gate. Fans out one `runAdversarialLoop` per
  * workstream (each scoped to one worktree's diff + cwd), aggregates the
  * verdict, and — on approval following a lens-fix round — commits the fix.
@@ -103,17 +199,11 @@ export async function runAdversarial(
   state: WorkState,
   now: number,
 ): Promise<WorkState> {
-  // PR8 — adversarial belongs INSIDE each workstream's worktree, not on a
-  // merged fanout diff. Fans out one loop per workstream (N parallel) and
-  // aggregates: any per-workstream rejection routes to handoff.
   const ids =
     Object.keys(state.pipelineState.workstreams ?? {}).length > 0
       ? Object.keys(state.pipelineState.workstreams ?? {})
       : ["default"];
 
-  // #486 — re-entry after an infra retry: only workstreams whose last
-  // outcome was NO VERDICT (infra-failure / dispatch-failed) re-run; a
-  // workstream that produced a verdict is final.
   const priorOutcomes = new Map<string, string>();
   for (const e of state.eventLog) {
     if (e.kind === "adversarial-workstream-outcome") {
@@ -123,21 +213,12 @@ export async function runAdversarial(
   const priorHadInfraFailure = [...priorOutcomes.values()].some((o) =>
     ["infra-failure", "dispatch-failed"].includes(o),
   );
-  // #485/#486 — the previous pass's per-workstream batch span (R1 splice),
-  // captured on the ORIGINAL event log (the fan-out clobbers `currentStep`).
   const priorBatchSpan = priorHadInfraFailure ? reentryPassBatchSpan(state.eventLog) : null;
   const retries = state.pipelineState.adversarialTransientRetries ?? {};
   let next: WorkState = {
     ...state,
     pipelineState: { ...state.pipelineState, currentStep: "adversarial" },
   };
-  // The re-emitted `step-started` / `branches-fanned-out` header marks the
-  // boundary of a fresh pass in the log; the re-entry pass does NOT
-  // re-emit them: re-emitting puts them outside the spliced span and a
-  // parked re-entry has to drop them again, which is what this pass's
-  // records-vs-header accounting exists for. `step-started` is
-  // informational (nothing routes on it); the re-entry pass's events are
-  // self-describing (they carry `step: "adversarial"`).
   if (!priorHadInfraFailure) {
     next = appendEvent(next, { kind: "step-started", step: "adversarial", at: now });
     if (ids.length > 1) {
@@ -150,10 +231,6 @@ export async function runAdversarial(
     }
   }
 
-  // #485/#486 — the per-workstream fan-out (loop invocation, per-round
-  // verdict records, per-workstream infra retry) lives in the leaf module
-  // work-driver-adversarial-fanout.ts (AGENTS.md §12); this handler
-  // aggregates its outcomes into the verdict events below.
   const {
     next: fannedNext,
     outcomes,
@@ -172,18 +249,11 @@ export async function runAdversarial(
     return next;
   }
   if (parkedInfra) {
-    // #486 — a FIRST-pass workstream exhausted its per-workstream budget and
-    // never produced a verdict. A permanent infra failure is NOT a rejection;
-    // park with the distinct cap, siblings' outcomes in the event log.
     const infraShortfall = outcomes.filter((o) => o.infra || o.threw);
     const names = infraShortfall.map((o) => o.id).join(", ");
     trace(
       `work-driver: adversarial per-workstream retry budget exhausted on first pass for [${names}] — parking`,
     );
-    // #543 — F4(g): a cap kill (loop / token-budget) parks with its own
-    // fixed-literal cap INSTEAD of the generic infra cap. The two are
-    // distinct events; the fixed literal (no role suffix) + role field is
-    // what F4(f) requires.
     const capKill = infraShortfall
       .map((o) => capHitForCapKill(o, state.pipelineState.reviewRound))
       .find(Boolean);
@@ -240,22 +310,10 @@ export async function runAdversarial(
     return next;
   }
 
-  // Aggregate verdict. ALL approved → adversarial-approved (nextStep routes
-  // to commit-pr). ANY rejected VERDICT → adversarial-rejected + cap-hit
-  // (nextStep routes to handoff via the cap-hit). #298: failures that are
-  // PURELY infrastructure (no verdict exists) append NO verdict events —
-  // the dispatch-failed event stays the eventLog tail so the halt-cascade
-  // router's RETRY_ONCE branch re-runs the step.
   const maxRounds = outcomes.reduce((acc, o) => Math.max(acc, o.rounds), 0);
   const aggregateJobId = makeRunId();
   const failed = outcomes.filter((o) => !o.ok);
   if (failed.length === 0) {
-    // #486 — non-blocking findings survive the pass. `PASSED WITH FINDINGS`
-    // is not `APPROVED`, and the difference has to reach the PR and the
-    // lens gate. They are CARRIED in the verdict event itself: the PR body
-    // (adversarial-findings.ts:carriedAdversarialFindings) reads `findings`
-    // off the latest `adversarial-approved` and renders undefined when the
-    // field is absent, so dropping the field would silently discard them.
     const carried = outcomes
       .map((o) => (o.passFindings?.trim() ? `### ${o.id}\n\n${o.passFindings.trim()}` : ""))
       .filter(Boolean)
@@ -268,91 +326,46 @@ export async function runAdversarial(
       ...(carried ? { findings: carried } : {}),
     });
 
-    // Issue #305 — commit lens-fix changes AFTER adversarial approves.
-    // runLensFix leaves fix uncommitted in the working tree so adversarial
-    // can review it via fetchDiff (git diff HEAD). Only commit on approval
-    // so rejected fixes stay visible for inspection in handoff.
-    //
-    // The commit happens at ctx.repoRoot (consolidated after commit-pr) for
-    // both N=1 and N>1 cycles. workstreams/ids reflect the pre-consolidation
-    // state and are not used to gate this path.
     if (state.pipelineState.lastCompletedStep === "lens-fix") {
       const execFn = ctx.verifyExecFn ?? execp;
       const psFix = state.pipelineState;
       const fixWorktrees = psFix.worktrees ?? {};
-      // #287 — development always happens in a worktree, so this is
-      // normally true; defensive read of the actual worktree map.
       const inWorktree = Object.values(fixWorktrees).some(
         (p) => path.resolve(p) !== path.resolve(ctx.repoRoot),
       );
-      // #287 — lens-fix runs in the WORKTREE (work-driver-lens.ts picks
-      // `worktrees.default` as its cwd), so committing at repoRoot found a
-      // clean tree and silently skipped: the fix never reached the PR. Pull
-      // the worktree's new diff onto the branch through the same integration
-      // path commit-pr uses, as a follow-up commit.
       const result = inWorktree
         ? await integrateLensFix(execFn, ctx, psFix, fixWorktrees)
         : await commitLensFixChanges(ctx.repoRoot, psFix.reviewRound, execFn);
       if (!result.committed) {
-        // The fix did not reach the branch. #492 — the cause (no diff vs
-        // integration failed) is established with git and carried on the
-        // cap-hit itself; the next round would re-read an unchanged branch
-        // and re-report identical findings, so halt and say why.
         const fixTree = inWorktree ? lensWorktree(ctx, state) : ctx.repoRoot;
-        const cause = result.error
-          ? `a diff existed but staging or integration failed (${result.error})`
-          : "the fixer produced no diff — the inspected worktree was clean";
         if (result.error) {
-          // The structural-failure half: a diff existed, and it may still
-          // be sitting in the worktree — it deserves a plumb-report.
           next.pipelineState.plumbReports.push({
             step: "adversarial",
             role: "driver",
-            body: `lens-fix ${cause} — worktree inspected: ${fixTree}`,
+            body: `lens-fix: a diff existed but staging or integration failed (${result.error}) — worktree inspected: ${fixTree}`,
             at: Date.now(),
           });
+          next = appendEvent(next, {
+            kind: "cap-hit",
+            at: Date.now(),
+            cap: "lens-fix-not-integrated",
+            reviewRound: psFix.reviewRound,
+            nextStep: "handoff",
+            lensWorktreePath: fixTree,
+            evidence: result.error,
+          });
+          trace(`work-driver: lens-fix integration failed — ${result.error}`);
+          return next;
         }
-        // Establish the no-diff classification with git rather than
-        // asserting it, and name the tree we checked — the #448 cwd defect
-        // was exactly "we looked in the wrong tree".
-        let evidence = result.error ?? "";
-        if (!evidence) {
-          try {
-            const { stdout: statusOut } = await execFn("git status --porcelain", {
-              cwd: fixTree,
-              maxBuffer: 64 * 1024,
-            });
-            evidence = statusOut.trim()
-              ? `git status --porcelain at ${fixTree} reported entries that were not stageable:\n${statusOut.trim().slice(0, 200)}`
-              : `git status --porcelain at ${fixTree} was empty`;
-          } catch (err) {
-            evidence = `git status --porcelain failed at ${fixTree}: ${(err as Error).message?.slice(0, 200)}`;
-          }
-        }
-        next = appendEvent(next, {
-          kind: "cap-hit",
-          at: Date.now(),
-          cap: "lens-fix-not-integrated",
-          reviewRound: psFix.reviewRound,
-          nextStep: "handoff",
-          lensWorktreePath: fixTree,
-          evidence,
-        });
-        trace(`work-driver: lens-fix not integrated — ${cause} (${evidence})`);
-        return next;
+        const handled = await handleNoCommittedFix(execFn, ctx, psFix, fixTree, result, next);
+        if (handled !== null) return handled;
       }
-      // `integrate()` already pushed; only the legacy repoRoot path needs this.
       if (result.committed && !result.pushed) {
-        // Push the commit so the remote branch (and PR) are updated for
-        // the next lens-review round and CI.
         try {
           await execFn("git push origin HEAD -q", { cwd: ctx.repoRoot, maxBuffer: 64 * 1024 });
         } catch (err) {
           const errMsg = `lens-fix push failed (non-blocking): ${(err as Error).message?.slice(0, 200)}`;
           trace(`work-driver: ${errMsg}`);
-          // Surface as plumb-report so the operator sees it in handoff.
-          // Record in pipelineState.plumbReports instead of event log so the
-          // tail remains "adversarial-approved" and nextStep() routes correctly.
           next.pipelineState.plumbReports.push({
             step: "adversarial",
             role: "driver",
@@ -363,11 +376,6 @@ export async function runAdversarial(
       }
     }
   } else if (failed.every((o) => o.infra) && ids.length === 1) {
-    // N=1 with a pure infra failure: no verdict exists. TWO-STATE design
-    // (#486):
-    // #486 — N=1 two-state: FIRST pass leaves the dispatch-failed tail for
-    // the RETRY_ONCE router; re-entry (priorHadInfraFailure) is permanent —
-    // park with the DISTINCT cap `adversarial-infra-failure` (NOT a rejection).
     if (!priorHadInfraFailure) {
       trace(
         "work-driver: adversarial loop infrastructure failure (N=1) — leaving dispatch-failed tail for the RETRY_ONCE router",
@@ -377,8 +385,6 @@ export async function runAdversarial(
       trace(
         `work-driver: adversarial infra failure final for [${names}] — parking with cap 'adversarial-infra-failure' (no verdict exists; NOT a rejection)`,
       );
-      // #543 — F4(g): a cap kill (loop / token-budget) parks with its own
-      // fixed-literal cap INSTEAD of the generic infra cap.
       const capKill = failed
         .map((o) => capHitForCapKill(o, state.pipelineState.reviewRound))
         .find(Boolean);
@@ -392,9 +398,6 @@ export async function runAdversarial(
         }
         return next;
       }
-      // No header to strip on re-entry (the re-entry pass does not
-      // re-emit step-started / branches-fanned-out); the cap-hit lands at
-      // the tail.
       next = appendEvent(next, {
         kind: "cap-hit",
         at: Date.now(),
@@ -404,49 +407,10 @@ export async function runAdversarial(
       });
     }
   } else if (
-    failed.every((o) => o.infra || o.threw) &&
-    (ids.length === 1
-      ? // #298 — N=1 keeps the legacy contract: the driver-level RETRY_ONCE
-        // router re-runs the step while the budget holds; only after the
-        // router hands it back (retryAttempts exhausted) is the failure
-        // final, and it parks with the infra cap instead of the step-failed
-        // default — "no verdict exists" is not "the step failed".
-        (state.pipelineState.retryAttempts?.adversarial ?? 0) >= 1
-      : ids.length > 1
-        ? // #486 — re-entry: every failing workstream already has a
-          // preserved outcome from a prior run, this pass just re-attempted
-          // the infra-failed ones and they still have no verdict. The
-          // step-level router cannot retry this (its branches-converged scan
-          // declines when ANY workstream succeeded), and re-running inside
-          // runAdversarial is bounded by the per-workstream budget — nothing
-          // is left to retry. Park with a distinct cap: a permanent infra
-          // failure is NOT a rejection.
-          priorHadInfraFailure
-        : false)
-  ) {
-    // The N=1 two-state branch above already parked the re-entry pass;
-    // reaching here with priorHadInfraFailure means N>1 (or a mixed
-    // outcome) — park with the named cap, same shape.
-
-    const names = failed.map((o) => o.id).join(", ");
-    trace(
-      `work-driver: adversarial infra failure final for [${names}] — parking with cap 'adversarial-infra-failure' (no verdict exists; NOT a rejection)`,
-    );
-    next = appendEvent(next, {
-      kind: "cap-hit",
-      at: Date.now(),
-      cap: "adversarial-infra-failure",
-      reviewRound: state.pipelineState.reviewRound,
-      nextStep: "handoff",
-    });
-  } else if (
-    failed.some(
+    failed.every(
       (o) => (o.infra || o.threw) && (retries[o.id] ?? 0) >= ADVERSARIAL_PER_WS_MAX_RETRIES,
     )
   ) {
-    // #486 — a workstream's per-workstream budget is exhausted and its
-    // siblings have real (rejected) verdicts; the rejection path must not
-    // swallow the infra shortfall as a fake "rejected". Park the same way.
     const names = failed
       .filter((o) => (o.infra || o.threw) && (retries[o.id] ?? 0) >= ADVERSARIAL_PER_WS_MAX_RETRIES)
       .map((o) => o.id)
@@ -461,11 +425,24 @@ export async function runAdversarial(
       reviewRound: state.pipelineState.reviewRound,
       nextStep: "handoff",
     });
+  } else if (
+    failed.every((o) => o.infra || o.threw) &&
+    (ids.length === 1
+      ? (state.pipelineState.retryAttempts?.adversarial ?? 0) >= 1
+      : priorHadInfraFailure)
+  ) {
+    const names = failed.map((o) => o.id).join(", ");
+    trace(
+      `work-driver: adversarial infra failure final for [${names}] — parking with cap 'adversarial-infra-failure' (no verdict exists; NOT a rejection)`,
+    );
+    next = appendEvent(next, {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "adversarial-infra-failure",
+      reviewRound: state.pipelineState.reviewRound,
+      nextStep: "handoff",
+    });
   } else {
-    // A genuine verdict (or a first-pass N>1 failure the step-level router
-    // will retry wholesale) reached the aggregate. Concatenate rejection text
-    // into findings; #486: a workstream with no verdict is named as an
-    // explicit shortfall, not folded into the findings.
     const noVerdict = new Set(failed.filter((o) => o.infra || o.threw).map((o) => o.id));
     const findings = failed
       .map((o) => {
