@@ -30,6 +30,7 @@
  * in both directions.
  */
 
+import { mergeEvidenceViewCmd, prChecksCmd } from "./forge-commands.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import {
   type DoctrineDoc,
@@ -37,6 +38,7 @@ import {
   type PolicyJudgeFn,
   askPolicy,
 } from "./work-driver-policy.ts";
+import type { EvidenceFailureKind } from "./workflow-state-cap.ts";
 import type { WorkEvent } from "./workflow-state.ts";
 
 /** Shell executor, matching `DriverContext.verifyExecFn`. */
@@ -109,10 +111,27 @@ export async function resolveMergeAuthority(
   };
 }
 
+/**
+ * Why the merge-evidence gate refused. `tooling` means the gate could not
+ * even READ what it is supposed to judge — the `gh` invocation itself
+ * errored, or its output was not the shape the gate consumes. That is a
+ * different event from a CI verdict: rendering it as "incomplete required
+ * checks" pointed the operator at a healthy, green CI while the real fault
+ * was an unsupported field in the driver's own query (#745). Renderers
+ * must keep the two kinds textually distinct.
+ */
+// The `tooling`/`ci` vocabulary is declared once in workflow-state-cap.ts
+// (neutral module: the state schema and this module both need it without
+// importing each other, and a grown vocabulary must not drift between the
+// persisted field and the runtime type).
+export type { EvidenceFailureKind } from "./workflow-state-cap.ts";
+
 export interface MergeEvidence {
   ok: boolean;
   /** Why not, when `ok` is false — operator-facing. */
   reason?: string;
+  /** When the refusal is a tooling failure, says so distinctly from a CI verdict. */
+  failureKind?: EvidenceFailureKind;
   mergeStateStatus?: string;
   failing: string[];
   /** Required checks reporting `skipped`/`neutral` — green to GitHub, not to us. */
@@ -123,7 +142,6 @@ interface PrCheckRow {
   name?: string;
   state?: string;
   bucket?: string;
-  isRequired?: boolean;
 }
 
 /**
@@ -139,6 +157,13 @@ interface PrCheckRow {
  * that gains a `paths-ignore:` silently becomes a required gate that always
  * reports green. That is a gate that cannot fail, which is the exact class of
  * defect this project has been removing.
+ *
+ * The `--json` fields requested here are pinned to gh 2.98.0 by
+ * `smoke-tests/test-gh-argv.ts`; the per-check required/optional flag is not
+ * among them (`isRequired` is not a field `gh pr checks` supports — #745),
+ * so the per-check rows only supply the failing/pending/skipped names, while
+ * the pass/not-pass verdict is `mergeStateStatus`: it already encodes the
+ * repo's own branch-protection rules.
  */
 export async function gatherMergeEvidence(
   execFn: ExecFn,
@@ -147,18 +172,25 @@ export async function gatherMergeEvidence(
 ): Promise<MergeEvidence> {
   let state: { mergeStateStatus?: string; state?: string };
   try {
-    const { stdout } = await execFn(
-      `gh pr view ${prNumber} --json mergeStateStatus,mergeable,state`,
-      { cwd: repoRoot, maxBuffer: 256 * 1024 },
-    );
-    const parsed = JSON.parse(stdout);
+    const { stdout } = await execFn(mergeEvidenceViewCmd(prNumber), {
+      cwd: repoRoot,
+      maxBuffer: 256 * 1024,
+    });
+    const parsed = JSON.parse(stdout) as { mergeStateStatus?: unknown; state?: unknown };
     state = {
-      mergeStateStatus: parsed.mergeStateStatus,
-      state: parsed.state,
+      // `mergeStateStatus` is a string the CLI passes through; it lands
+      // verbatim in operator-facing handoffs, so bound it on read — every
+      // downstream renderer inherits the cap.
+      mergeStateStatus:
+        typeof parsed.mergeStateStatus === "string"
+          ? parsed.mergeStateStatus.slice(0, 64)
+          : undefined,
+      state: typeof parsed.state === "string" ? parsed.state : undefined,
     };
   } catch (err) {
     return {
       ok: false,
+      failureKind: "tooling",
       reason: `could not read PR state: ${(err as Error).message?.slice(0, 160)}`,
       failing: [],
       inconclusive: [],
@@ -190,34 +222,47 @@ export async function gatherMergeEvidence(
   }
 
   let rows: PrCheckRow[] = [];
+  let rowsRead = false;
+  // Set when the invocation exited 0 but its stdout was not check data: an
+  // exit-0 call cannot be a tooling failure, and the operator needs the raw
+  // output to see what actually came back (a partial/HTML error page, a gh
+  // version that changed its output shape).
+  let malformedStdout = "";
   try {
-    const { stdout } = await execFn(
-      `gh pr checks ${prNumber} --json name,state,bucket,isRequired`,
-      { cwd: repoRoot, maxBuffer: 512 * 1024 },
-    );
-    const parsed: unknown = JSON.parse(stdout || "[]");
-    if (Array.isArray(parsed)) rows = parsed as PrCheckRow[];
+    const { stdout } = await execFn(prChecksCmd("github", prNumber), {
+      cwd: repoRoot,
+      maxBuffer: 512 * 1024,
+    });
+    // Empty/whitespace-only stdout is NO DATA, not an empty check list: a
+    // `rowsRead` here would let the gate say "no checks reported" (a CI
+    // verdict) when the invocation answered with nothing at all.
+    if (stdout.trim()) {
+      const parsed: unknown = JSON.parse(stdout);
+      if (Array.isArray(parsed)) {
+        rows = parsed as PrCheckRow[];
+        rowsRead = true;
+      } else {
+        malformedStdout = stdout;
+      }
+    }
   } catch (err) {
-    // `gh pr checks` exits non-zero when checks are failing OR when there are
-    // none at all. Both are "no positive evidence", and this gate fails closed.
-    return {
-      ok: false,
-      reason: `could not read PR checks: ${(err as Error).message?.slice(0, 160)}`,
-      mergeStateStatus: state.mergeStateStatus,
-      failing: [],
-      inconclusive: [],
-    };
+    // The catch conflates two shapes only when it hides which one happened:
+    // a non-zero exit (tooling — the invocation failed before answering) and
+    // a successful invocation whose stdout did not parse (a data regression
+    // the operator needs to see, not "fix your tooling").
+    if (err instanceof SyntaxError && !malformedStdout)
+      malformedStdout = "(output was not valid JSON)";
+    rows = [];
   }
 
-  const required = rows.filter((r) => r.isRequired !== false);
   const norm = (r: PrCheckRow) => (r.bucket ?? r.state ?? "").toLowerCase();
-  const failing = required
+  const failing = rows
     .filter((r) => ["fail", "failure", "cancelled", "timed_out", "error"].includes(norm(r)))
     .map((r) => r.name ?? "(unnamed)");
-  const pending = required
+  const pending = rows
     .filter((r) => ["pending", "queued", "in_progress", "waiting"].includes(norm(r)))
     .map((r) => r.name ?? "(unnamed)");
-  const inconclusive = required
+  const inconclusive = rows
     .filter((r) => ["skipping", "skipped", "neutral"].includes(norm(r)))
     .map((r) => r.name ?? "(unnamed)");
 
@@ -248,10 +293,50 @@ export async function gatherMergeEvidence(
       inconclusive,
     };
   }
-  if (required.length === 0) {
+  // `mergeStateStatus` is the authoritative verdict — it already encodes the
+  // repo's own required-check rules — while the rows above only name what is
+  // wrong. A CLEAN PR with an unreadable checks list fails closed: the gate
+  // has no evidence of a green check list, and this step is irreversible.
+  if (state.mergeStateStatus !== "CLEAN") {
     return {
       ok: false,
-      reason: "no required checks reported — refusing to merge on the absence of evidence",
+      reason: `mergeStateStatus is ${state.mergeStateStatus ?? "unreadable"}, not CLEAN`,
+      mergeStateStatus: state.mergeStateStatus,
+      failing: [],
+      inconclusive,
+    };
+  }
+  if (!rowsRead) {
+    if (malformedStdout) {
+      // An exit-0 invocation whose output was not usable check data. The
+      // raw output is shown when we captured it (JSON parsed but was not an
+      // array); a parse failure gets the placeholder so the operator can
+      // still tell "the CLI answered but the shape is wrong" from "the CLI
+      // never answered".
+      return {
+        ok: false,
+        reason: `the gh pr checks invocation returned data the gate could not read as a check list${
+          malformedStdout.startsWith("(") ? "" : ` — got: ${malformedStdout.slice(0, 160)}`
+        }. Fix the gh setup or the checks configuration, then re-run.`,
+        mergeStateStatus: state.mergeStateStatus,
+        failing: [],
+        inconclusive: [],
+      };
+    }
+    return {
+      ok: false,
+      failureKind: "tooling",
+      reason:
+        "the gh pr checks invocation failed before returning check data — this is a tooling failure, not a CI verdict (no check data was read). Fix the gh setup, then re-run.",
+      mergeStateStatus: state.mergeStateStatus,
+      failing: [],
+      inconclusive: [],
+    };
+  }
+  if (rows.length === 0) {
+    return {
+      ok: false,
+      reason: "no checks reported — refusing to merge on the absence of evidence",
       mergeStateStatus: state.mergeStateStatus,
       failing: [],
       inconclusive: [],
@@ -281,6 +366,23 @@ export function contradictsSuccess(evidence: MergeEvidence): string | undefined 
   return undefined;
 }
 
+/**
+ * The #745 tooling-vs-CI annotation, written once and consumed by every
+ * renderer that renders a merge hold (explainMergeHold, mergeHoldAction, the
+ * chat and markdown handoff surfaces, and the queue summary).
+ *
+ * A refusal whose own `gh` call errored is not a CI verdict — the operator
+ * must not go inspect a healthy green CI while the fault is the driver's
+ * query — but the tag is only meaningful when authority WAS granted (the
+ * no-authority line already points at the right place), so non-tooling and
+ * ungranted refusals return nothing.
+ */
+export function mergeHoldToolingNote(granted: boolean, failureKind?: EvidenceFailureKind): string {
+  return granted && failureKind === "tooling"
+    ? "The gh invocation itself failed — no check data was read, so the fault is the driver's query, not the checks. Check the gh setup first."
+    : "";
+}
+
 /** Operator-facing explanation for a cycle that stopped at the merge step. */
 export function explainMergeHold(
   authority: MergeAuthority,
@@ -303,15 +405,35 @@ export function explainMergeHold(
     // permitted" has to go and find that out; one sentence here saves it.
     return `${pr} is open and ready, but the driver is not permitted to merge it.${why}${hallucinated} Merging is opt-in by design: review and merge it yourself, or say so plainly in this project's AGENTS.md (one sentence, any language — e.g. "Agents may merge a PR to main once CI is green") and re-run, or pass --merge for a single run.`;
   }
-  return `${pr} is open and merging is permitted, but the evidence gate refused: ${evidence?.reason ?? "no evidence gathered"}. The driver merges on what \`gh\` reports, never on a subagent's claim.`;
+  const why = evidence?.reason ?? "no evidence gathered";
+  const tooling = mergeHoldToolingNote(true, evidence?.failureKind);
+  return `${pr} is open and merging is permitted, but the evidence gate refused: ${why}. ${tooling ? `${tooling} ` : ""}The driver merges on what \`gh\` reports, never on a subagent's claim.`;
 }
 
-/** The human action for the queue summary. */
-export function mergeHoldAction(authority: MergeAuthority, prNumber: number | undefined): string {
+/**
+ * The human action for the queue summary.
+ *
+ * `failureKind` is the tag #745 threads from the state file: when the gate's
+ * own `gh` call errored, telling the operator to "check the checks" sends
+ * them to a healthy green CI while the fault is the driver's query, so the
+ * action says it is a tooling failure instead. Untagged state (or a
+ * `ci`-tagged state) keeps the CI-flavoured line.
+ */
+export function mergeHoldAction(
+  authority: MergeAuthority,
+  prNumber?: number,
+  failureKind?: EvidenceFailureKind,
+): string {
+  // `prNumber` comes from the state file's `prNumber?: number` at every call
+  // site, so the optional marker (rather than `number | undefined`) is the
+  // honest signature: a bare `number` is never expected.
   const pr = prNumber ? `#${prNumber}` : "the PR";
-  return authority.granted
-    ? `check the failing/incomplete required checks on ${pr}, then merge`
-    : `review and merge ${pr} yourself (agent merging is not permitted in this project)`;
+  if (!authority.granted) {
+    return `review and merge ${pr} yourself (agent merging is not permitted in this project)`;
+  }
+  const tooling = mergeHoldToolingNote(true, failureKind);
+  if (tooling) return `the merge evidence gate for ${pr} ${tooling}`.replace("first.", "first");
+  return `check the failing/incomplete required checks on ${pr}, then merge`;
 }
 
 /**
