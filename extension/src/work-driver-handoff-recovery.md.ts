@@ -19,6 +19,7 @@ import { killDetail } from "./kill-detail.ts";
 import { commitPrDirtyRootStep } from "./work-driver-handoff-commitpr.ts";
 import { type RecoveryStep, recoveryStepsForCap } from "./work-driver-handoff-recovery.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
+import { mergeHoldToolingNote } from "./work-driver-merge-authority.ts";
 import {
   type WorkState,
   filesPresentFromConsolidation,
@@ -107,10 +108,12 @@ export function recoveryCommandsMarkdown(state: WorkState, forge: ForgeType = "g
     // #745 — a refusal whose own `gh` call errored is a tooling failure, not a
     // CI verdict: the step below says "see what the checks say", so name the
     // other reading explicitly when that is what happened.
-    if (hold?.authorityGranted && hold.evidenceFailureKind === "tooling") {
-      lines.push(
-        "# That is a tooling failure — the check data was never read (the driver's own gh invocation errored). Check the gh setup, not the checks.",
-      );
+    const toolingNote = mergeHoldToolingNote(
+      hold?.authorityGranted === true,
+      hold?.evidenceFailureKind,
+    );
+    if (toolingNote) {
+      lines.push(`# ${toolingNote}`);
     }
   } else if (cap === "existing-pr-detected") {
     const pr = ps.existingPr;

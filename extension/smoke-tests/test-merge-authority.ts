@@ -20,6 +20,7 @@ import {
   gatherMergeEvidence,
   mergeAuthorityEnabled,
   mergeHoldAction,
+  mergeHoldToolingNote,
 } from "../src/work-driver-merge-authority.ts";
 
 let exit = 0;
@@ -40,12 +41,13 @@ function assert(cond: boolean, msg: string) {
 // -------------------------------------------------------- evidence
 
 type Call = { cmd: string };
-function fakeGh(responses: Record<string, string | Error>) {
+function fakeGh(responses: Record<string, string | Error>, checksFrag = "pr checks") {
   const calls: Call[] = [];
   const fn = async (cmd: string) => {
     calls.push({ cmd });
     for (const [frag, res] of Object.entries(responses)) {
-      if (cmd.includes(frag)) {
+      const key = frag === "pr checks" ? checksFrag : frag;
+      if (cmd.includes(key)) {
         if (res instanceof Error) throw res;
         return { stdout: res };
       }
@@ -183,6 +185,70 @@ const passing = (name: string) => ({ name, state: "SUCCESS", bucket: "pass" });
     "an empty (but successfully read) list is a CI verdict, not tooling",
   );
 }
+{
+  // #745 review — an exit-0 invocation that returns EMPTY stdout is no data
+  // at all, not an empty check list: coercing it to `[]` would let the gate
+  // say "no checks reported" (a CI verdict) about a query that answered with
+  // nothing, so it is tagged tooling like a non-zero exit.
+  const { fn } = fakeGh(
+    {
+      "pr view": GREEN_STATE,
+      "pr checks": "  \n",
+    } as Record<string, string>,
+    "pr check",
+  );
+  const e = await gatherMergeEvidence(fn, "/x", 7);
+  assert(!e.ok, "empty stdout from an exit-0 `gh pr checks` still blocks (fail-closed)");
+  assert(
+    e.failureKind === "tooling",
+    "empty stdout is no data read — a tooling failure, not a 'no checks' CI verdict",
+  );
+}
+{
+  // #745 review — an exit-0 invocation whose stdout is NOT an array is a data
+  // regression, not a tooling failure: the CLI answered, its shape just isn't
+  // what the gate reads. The reason must show WHAT came back (truncated),
+  // and must NOT carry the tooling tag that would send the operator to fix
+  // their tooling instead of the malformed response.
+  const { fn } = fakeGh(
+    {
+      "pr view": GREEN_STATE,
+      "pr checks": "<html>Internal Server Error</html> not-json",
+    } as Record<string, string>,
+    "pr check",
+  );
+  const e = await gatherMergeEvidence(fn, "/x", 7);
+  assert(!e.ok, "non-array stdout from an exit-0 `gh pr checks` blocks (fail-closed)");
+  assert(e.failureKind !== "tooling", "malformed data is not tagged `tooling` (that would mislead)");
+  assert(
+    /data the gate could not read as a check list/.test(e.reason ?? ""),
+    "the reason names the data regression, not a broken gh setup",
+  );
+  assert(
+    /could not read as a check list|got:/.test(e.reason ?? ""),
+    "and names the regression explicitly (raw slice or an explicit no-data note)",
+  );
+}
+{
+  // #745 review — mergeStateStatus is a string the CLI passes through, and it
+  // lands verbatim in handoffs; a hostile/anomalous value must not yield an
+  // unbounded operator-facing string.
+  const longStatus = "X".repeat(200);
+  const { fn } = fakeGh(
+    {
+      "pr view": JSON.stringify({ mergeStateStatus: longStatus, state: "OPEN" }),
+      "pr checks": JSON.stringify([passing("build")]),
+    } as Record<string, string>,
+    "pr check",
+  );
+  const e = await gatherMergeEvidence(fn, "/x", 7);
+  assert(!e.ok, "an anomalous mergeStateStatus still blocks (fail-closed, not in the blocking set)");
+  assert(
+    (e.reason ?? "").length < 120,
+    `the rendered reason is bounded (got ${e.reason?.length}) — mergeStateStatus is truncated on read`,
+  );
+  assert(e.mergeStateStatus?.length === 64, "the stored value itself is bounded at read time");
+}
 
 // ------------------------------------ narration cannot promote, evidence demotes
 
@@ -219,7 +285,7 @@ const passing = (name: string) => ({ name, state: "SUCCESS", bucket: "pass" });
   // check data was never read).
   const tooling = mergeHoldAction({ granted: true, source: "doctrine" }, 42, "tooling");
   assert(
-    /tooling failure/.test(tooling) && !/incomplete required checks/.test(tooling),
+    /gh invocation/.test(tooling) && !/incomplete required checks/.test(tooling),
     "a tooling refusal renders a tooling action, not 'check the checks'",
   );
   const ci = mergeHoldAction({ granted: true, source: "doctrine" }, 42, "ci");
@@ -249,6 +315,19 @@ const passing = (name: string) => ({ name, state: "SUCCESS", bucket: "pass" });
     "with authority granted, the action points at the checks instead",
   );
 }
+
+  assert(
+    /tooling failure|The gh invocation itself failed/.test(mergeHoldToolingNote(true, "tooling")),
+    "the shared helper renders the tooling note for a tooling refusal",
+  );
+  assert(
+    mergeHoldToolingNote(true, "ci") === "" && mergeHoldToolingNote(true, undefined) === "",
+    "the shared helper is silent for CI-verdict and untagged refusals",
+  );
+  assert(
+    mergeHoldToolingNote(false, "tooling") === "",
+    "the shared helper is silent when authority was not granted (that line already points correctly)",
+  );
 
 // ------------------------------------------------------------ escape hatch
 
