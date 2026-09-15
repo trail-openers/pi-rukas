@@ -1,22 +1,28 @@
 #!/usr/bin/env bun
 /**
- * Pure unit tests for the dispatch deck's single composite widget (#729):
+ * Pure unit tests for the dispatch deck's single composite widget (#729, #742):
  *
  * #729 collapsed the pre-#729 dual-widget design (belowEditor detail deck +
  * aboveEditor DECK_PROMPT_KEY SelectList) into ONE widget key,
- * "ensemble:deck". The composite is a Container of detail rows followed by
- * a keyboard-selectable SelectList, both reading the same entries.
+ * "ensemble:deck". The composite is a Container of batch Text rows followed
+ * by a keyboard-selectable SelectList; #742 removed the per-job Text rows
+ * (which re-rendered every job above the list, whose labels were
+ * byte-identical `formatRow` lines) — the SelectList is now the sole
+ * per-job surface, one row per job.
  *
  * This test covers:
  *  - encodeDeckValue / parseDeckValue round-trip
  *  - buildDeckItems shape (one row per entry + cancel sentinel)
- *  - DeckItem.label IS the full formatRow line for that job (the
- *    composite's SelectList mirrors the deck's buildLines rows, #729)
+ *  - DeckItem.label is the job's full formatRow line, carrying role,
+ *    elapsed, tool call, plus the keyFragment description for same-role
+ *    disambiguation (the sole per-job surface, #742)
  *  - buildSteerPrompt is a ready-to-send steer with job context
  *  - setWidget is called with EXACTLY ONE key ("ensemble:deck") and a
  *    factory function — the one-key invariant (#729 acceptance criterion)
  *  - empty deck → the single widget is cleared (setWidget undefined)
- *  - the composite factory returns a Container with detail rows + SelectList
+ *  - the composite factory returns a Container whose per-job surface is
+ *    the SelectList — one visible row per job key (per-job regression,
+ *    #742), with no per-job Text children
  *
  * The interactive picker itself (keyboard input via ctx.ui) is live-only —
  * same boundary as test-model-picker.ts. Here we cover the pure builders
@@ -24,7 +30,7 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Container } from "@earendil-works/pi-tui";
+import { Container, SelectList, Text } from "@earendil-works/pi-tui";
 import {
   type DeckEntry,
   attach,
@@ -37,6 +43,7 @@ import {
   DECK_PROMPT_STEER_SOURCE,
 } from "../src/dispatch-deck.ts";
 import {
+  buildCompositeFactory,
   buildDeckItems,
   buildSteerPrompt,
   encodeDeckValue,
@@ -113,9 +120,13 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   );
 }
 
-// 4. DeckItem.label IS the full formatRow line for that job (#729 — the
-// SelectList mirrors the deck's buildLines rows, so the operator sees one
-// projection, not two).
+// 4. #742 — the SelectList is the sole per-job surface: each item label is
+// the job's full formatRow line (role + elapsed + tool call, no truncation
+// at this level), and the description carries the key fragment so two
+// same-role jobs stay distinguishable. (Pre-#742 this block asserted the
+// label was byte-identical to the deck's buildLines Text row — that
+// assertion pinned the double-projection and is replaced by the per-job
+// row-count regression below.)
 {
   const now = 2_000_000;
   const entries: DeckEntry[] = [
@@ -133,17 +144,22 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   ];
   const items = buildDeckItems(entries, now);
   const label = items[0]?.label ?? "";
-  // #729: the label IS the formatRow line — the two projections are merged.
   assert(
     label === formatRow(entries[0]!, now),
-    "label IS byte-identical to formatRow (single projection, #729)",
+    "label IS the full formatRow line (sole per-job surface, #742)",
   );
-  assert(label.startsWith("⏳"), "label starts with the hourglass icon (full detail row)");
+  assert(label.startsWith("⏳"), "label starts with the hourglass icon");
   assert(label.includes("2m14s"), "label includes elapsed time");
   assert(label.includes("bash (#7)"), "label includes tool name + use-count");
+  assert(
+    (items[0]?.description ?? "").length >= 1,
+    "description carries a job-key fragment for same-role disambiguation",
+  );
 }
 
-// 4b. Multiple entries — each label matches its own formatRow line.
+// 4b. Multiple entries — each label matches its own formatRow line, and
+// distinct keys yield distinct descriptions (two same-role jobs stay
+// tellable apart, the #729 failure mode).
 {
   const now = 4_000_000;
   const mk = (key: string, seq: number): DeckEntry => ({
@@ -163,9 +179,13 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
     const e = entries[i]!;
     assert(
       (items[i]?.label ?? "") === formatRow(e, now),
-      `item ${i} label IS its formatRow line (not a separate short form)`,
+      `item ${i} label IS its formatRow line (no separate Text projection)`,
     );
   }
+  assert(
+    items[0]?.description !== items[1]?.description,
+    "two same-role jobs carry distinct key descriptions",
+  );
 }
 
 // 5. DeckItem.value round-trips through parseDeckValue.
@@ -277,56 +297,68 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   detach();
 }
 
-// 9. Composite factory returns a Container with detail rows + SelectList.
-// Invoke the factory and verify the structure: at least one Text child
-// (the detail row) followed by a SelectList child.
+// 9. Composite factory returns a Container whose per-job surface is the
+// SelectList — one visible row per job key (per-job regression, #742). The
+// #742 defect: the factory used to add one Text child per buildLines row ON
+// TOP of the SelectList whose labels were byte-identical formatRow lines,
+// so every job rendered twice. Post-fix: 2 same-role jobs, empty lines →
+// 0 Text children, 1 SelectList item per job. Pre-fix this same test
+// yields 1 Text row per job and fails.
 {
-  reset();
-  const calls: Array<{
-    key: string;
-    content: string[] | ((...args: unknown[]) => unknown) | undefined;
-    options?: { placement?: string };
-  }> = [];
-  const ctx = {
-    ui: {
-      setWidget: (
-        key: string,
-        content: string[] | ((...args: unknown[]) => unknown) | undefined,
-        options?: { placement?: string },
-      ) => {
-        calls.push({ key, content, options });
-      },
-      setStatus: (_key: string, _text: string | undefined) => {},
+  const entries: DeckEntry[] = [
+    {
+      key: "job-a",
+      label: "explore",
+      seq: 0,
+      startedAt: 1_000_000,
+      state: makeState("explore", { lastToolName: "bash", toolUses: 3 }),
     },
-  } as unknown as Parameters<typeof attach>[0];
-  attach(ctx);
-  startEntry("a", { label: "developer", role: "developer" });
-  await new Promise((r) => setImmediate(r));
-  const deckCall = calls.find((c) => c.key === "ensemble:deck" && c.content !== undefined);
-  const factory = deckCall?.content;
-  assert(typeof factory === "function", "composite factory is a function");
-  if (typeof factory === "function") {
-    // The fakeTheme must support fg/bg for the composite's Text + SelectList.
-    const fakeTheme = {
-      fg: (_color: string, text: string) => text,
-      bg: (_color: string, text: string) => text,
-    } as unknown as Parameters<typeof factory>[1];
-    const component = factory(null, fakeTheme);
+    {
+      key: "job-b",
+      label: "explore",
+      seq: 1,
+      startedAt: 1_000_500,
+      state: makeState("explore", { lastToolName: "read", toolUses: 1 }),
+    },
+  ];
+  const fakeTheme = {
+    fg: (_color: string, text: string) => text,
+    bg: (_color: string, text: string) => text,
+  } as unknown as ReturnType<typeof buildCompositeFactory>[1];
+  const factory = buildCompositeFactory(
+    () => [],
+    () => [...entries],
+    20,
+    { onRowConfirm: () => {}, onSelectionChange: () => {} },
+  );
+  const component = factory(null, fakeTheme);
+  assert(component instanceof Container, "composite factory returns a Container (not a bare SelectList)");
+  if (component instanceof Container) {
+    // The blank separator Text is the one non-job Text child (it is the
+    // #143 presentation separator between the batch rows and the list).
+    const textChildren = component.children.filter((c) => c instanceof Text);
     assert(
-      component instanceof Container,
-      "composite factory returns a Container (not a bare SelectList)",
+      textChildren.length === 1 && (textChildren[0] as Text).text === "",
+      `only the blank separator Text remains (got ${textChildren.length} Text children) — #742 removed the per-job rows`,
     );
-    if (component instanceof Container) {
-      assert(component.children.length >= 2, `Container has ≥2 children (detail row + list); got ${component.children.length}`);
-      // The last child should be the SelectList (or a child of the container).
-      const last = component.children[component.children.length - 1];
+    const lists = component.children.filter((c) => c instanceof SelectList);
+    assert(lists.length === 1, "exactly one SelectList (the sole per-job surface)");
+    const list = lists[0];
+    if (list) {
+      const countFor = (key: string) =>
+        list.items.filter((it: { value: string }) => it.value === `deck::${key}`).length;
+      for (const e of entries) {
+        assert(
+          countFor(e.key) === 1,
+          `exactly ONE visible row for job '${e.key}' (got ${countFor(e.key)})`,
+        );
+      }
       assert(
-        last !== undefined,
-        "last child exists (SelectList or separator)",
+        list.items.length === entries.length + 1,
+        `SelectList has one item per job + cancel sentinel (got ${list.items.length})`,
       );
     }
   }
-  detach();
 }
 
 // 10. buildDeckItems with empty entries → only the cancel sentinel.

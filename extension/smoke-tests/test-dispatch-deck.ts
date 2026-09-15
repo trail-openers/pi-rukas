@@ -357,13 +357,13 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
     typeof last?.content === "function",
     "setWidget called with factory function (#232 — bypasses Pi's MAX_WIDGET_LINES=10 array cap)",
   );
-  // Invoke the factory and count Container children: 2 entries + 1 trailing
-  // blank line (#143 presentation separator) + 1 SelectList (#729 composite)
-  // = 4.
+  // Invoke the factory and count Container children: no per-job Text rows
+  // (#742 — the per-job surface is the SelectList) + 1 trailing blank line
+  // (#143 presentation separator) + 1 SelectList (#729 composite) = 2.
   const children = renderFactoryChildren(last?.content);
   assert(
-    children.length === 4,
-    "factory returns a Container with one Text per entry + trailing blank + SelectList (#729)",
+    children.length === 2,
+    "factory returns a Container with NO per-job Text rows + trailing blank + SelectList (#742)",
   );
   assert(last?.options?.placement === "belowEditor", "widget placement is 'belowEditor'");
   detach();
@@ -383,12 +383,12 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
 
   const last = calls[calls.length - 1];
   assert(typeof last?.content === "function", "overflow case still uses factory form");
-  // 20 entry rows + 1 overflow indicator + 1 trailing blank + 1 SelectList
-  // (#729 composite) = 23 children.
+  // No per-job Text rows (#742) + 1 trailing blank + 1 SelectList = 2
+  // children even past the cap — the cap now bounds batch Text rows only.
   const children = renderFactoryChildren(last?.content);
   assert(
-    children.length === 23,
-    `25 entries → 23 children (20 visible + overflow indicator + trailing blank + SelectList); got ${children.length}`,
+    children.length === 2,
+    `25 entries → 2 children (no per-job Text rows + trailing blank + SelectList, #742); got ${children.length}`,
   );
   detach();
 }

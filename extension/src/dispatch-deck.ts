@@ -1,12 +1,13 @@
 /**
- * Live dispatch deck (#117 / #607 / #709 / #729).
+ * Live dispatch deck (#117 / #607 / #709 / #729 / #742).
  *
  * The deck registers ONE widget — `ensemble:deck` — a composite Container
- * of detail rows (belowEditor) followed by a keyboard-selectable
- * SelectList. #729 collapsed the prior dual-projection design (a second
- * aboveEditor SelectList that re-rendered the same entries with a different
- * label format) into a single key, so the double-projection is
- * structurally impossible rather than merely de-duplicated by label text.
+ * of batch Text rows (belowEditor) followed by a keyboard-selectable
+ * SelectList that is the sole per-job surface. #729 collapsed the prior
+ * dual-projection design (a second aboveEditor SelectList that re-rendered
+ * the same entries with a different label format) into a single key; #742
+ * removed the internal per-job Text rows that rendered every job a second
+ * time above that list.
  *
  * Selecting a row in the composite's SelectList confirms the job: a
  * running job opens the steer prompt (`deck-ui` source tag); a settled
@@ -237,10 +238,10 @@ function renderNow(): void {
   }
 }
 
-/** Build the single composite widget factory (detail rows + SelectList).
- *  The detail rows render the deck's own `buildLines` projection (batch
- *  aware, in seq order); the SelectList items come from the entries
- *  accessor (job rows only — batch rows are not selectable jobs). */
+/** Build the single composite widget factory (batch rows + SelectList).
+ *  The batch Text rows render the deck's own `buildLines` projection
+ *  filtered to batch headers + member rows; the SelectList is the sole
+ *  per-job surface — one item per job entry (#742). */
 function buildCompositeWidgetFactory(ctx: ExtensionContext) {
   return deckComposite.buildCompositeFactory(
     buildLines,
