@@ -12,7 +12,12 @@
 // #679 — import from the canonical module (work-driver-plan.ts re-exports
 // the helpers; the stale duplicate copy was deleted — one function, one module).
 import { correctivePlanSteer, planQualityReason } from "../src/work-driver-plan.ts";
-import { countEnumeratedFindings, maxWorkstreams, parseWorkstreams } from "../src/work-driver-plan.ts";
+import {
+  countEnumeratedFindings,
+  maxWorkstreams,
+  parseWorkstreams,
+  planCorrectivePrompt,
+} from "../src/work-driver-plan.ts";
 import { inlinePlanPrompt } from "../src/work-driver-prompts-early.ts";
 
 let exit = 0;
@@ -290,6 +295,42 @@ assert(
   assert(
     /non-empty `paths:`/.test(p),
     "the prompt states the non-empty paths requirement the gate enforces",
+  );
+}
+
+// --------------------------------- #657 — corrective prompt: historical note
+
+{
+  // Simulate prior-handoff context (e.g. a stale cross-group-conflict from a
+  // previous cycle) already embedded in the plan prompt, as the driver's
+  // corrective re-dispatch composes it.
+  const priorContext =
+    "Prior handoff: cross-group-conflict with issue #654 (claims src/work-driver.ts); that issue is now closed.";
+  const steer = correctivePlanSteer("overlapping-paths", 2, 2, [
+    { a: "task-a", b: "task-b", path: "src/foo.ts" },
+  ]);
+  const corrective = planCorrectivePrompt(`${inlinePlanPrompt([657], "/tmp/scratch")}\n\n${priorContext}`, steer);
+  assert(
+    corrective.includes(priorContext),
+    "#657: the corrective prompt carries the prior-handoff context through",
+  );
+  assert(
+    /HISTORICAL records, not live preconditions/.test(corrective),
+    "#657: the corrective prompt tells the agent prior-conflict context is historical, not live",
+  );
+  assert(
+    /Do NOT re-verify them/.test(corrective),
+    "#657: the corrective prompt forbids re-verifying prior conflicts (the #657 loop burned 73.5M tokens on exactly this)",
+  );
+  assert(
+    /emit your final report once it is complete and stop/.test(corrective),
+    "#657: the corrective prompt tells the agent to emit the report and stop",
+  );
+  // The note applies to the corrective re-dispatch ONLY — the shared steer
+  // builders stay clean so a future non-corrective use cannot inherit it.
+  assert(
+    !/HISTORICAL/.test(steer),
+    "#657: the historical note is not baked into the shared steer builders",
   );
 }
 
