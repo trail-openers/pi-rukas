@@ -52,8 +52,8 @@ assert(
   "/start reads the queue summary — the only record of groups that never started",
 );
 assert(
-  /ls\s+\.pi\/work-state\//.test(body),
-  "...and lists the state dir, so parked cycles are visible at session open",
+  /read[\s\S]*?\.pi\/work-state\//.test(body),
+  "...and reads the state dir, so parked cycles are visible at session open",
 );
 assert(
   /humanAction/.test(body) && /notStarted/.test(body),
@@ -118,6 +118,17 @@ assert(
 assert(
   !commandBullets.some((c) => /^cd\s/.test(c)),
   "no /start command starts with `cd` — Pi's bash tool already runs in the project cwd",
+);
+assert(
+  !commandBullets.some((c) => /^ls\s/.test(c)),
+  "no command bullet prescribes a bare `ls` — that is not on the PM's bash allowlist and a refusal must surface, not be narrated around",
+);
+
+// A refused or failed readiness source must be reported in the summary, not
+// dressed up as a handled edge case.
+assert(
+  /unavailable|refused/.test(body.slice(body.indexOf("## Output"))),
+  "the Output section says a failed/refused data source must be reported as unavailable",
 );
 
 // ------------------- #712 — the /start dispatch is synthesis-tier, not 8-field
