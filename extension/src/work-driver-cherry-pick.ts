@@ -96,6 +96,9 @@ export interface OrchestratedCherryPickResult {
  * commit's files and silently dropped the earlier ones.
  * The batch is atomic: on the first conflict it aborts, the branch is
  * restored, and `[]` is returned. No partial cherry-picks survive.
+ * #750 — the abort now handles the 128-refusal (no CHERRY_PICK_HEAD with
+ * `--no-commit`) by falling back to `git reset --hard HEAD` instead of
+ * swallowing the error.
  */
 export async function cherryPickWorkstreams(
   execFn: (cmd: string, o?: { cwd?: string; maxBuffer?: number }) => Promise<{ stdout: string }>,
@@ -198,15 +201,35 @@ export async function cherryPickWorkstreams(
       }
     }
   }
-  // If any cherry-pick conflicted, abort the batch and return empty: the
-  // caller restores the branch and halts the cycle.
+  // #750 — on conflict: attempt `git cherry-pick --abort`. With `--no-commit`
+  // there is no CHERRY_PICK_HEAD, so git exits 128 (expected); fall back to
+  // `git reset --hard HEAD` to clear the staged/unmerged index. The caller's
+  // verifiedRestore confirms the root is clean. Returns [] on conflict.
   if (conflictedAt !== undefined) {
-    await execFn("git cherry-pick --abort", { cwd: repoRoot, maxBuffer: 64 * 1024 }).catch(
-      (abortErr: Error) =>
+    try {
+      await execFn("git cherry-pick --abort", { cwd: repoRoot, maxBuffer: 64 * 1024 });
+      trace(`work-driver: cherry-pick — abort succeeded after conflict in '${conflictedAt}'`);
+    } catch (abortErr) {
+      const msg = (abortErr as Error).message?.slice(0, 200) ?? "";
+      const isRefusal = /no cherry-pick or revert in progress|cherry-pick failed/i.test(msg);
+      if (isRefusal) {
         trace(
-          `work-driver: cherry-pick — abort failed after conflict in '${conflictedAt}': ${abortErr.message?.slice(0, 200)}`,
-        ),
-    );
+          `work-driver: cherry-pick — abort refused (${msg}) — falling back to reset --hard HEAD`,
+        );
+        try {
+          await execFn("git reset --hard HEAD", { cwd: repoRoot, maxBuffer: 256 * 1024 });
+          trace("work-driver: cherry-pick — reset --hard HEAD fallback succeeded");
+        } catch (resetErr) {
+          trace(
+            `work-driver: cherry-pick — reset --hard HEAD fallback FAILED: ${(resetErr as Error).message?.slice(0, 200)}`,
+          );
+        }
+      } else {
+        trace(
+          `work-driver: cherry-pick — abort failed unexpectedly after conflict in '${conflictedAt}': ${msg}`,
+        );
+      }
+    }
     return [];
   }
   return entries;
@@ -293,7 +316,9 @@ export async function orchestrateCherryPick(
       if (cherryShasCount === 0) {
         // No worktrees had commits — fall through to patch fallback.
       } else if (skippedCount < cherryShasCount) {
-        // Conflict: the batch was aborted. Signal caller via empty result + flag.
+        // #750 — Conflict: the batch was aborted. The abort logic inside
+        // cherryPickWorkstreams already attempted `git cherry-pick --abort`
+        // and fell back to `git reset --hard HEAD` on a 128-refusal.
         // Caller must restore branch and fail.
         return {
           cherryApplied: [],

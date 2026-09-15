@@ -13,6 +13,7 @@ import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.js";
 import type { DriverContext } from "./work-driver-context.js";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
+import { verifiedRestore } from "./work-driver-restore.js";
 
 export async function runConsolidatedVerify(
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
@@ -40,13 +41,20 @@ export async function runConsolidatedVerify(
   // is noise; the worktrees are untouched either way).
   const branchName = "pi-rukas-dev-verify";
   let originalRef: string | undefined;
-  const restoreRoot = async () => {
-    if (!originalRef) return;
-    await execFn("git reset --hard", { cwd: repoRoot, maxBuffer: 256 * 1024 }).catch((err) =>
+  const restoreRoot = async (): Promise<"restored" | "failed" | "skipped"> => {
+    if (!originalRef) return "skipped";
+    // #750 — use the shared verifiedRestore helper: preserves the diff,
+    // attempts cherry-pick --abort, falls back to reset --hard HEAD,
+    // re-reads porcelain, and only reports "restored" if verified clean.
+    const result = await verifiedRestore(execFn, { repoRoot, scratchDir });
+    if (!result.restored) {
       trace(
-        `work-driver: consolidated verify — reset --hard failed: ${(err as Error).message?.slice(0, 160)}`,
-      ),
-    );
+        `work-driver: consolidated verify — restore FAILED — still dirty: ${result.dirtyPaths.join(", ")}`,
+      );
+      return "failed";
+    }
+    // Check out the original ref (the verifiedRestore cleared the index and
+    // working tree but HEAD is now on the scratch branch).
     await execFn(`git checkout --force ${JSON.stringify(originalRef)}`, {
       cwd: repoRoot,
       maxBuffer: 256 * 1024,
@@ -61,6 +69,7 @@ export async function runConsolidatedVerify(
       cwd: repoRoot,
       maxBuffer: 64 * 1024,
     }).catch(() => undefined);
+    return "restored";
   };
   try {
     // Preflight — same as integrate(): repoRoot must be clean before we
@@ -113,7 +122,18 @@ export async function runConsolidatedVerify(
     });
 
     if (orchResult._conflict === "conflict") {
-      await restoreRoot();
+      const restoreStatus = await restoreRoot();
+      if (restoreStatus === "failed") {
+        // #750 — the restore could NOT complete. Do not claim restoration.
+        // Name the dirty paths explicitly so the operator knows the root
+        // is poisoned and must be inspected.
+        const dirtyPaths = await readDirtyPaths(execFn, repoRoot);
+        return {
+          status: "conflict",
+          kind: "conflict",
+          detail: `cherry-pick conflict — two workstreams edited the same lines; the batch was aborted but repoRoot was NOT restored (still dirty: ${dirtyPaths.join(", ")})`,
+        };
+      }
       return {
         status: "conflict",
         kind: "conflict",
@@ -123,7 +143,15 @@ export async function runConsolidatedVerify(
     }
     if (orchResult._applyConflict !== undefined) {
       const { id, reason, patchFile } = orchResult._applyConflict;
-      await restoreRoot();
+      const restoreStatus = await restoreRoot();
+      if (restoreStatus === "failed") {
+        const dirtyPaths = await readDirtyPaths(execFn, repoRoot);
+        return {
+          status: "conflict",
+          kind: "conflict",
+          detail: `patch-apply failed for workstream '${id}': ${reason}. Conflict patch preserved at ${patchFile}. repoRoot NOT restored (still dirty: ${dirtyPaths.join(", ")})`,
+        };
+      }
       return {
         status: "conflict",
         kind: "conflict",
@@ -167,5 +195,29 @@ export async function runConsolidatedVerify(
       kind: "conflict",
       detail: `consolidation could not be performed: ${(err as Error).message?.slice(0, 200)}`,
     };
+  }
+}
+
+/**
+ * Read the current dirty paths from repoRoot. Returns an array of path
+ * strings (porcelain lines with the status prefix stripped). Returns
+ * `["(unreadable)"]` on git failure.
+ */
+async function readDirtyPaths(
+  execFn: NonNullable<DriverContext["verifyExecFn"]>,
+  repoRoot: string,
+): Promise<string[]> {
+  try {
+    const { stdout } = await execFn("git status --porcelain", {
+      cwd: repoRoot,
+      maxBuffer: 1024 * 1024,
+    });
+    const paths = stdout
+      .split("\n")
+      .filter((l) => l.trim())
+      .map((l) => l.slice(3));
+    return paths.length > 0 ? paths.slice(0, 10) : ["(unreadable)"];
+  } catch {
+    return ["(unreadable — git status failed)"];
   }
 }
