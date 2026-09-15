@@ -195,7 +195,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         return { stdout: JSON.stringify({ mergeStateStatus: "CLEAN", state: "OPEN" }) };
       }
       if (cmd.includes("gh pr checks")) {
-        return { stdout: JSON.stringify([{ name: "ci", bucket: "pass", isRequired: true }]) };
+        return { stdout: JSON.stringify([{ name: "ci", bucket: "pass" }]) };
       }
       return { stdout: "" };
     };
@@ -267,7 +267,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         return { stdout: JSON.stringify({ mergeStateStatus: "CLEAN", state: "OPEN" }) };
       }
       if (cmd.includes("gh pr checks")) {
-        return { stdout: JSON.stringify([{ name: "ci", bucket: "pass", isRequired: true }]) };
+        return { stdout: JSON.stringify([{ name: "ci", bucket: "pass" }]) };
       }
       return { stdout: "" };
     };

@@ -137,14 +137,27 @@ export function prDiffCmd(forge: ForgeType, number: number): string {
  * CI checks for a PR/MR.
  *
  * GitHub: `gh pr checks` exits non-zero when any check fails — callers must
- * tolerate that (the existing driver does). GitLab: `glab ci lint` is
- * static analysis and NOT run-level checks, so we go through the API:
- * the MR's open pipeline's jobs, via `glab api` against
+ * tolerate that (the existing driver does). The requested fields are pinned
+ * to gh 2.98.0 by `smoke-tests/test-gh-argv.ts`; `isRequired` must not be
+ * added back — it is not a field this subcommand supports, and requesting it
+ * made the whole invocation fail closed on every PR (#745). GitLab:
+ * `glab ci lint` is static analysis and NOT run-level checks, so we go
+ * through the API: the MR's open pipeline's jobs, via `glab api` against
  * `/projects/:id/merge_requests/:iid/pipelines` (first entry = most recent).
  */
 export function prChecksCmd(forge: ForgeType, number: number): string {
-  if (forge === "github") return `gh pr checks ${number} --json name,state,bucket,isRequired`;
+  if (forge === "github") return `gh pr checks ${number} --json name,state,bucket`;
   return `glab api "/projects/:id/merge_requests/${number}/pipelines" --output json`;
+}
+
+/**
+ * GitHub's authoritative merge verdict for the merge-evidence gate. The
+ * driver used to hard-code this field list inline; it lives here so the
+ * argv-pinning test (`test-gh-argv.ts`) covers it the same way it covers
+ * `prChecksCmd`.
+ */
+export function mergeEvidenceViewCmd(number: number): string {
+  return `gh pr view ${number} --json mergeStateStatus,mergeable,state`;
 }
 
 // ── CI runs ───────────────────────────────────────────────────────────────

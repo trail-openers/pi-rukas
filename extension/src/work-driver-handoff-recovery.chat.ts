@@ -84,6 +84,14 @@ export function recoveryCommandsChat(
         ? `Merging is permitted here (${hold.authoritySource}), but the evidence gate refused: ${hold.evidenceReason ?? "no evidence"}.`
         : "Nothing grants this driver authority to merge in this project. That is the default: merging is opt-in.",
     );
+    // #745 — a tooling refusal (the gate's own gh call errored) is not a CI
+    // verdict; the recovery step below says "see what the checks say", so say
+    // the other reading here too.
+    if (hold?.authorityGranted && hold.evidenceFailureKind === "tooling") {
+      lines.push(
+        "That refusal is a tooling failure — the check data was never read, so the fault is the driver's gh invocation, not the checks. Check the gh setup first.",
+      );
+    }
   } else if (cap === "existing-pr-detected") {
     const pr = ps.existingPr;
     lines.push(

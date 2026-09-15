@@ -28,6 +28,7 @@ import { trace } from "./trace.ts";
 import { classifyFailureCause } from "./work-driver-failure-taxonomy.ts";
 import type { GroupingResult } from "./work-driver-grouping.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
+import { mergeHoldAction } from "./work-driver-merge-authority.ts";
 import { processAlive } from "./work-driver-resume.ts";
 import { notify } from "./work-notify.ts";
 import { groupPathsOverlap } from "./work-queue-overlap.ts";
@@ -166,6 +167,7 @@ function parkReason(state: WorkState | undefined): { reason: string; failedStep?
     } else if (cap.cap === "awaiting-human-merge") {
       const granted = state.pipelineState.mergeHold?.authorityGranted ? "granted" : "no-authority";
       suffix = `:${granted}:pr${state.pipelineState.prNumber ?? 0}`;
+      if (state.pipelineState.mergeHold?.evidenceFailureKind === "tooling") suffix += ":tooling";
     }
     return { reason: `cap ${cap.cap}${suffix}`, failedStep: step };
   }
@@ -189,11 +191,18 @@ export function humanActionFor(reason: string, primary: number): string {
   // #380 — the PR is open, green and pushed; the only thing missing is a human
   // decision. Telling the operator to `--restart` here would rebuild work that
   // is already done and open a duplicate PR.
-  const heldMerge = reason.match(/awaiting-human-merge:(granted|no-authority):pr(\d+)/);
+  const heldMerge = reason.match(
+    /awaiting-human-merge:(granted|no-authority):pr(\d+)(?::tooling)?/,
+  );
   if (heldMerge) {
+    const granted = heldMerge[1] === "granted";
     const pr = Number(heldMerge[2]) > 0 ? `#${heldMerge[2]}` : `the PR for #${primary}`;
-    return heldMerge[1] === "granted"
-      ? `check the incomplete required checks on ${pr}, then merge`
+    return granted
+      ? mergeHoldAction(
+          { granted, source: "doctrine" },
+          Number(heldMerge[2]) || undefined,
+          heldMerge[3] ? "tooling" : "ci",
+        )
       : `review and merge ${pr} yourself — agent merging is not permitted in this project (grant it in AGENTS.md or re-run with --merge)`;
   }
   // #380 — `--restart` after a failed merge wipes the state file but NOT the

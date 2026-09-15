@@ -194,6 +194,7 @@ export async function runMerged(
             authoritySource: authority.source,
             ...(authority.quote ? { authorityQuote: authority.quote } : {}),
             ...(evidence?.reason ? { evidenceReason: evidence.reason } : {}),
+            ...(evidence?.failureKind ? { evidenceFailureKind: evidence.failureKind } : {}),
             ...(evidence?.inconclusive?.length ? { inconclusive: evidence.inconclusive } : {}),
             ...(routedRoundCap ? { unresolvedReviewFindings: true } : {}),
           },

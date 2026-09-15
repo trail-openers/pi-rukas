@@ -93,7 +93,7 @@ function mergeGateGreen(cmd: string): { stdout: string } | undefined {
   if (cmd.includes("mergeStateStatus,mergeable,state"))
     return { stdout: '{"mergeStateStatus":"CLEAN","state":"OPEN"}' };
   if (cmd.includes("gh pr checks"))
-    return { stdout: '[{"name":"ci","bucket":"pass","isRequired":true}]' };
+    return { stdout: '[{"name":"ci","bucket":"pass"}]' };
   return undefined;
 }
 

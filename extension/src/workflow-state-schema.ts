@@ -242,6 +242,12 @@ export interface PipelineState {
     authorityQuote?: string;
     /** Why the executed-evidence gate refused, when authority was granted. */
     evidenceReason?: string;
+    /**
+     * The evidence refusal was a tooling failure — the `gh` invocation itself
+     * errored before any check data was read — not a CI verdict (#745).
+     * Renderers must keep the two textually distinct.
+     */
+    evidenceFailureKind?: "tooling" | "ci";
     /** Required checks reporting `skipped`/`neutral` — green to GitHub, not to us. */
     inconclusive?: string[];
     /**

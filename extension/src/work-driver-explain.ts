@@ -137,7 +137,13 @@ export function explainCap(
           ...(hold?.authorityQuote ? { quote: hold.authorityQuote } : {}),
         },
         hold?.evidenceReason
-          ? { ok: false, reason: hold.evidenceReason, failing: [], inconclusive: [] }
+          ? {
+              ok: false,
+              reason: hold.evidenceReason,
+              failing: [],
+              inconclusive: [],
+              ...(hold.evidenceFailureKind ? { failureKind: hold.evidenceFailureKind } : {}),
+            }
           : undefined,
         pr,
       );
