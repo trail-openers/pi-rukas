@@ -150,9 +150,16 @@ export async function runPlan(
             Object.keys(workstreams).length,
             findPathCollisions(workstreams),
           );
+    // #657 post-mortem — the corrective re-dispatch inherits the original
+    // prompt plus any prior-handoff / prior-conflict context the cycle has
+    // accumulated. A weak model read a stale `cross-group-conflict` (issue
+    // already closed, fix already on base) as a LIVE unsatisfiable
+    // precondition, re-verified it with two gh/git commands 530+ times, and
+    // burned 73.5M cache tokens before the wall-clock kill — twice.
+    const correctivePrompt = planCorrectivePrompt(prompt, steer);
     const retry = await dispatch(
       ctx.pi,
-      { role: "explore", prompt: `${prompt}\n\n${steer}` },
+      { role: "explore", prompt: correctivePrompt },
       { label: "plan:corrective" },
     ).catch(() => undefined);
     if (retry) {
@@ -399,6 +406,27 @@ export function parseWorkstreams(text: string): Record<
 export function maxWorkstreams(): number {
   const env = Number(process.env.PI_ENSEMBLE_MAX_WORKSTREAMS);
   return Number.isFinite(env) && env >= 1 ? env : 6;
+}
+
+/**
+ * #657 — the corrective plan re-dispatch prompt. The historical-context note
+ * lives here (at the corrective call path, NOT inside the shared steer
+ * builders) so it applies ONLY to corrective re-dispatches: a weak model in
+ * the #657 post-mortem read a stale `cross-group-conflict` reference as a
+ * live unsatisfiable precondition, re-verified it with two gh/git commands
+ * 530+ times, and burned 73.5M cache tokens before the wall-clock kill —
+ * twice.
+ */
+export function planCorrectivePrompt(prompt: string, steer: string): string {
+  const historicalNote = [
+    "NOTE: any prior-handoff or prior-conflict references in your context (e.g. an earlier",
+    "`cross-group-conflict` or overlapping-paths finding from a previous cycle) are HISTORICAL",
+    "records, not live preconditions. Do NOT re-verify them (no `gh issue view`, no `git",
+    "merge-base` checks on them) and do NOT let them block your plan. If the referenced",
+    "issue/commit is no longer relevant, simply proceed with your decomposition. Your job is",
+    "the decomposition itself — emit your final report once it is complete and stop.",
+  ].join(" ");
+  return `${prompt}\n\n${steer}\n\n${historicalNote}`;
 }
 
 /**
