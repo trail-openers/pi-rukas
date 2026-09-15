@@ -68,6 +68,13 @@ export function renderHandoffUserMessage(
   // No "adversarial-loop" default: naming a gate that passed is worse than
   // naming none. `explainCap` handles an absent cap explicitly now.
   const cap = capHit?.kind === "cap-hit" ? capHit.cap : undefined;
+  // #657 — an intent-park cap-hit carries the machine-readable park reason;
+  // surface it in the Last-step line so the operator sees WHICH park without
+  // opening the state file.
+  const capLabel =
+    capHit?.kind === "cap-hit" && capHit.parkReason
+      ? `${capHit.cap} (${capHit.parkReason})`
+      : (ps.lastCompletedStep ?? ps.currentStep);
   const why = explainCap(cap, state);
   const snap = ps.handoffSnapshot;
   const commentUrl = handoffEvt?.kind === "handoff-emitted" ? handoffEvt.commentUrl : undefined;
@@ -128,7 +135,7 @@ export function renderHandoffUserMessage(
     `pi-rukas /work for ${headerIssues} — HANDOFF (needs human attention)`,
     "",
     `Why: ${why}`,
-    `Last step: ${ps.lastCompletedStep ?? ps.currentStep}${ps.reviewRound > 0 ? ` · review round ${ps.reviewRound}/${MAX_REVIEW_ROUNDS}` : ""}`,
+    `Last step: ${capLabel}${ps.reviewRound > 0 ? ` · review round ${ps.reviewRound}/${MAX_REVIEW_ROUNDS}` : ""}`,
     `Cycle: ${ps.status}${ps.status === "aborted" ? " (mid-flight failure, not a cap-hit)" : ""}`,
     "",
     "Worktree state:",

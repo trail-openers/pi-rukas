@@ -376,12 +376,15 @@ export async function runExplore(
         `work-driver: intent verdict=${finalSpec.verdict}${finalSpec.parkReason ? ` (${finalSpec.parkReason})` : ""}, ${finalSpec.deliverables.length} deliverable(s) (source: ${source})`,
       );
       if (finalSpec.verdict === "park") {
+        // #657 — carry the machine-readable park reason on the cap-hit itself
+        // so the renderers can show `intent-park (contradicted-by-code)`.
         return appendEvent(next, {
           kind: "cap-hit",
           at: Date.now(),
           cap: "intent-park",
           reviewRound: next.pipelineState.reviewRound,
           nextStep: "handoff",
+          ...(finalSpec.parkReason ? { parkReason: finalSpec.parkReason } : {}),
         });
       }
       return next;

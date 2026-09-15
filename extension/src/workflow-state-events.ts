@@ -49,6 +49,12 @@ export type WorkEvent =
       step: WorkStep;
       at: number;
       note?: string;
+      /**
+       * #657 — the 1-based run count of this step within the cycle (re-entries
+       * of adversarial / lens-review / ci). Additive: renders as "(round N)"
+       * only when present and > 1.
+       */
+      round?: number;
     }
   | AdversarialEventFragment
   | {
@@ -293,6 +299,15 @@ export type WorkEvent =
        * wrote nothing" from "a diff existed but integration failed".
        */
       evidence?: string;
+      /**
+       * #657 — on `cap: "intent-park"` the machine-readable park reason
+       * (underspecified / contradicted-by-code / already-implemented /
+       * too-large / premise-unsound), carried on the event so the renderers
+       * can show `intent-park (contradicted-by-code)` without re-deriving it
+       * from `pipelineState.normalisedSpec`. Additive: the schema validator
+       * ignores extra fields.
+       */
+      parkReason?: string;
       /**
        * What the driver will do next: "handoff" (terminal), "step-back"
        * (Step 7h), or "ci" (Step 8).
