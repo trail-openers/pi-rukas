@@ -44,6 +44,17 @@ export type CapEvidence =
       usedTokens: number;
     };
 
+/**
+ * #745 — why the merge-evidence gate's refusal was not a CI verdict.
+ * Declared here (a neutral module both `workflow-state-schema.ts` and
+ * `work-driver-merge-authority.ts` already import) so the persisted
+ * `mergeHold.evidenceFailureKind` field and the runtime type cannot drift:
+ * one literal, one name. `tooling` means the gate's own `gh` invocation
+ * failed before any check data was read; `ci` means an actual check verdict
+ * blocked the merge.
+ */
+export type EvidenceFailureKind = "tooling" | "ci";
+
 /** #543 F5 — the driver-owned checkpoint taken when a dispatch-cap kill fires.
  *
  * The killed child CAN produce a report (that is its text); it can NEVER

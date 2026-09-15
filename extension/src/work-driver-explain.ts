@@ -136,10 +136,10 @@ export function explainCap(
           source: hold?.authoritySource ?? "none",
           ...(hold?.authorityQuote ? { quote: hold.authorityQuote } : {}),
         },
-        hold?.evidenceReason
+        hold?.evidenceReason || hold?.evidenceFailureKind
           ? {
               ok: false,
-              reason: hold.evidenceReason,
+              reason: hold?.evidenceReason,
               failing: [],
               inconclusive: [],
               ...(hold.evidenceFailureKind ? { failureKind: hold.evidenceFailureKind } : {}),

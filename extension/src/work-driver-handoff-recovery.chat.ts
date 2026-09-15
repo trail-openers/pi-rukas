@@ -22,6 +22,7 @@ import {
   requalifyLine,
 } from "./work-driver-handoff-recovery.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
+import { mergeHoldToolingNote } from "./work-driver-merge-authority.ts";
 import {
   type WorkEvent,
   type WorkState,
@@ -87,10 +88,12 @@ export function recoveryCommandsChat(
     // #745 — a tooling refusal (the gate's own gh call errored) is not a CI
     // verdict; the recovery step below says "see what the checks say", so say
     // the other reading here too.
-    if (hold?.authorityGranted && hold.evidenceFailureKind === "tooling") {
-      lines.push(
-        "That refusal is a tooling failure — the check data was never read, so the fault is the driver's gh invocation, not the checks. Check the gh setup first.",
-      );
+    const toolingNote = mergeHoldToolingNote(
+      hold?.authorityGranted === true,
+      hold?.evidenceFailureKind,
+    );
+    if (toolingNote) {
+      lines.push(toolingNote);
     }
   } else if (cap === "existing-pr-detected") {
     const pr = ps.existingPr;
