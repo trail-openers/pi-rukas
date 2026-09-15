@@ -57,6 +57,17 @@ export interface OrchestratedCherryPickResult {
   cherryApplied: string[];
   /** CHERRY-PICK: which workstreams had commits ahead of baseSha, keyed by id → SHA. */
   cherryPickShas: Record<string, string>;
+  /**
+   * #749 — ADDITIVE discriminator for the baseSha path: workstreams whose
+   * committed range existed but every pick was skipped as already-on-branch
+   * (tree-hash dedup). `cherryApplied` semantics are UNCHANGED for the
+   * existing baseSha callers (`runConsolidatedVerify`, `handoff-consolidate`) —
+   * they keep reading it exactly as before. The integration layer reads THIS
+   * field to tell "nothing was produced" apart from "work exists and its
+   * content is already on the branch", instead of collapsing both into a
+   * bare count.
+   */
+  skippedAlreadyOnBranch: string[];
   /** PATCH: which workstreams had no commits but had patchable changes. */
   patchApplied: string[];
   /** Which workstreams produced no diff at all, keyed by id → worktree path. */
@@ -235,6 +246,10 @@ export async function orchestrateCherryPick(
   const noDiff: NoDiff = {};
   const emptyWorkstreams: string[] = [];
   const patchApplied: string[] = [];
+  // #749 — the all-skipped set, when the cherry-pick batch ran and every
+  // pick was a tree-hash dedup skip (work existed; its content is already
+  // on the branch).
+  let allSkipped: string[] | undefined;
   // First pass: collect commit SHAs from worktrees with commits ahead.
   // #728 — the HEAD SHA is recorded here; the pick itself walks the full
   // baseSha..HEAD range inside cherryPickWorkstreams.
@@ -298,6 +313,7 @@ export async function orchestrateCherryPick(
         return {
           cherryApplied: [],
           cherryPickShas,
+          skippedAlreadyOnBranch: [],
           patchApplied: [],
           noDiff: {},
           emptyWorkstreams,
@@ -305,13 +321,19 @@ export async function orchestrateCherryPick(
           _conflict: "conflict",
         };
       }
-      // All skipped (already on branch) — treat as applied but no new commit.
+      // All skipped (already on branch) — treat as applied but no new
+      // commit. #749: the skip is a MEASURED fact, carried out of the
+      // cherry-pick layer as a discriminator rather than collapsed into a
+      // bare count.
+      const skipped: string[] = [];
       for (const id of ids) {
         if (cherryPickShas[id] && wtMap[id]) {
           cherryApplied.push(id);
           noDiff[id] = wtMap[id];
+          skipped.push(id);
         }
       }
+      if (skipped.length > 0) allSkipped = skipped;
     } else {
       // Cherry-picks succeeded — record each workstream that picked at
       // least one NEW commit exactly once (pre-#728 mis-indexed entries;
@@ -341,6 +363,7 @@ export async function orchestrateCherryPick(
           return {
             cherryApplied,
             cherryPickShas,
+            skippedAlreadyOnBranch: allSkipped ?? [],
             patchApplied,
             noDiff: { ...noDiff, [id]: wt },
             emptyWorkstreams,
@@ -404,6 +427,7 @@ export async function orchestrateCherryPick(
         return {
           cherryApplied,
           cherryPickShas,
+          skippedAlreadyOnBranch: allSkipped ?? [],
           patchApplied,
           noDiff,
           emptyWorkstreams,
@@ -434,6 +458,7 @@ export async function orchestrateCherryPick(
   return {
     cherryApplied,
     cherryPickShas,
+    skippedAlreadyOnBranch: allSkipped ?? [],
     patchApplied,
     noDiff,
     emptyWorkstreams,
