@@ -100,10 +100,10 @@ export const GH_PR = {
   updatedAt: "2026-09-02T00:00:00Z",
 };
 
-/** `gh pr checks N --json name,state,bucket,isRequired` rows. */
+/** `gh pr checks N --json name,state,bucket` rows (gh 2.98.0; no isRequired). */
 export const GH_CHECKS = [
-  { name: "ci", state: "completed", bucket: "pass", isRequired: true },
-  { name: "lint", state: "completed", bucket: "pass", isRequired: true },
+  { name: "ci", state: "completed", bucket: "pass" },
+  { name: "lint", state: "completed", bucket: "pass" },
 ];
 
 /** `gh api /repos/o/r/actions/runs/:id` (REST snake_case). */

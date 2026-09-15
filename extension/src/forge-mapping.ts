@@ -197,7 +197,7 @@ export function mapGlMr(raw: Record<string, unknown>): NormalizedPullRequest {
 
 // ── CI checks ─────────────────────────────────────────────────────────────
 
-/** gh `pr checks --json name,state,bucket,isRequired` rows → NormalizedCICheck. */
+/** gh `pr checks --json name,state,bucket` rows → NormalizedCICheck. */
 export function mapGhChecks(rows: unknown): NormalizedCICheck[] {
   if (!Array.isArray(rows)) throw new ForgeFieldError("checks rows", "gh pr checks");
   return (rows as Record<string, unknown>[]).map((r) => {
@@ -211,7 +211,6 @@ export function mapGhChecks(rows: unknown): NormalizedCICheck[] {
       name: str(r.name) ?? "(unnamed)",
       state: effectiveState,
       bucket: bucket?.toUpperCase(),
-      isRequired: typeof r.isRequired === "boolean" ? r.isRequired : undefined,
     };
   });
 }

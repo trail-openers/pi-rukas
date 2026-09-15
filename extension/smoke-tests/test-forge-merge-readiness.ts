@@ -68,8 +68,8 @@ async function main() {
   }
   {
     const failing = [
-      { name: "ci", state: "completed", bucket: "fail", isRequired: true },
-      { name: "lint", state: "completed", bucket: "pass", isRequired: true },
+      { name: "ci", state: "completed", bucket: "fail" },
+      { name: "lint", state: "completed", bucket: "pass" },
     ];
     const { fn } = mkExec({
       "gh pr view 17": { stdout: JSON.stringify(GH_PR) },

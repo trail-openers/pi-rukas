@@ -28,6 +28,7 @@ import { trace } from "./trace.ts";
 import { classifyFailureCause } from "./work-driver-failure-taxonomy.ts";
 import type { GroupingResult } from "./work-driver-grouping.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
+import { type EvidenceFailureKind, mergeHoldAction } from "./work-driver-merge-authority.ts";
 import { processAlive } from "./work-driver-resume.ts";
 import { notify } from "./work-notify.ts";
 import { groupPathsOverlap } from "./work-queue-overlap.ts";
@@ -36,7 +37,7 @@ import { writeQueueSummary } from "./work-queue-summary.ts";
 /** One entry of `groupIssues()`'s result — the unit the queue iterates. */
 export type IssueGroup = GroupingResult["groups"][string];
 // #676 — re-exported so importers of work-queue keep working; the predicates
-// live in work-queue-overlap.ts (own module, keeps work-queue under 500 lines).
+// live in work-queue-overlap.ts.
 export { groupPathsOverlap, overlappingSiblingIds } from "./work-queue-overlap.ts";
 import { type WorkState, readState, workStateDir } from "./workflow-state.ts";
 
@@ -62,10 +63,10 @@ export interface QueueEntry {
   failedStep?: string;
   /** What the operator has to do — an action, never "it failed". */
   humanAction?: string;
-  /** Raw token sum across the group's dispatch-completed/failed events (input+output+cacheRead+cacheWrite). Optional: older queue-summary.json files predate it. */
+  /** Raw token sum across the group's dispatch-completed/failed events
+   * (input+output+cacheRead+cacheWrite); older summaries predate it. */
   tokens?: number;
-  /** Cost in USD, when the total is priced. Never estimated when unknown. */
-  cost?: number;
+  cost?: number; // USD, when the total is priced; never estimated when unknown
 }
 
 export interface QueueSummary {
@@ -76,8 +77,7 @@ export interface QueueSummary {
   notStarted: string[]; // groups the queue never reached — it halted first
 }
 
-/**
- * Decide whether a finished group's failure is systemic.
+/** Decide whether a finished group's failure is systemic.
  *
  * Systemic means "the next group will hit this too": a spend cap, or a quota
  * window that nothing will get past until it resets. Everything else — a
@@ -91,12 +91,12 @@ export function isSystemicFailure(state: WorkState | undefined): {
   if (!state) return { systemic: false };
   // #386 — the failure that matters is the one that ENDED the cycle, not the
   // most recent one of its kind. The driver retries transient faults, so a
-  // cycle can hit a quota window at `explore`, recover, run for another
-  // twenty minutes, and then park for an unrelated semantic reason. Reading
-  // the last failure unconditionally found the recovered quota event and
-  // halted every remaining group — the exact outcome #368 exists to prevent.
-  // A failure followed by a successful `dispatch-completed` was recovered and
-  // does not count.
+  // cycle can hit a quota window, recover, run for another twenty minutes,
+  // and then park for an unrelated semantic reason. Reading the last failure
+  // unconditionally found the recovered quota event and halted every
+  // remaining group — the exact outcome #368 exists to prevent. A failure
+  // followed by a successful `dispatch-completed` was recovered and does not
+  // count.
   let lastFailure: WorkState["eventLog"][number] | undefined;
   for (let i = state.eventLog.length - 1; i >= 0; i--) {
     const e = state.eventLog[i];
@@ -138,7 +138,6 @@ function ownerAlive(state: WorkState): boolean {
   return typeof pid === "number" && processAlive(pid);
 }
 
-/** The reason a non-merged cycle stopped, read back off its state file. */
 function parkReason(state: WorkState | undefined): { reason: string; failedStep?: string } {
   if (!state) return { reason: "cycle produced no state file" };
   // A `running` status with a live owner is not a park — it is a cycle in
@@ -150,7 +149,7 @@ function parkReason(state: WorkState | undefined): { reason: string; failedStep?
   const cap = [...state.eventLog].reverse().find((e) => e.kind === "cap-hit");
   // `lastCompletedStep` is the last step that SUCCEEDED, so reporting it as
   // the failure point names the wrong step. The halt-cascade stamps the real
-  // step into the cap itself (`step-failed:<step>`); prefer that when present.
+  // step into the cap (`step-failed:<step>`); prefer that when present.
   const capStep =
     cap?.kind === "cap-hit" && cap.cap.startsWith("step-failed:")
       ? cap.cap.slice("step-failed:".length)
@@ -166,6 +165,7 @@ function parkReason(state: WorkState | undefined): { reason: string; failedStep?
     } else if (cap.cap === "awaiting-human-merge") {
       const granted = state.pipelineState.mergeHold?.authorityGranted ? "granted" : "no-authority";
       suffix = `:${granted}:pr${state.pipelineState.prNumber ?? 0}`;
+      if (state.pipelineState.mergeHold?.evidenceFailureKind === "tooling") suffix += ":tooling";
     }
     return { reason: `cap ${cap.cap}${suffix}`, failedStep: step };
   }
@@ -186,28 +186,37 @@ export function humanActionFor(reason: string, primary: number): string {
   if (intentPark) {
     return parkAction((intentPark[1] ?? "underspecified") as ParkReason, primary);
   }
-  // #380 — the PR is open, green and pushed; the only thing missing is a human
-  // decision. Telling the operator to `--restart` here would rebuild work that
-  // is already done and open a duplicate PR.
-  const heldMerge = reason.match(/awaiting-human-merge:(granted|no-authority):pr(\d+)/);
+  // #380 — the PR is open, green and pushed; the only thing missing is a
+  // human decision. Telling the operator to `--restart` here would rebuild
+  // work that is already done and open a duplicate PR.
+  const heldMerge = reason.match(
+    /awaiting-human-merge:(granted|no-authority):pr(\d+)(?::tooling)?/,
+  );
   if (heldMerge) {
+    const granted = heldMerge[1] === "granted";
     const pr = Number(heldMerge[2]) > 0 ? `#${heldMerge[2]}` : `the PR for #${primary}`;
-    return heldMerge[1] === "granted"
-      ? `check the incomplete required checks on ${pr}, then merge`
+    // The tag is carried by the reason string itself (`:tooling` suffix in
+    // `parkReason` above), so the queue cannot drift from the state file:
+    // untagged reasons keep the CI-flavoured action, as do pre-#745 files.
+    const failureKind: EvidenceFailureKind = heldMerge[3] === "tooling" ? "tooling" : "ci";
+    return granted
+      ? mergeHoldAction(
+          { granted, source: "doctrine" },
+          Number(heldMerge[2]) || undefined,
+          failureKind,
+        )
       : `review and merge ${pr} yourself — agent merging is not permitted in this project (grant it in AGENTS.md or re-run with --merge)`;
   }
   // #380 — `--restart` after a failed merge wipes the state file but NOT the
-  // open PR, so the re-run halts immediately on the pre-flight (#362). The
-  // work is committed and pushed; the merge is the only thing left.
+  // open PR, so the re-run halts immediately on the pre-flight (#362).
   if (/step-failed:merged/.test(reason)) {
     return `merge #${primary}'s PR by hand — the branch is pushed and the work is done (do NOT --restart: the open PR would halt the re-run)`;
   }
   if (/lens-diff-unreadable/.test(reason)) {
     return `check that #${primary}'s branch is pushed and \`git fetch origin --prune\` is current — the review could not read the diff`;
   }
-  if (/existing-pr-detected/.test(reason)) {
+  if (/existing-pr-detected/.test(reason))
     return `decide whether to resume, retarget or close the open PR for #${primary}`;
-  }
   if (/explore-needs-clarification|step-back-revise-spec/.test(reason)) {
     return `revise the body of #${primary} — the spec is underspecified`;
   }
@@ -222,7 +231,7 @@ export function humanActionFor(reason: string, primary: number): string {
   return `inspect .pi/work-state/${primary}.json and re-run \`/work ${primary} --restart\``;
 }
 
-/** Render the end-of-queue report. One entry per group; no per-step noise. */
+/** Render the end-of-queue report. One entry per group. */
 export function renderQueueSummary(s: QueueSummary): string {
   const lines = [
     `pi-rukas: /work queue finished — ${s.merged} merged, ${s.parked} parked${

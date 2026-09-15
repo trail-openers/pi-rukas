@@ -4,7 +4,7 @@
  */
 
 import type { Verdict } from "./lens-review.ts";
-import type { CapEvidence, CapedPartialState } from "./workflow-state-cap.ts";
+import type { CapEvidence, CapedPartialState, EvidenceFailureKind } from "./workflow-state-cap.ts";
 import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
 // #679/#728 — the workstream shape, workstreamBaseShas type and the
 // consolidation-completeness record, split out of this module (500-line
@@ -242,6 +242,12 @@ export interface PipelineState {
     authorityQuote?: string;
     /** Why the executed-evidence gate refused, when authority was granted. */
     evidenceReason?: string;
+    /**
+     * The evidence refusal was a tooling failure — the `gh` invocation itself
+     * errored before any check data was read — not a CI verdict (#745).
+     * Renderers must keep the two textually distinct.
+     */
+    evidenceFailureKind?: EvidenceFailureKind;
     /** Required checks reporting `skipped`/`neutral` — green to GitHub, not to us. */
     inconclusive?: string[];
     /**

@@ -61,13 +61,22 @@ export interface NormalizedPullRequest {
   updatedAt: string | undefined;
 }
 
-/** A single status check. State is uppercased per the gh convention. */
+/**
+ * A single status check. State is uppercased per the gh convention.
+ *
+ * There is deliberately no required/optional flag: `gh pr checks --json`
+ * does not expose one (`isRequired` is not a field the subcommand supports,
+ * and requesting it made every merge-evidence read fail closed — #745), and
+ * GitLab has no per-job equivalent. Readiness is decided by the forge's own
+ * authoritative signal (GitHub `mergeStateStatus`; GitLab the composed
+ * `detailed_merge_status` in `forge-merge.ts`), which already encodes each
+ * repo's required-check rules; the per-check rows only name what is
+ * failing/pending/skipped.
+ */
 export interface NormalizedCICheck {
   name: string;
   /** Uppercased state (gh: `COMPLETE/IN_PROGRESS/QUEUED...`, glab pipeline job states uppercased). */
   state: string;
-  /** Whether the check is required (gh `isRequired`). GitLab: undefined when unknown. */
-  isRequired?: boolean;
   /** Bucket when the forge reports one (gh: `pass/fail/pending/warning...`). */
   bucket?: string;
   url?: string;

@@ -236,13 +236,15 @@ export async function checkGithubReadiness(
     };
   }
 
-  const required = checks.checks.filter((c) => c.isRequired !== false);
-  const failing = required.filter((c) =>
+  // The pass/not-pass verdict is `mergeStateStatus` — it already encodes the
+  // repo's own required-check rules; the rows only name what is failing or
+  // pending (`gh pr checks` cannot say which of them are required; #745).
+  const failing = checks.checks.filter((c) =>
     ["FAIL", "FAILURE", "CANCELED", "CANCELLED", "TIMED_OUT", "ERROR"].includes(
       c.bucket?.toUpperCase() ?? c.state,
     ),
   );
-  const pending = required.filter((c) =>
+  const pending = checks.checks.filter((c) =>
     ["PENDING", "QUEUED", "IN_PROGRESS", "WAITING"].includes(c.state),
   );
 

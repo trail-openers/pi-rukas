@@ -351,12 +351,13 @@ async function main() {
       "gh pr checks 17": { stdout: JSON.stringify(GH_CHECKS) },
     });
     const forge = createForge(det, { execFn: fn });
-    await check("prChecks normalizes rows", async () => {
+    await check("prChecks normalizes rows (no isRequired — gh does not supply it, #745)", async () => {
       const checks = await forge.prChecks(17);
       assert(checks.length === 2, `len ${checks.length}`);
       assert(checks[0]!.name === "ci", "first name");
       assert(checks[0]!.state === "PASS", `state ${checks[0]!.state}`);
-      assert(checks[0]!.isRequired === true, "required");
+      assert(checks[0]!.bucket === "PASS", `bucket ${checks[0]!.bucket}`);
+      assert(!("isRequired" in checks[0]!), "the normalized check carries no isRequired field");
     });
   }
 
