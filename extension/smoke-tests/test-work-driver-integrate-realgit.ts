@@ -418,5 +418,80 @@ try {
   }
 }
 
+// ---- F: range-read fallback through integrate() — #736 (extends #728) --
+// Drives the range-read fallback (worktree rev-list throws → HEAD-only
+// pick) through the FULL integrate() path — the consumer surface
+// (IntegrateResult.completeness) the handoff consumer gates on. The strict-
+// subset drop case lives in test-work-driver-consolidation-drop.ts (task-a).
+{
+  const root4 = mkdtempSync(path.join(tmpdir(), "pi-ens-drop-"));
+  const [o4, repo4, scratch4] = ["origin.git", "repo", "scratch"].map((n) => path.join(root4, n));
+  mkdirSync(scratch4, { recursive: true });
+
+  try {
+    await execFileP("git", ["init", "--bare", "--initial-branch=main", o4]);
+    await execFileP("git", ["init", "--initial-branch=main", repo4]);
+    await git(repo4, ["config", "user.email", "t@example.com"]);
+    await git(repo4, ["config", "user.name", "T"]);
+    writeFileSync(path.join(repo4, "tracked.txt"), "base\n");
+    await git(repo4, ["add", "."]);
+    await git(repo4, ["commit", "-q", "-m", "base"]);
+    await git(repo4, ["remote", "add", "origin", o4]);
+    await git(repo4, ["push", "-q", "-u", "origin", "main"]);
+
+    const setup4 = await mechanizedBranchSetup(realExec, repo4, 736, [736], [], "drop test");
+    const wt4 = setup4.worktrees.default ?? "";
+    // Two files, one commit: the HEAD-only fallback stages the full commit,
+    // so no drop. Throwing for the worktree's rev-list proves it fired.
+    writeFileSync(path.join(wt4, "a-multi.txt"), "first\n");
+    writeFileSync(path.join(wt4, "b-multi.txt"), "second\n");
+    await git(wt4, ["add", "."]);
+    await git(wt4, ["commit", "-q", "-m", "add both files"]);
+
+    // Throw ONLY for the worktree's rev-list RANGE read (--reverse); the
+    // --count probe that precedes it must run real or the workstream is
+    // routed to the patch-fallback path.
+    const dropExec: ExecFn = async (cmd, o) => {
+      if (cmd.includes("--reverse") && cmd.includes("rev-list") && o?.cwd === wt4)
+        throw new Error("simulated rev-list range read failure");
+      return realExec(cmd, o);
+    };
+
+    const r = await integrate(dropExec, {
+      repoRoot: repo4,
+      branchName: setup4.branchName,
+      baseSha: setup4.baseSha,
+      worktrees: setup4.worktrees,
+      scratchDir: scratch4,
+      commitTitle: "feat: drop test",
+      commitBody: "Fixes #736",
+      mode: "create",
+    });
+    assert(
+      r.ok && !r.empty,
+      `drop test: integrate() completes ok despite the range-read failure (got: ${JSON.stringify(r)})`,
+    );
+    if (r.ok && !r.empty) {
+      assert(
+        r.completeness?.checkError === undefined,
+        "drop test: the IntegrateResult carries the completeness measurement (no checkError)",
+      );
+      assert(
+        r.completeness?.droppedPaths.length === 0,
+        `drop test: no files dropped when the fallback stages the full commit (got: ${JSON.stringify(
+          r.completeness?.droppedPaths,
+        )})`,
+      );
+      assert(
+        r.completeness?.landed.includes("a-multi.txt") && r.completeness?.landed.includes("b-multi.txt"),
+        "drop test: both files landed (the fallback staged the HEAD commit in full)",
+      );
+    }
+    console.log("✓ drop-through-integrate test passed");
+  } finally {
+    rmSync(root4, { recursive: true, force: true });
+  }
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
