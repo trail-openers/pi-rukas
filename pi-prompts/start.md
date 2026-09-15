@@ -43,13 +43,13 @@ argument-hint: ""
 
    **AGENTS.md staleness check** (reuses the output already read above — no new command). If the AGENTS.md read came back empty (the file is missing), or its commit date is older than the 10th-most-recent commit from the `oo git log --oneline -10` output above, note it in the readiness line and point the operator at the sibling `/agents-md` command to regenerate — check-and-pointer only, never run a regenerate yourself.
 
-5. **What `/work` left behind** — run these directly, one bash call each, alongside step 4:
-   - `ls .pi/work-state/`
+5. **What `/work` left behind** — run these directly, one call each, alongside step 4. Use the `read` tool for the directory listing — **NOT a bash `ls`**: `ls` is not on the PM's bash allowlist and a refused call is a data gap that must be reported, not narrated around.
+   - `read` tool on `.pi/work-state/` (directory listing — the read tool handles directories; `ls` is not allowlisted for the PM)
    - `cat .pi/work-state/queue-summary.json`
 
    This is the most actionable state in the repo and the only part of it that is invisible everywhere else. A parked cycle has no open PR and no issue comment; a group that never started has no state file at all — `queue-summary.json` is the only record it existed.
 
-   Both commands fail harmlessly in a repo that has never run `/work`. **Absence is silent** — say nothing rather than reporting a missing file as a finding.
+   Both reads fail harmlessly in a repo that has never run `/work` (a missing directory is an empty result, not an error). **Absence is silent** — say nothing rather than reporting a missing file as a finding. A *refused or failed* read, by contrast, is a data gap, not an absence — handle it per the rule in the Output section below.
 
    From the summary, carry into step 6: each parked group's issue numbers and its `humanAction`, the groups under `notStarted`, and how long ago `at` was. A summary from last week is history, not this morning's queue — say which.
 
@@ -64,6 +64,8 @@ One readiness line:
 - Current status (active work, CI health, hotspots)
 - **Anything `/work` parked, named with its action** — "#287 parked, needs acceptance criteria; group g4 (#301, #302) never started". This goes before the general status: it is the only part the operator cannot find any other way, and it is usually why they opened the session.
 - "Ready for instructions."
+
+**Report data gaps, don't narrate them away.** If any readiness data source fails or is refused (the `.pi/work-state/` reads, `gh issue list`, `gh pr list`, the CI check), say so explicitly in the line — e.g. "parked-work status: unavailable (check refused)". Never present a partial readiness summary as complete, and never invent a benign explanation for a failed or refused call — report the failure and continue with the sources that worked.
 
 This is NOT a report — you are confirming readiness.
 
