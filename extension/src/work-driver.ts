@@ -10,6 +10,7 @@
 import { notifyAgent } from "./agent-message.ts";
 import { trace } from "./trace.ts";
 import { runAdversarial } from "./work-driver-adversarial.ts";
+import { runArtifactSweep } from "./work-driver-artifact-sweep.ts";
 import { checkAttentionLabel } from "./work-driver-attention.ts";
 import { runBranch, runDevelop } from "./work-driver-branch-develop.ts";
 import { checkpointCapedDispatch } from "./work-driver-cap-checkpoint.ts";
@@ -197,6 +198,10 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
       liveCycles: new Set(ctx.issues),
     });
   }
+  // #657 — bounded best-effort sweep of orphan artifact dirs under
+  // .pi/work-state/ (numeric names, no sibling <N>.json, mtime > 14 days).
+  // Never throws; a failure is traced and swallowed.
+  await runArtifactSweep({ repoRoot: ctx.repoRoot });
 
   // #382 — resume on `running` state file: refuse (live pid), resume
   // (died mid-dispatch), or continue (clean boundary).
@@ -306,6 +311,12 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
     const stepStartedAt = Date.now();
     // PR4: sub-round labels for iterative steps.
     const stepRound = countPriorStepStarts(state, step) + 1;
+    // #657 — the first event of this iteration is the step-started the step
+    // handler appends; backfill its round here (the single chokepoint every
+    // iteration flows through) so renderers can show re-entries as
+    // "adversarial (round 3)". Additive field; absent in the 12 per-step
+    // handler append sites, so nothing there changes.
+    const before = state.eventLog.length;
     emitStepStarted(step, stepOrd.num, stepOrd.total, stepRound, ctx.issue);
     // PR2 O2: footer status cursor (step-level position with live-tick).
     updateFooter(state, stepStartedAt);
@@ -365,6 +376,30 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
     // the router already persisted state and we re-enter.
     const routed = await routeStepOutcome(ctx, state, step, stepOrd, stepRound, stepStartedAt);
     state = routed.state;
+    // #657 — backfill the round onto this iteration's step-started (the
+    // handler's first appended event) so the loop re-entries are visible in
+    // the event log. In-place rewrite of the ORIGINAL event — appending a
+    // second step-started would make it the tail event and shadow the tail
+    // checks nextStep()/routeStepOutcome() read (a trailing step-started is
+    // invisible to the cap-hit branch, so a cap-hit would lose its routing).
+    {
+      const first = state.eventLog[before];
+      if (first && first.kind === "step-started") {
+        const widened = {
+          ...first,
+          round: stepRound,
+        } as typeof first;
+        state = {
+          ...state,
+          updatedAt: Date.now(),
+          eventLog: [
+            ...state.eventLog.slice(0, before),
+            widened,
+            ...state.eventLog.slice(before + 1),
+          ],
+        };
+      }
+    }
     // #543 F5 — driver-owned checkpoint after a dispatch-cap kill. Must stay
     // BEFORE the `routed.retry` continue so a retried step never checkpoints
     // the same kill twice. Never throws; failure degrades to the uncommitted.

@@ -110,7 +110,11 @@ function stepTotals(events: WorkEvent[]): Record<string, { ms: number; tokens?: 
 function fmtEvent(e: WorkEvent): string {
   switch (e.kind) {
     case "step-started":
-      return `  step-started · ${e.step}${e.note ? ` · ${e.note}` : ""}`;
+      // #657 — a step-started with round > 1 is a loop re-entry (adversarial /
+      // lens-review / ci): render the round. First entries render unchanged.
+      return `  step-started · ${e.step}${
+        e.round !== undefined && e.round > 1 ? ` (round ${e.round})` : ""
+      }${e.note ? ` · ${e.note}` : ""}`;
     case "dispatch-started":
       return `  dispatch-started · ${e.step} · ${e.label}`;
     case "dispatch-completed":
@@ -131,8 +135,13 @@ function fmtEvent(e: WorkEvent): string {
       return `  lens-approved · round ${e.round}`;
     case "lens-issues-found":
       return `  lens-issues-found · round ${e.round} · ${e.verdict}`;
-    case "cap-hit":
-      return `  cap-hit · ${e.cap} · → ${e.nextStep}`;
+    case "cap-hit": {
+      // #657 — an intent-park cap-hit carrying the machine-readable reason
+      // renders it: "intent-park (contradicted-by-code)". Absent → unchanged.
+      const capLabel =
+        e.cap === "intent-park" && e.parkReason ? `${e.cap} (${e.parkReason})` : e.cap;
+      return `  cap-hit · ${capLabel} · → ${e.nextStep}`;
+    }
     case "plumb-report":
       return `  plumb-report · ${e.step} · ${e.role}`;
     case "step-back-triggered":
