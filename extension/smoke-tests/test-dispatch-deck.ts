@@ -262,7 +262,7 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   reset();
   startEntry("a", { label: "developer", role: "developer" });
   startEntry("b", { label: "explore", role: "explore" });
-  const lines = buildLines();
+  const { lines } = buildLines();
   assert(lines.length === 2, "two standalone singles → 2 lines");
   assert(lines[0]?.startsWith("⏳ developer"), "first standalone is developer (insertion order)");
   assert(lines[1]?.startsWith("⏳ explore"), "second standalone is explore");
@@ -276,7 +276,7 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   startEntry("m-a", { label: "developer[task-A]", role: "developer", batchKey: "batch-x" });
   startEntry("m-b", { label: "developer[task-B]", role: "developer", batchKey: "batch-x" });
   startEntry("m-c", { label: "developer[task-C]", role: "developer", batchKey: "batch-x" });
-  const lines = buildLines();
+  const { lines } = buildLines();
   assert(lines.length === 4, "1 batch + 3 members → 4 lines");
   assert(lines[0]?.startsWith("⏳ batch["), "first line is the batch header");
   assert(lines[1]?.startsWith(" ↳ "), "first member is indented");
@@ -293,7 +293,7 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
     role: "developer",
     batchKey: "never-registered",
   });
-  const lines = buildLines();
+  const { lines } = buildLines();
   assert(lines.length === 1, "orphan member → one line");
   assert(
     lines[0]?.startsWith("⏳ "),
@@ -308,7 +308,7 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   startEntry("m1", { label: "developer[task-A]", role: "developer", batchKey: "b1" });
   startEntry("m2", { label: "developer[task-B]", role: "developer", batchKey: "b1" });
   startEntry("solo", { label: "explore", role: "explore" });
-  const lines = buildLines();
+  const { lines } = buildLines();
   // Expected: batch header, member1, member2, solo
   assert(lines.length === 4, "1 batch + 2 members + 1 standalone → 4 lines");
   assert(lines[0]?.startsWith("⏳ batch["), "batch first");
@@ -333,7 +333,7 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   startBatchEntry("b1", { label: "developer×2", size: 2 });
   startEntry("m1", { label: "developer[task-A]", role: "developer", batchKey: "b1" });
   startEntry("m2", { label: "developer[task-B]", role: "developer", batchKey: "b1" });
-  const lines = buildLines();
+  const { lines } = buildLines();
   assert(lines.length === 4, "1 standalone + 1 batch + 2 members → 4 lines");
   assert(lines[0]?.startsWith("⏳ explore"), "standalone first (inserted before batch)");
   assert(lines[1]?.startsWith("⏳ batch["), "batch second");
@@ -357,13 +357,13 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
     typeof last?.content === "function",
     "setWidget called with factory function (#232 — bypasses Pi's MAX_WIDGET_LINES=10 array cap)",
   );
-  // Invoke the factory and count Container children: 2 entries + 1 trailing
-  // blank line (#143 presentation separator) + 1 SelectList (#729 composite)
-  // = 4.
+  // Invoke the factory and count Container children: no per-job Text rows
+  // (#742 — the per-job surface is the SelectList) + 1 trailing blank line
+  // (#143 presentation separator) + 1 SelectList (#729 composite) = 2.
   const children = renderFactoryChildren(last?.content);
   assert(
-    children.length === 4,
-    "factory returns a Container with one Text per entry + trailing blank + SelectList (#729)",
+    children.length === 2,
+    "factory returns a Container with NO per-job Text rows + trailing blank + SelectList (#742)",
   );
   assert(last?.options?.placement === "belowEditor", "widget placement is 'belowEditor'");
   detach();
@@ -383,12 +383,12 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
 
   const last = calls[calls.length - 1];
   assert(typeof last?.content === "function", "overflow case still uses factory form");
-  // 20 entry rows + 1 overflow indicator + 1 trailing blank + 1 SelectList
-  // (#729 composite) = 23 children.
+  // No per-job Text rows (#742) + 1 trailing blank + 1 SelectList = 2
+  // children even past the cap — the cap now bounds batch Text rows only.
   const children = renderFactoryChildren(last?.content);
   assert(
-    children.length === 23,
-    `25 entries → 23 children (20 visible + overflow indicator + trailing blank + SelectList); got ${children.length}`,
+    children.length === 2,
+    `25 entries → 2 children (no per-job Text rows + trailing blank + SelectList, #742); got ${children.length}`,
   );
   detach();
 }
