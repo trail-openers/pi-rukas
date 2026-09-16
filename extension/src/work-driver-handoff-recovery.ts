@@ -45,7 +45,8 @@ export type RecoverySection =
   | "intent-park"
   | "review-incomplete"
   | "worktree-work-consolidated"
-  | "worktree-work-fallback";
+  | "worktree-work-fallback"
+  | "develop-incomplete-deliverables";
 
 export interface RecoveryStep {
   /** The section this step belongs to (one of `RecoverySection`). */

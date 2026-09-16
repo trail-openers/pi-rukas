@@ -5,10 +5,14 @@
  * shared dispatch logic for one workstream (memory-brief retrieval, the
  * developer + speculative-explore `Promise.allSettled` race, the completion
  * and `branch-completed` events, the case-1 sibling-injection) and
- * `runDevelopTopological`, the #679 topological-dispatch core of `runDevelop`
- * (independent fan-out, failed/skipped detection, dependent workstreams,
- * safety net + verify gate). The closure captures per-run state via
- * `DevelopRunState` so the caller shares it across both dispatch phases.
+ * `runDependentWorkstreams` (the dependent-workstream phase: skip cascade,
+ * deferred worktree creation from the dependency's post-commit SHA, base
+ * resolution). The closure captures per-run state via `DevelopRunState` so
+ * the caller shares it across both dispatch phases.
+ *
+ * `runDevelopTopological` — the #679 topological-dispatch core (independent
+ * fan-out, failed/skipped detection, the safety net + verify gate) — lives
+ * in work-develop-topological.ts.
  */
 import path from "node:path";
 import { buildMemoryBrief } from "./memory-brief.ts";
@@ -350,151 +354,4 @@ export async function runDependentWorkstreams(
     }
   }
   return wtRef;
-}
-
-/** #679 — topological-dispatch core of runDevelop (moved from work-driver-branch-develop.ts, #744). */
-export async function runDevelopTopological(
-  ctx: DriverContext,
-  initialState: WorkState,
-  ids: string[],
-  workstreams: NonNullable<WorkState["pipelineState"]["workstreams"]>,
-  activeIssues: number[],
-  dispatch: NonNullable<DriverContext["dispatchFn"]>,
-  execFn: NonNullable<DriverContext["verifyExecFn"]>,
-  now: number,
-  jobId: string,
-): Promise<WorkState> {
-  void now;
-  const begun = { jobId };
-  let next = initialState;
-  const scratchAbs = scratchDir(ctx.repoRoot, ctx.issue);
-  const verdicts: Array<{ id: string; ok: boolean }> = [];
-  const branchEvents: WorkEvent[] = [];
-  const dependsOnMap: Record<string, string[]> = {};
-  for (const [id, ws] of Object.entries(workstreams)) {
-    if (ws?.dependsOn && ws.dependsOn.length > 0) dependsOnMap[id] = ws.dependsOn;
-  }
-  const { independent, dependentOrdered } = topologicalDispatchOrder(ids, dependsOnMap);
-  const stateRef = { current: next };
-  const runOneWorkstream = makeRunOneWorkstream({
-    ctx,
-    activeIssues,
-    scratchAbs,
-    workstreams: workstreams as DevelopRunState["workstreams"],
-    ids,
-    dispatch,
-    verdicts,
-    branchEvents: branchEvents as WorkEvent[],
-    stateRef,
-  });
-  let worktrees = next.pipelineState.worktrees ?? {};
-  let workstreamBaseShas = next.pipelineState.workstreamBaseShas ?? {};
-  const globalBaseSha = next.pipelineState.baseSha;
-
-  const independentCwds = independent.map((id) => worktrees[id] ?? ctx.repoRoot);
-  const independentResults = await Promise.all(
-    independent.map(async (id, i) => runOneWorkstream(id, independentCwds[i] ?? ctx.repoRoot)),
-  );
-
-  // #679 — a workstream is “blocked” for its dependents when its dispatch
-  // failed OR when it produced NO commits ahead of its base (the case-2(c)
-  // falsely-ok shape): building a dependent worktree on a dependency that
-  // shipped nothing is the incoherent-tree failure this ticket fixes.
-  const failedOrSkipped = new Set<string>();
-  for (const r of independentResults) {
-    if (!r.ok) failedOrSkipped.add(r.id);
-  }
-  for (const id of independent) {
-    const cwd = worktrees[id] ?? ctx.repoRoot;
-    const base = workstreamBaseShas[id] ?? globalBaseSha;
-    if (typeof base === "string" && /^[0-9a-f]{40}$/.test(base)) {
-      try {
-        const { stdout } = await execFn(`git rev-list --count ${base}..HEAD`, {
-          cwd,
-          maxBuffer: 64 * 1024,
-        });
-        if (Number.parseInt(stdout.trim(), 10) === 0) failedOrSkipped.add(id);
-      } catch {
-        failedOrSkipped.add(id); // unresolvable → treat as blocked (fail-safe)
-      }
-    } else {
-      failedOrSkipped.add(id); // no valid base → treat as blocked (fail-safe)
-    }
-  }
-  const wtResult = await runDependentWorkstreams(
-    ctx,
-    dependentOrdered,
-    workstreams,
-    dependsOnMap,
-    failedOrSkipped,
-    verdicts,
-    branchEvents,
-    execFn,
-    worktrees,
-    workstreamBaseShas,
-    globalBaseSha,
-    ids,
-    runOneWorkstream,
-  );
-  worktrees = wtResult.worktrees;
-  workstreamBaseShas = wtResult.workstreamBaseShas;
-  next = stateRef.current;
-  void independentResults;
-  next = appendEvent(clearDispatch(next, begun.jobId), ...branchEvents);
-  next = {
-    ...next,
-    pipelineState: {
-      ...next.pipelineState,
-      worktrees,
-      workstreamBaseShas: { ...workstreamBaseShas, ...next.pipelineState.workstreamBaseShas },
-    },
-  };
-  if (ids.length > 1) {
-    next = appendEvent(next, {
-      kind: "branches-converged",
-      step: "develop",
-      verdicts,
-      at: Date.now(),
-    });
-  }
-  // #679 (task-evidence) + #622 + PR17 — the safety net and the develop verify
-  // gate are NOT gated on the aggregate verdict `verdicts.every(v => v.ok)`
-  // (that skipped both gates for the whole fanout the moment any single
-  // workstream failed or was falsely-ok); both run when there is ANY evidence
-  // to check — the same condition verifyDevelopOutcome computes per worktree.
-  const hasDevelopEvidence = await hasAnyWorktreeEvidence(ctx, next);
-  if (hasDevelopEvidence) {
-    next = await applySafetyNet(ctx, next);
-  }
-  if (hasDevelopEvidence) {
-    const gate = await verifyStepOutcome(ctx, next, "develop");
-    if (!gate.ok) {
-      // #669 — a cherry-pick conflict during the develop-time consolidated verify
-      // is a DECOMPOSITION error (two workstreams edited the same lines), not a
-      // verify failure: retrying cannot fix it, so route it to its own cap so
-      // the operator sees "the work is individually fine but the decomposition
-      // is incoherent". The evidence rides on the cap-hit's `evidence` field.
-      const conflictFailure = gate.failures.find((f) =>
-        /cherry-pick \/ apply conflict|could not combine the workstreams/.test(f),
-      );
-      const cap = conflictFailure ? "consolidated-verify-conflict" : "verify-failed:develop";
-      trace(`work-driver: ${cap} — ${gate.failures.join(" | ")}`);
-      next = {
-        ...next,
-        pipelineState: {
-          ...next.pipelineState,
-          verifyEvidence: { step: "develop", failures: gate.failures, at: Date.now() },
-        },
-      };
-      next = appendEvent(next, {
-        kind: "cap-hit",
-        at: Date.now(),
-        cap,
-        reviewRound: next.pipelineState.reviewRound,
-        nextStep: "handoff",
-        ...(conflictFailure ? { evidence: conflictFailure } : {}),
-      });
-    }
-  }
-  return next;
 }

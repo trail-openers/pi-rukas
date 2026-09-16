@@ -426,6 +426,34 @@ export function recoveryStepsForCap(
         lines: [`rm .pi/work-state/${issue}.json`],
       },
     );
+  } else if (cap === "develop-incomplete-deliverables") {
+    // #741 — the converge gate capped: the verify gate passed (the code
+    // builds) but a plan deliverable's declared paths are absent from the
+    // end-of-develop diff even after the one-shot corrective re-dispatch.
+    steps.push(
+      {
+        section: "develop-incomplete-deliverables",
+        comment: [
+          "1. Read the converge gate's per-deliverable classification (the cap's",
+          "   evidence names the missing paths):",
+        ],
+        lines: [`jq .pipelineState.convergeEvidence .pi/work-state/${issue}.json`],
+      },
+      {
+        section: "develop-incomplete-deliverables",
+        comment: [
+          "2. Implement the missing deliverable(s) on the branch (the work in the",
+          "   worktrees is already committed) — or re-run /work to re-enter the",
+          "   gate with a fresh one-shot corrective budget:",
+        ],
+        lines: [`/work ${issue} --restart`],
+      },
+      {
+        section: "develop-incomplete-deliverables",
+        comment: ["3. Or abandon the cycle:"],
+        lines: [`rm .pi/work-state/${issue}.json`],
+      },
+    );
   }
   return { cap, section: steps[0]?.section, steps };
 }

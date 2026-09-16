@@ -168,6 +168,9 @@ function fmtEvent(e: WorkEvent): string {
       return `  lens-skipped-empty-diff · round ${e.round}`;
     case "lens-fix-empty-resend":
       return `  lens-fix-empty-resend · round ${e.round} · ${e.worktree}`;
+    case "converge-redispatch":
+      // #741 — the converge gate's one-shot corrective dispatch marker.
+      return "  converge-redispatch · develop · corrective dispatch for missing deliverable(s)";
     case "adversarial-skipped-empty-diff":
       return `  adversarial-skipped-empty-diff · workstream ${e.workstreamId}`;
     case "verify-full-status":
