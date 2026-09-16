@@ -10,6 +10,7 @@ import type { RoleName } from "./roles.ts";
 import type { DispatchUsage } from "./types.ts";
 import type { AdversarialEventFragment } from "./workflow-state-events-adversarial.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
+import type { DeferredCreationEventFragment } from "./workflow-state-events-deferred.ts";
 import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-leftover.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
@@ -442,6 +443,10 @@ export type WorkEvent =
       at: number;
       /** Failure tail (truncated) when ok=false. */
       error?: string;
+      /** #753 — timing record for a `dependsOn` workstream: the epoch-ms at which the dependency it waited on completed. */
+      depCompletedAt?: number;
+      /** #753 — the underlying failure detail for a DEFERRED worktree-creation failure. Absent on every other branch-completed. */
+      deferredCreation?: DeferredCreationEventFragment;
     }
   | {
       /**
