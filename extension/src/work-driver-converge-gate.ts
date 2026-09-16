@@ -209,14 +209,26 @@ async function treeChangedByCorrective(
 ): Promise<"unchanged" | "changed" | "unknown"> {
   if (!cwd) return "unknown";
   const root = ctx.repoRoot;
-  if (cwd !== root && !cwd.startsWith(`${root}${path.sep}`)) {
-    trace(`work-driver: converge gate — cannot probe worktree ${cwd}: outside repoRoot`);
+  // Resolve EXACTLY as readEndOfDevelopDiff does (work-driver-converge.ts):
+  // the "repoRoot" sentinel means the repo root checkout, anything else
+  // relative is rooted at the driver's repoRoot. The containment check and
+  // the shell both use the RESOLVED dir — comparing the raw persisted string
+  // would call a relative in-tree path (e.g. ".worktrees/issue-N-task-b")
+  // "outside repoRoot" and emit a misleading trace.
+  const dir = cwd === "repoRoot" ? root : path.isAbsolute(cwd) ? cwd : path.join(root, cwd);
+  if (dir !== root && !dir.startsWith(`${root}${path.sep}`)) {
+    trace(`work-driver: converge gate — cannot probe worktree ${dir}: outside repoRoot`);
     return "unknown";
   }
   try {
+    // Same maxBuffer as readEndOfDevelopDiff's porcelain read (a large dirty
+    // tree must not overflow ENOBUFS and silently flip the probe to
+    // unknown), plus a timeout so a wedged worktree (locked index, network
+    // fs) degrades to unknown → re-run rather than hanging the gate.
     const { stdout } = await (ctx.verifyExecFn ?? execp)("git status --porcelain", {
-      cwd,
-      maxBuffer: 1024 * 1024,
+      cwd: dir,
+      maxBuffer: 4 * 1024 * 1024,
+      timeout: 10_000,
     });
     return stdout.trim().length > 0 ? "changed" : "unchanged";
   } catch (err) {

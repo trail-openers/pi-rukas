@@ -104,7 +104,10 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 function makeConvergeExec(
   _dir: string,
   opts: { secondDiffHasBeta?: boolean; probeFails?: boolean },
-): NonNullable<DriverContext["verifyExecFn"]> {
+): NonNullable<DriverContext["verifyExecFn"]> & {
+  statusReads: () => number;
+  diffReads: () => number;
+} {
   // The diff name-set the converge gate sees: the gate reads the committed
   // diff once per worktree per pass (two worktrees here), and the develop
   // verify gate reads it once per worktree too, BEFORE the gate runs:
@@ -113,20 +116,32 @@ function makeConvergeExec(
   //   diffRead 3-4  — converge gate, pass 1: alpha.ts only (D2 ABSENT)
   //   diffRead 5+   — converge gate, pass 2 (after the corrective): both
   //                    files when the corrective worked
+  //
+  // Porcelain reads are counted separately (statusRead): the gate handler's
+  // tree-changed probe runs exactly ONE `git status --porcelain` per
+  // post-corrective re-run, and that single read is what AC5c discriminates
+  // on (the old skip path would run zero).
   let diffRead = 0;
+  let probeRead = 0;
   const filesForDiff = (): string[] => {
     if (diffRead >= 5 && opts.secondDiffHasBeta) {
       return ["extension/src/alpha.ts", "extension/src/beta.ts"];
     }
     return ["extension/src/alpha.ts"];
   };
-  return async (cmd, execOpts) => {
+  const exec = async (cmd, execOpts) => {
     if (cmd === "git status --porcelain") {
+      // The gate handler's tree-changed probe is the only porcelain read in
+      // this gate path that passes a `timeout` option — the verify gate
+      // and the develop-verify reads do not. Discriminate on that so the
+      // counter counts ONLY the probe (the AC5c discriminator).
+      const isProbe = (execOpts as { timeout?: number } | undefined)?.timeout !== undefined;
+      if (isProbe) probeRead += 1;
       // The converge gate's tree-changed probe (and the verify gate's
       // evidence check) both read porcelain. A throwing probe is the
       // AC5c seam: the three-state probe returns "unknown" and the
       // caller falls through to the safety net + verify re-run.
-      if (opts.probeFails) throw new Error("simulated git status failure (AC5c)");
+      if (opts.probeFails && isProbe) throw new Error("simulated git status failure (AC5c)");
       return {
         stdout:
           filesForDiff()
@@ -149,6 +164,9 @@ function makeConvergeExec(
     void execOpts;
     return { stdout: "" };
   };
+  exec.statusReads = () => probeRead;
+  exec.diffReads = () => diffRead;
+  return exec;
 }
 
 async function runConvergeCycle(
@@ -159,6 +177,7 @@ async function runConvergeCycle(
     correctiveFalsy?: boolean;
     probeFails?: boolean;
   },
+  execOut?: { statusReads: () => number; diffReads: () => number },
 ): Promise<WorkState | undefined> {
   const dir = mkdtempSync(path.join(tmpdir(), `converge-${issue}-`));
   try {
@@ -167,12 +186,17 @@ async function runConvergeCycle(
     });
     const wtA = path.join(dir, ".worktrees", `issue-${issue}-task-a`);
     const wtB = path.join(dir, ".worktrees", `issue-${issue}-task-b`);
+    const exec = makeConvergeExec(dir, opts);
+    if (execOut) {
+      execOut.statusReads = exec.statusReads;
+      execOut.diffReads = exec.diffReads;
+    }
     const ctx: DriverContext = {
       pi: makeFakePi().pi,
       repoRoot: dir,
       issue,
       issueBodyFetcherFn: mockIssueBodyOk,
-      verifyExecFn: makeConvergeExec(dir, opts),
+      verifyExecFn: exec,
       dispatchFn: async (_pi, spec, dOpts) => {
         const label = dOpts?.label ?? spec.role;
         if (label === "explore") return mkResult({ text: EXPLORE_SPEC });
@@ -308,13 +332,21 @@ async function runConvergeCycle(
 
   // --- AC5c: a throwing `git status` probe (the tree-changed check in the
   // converge gate) must route like `changed` — the safety net + verify
-  // re-run still happen — rather than skipping them. The cap fires (the
-  // corrective did not land beta) but the code path through the throwing
-  // probe is exercised. The state is identical to AC3 (the cap fires
-  // either way); what distinguishes this test is that the probe threw
-  // and the gate did NOT silently skip the re-run.
+  // re-run still happen — rather than skipping them. The discriminator:
+  // the gate handler's probe is the only porcelain read in this cycle that
+  // passes a `timeout` option (added with the probe's bound), so the mock
+  // counts only probe reads. A re-run happened ⇔ the probe read fired
+  // exactly once; the old skip path would have fired zero.
   // ---
-  const s5c = await runConvergeCycle(1004, { secondDiffHasBeta: false, probeFails: true });
+  const counts5c: { statusReads: () => number; diffReads: () => number } = {
+    statusReads: () => 0,
+    diffReads: () => 0,
+  };
+  const s5c = await runConvergeCycle(
+    1004,
+    { secondDiffHasBeta: false, probeFails: true },
+    counts5c,
+  );
   const cap5c = s5c?.eventLog.find(
     (e) => e.kind === "cap-hit" && e.cap === "develop-incomplete-deliverables",
   );
@@ -326,6 +358,10 @@ async function runConvergeCycle(
   assert(
     redispatches5c.length === 1,
     "AC5c: the corrective re-dispatch fired exactly once (the probe failure did not skip the gate)",
+  );
+  assert(
+    counts5c.statusReads() === 1,
+    "AC5c: the post-corrective re-run ACTUALLY RAN (the probe's git status read fired exactly once — the old skip path would have fired zero)",
   );
   assert(
     s5c?.pipelineState.status === "handoff" && s5c?.pipelineState.currentStep === "handoff",

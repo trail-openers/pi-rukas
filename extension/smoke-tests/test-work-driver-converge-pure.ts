@@ -256,13 +256,15 @@ assert(
   "prompt: the corrective re-dispatch carries the normalised spec (the LLM-assisted seam)",
 );
 
-// STEP_ORDINAL import sanity — the gate runs at end-of-develop; the ordinal
-// table is the step-ord source the driver loop reads. Assert the shape.
+// STEP_ORDINAL sanity — the gate runs at end-of-develop; the ordinal table
+// is the step-ord source the driver loop reads. Assert the POSITION and
+// the TOTAL: a renumbering of the step table (or a step being dropped or
+// added) would shift develop's number or the total, and both are load-
+// bearing for the "step N/9" badge the operator sees in scrollback.
 assert(
-  typeof STEP_ORDINAL.develop === "object" && STEP_ORDINAL.develop !== null,
-  "sanity: STEP_ORDINAL.develop is a well-formed object",
+  STEP_ORDINAL.develop.num === 4 && STEP_ORDINAL.develop.total === 9,
+  "sanity: develop is step 4 of 9 in the STEP_ORDINAL table (a renumbering breaks the badge)",
 );
-void STEP_ORDINAL;
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);
