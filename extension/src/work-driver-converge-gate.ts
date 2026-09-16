@@ -86,7 +86,12 @@ export async function runConvergeGateHandler(
   const correctiveCwd = owner && owner !== "repoRoot" ? owner : firstWorktreeDir(next);
 
   const prompt = buildConvergeCorrectivePrompt(next, converge);
-  let correctiveRan = false;
+  // Total partition over the dispatch outcome: { ok: true, ok: false,
+  // no-result (undefined/null), threw }. A killed child returns a
+  // DispatchResult (ok: false) rather than throwing; a falsy result is
+  // the same class as ok:false — a FAILED corrective, not a completed one.
+  // The success path is driven on the POSITIVE signal (ok === true), so a
+  // missing result can never fall through and present as a completion.
   let correctiveNote: string | undefined;
   try {
     const retry = await dispatchFn(ctx.pi, {
@@ -94,12 +99,10 @@ export async function runConvergeGateHandler(
       prompt,
       cwd: correctiveCwd,
     });
-    if (retry?.ok) {
-      correctiveRan = true;
-    } else if (retry) {
-      // A killed child returns a DispatchResult (ok: false) rather than
-      // throwing — that is a FAILED corrective, not a completed one.
-      correctiveNote = "corrective re-dispatch FAILED (child reported failure)";
+    if (retry?.ok !== true) {
+      correctiveNote = retry
+        ? "corrective re-dispatch FAILED (child reported failure)"
+        : "corrective re-dispatch FAILED (no result returned)";
     }
   } catch (err) {
     correctiveNote = `corrective re-dispatch FAILED (${String(err).slice(0, 200)})`;
@@ -129,10 +132,13 @@ export async function runConvergeGateHandler(
     at: Date.now(),
   });
 
-  // Did the corrective child actually change the tree? If not, the safety
-  // net + full verify re-run prove nothing new — skip them and go straight
-  // to the second converge pass (or the cap).
-  if (!(await treeChangedByCorrective(ctx, correctiveCwd))) {
+  // Did the corrective child actually change the tree? A CONFIRMED-clean
+  // tree skips the safety net + full verify re-run (they would prove
+  // nothing new). "unknown" — the cwd was outside repoRoot or the probe
+  // threw — falls through to the re-run: a redundant-but-correct re-run
+  // is the right cost for uncertainty; a skipped gate is not.
+  const treeState = await treeChangedByCorrective(ctx, correctiveCwd);
+  if (treeState === "unchanged") {
     trace("work-driver: corrective re-dispatch left no tree changes — skipping the verify re-run");
   } else {
     // The corrective child left new work in the worktree and the diff
@@ -185,28 +191,39 @@ export async function runConvergeGateHandler(
 }
 
 /**
- * Cheap dirty-tree probe for the corrective's worktree: non-empty
- * `git status --porcelain` means the child left (uncommitted) work behind.
- * The worktrees map is operator/persisted data — a path that does not lie
- * under repoRoot is skipped rather than shelled into (same stance as
- * readEndOfDevelopDiff's stale-path skip). An unreadable worktree is
- * treated as "unchanged" (the conservative, skip-the-rerun direction).
+ * Dirty-tree probe for the corrective's worktree, three states:
+ *
+ *   - `changed`   — non-empty `git status --porcelain`; the child left
+ *     (uncommitted) work behind, the gates must judge the new state.
+ *   - `unchanged` — the probe RAN and the tree is clean; the caller may
+ *     skip the safety net + verify re-run (nothing new to judge).
+ *   - `unknown`   — the probe could not run: no cwd, a persisted worktree
+ *     path outside repoRoot (operator data — skipped rather than shelled
+ *     into, same stance as readEndOfDevelopDiff's stale-path skip), or
+ *     `git status` threw. The caller treats this like `changed`: a
+ *     redundant-but-correct re-run beats a silently skipped gate.
  */
 async function treeChangedByCorrective(
   ctx: DriverContext,
   cwd: string | undefined,
-): Promise<boolean> {
-  if (!cwd) return false;
+): Promise<"unchanged" | "changed" | "unknown"> {
+  if (!cwd) return "unknown";
   const root = ctx.repoRoot;
-  if (cwd !== root && !cwd.startsWith(`${root}${path.sep}`)) return false;
+  if (cwd !== root && !cwd.startsWith(`${root}${path.sep}`)) {
+    trace(`work-driver: converge gate — cannot probe worktree ${cwd}: outside repoRoot`);
+    return "unknown";
+  }
   try {
     const { stdout } = await (ctx.verifyExecFn ?? execp)("git status --porcelain", {
       cwd,
       maxBuffer: 1024 * 1024,
     });
-    return stdout.trim().length > 0;
-  } catch {
-    return false;
+    return stdout.trim().length > 0 ? "changed" : "unchanged";
+  } catch (err) {
+    trace(
+      `work-driver: converge gate — worktree probe failed in ${cwd}: ${String(err).slice(0, 200)}`,
+    );
+    return "unknown";
   }
 }
 

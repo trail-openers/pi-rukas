@@ -12,7 +12,7 @@
 import path from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { type DriverContext } from "../src/work-driver-context.ts";
+import { type DriverContext, STEP_ORDINAL } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import {
   buildConvergeCorrectivePrompt,
@@ -92,49 +92,6 @@ function makeFakePi(): { pi: ExtensionAPI; sent: string[] } {
   assert(
     v5.absent.length === 0,
     "classify: an annotated path ('src/alpha.ts (new)') still matches the diff",
-  );
-
-  // --- The AC2 fixture case as a pure function: diff omits one of two →
-  // the corrective prompt names exactly the missing deliverable. ---
-  const lowerDelivs = [
-    { id: "d1", description: "alpha", paths: ["src/alpha.ts"] },
-    { id: "d2", description: "beta", paths: ["src/beta.ts"] },
-  ];
-  const vFix = classifyDeliverables(lowerDelivs, new Set(["src/alpha.ts"]));
-  const spec = {
-    issue: 999,
-    pipelineState: {
-      workstreams: {
-        "task-b": { id: "task-b", scope: "beta", paths: ["src/beta.ts"], outOfScope: [] },
-      },
-      worktrees: {
-        "task-b": "/tmp/fake-wt-task-b",
-      },
-      normalisedSpec: {
-        intent: "x",
-        deliverables: lowerDelivs,
-        acceptanceCriteria: ["alpha implemented", "beta implemented"],
-        outOfScope: [],
-        assumptions: [],
-        openQuestions: [],
-        evidence: [],
-        verdict: "proceed" as const,
-        rationale: "",
-      },
-    },
-  } as unknown as WorkState;
-  const prompt = buildConvergeCorrectivePrompt(spec, vFix);
-  assert(
-    prompt.includes("d2") && prompt.includes("src/beta.ts"),
-    "prompt: the corrective re-dispatch names the missing deliverable (d2 / src/beta.ts)",
-  );
-  assert(
-    prompt.includes("task-b"),
-    "prompt: the corrective re-dispatch attributes the missing path to its owning workstream",
-  );
-  assert(
-    prompt.includes("acceptance criteria"),
-    "prompt: the corrective re-dispatch carries the normalised spec (the LLM-assisted seam)",
   );
 
   // --- Recovery + explain for the new cap. ---
@@ -227,7 +184,7 @@ function makeFakePi(): { pi: ExtensionAPI; sent: string[] } {
 
 // --- The empty-spec skip through the gate's own entry (no spec) ---
 {
-  const dir = mkdtempSync(path.join(tmpdir(), "converge-nospec-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "converge-pure-nospec-"));
   try {
     const state = initialState(1003, 1000);
     const withSpec: WorkState = {
@@ -255,6 +212,57 @@ function makeFakePi(): { pi: ExtensionAPI; sent: string[] } {
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+// --- The AC2 fixture case as a pure function: diff omits one of two →
+// the corrective prompt names exactly the missing deliverable. ---
+const lowerDelivs = [
+  { id: "d1", description: "alpha", paths: ["src/alpha.ts"] },
+  { id: "d2", description: "beta", paths: ["src/beta.ts"] },
+];
+const vFix = classifyDeliverables(lowerDelivs, new Set(["src/alpha.ts"]));
+const spec = {
+  issue: 999,
+  pipelineState: {
+    workstreams: {
+      "task-b": { id: "task-b", scope: "beta", paths: ["src/beta.ts"], outOfScope: [] },
+    },
+    worktrees: {
+      "task-b": "/tmp/fake-wt-task-b",
+    },
+    normalisedSpec: {
+      intent: "x",
+      deliverables: lowerDelivs,
+      acceptanceCriteria: ["alpha implemented", "beta implemented"],
+      outOfScope: [],
+      assumptions: [],
+      openQuestions: [],
+      evidence: [],
+      verdict: "proceed" as const,
+      rationale: "",
+    },
+  },
+} as unknown as WorkState;
+const prompt = buildConvergeCorrectivePrompt(spec, vFix);
+assert(
+  prompt.includes("d2") && prompt.includes("src/beta.ts"),
+  "prompt: the corrective re-dispatch names the missing deliverable (d2 / src/beta.ts)",
+);
+assert(
+  prompt.includes("task-b"),
+  "prompt: the corrective re-dispatch attributes the missing path to its owning workstream",
+);
+assert(
+  prompt.includes("acceptance criteria"),
+  "prompt: the corrective re-dispatch carries the normalised spec (the LLM-assisted seam)",
+);
+
+// STEP_ORDINAL import sanity — the gate runs at end-of-develop; the ordinal
+// table is the step-ord source the driver loop reads. Assert the shape.
+assert(
+  typeof STEP_ORDINAL.develop === "object" && STEP_ORDINAL.develop !== null,
+  "sanity: STEP_ORDINAL.develop is a well-formed object",
+);
+void STEP_ORDINAL;
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

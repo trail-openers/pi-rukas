@@ -103,7 +103,7 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 
 function makeConvergeExec(
   _dir: string,
-  opts: { secondDiffHasBeta?: boolean },
+  opts: { secondDiffHasBeta?: boolean; probeFails?: boolean },
 ): NonNullable<DriverContext["verifyExecFn"]> {
   // The diff name-set the converge gate sees: the gate reads the committed
   // diff once per worktree per pass (two worktrees here), and the develop
@@ -122,6 +122,11 @@ function makeConvergeExec(
   };
   return async (cmd, execOpts) => {
     if (cmd === "git status --porcelain") {
+      // The converge gate's tree-changed probe (and the verify gate's
+      // evidence check) both read porcelain. A throwing probe is the
+      // AC5c seam: the three-state probe returns "unknown" and the
+      // caller falls through to the safety net + verify re-run.
+      if (opts.probeFails) throw new Error("simulated git status failure (AC5c)");
       return {
         stdout:
           filesForDiff()
@@ -148,7 +153,12 @@ function makeConvergeExec(
 
 async function runConvergeCycle(
   issue: number,
-  opts: { secondDiffHasBeta?: boolean; correctiveOk?: boolean },
+  opts: {
+    secondDiffHasBeta?: boolean;
+    correctiveOk?: boolean;
+    correctiveFalsy?: boolean;
+    probeFails?: boolean;
+  },
 ): Promise<WorkState | undefined> {
   const dir = mkdtempSync(path.join(tmpdir(), `converge-${issue}-`));
   try {
@@ -179,6 +189,10 @@ async function runConvergeCycle(
             // killed-child shape, AC5).
             if (opts.correctiveOk === false)
               return mkResult({ role: "developer", ok: false, text: "(child killed)" });
+            // A falsy dispatch result — neither ok:true nor a DispatchResult
+            // (AC5b: undefined must take the failure path, not the success
+            // path).
+            if (opts.correctiveFalsy === true) return undefined;
             return mkResult({ role: "developer", text: "done — implemented the missing work" });
           }
           return mkResult({ role: "developer", text: "done — implemented the assigned work" });
@@ -265,6 +279,57 @@ async function runConvergeCycle(
   assert(
     s5?.pipelineState.status === "handoff" && s5?.pipelineState.currentStep === "handoff",
     "AC5: the failed corrective routes the cycle to handoff",
+  );
+
+  // --- AC5b: a FALSY corrective dispatch result (undefined — neither an
+  // ok:true nor a DispatchResult) must take the same failure path as
+  // ok:false: the cap fires with failure evidence and NO
+  // converge-redispatch marker. The pre-fix code tested `retry?.ok` and
+  // `else if (retry)` — both falsy for undefined — and fell through to
+  // the success path.
+  // ---
+  const s5b = await runConvergeCycle(1003, { secondDiffHasBeta: false, correctiveFalsy: true });
+  const cap5b = s5b?.eventLog.find(
+    (e) => e.kind === "cap-hit" && e.cap === "develop-incomplete-deliverables",
+  );
+  const redispatches5b = s5b?.eventLog.filter((e) => e.kind === "converge-redispatch") ?? [];
+  assert(
+    cap5b !== undefined && redispatches5b.length === 0,
+    "AC5b: a falsy corrective result (undefined) raises the cap WITHOUT the converge-redispatch marker",
+  );
+  assert(
+    cap5b !== undefined && (cap5b.evidence?.includes("corrective re-dispatch FAILED") ?? false),
+    "AC5b: the falsy corrective's cap evidence names the failure (no result returned)",
+  );
+  assert(
+    s5b?.pipelineState.status === "handoff" && s5b?.pipelineState.currentStep === "handoff",
+    "AC5b: the falsy corrective routes the cycle to handoff",
+  );
+
+  // --- AC5c: a throwing `git status` probe (the tree-changed check in the
+  // converge gate) must route like `changed` — the safety net + verify
+  // re-run still happen — rather than skipping them. The cap fires (the
+  // corrective did not land beta) but the code path through the throwing
+  // probe is exercised. The state is identical to AC3 (the cap fires
+  // either way); what distinguishes this test is that the probe threw
+  // and the gate did NOT silently skip the re-run.
+  // ---
+  const s5c = await runConvergeCycle(1004, { secondDiffHasBeta: false, probeFails: true });
+  const cap5c = s5c?.eventLog.find(
+    (e) => e.kind === "cap-hit" && e.cap === "develop-incomplete-deliverables",
+  );
+  const redispatches5c = s5c?.eventLog.filter((e) => e.kind === "converge-redispatch") ?? [];
+  assert(
+    cap5c !== undefined,
+    "AC5c: a throwing git-status probe does NOT suppress the cap (the gate re-ran and classified both absent)",
+  );
+  assert(
+    redispatches5c.length === 1,
+    "AC5c: the corrective re-dispatch fired exactly once (the probe failure did not skip the gate)",
+  );
+  assert(
+    s5c?.pipelineState.status === "handoff" && s5c?.pipelineState.currentStep === "handoff",
+    "AC5c: the cycle still reaches handoff (the throwing probe did not break the cycle)",
   );
 
   // --- AC3: two absences — the corrective also fails to land beta → the
