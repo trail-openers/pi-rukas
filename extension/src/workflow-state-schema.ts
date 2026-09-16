@@ -353,14 +353,15 @@ export interface PipelineState {
    * (committed work / remaining paths / status file). Absent until then.
    */
   capedPartialState?: CapedPartialState;
+  /** #741 — converge gate's per-deliverable classification (implemented/partial/absent/unmeasurable). */
+  convergeEvidence?: {
+    at: number;
+    deliverables: Array<{ id: string; status: string; reason: string }>;
+  };
   /**
-   * PR5 — worktree snapshot captured by `runHandoff` before emitting
-   * the handoff artefact. Lets the operator-facing surfaces
-   * (renderHandoffUserMessage, renderTerminalStatus,
-   * renderHandoffMarkdown) answer WHERE the work is without re-shelling
-   * git on every call. Best-effort: capture failures populate the
-   * snapshot with empty / placeholder fields rather than aborting the
-   * handoff.
+   * PR5 — worktree snapshot captured by `runHandoff`. Lets operator-facing
+   * surfaces answer WHERE the work is without re-shelling git. Best-effort:
+   * capture failures populate empty / placeholder fields rather than aborting.
    */
   handoffSnapshot?: {
     /** `git status --porcelain` paths; capped at 50 entries for budget. */

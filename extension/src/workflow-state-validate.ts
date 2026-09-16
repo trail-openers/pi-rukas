@@ -71,6 +71,8 @@ export const KNOWN_EVENT_KINDS: readonly unknown[] = [
   "widening-scan",
   "memory-write",
   "memory-inject",
+  // #741 — the converge gate's one-shot corrective dispatch marker.
+  "converge-redispatch",
 ];
 
 /** `pipelineState.status` vocabulary. */
@@ -122,6 +124,11 @@ const CAP_HIT_FIXED_LITERALS: readonly unknown[] = [
   // incident shape): distinct from the conflict cap and the verify-failed:
   // develop template. The dropped paths ride in the event's evidence.
   "consolidation-incomplete",
+  // #741 — the converge gate's distinct cap: a plan deliverable is absent
+  // from the end-of-develop diff even after the one-shot corrective
+  // re-dispatch. Distinct from the verify-failed:develop template (the
+  // code builds; the diff is incomplete).
+  "develop-incomplete-deliverables",
   "intent-park",
   "awaiting-human-merge",
   "lens-diff-unreadable",
