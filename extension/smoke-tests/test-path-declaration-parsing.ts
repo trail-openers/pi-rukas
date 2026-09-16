@@ -115,17 +115,20 @@ function assert(cond: boolean, msg: string) {
   // (work-driver-handoff-recovery.ts), consumed by both surfaces; the md
   // presenter is kept in the list so a presenter that inlines its own
   // copy (bypassing the shared decision) still trips the canary.
+  // #744 — the per-cap recipe body was extracted into the caps module
+  // (work-driver-handoff-recovery-caps.ts); the staged-diff canary follows
+  // the literal where it now lives.
   for (const f of ["work-driver-handoff-recovery.ts", "work-driver-prompts-late.ts"]) {
     const src = read(f);
     assert(
       /git apply --3way --binary/.test(src),
       `canary: ${f} advises --3way --binary — it advised --index, which rejects a second workstream on the same file`,
     );
-    assert(
-      /diff --cached --binary/.test(src),
-      `canary: ${f} captures the STAGED diff — it used \`git diff HEAD\`, which silently omits untracked new files`,
-    );
   }
+  assert(
+    /diff --cached --binary/.test(read("work-driver-handoff-recovery-caps.ts")),
+    "canary: work-driver-handoff-recovery-caps.ts captures the STAGED diff — it used `git diff HEAD`, which silently omits untracked new files",
+  );
   // And the driver's own path agrees with what it tells the operator to do.
   assert(
     /git apply --3way --binary/.test(read("work-driver-cherry-pick.ts")),
