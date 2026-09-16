@@ -14,6 +14,7 @@ import {
   runDependentWorkstreams,
 } from "./work-develop-run.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import { runConvergeGateHandler } from "./work-driver-converge-gate.ts";
 import { topologicalDispatchOrder } from "./work-driver-dep-scheduler.ts";
 import { clearDispatch } from "./work-driver-resume.ts";
 import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net.ts";
@@ -151,7 +152,14 @@ async function runDevelopTopological(
   // failed workstream no longer skips the gate for the whole fanout.
   if (hasDevelopEvidence) {
     const gate = await verifyStepOutcome(ctx, next, "develop");
-    if (!gate.ok) {
+    if (gate.ok) {
+      // #741 — the verify gate proves the diff BUILDS; the converge gate
+      // proves it is COMPLETE. Runs only after the verify gate passes (the
+      // issue's stated ordering) — a diff that doesn't build never reaches
+      // the completeness check. Skips silently when disabled, when there is
+      // no normalised spec, or when the diff is unreadable.
+      next = await runConvergeGateHandler(ctx, next, dispatch);
+    } else {
       // #669 — a cherry-pick conflict during the develop-time consolidated
       // verify is a DECOMPOSITION error (two workstreams edited the same
       // lines), not a verify failure: retrying the verify command cannot

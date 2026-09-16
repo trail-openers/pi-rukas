@@ -20,7 +20,7 @@ import { cachedIssueTitle } from "./work-driver-integrate.ts";
 import { findOpenPrForIssue, prPreflightEnabled } from "./work-driver-pr-preflight.ts";
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 
-import { runDevelopTopological } from "./work-develop-run.ts";
+import { runDevelopTopological } from "./work-develop-topological.ts";
 import { salvageKnownDirtyWorktrees } from "./work-driver-branch-salvage.ts";
 import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";

@@ -165,6 +165,18 @@ export type WorkEvent =
       workstreamId: string;
     }
   | {
+      /**
+       * #741 — the end-of-develop converge gate's one-shot corrective
+       * developer dispatch completed (the first absent set was reported to a
+       * re-dispatch). The follow-up gate re-ran; whether it passed is visible
+       * on the next event (cap-hit develop-incomplete-deliverables or step
+       * completion).
+       */
+      kind: "converge-redispatch";
+      step: "develop";
+      at: number;
+    }
+  | {
       kind: "cap-hit";
       at: number;
       /**
@@ -243,6 +255,13 @@ export type WorkEvent =
         // never assembled). The dropped paths live in capEvidence/evidence
         // from the cherry-pick seam's `droppedPaths` diagnostic.
         | "consolidation-incomplete"
+        // #741 — the end-of-develop converge gate (work-driver-converge.ts):
+        // a plan deliverable whose declared paths are absent from the diff
+        // even AFTER the one-shot corrective re-dispatch. Distinct from
+        // verify-failed:develop — the code builds (the verify gate passed);
+        // the diff is INCOMPLETE. The missing deliverables ride in `evidence`
+        // + pipelineState.convergeEvidence.
+        | "develop-incomplete-deliverables"
         // PR17 — emitted by the driver-side outcome verification gate
         // (verifyStepOutcome) when a step's claimed outcome doesn't match
         // executed evidence: develop claimed done but no worktree has any
