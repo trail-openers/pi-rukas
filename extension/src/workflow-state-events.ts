@@ -12,6 +12,7 @@ import type { AdversarialEventFragment } from "./workflow-state-events-adversari
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-leftover.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
+import type { DeferredCreationEventFragment } from "./workflow-state-events-deferred.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import type { SafetyNetCommitEvent } from "./workflow-state-events-safety-net.ts";
 import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
@@ -423,6 +424,23 @@ export type WorkEvent =
       at: number;
       /** Failure tail (truncated) when ok=false. */
       error?: string;
+      /**
+       * #753 — timing record for a `dependsOn` workstream: the epoch-ms at
+       * which the dependency it waited on completed. Optional and additive
+       * (tail-safe: no new event kind). Present only when a dependency was
+       * awaited; the `ms` field keeps its existing meaning (this workstream's
+       * own elapsed time) and is never repurposed.
+       */
+      depCompletedAt?: number;
+      /**
+       * #753 — the underlying failure detail for a DEFERRED worktree-creation
+       * failure (the workstream declared `dependsOn` and its worktree was
+       * not created). Absent on every other branch-completed. Carries the
+       * deferral context (which dependency, which base ref) plus the git
+       * command/exit/stderr (or the DirtyWorktreeError finding) — the
+       * hand-written literal is no longer the sole record.
+       */
+      deferredCreation?: DeferredCreationEventFragment;
     }
   | {
       /**

@@ -234,28 +234,45 @@ export async function runDependentWorkstreams(
   globalBaseSha: string | undefined,
   allIds: string[],
   runOneWorkstream: (id: string, cwd: string) => Promise<{ id: string; ok: boolean }>,
+  /** #753 — the dependency's completion timestamp per dependency id, so the
+   * branch-completed event can record `depCompletedAt`. Undefined for the
+   * caller that does not track per-workstream completion times. */
+  /** #753 — the per-run state (carries `stateRef` for the cap-hit append
+   * on a dirty-leftover refusal). */
+  stateRef: { current: WorkState },
+  /** #753 — the dependency's completion timestamp per dependency id, so the
+   * branch-completed event can record `depCompletedAt`. Undefined when the
+   * caller does not track per-workstream completion times. */
+  depCompletedAtMap?: Record<string, number>,
+  /** #753 — why each failed-or-skipped workstream failed, so the cascade
+   * event can name the workstream that ACTUALLY failed (a cascade is
+   * distinguishable from a legitimate skip). */
+  failureSource?: Record<string, "skipped" | "failed">,
 ): Promise<{ worktrees: Record<string, string>; workstreamBaseShas: Record<string, string> }> {
   const wtRef = { worktrees, workstreamBaseShas };
   for (const id of ids) {
     const ws = workstreams[id];
     const dependsOn = ws?.dependsOn ?? [];
-    const skips = computeSkipCascade([id], dependsOnMap, failedOrSkipped);
+    const depCompletedAt = depCompletedAtMap?.[dependsOn[0] ?? ""];
+    const skips = computeSkipCascade([id], dependsOnMap, failedOrSkipped, failureSource);
     const skipReason = skips.get(id);
     if (skipReason) {
       trace(`work-driver: skipping dependent workstream ${id} — ${skipReason}`);
       failedOrSkipped.add(id);
+      if (failureSource) failureSource[id] = failureSource[id] ?? "skipped";
       verdicts.push({ id, ok: false });
-      if (allIds.length > 1) {
-        branchEvents.push({
-          kind: "branch-completed",
-          step: "develop",
-          workstreamId: id,
-          ok: false,
-          ms: 0,
-          at: Date.now(),
-          error: skipReason,
-        });
-      }
+      // #753 — record for EVERY plan size (the N>1 guard made a
+      // single-workstream failure completely silent).
+      branchEvents.push({
+        kind: "branch-completed",
+        step: "develop",
+        workstreamId: id,
+        ok: false,
+        ms: 0,
+        at: Date.now(),
+        error: skipReason,
+        ...(depCompletedAt !== undefined ? { depCompletedAt } : {}),
+      });
       continue;
     }
     const depResult = await resolveDependentBase(
@@ -273,43 +290,96 @@ export async function runDependentWorkstreams(
         `work-driver: skipping dependent workstream ${id} — ${depResult.skipReason ?? "no fromRef"}`,
       );
       failedOrSkipped.add(id);
+      if (failureSource) failureSource[id] = failureSource[id] ?? "skipped";
       verdicts.push({ id, ok: false });
-      if (allIds.length > 1) {
-        branchEvents.push({
-          kind: "branch-completed",
-          step: "develop",
-          workstreamId: id,
-          ok: false,
-          ms: 0,
-          at: Date.now(),
-          error: depResult.skipReason ?? "could not resolve dependency's post-commit SHA",
-        });
-      }
+      branchEvents.push({
+        kind: "branch-completed",
+        step: "develop",
+        workstreamId: id,
+        ok: false,
+        ms: 0,
+        at: Date.now(),
+        error: depResult.skipReason ?? "could not resolve dependency's post-commit SHA",
+        ...(depCompletedAt !== undefined ? { depCompletedAt } : {}),
+      });
       continue;
     }
-    const createdPath = await createDependentWorktree(
+    const created = await createDependentWorktree(
       execFn,
       ctx.repoRoot,
       ctx.issue,
       id,
       depResult.fromRef,
     );
-    if (!createdPath) {
+    if (created.path === undefined) {
       failedOrSkipped.add(id);
+      if (failureSource) failureSource[id] = "failed";
       verdicts.push({ id, ok: false });
-      if (allIds.length > 1) {
-        branchEvents.push({
-          kind: "branch-completed",
-          step: "develop",
-          workstreamId: id,
-          ok: false,
-          ms: 0,
+      // #753 — the underlying git error is recorded on the event (not a
+      // hand-written literal), plus the deferral context (which dependency,
+      // which base ref, when it completed). The DirtyWorktreeError class
+      // PARKS the cycle (it must never be force-removed); any other class
+      // fails the cycle with the error stated. Either way the cycle does
+      // not advance: a deferred-creation failure is an infrastructure
+      // fault, not a dependency skip.
+      const dep = dependsOn[0] ?? "";
+      const isDirty = created.failure.class === "dirty-leftover";
+      branchEvents.push({
+        kind: "branch-completed",
+        step: "develop",
+        workstreamId: id,
+        ok: false,
+        ms: 0,
+        at: Date.now(),
+        error: isDirty
+          ? `deferred worktree creation refused for ${id} — dirty or retained same-issue leftover at ${created.failure.leftoverPath ?? "(path unknown)"}; parking the cycle (uncommitted work must not be force-removed)`
+          : `deferred worktree creation failed for ${id}: ${created.failure.error?.slice(0, 200) ?? "unknown error"}`,
+        ...(depCompletedAt !== undefined ? { depCompletedAt } : {}),
+        deferredCreation: {
+          waitedFor: dep,
+          resolvedBaseRef: depResult.fromRef,
+          ...(depCompletedAt !== undefined ? { depCompletedAt } : {}),
+          failure: isDirty
+            ? {
+                class: "dirty-leftover" as const,
+                leftoverPath: created.failure.leftoverPath ?? "",
+                error: created.failure.error,
+              }
+            : {
+                class: "create-error" as const,
+                gitCommand: created.failure.gitCommand,
+                exitStatus: created.failure.exitStatus,
+                stderr: created.failure.stderr,
+                error: created.failure.error,
+              },
+        },
+      });
+      if (isDirty) {
+        // #753 — a DirtyWorktreeError (a dirty or retained same-issue
+        // leftover) is the finding. PARK with it stated, naming the leftover
+        // path. It must NOT be force-removed. The park is a cap-hit that the
+        // step router sees on the tail (the standard park shape — see the
+        // branch step's #475/#545 refusal).
+        const leftoverPath = created.failure.leftoverPath ?? "(path unknown)";
+        stateRef.current = appendEvent(stateRef.current, {
+          kind: "cap-hit",
           at: Date.now(),
-          error: `deferred worktree creation failed for ${id}`,
+          cap: "step-failed:develop",
+          reviewRound: stateRef.current.pipelineState.reviewRound,
+          nextStep: "handoff",
         });
+        trace(
+          `work-driver: PARK — deferred worktree creation for ${id} refused by dirty leftover at ${leftoverPath}; parking the cycle (no force-remove)`,
+        );
       }
-      continue;
+      // Stop processing further dependent workstreams: a deferred-creation
+      // failure is an infrastructure fault, and continuing would cascade the
+      // same fault down the chain (each dependent would also fail to create,
+      // each with its own confusing error). The branch-completed event (and,
+      // for the dirty class, the cap-hit) is the record; the loop exits.
+      return wtRef;
     }
+    const createdPath = created.path;
     wtRef.worktrees = { ...wtRef.worktrees, [id]: createdPath };
     const depBaseSha = depResult.baseSha ?? depResult.fromRef;
     if (depBaseSha) wtRef.workstreamBaseShas = { ...wtRef.workstreamBaseShas, [id]: depBaseSha };

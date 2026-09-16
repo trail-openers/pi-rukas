@@ -26,8 +26,7 @@
 
 import { trace } from "./trace.ts";
 import type { WorkState } from "./workflow-state.ts";
-import type { ExecFn } from "./worktree.ts";
-import { worktreeCreate, worktreePath } from "./worktree.ts";
+import { gitErrorDetail, type ExecFn, worktreeCreate, worktreePath, DirtyWorktreeError } from "./worktree.ts";
 
 /**
  * #679 — the dispatch order for a set of workstreams with a depends-on map.
@@ -216,9 +215,20 @@ export async function resolveDependentBase(
  * timing. The worktree name follows the same convention as the branch step:
  * `issue-<N>-<id>` under `.worktrees/`.
  *
- * Returns the created worktree's absolute path, or `undefined` if the
- * worktree could not be created (the caller records the failure and skips
- * the developer dispatch).
+ * Returns the created worktree's absolute path, or a structured failure
+ * record when the worktree could not be created (the caller records it on
+ * the `branch-completed` event and skips the developer dispatch).
+ *
+ * #753 — the failure record carries the UNDERLYING error rather than a
+ * hand-written literal. Two shapes, matched by `class`:
+ *   - "dirty-leftover" — a pre-add guard (DirtyWorktreeError) refused BEFORE
+ *     `git worktree add` ran. There is no git command to record for this
+ *     class; the error text IS the finding (it names the leftover path).
+ *     The caller PARKS the cycle on this class.
+ *   - "create-error" — the creation itself failed (the add, or a guard that
+ *     surfaced as a plain error). `gitCommand` / `exitStatus` / `stderr` are
+ *     filled in when they are known (the add threw), else the error text
+ *     carries the detail via `gitErrorDetail`.
  */
 export async function createDependentWorktree(
   execFn: ExecFn,
@@ -226,8 +236,24 @@ export async function createDependentWorktree(
   issue: number,
   dependentId: string,
   fromRef: string,
-): Promise<string | undefined> {
+): Promise<
+  | { path: string }
+  | {
+      path: undefined;
+      failure: {
+        class: "dirty-leftover" | "create-error";
+        error: string;
+        leftoverPath?: string;
+        gitCommand?: string;
+        exitStatus?: number | null;
+        stderr?: string;
+      };
+    }
+> {
   const name = `issue-${issue}-${dependentId}`;
+  const gitCmd = `git worktree add --detach ${JSON.stringify(
+    worktreePath(repoRoot, name),
+  )} ${JSON.stringify(fromRef)}`;
   try {
     const result = await worktreeCreate(execFn, {
       repoRoot,
@@ -237,12 +263,43 @@ export async function createDependentWorktree(
     trace(
       `work-driver: deferred worktree created for ${dependentId} @ ${fromRef.slice(0, 8)} (${result.path})`,
     );
-    return result.path;
+    return { path: result.path };
   } catch (err) {
+    if (err instanceof DirtyWorktreeError) {
+      trace(
+        `work-driver: deferred worktree creation refused (dirty leftover) for ${dependentId}: ${err.finding.path}`,
+      );
+      return {
+        path: undefined,
+        failure: {
+          class: "dirty-leftover",
+          error: err.message,
+          leftoverPath: err.finding.path,
+        },
+      };
+    }
+    const e = err as { message?: string; stderr?: string; code?: number | string };
+    const detail = gitErrorDetail(err);
     trace(
-      `work-driver: deferred worktree creation failed for ${dependentId}: ${(err as Error).message?.slice(0, 200)}`,
+      `work-driver: deferred worktree creation failed for ${dependentId}: ${detail.slice(0, 200)}`,
     );
-    return undefined;
+    // Only a numeric process exit code is an exit status; a non-zero exit
+    // surfaces as a number from `promisify(exec)` rejections. A string code
+    // (a libuv errno) is not an exit status — leave it undefined.
+    const exitStatus = typeof e.code === "number" ? e.code : undefined;
+    const rawStderr = (e.stderr ?? "").toString().trim();
+    const errorText = e.message ?? (detail || "unknown error");
+    const stderrText = rawStderr || detail;
+    return {
+      path: undefined,
+      failure: {
+        class: "create-error",
+        error: errorText,
+        gitCommand: gitCmd,
+        exitStatus,
+        stderr: stderrText,
+      },
+    };
   }
 }
 
@@ -256,18 +313,30 @@ export async function createDependentWorktree(
  * Returns a map `{ [workstreamId]: skipReason }` for each workstream that
  * should be skipped. The caller records `branch-completed` with `ok: false`
  * and the reason for each skipped workstream.
+ *
+ * #753 — the reason names the workstream that ACTUALLY failed when the
+ * caller knows why it failed, so a dependency cascade is distinguishable
+ * from a primary failure. The optional `failureSource` map carries
+ * `{ [failedId]: "skipped" | "failed" }` for the ids the caller has already
+ * marked failed-or-skipped; when it names the failed dependency, the
+ * reason appends ` (caused by <dep>: <source>)`. When absent (a legitimate
+ * skip, e.g. the dependency produced zero commits), the reason is the
+ * pre-#753 literal — a skip is not a failure and needs no cause.
  */
 export function computeSkipCascade(
   dependentOrdered: string[],
   dependsOnMap: Record<string, string[]>,
   failedOrSkipped: Set<string>,
+  failureSource?: Record<string, "skipped" | "failed">,
 ): Map<string, string> {
   const skips = new Map<string, string>();
   for (const id of dependentOrdered) {
     const deps = dependsOnMap[id] ?? [];
     const failedDep = deps.find((d) => failedOrSkipped.has(d) || skips.has(d));
     if (failedDep) {
-      skips.set(id, `dependency ${failedDep} was skipped or failed`);
+      const source = failureSource?.[failedDep];
+      const cause = source ? ` (caused by ${failedDep}: ${source})` : "";
+      skips.set(id, `dependency ${failedDep} was skipped or failed${cause}`);
     }
   }
   return skips;

@@ -353,6 +353,11 @@ async function runDevelopTopological(
   }
   const { independent, dependentOrdered } = topologicalDispatchOrder(ids, dependsOnMap);
   const stateRef = { current: next };
+  // #753 — per-workstream completion timestamps + a shared map of WHY each
+  // failed-or-skipped workstream failed (the cascade event names the workstream
+  // that ACTUALLY failed; a cascade is distinguishable from a legitimate skip).
+  const depCompletedAtMap: Record<string, number> = {};
+  const failureSource: Record<string, "skipped" | "failed"> = {};
   const runOneWorkstream = makeRunOneWorkstream({
     ctx,
     activeIssues,
@@ -370,7 +375,14 @@ async function runDevelopTopological(
 
   const independentCwds = independent.map((id) => worktrees[id] ?? ctx.repoRoot);
   const independentResults = await Promise.all(
-    independent.map(async (id, i) => runOneWorkstream(id, independentCwds[i] ?? ctx.repoRoot)),
+    independent.map(async (id, i) => {
+      const r = await runOneWorkstream(id, independentCwds[i] ?? ctx.repoRoot);
+      // #753 — record the completion timestamp so a dependent workstream's
+      // branch-completed event can carry `depCompletedAt`.
+      depCompletedAtMap[id] = Date.now();
+      if (!r.ok && !failureSource[id]) failureSource[id] = "failed";
+      return r;
+    }),
   );
 
   // #679 — a workstream is “blocked” for its dependents when its dispatch
@@ -412,6 +424,9 @@ async function runDevelopTopological(
     globalBaseSha,
     ids,
     runOneWorkstream,
+    stateRef,
+    depCompletedAtMap,
+    failureSource,
   );
   worktrees = wtResult.worktrees;
   workstreamBaseShas = wtResult.workstreamBaseShas;

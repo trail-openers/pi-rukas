@@ -104,7 +104,20 @@ export async function routeStepOutcome(
 ): Promise<{ state: WorkState; retry: boolean }> {
   let state = stateIn;
   {
-    const lastEvent = failureEventOf(state.eventLog);
+    // #753 — classify the lifecycle line from the most recent dispatch-failed
+    // / dispatch-failed-provider, scanned back to the step's own step-started
+    // marker (not the array tail). A branch-completed or cap-hit appended
+    // AFTER the dispatch-failed (the N=1 path now records one even on failure)
+    // would otherwise displace the tail and misclassify the line.
+    let lastEvent: WorkEvent | undefined;
+    for (let i = state.eventLog.length - 1; i >= 0; i--) {
+      const e = state.eventLog[i];
+      if (!e || e.kind === "step-started") break;
+      if (e.kind === "dispatch-failed" || e.kind === "dispatch-failed-provider") {
+        lastEvent = e;
+        break;
+      }
+    }
     const elapsed = Date.now() - stepStartedAt;
     if (lastEvent?.kind === "dispatch-failed" || lastEvent?.kind === "dispatch-failed-provider") {
       // #314 — classify once, derive both reason and retry policy.
@@ -195,10 +208,27 @@ export async function routeStepOutcome(
   // dispatch-failed branch and would silently advance the cycle into
   // wasted downstream work (the #553 cascade root).
   {
-    const tail = state.eventLog[state.eventLog.length - 1];
+    // #753 — scan back to the most recent dispatch-failed / dispatch-failed-
+    // provider event, rather than reading the array tail. A step can append
+    // a `branch-completed` (or a `cap-hit`) AFTER the dispatch-failed it is
+    // classifying (the N=1 single-workstream path now records a
+    // branch-completed even when it fails), which displaces the tail and
+    // would otherwise lose the signal. The scan is bounded by the step's own
+    // `step-started` marker so it can never reach back into a previous step.
+    // `failureEventOf` does the same for fan-outs; this is the single-dispatch
+    // form of the same idea.
+    let tail: WorkEvent | undefined;
+    for (let i = state.eventLog.length - 1; i >= 0; i--) {
+      const e = state.eventLog[i];
+      if (!e || e.kind === "step-started") break;
+      if (e.kind === "dispatch-failed" || e.kind === "dispatch-failed-provider") {
+        tail = e;
+        break;
+      }
+    }
     const isDispatchFail =
       tail?.kind === "dispatch-failed" || tail?.kind === "dispatch-failed-provider";
-    if (isDispatchFail) {
+    if (isDispatchFail && tail) {
       const policy = STEP_FAILURE_POLICY[step];
       // #308 — transient failures on HALT-class steps get a bounded
       // retry with backoff BEFORE the halt-cascade. The work was
