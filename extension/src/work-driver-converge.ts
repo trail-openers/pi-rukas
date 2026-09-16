@@ -71,7 +71,13 @@ export interface ConvergeDeliverableResult {
 }
 
 export interface ConvergeVerdict {
-  /** The diff could not be read at all — the gate degrades (no failure). */
+  /**
+   * Reserved for a future readable-but-incomplete diff reading (e.g. a
+   * per-worktree partial failure the gate wants to surface). Today the
+   * only unreadable path returns `null` before classification, so this is
+   * always `false` — the gate degrades to pass rather than emitting a
+   * half-classified verdict.
+   */
   diffUnreadable: boolean;
   deliverables: ConvergeDeliverableResult[];
   absent: ConvergeDeliverableResult[];
@@ -108,9 +114,16 @@ export async function readEndOfDevelopDiff(
   for (const [wsId, cwd] of Object.entries(worktrees)) {
     // The ops-fallback `{ default: "repoRoot" }` placeholder is NOT a
     // directory — it means "the repo root checkout". Resolve it; anything
-    // else relative must be rooted at the driver's repoRoot.
+    // else relative must be rooted at the driver's repoRoot. An absolute
+    // path that does NOT lie under repoRoot is the same stale-path class
+    // and is skipped — shelling git with a cwd from the persisted map taken
+    // verbatim would read an arbitrary directory tree.
     const dir =
       cwd === "repoRoot" ? repoRoot : path.isAbsolute(cwd) ? cwd : path.join(repoRoot, cwd);
+    if (dir !== repoRoot && !dir.startsWith(`${repoRoot}${path.sep}`)) {
+      trace(`work-driver: converge gate — skipping worktree ${wsId}: ${dir} is outside repoRoot`);
+      continue;
+    }
     const opts = { cwd: dir, maxBuffer: 4 * 1024 * 1024 };
     // Committed diff against this workstream's effective base (the per-
     // workstream entry wins over the global baseSha — the same fallback
@@ -262,7 +275,12 @@ export function buildConvergeCorrectivePrompt(state: WorkState, verdict: Converg
     const desc = spec?.deliverables.find((d) => d.id === a.id)?.description ?? a.id;
     list.push(`- ${a.id}: ${desc} — missing path(s): ${a.missing.join(", ")}`);
     missingByOwner.set(owner, list);
-  }
+  } // The owner key IS the attribution the corrective child needs (the fix
+  // must land in the owning workstream's worktree) — emit it, grouped:
+  const missingLines = [...missingByOwner.entries()].flatMap(([owner, list]) => [
+    `  [workstream ${owner}]`,
+    ...list,
+  ]);
   const specBlock = spec
     ? [
         "",
@@ -284,7 +302,7 @@ export function buildConvergeCorrectivePrompt(state: WorkState, verdict: Converg
     "end-to-end, commit it in your worktree, and re-run the local quality gates.",
     "",
     "Missing deliverable(s):",
-    ...[...missingByOwner.values()].flat(),
+    ...missingLines,
     ...specBlock,
     "Do NOT touch anything outside your declared scope. When done, list the deliverable(s)",
     "you implemented and the files changed.",
@@ -301,4 +319,27 @@ function workstreamsOwningPath(state: WorkState, missing: string[]): string | nu
     if (missing.some((p) => declared.includes(p))) owners.add(id);
   }
   return owners.size > 0 ? [...owners].join(", ") : null;
+}
+
+/**
+ * The FIRST workstream id that declared at least one of the missing paths
+ * (the converge gate handler uses this to dispatch the corrective re-dispatch
+ * with the owning worktree's cwd, so the fix lands where the deliverable
+ * belongs). `null` when no workstream claims the paths (the caller falls
+ * back).
+ */
+export function workstreamOwnsMissingPaths(
+  state: WorkState,
+  absent: ConvergeDeliverableResult[],
+): string | null {
+  const missing = new Set(absent.flatMap((a) => a.missing));
+  if (missing.size === 0) return null;
+  const workstreams = state.pipelineState.workstreams ?? {};
+  for (const [id, ws] of Object.entries(workstreams)) {
+    const declared = (ws?.paths ?? []).map(normaliseDeclaredPath);
+    for (const p of missing) {
+      if (declared.includes(p)) return id;
+    }
+  }
+  return null;
 }

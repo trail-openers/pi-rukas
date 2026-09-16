@@ -5,23 +5,17 @@
  * The verify gate proves the diff BUILDS; the converge gate proves it is
  * COMPLETE (cross-checks the diff against the plan's deliverables).
  *
- * Part 1 drives the real `runWorkDriver` with a scripted dispatchFn +
- * verifyExecFn. Part 2 exercises the pure classification + prompt +
- * recovery/explain functions. Part 3 covers the escape hatch.
+ * Drives the real `runWorkDriver` with a scripted dispatchFn +
+ * verifyExecFn (the AC2/AC3/AC4/AC5 end-to-end cases) plus the escape
+ * hatch. The pure classification + prompt + recovery/explain functions
+ * live in the sibling test-work-driver-converge-pure.ts.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { type DriverContext, STEP_ORDINAL } from "../src/work-driver-context.ts";
-import { explainCap } from "../src/work-driver-explain.ts";
-import {
-  buildConvergeCorrectivePrompt,
-  classifyDeliverables,
-  convergeGateEnabled,
-  runConvergeGate,
-} from "../src/work-driver-converge.ts";
-import { recoveryStepsForCap } from "../src/work-driver-handoff-recovery.ts";
+import { type DriverContext } from "../src/work-driver-context.ts";
+import { convergeGateEnabled, runConvergeGate } from "../src/work-driver-converge.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState, type WorkState } from "../src/workflow-state.ts";
 
@@ -111,29 +105,29 @@ function makeConvergeExec(
   _dir: string,
   opts: { secondDiffHasBeta?: boolean },
 ): NonNullable<DriverContext["verifyExecFn"]> {
-  // The diff name-set the converge gate sees:
-  //   first converge pass  — alpha.ts only (task-b's deliverable ABSENT)
-  //   second converge pass — alpha.ts (+ beta.ts when the corrective worked)
+  // The diff name-set the converge gate sees: the gate reads the committed
+  // diff once per worktree per pass (two worktrees here), and the develop
+  // verify gate reads it once per worktree too, BEFORE the gate runs:
+  //
+  //   diffRead 1-2  — develop verify gate: alpha.ts only
+  //   diffRead 3-4  — converge gate, pass 1: alpha.ts only (D2 ABSENT)
+  //   diffRead 5+   — converge gate, pass 2 (after the corrective): both
+  //                    files when the corrective worked
   let diffRead = 0;
   const filesForDiff = (): string[] => {
-    // diffRead 0 = before any diff read. The develop verify gate reads the
-    // diff first (diffRead 0 → 1). The converge gate's first read is
-    // diffRead 1 (after the increment); its second read (post-corrective)
-    // is diffRead 2.
-    //
-    // For the "secondDiffHasBeta" case the corrective worked, so both files
-    // are present from the converge gate's SECOND read. The verify gate's
-    // diff read is diffRead 1 (after increment), converge pass 1 is
-    // diffRead 2, converge pass 2 is diffRead 3. So both files appear
-    // from diffRead >= 3.
-    if (diffRead >= 3 && opts.secondDiffHasBeta) {
+    if (diffRead >= 5 && opts.secondDiffHasBeta) {
       return ["extension/src/alpha.ts", "extension/src/beta.ts"];
     }
     return ["extension/src/alpha.ts"];
   };
   return async (cmd, execOpts) => {
     if (cmd === "git status --porcelain") {
-      return { stdout: filesForDiff().map((f) => `M  ${f}`).join("\n") + "\n" };
+      return {
+        stdout:
+          filesForDiff()
+            .map((f) => `M  ${f}`)
+            .join("\n") + "\n",
+      };
     }
     if (cmd.startsWith("git diff --name-only")) {
       diffRead += 1;
@@ -154,7 +148,7 @@ function makeConvergeExec(
 
 async function runConvergeCycle(
   issue: number,
-  opts: { secondDiffHasBeta?: boolean },
+  opts: { secondDiffHasBeta?: boolean; correctiveOk?: boolean },
 ): Promise<WorkState | undefined> {
   const dir = mkdtempSync(path.join(tmpdir(), `converge-${issue}-`));
   try {
@@ -179,6 +173,14 @@ async function runConvergeCycle(
             text: `branch: ${BRANCH}\n\n## Worktrees\n- task-a: ${wtA}\n- task-b: ${wtB}`,
           });
         if (label === "developer" || label?.startsWith("developer[")) {
+          const isCorrective = label === "developer";
+          if (isCorrective) {
+            // A failed corrective (child returns ok:false — the documented
+            // killed-child shape, AC5).
+            if (opts.correctiveOk === false)
+              return mkResult({ role: "developer", ok: false, text: "(child killed)" });
+            return mkResult({ role: "developer", text: "done — implemented the missing work" });
+          }
           return mkResult({ role: "developer", text: "done — implemented the assigned work" });
         }
         if (label === "adversarial")
@@ -196,7 +198,8 @@ async function runConvergeCycle(
           return mkResult({ role: "ops", text: "Committed and pushed.\npr: 999" });
         if (label === "ops:ci") return mkResult({ role: "ops", text: "ci-status: success" });
         if (label === "ops:merged") return mkResult({ role: "ops", text: "merged" });
-        if (label === "ops:handoff") return mkResult({ role: "ops", text: "Posted.\nlabel: applied" });
+        if (label === "ops:handoff")
+          return mkResult({ role: "ops", text: "Posted.\nlabel: applied" });
         return mkResult({ role: spec.role, text: "ok" });
       },
     };
@@ -232,14 +235,36 @@ async function runConvergeCycle(
       s1.pipelineState.convergeEvidence.deliverables.length >= 2,
     "AC2: convergeEvidence was persisted with per-deliverable status",
   );
-  const d2 = s1?.pipelineState.convergeEvidence?.deliverables.find((d) => d.id === "D2");
+  const d2 = s1?.pipelineState.convergeEvidence?.deliverables.find((d) => d.id === "d2");
   assert(
     d2?.status === "implemented",
-    "AC2: after the corrective re-dispatch, D2 re-classifies as implemented (the gate re-ran on the new diff)",
+    "AC2: after the corrective re-dispatch, d2 re-classifies as implemented (the gate re-ran on the new diff)",
   );
   assert(
     s1?.pipelineState.status === "running" || s1?.pipelineState.status === "merged",
     "AC2: the cycle did NOT hand off (it proceeded past develop)",
+  );
+
+  // --- AC5: a FAILED corrective (child returns ok:false — the documented
+  // killed-child shape, not a throw) must NOT present as a completeness
+  // verdict: the cap fires, but its evidence says the corrective never ran.
+  // ---
+  const s5 = await runConvergeCycle(1002, { secondDiffHasBeta: false, correctiveOk: false });
+  const cap5 = s5?.eventLog.find(
+    (e) => e.kind === "cap-hit" && e.cap === "develop-incomplete-deliverables",
+  );
+  const redispatches5 = s5?.eventLog.filter((e) => e.kind === "converge-redispatch") ?? [];
+  assert(
+    cap5 !== undefined && redispatches5.length === 0,
+    "AC5: a failed corrective (ok:false) raises the cap WITHOUT the converge-redispatch marker",
+  );
+  assert(
+    cap5 !== undefined && (cap5.evidence?.includes("corrective re-dispatch FAILED") ?? false),
+    "AC5: the failed corrective's cap evidence says it did not run (not a completeness verdict)",
+  );
+  assert(
+    s5?.pipelineState.status === "handoff" && s5?.pipelineState.currentStep === "handoff",
+    "AC5: the failed corrective routes the cycle to handoff",
   );
 
   // --- AC3: two absences — the corrective also fails to land beta → the
@@ -254,11 +279,11 @@ async function runConvergeCycle(
   );
   assert(
     cap3 !== undefined &&
-      (cap3.evidence?.includes("D2") ||
+      (cap3.evidence?.includes("d2") ||
         cap3.evidence?.includes("beta") ||
-        s3?.pipelineState.convergeEvidence?.deliverables.find((d) => d.id === "D2")?.status ===
+        s3?.pipelineState.convergeEvidence?.deliverables.find((d) => d.id === "d2")?.status ===
           "absent"),
-    "AC3: the cap names the missing deliverable (evidence or convergeEvidence carries D2/beta)",
+    "AC3: the cap names the missing deliverable (evidence or convergeEvidence carries d2/beta)",
   );
   const redispatches3 = s3?.eventLog.filter((e) => e.kind === "converge-redispatch") ?? [];
   assert(
@@ -310,7 +335,12 @@ async function runConvergeCycle(
         if (cmd === "git status --porcelain") return { stdout: "M  src/other.ts\n" };
         return { stdout: "" };
       };
-      const ctx: DriverContext = { pi: makeFakePi().pi, repoRoot: dir, issue: 1001, verifyExecFn: exec };
+      const ctx: DriverContext = {
+        pi: makeFakePi().pi,
+        repoRoot: dir,
+        issue: 1001,
+        verifyExecFn: exec,
+      };
       const verdict = await runConvergeGate(ctx, withSpec);
       gateSkipped = verdict === null;
     } finally {
@@ -322,169 +352,6 @@ async function runConvergeCycle(
   }
   assert(gateSkipped, "AC4: disabled hatch skips silently (gate returns null — no classification)");
 }
-
-// --- Part 2: pure classification + recovery + explain seams ---
-
-{
-  const twoDelivs = [
-    { id: "D1", description: "alpha", paths: ["src/alpha.ts"] },
-    { id: "D2", description: "beta", paths: ["src/beta.ts"] },
-  ];
-  // 1 of 2 present → D2 absent.
-  const v1 = classifyDeliverables(twoDelivs, new Set(["src/alpha.ts"]));
-  assert(
-    v1.absent.length === 1 && v1.absent[0].id === "D2" && v1.deliverables[0].status === "implemented",
-    "classify: one of two declared deliverables in the diff → the other is ABSENT",
-  );
-  // Both absent.
-  const v2 = classifyDeliverables(twoDelivs, new Set(["src/other.ts"]));
-  assert(v2.absent.length === 2, "classify: neither declared path in the diff → both ABSENT");
-  // Partial: D1 has two paths, one present.
-  const vPart = classifyDeliverables(
-    [{ id: "D1", description: "alpha", paths: ["src/alpha.ts", "src/alpha2.ts"] }],
-    new Set(["src/alpha.ts"]),
-  );
-  assert(
-    vPart.partial.length === 1 && vPart.absent.length === 0,
-    "classify: some-but-not-all declared paths present → PARTIAL (never blocks)",
-  );
-  // Directory declaration covers its contents.
-  const v3 = classifyDeliverables(
-    [{ id: "D1", description: "alpha", paths: ["src/alpha"] }],
-    new Set(["src/alpha/x.ts"]),
-  );
-  assert(v3.absent.length === 0, "classify: a directory declaration is satisfied by files beneath it");
-  // Prose deliverable → unmeasurable, never blocks.
-  const v4 = classifyDeliverables([{ id: "D1", description: "alpha", paths: [] }], new Set());
-  assert(
-    v4.deliverables[0].status === "unmeasurable" && v4.absent.length === 0,
-    "classify: a prose deliverable (no paths) is unmeasurable and never absent",
-  );
-  // Annotation normalisation: "src/alpha.ts (new)" reads as src/alpha.ts.
-  const v5 = classifyDeliverables(
-    [{ id: "D1", description: "alpha", paths: ["src/alpha.ts (new)"] }],
-    new Set(["src/alpha.ts"]),
-  );
-  assert(v5.absent.length === 0, "classify: an annotated path ('src/alpha.ts (new)') still matches the diff");
-
-  // --- The AC2 fixture case as a pure function: diff omits one of two →
-  // the corrective prompt names exactly the missing deliverable. ---
-  const vFix = classifyDeliverables(twoDelivs, new Set(["src/alpha.ts"]));
-  const spec = {
-    issue: 999,
-    pipelineState: {
-      workstreams: {
-        "task-b": { id: "task-b", scope: "beta", paths: ["src/beta.ts"], outOfScope: [] },
-      },
-      normalisedSpec: {
-        intent: "x",
-        deliverables: twoDelivs,
-        acceptanceCriteria: ["alpha implemented", "beta implemented"],
-        outOfScope: [],
-        assumptions: [],
-        openQuestions: [],
-        evidence: [],
-        verdict: "proceed" as const,
-        rationale: "",
-      },
-    },
-  } as unknown as WorkState;
-  const prompt = buildConvergeCorrectivePrompt(spec, vFix);
-  assert(
-    prompt.includes("D2") && prompt.includes("src/beta.ts"),
-    "prompt: the corrective re-dispatch names the missing deliverable (D2 / src/beta.ts)",
-  );
-  assert(
-    prompt.includes("task-b"),
-    "prompt: the corrective re-dispatch attributes the missing path to its owning workstream",
-  );
-  assert(
-    prompt.includes("acceptance criteria"),
-    "prompt: the corrective re-dispatch carries the normalised spec (the LLM-assisted seam)",
-  );
-
-  // --- Recovery + explain for the new cap. ---
-  const base = initialState(1002, 1000);
-  const capState: WorkState = {
-    ...base,
-    pipelineState: {
-      ...base.pipelineState,
-      branchName: "feature/issue-1002",
-      convergeEvidence: {
-        at: 1,
-        deliverables: [
-          { id: "D1", status: "implemented", reason: "all 1 declared path(s) in the diff" },
-          { id: "D2", status: "absent", reason: "none of 1 declared path(s) in the diff (src/beta.ts)" },
-          { id: "D3", status: "partial", reason: "only 1/2 declared path(s) in the diff" },
-        ],
-      },
-    },
-  };
-  // cap-hit is LAST in the log — the reverse scan in recoveryStepsForCap
-  // must find it (the cap is on the event, not on pipelineState).
-  capState.eventLog.push({
-    kind: "cap-hit",
-    at: 2,
-    cap: "develop-incomplete-deliverables",
-    reviewRound: 0,
-    nextStep: "handoff",
-    evidence: "missing deliverable(s): D2 (src/beta.ts)",
-  });
-  const recovered = recoveryStepsForCap(capState);
-  assert(
-    recovered.cap === "develop-incomplete-deliverables" &&
-      recovered.steps.some((s) => s.section === "develop-incomplete-deliverables"),
-    "recovery: develop-incomplete-deliverables has a recovery section (inspect + re-run + abandon)",
-  );
-  const explain = explainCap("develop-incomplete-deliverables", capState);
-  assert(
-    explain.includes("INCOMPLETE") && explain.length > 80,
-    "explain: the cap renders an operator-readable sentence naming the completeness gap",
-  );
-  assert(
-    explain.includes("D3") || explain.includes("partial"),
-    "explain: the partial deliverable is surfaced as a non-blocking warning",
-  );
-}
-
-// --- The disabled-hatch silence through the gate's own entry (no spec) ---
-{
-  const dir = mkdtempSync(path.join(tmpdir(), "converge-nospec-"));
-  try {
-    const state = initialState(1003, 1000);
-    const withSpec: WorkState = {
-      ...state,
-      pipelineState: {
-        ...state.pipelineState,
-        worktrees: { default: dir },
-        normalisedSpec: {
-          intent: "x",
-          deliverables: [],
-          acceptanceCriteria: [],
-          outOfScope: [],
-          assumptions: [],
-          openQuestions: [],
-          evidence: [],
-          verdict: "proceed",
-          rationale: "",
-        },
-      },
-    };
-    const ctx: DriverContext = { pi: makeFakePi().pi, repoRoot: dir, issue: 1003 };
-    const verdict = await runConvergeGate(ctx, withSpec);
-    assert(verdict === null, "gate: a spec with zero deliverables skips (nothing to converge on)");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-// STEP_ORDINAL import sanity — the gate runs at end-of-develop; the ordinal
-// table is the step-ord source the driver loop reads. Assert the shape.
-assert(
-  typeof STEP_ORDINAL.develop === "object" && STEP_ORDINAL.develop !== null,
-  "sanity: STEP_ORDINAL.develop is a well-formed object",
-);
-void STEP_ORDINAL;
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

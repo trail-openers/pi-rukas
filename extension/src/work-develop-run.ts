@@ -5,10 +5,14 @@
  * shared dispatch logic for one workstream (memory-brief retrieval, the
  * developer + speculative-explore `Promise.allSettled` race, the completion
  * and `branch-completed` events, the case-1 sibling-injection) and
- * `runDevelopTopological`, the #679 topological-dispatch core of `runDevelop`
- * (independent fan-out, failed/skipped detection, dependent workstreams,
- * safety net + verify gate). The closure captures per-run state via
- * `DevelopRunState` so the caller shares it across both dispatch phases.
+ * `runDependentWorkstreams` (the dependent-workstream phase: skip cascade,
+ * deferred worktree creation from the dependency's post-commit SHA, base
+ * resolution). The closure captures per-run state via `DevelopRunState` so
+ * the caller shares it across both dispatch phases.
+ *
+ * `runDevelopTopological` — the #679 topological-dispatch core (independent
+ * fan-out, failed/skipped detection, the safety net + verify gate) — lives
+ * in work-develop-topological.ts.
  */
 import path from "node:path";
 import { buildMemoryBrief } from "./memory-brief.ts";

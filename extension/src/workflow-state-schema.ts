@@ -11,7 +11,9 @@ import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
 // gate). Re-exported so existing importers keep their paths.
 export type { Workstream, WorkstreamBaseShas } from "./workflow-state-schema-workstreams.ts";
 export type { ConsolidationCompleteness } from "./workflow-state-schema-consolidation-completeness.ts";
+export type { ConvergeEvidence } from "./workflow-state-schema-converge.ts";
 import type { ConsolidationCompleteness } from "./workflow-state-schema-consolidation-completeness.ts";
+import type { ConvergeEvidence } from "./workflow-state-schema-converge.ts";
 import type { Workstream, WorkstreamBaseShas } from "./workflow-state-schema-workstreams.ts";
 
 export {
@@ -353,11 +355,8 @@ export interface PipelineState {
    * (committed work / remaining paths / status file). Absent until then.
    */
   capedPartialState?: CapedPartialState;
-  /** #741 — converge gate's per-deliverable classification (implemented/partial/absent/unmeasurable). */
-  convergeEvidence?: {
-    at: number;
-    deliverables: Array<{ id: string; status: string; reason: string }>;
-  };
+  /** #741 — converge gate's per-deliverable classification. */
+  convergeEvidence?: ConvergeEvidence;
   /**
    * PR5 — worktree snapshot captured by `runHandoff`. Lets operator-facing
    * surfaces answer WHERE the work is without re-shelling git. Best-effort:
