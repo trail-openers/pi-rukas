@@ -4,14 +4,15 @@
  * #729 collapsed the deck's two live regions (belowEditor detail deck +
  * aboveEditor SelectList) into ONE widget key, "ensemble:deck", so the
  * double-projection is structurally impossible. This module owns the
- * widget's factory: a Container of batch Text rows (the deck's `buildLines`
- * projection minus the per-job lines) followed by the keyboard-selectable
- * SelectList. #742 removed the per-job Text rows — the `buildLines` output
- * used to re-render every job as a plain Text child above the list whose
- * labels were byte-identical `formatRow` lines, so each job rendered twice.
- * The SelectList is now the sole per-job surface (one item per job, key
- * disambiguation in the description column); batch headers and member rows
- * have no list counterpart of their own, so they keep their Text projection.
+ * widget's factory: a Container of batch Text rows (the deck's batch-only
+ * projection — batch headers + member rows) followed by the
+ * keyboard-selectable SelectList. #742 removed the per-job Text rows —
+ * the `buildLines` output used to re-render every job as a plain Text
+ * child above the list whose labels were byte-identical `formatRow` lines,
+ * so each job rendered twice. The SelectList is now the sole per-job
+ * surface (one item per job, key disambiguation in the description
+ * column); batch headers and member rows have no list counterpart of
+ * their own, so they keep their Text projection.
  *
  * The composite returns a Container. pi-tui's focus model routes keys to
  * `tui.getFocusedComponent()`, which is the editor unless the composite
@@ -60,19 +61,6 @@ export function parseDeckValue(value: string): string | undefined {
 }
 
 /**
- * The `buildLines` lines that are batch-related rather than per-job: batch
- * headers (`⏳ batch[`) and the `formatMemberRow` indented member rows
- * (` ↳ `). `buildCompositeFactory` renders these as Text children so batch
- * information is preserved now that the per-job Text rows are gone (#742).
- * Standalone (non-batched) job rows are NOT batch lines — they appear only
- * in the SelectList. The two line shapes are produced by `formatBatchRow`
- * and `formatMemberRow` in dispatch-deck.ts and by no other renderer.
- */
-function buildBatchLines(lines: readonly string[]): string[] {
-  return lines.filter((line) => line.startsWith("⏳ batch[") || line.startsWith(" ↳ "));
-}
-
-/**
  * Build the composite's SelectList rows. One item per job entry, plus the
  * cancel sentinel. The label is the job's full `formatRow` line; the
  * description carries the key fragment so same-role jobs stay
@@ -97,6 +85,13 @@ export function buildDeckItems(
   return items;
 }
 
+/**
+ * The SelectList's description column: a key fragment that keeps
+ * same-role jobs distinguishable. Keys ≤10 chars render verbatim (no
+ * marker); longer keys elide to a 10-char prefix + `…`. The prefix is
+ * sufficient for the common case (job keys embed a unique run-id in the
+ * first 10 chars, e.g. `df8a-7r`).
+ */
 function keyFragment(key: string): string {
   const frag = key.length <= 10 ? key : `${key.slice(0, 10).trimEnd()}…`;
   return `${key.length > 10 ? "key " : ""}${frag}`;
@@ -127,11 +122,10 @@ export function buildSteerPrompt(e: DeckEntry, now: number): string {
  * `existing.dispose?.()` on the previous component; Container has no
  * dispose, so re-registration is a clean swap.
  *
- * `lines` is the deck's own `buildLines` projection (batch-aware, in seq
- * order) and `entries` is the job snapshot; both are read once per render
- * so the batch Text rows and the SelectList cannot split mid-render. Only
- * the batch-related `lines` become Text children — the per-job lines are
- * the SelectList's, one row each (#742).
+ * `lines` is the deck's batch-only projection (batch headers + member
+ * rows; the per-job lines are the SelectList's, one row each — #742) and
+ * `entries` is the job snapshot; both are read once per render so the
+ * batch Text rows and the SelectList cannot split mid-render.
  */
 export function buildCompositeFactory(
   lines: () => string[],
@@ -148,7 +142,7 @@ export function buildCompositeFactory(
     const snapshot = entries();
     const list = buildSelectList(theme, snapshot, handlers);
     const container = new Container();
-    const batchLines = buildBatchLines(lines());
+    const batchLines = lines();
     const visible = batchLines.slice(0, maxRows);
     const overflow = Math.max(0, batchLines.length - maxRows);
     for (const line of visible) container.addChild(new Text(line, 1, 0));

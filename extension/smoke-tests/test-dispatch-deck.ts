@@ -262,7 +262,7 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   reset();
   startEntry("a", { label: "developer", role: "developer" });
   startEntry("b", { label: "explore", role: "explore" });
-  const lines = buildLines();
+  const { lines } = buildLines();
   assert(lines.length === 2, "two standalone singles → 2 lines");
   assert(lines[0]?.startsWith("⏳ developer"), "first standalone is developer (insertion order)");
   assert(lines[1]?.startsWith("⏳ explore"), "second standalone is explore");
@@ -276,7 +276,7 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   startEntry("m-a", { label: "developer[task-A]", role: "developer", batchKey: "batch-x" });
   startEntry("m-b", { label: "developer[task-B]", role: "developer", batchKey: "batch-x" });
   startEntry("m-c", { label: "developer[task-C]", role: "developer", batchKey: "batch-x" });
-  const lines = buildLines();
+  const { lines } = buildLines();
   assert(lines.length === 4, "1 batch + 3 members → 4 lines");
   assert(lines[0]?.startsWith("⏳ batch["), "first line is the batch header");
   assert(lines[1]?.startsWith(" ↳ "), "first member is indented");
@@ -293,7 +293,7 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
     role: "developer",
     batchKey: "never-registered",
   });
-  const lines = buildLines();
+  const { lines } = buildLines();
   assert(lines.length === 1, "orphan member → one line");
   assert(
     lines[0]?.startsWith("⏳ "),
@@ -308,7 +308,7 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   startEntry("m1", { label: "developer[task-A]", role: "developer", batchKey: "b1" });
   startEntry("m2", { label: "developer[task-B]", role: "developer", batchKey: "b1" });
   startEntry("solo", { label: "explore", role: "explore" });
-  const lines = buildLines();
+  const { lines } = buildLines();
   // Expected: batch header, member1, member2, solo
   assert(lines.length === 4, "1 batch + 2 members + 1 standalone → 4 lines");
   assert(lines[0]?.startsWith("⏳ batch["), "batch first");
@@ -333,7 +333,7 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   startBatchEntry("b1", { label: "developer×2", size: 2 });
   startEntry("m1", { label: "developer[task-A]", role: "developer", batchKey: "b1" });
   startEntry("m2", { label: "developer[task-B]", role: "developer", batchKey: "b1" });
-  const lines = buildLines();
+  const { lines } = buildLines();
   assert(lines.length === 4, "1 standalone + 1 batch + 2 members → 4 lines");
   assert(lines[0]?.startsWith("⏳ explore"), "standalone first (inserted before batch)");
   assert(lines[1]?.startsWith("⏳ batch["), "batch second");

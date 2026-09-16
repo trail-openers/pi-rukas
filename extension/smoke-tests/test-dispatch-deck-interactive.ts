@@ -173,7 +173,7 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
       lastEventAt: now - 1000,
     }),
   });
-  const entries = [mk("df8a-1aaaa", 0), mk("df8a-2bbbb", 1)];
+  const entries = [mk("df8a-1aaaa", 0), mk("df8a-2bbbb", 1), mk("df8a-3cccc", 2)];
   const items = buildDeckItems(entries, now);
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i]!;
@@ -185,6 +185,53 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   assert(
     items[0]?.description !== items[1]?.description,
     "two same-role jobs carry distinct key descriptions",
+  );
+  // Three distinct keys → all descriptions pairwise distinct (a 2-key
+  // comparison cannot fail trivially; a 3-way set can).
+  const descs = items.map((it) => it?.description ?? "");
+  assert(
+    new Set(descs).size === items.length,
+    "3 same-role jobs carry 3 distinct key descriptions",
+  );
+}
+
+// 4c. #742 description collision at the keyFragment truncation boundary:
+// two same-role jobs whose keys are BOTH >10 chars and share the first 10
+// chars (both elide to the same 10-char prefix + …) render IDENTICAL
+// descriptions. This is a known, conscious limitation: job keys embed a
+// unique run-id in the first 10 chars (e.g. `df8a-7r`), so the collision
+// requires an adversarial key shape. The labels (full `formatRow`) and
+// the `deck::<key>` value still disambiguate — only the short description
+// column collides. This assertion documents the current behaviour so the
+// collision is a conscious decision, not a silent regression.
+{
+  const now = 4_500_000;
+  const mk = (key: string, seq: number): DeckEntry => ({
+    key,
+    label: "developer[task-A]",
+    seq,
+    startedAt: now - 134_000,
+    state: makeState("developer", {
+      lastToolName: "bash",
+      toolUses: 7,
+      lastEventAt: now - 1000,
+    }),
+  });
+  // Both keys: 12 chars, identical first 10 → both elide to "aaaaaaaaaa…".
+  const entries = [mk("aaaaaaaaaaa1", 0), mk("aaaaaaaaaaa2", 1)];
+  const items = buildDeckItems(entries, now);
+  const d0 = items[0]?.description ?? "";
+  const d1 = items[1]?.description ?? "";
+  // Documented behaviour: same 10-char prefix → same description (collision
+  // is a conscious limitation, see comment above).
+  assert(
+    d0 === d1 && d0 === "key aaaaaaaaaa…",
+    `truncation-boundary collision is the DOCUMENTED behaviour (both '${d0}')`,
+  );
+  // But the labels and values still distinguish the two jobs.
+  assert(
+    items[0]?.label !== items[1]?.label || items[0]?.value !== items[1]?.value,
+    "labels/values still distinguish same-prefix keys",
   );
 }
 
@@ -345,18 +392,48 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
     assert(lists.length === 1, "exactly one SelectList (the sole per-job surface)");
     const list = lists[0];
     if (list) {
-      const countFor = (key: string) =>
-        list.items.filter((it: { value: string }) => it.value === `deck::${key}`).length;
+      // Query the list through its PUBLIC surface (SelectList.items is
+      // private in the 0.82.0 d.ts) — assert the job rows via the
+      // description column, which is the sole per-job disambiguation
+      // surface (#742) and renders in render(width) output (width > 40).
+      const rendered = list.render(200);
+      const frag = (key: string) =>
+        key.length <= 10 ? key : `${key.slice(0, 10).trimEnd()}…`;
+      const countFor = (key: string) => rendered.filter((l) => l.includes(frag(key))).length;
       for (const e of entries) {
         assert(
           countFor(e.key) === 1,
           `exactly ONE visible row for job '${e.key}' (got ${countFor(e.key)})`,
         );
       }
+      // The cancel sentinel renders as "── cancel ──" — a single trailing
+      // row, so visible rows = jobs + 1.
       assert(
-        list.items.length === entries.length + 1,
-        `SelectList has one item per job + cancel sentinel (got ${list.items.length})`,
+        rendered.length === entries.length + 1,
+        `SelectList renders one row per job + cancel sentinel (got ${rendered.length})`,
       );
+      // The attach() → setWidget → factory wiring (ARCHITECTURE finding):
+      // the production attach path must hand the composite factory to
+      // setWidget, so the same wiring verified in test-dispatch-deck.ts
+      // is exercised here too.
+      const calls: Array<string | ((...a: unknown[]) => unknown) | undefined> = [];
+      const wiringCtx = {
+        ui: {
+          setWidget: (_key: string, content: string | ((...a: unknown[]) => unknown) | undefined) => {
+            calls.push(content);
+          },
+          setStatus: (_k: string, _t: string | undefined) => {},
+        },
+      } as unknown as Parameters<typeof attach>[0];
+      attach(wiringCtx);
+      startEntry("wiring-a", { label: "developer", role: "developer" });
+      await new Promise((r) => setImmediate(r));
+      const factoryCall = calls.find((c) => typeof c === "function");
+      assert(
+        typeof factoryCall === "function",
+        "attach → scheduleRender wires the composite factory through setWidget",
+      );
+      detach();
     }
   }
 }
