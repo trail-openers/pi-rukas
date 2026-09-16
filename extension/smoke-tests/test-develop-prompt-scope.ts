@@ -203,5 +203,81 @@ const BRIEF = "Prior memory: #394 calibrated the retrieval floor; do not re-deri
   );
 }
 
+// --------------------------------------------------------------- #751: verify command
+
+{
+  // AC: the develop prompt contains the project's resolved verify command.
+  const prompt = inlineDevelopPrompt(
+    [751],
+    "/tmp/scratch",
+    ws,
+    undefined,
+    undefined,
+    BRIEF,
+    undefined,
+    "bun run check",
+  );
+  assert(
+    prompt.includes("bun run check"),
+    "#751: the resolved verify command string is embedded in the prompt",
+  );
+  assert(
+    /before committing/i.test(prompt),
+    "#751: the instruction is obligation-at-commit-time (not continuous)",
+  );
+  assert(
+    /cannot diverge/i.test(prompt),
+    "#751: the prompt states the two cannot diverge (AC: 'naming the concrete command the driver will later run so the two cannot diverge')",
+  );
+  assert(
+    /RUNNING the formatter|never by hand-guessing/i.test(prompt),
+    "#751: the prompt forbids hand-guessing formatter output",
+  );
+
+  // AC: a project whose verify command differs produces a correspondingly different prompt.
+  const prompt2 = inlineDevelopPrompt(
+    [751],
+    "/tmp/scratch",
+    ws,
+    undefined,
+    undefined,
+    BRIEF,
+    undefined,
+    "cargo check --quiet",
+  );
+  assert(
+    prompt2.includes("cargo check --quiet"),
+    "#751: a different resolved verify command yields a different prompt",
+  );
+  assert(
+    !prompt2.includes("bun run check"),
+    "#751: the first command is not carried over",
+  );
+  assert(
+    prompt !== prompt2,
+    "#751: the two prompts differ — the command is threaded in, not a constant",
+  );
+
+  // AC: when the project provides no verify command, the developer is told that plainly.
+  const noCmd = inlineDevelopPrompt(
+    [751],
+    "/tmp/scratch",
+    ws,
+    undefined,
+    undefined,
+    BRIEF,
+    undefined,
+    undefined,
+  );
+  assert(
+    /no discoverable verify command|no project-level check/i.test(noCmd),
+    "#751: no verify command → prompt says so plainly, does not invent one",
+  );
+  assert(
+    !noCmd.includes("bun run check"),
+    "#751: no fabricated command when none was resolved",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

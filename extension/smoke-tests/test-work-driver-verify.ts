@@ -15,6 +15,7 @@ import type { DriverContext } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { verifyCmdFor, verifyConsolidation, verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
+import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
 
 /**
  * The branch these fixtures put on the cycle.
@@ -122,6 +123,22 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       } finally {
         rmSync(rustDir, { recursive: true, force: true });
       }
+    }
+
+    // #751 — shared-source coupling: gate and prompt resolve the same string.
+    {
+      const dir = mkdtempSync(path.join(tmpdir(), "verify-cmd-coupling-"));
+      const wsF = { id: "default", scope: "test", paths: ["src/a.ts"], outOfScope: [] } as const;
+      const pf = (cmd: string | undefined) => inlineDevelopPrompt([751], "/tmp/scratch", { ...wsF }, undefined, undefined, undefined, undefined, cmd);
+      try {
+        fsSync.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+        fsSync.writeFileSync(path.join(dir, ".pi", "verify-cmd"), "echo hello\n");
+        const gc = await verifyCmdFor(dir);
+        assert(gc === "echo hello" && pf(gc).includes(gc), "#751: gate cmd == prompt cmd");
+        fsSync.writeFileSync(path.join(dir, ".pi", "verify-cmd"), "cargo test --workspace\n");
+        const gc2 = await verifyCmdFor(dir);
+        assert(gc2 === "cargo test --workspace" && pf(gc2).includes(gc2) && !pf(gc2).includes("echo hello"), "#751: both change at once");
+      } finally { rmSync(dir, { recursive: true, force: true }); }
     }
 
     // --- verifyStepOutcome: develop ---
@@ -462,21 +479,12 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         const dir = mkdtempSync(path.join(tmpdir(), "f5-empty-"));
         try {
           await mkGitRepo(dir, []);
-          const state = mkConsolidationState({
-            a: wsA(["src/a.ts", "src/b.ts"]),
-            b: wsB(["src/b.ts"]),
-          });
-          const ctx: DriverContext = { pi: makeFakePi().pi, repoRoot: dir, issue: 540 };
-          const res = await verifyConsolidation(ctx, state);
+          const state = mkConsolidationState({ a: wsA(["src/a.ts", "src/b.ts"]), b: wsB(["src/b.ts"]) });
+          const res = await verifyConsolidation({ pi: makeFakePi().pi, repoRoot: dir, issue: 540 }, state);
           const ids = res.missing.map((m) => m.id).sort();
-          assert(
-            JSON.stringify(ids) === JSON.stringify(["a", "b"]),
-            `F5.4: empty diff → all missing (got: ${JSON.stringify(ids)})`,
-          );
+          assert(JSON.stringify(ids) === JSON.stringify(["a", "b"]), `F5.4: empty diff → all missing (got: ${JSON.stringify(ids)})`);
           assert(res.filesPresent.length === 0, "F5.4: empty diff → empty filesPresent");
-        } finally {
-          rmSync(dir, { recursive: true, force: true });
-        }
+        } finally { rmSync(dir, { recursive: true, force: true }); }
       }
     }
   } finally {
