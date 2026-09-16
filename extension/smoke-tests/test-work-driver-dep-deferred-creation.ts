@@ -42,7 +42,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runDependentWorkstreams } from "../src/work-develop-run.ts";
-import { initialState, type WorkState } from "../src/workflow-state.ts";
+import { initialState, type WorkEvent, type WorkState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
 
 const execFileP = promisify(execFile);
@@ -98,14 +98,24 @@ async function fixture(
  * issue are read on the deferred-creation path; the dispatch is never called
  * (the workstream is skipped or its creation fails before dispatch). */
 function ctxFor(repo: string): DriverContext {
-  return {
-    // biome-ignore lint/suspicious/noExplicitAny: driver fixture — only repoRoot + issue are touched
-    pi: {} as any,
+  // The fixture sets only the fields the deferred-creation path reads; the
+  // single `unknown` cast is justified by the `pi` stub, while the `Pick`
+  // type keeps the four real fields compiler-checked.
+  const fixture: Pick<
+    DriverContext,
+    "repoRoot" | "issue" | "issues" | "verifyExecFn" | "stateRef"
+  > & {
+    // biome-ignore lint/suspicious/noExplicitAny: driver fixture — the pi binding is never touched on this path
+    pi: any;
+  } = {
+    pi: {},
     issue: 753,
     issues: [753],
     repoRoot: repo,
     verifyExecFn: realExec,
-  } as unknown as DriverContext;
+    stateRef: { current: initialState(753) },
+  };
+  return fixture as unknown as DriverContext;
 }
 
 /** A runOneWorkstream that records whether it was called (it should NOT be
@@ -126,7 +136,7 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
   const worktrees: Record<string, string> = { "task-a": depWt };
   const workstreamBaseShas = { "task-a": baseSha };
   const verdicts: Array<{ id: string; ok: boolean }> = [];
-  const branchEvents: unknown[] = [];
+  const branchEvents: WorkEvent[] = [];
   const failedOrSkipped = new Set<string>();
   const called: boolean[] = [];
   const ws = {
@@ -141,15 +151,14 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
     { "task-b": ["task-a"] },
     failedOrSkipped,
     verdicts,
-    branchEvents as never,
+    branchEvents,
     realExec,
     worktrees,
     workstreamBaseShas,
     baseSha,
     ["task-a", "task-b"],
     makeRunOne(called, worktrees),
-    stateRef,
-    { "task-a": Date.now() - 1000 },
+    { stateRef, depCompletedAtMap: { "task-a": Date.now() - 1000 } },
   );
   // The dependent's worktree was created (deferred creation succeeded).
   assert(
@@ -184,7 +193,7 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
   const worktrees: Record<string, string> = { "task-a": depWt };
   const workstreamBaseShas = { "task-a": baseSha };
   const verdicts: Array<{ id: string; ok: boolean }> = [];
-  const branchEvents: unknown[] = [];
+  const branchEvents: WorkEvent[] = [];
   const failedOrSkipped = new Set<string>();
   const called: boolean[] = [];
   const ws = {
@@ -192,22 +201,21 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
     "task-b": { id: "task-b", scope: "dependent", paths: [], outOfScope: [], dependsOn: ["task-a"] },
   };
   const stateRef = { current: initialState(753) };
-  await runDependentWorkstreams(
+  const failResult = await runDependentWorkstreams(
     ctxFor(repo),
     ["task-b"],
     ws,
     { "task-b": ["task-a"] },
     failedOrSkipped,
     verdicts,
-    branchEvents as never,
+    branchEvents,
     realExec,
     worktrees,
     workstreamBaseShas,
     baseSha,
     ["task-a", "task-b"],
     makeRunOne(called, worktrees),
-    stateRef,
-    { "task-a": Date.now() - 1000 },
+    { stateRef, depCompletedAtMap: { "task-a": Date.now() - 1000 } },
   );
   // The dependent was NOT dispatched (creation failed before dispatch).
   assert(called.length === 0, "#753 case 2: the dependent was NOT dispatched (creation failed first)");
@@ -220,20 +228,10 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
   // The branch-completed event carries the underlying failure (the leftover
   // path), the deferral context (which dependency, which base ref), and the
   // depCompletedAt timing field.
-  const evs = branchEvents as Array<{
-    kind: string;
-    workstreamId?: string;
-    ok?: boolean;
-    ms?: number;
-    error?: string;
-    depCompletedAt?: number;
-    deferredCreation?: {
-      waitedFor: string;
-      resolvedBaseRef?: string;
-      failure: { class: string; leftoverPath?: string; gitCommand?: string; stderr?: string };
-    };
-  }>;
-  const bc = evs.find((e) => e.kind === "branch-completed" && e.workstreamId === "task-b");
+  const bc = branchEvents.find(
+    (e): e is Extract<WorkEvent, { kind: "branch-completed" }> =>
+      e.kind === "branch-completed" && e.workstreamId === "task-b",
+  );
   assert(bc !== undefined, "#753 case 2: a branch-completed event was recorded for the dependent");
   assert(bc?.ok === false, "#753 case 2: the dependent's branch-completed event is ok=false");
   assert(
@@ -268,6 +266,18 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
     cap !== undefined,
     "#753 case 2: a cap-hit was emitted (the cycle PARKS on a dirty-leftover refusal)",
   );
+  // The cap-hit is the event-log TAIL — the step router routes on the tail,
+  // so the caller must short-circuit (parked flag) and not append the
+  // branch-completed event or a branches-converged verdict after it.
+  const tail = stateRef.current.eventLog[stateRef.current.eventLog.length - 1];
+  assert(
+    tail?.kind === "cap-hit",
+    "#753 case 2: the cap-hit remains the event-log tail (it is the routing signal)",
+  );
+  assert(
+    failResult.parked === true,
+    "#753 case 2: runDependentWorkstreams reports parked so the caller skips the converge + verify gates",
+  );
   // The ms field keeps its existing meaning (0 for a failed creation, not a
   // repurposed value).
   assert(bc?.ms === 0, "#753 case 2: the ms field keeps its meaning (0 for a failed creation)");
@@ -285,7 +295,7 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
   const worktrees: Record<string, string> = { "task-a": depWt };
   const workstreamBaseShas = { "task-a": baseSha };
   const verdicts: Array<{ id: string; ok: boolean }> = [];
-  const branchEvents: unknown[] = [];
+  const branchEvents: WorkEvent[] = [];
   const failedOrSkipped = new Set<string>();
   const called: boolean[] = [];
   const ws = {
@@ -302,25 +312,20 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
     { "task-b": ["task-a"], "task-c": ["task-b"] },
     failedOrSkipped,
     verdicts,
-    branchEvents as never,
+    branchEvents,
     realExec,
     worktrees,
     workstreamBaseShas,
     baseSha,
     ["task-a", "task-b", "task-c"],
     makeRunOne(called, worktrees),
-    stateRef,
-    { "task-a": Date.now() - 1000 },
+    { stateRef, depCompletedAtMap: { "task-a": Date.now() - 1000 } },
   );
   // task-b's creation failed (the primary failure).
-  const evs = branchEvents as Array<{
-    kind: string;
-    workstreamId?: string;
-    ok?: boolean;
-    error?: string;
-    deferredCreation?: { failure: { class: string } };
-  }>;
-  const bcB = evs.find((e) => e.kind === "branch-completed" && e.workstreamId === "task-b");
+  const bcB = branchEvents.find(
+    (e): e is Extract<WorkEvent, { kind: "branch-completed" }> =>
+      e.kind === "branch-completed" && e.workstreamId === "task-b",
+  );
   assert(bcB !== undefined && bcB.ok === false, "#753 cascade: task-b's branch-completed is ok=false");
   assert(
     bcB?.deferredCreation?.failure?.class === "dirty-leftover",

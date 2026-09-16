@@ -235,14 +235,14 @@ export async function resolveDependentBase(
  *     surfaced as a plain error). `gitCommand` / `exitStatus` / `stderr` are
  *     filled in when they are known (the add threw), else the error text
  *     carries the detail via `gitErrorDetail`.
+ *
+ * The return shape mirrors the `DeferredCreationEventFragment`/
+ * `DeferredCreationFailure` record the caller writes onto the
+ * `branch-completed` event (minus the deferral context) — keep the two in
+ * sync.
  */
-export async function createDependentWorktree(
-  execFn: ExecFn,
-  repoRoot: string,
-  issue: number,
-  dependentId: string,
-  fromRef: string,
-): Promise<
+/** The outcome of a deferred worktree creation (see `createDependentWorktree`). */
+export type DeferredCreationResult =
   | { path: string }
   | {
       path: undefined;
@@ -251,11 +251,19 @@ export async function createDependentWorktree(
         error: string;
         leftoverPath?: string;
         gitCommand?: string;
-        exitStatus?: number | null;
+        /** The command's exit status, when known (a numeric `e.code`). */
+        exitStatus?: number;
         stderr?: string;
       };
-    }
-> {
+    };
+
+export async function createDependentWorktree(
+  execFn: ExecFn,
+  repoRoot: string,
+  issue: number,
+  dependentId: string,
+  fromRef: string,
+): Promise<DeferredCreationResult> {
   const name = `issue-${issue}-${dependentId}`;
   const gitCmd = `git worktree add --detach ${JSON.stringify(worktreePath(repoRoot, name))} ${JSON.stringify(fromRef)}`;
   try {

@@ -63,8 +63,8 @@ export type DeferredCreationEventFragment = {
    * post-commit SHA). Present when resolution succeeded and creation then
    * failed; absent when resolution itself produced a skip. */
   resolvedBaseRef?: string;
-  /** The dependency's completion timestamp (see `depCompletedAt` on the
-   * branch-completed event carries the same value for the timing record). */
-  depCompletedAt?: number;
+  /** The dependency's completion timestamp lives on the parent
+   * `branch-completed` event's `depCompletedAt` field — one source of
+   * truth, not duplicated here. */
   failure: DeferredCreationFailure;
 };

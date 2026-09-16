@@ -68,6 +68,13 @@ export interface DevelopRunState {
   stateRef: { current: WorkState };
 }
 
+/** #753 — per-run state threaded into the dependent phase (always passed together). */
+export interface DependentRunState {
+  stateRef: { current: WorkState };
+  depCompletedAtMap?: Record<string, number>;
+  failureSource?: Record<string, "skipped" | "failed">;
+}
+
 /** Create the per-workstream dispatch closure (captures `stateRef` for memory-inject events). */
 export function makeRunOneWorkstream(
   s: DevelopRunState,
@@ -236,7 +243,12 @@ export function makeRunOneWorkstream(
  * #679 — run all dependent workstreams sequentially in topological order.
  * Each dependent's worktree is created (deferred) from its dependency's
  * post-commit SHA. A dependent whose dependency failed/was skipped is
- * itself skipped. Returns the updated worktrees and workstreamBaseShas.
+ * itself skipped. Returns the updated worktrees and workstreamBaseShas,
+ * plus `parked` when a dirty-leftover refusal appended its cap-hit mid-step
+ * (the caller must not append further events or run the safety-net/verify
+ * gates — the cap-hit must remain the step's tail event so the step router
+ * routes the cycle to handoff on it instead of appending a duplicate
+ * generic cap on the branches-converged verdict).
  */
 export async function runDependentWorkstreams(
   ctx: DriverContext,
@@ -252,14 +264,30 @@ export async function runDependentWorkstreams(
   globalBaseSha: string | undefined,
   allIds: string[],
   runOneWorkstream: (id: string, cwd: string) => Promise<{ id: string; ok: boolean }>,
-  /** #753 — the per-run state (carries `stateRef` for the cap-hit append on a dirty-leftover refusal). */
-  stateRef: { current: WorkState },
-  /** #753 — the dependency's completion timestamp per dependency id, so the branch-completed event can record `depCompletedAt`. */
-  depCompletedAtMap?: Record<string, number>,
-  /** #753 — why each failed-or-skipped workstream failed, so the cascade event can name the workstream that ACTUALLY failed. */
-  failureSource?: Record<string, "skipped" | "failed">,
-): Promise<{ worktrees: Record<string, string>; workstreamBaseShas: Record<string, string> }> {
+  /** #753 — the per-run state (park flag, dep-completion timestamps, failure source). */
+  run: DependentRunState,
+): Promise<{
+  worktrees: Record<string, string>;
+  workstreamBaseShas: Record<string, string>;
+  parked: boolean;
+}> {
   const wtRef = { worktrees, workstreamBaseShas };
+  const { stateRef, depCompletedAtMap, failureSource } = run;
+  // #753 — one place for the base shape of a failed dependent's branch-completed
+  // event (the `ok: false, ms: 0` contract); each failure site supplies its own
+  // error text and any additional fields.
+  const recordBranchCompleted = (id: string, error: string, extra?: object) => {
+    branchEvents.push({
+      kind: "branch-completed",
+      step: "develop",
+      workstreamId: id,
+      ok: false,
+      ms: 0,
+      at: Date.now(),
+      error,
+      ...(extra ?? {}),
+    } as WorkEvent);
+  };
   for (const id of ids) {
     const ws = workstreams[id];
     const dependsOn = ws?.dependsOn ?? [];
@@ -272,16 +300,11 @@ export async function runDependentWorkstreams(
       if (failureSource) failureSource[id] = failureSource[id] ?? "skipped";
       verdicts.push({ id, ok: false });
       // #753 — record for EVERY plan size (the N>1 guard made a single-workstream failure completely silent).
-      branchEvents.push({
-        kind: "branch-completed",
-        step: "develop",
-        workstreamId: id,
-        ok: false,
-        ms: 0,
-        at: Date.now(),
-        error: skipReason,
-        ...(depCompletedAt !== undefined ? { depCompletedAt } : {}),
-      });
+      recordBranchCompleted(
+        id,
+        skipReason,
+        depCompletedAt !== undefined ? { depCompletedAt } : undefined,
+      );
       continue;
     }
     const depResult = await resolveDependentBase(
@@ -301,16 +324,11 @@ export async function runDependentWorkstreams(
       failedOrSkipped.add(id);
       if (failureSource) failureSource[id] = failureSource[id] ?? "skipped";
       verdicts.push({ id, ok: false });
-      branchEvents.push({
-        kind: "branch-completed",
-        step: "develop",
-        workstreamId: id,
-        ok: false,
-        ms: 0,
-        at: Date.now(),
-        error: depResult.skipReason ?? "could not resolve dependency's post-commit SHA",
-        ...(depCompletedAt !== undefined ? { depCompletedAt } : {}),
-      });
+      recordBranchCompleted(
+        id,
+        depResult.skipReason ?? "could not resolve dependency's post-commit SHA",
+        depCompletedAt !== undefined ? { depCompletedAt } : undefined,
+      );
       continue;
     }
     const created = await createDependentWorktree(
@@ -327,38 +345,39 @@ export async function runDependentWorkstreams(
       // #753 — the underlying git error is recorded on the event (not a hand-written literal), plus the deferral context.
       const dep = dependsOn[0] ?? "";
       const isDirty = created.failure.class === "dirty-leftover";
-      branchEvents.push({
-        kind: "branch-completed",
-        step: "develop",
-        workstreamId: id,
-        ok: false,
-        ms: 0,
-        at: Date.now(),
-        error: isDirty
+      const depCompletedAtField = depCompletedAt !== undefined ? { depCompletedAt } : {};
+      recordBranchCompleted(
+        id,
+        isDirty
           ? `deferred worktree creation refused for ${id} — dirty or retained same-issue leftover at ${created.failure.leftoverPath ?? "(path unknown)"}; parking the cycle (uncommitted work must not be force-removed)`
           : `deferred worktree creation failed for ${id}: ${created.failure.error?.slice(0, 200) ?? "unknown error"}`,
-        ...(depCompletedAt !== undefined ? { depCompletedAt } : {}),
-        deferredCreation: {
-          waitedFor: dep,
-          resolvedBaseRef: depResult.fromRef,
-          ...(depCompletedAt !== undefined ? { depCompletedAt } : {}),
-          failure: isDirty
-            ? {
-                class: "dirty-leftover" as const,
-                leftoverPath: created.failure.leftoverPath ?? "",
-                error: created.failure.error,
-              }
-            : {
-                class: "create-error" as const,
-                gitCommand: created.failure.gitCommand,
-                exitStatus: created.failure.exitStatus,
-                stderr: created.failure.stderr,
-                error: created.failure.error,
-              },
+        {
+          ...depCompletedAtField,
+          deferredCreation: {
+            waitedFor: dep,
+            resolvedBaseRef: depResult.fromRef,
+            failure: isDirty
+              ? {
+                  class: "dirty-leftover" as const,
+                  leftoverPath: created.failure.leftoverPath ?? "",
+                  error: created.failure.error,
+                }
+              : {
+                  class: "create-error" as const,
+                  gitCommand: created.failure.gitCommand,
+                  exitStatus: created.failure.exitStatus,
+                  stderr: created.failure.stderr,
+                  error: created.failure.error,
+                },
+          },
         },
-      });
+      );
       if (isDirty) {
         // #753 — a DirtyWorktreeError (a dirty or retained same-issue leftover) is the finding. PARK with it stated.
+        // The caller must not append any further event after this cap-hit:
+        // the step router routes on the event-log tail, so the cap-hit has
+        // to stay the tail for the cycle to park on it (not on a duplicate
+        // generic cap on a later branches-converged verdict).
         const leftoverPath = created.failure.leftoverPath ?? "(path unknown)";
         stateRef.current = appendEvent(stateRef.current, {
           kind: "cap-hit",
@@ -372,7 +391,7 @@ export async function runDependentWorkstreams(
         );
       }
       // Stop processing further dependent workstreams: a deferred-creation failure is an infrastructure fault.
-      return wtRef;
+      return { ...wtRef, parked: isDirty };
     }
     const createdPath = created.path;
     wtRef.worktrees = { ...wtRef.worktrees, [id]: createdPath };
@@ -400,5 +419,5 @@ export async function runDependentWorkstreams(
       failedOrSkipped.add(id);
     }
   }
-  return wtRef;
+  return { ...wtRef, parked: false };
 }
