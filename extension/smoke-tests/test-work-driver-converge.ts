@@ -278,9 +278,25 @@ async function runConvergeCycle(
     d2?.status === "implemented",
     "AC2: after the corrective re-dispatch, d2 re-classifies as implemented (the gate re-ran on the new diff)",
   );
+  // AC2 is a claim about the CONVERGE GATE, not the terminal cycle status: the
+  // fixture cannot support a full cycle — lens-review shells out through `execp`
+  // (work-driver-diff.ts) rather than the injected `verifyExecFn` seam, so the
+  // diff read there fails on the mock and the cycle hands off on an
+  // unrelated `lens-diff-unreadable` cap. Assert on the event log: the
+  // pipeline advanced past develop and no develop-phase cap fires.
+  const devConverged = s1?.eventLog.find(
+    (e) => e.kind === "branches-converged" && e.step === "develop",
+  );
+  const devCap = s1?.eventLog.find(
+    (e) => e.kind === "cap-hit" && (e as { step?: string }).step === "develop",
+  );
+  const lensStarted = s1?.eventLog.find((e) => e.kind === "step-started" && e.step === "lens-review");
   assert(
-    s1?.pipelineState.status === "running" || s1?.pipelineState.status === "merged",
-    "AC2: the cycle did NOT hand off (it proceeded past develop)",
+    devConverged !== undefined &&
+      devCap === undefined &&
+      lensStarted !== undefined &&
+      (s1?.pipelineState.status === "handoff" || s1?.pipelineState.status === "running" || s1?.pipelineState.status === "merged"),
+    "AC2: the converge gate did not block the cycle — develop converged (branches-converged) with no develop-phase cap, and the pipeline advanced to lens-review (handoff at that later step is a fixture artefact, not a converge-block)",
   );
 
   // --- AC5: a FAILED corrective (child returns ok:false — the documented
