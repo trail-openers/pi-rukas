@@ -329,6 +329,20 @@ export function inlineDevelopPrompt(
     scope: string;
     paths: string[];
   }>,
+  /**
+   * #751 — the project's verify command, resolved ONCE PER WORKSTREAM by the
+   * caller via `verifyCmdFor(ctx.repoRoot)` (the same resolver the
+   * develop-verify gate uses) and threaded in here as a plain string so the
+   * prompt builder stays a pure function with no filesystem access. The
+   * prompt names this exact command so the developer's self-check and the
+   * driver's downstream gate can never diverge.
+   *
+   * Appended as the LAST parameter so the existing positional-argument call
+   * sites (the N=1 default path, the #679 sibling-injection tests) keep
+   * working unchanged; a mid-list insertion would silently re-shape every
+   * existing call.
+   */
+  verifyCmd?: string,
 ): string {
   // PR11 — multi-issue cycles must show the developer the ACTIVE issues
   // (NEEDS_WORK subset after explore), not the primary cycle issue. The
@@ -388,9 +402,13 @@ export function inlineDevelopPrompt(
     issues.length === 1
       ? `\`gh issue view ${issues[0]}\` to re-fetch the issue body (acceptance criteria, DoD).`
       : `Re-fetch each active issue body — run \`gh issue view <N>\` for each of: ${issues.map((n) => `#${n}`).join(", ")}.`;
+  const verifyLine = verifyCmd
+    ? `Before committing, run the project's verify command — \`${verifyCmd}\` — and make it pass in your worktree; this is the exact command the verify gate will run, so the two cannot diverge. Fix formatting or lint output by RUNNING the formatter/linter, never by hand-guessing.`
+    : "This project has no discoverable verify command, so there is no project-level check to run before committing — rely on the change being correct and complete.";
   lines.push(
     `  1. ${fetchInstr}`,
-    "  2. Implement the change end-to-end in the current branch. Run local quality gates (typecheck, lint, tests as the project defines them).",
+    "  2. Implement the change end-to-end in the current branch.",
+    `  3. ${verifyLine}`,
     // #543 F5 — the driver's checkpoint commits the worktree at the natural
     // seams the child made during its run, so a cap kill never leaves only
     // a failure message. Committing at natural seams is what makes those
@@ -400,8 +418,8 @@ export function inlineDevelopPrompt(
     // Make the exact commands explicit so smaller models don't drift off the
     // commit step under long-context constraint decay (issue #622 covers the
     // mechanical safety net as defense-in-depth).
-    '  3. Commit your work in the worktree at natural seams (a clean build, a passing test suite): run `git add -A` followed by `git commit -m "<type>(scope): concise subject"`. The verify gate REJECTS uncommitted-only work — no commit ahead of base SHA means the develop step fails. Do NOT push — the driver owns the branch and ops owns the push in Step 6.',
-    "  4. End your reply with a `## Touched files` section listing every file you changed and a one-line `## Summary`.",
+    '  4. Commit your work in the worktree at natural seams (a clean build, a passing test suite): run `git add -A` followed by `git commit -m "<type>(scope): concise subject"`. The verify gate REJECTS uncommitted-only work — no commit ahead of base SHA means the develop step fails. Do NOT push — the driver owns the branch and ops owns the push in Step 6.',
+    "  5. End your reply with a `## Touched files` section listing every file you changed and a one-line `## Summary`.",
     "",
     "Discourage drive-by edits; only touch files in scope.",
   );

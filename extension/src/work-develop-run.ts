@@ -18,6 +18,7 @@ import {
   inlineDevelopPrompt,
   inlineSpeculativeExplorePrompt,
 } from "./work-driver-prompts-early.ts";
+import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
 import {
@@ -96,6 +97,13 @@ export function makeRunOneWorkstream(
         cwd: ctx.repoRoot,
         timeoutMs: 8000,
       });
+      // #751 — resolve the project's verify command ONCE PER WORKSTREAM, from
+      // the same source the develop-verify gate uses (verifyCmdFor at
+      // work-driver-verify-develop.ts:292). Thread it into the prompt as a
+      // plain string so the developer's self-check and the driver's gate
+      // can never diverge; the gate itself is unchanged — it still runs and
+      // still disbelieves the developer's claim.
+      const verifyCmd = await verifyCmdFor(ctx.repoRoot);
       s.stateRef.current = appendEvent(s.stateRef.current, {
         kind: "memory-inject",
         at: Date.now(),
@@ -119,6 +127,7 @@ export function makeRunOneWorkstream(
               speculativeOn ? speculativeContextPath : undefined,
               brief.text,
               siblingWorkstreams,
+              verifyCmd,
             ),
             cwd,
           },
