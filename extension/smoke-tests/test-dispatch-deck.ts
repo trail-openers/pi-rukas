@@ -18,13 +18,15 @@
  * detach are covered in test-dispatch-deck-lifecycle.ts (#171 file-size split).
  */
 
-import { Container } from "@earendil-works/pi-tui";
+import { Container, Text } from "@earendil-works/pi-tui";
 import {
   type DeckEntry,
   attach,
+  batchSnapshot,
   buildLines,
   clearEntry,
   detach,
+  formatBatchRow,
   formatRow,
   reset,
   snapshot,
@@ -380,6 +382,44 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   assert(calls.length > callsBeforeClear, "clearing the last entry triggers a new setWidget call");
   assert(lastCall?.content === undefined, "empty deck calls setWidget(key, undefined)");
   detach();
+}
+
+// 12b. #761 (cc10e75 near-miss) — superset invariant: a deck holding ONLY a
+// batch + its members (no standalone entries) must NOT be treated as empty.
+// The cc10e75 predicate attempt made buildLines() return EMPTY for exactly
+// this shape, which would have made renderNow's empty-deck guard clear the
+// widget on every render. A deck whose only renderable thing is a batch
+// header must render it.
+{
+  reset();
+  startBatchEntry("sup-761", { label: "developer×2", size: 2 });
+  startEntry("sup-a", { label: "developer[task-A]", role: "developer", batchKey: "sup-761" });
+  startEntry("sup-b", { label: "developer[task-B]", role: "developer", batchKey: "sup-761" });
+  const lines = buildLines();
+  assert(lines.length === 1, "batch-only deck is NOT empty (buildLines has exactly the header)");
+  assert(lines[0]?.includes("batch[developer×2]"), "the batch header is in buildLines (not hidden)");
+}
+
+// 12c. #761 superset invariant, general form: every batch-header row present
+// in the batch-only projection (buildLinesBatchOnly — the composite's Text
+// projection) also appears in buildLines. The two projections share a header
+// formatter (formatBatchRow), so membership is a line-identity check.
+// buildLinesBatchOnly is not exported, so we reconstruct it from the
+// exported surface: batchSnapshot() + formatBatchRow() is exactly what
+// buildLinesBatchOnly computes (same loop, same formatter, see
+// dispatch-deck.ts).
+{
+  reset();
+  startBatchEntry("sh-1", { label: "alpha", size: 2 });
+  startBatchEntry("sh-2", { label: "beta", size: 1 });
+  startEntry("sh-m", { label: "developer[t]", role: "developer", batchKey: "sh-1" });
+  startEntry("sh-solo", { label: "explore", role: "explore" });
+  const batchOnly = batchSnapshot().map((b) => formatBatchRow(b));
+  assert(batchOnly.length === 2, "batch-only projection has 2 header rows (sanity)");
+  const lines = buildLines();
+  for (const header of batchOnly) {
+    assert(lines.includes(header), `batch-header row in batch-only projection also in buildLines: ${header}`);
+  }
 }
 
 console.log(`\nexit ${exit}`);

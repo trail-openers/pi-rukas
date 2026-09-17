@@ -431,16 +431,21 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
 // Text AND SelectList → double render. Post-fix: Text = batch headers only.
 // Distinct keys avoid the keyFragment collision (block 4c).
 {
-  if (process.env.PI_ENSEMBLE_QUIET_STATUS === "1") {
-    console.error("✗ PI_ENSEMBLE_QUIET_STATUS=1: deck empty, assertions vacuous");
-    process.exit(1);
-  }
+  // The canary below only works when startEntry/startBatchEntry actually
+  // populate; delete the flag so an ambient quiet env can't turn the block
+  // into a vacuous pass (and so a failure lands in the ledger, not a
+  // process.exit before it).
+  // biome-ignore lint/performance/noDelete: delete is the correct "reset to unset" (assignment leaves the key present with undefined)
+  delete process.env.PI_ENSEMBLE_QUIET_STATUS;
   reset();
   startBatchEntry("b-761", { label: "developer×2", size: 2 });
   startEntry("m-761-a", { label: "developer[task-A]", role: "developer", batchKey: "b-761" });
   startEntry("m-761-b", { label: "developer[task-B]", role: "developer", batchKey: "b-761" });
   startEntry("s-761", { label: "explore", role: "explore" });
-  if (snapshot().length !== 3) { console.error("✗ canary: deck not populated"); process.exit(1); }
+  // Real canary: if the deck is empty here, every negative assertion below
+  // passes vacuously (empty deck → empty Text → "members NOT in Text" is
+  // trivially true). Fail loudly via the shared ledger instead.
+  assert(snapshot().length === 3, "canary: deck populated (3 entries) — quiet env cannot vacuate the block");
   type WCall = { key: string; content: string[] | ((...a: unknown[]) => unknown) | undefined; options?: { placement?: string } };
   const calls: WCall[] = [];
   const ctx = {

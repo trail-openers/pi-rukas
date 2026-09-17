@@ -220,7 +220,7 @@ function scheduleRender(): void {
 
 function renderNow(): void {
   if (!activeCtx) return;
-  if (buildLines().length === 0) {
+  if (entries.size === 0 && batches.size === 0) {
     if (widgetVisible) {
       try {
         activeCtx.ui.setWidget(WIDGET_KEY, undefined);
@@ -292,9 +292,17 @@ export function steerDeckEntry(ctx: ExtensionUIContext, key: string, message: st
 /** Top-level deck rows: batch headers + standalone (non-batched) entries,
  *  in insertion order. Batched members are NOT included — the SelectList
  *  is the sole per-job surface (#742). This is the projection read by
- *  renderNow's empty-deck guard. It is a strict superset of
+ *  renderNow's empty-deck guard (via `hasRenderableRows`). It is a strict superset of
  *  `buildLinesBatchOnly`'s output (both contain batch headers; this adds
- *  standalone rows). */
+ *  standalone rows).
+ *
+ *  Orphan-member contract (fail-open, deliberate): an entry whose `batchKey`
+ *  names a batch that was never registered — or was cleared while its members
+ *  were still alive — is classified here as standalone and renders as a
+ *  top-level row. This is NOT logged, and if the batch is later (re)registered
+ *  the same entry silently flips back to a batch member. Test
+ *  test-dispatch-deck.ts block 8 pins this behaviour; treat it as the
+ *  documented contract, not a bug. */
 export function buildLines(now: number = Date.now()): string[] {
   const standalone: DeckEntry[] = [];
   for (const e of entries.values()) {
@@ -319,6 +327,16 @@ export function buildLines(now: number = Date.now()): string[] {
     }
   }
   return lines;
+}
+
+/**
+ * Is anything renderable? Equivalent to `buildLines().length > 0`: every row
+ * buildLines emits comes from either a batch (header) or an entry (standalone),
+ * so both collections empty ⇔ no rows. Used by renderNow's empty-deck guard
+ * so the 1s ticker can test emptiness without allocating and sorting.
+ */
+function hasRenderableRows(): boolean {
+  return entries.size > 0 || batches.size > 0;
 }
 
 /** The composite's Text projection: batch header rows only.
