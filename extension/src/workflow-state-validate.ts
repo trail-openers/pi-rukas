@@ -129,6 +129,13 @@ const CAP_HIT_FIXED_LITERALS: readonly unknown[] = [
   // re-dispatch. Distinct from the verify-failed:develop template (the
   // code builds; the diff is incomplete).
   "develop-incomplete-deliverables",
+  // #753 — a DEPENDENT workstream's deferred worktree creation was refused
+  // by a dirty same-issue leftover. A deliberate park terminalized as a
+  // handoff (not `step-failed:` — that prefix would read as a mid-flight
+  // crash), so the validator must know the literal or every re-entry of a
+  // live parked cycle would halt on "unrecognised value" and tell the
+  // operator to rm the very record this cap exists to create.
+  "deferred-creation:develop",
   "intent-park",
   "awaiting-human-merge",
   "lens-diff-unreadable",

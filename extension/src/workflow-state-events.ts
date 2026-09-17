@@ -10,6 +10,7 @@ import type { RoleName } from "./roles.ts";
 import type { DispatchUsage } from "./types.ts";
 import type { AdversarialEventFragment } from "./workflow-state-events-adversarial.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
+import type { DeferredCreationEventFragment } from "./workflow-state-events-deferred.ts";
 import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-leftover.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
@@ -307,7 +308,14 @@ export type WorkEvent =
         // shape across ≥3 files → step-back (SDD spec-gap analysis).
         | "repeat-finding-seam"
         | `verify-failed:${WorkStep}`
-        | `step-failed:${WorkStep}`;
+        | `step-failed:${WorkStep}`
+        // #753 — deferred worktree creation failed (dirty-leftover park). Its
+        // own literal cap name so explainCap can give it a tailored sentence
+        // (not a generic "step failed") and so the handoff does NOT
+        // terminalize it as `aborted` (the `step-failed:` prefix → `aborted`
+        // mapping in work-driver-handoff.ts is reserved for mid-flight
+        // dispatch failures; this is a deliberate park).
+        | "deferred-creation:develop";
       /** #543 — which role's child was cap-killed (loop/token-budget caps). */
       role?: RoleName;
       reviewRound: number;
@@ -442,6 +450,10 @@ export type WorkEvent =
       at: number;
       /** Failure tail (truncated) when ok=false. */
       error?: string;
+      /** #753 — timing record for a `dependsOn` workstream: the epoch-ms at which the dependency it waited on completed. */
+      depCompletedAt?: number;
+      /** #753 — the underlying failure detail for a DEFERRED worktree-creation failure. Absent on every other branch-completed. */
+      deferredCreation?: DeferredCreationEventFragment;
     }
   | {
       /**
