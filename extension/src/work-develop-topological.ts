@@ -48,6 +48,14 @@ async function runDevelopTopological(
   }
   const { independent, dependentOrdered } = topologicalDispatchOrder(ids, dependsOnMap);
   const stateRef = { current: next };
+  // #753 — per-workstream completion timestamps + a shared map of WHY each
+  // failed-or-skipped workstream failed (the cascade event names the workstream
+  // that ACTUALLY failed; a cascade is distinguishable from a legitimate skip).
+  const depCompletedAtMap: Record<string, number> = {};
+  // #753 — the independent phase is a parallel fan-out: the wall-clock moment
+  // the fan-out resolves is the completion timestamp every dependent records.
+  const independentCompletedAt = Date.now();
+  const failureSource: Record<string, "skipped" | "failed"> = {};
   const runOneWorkstream = makeRunOneWorkstream({
     ctx,
     activeIssues,
@@ -62,6 +70,14 @@ async function runDevelopTopological(
   let worktrees = next.pipelineState.worktrees ?? {};
   let workstreamBaseShas = next.pipelineState.workstreamBaseShas ?? {};
   const globalBaseSha = next.pipelineState.baseSha;
+  // #753 — the worktrees that exist as part of THIS cycle, keyed by workstream
+  // id. Seeded from pipelineState (the branch step's creations) so the #545
+  // same-issue dirty scan in the dependent phase treats this cycle's own
+  // worktrees as in-flight work, not as "leftover" — otherwise an independent
+  // workstream's legitimate in-progress dirt would park the cycle on a false
+  // positive (the #545 scan is unbounded within a cycle). The dependent phase
+  // grows this as it creates worktrees.
+  const inCycleWorktrees: string[] = [...Object.values(worktrees)];
 
   const independentCwds = independent.map((id) => worktrees[id] ?? ctx.repoRoot);
   const independentResults = await Promise.all(
@@ -76,6 +92,10 @@ async function runDevelopTopological(
   for (const r of independentResults) {
     if (!r.ok) failedOrSkipped.add(r.id);
   }
+  // #753 — populate the dep-completion map: dependents wait on their DIRECT
+  // dependency, so record the resolved fan-out time for every independent
+  // workstream; the dependent phase records its own completion as it goes.
+  for (const id of independent) depCompletedAtMap[id] = independentCompletedAt;
   for (const id of independent) {
     const cwd = worktrees[id] ?? ctx.repoRoot;
     const base = workstreamBaseShas[id] ?? globalBaseSha;
@@ -107,10 +127,38 @@ async function runDevelopTopological(
     globalBaseSha,
     ids,
     runOneWorkstream,
+    { stateRef, inCycleWorktrees, depCompletedAtMap, failureSource },
   );
   worktrees = wtResult.worktrees;
   workstreamBaseShas = wtResult.workstreamBaseShas;
   next = stateRef.current;
+  // #753 — a dirty-leftover refusal PARKED mid-step (cap-hit appended by
+  // runDependentWorkstreams). The cap-hit must remain the event-log tail so
+  // the step router routes the cycle to handoff on it: the sibling
+  // branch-completed events are flushed BEFORE the cap-hit (parkDeferredLeftover
+  // appends them first — verified against nextStep, which reads exactly the
+  // last event and routes a trailing cap-hit to its nextStep), and running the
+  // safety-net/verify gates (which append verifyEvidence / more events) would
+  // displace it and the router would add a SECOND, generic cap on the
+  // branches-converged verdict. Hence the short-circuit: no branches-converged,
+  // no gates.
+  if (wtResult.parked) {
+    // #753 — the dependent phase parked mid-step (dirty-leftover cap-hit is the
+    // tail). The write-ahead marker `beginDispatch` recorded for this step must
+    // be cleared on this path too — the non-park path does it just below; on the
+    // parked path the cycle terminates via handoff, but leaving the job in
+    // inFlightJobIds would trip detectInconsistencies on a later read.
+    next = appendEvent(clearDispatch(next, begun.jobId));
+    next = {
+      ...next,
+      pipelineState: {
+        ...next.pipelineState,
+        worktrees,
+        workstreamBaseShas: { ...workstreamBaseShas, ...next.pipelineState.workstreamBaseShas },
+      },
+    };
+    return next;
+  }
   void independentResults;
   next = appendEvent(clearDispatch(next, begun.jobId), ...branchEvents);
   next = {

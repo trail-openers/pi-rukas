@@ -19,6 +19,7 @@
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import { trace } from "./trace.ts";
+import { runCreateGuards } from "./worktree-create-guard.ts";
 import { type ProvisionResult, provisionWorktree } from "./worktree-provision.ts";
 export type { ProvisionResult } from "./worktree-provision.ts";
 export { salvageUncommittedWork, salvageDirtyWorktree } from "./worktree-salvage.ts";
@@ -32,6 +33,19 @@ export type ExecFn = (
 /** Worktrees live under `<repoRoot>/.worktrees/<name>`. */
 export function worktreePath(repoRoot: string, name: string): string {
   return path.join(repoRoot, ".worktrees", name);
+}
+
+/**
+ * Resolve a path to its canonical form (handles macOS /var → /private/var).
+ * No-op for paths that do not exist yet — the worktree target is resolved
+ * before `git worktree add` creates it, so this must not throw.
+ */
+export function resolvePath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
 }
 
 /**
@@ -183,21 +197,18 @@ export interface WorktreeCreateResult {
 /**
  * Create a worktree, returning its absolute path and provisioning outcome.
  *
- * Idempotent by construction: an existing worktree at the same path is removed
- * first. A resumed cycle must not fail because its own previous attempt left a
- * directory behind — that is the class of leftover that wedged whole queues.
- *
- * The pre-remove is guarded (#475): when the leftover holds uncommitted work
- * or local commits, force-removing it would destroy work that is nowhere else
- * (develop diffs are never committed). `worktreeCreate` then throws a
- * `DirtyWorktreeError` naming the absolute path instead, and the caller
- * (`mechanizedBranchSetup`) refuses — no fallback, because the LLM ops path
- * would destroy the same work through the same `--force` — routing the cycle
- * to handoff. A clean leftover is removed as before.
+ * `inCycleWorktrees` — optional list of worktree PATHS that belong to the
+ * current cycle (this workstream set, e.g. created by the branch step or by
+ * an earlier dependent in the dependent phase). The #545 same-issue dirty
+ * scan (`findDirtySameIssueLeftover`) is unbounded within a cycle: without
+ * this exclusion an earlier workstream's legitimate in-progress dirt would be
+ * misread as a "leftover" and park the cycle. In-cycle paths are excluded
+ * from the scan; a genuinely foreign leftover is still caught.
  */
 export async function worktreeCreate(
   execFn: ExecFn,
   opts: WorktreeCreateOpts,
+  inCycleWorktrees?: string[],
 ): Promise<WorktreeCreateResult> {
   const abs = worktreePath(opts.repoRoot, opts.name);
   // If the worktree name is in the retainedNames set, refuse to pre-remove.
@@ -219,33 +230,20 @@ export async function worktreeCreate(
       retained: true,
     });
   }
-  // #545 — the mechanism that killed the #540 restart: `worktree add` itself
-  // refuses against ANY leftover worktree of the same cycle (e.g. the
-  // cycle's OWN dead siblings from a parked run, all named
-  // `issue-<N>-<id>`). Inspect what's attached first so a dirty one becomes
-  // a refusal WITH salvage instead of a bare `fatal: ... already exists`
-  // error. A clean foreign leftover is still handled by `worktree add`'s
-  // own path-exists error — unchanged.
-  const issuePrefix = opts.name.split("-").slice(0, 2).join("-");
-  const siblingDirty = await findDirtySameIssueLeftover(
+  // #545 / #753 — the pre-add guards (sibling scan + target-path dirty
+  // guard) live in worktree-create-guard.ts (split for the 500-line cap).
+  // The target-path #475 guard runs UNCONDITIONALLY there; in-cycle
+  // membership only waives the sibling scan and the pre-remove, never the
+  // dirty guard.
+  await runCreateGuards(
     execFn,
-    opts.repoRoot,
-    opts.fromRef,
-    issuePrefix,
-    opts.name,
+    { repoRoot: opts.repoRoot, name: opts.name, fromRef: opts.fromRef },
+    inCycleWorktrees,
   );
-  if (siblingDirty) {
-    throw new DirtyWorktreeError(siblingDirty);
-  }
-  const leftover = await inspectWorktreeForLoss(execFn, opts.repoRoot, abs, opts.fromRef);
-  if (leftover) {
-    throw new DirtyWorktreeError(leftover);
-  }
-  await worktreeRemove(execFn, opts.repoRoot, opts.name, true).catch(() => undefined);
   // Always detached at baseSha: a named branch in a worktree contradicts
   // #287 (worktrees are the workstream's scratch space; the feature branch
-  // only ever exists at repoRoot, where integration happens) and breaks the
-  // invariant test-work-driver-always-worktree.ts enforces.
+  // only ever exists at repoRoot, where integration happens) and breaks
+  // the invariant test-work-driver-always-worktree.ts enforces.
   const add = async () =>
     execFn(`git worktree add --detach ${JSON.stringify(abs)} ${JSON.stringify(opts.fromRef)}`, {
       cwd: opts.repoRoot,
@@ -268,6 +266,18 @@ export async function worktreeCreate(
     const msg = detail && !originalMsg.includes(detail) ? `${originalMsg}\n${detail}` : originalMsg;
     const wrapped = new Error(`worktreeCreate: ${opts.name} failed: ${msg}`);
     wrapped.cause = err;
+    // #753 (six-lens FIX 1) — the wrapped Error drops the rejection's
+    // `code`/`stderr`, so the deferred-creation catch (which can only read
+    // the wrapper) would record `stderr: undefined` for a failing
+    // `git worktree add` — the exact detail #753 exists to capture. Re-expose
+    // both on the wrapper: `stderr` so the one extractor (`gitErrorDetail`)
+    // works on the wrapper, and the numeric `code` so the deferred-creation
+    // catch reads the real exit status off `wrapped.code` for
+    // `failure.exitStatus` (a failing `git worktree add` via
+    // `promisify(exec)` rejects with `code: 128`).
+    (wrapped as Error & { stderr?: string; code?: number }).stderr = detail;
+    const causeCode = (err as { code?: unknown })?.code;
+    if (typeof causeCode === "number") (wrapped as Error & { code?: number }).code = causeCode;
     throw wrapped;
   }
   // A worktree with only tracked files cannot run the project's own commands:
@@ -344,6 +354,12 @@ export async function scanWorktrees(
  * destroy. An unreadable `git worktree list` returns undefined: the
  * refusal then happens the pre-#545 way (the raw git error, now plumbed
  * via `gitErrorDetail`), which is the safe degradation.
+ *
+ * `excludePaths` — additional worktree paths to skip (in addition to
+ * `selfName`). #753: this cycle's own worktrees (created by the branch step
+ * or by an earlier dependent) are legitimate in-progress work, not
+ * "leftover" — without this exclusion the scan would park the cycle on a
+ * false positive.
  */
 export async function findDirtySameIssueLeftover(
   execFn: ExecFn,
@@ -351,10 +367,16 @@ export async function findDirtySameIssueLeftover(
   fromRef: string,
   issuePrefix: string,
   selfName: string,
+  excludePaths?: string[],
 ): Promise<DirtyWorktreeFinding | undefined> {
   const wtMarker = `.worktrees${path.sep}${issuePrefix}`;
   const hits = await scanWorktrees(execFn, repoRoot, fromRef, [wtMarker], selfName);
+  // #753 — on macOS, `git worktree list --porcelain` returns symlink-resolved
+  // paths (/private/var/...) while our paths are the logical form (/var/...).
+  // Resolve both sides before comparing.
+  const excludeSet = new Set((excludePaths ?? []).map((p) => resolvePath(p)));
   for (const hit of hits) {
+    if (excludeSet.has(resolvePath(hit.path))) continue;
     if (hit.finding) return hit.finding;
   }
   return undefined;
@@ -435,21 +457,7 @@ export async function sweepBranchHolders(
   // removed — if it's holding the branch, that's the normal state and there
   // is nothing to sweep. macOS /tmp is a symlink to /private/tmp, so
   // normalise both sides before comparing.
-  const holderResolved = (() => {
-    try {
-      return realpathSync(holderPath);
-    } catch {
-      return holderPath;
-    }
-  })();
-  const repoResolved = (() => {
-    try {
-      return realpathSync(repoRoot);
-    } catch {
-      return repoRoot;
-    }
-  })();
-  if (holderResolved === repoResolved) {
+  if (resolvePath(holderPath) === resolvePath(repoRoot)) {
     return false;
   }
   const finding = await inspectWorktreeForLoss(execFn, repoRoot, holderPath, "HEAD");

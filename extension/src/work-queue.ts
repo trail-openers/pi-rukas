@@ -36,7 +36,15 @@ import {
 import { processAlive } from "./work-driver-resume.ts";
 import { notify } from "./work-notify.ts";
 import { groupPathsOverlap } from "./work-queue-overlap.ts";
+import {
+  deferredLeftoverAction,
+  deferredLeftoverPath,
+  deferredLeftoverStep,
+} from "./work-queue-parks.ts";
 import { writeQueueSummary } from "./work-queue-summary.ts";
+// #753 (six-lens FIX 5) — the renderer moved to work-queue-render.ts to keep
+// this module under the 500-line cap; re-exported so importers keep working.
+export { renderQueueSummary } from "./work-queue-render.ts";
 
 /** One entry of `groupIssues()`'s result — the unit the queue iterates. */
 export type IssueGroup = GroupingResult["groups"][string];
@@ -153,10 +161,18 @@ function parkReason(state: WorkState | undefined): { reason: string; failedStep?
   const cap = [...state.eventLog].reverse().find((e) => e.kind === "cap-hit");
   // `lastCompletedStep` is the last step that SUCCEEDED, so reporting it as
   // the failure point names the wrong step. The halt-cascade stamps the real
-  // step into the cap (`step-failed:<step>`); prefer that when present.
+  // step into the cap (`step-failed:<step>`); prefer that when present. The
+  // #753 deferred-creation park has no `step-failed:` prefix by design (it is
+  // a deliberate park, not a dispatch failure), so map its step explicitly —
+  // the fallback would name `branch` (the last step that succeeded) instead
+  // of the dependent phase of develop where the refusal actually happened.
   const capStep =
-    cap?.kind === "cap-hit" && cap.cap.startsWith("step-failed:")
-      ? cap.cap.slice("step-failed:".length)
+    cap?.kind === "cap-hit"
+      ? cap.cap.startsWith("step-failed:")
+        ? cap.cap.slice("step-failed:".length)
+        : cap.cap === "deferred-creation:develop"
+          ? deferredLeftoverStep()
+          : undefined
       : undefined;
   const step = capStep ?? state.pipelineState.lastCompletedStep ?? state.pipelineState.currentStep;
   if (cap?.kind === "cap-hit") {
@@ -170,6 +186,11 @@ function parkReason(state: WorkState | undefined): { reason: string; failedStep?
       const granted = state.pipelineState.mergeHold?.authorityGranted ? "granted" : "no-authority";
       suffix = `:${granted}:pr${state.pipelineState.prNumber ?? 0}`;
       if (state.pipelineState.mergeHold?.evidenceFailureKind === "tooling") suffix += ":tooling";
+    } else if (cap.cap === "deferred-creation:develop") {
+      // #753 — name the leftover on the reason so the queue action can
+      // point at the exact path (salvage-before-rerun, never --restart).
+      const path = deferredLeftoverPath(state);
+      if (path) suffix = `:${path}`;
     }
     return { reason: `cap ${cap.cap}${suffix}`, failedStep: step };
   }
@@ -183,6 +204,12 @@ function parkReason(state: WorkState | undefined): { reason: string; failedStep?
  * inventing one.
  */
 export function humanActionFor(reason: string, primary: number): string {
+  // #753 — a dirty-leftover park (deferred worktree creation refused):
+  // salvage the leftover BEFORE any re-run — --restart would hit the same
+  // refusal.
+  if (reason.includes("deferred-creation:develop")) {
+    return deferredLeftoverAction(reason, primary);
+  }
   // #378 — intent parks carry their own specific action; the generic
   // "inspect the state file and --restart" fallback is useless here, because
   // re-running an unresolvable issue unchanged produces the same park.
@@ -233,38 +260,6 @@ export function humanActionFor(reason: string, primary: number): string {
   if (/verify-failed/.test(reason))
     return `inspect #${primary}'s diff — the outcome gate rejected it`;
   return `inspect .pi/work-state/${primary}.json and re-run \`/work ${primary} --restart\``;
-}
-
-/** Render the end-of-queue report. One entry per group. */
-export function renderQueueSummary(s: QueueSummary): string {
-  const lines = [
-    `pi-rukas: /work queue finished — ${s.merged} merged, ${s.parked} parked${
-      s.refused > 0 ? `, ${s.refused} did not start` : ""
-    }${s.notStarted.length > 0 ? `, ${s.notStarted.length} never reached` : ""}`,
-  ];
-  for (const e of s.entries) {
-    const issues = `#${e.issues.join(", #")}`;
-    if (e.outcome === "merged") {
-      lines.push(`  ✓ ${e.groupId} (${issues}) — merged`);
-    } else if (e.outcome === "parked") {
-      lines.push(
-        `  ⏸ ${e.groupId} (${issues}) — ${e.reason}${e.failedStep ? ` at ${e.failedStep}` : ""}`,
-      );
-      if (e.humanAction) lines.push(`      → ${e.humanAction}`);
-    } else if (e.outcome === "not-started") {
-      // Not a failure, emphatically not a halt: the driver declined to run,
-      // usually because a live cycle already owns the issue. Rendering it
-      // through the `else` below reported a halt that never happened.
-      lines.push(`  – ${e.groupId} (${issues}) — did not start: ${e.reason}`);
-      if (e.humanAction) lines.push(`      → ${e.humanAction}`);
-    } else {
-      lines.push(`  ✗ ${e.groupId} (${issues}) — ${e.reason} · queue halted here`);
-    }
-  }
-  if (s.notStarted.length > 0) {
-    lines.push(`  Not started: ${s.notStarted.join(", ")}`);
-  }
-  return lines.join("\n");
 }
 
 export interface RunQueueOpts {
