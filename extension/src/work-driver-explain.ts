@@ -373,8 +373,13 @@ export function explainCap(
       case "merged":
         // PR10 — merged step is now HALT. The `gh pr merge` invocation
         // (mechanized or LLM fallback) can fail on auth, branch
-        // protection, conflicts, or a missing required review.
-        return "the merge step failed — the PR was approved and CI passed, but `gh pr merge` did not succeed (auth / branch protection / conflicts / missing required review). Merge manually via `gh pr merge <PR-N> --squash --delete-branch` (check `gh repo view --json squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed` for allowed methods)";
+        // protection, conflicts, or a missing required review. Authority and
+        // the evidence gate already PASSED before this attempt — this is a
+        // hard failure of the merge itself, a distinct cap from
+        // `awaiting-human-merge`. A re-run would just hit the same wall,
+        // so `gh pr merge` by hand is the only recovery here — the
+        // exception, not the project's normal path.
+        return "the merge step failed — authority was granted and CI passed, but `gh pr merge` itself did not succeed (auth / branch protection / conflicts / missing required review). This cap means the merge ATTEMPT failed, not that the project denies agents — a re-run would hit the same wall, so remove the blocking cause and merge once with `gh pr merge <PR-N> --squash --delete-branch` (check `gh repo view --json squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed` for allowed methods)";
       case "step-back":
       case "handoff":
         // These remain DEGRADED_OK in STEP_FAILURE_POLICY and should never

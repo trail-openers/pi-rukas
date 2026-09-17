@@ -453,17 +453,19 @@ chore/...                             # tooling / config (no issue required)
 
 ### Spike branches
 
-Experimental architectural work lives on a feature branch and does NOT merge to main without explicit human approval. Stack spikes on top of foundational PRs if needed; rebase onto fresh main after the foundation merges.
+Experimental architectural work lives on a feature branch. Stack spikes on top of foundational PRs if needed; rebase onto fresh main after the foundation merges.
 
 ### LLMs are allowed to squash merge PRs/MRs
 
 If all project quality gates have been met (code reviews, CI, linters, type checks etc) LLMs / agents are allowed to squash merge PRs (GitLab: MRs).
 
+There is no retained human merge gate: humans do not merge and need only to be consulted if there are PRs that are somehow problematic that cannot be resolved through further research and steering — consultation is an escalation path for problems, not an approval step in the normal merge path.
+
 **This sentence is load-bearing, not decorative.** Since #380 the `/work` driver reads this file at the `merged` step and refuses to merge without an explicit grant like the heading above. Deleting or softening it turns auto-merge off for this repo; an unquoted prohibition anywhere in this file (of the `never merge` / `do not merge` / `automerge: false` shape) turns it off regardless of the grant. Other projects opt in the same way, or per-run with `/work <issue> --merge`; with neither, `/work` opens the PR and parks as `awaiting-human-merge`.
 
 Authority alone is not sufficient — the driver also requires executed evidence from `gh` (`mergeStateStatus` + `gh pr checks`), and treats required checks reporting `skipped`/`neutral` as NOT passing. See `docs/troubleshooting.md` → "Merge authority".
 
-**This file is read at the cycle's base commit, not from the working tree (#406).** A `/work` cycle that edits this section grants itself nothing: the merge gate reads the version that existed before the cycle started. The edit still ships in the PR and takes effect for the *next* cycle, once a human has merged it. That is deliberate — it keeps §7's "docs ship with the PR" rule working while closing the self-escalation path.
+**This file is read at the cycle's base commit, not from the working tree (#406).** A `/work` cycle that edits this section grants itself nothing: the merge gate reads the version that existed before the cycle started. The edit still ships in the PR and takes effect for the *next* cycle, once it has merged. That is deliberate — it keeps §7's "docs ship with the PR" rule working while closing the self-escalation path.
 
 ---
 
@@ -618,8 +620,8 @@ CLI flags and event shapes change between Pi minor versions. The pin in `extensi
 4. **4-day npm embargo** — applies to `extension/` deps via bunfig; recommend pinning for prerequisite CLIs too
 5. **PM never codes** — orchestrate via dispatch tools; the sticky preamble enforces this
 6. **Conventional commits + issue-driven** — alphabetic scopes like `feat(work): …`, branch `feature/issue-N-…`, issue linked via `Closes #N` in the PR body
-7. **Spike branches stay off main** — explicit human approval required for experimental merges
-8. **LLMs may squash-merge when gates pass** (see §9) — humans still hold approval authority on breaking changes and disputed PRs
+7. **Spike branches** — experimental work on its own branch, rebased after foundations land
+8. **LLMs may squash-merge when gates pass** (see §9) — no retained human merge gate
 9. **200-PR test for docs** — endures or doesn't get written
 10. **Transcript discipline** — orchestrator reads dispatch-tool summaries, never raw transcript files
 11. **File size limits** — 500 lines hard cap, 300 ideal; fully compliant repo-wide, mechanically enforced by `test-file-size-limit.ts`
