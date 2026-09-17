@@ -70,6 +70,14 @@ async function runDevelopTopological(
   let worktrees = next.pipelineState.worktrees ?? {};
   let workstreamBaseShas = next.pipelineState.workstreamBaseShas ?? {};
   const globalBaseSha = next.pipelineState.baseSha;
+  // #753 — the worktrees that exist as part of THIS cycle, keyed by workstream
+  // id. Seeded from pipelineState (the branch step's creations) so the #545
+  // same-issue dirty scan in the dependent phase treats this cycle's own
+  // worktrees as in-flight work, not as "leftover" — otherwise an independent
+  // workstream's legitimate in-progress dirt would park the cycle on a false
+  // positive (the #545 scan is unbounded within a cycle). The dependent phase
+  // grows this as it creates worktrees.
+  const inCycleWorktrees: string[] = [...Object.values(worktrees)];
 
   const independentCwds = independent.map((id) => worktrees[id] ?? ctx.repoRoot);
   const independentResults = await Promise.all(
@@ -119,7 +127,7 @@ async function runDevelopTopological(
     globalBaseSha,
     ids,
     runOneWorkstream,
-    { stateRef, depCompletedAtMap, failureSource },
+    { stateRef, inCycleWorktrees, depCompletedAtMap, failureSource },
   );
   worktrees = wtResult.worktrees;
   workstreamBaseShas = wtResult.workstreamBaseShas;
@@ -132,6 +140,12 @@ async function runDevelopTopological(
   // would add a SECOND, generic cap on the branches-converged verdict. Hence
   // the short-circuit: no branchEvents, no branches-converged, no gates.
   if (wtResult.parked) {
+    // #753 — the dependent phase parked mid-step (dirty-leftover cap-hit is the
+    // tail). The write-ahead marker `beginDispatch` recorded for this step must
+    // be cleared on this path too — the non-park path does it just below; on the
+    // parked path the cycle terminates via handoff, but leaving the job in
+    // inFlightJobIds would trip detectInconsistencies on a later read.
+    next = appendEvent(clearDispatch(next, begun.jobId));
     next = {
       ...next,
       pipelineState: {

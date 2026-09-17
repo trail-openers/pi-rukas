@@ -71,8 +71,47 @@ export interface DevelopRunState {
 /** #753 — per-run state threaded into the dependent phase (always passed together). */
 export interface DependentRunState {
   stateRef: { current: WorkState };
+  /** The worktrees that exist as part of THIS cycle, keyed by workstream id
+   * (the branch step's creations plus the dependents created so far).
+   * #753 — the #545 same-issue dirty scan in `worktreeCreate` is unbounded
+   * within a cycle: an earlier workstream of this same cycle (independent or
+   * dependent) lives at `.worktrees/issue-<N>-<id>` and is legitimately dirty
+   * while its own developer is still working. The scan must treat those as
+   * in-flight work, not as a "leftover" — otherwise one sibling's uncommitted
+   * work parks the whole cycle on a false positive. */
+  inCycleWorktrees?: string[];
   depCompletedAtMap?: Record<string, number>;
   failureSource?: Record<string, "skipped" | "failed">;
+}
+
+/** #753 — the `extra` fields added to a failed dependent's branch-completed
+ * event. Typed (instead of a bare `object`) so the `as WorkEvent` cast in
+ * `recordBranchCompleted` can only widen with fields that type-check against
+ * the union member — a mistyped `extra` field is a compile error, not a
+ * read-time surprise. */
+export type BranchCompletedExtra = Partial<Extract<WorkEvent, { kind: "branch-completed" }>>;
+
+/**
+ * #753 — append the dirty-leftover cap-hit and return `true` (the caller
+ * returns `parked: true` and short-circuits). This helper is the SINGLE
+ * place that couples the cap-hit append to the park flag: the flag and the
+ * append are one structural unit (no code path sets one without the other),
+ * and the append lands at the event-log TAIL — the step router routes on the
+ * tail, and the caller's short-circuit (work-develop-topological.ts) must
+ * keep it there.
+ */
+export function parkDeferredLeftover(
+  stateRef: { current: WorkState },
+  leftoverPath: string,
+): boolean {
+  stateRef.current = appendEvent(stateRef.current, {
+    kind: "cap-hit",
+    at: Date.now(),
+    cap: "deferred-creation:develop",
+    reviewRound: stateRef.current.pipelineState.reviewRound,
+    nextStep: "handoff",
+  });
+  return true;
 }
 
 /** Create the per-workstream dispatch closure (captures `stateRef` for memory-inject events). */
@@ -248,7 +287,10 @@ export function makeRunOneWorkstream(
  * (the caller must not append further events or run the safety-net/verify
  * gates — the cap-hit must remain the step's tail event so the step router
  * routes the cycle to handoff on it instead of appending a duplicate
- * generic cap on the branches-converged verdict).
+ * generic cap on the branches-converged verdict). A `create-error` (the
+ * non-dirty class) does NOT park: it is recorded and the remaining
+ * dependents keep processing (the PR7 branches-converged router halts the
+ * cycle at the tail, unchanged).
  */
 export async function runDependentWorkstreams(
   ctx: DriverContext,
@@ -264,7 +306,7 @@ export async function runDependentWorkstreams(
   globalBaseSha: string | undefined,
   allIds: string[],
   runOneWorkstream: (id: string, cwd: string) => Promise<{ id: string; ok: boolean }>,
-  /** #753 — the per-run state (park flag, dep-completion timestamps, failure source). */
+  /** #753 — the per-run state (in-cycle worktrees, park flag, dep-completion timestamps, failure source). */
   run: DependentRunState,
 ): Promise<{
   worktrees: Record<string, string>;
@@ -272,11 +314,11 @@ export async function runDependentWorkstreams(
   parked: boolean;
 }> {
   const wtRef = { worktrees, workstreamBaseShas };
-  const { stateRef, depCompletedAtMap, failureSource } = run;
+  const { stateRef, inCycleWorktrees, depCompletedAtMap, failureSource } = run;
   // #753 — one place for the base shape of a failed dependent's branch-completed
   // event (the `ok: false, ms: 0` contract); each failure site supplies its own
-  // error text and any additional fields.
-  const recordBranchCompleted = (id: string, error: string, extra?: object) => {
+  // error text and any additional fields (the typed `extra` keeps the cast safe).
+  const recordBranchCompleted = (id: string, error: string, extra?: BranchCompletedExtra) => {
     branchEvents.push({
       kind: "branch-completed",
       step: "develop",
@@ -291,6 +333,9 @@ export async function runDependentWorkstreams(
   for (const id of ids) {
     const ws = workstreams[id];
     const dependsOn = ws?.dependsOn ?? [];
+    // #753 — the FIRST declared dependency is the declared primary (same
+    // doctrine as `resolveDependentBase`); multi-dep workstreams record that
+    // primary's completion timestamp.
     const depCompletedAt = depCompletedAtMap?.[dependsOn[0] ?? ""];
     const skips = computeSkipCascade([id], dependsOnMap, failedOrSkipped, failureSource);
     const skipReason = skips.get(id);
@@ -337,6 +382,7 @@ export async function runDependentWorkstreams(
       ctx.issue,
       id,
       depResult.fromRef,
+      inCycleWorktrees,
     );
     if (created.path === undefined) {
       failedOrSkipped.add(id);
@@ -374,30 +420,39 @@ export async function runDependentWorkstreams(
       );
       if (isDirty) {
         // #753 — a DirtyWorktreeError (a dirty or retained same-issue leftover) is the finding. PARK with it stated.
-        // The caller must not append any further event after this cap-hit:
-        // the step router routes on the event-log tail, so the cap-hit has
-        // to stay the tail for the cycle to park on it (not on a duplicate
-        // generic cap on a later branches-converged verdict).
+        // parkDeferredLeftover appends the cap-hit AND returns the flag in one
+        // step — the flag and the append are one structural unit (the MEDIUM
+        // finding: they were previously coupled only by a comment). The
+        // caller's short-circuit (work-develop-topological.ts) keeps the
+        // cap-hit the event-log tail so the step router routes to handoff on it.
         const leftoverPath = created.failure.leftoverPath ?? "(path unknown)";
-        stateRef.current = appendEvent(stateRef.current, {
-          kind: "cap-hit",
-          at: Date.now(),
-          cap: "step-failed:develop",
-          reviewRound: stateRef.current.pipelineState.reviewRound,
-          nextStep: "handoff",
-        });
+        const parked = parkDeferredLeftover(stateRef, leftoverPath);
         trace(
           `work-driver: PARK — deferred worktree creation for ${id} refused by dirty leftover at ${leftoverPath}; parking the cycle (no force-remove)`,
         );
+        return { ...wtRef, parked };
       }
-      // Stop processing further dependent workstreams: a deferred-creation failure is an infrastructure fault.
-      return { ...wtRef, parked: isDirty };
+      // #753 — a create-error (transient git failure) is NOT a park. Record
+      // it and keep processing the remaining dependents (the pre-#753
+      // behaviour a review round flagged: the old code `continue`d, and the
+      // halt dropped their per-workstream recording). A dependent whose own
+      // dependency chain is intact can still create and dispatch, and each
+      // failure is recorded. Terminal routing is unchanged: the PR7
+      // branches-converged router halts on ANY failed verdict + HALT policy,
+      // so a failed workstream is never silently skipped downstream.
+      continue;
     }
     const createdPath = created.path;
     wtRef.worktrees = { ...wtRef.worktrees, [id]: createdPath };
+    // #753 — the dependent's worktree is now part of this cycle; a LATER
+    // dependent's deferred creation must not treat it as a same-issue
+    // leftover (it is in-flight work, not residue).
+    if (inCycleWorktrees) inCycleWorktrees.push(createdPath);
     const depBaseSha = depResult.baseSha ?? depResult.fromRef;
     if (depBaseSha) wtRef.workstreamBaseShas = { ...wtRef.workstreamBaseShas, [id]: depBaseSha };
     await runOneWorkstream(id, createdPath);
+    // #753 — the dependent's completion is the timestamp its own dependents record.
+    if (depCompletedAtMap) depCompletedAtMap[id] = Date.now();
     // #679 — after this workstream dispatches, check if it actually produced
     // commits ahead of its base. If it produced NOTHING (the case-2(c)
     // falsely-ok shape: the dispatch exited 0 but the tree is empty), any

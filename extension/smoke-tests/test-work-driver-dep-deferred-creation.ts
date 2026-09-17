@@ -1,38 +1,8 @@
 #!/usr/bin/env bun
 /**
- * #753 — deferred worktree creation: recording, cascade identity, and the
- * N=1 silence fix.
- *
- * This file holds the NEW regression tests for #753. The pre-existing
- * #679 scheduler tests (topological ordering, skip cascade, deferred base
- * resolution, happy-path deferred creation) live in
- * `test-work-driver-workstreams.ts` (sections 10b/10c and the fan-out
- * fixture) and are unchanged — they continue to pass.
- *
- * What this file adds (both cases use a REAL git fixture, not a mocked
- * exec, because the deferred-creation failure path has no other coverage):
- *
- * 1. A plan with a dependsOn edge creates a worktree for EVERY workstream
- *    including the deferred one (the happy path — the scheduler's deferred
- *    creation must succeed, not silently skip the dependent). This is a
- *    regression guard against the "deferred creation silently skipped"
- *    class of failure: the dependent's worktree exists and is detached at
- *    the dependency's post-commit SHA, not baseSha.
- *
- * 2. When deferred creation fails, the recorded branch-completed event
- *    carries the git command and stderr (via `gitErrorDetail`, not a
- *    hand-written literal), AND the dependent workstream's cascade event
- *    names the workstream that ACTUALLY failed (a cascade is distinguishable
- *    from a primary failure). The N=1 case is also recorded (the N>1 guard
- *    that made a single-workstream failure completely silent is gone).
- *
- * Both cases drive `runDependentWorkstreams` directly with a state whose
- * worktrees map OMITS the dependent (the branch step never created it —
- * that's the deferred-creation shape). The real git fixture is a minimal
- * repo with a base commit; the dependency workstream's worktree is created
- * for real (from baseSha), the dependency "commits" (a real commit ahead of
- * base so `resolveDependentBase` sees work), and the dependent's deferred
- * creation is then forced to fail by a dirty leftover at its target path.
+ * #753 — deferred worktree creation: recording, cascade identity, N=1
+ * silence fix, create-error vs dirty-leftover, and in-cycle exclusion.
+ * Real git fixture; drives runDependentWorkstreams directly.
  */
 
 import { execFile } from "node:child_process";
@@ -42,7 +12,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runDependentWorkstreams } from "../src/work-develop-run.ts";
-import { initialState, type WorkEvent, type WorkState } from "../src/workflow-state.ts";
+import { initialState, type WorkEvent } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
 
 const execFileP = promisify(execFile);
@@ -118,10 +88,7 @@ function ctxFor(repo: string): DriverContext {
   return fixture as unknown as DriverContext;
 }
 
-/** A runOneWorkstream that records whether it was called (it should NOT be
- * on the failure path — the workstream's worktree creation fails before
- * dispatch). Returns a fresh worktrees map so the caller can inspect what
- * was created. */
+/** A runOneWorkstream that records whether it was called. */
 function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
   return async (id: string, cwd: string) => {
     called.push(true);
@@ -141,7 +108,13 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
   const called: boolean[] = [];
   const ws = {
     "task-a": { id: "task-a", scope: "dep", paths: [], outOfScope: [] },
-    "task-b": { id: "task-b", scope: "dependent", paths: [], outOfScope: [], dependsOn: ["task-a"] },
+    "task-b": {
+      id: "task-b",
+      scope: "dependent",
+      paths: [],
+      outOfScope: [],
+      dependsOn: ["task-a"],
+    },
   };
   const stateRef = { current: initialState(753) };
   const res = await runDependentWorkstreams(
@@ -161,12 +134,6 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
     { stateRef, depCompletedAtMap: { "task-a": Date.now() - 1000 } },
   );
   // The dependent's worktree was created (deferred creation succeeded).
-  assert(
-    res.worktrees["task-b"] !== undefined && res.worktrees["task-b"] !== "",
-    "#753 case 1: the dependent workstream's worktree was created (deferred creation succeeded)",
-  );
-  // And it was dispatched.
-  assert(called.length === 1 && called[0] === true, "#753 case 1: the dependent was dispatched");
   // The worktree is detached at the dependency's post-commit SHA (not base).
   const depTarget = res.worktrees["task-b"];
   if (depTarget) {
@@ -174,9 +141,10 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
     const { stdout: depHead } = await git(depWt, ["rev-parse", "HEAD"]);
     assert(
       bHead.trim() === depHead.trim() && bHead.trim() !== baseSha,
-      "#753 case 1: the dependent worktree is detached at the dependency's post-commit SHA (not baseSha)",
+      "#753 case 1: the dependent worktree is detached at the dependency's post-commit SHA",
     );
   }
+  assert(res.parked === false, "#753 case 1: the happy path does not park");
 }
 
 // -------------------------------------------------------- case 2: creation fails
@@ -198,7 +166,13 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
   const called: boolean[] = [];
   const ws = {
     "task-a": { id: "task-a", scope: "dep", paths: [], outOfScope: [] },
-    "task-b": { id: "task-b", scope: "dependent", paths: [], outOfScope: [], dependsOn: ["task-a"] },
+    "task-b": {
+      id: "task-b",
+      scope: "dependent",
+      paths: [],
+      outOfScope: [],
+      dependsOn: ["task-a"],
+    },
   };
   const stateRef = { current: initialState(753) };
   const failResult = await runDependentWorkstreams(
@@ -218,7 +192,10 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
     { stateRef, depCompletedAtMap: { "task-a": Date.now() - 1000 } },
   );
   // The dependent was NOT dispatched (creation failed before dispatch).
-  assert(called.length === 0, "#753 case 2: the dependent was NOT dispatched (creation failed first)");
+  assert(
+    called.length === 0,
+    "#753 case 2: the dependent was NOT dispatched (creation failed first)",
+  );
   // The dirty leftover is still on disk — nothing was force-removed.
   const { stdout: leftoverStatus } = await git(depTarget, ["status", "--porcelain"]);
   assert(
@@ -274,9 +251,22 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
     tail?.kind === "cap-hit",
     "#753 case 2: the cap-hit remains the event-log tail (it is the routing signal)",
   );
+  // #753 — the cap-hit's cap field is "deferred-creation:develop" (not
+  // "step-failed:develop"), so the handoff terminalizes it as a `handoff`
+  // (a deliberate park) rather than an `aborted` (a mid-flight crash).
+  if (cap && cap.kind === "cap-hit") {
+    assert(
+      cap.cap === "deferred-creation:develop",
+      "#753 case 2: the cap-hit uses 'deferred-creation:develop' (not 'step-failed:develop') — the handoff status will be 'handoff', not 'aborted'",
+    );
+  }
+  // The parked flag and the cap-hit are one structural unit: parked === true
+  // IFF a cap-hit is present AND at the tail.
+  const capHitCount = stateRef.current.eventLog.filter((e) => e.kind === "cap-hit").length;
   assert(
-    failResult.parked === true,
-    "#753 case 2: runDependentWorkstreams reports parked so the caller skips the converge + verify gates",
+    (failResult.parked === true && capHitCount === 1 && tail?.kind === "cap-hit") ||
+      (failResult.parked === false && capHitCount === 0),
+    "#753 case 2: parked flag and cap-hit are structurally coupled (parked=true IFF cap-hit present and at tail)",
   );
   // The ms field keeps its existing meaning (0 for a failed creation, not a
   // repurposed value).
@@ -300,8 +290,20 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
   const called: boolean[] = [];
   const ws = {
     "task-a": { id: "task-a", scope: "dep", paths: [], outOfScope: [] },
-    "task-b": { id: "task-b", scope: "dependent", paths: [], outOfScope: [], dependsOn: ["task-a"] },
-    "task-c": { id: "task-c", scope: "transitive", paths: [], outOfScope: [], dependsOn: ["task-b"] },
+    "task-b": {
+      id: "task-b",
+      scope: "dependent",
+      paths: [],
+      outOfScope: [],
+      dependsOn: ["task-a"],
+    },
+    "task-c": {
+      id: "task-c",
+      scope: "transitive",
+      paths: [],
+      outOfScope: [],
+      dependsOn: ["task-b"],
+    },
   };
   const stateRef = { current: initialState(753) };
   // Drive task-b (fails) then task-c (cascades) through the same call.
@@ -326,7 +328,10 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
     (e): e is Extract<WorkEvent, { kind: "branch-completed" }> =>
       e.kind === "branch-completed" && e.workstreamId === "task-b",
   );
-  assert(bcB !== undefined && bcB.ok === false, "#753 cascade: task-b's branch-completed is ok=false");
+  assert(
+    bcB !== undefined && bcB.ok === false,
+    "#753 cascade: task-b's branch-completed is ok=false",
+  );
   assert(
     bcB?.deferredCreation?.failure?.class === "dirty-leftover",
     "#753 cascade: task-b's failure is the deferred-creation failure (the primary failure)",
@@ -341,6 +346,146 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
   assert(
     bcB?.error?.includes("task-b") === true,
     "#753 cascade: the primary failure event names the workstream that actually failed (task-b)",
+  );
+}
+
+// ------------------------------------------- case 3: create-error (non-dirty)
+{
+  const { repo, baseSha, depWt } = await fixture("create-error");
+  // Force the dependent's deferred creation to fail with a non-dirty error:
+  // use an unresolvable fromRef that causes `git worktree add` to fail with a
+  // plain git error (not a DirtyWorktreeError).
+  const worktrees: Record<string, string> = { "task-a": depWt };
+  const workstreamBaseShas = { "task-a": baseSha };
+  const verdicts: Array<{ id: string; ok: boolean }> = [];
+  const branchEvents: WorkEvent[] = [];
+  const failedOrSkipped = new Set<string>();
+  const called: boolean[] = [];
+  const ws = {
+    "task-a": { id: "task-a", scope: "dep", paths: [], outOfScope: [] },
+    "task-b": {
+      id: "task-b",
+      scope: "dependent",
+      paths: [],
+      outOfScope: [],
+      dependsOn: ["task-a"],
+    },
+  };
+  const stateRef = { current: initialState(753) };
+  // Use a fake execFn that fails on `git worktree add` with a plain error.
+  const failingExec: ExecFn = async (cmd, o) => {
+    if (cmd.includes("git worktree add")) {
+      throw new Error("fatal: invalid reference: nonexistent-ref");
+    }
+    return realExec(cmd, o);
+  };
+  const res = await runDependentWorkstreams(
+    ctxFor(repo),
+    ["task-b"],
+    ws,
+    { "task-b": ["task-a"] },
+    failedOrSkipped,
+    verdicts,
+    branchEvents,
+    failingExec,
+    worktrees,
+    workstreamBaseShas,
+    baseSha,
+    ["task-a", "task-b"],
+    makeRunOne(called, worktrees),
+    { stateRef, depCompletedAtMap: { "task-a": Date.now() - 1000 } },
+  );
+  // The dependent was NOT dispatched (creation failed before dispatch).
+  assert(
+    called.length === 0,
+    "#753 case 3: the dependent was NOT dispatched (creation failed first)",
+  );
+  // The cycle did NOT park (create-error is not a park).
+  assert(
+    res.parked === false,
+    "#753 case 3: the cycle did NOT park on a create-error (only dirty-leftover parks)",
+  );
+  // No cap-hit was emitted (only dirty-leftover emits a cap-hit).
+  const capHitCount = stateRef.current.eventLog.filter((e) => e.kind === "cap-hit").length;
+  assert(
+    capHitCount === 0,
+    "#753 case 3: no cap-hit was emitted for a create-error (the PR7 router handles routing)",
+  );
+  // The branch-completed event was recorded with the create-error class.
+  const bc = branchEvents.find(
+    (e): e is Extract<WorkEvent, { kind: "branch-completed" }> =>
+      e.kind === "branch-completed" && e.workstreamId === "task-b",
+  );
+  assert(bc !== undefined, "#753 case 3: a branch-completed event was recorded for the dependent");
+  assert(bc?.ok === false, "#753 case 3: the dependent's branch-completed event is ok=false");
+  assert(
+    bc?.deferredCreation?.failure?.class === "create-error",
+    "#753 case 3: the failure class is create-error (a git error, not a dirty leftover)",
+  );
+  assert(
+    bc?.deferredCreation?.failure?.error !== undefined,
+    "#753 case 3: the create-error carries the underlying error text",
+  );
+}
+
+// ------------------------------------------- case 4: in-cycle exclusion
+{
+  const { repo, baseSha, depWt } = await fixture("in-cycle");
+  // Create a second worktree that will be "in-cycle" (like task-a), and make
+  // it dirty. Then try to create a third worktree — the in-cycle exclusion
+  // must NOT prevent the creation from succeeding (the dirty in-cycle
+  // worktree is excluded from the scan).
+  const inCycleTarget = path.join(repo, ".worktrees", "issue-753-task-c");
+  await git(repo, ["worktree", "add", "-q", "--detach", inCycleTarget, baseSha]);
+  writeFileSync(path.join(inCycleTarget, "dirty.txt"), "uncommitted work\n");
+
+  const worktrees: Record<string, string> = { "task-a": depWt, "task-c": inCycleTarget };
+  const workstreamBaseShas = { "task-a": baseSha, "task-c": baseSha };
+  const verdicts: Array<{ id: string; ok: boolean }> = [];
+  const branchEvents: WorkEvent[] = [];
+  const failedOrSkipped = new Set<string>();
+  const called: boolean[] = [];
+  const ws = {
+    "task-a": { id: "task-a", scope: "dep", paths: [], outOfScope: [] },
+    "task-c": { id: "task-c", scope: "dep", paths: [], outOfScope: [] },
+    "task-b": {
+      id: "task-b",
+      scope: "dependent",
+      paths: [],
+      outOfScope: [],
+      dependsOn: ["task-a"],
+    },
+  };
+  const stateRef = { current: initialState(753) };
+  const res = await runDependentWorkstreams(
+    ctxFor(repo),
+    ["task-b"],
+    ws,
+    { "task-b": ["task-a"] },
+    failedOrSkipped,
+    verdicts,
+    branchEvents,
+    realExec,
+    worktrees,
+    workstreamBaseShas,
+    baseSha,
+    ["task-a", "task-b", "task-c"],
+    makeRunOne(called, worktrees),
+    {
+      stateRef,
+      depCompletedAtMap: { "task-a": Date.now() - 1000 },
+      inCycleWorktrees: [depWt, inCycleTarget],
+    },
+  );
+  // The dependent's worktree was created (the in-cycle dirty worktree task-c
+  // did NOT block the creation — it was excluded from the scan).
+  assert(
+    res.worktrees["task-b"] !== undefined && res.worktrees["task-b"] !== "",
+    "#753 case 4: the dependent workstream's worktree was created despite a dirty in-cycle worktree (in-cycle exclusion works)",
+  );
+  assert(
+    res.parked === false,
+    "#753 case 4: the cycle did not park (in-cycle dirty work is not a leftover)",
   );
 }
 

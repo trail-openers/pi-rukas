@@ -183,21 +183,18 @@ export interface WorktreeCreateResult {
 /**
  * Create a worktree, returning its absolute path and provisioning outcome.
  *
- * Idempotent by construction: an existing worktree at the same path is removed
- * first. A resumed cycle must not fail because its own previous attempt left a
- * directory behind — that is the class of leftover that wedged whole queues.
- *
- * The pre-remove is guarded (#475): when the leftover holds uncommitted work
- * or local commits, force-removing it would destroy work that is nowhere else
- * (develop diffs are never committed). `worktreeCreate` then throws a
- * `DirtyWorktreeError` naming the absolute path instead, and the caller
- * (`mechanizedBranchSetup`) refuses — no fallback, because the LLM ops path
- * would destroy the same work through the same `--force` — routing the cycle
- * to handoff. A clean leftover is removed as before.
+ * `inCycleWorktrees` — optional list of worktree PATHS that belong to the
+ * current cycle (this workstream set, e.g. created by the branch step or by
+ * an earlier dependent in the dependent phase). The #545 same-issue dirty
+ * scan (`findDirtySameIssueLeftover`) is unbounded within a cycle: without
+ * this exclusion an earlier workstream's legitimate in-progress dirt would be
+ * misread as a "leftover" and park the cycle. In-cycle paths are excluded
+ * from the scan; a genuinely foreign leftover is still caught.
  */
 export async function worktreeCreate(
   execFn: ExecFn,
   opts: WorktreeCreateOpts,
+  inCycleWorktrees?: string[],
 ): Promise<WorktreeCreateResult> {
   const abs = worktreePath(opts.repoRoot, opts.name);
   // If the worktree name is in the retainedNames set, refuse to pre-remove.
@@ -227,21 +224,31 @@ export async function worktreeCreate(
   // error. A clean foreign leftover is still handled by `worktree add`'s
   // own path-exists error — unchanged.
   const issuePrefix = opts.name.split("-").slice(0, 2).join("-");
+  // #753 — exclude this cycle's own worktrees from the dirty scan so an
+  // earlier workstream's legitimate in-progress dirt is not misread as a
+  // "leftover" (the scan is unbounded within a cycle).
+  const inCycleSet = new Set(inCycleWorktrees ?? []);
   const siblingDirty = await findDirtySameIssueLeftover(
     execFn,
     opts.repoRoot,
     opts.fromRef,
     issuePrefix,
     opts.name,
+    inCycleWorktrees,
   );
   if (siblingDirty) {
     throw new DirtyWorktreeError(siblingDirty);
   }
-  const leftover = await inspectWorktreeForLoss(execFn, opts.repoRoot, abs, opts.fromRef);
-  if (leftover) {
-    throw new DirtyWorktreeError(leftover);
+  // #753 — if the target path is in-cycle (this workstream set), skip the
+  // pre-remove and let `git worktree add` fail with its own error (path
+  // already exists). The in-cycle path is in-flight work, not a leftover.
+  if (!inCycleSet.has(abs)) {
+    const leftover = await inspectWorktreeForLoss(execFn, opts.repoRoot, abs, opts.fromRef);
+    if (leftover) {
+      throw new DirtyWorktreeError(leftover);
+    }
+    await worktreeRemove(execFn, opts.repoRoot, opts.name, true).catch(() => undefined);
   }
-  await worktreeRemove(execFn, opts.repoRoot, opts.name, true).catch(() => undefined);
   // Always detached at baseSha: a named branch in a worktree contradicts
   // #287 (worktrees are the workstream's scratch space; the feature branch
   // only ever exists at repoRoot, where integration happens) and breaks the
@@ -344,6 +351,12 @@ export async function scanWorktrees(
  * destroy. An unreadable `git worktree list` returns undefined: the
  * refusal then happens the pre-#545 way (the raw git error, now plumbed
  * via `gitErrorDetail`), which is the safe degradation.
+ *
+ * `excludePaths` — additional worktree paths to skip (in addition to
+ * `selfName`). #753: this cycle's own worktrees (created by the branch step
+ * or by an earlier dependent) are legitimate in-progress work, not
+ * "leftover" — without this exclusion the scan would park the cycle on a
+ * false positive.
  */
 export async function findDirtySameIssueLeftover(
   execFn: ExecFn,
@@ -351,13 +364,28 @@ export async function findDirtySameIssueLeftover(
   fromRef: string,
   issuePrefix: string,
   selfName: string,
+  excludePaths?: string[],
 ): Promise<DirtyWorktreeFinding | undefined> {
   const wtMarker = `.worktrees${path.sep}${issuePrefix}`;
   const hits = await scanWorktrees(execFn, repoRoot, fromRef, [wtMarker], selfName);
+  // #753 — on macOS, `git worktree list --porcelain` returns symlink-resolved
+  // paths (/private/var/...) while our paths are the logical form (/var/...).
+  // Resolve both sides before comparing.
+  const excludeSet = new Set((excludePaths ?? []).map((p) => resolvePath(p)));
   for (const hit of hits) {
+    if (excludeSet.has(resolvePath(hit.path))) continue;
     if (hit.finding) return hit.finding;
   }
   return undefined;
+}
+
+/** Resolve a path to its canonical form (handles macOS /var → /private/var). */
+function resolvePath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
 }
 
 /** Drop administrative records for worktrees whose directories are gone. */

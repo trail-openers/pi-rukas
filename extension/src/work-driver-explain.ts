@@ -335,6 +335,16 @@ export function explainCap(
   // Template-literal `step-failed:<step>` values land here. Switch on the
   // step suffix to produce a tailored sentence.
   if (cap.startsWith("step-failed:")) {
+    // #753 — deferred worktree-creation failure. Its own sentence, because
+    // `step-failed:develop` would be a mislabel (the dispatch itself never
+    // failed; the DEPENDENT's deferred worktree creation was refused or
+    // errored). The handoff's aborted-vs-handoff status keys off the
+    // `step-failed:` prefix, so this cap is named `deferred-creation:develop`
+    // (not `step-failed:…`) so a deliberate, well-explained park is
+    // terminalized as a handoff, not as a mid-flight crash.
+    if (cap === "deferred-creation:develop") {
+      return `a DEPENDENT workstream's deferred worktree creation was refused or failed (a dirty same-issue leftover at the target path, or a git error on the add) — the cycle parked so the leftover is inspected and salvaged rather than force-removed; the failed workstream's branch-completed event carries the git detail`;
+    }
     const step = cap.slice("step-failed:".length) as WorkStep;
     // PR7 — for multi-workstream halts (PR3 fanout steps: develop +
     // lens-review), append a parenthetical with the per-branch verdict

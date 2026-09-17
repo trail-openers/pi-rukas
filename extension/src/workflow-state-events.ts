@@ -308,7 +308,14 @@ export type WorkEvent =
         // shape across ≥3 files → step-back (SDD spec-gap analysis).
         | "repeat-finding-seam"
         | `verify-failed:${WorkStep}`
-        | `step-failed:${WorkStep}`;
+        | `step-failed:${WorkStep}`
+        // #753 — deferred worktree creation failed (dirty-leftover park). Its
+        // own literal cap name so explainCap can give it a tailored sentence
+        // (not a generic "step failed") and so the handoff does NOT
+        // terminalize it as `aborted` (the `step-failed:` prefix → `aborted`
+        // mapping in work-driver-handoff.ts is reserved for mid-flight
+        // dispatch failures; this is a deliberate park).
+        | "deferred-creation:develop";
       /** #543 — which role's child was cap-killed (loop/token-budget caps). */
       role?: RoleName;
       reviewRound: number;

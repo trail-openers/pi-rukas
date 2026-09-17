@@ -225,6 +225,14 @@ export async function resolveDependentBase(
  * record when the worktree could not be created (the caller records it on
  * the `branch-completed` event and skips the developer dispatch).
  *
+ * `inCycleWorktrees` — worktree paths that are part of the CURRENT cycle
+ * (this workstream set, created by the branch step or by an earlier
+ * dependent). The #545 same-issue dirty scan is unbounded within a cycle:
+ * without this exclusion, an EARLIER workstream's legitimate in-progress
+ * dirt (its developer still working) would be misread as a "leftover" and
+ * park the cycle on a false positive. In-cycle paths are therefore excluded
+ * from the scan; a genuinely foreign leftover is still caught.
+ *
  * #753 — the failure record carries the UNDERLYING error rather than a
  * hand-written literal. Two shapes, matched by `class`:
  *   - "dirty-leftover" — a pre-add guard (DirtyWorktreeError) refused BEFORE
@@ -251,8 +259,10 @@ export type DeferredCreationResult =
         error: string;
         leftoverPath?: string;
         gitCommand?: string;
-        /** The command's exit status, when known (a numeric `e.code`). */
-        exitStatus?: number;
+        /** The command's exit status, when known (a numeric `e.code`).
+         * Matches `DeferredCreationFailure` (number | null); the producer
+         * only ever assigns `undefined`, but the two shapes stay in sync. */
+        exitStatus?: number | null;
         stderr?: string;
       };
     };
@@ -263,11 +273,12 @@ export async function createDependentWorktree(
   issue: number,
   dependentId: string,
   fromRef: string,
+  inCycleWorktrees?: string[],
 ): Promise<DeferredCreationResult> {
   const name = `issue-${issue}-${dependentId}`;
   const gitCmd = `git worktree add --detach ${JSON.stringify(worktreePath(repoRoot, name))} ${JSON.stringify(fromRef)}`;
   try {
-    const result = await worktreeCreate(execFn, { repoRoot, name, fromRef });
+    const result = await worktreeCreate(execFn, { repoRoot, name, fromRef }, inCycleWorktrees);
     trace(
       `work-driver: deferred worktree created for ${dependentId} @ ${fromRef.slice(0, 8)} (${result.path})`,
     );
