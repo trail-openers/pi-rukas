@@ -20,9 +20,9 @@
  *    error text IS the finding (the leftover path it names). The cycle
  *    PARKS on this class; it must never be force-removed.
  *  - "create-error": the creation itself failed (the add, or a guard that
- *    surfaced as a plain error). `gitCommand` / `exitStatus` / `stderr`
- *    carry the underlying failure, extracted via worktree.ts's
- *    `gitErrorDetail` — never a new extraction scheme.
+ *    surfaced as a plain error). `gitCommand` / `stderr` carry the
+ *    underlying failure, extracted via worktree.ts's `gitErrorDetail` —
+ *    never a new extraction scheme.
  */
 
 /**
@@ -41,9 +41,7 @@ export type DeferredCreationFailure =
       class: "create-error";
       /** The git command the creation attempted, when one was reached. */
       gitCommand?: string;
-      /** The command's exit status, when known. */
-      exitStatus?: number | null;
-      /** The command's stderr, via `gitErrorDetail`. */
+      /** The command's stderr, via `gitErrorDetail` (never the wrapper). */
       stderr?: string;
       /** The error's text (wraps stderr; always present). */
       error: string;

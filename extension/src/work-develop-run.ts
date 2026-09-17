@@ -425,7 +425,6 @@ export async function runDependentWorkstreams(
               : {
                   class: "create-error" as const,
                   gitCommand: created.failure.gitCommand,
-                  exitStatus: created.failure.exitStatus,
                   stderr: created.failure.stderr,
                   error: created.failure.error,
                 },

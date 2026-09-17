@@ -36,6 +36,19 @@ export function worktreePath(repoRoot: string, name: string): string {
 }
 
 /**
+ * Resolve a path to its canonical form (handles macOS /var → /private/var).
+ * No-op for paths that do not exist yet — the worktree target is resolved
+ * before `git worktree add` creates it, so this must not throw.
+ */
+export function resolvePath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+/**
  * #545 — the machine-readable git error behind a failed command.
  *
  * The production `ExecFn` is `promisify(exec)`, whose rejection carries
@@ -229,8 +242,8 @@ export async function worktreeCreate(
   );
   // Always detached at baseSha: a named branch in a worktree contradicts
   // #287 (worktrees are the workstream's scratch space; the feature branch
-  // only ever exists at repoRoot, where integration happens) and breaks the
-  // invariant test-work-driver-always-worktree.ts enforces.
+  // only ever exists at repoRoot, where integration happens) and breaks
+  // the invariant test-work-driver-always-worktree.ts enforces.
   const add = async () =>
     execFn(`git worktree add --detach ${JSON.stringify(abs)} ${JSON.stringify(opts.fromRef)}`, {
       cwd: opts.repoRoot,
@@ -253,6 +266,15 @@ export async function worktreeCreate(
     const msg = detail && !originalMsg.includes(detail) ? `${originalMsg}\n${detail}` : originalMsg;
     const wrapped = new Error(`worktreeCreate: ${opts.name} failed: ${msg}`);
     wrapped.cause = err;
+    // #753 (six-lens FIX 1) — the wrapped Error drops the rejection's
+    // `code`/`stderr`, so the deferred-creation catch (which can only read
+    // the wrapper) would record `stderr: undefined` for a failing
+    // `git worktree add` — the exact detail #753 exists to capture.
+    // Re-expose it so the one extractor (`gitErrorDetail`) works on the
+    // wrapper, and the numeric exit status survives for `failure.exitStatus`.
+    (wrapped as Error & { stderr?: string; code?: number }).stderr = detail;
+    const causeCode = (err as { code?: unknown })?.code;
+    if (typeof causeCode === "number") (wrapped as Error & { code?: number }).code = causeCode;
     throw wrapped;
   }
   // A worktree with only tracked files cannot run the project's own commands:
@@ -357,15 +379,6 @@ export async function findDirtySameIssueLeftover(
   return undefined;
 }
 
-/** Resolve a path to its canonical form (handles macOS /var → /private/var). */
-function resolvePath(p: string): string {
-  try {
-    return realpathSync(p);
-  } catch {
-    return p;
-  }
-}
-
 /** Drop administrative records for worktrees whose directories are gone. */
 export async function worktreePrune(execFn: ExecFn, repoRoot: string): Promise<void> {
   await execFn("git worktree prune", { cwd: repoRoot, maxBuffer: 256 * 1024 });
@@ -441,21 +454,7 @@ export async function sweepBranchHolders(
   // removed — if it's holding the branch, that's the normal state and there
   // is nothing to sweep. macOS /tmp is a symlink to /private/tmp, so
   // normalise both sides before comparing.
-  const holderResolved = (() => {
-    try {
-      return realpathSync(holderPath);
-    } catch {
-      return holderPath;
-    }
-  })();
-  const repoResolved = (() => {
-    try {
-      return realpathSync(repoRoot);
-    } catch {
-      return repoRoot;
-    }
-  })();
-  if (holderResolved === repoResolved) {
+  if (resolvePath(holderPath) === resolvePath(repoRoot)) {
     return false;
   }
   const finding = await inspectWorktreeForLoss(execFn, repoRoot, holderPath, "HEAD");

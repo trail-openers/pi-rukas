@@ -240,9 +240,9 @@ export async function resolveDependentBase(
  *     class; the error text IS the finding (it names the leftover path).
  *     The caller PARKS the cycle on this class.
  *   - "create-error" — the creation itself failed (the add, or a guard that
- *     surfaced as a plain error). `gitCommand` / `exitStatus` / `stderr` are
- *     filled in when they are known (the add threw), else the error text
- *     carries the detail via `gitErrorDetail`.
+ *     surfaced as a plain error). `gitCommand` / `stderr` are filled in when
+ *     they are known (the add threw), else the error text carries the detail
+ *     via `gitErrorDetail`.
  *
  * The return shape mirrors the `DeferredCreationEventFragment`/
  * `DeferredCreationFailure` record the caller writes onto the
@@ -259,10 +259,6 @@ export type DeferredCreationResult =
         error: string;
         leftoverPath?: string;
         gitCommand?: string;
-        /** The command's exit status, when known (a numeric `e.code`).
-         * Matches `DeferredCreationFailure` (number | null); the producer
-         * only ever assigns `undefined`, but the two shapes stay in sync. */
-        exitStatus?: number | null;
         stderr?: string;
       };
     };
@@ -293,23 +289,24 @@ export async function createDependentWorktree(
         failure: { class: "dirty-leftover", error: err.message, leftoverPath: err.finding.path },
       };
     }
-    const e = err as { message?: string; stderr?: string; code?: number | string };
+    // #753 (six-lens FIX 1) — the SAME extraction the branch step uses
+    // (`gitErrorDetail`), never a second scheme. A failing `git worktree add`
+    // reaches here as worktree.ts's wrapper (the rejection's stderr is
+    // re-exposed on the wrapper by the fix), so `gitErrorDetail` returns the
+    // actual git stderr (the wrapper line stripped, no duplication) — which
+    // is what `failure.stderr` must carry, not the wrapped message.
     const detail = gitErrorDetail(err);
     trace(
       `work-driver: deferred worktree creation failed for ${dependentId}: ${detail.slice(0, 200)}`,
     );
-    const exitStatus = typeof e.code === "number" ? e.code : undefined;
-    const rawStderr = (e.stderr ?? "").toString().trim();
-    const errorText = e.message ?? (detail || "unknown error");
-    const stderrText = rawStderr || detail;
+    const errorText = (err as Error).message ?? (detail || "unknown error");
     return {
       path: undefined,
       failure: {
         class: "create-error",
         error: errorText,
         gitCommand: gitCmd,
-        exitStatus,
-        stderr: stderrText,
+        stderr: detail,
       },
     };
   }

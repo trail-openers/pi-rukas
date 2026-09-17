@@ -13,7 +13,9 @@ import { promisify } from "node:util";
 import { runDependentWorkstreams } from "../src/work-develop-run.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { nextStep } from "../src/work-driver-context.ts";
+import { createDependentWorktree } from "../src/work-driver-dep-scheduler.ts";
 import { type WorkEvent, initialState } from "../src/workflow-state.ts";
+import { runCreateGuards } from "../src/worktree-create-guard.ts";
 import type { ExecFn } from "../src/worktree.ts";
 
 const execFileP = promisify(execFile);
@@ -247,6 +249,103 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
   assert(
     decision.kind === "step" && decision.step === "handoff",
     "#753 case 6 (FIX 6): nextStep still routes to handoff on the cap-hit (it remains the tail)",
+  );
+}
+
+// ----------------------------------- case 3b: create-error carries the real git stderr
+// #753 (six-lens FIX 1): a genuine `git worktree add` failure (unresolvable
+// ref, real git stderr) must land in `failure.stderr` via `gitErrorDetail`
+// — and `failure.error` must NOT duplicate it. Without the fix, `stderr`
+// is undefined (the wrapper drops the rejection's stderr) and `error` is
+// the wrapper ("worktreeCreate: … failed: fatal: …"), duplicating the
+// fatal line.
+{
+  const name = path.join(root, "create-error-stderr");
+  mkdirSync(name, { recursive: true });
+  writeFileSync(path.join(name, "a.txt"), "base\n");
+  await git(name, ["init", "-q", "--initial-branch=main"]);
+  await git(name, ["config", "user.email", "t@example.com"]);
+  await git(name, ["config", "user.name", "T"]);
+  await git(name, ["add", "a.txt"]);
+  await git(name, ["commit", "-q", "-m", "base"]);
+  const { stdout: baseShaOut } = await git(name, ["rev-parse", "HEAD"]);
+  const depWt = path.join(name, ".worktrees", "issue-753-task-a");
+  await git(name, ["worktree", "add", "-q", "--detach", depWt, baseShaOut.trim()]);
+  writeFileSync(path.join(depWt, "a.txt"), "base\ndep work\n");
+  await git(depWt, ["add", "a.txt"]);
+  await git(depWt, ["commit", "-q", "-m", "dep work"]);
+  const res = await createDependentWorktree(realExec, name, 753, "task-b", "nonexistent-ref-00000");
+  if (res.path === undefined && res.failure.class === "create-error") {
+    const fe = res.failure.stderr ?? "";
+    const err = res.failure.error ?? "";
+    assert(
+      fe === "fatal: invalid reference: nonexistent-ref-00000",
+      `#753 case 3b: failure.stderr carries the ACTUAL git stderr, verbatim (no Command-failed wrapper, no duplication) (got: ${JSON.stringify(fe)})`,
+    );
+    assert(
+      err.includes("worktreeCreate:") === true && err.includes(fe) === true && fe !== err,
+      `#753 case 3b: failure.error keeps the wrapper context without duplicating stderr verbatim (error: ${JSON.stringify(err)})`,
+    );
+    assert(
+      res.failure.gitCommand?.includes("git worktree add") === true,
+      "#753 case 3b: failure.gitCommand names the attempted git worktree add",
+    );
+  } else {
+    assert(false, "#753 case 3b: the unresolvable ref produced a create-error");
+  }
+}
+
+// ------------------------------------------------ case 7: sibling scan degrades safely
+// #753 (six-lens FIX 2): a transient `git worktree list` failure during the
+// sibling scan must NOT escape to a create-error. It degrades to "no
+// finding" (creation proceeds exactly as pre-#545), mirroring the
+// documented fail-open direction of `scanWorktrees` and
+// `inspectWorktreeForLoss`.
+{
+  const { repo, baseSha } = await (async () => {
+    const name = path.join(root, "sibling-scan-degrades");
+    mkdirSync(name, { recursive: true });
+    writeFileSync(path.join(name, "a.txt"), "x\n");
+    await git(name, ["init", "-q", "--initial-branch=main"]);
+    await git(name, ["config", "user.email", "t@t.co"]);
+    await git(name, ["config", "user.name", "T"]);
+    await git(name, ["add", "."]);
+    await git(name, ["commit", "-q", "-m", "base"]);
+    const sha = (await git(name, ["rev-parse", "HEAD"])).stdout.trim();
+    return { repo: name, baseSha: sha };
+  })();
+  // A sibling worktree that the scan WOULD have caught if the git error
+  // did not fire.
+  const sibling = path.join(repo, ".worktrees", "issue-753-foreign");
+  await git(repo, ["worktree", "add", "-q", "--detach", sibling, baseSha]);
+  // Throw on the FIRST `git worktree list` call (the sibling scan) but not
+  // the second (the target-path guard does not call `worktree list`, but
+  // we throw only once to be safe).
+  let listCalls = 0;
+  const broken: ExecFn = async (cmd, o) => {
+    if (cmd.includes("worktree list")) {
+      listCalls++;
+      if (listCalls === 1) throw new Error("git: unable to read worktree list");
+    }
+    return realExec(cmd, o);
+  };
+  let threw = false;
+  try {
+    await runCreateGuards(broken, { repoRoot: repo, name: "issue-753-mine", fromRef: baseSha });
+  } catch {
+    threw = true;
+  }
+  assert(
+    threw === false,
+    "#753 case 7: a failing sibling scan degrades to no-finding (guards resolve) — it does NOT escape to a create-error",
+  );
+  // The sibling worktree is still on disk (the degraded scan did not touch it).
+  const { stdout: sibStatus } = await git(sibling, ["status", "--porcelain"]).catch(() => ({
+    stdout: "GONE\n",
+  }));
+  assert(
+    sibStatus !== "GONE\n",
+    "#753 case 7: the sibling worktree is untouched after the degraded scan (safe, not destructive)",
   );
 }
 

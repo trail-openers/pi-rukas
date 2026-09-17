@@ -17,7 +17,6 @@
  *     pre-remove is skipped for an in-cycle path.
  */
 
-import { realpathSync } from "node:fs";
 import { trace } from "./trace.ts";
 import {
   DirtyWorktreeError,
@@ -25,6 +24,7 @@ import {
   type ExecFn,
   findDirtySameIssueLeftover,
   inspectWorktreeForLoss,
+  resolvePath,
   worktreePath,
   worktreeRemove,
 } from "./worktree.ts";
@@ -59,6 +59,15 @@ export async function runCreateGuards(
   // #753 — the SIBLING scan excludes this cycle's own worktrees (the exclusion
   // happens inside findDirtySameIssueLeftover, which resolves both sides —
   // an earlier workstream's legitimate in-progress dirt is not a leftover).
+  // #753 (six-lens FIX 2) — the sibling scan degrades the SAFE direction:
+  // a transient `git worktree list` failure returns "no finding" and creation
+  // proceeds EXACTLY as pre-#545 did (the raw git error from `git worktree
+  // add`, now plumbed via `gitErrorDetail`). A throw here instead escaped to
+  // `create-error` with no dirty finding AND let `git worktree add` proceed
+  // onto an UNSCANNED dirty sibling — the shape #545 exists to prevent.
+  // This mirrors `scanWorktrees`' documented "unreadable list → empty array
+  // — the safe direction (no action)" and `inspectWorktreeForLoss`'s #475
+  // fail-open ("an unreadable worktree is removed as today").
   const siblingDirty = await findDirtySameIssueLeftover(
     execFn,
     opts.repoRoot,
@@ -66,7 +75,12 @@ export async function runCreateGuards(
     issuePrefix,
     opts.name,
     inCycleWorktrees,
-  );
+  ).catch((e) => {
+    trace(
+      `worktree: sibling scan failed for ${opts.name} — proceeding without it (${e instanceof Error ? e.message : String(e)})`,
+    );
+    return undefined;
+  });
   if (siblingDirty) {
     throw new DirtyWorktreeError(siblingDirty);
   }
@@ -90,15 +104,6 @@ export async function runCreateGuards(
     await worktreeRemove(execFn, opts.repoRoot, opts.name, true).catch(() => undefined);
   }
   trace(`worktree: guards passed for ${opts.name} — proceeding to create`);
-}
-
-/** Resolve a path to its canonical form (handles macOS /var → /private/var). */
-function resolvePath(p: string): string {
-  try {
-    return realpathSync(p);
-  } catch {
-    return p;
-  }
 }
 
 /** Re-export of the finding type for callers of the guard. */
