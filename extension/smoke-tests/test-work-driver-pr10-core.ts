@@ -304,8 +304,12 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     );
     const explanation = explainCap("step-failed:merged", after!);
     assert(
-      explanation.includes("gh pr merge") && /merge manually/i.test(explanation),
-      "explainCap step-failed:merged gives the operator a merge-manually recovery hint",
+      explanation.includes("gh pr merge") && /merge once with/.test(explanation),
+      "explainCap step-failed:merged gives the operator a one-off merge recovery hint (driver does not retry the merge step)",
+    );
+    assert(
+      !/merge manually/i.test(explanation),
+      "the recovery no longer frames manual merging as the normal path",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

@@ -403,11 +403,28 @@ export function explainMergeHold(
         : "";
     // Always name where a grant would live. An operator told only "not
     // permitted" has to go and find that out; one sentence here saves it.
-    return `${pr} is open and ready, but the driver is not permitted to merge it.${why}${hallucinated} Merging is opt-in by design: review and merge it yourself, or say so plainly in this project's AGENTS.md (one sentence, any language — e.g. "Agents may merge a PR to main once CI is green") and re-run, or pass --merge for a single run.`;
+    return `${pr} is open and ready, but the driver is not permitted to merge it.${why}${hallucinated} Merging is the driver's job once the gate passes: add a grant to this project's AGENTS.md (one sentence, any language — e.g. "Agents may merge a PR to main once CI is green") and re-run, or pass --merge for a single run.`;
   }
   const why = evidence?.reason ?? "no evidence gathered";
   const tooling = mergeHoldToolingNote(true, evidence?.failureKind);
   return `${pr} is open and merging is permitted, but the evidence gate refused: ${why}. ${tooling ? `${tooling} ` : ""}The driver merges on what \`gh\` reports, never on a subagent's claim.`;
+}
+
+/**
+ * The single source for the no-authority recovery sentence.
+ *
+ * #760: this sentence used to be duplicated near-verbatim in three surfaces
+ * (the queue summary, the merge-hold action, the handoff recovery steps) with
+ * slightly different wording — the exact mechanism that produced cross-surface
+ * disagreement in review. Call sites keep their own framing (a chat line, a
+ * queue notification, a numbered recovery step) but share this sentence.
+ *
+ * `pr` is the PR label the caller already has ("#42" or "the PR for #7").
+ * Returns a sentence fragment (no leading article, no trailing period) so
+ * each surface can place it in its own grammatical context.
+ */
+export function mergeHoldGrantAction(pr: string): string {
+  return `grant the driver authority to merge ${pr} — no merge grant exists for this run; add one sentence to AGENTS.md (the durable form) or pass --merge for this run`;
 }
 
 /**
@@ -429,11 +446,12 @@ export function mergeHoldAction(
   // honest signature: a bare `number` is never expected.
   const pr = prNumber ? `#${prNumber}` : "the PR";
   if (!authority.granted) {
-    return `review and merge ${pr} yourself (agent merging is not permitted in this project)`;
+    return mergeHoldGrantAction(pr);
   }
   const tooling = mergeHoldToolingNote(true, failureKind);
   if (tooling) return `the merge evidence gate for ${pr} ${tooling}`.replace("first.", "first");
-  return `check the failing/incomplete required checks on ${pr}, then merge`;
+  // Names the driver as the actor: a human was never going to merge anyway.
+  return `check the failing/incomplete required checks on ${pr}, then re-run with --merge once the gate passes`;
 }
 
 /**
