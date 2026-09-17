@@ -978,7 +978,7 @@ The **wall-clock** cap (90 min) is unchanged and still parks: a review that ran 
 
 That hold is deliberate and not redundant with the grant. Every grant this gate honours is conditioned on the quality gates having been met — this repo's own reads *"If all project quality gates have been met (code reviews, CI, linters, type checks etc)"* — and a review loop that exhausted its rounds with findings outstanding is precisely the gate that was not met. Deciding it on the event rather than on the wording keeps behaviour uniform: a project cannot opt into merging unreviewed work by phrasing its doctrine more loosely than it meant to.
 
-**What to do.** Read the PR comment. The findings are severity-ordered, worst first, and none has been fixed. Decide them, then merge by hand or push a fix to the branch.
+**What to do.** Read the PR comment. The findings are severity-ordered, worst first, and none has been fixed. Decide them, then push a fix to the branch so the gate can pass on a re-run.
 
 ## Multi-issue `/work` — how grouping is decided (PR16+)
 

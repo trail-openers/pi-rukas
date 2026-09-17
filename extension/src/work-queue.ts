@@ -205,12 +205,12 @@ export function humanActionFor(reason: string, primary: number): string {
           Number(heldMerge[2]) || undefined,
           failureKind,
         )
-      : `review and merge ${pr} yourself — agent merging is not permitted in this project (grant it in AGENTS.md or re-run with --merge)`;
+      : `grant the driver authority to merge ${pr} — a sentence in AGENTS.md, or re-run with --merge (agent merging is not permitted here as configured)`;
   }
   // #380 — `--restart` after a failed merge wipes the state file but NOT the
   // open PR, so the re-run halts immediately on the pre-flight (#362).
   if (/step-failed:merged/.test(reason)) {
-    return `merge #${primary}'s PR by hand — the branch is pushed and the work is done (do NOT --restart: the open PR would halt the re-run)`;
+    return `review #${primary}'s PR and remove the cause of the merge hold — the grant in AGENTS.md, --merge for this run, or the failing gh evidence (do NOT --restart: the open PR would halt the re-run)`;
   }
   if (/lens-diff-unreadable/.test(reason)) {
     return `check that #${primary}'s branch is pushed and \`git fetch origin --prune\` is current — the review could not read the diff`;

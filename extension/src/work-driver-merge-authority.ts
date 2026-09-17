@@ -403,7 +403,7 @@ export function explainMergeHold(
         : "";
     // Always name where a grant would live. An operator told only "not
     // permitted" has to go and find that out; one sentence here saves it.
-    return `${pr} is open and ready, but the driver is not permitted to merge it.${why}${hallucinated} Merging is opt-in by design: review and merge it yourself, or say so plainly in this project's AGENTS.md (one sentence, any language — e.g. "Agents may merge a PR to main once CI is green") and re-run, or pass --merge for a single run.`;
+    return `${pr} is open and ready, but the driver is not permitted to merge it.${why}${hallucinated} Merging is the driver's job once the gate passes: add a grant to this project's AGENTS.md (one sentence, any language — e.g. "Agents may merge a PR to main once CI is green") and re-run, or pass --merge for a single run.`;
   }
   const why = evidence?.reason ?? "no evidence gathered";
   const tooling = mergeHoldToolingNote(true, evidence?.failureKind);
@@ -429,7 +429,7 @@ export function mergeHoldAction(
   // honest signature: a bare `number` is never expected.
   const pr = prNumber ? `#${prNumber}` : "the PR";
   if (!authority.granted) {
-    return `review and merge ${pr} yourself (agent merging is not permitted in this project)`;
+    return `grant the driver authority to merge ${pr} — a sentence in AGENTS.md, or --merge for this run (agent merging is not permitted here as configured)`;
   }
   const tooling = mergeHoldToolingNote(true, failureKind);
   if (tooling) return `the merge evidence gate for ${pr} ${tooling}`.replace("first.", "first");

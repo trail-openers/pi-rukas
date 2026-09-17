@@ -457,7 +457,9 @@ Experimental architectural work lives on a feature branch. Stack spikes on top o
 
 ### LLMs are allowed to squash merge PRs/MRs
 
-If all project quality gates have been met (code reviews, CI, linters, type checks etc) LLMs / agents are allowed to squash merge PRs (GitLab: MRs). There is no retained human merge gate: humans do not merge and need only to be consulted if there are PRs that are somehow problematic that cannot be resolved through further research and steering — consultation is an escalation path for problems, not an approval step in the normal merge path.
+If all project quality gates have been met (code reviews, CI, linters, type checks etc) LLMs / agents are allowed to squash merge PRs (GitLab: MRs).
+
+There is no retained human merge gate: humans do not merge and need only to be consulted if there are PRs that are somehow problematic that cannot be resolved through further research and steering — consultation is an escalation path for problems, not an approval step in the normal merge path.
 
 **This sentence is load-bearing, not decorative.** Since #380 the `/work` driver reads this file at the `merged` step and refuses to merge without an explicit grant like the heading above. Deleting or softening it turns auto-merge off for this repo; an unquoted prohibition anywhere in this file (of the `never merge` / `do not merge` / `automerge: false` shape) turns it off regardless of the grant. Other projects opt in the same way, or per-run with `/work <issue> --merge`; with neither, `/work` opens the PR and parks as `awaiting-human-merge`.
 
@@ -618,8 +620,8 @@ CLI flags and event shapes change between Pi minor versions. The pin in `extensi
 4. **4-day npm embargo** — applies to `extension/` deps via bunfig; recommend pinning for prerequisite CLIs too
 5. **PM never codes** — orchestrate via dispatch tools; the sticky preamble enforces this
 6. **Conventional commits + issue-driven** — alphabetic scopes like `feat(work): …`, branch `feature/issue-N-…`, issue linked via `Closes #N` in the PR body
-7. **Spike branches** — experimental work develops on its own branch, rebased onto fresh main after foundations land
-8. **LLMs may squash-merge when gates pass** (see §9) — approval authority is exercised through the automated review gates (six-lens review + adversarial gate + CI), not by a human merging
+7. **Spike branches** — experimental work on its own branch, rebased after foundations land
+8. **LLMs may squash-merge when gates pass** (see §9) — no retained human merge gate
 9. **200-PR test for docs** — endures or doesn't get written
 10. **Transcript discipline** — orchestrator reads dispatch-tool summaries, never raw transcript files
 11. **File size limits** — 500 lines hard cap, 300 ideal; fully compliant repo-wide, mechanically enforced by `test-file-size-limit.ts`

@@ -307,8 +307,8 @@ const passing = (name: string) => ({ name, state: "SUCCESS", bucket: "pass" });
     "and never says '--restart' — the work is done and pushed; restarting would duplicate it",
   );
   assert(
-    /review and merge/.test(denied),
-    "it names the action only a human can take, per the SRE rule for notifications",
+    /grant the driver authority/.test(denied),
+    "it names the fix — grant the driver the authority — not a manual merge",
   );
   assert(
     /check the failing/.test(mergeHoldAction({ granted: true, source: "agents-md" }, 42)),

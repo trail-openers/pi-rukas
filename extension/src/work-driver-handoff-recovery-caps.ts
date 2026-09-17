@@ -209,7 +209,9 @@ export function recoveryStepsForCap(
       },
       {
         section: "awaiting-human-merge",
-        comment: ["2. Review and merge it yourself:"],
+        comment: [
+          "2. Review the PR and remove whatever is holding the merge (grant, evidence, or checks):",
+        ],
         lines: forgeLines(
           forge,
           [`gh pr view ${pr ?? "<pr>"} --web`],
