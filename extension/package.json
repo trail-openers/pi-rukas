@@ -1,6 +1,6 @@
 {
   "name": "@trail-openers/pi-rukas",
-  "version": "0.12.56",
+  "version": "0.12.57",
   "description": "Multi-specialist orchestrator extension for Pi — parallel worktree-isolated dispatch, adversarial gate, six-pass code review.",
   "keywords": [
     "pi-package",
