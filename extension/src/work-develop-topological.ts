@@ -48,6 +48,14 @@ async function runDevelopTopological(
   }
   const { independent, dependentOrdered } = topologicalDispatchOrder(ids, dependsOnMap);
   const stateRef = { current: next };
+  // #753 — per-workstream completion timestamps + a shared map of WHY each
+  // failed-or-skipped workstream failed (the cascade event names the workstream
+  // that ACTUALLY failed; a cascade is distinguishable from a legitimate skip).
+  const depCompletedAtMap: Record<string, number> = {};
+  // #753 — the independent phase is a parallel fan-out: the wall-clock moment
+  // the fan-out resolves is the completion timestamp every dependent records.
+  const independentCompletedAt = Date.now();
+  const failureSource: Record<string, "skipped" | "failed"> = {};
   const runOneWorkstream = makeRunOneWorkstream({
     ctx,
     activeIssues,
@@ -76,6 +84,10 @@ async function runDevelopTopological(
   for (const r of independentResults) {
     if (!r.ok) failedOrSkipped.add(r.id);
   }
+  // #753 — populate the dep-completion map: dependents wait on their DIRECT
+  // dependency, so record the resolved fan-out time for every independent
+  // workstream; the dependent phase records its own completion as it goes.
+  for (const id of independent) depCompletedAtMap[id] = independentCompletedAt;
   for (const id of independent) {
     const cwd = worktrees[id] ?? ctx.repoRoot;
     const base = workstreamBaseShas[id] ?? globalBaseSha;
@@ -107,10 +119,29 @@ async function runDevelopTopological(
     globalBaseSha,
     ids,
     runOneWorkstream,
+    { stateRef, depCompletedAtMap, failureSource },
   );
   worktrees = wtResult.worktrees;
   workstreamBaseShas = wtResult.workstreamBaseShas;
   next = stateRef.current;
+  // #753 — a dirty-leftover refusal PARKED mid-step (cap-hit appended by
+  // runDependentWorkstreams). The cap-hit must remain the event-log tail so
+  // the step router routes the cycle to handoff on it: appending the
+  // branch-completed events or running the safety-net/verify gates (which
+  // append verifyEvidence / more events) would displace it and the router
+  // would add a SECOND, generic cap on the branches-converged verdict. Hence
+  // the short-circuit: no branchEvents, no branches-converged, no gates.
+  if (wtResult.parked) {
+    next = {
+      ...next,
+      pipelineState: {
+        ...next.pipelineState,
+        worktrees,
+        workstreamBaseShas: { ...workstreamBaseShas, ...next.pipelineState.workstreamBaseShas },
+      },
+    };
+    return next;
+  }
   void independentResults;
   next = appendEvent(clearDispatch(next, begun.jobId), ...branchEvents);
   next = {
