@@ -220,7 +220,7 @@ function scheduleRender(): void {
 
 function renderNow(): void {
   if (!activeCtx) return;
-  if (buildLines().lines.length === 0) {
+  if (entries.size === 0 && batches.size === 0) {
     if (widgetVisible) {
       try {
         activeCtx.ui.setWidget(WIDGET_KEY, undefined);
@@ -239,10 +239,13 @@ function renderNow(): void {
 }
 
 /** Build the single composite widget factory (batch rows + SelectList).
- *  The batch Text rows render the deck's batch-only projection
- *  (`buildLinesBatchOnly` — batch headers + member rows, no per-job work);
- *  the SelectList is the sole per-job surface — one item per job entry
- *  (#742). */
+ *  The Text projection reads `buildLinesBatchOnly` (batch headers only);
+ *  the SelectList is the sole per-job surface (one item per entry, #742).
+ *  renderNow's empty-deck guard reads `buildLines` (batch headers +
+ *  standalone rows) so that a deck with only standalone entries still
+ *  renders; `buildLines`' output is a strict superset of
+ *  `buildLinesBatchOnly`'s (both contain batch headers; only `buildLines`
+ *  adds standalone rows). */
 function buildCompositeWidgetFactory(ctx: ExtensionContext) {
   return deckComposite.buildCompositeFactory(
     buildLinesBatchOnly,
@@ -286,15 +289,24 @@ export function steerDeckEntry(ctx: ExtensionUIContext, key: string, message: st
 // Row rendering
 // =============================================================================
 
-export function buildLines(now: number = Date.now()): { lines: string[]; batchLines: string[] } {
-  const byBatch = new Map<string, DeckEntry[]>();
+/** Top-level deck rows: batch headers + standalone (non-batched) entries,
+ *  in insertion order. Batched members are NOT included — the SelectList
+ *  is the sole per-job surface (#742). This is the projection read by
+ *  renderNow's empty-deck guard (via `hasRenderableRows`). It is a strict superset of
+ *  `buildLinesBatchOnly`'s output (both contain batch headers; this adds
+ *  standalone rows).
+ *
+ *  Orphan-member contract (fail-open, deliberate): an entry whose `batchKey`
+ *  names a batch that was never registered — or was cleared while its members
+ *  were still alive — is classified here as standalone and renders as a
+ *  top-level row. This is NOT logged, and if the batch is later (re)registered
+ *  the same entry silently flips back to a batch member. Test
+ *  test-dispatch-deck.ts block 8 pins this behaviour; treat it as the
+ *  documented contract, not a bug. */
+export function buildLines(now: number = Date.now()): string[] {
   const standalone: DeckEntry[] = [];
   for (const e of entries.values()) {
-    if (e.batchKey && batches.has(e.batchKey)) {
-      const arr = byBatch.get(e.batchKey) ?? [];
-      arr.push(e);
-      byBatch.set(e.batchKey, arr);
-    } else {
+    if (!e.batchKey || !batches.has(e.batchKey)) {
       standalone.push(e);
     }
   }
@@ -307,43 +319,36 @@ export function buildLines(now: number = Date.now()): { lines: string[]; batchLi
     (a, b) => (a.kind === "batch" ? a.b.seq : a.e.seq) - (b.kind === "batch" ? b.b.seq : b.e.seq),
   );
   const lines: string[] = [];
-  const batchLines: string[] = [];
   for (const item of tl) {
     if (item.kind === "batch") {
-      const batchLine = formatBatchRow(item.b, now);
-      lines.push(batchLine);
-      batchLines.push(batchLine);
-      for (const m of (byBatch.get(item.b.key) ?? []).slice().sort((a, b) => a.seq - b.seq)) {
-        const memberLine = formatMemberRow(m, now);
-        lines.push(memberLine);
-        batchLines.push(memberLine);
-      }
+      lines.push(formatBatchRow(item.b, now));
     } else {
       lines.push(formatRow(item.e, now));
     }
   }
-  return { lines, batchLines };
+  return lines;
 }
 
-/** The deck's batch-only projection: batch headers + member rows only.
- *  Skips the per-job `formatRow` work — those lines are the SelectList's,
- *  and the composite's `lines` accessor reads only this (the pre-#742
- *  "single shared projection" no longer covers job rows, #742). */
+/**
+ * Is anything renderable? Equivalent to `buildLines().length > 0`: every row
+ * buildLines emits comes from either a batch (header) or an entry (standalone),
+ * so both collections empty ⇔ no rows. Used by renderNow's empty-deck guard
+ * so the 1s ticker can test emptiness without allocating and sorting.
+ */
+function hasRenderableRows(): boolean {
+  return entries.size > 0 || batches.size > 0;
+}
+
+/** The composite's Text projection: batch header rows only.
+ *  Member rows are the SelectList's (one item per job entry, #742), so
+ *  including them here would render each batch member twice — once as a
+ *  Text row and once as a SelectList item. This is a strict subset of
+ *  `buildLines`' output (both contain batch headers; `buildLines` also
+ *  adds standalone rows). */
 function buildLinesBatchOnly(now: number = Date.now()): string[] {
-  const byBatch = new Map<string, DeckEntry[]>();
-  for (const e of entries.values()) {
-    if (e.batchKey && batches.has(e.batchKey)) {
-      const arr = byBatch.get(e.batchKey) ?? [];
-      arr.push(e);
-      byBatch.set(e.batchKey, arr);
-    }
-  }
   const lines: string[] = [];
   for (const b of batches.values()) {
     lines.push(formatBatchRow(b, now));
-    for (const m of (byBatch.get(b.key) ?? []).slice().sort((a, b2) => a.seq - b2.seq)) {
-      lines.push(formatMemberRow(m, now));
-    }
   }
   return lines;
 }
@@ -397,13 +402,6 @@ export function formatRow(
   now: number = Date.now(),
 ): string {
   return `${isStale(entry, now) ? "⚠" : "⏳"} ${formatRowCore(entry, now)}`;
-}
-
-export function formatMemberRow(
-  entry: { label: string; state: RunningState; startedAt: number },
-  now: number = Date.now(),
-): string {
-  return ` ↳ ${formatRowCore(entry, now)}`;
 }
 
 export function formatBatchRow(
