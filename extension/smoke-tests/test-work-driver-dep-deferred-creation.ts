@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 /**
- * #753 — deferred worktree creation: recording, cascade identity, N=1
- * silence fix, create-error vs dirty-leftover, and in-cycle exclusion.
- * Real git fixture; drives runDependentWorkstreams directly.
+ * #753 — deferred worktree creation: cases 1-4 (recording, cascade identity,
+ * create-error vs dirty-leftover, in-cycle exclusion). Cases 5-6 live in
+ * test-work-driver-dep-deferred-creation-target.ts (500-line cap).
  */
 
 import { execFile } from "node:child_process";
@@ -38,7 +38,6 @@ const realExec: ExecFn = async (cmd, o) => {
 const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 
 const root = mkdtempSync(path.join(tmpdir(), "pi-ens-753-"));
-
 /** A minimal repo with a committed base, plus a dependency worktree that
  * holds ONE real commit ahead of base (so `resolveDependentBase` sees work).
  * Returns the repo root, the base SHA, the dependency worktree path, and the
@@ -148,7 +147,6 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
   }
   assert(res.parked === false, "#753 case 1: the happy path does not park");
 }
-
 // -------------------------------------------------------- case 2: creation fails
 {
   const { repo, baseSha, depWt } = await fixture("fail");
@@ -283,7 +281,6 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
   // repurposed value).
   assert(bc?.ms === 0, "#753 case 2: the ms field keeps its meaning (0 for a failed creation)");
 }
-
 // ------------------------------------------- case 2b: cascade identity (N=3)
 {
   const { repo, baseSha, depWt } = await fixture("cascade");
@@ -359,7 +356,6 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
     "#753 cascade: the primary failure event names the workstream that actually failed (task-b)",
   );
 }
-
 // ------------------------------------------- case 3: create-error (non-dirty)
 {
   const { repo, baseSha, depWt } = await fixture("create-error");
@@ -438,7 +434,6 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
     "#753 case 3: the create-error carries the underlying error text",
   );
 }
-
 // ------------------------------------------- case 4: in-cycle exclusion
 {
   const { repo, baseSha, depWt } = await fixture("in-cycle");
@@ -497,180 +492,6 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
   assert(
     res.parked === false,
     "#753 case 4: the cycle did not park (in-cycle dirty work is not a leftover)",
-  );
-}
-
-// ------------------------------------------------ case 5: TARGET path in-cycle + dirty
-// FIX 2 [HIGH ×2]: the in-cycle skip must NOT remove the #475 dirty guard at
-// the TARGET path. Case 4 covers the SIBLING scan (exclusion there is the
-// genuine #753 fix); this case covers the target. Before the split, an
-// in-cycle dirty target produced a generic create-error (the guard was
-// skipped) instead of the descriptive DirtyWorktreeError finding.
-{
-  const { repo, baseSha, depWt } = await fixture("target-dirty");
-  // The target path (issue-753-task-b) pre-exists as a registered worktree,
-  // is dirty, AND is in-cycle (like task-a: created by the branch step).
-  const target = path.join(repo, ".worktrees", "issue-753-task-b");
-  await git(repo, ["worktree", "add", "-q", "--detach", target, baseSha]);
-  writeFileSync(path.join(target, "leftover.txt"), "uncommitted work\n");
-
-  const worktrees: Record<string, string> = { "task-a": depWt };
-  const workstreamBaseShas = { "task-a": baseSha };
-  const verdicts: Array<{ id: string; ok: boolean }> = [];
-  const branchEvents: WorkEvent[] = [];
-  const failedOrSkipped = new Set<string>();
-  const called: boolean[] = [];
-  const ws = {
-    "task-a": { id: "task-a", scope: "dep", paths: [], outOfScope: [] },
-    "task-b": {
-      id: "task-b",
-      scope: "dependent",
-      paths: [],
-      outOfScope: [],
-      dependsOn: ["task-a"],
-    },
-  };
-  const stateRef = { current: initialState(753) };
-  const res = await runDependentWorkstreams(
-    ctxFor(repo),
-    ["task-b"],
-    ws,
-    { "task-b": ["task-a"] },
-    failedOrSkipped,
-    verdicts,
-    branchEvents,
-    realExec,
-    worktrees,
-    workstreamBaseShas,
-    baseSha,
-    ["task-a", "task-b"],
-    makeRunOne(called, worktrees),
-    {
-      stateRef,
-      depCompletedAtMap: { "task-a": Date.now() - 1000 },
-      // The target is in-cycle (the branch step created it, and its worktree
-      // is registered in `git worktree list`) — exactly the shape that made
-      // the old code skip the dirty guard.
-      inCycleWorktrees: [depWt, target],
-    },
-  );
-  // The #475 dirty guard fires (park), not a generic create-error.
-  assert(
-    res.parked === true,
-    "#753 case 5: a dirty TARGET path that is in-cycle still PARKS (the #475 guard is not waived by in-cycle membership)",
-  );
-  const cap = stateRef.current.eventLog.find((e) => e.kind === "cap-hit");
-  assert(
-    cap?.kind === "cap-hit" && cap.cap === "deferred-creation:develop",
-    "#753 case 5: the park is the deferred-creation cap-hit (not a create-error that would not park)",
-  );
-  const bc = branchEvents.find(
-    (e): e is Extract<WorkEvent, { kind: "branch-completed" }> =>
-      e.kind === "branch-completed" && e.workstreamId === "task-b",
-  );
-  assert(
-    bc?.deferredCreation?.failure?.class === "dirty-leftover",
-    "#753 case 5: the branch-completed event records a dirty-leftover (the descriptive finding), not a create-error",
-  );
-  console.log("DBG: classOk=", bc?.deferredCreation?.failure?.class === "dirty-leftover", "pathOk=", bc?.deferredCreation?.failure?.leftoverPath === target, "refusedOk=", bc?.error?.includes("refused"), "targetInErr=", bc?.error?.includes(target), "bcLen=", bc?.error?.length, "tgtLen=", target.length);
-  assert(
-    bc?.deferredCreation?.failure?.class === "dirty-leftover" &&
-      bc.deferredCreation.leftoverPath === target &&
-      bc.error?.includes("refused") === true &&
-      bc.error?.includes(target) === true,
-    `#753 case 5: the dirty finding names the target path AND the error is the descriptive refusal text (not a generic git add failure) (got: ${bc?.error?.slice(0, 80)})`,
-  );
-  // The dirty leftover is still on disk — nothing was force-removed.
-  const { stdout: leftoverStatus } = await git(target, ["status", "--porcelain"]);
-  assert(
-    leftoverStatus.includes("leftover.txt"),
-    "#753 case 5: the dirty leftover is still on disk (NOT force-removed)",
-  );
-}
-
-// ------------------------------------------------ case 6: sibling survives the park
-// #753 (six-lens FIX 6): when the dependent phase parks on a dirty leftover,
-// the INDEPENDENT phase's results (the sibling's branch-completed event) must
-// survive in the durable event log. The pre-fix park short-circuit returned
-// before the caller flushed `branchEvents`, so sibling results lived only in
-// child transcripts. The cap-hit must STILL be the tail (the step router
-// routes on the tail).
-//
-// Drives the FULL topological develop (independent task-a dispatched as a
-// success, then dependent task-b parks) — the shape where sibling events
-// exist in branchEvents.
-{
-  const { repo, baseSha, depWt } = await fixture("sibling-survives");
-  // Force task-b's deferred creation to fail (dirty leftover at its target).
-  const depTarget = path.join(repo, ".worktrees", "issue-753-task-b");
-  mkdirSync(depTarget, { recursive: true });
-  await git(repo, ["worktree", "add", "-q", "--detach", depTarget, baseSha]);
-  writeFileSync(path.join(depTarget, "leftover.txt"), "uncommitted work\n");
-
-  const worktrees: Record<string, string> = { "task-a": depWt };
-  const workstreamBaseShas = { "task-a": baseSha };
-  const ws = {
-    "task-a": { id: "task-a", scope: "dep", paths: [], outOfScope: [] },
-    "task-b": {
-      id: "task-b",
-      scope: "dependent",
-      paths: [],
-      outOfScope: [],
-      dependsOn: ["task-a"],
-    },
-  };
-  const stateRef = { current: initialState(753) };
-  const ctx = ctxFor(repo);
-  // A fake dispatch that records the independent task-a as a success (the
-  // dependent task-b is never dispatched — creation fails first).
-  const fakeDispatch = async () =>
-    ({
-      ok: true,
-      text: "done",
-      ms: 1,
-      jobId: "task-a",
-      role: "developer",
-      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
-      transcriptPath: "/tmp/x",
-      tokens: 2,
-    });
-  const dispatchFn = fakeDispatch as unknown as NonNullable<DriverContext["dispatchFn"]>;
-  const topResult = await import("../src/work-develop-topological.ts");
-  const after = await topResult.runDevelopTopological(
-    { ...ctx, dispatchFn } as unknown as DriverContext,
-    stateRef.current,
-    ["task-a", "task-b"],
-    ws,
-    [753],
-    dispatchFn,
-    realExec,
-    Date.now(),
-    "job-1",
-  );
-  // The independent sibling's branch-completed event survived in the durable
-  // log (the park short-circuit no longer drops it).
-  assert(
-    after.eventLog.some(
-      (e) =>
-        e.kind === "branch-completed" &&
-        e.workstreamId === "task-a" &&
-        e.ok === true,
-    ),
-    "#753 case 6 (FIX 6): the independent sibling's branch-completed event survives in the durable event log on a dirty-leftover park",
-  );
-  // The cap-hit is still the tail (the step router routes on the tail).
-  const tail = after.eventLog[after.eventLog.length - 1];
-  assert(
-    tail?.kind === "cap-hit" && tail.cap === "deferred-creation:develop",
-    "#753 case 6 (FIX 6): the cap-hit is still the event-log tail after the sibling flush",
-  );
-  // The routing follows the cap-hit (it was not displaced by the sibling events).
-  const parkedState = after;
-  parkedState.pipelineState.currentStep = "develop";
-  const decision = nextStep(parkedState);
-  assert(
-    decision.kind === "step" && decision.step === "handoff",
-    "#753 case 6 (FIX 6): nextStep still routes to handoff on the cap-hit (it remains the tail)",
   );
 }
 

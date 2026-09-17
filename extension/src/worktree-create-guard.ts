@@ -20,9 +20,9 @@
 import { realpathSync } from "node:fs";
 import { trace } from "./trace.ts";
 import {
-  type ExecFn,
-  type DirtyWorktreeFinding,
   DirtyWorktreeError,
+  type DirtyWorktreeFinding,
+  type ExecFn,
   findDirtySameIssueLeftover,
   inspectWorktreeForLoss,
   worktreePath,
