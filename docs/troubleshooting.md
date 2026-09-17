@@ -1255,13 +1255,14 @@ Prose grants the *exception*; it can never grant the *rule*. Default-deny, the `
 
 Required checks reporting **`skipped` or `neutral` do not count as passing**, even though [GitHub counts them as success](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches). A required workflow that gains a `paths-ignore:` silently becomes a gate that can never fail; this driver refuses to merge on one.
 
-When either gate refuses, the cycle parks as `awaiting-human-merge`. **The work is done and pushed** — only the merge is held. Do not `--restart`: that wipes the state file but not the open PR, so the re-run halts immediately on the `existing-pr-detected` pre-flight. Either merge it yourself, or grant authority and re-run:
+When either gate refuses, the cycle parks as `awaiting-human-merge`. **The work is done and pushed** — only the merge is held. Do not `--restart`: that wipes the state file but not the open PR, so the re-run halts immediately on the `existing-pr-detected` pre-flight. Fix the gate that refused instead, so an agent merge can go through:
 
 ```bash
 gh pr checks <pr>        # what the checks actually say
-gh pr view <pr> --web    # review and merge it yourself
-/work <issue> --merge    # or grant authority for a re-run
+gh pr view <pr> --web    # review the PR and the checks
 ```
+
+Then remove the cause: add or repair the grant in `AGENTS.md` (see above), re-run with `/work <issue> --merge`, or resolve whatever the `gh` evidence is failing.
 
 At the `ci` step a weaker version of gate 2 applies: **narration cannot promote a status, but executed evidence can demote one.** An ops agent claiming `ci-status: success` gets checked against `gh`; if `gh` disagrees, it becomes a failure. An unreadable `gh` there leaves the claim standing — burning the retry budget on a run that genuinely passed is worse, and the merge gate is the one that has to be right.
 
