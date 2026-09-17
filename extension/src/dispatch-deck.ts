@@ -239,10 +239,9 @@ function renderNow(): void {
 }
 
 /** Build the single composite widget factory (batch rows + SelectList).
- *  The batch Text rows render the deck's batch-only projection
- *  (`buildLinesBatchOnly` — batch headers + member rows, no per-job work);
- *  the SelectList is the sole per-job surface — one item per job entry
- *  (#742). */
+ *  The batch Text rows render the deck's batch-headers-only projection
+ *  (`buildLinesBatchOnly` — batch headers only; member rows are the
+ *  SelectList's, one item per job entry, #742). */
 function buildCompositeWidgetFactory(ctx: ExtensionContext) {
   return deckComposite.buildCompositeFactory(
     buildLinesBatchOnly,
@@ -313,11 +312,6 @@ export function buildLines(now: number = Date.now()): { lines: string[]; batchLi
       const batchLine = formatBatchRow(item.b, now);
       lines.push(batchLine);
       batchLines.push(batchLine);
-      for (const m of (byBatch.get(item.b.key) ?? []).slice().sort((a, b) => a.seq - b.seq)) {
-        const memberLine = formatMemberRow(m, now);
-        lines.push(memberLine);
-        batchLines.push(memberLine);
-      }
     } else {
       lines.push(formatRow(item.e, now));
     }
@@ -325,25 +319,16 @@ export function buildLines(now: number = Date.now()): { lines: string[]; batchLi
   return { lines, batchLines };
 }
 
-/** The deck's batch-only projection: batch headers + member rows only.
- *  Skips the per-job `formatRow` work — those lines are the SelectList's,
- *  and the composite's `lines` accessor reads only this (the pre-#742
- *  "single shared projection" no longer covers job rows, #742). */
+/** The deck's batch-headers-only projection: batch header rows only.
+ *  Member rows are the SelectList's (one item per job entry, #742), so
+ *  including them here would render each batch member twice — once as a
+ *  `↳` Text row and once as a SelectList item. The composite's `lines`
+ *  accessor reads only this (the pre-#742 "single shared projection"
+ *  no longer covers job rows, #742). */
 function buildLinesBatchOnly(now: number = Date.now()): string[] {
-  const byBatch = new Map<string, DeckEntry[]>();
-  for (const e of entries.values()) {
-    if (e.batchKey && batches.has(e.batchKey)) {
-      const arr = byBatch.get(e.batchKey) ?? [];
-      arr.push(e);
-      byBatch.set(e.batchKey, arr);
-    }
-  }
   const lines: string[] = [];
   for (const b of batches.values()) {
     lines.push(formatBatchRow(b, now));
-    for (const m of (byBatch.get(b.key) ?? []).slice().sort((a, b2) => a.seq - b2.seq)) {
-      lines.push(formatMemberRow(m, now));
-    }
   }
   return lines;
 }

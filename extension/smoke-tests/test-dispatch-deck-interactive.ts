@@ -38,6 +38,7 @@ import {
   detach,
   formatRow,
   reset,
+  startBatchEntry,
   startEntry,
   DECK_PROMPT_CANCEL_KEY,
   DECK_PROMPT_STEER_SOURCE,
@@ -443,6 +444,53 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   const items = buildDeckItems([]);
   assert(items.length === 1, "empty entries → 1 item (cancel sentinel)");
   assert(items[0]?.key === DECK_PROMPT_CANCEL_KEY, "only item is the cancel sentinel");
+}
+
+// 11. #761 — batch-member double-render regression. Pre-fix: member rows in
+// Text AND SelectList → double render. Post-fix: Text = batch headers only.
+// Distinct keys avoid the keyFragment collision (block 4c).
+{
+  reset();
+  startBatchEntry("b-761", { label: "developer×2", size: 2 });
+  startEntry("m-761-a", { label: "developer[task-A]", role: "developer", batchKey: "b-761" });
+  startEntry("m-761-b", { label: "developer[task-B]", role: "developer", batchKey: "b-761" });
+  startEntry("s-761", { label: "explore", role: "explore" });
+  type WCall = { key: string; content: string[] | ((...a: unknown[]) => unknown) | undefined; options?: { placement?: string } };
+  const calls: WCall[] = [];
+  const ctx = {
+    ui: {
+      setWidget: (key: string, content: WCall["content"], options?: WCall["options"]) => { calls.push({ key, content, options }); },
+      setStatus: (_k: string, _t: string | undefined) => {},
+    },
+  } as unknown as Parameters<typeof attach>[0];
+  attach(ctx);
+  await new Promise((r) => setImmediate(r));
+  const fc = calls.find((c) => typeof c.content === "function");
+  assert(typeof fc?.content === "function", "factory present");
+  const th = { fg: (_c: string, t: string) => t, bg: (_c: string, t: string) => t } as unknown as ReturnType<typeof buildCompositeFactory>[1];
+  const comp = (fc?.content as unknown as (t: unknown, x: unknown) => unknown)(null, th) as Container;
+  assert(comp instanceof Container, "Container");
+  if (comp instanceof Container) {
+    const tl = comp.children
+      .filter((c) => c instanceof Text)
+      .map((c) => (c as Text)["text"] as string)
+      .filter((t) => t !== "");
+    assert(tl.some((l) => l.includes("batch[developer×2]")), "batch header in Text");
+    assert(!tl.some((l) => l.includes("developer[task-A]")), "member A NOT in Text");
+    assert(!tl.some((l) => l.includes("developer[task-B]")), "member B NOT in Text");
+    const lists = comp.children.filter((c) => c instanceof SelectList);
+    assert(lists.length === 1, "one SelectList");
+    const list = lists[0];
+    if (list) {
+      const r = list.render(200);
+      const n = (k: string) => r.filter((l) => l.includes(k)).length;
+      assert(n("m-761-a") === 1, "member A once in SelectList");
+      assert(n("m-761-b") === 1, "member B once in SelectList");
+      assert(n("s-761") === 1, "standalone once in SelectList");
+      assert(r.length === 4, "3 jobs + cancel sentinel");
+    }
+  }
+  detach();
 }
 
 console.log(`\nexit ${exit}`);
