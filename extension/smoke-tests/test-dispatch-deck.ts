@@ -5,9 +5,10 @@
  *  - update mutates in place
  *  - clear drops the row at 0s (no linger)
  *  - widget content is a string[] — Pi renders one line per element (#141)
- *  - hierarchical layout: batch rows are top-level (⏳); members nest under
- *    their batch with " ↳ " indent (no icon); standalone (non-batched) singles
- *    are top-level too
+ *  - hierarchical layout: batch headers are top-level (⏳); members do NOT
+ *    appear in the buildLines projection (the SelectList is the sole
+ *    per-job surface, #742); standalone (non-batched) singles are
+ *    top-level too
  *  - global insertion-order traversal of top-level items, member seq within batch
  *  - empty deck → setWidget(undefined)
  *  - tool-arg hint surfaces in row (#139)
@@ -17,14 +18,15 @@
  * detach are covered in test-dispatch-deck-lifecycle.ts (#171 file-size split).
  */
 
-import { Container } from "@earendil-works/pi-tui";
+import { Container, Text } from "@earendil-works/pi-tui";
 import {
   type DeckEntry,
   attach,
+  batchSnapshot,
   buildLines,
   clearEntry,
   detach,
-  formatMemberRow,
+  formatBatchRow,
   formatRow,
   reset,
   snapshot,
@@ -222,25 +224,6 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   assert(out.includes("parallel-cli research poll"), "row includes tool-arg hint");
 }
 
-// 4. formatMemberRow uses " ↳ " indent and no icon.
-{
-  const startedAt = 6_000_000;
-  const out = formatMemberRow(
-    {
-      key: "x",
-      label: "developer[task-A]",
-      seq: 3,
-      startedAt,
-      state: makeState("developer", { lastToolName: "bash", toolUses: 5 }),
-    },
-    startedAt + 1000,
-  );
-  assert(out.startsWith(" ↳ "), "member row starts with indent prefix");
-  assert(!out.includes("⏳"), "member row does not include the top-level hourglass");
-  assert(out.includes("developer[task-A]"), "member row includes its label");
-  assert(out.includes("bash (#5)"), "member row includes tool + count");
-}
-
 // 5. formatRow without a tool falls back to just icon + label + elapsed.
 {
   const startedAt = 7_000_000;
@@ -262,27 +245,26 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   reset();
   startEntry("a", { label: "developer", role: "developer" });
   startEntry("b", { label: "explore", role: "explore" });
-  const { lines } = buildLines();
+  const lines = buildLines();
   assert(lines.length === 2, "two standalone singles → 2 lines");
   assert(lines[0]?.startsWith("⏳ developer"), "first standalone is developer (insertion order)");
   assert(lines[1]?.startsWith("⏳ explore"), "second standalone is explore");
   assert(!lines.some((l) => l.startsWith(" ↳ ")), "no indented rows when there are no batches");
 }
 
-// 7. buildLines: batch + members → batch header at top, members indented underneath (#141).
+// 7. buildLines: batch + members → batch header only (member rows are the
+// SelectList's, #742 — the buildLines projection is used by the renderNow
+// empty-deck guard, not the composite's Text projection).
 {
   reset();
   startBatchEntry("batch-x", { label: "developer×3", size: 3 });
   startEntry("m-a", { label: "developer[task-A]", role: "developer", batchKey: "batch-x" });
   startEntry("m-b", { label: "developer[task-B]", role: "developer", batchKey: "batch-x" });
   startEntry("m-c", { label: "developer[task-C]", role: "developer", batchKey: "batch-x" });
-  const { lines } = buildLines();
-  assert(lines.length === 4, "1 batch + 3 members → 4 lines");
+  const lines = buildLines();
+  assert(lines.length === 1, "1 batch + 3 members → 1 line (batch header only, #742)");
   assert(lines[0]?.startsWith("⏳ batch["), "first line is the batch header");
-  assert(lines[1]?.startsWith(" ↳ "), "first member is indented");
-  assert(lines[1]?.includes("task-A"), "first member is task-A (insertion order)");
-  assert(lines[2]?.includes("task-B"), "second member is task-B");
-  assert(lines[3]?.includes("task-C"), "third member is task-C");
+  assert(!lines.some((l) => l.startsWith(" ↳ ")), "no indented member rows in buildLines (#742)");
 }
 
 // 8. buildLines: orphan member (batchKey points to non-existent batch) becomes standalone.
@@ -293,7 +275,7 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
     role: "developer",
     batchKey: "never-registered",
   });
-  const { lines } = buildLines();
+  const lines = buildLines();
   assert(lines.length === 1, "orphan member → one line");
   assert(
     lines[0]?.startsWith("⏳ "),
@@ -301,44 +283,37 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   );
 }
 
-// 9. buildLines: mixed — batch then standalone in dispatch order (#141).
+// 9. buildLines: mixed — batch header + standalone in dispatch order (#141).
+// Member rows are absent (SelectList's, #742); the batch header and the
+// standalone appear in insertion order.
 {
   reset();
   startBatchEntry("b1", { label: "developer×2", size: 2 });
   startEntry("m1", { label: "developer[task-A]", role: "developer", batchKey: "b1" });
   startEntry("m2", { label: "developer[task-B]", role: "developer", batchKey: "b1" });
   startEntry("solo", { label: "explore", role: "explore" });
-  const { lines } = buildLines();
-  // Expected: batch header, member1, member2, solo
-  assert(lines.length === 4, "1 batch + 2 members + 1 standalone → 4 lines");
-  assert(lines[0]?.startsWith("⏳ batch["), "batch first");
+  const lines = buildLines();
+  // Expected: batch header, standalone (members absent — SelectList's, #742)
+  assert(lines.length === 2, "1 batch + 2 members + 1 standalone → 2 lines (#742)");
+  assert(lines[0]?.startsWith("⏳ batch["), "batch header first");
   assert(
-    lines[1]?.startsWith(" ↳ ") && lines[1].includes("task-A"),
-    "member 1 indented under batch",
-  );
-  assert(
-    lines[2]?.startsWith(" ↳ ") && lines[2].includes("task-B"),
-    "member 2 indented under batch",
-  );
-  assert(
-    lines[3]?.startsWith("⏳ explore"),
-    "standalone single appears top-level AFTER the batch group",
+    lines[1]?.startsWith("⏳ explore"),
+    "standalone appears after the batch header",
   );
 }
 
 // 10. buildLines: top-level traversal respects global insertion order — standalone before batch.
+// Member rows are absent (SelectList's, #742); standalone and batch header appear in insertion order.
 {
   reset();
   startEntry("solo", { label: "explore", role: "explore" });
   startBatchEntry("b1", { label: "developer×2", size: 2 });
   startEntry("m1", { label: "developer[task-A]", role: "developer", batchKey: "b1" });
   startEntry("m2", { label: "developer[task-B]", role: "developer", batchKey: "b1" });
-  const { lines } = buildLines();
-  assert(lines.length === 4, "1 standalone + 1 batch + 2 members → 4 lines");
+  const lines = buildLines();
+  assert(lines.length === 2, "1 standalone + 1 batch + 2 members → 2 lines (#742)");
   assert(lines[0]?.startsWith("⏳ explore"), "standalone first (inserted before batch)");
-  assert(lines[1]?.startsWith("⏳ batch["), "batch second");
-  assert(lines[2]?.startsWith(" ↳ "), "member 1 indented");
-  assert(lines[3]?.startsWith(" ↳ "), "member 2 indented");
+  assert(lines[1]?.startsWith("⏳ batch["), "batch header second");
 }
 
 // 11. attach + scheduleRender → setWidget called with factory function +
@@ -407,6 +382,44 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   assert(calls.length > callsBeforeClear, "clearing the last entry triggers a new setWidget call");
   assert(lastCall?.content === undefined, "empty deck calls setWidget(key, undefined)");
   detach();
+}
+
+// 12b. #761 (cc10e75 near-miss) — superset invariant: a deck holding ONLY a
+// batch + its members (no standalone entries) must NOT be treated as empty.
+// The cc10e75 predicate attempt made buildLines() return EMPTY for exactly
+// this shape, which would have made renderNow's empty-deck guard clear the
+// widget on every render. A deck whose only renderable thing is a batch
+// header must render it.
+{
+  reset();
+  startBatchEntry("sup-761", { label: "developer×2", size: 2 });
+  startEntry("sup-a", { label: "developer[task-A]", role: "developer", batchKey: "sup-761" });
+  startEntry("sup-b", { label: "developer[task-B]", role: "developer", batchKey: "sup-761" });
+  const lines = buildLines();
+  assert(lines.length === 1, "batch-only deck is NOT empty (buildLines has exactly the header)");
+  assert(lines[0]?.includes("batch[developer×2]"), "the batch header is in buildLines (not hidden)");
+}
+
+// 12c. #761 superset invariant, general form: every batch-header row present
+// in the batch-only projection (buildLinesBatchOnly — the composite's Text
+// projection) also appears in buildLines. The two projections share a header
+// formatter (formatBatchRow), so membership is a line-identity check.
+// buildLinesBatchOnly is not exported, so we reconstruct it from the
+// exported surface: batchSnapshot() + formatBatchRow() is exactly what
+// buildLinesBatchOnly computes (same loop, same formatter, see
+// dispatch-deck.ts).
+{
+  reset();
+  startBatchEntry("sh-1", { label: "alpha", size: 2 });
+  startBatchEntry("sh-2", { label: "beta", size: 1 });
+  startEntry("sh-m", { label: "developer[t]", role: "developer", batchKey: "sh-1" });
+  startEntry("sh-solo", { label: "explore", role: "explore" });
+  const batchOnly = batchSnapshot().map((b) => formatBatchRow(b));
+  assert(batchOnly.length === 2, "batch-only projection has 2 header rows (sanity)");
+  const lines = buildLines();
+  for (const header of batchOnly) {
+    assert(lines.includes(header), `batch-header row in batch-only projection also in buildLines: ${header}`);
+  }
 }
 
 console.log(`\nexit ${exit}`);

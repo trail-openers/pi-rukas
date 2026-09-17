@@ -4,15 +4,15 @@
  * #729 collapsed the deck's two live regions (belowEditor detail deck +
  * aboveEditor SelectList) into ONE widget key, "ensemble:deck", so the
  * double-projection is structurally impossible. This module owns the
- * widget's factory: a Container of batch Text rows (the deck's batch-only
- * projection — batch headers + member rows) followed by the
+ * widget's factory: a Container of batch-header Text rows (the deck's
+ * batch-headers-only projection) followed by the
  * keyboard-selectable SelectList. #742 removed the per-job Text rows —
  * the `buildLines` output used to re-render every job as a plain Text
  * child above the list whose labels were byte-identical `formatRow` lines,
  * so each job rendered twice. The SelectList is now the sole per-job
  * surface (one item per job, key disambiguation in the description
- * column); batch headers and member rows have no list counterpart of
- * their own, so they keep their Text projection.
+ * column); batch headers have no list counterpart of their own, so they
+ * keep their Text projection.
  *
  * The composite returns a Container. pi-tui's focus model routes keys to
  * `tui.getFocusedComponent()`, which is the editor unless the composite
@@ -110,20 +110,20 @@ export function buildSteerPrompt(e: DeckEntry, now: number): string {
 }
 
 /**
- * Build the single composite widget: a Container with the batch Text rows
- * (batch headers + indented member rows, capped at `maxRows` with an
- * overflow indicator when needed), a blank separator, and the
- * keyboard-selectable SelectList — the sole per-job surface (#742). The
- * SelectList is the focus target inside the container; Pi's
- * `focusedComponent.handleInput` routes keys to it only when the user tabs
- * in, so the composite never steals editor input by default.
+ * Build the single composite widget: a Container with the batch-header
+ * Text rows (capped at `maxRows` with an overflow indicator when needed),
+ * a blank separator, and the keyboard-selectable SelectList — the sole
+ * per-job surface (#742). The SelectList is the focus target inside the
+ * container; Pi's `focusedComponent.handleInput` routes keys to it only
+ * when the user tabs in, so the composite never steals editor input by
+ * default.
  *
  * The factory returns a Container. Pi's setWidget calls
  * `existing.dispose?.()` on the previous component; Container has no
  * dispose, so re-registration is a clean swap.
  *
- * `lines` is the deck's batch-only projection (batch headers + member
- * rows; the per-job lines are the SelectList's, one row each — #742) and
+ * `lines` is the deck's batch-headers-only projection (batch header rows
+ * only; the per-job rows are the SelectList's, one row each — #742) and
  * `entries` is the job snapshot; both are read once per render so the
  * batch Text rows and the SelectList cannot split mid-render.
  */

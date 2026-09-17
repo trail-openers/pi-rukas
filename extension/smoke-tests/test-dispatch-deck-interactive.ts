@@ -1,32 +1,11 @@
 #!/usr/bin/env bun
 /**
- * Pure unit tests for the dispatch deck's single composite widget (#729, #742):
- *
- * #729 collapsed the pre-#729 dual-widget design (belowEditor detail deck +
- * aboveEditor DECK_PROMPT_KEY SelectList) into ONE widget key,
- * "ensemble:deck". The composite is a Container of batch Text rows followed
- * by a keyboard-selectable SelectList; #742 removed the per-job Text rows
- * (which re-rendered every job above the list, whose labels were
- * byte-identical `formatRow` lines) — the SelectList is now the sole
- * per-job surface, one row per job.
- *
- * This test covers:
- *  - encodeDeckValue / parseDeckValue round-trip
- *  - buildDeckItems shape (one row per entry + cancel sentinel)
- *  - DeckItem.label is the job's full formatRow line, carrying role,
- *    elapsed, tool call, plus the keyFragment description for same-role
- *    disambiguation (the sole per-job surface, #742)
- *  - buildSteerPrompt is a ready-to-send steer with job context
- *  - setWidget is called with EXACTLY ONE key ("ensemble:deck") and a
- *    factory function — the one-key invariant (#729 acceptance criterion)
- *  - empty deck → the single widget is cleared (setWidget undefined)
- *  - the composite factory returns a Container whose per-job surface is
- *    the SelectList — one visible row per job key (per-job regression,
- *    #742), with no per-job Text children
- *
- * The interactive picker itself (keyboard input via ctx.ui) is live-only —
- * same boundary as test-model-picker.ts. Here we cover the pure builders
- * and the widget-shape assertions that DON'T require a live Pi session.
+ * Pure unit tests for the dispatch deck's single composite widget (#729, #742).
+ * #729 collapsed the dual-widget design into ONE widget key, "ensemble:deck".
+ * #742 removed the per-job Text rows; the SelectList is the sole per-job
+ * surface. Covers: encode/parse round-trip, buildDeckItems shape, one-key
+ * invariant, empty-deck clear, composite factory shape (Container with
+ * SelectList, no per-job Text children). Interactive picker is live-only.
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -38,6 +17,8 @@ import {
   detach,
   formatRow,
   reset,
+  snapshot,
+  startBatchEntry,
   startEntry,
   DECK_PROMPT_CANCEL_KEY,
   DECK_PROMPT_STEER_SOURCE,
@@ -352,6 +333,7 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
 // 0 Text children, 1 SelectList item per job. Pre-fix this same test
 // yields 1 Text row per job and fails.
 {
+  reset();
   const entries: DeckEntry[] = [
     {
       key: "job-a",
@@ -443,6 +425,63 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   const items = buildDeckItems([]);
   assert(items.length === 1, "empty entries → 1 item (cancel sentinel)");
   assert(items[0]?.key === DECK_PROMPT_CANCEL_KEY, "only item is the cancel sentinel");
+}
+
+// 11. #761 — batch-member double-render regression. Pre-fix: member rows in
+// Text AND SelectList → double render. Post-fix: Text = batch headers only.
+// Distinct keys avoid the keyFragment collision (block 4c).
+{
+  // The canary below only works when startEntry/startBatchEntry actually
+  // populate; delete the flag so an ambient quiet env can't turn the block
+  // into a vacuous pass (and so a failure lands in the ledger, not a
+  // process.exit before it).
+  // biome-ignore lint/performance/noDelete: delete is the correct "reset to unset" (assignment leaves the key present with undefined)
+  delete process.env.PI_ENSEMBLE_QUIET_STATUS;
+  reset();
+  startBatchEntry("b-761", { label: "developer×2", size: 2 });
+  startEntry("m-761-a", { label: "developer[task-A]", role: "developer", batchKey: "b-761" });
+  startEntry("m-761-b", { label: "developer[task-B]", role: "developer", batchKey: "b-761" });
+  startEntry("s-761", { label: "explore", role: "explore" });
+  // Real canary: if the deck is empty here, every negative assertion below
+  // passes vacuously (empty deck → empty Text → "members NOT in Text" is
+  // trivially true). Fail loudly via the shared ledger instead.
+  assert(snapshot().length === 3, "canary: deck populated (3 entries) — quiet env cannot vacuate the block");
+  type WCall = { key: string; content: string[] | ((...a: unknown[]) => unknown) | undefined; options?: { placement?: string } };
+  const calls: WCall[] = [];
+  const ctx = {
+    ui: {
+      setWidget: (key: string, content: WCall["content"], options?: WCall["options"]) => { calls.push({ key, content, options }); },
+      setStatus: (_k: string, _t: string | undefined) => {},
+    },
+  } as unknown as Parameters<typeof attach>[0];
+  attach(ctx);
+  await new Promise((r) => setImmediate(r));
+  const fc = calls.find((c) => typeof c.content === "function");
+  assert(typeof fc?.content === "function", "factory present");
+  const th = { fg: (_c: string, t: string) => t, bg: (_c: string, t: string) => t } as unknown as ReturnType<typeof buildCompositeFactory>[1];
+  const comp = (fc?.content as unknown as (t: unknown, x: unknown) => unknown)(null, th) as Container;
+  assert(comp instanceof Container, "Container");
+  if (comp instanceof Container) {
+    const tl = comp.children
+      .filter((c) => c instanceof Text)
+      .map((c) => (c as Text)["text"] as string)
+      .filter((t) => t !== "");
+    assert(tl.some((l) => l.includes("batch[developer×2]")), "batch header in Text");
+    assert(!tl.some((l) => l.includes("developer[task-A]")), "member A NOT in Text");
+    assert(!tl.some((l) => l.includes("developer[task-B]")), "member B NOT in Text");
+    const lists = comp.children.filter((c) => c instanceof SelectList);
+    assert(lists.length === 1, "one SelectList");
+    const list = lists[0];
+    if (list) {
+      const r = list.render(200);
+      const n = (k: string) => r.filter((l) => l.includes(k)).length;
+      assert(n("m-761-a") === 1, "member A once in SelectList");
+      assert(n("m-761-b") === 1, "member B once in SelectList");
+      assert(n("s-761") === 1, "standalone once in SelectList");
+      assert(r.length === 4, "3 jobs + cancel sentinel");
+    }
+  }
+  detach();
 }
 
 console.log(`\nexit ${exit}`);
