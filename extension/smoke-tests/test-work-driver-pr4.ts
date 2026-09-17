@@ -15,7 +15,7 @@ import { type DriverContext, nextStep } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { parseHandoffCommentUrl } from "../src/work-driver-handoff.ts";
-import { parsePrNumber } from "../src/work-driver-lens.ts";
+import { parsePrNumber } from "../src/work-driver-merged.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { validateDiscriminants } from "../src/workflow-state-validate.ts";
 import { appendEvent, initialState, writeState } from "../src/workflow-state.ts";

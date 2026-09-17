@@ -84,7 +84,6 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 process.env.PI_ENSEMBLE_FORGE = "none";
 
 setupSpawnGuard();
-
 // 47. Issue #305 — lens-fix making NO change does NOT produce an empty commit.
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-lens-fix-no-change-"));
@@ -213,14 +212,10 @@ setupSpawnGuard();
 }
 
 // 49. Issue #492 — a lens-fix that produces nothing is classified as such.
-//
-// The `lens-fix-not-integrated` cap used to conflate two causes — "the fixer
-// wrote nothing" vs "a diff existed but integration failed" — and the
-// handoff told the operator to guess between them. This test drives the
-// no-diff half through the real driver: the fixer writes nothing, the
-// adversarial gate approves, and the cap-hit that fires must carry the
-// no-diff classification, the git evidence that establishes it, and the
-// worktree path it inspected.
+// #749 — the evidence assertion is deliberately changed: the old string
+// cited `git status --porcelain` (an uncommitted-changes check) as evidence
+// about whether commits landed. The new string names the detection actually
+// performed — a committed-work count against the branch head.
 {
   const dir = mkdtempSync(path.join(tmpdir(), "work-driver-lens-no-diff-"));
   try {
@@ -331,10 +326,18 @@ setupSpawnGuard();
       .find((e) => e.kind === "cap-hit" && e.cap === "lens-fix-not-integrated");
     assert(cap !== undefined, "a no-diff lens-fix parks with the lens-fix-not-integrated cap");
     if (cap && cap.kind === "cap-hit") {
+      // #749 — the evidence names the detection actually performed:
+      // a committed-work count against the branch head, NOT an
+      // uncommitted-changes check (`git status --porcelain`).
       assert(
-        (cap.evidence ?? "").includes("git status --porcelain") &&
-          (cap.evidence ?? "").includes("was empty"),
-        `the cap carries the git evidence that the worktree was clean (got: ${cap.evidence})`,
+        (cap.evidence ?? "").includes("no committed fix") &&
+          (cap.evidence ?? "").includes("rev-list --count"),
+        `the cap carries the committed-work evidence (got: ${cap.evidence})`,
+      );
+      // The old porcelain-based evidence must NOT appear.
+      assert(
+        !(cap.evidence ?? "").includes("git status --porcelain"),
+        `the cap does NOT cite an uncommitted-changes check (got: ${cap.evidence})`,
       );
       assert(
         cap.lensWorktreePath === wt,

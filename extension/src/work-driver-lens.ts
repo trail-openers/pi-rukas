@@ -16,6 +16,7 @@ import type { DriverContext } from "./work-driver-context.ts";
 import { readAllMergedDiffs } from "./work-driver-diff.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
 import { lensCapKillEvent, lensTimingsOf } from "./work-driver-lens-capkill.ts";
+import { countCommittedAhead, noDiffEvidence } from "./work-driver-lens-fix-commit.ts";
 import { applyLensVerdict } from "./work-driver-lens-verdicts.ts";
 import { parsePrNumber, runSingleDispatch } from "./work-driver-merged.ts";
 import { DOCTRINE_FILES, type DoctrineDoc, judgePolicy } from "./work-driver-policy.ts";
@@ -26,10 +27,6 @@ import { type WorkState, appendEvent } from "./workflow-state.ts";
 
 const execp = promisify(exec);
 
-export { parsePrNumber } from "./work-driver-merged.ts";
-export { lensTimingsOf } from "./work-driver-lens-capkill.ts";
-
-/** Step 7 — six-pass lens review. Bumps reviewRound, seeds reviewCapStartedAt. */
 export async function runLens(
   ctx: DriverContext,
   state: WorkState,
@@ -47,24 +44,10 @@ export async function runLens(
     },
   };
   next = appendEvent(next, { kind: "step-started", step: "lens-review", at: now });
-
-  // PR11 — lens-review runs POST-commit: `git diff HEAD` is empty at this
-  // point (the changes are IN HEAD), so fetchAllMergedDiffs uses
-  // `git diff origin/<base>..HEAD` (runAdversarial still uses
-  // fetchAllDiffs — adversarial runs PRE-commit, uncommitted diff).
-  // #384 — the read can say "I could not tell": a plain read returned ""
-  // on every git failure and the guard below treated an empty diff as
-  // APPROVED (stale ref / transient error / maxBuffer → unreviewed merge).
   const diffResult = await readAllMergedDiffs(ps.worktrees ?? {}, ctx.repoRoot, ps.branchName);
   if (!diffResult.ok) {
     trace(`work-driver: lens-review — diff unreadable: ${diffResult.reason}`);
-    next = {
-      ...next,
-      pipelineState: {
-        ...next.pipelineState,
-        lensDiffError: diffResult.reason,
-      },
-    };
+    next = { ...next, pipelineState: { ...next.pipelineState, lensDiffError: diffResult.reason } };
     return appendEvent(next, {
       kind: "cap-hit",
       at: Date.now(),
@@ -317,14 +300,17 @@ export async function commitLensFixChanges(
       maxBuffer: 64 * 1024,
     });
     status = raw.stdout;
-    if (!status.trim()) {
-      trace(`work-driver: lens-fix round ${round} — working tree clean, skipping commit`);
-      return { committed: false };
-    }
   } catch (err) {
     const errMsg = `git status failed: ${(err as Error).message?.slice(0, 200)}`;
     trace(`work-driver: lens-fix round ${round} — ${errMsg}`);
     return { committed: false, error: errMsg };
+  }
+  if (!status.trim()) {
+    // Clean tree — the committed-work check is done by the CALLER
+    // (runAdversarial) via `detectCommittedFix`. Reaching here with a
+    // clean tree means the caller found no committed fix either.
+    trace(`work-driver: lens-fix round ${round} — working tree clean, skipping commit`);
+    return { committed: false };
   }
 
   // Stage + commit.
@@ -410,6 +396,9 @@ export async function runLensFix(
     // re-dispatch's own evidence: if it is now dirty, the previous attempt
     // left uncommitted work — commit it (that is what the prompt says), do
     // not re-dispatch blindly.
+    // #749 — committed-work-aware: a clean porcelain is NOT evidence of
+    // "no fix" when the fixer committed its work. Check the committed
+    // count against the branch head before classifying.
     let porcelain: string | undefined;
     try {
       const execFn = ctx.verifyExecFn ?? execp;
@@ -429,22 +418,40 @@ export async function runLensFix(
         `work-driver: lens-fix re-dispatch skipped — worktree ${fixTree} not clean (or unreadable)`,
       );
     } else {
-      const evidence = `git status --porcelain at ${fixTree} was empty`;
-      trace(`work-driver: lens-fix re-dispatch — worktree ${fixTree} clean after a no-diff fix`);
-      next = appendEvent(next, {
-        kind: "lens-fix-empty-resend",
-        at: Date.now(),
-        jobId: makeRunId(),
-        round: state.pipelineState.reviewRound,
-        worktree: fixTree,
-        evidence,
-      });
+      // Clean tree. Check committed work before declaring "no fix".
+      const branchName = state.pipelineState.branchName;
+      let committedCount: number | undefined;
+      if (branchName) {
+        const execFn = ctx.verifyExecFn ?? execp;
+        committedCount = await countCommittedAhead(execFn, fixTree, branchName);
+      }
+      if (committedCount !== undefined && committedCount > 0) {
+        // The fixer committed its work — NOT a no-diff shape. The
+        // re-dispatch must not claim "no changes" when a committed fix
+        // exists.
+        trace(
+          `work-driver: lens-fix re-dispatch skipped — worktree ${fixTree} has ${committedCount} committed fix(es) ahead of ${branchName}`,
+        );
+      } else {
+        const evidence = branchName
+          ? noDiffEvidence(fixTree, branchName, committedCount ?? null)
+          : `no committed fix: no branch name recorded; worktree ${fixTree} has a clean working tree`;
+        trace(`work-driver: lens-fix re-dispatch — no committed fix in ${fixTree}`);
+        next = appendEvent(next, {
+          kind: "lens-fix-empty-resend",
+          at: Date.now(),
+          jobId: makeRunId(),
+          round: state.pipelineState.reviewRound,
+          worktree: fixTree,
+          evidence,
+        });
+      }
     }
   }
   const isResend = next !== state;
   const prompt = isResend
     ? [
-        `RE-DISPATCH — the previous lens-fix dispatch wrote NO changes: git status --porcelain at the lens-fix worktree ${JSON.stringify(fixTree)} was empty.`,
+        `RE-DISPATCH — the previous lens-fix dispatch produced no committed fix: no commits ahead of the feature branch in the lens-fix worktree ${JSON.stringify(fixTree)}.`,
         `Either the findings are already resolved in the committed diff (in which case say so with \`nothing-to-fix: <one-line reason>\` and make no changes), or the previous attempt left uncommitted work in that tree that it never committed. Inspect the tree — \`git -C ${fixTree} status\` — and commit any uncommitted fix work there: \`git add -A\` followed by \`git commit -m "<type>(scope): concise subject"\`. Do NOT push.`,
         "",
         "Findings (JSON-encoded array of {path, line, severity, title, suggestion}):",

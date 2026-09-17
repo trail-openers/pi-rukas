@@ -8,7 +8,7 @@
  * was indistinguishable from a slow one. This locks in the four fixes.
  */
 
-import { lensTimingsOf } from "../src/work-driver-lens.ts";
+import { lensTimingsOf } from "../src/work-driver-lens-capkill.ts";
 import { applyLensVerdict } from "../src/work-driver-lens-verdicts.ts";
 import { renderLensFindingsSection } from "../src/work-driver-pr-sections.ts";
 import {

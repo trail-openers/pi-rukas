@@ -31,7 +31,7 @@ import {
   withIntegrationLock,
 } from "./work-driver-integrate.ts";
 import { renderAssumptions } from "./work-driver-intent.ts";
-import { parsePrNumber } from "./work-driver-lens.ts";
+import { parsePrNumber } from "./work-driver-merged.ts";
 import { runSingleDispatch } from "./work-driver-merged.ts";
 import {
   assumptionsBlockOf,
