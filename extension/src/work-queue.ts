@@ -28,7 +28,11 @@ import { trace } from "./trace.ts";
 import { classifyFailureCause } from "./work-driver-failure-taxonomy.ts";
 import type { GroupingResult } from "./work-driver-grouping.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
-import { type EvidenceFailureKind, mergeHoldAction } from "./work-driver-merge-authority.ts";
+import {
+  type EvidenceFailureKind,
+  mergeHoldAction,
+  mergeHoldGrantAction,
+} from "./work-driver-merge-authority.ts";
 import { processAlive } from "./work-driver-resume.ts";
 import { notify } from "./work-notify.ts";
 import { groupPathsOverlap } from "./work-queue-overlap.ts";
@@ -205,7 +209,7 @@ export function humanActionFor(reason: string, primary: number): string {
           Number(heldMerge[2]) || undefined,
           failureKind,
         )
-      : `grant the driver authority to merge ${pr} — a sentence in AGENTS.md, or re-run with --merge (agent merging is not permitted here as configured)`;
+      : mergeHoldGrantAction(pr);
   }
   // #380 — `--restart` after a failed merge wipes the state file but NOT the
   // open PR, so the re-run halts immediately on the pre-flight (#362).
@@ -303,7 +307,7 @@ export async function runWorkQueue(opts: RunQueueOpts): Promise<QueueSummary> {
    * extracted paths overlap any in-flight group claimed at an EARLIER position
    * is deferred (re-tested on each pass) until that sibling reaches a terminal
    * state, so the reactive plan-time check no longer parks the loser after a
-   * wasted explore+plan dispatch. Only looking at earlier positions avoids a
+   * wasted explore+plan dispatch. Looking only at earlier positions avoids a
    * deadlock when every remaining worker holds a position past every
    * in-flight group; a deferred group is still claimed, so `finish()` reports
    * it through the `claimed` set.
@@ -323,14 +327,10 @@ export async function runWorkQueue(opts: RunQueueOpts): Promise<QueueSummary> {
       const gi = cursor;
       const g = groups[gi];
       if (!g) return;
-      // #676 lens-findings — advance the cursor before continuing. The
-      // refactor that moved `cursor += 1` onto the claim path left this
-      // branch spinning on the same `gi` forever: a group whose `issues`
-      // array is empty (unreachable via groupIssues(), which always
-      // populates ≥1 member, but `runWorkQueue` is exported and takes
-      // hand-built IssueGroup[]) would hit a bare `continue` with no cursor
-      // advance and no await — an infinite synchronous busy-spin that never
-      // lets `Promise.all(workers)` settle.
+      // #676 lens-findings — advance the cursor before continuing: a group
+      // with an empty `issues` array (unreachable via groupIssues(), but
+      // possible through the exported hand-built `IssueGroup[]`) would spin
+      // forever on a bare `continue` with no cursor advance and no await.
       if (g.issues[0] === undefined) {
         cursor += 1;
         continue;

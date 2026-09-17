@@ -20,6 +20,7 @@ import {
   gatherMergeEvidence,
   mergeAuthorityEnabled,
   mergeHoldAction,
+  mergeHoldGrantAction,
   mergeHoldToolingNote,
 } from "../src/work-driver-merge-authority.ts";
 
@@ -280,6 +281,18 @@ const passing = (name: string) => ({ name, state: "SUCCESS", bucket: "pass" });
 {
   const denied = mergeHoldAction({ granted: false, source: "none" }, 42);
   assert(/#42/.test(denied), "the human action names the PR");
+  // #760 round-3 — the no-authority sentence now names the actual state
+  // (no grant exists) instead of "not permitted here as configured", and
+  // shares one source (mergeHoldGrantAction) with the queue + handoff
+  // surfaces.
+  assert(
+    /no merge grant exists/.test(denied) && !/as configured/.test(denied),
+    "the no-authority action names the missing grant, not a configuration difference",
+  );
+  assert(
+    mergeHoldGrantAction("#42") === denied,
+    "the no-authority action IS the shared helper (single source across surfaces)",
+  );
   // #745 — when the gate's own gh call errored, the action must not tell the
   // operator to inspect the checks (a CI-flavoured line about a system whose
   // check data was never read).
@@ -311,8 +324,14 @@ const passing = (name: string) => ({ name, state: "SUCCESS", bucket: "pass" });
     "it names the fix — grant the driver the authority — not a manual merge",
   );
   assert(
-    /check the failing/.test(mergeHoldAction({ granted: true, source: "agents-md" }, 42)),
-    "with authority granted, the action points at the checks instead",
+    /then re-run with --merge once the gate passes/.test(
+      mergeHoldAction({ granted: true, source: "agents-md" }, 42),
+    ),
+    "with authority granted, the action points at the checks and the driver as the merge actor",
+  );
+  assert(
+    !/then merge[;,]?$/.test(mergeHoldAction({ granted: true, source: "agents-md" }, 42)),
+    "the CI-verdict line does not end with a bare 'then merge' instruction",
   );
 }
 

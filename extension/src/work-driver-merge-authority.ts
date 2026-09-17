@@ -411,6 +411,23 @@ export function explainMergeHold(
 }
 
 /**
+ * The single source for the no-authority recovery sentence.
+ *
+ * #760: this sentence used to be duplicated near-verbatim in three surfaces
+ * (the queue summary, the merge-hold action, the handoff recovery steps) with
+ * slightly different wording — the exact mechanism that produced cross-surface
+ * disagreement in review. Call sites keep their own framing (a chat line, a
+ * queue notification, a numbered recovery step) but share this sentence.
+ *
+ * `pr` is the PR label the caller already has ("#42" or "the PR for #7").
+ * Returns a sentence fragment (no leading article, no trailing period) so
+ * each surface can place it in its own grammatical context.
+ */
+export function mergeHoldGrantAction(pr: string): string {
+  return `grant the driver authority to merge ${pr} — no merge grant exists for this run; add one sentence to AGENTS.md (the durable form) or pass --merge for this run`;
+}
+
+/**
  * The human action for the queue summary.
  *
  * `failureKind` is the tag #745 threads from the state file: when the gate's
@@ -429,11 +446,12 @@ export function mergeHoldAction(
   // honest signature: a bare `number` is never expected.
   const pr = prNumber ? `#${prNumber}` : "the PR";
   if (!authority.granted) {
-    return `grant the driver authority to merge ${pr} — a sentence in AGENTS.md, or --merge for this run (agent merging is not permitted here as configured)`;
+    return mergeHoldGrantAction(pr);
   }
   const tooling = mergeHoldToolingNote(true, failureKind);
   if (tooling) return `the merge evidence gate for ${pr} ${tooling}`.replace("first.", "first");
-  return `check the failing/incomplete required checks on ${pr}, then merge`;
+  // Names the driver as the actor: a human was never going to merge anyway.
+  return `check the failing/incomplete required checks on ${pr}, then re-run with --merge once the gate passes`;
 }
 
 /**

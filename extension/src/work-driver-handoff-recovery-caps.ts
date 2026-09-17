@@ -24,6 +24,7 @@ import {
   type RecoverySection,
   type RecoveryStep,
 } from "./work-driver-handoff-recovery.ts";
+import { mergeHoldGrantAction } from "./work-driver-merge-authority.ts";
 import {
   type WorkEvent,
   type WorkState,
@@ -222,10 +223,10 @@ export function recoveryStepsForCap(
     if (!ps.mergeHold?.authorityGranted) {
       steps.push({
         section: "awaiting-human-merge",
-        comment: [
-          "3. Or grant the driver authority — either add an explicit line to AGENTS.md",
-          '   (e.g. "LLMs are allowed to squash merge PRs"), or pass --merge:',
-        ],
+        // The grant sentence itself comes from mergeHoldGrantAction so all
+        // three no-authority surfaces state it identically (single source,
+        // #760); this block keeps its numbered-step framing.
+        comment: [`3. ${mergeHoldGrantAction(pr ? `#${pr}` : "the PR")}:`],
         lines: [`/work ${issue} --merge`],
       });
     }
