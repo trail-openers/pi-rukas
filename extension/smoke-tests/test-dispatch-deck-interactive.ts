@@ -1,32 +1,11 @@
 #!/usr/bin/env bun
 /**
- * Pure unit tests for the dispatch deck's single composite widget (#729, #742):
- *
- * #729 collapsed the pre-#729 dual-widget design (belowEditor detail deck +
- * aboveEditor DECK_PROMPT_KEY SelectList) into ONE widget key,
- * "ensemble:deck". The composite is a Container of batch Text rows followed
- * by a keyboard-selectable SelectList; #742 removed the per-job Text rows
- * (which re-rendered every job above the list, whose labels were
- * byte-identical `formatRow` lines) — the SelectList is now the sole
- * per-job surface, one row per job.
- *
- * This test covers:
- *  - encodeDeckValue / parseDeckValue round-trip
- *  - buildDeckItems shape (one row per entry + cancel sentinel)
- *  - DeckItem.label is the job's full formatRow line, carrying role,
- *    elapsed, tool call, plus the keyFragment description for same-role
- *    disambiguation (the sole per-job surface, #742)
- *  - buildSteerPrompt is a ready-to-send steer with job context
- *  - setWidget is called with EXACTLY ONE key ("ensemble:deck") and a
- *    factory function — the one-key invariant (#729 acceptance criterion)
- *  - empty deck → the single widget is cleared (setWidget undefined)
- *  - the composite factory returns a Container whose per-job surface is
- *    the SelectList — one visible row per job key (per-job regression,
- *    #742), with no per-job Text children
- *
- * The interactive picker itself (keyboard input via ctx.ui) is live-only —
- * same boundary as test-model-picker.ts. Here we cover the pure builders
- * and the widget-shape assertions that DON'T require a live Pi session.
+ * Pure unit tests for the dispatch deck's single composite widget (#729, #742).
+ * #729 collapsed the dual-widget design into ONE widget key, "ensemble:deck".
+ * #742 removed the per-job Text rows; the SelectList is the sole per-job
+ * surface. Covers: encode/parse round-trip, buildDeckItems shape, one-key
+ * invariant, empty-deck clear, composite factory shape (Container with
+ * SelectList, no per-job Text children). Interactive picker is live-only.
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -38,6 +17,7 @@ import {
   detach,
   formatRow,
   reset,
+  snapshot,
   startBatchEntry,
   startEntry,
   DECK_PROMPT_CANCEL_KEY,
@@ -353,6 +333,7 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
 // 0 Text children, 1 SelectList item per job. Pre-fix this same test
 // yields 1 Text row per job and fails.
 {
+  reset();
   const entries: DeckEntry[] = [
     {
       key: "job-a",
@@ -450,11 +431,16 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
 // Text AND SelectList → double render. Post-fix: Text = batch headers only.
 // Distinct keys avoid the keyFragment collision (block 4c).
 {
+  if (process.env.PI_ENSEMBLE_QUIET_STATUS === "1") {
+    console.error("✗ PI_ENSEMBLE_QUIET_STATUS=1: deck empty, assertions vacuous");
+    process.exit(1);
+  }
   reset();
   startBatchEntry("b-761", { label: "developer×2", size: 2 });
   startEntry("m-761-a", { label: "developer[task-A]", role: "developer", batchKey: "b-761" });
   startEntry("m-761-b", { label: "developer[task-B]", role: "developer", batchKey: "b-761" });
   startEntry("s-761", { label: "explore", role: "explore" });
+  if (snapshot().length !== 3) { console.error("✗ canary: deck not populated"); process.exit(1); }
   type WCall = { key: string; content: string[] | ((...a: unknown[]) => unknown) | undefined; options?: { placement?: string } };
   const calls: WCall[] = [];
   const ctx = {

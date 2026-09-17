@@ -25,7 +25,6 @@ import {
   buildLines,
   clearEntry,
   detach,
-  formatMemberRow,
   formatRow,
   reset,
   snapshot,
@@ -223,25 +222,6 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   assert(out.includes("parallel-cli research poll"), "row includes tool-arg hint");
 }
 
-// 4. formatMemberRow uses " ↳ " indent and no icon.
-{
-  const startedAt = 6_000_000;
-  const out = formatMemberRow(
-    {
-      key: "x",
-      label: "developer[task-A]",
-      seq: 3,
-      startedAt,
-      state: makeState("developer", { lastToolName: "bash", toolUses: 5 }),
-    },
-    startedAt + 1000,
-  );
-  assert(out.startsWith(" ↳ "), "member row starts with indent prefix");
-  assert(!out.includes("⏳"), "member row does not include the top-level hourglass");
-  assert(out.includes("developer[task-A]"), "member row includes its label");
-  assert(out.includes("bash (#5)"), "member row includes tool + count");
-}
-
 // 5. formatRow without a tool falls back to just icon + label + elapsed.
 {
   const startedAt = 7_000_000;
@@ -263,7 +243,7 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   reset();
   startEntry("a", { label: "developer", role: "developer" });
   startEntry("b", { label: "explore", role: "explore" });
-  const { lines } = buildLines();
+  const lines = buildLines();
   assert(lines.length === 2, "two standalone singles → 2 lines");
   assert(lines[0]?.startsWith("⏳ developer"), "first standalone is developer (insertion order)");
   assert(lines[1]?.startsWith("⏳ explore"), "second standalone is explore");
@@ -279,7 +259,7 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   startEntry("m-a", { label: "developer[task-A]", role: "developer", batchKey: "batch-x" });
   startEntry("m-b", { label: "developer[task-B]", role: "developer", batchKey: "batch-x" });
   startEntry("m-c", { label: "developer[task-C]", role: "developer", batchKey: "batch-x" });
-  const { lines } = buildLines();
+  const lines = buildLines();
   assert(lines.length === 1, "1 batch + 3 members → 1 line (batch header only, #742)");
   assert(lines[0]?.startsWith("⏳ batch["), "first line is the batch header");
   assert(!lines.some((l) => l.startsWith(" ↳ ")), "no indented member rows in buildLines (#742)");
@@ -293,7 +273,7 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
     role: "developer",
     batchKey: "never-registered",
   });
-  const { lines } = buildLines();
+  const lines = buildLines();
   assert(lines.length === 1, "orphan member → one line");
   assert(
     lines[0]?.startsWith("⏳ "),
@@ -310,7 +290,7 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   startEntry("m1", { label: "developer[task-A]", role: "developer", batchKey: "b1" });
   startEntry("m2", { label: "developer[task-B]", role: "developer", batchKey: "b1" });
   startEntry("solo", { label: "explore", role: "explore" });
-  const { lines } = buildLines();
+  const lines = buildLines();
   // Expected: batch header, standalone (members absent — SelectList's, #742)
   assert(lines.length === 2, "1 batch + 2 members + 1 standalone → 2 lines (#742)");
   assert(lines[0]?.startsWith("⏳ batch["), "batch header first");
@@ -328,7 +308,7 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   startBatchEntry("b1", { label: "developer×2", size: 2 });
   startEntry("m1", { label: "developer[task-A]", role: "developer", batchKey: "b1" });
   startEntry("m2", { label: "developer[task-B]", role: "developer", batchKey: "b1" });
-  const { lines } = buildLines();
+  const lines = buildLines();
   assert(lines.length === 2, "1 standalone + 1 batch + 2 members → 2 lines (#742)");
   assert(lines[0]?.startsWith("⏳ explore"), "standalone first (inserted before batch)");
   assert(lines[1]?.startsWith("⏳ batch["), "batch header second");

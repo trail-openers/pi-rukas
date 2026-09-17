@@ -220,7 +220,7 @@ function scheduleRender(): void {
 
 function renderNow(): void {
   if (!activeCtx) return;
-  if (buildLines().lines.length === 0) {
+  if (buildLines().length === 0) {
     if (widgetVisible) {
       try {
         activeCtx.ui.setWidget(WIDGET_KEY, undefined);
@@ -239,9 +239,13 @@ function renderNow(): void {
 }
 
 /** Build the single composite widget factory (batch rows + SelectList).
- *  The batch Text rows render the deck's batch-headers-only projection
- *  (`buildLinesBatchOnly` — batch headers only; member rows are the
- *  SelectList's, one item per job entry, #742). */
+ *  The Text projection reads `buildLinesBatchOnly` (batch headers only);
+ *  the SelectList is the sole per-job surface (one item per entry, #742).
+ *  renderNow's empty-deck guard reads `buildLines` (batch headers +
+ *  standalone rows) so that a deck with only standalone entries still
+ *  renders; `buildLines`' output is a strict superset of
+ *  `buildLinesBatchOnly`'s (both contain batch headers; only `buildLines`
+ *  adds standalone rows). */
 function buildCompositeWidgetFactory(ctx: ExtensionContext) {
   return deckComposite.buildCompositeFactory(
     buildLinesBatchOnly,
@@ -285,15 +289,16 @@ export function steerDeckEntry(ctx: ExtensionUIContext, key: string, message: st
 // Row rendering
 // =============================================================================
 
-export function buildLines(now: number = Date.now()): { lines: string[]; batchLines: string[] } {
-  const byBatch = new Map<string, DeckEntry[]>();
+/** Top-level deck rows: batch headers + standalone (non-batched) entries,
+ *  in insertion order. Batched members are NOT included — the SelectList
+ *  is the sole per-job surface (#742). This is the projection read by
+ *  renderNow's empty-deck guard. It is a strict superset of
+ *  `buildLinesBatchOnly`'s output (both contain batch headers; this adds
+ *  standalone rows). */
+export function buildLines(now: number = Date.now()): string[] {
   const standalone: DeckEntry[] = [];
   for (const e of entries.values()) {
-    if (e.batchKey && batches.has(e.batchKey)) {
-      const arr = byBatch.get(e.batchKey) ?? [];
-      arr.push(e);
-      byBatch.set(e.batchKey, arr);
-    } else {
+    if (!e.batchKey || !batches.has(e.batchKey)) {
       standalone.push(e);
     }
   }
@@ -306,25 +311,22 @@ export function buildLines(now: number = Date.now()): { lines: string[]; batchLi
     (a, b) => (a.kind === "batch" ? a.b.seq : a.e.seq) - (b.kind === "batch" ? b.b.seq : b.e.seq),
   );
   const lines: string[] = [];
-  const batchLines: string[] = [];
   for (const item of tl) {
     if (item.kind === "batch") {
-      const batchLine = formatBatchRow(item.b, now);
-      lines.push(batchLine);
-      batchLines.push(batchLine);
+      lines.push(formatBatchRow(item.b, now));
     } else {
       lines.push(formatRow(item.e, now));
     }
   }
-  return { lines, batchLines };
+  return lines;
 }
 
-/** The deck's batch-headers-only projection: batch header rows only.
+/** The composite's Text projection: batch header rows only.
  *  Member rows are the SelectList's (one item per job entry, #742), so
  *  including them here would render each batch member twice — once as a
- *  `↳` Text row and once as a SelectList item. The composite's `lines`
- *  accessor reads only this (the pre-#742 "single shared projection"
- *  no longer covers job rows, #742). */
+ *  Text row and once as a SelectList item. This is a strict subset of
+ *  `buildLines`' output (both contain batch headers; `buildLines` also
+ *  adds standalone rows). */
 function buildLinesBatchOnly(now: number = Date.now()): string[] {
   const lines: string[] = [];
   for (const b of batches.values()) {
@@ -382,13 +384,6 @@ export function formatRow(
   now: number = Date.now(),
 ): string {
   return `${isStale(entry, now) ? "⚠" : "⏳"} ${formatRowCore(entry, now)}`;
-}
-
-export function formatMemberRow(
-  entry: { label: string; state: RunningState; startedAt: number },
-  now: number = Date.now(),
-): string {
-  return ` ↳ ${formatRowCore(entry, now)}`;
 }
 
 export function formatBatchRow(
