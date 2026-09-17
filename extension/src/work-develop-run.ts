@@ -34,6 +34,7 @@ import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
+import { writeState } from "./workflow-state.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
 /** Per-run mutable state shared by both dispatch phases. */
@@ -84,11 +85,12 @@ export interface DependentRunState {
   failureSource?: Record<string, "skipped" | "failed">;
 }
 
-/** #753 — the `extra` fields added to a failed dependent's branch-completed
- * event. Typed (instead of a bare `object`) so the `as WorkEvent` cast in
- * `recordBranchCompleted` can only widen with fields that type-check against
- * the union member — a mistyped `extra` field is a compile error, not a
- * read-time surprise. */
+/** #753 — the optional `extra` fields added to a failed dependent's
+ * branch-completed event. Typed as `Partial` of the `branch-completed` union
+ * member: the `satisfies` check in `recordBranchCompleted` keeps the spread
+ * type-checking against that member, so a mistyped `extra` field is a
+ * compile error, not a read-time surprise. (Nothing here protects readers —
+ * the branch-completed event is the record; the typing protects writers.) */
 export type BranchCompletedExtra = Partial<Extract<WorkEvent, { kind: "branch-completed" }>>;
 
 /**
@@ -99,12 +101,18 @@ export type BranchCompletedExtra = Partial<Extract<WorkEvent, { kind: "branch-co
  * and the append lands at the event-log TAIL — the step router routes on the
  * tail, and the caller's short-circuit (work-develop-topological.ts) must
  * keep it there.
+ *
+ * `branchEvents` (the accumulated sibling events: completion + branch-completed
+ * records from the independent phase and earlier dependents) is flushed to the
+ * state BEFORE the cap-hit lands, so sibling results survive in the durable log
+ * and the cap-hit is still the tail.
  */
 export function parkDeferredLeftover(
   stateRef: { current: WorkState },
   leftoverPath: string,
+  branchEvents?: WorkEvent[],
 ): boolean {
-  stateRef.current = appendEvent(stateRef.current, {
+  stateRef.current = appendEvent(stateRef.current, ...(branchEvents ?? []), {
     kind: "cap-hit",
     at: Date.now(),
     cap: "deferred-creation:develop",
@@ -318,8 +326,13 @@ export async function runDependentWorkstreams(
   // #753 — one place for the base shape of a failed dependent's branch-completed
   // event (the `ok: false, ms: 0` contract); each failure site supplies its own
   // error text and any additional fields (the typed `extra` keeps the cast safe).
+  // #753 (six-lens LOW) — the object literal type-checks directly against the
+  // `branch-completed` union member (a failed dependent's branch-completed
+  // event), so the `as WorkEvent` cast the spread made necessary is gone:
+  // `satisfies` keeps the union member's type-check while letting the
+  // optional `extra` fields widen as the union allows.
   const recordBranchCompleted = (id: string, error: string, extra?: BranchCompletedExtra) => {
-    branchEvents.push({
+    const ev = {
       kind: "branch-completed",
       step: "develop",
       workstreamId: id,
@@ -328,7 +341,8 @@ export async function runDependentWorkstreams(
       at: Date.now(),
       error,
       ...(extra ?? {}),
-    } as WorkEvent);
+    } satisfies Extract<WorkEvent, { kind: "branch-completed" }>;
+    branchEvents.push(ev);
   };
   for (const id of ids) {
     const ws = workstreams[id];
@@ -423,10 +437,14 @@ export async function runDependentWorkstreams(
         // parkDeferredLeftover appends the cap-hit AND returns the flag in one
         // step — the flag and the append are one structural unit (the MEDIUM
         // finding: they were previously coupled only by a comment). The
-        // caller's short-circuit (work-develop-topological.ts) keeps the
-        // cap-hit the event-log tail so the step router routes to handoff on it.
+        // sibling workstreams' branch-completed events are flushed to stateRef
+        // (and persisted) BEFORE the cap-hit lands, so the cap-hit is still
+        // the tail the step router routes on, while the independent phase's
+        // results stay in the durable log instead of surviving only in child
+        // transcripts.
         const leftoverPath = created.failure.leftoverPath ?? "(path unknown)";
-        const parked = parkDeferredLeftover(stateRef, leftoverPath);
+        const parked = parkDeferredLeftover(stateRef, leftoverPath, branchEvents);
+        await writeState(ctx.repoRoot, stateRef.current);
         trace(
           `work-driver: PARK — deferred worktree creation for ${id} refused by dirty leftover at ${leftoverPath}; parking the cycle (no force-remove)`,
         );

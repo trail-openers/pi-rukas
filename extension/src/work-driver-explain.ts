@@ -332,19 +332,37 @@ export function explainCap(
         : " (evidence detail missing from state)";
     return `the driver's outcome-verification gate rejected the ${step} step's "done" claim — the claimed result is not backed by executed evidence:${findings}\nNo LLM judged this; the driver ran the checks itself (git diff/rev-list, the project's verify command, gh pr view). Inspect the worktree(s), fix or re-dispatch, and re-run. Set PI_ENSEMBLE_VERIFY=0 to disable the gate (not recommended)`;
   }
+  // #753 — deferred worktree-creation failure. Its own sentence, because
+  // `step-failed:develop` would be a mislabel (the dispatch itself never
+  // failed; the DEPENDENT's deferred worktree creation was refused or
+  // errored). The handoff's aborted-vs-handoff status keys off the
+  // `step-failed:` prefix, so this cap is named `deferred-creation:develop`
+  // (not `step-failed:…`) so a deliberate, well-explained park is
+  // terminalized as a handoff, not as a mid-flight crash. The check sits
+  // ABOVE the `step-failed:` prefix block on purpose — inside it the branch
+  // was dead code and this cap fell through to the generic fallback.
+  if (cap === "deferred-creation:develop") {
+    // #753 — the leftover path rides on the failed workstream's branch-completed
+    // event (the `dirty-leftover` failure record); naming it here keeps the
+    // operator from having to dig for it. `leftoverPath` is a discriminant-
+    // narrowed field (present only on the `dirty-leftover` member of
+    // DeferredCreationFailure); read it after an explicit class check — no
+    // cast, no suppression.
+    const bc = state.eventLog
+      .slice()
+      .reverse()
+      .find((e): e is Extract<WorkEvent, { kind: "branch-completed" }> => {
+        if (e.kind !== "branch-completed" || e.ok !== false) return false;
+        return e.deferredCreation?.failure.class === "dirty-leftover";
+      });
+    const frag = bc?.deferredCreation;
+    const path =
+      frag && frag.failure.class === "dirty-leftover" ? frag.failure.leftoverPath : undefined;
+    return `a DEPENDENT workstream's deferred worktree creation was refused or failed (a dirty same-issue leftover at the target path, or a git error on the add) — the cycle parked so the leftover is inspected and salvaged rather than force-removed${path ? `; the leftover is at ${path}` : ""}; the failed workstream's branch-completed event carries the git detail`;
+  }
   // Template-literal `step-failed:<step>` values land here. Switch on the
   // step suffix to produce a tailored sentence.
   if (cap.startsWith("step-failed:")) {
-    // #753 — deferred worktree-creation failure. Its own sentence, because
-    // `step-failed:develop` would be a mislabel (the dispatch itself never
-    // failed; the DEPENDENT's deferred worktree creation was refused or
-    // errored). The handoff's aborted-vs-handoff status keys off the
-    // `step-failed:` prefix, so this cap is named `deferred-creation:develop`
-    // (not `step-failed:…`) so a deliberate, well-explained park is
-    // terminalized as a handoff, not as a mid-flight crash.
-    if (cap === "deferred-creation:develop") {
-      return `a DEPENDENT workstream's deferred worktree creation was refused or failed (a dirty same-issue leftover at the target path, or a git error on the add) — the cycle parked so the leftover is inspected and salvaged rather than force-removed; the failed workstream's branch-completed event carries the git detail`;
-    }
     const step = cap.slice("step-failed:".length) as WorkStep;
     // PR7 — for multi-workstream halts (PR3 fanout steps: develop +
     // lens-review), append a parenthetical with the per-branch verdict

@@ -19,6 +19,7 @@
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import { trace } from "./trace.ts";
+import { runCreateGuards } from "./worktree-create-guard.ts";
 import { type ProvisionResult, provisionWorktree } from "./worktree-provision.ts";
 export type { ProvisionResult } from "./worktree-provision.ts";
 export { salvageUncommittedWork, salvageDirtyWorktree } from "./worktree-salvage.ts";
@@ -216,39 +217,16 @@ export async function worktreeCreate(
       retained: true,
     });
   }
-  // #545 — the mechanism that killed the #540 restart: `worktree add` itself
-  // refuses against ANY leftover worktree of the same cycle (e.g. the
-  // cycle's OWN dead siblings from a parked run, all named
-  // `issue-<N>-<id>`). Inspect what's attached first so a dirty one becomes
-  // a refusal WITH salvage instead of a bare `fatal: ... already exists`
-  // error. A clean foreign leftover is still handled by `worktree add`'s
-  // own path-exists error — unchanged.
-  const issuePrefix = opts.name.split("-").slice(0, 2).join("-");
-  // #753 — exclude this cycle's own worktrees from the dirty scan so an
-  // earlier workstream's legitimate in-progress dirt is not misread as a
-  // "leftover" (the scan is unbounded within a cycle).
-  const inCycleSet = new Set(inCycleWorktrees ?? []);
-  const siblingDirty = await findDirtySameIssueLeftover(
+  // #545 / #753 — the pre-add guards (sibling scan + target-path dirty
+  // guard) live in worktree-create-guard.ts (split for the 500-line cap).
+  // The target-path #475 guard runs UNCONDITIONALLY there; in-cycle
+  // membership only waives the sibling scan and the pre-remove, never the
+  // dirty guard.
+  await runCreateGuards(
     execFn,
-    opts.repoRoot,
-    opts.fromRef,
-    issuePrefix,
-    opts.name,
+    { repoRoot: opts.repoRoot, name: opts.name, fromRef: opts.fromRef },
     inCycleWorktrees,
   );
-  if (siblingDirty) {
-    throw new DirtyWorktreeError(siblingDirty);
-  }
-  // #753 — if the target path is in-cycle (this workstream set), skip the
-  // pre-remove and let `git worktree add` fail with its own error (path
-  // already exists). The in-cycle path is in-flight work, not a leftover.
-  if (!inCycleSet.has(abs)) {
-    const leftover = await inspectWorktreeForLoss(execFn, opts.repoRoot, abs, opts.fromRef);
-    if (leftover) {
-      throw new DirtyWorktreeError(leftover);
-    }
-    await worktreeRemove(execFn, opts.repoRoot, opts.name, true).catch(() => undefined);
-  }
   // Always detached at baseSha: a named branch in a worktree contradicts
   // #287 (worktrees are the workstream's scratch space; the feature branch
   // only ever exists at repoRoot, where integration happens) and breaks the

@@ -134,11 +134,14 @@ async function runDevelopTopological(
   next = stateRef.current;
   // #753 — a dirty-leftover refusal PARKED mid-step (cap-hit appended by
   // runDependentWorkstreams). The cap-hit must remain the event-log tail so
-  // the step router routes the cycle to handoff on it: appending the
-  // branch-completed events or running the safety-net/verify gates (which
-  // append verifyEvidence / more events) would displace it and the router
-  // would add a SECOND, generic cap on the branches-converged verdict. Hence
-  // the short-circuit: no branchEvents, no branches-converged, no gates.
+  // the step router routes the cycle to handoff on it: the sibling
+  // branch-completed events are flushed BEFORE the cap-hit (parkDeferredLeftover
+  // appends them first — verified against nextStep, which reads exactly the
+  // last event and routes a trailing cap-hit to its nextStep), and running the
+  // safety-net/verify gates (which append verifyEvidence / more events) would
+  // displace it and the router would add a SECOND, generic cap on the
+  // branches-converged verdict. Hence the short-circuit: no branches-converged,
+  // no gates.
   if (wtResult.parked) {
     // #753 — the dependent phase parked mid-step (dirty-leftover cap-hit is the
     // tail). The write-ahead marker `beginDispatch` recorded for this step must
