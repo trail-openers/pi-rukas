@@ -96,9 +96,7 @@ async function integrateLensFix(
 
 /**
  * #749 — committed-work-aware classification for the `!result.committed`
- * branch. Returns the state after handling the committed-fix case (either
- * proceeding without a cap, or parking with accurate evidence), or null
- * when the result carried an integration error (the caller handles that).
+ * branch. Returns the post-handling state, or null to proceed.
  */
 async function handleNoCommittedFix(
   execFn: ExecFn,
@@ -314,6 +312,12 @@ export async function runAdversarial(
   const aggregateJobId = makeRunId();
   const failed = outcomes.filter((o) => !o.ok);
   if (failed.length === 0) {
+    // #486 — non-blocking findings survive the pass. `PASSED WITH FINDINGS`
+    // is not `APPROVED`, and the difference has to reach the PR and the
+    // lens gate. They are CARRIED in the verdict event itself: the PR body
+    // (adversarial-findings.ts:carriedAdversarialFindings) reads `findings`
+    // off the latest `adversarial-approved` and renders undefined when the
+    // field is absent, so dropping the field would silently discard them.
     const carried = outcomes
       .map((o) => (o.passFindings?.trim() ? `### ${o.id}\n\n${o.passFindings.trim()}` : ""))
       .filter(Boolean)
@@ -376,6 +380,11 @@ export async function runAdversarial(
       }
     }
   } else if (failed.every((o) => o.infra) && ids.length === 1) {
+    // N=1 with a pure infra failure: no verdict exists. TWO-STATE design
+    // (#486):
+    // #486 — N=1 two-state: FIRST pass leaves the dispatch-failed tail for
+    // the RETRY_ONCE router; re-entry (priorHadInfraFailure) is permanent —
+    // park with the DISTINCT cap `adversarial-infra-failure` (NOT a rejection).
     if (!priorHadInfraFailure) {
       trace(
         "work-driver: adversarial loop infrastructure failure (N=1) — leaving dispatch-failed tail for the RETRY_ONCE router",
@@ -408,28 +417,28 @@ export async function runAdversarial(
     }
   } else if (
     failed.every(
-      (o) => (o.infra || o.threw) && (retries[o.id] ?? 0) >= ADVERSARIAL_PER_WS_MAX_RETRIES,
-    )
-  ) {
-    const names = failed
-      .filter((o) => (o.infra || o.threw) && (retries[o.id] ?? 0) >= ADVERSARIAL_PER_WS_MAX_RETRIES)
-      .map((o) => o.id)
-      .join(", ");
-    trace(
-      `work-driver: adversarial per-workstream retry budget exhausted for [${names}] — parking`,
-    );
-    next = appendEvent(next, {
-      kind: "cap-hit",
-      at: Date.now(),
-      cap: "adversarial-infra-failure",
-      reviewRound: state.pipelineState.reviewRound,
-      nextStep: "handoff",
-    });
-  } else if (
-    failed.every((o) => o.infra || o.threw) &&
+      (o) => o.infra || o.threw || (retries[o.id] ?? 0) >= ADVERSARIAL_PER_WS_MAX_RETRIES,
+    ) &&
     (ids.length === 1
-      ? (state.pipelineState.retryAttempts?.adversarial ?? 0) >= 1
-      : priorHadInfraFailure)
+      ? // #298 — N=1 keeps the legacy contract: the driver-level RETRY_ONCE
+        // router re-runs the step while the budget holds; only after the
+        // router hands it back (retryAttempts exhausted) is the failure
+        // final, and it parks with the infra cap instead of the step-failed
+        // default — "no verdict exists" is not "the step failed".
+        // A workstream whose per-workstream retry budget is exhausted is
+        // likewise final — the rejection path must not swallow the infra
+        // shortfall as a fake "rejected" (#486). Parks the same way.
+        (state.pipelineState.retryAttempts?.adversarial ?? 0) >= 1 ||
+        failed.some((o) => (retries[o.id] ?? 0) >= ADVERSARIAL_PER_WS_MAX_RETRIES)
+      : // #486 — re-entry: every failing workstream already has a preserved
+        // outcome from a prior run, this pass just re-attempted the infra-failed
+        // ones and they still have no verdict. The step-level router cannot
+        // retry this (its branches-converged scan declines when ANY workstream
+        // succeeded), and re-running inside runAdversarial is bounded by the
+        // per-workstream budget — nothing is left to retry. A permanent infra
+        // failure is NOT a rejection, so it parks with the distinct cap.
+        priorHadInfraFailure ||
+        failed.some((o) => (retries[o.id] ?? 0) >= ADVERSARIAL_PER_WS_MAX_RETRIES))
   ) {
     const names = failed.map((o) => o.id).join(", ");
     trace(
@@ -443,6 +452,10 @@ export async function runAdversarial(
       nextStep: "handoff",
     });
   } else {
+    // A genuine verdict (or a first-pass N>1 failure the step-level router
+    // will retry wholesale) reached the aggregate. Concatenate rejection text
+    // into findings; #486: a workstream with no verdict is named as an
+    // explicit shortfall, not folded into the findings.
     const noVerdict = new Set(failed.filter((o) => o.infra || o.threw).map((o) => o.id));
     const findings = failed
       .map((o) => {

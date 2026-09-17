@@ -125,8 +125,11 @@ export async function landCommittedFix(
             : `patch-apply failed for the lens-fix worktree: ${orch._applyConflict?.reason ?? "unknown"}`,
         );
       }
-      if (orch.cherryApplied.length === 0) {
-        throw new Error("nothing landed on the branch — every pick was skipped");
+      // #749 — the tree-hash dedup skip means the content is already on the
+      // branch (not a failure); the caller re-reviews. A genuine no-op —
+      // no commits landed AND no skip was measured — is a failure.
+      if (orch.cherryApplied.length === 0 && orch.skippedAlreadyOnBranch.length === 0) {
+        throw new Error("nothing landed on the branch");
       }
     });
     return { ok: true, sha };
@@ -162,22 +165,12 @@ export async function detectCommittedFix(
 }
 
 /**
- * #749 — the stage+commit used by the legacy repoRoot path (fix made
- * directly in repoRoot, no worktree). `commitLensFixChanges` used to
- * declare "no fix" on a clean porcelain; the committed count is checked
- * first so a committed-but-clean tree is detected the same way the
- * worktree path detects it.
- */
-/**
  * Evidence string for the genuinely-empty followup: names the detection
  * actually performed (a committed-work count against the branch head) and
  * never cites an uncommitted-changes check as evidence about whether
  * commits landed (#749's AC6).
  */
 export function noDiffEvidence(tree: string, branchName: string, count: number | null): string {
-  const measured =
-    count === null
-      ? "could not be read (git error)"
-      : `is ${count} commit(s) ahead of ${branchName}`;
+  const measured = count === null ? "could not be read (git error)" : `count is ${count}`;
   return `no committed fix: the lens-fix worktree ${tree} has ${count === null ? "no readable" : count} commit(s) ahead of branch ${branchName} (rev-list --count ${branchName}..HEAD ${measured})`;
 }

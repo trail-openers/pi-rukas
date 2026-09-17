@@ -353,5 +353,148 @@ setupSpawnGuard();
   }
 }
 
+// 48. Issue #305 — lens-fix creating a NEW (untracked) file is committed.
+// Verifies that the explicit porcelain staging (not `git add -u`) picks
+// up untracked files. Previously, `git add -u` staged only tracked files
+// and silently dropped new files created by the developer.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "work-driver-lens-new-file-"));
+  try {
+    const fs = await import("node:fs/promises");
+    const { promisify } = await import("node:util");
+    const { exec } = await import("node:child_process");
+    const execp = promisify(exec);
+
+    // Real git repo with a committed feature branch.
+    await execp("git init -q", { cwd: dir });
+    await execp('git config user.email "t@t" && git config user.name "T"', {
+      cwd: dir,
+      shell: "/bin/bash",
+    });
+    await fs.writeFile(path.join(dir, "base.txt"), "hello\n");
+    await execp("git add base.txt && git commit -q -m initial", { cwd: dir, shell: "/bin/bash" });
+    await execp("git update-ref refs/remotes/origin/main HEAD", { cwd: dir });
+    await execp("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", {
+      cwd: dir,
+    });
+    await execp("git checkout -qb feature/lens-new-file", { cwd: dir });
+    await fs.writeFile(path.join(dir, "feature.txt"), "const x = eval(input);\n");
+    await execp("git add feature.txt && git commit -q -m 'feature with bug'", {
+      cwd: dir,
+      shell: "/bin/bash",
+    });
+
+    // Record the commit count BEFORE lens-fix.
+    const { stdout: beforeLog } = await execp("git rev-list --count origin/main..HEAD", {
+      cwd: dir,
+    });
+    const beforeCount = Number.parseInt(beforeLog.trim(), 10);
+
+    // Pre-seed at lens-fix step.
+    let s = initialState(308, 1_000_000);
+    s = {
+      ...s,
+      pipelineState: {
+        ...s.pipelineState,
+        currentStep: "lens-fix",
+        lastCompletedStep: "commit-pr",
+        worktrees: { default: dir },
+        workstreams: {
+          default: { id: "default", scope: "test", paths: [], outOfScope: [] },
+        },
+        branchName: "feature/lens-new-file",
+        prNumber: 3080,
+        reviewRound: 1,
+      },
+      eventLog: [
+        {
+          kind: "lens-issues-found" as const,
+          at: 2_000_000,
+          jobId: "j-lens-1",
+          round: 1,
+          findings: JSON.stringify([
+            {
+              lens: "SECURITY",
+              severity: "MEDIUM",
+              path: "feature.txt",
+              line: 1,
+              title: "eval() usage",
+              description: "Unsafe eval",
+              suggestion: "Extract to helper module",
+            },
+          ]),
+          verdict: "ISSUES_FOUND" as const,
+        },
+      ],
+    };
+    await writeState(dir, s);
+
+    const ctx: DriverContext = {
+      pi: makeFakePi().pi,
+      repoRoot: dir,
+      issue: 308,
+      issueBodyFetcherFn: mockIssueBodyOk,
+      dispatchFn: async (_pi, spec, opts) => {
+        // lens-fix: create a NEW (untracked) file and modify existing file.
+        if (opts?.label?.startsWith("developer:lens-fix")) {
+          await fs.writeFile(
+            path.join(dir, "safe-helper.ts"),
+            "export const safeParse = (x) => JSON.parse(x);\n",
+          );
+          await fs.writeFile(
+            path.join(dir, "feature.txt"),
+            "import { safeParse } from './safe-helper';\n",
+          );
+          return mkResult({
+            role: "developer",
+            ok: true,
+            text: "Fixed.",
+          });
+        }
+
+        if (opts?.label === "ops:handoff") {
+          return mkResult({ role: "ops", text: "Posted." });
+        }
+
+        throw new Error(`unexpected dispatch: ${spec.role} / ${opts?.label}`);
+      },
+      adversarialLoopFn: async () => {
+        return mkResult({
+          role: "adversarial-loop",
+          ok: true,
+          loopOutcome: "approved",
+          text: "Adversarial APPROVED.",
+        });
+      },
+      lensReviewFn: async () => {
+        return mkLensSummary({ verdict: "APPROVED" });
+      },
+    };
+
+    await runWorkDriver(ctx).catch(() => {});
+
+    // Verify the driver committed (extra commit after lens-fix).
+    const { stdout: afterLog } = await execp("git rev-list --count origin/main..HEAD", {
+      cwd: dir,
+    });
+    const afterCount = Number.parseInt(afterLog.trim(), 10);
+    assert(
+      afterCount === beforeCount + 1,
+      `driver committed the lens-fix with new file (before=${beforeCount}, after=${afterCount})`,
+    );
+
+    // Verify the committed diff includes the NEW file.
+    const { stdout: diff } = await execp("git diff origin/main..HEAD", { cwd: dir });
+    assert(diff.includes("safeParse"), "committed diff includes new file content");
+    assert(diff.includes("safe-helper.ts"), "committed diff references the new file");
+
+    // Verify the new file exists in the committed tree.
+    const { stdout: lsFiles } = await execp("git ls-files safe-helper.ts", { cwd: dir });
+    assert(lsFiles.trim() === "safe-helper.ts", "new file is tracked in the committed tree");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
