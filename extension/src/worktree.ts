@@ -269,9 +269,12 @@ export async function worktreeCreate(
     // #753 (six-lens FIX 1) — the wrapped Error drops the rejection's
     // `code`/`stderr`, so the deferred-creation catch (which can only read
     // the wrapper) would record `stderr: undefined` for a failing
-    // `git worktree add` — the exact detail #753 exists to capture.
-    // Re-expose it so the one extractor (`gitErrorDetail`) works on the
-    // wrapper, and the numeric exit status survives for `failure.exitStatus`.
+    // `git worktree add` — the exact detail #753 exists to capture. Re-expose
+    // both on the wrapper: `stderr` so the one extractor (`gitErrorDetail`)
+    // works on the wrapper, and the numeric `code` so the deferred-creation
+    // catch reads the real exit status off `wrapped.code` for
+    // `failure.exitStatus` (a failing `git worktree add` via
+    // `promisify(exec)` rejects with `code: 128`).
     (wrapped as Error & { stderr?: string; code?: number }).stderr = detail;
     const causeCode = (err as { code?: unknown })?.code;
     if (typeof causeCode === "number") (wrapped as Error & { code?: number }).code = causeCode;

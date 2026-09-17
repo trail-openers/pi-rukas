@@ -290,6 +290,15 @@ function makeRunOne(called: boolean[], worktrees: Record<string, string>) {
       res.failure.gitCommand?.includes("git worktree add") === true,
       "#753 case 3b: failure.gitCommand names the attempted git worktree add",
     );
+    // #753: a genuine `git worktree add` failure must record the REAL
+    // numeric exit status (the executor rejection's `code`), not `undefined`
+    // and not a hardcode-anything value. An unresolvable ref exits 128
+    // (verified: both `sh -c git worktree add …` and `promisify(exec)`
+    // reject with `code: 128` for this exact shape).
+    assert(
+      res.failure.exitStatus === 128,
+      `#753 case 3b: failure.exitStatus carries the REAL numeric exit status of the failing git command (expected 128 for an invalid ref; got: ${JSON.stringify(res.failure.exitStatus)})`,
+    );
   } else {
     assert(false, "#753 case 3b: the unresolvable ref produced a create-error");
   }

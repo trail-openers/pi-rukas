@@ -41,6 +41,10 @@ export type DeferredCreationFailure =
       class: "create-error";
       /** The git command the creation attempted, when one was reached. */
       gitCommand?: string;
+      /** The command's exit status, when known (the executor's numeric
+       * `code`). Absent when the executor didn't carry one — absence is a
+       * real state, not `null`. */
+      exitStatus?: number;
       /** The command's stderr, via `gitErrorDetail` (never the wrapper). */
       stderr?: string;
       /** The error's text (wraps stderr; always present). */

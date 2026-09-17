@@ -240,9 +240,9 @@ export async function resolveDependentBase(
  *     class; the error text IS the finding (it names the leftover path).
  *     The caller PARKS the cycle on this class.
  *   - "create-error" — the creation itself failed (the add, or a guard that
- *     surfaced as a plain error). `gitCommand` / `stderr` are filled in when
- *     they are known (the add threw), else the error text carries the detail
- *     via `gitErrorDetail`.
+ *     surfaced as a plain error). `gitCommand` / `exitStatus` / `stderr` are
+ *     filled in when they are known (the add threw), else the error text
+ *     carries the detail via `gitErrorDetail`.
  *
  * The return shape mirrors the `DeferredCreationEventFragment`/
  * `DeferredCreationFailure` record the caller writes onto the
@@ -259,6 +259,7 @@ export type DeferredCreationResult =
         error: string;
         leftoverPath?: string;
         gitCommand?: string;
+        exitStatus?: number;
         stderr?: string;
       };
     };
@@ -300,12 +301,20 @@ export async function createDependentWorktree(
       `work-driver: deferred worktree creation failed for ${dependentId}: ${detail.slice(0, 200)}`,
     );
     const errorText = (err as Error).message ?? (detail || "unknown error");
+    // #753 — the numeric exit status, read off the WRAPPER (worktree.ts
+    // re-exposes the rejection's `code` on it). A failing `git worktree add`
+    // via `promisify(exec)` rejects with `code: 128`. Absent when the
+    // executor didn't carry a numeric code — a real state, not a gap (the
+    // dirty-leftover class above never runs a command).
+    const wrapperCode = (err as Error & { code?: number }).code;
+    const exitStatus = typeof wrapperCode === "number" ? wrapperCode : undefined;
     return {
       path: undefined,
       failure: {
         class: "create-error",
         error: errorText,
         gitCommand: gitCmd,
+        exitStatus,
         stderr: detail,
       },
     };
