@@ -46,11 +46,21 @@ export async function countCommittedAhead(
   tree: string,
   branchName: string,
 ): Promise<number | undefined> {
+  const ref = `"refs/heads/${branchName}"..HEAD`;
+  const refRemote = `"refs/remotes/origin/${branchName}"..HEAD`;
   try {
-    const { stdout } = await execFn(`git rev-list --count ${JSON.stringify(branchName)}..HEAD`, {
-      cwd: tree,
-      maxBuffer: 64 * 1024,
-    });
+    let stdout: string;
+    try {
+      ({ stdout } = await execFn(`git rev-list --count ${ref}`, {
+        cwd: tree,
+        maxBuffer: 64 * 1024,
+      }));
+    } catch {
+      ({ stdout } = await execFn(`git rev-list --count ${refRemote}`, {
+        cwd: tree,
+        maxBuffer: 64 * 1024,
+      }));
+    }
     const n = Number.parseInt(stdout.trim(), 10);
     return Number.isFinite(n) ? n : undefined;
   } catch {
@@ -69,11 +79,21 @@ export async function diffAgainstBranch(
   tree: string,
   branchName: string,
 ): Promise<string[] | undefined> {
+  const ref = `"refs/heads/${branchName}"`;
+  const refRemote = `"refs/remotes/origin/${branchName}"`;
   try {
-    const { stdout } = await execFn(`git diff ${JSON.stringify(branchName)} HEAD --name-only`, {
-      cwd: tree,
-      maxBuffer: 1024 * 1024,
-    });
+    let stdout: string;
+    try {
+      ({ stdout } = await execFn(`git diff ${ref} HEAD --name-only`, {
+        cwd: tree,
+        maxBuffer: 1024 * 1024,
+      }));
+    } catch {
+      ({ stdout } = await execFn(`git diff ${refRemote} HEAD --name-only`, {
+        cwd: tree,
+        maxBuffer: 1024 * 1024,
+      }));
+    }
     return stdout
       .split("\n")
       .map((l) => l.trim())
@@ -118,6 +138,16 @@ export async function landCommittedFix(
         scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
         requireAllNonEmpty: false,
       });
+      const { stdout: stagedOut } = await execFn("git diff --cached --name-only", {
+        cwd: ctx.repoRoot,
+        maxBuffer: 64 * 1024,
+      });
+      if (stagedOut.trim()) {
+        await execFn(`git commit -q -m 'fix(lens): round 1 review findings'`, {
+          cwd: ctx.repoRoot,
+          maxBuffer: 64 * 1024,
+        });
+      }
       if (orch._conflict === "conflict" || orch._applyConflict !== undefined) {
         throw new Error(
           orch._conflict === "conflict"
