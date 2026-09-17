@@ -10,9 +10,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { DriverContext } from "../src/work-driver-context.ts";
 import { runDependentWorkstreams } from "../src/work-develop-run.ts";
-import { initialState, type WorkEvent } from "../src/workflow-state.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
+import { type WorkEvent, initialState } from "../src/workflow-state.ts";
 import type { ExecFn } from "../src/worktree.ts";
 
 const execFileP = promisify(execFile);
