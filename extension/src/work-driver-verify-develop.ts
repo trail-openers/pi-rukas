@@ -319,18 +319,21 @@ export async function verifyDevelopOutcome(
         );
       }
     }
-    // The consolidated run. With N=1 there is nothing to consolidate — the
-    // single worktree IS the combined tree. N>1 (or the legacy default-map
-    // shape where the worktree is repoRoot itself) needs a real consolidation
-    // to see the combination. A worktree with no commit ahead of baseSha
-    // contributes nothing to the combined tree (it cannot be cherry-picked).
-    const consolidationNeeded =
-      changedWorktrees.length > 1 ||
-      (changedWorktrees.length === 1 && changedWorktrees[0] !== ctx.repoRoot);
-    const hasNonRootWorktrees = Object.values(state.pipelineState.worktrees ?? {}).some(
-      (cwd) => cwd !== ctx.repoRoot,
-    );
-    if (!consolidationNeeded || !isValidSha(baseSha) || !hasNonRootWorktrees) {
+    // #750 — the develop gate reads the CONSOLIDATED tree, not the isolated
+    // worktrees: a per-worktree verify cannot see a file a sibling's commit
+    // supplies (or deletes), and the #750 regression proves the combined
+    // state is the only state worth testing. The combined tree is built from
+    // every worktree that has commits ahead of baseSha, so the gate runs
+    // when any committed worktree is non-trivial to consolidate — i.e. any
+    // worktree with committed work exists and the root itself is not the
+    // only worktree (N=1 with the root as the worktree is the combined tree).
+    const consolidationNeeded = changedWorktrees.length > 0;
+    // #750 — the consolidated run (which owns the dirty-root refusal at its
+    // preflight) must run whenever there is ANY committed worktree: the
+    // refusal fires even for the N=1 case where the only worktree is the
+    // root itself, because operator residue on the root must not be swept
+    // into the PR just because the combined tree is trivially the root.
+    if (!consolidationNeeded || !isValidSha(baseSha)) {
       // No consolidation possible: the per-worktree results are the verdict.
       failures.push(...perWorktreeVerifyFailures);
       if (consolidationNeeded) {

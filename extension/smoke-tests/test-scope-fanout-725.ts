@@ -364,8 +364,14 @@ try {
     });
     writeRel(f.worktrees.a, "extension/src/one.ts", "const one = 2;\n");
     await commitIn(f.worktrees.a, "feat: a one");
-    // Dirty the repo root — residue from a prior cycle.
+    // Dirty the repo root — residue from a prior cycle. Must be a TRACKED
+    // file: untracked `??` entries are not dirt for the dirty-root refusal
+    // (the operator may legitimately keep them), and the refusal fires on
+    // tracked dirt (M/UU) only.
     writeFileSync(path.join(f.repo, "leftover.ts"), "const old = 1;\n");
+    await git(f.repo, ["add", "leftover.ts"]);
+    await git(f.repo, ["commit", "-q", "-m", "add leftover"]);
+    writeFileSync(path.join(f.repo, "leftover.ts"), "const old = 2;\n");
 
     writeFileSync(path.join(f.repo, ".pi", "verify-cmd"), "true\n");
     let s = initialState(725, 1_000_000);
