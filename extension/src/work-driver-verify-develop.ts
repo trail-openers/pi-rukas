@@ -335,10 +335,13 @@ export async function verifyDevelopOutcome(
     // into the PR just because the combined tree is trivially the root.
     if (!consolidationNeeded || !isValidSha(baseSha)) {
       // No consolidation possible: the per-worktree results are the verdict.
+      // The only reachable skip is "changed work exists but no valid baseSha"
+      // (without it the combined tree cannot be built); with no changed
+      // worktrees there is nothing to combine, so no note is recorded.
       failures.push(...perWorktreeVerifyFailures);
-      if (consolidationNeeded) {
+      if (consolidationNeeded && !isValidSha(baseSha)) {
         notes.push(
-          "consolidated verify skipped — no non-repoRoot worktrees with a valid baseSha to cherry-pick into a combined tree; per-worktree evidence is the verdict",
+          "consolidated verify skipped — no valid baseSha to build the combined tree against, so the per-worktree evidence is the verdict",
         );
       }
     } else {

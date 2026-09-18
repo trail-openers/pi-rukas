@@ -5,12 +5,16 @@ import path from "node:path";
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import type { ConsolidationCompleteness } from "./work-driver-completeness.ts";
-import { verifiedRestoreRoot } from "./work-driver-restore.ts";
+import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
 import { stagePorcelainPaths } from "./work-driver-stage.ts";
 import type { WorkState } from "./workflow-state-schema.ts";
 import type { ExecFn } from "./worktree.ts";
 import { sweepBranchHolders } from "./worktree.ts";
+// Re-exported for backward compatibility (callers imported these from
+// work-driver-integrate.ts pre-#750; the implementations now live in
+// work-driver-preflight.ts).
+export { readDirtyPorcelain, restoreRepoRoot } from "./work-driver-preflight.ts";
 
 let integrationChain: Promise<unknown> = Promise.resolve();
 const LOCK_STALE_MS = 30 * 60 * 1000;
@@ -187,21 +191,26 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
           label: "integrate",
         })
       : { restored: true };
-  const restoreClaimFor = (r: VerifiedRestoreResult) =>
-    r.restored
-      ? `repoRoot was restored to ${originalRef} (verified)`
-      : `repoRoot was NOT restored to ${originalRef}: ${r.detail}${r.preservedAt ? ` (discarded state preserved at ${r.preservedAt})` : ""}`;
+  // The verified post-condition via the shared claim builder, wrapped with
+  // the ref the root was restored to (the helper's two shapes are kept
+  // verbatim; the ref is load-bearing for the operator's retry).
+  const claimFor = (r: VerifiedRestoreResult): string => {
+    const claim = restoreClaim(r);
+    return r.restored ? `repoRoot was restored to ${originalRef} (verified)` : claim;
+  };
   try {
-    // 1. Preflight: repoRoot must be clean before we touch its checkout.
-    // `.worktrees/` is driver scaffolding, not operator residue (backstop for
-    // when .git/info/exclude write failed).
+    // 1. Preflight: repoRoot must be clean of TRACKED dirt before we touch
+    //    its checkout. `.worktrees/` scaffolding and untracked `??` entries
+    //    are not dirt: they are never staged into the integration (git add
+    //    is explicit per-path) and untracked content is deliberately
+    //    preserved (the restore never runs `git clean`).
     const { stdout: rootStatus } = await execFn("git status --porcelain", {
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
     });
     const rootDirt = rootStatus
       .split("\n")
-      .filter((l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l));
+      .filter((l) => l.trim() && !l.startsWith("??") && !/^..\s+"?\.worktrees\//.test(l));
     if (rootDirt.length > 0) {
       const files = rootDirt
         .slice(0, 10)
@@ -210,7 +219,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       return {
         ok: false,
         failure: "dirty-repoRoot",
-        reason: `repo root has uncommitted changes, refusing to integrate onto ${branchName}: ${files}. Commit, stash, or discard them — integration would otherwise sweep them into the PR.`,
+        reason: `repo root has uncommitted tracked changes, refusing to integrate onto ${branchName}: ${files}. Commit, stash, or discard them — integration would otherwise sweep them into the PR.`,
         porcelain: rootDirt,
       };
     }
@@ -261,7 +270,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       return {
         ok: false,
         failure: "apply",
-        reason: `cherry-pick conflict — the batch was aborted. ${restoreClaimFor(restore)}.`,
+        reason: `cherry-pick conflict — the batch was aborted. ${claimFor(restore)}.`,
       };
     }
 
@@ -271,7 +280,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       const restore = await restoreRoot();
       return {
         ok: false,
-        reason: `worktree '${id}' has no uncommitted work — nothing to consolidate. ${restoreClaimFor(restore)}.`,
+        reason: `worktree '${id}' has no uncommitted work — nothing to consolidate. ${claimFor(restore)}.`,
         noDiff: Object.keys(orchResult.noDiff).length > 0 ? orchResult.noDiff : undefined,
       };
     }
@@ -282,7 +291,6 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       const emptySlice = orchResult.emptyWorkstreams.slice(
         orchResult.emptyWorkstreams.indexOf(id) + 1,
       );
-      await restoreRoot();
       const skipped = emptySlice.length > 0 ? ` Not attempted: ${emptySlice.join(", ")}.` : "";
       const restore = await restoreRoot();
       return {
@@ -290,7 +298,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
         failure: "apply",
         reason:
           `git apply failed for workstream '${id}': ${applyReason}.` +
-          `${skipped} ${restoreClaimFor(restore)}.`,
+          `${skipped} ${claimFor(restore)}.`,
         conflictPatch: patchFile,
       };
     }
@@ -380,7 +388,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
           reason:
             `the consolidated tree fails the project's verify command (\`${opts.verifyCmd}\`), so it was not pushed. ` +
             `Each workstream passed alone; the combination does not. Tail: ${failure.slice(-600)} ` +
-            `${restoreClaimFor(restore)}.`,
+            `${claimFor(restore)}.`,
         };
       }
     }
@@ -433,63 +441,4 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
         `${restore.restored ? "repoRoot was restored (verified)" : `repoRoot was NOT restored: ${restore.detail}`}`,
     };
   }
-}
-
-/**
- * #654 task-c — the dirty-repoRoot preflight as a reusable, single
- * implementation (the issue's "single implementation, not a copy").
- * Same filtering rule as `integrate()` — `.worktrees/` is driver scaffolding,
- * not operator residue — so the two cannot drift.
- * Returns `undefined` when repoRoot is clean (the common case).
- */
-export async function readDirtyPorcelain(
-  execFn: ExecFn,
-  repoRoot: string,
-): Promise<string[] | undefined> {
-  const { stdout } = await execFn("git status --porcelain", {
-    cwd: repoRoot,
-    maxBuffer: 1024 * 1024,
-  });
-  const dirt = stdout.split("\n").filter((l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l));
-  return dirt.length > 0 ? dirt : undefined;
-}
-
-/**
- * #654 task-c — the shared restore convention for the repoRoot checkout.
- * Stash tracked dirt so a retry can integrate onto a clean tree, then pop it
- * back so the operator's work is never lost. Untracked-only dirt is not
- * safely stashable — the caller parks with the porcelain in evidence instead.
- */
-export async function restoreRepoRoot(
-  execFn: ExecFn,
-  repoRoot: string,
-  porcelain: string[],
-): Promise<{ restored: boolean; reason?: string }> {
-  if (!porcelain.some((l) => l.trim().length > 0 && !l.startsWith("??"))) {
-    return {
-      restored: false,
-      reason:
-        "repo root has only untracked files — stashing is not safe for untracked work, so the cycle parks rather than risk dropping it",
-    };
-  }
-  try {
-    await execFn("git stash push -m pi-rukas-lens-fix-restore", {
-      cwd: repoRoot,
-      maxBuffer: 256 * 1024,
-    });
-  } catch (err) {
-    return {
-      restored: false,
-      reason: `git stash failed: ${(err as Error).message?.slice(0, 200)}`,
-    };
-  }
-  try {
-    await execFn("git stash pop", { cwd: repoRoot, maxBuffer: 256 * 1024 });
-  } catch (err) {
-    return {
-      restored: false,
-      reason: `git stash pop failed — the operator's work is in the stash (git stash list): ${(err as Error).message?.slice(0, 200)}`,
-    };
-  }
-  return { restored: true };
 }

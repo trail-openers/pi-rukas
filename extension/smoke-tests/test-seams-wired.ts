@@ -163,10 +163,6 @@ const SEAMS: Seam[] = [
     // post-condition read confirms the root is clean.
     file: "work-driver-restore.ts",
     pending: {},
-    testOnly: {
-      restoreClaim:
-        "the pure claim builder (verified-restored vs explicit not-restored); called by tests to assert the claim shape the callers emit",
-    },
     canary: { symbol: "verifiedRestoreRoot", importer: "work-driver-integrate.ts" },
   },
   {

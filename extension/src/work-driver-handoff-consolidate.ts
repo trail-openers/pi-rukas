@@ -50,7 +50,7 @@ import { promisify } from "node:util";
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import { withIntegrationLock } from "./work-driver-integrate.ts";
-import { verifiedRestoreRoot } from "./work-driver-restore.ts";
+import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -254,9 +254,6 @@ export async function consolidateWorktreesToBranch(
         // #750 — the verified restore (cherry-pick.ts already attempted
         // `--abort`; this one resets the staged/unmerged index the refusal
         // leaves behind and verifies the root is actually clean).
-        // #750 — the verified restore (cherry-pick.ts already attempted
-        // `--abort`; this one resets the staged/unmerged index the refusal
-        // leaves behind and verifies the root is actually clean).
         const restore = originalRef
           ? await verifiedRestoreRoot(execFn, {
               repoRoot: ctx.repoRoot,
@@ -268,12 +265,14 @@ export async function consolidateWorktreesToBranch(
         // A conflict means the worktrees still hold their commits verbatim —
         // the accurate per-worktree recovery (which names the paths and
         // HEAD SHAs) is the honest fallback, and the worktrees are retained.
-        const claim =
-          restore === undefined
-            ? "the batch was aborted"
-            : restore.restored
-              ? "repoRoot was restored"
-              : `repoRoot could NOT be restored (${restore.detail ?? "unknown"}) — run git status at the repo root`;
+        // #750 — the claim goes through the shared builder: the restored
+        // variant is the verified post-condition, the not-restored variant
+        // is loud and tells the operator where to look.
+        const claim = restoreClaim(
+          restore === undefined ? undefined : restore,
+          undefined,
+          "run git status at the repo root",
+        );
         return {
           ok: false as const,
           reason: `cherry-pick conflict — ${claim}; the work remains on its worktree detached HEADs (per-worktree recovery below)`,
@@ -289,12 +288,7 @@ export async function consolidateWorktreesToBranch(
               label: "handoff consolidation",
             })
           : undefined;
-        const claim =
-          restore === undefined
-            ? "the batch was aborted"
-            : restore.restored
-              ? "repoRoot was restored"
-              : `repoRoot could NOT be restored (${restore.detail ?? "unknown"})`;
+        const claim = restoreClaim(restore === undefined ? undefined : restore);
         return {
           ok: false as const,
           reason: `patch-apply failed for workstream '${id}': ${reason} (patch preserved at ${patchFile}); ${claim}; the work remains in its worktree (per-worktree recovery below)`,

@@ -13,8 +13,8 @@ import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.js";
 import type { DriverContext } from "./work-driver-context.js";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
-import { verifiedRestoreRoot } from "./work-driver-restore.js";
-import type { VerifiedRestoreResult } from "./work-driver-restore.js";
+import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
+import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
 
 export async function runConsolidatedVerify(
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
@@ -62,13 +62,11 @@ export async function runConsolidatedVerify(
     }).catch(() => undefined);
     return result;
   };
-  // The verified post-condition for the operator: the restored claim is
-  // emitted only when the check confirmed it; otherwise the distinct
-  // not-restored failure names what is still dirty.
-  const restoreClaim = (r: VerifiedRestoreResult) =>
-    r.restored
-      ? "the batch was aborted and repoRoot was verified restored"
-      : `the batch was aborted but repoRoot was NOT restored: ${r.detail ?? "unknown error"}${r.preservedAt ? ` (discarded state preserved at ${r.preservedAt})` : ""}`;
+  // The verified post-condition for the operator, via the shared claim
+  // builder (the not-restored variant carries the preserved-diff location and
+  // the still-dirty detail — the loud failure, never a bare "restored").
+  const restoreClaimFor = (r: VerifiedRestoreResult) =>
+    restoreClaim(r, "the batch was aborted and");
   try {
     // Preflight — same as integrate(): repoRoot must be clean before we
     // touch its checkout, or a dirty root would carry operator residue
@@ -130,7 +128,7 @@ export async function runConsolidatedVerify(
       return {
         status: "conflict",
         kind: "conflict",
-        detail: `cherry-pick conflict — two workstreams edited the same lines; ${restoreClaim(restore)}`,
+        detail: `cherry-pick conflict — two workstreams edited the same lines; ${restoreClaimFor(restore)}`,
       };
     }
     if (orchResult._applyConflict !== undefined) {
@@ -139,7 +137,7 @@ export async function runConsolidatedVerify(
       return {
         status: "conflict",
         kind: "conflict",
-        detail: `patch-apply failed for workstream '${id}': ${reason}. Conflict patch preserved at ${patchFile}. ${restoreClaim(restore)}`,
+        detail: `patch-apply failed for workstream '${id}': ${reason}. Conflict patch preserved at ${patchFile}. ${restoreClaimFor(restore)}`,
       };
     }
 
@@ -169,7 +167,7 @@ export async function runConsolidatedVerify(
       // #750 — the verified post-condition rides with every outcome of the
       // probe run (the root is transient either way; an unverified claim
       // about it is exactly the incident).
-      return { status: "failed", detail: `${detail} ${restoreClaim(restore)}` };
+      return { status: "failed", detail: `${detail} ${restoreClaimFor(restore)}` };
     }
     if (!restore.restored) {
       trace(
@@ -185,7 +183,7 @@ export async function runConsolidatedVerify(
     return {
       status: "conflict",
       kind: "conflict",
-      detail: `consolidation could not be performed: ${(err as Error).message?.slice(0, 200)}. ${restoreClaim(restore)}`,
+      detail: `consolidation could not be performed: ${(err as Error).message?.slice(0, 200)}. ${restoreClaimFor(restore)}`,
     };
   }
 }

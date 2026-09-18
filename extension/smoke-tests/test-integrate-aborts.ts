@@ -231,6 +231,10 @@ try {
     await commitIn(wtA, "task-a: edit shared");
     writeFileSync(path.join(wtB, "shared.txt"), "line1 B wins\n");
     await commitIn(wtB, "task-b: edit shared");
+    // Create the untracked file BEFORE the integration runs: only a file
+    // present during the conflict restore can prove the restore did not
+    // sweep it (`git clean` is forbidden in the restore path).
+    writeFileSync(path.join(f.repo, "untracked-keep.txt"), "deliberate\n");
     const { stdout: refBefore } = await git(f.repo, ["rev-parse", "HEAD"]);
     const r = await run(f, "feature/cherry-pick-conflict");
     assert(!r.ok, "#750: a committed cherry-pick conflict still fails the integration");
@@ -238,15 +242,10 @@ try {
       r.failure === "apply",
       `#750: the conflict routes through the apply failure discriminator (got ${JSON.stringify(r)})`,
     );
-    // Now test that untracked files survive a clean restore (no conflict).
-    // Place an untracked file at the root and verify it survives a successful
-    // integration (the restore path is not exercised on success, but the
-    // untracked file must not be swept by any git clean).
-    writeFileSync(path.join(f.repo, "untracked-keep.txt"), "deliberate\n");
+    // The untracked file was present during the restore (created above,
+    // before `run`); it must still be here. Tracked porcelain must be empty.
     const { stdout: dirt } = await git(f.repo, ["status", "--porcelain"]);
-    const trackedDirt = dirt
-      .split("\n")
-      .filter((l) => l.trim() && !l.startsWith("??"));
+    const trackedDirt = dirt.split("\n").filter((l) => l.trim() && !l.startsWith("??"));
     assert(
       trackedDirt.length === 0,
       `#750: repoRoot tracked porcelain is empty after a cherry-pick conflict abort (got ${JSON.stringify(trackedDirt)}) — the incident state (M + UU, no CHERRY_PICK_HEAD) must not survive`,

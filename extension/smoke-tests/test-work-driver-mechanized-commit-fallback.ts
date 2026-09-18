@@ -264,7 +264,7 @@ const mkDispatchFn =
       }
     }
 
-    // M4 — #539: dirty repoRoot (untracked file) → integrate() preflight
+    // M4 — #539: dirty repoRoot (tracked-modified file) → integrate() preflight
     // refusal → fallback; assert plumb names the dirty path(s) AND carries
     // fallbackCause="dirty-repoRoot".
     {
@@ -285,9 +285,9 @@ const mkDispatchFn =
           if (cmd.startsWith("git status --porcelain")) {
             const cwd = o?.cwd ?? "";
             const worktreeAdds = calls4.filter((c) => c.startsWith("git worktree add")).length;
-            // repoRoot is dirty with an untracked file (the #533/#534 shape)
+            // repoRoot is dirty with a tracked-modified file (the #602 shape)
             if (cwd === dir) {
-              return { stdout: "?? leftover/untracked-file.txt\n" };
+              return { stdout: " M leftover/modified-file.txt\n" };
             }
             // Worktree paths: clean during branch setup (all 3 adds),
             // dirty after (develop step ran).
@@ -323,7 +323,7 @@ const mkDispatchFn =
         );
         assert(plumb !== undefined, "M4: dirty repoRoot → plumb-report exists");
         assert(
-          plumb?.body.includes("leftover/untracked-file.txt"),
+          plumb?.body.includes("leftover/modified-file.txt"),
           "M4: plumb-report names the dirty path(s) from the integrate refusal",
         );
         assert(

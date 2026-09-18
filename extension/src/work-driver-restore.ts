@@ -60,14 +60,29 @@ export interface VerifiedRestoreResult {
 }
 
 /**
- * The claim text for the operator. One of exactly two shapes — the verified
- * post-condition, or the explicit not-restored failure with the preserved
- * diff location — so the caller cannot re-introduce an unqualified claim.
+ * The claim text for the operator. Every caller emits one of exactly two
+ * shapes — the verified post-condition, or the explicit not-restored failure
+ * with the preserved diff location — so no site can re-introduce an
+ * unqualified "restored" claim. `label` prefixes the post-condition for the
+ * caller's own wording (integrate, consolidated verify, handoff consolidation
+ * each say slightly different things before the claim); `trailing` appends a
+ * hint after the not-restored failure (the handoff's not-restored variant
+ * tells the operator to run git status).
  */
-export function restoreClaim(r: VerifiedRestoreResult): string {
-  if (r.restored) return "repoRoot was verified restored";
+export function restoreClaim(
+  r: VerifiedRestoreResult | undefined,
+  label?: string,
+  trailing?: string,
+): string {
+  if (r === undefined) return "the batch was aborted";
+  if (r.restored) {
+    const restored = "repoRoot was verified restored";
+    if (!label) return restored;
+    return label.endsWith(" ") ? `${label}${restored}` : `${label} ${restored}`;
+  }
   const preserved = r.preservedAt ? ` (discarded state preserved at ${r.preservedAt})` : "";
-  return `repoRoot was NOT restored: ${r.detail ?? "unknown error"}${preserved}`;
+  const tail = trailing ? ` ${trailing}` : "";
+  return `repoRoot was NOT restored: ${r.detail ?? "unknown error"}${preserved}${tail}`;
 }
 
 /**

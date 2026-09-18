@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { mechanizedBranchSetup } from "../src/work-driver-branch-mechanized.ts";
-import { integrate, restoreRepoRoot, readDirtyPorcelain } from "../src/work-driver-integrate.ts";
+import { integrate, readDirtyPorcelain, restoreRepoRoot } from "../src/work-driver-integrate.ts";
 import type { ExecFn } from "../src/worktree.ts";
 
 const execFileP = promisify(execFile);
@@ -354,27 +354,25 @@ try {
       }
     }
 
-    // E2: untracked-only repoRoot → restoreRepoRoot refuses (not safely stashable).
+    // E2: untracked-only repoRoot → read as clean (not tracked dirt).
     {
       // Clean up E1's file first (it was popped back, now untracked again).
-      await git(repo3, ["reset", "HEAD", "operator-wip.txt"]); // unstage if still staged
-      // Remove the tracked-modified file so we start clean.
+      await git(repo3, ["reset", "HEAD", "operator-wip.txt"]);
       await git(repo3, ["checkout", "--", "operator-wip.txt"]).catch(() => {});
       // Now create ONLY an untracked file.
       writeFileSync(path.join(repo3, "untracked-only.txt"), "untracked\n");
       const dirt2 = await readDirtyPorcelain(realExec, repo3);
-      assert(dirt2 !== undefined, "dirty-root E2: readDirtyPorcelain finds untracked dirt");
-      if (dirt2) {
-        const outcome2 = await restoreRepoRoot(realExec, repo3, dirt2);
-        assert(
-          outcome2.restored === false && outcome2.reason !== undefined,
-          `dirty-root E2: restoreRepoRoot refuses untracked-only dirt (got: ${JSON.stringify(outcome2)})`,
-        );
-        assert(
-          (outcome2.reason ?? "").includes("untracked"),
-          "dirty-root E2: the refusal names the untracked shape",
-        );
-      }
+      // #750 — untracked `??` entries are NOT tracked dirt for the dirty-preflight
+      // (they are never staged into the integration, and the restore never
+      // sweeps them). So an untracked-only root is read as CLEAN; the
+      // refusal branch in restoreRepoRoot is now only reachable via direct
+      // callers that pre-fill a `??`-containing porcelain (the #750
+      // test-integrate-aborts.ts untracked-safety case exercises that path
+      // end-to-end).
+      assert(
+        dirt2 === undefined,
+        "dirty-root E2: untracked-only root is read as clean (not tracked dirt)",
+      );
       // The untracked file must still be on disk (never touched).
       assert(
         existsSync(path.join(repo3, "untracked-only.txt")),
@@ -483,7 +481,8 @@ try {
         )})`,
       );
       assert(
-        r.completeness?.landed.includes("a-multi.txt") && r.completeness?.landed.includes("b-multi.txt"),
+        r.completeness?.landed.includes("a-multi.txt") &&
+          r.completeness?.landed.includes("b-multi.txt"),
         "drop test: both files landed (the fallback staged the HEAD commit in full)",
       );
     }
