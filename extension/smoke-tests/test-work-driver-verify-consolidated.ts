@@ -267,6 +267,134 @@ try {
       gate.failures.some((f) => /cherry-pick \/\*? ?apply conflict|could not combine/.test(f)),
       `#669 case 3: failure names the consolidation conflict (got: ${gate.failures.join("; ").slice(0, 200)})`,
     );
+
+    // --------------------------------------------------------------- #750
+    // Regression 1 — the abort VERIFIably leaves repoRoot clean. The
+    // pre-#750 restore claimed "repoRoot restored" without checking; the
+    // incident state (M + UU index entries, no CHERRY_PICK_HEAD) proves the
+    // claim can be false. Assert the porcelain directly — not inferred
+    // from the absence of an error. Untracked `??` entries are NOT dirt:
+    // the restore must not sweep them (`git clean` is forbidden), so they
+    // are excluded, as the restore's own check does.
+    const { stdout: rootPorcelain } = await git(f.repo, ["status", "--porcelain"]);
+    const trackedDirt = rootPorcelain
+      .split("\n")
+      .filter((l) => l.trim() && !l.startsWith("??"));
+    assert(
+      trackedDirt.length === 0,
+      `#750 regression 1: repoRoot is verifiably clean after the conflict abort (porcelain: ${JSON.stringify(trackedDirt)})`,
+    );
+    // The root is back where it started — not stranded on the scratch
+    // branch the probe created.
+    const { stdout: rootHead } = await git(f.repo, ["rev-parse", "HEAD"]);
+    assert(
+      rootHead.trim() === f.baseSha,
+      "#750 regression 1: repoRoot is back on its original ref (scratch branch not left behind)",
+    );
+
+    // Regression 2 — the claim matches the VERIFIED post-condition. The
+    // pre-#750 text asserted an unverified "repoRoot restored"; post-#750
+    // it says so only because a porcelain read confirmed it, and the loud
+    // not-restored wording is reserved for the (rare) failed cleanup.
+    const conflictFailure = gate.failures.find((fl) =>
+      /cherry-pick \/\*? ?apply conflict|could not combine/.test(fl),
+    );
+    assert(
+      conflictFailure !== undefined && conflictFailure.includes("verified restored"),
+      `#750 regression 2: the conflict claim states the VERIFIED post-condition (got: ${conflictFailure?.slice(0, 240)})`,
+    );
+    assert(
+      conflictFailure !== undefined && !/NOT restored/.test(conflictFailure),
+      "#750 regression 2: a successful restore does not carry the loud not-restored failure",
+    );
+
+    // Untracked files must not be swept: the restore never runs `git clean`,
+    // so an untracked file present during a conflict survives the restore.
+    const f2 = await fixture("untracked-safety", ["a", "b"], { "shared.txt": "line1\nline2\nline3\n" });
+    writeFileSync(path.join(f2.worktrees.a, "shared.txt"), "line1\nA says hi\nline3\n");
+    await commitIn(f2.worktrees.a, "task-a: edit line2");
+    writeFileSync(path.join(f2.worktrees.b, "shared.txt"), "line1\nB says hi\nline3\n");
+    await commitIn(f2.worktrees.b, "task-b: edit line2");
+    writeFileSync(path.join(f2.repo, ".pi", "verify-cmd"), "true\n");
+    let s2 = initialState(669, 1_000_000);
+    s2 = {
+      ...s2,
+      pipelineState: {
+        ...s2.pipelineState,
+        branchName: "feature/issue-669",
+        baseSha: f2.baseSha,
+        worktrees: f2.worktrees,
+        workstreams: {
+          a: { id: "a", scope: "edit line2 A", paths: [], outOfScope: [] },
+          b: { id: "b", scope: "edit line2 B", paths: [], outOfScope: [] },
+        },
+      },
+    };
+    const ctx2: DriverContext = {
+      pi: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
+      repoRoot: f2.repo,
+      issue: 669,
+      verifyExecFn: realExec,
+    };
+    const gate2 = await verifyStepOutcome(ctx2, s2, "develop");
+    // Now test that untracked files survive a clean restore (no conflict).
+    // Place an untracked file at the root and verify it survives.
+    writeFileSync(path.join(f2.repo, "untracked-keep.txt"), "deliberate\n");
+    const { stdout: afterPorcelain } = await git(f2.repo, ["status", "--porcelain"]);
+    assert(
+      afterPorcelain
+        .split("\n")
+        .some((l) => l.startsWith("??") && l.includes("untracked-keep.txt")),
+      "#750 regression 3: the untracked file SURVIVED the conflict restore (no git clean)",
+    );
+    assert(
+      !gate2.failures.some((f) => /refused — repoRoot is dirty/.test(f)),
+      "#750 regression 3: an untracked file at the root does not trip the dirty-root refusal (untracked is not dirt)",
+    );
+  }
+
+  // --------------------------------------------------------------- #750
+  // Regression 4 — an abort that CANNOT restore the root fails loudly.
+  // An injected execFn refuses `git reset --hard` and reports a dirty
+  // tracked path after the restore; the helper must return `restored: false`
+  // naming the path (never a silent success), and the claim built from it
+  // must be the loud not-restored failure, not the restored claim.
+  {
+    const { verifiedRestoreRoot } = await import("../src/work-driver-restore.ts");
+    const failingExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+      if (/git reset --hard/.test(cmd)) {
+        throw new Error("fatal: cannot update ref (refusing destructive reset)");
+      }
+      if (/git status --porcelain/.test(cmd)) {
+        return { stdout: "UU src/broken.ts\n?? note.txt\n" };
+      }
+      return { stdout: "" };
+    };
+    const r = await verifiedRestoreRoot(failingExec, {
+      repoRoot: path.join(root, "nonexistent-repo"),
+      originalRef: "main",
+      scratchDir: path.join(root, "restore-loud-scratch"),
+      label: "test-loud",
+    });
+    assert(
+      r.restored === false,
+      "#750 regression 4: a restore that cannot restore is restored:false, not a silent success",
+    );
+    assert(
+      r.detail !== undefined && /broken\.ts/.test(r.detail),
+      `#750 regression 4: the failure names the still-dirty path (detail: ${r.detail?.slice(0, 160)})`,
+    );
+    const claim = r.restored
+      ? "the batch was aborted and repoRoot was verified restored"
+      : `the batch was aborted but repoRoot was NOT restored: ${r.detail}`;
+    assert(
+      !/was verified restored/.test(claim),
+      `#750 regression 4: a failed restore does not emit the restored claim (claim: ${claim.slice(0, 160)})`,
+    );
+    assert(
+      /NOT restored/.test(claim),
+      "#750 regression 4: the failed cleanup is louder — it explicitly says NOT restored",
+    );
   }
 } finally {
   rmSync(root, { recursive: true, force: true });

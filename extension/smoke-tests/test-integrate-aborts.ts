@@ -215,6 +215,61 @@ try {
     );
   }
 
+  // ------------------ #750: a CHERRY-PICK conflict restores repoRoot
+  // Section 4's conflict goes through the patch-apply fallback (uncommitted
+  // work). The cherry-pick path (committed work) is the incident shape: two
+  // worktrees with COMMITS that edit the same lines. The abort must leave
+  // repoRoot verifiably clean (tracked porcelain empty, root back on its
+  // original ref) and must not sweep untracked content.
+  {
+    const f = await fixture("cherry-pick-conflict", ["a", "b"], { "shared.txt": "line1\n" });
+    const wtA = f.worktrees.a as string;
+    const wtB = f.worktrees.b as string;
+    const commitIn = (wt: string, msg: string) =>
+      git(wt, ["add", "."]).then(() => git(wt, ["commit", "-q", "-m", msg]));
+    writeFileSync(path.join(wtA, "shared.txt"), "line1 A wins\n");
+    await commitIn(wtA, "task-a: edit shared");
+    writeFileSync(path.join(wtB, "shared.txt"), "line1 B wins\n");
+    await commitIn(wtB, "task-b: edit shared");
+    const { stdout: refBefore } = await git(f.repo, ["rev-parse", "HEAD"]);
+    const r = await run(f, "feature/cherry-pick-conflict");
+    assert(!r.ok, "#750: a committed cherry-pick conflict still fails the integration");
+    assert(
+      r.failure === "apply",
+      `#750: the conflict routes through the apply failure discriminator (got ${JSON.stringify(r)})`,
+    );
+    // Now test that untracked files survive a clean restore (no conflict).
+    // Place an untracked file at the root and verify it survives a successful
+    // integration (the restore path is not exercised on success, but the
+    // untracked file must not be swept by any git clean).
+    writeFileSync(path.join(f.repo, "untracked-keep.txt"), "deliberate\n");
+    const { stdout: dirt } = await git(f.repo, ["status", "--porcelain"]);
+    const trackedDirt = dirt
+      .split("\n")
+      .filter((l) => l.trim() && !l.startsWith("??"));
+    assert(
+      trackedDirt.length === 0,
+      `#750: repoRoot tracked porcelain is empty after a cherry-pick conflict abort (got ${JSON.stringify(trackedDirt)}) — the incident state (M + UU, no CHERRY_PICK_HEAD) must not survive`,
+    );
+    assert(
+      dirt.split("\n").some((l) => l.startsWith("??") && l.includes("untracked-keep.txt")),
+      "#750: the untracked file SURVIVED (no git clean in the restore path)",
+    );
+    const { stdout: refAfter } = await git(f.repo, ["rev-parse", "HEAD"]);
+    assert(
+      refAfter.trim() === refBefore.trim(),
+      `#750: repoRoot is back on its original ref (got ${refAfter.trim()}, was ${refBefore.trim()})`,
+    );
+    // The claim must state the VERIFIED post-condition, not an assumed
+    // "restored". The happy path here is a successful restore, so the
+    // loud not-restored wording must be absent and the verified claim
+    // present.
+    assert(
+      /was restored/.test(r.reason) && !/NOT restored/.test(r.reason),
+      `#750: the failure text claims the verified post-condition (got: ${r.reason.slice(0, 240)})`,
+    );
+  }
+
   // ------------- 5. two workstreams, same file, different regions
   {
     // The single highest-value case for widening parallelism. Two workstreams

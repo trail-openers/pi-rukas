@@ -13,6 +13,8 @@ import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.js";
 import type { DriverContext } from "./work-driver-context.js";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
+import { verifiedRestoreRoot } from "./work-driver-restore.js";
+import type { VerifiedRestoreResult } from "./work-driver-restore.js";
 
 export async function runConsolidatedVerify(
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
@@ -40,28 +42,33 @@ export async function runConsolidatedVerify(
   // is noise; the worktrees are untouched either way).
   const branchName = "pi-rukas-dev-verify";
   let originalRef: string | undefined;
-  const restoreRoot = async () => {
-    if (!originalRef) return;
-    await execFn("git reset --hard", { cwd: repoRoot, maxBuffer: 256 * 1024 }).catch((err) =>
-      trace(
-        `work-driver: consolidated verify — reset --hard failed: ${(err as Error).message?.slice(0, 160)}`,
-      ),
-    );
-    await execFn(`git checkout --force ${JSON.stringify(originalRef)}`, {
-      cwd: repoRoot,
-      maxBuffer: 256 * 1024,
-    }).catch((err) =>
-      trace(
-        `work-driver: consolidated verify — could not restore repoRoot to ${originalRef}: ${(err as Error).message?.slice(0, 160)}`,
-      ),
-    );
+  // #750 — the restore is verified, not assumed: preserves the discarded
+  // state, resets, restores the checkout, and reports success only when the
+  // porcelain read confirms the root is clean. The caller emits that
+  // post-condition — it no longer asserts an unverified "restored".
+  const restoreRoot = async (): Promise<VerifiedRestoreResult> => {
+    if (!originalRef) return { restored: true };
+    const result = await verifiedRestoreRoot(execFn, {
+      repoRoot,
+      originalRef,
+      scratchDir,
+      label: "consolidated verify",
+    });
     // Delete the scratch branch so it does not accumulate on every develop
     // re-entry. Failure is non-fatal (a leftover branch costs nothing).
     await execFn(`git branch -D ${JSON.stringify(branchName)}`, {
       cwd: repoRoot,
       maxBuffer: 64 * 1024,
     }).catch(() => undefined);
+    return result;
   };
+  // The verified post-condition for the operator: the restored claim is
+  // emitted only when the check confirmed it; otherwise the distinct
+  // not-restored failure names what is still dirty.
+  const restoreClaim = (r: VerifiedRestoreResult) =>
+    r.restored
+      ? "the batch was aborted and repoRoot was verified restored"
+      : `the batch was aborted but repoRoot was NOT restored: ${r.detail ?? "unknown error"}${r.preservedAt ? ` (discarded state preserved at ${r.preservedAt})` : ""}`;
   try {
     // Preflight — same as integrate(): repoRoot must be clean before we
     // touch its checkout, or a dirty root would carry operator residue
@@ -70,11 +77,17 @@ export async function runConsolidatedVerify(
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
     });
-    const rootDirt = rootStatus
-      .split("\n")
-      .filter(
-        (l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l) && !/^..\s+"?(\.pi|tmp)\//.test(l),
-      );
+    const rootDirt = rootStatus.split("\n").filter(
+      (l) =>
+        l.trim() &&
+        // #750 — untracked `??` entries are NOT dirt here: they are
+        // never staged into the consolidation (git add is explicit
+        // per-path) and the operator may legitimately keep them. The
+        // tracked-dirt filter below is what matters for the refusal.
+        !l.startsWith("??") &&
+        !/^..\s+"?\.worktrees\//.test(l) &&
+        !/^..\s+"?\.pi\//.test(l),
+    );
     if (rootDirt.length > 0) {
       trace("work-driver: consolidated verify — repoRoot dirty, refusing to consolidate");
       return {
@@ -113,21 +126,20 @@ export async function runConsolidatedVerify(
     });
 
     if (orchResult._conflict === "conflict") {
-      await restoreRoot();
+      const restore = await restoreRoot();
       return {
         status: "conflict",
         kind: "conflict",
-        detail:
-          "cherry-pick conflict — two workstreams edited the same lines; the batch was aborted and repoRoot restored",
+        detail: `cherry-pick conflict — two workstreams edited the same lines; ${restoreClaim(restore)}`,
       };
     }
     if (orchResult._applyConflict !== undefined) {
       const { id, reason, patchFile } = orchResult._applyConflict;
-      await restoreRoot();
+      const restore = await restoreRoot();
       return {
         status: "conflict",
         kind: "conflict",
-        detail: `patch-apply failed for workstream '${id}': ${reason}. Conflict patch preserved at ${patchFile}`,
+        detail: `patch-apply failed for workstream '${id}': ${reason}. Conflict patch preserved at ${patchFile}. ${restoreClaim(restore)}`,
       };
     }
 
@@ -139,7 +151,7 @@ export async function runConsolidatedVerify(
       const e = err as Error & { stderr?: string; stdout?: string };
       verifyFailure = (e.stderr || e.stdout || e.message || "").toString().trim();
     }
-    await restoreRoot();
+    const restore = await restoreRoot();
     const applied =
       orchResult.cherryApplied.length > 0 ? orchResult.cherryApplied : orchResult.patchApplied;
     if (verifyFailure !== undefined) {
@@ -154,18 +166,26 @@ export async function runConsolidatedVerify(
           ? tail
           : `${tail} (unattributed — best-effort tail)`
         : "verify command exited non-zero";
-      return { status: "failed", detail };
+      // #750 — the verified post-condition rides with every outcome of the
+      // probe run (the root is transient either way; an unverified claim
+      // about it is exactly the incident).
+      return { status: "failed", detail: `${detail} ${restoreClaim(restore)}` };
+    }
+    if (!restore.restored) {
+      trace(
+        `work-driver: consolidated verify — root not restored after a passing run: ${restore.detail}`,
+      );
     }
     return { status: "passed", applied };
   } catch (err) {
-    await restoreRoot();
+    const restore = await restoreRoot();
     trace(
       `work-driver: consolidated verify — unexpected error: ${(err as Error).message?.slice(0, 200)}`,
     );
     return {
       status: "conflict",
       kind: "conflict",
-      detail: `consolidation could not be performed: ${(err as Error).message?.slice(0, 200)}`,
+      detail: `consolidation could not be performed: ${(err as Error).message?.slice(0, 200)}. ${restoreClaim(restore)}`,
     };
   }
 }

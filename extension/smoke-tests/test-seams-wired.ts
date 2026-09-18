@@ -156,6 +156,20 @@ const SEAMS: Seam[] = [
     canary: { symbol: "resolveIntentVerdict", importer: "work-driver-explore.ts" },
   },
   {
+    // #750 — the shared verified-restore helper for consolidation abort
+    // paths. The old per-site restore claimed "repoRoot restored" without
+    // verifying the porcelain; this one preserves the discarded state,
+    // resets, restores the checkout, and reports success only when the
+    // post-condition read confirms the root is clean.
+    file: "work-driver-restore.ts",
+    pending: {},
+    testOnly: {
+      restoreClaim:
+        "the pure claim builder (verified-restored vs explicit not-restored); called by tests to assert the claim shape the callers emit",
+    },
+    canary: { symbol: "verifiedRestoreRoot", importer: "work-driver-integrate.ts" },
+  },
+  {
     // #729 — the dispatch deck's single composite widget factory. Replaces
     // the pre-#729 deck-prompt-label.ts + aboveEditor DECK_PROMPT_KEY widget
     // with a belowEditor composite that renders ONE widget key. The pure
