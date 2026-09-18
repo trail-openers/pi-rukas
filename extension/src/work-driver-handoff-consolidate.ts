@@ -186,11 +186,11 @@ export async function consolidateWorktreesToBranch(
 
   try {
     const result = await withIntegrationLock(ctx.repoRoot, async () => {
-      // Dirty-repoRoot preflight, mirroring integrate(): a handoff
-      // consolidation that swept the operator's uncommitted repoRoot work
-      // into the parked branch would be the #602 class, and it is the one
-      // failure that destroys someone else's work. `.worktrees/` is the
-      // driver's own scaffolding, not operator residue.
+      // Dirty-repoRoot preflight — same gate as integrate() and
+      // consolidated-verify: untracked `??` IS dirt (the N=1 pre-#287 shape
+      // develops directly at repoRoot, and stagePorcelainPaths can sweep
+      // untracked files into the branch). `.worktrees/` is the driver's own
+      // scaffolding, not operator residue.
       const { stdout: rootStatus } = await execFn("git status --porcelain", {
         cwd: ctx.repoRoot,
         maxBuffer: 1024 * 1024,
@@ -201,7 +201,7 @@ export async function consolidateWorktreesToBranch(
       if (rootDirt.length > 0) {
         return {
           ok: false as const,
-          reason: `repoRoot has uncommitted changes; refusing to consolidate into ${branchName} (would sweep the operator's work into the parked branch): ${rootDirt
+          reason: `repoRoot has uncommitted changes (including untracked files, which this path can sweep into the parked branch); refusing to consolidate into ${branchName}: ${rootDirt
             .slice(0, 5)
             .map((l) => l.slice(3))
             .join(", ")}`,

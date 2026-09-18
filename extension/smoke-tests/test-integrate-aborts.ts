@@ -219,8 +219,8 @@ try {
   // Section 4's conflict goes through the patch-apply fallback (uncommitted
   // work). The cherry-pick path (committed work) is the incident shape: two
   // worktrees with COMMITS that edit the same lines. The abort must leave
-  // repoRoot verifiably clean (tracked porcelain empty, root back on its
-  // original ref) and must not sweep untracked content.
+  // repoRoot verifiably clean (porcelain empty, root back on its original
+  // ref) and must not sweep untracked content.
   {
     const f = await fixture("cherry-pick-conflict", ["a", "b"], { "shared.txt": "line1\n" });
     const wtA = f.worktrees.a as string;
@@ -231,10 +231,6 @@ try {
     await commitIn(wtA, "task-a: edit shared");
     writeFileSync(path.join(wtB, "shared.txt"), "line1 B wins\n");
     await commitIn(wtB, "task-b: edit shared");
-    // Create the untracked file BEFORE the integration runs: only a file
-    // present during the conflict restore can prove the restore did not
-    // sweep it (`git clean` is forbidden in the restore path).
-    writeFileSync(path.join(f.repo, "untracked-keep.txt"), "deliberate\n");
     const { stdout: refBefore } = await git(f.repo, ["rev-parse", "HEAD"]);
     const r = await run(f, "feature/cherry-pick-conflict");
     assert(!r.ok, "#750: a committed cherry-pick conflict still fails the integration");
@@ -242,17 +238,12 @@ try {
       r.failure === "apply",
       `#750: the conflict routes through the apply failure discriminator (got ${JSON.stringify(r)})`,
     );
-    // The untracked file was present during the restore (created above,
-    // before `run`); it must still be here. Tracked porcelain must be empty.
+    // The porcelain must be empty after the restore. The incident shape had
+    // staged (M) and unmerged (UU) entries that must not survive.
     const { stdout: dirt } = await git(f.repo, ["status", "--porcelain"]);
-    const trackedDirt = dirt.split("\n").filter((l) => l.trim() && !l.startsWith("??"));
     assert(
-      trackedDirt.length === 0,
-      `#750: repoRoot tracked porcelain is empty after a cherry-pick conflict abort (got ${JSON.stringify(trackedDirt)}) — the incident state (M + UU, no CHERRY_PICK_HEAD) must not survive`,
-    );
-    assert(
-      dirt.split("\n").some((l) => l.startsWith("??") && l.includes("untracked-keep.txt")),
-      "#750: the untracked file SURVIVED (no git clean in the restore path)",
+      dirt.trim() === "",
+      `#750: repoRoot porcelain is empty after a cherry-pick conflict abort (got ${JSON.stringify(dirt.trim())}) — the incident state (M + UU, no CHERRY_PICK_HEAD) must not survive`,
     );
     const { stdout: refAfter } = await git(f.repo, ["rev-parse", "HEAD"]);
     assert(

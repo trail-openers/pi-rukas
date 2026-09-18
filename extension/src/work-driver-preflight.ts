@@ -4,21 +4,21 @@
  *
  * Both functions share the same filtering rule (the `integrate()` preflight
  * and the `restoreRepoRoot` caller both read porcelain through here, so the
- * two cannot drift): `.worktrees/` scaffolding and untracked `??` entries
- * are NOT tracked dirt — they are never staged into the integration (git add
- * is explicit per-path) and untracked content is deliberately preserved
- * (the restore never runs `git clean`).
+ * two cannot drift): `.worktrees/` scaffolding is not dirt (driver's own
+ * scaffolding, never staged), and untracked `??` entries ARE dirt (the
+ * N=1 pre-#287 shape develops directly at repoRoot, and `stagePorcelainPaths`
+ * can sweep untracked files into the PR — so an untracked-only root must
+ * refuse, not pass, and the refusal parks rather than stash).
  */
 import type { ExecFn } from "./worktree.ts";
 
 /**
  * #654 task-c — the dirty-repoRoot preflight as a reusable, single
  * implementation (the issue's "single implementation, not a copy").
- * Same filtering rule as `integrate()` — `.worktrees/` scaffolding and
- * untracked `??` entries are not dirt (they are never staged into the
- * integration, and untracked content is deliberately preserved) — so the
- * two cannot drift.
- * Returns `undefined` when repoRoot is clean (the common case).
+ * Same filtering rule as `integrate()`'s inline preflight — `.worktrees/`
+ * scaffolding is not dirt, and untracked `??` entries ARE dirt (see the
+ * module header) — so the two cannot drift. Returns `undefined` when
+ * repoRoot is clean (the common case).
  */
 export async function readDirtyPorcelain(
   execFn: ExecFn,
@@ -28,9 +28,7 @@ export async function readDirtyPorcelain(
     cwd: repoRoot,
     maxBuffer: 1024 * 1024,
   });
-  const dirt = stdout
-    .split("\n")
-    .filter((l) => l.trim() && !l.startsWith("??") && !/^..\s+"?\.worktrees\//.test(l));
+  const dirt = stdout.split("\n").filter((l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l));
   return dirt.length > 0 ? dirt : undefined;
 }
 
@@ -45,6 +43,12 @@ export async function restoreRepoRoot(
   repoRoot: string,
   porcelain: string[],
 ): Promise<{ restored: boolean; reason?: string }> {
+  // #750 — safety net, currently unreachable from production: the dirty-
+  // preflight filters that feed this function (readDirtyPorcelain, integrate's
+  // inline preflight) already exclude `??`, so a porcelain containing ONLY
+  // untracked entries cannot reach the stash below. Kept deliberately:
+  // stashing untracked work (`stash push -u`) risks dropping it, so a
+  // future caller that passes untracked porcelain must park, not stash.
   if (!porcelain.some((l) => l.trim().length > 0 && !l.startsWith("??"))) {
     return {
       restored: false,

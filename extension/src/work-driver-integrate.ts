@@ -7,7 +7,6 @@ import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import type { ConsolidationCompleteness } from "./work-driver-completeness.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
-import { stagePorcelainPaths } from "./work-driver-stage.ts";
 import type { WorkState } from "./workflow-state-schema.ts";
 import type { ExecFn } from "./worktree.ts";
 import { sweepBranchHolders } from "./worktree.ts";
@@ -199,18 +198,22 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
     return r.restored ? `repoRoot was restored to ${originalRef} (verified)` : claim;
   };
   try {
-    // 1. Preflight: repoRoot must be clean of TRACKED dirt before we touch
-    //    its checkout. `.worktrees/` scaffolding and untracked `??` entries
-    //    are not dirt: they are never staged into the integration (git add
-    //    is explicit per-path) and untracked content is deliberately
-    //    preserved (the restore never runs `git clean`).
+    // 1. Preflight: repoRoot must be clean of dirt before we touch its
+    //    checkout. `.worktrees/` scaffolding is not dirt (driver's own
+    //    scaffolding, never staged). Untracked `??` entries ARE dirt: the
+    //    N=1 pre-#287 shape develops directly at repoRoot (worktree IS
+    //    repoRoot), and stagePorcelainPaths can sweep untracked files into
+    //    the PR. The refusal parks (stash+pop tracked, refuse untracked)
+    //    rather than stashing untracked files, which `stash push` without
+    //    `-u` would drop. Same filter as consolidated-verify and
+    //    handoff-consolidate — all three gates agree.
     const { stdout: rootStatus } = await execFn("git status --porcelain", {
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
     });
     const rootDirt = rootStatus
       .split("\n")
-      .filter((l) => l.trim() && !l.startsWith("??") && !/^..\s+"?\.worktrees\//.test(l));
+      .filter((l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l));
     if (rootDirt.length > 0) {
       const files = rootDirt
         .slice(0, 10)
@@ -219,7 +222,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       return {
         ok: false,
         failure: "dirty-repoRoot",
-        reason: `repo root has uncommitted tracked changes, refusing to integrate onto ${branchName}: ${files}. Commit, stash, or discard them — integration would otherwise sweep them into the PR.`,
+        reason: `repo root has uncommitted changes (tracked or untracked), refusing to integrate onto ${branchName}: ${files}. Stash or commit tracked changes; for untracked files, move them elsewhere or add to .gitignore — integration would otherwise sweep them into the PR.`,
         porcelain: rootDirt,
       };
     }
@@ -436,9 +439,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
     const restore = await restoreRoot();
     return {
       ok: false,
-      reason:
-        `${(e.stderr ?? e.message ?? "unknown error").toString().trim().slice(0, 300)} ` +
-        `${restore.restored ? "repoRoot was restored (verified)" : `repoRoot was NOT restored: ${restore.detail}`}`,
+      reason: `${(e.stderr ?? e.message ?? "unknown error").toString().trim().slice(0, 300)} ${claimFor(restore)}`,
     };
   }
 }

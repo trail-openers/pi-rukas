@@ -311,6 +311,10 @@ try {
 
     // Untracked files must not be swept: the restore never runs `git clean`,
     // so an untracked file present during a conflict survives the restore.
+    // NOTE: since #750, untracked `??` entries ARE dirt for the dirty-root
+    // gate (all three gates agree), so the untracked file will trip the
+    // refusal. We test the refusal path here — the file must survive the
+    // refusal (the refusal parks, it does not stash or clean).
     const f2 = await fixture("untracked-safety", ["a", "b"], {
       "shared.txt": "line1\nline2\nline3\n",
     });
@@ -319,10 +323,9 @@ try {
     writeFileSync(path.join(f2.worktrees.b, "shared.txt"), "line1\nB says hi\nline3\n");
     await commitIn(f2.worktrees.b, "task-b: edit line2");
     writeFileSync(path.join(f2.repo, ".pi", "verify-cmd"), "true\n");
-    // Create the untracked file BEFORE the gate runs: only a file present
-    // during the conflict restore can prove the restore did not sweep it
-    // (`git clean` is forbidden in the restore path). Untracked `??` entries
-    // do not trip the dirty-root refusal, so the conflict still happens.
+    // Create the untracked file BEFORE the gate runs: it will trip the
+    // dirty-root refusal (untracked IS dirt), and the file must survive
+    // the refusal (the refusal parks, it does not stash or clean).
     writeFileSync(path.join(f2.repo, "untracked-keep.txt"), "deliberate\n");
     let s2 = initialState(669, 1_000_000);
     s2 = {
@@ -345,25 +348,19 @@ try {
       verifyExecFn: realExec,
     };
     const gate2 = await verifyStepOutcome(ctx2, s2, "develop");
-    // The gate must have hit the conflict (it is run against this fixture
-    // because the untracked file must be present during THIS restore —
-    // a restore that never ran could not sweep anything).
+    // The gate must have hit the dirty-root refusal (untracked IS dirt).
     assert(
-      gate2.failures.some((fl) => /cherry-pick \/\*? ?apply conflict|could not combine/.test(fl)),
-      `#750 regression 3: the untracked-safety run hit the consolidation conflict it claims (got: ${gate2.failures.join("; ").slice(0, 200)})`,
+      gate2.failures.some((f) => /refused — repoRoot is dirty/.test(f)),
+      `#750 regression 3: untracked file trips the dirty-root refusal (got: ${gate2.failures.join("; ").slice(0, 200)})`,
     );
-    assert(
-      !gate2.failures.some((f) => /refused — repoRoot is dirty/.test(f)),
-      "#750 regression 3: an untracked file at the root does not trip the dirty-root refusal (untracked is not dirt)",
-    );
-    // The file survived the restore: it was present during it (created
+    // The file survived the refusal: it was present during it (created
     // above, before the gate ran) and is still here.
     const { stdout: afterPorcelain } = await git(f2.repo, ["status", "--porcelain"]);
     assert(
       afterPorcelain
         .split("\n")
         .some((l) => l.startsWith("??") && l.includes("untracked-keep.txt")),
-      "#750 regression 3: the untracked file SURVIVED the conflict restore (no git clean)",
+      "#750 regression 3: the untracked file SURVIVED the refusal (no git clean)",
     );
   }
 

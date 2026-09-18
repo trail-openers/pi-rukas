@@ -237,11 +237,11 @@ const INTEGRATE_BASE = {
 {
   // Dirty repoRoot must block integration — #283's gate, relocated. This is
   // what stops operator residue riding into the PR. #750 — the reason text
-  // now says "tracked changes" (untracked `??` entries are not dirt).
+  // says "uncommitted changes" (tracked or untracked — both are dirt).
   const { execFn } = recorder({ "git status --porcelain": " M src/operator-wip.ts\n" });
   const res = await integrate(execFn, { ...INTEGRATE_BASE, mode: "create" });
   assert(
-    !res.ok && /uncommitted tracked changes/.test(res.reason) && /operator-wip/.test(res.reason),
+    !res.ok && /uncommitted changes/.test(res.reason) && /operator-wip/.test(res.reason),
     "integrate: dirty repoRoot refuses to integrate and names the offending files",
   );
 }

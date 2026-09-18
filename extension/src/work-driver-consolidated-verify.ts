@@ -71,21 +71,15 @@ export async function runConsolidatedVerify(
     // Preflight — same as integrate(): repoRoot must be clean before we
     // touch its checkout, or a dirty root would carry operator residue
     // onto the probe branch. Refuse to consolidate rather than guess.
+    // `.worktrees/` and `.pi/` scaffolding are not dirt; untracked `??` IS
+    // dirt (see the integrate() preflight comment for the reasoning).
     const { stdout: rootStatus } = await execFn("git status --porcelain", {
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
     });
-    const rootDirt = rootStatus.split("\n").filter(
-      (l) =>
-        l.trim() &&
-        // #750 — untracked `??` entries are NOT dirt here: they are
-        // never staged into the consolidation (git add is explicit
-        // per-path) and the operator may legitimately keep them. The
-        // tracked-dirt filter below is what matters for the refusal.
-        !l.startsWith("??") &&
-        !/^..\s+"?\.worktrees\//.test(l) &&
-        !/^..\s+"?\.pi\//.test(l),
-    );
+    const rootDirt = rootStatus
+      .split("\n")
+      .filter((l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l) && !/^..\s+"?\.pi\//.test(l));
     if (rootDirt.length > 0) {
       trace("work-driver: consolidated verify — repoRoot dirty, refusing to consolidate");
       return {

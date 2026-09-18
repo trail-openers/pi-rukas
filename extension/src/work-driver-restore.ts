@@ -60,14 +60,16 @@ export interface VerifiedRestoreResult {
 }
 
 /**
- * The claim text for the operator. Every caller emits one of exactly two
- * shapes — the verified post-condition, or the explicit not-restored failure
- * with the preserved diff location — so no site can re-introduce an
- * unqualified "restored" claim. `label` prefixes the post-condition for the
- * caller's own wording (integrate, consolidated verify, handoff consolidation
- * each say slightly different things before the claim); `trailing` appends a
- * hint after the not-restored failure (the handoff's not-restored variant
- * tells the operator to run git status).
+ * The claim text for the operator. Every caller emits one of exactly three
+ * shapes — the verified post-condition, the explicit not-restored failure
+ * with the preserved diff location, or the aborted-batch marker (`r ===
+ * undefined`: the restore never ran because no originalRef was captured)
+ * — so no site can re-introduce an unqualified "restored" claim. `label`
+ * prefixes the post-condition for the caller's own wording (integrate,
+ * consolidated verify, handoff consolidation each say slightly different
+ * things before the claim); `trailing` appends a hint after the not-restored
+ * failure (the handoff's not-restored variant tells the operator to run git
+ * status).
  */
 export function restoreClaim(
   r: VerifiedRestoreResult | undefined,
