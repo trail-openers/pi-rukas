@@ -8,6 +8,16 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.58](https://github.com/trail-openers/pi-rukas/compare/v0.12.57...v0.12.58) (2026-09-18)
+
+
+### Bug Fixes
+
+* **deck:** batch members render once — Text projection is headers only ([#761](https://github.com/trail-openers/pi-rukas/issues/761)) ([#762](https://github.com/trail-openers/pi-rukas/issues/762)) ([bf59199](https://github.com/trail-openers/pi-rukas/commit/bf59199351d44c03fd79264a7b774045a19d40a7))
+* **work:** committed-work-aware lens-fix detection ([#749](https://github.com/trail-openers/pi-rukas/issues/749)) ([#764](https://github.com/trail-openers/pi-rukas/issues/764)) ([96c26f6](https://github.com/trail-openers/pi-rukas/commit/96c26f6d0c7e2c49577d893f1b9c488ab2c1e4e1))
+* **work:** record deferred worktree creation failure with git detail, park on dirty leftover ([#753](https://github.com/trail-openers/pi-rukas/issues/753)) ([#756](https://github.com/trail-openers/pi-rukas/issues/756)) ([7a3b866](https://github.com/trail-openers/pi-rukas/commit/7a3b8663c29b58dcc8ad1c6a72dded651b825a12))
+* **work:** verified restore on consolidation abort — stop claiming a restore that did not happen ([#750](https://github.com/trail-openers/pi-rukas/issues/750)) ([#766](https://github.com/trail-openers/pi-rukas/issues/766)) ([a0093e3](https://github.com/trail-openers/pi-rukas/commit/a0093e39045c1ed58dee5988f865a99bb217e3ba))
+
 ## [0.12.57](https://github.com/trail-openers/pi-rukas/compare/v0.12.56...v0.12.57) (2026-09-16)
 
 
