@@ -50,6 +50,7 @@ import { promisify } from "node:util";
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import { withIntegrationLock } from "./work-driver-integrate.ts";
+import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -171,6 +172,12 @@ export async function consolidateWorktreesToBranch(
     return { ok: false, reason: "no committed work ahead of the base — nothing to consolidate" };
   }
 
+  // #750 — where the root was before consolidation touched its checkout.
+  // The failure paths must restore it and say so honestly; pre-#750 this
+  // site only ran `git cherry-pick --abort` (which refuses for a
+  // --no-commit pick) and claimed "the batch was aborted" with the root
+  // still carrying staged/unmerged index content.
+  let originalRef: string | undefined;
   const mode = await branchExistsAtRoot(execFn, ctx.repoRoot, branchName);
   const commitBody =
     `Consolidated at handoff (issue #${state.issue}): the cycle parked at ` +
@@ -179,11 +186,11 @@ export async function consolidateWorktreesToBranch(
 
   try {
     const result = await withIntegrationLock(ctx.repoRoot, async () => {
-      // Dirty-repoRoot preflight, mirroring integrate(): a handoff
-      // consolidation that swept the operator's uncommitted repoRoot work
-      // into the parked branch would be the #602 class, and it is the one
-      // failure that destroys someone else's work. `.worktrees/` is the
-      // driver's own scaffolding, not operator residue.
+      // Dirty-repoRoot preflight — same gate as integrate() and
+      // consolidated-verify: untracked `??` IS dirt (the N=1 pre-#287 shape
+      // develops directly at repoRoot, and stagePorcelainPaths can sweep
+      // untracked files into the branch). `.worktrees/` is the driver's own
+      // scaffolding, not operator residue.
       const { stdout: rootStatus } = await execFn("git status --porcelain", {
         cwd: ctx.repoRoot,
         maxBuffer: 1024 * 1024,
@@ -194,12 +201,25 @@ export async function consolidateWorktreesToBranch(
       if (rootDirt.length > 0) {
         return {
           ok: false as const,
-          reason: `repoRoot has uncommitted changes; refusing to consolidate into ${branchName} (would sweep the operator's work into the parked branch): ${rootDirt
+          reason: `repoRoot has uncommitted changes (including untracked files, which this path can sweep into the parked branch); refusing to consolidate into ${branchName}: ${rootDirt
             .slice(0, 5)
             .map((l) => l.slice(3))
             .join(", ")}`,
         };
       }
+      originalRef = await execFn("git symbolic-ref --quiet --short HEAD", {
+        cwd: ctx.repoRoot,
+        maxBuffer: 64 * 1024,
+      })
+        .then((r) => r.stdout.trim())
+        .catch(async () =>
+          (
+            await execFn("git rev-parse HEAD", {
+              cwd: ctx.repoRoot,
+              maxBuffer: 64 * 1024,
+            })
+          ).stdout.trim(),
+        );
       if (mode === "create") {
         // No local branch and no baseSha — cannot create at a known commit;
         // degrade to the accurate-worktree fallback.
@@ -231,26 +251,47 @@ export async function consolidateWorktreesToBranch(
         requireAllNonEmpty: false,
       });
       if (orch._conflict === "conflict") {
-        await execFn("git cherry-pick --abort", { cwd: ctx.repoRoot, maxBuffer: 64 * 1024 }).catch(
-          (err) =>
-            trace(
-              `handoff-consolidate: cherry-pick abort failed: ${(err as Error).message?.slice(0, 200)}`,
-            ),
-        );
+        // #750 — the verified restore (cherry-pick.ts already attempted
+        // `--abort`; this one resets the staged/unmerged index the refusal
+        // leaves behind and verifies the root is actually clean).
+        const restore = originalRef
+          ? await verifiedRestoreRoot(execFn, {
+              repoRoot: ctx.repoRoot,
+              originalRef,
+              scratchDir: ctx.scratchDir,
+              label: "handoff consolidation",
+            })
+          : undefined;
         // A conflict means the worktrees still hold their commits verbatim —
         // the accurate per-worktree recovery (which names the paths and
         // HEAD SHAs) is the honest fallback, and the worktrees are retained.
+        // #750 — the claim goes through the shared builder: the restored
+        // variant is the verified post-condition, the not-restored variant
+        // is loud and tells the operator where to look.
+        const claim = restoreClaim(
+          restore === undefined ? undefined : restore,
+          undefined,
+          "run git status at the repo root",
+        );
         return {
           ok: false as const,
-          reason:
-            "cherry-pick conflict — the batch was aborted; the work remains on its worktree detached HEADs (per-worktree recovery below)",
+          reason: `cherry-pick conflict — ${claim}; the work remains on its worktree detached HEADs (per-worktree recovery below)`,
         };
       }
       if (orch._applyConflict !== undefined) {
         const { id, reason, patchFile } = orch._applyConflict;
+        const restore = originalRef
+          ? await verifiedRestoreRoot(execFn, {
+              repoRoot: ctx.repoRoot,
+              originalRef,
+              scratchDir: ctx.scratchDir,
+              label: "handoff consolidation",
+            })
+          : undefined;
+        const claim = restoreClaim(restore === undefined ? undefined : restore);
         return {
           ok: false as const,
-          reason: `patch-apply failed for workstream '${id}': ${reason} (patch preserved at ${patchFile}); the work remains in its worktree (per-worktree recovery below)`,
+          reason: `patch-apply failed for workstream '${id}': ${reason} (patch preserved at ${patchFile}); ${claim}; the work remains in its worktree (per-worktree recovery below)`,
         };
       }
       // #728 — the completeness gate (#723 class: the pick staged a subset
@@ -314,11 +355,23 @@ export async function consolidateWorktreesToBranch(
   } catch (err) {
     // Anything that threw mid-consolidation (a failed checkout, a git lock,
     // a lockfile error) must not abort the handoff — same degradation as a
-    // conflict. The repoRoot may be left mid-`checkout`; that is the
-    // operator's to see via `git -C <repoRoot> status`, and the worktrees
-    // still hold every commit, so no work is destroyed.
+    // conflict. The worktrees still hold every commit, so no work is
+    // destroyed; #750 also restores the root (which the throw may have
+    // left mid-`checkout`) and reports that honestly.
     const msg = (err as Error & { stderr?: string }).stderr ?? (err as Error).message ?? "unknown";
     trace(`handoff-consolidate: failed: ${msg.toString().slice(0, 200)}`);
+    if (originalRef) {
+      await verifiedRestoreRoot(execFn, {
+        repoRoot: ctx.repoRoot,
+        originalRef,
+        scratchDir: ctx.scratchDir,
+        label: "handoff consolidation",
+      }).catch((rerr) =>
+        trace(
+          `handoff-consolidate: restore after failure also failed: ${(rerr as Error).message?.slice(0, 200)}`,
+        ),
+      );
+    }
     return { ok: false, reason: `consolidation failed: ${msg.toString().slice(0, 200)}` };
   }
 }

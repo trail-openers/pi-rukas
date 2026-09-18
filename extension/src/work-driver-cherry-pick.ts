@@ -13,9 +13,11 @@
  * `orchestrateCherryPick` runs the intended-vs-actual completeness check
  * (union of each worktree's cumulative diff vs. what landed) and reports
  * `droppedPaths` for the consumers' `consolidation-incomplete` cap.
- * Conflict: the batch aborts and the branch is restored (`cap-hit:
- * cherry-pick-conflict`). Tree-hash dedupe + the recorded `commitShas` map
- * keep resume / cross-workstream overlap safe as before.
+ * Conflict: the batch aborts and the caller's VERIFIED restore
+ * (#750, work-driver-restore.ts) unwinds every staged pick and proves the
+ * root clean before the `cherry-pick-conflict` handoff. Tree-hash dedupe +
+ * the recorded `commitShas` map keep resume / cross-workstream overlap
+ * safe as before.
  */
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -33,12 +35,9 @@ interface CherryPickEntry {
   /** `cherry-picked` when a new commit landed; `skipped` when already applied. */
   status: "cherry-picked" | "skipped";
   /**
-   * #728 (task-c) — the workstream id of an entry picked via the HEAD-only
-   * fallback after a `rev-list` range read failed. Recorded for the
-   * completeness-evidence consumer that will surface the range-fallback
-   * cause (follow-up: #728 task-d); not yet read by any gate in this
-   * commit. Only set when the range read errored, never for a legitimately
-   * empty range.
+   * #728 (task-c) — set only when the range read errored and the pick fell
+   * back to HEAD-only (never for a legitimately empty range); the
+   * completeness-evidence consumer surfaces the range-fallback cause.
    */
   rangeReadError?: { workstreamId: string; error: string };
 }
@@ -84,19 +83,11 @@ export interface OrchestratedCherryPickResult {
   _applyConflict?: { id: string; reason: string; patchFile: string };
   /**
    * #728 (task-a) — intended-vs-actual completeness diagnostic: the union
-   * of every committed workstream's cumulative
-   * `git diff --name-only baseSha..worktree-HEAD` (the INTENDED stage set)
-   * compared against the name-set that actually landed on the integration
-   * branch (`baseSha..HEAD` there + the index). `droppedPaths` names what
-   * did not land — a non-empty value is a hard failure the consumers route
-   * to the `consolidation-incomplete` cap, distinct from
-   * `cherry-pick-conflict` (the pick failed) and from a verify-command
-   * failure (the code was fine; the diff was never assembled — the #723
-   * incident). `intended` / `landed` carry both sides as executed evidence
-   * (paths normalised via `normaliseDeclaredPath`). Absent only when no
-   * workstream carried committed work. `checkError` is the honest third
-   * state — the git read failed, the comparison could not run — and is
-   * NEVER read as "complete".
+   * of each committed workstream's cumulative `baseSha..worktree-HEAD` diff
+   * (INTENDED) vs. the name-set that actually landed. `droppedPaths`
+   * non-empty → `consolidation-incomplete` cap. Absent when no workstream
+   * carried committed work. `checkError` = the read failed; NEVER read as
+   * "complete".
    */
   completeness?: ConsolidationCompleteness;
 }
@@ -105,8 +96,11 @@ export interface OrchestratedCherryPickResult {
  * the integration branch — #728: the pre-#728 pick used only the worktree's
  * HEAD SHA, so a ≥2-commit workstream (the #723 shape) staged the last
  * commit's files and silently dropped the earlier ones.
- * The batch is atomic: on the first conflict it aborts, the branch is
- * restored, and `[]` is returned. No partial cherry-picks survive.
+ * The batch is atomic: on the first conflict the in-progress abort is
+ * attempted and `"conflict"` is returned explicitly (the pre-#750 `[]`
+ * return collapsed "all skipped" with "conflict aborted" for a
+ * single-workstream batch). No partial picks survive — the caller's
+ * verified restore (#750) unwinds every staged pick and verifies the root.
  */
 export async function cherryPickWorkstreams(
   execFn: (cmd: string, o?: { cwd?: string; maxBuffer?: number }) => Promise<{ stdout: string }>,
@@ -122,7 +116,7 @@ export async function cherryPickWorkstreams(
     /** Base the `baseSha..HEAD` range is measured against (usually the cycle baseSha). */
     baseSha?: string;
   },
-): Promise<CherryPickEntry[]> {
+): Promise<CherryPickEntry[] | "conflict"> {
   const { repoRoot, branchName, worktrees, commitShas, baseSha } = opts;
   const ids = Object.keys(worktrees);
   const entries: CherryPickEntry[] = [];
@@ -209,16 +203,21 @@ export async function cherryPickWorkstreams(
       }
     }
   }
-  // If any cherry-pick conflicted, abort the batch and return empty: the
-  // caller restores the branch and halts the cycle.
+  // If any cherry-pick conflicted, attempt the in-progress abort and return
+  // the explicit conflict marker. #750: `git cherry-pick --no-commit` often
+  // leaves no CHERRY_PICK_HEAD, in which case `--abort` REFUSES (exit 128)
+  // — that refusal is neither success nor the only recovery, so it is
+  // traced and the caller's verified restore (`verifiedRestoreRoot`) is the
+  // actual recovery, verified by its own porcelain read.
   if (conflictedAt !== undefined) {
-    await execFn("git cherry-pick --abort", { cwd: repoRoot, maxBuffer: 64 * 1024 }).catch(
-      (abortErr: Error) =>
-        trace(
-          `work-driver: cherry-pick — abort failed after conflict in '${conflictedAt}': ${abortErr.message?.slice(0, 200)}`,
-        ),
-    );
-    return [];
+    try {
+      await execFn("git cherry-pick --abort", { cwd: repoRoot, maxBuffer: 64 * 1024 });
+    } catch (abortErr) {
+      trace(
+        `work-driver: cherry-pick — abort refused after conflict in '${conflictedAt}' (no CHERRY_PICK_HEAD for a --no-commit pick; caller restores): ${(abortErr as Error).message?.slice(0, 200)}`,
+      );
+    }
+    return "conflict";
   }
   return entries;
 }
@@ -293,7 +292,7 @@ export async function orchestrateCherryPick(
       committedWorktrees[id] = wtMap[id];
   }
   if (Object.keys(cherryPickShas).length > 0) {
-    const entries = await cherryPickWorkstreams(execFn, {
+    const pick = await cherryPickWorkstreams(execFn, {
       repoRoot,
       branchName,
       worktrees: committedWorktrees,
@@ -301,30 +300,26 @@ export async function orchestrateCherryPick(
       scratchDir,
       baseSha,
     });
+    if (pick === "conflict") {
+      // The batch aborted; every staged pick is unwound by the caller's
+      // verified restore. #750: explicit marker — the caller restores the
+      // branch and fails rather than shipping a partial batch.
+      return {
+        cherryApplied: [],
+        cherryPickShas,
+        skippedAlreadyOnBranch: [],
+        patchApplied: [],
+        noDiff: {},
+        emptyWorkstreams,
+        hadNewCommits: false,
+        _conflict: "conflict",
+      };
+    }
+    const entries = pick;
     if (entries.length === 0) {
-      // Either all skipped (already on branch) or a conflict aborted.
-      const cherryShasCount = Object.keys(cherryPickShas).length;
-      const skippedCount = entries.filter((e) => e.status === "skipped").length;
-      if (cherryShasCount === 0) {
-        // No worktrees had commits — fall through to patch fallback.
-      } else if (skippedCount < cherryShasCount) {
-        // Conflict: the batch was aborted. Signal caller via empty result + flag.
-        // Caller must restore branch and fail.
-        return {
-          cherryApplied: [],
-          cherryPickShas,
-          skippedAlreadyOnBranch: [],
-          patchApplied: [],
-          noDiff: {},
-          emptyWorkstreams,
-          hadNewCommits: false,
-          _conflict: "conflict",
-        };
-      }
-      // All skipped (already on branch) — treat as applied but no new
-      // commit. #749: the skip is a MEASURED fact, carried out of the
-      // cherry-pick layer as a discriminator rather than collapsed into a
-      // bare count.
+      // Every pick was skipped as already on branch. #749: the skip is a
+      // MEASURED fact, carried out of the cherry-pick layer as a
+      // discriminator rather than collapsed into a bare count.
       const skipped: string[] = [];
       for (const id of ids) {
         if (cherryPickShas[id] && wtMap[id]) {
