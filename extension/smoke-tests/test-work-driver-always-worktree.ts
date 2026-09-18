@@ -236,7 +236,8 @@ const INTEGRATE_BASE = {
 
 {
   // Dirty repoRoot must block integration — #283's gate, relocated. This is
-  // what stops operator residue riding into the PR.
+  // what stops operator residue riding into the PR. #750 — the reason text
+  // says "uncommitted changes" (tracked or untracked — both are dirt).
   const { execFn } = recorder({ "git status --porcelain": " M src/operator-wip.ts\n" });
   const res = await integrate(execFn, { ...INTEGRATE_BASE, mode: "create" });
   assert(
