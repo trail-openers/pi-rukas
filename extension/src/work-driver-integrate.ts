@@ -200,13 +200,15 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
   try {
     // 1. Preflight: repoRoot must be clean of dirt before we touch its
     //    checkout. `.worktrees/` scaffolding is not dirt (driver's own
-    //    scaffolding, never staged). Untracked `??` entries ARE dirt: the
-    //    N=1 pre-#287 shape develops directly at repoRoot (worktree IS
-    //    repoRoot), and stagePorcelainPaths can sweep untracked files into
-    //    the PR. The refusal parks (stash+pop tracked, refuse untracked)
-    //    rather than stashing untracked files, which `stash push` without
-    //    `-u` would drop. Same filter as consolidated-verify and
-    //    handoff-consolidate — all three gates agree.
+    //    scaffolding, never staged). Untracked `??` entries ARE dirt in the
+    //    N=1 pre-#287 shape (worktree IS repoRoot, stagePorcelainPaths can
+    //    sweep them into the PR) but are NOT dirt when the workstream's work
+    //    lives in a separate worktree (#776) — in that shape integration
+    //    (cherry-pick / patch-apply) never touches untracked files at repoRoot.
+    //    The refusal parks (stash+pop tracked, refuse untracked) rather than
+    //    stashing untracked files, which `stash push` without `-u` would drop.
+    //    Same filter as consolidated-verify and handoff-consolidate — all
+    //    three gates agree.
     const { stdout: rootStatus } = await execFn("git status --porcelain", {
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
@@ -214,17 +216,35 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
     const rootDirt = rootStatus
       .split("\n")
       .filter((l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l));
+    const anyWorktree = Object.values(worktrees).some(
+      (p) => path.resolve(p) !== path.resolve(repoRoot),
+    );
     if (rootDirt.length > 0) {
-      const files = rootDirt
-        .slice(0, 10)
-        .map((l) => l.slice(3))
-        .join(", ");
-      return {
-        ok: false,
-        failure: "dirty-repoRoot",
-        reason: `repo root has uncommitted changes (tracked or untracked), refusing to integrate onto ${branchName}: ${files}. Stash or commit tracked changes; for untracked files, move them elsewhere or add to .gitignore — integration would otherwise sweep them into the PR.`,
-        porcelain: rootDirt,
-      };
+      // #776 — untracked-only dirt at repoRoot is non-blocking when the
+      // workstream's work lives in a separate worktree: integration
+      // (cherry-pick / patch-apply) never touches untracked files, and
+      // the debris is outside the workstream's paths. The N=1 shape
+      // (worktree IS repoRoot) still refuses because stagePorcelainPaths
+      // can sweep untracked files into the PR.
+      if (anyWorktree && rootDirt.every((l) => l.startsWith("??"))) {
+        trace(
+          `work-driver: integrate — untracked-only debris at repoRoot (non-blocking in worktree shape): ${rootDirt
+            .slice(0, 5)
+            .map((l) => l.slice(3))
+            .join(", ")}`,
+        );
+      } else {
+        const files = rootDirt
+          .slice(0, 10)
+          .map((l) => l.slice(3))
+          .join(", ");
+        return {
+          ok: false,
+          failure: "dirty-repoRoot",
+          reason: `repo root has uncommitted changes (tracked or untracked), refusing to integrate onto ${branchName}: ${files}. Stash or commit tracked changes; for untracked files, move them elsewhere or add to .gitignore — integration would otherwise sweep them into the PR.`,
+          porcelain: rootDirt,
+        };
+      }
     }
 
     // 2. Put repoRoot on the integration branch, remembering where it was.

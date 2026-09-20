@@ -130,6 +130,8 @@ async function handleNoCommittedFix(
     }
     const landed = await landCommittedFix(execFn, ctx, ps, fixTree);
     if (landed.ok) {
+      // #776 — ok covers both "landed" and "tree-hash-dedup skip" (#749).
+      // The work is on the branch; no cap.
       const sha = landed.sha;
       let pushOk = true;
       try {
@@ -162,6 +164,9 @@ async function handleNoCommittedFix(
       );
       return null;
     }
+    // #776 — integration genuinely failed (e.g. cherry-pick conflict). The
+    // work stays in the worktree ahead of base; captureCommittedWork (handoff)
+    // records the HEAD SHA in committedWork so the operator can recover it.
     return appendEvent(state, {
       kind: "cap-hit",
       at: Date.now(),
@@ -169,7 +174,7 @@ async function handleNoCommittedFix(
       reviewRound: ps.reviewRound,
       nextStep: "handoff",
       lensWorktreePath: fixTree,
-      evidence: `committed fix in ${fixTree} is NOT on branch ${branchName} and could not be landed: ${landed.error}`,
+      evidence: `committed fix in ${fixTree} (${fix.count} commit(s) ahead of ${branchName}) — integration genuinely failed: ${landed.error}. The fix's worktree HEAD SHA is recorded in the handoff snapshot's committedWork so it can be recovered (git cherry-pick from ${fixTree}).`,
     });
   }
   const evidence =

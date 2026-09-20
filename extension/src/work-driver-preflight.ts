@@ -13,6 +13,21 @@
 import type { ExecFn } from "./worktree.ts";
 
 /**
+ * #776 — true when every dirty line is `??` (untracked) — no tracked changes,
+ * no staged, no deleted. The caller uses this to decide whether untracked
+ * debris alone makes integration infeasible. In the worktree shape (workstream
+ * work lives in a separate worktree) untracked debris at repoRoot is NOT
+ * blocking because integration (cherry-pick / patch-apply) never touches
+ * untracked files; only the N=1 pre-#287 shape (worktree IS repoRoot, where
+ * `stagePorcelainPaths` can sweep untracked files into the PR) needs to keep
+ * treating untracked as dirt.
+ */
+export function porcelainHasUntrackedOnly(porcelain: string[]): boolean {
+  const lines = porcelain.filter((l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l));
+  return lines.length > 0 && lines.every((l) => l.startsWith("??"));
+}
+
+/**
  * #654 task-c — the dirty-repoRoot preflight as a reusable, single
  * implementation (the issue's "single implementation, not a copy").
  * Same filtering rule as `integrate()`'s inline preflight — `.worktrees/`

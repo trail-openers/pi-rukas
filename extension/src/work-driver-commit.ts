@@ -81,11 +81,8 @@ function causeFromIntegrateFailure(res: IntegrateResult): CommitPrFallbackCause 
   if (res.ok) return undefined;
   return res.failure === "dirty-repoRoot" ? "dirty-repoRoot" : "other";
 }
-/**
- * Wall-clock for the verify run against the consolidated tree. This is the
- * project's FAST suite, not the full one — it exists to catch "the
- * combination does not build", which is quick to discover. Default 15 min.
- */
+/** Wall-clock for the verify run against the consolidated tree (FAST suite).
+ * Exists to catch "the combination does not build". Default 15 min. */
 function integrationVerifyTimeoutMs(): number {
   const env = Number(process.env.PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS);
   return Number.isFinite(env) && env > 0 ? env : 15 * 60_000;
@@ -93,7 +90,7 @@ function integrationVerifyTimeoutMs(): number {
 /**
  * PR19 — Mechanized commit-pr: consolidation + commit + push + PR-creation
  * executed directly. Falls back to LLM ops dispatch on `{ok: false}` unless
- * `terminal` (verify failure — #328). See AGENTS.md §7 for history.
+ * `terminal` (verify failure — #328).
  */
 export async function mechanizedCommitPr(
   ctx: DriverContext,
@@ -253,7 +250,13 @@ export async function mechanizedCommitPr(
         reason: "forge not determined for this repo — cannot open the PR",
       };
     }
-    const created = await forge.prCreate(title, branchName, "", prBodyFile);
+    // #776 — the 4th arg is the base branch: prCreateCmd builds
+    // `--head <baseBranch>...<headBranch>` from it, so a path or empty value
+    // there is what produced #753's "...mech-pr-body.md...feature/…" GraphQL
+    // failure. We pass the body STRING (the scratch file above is for the
+    // ops-fallback prompt) and no base — gh/glab defaults to the repo
+    // default branch, which is the base the driver recorded in Step 3.
+    const created = await forge.prCreate(title, branchName, prBody);
     const prNumber = created.number;
     if (prNumber === undefined || !Number.isFinite(prNumber)) {
       return {
@@ -312,9 +315,8 @@ export async function mechanizedCommitPr(
 /**
  * Step 6 — Commit + PR. ops commits the diff, pushes, opens a PR with
  * `Fixes #N` in the body. PR4 captures the `pr: <N>` line ops's prompt
- * asks for into pipelineState.prNumber so the handoff step (7g) can
- * target the right PR for `gh pr comment` instead of falling back to
- * `gh issue comment`.
+ * asks for into pipelineState.prNumber so the handoff step (7g) targets
+ * the right PR for `gh pr comment` instead of falling back to issue.
  */
 export async function runCommitPr(
   ctx: DriverContext,
