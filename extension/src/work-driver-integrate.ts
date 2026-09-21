@@ -126,6 +126,16 @@ export interface IntegrateOpts {
   verifyExecFn?: ExecFn;
   /** Wall-clock for `verifyCmd`. */
   verifyTimeoutMs?: number;
+  /**
+   * #782 — the cycle's current `ciRetryCount`. Set when this is NOT the first
+   * consolidated run at commit-pr (a prior ci-retry already ran the verify
+   * command and bumped the count). When set, the single flake retry inside
+   * `runCommitPrConsolidatedVerify` is skipped — the retry precondition
+   * (issue #782 AC: "the retry fires ONLY when … the FIRST consolidated run
+   * at commit-pr (ciRetryCount unset)") is not met. Absent (or 0) is the
+   * first run; the retry fires when the other preconditions hold.
+   */
+  ciRetryCount?: number;
 }
 
 /** #492 — worktrees that produced no diff, keyed by id → worktree path. */
@@ -402,6 +412,9 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
         workstreamCount: ids.length,
         workstreamIds: ids,
         timeoutMs: opts.verifyTimeoutMs,
+        // #782 — pass the cycle's ciRetryCount through so the single flake
+        // retry fires only on the FIRST consolidated run (ciRetryCount unset).
+        isCiRetry: (opts.ciRetryCount ?? 0) > 0,
       });
       if (vr.ok === false) {
         const restore = await restoreRoot();

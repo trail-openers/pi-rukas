@@ -199,7 +199,13 @@ async function runDevelopTopological(
   // catch the case where claims are green but the evidence isn't. #679: one
   // failed workstream no longer skips the gate for the whole fanout.
   if (hasDevelopEvidence) {
-    const gate = await verifyStepOutcome(ctx, next, "develop");
+    // #782 — the flake-retry event (verify-flake-recovered) is appended to
+    // this array and merged into the state's event log after the gate runs.
+    const flakeEvents: WorkEvent[] = [];
+    const gate = await verifyStepOutcome(ctx, next, "develop", flakeEvents);
+    if (flakeEvents.length > 0) {
+      next = appendEvent(next, ...flakeEvents);
+    }
     if (gate.ok) {
       // #741 — the verify gate proves the diff BUILDS; the converge gate
       // proves it is COMPLETE. Runs only after the verify gate passes (the
@@ -233,11 +239,22 @@ async function runDevelopTopological(
           ? "consolidated-verify-consolidation-created"
           : "verify-failed:develop";
       trace(`work-driver: ${cap} — ${gate.failures.join(" | ")}`);
+      // #782 — the flake-retry outcome is threaded into verifyEvidence so the
+      // handoff can show "retried once, recovered" or "retried once, still
+      // failed" when the bounded re-run was performed. Absent when no retry
+      // ran (N=1, or per-worktree failures present) — pre-#782 state shape.
       next = {
         ...next,
         pipelineState: {
           ...next.pipelineState,
-          verifyEvidence: { step: "develop", failures: gate.failures, at: Date.now() },
+          verifyEvidence: {
+            step: "develop",
+            failures: gate.failures,
+            at: Date.now(),
+            ...(gate.flakeRetry
+              ? { retries: gate.flakeRetry.retries, recovered: gate.flakeRetry.recovered }
+              : {}),
+          },
         },
       };
       next = appendEvent(next, {

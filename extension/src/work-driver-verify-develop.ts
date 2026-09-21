@@ -9,9 +9,12 @@
  * normaliser, tolerance) live in work-driver-verify-develop-helpers.ts.
  */
 
-import fs from "node:fs/promises";
 import path from "node:path";
-import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
+import {
+  restoreConsolidatedVerifyRoot,
+  retryConsolidatedVerify,
+  runConsolidatedVerify,
+} from "./work-driver-consolidated-verify.ts";
 import {
   buildPerWorktreeFailuresByWs,
   classifyConsolidatedVerifyFailure,
@@ -26,27 +29,28 @@ import {
   protectedPathsEnabled,
   protectedPathsIn,
 } from "./work-driver-doctrine.ts";
+import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import { runFalsilyGreenCheck } from "./work-driver-falsily-green.ts";
 import { runScopeFanoutGate } from "./work-driver-scope-fanout.ts";
-import {
-  TEST_BLOCK_MARKERS,
-  countMarkersInDiffLine,
-  countSkipMarkersInDiffLine,
-} from "./work-driver-skip-ratchet.ts";
+import { declaredPathsHaveSource, verifyCmdFor } from "./work-driver-verify-cmd.ts";
+import { runSkipRatchetGate, runSmokeGate } from "./work-driver-verify-develop-gates.ts";
 import {
   formatExecError,
   normaliseScopePath,
-  testDeleteTolerance,
   verifyTimeoutMs,
 } from "./work-driver-verify-develop-helpers.ts";
-
-import {
-  declaredPathsHaveSource,
-  readFirstConfigLine,
-  verifyCmdFor,
-} from "./work-driver-verify-cmd.ts";
+import type { WorkEvent } from "./workflow-state-events.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
+
+/**
+ * #782 — the flake-retry outcome of the consolidated-verify gate. `undefined`
+ * when no retry ran (the normal path); `{retries, recovered}` when the
+ * bounded re-run was performed. The caller (work-develop-topological.ts) uses
+ * this to set verifyEvidence.retries/recovered and to emit the
+ * `verify-flake-recovered` event (recovered: true only).
+ */
+export type FlakeRetryOutcome = { retries: 1; recovered: boolean } | undefined;
 
 /** PR338 — validate a git SHA before shell interpolation. */
 const VALID_SHA_RE = /^[0-9a-f]{40}$/;
@@ -56,7 +60,13 @@ function isValidSha(s: string | undefined) {
 
 /**
  * Verify the develop step's outcome by checking executed evidence
- * in each worktree. Mutates `failures` and `notes` in place.
+ * in each worktree. Mutates `failures` and `notes` in place. When
+ * `eventsOut` is provided, #782 flake-retry events are appended to it
+ * (the driver's event log — the function is otherwise pure).
+ *
+ * Returns the flake-retry outcome (the #782 single bounded re-run result),
+ * or `undefined` when no retry ran. The caller uses this to populate
+ * verifyEvidence.retries / recovered on the state file.
  */
 export async function verifyDevelopOutcome(
   ctx: DriverContext,
@@ -64,7 +74,8 @@ export async function verifyDevelopOutcome(
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
   failures: string[],
   notes: string[],
-): Promise<void> {
+  eventsOut?: WorkEvent[],
+): Promise<FlakeRetryOutcome> {
   const worktrees =
     Object.keys(state.pipelineState.worktrees ?? {}).length > 0
       ? (state.pipelineState.worktrees ?? {})
@@ -350,14 +361,20 @@ export async function verifyDevelopOutcome(
         );
       }
     } else {
+      const scratchDir = path.join(ctx.repoRoot, "tmp", `issue-${ctx.issue}`);
+      // #782 — the flake retry fires ONLY when (a) every per-worktree verify
+      // passed, (b) the consolidated run failed, (c) workstreamCount > 1.
+      // N=1 is a no-op consolidation: its failure is a per-workstream defect.
+      const shouldRetry =
+        perWorktreeVerifyFailures.length === 0 && Object.keys(worktrees).length > 1;
       const cons = await runConsolidatedVerify(execFn, {
         repoRoot: ctx.repoRoot,
         baseSha: baseSha as string,
-        branchName: state.pipelineState.branchName,
         worktrees: state.pipelineState.worktrees ?? {},
-        scratchDir: path.join(ctx.repoRoot, "tmp", `issue-${ctx.issue}`),
+        scratchDir,
         verifyCmd: cmd,
         timeoutMs: verifyTimeoutMs(),
+        deferRestore: shouldRetry,
       });
       if (cons.status === "conflict") {
         // #725 — "conflict" has TWO causes: a genuine cherry-pick / patch-apply
@@ -373,6 +390,58 @@ export async function verifyDevelopOutcome(
             `consolidated verify could not combine the workstreams' commits — cherry-pick / apply conflict (${cons.detail}). Two workstreams edited the same lines; the decomposition is incoherent, which is distinct from a verify failure`,
           );
         }
+      } else if (cons.status === "failed" && shouldRetry && cons.deferredOriginalRef) {
+        // #782 — first run failed; the precondition holds, so re-run the SAME
+        // verify command ONCE on the SAME still-checked-out scratch tree, BEFORE
+        // the restore (which is deferred here). Exactly one retry, never a loop.
+        const retry = await retryConsolidatedVerify(execFn, {
+          repoRoot: ctx.repoRoot,
+          verifyCmd: cmd,
+          timeoutMs: verifyTimeoutMs(),
+          firstRunOutput: cons.firstRunOutput,
+        });
+        // The restore is the caller's responsibility here (deferredRestore).
+        // The scratch tree is only safe to unwind AFTER the retry has run —
+        // a re-run after restore would test the wrong tree (the mainline).
+        await restoreConsolidatedVerifyRoot(execFn, {
+          repoRoot: ctx.repoRoot,
+          originalRef: cons.deferredOriginalRef,
+          scratchDir,
+        });
+        if (retry.recovered) {
+          // Re-run passed: this was a flake, not a consolidation-created
+          // defect. Emit the audit event; the caller records
+          // verifyEvidence.retries/recovered from the returned outcome.
+          notes.push(
+            `consolidated verify FLAKE RECOVERED — the first run failed but the single bounded re-run on the same scratch tree passed \`${cmd}\`; the driver proceeds`,
+          );
+          eventsOut?.push({
+            kind: "verify-flake-recovered",
+            at: Date.now(),
+            step: "develop",
+            evidenceTail: cons.firstRunOutput.slice(0, 800),
+          });
+          return { retries: 1, recovered: true };
+        }
+        // Re-run also failed — a test that fails twice is not a flake.
+        // Classify the FIRST run's output (the original failure; the second
+        // run's failure is the same shape, and the classifier needs the
+        // asserted assertion, not the duplicate) and park as today.
+        const wsIds = Object.keys(worktrees);
+        const { tail, attributed } = extractAttributedTail(cons.firstRunOutput, 800);
+        const classifiedDetail = tail
+          ? attributed
+            ? tail
+            : `${tail} (unattributed — best-effort tail)`
+          : "verify command exited non-zero";
+        const verdict = classifyConsolidatedVerifyFailure(
+          wsIds.length,
+          wsIds,
+          classifiedDetail,
+          buildPerWorktreeFailuresByWs(worktrees, changedWorktrees, perWorktreeVerifyFailures),
+        );
+        failures.push(consolidatedFailureMessage(verdict, cmd));
+        return { retries: 1, recovered: false };
       } else if (cons.status === "failed") {
         // #777 — classify the consolidated-tree failure (see the classifier
         // module docstring for the three-way distinction).
@@ -384,6 +453,10 @@ export async function verifyDevelopOutcome(
           buildPerWorktreeFailuresByWs(worktrees, changedWorktrees, perWorktreeVerifyFailures),
         );
         failures.push(consolidatedFailureMessage(verdict, cmd));
+        // The non-retry failure path (N=1, or per-worktree failures present)
+        // also records retries: 0 / recovered: false on verifyEvidence so the
+        // handoff can distinguish "no retry was needed" from "retry ran and
+        // did not help".
       } else {
         notes.push(
           `consolidated verify passed — workstreams ${cons.applied.join(", ")} combined in one tree passed \`${cmd}\`; per-worktree verify failures are recorded as evidence, not failures, because the combined tree is the verdict for cross-worktree artifacts`,
@@ -400,99 +473,11 @@ export async function verifyDevelopOutcome(
     }
   }
 
-  // --- Skip-ratchet gate (PR277) ---
-  if (process.env.PI_ENSEMBLE_SKIP_RATCHET !== "0") {
-    // F4: if baseSha is absent, note the weakened scope of the check
-    if (!baseSha) {
-      notes.push(
-        "baseSha unavailable — skip-ratchet compared working tree against HEAD only; committed changes not inspected",
-      );
-    }
-
-    for (const cwd of changedWorktrees) {
-      let diffContent = "";
-      try {
-        const baseRef = isValidSha(baseSha) ? baseSha : "HEAD";
-        const { stdout } = await execFn(`git diff ${baseRef} -U0`, {
-          cwd,
-          timeout: verifyTimeoutMs(),
-          maxBuffer: 64 * 1024 * 1024,
-        });
-        diffContent = stdout;
-      } catch (err) {
-        failures.push(
-          `skip-ratchet: git diff failed in ${cwd} (${(err as Error).message?.slice(0, 100)}) — cannot inspect diff`,
-        );
-      }
-      if (!diffContent) continue;
-
-      let netIncrease = 0;
-      let netTestBlockDeletion = 0;
-      const lines = diffContent.split("\n");
-      for (const line of lines) {
-        // Diff file headers are not source lines. Do not let a marker in a
-        // filename influence either ratchet.
-        if (line.startsWith("+++") || line.startsWith("---")) continue;
-        if (line.startsWith("+")) {
-          netIncrease += countSkipMarkersInDiffLine(line);
-          netTestBlockDeletion -= countMarkersInDiffLine(line, TEST_BLOCK_MARKERS);
-        } else if (line.startsWith("-")) {
-          netIncrease -= countSkipMarkersInDiffLine(line);
-          netTestBlockDeletion += countMarkersInDiffLine(line, TEST_BLOCK_MARKERS);
-        }
-      }
-      if (netIncrease > 0) {
-        failures.push(
-          `diff adds ${netIncrease} skipped-test marker(s) — a skipped test is a disabled gate`,
-        );
-      }
-      const tolerance = testDeleteTolerance();
-      if (netTestBlockDeletion > tolerance) {
-        failures.push(
-          `diff removes ${netTestBlockDeletion} test block(s), beyond the tolerance of ${tolerance} — a shrinking test suite is a disabled gate`,
-        );
-      }
-    }
-  } else {
-    notes.push("PI_ENSEMBLE_SKIP_RATCHET=0 — skip-ratchet gate disabled");
-  }
-
-  // --- Product smoke command gate (PR277) ---
-  // #451 — runs in the first changed worktree, not at ctx.repoRoot.
-  // Under worktree isolation the repo root sits on mainline; running the
-  // smoke there would exercise the wrong tree. The worktree has the
-  // developer's changes and its provisioned dependencies.
-  if (process.env.PI_ENSEMBLE_SMOKE !== "0") {
-    let smokeCmd: string | undefined;
-    try {
-      const smokeFile = path.join(ctx.repoRoot, ".pi", "smoke-cmd");
-      const content = await fs.readFile(smokeFile, "utf8");
-      smokeCmd = readFirstConfigLine(content);
-    } catch {
-      // No smoke-cmd file — not a failure, just a note
-    }
-    if (smokeCmd) {
-      const smokeCwd = changedWorktrees[0] ?? ctx.repoRoot;
-      try {
-        await execFn(smokeCmd, {
-          cwd: smokeCwd,
-          timeout: verifyTimeoutMs(),
-          maxBuffer: 4 * 1024 * 1024,
-        });
-      } catch (err) {
-        const e = err as Error & { stdout?: string; stderr?: string; killed?: boolean };
-        failures.push(
-          formatExecError(
-            e,
-            `smoke: command \`${smokeCmd}\` exceeded its ${Math.round(verifyTimeoutMs() / 60000)}-min timeout in ${smokeCwd}`,
-            `smoke: command \`${smokeCmd}\` failed in ${smokeCwd}`,
-          ),
-        );
-      }
-    } else {
-      notes.push("no .pi/smoke-cmd — product smoke not run");
-    }
-  } else {
-    notes.push("PI_ENSEMBLE_SMOKE=0 — smoke gate disabled");
-  }
+  // --- Skip-ratchet gate (PR277) + product smoke gate (PR277) ---
+  // #451 — extracted to work-driver-verify-develop-gates.ts (AGENTS.md §12
+  // file-size cap). The #782 flake-retry logic above pushed this file past
+  // the 500-line limit; the two independent post-verify gates move there.
+  await runSkipRatchetGate(execFn, ctx.repoRoot, baseSha, changedWorktrees, failures, notes);
+  await runSmokeGate(execFn, ctx.repoRoot, changedWorktrees, failures, notes);
+  return undefined;
 }

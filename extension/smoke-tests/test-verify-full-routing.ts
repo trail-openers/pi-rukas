@@ -83,6 +83,25 @@ const verifyFull = (status: "success" | "failure"): WorkEvent =>
   );
 }
 
+// #782 — a recovered re-run (first failed, single re-run passed) surfaces as
+// status:success with recovered:true. At the routing layer it is indistinguishable
+// from a normal success: both proceed to merged, so the 30-60-min develop
+// re-run (ciRetryCount bump) is skipped — the flake cost one re-run, not a cycle.
+{
+  // biome-ignore lint/suspicious/noExplicitAny: partial fixture
+  const recovered: WorkEvent = ({
+    kind: "verify-full-status",
+    at: 1,
+    status: "success",
+    recovered: true,
+    ms: 1000,
+  }) as any as WorkEvent;
+  assert(
+    stepOf(atCi(recovered)) === "merged",
+    "a RECOVERED verify-full (recovered:true) routes to merged — no ciRetryCount bump, no develop re-run",
+  );
+}
+
 // -------------------------------- the two events agree, because they must
 
 {

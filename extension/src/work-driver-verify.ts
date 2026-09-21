@@ -20,7 +20,9 @@ import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import { detectMainline } from "./work-driver-git.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
+import type { FlakeRetryOutcome } from "./work-driver-verify-develop.ts";
 import type { ConsolidationVerdict } from "./workflow-state-consolidation.ts";
+import type { WorkEvent } from "./workflow-state-events.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 // Re-export for existing consumers (smoke tests) so import paths stay valid.
@@ -300,7 +302,15 @@ export async function verifyStepOutcome(
   ctx: DriverContext,
   state: WorkState,
   step: "develop" | "commit-pr",
-): Promise<{ ok: boolean; failures: string[]; notes: string[]; adoptedPrNumber?: number }> {
+  eventsOut?: WorkEvent[],
+): Promise<{
+  ok: boolean;
+  failures: string[];
+  notes: string[];
+  adoptedPrNumber?: number;
+  /** #782 — the flake-retry outcome of the develop consolidated-verify gate. */
+  flakeRetry?: FlakeRetryOutcome;
+}> {
   const failures: string[] = [];
   const notes: string[] = [];
   if (!verifyGateEnabled()) {
@@ -309,8 +319,8 @@ export async function verifyStepOutcome(
   const execFn = ctx.verifyExecFn ?? execp;
 
   if (step === "develop") {
-    await verifyDevelopOutcome(ctx, state, execFn, failures, notes);
-    return { ok: failures.length === 0, failures, notes };
+    const flakeRetry = await verifyDevelopOutcome(ctx, state, execFn, failures, notes, eventsOut);
+    return { ok: failures.length === 0, failures, notes, flakeRetry };
   }
 
   // step === "commit-pr"

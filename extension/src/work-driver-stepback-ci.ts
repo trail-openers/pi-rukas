@@ -190,13 +190,29 @@ export async function runCi(ctx: DriverContext, state: WorkState, now: number): 
         primaryWorktree,
         verifyFullTimeoutMs(),
         ctx.verifyExecFn ?? execp,
+        { retry: true },
       );
+      // #782 — a recovered re-run (first failed, second passed) surfaces as
+      // status:success with recovered:true, so the handoff can distinguish it
+      // from a normal success. The first run's tail is preserved on the event
+      // so the operator can see what the flake looked like. On a genuine
+      // failure the evidence is the first run's output (what was actually
+      // broken); the re-run's output is only recorded if it differs, in which
+      // case it is the more recent view of the same defect.
       next = appendEvent(next, {
         kind: "verify-full-status",
         at: Date.now(),
         status: result.outcome,
         ms: result.ms,
-        evidenceTail: result.output.slice(-500), // Last 500 chars for handoff
+        recovered: result.recovered,
+        // #782 — for a recovered run, evidenceTail carries the FIRST run's
+        // failing tail (what the flake looked like); the re-run passed so its
+        // output has no diagnostic value. For a genuine failure, carry the
+        // most recent tail (the re-run's, if we ran one).
+        evidenceTail: (result.outcome === "success" && result.recovered
+          ? (result.firstRunOutput ?? result.output)
+          : result.output
+        ).slice(-500), // Last 500 chars for handoff
       });
 
       if (result.outcome === "failure") {

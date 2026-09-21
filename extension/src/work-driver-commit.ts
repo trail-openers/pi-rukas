@@ -185,13 +185,13 @@ export async function mechanizedCommitPr(
       commitBody,
       mode: "create",
       requireAllNonEmpty: true,
-      // #453 — pass pre-existing commitShas so cherry-pick skips already-applied.
+      // #453 — skip already-applied. #782 — flake retry on first commit-pr
+      // run (ciRetryCount unset); subsequent runs skip the retry.
       commitShas: ps.commitShas,
-      // The first time anything compiles the COMBINATION of the workstreams.
-      // Absent `.pi/verify-cmd` leaves this undefined and the gate skips.
       verifyCmd: await verifyCmdFor(ctx.repoRoot),
       verifyExecFn: ctx.verifyExecFn,
       verifyTimeoutMs: integrationVerifyTimeoutMs(),
+      deferRestoreOnFlake: ps.ciRetryCount === undefined,
     });
     // #539 — the structured cause travels with the result: integrate()
     // KNOWS why it failed; a reader re-parsing `reason` would be guessing.
