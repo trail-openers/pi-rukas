@@ -28,6 +28,12 @@ export type HandoffEmittedEvent = {
   /** GitHub URL of the handoff PR/issue comment. */
   commentUrl?: string;
   labelApplied: boolean;
+  /**
+   * #775 — how the recorded comment/label state was established. Absent on
+   * events written before #775 (readers must treat absent as "unknown —
+   * trust the fields, don't trust the provenance").
+   */
+  delivery?: "dispatch" | "fallback";
   /** Path to the handoff markdown body (PR5; back-compat with PR4 events). */
   handoffBodyPath?: string;
   /** #674 — true when the driver consolidated the work onto the branch before rendering. */

@@ -15,7 +15,12 @@ import {
 } from "./work-driver-handoff-consolidate.ts";
 import { renderHandoffMarkdown } from "./work-driver-handoff-markdown.ts";
 import { postHandoffWithRetry } from "./work-driver-handoff-post-retry.ts";
-import { captureCommittedWork, makeHandoffEmittedEvent } from "./work-driver-handoff-post.ts";
+import {
+  captureCommittedWork,
+  makeHandoffEmittedEvent,
+  parseHandoffOpsReply,
+  verifyHandoffLabel,
+} from "./work-driver-handoff-post.ts";
 import { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
@@ -221,12 +226,35 @@ export async function runHandoff(
   // re-entered handoff and posted a SECOND comment. A prior handoff-emitted
   // event with a commentUrl is proof of delivery — reuse it (the label
   // re-application below stays: gh --add-label is idempotent server-side).
+  // #775 — the ops reply is parsed for BOTH the comment URL and the label
+  // state (the ops child now verifies the label with an unchained `gh …
+  // --json labels` read and reports it in the HANDOFF-RESULT marker). The
+  // URL parse (the SAME shared regex as `parseHandoffCommentUrl`, exercised
+  // inside `parseHandoffOpsReply`) falls back to the prior handoff-emitted
+  // event's URL (the re-entry dedupe) before any fallback post — the
+  // invariant pinned by test-work-driver-reentry.ts.
+  const parsed = parseHandoffOpsReply(opsReplyText);
+  // The dedupe line, verbatim — re-entry reuses a prior event's URL and
+  // never re-posts (the canary above pins the shape):
   let commentUrl = parseHandoffCommentUrl(opsReplyText) ?? priorHandoffCommentUrl(next.eventLog);
-  // #408 — there is nothing to parse here. `gh --add-label` is idempotent, the
-  // driver is already willing to run it, and running it is cheaper than reasoning
-  // about whether an agent's prose meant success. Narration cannot establish
-  // that a side effect happened; performing it can.
+  if (parsed.commentUrl && !commentUrl) commentUrl = parsed.commentUrl;
   let labelApplied = false;
+  // #775 — provenance of the recorded state. "dispatch" is asserted only
+  // when the driver verified it (URL parsed or label read-back succeeded);
+  // a reply whose state could not be verified records no provenance.
+  let delivery: "dispatch" | "fallback" | undefined;
+  {
+    const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
+    const objType = prNumber ? "pr" : "issue";
+    if (commentUrl) delivery = "dispatch";
+    if (forge) {
+      const verified = await verifyHandoffLabel(forge, objType, prNumber ?? ctx.issue);
+      if (verified) {
+        labelApplied = true;
+        if (!delivery) delivery = "dispatch";
+      }
+    }
+  }
 
   // PR5 in-process fallback (item 3, #674 — with retry). When the ops
   // dispatch failed OR the commentUrl didn't parse out, the driver itself
@@ -260,7 +288,10 @@ export async function runHandoff(
         // The forge adapter models `issueComment` only (S2 surface). PRs
         // get their handoff comment via the ops dispatch's raw `gh` prompt.
         if (posted.commentUrl) commentUrl = posted.commentUrl;
-        if (posted.labelApplied) labelApplied = true;
+        if (posted.labelApplied) {
+          labelApplied = true;
+          delivery = "fallback";
+        }
       }
     } catch (err) {
       trace(
@@ -291,6 +322,7 @@ export async function runHandoff(
       : snap.committedWork?.length
         ? "consolidation infeasible (work remains on its worktree detached HEADs)"
         : undefined,
+    delivery,
   });
   next = appendEvent(next, emitted);
   // #571 — release the path claim so sibling cycles can proceed.
