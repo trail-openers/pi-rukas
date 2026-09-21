@@ -12,6 +12,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
+import {
+  buildPerWorktreeFailuresByWs,
+  classifyConsolidatedVerifyFailure,
+  consolidatedFailureMessage,
+} from "./work-driver-consolidation-classify.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { provisionDepsHint } from "./work-driver-deps-hint.ts";
 import {
@@ -369,22 +374,23 @@ export async function verifyDevelopOutcome(
           );
         }
       } else if (cons.status === "failed") {
-        failures.push(
-          `verify command \`${cmd}\` failed on the CONSOLIDATED tree (all workstreams' changes combined): ${cons.detail}`,
+        // #777 — classify the consolidated-tree failure (see the classifier
+        // module docstring for the three-way distinction).
+        const wsIds = Object.keys(worktrees);
+        const verdict = classifyConsolidatedVerifyFailure(
+          wsIds.length,
+          wsIds,
+          cons.detail,
+          buildPerWorktreeFailuresByWs(worktrees, changedWorktrees, perWorktreeVerifyFailures),
         );
+        failures.push(consolidatedFailureMessage(verdict, cmd));
       } else {
         notes.push(
           `consolidated verify passed — workstreams ${cons.applied.join(", ")} combined in one tree passed \`${cmd}\`; per-worktree verify failures are recorded as evidence, not failures, because the combined tree is the verdict for cross-worktree artifacts`,
         );
       }
-      // The aggregation rule: a consolidated PASS downgrades every per-worktree
-      // verify failure to evidence (cross-worktree artifacts — the #645 shape,
-      // where a workstream's test reads a file only a sibling's commit
-      // supplies). A consolidated FAILURE (or a conflict that prevented the
-      // combined run from completing) keeps them as failures: a workstream
-      // that fails alone while the combined run also fails has a genuine
-      // per-worktree defect the combined verdict cannot explain away, and the
-      // operator needs BOTH the per-worktree detail and the combined verdict.
+      // Aggregation: a consolidated PASS downgrades per-worktree failures
+      // to evidence; a consolidated FAILURE keeps them as failures.
       if (cons.status === "passed") {
         for (const f of perWorktreeVerifyFailures)
           notes.push(`per-worktree verify (evidence) — ${f}`);

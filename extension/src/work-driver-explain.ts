@@ -272,6 +272,30 @@ export function explainCap(
       );
       return `${base}.${rootBlurb}`;
     }
+    case "consolidated-verify-consolidation-created": {
+      // #777 — the develop-time consolidated verify failed on a SPECIFIC
+      // assertion that neither workstream tripped alone (per-workstream
+      // pass, combined fail). The failure message in verifyEvidence carries
+      // the classification label, the specific assertion, and both workstream
+      // ids. Distinct from consolidated-verify-conflict (a cherry-pick
+      // conflict — decomposition error) and verify-failed:develop (generic
+      // verify failure — the per-worktree failures are the primary evidence).
+      // The operator gets the exact assertion + both workstream ids instead
+      // of "consolidated tree fails verify" — the handoff names the
+      // combination and the specific biome/tsc/test line.
+      const hit = [...state.eventLog]
+        .reverse()
+        .find(
+          (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
+            e.kind === "cap-hit" && e.cap === "consolidated-verify-consolidation-created",
+        );
+      const ev = hit?.evidence ?? "(no classification detail recorded)";
+      const wts = state.pipelineState.worktrees ?? {};
+      const wtList = Object.entries(wts)
+        .map(([id, p]) => `${id}: ${p}`)
+        .join(", ");
+      return `the develop step's consolidated verify failed on a specific assertion that NEITHER workstream tripped alone — the combination created the defect (classification: consolidation-created). ${ev} Worktrees: ${wtList || "(none recorded)"}. This is NOT the same as a cherry-pick conflict or a per-workstream verify failure: the work builds in each worktree in isolation; the combination does not. The specific failing assertion is named in the evidence above — fix the interaction between the two workstreams (dedupe, adjust the scaffold expectation, or resolve the design conflict by hand) and re-run`;
+    }
     case "consolidated-verify-conflict": {
       // #669 — the develop-time consolidated verify (cherry-picking every
       // workstream's commit onto the integration branch so the verify

@@ -1,31 +1,10 @@
 #!/usr/bin/env bun
 /**
- * #669 — the develop gate must see the COMBINED tree.
+ * #669 + #777 — the develop gate must see the COMBINED tree.
  *
- * Every gate upstream of the develop verify runs in a SINGLE worktree, so a
- * test in workstream X that asserts on a file owned by workstream Y cannot
- * pass in X's tree — the shape #645/#649 confirmed 5 times in one live
- * session (and the mirror: two workstreams touching the same file, where a
- * line-cap overflow is only visible in the COMBINED state — #659/#664).
- *
- * This test pins the fix with REAL git worktrees:
- *
- *   1. Per-worktree verify PASSES but consolidated verify FAILS (one
- *      workstream deletes a helper, the other adds a caller; each tree
- *      builds, the union does not — the #645 mirror). The develop gate
- *      must be NOT ok, and the failure must cite the consolidated tree.
- *
- *   2. Per-worktree verify FAILS but consolidated verify PASSES (one
- *      workstream's test reads a file only a sibling's commit supplies —
- *      the #645 shape). The develop gate must be OK — a fanout must not be
- *      rejected solely because per-worktree verification couldn't see the
- *      whole picture, when the actually-consolidated result passes.
- *
- *   3. A cherry-pick conflict (two workstreams edit the same lines) routes
- *      to the distinguishable cap, not verify-failed:develop.
- *
- * Reuses the fixture shape of test-integration-verify.ts (bare origin +
- * clone + worktrees).
+ * Cases 1–3: #669 (per-worktree pass/union fail, cross-dep, cherry-pick
+ * conflict). Cases 4–6: #777 (consolidation-created classification,
+ * N=1 invariant, cap rendering).
  */
 
 import { execFile } from "node:child_process";
@@ -106,36 +85,9 @@ function commitIn(wt: string, msg: string) {
 
 try {
   // --------------------------------------------------------------- case 1
-  // Per-worktree verify PASSES, consolidated verify FAILS.
-  // A deletes helper.sh; B's main.sh calls it. Each tree passes `test -f
-  // main.sh`; the union fails `test -f helper.sh && test -f main.sh`... no —
-  // the union must FAIL, each must PASS. A's tree: helper.sh deleted,
-  // main.sh untouched → `test -f helper.sh` fails in A. We need the opposite:
-  // each passes alone, union fails.
-  //
-  // The #645 mirror: A renames helper.sh → helper2.sh (deletes old, adds new).
-  // B adds main.sh that calls helper2.sh. A's tree: helper2.sh exists,
-  // helper.sh gone. B's tree: helper.sh exists (unchanged), helper2.sh
-  // absent, main.sh added. Verify cmd: `test -f helper2.sh && test -f
-  // main.sh`. A's tree: helper2.sh present, main.sh ABSENT → fails. No.
-  //
-  // Simpler: verify cmd = `sh -c 'test ! -f helper.sh || test -f main.sh'`.
-  // A's tree: helper.sh gone → `! -f helper.sh` true → PASS. B's tree:
-  // helper.sh present, main.sh present → PASS. Union: helper.sh gone,
-  // main.sh present → PASS. Still passes.
-  //
-  // Use the exact shape from test-integration-verify.ts: A DELETES
-  // helper.sh, B ADDS a caller (main.sh). Verify cmd: `test -f helper.sh`.
-  // A's tree: helper.sh gone → FAILS. That's the wrong direction.
-  //
-  // The correct #645 mirror (each passes, union fails): verify cmd checks
-  // that a file B depends on still exists. A DELETES helper.sh. B adds
-  // main.sh that references helper.sh. Verify cmd: `test -f helper.sh ||
-  // [ ! -f main.sh ]` — "either the helper exists, or the caller doesn't".
-  // A's tree: helper gone, no caller → `! -f main.sh` true → PASS.
-  // B's tree: helper present (unchanged in B), caller present →
-  // `-f helper.sh` true → PASS. Union: helper gone, caller present →
-  // both false → FAIL.
+  // Per-worktree verify PASSES, consolidated verify FAILS (the #645 mirror).
+  // A deletes helper.sh; B adds main.sh that references it. Verify cmd:
+  // "helper exists OR caller doesn't" — passes alone, fails in the union.
   {
     const f = await fixture("union-fails", ["a", "b"], {
       "helper.sh": "echo helper\n",
@@ -180,22 +132,14 @@ try {
 
   // --------------------------------------------------------------- case 2
   // Per-worktree verify FAILS, consolidated verify PASSES (the #645 shape).
-  // B's test (new file) asserts on a file only A's commit supplies. B's
-  // per-worktree verify fails because the file isn't in B's tree. The
-  // consolidated tree has both → passes. The gate must be OK.
   {
     const f = await fixture("cross-dep", ["a", "b"], {
       "lib.sh": "echo lib\n",
     });
-    // A: adds util.sh (a new file B's test will read).
     writeFileSync(path.join(f.worktrees.a, "util.sh"), "echo util\n");
     await commitIn(f.worktrees.a, "task-a: add util");
-    // B: adds a test that reads util.sh (which only exists in A's tree).
     writeFileSync(path.join(f.worktrees.b, "test-util.sh"), "cat util.sh\n");
     await commitIn(f.worktrees.b, "task-b: test reads util");
-
-    // Verify cmd: `test -f util.sh` — fails in B's tree (util.sh absent),
-    // passes in A's tree, passes in the union.
     writeFileSync(path.join(f.repo, ".pi", "verify-cmd"), "test -f util.sh\n");
 
     let s = initialState(669, 1_000_000);
@@ -230,8 +174,7 @@ try {
   }
 
   // --------------------------------------------------------------- case 3
-  // Cherry-pick conflict: both workstreams edit the SAME line of the SAME
-  // file. The consolidation cannot combine them → distinct cap.
+  // Cherry-pick conflict: both workstreams edit the SAME line.
   {
     const f = await fixture("conflict", ["a", "b"], {
       "shared.txt": "line1\nline2\nline3\n",
@@ -272,31 +215,20 @@ try {
     );
 
     // --------------------------------------------------------------- #750
-    // Regression 1 — the abort VERIFIably leaves repoRoot clean. The
-    // pre-#750 restore claimed "repoRoot restored" without checking; the
-    // incident state (M + UU index entries, no CHERRY_PICK_HEAD) proves the
-    // claim can be false. Assert the porcelain directly — not inferred
-    // from the absence of an error. Untracked `??` entries are NOT dirt:
-    // the restore must not sweep them (`git clean` is forbidden), so they
-    // are excluded, as the restore's own check does.
+    // Regression 1 — the abort VERIFIably leaves repoRoot clean.
     const { stdout: rootPorcelain } = await git(f.repo, ["status", "--porcelain"]);
     const trackedDirt = rootPorcelain.split("\n").filter((l) => l.trim() && !l.startsWith("??"));
     assert(
       trackedDirt.length === 0,
       `#750 regression 1: repoRoot is verifiably clean after the conflict abort (porcelain: ${JSON.stringify(trackedDirt)})`,
     );
-    // The root is back where it started — not stranded on the scratch
-    // branch the probe created.
     const { stdout: rootHead } = await git(f.repo, ["rev-parse", "HEAD"]);
     assert(
       rootHead.trim() === f.baseSha,
       "#750 regression 1: repoRoot is back on its original ref (scratch branch not left behind)",
     );
 
-    // Regression 2 — the claim matches the VERIFIED post-condition. The
-    // pre-#750 text asserted an unverified "repoRoot restored"; post-#750
-    // it says so only because a porcelain read confirmed it, and the loud
-    // not-restored wording is reserved for the (rare) failed cleanup.
+    // Regression 2 — the claim matches the VERIFIED post-condition.
     const conflictFailure = gate.failures.find((fl) =>
       /cherry-pick \/\*? ?apply conflict|could not combine/.test(fl),
     );
@@ -309,12 +241,7 @@ try {
       "#750 regression 2: a successful restore does not carry the loud not-restored failure",
     );
 
-    // Untracked files must not be swept: the restore never runs `git clean`,
-    // so an untracked file present during a conflict survives the restore.
-    // NOTE: since #750, untracked `??` entries ARE dirt for the dirty-root
-    // gate (all three gates agree), so the untracked file will trip the
-    // refusal. We test the refusal path here — the file must survive the
-    // refusal (the refusal parks, it does not stash or clean).
+    // Untracked files must not be swept by the restore.
     const f2 = await fixture("untracked-safety", ["a", "b"], {
       "shared.txt": "line1\nline2\nline3\n",
     });
@@ -364,12 +291,146 @@ try {
     );
   }
 
-  // --------------------------------------------------------------- #750
-  // Regression 4 — an abort that CANNOT restore the root fails loudly.
-  // An injected execFn refuses `git reset --hard` and reports a dirty
-  // tracked path after the restore; the helper must return `restored: false`
-  // naming the path (never a silent success), and the claim built from it
-  // must be the loud not-restored failure, not the restored claim.
+  // --------------------------------------------------------------- #777
+  // Case 4 — consolidation-created: per-worktree passes, consolidated fails.
+  // The failure must be classified, name the assertion + both workstream ids.
+  {
+    const f = await fixture("777-consolidation-created", ["a", "b"], {
+      "file-a.ts": "export const a = 1;\n",
+      "file-b.ts": "export const b = 2;\n",
+    });
+    writeFileSync(
+      path.join(f.worktrees.a, "file-a.ts"),
+      "export const a = 1;\nexport function aFn() { return a; }\n",
+    );
+    await commitIn(f.worktrees.a, "task-a: add aFn");
+    writeFileSync(
+      path.join(f.worktrees.b, "file-b.ts"),
+      "export const b = 2;\nexport function bFn() { return b; }\n",
+    );
+    await commitIn(f.worktrees.b, "task-b: add bFn");
+
+    // Verify cmd: each worktree has 3 total exports, the union has 4.
+    const verifyCmd =
+      "sh -c 'test $(grep -c export file-a.ts file-b.ts 2>/dev/null | awk \"{s+=$1} END {print s}\") -lt 4'";
+    writeFileSync(path.join(f.repo, ".pi", "verify-cmd"), `${verifyCmd}\n`);
+    let s = initialState(777, 1_000_000);
+    s = {
+      ...s,
+      pipelineState: {
+        ...s.pipelineState,
+        branchName: "feature/issue-777",
+        baseSha: f.baseSha,
+        worktrees: f.worktrees,
+        workstreams: {
+          a: { id: "a", scope: "add aFn", paths: [], outOfScope: [] },
+          b: { id: "b", scope: "add bFn", paths: [], outOfScope: [] },
+        },
+      },
+    };
+    const ctx: DriverContext = {
+      pi: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
+      repoRoot: f.repo,
+      issue: 777,
+      verifyExecFn: realExec,
+    };
+    const gate = await verifyStepOutcome(ctx, s, "develop");
+    assert(!gate.ok, "#777 case 4: per-worktree passes, consolidated fails → NOT ok");
+    // The failure must be classified as consolidation-created.
+    const ccFailure = gate.failures.find((fl) => /\[consolidation-created\]/.test(fl));
+    assert(
+      ccFailure !== undefined,
+      `#777 case 4: failure is classified consolidation-created (got: ${gate.failures.join("; ").slice(0, 200)})`,
+    );
+    // It must name BOTH workstream ids.
+    assert(
+      ccFailure !== undefined && /a.*b|b.*a/.test(ccFailure),
+      `#777 case 4: failure names both workstreams (got: ${ccFailure?.slice(0, 200)})`,
+    );
+    // It must NOT be routed to the generic verify-failed:develop cap.
+    // The classification label is in the failure text, which the topological
+    // router uses to pick the new cap.
+  }
+
+  // --------------------------------------------------------------- #777
+  // Case 5 — N=1 invariant: single-workstream cycle must NOT be
+  // consolidation-created.
+  {
+    const f = await fixture("777-n1-invariant", ["default"], {
+      "single.ts": "export const x = 1;\n",
+    });
+    writeFileSync(path.join(f.worktrees.default, "single.ts"), "export const x = 1;\nexport const y = 2;\n");
+    await commitIn(f.worktrees.default, "task-default: add y");
+    writeFileSync(
+      path.join(f.repo, ".pi", "verify-cmd"),
+      "sh -c 'test $(grep -c export single.ts 2>/dev/null) -le 1\n",
+    );
+    let s = initialState(777, 1_000_000);
+    s = {
+      ...s,
+      pipelineState: {
+        ...s.pipelineState,
+        branchName: "feature/issue-777",
+        baseSha: f.baseSha,
+        worktrees: f.worktrees,
+        workstreams: {
+          default: { id: "default", scope: "add y", paths: [], outOfScope: [] },
+        },
+      },
+    };
+    const ctx: DriverContext = {
+      pi: { sendUserMessage: () => {} } as unknown as ExtensionAPI,
+      repoRoot: f.repo,
+      issue: 777,
+      verifyExecFn: realExec,
+    };
+    const gate = await verifyStepOutcome(ctx, s, "develop");
+    assert(!gate.ok, "#777 case 5: N=1 consolidated verify fails → NOT ok");
+    // Must NOT be classified as consolidation-created (N=1 invariant).
+    const ccFailure = gate.failures.find((fl) => /\[consolidation-created\]/.test(fl));
+    assert(
+      ccFailure === undefined,
+      `#777 case 5: N=1 must NOT be consolidation-created (got: ${gate.failures.join("; ").slice(0, 200)})`,
+    );
+    // Should be classified as per-workstream-defect (the per-worktree failure
+    // matches the consolidated failure) or needs-human-decision.
+    const pwsFailure = gate.failures.find((fl) => /\[per-workstream-defect\]/.test(fl));
+    const nhdFailure = gate.failures.find((fl) => /\[needs-human-decision\]/.test(fl));
+    assert(
+      pwsFailure !== undefined || nhdFailure !== undefined,
+      `#777 case 5: N=1 classified as per-workstream-defect or needs-human-decision (got: ${gate.failures.join("; ").slice(0, 200)})`,
+    );
+  }
+
+  // --------------------------------------------------------------- #777
+  // Case 6 — cap rendering: the new cap must render a distinct explanation.
+  {
+    let s = initialState(777, 1_000_000);
+    s = {
+      ...s,
+      pipelineState: {
+        ...s.pipelineState,
+        worktrees: { a: "/w/a", b: "/w/b" },
+        branchName: "feature/issue-777",
+      },
+    };
+    s.eventLog.push({
+      kind: "cap-hit", at: 1, cap: "consolidated-verify-consolidation-created",
+      reviewRound: 0, nextStep: "handoff",
+      evidence: "[consolidation-created] verify command `tsc` failed — specific assertion: ✗ export already declared — workstream combination a + b",
+    });
+    const text = explainCap("consolidated-verify-consolidation-created", s);
+    assert(
+      /consolidation-created|NEITHER workstream tripped alone/.test(text),
+      `#777 cap: explainCap names the classification (got: ${text.slice(0, 120)})`,
+    );
+    assert(
+      /combination created the defect|combination does not build/.test(text),
+      `#777 cap: explainCap names the combination (got: ${text.slice(0, 120)})`,
+    );
+  }
+
+  // #750 regression 4 — a restore that CANNOT restore the root fails loudly.
   {
     const { verifiedRestoreRoot } = await import("../src/work-driver-restore.ts");
     const failingExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
@@ -412,8 +473,6 @@ try {
 }
 
 // ----------------------------------------------------------- cap rendering
-// The new cap must render a distinct explanation, not fall through to the
-// generic "step failed" fallback.
 {
   let s = initialState(669, 1_000_000);
   s = {
@@ -433,14 +492,8 @@ try {
     evidence: "patch-apply failed for workstream 'b': already exists",
   });
   const text = explainCap("consolidated-verify-conflict", s);
-  assert(
-    /decomposition is incoherent/.test(text),
-    "#669 cap: explainCap names the decomposition error, not a verify failure",
-  );
-  assert(
-    /re-split|non-overlapping/.test(text),
-    "#669 cap: the recovery names re-splitting the work, not retrying verify",
-  );
+  assert(/decomposition is incoherent/.test(text), "#669 cap: explainCap names the decomposition error");
+  assert(/re-split|non-overlapping/.test(text), "#669 cap: the recovery names re-splitting");
 }
 
 console.log(`\nexit ${exit}`);
