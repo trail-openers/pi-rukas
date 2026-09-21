@@ -1,0 +1,5 @@
+# Pi compatibility
+
+pi-rukas depends on Pi's CLI flags, JSON event stream shape, and `ExtensionAPI` surface. The current sandbox image ships pi `0.84.4`; the host-mode dev-deps pin `@earendil-works/pi-coding-agent` to `~0.84.4` so a Pi minor bump is a deliberate update. The sandbox version is a hand-maintained claim (the image's `npm install -g` is pinned to 0.84.4) asserted at exactly three prose sites — README.md's "Status" line, `.devcontainer/Dockerfile` (pi-mcp-adapter comment), and docs/pi-compatibility.md itself; update all three when the image's pi changes.
+
+When updating Pi: check the [pi-mono releases](https://github.com/badlogic/pi-mono/releases), bump the pin in `extension/package.json` and the "Tested against" line in [CHANGELOG.md](CHANGELOG.md), then run the live smoke tests under `extension/smoke-tests/test-*-live.ts` against the new version (real child-process spawn, JSON event parsing, tool-call extraction — CI runs offline tests only). See [CONTRIBUTING.md](CONTRIBUTING.md) → "Pi compatibility" for the specific fields and flags we depend on.
