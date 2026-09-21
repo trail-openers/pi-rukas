@@ -1,6 +1,8 @@
 # Sandboxed mode (recommended)
 
-`pi-rukas` launches Pi inside a Docker container where the container fence IS the trust boundary — no per-call permission prompts. Host state that should survive across sessions is bind-mounted in; container-local caches use named volumes. This is the recommended mode; host-mode `pi` remains available without Docker.
+`pi-rukas` launches Pi inside a Docker container where the container fence is the trust boundary ONLY if you opt out of the passthroughs (`PI_ENSEMBLE_NO_DOCKER_SOCKET=1` + `PI_ENSEMBLE_NO_SSH=1` + env scrubbing) — no per-call permission prompts. By default the sandbox is a runtime convenience (fast, isolated from accidental deletion), not a security boundary. Host state that should survive across sessions is bind-mounted in; container-local caches use named volumes. This is the recommended mode; host-mode `pi` remains available without Docker.
+
+> **Threat model.** If your threat model is a compromised or prompt-injected subagent, the default sandbox does NOT contain it (docker.sock = root-on-host, unrestricted egress, full env forwarding). For that threat model, opt out of the passthroughs OR run in a network-restricted environment.
 
 **What's mounted where:**
 
@@ -38,7 +40,7 @@
 
 > **Session resume note.** Pi scopes sessions by absolute project path. The same project at `~/projects/foo` on the host mounts at `/workspace` inside the container, so host-mode `pi -r` sessions and sandbox-mode `pi-rukas -r` sessions live in different scope buckets and don't cross-resume — even though both modes share `~/.pi/agent/sessions/` via bind-mount. Within a single mode, resume works as expected.
 
-**Why a sandbox.** Models emit novel command shapes constantly — chained pipes, new git subcommands, novel paths. Gating every call with a yes/no prompt produces ~30 prompts/minute, which trains users to rubber-stamp and degrades attention on prompts that DO matter (anti-protection). Sandbox mode moves the trust boundary from per-call gating to the container fence: full filesystem isolation from the host, all tools allowed inside. The image bakes in every CLI the role prompts assume on `$PATH` (Pi, bun, node, git, gh, vipune, oo, codebase-memory-mcp, ctx7).
+**Why a sandbox.** Models emit novel command shapes constantly — chained pipes, new git subcommands, novel paths. Gating every call with a yes/no prompt produces ~30 prompts/minute, which trains users to rubber-stamp and degrades attention on prompts that DO matter (anti-protection). Sandbox mode moves the trust boundary from per-call gating to the container fence: the workspace is bind-mounted (your edits are visible on the host); the fence isolates everything EXCEPT the workspace and the explicitly-forwarded passthroughs (docker socket, SSH, env), all tools allowed inside. The image bakes in every CLI the role prompts assume on `$PATH` (Pi, bun, node, git, gh, vipune, oo, codebase-memory-mcp, ctx7).
 
 **What v1 does NOT include.** The container has unrestricted network egress for v1. A follow-up (see issues) adds an init-firewall.sh + `--cap-add=NET_ADMIN` allowlist for `api.anthropic.com`, `github.com`, npm/pypi/crates.io, parallel.ai, ctx7. Until then, the sandbox protects your filesystem but not your network.
 
