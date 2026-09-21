@@ -431,7 +431,7 @@ async function main() {
     const { fn, calls } = mkExec({
       "gh label create": { stdout: "{}" },
       "gh issue edit 42 --add-label": { stdout: "" },
-      "gh mr edit 17 --add-label": { stdout: "" },
+      "gh pr edit 17 --add-label": { stdout: "" },
       "gh issue view 42": {
         stdout: JSON.stringify({ ...GH_ISSUE, labels: [{ name: "needs-human-attention" }] }),
       },
@@ -451,9 +451,10 @@ async function main() {
         calls.some((c) => c.includes("gh issue edit 42 --add-label")),
         `issue add: ${calls}`,
       );
+      // #775 — GitHub has no `mr` subcommand; an mr target maps to `pr`.
       assert(
-        calls.some((c) => c.includes("gh mr edit 17 --add-label")),
-        `mr add: ${calls}`,
+        calls.some((c) => c.includes("gh pr edit 17 --add-label")),
+        `mr add maps to gh pr edit: ${calls}`,
       );
       // 3. Read back — the attention gate (work-driver-attention.ts) reads
       //    the issue's labels to decide refuse/proceed.

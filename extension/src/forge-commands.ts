@@ -229,8 +229,19 @@ export function labelCreateCmd(forge: ForgeType, name: string, color: string): s
 }
 
 /**
- * Add a label to an issue. GitHub: `--add-label` on edit.
- * GitLab: `add_labels` field on issue PUT (auto-creates missing labels).
+ * The gh object-type keyword for a normalized `issue` / `mr` target. GitHub
+ * has no `mr` subcommand — merge requests are pull requests (`gh pr edit`).
+ * GitLab's `glab api` paths already use `merge_requests/` directly, so the
+ * mapping is applied on the github branch only.
+ */
+function ghObjectType(target: "issue" | "mr"): "issue" | "pr" {
+  return target === "issue" ? "issue" : "pr";
+}
+
+/**
+ * Add a label to an issue/PR. GitHub: `--add-label` on edit (gh has no
+ * `mr` subcommand — an `mr` target maps to `pr`, #775). GitLab:
+ * `add_labels` field on issue/MR PUT (auto-creates missing labels).
  */
 export function labelAddCmd(
   forge: ForgeType,
@@ -238,18 +249,20 @@ export function labelAddCmd(
   number: number,
   name: string,
 ): string {
-  if (forge === "github") return `gh ${target} edit ${number} --add-label ${shq(name)}`;
+  if (forge === "github")
+    return `gh ${ghObjectType(target)} edit ${number} --add-label ${shq(name)}`;
   return `glab api -X PUT -f "add_labels=${shq(name)}" /projects/:id/${target === "issue" ? `issues/${number}` : `merge_requests/${number}`}`;
 }
 
-/** Remove a label from an issue. GitLab: `remove_labels` on issue PUT. */
+/** Remove a label from an issue/PR. Same github `mr`→`pr` mapping as `labelAddCmd` (#775). */
 export function labelRemoveCmd(
   forge: ForgeType,
   target: "issue" | "mr",
   number: number,
   name: string,
 ): string {
-  if (forge === "github") return `gh ${target} edit ${number} --remove-label ${shq(name)}`;
+  if (forge === "github")
+    return `gh ${ghObjectType(target)} edit ${number} --remove-label ${shq(name)}`;
   return `glab api -X PUT -f "remove_labels=${shq(name)}" /projects/:id/${target === "issue" ? `issues/${number}` : `merge_requests/${number}`}`;
 }
 
