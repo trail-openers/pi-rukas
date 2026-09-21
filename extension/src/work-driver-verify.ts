@@ -21,6 +21,7 @@ import type { VerifyExecFn } from "./work-driver-git.ts";
 import { detectMainline } from "./work-driver-git.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
 import type { ConsolidationVerdict } from "./workflow-state-consolidation.ts";
+import type { WorkEvent } from "./workflow-state-events.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 // Re-export for existing consumers (smoke tests) so import paths stay valid.
@@ -300,7 +301,20 @@ export async function verifyStepOutcome(
   ctx: DriverContext,
   state: WorkState,
   step: "develop" | "commit-pr",
-): Promise<{ ok: boolean; failures: string[]; notes: string[]; adoptedPrNumber?: number }> {
+): Promise<{
+  ok: boolean;
+  failures: string[];
+  notes: string[];
+  adoptedPrNumber?: number;
+  /**
+   * #782 — true when this run's consolidated verify recovered from a single
+   * transient flake (the caller emits `verify-flake-recovered` and records
+   * `retries: 1, recovered: true` on any verifyEvidence it writes). Absent
+   * on every other outcome, including the retry-failed path (that path
+   * records `retries: 1, recovered: false` without the flag).
+   */
+  flakeRecovered?: boolean;
+}> {
   const failures: string[] = [];
   const notes: string[] = [];
   if (!verifyGateEnabled()) {
@@ -309,8 +323,19 @@ export async function verifyStepOutcome(
   const execFn = ctx.verifyExecFn ?? execp;
 
   if (step === "develop") {
-    await verifyDevelopOutcome(ctx, state, execFn, failures, notes);
-    return { ok: failures.length === 0, failures, notes };
+    // #782 — the flake callback is wired at this layer: on recovery it
+    // returns a success verdict carrying the flag the caller routes.
+    let flakeEvidenceTail: string | undefined;
+    await verifyDevelopOutcome(ctx, state, execFn, failures, notes, (evidenceTail) => {
+      flakeEvidenceTail = evidenceTail;
+    });
+    const flakeRecovered = flakeEvidenceTail !== undefined;
+    return {
+      ok: failures.length === 0,
+      failures,
+      notes,
+      ...(flakeRecovered ? { flakeRecovered: true } : {}),
+    };
   }
 
   // step === "commit-pr"

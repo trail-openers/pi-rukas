@@ -15,6 +15,7 @@ import type { DriverContext } from "./work-driver-context.js";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
+import { rerunConsolidatedVerifyOnce } from "./work-driver-verify-flake.ts";
 
 export async function runConsolidatedVerify(
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
@@ -26,10 +27,28 @@ export async function runConsolidatedVerify(
     scratchDir: string;
     verifyCmd: string;
     timeoutMs: number;
+    /**
+     * #782 — the single bounded flake re-run. When the first run fails and
+     * `canRetry` is true, the SAME command re-runs once on the SAME still-
+     * checked-out scratch tree (BEFORE `restoreRoot`) and the outcome
+     * replaces the single-run verdict: the re-run passes →
+     * `status: "passed"` + the `onRecover` callback with the original
+     * failing tail (the caller emits `verify-flake-recovered` and proceeds);
+     * the re-run fails → the SAME failed shape as a single-run failure,
+     * with `retried: true` and `recovered: false` so the caller records
+     * `retries: 1, recovered: false` and classifies/parks exactly as today.
+     * The retry is caller-gated: `canRetry` must be true only when every
+     * per-worktree verify passed AND this is a genuine consolidation (the
+     * caller owns those preconditions — N>1 at this seam).
+     */
+    retry?: {
+      canRetry: boolean;
+      onRecover: (evidenceTail?: string) => void;
+    };
   },
 ): Promise<
-  | { status: "passed"; applied: string[] }
-  | { status: "failed"; detail: string }
+  | { status: "passed"; applied: string[]; recovered?: boolean }
+  | { status: "failed"; detail: string; retried?: boolean; recovered?: boolean }
   // #725 — the caller distinguishes a genuine cherry-pick / patch-apply
   // conflict from a dirty-repoRoot preflight refusal via `kind`, not by
   // regexing the `detail` prose (a reworded message used to silently
@@ -37,6 +56,7 @@ export async function runConsolidatedVerify(
   | { status: "conflict"; detail: string; kind: "conflict" | "dirty-root" }
 > {
   const { repoRoot, baseSha, worktrees, scratchDir, verifyCmd, timeoutMs } = opts;
+  const retry = opts.retry;
   // A scratch branch name no other step of the cycle ever creates. Deleted
   // on the restore path below (a leftover branch costs nothing, but noise
   // is noise; the worktrees are untouched either way).
@@ -143,9 +163,30 @@ export async function runConsolidatedVerify(
       const e = err as Error & { stderr?: string; stdout?: string };
       verifyFailure = (e.stderr || e.stdout || e.message || "").toString().trim();
     }
+    // #782 — the single bounded flake re-run. It happens on the SAME still-
+    // checked-out scratch tree, BEFORE `restoreRoot` (a re-run after the
+    // restore would test the restored mainline, not the combination). When it
+    // passes, the probe is declared passed with the recovery flag; when it
+    // fails, the classification below proceeds on the second run's tail — a
+    // test that fails twice is not a flake, so the cycle parks as today.
+    let recovered = false;
+    let retried = false;
+    if (verifyFailure !== undefined && retry?.canRetry) {
+      retried = true;
+      const secondTail = await rerunConsolidatedVerifyOnce(execFn, verifyCmd, repoRoot, timeoutMs);
+      if (secondTail === undefined) {
+        recovered = true;
+      } else {
+        verifyFailure = secondTail;
+      }
+    }
     const restore = await restoreRoot();
     const applied =
       orchResult.cherryApplied.length > 0 ? orchResult.cherryApplied : orchResult.patchApplied;
+    if (recovered) {
+      retry?.onRecover(verifyFailure);
+      return { status: "passed", applied, recovered: true };
+    }
     if (verifyFailure !== undefined) {
       // #723 — same attribution anchor as formatExecError: a bare `.slice(-800)`
       // can splice a passing sub-command's tail onto a later failure.
@@ -161,7 +202,12 @@ export async function runConsolidatedVerify(
       // #750 — the verified post-condition rides with every outcome of the
       // probe run (the root is transient either way; an unverified claim
       // about it is exactly the incident).
-      return { status: "failed", detail: `${detail} ${restoreClaimFor(restore)}` };
+      return {
+        status: "failed",
+        detail: `${detail} ${restoreClaimFor(restore)}`,
+        retried,
+        recovered: false,
+      };
     }
     if (!restore.restored) {
       trace(

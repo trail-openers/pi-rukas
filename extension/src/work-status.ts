@@ -169,12 +169,13 @@ function fmtEvent(e: WorkEvent): string {
     case "lens-fix-empty-resend":
       return `  lens-fix-empty-resend · round ${e.round} · ${e.worktree}`;
     case "converge-redispatch":
-      // #741 — the converge gate's one-shot corrective dispatch marker.
       return "  converge-redispatch · develop · corrective dispatch for missing deliverable(s)";
     case "adversarial-skipped-empty-diff":
       return `  adversarial-skipped-empty-diff · workstream ${e.workstreamId}`;
     case "verify-full-status":
-      return `  verify-full-status · ${e.status}${e.ms ? ` · ${fmtElapsed(e.ms)}` : ""}${e.evidenceTail ? ` · ${e.evidenceTail.slice(0, 50)}` : ""}`;
+      return `  verify-full-status · ${e.status}${e.recovered ? " (recovered)" : ""}${e.ms ? ` · ${fmtElapsed(e.ms)}` : ""}${e.evidenceTail ? ` · ${e.evidenceTail.slice(0, 50)}` : ""}`;
+    case "verify-flake-recovered":
+      return `  verify-flake-recovered · ${e.step}${e.evidenceTail ? ` · ${e.evidenceTail.slice(0, 50)}` : ""}`;
     case "widening-scan":
       return `  widening-scan · ${e.findings.length} finding(s)`;
     case "memory-write":

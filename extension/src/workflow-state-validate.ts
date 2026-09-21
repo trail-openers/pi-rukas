@@ -68,6 +68,8 @@ export const KNOWN_EVENT_KINDS: readonly unknown[] = [
   "branch-completed",
   "branches-converged",
   "verify-full-status",
+  // #782 — the consolidated-verify gate's single-retry recovery marker.
+  "verify-flake-recovered",
   "widening-scan",
   "memory-write",
   "memory-inject",
