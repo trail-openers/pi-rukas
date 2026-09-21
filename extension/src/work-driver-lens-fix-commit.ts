@@ -33,7 +33,7 @@ import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import { withIntegrationLock } from "./work-driver-integrate.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
-import type { ExecFn } from "./worktree.ts";
+import { type ExecFn, sweepBranchHolders } from "./worktree.ts";
 
 /**
  * The number of commits the fixer made in `tree` beyond the feature
@@ -126,6 +126,10 @@ export async function landCommittedFix(
     const sha = stdout.trim();
     if (sha.length < 7) return { ok: false, error: "could not read the worktree's HEAD" };
     await withIntegrationLock(ctx.repoRoot, async () => {
+      // #776 — a clean worktree holding the branch blocks `git checkout`
+      // ("fatal: '<branch>' is already used by worktree at '…'"). Sweep it
+      // first, the same way integrate() followup mode does.
+      await sweepBranchHolders(execFn, ctx.repoRoot, branchName);
       await execFn(`git checkout ${JSON.stringify(branchName)}`, {
         cwd: ctx.repoRoot,
         maxBuffer: 256 * 1024,

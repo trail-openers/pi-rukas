@@ -66,6 +66,13 @@ async function main() {
     const cmd = forgeCommands.prCreateCmd("github", "T", "branch", "/tmp/b", "main");
     assert(cmd.includes("--head main...branch"), `got ${cmd}`);
   });
+  // #776 — an absent/blank base branch must produce a plain `--head <branch>`,
+  // never a ref range (the #753 "...mech-pr-body.md...feature/…" GraphQL shape).
+  await check("prCreateCmd without a baseBranch uses a plain --head (no '...')", () => {
+    const cmd = forgeCommands.prCreateCmd("github", "T", "branch", "/tmp/b");
+    assert(cmd.includes("--head branch"), `got ${cmd}`);
+    assert(!cmd.includes("..."), `ref range leaked: ${cmd}`);
+  });
   await check("labelCreateCmd uses gh label create --force", () => {
     const cmd = forgeCommands.labelCreateCmd("github", "needs-human-attention", "FFAA00");
     assert(cmd === "gh label create needs-human-attention --color FFAA00 --force", `got ${cmd}`);
@@ -342,6 +349,16 @@ async function main() {
       assert(cmd!.includes("--head main...feature/issue-17-x"), `--head: ${cmd}`);
       const file = cmd!.replace(/.*--body-file\s+/, "");
       assert(file.startsWith("/"), `not a temp path: ${file}`);
+    });
+    // #776 — the 4th arg of prCreate is the base branch, the 3rd the body
+    // STRING; a path in the 4th slot is the #776 construction bug. With no
+    // baseBranch the adapter must emit a plain --head.
+    await check("prCreate without a baseBranch emits a plain --head (no ref range)", async () => {
+      const pr = await forge.prCreate("A PR", "feature/issue-17-x", "the PR body");
+      assert(pr.number === 17, "round-tripped");
+      const cmd = calls.find((c) => c.includes("gh pr create") && !c.includes("..."));
+      assert(cmd !== undefined, `no plain-head create cmd: ${calls}`);
+      assert(cmd!.includes("--head feature/issue-17-x"), `--head: ${cmd}`);
     });
   }
 
