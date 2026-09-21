@@ -170,6 +170,63 @@ try {
     });
     assert(r.ok, "a repo with no verify command integrates exactly as before");
   }
+
+  // ------------------- #777 — the classify message is classified
+  // The commit-pr twin seam (integrate() step 4) must classify the
+  // consolidated-tree verify failure via the shared classifier, naming the
+  // specific assertion + workstream ids, not a generic "the combination
+  // does not" — the #761 plumb origin.
+  {
+    const f = await fixture("classified", ["a", "b"], { "afile.txt": "a\n", "bfile.txt": "b\n" });
+    rmSync(path.join(f.worktrees.a as string, "bfile.txt"));
+    writeFileSync(path.join(f.worktrees.b as string, "afile.txt"), "a edited\n");
+    const r = await integrate(realExec, {
+      repoRoot: f.repo,
+      branchName: "feature/classified",
+      baseSha: f.baseSha,
+      worktrees: f.worktrees,
+      scratchDir: f.scratch,
+      commitTitle: "feat: x",
+      commitBody: "b",
+      mode: "create",
+      requireAllNonEmpty: true,
+      // Workstream A deletes bfile.txt (uncommitted); workstream B edits afile.txt.
+      // The combined tree after integration is missing bfile.txt. The verify
+      // command uses `[ -f ... ] || exit 1` (a real shell test that exits 1
+      // when the file is absent) — NOT `test -f`, which exits 1 on the test
+      // itself. The `||` branch runs only when the test fails, emitting the
+      // ✗ assertion line, and the shell exits 1 (the `||` short-circuit
+      // preserves the test's non-zero exit).
+      verifyCmd: "[ -f bfile.txt ] || { echo '✗ check on bfile.txt: exit 0 (got 1)'; exit 1; }",
+    });
+    assert(!r.ok, "classify: a consolidated tree that fails verify does not integrate");
+    assert(
+      !r.ok && r.failure === "verify",
+      "classify: the failure is tagged `verify` — callers must distinguish a verdict from env variance",
+    );
+    assert(
+      !r.ok && /\[consolidation-created\]|\[per-workstream-defect\]|\[needs-human-decision\]/.test(r.reason),
+      `classify: the reason carries the classification label (got "${r.ok ? "" : r.reason.slice(0, 120)}")`,
+    );
+    assert(
+      !r.ok && /bfile\.txt/.test(r.reason),
+      `classify: the reason names the specific failing assertion — the biome line, not "exit 1" (got "${r.ok ? "" : r.reason.slice(0, 120)}")`,
+    );
+    assert(
+      !r.ok && /\b[a-b]\b/.test(r.reason) && r.reason.includes("a") && r.reason.includes("b"),
+      "classify: the reason names both workstream ids whose combination caused it",
+    );
+    assert(
+      !r.ok && /was restored|restored to/.test(r.reason),
+      "classify: the restore claim is still present after classification",
+    );
+    // The branch still must not reach origin.
+    const { stdout: remoteBranches } = await execFileP("git", ["branch", "-a"], { cwd: f.originDir });
+    assert(
+      !remoteBranches.includes("feature/classified"),
+      "classify: the branch never reached origin",
+    );
+  }
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

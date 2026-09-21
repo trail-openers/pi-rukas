@@ -126,6 +126,11 @@ const CAP_HIT_FIXED_LITERALS: readonly unknown[] = [
   // workstreams edited the same lines). A decomposition error, distinct
   // from the generic verify-failed:develop template.
   "consolidated-verify-conflict",
+  // #777 — develop-time consolidated verify failed on a specific assertion
+  // that neither workstream tripped alone (per-workstream pass, combined
+  // fail). Distinct from the conflict cap and the verify-failed:develop
+  // template. The failure message carries the classification + assertion.
+  "consolidated-verify-consolidation-created",
   // #728 — consolidation dropped files (strict-subset stage, the #723
   // incident shape): distinct from the conflict cap and the verify-failed:
   // develop template. The dropped paths ride in the event's evidence.
