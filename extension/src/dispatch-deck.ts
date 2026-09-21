@@ -344,8 +344,12 @@ function hasRenderableRows(): boolean {
  *  including them here would render each batch member twice — once as a
  *  Text row and once as a SelectList item. This is a strict subset of
  *  `buildLines`' output (both contain batch headers; `buildLines` also
- *  adds standalone rows). */
-function buildLinesBatchOnly(now: number = Date.now()): string[] {
+ *  adds standalone rows). Exported for the superset-invariant test
+ *  (test-dispatch-deck.ts block 12c), which compares it against
+ *  `buildLines` at a fixed `now` — the test cannot reconstruct this from
+ *  the exported surface without sampling `Date.now()` twice and racing a
+ *  1 ms elapsed-time tick (flaky on CI). */
+export function buildLinesBatchOnly(now: number = Date.now()): string[] {
   const lines: string[] = [];
   for (const b of batches.values()) {
     lines.push(formatBatchRow(b, now));
