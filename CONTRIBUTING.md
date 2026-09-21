@@ -276,6 +276,8 @@ Without it, release PRs are authored by `GITHUB_TOKEN` and GitHub's anti-recursi
   review / model code.
 - Use `gh issue create` or the web UI. No template — just be specific about
   what you saw and what you expected.
+- Found a security issue? Do not open a public issue or PR — report it
+  privately via [SECURITY.md](SECURITY.md).
 
 ## License
 
