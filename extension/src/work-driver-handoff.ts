@@ -16,6 +16,7 @@ import {
 import { renderHandoffMarkdown } from "./work-driver-handoff-markdown.ts";
 import { postHandoffWithRetry } from "./work-driver-handoff-post-retry.ts";
 import {
+  applyIssueLabelDualTarget,
   captureCommittedWork,
   makeHandoffEmittedEvent,
   parseHandoffOpsReply,
@@ -239,6 +240,12 @@ export async function runHandoff(
   let commentUrl = parseHandoffCommentUrl(opsReplyText) ?? priorHandoffCommentUrl(next.eventLog);
   if (parsed.commentUrl && !commentUrl) commentUrl = parsed.commentUrl;
   let labelApplied = false;
+  // #798 — per-target label state. When prNumber is set, the driver labels
+  // BOTH the issue (the entry-gate target) and the PR (the review target);
+  // each is verified independently. When prNumber is absent, only the issue
+  // is targeted and issueLabelApplied mirrors labelApplied.
+  let issueLabelApplied: boolean | undefined;
+  let prLabelApplied: boolean | undefined;
   // #775 — provenance of the recorded state. "dispatch" is asserted only
   // when the driver verified it (URL parsed or label read-back succeeded);
   // a reply whose state could not be verified records no provenance.
@@ -258,30 +265,31 @@ export async function runHandoff(
     );
   {
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
-    const objType = prNumber ? "pr" : "issue";
     if (commentUrl) delivery = "dispatch";
     if (forge) {
-      const verified = await verifyHandoffLabel(forge, objType, prNumber ?? ctx.issue);
-      if (verified) {
-        labelApplied = true;
-        if (!delivery) delivery = "dispatch";
+      if (prNumber) {
+        // #798 — option (a): verify the label on BOTH the issue (the entry-
+        // gate target) and the PR (the review target). Each is independent;
+        // a partial success records which target verified.
+        const issueVerified = await verifyHandoffLabel(forge, "issue", ctx.issue);
+        const prVerified = await verifyHandoffLabel(forge, "pr", prNumber);
+        issueLabelApplied = issueVerified;
+        prLabelApplied = prVerified;
+        labelApplied = issueVerified && prVerified;
+        if (labelApplied && !delivery) delivery = "dispatch";
+      } else {
+        const verified = await verifyHandoffLabel(forge, "issue", ctx.issue);
+        issueLabelApplied = verified;
+        labelApplied = verified;
+        if (verified && !delivery) delivery = "dispatch";
       }
     }
   }
 
-  // #775 — determine if the dispatch failed (threw or timed out) by checking
-  // for a dispatch-failed event in the event log that was just appended.
-  // A healthy dispatch (completion event, no failure) does NOT fail.
-
-  // PR5 in-process fallback (item 3, #674 — with retry). When the ops
-  // dispatch failed OR the commentUrl didn't parse out, the driver itself
-  // posts via the forge adapter — the body file is already on disk and no
-  // LLM is needed for two mechanical CLI invocations. A transient API
-  // hiccup (rate limit, 5xx, network blip) no longer immediately becomes a
-  // manual-recovery task: postHandoffWithRetry waits out a jittered linear
-  // backoff and re-issues the failed call (up to 3 attempts total), and
-  // only after retries are exhausted does the in-chat HANDOFF DISPATCH
-  // INCOMPLETE banner surface the verbatim manual gh commands.
+  // In-process fallback (with retry). When the ops dispatch failed OR the
+  // commentUrl didn't parse out, the driver itself posts via the forge
+  // adapter. postHandoffWithRetry retries with backoff; only after retries
+  // are exhausted does the HANDOFF DISPATCH INCOMPLETE banner surface.
   if (!commentUrl || !labelApplied) {
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
     try {
@@ -318,6 +326,9 @@ export async function runHandoff(
           targetId: targetId,
           objType,
           needsComment: !commentUrl,
+          // #798 — the comment target is the PR (when prNumber set), but the
+          // label must land on BOTH. The retry handles the comment target's
+          // label; the issue label is applied separately below.
           needsLabel: !labelApplied,
           existingComments,
         });
@@ -327,7 +338,23 @@ export async function runHandoff(
           // also failed, this is the fallback's provenance.
           if (dispatchFailed && !delivery) delivery = "fallback";
         }
-        if (posted.labelApplied) {
+        if (prNumber) {
+          // #798 — dual-target: re-verify both independently after the retry.
+          const issueVerified = await verifyHandoffLabel(forge, "issue", ctx.issue);
+          const prVerified = posted.labelApplied
+            ? await verifyHandoffLabel(forge, "pr", prNumber)
+            : (prLabelApplied ?? false);
+          if (issueVerified) {
+            issueLabelApplied = true;
+            if (dispatchFailed) delivery = "fallback";
+          }
+          if (prVerified) {
+            prLabelApplied = true;
+            if (dispatchFailed) delivery = "fallback";
+          }
+          labelApplied = issueVerified && prVerified;
+        } else if (posted.labelApplied) {
+          issueLabelApplied = true;
           labelApplied = true;
           if (dispatchFailed) delivery = "fallback";
         }
@@ -336,6 +363,22 @@ export async function runHandoff(
       trace(
         `work-driver: in-process forge fallback failed: ${(err as Error).message?.slice(0, 200)}`,
       );
+    }
+  }
+  // #798 — when prNumber is set, the fallback above applies the label to the
+  // comment target (PR) via postHandoffWithRetry. The ISSUE label is applied
+  // separately here because the retry only targets one object.
+  if (prNumber && !issueLabelApplied) {
+    const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
+    if (forge) {
+      // #798 — the helper APPLIES the issue label (its return is the
+      // immediately-following read-back, which can be stale/false when the
+      // server-side write has not settled). The authoritative state is a
+      // FRESH read — never trust the helper's first read for the record.
+      const ok = await applyIssueLabelDualTarget(forge, ctx.issue);
+      const verified = ok || (await verifyHandoffLabel(forge, "issue", ctx.issue));
+      issueLabelApplied = verified;
+      if (verified) labelApplied = true;
     }
   }
   // #674 — carry the consolidation outcome into the handoff-emitted event so the
@@ -362,6 +405,10 @@ export async function runHandoff(
         ? "consolidation infeasible (work remains on its worktree detached HEADs)"
         : undefined,
     delivery,
+    targetType: prNumber ? "pr" : "issue",
+    targetNumber: prNumber ?? ctx.issue,
+    issueLabelApplied,
+    prLabelApplied,
   });
   next = appendEvent(next, emitted);
   // #571 — release the path claim so sibling cycles can proceed.
@@ -370,23 +417,10 @@ export async function runHandoff(
   } catch {
     /* best-effort; handoff must always emit regardless */
   }
-  // Set terminal status from the most recent cap-hit's cap shape:
-  //   - step-failed:<step> or developer-timeout → 'aborted' (the
-  //     halt-cascade router synthesised this; mid-flight failure)
-  //   - any other cap (adversarial-loop, round-cap, wall-clock,
-  //     ci-retry) → 'handoff' (cycle reached handoff via the verdict
-  //     path, not via dispatch-failure)
+  // Terminal status: mid-flight halts (developer-timeout, step-failed:*,
+  // loop-detected, token-budget) → 'aborted'; all other caps → 'handoff'.
   const lastCapHit = [...next.eventLog].reverse().find((e) => e.kind === "cap-hit");
-  // Not a renderer — this only decides `aborted` vs `handoff`. It used to spell
-  // "no cap recorded" as `"adversarial-loop"`, which happened to give the right
-  // answer here (an absent cap is not a mid-flight halt) while seeding the same
-  // fake cap name the renderers were misreporting. Say what is meant instead.
   const capShape = lastCapHit?.kind === "cap-hit" ? lastCapHit.cap : undefined;
-  // #543 F4 — the dispatch-cap kills (loop-detected / token-budget) are
-  // mid-flight halts like developer-timeout: the child was killed by the
-  // harness, not by a review verdict. They route to `aborted` so the
-  // operator sees a mid-flight failure, and the caped-partial-state
-  // checkpoint block (F5) carries the work that was saved.
   const capKilledCap =
     capShape === "loop-detected" || capShape === "token-budget" ? capShape : undefined;
   const isMidFlightHalt =

@@ -149,7 +149,7 @@ function fmtEvent(e: WorkEvent): string {
     case "step-back-completed":
       return `  step-back-completed · ${e.sddElement}`;
     case "handoff-emitted":
-      return `  handoff-emitted${e.commentUrl ? ` · ${e.commentUrl}` : ""}${e.consolidated ? ` · onto ${e.consolidatedBranch ?? "?"}` : ""}`;
+      return `  handoff-emitted → ${e.targetType ?? "?"} #${e.targetNumber ?? "?"}${e.commentUrl ? ` · ${e.commentUrl}` : ""}${e.consolidated ? ` · onto ${e.consolidatedBranch ?? "?"}` : ""}`;
     case "handoff-consolidated":
       return `  handoff-consolidated · ${e.branchName} · ${e.workstreams.join(", ")}`;
     case "ci-status":
@@ -326,11 +326,19 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
   // GitHub handoff outcome.
   const handoffEvt = [...state.eventLog].reverse().find((e) => e.kind === "handoff-emitted");
   if (handoffEvt?.kind === "handoff-emitted") {
+    const te = handoffEvt;
+    // #798 — per-target fields present → label landed on (both) issue+PR;
+    // the single-boolean pre-#798 shape renders as before.
+    const dual = te.issueLabelApplied !== undefined || te.prLabelApplied !== undefined;
+    const labelLine = dual
+      ? `  label:   needs-human-attention${te.issueLabelApplied ? ` on issue #${issue}` : ` NOT verified on issue #${issue}`}${te.prLabelApplied !== undefined ? ` / ${te.prLabelApplied ? "on PR" : " NOT verified on PR"} #${ps.prNumber ?? "?"}` : ""}${te.labelApplied ? "" : " (partial failure)"}`
+      : `  label:   ${te.labelApplied ? "needs-human-attention applied" : "WARNING: NOT applied"}`;
     lines.push(
       "",
       "GitHub handoff:",
-      `  comment: ${handoffEvt.commentUrl ?? "WARNING: NOT POSTED — see recovery #4 below"}`,
-      `  label:   ${handoffEvt.labelApplied ? "needs-human-attention applied" : "WARNING: NOT applied"}`,
+      `  target:  ${te.targetType ? `${te.targetType} #${te.targetNumber ?? "?"}` : "?"} (explicit, #798)`,
+      `  comment: ${te.commentUrl ?? "WARNING: NOT POSTED — see recovery #4 below"}`,
+      labelLine,
     );
   }
 

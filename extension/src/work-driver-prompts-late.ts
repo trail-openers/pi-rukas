@@ -307,9 +307,32 @@ export function inlineHandoffOpsPrompt(
   const commentCmd = prNumber
     ? `gh pr comment ${prNumber} --body-file ${bodyPath}`
     : `gh issue comment ${issue} --body-file ${bodyPath}`;
-  const editCmd = prNumber
-    ? `gh pr edit ${prNumber} --add-label needs-human-attention`
-    : `gh issue edit ${issue} --add-label needs-human-attention`;
+  // #798 — option (a): when a PR exists, the label goes on BOTH the issue
+  // (the entry-gate target that /work N reads) and the PR (the review
+  // target). Without the PR, the issue is the only target.
+  const labelCmds: string[] = [];
+  if (prNumber) {
+    labelCmds.push(`gh issue edit ${issue} --add-label needs-human-attention`);
+    labelCmds.push(`gh pr edit ${prNumber} --add-label needs-human-attention`);
+  } else {
+    labelCmds.push(`gh issue edit ${issue} --add-label needs-human-attention`);
+  }
+  // Verification: check both targets when PR exists.
+  const verifyCmds: string[] = [];
+  if (prNumber) {
+    verifyCmds.push(`gh issue view ${issue} --json labels`);
+    verifyCmds.push(`gh pr view ${prNumber} --json labels`);
+  } else {
+    verifyCmds.push(`gh issue view ${issue} --json labels`);
+  }
+  const labelStep =
+    labelCmds.length === 1
+      ? `  3. Apply the label:\n     \`${labelCmds[0]}\``
+      : `  3. Apply the label to BOTH the issue and the PR (the entry gate reads the issue; the review happens on the PR):\n     \`${labelCmds[0]}\`\n     \`${labelCmds[1]}\``;
+  const verifyStep =
+    verifyCmds.length === 1
+      ? `  5. Verify the label is on the target with a single unchained command (do NOT chain it to anything else):\n     \`${verifyCmds[0]}\``
+      : `  5. Verify the label is on BOTH targets (one unchained command each — do NOT chain them):\n     \`${verifyCmds[0]}\`\n     \`${verifyCmds[1]}\``;
   return [
     `/work issue #${issue} — Step 7g (Cap-hit handoff). The driver hit a deterministic loop cap and is handing off to the user. Post the structured comment + apply the label.`,
     "",
@@ -320,17 +343,15 @@ export function inlineHandoffOpsPrompt(
     `  2. Post the handoff comment on ${target}:`,
     `     \`${commentCmd}\``,
     "",
-    "  3. Apply the label:",
-    `     \`${editCmd}\``,
+    labelStep,
     "",
     `  4. The body file is at: \`${bodyPath}\` (already populated by the driver — DO NOT modify or regenerate).`,
     "",
-    "  5. Verify the label is on the target with a single unchained command (do NOT chain it to anything else):",
-    `     \`${prNumber ? `gh pr view ${prNumber}` : `gh issue view ${issue}`} --json labels\``,
+    verifyStep,
     "",
     "  6. End your reply with the GitHub URL of the comment you just created (the canonical `…#issuecomment-<id>` form `gh` prints when posting succeeds), then on the final line a marker of EXACTLY this shape (the driver parses it mechanically):",
     "     `HANDOFF-RESULT: comment=<the comment URL, or none> label=<applied|not-applied>`",
-    "     (use `applied` only if the verification in step 5 showed the label is present on the target; the driver verifies the label itself via a forge read, so an unverified claim is treated as not-applied — report what you actually checked)",
+    "     (use `applied` only if ALL verification commands in step 5 showed the label is present on their respective targets; the driver verifies the label itself via a forge read, so an unverified claim is treated as not-applied — report what you actually checked)",
     "",
     "On any failure (gh auth, network, label-create), surface the error verbatim and continue with whatever steps are still possible — report what you actually verified, never a status you did not check.",
     scratchHygieneSection(scratchDirAbs),
