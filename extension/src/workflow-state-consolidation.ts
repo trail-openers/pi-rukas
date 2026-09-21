@@ -75,8 +75,10 @@ type TolerantConsolidationEntry =
  * `Array<{ id, paths }>` on the field) and the current
  * `IncompleteConsolidation` shape. Legacy entries map to `{ id, paths }`;
  * an `uncovered` verdict maps to `{ id, paths: uncoveredPaths }`.
- * `unverifiable` and `complete` verdicts are NOT "missing" — the gate
- * fires on `uncovered` only (`unverifiable` is a note, not a failure).
+ * `unverifiable`, `complete` and `moved` (#778 — covered, with the move
+ * recorded) verdicts are NOT "missing" — the gate fires on `uncovered`
+ * only (`unverifiable` is a note, not a failure; `moved` is a pass with
+ * provenance).
  *
  * This is the ONLY reader-facing adapter for the field: renderers call
  * it instead of indexing the field directly, so the two shapes are

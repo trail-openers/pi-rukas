@@ -439,13 +439,13 @@ async function runCommitPrLocked(
     trace(
       `work-driver: commit-pr partial-consolidation detected — missing workstreams: ${consolidationCheck.missing.map((m) => m.id).join(", ")}`,
     );
-    const verdicts: ConsolidationVerdict[] = consolidationCheck.verdicts
-      .filter((v) => v.status !== "complete")
-      .map((v) =>
-        v.status === "uncovered"
-          ? { id: v.id, status: "uncovered" as const, uncoveredPaths: v.uncoveredPaths }
-          : { id: v.id, status: "unverifiable" as const, reason: v.reason },
-      );
+    // #778 — persist `moved` verdicts too (the state file records where a
+    // renamed declared path landed, for #774's recovery plan); `complete`
+    // stays excluded, and the reader adapter's explicit `uncovered` filter
+    // makes persisting `moved` a no-op for missingWorkstreamsFromConsolidation.
+    const verdicts: ConsolidationVerdict[] = consolidationCheck.verdicts.filter(
+      (v) => v.status !== "complete",
+    );
     next = {
       ...next,
       pipelineState: {
