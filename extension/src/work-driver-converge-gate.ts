@@ -146,6 +146,13 @@ export async function runConvergeGateHandler(
     // first (commit the uncommitted work), then the verify gate.
     next = await applySafetyNet(ctx, next);
     const gate2 = await verifyStepOutcome(ctx, next, "develop");
+    if (gate2.flakeRecovered) {
+      next = appendEvent(next, {
+        kind: "verify-flake-recovered",
+        at: Date.now(),
+        step: "develop",
+      });
+    }
     if (!gate2.ok) {
       const cap2 = gate2.failures.find((f) =>
         /cherry-pick \/ apply conflict|could not combine the workstreams/.test(f),
@@ -156,7 +163,15 @@ export async function runConvergeGateHandler(
         ...next,
         pipelineState: {
           ...next.pipelineState,
-          verifyEvidence: { step: "develop", failures: gate2.failures, at: Date.now() },
+          // #782 — thread the flake-recovered flag into verifyEvidence so the
+          // handoff can show "retried once, recovered" when the converge gate
+          // parks after a consolidated verify that recovered from a flake.
+          verifyEvidence: {
+            step: "develop",
+            failures: gate2.failures,
+            at: Date.now(),
+            ...(gate2.flakeRecovered ? { retries: 1, recovered: true } : {}),
+          },
         },
       };
       next = appendEvent(next, {

@@ -41,7 +41,14 @@ function createMockExecFn(
     opts?: { cwd?: string; timeout?: number; maxBuffer?: number },
   ): Promise<{ stdout: string; stderr?: string }> => {
     trackCalls.push({ cmd, cwd: opts?.cwd });
-    const result = results[idx++] ?? { stdout: "", stderr: "unexpected call" };
+    // Out-of-bounds calls (e.g. a flake retry when the test only provided one
+    // result) also throw — the mock's contract is "unscripted calls fail",
+    // which matches the #782 flake-retry semantics (a retry that has no
+    // scripted result is a genuine second failure).
+    if (idx >= results.length) {
+      throw new Error("error: unexpected call");
+    }
+    const result = results[idx++];
     if (result.stderr?.startsWith("error:")) {
       throw new Error(result.stderr);
     }
@@ -199,6 +206,78 @@ async function testRunVerifyFullCwd() {
   console.log("✓ testRunVerifyFullCwd");
 }
 
+/**
+ * #782 — a flake re-runs once: the first run fails, the bounded re-run
+ * passes. The result is a success with `recovered: true` and the FIRST run's
+ * failing tail preserved as `firstRunOutput` (so the caller can surface what
+ * the flake looked like on the verify-full-status event).
+ */
+async function testRunVerifyFullFlakeRecovered() {
+  const trackCalls: Array<{ cmd: string; cwd?: string }> = [];
+  const mockExec = createMockExecFn(
+    [
+      { stdout: "", stderr: "error: test failed" },
+      { stdout: "test result: 23 passed, 0 failed", stderr: "" },
+    ],
+    trackCalls,
+  );
+  const result = await runVerifyFull("cargo test", tmpDir, 5000, mockExec, { retry: true });
+  assert.strictEqual(result.outcome, "success", "recovered re-run is a success");
+  assert.strictEqual(result.recovered, true, "recovered flag set");
+  assert.ok(
+    result.firstRunOutput?.includes("error: test failed"),
+    "first run's failing tail preserved",
+  );
+  assert.strictEqual(trackCalls.length, 2, "exactly one re-run (bounded, not a loop)");
+  assert.strictEqual(trackCalls[0].cmd, trackCalls[1].cmd, "same command re-run");
+  assert.strictEqual(trackCalls[0].cwd, trackCalls[1].cwd, "same worktree re-run");
+  console.log("✓ testRunVerifyFullFlakeRecovered");
+}
+
+/**
+ * #782 — a test that fails TWICE is not a flake. The re-run is bounded to
+ * exactly one, the result is a failure, no `recovered` flag, and the second
+ * (most recent) tail is the primary evidence.
+ */
+async function testRunVerifyFullFlakeStillFails() {
+  const trackCalls: Array<{ cmd: string; cwd?: string }> = [];
+  const mockExec = createMockExecFn(
+    [
+      { stdout: "", stderr: "error: test failed (run 1)" },
+      { stdout: "", stderr: "error: test failed (run 2)" },
+    ],
+    trackCalls,
+  );
+  const result = await runVerifyFull("cargo test", tmpDir, 5000, mockExec, { retry: true });
+  assert.strictEqual(result.outcome, "failure", "two failures is a genuine failure");
+  assert.strictEqual(result.recovered, undefined, "no recovered flag on genuine failure");
+  assert.ok(result.output.includes("run 2"), "most recent tail is the primary evidence");
+  assert.ok(
+    result.firstRunOutput?.includes("run 1"),
+    "first run's failing tail preserved",
+  );
+  assert.strictEqual(trackCalls.length, 2, "exactly one re-run, never a loop");
+  console.log("✓ testRunVerifyFullFlakeStillFails");
+}
+
+/**
+ * #782 — the retry is opt-in. A caller that does not pass `retry` keeps the
+ * pre-#782 single-run shape: one failing run is a failure and NO second call
+ * is made (a caller that never opts in must not pay for a re-run).
+ */
+async function testRunVerifyFullNoRetryWhenOptOut() {
+  const trackCalls: Array<{ cmd: string; cwd?: string }> = [];
+  const mockExec = createMockExecFn(
+    [{ stdout: "", stderr: "error: test failed" }],
+    trackCalls,
+  );
+  const result = await runVerifyFull("cargo test", tmpDir, 5000, mockExec);
+  assert.strictEqual(result.outcome, "failure");
+  assert.strictEqual(result.recovered, undefined);
+  assert.strictEqual(trackCalls.length, 1, "no re-run without retry opt-in");
+  console.log("✓ testRunVerifyFullNoRetryWhenOptOut");
+}
+
 /** Test: runVerifyFull measures elapsed time, not just reports zero */
 async function testRunVerifyFullMeasuresElapsed() {
   const slowExec = async () => {
@@ -224,6 +303,9 @@ export async function run() {
     await testRunVerifyFullEvidenceStdout();
     await testRunVerifyFullEvidenceStderr();
     await testRunVerifyFullCwd();
+    await testRunVerifyFullFlakeRecovered();
+    await testRunVerifyFullFlakeStillFails();
+    await testRunVerifyFullNoRetryWhenOptOut();
     await testRunVerifyFullMeasuresElapsed();
     console.log("\n✓ All verify-full tests passed");
   } finally {

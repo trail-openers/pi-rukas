@@ -19,6 +19,7 @@ import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-lefto
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import type { SafetyNetCommitEvent } from "./workflow-state-events-safety-net.ts";
+import type { VerifyFlakeRecoveredEvent } from "./workflow-state-events-verify-flake.ts";
 import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
 // #539 — the commit-pr fallback-cause vocabulary (M1) lives in the
 // sibling events-memory fragment module: single definition.
@@ -471,7 +472,15 @@ export type WorkEvent =
       ms?: number;
       /** Tail of the command output for the handoff/comment body. */
       evidenceTail?: string;
+      /**
+       * #782 — this success is the result of the single bounded re-run: the
+       * first run failed, the re-run (same command, same worktree) passed
+       * BEFORE the ciRetryCount bump. Additive: absent on every non-recovered
+       * outcome and on pre-#782 state files.
+       */
+      recovered?: boolean;
     }
+  | VerifyFlakeRecoveredEvent
   // Fragment events (AGENTS.md §12 module-size hygiene) — the union stays
   // exhaustive: nextStep() and the schema validator see the same closed type.
   | WideningScanEvent

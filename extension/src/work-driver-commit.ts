@@ -21,6 +21,7 @@ import {
   type CommitPrRootState,
   inspectCommitPrRoot,
 } from "./work-driver-commit-inspect.ts";
+import { finalizeCommitPrState } from "./work-driver-commit-pr-events.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
@@ -175,6 +176,7 @@ export async function mechanizedCommitPr(
     // baseSha rather than at whatever repoRoot's HEAD is, and refuses a dirty
     // repoRoot (#283's gate, relocated here) so operator residue can never
     // be swept into the PR — incident #602's shape.
+    let commitPrFlakeEvidence: string | undefined;
     const res = await integrate(execFn, {
       repoRoot: ctx.repoRoot,
       branchName,
@@ -185,13 +187,17 @@ export async function mechanizedCommitPr(
       commitBody,
       mode: "create",
       requireAllNonEmpty: true,
-      // #453 — pass pre-existing commitShas so cherry-pick skips already-applied.
+      // #453 — skip already-applied.
       commitShas: ps.commitShas,
-      // The first time anything compiles the COMBINATION of the workstreams.
-      // Absent `.pi/verify-cmd` leaves this undefined and the gate skips.
       verifyCmd: await verifyCmdFor(ctx.repoRoot),
       verifyExecFn: ctx.verifyExecFn,
       verifyTimeoutMs: integrationVerifyTimeoutMs(),
+      verifyRetry: {
+        ciRetryCount: ps.ciRetryCount,
+        onRecover: (evidenceTail?: string) => {
+          commitPrFlakeEvidence = evidenceTail;
+        },
+      },
     });
     // #539 — the structured cause travels with the result: integrate()
     // KNOWS why it failed; a reader re-parsing `reason` would be guessing.
@@ -265,39 +271,21 @@ export async function mechanizedCommitPr(
       };
     }
     // 5. Emit the same event shapes the dispatch path produces so the shared
-    // downstream (parsePrNumber + both gates) runs unchanged.
+    // downstream (parsePrNumber + both gates) runs unchanged. #782 — the
+    // flake-recovery event (verify-flake-recovered, step: "commit-pr") is
+    // included when the consolidated verify recovered on the single re-run.
     const rootState = await inspectCommitPrRoot(execFn, ctx.repoRoot);
-    let next = appendEvent(
-      { ...state, pipelineState: { ...state.pipelineState, currentStep: "commit-pr" } },
-      { kind: "step-started", step: "commit-pr", at: now },
+    const next = finalizeCommitPrState(
+      state,
+      now,
+      startedAt,
+      ids,
+      branchName,
+      prNumber,
+      res,
+      rootState,
+      commitPrFlakeEvidence,
     );
-    // Via the shared builder (work-driver-events.ts): unique jobId — the old
-    // inline literal "mechanized" appeared twice per fan-out cycle, making
-    // jobId useless as a correlation key (census 2026-09-09).
-    next = appendEvent(
-      next,
-      synthesizeDriverCompletion({
-        step: "commit-pr",
-        label: "driver:commit-pr",
-        summary: `Mechanized commit-pr: consolidated ${ids.length} worktree(s), committed, pushed ${branchName}, opened PR.\npr: ${prNumber}`,
-        startedAt,
-        now: Date.now(),
-      }),
-    );
-    // #453 — persist cherry-picked commit SHAs so resume can skip them.
-    const commitShas = res.commitShas;
-    // #728 — also persist the intended-vs-actual completeness diagnostic when
-    // the cherry-pick path produced one (see work-driver-commit-completeness.ts).
-    const commitPrRootFields = commitPrRootFieldsOf(rootState);
-    next = {
-      ...next,
-      pipelineState: {
-        ...next.pipelineState,
-        ...commitPrRootFields,
-        ...(commitShas ? { commitShas } : {}),
-        ...(res.completeness ? { consolidationCompleteness: res.completeness } : {}),
-      },
-    };
     return { ok: true, state: next };
   } catch (err) {
     const e = err as Error & { stderr?: string };
@@ -481,11 +469,20 @@ async function runCommitPrLocked(
   }
   if (!gate.ok) {
     trace(`work-driver: verify-failed:commit-pr — ${gate.failures.join(" | ")}`);
+    const commitPrFlake = next.eventLog.some((e) => e.kind === "verify-flake-recovered");
     next = {
       ...next,
       pipelineState: {
         ...next.pipelineState,
-        verifyEvidence: { step: "commit-pr", failures: gate.failures, at: Date.now() },
+        // #782 — the consolidated-verify gate re-ran the verify command once
+        // before classifying (recorded when the re-run happened, on both the
+        // recovered and the still-failed paths). Absent on pre-#782 cycles.
+        verifyEvidence: {
+          step: "commit-pr",
+          failures: gate.failures,
+          at: Date.now(),
+          ...(commitPrFlake ? { retries: 1, recovered: false } : {}),
+        },
       },
     };
     next = appendEvent(next, {

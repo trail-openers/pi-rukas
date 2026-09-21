@@ -31,12 +31,14 @@
  * two concerns separate.
  */
 
+import { trace } from "./trace.ts";
 import {
   classifyConsolidatedVerifyFailure,
   consolidatedFailureMessage,
 } from "./work-driver-consolidation-classify.ts";
 import type { ConsolidationFailureVerdict } from "./work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
+import { rerunConsolidatedVerifyOnce } from "./work-driver-verify-flake.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -50,7 +52,10 @@ import type { ExecFn } from "./worktree.ts";
  *   assertion, and the workstream ids.
  */
 export type CommitPrConsolidatedVerifyResult =
-  | { ok: true }
+  | {
+      ok: true /** #782 — the first run flaked and the single re-run passed. */;
+      recovered?: boolean;
+    }
   | {
       ok: false;
       /** Raw bounded (800-char) verify output, with attribution anchor. */
@@ -87,6 +92,20 @@ export type CommitPrConsolidatedVerifyResult =
  *   which is correct: at commit-pr, a per-workstream defect would have
  *   been caught (or parked) in the develop step and never reach the
  *   push. The N=1 invariant is still honoured by the classifier.
+ *
+ * #782 — single bounded flake retry. On the FIRST consolidated run at
+ * commit-pr (ciRetryCount unset), if every per-worktree verify passed
+ * (perWorktreeFailuresByWs is empty) and there are multiple workstreams
+ * (N>1), a transient flake (the #777/#296 watchdog-timing class under
+ * parallel-fanout load) is classified and parked before the re-run gets
+ * a chance. We now re-run the SAME verify command ONCE in the SAME still-
+ * checked-out integration tree BEFORE classifying. If the re-run passes,
+ * the caller proceeds (the flake was a false alarm); if it fails too,
+ * classification proceeds as today. A test that fails twice is not a
+ * flake — it still parks. The retry is exactly one re-run, never a
+ * loop; the precondition (first run, N>1, no per-worktree failures) is
+ * checked here so a later ci-retry (ciRetryCount set) re-enters the
+ * single-run path without a second re-run.
  */
 export async function runCommitPrConsolidatedVerify(
   execFn: NonNullable<ExecFn>,
@@ -97,20 +116,86 @@ export async function runCommitPrConsolidatedVerify(
     workstreamIds: string[];
     perWorktreeFailuresByWs?: Record<string, string>;
     timeoutMs?: number;
+    /**
+     * Set when this consolidated run is NOT the first at commit-pr (i.e.
+     * a prior ci-retry already ran the verify command and the caller bumped
+     * ciRetryCount). When set, the single flake retry is skipped — the
+     * retry precondition (issue #782 AC: "the retry fires ONLY when … the
+     * FIRST consolidated run at commit-pr (ciRetryCount unset)") is not met.
+     * Absent (undefined) is the first run; the retry fires when the other
+     * preconditions hold.
+     */
+    isCiRetry?: boolean;
+    /**
+     * #782 — the re-run passed: the caller records the recovery on the PR
+     * via the `verify-flake-recovered` event (the callback is where that
+     * append happens, BEFORE the caller appends any failure cap).
+     */
+    onRecover?: (evidenceTail?: string) => void;
   },
 ): Promise<CommitPrConsolidatedVerifyResult> {
-  let failure: string | undefined;
-  try {
-    await execFn(opts.verifyCmd, {
-      cwd: opts.repoRoot,
-      maxBuffer: 8 * 1024 * 1024,
-      timeout: opts.timeoutMs,
-    });
-  } catch (err) {
-    const e = err as Error & { stderr?: string; stdout?: string };
-    failure = (e.stderr || e.stdout || e.message || "").toString().trim();
+  // The single flake retry is allowed only when: (a) this is the first
+  // consolidated run at commit-pr (isCiRetry unset), (b) there are multiple
+  // workstreams (N>1 — N=1 is a no-op consolidation, its failure is a
+  // per-workstream defect), and (c) every per-worktree verify passed
+  // (perWorktreeFailuresByWs is empty — at this seam it is always {}, but
+  // the check is defensive and makes the precondition explicit).
+  const canRetry =
+    opts.isCiRetry !== true &&
+    opts.workstreamCount > 1 &&
+    Object.keys(opts.perWorktreeFailuresByWs ?? {}).length === 0;
+
+  const runOnce = async (): Promise<string | undefined> => {
+    try {
+      await execFn(opts.verifyCmd, {
+        cwd: opts.repoRoot,
+        maxBuffer: 8 * 1024 * 1024,
+        timeout: opts.timeoutMs,
+      });
+      return undefined;
+    } catch (err) {
+      const e = err as Error & { stderr?: string; stdout?: string };
+      return (e.stderr || e.stdout || e.message || "").toString().trim();
+    }
+  };
+
+  let firstFailure = await runOnce();
+  if (firstFailure === undefined) return { ok: true };
+
+  // #782 — on the first run, with every per-worktree verify passed and N>1,
+  // re-run the SAME command ONCE in the SAME still-checked-out integration
+  // tree BEFORE classifying. A transient flake (the #777/#296 watchdog-
+  // timing class) passes on the second run; a genuine consolidated defect
+  // fails both times and is classified below exactly as today.
+  if (canRetry) {
+    trace(
+      `work-driver: commit-pr verify failed on the first run — re-running the verify command once (flake retry, N=${opts.workstreamCount})`,
+    );
+    const secondTail = await rerunConsolidatedVerifyOnce(
+      execFn,
+      opts.verifyCmd,
+      opts.repoRoot,
+      opts.timeoutMs ?? 30 * 60_000,
+    );
+    if (secondTail === undefined) {
+      trace(
+        "work-driver: commit-pr verify re-run PASSED — the first-run failure was a flake; proceeding without classifying",
+      );
+      // The caller's onRecover callback is where the
+      // `verify-flake-recovered` step event is appended, so it happens
+      // BEFORE the caller appends `verify-failed:commit-pr` + its
+      // verifyEvidence (eventLog is append-only; the recovered path
+      // appends no cap).
+      opts.onRecover?.(firstFailure);
+      return { ok: true, recovered: true };
+    }
+    // The re-run failed — classify the second run's tail exactly as a
+    // single-run failure would be classified (a test that fails twice is
+    // not a flake, so the cycle parks as today).
+    firstFailure = secondTail;
   }
-  if (failure === undefined) return { ok: true };
+
+  const failure = firstFailure;
 
   // The tail we hand to the classifier: anchored at the FAILED: marker when
   // present, last 800 chars otherwise (the biome/tsc shape emits no marker).

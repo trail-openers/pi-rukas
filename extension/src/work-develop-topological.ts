@@ -201,6 +201,16 @@ async function runDevelopTopological(
   if (hasDevelopEvidence) {
     const gate = await verifyStepOutcome(ctx, next, "develop");
     if (gate.ok) {
+      // #782 — the consolidated verify's single re-run passed: the driver
+      // proceeds. Emit the recovery marker BEFORE the converge gate so the
+      // event log carries the audit trail even if the cycle parks later.
+      if (gate.flakeRecovered) {
+        next = appendEvent(next, {
+          kind: "verify-flake-recovered",
+          at: Date.now(),
+          step: "develop",
+        });
+      }
       // #741 — the verify gate proves the diff BUILDS; the converge gate
       // proves it is COMPLETE. Runs only after the verify gate passes (the
       // issue's stated ordering) — a diff that doesn't build never reaches
@@ -233,11 +243,19 @@ async function runDevelopTopological(
           ? "consolidated-verify-consolidation-created"
           : "verify-failed:develop";
       trace(`work-driver: ${cap} — ${gate.failures.join(" | ")}`);
+      // #782 — when the consolidated verify recovered from a flake but the
+      // converge gate then parks, record the retry so the handoff shows
+      // "retried once, recovered" even though the cycle stops here.
       next = {
         ...next,
         pipelineState: {
           ...next.pipelineState,
-          verifyEvidence: { step: "develop", failures: gate.failures, at: Date.now() },
+          verifyEvidence: {
+            step: "develop",
+            failures: gate.failures,
+            at: Date.now(),
+            ...(gate.flakeRecovered ? { retries: 1, recovered: true } : {}),
+          },
         },
       };
       next = appendEvent(next, {

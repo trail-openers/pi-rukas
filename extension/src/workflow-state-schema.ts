@@ -410,30 +410,33 @@ export interface PipelineState {
   prNumber?: number;
   /**
    * PR17 — SHA of the base commit the feature branch grew from, recorded
-   * by the branch step (git rev-parse HEAD at repoRoot right after ops
-   * created the branch). The outcome-verification gate diffs against
-   * this to prove the developer actually produced changes. Optional so
-   * pre-PR17 state files load cleanly; verifiers fall back to
-   * origin/<default-branch> when absent.
+   * by the branch step (git rev-parse HEAD at repoRoot after ops created
+   * the branch). The outcome-verification gate diffs against this to prove
+   * the developer produced changes. Optional so pre-PR17 state files load
+   * cleanly; verifiers fall back to origin/<default-branch> when absent.
    */
   baseSha?: string;
   /**
    * #453 — per-workstream applied SHAs for crash-safe resume. Maps
-   * workstream id → SHA that has been cherry-picked onto the integration
-   * branch. Updated as each SHA lands during cherry-pick integration.
-   * On crash-resume, workstreams whose id+sha match an entry here are
-   * skipped. Absent on pre-#453 state files; readers treat absent as {}.
+   * workstream id → SHA cherry-picked onto the integration branch; updated as
+   * each lands. On crash-resume, matching id+sha entries are skipped. Absent
+   * on pre-#453 state files; readers treat absent as {}.
    */
   appliedShas?: Record<string, string>;
   /**
-   * PR17 — evidence captured by the outcome-verification gate
-   * (verifyStepOutcome) when a `verify-failed:<step>` cap fires. Each
-   * failure string is one human-readable finding (e.g., "developer
-   * claimed done but every worktree has an empty diff", "verify command
-   * `cargo check` exited 101: <tail>"). Rendered into the handoff body
-   * by explainCap. Optional — absent unless a gate has failed.
+   * PR17 — outcome-verification gate (verifyStepOutcome) evidence for a
+   * `verify-failed:<step>` cap; each failure string is one finding rendered by
+   * explainCap. Optional — absent unless a gate failed.
+   * #782 — optional `retries`/`recovered`: the consolidated-verify gate's single
+   * bounded re-run. Absent pre-#782; absent = no re-run, so schemaVersion stays 1.
    */
-  verifyEvidence?: { step: WorkStep; failures: string[]; at: number };
+  verifyEvidence?: {
+    step: WorkStep;
+    failures: string[];
+    at: number;
+    retries?: number;
+    recovered?: boolean;
+  };
   /** Terminal status. "running" while active; flips on `merged` or `handoff`. */
   status: "running" | "merged" | "handoff" | "aborted";
   /**

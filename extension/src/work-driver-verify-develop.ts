@@ -9,7 +9,6 @@
  * normaliser, tolerance) live in work-driver-verify-develop-helpers.ts.
  */
 
-import fs from "node:fs/promises";
 import path from "node:path";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import {
@@ -28,23 +27,14 @@ import {
 } from "./work-driver-doctrine.ts";
 import { runFalsilyGreenCheck } from "./work-driver-falsily-green.ts";
 import { runScopeFanoutGate } from "./work-driver-scope-fanout.ts";
-import {
-  TEST_BLOCK_MARKERS,
-  countMarkersInDiffLine,
-  countSkipMarkersInDiffLine,
-} from "./work-driver-skip-ratchet.ts";
+import { declaredPathsHaveSource, verifyCmdFor } from "./work-driver-verify-cmd.ts";
+import { runSkipRatchetGate, runSmokeGate } from "./work-driver-verify-develop-gates.ts";
 import {
   formatExecError,
   normaliseScopePath,
-  testDeleteTolerance,
   verifyTimeoutMs,
 } from "./work-driver-verify-develop-helpers.ts";
 
-import {
-  declaredPathsHaveSource,
-  readFirstConfigLine,
-  verifyCmdFor,
-} from "./work-driver-verify-cmd.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
 
@@ -64,6 +54,8 @@ export async function verifyDevelopOutcome(
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
   failures: string[],
   notes: string[],
+  // #782 — fires when the consolidated-verify flake re-run passed.
+  onVerifyFlakeRecovered?: (evidenceTail?: string) => void,
 ): Promise<void> {
   const worktrees =
     Object.keys(state.pipelineState.worktrees ?? {}).length > 0
@@ -350,14 +342,31 @@ export async function verifyDevelopOutcome(
         );
       }
     } else {
+      const scratchDir = path.join(ctx.repoRoot, "tmp", `issue-${ctx.issue}`);
+      // #782 — the consolidated-verify flake retry: fires ONLY when every
+      // per-worktree verify passed, the consolidated run failed, and this is
+      // a genuine consolidation (N>1). N=1 consolidation is a no-op (its
+      // failure is a per-workstream defect) and per-worktree failures are
+      // genuine defects the classifier names. The re-run happens inside
+      // runConsolidatedVerify, BEFORE classification and BEFORE the restore.
+      const flakeRetryPrecondition =
+        perWorktreeVerifyFailures.length === 0 && Object.keys(worktrees).length > 1;
       const cons = await runConsolidatedVerify(execFn, {
         repoRoot: ctx.repoRoot,
         baseSha: baseSha as string,
-        branchName: state.pipelineState.branchName,
         worktrees: state.pipelineState.worktrees ?? {},
-        scratchDir: path.join(ctx.repoRoot, "tmp", `issue-${ctx.issue}`),
+        scratchDir,
         verifyCmd: cmd,
         timeoutMs: verifyTimeoutMs(),
+        retry: {
+          canRetry: flakeRetryPrecondition,
+          onRecover: (evidenceTail) => {
+            notes.push(
+              `consolidated verify RECOVERED after one bounded re-run (transient flake) — first-run failure preserved${evidenceTail ? `: ${evidenceTail}` : ""}`,
+            );
+            onVerifyFlakeRecovered?.(evidenceTail);
+          },
+        },
       });
       if (cons.status === "conflict") {
         // #725 — "conflict" has TWO causes: a genuine cherry-pick / patch-apply
@@ -375,7 +384,10 @@ export async function verifyDevelopOutcome(
         }
       } else if (cons.status === "failed") {
         // #777 — classify the consolidated-tree failure (see the classifier
-        // module docstring for the three-way distinction).
+        // module docstring for the three-way distinction). #782 — when the
+        // flake re-run happened (and also failed), the detail is the second
+        // run's tail; a test that fails twice is not a flake, so the cycle
+        // parks as today.
         const wsIds = Object.keys(worktrees);
         const verdict = classifyConsolidatedVerifyFailure(
           wsIds.length,
@@ -400,99 +412,11 @@ export async function verifyDevelopOutcome(
     }
   }
 
-  // --- Skip-ratchet gate (PR277) ---
-  if (process.env.PI_ENSEMBLE_SKIP_RATCHET !== "0") {
-    // F4: if baseSha is absent, note the weakened scope of the check
-    if (!baseSha) {
-      notes.push(
-        "baseSha unavailable — skip-ratchet compared working tree against HEAD only; committed changes not inspected",
-      );
-    }
-
-    for (const cwd of changedWorktrees) {
-      let diffContent = "";
-      try {
-        const baseRef = isValidSha(baseSha) ? baseSha : "HEAD";
-        const { stdout } = await execFn(`git diff ${baseRef} -U0`, {
-          cwd,
-          timeout: verifyTimeoutMs(),
-          maxBuffer: 64 * 1024 * 1024,
-        });
-        diffContent = stdout;
-      } catch (err) {
-        failures.push(
-          `skip-ratchet: git diff failed in ${cwd} (${(err as Error).message?.slice(0, 100)}) — cannot inspect diff`,
-        );
-      }
-      if (!diffContent) continue;
-
-      let netIncrease = 0;
-      let netTestBlockDeletion = 0;
-      const lines = diffContent.split("\n");
-      for (const line of lines) {
-        // Diff file headers are not source lines. Do not let a marker in a
-        // filename influence either ratchet.
-        if (line.startsWith("+++") || line.startsWith("---")) continue;
-        if (line.startsWith("+")) {
-          netIncrease += countSkipMarkersInDiffLine(line);
-          netTestBlockDeletion -= countMarkersInDiffLine(line, TEST_BLOCK_MARKERS);
-        } else if (line.startsWith("-")) {
-          netIncrease -= countSkipMarkersInDiffLine(line);
-          netTestBlockDeletion += countMarkersInDiffLine(line, TEST_BLOCK_MARKERS);
-        }
-      }
-      if (netIncrease > 0) {
-        failures.push(
-          `diff adds ${netIncrease} skipped-test marker(s) — a skipped test is a disabled gate`,
-        );
-      }
-      const tolerance = testDeleteTolerance();
-      if (netTestBlockDeletion > tolerance) {
-        failures.push(
-          `diff removes ${netTestBlockDeletion} test block(s), beyond the tolerance of ${tolerance} — a shrinking test suite is a disabled gate`,
-        );
-      }
-    }
-  } else {
-    notes.push("PI_ENSEMBLE_SKIP_RATCHET=0 — skip-ratchet gate disabled");
-  }
-
-  // --- Product smoke command gate (PR277) ---
-  // #451 — runs in the first changed worktree, not at ctx.repoRoot.
-  // Under worktree isolation the repo root sits on mainline; running the
-  // smoke there would exercise the wrong tree. The worktree has the
-  // developer's changes and its provisioned dependencies.
-  if (process.env.PI_ENSEMBLE_SMOKE !== "0") {
-    let smokeCmd: string | undefined;
-    try {
-      const smokeFile = path.join(ctx.repoRoot, ".pi", "smoke-cmd");
-      const content = await fs.readFile(smokeFile, "utf8");
-      smokeCmd = readFirstConfigLine(content);
-    } catch {
-      // No smoke-cmd file — not a failure, just a note
-    }
-    if (smokeCmd) {
-      const smokeCwd = changedWorktrees[0] ?? ctx.repoRoot;
-      try {
-        await execFn(smokeCmd, {
-          cwd: smokeCwd,
-          timeout: verifyTimeoutMs(),
-          maxBuffer: 4 * 1024 * 1024,
-        });
-      } catch (err) {
-        const e = err as Error & { stdout?: string; stderr?: string; killed?: boolean };
-        failures.push(
-          formatExecError(
-            e,
-            `smoke: command \`${smokeCmd}\` exceeded its ${Math.round(verifyTimeoutMs() / 60000)}-min timeout in ${smokeCwd}`,
-            `smoke: command \`${smokeCmd}\` failed in ${smokeCwd}`,
-          ),
-        );
-      }
-    } else {
-      notes.push("no .pi/smoke-cmd — product smoke not run");
-    }
-  } else {
-    notes.push("PI_ENSEMBLE_SMOKE=0 — smoke gate disabled");
-  }
+  // --- Skip-ratchet gate (PR277) + product smoke gate (PR277) ---
+  // #451 — extracted to work-driver-verify-develop-gates.ts (AGENTS.md §12
+  // file-size cap). The #782 flake-retry logic above pushed this file past
+  // the 500-line limit; the two independent post-verify gates move there.
+  await runSkipRatchetGate(execFn, ctx.repoRoot, baseSha, changedWorktrees, failures, notes);
+  await runSmokeGate(execFn, ctx.repoRoot, changedWorktrees, failures, notes);
+  return undefined;
 }
