@@ -83,6 +83,8 @@ async function main() {
     const rm = forgeCommands.labelRemoveCmd("github", "issue", 42, "needs-human-attention");
     assert(rm === "gh issue edit 42 --remove-label needs-human-attention", `got ${rm}`);
   });
+  // #775 — comment-list + PR-comment seams are covered in test-forge-comments.ts
+  // (split at the 500-line seam for this test file).
 
   // ── Create commands must NOT carry --json (gh create has no --json flag) ─
   // gh issue create and gh pr create print the created object's URL as plain
@@ -168,7 +170,7 @@ async function main() {
   // mapper) must reject — NOT silently map to number 0.
   async function rejectsOnNonUrl(forge: ReturnType<typeof createForge>, label: string) {
     let threw = false;
-    let got: unknown = undefined;
+    const got: unknown = undefined;
     try {
       await (label === "issue"
         ? forge.issueCreate("A new issue", "the body")
@@ -266,6 +268,10 @@ async function main() {
       assert(url.includes("issuecomment-1"), `got ${url}`);
     });
   }
+
+  // #775 — the comment-list seam (idempotency check) + PR comment seam are
+  // covered in test-forge-comments.ts (split at the 500-line seam for this
+  // test file).
 
   // ── Issue search ────────────────────────────────────────────────────────
   {
@@ -368,14 +374,17 @@ async function main() {
       "gh pr checks 17": { stdout: JSON.stringify(GH_CHECKS) },
     });
     const forge = createForge(det, { execFn: fn });
-    await check("prChecks normalizes rows (no isRequired — gh does not supply it, #745)", async () => {
-      const checks = await forge.prChecks(17);
-      assert(checks.length === 2, `len ${checks.length}`);
-      assert(checks[0]!.name === "ci", "first name");
-      assert(checks[0]!.state === "PASS", `state ${checks[0]!.state}`);
-      assert(checks[0]!.bucket === "PASS", `bucket ${checks[0]!.bucket}`);
-      assert(!("isRequired" in checks[0]!), "the normalized check carries no isRequired field");
-    });
+    await check(
+      "prChecks normalizes rows (no isRequired — gh does not supply it, #745)",
+      async () => {
+        const checks = await forge.prChecks(17);
+        assert(checks.length === 2, `len ${checks.length}`);
+        assert(checks[0]!.name === "ci", "first name");
+        assert(checks[0]!.state === "PASS", `state ${checks[0]!.state}`);
+        assert(checks[0]!.bucket === "PASS", `bucket ${checks[0]!.bucket}`);
+        assert(!("isRequired" in checks[0]!), "the normalized check carries no isRequired field");
+      },
+    );
   }
 
   // CI watch + CI run are covered by smoke-tests/test-forge-ci-watch.ts
@@ -400,11 +409,17 @@ async function main() {
     });
     await check("labelAdd uses --add-label", async () => {
       await forge.labelAdd("issue", 42, "bug");
-      assert(calls.some((c) => c.includes("--add-label")), "no add-label cmd");
+      assert(
+        calls.some((c) => c.includes("--add-label")),
+        "no add-label cmd",
+      );
     });
     await check("labelRemove uses --remove-label", async () => {
       await forge.labelRemove("issue", 42, "bug");
-      assert(calls.some((c) => c.includes("--remove-label")), "no remove-label cmd");
+      assert(
+        calls.some((c) => c.includes("--remove-label")),
+        "no remove-label cmd",
+      );
     });
   }
 
@@ -428,9 +443,18 @@ async function main() {
     await forge.labelAdd("issue", 42, "needs-human-attention");
     await forge.labelAdd("mr", 17, "needs-human-attention");
     await check("create-if-missing, add to issue AND mr, read back on issue", async () => {
-      assert(calls.some((c) => c.includes("gh label create") && c.includes("--force")), `create: ${calls}`);
-      assert(calls.some((c) => c.includes("gh issue edit 42 --add-label")), `issue add: ${calls}`);
-      assert(calls.some((c) => c.includes("gh mr edit 17 --add-label")), `mr add: ${calls}`);
+      assert(
+        calls.some((c) => c.includes("gh label create") && c.includes("--force")),
+        `create: ${calls}`,
+      );
+      assert(
+        calls.some((c) => c.includes("gh issue edit 42 --add-label")),
+        `issue add: ${calls}`,
+      );
+      assert(
+        calls.some((c) => c.includes("gh mr edit 17 --add-label")),
+        `mr add: ${calls}`,
+      );
       // 3. Read back — the attention gate (work-driver-attention.ts) reads
       //    the issue's labels to decide refuse/proceed.
       const names = (await forge.issueView(42)).labels.map((l) => l.name);
@@ -455,35 +479,8 @@ async function main() {
     });
   }
 
-  // ── Mappers (direct) ────────────────────────────────────────────────────
-  console.log("mappers:");
-  await check("mapGhIssue throws on missing number", () => {
-    try {
-      mapGhIssue({ title: "x", body: "y", state: "OPEN", url: "u" } as Record<string, unknown>);
-      throw new Error("should have thrown");
-    } catch (e) {
-      assert((e as Error).message.includes("number"), `wrong error: ${(e as Error).message}`);
-    }
-  });
-  await check("mapGhPr throws on missing state", () => {
-    try {
-      mapGhPr({ number: 1, title: "t", body: "b", url: "u" } as Record<string, unknown>);
-      throw new Error("should have thrown");
-    } catch (e) {
-      assert((e as Error).message.includes("state"), `wrong error: ${(e as Error).message}`);
-    }
-  });
-  await check("mapGhRun normalizes snake_case", () => {
-    const run = mapGhRun(GH_RUN_DONE as Record<string, unknown>);
-    assert(run.id === 901, "id");
-    assert(run.status === "COMPLETED", "status");
-    assert(run.conclusion === "SUCCESS", "conclusion");
-  });
-  await check("mapGhRepo normalizes", () => {
-    const r = mapGhRepo(GH_REPO as Record<string, unknown>);
-    assert(r.name === "acme/widget", "name");
-    assert(r.owner === "acme", "owner");
-  });
+  // Mappers (direct) are covered in test-forge-mapping-shapes.ts (the
+  // existing home for the GitHub/GitLab mapper shape tests).
 
   console.log("");
   if (exitCode !== 0) {

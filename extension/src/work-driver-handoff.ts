@@ -243,6 +243,19 @@ export async function runHandoff(
   // when the driver verified it (URL parsed or label read-back succeeded);
   // a reply whose state could not be verified records no provenance.
   let delivery: "dispatch" | "fallback" | undefined;
+  // #775 — track whether the ops dispatch actually failed (threw or timed out)
+  // so the fallback can be gated correctly: if the dispatch succeeded and
+  // the URL parsed, the fallback is skipped entirely (idempotent).
+  const dispatchFailed = next.eventLog
+    .slice()
+    .reverse()
+    .some(
+      (e) =>
+        e.kind === "dispatch-failed" &&
+        e.step === "handoff" &&
+        e.role === "ops" &&
+        e.label === "ops:handoff",
+    );
   {
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
     const objType = prNumber ? "pr" : "issue";
@@ -255,6 +268,10 @@ export async function runHandoff(
       }
     }
   }
+
+  // #775 — determine if the dispatch failed (threw or timed out) by checking
+  // for a dispatch-failed event in the event log that was just appended.
+  // A healthy dispatch (completion event, no failure) does NOT fail.
 
   // PR5 in-process fallback (item 3, #674 — with retry). When the ops
   // dispatch failed OR the commentUrl didn't parse out, the driver itself
@@ -274,23 +291,44 @@ export async function runHandoff(
         // The operator sees the HANDOFF DISPATCH INCOMPLETE banner.
         trace("work-driver: no forge resolved — in-process fallback skipped");
       } else {
-        const targetId = String(prNumber ?? ctx.issue);
         const objType = prNumber ? "pr" : "issue";
+        const targetId = prNumber ?? ctx.issue;
         const body = !commentUrl ? await fs.readFile(handoffBodyPath, "utf8").catch(() => "") : "";
+        // #775 — idempotency check: fetch the target's existing comments
+        // BEFORE posting so a comment the ops dispatch already posted (whose
+        // URL was lost) is not re-posted. A failed dispatch leaves no such
+        // comment, so the fallback posts exactly once.
+        let existingComments: unknown[] | undefined;
+        if (!commentUrl) {
+          try {
+            existingComments =
+              objType === "pr"
+                ? await forge.prComments(targetId)
+                : await forge.issueComments(targetId);
+          } catch (err) {
+            trace(
+              `work-driver: handoff comment-list fetch failed (non-fatal): ${(err as Error).message?.slice(0, 160)}`,
+            );
+          }
+        }
         const posted = await postHandoffWithRetry(forge, {
           issue: ctx.issue,
           body,
-          targetId: Number(targetId),
+          targetId: targetId,
           objType,
-          needsComment: !commentUrl && objType === "issue",
+          needsComment: !commentUrl,
           needsLabel: !labelApplied,
+          existingComments,
         });
-        // The forge adapter models `issueComment` only (S2 surface). PRs
-        // get their handoff comment via the ops dispatch's raw `gh` prompt.
-        if (posted.commentUrl) commentUrl = posted.commentUrl;
+        if (posted.commentUrl) {
+          commentUrl = posted.commentUrl;
+          // #775 — the fallback established the comment URL. If the dispatch
+          // also failed, this is the fallback's provenance.
+          if (dispatchFailed && !delivery) delivery = "fallback";
+        }
         if (posted.labelApplied) {
           labelApplied = true;
-          delivery = "fallback";
+          if (dispatchFailed) delivery = "fallback";
         }
       }
     } catch (err) {
