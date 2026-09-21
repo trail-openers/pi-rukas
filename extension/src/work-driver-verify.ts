@@ -44,6 +44,16 @@ const execp = promisify(exec);
  * path "b" WAS in the diff but flagged B's overlap pessimism, and missed
  * the false-pass direction entirely.
  *
+ * #778 rename awareness: the diff is read with `--name-status -M` so a
+ * move (`git mv` / rename-during-develop, the #744 shape where a declared
+ * name never appears in `--name-only`) is a rename code (R###), not a
+ * silent absence. A path is covered when the normalised path is an exact
+ * diff name, sits beneath a changed entry (directory declaration), OR a
+ * rename's SOURCE equals it — a move of the declared file still ships its
+ * content. R-code rename detection is the exact-path-evidence basis; no
+ * basename/substring matching, so co-located-but-different files (#655's
+ * measurement workstream) still read uncovered.
+ *
  * Returns BOTH sides of the verdict: `missing` (workstreams not covered,
  * for backward compat with the PR14 cap-hit message) AND `filesPresent`
  * (the committed file list — what actually shipped, so the handoff can
@@ -70,31 +80,66 @@ export async function verifyConsolidation(
   if (mainline && "branch" in mainline) {
     base = mainline.branch;
   }
-  let diffNames = "";
+  let statusOut = "";
   try {
     // #451 — name the integration branch explicitly. Under worktree isolation
     // the repo root sits on mainline; bare `..HEAD` would compare mainline
     // against itself and return empty (passing the gate unconditionally).
+    // #778 — `--name-status -M` (not `--name-only`): renames emit R### with
+    // the SOURCE path in the diff output, so a move is visible evidence
+    // instead of a silent absence of the old name.
     const branch = state.pipelineState.branchName ?? "HEAD";
-    const { stdout } = await execp(`git diff --name-only origin/${base}..${branch}`, {
+    const { stdout } = await execp(`git diff --name-status -M origin/${base}..${branch}`, {
       cwd: ctx.repoRoot,
       maxBuffer: 1024 * 1024,
     });
-    diffNames = stdout;
+    statusOut = stdout;
   } catch (err) {
     trace(
       `work-driver: verifyConsolidation diff failed (treating as no-missing): ${(err as Error).message?.slice(0, 120)}`,
     );
     return { missing: [], filesPresent: [], verdicts: [] };
   }
-  const filesPresent = diffNames.split("\n").filter((s) => s.trim().length > 0);
-  const changedFiles = new Set(filesPresent);
-  // A declared path counts as "in the diff" when a committed file equals
-  // it or sits beneath it (a directory declaration covers its contents).
-  // The exact-match Set lookup runs first — it is O(1) and is the common
-  // case; the prefix scan only fires for directory declarations.
+  const changedFiles = new Set<string>();
+  // #778 — rename SOURCES (the old side of R### codes): a declared path that
+  // was renamed away still shipped; exact-string membership only.
+  const renamedSources = new Set<string>();
+  for (const line of statusOut.split("\n")) {
+    const fields = line.split("\t");
+    const code = fields[0]?.trim() ?? "";
+    if (!code) continue;
+    const codeBase = code[0];
+    // A rename (R###) has two columns; the second is the rename's TARGET and
+    // is what landed — it belongs in the present set, not the source set.
+    if (codeBase === "R" && fields.length >= 3) {
+      for (const col of [1, 2] as const) {
+        const p = normaliseDeclaredPath(fields[col] ?? "");
+        if (!p) continue;
+        changedFiles.add(p);
+        if (col === 1) renamedSources.add(p);
+      }
+      continue;
+    }
+    // #778 — only a RENAME source can cover a declared path. A plain delete
+    // (D) still lists the name in `--name-status` — the pre-#778 behavior —
+    // so treating D as coverage would let a deleted file keep a workstream
+    // "covered"; a moved file is the only move that ships its content.
+    const p = normaliseDeclaredPath(fields[1] ?? "");
+    if (p && codeBase !== "D") changedFiles.add(p);
+  }
+  // #778 — filesPresent is the COMMITTED side of the record (what shipped);
+  // the rename source may no longer exist, so it is not a "present" file —
+  // it only covers a declared path via the source set above.
+  const filesPresent = [...changedFiles].filter((p) => p === "" || !renamedSources.has(p));
+  // A declared path counts as "in the diff" when a committed file equals it,
+  // sits beneath it (a directory declaration covers its contents), or a
+  // rename's source equals it (the #778/#744 move case). The exact-match Set
+  // lookups are O(1) and are the common case; the prefix scan only fires for
+  // directory declarations.
   const declaredPathInDiff = (p: string): boolean =>
-    changedFiles.has(p) || Array.from(changedFiles).some((f) => f.startsWith(`${p}/`));
+    changedFiles.has(p) ||
+    renamedSources.has(p) ||
+    Array.from(changedFiles).some((f) => f.startsWith(`${p}/`));
   // Normalised declared paths per workstream, so a sibling's set and this
   // workstream's paths compare like-for-like.
   const declaredOf = (ws: { paths: string[] }): string[] =>
