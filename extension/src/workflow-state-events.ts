@@ -199,6 +199,14 @@ export type WorkEvent =
        */
       lensWorktreePath?: string;
       /**
+       * #797 — the ref the cycle's integration started from at repoRoot
+       * (recorded before the checkout). Present on `lens-fix-not-integrated`
+       * caps: the post-condition for the handoff's recovery steps is that
+       * repoRoot is on this ref again. Absent on pre-#797 state files and
+       * on caps whose recovery does not depend on the checkout.
+       */
+      restoredToRef?: string;
+      /**
        * Which cap fired. Covers the handoff-doctrine caps plus the
        * "ci-retry" cap added in PR2 after the live-test infinite-loop bug:
        * ci-status:failure → develop → adversarial → review → ci → ... had no

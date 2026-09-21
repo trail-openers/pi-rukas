@@ -31,6 +31,7 @@
 
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import { withIntegrationLock } from "./work-driver-integrate.ts";
+import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
 import { type ExecFn, sweepBranchHolders } from "./worktree.ts";
@@ -107,8 +108,9 @@ export async function diffAgainstBranch(
  * Stage the tree's committed work (baseSha..HEAD) onto the feature branch
  * at repoRoot via the commit-pr cherry-pick machinery. Returns the SHA of
  * the tree's HEAD on success — the evidence a park string can quote — or
- * an error string when the batch could not land. The branch is restored on
- * failure (the caller parks; the work remains in the worktree).
+ * an error string when the batch could not land. On ANY failure the caller
+ * parks; this function restores repoRoot first (verified, inside the
+ * integration lock) and names the outcome in the error text.
  */
 export async function landCommittedFix(
   execFn: ExecFn,
@@ -121,10 +123,32 @@ export async function landCommittedFix(
   if (!ps.baseSha) {
     return { ok: false, error: "no baseSha recorded — cannot measure the committed range" };
   }
+  // #797 — where repoRoot's checkout was before integration touched it
+  // (the #782 incident left it on the feature branch mid-merge; a restore
+  // to a hardcoded mainline would be wrong for a cycle that started on a
+  // feature branch). Captured BEFORE the lock: the lock never mutates the
+  // checkout, and if the checkout fails below, originalRef is what the
+  // pre-lock failure needs.
+  const originalRef = await execFn("git symbolic-ref --quiet --short HEAD", {
+    cwd: ctx.repoRoot,
+    maxBuffer: 64 * 1024,
+  })
+    .then((r) => r.stdout.trim())
+    .catch(async () =>
+      (
+        await execFn("git rev-parse HEAD", { cwd: ctx.repoRoot, maxBuffer: 64 * 1024 })
+      ).stdout.trim(),
+    );
   try {
     const { stdout } = await execFn("git rev-parse HEAD", { cwd: tree, maxBuffer: 64 * 1024 });
     const sha = stdout.trim();
     if (sha.length < 7) return { ok: false, error: "could not read the worktree's HEAD" };
+    const scratch = scratchDir(ctx.repoRoot, ctx.issue);
+    // #797 — every failure below (checkout, cherry-pick conflict, commit,
+    // no-op) runs through the verified restore BEFORE the lock is released:
+    // the operator may find repoRoot on the wrong ref or with unmerged index
+    // entries if the restore is left to nothing. The worktree is untouched —
+    // the fixer's commits survive in `tree` either way.
     await withIntegrationLock(ctx.repoRoot, async () => {
       // #776 — a clean worktree holding the branch blocks `git checkout`
       // ("fatal: '<branch>' is already used by worktree at '…'"). Sweep it
@@ -139,7 +163,7 @@ export async function landCommittedFix(
         branchName,
         worktrees: { ids: ["lens-fix"], worktrees: { "lens-fix": tree }, commitShas: {} },
         baseSha: ps.baseSha,
-        scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
+        scratchDir: scratch,
         requireAllNonEmpty: false,
       });
       const { stdout: stagedOut } = await execFn("git diff --cached --name-only", {
@@ -153,22 +177,92 @@ export async function landCommittedFix(
         });
       }
       if (orch._conflict === "conflict" || orch._applyConflict !== undefined) {
-        throw new Error(
+        const restore = await verifiedRestoreRoot(execFn, {
+          repoRoot: ctx.repoRoot,
+          originalRef,
+          scratchDir: scratch,
+          label: "lens-fix-integration",
+        });
+        const causeMsg =
           orch._conflict === "conflict"
-            ? "cherry-pick conflict — the batch was aborted and the branch was restored"
-            : `patch-apply failed for the lens-fix worktree: ${orch._applyConflict?.reason ?? "unknown"}`,
+            ? "cherry-pick conflict — the batch was aborted"
+            : `patch-apply failed for the lens-fix worktree: ${orch._applyConflict?.reason ?? "unknown"}`;
+        throw new Error(
+          `${causeMsg}. ${restoreClaim(restore, "", MANUAL_REPAIR_HINT)} The fix's commits remain in the worktree ${tree}.`,
         );
       }
       // #749 — the tree-hash dedup skip means the content is already on the
       // branch (not a failure); the caller re-reviews. A genuine no-op —
       // no commits landed AND no skip was measured — is a failure.
       if (orch.cherryApplied.length === 0 && orch.skippedAlreadyOnBranch.length === 0) {
-        throw new Error("nothing landed on the branch");
+        const restore = await verifiedRestoreRoot(execFn, {
+          repoRoot: ctx.repoRoot,
+          originalRef,
+          scratchDir: scratch,
+          label: "lens-fix-integration",
+        });
+        throw new Error(
+          `nothing landed on the branch. ${restoreClaim(restore, "", MANUAL_REPAIR_HINT)}`,
+        );
       }
     });
     return { ok: true, sha };
   } catch (err) {
-    return { ok: false, error: (err as Error).message?.slice(0, 200) ?? "unknown error" };
+    const msg = (err as Error).message ?? "unknown error";
+    // #797 — a thrown failure inside the lock (commit failure with an
+    // unmerged index, a checkout throw, …) gets the same verified restore as
+    // the explicit conflict/no-op paths. A failure that already carries a
+    // restore claim (the conflict/no-op throws above) is not restored
+    // twice — the claim names the outcome either way.
+    if (!msg.includes("repoRoot was")) {
+      const restore = await verifiedRestoreRoot(execFn, {
+        repoRoot: ctx.repoRoot,
+        originalRef,
+        scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
+        label: "lens-fix-integration",
+      });
+      return {
+        ok: false,
+        error: `${msg.slice(0, 200)}. ${restoreClaim(restore, "", MANUAL_REPAIR_HINT)} The fix's commits remain in the worktree ${tree}.`,
+      };
+    }
+    return { ok: false, error: msg.slice(0, 300) };
+  }
+}
+
+/**
+ * #797 — the trailing text appended to every lens-fix integration failure
+ * claim. The verified-restore claim alone ("repoRoot was restored …") leaves
+ * an operator with no next step, and the not-restored variant must carry the
+ * repair commands the issue's acceptance criteria require: a failed restore
+ * is a more serious condition than the integration failure and names the
+ * exact commands that return repoRoot to a usable state.
+ */
+const MANUAL_REPAIR_HINT =
+  "If repoRoot is not usable, repair it with: git reset --hard && git checkout --force <the ref the cycle started from> (run `git status` and `git branch --show-current` to see the current state)";
+
+/**
+ * #797 — the ref a lens-fix integration cycle started from at repoRoot
+ * (the symbolic ref, falling back to the raw SHA for a detached HEAD), or
+ * undefined when the read failed. The handoff renderer uses this to state
+ * the restore post-condition: after a failed integration, repoRoot must be
+ * on this ref again.
+ */
+export async function repoRootOriginalRef(
+  execFn: ExecFn,
+  repoRoot: string,
+): Promise<string | undefined> {
+  try {
+    return await execFn("git symbolic-ref --quiet --short HEAD", {
+      cwd: repoRoot,
+      maxBuffer: 64 * 1024,
+    })
+      .then((r) => r.stdout.trim())
+      .catch(async () =>
+        (await execFn("git rev-parse HEAD", { cwd: repoRoot, maxBuffer: 64 * 1024 })).stdout.trim(),
+      );
+  } catch {
+    return undefined;
   }
 }
 
