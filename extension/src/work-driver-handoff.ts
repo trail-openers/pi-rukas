@@ -16,6 +16,7 @@ import {
 import { renderHandoffMarkdown } from "./work-driver-handoff-markdown.ts";
 import { postHandoffWithRetry } from "./work-driver-handoff-post-retry.ts";
 import { captureCommittedWork, makeHandoffEmittedEvent } from "./work-driver-handoff-post.ts";
+import { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
 import { inlineHandoffOpsPrompt } from "./work-driver-prompts-late.ts";
@@ -24,6 +25,9 @@ import { scratchDir } from "./work-driver-workspace.ts";
 import { runWorktreeTeardown } from "./work-driver-worktree-sweep.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
+// #775 prep — captureWorktreeSnapshot moved to work-driver-handoff-snapshot.ts
+// (§12 file-size split); re-exported so no consumer's import path changes.
+export { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
 const execp = promisify(exec);
 /** Resolution of the ops handoff dispatch when it outlived its bound. */
 const BOUND_EXCEEDED = Symbol("handoff-bound-exceeded");
@@ -389,100 +393,4 @@ export function priorHandoffCommentUrl(eventLog: readonly WorkEvent[]): string |
     );
   const url = prior?.commentUrl;
   return typeof url === "string" && url.length > 0 ? url : undefined;
-}
-/**
- * PR5 — capture a snapshot of the worktree at handoff time. Lets the
- * operator-facing surfaces (in-chat sendUserMessage, /work-status
- * terminal renderer, GitHub renderHandoffMarkdown) answer WHERE the
- * work is without re-shelling git on every call.
- *
- * Best-effort: every git invocation is try/catch'd so a missing branch /
- * gh-auth / network issue degrades gracefully — the snapshot's
- * `branchPushed: false` and empty `modifiedFiles` is meaningful by
- * itself; absence of the snapshot field is not.
- *
- * Caps file list at 50 entries to keep state-file readable; the
- * `unstagedCount + stagedCount` totals are always accurate even when
- * the per-file list is truncated.
- */
-export async function captureWorktreeSnapshot(
-  repoRoot: string,
-  branchName: string | undefined,
-  worktrees?: Record<string, string>,
-): Promise<NonNullable<WorkState["pipelineState"]["handoffSnapshot"]>> {
-  const snapshot: NonNullable<WorkState["pipelineState"]["handoffSnapshot"]> = {
-    modifiedFiles: [],
-    unstagedCount: 0,
-    stagedCount: 0,
-    branchExists: false,
-    branchPushed: false,
-    headSha: "",
-    capturedAt: Date.now(),
-  };
-  // #287 — the developer's uncommitted work lives in the WORKTREES, not at
-  // repoRoot. Snapshotting repoRoot alone would report "0 files modified" on
-  // exactly the handoffs where the operator needs to know what survived.
-  // Scan every worktree (falling back to repoRoot when none were recorded,
-  // i.e. a pre-branch halt), prefixing paths
-  // with the workstream id when there is more than one so the file list is
-  // unambiguous.
-  const scanRoots = Object.entries(worktrees ?? {});
-  const targets: Array<{ id: string | undefined; dir: string }> =
-    scanRoots.length > 0
-      ? scanRoots.map(([id, dir]) => ({ id: scanRoots.length > 1 ? id : undefined, dir }))
-      : [{ id: undefined, dir: repoRoot }];
-  // git status --porcelain (XY format: column 1 = staged tier, column 2 = unstaged tier).
-  for (const { id, dir } of targets) {
-    try {
-      const { stdout } = await execp("git status --porcelain", {
-        cwd: dir,
-        maxBuffer: 256 * 1024,
-      });
-      const lines = stdout.split("\n").filter((l) => l.length > 0);
-      for (const line of lines) {
-        const x = line[0] ?? " ";
-        const y = line[1] ?? " ";
-        if (x !== " " && x !== "?") snapshot.stagedCount += 1;
-        if (y !== " ") snapshot.unstagedCount += 1;
-        const filePath = line.slice(3);
-        if (snapshot.modifiedFiles.length < 50) {
-          snapshot.modifiedFiles.push(id ? `${id}: ${filePath}` : filePath);
-        }
-      }
-    } catch (err) {
-      trace(
-        `work-driver: captureWorktreeSnapshot git status failed for ${dir}: ${(err as Error).message?.slice(0, 200)}`,
-      );
-    }
-  }
-  // HEAD short SHA.
-  try {
-    const { stdout } = await execp("git rev-parse --short HEAD", { cwd: repoRoot });
-    snapshot.headSha = stdout.trim();
-  } catch (err) {
-    trace(
-      `work-driver: captureWorktreeSnapshot git rev-parse failed: ${(err as Error).message?.slice(0, 200)}`,
-    );
-  }
-  if (branchName) {
-    // Local branch existence.
-    try {
-      await execp(`git rev-parse --verify ${JSON.stringify(branchName)}`, { cwd: repoRoot });
-      snapshot.branchExists = true;
-    } catch {
-      snapshot.branchExists = false;
-    }
-    // Remote tracking (best-effort; network may be down). 10s timeout
-    // because ls-remote can hang on unreachable remotes.
-    try {
-      const { stdout } = await execp(`git ls-remote --heads origin ${JSON.stringify(branchName)}`, {
-        cwd: repoRoot,
-        timeout: 10_000,
-      });
-      snapshot.branchPushed = stdout.trim().length > 0;
-    } catch {
-      snapshot.branchPushed = false;
-    }
-  }
-  return snapshot;
 }
