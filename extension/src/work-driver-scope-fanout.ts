@@ -63,9 +63,28 @@ function scopeGateEnabled(): boolean {
   return value !== "0" && value !== "false";
 }
 
-/** #285 — normalise a scope path like git would spell it. */
+/**
+ * #285 — normalise a scope path like git would spell it.
+ *
+ * #784 — a trailing-parenthetical annotation is stripped before the ./
+ * and trailing-slash normalisation. This module's normaliser owns BOTH the
+ * in-scope `paths` side and the `outOfScope` fence side, and real state
+ * files carry annotations on both ("...ts (new)", "...ts (no changes)").
+ * The strip mirrors `normaliseDeclaredPath`'s trailing-annotation rule but
+ * is extended for UNTERMINATED parentheticals that occur in real state files
+ * (778.json shape: "...ts (any change to what consolidation stages — …"
+ * with no closing paren). Two-pass: pass 1 strips a balanced trailing
+ * "(…)", pass 2 strips a " (…" with no matching close. A parenthetical
+ * INSIDE a real filename ("docs/notes (draft).md") survives — the annotation
+ * must be at the END, and content after it (".md") disqualifies it.
+ */
 function normaliseScopePath(raw: string): string {
-  return raw.trim().replace(/^\.\//, "").replace(/\/+$/, "");
+  const stripped = raw
+    .trim()
+    .replace(/\s*\([^()]*\)\s*$/, "") // pass 1: balanced trailing "(…)"
+    .replace(/ \((?:[^()]*)$/, "") // pass 2: unterminated " (…" to end
+    .trim();
+  return stripped.replace(/^\.\//, "").replace(/\/+$/, "");
 }
 
 /** #285 — check whether a file path matches a declared scope path. */
@@ -163,12 +182,33 @@ export function runScopeFanoutGate(
     // is all the predicate needs).
     const depOwnedPaths = dependencyOwnedBy.get(id);
     const depOwnedArr = depOwnedPaths ? [...depOwnedPaths] : [];
+    // #784 — a second, additive exemption: a fence hit is demoted to a NOTE
+    // (not a failure, not silently dropped) when the fenced file is declared
+    // in THIS workstream's OWN `paths` (self-fence). The plan step can list
+    // the same file in a workstream's in-scope `paths` AND in that same
+    // workstream's `outOfScope` fence — the plan contradicts itself ("this
+    // file is yours" and "do not touch it"). The recorded #776 incident:
+    // rc1's fence listed work-driver-integrate.ts as out-of-scope while
+    // integrate.ts is exactly where rc1's fix lived, and the driver parked
+    // on the fence. The exemption is SELF-fence only, NOT a plan-wide
+    // widening: a path declared by an INDEPENDENT sibling still fails. Per-hit
+    // granularity: each file is judged independently, so a workstream touching
+    // two fenced files (one self-declared, one genuinely undeclared) emits one
+    // demotion note AND one failure.
+    const isSelfFenced = (file: string): boolean =>
+      declaredPaths.some((declared) => matchesScopePath(file, declared));
     const outOfScopeHits = changedFiles.filter(
       (file) =>
         outOfScope.some((declared) => matchesScopePath(file, declared)) &&
         !depOwnedArr.some((declared) => matchesScopePath(file, declared)),
     );
     for (const file of outOfScopeHits) {
+      if (isSelfFenced(file)) {
+        notes.push(
+          `fence hit demoted to warning: ${file} is declared in this workstream's own paths (self-fence)`,
+        );
+        continue;
+      }
       failures.push(`developer touched out-of-scope path ${file} — declared fence violated`);
     }
     if (declaredPaths.length === 0) {
