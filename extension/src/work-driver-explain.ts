@@ -341,7 +341,20 @@ export function explainCap(
       const where = worktree
         ? `The worktree inspected was \`${worktree}\` (\`git -C ${worktree} status\`).`
         : "The inspected worktree path was not recorded.";
-      return `the lens-fix round did not reach the branch — ${cause}. ${where} The cycle halted rather than reviewing again, because the next round would have re-read an unchanged branch and re-reported the identical findings until the round cap fired, which is what burned whole review budgets on already-solved defects. If the fix is still on disk, commit and push it there and re-run; if nothing exists, the findings were likely false positives and should be adjudicated before re-running`;
+      // #797 — the repoRoot condition is stated in the handoff body itself,
+      // not only in the evidence. The operator following the recovery steps
+      // must know whether repoRoot is usable before running anything there;
+      // a pre-#797 cap (no `restoredToRef`, no restore claim in the
+      // evidence) gets the honest "not recorded" sentence rather than a
+      // fabricated clean state.
+      const ref = hit?.restoredToRef;
+      const notRestored = cause.includes("repoRoot was NOT restored");
+      const rootCondition = notRestored
+        ? `⚠ repoRoot was NOT restored — it requires manual repair before any further /work cycle: run \`git status\` and \`git branch --show-current\` in the repository root, then \`git reset --hard\` and \`git checkout --force\` to the ref the cycle started from (${ref ?? "see the event-log evidence"}). The preserved state (if any) is named in the evidence above.`
+        : ref
+          ? `repoRoot was restored to ${ref} (verified) — the repository root is usable again; run \`git status\` and \`git symbolic-ref --short HEAD\` there to confirm (it must show ${ref} and an empty porcelain).`
+          : `the repoRoot condition was not recorded (this cycle predates #797) — run \`git status\` in the repository root before re-running; a dirty root will abort the next cycle's branch step.`;
+      return `the lens-fix round did not reach the branch — ${cause}. ${where} ${rootCondition} The cycle halted rather than reviewing again, because the next round would have re-read an unchanged branch and re-reported the identical findings until the round cap fired, which is what burned whole review budgets on already-solved defects. If the fix is still on disk, commit and push it there and re-run; if nothing exists, the findings were likely false positives and should be adjudicated before re-running`;
     }
   }
   // PR17 — `verify-failed:<step>`: the driver-side outcome gate found
