@@ -218,7 +218,20 @@ async function runDevelopTopological(
       const conflictFailure = gate.failures.find((f) =>
         /cherry-pick \/ apply conflict|could not combine the workstreams/.test(f),
       );
-      const cap = conflictFailure ? "consolidated-verify-conflict" : "verify-failed:develop";
+      // #777 — a consolidation-created verify failure (per-workstream pass,
+      // combined fail on a specific assertion) is a THIRD distinct cap,
+      // separate from both the conflict cap and the generic verify-failed:
+      // develop. The failure message carries the classification label, the
+      // specific assertion, and both workstream ids — the operator gets a
+      // precise handoff instead of "consolidated tree fails verify".
+      const consolidationCreatedFailure = gate.failures.find((f) =>
+        /\[consolidation-created\]/.test(f),
+      );
+      const cap = conflictFailure
+        ? "consolidated-verify-conflict"
+        : consolidationCreatedFailure
+          ? "consolidated-verify-consolidation-created"
+          : "verify-failed:develop";
       trace(`work-driver: ${cap} — ${gate.failures.join(" | ")}`);
       next = {
         ...next,
@@ -233,7 +246,9 @@ async function runDevelopTopological(
         cap,
         reviewRound: next.pipelineState.reviewRound,
         nextStep: "handoff",
-        ...(conflictFailure ? { evidence: conflictFailure } : {}),
+        ...(conflictFailure || consolidationCreatedFailure
+          ? { evidence: (conflictFailure ?? consolidationCreatedFailure) as string }
+          : {}),
       });
     }
   }

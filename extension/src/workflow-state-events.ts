@@ -245,6 +245,13 @@ export type WorkEvent =
         // verify-failed:develop — the work may be individually fine; the
         // decomposition is incoherent and needs re-planning, not a retry.
         | "consolidated-verify-conflict"
+        // #777 — develop-time consolidated verify failed on a SPECIFIC
+        // assertion that neither workstream tripped alone (per-workstream
+        // pass, combined fail). Distinct from consolidated-verify-conflict
+        // (cherry-pick conflict) and verify-failed:develop (generic).
+        // The failure message carries the classification label, the
+        // specific assertion, and both workstream ids.
+        | "consolidated-verify-consolidation-created"
         // #728 — consolidation dropped files: the branch's committed
         // name-set (baseSha..HEAD) is missing paths that ARE present in a
         // workstream's committed diff (cumulative baseSha..worktree-HEAD).

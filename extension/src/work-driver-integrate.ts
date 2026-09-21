@@ -5,6 +5,7 @@ import path from "node:path";
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
 import type { ConsolidationCompleteness } from "./work-driver-completeness.ts";
+import { runCommitPrConsolidatedVerify } from "./work-driver-integrate-verify.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
 import type { WorkState } from "./workflow-state-schema.ts";
@@ -390,28 +391,24 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
     //    Rolling back on failure is safe: the worktrees still hold every
     //    workstream's commit — they are only advanced past it after a
     //    successful push, below.
+    //    #777 — the classification happens here (the commit-pr twin seam) via
+    //    the shared classifier, so the handoff names the specific assertion
+    //    and the workstream combination instead of "the combination does not".
     if (opts.verifyCmd) {
       const verifyExec = opts.verifyExecFn ?? execFn;
-      let failure: string | undefined;
-      try {
-        await verifyExec(opts.verifyCmd, {
-          cwd: repoRoot,
-          maxBuffer: 8 * 1024 * 1024,
-          timeout: opts.verifyTimeoutMs,
-        });
-      } catch (err) {
-        const e = err as Error & { stderr?: string; stdout?: string };
-        failure = (e.stderr || e.stdout || e.message || "").toString().trim();
-      }
-      if (failure !== undefined) {
+      const vr = await runCommitPrConsolidatedVerify(verifyExec, {
+        verifyCmd: opts.verifyCmd,
+        repoRoot,
+        workstreamCount: ids.length,
+        workstreamIds: ids,
+        timeoutMs: opts.verifyTimeoutMs,
+      });
+      if (vr.ok === false) {
         const restore = await restoreRoot();
         return {
           ok: false,
           failure: "verify",
-          reason:
-            `the consolidated tree fails the project's verify command (\`${opts.verifyCmd}\`), so it was not pushed. ` +
-            `Each workstream passed alone; the combination does not. Tail: ${failure.slice(-600)} ` +
-            `${claimFor(restore)}.`,
+          reason: `${vr.classifiedMessage} — it was not pushed. ${claimFor(restore)}.`,
         };
       }
     }
