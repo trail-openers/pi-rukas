@@ -22,11 +22,10 @@ import { Container, Text } from "@earendil-works/pi-tui";
 import {
   type DeckEntry,
   attach,
-  batchSnapshot,
   buildLines,
+  buildLinesBatchOnly,
   clearEntry,
   detach,
-  formatBatchRow,
   formatRow,
   reset,
   snapshot,
@@ -404,19 +403,20 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
 // in the batch-only projection (buildLinesBatchOnly — the composite's Text
 // projection) also appears in buildLines. The two projections share a header
 // formatter (formatBatchRow), so membership is a line-identity check.
-// buildLinesBatchOnly is not exported, so we reconstruct it from the
-// exported surface: batchSnapshot() + formatBatchRow() is exactly what
-// buildLinesBatchOnly computes (same loop, same formatter, see
-// dispatch-deck.ts).
+// Both projections are evaluated at ONE fixed `now` (exported for exactly
+// this reason): comparing two projections sampled at different Date.now()
+// ticks raced a 1 ms elapsed-time boundary on CI ("0ms" vs "1ms") and
+// flaked the line-identity check.
 {
   reset();
   startBatchEntry("sh-1", { label: "alpha", size: 2 });
   startBatchEntry("sh-2", { label: "beta", size: 1 });
   startEntry("sh-m", { label: "developer[t]", role: "developer", batchKey: "sh-1" });
   startEntry("sh-solo", { label: "explore", role: "explore" });
-  const batchOnly = batchSnapshot().map((b) => formatBatchRow(b));
+  const now = Date.now();
+  const batchOnly = buildLinesBatchOnly(now);
   assert(batchOnly.length === 2, "batch-only projection has 2 header rows (sanity)");
-  const lines = buildLines();
+  const lines = buildLines(now);
   for (const header of batchOnly) {
     assert(lines.includes(header), `batch-header row in batch-only projection also in buildLines: ${header}`);
   }
