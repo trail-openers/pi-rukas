@@ -38,6 +38,7 @@ import {
 } from "./work-driver-consolidation-classify.ts";
 import type { ConsolidationFailureVerdict } from "./work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
+import { rerunConsolidatedVerifyOnce } from "./work-driver-verify-flake.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -51,7 +52,10 @@ import type { ExecFn } from "./worktree.ts";
  *   assertion, and the workstream ids.
  */
 export type CommitPrConsolidatedVerifyResult =
-  | { ok: true }
+  | {
+      ok: true /** #782 — the first run flaked and the single re-run passed. */;
+      recovered?: boolean;
+    }
   | {
       ok: false;
       /** Raw bounded (800-char) verify output, with attribution anchor. */
@@ -122,6 +126,12 @@ export async function runCommitPrConsolidatedVerify(
      * preconditions hold.
      */
     isCiRetry?: boolean;
+    /**
+     * #782 — the re-run passed: the caller records the recovery on the PR
+     * via the `verify-flake-recovered` event (the callback is where that
+     * append happens, BEFORE the caller appends any failure cap).
+     */
+    onRecover?: (evidenceTail?: string) => void;
   },
 ): Promise<CommitPrConsolidatedVerifyResult> {
   // The single flake retry is allowed only when: (a) this is the first
@@ -149,7 +159,7 @@ export async function runCommitPrConsolidatedVerify(
     }
   };
 
-  const firstFailure = await runOnce();
+  let firstFailure = await runOnce();
   if (firstFailure === undefined) return { ok: true };
 
   // #782 — on the first run, with every per-worktree verify passed and N>1,
@@ -161,14 +171,28 @@ export async function runCommitPrConsolidatedVerify(
     trace(
       `work-driver: commit-pr verify failed on the first run — re-running the verify command once (flake retry, N=${opts.workstreamCount})`,
     );
-    const reFailure = await runOnce();
-    if (reFailure === undefined) {
+    const secondTail = await rerunConsolidatedVerifyOnce(
+      execFn,
+      opts.verifyCmd,
+      opts.repoRoot,
+      opts.timeoutMs ?? 30 * 60_000,
+    );
+    if (secondTail === undefined) {
       trace(
         "work-driver: commit-pr verify re-run PASSED — the first-run failure was a flake; proceeding without classifying",
       );
-      return { ok: true };
+      // The caller's onRecover callback is where the
+      // `verify-flake-recovered` step event is appended, so it happens
+      // BEFORE the caller appends `verify-failed:commit-pr` + its
+      // verifyEvidence (eventLog is append-only; the recovered path
+      // appends no cap).
+      opts.onRecover?.(firstFailure);
+      return { ok: true, recovered: true };
     }
-    trace("work-driver: commit-pr verify re-run also FAILED — classifying as today");
+    // The re-run failed — classify the second run's tail exactly as a
+    // single-run failure would be classified (a test that fails twice is
+    // not a flake, so the cycle parks as today).
+    firstFailure = secondTail;
   }
 
   const failure = firstFailure;

@@ -208,7 +208,7 @@ try {
       mode: "create",
       requireAllNonEmpty: true,
       verifyCmd,
-      ciRetryCount: 1,
+      verifyRetry: { ciRetryCount: 1, onRecover: () => {} },
     });
     assert(!r.ok, "flake-ciretry: with ciRetryCount > 0 the retry is skipped → integrate() fails (no second run)");
     assert(

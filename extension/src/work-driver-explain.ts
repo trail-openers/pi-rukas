@@ -360,9 +360,11 @@ export function explainCap(
     // pre-#782 state files (treat absent as "no re-run", no suffix).
     let retryNote = "";
     if (evidence && (evidence.retries ?? 0) > 0) {
+      const n = evidence.retries;
+      const verb = n === 1 ? "retried once" : `retried ${n} times`;
       retryNote = evidence.recovered
-        ? "\nNote: the verify command was retried once and RECOVERED — the recorded failure was a transient flake; inspect the worktree(s) to confirm nothing else changed."
-        : "\nNote: the verify command was retried once and still failed — this is a real failure, not a flake.";
+        ? `\nNote: the verify command was ${verb} and RECOVERED — the recorded failure was a transient flake; inspect the worktree(s) to confirm nothing else changed.`
+        : `\nNote: the verify command was ${verb} and still failed — this is a real failure, not a flake.`;
     }
     return `the driver's outcome-verification gate rejected the ${step} step's "done" claim — the claimed result is not backed by executed evidence:${findings}${retryNote}\nNo LLM judged this; the driver ran the checks itself (git diff/rev-list, the project's verify command, gh pr view). Inspect the worktree(s), fix or re-dispatch, and re-run. Set PI_ENSEMBLE_VERIFY=0 to disable the gate (not recommended)`;
   }

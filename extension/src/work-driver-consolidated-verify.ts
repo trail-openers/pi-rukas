@@ -8,12 +8,6 @@
 // commit simply contributes nothing); repoRoot is ALWAYS restored
 // afterwards (the combined tree is a transient probe; leaving it on a
 // scratch ref would break the next integration's dirty-preflight).
-//
-// #782 — single bounded flake retry. When the consolidated run fails and
-// the caller asks for a retry (N>1, every per-worktree verify passed), the
-// SAME verify command is re-run ONCE on the same still-checked-out scratch
-// tree, BEFORE the restore. A test that fails twice is not a flake — the
-// second failure is returned to the caller for classification as today.
 
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.js";
@@ -21,157 +15,84 @@ import type { DriverContext } from "./work-driver-context.js";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
-
-export type ConsolidatedVerifyResult =
-  | {
-      status: "passed";
-      applied: string[];
-      /** #782 — 1 when the first run failed and the re-run passed. */
-      retries?: 1;
-      recovered?: true;
-    }
-  | {
-      status: "failed";
-      detail: string;
-      /** Raw combined stdout+stderr of the FIRST failing run. */
-      firstRunOutput: string;
-      /** #782 — set when the caller requested a retry and one was performed. */
-      retried?: true;
-      /** #782 — true when the re-run passed. Absent when no retry was requested. */
-      recovered?: boolean;
-      /** #782 — set when `deferRestore` is true and the caller must invoke
-       *  `restoreConsolidatedVerifyRoot` to undo the scratch checkout. */
-      deferredOriginalRef?: string;
-    }
-  | { status: "conflict"; detail: string; kind: "conflict" | "dirty-root" };
-
-/** The scratch branch name — no other step of the cycle ever creates it. */
-export const CONSOLIDATED_VERIFY_BRANCH = "pi-rukas-dev-verify";
-
-/**
- * #782 — the single bounded flake retry for the CONSOLIDATED-tree verify.
- *
- * Precondition (enforced by the caller, `verifyDevelopOutcome`):
- *   1. The first consolidated run failed.
- *   2. workstreamCount > 1 (N=1 is a no-op consolidation).
- *   3. Every per-worktree verify passed.
- *
- * Exactly one re-run — never a loop. The caller MUST invoke this BEFORE
- * restoring the scratch tree; a re-run after restore would test the wrong
- * tree (the restored mainline). If the scratch branch is no longer checked
- * out (the caller restored early), the retry is skipped and `recovered` is
- * false — the caller then classifies and parks as today.
- */
-export async function retryConsolidatedVerify(
-  execFn: NonNullable<DriverContext["verifyExecFn"]>,
-  opts: {
-    repoRoot: string;
-    verifyCmd: string;
-    timeoutMs: number;
-    firstRunOutput: string;
-  },
-): Promise<{ recovered: boolean; retries: 1 }> {
-  let currentRef = "";
-  try {
-    currentRef = (
-      await execFn("git symbolic-ref --quiet --short HEAD", {
-        cwd: opts.repoRoot,
-        maxBuffer: 64 * 1024,
-      })
-    ).stdout.trim();
-  } catch {
-    // detached HEAD or read failure — treat as "not on scratch branch".
-  }
-  if (currentRef !== CONSOLIDATED_VERIFY_BRANCH) {
-    trace(
-      `work-driver: consolidated verify flake retry skipped — repoRoot is on '${currentRef || "(detached)"}', not '${CONSOLIDATED_VERIFY_BRANCH}'`,
-    );
-    return { recovered: false, retries: 1 };
-  }
-  trace(
-    `work-driver: consolidated verify flake retry — re-running the SAME command in the SAME scratch tree (first-run failure: ${opts.firstRunOutput.slice(0, 120)})`,
-  );
-  try {
-    await execFn(opts.verifyCmd, {
-      cwd: opts.repoRoot,
-      timeout: opts.timeoutMs,
-      maxBuffer: 8 * 1024 * 1024,
-    });
-    return { recovered: true, retries: 1 };
-  } catch (err) {
-    const e = err as Error & { stderr?: string; stdout?: string };
-    trace(
-      `work-driver: consolidated verify flake retry FAILED (re-run also failed): ${((e.stderr || e.stdout || e.message) as string).slice(0, 120)}`,
-    );
-    return { recovered: false, retries: 1 };
-  }
-}
-
-/**
- * #782 — restore repoRoot after a deferred-restore consolidated verify.
- * The caller invokes this AFTER `retryConsolidatedVerify` (or after deciding
- * not to retry), so the scratch branch does not survive into the next step.
- */
-export async function restoreConsolidatedVerifyRoot(
-  execFn: NonNullable<DriverContext["verifyExecFn"]>,
-  opts: { repoRoot: string; originalRef: string; scratchDir: string },
-): Promise<VerifiedRestoreResult> {
-  const result = await verifiedRestoreRoot(execFn, {
-    repoRoot: opts.repoRoot,
-    originalRef: opts.originalRef,
-    scratchDir: opts.scratchDir,
-    label: "consolidated verify (deferred)",
-  });
-  await execFn(`git branch -D ${JSON.stringify(CONSOLIDATED_VERIFY_BRANCH)}`, {
-    cwd: opts.repoRoot,
-    maxBuffer: 64 * 1024,
-  }).catch(() => undefined);
-  return result;
-}
+import { rerunConsolidatedVerifyOnce } from "./work-driver-verify-flake.ts";
 
 export async function runConsolidatedVerify(
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
   opts: {
     repoRoot: string;
     baseSha: string;
+    branchName?: string;
     worktrees: Record<string, string>;
     scratchDir: string;
     verifyCmd: string;
     timeoutMs: number;
     /**
-     * #782 — when true, the restore is DEFERRED (the scratch branch stays
-     * checked out) so the caller can invoke `retryConsolidatedVerify` on the
-     * same still-checked-out tree. The caller MUST restore via
-     * `restoreConsolidatedVerifyRoot` before any further git operations.
-     * Default false — the legacy restore-immediately contract.
+     * #782 — the single bounded flake re-run. When the first run fails and
+     * `canRetry` is true, the SAME command re-runs once on the SAME still-
+     * checked-out scratch tree (BEFORE `restoreRoot`) and the outcome
+     * replaces the single-run verdict: the re-run passes →
+     * `status: "passed"` + the `onRecover` callback with the original
+     * failing tail (the caller emits `verify-flake-recovered` and proceeds);
+     * the re-run fails → the SAME failed shape as a single-run failure,
+     * with `retried: true` and `recovered: false` so the caller records
+     * `retries: 1, recovered: false` and classifies/parks exactly as today.
+     * The retry is caller-gated: `canRetry` must be true only when every
+     * per-worktree verify passed AND this is a genuine consolidation (the
+     * caller owns those preconditions — N>1 at this seam).
      */
-    deferRestore?: boolean;
+    retry?: {
+      canRetry: boolean;
+      onRecover: (evidenceTail?: string) => void;
+    };
   },
-): Promise<ConsolidatedVerifyResult> {
+): Promise<
+  | { status: "passed"; applied: string[]; recovered?: boolean }
+  | { status: "failed"; detail: string; retried?: boolean; recovered?: boolean }
+  // #725 — the caller distinguishes a genuine cherry-pick / patch-apply
+  // conflict from a dirty-repoRoot preflight refusal via `kind`, not by
+  // regexing the `detail` prose (a reworded message used to silently
+  // re-route the refusal to the conflict cap).
+  | { status: "conflict"; detail: string; kind: "conflict" | "dirty-root" }
+> {
   const { repoRoot, baseSha, worktrees, scratchDir, verifyCmd, timeoutMs } = opts;
-  const branchName = CONSOLIDATED_VERIFY_BRANCH;
+  const retry = opts.retry;
+  // A scratch branch name no other step of the cycle ever creates. Deleted
+  // on the restore path below (a leftover branch costs nothing, but noise
+  // is noise; the worktrees are untouched either way).
+  const branchName = "pi-rukas-dev-verify";
   let originalRef: string | undefined;
-  let deferred = false;
+  // #750 — the restore is verified, not assumed: preserves the discarded
+  // state, resets, restores the checkout, and reports success only when the
+  // porcelain read confirms the root is clean. The caller emits that
+  // post-condition — it no longer asserts an unverified "restored".
   const restoreRoot = async (): Promise<VerifiedRestoreResult> => {
-    if (!originalRef || deferred) return { restored: true };
+    if (!originalRef) return { restored: true };
     const result = await verifiedRestoreRoot(execFn, {
       repoRoot,
       originalRef,
       scratchDir,
       label: "consolidated verify",
     });
+    // Delete the scratch branch so it does not accumulate on every develop
+    // re-entry. Failure is non-fatal (a leftover branch costs nothing).
     await execFn(`git branch -D ${JSON.stringify(branchName)}`, {
       cwd: repoRoot,
       maxBuffer: 64 * 1024,
     }).catch(() => undefined);
     return result;
   };
+  // The verified post-condition for the operator, via the shared claim
+  // builder (the not-restored variant carries the preserved-diff location and
+  // the still-dirty detail — the loud failure, never a bare "restored").
   const restoreClaimFor = (r: VerifiedRestoreResult) =>
     restoreClaim(r, "the batch was aborted and");
   try {
     // Preflight — same as integrate(): repoRoot must be clean before we
-    // touch its checkout. `.worktrees/` and `.pi/` scaffolding are not dirt;
-    // untracked `??` IS dirt.
+    // touch its checkout, or a dirty root would carry operator residue
+    // onto the probe branch. Refuse to consolidate rather than guess.
+    // `.worktrees/` and `.pi/` scaffolding are not dirt; untracked `??` IS
+    // dirt (see the integrate() preflight comment for the reasoning).
     const { stdout: rootStatus } = await execFn("git status --porcelain", {
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
@@ -234,80 +155,75 @@ export async function runConsolidatedVerify(
       };
     }
 
-    const applied =
-      orchResult.cherryApplied.length > 0 ? orchResult.cherryApplied : orchResult.patchApplied;
-
     // Run the verify command against the combined tree.
-    let verifyOutput = "";
-    let verifyFailed = false;
+    let verifyFailure: string | undefined;
     try {
       await execFn(verifyCmd, { cwd: repoRoot, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 });
     } catch (err) {
       const e = err as Error & { stderr?: string; stdout?: string };
-      verifyOutput = (e.stderr || e.stdout || e.message || "").toString().trim();
-      verifyFailed = true;
+      verifyFailure = (e.stderr || e.stdout || e.message || "").toString().trim();
     }
-
-    if (verifyFailed && opts.deferRestore) {
-      // #782 — the caller wants to retry: keep the scratch tree checked out.
-      // The caller is responsible for the retry and the restore before any
-      // further git work at repoRoot.
-      deferred = true;
-      trace(
-        "work-driver: consolidated verify — first run failed; deferring restore for the flake retry",
-      );
+    // #782 — the single bounded flake re-run. It happens on the SAME still-
+    // checked-out scratch tree, BEFORE `restoreRoot` (a re-run after the
+    // restore would test the restored mainline, not the combination). When it
+    // passes, the probe is declared passed with the recovery flag; when it
+    // fails, the classification below proceeds on the second run's tail — a
+    // test that fails twice is not a flake, so the cycle parks as today.
+    let recovered = false;
+    let retried = false;
+    if (verifyFailure !== undefined && retry?.canRetry) {
+      retried = true;
+      const secondTail = await rerunConsolidatedVerifyOnce(execFn, verifyCmd, repoRoot, timeoutMs);
+      if (secondTail === undefined) {
+        recovered = true;
+      } else {
+        verifyFailure = secondTail;
+      }
+    }
+    const restore = await restoreRoot();
+    const applied =
+      orchResult.cherryApplied.length > 0 ? orchResult.cherryApplied : orchResult.patchApplied;
+    if (recovered) {
+      retry?.onRecover(verifyFailure);
+      return { status: "passed", applied, recovered: true };
+    }
+    if (verifyFailure !== undefined) {
+      // #723 — same attribution anchor as formatExecError: a bare `.slice(-800)`
+      // can splice a passing sub-command's tail onto a later failure.
+      const { tail, attributed } = extractAttributedTail(verifyFailure, 800);
+      if (!attributed && tail) {
+        trace("work-driver: consolidated verify tail is unattributed (no FAILED: marker found)");
+      }
+      const detail = tail
+        ? attributed
+          ? tail
+          : `${tail} (unattributed — best-effort tail)`
+        : "verify command exited non-zero";
+      // #750 — the verified post-condition rides with every outcome of the
+      // probe run (the root is transient either way; an unverified claim
+      // about it is exactly the incident).
       return {
         status: "failed",
-        detail: "",
-        firstRunOutput: verifyOutput,
-        deferredOriginalRef: originalRef,
+        detail: `${detail} ${restoreClaimFor(restore)}`,
+        retried,
+        recovered: false,
       };
     }
-
-    const restore = await restoreRoot();
-    if (!verifyFailed) {
-      if (!restore.restored) {
-        trace(
-          `work-driver: consolidated verify — root not restored after a passing run: ${restore.detail}`,
-        );
-      }
-      return { status: "passed", applied };
-    }
-    // #723 — same attribution anchor as formatExecError: a bare `.slice(-800)`
-    // can splice a passing sub-command's tail onto a later failure.
-    const { tail, attributed } = extractAttributedTail(verifyOutput, 800);
-    if (!attributed && tail) {
-      trace("work-driver: consolidated verify tail is unattributed (no FAILED: marker found)");
-    }
-    const detail = tail
-      ? attributed
-        ? tail
-        : `${tail} (unattributed — best-effort tail)`
-      : "verify command exited non-zero";
-    return {
-      status: "failed",
-      detail: `${detail} ${restoreClaimFor(restore)}`,
-      firstRunOutput: verifyOutput,
-    };
-  } catch (err) {
-    if (!deferred) {
-      const restore = await restoreRoot();
+    if (!restore.restored) {
       trace(
-        `work-driver: consolidated verify — unexpected error: ${(err as Error).message?.slice(0, 200)}`,
+        `work-driver: consolidated verify — root not restored after a passing run: ${restore.detail}`,
       );
-      return {
-        status: "conflict",
-        kind: "conflict",
-        detail: `consolidation could not be performed: ${(err as Error).message?.slice(0, 200)}. ${restoreClaimFor(restore)}`,
-      };
     }
+    return { status: "passed", applied };
+  } catch (err) {
+    const restore = await restoreRoot();
     trace(
-      `work-driver: consolidated verify — unexpected error during deferred restore: ${(err as Error).message?.slice(0, 200)}`,
+      `work-driver: consolidated verify — unexpected error: ${(err as Error).message?.slice(0, 200)}`,
     );
     return {
-      status: "failed",
-      detail: `unexpected error: ${(err as Error).message?.slice(0, 200)}`,
-      firstRunOutput: "",
+      status: "conflict",
+      kind: "conflict",
+      detail: `consolidation could not be performed: ${(err as Error).message?.slice(0, 200)}. ${restoreClaimFor(restore)}`,
     };
   }
 }

@@ -199,14 +199,18 @@ async function runDevelopTopological(
   // catch the case where claims are green but the evidence isn't. #679: one
   // failed workstream no longer skips the gate for the whole fanout.
   if (hasDevelopEvidence) {
-    // #782 — the flake-retry event (verify-flake-recovered) is appended to
-    // this array and merged into the state's event log after the gate runs.
-    const flakeEvents: WorkEvent[] = [];
-    const gate = await verifyStepOutcome(ctx, next, "develop", flakeEvents);
-    if (flakeEvents.length > 0) {
-      next = appendEvent(next, ...flakeEvents);
-    }
+    const gate = await verifyStepOutcome(ctx, next, "develop");
     if (gate.ok) {
+      // #782 — the consolidated verify's single re-run passed: the driver
+      // proceeds. Emit the recovery marker BEFORE the converge gate so the
+      // event log carries the audit trail even if the cycle parks later.
+      if (gate.flakeRecovered) {
+        next = appendEvent(next, {
+          kind: "verify-flake-recovered",
+          at: Date.now(),
+          step: "develop",
+        });
+      }
       // #741 — the verify gate proves the diff BUILDS; the converge gate
       // proves it is COMPLETE. Runs only after the verify gate passes (the
       // issue's stated ordering) — a diff that doesn't build never reaches
@@ -239,10 +243,9 @@ async function runDevelopTopological(
           ? "consolidated-verify-consolidation-created"
           : "verify-failed:develop";
       trace(`work-driver: ${cap} — ${gate.failures.join(" | ")}`);
-      // #782 — the flake-retry outcome is threaded into verifyEvidence so the
-      // handoff can show "retried once, recovered" or "retried once, still
-      // failed" when the bounded re-run was performed. Absent when no retry
-      // ran (N=1, or per-worktree failures present) — pre-#782 state shape.
+      // #782 — when the consolidated verify recovered from a flake but the
+      // converge gate then parks, record the retry so the handoff shows
+      // "retried once, recovered" even though the cycle stops here.
       next = {
         ...next,
         pipelineState: {
@@ -251,9 +254,7 @@ async function runDevelopTopological(
             step: "develop",
             failures: gate.failures,
             at: Date.now(),
-            ...(gate.flakeRetry
-              ? { retries: gate.flakeRetry.retries, recovered: gate.flakeRetry.recovered }
-              : {}),
+            ...(gate.flakeRecovered ? { retries: 1, recovered: true } : {}),
           },
         },
       };

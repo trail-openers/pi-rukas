@@ -127,15 +127,20 @@ export interface IntegrateOpts {
   /** Wall-clock for `verifyCmd`. */
   verifyTimeoutMs?: number;
   /**
-   * #782 — the cycle's current `ciRetryCount`. Set when this is NOT the first
-   * consolidated run at commit-pr (a prior ci-retry already ran the verify
-   * command and bumped the count). When set, the single flake retry inside
-   * `runCommitPrConsolidatedVerify` is skipped — the retry precondition
-   * (issue #782 AC: "the retry fires ONLY when … the FIRST consolidated run
-   * at commit-pr (ciRetryCount unset)") is not met. Absent (or 0) is the
-   * first run; the retry fires when the other preconditions hold.
+   * #782 — the commit-pr flake re-run. When the consolidated verify at this
+   * seam fails and `ciRetryCount` is unset (first consolidated run), the
+   * SAME command re-runs once on the SAME integration branch (no restore at
+   * this seam — repoRoot IS the consolidated tree) BEFORE classification.
+   * `onRecover` is called with the original failing tail when the re-run
+   * passes (the caller appends `verify-flake-recovered` BEFORE appending
+   * `verify-failed:commit-pr`, so eventLog is append-only and the ordering
+   * is the emission order). Absent on pre-#782 state files; readers treat
+   * absent as no retry (the classifier parks as today).
    */
-  ciRetryCount?: number;
+  verifyRetry?: {
+    ciRetryCount?: number;
+    onRecover: (evidenceTail?: string) => void;
+  };
 }
 
 /** #492 — worktrees that produced no diff, keyed by id → worktree path. */
@@ -414,7 +419,8 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
         timeoutMs: opts.verifyTimeoutMs,
         // #782 — pass the cycle's ciRetryCount through so the single flake
         // retry fires only on the FIRST consolidated run (ciRetryCount unset).
-        isCiRetry: (opts.ciRetryCount ?? 0) > 0,
+        isCiRetry: (opts.verifyRetry?.ciRetryCount ?? 0) > 0,
+        onRecover: opts.verifyRetry?.onRecover,
       });
       if (vr.ok === false) {
         const restore = await restoreRoot();

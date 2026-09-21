@@ -10,11 +10,7 @@
  */
 
 import path from "node:path";
-import {
-  restoreConsolidatedVerifyRoot,
-  retryConsolidatedVerify,
-  runConsolidatedVerify,
-} from "./work-driver-consolidated-verify.ts";
+import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import {
   buildPerWorktreeFailuresByWs,
   classifyConsolidatedVerifyFailure,
@@ -29,7 +25,6 @@ import {
   protectedPathsEnabled,
   protectedPathsIn,
 } from "./work-driver-doctrine.ts";
-import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import { runFalsilyGreenCheck } from "./work-driver-falsily-green.ts";
 import { runScopeFanoutGate } from "./work-driver-scope-fanout.ts";
 import { declaredPathsHaveSource, verifyCmdFor } from "./work-driver-verify-cmd.ts";
@@ -39,18 +34,9 @@ import {
   normaliseScopePath,
   verifyTimeoutMs,
 } from "./work-driver-verify-develop-helpers.ts";
-import type { WorkEvent } from "./workflow-state-events.ts";
+
 import type { WorkState } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
-
-/**
- * #782 — the flake-retry outcome of the consolidated-verify gate. `undefined`
- * when no retry ran (the normal path); `{retries, recovered}` when the
- * bounded re-run was performed. The caller (work-develop-topological.ts) uses
- * this to set verifyEvidence.retries/recovered and to emit the
- * `verify-flake-recovered` event (recovered: true only).
- */
-export type FlakeRetryOutcome = { retries: 1; recovered: boolean } | undefined;
 
 /** PR338 — validate a git SHA before shell interpolation. */
 const VALID_SHA_RE = /^[0-9a-f]{40}$/;
@@ -60,13 +46,7 @@ function isValidSha(s: string | undefined) {
 
 /**
  * Verify the develop step's outcome by checking executed evidence
- * in each worktree. Mutates `failures` and `notes` in place. When
- * `eventsOut` is provided, #782 flake-retry events are appended to it
- * (the driver's event log — the function is otherwise pure).
- *
- * Returns the flake-retry outcome (the #782 single bounded re-run result),
- * or `undefined` when no retry ran. The caller uses this to populate
- * verifyEvidence.retries / recovered on the state file.
+ * in each worktree. Mutates `failures` and `notes` in place.
  */
 export async function verifyDevelopOutcome(
   ctx: DriverContext,
@@ -74,8 +54,9 @@ export async function verifyDevelopOutcome(
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
   failures: string[],
   notes: string[],
-  eventsOut?: WorkEvent[],
-): Promise<FlakeRetryOutcome> {
+  // #782 — fires when the consolidated-verify flake re-run passed.
+  onVerifyFlakeRecovered?: (evidenceTail?: string) => void,
+): Promise<void> {
   const worktrees =
     Object.keys(state.pipelineState.worktrees ?? {}).length > 0
       ? (state.pipelineState.worktrees ?? {})
@@ -362,10 +343,13 @@ export async function verifyDevelopOutcome(
       }
     } else {
       const scratchDir = path.join(ctx.repoRoot, "tmp", `issue-${ctx.issue}`);
-      // #782 — the flake retry fires ONLY when (a) every per-worktree verify
-      // passed, (b) the consolidated run failed, (c) workstreamCount > 1.
-      // N=1 is a no-op consolidation: its failure is a per-workstream defect.
-      const shouldRetry =
+      // #782 — the consolidated-verify flake retry: fires ONLY when every
+      // per-worktree verify passed, the consolidated run failed, and this is
+      // a genuine consolidation (N>1). N=1 consolidation is a no-op (its
+      // failure is a per-workstream defect) and per-worktree failures are
+      // genuine defects the classifier names. The re-run happens inside
+      // runConsolidatedVerify, BEFORE classification and BEFORE the restore.
+      const flakeRetryPrecondition =
         perWorktreeVerifyFailures.length === 0 && Object.keys(worktrees).length > 1;
       const cons = await runConsolidatedVerify(execFn, {
         repoRoot: ctx.repoRoot,
@@ -374,7 +358,15 @@ export async function verifyDevelopOutcome(
         scratchDir,
         verifyCmd: cmd,
         timeoutMs: verifyTimeoutMs(),
-        deferRestore: shouldRetry,
+        retry: {
+          canRetry: flakeRetryPrecondition,
+          onRecover: (evidenceTail) => {
+            notes.push(
+              `consolidated verify RECOVERED after one bounded re-run (transient flake) — first-run failure preserved${evidenceTail ? `: ${evidenceTail}` : ""}`,
+            );
+            onVerifyFlakeRecovered?.(evidenceTail);
+          },
+        },
       });
       if (cons.status === "conflict") {
         // #725 — "conflict" has TWO causes: a genuine cherry-pick / patch-apply
@@ -390,61 +382,12 @@ export async function verifyDevelopOutcome(
             `consolidated verify could not combine the workstreams' commits — cherry-pick / apply conflict (${cons.detail}). Two workstreams edited the same lines; the decomposition is incoherent, which is distinct from a verify failure`,
           );
         }
-      } else if (cons.status === "failed" && shouldRetry && cons.deferredOriginalRef) {
-        // #782 — first run failed; the precondition holds, so re-run the SAME
-        // verify command ONCE on the SAME still-checked-out scratch tree, BEFORE
-        // the restore (which is deferred here). Exactly one retry, never a loop.
-        const retry = await retryConsolidatedVerify(execFn, {
-          repoRoot: ctx.repoRoot,
-          verifyCmd: cmd,
-          timeoutMs: verifyTimeoutMs(),
-          firstRunOutput: cons.firstRunOutput,
-        });
-        // The restore is the caller's responsibility here (deferredRestore).
-        // The scratch tree is only safe to unwind AFTER the retry has run —
-        // a re-run after restore would test the wrong tree (the mainline).
-        await restoreConsolidatedVerifyRoot(execFn, {
-          repoRoot: ctx.repoRoot,
-          originalRef: cons.deferredOriginalRef,
-          scratchDir,
-        });
-        if (retry.recovered) {
-          // Re-run passed: this was a flake, not a consolidation-created
-          // defect. Emit the audit event; the caller records
-          // verifyEvidence.retries/recovered from the returned outcome.
-          notes.push(
-            `consolidated verify FLAKE RECOVERED — the first run failed but the single bounded re-run on the same scratch tree passed \`${cmd}\`; the driver proceeds`,
-          );
-          eventsOut?.push({
-            kind: "verify-flake-recovered",
-            at: Date.now(),
-            step: "develop",
-            evidenceTail: cons.firstRunOutput.slice(0, 800),
-          });
-          return { retries: 1, recovered: true };
-        }
-        // Re-run also failed — a test that fails twice is not a flake.
-        // Classify the FIRST run's output (the original failure; the second
-        // run's failure is the same shape, and the classifier needs the
-        // asserted assertion, not the duplicate) and park as today.
-        const wsIds = Object.keys(worktrees);
-        const { tail, attributed } = extractAttributedTail(cons.firstRunOutput, 800);
-        const classifiedDetail = tail
-          ? attributed
-            ? tail
-            : `${tail} (unattributed — best-effort tail)`
-          : "verify command exited non-zero";
-        const verdict = classifyConsolidatedVerifyFailure(
-          wsIds.length,
-          wsIds,
-          classifiedDetail,
-          buildPerWorktreeFailuresByWs(worktrees, changedWorktrees, perWorktreeVerifyFailures),
-        );
-        failures.push(consolidatedFailureMessage(verdict, cmd));
-        return { retries: 1, recovered: false };
       } else if (cons.status === "failed") {
         // #777 — classify the consolidated-tree failure (see the classifier
-        // module docstring for the three-way distinction).
+        // module docstring for the three-way distinction). #782 — when the
+        // flake re-run happened (and also failed), the detail is the second
+        // run's tail; a test that fails twice is not a flake, so the cycle
+        // parks as today.
         const wsIds = Object.keys(worktrees);
         const verdict = classifyConsolidatedVerifyFailure(
           wsIds.length,
@@ -453,10 +396,6 @@ export async function verifyDevelopOutcome(
           buildPerWorktreeFailuresByWs(worktrees, changedWorktrees, perWorktreeVerifyFailures),
         );
         failures.push(consolidatedFailureMessage(verdict, cmd));
-        // The non-retry failure path (N=1, or per-worktree failures present)
-        // also records retries: 0 / recovered: false on verifyEvidence so the
-        // handoff can distinguish "no retry was needed" from "retry ran and
-        // did not help".
       } else {
         notes.push(
           `consolidated verify passed — workstreams ${cons.applied.join(", ")} combined in one tree passed \`${cmd}\`; per-worktree verify failures are recorded as evidence, not failures, because the combined tree is the verdict for cross-worktree artifacts`,

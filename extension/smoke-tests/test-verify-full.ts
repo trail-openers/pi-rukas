@@ -289,48 +289,6 @@ async function testRunVerifyFullMeasuresElapsed() {
   console.log("✓ testRunVerifyFullMeasuresElapsed");
 }
 
-/**
- * Test: #782 — verify-full flake retry: first run fails, second run passes.
- * The result should be outcome: "success" with flake.recovered: true.
- */
-async function testRunVerifyFullFlakeRecovered() {
-  const trackCalls: Array<{ cmd: string; cwd?: string }> = [];
-  // First call: error (throw); second call: success.
-  const mockExec = createMockExecFn(
-    [
-      { stdout: "", stderr: "error: transient vipune timeout" },
-      { stdout: "test result: 23 passed, 0 failed", stderr: "" },
-    ],
-    trackCalls,
-  );
-  const result = await runVerifyFull("cargo test", tmpDir, 5000, mockExec);
-  assert.strictEqual(result.outcome, "success", "flake-recovered: outcome should be success");
-  assert.strictEqual(result.flake?.recovered, true, "flake-recovered: flake.recovered should be true");
-  assert.strictEqual(trackCalls.length, 2, "flake-recovered: exactly 2 calls (first fail + retry)");
-  assert.ok(result.output.includes("transient vipune timeout"), "flake-recovered: output carries the first run's failure");
-  console.log("✓ testRunVerifyFullFlakeRecovered");
-}
-
-/**
- * Test: #782 — verify-full flake retry: both runs fail.
- * The result should be outcome: "failure" with flake.recovered: false.
- */
-async function testRunVerifyFullFlakeStillFails() {
-  const trackCalls: Array<{ cmd: string; cwd?: string }> = [];
-  const mockExec = createMockExecFn(
-    [
-      { stdout: "", stderr: "error: test failed (attempt 1)" },
-      { stdout: "", stderr: "error: test failed (attempt 2)" },
-    ],
-    trackCalls,
-  );
-  const result = await runVerifyFull("cargo test", tmpDir, 5000, mockExec);
-  assert.strictEqual(result.outcome, "failure", "flake-still-fails: outcome should be failure");
-  assert.strictEqual(result.flake?.recovered, false, "flake-still-fails: flake.recovered should be false");
-  assert.strictEqual(trackCalls.length, 2, "flake-still-fails: exactly 2 calls (no loop)");
-  console.log("✓ testRunVerifyFullFlakeStillFails");
-}
-
 /** Run all tests */
 export async function run() {
   await setupTmpDir();
@@ -349,8 +307,6 @@ export async function run() {
     await testRunVerifyFullFlakeStillFails();
     await testRunVerifyFullNoRetryWhenOptOut();
     await testRunVerifyFullMeasuresElapsed();
-    await testRunVerifyFullFlakeRecovered();
-    await testRunVerifyFullFlakeStillFails();
     console.log("\n✓ All verify-full tests passed");
   } finally {
     await cleanupTmpDir();
