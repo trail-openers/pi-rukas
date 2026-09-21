@@ -85,10 +85,16 @@ export const KNOWN_STATUSES: readonly unknown[] = ["running", "merged", "handoff
  * status + `paths` shape and refuses everything else it does not
  * recognize — the same "extend the union, don't smuggle a field" rule
  * this module applies to event kinds and steps.
+ *
+ * #778 — `moved` joins the vocabulary: a covered workstream whose declared
+ * path was renamed during develop/consolidation, with the move recorded in
+ * `movedPaths` (the same "extend the union" move that added `unverifiable`
+ * for #540).
  */
 export const KNOWN_CONSOLIDATION_STATUSES: readonly unknown[] = [
   "complete",
   "uncovered",
+  "moved",
   "unverifiable",
 ];
 
@@ -271,6 +277,30 @@ export function validateDiscriminants(state: unknown): string[] {
               out.push(
                 `pipelineState.incompleteConsolidation.verdicts[${i}].reason is missing or not a string (required when status is 'unverifiable')`,
               );
+            }
+            // #778 — a `moved` verdict must carry the move records: the
+            // whole point of the status is that the state file names both
+            // sides of the rename, so a partial record would be a confident
+            // wrong handoff input.
+            if (e.status === "moved") {
+              const mp = e.movedPaths;
+              if (!Array.isArray(mp)) {
+                out.push(
+                  `pipelineState.incompleteConsolidation.verdicts[${i}].movedPaths is missing or not an array (required when status is 'moved')`,
+                );
+              } else if (
+                mp.some(
+                  (m) =>
+                    typeof m !== "object" ||
+                    m === null ||
+                    typeof (m as Record<string, unknown>).from !== "string" ||
+                    typeof (m as Record<string, unknown>).to !== "string",
+                )
+              ) {
+                out.push(
+                  `pipelineState.incompleteConsolidation.verdicts[${i}].movedPaths contains an entry without string from/to`,
+                );
+              }
             }
           });
           if (ico.filesPresent !== undefined && !Array.isArray(ico.filesPresent)) {
