@@ -106,6 +106,14 @@ export async function postHandoffWithRetry(
     needsComment: boolean;
     needsLabel: boolean;
     /**
+     * The body the caller WOULD post if it has to — the comparison value for
+     * the existing-comment idempotency check. `opts.body` is `""` when the
+     * caller read the file best-effort and it came back empty (a missing body
+     * file must not be treated as "the comment is already there"), so the
+     * match requires BOTH a non-empty body and a body match.
+     */
+    expectedBody: string;
+    /**
      * #775 — the target's EXISTING comments (fetched by the caller through
      * the forge's comment-list seam before any post). When set, a comment
      * whose body is `opts.body` is NOT re-posted — its URL is used instead
@@ -156,11 +164,10 @@ export async function postHandoffWithRetry(
   // the comment was ALREADY posted (by the ops dispatch, whose URL was lost)
   // — use its URL and do not re-post. A failed dispatch leaves no such
   // comment, so the fallback posts exactly once.
-  if (opts.needsComment && opts.existingComments !== undefined) {
-    const existing = opts.existingComments.find((c) => {
-      const body = (c as Record<string, unknown>)?.body;
-      return typeof body === "string" && body === opts.body;
-    }) as { url?: string | null } | undefined;
+  if (opts.needsComment && opts.existingComments !== undefined && opts.expectedBody !== "") {
+    const existing = opts.existingComments.find(
+      (c) => (c as { body?: unknown }).body === opts.expectedBody,
+    ) as { url?: string | null } | undefined;
     if (existing?.url) {
       result.commentUrl = existing.url;
       trace(

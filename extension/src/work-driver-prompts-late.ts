@@ -330,7 +330,7 @@ export function inlineHandoffOpsPrompt(
     "",
     "  6. End your reply with the GitHub URL of the comment you just created (the canonical `…#issuecomment-<id>` form `gh` prints when posting succeeds), then on the final line a marker of EXACTLY this shape (the driver parses it mechanically):",
     "     `HANDOFF-RESULT: comment=<the comment URL, or none> label=<applied|not-applied>`",
-    "     (use `applied` only if the verification in step 5 showed the label is present on the target)",
+    "     (use `applied` only if the verification in step 5 showed the label is present on the target; the driver verifies the label itself via a forge read, so an unverified claim is treated as not-applied — report what you actually checked)",
     "",
     "On any failure (gh auth, network, label-create), surface the error verbatim and continue with whatever steps are still possible — report what you actually verified, never a status you did not check.",
     scratchHygieneSection(scratchDirAbs),

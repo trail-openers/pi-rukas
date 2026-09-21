@@ -314,6 +314,7 @@ export async function runHandoff(
         const posted = await postHandoffWithRetry(forge, {
           issue: ctx.issue,
           body,
+          expectedBody: body,
           targetId: targetId,
           objType,
           needsComment: !commentUrl,
