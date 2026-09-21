@@ -18,6 +18,7 @@
 import type {
   NormalizedCICheck,
   NormalizedCIRun,
+  NormalizedComment,
   NormalizedIssue,
   NormalizedLabel,
   NormalizedPullRequest,
@@ -67,6 +68,34 @@ export function mapGlIssueLabel(raw: unknown): NormalizedLabel {
     id: num(o.id) ?? num(o.iid),
     color: str(o.color),
     description: str(o.description),
+  };
+}
+
+// ── Comments / notes ─────────────────────────────────────────────────────────
+
+/**
+ * GitHub issue/PR comment rows (camelCase: `id`, `body`, `html_url`,
+ * `created_at`). `gh issue comment N --body-file` prints the canonical
+ * `…#issuecomment-<id>` URL; the list endpoint returns it as `html_url`.
+ */
+export function mapGhComment(raw: unknown): NormalizedComment {
+  const o = raw as Record<string, unknown>;
+  return {
+    id: num(o.id),
+    body: str(o.body) ?? "",
+    url: str(o.html_url),
+    createdAt: str(o.created_at),
+  };
+}
+
+/** GitLab note rows (snake_case: `id`, `body`, `web_url`, `created_at`). */
+export function mapGlComment(raw: unknown): NormalizedComment {
+  const o = raw as Record<string, unknown>;
+  return {
+    id: num(o.id),
+    body: str(o.body) ?? "",
+    url: str(o.web_url),
+    createdAt: str(o.created_at),
   };
 }
 

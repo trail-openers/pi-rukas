@@ -19,7 +19,7 @@
  * classified by provider delay: the backoff is a fixed linear schedule
  * (1s * attempt) with full jitter, bounded to 3 total attempts.
  *
- * Idempotency notes (edge-case #674):
+ * Idempotency notes (edge-case #674, sharpened by #775):
  *   - `issueComment` is retried only when the previous attempt threw
  *     (a thrown call posted nothing); a call that returned a value was
  *     recorded by the caller before the retry loop, so it is never
@@ -28,6 +28,12 @@
  *     the existing re-entry dedupe (`priorHandoffCommentUrl`) covers the
  *     crash-resume shape, and a duplicate handoff comment is recoverable
  *     whereas a missing one is not.
+ *   - #775 — a comment the OPS DISPATCH already posted (URL unparseable /
+ *     parse lost) is caught by the same-run `exists` check: the caller
+ *     passes `existingComments` (fetched through the forge's comment-list
+ *     seam) and a comment whose body is `body` is not re-posted — its
+ *     canonical URL is used instead. A failed dispatch (no comment posted)
+ *     leaves the list without a match, so the fallback posts exactly once.
  *   - `labelCreate` is idempotent server-side ("already exists" is
  *     swallowed) and `labelAdd` is idempotent (`gh --add-label` semantics),
  *     so retrying either is safe by construction.
@@ -99,6 +105,21 @@ export async function postHandoffWithRetry(
     objType: "issue" | "pr";
     needsComment: boolean;
     needsLabel: boolean;
+    /**
+     * The body the caller WOULD post if it has to — the comparison value for
+     * the existing-comment idempotency check. `opts.body` is `""` when the
+     * caller read the file best-effort and it came back empty (a missing body
+     * file must not be treated as "the comment is already there"), so the
+     * match requires BOTH a non-empty body and a body match.
+     */
+    expectedBody: string;
+    /**
+     * #775 — the target's EXISTING comments (fetched by the caller through
+     * the forge's comment-list seam before any post). When set, a comment
+     * whose body is `opts.body` is NOT re-posted — its URL is used instead
+     * (the "dispatch posted but the URL was lost" shape — no double post).
+     */
+    existingComments?: unknown[];
     /** Injectable clock/sleep for the offline suite. */
     sleep?: (ms: number) => Promise<void>;
     rand?: () => number;
@@ -116,6 +137,12 @@ export async function postHandoffWithRetry(
     labelAttempts: 0,
   };
 
+  // #775 — the forge adapter models a PR comment seam (`prComment`) alongside
+  // `issueComment`. The PR seam is used when the target is a PR; the issue
+  // path is unchanged.
+  const postCommentOnce = (n: number, body: string): Promise<string> =>
+    opts.objType === "pr" ? forge.prComment(n, body) : forge.issueComment(n, body);
+
   const backoffFor = (attempt: number): number => {
     // Linear schedule (1s * attempt) with full jitter on top — the same
     // shape as the step-router's transient backoff, sized for a transient
@@ -131,11 +158,29 @@ export async function postHandoffWithRetry(
   // Comment post (retry only when the previous attempt THREW — a returned
   // value was recorded before the loop advanced, so a successful call is
   // never re-issued).
-  if (opts.needsComment) {
+  //
+  // #775 — the idempotency check: when the caller supplied the target's
+  // existing comments and one of them carries a body identical to `opts.body`,
+  // the comment was ALREADY posted (by the ops dispatch, whose URL was lost)
+  // — use its URL and do not re-post. A failed dispatch leaves no such
+  // comment, so the fallback posts exactly once.
+  if (opts.needsComment && opts.existingComments !== undefined && opts.expectedBody !== "") {
+    const existing = opts.existingComments.find(
+      (c) => (c as { body?: unknown }).body === opts.expectedBody,
+    ) as { url?: string | null } | undefined;
+    if (existing?.url) {
+      result.commentUrl = existing.url;
+      trace(
+        "work-driver: handoff comment already present on target — reusing URL, not re-posting (idempotent)",
+      );
+    }
+  }
+
+  if (opts.needsComment && !result.commentUrl) {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       result.commentAttempts = attempt;
       try {
-        const out = await forge.issueComment(opts.issue, opts.body);
+        const out = await postCommentOnce(opts.issue, opts.body);
         const parsed = parseHandoffCommentUrl(out) ?? out.trim();
         if (parsed) {
           result.commentUrl = parsed;

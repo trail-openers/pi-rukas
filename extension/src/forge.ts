@@ -16,6 +16,7 @@ import { promisify } from "node:util";
 import { GH_TERMINAL_CI, GL_TERMINAL_CI, terminalCiFor } from "./forge-ci-terminal.ts";
 import { ciRun as ciRunImpl, ciWatch as ciWatchImpl } from "./forge-ci.ts";
 import * as cmds from "./forge-commands.ts";
+import { listIssueComments, listPrComments, postPrComment } from "./forge-comments.ts";
 import type { ForgeDetection, ForgeType } from "./forge-detect.ts";
 import {
   ForgeFieldError,
@@ -24,6 +25,7 @@ import {
   makeMinimalIssue,
   makeMinimalPr,
   mapGhChecks,
+  mapGhComment,
   mapGhIssue,
   mapGhIssueLabel,
   mapGhIssueWithNumber,
@@ -45,6 +47,7 @@ import type {
   MergeReadinessResult,
   NormalizedCICheck,
   NormalizedCIRun,
+  NormalizedComment,
   NormalizedIssue,
   NormalizedLabel,
   NormalizedPullRequest,
@@ -76,6 +79,8 @@ export interface Forge {
   issueCreate(title: string, body: string): Promise<NormalizedIssue>;
   issueEdit(number: number, body: string): Promise<NormalizedIssue>;
   issueComment(number: number, body: string): Promise<string>;
+  /** #775 — list the issue's comments (idempotency check before re-posting). */
+  issueComments(number: number): Promise<NormalizedComment[]>;
   issueSearch(query: string): Promise<NormalizedIssue[]>;
 
   // Pull requests / MRs
@@ -90,6 +95,10 @@ export interface Forge {
   prMerge(number: number, method?: "squash" | "merge" | "rebase"): Promise<string>;
   prDiff(number: number): Promise<string>;
   prChecks(number: number): Promise<NormalizedCICheck[]>;
+  /** #775 — list the PR/MR's review comments (the seam for PR handoff posts). */
+  prComments(number: number): Promise<NormalizedComment[]>;
+  /** #775 — post a comment on the PR (the in-process handoff fallback seam). */
+  prComment(number: number, body: string): Promise<string>;
 
   // CI
   ciWatch(runId: number, opts?: CiWatchOpts): Promise<CiWatchResult>;
@@ -251,6 +260,8 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
         run(cmds.issueCommentCmd(forge, number, file), (stdout) => stdout),
       ),
 
+    issueComments: (number) => listIssueComments({ forge, run, withBodyFile }, number),
+
     issueSearch: (query) =>
       run(cmds.issueSearchCmd(forge, query), (stdout) => {
         const rows = asArray(stdout);
@@ -343,6 +354,11 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
       run(cmds.prMergeCmd(forge, number, method), (stdout) => stdout),
 
     prDiff: (number) => run(cmds.prDiffCmd(forge, number), (stdout) => stdout),
+
+    prComments: (number) => listPrComments({ forge, run, withBodyFile }, number),
+
+    // #775 — post a comment on a PR (the in-process handoff fallback seam).
+    prComment: (number, body) => postPrComment({ forge, run, withBodyFile }, number, body),
 
     prChecks: async (number) => {
       if (forge === "github") {
@@ -447,6 +463,7 @@ export type {
   MergeReadinessResult,
   NormalizedCICheck,
   NormalizedCIRun,
+  NormalizedComment,
   NormalizedIssue,
   NormalizedLabel,
   NormalizedPullRequest,

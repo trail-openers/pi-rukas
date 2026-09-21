@@ -106,6 +106,19 @@ export interface NormalizedLabel {
 }
 
 /**
+ * A normalized issue/PR comment (note). `url` is the web URL of the note
+ * (GitHub: the canonical `…#issuecomment-<id>` form, usable as-is; GitLab:
+ * the note's `web_url`). `id` is undefined where the forge does not expose
+ * a stable numeric id in the list payload.
+ */
+export interface NormalizedComment {
+  id: number | undefined;
+  body: string;
+  url: string | undefined;
+  createdAt: string | undefined;
+}
+
+/**
  * Normalized repository settings relevant to merging. GitHub exposes three
  * independent booleans; GitLab exposes a merge-method enum plus a separate
  * squash enum. Both are surfaced here so callers can be forge-agnostic.

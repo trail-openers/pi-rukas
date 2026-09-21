@@ -72,6 +72,15 @@ function mkFakeForge(): {
       calls.push({ method: "labelAdd", args: [target, n, name] });
     },
     labelRemove: async () => {},
+    issueComments: async (): Promise<never> => {
+      throw new Error("not used in this test");
+    },
+    prComments: async (): Promise<never> => {
+      throw new Error("not used in this test");
+    },
+    prComment: async (): Promise<never> => {
+      throw new Error("not used in this test");
+    },
     issueView: async () => {
       throw new Error("not used in this test");
     },

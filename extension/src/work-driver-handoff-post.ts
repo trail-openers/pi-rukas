@@ -23,20 +23,68 @@ import fs from "node:fs/promises";
 import { promisify } from "node:util";
 import type { Forge } from "./forge.ts";
 import { trace } from "./trace.ts";
+import { parseHandoffCommentUrl } from "./work-driver-handoff.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
 const execp = promisify(exec);
 
+/** The label the handoff applies — the ops prompt, the fallback and the
+ * verification reader must all name the same label. */
+export const HANDOFF_LABEL = "needs-human-attention";
+
 /**
- * Parse a GitHub comment URL from forge output. Local copy to avoid a
- * circular import (work-driver-handoff.ts imports from this module).
- * Same regex as parseHandoffCommentUrl in work-driver-handoff.ts.
+ * #775 — the handoff delivery-provenance field (the `delivery` member of
+ * the handoff-emitted event, `workflow-state-events-handoff.ts`).
  */
-function parseCommentUrl(text: string | undefined): string | undefined {
-  if (!text) return undefined;
-  const m = text.match(/https:\/\/github\.com\/[^\s)>]+#issuecomment-\d+/);
-  return m?.[0];
+export type HandoffDelivery = "dispatch" | "fallback";
+
+/**
+ * #775 — read the attention label back from the target the handoff posted to
+ * (issue or PR) via the forge's existing `issueView` / `prView` seam — the
+ * same read `checkAttentionLabel` uses. `gh label add` is idempotent and its
+ * exit code is not proof the label is on the target (rate limits, 202
+ * accepted-but-pending writes, an edit that touched the wrong object), so the
+ * recorded state is verified, not narrated. Returns false on ANY read error
+ * — an unverifiable label is not an applied one, and the caller then falls
+ * back to the mechanical apply path rather than recording a false state.
+ */
+export async function verifyHandoffLabel(
+  forge: Forge,
+  objType: "issue" | "pr",
+  targetId: number,
+): Promise<boolean> {
+  try {
+    const view = objType === "pr" ? await forge.prView(targetId) : await forge.issueView(targetId);
+    return (view.labels ?? []).some((l) => l.name === HANDOFF_LABEL);
+  } catch (err) {
+    trace(
+      `work-driver: handoff label verification read failed (${objType} #${targetId}): ${(err as Error).message?.slice(0, 160)}`,
+    );
+    return false;
+  }
+}
+
+/**
+ * #775 — mechanical parse of the ops child's handoff reply. The ops prompt
+ * (work-driver-prompts-late.ts, #775) ends with a canonical marker block:
+ *
+ *   HANDOFF-RESULT: comment=<url> label=<applied|not-applied|failed>
+ *
+ * (plus an optional unchained `gh` verification command for the child to run).
+ * `label` is informational only — the driver verifies via the forge read in
+ * `verifyHandoffLabel` regardless, so a false "applied" in the reply is
+ * harmless and a missed marker never loses a label that WAS applied.
+ * The URL is the primary parse (last-match-wins per the #408 marker doctrine,
+ * the same regex the URL-only pre-#775 path used).
+ */
+export function parseHandoffOpsReply(text: string | undefined): {
+  commentUrl?: string;
+  labelConfirmed: boolean;
+} {
+  const url = parseHandoffCommentUrl(text);
+  const labelConfirmed = /HANDOFF-RESULT:[\s\S]*?label=applied/.test(text ?? "");
+  return { commentUrl: url, labelConfirmed };
 }
 
 export interface HandoffPostResult {
@@ -80,22 +128,23 @@ export async function postHandoffToForge(opts: {
       if (objType === "issue") {
         const body = await fs.readFile(handoffBodyPath, "utf8").catch(() => "");
         const out = await forge.issueComment(issue, body);
-        const parsedUrl = parseCommentUrl(out) ?? out.trim();
+        const parsedUrl = parseHandoffCommentUrl(out) ?? out.trim();
         if (parsedUrl) commentUrl = parsedUrl;
       }
     }
     if (!labelApplied) {
       try {
-        await forge.labelCreate("needs-human-attention", "FFAA00");
+        await forge.labelCreate(HANDOFF_LABEL, "FFAA00");
       } catch {
         /* already exists or no perms; continue */
       }
-      await forge.labelAdd(
-        objType === "pr" ? "mr" : "issue",
-        Number(targetId),
-        "needs-human-attention",
-      );
-      labelApplied = true;
+      await forge.labelAdd(objType === "pr" ? "mr" : "issue", Number(targetId), HANDOFF_LABEL);
+      // #775 — the label state is VERIFIED, not assumed: re-read the target
+      // through the forge's view seam. A label whose read-back fails is not
+      // recorded as applied; the loop re-applies on the next attempt (gh
+      // --add-label is idempotent), and an unrecoverable read degrades to
+      // labelApplied:false — an honest "not verifiable", never a lie.
+      labelApplied = await verifyHandoffLabel(forge, objType, Number(targetId));
     }
     if (commentUrl && labelApplied) return { commentUrl, labelApplied: true, attempts: attempt };
     if (attempt === maxAttempts) break;
@@ -117,6 +166,13 @@ export async function postHandoffToForge(opts: {
  * snapshot's `committedWork` field is the source the recovery renderers
  * read for the per-worktree paths + SHAs.
  *
+ * #775 — the `delivery` field records WHERE the recorded comment/label
+ * state came from (the ops dispatch parse/verify, or the in-process forge
+ * fallback). "dispatch" is asserted only when the driver VERIFIED the state
+ * (via `verifyHandoffLabel` or a parsed URL) — a reply whose state the
+ * driver could not verify records no provenance, which readers treat as
+ * unknown.
+ *
  * Pure: no I/O. The caller passes the parsed consolidation state.
  */
 export function makeHandoffEmittedEvent(opts: {
@@ -128,8 +184,10 @@ export function makeHandoffEmittedEvent(opts: {
   consolidatedBranch?: string;
   consolidatedWorkstreams?: string[];
   consolidationReason?: string;
+  /** #775 — provenance of the recorded comment/label state. */
+  delivery?: HandoffDelivery;
 }): Extract<WorkEvent, { kind: "handoff-emitted" }> {
-  const { at, commentUrl, labelApplied, handoffBodyPath } = opts;
+  const { at, commentUrl, labelApplied, handoffBodyPath, delivery } = opts;
   const ev: Extract<WorkEvent, { kind: "handoff-emitted" }> = {
     kind: "handoff-emitted",
     at,
@@ -137,6 +195,7 @@ export function makeHandoffEmittedEvent(opts: {
     labelApplied,
     handoffBodyPath,
   };
+  if (delivery) ev.delivery = delivery;
   if (opts.consolidated) {
     ev.consolidated = true;
     ev.consolidatedBranch = opts.consolidatedBranch;

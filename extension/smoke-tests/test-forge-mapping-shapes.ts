@@ -20,9 +20,13 @@ import {
   mapGlMr,
   mapGlPipelineJobs,
   mapGlRepo,
+  mapGhIssue,
+  mapGhPr,
+  mapGhRepo,
+  mapGhRun,
   parsePrNumberFromResponse,
 } from "../src/forge-mapping.ts";
-import { GL_JOBS, GL_MR, GL_PROJECT } from "./forge-fixtures.ts";
+import { GH_REPO, GH_RUN_DONE, GL_JOBS, GL_MR, GL_PROJECT } from "./forge-fixtures.ts";
 
 let exitCode = 0;
 function check(name: string, fn: () => void | Promise<void>) {
@@ -110,6 +114,36 @@ async function main() {
     const r = mapGlRepo(GL_PROJECT as Record<string, unknown>);
     assert(r.squashMergeAllowed === true, "squash");
     assert(r.mergeCommitAllowed === false, "merge");
+  });
+
+  // ── GitHub mappers (moved from test-forge-github.ts at the 500-line seam) ──
+  console.log("github mappers:");
+  await check("mapGhIssue throws on missing number", () => {
+    try {
+      mapGhIssue({ title: "x", body: "y", state: "OPEN", url: "u" } as Record<string, unknown>);
+      throw new Error("should have thrown");
+    } catch (e) {
+      assert((e as Error).message.includes("number"), `wrong error: ${(e as Error).message}`);
+    }
+  });
+  await check("mapGhPr throws on missing state", () => {
+    try {
+      mapGhPr({ number: 1, title: "t", body: "b", url: "u" } as Record<string, unknown>);
+      throw new Error("should have thrown");
+    } catch (e) {
+      assert((e as Error).message.includes("state"), `wrong error: ${(e as Error).message}`);
+    }
+  });
+  await check("mapGhRun normalizes snake_case", () => {
+    const run = mapGhRun(GH_RUN_DONE as Record<string, unknown>);
+    assert(run.id === 901, "id");
+    assert(run.status === "COMPLETED", "status");
+    assert(run.conclusion === "SUCCESS", "conclusion");
+  });
+  await check("mapGhRepo normalizes", () => {
+    const r = mapGhRepo(GH_REPO as Record<string, unknown>);
+    assert(r.name === "acme/widget", "name");
+    assert(r.owner === "acme", "owner");
   });
 
   console.log("");
