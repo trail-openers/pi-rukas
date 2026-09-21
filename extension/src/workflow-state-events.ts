@@ -11,6 +11,10 @@ import type { DispatchUsage } from "./types.ts";
 import type { AdversarialEventFragment } from "./workflow-state-events-adversarial.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 import type { DeferredCreationEventFragment } from "./workflow-state-events-deferred.ts";
+import type {
+  HandoffConsolidatedEvent,
+  HandoffEmittedEvent,
+} from "./workflow-state-events-handoff.ts";
 import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-leftover.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
@@ -19,6 +23,13 @@ import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
 // #539 — the commit-pr fallback-cause vocabulary (M1) lives in the
 // sibling events-memory fragment module: single definition.
 export type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
+// #775 prep — the handoff event members live in the sibling fragment module;
+// re-exported here so consumers' import paths are unaffected and the
+// `delivery` field (#775) can grow the fragment without inflating this file.
+export type {
+  HandoffConsolidatedEvent,
+  HandoffEmittedEvent,
+} from "./workflow-state-events-handoff.ts";
 /**
  * Linear step identifiers the driver walks. This union IS the definition
  * of the cycle — #393 deleted the prose flow that used to be its source.
@@ -393,30 +404,8 @@ export type WorkEvent =
       diagnosis: string;
       proposedRevision: string;
     }
-  | {
-      kind: "handoff-emitted";
-      at: number;
-      /** GitHub URL of the handoff PR/issue comment. */
-      commentUrl?: string;
-      labelApplied: boolean;
-      /** Path to the handoff markdown body (PR5; back-compat with PR4 events). */
-      handoffBodyPath?: string;
-      /** #674 — true when the driver consolidated the work onto the branch before rendering. */
-      consolidated?: boolean;
-      /** #674 — the feature branch the work was consolidated onto (success only). */
-      consolidatedBranch?: string;
-      /** #674 — workstream ids whose committed work landed on the branch. */
-      consolidatedWorkstreams?: string[];
-      /** #674 — why consolidation degraded to the per-worktree fallback. */
-      consolidationReason?: string;
-    }
-  | {
-      kind: "handoff-consolidated";
-      at: number;
-      /** #674 — the feature branch the work was consolidated onto. */
-      branchName: string;
-      workstreams: string[];
-    }
+  | HandoffEmittedEvent
+  | HandoffConsolidatedEvent
   | {
       kind: "ci-status";
       at: number;

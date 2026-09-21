@@ -47,6 +47,46 @@ export function issueCommentCmd(forge: ForgeType, number: number, bodyFile: stri
   return `glab api --method POST --header "Content-Type: application/json" -f "body=@${bodyFile}" /projects/:id/issues/${number}/notes`;
 }
 
+/**
+ * List an issue's comments. GitHub: `gh issue view N --json comments` (the
+ * `comments` field is a `gh issue view` GraphQL field — each row carries
+ * `id`, `body`, `html_url`, `created_at`). GitLab: the issue's `notes`
+ * endpoint. Both are single unchained reads (#408 recovery-command rule —
+ * the #775 in-process handoff fallback's idempotency check runs on this seam
+ * and must not prompt the permission matcher).
+ */
+export function issueCommentsCmd(forge: ForgeType, number: number): string {
+  if (forge === "github") return `gh issue view ${number} --json comments`;
+  return `glab api "/projects/:id/issues/${number}/notes" --output json`;
+}
+
+/**
+ * List a PR/MR's review comments (the notes an agent posts via
+ * `gh pr comment N --body-file` land here). GitHub: `gh pr view N
+ * --json comments` — gh 2.98.0's GraphQL `PullRequest` type exposes exactly
+ * the `comments` field, each row `{id, body, html_url, createdAt}` (the
+ * `html_url` being the canonical `…#issuecomment-<id>` form). GitLab: the
+ * MR's `notes` endpoint. #775 — the seam the in-process handoff fallback
+ * needs to post the handoff comment on a PR-targeted cycle (the adapter
+ * modeled `issueComment` only, so PR handoffs could never post in-process)
+ * and to check for an existing handoff comment before re-posting (the
+ * idempotency criterion).
+ */
+export function prCommentsCmd(forge: ForgeType, number: number): string {
+  if (forge === "github") return `gh pr view ${number} --json comments`;
+  return `glab api "/projects/:id/merge_requests/${number}/notes" --output json`;
+}
+
+/**
+ * #775 — post a comment on a PR. GitHub: `gh pr comment` (same underlying
+ * REST endpoint as `gh issue comment` — PRs are issues in GitHub's API).
+ * GitLab: the MR's notes endpoint (same shape as `issueComment`).
+ */
+export function prCommentCmd(forge: ForgeType, number: number, bodyFile: string): string {
+  if (forge === "github") return `gh pr comment ${number} --body-file ${shq(bodyFile)}`;
+  return `glab api --method POST --header "Content-Type: application/json" -f "body=@${bodyFile}" /projects/:id/merge_requests/${number}/notes`;
+}
+
 export function issueSearchCmd(forge: ForgeType, query: string): string {
   if (forge === "github")
     return `gh issue list --search ${shq(query)} --json number,title,state,url`;
@@ -189,8 +229,19 @@ export function labelCreateCmd(forge: ForgeType, name: string, color: string): s
 }
 
 /**
- * Add a label to an issue. GitHub: `--add-label` on edit.
- * GitLab: `add_labels` field on issue PUT (auto-creates missing labels).
+ * The gh object-type keyword for a normalized `issue` / `mr` target. GitHub
+ * has no `mr` subcommand — merge requests are pull requests (`gh pr edit`).
+ * GitLab's `glab api` paths already use `merge_requests/` directly, so the
+ * mapping is applied on the github branch only.
+ */
+function ghObjectType(target: "issue" | "mr"): "issue" | "pr" {
+  return target === "issue" ? "issue" : "pr";
+}
+
+/**
+ * Add a label to an issue/PR. GitHub: `--add-label` on edit (gh has no
+ * `mr` subcommand — an `mr` target maps to `pr`, #775). GitLab:
+ * `add_labels` field on issue/MR PUT (auto-creates missing labels).
  */
 export function labelAddCmd(
   forge: ForgeType,
@@ -198,18 +249,20 @@ export function labelAddCmd(
   number: number,
   name: string,
 ): string {
-  if (forge === "github") return `gh ${target} edit ${number} --add-label ${shq(name)}`;
+  if (forge === "github")
+    return `gh ${ghObjectType(target)} edit ${number} --add-label ${shq(name)}`;
   return `glab api -X PUT -f "add_labels=${shq(name)}" /projects/:id/${target === "issue" ? `issues/${number}` : `merge_requests/${number}`}`;
 }
 
-/** Remove a label from an issue. GitLab: `remove_labels` on issue PUT. */
+/** Remove a label from an issue/PR. Same github `mr`→`pr` mapping as `labelAddCmd` (#775). */
 export function labelRemoveCmd(
   forge: ForgeType,
   target: "issue" | "mr",
   number: number,
   name: string,
 ): string {
-  if (forge === "github") return `gh ${target} edit ${number} --remove-label ${shq(name)}`;
+  if (forge === "github")
+    return `gh ${ghObjectType(target)} edit ${number} --remove-label ${shq(name)}`;
   return `glab api -X PUT -f "remove_labels=${shq(name)}" /projects/:id/${target === "issue" ? `issues/${number}` : `merge_requests/${number}`}`;
 }
 

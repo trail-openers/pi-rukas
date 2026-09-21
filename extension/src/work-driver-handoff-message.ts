@@ -105,8 +105,15 @@ export function renderHandoffUserMessage(
   // driver emissions from model-side imitation. First line, before body.
   lines.push(`pi-rukas:driver-event v1 kind=handoff issue=${issue} at=${new Date().toISOString()}`);
 
-  // 1. Banner when GitHub posting failed.
-  if (!commentUrl || !labelApplied) {
+  // 1. Banner — true total failure ONLY (#775). The delivery chain is the
+  // ops dispatch → the in-process forge fallback → this message. The fallback
+  // runs before any handoff-emitted event is appended (work-driver-handoff.ts),
+  // so a missing URL/label here means BOTH delivery paths failed for that
+  // field. The banner fires only when BOTH fields are missing (true total
+  // failure); a partial delivery (one field ok, one lost) does NOT fire the
+  // banner — the operator can see which field failed from the section below.
+  const totalFailure = !commentUrl && !labelApplied;
+  if (totalFailure) {
     lines.push(
       `⚠ pi-rukas /work for issue #${issue} — HANDOFF DISPATCH INCOMPLETE`,
       "",
