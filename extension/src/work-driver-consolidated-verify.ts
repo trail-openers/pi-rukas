@@ -94,7 +94,12 @@ export async function runConsolidatedVerify(
     // onto the probe branch. Refuse to consolidate rather than guess.
     // `.worktrees/` and `.pi/` scaffolding are not dirt; untracked `??` IS
     // dirt (see the integrate() preflight comment for the reasoning).
-    const { stdout: rootStatus } = await execFn("git status --porcelain", {
+    // #746 AC5 — `-uall`, same as the branch-step early gate's read
+    // (readRepoRootDirt): plain --porcelain collapses an untracked
+    // directory tree to its top-level entry, so an operator would see a
+    // bare `?? extension/` and have to go hunting; -uall names the
+    // exact files, which is what the dirty-root message is for.
+    const { stdout: rootStatus } = await execFn("git status --porcelain -uall", {
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
     });
