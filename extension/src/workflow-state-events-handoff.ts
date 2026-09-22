@@ -36,6 +36,22 @@ export type HandoffEmittedEvent = {
   delivery?: "dispatch" | "fallback";
   /** Path to the handoff markdown body (PR5; back-compat with PR4 events). */
   handoffBodyPath?: string;
+  /**
+   * #798 — the explicit target object type of the handoff artefacts (where
+   * the comment was posted). A reader must not have to infer this from the
+   * comment URL or a sibling `prNumber` field.
+   */
+  targetType?: "issue" | "pr";
+  /** #798 — the number of the target object. */
+  targetNumber?: number;
+  /**
+   * #798 — per-target label verification. When the cycle labels both the
+   * issue and the PR (option a, #798), this records whether the ISSUE label
+   * was verified on the issue. Absent when only the issue was targeted.
+   */
+  issueLabelApplied?: boolean;
+  /** #798 — per-target label verification: the PR label. Absent when no PR exists. */
+  prLabelApplied?: boolean;
   /** #674 — true when the driver consolidated the work onto the branch before rendering. */
   consolidated?: boolean;
   /** #674 — the feature branch the work was consolidated onto (success only). */
