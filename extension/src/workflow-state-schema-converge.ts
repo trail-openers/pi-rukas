@@ -10,7 +10,7 @@ export interface ConvergeEvidence {
   deliverables: Array<{
     id: string;
     /** Matches work-driver-converge.ts's `DeliverableStatus` literal union. */
-    status: "implemented" | "partial" | "absent" | "unmeasurable";
+    status: "implemented" | "partial" | "absent" | "unmeasurable" | "no-diff";
     reason: string;
   }>;
 }

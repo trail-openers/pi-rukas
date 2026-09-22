@@ -291,3 +291,17 @@ export async function inspectCommitPrRoot(
     return { ok: false, error: msg };
   }
 }
+
+/**
+ * #500 — the `commitPrRoot` / `commitPrRootError` record fields for both
+ * commit-pr paths (mechanized + ops fallback). One builder so the two
+ * write sites cannot drift when the record gains a field.
+ */
+export function commitPrRootFieldsOf(r: CommitPrRootInspect): {
+  commitPrRoot: CommitPrRootState | undefined;
+  commitPrRootError: string | undefined;
+} {
+  return r.ok
+    ? { commitPrRoot: r.state, commitPrRootError: undefined }
+    : { commitPrRoot: undefined, commitPrRootError: r.error };
+}

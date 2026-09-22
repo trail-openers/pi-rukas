@@ -6,9 +6,8 @@
 import type { Verdict } from "./lens-review.ts";
 import type { CapEvidence, CapedPartialState, EvidenceFailureKind } from "./workflow-state-cap.ts";
 import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
-// #679/#728 — the workstream shape, workstreamBaseShas type and the
-// consolidation-completeness record, split out of this module (500-line
-// gate). Re-exported so existing importers keep their paths.
+// #679/#728 — workstream shape + consolidation record, split for the 500-line gate.
+// Re-exported so existing importers keep their paths.
 export type { Workstream, WorkstreamBaseShas } from "./workflow-state-schema-workstreams.ts";
 export type { ConsolidationCompleteness } from "./workflow-state-schema-consolidation-completeness.ts";
 export type { ConvergeEvidence } from "./workflow-state-schema-converge.ts";
@@ -88,31 +87,16 @@ export interface PipelineState {
    */
   lastCompletedStep?: WorkStep;
   /**
-   * Active dispatch IDs in flight under `currentStep`. Cleared when
-   * dispatch-completed lands. Driver uses this to detect "we crashed
-   * mid-dispatch" on resume — if the eventLog has dispatch-started without
-   * a matching dispatch-completed, the driver halts and asks the user to
-   * verify worktree state (per the troubleshooting doc).
+   * Active dispatch IDs in flight under `currentStep`. Cleared on
+   * dispatch-completed. Detects "crashed mid-dispatch" on resume.
    */
   inFlightJobIds: string[];
   /** Feature branch name once Step 3 completes. */
   branchName?: string;
   /**
-   * Workstreams decomposed by Step 2 (plan). Single-task /work writes
-   * `{default: {id:"default", scope, paths, outOfScope}}` so downstream
-   * code paths can treat `N=1` and `N>1` uniformly — they iterate
-   * `Object.keys(workstreams)` either way.
-   *
-   * - `id` matches the key (e.g., "default", "task-a", "task-b")
-   * - `scope` is a one-line brief; passed into the developer prompt
-   * - `paths` lists touchpoint files; helps developer stay in scope
-   * - `outOfScope` is the explicit fence — addresses the issue #553
-   *   scope-contamination empirical pattern (developer pulled off-scope
-   *   e2e files into a UX-fix PR because nothing told them what was OUT)
-   *
-   * Optional in the schema so state files written before PR3 still load
-   * cleanly under the same `schemaVersion: 1`. Readers treat absent as
-   * `{default: ...}` synthesised from the issue title.
+   * Workstreams decomposed by Step 2 (plan). Key = workstream id;
+   * `id`/`scope`/`paths`/`outOfScope` per workstream (see Workstream type).
+   * Optional for back-compat; absent = `{default: …}` synthesised.
    */
   workstreams?: Record<string, Workstream>;
   /**
@@ -207,15 +191,23 @@ export interface PipelineState {
    */
   integration?: { integratedAt?: number; reintegrations?: number };
   /**
-   * #378 — the resolved intent: what the issue is actually asking for,
-   * checked against the code and the world, plus the verdict the driver
-   * routed on. Absent when intent resolution is disabled or the resolver
-   * returned no `## Spec` block. The full artifact is also written to
-   * `.pi/work-state/<issue>/spec.txt` for inspection.
+   * #378 — the resolved intent. Absent when intent resolution is
+   * disabled or the resolver returned no `## Spec` block.
    */
   normalisedSpec?: {
     intent: string;
-    deliverables: Array<{ id: string; description: string; paths: string[] }>;
+    deliverables: Array<{
+      id: string;
+      description: string;
+      paths: string[];
+      /**
+       * #792 — the plan-time no-diff marker. Set by the intent resolver
+       * and nowhere else; a marker without a non-empty evidence string is
+       * NOT honoured. Optional; absent = no marker.
+       */
+      noDiff?: boolean;
+      noDiffEvidence?: string;
+    }>;
     acceptanceCriteria: string[];
     outOfScope: string[];
     assumptions: Array<{ text: string; basis: string }>;
@@ -242,13 +234,9 @@ export interface PipelineState {
     authoritySource: "agents-md" | "doctrine" | "operator" | "none" | "citation-failed";
     /** The AGENTS.md sentence that granted or forbade it, verbatim. */
     authorityQuote?: string;
-    /** Why the executed-evidence gate refused, when authority was granted. */
+    /** Why the executed-evidence gate refused. */
     evidenceReason?: string;
-    /**
-     * The evidence refusal was a tooling failure — the `gh` invocation itself
-     * errored before any check data was read — not a CI verdict (#745).
-     * Renderers must keep the two textually distinct.
-     */
+    /** The evidence refusal was a tooling failure, not a CI verdict (#745). */
     evidenceFailureKind?: EvidenceFailureKind;
     /** Required checks reporting `skipped`/`neutral` — green to GitHub, not to us. */
     inconclusive?: string[];
@@ -495,6 +483,5 @@ export interface WorkState {
 }
 
 // The state constructors/mutators (`initialState`, `appendEvent`,
-// `detectInconsistencies`) live in `workflow-state-update.ts` — split for
-// module-size hygiene (AGENTS.md §12); `workflow-state.ts` re-exports them
-// so existing imports keep working unchanged.
+// `detectInconsistencies`) live in `workflow-state-update.ts` —
+// `workflow-state.ts` re-exports them so existing imports keep working.
