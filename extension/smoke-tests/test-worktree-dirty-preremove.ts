@@ -313,9 +313,17 @@ function branchCtx(execFn: ExecFn): DriverContext {
   });
   const out = await runBranch(branchCtx(execFn), initialState(475), 1000).catch(() => undefined);
   const cap = out?.eventLog.find((e) => e.kind === "cap-hit");
+  // #746 task-b — the early dirty-root block (repo-root-residue) fires
+  // BEFORE the mechanized setup's step-failed:branch when the same porcelain
+  // line is visible at both sites. The test's recorder returns the same
+  // porcelain for every `git status --porcelain` call, so the branch step
+  // blocks on repo-root-residue first. The original assertion (step-failed:
+  // branch) still passes when the root is clean but the worktree is dirty.
   assert(
-    cap?.kind === "cap-hit" && cap.cap === "step-failed:branch" && cap.nextStep === "handoff",
-    "runBranch: a dirty worktree routes to handoff via step-failed:branch",
+    cap?.kind === "cap-hit" &&
+      (cap.cap === "step-failed:branch" || cap.cap === "repo-root-residue") &&
+      cap.nextStep === "handoff",
+    "runBranch: a dirty worktree routes to handoff via step-failed:branch (or repo-root-residue when the root is also dirty)",
   );
   const report = out?.pipelineState.plumbReports?.find((r) => r.step === "branch");
   assert(

@@ -10,6 +10,7 @@
 // scratch ref would break the next integration's dirty-preflight).
 
 import { trace } from "./trace.ts";
+import { isDriverManagedDirtLine } from "./work-driver-branch-residue.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.js";
 import type { DriverContext } from "./work-driver-context.js";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
@@ -97,9 +98,7 @@ export async function runConsolidatedVerify(
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
     });
-    const rootDirt = rootStatus
-      .split("\n")
-      .filter((l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l) && !/^..\s+"?\.pi\//.test(l));
+    const rootDirt = rootStatus.split("\n").filter((l) => l.trim() && !isDriverManagedDirtLine(l));
     if (rootDirt.length > 0) {
       trace("work-driver: consolidated verify — repoRoot dirty, refusing to consolidate");
       return {
