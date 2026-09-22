@@ -49,13 +49,20 @@ export function isDriverManagedDirtLine(line: string): boolean {
 /**
  * #746 task-b — the branch-step early dirty-root check.
  *
- * Runs `git status --porcelain` at repoRoot, applies the driver-managed
+ * Runs `git status --porcelain -uall` at repoRoot, applies the driver-managed
  * exclusion set, and returns the remaining paths — residue from a previous
  * cycle or the operator's own in-progress work. The caller HARD-BLOCKS the
  * cycle with a cap-hit on any hit: a stray file at repoRoot is a
  * correctness hazard for `integrate()` staging under the integration lock,
  * and a silent continue burns ~50 min before the consolidated verify fires
  * the same refusal.
+ *
+ * `-uall` is load-bearing for the "names the EXACT paths" criterion: plain
+ * `--porcelain` collapses an untracked directory tree to its top-level
+ * entry (a stray `extension/src/work-driver-converge.ts` at the root reads
+ * as a bare `?? extension/`, which is what made the #741 handoff's
+ * "residue at extension/…" message name a directory, not the file). The
+ * dirty-root gates must point at the residue itself, not its container.
  *
  * Returns `undefined` when the root is clean (the common case).
  *
@@ -67,7 +74,7 @@ export async function readRepoRootDirt(
   execFn: ExecFn,
   repoRoot: string,
 ): Promise<string[] | undefined> {
-  const { stdout } = await execFn("git status --porcelain", {
+  const { stdout } = await execFn("git status --porcelain -uall", {
     cwd: repoRoot,
     maxBuffer: 1024 * 1024,
   });
