@@ -313,9 +313,15 @@ export function explainCap(
       // evidence (which cherry-pick / apply failed, and any preserved patch
       // path) lives on the cap-hit's `evidence` field; the worktrees are the
       // operator's inspection targets. Distinct from verify-failed:develop:
-      // the work may be individually fine — the decomposition put two
-      // workstreams onto the same lines, and that is a re-planning problem,
-      // not a retry-the-verify-command problem.
+      // the work may be individually fine — a two-workstream overlap is a
+      // re-planning problem, not a retry-the-verify-command problem.
+      // #794 — a STACKED cycle (dependsOn present) is a different shape: the
+      // cherry-pick machinery now selects each workstream's OWN range
+      // (against its dependency's tip), so an ancestor commit is never
+      // re-picked on top of its content; a conflict that STILL fires is a
+      // genuine overlap (or a diverged dependency tip), and re-splitting was
+      // never the fix for a replay — so the prose below no longer asserts
+      // the decomposition as incoherent.
       const hit = [...state.eventLog]
         .reverse()
         .find(
@@ -329,6 +335,17 @@ export function explainCap(
       const wtList = Object.entries(wts)
         .map(([id, p]) => `${id}: ${p}`)
         .join(", ");
+      // #794 — stacked cycle: the pick is OWN-range (each workstream's
+      // commits against its dependency's tip), so a conflict here is a
+      // genuine overlap or a diverged dependency tip, never an ancestor
+      // re-apply — the pre-#794 text's "decomposition is incoherent" /
+      // "re-split" diagnosis is exactly wrong for a stack.
+      const stacked = Object.values(state.pipelineState.workstreams ?? {}).some(
+        (ws) => ws && Array.isArray(ws.dependsOn) && ws.dependsOn.length > 0,
+      );
+      if (stacked) {
+        return `the develop step's consolidated verify could not combine the workstreams' commits into a single tree — a cherry-pick / patch-apply conflict, even though each workstream's own range was picked against its dependency's tip (stacked cycle: ancestor commits are NOT re-picked). ${ev} Worktrees: ${wtList || "(none recorded)"}. Do NOT re-split on this alone: the conflict is either a genuine content overlap between workstreams (two workstreams editing the same lines) or a dependency whose tip diverged from the SHA the dependent's worktree was based on. Inspect the conflicting file, resolve it by hand, and re-run; check the dependency tips only if the conflicting lines belong to a dependency's own work`;
+      }
       return `the develop step's consolidated verify could not combine the workstreams' commits into a single tree — a cherry-pick / patch-apply conflict means two workstreams edited the same lines, so the work is individually plausible but the decomposition is incoherent. ${ev} Worktrees: ${wtList || "(none recorded)"}. This is NOT the same as a verify failure: the fix is to re-split the work into non-overlapping file sets (or resolve the overlap by hand), not to retry the verify command`;
     }
     case "lens-fix-not-integrated": {

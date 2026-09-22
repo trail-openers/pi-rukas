@@ -154,9 +154,14 @@ export async function runConvergeGateHandler(
       });
     }
     if (!gate2.ok) {
-      const cap2 = gate2.failures.find((f) =>
+      // #794 — the failure message distinguishes the stacked case (own-range
+      // pick; a conflict here is a genuine overlap or a diverged dependency
+      // tip — NOT a decomposition defect) from an independent-fanout
+      // overlap; the router's regex matches both shapes.
+      const conflictText = gate2.failures.find((f) =>
         /cherry-pick \/ apply conflict|could not combine the workstreams/.test(f),
-      )
+      );
+      const cap2 = conflictText
         ? ("consolidated-verify-conflict" as const)
         : ("verify-failed:develop" as const);
       next = {
@@ -180,6 +185,7 @@ export async function runConvergeGateHandler(
         cap: cap2,
         reviewRound: next.pipelineState.reviewRound,
         nextStep: "handoff",
+        ...(conflictText ? { evidence: conflictText } : {}),
       });
       return next;
     }

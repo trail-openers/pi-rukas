@@ -16,77 +16,10 @@ import { sweepBranchHolders } from "./worktree.ts";
 // work-driver-preflight.ts).
 export { readDirtyPorcelain, restoreRepoRoot } from "./work-driver-preflight.ts";
 
-let integrationChain: Promise<unknown> = Promise.resolve();
-const LOCK_STALE_MS = 30 * 60 * 1000;
-
-function lockPath(repoRoot: string): string {
-  return path.join(repoRoot, ".git", "pi-rukas-integration.lock");
-}
-
-async function acquireLockfile(repoRoot: string): Promise<() => Promise<void>> {
-  const file = lockPath(repoRoot);
-  const deadline = Date.now() + LOCK_STALE_MS;
-  for (;;) {
-    try {
-      // `wx` is O_EXCL: the create itself is the atomic test-and-set.
-      const fh = await fs.open(file, "wx");
-      await fh.writeFile(JSON.stringify({ pid: process.pid, at: Date.now() }));
-      await fh.close();
-      return async () => {
-        await fs.rm(file, { force: true }).catch(() => undefined);
-      };
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
-        // Cannot create the lock at all (read-only .git, permissions).
-        // Fail OPEN: the in-process chain still serialises this process.
-        trace(`integration-lock: lockfile unavailable, continuing: ${(err as Error).message}`);
-        return async () => undefined;
-      }
-      // Held. Sweep it if the holder is long gone, otherwise wait.
-      try {
-        const raw = JSON.parse(await fs.readFile(file, "utf8")) as { at?: number };
-        if (typeof raw.at === "number" && Date.now() - raw.at > LOCK_STALE_MS) {
-          trace("integration-lock: sweeping a stale lockfile");
-          await fs.rm(file, { force: true }).catch(() => undefined);
-          continue;
-        }
-      } catch {
-        // Unreadable/corrupt lock — treat as stale rather than deadlocking.
-        await fs.rm(file, { force: true }).catch(() => undefined);
-        continue;
-      }
-      if (Date.now() > deadline) {
-        trace("integration-lock: waited past the stale window, proceeding");
-        return async () => undefined;
-      }
-      await new Promise((r) => setTimeout(r, 250));
-    }
-  }
-}
-
-/** Run `fn` holding the integration lock. Never inherits a prior rejection. */
-export function withIntegrationLock<T>(repoRoot: string, fn: () => Promise<T>): Promise<T> {
-  const run = integrationChain.then(
-    () => guarded(repoRoot, fn),
-    () => guarded(repoRoot, fn),
-  );
-  integrationChain = run.catch(() => undefined);
-  return run;
-}
-
-async function guarded<T>(repoRoot: string, fn: () => Promise<T>): Promise<T> {
-  const release = await acquireLockfile(repoRoot);
-  try {
-    return await fn();
-  } finally {
-    await release();
-  }
-}
-
-/** Test seam: reset the in-process chain between fixtures. */
-export function __resetIntegrationLock(): void {
-  integrationChain = Promise.resolve();
-}
+// #794 — the integration lock lives in work-driver-lock.ts (extracted to
+// keep this file under the 500-line gate); the re-exports below preserve
+// every existing import path unchanged.
+export { withIntegrationLock, __resetIntegrationLock } from "./work-driver-lock.ts";
 
 /** Issue title from the explore step's cached artifact; undefined on miss. */
 export async function cachedIssueTitle(state: WorkState): Promise<string | undefined> {
@@ -106,6 +39,14 @@ export interface IntegrateOpts {
   /** Commit-ish the branch is created at. Required for mode "create". */
   baseSha?: string;
   worktrees: Record<string, string>;
+  /**
+   * #794 — per-workstream effective base map (`pipelineState.workstreamBaseShas`).
+   * A stacked workstream's OWN range is measured against its dependency's tip
+   * instead of the global baseSha, so its ancestor commits are not re-picked
+   * on top of their content (the #775 replay). A workstream with no entry
+   * falls back to `baseSha` — byte-identical to the pre-#794 behaviour.
+   */
+  workstreamBaseShas?: Record<string, string>;
   /** Where conflict patches are preserved for the operator. */
   scratchDir: string;
   commitTitle: string;
@@ -145,6 +86,38 @@ export interface IntegrateOpts {
 
 /** #492 — worktrees that produced no diff, keyed by id → worktree path. */
 export type NoDiff = Record<string, string>;
+
+/**
+ * Check if a commit is already reachable from the integration branch.
+ * Uses tree-hash comparison: identical trees = the commit is effectively
+ * already applied (even if the SHA differs, e.g. from a resume). Returns
+ * `false` on any read error (optimistic: cherry-pick if we can't verify).
+ */
+export async function isCommitOnBranch(
+  execFn: (cmd: string, o?: { cwd?: string; maxBuffer?: number }) => Promise<{ stdout: string }>,
+  repoRoot: string,
+  branchName: string,
+  sha: string,
+): Promise<boolean> {
+  try {
+    const { stdout: commitTree } = await execFn(`git cat-file -p ${sha}`, {
+      cwd: repoRoot,
+      maxBuffer: 64 * 1024,
+    });
+    const m = commitTree.match(/^tree ([0-9a-f]{40})$/m);
+    if (!m) return false;
+    const commitTreeHash = m[1];
+    const { stdout: headTree } = await execFn("git cat-file -p HEAD", {
+      cwd: repoRoot,
+      maxBuffer: 64 * 1024,
+    });
+    const headMatch = headTree.match(/^tree ([0-9a-f]{40})$/m);
+    if (!headMatch) return false;
+    return commitTreeHash === headMatch[1];
+  } catch {
+    return false;
+  }
+}
 
 export type IntegrateResult =
   | {
@@ -189,6 +162,8 @@ export type IntegrateResult =
  */
 export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<IntegrateResult> {
   const { repoRoot, branchName, worktrees, mode } = opts;
+  // #794 — pick scope: own-range selection per workstream (see IntegrateOpts).
+  const pickScope = { globalBaseSha: opts.baseSha, workstreamBaseShas: opts.workstreamBaseShas };
   const ids = Object.keys(worktrees);
   // Where repoRoot was before we touched it. A failed integration must put it
   // back: the previous code returned from inside the apply loop with the
@@ -300,6 +275,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       baseSha: opts.baseSha,
       scratchDir: opts.scratchDir,
       requireAllNonEmpty: opts.requireAllNonEmpty,
+      pickScope,
     });
 
     // Handle cherry-pick conflict — caller must abort and restore branch.

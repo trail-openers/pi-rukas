@@ -2,33 +2,39 @@
  * work-driver-cherry-pick — cherry-pick developer commits onto the feature
  * branch during integration (#453; full-range pick + completeness #728).
  *
- * Each worktree is `--detach`ed at `baseSha`; the only way to reach a
- * developer's commits is by SHA, so integrate cherry-picks them onto the
- * integration branch in one atomic batch (replacing the pre-#453
- * `git apply --3way` transplant).
- *
- * #728: the pick walks each workstream's FULL `baseSha..HEAD` range
- * (parent→child), so a multi-commit worktree no longer stages only its
- * HEAD commit's files (the #723 strict-subset drop). After the batch,
- * `orchestrateCherryPick` runs the intended-vs-actual completeness check
- * (union of each worktree's cumulative diff vs. what landed) and reports
- * `droppedPaths` for the consumers' `consolidation-incomplete` cap.
- * Conflict: the batch aborts and the caller's VERIFIED restore
- * (#750, work-driver-restore.ts) unwinds every staged pick and proves the
- * root clean before the `cherry-pick-conflict` handoff. Tree-hash dedupe +
- * the recorded `commitShas` map keep resume / cross-workstream overlap
- * safe as before.
+ * Each worktree is `--detach`ed at `baseSha`; integrate cherry-picks the
+ * commits on the integration branch in one atomic batch. #728: the pick
+ * walks each workstream's committed range (parent→child); #794: a stacked
+ * workstream's range is its OWN range — its commits against its dependency's
+ * tip (`workstreamBaseShas`), never the global base — so ancestor commits
+ * are not re-picked on top of their content (the #775 replay). On conflict
+ * the batch aborts and the caller's VERIFIED restore (#750) unwinds every
+ * staged pick; tree-hash dedupe + the recorded `commitShas` map keep resume
+ * / cross-workstream overlap safe.
  */
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
 import { measureConsolidationCompleteness } from "./work-driver-completeness.ts";
 import type { ConsolidationCompleteness } from "./work-driver-completeness.ts";
-import type { NoDiff } from "./work-driver-integrate.ts";
+import { type NoDiff, isCommitOnBranch } from "./work-driver-integrate.ts";
 import { rebaseStagedPatchOntoHead } from "./work-driver-rebase-patch.ts";
 import { stagePorcelainPaths } from "./work-driver-stage.ts";
 // #654 (task-b) — re-exported so existing importers keep their path.
 export { rebaseStagedPatchOntoHead };
+
+// #794 — per-workstream OWN range (see module header).
+export type WorkStreamPickScope = {
+  globalBaseSha?: string;
+  workstreamBaseShas?: Record<string, string>;
+};
+
+function pickScopeBase(id: string, scope: WorkStreamPickScope): string | undefined {
+  const per = scope.workstreamBaseShas?.[id];
+  if (per && /^[0-9a-f]{40}$/.test(per)) return per;
+  return scope.globalBaseSha;
+}
+
 /** The worktree SHA + whether it was cherry-picked or skipped. */
 interface CherryPickEntry {
   sha: string;
@@ -113,11 +119,14 @@ export async function cherryPickWorkstreams(
     commitShas: Record<string, string>;
     /** Scratch dir for conflict artifacts. */
     scratchDir?: string;
-    /** Base the `baseSha..HEAD` range is measured against (usually the cycle baseSha). */
+    /** Legacy single base the `baseSha..HEAD` range is measured against. */
     baseSha?: string;
+    /** #794 — per-workstream own-range selection (see `WorkStreamPickScope`). */
+    pickScope?: WorkStreamPickScope;
   },
 ): Promise<CherryPickEntry[] | "conflict"> {
-  const { repoRoot, branchName, worktrees, commitShas, baseSha } = opts;
+  const { repoRoot, branchName, worktrees, commitShas } = opts;
+  const scope: WorkStreamPickScope = opts.pickScope ?? { globalBaseSha: opts.baseSha };
   const ids = Object.keys(worktrees);
   const entries: CherryPickEntry[] = [];
   const rangeFellBack = new Map<string, { workstreamId: string; error: string }>();
@@ -130,11 +139,14 @@ export async function cherryPickWorkstreams(
   for (const id of ids) {
     const wtPath = worktrees[id];
     if (!wtPath) continue;
+    // #794 — the range base is the workstream's own effective base (its
+    // dependency's tip when stacked) so ancestor commits are not re-picked.
+    const rangeBase = pickScopeBase(id, scope);
     let list: string[] = [];
-    if (baseSha) {
+    if (rangeBase) {
       try {
         const { stdout } = await execFn(
-          `git rev-list --reverse --first-parent ${JSON.stringify(baseSha)}..HEAD`,
+          `git rev-list --reverse --first-parent ${JSON.stringify(rangeBase)}..HEAD`,
           { cwd: wtPath, maxBuffer: 1024 * 1024 },
         );
         list = stdout
@@ -236,9 +248,16 @@ export async function orchestrateCherryPick(
     baseSha?: string;
     scratchDir: string;
     requireAllNonEmpty?: boolean;
+    /**
+     * #794 — per-workstream own-range selection (see `WorkStreamPickScope`).
+     * Absent → legacy single-`baseSha` range, byte-identical to pre-#794.
+     */
+    pickScope?: WorkStreamPickScope;
   },
 ): Promise<OrchestratedCherryPickResult> {
-  const { repoRoot, branchName, baseSha, worktrees, scratchDir, requireAllNonEmpty } = opts;
+  const { repoRoot, branchName, worktrees, scratchDir, requireAllNonEmpty } = opts;
+  const scope: WorkStreamPickScope = opts.pickScope ?? { globalBaseSha: opts.baseSha };
+  const baseSha = scope.globalBaseSha;
   const { ids, worktrees: wtMap, commitShas: preApplied } = worktrees;
   const cherryPickShas: Record<string, string> = {};
   const cherryApplied: string[] = [];
@@ -257,10 +276,14 @@ export async function orchestrateCherryPick(
       const wt = wtMap[id];
       if (!wt) continue;
       try {
-        const { stdout } = await execFn(`git rev-list --count ${JSON.stringify(baseSha)}..HEAD`, {
-          cwd: wt,
-          maxBuffer: 64 * 1024,
-        });
+        // #794 — count OWN commits (against the workstream's effective base)
+        // so a dependent with nothing of its own is not miscounted as
+        // carrying the ancestors' commits.
+        const rangeBase = pickScopeBase(id, scope);
+        const { stdout } = await execFn(
+          `git rev-list --count ${JSON.stringify(rangeBase ?? baseSha)}..HEAD`,
+          { cwd: wt, maxBuffer: 64 * 1024 },
+        );
         const ahead = Number.parseInt(stdout.trim(), 10);
         if (Number.isFinite(ahead) && ahead > 0) {
           const { stdout: shaOut } = await execFn("git rev-parse HEAD", {
@@ -299,6 +322,7 @@ export async function orchestrateCherryPick(
       commitShas: preApplied,
       scratchDir,
       baseSha,
+      pickScope: scope,
     });
     if (pick === "conflict") {
       // The batch aborted; every staged pick is unwound by the caller's
@@ -446,6 +470,7 @@ export async function orchestrateCherryPick(
           repoRoot,
           worktrees: wtMap,
           baseSha,
+          pickScope: scope,
           committedIds: committed,
         })
       : undefined;
@@ -461,35 +486,5 @@ export async function orchestrateCherryPick(
     completeness,
   };
 }
-/**
- * Check if a commit is already reachable from the integration branch.
- * Uses tree-hash comparison: identical trees = the commit is effectively
- * already applied (even if the SHA differs, e.g. from a resume). Returns
- * `false` on any read error (optimistic: cherry-pick if we can't verify).
- */
-async function isCommitOnBranch(
-  execFn: (cmd: string, o?: { cwd?: string; maxBuffer?: number }) => Promise<{ stdout: string }>,
-  repoRoot: string,
-  branchName: string,
-  sha: string,
-): Promise<boolean> {
-  try {
-    const { stdout: commitTree } = await execFn(`git cat-file -p ${sha}`, {
-      cwd: repoRoot,
-      maxBuffer: 64 * 1024,
-    });
-    const m = commitTree.match(/^tree ([0-9a-f]{40})$/m);
-    if (!m) return false;
-    const commitTreeHash = m[1];
-    const { stdout: headTree } = await execFn("git cat-file -p HEAD", {
-      cwd: repoRoot,
-      maxBuffer: 64 * 1024,
-    });
-    const headMatch = headTree.match(/^tree ([0-9a-f]{40})$/m);
-    if (!headMatch) return false;
-    return commitTreeHash === headMatch[1];
-  } catch {
-    // Can't verify — assume the commit needs to be applied.
-    return false;
-  }
-}
+// isCommitOnBranch (the tree-hash dedup check) moved to
+// work-driver-integrate.ts to keep this file under the 500-line gate.
