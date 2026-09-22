@@ -70,6 +70,54 @@ async function runDevelopTopological(
   let worktrees = next.pipelineState.worktrees ?? {};
   let workstreamBaseShas = next.pipelineState.workstreamBaseShas ?? {};
   const globalBaseSha = next.pipelineState.baseSha;
+  // #679 — a workstream is “blocked” for its dependents when its dispatch
+  // failed OR when it produced NO commits ahead of its base (the case-2(c)
+  // falsely-ok shape): building a dependent worktree on a dependency that
+  // shipped nothing is the incoherent-tree failure this ticket fixes. The
+  // #746 missing-worktree refusals below record into it before the fan-out.
+  const failedOrSkipped = new Set<string>();
+  // #746 — resolve each independent workstream's cwd from the worktrees map
+  // BEFORE the fan-out. A workstream with no worktree entry has no valid
+  // cwd: the pre-fix code fell back to ctx.repoRoot (worktrees[id] ??
+  // ctx.repoRoot), so spawn.ts silently ran the developer in the Pi process
+  // directory and the child wrote its deliverables at the repository root —
+  // a cross-cycle poisoning channel (the #741 incident: a stray
+  // extension/src/work-driver-converge.ts at the root refused the NEXT
+  // cycle's consolidated verify ~50 minutes in). The correct behaviour is to
+  // fail that workstream with a named error, never to silently fall back.
+  // Deferred (depends-on) workstreams legitimately have no entry here —
+  // they are not in `independent` (their cwd comes from
+  // createDependentWorktree in the dependent phase, which already fails the
+  // workstream on a creation failure).
+  const missingWorktree = independent.filter((id) => typeof worktrees[id] !== "string");
+  if (missingWorktree.length > 0) {
+    for (const id of missingWorktree) {
+      const err = `no worktree recorded for workstream ${id} (worktrees map has no entry) — dispatch refused rather than falling back to repoRoot`;
+      branchEvents.push({
+        kind: "dispatch-failed",
+        step: "develop",
+        role: "developer",
+        jobId: "unknown",
+        label: ids.length > 1 ? `developer[${id}]` : "developer",
+        ms: 0,
+        at: Date.now(),
+        errorTail: err.slice(0, 200),
+      });
+      branchEvents.push({
+        kind: "branch-completed",
+        step: "develop",
+        workstreamId: id,
+        ok: false,
+        ms: 0,
+        at: Date.now(),
+        error: err,
+      });
+      verdicts.push({ id, ok: false });
+      failedOrSkipped.add(id);
+      if (failureSource[id] === undefined) failureSource[id] = "failed";
+      trace(`work-driver: develop refused for ${id} — ${err}`);
+    }
+  }
   // #753 — the worktrees that exist as part of THIS cycle, keyed by workstream
   // id. Seeded from pipelineState (the branch step's creations) so the #545
   // same-issue dirty scan in the dependent phase treats this cycle's own
@@ -79,16 +127,12 @@ async function runDevelopTopological(
   // grows this as it creates worktrees.
   const inCycleWorktrees: string[] = [...Object.values(worktrees)];
 
-  const independentCwds = independent.map((id) => worktrees[id] ?? ctx.repoRoot);
+  // #746 — every dispatched independent now has a worktree (the missing ones
+  // failed above); the lookup can no longer fall back to ctx.repoRoot.
+  const dispatchedIndependents = independent.filter((id) => !missingWorktree.includes(id));
   const independentResults = await Promise.all(
-    independent.map(async (id, i) => runOneWorkstream(id, independentCwds[i] ?? ctx.repoRoot)),
+    dispatchedIndependents.map((id) => runOneWorkstream(id, worktrees[id] as string)),
   );
-
-  // #679 — a workstream is “blocked” for its dependents when its dispatch
-  // failed OR when it produced NO commits ahead of its base (the case-2(c)
-  // falsely-ok shape): building a dependent worktree on a dependency that
-  // shipped nothing is the incoherent-tree failure this ticket fixes.
-  const failedOrSkipped = new Set<string>();
   for (const r of independentResults) {
     if (!r.ok) failedOrSkipped.add(r.id);
   }
@@ -97,7 +141,11 @@ async function runDevelopTopological(
   // workstream; the dependent phase records its own completion as it goes.
   for (const id of independent) depCompletedAtMap[id] = independentCompletedAt;
   for (const id of independent) {
-    const cwd = worktrees[id] ?? ctx.repoRoot;
+    // #746 — a missing worktree was already failed (dispatch refused); it
+    // cannot be evidence-checked (there is no tree), and is already in
+    // failedOrSkipped, so skip it.
+    if (typeof worktrees[id] !== "string") continue;
+    const cwd = worktrees[id];
     const base = workstreamBaseShas[id] ?? globalBaseSha;
     if (typeof base === "string" && /^[0-9a-f]{40}$/.test(base)) {
       try {

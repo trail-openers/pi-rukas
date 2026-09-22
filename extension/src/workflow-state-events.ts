@@ -336,13 +336,13 @@ export type WorkEvent =
         | "repeat-finding-seam"
         | `verify-failed:${WorkStep}`
         | `step-failed:${WorkStep}`
-        // #753 — deferred worktree creation failed (dirty-leftover park). Its
-        // own literal cap name so explainCap can give it a tailored sentence
-        // (not a generic "step failed") and so the handoff does NOT
-        // terminalize it as `aborted` (the `step-failed:` prefix → `aborted`
-        // mapping in work-driver-handoff.ts is reserved for mid-flight
-        // dispatch failures; this is a deliberate park).
-        | "deferred-creation:develop";
+        // #753 — deferred worktree creation failed (dirty-leftover park).
+        // Own literal so explainCap can give it a tailored sentence and the
+        // handoff does NOT terminalize it as `aborted`.
+        | "deferred-creation:develop"
+        // #746 task-b — branch-step early dirty-root block: a stray untracked/
+        // modified file at repoRoot BEFORE any develop dispatch. Deliberate park.
+        | "repo-root-residue";
       /** #543 — which role's child was cap-killed (loop/token-budget caps). */
       role?: RoleName;
       reviewRound: number;
