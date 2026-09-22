@@ -28,36 +28,22 @@
  * to itself.
  */
 
-import { spawnSpecialist } from "../src/spawn.ts";
-import {
-  ABORT_PROMPT,
-  runAbortProbe,
-  type AbortProbeResult,
-} from "./lib/test-cancel-probes.ts";
-
-/**
- * The abort probe's pass/fail predicate, isolated so the self-check at the
- * bottom can prove it discriminates: a correctly attributed abort passes,
- * and any broken-path shape (no attribution, ok=true, wrong cause) fails —
- * the same shape test-file-size-limit.ts applies to itself.
- */
-function abortProbePasses(p: AbortProbeResult): boolean {
-  return p.killCause === "abort" && p.ok === false;
-}
-
-let exit = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) {
-    console.log(`✓ ${msg}`);
-  } else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
-}
-
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSpecialist } from "../src/spawn.ts";
+import {
+  ABORT_PROMPT,
+  abortProbePasses,
+  runAbortProbe,
+  assert as sharedAssert,
+} from "./lib/test-cancel-probes.ts";
+
+let exit = 0;
+function assert(cond: boolean, msg: string) {
+  sharedAssert(cond, msg);
+  if (!cond) exit = 1;
+}
 
 const fakeDir = mkdtempSync(join(tmpdir(), "pi-ensemble-fake-pi-"));
 const savedPath = process.env.PATH;
@@ -75,106 +61,137 @@ function writeFakePi(trapTerm = false) {
 process.env.PATH = `${fakeDir}:${savedPath}`;
 process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "0"; // abort tests: pure abort path
 
-// Test 1 — AbortSignal kills the child mid-flight (deterministic fake child).
-// Uses the same SIGTERM→SIGKILL kill function the #296 watchdog uses (the
-// subject is the attribution; the watchdog poll loop itself is tests 3–4).
-// The wall clock is logged for observability and never fails.
-{
-  writeFakePi();
-  console.log("[test] fake child, abort after 1500ms...");
-  const p = await runAbortProbe(ABORT_PROMPT);
-  assert(p.ok, "aborted fake child: killCause='abort' + ok=false");
-  p.lines.forEach((l) => console.log(l));
-}
+// Tests 1–2 run against the fake `pi` with the inactivity watchdog disabled —
+// the whole point is that only the abort path can fire. If anything in the
+// environment between the module top and here resets the watchdog to its
+// 25-min default, this assertion fires immediately instead of the probe
+// silently flipping killCause to 'inactivity'.
+assert(
+  process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS === "0",
+  "env invariant: PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS === '0' for the abort tests",
+);
 
-// Test 2 — the SIGTERM→SIGKILL escalation: a child that IGNORES SIGTERM is
-// still killed by the 5s SIGKILL timer. This was previously uncovered — the
-// real-spawn sections could not demonstrate it, because a healthy real child
-// exits on SIGTERM before the escalation ever matters.
-{
-  writeFakePi(true);
-  console.log("\n[test] fake child traps SIGTERM; SIGKILL escalation expected...");
-  const p = await runAbortProbe(ABORT_PROMPT);
-  assert(p.ok, "TERM-trapping child: killCause='abort' + ok=false");
-  p.lines.forEach((l) => console.log(l));
-  assert(
-    p.elapsedMs >= 5_000,
-    `SIGKILL escalation fired (wall ${p.elapsedMs}ms ≥ 5000ms; TERM was trapped)`,
-  );
-  assert(
-    p.exitCode === null || p.exitCode === -9,
-    `TERM-trapping child died to SIGKILL (exit=${p.exitCode})`,
-  );
-}
+try {
+  // Test 1 — AbortSignal kills the child mid-flight (deterministic fake child).
+  // Uses the same SIGTERM→SIGKILL kill function the #296 watchdog uses (the
+  // subject is the attribution; the watchdog poll loop itself is tests 3–4).
+  // The wall clock is logged for observability and never fails.
+  {
+    writeFakePi();
+    console.log("[test] fake child, abort after 1500ms...");
+    const p = await runAbortProbe(ABORT_PROMPT);
+    assert(p.ok, "aborted fake child: killCause='abort' + ok=false");
+    for (const l of p.lines) console.log(l);
+  }
 
-// Test 3 — a totally silent child is killed by the inactivity watchdog long
-// before the wall-clock cap.
-{
-  writeFileSync(join(fakeDir, "pi"), "#!/bin/sh\nexec sleep 300\n");
-  chmodSync(join(fakeDir, "pi"), 0o755);
-  process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
-  console.log("\n[test] silent fake child, 2000ms inactivity budget...");
-  const start = Date.now();
-  const r = await spawnSpecialist({ role: "explore", prompt: "irrelevant" }, { timeoutMs: 60_000 });
-  const elapsed = Date.now() - start;
-  assert(elapsed < 15_000, `inactivity-killed child returned early (took ${elapsed}ms)`);
-  assert(r.ok === false, "#296: inactivity-killed child reports ok=false");
-  assert(r.killCause === "inactivity", "#296: silent child carries killCause='inactivity'");
-  assert(r.killBudgetMs === 2000, "#296: inactivity killBudgetMs records the budget");
-}
+  // Test 2 — the SIGTERM→SIGKILL escalation: a child that IGNORES SIGTERM is
+  // still killed by the 5s SIGKILL timer. This was previously uncovered — the
+  // real-spawn sections could not demonstrate it, because a healthy real child
+  // exits on SIGTERM before the escalation ever matters.
+  //
+  // The 5s SIGKILL escalation timer (spawn.ts) is the cost of covering a
+  // previously-uncovered path — the fake child traps SIGTERM, so the abort can
+  // only complete once the escalation fires. Bounded at ~5s, deliberately
+  // accepted: the SIGKILL timer is hardcoded in spawn.ts and out of scope here
+  // (the #296 watchdog implementation must not change for this ticket).
+  {
+    writeFakePi(true);
+    console.log("\n[test] fake child traps SIGTERM; SIGKILL escalation expected...");
+    const p = await runAbortProbe(ABORT_PROMPT);
+    assert(p.ok, "TERM-trapping child: killCause='abort' + ok=false");
+    for (const l of p.lines) console.log(l);
+    assert(
+      p.elapsedMs >= 5_000,
+      `SIGKILL escalation fired (wall ${p.elapsedMs}ms ≥ 5000ms; TERM was trapped)`,
+    );
+    assert(
+      p.exitCode === null || p.exitCode === -9,
+      `TERM-trapping child died to SIGKILL (exit=${p.exitCode})`,
+    );
+  }
 
-// Test 4 — a child that keeps streaming stdout OUTLIVES the inactivity
-// window unharmed (any output resets the watchdog; only true silence kills).
-{
-  writeFileSync(
-    join(fakeDir, "pi"),
-    [
-      "#!/bin/sh",
-      "i=0",
-      'while [ $i -lt 10 ]; do echo "noise $i"; i=$((i+1)); sleep 0.5; done',
-      `echo '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"survived"}]}]}'`,
-      "exit 0",
-    ].join("\n"),
-  );
-  chmodSync(join(fakeDir, "pi"), 0o755);
-  process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
-  console.log("\n[test] streaming fake child (5s of 500ms-spaced output, 2000ms budget)...");
-  const r = await spawnSpecialist({ role: "explore", prompt: "irrelevant" }, { timeoutMs: 60_000 });
-  assert(r.killCause === undefined, "#296: streaming child is NOT killed by the watchdog");
-  assert(r.exitCode === 0 && r.ok === true, "#296: streaming child completes cleanly");
-  assert(r.text.includes("survived"), "#296: streaming child's final text survives");
-}
+  // Test 3 — a totally silent child is killed by the inactivity watchdog long
+  // before the wall-clock cap.
+  {
+    writeFileSync(join(fakeDir, "pi"), "#!/bin/sh\nexec sleep 300\n");
+    chmodSync(join(fakeDir, "pi"), 0o755);
+    process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
+    console.log("\n[test] silent fake child, 2000ms inactivity budget...");
+    const start = Date.now();
+    const r = await spawnSpecialist(
+      { role: "explore", prompt: "irrelevant" },
+      { timeoutMs: 60_000 },
+    );
+    const elapsed = Date.now() - start;
+    assert(elapsed < 15_000, `inactivity-killed child returned early (took ${elapsed}ms)`);
+    assert(r.ok === false, "#296: inactivity-killed child reports ok=false");
+    assert(r.killCause === "inactivity", "#296: silent child carries killCause='inactivity'");
+    assert(r.killBudgetMs === 2000, "#296: inactivity killBudgetMs records the budget");
+  }
 
-// Test 5 (#296) — wall-clock cap kill carries killCause='timeout' + budget.
-// Deterministic: silent fake child, inactivity watchdog disabled.
-{
-  writeFileSync(join(fakeDir, "pi"), "#!/bin/sh\nexec sleep 300\n");
-  chmodSync(join(fakeDir, "pi"), 0o755);
-  process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "0";
-  console.log("\n[test] silent fake child, 1500ms wall-clock cap, watchdog off...");
-  const r = await spawnSpecialist({ role: "explore", prompt: "irrelevant" }, { timeoutMs: 1500 });
-  assert(r.ok === false, "#296: cap-killed child reports ok=false");
-  assert(r.killCause === "timeout", "#296: cap-killed child carries killCause='timeout'");
-  assert(r.killBudgetMs === 1500, "#296: killBudgetMs records the expired wall-clock budget");
-}
+  // Test 4 — a child that keeps streaming stdout OUTLIVES the inactivity
+  // window unharmed (any output resets the watchdog; only true silence kills).
+  {
+    writeFileSync(
+      join(fakeDir, "pi"),
+      [
+        "#!/bin/sh",
+        "i=0",
+        'while [ $i -lt 10 ]; do echo "noise $i"; i=$((i+1)); sleep 0.5; done',
+        `echo '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"survived"}]}]}'`,
+        "exit 0",
+      ].join("\n"),
+    );
+    chmodSync(join(fakeDir, "pi"), 0o755);
+    process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
+    console.log("\n[test] streaming fake child (5s of 500ms-spaced output, 2000ms budget)...");
+    const r = await spawnSpecialist(
+      { role: "explore", prompt: "irrelevant" },
+      { timeoutMs: 60_000 },
+    );
+    assert(r.killCause === undefined, "#296: streaming child is NOT killed by the watchdog");
+    assert(r.exitCode === 0 && r.ok === true, "#296: streaming child completes cleanly");
+    assert(r.text.includes("survived"), "#296: streaming child's final text survives");
+  }
 
-// Self-check — the abort probe's own predicate must discriminate: a
-// correctly attributed abort passes, and each broken-path shape (no
-// attribution, ok=true, wrong cause) fails. Same shape test-file-size-limit.ts
-// applies to itself: a test that cannot go RED is decorative.
-{
-  const fabricated = (killCause: string | undefined, ok: boolean) =>
-    abortProbePasses({ ok, lines: [], killCause, exitCode: null, elapsedMs: 0 });
-  assert(fabricated("abort", false) === true, "self-check: attributed abort (killCause + ok=false) passes");
-  assert(fabricated(undefined, false) === false, "self-check: missing killCause fails");
-  assert(fabricated("timeout", false) === false, "self-check: wrong cause fails");
-  assert(fabricated("abort", true) === false, "self-check: ok=true abort fails");
-}
+  // Test 5 (#296) — wall-clock cap kill carries killCause='timeout' + budget.
+  // Deterministic: silent fake child, inactivity watchdog disabled.
+  {
+    writeFileSync(join(fakeDir, "pi"), "#!/bin/sh\nexec sleep 300\n");
+    chmodSync(join(fakeDir, "pi"), 0o755);
+    process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "0";
+    console.log("\n[test] silent fake child, 1500ms wall-clock cap, watchdog off...");
+    const r = await spawnSpecialist({ role: "explore", prompt: "irrelevant" }, { timeoutMs: 1500 });
+    assert(r.ok === false, "#296: cap-killed child reports ok=false");
+    assert(r.killCause === "timeout", "#296: cap-killed child carries killCause='timeout'");
+    assert(r.killBudgetMs === 1500, "#296: killBudgetMs records the expired wall-clock budget");
+  }
 
-process.env.PATH = savedPath;
-if (savedInactivity) process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = savedInactivity;
-else process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = undefined;
-rmSync(fakeDir, { recursive: true, force: true });
+  // Self-check — the abort probe's own predicate must discriminate: a
+  // correctly attributed abort passes, and each broken-path shape (no
+  // attribution, ok=true, wrong cause) fails. Same shape test-file-size-limit.ts
+  // applies to itself: a test that cannot go RED is decorative.
+  {
+    const fabricated = (killCause: string | undefined, ok: boolean) =>
+      abortProbePasses({ ok, lines: [], killCause, exitCode: null, elapsedMs: 0 });
+    assert(
+      fabricated("abort", false) === true,
+      "self-check: attributed abort (killCause + ok=false) passes",
+    );
+    assert(fabricated(undefined, false) === false, "self-check: missing killCause fails");
+    assert(fabricated("timeout", false) === false, "self-check: wrong cause fails");
+    assert(fabricated("abort", true) === false, "self-check: ok=true abort fails");
+  }
+} finally {
+  // Restore the process-wide env even when a probe above throws — the fake
+  // `pi` on PATH and the inactivity override must not leak past this file
+  // (a stub `pi` in the parent's PATH would shadow the real binary for any
+  // later spawn in the same process).
+  process.env.PATH = savedPath;
+  if (savedInactivity) process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = savedInactivity;
+  else process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = undefined;
+  rmSync(fakeDir, { recursive: true, force: true });
+}
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

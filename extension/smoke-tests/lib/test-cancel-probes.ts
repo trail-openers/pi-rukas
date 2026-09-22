@@ -1,25 +1,19 @@
-// Shared probe runner for the real-spawn sections of test-cancel and
-// test-cancel-realspawn-live (issue #809).
+// Shared probe runner for the fake-pi sections of test-cancel and the
+// real-spawn sections of test-cancel-realspawn-live (issue #809).
 //
-// The flaky shape: spawnSpecialist on a REAL `pi` child (getPiInvocation's
-// PATH fallback), AbortController abort at 1500ms / timeoutMs 2000, and a
-// wall-clock assertion on the return. Under the conditions this project
-// actually runs under (concurrent /work cycles, a laptop that may sleep,
-// several Pi children at once) the wall clock is not a property of the code —
-// the two 497s-vs-1500ms incidents (cycles #777, #798) were processes that
-// simply did not run for most of the interval.
-//
-// These probes therefore assert the SEMANTIC outcome — that the kill was
-// attributed (killCause) — not elapsed seconds. The wall clock is still
-// recorded and logged so a genuine regression that also slows teardown stays
-// visible; it only decides "broken" when the child is still running long past
-// every timer in play (abort 1500ms + SIGKILL escalation 5000ms + spawn
-// backstop), i.e. when the event-based assertion would NOT yet have a killCause
-// to check.
+// The wall-clock rationale (why these probes assert killCause attribution
+// instead of elapsed seconds, what the two 497s-vs-1500ms incidents were,
+// and the cost tradeoff of keeping the real-spawn variant as a -live test)
+// is documented in test-cancel.ts's file header. This file is the shared
+// implementation of that design.
 
 import { spawnSpecialist } from "../../src/spawn.ts";
 
-export interface AbortProbeResult {
+// One shape for both probes: the only real difference between them is whether
+// an abort signal is in flight. Keep it a single interface — the two are the
+// same concept (a spawn probe returning an attributed-kill result), and two
+// identical interfaces silently drift the moment a field is added to one.
+export interface ProbeResult {
   ok: boolean;
   lines: string[];
   killCause: string | undefined;
@@ -27,73 +21,98 @@ export interface AbortProbeResult {
   elapsedMs: number;
 }
 
-export interface TimeoutProbeResult {
-  ok: boolean;
-  lines: string[];
-  killCause: string | undefined;
-  exitCode: number | null;
-  elapsedMs: number;
-}
-
-/**
- * Test-1 shape: fire an explore child, abort it after `abortAtMs`, and verify
- * the abort was attributed (killCause 'abort', ok=false).
- */
-export async function runAbortProbe(prompt: string, abortAtMs = 1500): Promise<AbortProbeResult> {
-  const controller = new AbortController();
-  const start = Date.now();
-  setTimeout(() => controller.abort(), abortAtMs);
-  const r = await spawnSpecialist(
-    { role: "explore", prompt },
-    {
-      signal: controller.signal,
-      timeoutMs: 60_000,
-    },
-  );
-  const elapsed = Date.now() - start;
-  const lines: string[] = [];
-  let ok = true;
-  const attributed = r.killCause === "abort" && r.ok === false;
-  if (!attributed) {
-    // Distinguish "the kill path misbehaved" from "the child simply took a
-    // long time to die" — a stalled teardown still attributes killCause.
-    lines.push(
-      `aborted child: killCause=${r.killCause ?? "none"} ok=${r.ok} exit=${r.exitCode} ` +
-        `wall=${elapsed}ms`,
-    );
-    ok = false;
+// Small shared test-harness helper. Each smoke test file in this suite is
+// standalone and self-terminated (a single `process.exit(exit)` at the end)
+// with its own local exit counter; `assert` is the one piece this PR
+// extracted so both cancel-test files use the same shape. It prints the
+// same ✓/✗ line as the per-file helpers it replaced; the exit code is
+// tracked by the caller's own counter (see each test file).
+export function assert(cond: boolean, msg: string): void {
+  if (cond) {
+    console.log(`✓ ${msg}`);
   } else {
-    lines.push(`aborted child: killCause='abort' ok=false exit=${r.exitCode} wall=${elapsed}ms`);
+    console.error(`✗ ${msg}`);
   }
-  return { ok, lines, killCause: r.killCause, exitCode: r.exitCode, elapsedMs: elapsed };
 }
 
 /**
- * Test-2 shape: fire an explore child with a short wall-clock cap and verify
+ * The abort probe's pass/fail predicate, exported so test-cancel's self-check
+ * exercises the SAME predicate the probe itself uses — a test that cannot go
+ * RED is decorative (the shape test-file-size-limit.ts applies to itself).
+ */
+export function abortProbePasses(p: ProbeResult): boolean {
+  return p.killCause === "abort" && p.ok === false;
+}
+
+// The timeout probe's pass/fail predicate, same reasoning as above.
+export function timeoutProbePasses(p: ProbeResult): boolean {
+  return p.killCause === "timeout" && p.ok === false;
+}
+
+// One kill probe; the abort variant is the signal variant of this. The
+// `controller` timer is cleared in a finally so a late abort can never fire
+// after spawnSpecialist has resolved (which would keep the event loop alive
+// for the remainder of abortAtMs and could attribute a kill the probe already
+// finished on). The pass/fail check uses the exported predicate so the
+// self-check in test-cancel exercises the same code that actually runs.
+async function runKillProbe(
+  prompt: string,
+  opts: { controller?: AbortController; abortAtMs?: number; timeoutMs: number },
+  expected: "abort" | "timeout",
+): Promise<ProbeResult> {
+  const start = Date.now();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (opts.controller && opts.abortAtMs !== undefined) {
+    timer = setTimeout(() => opts.controller.abort(), opts.abortAtMs);
+  }
+  let r: Awaited<ReturnType<typeof spawnSpecialist>>;
+  try {
+    r = await spawnSpecialist(
+      { role: "explore", prompt },
+      {
+        signal: opts.controller?.signal,
+        timeoutMs: opts.timeoutMs,
+      },
+    );
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  const elapsed = Date.now() - start;
+  const attributed =
+    expected === "abort"
+      ? r.killCause === "abort" && r.ok === false
+      : r.killCause === "timeout" && r.ok === false;
+  const label = expected === "abort" ? "aborted child" : "timed-out child";
+  const lines = attributed
+    ? [`${label}: killCause='${expected}' ok=false exit=${r.exitCode} wall=${elapsed}ms`]
+    : [
+        `${label}: killCause=${r.killCause ?? "none"} ok=${r.ok} exit=${r.exitCode} ` +
+          `wall=${elapsed}ms`,
+      ];
+  return {
+    ok: attributed,
+    lines,
+    killCause: r.killCause,
+    exitCode: r.exitCode,
+    elapsedMs: elapsed,
+  };
+}
+
+/**
+ * Abort probe: fire an explore child, abort it after `abortAtMs`, and verify
+ * the kill was attributed (killCause 'abort', ok=false).
+ */
+export function runAbortProbe(prompt: string, abortAtMs = 1500): Promise<ProbeResult> {
+  const controller = new AbortController();
+  return runKillProbe(prompt, { controller, abortAtMs, timeoutMs: 60_000 }, "abort");
+}
+
+/**
+ * Timeout probe: fire an explore child with a short wall-clock cap and verify
  * the cap-kill was attributed (killCause 'timeout', ok=false).
  */
-export async function runTimeoutProbe(
-  prompt: string,
-  timeoutMs = 2000,
-): Promise<TimeoutProbeResult> {
-  const start = Date.now();
-  const r = await spawnSpecialist({ role: "explore", prompt }, { timeoutMs });
-  const elapsed = Date.now() - start;
-  const lines: string[] = [];
-  let ok = true;
-  const attributed = r.killCause === "timeout" && r.ok === false;
-  if (!attributed) {
-    lines.push(
-      `timed-out child: killCause=${r.killCause ?? "none"} ok=${r.ok} exit=${r.exitCode} ` +
-        `wall=${elapsed}ms`,
-    );
-    ok = false;
-  } else {
-    lines.push(
-      `timed-out child: killCause='timeout' ok=false exit=${r.exitCode} wall=${elapsed}ms`,
-    );
-  }
-  return { ok, lines, killCause: r.killCause, exitCode: r.exitCode, elapsedMs: elapsed };
+export function runTimeoutProbe(prompt: string, timeoutMs = 2000): Promise<ProbeResult> {
+  return runKillProbe(prompt, { timeoutMs }, "timeout");
 }
 
 export const ABORT_PROMPT =
