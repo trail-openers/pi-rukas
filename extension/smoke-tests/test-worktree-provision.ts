@@ -366,8 +366,7 @@ async function makeWorktreeFixture(root: string, name: string): Promise<string> 
   );
   assert(/tsc --noEmit/.test(cmd), "...and the gate typechecks");
   assert(/bun run check/.test(cmd), "...and lints");
-  assert(/smoke-tests\/test-\*/.test(cmd), "...and runs the offline smoke suite");
-  assert(/-live\.ts/.test(cmd), "...while excluding the live tests, as AGENTS.md §1 specifies");
+  assert(/smoke-tests\/lib\/verify-loop\.sh/.test(cmd), "...and runs the offline smoke suite via the shared verify-loop");
 }
 
 // ------------- #481: pi-ensemble itself provisions without a hook (real repo probe)
