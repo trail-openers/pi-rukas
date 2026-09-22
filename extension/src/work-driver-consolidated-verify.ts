@@ -29,6 +29,15 @@ export async function runConsolidatedVerify(
     verifyCmd: string;
     timeoutMs: number;
     /**
+     * #794 — per-workstream effective base map (`workstreamBaseShas`):
+     * a stacked workstream's OWN range is measured against its dependency's
+     * tip, not the global baseSha — the same map the develop step records
+     * when it creates the dependent worktree (work-driver-dep-scheduler.ts).
+     * A workstream with no entry falls back to `baseSha` (byte-identical to
+     * the pre-#794 range for the N-disjoint case).
+     */
+    workstreamBaseShas?: Record<string, string>;
+    /**
      * #782 — the single bounded flake re-run. When the first run fails and
      * `canRetry` is true, the SAME command re-runs once on the SAME still-
      * checked-out scratch tree (BEFORE `restoreRoot`) and the outcome
@@ -57,6 +66,12 @@ export async function runConsolidatedVerify(
   | { status: "conflict"; detail: string; kind: "conflict" | "dirty-root" }
 > {
   const { repoRoot, baseSha, worktrees, scratchDir, verifyCmd, timeoutMs } = opts;
+  // #794 — the pick scope: each workstream's own range is measured against
+  // its effective base (the dependency's tip for a stacked workstream), so
+  // a dependent's ANCESTOR commits are not re-picked on top of their
+  // content. `workstreamBaseShas` entries are resolved per workstream inside
+  // `orchestrateCherryPick`; a missing entry falls back to `baseSha`.
+  const pickScope = { globalBaseSha: baseSha, workstreamBaseShas: opts.workstreamBaseShas };
   const retry = opts.retry;
   // A scratch branch name no other step of the cycle ever creates. Deleted
   // on the restore path below (a leftover branch costs nothing, but noise
@@ -139,6 +154,7 @@ export async function runConsolidatedVerify(
       baseSha,
       scratchDir,
       requireAllNonEmpty: false,
+      pickScope,
     });
 
     if (orchResult._conflict === "conflict") {

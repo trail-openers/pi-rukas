@@ -267,12 +267,13 @@ async function runDevelopTopological(
       next = await runConvergeGateHandler(ctx, next, dispatch);
     } else {
       // #669 — a cherry-pick conflict during the develop-time consolidated
-      // verify is a DECOMPOSITION error (two workstreams edited the same
-      // lines), not a verify failure: retrying the verify command cannot
-      // fix it. Route it to its own cap so the operator sees "the work is
-      // individually fine but the decomposition is incoherent" instead of
-      // being told the verify failed. The evidence (which apply failed,
-      // any preserved patch path) rides on the cap-hit's `evidence` field.
+      // verify is a consolidation error (two workstreams' changes cannot
+      // combine), not a verify failure: retrying the verify command cannot
+      // fix it. Route it to its own cap so the operator sees the conflict
+      // with its evidence instead of being told the verify failed. #794 —
+      // explainCap (not this message) distinguishes a stacked cycle from an
+      // independent fanout overlap; the stacked distinction belongs there
+      // because the cap is the operator-facing explanation seam.
       const conflictFailure = gate.failures.find((f) =>
         /cherry-pick \/ apply conflict|could not combine the workstreams/.test(f),
       );

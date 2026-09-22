@@ -182,6 +182,8 @@ export async function mechanizedCommitPr(
       branchName,
       baseSha: ps.baseSha,
       worktrees,
+      // #794 — own-range selection (stacked workstreams: see workstreamBaseShas).
+      workstreamBaseShas: ps.workstreamBaseShas,
       scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
       commitTitle: title,
       commitBody,
