@@ -44,10 +44,14 @@
  * link" is the status quo, not a regression — it is traced and reported, and
  * the cycle continues.
  */
-
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
+import {
+  anyNonEmptySharedSource,
+  expectedDepLocations,
+  resolvedNonEmptyDirectory,
+} from "./worktree-provision-verify.ts";
 
 /** The exec shape `worktree.ts` already uses. */
 type ExecFn = (
@@ -293,13 +297,65 @@ export async function provisionWorktree(
     return { via: "none", linked: [] };
   }
   if (hookExists) {
+    // #765 — precondition: the project expects deps (manifest present) but
+    // no source tree is non-empty (fork-A: fresh clone). The hook's
+    // deliberate exit-0-when-source-absent branch is untouched.
+    const hookPreconditions: string[] = [];
+    const hookPackageDirs = await packageDirsAt(repoRoot);
+    if (
+      (await depsExpectedAt(repoRoot, hookPackageDirs)) &&
+      !(await anyNonEmptySharedSource(repoRoot, hookPackageDirs))
+    ) {
+      hookPreconditions.push(
+        "no non-empty dependency source (node_modules/.venv/vendor) at repoRoot or in the discovered " +
+          "package dirs, yet the project expects dependencies here (a manifest/lockfile is present) — " +
+          "the hook has nothing to link unless it installs from scratch; the worktree will be bare " +
+          "until the source tree exists at repoRoot",
+      );
+    }
     try {
       await execFn(`sh ${JSON.stringify(hook)}`, {
         cwd: worktreeAbs,
         maxBuffer: 1024 * 1024,
       });
+      // #765 — verify, do not assume: exit 0 records INVOCATION, the
+      // filesystem records provisioning. Each expected location must RESOLVE
+      // to a non-empty dir (catches stale symlinks). No stdout parsing.
+      const locations = await expectedDepLocations(repoRoot, hookPackageDirs);
+      const verified: string[] = [];
+      for (const { dirRel, source } of locations) {
+        const dep = path.basename(source);
+        const target = path.join(worktreeAbs, dirRel, dep);
+        if (await resolvedNonEmptyDirectory(target)) {
+          verified.push(dirRel === "" ? dep : path.join(dirRel, dep));
+          continue;
+        }
+        const rel = dirRel === "" ? dep : path.join(dirRel, dep);
+        const problem =
+          `${WORKTREE_SETUP_HOOK} exited 0 but ${rel} in the worktree is absent, stale, or empty ` +
+          `(source: ${source}) — the hook linked nothing useful there`;
+        trace(`worktree: ${problem}`);
+        return {
+          via: "hook",
+          linked: verified,
+          problem:
+            hookPreconditions.length > 0
+              ? `${hookPreconditions.join("; ")} (and ${problem})`
+              : problem,
+        };
+      }
+      // #765 — if NO source tree existed at hook-run time, the hook could
+      // not have linked anything (fresh-clone fork-A shape).
+      if (locations.length === 0) {
+        const problem =
+          hookPreconditions.length > 0
+            ? hookPreconditions.join("; ")
+            : `${WORKTREE_SETUP_HOOK} exited 0 but no dependency source tree existed at ${repoRoot} — the worktree is bare; the hook linked nothing`;
+        trace(`worktree: ${problem}`);
+        return { via: "hook", linked: [], problem };
+      }
       trace(`worktree: provisioned via ${WORKTREE_SETUP_HOOK}`);
-      return { via: "hook", linked: [] };
+      return { via: "hook", linked: verified };
     } catch (err) {
       const problem = `${WORKTREE_SETUP_HOOK} failed: ${(err as Error).message?.slice(0, 200)}`;
       trace(`worktree: ${problem}`);
@@ -328,6 +384,23 @@ export async function provisionWorktree(
         `${dirRel === "" ? dep : path.join(dirRel, dep)}: ${(err as Error).message?.slice(0, 120)}`,
       );
     }
+  }
+  // #765 — verify what the SYMLINK path just linked: a source that resolved
+  // at scan time can still leave the worktree link pointing at a tree that
+  // is now empty or gone (the #761 fork-B shape). A link that does not
+  // resolve to a non-empty directory is pulled from `linked` (so it is
+  // never reported as a useful link) and recorded as a `problem`.
+  for (const [dep, { dirRel, source }] of found) {
+    const target = path.join(worktreeAbs, dirRel, dep);
+    if (await resolvedNonEmptyDirectory(target)) continue;
+    const rel = dirRel === "" ? dep : path.join(dirRel, dep);
+    problems.push(
+      `${rel}: linked but the link does not resolve to a non-empty directory (source: ${source})`,
+    );
+    const i = linkedRel.indexOf(rel);
+    if (i >= 0) linkedRel.splice(i, 1);
+    const di = linked.indexOf(dep);
+    if (di >= 0) linked.splice(di, 1);
   }
   if (linked.length > 0) {
     const sources = [...found.entries()]
