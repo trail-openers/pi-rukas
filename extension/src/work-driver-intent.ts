@@ -49,6 +49,20 @@ export interface SpecDeliverable {
   id: string;
   description: string;
   paths: string[];
+  /**
+   * Plan-time no-diff marker: `true` when the deliverable cannot produce a
+   * diff by design (repo settings, operator action, etc.) and was explicitly
+   * marked with `[no-diff: <evidence>]` in the explore reply.
+   * Only the intent resolver (explore role) may set this field.
+   */
+  noDiff?: boolean;
+  /**
+   * The evidence string recorded at plan time for a no-diff deliverable
+   * (a command, API endpoint, or settings URL). Present only when `noDiff`
+   * is true and the evidence was non-empty; absent when the marker was
+   * provided without evidence (the marker is then not honoured).
+   */
+  noDiffEvidence?: string;
 }
 
 export interface SpecAssumption {
@@ -218,10 +232,10 @@ export function parseNormalisedSpec(text: string): NormalisedSpec | undefined {
 }
 
 /**
- * `- <id>: <description> [paths: a.ts, b/c.ts]`
+ * `- <id>: <description> [paths: a.ts, b/c.ts] [no-diff: <evidence>]
  *
- * Paths are optional — a terse hand-written issue will not name files, and
- * demanding them would re-introduce the format dependency this module removes.
+ * Paths are optional. The no-diff marker is explicit: `[no-diff: <evidence>]`.
+ * A bare "n/a" in paths is prose, not a control signal.
  */
 function parseDeliverables(section: string | undefined): SpecDeliverable[] {
   return bullets(section).map((line, i) => {
@@ -230,12 +244,25 @@ function parseDeliverables(section: string | undefined): SpecDeliverable[] {
       .split(",")
       .map((p) => p.trim())
       .filter(Boolean);
-    const withoutPaths = line.replace(/\[paths:[^\]]*\]/i, "").trim();
-    const idMatch = withoutPaths.match(/^([a-z0-9][a-z0-9_-]*)\s*:\s*(.+)$/i);
+    // The no-diff marker is explicit and machine-readable: `[no-diff: <evidence>]`.
+    // A bare "n/a" in a `[paths: …]` slot must NOT be silently auto-detected —
+    // that is prose, and treating prose as a control signal is how the bug works.
+    // Contradictory case: a deliverable with BOTH valid code paths AND the
+    // no-diff marker is malformed. The code paths win and the marker is
+    // ignored (documented decision per issue #792).
+    const noDiffMatch = line.match(/\[no-diff:\s*([^\]]*)\]/i);
+    const noDiffEvidence = noDiffMatch?.[1]?.trim() ?? "";
+    const hasValidNoDiff = noDiffMatch !== null && noDiffEvidence.length > 0 && paths.length === 0;
+    const withoutMarkers = line
+      .replace(/\[paths:[^\]]*\]/i, "")
+      .replace(/\[no-diff:[^\]]*\]/i, "")
+      .trim();
+    const idMatch = withoutMarkers.match(/^([a-z0-9][a-z0-9_-]*)\s*:\s*(.+)$/i);
     return {
       id: idMatch?.[1]?.toLowerCase() ?? `d${i + 1}`,
-      description: (idMatch?.[2] ?? withoutPaths).trim(),
+      description: (idMatch?.[2] ?? withoutMarkers).trim(),
       paths,
+      ...(hasValidNoDiff ? { noDiff: true as const, noDiffEvidence } : {}),
     };
   });
 }
@@ -302,38 +329,18 @@ function blockingQuestions(qs: string[]): string[] {
  * correctly returns false.
  */
 /**
- * Is there something to build, and something to judge it by?
+ * Is there something to build?
  *
- * Deliberately a LOWER bar than `specIsComplete`. That predicate exists to
- * refute a park — to overturn an "underspecified" verdict — and demands a
- * confirmed evidence row, which is the right price for overturning a decision
- * and the wrong price for making one. A straightforward issue with no contested
- * claims has no evidence to confirm, and parking it would be a regression.
- *
- * This one asks only what `proceed` has to MEAN: an intent, and at least one
- * deliverable. Without deliverables `work-driver-plan.ts` silently falls back
- * to `countEnumeratedFindings`, and #290's decomposition arithmetic degrades on
- * exactly that input — that is a real downstream break, so it stays the bar.
- *
- * Two things are deliberately NOT required, for the same reason.
- *
- * Acceptance criteria: demanding them looked right and was wrong, and two
- * existing tests caught it before it shipped.
- *
- * A blocking open question: the same mistake, which nothing caught. Measured
- * over the 13 real resolver replies on this host, that conjunct alone flipped
- * FIVE `proceed` verdicts to `park` — the single largest source of false
- * parks. `blockingQuestions` prices *overturning* a park inside
- * `specIsComplete`; pricing a decision the same way is a category error, and
- * `proceed-with-assumptions` exists precisely for a spec that has open
- * questions and defensible answers to them.
- *
- * The bar has to be the thing whose absence actually breaks something
- * downstream, not everything one might wish a spec had.
+ * Lower bar than `specIsComplete` (which refutes a park): an intent and at
+ * least one deliverable that is NOT a pure no-diff marker. Without this the
+ * driver would run plan+develop with zero diff-producing work.
  */
 export function specIsActionable(spec: NormalisedSpec): boolean {
   return (
-    spec.intent.trim().length > 0 && spec.deliverables.some((d) => d.description.trim().length > 0)
+    spec.intent.trim().length > 0 &&
+    spec.deliverables.some(
+      (d) => d.description.trim().length > 0 && !(d.noDiff === true && d.paths.length === 0),
+    )
   );
 }
 
