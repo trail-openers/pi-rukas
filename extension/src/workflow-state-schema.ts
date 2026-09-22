@@ -88,31 +88,16 @@ export interface PipelineState {
    */
   lastCompletedStep?: WorkStep;
   /**
-   * Active dispatch IDs in flight under `currentStep`. Cleared when
-   * dispatch-completed lands. Driver uses this to detect "we crashed
-   * mid-dispatch" on resume — if the eventLog has dispatch-started without
-   * a matching dispatch-completed, the driver halts and asks the user to
-   * verify worktree state (per the troubleshooting doc).
+   * Active dispatch IDs in flight under `currentStep`. Cleared on
+   * dispatch-completed. Detects "crashed mid-dispatch" on resume.
    */
   inFlightJobIds: string[];
   /** Feature branch name once Step 3 completes. */
   branchName?: string;
   /**
-   * Workstreams decomposed by Step 2 (plan). Single-task /work writes
-   * `{default: {id:"default", scope, paths, outOfScope}}` so downstream
-   * code paths can treat `N=1` and `N>1` uniformly — they iterate
-   * `Object.keys(workstreams)` either way.
-   *
-   * - `id` matches the key (e.g., "default", "task-a", "task-b")
-   * - `scope` is a one-line brief; passed into the developer prompt
-   * - `paths` lists touchpoint files; helps developer stay in scope
-   * - `outOfScope` is the explicit fence — addresses the issue #553
-   *   scope-contamination empirical pattern (developer pulled off-scope
-   *   e2e files into a UX-fix PR because nothing told them what was OUT)
-   *
-   * Optional in the schema so state files written before PR3 still load
-   * cleanly under the same `schemaVersion: 1`. Readers treat absent as
-   * `{default: ...}` synthesised from the issue title.
+   * Workstreams decomposed by Step 2 (plan). Key = workstream id;
+   * `id`/`scope`/`paths`/`outOfScope` per workstream (see Workstream type).
+   * Optional for back-compat; absent = `{default: …}` synthesised.
    */
   workstreams?: Record<string, Workstream>;
   /**
@@ -215,7 +200,19 @@ export interface PipelineState {
    */
   normalisedSpec?: {
     intent: string;
-    deliverables: Array<{ id: string; description: string; paths: string[] }>;
+    deliverables: Array<{
+      id: string;
+      description: string;
+      paths: string[];
+      /**
+       * #792 — the plan-time no-diff marker. Set by the intent resolver
+       * and nowhere else; a marker without a non-empty evidence string is
+       * NOT honoured. Optional; absent = no marker.
+       */
+      noDiff?: boolean;
+      noDiffReason?: string;
+      noDiffEvidence?: string;
+    }>;
     acceptanceCriteria: string[];
     outOfScope: string[];
     assumptions: Array<{ text: string; basis: string }>;

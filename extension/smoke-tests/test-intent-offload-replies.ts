@@ -39,6 +39,7 @@ import {
   reconcileVerdict,
   specIsActionable,
 } from "../src/work-driver-intent.ts";
+import { parseNormalisedSpecArtifact } from "../src/work-driver-intent-artifact.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPLY = path.join(__dirname, "fixtures", "explore-replies", "674.txt");
@@ -180,15 +181,144 @@ assert(
 }
 
 // ---------------------------------------------------------------------------
-// Edge case: path outside the scratch dir is ignored (no read attempted)
+// #792 — the no-diff marker round-trip through parseNormalisedSpecArtifact
+// ---------------------------------------------------------------------------
+//
+// The artifact path (persistSpecArtifact → readSpecArtifact) is a SEPARATE
+// parser + validator from the inline path (parseNormalisedSpec →
+// parseDeliverables). A spec.txt that carries a no-diff marker must
+// round-trip through parseNormalisedSpecArtifact identically to the inline
+// path, with the noDiff/noDiffReason/noDiffEvidence fields surviving the
+// JSON round-trip and the strict element validation.
+//
+// We construct a NormalisedSpec-shaped object directly (since the inline
+// parser is task-a's scope) and round-trip it through JSON stringify +
+// parseNormalisedSpecArtifact. The round-trip must preserve:
+//   1. A valid no-diff deliverable (noDiff: true, noDiffReason, noDiffEvidence)
+//   2. A deliverable WITHOUT the no-diff marker (fields absent → still valid)
+//   3. A malformed no-diff marker (noDiff: "true" as a string) → the entire
+//      artifact is invalid (returns undefined) — the reader degrades to the
+//      prose-only path rather than carrying a half-validated spec.
 // ---------------------------------------------------------------------------
 
-// This is a content test: parseNormalisedSpec doesn't read files, so we
-// verify the caller (task-a's offload fallback) would reject the path before
-// calling parseNormalisedSpec. The fixture 674.txt itself cites a valid
-// scratch path; the test for path rejection is task-a's responsibility
-// (unit-level test in test-intent-resolution.ts). We pin here that the
-// offloaded file parses correctly so the integration is sound.
+{
+  // The base spec shape (all required fields present, no no-diff fields).
+  const baseSpec = {
+    intent: "Add a SECURITY.md and enable secret scanning",
+    deliverables: [
+      { id: "d1", description: "Create SECURITY.md", paths: ["SECURITY.md"] },
+      { id: "d2", description: "Enable secret scanning via gh api", paths: ["n/a — repo settings"] },
+    ],
+    acceptanceCriteria: ["SECURITY.md exists"],
+    outOfScope: [],
+    assumptions: [],
+    openQuestions: [],
+    evidence: [{ claim: "gh api works", source: "docs", verdict: "confirmed" }],
+    verdict: "proceed" as const,
+    rationale: "Clear enough to proceed.",
+  };
+
+  // (1) A deliverable carrying a valid no-diff marker: the marker fields
+  // round-trip through JSON stringify + parseNormalisedSpecArtifact intact.
+  const withMarker = {
+    ...baseSpec,
+    deliverables: [
+      { id: "d1", description: "Create SECURITY.md", paths: ["SECURITY.md"] },
+      {
+        id: "d2",
+        description: "Enable secret scanning via gh api",
+        paths: [],
+        noDiff: true,
+        noDiffReason: "repo-settings",
+        noDiffEvidence: "gh api -X PATCH repos/owner/repo/security_and_analysis/secret_scanning",
+      },
+    ],
+  };
+  const rtWithMarker = parseNormalisedSpecArtifact(JSON.stringify(withMarker, null, 2));
+  assert(
+    rtWithMarker !== undefined,
+    "round-trip: a spec with a valid no-diff marker (noDiff:true + reason + evidence) survives parseNormalisedSpecArtifact",
+  );
+  if (rtWithMarker) {
+    const d2 = rtWithMarker.deliverables.find((d) => d.id === "d2");
+    assert(
+      d2?.noDiff === true,
+      "round-trip: d2.noDiff survives as boolean true (got " + String(d2?.noDiff) + ")",
+    );
+    assert(
+      d2?.noDiffReason === "repo-settings",
+      "round-trip: d2.noDiffReason survives verbatim (got " + String(d2?.noDiffReason) + ")",
+    );
+    assert(
+      typeof d2?.noDiffEvidence === "string" && d2.noDiffEvidence.startsWith("gh api"),
+      "round-trip: d2.noDiffEvidence survives verbatim (got " + String(d2?.noDiffEvidence) + ")",
+    );
+    // d1 (no marker) must still be valid.
+    const d1 = rtWithMarker.deliverables.find((d) => d.id === "d1");
+    assert(
+      d1 !== undefined && d1.noDiff === undefined,
+      "round-trip: d1 (no marker) reads noDiff as undefined (absent = no marker)",
+    );
+  }
+
+  // (2) A deliverable with the marker fields ABSENT (pre-#792 shape) —
+  // the strict validator must still accept it (optional fields).
+  const rtNoMarker = parseNormalisedSpecArtifact(JSON.stringify(baseSpec, null, 2));
+  assert(
+    rtNoMarker !== undefined,
+    "round-trip: a pre-#792 spec (no noDiff/noDiffReason/noDiffEvidence fields) still validates",
+  );
+  if (rtNoMarker) {
+    assert(
+      rtNoMarker.deliverables.every((d) => d.noDiff === undefined),
+      "round-trip: pre-#792 deliverables read noDiff as undefined",
+    );
+  }
+
+  // (3) A MALFORMED marker: noDiff is a string ("true") instead of a boolean.
+  // The strict validator must reject the ENTIRE artifact (returns undefined)
+  // — a half-validated spec must not flow into the driver.
+  const malformed = {
+    ...baseSpec,
+    deliverables: [
+      { id: "d1", description: "Create SECURITY.md", paths: ["SECURITY.md"] },
+      {
+        id: "d2",
+        description: "Enable secret scanning",
+        paths: [],
+        noDiff: "true", // string, not boolean — malformed
+        noDiffReason: "repo-settings",
+        noDiffEvidence: "gh api",
+      },
+    ],
+  };
+  const rtMalformed = parseNormalisedSpecArtifact(JSON.stringify(malformed, null, 2));
+  assert(
+    rtMalformed === undefined,
+    "round-trip: a malformed no-diff marker (noDiff: 'true' as string) rejects the entire artifact",
+  );
+
+  // (3b) A malformed marker: noDiff is boolean true but noDiffReason is a number.
+  const malformed2 = {
+    ...baseSpec,
+    deliverables: [
+      { id: "d1", description: "Create SECURITY.md", paths: ["SECURITY.md"] },
+      {
+        id: "d2",
+        description: "Enable secret scanning",
+        paths: [],
+        noDiff: true,
+        noDiffReason: 42, // number, not string — malformed
+        noDiffEvidence: "gh api",
+      },
+    ],
+  };
+  const rtMalformed2 = parseNormalisedSpecArtifact(JSON.stringify(malformed2, null, 2));
+  assert(
+    rtMalformed2 === undefined,
+    "round-trip: a malformed noDiffReason (number) rejects the entire artifact",
+  );
+}
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);
