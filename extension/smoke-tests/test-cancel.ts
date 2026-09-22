@@ -1,14 +1,49 @@
 #!/usr/bin/env bun
 /**
- * Verify the two new escape hatches in spawnSpecialist:
- *   1. AbortSignal — Esc cancellation kills the child within a few seconds
- *   2. timeoutMs default — runaway children get SIGTERM'd at the deadline
+ * Verify the two escape hatches in spawnSpecialist (AbortSignal / timeoutMs)
+ * plus the #296 inactivity watchdog — fully offline.
  *
- * Both are critical: without them an entire Pi session can deadlock on a
- * hung child (observed in the wild — overnight stuck session).
+ * #809 — the two REAL-spawn sections that used to live here (an abort probe
+ * and a 2000ms-timeout probe against genuine `pi` children, asserting
+ * `elapsed < 10s` / `elapsed < 12s`) are timing-flaky and cost two false
+ * parks (cycles #777 and #798: 496954ms against a 10s bound). The wall clock
+ * measured parent + child + provider round-trip under up to 6 concurrent Pi
+ * processes, and on a laptop that may sleep — the 497s observation is a
+ * process that was descheduled, not an abort path that is slow. They moved to
+ * `test-cancel-realspawn-live.ts`, which keeps the same two spawns (token cost
+ * unchanged) but asserts the SEMANTIC outcome (killCause attribution) instead
+ * of elapsed seconds. It is `*-live.ts` (excluded from the offline gate) —
+ * CI does not install `pi`, and a real-spawn section glob-matched into the
+ * offline suite would crash there on a missing binary rather than skip.
+ *
+ * The abort-path semantics they covered are now ALSO exercised deterministically
+ * here (tests 1–2) against a fake `pi` on PATH — the same pattern as tests
+ * 3–5 — so the offline suite kills a real child via the exact `onAbort`
+ * code path and checks the result, with no wall-clock bound to flake on and
+ * no provider involved.
+ *
+ * Self-check (bottom of file): the abort probe's predicate is asserted
+ * against fabricated results so this test goes RED when a broken abort path
+ * would stop attributing — the same shape test-file-size-limit.ts applies
+ * to itself.
  */
 
 import { spawnSpecialist } from "../src/spawn.ts";
+import {
+  ABORT_PROMPT,
+  runAbortProbe,
+  type AbortProbeResult,
+} from "./lib/test-cancel-probes.ts";
+
+/**
+ * The abort probe's pass/fail predicate, isolated so the self-check at the
+ * bottom can prove it discriminates: a correctly attributed abort passes,
+ * and any broken-path shape (no attribution, ok=true, wrong cause) fails —
+ * the same shape test-file-size-limit.ts applies to itself.
+ */
+function abortProbePasses(p: AbortProbeResult): boolean {
+  return p.killCause === "abort" && p.ok === false;
+}
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -20,49 +55,6 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-// Test 1 — AbortSignal cancels mid-flight.
-{
-  console.log("[test] firing explore child, will abort after 1500ms...");
-  const controller = new AbortController();
-  const start = Date.now();
-  setTimeout(() => controller.abort(), 1500);
-  const r = await spawnSpecialist(
-    {
-      role: "explore",
-      // Force the model to take a few seconds (the actual prompt doesn't
-      // matter — we abort before it finishes).
-      prompt:
-        "Think step by step about prime numbers under 100, list them all with explanations of why each is prime. Take your time.",
-    },
-    { signal: controller.signal, timeoutMs: 60_000 },
-  );
-  const elapsed = Date.now() - start;
-  assert(elapsed < 10_000, `aborted child returned within 10s (took ${elapsed}ms)`);
-  assert(r.ok === false, "aborted child reports ok=false");
-  console.log(`  → exit=${r.exitCode} text="${r.text.slice(0, 80)}"`);
-}
-
-// Test 2 — timeoutMs caps a runaway child.
-{
-  console.log("\n[test] firing explore child with 2000ms timeout...");
-  const start = Date.now();
-  const r = await spawnSpecialist(
-    {
-      role: "explore",
-      prompt:
-        "Carefully reason through 10 different math problems and explain each step. Take your time.",
-    },
-    { timeoutMs: 2000 },
-  );
-  const elapsed = Date.now() - start;
-  assert(elapsed < 12_000, `timed-out child returned within 12s (took ${elapsed}ms)`);
-  assert(r.ok === false, "timed-out child reports ok=false");
-  console.log(`  → exit=${r.exitCode} text="${r.text.slice(0, 80)}"`);
-}
-
-// Tests 3-4 (#296) — inactivity watchdog, fully offline via a fake `pi`
-// binary on PATH (getPiInvocation falls back to PATH lookup outside a real
-// pi process, which is exactly the smoke-test context).
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -71,12 +63,55 @@ const fakeDir = mkdtempSync(join(tmpdir(), "pi-ensemble-fake-pi-"));
 const savedPath = process.env.PATH;
 const savedInactivity = process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS;
 
+/** A fake `pi` that stays alive until killed (TERM-trapping variant included). */
+function writeFakePi(trapTerm = false) {
+  writeFileSync(
+    join(fakeDir, "pi"),
+    ["#!/bin/sh", trapTerm ? "trap '' TERM" : "true", "exec sleep 300"].join("\n"),
+  );
+  chmodSync(join(fakeDir, "pi"), 0o755);
+}
+
+process.env.PATH = `${fakeDir}:${savedPath}`;
+process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "0"; // abort tests: pure abort path
+
+// Test 1 — AbortSignal kills the child mid-flight (deterministic fake child).
+// Uses the same SIGTERM→SIGKILL kill function the #296 watchdog uses (the
+// subject is the attribution; the watchdog poll loop itself is tests 3–4).
+// The wall clock is logged for observability and never fails.
+{
+  writeFakePi();
+  console.log("[test] fake child, abort after 1500ms...");
+  const p = await runAbortProbe(ABORT_PROMPT);
+  assert(p.ok, "aborted fake child: killCause='abort' + ok=false");
+  p.lines.forEach((l) => console.log(l));
+}
+
+// Test 2 — the SIGTERM→SIGKILL escalation: a child that IGNORES SIGTERM is
+// still killed by the 5s SIGKILL timer. This was previously uncovered — the
+// real-spawn sections could not demonstrate it, because a healthy real child
+// exits on SIGTERM before the escalation ever matters.
+{
+  writeFakePi(true);
+  console.log("\n[test] fake child traps SIGTERM; SIGKILL escalation expected...");
+  const p = await runAbortProbe(ABORT_PROMPT);
+  assert(p.ok, "TERM-trapping child: killCause='abort' + ok=false");
+  p.lines.forEach((l) => console.log(l));
+  assert(
+    p.elapsedMs >= 5_000,
+    `SIGKILL escalation fired (wall ${p.elapsedMs}ms ≥ 5000ms; TERM was trapped)`,
+  );
+  assert(
+    p.exitCode === null || p.exitCode === -9,
+    `TERM-trapping child died to SIGKILL (exit=${p.exitCode})`,
+  );
+}
+
 // Test 3 — a totally silent child is killed by the inactivity watchdog long
 // before the wall-clock cap.
 {
   writeFileSync(join(fakeDir, "pi"), "#!/bin/sh\nexec sleep 300\n");
   chmodSync(join(fakeDir, "pi"), 0o755);
-  process.env.PATH = `${fakeDir}:${savedPath}`;
   process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
   console.log("\n[test] silent fake child, 2000ms inactivity budget...");
   const start = Date.now();
@@ -121,6 +156,19 @@ const savedInactivity = process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS;
   assert(r.ok === false, "#296: cap-killed child reports ok=false");
   assert(r.killCause === "timeout", "#296: cap-killed child carries killCause='timeout'");
   assert(r.killBudgetMs === 1500, "#296: killBudgetMs records the expired wall-clock budget");
+}
+
+// Self-check — the abort probe's own predicate must discriminate: a
+// correctly attributed abort passes, and each broken-path shape (no
+// attribution, ok=true, wrong cause) fails. Same shape test-file-size-limit.ts
+// applies to itself: a test that cannot go RED is decorative.
+{
+  const fabricated = (killCause: string | undefined, ok: boolean) =>
+    abortProbePasses({ ok, lines: [], killCause, exitCode: null, elapsedMs: 0 });
+  assert(fabricated("abort", false) === true, "self-check: attributed abort (killCause + ok=false) passes");
+  assert(fabricated(undefined, false) === false, "self-check: missing killCause fails");
+  assert(fabricated("timeout", false) === false, "self-check: wrong cause fails");
+  assert(fabricated("abort", true) === false, "self-check: ok=true abort fails");
 }
 
 process.env.PATH = savedPath;
