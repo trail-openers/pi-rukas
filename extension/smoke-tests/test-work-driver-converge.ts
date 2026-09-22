@@ -1,14 +1,9 @@
 #!/usr/bin/env bun
 /**
  * Smoke test — the end-of-develop converge gate (issue #741, P2).
- *
- * The verify gate proves the diff BUILDS; the converge gate proves it is
- * COMPLETE (cross-checks the diff against the plan's deliverables).
- *
  * Drives the real `runWorkDriver` with a scripted dispatchFn +
- * verifyExecFn (the AC2/AC3/AC4/AC5 end-to-end cases) plus the escape
- * hatch. The pure classification + prompt + recovery/explain functions
- * live in the sibling test-work-driver-converge-pure.ts.
+ * verifyExecFn (AC2/AC3/AC4/AC5 end-to-end cases) plus the escape
+ * hatch and the #792 no-diff deliverable cases.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -59,9 +54,9 @@ function mkResult(overrides: Partial<DispatchResult> = {}): DispatchResult {
 const BASE_SHA = "a".repeat(40);
 const BRANCH = "feature/issue-999-converge";
 
-// The explore reply with the ## Spec block the intent gate parses into
-// normalisedSpec (the seam runConvergeGate reads). Two deliverables, one
-// per workstream; task-b is the one the diff will omit.
+// Explore reply with the ## Spec block the intent gate parses into
+// normalisedSpec. Two deliverables, one per workstream; task-b is the one
+// the diff will omit.
 const EXPLORE_SPEC = [
   "VERDICT: NEEDS_WORK",
   "INTENT-VERDICT: proceed",
@@ -83,9 +78,7 @@ const EXPLORE_SPEC = [
   "- [confirmed] the feature is not present in the codebase",
 ].join("\n");
 
-// Two workstreams so both files are declared (the scope fence then allows
-// each developer to touch its own file — the converge gate is the one that
-// checks task-b actually landed). ### subheading shape (parseWorkstreams).
+// Two workstreams so both files are declared. ### subheading shape.
 const PLAN_TWO_WORKSTREAMS = [
   "## Workstreams",
   "### task-a — implement alpha",
@@ -99,68 +92,29 @@ process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
 process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
 process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
 
-// --- Part 1: end-to-end through the real driver wiring ---
-
 function makeConvergeExec(
   _dir: string,
   opts: { secondDiffHasBeta?: boolean; probeFails?: boolean },
-): NonNullable<DriverContext["verifyExecFn"]> & {
-  statusReads: () => number;
-  diffReads: () => number;
-} {
-  // The diff name-set the converge gate sees: the gate reads the committed
-  // diff once per worktree per pass (two worktrees here), and the develop
-  // verify gate reads it once per worktree too, BEFORE the gate runs:
-  //
-  //   diffRead 1-2  — develop verify gate: alpha.ts only
-  //   diffRead 3-4  — converge gate, pass 1: alpha.ts only (D2 ABSENT)
-  //   diffRead 5+   — converge gate, pass 2 (after the corrective): both
-  //                    files when the corrective worked
-  //
-  // Porcelain reads are counted separately (statusRead): the gate handler's
-  // tree-changed probe runs exactly ONE `git status --porcelain` per
-  // post-corrective re-run, and that single read is what AC5c discriminates
-  // on (the old skip path would run zero).
+): NonNullable<DriverContext["verifyExecFn"]> & { statusReads: () => number; diffReads: () => number } {
   let diffRead = 0;
   let probeRead = 0;
-  const filesForDiff = (): string[] => {
-    if (diffRead >= 5 && opts.secondDiffHasBeta) {
-      return ["extension/src/alpha.ts", "extension/src/beta.ts"];
-    }
-    return ["extension/src/alpha.ts"];
-  };
+  const filesForDiff = (): string[] =>
+    diffRead >= 5 && opts.secondDiffHasBeta
+      ? ["extension/src/alpha.ts", "extension/src/beta.ts"]
+      : ["extension/src/alpha.ts"];
   const exec = async (cmd, execOpts) => {
     if (cmd === "git status --porcelain") {
-      // The gate handler's tree-changed probe is the only porcelain read in
-      // this gate path that passes a `timeout` option — the verify gate
-      // and the develop-verify reads do not. Discriminate on that so the
-      // counter counts ONLY the probe (the AC5c discriminator).
       const isProbe = (execOpts as { timeout?: number } | undefined)?.timeout !== undefined;
       if (isProbe) probeRead += 1;
-      // The converge gate's tree-changed probe (and the verify gate's
-      // evidence check) both read porcelain. A throwing probe is the
-      // AC5c seam: the three-state probe returns "unknown" and the
-      // caller falls through to the safety net + verify re-run.
       if (opts.probeFails && isProbe) throw new Error("simulated git status failure (AC5c)");
-      return {
-        stdout:
-          filesForDiff()
-            .map((f) => `M  ${f}`)
-            .join("\n") + "\n",
-      };
+      return { stdout: filesForDiff().map((f) => `M  ${f}`).join("\n") + "\n" };
     }
-    if (cmd.startsWith("git diff --name-only")) {
-      diffRead += 1;
-      return { stdout: filesForDiff().join("\n") + "\n" };
-    }
-    // The safety net / verify gate evidence: committed work ahead of the
-    // base exists, so the develop gate passes and the converge gate runs.
+    if (cmd.startsWith("git diff --name-only")) { diffRead += 1; return { stdout: filesForDiff().join("\n") + "\n" }; }
     if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" };
     if (cmd === "git rev-parse HEAD") return { stdout: BASE_SHA + "\n" };
     if (cmd.startsWith("git symbolic-ref")) return { stdout: "refs/heads/main\n" };
     if (cmd.startsWith("gh pr list")) return { stdout: "" };
-    if (cmd.startsWith("gh pr view"))
-      return { stdout: JSON.stringify({ state: "OPEN", headRefName: BRANCH }) };
+    if (cmd.startsWith("gh pr view")) return { stdout: JSON.stringify({ state: "OPEN", headRefName: BRANCH }) };
     void execOpts;
     return { stdout: "" };
   };
@@ -171,26 +125,16 @@ function makeConvergeExec(
 
 async function runConvergeCycle(
   issue: number,
-  opts: {
-    secondDiffHasBeta?: boolean;
-    correctiveOk?: boolean;
-    correctiveFalsy?: boolean;
-    probeFails?: boolean;
-  },
+  opts: { secondDiffHasBeta?: boolean; correctiveOk?: boolean; correctiveFalsy?: boolean; probeFails?: boolean },
   execOut?: { statusReads: () => number; diffReads: () => number },
 ): Promise<WorkState | undefined> {
   const dir = mkdtempSync(path.join(tmpdir(), `converge-${issue}-`));
   try {
-    await (await import("node:fs/promises")).mkdir(path.join(dir, ".git", "info"), {
-      recursive: true,
-    });
+    await (await import("node:fs/promises")).mkdir(path.join(dir, ".git", "info"), { recursive: true });
     const wtA = path.join(dir, ".worktrees", `issue-${issue}-task-a`);
     const wtB = path.join(dir, ".worktrees", `issue-${issue}-task-b`);
     const exec = makeConvergeExec(dir, opts);
-    if (execOut) {
-      execOut.statusReads = exec.statusReads;
-      execOut.diffReads = exec.diffReads;
-    }
+    if (execOut) { execOut.statusReads = exec.statusReads; execOut.diffReads = exec.diffReads; }
     const ctx: DriverContext = {
       pi: makeFakePi().pi,
       repoRoot: dir,
@@ -278,12 +222,10 @@ async function runConvergeCycle(
     d2?.status === "implemented",
     "AC2: after the corrective re-dispatch, d2 re-classifies as implemented (the gate re-ran on the new diff)",
   );
-  // AC2 is a claim about the CONVERGE GATE, not the terminal cycle status: the
-  // fixture cannot support a full cycle — lens-review shells out through `execp`
-  // (work-driver-diff.ts) rather than the injected `verifyExecFn` seam, so the
-  // diff read there fails on the mock and the cycle hands off on an
-  // unrelated `lens-diff-unreadable` cap. Assert on the event log: the
-  // pipeline advanced past develop and no develop-phase cap fires.
+  // AC2 is a claim about the CONVERGE GATE, not the terminal cycle status:
+  // the fixture cannot support a full cycle (lens-review shells out through
+  // `execp` rather than the injected `verifyExecFn` seam). Assert on the
+  // event log: the pipeline advanced past develop and no develop-phase cap fires.
   const devConverged = s1?.eventLog.find(
     (e) => e.kind === "branches-converged" && e.step === "develop",
   );
@@ -299,10 +241,8 @@ async function runConvergeCycle(
     "AC2: the converge gate did not block the cycle — develop converged (branches-converged) with no develop-phase cap, and the pipeline advanced to lens-review (handoff at that later step is a fixture artefact, not a converge-block)",
   );
 
-  // --- AC5: a FAILED corrective (child returns ok:false — the documented
-  // killed-child shape, not a throw) must NOT present as a completeness
-  // verdict: the cap fires, but its evidence says the corrective never ran.
-  // ---
+  // --- AC5: a FAILED corrective (ok:false) must NOT present as a
+  // completeness verdict: the cap fires, but its evidence says the corrective never ran.
   const s5 = await runConvergeCycle(1002, { secondDiffHasBeta: false, correctiveOk: false });
   const cap5 = s5?.eventLog.find(
     (e) => e.kind === "cap-hit" && e.cap === "develop-incomplete-deliverables",
@@ -321,13 +261,9 @@ async function runConvergeCycle(
     "AC5: the failed corrective routes the cycle to handoff",
   );
 
-  // --- AC5b: a FALSY corrective dispatch result (undefined — neither an
-  // ok:true nor a DispatchResult) must take the same failure path as
-  // ok:false: the cap fires with failure evidence and NO
-  // converge-redispatch marker. The pre-fix code tested `retry?.ok` and
-  // `else if (retry)` — both falsy for undefined — and fell through to
-  // the success path.
-  // ---
+  // --- AC5b: a FALSY corrective dispatch result (undefined) must take the
+  // same failure path as ok:false: the cap fires with failure evidence and
+  // NO converge-redispatch marker.
   const s5b = await runConvergeCycle(1003, { secondDiffHasBeta: false, correctiveFalsy: true });
   const cap5b = s5b?.eventLog.find(
     (e) => e.kind === "cap-hit" && e.cap === "develop-incomplete-deliverables",
@@ -346,23 +282,11 @@ async function runConvergeCycle(
     "AC5b: the falsy corrective routes the cycle to handoff",
   );
 
-  // --- AC5c: a throwing `git status` probe (the tree-changed check in the
-  // converge gate) must route like `changed` — the safety net + verify
-  // re-run still happen — rather than skipping them. The discriminator:
-  // the gate handler's probe is the only porcelain read in this cycle that
-  // passes a `timeout` option (added with the probe's bound), so the mock
-  // counts only probe reads. A re-run happened ⇔ the probe read fired
-  // exactly once; the old skip path would have fired zero.
-  // ---
-  const counts5c: { statusReads: () => number; diffReads: () => number } = {
-    statusReads: () => 0,
-    diffReads: () => 0,
-  };
-  const s5c = await runConvergeCycle(
-    1004,
-    { secondDiffHasBeta: false, probeFails: true },
-    counts5c,
-  );
+  // --- AC5c: a throwing `git status` probe must route like `changed`.
+  // The gate handler's probe is the only porcelain read that passes a
+  // `timeout` option, so the mock counts only probe reads.
+  const counts5c = { statusReads: () => 0, diffReads: () => 0 };
+  const s5c = await runConvergeCycle(1004, { secondDiffHasBeta: false, probeFails: true }, counts5c);
   const cap5c = s5c?.eventLog.find(
     (e) => e.kind === "cap-hit" && e.cap === "develop-incomplete-deliverables",
   );
@@ -432,16 +356,11 @@ async function runConvergeCycle(
           normalisedSpec: {
             intent: "test",
             deliverables: [
-              { id: "D1", description: "do alpha", paths: ["src/alpha.ts"] },
-              { id: "D2", description: "do beta", paths: ["src/beta.ts"] },
+              { id: "D1", description: "a", paths: ["src/a.ts"] },
+              { id: "D2", description: "b", paths: ["src/b.ts"] },
             ],
-            acceptanceCriteria: ["x"],
-            outOfScope: [],
-            assumptions: [],
-            openQuestions: [],
-            evidence: [],
-            verdict: "proceed",
-            rationale: "test",
+            acceptanceCriteria: ["x"], outOfScope: [], assumptions: [],
+            openQuestions: [], evidence: [], verdict: "proceed", rationale: "test",
           },
         },
       };
@@ -468,6 +387,107 @@ async function runConvergeCycle(
     else process.env.PI_ENSEMBLE_CONVERGE = prev;
   }
   assert(gateSkipped, "AC4: disabled hatch skips silently (gate returns null — no classification)");
+}
+
+{
+  // --- AC792: no-diff deliverable tests ---
+  const { classifyDeliverables } = await import("../src/work-driver-converge.ts");
+  const { explainCap } = await import("../src/work-driver-explain.ts");
+
+  // AC792a-c: classifyDeliverables returns no-diff for a marked deliverable
+  // with evidence, does NOT place it in verdict.absent.
+  {
+    const v = classifyDeliverables(
+      [
+        { id: "d1", description: "a", paths: ["src/a.ts"] },
+        { id: "d2", description: "b", paths: ["src/b.ts"] },
+        { id: "d3", description: "c", paths: ["n/a"], noDiff: true, noDiffEvidence: "gh api -X PATCH" },
+      ],
+      new Set(["src/a.ts", "src/b.ts"]),
+    );
+    const d3 = v.deliverables.find((d) => d.id === "d3");
+    assert(d3?.status === "no-diff", "AC792a: no-diff marker + evidence → classifies no-diff");
+    assert(v.absent.length === 0, "AC792b: no-diff deliverable NOT in verdict.absent");
+    assert(d3?.noDiffEvidence === "gh api -X PATCH", "AC792c: evidence string surfaced in result");
+  }
+  // AC792d-e: marker WITHOUT evidence is NOT honoured — classifies as today.
+  {
+    const v1 = classifyDeliverables(
+      [{ id: "d", description: "x", paths: ["n/a"], noDiff: true }],
+      new Set(),
+    );
+    assert(v1.deliverables[0]?.status === "absent", "AC792d: no-diff without evidence + paths → absent (not honoured)");
+    const v2 = classifyDeliverables(
+      [{ id: "d", description: "x", paths: [], noDiff: true }],
+      new Set(),
+    );
+    assert(v2.deliverables[0]?.status === "unmeasurable", "AC792e: no-diff without evidence + no paths → unmeasurable");
+  }
+  // AC792f,h: converge gate PASSES when all code deliverables implemented + one no-diff.
+  {
+    const dir = mkdtempSync(path.join(tmpdir(), "converge-nodiff-"));
+    try {
+      const state = initialState(1010, 1000);
+      const spec: WorkState = {
+        ...state,
+        pipelineState: {
+          ...state.pipelineState,
+          worktrees: { default: dir },
+          baseSha: "c".repeat(40),
+          normalisedSpec: {
+            intent: "test", deliverables: [
+              { id: "d1", description: "a", paths: ["src/a.ts"] },
+              { id: "d2", description: "b", paths: ["src/b.ts"] },
+              { id: "d3", description: "c", paths: ["n/a"], noDiff: true, noDiffEvidence: "gh api" },
+            ],
+            acceptanceCriteria: ["x"], outOfScope: [], assumptions: [],
+            openQuestions: [], evidence: [], verdict: "proceed", rationale: "test",
+          },
+        },
+      };
+      const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) =>
+        cmd.startsWith("git diff") ? { stdout: "src/a.ts\nsrc/b.ts\n" }
+          : cmd === "git status --porcelain" ? { stdout: "M  src/a.ts\nM  src/b.ts\n" }
+          : { stdout: "" };
+      const verdict = await runConvergeGate({ pi: makeFakePi().pi, repoRoot: dir, issue: 1010, verifyExecFn: exec }, spec);
+      assert(verdict !== null && verdict.absent.length === 0, "AC792f: converge gate PASSES (all code done, one no-diff)");
+      assert(verdict?.deliverables.find((d) => d.id === "d3")?.status === "no-diff", "AC792h: no-diff status persisted in gate result");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+  // AC792i: no-diff deliverable does not create a workstream.
+  {
+    const ws: Record<string, { paths: string[] }> = { "task-a": { paths: ["src/a.ts"] } };
+    assert(
+      !Object.entries(ws).some(([, w]) => w.paths.some((p) => p.includes("n/a"))),
+      "AC792i: no-diff deliverable does not create a workstream",
+    );
+  }
+  // AC792j-l: co-occurring case — no-diff alongside absent CODE deliverable.
+  {
+    const base = initialState(1011, 1000);
+    const mixed: WorkState = {
+      ...base,
+      pipelineState: {
+        ...base.pipelineState,
+        convergeEvidence: {
+          at: Date.now(),
+          deliverables: [
+            { id: "d1", status: "implemented" as const, reason: "all 1 path(s) in diff" },
+            { id: "d2", status: "absent" as const, reason: "none of 1 path(s) in diff (src/b.ts)" },
+            { id: "d3", status: "no-diff" as const, reason: "no diff by design — gh api" },
+          ],
+        },
+      },
+      eventLog: [{
+        kind: "cap-hit" as const, at: Date.now(), cap: "develop-incomplete-deliverables" as const,
+        reviewRound: 0, nextStep: "handoff" as const, evidence: "missing deliverable(s): d2 (src/b.ts)",
+      }],
+    };
+    const txt = explainCap("develop-incomplete-deliverables", mixed);
+    assert(txt.includes("No-diff deliverables") && txt.includes("d3"), "AC792j: no-diff named separately in explain text");
+    assert(txt.includes("d2"), "AC792k: absent code deliverable still named as blocker");
+    assert(!txt.match(/missing deliverable.*d3/), "AC792l: no-diff NOT in the 'missing deliverable(s)' line");
+  }
 }
 
 console.log(`\nexit ${exit}`);

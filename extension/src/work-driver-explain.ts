@@ -1,11 +1,8 @@
 /**
  * work-driver-explain — cap-hit → operator-readable sentence.
- *
  * Extracted from work-driver.ts (issue #171 file-size hygiene). Pure
  * formatter with no DriverContext dependency — single source of truth
- * for the WHY explanation used by every handoff surface (in-chat
- * sendUserMessage via work-driver-handoff-message.ts, /work-status
- * terminal renderer, GitHub body via work-driver-handoff-markdown.ts).
+ * for the WHY explanation used by every handoff surface.
  */
 
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
@@ -22,10 +19,8 @@ import {
 
 /**
  * PR5 — single source of truth mapping a cap-hit `cap` value to an
- * operator-readable sentence. Used by every handoff surface (in-chat
- * sendUserMessage, /work-status terminal renderer, GitHub
- * renderHandoffMarkdown) so the WHY explanation stays consistent.
- *
+ * operator-readable sentence. Used by every handoff surface so the
+ * WHY explanation stays consistent.
  * Exhaustive switch — adding a new cap value to the WorkEvent union
  * forces a typecheck error here, which is the design intent.
  */
@@ -103,8 +98,7 @@ export function explainCap(
     case "develop-incomplete-deliverables": {
       // #741 — the converge gate: the verify gate passed (the code builds),
       // but one or more plan deliverables are absent from the end-of-develop
-      // diff even after the one-shot corrective re-dispatch. The missing
-      // deliverables ride on the cap event's evidence + convergeEvidence.
+      // diff. The missing deliverables ride on the cap event's evidence.
       const hit = [...state.eventLog]
         .reverse()
         .find((e) => e.kind === "cap-hit" && e.cap === "develop-incomplete-deliverables");
@@ -113,11 +107,18 @@ export function explainCap(
       const partials = (state.pipelineState.convergeEvidence?.deliverables ?? [])
         .filter((d) => d.status === "partial")
         .map((d) => `${d.id} (${d.reason})`);
+      const noDiff = (state.pipelineState.convergeEvidence?.deliverables ?? [])
+        .filter((d) => d.status === "no-diff")
+        .map((d) => `${d.id} (${d.reason})`);
       const partialWarning =
         partials.length > 0
           ? `\n\nPartial deliverables (warning, non-blocking):\n${partials.map((p) => `  - ${p}`).join("\n")}`
           : "";
-      return `the converge gate found the end-of-develop diff INCOMPLETE: ${evidence}. The verify gate passed — the code builds and tests; what is missing is declared plan work the diff never contained. The driver already spent its one-shot corrective re-dispatch on these deliverables; re-running /work re-enters the gate with a fresh corrective budget, or implement the missing deliverables on the branch directly.${partialWarning}`;
+      const noDiffWarning =
+        noDiff.length > 0
+          ? `\n\nNo-diff deliverables (not blocking — no diff by design):\n${noDiff.map((p) => `  - ${p}`).join("\n")}`
+          : "";
+      return `the converge gate found the end-of-develop diff INCOMPLETE: ${evidence}. The verify gate passed — the code builds and tests; what is missing is declared plan work the diff never contained. The driver already spent its one-shot corrective re-dispatch on these deliverables; re-running /work re-enters the gate with a fresh corrective budget, or implement the missing deliverables on the branch directly.${partialWarning}${noDiffWarning}`;
     }
     case "intent-park": {
       const spec = state.pipelineState.normalisedSpec;

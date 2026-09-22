@@ -65,6 +65,7 @@ export async function runConvergeGateHandler(
             id: d.id,
             status: d.status,
             reason: d.reason,
+            ...(d.noDiffEvidence ? { noDiffEvidence: d.noDiffEvidence } : {}),
           })),
         },
       },

@@ -199,7 +199,6 @@ function isDeliverableArray(v: unknown): v is SpecDeliverable[] {
       // degrades to the prose-only path rather than carrying a
       // half-validated spec into the driver.
       if (dd.noDiff !== undefined && typeof dd.noDiff !== "boolean") return false;
-      if (dd.noDiffReason !== undefined && typeof dd.noDiffReason !== "string") return false;
       if (dd.noDiffEvidence !== undefined && typeof dd.noDiffEvidence !== "string") return false;
       return true;
     })
