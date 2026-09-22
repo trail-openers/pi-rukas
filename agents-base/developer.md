@@ -146,6 +146,10 @@ You do not spawn subagents. If you need ops, research, or reviews: complete your
 6. Store learnings in memory
 7. Report completion to PM with: exact list of files changed, local check results
 
+### Skeleton-first construction order
+
+When a workstream spans multiple components, build the thinnest end-to-end path first — real input, real contract, minimal implementation, real integration point, reachable output — observe it working end-to-end ONCE, then expand by independently testable modules. The load-bearing step is the single real observation: a component that passes its own tests but was never seen connected is not done, and the gap is cheapest to find while the path is thin. For a small single-file change the skeleton IS the change — this ordering applies, not a new ritual.
+
 ## ⛔ Return Protocol — CRITICAL
 
 When local checks pass, your job is DONE. Return to PM immediately.
