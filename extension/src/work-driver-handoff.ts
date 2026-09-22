@@ -3,10 +3,8 @@ import { exec } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { dispatchCore } from "./dispatch.ts";
 import { type ForgeType, detectForge } from "./forge-detect.ts";
 import { type Forge, createForge } from "./forge.ts";
-import { transcriptPathFor } from "./spawn-support.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import {
@@ -14,18 +12,17 @@ import {
   workNotYetOnBranch,
 } from "./work-driver-handoff-consolidate.ts";
 import { renderHandoffMarkdown } from "./work-driver-handoff-markdown.ts";
+import { runHandoffOpsDispatch } from "./work-driver-handoff-ops.ts";
 import { postHandoffWithRetry } from "./work-driver-handoff-post-retry.ts";
 import {
+  applyIssueLabelDualTarget,
   captureCommittedWork,
   makeHandoffEmittedEvent,
   parseHandoffOpsReply,
   verifyHandoffLabel,
 } from "./work-driver-handoff-post.ts";
 import { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
-import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
-import { inlineHandoffOpsPrompt } from "./work-driver-prompts-late.ts";
-import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { runWorktreeTeardown } from "./work-driver-worktree-sweep.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
@@ -34,8 +31,6 @@ import type { ExecFn } from "./worktree.ts";
 // (§12 file-size split); re-exported so no consumer's import path changes.
 export { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
 const execp = promisify(exec);
-/** Resolution of the ops handoff dispatch when it outlived its bound. */
-const BOUND_EXCEEDED = Symbol("handoff-bound-exceeded");
 export function handoffDispatchTimeoutMs(): number {
   const env = Number(process.env.PI_ENSEMBLE_HANDOFF_TIMEOUT_MS);
   return Number.isFinite(env) && env > 0 ? env : 8 * 60_000;
@@ -141,86 +136,14 @@ export async function runHandoff(
   // already on disk; ops just runs two `gh` invocations. Bounded by
   // handoffDispatchTimeoutMs() — see there for why a bound is safe here when
   // the deleted per-role caps were not, and why the number is what it is.
-  const dispatch = ctx.dispatchFn ?? dispatchCore;
-  const boundMs = handoffDispatchTimeoutMs();
-  const startedAt = Date.now();
+  // (The dispatch leg itself lives in work-driver-handoff-ops.ts — §12
+  // file-size split; the bound, the write-ahead resume bookkeeping and the
+  // completion / dispatch-failed event construction moved verbatim.)
   const prNumber = state.pipelineState.prNumber;
   const target = prNumber ? `pr #${prNumber}` : `issue #${ctx.issue}`;
-  const prompt = inlineHandoffOpsPrompt(
-    ctx.issue,
-    prNumber,
-    handoffBodyPath,
-    scratchDir(ctx.repoRoot, ctx.issue),
-  );
-  // #573 — derive transcript path BEFORE beginDispatch so crash-resume can
-  // locate the surviving session file. Single dispatch: seq=undefined.
-  const handoffRunId = `handoff:ops:${process.pid}:${startedAt}`;
-  const handoffTranscript = transcriptPathFor("ops", handoffRunId);
-  // #382 — write-ahead: persist the intent to dispatch BEFORE awaiting.
-  const begun = await beginDispatch(
-    ctx.repoRoot,
-    next,
-    "handoff",
-    "ops",
-    "handoff",
-    startedAt,
-    handoffTranscript,
-  );
-  let opsReplyText = "";
-  // Two enforcement points, deliberately: `timeoutMs` makes spawn SIGTERM the
-  // real child so an abandoned handoff agent is not left running, and the race
-  // is what frees the DRIVER. Only the race can be relied on — an injected
-  // dispatchFn, a wedged job wrapper or a child that ignores the signal all
-  // leave the promise pending, which is the shape that cost #626 26 minutes.
-  let boundTimer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const bound = new Promise<typeof BOUND_EXCEEDED>((resolve) => {
-      boundTimer = setTimeout(() => resolve(BOUND_EXCEEDED), boundMs);
-      boundTimer.unref?.();
-    });
-    const res = await Promise.race([
-      dispatch(ctx.pi, { role: "ops", prompt }, { label: "ops:handoff", timeoutMs: boundMs }),
-      bound,
-    ]);
-    next = clearDispatch(next, begun.jobId);
-    if (res === BOUND_EXCEEDED) {
-      trace(`work-driver: handoff ops dispatch exceeded ${boundMs}ms — using in-process gh`);
-      next = appendEvent(next, {
-        kind: "dispatch-failed",
-        step: "handoff",
-        role: "ops",
-        jobId: "unknown",
-        label: "ops:handoff",
-        ms: Date.now() - startedAt,
-        at: Date.now(),
-        // Deliberately NO `killCause`. Nothing was killed — the driver stopped
-        // waiting and took the fallback, and the child may still be running.
-        // Tagging this as a kill would also make it the newest kill in the log,
-        // so `killDetail()` would report the handoff's own bound instead of the
-        // kill that actually ended the cycle — burying the cause under the
-        // report of it. The errorTail below already says what happened.
-        errorTail: `handoff ops dispatch exceeded its ${boundMs}ms bound (PI_ENSEMBLE_HANDOFF_TIMEOUT_MS); the in-process gh fallback posted the comment instead`,
-      });
-    } else {
-      opsReplyText = res.text ?? "";
-      const completionEvent = await buildCompletionEvent(ctx, "handoff", "ops", "ops:handoff", res);
-      next = appendEvent(next, completionEvent);
-    }
-  } catch (err) {
-    trace(`work-driver: handoff ops dispatch threw: ${(err as Error).message}`);
-    next = appendEvent(clearDispatch(next, begun.jobId), {
-      kind: "dispatch-failed",
-      step: "handoff",
-      role: "ops",
-      jobId: "unknown",
-      label: "ops:handoff",
-      ms: Date.now() - startedAt,
-      at: Date.now(),
-      errorTail: (err as Error).message?.slice(-200),
-    });
-  } finally {
-    if (boundTimer) clearTimeout(boundTimer);
-  }
+  const dispatchResult = await runHandoffOpsDispatch(ctx, next, handoffBodyPath);
+  next = dispatchResult.next;
+  const opsReplyText = dispatchResult.opsReplyText;
   // RE-ENTRY DEDUPE (census 2026-09-09): a crash after the comment posted
   // but before the enclosing writeState left the file at "running"; resume
   // re-entered handoff and posted a SECOND comment. A prior handoff-emitted
@@ -239,6 +162,12 @@ export async function runHandoff(
   let commentUrl = parseHandoffCommentUrl(opsReplyText) ?? priorHandoffCommentUrl(next.eventLog);
   if (parsed.commentUrl && !commentUrl) commentUrl = parsed.commentUrl;
   let labelApplied = false;
+  // #798 — per-target label state. When prNumber is set, the driver labels
+  // BOTH the issue (the entry-gate target) and the PR (the review target);
+  // each is verified independently. When prNumber is absent, only the issue
+  // is targeted and issueLabelApplied mirrors labelApplied.
+  let issueLabelApplied: boolean | undefined;
+  let prLabelApplied: boolean | undefined;
   // #775 — provenance of the recorded state. "dispatch" is asserted only
   // when the driver verified it (URL parsed or label read-back succeeded);
   // a reply whose state could not be verified records no provenance.
@@ -258,30 +187,31 @@ export async function runHandoff(
     );
   {
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
-    const objType = prNumber ? "pr" : "issue";
     if (commentUrl) delivery = "dispatch";
     if (forge) {
-      const verified = await verifyHandoffLabel(forge, objType, prNumber ?? ctx.issue);
-      if (verified) {
-        labelApplied = true;
-        if (!delivery) delivery = "dispatch";
+      if (prNumber) {
+        // #798 — option (a): verify the label on BOTH the issue (the entry-
+        // gate target) and the PR (the review target). Each is independent;
+        // a partial success records which target verified.
+        const issueVerified = await verifyHandoffLabel(forge, "issue", ctx.issue);
+        const prVerified = await verifyHandoffLabel(forge, "pr", prNumber);
+        issueLabelApplied = issueVerified;
+        prLabelApplied = prVerified;
+        labelApplied = issueVerified && prVerified;
+        if (labelApplied && !delivery) delivery = "dispatch";
+      } else {
+        const verified = await verifyHandoffLabel(forge, "issue", ctx.issue);
+        issueLabelApplied = verified;
+        labelApplied = verified;
+        if (verified && !delivery) delivery = "dispatch";
       }
     }
   }
 
-  // #775 — determine if the dispatch failed (threw or timed out) by checking
-  // for a dispatch-failed event in the event log that was just appended.
-  // A healthy dispatch (completion event, no failure) does NOT fail.
-
-  // PR5 in-process fallback (item 3, #674 — with retry). When the ops
-  // dispatch failed OR the commentUrl didn't parse out, the driver itself
-  // posts via the forge adapter — the body file is already on disk and no
-  // LLM is needed for two mechanical CLI invocations. A transient API
-  // hiccup (rate limit, 5xx, network blip) no longer immediately becomes a
-  // manual-recovery task: postHandoffWithRetry waits out a jittered linear
-  // backoff and re-issues the failed call (up to 3 attempts total), and
-  // only after retries are exhausted does the in-chat HANDOFF DISPATCH
-  // INCOMPLETE banner surface the verbatim manual gh commands.
+  // In-process fallback (with retry). When the ops dispatch failed OR the
+  // commentUrl didn't parse out, the driver itself posts via the forge
+  // adapter. postHandoffWithRetry retries with backoff; only after retries
+  // are exhausted does the HANDOFF DISPATCH INCOMPLETE banner surface.
   if (!commentUrl || !labelApplied) {
     const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
     try {
@@ -318,6 +248,9 @@ export async function runHandoff(
           targetId: targetId,
           objType,
           needsComment: !commentUrl,
+          // #798 — the comment target is the PR (when prNumber set), but the
+          // label must land on BOTH. The retry handles the comment target's
+          // label; the issue label is applied separately below.
           needsLabel: !labelApplied,
           existingComments,
         });
@@ -327,7 +260,23 @@ export async function runHandoff(
           // also failed, this is the fallback's provenance.
           if (dispatchFailed && !delivery) delivery = "fallback";
         }
-        if (posted.labelApplied) {
+        if (prNumber) {
+          // #798 — dual-target: re-verify both independently after the retry.
+          const issueVerified = await verifyHandoffLabel(forge, "issue", ctx.issue);
+          const prVerified = posted.labelApplied
+            ? await verifyHandoffLabel(forge, "pr", prNumber)
+            : (prLabelApplied ?? false);
+          if (issueVerified) {
+            issueLabelApplied = true;
+            if (dispatchFailed) delivery = "fallback";
+          }
+          if (prVerified) {
+            prLabelApplied = true;
+            if (dispatchFailed) delivery = "fallback";
+          }
+          labelApplied = issueVerified && prVerified;
+        } else if (posted.labelApplied) {
+          issueLabelApplied = true;
           labelApplied = true;
           if (dispatchFailed) delivery = "fallback";
         }
@@ -336,6 +285,22 @@ export async function runHandoff(
       trace(
         `work-driver: in-process forge fallback failed: ${(err as Error).message?.slice(0, 200)}`,
       );
+    }
+  }
+  // #798 — when prNumber is set, the fallback above applies the label to the
+  // comment target (PR) via postHandoffWithRetry. The ISSUE label is applied
+  // separately here because the retry only targets one object.
+  if (prNumber && !issueLabelApplied) {
+    const forge = ctx.forge ?? (await handoffForge(ctx.repoRoot));
+    if (forge) {
+      // #798 — the helper APPLIES the issue label (its return is the
+      // immediately-following read-back, which can be stale/false when the
+      // server-side write has not settled). The authoritative state is a
+      // FRESH read — never trust the helper's first read for the record.
+      const ok = await applyIssueLabelDualTarget(forge, ctx.issue);
+      const verified = ok || (await verifyHandoffLabel(forge, "issue", ctx.issue));
+      issueLabelApplied = verified;
+      if (verified) labelApplied = true;
     }
   }
   // #674 — carry the consolidation outcome into the handoff-emitted event so the
@@ -362,6 +327,10 @@ export async function runHandoff(
         ? "consolidation infeasible (work remains on its worktree detached HEADs)"
         : undefined,
     delivery,
+    targetType: prNumber ? "pr" : "issue",
+    targetNumber: prNumber ?? ctx.issue,
+    issueLabelApplied,
+    prLabelApplied,
   });
   next = appendEvent(next, emitted);
   // #571 — release the path claim so sibling cycles can proceed.
@@ -370,23 +339,10 @@ export async function runHandoff(
   } catch {
     /* best-effort; handoff must always emit regardless */
   }
-  // Set terminal status from the most recent cap-hit's cap shape:
-  //   - step-failed:<step> or developer-timeout → 'aborted' (the
-  //     halt-cascade router synthesised this; mid-flight failure)
-  //   - any other cap (adversarial-loop, round-cap, wall-clock,
-  //     ci-retry) → 'handoff' (cycle reached handoff via the verdict
-  //     path, not via dispatch-failure)
+  // Terminal status: mid-flight halts (developer-timeout, step-failed:*,
+  // loop-detected, token-budget) → 'aborted'; all other caps → 'handoff'.
   const lastCapHit = [...next.eventLog].reverse().find((e) => e.kind === "cap-hit");
-  // Not a renderer — this only decides `aborted` vs `handoff`. It used to spell
-  // "no cap recorded" as `"adversarial-loop"`, which happened to give the right
-  // answer here (an absent cap is not a mid-flight halt) while seeding the same
-  // fake cap name the renderers were misreporting. Say what is meant instead.
   const capShape = lastCapHit?.kind === "cap-hit" ? lastCapHit.cap : undefined;
-  // #543 F4 — the dispatch-cap kills (loop-detected / token-budget) are
-  // mid-flight halts like developer-timeout: the child was killed by the
-  // harness, not by a review verdict. They route to `aborted` so the
-  // operator sees a mid-flight failure, and the caped-partial-state
-  // checkpoint block (F5) carries the work that was saved.
   const capKilledCap =
     capShape === "loop-detected" || capShape === "token-budget" ? capShape : undefined;
   const isMidFlightHalt =

@@ -186,6 +186,14 @@ export function makeHandoffEmittedEvent(opts: {
   consolidationReason?: string;
   /** #775 — provenance of the recorded comment/label state. */
   delivery?: HandoffDelivery;
+  /** #798 — explicit target object type (where the comment was posted). */
+  targetType?: "issue" | "pr";
+  /** #798 — the number of the target object. */
+  targetNumber?: number;
+  /** #798 — per-target: the issue label was verified on the issue. */
+  issueLabelApplied?: boolean;
+  /** #798 — per-target: the PR label was verified on the PR. */
+  prLabelApplied?: boolean;
 }): Extract<WorkEvent, { kind: "handoff-emitted" }> {
   const { at, commentUrl, labelApplied, handoffBodyPath, delivery } = opts;
   const ev: Extract<WorkEvent, { kind: "handoff-emitted" }> = {
@@ -196,6 +204,10 @@ export function makeHandoffEmittedEvent(opts: {
     handoffBodyPath,
   };
   if (delivery) ev.delivery = delivery;
+  if (opts.targetType) ev.targetType = opts.targetType;
+  if (opts.targetNumber !== undefined) ev.targetNumber = opts.targetNumber;
+  if (opts.issueLabelApplied !== undefined) ev.issueLabelApplied = opts.issueLabelApplied;
+  if (opts.prLabelApplied !== undefined) ev.prLabelApplied = opts.prLabelApplied;
   if (opts.consolidated) {
     ev.consolidated = true;
     ev.consolidatedBranch = opts.consolidatedBranch;
@@ -204,6 +216,28 @@ export function makeHandoffEmittedEvent(opts: {
     ev.consolidationReason = opts.consolidationReason;
   }
   return ev;
+}
+
+/**
+ * #798 — apply the issue label in the dual-target (option a) path.
+ *
+ * When `prNumber` is set, `postHandoffWithRetry` labels the comment target
+ * (the PR). The issue label is applied here, separately, because the retry
+ * targets a single object. This is idempotent (`gh --add-label`) and
+ * verified independently via `verifyHandoffLabel`. Returns `true` when the
+ * label was successfully applied AND verified on the issue.
+ */
+export async function applyIssueLabelDualTarget(forge: Forge, issue: number): Promise<boolean> {
+  try {
+    await forge.labelCreate(HANDOFF_LABEL, "FFAA00").catch(() => {});
+    await forge.labelAdd("issue", issue, HANDOFF_LABEL);
+    return await verifyHandoffLabel(forge, "issue", issue);
+  } catch (err) {
+    trace(
+      `work-driver: issue label fallback failed (#798 dual-target): ${(err as Error).message?.slice(0, 160)}`,
+    );
+    return false;
+  }
 }
 
 /** #674 — a committed-worktree entry inside a handoff snapshot. */

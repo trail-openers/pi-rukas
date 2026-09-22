@@ -79,6 +79,16 @@ export function renderHandoffUserMessage(
   const snap = ps.handoffSnapshot;
   const commentUrl = handoffEvt?.kind === "handoff-emitted" ? handoffEvt.commentUrl : undefined;
   const labelApplied = handoffEvt?.kind === "handoff-emitted" ? handoffEvt.labelApplied : false;
+  // #798 — per-target label state (option a: the label lands on both the
+  // issue and the PR when a PR exists). Pre-#798 events carry the single
+  // `labelApplied` only; `targetType`/`targetNumber` name where the comment
+  // (and the label, pre-#798) landed without a URL parse.
+  const issueLabelApplied =
+    handoffEvt?.kind === "handoff-emitted" ? handoffEvt.issueLabelApplied : undefined;
+  const prLabelApplied =
+    handoffEvt?.kind === "handoff-emitted" ? handoffEvt.prLabelApplied : undefined;
+  const targetType = handoffEvt?.kind === "handoff-emitted" ? handoffEvt.targetType : undefined;
+  const targetNumber = handoffEvt?.kind === "handoff-emitted" ? handoffEvt.targetNumber : undefined;
   const handoffBodyPath =
     (handoffEvt?.kind === "handoff-emitted" ? handoffEvt.handoffBodyPath : undefined) ??
     `${scratchDirAbs}/handoff-comment.md`;
@@ -229,11 +239,24 @@ export function renderHandoffUserMessage(
     );
   }
   if (commentUrl) {
-    lines.push(
-      "",
-      `GitHub handoff: ${commentUrl}`,
-      `  label ${labelApplied ? "applied to" : "NOT applied to"} ${target}`,
-    );
+    // #798 — state WHERE the artefacts landed explicitly. The label is on
+    // both objects (issue + PR) when a PR exists; the issue label is what the
+    // entry gate reads, so name it when the state is known.
+    const labelPart =
+      prLabelApplied !== undefined || issueLabelApplied !== undefined
+        ? [
+            `  label ${labelApplied ? "applied" : "NOT fully applied"}:`,
+            `    issue #${issue}: ${issueLabelApplied === true ? "applied" : "NOT verified"}`,
+            ...(prLabelApplied !== undefined
+              ? [`    PR #${ps.prNumber}: ${prLabelApplied === true ? "applied" : "NOT verified"}`]
+              : []),
+          ]
+        : [`  label ${labelApplied ? "applied to" : "NOT applied to"} ${target}`];
+    const targetPart =
+      targetType && targetNumber !== undefined
+        ? ["", `  comment target: ${targetType} #${targetNumber}`]
+        : [];
+    lines.push("", `GitHub handoff: ${commentUrl}`, ...labelPart, ...targetPart);
   }
   lines.push(
     "",
