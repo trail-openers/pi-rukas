@@ -172,6 +172,16 @@ export function explainCap(
           : "";
       return `${base}${skipped} All the work is done and pushed — only the merge is held.`;
     }
+    case "repo-root-residue": {
+      const hit = [...state.eventLog]
+        .reverse()
+        .find(
+          (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
+            e.kind === "cap-hit" && e.cap === "repo-root-residue",
+        );
+      const paths = hit?.evidence ?? "(no detail recorded)";
+      return `the branch step found uncommitted work at the repo root BEFORE any development dispatch: ${paths}. This is residue from a previous cycle or the operator's own in-progress work — NOT a defect in this cycle's diff. The driver preserved it (nothing was deleted or stashed) and halted before paying for a develop dispatch that would only fail at the verification gate roughly 50 minutes later. Inspect the paths (\`git status\` at the repo root), clear them (commit, move, or add to .gitignore), and re-run the cycle.`;
+    }
     case "cross-group-conflict": {
       const hit = [...state.eventLog]
         .reverse()

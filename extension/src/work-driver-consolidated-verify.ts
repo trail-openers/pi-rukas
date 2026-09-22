@@ -10,6 +10,7 @@
 // scratch ref would break the next integration's dirty-preflight).
 
 import { trace } from "./trace.ts";
+import { isDriverManagedDirtLine } from "./work-driver-branch-residue.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.js";
 import type { DriverContext } from "./work-driver-context.js";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
@@ -93,13 +94,16 @@ export async function runConsolidatedVerify(
     // onto the probe branch. Refuse to consolidate rather than guess.
     // `.worktrees/` and `.pi/` scaffolding are not dirt; untracked `??` IS
     // dirt (see the integrate() preflight comment for the reasoning).
-    const { stdout: rootStatus } = await execFn("git status --porcelain", {
+    // #746 AC5 — `-uall`, same as the branch-step early gate's read
+    // (readRepoRootDirt): plain --porcelain collapses an untracked
+    // directory tree to its top-level entry, so an operator would see a
+    // bare `?? extension/` and have to go hunting; -uall names the
+    // exact files, which is what the dirty-root message is for.
+    const { stdout: rootStatus } = await execFn("git status --porcelain -uall", {
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
     });
-    const rootDirt = rootStatus
-      .split("\n")
-      .filter((l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l) && !/^..\s+"?\.pi\//.test(l));
+    const rootDirt = rootStatus.split("\n").filter((l) => l.trim() && !isDriverManagedDirtLine(l));
     if (rootDirt.length > 0) {
       trace("work-driver: consolidated verify — repoRoot dirty, refusing to consolidate");
       return {

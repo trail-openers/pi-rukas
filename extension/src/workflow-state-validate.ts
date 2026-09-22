@@ -149,6 +149,12 @@ const CAP_HIT_FIXED_LITERALS: readonly unknown[] = [
   // live parked cycle would halt on "unrecognised value" and tell the
   // operator to rm the very record this cap exists to create.
   "deferred-creation:develop",
+  // #746 task-b — the branch step's early dirty-root block: a stray
+  // untracked/modified file at repoRoot (outside the driver-managed
+  // exclusion set) present BEFORE any develop dispatch. A deliberate park
+  // terminalized as a handoff (not `step-failed:` — that prefix would read
+  // as a mid-flight crash); the paths are preserved, never mutated.
+  "repo-root-residue",
   "intent-park",
   "awaiting-human-merge",
   "lens-diff-unreadable",
