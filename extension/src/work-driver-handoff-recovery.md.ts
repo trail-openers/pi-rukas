@@ -28,10 +28,14 @@ import {
 
 const EMPTY_STEP: RecoveryStep = { section: "review-incomplete", comment: [], lines: [] };
 
-export function recoveryCommandsMarkdown(state: WorkState, forge: ForgeType = "github"): string[] {
+export function recoveryCommandsMarkdown(
+  state: WorkState,
+  forge: ForgeType = "github",
+  mergeSubject?: string,
+): string[] {
   const ps = state.pipelineState;
   const issue = state.issue;
-  const { cap, steps } = recoveryStepsForCap(state, forge ?? "github");
+  const { cap, steps } = recoveryStepsForCap(state, forge ?? "github", mergeSubject);
   const reason = (ps.normalisedSpec?.parkReason ?? "underspecified") as ParkReason;
   const lines: string[] = ["### Concrete recovery commands", "", "Pick one:", "", "```bash"];
 

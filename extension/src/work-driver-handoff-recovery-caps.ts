@@ -20,12 +20,14 @@
 
 import type { ForgeType } from "./forge-detect.ts";
 import { dependencyLeaves } from "./work-driver-cherry-pick.ts";
+import { consolidatedMergeStep } from "./work-driver-handoff-merge-step.ts";
 import {
   CONSOLIDATE_APPLY,
   type RecoverySection,
   type RecoveryStep,
 } from "./work-driver-handoff-recovery.ts";
 import { mergeHoldGrantAction } from "./work-driver-merge-authority.ts";
+import { isConsolidatedPark } from "./work-driver-merge-subject.ts";
 import {
   type WorkEvent,
   type WorkState,
@@ -34,29 +36,18 @@ import {
 
 type Cap = Extract<WorkEvent, { kind: "cap-hit" }>["cap"];
 
-/**
- * #612 — forge-appropriate recovery commands. The shared decision renders
- * the LITERAL command strings the operator is expected to run; those strings
- * used to hard-code `gh`, which is the wrong CLI for a repo that lives on
- * GitLab. The builders below pick the spelling per forge:
- *
- *   - `github` — today's exact strings, byte-for-byte (the zero-regression
- *     path; every existing rendering test pins these verbatim).
- *   - `gitlab` — the glab equivalent of the same operator step.
- *
- * `unknown` deliberately falls back to the GitHub strings: the recovery
- * block is advisory text for a human, not an executed command, and an
- * operator on an unrecognised host is better served by the familiar spelling
- * (they already know their CLI may not match) than by a refusal. The git /
- * rm / cat / `#` lines are forge-agnostic and shared by both branches.
- */
+/** #612 — forge-appropriate recovery commands: `github` byte-for-byte, `gitlab` glab equivalent, `unknown` falls back to github (advisory text). The git / rm / cat / `#` lines are forge-agnostic. */
 function forgeLines(forge: ForgeType, github: string[], gitlab: string[]): string[] {
   return forge === "gitlab" ? gitlab : github;
 }
 
+// #810 — the step-3 recovery merge command (consolidatedMergeStep) is in
+// work-driver-handoff-merge-step.ts; re-exported here for importers.
+
 export function recoveryStepsForCap(
   state: WorkState,
   forge: ForgeType = "github",
+  mergeSubject?: string,
 ): {
   cap: Cap | undefined;
   section: RecoverySection | undefined;
@@ -68,18 +59,11 @@ export function recoveryStepsForCap(
   const cap: Cap | undefined = capHit ? capHit.cap : undefined;
   const steps: RecoveryStep[] = [];
 
-  // #674 — worktree-aware recovery. When the cycle's work lives in
-  // committed work on detached-HEAD worktrees (the shape of the five parked
-  // cycles #645/#649/#659/#660/#664), the generic `git -C <repoRoot>
-  // status` / `add -p` / `push` block is provably wrong: the main checkout
-  // is empty, and the work is on the worktree detached HEADs. The predicate
-  // is the state — `handoffSnapshot.committedWork` non-empty — NOT the cap
-  // (the ticket explicitly scopes the fix to the handoff/recovery path, not
-  // to routing develop-parks to a different cap). When consolidation
-  // succeeded (the `handoff-consolidated` event is present), the branch
-  // genuinely contains the work and the printed `push` becomes true; when
-  // consolidation was infeasible, the per-worktree paths + HEAD SHAs +
-  // working cherry-pick commands are the honest recovery.
+  // #674 — worktree-aware recovery. The predicate is the state
+  // (`handoffSnapshot.committedWork` non-empty), NOT the cap. When
+  // consolidation succeeded the branch contains the work; when it was
+  // infeasible the per-worktree paths + HEAD SHAs + cherry-pick commands
+  // are the honest recovery.
   const committedWork = ps.handoffSnapshot?.committedWork;
   if (cap !== undefined && committedWork && committedWork.length > 0 && ps.branchName) {
     const consEvent = [...state.eventLog]
@@ -106,9 +90,19 @@ export function recoveryStepsForCap(
           ],
           lines: [`git push -u origin ${ps.branchName}`],
         },
+        // #810 — the subject is the PR title, read live by the caller
+        // (mergeSubjectForState) and threaded in; for a parked cycle whose
+        // consolidated branch holds a single commit, GitHub's squash would
+        // otherwise use the driver's `chore(handoff):` commit subject.
+        // Absent → the step degrades to the pre-#810 form (no subject flag).
+        consolidatedMergeStep(
+          forge,
+          ps.prNumber,
+          isConsolidatedPark(state) ? mergeSubject : undefined,
+        ),
         {
           section: "worktree-work-consolidated",
-          comment: ["3. Or abandon the cycle and start over:"],
+          comment: ["4. Or abandon the cycle and start over:"],
           lines: [`rm .pi/work-state/${issue}.json`, `/work ${issue} --restart`],
         },
       );
