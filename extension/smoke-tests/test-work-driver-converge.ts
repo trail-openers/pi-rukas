@@ -401,7 +401,7 @@ async function runConvergeCycle(
       [
         { id: "d1", description: "a", paths: ["src/a.ts"] },
         { id: "d2", description: "b", paths: ["src/b.ts"] },
-        { id: "d3", description: "c", paths: ["n/a"], noDiff: true, noDiffEvidence: "gh api -X PATCH" },
+        { id: "d3", description: "c", paths: [], noDiff: true, noDiffEvidence: "gh api -X PATCH" },
       ],
       new Set(["src/a.ts", "src/b.ts"]),
     );
@@ -438,7 +438,7 @@ async function runConvergeCycle(
             intent: "test", deliverables: [
               { id: "d1", description: "a", paths: ["src/a.ts"] },
               { id: "d2", description: "b", paths: ["src/b.ts"] },
-              { id: "d3", description: "c", paths: ["n/a"], noDiff: true, noDiffEvidence: "gh api" },
+              { id: "d3", description: "c", paths: [], noDiff: true, noDiffEvidence: "gh api" },
             ],
             acceptanceCriteria: ["x"], outOfScope: [], assumptions: [],
             openQuestions: [], evidence: [], verdict: "proceed", rationale: "test",
