@@ -242,6 +242,10 @@ export async function consolidateWorktreesToBranch(
           maxBuffer: 256 * 1024,
         });
       }
+      // #794 — own-range selection: a stacked workstream's range is
+      // measured against its dependency's tip (`workstreamBaseShas`), so
+      // ancestor commits are not re-picked on top of their content (the
+      // #775 replay). A workstream with no entry falls back to `ps.baseSha`.
       const orch = await orchestrateCherryPick(execFn, {
         repoRoot: ctx.repoRoot,
         branchName,
@@ -249,6 +253,7 @@ export async function consolidateWorktreesToBranch(
         baseSha: ps.baseSha,
         scratchDir: ctx.scratchDir,
         requireAllNonEmpty: false,
+        pickScope: { globalBaseSha: ps.baseSha, workstreamBaseShas: ps.workstreamBaseShas },
       });
       if (orch._conflict === "conflict") {
         // #750 — the verified restore (cherry-pick.ts already attempted

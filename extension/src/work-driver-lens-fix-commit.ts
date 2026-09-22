@@ -158,6 +158,11 @@ export async function landCommittedFix(
         cwd: ctx.repoRoot,
         maxBuffer: 256 * 1024,
       });
+      // #794 — own-range selection: a lens-fix tree may sit on top of a
+      // stacked workstream's commits (a dependent worktree based on its
+      // dependency's tip), so the range is measured against the tree's
+      // effective base (`workstreamBaseShas`, falling back to `ps.baseSha`)
+      // instead of replaying every commit ahead of the cycle base.
       const orch = await orchestrateCherryPick(execFn, {
         repoRoot: ctx.repoRoot,
         branchName,
@@ -165,6 +170,7 @@ export async function landCommittedFix(
         baseSha: ps.baseSha,
         scratchDir: scratch,
         requireAllNonEmpty: false,
+        pickScope: { globalBaseSha: ps.baseSha, workstreamBaseShas: ps.workstreamBaseShas },
       });
       const { stdout: stagedOut } = await execFn("git diff --cached --name-only", {
         cwd: ctx.repoRoot,

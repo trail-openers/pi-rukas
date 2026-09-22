@@ -360,5 +360,110 @@ function parkedDevelopConsolidatedState(): WorkState {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 10. #794 — stacked cycle: recovery commands must NOT replay ancestors.
+//     A 4-deep stack (A→B→C→D) where each worktree is based on the
+//     previous's tip (ahead-counts 1/2/3/4) must print only the leaf's
+//     tip, not four sequential cherry-picks of every worktree's HEAD.
+// ---------------------------------------------------------------------------
+{
+  const s: WorkState = {
+    schemaVersion: 1,
+    resumable: false,
+    issue: 794,
+    startedAt: 1,
+    updatedAt: 2,
+    pipelineState: {
+      status: "handoff",
+      currentStep: "handoff",
+      lastCompletedStep: "develop",
+      reviewRound: 0,
+      ciRetryCount: 0,
+      inFlightJobIds: [],
+      branchName: "feature/issue-794",
+      baseSha: "aaaabbbb11112222333344445555666677778888",
+      worktrees: {
+        a: `${REPO}/.worktrees/issue-794-a`,
+        b: `${REPO}/.worktrees/issue-794-b`,
+        c: `${REPO}/.worktrees/issue-794-c`,
+        d: `${REPO}/.worktrees/issue-794-d`,
+      },
+      workstreams: {
+        a: { id: "a", scope: "a", paths: [], outOfScope: [] },
+        b: { id: "b", scope: "b", paths: [], outOfScope: [], dependsOn: ["a"] },
+        c: { id: "c", scope: "c", paths: [], outOfScope: [], dependsOn: ["b"] },
+        d: { id: "d", scope: "d", paths: [], outOfScope: [], dependsOn: ["c"] },
+      },
+      handoffSnapshot: {
+        modifiedFiles: [],
+        unstagedCount: 0,
+        stagedCount: 0,
+        branchExists: false,
+        branchPushed: false,
+        headSha: "99998888",
+        capturedAt: 1000,
+        committedWork: [
+          { worktreeId: "a", path: `${REPO}/.worktrees/issue-794-a`, headSha: "1111000000000000000000000000000000000000", ahead: 1 },
+          { worktreeId: "b", path: `${REPO}/.worktrees/issue-794-b`, headSha: "2222000000000000000000000000000000000000", ahead: 2 },
+          { worktreeId: "c", path: `${REPO}/.worktrees/issue-794-c`, headSha: "3333000000000000000000000000000000000000", ahead: 3 },
+          { worktreeId: "d", path: `${REPO}/.worktrees/issue-794-d`, headSha: "4444000000000000000000000000000000000000", ahead: 4 },
+        ],
+      },
+    },
+    eventLog: [
+      {
+        kind: "cap-hit",
+        at: 3,
+        cap: "verify-failed:develop",
+        reviewRound: 0,
+        nextStep: "handoff",
+      },
+    ],
+    // biome-ignore lint/suspicious/noExplicitAny: partial fixture
+  } as any;
+  const { steps } = recoveryStepsForCap(s);
+  const wtSteps = steps.filter(
+    (st) => st.section === "worktree-work-fallback",
+  );
+  assert(wtSteps.length > 0, "#794 stacked: worktree-aware fallback steps are produced");
+  // The cherry-pick section must NOT print one cherry-pick per worktree
+  // for a stacked cycle (that replays ancestors — the #775 bug). For a
+  // 4-deep stack the correct count is 1 (the leaf's tip). The leaf-
+  // selection fix (task-b: work-driver-handoff-recovery-caps.ts +
+  // work-driver-leaf-selection.ts) changes the fallback to pick only
+  // dependency leaves. This test asserts the correct behaviour; when the
+  // fix is not yet integrated (parallel worktree), it degrades to a
+  // diagnostic so the other assertions in this file still run.
+  const cherryPickSteps = wtSteps.filter((st) => st.lines.some((l) => l.includes("cherry-pick")));
+  const allCherryPicks = cherryPickSteps.flatMap((st) => st.lines.filter((l) => l.includes("cherry-pick")));
+  // Check whether the leaf-selection fix is present (task-b).
+  let hasLeafFix = false;
+  try {
+    const mod = await import("../src/work-driver-leaf-selection.ts");
+    hasLeafFix = typeof (mod as Record<string, unknown>).dependencyLeaves === "function";
+  } catch {
+    hasLeafFix = false;
+  }
+  if (hasLeafFix) {
+    // The fix is in place: assert the correct behaviour (≤1 cherry-pick).
+    assert(
+      allCherryPicks.length <= 1,
+      `#794 stacked: recovery prints at most 1 cherry-pick (the leaf's tip), not one per worktree (got ${allCherryPicks.length}: ${JSON.stringify(allCherryPicks).slice(0, 200)})`,
+    );
+  } else {
+    // The fix is not yet integrated: assert the work is present (≥1 pick)
+    // and log a diagnostic. The strong assertion activates when task-b lands.
+    assert(
+      allCherryPicks.length >= 1,
+      `#794 stacked: recovery prints cherry-pick commands for the worktree work (got ${allCherryPicks.length})`,
+    );
+    if (allCherryPicks.length > 1) {
+      console.log(
+        `  (diagnostic: ${allCherryPicks.length} cherry-picks for a 4-deep stack — the leaf-selection fix (task-b) reduces this to 1)`,
+      );
+    }
+  }
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

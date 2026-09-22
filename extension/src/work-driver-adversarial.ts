@@ -38,7 +38,7 @@ import type { ExecFn } from "./worktree.ts";
 
 const execp = promisify(exec);
 
-/** #287 Part C — re-integrate a lens-fix made in a worktree. See #654 task-c. */
+/** #287 Part C — re-integrate a lens-fix made in a worktree (#654 task-c). */
 async function integrateLensFix(
   execFn: ExecFn,
   ctx: DriverContext,
@@ -53,6 +53,8 @@ async function integrateLensFix(
       repoRoot: ctx.repoRoot,
       branchName,
       worktrees,
+      // #794 — own-range selection (stacked workstreams: see workstreamBaseShas).
+      workstreamBaseShas: ps.workstreamBaseShas,
       scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
       commitTitle: `fix(lens): round ${round} review findings`,
       commitBody: `Addresses six-pass review findings from round ${round}.`,
@@ -67,6 +69,8 @@ async function integrateLensFix(
           repoRoot: ctx.repoRoot,
           branchName,
           worktrees,
+          // #794 — same pick scope as the first pass above.
+          workstreamBaseShas: ps.workstreamBaseShas,
           scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
           commitTitle: `fix(lens): round ${round} review findings`,
           commitBody: `Addresses six-pass review findings from round ${round}.`,
@@ -94,10 +98,7 @@ async function integrateLensFix(
   return { committed: true, pushed: true };
 }
 
-/**
- * #749/#797 — committed-work-aware classification for the `!result.committed`
- * branch. Returns the post-handling state, or null to proceed.
- */
+/** #749/#797 — committed-work classification for the `!result.committed` branch. */
 async function handleNoCommittedFix(
   execFn: ExecFn,
   ctx: DriverContext,
