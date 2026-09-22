@@ -188,14 +188,20 @@ function isStringArray(v: unknown): v is string[] {
 function isDeliverableArray(v: unknown): v is SpecDeliverable[] {
   return (
     Array.isArray(v) &&
-    v.every(
-      (d) =>
-        d !== null &&
-        typeof d === "object" &&
-        typeof (d as SpecDeliverable).id === "string" &&
-        typeof (d as SpecDeliverable).description === "string" &&
-        isStringArray((d as SpecDeliverable).paths),
-    )
+    v.every((d) => {
+      if (d === null || typeof d !== "object") return false;
+      const dd = d as SpecDeliverable & Record<string, unknown>;
+      if (typeof dd.id !== "string" || typeof dd.description !== "string") return false;
+      if (!isStringArray(dd.paths)) return false;
+      // #792 — the no-diff marker fields, when present, must be of the
+      // expected types. A malformed marker (e.g. `noDiff: "true"` as a
+      // string) is a malformed element and returns false so the reader
+      // degrades to the prose-only path rather than carrying a
+      // half-validated spec into the driver.
+      if (dd.noDiff !== undefined && typeof dd.noDiff !== "boolean") return false;
+      if (dd.noDiffEvidence !== undefined && typeof dd.noDiffEvidence !== "string") return false;
+      return true;
+    })
   );
 }
 

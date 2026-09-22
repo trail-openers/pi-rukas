@@ -173,6 +173,7 @@ function intentResolutionBlock(issues: number[]): string {
     "",
     "### Deliverables",
     "- <id>: <what to build> [paths: src/foo.ts, src/bar.ts]",
+    "- <id>: <what to do> [no-diff: <evidence: the command, API endpoint, or settings URL>]   ← ONLY for work that produces NO code diff by design (repo settings toggles, an operator decision, a manual verification step, external service configuration)",
     "",
     "### Acceptance criteria",
     "- <testable outcome>",
@@ -193,6 +194,10 @@ function intentResolutionBlock(issues: number[]): string {
     "Then a `## Rationale` section: two or three sentences on why you reached that verdict. On a park this is what the operator reads.",
     "",
     "Deliverables are the units of work, NOT the acceptance criteria — one per separable thing to build. If the issue enumerates them, carry them across; if it does not, derive them.",
+    "",
+    "A deliverable that cannot produce a code diff by design (e.g. a GitHub repo settings toggle, an operator decision, a manual verification step, or external service configuration) gets a `[no-diff: <evidence>]` marker INSTEAD of `[paths: ...]`, where <evidence> is the command, API endpoint, or settings URL that proves it was done. The driver skips the diff check for marked deliverables and surfaces them as operator actions in the PR body — but the marker is honoured ONLY when the evidence string is non-empty, and ONLY when the deliverable declares no code paths (a deliverable with both is malformed and the code paths win). Never use the marker to excuse missing code work, and never write prose like `n/a` into a `[paths: ...]` slot — prose is not a control signal.",
+    "",
+    "A no-diff deliverable is NOT a workstream candidate — it must not appear in the `## Workstreams` block (it has no paths, so it would fail the empty-paths plan-quality check).",
   ].join("\n");
 }
 

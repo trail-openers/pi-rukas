@@ -38,6 +38,7 @@ import {
   planQualityReason,
 } from "./work-driver-plan-helpers.ts";
 import { findPathCollisions, findTestSubjectSplits } from "./work-driver-plan-paths.ts";
+import { planFindingsCount } from "./work-driver-pr-body-definition.ts";
 import { inlinePlanPrompt } from "./work-driver-prompts-early.ts";
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
@@ -133,10 +134,12 @@ export async function runPlan(
   // planned single-workstream issue therefore triggered a corrective
   // re-dispatch essentially every time.
   const spec = next.pipelineState.normalisedSpec;
-  const findingsCount =
-    spec && spec.deliverables.length > 0
-      ? spec.deliverables.length
-      : await countFindingsForCycle(ctx, next);
+  // #792 — count only the deliverables that are expected to produce a diff.
+  // A plan-time no-diff marker (settings toggle, operator action, manual
+  // verification) cannot land in any diff, so it must not feed the
+  // decomposition arithmetic — a 4-code deliverable plan plus one settings
+  // toggle reads as 4, not 5 (the #786 phantom-under-decomposition shape).
+  const findingsCount = spec ? planFindingsCount(spec) : await countFindingsForCycle(ctx, next);
   const reason = planQualityReason(workstreams, findingsCount);
   let redispatched = false;
   if (planQualityEnabled() && reason) {

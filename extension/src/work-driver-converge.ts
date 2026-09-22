@@ -20,6 +20,9 @@
  *   - `partial`      — some but not all declared paths are in the diff
  *   - `absent`       — no declared path is in the diff
  *   - `unmeasurable` — no declared paths (prose deliverable); never blocks
+ *   - `no-diff`      — plan-time marker + evidence: the absence is correct
+ *                      by design (settings toggle, operator action); never
+ *                      blocks, surfaced as an operator action
  *
  * Classification is DETERMINISTIC path presence — zero LLM calls (the
  * issue's stated baseline). A diff file "satisfies" a declared path when
@@ -55,7 +58,7 @@ export function convergeGateEnabled(): boolean {
   return v !== "0" && v !== "false";
 }
 
-export type DeliverableStatus = "implemented" | "partial" | "absent" | "unmeasurable";
+export type DeliverableStatus = "implemented" | "partial" | "absent" | "unmeasurable" | "no-diff";
 
 export interface ConvergeDeliverableResult {
   id: string;
@@ -68,6 +71,12 @@ export interface ConvergeDeliverableResult {
   missing: string[];
   /** One-line, operator-readable reason (rendered in handoff + PR body). */
   reason: string;
+  /**
+   * The evidence string recorded at plan time for a `no-diff` deliverable
+   * (a command to run, an API endpoint, or a settings URL). Surfaced verbatim
+   * in the operator-actions render. `undefined` for all other statuses.
+   */
+  noDiffEvidence?: string;
 }
 
 export interface ConvergeVerdict {
@@ -82,6 +91,15 @@ export interface ConvergeVerdict {
   deliverables: ConvergeDeliverableResult[];
   absent: ConvergeDeliverableResult[];
   partial: ConvergeDeliverableResult[];
+  /**
+   * Deliverables classified `no-diff` — the gate checked and the absence
+   * is correct by design (settings toggle, operator action, etc.). These
+   * are NOT blockers; they are surfaced as operator actions in the
+   * completion report and PR body. Distinct from `unmeasurable` (the gate
+   * cannot check this) and from `absent` (the gate checked and the work
+   * is missing).
+   */
+  noDiff: ConvergeDeliverableResult[];
 }
 
 /**
@@ -185,14 +203,52 @@ export async function readEndOfDevelopDiff(
  * The core classification. Pure over (deliverables, diff-file-set) so the
  * smoke test exercises the exact production predicate with no git at all.
  */
+/**
+ * The deliverable shape accepted by `classifyDeliverables`. Extends the
+ * inline shape with the optional plan-time no-diff marker (issue #792):
+ * `noDiff` flags a deliverable that produces no diff by design, and
+ * `noDiffEvidence` carries the evidence string (command, API endpoint, or
+ * settings URL) that makes the marker actionable. When `noDiff` is true but
+ * `noDiffEvidence` is absent or empty, the marker is NOT honoured — the
+ * deliverable classifies as it would without the marker (absent if it has
+ * paths, unmeasurable if it does not). A contradictory case (both valid code
+ * paths AND a no-diff marker) lets the code paths win: the marker is ignored
+ * and the deliverable is classified by path presence.
+ */
+export interface ClassifyDeliverableInput {
+  id: string;
+  description: string;
+  paths: string[];
+  /** Plan-time marker: this deliverable produces no diff by design. */
+  noDiff?: boolean;
+  /** Evidence string required for the no-diff marker to be honoured. */
+  noDiffEvidence?: string;
+}
+
 export function classifyDeliverables(
-  deliverables: Array<{ id: string; description: string; paths: string[] }>,
+  deliverables: ClassifyDeliverableInput[],
   diffFiles: Set<string>,
 ): ConvergeVerdict {
   const results: ConvergeDeliverableResult[] = deliverables.map((d) => {
     const paths = [
       ...new Set((d.paths ?? []).map(normaliseDeclaredPath).filter((p) => p.length > 0)),
     ];
+
+    // No-diff marker: honoured only when it carries a non-empty evidence
+    // string AND the deliverable has no valid code paths (a contradictory
+    // marker + paths lets the code paths win — deterministic, documented).
+    if (d.noDiff && d.noDiffEvidence && d.noDiffEvidence.trim().length > 0 && paths.length === 0) {
+      return {
+        id: d.id,
+        status: "no-diff",
+        paths,
+        present: [],
+        missing: [],
+        reason: `no diff by design — evidence: ${d.noDiffEvidence.trim()}`,
+        noDiffEvidence: d.noDiffEvidence.trim(),
+      };
+    }
+
     if (paths.length === 0) {
       return {
         id: d.id,
@@ -226,6 +282,7 @@ export function classifyDeliverables(
     deliverables: results,
     absent: results.filter((r) => r.status === "absent"),
     partial: results.filter((r) => r.status === "partial"),
+    noDiff: results.filter((r) => r.status === "no-diff"),
   };
 }
 
@@ -252,6 +309,11 @@ export async function runConvergeGate(
   if (verdict.absent.length > 0) {
     trace(
       `work-driver: converge gate — absent deliverable(s): ${verdict.absent.map((a) => a.id).join(", ")}`,
+    );
+  }
+  if (verdict.noDiff.length > 0) {
+    trace(
+      `work-driver: converge gate — no-diff deliverable(s) (operator actions): ${verdict.noDiff.map((a) => a.id).join(", ")}`,
     );
   }
   return verdict;
