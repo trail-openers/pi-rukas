@@ -17,11 +17,10 @@ import { promisify } from "node:util";
 import { trace } from "./trace.ts";
 import { raiseConsolidationIncompleteCap } from "./work-driver-commit-completeness.ts";
 import {
-  type CommitPrRootInspect,
   type CommitPrRootState,
+  commitPrRootFieldsOf,
   inspectCommitPrRoot,
 } from "./work-driver-commit-inspect.ts";
-import { finalizeCommitPrState } from "./work-driver-commit-pr-events.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
@@ -40,6 +39,7 @@ import {
   clipTitle,
   companionLinesOf,
   fixesLinesOf,
+  operatorActionsSectionOf,
 } from "./work-driver-pr-body-definition.ts";
 import { findOpenPrForBranch } from "./work-driver-pr-preflight.ts";
 import { renderLensFindingsSection } from "./work-driver-pr-sections.ts";
@@ -55,22 +55,11 @@ import type {
   WorkState,
 } from "./workflow-state.ts";
 const execp = promisify(exec);
+import { finalizeCommitPrState } from "./work-driver-commit-pr-events.ts";
+
 // clipTitle (#507) lives with the PR text builders in
 // work-driver-pr-body-definition.ts; re-exported for existing consumers.
 export { clipTitle } from "./work-driver-pr-body-definition.ts";
-/**
- * #500 — the `commitPrRoot` / `commitPrRootError` record fields for both
- * commit-pr paths (mechanized + ops fallback). One builder so the two
- * write sites cannot drift when the record gains a field.
- */
-function commitPrRootFieldsOf(r: CommitPrRootInspect): {
-  commitPrRoot: CommitPrRootState | undefined;
-  commitPrRootError: string | undefined;
-} {
-  return r.ok
-    ? { commitPrRoot: r.state, commitPrRootError: undefined }
-    : { commitPrRoot: undefined, commitPrRootError: r.error };
-}
 
 // #539 — the fallback-cause vocabulary lives ONCE in workflow-state-events.ts
 // (the event type that persists it) and is imported above; re-exported for
@@ -232,6 +221,10 @@ export async function mechanizedCommitPr(
     // they may as well not exist.
     const assumptionsBlock = assumptionsBlockOf(ps.normalisedSpec);
     const carriedFindings = carriedFindingsSectionOf(state.eventLog);
+    // #792 — no-diff deliverables (settings toggles, operator actions) must
+    // surface as a DISTINCT PR-body section, not vanish from the record and
+    // not be misrendered under the assumptions heading.
+    const operatorActions = operatorActionsSectionOf(ps.normalisedSpec);
     const prBody = [
       "Automated by pi-rukas /work driver (mechanized commit-pr).",
       "",
@@ -240,6 +233,7 @@ export async function mechanizedCommitPr(
       ...workstreamLines,
       assumptionsBlock,
       carriedFindings,
+      operatorActions,
       renderLensFindingsSection(state.eventLog),
     ]
       .filter((l) => l !== "")
