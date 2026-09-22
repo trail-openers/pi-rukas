@@ -24,6 +24,7 @@ import {
 import type { DriverContext } from "./work-driver-context.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
+import { deriveConsolidationSubject } from "./work-driver-handoff-subject.ts";
 import {
   type IntegrateResult,
   cachedIssueTitle,
@@ -31,8 +32,7 @@ import {
   withIntegrationLock,
 } from "./work-driver-integrate.ts";
 import { renderAssumptions } from "./work-driver-intent.ts";
-import { parsePrNumber } from "./work-driver-merged.ts";
-import { runSingleDispatch } from "./work-driver-merged.ts";
+import { parsePrNumber, runSingleDispatch } from "./work-driver-merged.ts";
 import {
   assumptionsBlockOf,
   carriedFindingsSectionOf,
@@ -55,7 +55,10 @@ import type {
   WorkState,
 } from "./workflow-state.ts";
 const execp = promisify(exec);
-import { finalizeCommitPrState } from "./work-driver-commit-pr-events.ts";
+import {
+  finalizeCommitPrState,
+  runCommitPrPostDispatchGates,
+} from "./work-driver-commit-pr-events.ts";
 
 // clipTitle (#507) lives with the PR text builders in
 // work-driver-pr-body-definition.ts; re-exported for existing consumers.
@@ -70,6 +73,39 @@ export type { CommitPrFallbackCause } from "./workflow-state-events.ts";
 function causeFromIntegrateFailure(res: IntegrateResult): CommitPrFallbackCause | undefined {
   if (res.ok) return undefined;
   return res.failure === "dirty-repoRoot" ? "dirty-repoRoot" : "other";
+}
+
+/**
+ * #818 — the commit-pr PR title and commit title, always a valid
+ * conventional-commit subject.
+ *
+ * Derives via `deriveConsolidationSubject` (the single shared parser — the
+ * handoff consolidation path derives through the same helper, so the two
+ * cannot disagree) from the cached issue title, then the LIVE forge issue
+ * title (the #810 pattern in work-driver-handoff-consolidate.ts), then an
+ * honest `chore(work): …`. `implement issue #N` is removed: it is not a
+ * conventional subject, release-please drops it, and it is exactly what
+ * #771/#809 landed as. Derivation runs BEFORE clipping so the `type(scope):`
+ * prefix can never be cut off.
+ */
+export async function deriveCommitPrTitle(
+  state: WorkState,
+  ctx: Pick<DriverContext, "repoRoot" | "issue">,
+  execFn: (cmd: string, o?: { cwd?: string; maxBuffer?: number }) => Promise<{ stdout: string }>,
+): Promise<string> {
+  const from = async (rawTitle: string | undefined): Promise<string | undefined> =>
+    rawTitle ? deriveConsolidationSubject(rawTitle) : undefined;
+  const cached = await from(await cachedIssueTitle(state));
+  if (cached) return clipTitle(cached, 64);
+  let live: string | undefined;
+  try {
+    const forge = await forgeForCycle(ctx, execFn);
+    if (forge) live = await from((await forge.issueView(ctx.issue)).title);
+  } catch {
+    live = undefined;
+  }
+  if (live) return clipTitle(live, 64);
+  return clipTitle(`chore(work): resolve issue #${ctx.issue}`, 64);
 }
 /** Wall-clock for the verify run against the consolidated tree (FAST suite).
  * Exists to catch "the combination does not build". Default 15 min. */
@@ -140,11 +176,9 @@ export async function mechanizedCommitPr(
       };
       return { ok: true, state: next };
     }
-    const rawTitle = await cachedIssueTitle(state);
-    const title =
-      rawTitle !== null && rawTitle !== undefined
-        ? clipTitle(rawTitle, 64)
-        : `implement issue #${ctx.issue}`;
+    // #818 — the PR title and the commit title are the SAME conventional
+    // subject, derived from the issue (never `implement issue #N`).
+    const title = await deriveCommitPrTitle(state, ctx, execFn);
     const fixesLines = issues.map((n) => `Fixes #${n}`);
     const companionLines = (ps.droppedIssues ?? []).map(
       (d) =>
@@ -322,6 +356,7 @@ async function runCommitPrLocked(
 ): Promise<WorkState> {
   let next: WorkState | undefined;
   let preDispatch = state;
+  const execFn = ctx.verifyExecFn ?? execp;
   // PR19 — mechanized commit-pr. The LLM ops dispatch remains as fallback
   // for judgmental recovery (apply conflict, push rejection).
   {
@@ -366,7 +401,11 @@ async function runCommitPrLocked(
     }
   }
   if (next === undefined) {
-    const issueTitle = await cachedIssueTitle(preDispatch);
+    // #818 — the ops fallback receives the DERIVED conventional subject (not
+    // the raw issue title), so the PR the ops child opens is conventional
+    // even when the mechanized path fell back. The prompt instructs it to
+    // use the subject verbatim as the PR title.
+    const issueTitle = await deriveCommitPrTitle(preDispatch, ctx, execFn);
     next = await runSingleDispatch(ctx, preDispatch, "commit-pr", "ops", "ops:commit-pr", now, () =>
       // PR14 — thread worktrees + workstreams + branchName into the prompt
       // so ops knows to consolidate every worktree's uncommitted changes
@@ -388,106 +427,5 @@ async function runCommitPrLocked(
   }
   const last = next.eventLog[next.eventLog.length - 1];
   if (last?.kind !== "dispatch-completed") return next;
-  // #500 — the ops fallback consolidates repoRoot BY HAND; unlike the
-  // mechanized path there is no guarantee what it leaves. Record the state
-  // it actually left (unmerged paths, staged count, current branch) so the
-  // handoff renders facts rather than the assumption of a clean tree. A read
-  // failure records the failure, not a guess.
-  const execFn = ctx.verifyExecFn ?? execp;
-  const rootState = await inspectCommitPrRoot(execFn, ctx.repoRoot);
-  next = {
-    ...next,
-    pipelineState: {
-      ...next.pipelineState,
-      ...commitPrRootFieldsOf(rootState),
-    },
-  };
-  const prNumber = parsePrNumber(last.summary);
-  if (prNumber !== undefined) {
-    next = {
-      ...next,
-      pipelineState: { ...next.pipelineState, prNumber },
-    };
-  }
-  // #728 — file-level consolidation completeness gate
-  // (work-driver-commit-completeness.ts): raises the `consolidation-incomplete`
-  // cap when the mechanized path recorded dropped paths.
-  if (next.pipelineState.consolidationCompleteness?.droppedPaths.length) {
-    return raiseConsolidationIncompleteCap(next);
-  }
-  // PR14 + #540 — post-dispatch consolidation gate (subsumption-aware,
-  // both-sides report). Defense in depth: the v0.12.13 incident merged
-  // 1 of 3 workstreams as a "successful" cycle.
-  const consolidationCheck = await verifyConsolidation(ctx, next);
-  if (consolidationCheck.missing.length > 0) {
-    trace(
-      `work-driver: commit-pr partial-consolidation detected — missing workstreams: ${consolidationCheck.missing.map((m) => m.id).join(", ")}`,
-    );
-    // #778 — persist `moved` verdicts too (the state file records where a
-    // renamed declared path landed, for #774's recovery plan); `complete`
-    // stays excluded, and the reader adapter's explicit `uncovered` filter
-    // makes persisting `moved` a no-op for missingWorkstreamsFromConsolidation.
-    const verdicts: ConsolidationVerdict[] = consolidationCheck.verdicts.filter(
-      (v) => v.status !== "complete",
-    );
-    next = {
-      ...next,
-      pipelineState: {
-        ...next.pipelineState,
-        incompleteConsolidation: {
-          verdicts,
-          filesPresent: consolidationCheck.filesPresent,
-        },
-      },
-    };
-    next = appendEvent(next, {
-      kind: "cap-hit",
-      at: Date.now(),
-      cap: "commit-pr-incomplete-consolidation",
-      reviewRound: next.pipelineState.reviewRound,
-      nextStep: "handoff",
-    });
-    return next;
-  }
-  // PR17 — outcome verification gate: prove the "committed + opened PR"
-  // claim with executed evidence (commits ahead of origin/<base>, PR
-  // number resolving via gh). Runs only when the consolidation gate
-  // passed — one cap per failure, most-specific wins. Bonus repair: when
-  // ops forgot the `pr: <N>` marker but the PR exists, the gate adopts
-  // the number resolved via the forge PR list by head branch so handoff/ci target
-  // the right PR (pre-PR17 a missing marker silently degraded both).
-  const gate = await verifyStepOutcome(ctx, next, "commit-pr");
-  if (gate.adoptedPrNumber !== undefined) {
-    next = {
-      ...next,
-      pipelineState: { ...next.pipelineState, prNumber: gate.adoptedPrNumber },
-    };
-  }
-  if (!gate.ok) {
-    trace(`work-driver: verify-failed:commit-pr — ${gate.failures.join(" | ")}`);
-    const commitPrFlake = next.eventLog.some((e) => e.kind === "verify-flake-recovered");
-    next = {
-      ...next,
-      pipelineState: {
-        ...next.pipelineState,
-        // #782 — the consolidated-verify gate re-ran the verify command once
-        // before classifying (recorded when the re-run happened, on both the
-        // recovered and the still-failed paths). Absent on pre-#782 cycles.
-        verifyEvidence: {
-          step: "commit-pr",
-          failures: gate.failures,
-          at: Date.now(),
-          ...(commitPrFlake ? { retries: 1, recovered: false } : {}),
-        },
-      },
-    };
-    next = appendEvent(next, {
-      kind: "cap-hit",
-      at: Date.now(),
-      cap: "verify-failed:commit-pr",
-      reviewRound: next.pipelineState.reviewRound,
-      nextStep: "handoff",
-    });
-  }
-  return next;
+  return runCommitPrPostDispatchGates(ctx, execFn, next);
 }
