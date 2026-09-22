@@ -37,7 +37,9 @@ function assert(cond: boolean, msg: string) {
 //    begins with a conventional-commit prefix; report "no prefix" otherwise.
 // ---------------------------------------------------------------------------
 {
-  const p1 = parseConventionalTitle("fix(work): restore repoRoot when a lens-fix integration fails");
+  const p1 = parseConventionalTitle(
+    "fix(work): restore repoRoot when a lens-fix integration fails",
+  );
   assert(p1.type === "fix", "parse: type is 'fix' for a fix(work) title");
   assert(p1.scope === "work", "parse: scope is 'work' for a fix(work) title");
   assert(
@@ -53,8 +55,18 @@ function assert(cond: boolean, msg: string) {
   const p3 = parseConventionalTitle("How do I configure the sandbox?");
   assert(p3.type === null, "parse: a question-titled issue has no conventional type");
 
+  // #818 — 'spike' IS now a recognised plan-driver prefix (plan-types.ts's
+  // TITLE_PREFIX emits `research: ` for spikes; `spike:` is the human-filed
+  // variant). #810 asserted `type === null` because the parser only
+  // recognised conventional types; #818 extends the parser to the full
+  // plan-driver vocabulary, so `spike:` now parses (bare `spike`) and the
+  // MAPPING to an honest `chore` happens in deriveConsolidationSubject
+  // (PLAN_DRIVER_PREFIXES.spike === "chore" — asserted in section 2).
   const p4 = parseConventionalTitle("spike: explore the dispatch deck");
-  assert(p4.type === null, "parse: 'spike' is not a conventional type → no type (chore fallback)");
+  assert(
+    p4.type === "spike",
+    "parse: 'spike' is a recognised plan-driver prefix (bare 'spike', #818)",
+  );
 
   const p5 = parseConventionalTitle("fix(handoff): label the issue as well as the PR");
   assert(p5.type === "fix", "parse: type is 'fix' for fix(handoff)");
@@ -79,7 +91,10 @@ function assert(cond: boolean, msg: string) {
     s1 === "fix(work): restore repoRoot when a lens-fix integration fails",
     `derive: a fix(work) title preserves the fix type (got ${JSON.stringify(s1)})`,
   );
-  assert(s1 !== undefined && !s1.startsWith("chore"), "derive: the incident shape is NOT labelled chore");
+  assert(
+    s1 !== undefined && !s1.startsWith("chore"),
+    "derive: the incident shape is NOT labelled chore",
+  );
 
   // A feat with a scope keeps it; release-please bump type preserved.
   const s2 = deriveConsolidationSubject("feat(review): add per-lens retry");
@@ -88,14 +103,36 @@ function assert(cond: boolean, msg: string) {
     `derive: feat(review) preserved (got ${JSON.stringify(s2)})`,
   );
 
-  // A conventional type release-please does NOT bump (test:, ci:) falls back
-  // to an honest chore rather than being relabelled fix:
+  // #818 — a conventional type passes through as ITSELF, including the
+  // non-bumping types (#810 collapsed `test:`/`ci:`/`chore:` to `chore`;
+  // #818's commit-pr path needs the honest type instead, so the shared
+  // parser passes the full conventional vocabulary through). The #810
+  // assertion that pinned the collapse was updated to pin the pass-through:
+  // the subject still starts with `chore`-class honesty for a non-bumping
+  // type in that the type is preserved verbatim rather than relabelled.
   const s3 = deriveConsolidationSubject("test: add a regression test for the sweep");
   assert(
-    s3.startsWith("chore"),
-    `derive: a non-bumping type falls back to chore (got ${JSON.stringify(s3)})`,
+    s3 === "test(work): add a regression test for the sweep",
+    `derive: a non-bumping conventional type passes through as itself (#818; got ${JSON.stringify(s3)})`,
   );
   assert(!s3.startsWith("fix"), "derive: non-bumping type is NOT relabelled fix");
+
+  // #818 — the full conventional vocabulary passes through as itself.
+  const s3a = deriveConsolidationSubject("chore: tidy the scratch dir");
+  assert(
+    s3a === "chore(work): tidy the scratch dir",
+    `derive: chore: passes through as chore (got ${JSON.stringify(s3a)})`,
+  );
+  const s3b = deriveConsolidationSubject("docs: write the troubleshooting entry");
+  assert(
+    s3b === "docs(work): write the troubleshooting entry",
+    `derive: docs: passes through as docs (got ${JSON.stringify(s3b)})`,
+  );
+  const s3c = deriveConsolidationSubject("ci: harden the verify gate");
+  assert(
+    s3c === "ci(work): harden the verify gate",
+    `derive: ci: passes through as ci (got ${JSON.stringify(s3c)})`,
+  );
 
   // A question title maps to no type → honest chore, with the title as description.
   const s4 = deriveConsolidationSubject("How do I configure the sandbox?");
@@ -120,7 +157,10 @@ function assert(cond: boolean, msg: string) {
   );
 
   // An issue number can never land in the scope position.
-  assert(s6 !== undefined && !s6.includes("(810)"), "derive: no issue number in the scope position");
+  assert(
+    s6 !== undefined && !s6.includes("(810)"),
+    "derive: no issue number in the scope position",
+  );
 
   // A breaking marker present in the title survives; one is never ADDED.
   const s7 = deriveConsolidationSubject("feat!: replace the dispatch deck");
@@ -139,6 +179,75 @@ function assert(cond: boolean, msg: string) {
     deriveConsolidationSubject("   ") === undefined,
     "derive: a whitespace title yields no subject",
   );
+
+  // -----------------------------------------------------------------------
+  // #818 — plan-driver prefixes (TITLE_PREFIX in plan-types.ts) map to the
+  // type the change actually ships; unknown prefixes stay honest chore.
+  // -----------------------------------------------------------------------
+  // The #818 incident shape: a plan-driver bug must land as `fix:`, not
+  // `chore:` (which release-please drops) and not a raw `Bug: …`.
+  const s8 = deriveConsolidationSubject("Bug: test-cancel.ts is timing-flaky in the offline suite");
+  assert(
+    s8 === "fix(work): test-cancel.ts is timing-flaky in the offline suite",
+    `derive: 'Bug:' maps to fix (got ${JSON.stringify(s8)})`,
+  );
+  assert(!s8?.startsWith("chore"), "derive: a Bug: title is NOT an honest chore");
+
+  // Lowercase 'bug' (the case-insensitive shape a human might file).
+  const s9 = deriveConsolidationSubject("bug: the queue halts on one dead cycle");
+  assert(
+    s9 === "fix(work): the queue halts on one dead cycle",
+    `derive: lowercase 'bug' maps to fix (got ${JSON.stringify(s9)})`,
+  );
+
+  // Feature: (capitalised) maps to feat, like feat:.
+  const s10 = deriveConsolidationSubject("Feature: add a brand-new worktree sweep");
+  assert(
+    s10 === "feat(work): add a brand-new worktree sweep",
+    `derive: 'Feature:' maps to feat (got ${JSON.stringify(s10)})`,
+  );
+
+  // EPIC: maps to feat — an epic ships features.
+  const s11 = deriveConsolidationSubject("EPIC: overhaul the dispatch deck");
+  assert(
+    s11 === "feat(work): overhaul the dispatch deck",
+    `derive: 'EPIC:' maps to feat (got ${JSON.stringify(s11)})`,
+  );
+
+  // research:/spike: map to an honest chore — research is not a feature.
+  const s12 = deriveConsolidationSubject("research: sandbox landscape survey");
+  assert(
+    s12 === "chore(work): sandbox landscape survey",
+    `derive: 'research:' maps to chore (got ${JSON.stringify(s12)})`,
+  );
+  assert(!s12?.startsWith("feat"), "derive: a research title is NOT relabelled feat");
+
+  // A conventional prefix with a scope + the plan-driver prefix is
+  // mutually exclusive by construction: 'Bug' is not conventional, so no
+  // 'Bug(spawn):' shape exists to worry about. But an explicit scope on a
+  // plan-driver prefix is still parsed and honoured when alphabetic.
+  const s13 = deriveConsolidationSubject("Bug(spawn): the child hangs on macOS");
+  assert(
+    s13 === "fix(spawn): the child hangs on macOS",
+    `derive: 'Bug(spawn):' keeps the alphabetic scope (got ${JSON.stringify(s13)})`,
+  );
+
+  // Genuinely unknown prefix → honest chore with the title as description.
+  const s14 = deriveConsolidationSubject("Urgent: the queue halts on one dead cycle");
+  assert(
+    s14 === "chore(work): Urgent: the queue halts on one dead cycle",
+    `derive: an unknown prefix is an honest chore with the full title (got ${JSON.stringify(s14)})`,
+  );
+  assert(!s14?.startsWith("fix"), "derive: an unknown prefix is NOT an invented fix");
+
+  // parseConventionalTitle now recognises the plan-driver prefixes too
+  // (returned bare lowercase; the mapping is deriveConsolidationSubject's).
+  const p7 = parseConventionalTitle("Bug: test-cancel.ts is flaky");
+  assert(p7.type === "bug", "parse: 'Bug' is recognised as a plan-driver prefix (bare 'bug')");
+  const p8 = parseConventionalTitle("EPIC: overhaul the deck");
+  assert(p8.type === "epic", "parse: 'EPIC' is recognised (bare 'epic', lowercased)");
+  const p9 = parseConventionalTitle("research: sandbox survey");
+  assert(p9.type === "research", "parse: 'research' is recognised as a plan-driver prefix");
 }
 
 // ---------------------------------------------------------------------------
@@ -184,14 +293,23 @@ function assert(cond: boolean, msg: string) {
         worktrees: { "task-a": wt },
       },
       eventLog: [
-        { kind: "cap-hit", at: 3, cap: "verify-failed:develop", reviewRound: 0, nextStep: "handoff" },
+        {
+          kind: "cap-hit",
+          at: 3,
+          cap: "verify-failed:develop",
+          reviewRound: 0,
+          nextStep: "handoff",
+        },
       ],
       // biome-ignore lint/suspicious/noExplicitAny: partial fixture
     } as any;
     const saved = process.env.PI_ENSEMBLE_FORGE;
     process.env.PI_ENSEMBLE_FORGE = "none";
-    const result = await consolidateWorktreesToBranch({ repoRoot: dir, issue: 810, scratchDir: dir }, state);
-    if (saved === undefined) delete process.env.PI_ENSEMBLE_FORGE;
+    const result = await consolidateWorktreesToBranch(
+      { repoRoot: dir, issue: 810, scratchDir: dir },
+      state,
+    );
+    if (saved === undefined) process.env.PI_ENSEMBLE_FORGE = undefined;
     else process.env.PI_ENSEMBLE_FORGE = saved;
     assert(result.ok, `e2e: consolidation succeeds on the real repo (reason=${result.reason})`);
     let aheadOnBranch = -1;

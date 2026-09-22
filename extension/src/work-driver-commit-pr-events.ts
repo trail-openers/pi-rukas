@@ -10,14 +10,106 @@
  * consolidationCompleteness fields.
  */
 
+import { trace } from "./trace.ts";
+import { raiseConsolidationIncompleteCap } from "./work-driver-commit-completeness.ts";
 import type { CommitPrRootInspect } from "./work-driver-commit-inspect.ts";
+import { inspectCommitPrRoot } from "./work-driver-commit-inspect.ts";
+import { commitPrRootFieldsOf } from "./work-driver-commit-inspect.ts";
+import type { DriverContext } from "./work-driver-context.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import type { IntegrateResult } from "./work-driver-integrate.ts";
+import { parsePrNumber } from "./work-driver-merged.ts";
+import { verifyConsolidation, verifyStepOutcome } from "./work-driver-verify.ts";
+import type { ConsolidationVerdict } from "./workflow-state.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { appendEvent } from "./workflow-state.ts";
 
 /** The successful, non-empty IntegrateResult — the only shape this function handles. */
 type NonEmptyIntegrateResult = Extract<IntegrateResult, { ok: true; empty: false }>;
+
+/**
+ * The post-dispatch gate sequence for an LLM-ops commit-pr fallback.
+ * Extracted from work-driver-commit.ts to keep that file under the
+ * AGENTS.md §12 500-line cap (#818).
+ *
+ * Records the root state, parses the PR number, runs the consolidation
+ * completeness gate, and the outcome verification gate. Returns the
+ * updated WorkState.
+ */
+export async function runCommitPrPostDispatchGates(
+  ctx: DriverContext,
+  execFn: NonNullable<DriverContext["verifyExecFn"]>,
+  next: WorkState,
+): Promise<WorkState> {
+  const last = next.eventLog[next.eventLog.length - 1];
+  if (last?.kind !== "dispatch-completed") return next;
+  const rootState = await inspectCommitPrRoot(execFn, ctx.repoRoot);
+  let state: WorkState = {
+    ...next,
+    pipelineState: { ...next.pipelineState, ...commitPrRootFieldsOf(rootState) },
+  };
+  const prNumber = parsePrNumber(last.summary);
+  if (prNumber !== undefined) {
+    state = { ...state, pipelineState: { ...state.pipelineState, prNumber } };
+  }
+  if (state.pipelineState.consolidationCompleteness?.droppedPaths.length) {
+    return raiseConsolidationIncompleteCap(state);
+  }
+  const consolidationCheck = await verifyConsolidation(ctx, state);
+  if (consolidationCheck.missing.length > 0) {
+    trace(
+      `work-driver: commit-pr partial-consolidation detected — missing workstreams: ${consolidationCheck.missing.map((m) => m.id).join(", ")}`,
+    );
+    const verdicts: ConsolidationVerdict[] = consolidationCheck.verdicts.filter(
+      (v) => v.status !== "complete",
+    );
+    state = {
+      ...state,
+      pipelineState: {
+        ...state.pipelineState,
+        incompleteConsolidation: { verdicts, filesPresent: consolidationCheck.filesPresent },
+      },
+    };
+    return appendEvent(state, {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "commit-pr-incomplete-consolidation",
+      reviewRound: state.pipelineState.reviewRound,
+      nextStep: "handoff",
+    });
+  }
+  const gate = await verifyStepOutcome(ctx, state, "commit-pr");
+  if (gate.adoptedPrNumber !== undefined) {
+    state = {
+      ...state,
+      pipelineState: { ...state.pipelineState, prNumber: gate.adoptedPrNumber },
+    };
+  }
+  if (!gate.ok) {
+    trace(`work-driver: verify-failed:commit-pr — ${gate.failures.join(" | ")}`);
+    const commitPrFlake = state.eventLog.some((e) => e.kind === "verify-flake-recovered");
+    state = {
+      ...state,
+      pipelineState: {
+        ...state.pipelineState,
+        verifyEvidence: {
+          step: "commit-pr",
+          failures: gate.failures,
+          at: Date.now(),
+          ...(commitPrFlake ? { retries: 1, recovered: false } : {}),
+        },
+      },
+    };
+    state = appendEvent(state, {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "verify-failed:commit-pr",
+      reviewRound: state.pipelineState.reviewRound,
+      nextStep: "handoff",
+    });
+  }
+  return state;
+}
 
 /**
  * Append the event sequence for a successful mechanized commit-pr and

@@ -106,9 +106,16 @@ export function inlineCommitPrPrompt(
   ]
     .filter((s) => s !== "")
     .join("\\n\\n");
+  // #818 — the caller (work-driver-commit.ts) passes the DERIVED
+  // conventional-commit subject (deriveCommitPrTitle →
+  // deriveConsolidationSubject), never the raw issue title, so the PR the
+  // ops child opens is a valid conventional subject even on the fallback
+  // path. The instruction is verbatim: the driver cannot re-derive what
+  // ops writes, and a paraphrased `Bug: …` title would repeat the #818
+  // incident on the fallback path.
   const issueTitleLine = issueTitle
-    ? `Authoritative issue title (data from the cached issue body): ${JSON.stringify(issueTitle)}`
-    : `Issue title unavailable — run \`gh issue view ${issues[0] ?? "<issue>"}\` before writing PR prose.`;
+    ? `Conventional PR title (DERIVED from the issue by the driver — use it VERBATIM as the PR title, do not paraphrase, do not substitute the raw issue title): ${JSON.stringify(issueTitle)}`
+    : `Issue title unavailable — run \`gh issue view ${issues[0] ?? "<issue>"}\` and derive a conventional-commit title (type(scope): description) before writing PR prose.`;
   const scopeFence = Object.values(workstreams).map(
     (workstream) =>
       `  - \`${workstream.id}\`: ${

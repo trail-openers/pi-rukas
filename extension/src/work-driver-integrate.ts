@@ -21,13 +21,31 @@ export { readDirtyPorcelain, restoreRepoRoot } from "./work-driver-preflight.ts"
 // every existing import path unchanged.
 export { withIntegrationLock, __resetIntegrationLock } from "./work-driver-lock.ts";
 
-/** Issue title from the explore step's cached artifact; undefined on miss. */
+/**
+ * Issue title from the explore step's cached artifact; undefined on miss.
+ *
+ * Reads BOTH artifact shapes, anchored to the FIRST line so a body line
+ * starting with `title:` can never shadow the real title (#818):
+ *
+ *   - `"${title}\n\n${body}"` — what `fetchIssueBodyViaGh` (the explore step,
+ *     the format every production artifact uses) writes: a BARE title on
+ *     line 1, no `title:` prefix. Pre-#818 the regex below only matched the
+ *     `title:` shape, so it returned undefined for every production cycle
+ *     (#771/#809 landed as `implement issue #N`).
+ *   - `"title: ${title}\n${body}"` — the legacy `fetchIssueBodies` shape
+ *     written by `work-entry.ts`; kept so pre-existing state files still
+ *     resolve their title.
+ */
 export async function cachedIssueTitle(state: WorkState): Promise<string | undefined> {
   const artifact = state.pipelineState.issueBodyArtifact;
   if (!artifact) return undefined;
   try {
     const body = await fs.readFile(artifact, "utf8");
-    return body.match(/^title:\s*(.+)$/m)?.[1]?.trim();
+    const firstLine = body.split("\n")[0]?.trim() ?? "";
+    const prefixed = firstLine.match(/^title:\s*(.+)$/);
+    if (prefixed) return prefixed[1]?.trim();
+    if (!firstLine) return undefined;
+    return firstLine;
   } catch {
     return undefined;
   }

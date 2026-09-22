@@ -165,8 +165,8 @@ const scratchDir = "/tmp/pi-ensemble-issue-284";
     };
     await runCommitPr(ctx, state, Date.now());
     assert(
-      captured.includes('"Ground the ops prompts"'),
-      "#284 B fallback: cached issue-body title reaches the ops prompt",
+      captured.includes('"chore(work): Ground the ops prompts"'),
+      "#284 B fallback: derived conventional subject reaches the ops prompt (#818)",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
