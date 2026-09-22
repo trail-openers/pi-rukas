@@ -6,7 +6,7 @@
  */
 
 import { exec } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -358,6 +358,7 @@ async function makeWorktreeFixture(root: string, name: string): Promise<string> 
 {
   const { verifyCmdFor } = await import("../src/work-driver-verify-cmd.ts");
   const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+  const loopScript = path.join(repoRoot, "extension", "smoke-tests", "lib", "verify-loop.sh");
   const cmd = (await verifyCmdFor(repoRoot)) ?? "";
 
   assert(
@@ -367,6 +368,7 @@ async function makeWorktreeFixture(root: string, name: string): Promise<string> 
   assert(/tsc --noEmit/.test(cmd), "...and the gate typechecks");
   assert(/bun run check/.test(cmd), "...and lints");
   assert(/smoke-tests\/lib\/verify-loop\.sh/.test(cmd), "...and runs the offline smoke suite via the shared verify-loop");
+  assert(existsSync(loopScript) && readFileSync(loopScript, "utf-8").includes("-live.ts"), "...and the shared verify-loop still excludes *-live.ts tests");
 }
 
 // ------------- #481: pi-ensemble itself provisions without a hook (real repo probe)

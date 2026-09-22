@@ -13,10 +13,13 @@
  *      extractAttributedTail(output, 800) still yields the summary line.
  *   4. Single-execution: a fixture that appends to a counter file;
  *      assert it ran exactly once despite failing.
+ *   5. Live-exclusion canary: a *-live.ts fixture in the argument list must
+ *      be skipped — not executed (sentinel file absent), not counted in the
+ *      summary, not present in the output.
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
@@ -109,6 +112,32 @@ function runLoop(files: string[]): { status: number; stdout: string } {
   } finally {
     rmSync(counterFile, { force: true });
   }
+}
+
+// --- Case 5: live-exclusion canary ---
+{
+  // A *-live.ts file that, if ever executed, writes a sentinel and exits 1.
+  // If the exclusion line in verify-loop.sh is ever removed, the fixture runs,
+  // the sentinel appears, and the fixture lands in the failure summary.
+  const sentinel = path.join(mkdtempSync(path.join(tmpdir(), "verify-loop-live-")), "sentinel");
+  rmSync(sentinel, { force: true });
+
+  const files = [
+    path.join(FIXTURES, "allpass-a.ts"),
+    path.join(FIXTURES, "fixture-spawn-live.ts"),
+    path.join(FIXTURES, "allpass-b.ts"),
+  ];
+  const result = spawnSync("bash", [SCRIPT, ...files], {
+    cwd: path.join(__dirname, ".."),
+    encoding: "utf-8",
+    env: { ...process.env, FIXTURE_LIVE_SENTINEL: sentinel },
+  });
+  const { status, stdout } = { status: result.status ?? -1, stdout: result.stdout };
+
+  assert(!existsSync(sentinel), "case 5: live fixture was NOT executed (sentinel absent)");
+  assert(status === 0, "case 5: exit 0 — the skipped file is not a failure");
+  assert(!stdout.includes("fixture-spawn-live"), "case 5: skipped live file absent from output");
+  assert(!stdout.includes("FAILED:"), "case 5: no summary marker on a run where only a live file was skipped");
 }
 
 console.log(exit === 0 ? "\nAll verify-loop checks passed." : "\nFAILED");
