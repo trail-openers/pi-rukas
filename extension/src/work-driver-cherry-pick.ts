@@ -22,6 +22,9 @@ import { rebaseStagedPatchOntoHead } from "./work-driver-rebase-patch.ts";
 import { stagePorcelainPaths } from "./work-driver-stage.ts";
 // #654 (task-b) — re-exported so existing importers keep their path.
 export { rebaseStagedPatchOntoHead };
+// #794 (task-b) — re-exported from its own module (AGENTS.md §12 file-size
+// limit) so importers keep this path.
+export { dependencyLeaves } from "./work-driver-leaf-selection.ts";
 
 // #794 — per-workstream OWN range (see module header).
 export type WorkStreamPickScope = {

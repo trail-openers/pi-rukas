@@ -19,6 +19,7 @@
  */
 
 import type { ForgeType } from "./forge-detect.ts";
+import { dependencyLeaves } from "./work-driver-cherry-pick.ts";
 import {
   CONSOLIDATE_APPLY,
   type RecoverySection,
@@ -112,6 +113,31 @@ export function recoveryStepsForCap(
         },
       );
     } else {
+      // #794 (task-b) — for a dependsOn STACK, picking every worktree's
+      // HEAD replays each ancestor commit once per level of the stack
+      // (the #775 shape: the printed instructions themselves reproduced
+      // the failure when followed). In a stack each dependent's worktree
+      // is based on its dependency's tip, so the DEPENDENCY LEAVES — the
+      // worktrees no other workstream builds on — carry the union of the
+      // stack's commits. Pick those once, in topological order, and the
+      // branch lands every commit exactly once. With no `dependsOn`
+      // declared, every worktree is its own leaf and the printed commands
+      // are byte-identical to the pre-#794 per-worktree list (the
+      // N-disjoint behaviour is unchanged).
+      const leaves = dependencyLeaves(
+        committedWork.map((w) => w.worktreeId),
+        ps.workstreams
+          ? Object.fromEntries(
+              Object.entries(ps.workstreams).map(([id, ws]) => [id, ws.dependsOn ?? []]),
+            )
+          : undefined,
+      );
+      const byId = new Map(committedWork.map((w) => [w.worktreeId, w]));
+      const toPick = leaves
+        .map((id) => byId.get(id))
+        .filter((w): w is (typeof committedWork)[number] => w !== undefined);
+      const stacked = toPick.length < committedWork.length;
+      const topOfStack = toPick.length > 0 && toPick.length === 1 ? toPick[0] : undefined;
       steps.push(
         {
           section: "worktree-work-fallback",
@@ -125,13 +151,20 @@ export function recoveryStepsForCap(
         },
         {
           section: "worktree-work-fallback",
-          comment: [
-            "2. Cherry-pick each worktree's commits onto the feature branch (run from the main checkout):",
-          ],
+          comment: stacked
+            ? [
+                "2. Cherry-pick onto the feature branch — the workstreams are a dependsOn",
+                "   stack, so only the worktree(s) NO other workstream builds on carry new",
+                "   commits (each dependent's worktree already contains its ancestors' work).",
+                "   Run from the main checkout:",
+              ]
+            : [
+                "2. Cherry-pick each worktree's commits onto the feature branch (run from the main checkout):",
+              ],
           lines: [
             `git checkout ${ps.branchName}`,
-            ...committedWork.flatMap((w) => [
-              `git cherry-pick ${w.headSha}   # worktree: ${w.path} (HEAD ${w.headSha.slice(0, 8)}, ${w.ahead} ahead)`,
+            ...toPick.flatMap((w) => [
+              `git cherry-pick ${w.headSha}   # worktree: ${w.path} (HEAD ${w.headSha.slice(0, 8)})${topOfStack ? "   # tip of the dependency chain — applies the whole stack in one pick" : ""}`,
             ]),
           ],
         },
