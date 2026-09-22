@@ -56,8 +56,4 @@ jobs:
       - name: Offline smoke tests
         working-directory: extension
         run: |
-          for t in smoke-tests/test-*.ts; do
-            case "$t" in *-live.ts) continue;; esac
-            echo "--- $t"
-            bun run "$t" || exit 1
-          done
+          bash smoke-tests/lib/verify-loop.sh smoke-tests/test-*.ts

@@ -16,10 +16,7 @@ bun run build
 
 # 2. Type-check, lint, and smoke-test (extension/)
 cd extension && bunx tsc --noEmit && bun run check && \
-  for t in smoke-tests/test-*.ts; do \
-    case "$t" in *-live.ts) continue;; esac; \
-    bun run "$t" || exit 1; \
-  done
+  bash smoke-tests/lib/verify-loop.sh smoke-tests/test-*.ts
 ```
 
 If any check fails: fix the issue, re-run, only then push. Do NOT:
