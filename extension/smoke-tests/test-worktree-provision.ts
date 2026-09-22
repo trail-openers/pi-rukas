@@ -12,12 +12,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { mechanizedBranchSetup } from "../src/work-driver-branch-mechanized.ts";
-import {
-  NEVER_SHARED,
-  SHAREABLE_DEPS,
-  looksLikeMissingDeps,
-  provisionWorktree,
-} from "../src/worktree-provision.ts";
+import { NEVER_SHARED, SHAREABLE_DEPS, looksLikeMissingDeps, provisionWorktree } from "../src/worktree-provision.ts";
 
 const pexec = promisify(exec);
 
@@ -367,8 +362,14 @@ async function makeWorktreeFixture(root: string, name: string): Promise<string> 
   );
   assert(/tsc --noEmit/.test(cmd), "...and the gate typechecks");
   assert(/bun run check/.test(cmd), "...and lints");
-  assert(/smoke-tests\/lib\/verify-loop\.sh/.test(cmd), "...and runs the offline smoke suite via the shared verify-loop");
-  assert(existsSync(loopScript) && readFileSync(loopScript, "utf-8").includes("-live.ts"), "...and the shared verify-loop still excludes *-live.ts tests");
+  assert(
+    /smoke-tests\/lib\/verify-loop\.sh/.test(cmd),
+    "...and runs the offline smoke suite via the shared verify-loop",
+  );
+  assert(
+    existsSync(loopScript) && readFileSync(loopScript, "utf-8").includes("-live.ts"),
+    "...and the shared verify-loop still excludes *-live.ts tests",
+  );
 }
 
 // ------------- #481: pi-ensemble itself provisions without a hook (real repo probe)

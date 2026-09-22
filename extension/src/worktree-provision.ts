@@ -44,13 +44,14 @@
  * link" is the status quo, not a regression — it is traced and reported, and
  * the cycle continues.
  */
-
 import fs from "node:fs/promises";
 import path from "node:path";
 import { trace } from "./trace.ts";
+import { depsExpectedAt, packageDirsAt, runHookProvisioning } from "./worktree-provision-hook.ts";
+import { resolvedNonEmptyDirectory } from "./worktree-provision-verify.ts";
 
 /** The exec shape `worktree.ts` already uses. */
-type ExecFn = (
+export type ExecFn = (
   cmd: string,
   opts: { cwd?: string; maxBuffer?: number },
 ) => Promise<{ stdout: string }>;
@@ -167,79 +168,6 @@ function candidatesForDir(dirRel: string): string[] {
 }
 
 /**
- * Manifest/lockfile markers: "this directory is a package", i.e. a place to
- * look for a nested `node_modules`. #481's discovery signal — depth-1
- * directories with any of these are scanned, so a nested-package monorepo
- * provisions without a hook and without knowing its own layout.
- */
-const DEPENDENCY_MARKERS = [
-  "package.json",
-  "bun.lock",
-  "bun.lockb",
-  "package-lock.json",
-  "yarn.lock",
-  "pnpm-lock.yaml",
-  "pyproject.toml",
-  "uv.lock",
-  "requirements.txt",
-  "go.mod",
-  "go.sum",
-  "Cargo.toml",
-  "Gemfile",
-];
-
-/**
- * Depth-1 subdirectories of `repoRoot` that contain a dependency marker.
- *
- * Depth-1 only: deeper nesting is where per-worktree scratch (`.worktrees/`)
- * and vendor trees live, and scanning them would re-link the very worktrees
- * this module creates. Unreadable / non-directory `repoRoot` → no candidates.
- */
-async function packageDirsAt(repoRoot: string): Promise<string[]> {
-  let entries: import("node:fs").Dirent[];
-  try {
-    entries = await fs.readdir(repoRoot, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const dirs = entries
-    .filter((e) => e.isDirectory() && !e.name.startsWith(".") && e.name !== "node_modules")
-    .map((e) => e.name);
-  if (dirs.length === 0) return [];
-  const hasMarker = async (dir: string) =>
-    DEPENDENCY_MARKERS.some((m) => fileExists(path.join(repoRoot, dir, m)));
-  const marked: string[] = [];
-  for (const dir of dirs) {
-    if (await hasMarker(dir)) marked.push(dir);
-  }
-  return marked;
-}
-
-/**
- * Directories under `repoRoot` that "plainly need dependencies" — a manifest
- * or lockfile at the root, or in a discovered package directory. Drives the
- * `problem` field: a project that needs deps and has none findable gets a
- * trace, not a silent bare worktree.
- */
-async function depsExpectedAt(repoRoot: string, packageDirs: string[]): Promise<boolean> {
-  const rootHit = await Promise.any(
-    DEPENDENCY_MARKERS.map((m) =>
-      fileExists(path.join(repoRoot, m)).then((ok) => (ok ? true : Promise.reject())),
-    ),
-  ).catch(() => false);
-  if (rootHit) return true;
-  for (const dir of packageDirs) {
-    const dirHit = await Promise.any(
-      DEPENDENCY_MARKERS.map((m) =>
-        fileExists(path.join(repoRoot, dir, m)).then((ok) => (ok ? true : Promise.reject())),
-      ),
-    ).catch(() => false);
-    if (dirHit) return true;
-  }
-  return false;
-}
-
-/**
  * Resolve where each shareable dependency lives: a non-empty, gitignored
  * candidate under `repoRoot` or one of the discovered package directories.
  *
@@ -293,18 +221,7 @@ export async function provisionWorktree(
     return { via: "none", linked: [] };
   }
   if (hookExists) {
-    try {
-      await execFn(`sh ${JSON.stringify(hook)}`, {
-        cwd: worktreeAbs,
-        maxBuffer: 1024 * 1024,
-      });
-      trace(`worktree: provisioned via ${WORKTREE_SETUP_HOOK}`);
-      return { via: "hook", linked: [] };
-    } catch (err) {
-      const problem = `${WORKTREE_SETUP_HOOK} failed: ${(err as Error).message?.slice(0, 200)}`;
-      trace(`worktree: ${problem}`);
-      return { via: "hook", linked: [], problem };
-    }
+    return runHookProvisioning(execFn, repoRoot, worktreeAbs, hook);
   }
 
   const packageDirs = await packageDirsAt(repoRoot);
@@ -328,6 +245,23 @@ export async function provisionWorktree(
         `${dirRel === "" ? dep : path.join(dirRel, dep)}: ${(err as Error).message?.slice(0, 120)}`,
       );
     }
+  }
+  // #765 — verify what the SYMLINK path just linked: a source that resolved
+  // at scan time can still leave the worktree link pointing at a tree that
+  // is now empty or gone (the #761 fork-B shape). A link that does not
+  // resolve to a non-empty directory is pulled from `linked` (so it is
+  // never reported as a useful link) and recorded as a `problem`.
+  for (const [dep, { dirRel, source }] of found) {
+    const target = path.join(worktreeAbs, dirRel, dep);
+    if (await resolvedNonEmptyDirectory(target)) continue;
+    const rel = dirRel === "" ? dep : path.join(dirRel, dep);
+    problems.push(
+      `${rel}: linked but the link does not resolve to a non-empty directory (source: ${source})`,
+    );
+    const i = linkedRel.indexOf(rel);
+    if (i >= 0) linkedRel.splice(i, 1);
+    const di = linked.indexOf(dep);
+    if (di >= 0) linked.splice(di, 1);
   }
   if (linked.length > 0) {
     const sources = [...found.entries()]
