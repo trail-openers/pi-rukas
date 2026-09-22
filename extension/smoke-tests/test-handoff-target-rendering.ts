@@ -1,4 +1,5 @@
-#!/usr/bin/env bun/**
+#!/usr/bin/env bun
+/**
  * #798 (workstream `ws2`) — the handoff READER surfaces state WHERE the
  * artefacts landed, explicitly.
  *
@@ -39,8 +40,14 @@ function parkedWithPr(
     prLabelApplied?: boolean;
     targetType?: "issue" | "pr";
     targetNumber?: number;
+    /** Override for legacy events (pre-#798, no per-target fields). */
+    labelApplied?: boolean;
   },
 ): WorkState {
+  const labelApplied =
+    ev.labelApplied !== undefined
+      ? ev.labelApplied
+      : ev.issueLabelApplied === true && ev.prLabelApplied === true;
   // biome-ignore lint/suspicious/noExplicitAny: partial fixture; readers read a subset
   return {
     schemaVersion: 1,
@@ -64,7 +71,7 @@ function parkedWithPr(
         kind: "handoff-emitted",
         at: 4,
         commentUrl: "https://github.com/acme/widget/pull/796#issuecomment-1",
-        labelApplied: ev.issueLabelApplied === true && ev.prLabelApplied === true,
+        labelApplied,
         handoffBodyPath: `${REPO}/tmp/issue-782/handoff-comment.md`,
         ...ev,
       },
@@ -110,7 +117,7 @@ function parkedWithPr(
 // ── 3. In-chat message: pre-#798 event (no per-target fields) ──────────────
 {
   const out = renderHandoffUserMessage(
-    parkedWithPr({}),
+    parkedWithPr({ labelApplied: true }),
     REPO,
     `${REPO}/tmp/issue-782`,
   );
@@ -153,7 +160,7 @@ function parkedWithPr(
 
 // ── 6. /work-status terminal: pre-#798 event renders as before ─────────────
 {
-  const out = renderStatus(parkedWithPr({}));
+  const out = renderStatus(parkedWithPr({ labelApplied: true }), REPO);
   assert(
     /label:   needs-human-attention applied/.test(out),
     "status (legacy event): the old single-boolean label line is unchanged",
