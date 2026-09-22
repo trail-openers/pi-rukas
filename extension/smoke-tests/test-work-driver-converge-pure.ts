@@ -256,6 +256,93 @@ assert(
   "prompt: the corrective re-dispatch carries the normalised spec (the LLM-assisted seam)",
 );
 
+// --- No-diff status (issue #792) ---
+{
+  // 1. A marked deliverable WITH evidence classifies `no-diff` and is NOT in absent.
+  const vNd = classifyDeliverables(
+    [
+      { id: "d1", description: "alpha", paths: ["src/alpha.ts"] },
+      { id: "d5", description: "enable secret scanning", paths: [], noDiff: true, noDiffEvidence: "gh api -X PATCH repos/.../security_and_analysis" },
+    ],
+    new Set(["src/alpha.ts"]),
+  );
+  assert(
+    vNd.deliverables[1].status === "no-diff" &&
+      vNd.absent.length === 0 &&
+      vNd.noDiff.length === 1 &&
+      vNd.noDiff[0].id === "d5",
+    "classify: a no-diff deliverable with evidence → status no-diff, NOT in absent, IS in noDiff array",
+  );
+  assert(
+    vNd.noDiff[0].noDiffEvidence === "gh api -X PATCH repos/.../security_and_analysis",
+    "classify: the evidence string is carried verbatim on the no-diff result",
+  );
+
+  // 2. A marked deliverable WITHOUT evidence is NOT honoured → classifies as today.
+  //    With paths → absent; without paths → unmeasurable.
+  const vNoEv1 = classifyDeliverables(
+    [{ id: "d5", description: "enable secret scanning", paths: ["n/a — repo settings"], noDiff: true }],
+    new Set(),
+  );
+  assert(
+    vNoEv1.deliverables[0].status === "absent" && vNoEv1.absent.length === 1,
+    "classify: no-diff marker without evidence + has paths → ABSENT (gate fires, not honoured)",
+  );
+  const vNoEv2 = classifyDeliverables(
+    [{ id: "d5", description: "enable secret scanning", paths: [], noDiff: true }],
+    new Set(),
+  );
+  assert(
+    vNoEv2.deliverables[0].status === "unmeasurable" && vNoEv2.absent.length === 0,
+    "classify: no-diff marker without evidence + no paths → UNMEASURABLE (not honoured)",
+  );
+
+  // 3. Four code deliverables present + one no-diff: gate PASSES (absent is empty).
+  const vPass = classifyDeliverables(
+    [
+      { id: "d1", description: "alpha", paths: ["src/alpha.ts"] },
+      { id: "d2", description: "beta", paths: ["src/beta.ts"] },
+      { id: "d3", description: "gamma", paths: ["src/gamma.ts"] },
+      { id: "d4", description: "delta", paths: ["src/delta.ts"] },
+      { id: "d5", description: "enable secret scanning", paths: [], noDiff: true, noDiffEvidence: "gh api -X PATCH repos/.../security_and_analysis" },
+    ],
+    new Set(["src/alpha.ts", "src/beta.ts", "src/gamma.ts", "src/delta.ts"]),
+  );
+  assert(
+    vPass.absent.length === 0 && vPass.noDiff.length === 1 && vPass.noDiff[0].id === "d5",
+    "classify: four code deliverables implemented + one no-diff → gate PASSES (absent empty)",
+  );
+
+  // 4. Same plan but one CODE deliverable missing: gate FAILS and names THAT,
+  //    not the no-diff one.
+  const vFail = classifyDeliverables(
+    [
+      { id: "d1", description: "alpha", paths: ["src/alpha.ts"] },
+      { id: "d2", description: "beta", paths: ["src/beta.ts"] },
+      { id: "d3", description: "gamma", paths: ["src/gamma.ts"] },
+      { id: "d4", description: "delta", paths: ["src/delta.ts"] },
+      { id: "d5", description: "enable secret scanning", paths: [], noDiff: true, noDiffEvidence: "gh api -X PATCH repos/.../security_and_analysis" },
+    ],
+    new Set(["src/alpha.ts", "src/beta.ts", "src/gamma.ts"]), // src/delta.ts missing
+  );
+  assert(
+    vFail.absent.length === 1 &&
+      vFail.absent[0].id === "d4" &&
+      !vFail.absent.some((a) => a.id === "d5"),
+    "classify: one CODE deliverable missing → gate FAILS, names d4 (not d5 the no-diff one)",
+  );
+
+  // 5. Contradictory case: both valid code paths AND no-diff marker → code paths win.
+  const vContradict = classifyDeliverables(
+    [{ id: "d1", description: "alpha", paths: ["src/alpha.ts"], noDiff: true, noDiffEvidence: "some evidence" }],
+    new Set(),
+  );
+  assert(
+    vContradict.deliverables[0].status === "absent" && vContradict.absent.length === 1,
+    "classify: contradictory (paths + no-diff marker) → code paths win, marker ignored (absent)",
+  );
+}
+
 // STEP_ORDINAL sanity — the gate runs at end-of-develop; the ordinal table
 // is the step-ord source the driver loop reads. Assert the POSITION and
 // the TOTAL: a renumbering of the step table (or a step being dropped or
