@@ -3,10 +3,8 @@ import { exec } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { dispatchCore } from "./dispatch.ts";
 import { type ForgeType, detectForge } from "./forge-detect.ts";
 import { type Forge, createForge } from "./forge.ts";
-import { transcriptPathFor } from "./spawn-support.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import {
@@ -14,6 +12,7 @@ import {
   workNotYetOnBranch,
 } from "./work-driver-handoff-consolidate.ts";
 import { renderHandoffMarkdown } from "./work-driver-handoff-markdown.ts";
+import { runHandoffOpsDispatch } from "./work-driver-handoff-ops.ts";
 import { postHandoffWithRetry } from "./work-driver-handoff-post-retry.ts";
 import {
   applyIssueLabelDualTarget,
@@ -23,10 +22,7 @@ import {
   verifyHandoffLabel,
 } from "./work-driver-handoff-post.ts";
 import { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
-import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
-import { inlineHandoffOpsPrompt } from "./work-driver-prompts-late.ts";
-import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { runWorktreeTeardown } from "./work-driver-worktree-sweep.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
@@ -35,8 +31,6 @@ import type { ExecFn } from "./worktree.ts";
 // (§12 file-size split); re-exported so no consumer's import path changes.
 export { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
 const execp = promisify(exec);
-/** Resolution of the ops handoff dispatch when it outlived its bound. */
-const BOUND_EXCEEDED = Symbol("handoff-bound-exceeded");
 export function handoffDispatchTimeoutMs(): number {
   const env = Number(process.env.PI_ENSEMBLE_HANDOFF_TIMEOUT_MS);
   return Number.isFinite(env) && env > 0 ? env : 8 * 60_000;
@@ -142,86 +136,14 @@ export async function runHandoff(
   // already on disk; ops just runs two `gh` invocations. Bounded by
   // handoffDispatchTimeoutMs() — see there for why a bound is safe here when
   // the deleted per-role caps were not, and why the number is what it is.
-  const dispatch = ctx.dispatchFn ?? dispatchCore;
-  const boundMs = handoffDispatchTimeoutMs();
-  const startedAt = Date.now();
+  // (The dispatch leg itself lives in work-driver-handoff-ops.ts — §12
+  // file-size split; the bound, the write-ahead resume bookkeeping and the
+  // completion / dispatch-failed event construction moved verbatim.)
   const prNumber = state.pipelineState.prNumber;
   const target = prNumber ? `pr #${prNumber}` : `issue #${ctx.issue}`;
-  const prompt = inlineHandoffOpsPrompt(
-    ctx.issue,
-    prNumber,
-    handoffBodyPath,
-    scratchDir(ctx.repoRoot, ctx.issue),
-  );
-  // #573 — derive transcript path BEFORE beginDispatch so crash-resume can
-  // locate the surviving session file. Single dispatch: seq=undefined.
-  const handoffRunId = `handoff:ops:${process.pid}:${startedAt}`;
-  const handoffTranscript = transcriptPathFor("ops", handoffRunId);
-  // #382 — write-ahead: persist the intent to dispatch BEFORE awaiting.
-  const begun = await beginDispatch(
-    ctx.repoRoot,
-    next,
-    "handoff",
-    "ops",
-    "handoff",
-    startedAt,
-    handoffTranscript,
-  );
-  let opsReplyText = "";
-  // Two enforcement points, deliberately: `timeoutMs` makes spawn SIGTERM the
-  // real child so an abandoned handoff agent is not left running, and the race
-  // is what frees the DRIVER. Only the race can be relied on — an injected
-  // dispatchFn, a wedged job wrapper or a child that ignores the signal all
-  // leave the promise pending, which is the shape that cost #626 26 minutes.
-  let boundTimer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const bound = new Promise<typeof BOUND_EXCEEDED>((resolve) => {
-      boundTimer = setTimeout(() => resolve(BOUND_EXCEEDED), boundMs);
-      boundTimer.unref?.();
-    });
-    const res = await Promise.race([
-      dispatch(ctx.pi, { role: "ops", prompt }, { label: "ops:handoff", timeoutMs: boundMs }),
-      bound,
-    ]);
-    next = clearDispatch(next, begun.jobId);
-    if (res === BOUND_EXCEEDED) {
-      trace(`work-driver: handoff ops dispatch exceeded ${boundMs}ms — using in-process gh`);
-      next = appendEvent(next, {
-        kind: "dispatch-failed",
-        step: "handoff",
-        role: "ops",
-        jobId: "unknown",
-        label: "ops:handoff",
-        ms: Date.now() - startedAt,
-        at: Date.now(),
-        // Deliberately NO `killCause`. Nothing was killed — the driver stopped
-        // waiting and took the fallback, and the child may still be running.
-        // Tagging this as a kill would also make it the newest kill in the log,
-        // so `killDetail()` would report the handoff's own bound instead of the
-        // kill that actually ended the cycle — burying the cause under the
-        // report of it. The errorTail below already says what happened.
-        errorTail: `handoff ops dispatch exceeded its ${boundMs}ms bound (PI_ENSEMBLE_HANDOFF_TIMEOUT_MS); the in-process gh fallback posted the comment instead`,
-      });
-    } else {
-      opsReplyText = res.text ?? "";
-      const completionEvent = await buildCompletionEvent(ctx, "handoff", "ops", "ops:handoff", res);
-      next = appendEvent(next, completionEvent);
-    }
-  } catch (err) {
-    trace(`work-driver: handoff ops dispatch threw: ${(err as Error).message}`);
-    next = appendEvent(clearDispatch(next, begun.jobId), {
-      kind: "dispatch-failed",
-      step: "handoff",
-      role: "ops",
-      jobId: "unknown",
-      label: "ops:handoff",
-      ms: Date.now() - startedAt,
-      at: Date.now(),
-      errorTail: (err as Error).message?.slice(-200),
-    });
-  } finally {
-    if (boundTimer) clearTimeout(boundTimer);
-  }
+  const dispatchResult = await runHandoffOpsDispatch(ctx, next, handoffBodyPath);
+  next = dispatchResult.next;
+  const opsReplyText = dispatchResult.opsReplyText;
   // RE-ENTRY DEDUPE (census 2026-09-09): a crash after the comment posted
   // but before the enclosing writeState left the file at "running"; resume
   // re-entered handoff and posted a SECOND comment. A prior handoff-emitted
