@@ -92,7 +92,11 @@ export interface Forge {
     body: string,
     baseBranch?: string,
   ): Promise<NormalizedPullRequest>;
-  prMerge(number: number, method?: "squash" | "merge" | "rebase"): Promise<string>;
+  prMerge(
+    number: number,
+    method?: "squash" | "merge" | "rebase",
+    subject?: string,
+  ): Promise<string>;
   prDiff(number: number): Promise<string>;
   prChecks(number: number): Promise<NormalizedCICheck[]>;
   /** #775 — list the PR/MR's review comments (the seam for PR handoff posts). */
@@ -350,8 +354,8 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
         }),
       ),
 
-    prMerge: (number, method = "squash") =>
-      run(cmds.prMergeCmd(forge, number, method), (stdout) => stdout),
+    prMerge: (number, method: "squash" | "merge" | "rebase" = "squash", subject?: string) =>
+      run(cmds.prMergeCmd(forge, number, method, subject), (stdout) => stdout),
 
     prDiff: (number) => run(cmds.prDiffCmd(forge, number), (stdout) => stdout),
 

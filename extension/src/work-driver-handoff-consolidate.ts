@@ -47,8 +47,11 @@
 
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
+import { type ForgeDetection, detectForge } from "./forge-detect.ts";
+import { createForge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
+import { deriveConsolidationSubject } from "./work-driver-handoff-subject.ts";
 import { withIntegrationLock } from "./work-driver-integrate.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -341,13 +344,18 @@ export async function consolidateWorktreesToBranch(
         maxBuffer: 64 * 1024,
       });
       if (hasStaged.trim()) {
-        await execFn(
-          `git commit -m ${JSON.stringify(`chore(handoff): consolidate parked work onto ${branchName}`)} -m ${JSON.stringify(commitBody)}`,
-          {
-            cwd: ctx.repoRoot,
-            maxBuffer: 256 * 1024,
-          },
-        );
+        // #810 — real change IS present (non-empty staged diff), so the commit
+        // describes the CHANGE, not the driver's housekeeping step. The subject
+        // is derived from the issue title; a fetch failure or an unmappable
+        // type falls back to an honest `chore(work):` rather than relabelling
+        // the change to satisfy release-please.
+        const subject =
+          (await deriveConsolidationSubjectFor(ctx)) ??
+          `chore(handoff): consolidate parked work onto ${branchName}`;
+        await execFn(`git commit -m ${JSON.stringify(subject)} -m ${JSON.stringify(commitBody)}`, {
+          cwd: ctx.repoRoot,
+          maxBuffer: 256 * 1024,
+        });
       }
       return { ok: true as const, branchName, workstreams: applied };
     });
@@ -378,6 +386,36 @@ export async function consolidateWorktreesToBranch(
       );
     }
     return { ok: false, reason: `consolidation failed: ${msg.toString().slice(0, 200)}` };
+  }
+}
+
+/**
+ * #810 — the consolidation commit's subject, derived from the issue title.
+ *
+ * Fetches the issue title the same way the branch slug and PR title are built
+ * (`gh issue view` via the forge adapter) and runs it through
+ * {@link deriveConsolidationSubject}. A fetch failure (forge undetermined,
+ * network, auth) or an empty/unmappable title returns `undefined`, which the
+ * caller maps to the honest `chore(handoff):` line rather than guessing.
+ */
+async function deriveConsolidationSubjectFor(ctx: {
+  repoRoot: string;
+  issue: number;
+}): Promise<string | undefined> {
+  if (process.env.PI_ENSEMBLE_FORGE === "none") return undefined;
+  let det: ForgeDetection;
+  try {
+    det = await detectForge(ctx.repoRoot, {});
+  } catch {
+    return undefined;
+  }
+  if (det.forge === "unknown") return undefined;
+  const forge = createForge(det, { cwd: ctx.repoRoot });
+  try {
+    const issue = await forge.issueView(ctx.issue);
+    return deriveConsolidationSubject(issue.title);
+  } catch {
+    return undefined;
   }
 }
 

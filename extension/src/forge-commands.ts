@@ -159,13 +159,28 @@ export function prCreateCmd(
  * that has not merged. `--auto-merge=false` forces the immediate, explicit
  * merge. There is no GitHub analogue (gh pr merge merges immediately).
  */
+/**
+ * `--subject` must be a non-empty string: `gh pr merge` has no way to
+ * express "use the repository default" (an empty value would become
+ * `--subject ''`, which GitHub rejects or treats as a blank subject), so
+ * the flag is absent exactly when no subject was provided. The subject
+ * must not contain a newline (a shell one-liner argument); callers clip.
+ */
+export function prMergeSubjectFlag(subject: string | undefined): string {
+  const s = subject?.trim();
+  if (!s) return "";
+  return ` --subject ${shq(s)}`;
+}
+
 export function prMergeCmd(
   forge: ForgeType,
   number: number,
   method: "squash" | "merge" | "rebase" = "squash",
+  subject?: string,
 ): string {
-  if (forge === "github") return `gh pr merge ${number} --${method} --delete-branch`;
-  return `glab mr merge ${number} --${method} --auto-merge=false`;
+  const subjectFlag = prMergeSubjectFlag(subject);
+  if (forge === "github") return `gh pr merge ${number} --${method} --delete-branch${subjectFlag}`;
+  return `glab mr merge ${number} --${method} --auto-merge=false${subjectFlag}`;
 }
 
 export function prDiffCmd(forge: ForgeType, number: number): string {

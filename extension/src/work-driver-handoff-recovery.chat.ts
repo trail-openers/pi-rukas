@@ -59,10 +59,11 @@ export function recoveryCommandsChat(
   repoRoot: string,
   scratchDirAbs: string,
   forge: ForgeType = "github",
+  mergeSubject?: string,
 ): string[] {
   const ps = state.pipelineState;
   const issue = state.issue;
-  const { cap, steps } = recoveryStepsForCap(state, forge);
+  const { cap, steps } = recoveryStepsForCap(state, forge, mergeSubject);
   const handoffBodyPath =
     (
       state.eventLog

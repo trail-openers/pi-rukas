@@ -13,10 +13,12 @@
 
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
+import { prMergeSubjectFlag } from "./forge-commands.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
+import { mergeSubjectForState } from "./work-driver-merge-subject.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 const execp = promisify(exec);
@@ -100,11 +102,22 @@ export async function deriveMergeMethod(
  *
  * Returns `{ merged: true, warningNote? }` on success, `{ ok: false }` on failure.
  */
+/**
+ * `executeAndVerifyMerge` — the `subject` is the #810 merge-subject seam:
+ * when the driver merges a parked cycle's consolidated single-commit branch,
+ * it must pass the PR title as `--subject` (the handoff-recovery commands
+ * carry the same instruction), because GitHub's squash of a single-commit
+ * branch would otherwise use that commit's housekeeping subject (the
+ * `chore(handoff):` misclassification, PR #801). `undefined` keeps the
+ * command byte-identical to the pre-#810 shape for the normal multi-commit
+ * path and for forge adapters whose merge does not take a subject.
+ */
 export async function executeAndVerifyMerge(
   prNumber: number,
   method: MergeMethod,
   execFn: VerifyExecFn,
   repoRoot: string,
+  subject?: string,
 ): Promise<{ merged: true; warningNote?: string } | { ok: false; reason: string }> {
   const forge = await forgeForCycle({ repoRoot }, execFn);
   if (!forge) {
@@ -127,7 +140,7 @@ export async function executeAndVerifyMerge(
 
   // Execute the merge.
   try {
-    await forge.prMerge(prNumber, method);
+    await forge.prMerge(prNumber, method, subject);
   } catch (err) {
     const e = err as Error & { stderr?: string };
     const message = (e.stderr ?? e.message ?? "").toString();
@@ -197,6 +210,7 @@ async function executeAndVerifyMergeDirect(
   method: MergeMethod,
   execFn: VerifyExecFn,
   repoRoot: string,
+  subject?: string,
 ): Promise<{ merged: true; warningNote?: string } | { ok: false; reason: string }> {
   // First check: is the PR already merged? (idempotent on resume)
   try {
@@ -214,10 +228,13 @@ async function executeAndVerifyMergeDirect(
 
   // Execute the merge.
   try {
-    await execFn(`gh pr merge ${prNumber} --${method} --delete-branch`, {
-      cwd: repoRoot,
-      maxBuffer: 1024 * 1024,
-    });
+    await execFn(
+      `gh pr merge ${prNumber} --${method} --delete-branch${prMergeSubjectFlag(subject)}`,
+      {
+        cwd: repoRoot,
+        maxBuffer: 1024 * 1024,
+      },
+    );
   } catch (err) {
     const e = err as Error & { stderr?: string };
     const message = (e.stderr ?? e.message ?? "").toString();
@@ -302,12 +319,21 @@ export async function mechanizedMerge(
     return { ok: false, reason: methodResult.note };
   }
 
+  // #810 — an explicit squash subject so a parked cycle's consolidated
+  // single-commit branch lands with the PR title, not the driver's
+  // `chore(handoff):` housekeeping commit subject. Returns undefined for
+  // the normal shape (or when the PR title is unreadable) — the command
+  // then stays byte-identical to the pre-#810 form.
+  const subject = await mergeSubjectForState(ctx, state, execFn);
+  if (subject) trace(`work-driver: merge subject override: ${subject}`);
+
   // Execute and verify the merge.
   const mergeResult = await executeAndVerifyMerge(
     prNumber,
     methodResult.method,
     execFn,
     ctx.repoRoot,
+    subject,
   );
   if (!("merged" in mergeResult)) {
     return { ok: false, reason: mergeResult.reason, method: methodResult.method };

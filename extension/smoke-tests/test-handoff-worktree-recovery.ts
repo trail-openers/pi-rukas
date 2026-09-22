@@ -403,10 +403,30 @@ function parkedDevelopConsolidatedState(): WorkState {
         headSha: "99998888",
         capturedAt: 1000,
         committedWork: [
-          { worktreeId: "a", path: `${REPO}/.worktrees/issue-794-a`, headSha: "1111000000000000000000000000000000000000", ahead: 1 },
-          { worktreeId: "b", path: `${REPO}/.worktrees/issue-794-b`, headSha: "2222000000000000000000000000000000000000", ahead: 2 },
-          { worktreeId: "c", path: `${REPO}/.worktrees/issue-794-c`, headSha: "3333000000000000000000000000000000000000", ahead: 3 },
-          { worktreeId: "d", path: `${REPO}/.worktrees/issue-794-d`, headSha: "4444000000000000000000000000000000000000", ahead: 4 },
+          {
+            worktreeId: "a",
+            path: `${REPO}/.worktrees/issue-794-a`,
+            headSha: "1111000000000000000000000000000000000000",
+            ahead: 1,
+          },
+          {
+            worktreeId: "b",
+            path: `${REPO}/.worktrees/issue-794-b`,
+            headSha: "2222000000000000000000000000000000000000",
+            ahead: 2,
+          },
+          {
+            worktreeId: "c",
+            path: `${REPO}/.worktrees/issue-794-c`,
+            headSha: "3333000000000000000000000000000000000000",
+            ahead: 3,
+          },
+          {
+            worktreeId: "d",
+            path: `${REPO}/.worktrees/issue-794-d`,
+            headSha: "4444000000000000000000000000000000000000",
+            ahead: 4,
+          },
         ],
       },
     },
@@ -422,9 +442,7 @@ function parkedDevelopConsolidatedState(): WorkState {
     // biome-ignore lint/suspicious/noExplicitAny: partial fixture
   } as any;
   const { steps } = recoveryStepsForCap(s);
-  const wtSteps = steps.filter(
-    (st) => st.section === "worktree-work-fallback",
-  );
+  const wtSteps = steps.filter((st) => st.section === "worktree-work-fallback");
   assert(wtSteps.length > 0, "#794 stacked: worktree-aware fallback steps are produced");
   // The cherry-pick section must NOT print one cherry-pick per worktree
   // for a stacked cycle (that replays ancestors — the #775 bug). For a
@@ -435,7 +453,9 @@ function parkedDevelopConsolidatedState(): WorkState {
   // fix is not yet integrated (parallel worktree), it degrades to a
   // diagnostic so the other assertions in this file still run.
   const cherryPickSteps = wtSteps.filter((st) => st.lines.some((l) => l.includes("cherry-pick")));
-  const allCherryPicks = cherryPickSteps.flatMap((st) => st.lines.filter((l) => l.includes("cherry-pick")));
+  const allCherryPicks = cherryPickSteps.flatMap((st) =>
+    st.lines.filter((l) => l.includes("cherry-pick")),
+  );
   // Check whether the leaf-selection fix is present (task-b).
   let hasLeafFix = false;
   try {
