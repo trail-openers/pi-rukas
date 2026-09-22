@@ -90,7 +90,17 @@ export async function runBranch(
   // happens at repoRoot: every workstream gets a detached worktree. The LLM
   // ops dispatch below remains as the fallback for env variance (recovery,
   // not an opt-out).
-  {
+  //
+  // #818 — resume stability: a state file that already recorded a
+  // `branchName` MUST keep it. The driver never re-runs the branch step for
+  // a running cycle on the happy path (nextStep's linear table routes plan →
+  // branch exactly once), so a recorded branchName here means a resumed
+  // cycle — and re-deriving the slug from the re-read issue title would
+  // point commit-pr's re-entry guard and the PR at a branch the work was
+  // never on. Skip the mechanized setup entirely and fall through to the
+  // ops dispatch, which records git's ACTUAL branch (the same name).
+  const recordedBranch = state.pipelineState.branchName;
+  if (!recordedBranch) {
     const execFnMech = ctx.verifyExecFn ?? execp;
     try {
       // #679 case 2(b) — build the depends-on map from the plan's
