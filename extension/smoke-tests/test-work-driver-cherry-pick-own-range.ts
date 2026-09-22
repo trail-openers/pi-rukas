@@ -182,6 +182,8 @@ try {
     // rebuild a scratch ref from base + the own SHAs and diff it.
     const scratch = path.join(root, "case1-verify");
     await execFileP("git", ["clone", "-q", f.repo, scratch]);
+    await git(scratch, ["config", "user.email", "t@example.com"]);
+    await git(scratch, ["config", "user.name", "T"]);
     await git(scratch, ["checkout", "-q", "-B", "rebuild", f.baseSha]);
     for (const id of ["a", "b", "c", "d"]) {
       const shas = (
@@ -282,6 +284,8 @@ try {
     );
     const scratch = path.join(root, "case3-verify");
     await execFileP("git", ["clone", "-q", f.repo, scratch]);
+    await git(scratch, ["config", "user.email", "t@example.com"]);
+    await git(scratch, ["config", "user.name", "T"]);
     await git(scratch, ["checkout", "-q", "-B", "rebuild", f.baseSha]);
     const aShas = (
       await git(f.worktrees.a, ["rev-list", "--reverse", `${baseShaOf.a}..HEAD`])
