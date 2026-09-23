@@ -7,6 +7,12 @@
 
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
 import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
+import { explainConsolidation } from "./work-driver-explain-consolidation.ts";
+import { explainDetectCaps } from "./work-driver-explain-detect-caps.ts";
+import { explainLens } from "./work-driver-explain-lens.ts";
+import { explainOther } from "./work-driver-explain-other.ts";
+import { explainPrSteps } from "./work-driver-explain-pr-steps.ts";
+import { explainReview } from "./work-driver-explain-review.ts";
 import { type ParkReason, explainPark } from "./work-driver-intent.ts";
 import { explainMergeHold } from "./work-driver-merge-authority.ts";
 import {
@@ -54,30 +60,10 @@ export function explainCap(
       return `CI failed ${MAX_CI_RETRIES} times in a row (each retry re-entered develop → adversarial → lens-review → ci) — CI is permanently broken for this branch, or the develop step keeps producing the same failure`;
     case "developer-timeout":
       return `developer subagent hit the wall-clock backstop (PI_ENSEMBLE_SPAWN_TIMEOUT_MS, default 2 h) with ${fileBlurb} in the worktree — that backstop only catches runaway loops, so reaching it means the work needs different decomposition (split the issue into smaller workstreams) or manual takeover`;
-    case "loop-detected": {
-      // #543 — the F1 loop detector killed a repeating child. The trigger
-      // evidence lives in pipelineState.capEvidence; render it so the
-      // operator sees WHICH call repeated (the #296 structured-kill contract
-      // — a bare cause cannot say what looped).
-      const ev = state.pipelineState.capEvidence;
-      const loop = ev && ev.kind === "loop" ? ev : undefined;
-      const tool = loop?.tool ? `repeating \`${loop.tool}\`` : "repeating the same tool call";
-      const count = loop?.count ? ` ${loop.count} times` : "";
-      const range = loop?.turnRange ? ` (turns ${loop.turnRange[0]}–${loop.turnRange[1]})` : "";
-      const fp = loop?.fingerprint ? ` with normalised args \`${loop.fingerprint}\`` : "";
-      return `a subagent was looped on — it kept re-issuing the same ${tool}${count}${range}${fp}, so the harness killed it before it burned more budget (override: PI_ENSEMBLE_DISPATCH_CAPS / PI_ENSEMBLE_CAP_KILL_GRACE_MS). This is a detected loop, NOT a provider fault: retrying the same prompt would loop again, so the fix is a changed approach (or a tighter prompt), not a re-dispatch`;
-    }
-    case "token-budget": {
-      // #543 — the F6 cumulative token budget was crossed. The budget and the
-      // spend at the kill live in pipelineState.capEvidence.
-      const ev = state.pipelineState.capEvidence;
-      const budgetEv = ev && ev.kind === "token-budget" ? ev : undefined;
-      const budget = budgetEv
-        ? ` ${Math.round(budgetEv.budgetTokens).toLocaleString()} tokens`
-        : "";
-      const used = budgetEv ? ` (spent ${Math.round(budgetEv.usedTokens).toLocaleString()})` : "";
-      return `a subagent crossed its cumulative token budget${budget}${used} — a cost cap, not a provider fault (override: PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>). The budget bounds context-driven spend; raise it only if the work genuinely needs the context, or re-dispatch with a tighter prompt so it fits`;
-    }
+    case "loop-detected":
+      return explainDetectCaps(cap, state);
+    case "token-budget":
+      return explainDetectCaps(cap, state);
     case "repeat-finding-seam": {
       // #280 §B — same finding shape across ≥3 files is a missing-seam
       // signal, not N independent defects. Patching each instance would
@@ -120,33 +106,12 @@ export function explainCap(
           : "";
       return `the converge gate found the end-of-develop diff INCOMPLETE: ${evidence}. The verify gate passed — the code builds and tests; what is missing is declared plan work the diff never contained. The driver already spent its one-shot corrective re-dispatch on these deliverables; re-running /work re-enters the gate with a fresh corrective budget, or implement the missing deliverables on the branch directly.${partialWarning}${noDiffWarning}`;
     }
-    case "intent-park": {
-      const spec = state.pipelineState.normalisedSpec;
-      const reason = (spec?.parkReason ?? "underspecified") as ParkReason;
-      const why = explainPark(reason, state.issue);
-      const contradictions = (spec?.evidence ?? []).filter((e) => e.verdict === "contradicted");
-      const evidence =
-        contradictions.length > 0
-          ? `\n\nContradicting evidence:\n${contradictions.map((e) => `  - ${e.claim}${e.source ? ` (${e.source})` : ""}`).join("\n")}`
-          : "";
-      const rationale = spec?.rationale ? `\n\nResolver's rationale: ${spec.rationale}` : "";
-      return `${why} No code was written — the driver halted at intent resolution, before plan or branch ran.${evidence}${rationale}`;
-    }
-    case "lens-diff-unreadable": {
-      const why = state.pipelineState.lensDiffError ?? "(no detail recorded)";
-      return `The six-pass code review could not read the diff it is supposed to review: ${why}. The driver halted rather than approving. Before #384 an unreadable diff returned empty, and the empty-diff guard treated empty as approved — so a stale ref or a transient git error merged code that nothing had reviewed. Check that the branch is pushed and \`origin\` is current (\`git fetch origin --prune\`), then re-run.`;
-    }
-    case "adversarial-infra-failure": {
-      const out = [...state.eventLog]
-        .reverse()
-        .find(
-          (e): e is Extract<WorkEvent, { kind: "adversarial-workstream-outcome" }> =>
-            e.kind === "adversarial-workstream-outcome" &&
-            (e.outcome === "infra-failure" || e.outcome === "dispatch-failed"),
-        );
-      const which = out ? `workstream ${out.workstreamId}` : "a workstream";
-      return `${which}'s adversarial loop failed on infrastructure and stayed failed after a retry with the provider-stated backoff — NO verdict exists for it, and that is not a review rejection. The other workstreams' completed reviews are preserved in the state file (adversarial-workstream-outcome events); recover by re-running /work, which re-enters the adversarial step and re-runs ONLY the workstream(s) that never produced a verdict`;
-    }
+    case "intent-park":
+      return explainPrSteps(cap, state);
+    case "lens-diff-unreadable":
+      return explainLens(cap, state);
+    case "adversarial-infra-failure":
+      return explainOther(cap, state);
     case "awaiting-human-merge": {
       const hold = state.pipelineState.mergeHold;
       const pr = state.pipelineState.prNumber;
@@ -211,16 +176,8 @@ export function explainCap(
         failed.length > 0 ? failed.map((f) => `#${f.issue}`).join(", ") : "one or more issues";
       return `\`gh issue view\` returned empty/error for ${which} on every attempt (the fetch is retried with backoff, so a one-off blip is already ruled out) — the driver cannot reliably classify work that hasn't been read. Most likely causes: gh version with projectCards GraphQL deprecation, gh extension hijacking stdout, expired auth (\`gh auth status\`), or a persistent network fault. Fix the gh setup and re-run /work; the body fetch is a load-bearing pre-condition`;
     }
-    case "step-back-revise-spec": {
-      const sb = [...state.eventLog]
-        .reverse()
-        .find(
-          (e): e is Extract<WorkEvent, { kind: "step-back-completed" }> =>
-            e.kind === "step-back-completed",
-        );
-      const elem = sb?.sddElement ?? "(spec element not specified)";
-      return `explore stepped back and identified a spec-level gap in **${elem}** — the lens-review fix loop kept flagging the same shape across rounds (MAST 41.77% — spec-level problem fingerprint). The handoff body includes a proposed revision. After updating the issue (via /plan or \`gh issue edit\`), re-run with \`/work N --restart\` to start a fresh cycle against the revised spec`;
-    }
+    case "step-back-revise-spec":
+      return explainOther(cap, state);
     case "commit-pr-incomplete-consolidation": {
       const missing = missingWorkstreamsFromConsolidation(
         state.pipelineState.incompleteConsolidation,
@@ -256,33 +213,10 @@ export function explainCap(
       );
       return `commit-pr's post-dispatch consolidation gate detected that the committed diff is missing files from these workstreams: ${which}. Ops committed a partial slice — the developers' work in the missing worktrees is uncommitted on disk. Pre-PR14 this would have merged silently (v0.12.13 /work 577 closed an issue with 1 of 3 workstreams' changes shipped). The driver halted before merge; recover by collecting the missing diffs from \`.worktrees/issue-N-<id>\` and re-running, or take over the integration manually.${presentBlurb}${rootBlurb}`;
     }
-    case "verify-failed:commit-pr": {
-      // #500 — the outcome gate fires on the same commit-pr step as the
-      // incomplete-consolidation cap, so the recorded repoRoot state applies
-      // to its recovery too. The blurb stays cap-scoped: it only appends from
-      // the cases whose recovery commands reference the recorded state.
-      const rootBlurb = commitPrRootBlurb(
-        state.pipelineState.commitPrRoot,
-        state.pipelineState.commitPrRootError,
-        "the recovery commands below apply as-is",
-      );
-      return `the driver's outcome-verification gate rejected the commit-pr step's "done" claim — the committed + pushed + PR-opened claim is not backed by executed evidence. The per-check findings are in the handoff body; inspect the recorded repoRoot state there and re-run.${rootBlurb}`;
-    }
-    case "integration-verify-failed": {
-      const base =
-        "the consolidated tree failed the project's verify command, so nothing was pushed. Each workstream passed its own develop gate in its own worktree; the combination does not build — which is a defect integration CREATED, and the only place it can be caught. The failing output is in the plumb-report above. Recover by fixing the interaction (typically one workstream renamed or moved something another still refers to) and re-running";
-      // #500 — this cap fires BEFORE the PR is created, but a failed
-      // mechanized attempt can leave repoRoot dirty, and the operator's next
-      // step (re-running) re-hits integrate()'s dirty preflight. The recorded
-      // state + clearing command is the difference between "re-run" and
-      // "re-run and get wedged again".
-      const rootBlurb = commitPrRootBlurb(
-        state.pipelineState.commitPrRoot,
-        state.pipelineState.commitPrRootError,
-        "clear it with the recorded command so re-running does not wedge at integrate()'s dirty preflight",
-      );
-      return `${base}.${rootBlurb}`;
-    }
+    case "verify-failed:commit-pr":
+      return explainConsolidation(cap, state);
+    case "integration-verify-failed":
+      return explainConsolidation(cap, state);
     case "consolidated-verify-consolidation-created": {
       // #777 — the develop-time consolidated verify failed on a SPECIFIC
       // assertion that neither workstream tripped alone (per-workstream
@@ -307,83 +241,10 @@ export function explainCap(
         .join(", ");
       return `the develop step's consolidated verify failed on a specific assertion that NEITHER workstream tripped alone — the combination created the defect (classification: consolidation-created). ${ev} Worktrees: ${wtList || "(none recorded)"}. This is NOT the same as a cherry-pick conflict or a per-workstream verify failure: the work builds in each worktree in isolation; the combination does not. The specific failing assertion is named in the evidence above — fix the interaction between the two workstreams (dedupe, adjust the scaffold expectation, or resolve the design conflict by hand) and re-run`;
     }
-    case "consolidated-verify-conflict": {
-      // #669 — the develop-time consolidated verify (cherry-picking every
-      // workstream's commit onto the integration branch so the verify
-      // command sees the COMBINED tree) hit a real file-level conflict. The
-      // evidence (which cherry-pick / apply failed, and any preserved patch
-      // path) lives on the cap-hit's `evidence` field; the worktrees are the
-      // operator's inspection targets. Distinct from verify-failed:develop:
-      // the work may be individually fine — a two-workstream overlap is a
-      // re-planning problem, not a retry-the-verify-command problem.
-      // #794 — a STACKED cycle (dependsOn present) is a different shape: the
-      // cherry-pick machinery now selects each workstream's OWN range
-      // (against its dependency's tip), so an ancestor commit is never
-      // re-picked on top of its content; a conflict that STILL fires is a
-      // genuine overlap (or a diverged dependency tip), and re-splitting was
-      // never the fix for a replay — so the prose below no longer asserts
-      // the decomposition as incoherent.
-      const hit = [...state.eventLog]
-        .reverse()
-        .find(
-          (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
-            e.kind === "cap-hit" && e.cap === "consolidated-verify-conflict",
-        );
-      const ev =
-        hit?.evidence ??
-        "(no conflict detail recorded — inspect the worktrees to see which files both workstreams edited)";
-      const wts = state.pipelineState.worktrees ?? {};
-      const wtList = Object.entries(wts)
-        .map(([id, p]) => `${id}: ${p}`)
-        .join(", ");
-      // #794 — stacked cycle: the pick is OWN-range (each workstream's
-      // commits against its dependency's tip), so a conflict here is a
-      // genuine overlap or a diverged dependency tip, never an ancestor
-      // re-apply — the pre-#794 text's "decomposition is incoherent" /
-      // "re-split" diagnosis is exactly wrong for a stack.
-      const stacked = Object.values(state.pipelineState.workstreams ?? {}).some(
-        (ws) => ws && Array.isArray(ws.dependsOn) && ws.dependsOn.length > 0,
-      );
-      if (stacked) {
-        return `the develop step's consolidated verify could not combine the workstreams' commits into a single tree — a cherry-pick / patch-apply conflict, even though each workstream's own range was picked against its dependency's tip (stacked cycle: ancestor commits are NOT re-picked). ${ev} Worktrees: ${wtList || "(none recorded)"}. Do NOT re-split on this alone: the conflict is either a genuine content overlap between workstreams (two workstreams editing the same lines) or a dependency whose tip diverged from the SHA the dependent's worktree was based on. Inspect the conflicting file, resolve it by hand, and re-run; check the dependency tips only if the conflicting lines belong to a dependency's own work`;
-      }
-      return `the develop step's consolidated verify could not combine the workstreams' commits into a single tree — a cherry-pick / patch-apply conflict means two workstreams edited the same lines, so the work is individually plausible but the decomposition is incoherent. ${ev} Worktrees: ${wtList || "(none recorded)"}. This is NOT the same as a verify failure: the fix is to re-split the work into non-overlapping file sets (or resolve the overlap by hand), not to retry the verify command`;
-    }
-    case "lens-fix-not-integrated": {
-      // #492 — the cap-hit itself carries the cause and the git evidence
-      // that establishes it, plus the worktree the driver inspected. Read
-      // the latest such cap from the log; an absent detail (pre-#492 state
-      // files) falls back to naming the worktree from the recorded map.
-      const hit = [...state.eventLog]
-        .reverse()
-        .find(
-          (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
-            e.kind === "cap-hit" && e.cap === "lens-fix-not-integrated",
-        );
-      const worktree = hit?.lensWorktreePath ?? state.pipelineState.worktrees?.default;
-      const cause =
-        hit?.evidence ??
-        (hit
-          ? "(no git evidence recorded — this cycle predates #492's cause classification)"
-          : "(no lens-fix-not-integrated cap recorded in the event log)");
-      const where = worktree
-        ? `The worktree inspected was \`${worktree}\` (\`git -C ${worktree} status\`).`
-        : "The inspected worktree path was not recorded.";
-      // #797 — the repoRoot condition is stated in the handoff body itself,
-      // not only in the evidence. The operator following the recovery steps
-      // must know whether repoRoot is usable before running anything there;
-      // a pre-#797 cap (no `restoredToRef`, no restore claim in the
-      // evidence) gets the honest "not recorded" sentence rather than a
-      // fabricated clean state.
-      const ref = hit?.restoredToRef;
-      const notRestored = cause.includes("repoRoot was NOT restored");
-      const rootCondition = notRestored
-        ? `⚠ repoRoot was NOT restored — it requires manual repair before any further /work cycle: run \`git status\` and \`git branch --show-current\` in the repository root, then \`git reset --hard\` and \`git checkout --force\` to the ref the cycle started from (${ref ?? "see the event-log evidence"}). The preserved state (if any) is named in the evidence above.`
-        : ref
-          ? `repoRoot was restored to ${ref} (verified) — the repository root is usable again; run \`git status\` and \`git symbolic-ref --short HEAD\` there to confirm (it must show ${ref} and an empty porcelain).`
-          : `the repoRoot condition was not recorded (this cycle predates #797) — run \`git status\` in the repository root before re-running; a dirty root will abort the next cycle's branch step.`;
-      return `the lens-fix round did not reach the branch — ${cause}. ${where} ${rootCondition} The cycle halted rather than reviewing again, because the next round would have re-read an unchanged branch and re-reported the identical findings until the round cap fired, which is what burned whole review budgets on already-solved defects. If the fix is still on disk, commit and push it there and re-run; if nothing exists, the findings were likely false positives and should be adjudicated before re-running`;
-    }
+    case "consolidated-verify-conflict":
+      return explainConsolidation(cap, state);
+    case "lens-fix-not-integrated":
+      return explainLens(cap, state);
   }
   // PR17 — `verify-failed:<step>`: the driver-side outcome gate found
   // the step's claimed result isn't backed by executed evidence. The
