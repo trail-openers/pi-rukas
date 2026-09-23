@@ -18,6 +18,30 @@ import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
 import { rerunConsolidatedVerifyOnce } from "./work-driver-verify-flake.ts";
 
+/**
+ * #826 — the recorded outcome of the flake-retry decision, computed ONCE in
+ * `onFirstFailure` (inside `runConsolidatedVerify`) and reported on the
+ * result as `retryDecision` so the caller renders its notes from the value
+ * instead of a second `sharesAssertion` call:
+ *
+ * - `"allowed-no-per-worktree-failure"` — the re-run was allowed because
+ *   there was no per-worktree failure to compare against (the #782 shape).
+ * - `"allowed-shared"` — the per-worktree assertion is KNOWN and shared by
+ *   the first consolidated run's RAW failure (one unstable test).
+ * - `"allowed-unknown"` — the per-worktree assertion was NOT extractable
+ *   (honest absence); the re-run was allowed, preserving pre-#826 behaviour
+ *   for that case — absence is not evidence of a mismatch.
+ * - `"suppressed-mismatch"` — the per-worktree assertion is KNOWN and the
+ *   first consolidated run did NOT share it; the re-run was withheld (a
+ *   single per-worktree failure with a different assertion is a genuine
+ *   defect the re-run could mask — the #821 shape).
+ */
+export type ConsolidatedVerifyRetryDecision =
+  | "allowed-no-per-worktree-failure"
+  | "allowed-shared"
+  | "allowed-unknown"
+  | "suppressed-mismatch";
+
 export async function runConsolidatedVerify(
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
   opts: {
@@ -38,27 +62,51 @@ export async function runConsolidatedVerify(
      */
     workstreamBaseShas?: Record<string, string>;
     /**
-     * #782 — the single bounded flake re-run. When the first run fails and
-     * `canRetry` is true, the SAME command re-runs once on the SAME still-
-     * checked-out scratch tree (BEFORE `restoreRoot`) and the outcome
-     * replaces the single-run verdict: the re-run passes →
-     * `status: "passed"` + the `onRecover` callback with the original
-     * failing tail (the caller emits `verify-flake-recovered` and proceeds);
-     * the re-run fails → the SAME failed shape as a single-run failure,
-     * with `retried: true` and `recovered: false` so the caller records
-     * `retries: 1, recovered: false` and classifies/parks exactly as today.
-     * The retry is caller-gated: `canRetry` must be true only when every
-     * per-worktree verify passed AND this is a genuine consolidation (the
-     * caller owns those preconditions — N>1 at this seam).
+     * #782/#826 — the single bounded flake re-run, two-phase contract:
+     * `canRetry` only ADMITS the first run (the length precondition —
+     * caller-gated, N>1 at this seam); the FINAL allow/suppress decision is
+     * made by `onFirstFailure` when the first run fails. When the re-run is
+     * allowed it runs once on the SAME still-checked-out scratch tree
+     * (BEFORE `restoreRoot`) and the outcome replaces the single-run
+     * verdict: the re-run passes → `status: "passed"` + the `onRecover`
+     * callback with the original failing tail (the caller emits
+     * `verify-flake-recovered` and proceeds); the re-run fails → the SAME
+     * failed shape as a single-run failure, with `retried: true` and
+     * `recovered: false` so the caller records `retries: 1, recovered:
+     * false` and classifies/parks exactly as today.
+     * #826 — `onFirstFailure` fires with the RAW first-run failure text
+     * (before `extractAttributedTail` elision) and returns the decision —
+     * `{ allowed: boolean, decision: ConsolidatedVerifyRetryDecision }`.
+     * `allowed: false` SUPPRESSES the re-run (e.g. a known per-worktree
+     * assertion the first run did not share — a likely genuine defect).
+     * `allowed: true` runs it. The decision is computed here, ONCE, and
+     * reported on the failed/passed result as `retryDecision` so the
+     * caller renders its notes from the recorded value instead of a second
+     * comparator call. When no first-run failure occurs (or the callback is
+     * absent) `retryDecision` is undefined.
      */
     retry?: {
       canRetry: boolean;
       onRecover: (evidenceTail?: string) => void;
+      onFirstFailure?: (
+        rawFailure: string,
+      ) => { allowed: boolean; decision: ConsolidatedVerifyRetryDecision } | undefined;
     };
   },
 ): Promise<
-  | { status: "passed"; applied: string[]; recovered?: boolean }
-  | { status: "failed"; detail: string; retried?: boolean; recovered?: boolean }
+  | {
+      status: "passed";
+      applied: string[];
+      recovered?: boolean;
+      retryDecision?: ConsolidatedVerifyRetryDecision;
+    }
+  | {
+      status: "failed";
+      detail: string;
+      retried?: boolean;
+      recovered?: boolean;
+      retryDecision?: ConsolidatedVerifyRetryDecision;
+    }
   // #725 — the caller distinguishes a genuine cherry-pick / patch-apply
   // conflict from a dirty-repoRoot preflight refusal via `kind`, not by
   // regexing the `detail` prose (a reworded message used to silently
@@ -183,21 +231,39 @@ export async function runConsolidatedVerify(
       const e = err as Error & { stderr?: string; stdout?: string };
       verifyFailure = (e.stderr || e.stdout || e.message || "").toString().trim();
     }
-    // #782 — the single bounded flake re-run. It happens on the SAME still-
-    // checked-out scratch tree, BEFORE `restoreRoot` (a re-run after the
-    // restore would test the restored mainline, not the combination). When it
-    // passes, the probe is declared passed with the recovery flag; when it
-    // fails, the classification below proceeds on the second run's tail — a
-    // test that fails twice is not a flake, so the cycle parks as today.
+    // #782/#826 — the single bounded flake re-run. It happens on the SAME
+    // still-checked-out scratch tree, BEFORE `restoreRoot` (a re-run after
+    // the restore would test the restored mainline, not the combination).
+    // The retry decision (allow / suppress) is made ONCE in onFirstFailure
+    // against the RAW first-run failure and reported on the result as
+    // `retryDecision`; the caller renders its notes from that recorded
+    // value, not from a second comparator call.
     let recovered = false;
     let retried = false;
+    let retryDecision: ConsolidatedVerifyRetryDecision | undefined;
     if (verifyFailure !== undefined && retry?.canRetry) {
-      retried = true;
-      const secondTail = await rerunConsolidatedVerifyOnce(execFn, verifyCmd, repoRoot, timeoutMs);
-      if (secondTail === undefined) {
-        recovered = true;
-      } else {
-        verifyFailure = secondTail;
+      const verdict = retry.onFirstFailure?.(verifyFailure);
+      // One decision, one re-run: no callback (or no result from it) means
+      // there was no per-worktree failure to compare against — the re-run
+      // is allowed (the #782 shape).
+      const { allowed, decision } =
+        verdict === undefined
+          ? { allowed: true as const, decision: "allowed-no-per-worktree-failure" as const }
+          : { allowed: verdict.allowed, decision: verdict.decision };
+      retryDecision = decision;
+      if (allowed) {
+        retried = true;
+        const secondTail = await rerunConsolidatedVerifyOnce(
+          execFn,
+          verifyCmd,
+          repoRoot,
+          timeoutMs,
+        );
+        if (secondTail === undefined) {
+          recovered = true;
+        } else {
+          verifyFailure = secondTail;
+        }
       }
     }
     const restore = await restoreRoot();
@@ -205,7 +271,7 @@ export async function runConsolidatedVerify(
       orchResult.cherryApplied.length > 0 ? orchResult.cherryApplied : orchResult.patchApplied;
     if (recovered) {
       retry?.onRecover(verifyFailure);
-      return { status: "passed", applied, recovered: true };
+      return { status: "passed", applied, recovered: true, retryDecision };
     }
     if (verifyFailure !== undefined) {
       // #723 — same attribution anchor as formatExecError: a bare `.slice(-800)`
@@ -227,6 +293,7 @@ export async function runConsolidatedVerify(
         detail: `${detail} ${restoreClaimFor(restore)}`,
         retried,
         recovered: false,
+        retryDecision,
       };
     }
     if (!restore.restored) {

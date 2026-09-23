@@ -22,14 +22,32 @@ import {
   classifyConsolidatedVerifyFailure,
   consolidatedFailureMessage,
   extractSpecificAssertion,
+  sharesAssertion,
 } from "./work-driver-consolidation-classify.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { provisionDepsHint } from "./work-driver-deps-hint.ts";
+import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { formatExecError, verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
+
+/**
+ * #826 — the three-state per-worktree assertion for the flake-retry gate.
+ * The RAW extracted assertion (a specific `✗`/error line found in the
+ * failure text) or `null` when nothing assertion-shaped could be extracted
+ * (honest absence, the NO_SPECIFIC_ASSERTION sentinel is NOT a known
+ * assertion). Known-and-mismatching suppresses the re-run (the #821 defect);
+ * unknown ALLOWS it (the pre-#826 behaviour for that case): absence on the
+ * per-worktree side is not evidence the consolidated failure is an
+ * independent defect.
+ */
+function gatePerAssertion(failureText: string | undefined): string | null {
+  if (failureText === undefined) return null;
+  const extracted = extractSpecificAssertion(failureText);
+  return extracted === NO_SPECIFIC_ASSERTION ? null : extracted;
+}
 
 // #794 — the per-worktree + consolidated verify gate of the develop step
 // (moved from work-driver-verify-develop.ts to keep that file under the
@@ -136,25 +154,38 @@ export async function runVerifyCommandGate(opts: {
     changedWorktrees,
     perWorktreeVerifyFailures,
   );
-  // #782/#807 — the consolidated-verify flake retry: fires when this is a
-  // genuine consolidation (N>1) AND the per-worktree failures are at most
-  // one (zero = the #782 shape; one = a possible flake). The #798 shape —
-  // a timing-flaky test that failed in a worktree AND on the combined tree
-  // is one unstable test, not two independent defects — is what makes a
-  // single per-worktree failure retry-eligible. A per-worktree failure with
-  // a DIFFERENT assertion (or more than one per-worktree failure) remains a
-  // genuine defect and still blocks the retry, so a real consolidation-
-  // created defect is never retried into a false pass. The shared-assertion
-  // check itself is made against the consolidated failure AFTER it runs
-  // (below) — the per-worktree failure is not yet known to share the
-  // consolidated assertion until the consolidated run fails. The re-run
-  // happens inside runConsolidatedVerify, BEFORE classification and BEFORE
-  // the restore, and is bounded at exactly one.
+  // #782/#807/#826 — the consolidated-verify flake retry, two-phase gate:
+  // (1) a length-only precondition admits the FIRST consolidated run — it
+  // fires when this is a genuine consolidation (N>1) AND the per-worktree
+  // failures are at most one (zero = the #782 shape; one = a possible
+  // flake, the #798 shape where a timing-flaky test failed in a worktree
+  // AND on the combined tree — one unstable test, not two independent
+  // defects). The consolidated assertion is not known before the run, so
+  // nothing more can be checked up front.
+  // (2) the RE-RUN is decided by onFirstFailure against the RAW first-run
+  // failure (deliberately raw: the elided detail can drop the ✗ line —
+  // see #827 — while the classifier compares the elided detail): a KNOWN
+  // per-worktree assertion that the first run does NOT share is suppressed
+  // (a single per-worktree failure with a different assertion is a genuine
+  // defect — the re-run would burn a full verify run and could mask it,
+  // the #821 defect); a SHARED assertion or an UNKNOWN (unextractable) one
+  // ALLOWS the re-run (pre-#826 behaviour for the unknown case). The
+  // decision is computed ONCE in onFirstFailure and reported on the result
+  // as `retryDecision` — the post-run notes are rendered from it, not from
+  // a second comparator call.
+  const singlePerWorktreeFailure = perWorktreeVerifyFailures.length === 1;
   const flakeRetryPrecondition =
-    (perWorktreeVerifyFailures.length === 0 ||
-      (perWorktreeVerifyFailures.length === 1 &&
-        Object.keys(perWorktreeFailuresByWs).length === 1)) &&
+    (!singlePerWorktreeFailure || Object.keys(perWorktreeFailuresByWs).length === 1) &&
     Object.keys(worktrees).length > 1;
+  // The #807 invariant: the per-worktree assertion is extracted BEFORE the
+  // consolidated run so the post-run note reads the same value the
+  // classifier will compare. `null` = honest absence (nothing extractable),
+  // which the gate treats as unknown, not as a mismatch.
+  const singlePerWs = singlePerWorktreeFailure
+    ? Object.keys(perWorktreeFailuresByWs)[0]
+    : undefined;
+  const singlePerAssertion: string | null | undefined =
+    singlePerWs !== undefined ? gatePerAssertion(perWorktreeFailuresByWs[singlePerWs]) : undefined;
   const cons = await runConsolidatedVerify(execFn, {
     repoRoot: ctx.repoRoot,
     baseSha: baseSha as string,
@@ -168,14 +199,35 @@ export async function runVerifyCommandGate(opts: {
     timeoutMs: verifyTimeoutMs(),
     retry: {
       canRetry: flakeRetryPrecondition,
+      onFirstFailure: (raw) => {
+        if (singlePerAssertion === undefined) {
+          return { allowed: true, decision: "allowed-no-per-worktree-failure" };
+        }
+        if (singlePerAssertion === null) {
+          return { allowed: true, decision: "allowed-unknown" };
+        }
+        return sharesAssertion(raw, singlePerAssertion)
+          ? { allowed: true, decision: "allowed-shared" }
+          : { allowed: false, decision: "suppressed-mismatch" };
+      },
       onRecover: (evidenceTail) => {
         notes.push(
           `consolidated verify RECOVERED after one bounded re-run (transient flake) — first-run failure preserved${evidenceTail ? `: ${evidenceTail}` : ""}`,
         );
+        // The decision note rides on the recorded `retryDecision` AFTER the
+        // consolidated run (below), where the same value also drives the
+        // failed-path notes — one read, no closure cell.
         onVerifyFlakeRecovered?.(evidenceTail);
       },
     },
   });
+  // The decision is recorded ONCE by the consolidated run (see onFirstFailure
+  // above) and reported on the failed/passed result as `retryDecision` —
+  // every post-run note below renders from this value, never a second
+  // comparator call. A conflict outcome (refusal or cherry-pick failure)
+  // never records one.
+  const consRetryDecision =
+    cons.status === "failed" || cons.status === "passed" ? cons.retryDecision : undefined;
   if (cons.status === "conflict") {
     // #725 — "conflict" has TWO causes: a genuine cherry-pick / patch-apply
     // conflict (a decomposition error) and the repoRoot-dirty preflight
@@ -213,32 +265,37 @@ export async function runVerifyCommandGate(opts: {
     // classifier module docstring for the three-way distinction). #782 —
     // when the flake re-run happened (and also failed), the detail is the
     // second run's tail; a test that fails twice is not a flake, so the
-    // cycle parks as today. #807 — the gate below must read the SAME map
-    // the retry precondition did (see the buildPerWorktreeFailuresByWs
-    // call above), so "shared assertion" cannot mean two different things.
+    // cycle parks as today.
     const wsIds = Object.keys(worktrees);
-    // #807 — if a retry fired despite one per-worktree failure (the #798
-    // shape: one flaky test that failed twice), the shared assertion is
-    // only provable now, from the consolidated failure itself.
-    if (flakeRetryPrecondition && perWorktreeVerifyFailures.length === 1) {
-      const ws = Object.keys(perWorktreeFailuresByWs)[0];
-      if (ws !== undefined) {
-        const perAssertion = extractSpecificAssertion(perWorktreeFailuresByWs[ws] ?? "");
-        const consAssertion = extractSpecificAssertion(cons.detail);
-        if (
-          perAssertion &&
-          perAssertion !== NO_SPECIFIC_ASSERTION &&
-          consAssertion === perAssertion
-        ) {
-          notes.push(
-            `flake retry fired despite a per-worktree failure — workstream '${ws}' and the consolidated tree failed on the SAME assertion (${perAssertion}), which is one unstable test failing twice, not two independent defects`,
-          );
-        } else {
-          notes.push(
-            "flake retry fired despite a per-worktree failure, but its assertion did NOT match the consolidated failure — the re-run was conservative; the classification below attributes the failure",
-          );
-        }
+    // #807/#826 — post-run annotation, rendered from the decision computed
+    // ONCE in onFirstFailure (no second comparator call; the mismatch
+    // branch is unreachable here because suppression withheld the re-run
+    // before this point).
+    if (cons.retried === true && singlePerWs !== undefined) {
+      if (consRetryDecision === "allowed-shared" && singlePerAssertion !== null) {
+        notes.push(
+          `flake retry fired despite a per-worktree failure — workstream '${singlePerWs}' and the consolidated tree failed on the SAME assertion (${singlePerAssertion}), which is one unstable test failing twice, not two independent defects`,
+        );
+      } else if (consRetryDecision === "allowed-unknown") {
+        notes.push(
+          `flake retry fired despite a per-worktree failure — workstream '${singlePerWs}' failed but no assertion could be extracted from its failure, so the re-run was allowed (pre-#826 behaviour for the unknown case) and also failed`,
+        );
       }
+    }
+    if (
+      consRetryDecision === "suppressed-mismatch" &&
+      singlePerWs !== undefined &&
+      singlePerAssertion !== null
+    ) {
+      // #826 — suppression is observable: name the per-worktree assertion
+      // and state that the re-run was WITHHELD (bounded evidence only —
+      // the raw failure text is never embedded in a note).
+      const boundedPer = perWorktreeFailuresByWs[singlePerWs]
+        ? extractAttributedTail(perWorktreeFailuresByWs[singlePerWs] ?? "", 800).tail
+        : "";
+      notes.push(
+        `flake re-run WITHHELD — workstream '${singlePerWs}' failed with assertion (${singlePerAssertion}) while the consolidated first run failed on a different assertion, so a single re-run was suppressed as likely masking a genuine defect${boundedPer ? ` — per-worktree evidence: ${boundedPer}` : ""}`,
+      );
     }
     const verdict = classifyConsolidatedVerifyFailure(
       wsIds.length,
@@ -251,6 +308,35 @@ export async function runVerifyCommandGate(opts: {
     notes.push(
       `consolidated verify passed — workstreams ${cons.applied.join(", ")} combined in one tree passed \`${cmd}\`; per-worktree verify failures are recorded as evidence, not failures, because the combined tree is the verdict for cross-worktree artifacts`,
     );
+    // #826 — recovery is as observable as failure: when the re-run recovered
+    // a first-run failure that shares a KNOWN per-worktree assertion (or is
+    // attributed to a transient flake, the `allowed-unknown` case), record
+    // the per-worktree failure evidence here — BOUNDED to the extracted
+    // assertion plus an attributed 800-char tail, never the raw failure
+    // text. Rendered from `cons.retryDecision` (the value the seam recorded
+    // once); `allowed-no-per-worktree-failure` has no per-worktree failure
+    // to evidence and is left to the RECOVERED note emitted in onRecover.
+    if (
+      cons.recovered === true &&
+      singlePerWs !== undefined &&
+      (consRetryDecision === "allowed-shared" || consRetryDecision === "allowed-unknown")
+    ) {
+      const boundedPer = perWorktreeFailuresByWs[singlePerWs]
+        ? extractAttributedTail(perWorktreeFailuresByWs[singlePerWs], 800).tail || "(no tail)"
+        : "(no tail)";
+      if (consRetryDecision === "allowed-shared" && singlePerAssertion !== null) {
+        notes.push(
+          `recovered with a per-worktree failure present — workstream '${singlePerWs}' failed on the SAME assertion (${singlePerAssertion}) as the consolidated first run — one unstable test, not two independent defects — per-worktree evidence: ${boundedPer}`,
+        );
+      } else {
+        // `allowed-unknown`: the per-worktree assertion was not
+        // extractable, so the recovery is attributed to a transient
+        // flake and the per-worktree failure stands as evidence.
+        notes.push(
+          `recovered with a per-worktree failure present — workstream '${singlePerWs}' failed (assertion not extractable from the per-worktree failure; recovery attributed to a transient flake) — per-worktree failure stands as evidence: ${boundedPer}`,
+        );
+      }
+    }
   }
   // Aggregation: a consolidated PASS downgrades per-worktree failures
   // to evidence; a consolidated FAILURE keeps them as failures.

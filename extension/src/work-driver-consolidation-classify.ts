@@ -173,8 +173,8 @@ export function extractSpecificAssertion(failureTail: string): string {
  * sentinel never matches — absence on either side is not evidence of a
  * shared cause.
  */
-function sharesAssertion(consolidated: string, per: string): boolean {
-  return per !== NO_SPECIFIC_ASSERTION && per.length > 0 && consolidated.includes(per);
+export function sharesAssertion(consolidated: string, per: string): boolean {
+  return per !== NO_SPECIFIC_ASSERTION && consolidated.includes(per);
 }
 
 /**
