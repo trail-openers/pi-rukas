@@ -14,6 +14,7 @@
  * its dependency's tip (no ancestor replay — the #775 shape).
  */
 import path from "node:path";
+import { describeSiblingFenceViolations } from "./work-develop-fence-verdicts.ts";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import {
   NO_SPECIFIC_ASSERTION,
@@ -24,6 +25,7 @@ import {
 } from "./work-driver-consolidation-classify.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { provisionDepsHint } from "./work-driver-deps-hint.ts";
+import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { formatExecError, verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -44,6 +46,16 @@ export async function runVerifyCommandGate(opts: {
   failures: string[];
   notes: string[];
   onVerifyFlakeRecovered?: (evidenceTail?: string) => void;
+  /**
+   * #814 — structured fence violations recorded by the scope gate earlier
+   * in this same develop verify (the gate runs BEFORE the consolidated
+   * verify, so the records already exist when the conflict branch fires).
+   * When a sibling-declared violation exists, the conflict is the fence
+   * materialising at consolidation, not an incoherent decomposition — the
+   * failure string attributes it accordingly (workstream, file, declaring
+   * sibling) and the "incoherent" claim is not asserted.
+   */
+  fenceViolations?: FenceViolationRecord[];
 }): Promise<void> {
   const {
     execFn,
@@ -57,6 +69,7 @@ export async function runVerifyCommandGate(opts: {
     failures,
     notes,
     onVerifyFlakeRecovered,
+    fenceViolations,
   } = opts;
   const VALID_SHA_RE = /^[0-9a-f]{40}$/;
   const isValidSha = (s: string | undefined) => typeof s === "string" && VALID_SHA_RE.test(s);
@@ -173,9 +186,27 @@ export async function runVerifyCommandGate(opts: {
         `consolidated verify was refused — repoRoot is dirty (${cons.detail}). Leftover residue from an earlier cycle, NOT a workstream conflict or verify failure: run \`git status\` at the repo root, clear the residue, and re-run the cycle`,
       );
     } else {
-      failures.push(
-        `consolidated verify could not combine the workstreams' commits — cherry-pick / apply conflict (${cons.detail}). Two workstreams edited the same lines; the decomposition is incoherent, which is distinct from a verify failure`,
-      );
+      // #814 — the "incoherent decomposition" claim is asserted ONLY when
+      // the driver has NO recorded fence evidence. When a sibling-declared
+      // fence violation exists (the #792/#794 shape: declared paths were
+      // DISJOINT — a developer wrote outside its scope, and the conflict is
+      // that violation materialising at consolidation), the conflict is the
+      // FENCE's consequence, and re-splitting the plan fixes nothing: name
+      // the violating workstream, the file, and the declaring sibling
+      // instead of re-diagnosing a plan that was never wrong.
+      // #814 — the sibling-declared attribution sentence is the shared
+      // describeSiblingFenceViolations (one home for the wording; the
+      // explainConsolidation fence branch renders the same sentence).
+      const named = describeSiblingFenceViolations(fenceViolations ?? []);
+      if (named !== undefined) {
+        failures.push(
+          `consolidated verify could not combine the workstreams' commits — cherry-pick / apply conflict (${cons.detail}). The develop scope fence recorded a sibling-declared violation BEFORE this conflict: ${named}. The declared paths are disjoint — the decomposition is fine; the fence was violated and the conflict is its consequence at consolidation. Re-splitting the plan will NOT fix this; restore the fence boundary (the touching workstream's commit must not include that file) and re-run`,
+        );
+      } else {
+        failures.push(
+          `consolidated verify could not combine the workstreams' commits — cherry-pick / apply conflict (${cons.detail}). Two workstreams edited the same lines; the decomposition is incoherent, which is distinct from a verify failure`,
+        );
+      }
     }
   } else if (cons.status === "failed") {
     // #777/#807 — classify the consolidated-tree failure (see the

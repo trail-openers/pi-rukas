@@ -464,7 +464,7 @@ export type WorkEvent =
        */
       kind: "branches-converged";
       step: WorkStep;
-      verdicts: Array<{ id: string; ok: boolean }>;
+      verdicts: Array<{ id: string; ok: boolean; reason?: string }>;
       at: number;
     }
   | {

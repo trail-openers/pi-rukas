@@ -11,8 +11,11 @@ import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
 export type { Workstream, WorkstreamBaseShas } from "./workflow-state-schema-workstreams.ts";
 export type { ConsolidationCompleteness } from "./workflow-state-schema-consolidation-completeness.ts";
 export type { ConvergeEvidence } from "./workflow-state-schema-converge.ts";
+// #814 — FenceViolation lives with the other verifyEvidence shapes.
+export type { FenceViolation } from "./workflow-state-schema-verify.ts";
 import type { ConsolidationCompleteness } from "./workflow-state-schema-consolidation-completeness.ts";
 import type { ConvergeEvidence } from "./workflow-state-schema-converge.ts";
+import type { FenceViolation } from "./workflow-state-schema-verify.ts";
 import type { Workstream, WorkstreamBaseShas } from "./workflow-state-schema-workstreams.ts";
 
 export {
@@ -424,6 +427,11 @@ export interface PipelineState {
     at: number;
     retries?: number;
     recovered?: boolean;
+    /**
+     * #814 — structured develop-scope-fence violations (see
+     * `FenceViolation` below). Absent = none recorded.
+     */
+    fenceViolations?: FenceViolation[];
   };
   /** Terminal status. "running" while active; flips on `merged` or `handoff`. */
   status: "running" | "merged" | "handoff" | "aborted";
