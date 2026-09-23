@@ -14,6 +14,7 @@ import type { DeferredCreationEventFragment } from "./workflow-state-events-defe
 import type {
   HandoffConsolidatedEvent,
   HandoffEmittedEvent,
+  LensSkippedEmptyDiffEvent,
 } from "./workflow-state-events-handoff.ts";
 import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-leftover.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
@@ -24,9 +25,13 @@ import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
 // #539 — the commit-pr fallback-cause vocabulary (M1) lives in the
 // sibling events-memory fragment module: single definition.
 export type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
+// #775 prep — the handoff event members live in the sibling fragment module;
+// re-exported here so consumers' import paths are unaffected and the
+// `delivery` field (#775) can grow the fragment without inflating this file.
 export type {
   HandoffConsolidatedEvent,
   HandoffEmittedEvent,
+  LensSkippedEmptyDiffEvent,
 } from "./workflow-state-events-handoff.ts";
 /**
  * Linear step identifiers the driver walks. This union IS the definition
@@ -151,16 +156,7 @@ export type WorkEvent =
       /** "ISSUES_FOUND" | "CRITICAL_ISSUES_FOUND" — preserved verbatim from the verdict. */
       verdict: "ISSUES_FOUND" | "CRITICAL_ISSUES_FOUND";
     }
-  | {
-      /**
-       * PR6 — runLens skipped child dispatch (empty diff); paired with a
-       * synthesised `lens-approved` so the driver advances. Avoids #533
-       * hallucinated findings on empty context.
-       */
-      kind: "lens-skipped-empty-diff";
-      at: number;
-      round: number;
-    }
+  | LensSkippedEmptyDiffEvent
   | {
       /**
        * #286 — runAdversarial skipped the adversarial loop for a workstream
