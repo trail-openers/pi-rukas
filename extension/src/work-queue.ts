@@ -41,7 +41,7 @@ import {
   deferredLeftoverPath,
   deferredLeftoverStep,
 } from "./work-queue-parks.ts";
-import { writeQueueSummary } from "./work-queue-summary.ts";
+import { mergeQueueSummaryEntries } from "./work-queue-summary.ts";
 // #753 (six-lens FIX 5) — the renderer moved to work-queue-render.ts to keep
 // this module under the 500-line cap; re-exported so importers keep working.
 export { renderQueueSummary } from "./work-queue-render.ts";
@@ -461,9 +461,13 @@ export async function runWorkQueue(opts: RunQueueOpts): Promise<QueueSummary> {
   // #382 — the summary is the most actionable state the run produces: which
   // groups parked, why, and what a human has to do about each. It used to
   // exist only in the scrollback of the session that produced it, so walking
-  // away and coming back meant it was gone. Best-effort: a failed write must
-  // not turn a completed queue into an error.
-  await writeQueueSummary(opts.repoRoot, summary);
+  // away and coming back meant it was gone. #808 — merge, not overwrite: the
+  // queue summary is an accumulating index and single-issue cycles write to
+  // it too, so a whole-file overwrite here would erase the rows earlier
+  // single-issue cycles recorded (the #765 incident shape, reversed). Only
+  // this run's groups are replaced; rows for other issues are kept. Best-
+  // effort: a failed write must not turn a completed queue into an error.
+  await mergeQueueSummaryEntries(opts.repoRoot, summary.entries, summary.notStarted);
   return summary;
 }
 
