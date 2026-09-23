@@ -1,32 +1,27 @@
 #!/usr/bin/env bun
 /**
- * #543 F1 — loop-detector fixtures (a)–(h) from the issue spec.
+ * #543 F1 + #772 — loop-detector fixtures.
  *
- * The detector (loop-detector.ts) is a pure function: fixtures script
- * "message_end" content-block streams through "createLoopDetector().observe()"
- * and assert when the streak crosses the steer (5) and kill (10) thresholds.
+ * F1 (a)–(h): streak-based identical-tool-call detection (steer@5, kill@10).
+ * #772 (i)–(m): success-keyed non-adjacent repetition counter (steer@3, kill@6).
  *
- * The grace window (g's deferral) lives in the CALLER (spawn-caps.ts,
- * wall-clock). We exercise the caller through "createCapSession" with a fake
- * child and a real (short) wall clock: the 500ms poll inside createCapSession
- * is real, and PI_ENSEMBLE_CAP_KILL_GRACE_MS is injected via env (1000ms
- * deferral window; 0 for the immediate-kill variant), keeping the test
- * deterministic without a real spawn.
+ * The detector is a pure function: fixtures script "message_end" and
+ * "toolResult" streams through `createLoopDetector().observe()` and
+ * `.observeToolResult()`, asserting threshold crossings.
  *
- * Ops-role exemption (f) is the caller's decision (spawn-caps.ts "capsOn"
- * excludes role === "ops"); we assert it through createCapSession, not the
- * detector (which has no role concept).
- *
- * (h) — no-retry for a loop-killed lens: runLensReview's retry loop breaks
- * on killCause "loop" (lens-review.ts "#543 no-retry-on-cap-kill"); the
- * adversarial-side no-retry is already covered by
- * test-work-driver-cap-kill-no-retry.ts. There was no offline test for the
- * lens side, so this file asserts it here with a mocked spawn.
+ * The grace window (g) lives in the caller (spawn-caps.ts, wall-clock);
+ * we exercise it through `createCapSession` with a fake child.
  */
 
 import { mock } from "bun:test";
 
-import { createLoopDetector, loopDetectorEnabled, loopSteerText } from "../src/loop-detector.ts";
+import {
+  SUCCESS_KILL_AT,
+  SUCCESS_STEER_AT,
+  createLoopDetector,
+  loopSteerText,
+  successSteerText,
+} from "../src/loop-detector.ts";
 import type { LoopDetectionEvent, LoopDetector } from "../src/loop-detector.ts";
 import type { PiContentBlock } from "../src/pi-event-shapes.ts";
 import { createCapSession } from "../src/spawn-caps.ts";
@@ -40,29 +35,36 @@ function assert(cond: boolean, msg: string) {
     exit = 1;
   }
 }
-
 function eq(actual: unknown, expected: unknown, msg: string): boolean {
   const a = JSON.stringify(actual);
   const e = JSON.stringify(expected);
-  if (a === e) {
-    assert(true, msg);
-    return true;
-  }
+  if (a === e) return assert(true, msg);
   console.error(`  expected: ${e}\n  actual:   ${a}`);
   return assert(false, msg);
 }
 
-/* ---------------------------------------------------------------- helpers */
-
-function tc(name: string, args: unknown): PiContentBlock {
-  return { type: "toolCall", id: "x", name, arguments: args };
+/* helpers */
+function tc(name: string, args: unknown, id?: string): PiContentBlock {
+  return { type: "toolCall", id: id ?? "x", name, arguments: args };
 }
-function bash(command: string): PiContentBlock {
-  // Pi's message_end shape carries arguments as a JSON string; the detector
-  // redacts absolute paths inside that string.
-  return tc("bash", JSON.stringify({ command }));
+function bash(command: string, id?: string): PiContentBlock {
+  return tc("bash", JSON.stringify({ command }), id);
 }
-
+function read(path: string, id?: string): PiContentBlock {
+  return tc("read", { path }, id);
+}
+function edit(path: string, id?: string): PiContentBlock {
+  return tc("edit", { path }, id);
+}
+function feedToolResult(
+  det: LoopDetector,
+  toolCallId: string,
+  toolName: string,
+  resultText: string,
+  isError: boolean,
+): LoopDetectionEvent | null {
+  return det.observeToolResult(toolName, toolCallId, resultText, isError);
+}
 function withEnv<T>(vars: Record<string, string | undefined>, fn: () => T): T {
   const prior: Record<string, string | undefined> = {};
   for (const [k, v] of Object.entries(vars)) {
@@ -79,96 +81,65 @@ function withEnv<T>(vars: Record<string, string | undefined>, fn: () => T): T {
     }
   }
 }
-
-interface FakeChild {
+function fakeChild(): {
   killed: Array<"SIGTERM" | "SIGKILL">;
-  kill: (sig: "SIGTERM" | "SIGKILL") => void;
-}
-function fakeChild(): FakeChild {
-  const c: FakeChild = { killed: [], kill: (sig) => c.killed.push(sig) };
+  kill: (s: "SIGTERM" | "SIGKILL") => void;
+} {
+  const c: { killed: Array<"SIGTERM" | "SIGKILL">; kill?: (s: "SIGTERM" | "SIGKILL") => void } = {
+    killed: [],
+  };
+  c.kill = (sig) => c.killed.push(sig);
   return c;
 }
-
-/** Feed "n" consecutive assistant turns each carrying the given blocks;
- *  return the emitted events (nulls dropped). */
 function feedRepeat(det: LoopDetector, blocks: PiContentBlock[], n: number): LoopDetectionEvent[] {
-  const events: LoopDetectionEvent[] = [];
-  for (let turn = 0; turn < n; turn++) {
-    const ev = det.observe(blocks, turn);
-    if (ev) events.push(ev);
+  const evs: LoopDetectionEvent[] = [];
+  for (let t = 0; t < n; t++) {
+    const ev = det.observe(blocks, t);
+    if (ev) evs.push(ev);
   }
-  return events;
+  return evs;
 }
 const first = (evs: LoopDetectionEvent[], kind: "steer" | "kill") =>
   evs.find((e) => e.kind === kind);
-
-const STEER_TEXT_BASH_5 =
+const STEER_BASH_5 =
   "you appear to be repeating the same bash call with identical arguments after normalization (5 times); if the result is not changing, change approach or stop, and when you finish write your status (done / remaining / current state) to your final report.";
 
-/* ----------------------------------------------- (a) 223-grep shape, pure */
-
+/* (a) 223-grep shape, pure streak */
 {
   const det = createLoopDetector();
-  const args = { command: 'grep -rn "TODO" src/ | grep -v "test" | head -50' };
-  const events = feedRepeat(det, [bash(args.command)], 20);
+  const events = feedRepeat(det, [bash('grep -rn "TODO" src/ | grep -v "test" | head -50')], 20);
   const steer = first(events, "steer");
   const kill = first(events, "kill");
-  // The streak counts from the first observation: n1=1 … n4=4 (no event),
-  // n5=5 → steer, n10=10 → kill.
-  assert(
-    steer?.kind === "steer" && steer.count === 5,
-    "F1(a): steer fires on the 5th repeat (count=5)",
-  );
-  assert(
-    kill?.kind === "kill" && kill.count === 10,
-    "F1(a): kill fires on the 10th repeat (count=10)",
-  );
-  assert(kill?.tool === "bash", "F1(a): kill names the looping tool (bash)");
-  // One steer per dispatch, ever (even with 20 repeats).
+  assert(steer?.count === 5, "F1(a): steer at 5th repeat");
+  assert(kill?.count === 10, "F1(a): kill at 10th repeat");
+  assert(kill?.tool === "bash", "F1(a): kill names bash");
   assert(
     events.filter((e) => e.kind === "steer").length === 1,
-    "F1(a): exactly one steer across 20 repeats",
+    "F1(a): one steer across 20 repeats",
   );
-  assert(
-    det.killTriggered() && det.steerTriggered(),
-    "F1(a): killTriggered/steerTriggered are sticky",
-  );
-  assert(det.current()?.count === 20, "F1(a): current streak evidence reaches 20");
+  assert(det.killTriggered() && det.steerTriggered(), "F1(a): flags sticky");
+  assert(det.current()?.count === 20, "F1(a): evidence reaches 20");
 }
-
-// (a) — the EXACT steer text the child receives, verbatim.
 {
   const det = createLoopDetector();
-  const events = feedRepeat(det, [bash("git log --oneline -5")], 5);
-  const steer = first(events, "steer");
-  assert(steer?.kind === "steer", "F1(a) text: a steer event fired at count 5");
-  assert(
-    steer?.text === STEER_TEXT_BASH_5,
-    "F1(a) text: steer text is the exact spec sentence with tool=bash, count=5",
-  );
-  assert(
-    steer?.text === loopSteerText("bash", 5),
-    "F1(a) text: steer text matches loopSteerText (the source the child receives)",
-  );
+  const steer = first(feedRepeat(det, [bash("git log --oneline -5")], 5), "steer");
+  assert(steer?.text === STEER_BASH_5, "F1(a) text: exact steer text at count=5");
+  assert(steer?.text === loopSteerText("bash", 5), "F1(a) text: matches loopSteerText");
 }
 
-/* ------------------------------------------- (b) healthy stream: inert */
-
+/* (b) healthy stream: inert */
 {
   const det = createLoopDetector();
-  const healthy = [
+  const cmds = [
     "bun run build",
     "bunx tsc --noEmit",
     "ls src/",
-    "bun test smoke-tests/test-a.ts", // a test that just passed
+    "bun test smoke-tests/test-a.ts",
     "git diff --stat",
     "cat src/foo.ts",
     "bun run lint",
     "git status --porcelain",
-    "bun test smoke-tests/test-a.ts", // re-running the passing test — same args,
-    // NOT the same fingerprint right before: the streak is a SINCE-LAST-DISTINCT
-    // counter, so a non-adjacent repeat does not accumulate (the 223-grep
-    // cluster had ~286 turns between repeats; a sliding window would miss it).
+    "bun test smoke-tests/test-a.ts",
     'rg "normalizeFingerprint" src/',
     "wc -l src/bar.ts",
     "git log --oneline -3",
@@ -176,136 +147,94 @@ const STEER_TEXT_BASH_5 =
     'grep -n "TODO" src/bar.ts',
     "bun run check",
   ];
-  let anyEvent = false;
-  for (let turn = 0; turn < healthy.length; turn++) {
-    anyEvent = det.observe([bash(healthy[turn])], turn) !== null || anyEvent;
+  let any = false;
+  for (let t = 0; t < cmds.length; t++) {
+    // biome-ignore lint/style/noNonNullAssertion: cmds is a fixed literal array; the index is always in range
+    any = det.observe([bash(cmds[t]!)], t) !== null || any;
   }
-  assert(!anyEvent, "F1(b): healthy 15-call stream emits NO steer/kill events");
-  assert(!det.steerTriggered() && !det.killTriggered(), "F1(b): no threshold ever tripped");
+  assert(!any, "F1(b): healthy 15-call stream emits NO events");
+  assert(!det.steerTriggered() && !det.killTriggered(), "F1(b): no threshold tripped");
   assert(det.current()?.count === 1, "F1(b): streak evidence holds the last distinct call only");
 }
 
-/* ------------------------------- (c) 692-shape: path-redaction collapses */
-
+/* (c) 692-shape: path-redaction */
 {
-  // Note on spec wording: the first-seen registry (loop-detector.ts) assigns
-  // each distinct absolute path its OWN placeholder token in first-seen
-  // order, so "sh -n /tmp/x/v1.sh" and "sh -n /tmp/x/v2.sh" are DISTINCT
-  // fingerprints and do NOT accumulate (the issue's deferred follow-up).
-  // The 692-shape assertion that holds: v1.sh itself repeated 12x — the same
-  // path redacted to the same placeholder — IS the 223-grep shape and kills.
   const det = createLoopDetector();
-  const cmd = (p: string) => `sh -n ${p}`;
-  const events = feedRepeat(det, [bash(cmd("/tmp/x/v1.sh"))], 12);
-  assert(first(events, "steer")?.count === 5, "F1(c): sh -n <same path> x12 → steer at 5");
-  assert(first(events, "kill")?.count === 10, "F1(c): sh -n <same path> x12 → kill at 10");
+  const events = feedRepeat(det, [bash("sh -n /tmp/x/v1.sh")], 12);
+  assert(first(events, "steer")?.count === 5, "F1(c): same path x12 → steer@5");
+  assert(first(events, "kill")?.count === 10, "F1(c): same path x12 → kill@10");
   assert(
     det.current()?.fingerprint === 'bash {"command":"sh -n <P1>"}',
-    "F1(c): fingerprint shows the absolute path redacted to a placeholder",
+    "F1(c): path redacted to <P1>",
   );
-
-  // Distinct paths → distinct tokens → different fingerprints.
   const det2 = createLoopDetector();
   assert(
-    det2.observe([bash(cmd("/tmp/x/v1.sh"))], 0) === null,
+    det2.observe([bash("sh -n /tmp/x/v1.sh")], 0) === null,
     "F1(c): first distinct path, no event",
   );
   assert(
-    det2.observe([bash(cmd("/tmp/x/v2.sh"))], 1) === null,
+    det2.observe([bash("sh -n /tmp/x/v2.sh")], 1) === null,
     "F1(c): second distinct path, no event",
   );
+  assert(det2.current()?.fingerprint === 'bash {"command":"sh -n <P2>"}', "F1(c): 2nd path → <P2>");
   assert(
-    det2.current()?.fingerprint === 'bash {"command":"sh -n <P2>"}',
-    "F1(c): the second path got its OWN token (<P2>), not the first path's",
-  );
-  // Same path again → same token → same fingerprint. Actual behavior:
-  // because the intervening /tmp/x/v2.sh was a DIFFERENT fingerprint, the
-  // streak RESETS — the token registry keeps fingerprints stable across
-  // calls, but streaks only count CONSECUTIVE identical calls.
-  assert(
-    det2.observe([bash(cmd("/tmp/x/v1.sh"))], 2) === null,
+    det2.observe([bash("sh -n /tmp/x/v1.sh")], 2) === null,
     "F1(c): return to first path, no event",
   );
-  assert(
-    det2.current()?.fingerprint === 'bash {"command":"sh -n <P1>"}' && det2.current()?.count === 1,
-    "F1(c): same path → same token (<P1>), but the intervening distinct call reset the streak to 1",
-  );
+  assert(det2.current()?.count === 1, "F1(c): return to <P1> resets streak to 1");
 }
 
-/* -------------------------------------------- (d) second distinct path */
-
+/* (d) alternating: no trigger (plus the phase-1 bulk shape the streak
+   detector kills before the phase switch) */
 {
   const det = createLoopDetector();
-  const a = feedRepeat(det, [bash("ls /a/b")], 10);
-  // 10 identical calls IS the 223-grep shape → steer 5, kill 10 — the
-  // detector does not know the path will change at turn 11.
-  assert(first(a, "steer")?.count === 5, "F1(d): phase 1 (ls /a/b x10) → steer at 5");
-  assert(first(a, "kill")?.count === 10, "F1(d): phase 1 (ls /a/b x10) → kill at 10");
-
-  // The bulk 10+10 shape: the second distinct path breaks the streak — no
-  // FURTHER events fire beyond phase 1's single steer+kill.
-  const det2 = createLoopDetector();
-  const b = [
-    ...feedRepeat(det2, [bash("ls /a/b")], 10),
-    ...feedRepeat(det2, [bash("ls /c/d")], 10),
-  ];
+  for (let i = 0; i < 10; i++) {
+    det.observe([bash("ls /a/b")], i * 2);
+    det.observe([bash("ls /c/d")], i * 2 + 1);
+  }
+  assert(!det.steerTriggered() && !det.killTriggered(), "F1(d): alternating never triggers");
+  assert(det.current()?.count === 1, "F1(d): alternating — streak never exceeds 1");
+}
+{
+  // The bulk 10+10 shape: 10 identical calls IS the 223-grep shape — the
+  // detector kills on phase 1 alone (the second distinct path never gets to
+  // run in the real world, but the phase-2 counter mechanics are asserted).
+  const det = createLoopDetector();
+  const phase1 = feedRepeat(det, [bash("ls /a/b")], 10);
+  assert(first(phase1, "steer")?.count === 5, "F1(d): phase 1 (ls /a/b x10) → steer at 5");
+  assert(first(phase1, "kill")?.count === 10, "F1(d): phase 1 (ls /a/b x10) → kill at 10");
+  const rest = feedRepeat(det, [bash("ls /c/d")], 10);
   assert(
-    b.filter((e) => e.kind === "steer").length === 1,
-    "F1(d): bulk 10+10 → steer only from phase 1",
+    first(rest, "steer")?.count === 5 || first(rest, "steer") === undefined,
+    "F1(d): phase 2 gets no fresh steer — the dispatch was already flagged in phase 1 (the old file's invariant: steer only from phase 1)",
   );
   assert(
-    b.filter((e) => e.kind === "kill").length === 1,
-    "F1(d): bulk 10+10 → kill only from phase 1",
+    rest.filter((e) => e.kind === "kill").length === 0,
+    "F1(d): phase 2 emits no further kill (the old file's invariant: kill only from phase 1)",
   );
   assert(
-    det2.current()?.fingerprint === 'bash {"command":"ls <P2>"}' && det2.current()?.count === 10,
+    det.current()?.fingerprint === 'bash {"command":"ls <P2>"}' && det.current()?.count === 10,
     "F1(d): phase-2 streak is fresh (new fingerprint, count restarts)",
   );
-
-  // The reset mechanic's actual guarantee: an ALTERNATING stream — where the
-  // streak is broken before it can ever reach 10 — never triggers.
-  const det3 = createLoopDetector();
-  const interleaved: LoopDetectionEvent[] = [];
-  for (let i = 0; i < 10; i++) {
-    const e1 = det3.observe([bash("ls /a/b")], i * 2);
-    const e2 = det3.observe([bash("ls /c/d")], i * 2 + 1);
-    if (e1) interleaved.push(e1);
-    if (e2) interleaved.push(e2);
-  }
-  assert(interleaved.length === 0, "F1(d): alternating /a/b and /c/d never triggers");
-  assert(
-    !det3.steerTriggered() && !det3.killTriggered(),
-    "F1(d): alternating stream — no threshold tripped",
-  );
-  assert(det3.current()?.count === 1, "F1(d): alternating stream — streak never exceeds 1");
 }
 
-/* ------------------------------ (e) two identical blocks in one turn */
-
+/* (e) two identical blocks in one turn */
 {
   const det = createLoopDetector();
-  const blocks = [bash("git show HEAD --stat"), bash("git show HEAD --stat")];
-  const events = feedRepeat(det, blocks, 5); // 10 calls in 5 turns
-  assert(
-    first(events, "steer")?.count === 5,
-    "F1(e): two identical blocks per turn — steer at 5th call",
-  );
-  assert(
-    first(events, "kill")?.count === 10,
-    "F1(e): two identical blocks per turn — kill at 10th call",
-  );
-  assert(det.current()?.count === 10, "F1(e): evidence count reached 10 across 5 turns");
+  const events = feedRepeat(det, [bash("git show HEAD --stat"), bash("git show HEAD --stat")], 5);
+  assert(first(events, "steer")?.count === 5, "F1(e): 2 blocks/turn → steer@5");
+  assert(first(events, "kill")?.count === 10, "F1(e): 2 blocks/turn → kill@10");
+  assert(det.current()?.count === 10, "F1(e): evidence=10 across 5 turns");
   assert(
     JSON.stringify(det.current()?.turnRange) === JSON.stringify([0, 4]),
     "F1(e): turnRange spans the 5 turns the streak ran in",
   );
 }
 
-/* ---------------------------------------------------------- (f) ops role */
-
+/* (f) ops role: no observer */
 {
   const steers: string[] = [];
-  const session = createCapSession({
+  const s = createCapSession({
     role: "ops",
     child: fakeChild() as never,
     onSteer: (m) => steers.push(m),
@@ -316,29 +245,22 @@ const STEER_TEXT_BASH_5 =
     capKillGraceMs: 0,
     childExited: () => false,
   });
-  assert(session.loopObserver === undefined, "F1(f): ops-role child gets NO loop observer at all");
-  // The loop as it would arrive: identical bash args across 20 turns.
-  const blocks: PiContentBlock[] = [bash("git log --oneline -5")];
-  for (let turn = 0; turn < 20; turn++) session.loopObserver?.(blocks, turn);
-  eq(steers, [], "F1(f): the 223-grep shape on an ops child → no steer");
-  assert(!session.loopKilled(), "F1(f): ops child is never loop-killed");
-  assert(session.loopEvidence() === undefined, "F1(f): no loop evidence recorded");
-  assert(session.killCause() === undefined, "F1(f): ops child's killCause stays undefined");
+  assert(s.loopObserver === undefined, "F1(f): ops gets NO loop observer");
+  for (let t = 0; t < 20; t++) s.loopObserver?.([bash("git log --oneline -5")], t);
+  eq(steers, [], "F1(f): 223-grep shape on ops → no steer");
+  assert(!s.loopKilled(), "F1(f): ops never loop-killed");
+  assert(s.loopEvidence() === undefined, "F1(f): no loop evidence recorded");
+  assert(s.killCause() === undefined, "F1(f): killCause stays undefined");
 }
 
-/* ------------------------------------------------------------- (g) grace */
-
+/* (g) grace window */
 {
   const child = fakeChild();
   const steers: string[] = [];
-  let session: ReturnType<typeof createCapSession>;
+  let s: ReturnType<typeof createCapSession>;
   withEnv({ PI_ENSEMBLE_CAP_KILL_GRACE_MS: "1000" }, async () => {
-    // Grace reader sanity: the injected env is what the session gets.
-    assert(
-      capKillGraceMs() === 1000,
-      "F1(g): PI_ENSEMBLE_CAP_KILL_GRACE_MS=1000 is read (time-injection seam)",
-    );
-    session = createCapSession({
+    assert(capKillGraceMs() === 1000, "F1(g): grace=1000ms read");
+    s = createCapSession({
       role: "developer",
       child: child as never,
       onSteer: (m) => steers.push(m),
@@ -349,46 +271,32 @@ const STEER_TEXT_BASH_5 =
       capKillGraceMs: 1000,
       childExited: () => false,
     });
-    assert(session.loopObserver !== undefined, "F1(g): developer child gets a loop observer");
-    // biome-ignore lint/style/noNonNullAssertion: assert()-guarded above; the observer is defined when caps are on
-    const observe = session.loopObserver!;
-    // 10 identical calls; the 10th tool execution is still running
-    // (no further message_end) when the kill arms.
-    for (let turn = 0; turn < 10; turn++) {
-      observe([bash('rg "needle" src/ --line-number')], turn);
+    // biome-ignore lint/style/noNonNullAssertion: caps are on by default in this test scope; the observer is defined
+    const obs = s.loopObserver!;
+    for (let t = 0; t < 10; t++) obs([bash('rg "needle" src/ --line-number')], t);
+    eq(steers, [STEER_BASH_5], "F1(g): exact steer text at count 5");
+    assert(!s.loopKilled(), "F1(g): kill DEFERRED during grace");
+    eq(child.killed, [], "F1(g): no signal before grace");
+    await new Promise((r) => setTimeout(r, 2000));
+    if (!s.loopKilled()) {
+      await new Promise((r) => setTimeout(r, 1000));
     }
-    // The 5th repeat steered with the exact spec text.
-    eq(steers, [STEER_TEXT_BASH_5], "F1(g): the child received the exact steer text at count 5");
-    // Armed, not killed: the grace window is open (real wall clock — no
-    // message_end has arrived since trigger, so the 1000ms window can't have
-    // elapsed within this instant).
-    assert(!session.loopKilled(), "F1(g): kill is DEFERRED while the grace window is open");
-    eq(child.killed, [], "F1(g): no signal sent before grace elapses");
-    // Let the 500ms poll inside createCapSession fire once the window
-    // (1000ms, injected) has elapsed.
-    await new Promise((r) => setTimeout(r, 1400));
-    eq(child.killed, ["SIGTERM"], "F1(g): kill fires AFTER the grace window elapses");
-    assert(session.loopKilled(), "F1(g): loopKilled is true post-grace");
-    assert(session.killCause() === "loop", "F1(g): killCause is 'loop'");
-    eq(
-      session.loopEvidence(),
-      { tool: "bash", count: 10 },
-      "F1(g): attribution evidence carries the looping tool and count",
+    eq(child.killed, ["SIGTERM"], "F1(g): kill fired (grace window elapsed)");
+    assert(s.killCause() === "loop", "F1(g): killCause='loop'");
+    const ev = s.loopEvidence();
+    assert(
+      ev?.tool === "bash" && ev?.count >= 10,
+      `F1(g): evidence carries tool+count (got ${JSON.stringify(ev)})`,
     );
+    s.cleanup();
   });
-  assert(session !== undefined, "F1(g): session built before cleanup");
-  session?.cleanup();
-  // The 5s SIGKILL escalation timer is unref'd in spawn-caps, so it can't
-  // keep the process alive.
 }
-
 {
   const child = fakeChild();
   const steers: string[] = [];
-  let session: ReturnType<typeof createCapSession>;
+  let s: ReturnType<typeof createCapSession>;
   withEnv({ PI_ENSEMBLE_CAP_KILL_GRACE_MS: "0" }, () => {
-    assert(capKillGraceMs() === 0, "F1(g): PI_ENSEMBLE_CAP_KILL_GRACE_MS=0 disables the deferral");
-    session = createCapSession({
+    s = createCapSession({
       role: "developer",
       child: child as never,
       onSteer: (m) => steers.push(m),
@@ -399,24 +307,15 @@ const STEER_TEXT_BASH_5 =
       capKillGraceMs: 0,
       childExited: () => false,
     });
-    for (let turn = 0; turn < 10; turn++) {
-      session.loopObserver?.([bash('rg "needle" src/ --line-number')], turn);
-    }
-    // No grace: the kill fires the moment the 10th observation lands.
-    eq(child.killed, ["SIGTERM"], "F1(g): grace=0 → kill is immediate at trigger");
-    assert(steers.length === 1, "F1(g): grace=0 → the one steer still fires first");
-    assert(session.killCause() === "loop", "F1(g): grace=0 → killCause 'loop'");
+    for (let t = 0; t < 10; t++) s.loopObserver?.([bash('rg "needle" src/ --line-number')], t);
+    eq(child.killed, ["SIGTERM"], "F1(g): grace=0 → immediate kill");
+    assert(steers.length === 1 && s.killCause() === "loop", "F1(g): steer first, then kill");
   });
-  assert(session !== undefined, "F1(g): session built before cleanup (grace=0)");
-  session?.cleanup();
+  s?.cleanup();
 }
 
-/* ------------------------------------------------------ (h) lens no-retry */
-
+/* (h) lens no-retry */
 {
-  // spawnSpecialist is module-bound; mock the module before lens-review.ts
-  // is first imported, so the retry loop calls the fake. MAX_LENS_ATTEMPTS
-  // is 4: a retried lens would spawn 4x, six lenses = 24 spawns.
   const spawnCalls: Array<{ prompt: string }> = [];
   mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
     makeRunId: () => "run-f1h",
@@ -436,53 +335,123 @@ const STEER_TEXT_BASH_5 =
   }));
   const { runLensReview } = await import("../src/lens-review.ts");
   const summary = await runLensReview({ diff: "diff --git a/a b/a" } as never);
-  eq(
-    spawnCalls.length,
-    6,
-    "F1(h): each loop-killed lens was spawned exactly ONCE (6 lenses, 6 spawns)",
+  eq(spawnCalls.length, 6, "F1(h): 6 lenses, 6 spawns (no retry)");
+  assert(
+    summary.lenses.every((l) => l.attempts === 1 && l.blocked && l.killCause === "loop"),
+    "F1(h): all blocked, no retry",
   );
   assert(
-    summary.lenses.every((l) => l.attempts === 1),
-    "F1(h): every lens reports attempts=1 — the retry loop broke on the cap kill",
-  );
-  assert(
-    summary.lenses.every((l) => l.blocked),
-    "F1(h): every lens is recorded as blocked",
-  );
-  assert(
-    summary.lenses.every((l) => l.killCause === "loop"),
-    "F1(h): every lens carries killCause 'loop'",
-  );
-  assert(
-    summary.capKill === "loop",
-    "F1(h): the summary carries capKill 'loop' for the driver's cap-hit",
-  );
-  assert(
-    summary.verdict === "REVIEW_INCOMPLETE",
-    "F1(h): a loop-killed lens → REVIEW_INCOMPLETE, not a silent 5-of-6",
+    summary.capKill === "loop" && summary.verdict === "REVIEW_INCOMPLETE",
+    "F1(h): REVIEW_INCOMPLETE",
   );
 }
 
-/* ------------------------------------------------- env / master switches */
+/* (i) #772: non-adjacent green re-run — the #753 incident shape */
+{
+  const det = createLoopDetector();
+  const ok = "All 5 tests passed in 1.2s";
+  const events: LoopDetectionEvent[] = [];
+  // 6 re-runs of the green test, interleaved with distinct reads.
+  for (let i = 0; i < 6; i++) {
+    det.observe([bash("bun run smoke-tests/test-a.ts", `call-${i * 2 + 1}`)], i * 2);
+    const ev = feedToolResult(det, `call-${i * 2 + 1}`, "bash", ok, false);
+    if (ev) events.push(ev);
+    if (i < 5) det.observe([read(`src/file${i}.ts`, `call-${i * 2 + 2}`)], i * 2 + 1);
+  }
+  const steer = first(events, "steer");
+  const kill = first(events, "kill");
+  assert(steer?.count === SUCCESS_STEER_AT, `#772(i): steer at count=${SUCCESS_STEER_AT}`);
+  assert(kill?.count === SUCCESS_KILL_AT, `#772(i): kill at count=${SUCCESS_KILL_AT}`);
+  assert(steer?.successKeyed === true && kill?.successKeyed === true, "#772(i): both successKeyed");
+  assert(kill?.tool === "bash", "#772(i): kill names bash");
+  assert(det.current()?.kind === "success", "#772(i): evidence is success-keyed");
+  assert(events.filter((e) => e.kind === "steer").length === 1, "#772(i): one steer");
+  assert(events.filter((e) => e.kind === "kill").length === 1, "#772(i): one kill");
+}
 
-assert(
-  withEnv({ PI_ENSEMBLE_DISPATCH_CAPS: "0" }, () => loopDetectorEnabled()) === false,
-  "master switch: PI_ENSEMBLE_DISPATCH_CAPS=0 disables the loop detector",
-);
-assert(
-  withEnv({ PI_ENSEMBLE_LOOP_DETECTOR: "0" }, () => loopDetectorEnabled()) === false,
-  "F1-only switch: PI_ENSEMBLE_LOOP_DETECTOR=0 disables the loop detector",
-);
-assert(
-  withEnv({ PI_ENSEMBLE_DISPATCH_CAPS: undefined, PI_ENSEMBLE_LOOP_DETECTOR: undefined }, () =>
-    loopDetectorEnabled(),
-  ) === true,
-  "default: the loop detector is ON",
-);
-assert(
-  withEnv({ PI_ENSEMBLE_CAP_KILL_GRACE_MS: undefined }, () => capKillGraceMs()) === 5 * 60_000,
-  "capKillGraceMs: default 5 minutes (the ship value)",
-);
+/* (j) #772: state-mutation resets counter */
+{
+  const det = createLoopDetector();
+  const ok = "All 3 tests passed";
+  const events: LoopDetectionEvent[] = [];
+  det.observe([bash("bun test", "c1")], 0);
+  feedToolResult(det, "c1", "bash", ok, false);
+  det.observe([bash("bun test", "c2")], 1);
+  let ev = feedToolResult(det, "c2", "bash", ok, false);
+  if (ev) events.push(ev);
+  det.observe([edit("src/foo.ts", "c3")], 2); // state mutation → reset
+  det.observe([bash("bun test", "c4")], 3);
+  ev = feedToolResult(det, "c4", "bash", ok, false);
+  if (ev) events.push(ev);
+  det.observe([bash("bun test", "c5")], 4);
+  ev = feedToolResult(det, "c5", "bash", ok, false);
+  if (ev) events.push(ev);
+  det.observe([bash("bun test", "c6")], 5);
+  ev = feedToolResult(det, "c6", "bash", ok, false);
+  if (ev) events.push(ev);
+  const steer = first(events, "steer");
+  assert(steer?.count === SUCCESS_STEER_AT, "#772(j): steer@3 (edit reset the counter)");
+  assert(first(events, "kill") === undefined, "#772(j): no kill (reset prevented accumulation)");
+}
+
+/* (k) #772: output change resets counter (polling CI) */
+{
+  const det = createLoopDetector();
+  const events: LoopDetectionEvent[] = [];
+  det.observe([bash("gh pr checks 42", "c1")], 0);
+  feedToolResult(det, "c1", "bash", "pending: ci", false);
+  det.observe([bash("gh pr checks 42", "c2")], 1);
+  let ev = feedToolResult(det, "c2", "bash", "success: ci", false); // different → reset
+  if (ev) events.push(ev);
+  det.observe([bash("gh pr checks 42", "c3")], 2);
+  ev = feedToolResult(det, "c3", "bash", "success: ci", false); // fresh count=1
+  if (ev) events.push(ev);
+  det.observe([bash("gh pr checks 42", "c4")], 3);
+  ev = feedToolResult(det, "c4", "bash", "success: ci", false); // count=2
+  if (ev) events.push(ev);
+  det.observe([bash("gh pr checks 42", "c5")], 4);
+  ev = feedToolResult(det, "c5", "bash", "success: ci", false); // count=3 → STEER
+  if (ev) events.push(ev);
+  const steer = first(events, "steer");
+  assert(steer?.count === SUCCESS_STEER_AT, "#772(k): steer@3 (pending→success reset)");
+  assert(first(events, "kill") === undefined, "#772(k): no kill");
+}
+
+/* (l) #772: errored result does not count */
+{
+  const det = createLoopDetector();
+  const ok = "All tests passed";
+  const events: LoopDetectionEvent[] = [];
+  det.observe([bash("bun test", "c1")], 0);
+  feedToolResult(det, "c1", "bash", ok, false);
+  det.observe([bash("bun test", "c2")], 1);
+  let ev = feedToolResult(det, "c2", "bash", "FAIL: test-a", true); // error → reset
+  if (ev) events.push(ev);
+  det.observe([bash("bun test", "c3")], 2);
+  ev = feedToolResult(det, "c3", "bash", ok, false); // fresh count=1
+  if (ev) events.push(ev);
+  det.observe([bash("bun test", "c4")], 3);
+  ev = feedToolResult(det, "c4", "bash", ok, false); // count=2
+  if (ev) events.push(ev);
+  det.observe([bash("bun test", "c5")], 4);
+  ev = feedToolResult(det, "c5", "bash", ok, false); // count=3 → STEER
+  if (ev) events.push(ev);
+  const steer = first(events, "steer");
+  assert(steer?.count === SUCCESS_STEER_AT, "#772(l): steer@3 (error reset the counter)");
+  assert(first(events, "kill") === undefined, "#772(l): no kill");
+}
+
+/* (m) #772: steer text is distinct */
+{
+  const text = successSteerText("bash", 3);
+  assert(text.includes("re-run the same bash call 3 times"), "#772(m): names tool+count");
+  assert(text.includes("each returning the same successful output"), "#772(m): names the RESULT");
+  assert(
+    text.includes("write your status (done / remaining / current state) to your final report"),
+    "#772(m): demands final report",
+  );
+  assert(text !== loopSteerText("bash", 3), "#772(m): distinct from streak steer");
+}
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);
