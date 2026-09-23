@@ -355,9 +355,11 @@ export function buildChildArgs(
   // for dispatch_steer (#152) and all async push-callback flows.
   args.push("--session", transcriptPath);
   args.push("--append-system-prompt", tmpPromptFile);
-  // `--exclude-tools` requires Pi >= 0.83.0; with pin at ~0.82.0 the
-  // flag is accepted by 0.82.x but was unknown in 0.75.x (caused
-  // immediate child exit). Verified by test-role-tools.ts smoke test.
+  // `--exclude-tools` requires a recent Pi (>= 0.83.0); unknown flags exit
+  // children immediately (older releases such as the 0.75.x era), so the
+  // flag must exist in every Pi at or above the install floor — enforced
+  // by install-preflight.sh's MIN_PI_VERSION, not by the non-normative dev
+  // pins. Verified by test-role-tools.ts smoke test.
   const excludedTools = excludeToolsFor(role);
   if (excludedTools) {
     args.push("--exclude-tools", excludedTools);
