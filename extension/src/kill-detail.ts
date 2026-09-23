@@ -32,6 +32,14 @@ const WHY: Record<string, string> = {
   loop: "was looped on — it repeated the same tool call after normalisation, so the harness killed it before it burned more budget; changing approach (not retrying) is the fix",
   "token-budget":
     "crossed its token budget — a cost cap, not a provider fault; the budget is PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>, not the inactivity knob",
+  // #754 — the plan step's own 30-minute bound (the bound the compiled /plan
+  // pipeline already adopts via PLAN_DISPATCH_TIMEOUT_MS) expired on the
+  // primary plan dispatch. Distinct wording from the global backstop on
+  // purpose: planning either converges quickly or is not converging, and the
+  // operator must not be told the ISSUE is the problem (the observed
+  // corrective re-plan on the incident cycle finished in 37 s).
+  "plan-timeout":
+    "hit the plan step's own wall-clock bound (PI_ENSEMBLE_PLAN_TIMEOUT_MS, default 30 min) — the bound is on planning, not on the issue: a decomposition either converges quickly or is not converging, and the corrective re-plan the driver attempted did not recover",
 };
 
 /**

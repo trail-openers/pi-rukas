@@ -111,6 +111,16 @@ export function classifyFailureCause(tail: {
   if (tail.killCause === "token-budget") {
     return { cause: "self-killed:token-budget", shouldRetry: false, maxRetries: 0 };
   }
+  // #754 — the plan step's own wall-clock bound expired on the primary plan
+  // dispatch. An EXPLICIT branch is load-bearing: a kill that fell through
+  // to the generic 'crashed' fallback below would carry shouldRetry:true,
+  // re-running a dispatch that was killed for taking too long — the opposite
+  // of the intent. The in-step recovery is the plan step's corrective
+  // re-dispatch (runPlan), not a wholesale router retry. shouldRetry FALSE,
+  // maxRetries 0, mirroring the #543 loop/token-budget branches.
+  if (tail.killCause === "plan-timeout") {
+    return { cause: "self-killed:plan-timeout", shouldRetry: false, maxRetries: 0 };
+  }
 
   // 429 rate-limit. #366 — read the delay the provider actually asked for
   // instead of treating every 429 as permanently fatal. A per-minute token
@@ -181,6 +191,8 @@ export function failureCauseReason(tail: {
       return "killed by pi-rukas (loop detected — the same tool call repeated; retrying would loop again)";
     case "self-killed:token-budget":
       return "killed by pi-rukas (token budget crossed — a cost cap, not a provider fault)";
+    case "self-killed:plan-timeout":
+      return "killed by pi-rukas (the plan step's own wall-clock bound expired — a bound on planning, not on the issue)";
     case "rate-limited:429":
       return "provider rate-limited (429), no retry delay stated — halting rather than guessing how long to wait";
     case "rate-limited:burst":
@@ -220,6 +232,8 @@ export function failureCauseReasonForClass(
       return "killed by pi-rukas (loop detected — the same tool call repeated; retrying would loop again)";
     case "self-killed:token-budget":
       return "killed by pi-rukas (token budget crossed — a cost cap, not a provider fault)";
+    case "self-killed:plan-timeout":
+      return "killed by pi-rukas (the plan step's own wall-clock bound expired — a bound on planning, not on the issue)";
     case "rate-limited:429":
       return "provider rate-limited (429), no retry delay stated — halting rather than guessing how long to wait";
     case "rate-limited:burst":

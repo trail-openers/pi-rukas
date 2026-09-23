@@ -98,7 +98,10 @@ function fmtObservedWork(result: DispatchResult): string {
   return ` · ${result.observedToolCalls} tool calls before it died`;
 }
 
-function describeOutcome(result: DispatchResult): { status: string; bodyPrefix: string | null } {
+export function describeOutcome(result: DispatchResult): {
+  status: string;
+  bodyPrefix: string | null;
+} {
   // #309 — killCause wins over errorStop. A self-kill is never reported
   // as a provider error.
   if (result.killCause === "timeout") {
@@ -125,6 +128,14 @@ function describeOutcome(result: DispatchResult): { status: string; bodyPrefix: 
   }
   if (result.killCause === "token-budget") {
     return { status: "FAILED (self-killed: token budget crossed)", bodyPrefix: null };
+  }
+  // #754 — the plan step's own bound expired. Distinct from the generic
+  // wall-clock timeout headline: the bound is on planning, not on the work.
+  if (result.killCause === "plan-timeout") {
+    return {
+      status: `FAILED (self-killed: plan-step wall-clock bound, ${result.killBudgetMs ? `${Math.round(result.killBudgetMs / 60_000)}min` : "budget exceeded"})`,
+      bodyPrefix: null,
+    };
   }
   if (result.errorStop && isRateLimit429Msg(result.errorStop.message)) {
     // #366's distinction, not a second one. A per-minute token bucket and a

@@ -24,9 +24,6 @@ import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
 // #539 — the commit-pr fallback-cause vocabulary (M1) lives in the
 // sibling events-memory fragment module: single definition.
 export type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
-// #775 prep — the handoff event members live in the sibling fragment module;
-// re-exported here so consumers' import paths are unaffected and the
-// `delivery` field (#775) can grow the fragment without inflating this file.
 export type {
   HandoffConsolidatedEvent,
   HandoffEmittedEvent,
@@ -127,8 +124,8 @@ export type WorkEvent =
       /** Process-level failure (non-zero exit), distinct from provider-error. */
       exitCode?: number | null;
       errorTail?: string;
-      /** Structured self-kill cause (#296; #543 adds loop/token-budget). */
-      killCause?: "timeout" | "inactivity" | "abort" | "loop" | "token-budget";
+      /** Structured self-kill cause (#296; #543 adds loop/token-budget; #754 adds plan-timeout). */
+      killCause?: "timeout" | "inactivity" | "abort" | "loop" | "token-budget" | "plan-timeout";
       /** #543 — the F1 streak evidence at a loop kill (tool + count);
        * persisted on `pipelineState.capEvidence` so `explainCap` renders WHAT looped. */
       loopEvidence?: { tool: string; count: number };
@@ -331,6 +328,9 @@ export type WorkEvent =
         // child was killed is carried in the new `role` field + capEvidence.
         | "loop-detected"
         | "token-budget"
+        // #754 — the plan step's own bound expired on the primary plan
+        // dispatch; distinct from `step-failed:plan` and `developer-timeout`.
+        | "plan-timeout"
         // #280 §B — round-1 repeat-finding seam detection. Same finding
         // shape across ≥3 files → step-back (SDD spec-gap analysis).
         | "repeat-finding-seam"

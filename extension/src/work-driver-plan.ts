@@ -13,6 +13,7 @@ import { extractListField, sliceMarkdownSection } from "./work-driver-plan-parse
 
 // Re-exported: several modules read plan/spec markdown through this module.
 export { sliceMarkdownSection, splitOutsideParens } from "./work-driver-plan-parse.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { transcriptPathFor } from "./spawn-support.ts";
 import type { DispatchResult } from "./types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
@@ -29,13 +30,18 @@ export {
   countFindingsForCycle,
   planQualityEnabled,
   planQualityReason,
+  planDispatchTimeoutMs,
+  planTimeoutCorrective,
 } from "./work-driver-plan-helpers.ts";
 import {
   correctivePlanSteer,
   correctiveTestSubjectSplitSteer,
   countFindingsForCycle,
+  planDispatchTimeoutMs,
   planQualityEnabled,
   planQualityReason,
+  planTimeoutCorrective,
+  planTimeoutKill,
 } from "./work-driver-plan-helpers.ts";
 import { findPathCollisions, findTestSubjectSplits } from "./work-driver-plan-paths.ts";
 import { planFindingsCount } from "./work-driver-pr-body-definition.ts";
@@ -99,8 +105,11 @@ export async function runPlan(
   );
   next = begun.state;
   let result: DispatchResult;
+  // #754 — the PRIMARY plan dispatch carries the step's own bound; the
+  // corrective below deliberately does not (it is the recovery path).
+  const primaryOpts = { label: "plan", timeoutMs: planDispatchTimeoutMs() };
   try {
-    result = await dispatch(ctx.pi, { role: "explore", prompt }, { label: "plan" });
+    result = await dispatch(ctx.pi, { role: "explore", prompt }, primaryOpts);
   } catch (err) {
     return appendEvent(clearDispatch(next, begun.jobId), {
       kind: "dispatch-failed",
@@ -113,11 +122,29 @@ export async function runPlan(
       errorTail: (err as Error).message?.slice(-200),
     });
   }
+  // #754 — a primary dispatch killed at the plan bound is routed to the
+  // corrective re-dispatch below: a killed child has no structured output,
+  // parseWorkstreams would return nothing. The cause is rewritten at the
+  // call site (not resolveKillCause) so downstream sees it, not a timeout.
+  let planKill: DispatchResult | undefined;
+  const primary = planTimeoutKill(result, primaryOpts);
+  if (primary) {
+    result = primary;
+    planKill = result;
+  }
   const event = await buildCompletionEvent(ctx, "plan", "explore", "plan", result);
   next = appendEvent(clearDispatch(next, begun.jobId), event);
   // Parse workstreams out of the reply. Failure or N=0 collapses to
   // `default` — never blocks the cycle.
   let workstreams = parseWorkstreams(result.text ?? "");
+
+  const spec = next.pipelineState.normalisedSpec;
+  // #792 — count only the deliverables that are expected to produce a diff.
+  // A plan-time no-diff marker (settings toggle, operator action, manual
+  // verification) cannot land in any diff, so it must not feed the
+  // decomposition arithmetic — a 4-code deliverable plan plus one settings
+  // toggle reads as 4, not 5 (the #786 phantom-under-decomposition shape).
+  const findingsCount = spec ? planFindingsCount(spec) : await countFindingsForCycle(ctx, next);
 
   // #290 — deterministic plan-quality gate. An under-decomposed plan is the
   // dominant convergence failure: on nessie #604 an 8.6s plan collapsed six
@@ -133,16 +160,30 @@ export async function runPlan(
   // `**E.**`) seen, because bolded letters are invisible to it. A correctly
   // planned single-workstream issue therefore triggered a corrective
   // re-dispatch essentially every time.
-  const spec = next.pipelineState.normalisedSpec;
-  // #792 — count only the deliverables that are expected to produce a diff.
-  // A plan-time no-diff marker (settings toggle, operator action, manual
-  // verification) cannot land in any diff, so it must not feed the
-  // decomposition arithmetic — a 4-code deliverable plan plus one settings
-  // toggle reads as 4, not 5 (the #786 phantom-under-decomposition shape).
-  const findingsCount = spec ? planFindingsCount(spec) : await countFindingsForCycle(ctx, next);
   const reason = planQualityReason(workstreams, findingsCount);
   let redispatched = false;
-  if (planQualityEnabled() && reason) {
+  // #754 — a primary killed at the step's own bound gets the one-shot
+  // corrective re-dispatch below (the kill-triggered half of it).
+  if (planKill) {
+    const recovered = await planTimeoutCorrective(
+      ctx,
+      ctx.pi,
+      dispatch,
+      prompt,
+      planKill,
+      next,
+      parseWorkstreams,
+      planCorrectivePrompt,
+    );
+    if (recovered.ok) {
+      next = recovered.state;
+      workstreams = recovered.workstreams;
+      redispatched = true;
+    }
+  }
+  // #754 — the kill-triggered corrective already spent this cycle's one-shot
+  // corrective budget; the quality gate below must not spend it a second time.
+  if (!planKill && planQualityEnabled() && reason) {
     trace(`work-driver: plan quality — ${reason}, re-dispatching once`);
     const steer =
       reason === "test-subject-split"
@@ -166,6 +207,11 @@ export async function runPlan(
       { label: "plan:corrective" },
     ).catch(() => undefined);
     if (retry) {
+      // #754 — the corrective is NEVER re-dispatched again — exactly one
+      // corrective re-dispatch per cycle, whether the trigger was plan-quality
+      // findings or the #754 kill above. If it too failed or was killed, the
+      // step ends on its dispatch-failed and the router's `plan-timeout` cap
+      // halts to handoff.
       next = appendEvent(
         next,
         await buildCompletionEvent(ctx, "plan", "explore", "plan:corrective", retry),

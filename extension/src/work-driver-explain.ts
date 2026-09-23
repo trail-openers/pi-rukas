@@ -64,6 +64,10 @@ export function explainCap(
       return explainDetectCaps(cap, state);
     case "token-budget":
       return explainDetectCaps(cap, state);
+    case "plan-timeout":
+      // #754 — the plan step's own bound: the kill-cause family module owns
+      // the sentence (it reads the kill event's usage off the log).
+      return explainDetectCaps(cap, state);
     case "repeat-finding-seam": {
       // #280 §B — same finding shape across ≥3 files is a missing-seam
       // signal, not N independent defects. Patching each instance would
