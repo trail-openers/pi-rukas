@@ -47,6 +47,18 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   return { ...base, ...opts, usage: { ...base.usage, ...(opts.usage ?? {}) } };
 }
 
+// #835 fixtures: one developer-role entry per key, identical start time so
+// only the description column differs between same-role rows.
+function mkJobs(keys: string[], now: number): DeckEntry[] {
+  return keys.map((key, i) => ({
+    key,
+    label: "developer[task-A]",
+    seq: i,
+    startedAt: now - 134_000,
+    state: makeState("developer", { lastToolName: "bash", toolUses: 7, lastEventAt: now - 1000 }),
+  }));
+}
+
 // 1. encodeDeckValue / parseDeckValue — round-trip.
 {
   const key = "df8a-7r";
@@ -136,6 +148,7 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
     (items[0]?.description ?? "").length >= 1,
     "description carries a job-key fragment for same-role disambiguation",
   );
+  assert(items[0]?.description === "x", "≤10-char key 'x' renders verbatim (no 'key ' prefix, no ellipsis)");
 }
 
 // 4b. Multiple entries — each label matches its own formatRow line, and
@@ -176,43 +189,54 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   );
 }
 
-// 4c. #742 description collision at the keyFragment truncation boundary:
-// two same-role jobs whose keys are BOTH >10 chars and share the first 10
-// chars (both elide to the same 10-char prefix + …) render IDENTICAL
-// descriptions. This is a known, conscious limitation: job keys embed a
-// unique run-id in the first 10 chars (e.g. `df8a-7r`), so the collision
-// requires an adversarial key shape. The labels (full `formatRow`) and
-// the `deck::<key>` value still disambiguate — only the short description
-// column collides. This assertion documents the current behaviour so the
-// collision is a conscious decision, not a silent regression.
+// 4c. #835 truncation-boundary collision, fixed: two same-role jobs whose
+// keys are BOTH >10 chars and share the first 10 chars now render
+// DISTINCT descriptions — the colliding group's prefix lengthens until
+// every row's description is unique. Both still start with the 10-char
+// fragment; neither is pinned to the 10-char form (the lengthening fixes
+// it). The old equality assertion is REPLACED by this distinctness one.
 {
   const now = 4_500_000;
-  const mk = (key: string, seq: number): DeckEntry => ({
-    key,
-    label: "developer[task-A]",
-    seq,
-    startedAt: now - 134_000,
-    state: makeState("developer", {
-      lastToolName: "bash",
-      toolUses: 7,
-      lastEventAt: now - 1000,
-    }),
-  });
-  // Both keys: 12 chars, identical first 10 → both elide to "aaaaaaaaaa…".
-  const entries = [mk("aaaaaaaaaaa1", 0), mk("aaaaaaaaaaa2", 1)];
-  const items = buildDeckItems(entries, now);
+  const items = buildDeckItems(mkJobs(["aaaaaaaaaaa1", "aaaaaaaaaaa2"], now), now);
   const d0 = items[0]?.description ?? "";
   const d1 = items[1]?.description ?? "";
-  // Documented behaviour: same 10-char prefix → same description (collision
-  // is a conscious limitation, see comment above).
-  assert(
-    d0 === d1 && d0 === "key aaaaaaaaaa…",
-    `truncation-boundary collision is the DOCUMENTED behaviour (both '${d0}')`,
-  );
-  // But the labels and values still distinguish the two jobs.
+  assert(d0 !== d1, `truncation-boundary collision resolved (distinct: '${d0}' vs '${d1}')`);
+  assert(d0.startsWith("key aaaaaaaaaa"), "first colliding key still starts with 'key aaaaaaaaaa'");
+  assert(d1.startsWith("key aaaaaaaaaa"), "second colliding key still starts with 'key aaaaaaaaaa'");
   assert(
     items[0]?.label !== items[1]?.label || items[0]?.value !== items[1]?.value,
     "labels/values still distinguish same-prefix keys",
+  );
+}
+
+// 4d. #835 fragment rules — the non-colliding and short-key paths keep
+// the exact current output: a >10-char key whose 10-char fragment is
+// unique renders byte-identical to today; a ≤10-char key renders
+// verbatim with no "key " prefix and no ellipsis.
+{
+  const now = 4_600_000;
+  const single = buildDeckItems(mkJobs(["z0z0z0z0z1z9"], now), now);
+  const got = single[0]?.description ?? "";
+  assert(got === "key z0z0z0z0z1…", `unique 10-char fragment renders byte-identical to today (got '${got}')`);
+  const short = buildDeckItems(mkJobs(["x"], now), now);
+  assert(short[0]?.description === "x", "≤10-char key renders verbatim with no 'key ' prefix and no ellipsis");
+}
+
+// 4e. #835 adversarial distinctness — three keys sharing their first 13
+// chars (15-char fixtures) yield three pairwise-distinct descriptions,
+// and every row's key/value is unchanged so parseDeckValue routing is
+// unaffected.
+{
+  const now = 4_700_000;
+  // 15-char keys sharing the first 13 chars.
+  const keys = ["abcdefghijklm1x", "abcdefghijklm2x", "abcdefghijklm3x"];
+  const items = buildDeckItems(mkJobs(keys, now), now);
+  const jobItems = items.slice(0, keys.length);
+  const descs = jobItems.map((it) => it?.description ?? "");
+  assert(new Set(descs).size === keys.length, `3 keys sharing 13 chars → 3 distinct descriptions (${descs.join(" / ")})`);
+  assert(
+    jobItems.every((it, i) => it.key === keys[i] && it.value === encodeDeckValue(keys[i] ?? "")),
+    "key/value columns unchanged for colliding keys (parseDeckValue routing safe)",
   );
 }
 
@@ -335,20 +359,8 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
 {
   reset();
   const entries: DeckEntry[] = [
-    {
-      key: "job-a",
-      label: "explore",
-      seq: 0,
-      startedAt: 1_000_000,
-      state: makeState("explore", { lastToolName: "bash", toolUses: 3 }),
-    },
-    {
-      key: "job-b",
-      label: "explore",
-      seq: 1,
-      startedAt: 1_000_500,
-      state: makeState("explore", { lastToolName: "read", toolUses: 1 }),
-    },
+    { key: "job-a", label: "explore", seq: 0, startedAt: 1_000_000, state: makeState("explore", { lastToolName: "bash", toolUses: 3 }) },
+    { key: "job-b", label: "explore", seq: 1, startedAt: 1_000_500, state: makeState("explore", { lastToolName: "read", toolUses: 1 }) },
   ];
   const fakeTheme = {
     fg: (_color: string, text: string) => text,
@@ -379,21 +391,14 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
       // description column, which is the sole per-job disambiguation
       // surface (#742) and renders in render(width) output (width > 40).
       const rendered = list.render(200);
-      const frag = (key: string) =>
-        key.length <= 10 ? key : `${key.slice(0, 10).trimEnd()}…`;
-      const countFor = (key: string) => rendered.filter((l) => l.includes(frag(key))).length;
+      const countFor = (key: string) => rendered.filter((l) => l.includes(key)).length;
       for (const e of entries) {
         assert(
           countFor(e.key) === 1,
           `exactly ONE visible row for job '${e.key}' (got ${countFor(e.key)})`,
         );
       }
-      // The cancel sentinel renders as "── cancel ──" — a single trailing
-      // row, so visible rows = jobs + 1.
-      assert(
-        rendered.length === entries.length + 1,
-        `SelectList renders one row per job + cancel sentinel (got ${rendered.length})`,
-      );
+      assert(rendered.length === entries.length + 1, `SelectList renders one row per job + cancel sentinel (got ${rendered.length})`);
       // The attach() → setWidget → factory wiring (ARCHITECTURE finding):
       // the production attach path must hand the composite factory to
       // setWidget, so the same wiring verified in test-dispatch-deck.ts
@@ -411,10 +416,7 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
       startEntry("wiring-a", { label: "developer", role: "developer" });
       await new Promise((r) => setImmediate(r));
       const factoryCall = calls.find((c) => typeof c === "function");
-      assert(
-        typeof factoryCall === "function",
-        "attach → scheduleRender wires the composite factory through setWidget",
-      );
+      assert(typeof factoryCall === "function", "attach → scheduleRender wires the composite factory through setWidget");
       detach();
     }
   }

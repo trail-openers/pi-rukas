@@ -71,11 +71,12 @@ export function buildDeckItems(
   entries: readonly DeckEntry[],
   now: number = Date.now(),
 ): DeckItem[] {
-  const items: DeckItem[] = entries.map((e) => ({
+  const descriptions = distinctKeyFragments(entries.map((e) => e.key));
+  const items: DeckItem[] = entries.map((e, i) => ({
     key: e.key,
     value: encodeDeckValue(e.key),
     label: formatRow(e, now),
-    description: keyFragment(e.key),
+    description: descriptions[i],
   }));
   items.push({
     key: DECK_PROMPT_CANCEL_KEY,
@@ -86,15 +87,44 @@ export function buildDeckItems(
 }
 
 /**
- * The SelectList's description column: a key fragment that keeps
- * same-role jobs distinguishable. Keys ≤10 chars render verbatim (no
- * marker); longer keys elide to a 10-char prefix + `…`. The prefix is
- * sufficient for the common case (job keys embed a unique run-id in the
- * first 10 chars, e.g. `df8a-7r`).
+ * Render `key` truncated to a `prefix`-char fragment. ≤10-char keys
+ * render verbatim (no marker); longer keys render as "key " + first
+ * `prefix` chars (trimEnd) + `…` — unless `prefix` reaches the full key
+ * length, in which case the full key renders with no ellipsis.
  */
-function keyFragment(key: string): string {
-  const frag = key.length <= 10 ? key : `${key.slice(0, 10).trimEnd()}…`;
-  return `${key.length > 10 ? "key " : ""}${frag}`;
+function keyFragmentAt(key: string, prefix: number): string {
+  if (key.length <= 10) return key;
+  if (prefix >= key.length) return key;
+  return `key ${key.slice(0, prefix).trimEnd()}…`;
+}
+
+/**
+ * Collision-aware fragments over the whole visible set. Group keys by
+ * their current 10-char fragment; for any group with more than one
+ * DISTINCT key, increase that group's prefix length by 1 and re-group,
+ * repeating until every description is distinct or the prefix reaches
+ * the full key length (rendered in full, no ellipsis). Entries whose
+ * 10-char fragment is already unique keep the exact current output.
+ */
+function distinctKeyFragments(keys: string[]): string[] {
+  const n = keys.length;
+  const prefix = keys.map((k) => (k.length > 10 ? 10 : k.length));
+  for (;;) {
+    const fragments = keys.map((k, i) => keyFragmentAt(k, prefix[i] ?? 10));
+    const seen = new Set<string>();
+    const bumped = new Set<number>();
+    for (let i = 0; i < n; i++) {
+      const frag = fragments[i] ?? "";
+      if (seen.has(frag)) bumped.add(i);
+      seen.add(frag);
+    }
+    if (bumped.size === 0) return fragments;
+    for (const i of bumped) {
+      const key = keys[i] ?? "";
+      const cur = prefix[i] ?? key.length;
+      if (cur < key.length) prefix[i] = cur + 1;
+    }
+  }
 }
 
 /**
