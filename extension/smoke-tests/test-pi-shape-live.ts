@@ -72,10 +72,12 @@ type AnyEvent = Record<string, unknown>;
 
 // The single source of truth for the extension-registered tool roster.
 // MUST stay in sync with the `name:` at each `pi.registerTool` site in
-// extension/src (index.ts registers every tool except the lens
-// companion extensions report_finding / report_policy, which are loaded
-// into lens children, not this child). The canary at the end of this
-// test fails if src registrations diverge from this list.
+// extension/src (index.ts registers the parent-session tools; the companion
+// extensions under extension/src — report_finding, report_policy,
+// report_facts, report_plan_item, report_research_claim — are separate
+// entrypoints loaded into child processes, not this parent child). The
+// canary at the end of this test fails if src registrations diverge from
+// this list.
 const EXPECTED_ROSTER = [
   "agents_md_run",
   "adversarial_loop",
@@ -89,6 +91,8 @@ const EXPECTED_ROSTER = [
   "dispatch_status",
   "load_workflow_doctrine",
   "start_work_driver",
+  "start_plan_driver",
+  "start_research_driver",
 ] as const;
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -356,7 +360,13 @@ for (const file of readdirSync(extSrcDir)) {
     registered.push(m[1]);
   }
 }
-const COMPANION_TOOLS = new Set(["report_finding", "report_policy"]);
+const COMPANION_TOOLS = new Set([
+  "report_finding",
+  "report_policy",
+  "report_facts",
+  "report_plan_item",
+  "report_research_claim",
+]);
 const expectedSet = new Set<string>([...EXPECTED_ROSTER, ...COMPANION_TOOLS]);
 const registeredSet = new Set(registered);
 const missingFromList = [...registeredSet].filter((n) => !expectedSet.has(n));

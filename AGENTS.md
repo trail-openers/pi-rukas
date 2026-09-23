@@ -118,18 +118,18 @@ For extensions outside the canonical install location (dev-mode, monorepo paths)
 
 ## 4. Pi compatibility (load-bearing)
 
-The extension depends on Pi's CLI flags, JSON event stream shape, and `ExtensionAPI` surface. The pin in `extension/package.json` (`@earendil-works/pi-coding-agent: ~0.82.0`) is **deliberate**, not a default. But understanding what it actually protects — and what it does not — is critical.
+The extension depends on Pi's CLI flags, JSON event stream shape, and `ExtensionAPI` surface. The dev-dependency pins in `extension/package.json` (`@earendil-works/pi-coding-agent` + `@earendil-works/pi-tui`, co-pinned and moved in lockstep) are **deliberate and non-normative**: a CI-reproducibility device (so `bun install --frozen-lockfile` is reproducible), explicitly NOT a supported-version claim. Operators are free to upgrade Pi at any time — `pi` is a global install outside the extension's package manager. The single maintained version claim is the "Last verified against pi X.Y.Z" line in [docs/pi-compatibility.md](docs/pi-compatibility.md); this section and every other site reference or restate it, never carry an independent literal that can drift (enforced by `extension/smoke-tests/test-pi-version-drift.ts`).
 
-Currently validated against `pi` **0.82.1** (live shape tests passed via `test-pi-shape-live.ts`).
+Last verified against `pi` **0.84.4 (2026-09-23)** — the line above in [docs/pi-compatibility.md](docs/pi-compatibility.md) is the single source of truth (verified via `test-pi-shape-live.ts`); this restatement must agree with it (and with the `extension/package.json` pins' co-pin state) or the drift gate fails.
 
 ### What the pin protects
 
-1. **Type-checking.** Every import of `@earendil-works/pi-coding-agent` across the extension source is `import type` — erased at compile time, zero runtime footprint. The pin ensures the extension's types match 0.82.0's shape. That's it.
-2. **pi-tui widget code.** `@earendil-works/pi-tui` has value imports (`Text`, `SelectList`, `Container` in `lifecycle-events.ts`, `model-picker.ts`, `dispatch-deck.ts`) that resolve to the pinned 0.82.0 code at runtime. So 0.82.0 TUI widgets render inside whatever Pi version the user actually runs. This IS a real runtime footprint.
+1. **Type-checking.** Every import of `@earendil-works/pi-coding-agent` across the extension source is `import type` — erased at compile time, zero runtime footprint. The pin ensures the extension's types match the pinned package's shape. That's it.
+2. **pi-tui widget code.** `@earendil-works/pi-tui` has value imports (`Text`, `SelectList`, `Container` in `lifecycle-events.ts`, `model-picker.ts`, `dispatch-deck.ts`) that resolve to the pinned pi-tui code at runtime. So the pinned TUI widgets render inside whatever Pi version the user actually runs. This IS a real runtime footprint.
 
 ### What the pin does NOT protect
 
-The runtime `ExtensionAPI` surface. `@earendil-works/pi-coding-agent` is a devDependency; it cannot fence runtime. `spawnSpecialist` re-invokes `process.argv[1]` — the **running pi binary** — never the pinned package. The extension is typed against 0.82.0 but called with the installed Pi's ExtensionAPI. If the user's Pi drifts past 0.82.0 (e.g. runtime 0.83.0), the pin is silent. Shape changes in the ExtensionAPI or CLI flags will only surface as runtime errors, not type errors.
+The runtime `ExtensionAPI` surface. `@earendil-works/pi-coding-agent` is a devDependency; it cannot fence runtime. `spawnSpecialist` re-invokes `process.argv[1]` — the **running pi binary** — never the pinned package. The extension is typed against the pinned package but called with the installed Pi's ExtensionAPI. If the user's Pi drifts past the pinned version, the pin is silent. Shape changes in the ExtensionAPI or CLI flags will only surface as runtime errors, not type errors.
 
 ### The uncovered risk: runtime drift
 
@@ -150,12 +150,12 @@ Don't assume these are stable across Pi versions — verify when bumping:
 ### Bumping the Pi pin
 
 1. Read the Pi changelog: `gh api repos/badlogic/pi-mono/releases | jq -r '.[0:5][] | "\(.tag_name): \(.body[0:200])"'`.
-2. Bump in `extension/package.json` (e.g. `~0.82.0` → `~0.83.0`).
+2. Bump in `extension/package.json` — relative example: `~0.XY.Z` → `~0.XY.(Z+1)`. Bump `pi-coding-agent` and `pi-tui` together (lockstep); the drift gate fails on a one-sided bump.
 3. Run **live** smoke tests on the new version (offline tests won't catch shape changes):
    - `bun run smoke-tests/test-pi-shape-live.ts` — load-bearing shape assertions (#7). Spawns a trivial PONG child and verifies the event shapes (`agent_end`, `message_end.message.role/usage`, `content[].type`, `model`) we depend on.
    - `bun run smoke-tests/test-progress-live.ts` — multi-turn `onProgress` cadence.
    - `bun run smoke-tests/test-lens-review-live.ts` — six-pass review against a synthetic diff.
-4. Record the validated version in AGENTS.md § 4 (update the "Currently validated against" line near the top of this section). Do NOT edit released CHANGELOG entries — those are historical records.
+4. Update the "Last verified against" line in [docs/pi-compatibility.md](docs/pi-compatibility.md) (version + date) and the restating line in this section — the `test-pi-version-drift.ts` gate cross-checks both against the declared pins. Do NOT edit released CHANGELOG entries — those are historical records.
 5. PR with the bump + smoke-test evidence.
 
 When Pi changes a shape we depend on (this has happened: `tool_use` → `toolCall`), the offline smoke tests won't catch it — `test-pi-shape-live.ts` is the only detector. Since #319 it exercises tool-call shapes (`toolCall` blocks, `tool_execution_start`) and tool-roster integrity, so a rename or a silently dropped registered tool now fails the gate.
@@ -579,7 +579,7 @@ Reading `~/.pi/agent/ensemble-runs/*.json` directly is forbidden for the orchest
 
 ### 🚨 Pi version shape drift
 
-CLI flags and event shapes change between Pi minor versions. The pin in `extension/package.json` (`~0.82.0`) protects us, but bumping requires live tests + manual transcript inspection. The offline smoke tests don't exercise child-process behaviour; they won't catch a Pi shape regression.
+CLI flags and event shapes change between Pi minor versions. The dev pins in `extension/package.json` (non-normative — a CI-reproducibility device) keep CI stable, but bumping requires live tests + manual transcript inspection. The offline smoke tests don't exercise child-process behaviour; they won't catch a Pi shape regression. The single maintained version claim lives in [docs/pi-compatibility.md](docs/pi-compatibility.md); `test-pi-version-drift.ts` cross-checks it against the declared pins and the other docs.
 
 ### 🚨 Branching off stale main
 

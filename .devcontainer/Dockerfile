@@ -108,9 +108,10 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 
 # Pi (per https://pi.dev/docs/latest/quickstart)
 # Pinned to the install floor 0.84.4 (install-preflight.sh MIN_PI_VERSION).
-# The version claimed in the pi-mcp-adapter comment below and in README ("Status"
-# line + Pi compatibility section) is a hand-maintained claim; re-check all
-# three when the built image's pi changes.
+# The floor (install-preflight.sh) and this line are cross-checked by
+# test-prerequisite-drift.ts; the separate "last verified" claim in
+# docs/pi-compatibility.md is cross-checked by test-pi-version-drift.ts —
+# re-run the relevant gate when the built image's pi changes.
 RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.84.4
 
 # ctx7 — current library docs
@@ -186,12 +187,12 @@ RUN cd ${PI_ENSEMBLE_DIR}/extension && bun install --frozen-lockfile
 # project under ~/.pi/agent/npm/node_modules/ (NOT the extensions/ dir, which
 # is only used for git/local installs); Pi's own package manager then loads
 # it at runtime via the `pi.extensions` manifest in the package's package.json.
-# Verified against pi 0.84.4 (see the version note at the pi install line
-# above; also asserted in README → "Status" + Pi compatibility): `pi install
-# npm:pi-mcp-adapter` + the node_modules layout below. Bumping pi is a
-# deliberate update per AGENTS.md § 5 — re-verify this check when the pin
-# changes. (This path literal is the build-side mirror of install.sh §5's
-# bridge check — keep them in sync.)
+# Verified against pi 0.84.4 (see the "Last verified against" line in
+# docs/pi-compatibility.md — test-pi-version-drift.ts cross-checks this claim
+# against it): `pi install npm:pi-mcp-adapter` + the node_modules layout
+# below. Bumping pi is a deliberate update per AGENTS.md § 4 — re-verify
+# this check when the version changes. (This path literal is the build-side
+# mirror of install.sh §5's bridge check — keep them in sync.)
 # Pinned at 2.32.1 (last confirmed-clean release) per nicobailon/pi-mcp-adapter#547:
 # 2.33.0 pins its @modelcontextprotocol/client+core deps at pkg.pr.new preview-
 # tarball URLs, which npm 12's allow-remote=none default rejects with EALLOWREMOTE
