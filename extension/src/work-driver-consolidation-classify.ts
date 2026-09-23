@@ -87,18 +87,66 @@ export interface ConsolidationFailureVerdict {
 }
 
 /**
+ * #807 — the honest-absence sentinel. A tail with NO assertion-shaped line
+ * (a bare `FAILED: <file>` marker, an echoed command, a truncated stream)
+ * used to fall back to the first non-empty line — which is exactly how #746
+ * reported `$ cd extension && bun run check` (an echoed, PASSING command)
+ * as "the specific assertion". An explicit absence the operator can
+ * recognise beats a confidently wrong specific; the tail is still shown
+ * next to it by `consolidatedFailureMessage`.
+ */
+export const NO_SPECIFIC_ASSERTION = "(no specific assertion could be extracted)";
+
+/**
+ * #807 — a line that merely NAMES a failure, not an assertion: the smoke
+ * loop's per-failure marker (`FAILED: smoke-tests/test-cancel.ts` — #798
+ * reported this as the assertion, sending operators to a filename) and its
+ * post-#804 summary (`FAILED: 2 test(s) — a.ts, b.ts`). The real assertion
+ * sits beneath the marker; the summary carries the count.
+ */
+const IS_MARKER_LINE = /^FAILED:/;
+/** #807 — an ECHOED shell command (the verify-cmd chain's `$ …` output, #746). */
+const IS_ECHOED_COMMAND = /^\$ /;
+/** #807 — a line that carries ACTUAL failure content (priority: `✗` first). */
+const IS_ASSERTION_LINE =
+  /^✗\s|^error:?\s|^Error:|error\[E\d+\]|\bTS\d{4,}\b|exit 0 \(got 1\)|zero findings \(got 1\)/;
+
+/**
+ * #807 — a token-shape secret guard: the extracted assertion reaches a
+ * GitHub comment (cap evidence + handoff body), so a line that looks like
+ * credential material is skipped in favour of the next qualifying line.
+ */
+const LOOKS_LIKE_SECRET =
+  /(api[_-]?key|access[_-]?token|bearer\s|password|passwd|secret[_-]?key)\s*[=:]\s*\S{8,}/i;
+
+/** #807 — a line that is neither an assertion nor usable evidence. */
+function isNonAssertionLine(line: string): boolean {
+  return IS_MARKER_LINE.test(line) || IS_ECHOED_COMMAND.test(line) || LOOKS_LIKE_SECRET.test(line);
+}
+
+/**
  * Extract the specific failing assertion from a consolidated-verify failure
  * tail. The tail comes from `extractAttributedTail` — when `attributed:
- * true` it starts at the `FAILED:` marker (the smoke-loop shape); when
+ * true` it starts at a `FAILED:` marker (post-#804 the LAST one, the
+ * summary, which is why a marker alone is never a valid answer); when
  * `false` it is the last 800 chars of the combined output (the biome/tsc
- * shape, which emits no marker).
+ * chain-stage shape, which emits no marker and may carry an echoed `$ …`
+ * command line from a passing earlier stage).
  *
- * The assertion is the FIRST line of the tail that looks like a concrete
- * failure: a line starting with `✗` (biome/scaffold), `error:` or `Error:`
- * (tsc/compilation), `FAILED:` (smoke-loop marker), or containing `exit 0
- * (got 1)` / `zero findings (got 1)` (the scaffolded-file shape). When no
- * such line is found, the first non-empty line of the tail is returned —
- * the operator still gets something specific, not just "exit 1".
+ * #807 — the assertion is the FIRST line of the tail that carries actual
+ * failure content, preferring a `✗` assertion (smoke loop / biome /
+ * scaffold), then a compiler/linter error (tsc `error TS…`, biome
+ * diagnostic, `error:`/`Error:`/`error[E…]:`). Marker lines (`FAILED: …`,
+ * including the `FAILED: <n> test(s) — …` summary), echoed shell command
+ * lines (`$ …`), and secret-shaped lines are NEVER selected. When no line
+ * qualifies, `NO_SPECIFIC_ASSERTION` is returned instead of the first
+ * non-empty line (the #746 defect): a field that reports absence honestly
+ * beats one that sometimes holds a filename and sometimes a command echo.
+ *
+ * Multi-failure (post-#804) decision, pinned in test-work-driver-verify-
+ * extract-assertion.ts: "the specific assertion" is the FIRST real
+ * assertion; the count is the summary marker's job, so it is not
+ * duplicated into the extracted field.
  */
 export function extractSpecificAssertion(failureTail: string): string {
   const lines = failureTail
@@ -106,11 +154,27 @@ export function extractSpecificAssertion(failureTail: string): string {
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
   for (const line of lines) {
-    if (/^✗\s/.test(line) || /^FAILED:/.test(line)) return line;
-    if (/^error:|^Error:/.test(line)) return line;
-    if (/exit 0 \(got 1\)/.test(line) || /zero findings \(got 1\)/.test(line)) return line;
+    if (isNonAssertionLine(line)) continue;
+    if (/^✗\s/.test(line)) return line;
   }
-  return lines[0] ?? failureTail.trim();
+  for (const line of lines) {
+    if (isNonAssertionLine(line)) continue;
+    if (IS_ASSERTION_LINE.test(line)) return line;
+  }
+  return NO_SPECIFIC_ASSERTION;
+}
+
+/**
+ * #807 — true when `per` is a genuine assertion that also appears verbatim
+ * in `consolidated`, for the classifier's root-cause match. Extracted
+ * assertions are compared (the #798 fix): both sides reduced to a marker
+ * or an echo used to make a marker-vs-marker match (or a marker-vs-text
+ * miss) where the identical `✗ …` line sat invisibly underneath. The
+ * sentinel never matches — absence on either side is not evidence of a
+ * shared cause.
+ */
+function sharesAssertion(consolidated: string, per: string): boolean {
+  return per !== NO_SPECIFIC_ASSERTION && per.length > 0 && consolidated.includes(per);
 }
 
 /**
@@ -166,7 +230,7 @@ export function classifyConsolidatedVerifyFailure(
   if (workstreamCount <= 1) {
     const perFailure = Object.values(perWorktreeFailuresByWs)[0] ?? "";
     const perAssertion = extractSpecificAssertion(perFailure);
-    if (perFailure && perAssertion && consolidatedFailure.includes(perAssertion)) {
+    if (perFailure && perAssertion && sharesAssertion(consolidatedFailure, perAssertion)) {
       return {
         classification: "per-workstream-defect",
         assertion,
@@ -192,7 +256,7 @@ export function classifyConsolidatedVerifyFailure(
     const perFailure = perWorktreeFailuresByWs[wsId];
     if (!perFailure) continue;
     const perAssertion = extractSpecificAssertion(perFailure);
-    if (perAssertion && consolidatedFailure.includes(perAssertion)) {
+    if (perAssertion && sharesAssertion(consolidatedFailure, perAssertion)) {
       return {
         classification: "per-workstream-defect",
         assertion,

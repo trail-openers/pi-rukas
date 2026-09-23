@@ -16,9 +16,11 @@
 import path from "node:path";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import {
+  NO_SPECIFIC_ASSERTION,
   buildPerWorktreeFailuresByWs,
   classifyConsolidatedVerifyFailure,
   consolidatedFailureMessage,
+  extractSpecificAssertion,
 } from "./work-driver-consolidation-classify.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { provisionDepsHint } from "./work-driver-deps-hint.ts";
@@ -110,14 +112,36 @@ export async function runVerifyCommandGate(opts: {
     return;
   }
   const scratchDir = path.join(ctx.repoRoot, "tmp", `issue-${ctx.issue}`);
-  // #782 — the consolidated-verify flake retry: fires ONLY when every
-  // per-worktree verify passed, the consolidated run failed, and this is
-  // a genuine consolidation (N>1). N=1 consolidation is a no-op (its
-  // failure is a per-workstream defect) and per-worktree failures are
-  // genuine defects the classifier names. The re-run happens inside
-  // runConsolidatedVerify, BEFORE classification and BEFORE the restore.
+  // #807 — the retry gate and the Case-2 root-cause match below must read
+  // the SAME per-worktree failure map: if the retry fires on one view of
+  // the failures and the classifier later compares a different, filtered
+  // view, a "shared assertion" decision can diverge between the gate and
+  // the verdict (the #798 class of marker-vs-marker mismatch). Both now
+  // read `perWorktreeFailuresByWs`.
+  const perWorktreeFailuresByWs = buildPerWorktreeFailuresByWs(
+    worktrees,
+    changedWorktrees,
+    perWorktreeVerifyFailures,
+  );
+  // #782/#807 — the consolidated-verify flake retry: fires when this is a
+  // genuine consolidation (N>1) AND the per-worktree failures are at most
+  // one (zero = the #782 shape; one = a possible flake). The #798 shape —
+  // a timing-flaky test that failed in a worktree AND on the combined tree
+  // is one unstable test, not two independent defects — is what makes a
+  // single per-worktree failure retry-eligible. A per-worktree failure with
+  // a DIFFERENT assertion (or more than one per-worktree failure) remains a
+  // genuine defect and still blocks the retry, so a real consolidation-
+  // created defect is never retried into a false pass. The shared-assertion
+  // check itself is made against the consolidated failure AFTER it runs
+  // (below) — the per-worktree failure is not yet known to share the
+  // consolidated assertion until the consolidated run fails. The re-run
+  // happens inside runConsolidatedVerify, BEFORE classification and BEFORE
+  // the restore, and is bounded at exactly one.
   const flakeRetryPrecondition =
-    perWorktreeVerifyFailures.length === 0 && Object.keys(worktrees).length > 1;
+    (perWorktreeVerifyFailures.length === 0 ||
+      (perWorktreeVerifyFailures.length === 1 &&
+        Object.keys(perWorktreeFailuresByWs).length === 1)) &&
+    Object.keys(worktrees).length > 1;
   const cons = await runConsolidatedVerify(execFn, {
     repoRoot: ctx.repoRoot,
     baseSha: baseSha as string,
@@ -154,17 +178,42 @@ export async function runVerifyCommandGate(opts: {
       );
     }
   } else if (cons.status === "failed") {
-    // #777 — classify the consolidated-tree failure (see the classifier
-    // module docstring for the three-way distinction). #782 — when the
-    // flake re-run happened (and also failed), the detail is the second
-    // run's tail; a test that fails twice is not a flake, so the cycle
-    // parks as today.
+    // #777/#807 — classify the consolidated-tree failure (see the
+    // classifier module docstring for the three-way distinction). #782 —
+    // when the flake re-run happened (and also failed), the detail is the
+    // second run's tail; a test that fails twice is not a flake, so the
+    // cycle parks as today. #807 — the gate below must read the SAME map
+    // the retry precondition did (see the buildPerWorktreeFailuresByWs
+    // call above), so "shared assertion" cannot mean two different things.
     const wsIds = Object.keys(worktrees);
+    // #807 — if a retry fired despite one per-worktree failure (the #798
+    // shape: one flaky test that failed twice), the shared assertion is
+    // only provable now, from the consolidated failure itself.
+    if (flakeRetryPrecondition && perWorktreeVerifyFailures.length === 1) {
+      const ws = Object.keys(perWorktreeFailuresByWs)[0];
+      if (ws !== undefined) {
+        const perAssertion = extractSpecificAssertion(perWorktreeFailuresByWs[ws] ?? "");
+        const consAssertion = extractSpecificAssertion(cons.detail);
+        if (
+          perAssertion &&
+          perAssertion !== NO_SPECIFIC_ASSERTION &&
+          consAssertion === perAssertion
+        ) {
+          notes.push(
+            `flake retry fired despite a per-worktree failure — workstream '${ws}' and the consolidated tree failed on the SAME assertion (${perAssertion}), which is one unstable test failing twice, not two independent defects`,
+          );
+        } else {
+          notes.push(
+            "flake retry fired despite a per-worktree failure, but its assertion did NOT match the consolidated failure — the re-run was conservative; the classification below attributes the failure",
+          );
+        }
+      }
+    }
     const verdict = classifyConsolidatedVerifyFailure(
       wsIds.length,
       wsIds,
       cons.detail,
-      buildPerWorktreeFailuresByWs(worktrees, changedWorktrees, perWorktreeVerifyFailures),
+      perWorktreeFailuresByWs,
     );
     failures.push(consolidatedFailureMessage(verdict, cmd));
   } else {
