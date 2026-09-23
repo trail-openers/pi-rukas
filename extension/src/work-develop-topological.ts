@@ -8,6 +8,7 @@
  * dependent-workstream runner live in work-develop-run.ts.
  */
 import { trace } from "./trace.ts";
+import { applyFenceVerdicts } from "./work-develop-fence-verdicts.ts";
 import {
   type DevelopRunState,
   makeRunOneWorkstream,
@@ -40,7 +41,7 @@ async function runDevelopTopological(
   const begun = { jobId };
   let next = initialState;
   const scratchAbs = scratchDir(ctx.repoRoot, ctx.issue);
-  const verdicts: Array<{ id: string; ok: boolean }> = [];
+  const verdicts: Array<{ id: string; ok: boolean; reason?: string }> = [];
   const branchEvents: WorkEvent[] = [];
   const dependsOnMap: Record<string, string[]> = {};
   for (const [id, ws] of Object.entries(workstreams)) {
@@ -248,6 +249,15 @@ async function runDevelopTopological(
   // failed workstream no longer skips the gate for the whole fanout.
   if (hasDevelopEvidence) {
     const gate = await verifyStepOutcome(ctx, next, "develop");
+    // #814 — a fence violator must not report a bare "ok" in the
+    // branches-converged verdicts (the #792 dishonesty): applyFenceVerdicts
+    // flips the entries named in `gate.fenceViolations` to ok:false with an
+    // attributed reason (see work-develop-fence-verdicts.ts). The
+    // `ids.length > 1` guard stays here — the function is pure and checks
+    // nothing about the fanout size.
+    if (gate.fenceViolations && ids.length > 1) {
+      applyFenceVerdicts(verdicts, gate.fenceViolations);
+    }
     if (gate.ok) {
       // #782 — the consolidated verify's single re-run passed: the driver
       // proceeds. Emit the recovery marker BEFORE the converge gate so the
@@ -303,6 +313,7 @@ async function runDevelopTopological(
             step: "develop",
             failures: gate.failures,
             at: Date.now(),
+            ...(gate.fenceViolations ? { fenceViolations: gate.fenceViolations } : {}),
             ...(gate.flakeRecovered ? { retries: 1, recovered: true } : {}),
           },
         },

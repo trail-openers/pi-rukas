@@ -47,7 +47,10 @@ function run(ws: WS, changed: string[]) {
   return { failures, notes };
 }
 
-const FENCE = /developer touched out-of-scope path .+ — declared fence violated/;
+// #814 — the attributed failure strings keep the `declared fence violated`
+// phrase; the workstream id and kind suffix were added for attribution. The
+// normalisation under test is unchanged — the regex pins the phrase.
+const FENCE = /touched out-of-scope path .+ — declared fence violated \((sibling-declared|issue-fenced)\)/;
 
 // ------------------------------------------ annotation stripping — FENCE side
 //
@@ -97,9 +100,14 @@ const FENCE = /developer touched out-of-scope path .+ — declared fence violate
       fanout.startsWith("scope fanout: 8 undeclared file(s) changed vs 1 declared"),
     `in-scope side: declared count is 1 for an annotated path entry (got: ${fanout ?? "no fanout failure"})`,
   );
+  // #814 — the undeclared warning (a fence-free touched file, no siblings
+  // declare it) also notes the touched file; filter those out so the
+  // assertion pins the ABSENCE of a fence hit (the normalisation under
+  // test) rather than the presence of an unrelated warning.
+  const nonUndeclared = notes.filter((n) => !/undeclared/.test(n));
   assert(
-    notes.length === 0,
-    `in-scope side: no notes for a fully-declared touch (got: ${notes.join("; ")})`,
+    nonUndeclared.length === 0,
+    `in-scope side: no fence notes for a fully-declared touch (got: ${notes.join("; ")})`,
   );
 }
 
@@ -118,7 +126,7 @@ const FENCE = /developer touched out-of-scope path .+ — declared fence violate
   );
   assert(
     failures.some((f) =>
-      /developer touched out-of-scope path extension\/smoke-tests\/test-work-driver-mechanized-commit\.ts/.test(
+      /touched out-of-scope path extension\/smoke-tests\/test-work-driver-mechanized-commit\.ts/.test(
         f,
       ),
     ),
@@ -142,7 +150,7 @@ const FENCE = /developer touched out-of-scope path .+ — declared fence violate
   );
   assert(
     failures.some((f) =>
-      /developer touched out-of-scope path extension\/smoke-tests\/test-work-driver-mechanized-commit\.ts/.test(
+      /touched out-of-scope path extension\/smoke-tests\/test-work-driver-mechanized-commit\.ts/.test(
         f,
       ),
     ),
@@ -165,7 +173,7 @@ const FENCE = /developer touched out-of-scope path .+ — declared fence violate
     [fname],
   );
   assert(
-    failures.some((f) => /developer touched out-of-scope path docs\/notes \(draft\)\.md/.test(f)),
+    failures.some((f) => /touched out-of-scope path docs\/notes \(draft\)\.md/.test(f)),
     `canary: "docs/notes (draft).md" survives the strip (only a TRAILING annotation is stripped) (got: ${failures.join("; ")})`,
   );
 }
@@ -181,7 +189,7 @@ const FENCE = /developer touched out-of-scope path .+ — declared fence violate
     ["src/foo/bar.ts"],
   );
   assert(
-    failures.some((f) => /developer touched out-of-scope path src\/foo\/bar\.ts/.test(f)),
+    failures.some((f) => /touched out-of-scope path src\/foo\/bar\.ts/.test(f)),
     `directory fence: "src/foo/" (trailing slash) still fences the whole tree (got: ${failures.join("; ")})`,
   );
 }
@@ -191,7 +199,7 @@ const FENCE = /developer touched out-of-scope path .+ — declared fence violate
     ["src/foo/bar.ts"],
   );
   assert(
-    failures.some((f) => /developer touched out-of-scope path src\/foo\/bar\.ts/.test(f)),
+    failures.some((f) => /touched out-of-scope path src\/foo\/bar\.ts/.test(f)),
     `directory fence: annotated "src/foo (new)" strips to "src/foo" and still fences the tree (got: ${failures.join("; ")})`,
   );
 }

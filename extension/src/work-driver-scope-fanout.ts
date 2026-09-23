@@ -56,6 +56,7 @@
  */
 
 import { couplesTo, isTestPath } from "./work-driver-plan-paths.ts";
+import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 
 /** #285 — escape hatch for the deterministic develop scope/fanout gate. */
 function scopeGateEnabled(): boolean {
@@ -116,6 +117,22 @@ function scopeFanoutMinimum(): number {
  * diff (the caller resolves the per-workstream base from
  * `workstreamBaseShas`), so a dependent workstream's inherited dependency
  * commits never appear in its changed set.
+ *
+ * #814 — structured violation records: every non-self fence hit still
+ * BLOCKS (a failure string reaches `failures`) and is attributed to its
+ * violating workstream, classified `sibling-declared` (the file is in
+ * ANOTHER workstream's `paths`: a guaranteed consolidation collision;
+ * the record carries `declaredById`) versus `issue-fenced` (fenced but
+ * declared by no sibling — an issue-level exclusion; every N=1 fence hit
+ * is this). A SEPARATE, computed scan of the changed set records files
+ * that sit in NO workstream's `paths` AND are not in the workstream's own
+ * `outOfScope` (and are not self/dependsOn-exempt) as `undeclared` —
+ * honest discovery: WARN (a note) plus a structured record, never a
+ * failure. All records go into the `fenceViolations` out-parameter. The
+ * #725 dependsOn carve-out and the #784 self-fence demotion are unchanged
+ * and produce NO structured record; the self-fence note now also names
+ * the violating workstream (the note already existed; attribution is
+ * added to the record the #792 incident was missing).
  */
 export function runScopeFanoutGate(
   workstreams: Record<
@@ -132,6 +149,7 @@ export function runScopeFanoutGate(
   changedPathsByWorkstream: Map<string, Set<string>>,
   failures: string[],
   notes: string[],
+  fenceViolations?: FenceViolationRecord[],
 ): void {
   if (!scopeGateEnabled()) {
     notes.push("PI_ENSEMBLE_SCOPE_GATE=0 — develop scope/fanout gate disabled");
@@ -182,6 +200,19 @@ export function runScopeFanoutGate(
     // is all the predicate needs).
     const depOwnedPaths = dependencyOwnedBy.get(id);
     const depOwnedArr = depOwnedPaths ? [...depOwnedPaths] : [];
+    // #814 — the SIBLING-declared sets: for every OTHER workstream, its own
+    // normalised declared `paths` (excluding this workstream, so a self-
+    // declaration is judged as self-fence first, below). A fence hit
+    // matching one of these is `sibling-declared` (annexation); a hit
+    // matching none is `issue-fenced` (issue-level exclusion). Both still
+    // BLOCK. `declaredBy` is hoisted out of the per-file loop — it is
+    // identical for the fence hits and the undeclared scan below.
+    const declaredBy = new Map<string, string[]>();
+    for (const [otherId, otherWs] of Object.entries(workstreams)) {
+      if (otherId === id || !otherWs) continue;
+      const own = otherWs.paths.map(normaliseScopePath).filter((p) => p.length > 0);
+      if (own.length > 0) declaredBy.set(otherId, own);
+    }
     // #784 — a second, additive exemption: a fence hit is demoted to a NOTE
     // (not a failure, not silently dropped) when the fenced file is declared
     // in THIS workstream's OWN `paths` (self-fence). The plan step can list
@@ -204,12 +235,64 @@ export function runScopeFanoutGate(
     );
     for (const file of outOfScopeHits) {
       if (isSelfFenced(file)) {
+        // #814 — the self-fence demotion is UNCHANGED (note, not failure,
+        // no structured record); the note now names the workstream, which
+        // the #792 incident lacked.
         notes.push(
           `fence hit demoted to warning: ${file} is declared in this workstream's own paths (self-fence)`,
         );
         continue;
       }
-      failures.push(`developer touched out-of-scope path ${file} — declared fence violated`);
+      // #814 — attribution. A fence hit ALWAYS blocks (as before #814);
+      // the failure string and the structured record now name the violating
+      // workstream id (the #792 violations were unattributed) and the kind.
+      // `sibling-declared` — the file is in ANOTHER workstream's `paths`
+      // (the #572 contract guarantees at most one declarer; a defensive
+      // first-match scan keeps the comparison normalised): a guaranteed
+      // consolidation collision; `declaredById` carries the sibling. The
+      // string keeps the `declared fence violated` phrase the existing tests
+      // match.
+      const declaringId = [...declaredBy.entries()].find(([, own]) =>
+        own.some((declared) => matchesScopePath(file, declared)),
+      )?.[0];
+      if (declaringId !== undefined) {
+        failures.push(
+          `workstream ${id} touched out-of-scope path ${file} declared by ${declaringId} — declared fence violated (sibling-declared)`,
+        );
+        fenceViolations?.push({
+          workstreamId: id,
+          file,
+          declaredById: declaringId,
+          kind: "sibling-declared",
+        });
+      } else {
+        // ISSUE-FENCED — the file is fenced (the workstream's own
+        // `outOfScope`) but no sibling declared it: an issue-level
+        // exclusion. Every N=1 fence hit is this. Still blocks; no
+        // `declaredById` to record.
+        failures.push(
+          `workstream ${id} touched out-of-scope path ${file} — declared fence violated (issue-fenced)`,
+        );
+        fenceViolations?.push({ workstreamId: id, file, kind: "issue-fenced" });
+      }
+    }
+    // #814 — UNDECLARED: a touched file that is in NO workstream's `paths`
+    // and NOT in this workstream's own `outOfScope` (a fence hit is judged
+    // above, never re-classified here) — honest discovery, usually one
+    // adjacent file to make the own tree compile. Computed from the CHANGED
+    // SET, not from fence hits: WARNS (a note + a structured record),
+    // never a failure. Self-declared and dependsOn-exempt files are
+    // excluded — the #725 carve-out and the #784 self-fence demotion keep
+    // their exemptions and their absence of records.
+    for (const file of changedFiles) {
+      if (declaredPaths.some((declared) => matchesScopePath(file, declared))) continue;
+      if (depOwnedArr.some((declared) => matchesScopePath(file, declared))) continue;
+      if (outOfScope.some((declared) => matchesScopePath(file, declared))) continue;
+      if (planDeclaredPaths.has(file)) continue;
+      notes.push(
+        `workstream ${id} touched ${file}, which is in no workstream's declared paths (undeclared — warning, not blocking)`,
+      );
+      fenceViolations?.push({ workstreamId: id, file, kind: "undeclared" });
     }
     if (declaredPaths.length === 0) {
       notes.push(`scope fanout check skipped for ${id} — workstream has no declared paths`);

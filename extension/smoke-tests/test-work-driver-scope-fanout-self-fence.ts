@@ -39,7 +39,10 @@ type WS = {
   dependsOn?: string[];
 };
 
-const FENCE_FAIL = /developer touched out-of-scope path .+ — declared fence violated/;
+// #814 — the attributed failure strings keep the `declared fence violated`
+// phrase; the workstream id and kind suffix were added for attribution. The
+// demotion note (self-fence) wording is unchanged.
+const FENCE_FAIL = /touched out-of-scope path .+ — declared fence violated \((sibling-declared|issue-fenced)\)/;
 const DEMOTION_NOTE =
   /fence hit demoted to warning: .+ is declared in this workstream's own paths \(self-fence\)/;
 
@@ -85,11 +88,13 @@ function run(workstreams: Record<string, WS>, changed: Record<string, string[]>)
   const a: WS = { id: "a", scope: "x", paths: ["src/a.ts"], outOfScope: ["src/b.ts"] };
   const b: WS = { id: "b", scope: "y", paths: ["src/b.ts"], outOfScope: ["src/a.ts"] };
   const { failures, notes } = run({ a, b }, { b: ["src/a.ts"] });
+  // #814 — the attributed failure string: workstream id + declaring sibling
+  // + kind, with the `declared fence violated` phrase preserved.
   assert(
     failures.some((f) =>
-      /developer touched out-of-scope path src\/a\.ts — declared fence violated/.test(f),
+      /touched out-of-scope path src\/a\.ts declared by a — declared fence violated \(sibling-declared\)/.test(f),
     ),
-    `regression: sibling-declared path (no dependsOn) still FAILS with the unchanged string (got: ${failures.join("; ")})`,
+    `regression: sibling-declared path (no dependsOn) still FAILS with the attributed string (got: ${failures.join("; ")})`,
   );
   assert(
     !notes.some((n) => DEMOTION_NOTE.test(n)),
@@ -111,9 +116,12 @@ function run(workstreams: Record<string, WS>, changed: Record<string, string[]>)
   const { failures, notes } = run({ a }, { a: ["src/self.ts", "src/other.ts"] });
   const fenceFailures = failures.filter((f) => FENCE_FAIL.test(f));
   const demotionNotes = notes.filter((n) => DEMOTION_NOTE.test(n));
+  // #814 — the second hit (src/other.ts) is fenced but declared by no sibling:
+  // `issue-fenced`, still a failure with the attributed string.
   assert(
-    fenceFailures.length === 1 && /src\/other\.ts/.test(fenceFailures[0]),
-    `mixed: exactly ONE failure, for the undeclared file (got: ${failures.join("; ")})`,
+    fenceFailures.length === 1 && /src\/other\.ts/.test(fenceFailures[0]) &&
+      /issue-fenced/.test(fenceFailures[0]),
+    `mixed: exactly ONE failure, for the issue-fenced file (got: ${failures.join("; ")})`,
   );
   assert(
     !/src\/self\.ts/.test(fenceFailures.join("; ")),

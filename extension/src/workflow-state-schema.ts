@@ -8,12 +8,20 @@ import type { CapEvidence, CapedPartialState, EvidenceFailureKind } from "./work
 import type { WorkEvent, WorkStep } from "./workflow-state-events.ts";
 // #679/#728 — workstream shape + consolidation record, split for the 500-line gate.
 // Re-exported so existing importers keep their paths.
-export type { Workstream, WorkstreamBaseShas } from "./workflow-state-schema-workstreams.ts";
+export type {
+  Workstream,
+  WorkstreamBaseShas,
+  FenceViolation,
+} from "./workflow-state-schema-workstreams.ts";
 export type { ConsolidationCompleteness } from "./workflow-state-schema-consolidation-completeness.ts";
 export type { ConvergeEvidence } from "./workflow-state-schema-converge.ts";
 import type { ConsolidationCompleteness } from "./workflow-state-schema-consolidation-completeness.ts";
 import type { ConvergeEvidence } from "./workflow-state-schema-converge.ts";
-import type { Workstream, WorkstreamBaseShas } from "./workflow-state-schema-workstreams.ts";
+import type {
+  FenceViolation,
+  Workstream,
+  WorkstreamBaseShas,
+} from "./workflow-state-schema-workstreams.ts";
 
 export {
   filesPresentFromConsolidation,
@@ -424,6 +432,11 @@ export interface PipelineState {
     at: number;
     retries?: number;
     recovered?: boolean;
+    /**
+     * #814 — structured develop-scope-fence violations (see
+     * `FenceViolation` below). Absent = none recorded.
+     */
+    fenceViolations?: FenceViolation[];
   };
   /** Terminal status. "running" while active; flips on `merged` or `handoff`. */
   status: "running" | "merged" | "handoff" | "aborted";
