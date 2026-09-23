@@ -36,6 +36,11 @@ export function overrideEnvForKillCause(
   switch (killCause) {
     case "timeout":
       return "PI_ENSEMBLE_SPAWN_TIMEOUT_MS";
+    // #754 — the plan step's own bound; its env knob is a DISTINCT name from
+    // the global backstop (PI_ENSEMBLE_SPAWN_TIMEOUT_MS stays role-agnostic
+    // and step-agnostic — test-spawn-bounds.ts asserts that).
+    case "plan-timeout":
+      return "PI_ENSEMBLE_PLAN_TIMEOUT_MS";
     case "loop":
     case "token-budget":
       return "PI_ENSEMBLE_DISPATCH_CAPS + PI_ENSEMBLE_CAP_KILL_GRACE_MS";
@@ -86,6 +91,13 @@ export async function buildCompletionEvent(
         : "its cumulative token budget";
       detail =
         `[pi-rukas] killed on token-budget — ${budgetClause}` +
+        ` (override: ${overrideEnvForKillCause(result.killCause)})`;
+    } else if (result.killCause === "plan-timeout") {
+      // #754 — the plan step's own 30-minute bound expired (not the 2 h
+      // global backstop). The operator-facing text names the bound so the
+      // kill is not misread as a developer-scale wall-clock timeout.
+      detail =
+        `[pi-rukas] killed after ${result.killBudgetMs}ms — the plan step's own wall-clock bound expired` +
         ` (override: ${overrideEnvForKillCause(result.killCause)})`;
     } else {
       detail =

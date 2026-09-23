@@ -347,6 +347,9 @@ export async function runHandoff(
     capShape === "loop-detected" || capShape === "token-budget" ? capShape : undefined;
   const isMidFlightHalt =
     capShape === "developer-timeout" ||
+    // #754 — a plan-timeout kill is a mid-flight halt like developer-timeout:
+    // the cycle parked on a bound we chose, and the terminal status says so.
+    capShape === "plan-timeout" ||
     Boolean(capKilledCap) ||
     (capShape?.startsWith("step-failed:") ?? false);
   next = {

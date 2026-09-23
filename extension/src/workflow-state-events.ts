@@ -14,6 +14,7 @@ import type { DeferredCreationEventFragment } from "./workflow-state-events-defe
 import type {
   HandoffConsolidatedEvent,
   HandoffEmittedEvent,
+  LensSkippedEmptyDiffEvent,
 } from "./workflow-state-events-handoff.ts";
 import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-leftover.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
@@ -30,6 +31,7 @@ export type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts"
 export type {
   HandoffConsolidatedEvent,
   HandoffEmittedEvent,
+  LensSkippedEmptyDiffEvent,
 } from "./workflow-state-events-handoff.ts";
 /**
  * Linear step identifiers the driver walks. This union IS the definition
@@ -127,8 +129,8 @@ export type WorkEvent =
       /** Process-level failure (non-zero exit), distinct from provider-error. */
       exitCode?: number | null;
       errorTail?: string;
-      /** Structured self-kill cause (#296; #543 adds loop/token-budget). */
-      killCause?: "timeout" | "inactivity" | "abort" | "loop" | "token-budget";
+      /** Structured self-kill cause (#296; #543 adds loop/token-budget; #754 adds plan-timeout). */
+      killCause?: "timeout" | "inactivity" | "abort" | "loop" | "token-budget" | "plan-timeout";
       /** #543 — the F1 streak evidence at a loop kill (tool + count);
        * persisted on `pipelineState.capEvidence` so `explainCap` renders WHAT looped. */
       loopEvidence?: { tool: string; count: number };
@@ -154,16 +156,7 @@ export type WorkEvent =
       /** "ISSUES_FOUND" | "CRITICAL_ISSUES_FOUND" — preserved verbatim from the verdict. */
       verdict: "ISSUES_FOUND" | "CRITICAL_ISSUES_FOUND";
     }
-  | {
-      /**
-       * PR6 — runLens skipped child dispatch (empty diff); paired with a
-       * synthesised `lens-approved` so the driver advances. Avoids #533
-       * hallucinated findings on empty context.
-       */
-      kind: "lens-skipped-empty-diff";
-      at: number;
-      round: number;
-    }
+  | LensSkippedEmptyDiffEvent
   | {
       /**
        * #286 — runAdversarial skipped the adversarial loop for a workstream
@@ -331,6 +324,9 @@ export type WorkEvent =
         // child was killed is carried in the new `role` field + capEvidence.
         | "loop-detected"
         | "token-budget"
+        // #754 — the plan step's own bound expired on the primary plan
+        // dispatch; distinct from `step-failed:plan` and `developer-timeout`.
+        | "plan-timeout"
         // #280 §B — round-1 repeat-finding seam detection. Same finding
         // shape across ≥3 files → step-back (SDD spec-gap analysis).
         | "repeat-finding-seam"

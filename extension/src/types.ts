@@ -94,7 +94,11 @@ export interface DispatchResult {
    * self-inflicted caps, never a provider fault — a looped/budgeted child is
    * retried exactly zero times (unlike "inactivity", which is a genuine hang).
    */
-  killCause?: "timeout" | "inactivity" | "abort" | "loop" | "token-budget";
+  // #754 — "plan-timeout" = the plan step's own wall-clock bound
+  // (planDispatchTimeoutMs, default 30 min) expired on the PRIMARY plan
+  // dispatch. Set at the plan call site from the expired per-call timeoutMs —
+  // resolveKillCause stays a function of the child-process cap facts only.
+  killCause?: "timeout" | "inactivity" | "abort" | "loop" | "token-budget" | "plan-timeout";
   /**
    * #298 — set only on the SYNTHESIZED adversarial-loop result (role
    * "adversarial-loop"): "rejected" is a COMPLETED reviewer verdict (must be
@@ -221,6 +225,8 @@ export type DispatchFailureCause =
   | "self-killed:loop"
   /** #543 — the F6 cumulative token budget was crossed; spend cap, not a provider fault. */
   | "self-killed:token-budget"
+  /** #754 — the plan step's own wall-clock bound expired; a budget kill, not a provider fault — the plan step's corrective re-dispatch is the recovery, not a wholesale retry. */
+  | "self-killed:plan-timeout"
   | "crashed"
   | "crashed-unknown";
 
