@@ -51,8 +51,10 @@
  * Escape hatch: PI_ENSEMBLE_PI_VERSION_DRIFT=0.
  */
 
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const FIXTURES = path.resolve(import.meta.dirname, "fixtures", "prerequisite-drift");
@@ -140,6 +142,34 @@ export function piVersionLiterals(text: string): string[] {
 }
 
 /**
+ * Every file git considers part of the repo: tracked (`--cached`) plus
+ * untracked-but-not-ignored (`--others --exclude-standard`). A plain
+ * readdir walk reads git-IGNORED runtime debris (outputs/ research
+ * artifacts, .pi-subagents/ transcripts) that carries historical Pi version
+ * literals — at repoRoot that debris makes the census fail on every
+ * consolidated verify even though the debris is not part of the repo. One
+ * ls-files call gives exactly the tracked+untracked-not-ignored set; the
+ * caller's explicit exclusions (fixtures, etc.) apply on top.
+ *
+ * Fails loudly (throws) if git is unavailable — a silent fallback to a
+ * directory walk would re-admit the ignored debris the gate exists to skip.
+ */
+export function gitRepoFiles(repoRoot: string): string[] {
+  // -c core.quotepath=false makes the raw-path output explicit: -z already
+  // emits unquoted bytes (verified empirically — quoting only applies to the
+  // non -z textual path), but the flag guards a config-level surprise in the
+  // one place where a quoted path would corrupt the census listing silently.
+  const out = execFileSync("git", ["-c", "core.quotepath=false", "-C", repoRoot, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  return out
+    .split("\0")
+    .filter((f) => f.length > 0)
+    .map((f) => path.join(repoRoot, f));
+}
+
+/**
  * The full site census: every repo file that can carry a Pi version claim,
  * with the expected superset of bare 0.8x.y literals it may hold. Adding a
  * new version-claim site means adding a row here — the gate fails otherwise
@@ -157,9 +187,10 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // The dev pins (lockstep) + this gate's own literals + its fixture.
     "extension/package.json": ["0.82.0"],
     // …plus this gate's own canary literals (0.82.1 stale-verified canary, 0.84.3 floor canary,
-    // 0.83.9/0.85.0/0.84.5 numeric-matrix canaries, 0.83.0 --exclude-tools canary, 0.87.0
-    // undeclared-literal canary — all in canary strings, all must stay visible to the census).
-    "test-pi-version-drift.ts": ["0.82.0", "0.84.4", "0.99.0", "0.82.1", "0.84.3", "0.83.9", "0.85.0", "0.84.5", "0.83.0", "0.87.0"],
+    // 0.83.9/0.85.0/0.84.5 numeric-matrix canaries, 0.83.0 --exclude-tools canary, 0.86.0
+    // gitignore-listing canary, 0.87.0 undeclared-literal canary — all in canary strings, all
+    // must stay visible to the census).
+    "test-pi-version-drift.ts": ["0.82.0", "0.84.4", "0.99.0", "0.82.1", "0.84.3", "0.83.9", "0.85.0", "0.84.5", "0.83.0", "0.86.0", "0.87.0"],
     // The preflight floor (MIN_PI_VERSION + the #578 provenance/bug-window notes).
     "install-preflight.sh": ["0.84.4", "0.84.3"],
     // The install floor on the install line.
@@ -307,6 +338,44 @@ if (verified && pins.codingAgent) {
   const floor = read("install-preflight.sh").match(/\bMIN_PI_VERSION="?([0-9][0-9a-z.+-]*)"?/);
   const floorV = floor ? (floor[1] as string) : "";
   assert(compareVersions("0.99.0", floorV) !== null, `a declared pin different from the install floor (${floorV}) is comparable and legal — the gate never asserts pin == floor`);
+
+  // Canary 7 — the census listing respects .gitignore exactly: in a temp
+  // repo, a gitignored file carrying an unknown 0.8x.y literal in the claim
+  // space is excluded, while a tracked file and an UNTRACKED-but-not-ignored
+  // file with the same literal are both included. (This is the shape of the
+  // repoRoot debris that failed every consolidated verify: outputs/ is
+  // gitignored but the old readdir walk read it anyway; and --others must
+  // still surface new untracked claims — the gate is narrowed, not weakened.)
+  let tmp: string | null = null;
+  try {
+    tmp = mkdtempSync(path.join(os.tmpdir(), "pi-drift-census-"));
+    execFileSync("git", ["init", "-q"], { cwd: tmp });
+    writeFileSync(path.join(tmp, "tracked.md"), "no version literal here\n");
+    writeFileSync(path.join(tmp, ".gitignore"), "outputs/\n");
+    const outDir = path.join(tmp, "outputs");
+    mkdirSync(outDir);
+    writeFileSync(path.join(outDir, "x.md"), "pi 0.86.0 was old\n");
+    execFileSync("git", ["add", "-A"], { cwd: tmp });
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init"], { cwd: tmp });
+    // Untracked but NOT ignored — a genuinely new version-claim site the census must see.
+    writeFileSync(path.join(tmp, "new-claim.md"), "pi 0.86.0 arrived\n");
+    // Non-ASCII name: the census must list it exactly (raw UTF-8, unquoted)
+    // and the absolute path must be readable — a quoted or C-escaped listing
+    // would produce a phantom file the census then fails to read.
+    writeFileSync(path.join(tmp, "résumé.md"), "no version literal here\n");
+    const listed = gitRepoFiles(tmp).map((p) => path.relative(tmp, p)).sort();
+    assert(listed.includes("tracked.md"), "canary: census listing includes the tracked file");
+    assert(!listed.includes("outputs/x.md"), "canary: census listing excludes the gitignored outputs/x.md (the repoRoot debris shape)");
+    assert(listed.includes("new-claim.md"), "canary: census listing includes the untracked-but-not-ignored file (the gate is narrowed, not weakened)");
+    assert(listed.includes("résumé.md"), "canary: census listing includes the untracked non-ASCII file by its exact UTF-8 name (raw path, unquoted)");
+    assert(!listed.some((p) => p.startsWith('"')), "canary: no listed path is C-style quoted (a quote would mean the -c/-z raw-path contract broke)");
+    const resumeAbs = path.join(tmp, "résumé.md");
+    assert(readFileSync(resumeAbs, "utf8").includes("no version literal"), "canary: readFileSync of the listed non-ASCII absolute path succeeds (the path is a real file, not a quoted escape sequence)");
+  } catch (e) {
+    assert(false, `canary: temp-repo gitignore check errored: ${String(e)}`);
+  } finally {
+    if (tmp) rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 // ---------------------------------------------------------------- site census
@@ -319,16 +388,11 @@ if (verified && pins.codingAgent) {
 {
   const verifiedV = parseVerifiedLine(compat)?.version ?? "";
   const census = siteCensus(verifiedV);
-  const allFiles: string[] = [];
-  const walk = (dir: string) => {
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (e.name === "node_modules" || e.name === ".git" || e.name === ".worktrees") continue;
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) walk(p);
-      else allFiles.push(p);
-    }
-  };
-  walk(REPO_ROOT);
+  // ls-files never reports paths under .git/, and node_modules is gitignored
+  // (untracked + ignored), so the old walk's node_modules/.git/.worktrees
+  // skips are implied by the git-based listing; fixtures stay explicitly
+  // excluded below (they are tracked canary inputs, not claims).
+  const allFiles = gitRepoFiles(REPO_ROOT);
 
   const surprises: string[] = [];
   let declared = 0;
