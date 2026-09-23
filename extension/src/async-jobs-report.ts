@@ -120,7 +120,18 @@ export function describeOutcome(result: DispatchResult): {
   // provider failure (the same five-way ordering the timeout/inactivity/abort
   // kills follow). A looped/budgeted child was killed BY the harness, so the
   // headline must not read as a provider fault or a bad prompt.
+  // #772 — a success-keyed loop kill gets its own wording: "repeated an
+  // already-successful command" is a different incident than "repeated the
+  // same tool call" (the #753 shape — a green test re-issued with identical
+  // output), and reporting it generically sends the operator after the wrong
+  // cause.
   if (result.killCause === "loop") {
+    if (result.loopEvidence?.kind === "success") {
+      return {
+        status: `FAILED (self-killed: repeated an already-successful command — ${result.loopEvidence.tool} × ${result.loopEvidence.count})`,
+        bodyPrefix: null,
+      };
+    }
     return {
       status: "FAILED (self-killed: loop detected)",
       bodyPrefix: null,

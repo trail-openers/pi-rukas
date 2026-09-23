@@ -132,8 +132,10 @@ export type WorkEvent =
       /** Structured self-kill cause (#296; #543 adds loop/token-budget; #754 adds plan-timeout). */
       killCause?: "timeout" | "inactivity" | "abort" | "loop" | "token-budget" | "plan-timeout";
       /** #543 — the F1 streak evidence at a loop kill (tool + count);
-       * persisted on `pipelineState.capEvidence` so `explainCap` renders WHAT looped. */
-      loopEvidence?: { tool: string; count: number };
+       * persisted on `pipelineState.capEvidence` so `explainCap` renders WHAT looped.
+       * #772 — `kind` names which counter fired ("streak" vs the success-keyed
+       * "success") so the handoff rendering can tell the #753 shape apart. */
+      loopEvidence?: { tool: string; count: number; kind?: "streak" | "success" };
       /** #543 — the F6 budget + used tokens at a token-budget kill; same purpose as loopEvidence. */
       tokenBudget?: { budget: number; used: number };
       /** #534 — tokens flushed before the process-level failure. */

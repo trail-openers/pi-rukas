@@ -275,11 +275,63 @@ function truncateHint(s: string): string {
  */
 export type LoopObserver = (blocks: PiContentBlock[], turnIndex: number) => void;
 
+/**
+ * #772 — the tool-result feed for the loop detector's success-keyed
+ * counter. `ingestEvent` calls this for every `toolResult` message the
+ * child emits, so the detector can key its repetition count on the
+ * SUCCEEDING call (not just on identical arguments at `message_end`
+ * time, when the tool has not run yet). The caller (spawn.ts via
+ * `spawn-caps.ts`) creates one detector per spawn and passes both this
+ * callback and the `LoopObserver`; when absent the success-keyed counter
+ * is inert.
+ */
+export type ToolResultObserver = (
+  toolName: string,
+  toolCallId: string,
+  resultText: string,
+  isError: boolean,
+) => void;
+
+/**
+ * #772 — the fields `ingestEvent` reads off a `toolResult` message. The
+ * extraction lives here (not inline in `ingestEvent`) so the seam is
+ * independently testable: a synthetic toolResult message through
+ * `ingestEvent` with a captured observer is the regression test for the
+ * success-keyed counter's feed.
+ */
+export function toolResultFields(msg: {
+  toolName?: unknown;
+  toolCallId?: unknown;
+  content?: Array<{ type?: string; text?: string }>;
+  isError?: boolean;
+}): {
+  toolName: string;
+  toolCallId: string;
+  resultText: string;
+  isError: boolean;
+} {
+  const content = Array.isArray(msg.content) ? msg.content : [];
+  const resultText = content
+    .filter(
+      (b): b is { type: string; text: string } =>
+        b.type === "text" && typeof b.text === "string" && b.text.length > 0,
+    )
+    .map((b) => b.text)
+    .join("");
+  return {
+    toolName: typeof msg.toolName === "string" && msg.toolName ? msg.toolName : "unknown",
+    toolCallId: typeof msg.toolCallId === "string" ? msg.toolCallId : "",
+    resultText,
+    isError: msg.isError === true,
+  };
+}
+
 export function ingestEvent(
   state: RunningState,
   event: ProgressEvent,
   startMs: number,
   loopObserver?: LoopObserver,
+  toolResultObserver?: ToolResultObserver,
 ): boolean {
   state.elapsedMs = Date.now() - startMs;
   // #299 — STALE heartbeat refreshes on ANY child event, not just assistant
@@ -291,6 +343,19 @@ export function ingestEvent(
   state.lastEventAt = Date.now();
   if (event.type !== "message" && event.type !== "message_end") return false;
   const msg = event.message;
+  // #772 — toolResult messages: feed the success-keyed counter. Pi emits
+  // tool results as their own message role (not blocks inside a user
+  // message); the message carries `toolName`, `toolCallId`, `content`
+  // (an array of text blocks), and `isError`. This is the signal the
+  // streak counter cannot see — message_end fires BEFORE the tool runs,
+  // so the success-keyed counter needs the actual result.
+  if (msg && msg.role === "toolResult") {
+    if (toolResultObserver) {
+      const tr = toolResultFields(msg);
+      toolResultObserver(tr.toolName, tr.toolCallId, tr.resultText, tr.isError);
+    }
+    return false; // toolResult is not an assistant turn; no onProgress.
+  }
   if (!msg || msg.role !== "assistant") return false;
   state.turns += 1;
   if (msg.model && !state.model) state.model = msg.model;

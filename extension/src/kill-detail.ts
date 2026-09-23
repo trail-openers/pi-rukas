@@ -20,6 +20,12 @@
 
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
+type KillDetailEvent = {
+  kind: "dispatch-failed";
+  killCause?: string;
+  loopEvidence?: { tool: string; count: number; kind?: "streak" | "success" };
+};
+
 const WHY: Record<string, string> = {
   timeout:
     "hit the wall-clock backstop — that only catches runaway loops, so this means the work needs splitting or manual takeover",
@@ -30,6 +36,12 @@ const WHY: Record<string, string> = {
   // from a wall-clock timeout: a repeating call was detected structurally,
   // so "split the work" does not apply (re-issuing the same prompt loops again).
   loop: "was looped on — it repeated the same tool call after normalisation, so the harness killed it before it burned more budget; changing approach (not retrying) is the fix",
+  // #772 — the success-keyed variant: a distinct incident (re-issuing an
+  // already-green command with identical output, non-adjacent repetition the
+  // streak counter cannot see). The WHY line must match the new report
+  // headline so the operator is not sent after the wrong cause.
+  "loop-success":
+    "was looped on — it re-issued an already-successful command with identical output, so the harness killed it before it burned more budget; changing approach (not retrying) is the fix",
   "token-budget":
     "crossed its token budget — a cost cap, not a provider fault; the budget is PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>, not the inactivity knob",
   // #754 — the plan step's own 30-minute bound (the bound the compiled /plan
@@ -56,7 +68,14 @@ export function killDetail(state: WorkState): string[] {
         e.kind === "dispatch-failed" && Boolean(e.killCause),
     );
   if (!killed?.killCause) return [];
-  const why = WHY[killed.killCause] ?? "was killed by the harness";
+  // #772 — a success-keyed loop kill gets its own WHY line (matching the
+  // report headline), not the generic loop wording.
+  const why =
+    WHY[
+      killed.killCause === "loop" && killed.loopEvidence?.kind === "success"
+        ? "loop-success"
+        : killed.killCause
+    ] ?? "was killed by the harness";
   const tail = killed.errorTail?.trim();
   return [
     `# The ${killed.role ?? "subagent"} on step \`${killed.step}\` ${why}.`,

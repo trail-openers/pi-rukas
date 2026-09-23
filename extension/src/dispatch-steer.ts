@@ -50,6 +50,14 @@ interface SteerDetails {
  *                              that long-dispatch mid-stream deaths are cheap
  *                              to recover from if the child writes a status
  *                              summary before it ends).
+ *   - "driver-success-keyed" — the #772 success-keyed repetition counter
+ *                              (re-issuing an already-successful command with
+ *                              identical output — the #753 incident shape). A
+ *                              distinct source from "driver-loop-detector" so
+ *                              the operator can tell which counter fired: a
+ *                              success-keyed steer means the child is
+ *                              re-running a GREEN command, not repeating
+ *                              arguments.
  *
  * The PM tool path passes "pm-tool"; the driver's caps pass the other two.
  * The tag is informational — it tells the operator WHY the child was nudged.
@@ -60,7 +68,9 @@ export type SteerSource =
   | "driver-budget"
   | "driver-turn-nudge"
   /** #607 d3 — deck UI steer (user confirms a row in the interactive deck). */
-  | "deck-ui";
+  | "deck-ui"
+  /** #772 — the success-keyed repetition counter's report-demanding steer. */
+  | "driver-success-keyed";
 
 /**
  * The driver-callable steer core (#543 F2).
