@@ -18,8 +18,6 @@ import { runCommitPr } from "./work-driver-commit.ts";
 import { type DriverContext, STEP_ORDINAL, nextStep } from "./work-driver-context.ts";
 import { countPriorStepStarts } from "./work-driver-diff.ts";
 import { runExplore } from "./work-driver-explore.ts";
-import { finalizeCycle } from "./work-driver-finalize.ts";
-import { renderHandoffUserMessage } from "./work-driver-handoff-message.ts";
 import { runHandoff } from "./work-driver-handoff.ts";
 import { runLens, runLensFix } from "./work-driver-lens.ts";
 import {
@@ -44,6 +42,7 @@ import {
 } from "./work-driver-resume-reattach.ts";
 import { routeStepOutcome } from "./work-driver-step-router.ts";
 import { runCi, runStepBack } from "./work-driver-stepback-ci.ts";
+import { deliverTerminalLine } from "./work-driver-terminal-delivery.ts";
 import { scratchDir, setupWorkspaceTmp, teardownWorkspaceTmp } from "./work-driver-workspace.ts";
 import { runWorktreeSweep } from "./work-driver-worktree-sweep.ts";
 import * as workWidget from "./work-widget.ts";
@@ -465,24 +464,16 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
     await teardownWorkspaceTmp(ctx.repoRoot, ctx.issue);
   }
 
-  // #580 — write-ahead guard: write handoffDeliveredAt before notifyAgent so
-  // a crash between write and send does not cause re-delivery on restart.
-  if (final === "merged") {
-    notifyAgent(ctx.pi, `pi-rukas /work for issue #${ctx.issue} — MERGED ✓`);
-  } else if (final === "handoff" || final === "aborted") {
-    if (!state.pipelineState.handoffDeliveredAt) {
-      const msg = renderHandoffUserMessage(
-        state,
-        ctx.repoRoot,
-        scratchDir(ctx.repoRoot, ctx.issue),
-      );
-      state = {
-        ...state,
-        pipelineState: { ...state.pipelineState, handoffDeliveredAt: new Date().toISOString() },
-      };
-      await writeState(ctx.repoRoot, state);
-      notifyAgent(ctx.pi, msg);
-    }
+  // #808 — single terminal-delivery path (work-driver-terminal-delivery.ts):
+  // send first, record handoffDeliveredAt only after a successful send, and
+  // trace (never escape) a delivery throw so a resume can re-attempt it.
+  state = await deliverTerminalLine(ctx, state);
+  if (final === "handoff" || final === "aborted") {
+    // Persist the updated state (handoffDeliveredAt set on success, or
+    // unchanged when the send threw — in which case the next invocation
+    // retries the delivery). On a send failure this write is the only
+    // record that the driver reached its terminal boundary at all.
+    await writeState(ctx.repoRoot, state);
   }
   return { started: true };
 }
