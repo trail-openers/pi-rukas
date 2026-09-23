@@ -8,6 +8,37 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.58](https://github.com/trail-openers/pi-rukas/compare/v0.12.57...v0.12.58) (2026-09-23)
+
+
+### Features
+
+* **work:** classify deliverables that legitimately produce no diff ([92ed17b](https://github.com/trail-openers/pi-rukas/commit/92ed17b9a8cbf34ef219e9c38a25f7b9e1fb821d))
+* **work:** single bounded flake retry across all verify seams ([#782](https://github.com/trail-openers/pi-rukas/issues/782)) ([#796](https://github.com/trail-openers/pi-rukas/issues/796)) ([be997e4](https://github.com/trail-openers/pi-rukas/commit/be997e4f6b292dc9ac01b72c13303f99b36d8f29))
+
+
+### Bug Fixes
+
+* **deck:** batch members render once — Text projection is headers only ([#761](https://github.com/trail-openers/pi-rukas/issues/761)) ([#762](https://github.com/trail-openers/pi-rukas/issues/762)) ([bf59199](https://github.com/trail-openers/pi-rukas/commit/bf59199351d44c03fd79264a7b774045a19d40a7))
+* **handoff:** label the issue as well as the PR, and record the target ([#802](https://github.com/trail-openers/pi-rukas/issues/802)) ([2157642](https://github.com/trail-openers/pi-rukas/commit/2157642c537c2cab53baa48972c4b7a126f8e837))
+* **handoff:** verify the label by reading it back, not by asserting it ([#793](https://github.com/trail-openers/pi-rukas/issues/793)) ([3614be5](https://github.com/trail-openers/pi-rukas/commit/3614be596a58ea78cc4f489be72d9b24e4ff1f03))
+* **provision:** verify hook and symlink outcomes on the filesystem ([#805](https://github.com/trail-openers/pi-rukas/issues/805)) ([1320f86](https://github.com/trail-openers/pi-rukas/commit/1320f86c187797b45d13ee3d765a5b21f091cc40))
+* **verify:** run every test and report all failures instead of exiting at the first ([#804](https://github.com/trail-openers/pi-rukas/issues/804)) ([76e1e75](https://github.com/trail-openers/pi-rukas/commit/76e1e75658381d4af65329c49336889f97c18aae))
+* **work:** bound the plan dispatch with its own timeout ([7eca58b](https://github.com/trail-openers/pi-rukas/commit/7eca58b2d0fdea78a8889929aee8e48d566d3572))
+* **work:** classify consolidated-tree verify failures (consolidation-created / per-workstream / needs-human) — [#777](https://github.com/trail-openers/pi-rukas/issues/777) ([#781](https://github.com/trail-openers/pi-rukas/issues/781)) ([2b2bcc3](https://github.com/trail-openers/pi-rukas/commit/2b2bcc3d37a0968a56a128962812d10841f5d1fb))
+* **work:** committed-work-aware lens-fix detection ([#749](https://github.com/trail-openers/pi-rukas/issues/749)) ([#764](https://github.com/trail-openers/pi-rukas/issues/764)) ([96c26f6](https://github.com/trail-openers/pi-rukas/commit/96c26f6d0c7e2c49577d893f1b9c488ab2c1e4e1))
+* **work:** complete lens-fix integration (untracked debris, PR-create ref, conflict-park SHA) — [#776](https://github.com/trail-openers/pi-rukas/issues/776) ([#779](https://github.com/trail-openers/pi-rukas/issues/779)) ([199d5fb](https://github.com/trail-openers/pi-rukas/commit/199d5fbe4c19c86ab004725843cb3814487bfdce))
+* **work:** consolidation verifier rename+annotation false positive — [#744](https://github.com/trail-openers/pi-rukas/issues/744), [#778](https://github.com/trail-openers/pi-rukas/issues/778) ([#780](https://github.com/trail-openers/pi-rukas/issues/780)) ([c038134](https://github.com/trail-openers/pi-rukas/commit/c03813468f23a505be4fe1e77de85168f44df241))
+* **work:** deliver the terminal driver line reliably and record single-issue outcomes ([6f6b577](https://github.com/trail-openers/pi-rukas/commit/6f6b577cc76d61b1ec8f4b3f0bf6d9e5be00595f))
+* **work:** derive conventional PR titles from the issue ([3bf377c](https://github.com/trail-openers/pi-rukas/commit/3bf377c9a3dea13a85026c42c4489de674f52c4c))
+* **work:** derive the consolidation commit subject from the issue ([5073dcf](https://github.com/trail-openers/pi-rukas/commit/5073dcfef3697c18f873cb547de8eabcc146696a))
+* **work:** exempt a workstream's own declared file from its scope fence ([#790](https://github.com/trail-openers/pi-rukas/issues/790)) ([2a0fa6b](https://github.com/trail-openers/pi-rukas/commit/2a0fa6b829184ed348fcddb3e597e3edead2f5fd))
+* **work:** give every develop dispatch an explicit worktree and block a dirty root early ([#806](https://github.com/trail-openers/pi-rukas/issues/806)) ([94c7f0a](https://github.com/trail-openers/pi-rukas/commit/94c7f0a435f1d54d0005df6b0574155f343d2bf6))
+* **work:** record deferred worktree creation failure with git detail, park on dirty leftover ([#753](https://github.com/trail-openers/pi-rukas/issues/753)) ([#756](https://github.com/trail-openers/pi-rukas/issues/756)) ([7a3b866](https://github.com/trail-openers/pi-rukas/commit/7a3b8663c29b58dcc8ad1c6a72dded651b825a12))
+* **work:** replay stacked workstream commits against their own base ([c216261](https://github.com/trail-openers/pi-rukas/commit/c216261fa683272feab55a257d8ff2f368a498b3)), closes [#794](https://github.com/trail-openers/pi-rukas/issues/794)
+* **work:** report the real failing assertion and retry a shared flake once ([941424a](https://github.com/trail-openers/pi-rukas/commit/941424acae84d161c2b467157316900c9e7f5c8f))
+* **work:** verified restore on consolidation abort — stop claiming a restore that did not happen ([#750](https://github.com/trail-openers/pi-rukas/issues/750)) ([#766](https://github.com/trail-openers/pi-rukas/issues/766)) ([a0093e3](https://github.com/trail-openers/pi-rukas/commit/a0093e39045c1ed58dee5988f865a99bb217e3ba))
+
 ## [0.12.57](https://github.com/trail-openers/pi-rukas/compare/v0.12.56...v0.12.57) (2026-09-16)
 
 
