@@ -155,7 +155,11 @@ export function piVersionLiterals(text: string): string[] {
  * directory walk would re-admit the ignored debris the gate exists to skip.
  */
 export function gitRepoFiles(repoRoot: string): string[] {
-  const out = execFileSync("git", ["-C", repoRoot, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
+  // -c core.quotepath=false makes the raw-path output explicit: -z already
+  // emits unquoted bytes (verified empirically — quoting only applies to the
+  // non -z textual path), but the flag guards a config-level surprise in the
+  // one place where a quoted path would corrupt the census listing silently.
+  const out = execFileSync("git", ["-c", "core.quotepath=false", "-C", repoRoot, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });
@@ -355,10 +359,18 @@ if (verified && pins.codingAgent) {
     execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init"], { cwd: tmp });
     // Untracked but NOT ignored — a genuinely new version-claim site the census must see.
     writeFileSync(path.join(tmp, "new-claim.md"), "pi 0.86.0 arrived\n");
+    // Non-ASCII name: the census must list it exactly (raw UTF-8, unquoted)
+    // and the absolute path must be readable — a quoted or C-escaped listing
+    // would produce a phantom file the census then fails to read.
+    writeFileSync(path.join(tmp, "résumé.md"), "no version literal here\n");
     const listed = gitRepoFiles(tmp).map((p) => path.relative(tmp, p)).sort();
     assert(listed.includes("tracked.md"), "canary: census listing includes the tracked file");
     assert(!listed.includes("outputs/x.md"), "canary: census listing excludes the gitignored outputs/x.md (the repoRoot debris shape)");
     assert(listed.includes("new-claim.md"), "canary: census listing includes the untracked-but-not-ignored file (the gate is narrowed, not weakened)");
+    assert(listed.includes("résumé.md"), "canary: census listing includes the untracked non-ASCII file by its exact UTF-8 name (raw path, unquoted)");
+    assert(!listed.some((p) => p.startsWith('"')), "canary: no listed path is C-style quoted (a quote would mean the -c/-z raw-path contract broke)");
+    const resumeAbs = path.join(tmp, "résumé.md");
+    assert(readFileSync(resumeAbs, "utf8").includes("no version literal"), "canary: readFileSync of the listed non-ASCII absolute path succeeds (the path is a real file, not a quoted escape sequence)");
   } catch (e) {
     assert(false, `canary: temp-repo gitignore check errored: ${String(e)}`);
   } finally {
