@@ -12,7 +12,7 @@ Is it a backronym? Technically, Pie Is Ready — Users Keep Adding Steps. But ho
 
 A multi-specialist orchestrator extension for [Pi](https://pi.dev) — the terminal AI coding agent. Spawns role-specialised child Pi processes in parallel, isolates them in git worktrees, runs a mandatory adversarial gate before commit, and gates merge on a six-pass code review (security, error handling, type safety, performance, architecture, simplicity).
 
-> **Status: alpha.** The interfaces work and the workflow runs end-to-end, but the API will change before `1.0`. Use on disposable repos until you've kicked the tires. Tested against pi `0.84.4` (the install floor; the sandbox image ships `0.84.4` — see [Pi compatibility](#pi-compatibility), which carries the full list of sites asserting this claim).
+> **Status: alpha.** The interfaces work and the workflow runs end-to-end, but the API will change before `1.0`. Use on disposable repos until you've kicked the tires. Run whatever Pi version you like — [docs/pi-compatibility.md](docs/pi-compatibility.md) carries the single maintained "last verified against" line (the version to fall back to if you hit trouble on a newer Pi) and the full list of version-claim sites.
 
 ## What you get
 
@@ -183,7 +183,7 @@ The 28 modules under `modules/` (vipune memory patterns, output standards, async
 
 ## Pi compatibility
 
-See [docs/pi-compatibility.md](docs/pi-compatibility.md) — the pinned Pi version, the three sites that assert it, and the bump procedure.
+See [docs/pi-compatibility.md](docs/pi-compatibility.md) — the single maintained "last verified against" line, the non-normative dev pins in `extension/package.json`, and the bump procedure.
 
 ## Security
 

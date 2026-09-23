@@ -1,0 +1,9 @@
+{
+  "name": "prerequisite-drift-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "~0.99.0",
+    "@earendil-works/pi-tui": "~0.84.4"
+  }
+}

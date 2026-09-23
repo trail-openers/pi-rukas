@@ -184,7 +184,7 @@ Examples:
 ```
 feat(review): add per-lens retry on parse failure
 fix(spawn): close stdin to prevent hang on macOS
-chore(deps): bump @earendil-works/pi-coding-agent to 0.76.0
+chore(deps): bump @earendil-works/pi-coding-agent to <next release>
 feat(work)!: replace dispatch_parallel max with PI_ENSEMBLE_MAX_PARALLEL env
 
 BREAKING CHANGE: the hardcoded 10-slot limit is now configurable
@@ -222,20 +222,26 @@ yourself), add the package name to `minimumReleaseAgeExcludes` in
 ## Pi compatibility
 
 pi-rukas depends on Pi's CLI flags, JSON event stream shape, and
-`ExtensionAPI` surface. We pin `@earendil-works/pi-coding-agent` to a tight
-range in `extension/devDependencies` so a Pi minor bump is a deliberate
-update, not silent drift.
+`ExtensionAPI` surface. `extension/package.json` pins `@earendil-works/pi-coding-agent`
+and `@earendil-works/pi-tui` (co-pinned, moved in lockstep) so CI's
+`bun install --frozen-lockfile` stays reproducible — the pins are a
+CI-reproducibility device, explicitly **non-normative**: they are NOT a
+supported-version claim, and operators are free to run any Pi version they
+like. The single maintained version claim is the "Last verified against pi
+X.Y.Z" line in [docs/pi-compatibility.md](docs/pi-compatibility.md); the
+drift gate `extension/smoke-tests/test-pi-version-drift.ts` cross-checks it
+against the declared pins.
 
 When updating the pin:
 
 1. Read the Pi changelog: `gh api repos/badlogic/pi-mono/releases | jq -r '.[0:5][] | "\(.tag_name): \(.body[0:200])"'`.
-2. Bump the pin in `extension/package.json` (e.g. `~0.75.3` → `~0.76.0`).
+2. Bump the pin in `extension/package.json` — relative example: `~0.XY.Z` → `~0.XY.(Z+1)`; bump `pi-coding-agent` and `pi-tui` together (lockstep).
 3. Run the live smoke tests on the new version. Especially watch:
    - `agent_end.messages[].content[]` block types (we depend on `text`, `thinking`, `toolCall`).
    - Tool-call args field (we depend on `arguments`).
    - CLI flags: `--mode rpc`, `--no-extensions`, `--append-system-prompt`, `--session`, `--skill`, `--extension`, `--model`.
    - `--mode rpc` stdin protocol: `{type:"prompt"|"steer"|"abort"|"follow_up"|"get_state", …}` commands (load-bearing for `dispatch_steer` and the initial-prompt path).
-4. Update CHANGELOG.md's "Tested against pi X.Y.Z" line.
+4. Update the "Last verified against pi X.Y.Z" line in docs/pi-compatibility.md (version + date) and the restating line in AGENTS.md § 4.
 5. Open a PR with the bump + smoke-test evidence.
 
 When Pi changes a shape we depend on (this has happened — `tool_use` →
