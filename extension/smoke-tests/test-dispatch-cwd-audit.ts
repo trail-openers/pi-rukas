@@ -93,7 +93,10 @@ const ROOT_INTENTIONAL_SITES: Array<{ file: string; site: RegExp; label: string;
   },
   {
     file: "work-driver-plan.ts",
-    site: /dispatch\(ctx\.pi,\s*\{\s*role:\s*"explore",\s*prompt\s*\},\s*\{\s*label:\s*"plan"\s*\}\)/,
+    // #754 — the site now carries the plan step's own bound in the opts
+    // object; anchor on the spec + label (timeoutMs is not part of the cwd
+    // audit) rather than requiring a bare opts.
+    site: /\{\s*role:\s*"explore",\s*prompt\s*\},\s*primaryOpts/,
     label: "plan (label: plan)",
     why: "produces the workstream decomposition; the worktrees it describes do not exist until the branch step",
   },
@@ -102,6 +105,12 @@ const ROOT_INTENTIONAL_SITES: Array<{ file: string; site: RegExp; label: string;
     site: /\{\s*role:\s*"explore",\s*prompt:\s*correctivePrompt\s*\}/,
     label: "plan:corrective (label: plan:corrective)",
     why: "the one-shot plan re-dispatch — same step, same reason",
+  },
+  {
+    file: "work-driver-plan-helpers.ts",
+    site: /\{\s*role:\s*"explore",\s*prompt:\s*correctivePrompt\s*\}/,
+    label: "plan:corrective (kill-triggered, helpers)",
+    why: "the #754 kill-triggered corrective re-dispatch — same step, same reason as the quality-gate corrective",
   },
   {
     file: "work-driver-policy.ts",

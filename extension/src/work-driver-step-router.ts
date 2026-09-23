@@ -255,7 +255,13 @@ export async function routeStepOutcome(
           capKilled ??
           (step === "develop" && killCause === "timeout"
             ? ("developer-timeout" as const)
-            : (`step-failed:${step}` as const));
+            : step === "plan" && killCause === "plan-timeout"
+              ? // #754 — mirrors the develop `developer-timeout` special case:
+                //   the plan step's own bound expired and its one-shot
+                //   corrective re-dispatch did not recover, so the operator
+                //   sees a cap that names the plan step, not a generic one.
+                ("plan-timeout" as const)
+              : (`step-failed:${step}` as const));
         const capEvent: Extract<WorkEvent, { kind: "cap-hit" }> = {
           kind: "cap-hit",
           at: Date.now(),

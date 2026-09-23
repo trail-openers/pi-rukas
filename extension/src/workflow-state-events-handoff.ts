@@ -70,3 +70,14 @@ export type HandoffConsolidatedEvent = {
   branchName: string;
   workstreams: string[];
 };
+
+/**
+ * PR6 — runLens skipped child dispatch (empty diff); paired with a
+ * synthesised `lens-approved` so the driver advances. Avoids #533
+ * hallucinated findings on empty context.
+ */
+export type LensSkippedEmptyDiffEvent = {
+  kind: "lens-skipped-empty-diff";
+  at: number;
+  round: number;
+};
