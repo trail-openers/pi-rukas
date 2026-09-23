@@ -316,12 +316,19 @@ async function spawnSpecialistInner(
     // assistant turn completed (the right cadence to surface to the user).
     // #543 F1 — pass the full block list to the loop detector (ops-role
     // children are exempt: the cap session returns no observer for them).
+    // #772 — the 5th argument feeds the success-keyed counter with the
+    // toolResult events the streak observer never sees. Without it the
+    // counter's only input is invisible in production: the session eagerly
+    // builds the observer, but nothing routes the event stream to it
+    // (the "second detector that silently does not fire" class — exactly
+    // what the ticket's gap gate condemned).
     if (
       ingestEvent(
         runningState,
         parsed as Parameters<typeof ingestEvent>[1],
         start,
         caps.loopObserver,
+        caps.toolResultObserver,
       )
     ) {
       // #543 F6 — check the token budget on every assistant turn end.

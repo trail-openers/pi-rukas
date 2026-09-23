@@ -67,6 +67,7 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
 };
 
 // 1. tokenBudgetFor: default-OFF (0) for every role at ship.
+// biome-ignore lint/complexity/noUselessLoneBlockStatements: fixture scope (shared `exit`/`assert` across the file)
 {
   assert(
     withEnv(
@@ -163,6 +164,7 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
 }
 
 // 4. capKillGraceMs: default 5min, 0 disables, env override (time-injectable).
+// biome-ignore lint/complexity/noUselessLoneBlockStatements: fixture scope (shared `exit`/`assert` across the file)
 {
   assert(
     withEnv({ PI_ENSEMBLE_CAP_KILL_GRACE_MS: undefined }, () => capKillGraceMs() === 5 * 60_000),
@@ -226,6 +228,7 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
 // wall-clock backstop is a token-budget kill, NOT a timeout. The attribution
 // drives retry semantics AND the env override the operator reads.
 // ---------------------------------------------------------------------------
+// biome-ignore lint/complexity/noUselessLoneBlockStatements: fixture scope (shared `exit`/`assert` across the file)
 {
   assert(
     resolveKillCause({
@@ -307,7 +310,8 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
 // flip and mark a normally-completed child as a cap failure.
 // ---------------------------------------------------------------------------
 {
-  const child = { killed: [] as string[], kill: (sig: string) => child.killed.push(sig) } as never;
+  const killedSigs: string[] = [];
+  const child = { killed: killedSigs, kill: (sig: string) => killedSigs.push(sig) } as never;
   let exited = false;
   const session = createCapSession({
     role: "developer",
@@ -397,7 +401,8 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
 // trigger"; a different call is new work the in-flight kill would discard.
 // ---------------------------------------------------------------------------
 {
-  const child = { killed: [] as string[], kill: (sig: string) => child.killed.push(sig) } as never;
+  const killedSigs: string[] = [];
+  const child = { killed: killedSigs, kill: (sig: string) => killedSigs.push(sig) } as never;
   let session: ReturnType<typeof createCapSession>;
   process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS = "30000"; // long window
   try {
@@ -413,6 +418,7 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
       childExited: () => false,
     });
     // biome-ignore lint/style/noNonNullAssertion: caps are on by default in this test scope
+    // biome-ignore lint/style/noNonNullAssertion: caps are on by default in this test scope; the observer is defined
     const observe = session.loopObserver!;
     // 10 identical calls → kill arms (count reaches LOOP_KILL_AT=10).
     for (let turn = 0; turn < 10; turn++) {

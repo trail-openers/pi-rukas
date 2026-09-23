@@ -78,9 +78,14 @@ export async function buildCompletionEvent(
       detail = "[pi-rukas] cancelled (abort signal)";
     } else if (result.killCause === "loop") {
       const ev = result.loopEvidence;
-      const what = ev
-        ? `${ev.tool} × ${ev.count} (normalised args)`
-        : "the same tool call after normalisation";
+      // #772 — a success-keyed kill names its specific shape: an already-green
+      // command re-issued with identical output, not the generic streak.
+      const what =
+        ev?.kind === "success"
+          ? `an already-successful ${ev.tool} call (${ev.count} times, identical output each time)`
+          : ev
+            ? `${ev.tool} × ${ev.count} (normalised args)`
+            : "the same tool call after normalisation";
       detail =
         `[pi-rukas] killed on loop — it kept re-issuing ${what}` +
         ` (override: ${overrideEnvForKillCause(result.killCause)})`;

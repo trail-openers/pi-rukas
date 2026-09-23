@@ -26,6 +26,7 @@ import { type LoopDetector, createLoopDetector, loopDetectorEnabled } from "./lo
 import type { PiContentBlock } from "./pi-event-shapes.ts";
 import type { LoopObserver } from "./progress.ts";
 import { TokenBudgetTracker } from "./spawn-support.ts";
+import { trace } from "./trace.ts";
 import { turnNudgeEnabled, turnNudgeText, turnNudgeThreshold } from "./turn-nudge.ts";
 import type { DispatchResult } from "./types.ts";
 
@@ -82,8 +83,12 @@ export function capKillAttribution(
 ): void {
   if (caps.loopKilled()) {
     const ev = caps.loopEvidence();
+    const what =
+      ev?.kind === "success"
+        ? `repeated an already-successful ${ev.tool} call (${ev.count} times, identical output)`
+        : `${ev?.tool ?? "unknown"} repeated ${ev?.count ?? 0} times after normalization`;
     appendStderr(
-      `\n[pi-rukas] killed: loop detected (${ev?.tool ?? "unknown"} repeated ${ev?.count ?? 0} times after normalization; override: PI_ENSEMBLE_DISPATCH_CAPS / PI_ENSEMBLE_CAP_KILL_GRACE_MS)`,
+      `\n[pi-rukas] killed: loop detected (${what}; override: PI_ENSEMBLE_DISPATCH_CAPS / PI_ENSEMBLE_CAP_KILL_GRACE_MS)`,
     );
   }
   if (caps.tokenBudgetTracker?.killed) {
@@ -116,6 +121,16 @@ export interface CapSession {
   /** The F1 observer passed to `ingestEvent` (undefined when the loop
    * detector is disabled / ops-role / master switch off). */
   loopObserver?: LoopObserver;
+  /** #772 — the toolResult feed for the success-keyed counter (undefined when
+   * the loop detector is disabled / ops-role / master switch off). Active for
+   * the whole spawn: the counter accumulates results until its own thresholds
+   * fire (the session reacts to the detector's events, never before). */
+  toolResultObserver?: (
+    toolName: string,
+    toolCallId: string,
+    resultText: string,
+    isError: boolean,
+  ) => void;
   /** The F6 tracker; call `check`/`onMessageEnd` on every assistant turn end. */
   tokenBudgetTracker?: TokenBudgetTracker;
   /** True when the F1 loop kill fired. */
@@ -123,8 +138,10 @@ export interface CapSession {
   /**
    * Structured trigger evidence (snapshot taken at kill time; the live
    * detector keeps counting past the kill). Absent until the kill fires.
+   * #772 — `kind` names which counter fired ("streak" vs "success") so
+   * the dispatch report can label a success-keyed kill distinctly.
    */
-  loopEvidence(): { tool: string; count: number } | undefined;
+  loopEvidence(): { tool: string; count: number; kind?: "streak" | "success" } | undefined;
   /** #543 (spawn#6) test seam — the fingerprint the armed kill is tracking. */
   loopArmedFingerprint(): string | undefined;
   /** #546 AC4 — the soft turn-count nudge (undefined when off, when there is
@@ -183,16 +200,33 @@ export function createCapSession(opts: CapSessionOpts): CapSession {
   // and a different call is new work — the loop may have ended, and the kill
   // would discard in-progress work on it (the #296 false-positive shape).
   let armedFingerprint: string | undefined;
+  // #772 — which counter armed the grace window: "streak" is the #543
+  // strict-adjacent streak counter (armed from loopObserver), "success" is
+  // the #772 success-keyed counter (armed from toolResultObserver). The
+  // grace-window re-key in loopObserver applies ONLY to streak-armed kills:
+  // a success-armed kill's fingerprint already IS the looping command, and
+  // the #753-shape child keeps re-issuing it (each a new message_end), so
+  // re-arming on that traffic would reset the grace clock indefinitely and
+  // the kill could never fire.
+  let armedBy: "streak" | "success" | undefined;
   // #543 (spawn#7) — the streak evidence is snapshotted at kill time: the
   // detector's `current()` keeps counting past the kill (a turn may still be
   // landing), so reading it later would report a count the cap never saw.
-  let loopEvidenceAtKill: { tool: string; count: number } | undefined;
+  let loopEvidenceAtKill: { tool: string; count: number; kind?: "streak" | "success" } | undefined;
   const loops = () => {
     if (loopKilled || opts.childExited()) return; // H1 — the child is already gone
     loopKilled = true;
     const ev = loopDetector?.current();
-    if (ev) loopEvidenceAtKill = { tool: ev.tool, count: ev.count };
-    killChild(opts.child);
+    if (ev) loopEvidenceAtKill = { tool: ev.tool, count: ev.count, kind: ev.kind };
+    try {
+      killChild(opts.child);
+    } catch {
+      // The child's kill method is unavailable (e.g. a test double without
+      // a kill stub, or the process is already reaped). The killCause and
+      // evidence are already recorded — the kill signal itself is a
+      // best-effort side effect. In production, a real ChildProcess always
+      // has a kill method.
+    }
   };
   if (capsOn && loopDetectorEnabled()) {
     loopDetector = createLoopDetector();
@@ -262,6 +296,55 @@ export function createCapSession(opts: CapSessionOpts): CapSession {
       : undefined;
   budgetGracePoll?.unref();
 
+  // #772 — success-keyed counter's result feed. ACTIVE for the whole spawn:
+  // the counter must accumulate results BEFORE the streak kill can arm
+  // (the success counter's own steer/kill thresholds are what fire the
+  // events the session reacts to). The detector's observeToolResult is the
+  // pure state machine; this closure is the session-side reaction to its
+  // events — the same reaction shape loopObserver has for the streak
+  // counter's events (steer → courtesy, kill → grace window → kill).
+  const toolResultObserver = loopDetector
+    ? (toolName: string, toolCallId: string, resultText: string, isError: boolean): void => {
+        if (loopKilled) return; // the kill already fired; further results are noise
+        let ev: ReturnType<typeof loopDetector.observeToolResult> | null | undefined;
+        try {
+          ev = loopDetector.observeToolResult(toolName, toolCallId, resultText, isError);
+        } catch (err) {
+          // The detector's state is corrupt (e.g. a malformed toolResult
+          // message). The counter cannot fire; the child continues. Trace
+          // the error instead of swallowing it (PI_ENSEMBLE_DEBUG=1).
+          trace(`loop-detector observeToolResult failed: ${String(err)}`);
+          return;
+        }
+        if (!ev) return;
+        if (ev.kind === "steer") {
+          // #772 — the report-demanding steer. Distinct source tag from
+          // the streak steer ("driver-success-keyed") so the lifecycle
+          // entry tells the operator WHICH counter fired — a success-keyed
+          // steer means "you are re-running a green command", not "you
+          // are repeating arguments".
+          try {
+            opts.onSteer?.(ev.text, "driver-success-keyed");
+          } catch {
+            /* child already gone — the kill below still fires */
+          }
+        } else if (graceMs > 0) {
+          // Grace window (the report window): from the moment the success
+          // kill fires, the child gets a full window to write its final
+          // report (the AC: "given the chance to REPORT before being
+          // killed"). The poll above fires the kill once the window
+          // elapses without the child settling.
+          loopKillArmed = true;
+          loopKillArmedAt = Date.now();
+          armedFingerprint = ev.fingerprint;
+          armedBy = "success";
+          // Grace window armed — the poll will fire the kill after graceMs.
+        } else {
+          loops();
+        }
+      }
+    : undefined;
+
   return {
     loopObserver: loopDetector
       ? (blocks: PiContentBlock[], turn: number): void => {
@@ -269,7 +352,34 @@ export function createCapSession(opts: CapSessionOpts): CapSession {
           // kill is armed but not yet fired defers the grace window: it is
           // new work the in-flight kill would discard. A distinct fingerprint
           // may even have ended the loop (the streak reset upstream).
-          if (loopKillArmed && !loopKilled) loopKillArmedAt = Date.now();
+          // #772 R1 — re-keyed on a DISTINCT fingerprint, not on any
+          // message_end: a #753-shape child keeps re-issuing the looping
+          // command (each a new message_end); re-arming on every one would
+          // reset the grace clock indefinitely and the kill could never fire.
+          // #772 — the re-key applies ONLY to streak-armed kills (armedBy ===
+          // "streak"). A success-armed kill's fingerprint IS the looping
+          // command: the child re-issuing it is the loop continuing, not new
+          // work, and re-arming on it would defer the kill indefinitely.
+          // #772 lens-review — normalised through the DETECTOR's own
+          // path-redaction registry (fingerprintOf), not a second local
+          // registry: two registries can assign the same path different
+          // tokens, making the distinct comparison wrong.
+          if (loopKillArmed && !loopKilled && loopDetector && armedBy === "streak") {
+            const armed = armedFingerprint;
+            const fps = blocks
+              .filter((b): b is PiContentBlock => b.type === "toolCall")
+              .map((b) => {
+                try {
+                  return loopDetector.fingerprintOf(b.name ?? "", b.arguments);
+                } catch (err) {
+                  // A malformed block must not break the whole observer —
+                  // skip it (the kill window keeps its current clock).
+                  trace(`loop-detector fingerprintOf failed: ${String(err)}`);
+                  return armed;
+                }
+              });
+            if (armed && fps.some((x) => x !== armed)) loopKillArmedAt = Date.now();
+          }
           const ev = loopDetector.observe(blocks, turn);
           if (!ev) return;
           if (ev.kind === "steer") {
@@ -287,11 +397,13 @@ export function createCapSession(opts: CapSessionOpts): CapSession {
             loopKillArmed = true;
             loopKillArmedAt = Date.now();
             armedFingerprint = ev.fingerprint;
+            armedBy = "streak";
           } else {
             loops();
           }
         }
       : undefined,
+    toolResultObserver,
     tokenBudgetTracker,
     loopKilled: () => loopKilled,
     loopEvidence: () => loopEvidenceAtKill,

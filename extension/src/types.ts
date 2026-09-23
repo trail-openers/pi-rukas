@@ -132,8 +132,16 @@ export interface DispatchResult {
    * F1 detector had at kill time: the tool name and the streak count.
    * `buildCompletionEvent` uses this so the state-file errorTail names WHAT
    * looped, not just the cause. Absent for every other killCause.
+   *
+   * #772 — `kind` names WHICH counter fired: "streak" is the #543
+   * strict-adjacent streak counter, "success" is the #772 success-keyed
+   * repetition counter (identical already-successful command re-issued with
+   * identical output). The dispatch report uses it to label the kill as
+   * "repeated an already-successful command" rather than the generic
+   * "repeated the same tool call" — the ticket's AC: "the kill cause is
+   * typed and distinguishable in the dispatch report".
    */
-  loopEvidence?: { tool: string; count: number };
+  loopEvidence?: { tool: string; count: number; kind?: "streak" | "success" };
   /**
    * #543 — set when killCause is "token-budget". The F6 budget + the
    * cumulative tokens observed at the kill. Absent for every other killCause.
