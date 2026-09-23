@@ -27,6 +27,7 @@
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { unifiedDiff } from "./agents-md-diff.ts";
 import {
   type AgentsMdFs,
   type Verb,
@@ -39,8 +40,6 @@ import { type AgentFacts, agentFactsToDetectedFacts } from "./agents-md/detect.t
 import type { AgentOverride, OperatorAnswers, ScaffoldOpts } from "./agents-md/scaffold.ts";
 import { trace } from "./trace.ts";
 import { resolveRepoRoot } from "./work-entry.ts";
-
-const DIFF_MAX_LINES = 200;
 
 export function registerAgentsMdTools(pi: ExtensionAPI) {
   pi.registerTool({
@@ -245,22 +244,23 @@ function defaultRepoFs(): AgentsMdFs {
  * from stdout, plus the unified diff for create/update.
  */
 function renderReport(result: VerbResult, file: string): string {
+  const lines: string[] = [`exit: ${result.exitCode}`];
   if (result.error) {
-    return `error (${result.exitCode}): ${result.error}`;
+    lines.push(`error (${result.exitCode}): ${result.error}`);
+    return lines.join("\n");
   }
   if (result.verb === "check") {
     const c = result.check;
-    if (!c) return "error: no check result";
-    if (c.findings.length === 0) return "clean";
-    return c.findings.map((f) => `${f.kind}: ${f.message}`).join("\n");
+    if (!c) return lines.concat("error: no check result").join("\n");
+    if (c.findings.length === 0) return lines.concat("clean").join("\n");
+    for (const f of c.findings) lines.push(`${f.kind}: ${f.message}`);
+    return lines.join("\n");
   }
   const p = result.plan;
-  if (!p) return "error: no plan result";
-  const lines: string[] = [
-    p.wouldWrite ? "would write" : "no-op (already current)",
-    `managed: ${p.managedIds.join(", ")}`,
-    `target: ${file}`,
-  ];
+  if (!p) return lines.concat("error: no plan result").join("\n");
+  lines.push(p.wouldWrite ? "would write" : "no-op (already current)");
+  lines.push(`managed: ${p.managedIds.join(", ")}`);
+  lines.push(`target: ${file}`);
   if (p.omitted.length) {
     lines.push(`omitted: ${p.omitted.map((o) => `${o.id} (${o.reason})`).join(", ")}`);
   }
@@ -277,115 +277,4 @@ function renderReport(result: VerbResult, file: string): string {
     }
   }
   return lines.join("\n");
-}
-
-/**
- * Hand-rolled line diff (LCS over lines) in unified style: unchanged context
- * collapses to one line around each change block. Truncated to the first
- * DIFF_MAX_LINES rendered lines with a `… K more lines` marker — a wrapped
- * brownfield file can be hundreds of insertion lines, and this text is what
- * the operator sees before a write.
- *
- * Both inputs are small (the rendered AGENTS.md sections, well under the 32
- * KiB cap the size test enforces), so the O(n·m) LCS table is fine.
- */
-function unifiedDiff(oldText: string, newText: string): string {
-  const a = oldText.split("\n");
-  const b = newText.split("\n");
-  const n = a.length;
-  const m = b.length;
-  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
-  const cell = (dp: number[][], i: number, j: number): number => {
-    const row = dp[i];
-    if (row === undefined) return 0;
-    const v = row[j];
-    return typeof v === "number" ? v : 0;
-  };
-  for (let i = n - 1; i >= 0; i--) {
-    const row = dp[i];
-    const next = dp[i + 1];
-    if (row === undefined || next === undefined) continue;
-    for (let j = m - 1; j >= 0; j--) {
-      const ai = a[i];
-      const bj = b[j];
-      if (ai !== undefined && bj !== undefined) {
-        row[j] =
-          ai === bj ? cell(dp, i + 1, j + 1) + 1 : Math.max(cell(dp, i + 1, j), cell(dp, i, j + 1));
-      }
-    }
-  }
-  type Op = { kind: "ctx" | "del" | "add"; line: string };
-  const ops: Op[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < n && j < m) {
-    const ai = a[i] ?? "";
-    const bj = b[j] ?? "";
-    if (ai === bj) {
-      ops.push({ kind: "ctx", line: ai });
-      i++;
-      j++;
-    } else if (cell(dp, i + 1, j) >= cell(dp, i, j + 1)) {
-      ops.push({ kind: "del", line: ai });
-      i++;
-    } else {
-      ops.push({ kind: "add", line: bj });
-      j++;
-    }
-  }
-  while (i < n) {
-    const ai = a[i] ?? "";
-    ops.push({ kind: "del", line: ai });
-    i++;
-  }
-  while (j < m) {
-    const bj = b[j] ?? "";
-    ops.push({ kind: "add", line: bj });
-    j++;
-  }
-  if (!ops.some((o) => o.kind !== "ctx")) return "";
-
-  // Each hunk: one context line before, the change block, one after. Truncate
-  // mid-hunk at DIFF_MAX_LINES rendered lines; `consumed` tracks ops already
-  // covered so the `… K more lines` marker counts every op not yet rendered.
-  const out: string[] = [];
-  let k = 0;
-  let consumed = 0;
-  while (k < ops.length) {
-    const ok = ops[k];
-    if (ok === undefined) break;
-    if (ok.kind === "ctx") {
-      k++;
-      consumed++;
-      continue;
-    }
-    let start = k;
-    while (start > 0) {
-      const prev = ops[start - 1];
-      if (prev === undefined || prev.kind !== "ctx") break;
-      start--;
-    }
-    let end = k;
-    while (end + 1 < ops.length) {
-      const next = ops[end + 1];
-      if (next === undefined || next.kind !== "ctx") break;
-      end++;
-    }
-    const hunkStart = Math.max(0, start - 1);
-    const hunkEnd = Math.min(ops.length - 1, end + 1);
-    for (let t = hunkStart; t <= hunkEnd && out.length < DIFF_MAX_LINES; t++) {
-      const o = ops[t];
-      if (o === undefined) break;
-      const prefix = o.kind === "ctx" ? " " : o.kind === "del" ? "-" : "+";
-      out.push(`${prefix}${o.line}`);
-      consumed++;
-    }
-    k = end + 1;
-    if (out.length >= DIFF_MAX_LINES) {
-      const remaining = ops.length - consumed;
-      if (remaining > 0) out.push(`… ${remaining} more lines`);
-      break;
-    }
-  }
-  return out.join("\n");
 }
