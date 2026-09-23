@@ -162,6 +162,20 @@ export function runScopeFanoutGate(
       if (n.length > 0) planDeclaredPaths.add(n);
     }
   }
+  // #814 — the SIBLING-declared sets, normalised ONCE per run (the review
+  // flagged the previous per-workstream-loop re-normalisation: each workstream
+  // re-normalised every sibling's paths). For every workstream, its own
+  // normalised declared `paths`; the per-workstream loop below skips the
+  // caller's own id at match time, so a self-declaration is judged as
+  // self-fence first. `sibling-declared` (annexation) versus `issue-fenced`
+  // (issue-level exclusion) is decided against this map in the fence-hit
+  // branch; both still BLOCK.
+  const declaredBy = new Map<string, string[]>();
+  for (const [otherId, otherWs] of Object.entries(workstreams)) {
+    if (!otherWs) continue;
+    const own = otherWs.paths.map(normaliseScopePath).filter((p) => p.length > 0);
+    if (own.length > 0) declaredBy.set(otherId, own);
+  }
   // #725 — per-workstream, the union of the declared `paths` of the
   // workstreams this one depends on. A path in this set is exempt from the
   // outOfScope fence below: the cross-declaration contract (#572) puts it in
@@ -200,19 +214,9 @@ export function runScopeFanoutGate(
     // is all the predicate needs).
     const depOwnedPaths = dependencyOwnedBy.get(id);
     const depOwnedArr = depOwnedPaths ? [...depOwnedPaths] : [];
-    // #814 — the SIBLING-declared sets: for every OTHER workstream, its own
-    // normalised declared `paths` (excluding this workstream, so a self-
-    // declaration is judged as self-fence first, below). A fence hit
-    // matching one of these is `sibling-declared` (annexation); a hit
-    // matching none is `issue-fenced` (issue-level exclusion). Both still
-    // BLOCK. `declaredBy` is hoisted out of the per-file loop — it is
-    // identical for the fence hits and the undeclared scan below.
-    const declaredBy = new Map<string, string[]>();
-    for (const [otherId, otherWs] of Object.entries(workstreams)) {
-      if (otherId === id || !otherWs) continue;
-      const own = otherWs.paths.map(normaliseScopePath).filter((p) => p.length > 0);
-      if (own.length > 0) declaredBy.set(otherId, own);
-    }
+    // #814 — the sibling-declared sets are hoisted out of this loop (the
+    // per-run `declaredBy` map computed above); `id` is skipped at match
+    // time, so a self-declaration is judged as self-fence first, below.
     // #784 — a second, additive exemption: a fence hit is demoted to a NOTE
     // (not a failure, not silently dropped) when the fenced file is declared
     // in THIS workstream's OWN `paths` (self-fence). The plan step can list
@@ -252,8 +256,9 @@ export function runScopeFanoutGate(
       // consolidation collision; `declaredById` carries the sibling. The
       // string keeps the `declared fence violated` phrase the existing tests
       // match.
-      const declaringId = [...declaredBy.entries()].find(([, own]) =>
-        own.some((declared) => matchesScopePath(file, declared)),
+      const declaringId = [...declaredBy.entries()].find(
+        ([declaringWsId, own]) =>
+          declaringWsId !== id && own.some((declared) => matchesScopePath(file, declared)),
       )?.[0];
       if (declaringId !== undefined) {
         failures.push(

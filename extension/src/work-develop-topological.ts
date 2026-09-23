@@ -8,7 +8,11 @@
  * dependent-workstream runner live in work-develop-run.ts.
  */
 import { trace } from "./trace.ts";
-import { applyFenceVerdicts } from "./work-develop-fence-verdicts.ts";
+import {
+  applyFenceVerdicts,
+  describeSiblingFenceViolations,
+  replaceDevelopConvergedVerdicts,
+} from "./work-develop-fence-verdicts.ts";
 import {
   type DevelopRunState,
   makeRunOneWorkstream,
@@ -219,10 +223,17 @@ async function runDevelopTopological(
     },
   };
   if (ids.length > 1) {
+    // #814 — the develop branches-converged emits here (after the
+    // branch-completed batch, before the safety net and the develop verify
+    // gate), unconditionally, carrying a COPY of the current verdicts (the
+    // no-evidence path emits here too); exactly one per cycle. If the gate
+    // below records fence violations, replaceDevelopConvergedVerdicts replaces
+    // THIS event in place with the flipped verdicts (see work-develop-
+    // fence-verdicts.ts).
     next = appendEvent(next, {
       kind: "branches-converged",
       step: "develop",
-      verdicts,
+      verdicts: [...verdicts],
       at: Date.now(),
     });
   }
@@ -249,14 +260,21 @@ async function runDevelopTopological(
   // failed workstream no longer skips the gate for the whole fanout.
   if (hasDevelopEvidence) {
     const gate = await verifyStepOutcome(ctx, next, "develop");
-    // #814 — a fence violator must not report a bare "ok" in the
-    // branches-converged verdicts (the #792 dishonesty): applyFenceVerdicts
-    // flips the entries named in `gate.fenceViolations` to ok:false with an
-    // attributed reason (see work-develop-fence-verdicts.ts). The
-    // `ids.length > 1` guard stays here — the function is pure and checks
-    // nothing about the fanout size.
+    // #814 — a fence violator must not report a bare "ok" here: replace the
+    // event with the flipped verdicts via replaceDevelopConvergedVerdicts
+    // (invariant named there; see work-develop-fence-verdicts.ts).
     if (gate.fenceViolations && ids.length > 1) {
-      applyFenceVerdicts(verdicts, gate.fenceViolations);
+      const flipped = applyFenceVerdicts(
+        verdicts.map((v) => ({ ...v })),
+        gate.fenceViolations,
+      );
+      const changed = flipped.some((v, i) => {
+        const o = verdicts[i];
+        return o === undefined || o.ok !== v.ok || o.reason !== v.reason;
+      });
+      if (changed) {
+        next = replaceDevelopConvergedVerdicts(next, flipped);
+      }
     }
     if (gate.ok) {
       // #782 — the consolidated verify's single re-run passed: the driver
@@ -287,6 +305,17 @@ async function runDevelopTopological(
       const conflictFailure = gate.failures.find((f) =>
         /cherry-pick \/ apply conflict|could not combine the workstreams/.test(f),
       );
+      // #814 — when the consolidated-verify-conflict cap fires on a
+      // sibling-declared fence violation, the cap-hit EVIDENCE carries the
+      // shared attribution sentence (describeSiblingFenceViolations — the
+      // same wording as the handoff's explainConsolidation fence branch), so
+      // the operator sees "workstream X touched F, declared by workstream Y"
+      // at the cap itself, not only in the rendered explanation. (The
+      // gate's failure string, recorded on verifyEvidence.failures, carries
+      // the full attribution too; the evidence is the tail-visible seam.)
+      const fenceProse = gate.fenceViolations
+        ? describeSiblingFenceViolations(gate.fenceViolations)
+        : undefined;
       // #777 — a consolidation-created verify failure (per-workstream pass,
       // combined fail on a specific assertion) is a THIRD distinct cap,
       // separate from both the conflict cap and the generic verify-failed:
@@ -325,7 +354,11 @@ async function runDevelopTopological(
         reviewRound: next.pipelineState.reviewRound,
         nextStep: "handoff",
         ...(conflictFailure || consolidationCreatedFailure
-          ? { evidence: (conflictFailure ?? consolidationCreatedFailure) as string }
+          ? {
+              evidence:
+                ((conflictFailure ?? consolidationCreatedFailure) as string) +
+                (fenceProse ? ` [fence: ${fenceProse}]` : ""),
+            }
           : {}),
       });
     }

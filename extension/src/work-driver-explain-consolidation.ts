@@ -6,7 +6,9 @@
  * bodies of work-driver-explain.ts.
  */
 
+import { describeSiblingFenceViolations } from "./work-develop-fence-verdicts.ts";
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
+import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 type Cap = Extract<WorkEvent, { kind: "cap-hit" }>["cap"];
@@ -153,21 +155,8 @@ export function explainConsolidation(cap: Cap, state: WorkState): string {
  * pre-#814 text, where the "incoherent" claim is still true for a genuine
  * declared-path overlap.
  */
-function fenceAttribution(
-  fence: Array<{
-    workstreamId: string;
-    file: string;
-    declaredById?: string;
-    kind: "sibling-declared" | "issue-fenced" | "undeclared";
-  }>,
-): string | undefined {
-  const violations = fence.filter((v) => v.kind === "sibling-declared");
-  if (violations.length === 0) return undefined;
-  const named = violations
-    .map(
-      (v) =>
-        `workstream ${v.workstreamId} touched ${v.file}, declared by workstream ${v.declaredById}`,
-    )
-    .join("; ");
+function fenceAttribution(fence: FenceViolationRecord[]): string | undefined {
+  const named = describeSiblingFenceViolations(fence);
+  if (!named) return undefined;
   return `the develop step's consolidated verify could not combine the workstreams' commits into a single tree — a cherry-pick / patch-apply conflict that the develop scope fence ALREADY predicted: the declared paths were DISJOINT (the decomposition was fine), but the fence was violated — ${named}. Re-splitting the plan will NOT fix this conflict; it is the fence violation materialising at consolidation. Restore the fence boundary (the violating workstream's commit must not include that file — split the change so each file is touched by exactly one workstream) and re-run`;
 }

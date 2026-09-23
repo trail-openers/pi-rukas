@@ -53,21 +53,7 @@ export interface Workstream {
  */
 export type WorkstreamBaseShas = Record<string, string>;
 
-/**
- * #814 — a single structured develop-scope-fence violation record.
- * Both BLOCKING kinds carry a failure string in `verifyEvidence.failures`:
- * `sibling-declared` (the file is in ANOTHER workstream's `paths` —
- * `declaredById` names that sibling; a guaranteed consolidation collision)
- * and `issue-fenced` (the file is in the workstream's own `outOfScope`
- * fence but declared by no sibling — an issue-level exclusion; every N=1
- * fence hit is this). `undeclared` is a SEPARATE, computed class (touched
- * file in no workstream's `paths` AND not in its own fence): it WARNS —
- * a note plus this record, never a failure.
- */
-export interface FenceViolation {
-  workstreamId: string;
-  file: string;
-  /** Sibling-declared hits only: the workstream that declared the file. */
-  declaredById?: string;
-  kind: "sibling-declared" | "issue-fenced" | "undeclared";
-}
+// #814 — `FenceViolation` moved to workflow-state-schema-verify.ts (the
+// verifyEvidence-shape home); re-exported so existing importers of this
+// file's path keep working.
+export type { FenceViolation } from "./workflow-state-schema-verify.ts";

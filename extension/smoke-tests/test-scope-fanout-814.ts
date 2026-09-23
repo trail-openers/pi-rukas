@@ -27,11 +27,11 @@
  * strings quoted in the issue body (the state files are deleted).
  */
 
-import { runScopeFanoutGate } from "../src/work-driver-scope-fanout.ts";
 import { applyFenceVerdicts } from "../src/work-develop-fence-verdicts.ts";
-import type { FenceViolationRecord } from "../src/work-driver-scope-fence.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
+import { runScopeFanoutGate } from "../src/work-driver-scope-fanout.ts";
+import type { FenceViolationRecord } from "../src/work-driver-scope-fence.ts";
 import { initialState } from "../src/workflow-state.ts";
 
 let exit = 0;
@@ -86,7 +86,10 @@ function run(
     `sibling-declared: a failure string is produced (got: ${failures.join("; ")})`,
   );
   assert(
-    !!fenceFail && fenceFail.includes("b") && fenceFail.includes("src/a.ts") && fenceFail.includes("a"),
+    !!fenceFail &&
+      fenceFail.includes("b") &&
+      fenceFail.includes("src/a.ts") &&
+      fenceFail.includes("a"),
     `sibling-declared: the failure names the violating workstream (b), the file (src/a.ts), and the declaring sibling (a) (got: ${fenceFail})`,
   );
   assert(
@@ -95,8 +98,10 @@ function run(
   );
   // Structured record
   assert(
-    records.length === 1 && records[0].kind === "sibling-declared" &&
-      records[0].workstreamId === "b" && records[0].file === "src/a.ts" &&
+    records.length === 1 &&
+      records[0].kind === "sibling-declared" &&
+      records[0].workstreamId === "b" &&
+      records[0].file === "src/a.ts" &&
       records[0].declaredById === "a",
     `sibling-declared: structured record is correct (got: ${JSON.stringify(records)})`,
   );
@@ -241,40 +246,11 @@ function run(
   const T = "extension/src/work-develop-topological.ts";
   const F = "extension/src/work-driver-scope-fanout.ts";
   const workstreams: Record<string, WS> = {
-    "task-a": {
-      id: "task-a",
-      scope: "state schema",
-      paths: [S],
-      outOfScope: [C, SC],
-    },
-    "task-b": {
-      id: "task-b",
-      scope: "converge gate",
-      paths: [C],
-      outOfScope: [S, SC],
-    },
-    "task-c": {
-      id: "task-c",
-      scope: "converge schema",
-      paths: [SC],
-      outOfScope: [S, C],
-    },
-    "task-d": {
-      id: "task-d",
-      scope: "topological dispatch",
-      paths: [T],
-      outOfScope: [
-        S,
-        C,
-        SC,
-      ],
-    },
-    "task-e": {
-      id: "task-e",
-      scope: "fence attribution",
-      paths: [F],
-      outOfScope: [S, C],
-    },
+    "task-a": { id: "task-a", scope: "state schema", paths: [S], outOfScope: [C, SC] },
+    "task-b": { id: "task-b", scope: "converge gate", paths: [C], outOfScope: [S, SC] },
+    "task-c": { id: "task-c", scope: "converge schema", paths: [SC], outOfScope: [S, C] },
+    "task-d": { id: "task-d", scope: "topological dispatch", paths: [T], outOfScope: [S, C, SC] },
+    "task-e": { id: "task-e", scope: "fence attribution", paths: [F], outOfScope: [S, C] },
   };
 
   // The four violations (verbatim from the issue):
@@ -283,12 +259,7 @@ function run(
   // - task-d touched workflow-state-schema.ts (task-a declared it)
   // - task-c touched work-driver-converge.ts (task-b declared it)
   const changed: Record<string, string[]> = {
-    "task-d": [
-      T,
-      SC,
-      C,
-      S,
-    ],
+    "task-d": [T, SC, C, S],
     "task-c": [SC, C],
     "task-a": [S],
     "task-b": [C],
@@ -306,10 +277,7 @@ function run(
 
   // Each is attributed
   const taskD = siblingRecords.filter((r) => r.workstreamId === "task-d");
-  assert(
-    taskD.length === 3,
-    `#792 fixture: task-d has 3 violations (got: ${taskD.length})`,
-  );
+  assert(taskD.length === 3, `#792 fixture: task-d has 3 violations (got: ${taskD.length})`);
   assert(
     taskD.some((r) => r.file === SC && r.declaredById === "task-c"),
     `#792 fixture: task-d / workflow-state-schema-converge.ts → declared by task-c`,
@@ -325,8 +293,7 @@ function run(
 
   const taskC = siblingRecords.filter((r) => r.workstreamId === "task-c");
   assert(
-    taskC.length === 1 && taskC[0].file === C &&
-      taskC[0].declaredById === "task-b",
+    taskC.length === 1 && taskC[0].file === C && taskC[0].declaredById === "task-b",
     `#792 fixture: task-c / work-driver-converge.ts → declared by task-b`,
   );
 
@@ -359,14 +326,7 @@ function run(
       },
     },
   };
-  s.eventLog.push({
-    kind: "cap-hit",
-    at: 1,
-    cap: "consolidated-verify-conflict",
-    reviewRound: 0,
-    nextStep: "handoff",
-    evidence: "cherry-pick conflict on work-driver-converge.ts",
-  });
+  s.eventLog.push({ kind: "cap-hit", at: 1, cap: "consolidated-verify-conflict", reviewRound: 0, nextStep: "handoff", evidence: "cherry-pick conflict on work-driver-converge.ts" });
   const text = explainCap("consolidated-verify-conflict", s);
   assert(
     !text.includes("incoherent"),
@@ -437,9 +397,7 @@ function run(
           "consolidated verify could not combine the workstreams' commits — cherry-pick / apply conflict (conflict at extension/src/work-driver-converge.ts)",
         ],
         at: 1,
-        fenceViolations: [
-          { workstreamId: "task-d", file: "extension/src/work-driver-converge.ts", declaredById: "task-b", kind: "sibling-declared" },
-        ],
+        fenceViolations: [{ workstreamId: "task-d", file: "extension/src/work-driver-converge.ts", declaredById: "task-b", kind: "sibling-declared" }],
       },
     },
   };
@@ -482,6 +440,11 @@ function run(
   assert(byId.get("c")?.ok === false && (byId.get("c")?.reason ?? "").includes("src/c.ts"), `branches-converged: the issue-fenced violator is ok:false with a reason (got: ${JSON.stringify(verdicts)})`);
   assert(byId.get("e")?.ok === true, `branches-converged: an undeclared-only workstream is NOT flipped (got: ${JSON.stringify(verdicts)})`);
 }
+
+// #814 — the persisted branches-converged event case (the flipped verdict in
+// the RETURNED state's eventLog, driven through the real runDevelopTopological)
+// lives in test-scope-fanout-814-persisted.ts (this file was at the 500-line
+// gate).
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);
