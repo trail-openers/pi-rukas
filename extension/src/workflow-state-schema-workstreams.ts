@@ -52,3 +52,8 @@ export interface Workstream {
  * back to the global baseSha).
  */
 export type WorkstreamBaseShas = Record<string, string>;
+
+// #814 — `FenceViolation` moved to workflow-state-schema-verify.ts (the
+// verifyEvidence-shape home); re-exported so existing importers of this
+// file's path keep working.
+export type { FenceViolation } from "./workflow-state-schema-verify.ts";

@@ -19,6 +19,7 @@ import type { DriverContext } from "./work-driver-context.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import { detectMainline } from "./work-driver-git.ts";
+import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
 import type { ConsolidationVerdict } from "./workflow-state-consolidation.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
@@ -314,6 +315,15 @@ export async function verifyStepOutcome(
    * records `retries: 1, recovered: false` without the flag).
    */
   flakeRecovered?: boolean;
+  /**
+   * #814 — structured develop-scope-fence violations recorded by the
+   * develop gate (absent when the gate recorded none, including
+   * pre-#814 state files and self-fence/dependsOn-exempt hits). The caller
+   * persists them on `pipelineState.verifyEvidence.fenceViolations` so the
+   * explain/handoff renderers can attribute a consolidation conflict to the
+   * fence instead of asserting an incoherent decomposition.
+   */
+  fenceViolations?: FenceViolationRecord[];
 }> {
   const failures: string[] = [];
   const notes: string[] = [];
@@ -326,14 +336,24 @@ export async function verifyStepOutcome(
     // #782 — the flake callback is wired at this layer: on recovery it
     // returns a success verdict carrying the flag the caller routes.
     let flakeEvidenceTail: string | undefined;
-    await verifyDevelopOutcome(ctx, state, execFn, failures, notes, (evidenceTail) => {
-      flakeEvidenceTail = evidenceTail;
-    });
+    const fenceViolations: FenceViolationRecord[] = [];
+    await verifyDevelopOutcome(
+      ctx,
+      state,
+      execFn,
+      failures,
+      notes,
+      (evidenceTail) => {
+        flakeEvidenceTail = evidenceTail;
+      },
+      fenceViolations,
+    );
     const flakeRecovered = flakeEvidenceTail !== undefined;
     return {
       ok: failures.length === 0,
       failures,
       notes,
+      ...(fenceViolations.length > 0 ? { fenceViolations } : {}),
       ...(flakeRecovered ? { flakeRecovered: true } : {}),
     };
   }

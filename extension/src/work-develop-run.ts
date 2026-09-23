@@ -62,7 +62,7 @@ export interface DevelopRunState {
   /** The dispatch function (ctx.dispatchFn ?? dispatchCore). */
   dispatch: NonNullable<DriverContext["dispatchFn"]>;
   /** Per-branch verdicts accumulated across both phases. */
-  verdicts: Array<{ id: string; ok: boolean }>;
+  verdicts: Array<{ id: string; ok: boolean; reason?: string }>;
   /** Per-branch events (completion, speculative, branch-completed, dispatch-failed). */
   branchEvents: WorkEvent[];
   /** The current state (mutated by appendEvent for memory-inject events). */

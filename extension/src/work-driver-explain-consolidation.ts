@@ -6,7 +6,9 @@
  * bodies of work-driver-explain.ts.
  */
 
+import { describeSiblingFenceViolations } from "./work-develop-fence-verdicts.ts";
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
+import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 type Cap = Extract<WorkEvent, { kind: "cap-hit" }>["cap"];
@@ -109,11 +111,52 @@ export function explainConsolidation(cap: Cap, state: WorkState): string {
         (ws) => ws && Array.isArray(ws.dependsOn) && ws.dependsOn.length > 0,
       );
       if (stacked) {
+        // #814 — the stacked prose below no longer asserts incoherence, so
+        // the fence override must run BEFORE it. When the driver recorded
+        // a sibling-declared fence violation, the conflict is the fence
+        // materialising at consolidation — name the attribution instead of
+        // the stacked-overlap prose (same distinction as the flat case
+        // below; the fence records are the same on either shape).
+        const fence = state.pipelineState.verifyEvidence?.fenceViolations ?? [];
+        const fenceText = fenceAttribution(fence);
+        if (fenceText) return fenceText;
         return `the develop step's consolidated verify could not combine the workstreams' commits into a single tree — a cherry-pick / patch-apply conflict, even though each workstream's own range was picked against its dependency's tip (stacked cycle: ancestor commits are NOT re-picked). ${ev} Worktrees: ${wtList || "(none recorded)"}. Do NOT re-split on this alone: the conflict is either a genuine content overlap between workstreams (two workstreams editing the same lines) or a dependency whose tip diverged from the SHA the dependent's worktree was based on. Inspect the conflicting file, resolve it by hand, and re-run; check the dependency tips only if the conflicting lines belong to a dependency's own work`;
       }
+      // #814 — fence attribution takes precedence over the incoherent-
+      // decomposition claim: when the driver recorded a sibling-declared
+      // fence violation (workstream W touched a file sibling S declared),
+      // the conflict is the FENCE materialising at consolidation — the
+      // declared paths were DISJOINT, so the plan was fine and re-splitting
+      // fixes nothing. The structured records on `verifyEvidence`
+      // carry the attribution (violating workstream, file, declaring
+      // sibling); read them (not `failures`) for that, and fall back to
+      // the incoherent-decomposition text when they are absent or empty
+      // (a genuine declared-path overlap — there, "incoherent" is true).
+      const fence = state.pipelineState.verifyEvidence?.fenceViolations ?? [];
+      const fenceText = fenceAttribution(fence);
+      if (fenceText) return fenceText;
       return `the develop step's consolidated verify could not combine the workstreams' commits into a single tree — a cherry-pick / patch-apply conflict means two workstreams edited the same lines, so the work is individually plausible but the decomposition is incoherent. ${ev} Worktrees: ${wtList || "(none recorded)"}. This is NOT the same as a verify failure: the fix is to re-split the work into non-overlapping file sets (or resolve the overlap by hand), not to retry the verify command`;
     }
     default:
       return `unhandled consolidation cap: ${cap}`;
   }
+}
+
+/**
+ * #814 — the operator-facing fence attribution for the
+ * `consolidated-verify-conflict` cap. When `verifyEvidence.fenceViolations`
+ * carries at least one `sibling-declared` record, the conflict is the fence
+ * materialising at consolidation: the declared paths were DISJOINT (the
+ * plan was fine — the fence was violated), and the operator must be told
+ * WHICH workstream touched WHICH file that WHICH sibling declared, not
+ * that the decomposition is incoherent (re-splitting would not fix it).
+ * Returns `undefined` when no sibling-declared record is present (absent,
+ * empty, or undeclared-only records) — the caller then falls back to the
+ * pre-#814 text, where the "incoherent" claim is still true for a genuine
+ * declared-path overlap.
+ */
+function fenceAttribution(fence: FenceViolationRecord[]): string | undefined {
+  const named = describeSiblingFenceViolations(fence);
+  if (!named) return undefined;
+  return `the develop step's consolidated verify could not combine the workstreams' commits into a single tree — a cherry-pick / patch-apply conflict that the develop scope fence ALREADY predicted: the declared paths were DISJOINT (the decomposition was fine), but the fence was violated — ${named}. Re-splitting the plan will NOT fix this conflict; it is the fence violation materialising at consolidation. Restore the fence boundary (the violating workstream's commit must not include that file — split the change so each file is touched by exactly one workstream) and re-run`;
 }

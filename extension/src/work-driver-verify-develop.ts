@@ -20,6 +20,7 @@ import {
 } from "./work-driver-doctrine.ts";
 import { runFalsilyGreenCheck } from "./work-driver-falsily-green.ts";
 import { runScopeFanoutGate } from "./work-driver-scope-fanout.ts";
+import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { declaredPathsHaveSource, verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { runSkipRatchetGate, runSmokeGate } from "./work-driver-verify-develop-gates.ts";
 import { normaliseScopePath } from "./work-driver-verify-develop-helpers.ts";
@@ -45,6 +46,9 @@ export async function verifyDevelopOutcome(
   notes: string[],
   // #782 — fires when the consolidated-verify flake re-run passed.
   onVerifyFlakeRecovered?: (evidenceTail?: string) => void,
+  // #814 — out-parameter for structured fence-violation records (see the
+  // scope/fanout gate call below). Mutated in place by runScopeFanoutGate.
+  fenceViolations?: FenceViolationRecord[],
 ): Promise<void> {
   const worktrees =
     Object.keys(state.pipelineState.worktrees ?? {}).length > 0
@@ -236,13 +240,24 @@ export async function verifyDevelopOutcome(
   // keeps findPathCollisions from firing. A fence HIT is a decomposition
   // problem, not an integration one: NOT routed to the consolidated-verify-
   // conflict cap (only the cherry-pick conflict below).
+  // #814 — the gate now also emits STRUCTURED violation records (violating
+  // workstream, file, declaring sibling, kind). Fence HITS (both the
+  // `sibling-declared` and `issue-fenced` kinds) BLOCK: a failure string
+  // reaches `failures`, so `verifyStepOutcome` returns ok:false for the
+  // whole develop step and the cycle routes through the existing
+  // corrective/verify-failed path. An `undeclared` hit only warns (a note);
+  // it cannot collide with a sibling. All record shapes land in
+  // `verifyEvidence.fenceViolations` so the explain/handoff renderers can
+  // attribute them (the #792 violations were unattributed). The records are
+  // collected into the caller's `fenceViolations` array — the same reference
+  // `verifyStepOutcome` passes through — so no local copy is needed here.
   runScopeFanoutGate(
     state.pipelineState.workstreams ?? {},
     changedPathsByWorkstream,
     failures,
     notes,
+    fenceViolations,
   );
-
   if (changedWorktrees.length === 0) {
     // #679 (task-evidence) — if every assessed worktree is a legitimate
     // docs-only stream (declared non-source), the absence of commits is not a
@@ -297,6 +312,11 @@ export async function verifyDevelopOutcome(
       failures,
       notes,
       onVerifyFlakeRecovered,
+      // #814 — the fence records the gate just wrote (the scope gate runs
+      // before the consolidated verify) — so a conflict the fence already
+      // recorded is attributed, not re-diagnosed as an incoherent
+      // decomposition.
+      ...(fenceViolations !== undefined ? { fenceViolations } : {}),
     });
   }
 
