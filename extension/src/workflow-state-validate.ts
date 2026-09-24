@@ -1,35 +1,14 @@
 /**
  * workflow-state-validate — discriminant validation for /work state files.
  *
- * #533 — the reader used to hit an unrecognised event kind or step value and
- * silently carry it: `readState` passed an untyped cast, `nextStep`'s linear
- * table returned `undefined` on an unknown `currentStep`, and the while-loop's
- * 64-iteration safety counter fired with a generic message naming no field.
+ * #533 — a reader hitting an unrecognised event kind or step value must
+ * REFUSE to reconstruct rather than silently drop. One validator checks
+ * every discriminant at read: eventLog[].kind, pipelineState.{currentStep,
+ * status, lastCompletedStep}, and every WorkStep-typed event field.
  *
- * dsh's persistence rule (DeepSeek Harness, 2026-08-13): a reader hitting an
- * unrecognized event type MUST refuse to reconstruct rather than silently
- * drop. This module is pi-rukas's half of that rule — one validator that
- * checks every discriminant at read:
- *
- *   - `eventLog[].kind`
- *   - `pipelineState.currentStep`
- *   - `pipelineState.status`
- *   - `pipelineState.lastCompletedStep`
- *   - every `WorkStep`-typed event field: `step-started.step`,
- *     `dispatch-started.step`, `dispatch-completed.step`,
- *     `dispatch-failed-provider.step`, `dispatch-failed.step`,
- *     `plumb-report.step`, `branches-fanned-out.step`,
- *     `branch-completed.step`, `branches-converged.step`,
- *     `memory-inject.step`, plus `cap-hit.nextStep`.
- *
- * **Resume-path-only.** The driver (`runWorkDriver`) runs the validator on
- * every read; `/work-status`, the queue and other renderers do NOT. A
- * TERMINAL state file (merged/handoff/aborted) with an unknown kind must
- * still load — a parked cycle's history has to stay observable, and a future
- * additive event kind on a terminal file must not stop `/work-status` from
- * rendering. The versioning doc in `workflow-state.ts` pre-resolved the
- * consequence: schemaVersion stays 1 — a bump would break every live file on
- * upgrade, contradicting the documented "rm to start fresh" recovery story.
+ * **Resume-path-only.** The driver runs the validator on every read;
+ * /work-status and the queue do NOT. A TERMINAL state file with an unknown
+ * kind must still load (a parked cycle's history has to stay observable).
  */
 
 import type { WorkStep } from "./workflow-state-events.ts";
@@ -75,6 +54,11 @@ export const KNOWN_EVENT_KINDS: readonly unknown[] = [
   "memory-inject",
   // #741 — the converge gate's one-shot corrective dispatch marker.
   "converge-redispatch",
+  // #844 — the branch step's stale-local-branch reset record (old + new tip).
+  // Absent from the tuple, EVERY restarted cycle that resets a stale branch
+  // halts on its own re-entry (the fix manufactures the corruption it
+  // exists to prevent).
+  "branch-reset",
 ];
 
 /** `pipelineState.status` vocabulary. */
@@ -159,6 +143,9 @@ const CAP_HIT_FIXED_LITERALS: readonly unknown[] = [
   "awaiting-human-merge",
   "lens-diff-unreadable",
   "existing-pr-detected",
+  // #844 — the ops-fallback branch path's post-dispatch merge-base check
+  // failed: the branch ops created does not sit on the driver-fetched base.
+  "ops-merge-base-mismatch",
   "adversarial-infra-failure",
   "loop-detected",
   "token-budget",
@@ -481,7 +468,13 @@ export function validateDiscriminants(state: unknown): string[] {
       // separate `role` field instead).
       if (e.kind === "cap-hit" && typeof e.cap === "string") {
         const cap = e.cap as string;
-        const isTemplate = cap.startsWith("verify-failed:") || cap.startsWith("step-failed:");
+        // #844 — `branch-ahead:` is a TEMPLATE (the ahead count rides in the
+        // suffix), like `verify-failed:` / `step-failed:`; the other two #844
+        // caps are fixed literals in CAP_HIT_FIXED_LITERALS.
+        const isTemplate =
+          cap.startsWith("verify-failed:") ||
+          cap.startsWith("step-failed:") ||
+          cap.startsWith("branch-ahead:");
         if (!CAP_HIT_FIXED_LITERALS.includes(cap) && !isTemplate) {
           out.push(`eventLog[${i}].cap has unknown value ${JSON.stringify(cap)}`);
         }

@@ -1,14 +1,12 @@
 /**
- * /work workflow state — event-log types.
- * `WorkStep` (the linear step identifiers the driver walks) and `WorkEvent`
- * (the append-only, typed event-log entries the driver writes on every state
- * transition). Split out of `workflow-state.ts` for module-size hygiene
- * (AGENTS.md §12) — re-exported from there so consumers' import paths are
- * unaffected.
+ * /work workflow state — event-log types. `WorkStep` (linear step identifiers)
+ * and `WorkEvent` (append-only, typed event-log entries). Split from
+ * `workflow-state.ts` for module-size hygiene (AGENTS.md §12).
  */
 import type { RoleName } from "./roles.ts";
 import type { DispatchUsage } from "./types.ts";
 import type { AdversarialEventFragment } from "./workflow-state-events-adversarial.ts";
+import type { BranchResetEvent } from "./workflow-state-events-branch-reset.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 import type { DeferredCreationEventFragment } from "./workflow-state-events-deferred.ts";
 import type {
@@ -25,12 +23,9 @@ import type {
   VerifyFullStatusEvent,
 } from "./workflow-state-events-verify-flake.ts";
 import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
-// #539 — the commit-pr fallback-cause vocabulary (M1) lives in the
-// sibling events-memory fragment module: single definition.
+// #539 — single definition in the sibling fragment module.
 export type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
-// #775 prep — the handoff event members live in the sibling fragment module;
-// re-exported here so consumers' import paths are unaffected and the
-// `delivery` field (#775) can grow the fragment without inflating this file.
+// #775 prep — handoff event members re-exported from the sibling fragment.
 export type {
   HandoffConsolidatedEvent,
   HandoffEmittedEvent,
@@ -319,6 +314,10 @@ export type WorkEvent =
         // is cheap; approving on the absence of evidence is not.
         | "lens-diff-unreadable"
         | "existing-pr-detected"
+        // #844 — the ops-fallback branch path's post-dispatch merge-base check
+        // failed: the branch ops created does not sit on the driver-resolved
+        // baseSha (ops built off a stale local ref — the #830 shape).
+        | "ops-merge-base-mismatch"
         // #486 — infra-failure: adversarial loop failed on infra every attempt.
         | "adversarial-infra-failure"
         // #571 — sibling cycle holds a path claim; overlap detected at plan
@@ -337,6 +336,10 @@ export type WorkEvent =
         | "repeat-finding-seam"
         | `verify-failed:${WorkStep}`
         | `step-failed:${WorkStep}`
+        // #844 — a local branch of the resolved name is ahead of the
+        // freshly-fetched origin/<mainline>; the ahead count is in the
+        // cap suffix, the branch name is in `evidence`.
+        | `branch-ahead:${string}`
         // #753 — deferred worktree creation failed (dirty-leftover park).
         // Own literal so explainCap can give it a tailored sentence and the
         // handoff does NOT terminalize it as `aborted`.
@@ -366,10 +369,8 @@ export type WorkEvent =
       /**
        * #657 — on `cap: "intent-park"` the machine-readable park reason
        * (underspecified / contradicted-by-code / already-implemented /
-       * too-large / premise-unsound), carried on the event so the renderers
-       * can show `intent-park (contradicted-by-code)` without re-deriving it
-       * from `pipelineState.normalisedSpec`. Additive: the schema validator
-       * ignores extra fields.
+       * too-large / premise-unsound). Carried on the event so the renderers
+       * can show `intent-park (contradicted-by-code)` without re-deriving it.
        */
       parkReason?: string;
       /**
@@ -483,12 +484,11 @@ export type WorkEvent =
     }
   | VerifyFullStatusEvent
   | VerifyFlakeRecoveredEvent
-  // Fragment events (AGENTS.md §12 module-size hygiene) — the union stays
-  // exhaustive: nextStep() and the schema validator see the same closed type.
   | WideningScanEvent
   | MemoryEventFragment
   | WorktreeProvisionedEvent
   | SafetyNetCommitEvent
+  | BranchResetEvent
   | WorktreeLeftoverHandledEvent;
 /** Discriminator union of event kinds — useful for callers that switch on it. */
 export type WorkEventKind = WorkEvent["kind"];

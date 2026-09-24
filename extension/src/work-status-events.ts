@@ -140,5 +140,9 @@ export function fmtEvent(e: WorkEvent): string {
       return `  safety-net-commit · [${e.workstreamId}] · ${e.filesCommitted} file(s) · ${e.commitSha.slice(0, 7)}`;
     case "worktree-leftover-handled":
       return `  worktree-leftover-handled · ${e.path.split("/").pop()} · ${e.action}${e.refs.length ? ` · refs: ${e.refs.join(", ")}` : ""}${e.salvageDir ? ` · salvage: ${e.salvageDir}` : ""}`;
+    case "branch-reset":
+      // #844 — the old tip is the recovery handle; both are rendered so the
+      // operator can `git checkout <oldSha>` without reading the state file.
+      return `  branch-reset · ${e.branch} · ${e.oldSha.slice(0, 8)} → ${e.newSha.slice(0, 8)}`;
   }
 }

@@ -9,7 +9,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { dispatchCore } from "./dispatch.ts";
 import { trace } from "./trace.ts";
-import { mechanizedBranchSetup } from "./work-driver-branch-mechanized.ts";
+import { BranchAheadError, mechanizedBranchSetup } from "./work-driver-branch-mechanized.ts";
 import { parseWorktreesBlock, runBranchViaOpsDispatch } from "./work-driver-branch-ops.ts";
 import { runBranchResiduePass } from "./work-driver-branch-residue.ts";
 
@@ -104,17 +104,58 @@ export async function runBranch(
       for (const [id, ws] of Object.entries(wsMap)) {
         if (ws?.dependsOn && ws.dependsOn.length > 0) dependsOnByWorkstream[id] = ws.dependsOn;
       }
-      const setup = await mechanizedBranchSetup(
-        execFnMech,
-        ctx.repoRoot,
-        ctx.issue,
-        activeIssuesOf(state),
-        workstreamIds,
-        await cachedIssueTitle(state),
-        dependsOnByWorkstream,
-      );
+      let setup: Awaited<ReturnType<typeof mechanizedBranchSetup>>;
+      try {
+        setup = await mechanizedBranchSetup(
+          execFnMech,
+          ctx.repoRoot,
+          ctx.issue,
+          activeIssuesOf(state),
+          workstreamIds,
+          await cachedIssueTitle(state),
+          dependsOnByWorkstream,
+        );
+      } catch (aheadErr) {
+        // #844 — a local branch of the resolved name is AHEAD of the
+        // freshly-fetched base (unpushed work of a live cycle, or a
+        // diverged branch). The step halts with a dedicated cap naming the
+        // branch and its ahead count — nothing is reset and NO ops
+        // fallback (whose mainline guard would not catch this shape).
+        if (aheadErr instanceof BranchAheadError) {
+          const aheadLabel = aheadErr.aheadCount === null ? "unknown" : String(aheadErr.aheadCount);
+          trace(
+            `work-driver: branch step halted — local branch ${aheadErr.branchName} is ${aheadLabel === "unknown" ? "an unknown number of" : `${aheadLabel}`} commit(s) ahead of the fetched base; nothing was reset`,
+          );
+          const started = appendEvent(
+            { ...state, pipelineState: { ...state.pipelineState, currentStep: "branch" } },
+            { kind: "step-started", step: "branch", at: now },
+          );
+          return appendEvent(started, {
+            kind: "cap-hit",
+            at: Date.now(),
+            cap: `branch-ahead:${aheadLabel}` as const,
+            reviewRound: state.pipelineState.reviewRound,
+            nextStep: "handoff",
+            evidence: `${aheadErr.branchName} is ${aheadErr.aheadCount === null ? "an unknown number of" : `${aheadErr.aheadCount}`} commit(s) ahead of the fetched base (origin/<mainline>) — possible unpushed work of a live cycle (ahead count ${aheadLabel === "unknown" ? "unreadable — the ancestry probe failed, so the driver refused to reset on a guess" : `confirmed as ${aheadLabel}`})`,
+          });
+        }
+        throw aheadErr;
+      }
+      // #844 — the reset of a stale local branch is recorded in the event
+      // log (the recovery handle) so the audit trail carries the old tip
+      // even if a later step fails.
+      let baseState = state;
+      if (setup.resetFromSha !== undefined) {
+        baseState = appendEvent(baseState, {
+          kind: "branch-reset",
+          at: Date.now(),
+          branch: setup.branchName,
+          oldSha: setup.resetFromSha,
+          newSha: setup.baseSha,
+        });
+      }
       const started = appendEvent(
-        { ...state, pipelineState: { ...state.pipelineState, currentStep: "branch" } },
+        { ...baseState, pipelineState: { ...baseState.pipelineState, currentStep: "branch" } },
         { kind: "step-started", step: "branch", at: now },
       );
       // Via the shared builder (work-driver-events.ts): unique jobId —

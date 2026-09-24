@@ -245,6 +245,30 @@ export function explainCap(
     case "lens-fix-not-integrated":
       return explainLens(cap, state);
   }
+  // #844 — a local branch of the resolved name holds commits the freshly
+  // fetched origin/<mainline> does not. Deliberate halt: only a human can
+  // decide whether the unpushed work is live, stale, or a diverged shape.
+  // The ahead count is in the cap's suffix (or `unknown` when the count or
+  // the ancestry probe itself could not be read — #844 round-2: an unreadable
+  // probe halts instead of resetting, and the count then rides in as
+  // `unknown`, never a fabricated 0); the branch name is in evidence.
+  if (cap.startsWith("branch-ahead:")) {
+    const hit = lastCapHit(state, cap);
+    const ev = hit?.evidence ?? "(no detail recorded)";
+    const suffix = cap.split(":")[1] ?? "unknown";
+    const ahead = suffix === "unknown" ? "an unknown number of" : `${suffix}`;
+    return `the branch step found a local feature branch that is ${ahead} commit(s) ahead of the freshly-fetched origin/<mainline> — the branch holds unpushed work that a reset would destroy, and only a human can decide what to do with it: ${ev}. The driver reset NOTHING; the branch name is in the evidence above. Inspect the ahead commits (\`git log origin/<mainline>..<branch>\`), push them if they are live work, delete the branch if they are stale, then re-run the cycle`;
+  }
+  // #844 — the ops-fallback branch path's post-dispatch merge-base check
+  // failed: the branch ops actually created does not sit on the
+  // driver-resolved baseSha. Ops built off a stale local ref (the #830
+  // shape) or the mainline did not actually advance. The operator must
+  // reset the branch to the correct base and re-run the cycle.
+  if (cap === "ops-merge-base-mismatch") {
+    const hit = lastCapHit(state, cap);
+    const ev = hit?.evidence ?? "(no detail recorded)";
+    return `the branch step's ops fallback recorded a baseSha that does not match the branch's actual merge-base with origin/<mainline>: ${ev}. The branch was not built off the freshly-fetched base — ops likely created it from a stale local ref. Reset the branch to the correct base (\`git branch -f <branch> <correct-sha>\`) and re-run the cycle, or investigate the branch's commit history before proceeding`;
+  }
   // PR17 — `verify-failed:<step>`: the driver-side outcome gate found
   // the step's claimed result isn't backed by executed evidence. The
   // per-check findings live in pipelineState.verifyEvidence.
