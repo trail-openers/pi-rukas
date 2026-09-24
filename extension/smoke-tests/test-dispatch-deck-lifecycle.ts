@@ -13,6 +13,7 @@
 import {
   attach,
   batchSnapshot,
+  buildLines,
   clearBatchEntry,
   clearEntry,
   detach,
@@ -124,14 +125,17 @@ function fakeCtx(): { calls: WidgetCall[]; ctx: Parameters<typeof attach>[0] } {
   assert(batchSnapshot().length === 1, "batchSnapshot() returns the batch row");
 }
 
-// 16. Ticker lifecycle.
+// 16. Ticker lifecycle. #837 — settled rows do NOT keep the ticker alive:
+// the ticker stops when no LIVE entries remain (entries + batches empty),
+// even though the bounded settled section is still rendered (settled rows
+// are static — no elapsed-time updates needed).
 {
   reset();
   assert(!isTicking(), "ticker is not armed when no entries");
   startEntry("a", { label: "developer", role: "developer" });
   assert(isTicking(), "ticker arms when first entry registers");
   clearEntry("a");
-  assert(!isTicking(), "ticker stops when last entry drains");
+  assert(!isTicking(), "ticker stops when last LIVE entry drains (settled row retained, ticker still off)");
   startBatchEntry("bonly", { label: "explore×2", size: 2 });
   assert(isTicking(), "ticker arms for a batch-only state");
   clearBatchEntry("bonly");
@@ -152,18 +156,32 @@ function fakeCtx(): { calls: WidgetCall[]; ctx: Parameters<typeof attach>[0] } {
   assert(snapshot().length === 1, "deck resumes when env var unset");
 }
 
-// 18. detach removes the widget.
+// 18. detach removes the widget and clears the settled retention list.
 {
   reset();
   const { calls, ctx } = fakeCtx();
   attach(ctx);
   startEntry("a", { label: "developer", role: "developer" });
+  clearEntry("a"); // settle → retained
   await new Promise((r) => setImmediate(r));
   detach();
   const last = calls[calls.length - 1];
   assert(last?.content === undefined, "detach calls setWidget(key, undefined)");
   assert(snapshot().length === 0, "detach drains entries");
   assert(batchSnapshot().length === 0, "detach drains batches");
+  assert(buildLines().length === 0, "detach drains the settled retention list");
+}
+
+// 18b. #837 — quiet mode: settled rows are NOT registered (startEntry
+// short-circuits, so nothing to settle), and a settle under quiet is a no-op.
+{
+  reset();
+  process.env.PI_ENSEMBLE_QUIET_STATUS = "1";
+  startEntry("q1", { label: "developer", role: "developer" });
+  clearEntry("q1");
+  assert(buildLines().length === 0, "quiet mode: no retained settled rows (startEntry was skipped)");
+  process.env.PI_ENSEMBLE_QUIET_STATUS = undefined;
+  reset();
 }
 
 console.log(`\nexit ${exit}`);

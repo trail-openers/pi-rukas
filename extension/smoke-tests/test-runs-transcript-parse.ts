@@ -174,5 +174,58 @@ assert(
   assert(noFile.includes("job ghost"), "no-transcript note names the job");
 }
 
+// #837 — the recorded transcriptPath (captured at settle time from the
+// DispatchResult) takes precedence over the key-based disk scan. This is
+// what makes driver children, batch members and `runId/tag`-keyed lens/
+// adversarial children openable: their deck key cannot re-derive the file.
+{
+  const vdir3 = mkdtempSync(path.join(os.tmpdir(), "runs-viewer3-"));
+  const datedir3 = path.join(vdir3, "2026-01-03");
+  mkdirSync(datedir3);
+  // The file is named by a runId that differs from the deck key entirely
+  // (the driver-job shape: deck key = jobId, file = runId-role.json).
+  const realFile = path.join(datedir3, "runIdABC-developer.json");
+  writeFileSync(realFile, rows.map((r) => JSON.stringify(r)).join("\n"));
+
+  // (a) A '/' key (lens/adversarial shape) is unresolvable by the scan —
+  // the recorded path is the only way.
+  const settledViewer = await buildViewerText(
+    "runIdABC/review", // contains '/' → findTranscriptPath returns undefined
+    "code-review-specialist[review]",
+    { role: "code-review-specialist", sizeBytes: 0 },
+    vdir3,
+    realFile, // recorded at settle time
+  );
+  assert(
+    !settledViewer.includes("no transcript found"),
+    "recorded transcriptPath opens the file even when the key is unresolvable ('/' key)",
+  );
+  assert(settledViewer.includes("tool calls: 1"), "recorded-path viewer renders the parsed transcript");
+
+  // (b) A jobId key whose disk scan would find a DIFFERENT (wrong) file —
+  // the recorded path must win over the prefix collision.
+  writeFileSync(path.join(datedir3, "jobD-developer.json"), JSON.stringify(rows[0]));
+  writeFileSync(path.join(datedir3, "jobDX-developer.json"), "{}"); // prefix sibling
+  const collision = await buildViewerText(
+    "jobD",
+    "developer",
+    { role: "developer", sizeBytes: 0 },
+    vdir3,
+    realFile, // recorded path is authoritative
+  );
+  assert(collision.includes("tool calls: 1"), "recorded path wins over the key-based prefix scan (sibling collision)");
+
+  // (c) A recorded path that no longer exists on disk (pruned) degrades to
+  // the no-transcript note — never a crash.
+  const pruned = await buildViewerText(
+    "jobD",
+    "developer",
+    { role: "developer", sizeBytes: 0 },
+    vdir3,
+    path.join(datedir3, "deleted.json"),
+  );
+  assert(pruned.includes("no transcript found"), "recorded path missing on disk → no-transcript note (no throw)");
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

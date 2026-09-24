@@ -140,7 +140,7 @@ export async function runAdversarialLoop(
     const label = `${role}[${tag}]`;
     dispatchDeck.startEntry(deckKey, { label, role, tag });
     try {
-      return await spawnSpecialist(
+      const r = await spawnSpecialist(
         { role, prompt, cwd },
         {
           signal,
@@ -155,18 +155,20 @@ export async function runAdversarialLoop(
           },
         },
       );
+      // #837 — settle with the child's real transcript (runId/tag keys can't
+      // be re-derived from the key by findTranscriptPath).
+      dispatchDeck.clearEntry(deckKey, { ok: r.ok, transcriptPath: r.transcriptPath });
+      return r;
+    } catch (err) {
+      dispatchDeck.clearEntry(deckKey, { ok: false }); // spawn threw; no transcript
+      throw err;
     } finally {
-      dispatchDeck.clearEntry(deckKey);
       setOrchestratorActiveChild(orchestratorJobId, null);
     }
   };
 
-  /**
-   * #309/#314 — classify a dispatch result by its ROOT CAUSE so the adversarial
-   * loop can branch on structure (self-kill / 429 / provider-severed) instead
-   * of collapsing everything into a boolean. Uses shared RATE_LIMIT_429_PATTERN
-   * from types.ts. Infra-failure is derived: cause !== "success".
-   */
+  /** #309/#314 — classify a dispatch result by its ROOT CAUSE (self-kill /
+   *  429 / provider-severed) via shared RATE_LIMIT_429_PATTERN. */
   const classifyDispatchOutcome = (
     r: DispatchResult,
   ): {
@@ -263,11 +265,8 @@ export async function runAdversarialLoop(
     };
   };
 
-  /**
-   * #308 — retry loop that respects cause-specific depth.
-   * Provider severances get deeper retries (up to maxRetries).
-   * Self-kills and 429 get no retries. Inactivity gets one.
-   */
+  /** #308 — retry loop that respects cause-specific depth: provider severances
+   *  retry up to maxRetries; self-kills and 429 never; inactivity retries once. */
   const runPhaseWithInfraRetry = async (
     role: "adversarial-developer" | "developer",
     tag: string,
@@ -452,7 +451,7 @@ interface SynthesizeInput {
   adversarialRounds?: DispatchResult["adversarialRounds"];
   /** #485 — total rounds executed when the loop exited with no verdict. */
   roundsExecuted?: number;
-  /** #543 — a loop / token-budget self-kill, threaded so the cap path can distinguish it. */
+  /** #543 — loop / token-budget self-kill, so the cap path can distinguish it. */
   killCause?: DispatchResult["killCause"];
 }
 

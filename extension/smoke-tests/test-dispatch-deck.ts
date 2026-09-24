@@ -18,7 +18,7 @@
  * detach are covered in test-dispatch-deck-lifecycle.ts (#171 file-size split).
  */
 
-import { Container, Text } from "@earendil-works/pi-tui";
+import { Container } from "@earendil-works/pi-tui";
 import {
   type DeckEntry,
   attach,
@@ -26,7 +26,9 @@ import {
   buildLinesBatchOnly,
   clearEntry,
   detach,
+  formatBatchRow,
   formatRow,
+  formatSettledRow,
   reset,
   snapshot,
   startBatchEntry,
@@ -103,13 +105,14 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   );
 }
 
-// 2. clearEntry drops the row from the snapshot.
+// 2. clearEntry drops the row from the live snapshot. #837: settled rows
+// move to the bounded retention list (covered in test-dispatch-deck-settled.ts).
 {
   reset();
   startEntry("x", { label: "developer", role: "developer" });
   assert(snapshot().length === 1, "entry registered");
   clearEntry("x");
-  assert(snapshot().length === 0, "clear drops the entry immediately (no 0s linger)");
+  assert(snapshot().length === 0, "clear drops the entry from the LIVE snapshot immediately (no linger)");
 }
 
 // 3. formatRow renders compact single line: icon + label + elapsed + tool.
@@ -367,19 +370,22 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   detach();
 }
 
-// 12. Empty deck → setWidget(undefined) to remove the widget.
+// 12. Empty deck → setWidget(undefined) to remove the widget. #837: the
+// widget now stays alive with a settled-only deck (retained rows remain
+// selectable, covered in test-dispatch-deck-settled.ts). A truly empty deck
+// (no live, no settled) still clears — verified via the pristine-attach path
+// in that file.
 {
   reset();
   const { calls, ctx } = fakeCtx();
   attach(ctx);
   startEntry("a", { label: "developer", role: "developer" });
   await new Promise((r) => setImmediate(r));
-  const callsBeforeClear = calls.length;
+  // Settle the row — the deck must NOT clear (settled section renders).
   clearEntry("a");
   await new Promise((r) => setImmediate(r));
   const lastCall = calls[calls.length - 1];
-  assert(calls.length > callsBeforeClear, "clearing the last entry triggers a new setWidget call");
-  assert(lastCall?.content === undefined, "empty deck calls setWidget(key, undefined)");
+  assert(typeof lastCall?.content === "function", "settled-only deck keeps the widget (factory re-registered, not cleared)");
   detach();
 }
 
