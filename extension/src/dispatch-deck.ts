@@ -1,27 +1,19 @@
 /**
- * Live dispatch deck (#117 / #607 / #709 / #729 / #742 / #834).
+ * Live dispatch deck (#117 / #607 / #709 / #729 / #742 / #834 / #839).
  *
- * The deck registers ONE widget — `ensemble:deck` — a composite Container
- * of batch Text rows followed by plain per-job rows, one per RUNNING job
- * (batch members included). #834 replaced the non-focusable SelectList
- * (which never received input — keys route to the focused editor, #176)
- * with these rows plus a roster-mode input listener (dispatch-deck-nav.ts)
- * that lets the operator walk the rows with the arrow keys from an empty
- * editor.
- *
- * Selecting a row (Enter in roster mode) confirms the job: a running job
- * opens the steer prompt (`deck-ui` source tag).
+ * One widget — `ensemble:deck` — a composite Container of batch Text rows
+ * followed by plain per-job rows (one per RUNNING job). Roster mode
+ * (#834, dispatch-deck-nav.ts) lets the operator walk rows from an empty
+ * editor; Enter on a running row opens the live view (#839) or the steer
+ * prompt; Enter on a settled row opens the transcript viewer.
  *
  * Opt-out: PI_ENSEMBLE_QUIET_STATUS=1.
- *
- * #709's "do not remove either widget" directive is superseded — the
- * aboveEditor `ensemble:deck-prompt` widget was the source of the
- * duplicate projection and was removed in #729.
  */
 
 import type { ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import * as deckComposite from "./dispatch-deck-composite.ts";
-import { steerFromDeck } from "./dispatch-deck-interactive.ts";
+import { openTranscriptViewer, steerFromDeck } from "./dispatch-deck-interactive.ts";
+import { hasBuffer, openLiveView } from "./dispatch-deck-live.ts";
 import { type DeckNav, createDeckNav } from "./dispatch-deck-nav.ts";
 import { type RunningState, emptyRunningState, formatElapsed } from "./progress.ts";
 import { trace } from "./trace.ts";
@@ -126,30 +118,12 @@ function navGetters(ctx: ExtensionContext) {
   };
 }
 
-/**
- * #834 — register the roster-mode input listener once. The listener is
- * the operator's path into the deck's running-job rows: from an empty
- * editor, `down` enters roster mode (see dispatch-deck-nav.ts). It is
- * registered only when the extension has a UI surface and the deck is
- * not quiet — quiet mode and headless mode register nothing. `detach()`
- * unsubscribes; a re-`attach` after `detach` registers a fresh listener
- * (the module-level `nav` is cleared by `detach`, so at most one
- * listener is ever live).
- */
+/** Register the roster-mode input listener once (#834). Quiet/headless register nothing. */
 function attachNav(ctx: ExtensionContext): void {
   if (!tryAttachNav(ctx)) detachNav();
 }
 
-/**
- * Own the nav wiring for one cycle: the quiet/hasUI guards, the
- * prior-listener teardown, the createDeckNav construction and the
- * registration. Used by `attach()` (explicit attach — a new budget for
- * the self-heal counters) and renderNow's self-heal (a transient
- * attach-time failure retries here on a later render). The
- * `navWarned`/`navHealAttempts` resets live in `attachNav` only: the
- * self-heal path must accumulate across renders so the cap binds. Returns
- * true when the listener is live.
- */
+/** Own the nav wiring for one cycle (guards, teardown, createDeckNav, registration). */
 function tryAttachNav(ctx: ExtensionContext): boolean {
   if (isQuiet() || !ctx.hasUI) return false;
   // Unsubscribe any prior listener before re-registering (attach can be
@@ -361,16 +335,34 @@ function buildCompositeWidgetFactory(ctx: ExtensionContext) {
   );
 }
 
-/** #607 d3. Route a confirmed row to the steer prompt. */
-async function onRowConfirm(ctx: ExtensionContext, key: string): Promise<void> {
+/** Route a confirmed row (Enter in roster mode). Running + buffer → live view; running, no buffer → steer; settled → transcript viewer. */
+export async function onRowConfirm(ctx: ExtensionContext, key: string): Promise<void> {
   const entry = entries.get(key);
   if (!entry) return;
+  if (entry.state.done) {
+    await openTranscriptViewer(ctx, entry);
+    return;
+  }
+  if (hasBuffer(key)) {
+    await openLiveView(ctx, key, {
+      getEntry: (k) => entries.get(k),
+      buildSteerPrompt: (e: unknown, now: number) =>
+        deckComposite.buildSteerPrompt(e as DeckEntry, now),
+      steer: (k, text) => steerDeckEntry(ctx.ui, k, text),
+    });
+    return;
+  }
+  await openSteerPrompt(ctx, entry);
+}
+
+/** The pre-filled steer prompt for a row; undefined when the operator cancels. */
+async function openSteerPrompt(ctx: ExtensionContext, entry: DeckEntry): Promise<void> {
   const text = await ctx.ui.editor(
     `Steer ${entry.label}`,
     deckComposite.buildSteerPrompt(entry, Date.now()),
   );
   if (text === undefined) return;
-  steerDeckEntry(ctx.ui, key, text);
+  steerDeckEntry(ctx.ui, entry.key, text);
 }
 
 /** Deliver a steer to a deck row's job (`deck-ui` source; routes through the shared steer core). */

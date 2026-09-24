@@ -87,6 +87,16 @@ export interface SpawnOptions {
    * and the steer is skipped (budget default-OFF makes it a no-op for them).
    */
   onSteer?: (message: string, source: SteerSource) => void;
+  /**
+   * #839 — raw-event observer for the dispatch deck's live view (epic #833
+   * G5). Invoked from spawn.ts's stdout line handler for EVERY parsed child
+   * event (assistant `message_end` blocks and `toolResult` messages in
+   * practice; everything else is dropped inside the observer). The event is
+   * the raw parsed shape (no `ProgressEvent` narrowing) so spawn does not
+   * have to re-type its own line handler. The observer must be cheap and
+   * non-throwing — it runs on the hot event path.
+   */
+  onRawEvent?: (event: PiJsonEvent) => void;
 }
 
 // Pi event shape (Pi 0.75.3) — emitted by `--mode rpc` to stdout as JSONL.

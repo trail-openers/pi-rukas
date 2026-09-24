@@ -18,6 +18,7 @@ import {
   formatSingleReport,
   totalTokens,
 } from "./async-jobs-report.ts";
+import * as live from "./dispatch-deck-live.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import * as lifecycle from "./lifecycle-events.ts";
 import type { RunningState } from "./progress.ts";
@@ -73,6 +74,14 @@ export interface WorkHooks {
    * straight through to spawnSpecialist's onProgress option.
    */
   onProgress: (state: RunningState) => void;
+  /**
+   * #839 — raw-event observer for the dispatch deck's live view. Work
+   * functions pass this through to spawnSpecialist's onRawEvent option;
+   * it fires for every parsed child event and feeds the job's ring buffer
+   * (dispatch-deck-live.ts), which the live-view overlay renders. No-op
+   * for deck-skipping jobs (no buffer is ever created for them).
+   */
+  onRawEvent: (event: unknown) => void;
   /**
    * Stdin-handle callback (#153). Called once after the child is spawned,
    * before the kickoff prompt is written. Work functions pass this through
@@ -171,9 +180,17 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
   lifecycle.emitDispatched(jobId, input.label, input.role);
   sessionAutosave.recordDispatch(input.role);
 
+  if (!input.skipDeck) live.startBuffer(jobId);
   const hooks: WorkHooks = {
     onProgress: (progress) => {
       if (!input.skipDeck) dispatchDeck.updateEntry(jobId, progress);
+    },
+    // #839 — feed the live-view ring buffer from the raw event stream.
+    // The buffer is dropped on settle below (the deck-entry clear), so
+    // skipDeck jobs (lens/adversarial orchestrators) get no buffer and no
+    // leak.
+    onRawEvent: (event) => {
+      live.feedRawEvent(jobId, event as Parameters<typeof live.feedRawEvent>[1]);
     },
     onStdin: (stdin) => {
       childHandles.set(jobId, { stdin, label: input.label, role: input.role });
@@ -186,7 +203,10 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
       jobs.delete(jobId);
       childHandles.delete(jobId);
       clearJobIssues(jobId);
-      if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
+      if (!input.skipDeck) {
+        dispatchDeck.clearEntry(jobId);
+        live.dropBuffer(jobId);
+      }
       // Five-way: ok / killCause / 429 / FAILED-PROVIDER-ERROR / process-exit-failed.
       // #309/#314 — killCause (#296) wins over errorStop. A self-kill is NOT a
       // provider/transport error and must not emit the "terminated mid-stream" badge.
@@ -250,7 +270,10 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
       jobs.delete(jobId);
       childHandles.delete(jobId);
       clearJobIssues(jobId);
-      if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
+      if (!input.skipDeck) {
+        dispatchDeck.clearEntry(jobId);
+        live.dropBuffer(jobId);
+      }
       lifecycle.emitFailed(jobId, input.label, input.role, Date.now() - state.startedAt);
       sessionAutosave.recordOutcome(false);
       if (ownerKind === "pm") {
@@ -356,9 +379,12 @@ export function startBatch(
     jobs.set(jobId, memberState);
 
     dispatchDeck.startEntry(jobId, { label: m.label, role: m.role, batchKey: batchId });
+    live.startBuffer(jobId);
     sessionAutosave.recordDispatch(m.role);
     const memberHooks: WorkHooks = {
       onProgress: (progress) => dispatchDeck.updateEntry(jobId, progress),
+      onRawEvent: (event) =>
+        live.feedRawEvent(jobId, event as Parameters<typeof live.feedRawEvent>[1]),
       onStdin: (stdin) => {
         childHandles.set(jobId, { stdin, label: m.label, role: m.role });
       },
@@ -372,6 +398,7 @@ export function startBatch(
           jobs.delete(jobId);
           childHandles.delete(jobId);
           dispatchDeck.clearEntry(jobId);
+          live.dropBuffer(jobId);
           sessionAutosave.recordOutcome(result.ok);
           memberResults.push({ jobId, label: m.label, result });
         },
@@ -379,6 +406,7 @@ export function startBatch(
           jobs.delete(jobId);
           childHandles.delete(jobId);
           dispatchDeck.clearEntry(jobId);
+          live.dropBuffer(jobId);
           sessionAutosave.recordOutcome(false);
           memberResults.push({
             jobId,
