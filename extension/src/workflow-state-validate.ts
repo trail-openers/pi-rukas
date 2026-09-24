@@ -59,6 +59,11 @@ export const KNOWN_EVENT_KINDS: readonly unknown[] = [
   // halts on its own re-entry (the fix manufactures the corruption it
   // exists to prevent).
   "branch-reset",
+  // #799 task-a — the per-dispatch heartbeat (a bounded in-flight snapshot
+  // for single-dispatch steps, written between dispatch-started and
+  // dispatch-completed). A state file written by a newer driver must
+  // resume on an older one's reader without halting on an unknown kind.
+  "dispatch-heartbeat",
 ];
 
 /** `pipelineState.status` vocabulary. */

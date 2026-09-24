@@ -31,6 +31,7 @@ import {
 } from "./work-driver-prompts-early.ts";
 import { clearDispatch } from "./work-driver-resume.ts";
 import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net.ts";
+import { armStepNotice } from "./work-driver-step-notice.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
@@ -292,15 +293,10 @@ export function makeRunOneWorkstream(
  * post-commit SHA. A dependent whose dependency failed/was skipped is
  * itself skipped. Returns the updated worktrees and workstreamBaseShas,
  * plus `parked` when a dirty-leftover refusal appended its cap-hit mid-step
- * (the caller must not append further events or run the safety-net/verify
- * gates — the cap-hit must remain the step's tail event so the step router
- * routes the cycle to handoff on it instead of appending a duplicate
- * generic cap on the branches-converged verdict). A `create-error` (the
- * non-dirty class) does NOT park: it is recorded and the remaining
- * dependents keep processing (the PR7 branches-converged router halts the
- * cycle at the tail, unchanged).
- */
-export async function runDependentWorkstreams(
+ * (the cap-hit must remain the tail so the step router routes to handoff).
+ * A `create-error` does NOT park: it is recorded and the remaining dependents
+ * keep processing.
+ */ export async function runDependentWorkstreams(
   ctx: DriverContext,
   ids: string[],
   workstreams: NonNullable<WorkState["pipelineState"]["workstreams"]>,
@@ -323,6 +319,12 @@ export async function runDependentWorkstreams(
 }> {
   const wtRef = { worktrees, workstreamBaseShas };
   const { stateRef, inCycleWorktrees, depCompletedAtMap, failureSource } = run;
+  // #799 F2 — the dependent phase's wall-clock span (fire-once, above healthy band).
+  const cancelPhaseNotice = armStepNotice({
+    state: stateRef.current,
+    step: "develop (dependent)",
+    startedAt: Date.now(),
+  });
   // #753 — one place for the base shape of a failed dependent's branch-completed
   // event (the `ok: false, ms: 0` contract); each failure site supplies its own
   // error text and any additional fields (the typed `extra` keeps the cast safe).
@@ -445,6 +447,7 @@ export async function runDependentWorkstreams(
         const leftoverPath = created.failure.leftoverPath ?? "(path unknown)";
         const parked = parkDeferredLeftover(stateRef, leftoverPath, branchEvents);
         await writeState(ctx.repoRoot, stateRef.current);
+        cancelPhaseNotice();
         trace(
           `work-driver: PARK — deferred worktree creation for ${id} refused by dirty leftover at ${leftoverPath}; parking the cycle (no force-remove)`,
         );
@@ -492,5 +495,6 @@ export async function runDependentWorkstreams(
       failedOrSkipped.add(id);
     }
   }
+  cancelPhaseNotice();
   return { ...wtRef, parked: false };
 }

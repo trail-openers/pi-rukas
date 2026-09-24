@@ -24,6 +24,7 @@ import { topologicalDispatchOrder } from "./work-driver-dep-scheduler.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import { clearDispatch } from "./work-driver-resume.ts";
 import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net.ts";
+import { armStepNotice } from "./work-driver-step-notice.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
@@ -97,6 +98,21 @@ async function runDevelopTopological(
   let worktrees = next.pipelineState.worktrees ?? {};
   let workstreamBaseShas = next.pipelineState.workstreamBaseShas ?? {};
   const globalBaseSha = next.pipelineState.baseSha;
+  // #799 F2 — the step notice: the fan-out's wall-clock span, not any single
+  // child's. The incident's silent window was a fan-out whose children were
+  // each individually healthy (19–73 min) yet collectively ran ~2h — the
+  // notice is keyed on the STEP's elapsed time so it fires on the incident
+  // shape without alarming on a healthy 73-min child.
+  const stepStartedAt = Date.now();
+  const cancelStepNotice = armStepNotice({
+    state: next,
+    step: "develop",
+    startedAt: stepStartedAt,
+  });
+  const endStep = (final: WorkState): WorkState => {
+    cancelStepNotice();
+    return final;
+  };
   // #679 — a workstream is “blocked” for its dependents when its dispatch
   // failed OR when it produced NO commits ahead of its base (the case-2(c)
   // falsely-ok shape): building a dependent worktree on a dependency that
@@ -232,7 +248,7 @@ async function runDevelopTopological(
         workstreamBaseShas: { ...workstreamBaseShas, ...next.pipelineState.workstreamBaseShas },
       },
     };
-    return next;
+    return endStep(next);
   }
   void independentResults;
   next = appendEvent(clearDispatch(next, begun.jobId), ...branchEvents);
@@ -403,7 +419,7 @@ async function runDevelopTopological(
       });
     }
   }
-  return next;
+  return endStep(next);
 }
 
 // #841 — re-exported for the smoke test's direct bound check (the N=1
