@@ -22,6 +22,19 @@
  * `git checkout -B <branch> <baseSha>`; this step only resolves and records
  * the name, so a cycle that dies before producing a diff leaves no branch
  * behind.
+ *
+ * #844 — the branch name is resolved BEFORE any worktree exists, so a
+ * stale local branch of the same name (a parked cycle's residue — the #830
+ * incident) is inspected at the branch step, not at `integrate()`. A local
+ * branch that does NOT contain the freshly-fetched `origin/<mainline>`
+ * (behind, or diverged with everything already merged) is force-moved to
+ * baseSha (`git branch -f`) and a `branch-reset` event records the old tip
+ * so the work is recoverable. A branch that IS ahead of
+ * `origin/<mainline>` (unpushed work — only a human can decide what to do
+ * with it) halts the step via a `branch-ahead:branch` cap; nothing is
+ * reset. The detection is purely read-only (two `git` probes) and runs
+ * only against the resolved branch name, so a fresh cycle with no local
+ * branch never sees it.
  */
 
 import fs from "node:fs/promises";
@@ -194,6 +207,101 @@ async function sharedFetch(execFn: ExecFn, repoRoot: string, ref: string): Promi
   }
 }
 
+/**
+ * #844 — a local branch of the resolved name is AHEAD of the freshly
+ * fetched `origin/<mainline>`: it holds unpushed commits a reset would
+ * destroy, and only a human can decide what to do with them. The branch
+ * step halts on this (a `branch-ahead:branch` cap naming the branch and
+ * its ahead count) instead of falling through to the ops fallback — the
+ * fallback's `resolvedTheMainline` guard checks the branch name, not its
+ * ancestry, so a diverged feature branch would sail through it.
+ */
+export class BranchAheadError extends Error {
+  constructor(
+    readonly branchName: string,
+    readonly aheadCount: number,
+  ) {
+    super(
+      `branch ${branchName} is ${aheadCount} commit(s) ahead of origin/<mainline> — possible unpushed work; only a human can decide`,
+    );
+    this.name = "BranchAheadError";
+  }
+}
+
+/**
+ * #844 — inspect a local branch of the resolved name against the freshly
+ * fetched base. Returns the pre-reset tip SHA when the branch was force-moved
+ * to `baseSha` (a `branch-reset` event must be recorded for it), `undefined`
+ * when no local branch exists, and throws `BranchAheadError` when the
+ * branch holds commits `origin/<mainline>` does not (a diverged branch's
+ * `git branch -f` is a reset by definition, and a reset must be recorded,
+ * never silent — the ahead halt is the operator's call). Purely read-only
+ * until the force-move itself.
+ */
+async function reconcileExistingLocalBranch(
+  execFn: ExecFn,
+  repoRoot: string,
+  branchName: string,
+  baseSha: string,
+): Promise<string | undefined> {
+  const revRef = async (ref: string) => {
+    try {
+      const { stdout } = await execFn(`git rev-parse --verify --quiet ${JSON.stringify(ref)}`, {
+        cwd: repoRoot,
+        maxBuffer: 64 * 1024,
+      });
+      return stdout.trim();
+    } catch {
+      return "";
+    }
+  };
+  const oldSha = await revRef(`refs/heads/${branchName}`);
+  if (!oldSha || oldSha === baseSha) return undefined;
+  // `git merge-base --is-ancestor baseSha <branch>`: exit 0 means
+  // the base is reachable from the branch (the branch contains origin's tip —
+  // it is ahead or equal). Anything else (non-zero, missing commit) is
+  // "does not contain": behind or diverged → safe to reset.
+  let containsBase = false;
+  try {
+    await execFn(
+      `git merge-base --is-ancestor ${JSON.stringify(baseSha)} ${JSON.stringify(`refs/heads/${branchName}`)}`,
+      {
+        cwd: repoRoot,
+        maxBuffer: 64 * 1024,
+      },
+    );
+    containsBase = true;
+  } catch {
+    containsBase = false;
+  }
+  if (containsBase) {
+    let aheadCount = "0";
+    try {
+      const { stdout } = await execFn(
+        `git rev-list --count ${JSON.stringify(baseSha)}..${JSON.stringify(`refs/heads/${branchName}`)}`,
+        { cwd: repoRoot, maxBuffer: 64 * 1024 },
+      );
+      aheadCount = stdout.trim();
+    } catch {
+      aheadCount = "?";
+    }
+    throw new BranchAheadError(branchName, Number(aheadCount) || 0);
+  }
+  // The branch is checked out at repoRoot (a handoff-parked cycle leaves it
+  // there — the #830/#835 shape): `git branch -f` refuses to move the
+  // currently-checked-out ref. Force-move via `update-ref`, which moves any
+  // branch ref regardless of checkout — the working tree is re-read on the
+  // next `git status`, so the operator's checkout is never destroyed.
+  await execFn(
+    `git update-ref ${JSON.stringify(`refs/heads/${branchName}`)} ${JSON.stringify(baseSha)}`,
+    {
+      cwd: repoRoot,
+      maxBuffer: 64 * 1024,
+    },
+  );
+  return oldSha;
+}
+
 export interface MechanizedBranchResult {
   branchName: string;
   baseSha: string;
@@ -222,6 +330,12 @@ export interface MechanizedBranchResult {
   workstreamBaseShas: Record<string, string>;
   /** Per-workstream provisioning outcome, keyed by workstream id. */
   provisions: Record<string, ProvisionResult>;
+  /**
+   * #844 — the pre-reset tip of a stale local branch that was force-moved
+   * to `baseSha` (the caller records a `branch-reset` event with this as
+   * `oldSha`). `undefined` when no existing local branch was touched.
+   */
+  resetFromSha?: string;
 }
 
 /**
@@ -282,6 +396,12 @@ export async function mechanizedBranchSetup(
   }
 
   const branchName = branchSlug(issues, issueTitle);
+  // #844 — before any worktree is created: if a local branch of the resolved
+  // name exists and does not contain the freshly-fetched base, reset it
+  // (recoverable via the recorded old tip); if it IS ahead, the step halts
+  // (BranchAheadError — the caller routes to the cap, NOT to the ops
+  // fallback, whose mainline guard would not catch this shape).
+  const resetFromSha = await reconcileExistingLocalBranch(execFn, repoRoot, branchName, baseSha);
   const ids = workstreamIds.length > 0 ? workstreamIds : ["default"];
   const worktrees: Record<string, string> = {};
   const provisions: Record<string, ProvisionResult> = {};
@@ -328,6 +448,11 @@ export async function mechanizedBranchSetup(
   trace(
     `work-driver: mechanized branch setup — ${branchName} @ ${baseSha.slice(0, 8)} (${ids.length} workstream(s)${deferredWorkstreams.length ? `, ${deferredWorkstreams.length} worktree(s) deferred (depends-on)` : ""})`,
   );
+  if (resetFromSha) {
+    trace(
+      `work-driver: stale local branch ${branchName} reset ${resetFromSha.slice(0, 8)} → ${baseSha.slice(0, 8)} (base) — old tip recoverable`,
+    );
+  }
   return {
     branchName,
     baseSha,
@@ -336,5 +461,6 @@ export async function mechanizedBranchSetup(
     deferredWorkstreams,
     workstreamBaseShas,
     provisions,
+    ...(resetFromSha ? { resetFromSha } : {}),
   };
 }

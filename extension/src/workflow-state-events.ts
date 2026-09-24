@@ -9,6 +9,7 @@
 import type { RoleName } from "./roles.ts";
 import type { DispatchUsage } from "./types.ts";
 import type { AdversarialEventFragment } from "./workflow-state-events-adversarial.ts";
+import type { BranchResetEvent } from "./workflow-state-events-branch-reset.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 import type { DeferredCreationEventFragment } from "./workflow-state-events-deferred.ts";
 import type {
@@ -25,12 +26,9 @@ import type {
   VerifyFullStatusEvent,
 } from "./workflow-state-events-verify-flake.ts";
 import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
-// #539 — the commit-pr fallback-cause vocabulary (M1) lives in the
-// sibling events-memory fragment module: single definition.
+// #539 — single definition in the sibling fragment module.
 export type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
-// #775 prep — the handoff event members live in the sibling fragment module;
-// re-exported here so consumers' import paths are unaffected and the
-// `delivery` field (#775) can grow the fragment without inflating this file.
+// #775 prep — handoff event members re-exported from the sibling fragment.
 export type {
   HandoffConsolidatedEvent,
   HandoffEmittedEvent,
@@ -337,6 +335,10 @@ export type WorkEvent =
         | "repeat-finding-seam"
         | `verify-failed:${WorkStep}`
         | `step-failed:${WorkStep}`
+        // #844 — a local branch of the resolved name is ahead of the
+        // freshly-fetched origin/<mainline>; the ahead count is in the
+        // cap suffix, the branch name is in `evidence`.
+        | `branch-ahead:${string}`
         // #753 — deferred worktree creation failed (dirty-leftover park).
         // Own literal so explainCap can give it a tailored sentence and the
         // handoff does NOT terminalize it as `aborted`.
@@ -483,12 +485,11 @@ export type WorkEvent =
     }
   | VerifyFullStatusEvent
   | VerifyFlakeRecoveredEvent
-  // Fragment events (AGENTS.md §12 module-size hygiene) — the union stays
-  // exhaustive: nextStep() and the schema validator see the same closed type.
   | WideningScanEvent
   | MemoryEventFragment
   | WorktreeProvisionedEvent
   | SafetyNetCommitEvent
+  | BranchResetEvent
   | WorktreeLeftoverHandledEvent;
 /** Discriminator union of event kinds — useful for callers that switch on it. */
 export type WorkEventKind = WorkEvent["kind"];
