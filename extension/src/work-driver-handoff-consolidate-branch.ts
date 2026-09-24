@@ -8,30 +8,20 @@
  * existing local branch holds. If a prior cycle left the branch at an older
  * main commit while origin/<mainline> advanced, the consolidated diff
  * silently reverts the work that merged in the meantime — the #830
- * mechanism (PM decision 0). This helper applies the SAME single predicate
- * the branch step uses (work-driver-branch-mechanized.ts,
- * `reconcileExistingLocalBranch`): the local branch does NOT contain the
- * freshly-fetched `origin/<mainline>` (behind, or diverged with everything
- * already merged — rebase-able) → force-move it to the fetched tip; it IS
- * ahead → never touch it.
+ * mechanism (PM decision 0).
  *
- * Deliberate deviations from the branch step's reset:
- *
- *   - `git update-ref` instead of `git branch -f` — the branch may be
- *     checked out at repoRoot (the handoff's own prior consolidation does
- *     exactly that); `branch -f` refuses a checked-out ref.
- *   - `undefined` instead of a `branch-reset` event — handoff is a
- *     terminal, best-effort path with no state file to append to; the
- *     trace carries the old tip SHA (the recovery handle) in the
- *     session log.
- *   - Fetch-down degrades to a trace (return undefined) rather than a
- *     halt: the handoff must complete, and without a fresh origin ref
- *     there is nothing to compare against — the local tip is the best
- *     information available.
+ * #844 round-2 — this is a THIN wrapper over the branch step's
+ * `reconcileExistingLocalBranch` (work-driver-branch-mechanized.ts), the
+ * PM decision's "one predicate". The only divergence is fetch-down handling:
+ * the branch step THROWS on an unreadable base (a branch step has to halt on
+ * it), while the handoff must complete, so a fetch that is down degrades to
+ * a trace + no-op here instead. Everything else — the ancestry probe, the
+ * ahead refusal (BranchAheadError), the `git update-ref` move that works on
+ * a branch checked out at repoRoot — is the single shared predicate.
  */
 
 import { trace } from "./trace.ts";
-import { detectMainline } from "./work-driver-branch-mechanized.ts";
+import { detectMainline, reconcileExistingLocalBranch } from "./work-driver-branch-mechanized.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -47,6 +37,11 @@ export async function reconcileHandoffConsolidateBranch(
   repoRoot: string,
   branchName: string,
 ): Promise<string | undefined> {
+  // #844 round-2 — fetch down degrades to a trace + no-op (return undefined)
+  // rather than a halt: the handoff must complete, and without a fresh origin
+  // ref there is nothing to compare against — the local tip is the best
+  // information available. Without this guard the shared predicate's
+  // "could not resolve <mainline>" throw would become a handoff failure.
   let fetchedTip = "";
   try {
     const mainline = await detectMainline(execFn, repoRoot);
@@ -75,41 +70,11 @@ export async function reconcileHandoffConsolidateBranch(
     );
   }
   if (!fetchedTip) return undefined;
-  let localTip = "";
-  try {
-    const { stdout } = await execFn(
-      `git rev-parse --verify --quiet ${JSON.stringify(`refs/heads/${branchName}`)}`,
-      { cwd: repoRoot, maxBuffer: 64 * 1024 },
-    );
-    localTip = stdout.trim();
-  } catch {
-    localTip = "";
-  }
-  if (!localTip || localTip === fetchedTip) return undefined;
-  // `git merge-base --is-ancestor fetchedTip <branch>`: exit 0 means the
-  // branch contains the fetched tip (it is ahead or equal) → the predicate
-  // refuses to reset; anything else (non-zero, missing commit) is
-  // "does not contain": behind or diverged → safe to force-move.
-  let branchContainsFetchedTip = false;
-  try {
-    await execFn(
-      `git merge-base --is-ancestor ${JSON.stringify(fetchedTip)} ${JSON.stringify(`refs/heads/${branchName}`)}`,
-      { cwd: repoRoot, maxBuffer: 64 * 1024 },
-    );
-    branchContainsFetchedTip = true;
-  } catch {
-    branchContainsFetchedTip = false;
-  }
-  if (branchContainsFetchedTip) return undefined;
-  // `git update-ref` instead of `git branch -f`: the branch may be checked
-  // out at repoRoot (a handoff's own prior consolidation leaves it there),
-  // and `branch -f` refuses to move the currently-checked-out ref.
-  await execFn(
-    `git update-ref ${JSON.stringify(`refs/heads/${branchName}`)} ${JSON.stringify(fetchedTip)}`,
-    { cwd: repoRoot, maxBuffer: 64 * 1024 },
-  );
-  trace(
-    `work-driver: handoff-consolidate — stale local branch ${branchName} reset ${localTip.slice(0, 8)} → ${fetchedTip.slice(0, 8)} (fetched origin/<mainline>); old tip recoverable via that SHA`,
-  );
-  return localTip;
+  // The single shared predicate (ancestry probe + ahead refusal +
+  // `git update-ref` move). The ahead refusal cannot fire in the normal
+  // flow: follow-up mode only reaches here for a branch that is NOT checked
+  // out at repoRoot, and a local branch AHEAD of the freshly-fetched tip was
+  // just reset (or is this cycle's own work, created at the tip) — so a
+  // BranchAheadError here would mean a concurrent cycle raced the fetch.
+  return reconcileExistingLocalBranch(execFn, repoRoot, branchName, fetchedTip);
 }

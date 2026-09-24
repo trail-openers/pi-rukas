@@ -239,9 +239,17 @@ export async function runBranchViaOpsDispatch(
       );
     }
   }
-  if (verifiedBase && ps.baseSha && verifiedBase !== ps.baseSha) {
+  // #844 round-2 — compare against the DRIVER-FETCHED base, not ps.baseSha.
+  // `ps.baseSha` is only populated BELOW this check (from `git rev-parse HEAD`
+  // at repoRoot — which is `main`, not the branch ops just created), so
+  // comparing against it would (a) always be empty here and (b) halt a correct
+  // branch whenever local main ≠ origin/main. `driverBaseSha` was resolved
+  // above (freshest origin/<mainline> tip, local-ref fallback) for exactly this
+  // comparison; a fetch-down run leaves it empty and the check degrades to a
+  // trace (no false halt).
+  if (verifiedBase && driverBaseSha && verifiedBase !== driverBaseSha) {
     trace(
-      `work-driver: ops-fallback merge-base MISMATCH — branch ${branch} merge-base ${verifiedBase.slice(0, 8)} != recorded baseSha ${ps.baseSha.slice(0, 8)} — halting`,
+      `work-driver: ops-fallback merge-base MISMATCH — branch ${branch} merge-base ${verifiedBase.slice(0, 8)} != driver-fetched base ${driverBaseSha.slice(0, 8)} — halting`,
     );
     return appendEvent(next, {
       kind: "cap-hit",
@@ -249,7 +257,7 @@ export async function runBranchViaOpsDispatch(
       cap: "ops-merge-base-mismatch",
       reviewRound: next.pipelineState.reviewRound,
       nextStep: "handoff",
-      evidence: `branch ${branch} sits at merge-base ${verifiedBase} with origin/<mainline>, but the driver recorded baseSha ${ps.baseSha} — the branch was not built off the freshly-fetched base`,
+      evidence: `branch ${branch} sits at merge-base ${verifiedBase} with origin/<mainline>, but the driver fetched base ${driverBaseSha} — the branch was not built off the freshly-fetched base`,
     });
   }
   // #451 — ALWAYS parse the `## Worktrees` block when the ops reply carries

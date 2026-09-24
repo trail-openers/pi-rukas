@@ -238,7 +238,7 @@ export class BranchAheadError extends Error {
  * never silent — the ahead halt is the operator's call). Purely read-only
  * until the force-move itself.
  */
-async function reconcileExistingLocalBranch(
+export async function reconcileExistingLocalBranch(
   execFn: ExecFn,
   repoRoot: string,
   branchName: string,
