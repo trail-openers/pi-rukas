@@ -64,6 +64,8 @@ async function fixture772w6(): Promise<void> {
       childExited: () => false,
     });
     const green = "All tests passed";
+    // Lower bound on the arm time (captured before the arming loop).
+    const w6ArmedAt = Date.now();
     // Arm a success-keyed kill: 6 identical green results through the
     // toolResult feed (each a distinct call id but identical fingerprint).
     for (let i = 0; i < 6; i++) {
@@ -73,9 +75,6 @@ async function fixture772w6(): Promise<void> {
     }
     assert(s.loopArmedFingerprint() !== undefined, "#772(w6): success kill armed");
     assert(!s.loopKilled(), "#772(w6): kill deferred — grace window open");
-    // Lower bound on the arm time (before the arm-completing traffic); the
-    // grace assertion still fails for a grace-0 regression.
-    const w6ArmedAt = Date.now();
     // The #753-shape traffic: the child keeps re-issuing the command, each
     // with a DISTINCT fingerprint (a changing path). Under the old code
     // (re-arm on any distinct message_end) the grace clock would reset
