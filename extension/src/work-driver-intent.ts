@@ -33,6 +33,7 @@ import {
   loadBearingContradictions,
   supportingContradictions,
 } from "./work-driver-intent-criticality.ts";
+import { sliceSpecField, sliceSpecSectionH2OrH3 } from "./work-driver-intent-spec-slice.ts";
 import { sliceMarkdownSection } from "./work-driver-plan.ts";
 
 /** Why a cycle refused to write code. Machine-readable so the queue can act. */
@@ -120,20 +121,13 @@ const PARK_REASONS: ParkReason[] = [
 ];
 
 /**
- * Slice a `### <name>` subsection out of the `## Spec` block.
- *
- * `sliceMarkdownSection` matches exactly `##`, so it cannot reach these. It is
- * left alone rather than generalised: `parseWorkstreams` depends on its
- * current terminator behaviour, and widening a shared helper to serve one new
- * caller is how subtle parsing regressions get introduced.
+ * Slice a `### <name>` subsection (or a bare bold-label line) out of the `Spec`
+ * block. Delegates to `sliceSpecField` in `work-driver-intent-spec-slice.ts`,
+ * which handles both the prompt's `### <name>` template and the bare bold-label
+ * form (`**Deliverables**`) that real resolvers emit.
  */
 function sliceSubsection(text: string, name: string): string | undefined {
-  const m = text.match(new RegExp(`^###\\s+${name}\\s*$`, "im"));
-  if (!m || m.index === undefined) return undefined;
-  const after = text.slice(m.index + m[0].length);
-  // Terminate at the next heading of any level.
-  const next = after.match(/^#{2,3}\s/m);
-  return next?.index !== undefined ? after.slice(0, next.index) : after;
+  return sliceSpecField(text, name);
 }
 
 /** Bullet lines of a markdown section, with the leading marker stripped. */
@@ -186,7 +180,7 @@ function bullets(section: string | undefined): string[] {
  * field has a defined empty value, and an unreadable verdict parks.
  */
 export function parseNormalisedSpec(text: string): NormalisedSpec | undefined {
-  const section = sliceMarkdownSection(text, "Spec");
+  const section = sliceSpecSectionH2OrH3(text, "Spec");
   if (section === undefined) return undefined;
 
   const rawVerdict = readMarker(text, "INTENT-VERDICT", /(proceed-with-assumptions|proceed|park)/);

@@ -416,12 +416,14 @@ export async function runExplore(
     // there, `work-driver-prompts-early.ts:46-47`).
     if (exploreProducedNoSignal(useIntent, verdict)) {
       trace("work-driver: explore returned neither a `## Spec` block nor a verdict — parking");
+      // #830 — carry WHY the driver could not act so the handoff names it.
       return appendEvent(next, {
         kind: "cap-hit",
         at: Date.now(),
         cap: "explore-needs-clarification",
         reviewRound: next.pipelineState.reviewRound,
         nextStep: "handoff",
+        evidence: "no verdict and no spec parsed",
       });
     }
     if (verdict === "ALREADY_COMPLETE" || verdict === "NEEDS_CLARIFICATION") {
@@ -479,17 +481,14 @@ export async function runExplore(
 }
 
 /**
- * Did explore say anything the driver can act on?
- *
- * Two channels can carry a decision: the `## Spec` block (intent path) and the
- * legacy `EXPLORE-VERDICT` token. Reaching this point means the spec block did
- * not parse; if the legacy token is absent too, explore produced no decision at
- * all — and the driver used to treat that as permission to proceed, planning
- * and building against a reply it could not read.
- *
- * A single-issue intent cycle is the case that matters, because there the
- * prompt does not ask for the legacy token (`useLegacyVerdict` is false), so
- * the fallback it degrades to cannot fire by construction.
+ * Did explore say anything the driver can act on? Two channels can carry a
+ * decision: the `## Spec` block (intent path) and the legacy `EXPLORE-VERDICT`
+ * token. Reaching this point means the spec block did not parse; if the legacy
+ * token is absent too, explore produced no decision at all — and the driver
+ * used to treat that as permission to proceed, planning and building against a
+ * reply it could not read. A single-issue intent cycle is the case that
+ * matters, because there the prompt does not ask for the legacy token
+ * (`useLegacyVerdict` is false), so the fallback cannot fire by construction.
  */
 export function exploreProducedNoSignal(
   intentPathActive: boolean,

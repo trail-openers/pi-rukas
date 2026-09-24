@@ -1,0 +1,62 @@
+Task complete: /work issue #826 — Step 1 reconnaissance
+
+## Workstreams
+
+- **ws-a: production code fix** — implement option (a) two-phase retry gate, export sharesAssertion, gate post-run annotation on `cons.retried`, record per-worktree evidence on recovered path. Files: `extension/src/work-driver-verify-verify-cmd.ts`, `extension/src/work-driver-consolidation-classify.ts`, `extension/src/work-driver-consolidated-verify.ts`.
+- **ws-b: test rewrite + gate-level integration test** — delete local `retryPrecondition` copy from `test-work-driver-verify-classify-retry.ts`, add `runVerifyCommandGate` cases with counting fake `execFn` (mismatch→no retry, match→one re-run, zero-failure→unchanged, N=1→no retry, >800-char elided tail). Files: `extension/smoke-tests/test-work-driver-verify-classify-retry.ts`, `extension/smoke-tests/test-work-driver-verify-flake.ts` (may need new test file or extension to existing).
+
+## Intent resolution
+
+**INTENT-VERDICT: proceed**
+**PARK-REASON:** (not applicable — proceeding)
+
+### Spec
+
+**Intent** — Fix the consolidated-verify flake retry so (1) a genuine single-worktree defect with a different assertion does NOT burn a second full verify run (option (a) two-phase gate), (2) the shared-assertion comparison is one exported function used at both the classifier and the retry gate, (3) the test exercises the production gate rather than a hand-copied duplicate, and (4) the recovered path is as observable as the failed path.
+
+**Deliverables**
+
+- `d1`: Export `sharesAssertion` from `work-driver-consolidation-classify.ts` and use it at both the classifier (`Case-2` + `N=1`) and the retry gate — no inline `consAssertion === perAssertion` duplicate. The comparison operates on extracted assertions (via `extractSpecificAssertion`), not raw `includes` on the untrimmed consolidated detail. [paths: extension/src/work-driver-consolidation-classify.ts, extension/src/work-driver-verify-verify-cmd.ts]
+- `d2`: Implement option (a) two-phase gate — the length-only precondition admits the first consolidated run; the re-run happens only if the per-worktree assertion (via `extractSpecificAssertion`) matches the first consolidated run's extracted assertion. This requires passing a `canRetry` predicate (or `perAssertion`) into `runConsolidatedVerify` so the in-module retry check compares after the first run fails. Zero per-worktree failures → unconditional retry (unchanged #782 behaviour). N=1 → no retry (unchanged). [paths: extension/src/work-driver-consolidated-verify.ts, extension/src/work-driver-verify-verify-cmd.ts]
+- `d3`: Gate the post-run annotation on `cons.retried === true`, not on the predicted precondition. [paths: extension/src/work-driver-verify-verify-cmd.ts]
+- `d4`: On the flake-RECOVERED path, record the per-worktree failure evidence in notes and the shared/not-shared outcome, so recovery is as observable as failure. [paths: extension/src/work-driver-verify-verify-cmd.ts]
+- `d5`: Delete the local `retryPrecondition` copy from `test-work-driver-verify-classify-retry.ts`; add `runVerifyCommandGate` cases with a counting fake `execFn`: shared-assertion single per-worktree failure → one retry; different-assertion → no retry (option a) and classification `consolidation-created`; zero per-worktree failures → unchanged #782 behaviour; N=1 → no retry; >800-char attributed-tail case exercising elision. [paths: extension/smoke-tests/test-work-driver-verify-classify-retry.ts, extension/smoke-tests/test-work-driver-verify-flake.ts]
+
+**Acceptance criteria**
+
+- A genuine single-worktree defect with a different assertion does NOT trigger a second verify run (the counting fake `execFn` sees exactly 1 verify invocation, not 2).
+- A shared-assertion single per-worktree failure triggers exactly 1 re-run (counting fake sees 2 verify invocations).
+- The post-run annotation fires only when `cons.retried === true` — not on a predicted precondition that did not fire.
+- The recovered path records the per-worktree failure text in notes (not dropped).
+- The `sharesAssertion` function is exported and used at both the classifier and the retry gate; no inline `===` on extracted assertions survives.
+- The >800-char elided-tail case: the shared assertion is still detected (the `✗` line survives `extractAttributedTail` elision or is explicitly handled).
+- `runCommitPrConsolidatedVerify` behaviour is unchanged (its own inline `canRetry` with always-`{}` perWorktree map → unconditional retry on first run, N>1).
+- All existing offline smoke tests pass (no regressions).
+
+**Out of scope**
+
+- The `extractSpecificAssertion` priority rules themselves (they reviewed clean).
+- `verify-loop` output format, `extractAttributedTail` anchoring.
+- `test-cancel.ts` stability.
+
+**Assumptions**
+
+- Option (a) is chosen over option (b) (the issue's stated preference). The two-phase design is the path.
+- The `runConsolidatedVerify` `retry` interface may change from `canRetry: boolean` to a predicate or structured object; the existing `test-work-driver-verify-flake.ts` cases (recover / re-fail / canRetry:false) will be updated to match the new shape.
+- The `onRecover` callback signature may change to accept a structured object (per-worktree failure + shared/not-shared outcome) rather than a bare `evidenceTail` string.
+
+**Open questions**
+
+- None blocking.
+
+**Evidence**
+
+- `flakeRetryPrecondition` in `work-driver-verify-verify-cmd.ts` is length-only (no assertion comparison) — confirmed by reading the file at HEAD cd6cb5f.
+- `sharesAssertion` is private in `work-driver-consolidation-classify.ts` L177 (`consolidated.includes(per)`) — confirmed.
+- `test-work-driver-verify-classify-retry.ts` defines a local `retryPrecondition` (L80-91) and never imports `runVerifyCommandGate` — confirmed.
+- `runCommitPrConsolidatedVerify` has its own inline `canRetry` (first-run + N>1 + empty perWorktree map) — confirmed.
+- The post-run annotation in `work-driver-verify-verify-cmd.ts` is gated on the predicted `flakeRetryPrecondition`, not `cons.retried` — confirmed.
+
+## Rationale
+
+All defect claims from the retroactive lens review are confirmed live at HEAD. The intent is clear, well-scoped, and grounded in the code. Option (a) is the issue's stated preference and is the correct path: it matches #807's stated intent (a genuine single-worktree defect should not burn a second verify run) and removes the wasted full re-run. The two-phase design (length precondition admits first run; shared-assertion check after first-run failure) is the minimal change that achieves the goal. The work is well-sized for one cycle.
