@@ -18,7 +18,7 @@
  *   - edge cases (empty/empty, identical, trailing-newline-only diff)
  */
 
-import { unifiedDiff, toLines, DIFF_MAX_LINES } from "../src/agents-md-diff.ts";
+import { unifiedDiff, toLines, DIFF_MAX_LINES, DIFF_MAX_CELLS } from "../src/agents-md-diff.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -110,6 +110,22 @@ if (markerIdx !== -1) {
   assert(truncLines[markerIdx] === "… 2 more lines", `truncation: marker says 2 more lines (got ${JSON.stringify(truncLines[markerIdx])})`);
 } else {
   assert(false, `truncation: no marker found, got ${truncLines.length} lines`);
+}
+
+// ------------------------------------------------- oversized input guard
+
+// 3000 × 3000 = 9,000,000 cells > DIFF_MAX_CELLS: no LCS table is built, so
+// this must return an explicit marker almost instantly (a real 9M-cell pass
+// would take well over a second).
+{
+  const bigA = Array.from({ length: 3000 }, (_, i) => `a_${i}`).join("\n");
+  const bigB = Array.from({ length: 3000 }, (_, i) => `b_${i}`).join("\n");
+  const startedAt = Date.now();
+  const big = unifiedDiff(bigA, bigB);
+  const elapsed = Date.now() - startedAt;
+  assert(big === "… diff too large to render (3000 → 3000 lines)", `oversized: explicit marker line (got ${JSON.stringify(big)})`);
+  assert(elapsed < 1000, `oversized: returned in ${elapsed}ms (<1s, no table built)`);
+  assert(3000 * 3000 > DIFF_MAX_CELLS, "oversized: test inputs actually exceed the cell budget");
 }
 
 // ---------------------------------------------------------------- edge cases

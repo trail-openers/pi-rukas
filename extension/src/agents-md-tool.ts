@@ -251,13 +251,22 @@ function renderReport(result: VerbResult, file: string): string {
   }
   if (result.verb === "check") {
     const c = result.check;
-    if (!c) return lines.concat("error: no check result").join("\n");
-    if (c.findings.length === 0) return lines.concat("clean").join("\n");
+    if (!c) {
+      lines.push("error: no check result");
+      return lines.join("\n");
+    }
+    if (c.findings.length === 0) {
+      lines.push("clean");
+      return lines.join("\n");
+    }
     for (const f of c.findings) lines.push(`${f.kind}: ${f.message}`);
     return lines.join("\n");
   }
   const p = result.plan;
-  if (!p) return lines.concat("error: no plan result").join("\n");
+  if (!p) {
+    lines.push("error: no plan result");
+    return lines.join("\n");
+  }
   lines.push(p.wouldWrite ? "would write" : "no-op (already current)");
   lines.push(`managed: ${p.managedIds.join(", ")}`);
   lines.push(`target: ${file}`);

@@ -32,6 +32,14 @@
 export const DIFF_MAX_LINES = 200;
 
 /**
+ * Cell budget for the LCS table: if n·m exceeds this, the alignment is
+ * skipped and an explicit marker line is returned instead. Guards against
+ * quadratic memory/time on pathologically large inputs — a short explicit
+ * diff, never a silently truncated one.
+ */
+export const DIFF_MAX_CELLS = 4_000_000;
+
+/**
  * The one split rule both sides share. Empty text → zero lines; a trailing
  * newline is dropped so "a\nb\n" and "a\nb" are line-identical.
  */
@@ -46,26 +54,26 @@ type Op = { kind: "ctx" | "del" | "add"; line: string };
 
 /**
  * Align old/new line arrays into a flat op list via LCS. The LCS table is
- * O(n·m) — fine at AGENTS.md size.
+ * O(n·m) — fine at AGENTS.md size. Returns undefined when the input pair
+ * exceeds DIFF_MAX_CELLS: the caller renders an explicit marker instead of
+ * allocating a table it cannot afford.
  */
-function align(a: string[], b: string[]): Op[] {
+function align(a: string[], b: string[]): Op[] | undefined {
   const n = a.length;
   const m = b.length;
-  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
-  const cell = (row: number[] | undefined, j: number): number => {
-    if (row === undefined) return 0;
-    const v = row[j];
+  if (n * m > DIFF_MAX_CELLS) return undefined;
+  const dp = new Int32Array((n + 1) * (m + 1));
+  const at = (i: number, j: number): number => {
+    const v = dp[i * (m + 1) + j];
     return typeof v === "number" ? v : 0;
   };
   for (let i = n - 1; i >= 0; i--) {
-    const row = dp[i];
-    const next = dp[i + 1];
-    if (row === undefined || next === undefined) continue;
+    const ai = a[i];
     for (let j = m - 1; j >= 0; j--) {
-      const ai = a[i];
       const bj = b[j];
       if (ai !== undefined && bj !== undefined) {
-        row[j] = ai === bj ? cell(next, j + 1) + 1 : Math.max(cell(next, j), cell(row, j + 1));
+        dp[i * (m + 1) + j] =
+          ai === bj ? at(i + 1, j + 1) + 1 : Math.max(at(i + 1, j), at(i, j + 1));
       }
     }
   }
@@ -79,7 +87,7 @@ function align(a: string[], b: string[]): Op[] {
       ops.push({ kind: "ctx", line: ai });
       i++;
       j++;
-    } else if (cell(dp[i + 1], j) >= cell(dp[i], j + 1)) {
+    } else if (at(i + 1, j) >= at(i, j + 1)) {
       if (ai !== undefined) ops.push({ kind: "del", line: ai });
       i++;
     } else {
@@ -112,6 +120,9 @@ export function unifiedDiff(oldText: string, newText: string): string {
   const a = toLines(oldText);
   const b = toLines(newText);
   const ops = align(a, b);
+  if (ops === undefined) {
+    return `… diff too large to render (${a.length} → ${b.length} lines)`;
+  }
   if (!ops.some((o) => o.kind !== "ctx")) return "";
 
   // A change run is a maximal run of consecutive non-ctx ops.
@@ -127,9 +138,7 @@ export function unifiedDiff(oldText: string, newText: string): string {
 
   // Hunk for each change: one context line on each side, clamped to the op
   // list. Consecutive changes whose context windows touch or overlap merge
-  // into one hunk. `consumed` is the cursor — the first op index not yet
-  // rendered — so the truncation remainder counts every unrendered op
-  // exactly once.
+  // into one hunk.
   const out: string[] = [];
   let consumed = 0;
   for (let ci = 0; ci < changes.length; ci++) {
@@ -143,23 +152,19 @@ export function unifiedDiff(oldText: string, newText: string): string {
       if (nxt.start <= hunkEnd) hunkEnd = Math.min(ops.length - 1, nxt.end + 1);
       else break;
     }
-    if (out.length >= DIFF_MAX_LINES) {
-      out.push(`… ${ops.length - consumed} more lines`);
-      break;
-    }
-    let lastRendered = hunkStart - 1;
-    for (let t = hunkStart; t <= hunkEnd && out.length < DIFF_MAX_LINES; t++) {
+    let t = hunkStart;
+    for (; t <= hunkEnd && out.length < DIFF_MAX_LINES; t++) {
       const o = ops[t];
       if (o === undefined) break;
       out.push(`${opPrefix(o.kind)}${o.line}`);
-      lastRendered = t;
     }
-    if (out.length >= DIFF_MAX_LINES) {
-      const remaining = ops.length - (lastRendered + 1);
-      if (remaining > 0) out.push(`… ${remaining} more lines`);
-      break;
+    if (t < ops.length && out.length < DIFF_MAX_LINES) {
+      consumed = hunkEnd + 1;
+      continue;
     }
-    consumed = hunkEnd + 1;
+    const remaining = ops.length - t;
+    if (remaining > 0) out.push(`… ${remaining} more lines`);
+    break;
   }
   return out.join("\n");
 }
