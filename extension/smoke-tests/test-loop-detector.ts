@@ -26,6 +26,7 @@ import type { LoopDetectionEvent, LoopDetector } from "../src/loop-detector.ts";
 import type { PiContentBlock } from "../src/pi-event-shapes.ts";
 import { createCapSession } from "../src/spawn-caps.ts";
 import { capKillGraceMs } from "../src/spawn-support.ts";
+import { pollUntilKilled } from "./lib/poll-until-killed.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -258,7 +259,9 @@ const STEER_BASH_5 =
   const child = fakeChild();
   const steers: string[] = [];
   let s: ReturnType<typeof createCapSession>;
-  withEnv({ PI_ENSEMBLE_CAP_KILL_GRACE_MS: "1000" }, async () => {
+  const savedGrace = process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS;
+  process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS = "1000";
+  try {
     assert(capKillGraceMs() === 1000, "F1(g): grace=1000ms read");
     s = createCapSession({
       role: "developer",
@@ -273,14 +276,18 @@ const STEER_BASH_5 =
     });
     // biome-ignore lint/style/noNonNullAssertion: caps are on by default in this test scope; the observer is defined
     const obs = s.loopObserver!;
+    // Lower bound on the arm time (captured before the arming loop).
+    const gArmedAt = Date.now();
     for (let t = 0; t < 10; t++) obs([bash('rg "needle" src/ --line-number')], t);
     eq(steers, [STEER_BASH_5], "F1(g): exact steer text at count 5");
     assert(!s.loopKilled(), "F1(g): kill DEFERRED during grace");
     eq(child.killed, [], "F1(g): no signal before grace");
-    await new Promise((r) => setTimeout(r, 2000));
-    if (!s.loopKilled()) {
-      await new Promise((r) => setTimeout(r, 1000));
-    }
+    const gFired = await pollUntilKilled(s, 1000);
+    assert(gFired.ok, `F1(g): kill fires (kill did not fire within ${1000 + 5000} ms of polling)`);
+    assert(
+      gFired.at >= gArmedAt + 1000,
+      `F1(g): kill fires after the grace window (kill at ${gFired.at - gArmedAt}ms vs grace 1000ms)`,
+    );
     eq(child.killed, ["SIGTERM"], "F1(g): kill fired (grace window elapsed)");
     assert(s.killCause() === "loop", "F1(g): killCause='loop'");
     const ev = s.loopEvidence();
@@ -289,7 +296,10 @@ const STEER_BASH_5 =
       `F1(g): evidence carries tool+count (got ${JSON.stringify(ev)})`,
     );
     s.cleanup();
-  });
+  } finally {
+    if (savedGrace === undefined) delete process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS;
+    else process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS = savedGrace;
+  }
 }
 {
   const child = fakeChild();

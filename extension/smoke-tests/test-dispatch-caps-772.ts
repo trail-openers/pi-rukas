@@ -5,6 +5,7 @@
  * Moved verbatim from test-dispatch-caps.ts (file-size split).
  */
 
+import { pollUntilKilled } from "./lib/poll-until-killed.ts";
 import { createCapSession } from "../src/spawn-caps.ts";
 
 let exit = 0;
@@ -42,6 +43,10 @@ function assert(cond: boolean, msg: string) {
       capKillGraceMs: 2000,
       childExited: () => false,
     });
+    // Lower bound on the arm time (captured before the arming loop): the
+    // 500 ms poll tick is not aligned to arming, so measuring after the arm
+    // can overstate it; a lower bound still catches a grace-0 regression.
+    const armedAt = Date.now();
     const green = "All tests passed in 0.8s";
     // 7 identical green re-issues (kill at 6), each interleaved with a
     // distinct read (non-adjacent — the streak counter cannot see this shape).
@@ -73,11 +78,16 @@ function assert(cond: boolean, msg: string) {
       !session.loopKilled() || session.killCause() === "loop",
       "#772: kill either deferred (grace) or fired (race)",
     );
-    // If the grace window is still open, wait for it to elapse.
-    if (!session.loopKilled()) {
-      await new Promise((r) => setTimeout(r, 2400));
-    }
-    assert(session.loopKilled(), "#772: success-keyed kill fires after the grace window");
+    // Poll until the 500 ms grace poll in spawn-caps.ts fires the kill
+    // (the kill lands in [grace, grace + tick]; a fixed sleep raced it on
+    // slow runners — #846). The clock check below still proves the kill
+    // fired AFTER the grace window, not before.
+    const fired = await pollUntilKilled(session, 2000);
+    assert(fired.ok, `#772: success-keyed kill fires (kill did not fire within ${2000 + 5000} ms of polling)`);
+    assert(
+      fired.at >= armedAt + 2000,
+      `#772: success-keyed kill fires after the grace window (kill at ${fired.at - armedAt}ms vs grace 2000ms)`,
+    );
     assert(
       session.loopEvidence()?.kind === "success",
       "#772: loopEvidence kind:success (typed kill)",
