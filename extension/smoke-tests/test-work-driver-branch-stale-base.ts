@@ -329,6 +329,48 @@ try {
       assert(stdout.trim() === aheadSha, "the ahead branch's tip is unchanged (nothing was reset)");
     }
   }
+
+  // ----------------------------------------------------------------
+  // 9. handoff-consolidate (PM decision 0/1): stale local branch +
+  //    fresh-base workstream worktree → the existing local branch is
+  //    reset to the freshly-fetched origin/main before the pick, so the
+  //    consolidated merge-base equals origin/main, not the stale tip.
+  // ----------------------------------------------------------------
+  {
+    const { repo, firstSha, advanceOrigin } = await fixture("handoff-stale");
+    await git(repo, ["branch", BRANCH, firstSha]);
+    const newSha = await advanceOrigin("handoff-advance\n", "main advances again");
+    // A workstream worktree with one commit on the FRESH base — the parked
+    // cycle's shape: work at newSha while the local branch is at firstSha.
+    const wt = path.join(repo, ".worktrees", "task-a-wt");
+    await git(repo, ["worktree", "add", "--detach", "-q", wt, newSha]);
+    writeFileSync(path.join(wt, "note.txt"), "consolidated work\n");
+    await git(wt, ["add", "-A"]);
+    await git(wt, ["commit", "-q", "-m", "workstream work"]);
+
+    const { reconcileHandoffConsolidateBranch } = await import(
+      "../src/work-driver-handoff-consolidate-branch.ts"
+    );
+    const resetFrom = await reconcileHandoffConsolidateBranch(realExec, repo, BRANCH);
+    assert(resetFrom === firstSha, `the stale local branch was force-moved to the freshly-fetched origin/main (old tip ${firstSha.slice(0, 8)} recorded)`);
+    {
+      const { stdout } = await git(repo, ["rev-parse", BRANCH]);
+      assert(stdout.trim() === newSha, "the stale local branch is now at the freshly-fetched origin/main");
+    }
+    {
+      const { stdout } = await git(repo, ["merge-base", `refs/heads/${BRANCH}`, newSha]);
+      assert(stdout.trim() === newSha, `the consolidated branch's merge-base equals origin/main (${newSha.slice(0, 8)}), not the stale tip`);
+    }
+    {
+      const { stdout } = await git(repo, ["status", "--porcelain"]);
+      const dirt = stdout.split("\n").filter((l) => l.trim() && !/^..\s+"?\.worktrees\//.test(l));
+      assert(
+        dirt.length === 0,
+        `repoRoot is clean after reconciliation (dirt: ${dirt.join(", ")})`,
+      );
+    }
+    await git(repo, ["worktree", "remove", "-f", wt]).catch(() => {});
+  }
 } finally {
   rmSync(rootBase, { recursive: true, force: true });
   try { rmSync(TITLE_ARTIFACT, { force: true }); } catch { /* ignore */ }

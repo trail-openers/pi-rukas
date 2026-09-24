@@ -51,6 +51,7 @@ import { type ForgeDetection, detectForge } from "./forge-detect.ts";
 import { createForge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.ts";
+import { reconcileHandoffConsolidateBranch } from "./work-driver-handoff-consolidate-branch.ts";
 import { deriveConsolidationSubject } from "./work-driver-handoff-subject.ts";
 import { withIntegrationLock } from "./work-driver-integrate.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
@@ -223,6 +224,14 @@ export async function consolidateWorktreesToBranch(
             })
           ).stdout.trim(),
         );
+      // #844 — PM decision 1: the single-predicate stale-branch
+      // reconciliation for the follow-up mode (a plain `git checkout
+      // <branch>` below would cherry-pick onto whatever tip the existing
+      // local branch holds — the #830 mechanism; see the sibling
+      // work-driver-handoff-consolidate-branch.ts for the full rationale).
+      if (mode !== "create" && ps.baseSha) {
+        await reconcileHandoffConsolidateBranch(execFn, ctx.repoRoot, branchName);
+      }
       if (mode === "create") {
         // No local branch and no baseSha — cannot create at a known commit;
         // degrade to the accurate-worktree fallback.
