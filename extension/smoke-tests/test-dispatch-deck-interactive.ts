@@ -293,7 +293,9 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
         key: string,
         content: string[] | ((...args: unknown[]) => unknown) | undefined,
         options?: { placement?: string },
-      ) => { calls.push({ key, content, options }); },
+      ) => {
+        calls.push({ key, content, options });
+      },
       setStatus: (_key: string, _text: string | undefined) => {},
     },
   } as unknown as Parameters<typeof attach>[0];
