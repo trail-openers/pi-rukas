@@ -302,14 +302,19 @@ export async function runVerifyCommandGate(opts: {
         `flake re-run WITHHELD — workstream '${singlePerWs}' failed with assertion (${singlePerAssertion}) while the consolidated first run failed on a different assertion, so a single re-run was suppressed as likely masking a genuine defect${boundedPer ? ` — per-worktree evidence: ${boundedPer}` : ""}`,
       );
     }
-    // #841 — the classifier reads the raw verify tail, NOT the full
-    // `cons.detail` (which now carries the log path + restore claim).
-    // Stripping the `Raw output:` clause keeps the classifier's input
-    // identical to pre-#841: the bounded 800-char tail with no appended
-    // file path that could theoretically match an assertion pattern.
-    const classifierInput = cons.detail
-      .replace(/ Raw output: \S+\.?/g, "")
-      .replace(/ Raw output: unavailable\./g, "");
+    // #841 — the classifier reads the bounded tail of the RAW verify
+    // failure, NOT `cons.detail` (which now carries the log path + restore
+    // claim). The raw stream is carried structurally on the result
+    // (`rawFailure`) instead of being regexed out of the detail prose —
+    // the log path on the result is likewise spliced in without parsing.
+    const rawFailure = cons.rawFailure ?? "";
+    const { tail } = extractAttributedTail(rawFailure, 800);
+    const classifierInput =
+      tail.length > 0
+        ? tail
+        : rawFailure.length > 0
+          ? rawFailure
+          : "verify command exited non-zero";
     const verdict = classifyConsolidatedVerifyFailure(
       wsIds.length,
       wsIds,

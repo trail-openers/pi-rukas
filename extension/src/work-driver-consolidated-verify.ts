@@ -19,6 +19,7 @@ import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
 import {
   combinedExecFailureStream,
+  consolidatedVerifyLogName,
   rerunConsolidatedVerifyOnce,
   writeConsolidatedVerifyLog,
 } from "./work-driver-verify-flake.ts";
@@ -129,6 +130,14 @@ export async function runConsolidatedVerify(
        * is threaded here rather than regexed out of `detail`.
        */
       logPath?: string;
+      /**
+       * #841 — the RAW failure stream of the run that ended the run (the
+       * run2 raw stream when `retried === true`, the run1 raw stream
+       * otherwise), carried structurally so the caller's classifier reads
+       * the same shape a single-run failure reads — without parsing the
+       * log path / restore claim back out of `detail` prose.
+       */
+      rawFailure?: string;
     }
   // #725 — the caller distinguishes a genuine cherry-pick / patch-apply
   // conflict from a dirty-repoRoot preflight refusal via `kind`, not by
@@ -254,12 +263,11 @@ export async function runConsolidatedVerify(
     // carry the same value even if the flake retry fires milliseconds later.
     const runTimestamp = new Date().toISOString();
     let run1LogPath: string | undefined;
-    // #841 — computed directly (not regexed from run1LogPath) so the run2
-    // path is correct even when the run1 write failed.
-    const run2LogPath = path.join(
-      scratchDir,
-      `consolidated-verify-${runTimestamp.replace(/[:.]/g, "-")}-run2.log`,
-    );
+    // #841 — the run2 path is derived from the SAME helper that computes
+    // the run1 filename (one home for the name shape), so the pair cannot
+    // drift apart; it is computed here rather than from run1LogPath so it
+    // stays correct even when the run1 write failed.
+    const run2LogPath = path.join(scratchDir, consolidatedVerifyLogName(runTimestamp, 2));
     // Run the verify command against the combined tree.
     let verifyFailure: string | undefined;
     try {
@@ -285,6 +293,10 @@ export async function runConsolidatedVerify(
     let recovered = false;
     let retried = false;
     let retryDecision: ConsolidatedVerifyRetryDecision | undefined;
+    // #841 — the raw stream of the run that ended the run, carried
+    // structurally on the result (see the `rawFailure` field): run1 unless
+    // the re-run below replaces it.
+    let rawFailure: string | undefined = verifyFailure;
     if (verifyFailure !== undefined && retry?.canRetry) {
       const verdict = retry.onFirstFailure?.(verifyFailure);
       // One decision, one re-run: no callback (or no result from it) means
@@ -312,16 +324,18 @@ export async function runConsolidatedVerify(
         );
         if (secondTail === undefined) {
           recovered = true;
-          // #841 — on recovery the run2 log was written on the passing
-          // re-run (no raw stream to persist on a pass — the re-run
-          // succeeded, so its own log is a no-op by contract); run1's log
-          // is the only record of the transient failure and is what the
-          // caller surfaces in the recovery note.
+          // #841 — on recovery the run2 re-run passed, so it persisted no
+          // log of its own (a pass has no raw stream); run1's log is the
+          // only record of the transient failure and is what the caller
+          // surfaces in the recovery note.
         } else {
-          // #841 — the re-run also failed; the run2 log was written inside
-          // `rerunConsolidatedVerifyOnce` (same scratchDir + timestamp +
-          // run=2, so the path is the one computed above).
+          // #841 — the re-run also failed; `rerunConsolidatedVerifyOnce`
+          // returned its RAW stream (not the bounded tail) so the
+          // classification below sees the same shape a single-run failure
+          // sees, and the run2 log was written inside the helper (same
+          // scratchDir + timestamp + run=2 — the path computed above).
           verifyFailure = secondTail;
+          rawFailure = secondTail;
         }
       }
     }
@@ -372,6 +386,7 @@ export async function runConsolidatedVerify(
         recovered: false,
         retryDecision,
         logPath: finalLogPath,
+        rawFailure,
       };
     }
     if (!restore.restored) {

@@ -26,21 +26,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { trace } from "./trace.ts";
-import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import type { ExecFn } from "./worktree.ts";
 
-/**
- * Re-run `cmd` once in `cwd` (the SAME consolidated tree the first run ran
- * in — the caller must not restore in between). Returns the bounded,
- * attributed failure tail of the re-run when it fails (the caller classifies
- * that tail exactly as it would a single-run failure), or `undefined` when
- * the re-run passed (a flake — the caller proceeds).
- *
- * A re-run that errors in an unexpected way (a git error, an executor crash)
- * reports failure with a best-effort tail: a second run that is not a
- * clean pass is not evidence of recovery, so the cycle parks as if the
- * single run had failed.
- */
 /**
  * #841 — the combined raw failure stream for a single consolidated verify
  * run. The pre-#841 shape used `e.stderr || e.stdout || e.message`, which
@@ -75,16 +62,38 @@ export function combinedExecFailureStream(e: Error & { stderr?: string; stdout?:
  * same prefix, different suffix), so the caller computes it once per run
  * pair and threads it through.
  */
+/**
+ * #841 — the log filename for one consolidated verify run, relative to
+ * `scratchDir`. Single home for the name shape so the run1 and run2 paths
+ * (and the truncation cap below) cannot drift apart.
+ */
+export function consolidatedVerifyLogName(timestamp: string, run: 1 | 2): string {
+  return `consolidated-verify-${timestamp.replace(/[:.]/g, "-")}-run${run}.log`;
+}
+
+// #841 — bound on a persisted run log. The raw stream can be large (the
+// 8 MiB maxBuffer), and the log is diagnostic, not load-bearing: past the
+// cap the operator still has the bounded tail in the evidence, so truncate
+// with a marker instead of writing multi-MB scratch files.
+const VERIFY_LOG_MAX_BYTES = 2 * 1024 * 1024;
+
+// #841 — apply the size cap to a raw run stream before it is persisted.
+function boundVerifyLog(raw: string): string {
+  if (Buffer.byteLength(raw, "utf8") <= VERIFY_LOG_MAX_BYTES) return raw;
+  const marker = "\n…[truncated — full output exceeded the 2 MiB log cap]\n";
+  const max = VERIFY_LOG_MAX_BYTES - Buffer.byteLength(marker, "utf8");
+  let out = raw;
+  while (Buffer.byteLength(out, "utf8") > max) out = out.slice(0, Math.floor(out.length / 2));
+  return out + marker;
+}
+
 export function writeConsolidatedVerifyLog(
   scratchDir: string,
   timestamp: string,
   run: 1 | 2,
   raw: string,
 ): string | undefined {
-  const file = path.join(
-    scratchDir,
-    `consolidated-verify-${timestamp.replace(/[:.]/g, "-")}-run${run}.log`,
-  );
+  const file = path.join(scratchDir, consolidatedVerifyLogName(timestamp, run));
   try {
     // mkdirSync(recursive) is idempotent — scratchDir is created elsewhere
     // at cycle start (the #750 precedent in work-driver-restore.ts uses the
@@ -92,7 +101,7 @@ export function writeConsolidatedVerifyLog(
     // writes. Failure here is caught below: a log-write error never changes
     // the verify outcome.
     mkdirSync(scratchDir, { recursive: true });
-    writeFileSync(file, raw, "utf8");
+    writeFileSync(file, boundVerifyLog(raw), "utf8");
     trace(`work-driver: consolidated verify — run${run} log written to ${file}`);
     return file;
   } catch (err) {
@@ -103,6 +112,22 @@ export function writeConsolidatedVerifyLog(
   }
 }
 
+/**
+ * Re-run `cmd` once in `cwd` (the SAME consolidated tree the first run ran
+ * in — the caller must not restore in between). Returns the RAW failure
+ * stream of the re-run when it fails (the caller extracts the bounded,
+ * attributed tail from it exactly as it would for a single-run failure),
+ * or `undefined` when the re-run passed (a flake — the caller proceeds).
+ *
+ * A re-run that errors in an unexpected way (a git error, an executor crash)
+ * reports failure with a best-effort stream: a second run that is not a
+ * clean pass is not evidence of recovery, so the cycle parks as if the
+ * single run had failed.
+ *
+ * #841 — the re-run PERSISTS its raw stream (run2 log) when `scratchDir` +
+ * `timestamp` are provided, and RETURNS the raw stream (not the bounded
+ * tail) so the caller classifies it structurally instead of parsing prose.
+ */
 export async function rerunConsolidatedVerifyOnce(
   execFn: NonNullable<ExecFn>,
   cmd: string,
@@ -127,6 +152,5 @@ export async function rerunConsolidatedVerifyOnce(
   if (scratchDir !== undefined && timestamp !== undefined) {
     writeConsolidatedVerifyLog(scratchDir, timestamp, 2, rawFailure);
   }
-  const { tail } = extractAttributedTail(rawFailure, 800);
-  return tail || rawFailure || "verify command exited non-zero";
+  return rawFailure;
 }
