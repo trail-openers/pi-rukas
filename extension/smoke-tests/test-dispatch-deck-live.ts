@@ -22,6 +22,7 @@
  * row WITHOUT a buffer opens the steer prompt directly (no custom call).
  */
 
+import { onRowConfirm } from "../src/dispatch-deck-confirm.ts";
 import {
   LIVE_RING_CAP,
   bufferCount,
@@ -33,7 +34,6 @@ import {
   startBuffer,
 } from "../src/dispatch-deck-live.ts";
 import { clearEntry, detach, reset, snapshot, startEntry } from "../src/dispatch-deck.ts";
-import { onRowConfirm } from "../src/dispatch-deck-confirm.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -62,7 +62,10 @@ function resetBuffers(): void {
     });
   }
   const buf = getBuffer("b1");
-  assert(buf.length === LIVE_RING_CAP, `1a: 201 events → ring holds exactly ${LIVE_RING_CAP} (got ${buf.length})`);
+  assert(
+    buf.length === LIVE_RING_CAP,
+    `1a: 201 events → ring holds exactly ${LIVE_RING_CAP} (got ${buf.length})`,
+  );
   assert(buf[0]?.text === "msg-1", "1b: oldest (msg-0) evicted");
   assert(buf[199]?.text === "msg-200", "1c: newest (msg-200) present");
   dropBuffer("b1");
@@ -96,10 +99,16 @@ function resetBuffers(): void {
   });
   const buf = getBuffer("b2");
   assert(buf.length === 3, `2a: three events buffered (got ${buf.length})`);
-  assert(buf[0]?.kind === "text" && buf[0].text === "investigating the failure", "2b: assistant text buffered");
+  assert(
+    buf[0]?.kind === "text" && buf[0].text === "investigating the failure",
+    "2b: assistant text buffered",
+  );
   assert(buf[1]?.kind === "toolCall" && buf[1].name === "bash", "2c: toolCall buffered with name");
   assert(buf[1]?.args.includes("cargo test --lib"), "2d: tool args stringified + trimmed");
-  assert(buf[2]?.kind === "toolResult" && buf[2].text === "test result: 12 passed, 0 failed", "2e: toolResult buffered");
+  assert(
+    buf[2]?.kind === "toolResult" && buf[2].text === "test result: 12 passed, 0 failed",
+    "2e: toolResult buffered",
+  );
   // toolResult with isError → marked
   feedRawEvent("b2", {
     type: "message",
@@ -144,7 +153,10 @@ function resetBuffers(): void {
   assert(buf[0]?.kind === "text" && buf[0].text.length <= 400, "2b-1: text truncated to ≤400");
   assert(buf[0].text.endsWith("…"), "2b-2: text has ellipsis");
   assert(buf[1]?.kind === "toolCall" && buf[1].args.length <= 240, "2b-3: args truncated to ≤240");
-  assert(buf[2]?.kind === "toolResult" && buf[2].text.length <= 200, "2b-4: result truncated to ≤200");
+  assert(
+    buf[2]?.kind === "toolResult" && buf[2].text.length <= 200,
+    "2b-4: result truncated to ≤200",
+  );
   dropBuffer("b3");
 }
 
@@ -161,7 +173,16 @@ function resetBuffers(): void {
   } as const;
   const comp = createLiveViewComponent(
     "b1",
-    () => ({ label: "developer", role: "developer", startedAt: Date.now(), now: Date.now(), turns: 1, toolUses: 1, totalTokens: 100, lastToolName: "bash" }),
+    () => ({
+      label: "developer",
+      role: "developer",
+      startedAt: Date.now(),
+      now: Date.now(),
+      turns: 1,
+      toolUses: 1,
+      totalTokens: 100,
+      lastToolName: "bash",
+    }),
     fakeTheme,
     (r) => doneResults.push(r),
   );
@@ -182,7 +203,12 @@ function resetBuffers(): void {
   comp.handleInput("\x1b");
   assert(doneResults.includes("close"), "3d: Esc → done('close')");
   // s → steer
-  const comp2 = createLiveViewComponent("b1", () => undefined, fakeTheme, (r) => doneResults.push(`steer-${r}`));
+  const comp2 = createLiveViewComponent(
+    "b1",
+    () => undefined,
+    fakeTheme,
+    (r) => doneResults.push(`steer-${r}`),
+  );
   comp2.handleInput("s");
   assert(doneResults.includes("steer-steer"), "3e: 's' → done('steer')");
   dropBuffer("b1");
@@ -202,7 +228,12 @@ function resetBuffers(): void {
   }
   const doneResults: string[] = [];
   const fakeTheme = { muted: (t: string) => t, error: (t: string) => t } as const;
-  const comp = createLiveViewComponent("b2", () => undefined, fakeTheme, (r) => doneResults.push(r));
+  const comp = createLiveViewComponent(
+    "b2",
+    () => undefined,
+    fakeTheme,
+    (r) => doneResults.push(r),
+  );
   // Initially following (offset 0): render shows the last 10 events.
   let flat = comp.render(80).join("\n");
   assert(flat.includes("line-9"), "4a: following shows the newest event");
@@ -225,6 +256,7 @@ function resetBuffers(): void {
 // ---------------------------------------------------------------------------
 // 5. Buffer freed on dropBuffer (clear).
 // ---------------------------------------------------------------------------
+// biome-ignore lint/complexity/noUselessLoneBlockStatements: fixture scope (shared `exit`/`assert` across the file)
 {
   resetBuffers();
   startBuffer("b1");
@@ -241,6 +273,7 @@ function resetBuffers(): void {
 // ---------------------------------------------------------------------------
 // 6. Quiet mode: no buffer created.
 // ---------------------------------------------------------------------------
+// biome-ignore lint/complexity/noUselessLoneBlockStatements: fixture scope (shared `exit`/`assert` across the file)
 {
   resetBuffers();
   process.env.PI_ENSEMBLE_QUIET_STATUS = "1";
@@ -251,7 +284,7 @@ function resetBuffers(): void {
     message: { role: "assistant", content: [{ type: "text", text: "x" }] },
   });
   assert(!hasBuffer("b1"), "6b: quiet mode → feedRawEvent is a no-op");
-  delete process.env.PI_ENSEMBLE_QUIET_STATUS;
+  process.env.PI_ENSEMBLE_QUIET_STATUS = undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -336,6 +369,56 @@ function rowHost() {
     getEntry: (k: string) => snapshot().find((e) => e.key === k),
     steer: (_k: string, _m: string) => {},
   };
+}
+
+// ---------------------------------------------------------------------------
+// 9. Exception safety: a throwing observer must not be swallowed — the
+//    #839 contract is that observers are cheap and non-throwing by
+//    construction, and the spawn line handler does NOT guard them (a throw
+//    surfaces through spawn, which is what this test pins down). We verify
+//    that `pushEvent` itself never throws on bounded inputs, and that the
+//    observer path in `feedRawEvent` is defensive (map lookup + pushEvent).
+// ---------------------------------------------------------------------------
+{
+  resetBuffers();
+  startBuffer("b9");
+  let threw = false;
+  try {
+    // Even a malformed / huge event must not throw from pushEvent.
+    feedRawEvent("b9", {
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "x".repeat(10_000) }] },
+    });
+  } catch {
+    threw = true;
+  }
+  assert(!threw, "9a: feedRawEvent does not throw on large input");
+  assert(getBuffer("b9")?.length === 1, "9b: one event buffered");
+  assert(
+    (getBuffer("b9")[0] as { text: string }).text.length <= 400,
+    "9c: truncation bounds the ring entry",
+  );
+  // Unknown event type is a no-op, never a throw.
+  let threwUnknown = false;
+  try {
+    feedRawEvent("b9", { type: "unknown_event", nonsense: true } as never);
+  } catch {
+    threwUnknown = true;
+  }
+  assert(!threwUnknown, "9d: unknown event type does not throw");
+  assert(getBuffer("b9")?.length === 1, "9e: unknown event not buffered");
+  dropBuffer("b9");
+  // Feed after drop is a no-op, never a throw.
+  let threwAfterDrop = false;
+  try {
+    feedRawEvent("b9", {
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "y" }] },
+    });
+  } catch {
+    threwAfterDrop = true;
+  }
+  assert(!threwAfterDrop, "9f: feed after drop is a no-op, never throws");
 }
 
 console.log(`\nexit ${exit}`);
