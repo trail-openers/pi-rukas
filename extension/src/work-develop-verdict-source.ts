@@ -24,12 +24,8 @@ import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 /** One line of the handoff's "Workstream verdicts" section. */
 export interface VerdictLine {
-  /** The workstream id (converged `verdicts[].id` or branch-completed `workstreamId`). */
-  id: string;
   /** True when the verdict is "ok"; false when it is a "FAIL …" line. */
   ok: boolean;
-  /** The failure attribution (e.g. the #814 fence reason) for a FAIL line; undefined for ok. */
-  reason?: string;
   /**
    * The verdict text shared by both handoff surfaces, without any list
    * prefix or indentation — the markdown renderer renders it as a list
@@ -39,9 +35,18 @@ export interface VerdictLine {
   text: string;
 }
 
-function renderVerdictLine(id: string, ok: boolean, reason?: string): string {
-  if (ok) return `${id}: ok`;
-  return reason ? `${id}: FAIL — ${reason}` : `${id}: FAIL`;
+/** One raw verdict before the id/ok/reason → line-text mapping. */
+interface RawVerdict {
+  id: string;
+  ok: boolean;
+  reason?: string;
+}
+
+function toLine({ id, ok, reason }: RawVerdict): VerdictLine {
+  return {
+    ok,
+    text: ok ? `${id}: ok` : reason ? `${id}: FAIL — ${reason}` : `${id}: FAIL`,
+  };
 }
 
 /**
@@ -53,33 +58,24 @@ function renderVerdictLine(id: string, ok: boolean, reason?: string): string {
  * `branch-completed` events (chronological log order).
  */
 export function developVerdictLines(state: WorkState): VerdictLine[] {
+  // One `{id, ok, reason}[]` source for both shapes, one mapping — the
+  // branches-converged source wins only when it is non-empty.
   const lastConverged = [...state.eventLog]
     .reverse()
     .find(
       (e): e is Extract<WorkEvent, { kind: "branches-converged" }> =>
         e.kind === "branches-converged" && e.step === "develop",
-    ) as Extract<WorkEvent, { kind: "branches-converged" }> | undefined;
-  if (lastConverged && lastConverged.verdicts.length > 0) {
-    return lastConverged.verdicts.map((v) => ({
-      id: v.id,
-      ok: v.ok,
-      reason: v.reason,
-      text: renderVerdictLine(v.id, v.ok, v.reason),
-    }));
-  }
-  return state.eventLog
-    .filter(
-      (e): e is Extract<WorkEvent, { kind: "branch-completed" }> => e.kind === "branch-completed",
-    )
-    .map((e) => {
-      // branch-completed carries no structured `reason` field — its `error`
-      // tail (truncated at the event) is the fallback attribution.
-      const reason = e.ok ? undefined : e.error;
-      return {
-        id: e.workstreamId,
-        ok: e.ok,
-        reason,
-        text: renderVerdictLine(e.workstreamId, e.ok, reason),
-      };
-    });
+    );
+  const raw: RawVerdict[] =
+    lastConverged && lastConverged.verdicts.length > 0
+      ? lastConverged.verdicts
+      : state.eventLog
+          .filter(
+            (e): e is Extract<WorkEvent, { kind: "branch-completed" }> =>
+              e.kind === "branch-completed",
+          )
+          // branch-completed carries no structured `reason` field — its `error`
+          // tail (truncated at the event) is the fallback attribution.
+          .map((e) => ({ id: e.workstreamId, ok: e.ok, reason: e.ok ? undefined : e.error }));
+  return raw.map(toLine);
 }
