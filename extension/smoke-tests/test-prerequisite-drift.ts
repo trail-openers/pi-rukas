@@ -42,6 +42,8 @@ const EXCEPTIONS: Record<string, string> = {
   // npm installs `parallel-web-cli`; the binary is `parallel-cli` (REQUIRED_CLIS).
   "parallel-web-cli":
     "npm package name — installs the `parallel-cli` binary already in REQUIRED_CLIS",
+  // #773: wigolo — optional /research fallback (Dockerfile + docs only, not a prerequisite).
+  "wigolo@0.2.1": "optional /research fallback (#773): baked into the image, documented in docs/configuration.md; not a required prerequisite",
 };
 
 let exit = 0;
@@ -237,9 +239,7 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
   assert(
     unknown.length === 0,
     `every Dockerfile global install is in REQUIRED_CLIS or EXCEPTIONS${
-      unknown.length
-        ? ` — unexplained: ${unknown.map((d) => `${d.name} (line ${d.line})`).join(", ")} (add to REQUIRED_CLIS, or to EXCEPTIONS with a reason)`
-        : ""
+      unknown.length ? ` — unexplained: ${unknown.map((d) => `${d.name} (line ${d.line})`).join(", ")} (add to REQUIRED_CLIS, or to EXCEPTIONS with a reason)` : ""
     }`,
   );
 }
@@ -464,7 +464,6 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
     fCmpDocker !== null && fCmpDocker > 0,
     "canary: above-floor Dockerfile pin is detected (above floor)",
   );
-
   // Unpinned forms must fail, not pass silently: a surface with no pi pin
   // anywhere parses to "" and the version gate asserts it is non-empty.
   const fUnpinned = parsePiFloors({ installSh: fixtureInstall, readme: "", dockerfile: "" });

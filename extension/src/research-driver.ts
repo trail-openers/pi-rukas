@@ -45,6 +45,15 @@ import {
   slugify,
   writeArtifact,
 } from "./research-artifact.ts";
+import {
+  type ParallelOutcome,
+  type WigoloSurface,
+  classifyParallelOutcome,
+  researchFallbackLine,
+  selectFallback,
+  surfaceForAngle,
+  wigoloAnglePrompt,
+} from "./research-fallback.ts";
 import { writeResearchMemory } from "./research-memory.ts";
 import {
   type AngleRun,
@@ -160,31 +169,104 @@ export async function runResearchPipeline(
       ? `PM has already established (DO NOT re-investigate; dig deeper instead):\n${renderPriorContext(priorContext)}\n${priorContextHasVipune(priorContext) ? `${VIPUNE_PRECEDENCE_NOTE}\n` : ""}\n`
       : "";
 
+  // Phase 2 prep — the dispatch-time fallback line (#773). Read HOST-side:
+  // unset = enabled, `0` = disabled. Never forwarded to the sandbox (the
+  // PI_ENSEMBLE_* pattern is blocklisted in bin/pi-rukas), so the explore
+  // recipe stays static and this single line is the only per-run difference.
+  const fallbackEnabled = process.env.PI_ENSEMBLE_RESEARCH_FALLBACK !== "0";
+  const fallbackLine = researchFallbackLine(fallbackEnabled);
+
   // Phase 2 — one parallel retrieval barrier. Fail-closed per angle: an
   // angle is ok only when the dispatch succeeded AND produced ≥1 structured
-  // claim (the plan driver's D8 rule).
+  // claim (the plan driver's D8 rule). A failed angle whose child classified
+  // the Parallel failure as retryable (credit/auth/network) is re-dispatched
+  // ONCE, wigolo-framed (#773) — never more, and never for an empty result.
   const angleSpecs = anglesForTier(tier, topic, codeIdentifiersIn(topic), input.angles);
+  const runAngle = async (
+    a: (typeof angleSpecs)[number],
+    backend: AngleRun["backend"],
+    reason: ParallelOutcome | undefined,
+  ): Promise<AngleRun & { fullText: string }> => {
+    const prompt =
+      backend === "parallel"
+        ? `${fallbackLine}${priorBlock}${a.prompt}`
+        : `${fallbackLine}${priorBlock}${wigoloAnglePrompt(a, surfaceForAngle(a.name), reason ?? "unparseable")}`;
+    let r: Awaited<ReturnType<ResearchDispatchFn>>;
+    try {
+      r = await dispatch(
+        pi,
+        { role: "explore", prompt, cwd: repoRoot },
+        {
+          label: `research-${a.name}`.slice(0, 24),
+          timeoutMs: RESEARCH_DISPATCH_TIMEOUT_MS,
+          extraArgs: RESEARCH_EXTRA_ARGS,
+        },
+      );
+    } catch (err) {
+      // A rejecting dispatch (or a throwing stub) must never sink the whole
+      // retrieval barrier — the angle stays failed and the other angles and
+      // the artifact survive it.
+      const msg = err instanceof Error ? err.message : String(err);
+      trace(`research-driver: dispatch rejected for ${a.name}: ${msg}`);
+      return {
+        name: a.name,
+        ok: false,
+        summary: `dispatch rejected: ${msg}`,
+        claims: [],
+        backend,
+        failure: msg,
+        fullText: `dispatch rejected: ${msg}`,
+      };
+    }
+    const claims = extractResearchClaims(r.toolUses, a.name);
+    const ok = r.ok && !r.errorStop && claims.length > 0;
+    return {
+      name: a.name,
+      ok,
+      summary: r.text.trim().slice(0, 500),
+      claims,
+      backend,
+      failure: ok
+        ? undefined
+        : !r.ok
+          ? "dispatch failed or timed out"
+          : r.errorStop
+            ? "provider error mid-stream"
+            : "returned no structured claims",
+      // The parallel-outcome:/backend: markers are the LAST lines of a
+      // reply — classification must see the full text, not the summary.
+      fullText: r.text,
+    };
+  };
   const angles: AngleRun[] = await timed("retrieve", () =>
     Promise.all(
-      angleSpecs.map((a) =>
-        dispatch(
-          pi,
-          { role: "explore", prompt: `${priorBlock}${a.prompt}`, cwd: repoRoot },
-          {
-            label: `research-${a.name}`.slice(0, 24),
-            timeoutMs: RESEARCH_DISPATCH_TIMEOUT_MS,
-            extraArgs: RESEARCH_EXTRA_ARGS,
-          },
-        ).then((r) => {
-          const claims = extractResearchClaims(r.toolUses, a.name);
-          return {
-            name: a.name,
-            ok: r.ok && !r.errorStop && claims.length > 0,
-            summary: r.text.trim().slice(0, 500),
-            claims,
-          };
-        }),
-      ),
+      angleSpecs.map(async (a) => {
+        let run = await runAngle(a, "parallel", undefined);
+        if (!run.ok && fallbackEnabled) {
+          // The markers sit at the END of the reply, so classify on the
+          // full text — a 500-char summary silently drops them.
+          const outcome: ParallelOutcome = classifyParallelOutcome(run.fullText);
+          const decision = selectFallback(outcome, surfaceForAngle(a.name), fallbackEnabled);
+          if (decision === "fall-back-to-wigolo") {
+            // Re-dispatch ONCE: a second failure is not retried — the angle
+            // stays failed and its summary carries both attempts' text.
+            const retry = await runAngle(a, "wigolo", outcome);
+            const merged = retry.ok
+              ? `${run.summary}\n[wigolo fallback: ${retry.summary}]`
+              : `${run.summary}\n[wigolo fallback failed: ${classifyParallelOutcome(retry.fullText)}]`;
+            run = {
+              ...retry,
+              fullText: retry.fullText,
+              summary: merged.length > 500 ? `${merged.slice(0, 500)}…` : merged,
+            };
+          } else {
+            run.summary =
+              `${run.summary}\n[parallel-outcome: ${outcome}; decision: ${decision}]`.slice(0, 500);
+          }
+        }
+        const { fullText: _fullText, ...bare } = run;
+        return bare;
+      }),
     ),
   );
 

@@ -155,6 +155,20 @@ RUN curl -fsSL https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/ma
 # `|| true` is preserved so a transient GitHub outage doesn't break the build.
 RUN npm install -g parallel-web-cli || true
 
+# wigolo — keyless local web-intelligence CLI; the /research fallback when
+# parallel-cli fails with credit-exhausted / auth-missing / network-failed
+# (#773). One-shot tools used here: search / fetch / research run.
+# Unlike parallel-web-cli (whose postinstall downloads a platform binary),
+# wigolo@0.2.1 ships NO install scripts — only build/test/lint dev scripts —
+# so --ignore-scripts is safe and keeps the supply-chain posture of the rest
+# of this image. Node >= 20 (the image carries Node 22). Its ~1.5 GB browser
+# engine downloads lazily on first use, so the image stays small. Soft-fail
+# like parallel-cli above: an upstream npm hiccup must not break the build,
+# and the fallback is optional by definition.
+# `|| true` preserved for the same reason as the parallel-cli line.
+# The ~1.5 GB engine is fetched lazily at runtime by wigolo itself, unpinned and without a checksum — accepted because wigolo is an optional fallback that runs only after a Parallel failure; revisit if wigolo becomes primary.
+RUN npm install -g --ignore-scripts wigolo@0.2.1 || true
+
 # -----------------------------------------------------------------------------
 # 6. Copy pi-rukas repo + run install.sh
 #    Layout chosen so the repo is read-only image content; user state lives
