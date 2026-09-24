@@ -105,6 +105,15 @@ function keyFragmentAt(key: string, prefix: number): string {
  * repeating until every description is distinct or the prefix reaches
  * the full key length (rendered in full, no ellipsis). Entries whose
  * 10-char fragment is already unique keep the exact current output.
+ *
+ * Only 2nd+ occurrences in a colliding group lengthen: the first keeps
+ * the 10-char form while later ones grow by 1, 2, … — always distinct
+ * and all still starting with the 10-char fragment. The loop is
+ * bounded: a pass in which no bumpable prefix can change makes further
+ * lengthening impossible (duplicates can only persist at this point),
+ * so it exits with the fragments as-is — duplicate keys ≤10 chars
+ * render verbatim and identical, where the label and value columns
+ * still disambiguate.
  */
 function distinctKeyFragments(keys: string[]): string[] {
   const n = keys.length;
@@ -119,11 +128,16 @@ function distinctKeyFragments(keys: string[]): string[] {
       seen.add(frag);
     }
     if (bumped.size === 0) return fragments;
+    let changed = false;
     for (const i of bumped) {
       const key = keys[i] ?? "";
       const cur = prefix[i] ?? key.length;
-      if (cur < key.length) prefix[i] = cur + 1;
+      if (cur < key.length) {
+        prefix[i] = cur + 1;
+        changed = true;
+      }
     }
+    if (!changed) return fragments;
   }
 }
 

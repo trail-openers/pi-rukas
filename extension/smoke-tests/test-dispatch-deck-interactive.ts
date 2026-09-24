@@ -47,12 +47,11 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   return { ...base, ...opts, usage: { ...base.usage, ...(opts.usage ?? {}) } };
 }
 
-// #835 fixtures: one developer-role entry per key, identical start time so
-// only the description column differs between same-role rows.
+// #835 fixtures: one developer-role entry per key, distinct seq/label so labels differ.
 function mkJobs(keys: string[], now: number): DeckEntry[] {
   return keys.map((key, i) => ({
     key,
-    label: "developer[task-A]",
+    label: `developer[task-${i}]`,
     seq: i,
     startedAt: now - 134_000,
     state: makeState("developer", { lastToolName: "bash", toolUses: 7, lastEventAt: now - 1000 }),
@@ -69,10 +68,7 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
 
 // 2. parseDeckValue rejects malformed values cleanly.
 {
-  assert(
-    parseDeckValue("no-prefix") === undefined,
-    "parseDeckValue: no prefix → undefined",
-  );
+  assert(parseDeckValue("no-prefix") === undefined, "parseDeckValue: no prefix → undefined");
   assert(
     parseDeckValue("deck::") === undefined,
     "parseDeckValue: empty key after prefix → undefined",
@@ -107,10 +103,7 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
   assert(items[0]?.key === "a", "first item is entry 'a' (insertion order)");
   assert(items[1]?.key === "b", "second item is entry 'b'");
   assert(items[2]?.key === DECK_PROMPT_CANCEL_KEY, "last item is the cancel sentinel");
-  assert(
-    items[2]?.label === "── cancel ──",
-    "cancel sentinel has the expected label",
-  );
+  assert(items[2]?.label === "── cancel ──", "cancel sentinel has the expected label");
 }
 
 // 4. #742 — the SelectList is the sole per-job surface: each item label is
@@ -148,7 +141,10 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
     (items[0]?.description ?? "").length >= 1,
     "description carries a job-key fragment for same-role disambiguation",
   );
-  assert(items[0]?.description === "x", "≤10-char key 'x' renders verbatim (no 'key ' prefix, no ellipsis)");
+  assert(
+    items[0]?.description === "x",
+    "≤10-char key 'x' renders verbatim (no 'key ' prefix, no ellipsis)",
+  );
 }
 
 // 4b. Multiple entries — each label matches its own formatRow line, and
@@ -189,55 +185,36 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
   );
 }
 
-// 4c. #835 truncation-boundary collision, fixed: two same-role jobs whose
-// keys are BOTH >10 chars and share the first 10 chars now render
-// DISTINCT descriptions — the colliding group's prefix lengthens until
-// every row's description is unique. Both still start with the 10-char
-// fragment; neither is pinned to the 10-char form (the lengthening fixes
-// it). The old equality assertion is REPLACED by this distinctness one.
+// 4c. #835 collision fix: same-role jobs whose keys are BOTH >10 chars and share the first 10 chars
+// now render DISTINCT descriptions (prefix lengthens until unique). 4d/4e/4f below.
 {
   const now = 4_500_000;
   const items = buildDeckItems(mkJobs(["aaaaaaaaaaa1", "aaaaaaaaaaa2"], now), now);
   const d0 = items[0]?.description ?? "";
   const d1 = items[1]?.description ?? "";
-  assert(d0 !== d1, `truncation-boundary collision resolved (distinct: '${d0}' vs '${d1}')`);
-  assert(d0.startsWith("key aaaaaaaaaa"), "first colliding key still starts with 'key aaaaaaaaaa'");
-  assert(d1.startsWith("key aaaaaaaaaa"), "second colliding key still starts with 'key aaaaaaaaaa'");
-  assert(
-    items[0]?.label !== items[1]?.label || items[0]?.value !== items[1]?.value,
-    "labels/values still distinguish same-prefix keys",
-  );
+  const ok = d0 !== d1 && d0.startsWith("key aaaaaaaaaa") && d1.startsWith("key aaaaaaaaaa");
+  assert(ok && items[0]?.label !== items[1]?.label, `resolved: distinct fragments ${d0} vs ${d1}`);
 }
 
-// 4d. #835 fragment rules — the non-colliding and short-key paths keep
-// the exact current output: a >10-char key whose 10-char fragment is
-// unique renders byte-identical to today; a ≤10-char key renders
-// verbatim with no "key " prefix and no ellipsis.
-{
-  const now = 4_600_000;
-  const single = buildDeckItems(mkJobs(["z0z0z0z0z1z9"], now), now);
-  const got = single[0]?.description ?? "";
-  assert(got === "key z0z0z0z0z1…", `unique 10-char fragment renders byte-identical to today (got '${got}')`);
-  const short = buildDeckItems(mkJobs(["x"], now), now);
-  assert(short[0]?.description === "x", "≤10-char key renders verbatim with no 'key ' prefix and no ellipsis");
-}
-
-// 4e. #835 adversarial distinctness — three keys sharing their first 13
-// chars (15-char fixtures) yield three pairwise-distinct descriptions,
-// and every row's key/value is unchanged so parseDeckValue routing is
-// unaffected.
+// 4d/4e/4f. #835 — 4d: non-colliding + short-key paths keep today's output; 4e: three keys sharing
+// 13 chars yield distinct descriptions; 4f: IDENTICAL keys (≤10 chars) force no-progress termination.
 {
   const now = 4_700_000;
-  // 15-char keys sharing the first 13 chars.
+  const u4 = buildDeckItems(mkJobs(["z0z0z0z0z1z9"], now), now)[0]?.description ?? "";
+  const u5 = buildDeckItems(mkJobs(["x"], now), now)[0]?.description ?? "";
+  const u4ok = u4 === "key z0z0z0z0z1…" && u5 === "x";
+  assert(u4ok, "4d: unique fragment unchanged; ≤10-char key verbatim (no prefix, no ellipsis)");
   const keys = ["abcdefghijklm1x", "abcdefghijklm2x", "abcdefghijklm3x"];
-  const items = buildDeckItems(mkJobs(keys, now), now);
-  const jobItems = items.slice(0, keys.length);
-  const descs = jobItems.map((it) => it?.description ?? "");
-  assert(new Set(descs).size === keys.length, `3 keys sharing 13 chars → 3 distinct descriptions (${descs.join(" / ")})`);
-  assert(
-    jobItems.every((it, i) => it.key === keys[i] && it.value === encodeDeckValue(keys[i] ?? "")),
-    "key/value columns unchanged for colliding keys (parseDeckValue routing safe)",
-  );
+  const items4 = buildDeckItems(mkJobs(keys, now), now).slice(0, keys.length);
+  const ok4 =
+    new Set(items4.map((it) => it?.description ?? "")).size === keys.length &&
+    items4.every((it, i) => it.key === keys[i] && it.value === encodeDeckValue(keys[i] ?? ""));
+  assert(ok4, "4e: 3 keys sharing 13 chars → distinct; key/value columns unchanged (routing safe)");
+  // 4f: unresolvable duplicates must terminate and keep the label column distinct.
+  const dup = buildDeckItems(mkJobs(["abc", "abc"], now), now);
+  const dupOk = dup.length === 3 && dup[0]?.description === dup[1]?.description;
+  const dupMsg = "4f: duplicates terminate — same fragment, distinct labels, values correct";
+  assert(dupOk && dup[0]?.label !== dup[1]?.label && dup[0]?.value === dup[1]?.value, dupMsg);
 }
 
 // 5. DeckItem.value round-trips through parseDeckValue.
@@ -281,18 +258,14 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
   );
 }
 
-// 7. DECK_PROMPT_STEER_SOURCE constant is 'deck-ui'.
+// 7. DECK_PROMPT_STEER_SOURCE constant is 'deck-ui' (new SteerSource member).
 {
-  assert(
-    DECK_PROMPT_STEER_SOURCE === "deck-ui",
-    "DECK_PROMPT_STEER_SOURCE is 'deck-ui' (new SteerSource member)",
-  );
+  assert(DECK_PROMPT_STEER_SOURCE === "deck-ui", "DECK_PROMPT_STEER_SOURCE is 'deck-ui'");
 }
 
-// 8. #729 ONE-KEY INVARIANT: setWidget is called with EXACTLY ONE key
-// ("ensemble:deck") across the full attach→startEntry→render→clearEntry→
-// render cycle. A second ensemble-owned key (e.g. a resurrected
-// DECK_PROMPT_KEY) fails this test.
+// 8. #729 ONE-KEY INVARIANT: setWidget is called with EXACTLY ONE key ("ensemble:deck")
+// across the full attach→startEntry→render→clearEntry→render cycle. A second
+// ensemble-owned key (e.g. a resurrected DECK_PROMPT_KEY) fails this test.
 {
   reset();
   const calls: Array<{
@@ -319,17 +292,12 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
   await new Promise((r) => setImmediate(r));
 
   // Collect all DISTINCT keys that received non-undefined content.
-  const nonUndefinedKeys = new Set(
-    calls.filter((c) => c.content !== undefined).map((c) => c.key),
-  );
+  const nonUndefinedKeys = new Set(calls.filter((c) => c.content !== undefined).map((c) => c.key));
   assert(
     nonUndefinedKeys.size === 1,
     `exactly ONE distinct key received non-undefined content (got ${nonUndefinedKeys.size}: ${[...nonUndefinedKeys].join(", ")})`,
   );
-  assert(
-    nonUndefinedKeys.has("ensemble:deck"),
-    "the single key is 'ensemble:deck'",
-  );
+  assert(nonUndefinedKeys.has("ensemble:deck"), "the single key is 'ensemble:deck'");
   // The widget uses factory form (not string[] array).
   const deckCall = calls.find((c) => c.key === "ensemble:deck" && c.content !== undefined);
   assert(
@@ -349,18 +317,28 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
   detach();
 }
 
-// 9. Composite factory returns a Container whose per-job surface is the
-// SelectList — one visible row per job key (per-job regression, #742). The
-// #742 defect: the factory used to add one Text child per buildLines row ON
-// TOP of the SelectList whose labels were byte-identical formatRow lines,
-// so every job rendered twice. Post-fix: 2 same-role jobs, empty lines →
-// 0 Text children, 1 SelectList item per job. Pre-fix this same test
-// yields 1 Text row per job and fails.
+// 9. Composite factory returns a Container whose per-job surface is the SelectList — one
+// visible row per job key (per-job regression, #742). The #742 defect: the factory used
+// to add one Text child per buildLines row ON TOP of the SelectList with byte-identical
+// formatRow labels, so every job rendered twice. Post-fix: empty lines → 0 Text
+// children, 1 SelectList item per job. Pre-fix this test yields 1 Text row per job and fails.
 {
   reset();
   const entries: DeckEntry[] = [
-    { key: "job-a", label: "explore", seq: 0, startedAt: 1_000_000, state: makeState("explore", { lastToolName: "bash", toolUses: 3 }) },
-    { key: "job-b", label: "explore", seq: 1, startedAt: 1_000_500, state: makeState("explore", { lastToolName: "read", toolUses: 1 }) },
+    {
+      key: "job-a",
+      label: "explore",
+      seq: 0,
+      startedAt: 1_000_000,
+      state: makeState("explore", { lastToolName: "bash", toolUses: 3 }),
+    },
+    {
+      key: "job-b",
+      label: "explore",
+      seq: 1,
+      startedAt: 1_000_500,
+      state: makeState("explore", { lastToolName: "read", toolUses: 1 }),
+    },
   ];
   const fakeTheme = {
     fg: (_color: string, text: string) => text,
@@ -373,7 +351,10 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
     { onRowConfirm: () => {}, onSelectionChange: () => {} },
   );
   const component = factory(null, fakeTheme);
-  assert(component instanceof Container, "composite factory returns a Container (not a bare SelectList)");
+  assert(
+    component instanceof Container,
+    "composite factory returns a Container (not a bare SelectList)",
+  );
   if (component instanceof Container) {
     // The blank separator Text is the one non-job Text child (it is the
     // #143 presentation separator between the batch rows and the list).
@@ -391,14 +372,20 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
       // description column, which is the sole per-job disambiguation
       // surface (#742) and renders in render(width) output (width > 40).
       const rendered = list.render(200);
-      const countFor = (key: string) => rendered.filter((l) => l.includes(key)).length;
+      const frag = (key: string) => (key.length <= 10 ? key : `${key.slice(0, 10).trimEnd()}…`);
+      const countFor = (key: string) => rendered.filter((l) => l.includes(frag(key))).length;
       for (const e of entries) {
         assert(
           countFor(e.key) === 1,
           `exactly ONE visible row for job '${e.key}' (got ${countFor(e.key)})`,
         );
       }
-      assert(rendered.length === entries.length + 1, `SelectList renders one row per job + cancel sentinel (got ${rendered.length})`);
+      // The cancel sentinel renders as "── cancel ──" — a single trailing
+      // row, so visible rows = jobs + 1.
+      assert(
+        rendered.length === entries.length + 1,
+        `SelectList renders one row per job + cancel sentinel (got ${rendered.length})`,
+      );
       // The attach() → setWidget → factory wiring (ARCHITECTURE finding):
       // the production attach path must hand the composite factory to
       // setWidget, so the same wiring verified in test-dispatch-deck.ts
@@ -406,7 +393,10 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
       const calls: Array<string | ((...a: unknown[]) => unknown) | undefined> = [];
       const wiringCtx = {
         ui: {
-          setWidget: (_key: string, content: string | ((...a: unknown[]) => unknown) | undefined) => {
+          setWidget: (
+            _key: string,
+            content: string | ((...a: unknown[]) => unknown) | undefined,
+          ) => {
             calls.push(content);
           },
           setStatus: (_k: string, _t: string | undefined) => {},
@@ -416,7 +406,10 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
       startEntry("wiring-a", { label: "developer", role: "developer" });
       await new Promise((r) => setImmediate(r));
       const factoryCall = calls.find((c) => typeof c === "function");
-      assert(typeof factoryCall === "function", "attach → scheduleRender wires the composite factory through setWidget");
+      assert(
+        typeof factoryCall === "function",
+        "attach → scheduleRender wires the composite factory through setWidget",
+      );
       detach();
     }
   }
@@ -429,9 +422,8 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
   assert(items[0]?.key === DECK_PROMPT_CANCEL_KEY, "only item is the cancel sentinel");
 }
 
-// 11. #761 — batch-member double-render regression. Pre-fix: member rows in
-// Text AND SelectList → double render. Post-fix: Text = batch headers only.
-// Distinct keys avoid the keyFragment collision (block 4c).
+// 11. #761 batch-member double-render regression. Pre-fix: member rows in Text AND SelectList
+// (double render). Post-fix: Text = batch headers only. Distinct keys avoid the collision (4c).
 {
   // The canary below only works when startEntry/startBatchEntry actually
   // populate; delete the flag so an ambient quiet env can't turn the block
@@ -447,12 +439,21 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
   // Real canary: if the deck is empty here, every negative assertion below
   // passes vacuously (empty deck → empty Text → "members NOT in Text" is
   // trivially true). Fail loudly via the shared ledger instead.
-  assert(snapshot().length === 3, "canary: deck populated (3 entries) — quiet env cannot vacuate the block");
-  type WCall = { key: string; content: string[] | ((...a: unknown[]) => unknown) | undefined; options?: { placement?: string } };
+  assert(
+    snapshot().length === 3,
+    "canary: deck populated (3 entries) — quiet env cannot vacuate the block",
+  );
+  type WCall = {
+    key: string;
+    content: string[] | ((...a: unknown[]) => unknown) | undefined;
+    options?: { placement?: string };
+  };
   const calls: WCall[] = [];
   const ctx = {
     ui: {
-      setWidget: (key: string, content: WCall["content"], options?: WCall["options"]) => { calls.push({ key, content, options }); },
+      setWidget: (key: string, content: WCall["content"], options?: WCall["options"]) => {
+        calls.push({ key, content, options });
+      },
       setStatus: (_k: string, _t: string | undefined) => {},
     },
   } as unknown as Parameters<typeof attach>[0];
@@ -460,15 +461,24 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
   await new Promise((r) => setImmediate(r));
   const fc = calls.find((c) => typeof c.content === "function");
   assert(typeof fc?.content === "function", "factory present");
-  const th = { fg: (_c: string, t: string) => t, bg: (_c: string, t: string) => t } as unknown as ReturnType<typeof buildCompositeFactory>[1];
-  const comp = (fc?.content as unknown as (t: unknown, x: unknown) => unknown)(null, th) as Container;
+  const th = {
+    fg: (_c: string, t: string) => t,
+    bg: (_c: string, t: string) => t,
+  } as unknown as ReturnType<typeof buildCompositeFactory>[1];
+  const comp = (fc?.content as unknown as (t: unknown, x: unknown) => unknown)(
+    null,
+    th,
+  ) as Container;
   assert(comp instanceof Container, "Container");
   if (comp instanceof Container) {
     const tl = comp.children
       .filter((c) => c instanceof Text)
       .map((c) => (c as Text)["text"] as string)
       .filter((t) => t !== "");
-    assert(tl.some((l) => l.includes("batch[developer×2]")), "batch header in Text");
+    assert(
+      tl.some((l) => l.includes("batch[developer×2]")),
+      "batch header in Text",
+    );
     assert(!tl.some((l) => l.includes("developer[task-A]")), "member A NOT in Text");
     assert(!tl.some((l) => l.includes("developer[task-B]")), "member B NOT in Text");
     const lists = comp.children.filter((c) => c instanceof SelectList);
