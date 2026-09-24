@@ -32,6 +32,8 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Component, isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
+import type { DeckEntry } from "./dispatch-deck.ts";
+import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { trace } from "./trace.ts";
 
 // =============================================================================
@@ -73,24 +75,8 @@ export function toolCallArgsPreview(args: unknown): string {
  * assistant `message_end` and every `toolResult` message (everything else is
  * dropped here). Truncation happens HERE, at feed time, so the buffer
  * stores bounded strings only.
- *
- * The shape is structural (subset of `PiJsonEvent`): spawn.ts passes the
- * parsed event without a cast, so spawn's event type stays the authority.
  */
-export type LiveFeed = (event: {
-  type?: string;
-  message?: {
-    role?: string;
-    content?: Array<{
-      type?: string;
-      text?: string;
-      name?: string;
-      arguments?: unknown;
-    }>;
-    toolName?: string;
-    isError?: boolean;
-  };
-}) => void;
+export type LiveFeed = (event: PiJsonEvent) => void;
 
 const buffers = new Map<string, LiveEvent[]>();
 
@@ -144,14 +130,15 @@ export function pushEvent(buf: LiveEvent[], event: Parameters<LiveFeed>[0]): voi
   if (msg.role === "toolResult") {
     const resultText = (msg.content ?? [])
       .filter((b) => b.type === "text" && typeof b.text === "string" && b.text.length > 0)
-      .map((b) => b.text)
+      .map((b) => b.text as string)
       .join("");
     if (!resultText) return;
+    const name = event.toolName;
     appendEvicted(buf, {
       kind: "toolResult",
-      name: typeof msg.toolName === "string" && msg.toolName ? msg.toolName : "unknown",
+      name: name ? name : "unknown",
       text: truncate(resultText, LIVE_RESULT_MAX),
-      isError: msg.isError === true,
+      isError: event.isError === true,
     });
     return;
   }
@@ -308,20 +295,8 @@ export function createLiveViewComponent(
  */
 export interface LiveViewHost {
   /** The deck entry for the key (structural — the deck module owns the map). */
-  getEntry: (key: string) =>
-    | {
-        label: string;
-        state: {
-          role: string;
-          turns: number;
-          toolUses: number;
-          totalTokens: number;
-          lastToolName?: string;
-        };
-        startedAt: number;
-      }
-    | undefined;
-  buildSteerPrompt: (entry: unknown, now: number) => string;
+  getEntry: (key: string) => DeckEntry | undefined;
+  buildSteerPrompt: (entry: DeckEntry, now: number) => string;
   steer: (key: string, text: string) => void;
 }
 

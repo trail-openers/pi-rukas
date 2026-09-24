@@ -21,6 +21,7 @@ import {
 import * as live from "./dispatch-deck-live.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import * as lifecycle from "./lifecycle-events.ts";
+import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import type { RunningState } from "./progress.ts";
 import * as sessionAutosave from "./session-autosave.ts";
 import { trace } from "./trace.ts";
@@ -81,7 +82,7 @@ export interface WorkHooks {
    * (dispatch-deck-live.ts), which the live-view overlay renders. No-op
    * for deck-skipping jobs (no buffer is ever created for them).
    */
-  onRawEvent: (event: unknown) => void;
+  onRawEvent: (event: PiJsonEvent) => void;
   /**
    * Stdin-handle callback (#153). Called once after the child is spawned,
    * before the kickoff prompt is written. Work functions pass this through
@@ -190,7 +191,7 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
     // skipDeck jobs (lens/adversarial orchestrators) get no buffer and no
     // leak.
     onRawEvent: (event) => {
-      live.feedRawEvent(jobId, event as Parameters<typeof live.feedRawEvent>[1]);
+      live.feedRawEvent(jobId, event);
     },
     onStdin: (stdin) => {
       childHandles.set(jobId, { stdin, label: input.label, role: input.role });
@@ -383,8 +384,7 @@ export function startBatch(
     sessionAutosave.recordDispatch(m.role);
     const memberHooks: WorkHooks = {
       onProgress: (progress) => dispatchDeck.updateEntry(jobId, progress),
-      onRawEvent: (event) =>
-        live.feedRawEvent(jobId, event as Parameters<typeof live.feedRawEvent>[1]),
+      onRawEvent: (event) => live.feedRawEvent(jobId, event),
       onStdin: (stdin) => {
         childHandles.set(jobId, { stdin, label: m.label, role: m.role });
       },

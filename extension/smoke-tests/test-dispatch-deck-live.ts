@@ -16,8 +16,8 @@
  *   - the buffer is freed on dropBuffer
  *   - quiet mode → no buffer
  *
- * The roster Enter → live-view wiring (dispatch-deck.onRowConfirm with a
- * fake ctx.ui.custom) is covered here too: a running row WITH a buffer
+ * The roster Enter → live-view wiring (dispatch-deck-confirm.ts onRowConfirm
+ * with a fake ctx.ui.custom) is covered here too: a running row WITH a buffer
  * opens the live view (custom called with overlay:true, no picker); a
  * row WITHOUT a buffer opens the steer prompt directly (no custom call).
  */
@@ -32,15 +32,8 @@ import {
   hasBuffer,
   startBuffer,
 } from "../src/dispatch-deck-live.ts";
-import {
-  attach,
-  clearEntry,
-  detach,
-  onRowConfirm,
-  reset,
-  startEntry,
-} from "../src/dispatch-deck.ts";
-import { emptyRunningState } from "../src/progress.ts";
+import { clearEntry, detach, reset, snapshot, startEntry } from "../src/dispatch-deck.ts";
+import { onRowConfirm } from "../src/dispatch-deck-confirm.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -95,11 +88,10 @@ function resetBuffers(): void {
   // toolResult message (separate role in Pi)
   feedRawEvent("b2", {
     type: "message",
+    toolName: "bash",
     message: {
-      role: "toolResult" as unknown as string,
-      toolName: "bash",
+      role: "toolResult",
       content: [{ type: "text", text: "test result: 12 passed, 0 failed" }],
-      isError: false,
     },
   });
   const buf = getBuffer("b2");
@@ -111,11 +103,11 @@ function resetBuffers(): void {
   // toolResult with isError → marked
   feedRawEvent("b2", {
     type: "message",
+    toolName: "bash",
+    isError: true,
     message: {
-      role: "toolResult" as unknown as string,
-      toolName: "bash",
+      role: "toolResult",
       content: [{ type: "text", text: "error: command failed" }],
-      isError: true,
     },
   });
   const buf2 = getBuffer("b2");
@@ -144,8 +136,7 @@ function resetBuffers(): void {
   feedRawEvent("b3", {
     type: "message",
     message: {
-      role: "toolResult" as unknown as string,
-      toolName: "bash",
+      role: "toolResult",
       content: [{ type: "text", text: "z".repeat(300) }],
     },
   });
@@ -291,7 +282,7 @@ function resetBuffers(): void {
       onTerminalInput: () => () => {},
     },
   } as unknown as Parameters<typeof onRowConfirm>[0];
-  await onRowConfirm(fakeCtx, "deck-job-1");
+  await onRowConfirm(fakeCtx, "deck-job-1", rowHost());
   assert(customCalls.length === 1, "7a: running row with buffer → custom called once");
   assert(customCalls[0]?.overlay === true, "7b: custom called with overlay:true");
   assert(editorCalls.length === 0, "7c: no steer prompt (no editor call)");
@@ -318,7 +309,7 @@ function resetBuffers(): void {
       onTerminalInput: () => () => {},
     },
   } as unknown as Parameters<typeof onRowConfirm>[0];
-  await onRowConfirm(fakeCtx2, "deck-job-2");
+  await onRowConfirm(fakeCtx2, "deck-job-2", rowHost());
   assert(customCalls2.length === 0, "7d: running row without buffer → no custom call");
   assert(editorCalls2.length === 1, "7e: steer prompt opened directly (editor called)");
   clearEntry("deck-job-2");
@@ -326,31 +317,25 @@ function resetBuffers(): void {
 }
 
 // ---------------------------------------------------------------------------
-// 8. Settled row → transcript viewer (no custom, no live view).
+// 8. Entry is running (not settled) — the deck shows only RUNNING rows.
 // ---------------------------------------------------------------------------
 {
   resetBuffers();
   reset();
   startEntry("deck-job-3", { label: "developer", role: "developer" });
-  // Mark the entry as done so onRowConfirm takes the settled-row path.
-  // The deck module doesn't expose a direct setter, but updateEntry with a
-  // done state is the production path (spawn.ts calls it on settle).
-  const doneState = { ...emptyRunningState("developer"), done: true, ok: true };
-  // We need to use the deck module's updateEntry — but that's not exported.
-  // Instead, we can call onRowConfirm and verify it takes the transcript
-  // viewer path (which calls ctx.ui.editor with the transcript text) rather
-  // than the live view (custom) or steer (editor with "Steer ..." title).
-  // Since we can't easily simulate settle without going through the full
-  // async-jobs path, this test asserts the routing logic: the entry's state
-  // done flag determines the path.
-  // For now, just assert the entry exists and is running (not settled).
-  const { snapshot } = await import("../src/dispatch-deck.ts");
   const snap = snapshot();
   const entry = snap.find((e) => e.key === "deck-job-3");
   assert(!!entry, "8a: entry exists");
-  assert(entry?.state.done === false, "8b: entry is running (not settled) — settled path is covered by openTranscriptViewer");
+  assert(entry?.state.done === false, "8b: entry is running (not settled)");
   clearEntry("deck-job-3");
   detach();
+}
+
+function rowHost() {
+  return {
+    getEntry: (k: string) => snapshot().find((e) => e.key === k),
+    steer: (_k: string, _m: string) => {},
+  };
 }
 
 console.log(`\nexit ${exit}`);
