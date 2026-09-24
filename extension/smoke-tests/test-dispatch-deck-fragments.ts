@@ -79,7 +79,7 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
 {
   const now = 4_700_000;
   const dup = buildDeckItems(mkJobs(["abc", "abc"], now), now);
-  const dupOk = dup.length === 3 && dup[0]?.description === dup[1]?.description;
+  const dupOk = dup.length === 2 && dup[0]?.description === dup[1]?.description;
   const dupMsg = "4f: duplicates terminate — same fragment, distinct labels, values correct";
   assert(dupOk && dup[0]?.label !== dup[1]?.label && dup[0]?.value === dup[1]?.value, dupMsg);
 }
@@ -105,7 +105,7 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
   const now = 5_100_000;
   const k = "abcdefghijklmn";
   const items = buildDeckItems(mkJobs([k, k], now), now);
-  assert(items.length === 3, "4h: duplicate long keys → 2 entries + cancel sentinel");
+  assert(items.length === 2, "4h: duplicate long keys → 2 entries (no cancel sentinel, #834)");
   const d0 = items[0]?.description ?? "";
   const d1 = items[1]?.description ?? "";
   assert(

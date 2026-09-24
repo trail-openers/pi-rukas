@@ -64,12 +64,15 @@ interface WidgetCall {
 function fakeCtx(): { calls: WidgetCall[]; ctx: Parameters<typeof attach>[0] } {
   const calls: WidgetCall[] = [];
   const ctx = {
+    hasUI: true,
     ui: {
       setWidget: (key: string, content: WidgetContent, options?: { placement?: string }) => {
         calls.push({ key, content, options });
       },
       // setStatus retained for type compatibility but not used by the deck anymore.
       setStatus: (_key: string, _text: string | undefined) => {},
+      getEditorText: () => "",
+      onTerminalInput: () => () => {},
     },
   } as unknown as Parameters<typeof attach>[0];
   return { calls, ctx };
@@ -331,13 +334,13 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
     typeof last?.content === "function",
     "setWidget called with factory function (#232 — bypasses Pi's MAX_WIDGET_LINES=10 array cap)",
   );
-  // Invoke the factory and count Container children: no per-job Text rows
-  // (#742 — the per-job surface is the SelectList) + 1 trailing blank line
-  // (#143 presentation separator) + 1 SelectList (#729 composite) = 2.
+  // Invoke the factory and count Container children: #834 replaced the
+  // SelectList with plain per-job Text rows — 2 job rows + 1 blank
+  // separator + 1 hint row (empty editor → hint shown) = 4.
   const children = renderFactoryChildren(last?.content);
   assert(
-    children.length === 2,
-    "factory returns a Container with NO per-job Text rows + trailing blank + SelectList (#742)",
+    children.length === 4,
+    `factory returns a Container with 2 job rows + blank + hint (#834); got ${children.length}`,
   );
   assert(last?.options?.placement === "belowEditor", "widget placement is 'belowEditor'");
   detach();
@@ -357,12 +360,13 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
 
   const last = calls[calls.length - 1];
   assert(typeof last?.content === "function", "overflow case still uses factory form");
-  // No per-job Text rows (#742) + 1 trailing blank + 1 SelectList = 2
-  // children even past the cap — the cap now bounds batch Text rows only.
+  // #834: 25 job rows (one per entry) + 1 blank separator + 1 hint = 27
+  // children. The per-job rows are plain Text — there is no SelectList to
+  // cap them, so the cap (batch headers only) no longer bounds the list.
   const children = renderFactoryChildren(last?.content);
   assert(
-    children.length === 2,
-    `25 entries → 2 children (no per-job Text rows + trailing blank + SelectList, #742); got ${children.length}`,
+    children.length === 27,
+    `25 entries → 27 children (25 job rows + blank + hint, #834); got ${children.length}`,
   );
   detach();
 }
