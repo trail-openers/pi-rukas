@@ -68,7 +68,8 @@ let navWarned = false;
 // Self-heal attempt counter: caps the renderNow retry loop so a persistent
 // onTerminalInput failure (a host without the capability at all) doesn't
 // re-create and re-attempt registration on every 1 s render for the whole
-// session. Reset by attachNav (a new attach = a fresh budget).
+// session. Reset ONLY by attachNav — the self-heal path must ACCUMULATE
+// attempts across renders or the cap never binds.
 let navHealAttempts = 0;
 const NAV_HEAL_MAX = 5;
 
@@ -118,14 +119,10 @@ function detachNav(): void {
 function navGetters(ctx: ExtensionContext) {
   return {
     runningKeys: () => [...entries.values()].map((e) => e.key),
-    editorText: () => {
-      try {
-        return ctx.ui.getEditorText();
-      } catch {
-        return "";
-      }
-    },
-    hasRunning: () => entries.size > 0,
+    // No try/catch: a throw propagates to the key-press handler (Pi's
+    // input loop). Swallowing it to "" would ENABLE roster mode from a
+    // throwing editor — fail open instead.
+    editorText: () => ctx.ui.getEditorText(),
   };
 }
 
@@ -144,19 +141,20 @@ function attachNav(ctx: ExtensionContext): void {
 }
 
 /**
- * Own the full nav wiring for one attach cycle: the quiet/hasUI guards,
- * the prior-listener teardown, the createDeckNav construction and the
- * registration. Used by both `attach()` (direct) and renderNow's
- * self-heal (a transient attach-time failure retries here on a later
- * render). Returns true when the listener is live.
+ * Own the nav wiring for one cycle: the quiet/hasUI guards, the
+ * prior-listener teardown, the createDeckNav construction and the
+ * registration. Used by `attach()` (explicit attach — a new budget for
+ * the self-heal counters) and renderNow's self-heal (a transient
+ * attach-time failure retries here on a later render). The
+ * `navWarned`/`navHealAttempts` resets live in `attachNav` only: the
+ * self-heal path must accumulate across renders so the cap binds. Returns
+ * true when the listener is live.
  */
 function tryAttachNav(ctx: ExtensionContext): boolean {
   if (isQuiet() || !ctx.hasUI) return false;
   // Unsubscribe any prior listener before re-registering (attach can be
   // called more than once in a session without an intervening detach).
   detachNav();
-  navWarned = false;
-  navHealAttempts = 0;
   const n = createDeckNav(navGetters(ctx), (key) => void onRowConfirm(ctx, key), scheduleRender);
   if (!registerNavListener(n, ctx)) return false;
   nav = n;
@@ -324,10 +322,14 @@ function renderNow(): void {
   // roster-mode listener registration while it is absent, capped so a
   // persistent failure (a host without the capability at all) settles into
   // the degraded state instead of retrying every render forever. The
-  // quiet/hasUI guards live inside tryAttachNav.
+  // quiet/hasUI guards live inside tryAttachNav. The attempt counter is
+  // NOT reset here — the self-heal path accumulates across renders so the
+  // NAV_HEAL_MAX cap binds; only attachNav resets the budget.
   if (nav === undefined && navHealAttempts < NAV_HEAL_MAX) {
     navHealAttempts++;
-    tryAttachNav(activeCtx);
+    if (tryAttachNav(activeCtx)) {
+      trace("dispatch-deck: roster-mode nav restored (self-heal) after earlier failure");
+    }
   }
   const factory = buildCompositeWidgetFactory(activeCtx);
   try {

@@ -66,7 +66,10 @@ export function buildJobRows(running: readonly DeckEntry[], now: number): JobRow
   const fragments = distinctKeyFragments(running.map((e) => e.key));
   return running.map((e, i) => ({
     key: e.key,
-    text: `${formatRow(e, now)} · ${fragments[i]}`,
+    // Elided (>10-char) fragments carry a `key ` prefix so the suffix is
+    // visibly a key, not opaque text; short keys stay verbatim (already
+    // the full key, a prefix would be noise).
+    text: `${formatRow(e, now)} · ${e.key.length > 10 ? `key ${fragments[i]}` : fragments[i]}`,
   }));
 }
 

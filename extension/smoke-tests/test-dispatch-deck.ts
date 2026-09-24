@@ -453,9 +453,9 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   assert(rows[0]?.text !== rows[1]?.text, `14b: buildJobRows rows distinct (${rows[0]?.text} vs ${rows[1]?.text})`);
   assert(
     (rows[0]?.text ?? "").endsWith(" · ") === false &&
-      (rows[0]?.text ?? "").includes(" · aaaaaaaa") &&
-      (rows[1]?.text ?? "").includes(" · aaaaaaaa"),
-    "14c: fragment is the row suffix and preserves the shared 10-char prefix",
+      (rows[0]?.text ?? "").includes(" · key aaaaaaaa") &&
+      (rows[1]?.text ?? "").includes(" · key aaaaaaaa"),
+    "14c: fragment is the row suffix, prefixed `key `, preserves the shared 10-char prefix",
   );
   // The composite factory renders the same distinct rows (the production
   // surface the operator sees), with the `>` marker position-only.
@@ -485,8 +485,8 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   const advFragments = buildJobRows(advEntries, now).map((r) => r.text.split(" · ").pop() ?? "");
   assert(
     new Set(advFragments).size === 3 &&
-      advFragments.every((f) => f.startsWith("abcdefghij")),
-    `14g: 3 keys sharing 13 chars → pairwise-distinct fragments (${advFragments.join(" | ")})`,
+      advFragments.every((f) => f.startsWith("key abcdefghij")),
+    `14g: 3 keys sharing 13 chars → pairwise-distinct key-fragments (${advFragments.join(" | ")})`,
   );
 }
 

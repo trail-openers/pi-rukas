@@ -48,8 +48,6 @@ export interface DeckNavGetters {
   runningKeys: () => string[];
   /** The editor's current text ("" when empty). */
   editorText: () => string;
-  /** True while at least one running job exists (hint visibility). */
-  hasRunning: () => boolean;
 }
 
 /** The listener handler returned to `ctx.ui.onTerminalInput`. */
@@ -155,14 +153,12 @@ export function createDeckNav(
     }
 
     // --- Inactive: only `down` with an empty editor and a running job.
-    if (matchesKey(data, "down") && get.editorText() === "" && get.hasRunning()) {
-      const keys = get.runningKeys();
-      if (keys.length > 0) {
-        active = true;
-        selected = keys[0];
-        onChange();
-        return { consume: true };
-      }
+    const keys = get.runningKeys();
+    if (matchesKey(data, "down") && get.editorText() === "" && keys.length > 0) {
+      active = true;
+      selected = keys[0];
+      onChange();
+      return { consume: true };
     }
     return undefined;
   };

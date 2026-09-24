@@ -23,6 +23,8 @@
 import { attach, detach, reset, startEntry } from "../src/dispatch-deck.ts";
 import { createDeckNav, type DeckNav, type NavListener } from "../src/dispatch-deck-nav.ts";
 
+const NAV_HEAL_MAX = 5; // must match the cap in dispatch-deck.ts
+
 let exit = 0;
 function assert(cond: boolean, msg: string) {
   if (cond) {
@@ -83,7 +85,6 @@ function makeNav(keysRef: { keys: string[] }, fake: FakeUI): NavHarness {
       {
         runningKeys: () => keysRef.keys,
         editorText: () => fake.editorText,
-        hasRunning: () => keysRef.keys.length > 0,
       },
       (key) => confirm.push(key),
       () => {
@@ -119,7 +120,7 @@ try {
   process.exit(exit);
 }
 
-function main(): void {
+async function main(): Promise<void> {
 
 // ---------------------------------------------------------------------------
 // 1. Activation: down + empty editor + running jobs → consumed, first row
@@ -428,6 +429,50 @@ function main(): void {
   press(fake, "\x1b[B"); // activate → batch-m1
   press(fake, "\r"); // enter → onRowConfirm(batch-m1)
   assert(h.confirm.length === 1 && h.confirm[0] === "batch-m1", "17: batch-member row confirms its own key (steer route intact)");
+}
+
+// 18. Self-heal cap: a UI whose onTerminalInput always throws → renderNow
+// retries registration at most NAV_HEAL_MAX times and emits the operator
+// warning exactly once. The resets live in attachNav (explicit attach =
+// fresh budget), not tryAttachNav, so renderNow's self-heal path
+// ACCUMULATES attempts across renders and the cap binds. A reset in
+// tryAttachNav would let the counter never reach the cap.
+{
+  reset();
+  let registerCalls = 0;
+  let warnings = 0;
+  const ctx = {
+    hasUI: true,
+    ui: {
+      getEditorText: () => "",
+      onTerminalInput: () => {
+        registerCalls++;
+        throw new Error("boom");
+      },
+      notify: (_m: string, level: string) => {
+        if (level === "warning") warnings++;
+      },
+      setWidget: () => {},
+    },
+  } as unknown as Parameters<typeof attach>[0];
+  startEntry("job-1", { label: "developer", role: "developer" });
+  attach(ctx); // explicit attach: fails (registerCalls 1, warning 1), resets the heal counter
+  // renderNow fires via the deck's 1 s ticker. Wait past NAV_HEAL_MAX + 2
+  // ticks so >7 renders happen while nav is absent; the self-heal path must
+  // cap registration at NAV_HEAL_MAX additional attempts total.
+  await new Promise((r) => setTimeout(r, (NAV_HEAL_MAX + 2) * 1000 + 200));
+  // 1 (attach) + NAV_HEAL_MAX (heals) = 6 max. With a reset-in-tryAttachNav
+  // the count would be 1 + number of renders (≈ 8+), i.e. uncapped.
+  assert(
+    registerCalls <= 1 + NAV_HEAL_MAX,
+    `18a: self-heal registration attempts capped at NAV_HEAL_MAX (${registerCalls} ≤ ${1 + NAV_HEAL_MAX})`,
+  );
+  assert(
+    registerCalls < 1 + (NAV_HEAL_MAX + 2),
+    `18b: cap actually skips renders (registerCalls=${registerCalls} < ${1 + NAV_HEAL_MAX + 2})`,
+  );
+  assert(warnings === 1, `18c: operator warning emitted exactly once (got ${warnings})`);
+  detach();
 }
 
 console.log(`\nexit ${exit}`);
