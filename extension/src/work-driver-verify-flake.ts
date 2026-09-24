@@ -23,7 +23,7 @@
  * "extract a bounded, attributed tail from the raw failure" step.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { trace } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -50,12 +50,10 @@ export function combinedExecFailureStream(e: Error & { stderr?: string; stdout?:
   );
 }
 
-/**
- * #841 — the log filename for one consolidated verify run, relative to
- * `scratchDir`. Single home for the name shape so the run1 and run2 paths
- * (and the truncation cap below) cannot drift apart.
- */
-export function consolidatedVerifyLogName(timestamp: string, run: 1 | 2): string {
+// #841 — the log filename for one consolidated verify run, relative to
+// `scratchDir`. Single home for the name shape so the run1 and run2 paths
+// (and the truncation cap below) cannot drift apart.
+function consolidatedVerifyLogName(timestamp: string, run: 1 | 2): string {
   return `consolidated-verify-${timestamp.replace(/[:.]/g, "-")}-run${run}.log`;
 }
 
@@ -87,6 +85,9 @@ function boundVerifyLog(raw: string): string {
  * same prefix, different suffix), so the caller computes it once per run
  * pair and threads it through.
  */
+export function rawOutputClause(logPath?: string): string {
+  return logPath ? ` Raw output: ${logPath}.` : " Raw output: unavailable.";
+}
 export function writeConsolidatedVerifyLog(
   scratchDir: string,
   timestamp: string,
@@ -102,6 +103,12 @@ export function writeConsolidatedVerifyLog(
     // the verify outcome.
     mkdirSync(scratchDir, { recursive: true });
     writeFileSync(file, boundVerifyLog(raw), "utf8");
+    // #841 — the raw stream can carry anything the verify command printed
+    // (untrusted content); keep the log owner-only. A separate chmod (not
+    // the write's mode option) also tightens a pre-existing log from an
+    // older run; failure is caught below — a permission hiccup never
+    // changes the verify outcome.
+    chmodSync(file, 0o600);
     trace(`work-driver: consolidated verify — run${run} log written to ${file}`);
     return file;
   } catch (err) {

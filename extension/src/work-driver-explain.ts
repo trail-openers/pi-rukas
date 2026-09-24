@@ -254,27 +254,21 @@ export function explainCap(
       evidence && evidence.failures.length > 0
         ? `\n${evidence.failures.map((f) => `  - ${f}`).join("\n")}`
         : " (evidence detail missing from state)";
-    // #841 — when the cap itself carries a persisted raw-output log path
-    // (the consolidated verify's run1/run2 logs, named in the gate's failure
-    // string that rides on the cap's evidence), render it here. The
-    // failure-string bullets above already name the path, but the operator
-    // reads the closing sentence for WHERE to look; an empty failures list
-    // (the "(evidence detail missing)" shape) otherwise leaves the log
-    // path reachable only from the raw event. The scan is prefix-based
-    // (the gate embeds the path in prose), never content-parsing.
+    // #841 — when the cap carries the persisted raw-output log paths
+    // STRUCTURALLY (the consolidated verify's run1/run2 logs, recorded on
+    // the cap-hit event's `logPaths` field by the gate's emit site), render
+    // them here. The failure-string bullets above already name the path, but
+    // the operator reads the closing sentence for WHERE to look; an empty
+    // failures list (the "(evidence detail missing)" shape) otherwise leaves
+    // the log path reachable only from the raw event. No prose scanning —
+    // the paths ride on the event, never parsed out of it. Absent on
+    // pre-#841 state files (say nothing rather than guess).
     let logLine = "";
     if (step === "develop") {
       const capHit = lastCapHit(state, `verify-failed:${step}`);
-      const capEvidence =
-        capHit &&
-        typeof capHit.evidence === "string" &&
-        capHit.evidence.includes("consolidated-verify-")
-          ? capHit.evidence
-          : undefined;
-      const logMatch = capEvidence?.match(/consolidated-verify-[^\s)\]"']+\.log/g);
-      if (logMatch && logMatch.length > 0) {
-        const unique = [...new Set(logMatch)];
-        logLine = `\nFull raw verify output: ${unique.join(", ")} (scratch dir — inspect it before re-dispatching)`;
+      const logPaths = capHit?.logPaths;
+      if (logPaths && logPaths.length > 0) {
+        logLine = `\nFull raw verify output: ${logPaths.join(", ")} (scratch dir — inspect it before re-dispatching)`;
       }
     }
     // #782 — the consolidated-verify gate re-runs the verify command once

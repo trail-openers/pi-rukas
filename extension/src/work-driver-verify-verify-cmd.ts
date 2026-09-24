@@ -30,6 +30,7 @@ import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { formatExecError, verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
+import { rawOutputClause } from "./work-driver-verify-flake.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
 
@@ -65,6 +66,13 @@ export async function runVerifyCommandGate(opts: {
   notes: string[];
   onVerifyFlakeRecovered?: (evidenceTail?: string) => void;
   /**
+   * #841 — out-parameter for the consolidated run's persisted raw-output log
+   * path (called with the log the gate actually wrote — `logPath` is
+   * undefined when the write failed, so the caller never records a path
+   * that does not exist on disk).
+   */
+  onConsolidatedLogPath?: (logPath: string) => void;
+  /**
    * #814 — structured fence violations recorded by the scope gate earlier
    * in this same develop verify (the gate runs BEFORE the consolidated
    * verify, so the records already exist when the conflict branch fires).
@@ -88,6 +96,7 @@ export async function runVerifyCommandGate(opts: {
     notes,
     onVerifyFlakeRecovered,
     fenceViolations,
+    onConsolidatedLogPath,
   } = opts;
   const VALID_SHA_RE = /^[0-9a-f]{40}$/;
   const isValidSha = (s: string | undefined) => typeof s === "string" && VALID_SHA_RE.test(s);
@@ -328,8 +337,14 @@ export async function runVerifyCommandGate(opts: {
     // failure string here: the evidence must name the path so an operator
     // with "(no specific assertion could be extracted)" can open the file
     // and see the raw stream.
-    const logClause = cons.logPath ? ` Raw output: ${cons.logPath}.` : " Raw output: unavailable.";
+    // #841 — the shared rawOutputClause helper (single home for the
+    // sentence so both verify seams render identically).
+    const logClause = rawOutputClause(cons.logPath);
     failures.push(consolidatedFailureMessage(verdict, cmd) + logClause);
+    // #841 — thread the ACTUAL written log path back (the write's own
+    // return — undefined when the write failed, in which case there is
+    // nothing to record structurally).
+    if (cons.logPath !== undefined) onConsolidatedLogPath?.(cons.logPath);
   } else {
     notes.push(
       `consolidated verify passed — workstreams ${cons.applied.join(", ")} combined in one tree passed \`${cmd}\`; per-worktree verify failures are recorded as evidence, not failures, because the combined tree is the verdict for cross-worktree artifacts`,

@@ -88,6 +88,88 @@ async function addWorktree(f: { repo: string; baseSha: string; dir: string }, id
   return wt;
 }
 
+// Case 8b: N=1 cap-hit evidence is bounded — 10 × 5 KB failures must
+// produce joined evidence ≤ 4100 chars (per-failure 800-char bound +
+// 4000-char join cap + the "… (truncated)" marker).
+async function runCase8b() {
+  const dir = path.join(root, "case8b-bounded");
+  const repo = path.join(dir, "repo");
+  mkdirSync(repo, { recursive: true });
+  writeFileSync(path.join(repo, "tracked.txt"), "base\n");
+  await execFileP("git", ["init", "--initial-branch=main", repo]);
+  await git(repo, ["config", "user.email", "t@example.com"]);
+  await git(repo, ["config", "user.name", "T"]);
+  await git(repo, ["add", "."]);
+  await git(repo, ["commit", "-q", "-m", "base"]);
+  const baseSha = (await git(repo, ["rev-parse", "HEAD"])).stdout.trim();
+  const pi = path.join(repo, ".pi");
+  mkdirSync(pi, { recursive: true });
+  writeFileSync(path.join(pi, "verify-cmd"), "sh -c 'exit 1'\n");
+  writeFileSync(path.join(repo, "change.txt"), "new\n");
+  await git(repo, ["add", "."]);
+  await git(repo, ["commit", "-q", "-m", "add change"]);
+
+  const state = initialState(841);
+  state.pipelineState.worktrees = { default: repo };
+  state.pipelineState.baseSha = baseSha;
+  state.pipelineState.workstreams = {
+    default: { id: "default", scope: "N=1 bounded test", paths: ["change.txt"], outOfScope: [] },
+  };
+
+  const bigStderr = "x".repeat(5 * 1024);
+  const ctx: DriverContext = {
+    pi: {} as unknown as DriverContext["pi"],
+    repoRoot: repo,
+    issue: 841,
+    dispatchFn: async () => ({
+      ok: true, finalText: "done", errorStop: false, stopReason: "stop",
+      durationMs: 100, totalCost: 0, inputTokens: 0, outputTokens: 0,
+    }),
+    verifyExecFn: async (cmd, o) => {
+      if (cmd.startsWith("git ")) return { stdout: (await sh(o?.cwd ?? "", cmd)).stdout };
+      const e = new Error("Command failed") as Error & { stdout?: string; stderr?: string };
+      e.stdout = "";
+      e.stderr = bigStderr;
+      throw e;
+    },
+  };
+
+  // 10 × 5 KB failures: 9 per-worktree failures (the gate appends the
+  // per-worktree failures alongside the consolidated one when it cannot
+  // consolidate) are not reachable in a single worktree, so instead we
+  // verify the same bound through the real N=1 gate (one 5 KB failure
+  // yields one bounded failure string) and check the cap-hit evidence
+  // field length directly — the join path with a single failure must
+  // still respect the per-failure bound, and the generic boundJoinFailures
+  // cap is exercised by the assertion below on the recorded evidence.
+  const result = await runDevelopTopological(
+    ctx, state, ["default"], state.pipelineState.workstreams!, [841],
+    ctx.dispatchFn!, ctx.verifyExecFn!, Date.now(), "job-841b",
+  );
+  const capHit = [...result.eventLog].reverse().find((e) => e.kind === "cap-hit");
+  assert(capHit !== undefined, "case 8b: cap-hit emitted");
+  if (capHit?.kind === "cap-hit") {
+    const evLen = capHit.evidence?.length ?? 0;
+    assert(
+      evLen > 0 && evLen <= 4100,
+      `case 8b: cap-hit evidence bounded (got ${evLen} chars, expected ≤ 4100)`,
+    );
+  }
+  // Direct boundJoinFailures check: simulate the 10 × 5 KB shape that the
+  // multi-worktree fanout produces and confirm the join cap holds.
+  const { boundJoinFailuresForTest } = await import("../src/work-develop-topological.ts");
+  const tenBig = Array.from({ length: 10 }, () => "y".repeat(5 * 1024));
+  const joined = boundJoinFailuresForTest(tenBig);
+  assert(
+    joined.length <= 4100,
+    `case 8b: boundJoinFailures(10 × 5 KB) ≤ 4100 chars (got ${joined.length})`,
+  );
+  assert(
+    joined.includes("truncated"),
+    "case 8b: truncated joined evidence carries the truncation marker",
+  );
+}
+
 const opts = (
   f: { repo: string; baseSha: string; dir: string; scratch: string },
   wt: Record<string, string>,
@@ -392,6 +474,7 @@ async function main() {
   try {
     await runCases1to7();
     await runCase8();
+    await runCase8b();
     await runCase9();
   } finally {
     rmSync(root, { recursive: true, force: true });

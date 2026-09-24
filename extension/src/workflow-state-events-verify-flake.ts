@@ -34,3 +34,25 @@ export type VerifyFlakeRecoveredEvent = {
    */
   evidenceTail?: string;
 };
+
+/**
+ * Issue #279 — verify-full tier status event (driver-side, ci step).
+ * Lives in this verify fragment (same domain: verify-tier outcomes) to
+ * keep the main union file under the §12 500-line limit.
+ */
+export type VerifyFullStatusEvent = {
+  kind: "verify-full-status";
+  at: number;
+  status: "success" | "failure" | "skipped";
+  /** Time spent executing the full suite (ms). Undefined when skipped. */
+  ms?: number;
+  /** Tail of the command output for the handoff/comment body. */
+  evidenceTail?: string;
+  /**
+   * #782 — this success is the result of the single bounded re-run: the
+   * first run failed, the re-run (same command, same worktree) passed
+   * BEFORE the ciRetryCount bump. Additive: absent on every non-recovered
+   * outcome and on pre-#782 state files.
+   */
+  recovered?: boolean;
+};

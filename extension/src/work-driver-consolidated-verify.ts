@@ -18,6 +18,7 @@ import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
 import {
   combinedExecFailureStream,
+  rawOutputClause,
   rerunConsolidatedVerifyOnce,
   writeConsolidatedVerifyLog,
 } from "./work-driver-verify-flake.ts";
@@ -374,9 +375,9 @@ export async function runConsolidatedVerify(
       // the failure string (which lands in `verifyEvidence.failures` and
       // renders in the handoff) without regexing `detail`.
       const finalLogPath = retried ? run2LogPath : run1LogPath;
-      const logClause = finalLogPath
-        ? ` Raw output: ${finalLogPath}.`
-        : " Raw output: unavailable.";
+      // #841 — the shared rawOutputClause helper (single home for the
+      // sentence so the develop gate and the handoff cannot drift).
+      const logClause = rawOutputClause(finalLogPath);
       // #750 — the verified post-condition rides with every outcome of the
       // probe run (the root is transient either way; an unverified claim
       // about it is exactly the incident).
