@@ -154,15 +154,7 @@ Tools (all async via push-callback — tools return a `{ jobId }` immediately; t
 | `load_workflow_doctrine <name>` | Return a workflow command's full instructions (`research`, `plan`, `review`, `audit`, `start`, `do`) as tool output, so PM can run one without the user typing the slash command. `/work` is deliberately excluded — it is a compiled driver, not prose. |
 | `check_review_cap <key>` | Wall-clock cap helper for the `/work` fix loop — ok/exceeded against a 90-min budget so the PM stops doom-loops ([#4](https://github.com/trail-openers/pi-rukas/issues/4)). |
 
-Per-child transcripts are saved to `~/.pi/agent/ensemble-runs/<date>/<runId>-<role>[-<tag>].json` — replay with `pi --session <path>` or browse via `/runs`. The user inspects these; orchestrating agents do NOT read them (the dispatch tool's report is the bounded summary by design).
-
-## The dispatch deck
-
-While specialists run, a live deck renders below the editor — one row per RUNNING subagent (batch members included), updated every second. Opt out with `PI_ENSEMBLE_QUIET_STATUS=1`; the row cap is `PI_ENSEMBLE_DECK_MAX_ROWS` (default 20). Full key and env reference: [docs/configuration.md](docs/configuration.md#environment-variables).
-
-**Roster mode (#834).** The deck is a passive widget and normally never sees keystrokes — the editor has focus. Roster mode bridges that: from an **empty editor** with at least one running subagent, `↓` enters roster mode; `↓`/`↑` (or `j`/`k`) walk the rows, `Enter` opens the steer prompt for the selected row, and `Esc` (or `↑` on the top row) exits. Any other key exits roster mode and goes to the editor.
-
-**Known trade-off:** from an empty editor while subagents are running, `↓` enters roster mode instead of walking prompt history. This is deliberate — the same trade-off pi-subagents makes. With no running subagents the editor behaves exactly as before.
+Per-child transcripts are saved to `~/.pi/agent/ensemble-runs/<date>/<runId>-<role>[-<tag>].json` — replay with `pi --session <path>` or browse via `/runs`. The user inspects these; orchestrating agents do NOT read them (the dispatch tool's report is the bounded summary by design). The live dispatch deck renders one row per RUNNING subagent below the editor (updated every second); **roster mode (#834)** lets you navigate rows from an empty editor with `↓`/`↑`/`j`/`k` and steer with `Enter`. Opt out: `PI_ENSEMBLE_QUIET_STATUS=1`; row cap: `PI_ENSEMBLE_DECK_MAX_ROWS` (default 20). Full key reference: [docs/configuration.md](docs/configuration.md#environment-variables).
 
 ## Configuring subagent models
 
