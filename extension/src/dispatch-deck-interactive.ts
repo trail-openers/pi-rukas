@@ -1,13 +1,19 @@
 /**
- * Interactive deck surfaces (607 d2 + d3).
+ * Interactive deck surfaces (#607 d3; the d2 viewer surface is retained
+ * but currently unreferenced in production).
  *
- * Transcript viewer (d2): confirming a deck row for a settled job opens
- * ctx.ui.editor pre-filled with summariseTranscript / renderTranscript output
- * for the job's transcript file, the same renderer the /runs command uses.
+ * Steer input (d3, LIVE): confirming a deck row for a running job opens
+ * the pre-filled steer prompt; saving it routes through steerChild() with
+ * the deck-ui source tag.
  *
- * Steer input (d3): confirming a deck row for a running job opens the
- * pre-filled steer prompt; saving it routes through steerChild() with the
- * deck-ui source tag.
+ * Transcript viewer (d2, DEFERRED): `openTranscriptViewer`,
+ * `buildViewerText` and `findTranscriptPath` build a read-only
+ * ctx.ui.editor view pre-filled with summariseTranscript / renderTranscript
+ * output for a job's transcript file (the same renderer /runs uses). The
+ * #834 PR deleted the production caller (the deck's settled-row route);
+ * the surface stays for the live-view / finished-run surface
+ * (#839 / #836), exercised today only by the smoke tests
+ * (test-runs-transcript-parse.ts).
  *
  * Quiet mode: PI_ENSEMBLE_QUIET_STATUS=1 disables the viewer and steer.
  */
@@ -22,6 +28,8 @@ import { trace } from "./trace.ts";
 
 const TRANSCRIPT_TITLE_MAX = 60;
 
+// d2 surface (transcript viewer below) — re-introduced by #839/#836
+// (live-view / finished-run); see `openTranscriptViewer` for the contract.
 interface TranscriptMeta {
   role: string;
   sizeBytes: number;
@@ -109,7 +117,6 @@ export async function buildViewerText(
   );
 }
 
-/** d3. The deck-UI steer source tag carried by the lifecycle scrollback line. */
 export const DECK_UI_STEER_SOURCE: SteerSource = "deck-ui";
 
 /**

@@ -52,11 +52,12 @@ export function ensureGitExclude(repoRoot: string, lines: string[]): Promise<voi
   // version still lose one update — which is precisely the bug: whichever
   // wrote second silently dropped the other's line. The chain makes the whole
   // read-modify-write the unit.
-  const run = excludeChain.then(
-    () => ensureGitExcludeInner(repoRoot, lines),
-    () => ensureGitExcludeInner(repoRoot, lines),
-  );
-  excludeChain = run.catch(() => undefined);
+  const run = excludeChain.then(() => ensureGitExcludeInner(repoRoot, lines));
+  // The chain itself stores an always-resolved promise (`.finally`), not the
+  // raw `run`: a stored rejection would make the next caller's `.then` take
+  // the on-rejected branch and break mutual exclusion. inner is best-effort
+  // today (never throws), but the shape stays correct if that changes.
+  excludeChain = run.finally(() => {});
   return run;
 }
 
