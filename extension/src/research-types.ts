@@ -77,6 +77,20 @@ export interface AngleRun {
   /** The child's short prose summary (the claims are the record). */
   summary: string;
   claims: ResearchClaim[];
+  /**
+   * Which backend produced this angle's claims (the driver previously had
+   * no idea — #773): `parallel` (the default, the baked-in recipe) or
+   * `wigolo` (the one-shot fallback re-dispatch after a classified
+   * Parallel failure). Rendered in the angle summaries.
+   */
+  backend: "parallel" | "wigolo";
+  /**
+   * Why the angle failed (always set when `ok` is false): "dispatch
+   * failed or timed out", "provider error mid-stream", "returned no
+   * structured claims", or the dispatch rejection's message. Rendered in
+   * the angle summaries (mirrors plan-investigate.ts's failure strings).
+   */
+  failure?: string;
 }
 
 /** Reasons the pipeline halted without an artifact. */

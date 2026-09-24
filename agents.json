@@ -709,6 +709,7 @@
           "oo help *": "allow",
           "oo patterns": "allow",
           "parallel-cli *": "allow",
+          "wigolo *": "allow",
           "psql*": "ask",
           "mysql*": "ask",
           "mongosh*": "ask",

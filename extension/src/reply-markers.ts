@@ -155,6 +155,19 @@ export const MARKER_CONTRACTS: readonly MarkerContract[] = [
     onAbsence: "claim stays unannotated (absence is not a verdict; annotation never upgrades)",
   },
   {
+    token: "parallel-outcome",
+    values: [
+      "success",
+      "credit-exhausted",
+      "auth-missing",
+      "network-failed",
+      "empty-result",
+      "unparseable",
+    ],
+    consumer: "research-fallback.ts",
+    onAbsence: "unparseable → keep-parallel (never success, never a fallback trigger)",
+  },
+  {
     token: "pr",
     values: "<PR number> (`pr: <N>` line)",
     consumer: "work-driver-lens.ts",
