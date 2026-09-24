@@ -10,16 +10,21 @@
  * the operator browses them via /runs.
  */
 
-import type { ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as deckComposite from "./dispatch-deck-composite.ts";
-import { steerFromDeck } from "./dispatch-deck-interactive.ts";
 import { hasBuffer, openLiveView } from "./dispatch-deck-live.ts";
 import type { DeckEntry } from "./dispatch-deck.ts";
+import { trace } from "./trace.ts";
 
 /** Deck map accessors injected by dispatch-deck.ts (keeps the map private). */
 export interface RowConfirmHost {
   getEntry: (key: string) => DeckEntry | undefined;
-  /** Deliver a steer to the row's job (`deck-ui` source; shared steer core). */
+  /**
+   * Deliver a steer to the row's job. The host is built per-attach from the
+   * confirming ctx (dispatch-deck.ts `rowConfirmHostFor`) so the steer goes
+   * through the shared steer core with a UI that can notify on failure —
+   * never silently dropped.
+   */
   steer: (key: string, message: string) => void;
 }
 
@@ -42,21 +47,25 @@ export async function onRowConfirm(
   await openSteerPrompt(ctx, entry, host);
 }
 
-/** The pre-filled steer prompt for a row; undefined when the operator cancels. */
+/**
+ * The pre-filled steer prompt for a row; undefined when the operator cancels.
+ * A rejecting editor (e.g. an unsupported surface) is caught and traced,
+ * mirroring `openLiveView`'s catch — an editor throw must not escape into
+ * the roster input handler.
+ */
 async function openSteerPrompt(
   ctx: ExtensionContext,
   entry: DeckEntry,
   host: RowConfirmHost,
 ): Promise<void> {
-  const text = await ctx.ui.editor(
-    `Steer ${entry.label}`,
-    deckComposite.buildSteerPrompt(entry, Date.now()),
-  );
-  if (text === undefined) return;
-  host.steer(entry.key, text);
-}
-
-/** Deliver a steer to a deck row's job (`deck-ui` source; routes through the shared steer core). */
-export function steerDeckEntry(ctx: ExtensionUIContext, key: string, message: string): void {
-  void steerFromDeck(ctx, key, message);
+  try {
+    const text = await ctx.ui.editor(
+      `Steer ${entry.label}`,
+      deckComposite.buildSteerPrompt(entry, Date.now()),
+    );
+    if (text === undefined) return;
+    host.steer(entry.key, text);
+  } catch (err) {
+    trace(`dispatch-deck-confirm: steer prompt failed for ${entry.key}: ${(err as Error).message}`);
+  }
 }

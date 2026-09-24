@@ -10,8 +10,9 @@
  *     `feedRawEvent` from a raw-event observer on `spawnSpecialist`'s opts
  *     (spawn.ts line handler, for every assistant `message_end` and
  *     `toolResult`), threaded through `WorkHooks` in `startJob`/`startBatch`.
- *     Buffers are dropped when the job's deck entry is cleared — no leak
- *     across many dispatches.
+ *     Buffers are dropped when the job's deck entry is cleared (the deck
+ *     module's `clearEntry` calls `dropBuffer` — co-located lifecycle, no
+ *     leak across many dispatches).
  *   - Truncation happens at FEED time: normalised events are stored
  *     already-truncated (assistant text 400, tool args 240, results 200 —
  *     the runs.ts limits). The ring cap (200 events) is the only other
@@ -34,6 +35,8 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Component, isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
 import type { DeckEntry } from "./dispatch-deck.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
+import { formatElapsed } from "./progress.ts";
+import { TOOL_ARGS_PREVIEW_MAX, TOOL_RESULT_LINE_MAX } from "./runs.ts";
 import { trace } from "./trace.ts";
 
 // =============================================================================
@@ -50,10 +53,12 @@ export type LiveEvent =
 export const LIVE_RING_CAP = 200;
 /** Assistant text is truncated to this many chars at feed time (PM decision 5). */
 export const LIVE_TEXT_MAX = 400;
-/** Tool-call argument previews are truncated to this many chars (runs.ts limit). */
-export const LIVE_ARGS_MAX = 240;
-/** Tool-result previews are truncated to this many chars (runs.ts limit). */
-export const LIVE_RESULT_MAX = 200;
+// Tool-arg / tool-result truncation reuses the runs.ts limits (LIVE_TOOL_ARGS_MAX /
+// LIVE_TOOL_RESULT_MAX imported from runs.ts) so the two surfaces cannot drift.
+/** Preview of a tool call's arguments after whitespace collapse (chars). */
+export const LIVE_ARGS_MAX = TOOL_ARGS_PREVIEW_MAX;
+/** Preview of a tool result after newlines collapse to spaces (chars). */
+export const LIVE_RESULT_MAX = TOOL_RESULT_LINE_MAX;
 
 /** Truncate with an ellipsis marker, matching runs.ts / progress.ts style. */
 function truncate(s: string, max: number): string {
@@ -61,22 +66,21 @@ function truncate(s: string, max: number): string {
   return `${s.slice(0, max - 1).trimEnd()}…`;
 }
 
-/** One-line, whitespace-normalised preview of a tool call's arguments. */
+/**
+ * One-line, whitespace-normalised preview of a tool call's arguments.
+ * The raw string is bounded to ~4× the target BEFORE the whitespace collapse
+ * so a multi-MB payload is not rescanned in full: the collapse can only
+ * shorten the string, so anything past the first 4×LIVE_ARGS_MAX chars of the
+ * collapsed output would sit past the truncation point anyway (whitespace is
+ * at most half of a raw string that is all whitespace).
+ */
 export function toolCallArgsPreview(args: unknown): string {
   if (args === undefined || args === null) return "";
   const raw = typeof args === "string" ? args : JSON.stringify(args);
-  const oneLine = raw.replaceAll(/\s+/g, " ").trim();
+  const bounded = raw.length > LIVE_ARGS_MAX * 4 ? raw.slice(0, LIVE_ARGS_MAX * 4) : raw;
+  const oneLine = bounded.replaceAll(/\s+/g, " ").trim();
   return truncate(oneLine, LIVE_ARGS_MAX);
 }
-
-/**
- * The raw-event observer the deck's live view is fed through. Invoked from
- * spawn.ts's line handler for every parsed child event — in practice every
- * assistant `message_end` and every `toolResult` message (everything else is
- * dropped here). Truncation happens HERE, at feed time, so the buffer
- * stores bounded strings only.
- */
-export type LiveFeed = (event: PiJsonEvent) => void;
 
 const buffers = new Map<string, LiveEvent[]>();
 
@@ -116,14 +120,14 @@ export function bufferCount(): number {
  * content) are dropped silently. A feed for a key with no buffer (quiet
  * mode, or a lens/adversarial child) is a no-op.
  */
-export function feedRawEvent(key: string, event: Parameters<LiveFeed>[0]): void {
+export function feedRawEvent(key: string, event: PiJsonEvent): void {
   const buf = buffers.get(key);
   if (!buf) return;
   pushEvent(buf, event);
 }
 
 /** Push a parsed event onto a ring (module helper, exported for the feed-path test). */
-export function pushEvent(buf: LiveEvent[], event: Parameters<LiveFeed>[0]): void {
+export function pushEvent(buf: LiveEvent[], event: PiJsonEvent): void {
   if (event.type !== "message" && event.type !== "message_end") return;
   const msg = event.message;
   if (!msg) return;
@@ -233,14 +237,6 @@ export function createLiveViewComponent(
   let offset = 0; // events scrolled back from the tail; 0 = following
   const visible = 24;
 
-  const fmt = (ms: number): string => {
-    if (ms < 1000) return `${ms}ms`;
-    if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-    const m = Math.floor(ms / 60_000);
-    const s = Math.floor((ms % 60_000) / 1000);
-    return `${m}m${s}s`;
-  };
-
   return {
     invalidate(): void {
       /* no cached state */
@@ -248,7 +244,7 @@ export function createLiveViewComponent(
     render(width: number): string[] {
       const h = header();
       const hline = h
-        ? `${h.label} · ${h.role} · ${fmt(Math.max(0, h.now - h.startedAt))} · ${h.turns} turn${h.turns === 1 ? "" : "s"} · ${h.toolUses} tools · ${h.totalTokens} tokens${h.lastToolName ? ` · last: ${h.lastToolName}` : ""}`
+        ? `${h.label} · ${h.role} · ${formatElapsed(Math.max(0, h.now - h.startedAt))} · ${h.turns} turn${h.turns === 1 ? "" : "s"} · ${h.toolUses} tools · ${h.totalTokens} tokens${h.lastToolName ? ` · last: ${h.lastToolName}` : ""}`
         : key;
       const events = getBuffer(key);
       const lines: string[] = [hline];

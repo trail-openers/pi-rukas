@@ -22,9 +22,15 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as deckComposite from "./dispatch-deck-composite.ts";
-import { type RowConfirmHost, onRowConfirm, steerDeckEntry } from "./dispatch-deck-confirm.ts";
+import { type RowConfirmHost, onRowConfirm } from "./dispatch-deck-confirm.ts";
+import { steerFromDeck } from "./dispatch-deck-interactive.ts";
+import { dropBuffer } from "./dispatch-deck-live.ts";
 import { type DeckNav, createDeckNav } from "./dispatch-deck-nav.ts";
-import { type RunningState, emptyRunningState, formatElapsed } from "./progress.ts";
+import {
+  buildLinesBatchOnly as buildLinesBatchOnlyImpl,
+  buildLines as buildLinesImpl,
+} from "./dispatch-deck-rows.ts";
+import { type RunningState, emptyRunningState } from "./progress.ts";
 import { trace } from "./trace.ts";
 
 const WIDGET_KEY = "ensemble:deck";
@@ -158,7 +164,7 @@ function tryAttachNav(ctx: ExtensionContext): boolean {
   detachNav();
   const n = createDeckNav(
     navGetters(ctx),
-    (key) => void onRowConfirm(ctx, key, rowConfirmHost),
+    (key) => void onRowConfirm(ctx, key, rowConfirmHostFor(ctx)),
     scheduleRender,
   );
   if (!registerNavListener(n, ctx)) return false;
@@ -225,6 +231,10 @@ export function updateEntry(key: string, state: RunningState): void {
 
 export function clearEntry(key: string): void {
   if (!entries.delete(key)) return;
+  // #839 — the live-view ring buffer's lifecycle is co-located with the deck
+  // entry's: clearing the entry always drops the buffer (no-op for keys with
+  // none — lens/adversarial children and skipDeck jobs get no buffer at all).
+  dropBuffer(key);
   scheduleRender();
   if (entries.size === 0 && batches.size === 0) stopTicker();
 }
@@ -289,12 +299,17 @@ export function isTicking(): boolean {
 }
 
 /** Deck-map accessors the row-confirm module (#607 d3 / #839) reads through. */
-const rowConfirmHost: RowConfirmHost = {
-  getEntry: (key) => entries.get(key),
-  steer: (key, message) => {
-    if (activeCtx) steerDeckEntry(activeCtx.ui, key, message);
-  },
-};
+// #839 — the steer host is built per-attach (onRowConfirm receives it at call
+// time) so a steer is never silently dropped: openSteerPrompt / openLiveView
+// pass the SAME ctx.ui down, so steerFromDeck always has a UI to notify on
+// failure (an `activeCtx`-only lookup silently dropped steers whenever the
+// confirming ctx differed from the last attach()).
+function rowConfirmHostFor(ctx: ExtensionContext): RowConfirmHost {
+  return {
+    getEntry: (key) => entries.get(key),
+    steer: (key, message) => void steerFromDeck(ctx.ui, key, message),
+  };
+}
 
 function startTickerIfNeeded(): void {
   if (tickHandle !== undefined || isQuiet()) return;
@@ -364,7 +379,7 @@ function renderNow(): void {
  *  (both contain batch headers; only `buildLines` adds standalone rows). */
 function buildCompositeWidgetFactory(ctx: ExtensionContext) {
   return deckComposite.buildCompositeFactory(
-    buildLinesBatchOnly,
+    () => buildLinesBatchOnlyImpl(batches),
     () => ({
       running: snapshot(),
       selectedKey: nav?.selectedKey(),
@@ -375,7 +390,9 @@ function buildCompositeWidgetFactory(ctx: ExtensionContext) {
 }
 
 // =============================================================================
-// Row rendering
+// Row rendering (the row-shape code lives in dispatch-deck-rows.ts;
+// these thin wrappers keep the module's public API stable while the deck
+// module's private `entries`/`batches` maps stay module-private)
 // =============================================================================
 
 /** Top-level deck rows: batch headers + standalone (non-batched) entries,
@@ -393,29 +410,7 @@ function buildCompositeWidgetFactory(ctx: ExtensionContext) {
  *  test-dispatch-deck.ts block 8 pins this behaviour; treat it as the
  *  documented contract, not a bug. */
 export function buildLines(now: number = Date.now()): string[] {
-  const standalone: DeckEntry[] = [];
-  for (const e of entries.values()) {
-    if (!e.batchKey || !batches.has(e.batchKey)) {
-      standalone.push(e);
-    }
-  }
-  type TL = { kind: "batch"; b: BatchDeckEntry } | { kind: "single"; e: DeckEntry };
-  const tl: TL[] = [
-    ...[...batches.values()].map((b) => ({ kind: "batch" as const, b })),
-    ...standalone.map((e) => ({ kind: "single" as const, e })),
-  ];
-  tl.sort(
-    (a, b) => (a.kind === "batch" ? a.b.seq : a.e.seq) - (b.kind === "batch" ? b.b.seq : b.e.seq),
-  );
-  const lines: string[] = [];
-  for (const item of tl) {
-    if (item.kind === "batch") {
-      lines.push(formatBatchRow(item.b, now));
-    } else {
-      lines.push(formatRow(item.e, now));
-    }
-  }
-  return lines;
+  return buildLinesImpl(entries, batches, now);
 }
 
 /** The composite's Text projection: batch header rows only.
@@ -429,68 +424,11 @@ export function buildLines(now: number = Date.now()): string[] {
  *  sampling `Date.now()` twice and racing a 1 ms elapsed-time tick
  *  (flaky on CI). */
 export function buildLinesBatchOnly(now: number = Date.now()): string[] {
-  const lines: string[] = [];
-  for (const b of batches.values()) {
-    lines.push(formatBatchRow(b, now));
-  }
-  return lines;
+  return buildLinesBatchOnlyImpl(batches, now);
 }
 
-const STALE_THRESHOLD_MS = (() => {
-  const env = Number(process.env.PI_ENSEMBLE_STALE_THRESHOLD_MS);
-  return Number.isFinite(env) && env >= 1000 ? env : 15 * 60_000;
-})();
-
-const HINT_MAX = 50;
-
-function isStale(entry: { state: RunningState; startedAt: number }, now: number): boolean {
-  const last = entry.state.lastEventAt ?? entry.startedAt;
-  return now - last >= STALE_THRESHOLD_MS;
-}
-
-function entryLabel(e: { label: string; state: RunningState }): string {
-  return e.label || (e.state.tag ? `${e.state.role}[${e.state.tag}]` : e.state.role);
-}
-
-function truncateHint(s: string): string {
-  const oneLine = s.replaceAll(/\s+/g, " ").trim();
-  if (oneLine.length <= HINT_MAX) return oneLine;
-  return `${oneLine.slice(0, HINT_MAX - 1).trimEnd()}…`;
-}
-
-function formatRowCore(
-  entry: { label: string; state: RunningState; startedAt: number },
-  now: number,
-): string {
-  const elapsedMs = Math.max(0, now - entry.startedAt);
-  const parts: string[] = [entryLabel(entry), formatElapsed(elapsedMs)];
-  if (entry.state.lastToolName) {
-    parts.push(
-      entry.state.toolUses > 1
-        ? `${entry.state.lastToolName} (#${entry.state.toolUses})`
-        : entry.state.lastToolName,
-    );
-    if (entry.state.lastToolHint) parts.push(truncateHint(entry.state.lastToolHint));
-  }
-  if (isStale(entry, now)) {
-    parts.push(
-      `STALE (no progress ${formatElapsed(now - (entry.state.lastEventAt ?? entry.startedAt))})`,
-    );
-  }
-  return parts.join(" ");
-}
-
-export function formatRow(
-  entry: { label: string; state: RunningState; startedAt: number },
-  now: number = Date.now(),
-): string {
-  return `${isStale(entry, now) ? "⚠" : "⏳"} ${formatRowCore(entry, now)}`;
-}
-
-export function formatBatchRow(
-  batch: { label: string; size: number; completed: number; startedAt: number },
-  now: number = Date.now(),
-): string {
-  const running = Math.max(0, batch.size - batch.completed);
-  return `⏳ batch[${batch.label}] ${formatElapsed(Math.max(0, now - batch.startedAt))} · ${batch.completed}/${batch.size} done${running > 0 ? ` · ${running} running` : ""}`;
-}
+// Re-exported from dispatch-deck-rows.ts so that existing importers
+// (dispatch-deck-composite.ts, test-dispatch-deck.ts) keep their import
+// paths unchanged — the deck module stays the stable public surface for
+// the row-shape API.
+export { formatBatchRow, formatRow } from "./dispatch-deck-rows.ts";

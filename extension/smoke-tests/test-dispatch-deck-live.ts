@@ -14,14 +14,18 @@
  *   - handleInput: `s` → steer with the right key, Esc → close, ↑/↓ pause
  *     and resume following
  *   - the buffer is freed on dropBuffer
+ *   - clearEntry (deck module) drops the buffer — co-located lifecycle
  *   - quiet mode → no buffer
+ *   - a synchronous throw from a work function does not leak (startJob path)
+ *   - an openSteerPrompt editor rejection is caught (onRowConfirm resolves)
  *
  * The roster Enter → live-view wiring (dispatch-deck-confirm.ts onRowConfirm
  * with a fake ctx.ui.custom) is covered here too: a running row WITH a buffer
- * opens the live view (custom called with overlay:true, no picker); a
- * row WITHOUT a buffer opens the steer prompt directly (no custom call).
+ * opens the live view (custom called with overlay:true, no picker); a row
+ * WITHOUT a buffer opens the steer prompt directly (no custom call).
  */
 
+import { startJob } from "../src/async-jobs.ts";
 import { onRowConfirm } from "../src/dispatch-deck-confirm.ts";
 import {
   LIVE_RING_CAP,
@@ -120,7 +124,7 @@ function resetBuffers(): void {
     },
   });
   const buf2 = getBuffer("b2");
-  assert(buf2[3]?.kind === "toolResult" && buf2[3].isError === true, "2f: error toolResult marked");
+  assert(buf2[3]?.isError === true, "2f: error toolResult marked");
   dropBuffer("b2");
 }
 
@@ -197,7 +201,7 @@ function resetBuffers(): void {
   });
   const lines1 = comp.render(80);
   const flat1 = lines1.join("\n");
-  assert(flat1.includes("starting work"), "3b: new event appears on next render (same component)");
+  assert(flat1.includes("starting work"), "3b: new event appears on the next render");
   assert(flat1.includes("developer"), "3c: header shows the role label");
   // Esc → close
   comp.handleInput("\x1b");
@@ -256,8 +260,7 @@ function resetBuffers(): void {
 // ---------------------------------------------------------------------------
 // 5. Buffer freed on dropBuffer (clear).
 // ---------------------------------------------------------------------------
-// biome-ignore lint/complexity/noUselessLoneBlockStatements: fixture scope (shared `exit`/`assert` across the file)
-{
+function testDropBuffer() {
   resetBuffers();
   startBuffer("b1");
   feedRawEvent("b1", {
@@ -269,12 +272,12 @@ function resetBuffers(): void {
   assert(!hasBuffer("b1"), "5b: buffer gone after drop");
   assert(bufferCount() === 0, "5c: buffer count is 0 after drop");
 }
+testDropBuffer();
 
 // ---------------------------------------------------------------------------
 // 6. Quiet mode: no buffer created.
 // ---------------------------------------------------------------------------
-// biome-ignore lint/complexity/noUselessLoneBlockStatements: fixture scope (shared `exit`/`assert` across the file)
-{
+function testQuietMode() {
   resetBuffers();
   process.env.PI_ENSEMBLE_QUIET_STATUS = "1";
   startBuffer("b1");
@@ -284,7 +287,57 @@ function resetBuffers(): void {
     message: { role: "assistant", content: [{ type: "text", text: "x" }] },
   });
   assert(!hasBuffer("b1"), "6b: quiet mode → feedRawEvent is a no-op");
-  process.env.PI_ENSEMBLE_QUIET_STATUS = undefined;
+  Reflect.deleteProperty(process.env, "PI_ENSEMBLE_QUIET_STATUS");
+}
+testQuietMode();
+
+// ---------------------------------------------------------------------------
+// 6b. clearEntry (deck module) drops the buffer — co-located lifecycle:
+//     the buffer dies with the deck entry, so async-jobs needs no separate
+//     dropBuffer call on settle.
+// ---------------------------------------------------------------------------
+function testClearEntryDropsBuffer() {
+  resetBuffers();
+  reset();
+  startBuffer("deck-job-1");
+  startEntry("deck-job-1", { label: "developer", role: "developer" });
+  assert(hasBuffer("deck-job-1"), "6b-a: buffer exists while the entry is alive");
+  clearEntry("deck-job-1");
+  assert(!hasBuffer("deck-job-1"), "6b-b: clearEntry drops the buffer (co-located)");
+  assert(bufferCount() === 0, "6b-c: buffer count is 0 after clearEntry");
+  detach();
+}
+testClearEntryDropsBuffer();
+
+// ---------------------------------------------------------------------------
+// 6c. A synchronous throw from a work function does not leak: the deck entry
+//     and its buffer are cleared before startJob rethrows.
+// ---------------------------------------------------------------------------
+{
+  resetBuffers();
+  reset();
+  const fakePi = {
+    sendUserMessage: () => {},
+  } as never;
+  let threw = false;
+  try {
+    startJob(fakePi, {
+      label: "sync-throw-job",
+      role: "developer",
+      work: () => {
+        throw new Error("sync work failure");
+      },
+    });
+  } catch (err) {
+    threw = err instanceof Error && err.message === "sync work failure";
+  }
+  assert(threw, "6c-a: synchronous work throw propagates from startJob");
+  // The deck entry is gone (no row for a job that never ran) and clearEntry
+  // drops the buffer with it — nothing leaks for a job that threw.
+  const leaked = snapshot().find((e) => e.label === "sync-throw-job");
+  assert(!leaked, "6c-b: no deck entry leaked for a synchronously-throwing job");
+  assert(bufferCount() === 0, "6c-c: buffer count is 0 after the sync throw");
+  detach();
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +400,29 @@ function resetBuffers(): void {
   assert(editorCalls2.length === 1, "7e: steer prompt opened directly (editor called)");
   clearEntry("deck-job-2");
   detach();
+
+  // --- 7f: a REJECTING editor is caught inside openSteerPrompt — onRowConfirm
+  //     resolves (the throw never escapes into the roster input handler).
+  startEntry("deck-job-4", { label: "explore", role: "explore" });
+  const fakeCtx4 = {
+    hasUI: true,
+    ui: {
+      custom: (_f: unknown, _o?: unknown) => Promise.resolve("close"),
+      editor: (_t: string, _p: string) => Promise.reject(new Error("editor unsupported")),
+      setWidget: () => {},
+      getEditorText: () => "",
+      onTerminalInput: () => () => {},
+    },
+  } as unknown as Parameters<typeof onRowConfirm>[0];
+  let threw = false;
+  try {
+    await onRowConfirm(fakeCtx4, "deck-job-4", rowHost());
+  } catch {
+    threw = true;
+  }
+  assert(!threw, "7f: rejecting editor → caught, onRowConfirm resolves (no throw escapes)");
+  clearEntry("deck-job-4");
+  detach();
 }
 
 // ---------------------------------------------------------------------------
@@ -370,7 +446,6 @@ function rowHost() {
     steer: (_k: string, _m: string) => {},
   };
 }
-
 // ---------------------------------------------------------------------------
 // 9. Exception safety: a throwing observer must not be swallowed — the
 //    #839 contract is that observers are cheap and non-throwing by

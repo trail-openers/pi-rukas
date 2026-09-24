@@ -119,16 +119,17 @@ export interface PiUsage {
 }
 export interface PiMessage {
   /**
-   * Pi emits tool results as their own message role (not blocks inside a
-   * user message): the message carries `toolName`, `toolCallId` and `isError`
-   * fields the assistant/user shapes do not (see pi-ai's `ToolResultMessage`).
-   * The role string is deliberately widened to `string` (rather than the
-   * three-member union of known roles) so the raw `--mode rpc` shape — as
-   * emitted by any Pi version the operator runs — stays assignable without a
-   * cast; the consumers (progress.ts, dispatch-deck-live.ts) narrow with
-   * equality checks (`=== "toolResult"` / `=== "assistant"`).
+   * The three message roles Pi emits: assistant turns, user turns (prompts
+   * and tool-result-bearing messages per Anthropic's shape), and the
+   * `toolResult` role Pi uses for tool results as their OWN message (carrying
+   * `toolName`, `toolCallId` and `isError` — see pi-ai's `ToolResultMessage`).
+   * The version tolerance for any OTHER role an operator's Pi version might
+   * emit lives at the JSON.parse cast in spawn.ts (`parsed` is cast from
+   * plain parsed JSON), not here; the consumers (progress.ts,
+   * dispatch-deck-live.ts) narrow with equality checks
+   * (`=== "toolResult"` / `=== "assistant"`).
    */
-  role: string;
+  role: "user" | "assistant" | "toolResult";
   /** #839 — stamped on `toolResult` messages (pi-ai `ToolResultMessage`). */
   toolName?: string;
   /** #839 — stamped on `toolResult` messages (pi-ai `ToolResultMessage`). */

@@ -2,8 +2,25 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { showRunChildren } from "./runs-view.ts";
 
 const ENSEMBLE_DIR_DEFAULT = path.join(os.homedir(), ".pi", "agent", "ensemble-runs");
+
+/**
+ * Transcript-preview truncation limits (chars), shared with the dispatch
+ * deck's live view (dispatch-deck-live.ts) so the two surfaces truncate the
+ * same transcript content identically. `summariseTranscript`'s tool-result
+ * previews use TOOL_RESULT_PREVIEW_MAX; `renderTranscript`'s tool-call arg
+ * preview uses TOOL_ARGS_PREVIEW_MAX (after JSON.stringify, before newline
+ * handling) and its tool-result line uses TOOL_RESULT_PREVIEW_MAX (after
+ * newline collapse). The live view additionally caps assistant text at
+ * 400 chars (its own LIVE_TEXT_MAX — PM decision 5; runs.ts accumulates
+ * assistant text in full and only trims at render).
+ */
+export const TOOL_RESULT_PREVIEW_MAX = 400;
+export const TOOL_ARGS_PREVIEW_MAX = 240;
+/** `renderTranscript`'s tool-result line preview (after `replaceAll("\n", " ")`). */
+export const TOOL_RESULT_LINE_MAX = 200;
 
 /**
  * Keep this many most-recent batches on disk; everything older is auto-pruned
@@ -24,7 +41,7 @@ const KEEP_LAST_BATCHES = (() => {
  */
 const PRUNE_MIN_AGE_MS = 60_000;
 
-interface RunFile {
+export interface RunFile {
   path: string;
   filename: string;
   runId: string;
@@ -34,7 +51,7 @@ interface RunFile {
   sizeBytes: number;
 }
 
-interface Batch {
+export interface Batch {
   runId: string;
   mtimeMs: number; // newest child's mtime
   children: RunFile[];
@@ -209,7 +226,7 @@ export async function transcriptsSummary(
   return `${files.length} files · ${batches.length} batches · oldest ${oldestAge} · ${sizeStr}  (keep last ${KEEP_LAST_BATCHES})`;
 }
 
-function fmtRelative(mtimeMs: number, now = Date.now()): string {
+export function fmtRelative(mtimeMs: number, now = Date.now()): string {
   const dMs = now - mtimeMs;
   if (dMs < 60_000) return `${Math.round(dMs / 1000)}s ago`;
   if (dMs < 3_600_000) return `${Math.round(dMs / 60_000)}m ago`;
@@ -217,7 +234,7 @@ function fmtRelative(mtimeMs: number, now = Date.now()): string {
   return `${Math.round(dMs / 86_400_000)}d ago`;
 }
 
-function fmtSize(bytes: number): string {
+export function fmtSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}K`;
   return `${(bytes / 1024 / 1024).toFixed(1)}M`;
@@ -284,7 +301,7 @@ export async function summariseTranscript(file: string): Promise<ParsedTranscrip
     if (msg.role === "toolResult") {
       const blocks = msg.content ?? [];
       const preview = blocks.map((b) => (b.type === "text" && b.text ? b.text : "")).join("");
-      out.toolResults.push({ preview: preview.slice(0, 400) });
+      out.toolResults.push({ preview: preview.slice(0, TOOL_RESULT_PREVIEW_MAX) });
     } else if (msg.role === "user") {
       for (const b of msg.content ?? []) {
         if (b.type === "text" && b.text) {
@@ -296,7 +313,7 @@ export async function summariseTranscript(file: string): Promise<ParsedTranscrip
               : Array.isArray(b.content)
                 ? (b.content as Array<{ text?: string }>).map((c) => c.text ?? "").join("")
                 : JSON.stringify(b.content ?? "");
-          out.toolResults.push({ preview: preview.slice(0, 400) });
+          out.toolResults.push({ preview: preview.slice(0, TOOL_RESULT_PREVIEW_MAX) });
         }
       }
     } else if (msg.role === "assistant") {
@@ -342,12 +359,15 @@ export function renderTranscript(file: RunFile, parsed: ParsedTranscript): strin
       const tc = parsed.toolCalls[i];
       if (!tc) continue;
       const inputStr = JSON.stringify(tc.input);
-      const truncated = inputStr.length > 240 ? `${inputStr.slice(0, 240)}…` : inputStr;
+      const truncated =
+        inputStr.length > TOOL_ARGS_PREVIEW_MAX
+          ? `${inputStr.slice(0, TOOL_ARGS_PREVIEW_MAX)}…`
+          : inputStr;
       lines.push(`${i + 1}. [${tc.name}] ${truncated}`);
       const matching = parsed.toolResults[i];
       if (matching) {
-        const preview = matching.preview.replaceAll("\n", " ").slice(0, 200);
-        lines.push(`   → ${preview}${preview.length === 200 ? "…" : ""}`);
+        const preview = matching.preview.replaceAll("\n", " ").slice(0, TOOL_RESULT_LINE_MAX);
+        lines.push(`   → ${preview}${preview.length === TOOL_RESULT_LINE_MAX ? "…" : ""}`);
       }
     }
   }
@@ -408,24 +428,7 @@ export function registerRunsCommand(pi: ExtensionAPI) {
 
       const batch = await pickBatch(ctx, allBatches, showAll);
       if (!batch) return;
-
-      // Level 2: pick a child within the batch. Children-per-batch is usually
-      // 1–6 so no pagination needed here.
-      const childLabels = batch.children.map((c) => {
-        const tag = c.seq != null ? `${c.role}-${c.seq}` : c.role;
-        return `${tag.padEnd(28)} · ${fmtSize(c.sizeBytes).padStart(6)}`;
-      });
-      const childPick = await ctx.ui.select(`Children in ${batch.runId}`, childLabels);
-      if (!childPick) return;
-      const child = batch.children[childLabels.indexOf(childPick)];
-      if (!child) return;
-
-      // Level 3: render summary and show in scrollable editor
-      const parsed = await summariseTranscript(child.path);
-      const rendered = renderTranscript(child, parsed);
-      // ui.editor returns the (possibly edited) text on save, undefined on Esc.
-      // We use it as a read-only viewer; discard the return value.
-      await ctx.ui.editor(`${child.role}${child.seq != null ? `-${child.seq}` : ""}`, rendered);
+      await showRunChildren(ctx, batch);
     },
   });
 }
@@ -470,11 +473,13 @@ async function pickBatch(
     const pick = await ctx.ui.select(title, [...labels, ...sentinels]);
     if (!pick) return undefined;
 
+    // Handle the sentinel rows ("show older" / "show all") before falling
+    // through to the normal child selection.
     if (pick === SHOW_OLDER) {
       offset += BATCH_PAGE_SIZE;
       continue;
     }
-    if (pick === SHOW_ALL) {
+    if (pick === SHOW_ALL && !showAll) {
       // Re-open with the cap removed. (showAll=true on the next loop.)
       // Tail call via simple flag swap.
       return pickBatch(ctx, allBatches, true);

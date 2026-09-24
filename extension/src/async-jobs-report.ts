@@ -1,9 +1,19 @@
 /**
- * Report-formatting helpers for async dispatch jobs — pure functions, no
- * ExtensionAPI coupling. Renders the bounded single/failure/batch reports
- * that async-jobs.ts pushes back to the parent agent via
- * `pi.sendUserMessage(report, { deliverAs: "steer" })`.
+ * Report-formatting helpers and batch settlement for async dispatch jobs.
+ * The formatters below are pure functions, no ExtensionAPI coupling; they
+ * render the bounded single/failure/batch reports that async-jobs.ts pushes
+ * back to the parent agent via `pi.sendUserMessage(report, { deliverAs:
+ * "steer" })`. `settleMember` is the batch's finalize tail (moved here from
+ * async-jobs.ts when that file hit the 500-line limit — it is the report +
+ * lifecycle-emit half of batch settlement) and is called from async-jobs.ts
+ * on the last member's settle (the async `.finally` path and the
+ * synchronous-throw path in `startBatch`).
  */
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { jobs } from "./async-jobs-registry.ts";
+import * as dispatchDeck from "./dispatch-deck.ts";
+import * as lifecycle from "./lifecycle-events.ts";
+import { trace } from "./trace.ts";
 import { type DispatchResult, isRateLimit429Msg } from "./types.ts";
 import { classifyFailureCause } from "./work-driver-failure-taxonomy.ts";
 
@@ -280,6 +290,73 @@ export function formatFailReport(jobId: string, label: string, err: Error): stri
     "",
     "(See /runs for any partial transcript.)",
   ].join("\n");
+}
+
+interface BatchOrchestratorJobState {
+  kind: string;
+  jobId: string;
+  role: string;
+  label: string;
+  startedAt: number;
+  size: number;
+  completed: number;
+}
+
+/**
+ * Finalize the batch when its last member settles: advance the persistent
+ * batch row ("1/3 done · 2 running"), then when ALL members are in, emit the
+ * lifecycle outcome, deliver the ONE consolidated report, and tear down the
+ * batch entry. Shared by the async member-settle path (`.finally`) and the
+ * synchronous-throw path in `startBatch` (where the member never got a
+ * promise to settle, so the same tail runs inline). The caller has already
+ * removed the settled member's job and deck entry before this runs.
+ */
+export function settleMember(
+  pi: ExtensionAPI,
+  batchId: string,
+  batchLabel: string,
+  startedAt: number,
+  orchestrator: BatchOrchestratorJobState,
+  memberResults: BatchReportInput["members"],
+): void {
+  orchestrator.completed++;
+  // Advance the batch row's counter so the user sees "1/3 done · 2 running".
+  dispatchDeck.updateBatchProgress(batchId, orchestrator.completed);
+  if (orchestrator.completed !== orchestrator.size) return;
+  jobs.delete(batchId);
+  dispatchDeck.clearBatchEntry(batchId);
+  const batchMs = Date.now() - startedAt;
+  const anyFailed = memberResults.some((m) => "failed" in m.result || !m.result.ok);
+  const tokens = memberResults.reduce((acc, m) => {
+    if ("failed" in m.result) return acc;
+    return acc + totalTokens(m.result);
+  }, 0);
+  if (anyFailed) {
+    lifecycle.emitFailed(batchId, batchLabel, batchLabel, batchMs);
+  } else {
+    lifecycle.emitCompleted(batchId, batchLabel, batchLabel, batchMs, tokens);
+  }
+  const report = formatBatchReport({
+    batchLabel,
+    batchId,
+    startedAt,
+    members: memberResults,
+  });
+  deliverSteerReport(pi, report);
+  trace(`async batch ${batchId} (${batchLabel}) finished in ${Date.now() - startedAt}ms`);
+}
+
+/**
+ * Push a report back to the parent agent. `deliverAs: "steer"` queues the
+ * message during a streaming turn (delivered before the next LLM call) or
+ * directly if the agent is idle.
+ */
+export function deliverSteerReport(pi: ExtensionAPI, report: string): void {
+  try {
+    pi.sendUserMessage(report, { deliverAs: "steer" });
+  } catch (err) {
+    trace(`async report delivery failed: ${(err as Error).message}`);
+  }
 }
 
 export interface BatchReportInput {
