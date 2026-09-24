@@ -6,9 +6,9 @@
  *  - clear drops the row at 0s (no linger)
  *  - widget content is a string[] — Pi renders one line per element (#141)
  *  - hierarchical layout: batch headers are top-level (⏳); members do NOT
- *    appear in the buildLines projection (the SelectList is the sole
- *    per-job surface, #742); standalone (non-batched) singles are
- *    top-level too
+ *    appear in the buildLines projection (they render as their own
+ *    per-job rows in the composite, #834); standalone (non-batched)
+ *    singles are top-level too
  *  - global insertion-order traversal of top-level items, member seq within batch
  *  - empty deck → setWidget(undefined)
  *  - tool-arg hint surfaces in row (#139)
@@ -33,6 +33,7 @@ import {
   startEntry,
   updateEntry,
 } from "../src/dispatch-deck.ts";
+import { buildJobRows, buildCompositeFactory } from "../src/dispatch-deck-composite.ts";
 import { type RunningState, emptyRunningState } from "../src/progress.ts";
 
 let exit = 0;
@@ -64,12 +65,16 @@ interface WidgetCall {
 function fakeCtx(): { calls: WidgetCall[]; ctx: Parameters<typeof attach>[0] } {
   const calls: WidgetCall[] = [];
   const ctx = {
+    hasUI: true,
     ui: {
       setWidget: (key: string, content: WidgetContent, options?: { placement?: string }) => {
         calls.push({ key, content, options });
       },
       // setStatus retained for type compatibility but not used by the deck anymore.
       setStatus: (_key: string, _text: string | undefined) => {},
+      notify: (_msg: string, _level?: string) => {},
+      getEditorText: () => "",
+      onTerminalInput: () => () => {},
     },
   } as unknown as Parameters<typeof attach>[0];
   return { calls, ctx };
@@ -251,9 +256,9 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   assert(!lines.some((l) => l.startsWith(" ↳ ")), "no indented rows when there are no batches");
 }
 
-// 7. buildLines: batch + members → batch header only (member rows are the
-// SelectList's, #742 — the buildLines projection is used by the renderNow
-// empty-deck guard, not the composite's Text projection).
+// 7. buildLines: batch + members → batch header only (members render as
+// their own per-job rows in the composite, #834 — the buildLines
+// projection is a test-only surface, not the composite's Text projection).
 {
   reset();
   startBatchEntry("batch-x", { label: "developer×3", size: 3 });
@@ -283,8 +288,9 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
 }
 
 // 9. buildLines: mixed — batch header + standalone in dispatch order (#141).
-// Member rows are absent (SelectList's, #742); the batch header and the
-// standalone appear in insertion order.
+// Member rows are absent (members have their own per-job rows in the
+// composite, #834); the batch header and the standalone appear in
+// insertion order.
 {
   reset();
   startBatchEntry("b1", { label: "developer×2", size: 2 });
@@ -292,8 +298,8 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   startEntry("m2", { label: "developer[task-B]", role: "developer", batchKey: "b1" });
   startEntry("solo", { label: "explore", role: "explore" });
   const lines = buildLines();
-  // Expected: batch header, standalone (members absent — SelectList's, #742)
-  assert(lines.length === 2, "1 batch + 2 members + 1 standalone → 2 lines (#742)");
+  // Expected: batch header, standalone (members absent — per-job rows, #834)
+  assert(lines.length === 2, "1 batch + 2 members + 1 standalone → 2 lines (#834)");
   assert(lines[0]?.startsWith("⏳ batch["), "batch header first");
   assert(
     lines[1]?.startsWith("⏳ explore"),
@@ -302,7 +308,8 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
 }
 
 // 10. buildLines: top-level traversal respects global insertion order — standalone before batch.
-// Member rows are absent (SelectList's, #742); standalone and batch header appear in insertion order.
+// Member rows are absent (members have their own per-job rows in the
+// composite, #834); standalone and batch header appear in insertion order.
 {
   reset();
   startEntry("solo", { label: "explore", role: "explore" });
@@ -310,7 +317,7 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   startEntry("m1", { label: "developer[task-A]", role: "developer", batchKey: "b1" });
   startEntry("m2", { label: "developer[task-B]", role: "developer", batchKey: "b1" });
   const lines = buildLines();
-  assert(lines.length === 2, "1 standalone + 1 batch + 2 members → 2 lines (#742)");
+  assert(lines.length === 2, "1 standalone + 1 batch + 2 members → 2 lines (#834)");
   assert(lines[0]?.startsWith("⏳ explore"), "standalone first (inserted before batch)");
   assert(lines[1]?.startsWith("⏳ batch["), "batch header second");
 }
@@ -331,13 +338,13 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
     typeof last?.content === "function",
     "setWidget called with factory function (#232 — bypasses Pi's MAX_WIDGET_LINES=10 array cap)",
   );
-  // Invoke the factory and count Container children: no per-job Text rows
-  // (#742 — the per-job surface is the SelectList) + 1 trailing blank line
-  // (#143 presentation separator) + 1 SelectList (#729 composite) = 2.
+  // Invoke the factory and count Container children: #834 replaced the
+  // SelectList with plain per-job Text rows — 2 job rows + 1 blank
+  // separator + 1 hint row (empty editor → hint shown) = 4.
   const children = renderFactoryChildren(last?.content);
   assert(
-    children.length === 2,
-    "factory returns a Container with NO per-job Text rows + trailing blank + SelectList (#742)",
+    children.length === 4,
+    `factory returns a Container with 2 job rows + blank + hint (#834); got ${children.length}`,
   );
   assert(last?.options?.placement === "belowEditor", "widget placement is 'belowEditor'");
   detach();
@@ -357,12 +364,13 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
 
   const last = calls[calls.length - 1];
   assert(typeof last?.content === "function", "overflow case still uses factory form");
-  // No per-job Text rows (#742) + 1 trailing blank + 1 SelectList = 2
-  // children even past the cap — the cap now bounds batch Text rows only.
+  // #834: 25 job rows (one per entry) + 1 blank separator + 1 hint = 27
+  // children. The per-job rows are plain Text — there is no SelectList to
+  // cap them, so the cap (batch headers only) no longer bounds the list.
   const children = renderFactoryChildren(last?.content);
   assert(
-    children.length === 2,
-    `25 entries → 2 children (no per-job Text rows + trailing blank + SelectList, #742); got ${children.length}`,
+    children.length === 27,
+    `25 entries → 27 children (25 job rows + blank + hint, #834); got ${children.length}`,
   );
   detach();
 }
@@ -420,6 +428,66 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   for (const header of batchOnly) {
     assert(lines.includes(header), `batch-header row in batch-only projection also in buildLines: ${header}`);
   }
+}
+
+// 14. #835 regression guard on the #834 plain-row surface: two same-role
+// jobs whose keys share a prefix (the realistic newJobId shape — a shared
+// base-36 timestamp prefix) can render byte-identical formatRow lines from
+// spawn until the first updateEntry. buildJobRows appends the collision-
+// aware key fragment so the rendered rows stay distinct for their whole
+// lifetime; the composite renders them with the same fragment.
+{
+  const now = 4_500_000;
+  const keys = ["aaaaaaaaaaa1", "aaaaaaaaaaa2"];
+  const entries: DeckEntry[] = keys.map((key, i) => ({
+    key,
+    label: "developer",
+    seq: i,
+    startedAt: now - 134_000,
+    state: makeState("developer", { lastEventAt: now - 1000 }),
+  }));
+  // Precondition: without the fragment the rows are byte-identical (the
+  // bug the fragment fixes) — same label, same role, same-second elapsed.
+  assert(formatRow(entries[0]!, now) === formatRow(entries[1]!, now), "14a: bare formatRow rows are identical (the #835 class)");
+  const rows = buildJobRows(entries, now);
+  assert(rows[0]?.text !== rows[1]?.text, `14b: buildJobRows rows distinct (${rows[0]?.text} vs ${rows[1]?.text})`);
+  assert(
+    (rows[0]?.text ?? "").endsWith(" · ") === false &&
+      (rows[0]?.text ?? "").includes(" · key aaaaaaaa") &&
+      (rows[1]?.text ?? "").includes(" · key aaaaaaaa"),
+    "14c: fragment is the row suffix, prefixed `key `, preserves the shared 10-char prefix",
+  );
+  // The composite factory renders the same distinct rows (the production
+  // surface the operator sees), with the `>` marker position-only.
+  const factory = buildCompositeFactory(() => [], () => ({ running: entries, selectedKey: keys[0], showHint: false }), 20);
+  const comp = factory(null, fakeTheme);
+  if (comp instanceof Container) {
+    const rendered = comp.children.map((c) => (c as Text).text);
+    assert(rendered.length === 3, "14d: 2 job rows + 1 blank separator (no hint: roster mode active)");
+    assert(rendered[0]?.startsWith("> ") && !rendered[1]?.startsWith("> "), "14e: '>' marker on the selected row only");
+    assert(
+      rendered[0] !== rendered[1] &&
+        rendered[0]?.slice(2) !== rendered[1]?.slice(2),
+      "14f: composite renders distinct rows (fragment survives the '> ' prefix)",
+    );
+  }
+
+  // 14g. Three keys sharing the first 13 chars → three pairwise-distinct
+  // fragments, all starting with the shared prefix.
+  const adv = ["abcdefghijklm1x", "abcdefghijklm2x", "abcdefghijklm3x"];
+  const advEntries: DeckEntry[] = adv.map((key, i) => ({
+    key,
+    label: "developer",
+    seq: i,
+    startedAt: now - 134_000,
+    state: makeState("developer", { lastEventAt: now - 1000 }),
+  }));
+  const advFragments = buildJobRows(advEntries, now).map((r) => r.text.split(" · ").pop() ?? "");
+  assert(
+    new Set(advFragments).size === 3 &&
+      advFragments.every((f) => f.startsWith("key abcdefghij")),
+    `14g: 3 keys sharing 13 chars → pairwise-distinct key-fragments (${advFragments.join(" | ")})`,
+  );
 }
 
 console.log(`\nexit ${exit}`);

@@ -1,17 +1,16 @@
 /**
- * Live dispatch deck (#117 / #607 / #709 / #729 / #742).
+ * Live dispatch deck (#117 / #607 / #709 / #729 / #742 / #834).
  *
  * The deck registers ONE widget — `ensemble:deck` — a composite Container
- * of batch Text rows (belowEditor) followed by a keyboard-selectable
- * SelectList that is the sole per-job surface. #729 collapsed the prior
- * dual-projection design (a second aboveEditor SelectList that re-rendered
- * the same entries with a different label format) into a single key; #742
- * removed the internal per-job Text rows that rendered every job a second
- * time above that list.
+ * of batch Text rows followed by plain per-job rows, one per RUNNING job
+ * (batch members included). #834 replaced the non-focusable SelectList
+ * (which never received input — keys route to the focused editor, #176)
+ * with these rows plus a roster-mode input listener (dispatch-deck-nav.ts)
+ * that lets the operator walk the rows with the arrow keys from an empty
+ * editor.
  *
- * Selecting a row in the composite's SelectList confirms the job: a
- * running job opens the steer prompt (`deck-ui` source tag); a settled
- * job opens the read-only transcript viewer (#607 d2/d3).
+ * Selecting a row (Enter in roster mode) confirms the job: a running job
+ * opens the steer prompt (`deck-ui` source tag).
  *
  * Opt-out: PI_ENSEMBLE_QUIET_STATUS=1.
  *
@@ -22,7 +21,8 @@
 
 import type { ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import * as deckComposite from "./dispatch-deck-composite.ts";
-import * as deckInteractive from "./dispatch-deck-interactive.ts";
+import { steerFromDeck } from "./dispatch-deck-interactive.ts";
+import { type DeckNav, createDeckNav } from "./dispatch-deck-nav.ts";
 import { type RunningState, emptyRunningState, formatElapsed } from "./progress.ts";
 import { trace } from "./trace.ts";
 
@@ -55,9 +55,6 @@ export interface BatchDeckEntry {
   startedAt: number;
 }
 
-export const DECK_PROMPT_STEER_SOURCE = "deck-ui";
-export const DECK_PROMPT_CANCEL_KEY = "__deck_prompt::cancel__";
-
 const entries = new Map<string, DeckEntry>();
 const batches = new Map<string, BatchDeckEntry>();
 let activeCtx: ExtensionContext | undefined;
@@ -65,9 +62,16 @@ let pendingRender = false;
 let insertionCounter = 0;
 let tickHandle: ReturnType<typeof setInterval> | undefined;
 let widgetVisible = false;
-// #607 d2/d3 — jobIds that have settled (deck entry cleared); confirmed
-// rows route to the transcript viewer instead of the steer prompt.
-const settledJobs = new Set<string>();
+let nav: DeckNav | undefined;
+let navUnsub: (() => void) | undefined;
+let navWarned = false;
+// Self-heal attempt counter: caps the renderNow retry loop so a persistent
+// onTerminalInput failure (a host without the capability at all) doesn't
+// re-create and re-attempt registration on every 1 s render for the whole
+// session. Reset ONLY by attachNav — the self-heal path must ACCUMULATE
+// attempts across renders or the cap never binds.
+let navHealAttempts = 0;
+const NAV_HEAL_MAX = 5;
 
 function isQuiet(): boolean {
   return process.env.PI_ENSEMBLE_QUIET_STATUS === "1";
@@ -83,6 +87,7 @@ export function attach(ctx: ExtensionContext): void {
     startTickerIfNeeded();
     scheduleRender();
   }
+  attachNav(ctx);
 }
 
 export function detach(): void {
@@ -92,11 +97,96 @@ export function detach(): void {
       activeCtx.ui.setWidget(WIDGET_KEY, undefined);
     } catch {}
   }
+  detachNav();
   activeCtx = undefined;
   entries.clear();
   batches.clear();
   pendingRender = false;
   widgetVisible = false;
+}
+
+/** Detach the roster-mode listener (if registered) and drop the nav state. */
+function detachNav(): void {
+  if (navUnsub) {
+    try {
+      navUnsub();
+    } catch {}
+    navUnsub = undefined;
+  }
+  nav = undefined;
+}
+
+function navGetters(ctx: ExtensionContext) {
+  return {
+    runningKeys: () => [...entries.values()].map((e) => e.key),
+    // No try/catch: a throw propagates to the key-press handler (Pi's
+    // input loop). Swallowing it to "" would ENABLE roster mode from a
+    // throwing editor — fail open instead.
+    editorText: () => ctx.ui.getEditorText(),
+  };
+}
+
+/**
+ * #834 — register the roster-mode input listener once. The listener is
+ * the operator's path into the deck's running-job rows: from an empty
+ * editor, `down` enters roster mode (see dispatch-deck-nav.ts). It is
+ * registered only when the extension has a UI surface and the deck is
+ * not quiet — quiet mode and headless mode register nothing. `detach()`
+ * unsubscribes; a re-`attach` after `detach` registers a fresh listener
+ * (the module-level `nav` is cleared by `detach`, so at most one
+ * listener is ever live).
+ */
+function attachNav(ctx: ExtensionContext): void {
+  if (!tryAttachNav(ctx)) detachNav();
+}
+
+/**
+ * Own the nav wiring for one cycle: the quiet/hasUI guards, the
+ * prior-listener teardown, the createDeckNav construction and the
+ * registration. Used by `attach()` (explicit attach — a new budget for
+ * the self-heal counters) and renderNow's self-heal (a transient
+ * attach-time failure retries here on a later render). The
+ * `navWarned`/`navHealAttempts` resets live in `attachNav` only: the
+ * self-heal path must accumulate across renders so the cap binds. Returns
+ * true when the listener is live.
+ */
+function tryAttachNav(ctx: ExtensionContext): boolean {
+  if (isQuiet() || !ctx.hasUI) return false;
+  // Unsubscribe any prior listener before re-registering (attach can be
+  // called more than once in a session without an intervening detach).
+  detachNav();
+  const n = createDeckNav(navGetters(ctx), (key) => void onRowConfirm(ctx, key), scheduleRender);
+  if (!registerNavListener(n, ctx)) return false;
+  nav = n;
+  return true;
+}
+
+/**
+ * Register the nav listener. Returns true on success. On failure the
+ * deck still renders — only the roster-mode entry point is unavailable;
+ * registration is retried on the next renderNow (self-heal for a
+ * transient attach-time failure) and a persistent one surfaces a
+ * one-time operator-visible warning (the trace alone is stderr-only and
+ * off unless PI_ENSEMBLE_DEBUG=1).
+ */
+function registerNavListener(n: DeckNav, ctx: ExtensionContext): boolean {
+  try {
+    navUnsub = ctx.ui.onTerminalInput(n.handler);
+    return true;
+  } catch (err) {
+    navUnsub = undefined;
+    trace(`dispatch-deck: onTerminalInput unavailable: ${(err as Error).message}`);
+    if (!navWarned) {
+      navWarned = true;
+      try {
+        ctx.ui.notify(
+          "Dispatch deck: arrow-key roster nav is unavailable this session (onTerminalInput not supported); rows still render.",
+          "warning",
+        );
+      } catch {}
+    }
+    return false;
+  }
 }
 
 export interface StartEntryOpts {
@@ -130,7 +220,6 @@ export function updateEntry(key: string, state: RunningState): void {
 
 export function clearEntry(key: string): void {
   if (!entries.delete(key)) return;
-  settledJobs.add(key);
   scheduleRender();
   if (entries.size === 0 && batches.size === 0) stopTicker();
 }
@@ -187,7 +276,7 @@ export function reset(): void {
   pendingRender = false;
   insertionCounter = 0;
   widgetVisible = false;
-  settledJobs.clear();
+  detachNav();
 }
 
 export function isTicking(): boolean {
@@ -229,6 +318,19 @@ function renderNow(): void {
     }
     return;
   }
+  // Self-heal a transient attach-time onTerminalInput failure: re-try the
+  // roster-mode listener registration while it is absent, capped so a
+  // persistent failure (a host without the capability at all) settles into
+  // the degraded state instead of retrying every render forever. The
+  // quiet/hasUI guards live inside tryAttachNav. The attempt counter is
+  // NOT reset here — the self-heal path accumulates across renders so the
+  // NAV_HEAL_MAX cap binds; only attachNav resets the budget.
+  if (nav === undefined && navHealAttempts < NAV_HEAL_MAX) {
+    navHealAttempts++;
+    if (tryAttachNav(activeCtx)) {
+      trace("dispatch-deck: roster-mode nav restored (self-heal) after earlier failure");
+    }
+  }
   const factory = buildCompositeWidgetFactory(activeCtx);
   try {
     activeCtx.ui.setWidget(WIDGET_KEY, factory, { placement: "belowEditor" });
@@ -238,51 +340,42 @@ function renderNow(): void {
   }
 }
 
-/** Build the single composite widget factory (batch rows + SelectList).
- *  The Text projection reads `buildLinesBatchOnly` (batch headers only);
- *  the SelectList is the sole per-job surface (one item per entry, #742).
- *  renderNow's empty-deck guard reads `buildLines` (batch headers +
- *  standalone rows) so that a deck with only standalone entries still
- *  renders; `buildLines`' output is a strict superset of
- *  `buildLinesBatchOnly`'s (both contain batch headers; only `buildLines`
- *  adds standalone rows). */
+/** Build the single composite widget factory (batch rows + per-job plain
+ *  rows). The Text projection reads `buildLinesBatchOnly` (batch headers
+ *  only); the per-job rows are one Text row per RUNNING entry (batch
+ *  members included, #834) with the roster-mode `>` marker and the
+ *  `↓ select subagents` hint. renderNow's empty-deck guard tests
+ *  `entries.size === 0 && batches.size === 0` directly (no projection
+ *  read) so that a deck with only standalone entries still renders;
+ *  `buildLines`' output is a strict superset of `buildLinesBatchOnly`'s
+ *  (both contain batch headers; only `buildLines` adds standalone rows). */
 function buildCompositeWidgetFactory(ctx: ExtensionContext) {
   return deckComposite.buildCompositeFactory(
     buildLinesBatchOnly,
-    () => [...entries.values()],
+    () => ({
+      running: snapshot(),
+      selectedKey: nav?.selectedKey(),
+      showHint: !nav?.isActive() && entries.size > 0,
+    }),
     getDeckMaxRows(),
-    {
-      onRowConfirm: (key) => {
-        void onRowConfirm(ctx, key);
-      },
-      onSelectionChange: () => {
-        scheduleRender();
-      },
-    },
   );
 }
 
-/** #607 d2/d3. Route a confirmed row. */
+/** #607 d3. Route a confirmed row to the steer prompt. */
 async function onRowConfirm(ctx: ExtensionContext, key: string): Promise<void> {
   const entry = entries.get(key);
   if (!entry) return;
-  if (!settledJobs.has(key)) {
-    const text = await ctx.ui.editor(
-      `Steer ${entry.label}`,
-      deckComposite.buildSteerPrompt(entry, Date.now()),
-    );
-    if (text === undefined) return;
-    steerDeckEntry(ctx.ui, key, text);
-    return;
-  }
-  void deckInteractive
-    .openTranscriptViewer(ctx, entry)
-    .catch((e: Error) => trace(`dispatch-deck: viewer error: ${e.message}`));
+  const text = await ctx.ui.editor(
+    `Steer ${entry.label}`,
+    deckComposite.buildSteerPrompt(entry, Date.now()),
+  );
+  if (text === undefined) return;
+  steerDeckEntry(ctx.ui, key, text);
 }
 
 /** Deliver a steer to a deck row's job (`deck-ui` source; routes through the shared steer core). */
 export function steerDeckEntry(ctx: ExtensionUIContext, key: string, message: string): void {
-  void deckInteractive.steerFromDeck(ctx, key, message);
+  void steerFromDeck(ctx, key, message);
 }
 
 // =============================================================================
@@ -290,11 +383,11 @@ export function steerDeckEntry(ctx: ExtensionUIContext, key: string, message: st
 // =============================================================================
 
 /** Top-level deck rows: batch headers + standalone (non-batched) entries,
- *  in insertion order. Batched members are NOT included — the SelectList
- *  is the sole per-job surface (#742). This is the projection read by
- *  renderNow's empty-deck guard (via `hasRenderableRows`). It is a strict superset of
- *  `buildLinesBatchOnly`'s output (both contain batch headers; this adds
- *  standalone rows).
+ *  in insertion order. Batched members are NOT included — they render as
+ *  their own per-job rows in the composite's row projection (#834), so
+ *  including them here would double-render them. It is a strict superset
+ *  of `buildLinesBatchOnly`'s output (both contain batch headers; this
+ *  adds standalone rows).
  *
  *  Orphan-member contract (fail-open, deliberate): an entry whose `batchKey`
  *  names a batch that was never registered — or was cleared while its members
@@ -329,26 +422,16 @@ export function buildLines(now: number = Date.now()): string[] {
   return lines;
 }
 
-/**
- * Is anything renderable? Equivalent to `buildLines().length > 0`: every row
- * buildLines emits comes from either a batch (header) or an entry (standalone),
- * so both collections empty ⇔ no rows. Used by renderNow's empty-deck guard
- * so the 1s ticker can test emptiness without allocating and sorting.
- */
-function hasRenderableRows(): boolean {
-  return entries.size > 0 || batches.size > 0;
-}
-
 /** The composite's Text projection: batch header rows only.
- *  Member rows are the SelectList's (one item per job entry, #742), so
- *  including them here would render each batch member twice — once as a
- *  Text row and once as a SelectList item. This is a strict subset of
- *  `buildLines`' output (both contain batch headers; `buildLines` also
- *  adds standalone rows). Exported for the superset-invariant test
- *  (test-dispatch-deck.ts block 12c), which compares it against
- *  `buildLines` at a fixed `now` — the test cannot reconstruct this from
- *  the exported surface without sampling `Date.now()` twice and racing a
- *  1 ms elapsed-time tick (flaky on CI). */
+ *  Members have their own per-job rows (one Text row per running entry
+ *  in the composite, #834), so including them here would render each
+ *  batch member twice. This is a strict subset of `buildLines`' output
+ *  (both contain batch headers; `buildLines` also adds standalone rows).
+ *  Exported for the superset-invariant test (test-dispatch-deck.ts block
+ *  12c), which compares it against `buildLines` at a fixed `now` — the
+ *  test cannot reconstruct this from the exported surface without
+ *  sampling `Date.now()` twice and racing a 1 ms elapsed-time tick
+ *  (flaky on CI). */
 export function buildLinesBatchOnly(now: number = Date.now()): string[] {
   const lines: string[] = [];
   for (const b of batches.values()) {

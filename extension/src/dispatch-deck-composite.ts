@@ -1,119 +1,102 @@
 /**
- * The dispatch deck's single composite widget factory (#729, #742).
+ * The dispatch deck's single composite widget factory (#729, #742, #834).
  *
- * #729 collapsed the deck's two live regions (belowEditor detail deck +
- * aboveEditor SelectList) into ONE widget key, "ensemble:deck", so the
- * double-projection is structurally impossible. This module owns the
- * widget's factory: a Container of batch-header Text rows (the deck's
- * batch-headers-only projection) followed by the
- * keyboard-selectable SelectList. #742 removed the per-job Text rows —
- * the `buildLines` output used to re-render every job as a plain Text
- * child above the list whose labels were byte-identical `formatRow` lines,
- * so each job rendered twice. The SelectList is now the sole per-job
- * surface (one item per job, key disambiguation in the description
- * column); batch headers have no list counterpart of their own, so they
- * keep their Text projection.
+ * #729 collapsed the deck's two live regions into ONE widget key,
+ * "ensemble:deck", so the double-projection is structurally impossible.
+ * This module owns the widget's factory: a Container of batch-header Text
+ * rows (the deck's batch-headers-only projection) followed by the
+ * per-job rows.
  *
- * The composite returns a Container. pi-tui's focus model routes keys to
- * `tui.getFocusedComponent()`, which is the editor unless the composite
- * explicitly focuses the SelectList (see `buildCompositeFactory`). The
- * #176 Container-doesn't-forward-input caveat does NOT apply here because
- * Pi's interactive mode only calls `focusedComponent.handleInput`; the
- * editor owns focus until the user tabs into the list.
+ * #834 (epic #833 G1): the non-focusable SelectList that sat in this
+ * container is GONE — it never received input (#176: keys route to the
+ * focused component, the editor). The per-job surface is now plain Text
+ * rows, one per RUNNING job entry (standalone or batch member — batch
+ * members are included here because the batch header alone cannot be
+ * steered; the header stays as its own Text row for the progress display).
+ * While roster mode is active (see dispatch-deck-nav.ts) the selected row
+ * carries a `>` marker; when the editor is empty and any job runs, a
+ * one-line `↓ select subagents` hint appears below the rows.
  *
- * Placement: belowEditor — the deck's long-standing home. The aboveEditor
- * slot is deliberately left free; a widget there would sit between the
- * status line and the editor, which is real estate the operator types in.
+ * The composite returns a Container. Pi's setWidget calls
+ * `existing.dispose?.()` on the previous component; Container has no
+ * dispose, so re-registration is a clean swap.
+ *
+ * The factory is re-invoked by the deck's 1 s ticker (renderNow re-registers
+ * the whole widget), so the rows read a fresh entries snapshot on every
+ * render and the nav module's selection state re-resolves naturally.
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import {
-  type Component,
-  Container,
-  SelectList,
-  type TUI,
-  Text,
-  getKeybindings,
-} from "@earendil-works/pi-tui";
-import type { DeckEntry } from "./dispatch-deck.ts";
-import { DECK_PROMPT_CANCEL_KEY, formatRow } from "./dispatch-deck.ts";
+import { type Component, Container, type TUI, Text } from "@earendil-works/pi-tui";
+import { DECK_HINT_TEXT } from "./dispatch-deck-nav.ts";
+import { type DeckEntry, formatRow } from "./dispatch-deck.ts";
 import { formatElapsed } from "./progress.ts";
 
-/** One row of the composite's SelectList: job key, encoded value, label. */
-export interface DeckItem {
-  key: string;
-  value: string;
-  label: string;
-  description?: string;
-}
-
-const COMPOSITE_MAX_VISIBLE = 12;
-
-export function encodeDeckValue(key: string): string {
-  return `deck::${key}`;
-}
-
-export function parseDeckValue(value: string): string | undefined {
-  const prefix = "deck::";
-  if (!value.startsWith(prefix)) return undefined;
-  const key = value.slice(prefix.length);
-  return key.length > 0 ? key : undefined;
+/**
+ * Row state for the plain-row rendering (#834).
+ * `running` includes batch members (one row per job, #709/#729/#742/#761
+ * single-surface invariant); `selectedKey` is the roster-mode `>` target.
+ */
+export interface DeckRows {
+  running: readonly DeckEntry[];
+  selectedKey?: string;
+  showHint: boolean;
 }
 
 /**
- * Build the composite's SelectList rows. One item per job entry, plus the
- * cancel sentinel. The label is the job's full `formatRow` line; the
- * description carries the key fragment so same-role jobs stay
- * distinguishable when the list is long. The SelectList is the sole
- * per-job surface (#742).
+ * A single per-job row's rendered content, with the collision-aware key
+ * fragment (#835) precomputed over the whole visible set. Exported so the
+ * distinct-rows behaviour is directly assertable (test-dispatch-deck.ts
+ * block 14); the composite is the production caller.
  */
-export function buildDeckItems(
-  entries: readonly DeckEntry[],
-  now: number = Date.now(),
-): DeckItem[] {
-  const descriptions = distinctKeyFragments(entries.map((e) => e.key));
-  const items: DeckItem[] = entries.map((e, i) => ({
+export interface JobRowLine {
+  key: string;
+  text: string;
+}
+
+/**
+ * The job rows for the composite: one entry per running entry, in order.
+ * `formatRow` alone is not enough — two same-role jobs whose keys share a
+ * prefix can render byte-identical rows from spawn until the first
+ * `updateEntry` (the #835 class), so every row >10 chars appends a
+ * collision-aware `· key …` fragment (≤10-char keys append the key
+ * verbatim) that `distinctKeyFragments` guarantees distinct across the set.
+ */
+export function buildJobRows(running: readonly DeckEntry[], now: number): JobRowLine[] {
+  const fragments = distinctKeyFragments(running.map((e) => e.key));
+  return running.map((e, i) => ({
     key: e.key,
-    value: encodeDeckValue(e.key),
-    label: formatRow(e, now),
-    description: descriptions[i],
+    // Elided (>10-char) fragments carry a `key ` prefix so the suffix is
+    // visibly a key, not opaque text; short keys stay verbatim (already
+    // the full key, a prefix would be noise).
+    text: `${formatRow(e, now)} · ${e.key.length > 10 ? `key ${fragments[i]}` : fragments[i]}`,
   }));
-  items.push({
-    key: DECK_PROMPT_CANCEL_KEY,
-    value: encodeDeckValue(DECK_PROMPT_CANCEL_KEY),
-    label: "── cancel ──",
-  });
-  return items;
 }
 
 /**
  * Render `key` truncated to a `prefix`-char fragment. ≤10-char keys
- * render verbatim (no marker); longer keys render as "key " + first
- * `prefix` chars (trimEnd) + `…` — unless `prefix` reaches the full key
- * length, in which case the full key renders with no ellipsis.
+ * render verbatim (no marker); longer keys render as a 10-char prefix +
+ * `…` (the #835 elision shape, trimmed) — unless `prefix` reaches the full
+ * key length, in which case the full key renders with no ellipsis.
  */
 function keyFragmentAt(key: string, prefix: number): string {
   if (key.length <= 10) return key;
   if (prefix >= key.length) return key;
-  return `key ${key.slice(0, prefix).trimEnd()}…`;
+  return `${key.slice(0, prefix).trimEnd()}…`;
 }
 
 /**
- * Collision-aware fragments over the whole visible set. Group keys by
- * their current 10-char fragment; for any group with more than one
- * DISTINCT key, increase that group's prefix length by 1 and re-group,
- * repeating until every description is distinct or the prefix reaches
- * the full key length (rendered in full, no ellipsis). Entries whose
- * 10-char fragment is already unique keep the exact current output.
- *
- * Only 2nd+ occurrences in a colliding group lengthen: the first keeps
- * the 10-char form while later ones grow by 1, 2, … — always distinct
- * and all still starting with the 10-char fragment. The loop is
- * bounded: a pass in which no bumpable prefix can change makes further
- * lengthening impossible (duplicates can only persist at this point),
- * so it exits with the fragments as-is — duplicate keys ≤10 chars
- * render verbatim and identical, where the label and value columns
- * still disambiguate.
+ * Collision-aware fragments over the whole visible set (#835's algorithm,
+ * ported to the plain-row surface when #834 deleted the SelectList column
+ * that was its reader). Group keys by their current fragment; for any group
+ * with more than one DISTINCT fragment, increase the 2nd+ occurrence's
+ * prefix length by 1 and re-group, repeating until every fragment is
+ * distinct or the prefix reaches the full key length (rendered in full,
+ * no ellipsis). Entries whose fragment is already unique keep the 10-char
+ * form. The loop is bounded: a pass in which no prefix can change makes
+ * further lengthening impossible, so it exits as-is — duplicate keys
+ * ≤10 chars stay identical, where the row's other content (label, `>`
+ * marker, position) still distinguishes them.
  */
 function distinctKeyFragments(keys: string[]): string[] {
   const n = keys.length;
@@ -156,35 +139,31 @@ export function buildSteerPrompt(e: DeckEntry, now: number): string {
 /**
  * Build the single composite widget: a Container with the batch-header
  * Text rows (capped at `maxRows` with an overflow indicator when needed),
- * a blank separator, and the keyboard-selectable SelectList — the sole
- * per-job surface (#742). The SelectList is the focus target inside the
- * container; Pi's `focusedComponent.handleInput` routes keys to it only
- * when the user tabs in, so the composite never steals editor input by
- * default.
+ * the per-job plain Text rows (one per running entry, `>` on the
+ * selected row while roster mode is active), and — when the editor is
+ * empty and jobs exist — the one-line `↓ select subagents` hint.
  *
  * The factory returns a Container. Pi's setWidget calls
  * `existing.dispose?.()` on the previous component; Container has no
  * dispose, so re-registration is a clean swap.
  *
  * `lines` is the deck's batch-headers-only projection (batch header rows
- * only; the per-job rows are the SelectList's, one row each — #742) and
- * `entries` is the job snapshot; both are read once per render so the
- * batch Text rows and the SelectList cannot split mid-render.
+ * only) and `rows` is the per-job row state read once per render so the
+ * batch Text rows and the job rows cannot split mid-render.
  */
 export function buildCompositeFactory(
   lines: () => string[],
-  entries: () => DeckEntry[],
+  rows: () => DeckRows,
   maxRows: number,
-  handlers: {
-    onRowConfirm: (key: string) => void;
-    onSelectionChange: () => void;
-  },
 ): (tui: TUI, theme: Theme) => Component {
-  return (tui: TUI, theme: Theme) => {
-    // One snapshot per render: the batch rows and the list read the same
-    // entries so a mid-render update cannot split the two projections.
-    const snapshot = entries();
-    const list = buildSelectList(theme, snapshot, handlers);
+  return (_tui: TUI, theme: Theme) => {
+    // Both projections read the deck module's entry/batch maps, which
+    // are updated atomically within that module (no concurrent writer),
+    // so a mid-render interleaving cannot split the two projections.
+    // One clock sample per render: the batch headers and the per-job rows
+    // cannot disagree by an elapsed-time tick crossing mid-render.
+    const now = Date.now();
+    const rowState = rows();
     const container = new Container();
     const batchLines = lines();
     const visible = batchLines.slice(0, maxRows);
@@ -193,49 +172,15 @@ export function buildCompositeFactory(
     if (overflow > 0) {
       container.addChild(new Text(theme.fg("muted", `... (${overflow} more)`), 1, 0));
     }
-    container.addChild(new Text("", 1, 0));
-    container.addChild(list);
+    for (const row of buildJobRows(rowState.running, now)) {
+      const isSel = rowState.selectedKey === row.key;
+      const line = isSel ? `> ${row.text}` : `  ${row.text}`;
+      container.addChild(new Text(line, 1, 0));
+    }
+    if (rowState.running.length > 0) container.addChild(new Text("", 1, 0));
+    if (rowState.showHint) {
+      container.addChild(new Text(theme.fg("muted", DECK_HINT_TEXT), 1, 0));
+    }
     return container;
   };
-}
-
-function buildSelectList(
-  theme: Theme,
-  entries: DeckEntry[],
-  handlers: {
-    onRowConfirm: (key: string) => void;
-    onSelectionChange: () => void;
-  },
-) {
-  const items = buildDeckItems(entries).map((it) => ({
-    value: it.value,
-    label: it.label,
-    description: it.description,
-  }));
-  const tl = {
-    selectedPrefix: (t: string) => theme.fg("accent", t),
-    selectedText: (t: string) => theme.bg("selectedBg", t),
-    description: (t: string) => theme.fg("dim", t),
-    scrollInfo: (t: string) => theme.fg("muted", t),
-    noMatch: (t: string) => theme.fg("muted", t),
-  };
-  const list = new SelectList(items, COMPOSITE_MAX_VISIBLE, tl, {
-    minPrimaryColumnWidth: 24,
-    maxPrimaryColumnWidth: 60,
-  });
-  list.onSelectionChange = () => handlers.onSelectionChange();
-  const kb = getKeybindings();
-  const orig = list.handleInput.bind(list);
-  list.handleInput = (data: string): void => {
-    if (kb.matches(data, "tui.select.confirm")) {
-      const cur = list.getSelectedItem();
-      if (cur) {
-        const key = parseDeckValue(cur.value);
-        if (key && key !== DECK_PROMPT_CANCEL_KEY) handlers.onRowConfirm(key);
-        return;
-      }
-    }
-    orig(data);
-  };
-  return list;
 }

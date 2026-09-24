@@ -51,6 +51,7 @@ interface WidgetCall {
 function fakeCtx(): { calls: WidgetCall[]; ctx: Parameters<typeof attach>[0] } {
   const calls: WidgetCall[] = [];
   const ctx = {
+    hasUI: true,
     ui: {
       setWidget: (
         key: string,
@@ -61,6 +62,8 @@ function fakeCtx(): { calls: WidgetCall[]; ctx: Parameters<typeof attach>[0] } {
       },
       // setStatus retained for type compatibility but not used by the deck anymore.
       setStatus: (_key: string, _text: string | undefined) => {},
+      getEditorText: () => "",
+      onTerminalInput: () => () => {},
     },
   } as unknown as Parameters<typeof attach>[0];
   return { calls, ctx };
