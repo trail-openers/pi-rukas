@@ -65,6 +65,12 @@ let widgetVisible = false;
 let nav: DeckNav | undefined;
 let navUnsub: (() => void) | undefined;
 let navWarned = false;
+// Self-heal attempt counter: caps the renderNow retry loop so a persistent
+// onTerminalInput failure (a host without the capability at all) doesn't
+// re-create and re-attempt registration on every 1 s render for the whole
+// session. Reset by attachNav (a new attach = a fresh budget).
+let navHealAttempts = 0;
+const NAV_HEAL_MAX = 5;
 
 function isQuiet(): boolean {
   return process.env.PI_ENSEMBLE_QUIET_STATUS === "1";
@@ -134,12 +140,27 @@ function navGetters(ctx: ExtensionContext) {
  * listener is ever live).
  */
 function attachNav(ctx: ExtensionContext): void {
-  if (isQuiet() || !ctx.hasUI) return;
+  if (!tryAttachNav(ctx)) detachNav();
+}
+
+/**
+ * Own the full nav wiring for one attach cycle: the quiet/hasUI guards,
+ * the prior-listener teardown, the createDeckNav construction and the
+ * registration. Used by both `attach()` (direct) and renderNow's
+ * self-heal (a transient attach-time failure retries here on a later
+ * render). Returns true when the listener is live.
+ */
+function tryAttachNav(ctx: ExtensionContext): boolean {
+  if (isQuiet() || !ctx.hasUI) return false;
   // Unsubscribe any prior listener before re-registering (attach can be
   // called more than once in a session without an intervening detach).
   detachNav();
+  navWarned = false;
+  navHealAttempts = 0;
   const n = createDeckNav(navGetters(ctx), (key) => void onRowConfirm(ctx, key), scheduleRender);
-  if (registerNavListener(n, ctx)) nav = n;
+  if (!registerNavListener(n, ctx)) return false;
+  nav = n;
+  return true;
 }
 
 /**
@@ -300,11 +321,13 @@ function renderNow(): void {
     return;
   }
   // Self-heal a transient attach-time onTerminalInput failure: re-try the
-  // roster-mode listener registration whenever it is absent.
-  if (nav === undefined && !isQuiet() && activeCtx.hasUI) {
-    const c = activeCtx;
-    const n = createDeckNav(navGetters(c), (key) => void onRowConfirm(c, key), scheduleRender);
-    if (registerNavListener(n, c)) nav = n;
+  // roster-mode listener registration while it is absent, capped so a
+  // persistent failure (a host without the capability at all) settles into
+  // the degraded state instead of retrying every render forever. The
+  // quiet/hasUI guards live inside tryAttachNav.
+  if (nav === undefined && navHealAttempts < NAV_HEAL_MAX) {
+    navHealAttempts++;
+    tryAttachNav(activeCtx);
   }
   const factory = buildCompositeWidgetFactory(activeCtx);
   try {

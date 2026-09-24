@@ -232,7 +232,11 @@ const fakeTheme = {
     content: string[] | ((...args: unknown[]) => unknown) | undefined;
     options?: { placement?: string };
   }> = [];
+  // hasUI/getEditorText/onTerminalInput match the other tests' ctx shape —
+  // the one-key assertion is about the widget, independent of the nav
+  // listener, so the ctx must not silently lean on the !hasUI early-bail.
   const ctx = {
+    hasUI: true,
     ui: {
       setWidget: (
         key: string,
@@ -242,6 +246,8 @@ const fakeTheme = {
         calls.push({ key, content, options });
       },
       setStatus: (_key: string, _text: string | undefined) => {},
+      getEditorText: () => "",
+      onTerminalInput: (_h: unknown) => () => {},
     },
   } as unknown as Parameters<typeof attach>[0];
   attach(ctx);

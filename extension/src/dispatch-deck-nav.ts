@@ -80,16 +80,22 @@ export function createDeckNav(
   let active = false;
   let selected: string | undefined;
 
+  // "Exit roster mode" — the single spelling of that transition, shared by
+  // every branch that clears the selection.
+  const exit = (): void => {
+    active = false;
+    selected = undefined;
+    onChange();
+  };
+
   // Re-resolve the selection against the current running keys. Returns
-  // false when no keys remain (roster mode is exited here).
+  // false when no keys remain (roster mode is exited here). Safe to call
+  // with no selection: it keeps the active flag and leaves the handler's
+  // next-key logic in charge.
   const reResolve = (): boolean => {
     const keys = get.runningKeys();
     if (keys.length === 0) {
-      if (active) {
-        active = false;
-        selected = undefined;
-        onChange();
-      }
+      if (active) exit();
       return false;
     }
     if (!selected) return true;
@@ -98,8 +104,7 @@ export function createDeckNav(
     // The selected job settled (its slot is gone from the list). The
     // nearest remaining row is the one that shifted up into its slot —
     // the successor, or the last row if the settled row was the last.
-    const fallback = idx < keys.length - 1 ? keys[idx] : keys[keys.length - 1];
-    selected = fallback ?? keys[0];
+    selected = idx < keys.length - 1 ? keys[idx] : keys[keys.length - 1];
     onChange();
     return true;
   };
@@ -112,16 +117,12 @@ export function createDeckNav(
       // --- Roster mode: every key is consumed EXCEPT an unknown key,
       // which exits and is NOT consumed (typing goes to the editor).
       if (matchesKey(data, "escape")) {
-        active = false;
-        selected = undefined;
-        onChange();
+        exit();
         return { consume: true };
       }
       if (matchesKey(data, "enter")) {
         const key = selected;
-        active = false;
-        selected = undefined;
-        onChange();
+        exit();
         if (key) onRowConfirm(key);
         return { consume: true };
       }
@@ -129,7 +130,7 @@ export function createDeckNav(
         if (!reResolve()) return { consume: true };
         const keys = get.runningKeys();
         const i = selected ? keys.indexOf(selected) : 0;
-        const next = keys[Math.min(i + 1, keys.length - 1)] ?? keys[0];
+        const next = keys[Math.min(i + 1, keys.length - 1)];
         if (next !== selected) {
           selected = next;
           onChange();
@@ -141,9 +142,7 @@ export function createDeckNav(
         const keys = get.runningKeys();
         const i = selected ? keys.indexOf(selected) : 0;
         if (i <= 0) {
-          active = false;
-          selected = undefined;
-          onChange();
+          exit();
         } else {
           selected = keys[i - 1];
           onChange();
@@ -151,9 +150,7 @@ export function createDeckNav(
         return { consume: true };
       }
       // Any other key: exit roster mode, do NOT consume.
-      active = false;
-      selected = undefined;
-      onChange();
+      exit();
       return undefined;
     }
 

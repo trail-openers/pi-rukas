@@ -10,10 +10,10 @@
  * `buildViewerText` and `findTranscriptPath` build a read-only
  * ctx.ui.editor view pre-filled with summariseTranscript / renderTranscript
  * output for a job's transcript file (the same renderer /runs uses). The
- * #834 PR deleted the production caller (the deck's settled-row route),
- * so this surface is currently exercised only by the smoke tests
- * (test-runs-transcript-parse.ts); it is retained for the live-view /
- * finished-run surface (#839 / #836), not dead code.
+ * #834 PR deleted the production caller (the deck's settled-row route);
+ * the surface stays for the live-view / finished-run surface
+ * (#839 / #836), exercised today only by the smoke tests
+ * (test-runs-transcript-parse.ts).
  *
  * Quiet mode: PI_ENSEMBLE_QUIET_STATUS=1 disables the viewer and steer.
  */
@@ -28,6 +28,8 @@ import { trace } from "./trace.ts";
 
 const TRANSCRIPT_TITLE_MAX = 60;
 
+// d2 surface (transcript viewer below) — re-introduced by #839/#836
+// (live-view / finished-run); see `openTranscriptViewer` for the contract.
 interface TranscriptMeta {
   role: string;
   sizeBytes: number;
@@ -115,7 +117,6 @@ export async function buildViewerText(
   );
 }
 
-/** d3. The deck-UI steer source tag carried by the lifecycle scrollback line. */
 export const DECK_UI_STEER_SOURCE: SteerSource = "deck-ui";
 
 /**

@@ -183,6 +183,9 @@ export function buildCompositeFactory(
     // Both projections read the deck module's entry/batch maps, which
     // are updated atomically within that module (no concurrent writer),
     // so a mid-render interleaving cannot split the two projections.
+    // One clock sample per render: the batch headers and the per-job rows
+    // cannot disagree by an elapsed-time tick crossing mid-render.
+    const now = Date.now();
     const rowState = rows();
     const container = new Container();
     const batchLines = lines();
@@ -193,7 +196,7 @@ export function buildCompositeFactory(
       container.addChild(new Text(theme.fg("muted", `... (${overflow} more)`), 1, 0));
     }
     for (const entry of rowState.running) {
-      const label = formatRow(entry, Date.now());
+      const label = formatRow(entry, now);
       const isSel = rowState.selectedKey === entry.key;
       const line = isSel ? `> ${label}` : `  ${label}`;
       container.addChild(new Text(line, 1, 0));

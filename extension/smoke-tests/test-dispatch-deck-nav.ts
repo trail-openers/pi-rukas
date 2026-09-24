@@ -77,24 +77,25 @@ interface NavHarness {
 
 function makeNav(keysRef: { keys: string[] }, fake: FakeUI): NavHarness {
   const confirm: string[] = [];
-  const harness: NavHarness = {
-    nav: undefined as unknown as DeckNav,
+  let changes = 0;
+  return {
+    nav: createDeckNav(
+      {
+        runningKeys: () => keysRef.keys,
+        editorText: () => fake.editorText,
+        hasRunning: () => keysRef.keys.length > 0,
+      },
+      (key) => confirm.push(key),
+      () => {
+        changes++;
+      },
+    ),
     confirm,
-    changes: 0,
+    get changes() {
+      return changes;
+    },
     keys: () => keysRef.keys,
   };
-  harness.nav = createDeckNav(
-    {
-      runningKeys: () => keysRef.keys,
-      editorText: () => fake.editorText,
-      hasRunning: () => keysRef.keys.length > 0,
-    },
-    (key) => confirm.push(key),
-    () => {
-      harness.changes++;
-    },
-  );
-  return harness;
 }
 
 // The listener the handler is registered through — call the first (only)
@@ -108,6 +109,17 @@ function press(fake: FakeUI, data: string): { consume?: boolean } | undefined {
 // Wire keysRef through the deck module (the production path) so the
 // handler reads the same keys the deck renders.
 const keyStore = { keys: [] as string[] };
+
+// Wrapping the body so an unexpected throw still exits deterministically
+// (process.exit in a finally) instead of dying on an uncaught exception with
+// the deck module state left dirty.
+try {
+  main();
+} finally {
+  process.exit(exit);
+}
+
+function main(): void {
 
 // ---------------------------------------------------------------------------
 // 1. Activation: down + empty editor + running jobs → consumed, first row
@@ -419,4 +431,4 @@ const keyStore = { keys: [] as string[] };
 }
 
 console.log(`\nexit ${exit}`);
-process.exit(exit);
+}
