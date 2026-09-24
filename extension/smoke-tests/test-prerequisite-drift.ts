@@ -1,7 +1,12 @@
 #!/usr/bin/env bun
 /**
- * Prerequisite-drift gate — #489. Compares README, install.sh, Dockerfile.
- * Escape hatch: PI_ENSEMBLE_PREREQ_DRIFT=0.
+ * Prerequisite-drift gate — #489.
+ * Three sources describe pi-ensemble's prerequisites and disagree: README, install.sh, Dockerfile.
+ * The gate compares SETS (not counts) so docs may reflow freely.
+ *
+ * Directions: forward (REQUIRED_CLIS → README), reverse (Dockerfile → REQUIRED_CLIS/EXCEPTIONS),
+ * OR gates (forge CLI gh/glab), version floors (pi #578, oo #715).
+ * Proven in both directions via static fixtures (canary). Escape hatch: PI_ENSEMBLE_PREREQ_DRIFT=0.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -25,7 +30,8 @@ const EXCEPTIONS: Record<string, string> = {
   // Dockerfile installs the npm package; REQUIRED_CLIS names the binary it
   // installs. Same tool, two names — keeps the reverse direction clean.
   "pi-coding-agent": "npm package name — installs the `pi` binary already in REQUIRED_CLIS",
-  "@earendil-works/pi-coding-agent": "npm package name — installs the `pi` binary already in REQUIRED_CLIS",
+  "@earendil-works/pi-coding-agent":
+    "npm package name — installs the `pi` binary already in REQUIRED_CLIS",
   // #578 floor pin on the Dockerfile pi install. parseDockerInstalls keeps the full tagged name;
   // version consistency is asserted separately (parsePiFloors) — this entry keeps the NAME-level
   // reverse direction from flagging a false drift.
@@ -207,10 +213,8 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
 
 {
   // Forward: every REQUIRED_CLIS name is named in the README Prerequisites section. Presence, not
-  // table parsing — formatting is free to change. wigolo (#773) is documented in install.sh and
-  // docs/configuration.md, not in the README — it is the optional /research fallback, not a
-  // required prerequisite, so it is excepted from this check (like bun).
-  const missing = installNames.filter((n) => !readmeSection.includes(n) && !excepted.has(n));
+  // table parsing — formatting is free to change.
+  const missing = installNames.filter((n) => !readmeSection.includes(n));
   assert(
     missing.length === 0,
     `every REQUIRED_CLIS name appears in the README Prerequisites section${
@@ -235,9 +239,7 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
   assert(
     unknown.length === 0,
     `every Dockerfile global install is in REQUIRED_CLIS or EXCEPTIONS${
-      unknown.length
-        ? ` — unexplained: ${unknown.map((d) => `${d.name} (line ${d.line})`).join(", ")} (add to REQUIRED_CLIS, or to EXCEPTIONS with a reason)`
-        : ""
+      unknown.length ? ` — unexplained: ${unknown.map((d) => `${d.name} (line ${d.line})`).join(", ")} (add to REQUIRED_CLIS, or to EXCEPTIONS with a reason)` : ""
     }`,
   );
 }
@@ -462,7 +464,6 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
     fCmpDocker !== null && fCmpDocker > 0,
     "canary: above-floor Dockerfile pin is detected (above floor)",
   );
-
   // Unpinned forms must fail, not pass silently: a surface with no pi pin
   // anywhere parses to "" and the version gate asserts it is non-empty.
   const fUnpinned = parsePiFloors({ installSh: fixtureInstall, readme: "", dockerfile: "" });
