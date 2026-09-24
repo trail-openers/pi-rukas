@@ -49,7 +49,9 @@ function withEnv<T>(vars: Record<string, string | undefined>, fn: () => T): T {
 async function fixture772w6(): Promise<void> {
   const child = { kill: (_sig: string) => {} } as never;
   let s: ReturnType<typeof createCapSession>;
-  withEnv({ PI_ENSEMBLE_CAP_KILL_GRACE_MS: "2000" }, async () => {
+  // Await: withEnv's finally restores env before the awaited body resumes, which is
+  // fine — the session got graceMs explicitly and reads it synchronously at creation.
+  await withEnv({ PI_ENSEMBLE_CAP_KILL_GRACE_MS: "2000" }, async () => {
     s = createCapSession({
       role: "developer",
       child,
@@ -71,6 +73,9 @@ async function fixture772w6(): Promise<void> {
     }
     assert(s.loopArmedFingerprint() !== undefined, "#772(w6): success kill armed");
     assert(!s.loopKilled(), "#772(w6): kill deferred — grace window open");
+    // Lower bound on the arm time (before the arm-completing traffic); the
+    // grace assertion still fails for a grace-0 regression.
+    const w6ArmedAt = Date.now();
     // The #753-shape traffic: the child keeps re-issuing the command, each
     // with a DISTINCT fingerprint (a changing path). Under the old code
     // (re-arm on any distinct message_end) the grace clock would reset
@@ -79,7 +84,6 @@ async function fixture772w6(): Promise<void> {
     for (let i = 6; i < 14; i++) {
       s.loopObserver?.([bash(`bun test --filter=case-${i}`, `w6-d${i}`)], i * 2);
     }
-    const w6ArmedAt = Date.now();
     const w6Fired = await pollUntilKilled(s);
     assert(w6Fired.ok, "#772(w6): kill fires");
     assert(

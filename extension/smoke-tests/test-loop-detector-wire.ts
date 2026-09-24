@@ -237,7 +237,7 @@ async function fixture772q(): Promise<void> {
   const child = { killed: killedSigs, kill: (sig: string) => killedSigs.push(sig) } as never;
   let s: ReturnType<typeof createCapSession>;
   const steers: Array<{ msg: string; src: string }> = [];
-  withEnv({ PI_ENSEMBLE_CAP_KILL_GRACE_MS: "2000" }, () => {
+  await withEnv({ PI_ENSEMBLE_CAP_KILL_GRACE_MS: "2000" }, () => {
     s = createCapSession({
       role: "explore",
       child,
@@ -252,6 +252,8 @@ async function fixture772q(): Promise<void> {
   });
   const green = "All 5 tests passed in 1.2s";
   let steeredAt: number | null = null;
+  // Lower bound on the arm time (captured before the arming call).
+  const qArmedAt = Date.now();
   let armedAt: number | null = null;
   for (let i = 0; i < 6; i++) {
     const callId = `q-${i}`;
@@ -276,7 +278,6 @@ async function fixture772q(): Promise<void> {
     `#772(q): kill armed on re-issue #${SUCCESS_KILL_AT} (got #${(armedAt ?? -1) + 1})`,
   );
   assert(!s.loopKilled(), "#772(q): kill deferred — grace window open (the report window)");
-  const qArmedAt = Date.now();
   const fired = await pollUntilKilled(s);
   assert(fired.ok, "#772(q): kill fires");
   assert(fired.at >= qArmedAt + 2000, `#772(q): kill after grace window (${fired.at - qArmedAt}ms >= 2000ms)`);
@@ -298,7 +299,7 @@ await fixture772q();
 async function fixture772r(): Promise<void> {
   const child = { kill: (_sig: string) => {} } as never;
   let s: ReturnType<typeof createCapSession>;
-  withEnv({ PI_ENSEMBLE_CAP_KILL_GRACE_MS: "2000" }, async () => {
+  await withEnv({ PI_ENSEMBLE_CAP_KILL_GRACE_MS: "2000" }, async () => {
     s = createCapSession({
       role: "developer",
       child,
@@ -311,13 +312,14 @@ async function fixture772r(): Promise<void> {
       childExited: () => false,
     });
     // 10 identical re-issues → streak kill arms at the 10th.
+    // Lower bound on the arm time (captured before the arming loop).
+    const rArmedAt = Date.now();
     for (let i = 0; i < 10; i++) s?.loopObserver?.([bash("git status --porcelain", `r-${i}`)], i);
     assert(s?.loopArmedFingerprint() !== undefined, "#772(r): kill armed at 10 repeats");
     // The #753 shape: the child keeps re-issuing the SAME looping command.
     // Each is a new message_end, but none is distinct — the grace clock must
     // NOT reset, so the kill fires when the 2s window elapses.
     for (let i = 10; i < 16; i++) s?.loopObserver?.([bash("git status --porcelain", `r-${i}`)], i);
-    const rArmedAt = Date.now();
     const rFired = s ? await pollUntilKilled(s) : { ok: false, at: Date.now() };
     assert(rFired.ok, "#772(r): kill fires");
     assert(
@@ -331,7 +333,7 @@ async function fixture772r(): Promise<void> {
   // work — the #296 shape the deferral exists for.
   const child2 = { kill: (_sig: string) => {} } as never;
   let s2: ReturnType<typeof createCapSession>;
-  withEnv({ PI_ENSEMBLE_CAP_KILL_GRACE_MS: "30000" }, async () => {
+  await withEnv({ PI_ENSEMBLE_CAP_KILL_GRACE_MS: "30000" }, async () => {
     s2 = createCapSession({
       role: "developer",
       child: child2,

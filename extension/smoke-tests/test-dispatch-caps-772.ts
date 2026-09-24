@@ -43,6 +43,10 @@ function assert(cond: boolean, msg: string) {
       capKillGraceMs: 2000,
       childExited: () => false,
     });
+    // Lower bound on the arm time (captured before the arming loop): the
+    // 500 ms poll tick is not aligned to arming, so measuring after the arm
+    // can overstate it; a lower bound still catches a grace-0 regression.
+    const armedAt = Date.now();
     const green = "All tests passed in 0.8s";
     // 7 identical green re-issues (kill at 6), each interleaved with a
     // distinct read (non-adjacent — the streak counter cannot see this shape).
@@ -70,7 +74,6 @@ function assert(cond: boolean, msg: string) {
     // Grace window is open (2s) — the kill is deferred while the child has
     // its report window. This is the "chance to REPORT before being killed"
     // the ticket's AC requires. The poll will fire the kill after 2s.
-    const armedAt = Date.now();
     assert(
       !session.loopKilled() || session.killCause() === "loop",
       "#772: kill either deferred (grace) or fired (race)",

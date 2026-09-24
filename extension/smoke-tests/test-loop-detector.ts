@@ -276,11 +276,12 @@ const STEER_BASH_5 =
     });
     // biome-ignore lint/style/noNonNullAssertion: caps are on by default in this test scope; the observer is defined
     const obs = s.loopObserver!;
+    // Lower bound on the arm time (captured before the arming loop).
+    const gArmedAt = Date.now();
     for (let t = 0; t < 10; t++) obs([bash('rg "needle" src/ --line-number')], t);
     eq(steers, [STEER_BASH_5], "F1(g): exact steer text at count 5");
     assert(!s.loopKilled(), "F1(g): kill DEFERRED during grace");
     eq(child.killed, [], "F1(g): no signal before grace");
-    const gArmedAt = Date.now();
     const gFired = await pollUntilKilled(s);
     assert(gFired.ok, "F1(g): kill fires (kill did not fire within 10 s of polling)");
     assert(
