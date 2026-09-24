@@ -109,10 +109,7 @@ export async function runLensChild(opts: {
     }
   }
 
-  dispatchDeck.clearEntry(deckKey, {
-    ok: !!result && result.ok,
-    transcriptPath: result?.transcriptPath,
-  });
+  dispatchDeck.clearEntry(deckKey);
   bumpBatch();
 
   // All attempts failed (or user aborted) — lens is blocked, no findings.

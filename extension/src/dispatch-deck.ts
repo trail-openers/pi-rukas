@@ -23,7 +23,6 @@
 import type { ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import * as deckComposite from "./dispatch-deck-composite.ts";
 import * as deckInteractive from "./dispatch-deck-interactive.ts";
-import * as deckSettled from "./dispatch-deck-settled.ts";
 import { type RunningState, emptyRunningState, formatElapsed } from "./progress.ts";
 import { trace } from "./trace.ts";
 
@@ -66,6 +65,9 @@ let pendingRender = false;
 let insertionCounter = 0;
 let tickHandle: ReturnType<typeof setInterval> | undefined;
 let widgetVisible = false;
+// #607 d2/d3 — jobIds that have settled (deck entry cleared); confirmed
+// rows route to the transcript viewer instead of the steer prompt.
+const settledJobs = new Set<string>();
 
 function isQuiet(): boolean {
   return process.env.PI_ENSEMBLE_QUIET_STATUS === "1";
@@ -93,7 +95,6 @@ export function detach(): void {
   activeCtx = undefined;
   entries.clear();
   batches.clear();
-  deckSettled.clearSettled();
   pendingRender = false;
   widgetVisible = false;
 }
@@ -127,27 +128,11 @@ export function updateEntry(key: string, state: RunningState): void {
   scheduleRender();
 }
 
-export function clearEntry(key: string, opts?: { ok?: boolean; transcriptPath?: string }): void {
-  const entry = entries.get(key);
+export function clearEntry(key: string): void {
   if (!entries.delete(key)) return;
-  // #837 — snapshot the entry BEFORE it disappears: the retained row is what
-  // onRowConfirm reads for the transcript viewer, and it carries the child's
-  // real transcriptPath (minted inside spawnSpecialist, can differ from key).
-  if (entry) {
-    deckSettled.retainSettled(entry, {
-      ok: opts?.ok ?? true,
-      transcriptPath: opts?.transcriptPath,
-    });
-  }
-  if (entries.size === 0 && batches.size === 0) {
-    // Settled transition (live → settled-only): render now so the retained
-    // row appears without waiting for the next live tick; settled rows do
-    // not restart the ticker (it stops when no LIVE entries remain).
-    renderNow();
-    stopTicker();
-  } else {
-    scheduleRender();
-  }
+  settledJobs.add(key);
+  scheduleRender();
+  if (entries.size === 0 && batches.size === 0) stopTicker();
 }
 
 export interface StartBatchEntryOpts {
@@ -189,6 +174,7 @@ export function snapshot(): DeckEntry[] {
     state: { ...e.state, usage: { ...e.state.usage } },
   }));
 }
+
 export function batchSnapshot(): BatchDeckEntry[] {
   return [...batches.values()].map((b) => ({ ...b }));
 }
@@ -197,11 +183,11 @@ export function reset(): void {
   stopTicker();
   entries.clear();
   batches.clear();
-  deckSettled.clearSettled();
   activeCtx = undefined;
   pendingRender = false;
   insertionCounter = 0;
   widgetVisible = false;
+  settledJobs.clear();
 }
 
 export function isTicking(): boolean {
@@ -234,8 +220,7 @@ function scheduleRender(): void {
 
 function renderNow(): void {
   if (!activeCtx) return;
-  const settled = deckSettled.settledSnapshot().length > 0;
-  if (entries.size === 0 && batches.size === 0 && !settled) {
+  if (entries.size === 0 && batches.size === 0) {
     if (widgetVisible) {
       try {
         activeCtx.ui.setWidget(WIDGET_KEY, undefined);
@@ -244,8 +229,6 @@ function renderNow(): void {
     }
     return;
   }
-  // #837 — a settled-only deck keeps the widget alive: the retained rows are
-  // selectable and open the transcript viewer.
   const factory = buildCompositeWidgetFactory(activeCtx);
   try {
     activeCtx.ui.setWidget(WIDGET_KEY, factory, { placement: "belowEditor" });
@@ -257,8 +240,7 @@ function renderNow(): void {
 
 /** Build the single composite widget factory (batch rows + SelectList).
  *  The Text projection reads `buildLinesBatchOnly` (batch headers only);
- *  the SelectList is the sole per-job surface (one item per entry, #742),
- *  extended in #837 with a trailing settled section (bounded retention rows).
+ *  the SelectList is the sole per-job surface (one item per entry, #742).
  *  renderNow's empty-deck guard reads `buildLines` (batch headers +
  *  standalone rows) so that a deck with only standalone entries still
  *  renders; `buildLines`' output is a strict superset of
@@ -268,7 +250,6 @@ function buildCompositeWidgetFactory(ctx: ExtensionContext) {
   return deckComposite.buildCompositeFactory(
     buildLinesBatchOnly,
     () => [...entries.values()],
-    () => deckSettled.settledSnapshot().reverse(),
     getDeckMaxRows(),
     {
       onRowConfirm: (key) => {
@@ -281,28 +262,22 @@ function buildCompositeWidgetFactory(ctx: ExtensionContext) {
   );
 }
 
-/**
- * #607 d2/d3. Route a confirmed row.
- * #837 — settled rows live in the bounded retention list (the live entry is
- * gone by confirm time), so the settled check MUST come first: an evicted or
- * settled key has no live entry.
- */
+/** #607 d2/d3. Route a confirmed row. */
 async function onRowConfirm(ctx: ExtensionContext, key: string): Promise<void> {
-  const settled = deckSettled.getSettled(key);
-  if (settled) {
-    void deckInteractive
-      .openTranscriptViewerFor(ctx, settled)
-      .catch((e: Error) => trace(`dispatch-deck: viewer error: ${e.message}`));
-    return;
-  }
   const entry = entries.get(key);
   if (!entry) return;
-  const text = await ctx.ui.editor(
-    `Steer ${entry.label}`,
-    deckComposite.buildSteerPrompt(entry, Date.now()),
-  );
-  if (text === undefined) return;
-  steerDeckEntry(ctx.ui, key, text);
+  if (!settledJobs.has(key)) {
+    const text = await ctx.ui.editor(
+      `Steer ${entry.label}`,
+      deckComposite.buildSteerPrompt(entry, Date.now()),
+    );
+    if (text === undefined) return;
+    steerDeckEntry(ctx.ui, key, text);
+    return;
+  }
+  void deckInteractive
+    .openTranscriptViewer(ctx, entry)
+    .catch((e: Error) => trace(`dispatch-deck: viewer error: ${e.message}`));
 }
 
 /** Deliver a steer to a deck row's job (`deck-ui` source; routes through the shared steer core). */
@@ -315,12 +290,11 @@ export function steerDeckEntry(ctx: ExtensionUIContext, key: string, message: st
 // =============================================================================
 
 /** Top-level deck rows: batch headers + standalone (non-batched) entries,
- *  in insertion order, followed by the bounded settled section (#837 —
- *  retained rows in newest-first order, clearly separated). Batched members
- *  are NOT included — the SelectList is the sole per-job surface (#742). The
- *  settled section keeps a settled-only deck non-empty (renderNow's guard)
- *  and preserves the superset invariant: every live row and every batch
- *  header also appears in the composite's Text projection.
+ *  in insertion order. Batched members are NOT included — the SelectList
+ *  is the sole per-job surface (#742). This is the projection read by
+ *  renderNow's empty-deck guard (via `hasRenderableRows`). It is a strict superset of
+ *  `buildLinesBatchOnly`'s output (both contain batch headers; this adds
+ *  standalone rows).
  *
  *  Orphan-member contract (fail-open, deliberate): an entry whose `batchKey`
  *  names a batch that was never registered — or was cleared while its members
@@ -352,13 +326,17 @@ export function buildLines(now: number = Date.now()): string[] {
       lines.push(formatRow(item.e, now));
     }
   }
-  // #837 — settled section (newest first), after the live rows. The rows are
-  // also the SelectList's trailing items; here they make a settled-only deck
-  // count as non-empty for the render guard.
-  for (const s of deckSettled.settledSnapshot().reverse()) {
-    lines.push(formatSettledRow(s, now));
-  }
   return lines;
+}
+
+/**
+ * Is anything renderable? Equivalent to `buildLines().length > 0`: every row
+ * buildLines emits comes from either a batch (header) or an entry (standalone),
+ * so both collections empty ⇔ no rows. Used by renderNow's empty-deck guard
+ * so the 1s ticker can test emptiness without allocating and sorting.
+ */
+function hasRenderableRows(): boolean {
+  return entries.size > 0 || batches.size > 0;
 }
 
 /** The composite's Text projection: batch header rows only.
@@ -436,32 +414,4 @@ export function formatBatchRow(
 ): string {
   const running = Math.max(0, batch.size - batch.completed);
   return `⏳ batch[${batch.label}] ${formatElapsed(Math.max(0, now - batch.startedAt))} · ${batch.completed}/${batch.size} done${running > 0 ? ` · ${running} running` : ""}`;
-}
-
-/** #837 — a retained settled row: ✓/✗ outcome prefix + final state, plus
- *  the key (settled rows share the 10-char description-column budget with
- *  live rows, so the key is carried in the label for disambiguation). */
-export function formatSettledRow(
-  s: {
-    key: string;
-    label: string;
-    ok: boolean;
-    startedAt: number;
-    state: { lastToolName?: string; toolUses: number };
-  },
-  now: number = Date.now(),
-): string {
-  const icon = s.ok ? "✓" : "✗";
-  const parts: string[] = [
-    `${icon} ${s.label} (${s.key})`,
-    formatElapsed(Math.max(0, now - s.startedAt)),
-  ];
-  if (s.state.lastToolName) {
-    parts.push(
-      s.state.toolUses > 1
-        ? `${s.state.lastToolName} (#${s.state.toolUses})`
-        : s.state.lastToolName,
-    );
-  }
-  return parts.join(" ");
 }
