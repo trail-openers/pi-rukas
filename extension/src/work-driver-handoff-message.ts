@@ -9,6 +9,7 @@
 
 import type { ForgeType } from "./forge-detect.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
+import { developVerdictLines } from "./work-develop-verdict-source.ts";
 import { capedPartialStateLines } from "./work-driver-caped-state.ts";
 import { commitPrRootFactLines } from "./work-driver-commit-inspect.ts";
 import { MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
@@ -221,21 +222,20 @@ export function renderHandoffUserMessage(
   // Empty for every other cap and for pre-#543 state files.
   lines.push(...capedPartialStateLines(state, "  ").map((l) => (l ? l : "")));
   // PR7 — surface per-workstream verdicts when the cycle hit a
-  // multi-workstream halt (PR3 fanout). renderHandoffMarkdown already
-  // emits this section for GitHub; mirror to chat so the operator
-  // doesn't have to click into the PR body to see which branch failed.
-  const lastConverged = [...state.eventLog]
-    .reverse()
-    .find(
-      (e): e is Extract<WorkEvent, { kind: "branches-converged" }> =>
-        e.kind === "branches-converged",
-    );
-  if (lastConverged && lastConverged.verdicts.length > 0) {
-    const okN = lastConverged.verdicts.filter((v) => v.ok).length;
+  // multi-workstream halt (PR3 fanout). The lines come from the shared
+  // source (work-develop-verdict-source.ts): last develop branches-converged
+  // (post-#814 the fence-flipped verdicts live there), else branch-completed.
+  // The same array + presence rule renderHandoffMarkdown uses, so a fence
+  // flip shows as "FAIL — <reason>" in both surfaces.
+  const verdictLines = developVerdictLines(state);
+  if (verdictLines.length > 0) {
+    const okN = verdictLines.filter((v) => v.ok).length;
     lines.push(
       "",
-      `Workstream verdicts (${lastConverged.step} fanout, ${okN}/${lastConverged.verdicts.length} ok):`,
-      ...lastConverged.verdicts.map((v) => `  ${v.id}: ${v.ok ? "ok" : "FAIL"}`),
+      `Workstream verdicts (develop fanout, ${okN}/${verdictLines.length} ok):`,
+      // The shared line text carries the markdown list dash; in chat the
+      // section is indented, so re-prefix instead of inheriting the `- `.
+      ...verdictLines.map((v) => `  ${v.text}`),
     );
   }
   if (commentUrl) {

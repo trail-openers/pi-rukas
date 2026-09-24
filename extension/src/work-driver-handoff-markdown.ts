@@ -10,6 +10,7 @@
 import type { ForgeType } from "./forge-detect.ts";
 import { killDetail } from "./kill-detail.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
+import { developVerdictLines } from "./work-develop-verdict-source.ts";
 import { capedPartialStateLines } from "./work-driver-caped-state.ts";
 import { formatCycleTotal } from "./work-driver-cycle-total.ts";
 import { explainCap } from "./work-driver-explain.ts";
@@ -66,11 +67,11 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
         e.kind === "dispatch-completed",
     )
     .map((e) => `- ${e.step.padEnd(14)} ${(e.ms / 1000).toFixed(1)}s · ${e.label}`);
-  const branches = state.eventLog
-    .filter(
-      (e): e is Extract<WorkEvent, { kind: "branch-completed" }> => e.kind === "branch-completed",
-    )
-    .map((e) => `- ${e.workstreamId}: ${e.ok ? "ok" : "FAIL"}`);
+  // #848 — workstream verdicts come from the shared source (last develop
+  // branches-converged, fence-flipped; else branch-completed) — the same
+  // function + presence rule as the chat renderer, so a fence flip shows
+  // as "FAIL — <reason>" in both surfaces, never a stale "ok".
+  const branches = developVerdictLines(state).map((v) => `- ${v.text}`);
 
   // PR5: explainCap provides the operator-readable WHY sentence used
   // across all three handoff surfaces (in-chat, GitHub body, /work-status).
@@ -169,6 +170,8 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     lines.push("");
   }
 
+  // Presence rule (shared with the chat renderer via the same array):
+  // render iff the chosen source is non-empty.
   if (branches.length > 0) {
     lines.push("### Workstream verdicts (Step 4 fanout)", ...branches, "");
   }

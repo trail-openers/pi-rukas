@@ -28,6 +28,7 @@
  */
 
 import { applyFenceVerdicts } from "../src/work-develop-fence-verdicts.ts";
+import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { runScopeFanoutGate } from "../src/work-driver-scope-fanout.ts";
@@ -439,6 +440,44 @@ function run(
   assert(byId.get("b")?.ok === false && (byId.get("b")?.reason ?? "").includes("src/a.ts") && (byId.get("b")?.reason ?? "").includes("declared by a"), `branches-converged: the sibling-declared violator is ok:false with an attributed reason (got: ${JSON.stringify(verdicts)})`);
   assert(byId.get("c")?.ok === false && (byId.get("c")?.reason ?? "").includes("src/c.ts"), `branches-converged: the issue-fenced violator is ok:false with a reason (got: ${JSON.stringify(verdicts)})`);
   assert(byId.get("e")?.ok === true, `branches-converged: an undeclared-only workstream is NOT flipped (got: ${JSON.stringify(verdicts)})`);
+}
+
+// #848 — the flipped verdicts (the REAL applyFenceVerdicts output, not a
+// hand-built array) render identically in BOTH handoff surfaces: the
+// markdown body reads the same shared verdict source as the chat message,
+// so the sibling-declared violator shows "FAIL — <reason>" in both, not
+// "ok" in one and "FAIL" in the other.
+{
+  let s = initialState(848, 1_000_000);
+  s = {
+    ...s,
+    pipelineState: { ...s.pipelineState, branchName: "feature/issue-848" },
+  };
+  s.eventLog.push(
+    { kind: "branch-completed", step: "develop", workstreamId: "a", ok: true, ms: 1000, at: 1 },
+    { kind: "branch-completed", step: "develop", workstreamId: "b", ok: true, ms: 1000, at: 2 },
+    {
+      kind: "branches-converged",
+      step: "develop",
+      at: 3,
+      verdicts: applyFenceVerdicts(
+        [
+          { id: "a", ok: true },
+          { id: "b", ok: true },
+        ],
+        [
+          { workstreamId: "b", file: "src/a.ts", declaredById: "a", kind: "sibling-declared" },
+        ],
+      ),
+    },
+    { kind: "cap-hit", at: 4, cap: "step-failed:develop", reviewRound: 0, nextStep: "handoff" },
+  );
+  const md = renderHandoffMarkdown(s);
+  const chat = renderHandoffUserMessage(s, "/repo/x", "/repo/x/tmp/issue-848");
+  const fenceLine = "b: FAIL — fence violation: src/a.ts (declared by a)";
+  assert(md.includes(fenceLine), `#848 markdown: the flipped verdict renders with the fence reason ("${fenceLine}")`);
+  assert(chat.includes(fenceLine), `#848 chat: the identical fence-reason line (both surfaces agree)`);
+  assert(!md.includes("- b: ok") && !chat.includes("  b: ok"), "#848: neither surface shows the stale 'b: ok'");
 }
 
 // #814 — the persisted branches-converged event case (the flipped verdict in

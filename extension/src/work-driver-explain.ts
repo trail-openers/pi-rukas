@@ -5,6 +5,7 @@
  * for the WHY explanation used by every handoff surface.
  */
 
+import { developVerdictLines } from "./work-develop-verdict-source.ts";
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
 import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { explainConsolidation } from "./work-driver-explain-consolidation.ts";
@@ -323,15 +324,25 @@ export function explainCap(
     // verdicts; explainCap surfaces the count so the operator can tell
     // "all 3 branches failed" from "1 of 3 failed" without reading the
     // event log.
-    const lastConverged = [...state.eventLog]
-      .reverse()
-      .find(
-        (e): e is Extract<WorkEvent, { kind: "branches-converged" }> =>
-          e.kind === "branches-converged" && e.step === step,
-      );
-    const fanoutTag = lastConverged
-      ? ` (${lastConverged.verdicts.filter((v) => !v.ok).length}/${lastConverged.verdicts.length} workstream branches failed)`
-      : "";
+    // The develop count must agree with the handoff's verdict section, so it
+    // comes from the same shared source; other steps keep their own converged event.
+    const developLines = step === "develop" ? developVerdictLines(state) : undefined;
+    const lastConverged =
+      developLines === undefined
+        ? [...state.eventLog]
+            .reverse()
+            .find(
+              (e): e is Extract<WorkEvent, { kind: "branches-converged" }> =>
+                e.kind === "branches-converged" && e.step === step,
+            )
+        : undefined;
+    const fanoutTag = developLines
+      ? developLines.length > 0
+        ? ` (${developLines.filter((v) => !v.ok).length}/${developLines.length} workstream branches failed)`
+        : ""
+      : lastConverged
+        ? ` (${lastConverged.verdicts.filter((v) => !v.ok).length}/${lastConverged.verdicts.length} workstream branches failed)`
+        : "";
     switch (step) {
       case "explore":
         return "the explore step dispatch failed before producing a usable spec — cycle cannot continue without recon context";
