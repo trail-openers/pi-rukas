@@ -8,6 +8,23 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.59](https://github.com/trail-openers/pi-rukas/compare/v0.12.58...v0.12.59) (2026-09-24)
+
+
+### Bug Fixes
+
+* **agents-md:** render a faithful dry-run diff and print the exit code ([#847](https://github.com/trail-openers/pi-rukas/issues/847)) ([7e28196](https://github.com/trail-openers/pi-rukas/commit/7e28196060e088dc24dcdd03811ce20fb00181f2))
+* **deck:** disambiguate rows whose job keys share a prefix ([#845](https://github.com/trail-openers/pi-rukas/issues/845)) ([58e3761](https://github.com/trail-openers/pi-rukas/commit/58e376136f08138972135c6cf72217bf13c78297))
+* **test:** scope the Pi version census to files git tracks ([#843](https://github.com/trail-openers/pi-rukas/issues/843)) ([80a2a80](https://github.com/trail-openers/pi-rukas/commit/80a2a8085384775f333a884b896716cc204dfee9))
+* **work:** attribute fence violations and block sibling annexation ([cd6cb5f](https://github.com/trail-openers/pi-rukas/commit/cd6cb5f2bbcefe5da67b267d50cd5041f27bc873))
+* **work:** base restarted cycles on fresh origin main ([#863](https://github.com/trail-openers/pi-rukas/issues/863)) ([05b8f31](https://github.com/trail-openers/pi-rukas/commit/05b8f315b0fe79104b4db85174e3e02c34988b31))
+* **work:** detect success-keyed repetition loops and kill them ([57cb3b4](https://github.com/trail-openers/pi-rukas/commit/57cb3b469d58c0af59e4524051c1e15455b45c0e))
+* **work:** Epic [#833](https://github.com/trail-openers/pi-rukas/issues/833) sub-issue 2 (G2), filed as its… ([#852](https://github.com/trail-openers/pi-rukas/issues/852)) ([a590a5b](https://github.com/trail-openers/pi-rukas/commit/a590a5bf72e21a37ea1db34bed7ea57ac4dabee8)), closes [#837](https://github.com/trail-openers/pi-rukas/issues/837)
+* **work:** gate the consolidated-verify flake retry on a shared assertion ([8016fb0](https://github.com/trail-openers/pi-rukas/commit/8016fb0fff6a8f2fc71d530bb3f93fe5e812531b))
+* **work:** parse a nested ### Spec and carry no-signal park evidence ([#850](https://github.com/trail-openers/pi-rukas/issues/850)) ([7b37154](https://github.com/trail-openers/pi-rukas/commit/7b3715423924776a5cc714e1423e9ac7be286afa))
+* **work:** persist consolidated-verify output and classify on both streams ([#853](https://github.com/trail-openers/pi-rukas/issues/853)) ([eebc2a7](https://github.com/trail-openers/pi-rukas/commit/eebc2a7fbfd96f5ff75a9256689ae9388161daf9))
+* **work:** render the fence-flipped workstream verdicts in the handoff ([#862](https://github.com/trail-openers/pi-rukas/issues/862)) ([ba090e1](https://github.com/trail-openers/pi-rukas/commit/ba090e1191609b7f25e253580d1eb7bbdaaebcad))
+
 ## [0.12.58](https://github.com/trail-openers/pi-rukas/compare/v0.12.57...v0.12.58) (2026-09-23)
 
 
