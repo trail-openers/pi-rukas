@@ -79,7 +79,9 @@ export type {
   WorkEvent,
   WorkEventKind,
   CommitPrFallbackCause,
+  DispatchHeartbeatEvent,
 } from "./workflow-state-events.ts";
+export { heartbeatIntervalMs } from "./workflow-state-events.ts";
 export { WORK_STATE_SCHEMA_VERSION } from "./workflow-state-schema.ts";
 export type {
   ConsolidationVerdict,

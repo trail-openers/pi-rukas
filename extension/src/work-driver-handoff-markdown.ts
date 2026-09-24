@@ -25,6 +25,8 @@ import {
 } from "./work-driver-handoff-commitpr.ts";
 import { recoveryCommandsMarkdown } from "./work-driver-handoff-recovery.md.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
+import { dispatchDurations } from "./work-status-dispatch-durations.ts";
+import { fmtElapsed } from "./work-status-events.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 /**
@@ -61,12 +63,20 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     )
     .slice(0, 5)
     .map((e) => `- \`${e.label}\` — \`${e.transcriptPath}\``);
-  const stepDurations = state.eventLog
-    .filter(
-      (e): e is Extract<WorkEvent, { kind: "dispatch-completed" }> =>
-        e.kind === "dispatch-completed",
-    )
-    .map((e) => `- ${e.step.padEnd(14)} ${(e.ms / 1000).toFixed(1)}s · ${e.label}`);
+  // #799 — per-dispatch durations: the shared helper reads the event log and
+  // returns one row per dispatch (completed OR failed). The handoff was
+  // already rendering per-dispatch rows under "What was attempted"; this
+  // refactor re-uses the shared source so the handoff and /work-status
+  // surfaces cannot drift apart, and it adds failed rows (which were
+  // previously invisible here) so a post-mortem reader sees the attempts
+  // that did not land, not just the ones that did.
+  // fmtElapsed (shared with the status renderers) so the handoff and
+  // /work-status format the same duration identically at any scale — a
+  // 460_000ms dispatch reads `7m40s` here, not `460.0s`.
+  const dispatchRows = dispatchDurations(state.eventLog).map((r) => {
+    const failed = r.failed ? " · (failed)" : "";
+    return `- ${r.step.padEnd(14)} ${fmtElapsed(r.ms)} · ${r.label}${failed}`;
+  });
   // #848 — workstream verdicts come from the shared source (last develop
   // branches-converged, fence-flipped; else branch-completed) — the same
   // function + presence rule as the chat renderer, so a fence flip shows
@@ -107,7 +117,7 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
     ...adversarialOutcomeSection(state),
     ...plumbReportSection(state),
     "### What was attempted",
-    ...stepDurations.map((s) => s),
+    ...dispatchRows,
     "",
   ];
   if (allIssues.length > 1) {

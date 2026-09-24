@@ -14,6 +14,7 @@ import type {
   HandoffEmittedEvent,
   LensSkippedEmptyDiffEvent,
 } from "./workflow-state-events-handoff.ts";
+import type { DispatchHeartbeatEvent } from "./workflow-state-events-heartbeat.ts";
 import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-leftover.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
@@ -31,6 +32,10 @@ export type {
   HandoffEmittedEvent,
   LensSkippedEmptyDiffEvent,
 } from "./workflow-state-events-handoff.ts";
+// #799 task-a — the heartbeat event member + interval seam re-exported
+// from the sibling fragment (same pattern as the handoff members above).
+export type { DispatchHeartbeatEvent } from "./workflow-state-events-heartbeat.ts";
+export { heartbeatIntervalMs } from "./workflow-state-events-heartbeat.ts";
 /**
  * Linear step identifiers the driver walks. This union IS the definition
  * of the cycle — #393 deleted the prose flow that used to be its source.
@@ -489,6 +494,7 @@ export type WorkEvent =
   | WorktreeProvisionedEvent
   | SafetyNetCommitEvent
   | BranchResetEvent
-  | WorktreeLeftoverHandledEvent;
+  | WorktreeLeftoverHandledEvent
+  | DispatchHeartbeatEvent;
 /** Discriminator union of event kinds — useful for callers that switch on it. */
 export type WorkEventKind = WorkEvent["kind"];

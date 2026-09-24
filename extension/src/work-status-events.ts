@@ -144,5 +144,10 @@ export function fmtEvent(e: WorkEvent): string {
       // #844 — the old tip is the recovery handle; both are rendered so the
       // operator can `git checkout <oldSha>` without reading the state file.
       return `  branch-reset · ${e.branch} · ${e.oldSha.slice(0, 8)} → ${e.newSha.slice(0, 8)}`;
+    case "dispatch-heartbeat":
+      // #799 task-a — a bounded mid-flight snapshot of a single dispatch.
+      // The `zeroState` flag names the "no deck snapshot yet" shape rather
+      // than rendering a misleading "0 turns · 0 tok".
+      return `  dispatch-heartbeat · ${e.step} · ${e.label} · ${fmtElapsed(e.elapsedMs)} · ${e.turns} turn${e.turns === 1 ? "" : "s"}${e.lastToolName ? ` · last=${e.lastToolName}` : ""}${e.totalTokens > 0 ? ` · ${fmtTokens(e.totalTokens)} tok` : ""}${e.zeroState ? " · (no snapshot yet)" : ""}`;
   }
 }
