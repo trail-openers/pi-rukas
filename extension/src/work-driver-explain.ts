@@ -172,8 +172,23 @@ export function explainCap(
           : "its body carries a closing keyword for the issue";
       return `PR #${pr?.number ?? "(unknown)"} is already open for this issue — ${via}. The driver halted at the branch step BEFORE any dispatch, so no tokens were spent and nothing was written. \`--restart\` wipes the driver's state file but not GitHub, which is how issue #5 got rebuilt from scratch and shipped as a duplicate (#358 left orphaned by #359). Decide whether to resume that PR's branch, close it, or retarget it — the driver will not attach new commits to a PR whose head is a different branch`;
     }
-    case "explore-needs-clarification":
-      return "explore could not determine concrete work to do — the issue may be ambiguous, missing acceptance criteria, or contradictory. The driver halted before plan ran. Clarify the issue body and re-run /work";
+    case "explore-needs-clarification": {
+      // #830 — when the driver recorded WHY (the no-signal branch now carries
+      // `evidence: "no verdict and no spec parsed"`), name it. The generic
+      // sentence stays as the fallback for caps fired before the field existed
+      // or by a path that did not set it.
+      const hit = [...state.eventLog]
+        .reverse()
+        .find(
+          (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
+            e.kind === "cap-hit" && e.cap === "explore-needs-clarification",
+        );
+      const evidence = hit?.evidence;
+      const why = evidence
+        ? `the driver recorded: ${evidence} — the reply did not contain a verdict the driver could route on, nor a spec section it could extract`
+        : "the issue may be ambiguous, missing acceptance criteria, or contradictory";
+      return `explore could not determine concrete work to do — ${why}. The driver halted before plan ran. Clarify the issue body (or fix the reply shape) and re-run /work`;
+    }
     case "explore-bodies-empty": {
       const failed = state.pipelineState.emptyBodyIssues ?? [];
       const which =

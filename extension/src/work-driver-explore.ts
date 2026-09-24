@@ -403,25 +403,22 @@ export async function runExplore(
         pipelineState: { ...next.pipelineState, exploreVerdict: verdict },
       };
     }
-    // No `## Spec` block AND no legacy verdict is no signal at all, and the
-    // driver used to read that as "proceed": it fell through to `return next`
-    // and advanced to plan on an explore reply it could not parse a single
-    // decision out of.
-    //
-    // The documented degradation stays intact — an older prompt or a drifting
-    // agent that still emits the legacy token is honoured above. This only
-    // catches the case where neither channel said anything, which on the
-    // single-issue intent path is the likely one, because the prompt suppresses
-    // the legacy token it would fall back to (`useLegacyVerdict` is false
-    // there, `work-driver-prompts-early.ts:46-47`).
+    // No `## Spec` block AND no legacy verdict is no signal at all. The
+    // documented degradation stays intact — an older prompt that still emits
+    // the legacy token is honoured above. This only catches the case where
+    // neither channel said anything, which on the single-issue intent path is
+    // the likely one, because the prompt suppresses the legacy token
+    // (`useLegacyVerdict` is false there).
     if (exploreProducedNoSignal(useIntent, verdict)) {
       trace("work-driver: explore returned neither a `## Spec` block nor a verdict — parking");
+      // #830 — carry WHY the driver could not act so the handoff names it.
       return appendEvent(next, {
         kind: "cap-hit",
         at: Date.now(),
         cap: "explore-needs-clarification",
         reviewRound: next.pipelineState.reviewRound,
         nextStep: "handoff",
+        evidence: "no verdict and no spec parsed",
       });
     }
     if (verdict === "ALREADY_COMPLETE" || verdict === "NEEDS_CLARIFICATION") {

@@ -1,16 +1,8 @@
 /**
  * work-driver-handoff-recovery-caps — the per-cap RECOVERY RECIPE table,
  * extracted from work-driver-handoff-recovery.ts (AGENTS.md §12 file-size
- * limit). This module owns the cap → recovery-steps DECISION BODY:
- * `recoveryStepsForCap(state, forge)`, the if/else chain of per-cap literal
- * command sections (including the #674 worktree-aware block that precedes
- * the cap-keyed chain and short-circuits it), plus the `forgeLines` helper
- * that picks the github/gitlab spelling per forge.
- *
- * The shared types (`RecoverySection`, `RecoveryStep`) and
- * `CONSOLIDATE_APPLY` stay in the parent work-driver-handoff-recovery.ts;
- * the parent re-exports `recoveryStepsForCap` from here so the renderers,
- * the forge test and the smoke tests import it unchanged.
+ * limit). Owns the cap → recovery-steps DECISION BODY: the if/else chain of
+ * per-cap literal command sections plus the `forgeLines` helper.
  *
  * Behaviour contract: the branch ORDER is load-bearing — the worktree-aware
  * block must fire before the if/else chain (it short-circuits the regular
@@ -295,15 +287,30 @@ export function recoveryStepsForCap(
       },
     );
   } else if (cap === "explore-needs-clarification") {
+    // #830 — step 1 was `cat tmp/issue-N/handoff-comment.md`, the very file
+    // the operator is reading. Now the steps read the EXPLORE ARTIFACT.
+    const hit = [...state.eventLog]
+      .reverse()
+      .find(
+        (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
+          e.kind === "cap-hit" && e.cap === "explore-needs-clarification",
+      );
+    const evidence = hit?.evidence;
+    const artifactPath = `.pi/work-state/${issue}/`;
     steps.push(
       {
         section: "explore-needs-clarification",
-        comment: ["1. Read what explore couldn't determine:"],
-        lines: [`cat tmp/issue-${issue}/handoff-comment.md`],
+        comment: [
+          evidence
+            ? `1. The driver recorded: ${evidence}. Read the explore artifact to confirm`
+            : "1. Read the explore artifact to see what the reply actually contained:",
+          "   the reply (the issue may be fine — the parser may have missed it):",
+        ],
+        lines: [`ls ${artifactPath}`, `cat ${artifactPath}*explore*.txt`],
       },
       {
         section: "explore-needs-clarification",
-        comment: ["2. Edit the issue body to add the missing acceptance criteria / scope:"],
+        comment: ["2. If the issue is ambiguous or missing acceptance criteria, edit it first:"],
         lines: forgeLines(
           forge,
           [`gh issue edit ${issue}`],
@@ -312,8 +319,8 @@ export function recoveryStepsForCap(
       },
       {
         section: "explore-needs-clarification",
-        comment: ["3. Re-run /work once the issue is clearer:"],
-        lines: [`rm .pi/work-state/${issue}.json`, "# then restart Pi"],
+        comment: ["3. Re-run /work (the state file is discarded automatically on --restart):"],
+        lines: [`/work ${issue} --restart`],
       },
       {
         section: "explore-needs-clarification",
