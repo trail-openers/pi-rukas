@@ -26,6 +26,7 @@ import type { LoopDetectionEvent, LoopDetector } from "../src/loop-detector.ts";
 import type { PiContentBlock } from "../src/pi-event-shapes.ts";
 import { createCapSession } from "../src/spawn-caps.ts";
 import { capKillGraceMs } from "../src/spawn-support.ts";
+import { pollUntilKilled } from "./lib/poll-until-killed.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -101,21 +102,6 @@ function feedRepeat(det: LoopDetector, blocks: PiContentBlock[], n: number): Loo
 }
 const first = (evs: LoopDetectionEvent[], kind: "steer" | "kill") =>
   evs.find((e) => e.kind === kind);
-/** #846 — poll until the grace-window kill is observed, bounded at 10 s.
- * The kill fires from spawn-caps.ts's 500 ms setInterval poll and can land
- * up to graceMs + one tick after arming, so a fixed sleep raced the poll on
- * slow CI runners. The poll only READS state; a distinct timeout message
- * separates a true hang from the product assertions. */
-async function pollUntilKilled(
-  s: ReturnType<typeof createCapSession>,
-): Promise<{ ok: boolean; at: number }> {
-  const t0 = Date.now();
-  while (Date.now() - t0 < 10_000) {
-    if (s.loopKilled()) return { ok: true, at: Date.now() };
-    await new Promise((r) => setTimeout(r, 50));
-  }
-  return { ok: false, at: Date.now() };
-}
 const STEER_BASH_5 =
   "you appear to be repeating the same bash call with identical arguments after normalization (5 times); if the result is not changing, change approach or stop, and when you finish write your status (done / remaining / current state) to your final report.";
 

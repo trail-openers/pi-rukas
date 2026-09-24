@@ -5,6 +5,7 @@
  * Moved verbatim from test-dispatch-caps.ts (file-size split).
  */
 
+import { pollUntilKilled } from "./lib/poll-until-killed.ts";
 import { createCapSession } from "../src/spawn-caps.ts";
 
 let exit = 0;
@@ -14,23 +15,6 @@ function assert(cond: boolean, msg: string) {
     console.error(`✗ ${msg}`);
     exit = 1;
   }
-}
-
-/** #846 — poll until the grace-window kill is observed, bounded at 10 s.
- * The kill fires from spawn-caps.ts's 500 ms setInterval poll and can land
- * up to graceMs + one tick after arming, so a fixed sleep raced the poll on
- * slow CI runners. The poll only READS state (no observer traffic — new
- * message_ends would re-arm a streak-armed window). Fails with a distinct
- * message if the kill never fires within the bound. */
-async function pollUntilKilled(
-  s: ReturnType<typeof createCapSession>,
-): Promise<{ ok: boolean; at: number }> {
-  const t0 = Date.now();
-  while (Date.now() - t0 < 10_000) {
-    if (s.loopKilled()) return { ok: true, at: Date.now() };
-    await new Promise((r) => setTimeout(r, 50));
-  }
-  return { ok: false, at: Date.now() };
 }
 
 // ---------------------------------------------------------------------------
