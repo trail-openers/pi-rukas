@@ -251,8 +251,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     `explainCap step-failed:develop surfaces fanout count (got: "${sentence}")`,
   );
 
-  // Single-workstream / no branches-converged → no parenthetical.
+  // No develop branches-converged (and no branch-completed fanout) → no parenthetical.
   const sNoFanout = initialState(540, 1_000_000);
+  (sNoFanout as unknown as { pipelineState: Record<string, unknown> }).pipelineState.branchName =
+    "feature/issue-540";
   const sentenceSingle = explainCap("step-failed:develop", sNoFanout);
   assert(
     !sentenceSingle.includes("workstream branches"),
