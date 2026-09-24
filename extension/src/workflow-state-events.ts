@@ -1,10 +1,7 @@
 /**
- * /work workflow state — event-log types.
- * `WorkStep` (the linear step identifiers the driver walks) and `WorkEvent`
- * (the append-only, typed event-log entries the driver writes on every state
- * transition). Split out of `workflow-state.ts` for module-size hygiene
- * (AGENTS.md §12) — re-exported from there so consumers' import paths are
- * unaffected.
+ * /work workflow state — event-log types. `WorkStep` (linear step identifiers)
+ * and `WorkEvent` (append-only, typed event-log entries). Split from
+ * `workflow-state.ts` for module-size hygiene (AGENTS.md §12).
  */
 import type { RoleName } from "./roles.ts";
 import type { DispatchUsage } from "./types.ts";
@@ -317,6 +314,10 @@ export type WorkEvent =
         // is cheap; approving on the absence of evidence is not.
         | "lens-diff-unreadable"
         | "existing-pr-detected"
+        // #844 — the ops-fallback branch path's post-dispatch merge-base check
+        // failed: the branch ops created does not sit on the driver-resolved
+        // baseSha (ops built off a stale local ref — the #830 shape).
+        | "ops-merge-base-mismatch"
         // #486 — infra-failure: adversarial loop failed on infra every attempt.
         | "adversarial-infra-failure"
         // #571 — sibling cycle holds a path claim; overlap detected at plan
@@ -368,10 +369,8 @@ export type WorkEvent =
       /**
        * #657 — on `cap: "intent-park"` the machine-readable park reason
        * (underspecified / contradicted-by-code / already-implemented /
-       * too-large / premise-unsound), carried on the event so the renderers
-       * can show `intent-park (contradicted-by-code)` without re-deriving it
-       * from `pipelineState.normalisedSpec`. Additive: the schema validator
-       * ignores extra fields.
+       * too-large / premise-unsound). Carried on the event so the renderers
+       * can show `intent-park (contradicted-by-code)` without re-deriving it.
        */
       parkReason?: string;
       /**

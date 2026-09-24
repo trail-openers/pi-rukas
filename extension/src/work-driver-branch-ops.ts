@@ -8,6 +8,20 @@
  * other than `DirtyWorktreeError` — the recovery path #287 kept
  * deliberately: absorbing environment variance, not an opt-out.
  *
+ * #844 — the ops-fallback path previously recorded `baseSha` as
+ * `git rev-parse HEAD` at repoRoot and TRUSTED it, with no verification that
+ * the branch ops actually created sits on that base. The #830 incident's
+ * restarted cycle is exactly this shape: a stale local branch, recorded
+ * baseSha, and a diff that silently reverted merged work. Now the driver
+ * resolves the freshest `origin/<mainline>` tip (best-effort fetch — the
+ * mechanized path's fetch already failed, so this is often the local
+ * mainline) and, after the dispatch, verifies that the resulting branch's
+ * merge-base against `origin/<mainline>` equals the recorded baseSha, halting
+ * with an `ops-merge-base-mismatch` cap on a mismatch. The check is
+ * read-only and degrades to a trace (no halt) when the branch or remote
+ * mainline ref cannot be resolved — a fetch-down fallback is the NORMAL shape
+ * of this path, and "cannot verify" must not become a false halt.
+ *
  * #533 — this path does NOT provision the worktrees it records: only
  * `worktreeCreate` (the mechanized path) calls `provisionWorktree`, and the
  * ops prompt only tells ops to `git worktree add`. A worktree without
@@ -23,6 +37,7 @@ import { exec } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
 import { trace } from "./trace.ts";
+import { detectMainline, resolveBaseSha } from "./work-driver-branch-mechanized.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { parseBranchName } from "./work-driver-diff.ts";
 import { resolvedTheMainline } from "./work-driver-git.ts";
@@ -78,13 +93,48 @@ export async function runBranchViaOpsDispatch(
   workstreamIds: string[],
   now: number,
 ): Promise<WorkState> {
+  const execFn = ctx.verifyExecFn ?? execp;
+  // #844 — resolve the freshest base BEFORE the dispatch so the prompt can
+  // name the exact SHA and the post-dispatch check has a driver-computed
+  // value to compare against. The fetch is best-effort: the ops-fallback path
+  // fires AFTER the mechanized path's fetch already failed (or a git error
+  // elsewhere), so a fetch-down run has no fresher origin ref — fall back to
+  // the local mainline. `resolveBaseSha` already prefers origin/<mainline>
+  // over the local ref. A fetch failure (or no remote) here must NOT throw —
+  // this is the env-variance recovery path, and a fetch that is down is
+  // exactly the variance it absorbs; an empty baseSha means the driver cannot
+  // verify and the check below degrades to a trace.
+  let driverBaseSha = "";
+  try {
+    const mainline = await detectMainline(execFn, ctx.repoRoot);
+    // Best-effort fetch of the mainline ref; a failure degrades to the local ref.
+    try {
+      await execFn(`git fetch origin ${JSON.stringify(mainline)}`, {
+        cwd: ctx.repoRoot,
+        maxBuffer: 1024 * 1024,
+      });
+    } catch (err) {
+      trace(
+        `work-driver: ops-fallback fetch of origin/${mainline} failed — verifying against local refs: ${(err as Error).message?.slice(0, 160)}`,
+      );
+    }
+    driverBaseSha = await resolveBaseSha(execFn, ctx.repoRoot, mainline);
+  } catch (err) {
+    trace(
+      `work-driver: ops-fallback baseSha resolution failed (verification will degrade): ${(err as Error).message?.slice(0, 160)}`,
+    );
+  }
   let next = await runSingleDispatch(ctx, base, "branch", "ops", "ops", now, () =>
-    inlineBranchPrompt(activeIssuesOf(base), workstreamIds, scratchDir(ctx.repoRoot, ctx.issue)),
+    inlineBranchPrompt(
+      activeIssuesOf(base),
+      workstreamIds,
+      scratchDir(ctx.repoRoot, ctx.issue),
+      driverBaseSha || undefined,
+    ),
   );
   const last = next.eventLog[next.eventLog.length - 1];
   if (last?.kind !== "dispatch-completed") return next;
   const reportedBranch = parseBranchName(last.summary);
-  const execFn = ctx.verifyExecFn ?? execp;
   let actualBranch: string | undefined;
   try {
     const { stdout } = await execFn("git rev-parse --abbrev-ref HEAD", {
@@ -150,6 +200,58 @@ export async function runBranchViaOpsDispatch(
   }
   const ps: typeof next.pipelineState = { ...next.pipelineState };
   if (branch) ps.branchName = branch;
+  // #844 — verify the branch ops actually created sits on the driver-resolved
+  // base. `git merge-base <branch> origin/<mainline>` is the freshest common
+  // ancestor of the branch and the remote mainline; if ops built the branch
+  // off the freshly-fast-forwarded mainline, that merge-base IS the branch tip
+  // (branch == base). A mismatch means ops built off a stale local ref or the
+  // mainline did not actually advance — exactly the #830 shape. The check is
+  // read-only and degrades to a trace (no halt) when the branch or the remote
+  // mainline ref cannot be resolved: a fetch-down fallback is the NORMAL shape
+  // of this path, and "cannot verify" must not become a false halt. A
+  // `git merge-base` on unrelated histories (no common ancestor) exits
+  // non-zero, which also routes to the halt (a branch with no shared ancestor
+  // with origin/main is definitely not on the fresh base).
+  let verifiedBase = "";
+  if (branch) {
+    try {
+      const mainline = await detectMainline(execFn, ctx.repoRoot);
+      let originSha = "";
+      try {
+        const { stdout } = await execFn(
+          `git rev-parse --verify --quiet ${JSON.stringify(`origin/${mainline}`)}`,
+          { cwd: ctx.repoRoot, maxBuffer: 64 * 1024 },
+        );
+        originSha = stdout.trim();
+      } catch {
+        originSha = "";
+      }
+      if (originSha) {
+        const { stdout } = await execFn(
+          `git merge-base ${JSON.stringify(`refs/heads/${branch}`)} ${JSON.stringify(originSha)}`,
+          { cwd: ctx.repoRoot, maxBuffer: 64 * 1024 },
+        );
+        verifiedBase = stdout.trim();
+      }
+    } catch (err) {
+      trace(
+        `work-driver: ops-fallback merge-base verification failed to run (degraded, no halt): ${(err as Error).message?.slice(0, 160)}`,
+      );
+    }
+  }
+  if (verifiedBase && ps.baseSha && verifiedBase !== ps.baseSha) {
+    trace(
+      `work-driver: ops-fallback merge-base MISMATCH — branch ${branch} merge-base ${verifiedBase.slice(0, 8)} != recorded baseSha ${ps.baseSha.slice(0, 8)} — halting`,
+    );
+    return appendEvent(next, {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "ops-merge-base-mismatch",
+      reviewRound: next.pipelineState.reviewRound,
+      nextStep: "handoff",
+      evidence: `branch ${branch} sits at merge-base ${verifiedBase} with origin/<mainline>, but the driver recorded baseSha ${ps.baseSha} — the branch was not built off the freshly-fetched base`,
+    });
+  }
   // #451 — ALWAYS parse the `## Worktrees` block when the ops reply carries
   // one, N=1 included. The `{ default: ctx.repoRoot }` entry is a LAST-RESORT
   // cwd: under the worktree-isolation epic the repo root is no longer checked
