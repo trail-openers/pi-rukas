@@ -4,10 +4,11 @@
  * #742, #834). #834 replaced the non-focusable SelectList (which never
  * received input — keys route to the focused editor, #176) with plain per-job
  * Text rows, one per RUNNING job (batch members included), plus the
- * roster-mode input listener. Covers: encode/parse round-trip,
- * buildDeckItems shape (no cancel sentinel), buildSteerPrompt, the
+ * roster-mode input listener. Covers: buildSteerPrompt, the
  * ONE-KEY widget invariant, and the composite factory shape (Container of
- * plain Text rows — NO SelectList children).
+ * plain Text rows — NO SelectList children). The SelectList's encode/parse
+ * value surface (deck:: prefix) was deleted with it in #834 — it had no
+ * production caller.
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -26,10 +27,7 @@ import {
 import { DECK_UI_STEER_SOURCE } from "../src/dispatch-deck-interactive.ts";
 import {
   buildCompositeFactory,
-  buildDeckItems,
   buildSteerPrompt,
-  encodeDeckValue,
-  parseDeckValue,
   type DeckRows,
 } from "../src/dispatch-deck-composite.ts";
 import { type RunningState, emptyRunningState } from "../src/progress.ts";
@@ -53,141 +51,6 @@ const fakeTheme = {
   fg: (_color: string, text: string) => text,
   bg: (_color: string, text: string) => text,
 } as const;
-
-// 1. encodeDeckValue / parseDeckValue — round-trip.
-{
-  const key = "df8a-7r";
-  const v = encodeDeckValue(key);
-  assert(v === `deck::${key}`, "encodeDeckValue prefixes with 'deck::'");
-  assert(parseDeckValue(v) === key, "parseDeckValue round-trips a real key");
-}
-
-// 2. parseDeckValue rejects malformed values cleanly.
-{
-  assert(
-    parseDeckValue("no-prefix") === undefined,
-    "parseDeckValue: no prefix → undefined",
-  );
-  assert(
-    parseDeckValue("deck::") === undefined,
-    "parseDeckValue: empty key after prefix → undefined",
-  );
-  assert(
-    parseDeckValue("deck:::x") !== undefined,
-    "parseDeckValue: key containing '::' is allowed (round-trips as-is)",
-  );
-}
-
-// 3. buildDeckItems — one item per entry, NO cancel sentinel (#834: the
-// sentinel belonged to the SelectList, which is gone).
-{
-  const now = 1_000_000;
-  const entries: DeckEntry[] = [
-    {
-      key: "a",
-      label: "developer",
-      seq: 0,
-      startedAt: now - 100_000,
-      state: makeState("developer", { lastToolName: "bash", toolUses: 3 }),
-    },
-    {
-      key: "b",
-      label: "explore",
-      seq: 1,
-      startedAt: now - 50_000,
-      state: makeState("explore"),
-    },
-  ];
-  const items = buildDeckItems(entries, now);
-  assert(items.length === 2, "2 entries → 2 items (no cancel sentinel, #834)");
-  assert(items[0]?.key === "a", "first item is entry 'a' (insertion order)");
-  assert(items[1]?.key === "b", "second item is entry 'b'");
-}
-
-// 4. Each item label is the job's full formatRow line (the per-job row
-// renders this verbatim, #742/#834), and the description carries the key
-// fragment so two same-role jobs stay distinguishable.
-{
-  const now = 2_000_000;
-  const entries: DeckEntry[] = [
-    {
-      key: "x",
-      label: "developer[task-A]",
-      seq: 0,
-      startedAt: now - 134_000,
-      state: makeState("developer", {
-        lastToolName: "bash",
-        toolUses: 7,
-        lastEventAt: now - 1000, // not stale
-      }),
-    },
-  ];
-  const items = buildDeckItems(entries, now);
-  const label = items[0]?.label ?? "";
-  assert(
-    label === formatRow(entries[0]!, now),
-    "label IS the full formatRow line (per-job row, #834)",
-  );
-  assert(label.startsWith("⏳"), "label starts with the hourglass icon");
-  assert(label.includes("2m14s"), "label includes elapsed time");
-  assert(label.includes("bash (#7)"), "label includes tool name + use-count");
-  assert(
-    items[0]?.description === "x",
-    "≤10-char key 'x' renders verbatim (no 'key ' prefix, no ellipsis)",
-  );
-}
-
-// 4b. Multiple entries — each label matches its own formatRow line, and
-// distinct keys yield distinct descriptions (two same-role jobs stay
-// tellable apart, the #729 failure mode).
-{
-  const now = 4_000_000;
-  const mk = (key: string, seq: number): DeckEntry => ({
-    key,
-    label: "developer[task-A]",
-    seq,
-    startedAt: now - 134_000,
-    state: makeState("developer", {
-      lastToolName: "bash",
-      toolUses: 7,
-      lastEventAt: now - 1000,
-    }),
-  });
-  const entries = [mk("df8a-1aaaa", 0), mk("df8a-2bbbb", 1), mk("df8a-3cccc", 2)];
-  const items = buildDeckItems(entries, now);
-  for (let i = 0; i < entries.length; i++) {
-    const e = entries[i]!;
-    assert(
-      (items[i]?.label ?? "") === formatRow(e, now),
-      `item ${i} label IS its formatRow line`,
-    );
-  }
-  assert(
-    items[0]?.description !== items[1]?.description,
-    "two same-role jobs carry distinct key descriptions",
-  );
-  const descs = items.map((it) => it?.description ?? "");
-  assert(
-    new Set(descs).size === items.length,
-    "3 same-role jobs carry 3 distinct key descriptions",
-  );
-}
-
-// 5. DeckItem.value round-trips through parseDeckValue.
-{
-  const entries: DeckEntry[] = [
-    {
-      key: "my-job",
-      label: "ops",
-      seq: 0,
-      startedAt: 1,
-      state: makeState("ops"),
-    },
-  ];
-  const items = buildDeckItems(entries);
-  const value = items[0]?.value ?? "";
-  assert(parseDeckValue(value) === "my-job", "item.value round-trips to the entry key");
-}
 
 // 6. buildSteerPrompt is a ready-to-send steer with job context.
 {
@@ -386,13 +249,6 @@ const fakeTheme = {
       "no running jobs, no hint → 0 rows",
     );
   }
-}
-
-// 10. buildDeckItems with empty entries → no items (no cancel sentinel —
-// it belonged to the SelectList, gone in #834).
-{
-  const items = buildDeckItems([]);
-  assert(items.length === 0, "empty entries → 0 items (no cancel sentinel, #834)");
 }
 
 // 11. #761 / #834 — batch-member single-row regression: a batch header

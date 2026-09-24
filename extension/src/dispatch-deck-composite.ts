@@ -33,35 +33,6 @@ import { type DeckEntry, formatRow } from "./dispatch-deck.ts";
 import { formatElapsed } from "./progress.ts";
 
 /**
- * One row of the composite: job key, encoded value, label.
- *
- * TEST-ONLY / deferred pipeline: post-#834 the production per-job rows
- * are built inline in `buildCompositeFactory` straight from `DeckEntry`,
- * so `DeckItem` / `buildDeckItems` / `encodeDeckValue` / `parseDeckValue`
- * have no runtime consumer — they exist for the smoke tests
- * (test-dispatch-deck-interactive.ts, test-dispatch-deck-fragments.ts)
- * and the #835 distinct-fragment behaviour they pin. Retained for the
- * live-view surface (#839 / #836), which will render these values.
- */
-export interface DeckItem {
-  key: string;
-  value: string;
-  label: string;
-  description?: string;
-}
-
-export function encodeDeckValue(key: string): string {
-  return `deck::${key}`;
-}
-
-export function parseDeckValue(value: string): string | undefined {
-  const prefix = "deck::";
-  if (!value.startsWith(prefix)) return undefined;
-  const key = value.slice(prefix.length);
-  return key.length > 0 ? key : undefined;
-}
-
-/**
  * Row state for the plain-row rendering (#834).
  * `running` includes batch members (one row per job, #709/#729/#742/#761
  * single-surface invariant); `selected` is the roster-mode `>` target.
@@ -70,81 +41,6 @@ export interface DeckRows {
   running: readonly DeckEntry[];
   selectedKey?: string;
   showHint: boolean;
-}
-
-/**
- * Build the composite's job rows. One item per RUNNING entry (batch
- * members included), each carrying the job's full `formatRow` line plus
- * a distinct key-fragment description so same-role jobs stay tellable
- * apart (#835). The cancel sentinel is gone with the SelectList (#834) —
- * cancel no longer exists as a deck action.
- */
-export function buildDeckItems(
-  entries: readonly DeckEntry[],
-  now: number = Date.now(),
-): DeckItem[] {
-  const descriptions = distinctKeyFragments(entries.map((e) => e.key));
-  return entries.map((e, i) => ({
-    key: e.key,
-    value: encodeDeckValue(e.key),
-    label: formatRow(e, now),
-    description: descriptions[i],
-  }));
-}
-
-/**
- * Render `key` truncated to a `prefix`-char fragment. ≤10-char keys
- * render verbatim (no marker); longer keys render as "key " + first
- * `prefix` chars (trimEnd) + `…` — unless `prefix` reaches the full key
- * length, in which case the full key renders with no ellipsis.
- */
-function keyFragmentAt(key: string, prefix: number): string {
-  if (key.length <= 10) return key;
-  if (prefix >= key.length) return key;
-  return `key ${key.slice(0, prefix).trimEnd()}…`;
-}
-
-/**
- * Collision-aware fragments over the whole visible set. Group keys by
- * their current 10-char fragment; for any group with more than one
- * DISTINCT key, increase that group's prefix length by 1 and re-group,
- * repeating until every description is distinct or the prefix reaches
- * the full key length (rendered in full, no ellipsis). Entries whose
- * 10-char fragment is already unique keep the exact current output.
- *
- * Only 2nd+ occurrences in a colliding group lengthen: the first keeps
- * the 10-char form while later ones grow by 1, 2, … — always distinct
- * and all still starting with the 10-char fragment. The loop is
- * bounded: a pass in which no bumpable prefix can change makes further
- * lengthening impossible (duplicates can only persist at this point),
- * so it exits with the fragments as-is — duplicate keys ≤10 chars
- * render verbatim and identical, where the label and value columns
- * still disambiguate.
- */
-function distinctKeyFragments(keys: string[]): string[] {
-  const n = keys.length;
-  const prefix = keys.map((k) => (k.length > 10 ? 10 : k.length));
-  for (;;) {
-    const fragments = keys.map((k, i) => keyFragmentAt(k, prefix[i] ?? 10));
-    const seen = new Set<string>();
-    const bumped = new Set<number>();
-    for (let i = 0; i < n; i++) {
-      const frag = fragments[i] ?? "";
-      if (seen.has(frag)) bumped.add(i);
-      seen.add(frag);
-    }
-    if (bumped.size === 0) return fragments;
-    let changed = false;
-    for (const i of bumped) {
-      const key = keys[i] ?? "";
-      const cur = prefix[i] ?? key.length;
-      if (cur < key.length) {
-        prefix[i] = cur + 1;
-        changed = true;
-      }
-    }
-    if (!changed) return fragments;
-  }
 }
 
 /**
