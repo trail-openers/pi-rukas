@@ -211,6 +211,11 @@ export async function runVerifyCommandGate(opts: {
           : { allowed: false, decision: "suppressed-mismatch" };
       },
       onRecover: (evidenceTail) => {
+        // #841 — onRecover fires BEFORE the run result is available, so the
+        // log path is not in scope here. The post-run pass below (the
+        // `cons.recovered === true` branch) surfaces the run1 log path in
+        // its own note, which is the one the operator actually reads when
+        // the gate proceeds after recovery.
         notes.push(
           `consolidated verify RECOVERED after one bounded re-run (transient flake) — first-run failure preserved${evidenceTail ? `: ${evidenceTail}` : ""}`,
         );
@@ -297,17 +302,42 @@ export async function runVerifyCommandGate(opts: {
         `flake re-run WITHHELD — workstream '${singlePerWs}' failed with assertion (${singlePerAssertion}) while the consolidated first run failed on a different assertion, so a single re-run was suppressed as likely masking a genuine defect${boundedPer ? ` — per-worktree evidence: ${boundedPer}` : ""}`,
       );
     }
+    // #841 — the classifier reads the raw verify tail, NOT the full
+    // `cons.detail` (which now carries the log path + restore claim).
+    // Stripping the `Raw output:` clause keeps the classifier's input
+    // identical to pre-#841: the bounded 800-char tail with no appended
+    // file path that could theoretically match an assertion pattern.
+    const classifierInput = cons.detail
+      .replace(/ Raw output: \S+\.?/g, "")
+      .replace(/ Raw output: unavailable\./g, "");
     const verdict = classifyConsolidatedVerifyFailure(
       wsIds.length,
       wsIds,
-      cons.detail,
+      classifierInput,
       perWorktreeFailuresByWs,
     );
-    failures.push(consolidatedFailureMessage(verdict, cmd));
+    // #841 — the log path must land in `failures[]` (which the gate pushes
+    // into `verifyEvidence.failures` and the handoff renders) — not only in
+    // `cons.detail` (which the classifier reads but does not surface in the
+    // final message). The path is on the result, so we splice it into the
+    // failure string here: the evidence must name the path so an operator
+    // with "(no specific assertion could be extracted)" can open the file
+    // and see the raw stream.
+    const logClause = cons.logPath ? ` Raw output: ${cons.logPath}.` : " Raw output: unavailable.";
+    failures.push(consolidatedFailureMessage(verdict, cmd) + logClause);
   } else {
     notes.push(
       `consolidated verify passed — workstreams ${cons.applied.join(", ")} combined in one tree passed \`${cmd}\`; per-worktree verify failures are recorded as evidence, not failures, because the combined tree is the verdict for cross-worktree artifacts`,
     );
+    // #841 — on a RECOVERED pass (run1 failed, run2 passed), the run1 log
+    // is the only record of the transient failure and the operator needs
+    // to know where it is. The log path is on the result, so the note
+    // reads it here rather than threading it through the onRecover callback
+    // (whose signature is `(evidenceTail?: string) => void` and predates
+    // #841).
+    if (cons.recovered === true && cons.logPath) {
+      notes.push(`recovered run — raw first-run output preserved at ${cons.logPath}`);
+    }
     // #826 — recovery is as observable as failure: when the re-run recovered
     // a first-run failure that shares a KNOWN per-worktree assertion (or is
     // attributed to a transient flake, the `allowed-unknown` case), record

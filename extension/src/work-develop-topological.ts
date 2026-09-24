@@ -347,19 +347,25 @@ async function runDevelopTopological(
           },
         },
       };
+      // #841 — the verify-failed:develop cap always carries evidence. The
+      // pre-fix spread attached it only for the conflict and
+      // consolidation-created branches, so the generic N=1 shape (issue
+      // #840) parked with NO evidence field at all — the handoff had
+      // nothing to name beyond verifyEvidence.failures, and the raw verify
+      // output (persisted to the scratch dir by the consolidated gate, the
+      // failure strings below) was unreferenceable. Every verify failure is
+      // now named at the cap itself; the fence prose still suffixes the
+      // conflict / consolidation-created wording only.
+      const failureEvidence =
+        conflictFailure ?? consolidationCreatedFailure ?? gate.failures.join(" | ");
       next = appendEvent(next, {
         kind: "cap-hit",
         at: Date.now(),
         cap,
         reviewRound: next.pipelineState.reviewRound,
         nextStep: "handoff",
-        ...(conflictFailure || consolidationCreatedFailure
-          ? {
-              evidence:
-                ((conflictFailure ?? consolidationCreatedFailure) as string) +
-                (fenceProse ? ` [fence: ${fenceProse}]` : ""),
-            }
-          : {}),
+        evidence:
+          failureEvidence + (conflictFailure ? (fenceProse ? ` [fence: ${fenceProse}]` : "") : ""),
       });
     }
   }
