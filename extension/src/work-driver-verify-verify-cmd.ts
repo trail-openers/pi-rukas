@@ -30,6 +30,7 @@ import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { formatExecError, verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
+import { rawOutputClause } from "./work-driver-verify-flake.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { looksLikeMissingDeps } from "./worktree-provision.ts";
 
@@ -65,6 +66,13 @@ export async function runVerifyCommandGate(opts: {
   notes: string[];
   onVerifyFlakeRecovered?: (evidenceTail?: string) => void;
   /**
+   * #841 — out-parameter for the consolidated run's persisted raw-output log
+   * path (called with the log the gate actually wrote — `logPath` is
+   * undefined when the write failed, so the caller never records a path
+   * that does not exist on disk).
+   */
+  onConsolidatedLogPath?: (logPath: string) => void;
+  /**
    * #814 — structured fence violations recorded by the scope gate earlier
    * in this same develop verify (the gate runs BEFORE the consolidated
    * verify, so the records already exist when the conflict branch fires).
@@ -88,6 +96,7 @@ export async function runVerifyCommandGate(opts: {
     notes,
     onVerifyFlakeRecovered,
     fenceViolations,
+    onConsolidatedLogPath,
   } = opts;
   const VALID_SHA_RE = /^[0-9a-f]{40}$/;
   const isValidSha = (s: string | undefined) => typeof s === "string" && VALID_SHA_RE.test(s);
@@ -211,6 +220,11 @@ export async function runVerifyCommandGate(opts: {
           : { allowed: false, decision: "suppressed-mismatch" };
       },
       onRecover: (evidenceTail) => {
+        // #841 — onRecover fires BEFORE the run result is available, so the
+        // log path is not in scope here. The post-run pass below (the
+        // `cons.recovered === true` branch) surfaces the run1 log path in
+        // its own note, which is the one the operator actually reads when
+        // the gate proceeds after recovery.
         notes.push(
           `consolidated verify RECOVERED after one bounded re-run (transient flake) — first-run failure preserved${evidenceTail ? `: ${evidenceTail}` : ""}`,
         );
@@ -297,17 +311,53 @@ export async function runVerifyCommandGate(opts: {
         `flake re-run WITHHELD — workstream '${singlePerWs}' failed with assertion (${singlePerAssertion}) while the consolidated first run failed on a different assertion, so a single re-run was suppressed as likely masking a genuine defect${boundedPer ? ` — per-worktree evidence: ${boundedPer}` : ""}`,
       );
     }
+    // #841 — the classifier reads the bounded tail of the RAW verify
+    // failure, NOT `cons.detail` (which now carries the log path + restore
+    // claim). The raw stream is carried structurally on the result
+    // (`rawFailure`) instead of being regexed out of the detail prose —
+    // the log path on the result is likewise spliced in without parsing.
+    const rawFailure = cons.rawFailure ?? "";
+    const { tail } = extractAttributedTail(rawFailure, 800);
+    const classifierInput =
+      tail.length > 0
+        ? tail
+        : rawFailure.length > 0
+          ? rawFailure
+          : "verify command exited non-zero";
     const verdict = classifyConsolidatedVerifyFailure(
       wsIds.length,
       wsIds,
-      cons.detail,
+      classifierInput,
       perWorktreeFailuresByWs,
     );
-    failures.push(consolidatedFailureMessage(verdict, cmd));
+    // #841 — the log path must land in `failures[]` (which the gate pushes
+    // into `verifyEvidence.failures` and the handoff renders) — not only in
+    // `cons.detail` (which the classifier reads but does not surface in the
+    // final message). The path is on the result, so we splice it into the
+    // failure string here: the evidence must name the path so an operator
+    // with "(no specific assertion could be extracted)" can open the file
+    // and see the raw stream.
+    // #841 — the shared rawOutputClause helper (single home for the
+    // sentence so both verify seams render identically).
+    const logClause = rawOutputClause(cons.logPath);
+    failures.push(consolidatedFailureMessage(verdict, cmd) + logClause);
+    // #841 — thread the ACTUAL written log path back (the write's own
+    // return — undefined when the write failed, in which case there is
+    // nothing to record structurally).
+    if (cons.logPath !== undefined) onConsolidatedLogPath?.(cons.logPath);
   } else {
     notes.push(
       `consolidated verify passed — workstreams ${cons.applied.join(", ")} combined in one tree passed \`${cmd}\`; per-worktree verify failures are recorded as evidence, not failures, because the combined tree is the verdict for cross-worktree artifacts`,
     );
+    // #841 — on a RECOVERED pass (run1 failed, run2 passed), the run1 log
+    // is the only record of the transient failure and the operator needs
+    // to know where it is. The log path is on the result, so the note
+    // reads it here rather than threading it through the onRecover callback
+    // (whose signature is `(evidenceTail?: string) => void` and predates
+    // #841).
+    if (cons.recovered === true && cons.logPath) {
+      notes.push(`recovered run — raw first-run output preserved at ${cons.logPath}`);
+    }
     // #826 — recovery is as observable as failure: when the re-run recovered
     // a first-run failure that shares a KNOWN per-worktree assertion (or is
     // attributed to a transient flake, the `allowed-unknown` case), record

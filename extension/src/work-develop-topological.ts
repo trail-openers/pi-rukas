@@ -21,11 +21,33 @@ import {
 import type { DriverContext } from "./work-driver-context.ts";
 import { runConvergeGateHandler } from "./work-driver-converge-gate.ts";
 import { topologicalDispatchOrder } from "./work-driver-dep-scheduler.ts";
+import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import { clearDispatch } from "./work-driver-resume.ts";
 import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
+
+// #841 — per-failure / joined-evidence bounds for the cap-hit evidence
+// field. A failure string is already an 800-char attributed tail; a
+// fanout with several failures joined unboundedly produced multi-KB
+// evidence. Bound each failure and the join itself, with a truncation
+// marker so the operator knows the evidence is bounded.
+const CAP_EVIDENCE_PER_FAILURE_MAX = 800;
+const CAP_EVIDENCE_TOTAL_MAX = 4000;
+const CAP_EVIDENCE_TRUNCATED = " … (truncated)";
+
+/** #841 — bound a single failure string before it is joined into evidence. */
+function boundFailure(f: string): string {
+  return extractAttributedTail(f, CAP_EVIDENCE_PER_FAILURE_MAX).tail || f.slice(-800);
+}
+
+/** #841 — join bounded failures, capping the total with a truncation marker. */
+function boundJoinFailures(failures: string[]): string {
+  const joined = failures.map(boundFailure).join(" | ");
+  if (joined.length <= CAP_EVIDENCE_TOTAL_MAX) return joined;
+  return joined.slice(0, CAP_EVIDENCE_TOTAL_MAX) + CAP_EVIDENCE_TRUNCATED;
+}
 
 /**
  * #679 — topological-dispatch core of runDevelop (see work-develop-run.ts).
@@ -347,23 +369,46 @@ async function runDevelopTopological(
           },
         },
       };
+      // #841 — the verify-failed:develop cap always carries evidence. The
+      // pre-fix spread attached it only for the conflict and
+      // consolidation-created branches, so the generic N=1 shape (issue
+      // #840) parked with NO evidence field at all — the handoff had
+      // nothing to name beyond verifyEvidence.failures, and the raw verify
+      // output (persisted to the scratch dir by the consolidated gate, the
+      // failure strings below) was unreferenceable. Every verify failure is
+      // now named at the cap itself; the fence prose suffixes the conflict /
+      // consolidation-created wording (the attribution belongs on both caps).
+      // Each failure is bounded before the join, and the join itself is
+      // capped (the #841 unbounded-evidence fix).
+      const failureEvidence =
+        conflictFailure ?? consolidationCreatedFailure ?? boundJoinFailures(gate.failures);
+      // #841 — the log path the gate actually wrote, carried STRUCTURALLY on
+      // the cap event (the explain renderer renders it without regexing the
+      // evidence prose); absent when the gate wrote no log.
+      const logPaths = gate.logPath !== undefined ? [gate.logPath] : undefined;
       next = appendEvent(next, {
         kind: "cap-hit",
         at: Date.now(),
         cap,
         reviewRound: next.pipelineState.reviewRound,
         nextStep: "handoff",
-        ...(conflictFailure || consolidationCreatedFailure
-          ? {
-              evidence:
-                ((conflictFailure ?? consolidationCreatedFailure) as string) +
-                (fenceProse ? ` [fence: ${fenceProse}]` : ""),
-            }
-          : {}),
+        evidence:
+          failureEvidence +
+          (conflictFailure || consolidationCreatedFailure
+            ? fenceProse
+              ? ` [fence: ${fenceProse}]`
+              : ""
+            : ""),
+        ...(logPaths !== undefined ? { logPaths } : {}),
       });
     }
   }
   return next;
 }
+
+// #841 — re-exported for the smoke test's direct bound check (the N=1
+// gate cannot produce the 10-failure shape, so the test exercises the
+// join bound in isolation).
+export { boundJoinFailures as boundJoinFailuresForTest };
 
 export { runDevelopTopological };
