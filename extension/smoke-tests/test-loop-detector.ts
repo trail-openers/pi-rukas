@@ -101,6 +101,21 @@ function feedRepeat(det: LoopDetector, blocks: PiContentBlock[], n: number): Loo
 }
 const first = (evs: LoopDetectionEvent[], kind: "steer" | "kill") =>
   evs.find((e) => e.kind === kind);
+/** #846 — poll until the grace-window kill is observed, bounded at 10 s.
+ * The kill fires from spawn-caps.ts's 500 ms setInterval poll and can land
+ * up to graceMs + one tick after arming, so a fixed sleep raced the poll on
+ * slow CI runners. The poll only READS state; a distinct timeout message
+ * separates a true hang from the product assertions. */
+async function pollUntilKilled(
+  s: ReturnType<typeof createCapSession>,
+): Promise<{ ok: boolean; at: number }> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < 10_000) {
+    if (s.loopKilled()) return { ok: true, at: Date.now() };
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return { ok: false, at: Date.now() };
+}
 const STEER_BASH_5 =
   "you appear to be repeating the same bash call with identical arguments after normalization (5 times); if the result is not changing, change approach or stop, and when you finish write your status (done / remaining / current state) to your final report.";
 
@@ -258,7 +273,9 @@ const STEER_BASH_5 =
   const child = fakeChild();
   const steers: string[] = [];
   let s: ReturnType<typeof createCapSession>;
-  withEnv({ PI_ENSEMBLE_CAP_KILL_GRACE_MS: "1000" }, async () => {
+  const savedGrace = process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS;
+  process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS = "1000";
+  try {
     assert(capKillGraceMs() === 1000, "F1(g): grace=1000ms read");
     s = createCapSession({
       role: "developer",
@@ -277,10 +294,13 @@ const STEER_BASH_5 =
     eq(steers, [STEER_BASH_5], "F1(g): exact steer text at count 5");
     assert(!s.loopKilled(), "F1(g): kill DEFERRED during grace");
     eq(child.killed, [], "F1(g): no signal before grace");
-    await new Promise((r) => setTimeout(r, 2000));
-    if (!s.loopKilled()) {
-      await new Promise((r) => setTimeout(r, 1000));
-    }
+    const gArmedAt = Date.now();
+    const gFired = await pollUntilKilled(s);
+    assert(gFired.ok, "F1(g): kill fires (kill did not fire within 10 s of polling)");
+    assert(
+      gFired.at >= gArmedAt + 1000,
+      `F1(g): kill fires after the grace window (kill at ${gFired.at - gArmedAt}ms vs grace 1000ms)`,
+    );
     eq(child.killed, ["SIGTERM"], "F1(g): kill fired (grace window elapsed)");
     assert(s.killCause() === "loop", "F1(g): killCause='loop'");
     const ev = s.loopEvidence();
@@ -289,7 +309,10 @@ const STEER_BASH_5 =
       `F1(g): evidence carries tool+count (got ${JSON.stringify(ev)})`,
     );
     s.cleanup();
-  });
+  } finally {
+    if (savedGrace === undefined) delete process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS;
+    else process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS = savedGrace;
+  }
 }
 {
   const child = fakeChild();

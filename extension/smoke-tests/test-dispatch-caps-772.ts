@@ -16,6 +16,23 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
+/** #846 — poll until the grace-window kill is observed, bounded at 10 s.
+ * The kill fires from spawn-caps.ts's 500 ms setInterval poll and can land
+ * up to graceMs + one tick after arming, so a fixed sleep raced the poll on
+ * slow CI runners. The poll only READS state (no observer traffic — new
+ * message_ends would re-arm a streak-armed window). Fails with a distinct
+ * message if the kill never fires within the bound. */
+async function pollUntilKilled(
+  s: ReturnType<typeof createCapSession>,
+): Promise<{ ok: boolean; at: number }> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < 10_000) {
+    if (s.loopKilled()) return { ok: true, at: Date.now() };
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return { ok: false, at: Date.now() };
+}
+
 // ---------------------------------------------------------------------------
 // #772 — the success-keyed counter end-to-end through the CapSession seam:
 // a non-adjacent green re-run (the #753 incident shape) must steer once
@@ -69,15 +86,21 @@ function assert(cond: boolean, msg: string) {
     // Grace window is open (2s) — the kill is deferred while the child has
     // its report window. This is the "chance to REPORT before being killed"
     // the ticket's AC requires. The poll will fire the kill after 2s.
+    const armedAt = Date.now();
     assert(
       !session.loopKilled() || session.killCause() === "loop",
       "#772: kill either deferred (grace) or fired (race)",
     );
-    // If the grace window is still open, wait for it to elapse.
-    if (!session.loopKilled()) {
-      await new Promise((r) => setTimeout(r, 2400));
-    }
-    assert(session.loopKilled(), "#772: success-keyed kill fires after the grace window");
+    // Poll until the 500 ms grace poll in spawn-caps.ts fires the kill
+    // (the kill lands in [grace, grace + tick]; a fixed sleep raced it on
+    // slow runners — #846). The clock check below still proves the kill
+    // fired AFTER the grace window, not before.
+    const fired = await pollUntilKilled(session);
+    assert(fired.ok, "#772: success-keyed kill fires (kill did not fire within 10 s of polling)");
+    assert(
+      fired.at >= armedAt + 2000,
+      `#772: success-keyed kill fires after the grace window (kill at ${fired.at - armedAt}ms vs grace 2000ms)`,
+    );
     assert(
       session.loopEvidence()?.kind === "success",
       "#772: loopEvidence kind:success (typed kill)",

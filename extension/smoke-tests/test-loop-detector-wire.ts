@@ -1,11 +1,8 @@
 #!/usr/bin/env bun
 /**
- * #772 — success-keyed counter WIRE fixtures (n)–(q).
- *
- * Moved verbatim from test-loop-detector.ts (file-size split): the
- * ingestEvent seam, toolResultFields extraction, the typed kill in the
- * dispatch report, and the #753 incident shape end-to-end through
- * createCapSession with a grace window.
+ * #772 — success-keyed counter WIRE fixtures (n)–(q): the ingestEvent seam,
+ * toolResultFields extraction, the typed kill in the dispatch report, and the
+ * #753 incident shape end-to-end through createCapSession with a grace window.
  */
 
 import { formatSingleReport } from "../src/async-jobs-report.ts";
@@ -48,6 +45,17 @@ function withEnv<T>(vars: Record<string, string | undefined>, fn: () => T): T {
       else process.env[k] = v;
     }
   }
+}
+/** #846 — poll until the grace-window kill is observed (50 ms tick, 10 s bound). */
+async function pollUntilKilled(
+  s: ReturnType<typeof createCapSession>,
+): Promise<{ ok: boolean; at: number }> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < 10_000) {
+    if (s.loopKilled()) return { ok: true, at: Date.now() };
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return { ok: false, at: Date.now() };
 }
 
 /* (n) #772 — the WIRE: a synthetic agent transcript (assistant message_end
@@ -223,14 +231,9 @@ function withEnv<T>(vars: Record<string, string | undefined>, fn: () => T): T {
   s2.cleanup();
 }
 
-/* (q) #772 — the #753 incident shape end-to-end through createCapSession
-   with a grace window: the green test re-issued non-adjacently (reads
-   interleaved), the success steer fires ONCE at 3, the kill arms at 6, and
-   the grace window defers the kill (the child gets its report window).
-
-   Moved verbatim from test-loop-detector.ts (file-size split); the only
-   change here is the top-level await this file now needs (the original's
-   `s!` non-null assertions became optional chains under biome). */
+/* (q) #772 — the #753 incident shape end-to-end: green test re-issued
+   non-adjacently (reads interleaved), steer at 3, kill armed at 6, grace
+   window defers the kill (the child's report window). */
 async function fixture772q(): Promise<void> {
   const killedSigs: string[] = [];
   const child = { killed: killedSigs, kill: (sig: string) => killedSigs.push(sig) } as never;
@@ -275,23 +278,22 @@ async function fixture772q(): Promise<void> {
     `#772(q): kill armed on re-issue #${SUCCESS_KILL_AT} (got #${(armedAt ?? -1) + 1})`,
   );
   assert(!s.loopKilled(), "#772(q): kill deferred — grace window open (the report window)");
-  await new Promise((r) => setTimeout(r, 2400));
-  assert(s.loopKilled(), "#772(q): kill fires after the grace window");
+  const qArmedAt = Date.now();
+  const fired = await pollUntilKilled(s);
+  assert(fired.ok, "#772(q): kill fires");
+  assert(
+    fired.at >= qArmedAt + 2000,
+    `#772(q): kill after grace window (${fired.at - qArmedAt}ms >= 2000ms)`,
+  );
   assert(s.killCause() === "loop", "#772(q): killCause loop");
   assert(s.loopEvidence()?.kind === "success", "#772(q): evidence kind success at kill");
   s?.cleanup();
 }
 await fixture772q();
 
-/* (r) #772 R1 — the grace deferral is keyed on a DISTINCT fingerprint, not
-   on any message_end. The #753 shape the ticket describes is a child that
-   keeps re-issuing the looping command (each a new message_end). If the
-   deferral re-armed on every message_end, such a child would reset the grace
-   clock indefinitely and the kill would never fire — the "chance to report"
-   that in practice becomes "the loop runs forever" (fixture (q) passes only
-   because its scripted stream STOPS after re-issue #6; a realistic looping
-   child does not). Distinct calls still re-arm (the #296 shape the deferral
-   exists for). */
+/* (r) #772 R1 — grace deferral is keyed on a DISTINCT fingerprint, not any
+   message_end. Repeats of the looping command do NOT reset the grace clock;
+   a distinct call (loop ended) does (the #296 shape the deferral exists for). */
 async function fixture772r(): Promise<void> {
   const child = { kill: (_sig: string) => {} } as never;
   let s: ReturnType<typeof createCapSession>;
@@ -314,8 +316,13 @@ async function fixture772r(): Promise<void> {
     // Each is a new message_end, but none is distinct — the grace clock must
     // NOT reset, so the kill fires when the 2s window elapses.
     for (let i = 10; i < 16; i++) s?.loopObserver?.([bash("git status --porcelain", `r-${i}`)], i);
-    await new Promise((r) => setTimeout(r, 2600));
-    assert(s?.loopKilled(), "#772(r): repeats of the looping command do NOT defer the kill");
+    const rArmedAt = Date.now();
+    const rFired = s ? await pollUntilKilled(s) : { ok: false, at: Date.now() };
+    assert(rFired.ok, "#772(r): kill fires");
+    assert(
+      rFired.at >= rArmedAt + 2000,
+      `#772(r): repeats do NOT defer kill (${rFired.at - rArmedAt}ms >= 2000ms)`,
+    );
     assert(s?.killCause() === "loop", "#772(r): killCause loop after the window");
     s?.cleanup();
   });
@@ -438,13 +445,8 @@ await fixture772r();
   }
 }
 
-/* (w6) #772 R3 — a SUCCESS-keyed kill armed from the toolResult feed must
-   NOT have its grace window re-armed by later message_end traffic. The
-   #753-shape child keeps re-issuing the looping command (each a new
-   message_end with a DISTINCT fingerprint because the call args differ
-   slightly — e.g. a path that changes). The re-key in loopObserver only
-   applies to STREAK-armed kills; a success-armed kill must fire after
-   graceMs regardless of the re-issuing traffic. */
+/* (w6) #772 R3 — a success-armed kill must NOT be re-armed by later
+   message_end traffic (the re-key applies only to streak-armed kills). */
 async function fixture772w6(): Promise<void> {
   const child = { kill: (_sig: string) => {} } as never;
   let s: ReturnType<typeof createCapSession>;
@@ -478,8 +480,13 @@ async function fixture772w6(): Promise<void> {
     for (let i = 6; i < 14; i++) {
       s.loopObserver?.([bash(`bun test --filter=case-${i}`, `w6-d${i}`)], i * 2);
     }
-    await new Promise((r) => setTimeout(r, 2400));
-    assert(s.loopKilled(), "#772(w6): success-armed kill fires after grace (NOT re-armed by re-issuing traffic)");
+    const w6ArmedAt = Date.now();
+    const w6Fired = await pollUntilKilled(s);
+    assert(w6Fired.ok, "#772(w6): kill fires");
+    assert(
+      w6Fired.at >= w6ArmedAt + 2000,
+      `#772(w6): kill after grace, NOT re-armed (${w6Fired.at - w6ArmedAt}ms >= 2000ms)`,
+    );
     assert(s.killCause() === "loop", "#772(w6): killCause loop");
     assert(s.loopEvidence()?.kind === "success", "#772(w6): evidence kind success at kill");
     s?.cleanup();
