@@ -45,6 +45,7 @@ import {
   BranchAheadError,
   branchSlug,
   mechanizedBranchSetup,
+  reconcileExistingLocalBranch,
 } from "../src/work-driver-branch-mechanized.ts";
 import type { ExecFn } from "../src/worktree.ts";
 
@@ -327,6 +328,39 @@ try {
     {
       const { stdout } = await git(repo, ["rev-parse", BRANCH]);
       assert(stdout.trim() === aheadSha, "the ahead branch's tip is unchanged (nothing was reset)");
+    }
+  }
+
+  // ----------------------------------------------------------------
+  // 8b. round-2: ancestry probe fails with a non-1 exit on an EXISTING
+  //     branch → no reset, halt with branch-ahead:unknown (a fake execFn
+  //     drives the probe to a non-zero/non-1 exit — real git would only do
+  //     this on lock/I/O damage, which is exactly when a reset must NOT run).
+  // ----------------------------------------------------------------
+  {
+    const { repo, firstSha, advanceOrigin } = await fixture("probe-fail");
+    await git(repo, ["branch", BRANCH, firstSha]);
+    await advanceOrigin("advance\n", "advance main"); // base != oldSha
+    let probeCalls = 0;
+    const stubExec: ExecFn = async (cmd, o) => {
+      if (cmd.includes("merge-base --is-ancestor")) {
+        probeCalls++;
+        throw Object.assign(new Error("git: unable to read tree (probe damage)"), { code: 128 });
+      }
+      return realExec(cmd, o);
+    };
+    let aheadErr: BranchAheadError | undefined;
+    try {
+      await reconcileExistingLocalBranch(stubExec, repo, BRANCH, (await git(repo, ["rev-parse", "origin/main"])).stdout.trim());
+    } catch (err) {
+      if (err instanceof BranchAheadError) aheadErr = err;
+    }
+    assert(aheadErr !== undefined, "a twice-failing ancestry probe on an existing branch halts (BranchAheadError)");
+    assert(aheadErr?.aheadCount === null, `the ahead count is null, not a fabricated number (got: ${aheadErr?.aheadCount})`);
+    assert(probeCalls === 2, `the probe was retried exactly once (calls: ${probeCalls})`);
+    {
+      const { stdout } = await git(repo, ["rev-parse", BRANCH]);
+      assert(stdout.trim() === firstSha, "NO reset — the branch tip is unchanged after a probe failure");
     }
   }
 

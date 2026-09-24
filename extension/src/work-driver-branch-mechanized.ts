@@ -28,7 +28,7 @@
  * incident) is inspected at the branch step, not at `integrate()`. A local
  * branch that does NOT contain the freshly-fetched `origin/<mainline>`
  * (behind, or diverged with everything already merged) is force-moved to
- * baseSha (`git branch -f`) and a `branch-reset` event records the old tip
+ * baseSha (`git update-ref`) and a `branch-reset` event records the old tip
  * so the work is recoverable. A branch that IS ahead of
  * `origin/<mainline>` (unpushed work — only a human can decide what to do
  * with it) halts the step via a `branch-ahead:branch` cap; nothing is
@@ -37,12 +37,13 @@
  * branch never sees it.
  */
 
-import fs from "node:fs/promises";
-import path from "node:path";
 import { trace } from "./trace.ts";
+import { ensureWorktreesExcluded } from "./work-driver-git-exclude.ts";
 import type { ExecFn } from "./worktree.ts";
 import { DirtyWorktreeError, worktreeCreate } from "./worktree.ts";
 import type { ProvisionResult } from "./worktree.ts";
+
+export { ensureGitExclude } from "./work-driver-git-exclude.ts";
 
 /**
  * Deterministic branch slug. Replaces the LLM-authored name, which produced
@@ -102,7 +103,7 @@ export async function resolveBaseSha(
   execFn: ExecFn,
   repoRoot: string,
   mainline: string,
-): Promise<string> {
+): Promise<{ sha: string; fromOrigin: boolean }> {
   const sha = async (ref: string) => {
     const { stdout } = await execFn(`git rev-parse --verify --quiet ${JSON.stringify(ref)}`, {
       cwd: repoRoot,
@@ -110,80 +111,33 @@ export async function resolveBaseSha(
     });
     return stdout.trim();
   };
-  let baseSha = await sha(`origin/${mainline}`).catch(() => "");
-  if (!baseSha) baseSha = await sha(`refs/heads/${mainline}`).catch(() => "");
-  return baseSha;
+  const origin = await sha(`origin/${mainline}`).catch(() => "");
+  if (origin) return { sha: origin, fromOrigin: true };
+  const local = await sha(`refs/heads/${mainline}`).catch(() => "");
+  if (local) return { sha: local, fromOrigin: false };
+  return { sha: "", fromOrigin: false };
 }
 
 /**
- * Keep `.worktrees/` out of the repo's own `git status`.
+ * Resolve the mainline tip via `resolveBaseSha` and report WHERE the SHA
+ * came from: `fromOrigin` is true only when `origin/<mainline>` resolved
+ * (the remote tip), false when the local `refs/heads/<mainline>` was used
+ * (a fetch-down run) or neither ref exists.
  *
- * Written to `.git/info/exclude` (per-clone) rather than `.gitignore`
- * (committed) so the driver never alters the project's tracked shape — the
- * same convention AGENTS.md §7 already mandates for `tmp/`.
- *
- * Not cosmetic: without it, the very worktrees this step creates read as
- * untracked residue at repoRoot, and `integrate()`'s dirty-root preflight
- * refuses to run — every cycle, forever. Caught by the real-git test, missed
- * by the mocked one, which is the whole argument for having both.
+ * #844 round-2 — the ops-fallback post-dispatch merge-base check needs this
+ * flag: comparing the branch's merge-base against a LOCAL-ref base is
+ * circular (the check's purpose is to detect a branch built off a stale
+ * local ref), so the caller skips the comparison and traces the degradation
+ * whenever `fromOrigin` is false. Shared by `mechanizedBranchSetup` and
+ * `runBranchViaOpsDispatch` so the origin→local fallback lives in one place.
  */
-export async function ensureWorktreesExcluded(_execFn: ExecFn, repoRoot: string): Promise<void> {
-  await ensureGitExclude(repoRoot, [".worktrees/"]);
-}
-
-/**
- * Add lines to `.git/info/exclude` as ONE atomic read-modify-write.
- *
- * Two callers append to this file — this one and `setupWorkspaceTmp` (for
- * `tmp/`) — and both previously did a non-atomic read-then-write. Interleaved,
- * the `writeFile` overwrite clobbers whatever the other just appended. Losing
- * the `.worktrees/` line is not cosmetic: every worktree file then shows in
- * repoRoot's `git status --porcelain`, and while `integrate()`'s preflight
- * filters it defensively, nothing else does.
- *
- * tmp-file + rename, the same shape `writeState` uses, so a concurrent reader
- * never observes a half-written file.
- *
- * `.git/info/exclude` rather than `.gitignore`: per-clone, so the driver never
- * alters the project's tracked shape — the convention AGENTS.md §7 already
- * mandates for `tmp/`.
- */
-let excludeChain: Promise<unknown> = Promise.resolve();
-
-export function ensureGitExclude(repoRoot: string, lines: string[]): Promise<void> {
-  // Serialised, not merely atomic. tmp-file + rename makes each WRITE atomic,
-  // but two callers that read the same original and each write their own
-  // version still lose one update — which is precisely the bug: whichever
-  // wrote second silently dropped the other's line. The chain makes the whole
-  // read-modify-write the unit.
-  const run = excludeChain.then(
-    () => ensureGitExcludeInner(repoRoot, lines),
-    () => ensureGitExcludeInner(repoRoot, lines),
-  );
-  excludeChain = run.catch(() => undefined);
-  return run;
-}
-
-async function ensureGitExcludeInner(repoRoot: string, lines: string[]): Promise<void> {
-  const excludePath = path.join(repoRoot, ".git", "info", "exclude");
-  try {
-    const existing = await fs.readFile(excludePath, "utf8").catch(() => "");
-    const missing = lines.filter(
-      (l) => !new RegExp(`^${l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m").test(existing),
-    );
-    if (missing.length === 0) return;
-    await fs.mkdir(path.dirname(excludePath), { recursive: true });
-    const sep = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
-    const body = `${existing}${sep}# pi-rukas /work driver\n${missing.join("\n")}\n`;
-    const tmp = `${excludePath}.${process.pid}.tmp`;
-    await fs.writeFile(tmp, body, "utf8");
-    await fs.rename(tmp, excludePath);
-  } catch (err) {
-    // Best-effort: integrate()'s preflight filters `.worktrees/` defensively.
-    trace(
-      `work-driver: could not update .git/info/exclude: ${(err as Error).message?.slice(0, 120)}`,
-    );
-  }
+export async function freshMainlineTip(
+  execFn: ExecFn,
+  repoRoot: string,
+  mainline?: string,
+): Promise<{ sha: string; fromOrigin: boolean }> {
+  const line = mainline ?? (await detectMainline(execFn, repoRoot));
+  return resolveBaseSha(execFn, repoRoot, line);
 }
 
 let inFlightFetch: { key: string; p: Promise<unknown> } | undefined;
@@ -217,12 +171,17 @@ async function sharedFetch(execFn: ExecFn, repoRoot: string, ref: string): Promi
  * ancestry, so a diverged feature branch would sail through it.
  */
 export class BranchAheadError extends Error {
+  /**
+   * #844 round-2 — null when the ahead count could not be read (a failed
+   * `rev-list --count`, or a failed ancestry probe). The cap renders
+   * `branch-ahead:unknown` instead of a fabricated `branch-ahead:0`.
+   */
   constructor(
     readonly branchName: string,
-    readonly aheadCount: number,
+    readonly aheadCount: number | null,
   ) {
     super(
-      `branch ${branchName} is ${aheadCount} commit(s) ahead of origin/<mainline> — possible unpushed work; only a human can decide`,
+      `branch ${branchName} is ${aheadCount ?? "an unknown number of"} commit(s) ahead of origin/<mainline> — possible unpushed work; only a human can decide`,
     );
     this.name = "BranchAheadError";
   }
@@ -234,9 +193,16 @@ export class BranchAheadError extends Error {
  * to `baseSha` (a `branch-reset` event must be recorded for it), `undefined`
  * when no local branch exists, and throws `BranchAheadError` when the
  * branch holds commits `origin/<mainline>` does not (a diverged branch's
- * `git branch -f` is a reset by definition, and a reset must be recorded,
+ * `git update-ref` is a reset by definition, and a reset must be recorded,
  * never silent — the ahead halt is the operator's call). Purely read-only
  * until the force-move itself.
+ *
+ * #844 round-2 — the ancestry probe is fail-safe: only a POSITIVELY confirmed
+ * ancestry (exit 0) takes the ahead path, and only a definitively-negative
+ * result (exit 1) takes the reset path. Any other probe error (missing
+ * commit, lock, I/O) retries once, and a second failure HALTS
+ * (BranchAheadError with a null ahead count) rather than reset — an
+ * unreadable probe must not license destroying an existing branch.
  */
 export async function reconcileExistingLocalBranch(
   execFn: ExecFn,
@@ -259,33 +225,54 @@ export async function reconcileExistingLocalBranch(
   if (!oldSha || oldSha === baseSha) return undefined;
   // `git merge-base --is-ancestor baseSha <branch>`: exit 0 means
   // the base is reachable from the branch (the branch contains origin's tip —
-  // it is ahead or equal). Anything else (non-zero, missing commit) is
-  // "does not contain": behind or diverged → safe to reset.
-  let containsBase = false;
-  try {
-    await execFn(
-      `git merge-base --is-ancestor ${JSON.stringify(baseSha)} ${JSON.stringify(`refs/heads/${branchName}`)}`,
-      {
-        cwd: repoRoot,
-        maxBuffer: 64 * 1024,
-      },
-    );
-    containsBase = true;
-  } catch {
-    containsBase = false;
+  // it is ahead or equal); exit 1 means definitively NOT an ancestor
+  // (behind or diverged → safe to reset). Any other error is an unreadable
+  // probe — a reset requires a POSITIVE ancestry proof, so the probe is
+  // retried once, and a second failure halts with an unknown ahead count
+  // instead of resetting on a guess.
+  const probeExitCode = async (): Promise<number> => {
+    try {
+      await execFn(
+        `git merge-base --is-ancestor ${JSON.stringify(baseSha)} ${JSON.stringify(`refs/heads/${branchName}`)}`,
+        {
+          cwd: repoRoot,
+          maxBuffer: 64 * 1024,
+        },
+      );
+      return 0;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException & { code?: number })?.code;
+      return typeof code === "number" ? code : -1;
+    }
+  };
+  let containsBase: boolean | null = null; // null = unreadable probe
+  const first = await probeExitCode();
+  if (first === 0) containsBase = true;
+  else if (first === 1) containsBase = false;
+  else {
+    const second = await probeExitCode();
+    if (second === 0) containsBase = true;
+    else if (second === 1) containsBase = false;
+    else {
+      trace(
+        `work-driver: merge-base --is-ancestor probe failed twice for ${branchName} — refusing to reset an existing branch on an unreadable probe (halting instead)`,
+      );
+      throw new BranchAheadError(branchName, null);
+    }
   }
   if (containsBase) {
-    let aheadCount = "0";
+    let aheadCount: number | null = null;
     try {
       const { stdout } = await execFn(
         `git rev-list --count ${JSON.stringify(baseSha)}..${JSON.stringify(`refs/heads/${branchName}`)}`,
         { cwd: repoRoot, maxBuffer: 64 * 1024 },
       );
-      aheadCount = stdout.trim();
+      const n = Number(stdout.trim());
+      aheadCount = Number.isInteger(n) && n >= 0 ? n : null;
     } catch {
-      aheadCount = "?";
+      aheadCount = null;
     }
-    throw new BranchAheadError(branchName, Number(aheadCount) || 0);
+    throw new BranchAheadError(branchName, aheadCount);
   }
   // The branch is checked out at repoRoot (a handoff-parked cycle leaves it
   // there — the #830/#835 shape): `git branch -f` refuses to move the
@@ -388,7 +375,7 @@ export async function mechanizedBranchSetup(
       `work-driver: fetch of origin/${mainline} failed — proceeding from local refs: ${(err as Error).message?.slice(0, 160)}`,
     );
   }
-  const baseSha = await resolveBaseSha(execFn, repoRoot, mainline);
+  const { sha: baseSha } = await freshMainlineTip(execFn, repoRoot, mainline);
   if (!baseSha) {
     throw new Error(
       `could not resolve ${mainline} to a commit (no origin/${mainline} after fetch, no refs/heads/${mainline})`,

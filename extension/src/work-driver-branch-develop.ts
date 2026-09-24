@@ -122,8 +122,9 @@ export async function runBranch(
         // branch and its ahead count — nothing is reset and NO ops
         // fallback (whose mainline guard would not catch this shape).
         if (aheadErr instanceof BranchAheadError) {
+          const aheadLabel = aheadErr.aheadCount === null ? "unknown" : String(aheadErr.aheadCount);
           trace(
-            `work-driver: branch step halted — local branch ${aheadErr.branchName} is ${aheadErr.aheadCount} commit(s) ahead of the fetched base; nothing was reset`,
+            `work-driver: branch step halted — local branch ${aheadErr.branchName} is ${aheadLabel === "unknown" ? "an unknown number of" : `${aheadLabel}`} commit(s) ahead of the fetched base; nothing was reset`,
           );
           const started = appendEvent(
             { ...state, pipelineState: { ...state.pipelineState, currentStep: "branch" } },
@@ -132,10 +133,10 @@ export async function runBranch(
           return appendEvent(started, {
             kind: "cap-hit",
             at: Date.now(),
-            cap: `branch-ahead:${aheadErr.aheadCount}` as const,
+            cap: `branch-ahead:${aheadLabel}` as const,
             reviewRound: state.pipelineState.reviewRound,
             nextStep: "handoff",
-            evidence: `${aheadErr.branchName} is ${aheadErr.aheadCount} commit(s) ahead of the fetched base (origin/<mainline>) — possible unpushed work of a live cycle`,
+            evidence: `${aheadErr.branchName} is ${aheadErr.aheadCount === null ? "an unknown number of" : `${aheadErr.aheadCount}`} commit(s) ahead of the fetched base (origin/<mainline>) — possible unpushed work of a live cycle (ahead count ${aheadLabel === "unknown" ? "unreadable — the ancestry probe failed, so the driver refused to reset on a guess" : `confirmed as ${aheadLabel}`})`,
           });
         }
         throw aheadErr;

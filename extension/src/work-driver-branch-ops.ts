@@ -37,7 +37,7 @@ import { exec } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
 import { trace } from "./trace.ts";
-import { detectMainline, resolveBaseSha } from "./work-driver-branch-mechanized.ts";
+import { detectMainline, freshMainlineTip } from "./work-driver-branch-mechanized.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { parseBranchName } from "./work-driver-diff.ts";
 import { resolvedTheMainline } from "./work-driver-git.ts";
@@ -99,12 +99,15 @@ export async function runBranchViaOpsDispatch(
   // value to compare against. The fetch is best-effort: the ops-fallback path
   // fires AFTER the mechanized path's fetch already failed (or a git error
   // elsewhere), so a fetch-down run has no fresher origin ref — fall back to
-  // the local mainline. `resolveBaseSha` already prefers origin/<mainline>
-  // over the local ref. A fetch failure (or no remote) here must NOT throw —
-  // this is the env-variance recovery path, and a fetch that is down is
-  // exactly the variance it absorbs; an empty baseSha means the driver cannot
-  // verify and the check below degrades to a trace.
+  // the local mainline (`freshMainlineTip` reports which ref the SHA came
+  // from — the post-dispatch check below only compares against an origin
+  // value, since comparing against a local ref is circular: the check exists
+  // to catch a branch built off a STALE local ref). A fetch failure (or no
+  // remote) here must NOT throw — this is the env-variance recovery path, and
+  // a fetch that is down is exactly the variance it absorbs; an empty baseSha
+  // means the driver cannot verify and the check degrades to a trace.
   let driverBaseSha = "";
+  let driverBaseFromOrigin = false;
   try {
     const mainline = await detectMainline(execFn, ctx.repoRoot);
     // Best-effort fetch of the mainline ref; a failure degrades to the local ref.
@@ -118,7 +121,9 @@ export async function runBranchViaOpsDispatch(
         `work-driver: ops-fallback fetch of origin/${mainline} failed — verifying against local refs: ${(err as Error).message?.slice(0, 160)}`,
       );
     }
-    driverBaseSha = await resolveBaseSha(execFn, ctx.repoRoot, mainline);
+    const tip = await freshMainlineTip(execFn, ctx.repoRoot, mainline);
+    driverBaseSha = tip.sha;
+    driverBaseFromOrigin = tip.fromOrigin;
   } catch (err) {
     trace(
       `work-driver: ops-fallback baseSha resolution failed (verification will degrade): ${(err as Error).message?.slice(0, 160)}`,
@@ -212,20 +217,21 @@ export async function runBranchViaOpsDispatch(
   // `git merge-base` on unrelated histories (no common ancestor) exits
   // non-zero, which also routes to the halt (a branch with no shared ancestor
   // with origin/main is definitely not on the fresh base).
+  // #844 round-2 — the comparison only runs when BOTH values come from
+  // `origin/<mainline>`. If the driver's own base came from the LOCAL mainline
+  // ref (fetch failed / no origin ref), comparing the branch's merge-base
+  // against it is circular — a branch correctly built off the local ref WOULD
+  // mismatch once origin advanced — so the check is skipped and the
+  // degradation traced.
   let verifiedBase = "";
-  if (branch) {
+  if (branch && driverBaseSha && !driverBaseFromOrigin) {
+    trace(
+      `work-driver: ops-fallback base ${driverBaseSha.slice(0, 8)} came from the LOCAL mainline ref (origin unavailable) — skipping the post-dispatch merge-base equality check (comparing against a local ref would be circular); verification degraded, no halt`,
+    );
+  } else if (branch && driverBaseSha) {
     try {
-      const mainline = await detectMainline(execFn, ctx.repoRoot);
-      let originSha = "";
-      try {
-        const { stdout } = await execFn(
-          `git rev-parse --verify --quiet ${JSON.stringify(`origin/${mainline}`)}`,
-          { cwd: ctx.repoRoot, maxBuffer: 64 * 1024 },
-        );
-        originSha = stdout.trim();
-      } catch {
-        originSha = "";
-      }
+      const tip = await freshMainlineTip(execFn, ctx.repoRoot);
+      const originSha = tip.fromOrigin ? tip.sha : "";
       if (originSha) {
         const { stdout } = await execFn(
           `git merge-base ${JSON.stringify(`refs/heads/${branch}`)} ${JSON.stringify(originSha)}`,

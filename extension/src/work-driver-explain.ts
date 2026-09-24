@@ -247,12 +247,16 @@ export function explainCap(
   // #844 — a local branch of the resolved name holds commits the freshly
   // fetched origin/<mainline> does not. Deliberate halt: only a human can
   // decide whether the unpushed work is live, stale, or a diverged shape.
-  // The ahead count is in the cap's suffix; the branch name is in evidence.
+  // The ahead count is in the cap's suffix (or `unknown` when the count or
+  // the ancestry probe itself could not be read — #844 round-2: an unreadable
+  // probe halts instead of resetting, and the count then rides in as
+  // `unknown`, never a fabricated 0); the branch name is in evidence.
   if (cap.startsWith("branch-ahead:")) {
     const hit = lastCapHit(state, cap);
     const ev = hit?.evidence ?? "(no detail recorded)";
-    const aheadCount = cap.split(":")[1] ?? "?";
-    return `the branch step found a local feature branch that is ${aheadCount} commit(s) ahead of the freshly-fetched origin/<mainline> — the branch holds unpushed work that a reset would destroy, and only a human can decide what to do with it: ${ev}. The driver reset NOTHING; the branch name is in the evidence above. Inspect the ahead commits (\`git log origin/<mainline>..<branch>\`), push them if they are live work, delete the branch if they are stale, then re-run the cycle`;
+    const suffix = cap.split(":")[1] ?? "unknown";
+    const ahead = suffix === "unknown" ? "an unknown number of" : `${suffix}`;
+    return `the branch step found a local feature branch that is ${ahead} commit(s) ahead of the freshly-fetched origin/<mainline> — the branch holds unpushed work that a reset would destroy, and only a human can decide what to do with it: ${ev}. The driver reset NOTHING; the branch name is in the evidence above. Inspect the ahead commits (\`git log origin/<mainline>..<branch>\`), push them if they are live work, delete the branch if they are stale, then re-run the cycle`;
   }
   // #844 — the ops-fallback branch path's post-dispatch merge-base check
   // failed: the branch ops actually created does not sit on the

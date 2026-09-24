@@ -210,6 +210,35 @@ try {
   }
 
   // -------------------------------------------------------------
+  // 2b. round-2: the driver's base came from the LOCAL mainline ref (fetch
+  //     failed → no origin ref) → the post-dispatch merge-base equality
+  //     check is SKIPPED (comparing against a local ref is circular) and no
+  //     cap fires, even though a local-ref comparison would mismatch.
+  // -------------------------------------------------------------
+  {
+    const { repo, originSha } = await fixture("local-ref-base", { branchAtStale: false });
+    // Erase the origin remote so origin/main is unresolvable: the driver's
+    // base falls back to refs/heads/main, and the post-dispatch check must
+    // skip (not compare against a local ref, which would halt this correct
+    // branch — origin/main is at originSha, ahead of local main... local
+    // main was ff'd to origin in the fixture, so make it diverge instead).
+    const localMain = (await git(repo, ["rev-parse", "refs/heads/main"])).stdout.trim();
+    await git(repo, ["remote", "remove", "origin"]);
+    assert(localMain === originSha, "fixture sanity: local main == origin/main before the remote was removed");
+    // Now local main and the branch are equal; with origin gone the base is
+    // local — the check must skip, and (crucially) must not crash/halt.
+    const ctx = makeCtx(repo, realExec, BRANCH_REPLY);
+    const st = initialState(844);
+    const out = await runBranchViaOpsDispatch(ctx, st, [], 1000).catch((e) => {
+      console.error(`fixture 2b threw: ${(e as Error).message}`);
+      return undefined;
+    });
+    assert(out !== undefined, "ops-fallback does not throw when the base comes from the local mainline ref");
+    const cap = out?.eventLog.find((e) => e.kind === "cap-hit");
+    assert(cap === undefined, "NO cap when the base came from the LOCAL ref — the merge-base equality check is skipped (degraded, traced, not halted)");
+  }
+
+  // -------------------------------------------------------------
   // 3. Canary: the validator accepts the new ops-merge-base-mismatch cap
   //    (a valid state file carrying it passes — the #844 round-1 finding
   //    was that the validator rejected every new marker).
@@ -283,6 +312,23 @@ try {
     assert(
       findings3.some((f) => f.includes(".cap has unknown value")),
       `a fabricated branch-ahead-foo:3 cap is still rejected (got: ${JSON.stringify(findings3)})`,
+    );
+    // #844 round-2 — a null ahead count renders `branch-ahead:unknown`;
+    // the validator's template check must accept it (the count is advisory
+    // and `unknown` is the honest value when the count could not be read).
+    const s4 = initialState(844);
+    s4.pipelineState.currentStep = "branch";
+    s4.eventLog.push({
+      kind: "cap-hit",
+      at: 2,
+      cap: "branch-ahead:unknown",
+      reviewRound: 0,
+      nextStep: "handoff",
+    });
+    const findings4 = validateDiscriminants(s4 as unknown);
+    assert(
+      findings4.length === 0,
+      `branch-ahead:unknown cap validates cleanly (got: ${JSON.stringify(findings4)})`,
     );
   }
 } finally {

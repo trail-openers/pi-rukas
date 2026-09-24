@@ -25,7 +25,7 @@
  */
 
 import { trace } from "./trace.ts";
-import { detectMainline, resolveBaseSha } from "./work-driver-branch-mechanized.ts";
+import { detectMainline, freshMainlineTip } from "./work-driver-branch-mechanized.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { activeIssuesOf } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent, writeState } from "./workflow-state.ts";
@@ -149,7 +149,7 @@ This is residue from a previous cycle or the operator's own in-progress work —
   }
   try {
     const mainline = await detectMainline(execFn, ctx.repoRoot);
-    const fromRef = await resolveBaseSha(execFn, ctx.repoRoot, mainline);
+    const { sha: fromRef } = await freshMainlineTip(execFn, ctx.repoRoot, mainline);
     if (!fromRef) return state;
     const { actions, unresolved } = await handleSameIssueLeftovers(
       execFn,
