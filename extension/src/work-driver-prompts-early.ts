@@ -1,11 +1,8 @@
 /**
  * /work driver — inline prompt builders for the early pipeline steps.
- *
- * Pure string-template builders (no `DriverContext`, no state-machine
- * logic) for Steps 1-4: explore, plan, branch, develop, and the Step 4
- * speculative-explore side-dispatch. Split out of work-driver.ts per
- * AGENTS.md §12 module-size hygiene (issue #171) — these are called
- * directly by the corresponding `run<Step>` handlers in work-driver.ts.
+ * Pure string-template builders (no `DriverContext`, no state-machine logic)
+ * for Steps 1-4: explore, plan, branch, develop, speculative-explore.
+ * Split out of work-driver.ts per AGENTS.md §12 module-size hygiene (#171).
  */
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
 
@@ -127,16 +124,9 @@ export function inlineExplorePrompt(
 }
 
 /**
- * #378 — ask the explore agent to resolve INTENT, not just classify.
- *
- * The single `VERDICT:` token assumed the issue already said what to build.
- * Specs are often hand-written, terse, or wrong, so the resolver has to work
- * out what is being asked, check whether that is TRUE against the code and the
- * world, and then decide — including deciding not to build.
- *
- * This runs in the explore role, which is structurally denied write/edit/
- * multiedit (#238). That matters: an agent holding edit tools rationalises
- * ambiguity away because building is cheaper than asking.
+ * #378 — ask the explore agent to resolve INTENT, not just classify. Runs in
+ * the explore role (structurally denied write/edit, #238). An agent holding
+ * edit tools rationalises ambiguity away because building is cheaper than asking.
  */
 function intentResolutionBlock(issues: number[]): string {
   const one = issues.length === 1;
@@ -202,11 +192,8 @@ function intentResolutionBlock(issues: number[]): string {
 }
 
 /**
- * Step 2 (plan) prompt. PR3: explicitly asks for `## Workstreams` —
- * matches the parser in `parseWorkstreams`. Single-workstream issues
- * return one `### default` entry (or zero, which the driver synthesises).
- * Cribbed from `pi-prompts/plan.md` Phase 2's type-conditional
- * decomposition philosophy.
+ * Step 2 (plan) prompt. PR3: asks for `## Workstreams`; single-workstream
+ * issues return one `### default` entry (or zero, which the driver synthesises).
  */
 export function inlinePlanPrompt(issues: number[], scratchDirAbs: string): string {
   const headline = issues.length === 1 ? `issue #${issues[0]}` : `issues #${issues.join(", #")}`;
@@ -252,6 +239,15 @@ export function inlineBranchPrompt(
   issues: number[],
   workstreamIds: string[],
   scratchDirAbs: string,
+  /**
+   * #844 — the driver-fetched base SHA. When present the prompt names this
+   * EXACT SHA instead of "the fresh mainline tip" so ops builds the branch
+   * from the same commit the driver then verifies against (the merge-base
+   * check in runBranchViaOpsDispatch). The ops-fallback path fires after a
+   * failed fetch, so the call site may omit it — the prompt then keeps the
+   * pre-#844 "fresh mainline tip" shape.
+   */
+  baseSha?: string,
 ): string {
   const multi = workstreamIds.length > 1;
   const multiIssue = issues.length > 1;
@@ -269,7 +265,12 @@ export function inlineBranchPrompt(
     "  1. Identify the mainline branch (default `main`; detect via `git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@'`).",
     "  2. Verify clean working tree (`git status --porcelain` must be empty). If dirty, ABORT and surface the failure verbatim — do NOT branch off uncommitted work.",
     "  3. Fetch + fast-forward mainline (`git fetch origin && git checkout <mainline> && git pull --ff-only origin <mainline>`). If --ff-only fails, ABORT.",
-    `  4. Create branch \`${branchHint}\` from the fresh mainline tip.`,
+    ...(baseSha
+      ? [
+          `  4. Create branch \`${branchHint}\` from the driver-fetched base SHA \`${baseSha}\`. Verify with \`git rev-parse \`${branchHint}\`\` that the branch sits exactly at that SHA — the driver verifies this after your reply and HALTS the cycle with a cap on any mismatch.`,
+          `     If a local branch of the target name already exists, do NOT build on its tip: it may be stale. Use \`git branch -f \`${branchHint}\` \`${baseSha}\`\` to create it at the base SHA, or report the conflict verbatim.`,
+        ]
+      : [`  4. Create branch \`${branchHint}\` from the fresh mainline tip.`]),
     "  5. End your reply with a single line `branch: <branch-name>` so the driver can capture it.",
   ];
   if (multi) {
