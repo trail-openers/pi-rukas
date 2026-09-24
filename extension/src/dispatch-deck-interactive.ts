@@ -82,13 +82,35 @@ export async function buildViewerText(
   label: string,
   meta: TranscriptMeta,
   rootDir?: string,
+  /**
+   * The child's real transcript file, recorded at settle time (#837).
+   * Takes precedence over the key-based disk scan: the deck key can differ
+   * from the on-disk runId (batch members, `runId/tag`-keyed lens/adversarial
+   * children, driver children), and the recorded path also dodges the
+   * two-date-dir scan window.
+   */
+  transcriptPath?: string,
 ): Promise<string> {
-  const file = await findTranscriptPath(key, rootDir);
+  const file = transcriptPath ?? (await findTranscriptPath(key, rootDir));
   if (!file) {
     return [
       `# ${label} - no transcript found`,
       "",
       `No transcript on disk for job ${key}.`,
+      "The child may have been pruned (/runs prune) or pre-dates this process.",
+      "Replay (when available): pi --session <transcript path>",
+    ].join("\n");
+  }
+  // #837 — a recorded path may have been pruned (or the scan may have
+  // matched a file that vanished between the scan and the read); degrade to
+  // the no-transcript note instead of throwing.
+  try {
+    await fs.access(file);
+  } catch {
+    return [
+      `# ${label} - no transcript found`,
+      "",
+      `No transcript on disk for job ${key} (expected at ${file}).`,
       "The child may have been pruned (/runs prune) or pre-dates this process.",
       "Replay (when available): pi --session <transcript path>",
     ].join("\n");
@@ -143,22 +165,50 @@ export async function steerFromDeck(
  * only on row confirm, never on deck render.
  */
 export async function openTranscriptViewer(ctx: ExtensionContext, entry: DeckEntry): Promise<void> {
+  await openTranscriptViewerFor(ctx, {
+    key: entry.key,
+    label: entry.label,
+    role: entry.state.role,
+    tag: entry.state.tag,
+  });
+}
+
+/**
+ * #837. Viewer for a SETTLED row. The row is a snapshot (the live deck entry
+ * is gone by confirm time) and carries the child's real transcriptPath, which
+ * the key-based re-derivation cannot recover for batch members, `runId/tag`
+ * keys (lens/adversarial) or driver children.
+ */
+export async function openTranscriptViewerFor(
+  ctx: ExtensionContext,
+  row: {
+    key: string;
+    label: string;
+    role: string;
+    tag?: string;
+    transcriptPath?: string;
+  },
+): Promise<void> {
   if (process.env.PI_ENSEMBLE_QUIET_STATUS === "1") {
     trace("dispatch-deck-interactive: quiet mode - ignoring viewer request");
     return;
   }
   try {
-    const text = await buildViewerText(entry.key, entry.label, {
-      role: entry.state.role,
-      sizeBytes: 0,
-    });
-    await ctx.ui.editor(viewerTitle(entry), text);
+    const text = await buildViewerText(
+      row.key,
+      row.label,
+      { role: row.role, sizeBytes: 0 },
+      undefined,
+      row.transcriptPath,
+    );
+    await ctx.ui.editor(viewerTitle(row), text);
   } catch (err) {
-    trace(`dispatch-deck-interactive: viewer failed for ${entry.key}: ${(err as Error).message}`);
+    trace(`dispatch-deck-interactive: viewer failed for ${row.key}: ${(err as Error).message}`);
   }
 }
 
-function viewerTitle(entry: DeckEntry): string {
-  const t = `Transcript - ${entry.label} (${entry.key})`;
+function viewerTitle(row: { key: string; label: string; tag?: string }): string {
+  const suffix = row.tag ? ` (${row.key}:${row.tag})` : ` (${row.key})`;
+  const t = `Transcript - ${row.label}${suffix}`;
   return t.length > TRANSCRIPT_TITLE_MAX ? `${t.slice(0, TRANSCRIPT_TITLE_MAX - 1)}...` : t;
 }

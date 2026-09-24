@@ -35,8 +35,9 @@ import {
   Text,
   getKeybindings,
 } from "@earendil-works/pi-tui";
+import type { SettledEntry } from "./dispatch-deck-settled.ts";
 import type { DeckEntry } from "./dispatch-deck.ts";
-import { DECK_PROMPT_CANCEL_KEY, formatRow } from "./dispatch-deck.ts";
+import { DECK_PROMPT_CANCEL_KEY, formatRow, formatSettledRow } from "./dispatch-deck.ts";
 import { formatElapsed } from "./progress.ts";
 
 /** One row of the composite's SelectList: job key, encoded value, label. */
@@ -169,11 +170,14 @@ export function buildSteerPrompt(e: DeckEntry, now: number): string {
  * `lines` is the deck's batch-headers-only projection (batch header rows
  * only; the per-job rows are the SelectList's, one row each — #742) and
  * `entries` is the job snapshot; both are read once per render so the
- * batch Text rows and the SelectList cannot split mid-render.
+ * batch Text rows and the SelectList cannot split mid-render. `settled`
+ * (#837) is the bounded retention list — rendered as a clearly separated
+ * trailing section (Text block + SelectList items) above the cancel row.
  */
 export function buildCompositeFactory(
   lines: () => string[],
   entries: () => DeckEntry[],
+  settled: () => SettledEntry[],
   maxRows: number,
   handlers: {
     onRowConfirm: (key: string) => void;
@@ -184,7 +188,8 @@ export function buildCompositeFactory(
     // One snapshot per render: the batch rows and the list read the same
     // entries so a mid-render update cannot split the two projections.
     const snapshot = entries();
-    const list = buildSelectList(theme, snapshot, handlers);
+    const settledRows = settled();
+    const list = buildSelectList(theme, snapshot, settledRows, handlers);
     const container = new Container();
     const batchLines = lines();
     const visible = batchLines.slice(0, maxRows);
@@ -192,6 +197,20 @@ export function buildCompositeFactory(
     for (const line of visible) container.addChild(new Text(line, 1, 0));
     if (overflow > 0) {
       container.addChild(new Text(theme.fg("muted", `... (${overflow} more)`), 1, 0));
+    }
+    if (settledRows.length > 0) {
+      // #837 — the settled section: a clearly separated trailing Text block
+      // (these are retention rows, not per-LIVE-job rows — the #742
+      // batch-headers-only invariant is preserved) above the SelectList,
+      // which carries the selectable settled items.
+      container.addChild(new Text(theme.fg("muted", "── settled (recently finished) ──"), 1, 0));
+      for (const s of settledRows.slice(0, maxRows)) {
+        container.addChild(new Text(formatSettledRow(s), 1, 0));
+      }
+      const settledOverflow = Math.max(0, settledRows.length - maxRows);
+      if (settledOverflow > 0) {
+        container.addChild(new Text(theme.fg("muted", `... (${settledOverflow} more)`), 1, 0));
+      }
     }
     container.addChild(new Text("", 1, 0));
     container.addChild(list);
@@ -202,6 +221,7 @@ export function buildCompositeFactory(
 function buildSelectList(
   theme: Theme,
   entries: DeckEntry[],
+  settled: SettledEntry[],
   handlers: {
     onRowConfirm: (key: string) => void;
     onSelectionChange: () => void;
@@ -212,6 +232,20 @@ function buildSelectList(
     label: it.label,
     description: it.description,
   }));
+  // #837 — settled rows join the list as a trailing section (newest first;
+  // the caller already ordered them). A separator row makes the boundary
+  // visually explicit inside the list; the label carries the full key so
+  // settled rows stay distinguishable even when 10-char fragments collide.
+  if (settled.length > 0) {
+    items.push({ value: "", label: "── settled ──", description: "" });
+    for (const s of settled) {
+      items.push({
+        value: encodeDeckValue(s.key),
+        label: formatSettledRow(s),
+        description: s.key,
+      });
+    }
+  }
   const tl = {
     selectedPrefix: (t: string) => theme.fg("accent", t),
     selectedText: (t: string) => theme.bg("selectedBg", t),
@@ -223,6 +257,11 @@ function buildSelectList(
     minPrimaryColumnWidth: 24,
     maxPrimaryColumnWidth: 60,
   });
+  // #837 — the override's intercept path reads the list's items through
+  // getSelectedItem(); the stock render path uses the private `items` field
+  // directly (same array reference — the override only reads, never
+  // reassigns, so no divergence is possible). Expose the public surface
+  // here for the test's drive.
   list.onSelectionChange = () => handlers.onSelectionChange();
   const kb = getKeybindings();
   const orig = list.handleInput.bind(list);

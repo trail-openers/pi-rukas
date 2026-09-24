@@ -186,7 +186,12 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
       jobs.delete(jobId);
       childHandles.delete(jobId);
       clearJobIssues(jobId);
-      if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
+      if (!input.skipDeck) {
+        dispatchDeck.clearEntry(jobId, {
+          ok: result.ok,
+          transcriptPath: result.transcriptPath,
+        });
+      }
       // Five-way: ok / killCause / 429 / FAILED-PROVIDER-ERROR / process-exit-failed.
       // #309/#314 — killCause (#296) wins over errorStop. A self-kill is NOT a
       // provider/transport error and must not emit the "terminated mid-stream" badge.
@@ -250,7 +255,9 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
       jobs.delete(jobId);
       childHandles.delete(jobId);
       clearJobIssues(jobId);
-      if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
+      if (!input.skipDeck) {
+        dispatchDeck.clearEntry(jobId, { ok: false });
+      }
       lifecycle.emitFailed(jobId, input.label, input.role, Date.now() - state.startedAt);
       sessionAutosave.recordOutcome(false);
       if (ownerKind === "pm") {
@@ -371,14 +378,14 @@ export function startBatch(
         (result) => {
           jobs.delete(jobId);
           childHandles.delete(jobId);
-          dispatchDeck.clearEntry(jobId);
+          dispatchDeck.clearEntry(jobId, { ok: result.ok, transcriptPath: result.transcriptPath });
           sessionAutosave.recordOutcome(result.ok);
           memberResults.push({ jobId, label: m.label, result });
         },
         (err: Error) => {
           jobs.delete(jobId);
           childHandles.delete(jobId);
-          dispatchDeck.clearEntry(jobId);
+          dispatchDeck.clearEntry(jobId, { ok: false });
           sessionAutosave.recordOutcome(false);
           memberResults.push({
             jobId,
