@@ -251,7 +251,9 @@ export async function runResearchPipeline(
             // Re-dispatch ONCE: a second failure is not retried — the angle
             // stays failed and its summary carries both attempts' text.
             const retry = await runAngle(a, "wigolo", outcome);
-            const merged = `${run.summary}\n[wigolo fallback: ${retry.summary}]`;
+            const merged = retry.ok
+              ? `${run.summary}\n[wigolo fallback: ${retry.summary}]`
+              : `${run.summary}\n[wigolo fallback failed: ${classifyParallelOutcome(retry.fullText)}]`;
             run = {
               ...retry,
               fullText: retry.fullText,

@@ -166,6 +166,7 @@ RUN npm install -g parallel-web-cli || true
 # like parallel-cli above: an upstream npm hiccup must not break the build,
 # and the fallback is optional by definition.
 # `|| true` preserved for the same reason as the parallel-cli line.
+# The ~1.5 GB engine is fetched lazily at runtime by wigolo itself, unpinned and without a checksum — accepted because wigolo is an optional fallback that runs only after a Parallel failure; revisit if wigolo becomes primary.
 RUN npm install -g --ignore-scripts wigolo@0.2.1 || true
 
 # -----------------------------------------------------------------------------

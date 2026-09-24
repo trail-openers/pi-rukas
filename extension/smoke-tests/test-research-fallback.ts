@@ -141,14 +141,17 @@ function assert(cond: boolean, msg: string) {
     selectFallback("network-failed", "search", false) === "keep-parallel",
     "selector: flag 0 → never (network)",
   );
-  for (const s of ["monitor", "findall", "enrichment"] as const) {
+  // Non-web angles (monitor / findall / enrichment / custom) map to `none`
+  // via surfaceForAngle — the selector's surface is WigoloSurface, so they
+  // arrive here as "none".
+  for (const angle of ["monitor", "findall", "enrichment", "custom-1"] as const) {
     assert(
-      selectFallback("credit-exhausted", s, on) === "no-fallback-available",
-      `selector: ${s} → no-fallback-available (no wigolo equivalent)`,
+      surfaceForAngle(angle) === "none",
+      `surface: ${angle} angle → none (no wigolo equivalent)`,
     );
   }
   assert(
-    selectFallback("credit-exhausted", "monitor", false) === "keep-parallel",
+    selectFallback("credit-exhausted", "none", false) === "keep-parallel",
     "selector: flag 0 beats even no-fallback",
   );
 }

@@ -108,19 +108,13 @@ export function classifyParallelOutcome(rawText: string): ParallelOutcome {
  */
 export function selectFallback(
   outcome: ParallelOutcome,
-  surface: WigoloSurface | "monitor" | "findall" | "enrichment",
+  surface: WigoloSurface,
   fallbackEnabled: boolean,
 ): FallbackDecision {
   if (!fallbackEnabled) return "keep-parallel";
   if (outcome === "success" || outcome === "empty-result" || outcome === "unparseable")
     return "keep-parallel";
-  if (
-    surface === "none" ||
-    surface === "monitor" ||
-    surface === "findall" ||
-    surface === "enrichment"
-  )
-    return "no-fallback-available";
+  if (surface === "none") return "no-fallback-available";
   return "fall-back-to-wigolo";
 }
 
@@ -175,7 +169,6 @@ export function wigoloAnglePrompt(
       : "",
     "",
     "An empty Parallel result is NOT a failure — this re-dispatch happened because the Parallel call itself FAILED, not because it returned nothing.",
-    "monitor / findall / enrichment have NO wigolo equivalent — if this angle required one, report a gap instead.",
     "",
     "Do the original task below. When finished, end your reply with the line `backend: wigolo`.",
     "",
