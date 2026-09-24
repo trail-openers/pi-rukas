@@ -191,15 +191,32 @@ export async function runResearchPipeline(
       backend === "parallel"
         ? `${fallbackLine}${priorBlock}${a.prompt}`
         : `${fallbackLine}${priorBlock}${wigoloAnglePrompt(a, surfaceForAngle(a.name), reason ?? "unparseable")}`;
-    const r = await dispatch(
-      pi,
-      { role: "explore", prompt, cwd: repoRoot },
-      {
-        label: `research-${a.name}`.slice(0, 24),
-        timeoutMs: RESEARCH_DISPATCH_TIMEOUT_MS,
-        extraArgs: RESEARCH_EXTRA_ARGS,
-      },
-    );
+    let r: Awaited<ReturnType<ResearchDispatchFn>>;
+    try {
+      r = await dispatch(
+        pi,
+        { role: "explore", prompt, cwd: repoRoot },
+        {
+          label: `research-${a.name}`.slice(0, 24),
+          timeoutMs: RESEARCH_DISPATCH_TIMEOUT_MS,
+          extraArgs: RESEARCH_EXTRA_ARGS,
+        },
+      );
+    } catch (err) {
+      // A rejecting dispatch (or a throwing stub) must never sink the whole
+      // retrieval barrier — the angle stays failed and the other angles and
+      // the artifact survive it.
+      const msg = err instanceof Error ? err.message : String(err);
+      trace(`research-driver: dispatch rejected for ${a.name}: ${msg}`);
+      return {
+        name: a.name,
+        ok: false,
+        summary: `dispatch rejected: ${msg}`,
+        claims: [],
+        backend,
+        failure: msg,
+      };
+    }
     const claims = extractResearchClaims(r.toolUses, a.name);
     return {
       name: a.name,
@@ -207,6 +224,14 @@ export async function runResearchPipeline(
       summary: r.text.trim().slice(0, 500),
       claims,
       backend,
+      failure:
+        r.ok && !r.errorStop && claims.length > 0
+          ? undefined
+          : !r.ok
+            ? "dispatch failed or timed out"
+            : r.errorStop
+              ? "provider error mid-stream"
+              : "returned no structured claims",
     };
   };
   const angles: AngleRun[] = await timed("retrieve", () =>
@@ -220,9 +245,10 @@ export async function runResearchPipeline(
             // Re-dispatch ONCE: a second failure is not retried — the angle
             // stays failed and its summary carries both attempts' text.
             const retry = await runAngle(a, "wigolo", outcome);
+            const merged = `${run.summary}\n[wigolo fallback: ${retry.summary}]`;
             run = {
               ...retry,
-              summary: `${run.summary}\n[wigolo fallback: ${retry.summary}]`.slice(0, 500),
+              summary: merged.length > 500 ? `${merged.slice(0, 500)}…` : merged,
             };
           } else {
             run.summary =

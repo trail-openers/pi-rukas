@@ -131,10 +131,11 @@ ${abstention}${entail}`;
 
 function angleSummaries(a: ArtifactArgs): string {
   const summaries = a.angles
-    .map(
-      (x) =>
-        `- **${x.name}** (${x.ok ? "ok" : "failed"}${x.backend === "wigolo" ? " · wigolo" : ""}): ${x.summary || "(no summary)"}`,
-    )
+    .map((x) => {
+      const failed = x.ok ? "" : x.failure ? ` · failed: ${x.failure}` : "failed";
+      const backend = x.backend === "wigolo" ? " · wigolo" : "";
+      return `- **${x.name}** (${x.ok ? "ok" : `failed${failed}`}${backend}): ${x.summary || "(no summary)"}`;
+    })
     .join("\n");
   return `## Angle summaries\n\n${summaries || "- (no angles ran)"}\n`;
 }

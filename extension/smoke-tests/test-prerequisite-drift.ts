@@ -1,11 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Prerequisite-drift gate — #489.
- * Three sources describe pi-rukas's prerequisites and disagree: README, install.sh, Dockerfile.
- * The gate compares SETS (not counts) so docs may reflow freely.
- *
- * Directions: forward (REQUIRED_CLIS → README), reverse (Dockerfile → REQUIRED_CLIS/EXCEPTIONS),
- * OR gates (forge CLI gh/glab), version floors (pi #578, oo #715). Proven both directions (canary).
+ * Prerequisite-drift gate — #489. Compares README, install.sh, Dockerfile.
  * Escape hatch: PI_ENSEMBLE_PREREQ_DRIFT=0.
  */
 
@@ -22,16 +17,15 @@ const EXCEPTIONS: Record<string, string> = {
   "pi-mcp-adapter@2.32.1": "MCP bridge, pinned at the last clean release per nicobailon/pi-mcp-adapter#547 (npm-12 EALLOWREMOTE)",
   // MCP server binary loaded via pi-mcp-adapter, not a PATH CLI. Wired by install.sh step 6. Never a REQUIRED_CLIS entry.
   "codebase-memory-mcp": "MCP server binary, not a PATH CLI — preflighted by install.sh step 6 instead",
-  // In the README (extension runtime) but never in REQUIRED_CLIS: install.sh uses
-  // bun/npm, so requiring it on PATH would warn most hosts. #488.
+  // In the README (extension runtime) but never in REQUIRED_CLIS: install.sh
+  // uses bun/npm, so requiring it on PATH would warn most hosts. #488.
   bun: "declared in README as extension runtime, not preflighted on PATH — install.sh falls back to npm",
   // Dockerfile npm self-update — infrastructure, not a prerequisite.
   "npm@latest": "npm self-update in the Dockerfile — not a pi-ensemble prerequisite",
   // Dockerfile installs the npm package; REQUIRED_CLIS names the binary it
   // installs. Same tool, two names — keeps the reverse direction clean.
   "pi-coding-agent": "npm package name — installs the `pi` binary already in REQUIRED_CLIS",
-  "@earendil-works/pi-coding-agent":
-    "npm package name — installs the `pi` binary already in REQUIRED_CLIS",
+  "@earendil-works/pi-coding-agent": "npm package name — installs the `pi` binary already in REQUIRED_CLIS",
   // #578 floor pin on the Dockerfile pi install. parseDockerInstalls keeps the full tagged name;
   // version consistency is asserted separately (parsePiFloors) — this entry keeps the NAME-level
   // reverse direction from flagging a false drift.
@@ -42,7 +36,9 @@ const EXCEPTIONS: Record<string, string> = {
   // npm installs `parallel-web-cli`; the binary is `parallel-cli` (REQUIRED_CLIS).
   "parallel-web-cli":
     "npm package name — installs the `parallel-cli` binary already in REQUIRED_CLIS",
-  // #773: Dockerfile pins `wigolo@0.2.1`; REQUIRED_CLIS names the binary unversioned.
+  // #773: wigolo — optional /research fallback (install.sh + docs/configuration.md,
+  // not a required prerequisite, absent from the README).
+  wigolo: "optional /research fallback — install.sh + docs/configuration.md only, not in the README",
   "wigolo@0.2.1": "pinned npm package name — installs the `wigolo` binary already in REQUIRED_CLIS",
 };
 
@@ -115,8 +111,10 @@ export function parseDockerInstalls(dockerfile: string): { name: string; line: n
     if (c && !(c[1] as string).startsWith("-")) names.push(c[1] as string);
     // Forge CLIs via a piped curl one-liner (e.g. glab's official install script, #608).
     // Recognised by the `glab` marker on the line (the piped URL is generic — `installation.sh` —
-    // elsewhere would be invisible to the reverse direction. Scoped to glab only: gh's channel
-    // is the apt repo (rule below); glab's ONLY channel is the piped script.
+    // and doesn't name the binary), so a Dockerfile that pipes in glab without ever naming it
+    // elsewhere would otherwise be invisible to the reverse direction. Scoped to glab only:
+    // gh's official channel is its apt repo (the apt-get rule below); glab's ONLY channel is
+    // the piped script.
     if (/\bglab\b/.test(t)) {
       for (const m of t.matchAll(/curl[^&|;]*\|\s*(?:bash|sh)[^&|;]*/g)) {
         if (m[0]) names.push("glab");
@@ -211,8 +209,10 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
 
 {
   // Forward: every REQUIRED_CLIS name is named in the README Prerequisites section. Presence, not
-  // table parsing — formatting is free to change.
-  const missing = installNames.filter((n) => !readmeSection.includes(n));
+  // table parsing — formatting is free to change. wigolo (#773) is documented in install.sh and
+  // docs/configuration.md, not in the README — it is the optional /research fallback, not a
+  // required prerequisite, so it is excepted from this check (like bun).
+  const missing = installNames.filter((n) => !readmeSection.includes(n) && !excepted.has(n));
   assert(
     missing.length === 0,
     `every REQUIRED_CLIS name appears in the README Prerequisites section${
@@ -225,9 +225,9 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
 
 {
   // Reverse: every Dockerfile global install is either required or excepted. Forge CLIs
-  // (gh/glab) map to the `forge` pseudo-name in REQUIRED_CLIS; they are accepted here only
-  // when the OR-gate is actually declared (the block below asserts that) — remove the gate
-  // and gh/glab become unexplained again.
+  // (gh/glab) map to the `forge` pseudo-name in REQUIRED_CLIS; they are accepted here
+  // only when the OR-gate is actually declared (the dedicated block below asserts that)
+  // — remove the gate and gh/glab become unexplained again.
   const hasForgeGate = installNames.includes("forge");
   const unknown = dockerInstalls.filter((d) => {
     if (required.has(d.name) || excepted.has(d.name)) return false;
@@ -278,9 +278,10 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
 }
 
 {
-  // Exception hygiene: every EXCEPTIONS key has a non-empty reason. The entries
-  // ship pre-seeded with today's known divergences (each comment names the issue
-  // that resolves it); the reasons are the record, and a bare key is a pending decision.
+  // Exception hygiene: every EXCEPTIONS key has a non-empty reason. The
+  // entries ship pre-seeded with today's known divergences (each comment
+  // names the issue that resolves it); the reasons are the record, and a
+  // bare key is a decision that hasn't been made yet.
   const empty = Object.entries(EXCEPTIONS).filter(([, reason]) => reason.trim() === "");
   assert(
     empty.length === 0,
@@ -413,8 +414,9 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
     "canary fixture: parseDockerInstalls recognises the forge CLI via apt-get (gh)",
   );
   // Piped-curl canary: glab's official install channel is a piped curl
-  // one-liner. The `glab` marker must sit on the piped line (per-line processing),
-  // so the realistic shape is a RUN line that pipes the script and names the binary.
+  // one-liner. The `glab` marker must be on the same line as the piped
+  // curl (per-line processing), so the realistic shape is a RUN line that
+  // both pipes the script and references the binary.
   const pipedCurlLine =
     "RUN curl -fsSL https://gitlab.com/gitlab-org/cli/-/raw/main/docs/installation.sh | bash && command -v glab";
   const pipedCurlInstalls = parseDockerInstalls(pipedCurlLine);
@@ -422,8 +424,9 @@ const excepted = new Set(Object.keys(EXCEPTIONS));
     pipedCurlInstalls.some((d) => d.name === "glab"),
     "canary: parseDockerInstalls recognises a forge CLI installed via piped curl (glab)",
   );
-  // Negative: a piped curl line without the `glab` marker must produce no
-  // `glab` entry (the bun/curl line in the real Dockerfile is such a line).
+  // Negative: a piped curl line with no `glab` marker must NOT produce a
+  // `glab` entry (the bun/curl line in the real Dockerfile is such a line
+  // and must stay invisible to the reverse direction).
   const bunPipedLine = "RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash";
   const bunPipedInstalls = parseDockerInstalls(bunPipedLine);
   assert(

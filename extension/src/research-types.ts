@@ -83,7 +83,14 @@ export interface AngleRun {
    * `wigolo` (the one-shot fallback re-dispatch after a classified
    * Parallel failure). Rendered in the angle summaries.
    */
-  backend?: "parallel" | "wigolo";
+  backend: "parallel" | "wigolo";
+  /**
+   * Why the angle failed (always set when `ok` is false): "dispatch
+   * failed or timed out", "provider error mid-stream", "returned no
+   * structured claims", or the dispatch rejection's message. Rendered in
+   * the angle summaries (mirrors plan-investigate.ts's failure strings).
+   */
+  failure?: string;
 }
 
 /** Reasons the pipeline halted without an artifact. */

@@ -18,8 +18,28 @@
  */
 import { readMarker } from "./reply-markers.ts";
 
-/** The three wigolo surfaces the explore recipe covers (research = deep). */
-export type WigoloSurface = "search" | "fetch" | "research";
+/**
+ * The three wigolo surfaces the explore recipe covers (research = deep).
+ * `none` = no wigolo equivalent for this angle (codebase, monitor, findall,
+ * enrichment, custom) — the decision is `no-fallback-available`, and the
+ * prompt builder is not reached.
+ */
+export type WigoloSurface = "search" | "fetch" | "research" | "none";
+
+/** The fixed alternation `classifyParallelOutcome` matches the marker with. */
+/** The fixed set of class tokens `classifyParallelOutcome` matches. */
+const OUTCOME_TOKENS: readonly ParallelOutcome[] = [
+  "credit-exhausted",
+  "auth-missing",
+  "network-failed",
+  "empty-result",
+  "success",
+  "unparseable",
+];
+
+function isOutcomeToken(v: string): v is ParallelOutcome {
+  return (OUTCOME_TOKENS as readonly string[]).includes(v);
+}
 
 /**
  * The classified outcome of the Parallel attempt behind a failed angle.
@@ -49,36 +69,28 @@ export type ParallelOutcome =
 export type FallbackDecision = "keep-parallel" | "fall-back-to-wigolo" | "no-fallback-available";
 
 /**
- * Classify the raw `parallel-outcome:` marker text (last occurrence wins,
- * via the shared marker reader — the #408 doctrine). The classification is
- * ANCHORED, not keyword-broad: credit on the verbatim string, everything
- * else on a narrow token set, so prose that merely mentions "credit" in a
- * research summary cannot re-route the driver.
+ * Classify the raw reply of a Parallel attempt. The classification is
+ * ANCHORED, not keyword-broad (prose that merely mentions "network latency"
+ * or "HTTP 401" must never re-route the driver):
+ *
+ * 1. the `parallel-outcome:` marker — read with readMarker (last occurrence
+ *    wins, #408) using a FIXED alternation of the six class tokens; a marker
+ *    outside that set is treated as absent (garbage token ≠ a classification);
+ * 2. without a marker, ONLY the two verbatim anchors: `Insufficient credit`
+ *    → credit-exhausted, `blocked_by_challenge` → network-failed;
+ * 3. nothing → `unparseable` (never success, never a fallback trigger).
  */
 export function classifyParallelOutcome(rawText: string): ParallelOutcome {
   if (typeof rawText !== "string" || rawText.trim() === "") return "unparseable";
-  // The `parallel-outcome:` marker, last occurrence wins (readMarker,
-  // #408) — a musing earlier in the reply must not be read as the outcome.
-  const marker = readMarker(rawText, "parallel-outcome", /([\w][\w-]*)/i);
-  // The bare verbatim credit string is the documented anchor (the live case
-  // in outputs/research-knockoutez-wigolo-…md): it maps to credit-exhausted
-  // even when the child never emitted the marker.
-  if (marker?.toLowerCase().includes("credit")) return "credit-exhausted";
+  const marker = readMarker(
+    rawText,
+    "parallel-outcome",
+    new RegExp(`(${OUTCOME_TOKENS.join("|")})`, "i"),
+  );
+  if (marker && isOutcomeToken(marker)) return marker;
   const t = rawText.toLowerCase();
   if (t.includes("insufficient credit")) return "credit-exhausted";
-  if (t.includes("blocked_by_challenge") || t.includes("network-failed") || t.includes("network"))
-    return "network-failed";
-  if (t.includes("auth-missing") || t.includes("401")) return "auth-missing";
-  if (t.includes("empty-result")) return "empty-result";
-  if (marker) {
-    const m = marker.toLowerCase();
-    if (m.includes("credit")) return "credit-exhausted";
-    if (m.includes("network") || m.includes("block")) return "network-failed";
-    if (m.includes("auth")) return "auth-missing";
-    if (m.includes("empty")) return "empty-result";
-    if (m.includes("success")) return "success";
-    if (m.includes("unparseable")) return "unparseable";
-  }
+  if (t.includes("blocked_by_challenge")) return "network-failed";
   return "unparseable";
 }
 
@@ -89,8 +101,9 @@ export function classifyParallelOutcome(rawText: string): ParallelOutcome {
  *   FAILURES; an empty answer is an answer).
  * - `credit-exhausted` / `auth-missing` / `network-failed` → fall back,
  *   UNLESS the flag is `0` (host-side off — the driver then never
- *   re-dispatches) or the surface has no wigolo equivalent (monitor /
- *   findall / enrichment — `no-fallback-available`, the honest answer).
+ *   re-dispatches) or the surface has no wigolo equivalent (`none` for
+ *   codebase / monitor / findall / enrichment — `no-fallback-available`,
+ *   the honest answer).
  * - `unparseable` → keep Parallel (never success, never a trigger).
  */
 export function selectFallback(
@@ -101,21 +114,31 @@ export function selectFallback(
   if (!fallbackEnabled) return "keep-parallel";
   if (outcome === "success" || outcome === "empty-result" || outcome === "unparseable")
     return "keep-parallel";
-  if (surface === "monitor" || surface === "findall" || surface === "enrichment")
+  if (
+    surface === "none" ||
+    surface === "monitor" ||
+    surface === "findall" ||
+    surface === "enrichment"
+  )
     return "no-fallback-available";
   return "fall-back-to-wigolo";
 }
 
 /**
- * Map an angle name to its wigolo surface (#773 spec): web-current /
- * adoption-signals / alternatives → search, docs-depth → fetch, deep tier
- * → research. Unknown angles default to search (the cheapest surface).
+ * Map an angle name to its wigolo surface (#773 spec). ONLY the known web
+ * angles map: web-current / adoption-signals / alternatives → search,
+ * docs-depth → fetch, deep-dive → research. Everything else — the
+ * codebase angle, custom-N PM angles, anything unknown — is `none` (no
+ * wigolo equivalent: the decision is `no-fallback-available`, never a
+ * re-dispatch of a non-web angle through a web surface).
  */
 export function surfaceForAngle(angleName: string): WigoloSurface {
   const n = angleName.toLowerCase();
-  if (n.includes("docs") || n.includes("fetch")) return "fetch";
-  if (n.includes("deep") || n.includes("research")) return "research";
-  return "search";
+  if (n === "web-current" || n === "adoption-signals" || n === "adoption-alternatives")
+    return "search";
+  if (n === "docs-depth") return "fetch";
+  if (n === "deep-dive") return "research";
+  return "none";
 }
 
 /** The dispatch-time line injected next to priorBlock (one static recipe). */
@@ -132,7 +155,7 @@ export function researchFallbackLine(enabled: boolean): string {
 export function wigoloAnglePrompt(
   angle: { name: string; prompt: string },
   surface: WigoloSurface,
-  reason: ParallelOutcome | string,
+  reason: ParallelOutcome,
 ): string {
   const cmds =
     surface === "fetch"
@@ -143,7 +166,9 @@ export function wigoloAnglePrompt(
   return [
     `RE-RESEARCH (angle: ${angle.name}) — Parallel failed (classified: ${reason}); use the WIGOLO CLI for this angle only.`,
     "",
-    "wigolo is a keyless local web-intelligence CLI already in the sandbox. It mirrors this angle with:",
+    'Preflight the binary FIRST: `command -v wigolo >/dev/null 2>&1 || echo "wigolo not installed"`. If it is missing, DO NOT report `empty-result` — end your reply with `backend: wigolo` and `parallel-outcome: network-failed` with the text "wigolo not installed".',
+    "",
+    "wigolo is a keyless local web-intelligence CLI in the sandbox. It mirrors this angle with:",
     `  ${cmds}`,
     surface === "research"
       ? "With WIGOLO_LLM_API_KEY set, `research` returns a SYNTHESIZED brief; without it, a RAW brief. State which one you used."

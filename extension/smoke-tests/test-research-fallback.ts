@@ -66,6 +66,28 @@ function assert(cond: boolean, msg: string) {
   );
   assert(classifyParallelOutcome("parallel-outcome: success") === "success", "classifier: success");
   assert(
+    classifyParallelOutcome("parallel-outcome: success\nthe request got HTTP 401 from upstream") ===
+      "success",
+    "classifier: `success` marker beats a bare 401 in the prose (marker is authoritative)",
+  );
+  assert(
+    classifyParallelOutcome("parallel-outcome: garbage-token") === "unparseable",
+    "classifier: marker outside the six-token set is treated as absent",
+  );
+  assert(
+    classifyParallelOutcome("the network latency was high but the fetch succeeded") ===
+      "unparseable",
+    "classifier: prose mentioning 'network latency' with no marker → unparseable",
+  );
+  assert(
+    classifyParallelOutcome("the endpoint answered HTTP 401, retrying") === "unparseable",
+    "classifier: prose mentioning 'HTTP 401' with no marker → unparseable",
+  );
+  assert(
+    classifyParallelOutcome("a parallel task got cancelled mid-stream") === "unparseable",
+    "classifier: prose mentioning the token 'parallel' is not a marker",
+  );
+  assert(
     classifyParallelOutcome("") === "unparseable",
     "classifier: empty → unparseable (never success)",
   );
@@ -147,7 +169,17 @@ function assert(cond: boolean, msg: string) {
   assert(surfaceForAngle("adoption-alternatives") === "search", "surface: alternatives → search");
   assert(surfaceForAngle("docs-depth") === "fetch", "surface: docs-depth → fetch");
   assert(surfaceForAngle("deep-dive") === "research", "surface: deep tier → research");
-  assert(surfaceForAngle("mystery-angle") === "search", "surface: unknown → default search");
+  assert(surfaceForAngle("codebase") === "none", "surface: codebase angle → none (no re-dispatch)");
+  assert(surfaceForAngle("custom-1") === "none", "surface: custom-N angle → none");
+  assert(surfaceForAngle("mystery-angle") === "none", "surface: unknown angle → none, not search");
+  assert(
+    selectFallback("credit-exhausted", "none", true) === "no-fallback-available",
+    "selector: surface none → no-fallback-available",
+  );
+  assert(
+    selectFallback("network-failed", "none", true) === "no-fallback-available",
+    "selector: codebase failure never re-dispatches (no-fallback-available)",
+  );
 }
 
 // -------------------------------------------------------- dispatch-time line
@@ -165,7 +197,9 @@ interface SeenDispatch {
 }
 const seen: SeenDispatch[] = [];
 let failAngle: string | undefined;
+let failAngle2: string | undefined;
 let wigoloFails = false;
+let rejectOnWigolo = false;
 
 function claimCall(text: string, source: string) {
   return {
@@ -185,8 +219,12 @@ setResearchDispatch(((_pi: unknown, spec: { prompt: string }, opts?: { label?: s
   const label = opts?.label ?? "";
   const isWigolo = spec.prompt.includes("WIGOLO CLI") || spec.prompt.includes("wigolo fallback");
   seen.push({ label, prompt: spec.prompt, isWigolo } as SeenDispatch);
-  const failed = label === `research-${failAngle}`.slice(0, 24) && (isWigolo ? wigoloFails : true);
+  const failedLabel = `research-${failAngle ?? failAngle2 ?? ""}`.slice(0, 24);
+  const failed = label === failedLabel && (isWigolo ? (wigoloFails || rejectOnWigolo) : true);
   if (failed) {
+    if (isWigolo && rejectOnWigolo) {
+      return Promise.reject(new Error("stub: wigolo dispatch exploded"));
+    }
     return Promise.resolve({
       role: "explore",
       ok: true,
@@ -310,7 +348,97 @@ async function freshRepo(): Promise<string> {
   setResearchDispatch(null);
 }
 
-setResearchDispatch(null);
+setResearchDispatch(((_pi: unknown, spec: { prompt: string }, opts?: { label?: string }) => {
+  const label = opts?.label ?? '';
+  const isWigolo = spec.prompt.includes('WIGOLO CLI') || spec.prompt.includes('wigolo fallback');
+  seen.push({ label, prompt: spec.prompt, isWigolo } as SeenDispatch);
+  const failedLabel = `research-${failAngle ?? ''}`.slice(0, 24);
+  const failed = label === failedLabel && (isWigolo ? rejectOnWigolo : true);
+  if (failed) {
+    if (isWigolo && rejectOnWigolo) {
+      return Promise.reject(new Error('stub: wigolo dispatch exploded'));
+    }
+    return Promise.resolve({
+      role: 'explore',
+      ok: true,
+      text: 'parallel failed\nparallel-outcome: credit-exhausted',
+      toolUses: [],
+      ms: 1,
+      exitCode: 0,
+    });
+  }
+  return Promise.resolve({
+    role: 'explore',
+    ok: true,
+    text: 'found',
+    toolUses: [claimCall('the claim holds', 'https://a/live')],
+    ms: 1,
+    exitCode: 0,
+  });
+}) as never);
+
+{
+  // A REJECTING wigolo retry (web-current angle): the angle is a failed
+  // AngleRun (ok false, claims [], backend wigolo, a failure naming the
+  // rejection) — the single-angle pipeline halts with the failure recorded.
+  const tmp = await freshRepo();
+  seen.length = 0;
+  failAngle = "web-current";
+  rejectOnWigolo = true;
+  const r = await runResearchPipeline(
+    FAKE_PI,
+    { topic: "what is a thing", tier: "quick" },
+    tmp,
+    deps,
+  );
+  assert(r.halt !== undefined, "single angle: pipeline halts when the only angle rejects");
+  const rejected = r.angles[0];
+  assert(rejected?.name === "web-current", "angle is web-current");
+  assert(rejected?.ok === false, "rejection angle is not ok");
+  assert((rejected?.claims.length ?? 1) === 0, "rejection angle has no claims");
+  assert(rejected?.backend === "wigolo", "rejection angle keeps its wigolo backend");
+  assert(
+    rejected?.failure === "stub: wigolo dispatch exploded",
+    `failure names the rejection (got ${rejected?.failure})`,
+  );
+  rejectOnWigolo = false;
+  await fs.rm(tmp, { recursive: true, force: true });
+}
+
+{
+  // codebase angle: NO wigolo equivalent → no re-dispatch, stays parallel,
+  // summary records the no-fallback decision, other angle and artifact intact.
+  const tmp = await freshRepo();
+  seen.length = 0;
+  failAngle = "custom-1";
+  const r2 = await runResearchPipeline(
+    FAKE_PI,
+    {
+      topic: "what is a thing",
+      tier: "standard",
+      angles: ["codebase: establish the current state", "web-current: establish the docs depth"],
+    },
+    tmp,
+    deps,
+  );
+  assert(r2.halt === undefined, "pipeline completed when codebase angle fails (no re-dispatch)");
+  const codebase = r2.angles.find((x) => x.name === "custom-1");
+  assert(codebase !== undefined, "codebase angle present");
+  assert(codebase?.ok === false, "codebase angle is not ok");
+  assert((codebase?.claims.length ?? 1) === 0, "codebase angle has no claims");
+  assert(codebase?.backend === "parallel", "codebase angle stays on parallel (no re-dispatch)");
+  assert(
+    codebase?.summary.includes("no-fallback-available"),
+    `summary records the no-fallback decision (got ${codebase?.summary.slice(0, 100)})`,
+  );
+  const other = r2.angles.find((x) => x.ok);
+  assert(other !== undefined && other?.claims.length === 1, "the other angle is intact");
+  assert(r2.claims.length === 1, "the surviving claim reached the result");
+  const body = await fs.readFile(r2.artifactPath as string, "utf8");
+  assert(body.includes("no-fallback-available"), "artifact renders the no-fallback decision");
+  assert(/\*\*custom-2\*\* \(ok\):/.test(body), "artifact renders the other angle's summary");
+  await fs.rm(tmp, { recursive: true, force: true });
+}
 
 // ------------------------------------------------------- dispatch-time flag
 

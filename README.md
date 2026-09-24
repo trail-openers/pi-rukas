@@ -49,20 +49,20 @@ Required CLIs on `$PATH`. The role prompts assume all of these are installed —
 | Tool | Purpose |
 |---|---|
 | [Pi](https://pi.dev) | The terminal coding agent this extends. |
-| [`bun`](https://bun.com) | Extension runtime (loads TS via `jiti`). |
+| [`bun`](https://bun.com) | Runtime for the extension (loads TS via `jiti`). |
 | `git` ≥ 2.20 | Worktrees, branches, diffs. |
-| Forge CLI (`gh` / `glab`) | Forge issue / PR / CI ops — `gh` for GitHub, `glab` for GitLab; install at least one. |
+| Forge CLI (`gh` / `glab`) | Forge issue / PR / CI ops — `gh` for GitHub, `glab` for GitLab. Install at least one; both is fine. |
 | [`vipune`](https://github.com/randomm/vipune) | Cross-session memory (fact + observation patterns). All agents call this. (Cargo from source.) |
 | [`codebase-memory-mcp`](https://github.com/DeusData/codebase-memory-mcp) | Knowledge-graph code indexer exposed as MCP — powers `codebase_memory_search_code` / `trace_path` / `detect_changes` / `get_architecture`. (curl-to-bash install.) |
-| [`oo`](https://github.com/randomm/oo) | Context-efficient wrapper for chatty CLIs (git, gh). (Cargo from source, floor `0.5.0`.) |
+| [`oo`](https://github.com/randomm/oo) | Context-efficient wrapper for chatty CLIs (git, gh). (Cargo from source. Pinned to floor `0.5.0`.) |
 | `jq` | Used by `build.sh` to assemble the capability matrix into the PM prompt. |
-| [`parallel-cli`](https://docs.parallel.ai/cli/overview) | Web search / fetch / deep research for the `explore` role. |
-| [`wigolo`](https://github.com/KnockOutEZ/wigolo) | Keyless local web-intelligence CLI — the `/research` fallback when `parallel-cli` fails (credit/auth/network). Install: `npm install -g --ignore-scripts wigolo@0.2.1` (Node ≥ 20). |
+| [`parallel-cli`](https://docs.parallel.ai/cli/overview) | Web search / fetch / deep research for the `explore` role. (Homebrew tap.) |
 | [`pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter) | MCP bridge — **without the bridge no MCP server loads**. Sandbox users are unaffected: the image bakes it in. |
-| [`ctx7`](https://context7.com) | Current third-party library documentation (`ctx7 library <name>` → `ctx7 docs <id> <query>`). |
+| [`ctx7`](https://context7.com) | Current third-party library documentation. `ctx7 library <name>` → `ctx7 docs <id> <query>`. Free tier works without login. |
+
 ### Supply-chain setup (recommended one-time before installing)
 
-Recent supply-chain attacks (compromised maintainer publishes a malicious version, caught within hours) make a release-age embargo worth setting up **once, globally**:
+Recent supply-chain attacks (compromised maintainer publishes a malicious version, caught and yanked within hours) make a release-age embargo worth setting up **once, globally**:
 
 ```bash
 # npm — applies to all `npm install -g …` from now on
