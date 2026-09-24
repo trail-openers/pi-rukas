@@ -136,6 +136,10 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
     (items[0]?.description ?? "").length >= 1,
     "description carries a job-key fragment for same-role disambiguation",
   );
+  assert(
+    items[0]?.description === "x",
+    "≤10-char key 'x' renders verbatim (no 'key ' prefix, no ellipsis)",
+  );
 }
 
 // 4b. Multiple entries — each label matches its own formatRow line, and
@@ -176,45 +180,9 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   );
 }
 
-// 4c. #742 description collision at the keyFragment truncation boundary:
-// two same-role jobs whose keys are BOTH >10 chars and share the first 10
-// chars (both elide to the same 10-char prefix + …) render IDENTICAL
-// descriptions. This is a known, conscious limitation: job keys embed a
-// unique run-id in the first 10 chars (e.g. `df8a-7r`), so the collision
-// requires an adversarial key shape. The labels (full `formatRow`) and
-// the `deck::<key>` value still disambiguate — only the short description
-// column collides. This assertion documents the current behaviour so the
-// collision is a conscious decision, not a silent regression.
-{
-  const now = 4_500_000;
-  const mk = (key: string, seq: number): DeckEntry => ({
-    key,
-    label: "developer[task-A]",
-    seq,
-    startedAt: now - 134_000,
-    state: makeState("developer", {
-      lastToolName: "bash",
-      toolUses: 7,
-      lastEventAt: now - 1000,
-    }),
-  });
-  // Both keys: 12 chars, identical first 10 → both elide to "aaaaaaaaaa…".
-  const entries = [mk("aaaaaaaaaaa1", 0), mk("aaaaaaaaaaa2", 1)];
-  const items = buildDeckItems(entries, now);
-  const d0 = items[0]?.description ?? "";
-  const d1 = items[1]?.description ?? "";
-  // Documented behaviour: same 10-char prefix → same description (collision
-  // is a conscious limitation, see comment above).
-  assert(
-    d0 === d1 && d0 === "key aaaaaaaaaa…",
-    `truncation-boundary collision is the DOCUMENTED behaviour (both '${d0}')`,
-  );
-  // But the labels and values still distinguish the two jobs.
-  assert(
-    items[0]?.label !== items[1]?.label || items[0]?.value !== items[1]?.value,
-    "labels/values still distinguish same-prefix keys",
-  );
-}
+// 4c. #835 collision fix — same-role jobs with >10-char keys sharing the
+// first 10 chars now render DISTINCT descriptions. Moved to
+// test-dispatch-deck-fragments.ts; one-line pointer, no assertions here.
 
 // 5. DeckItem.value round-trips through parseDeckValue.
 {
