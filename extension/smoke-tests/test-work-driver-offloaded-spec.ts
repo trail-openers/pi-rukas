@@ -34,6 +34,7 @@ import { readState } from "../src/workflow-state.ts";
 const __dirname = path.dirname(new URL(import.meta.url).pathname);
 const REPLY_FIXTURE = path.join(__dirname, "fixtures", "explore-replies", "674.txt");
 const REPORT_FIXTURE = path.join(__dirname, "fixtures", "explore-replies", "674-report.md");
+const REPLY_826_FIXTURE = path.join(__dirname, "fixtures", "explore-replies", "826.txt");
 
 // ---- offload helper functions (inlined from task-a's intended module) ----
 
@@ -439,6 +440,43 @@ async function runDriverCase(
     assert(r.spec === undefined, "driver-legacy: no normalisedSpec — offload fallback scoped to intent path");
   } finally {
     process.env.PI_ENSEMBLE_INTENT = undefined;
+  }
+}
+
+// ============================================================================
+// #830 — the 826 fixture: ### Spec nested under ## Intent resolution with
+// whole-bold markers. The inline parse must find the spec and route to plan,
+// not park at explore-needs-clarification.
+// ============================================================================
+{
+  const reply826 = readFileSync(REPLY_826_FIXTURE, "utf8");
+
+  // Anti-vacuity: the fixture must still be the raw thing.
+  assert(
+    /^###\s+Spec\s*$/m.test(reply826) && !/^##\s+Spec\s*$/m.test(reply826),
+    "826 fixture: has ### Spec (not ## Spec) — the shape that broke",
+  );
+  assert(
+    reply826.includes("**INTENT-VERDICT: proceed**"),
+    "826 fixture: has whole-bold INTENT-VERDICT: proceed",
+  );
+
+  // The inline parse must find the spec (no offload file needed).
+  const inlineParsed = parseNormalisedSpec(reply826);
+  assert(inlineParsed !== undefined, "826: parseNormalisedSpec finds the spec inline (no offload needed)");
+
+  // Driver-level: the 826 reply must NOT park at explore-needs-clarification.
+  const r = await runDriverCase(
+    "offload-driver-826-",
+    826,
+    {},
+    reply826,
+  );
+  assert(r.cap === undefined, "driver-826: NO cap-hit — the spec is found inline, no park");
+  assert(r.spec !== undefined, "driver-826: normalisedSpec recorded on state");
+  if (r.spec) {
+    assert(r.spec.deliverables.length === 5, `driver-826: 5 deliverables (got ${r.spec.deliverables.length})`);
+    assert(r.spec.verdict === "proceed-with-assumptions", `driver-826: resolved verdict proceed-with-assumptions (got ${r.spec.verdict})`);
   }
 }
 

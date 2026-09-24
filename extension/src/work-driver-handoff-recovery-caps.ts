@@ -28,6 +28,7 @@ import {
 } from "./work-driver-handoff-recovery.ts";
 import { mergeHoldGrantAction } from "./work-driver-merge-authority.ts";
 import { isConsolidatedPark } from "./work-driver-merge-subject.ts";
+import { type CapHitEvent, lastCapHit } from "./workflow-state-cap.ts";
 import {
   type WorkEvent,
   type WorkState,
@@ -55,7 +56,7 @@ export function recoveryStepsForCap(
 } {
   const ps = state.pipelineState;
   const issue = state.issue;
-  const capHit = [...state.eventLog].reverse().find((e) => e.kind === "cap-hit");
+  const capHit = [...state.eventLog].reverse().find((e): e is CapHitEvent => e.kind === "cap-hit");
   const cap: Cap | undefined = capHit ? capHit.cap : undefined;
   const steps: RecoveryStep[] = [];
 
@@ -295,15 +296,22 @@ export function recoveryStepsForCap(
       },
     );
   } else if (cap === "explore-needs-clarification") {
+    // #830 — the explore reply is saved to .pi/work-state/${issue}/ when it exceeds 4 KiB;
+    // otherwise it appears inline in the cap-hit's preceding dispatch event in .pi/work-state/${issue}.json.
+    const evidence = lastCapHit(state, "explore-needs-clarification")?.evidence;
     steps.push(
       {
         section: "explore-needs-clarification",
-        comment: ["1. Read what explore couldn't determine:"],
-        lines: [`cat tmp/issue-${issue}/handoff-comment.md`],
+        comment: [
+          evidence
+            ? `1. The driver recorded: ${evidence}. List the explore artifacts to confirm:`
+            : "1. List the explore artifacts to see what the reply contained (the issue may be fine — the parser may have missed it):",
+        ],
+        lines: [`ls .pi/work-state/${issue}/`],
       },
       {
         section: "explore-needs-clarification",
-        comment: ["2. Edit the issue body to add the missing acceptance criteria / scope:"],
+        comment: ["2. If the issue is ambiguous or missing acceptance criteria, edit it first:"],
         lines: forgeLines(
           forge,
           [`gh issue edit ${issue}`],
@@ -312,8 +320,8 @@ export function recoveryStepsForCap(
       },
       {
         section: "explore-needs-clarification",
-        comment: ["3. Re-run /work once the issue is clearer:"],
-        lines: [`rm .pi/work-state/${issue}.json`, "# then restart Pi"],
+        comment: ["3. Re-run /work (the state file is discarded automatically on --restart):"],
+        lines: [`/work ${issue} --restart`],
       },
       {
         section: "explore-needs-clarification",

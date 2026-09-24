@@ -125,8 +125,20 @@ const run = (raw: Record<string, unknown>) =>
   // Post-#680 M1: the diff includes sidecar changes (new file), so minus lines
   // are expected for the sidecar diff. The AGENTS.md diff itself is still
   // insertions-only.
-  const plusLines = r.content[0]?.text.split("\n").filter((l) => l.startsWith("+"));
+  const reportText = r.content[0]?.text ?? "";
+  const plusLines = reportText.split("\n").filter((l) => l.startsWith("+"));
   assert(plusLines.length > 0, "create diff has insertion lines");
+  // #840: each scaffold heading appears exactly once in the diff. The fact
+  // sections (Quality Gates, Commands, Environment) use ## headings; the
+  // 7 boilerplate sections use # headings.
+  const diffLines = reportText.split("\n");
+  const headings = ["## Quality Gates", "## Commands", "## Environment", "# Git Workflow", "# Documentation Policy", "# Code Review Doctrine", "# Context7 Protocol", "# Testing Standards"];
+  for (const h of headings) {
+    const count = diffLines.filter((l) => l === `+${h}`).length;
+    assert(count === 1, `create diff: heading '${h}' appears exactly once (got ${count})`);
+  }
+  // #840: report text includes exit: 0 matching details.exitCode
+  assert(reportText.includes("exit: 0"), "create report includes 'exit: 0'");
 }
 
 // ------------------------------------------------------------------- update
@@ -174,6 +186,8 @@ const run = (raw: Record<string, unknown>) =>
     "idempotent update: no-op, exit 0",
   );
   assert(r.content[0]?.text.includes("no-op (already current)"), "no-op report says so");
+  // #840: report text includes exit: 0
+  assert(r.content[0]?.text?.includes("exit: 0"), "no-op update report includes 'exit: 0'");
 }
 
 // ---------------------------------------------------------------------- check
@@ -188,7 +202,9 @@ const run = (raw: Record<string, unknown>) =>
   assert(c?.code === 0, `clean fixture → check code 0 (got ${c?.code})`);
   assert(c?.corrupt === false, "clean fixture: not corrupt");
   assert(c?.findings.length === 0, "clean fixture: zero findings");
-  assert(r.content[0]?.text === "clean", "clean check renders 'clean'");
+  // #840: clean check report includes exit: 0
+  assert(r.content[0]?.text?.includes("exit: 0"), "clean check report includes 'exit: 0'");
+  assert(r.content[0]?.text?.includes("clean"), "clean check renders 'clean'");
 
   // A stale reference → findings, one line per finding.
   writeFileSync(
@@ -198,6 +214,8 @@ const run = (raw: Record<string, unknown>) =>
   const r2 = await run({ verb: "check" });
   const c2 = r2.details.check as { code: number; findings: { kind: string; message: string }[] };
   assert(r2.details.exitCode === 1 && c2.code === 1, "stale path → exit 1");
+  // #840: findings report includes exit: 1
+  assert(r2.content[0]?.text?.includes("exit: 1"), "findings report includes 'exit: 1'");
   assert(
     c2.findings.some((f) => f.kind === "stale-path" && f.message.includes("gone.ts")),
     "check finding names the stale path",
@@ -215,6 +233,8 @@ const run = (raw: Record<string, unknown>) =>
     "check on a missing file: error present, check absent",
   );
   assert(r3.details.exitCode === 2, "check on a missing file → exit 2");
+  // #840: error report includes exit: 2
+  assert(r3.content[0]?.text?.includes("exit: 2"), "error report includes 'exit: 2'");
   assert(r3.content[0]?.text.includes("error"), "…and the report renders the error");
 }
 
