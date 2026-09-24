@@ -10,9 +10,7 @@
  *
  * `sliceSpecSectionH2OrH3` finds `## Spec` or `### Spec` (including a level-3
  * heading nested under a parent `##`) and keeps everything down to the next
- * level-2 heading in the body — or, for a `### Spec`, up to the parent `##`'s
- * next sibling (the #826 shape, where an earlier `## Workstreams` would
- * otherwise sever the spec from its fields).
+ * level-2 heading in the body.
  *
  * `sliceMarkdownSection` is deliberately left strict (`##`-only): `parseWorkstreams`
  * and `parseWorktreesBlock` depend on the exact-level-2 terminator behaviour,
@@ -41,15 +39,8 @@ export const SPEC_FIELD_NAMES = [
   "Evidence",
 ] as const;
 
-// Escape each non-alphanumeric char for the alternation; a regex-class escape
-// here would not survive string-literal → RegExp construction, so map per char.
-// Escape each non-alphanumeric, non-alternation char for the regex; `|` is the
-// alternation separator itself and must not be escaped (a `\\|` would make it
-// a literal `|` and break the alternation).
-const SPEC_FIELD_NAME_ALTERNATIVE = SPEC_FIELD_NAMES.join("|")
-  .split("")
-  .map((c) => (/[a-zA-Z0-9|]/.test(c) ? c : `\\${c}`))
-  .join("");
+// field names are letters and spaces only, so no regex escaping is needed
+const SPEC_FIELD_NAME_ALTERNATIVE = SPEC_FIELD_NAMES.join("|");
 
 /**
  * The terminator for `sliceSpecField`.
@@ -68,6 +59,7 @@ const SPEC_FIELD_NAME_ALTERNATIVE = SPEC_FIELD_NAMES.join("|")
  *      only the spec field names, case-insensitive). `**<name>**` is only a
  *      terminator when it names a field the parser reads, so a
  *      `**Note** — …` line inside a field body does NOT end the field.
+
  *
  * A bullet line opens with `-` or a digit, so it never terminates a section
  * early; a `#` or a `**label**` inside prose (not at a line start) never
@@ -122,40 +114,12 @@ export function sliceSpecField(text: string, name: string): string | undefined {
  * (including a sibling `###` section after a `### Spec`, which is accepted),
  * because those headings ARE the field separators `sliceSpecField` uses;
  * stopping at `###` would sever the spec from its own `###` fields.
- *
- * One extra rule, for the #826 shape only: when the `### Spec` is nested
- * under a parent `## <x>`, the body extends to that parent's next sibling
- * `## <y>` — a level-2 heading that PRECEDES the `### Spec` is part of the
- * parent section's own layout (the fixture's `## Workstreams` sits above
- * `### Spec`), not a terminator, and `## <y>` is where the parent section —
- * and with it the nested spec — ends.
  */
 export function sliceSpecSectionH2OrH3(text: string, name: string): string | undefined {
   const m = text.match(new RegExp(`^(?:##|###)\\s+${name}\\s*$`, "im"));
   if (!m || m.index === undefined) return undefined;
   const after = text.slice(m.index + m[0].length);
   const next = after.match(/^##\s(?!#)/m);
-  let end = next?.index ?? after.length;
-  if (m[0].startsWith("###")) {
-    // Find the parent level-2 heading preceding this level-3 section, if any.
-    let parentEnd: number | null = null;
-    for (const pm of text.matchAll(/^##\s/gm)) {
-      if (pm.index === undefined || pm.index > m.index) break;
-      parentEnd = pm.index;
-    }
-    if (parentEnd !== null) {
-      // The parent's sibling `##` — the first level-2 heading after the
-      // parent and before this section — is where the parent (and the
-      // nested spec) ends; any level-2 heading between the parent and this
-      // section is the parent's own content, not a terminator.
-      for (const pm of text.matchAll(/^##\s(?!#)/gm)) {
-        if (pm.index !== undefined && pm.index > parentEnd && pm.index < m.index) {
-          end = pm.index;
-          break;
-        }
-      }
-    }
-  }
-  const body = after.slice(0, end);
+  const body = next?.index !== undefined ? after.slice(0, next.index) : after;
   return body.replace(/\n\s*-{3,}\s*$/, "\n");
 }

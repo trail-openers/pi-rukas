@@ -13,6 +13,7 @@
  */
 
 import {
+  SPEC_FIELD_NAMES,
   sliceSpecSectionH2OrH3,
   sliceSpecField,
 } from "../src/work-driver-intent-spec-slice.ts";
@@ -24,6 +25,18 @@ function assert(cond: boolean, msg: string) {
   else {
     console.error(`✗ ${msg}`);
     exit = 1;
+  }
+}
+
+// ============================================================================
+// SPEC_FIELD_NAMES regex safety
+// ============================================================================
+
+{
+  // The module builds its terminators by joining SPEC_FIELD_NAMES with `|`
+  // and no escaping; that is only safe while every entry is letters/spaces.
+  for (const name of SPEC_FIELD_NAMES) {
+    assert(/^[A-Za-z ]+$/.test(name), `field name regex-safe: ${name}`);
   }
 }
 
