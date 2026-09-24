@@ -185,8 +185,8 @@ export async function runResearchPipeline(
   const runAngle = async (
     a: (typeof angleSpecs)[number],
     backend: AngleRun["backend"],
-    reason?: ParallelOutcome,
-  ): Promise<AngleRun> => {
+    reason: ParallelOutcome | undefined,
+  ): Promise<AngleRun & { fullText: string }> => {
     const prompt =
       backend === "parallel"
         ? `${fallbackLine}${priorBlock}${a.prompt}`
@@ -215,31 +215,37 @@ export async function runResearchPipeline(
         claims: [],
         backend,
         failure: msg,
+        fullText: `dispatch rejected: ${msg}`,
       };
     }
     const claims = extractResearchClaims(r.toolUses, a.name);
+    const ok = r.ok && !r.errorStop && claims.length > 0;
     return {
       name: a.name,
-      ok: r.ok && !r.errorStop && claims.length > 0,
+      ok,
       summary: r.text.trim().slice(0, 500),
       claims,
       backend,
-      failure:
-        r.ok && !r.errorStop && claims.length > 0
-          ? undefined
-          : !r.ok
-            ? "dispatch failed or timed out"
-            : r.errorStop
-              ? "provider error mid-stream"
-              : "returned no structured claims",
+      failure: ok
+        ? undefined
+        : !r.ok
+          ? "dispatch failed or timed out"
+          : r.errorStop
+            ? "provider error mid-stream"
+            : "returned no structured claims",
+      // The parallel-outcome:/backend: markers are the LAST lines of a
+      // reply — classification must see the full text, not the summary.
+      fullText: r.text,
     };
   };
   const angles: AngleRun[] = await timed("retrieve", () =>
     Promise.all(
       angleSpecs.map(async (a) => {
-        let run = await runAngle(a, "parallel");
+        let run = await runAngle(a, "parallel", undefined);
         if (!run.ok && fallbackEnabled) {
-          const outcome: ParallelOutcome = classifyParallelOutcome(run.summary);
+          // The markers sit at the END of the reply, so classify on the
+          // full text — a 500-char summary silently drops them.
+          const outcome: ParallelOutcome = classifyParallelOutcome(run.fullText);
           const decision = selectFallback(outcome, surfaceForAngle(a.name), fallbackEnabled);
           if (decision === "fall-back-to-wigolo") {
             // Re-dispatch ONCE: a second failure is not retried — the angle
@@ -248,6 +254,7 @@ export async function runResearchPipeline(
             const merged = `${run.summary}\n[wigolo fallback: ${retry.summary}]`;
             run = {
               ...retry,
+              fullText: retry.fullText,
               summary: merged.length > 500 ? `${merged.slice(0, 500)}…` : merged,
             };
           } else {
@@ -255,7 +262,8 @@ export async function runResearchPipeline(
               `${run.summary}\n[parallel-outcome: ${outcome}; decision: ${decision}]`.slice(0, 500);
           }
         }
-        return run;
+        const { fullText: _fullText, ...bare } = run;
+        return bare;
       }),
     ),
   );

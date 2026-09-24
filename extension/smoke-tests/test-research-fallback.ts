@@ -197,7 +197,6 @@ interface SeenDispatch {
 }
 const seen: SeenDispatch[] = [];
 let failAngle: string | undefined;
-let failAngle2: string | undefined;
 let wigoloFails = false;
 let rejectOnWigolo = false;
 
@@ -215,23 +214,20 @@ function claimCall(text: string, source: string) {
   };
 }
 
-setResearchDispatch(((_pi: unknown, spec: { prompt: string }, opts?: { label?: string }) => {
+const driverStub = ((_pi: unknown, spec: { prompt: string }, opts?: { label?: string }) => {
   const label = opts?.label ?? "";
   const isWigolo = spec.prompt.includes("WIGOLO CLI") || spec.prompt.includes("wigolo fallback");
   seen.push({ label, prompt: spec.prompt, isWigolo } as SeenDispatch);
-  const failedLabel = `research-${failAngle ?? failAngle2 ?? ""}`.slice(0, 24);
-  const failed = label === failedLabel && (isWigolo ? (wigoloFails || rejectOnWigolo) : true);
+  const failedLabel = `research-${failAngle ?? ""}`.slice(0, 24);
+  const failed = label === failedLabel && (isWigolo ? wigoloFails || rejectOnWigolo : true);
   if (failed) {
-    if (isWigolo && rejectOnWigolo) {
+    if (isWigolo && rejectOnWigolo)
       return Promise.reject(new Error("stub: wigolo dispatch exploded"));
-    }
     return Promise.resolve({
       role: "explore",
       ok: true,
       text: "parallel failed\nparallel-outcome: credit-exhausted",
       toolUses: [],
-      ms: 1,
-      exitCode: 0,
     });
   }
   return Promise.resolve({
@@ -239,10 +235,8 @@ setResearchDispatch(((_pi: unknown, spec: { prompt: string }, opts?: { label?: s
     ok: true,
     text: isWigolo ? "found it via wigolo\nbackend: wigolo" : "found it via parallel",
     toolUses: [claimCall("the claim holds", "https://a/live")],
-    ms: 1,
-    exitCode: 0,
   });
-}) as never);
+}) as never;
 
 const execStub: ExecFn = async (cmd) => {
   if (cmd.startsWith("git rev-parse")) return { stdout: "feedbeef12345\n" };
@@ -267,6 +261,7 @@ async function freshRepo(): Promise<string> {
 
 {
   // credit-exhausted angle → re-dispatched ONCE wigolo-framed, backend wigolo.
+  setResearchDispatch(driverStub);
   const tmp = await freshRepo();
   seen.length = 0;
   failAngle = "web-current";
@@ -348,39 +343,11 @@ async function freshRepo(): Promise<string> {
   setResearchDispatch(null);
 }
 
-setResearchDispatch(((_pi: unknown, spec: { prompt: string }, opts?: { label?: string }) => {
-  const label = opts?.label ?? '';
-  const isWigolo = spec.prompt.includes('WIGOLO CLI') || spec.prompt.includes('wigolo fallback');
-  seen.push({ label, prompt: spec.prompt, isWigolo } as SeenDispatch);
-  const failedLabel = `research-${failAngle ?? ''}`.slice(0, 24);
-  const failed = label === failedLabel && (isWigolo ? rejectOnWigolo : true);
-  if (failed) {
-    if (isWigolo && rejectOnWigolo) {
-      return Promise.reject(new Error('stub: wigolo dispatch exploded'));
-    }
-    return Promise.resolve({
-      role: 'explore',
-      ok: true,
-      text: 'parallel failed\nparallel-outcome: credit-exhausted',
-      toolUses: [],
-      ms: 1,
-      exitCode: 0,
-    });
-  }
-  return Promise.resolve({
-    role: 'explore',
-    ok: true,
-    text: 'found',
-    toolUses: [claimCall('the claim holds', 'https://a/live')],
-    ms: 1,
-    exitCode: 0,
-  });
-}) as never);
-
 {
   // A REJECTING wigolo retry (web-current angle): the angle is a failed
   // AngleRun (ok false, claims [], backend wigolo, a failure naming the
   // rejection) — the single-angle pipeline halts with the failure recorded.
+  setResearchDispatch(driverStub);
   const tmp = await freshRepo();
   seen.length = 0;
   failAngle = "web-current";
@@ -406,8 +373,56 @@ setResearchDispatch(((_pi: unknown, spec: { prompt: string }, opts?: { label?: s
 }
 
 {
+  // Long-reply marker: a 2,000-char prose reply whose LAST line carries the
+  // credit-exhausted marker must still trigger the wigolo re-dispatch — the
+  // classifier runs on the full reply, not the 500-char summary (#773 fix).
+  const tmp = await freshRepo();
+  const longSeen: SeenDispatch[] = [];
+  const longStub = ((_pi: unknown, spec: { prompt: string }, opts?: { label?: string }) => {
+    const label = opts?.label ?? "";
+    const isWigolo = spec.prompt.includes("WIGOLO CLI") || spec.prompt.includes("wigolo fallback");
+    const fail = label === "research-web-current" && !isWigolo;
+    longSeen.push({ label, prompt: spec.prompt } as SeenDispatch);
+    const prose = "the parallel search returned a plausible result set but credit ran out; ".repeat(
+      35,
+    );
+    const text = fail
+      ? `${prose.slice(0, 1990)} parallel-outcome: credit-exhausted`
+      : isWigolo
+        ? "found it via wigolo\nbackend: wigolo"
+        : "found it via parallel";
+    return Promise.resolve({
+      role: "explore",
+      ok: true,
+      text,
+      toolUses: fail ? [] : [claimCall("the claim holds", "https://a/live")],
+    });
+  }) as never;
+  setResearchDispatch(longStub);
+  const rLong = await runResearchPipeline(
+    FAKE_PI,
+    { topic: "what is a thing", tier: "quick" },
+    tmp,
+    deps,
+  );
+  const webDispatches = longSeen.filter((s) => s.label === "research-web-current");
+  assert(
+    webDispatches.length === 2,
+    `long reply with trailing marker still re-dispatches (got ${webDispatches.length} dispatches)`,
+  );
+  assert(
+    /WIGOLO CLI/.test(webDispatches[1]?.prompt ?? ""),
+    "second attempt is wigolo-framed after the long credit-exhausted reply",
+  );
+  assert(rLong.angles[0]?.backend === "wigolo", "long-reply angle carries backend: wigolo");
+  setResearchDispatch(null);
+  await fs.rm(tmp, { recursive: true, force: true });
+}
+
+{
   // codebase angle: NO wigolo equivalent → no re-dispatch, stays parallel,
   // summary records the no-fallback decision, other angle and artifact intact.
+  setResearchDispatch(driverStub);
   const tmp = await freshRepo();
   seen.length = 0;
   failAngle = "custom-1";
