@@ -176,6 +176,7 @@ const SEAMS: Seam[] = [
     pending: {},
     testOnly: {
       buildSteerPrompt: "steer prompt builder; exercised by test-dispatch-deck-interactive.ts",
+      buildJobRows: "row builder with the #835 key-fragment disambiguator; exercised by test-dispatch-deck.ts block 14",
     },
     canary: { symbol: "buildCompositeFactory", importer: "dispatch-deck.ts" },
   },

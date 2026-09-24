@@ -33,6 +33,7 @@ import {
   startEntry,
   updateEntry,
 } from "../src/dispatch-deck.ts";
+import { buildJobRows, buildCompositeFactory } from "../src/dispatch-deck-composite.ts";
 import { type RunningState, emptyRunningState } from "../src/progress.ts";
 
 let exit = 0;
@@ -427,6 +428,66 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   for (const header of batchOnly) {
     assert(lines.includes(header), `batch-header row in batch-only projection also in buildLines: ${header}`);
   }
+}
+
+// 14. #835 regression guard on the #834 plain-row surface: two same-role
+// jobs whose keys share a prefix (the realistic newJobId shape — a shared
+// base-36 timestamp prefix) can render byte-identical formatRow lines from
+// spawn until the first updateEntry. buildJobRows appends the collision-
+// aware key fragment so the rendered rows stay distinct for their whole
+// lifetime; the composite renders them with the same fragment.
+{
+  const now = 4_500_000;
+  const keys = ["aaaaaaaaaaa1", "aaaaaaaaaaa2"];
+  const entries: DeckEntry[] = keys.map((key, i) => ({
+    key,
+    label: "developer",
+    seq: i,
+    startedAt: now - 134_000,
+    state: makeState("developer", { lastEventAt: now - 1000 }),
+  }));
+  // Precondition: without the fragment the rows are byte-identical (the
+  // bug the fragment fixes) — same label, same role, same-second elapsed.
+  assert(formatRow(entries[0]!, now) === formatRow(entries[1]!, now), "14a: bare formatRow rows are identical (the #835 class)");
+  const rows = buildJobRows(entries, now);
+  assert(rows[0]?.text !== rows[1]?.text, `14b: buildJobRows rows distinct (${rows[0]?.text} vs ${rows[1]?.text})`);
+  assert(
+    (rows[0]?.text ?? "").endsWith(" · ") === false &&
+      (rows[0]?.text ?? "").includes(" · aaaaaaaa") &&
+      (rows[1]?.text ?? "").includes(" · aaaaaaaa"),
+    "14c: fragment is the row suffix and preserves the shared 10-char prefix",
+  );
+  // The composite factory renders the same distinct rows (the production
+  // surface the operator sees), with the `>` marker position-only.
+  const factory = buildCompositeFactory(() => [], () => ({ running: entries, selectedKey: keys[0], showHint: false }), 20);
+  const comp = factory(null, fakeTheme);
+  if (comp instanceof Container) {
+    const rendered = comp.children.map((c) => (c as Text).text);
+    assert(rendered.length === 3, "14d: 2 job rows + 1 blank separator (no hint: roster mode active)");
+    assert(rendered[0]?.startsWith("> ") && !rendered[1]?.startsWith("> "), "14e: '>' marker on the selected row only");
+    assert(
+      rendered[0] !== rendered[1] &&
+        rendered[0]?.slice(2) !== rendered[1]?.slice(2),
+      "14f: composite renders distinct rows (fragment survives the '> ' prefix)",
+    );
+  }
+
+  // 14g. Three keys sharing the first 13 chars → three pairwise-distinct
+  // fragments, all starting with the shared prefix.
+  const adv = ["abcdefghijklm1x", "abcdefghijklm2x", "abcdefghijklm3x"];
+  const advEntries: DeckEntry[] = adv.map((key, i) => ({
+    key,
+    label: "developer",
+    seq: i,
+    startedAt: now - 134_000,
+    state: makeState("developer", { lastEventAt: now - 1000 }),
+  }));
+  const advFragments = buildJobRows(advEntries, now).map((r) => r.text.split(" · ").pop() ?? "");
+  assert(
+    new Set(advFragments).size === 3 &&
+      advFragments.every((f) => f.startsWith("abcdefghij")),
+    `14g: 3 keys sharing 13 chars → pairwise-distinct fragments (${advFragments.join(" | ")})`,
+  );
 }
 
 console.log(`\nexit ${exit}`);

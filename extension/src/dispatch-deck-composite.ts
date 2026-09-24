@@ -35,12 +35,90 @@ import { formatElapsed } from "./progress.ts";
 /**
  * Row state for the plain-row rendering (#834).
  * `running` includes batch members (one row per job, #709/#729/#742/#761
- * single-surface invariant); `selected` is the roster-mode `>` target.
+ * single-surface invariant); `selectedKey` is the roster-mode `>` target.
  */
 export interface DeckRows {
   running: readonly DeckEntry[];
   selectedKey?: string;
   showHint: boolean;
+}
+
+/**
+ * A single per-job row's rendered content, with the collision-aware key
+ * fragment (#835) precomputed over the whole visible set. Exported so the
+ * distinct-rows behaviour is directly assertable (test-dispatch-deck.ts
+ * block 14); the composite is the production caller.
+ */
+export interface JobRowLine {
+  key: string;
+  text: string;
+}
+
+/**
+ * The job rows for the composite: one entry per running entry, in order.
+ * `formatRow` alone is not enough — two same-role jobs whose keys share a
+ * prefix can render byte-identical rows from spawn until the first
+ * `updateEntry` (the #835 class), so every row >10 chars appends a
+ * collision-aware `· key …` fragment (≤10-char keys append the key
+ * verbatim) that `distinctKeyFragments` guarantees distinct across the set.
+ */
+export function buildJobRows(running: readonly DeckEntry[], now: number): JobRowLine[] {
+  const fragments = distinctKeyFragments(running.map((e) => e.key));
+  return running.map((e, i) => ({
+    key: e.key,
+    text: `${formatRow(e, now)} · ${fragments[i]}`,
+  }));
+}
+
+/**
+ * Render `key` truncated to a `prefix`-char fragment. ≤10-char keys
+ * render verbatim (no marker); longer keys render as a 10-char prefix +
+ * `…` (the #835 elision shape, trimmed) — unless `prefix` reaches the full
+ * key length, in which case the full key renders with no ellipsis.
+ */
+function keyFragmentAt(key: string, prefix: number): string {
+  if (key.length <= 10) return key;
+  if (prefix >= key.length) return key;
+  return `${key.slice(0, prefix).trimEnd()}…`;
+}
+
+/**
+ * Collision-aware fragments over the whole visible set (#835's algorithm,
+ * ported to the plain-row surface when #834 deleted the SelectList column
+ * that was its reader). Group keys by their current fragment; for any group
+ * with more than one DISTINCT fragment, increase the 2nd+ occurrence's
+ * prefix length by 1 and re-group, repeating until every fragment is
+ * distinct or the prefix reaches the full key length (rendered in full,
+ * no ellipsis). Entries whose fragment is already unique keep the 10-char
+ * form. The loop is bounded: a pass in which no prefix can change makes
+ * further lengthening impossible, so it exits as-is — duplicate keys
+ * ≤10 chars stay identical, where the row's other content (label, `>`
+ * marker, position) still distinguishes them.
+ */
+function distinctKeyFragments(keys: string[]): string[] {
+  const n = keys.length;
+  const prefix = keys.map((k) => (k.length > 10 ? 10 : k.length));
+  for (;;) {
+    const fragments = keys.map((k, i) => keyFragmentAt(k, prefix[i] ?? 10));
+    const seen = new Set<string>();
+    const bumped = new Set<number>();
+    for (let i = 0; i < n; i++) {
+      const frag = fragments[i] ?? "";
+      if (seen.has(frag)) bumped.add(i);
+      seen.add(frag);
+    }
+    if (bumped.size === 0) return fragments;
+    let changed = false;
+    for (const i of bumped) {
+      const key = keys[i] ?? "";
+      const cur = prefix[i] ?? key.length;
+      if (cur < key.length) {
+        prefix[i] = cur + 1;
+        changed = true;
+      }
+    }
+    if (!changed) return fragments;
+  }
 }
 
 /**
@@ -91,10 +169,9 @@ export function buildCompositeFactory(
     if (overflow > 0) {
       container.addChild(new Text(theme.fg("muted", `... (${overflow} more)`), 1, 0));
     }
-    for (const entry of rowState.running) {
-      const label = formatRow(entry, now);
-      const isSel = rowState.selectedKey === entry.key;
-      const line = isSel ? `> ${label}` : `  ${label}`;
+    for (const row of buildJobRows(rowState.running, now)) {
+      const isSel = rowState.selectedKey === row.key;
+      const line = isSel ? `> ${row.text}` : `  ${row.text}`;
       container.addChild(new Text(line, 1, 0));
     }
     if (rowState.running.length > 0) container.addChild(new Text("", 1, 0));
