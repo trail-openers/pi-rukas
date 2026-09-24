@@ -324,6 +324,14 @@ export async function verifyStepOutcome(
    * fence instead of asserting an incoherent decomposition.
    */
   fenceViolations?: FenceViolationRecord[];
+  /**
+   * #841 — the consolidated verify's persisted raw-output log path (run2
+   * when a flake re-run fired, run1 otherwise), carried STRUCTURALLY so the
+   * caller records it on the cap-hit event's `logPaths` field instead of
+   * regexing the path out of the failure prose. Absent when no log was
+   * written (write failure, no consolidated run).
+   */
+  logPath?: string;
 }> {
   const failures: string[] = [];
   const notes: string[] = [];
@@ -336,6 +344,7 @@ export async function verifyStepOutcome(
     // #782 — the flake callback is wired at this layer: on recovery it
     // returns a success verdict carrying the flag the caller routes.
     let flakeEvidenceTail: string | undefined;
+    let consolidatedLogPath: string | undefined;
     const fenceViolations: FenceViolationRecord[] = [];
     await verifyDevelopOutcome(
       ctx,
@@ -347,6 +356,9 @@ export async function verifyStepOutcome(
         flakeEvidenceTail = evidenceTail;
       },
       fenceViolations,
+      (logPath) => {
+        consolidatedLogPath = logPath;
+      },
     );
     const flakeRecovered = flakeEvidenceTail !== undefined;
     return {
@@ -355,6 +367,7 @@ export async function verifyStepOutcome(
       notes,
       ...(fenceViolations.length > 0 ? { fenceViolations } : {}),
       ...(flakeRecovered ? { flakeRecovered: true } : {}),
+      ...(consolidatedLogPath !== undefined ? { logPath: consolidatedLogPath } : {}),
     };
   }
 

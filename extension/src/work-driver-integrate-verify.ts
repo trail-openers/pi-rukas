@@ -38,7 +38,10 @@ import {
 } from "./work-driver-consolidation-classify.ts";
 import type { ConsolidationFailureVerdict } from "./work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
-import { rerunConsolidatedVerifyOnce } from "./work-driver-verify-flake.ts";
+import {
+  combinedExecFailureStream,
+  rerunConsolidatedVerifyOnce,
+} from "./work-driver-verify-flake.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -154,8 +157,10 @@ export async function runCommitPrConsolidatedVerify(
       });
       return undefined;
     } catch (err) {
-      const e = err as Error & { stderr?: string; stdout?: string };
-      return (e.stderr || e.stdout || e.message || "").toString().trim();
+      // #841 — classify on stdout AND stderr (the shared helper), not on
+      // stderr-with-stdout-dropped: a failure that prints its assertion on
+      // stdout and a warning on stderr must still classify on the assertion.
+      return combinedExecFailureStream(err as Error & { stderr?: string; stdout?: string });
     }
   };
 
@@ -171,13 +176,17 @@ export async function runCommitPrConsolidatedVerify(
     trace(
       `work-driver: commit-pr verify failed on the first run — re-running the verify command once (flake retry, N=${opts.workstreamCount})`,
     );
-    const secondTail = await rerunConsolidatedVerifyOnce(
+    // #841 — this twin passes neither scratchDir nor timestamp, so the
+    // re-run persists no log (out of scope per the ticket's DECISION) and
+    // returns the RAW stream; the caller bounds it with the pre-existing
+    // `extractAttributedTail` below — nothing multi-MB reaches the evidence.
+    const secondRun = await rerunConsolidatedVerifyOnce(
       execFn,
       opts.verifyCmd,
       opts.repoRoot,
       opts.timeoutMs ?? 30 * 60_000,
     );
-    if (secondTail === undefined) {
+    if (secondRun === undefined) {
       trace(
         "work-driver: commit-pr verify re-run PASSED — the first-run failure was a flake; proceeding without classifying",
       );
@@ -192,7 +201,7 @@ export async function runCommitPrConsolidatedVerify(
     // The re-run failed — classify the second run's tail exactly as a
     // single-run failure would be classified (a test that fails twice is
     // not a flake, so the cycle parks as today).
-    firstFailure = secondTail;
+    firstFailure = secondRun.raw;
   }
 
   const failure = firstFailure;

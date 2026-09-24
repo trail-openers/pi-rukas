@@ -16,7 +16,12 @@ import type { DriverContext } from "./work-driver-context.js";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
-import { rerunConsolidatedVerifyOnce } from "./work-driver-verify-flake.ts";
+import {
+  combinedExecFailureStream,
+  rawOutputClause,
+  rerunConsolidatedVerifyOnce,
+  writeConsolidatedVerifyLog,
+} from "./work-driver-verify-flake.ts";
 
 /**
  * #826 — the recorded outcome of the flake-retry decision, computed ONCE in
@@ -99,6 +104,15 @@ export async function runConsolidatedVerify(
       applied: string[];
       recovered?: boolean;
       retryDecision?: ConsolidatedVerifyRetryDecision;
+      /**
+       * #841 — the absolute path of the run1 log (the consolidated first
+       * run that failed and was recovered by the flake re-run). Present only
+       * on `recovered: true` results; the caller surfaces it in the recovery
+       * note. Absent on a passing run that never failed and on a failed
+       * result (where `logPath` on the failed shape carries the run that
+       * ended the run).
+       */
+      logPath?: string;
     }
   | {
       status: "failed";
@@ -106,6 +120,23 @@ export async function runConsolidatedVerify(
       retried?: boolean;
       recovered?: boolean;
       retryDecision?: ConsolidatedVerifyRetryDecision;
+      /**
+       * #841 — the absolute path of the LAST consolidated-verify run's raw
+       * log (the run2 log when `retried === true`, the run1 log otherwise).
+       * `undefined` when the write failed (unwritable scratch dir, etc.) —
+       * the caller then says the log is unavailable in the evidence string.
+       * The ticket asks the path to appear in the cap-hit evidence, so it
+       * is threaded here rather than regexed out of `detail`.
+       */
+      logPath?: string;
+      /**
+       * #841 — the RAW failure stream of the run that ended the run (the
+       * run2 raw stream when `retried === true`, the run1 raw stream
+       * otherwise), carried structurally so the caller's classifier reads
+       * the same shape a single-run failure reads — without parsing the
+       * log path / restore claim back out of `detail` prose.
+       */
+      rawFailure?: string;
     }
   // #725 — the caller distinguishes a genuine cherry-pick / patch-apply
   // conflict from a dirty-repoRoot preflight refusal via `kind`, not by
@@ -223,13 +254,33 @@ export async function runConsolidatedVerify(
       };
     }
 
+    // #841 — ONE ISO timestamp per verify cycle: the run1 and run2 log
+    // files share the same prefix (the ticket names them
+    // `consolidated-verify-<ISO timestamp>-run<1|2>.log`), so the pair is
+    // unambiguous to an operator inspecting scratchDir. The timestamp is
+    // captured here, BEFORE the run1 attempt, so both runs of one cycle
+    // carry the same value even if the flake retry fires milliseconds later.
+    const runTimestamp = new Date().toISOString();
+    let run1LogPath: string | undefined;
+    // #841 — the run2 log path is NOT precomputed here: it comes from the
+    // actual return of the run2 write (inside `rerunConsolidatedVerifyOnce`),
+    // so a failed run2 write is reported as "unavailable" rather than
+    // naming a file that does not exist on disk.
+    let run2LogPath: string | undefined;
     // Run the verify command against the combined tree.
     let verifyFailure: string | undefined;
     try {
       await execFn(verifyCmd, { cwd: repoRoot, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 });
     } catch (err) {
       const e = err as Error & { stderr?: string; stdout?: string };
-      verifyFailure = (e.stderr || e.stdout || e.message || "").toString().trim();
+      verifyFailure = combinedExecFailureStream(e);
+      // #841 — persist the RAW run1 stream before the bounded tail is
+      // computed: the run1 log is the operator's only record of what the
+      // first attempt printed, including the stdout that the pre-#841 `||`
+      // shape dropped. The write never fails the step — a write error
+      // leaves run1LogPath undefined and the caller's evidence string says
+      // the log is unavailable.
+      run1LogPath = writeConsolidatedVerifyLog(scratchDir, runTimestamp, 1, verifyFailure);
     }
     // #782/#826 — the single bounded flake re-run. It happens on the SAME
     // still-checked-out scratch tree, BEFORE `restoreRoot` (a re-run after
@@ -241,6 +292,10 @@ export async function runConsolidatedVerify(
     let recovered = false;
     let retried = false;
     let retryDecision: ConsolidatedVerifyRetryDecision | undefined;
+    // #841 — the raw stream of the run that ended the run, carried
+    // structurally on the result (see the `rawFailure` field): run1 unless
+    // the re-run below replaces it.
+    let rawFailure: string | undefined = verifyFailure;
     if (verifyFailure !== undefined && retry?.canRetry) {
       const verdict = retry.onFirstFailure?.(verifyFailure);
       // One decision, one re-run: no callback (or no result from it) means
@@ -253,16 +308,36 @@ export async function runConsolidatedVerify(
       retryDecision = decision;
       if (allowed) {
         retried = true;
-        const secondTail = await rerunConsolidatedVerifyOnce(
+        // #841 — thread scratchDir + the SAME timestamp into the re-run so
+        // the run2 log is written next to run1 with the matching prefix.
+        // (The commit-pr twin seam in work-driver-integrate-verify.ts passes
+        // neither argument and keeps its pre-#841 behaviour per the ticket's
+        // scope.)
+        const secondRun = await rerunConsolidatedVerifyOnce(
           execFn,
           verifyCmd,
           repoRoot,
           timeoutMs,
+          scratchDir,
+          runTimestamp,
         );
-        if (secondTail === undefined) {
+        if (secondRun === undefined) {
           recovered = true;
+          // #841 — on recovery the run2 re-run passed, so it persisted no
+          // log of its own (a pass has no raw stream); run1's log is the
+          // only record of the transient failure and is what the caller
+          // surfaces in the recovery note.
         } else {
-          verifyFailure = secondTail;
+          // #841 — the re-run also failed; `rerunConsolidatedVerifyOnce`
+          // returned its RAW stream (not the bounded tail) so the
+          // classification below sees the same shape a single-run failure
+          // sees, and the run2 log was written inside the helper (same
+          // scratchDir + timestamp + run=2). `logPath` is the write's own
+          // return — `undefined` when the run2 write failed, which the
+          // failure shape below reports as an unavailable log.
+          verifyFailure = secondRun.raw;
+          rawFailure = secondRun.raw;
+          run2LogPath = secondRun.logPath;
         }
       }
     }
@@ -271,7 +346,16 @@ export async function runConsolidatedVerify(
       orchResult.cherryApplied.length > 0 ? orchResult.cherryApplied : orchResult.patchApplied;
     if (recovered) {
       retry?.onRecover(verifyFailure);
-      return { status: "passed", applied, recovered: true, retryDecision };
+      return {
+        status: "passed",
+        applied,
+        recovered: true,
+        retryDecision,
+        // #841 — the caller (runVerifyCommandGate) names the run1 log in
+        // the recovery note; the run2 re-run passed, so run1 is the
+        // interesting record.
+        logPath: run1LogPath,
+      };
     }
     if (verifyFailure !== undefined) {
       // #723 — same attribution anchor as formatExecError: a bare `.slice(-800)`
@@ -285,15 +369,26 @@ export async function runConsolidatedVerify(
           ? tail
           : `${tail} (unattributed — best-effort tail)`
         : "verify command exited non-zero";
+      // #841 — the log that matters for THIS failure is run2 when a retry
+      // fired (run2 is the run the classifier reads), run1 otherwise.
+      // The log path rides on the result so the caller can include it in
+      // the failure string (which lands in `verifyEvidence.failures` and
+      // renders in the handoff) without regexing `detail`.
+      const finalLogPath = retried ? run2LogPath : run1LogPath;
+      // #841 — the shared rawOutputClause helper (single home for the
+      // sentence so the develop gate and the handoff cannot drift).
+      const logClause = rawOutputClause(finalLogPath);
       // #750 — the verified post-condition rides with every outcome of the
       // probe run (the root is transient either way; an unverified claim
       // about it is exactly the incident).
       return {
         status: "failed",
-        detail: `${detail} ${restoreClaimFor(restore)}`,
+        detail: `${detail}${logClause} ${restoreClaimFor(restore)}`,
         retried,
         recovered: false,
         retryDecision,
+        logPath: finalLogPath,
+        rawFailure,
       };
     }
     if (!restore.restored) {

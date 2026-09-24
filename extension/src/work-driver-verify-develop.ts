@@ -49,6 +49,10 @@ export async function verifyDevelopOutcome(
   // #814 — out-parameter for structured fence-violation records (see the
   // scope/fanout gate call below). Mutated in place by runScopeFanoutGate.
   fenceViolations?: FenceViolationRecord[],
+  // #841 — out-parameter for the consolidated verify's persisted raw-output
+  // log path (the gate records it when a log was written, so the caller can
+  // put it on the cap-hit event structurally instead of regexing prose).
+  onConsolidatedLogPath?: (logPath: string) => void,
 ): Promise<void> {
   const worktrees =
     Object.keys(state.pipelineState.worktrees ?? {}).length > 0
@@ -317,6 +321,7 @@ export async function verifyDevelopOutcome(
       // recorded is attributed, not re-diagnosed as an incoherent
       // decomposition.
       ...(fenceViolations !== undefined ? { fenceViolations } : {}),
+      ...(onConsolidatedLogPath !== undefined ? { onConsolidatedLogPath } : {}),
     });
   }
 

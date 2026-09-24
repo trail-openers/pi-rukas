@@ -177,6 +177,40 @@ try {
     );
   }
 
+  // ------------------------- case 3b — two-stream classification (first run)
+  // #841 — a first-run failure that prints its assertion on STDOUT and a
+  // warning on STDERR must classify on the stdout assertion: the failure
+  // stream is the combined stdout+stderr, not stderr-with-stdout-dropped.
+  // N=1 skips the flake retry, so this exercises the first-run leg's
+  // stream construction directly.
+  {
+    const f = await fixture("flake-twostream", ["a"], { "afile.txt": "a\n" });
+    writeFileSync(path.join(f.worktrees.a as string, "afile.txt"), "a edited\n");
+    await commitIn(f.worktrees.a as string, "task-a: edit a");
+
+    const verifyCmd = `sh -c 'echo "✗ x: stdout assertion"; echo "a warning" >&2; exit 1'`;
+    const r = await integrate(realExec, {
+      repoRoot: f.repo,
+      branchName: "feature/flake-twostream",
+      baseSha: f.baseSha,
+      worktrees: f.worktrees,
+      scratchDir: f.scratch,
+      commitTitle: "feat: two-stream",
+      commitBody: "b",
+      mode: "create",
+      requireAllNonEmpty: true,
+      verifyCmd,
+    });
+    assert(!r.ok, "twostream: the verify failure is reported");
+    // The classified message (in reason) carries the specific assertion the
+    // classifier parsed out of the combined stream — that is what proves
+    // the stdout assertion survived next to the stderr warning.
+    assert(
+      !r.ok && r.reason.includes("✗ x"),
+      "twostream: the classified reason carries the stdout assertion ✗ x (stdout survives alongside stderr)",
+    );
+  }
+
   // ------------------------- case 3 — ciRetryCount > 0 (retry skipped)
   // A prior ci-retry already ran the verify command (ciRetryCount > 0).
   // The single flake retry must be SKIPPED — the precondition (first run)

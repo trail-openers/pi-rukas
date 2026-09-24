@@ -20,7 +20,10 @@ import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-lefto
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import type { SafetyNetCommitEvent } from "./workflow-state-events-safety-net.ts";
-import type { VerifyFlakeRecoveredEvent } from "./workflow-state-events-verify-flake.ts";
+import type {
+  VerifyFlakeRecoveredEvent,
+  VerifyFullStatusEvent,
+} from "./workflow-state-events-verify-flake.ts";
 import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
 // #539 — the commit-pr fallback-cause vocabulary (M1) lives in the
 // sibling events-memory fragment module: single definition.
@@ -352,6 +355,15 @@ export type WorkEvent =
        */
       evidence?: string;
       /**
+       * #841 — the persisted raw verify output logs behind this cap (the
+       * consolidated verify's run1/run2 logs), carried STRUCTURALLY on the
+       * event instead of being regexed out of the cap's prose evidence by
+       * the explain renderer. Present only on the develop verify caps whose
+       * gate wrote one or more logs; absent everywhere else (and on all
+       * pre-#841 state files).
+       */
+      logPaths?: string[];
+      /**
        * #657 — on `cap: "intent-park"` the machine-readable park reason
        * (underspecified / contradicted-by-code / already-implemented /
        * too-large / premise-unsound), carried on the event so the renderers
@@ -469,23 +481,7 @@ export type WorkEvent =
       verdicts: Array<{ id: string; ok: boolean; reason?: string }>;
       at: number;
     }
-  | {
-      /** Issue #279 — verify-full tier status: driver-side, ci step. */
-      kind: "verify-full-status";
-      at: number;
-      status: "success" | "failure" | "skipped";
-      /** Time spent executing the full suite (ms). Undefined when skipped. */
-      ms?: number;
-      /** Tail of the command output for the handoff/comment body. */
-      evidenceTail?: string;
-      /**
-       * #782 — this success is the result of the single bounded re-run: the
-       * first run failed, the re-run (same command, same worktree) passed
-       * BEFORE the ciRetryCount bump. Additive: absent on every non-recovered
-       * outcome and on pre-#782 state files.
-       */
-      recovered?: boolean;
-    }
+  | VerifyFullStatusEvent
   | VerifyFlakeRecoveredEvent
   // Fragment events (AGENTS.md §12 module-size hygiene) — the union stays
   // exhaustive: nextStep() and the schema validator see the same closed type.

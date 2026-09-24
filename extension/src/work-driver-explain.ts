@@ -254,6 +254,23 @@ export function explainCap(
       evidence && evidence.failures.length > 0
         ? `\n${evidence.failures.map((f) => `  - ${f}`).join("\n")}`
         : " (evidence detail missing from state)";
+    // #841 — when the cap carries the persisted raw-output log paths
+    // STRUCTURALLY (the consolidated verify's run1/run2 logs, recorded on
+    // the cap-hit event's `logPaths` field by the gate's emit site), render
+    // them here. The failure-string bullets above already name the path, but
+    // the operator reads the closing sentence for WHERE to look; an empty
+    // failures list (the "(evidence detail missing)" shape) otherwise leaves
+    // the log path reachable only from the raw event. No prose scanning —
+    // the paths ride on the event, never parsed out of it. Absent on
+    // pre-#841 state files (say nothing rather than guess).
+    let logLine = "";
+    if (step === "develop") {
+      const capHit = lastCapHit(state, `verify-failed:${step}`);
+      const logPaths = capHit?.logPaths;
+      if (logPaths && logPaths.length > 0) {
+        logLine = `\nFull raw verify output: ${logPaths.join(", ")} (scratch dir — inspect it before re-dispatching)`;
+      }
+    }
     // #782 — the consolidated-verify gate re-runs the verify command once
     // before classifying. When the re-run happened, say so so the operator
     // can tell a genuine double failure from one that recovered; absent on
@@ -266,7 +283,7 @@ export function explainCap(
         ? `\nNote: the verify command was ${verb} and RECOVERED — the recorded failure was a transient flake; inspect the worktree(s) to confirm nothing else changed.`
         : `\nNote: the verify command was ${verb} and still failed — this is a real failure, not a flake.`;
     }
-    return `the driver's outcome-verification gate rejected the ${step} step's "done" claim — the claimed result is not backed by executed evidence:${findings}${retryNote}\nNo LLM judged this; the driver ran the checks itself (git diff/rev-list, the project's verify command, gh pr view). Inspect the worktree(s), fix or re-dispatch, and re-run. Set PI_ENSEMBLE_VERIFY=0 to disable the gate (not recommended)`;
+    return `the driver's outcome-verification gate rejected the ${step} step's "done" claim — the claimed result is not backed by executed evidence:${findings}${retryNote}${logLine}\nNo LLM judged this; the driver ran the checks itself (git diff/rev-list, the project's verify command, gh pr view). Inspect the worktree(s), fix or re-dispatch, and re-run. Set PI_ENSEMBLE_VERIFY=0 to disable the gate (not recommended)`;
   }
   // #753 — deferred worktree-creation failure. Its own sentence, because
   // `step-failed:develop` would be a mislabel (the dispatch itself never
