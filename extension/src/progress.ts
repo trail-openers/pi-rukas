@@ -192,19 +192,11 @@ export function renderBatch(label: string, states: RunningState[]): string {
 /** Strict subset of Pi's JSON event shape that we care about for progress. */
 interface ProgressEvent {
   type?: string;
-  /**
-   * #772 — `toolName`/`toolCallId`/`isError` are stamped on the EVENT by Pi
-   * for `toolResult` messages (see `PiJsonEvent`); carried here so
-   * `toolResultFields` can read them without a cast.
-   */
-  toolName?: unknown;
-  toolCallId?: unknown;
-  isError?: unknown;
   message?: {
     role?: string;
     content?: Array<{
       type?: string;
-      text?: unknown;
+      text?: string;
       name?: string;
       arguments?: unknown;
     }>;
@@ -301,20 +293,18 @@ export type ToolResultObserver = (
 ) => void;
 
 /**
- * #772 — the fields `ingestEvent` reads off a `toolResult` event. The
+ * #772 — the fields `ingestEvent` reads off a `toolResult` message. The
  * extraction lives here (not inline in `ingestEvent`) so the seam is
  * independently testable: a synthetic toolResult message through
  * `ingestEvent` with a captured observer is the regression test for the
- * success-keyed counter's feed. The fields sit on the EVENT (see
- * `PiJsonEvent`); `msg` is the event's `message`. `content` is a raw
- * JSONL block shape because Pi's `text` blocks arrive as `string | block[]`
- * in tool-result messages (unlike the strict `PiContentBlock` union used
- * for assistant messages).
+ * success-keyed counter's feed.
  */
-export function toolResultFields(
-  msg: { content?: Array<{ type?: string; text?: unknown }> },
-  extra: { toolName?: unknown; toolCallId?: unknown; isError?: unknown },
-): {
+export function toolResultFields(msg: {
+  toolName?: unknown;
+  toolCallId?: unknown;
+  content?: Array<{ type?: string; text?: string }>;
+  isError?: boolean;
+}): {
   toolName: string;
   toolCallId: string;
   resultText: string;
@@ -329,10 +319,10 @@ export function toolResultFields(
     .map((b) => b.text)
     .join("");
   return {
-    toolName: typeof extra.toolName === "string" && extra.toolName ? extra.toolName : "unknown",
-    toolCallId: typeof extra.toolCallId === "string" ? extra.toolCallId : "",
+    toolName: typeof msg.toolName === "string" && msg.toolName ? msg.toolName : "unknown",
+    toolCallId: typeof msg.toolCallId === "string" ? msg.toolCallId : "",
     resultText,
-    isError: extra.isError === true,
+    isError: msg.isError === true,
   };
 }
 
@@ -361,7 +351,7 @@ export function ingestEvent(
   // so the success-keyed counter needs the actual result.
   if (msg && msg.role === "toolResult") {
     if (toolResultObserver) {
-      const tr = toolResultFields(msg, event);
+      const tr = toolResultFields(msg);
       toolResultObserver(tr.toolName, tr.toolCallId, tr.resultText, tr.isError);
     }
     return false; // toolResult is not an assistant turn; no onProgress.

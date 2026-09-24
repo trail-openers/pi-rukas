@@ -119,15 +119,22 @@ export interface PiUsage {
 }
 export interface PiMessage {
   /**
-   * Pi also emits tool results as their own message role (not blocks inside
-   * a user message): the message carries `toolName`, `toolCallId` and
-   * `isError` fields the assistant/user shapes do not. The role string is
-   * deliberately widened to `string` (rather than a union of the known
-   * roles) so the raw `--mode rpc` shape — as emitted by any Pi version
-   * the operator runs — stays assignable without a cast; the consumers
-   * (progress.ts, dispatch-deck-live.ts) narrow with equality checks.
+   * Pi emits tool results as their own message role (not blocks inside a
+   * user message): the message carries `toolName`, `toolCallId` and `isError`
+   * fields the assistant/user shapes do not (see pi-ai's `ToolResultMessage`).
+   * The role string is deliberately widened to `string` (rather than the
+   * three-member union of known roles) so the raw `--mode rpc` shape — as
+   * emitted by any Pi version the operator runs — stays assignable without a
+   * cast; the consumers (progress.ts, dispatch-deck-live.ts) narrow with
+   * equality checks (`=== "toolResult"` / `=== "assistant"`).
    */
   role: string;
+  /** #839 — stamped on `toolResult` messages (pi-ai `ToolResultMessage`). */
+  toolName?: string;
+  /** #839 — stamped on `toolResult` messages (pi-ai `ToolResultMessage`). */
+  toolCallId?: string;
+  /** #839 — stamped on `toolResult` messages (pi-ai `ToolResultMessage`). */
+  isError?: boolean;
   content?: PiContentBlock[];
   toolResults?: unknown[];
   usage?: PiUsage;
@@ -146,16 +153,6 @@ export interface PiMessage {
 export interface PiJsonEvent {
   type?: string;
   messages?: PiMessage[];
-  /**
-   * The `toolName`/`toolCallId`/`isError`/`toolCallId` fields stamped on
-   * `toolResult` messages (see `PiMessage.role`). Typed on the event
-   * (where Pi stamps them, next to `message`) rather than on `PiMessage`
-   * because the assistant/user shapes do not carry them; consumers narrow
-   * from `message` via this interface.
-   */
-  toolName?: string;
-  toolCallId?: string;
-  isError?: boolean;
   message?: PiMessage;
   /**
    * Pi stamps this on `agent_end` when it is about to retry a transient

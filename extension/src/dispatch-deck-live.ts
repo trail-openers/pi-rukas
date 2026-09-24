@@ -133,12 +133,14 @@ export function pushEvent(buf: LiveEvent[], event: Parameters<LiveFeed>[0]): voi
       .map((b) => b.text as string)
       .join("");
     if (!resultText) return;
-    const name = event.toolName;
+    // #839 — the tool-result identity fields live on the MESSAGE (pi-ai
+    // `ToolResultMessage`), not on the event; no cast needed.
+    const name = msg.toolName;
     appendEvicted(buf, {
       kind: "toolResult",
       name: name ? name : "unknown",
       text: truncate(resultText, LIVE_RESULT_MAX),
-      isError: event.isError === true,
+      isError: msg.isError === true,
     });
     return;
   }

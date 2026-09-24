@@ -88,9 +88,9 @@ function resetBuffers(): void {
   // toolResult message (separate role in Pi)
   feedRawEvent("b2", {
     type: "message",
-    toolName: "bash",
     message: {
       role: "toolResult",
+      toolName: "bash",
       content: [{ type: "text", text: "test result: 12 passed, 0 failed" }],
     },
   });
@@ -103,10 +103,10 @@ function resetBuffers(): void {
   // toolResult with isError → marked
   feedRawEvent("b2", {
     type: "message",
-    toolName: "bash",
-    isError: true,
     message: {
       role: "toolResult",
+      toolName: "bash",
+      isError: true,
       content: [{ type: "text", text: "error: command failed" }],
     },
   });

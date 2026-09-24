@@ -86,13 +86,13 @@ function withEnv<T>(vars: Record<string, string | undefined>, fn: () => T): T {
     ingestEvent(state, asst as never, 0, (blocks, turn) => det.observe(blocks, turn), trObs);
     const tr = {
       type: "message_end",
-      toolName: "bash",
-      toolCallId: callId,
       message: {
         role: "toolResult",
+        toolName: "bash",
+        toolCallId: callId,
         content: [{ type: "text", text: green }],
+        isError: false,
       },
-      isError: false,
     };
     ingestEvent(state, tr as never, 0, (blocks, turn) => det.observe(blocks, turn), trObs);
   }
@@ -114,23 +114,20 @@ function withEnv<T>(vars: Record<string, string | undefined>, fn: () => T): T {
    fed. A toolResult message with toolName/toolCallId/content/isError is
    parsed into the observer's input; missing fields degrade safely. */
 {
-  const f = toolResultFields(
-    {
-      content: [
-        { type: "text", text: "hello " },
-        { type: "text", text: "world" },
-        { type: "image", text: "skip" },
-      ],
-    },
-    { toolName: "bash", toolCallId: "abc", isError: false },
-  );
+  const f = toolResultFields({
+    toolName: "bash",
+    toolCallId: "abc",
+    content: [
+      { type: "text", text: "hello " },
+      { type: "text", text: "world" },
+      { type: "image", text: "skip" },
+    ],
+    isError: false,
+  });
   assert(f.toolName === "bash" && f.toolCallId === "abc", "#772(o): name + callId parsed");
   assert(f.resultText === "hello world", "#772(o): text blocks joined, non-text dropped");
   assert(f.isError === false, "#772(o): isError defaults false");
-  const g = toolResultFields(
-    { content: [{ type: "text", text: "boom" }] },
-    { isError: true },
-  );
+  const g = toolResultFields({ content: [{ type: "text", text: "boom" }], isError: true });
   assert(
     g.toolName === "unknown" && g.toolCallId === "",
     "#772(o): missing name/id degrade to unknown/empty",
@@ -408,13 +405,13 @@ await fixture772r();
     lines.push(
       JSON.stringify({
         type: "message",
-        toolName: "bash",
-        toolCallId: `s-${i}`,
         message: {
           role: "toolResult",
+          toolName: "bash",
+          toolCallId: `s-${i}`,
           content: [{ type: "text", text: "All 5 tests passed in 1.2s" }],
+          isError: false,
         },
-        isError: false,
       }),
     );
   }
