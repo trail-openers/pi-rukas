@@ -51,18 +51,6 @@ export function combinedExecFailureStream(e: Error & { stderr?: string; stdout?:
 }
 
 /**
- * #841 — write the combined raw stdout+stderr of one consolidated verify run
- * to `<scratchDir>/consolidated-verify-<ISO timestamp>-run<1|2>.log`.
- * Never fails the step: a write error (unwritable scratch dir, ENOSPC,
- * etc.) is traced and returns `undefined` — the verify outcome is unchanged
- * and the caller's evidence string says the log is unavailable.
- *
- * `timestamp` is the SAME value for run1 and run2 of one verify cycle (the
- * ticket names them `consolidated-verify-<ISO timestamp>-run<1|2>.log` —
- * same prefix, different suffix), so the caller computes it once per run
- * pair and threads it through.
- */
-/**
  * #841 — the log filename for one consolidated verify run, relative to
  * `scratchDir`. Single home for the name shape so the run1 and run2 paths
  * (and the truncation cap below) cannot drift apart.
@@ -87,6 +75,18 @@ function boundVerifyLog(raw: string): string {
   return out + marker;
 }
 
+/**
+ * #841 — write the combined raw stdout+stderr of one consolidated verify run
+ * to `<scratchDir>/consolidated-verify-<ISO timestamp>-run<1|2>.log`.
+ * Never fails the step: a write error (unwritable scratch dir, ENOSPC,
+ * etc.) is traced and returns `undefined` — the verify outcome is unchanged
+ * and the caller's evidence string says the log is unavailable.
+ *
+ * `timestamp` is the SAME value for run1 and run2 of one verify cycle (the
+ * ticket names them `consolidated-verify-<ISO timestamp>-run<1|2>.log` —
+ * same prefix, different suffix), so the caller computes it once per run
+ * pair and threads it through.
+ */
 export function writeConsolidatedVerifyLog(
   scratchDir: string,
   timestamp: string,
@@ -127,6 +127,11 @@ export function writeConsolidatedVerifyLog(
  * #841 — the re-run PERSISTS its raw stream (run2 log) when `scratchDir` +
  * `timestamp` are provided, and RETURNS the raw stream (not the bounded
  * tail) so the caller classifies it structurally instead of parsing prose.
+ * The written run2 log path rides back as `logPath` — the ACTUAL return of
+ * the write (`undefined` when it failed, so the caller never names a log
+ * that does not exist); omitted when `scratchDir` is not provided
+ * (commit-pr twin, which is intentionally out of scope for #841 per the
+ * issue's DECISION).
  */
 export async function rerunConsolidatedVerifyOnce(
   execFn: NonNullable<ExecFn>,
@@ -135,7 +140,7 @@ export async function rerunConsolidatedVerifyOnce(
   timeoutMs: number,
   scratchDir?: string,
   timestamp?: string,
-): Promise<string | undefined> {
+): Promise<{ raw: string; logPath?: string } | undefined> {
   trace(`work-driver: verify-flake — re-running \`${cmd}\` once in ${cwd}`);
   let rawFailure: string | undefined;
   try {
@@ -147,10 +152,12 @@ export async function rerunConsolidatedVerifyOnce(
   if (rawFailure === undefined) return undefined;
   // #841 — persist the RAW run2 stream before the bounded tail is computed:
   // the run2 log is the operator's only record of what the second attempt
-  // printed. Skipped when scratchDir is not provided (commit-pr twin, which
-  // is intentionally out of scope for #841 per the issue's DECISION).
+  // printed. The write's own return is threaded back (see the docblock) —
+  // when it fails the caller says the log is unavailable, it never names
+  // a precomputed path that does not exist on disk.
   if (scratchDir !== undefined && timestamp !== undefined) {
-    writeConsolidatedVerifyLog(scratchDir, timestamp, 2, rawFailure);
+    const logPath = writeConsolidatedVerifyLog(scratchDir, timestamp, 2, rawFailure);
+    return { raw: rawFailure, logPath };
   }
-  return rawFailure;
+  return { raw: rawFailure };
 }

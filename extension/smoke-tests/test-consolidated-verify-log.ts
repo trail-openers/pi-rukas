@@ -212,6 +212,25 @@ async function runCases1to7() {
     }
     rmSync(f.scratch, { force: true });
   }
+  // Case 5b: flake re-run fires, its run2 log WRITE fails (scratch is a file)
+  // → run2 log absent, logPath undefined, detail says "unavailable" — the
+  // precomputed run2 path is never named for a file that was not written.
+  {
+    const f = await makeFixture("case5b");
+    const wt = await addWorktree(f, "a");
+    writeFileSync(f.scratch, "not-a-dir\n"); // scratch is now a file
+    const stub = makeStubExec(() => ({ stdout: "✗ x\n", stderr: "w\n", throw: true }));
+    const r = await runConsolidatedVerify(stub, opts(f, { a: wt }, {
+      retry: { canRetry: true, onRecover: () => assert(false, "case 5b: onRecover should not fire") },
+    }));
+    assert(r.status === "failed", `case 5b: status is failed (got: ${r.status})`);
+    if (r.status === "failed") {
+      assert(r.retried === true, "case 5b: retried is true (the re-run fired)");
+      assert(r.logPath === undefined, "case 5b: logPath is undefined when the run2 write fails");
+      assert(r.detail.includes("unavailable"), "case 5b: detail says log is unavailable");
+    }
+    rmSync(f.scratch, { force: true });
+  }
   // Case 6: no log on a clean pass
   {
     const f = await makeFixture("case6");

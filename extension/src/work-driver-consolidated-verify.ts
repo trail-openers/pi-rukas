@@ -9,7 +9,6 @@
 // afterwards (the combined tree is a transient probe; leaving it on a
 // scratch ref would break the next integration's dirty-preflight).
 
-import path from "node:path";
 import { trace } from "./trace.ts";
 import { isDriverManagedDirtLine } from "./work-driver-branch-residue.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.js";
@@ -19,7 +18,6 @@ import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
 import {
   combinedExecFailureStream,
-  consolidatedVerifyLogName,
   rerunConsolidatedVerifyOnce,
   writeConsolidatedVerifyLog,
 } from "./work-driver-verify-flake.ts";
@@ -263,11 +261,11 @@ export async function runConsolidatedVerify(
     // carry the same value even if the flake retry fires milliseconds later.
     const runTimestamp = new Date().toISOString();
     let run1LogPath: string | undefined;
-    // #841 — the run2 path is derived from the SAME helper that computes
-    // the run1 filename (one home for the name shape), so the pair cannot
-    // drift apart; it is computed here rather than from run1LogPath so it
-    // stays correct even when the run1 write failed.
-    const run2LogPath = path.join(scratchDir, consolidatedVerifyLogName(runTimestamp, 2));
+    // #841 — the run2 log path is NOT precomputed here: it comes from the
+    // actual return of the run2 write (inside `rerunConsolidatedVerifyOnce`),
+    // so a failed run2 write is reported as "unavailable" rather than
+    // naming a file that does not exist on disk.
+    let run2LogPath: string | undefined;
     // Run the verify command against the combined tree.
     let verifyFailure: string | undefined;
     try {
@@ -314,7 +312,7 @@ export async function runConsolidatedVerify(
         // (The commit-pr twin seam in work-driver-integrate-verify.ts passes
         // neither argument and keeps its pre-#841 behaviour per the ticket's
         // scope.)
-        const secondTail = await rerunConsolidatedVerifyOnce(
+        const secondRun = await rerunConsolidatedVerifyOnce(
           execFn,
           verifyCmd,
           repoRoot,
@@ -322,7 +320,7 @@ export async function runConsolidatedVerify(
           scratchDir,
           runTimestamp,
         );
-        if (secondTail === undefined) {
+        if (secondRun === undefined) {
           recovered = true;
           // #841 — on recovery the run2 re-run passed, so it persisted no
           // log of its own (a pass has no raw stream); run1's log is the
@@ -333,9 +331,12 @@ export async function runConsolidatedVerify(
           // returned its RAW stream (not the bounded tail) so the
           // classification below sees the same shape a single-run failure
           // sees, and the run2 log was written inside the helper (same
-          // scratchDir + timestamp + run=2 — the path computed above).
-          verifyFailure = secondTail;
-          rawFailure = secondTail;
+          // scratchDir + timestamp + run=2). `logPath` is the write's own
+          // return — `undefined` when the run2 write failed, which the
+          // failure shape below reports as an unavailable log.
+          verifyFailure = secondRun.raw;
+          rawFailure = secondRun.raw;
+          run2LogPath = secondRun.logPath;
         }
       }
     }
