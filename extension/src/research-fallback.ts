@@ -59,11 +59,11 @@ export function classifyParallelOutcome(rawText: string): ParallelOutcome {
   if (typeof rawText !== "string" || rawText.trim() === "") return "unparseable";
   // The `parallel-outcome:` marker, last occurrence wins (readMarker,
   // #408) — a musing earlier in the reply must not be read as the outcome.
-  const marker = readMarker(rawText, "parallel-outcome", new RegExp("([\\w][\\w-]*)", "i"));
+  const marker = readMarker(rawText, "parallel-outcome", /([\w][\w-]*)/i);
   // The bare verbatim credit string is the documented anchor (the live case
   // in outputs/research-knockoutez-wigolo-…md): it maps to credit-exhausted
   // even when the child never emitted the marker.
-  if (marker && marker.toLowerCase().includes("credit")) return "credit-exhausted";
+  if (marker?.toLowerCase().includes("credit")) return "credit-exhausted";
   const t = rawText.toLowerCase();
   if (t.includes("insufficient credit")) return "credit-exhausted";
   if (t.includes("blocked_by_challenge") || t.includes("network-failed") || t.includes("network"))
@@ -136,10 +136,10 @@ export function wigoloAnglePrompt(
 ): string {
   const cmds =
     surface === "fetch"
-      ? `wigolo fetch <url> --json 2>/dev/null`
+      ? "wigolo fetch <url> --json 2>/dev/null"
       : surface === "research"
-        ? `wigolo research "question" --depth standard --json 2>/dev/null`
-        : `wigolo search "query" --json 2>/dev/null`;
+        ? 'wigolo research "question" --depth standard --json 2>/dev/null'
+        : 'wigolo search "query" --json 2>/dev/null';
   return [
     `RE-RESEARCH (angle: ${angle.name}) — Parallel failed (classified: ${reason}); use the WIGOLO CLI for this angle only.`,
     "",

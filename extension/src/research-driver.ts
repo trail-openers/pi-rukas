@@ -45,16 +45,16 @@ import {
   slugify,
   writeArtifact,
 } from "./research-artifact.ts";
-import { writeResearchMemory } from "./research-memory.ts";
 import {
-  classifyParallelOutcome,
   type ParallelOutcome,
   type WigoloSurface,
+  classifyParallelOutcome,
   researchFallbackLine,
   selectFallback,
   surfaceForAngle,
   wigoloAnglePrompt,
 } from "./research-fallback.ts";
+import { writeResearchMemory } from "./research-memory.ts";
 import {
   type AngleRun,
   RESEARCH_TIERS,
