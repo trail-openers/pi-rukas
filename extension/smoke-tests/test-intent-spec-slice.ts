@@ -165,6 +165,38 @@ function assert(cond: boolean, msg: string) {
   assert(missing === undefined, "missing field: returns undefined");
 }
 
+{
+  // #830 — a `**Note** — …` line inside a field body does NOT end the field:
+  // FIELD_TERMINATOR's bold-label alternative matches only the spec field
+  // names, so a non-field bold label stays inside the body.
+  const text = [
+    "### Deliverables",
+    "- d1: fix the thing",
+    "**Note** — keep me",
+    "",
+    "### Acceptance criteria",
+    "- ac1",
+  ].join("\n");
+  const deliv = sliceSpecField(text, "Deliverables");
+  assert(deliv !== undefined && deliv.includes("fix the thing"), "bold note: finds the field");
+  assert(deliv !== undefined && deliv.includes("keep me"), "bold note: a `**Note**` line inside the body is kept");
+  assert(
+    deliv !== undefined && !deliv.includes("Acceptance criteria"),
+    "bold note: still terminates at the next field heading",
+  );
+}
+
+{
+  // #830 — inside a spec, a `## Deliverables` line is NOT treated as a field
+  // heading by sliceSpecField (the field slicer only accepts level 3–6), so
+  // the field is not found via the heading path.
+  const text = "### Intent\nDo the thing\n\n## Deliverables\n- d1: x\n";
+  const deliv = sliceSpecField(text, "Deliverables");
+  assert(deliv === undefined, "h2 inside spec: a `## <field>` line is not a field heading (undefined)");
+  const intent = sliceSpecField(text, "Intent");
+  assert(intent !== undefined && !intent.includes("Deliverables"), "h2 inside spec: the h2 line terminates the preceding field");
+}
+
 // ============================================================================
 // sliceMarkdownSection (unchanged) — verify it still only matches level-2
 // ============================================================================

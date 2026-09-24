@@ -15,6 +15,7 @@ import { explainPrSteps } from "./work-driver-explain-pr-steps.ts";
 import { explainReview } from "./work-driver-explain-review.ts";
 import { type ParkReason, explainPark } from "./work-driver-intent.ts";
 import { explainMergeHold } from "./work-driver-merge-authority.ts";
+import { lastCapHit } from "./workflow-state-cap.ts";
 import {
   type WorkEvent,
   type WorkState,
@@ -89,9 +90,7 @@ export function explainCap(
       // #741 — the converge gate: the verify gate passed (the code builds),
       // but one or more plan deliverables are absent from the end-of-develop
       // diff. The missing deliverables ride on the cap event's evidence.
-      const hit = [...state.eventLog]
-        .reverse()
-        .find((e) => e.kind === "cap-hit" && e.cap === "develop-incomplete-deliverables");
+      const hit = lastCapHit(state, "develop-incomplete-deliverables");
       const evidence =
         (hit && "evidence" in hit ? hit.evidence : undefined) ?? "(no detail recorded)";
       const partials = (state.pipelineState.convergeEvidence?.deliverables ?? [])
@@ -143,22 +142,12 @@ export function explainCap(
       return `${base}${skipped} All the work is done and pushed — only the merge is held.`;
     }
     case "repo-root-residue": {
-      const hit = [...state.eventLog]
-        .reverse()
-        .find(
-          (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
-            e.kind === "cap-hit" && e.cap === "repo-root-residue",
-        );
+      const hit = lastCapHit(state, "repo-root-residue");
       const paths = hit?.evidence ?? "(no detail recorded)";
       return `the branch step found uncommitted work at the repo root BEFORE any development dispatch: ${paths}. This is residue from a previous cycle or the operator's own in-progress work — NOT a defect in this cycle's diff. The driver preserved it (nothing was deleted or stashed) and halted before paying for a develop dispatch that would only fail at the verification gate roughly 50 minutes later. Inspect the paths (\`git status\` at the repo root), clear them (commit, move, or add to .gitignore), and re-run the cycle.`;
     }
     case "cross-group-conflict": {
-      const hit = [...state.eventLog]
-        .reverse()
-        .find(
-          (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
-            e.kind === "cap-hit" && e.cap === "cross-group-conflict",
-        );
+      const hit = lastCapHit(state, "cross-group-conflict");
       const ev = hit?.evidence ?? "";
       const siblingMatch = ev.match(/issue #(\d+)/);
       const siblingIssue = siblingMatch ? siblingMatch[1] : "(see evidence)";
@@ -177,12 +166,7 @@ export function explainCap(
       // `evidence: "no verdict and no spec parsed"`), name it. The generic
       // sentence stays as the fallback for caps fired before the field existed
       // or by a path that did not set it.
-      const hit = [...state.eventLog]
-        .reverse()
-        .find(
-          (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
-            e.kind === "cap-hit" && e.cap === "explore-needs-clarification",
-        );
+      const hit = lastCapHit(state, "explore-needs-clarification");
       const evidence = hit?.evidence;
       const why = evidence
         ? `the driver recorded: ${evidence} — the reply did not contain a verdict the driver could route on, nor a spec section it could extract`
@@ -247,12 +231,7 @@ export function explainCap(
       // The operator gets the exact assertion + both workstream ids instead
       // of "consolidated tree fails verify" — the handoff names the
       // combination and the specific biome/tsc/test line.
-      const hit = [...state.eventLog]
-        .reverse()
-        .find(
-          (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
-            e.kind === "cap-hit" && e.cap === "consolidated-verify-consolidation-created",
-        );
+      const hit = lastCapHit(state, "consolidated-verify-consolidation-created");
       const ev = hit?.evidence ?? "(no classification detail recorded)";
       const wts = state.pipelineState.worktrees ?? {};
       const wtList = Object.entries(wts)

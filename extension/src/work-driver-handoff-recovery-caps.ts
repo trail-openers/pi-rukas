@@ -1,8 +1,16 @@
 /**
  * work-driver-handoff-recovery-caps — the per-cap RECOVERY RECIPE table,
  * extracted from work-driver-handoff-recovery.ts (AGENTS.md §12 file-size
- * limit). Owns the cap → recovery-steps DECISION BODY: the if/else chain of
- * per-cap literal command sections plus the `forgeLines` helper.
+ * limit). This module owns the cap → recovery-steps DECISION BODY:
+ * `recoveryStepsForCap(state, forge)`, the if/else chain of per-cap literal
+ * command sections (including the #674 worktree-aware block that precedes
+ * the cap-keyed chain and short-circuits it), plus the `forgeLines` helper
+ * that picks the github/gitlab spelling per forge.
+ *
+ * The shared types (`RecoverySection`, `RecoveryStep`) and
+ * `CONSOLIDATE_APPLY` stay in the parent work-driver-handoff-recovery.ts;
+ * the parent re-exports `recoveryStepsForCap` from here so the renderers,
+ * the forge test and the smoke tests import it unchanged.
  *
  * Behaviour contract: the branch ORDER is load-bearing — the worktree-aware
  * block must fire before the if/else chain (it short-circuits the regular
@@ -20,6 +28,7 @@ import {
 } from "./work-driver-handoff-recovery.ts";
 import { mergeHoldGrantAction } from "./work-driver-merge-authority.ts";
 import { isConsolidatedPark } from "./work-driver-merge-subject.ts";
+import { lastCapHit } from "./workflow-state-cap.ts";
 import {
   type WorkEvent,
   type WorkState,
@@ -47,7 +56,9 @@ export function recoveryStepsForCap(
 } {
   const ps = state.pipelineState;
   const issue = state.issue;
-  const capHit = [...state.eventLog].reverse().find((e) => e.kind === "cap-hit");
+  const capHit = [...state.eventLog]
+    .reverse()
+    .find((e): e is Extract<WorkEvent, { kind: "cap-hit" }> => e.kind === "cap-hit");
   const cap: Cap | undefined = capHit ? capHit.cap : undefined;
   const steps: RecoveryStep[] = [];
 
@@ -287,26 +298,19 @@ export function recoveryStepsForCap(
       },
     );
   } else if (cap === "explore-needs-clarification") {
-    // #830 — step 1 was `cat tmp/issue-N/handoff-comment.md`, the very file
-    // the operator is reading. Now the steps read the EXPLORE ARTIFACT.
-    const hit = [...state.eventLog]
-      .reverse()
-      .find(
-        (e): e is Extract<WorkEvent, { kind: "cap-hit" }> =>
-          e.kind === "cap-hit" && e.cap === "explore-needs-clarification",
-      );
-    const evidence = hit?.evidence;
-    const artifactPath = `.pi/work-state/${issue}/`;
+    // #830 — the explore reply is saved to .pi/work-state/${issue}/ when it exceeds 4 KiB;
+    // otherwise it appears inline in the cap-hit's preceding dispatch event in .pi/work-state/${issue}.json.
+    const evidence = lastCapHit(state, "explore-needs-clarification")?.evidence;
     steps.push(
       {
         section: "explore-needs-clarification",
         comment: [
           evidence
-            ? `1. The driver recorded: ${evidence}. Read the explore artifact to confirm`
-            : "1. Read the explore artifact to see what the reply actually contained:",
-          "   the reply (the issue may be fine — the parser may have missed it):",
+            ? `1. The driver recorded: ${evidence}. List the explore artifacts to confirm`
+            : "1. List the explore artifacts to see what the reply contained:",
+          "   (the issue may be fine — the parser may have missed it):",
         ],
-        lines: [`ls ${artifactPath}`, `cat ${artifactPath}*explore*.txt`],
+        lines: [`ls .pi/work-state/${issue}/`],
       },
       {
         section: "explore-needs-clarification",

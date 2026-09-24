@@ -6,6 +6,21 @@
  */
 
 import type { RoleName } from "./roles.ts";
+import type { WorkEvent } from "./workflow-state-events.ts";
+import type { WorkState } from "./workflow-state-schema.ts";
+
+export type CapHitEvent = Extract<WorkEvent, { kind: "cap-hit" }>;
+
+/**
+ * The most recent `cap-hit` event with the given `cap`, or `undefined`.
+ * #830 — the handoff surfaces used to each write their own
+ * `[...state.eventLog].reverse().find(…)` scan; this is the shared one.
+ */
+export function lastCapHit(state: WorkState, cap: string): CapHitEvent | undefined {
+  return [...state.eventLog]
+    .reverse()
+    .find((e): e is CapHitEvent => e.kind === "cap-hit" && e.cap === cap);
+}
 
 /**
  * #543 F4 — the evidence that a dispatch-cap kill fired, rendered by the

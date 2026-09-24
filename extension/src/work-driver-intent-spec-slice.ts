@@ -9,9 +9,10 @@
  * `explore-needs-clarification` with no record of which half failed.
  *
  * `sliceSpecSectionH2OrH3` finds `## Spec` or `### Spec` (including a level-3
- * heading nested under a parent `##`) and terminates at the next heading of
- * level ≤ its own — sibling `###` subsections (Intent, Deliverables, …) stay
- * INSIDE the spec block.
+ * heading nested under a parent `##`) and keeps everything down to the next
+ * level-2 heading in the body — or, for a `### Spec`, up to the parent `##`'s
+ * next sibling (the #826 shape, where an earlier `## Workstreams` would
+ * otherwise sever the spec from its fields).
  *
  * `sliceMarkdownSection` is deliberately left strict (`##`-only): `parseWorkstreams`
  * and `parseWorktreesBlock` depend on the exact-level-2 terminator behaviour,
@@ -26,27 +27,56 @@
  *      used, which is also what its `**Intent** — …` intent line relies on)
  *
  * Both terminate at the next heading of any level, or at the next bare bold
- * label line. A bullet line opens with `-` so it never terminates a section
- * early.
+ * label line naming a spec field.
  */
 
+/** #830 — the exact field names `parseNormalisedSpec` reads via sliceSpecField. */
+export const SPEC_FIELD_NAMES = [
+  "Intent",
+  "Deliverables",
+  "Acceptance criteria",
+  "Out of scope",
+  "Assumptions",
+  "Open questions",
+  "Evidence",
+] as const;
+
+// Escape each non-alphanumeric char for the alternation; a regex-class escape
+// here would not survive string-literal → RegExp construction, so map per char.
+// Escape each non-alphanumeric, non-alternation char for the regex; `|` is the
+// alternation separator itself and must not be escaped (a `\\|` would make it
+// a literal `|` and break the alternation).
+const SPEC_FIELD_NAME_ALTERNATIVE = SPEC_FIELD_NAMES.join("|")
+  .split("")
+  .map((c) => (/[a-zA-Z0-9|]/.test(c) ? c : `\\${c}`))
+  .join("");
+
 /**
- * The terminator for `sliceSpecField`: the start of the next section.
+ * The terminator for `sliceSpecField`.
  *
- * Matches a markdown heading (any level) or a bare bold-label line. A bold
- * label is a line whose trimmed content is `**<word(s)>**` followed by
- * nothing, an em-dash, a hyphen, or a colon — the shapes real resolvers emit
- * as section headers.
+ * Matches at a line start, whether or not a blank line precedes it: the
+ * earlier version anchored on the `\n` of a blank line, so a compact reply
+ * (`### Intent\nDo the thing\n### Deliverables\n- d1: x`) never terminated at
+ * the next heading and the previous field's body swallowed the next one.
  *
- * The terminator fires on the next heading or bold-label line WHETHER OR NOT
- * A BLANK LINE PRECEDES IT. The earlier version required the `\n` of a blank
- * line before the heading, so a compact reply (`### Intent\nDo the thing\n###
- * Deliverables\n- d1: x`) never terminated at the next heading and the
- * previous field's body swallowed the next one. A heading or label is still
- * only a terminator at a LINE START: a `#` or a full-line `**label**` inside
- * prose does not match, so multi-line field content is never cut short.
+ * Two alternatives:
+ *
+ *   1. A markdown heading of any level (`#`–`######`) — every real spec
+ *      separator is a heading, and a heading inside a field body is the end
+ *      of the field, whatever it names.
+ *   2. A bare bold-label line naming a SPEC field (`**Deliverables**`, with
+ *      only the spec field names, case-insensitive). `**<name>**` is only a
+ *      terminator when it names a field the parser reads, so a
+ *      `**Note** — …` line inside a field body does NOT end the field.
+ *
+ * A bullet line opens with `-` or a digit, so it never terminates a section
+ * early; a `#` or a `**label**` inside prose (not at a line start) never
+ * matches.
  */
-const FIELD_TERMINATOR = /^\s*(?:#{1,6}\s|\*\*\s*[\p{L}][\p{L} ]*\*\*\s*(?:[—–:-]|$))/mu;
+const FIELD_TERMINATOR = new RegExp(
+  `^\\s*(?:#{1,6}\\s|\\*\\*\\s*(?:${SPEC_FIELD_NAME_ALTERNATIVE})\\s*\\*\\*\\s*(?:[—–:-]|$))`,
+  "im",
+);
 
 /**
  * Slice a field out of the `Spec` section.
@@ -60,12 +90,11 @@ const FIELD_TERMINATOR = /^\s*(?:#{1,6}\s|\*\*\s*[\p{L}][\p{L} ]*\*\*\s*(?:[—�
  *      separator (`—`, `:`, `-`) and content on the same line (the #826
  *      fixture's `**Intent** — Fix the …`)
  *
- * All three terminate at the next heading of any level, or at the next bare
- * bold-label line. A bullet line opens with `-` so it never terminates a
- * section early.
+ * All three terminate at `FIELD_TERMINATOR` — the next heading of any
+ * level, or the next bare bold-label line naming a spec field.
  */
 export function sliceSpecField(text: string, name: string): string | undefined {
-  const heading = new RegExp(`^#{2,6}\\s+${name}\\s*$`, "im");
+  const heading = new RegExp(`^#{3,6}\\s+${name}\\s*$`, "im");
   // Bare bold-label line: `**Name**` at line start, end-of-line after the label.
   // `\\s*$` allows trailing whitespace. The `\\s*` between `\\*\\*` and `\\s*$`
   // ensures the label is self-contained (no content on the same line).
@@ -88,38 +117,45 @@ export function sliceSpecField(text: string, name: string): string | undefined {
 /**
  * The `Spec` section at level 2 or 3.
  *
- * Matches `## Spec` or `### Spec` (case-insensitive). The body terminates at
- * the next `##` (level-2) heading — the `^##\s(?!#)` anchor matches a level-2
- * heading and its whitespace but NOT a level-3 `###` (the `(?!#)` rejects the
- * trailing `#`). `###` subsections (Intent, Deliverables, …) are therefore
- * INSIDE the section, never terminators — they are the field separators
- * `sliceSpecField` uses. Deeper headings (`####`) are also inside the section.
- * The same `##`-only terminator is correct for both a level-2 and a level-3
- * section: a level-2 section's own `###` subsections stay inside, and a
- * level-3 section's sibling `###` fields stay inside (they are the separators
- * `sliceSpecField` uses); the next top-level `##` is the only level-2
- * terminator, so a `###` heading never ends the block. (A sibling `###`
- * section *after* a `### Spec` block would leak into its body — benign in
- * practice, because `sliceSpecField`'s anchored match and the field-level
- * terminator stop the field slicers from mis-reading sibling content; the
- * `##`-only terminator is the load-bearing behaviour, and widening it to also
- * stop at `###` would sever the spec from its own `###` fields.)
+ * Matches `## Spec` or `### Spec` (case-insensitive). The body ends at the
+ * next level-2 `## ` heading only — `###` and deeper headings stay inside
+ * (including a sibling `###` section after a `### Spec`, which is accepted),
+ * because those headings ARE the field separators `sliceSpecField` uses;
+ * stopping at `###` would sever the spec from its own `###` fields.
+ *
+ * One extra rule, for the #826 shape only: when the `### Spec` is nested
+ * under a parent `## <x>`, the body extends to that parent's next sibling
+ * `## <y>` — a level-2 heading that PRECEDES the `### Spec` is part of the
+ * parent section's own layout (the fixture's `## Workstreams` sits above
+ * `### Spec`), not a terminator, and `## <y>` is where the parent section —
+ * and with it the nested spec — ends.
  */
 export function sliceSpecSectionH2OrH3(text: string, name: string): string | undefined {
   const m = text.match(new RegExp(`^(?:##|###)\\s+${name}\\s*$`, "im"));
   if (!m || m.index === undefined) return undefined;
-  // The terminator is a heading of level ≤ the section's own level. A level-2
-  // section (`## Spec`) terminates at the next `##` — its `###` subsections
-  // (Intent, Deliverables, …) are inside the section, not terminators. A
-  // level-3 section (`### Spec`) terminates at the next `##` or `###`, and
-  // its sibling `###` subsections are also inside (they're the field
-  // separators `sliceSpecField` uses), so the terminator is `##` only.
   const after = text.slice(m.index + m[0].length);
-  // Terminate at the next `##` heading (level 2). `###` subsections are
-  // inside the section, not terminators — they're the field separators
-  // `sliceSpecField` uses. A `##` heading is the only level-2 terminator;
-  // `###` and deeper are inside the section.
   const next = after.match(/^##\s(?!#)/m);
-  const body = next?.index !== undefined ? after.slice(0, next.index) : after;
+  let end = next?.index ?? after.length;
+  if (m[0].startsWith("###")) {
+    // Find the parent level-2 heading preceding this level-3 section, if any.
+    let parentEnd: number | null = null;
+    for (const pm of text.matchAll(/^##\s/gm)) {
+      if (pm.index === undefined || pm.index > m.index) break;
+      parentEnd = pm.index;
+    }
+    if (parentEnd !== null) {
+      // The parent's sibling `##` — the first level-2 heading after the
+      // parent and before this section — is where the parent (and the
+      // nested spec) ends; any level-2 heading between the parent and this
+      // section is the parent's own content, not a terminator.
+      for (const pm of text.matchAll(/^##\s(?!#)/gm)) {
+        if (pm.index !== undefined && pm.index > parentEnd && pm.index < m.index) {
+          end = pm.index;
+          break;
+        }
+      }
+    }
+  }
+  const body = after.slice(0, end);
   return body.replace(/\n\s*-{3,}\s*$/, "\n");
 }
