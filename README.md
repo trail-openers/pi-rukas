@@ -57,6 +57,7 @@ Required CLIs on `$PATH`. The role prompts assume all of these are installed —
 | [`oo`](https://github.com/randomm/oo) | Context-efficient wrapper for chatty CLIs (git, gh). (Cargo from source. Pinned to floor `0.5.0`.) |
 | `jq` | Used by `build.sh` to assemble the capability matrix into the PM prompt. |
 | [`parallel-cli`](https://docs.parallel.ai/cli/overview) | Web search / fetch / deep research for the `explore` role. (Homebrew tap.) |
+| [`wigolo`](https://github.com/KnockOutEZ/wigolo) | Keyless local web-intelligence CLI — the `/research` fallback when `parallel-cli` fails (credit/auth/network). `npm install -g --ignore-scripts wigolo@0.2.1`; Node ≥ 20, ~1.5 GB engine downloaded lazily on first use. |
 | [`pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter) | MCP bridge — **without the bridge no MCP server loads**. Sandbox users are unaffected: the image bakes it in. |
 | [`ctx7`](https://context7.com) | Current third-party library documentation. `ctx7 library <name>` → `ctx7 docs <id> <query>`. Free tier works without login. |
 

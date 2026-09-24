@@ -47,6 +47,15 @@ import {
 } from "./research-artifact.ts";
 import { writeResearchMemory } from "./research-memory.ts";
 import {
+  classifyParallelOutcome,
+  type ParallelOutcome,
+  type WigoloSurface,
+  researchFallbackLine,
+  selectFallback,
+  surfaceForAngle,
+  wigoloAnglePrompt,
+} from "./research-fallback.ts";
+import {
   type AngleRun,
   RESEARCH_TIERS,
   type ResearchClaim,
@@ -160,31 +169,68 @@ export async function runResearchPipeline(
       ? `PM has already established (DO NOT re-investigate; dig deeper instead):\n${renderPriorContext(priorContext)}\n${priorContextHasVipune(priorContext) ? `${VIPUNE_PRECEDENCE_NOTE}\n` : ""}\n`
       : "";
 
+  // Phase 2 prep — the dispatch-time fallback line (#773). Read HOST-side:
+  // unset = enabled, `0` = disabled. Never forwarded to the sandbox (the
+  // PI_ENSEMBLE_* pattern is blocklisted in bin/pi-rukas), so the explore
+  // recipe stays static and this single line is the only per-run difference.
+  const fallbackEnabled = process.env.PI_ENSEMBLE_RESEARCH_FALLBACK !== "0";
+  const fallbackLine = researchFallbackLine(fallbackEnabled);
+
   // Phase 2 — one parallel retrieval barrier. Fail-closed per angle: an
   // angle is ok only when the dispatch succeeded AND produced ≥1 structured
-  // claim (the plan driver's D8 rule).
+  // claim (the plan driver's D8 rule). A failed angle whose child classified
+  // the Parallel failure as retryable (credit/auth/network) is re-dispatched
+  // ONCE, wigolo-framed (#773) — never more, and never for an empty result.
   const angleSpecs = anglesForTier(tier, topic, codeIdentifiersIn(topic), input.angles);
+  const runAngle = async (
+    a: (typeof angleSpecs)[number],
+    backend: AngleRun["backend"],
+    reason?: ParallelOutcome,
+  ): Promise<AngleRun> => {
+    const prompt =
+      backend === "parallel"
+        ? `${fallbackLine}${priorBlock}${a.prompt}`
+        : `${fallbackLine}${priorBlock}${wigoloAnglePrompt(a, surfaceForAngle(a.name), reason ?? "unparseable")}`;
+    const r = await dispatch(
+      pi,
+      { role: "explore", prompt, cwd: repoRoot },
+      {
+        label: `research-${a.name}`.slice(0, 24),
+        timeoutMs: RESEARCH_DISPATCH_TIMEOUT_MS,
+        extraArgs: RESEARCH_EXTRA_ARGS,
+      },
+    );
+    const claims = extractResearchClaims(r.toolUses, a.name);
+    return {
+      name: a.name,
+      ok: r.ok && !r.errorStop && claims.length > 0,
+      summary: r.text.trim().slice(0, 500),
+      claims,
+      backend,
+    };
+  };
   const angles: AngleRun[] = await timed("retrieve", () =>
     Promise.all(
-      angleSpecs.map((a) =>
-        dispatch(
-          pi,
-          { role: "explore", prompt: `${priorBlock}${a.prompt}`, cwd: repoRoot },
-          {
-            label: `research-${a.name}`.slice(0, 24),
-            timeoutMs: RESEARCH_DISPATCH_TIMEOUT_MS,
-            extraArgs: RESEARCH_EXTRA_ARGS,
-          },
-        ).then((r) => {
-          const claims = extractResearchClaims(r.toolUses, a.name);
-          return {
-            name: a.name,
-            ok: r.ok && !r.errorStop && claims.length > 0,
-            summary: r.text.trim().slice(0, 500),
-            claims,
-          };
-        }),
-      ),
+      angleSpecs.map(async (a) => {
+        let run = await runAngle(a, "parallel");
+        if (!run.ok && fallbackEnabled) {
+          const outcome: ParallelOutcome = classifyParallelOutcome(run.summary);
+          const decision = selectFallback(outcome, surfaceForAngle(a.name), fallbackEnabled);
+          if (decision === "fall-back-to-wigolo") {
+            // Re-dispatch ONCE: a second failure is not retried — the angle
+            // stays failed and its summary carries both attempts' text.
+            const retry = await runAngle(a, "wigolo", outcome);
+            run = {
+              ...retry,
+              summary: `${run.summary}\n[wigolo fallback: ${retry.summary}]`.slice(0, 500),
+            };
+          } else {
+            run.summary =
+              `${run.summary}\n[parallel-outcome: ${outcome}; decision: ${decision}]`.slice(0, 500);
+          }
+        }
+        return run;
+      }),
     ),
   );
 

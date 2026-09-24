@@ -104,6 +104,7 @@ REQUIRED_CLIS=(
   "vipune:cargo install vipune  (https://github.com/randomm/vipune)"
   "oo:cargo install double-o --version ${MIN_OO_VERSION}  (https://github.com/randomm/oo)"
   "parallel-cli:npm install -g parallel-web-cli   (or: brew install parallel-web/tap/parallel-cli — then: parallel-cli login)"
+  "wigolo:npm install -g --ignore-scripts wigolo@0.2.1   (Node.js >= 20; ~1.5 GB browser engine downloads lazily on first use — keyless local web-intelligence CLI, the /research fallback per #773)"
   "ctx7:npm install -g ctx7  (free tier works without login; Node.js >= 18)"
 )
 
