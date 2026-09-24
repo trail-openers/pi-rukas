@@ -282,8 +282,8 @@ const STEER_BASH_5 =
     eq(steers, [STEER_BASH_5], "F1(g): exact steer text at count 5");
     assert(!s.loopKilled(), "F1(g): kill DEFERRED during grace");
     eq(child.killed, [], "F1(g): no signal before grace");
-    const gFired = await pollUntilKilled(s);
-    assert(gFired.ok, "F1(g): kill fires (kill did not fire within 10 s of polling)");
+    const gFired = await pollUntilKilled(s, 1000);
+    assert(gFired.ok, `F1(g): kill fires (kill did not fire within ${1000 + 5000} ms of polling)`);
     assert(
       gFired.at >= gArmedAt + 1000,
       `F1(g): kill fires after the grace window (kill at ${gFired.at - gArmedAt}ms vs grace 1000ms)`,

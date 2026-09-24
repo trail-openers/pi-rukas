@@ -278,7 +278,7 @@ async function fixture772q(): Promise<void> {
     `#772(q): kill armed on re-issue #${SUCCESS_KILL_AT} (got #${(armedAt ?? -1) + 1})`,
   );
   assert(!s.loopKilled(), "#772(q): kill deferred — grace window open (the report window)");
-  const fired = await pollUntilKilled(s);
+  const fired = await pollUntilKilled(s, 2000);
   assert(fired.ok, "#772(q): kill fires");
   assert(fired.at >= qArmedAt + 2000, `#772(q): kill after grace window (${fired.at - qArmedAt}ms >= 2000ms)`);
   assert(s.killCause() === "loop", "#772(q): killCause loop");
@@ -320,7 +320,9 @@ async function fixture772r(): Promise<void> {
     // Each is a new message_end, but none is distinct — the grace clock must
     // NOT reset, so the kill fires when the 2s window elapses.
     for (let i = 10; i < 16; i++) s?.loopObserver?.([bash("git status --porcelain", `r-${i}`)], i);
-    const rFired = s ? await pollUntilKilled(s) : { ok: false, at: Date.now() };
+    assert(s !== undefined, "#772(r): session was not created");
+    if (!s) return;
+    const rFired = await pollUntilKilled(s, 2000);
     assert(rFired.ok, "#772(r): kill fires");
     assert(
       rFired.at >= rArmedAt + 2000,

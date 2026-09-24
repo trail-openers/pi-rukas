@@ -83,7 +83,7 @@ async function fixture772w6(): Promise<void> {
     for (let i = 6; i < 14; i++) {
       s.loopObserver?.([bash(`bun test --filter=case-${i}`, `w6-d${i}`)], i * 2);
     }
-    const w6Fired = await pollUntilKilled(s);
+    const w6Fired = await pollUntilKilled(s, 2000);
     assert(w6Fired.ok, "#772(w6): kill fires");
     assert(
       w6Fired.at >= w6ArmedAt + 2000,

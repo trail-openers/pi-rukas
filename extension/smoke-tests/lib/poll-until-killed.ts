@@ -16,16 +16,20 @@
 import type { createCapSession } from "../../src/spawn-caps.ts";
 
 /**
- * #846 — poll until the grace-window kill is observed (50 ms tick, 10 s
- * bound). The poll only READS state (no observer traffic — new message_ends
- * would re-arm a streak-armed window). Fails (ok: false) with a distinct
- * timeout the caller's assertion separates from a product failure.
+ * #846 — poll until the grace-window kill is observed (50 ms tick, bounded
+ * at graceMs + 5000 — 10× the 500 ms tick above the worst-case [grace, grace +
+ * tick] landing, tight enough to keep the hang case short). The poll only
+ * READS state (no observer traffic — new message_ends would re-arm a
+ * streak-armed window). Fails (ok: false) with a distinct timeout the
+ * caller's assertion separates from a product failure.
  */
 export async function pollUntilKilled(
   s: ReturnType<typeof createCapSession>,
+  graceMs: number,
 ): Promise<{ ok: boolean; at: number }> {
+  const bound = graceMs + 5000;
   const t0 = Date.now();
-  while (Date.now() - t0 < 10_000) {
+  while (Date.now() - t0 < bound) {
     if (s.loopKilled()) return { ok: true, at: Date.now() };
     await new Promise((r) => setTimeout(r, 50));
   }
