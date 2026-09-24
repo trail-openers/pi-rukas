@@ -284,13 +284,11 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
     deckCall?.options?.placement === "belowEditor",
     "ensemble:deck placement is 'belowEditor'",
   );
-  // The empty-deck clear also uses the same single key. #837: settling the
-  // last entry keeps the widget alive (settled section), so the final call
-  // is a re-registration (factory), not an undefined-clear.
+  // The empty-deck clear also uses the same single key.
   const lastCall = calls[calls.length - 1];
   assert(
-    lastCall?.key === "ensemble:deck" && typeof lastCall?.content === "function",
-    "settled-only deck re-registers 'ensemble:deck' (setWidget factory, not undefined)",
+    lastCall?.key === "ensemble:deck" && lastCall?.content === undefined,
+    "empty deck clears 'ensemble:deck' (setWidget undefined)",
   );
   detach();
 }
@@ -327,7 +325,6 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   const factory = buildCompositeFactory(
     () => [],
     () => [...entries],
-    () => [],
     20,
     { onRowConfirm: () => {}, onSelectionChange: () => {} },
   );
