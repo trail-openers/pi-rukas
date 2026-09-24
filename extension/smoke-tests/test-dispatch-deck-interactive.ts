@@ -47,17 +47,6 @@ function makeState(role: string, opts: Partial<RunningState> = {}): RunningState
   return { ...base, ...opts, usage: { ...base.usage, ...(opts.usage ?? {}) } };
 }
 
-// #835 fixtures: one developer-role entry per key, distinct seq/label so labels differ.
-function mkJobs(keys: string[], now: number): DeckEntry[] {
-  return keys.map((key, i) => ({
-    key,
-    label: `developer[task-${i}]`,
-    seq: i,
-    startedAt: now - 134_000,
-    state: makeState("developer", { lastToolName: "bash", toolUses: 7, lastEventAt: now - 1000 }),
-  }));
-}
-
 // 1. encodeDeckValue / parseDeckValue — round-trip.
 {
   const key = "df8a-7r";
@@ -106,7 +95,10 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
   assert(items[0]?.key === "a", "first item is entry 'a' (insertion order)");
   assert(items[1]?.key === "b", "second item is entry 'b'");
   assert(items[2]?.key === DECK_PROMPT_CANCEL_KEY, "last item is the cancel sentinel");
-  assert(items[2]?.label === "── cancel ──", "cancel sentinel has the expected label");
+  assert(
+    items[2]?.label === "── cancel ──",
+    "cancel sentinel has the expected label",
+  );
 }
 
 // 4. #742 — the SelectList is the sole per-job surface: each item label is
@@ -188,48 +180,9 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
   );
 }
 
-// 4c. #835 collision fix: same-role jobs whose keys are BOTH >10 chars and share the
-// first 10 chars now render DISTINCT descriptions (the 2nd+ occurrence's prefix
-// lengthens until unique). Labels and values still disambiguate.
-{
-  const now = 4_500_000;
-  const items = buildDeckItems(mkJobs(["aaaaaaaaaaa1", "aaaaaaaaaaa2"], now), now);
-  const d0 = items[0]?.description ?? "";
-  const d1 = items[1]?.description ?? "";
-  const ok = d0 !== d1 && d0.startsWith("key aaaaaaaaaa") && d1.startsWith("key aaaaaaaaaa");
-  assert(ok, `distinct fragments after fix: ${d0} vs ${d1}`);
-  assert(
-    items[0]?.label !== items[1]?.label || items[0]?.value !== items[1]?.value,
-    "labels/values still distinguish same-prefix keys",
-  );
-}
-
-// 4d–4g. #835: 4d non-colliding/short-key output unchanged; 4e: 3 keys sharing 13 chars → 3
-// distinct; 4f: duplicate keys force the no-progress termination; 4g (PM decision): three
-// 14-char keys sharing their first 12 chars → pairwise distinct, routing unchanged.
-{
-  const now = 4_700_000;
-  const u4 = buildDeckItems(mkJobs(["z0z0z0z0z1z9"], now), now)[0]?.description ?? "";
-  const u4ok = u4 === "key z0z0z0z0z1…" && buildDeckItems(mkJobs(["x"], now), now)[0]?.description === "x";
-  assert(u4ok, "4d: unique fragment unchanged; ≤10-char key verbatim (no prefix, no ellipsis)");
-  const keys = ["abcdefghijklm1x", "abcdefghijklm2x", "abcdefghijklm3x"];
-  const items4 = buildDeckItems(mkJobs(keys, now), now).slice(0, keys.length);
-  const ok4 =
-    new Set(items4.map((it) => it?.description ?? "")).size === keys.length &&
-    items4.every((it, i) => it.key === keys[i] && it.value === encodeDeckValue(keys[i] ?? ""));
-  assert(ok4, "4e: 3 keys sharing 13 chars → distinct; key/value columns unchanged (routing safe)");
-  const dup = buildDeckItems(mkJobs(["abc", "abc"], now), now);
-  const dupOk = dup.length === 3 && dup[0]?.description === dup[1]?.description;
-  const dupMsg = "4f: duplicates terminate — same fragment, distinct labels, values correct";
-  assert(dupOk && dup[0]?.label !== dup[1]?.label && dup[0]?.value === dup[1]?.value, dupMsg);
-  const adv = ["aaaaaaaaaaaa11", "aaaaaaaaaaaa22", "aaaaaaaaaaaa33"];
-  const items = buildDeckItems(mkJobs(adv, 4_900_000), 4_900_000).slice(0, adv.length);
-  const descs = items.map((it) => it?.description ?? "");
-  const ok5 =
-    new Set(descs).size === adv.length &&
-    items.every((it, i) => it.key === adv[i] && it.value === encodeDeckValue(adv[i] ?? ""));
-  assert(ok5, `4g: 3 keys sharing 12 chars → pairwise distinct (${descs.join(" | ")}); routing safe`);
-}
+// 4c. #835 collision fix — same-role jobs with >10-char keys sharing the
+// first 10 chars now render DISTINCT descriptions. Moved to
+// test-dispatch-deck-fragments.ts; one-line pointer, no assertions here.
 
 // 5. DeckItem.value round-trips through parseDeckValue.
 {
@@ -286,7 +239,11 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
 // DECK_PROMPT_KEY) fails this test.
 {
   reset();
-  const calls: Array<{ key: string; content: string[] | ((...args: unknown[]) => unknown) | undefined; options?: { placement?: string } }> = [];
+  const calls: Array<{
+    key: string;
+    content: string[] | ((...args: unknown[]) => unknown) | undefined;
+    options?: { placement?: string };
+  }> = [];
   const ctx = {
     ui: {
       setWidget: (
@@ -390,10 +347,9 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
       // description column, which is the sole per-job disambiguation
       // surface (#742) and renders in render(width) output (width > 40).
       const rendered = list.render(200);
-      // Count via buildDeckItems — the module's fragment computation (collision-aware;
-      // identical to the raw key for these short, unique keys — the one-row meaning holds).
-      const frags = Object.fromEntries(buildDeckItems(entries).map((it) => [it.key, it.description ?? ""]));
-      const countFor = (key: string) => rendered.filter((l) => l.includes(frags[key] ?? key)).length;
+      const frag = (key: string) =>
+        key.length <= 10 ? key : `${key.slice(0, 10).trimEnd()}…`;
+      const countFor = (key: string) => rendered.filter((l) => l.includes(frag(key))).length;
       for (const e of entries) {
         assert(
           countFor(e.key) === 1,
