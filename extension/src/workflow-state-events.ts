@@ -363,8 +363,14 @@ export type WorkEvent =
        * pre-#841 state files).
        */
       logPaths?: string[];
-      /** #657 — the machine-readable intent-park reason (see the intent
-       * park vocabulary); additive, ignored by the schema validator. */
+      /**
+       * #657 — on `cap: "intent-park"` the machine-readable park reason
+       * (underspecified / contradicted-by-code / already-implemented /
+       * too-large / premise-unsound), carried on the event so the renderers
+       * can show `intent-park (contradicted-by-code)` without re-deriving it
+       * from `pipelineState.normalisedSpec`. Additive: the schema validator
+       * ignores extra fields.
+       */
       parkReason?: string;
       /**
        * What the driver will do next: "handoff" (terminal), "step-back"
