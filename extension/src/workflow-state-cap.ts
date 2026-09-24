@@ -1,8 +1,9 @@
 /**
  * workflow-state-cap — the #543 dispatch-cap types: the evidence a cap
  * kill fired (`CapEvidence`, F4(j)) and the driver-owned checkpoint
- * record (`CapedPartialState`, F5). Split from workflow-state-schema.ts
- * for AGENTS.md §12 file-size hygiene.
+ * record (`CapedPartialState`, F5), plus the shared `lastCapHit()`
+ * event-log scan (#830). Split from workflow-state-schema.ts for AGENTS.md
+ * §12 file-size hygiene.
  */
 
 import type { RoleName } from "./roles.ts";

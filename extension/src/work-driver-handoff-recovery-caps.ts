@@ -28,7 +28,7 @@ import {
 } from "./work-driver-handoff-recovery.ts";
 import { mergeHoldGrantAction } from "./work-driver-merge-authority.ts";
 import { isConsolidatedPark } from "./work-driver-merge-subject.ts";
-import { lastCapHit } from "./workflow-state-cap.ts";
+import { type CapHitEvent, lastCapHit } from "./workflow-state-cap.ts";
 import {
   type WorkEvent,
   type WorkState,
@@ -56,9 +56,7 @@ export function recoveryStepsForCap(
 } {
   const ps = state.pipelineState;
   const issue = state.issue;
-  const capHit = [...state.eventLog]
-    .reverse()
-    .find((e): e is Extract<WorkEvent, { kind: "cap-hit" }> => e.kind === "cap-hit");
+  const capHit = [...state.eventLog].reverse().find((e): e is CapHitEvent => e.kind === "cap-hit");
   const cap: Cap | undefined = capHit ? capHit.cap : undefined;
   const steps: RecoveryStep[] = [];
 
@@ -306,9 +304,8 @@ export function recoveryStepsForCap(
         section: "explore-needs-clarification",
         comment: [
           evidence
-            ? `1. The driver recorded: ${evidence}. List the explore artifacts to confirm`
-            : "1. List the explore artifacts to see what the reply contained:",
-          "   (the issue may be fine — the parser may have missed it):",
+            ? `1. The driver recorded: ${evidence}. List the explore artifacts to confirm:`
+            : "1. List the explore artifacts to see what the reply contained (the issue may be fine — the parser may have missed it):",
         ],
         lines: [`ls .pi/work-state/${issue}/`],
       },

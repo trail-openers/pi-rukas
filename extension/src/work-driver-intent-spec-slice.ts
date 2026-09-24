@@ -43,7 +43,7 @@ export const SPEC_FIELD_NAMES = [
 const SPEC_FIELD_NAME_ALTERNATIVE = SPEC_FIELD_NAMES.join("|");
 
 /**
- * The terminator for `sliceSpecField`.
+ * The boundary for `sliceSpecField`.
  *
  * Matches at a line start, whether or not a blank line precedes it: the
  * earlier version anchored on the `\n` of a blank line, so a compact reply
@@ -59,13 +59,17 @@ const SPEC_FIELD_NAME_ALTERNATIVE = SPEC_FIELD_NAMES.join("|");
  *      only the spec field names, case-insensitive). `**<name>**` is only a
  *      terminator when it names a field the parser reads, so a
  *      `**Note** — …` line inside a field body does NOT end the field.
-
+ *
+ * A heading of ANY level ends a field (load-bearing: it keeps a trailing
+ * `## Rationale` / `## Workstreams` block out of the last parsed field),
+ * but only `###`–`######` headings and spec-field bold labels open one, so
+ * `## Deliverables` ends the field above it without starting a new one.
  *
  * A bullet line opens with `-` or a digit, so it never terminates a section
  * early; a `#` or a `**label**` inside prose (not at a line start) never
  * matches.
  */
-const FIELD_TERMINATOR = new RegExp(
+const FIELD_END = new RegExp(
   `^\\s*(?:#{1,6}\\s|\\*\\*\\s*(?:${SPEC_FIELD_NAME_ALTERNATIVE})\\s*\\*\\*\\s*(?:[—–:-]|$))`,
   "im",
 );
@@ -82,7 +86,7 @@ const FIELD_TERMINATOR = new RegExp(
  *      separator (`—`, `:`, `-`) and content on the same line (the #826
  *      fixture's `**Intent** — Fix the …`)
  *
- * All three terminate at `FIELD_TERMINATOR` — the next heading of any
+ * All three terminate at `FIELD_END` — the next heading of any
  * level, or the next bare bold-label line naming a spec field.
  */
 export function sliceSpecField(text: string, name: string): string | undefined {
@@ -100,7 +104,7 @@ export function sliceSpecField(text: string, name: string): string | undefined {
     const m = text.match(re);
     if (!m || m.index === undefined) continue;
     const after = text.slice(m.index + m[0].length);
-    const next = after.match(FIELD_TERMINATOR);
+    const next = after.match(FIELD_END);
     return next?.index !== undefined ? after.slice(0, next.index) : after;
   }
   return undefined;
