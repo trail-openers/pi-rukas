@@ -106,10 +106,7 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
   assert(items[0]?.key === "a", "first item is entry 'a' (insertion order)");
   assert(items[1]?.key === "b", "second item is entry 'b'");
   assert(items[2]?.key === DECK_PROMPT_CANCEL_KEY, "last item is the cancel sentinel");
-  assert(
-    items[2]?.label === "── cancel ──",
-    "cancel sentinel has the expected label",
-  );
+  assert(items[2]?.label === "── cancel ──", "cancel sentinel has the expected label");
 }
 
 // 4. #742 — the SelectList is the sole per-job surface: each item label is
@@ -207,15 +204,13 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
   );
 }
 
-// 4d–4g. #835: 4d non-colliding + short-key paths keep today's output; 4e: 3 keys sharing
-// 13 chars → 3 distinct descriptions, routing unchanged; 4f: identical keys (duplicates)
-// force the no-progress termination; 4g: the PM-decision adversarial fixture — three
-// 14-char keys sharing their first 12 chars → pairwise distinct descriptions.
+// 4d–4g. #835: 4d non-colliding/short-key output unchanged; 4e: 3 keys sharing 13 chars → 3
+// distinct; 4f: duplicate keys force the no-progress termination; 4g (PM decision): three
+// 14-char keys sharing their first 12 chars → pairwise distinct, routing unchanged.
 {
   const now = 4_700_000;
   const u4 = buildDeckItems(mkJobs(["z0z0z0z0z1z9"], now), now)[0]?.description ?? "";
-  const u5 = buildDeckItems(mkJobs(["x"], now), now)[0]?.description ?? "";
-  const u4ok = u4 === "key z0z0z0z0z1…" && u5 === "x";
+  const u4ok = u4 === "key z0z0z0z0z1…" && buildDeckItems(mkJobs(["x"], now), now)[0]?.description === "x";
   assert(u4ok, "4d: unique fragment unchanged; ≤10-char key verbatim (no prefix, no ellipsis)");
   const keys = ["abcdefghijklm1x", "abcdefghijklm2x", "abcdefghijklm3x"];
   const items4 = buildDeckItems(mkJobs(keys, now), now).slice(0, keys.length);
@@ -291,11 +286,14 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
 // DECK_PROMPT_KEY) fails this test.
 {
   reset();
-  type WCall8 = { key: string; content: string[] | ((...args: unknown[]) => unknown) | undefined; options?: { placement?: string } };
-  const calls: WCall8[] = [];
+  const calls: Array<{ key: string; content: string[] | ((...args: unknown[]) => unknown) | undefined; options?: { placement?: string } }> = [];
   const ctx = {
     ui: {
-      setWidget: (key: string, content: WCall8["content"], options?: WCall8["options"]) => { calls.push({ key, content, options }); },
+      setWidget: (
+        key: string,
+        content: string[] | ((...args: unknown[]) => unknown) | undefined,
+        options?: { placement?: string },
+      ) => { calls.push({ key, content, options }); },
       setStatus: (_key: string, _text: string | undefined) => {},
     },
   } as unknown as Parameters<typeof attach>[0];
@@ -365,10 +363,12 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
     fg: (_color: string, text: string) => text,
     bg: (_color: string, text: string) => text,
   } as unknown as ReturnType<typeof buildCompositeFactory>[1];
-  const factory = buildCompositeFactory(() => [], () => [...entries], 20, {
-    onRowConfirm: () => {},
-    onSelectionChange: () => {},
-  });
+  const factory = buildCompositeFactory(
+    () => [],
+    () => [...entries],
+    20,
+    { onRowConfirm: () => {}, onSelectionChange: () => {} },
+  );
   const component = factory(null, fakeTheme);
   assert(component instanceof Container, "composite factory returns a Container (not a bare SelectList)");
   if (component instanceof Container) {
@@ -388,9 +388,8 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
       // description column, which is the sole per-job disambiguation
       // surface (#742) and renders in render(width) output (width > 40).
       const rendered = list.render(200);
-      // Count via buildDeckItems — the module's actual fragment computation
-      // (collision-aware; identical to the raw key for these short, unique
-      // keys, so the one-row-per-job assertion keeps its meaning).
+      // Count via buildDeckItems — the module's fragment computation (collision-aware;
+      // identical to the raw key for these short, unique keys — the one-row meaning holds).
       const frags = Object.fromEntries(buildDeckItems(entries).map((it) => [it.key, it.description ?? ""]));
       const countFor = (key: string) => rendered.filter((l) => l.includes(frags[key] ?? key)).length;
       for (const e of entries) {
