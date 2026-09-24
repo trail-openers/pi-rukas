@@ -74,13 +74,15 @@ function mkJobs(keys: string[], now: number): DeckEntry[] {
   assert(ok4, "4e: 3 keys sharing 13 chars → distinct; key/value columns unchanged (routing safe)");
 }
 
-// 4f. Duplicate keys force the no-progress termination: same fragment,
-// distinct labels, identical values (labels/values still disambiguate).
+// 4f. Identical duplicate keys — same fragment (the #835 loop terminates
+// via its no-progress exit, no infinite recursion), distinct labels, values
+// correct, 2 entries (no sentinel post-#834).
 {
   const now = 4_700_000;
   const dup = buildDeckItems(mkJobs(["abc", "abc"], now), now);
   const dupOk = dup.length === 2 && dup[0]?.description === dup[1]?.description;
-  const dupMsg = "4f: duplicates terminate — same fragment, distinct labels, values correct";
+  const dupMsg =
+    "4f: identical keys — same fragment (loop terminates), distinct labels, 2 entries (no sentinel post-#834)";
   assert(dupOk && dup[0]?.label !== dup[1]?.label && dup[0]?.value === dup[1]?.value, dupMsg);
 }
 

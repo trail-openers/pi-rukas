@@ -6,9 +6,9 @@
  *  - clear drops the row at 0s (no linger)
  *  - widget content is a string[] — Pi renders one line per element (#141)
  *  - hierarchical layout: batch headers are top-level (⏳); members do NOT
- *    appear in the buildLines projection (the SelectList is the sole
- *    per-job surface, #742); standalone (non-batched) singles are
- *    top-level too
+ *    appear in the buildLines projection (they render as their own
+ *    per-job rows in the composite, #834); standalone (non-batched)
+ *    singles are top-level too
  *  - global insertion-order traversal of top-level items, member seq within batch
  *  - empty deck → setWidget(undefined)
  *  - tool-arg hint surfaces in row (#139)
@@ -71,6 +71,7 @@ function fakeCtx(): { calls: WidgetCall[]; ctx: Parameters<typeof attach>[0] } {
       },
       // setStatus retained for type compatibility but not used by the deck anymore.
       setStatus: (_key: string, _text: string | undefined) => {},
+      notify: (_msg: string, _level?: string) => {},
       getEditorText: () => "",
       onTerminalInput: () => () => {},
     },
@@ -254,9 +255,9 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   assert(!lines.some((l) => l.startsWith(" ↳ ")), "no indented rows when there are no batches");
 }
 
-// 7. buildLines: batch + members → batch header only (member rows are the
-// SelectList's, #742 — the buildLines projection is used by the renderNow
-// empty-deck guard, not the composite's Text projection).
+// 7. buildLines: batch + members → batch header only (members render as
+// their own per-job rows in the composite, #834 — the buildLines
+// projection is a test-only surface, not the composite's Text projection).
 {
   reset();
   startBatchEntry("batch-x", { label: "developer×3", size: 3 });
@@ -286,8 +287,9 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
 }
 
 // 9. buildLines: mixed — batch header + standalone in dispatch order (#141).
-// Member rows are absent (SelectList's, #742); the batch header and the
-// standalone appear in insertion order.
+// Member rows are absent (members have their own per-job rows in the
+// composite, #834); the batch header and the standalone appear in
+// insertion order.
 {
   reset();
   startBatchEntry("b1", { label: "developer×2", size: 2 });
@@ -295,8 +297,8 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   startEntry("m2", { label: "developer[task-B]", role: "developer", batchKey: "b1" });
   startEntry("solo", { label: "explore", role: "explore" });
   const lines = buildLines();
-  // Expected: batch header, standalone (members absent — SelectList's, #742)
-  assert(lines.length === 2, "1 batch + 2 members + 1 standalone → 2 lines (#742)");
+  // Expected: batch header, standalone (members absent — per-job rows, #834)
+  assert(lines.length === 2, "1 batch + 2 members + 1 standalone → 2 lines (#834)");
   assert(lines[0]?.startsWith("⏳ batch["), "batch header first");
   assert(
     lines[1]?.startsWith("⏳ explore"),
@@ -305,7 +307,8 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
 }
 
 // 10. buildLines: top-level traversal respects global insertion order — standalone before batch.
-// Member rows are absent (SelectList's, #742); standalone and batch header appear in insertion order.
+// Member rows are absent (members have their own per-job rows in the
+// composite, #834); standalone and batch header appear in insertion order.
 {
   reset();
   startEntry("solo", { label: "explore", role: "explore" });
@@ -313,7 +316,7 @@ function renderFactoryChildren(content: WidgetContent): unknown[] {
   startEntry("m1", { label: "developer[task-A]", role: "developer", batchKey: "b1" });
   startEntry("m2", { label: "developer[task-B]", role: "developer", batchKey: "b1" });
   const lines = buildLines();
-  assert(lines.length === 2, "1 standalone + 1 batch + 2 members → 2 lines (#742)");
+  assert(lines.length === 2, "1 standalone + 1 batch + 2 members → 2 lines (#834)");
   assert(lines[0]?.startsWith("⏳ explore"), "standalone first (inserted before batch)");
   assert(lines[1]?.startsWith("⏳ batch["), "batch header second");
 }

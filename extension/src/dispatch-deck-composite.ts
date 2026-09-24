@@ -32,7 +32,17 @@ import { DECK_HINT_TEXT } from "./dispatch-deck-nav.ts";
 import { type DeckEntry, formatRow } from "./dispatch-deck.ts";
 import { formatElapsed } from "./progress.ts";
 
-/** One row of the composite: job key, encoded value, label. */
+/**
+ * One row of the composite: job key, encoded value, label.
+ *
+ * TEST-ONLY / deferred pipeline: post-#834 the production per-job rows
+ * are built inline in `buildCompositeFactory` straight from `DeckEntry`,
+ * so `DeckItem` / `buildDeckItems` / `encodeDeckValue` / `parseDeckValue`
+ * have no runtime consumer — they exist for the smoke tests
+ * (test-dispatch-deck-interactive.ts, test-dispatch-deck-fragments.ts)
+ * and the #835 distinct-fragment behaviour they pin. Retained for the
+ * live-view surface (#839 / #836), which will render these values.
+ */
 export interface DeckItem {
   key: string;
   value: string;
@@ -170,8 +180,9 @@ export function buildCompositeFactory(
   maxRows: number,
 ): (tui: TUI, theme: Theme) => Component {
   return (_tui: TUI, theme: Theme) => {
-    // One snapshot per render: the batch rows and the job rows read the
-    // same state so a mid-render update cannot split the two projections.
+    // Both projections read the deck module's entry/batch maps, which
+    // are updated atomically within that module (no concurrent writer),
+    // so a mid-render interleaving cannot split the two projections.
     const rowState = rows();
     const container = new Container();
     const batchLines = lines();

@@ -22,8 +22,8 @@ import {
   snapshot,
   startBatchEntry,
   startEntry,
-  DECK_PROMPT_STEER_SOURCE,
 } from "../src/dispatch-deck.ts";
+import { DECK_UI_STEER_SOURCE } from "../src/dispatch-deck-interactive.ts";
 import {
   buildCompositeFactory,
   buildDeckItems,
@@ -214,11 +214,11 @@ const fakeTheme = {
   );
 }
 
-// 7. DECK_PROMPT_STEER_SOURCE constant is 'deck-ui'.
+// 7. DECK_UI_STEER_SOURCE constant is 'deck-ui'.
 {
   assert(
-    DECK_PROMPT_STEER_SOURCE === "deck-ui",
-    "DECK_PROMPT_STEER_SOURCE is 'deck-ui' (new SteerSource member)",
+    DECK_UI_STEER_SOURCE === "deck-ui",
+    "DECK_UI_STEER_SOURCE is 'deck-ui' (new SteerSource member)",
   );
 }
 
@@ -436,9 +436,9 @@ const fakeTheme = {
     assert(n("task-A") === 1, "member A renders exactly once");
     assert(n("task-B") === 1, "member B renders exactly once");
     assert(n("explore") >= 1, "standalone renders");
-    // 1 batch header + 3 job rows + 1 blank + 1 hint = 6 total children
-    // (the blank and hint may be present; count the job + header rows).
-    assert(comp.children.length >= 5, "batch header + 3 job rows + separator present");
+    // 1 batch header + 3 job rows + 1 blank separator + 1 hint row
+    // (empty editor → hint shown) = 6 children total.
+    assert(comp.children.length === 6, "batch header + 3 job rows + separator + hint");
   }
   detach();
 }

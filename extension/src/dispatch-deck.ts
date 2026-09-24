@@ -55,8 +55,6 @@ export interface BatchDeckEntry {
   startedAt: number;
 }
 
-export const DECK_PROMPT_STEER_SOURCE = "deck-ui";
-
 const entries = new Map<string, DeckEntry>();
 const batches = new Map<string, BatchDeckEntry>();
 let activeCtx: ExtensionContext | undefined;
@@ -66,6 +64,7 @@ let tickHandle: ReturnType<typeof setInterval> | undefined;
 let widgetVisible = false;
 let nav: DeckNav | undefined;
 let navUnsub: (() => void) | undefined;
+let navWarned = false;
 
 function isQuiet(): boolean {
   return process.env.PI_ENSEMBLE_QUIET_STATUS === "1";
@@ -91,6 +90,16 @@ export function detach(): void {
       activeCtx.ui.setWidget(WIDGET_KEY, undefined);
     } catch {}
   }
+  detachNav();
+  activeCtx = undefined;
+  entries.clear();
+  batches.clear();
+  pendingRender = false;
+  widgetVisible = false;
+}
+
+/** Detach the roster-mode listener (if registered) and drop the nav state. */
+function detachNav(): void {
   if (navUnsub) {
     try {
       navUnsub();
@@ -98,11 +107,20 @@ export function detach(): void {
     navUnsub = undefined;
   }
   nav = undefined;
-  activeCtx = undefined;
-  entries.clear();
-  batches.clear();
-  pendingRender = false;
-  widgetVisible = false;
+}
+
+function navGetters(ctx: ExtensionContext) {
+  return {
+    runningKeys: () => [...entries.values()].map((e) => e.key),
+    editorText: () => {
+      try {
+        return ctx.ui.getEditorText();
+      } catch {
+        return "";
+      }
+    },
+    hasRunning: () => entries.size > 0,
+  };
 }
 
 /**
@@ -119,33 +137,36 @@ function attachNav(ctx: ExtensionContext): void {
   if (isQuiet() || !ctx.hasUI) return;
   // Unsubscribe any prior listener before re-registering (attach can be
   // called more than once in a session without an intervening detach).
-  if (navUnsub) {
-    try {
-      navUnsub();
-    } catch {}
-    navUnsub = undefined;
-  }
-  const get = {
-    runningKeys: () => [...entries.values()].map((e) => e.key),
-    editorText: () => {
-      try {
-        return ctx.ui.getEditorText();
-      } catch {
-        return "";
-      }
-    },
-    hasRunning: () => entries.size > 0,
-  };
-  const n = createDeckNav(get, (key) => void onRowConfirm(ctx, key), scheduleRender);
-  nav = n;
+  detachNav();
+  const n = createDeckNav(navGetters(ctx), (key) => void onRowConfirm(ctx, key), scheduleRender);
+  if (registerNavListener(n, ctx)) nav = n;
+}
+
+/**
+ * Register the nav listener. Returns true on success. On failure the
+ * deck still renders — only the roster-mode entry point is unavailable;
+ * registration is retried on the next renderNow (self-heal for a
+ * transient attach-time failure) and a persistent one surfaces a
+ * one-time operator-visible warning (the trace alone is stderr-only and
+ * off unless PI_ENSEMBLE_DEBUG=1).
+ */
+function registerNavListener(n: DeckNav, ctx: ExtensionContext): boolean {
   try {
     navUnsub = ctx.ui.onTerminalInput(n.handler);
+    return true;
   } catch (err) {
-    // Headless UI shapes may not implement onTerminalInput; the deck
-    // renders fine without the roster-mode entry point.
-    nav = undefined;
     navUnsub = undefined;
     trace(`dispatch-deck: onTerminalInput unavailable: ${(err as Error).message}`);
+    if (!navWarned) {
+      navWarned = true;
+      try {
+        ctx.ui.notify(
+          "Dispatch deck: arrow-key roster nav is unavailable this session (onTerminalInput not supported); rows still render.",
+          "warning",
+        );
+      } catch {}
+    }
+    return false;
   }
 }
 
@@ -236,13 +257,7 @@ export function reset(): void {
   pendingRender = false;
   insertionCounter = 0;
   widgetVisible = false;
-  if (navUnsub) {
-    try {
-      navUnsub();
-    } catch {}
-    navUnsub = undefined;
-  }
-  nav = undefined;
+  detachNav();
 }
 
 export function isTicking(): boolean {
@@ -284,6 +299,13 @@ function renderNow(): void {
     }
     return;
   }
+  // Self-heal a transient attach-time onTerminalInput failure: re-try the
+  // roster-mode listener registration whenever it is absent.
+  if (nav === undefined && !isQuiet() && activeCtx.hasUI) {
+    const c = activeCtx;
+    const n = createDeckNav(navGetters(c), (key) => void onRowConfirm(c, key), scheduleRender);
+    if (registerNavListener(n, c)) nav = n;
+  }
   const factory = buildCompositeWidgetFactory(activeCtx);
   try {
     activeCtx.ui.setWidget(WIDGET_KEY, factory, { placement: "belowEditor" });
@@ -297,11 +319,11 @@ function renderNow(): void {
  *  rows). The Text projection reads `buildLinesBatchOnly` (batch headers
  *  only); the per-job rows are one Text row per RUNNING entry (batch
  *  members included, #834) with the roster-mode `>` marker and the
- *  `↓ select subagents` hint. renderNow's empty-deck guard reads
- *  `buildLines` (batch headers + standalone rows) so that a deck with
- *  only standalone entries still renders; `buildLines`' output is a
- *  strict superset of `buildLinesBatchOnly`'s (both contain batch
- *  headers; only `buildLines` adds standalone rows). */
+ *  `↓ select subagents` hint. renderNow's empty-deck guard tests
+ *  `entries.size === 0 && batches.size === 0` directly (no projection
+ *  read) so that a deck with only standalone entries still renders;
+ *  `buildLines`' output is a strict superset of `buildLinesBatchOnly`'s
+ *  (both contain batch headers; only `buildLines` adds standalone rows). */
 function buildCompositeWidgetFactory(ctx: ExtensionContext) {
   return deckComposite.buildCompositeFactory(
     buildLinesBatchOnly,
@@ -336,11 +358,11 @@ export function steerDeckEntry(ctx: ExtensionUIContext, key: string, message: st
 // =============================================================================
 
 /** Top-level deck rows: batch headers + standalone (non-batched) entries,
- *  in insertion order. Batched members are NOT included — the SelectList
- *  is the sole per-job surface (#742). This is the projection read by
- *  renderNow's empty-deck guard (via `hasRenderableRows`). It is a strict superset of
- *  `buildLinesBatchOnly`'s output (both contain batch headers; this adds
- *  standalone rows).
+ *  in insertion order. Batched members are NOT included — they render as
+ *  their own per-job rows in the composite's row projection (#834), so
+ *  including them here would double-render them. It is a strict superset
+ *  of `buildLinesBatchOnly`'s output (both contain batch headers; this
+ *  adds standalone rows).
  *
  *  Orphan-member contract (fail-open, deliberate): an entry whose `batchKey`
  *  names a batch that was never registered — or was cleared while its members
@@ -375,26 +397,16 @@ export function buildLines(now: number = Date.now()): string[] {
   return lines;
 }
 
-/**
- * Is anything renderable? Equivalent to `buildLines().length > 0`: every row
- * buildLines emits comes from either a batch (header) or an entry (standalone),
- * so both collections empty ⇔ no rows. Used by renderNow's empty-deck guard
- * so the 1s ticker can test emptiness without allocating and sorting.
- */
-function hasRenderableRows(): boolean {
-  return entries.size > 0 || batches.size > 0;
-}
-
 /** The composite's Text projection: batch header rows only.
- *  Member rows are the SelectList's (one item per job entry, #742), so
- *  including them here would render each batch member twice — once as a
- *  Text row and once as a SelectList item. This is a strict subset of
- *  `buildLines`' output (both contain batch headers; `buildLines` also
- *  adds standalone rows). Exported for the superset-invariant test
- *  (test-dispatch-deck.ts block 12c), which compares it against
- *  `buildLines` at a fixed `now` — the test cannot reconstruct this from
- *  the exported surface without sampling `Date.now()` twice and racing a
- *  1 ms elapsed-time tick (flaky on CI). */
+ *  Members have their own per-job rows (one Text row per running entry
+ *  in the composite, #834), so including them here would render each
+ *  batch member twice. This is a strict subset of `buildLines`' output
+ *  (both contain batch headers; `buildLines` also adds standalone rows).
+ *  Exported for the superset-invariant test (test-dispatch-deck.ts block
+ *  12c), which compares it against `buildLines` at a fixed `now` — the
+ *  test cannot reconstruct this from the exported surface without
+ *  sampling `Date.now()` twice and racing a 1 ms elapsed-time tick
+ *  (flaky on CI). */
 export function buildLinesBatchOnly(now: number = Date.now()): string[] {
   const lines: string[] = [];
   for (const b of batches.values()) {
