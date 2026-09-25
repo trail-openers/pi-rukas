@@ -14,6 +14,7 @@ import { isDriverManagedDirtLine } from "./work-driver-branch-residue.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.js";
 import type { DriverContext } from "./work-driver-context.js";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
+import { withIntegrationLock } from "./work-driver-lock.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
 import {
@@ -98,7 +99,16 @@ export async function runConsolidatedVerify(
       ) => { allowed: boolean; decision: ConsolidatedVerifyRetryDecision } | undefined;
     };
   },
-): Promise<
+) {
+  return withIntegrationLock(opts.repoRoot, () => runConsolidatedVerifyUnlocked(execFn, opts));
+}
+
+/**
+ * #861 — the shared result shape of the consolidated verify (the wrapper
+ * and its unlocked body return the same type; the body computes it, the
+ * wrapper only adds the lock).
+ */
+export type ConsolidatedVerifyResult =
   | {
       status: "passed";
       applied: string[];
@@ -141,9 +151,47 @@ export async function runConsolidatedVerify(
   // #725 — the caller distinguishes a genuine cherry-pick / patch-apply
   // conflict from a dirty-repoRoot preflight refusal via `kind`, not by
   // regexing the `detail` prose (a reworded message used to silently
-  // re-route the refusal to the conflict cap).
-  | { status: "conflict"; detail: string; kind: "conflict" | "dirty-root" }
-> {
+  // re-route the refusal to the conflict cap). The unlocked body below
+  // returns this same shape in both cases.
+  | { status: "conflict"; detail: string; kind: "conflict" | "dirty-root" };
+
+/**
+ * #861 — the unlocked body of the consolidated verify. The ONLY production
+ * caller is `runConsolidatedVerify` (the `withIntegrationLock` wrapper);
+ * this export exists so the smoke-test harness can prove the wrapper is what
+ * serialises (the anti-vacuity control calls this directly).
+ *
+ * #861 (decision 5) — the wrapper takes the integration lock around the
+ * WHOLE repoRoot section (dirty-root preflight read, checkout -B,
+ * cherry-pick, verify, the single flake re-run, restoreRoot and branch -D),
+ * exactly like every other repoRoot-mutating path (integrate(), runCommitPr,
+ * handoff-consolidate, merged teardown). The only production caller chain
+ * — runVerifyCommandGate → verifyDevelopOutcome →
+ * verifyStepOutcome("develop") — runs at step boundaries with no ancestor
+ * holding the lock (the develop/commit-pr step handlers never hold it while
+ * running the outcome gate), so the take is exactly once; nesting would
+ * deadlock the in-process chain (the same call waiting on itself).
+ */
+export async function runConsolidatedVerifyUnlocked(
+  execFn: NonNullable<DriverContext["verifyExecFn"]>,
+  opts: {
+    repoRoot: string;
+    baseSha: string;
+    branchName?: string;
+    worktrees: Record<string, string>;
+    scratchDir: string;
+    verifyCmd: string;
+    timeoutMs: number;
+    workstreamBaseShas?: Record<string, string>;
+    retry?: {
+      canRetry: boolean;
+      onRecover: (evidenceTail?: string) => void;
+      onFirstFailure?: (
+        rawFailure: string,
+      ) => { allowed: boolean; decision: ConsolidatedVerifyRetryDecision } | undefined;
+    };
+  },
+): Promise<ConsolidatedVerifyResult> {
   const { repoRoot, baseSha, worktrees, scratchDir, verifyCmd, timeoutMs } = opts;
   // #794 — the pick scope: each workstream's own range is measured against
   // its effective base (the dependency's tip for a stacked workstream), so
