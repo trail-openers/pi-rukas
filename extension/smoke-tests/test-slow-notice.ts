@@ -340,14 +340,42 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
   assert(written.length === 1, "the steer reached the child's stdin");
   assert(written[0]?.includes('"type":"steer"') === true, "the RPC envelope is correct");
   deckMod.clearEntry(deckKey);
-  // #799 — clearEntry keeps state in quiet mode; the child handle must be
-  // deleted explicitly so a settled child is no longer steerable.
   const { childHandles } = await import("../src/async-jobs-registry.ts");
   childHandles.delete(deckKey);
   assert(
     steerChild(deckKey, "again", "pm-tool").delivered === false,
     "settled lens child → no-such-job",
   );
+}
+
+// --------------------------------------------- 9. slow-watch in quiet mode
+{
+  // #799 — the slow-watch is decoupled from the dispatch deck: it keeps its
+  // own per-job state (a module-level map in slow-notice.ts, fed by
+  // feedSlowProgress and cleared on settle) and reads NO deck entry, so it
+  // fires identically under PI_ENSEMBLE_QUIET_STATUS=1 (which makes
+  // dispatch-deck's updateEntry/clearEntry no-ops).
+  await withEnv({ PI_ENSEMBLE_QUIET_STATUS: "1" }, async () => {
+    clearSlowWatchesForTesting();
+    clearJobsForTesting();
+    const notices: string[] = [];
+    const steers: Array<{ id: string; text: string; source: string }> = [];
+    const stop = watchSlowDispatch({
+      id: "job-quiet",
+      role: "developer",
+      label: "developer",
+      pi: fakePi(notices),
+      steerFn: recordSteers(steers),
+    });
+    feedSlowProgress("job-quiet", stateAt(149));
+    assert(notices.length === 0 && steers.length === 0, "quiet: 149 turns → nothing yet");
+    feedSlowProgress("job-quiet", stateAt(151));
+    assert(notices.length === 1, "quiet mode: crossing 150 turns → notice still fires");
+    assert(steers.length === 1, "quiet mode: crossing 150 turns → steer still fires");
+    stop();
+    feedSlowProgress("job-quiet", stateAt(400));
+    assert(notices.length === 1, "quiet: settled watch never fires again (map cleared on settle)");
+  });
 }
 
 console.log(`\nexit ${exit}`);

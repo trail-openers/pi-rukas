@@ -8,9 +8,10 @@ import type { DispatchFailureCause, DispatchResult } from "./types.ts";
 import { ADVERSARIAL_TRANSIENT_MAX_RETRIES, isRateLimit429Msg } from "./types.ts";
 
 /**
- * Classify a dispatch result by its ROOT CAUSE so the adversarial
+ * #309/#314 — classify a dispatch result by its ROOT CAUSE so the adversarial
  * loop can branch on structure (self-kill / 429 / provider-severed) instead
- * of collapsing everything to a boolean.
+ * of collapsing everything into a boolean. Uses shared RATE_LIMIT_429_PATTERN
+ * from types.ts. Infra-failure is derived: cause !== "success".
  */
 export function classifyDispatchOutcome(r: DispatchResult): {
   cause: DispatchFailureCause;

@@ -53,7 +53,7 @@ function assert(cond: boolean, msg: string) {
   const { readFileSync } = await import("node:fs");
   const path = await import("node:path");
   const src = readFileSync(
-    path.resolve(import.meta.dirname, "..", "src", "work-driver-explore.ts"),
+    path.resolve(import.meta.dirname, "..", "src", "work-driver-explore-run.ts"),
     "utf8",
   );
 

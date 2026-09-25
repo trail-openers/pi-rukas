@@ -1,10 +1,13 @@
 /**
  * work-driver-adversarial-fanout — the per-workstream fan-out of the
- * adversarial gate (#486), extracted from work-driver-adversarial.ts.
- * Leaf module. A transient infra failure in ONE workstream's loop is
- * retried in-step (per-workstream budget, taxonomy backoff) while the
- * other workstreams' approved verdicts are preserved in the event log.
- * A permanent failure parks with cap `adversarial-infra-failure`.
+ * adversarial gate (#486), extracted from work-driver-adversarial.ts
+ * (AGENTS.md §12 file-size limit). Leaf module — no dependency on any
+ * work-driver-<step>.ts handler. #486: a transient infrastructure failure
+ * in ONE workstream's loop is retried in-step (per-workstream budget,
+ * taxonomy backoff) while the other workstreams' approved verdicts are
+ * preserved in the event log either way. A permanent failure parks with
+ * cap `adversarial-infra-failure` instead of being rendered as a review
+ * rejection.
  */
 
 import { runAdversarialLoop } from "./adversarial.ts";
@@ -34,7 +37,27 @@ import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
-/** #486 — the driver's per-workstream adversarial retry budget. Matches the #308 router's TRANSIENT_MAX_RETRIES shape (2 retries = up to 3 total attempts). */
+/**
+ * #543 — the cap-kill fields of an AdversarialOutcome: the killCause
+ * (loop / token-budget) + its structured trigger evidence, threaded from
+ * the inner spawn's DispatchResult. Empty when the result carries no cap
+ * kill. Split from runOne's return (AGENTS.md §12 file-size limit).
+ */
+function capKillOutcomeFields(result: DispatchResult): Partial<AdversarialOutcome> {
+  if (result.killCause === "loop") {
+    return {
+      killCause: "loop",
+      ...(result.loopEvidence ? { loopEvidence: result.loopEvidence } : {}),
+    };
+  }
+  if (result.killCause === "token-budget") {
+    return {
+      killCause: "token-budget",
+      ...(result.tokenBudget ? { tokenBudget: result.tokenBudget } : {}),
+    };
+  }
+  return {};
+}
 
 export async function fanOutAdversarial(
   ctx: DriverContext,
@@ -474,26 +497,4 @@ export async function fanOutAdversarial(
     parked: false,
     parkedInfra: !priorHadInfraFailure && ids.length > 1 && outcomes.some(exhaustedNoVerdict),
   });
-}
-
-/**
- * #543 — the cap-kill fields of an AdversarialOutcome: the killCause
- * (loop / token-budget) + its structured trigger evidence, threaded from
- * the inner spawn's DispatchResult. Empty when the result carries no cap
- * kill. Split from runOne's return (AGENTS.md §12 file-size limit).
- */
-function capKillOutcomeFields(result: DispatchResult): Partial<AdversarialOutcome> {
-  if (result.killCause === "loop") {
-    return {
-      killCause: "loop",
-      ...(result.loopEvidence ? { loopEvidence: result.loopEvidence } : {}),
-    };
-  }
-  if (result.killCause === "token-budget") {
-    return {
-      killCause: "token-budget",
-      ...(result.tokenBudget ? { tokenBudget: result.tokenBudget } : {}),
-    };
-  }
-  return {};
 }

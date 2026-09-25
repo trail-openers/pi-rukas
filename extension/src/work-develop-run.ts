@@ -93,7 +93,7 @@ export type BranchCompletedExtra = Partial<Extract<WorkEvent, { kind: "branch-co
  * place that couples the cap-hit append to the park flag: the flag and the
  * append are one structural unit (no code path sets one without the other),
  * and the append lands at the event-log TAIL — the step router routes on the
- * tail, and the caller's short-circuit (work-develop-dependent.ts) must
+ * tail, and the caller's short-circuit (work-develop-topological.ts) must
  * keep it there.
  *
  * `branchEvents` (the accumulated sibling events: completion + branch-completed

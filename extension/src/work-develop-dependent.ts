@@ -13,7 +13,9 @@
  */
 import { trace } from "./trace.ts";
 import type { BranchCompletedExtra, DependentRunState } from "./work-develop-run.ts";
-import { parkDeferredLeftover } from "./work-develop-run.ts"; /**
+import { parkDeferredLeftover } from "./work-develop-run.ts";
+
+/**
  * #679 — run all dependent workstreams sequentially in topological order.
  * Each dependent's worktree is created (deferred) from its dependency's
  * post-commit SHA. A dependent whose dependency failed/was skipped is

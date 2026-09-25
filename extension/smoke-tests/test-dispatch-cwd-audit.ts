@@ -86,12 +86,10 @@ const ROOT_INTENTIONAL_SITES: Array<{ file: string; site: RegExp; label: string;
     why: "watches the FORGE, not a tree — the worktrees are already committed and pushed at this point",
   },
   {
-    file: "work-driver-explore.ts",
-    // #799 — the site now carries the slow-run recorder in opts; anchor on
-    // the spec + label (onSlow is not part of the cwd audit) rather than
-    // requiring the bare opts shape.
-    site: /\{\s*role:\s*"explore",\s*prompt\s*\},\s*\{\s*label:\s*"explore"/,
-    label: "explore (label: explore)",
+    file: "work-driver-explore-run.ts",
+    // #799 — runExplore (and its dispatch) lives in work-driver-explore-run.ts
+    site: /dispatch\(\s*ctx\.pi,\s*\{\s*role:\s*"explore",\s*prompt\s*\},\s*\{\s*label:\s*"explore",\s*onSlow:/,
+    label: "explore (label: explore) — runExplore",
     why: "reads the issue and the code at the integration point before any worktree exists",
   },
   {
@@ -123,7 +121,7 @@ const ROOT_INTENTIONAL_SITES: Array<{ file: string; site: RegExp; label: string;
   },
   {
     file: "work-driver-handoff-ops.ts",
-    site: /\{\s*role:\s*"ops",\s*prompt\s*\},\s*\{\s*label:\s*"ops:handoff"/,
+    site: /dispatch\(\s*ctx\.pi,\s*\{\s*role:\s*"ops",\s*prompt\s*\},\s*\{\s*label:\s*"ops:handoff"/,
     label: "handoff (ops:handoff)",
     why: "posts the handoff comment to the forge; the cycle's trees are torn down or parked and the operator is being told where to look",
   },
@@ -157,9 +155,9 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     "canary: the speculative-explore dispatch carries the same explicit cwd",
   );
   // Dependent workstreams dispatch only after a successful deferred
-  // worktree creation, with the created path as cwd. The dependent phase
-  // moved to work-develop-dependent.ts (500-line headroom) — the canary
-  // reads that file now.
+  // worktree creation, with the created path as cwd.
+  // The dependent phase moved to work-develop-dependent.ts (500-line
+  // headroom) — the canary reads that file now.
   const dep = read("work-develop-dependent.ts");
   assert(
     /runOneWorkstream\(\s*id,\s*createdPath\s*\)/.test(dep),
@@ -265,14 +263,15 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
     const raw = readFileSync(path.join(SRC, entry.name), "utf8");
     let n = 0;
-    for (const line of raw.split("\n")) {
-      if (/^\s*\*/.test(line)) continue; // block-comment line
-      if (SEAM.test(line)) n += 1;
-    }
+    raw
+      .split("\n")
+      .forEach((line) => {
+        if (/^\s*\*/.test(line)) return; // block-comment line
+        if (SEAM.test(line)) n += 1;
+      });
     // Subtract the file's own seam DEFINITIONS (export function dispatchCore,
     // export function spawnSpecialist) — those are the seams, not call sites.
-    const defs =
-      raw.match(/^export (?:async )?function (?:dispatchCore|spawnSpecialist)\(/gm)?.length ?? 0;
+    const defs = raw.match(/^export (?:async )?function (?:dispatchCore|spawnSpecialist)\(/gm)?.length ?? 0;
     const calls = Math.max(0, n - defs);
     if (calls > 0) perFile[entry.name] = (perFile[entry.name] ?? 0) + calls;
   }
@@ -286,6 +285,7 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     "work-driver-lens.ts": 1, // the lens-fix runSingleDispatch (the review is an exec)
     "adversarial.ts": 1, // runPhase's inner spawn — cwd threaded by the fan-out
     "lens-review-child.ts": 1, // the lens child — cwd: runOpts.cwd, set by the lens review seam
+    "work-driver-explore-run.ts": 1, // runExplore (the integration-point read, no cwd)
   };
   // The /plan and /research drivers' seams — outside the /work driver's
   // scope for this audit (their own cwd hygiene is a separate concern).
@@ -317,9 +317,7 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     if (NON_WORK_DRIVER.has(file)) continue; // /plan + /research — outside this audit's scope
     const expected = AUDITED[file];
     if (expected === undefined) {
-      problems.push(
-        `${file}: ${count} call site(s) in a file that is neither allowlisted, cwd-audited, nor seam plumbing`,
-      );
+      problems.push(`${file}: ${count} call site(s) in a file that is neither allowlisted, cwd-audited, nor seam plumbing`);
     } else if (count !== expected) {
       problems.push(
         `${file}: ${count} call site(s) found but the audit section accounts for ${expected} — a dispatch site moved or a new one was added`,
