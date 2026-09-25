@@ -81,11 +81,13 @@ export async function runHandoffOpsDispatch(
           label: "ops:handoff",
           timeoutMs: boundMs,
           // #799 — the slow recorder collects into the driver's pending
-          // buffer; the step boundary (routeStepOutcome) drains it. The
-          // child may outlive the race (below) — its crossings are recorded
-          // either way and land in the log with the step's own events. If
-          // they are never drained, dropSlowEvents at the end of runHandoff
-          // (the cycle's terminal step) removes the leftover entry.
+          // buffer. The child may outlive the race (below) — its crossings
+          // are recorded either way and drainSlowEvents at the end of
+          // runHandoff (the cycle's terminal step) lands them in the durable
+          // log. A crossing recorded after that final drain is not persisted
+          // (no later boundary exists — handoff is terminal); the in-session
+          // notice already went out, and the next cycle's start drops any
+          // leftover (see work-driver.ts).
           onSlow: slowRecorder(ctx.issue, "handoff"),
         },
       ),
@@ -131,8 +133,10 @@ export async function runHandoffOpsDispatch(
     // The bounded race frees the DRIVER; the child it was racing may still be
     // running, so the slow watch is deliberately NOT stopped here — its
     // crossings keep recording until the child settles (the watch's own
-    // settle path owns the stop). Its recorded crossings belong to the log
-    // either way.
+    // settle path owns the stop). Crossings that arrive before runHandoff's
+    // final drain land in the log with it; one recorded after that drain is
+    // not persisted (the cycle is terminal — the in-session notice already
+    // went out, and the next cycle's start drops the leftover).
     if (boundTimer) clearTimeout(boundTimer);
   }
   return { next, opsReplyText };

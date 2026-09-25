@@ -18,10 +18,10 @@ import { execSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runSingleDispatch } from "../src/work-driver-merged.ts";
-import { initialState } from "../src/workflow-state.ts";
+import { appendEvent, initialState } from "../src/workflow-state.ts";
+import { runWorkDriver } from "../src/work-driver.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -206,6 +206,112 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
     !next.eventLog.some((e) => e.kind === "adversarial-skipped-empty-diff"),
     "adversarial fan-out: the child ran (the fixture diff is non-empty, no skip)",
   );
+}
+
+// ------------------------------------------------------------------ 5. handoff final drain
+{
+  // #799 — a crossing recorded DURING the handoff leg (the ops child may
+  // outlive the dispatch bound and keep recording after the race) is
+  // drained by runHandoff into the state it returns — instead of the
+  // step-boundary drain (routeStepOutcome, which runs after runHandoff
+  // returns) or being discarded.
+  process.env.PI_ENSEMBLE_RESUME = "0";
+  process.env.PI_ENSEMBLE_CROSS_GROUP_CONFLICTS = "0";
+  process.env.PI_ENSEMBLE_FORGE = "none";
+  process.env.PI_ENSEMBLE_HANDOFF_CONSOLIDATE = "0";
+  process.env.PI_ENSEMBLE_WORKTREE_TEARDOWN = "0";
+  const { runHandoff } = await import("../src/work-driver-handoff.ts");
+  const { clearSlowEventsForTesting, drainSlowEvents, slowRecorder } = await import("../src/slow-notice.ts");
+  clearSlowEventsForTesting();
+  const dir = mkdtempSync(path.join(os.tmpdir(), "pi-ens-799handoff-"));
+  const ctx: any = {
+    pi: { sendUserMessage: () => {} },
+    issue: 799,
+    issues: [799],
+    repoRoot: dir,
+    // The fake ops dispatch crosses the threshold via onSlow mid-leg, exactly
+    // as a real slow child recording while the driver works would.
+    dispatchFn: async (_pi: unknown, _spec: unknown, opts: any) => {
+      opts?.onSlow?.({
+        step: "handoff",
+        role: "ops",
+        jobId: "handoff-fake",
+        label: "ops:handoff",
+        elapsedMs: 12_000,
+        turns: 3,
+        tokens: 1234,
+        at: Date.now(),
+      });
+      return { role: "ops", ok: true, text: "done", toolUses: [], ms: 1, exitCode: 0 };
+    },
+  };
+  const capped = appendEvent(initialState(799, 1_000_000), {
+    kind: "cap-hit",
+    at: 1_000_400,
+    cap: "step-failed:explore",
+    reviewRound: 0,
+    nextStep: "handoff",
+  });
+  const out = await runHandoff(ctx, capped, Date.now());
+  const inLog = out.eventLog.filter((e) => e.kind === "dispatch-slow");
+  assert(inLog.length === 1, "handoff drain: a crossing recorded during the handoff leg is present in the state runHandoff returns");
+  assert(
+    inLog[0]?.kind === "dispatch-slow" && inLog[0]?.step === "handoff" && inLog[0]?.jobId === "handoff-fake",
+    "handoff drain: the event is the one the ops child recorded (step + job id)",
+  );
+  // The buffer entry was consumed by the drain — nothing is left to leak
+  // into a later cycle of the same issue.
+  assert(drainSlowEvents(799).length === 0, "handoff drain: the pending buffer is empty afterwards (no leftover to leak)");
+  delete process.env.PI_ENSEMBLE_FORGE;
+  delete process.env.PI_ENSEMBLE_HANDOFF_CONSOLIDATE;
+  delete process.env.PI_ENSEMBLE_WORKTREE_TEARDOWN;
+}
+
+// ------------------------------------------------------- 6. cycle-start drop of a stale buffer entry
+{
+  // #799 — a parked cycle's leftover buffer entry (a crossing its handoff's
+  // final drain did not catch) must not leak into a fresh cycle of the same
+  // issue: the driver drops every issue's entry when a cycle begins.
+  process.env.PI_ENSEMBLE_FORGE = "none";
+  const { clearSlowEventsForTesting, drainSlowEvents, slowRecorder } = await import("../src/slow-notice.ts");
+  clearSlowEventsForTesting();
+  const stale = slowRecorder(799, "handoff");
+  stale({
+    step: "handoff",
+    role: "ops",
+    jobId: "stale-job",
+    label: "ops:handoff",
+    elapsedMs: 12_000,
+    turns: 3,
+    tokens: 1234,
+    at: 1_000_000,
+  });
+  assert(drainSlowEvents(799).length === 1, "cycle start: a stale buffer entry exists before the cycle begins");
+  // The fake dispatch records nothing; the stale entry's jobId is not in the
+  // log after the cycle runs.
+  const ctx: DriverContext = {
+    pi: fakePi([]),
+    issue: 799,
+    issues: [799],
+    repoRoot: "/tmp",
+    dispatchFn: async () => ({ role: "explore", ok: true, text: "done", toolUses: [], ms: 1, exitCode: 0 }),
+  } as unknown as DriverContext;
+  await runWorkDriver(ctx);
+  const leftover = drainSlowEvents(799);
+  assert(!leftover.some((e) => e.jobId === "stale-job"), "cycle start: the stale entry is gone after the cycle starts (no leak into the new cycle)");
+  // Sibling-cycle isolation is unchanged: another issue's entry survives.
+  const other = slowRecorder(800, "develop");
+  other({
+    step: "develop",
+    role: "developer",
+    jobId: "other-job",
+    label: "dev:default",
+    elapsedMs: 1,
+    turns: 1,
+    tokens: 1,
+    at: 1,
+  });
+  clearSlowEventsForTesting();
 }
 
 console.log(`\nexit ${exit}`);
