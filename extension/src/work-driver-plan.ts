@@ -113,7 +113,7 @@ export async function runPlan(
   const primaryOpts = {
     label: "plan",
     timeoutMs: planDispatchTimeoutMs(),
-    onSlow: slowRecorder("plan"),
+    onSlow: slowRecorder(ctx.issue, "plan"),
   };
   try {
     result = await dispatch(ctx.pi, { role: "explore", prompt }, primaryOpts);
@@ -211,7 +211,7 @@ export async function runPlan(
     const retry = await dispatch(
       ctx.pi,
       { role: "explore", prompt: correctivePrompt },
-      { label: "plan:corrective", onSlow: slowRecorder("plan") },
+      { label: "plan:corrective", onSlow: slowRecorder(ctx.issue, "plan") },
     ).catch(() => undefined);
     if (retry) {
       // #754 — the corrective is NEVER re-dispatched again — exactly one

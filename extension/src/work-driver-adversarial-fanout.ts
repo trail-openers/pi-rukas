@@ -179,9 +179,10 @@ export async function fanOutAdversarial(
           // from older state files, which degrade to the previous behaviour.
           issueBody: state.pipelineState.issueBodyArtifact,
           // #799 — the slow-run recorder collects into the driver's pending
-          // buffer; the step boundary (routeStepOutcome) drains it — the
-          // fan-out folds nothing of its own any more.
-          onSlow: slowRecorder("adversarial"),
+          // buffer (keyed by this cycle's primary issue); the step boundary
+          // (routeStepOutcome) drains it — the fan-out folds nothing of its
+          // own any more.
+          onSlow: slowRecorder(ctx.issue, "adversarial"),
         },
         // No AbortController plumbing in v1 — spawn-level timeouts
         // in spawn.ts (per-role) bound the work.

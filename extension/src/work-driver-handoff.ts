@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { type ForgeType, detectForge } from "./forge-detect.ts";
 import { type Forge, createForge } from "./forge.ts";
+import { dropSlowEvents } from "./slow-notice.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import {
@@ -362,6 +363,13 @@ export async function runHandoff(
   trace(
     `work-driver: handoff for issue #${ctx.issue} (${target}) — commentUrl=${commentUrl ?? "?"} label=${labelApplied}`,
   );
+  // #799 — cycle end: drop this cycle's leftover slow-event buffer entry.
+  // The step-boundary drain (routeStepOutcome) handles the normal path; this
+  // covers a crossing no boundary drained (e.g. a handoff ops child that
+  // outlived its bound and recorded after the race), so it cannot leak into
+  // a later cycle of the same issue. Handoff is the terminal step every
+  // /work cycle ends in, so this is the one place the leftover belongs.
+  dropSlowEvents(ctx.issue);
   return next;
 }
 /** #674 — consolidate the parked cycle's workstream work onto its feature branch BEFORE the handoff body is rendered (item 1+2 preferred fix direction). Delegates to work-driver-handoff-consolidate.ts for the actual integration (which runs under withIntegrationLock, respects integrate()'s dirty-repoRoot preflight, and degrades to a failure outcome rather than throwing). Returns the `handoff-consolidated` event to append, or undefined when consolidation was not possible (no branch, no work, no baseSha, dirty repoRoot, conflict, or git error). The caller degrades to the accurate per-worktree recovery in that case. */

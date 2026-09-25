@@ -1,11 +1,14 @@
 #!/usr/bin/env bun
 /**
  * #799 — the slow-run watch: threshold notice to the PM + automatic steer,
- * the driver's dispatch-slow event, and the kill-kill-free contract.
+ * the kill-kill-free contract, and the cycle-keyed slow-event buffer.
  *
- * Drives the REAL code (watchSlowDispatch / feedSlowProgress / startJob /
- * dispatchCore / runSingleDispatch) with a fake child whose progress crosses
- * the turn threshold and a fake clock/timer for the elapsed dimension.
+ * Drives the REAL code (watchSlowDispatch / feedSlowProgress / startJob)
+ * with a fake child whose progress crosses the turn threshold and a fake
+ * clock/timer for the elapsed dimension. The driver-path coverage (the
+ * dispatch-slow event through runSingleDispatch / runPlan / the adversarial
+ * fan-out, drained at the step boundary) lives in
+ * test-slow-notice-driver.ts (§12 file-size split).
  *
  * Acceptance (issue #799, operator decision 2026-09-24):
  *  - crossing 150 turns → the PM gets exactly one notice with the peek
@@ -15,15 +18,10 @@
  *  - PI_ENSEMBLE_AUTO_STEER=0 → notice, no steer; PI_ENSEMBLE_SLOW_NOTICE=0
  *    → neither.
  *  - a lens child is steerable by the id dispatch_peek shows.
- *  - a driver dispatch crossing a threshold records dispatch-slow in the
- *    event log (runPlan + adversarial fan-out, drained at the step boundary).
+ *  - the slow-event buffer is keyed by cycle: concurrent cycles never see
+ *    each other's dispatch-slow events.
  */
 
-import { mkdtempSync, readFileSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { execSync } from "node:child_process";
-import type { Writable } from "node:stream";
 import { clearJobsForTesting, startJob } from "../src/async-jobs.ts";
 import {
   clearParentExtensionApiForTesting,
@@ -33,15 +31,13 @@ import { steerChild } from "../src/dispatch-steer.ts";
 import type { RunningState } from "../src/progress.ts";
 import {
   clearSlowWatchesForTesting,
+  drainSlowEvents,
   feedSlowProgress,
-  slowSteerText,
   slowThresholds,
   watchSlowDispatch,
 } from "../src/slow-notice.ts";
 import type { DispatchResult } from "../src/types.ts";
-import type { DriverContext } from "../src/work-driver-context.ts";
-import { runSingleDispatch } from "../src/work-driver-merged.ts";
-import { initialState } from "../src/workflow-state.ts";
+import type { WorkEvent } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -56,8 +52,6 @@ function setup() {
   clearSlowWatchesForTesting();
   clearJobsForTesting();
 }
-
-const REPO = mkdtempSync(path.join(os.tmpdir(), "pi-ens-799s-"));
 
 /** A fake pi whose sendUserMessage records the steer-delivered messages. */
 function fakePi(notices: string[]) {
@@ -153,7 +147,10 @@ await withEnv({}, async () => {
     now,
   });
   // Default thresholds: 20 min / 150 turns / 20M tokens.
-  t += 21 * 60_000;
+  t += 19 * 60_000;
+  feedSlowProgress("job-elapsed", stateAt(1));
+  assert(notices.length === 0, "19 min → nothing yet");
+  t += 2 * 60_000;
   feedSlowProgress("job-elapsed", stateAt(1));
   assert(notices.length === 1, "crossing 20 min → exactly one notice (fake clock)");
   assert(steers.length === 1, "crossing 20 min → exactly one steer");
@@ -223,74 +220,6 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "150" }, async () => {
   assert(jobId.length > 0, "jobId is the id the notice names");
 });
 
-// ------------------------------------------- 6. runSingleDispatch + onSlow
-await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
-  setup();
-  const state = initialState(799, 1_000_000);
-  const fakeDispatch: NonNullable<DriverContext["dispatchFn"]> = async (_pi, _spec, opts) => {
-    // The fake dispatch crosses the threshold directly via onSlow (the watch
-    // is keyed by the job id startJob mints, which the driver does not see
-    // until beginDispatch — the recorder's buffer is what carries the event).
-    const onSlow = opts?.onSlow;
-    assert(typeof onSlow === "function", "runSingleDispatch threads onSlow");
-    onSlow?.({
-      step: "branch",
-      role: "ops",
-      jobId: "fake-job",
-      label: "ops:branch",
-      elapsedMs: 12_000,
-      turns: 3,
-      tokens: 1234,
-      at: Date.now(),
-    });
-    return { role: "ops", ok: true, text: "done", toolUses: [], ms: 1, exitCode: 0, transcriptPath: "/tmp/x" };
-  };
-  const ctx: DriverContext = {
-    pi: fakePi([]),
-    issue: 799,
-    issues: [799],
-    repoRoot: REPO,
-    dispatchFn: fakeDispatch,
-  } as unknown as DriverContext;
-  const out = await runSingleDispatch(ctx, state, "branch", "ops", "ops:branch", Date.now(), () => "prompt");
-  // #799 — the slow recorder no longer folds into a per-step state ref: the
-  // crossing is collected in the driver's pending buffer and drained at the
-  // step boundary (routeStepOutcome, the single persistence point). Drain it
-  // here exactly as the driver does, then check the union is exactly one.
-  const { drainSlowEvents } = await import("../src/slow-notice.ts");
-  const drained = drainSlowEvents();
-  const slowEvents = [...out.eventLog, ...drained].filter((e) => e.kind === "dispatch-slow");
-  assert(slowEvents.length === 1, "driver dispatch crossing → one dispatch-slow in the log (buffer drain)");
-  const ev = slowEvents[0];
-  if (ev && ev.kind === "dispatch-slow") {
-    assert(ev.step === "branch", "dispatch-slow carries the step");
-    assert(ev.turns === 3 && ev.tokens === 1234, "dispatch-slow carries turns + tokens");
-    assert(ev.jobId === "fake-job", "dispatch-slow carries the job id");
-  }
-  // The completion event lands in the step's own returned state (the buffer
-  // drain at the step boundary lands the slow event in the PERSISTED log).
-  const last = out.eventLog[out.eventLog.length - 1];
-  assert(last?.kind === "dispatch-completed", "completion event is the tail of the step's own state");
-});
-
-// ------------------------------- 7. runSingleDispatch has no heartbeat loop
-{
-  const src = readFileSync(path.join(import.meta.dir, "../src/work-driver-merged.ts"), "utf8");
-  // #799 — the periodic heartbeat is gone: no setInterval in the dispatch
-  // path (a comment mentioning it is fine; a live loop is not).
-  assert(!/setInterval\(/.test(src), "work-driver-merged.ts: no heartbeat loop remains");
-  const slowSrc = readFileSync(path.join(import.meta.dir, "../src/slow-notice.ts"), "utf8");
-  assert(/watchSlowDispatch/.test(slowSrc), "slow-notice.ts: the watch module exists");
-  // The mandated steer text is exactly the operator's string.
-  const text = slowSteerText(1234, 150);
-  assert(
-    text.startsWith("You have been running for ") &&
-      text.includes("/ 150 turns") &&
-      text.includes("Report status in ≤3 lines (done / remaining / blocked)"),
-    "steer text matches the mandated shape",
-  );
-}
-
 // --------------------------------------------- 8. lens child is steerable
 {
   // The registry + steer-core path: a lens child registers its stdin under
@@ -307,7 +236,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
     tag: "simplicity",
   });
   const written: string[] = [];
-  const fakeStdin = { write: (s: string) => (written.push(s), true) } as unknown as Writable;
+  const fakeStdin = { write: (s: string) => (written.push(s), true) } as unknown as import("node:stream").Writable;
   registerChildHandle(deckKey, fakeStdin, "code-review-specialist[simplicity]", "code-review-specialist");
   const r = steerChild(deckKey, "status check", "pm-tool");
   assert(r.delivered === true, `lens child is steerable by the deck id (${r.reason ?? "ok"})`);
@@ -374,106 +303,6 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
   }
 });
 
-// ---------------------------------------------------------------- 11. runPlan slow event
-{
-  process.env.PI_ENSEMBLE_RESUME = "0";
-  process.env.PI_ENSEMBLE_CROSS_GROUP_CONFLICTS = "0";
-  const { runPlan } = await import("../src/work-driver-plan.ts");
-  const { initialState } = await import("../src/workflow-state.ts");
-  const { clearSlowEventsForTesting, drainSlowEvents } = await import("../src/slow-notice.ts");
-  clearSlowEventsForTesting();
-  const fakeDispatch: any = async (_pi: unknown, _spec: unknown, opts: any) => {
-    opts?.onSlow?.({
-      step: "plan",
-      role: "explore",
-      jobId: "x",
-      label: "plan",
-      elapsedMs: 1,
-      turns: 151,
-      tokens: 3,
-      at: Date.now(),
-    });
-    return { role: "explore", ok: true, text: "done", toolUses: [], ms: 5, exitCode: 0 };
-  };
-  const ctx: any = {
-    pi: { sendUserMessage: () => {} },
-    issue: 799,
-    issues: [799],
-    repoRoot: "/tmp",
-    dispatchFn: fakeDispatch,
-  };
-  const out = await runPlan(ctx, initialState(799, 1_000_000));
-  // #799 — the plan-time crossing is collected in the pending buffer (the
-  // old shape folded into a throwaway ref that was never folded back, so it
-  // was lost); the driver drains it at the step boundary.
-  const drained = drainSlowEvents();
-  const slowEvents = [...out.eventLog, ...drained].filter((e) => e.kind === "dispatch-slow");
-  assert(
-    slowEvents.length === 1 &&
-      slowEvents[0]?.kind === "dispatch-slow" &&
-      slowEvents[0]?.step === "plan",
-    "runPlan: the dispatch-slow recorded during the plan step lands exactly once (pending buffer drain)",
-  );
-  assert(out.eventLog.length >= 1, "runPlan: the step completed (its own state still carries its own events)");
-}
-
-// ------------------------------------ 12. adversarial fan-out slow event
-{
-  // The fan-out's slow recorder: the old shape wrote into a `fanoutStateRef`
-  // the fan-out never read back (crossings lost). It now collects into the
-  // driver's pending buffer, drained at the step boundary. Drive the REAL
-  // `fanOutAdversarial` with a fake loop fn whose child crosses the threshold.
-  // The child must actually run (not be skipped by the empty-diff short-circuit).
-  process.env.PI_ENSEMBLE_RESUME = "0";
-  process.env.PI_ENSEMBLE_CROSS_GROUP_CONFLICTS = "0";
-  const { fanOutAdversarial } = await import("../src/work-driver-adversarial-fanout.ts");
-  const { initialState } = await import("../src/workflow-state.ts");
-  const { clearSlowEventsForTesting, drainSlowEvents } = await import("../src/slow-notice.ts");
-  clearSlowEventsForTesting();
-  const state = initialState(799, 1_000_000);
-  state.pipelineState.worktrees = { default: process.cwd() };
-  // A real diff is required so the empty-diff short-circuit does not skip the
-  // dispatch (no child → onSlow never fires). `git diff <baseSha>..HEAD` shows
-  // the commits since base — for this branch that is the #799 work (non-empty),
-  // so pin baseSha to the branch base. Deterministic; falls back to empty diff.
-  for (const r of ["origin/main", "main", "HEAD~3"]) {
-    try {
-      const sha = execSync(`git -C . rev-parse --verify ${r}`, { maxBuffer: 64 * 1024 })
-        .toString()
-        .trim();
-      if (/^[0-9a-f]{40}$/.test(sha)) {
-        state.pipelineState.baseSha = sha;
-        break;
-      }
-    } catch {
-      /* try the next ref */
-    }
-  }
-  const fakeLoop: NonNullable<DriverContext["adversarialLoopFn"]> = async (_params) => {
-    _params.onSlow?.({
-      step: "adversarial", role: "adversarial-developer", jobId: "fanout-fake", label: "adversarial_loop",
-      elapsedMs: 12_000, turns: 3, tokens: 1234, at: Date.now(),
-    });
-    return { role: "adversarial-loop", ok: true, text: "VERDICT: APPROVED\n\nNo issues.", toolUses: [], ms: 1, exitCode: 0 };
-  };
-  const ctx: any = {
-    pi: { sendUserMessage: () => {} },
-    issue: 799,
-    issues: [799],
-    repoRoot: process.cwd(),
-    adversarialLoopFn: fakeLoop,
-  };
-  const { next } = await fanOutAdversarial(ctx, state, ["default"], new Map(), false, null);
-  const drained = drainSlowEvents();
-  const slowEvents = [...next.eventLog, ...drained].filter((e) => e.kind === "dispatch-slow");
-  assert(
-    slowEvents.length === 1 &&
-      slowEvents[0]?.kind === "dispatch-slow" &&
-      slowEvents[0]?.step === "adversarial",
-    "adversarial fan-out: the dispatch-slow recorded during the fan-out lands exactly once (pending buffer drain)",
-  );
-}
-
 // ---------------------------------------------------------------- 13. lens PM notice
 await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
   const notices: string[] = [];
@@ -482,7 +311,12 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
   setup();
   let t = 2_000_000;
   const now = () => t;
-  const stop = watchSlowDispatch({ id: "job-lens", role: "code-review-specialist", label: "lens:arch", now });
+  const stop = watchSlowDispatch({
+    id: "job-lens",
+    role: "code-review-specialist",
+    label: "lens:arch",
+    now,
+  });
   try {
     t += 100;
     feedSlowProgress("job-lens", { turns: 1, totalTokens: 1, elapsedMs: 100 });
@@ -493,6 +327,66 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
     clearParentExtensionApiForTesting();
   }
 });
+
+// --------------------------------------------------- 14. cycle-keyed buffer
+{
+  // #799 — the pending slow-event buffer is keyed by the cycle's primary
+  // issue (the registry's cycle identity). Up to
+  // MAX_PARALLEL_GROUPS_DEFAULT (3) groups run concurrently in one process;
+  // the old shared array let cycle A's routeStepOutcome drain cycle B's
+  // crossings into A's event log. Drive both recorders concurrently and
+  // verify each drain returns ONLY its own cycle's events.
+  const { clearSlowEventsForTesting, slowRecorder } = await import("../src/slow-notice.ts");
+  clearSlowEventsForTesting();
+  const at = Date.now();
+  slowRecorder(100, "plan")({
+    step: "plan",
+    role: "explore",
+    jobId: "job-a1",
+    label: "plan",
+    elapsedMs: 1,
+    turns: 151,
+    tokens: 1,
+    at,
+  });
+  // Interleave: cycle B records between A's two crossings, as two cycles
+  // advancing in lockstep do in the real driver loop.
+  slowRecorder(200, "adversarial")({
+    step: "adversarial",
+    role: "adversarial-developer",
+    jobId: "job-b1",
+    label: "adversarial",
+    elapsedMs: 1,
+    turns: 151,
+    tokens: 2,
+    at,
+  });
+  slowRecorder(100, "plan")({
+    step: "plan",
+    role: "explore",
+    jobId: "job-a2",
+    label: "plan",
+    elapsedMs: 1,
+    turns: 301,
+    tokens: 3,
+    at,
+  });
+  const drainedA: WorkEvent[] = drainSlowEvents(100);
+  assert(
+    drainedA.length === 2 && drainedA.every((e) => e.jobId === "job-a1" || e.jobId === "job-a2"),
+    "drain(A) returns exactly cycle A's two crossings (not B's)",
+  );
+  assert(drainedA.every((e) => e.kind === "dispatch-slow"), "drain(A) events are dispatch-slow");
+  const drainedB: WorkEvent[] = drainSlowEvents(200);
+  assert(
+    drainedB.length === 1 && drainedB[0]?.jobId === "job-b1",
+    "cycle B's crossing remained for B's own drain (no cross-cycle contamination)",
+  );
+  // Drain is a deletion: a second drain of either cycle returns nothing, and
+  // draining an unknown cycle never throws or returns a sibling's events.
+  assert(drainSlowEvents(100).length === 0, "drain(A) again → empty (entry deleted on first drain)");
+  assert(drainSlowEvents(999).length === 0, "drain(unknown) → empty, no throw");
+}
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

@@ -83,8 +83,10 @@ export async function runHandoffOpsDispatch(
           // #799 — the slow recorder collects into the driver's pending
           // buffer; the step boundary (routeStepOutcome) drains it. The
           // child may outlive the race (below) — its crossings are recorded
-          // either way and land in the log with the step's own events.
-          onSlow: slowRecorder("handoff"),
+          // either way and land in the log with the step's own events. If
+          // they are never drained, dropSlowEvents at the end of runHandoff
+          // (the cycle's terminal step) removes the leftover entry.
+          onSlow: slowRecorder(ctx.issue, "handoff"),
         },
       ),
       bound,

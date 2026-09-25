@@ -215,7 +215,7 @@ export async function runExplore(
       // #799 — the slow recorder collects into the driver's pending buffer;
       // the step boundary (routeStepOutcome) drains it — this step folds
       // nothing.
-      { label: "explore", onSlow: slowRecorder("explore") },
+      { label: "explore", onSlow: slowRecorder(ctx.issue, "explore") },
     ),
   ]).then((arr) => arr[0]);
 

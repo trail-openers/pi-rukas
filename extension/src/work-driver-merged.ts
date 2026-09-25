@@ -114,9 +114,10 @@ export async function runSingleDispatch(
         label,
         timeoutMs: opts?.timeoutMs,
         // #799 — the slow recorder collects the crossings into the driver's
-        // pending buffer; the step-boundary drain (routeStepOutcome) persists
-        // them — this step folds nothing of its own any more.
-        onSlow: slowRecorder(step),
+        // pending buffer (keyed by this cycle's primary issue); the
+        // step-boundary drain (routeStepOutcome) persists them — this step
+        // folds nothing of its own any more.
+        onSlow: slowRecorder(ctx.issue, step),
       },
     );
   } catch (err) {
