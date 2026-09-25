@@ -14,7 +14,7 @@ import {
   lensPromptFor,
   renderSummary,
 } from "./lens-review-format.ts";
-import { blockedLensResults, installBlockRows, skillsDirUsable } from "./lens-review-skills.ts";
+import { installBlockRows, skillsDirUsable } from "./lens-review-skills.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
 import { makeRunId } from "./spawn.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
@@ -295,24 +295,18 @@ export async function runLensReview(opts: {
   // with a single install message and no spawn is ever called. The roster
   // is empty exactly in those cases, so the two are one check now (#873
   // moved the "any lens skill present" test onto the parsed roster).
-  const skillsDirProblem =
-    roster.length === 0
-      ? (skillsDirUsable(skillsDir) ??
-        `skills dir ${skillsDir} missing or empty — run ./install.sh`)
-      : undefined;
-  if (skillsDirProblem) {
+  if (roster.length === 0) {
+    const problem =
+      skillsDirUsable(skillsDir) ?? `skills dir ${skillsDir} missing or empty — run ./install.sh`;
     const batchKey = `${runId}/batch`;
     dispatchDeck.startBatchEntry(batchKey, {
-      label: `code-review-specialist×${roster.length}`,
-      size: roster.length,
+      label: "code-review-specialist×0",
+      size: 0,
     });
-    const lensResults =
-      roster.length === 0
-        ? installBlockRows(skillsDirProblem)
-        : blockedLensResults(skillsDirProblem, roster);
-    // Bump the batch once per lens so the deck shows 6/6 even though no
-    // spawn happened — the lens did "complete" (as a block), and the
-    // operator should see the pass as finished, not stuck.
+    const lensResults = installBlockRows(problem);
+    // Bump the batch once per lens so the deck shows the pass as finished,
+    // not stuck, even though no spawn happened — the lens did "complete"
+    // (as a block).
     for (let i = 1; i <= lensResults.length; i++) {
       dispatchDeck.updateBatchProgress(batchKey, i);
     }

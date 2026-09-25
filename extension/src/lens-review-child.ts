@@ -2,7 +2,9 @@
  * lens-review-child — one lens's spawn + retry loop + result shaping,
  * split from lens-review.ts (AGENTS.md §12 file-size limit).
  *
- * `runLensReview` (lens-review.ts) maps `LENSES` over this; the batch
+ * `runLensReview` (lens-review.ts) maps the parsed lens roster (the
+ * `code-review-*` skill dirs — see `buildLensRoster` in lens-roster.ts)
+ * over this; the batch
  * deck, dedup, verdict and cap-kill summary live in the parent.
  */
 

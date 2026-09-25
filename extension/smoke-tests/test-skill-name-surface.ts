@@ -45,7 +45,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { buildLensRoster } from "../src/lens-roster.ts";
-import { frontmatterName } from "../src/skill-frontmatter.ts";
+import { frontmatterField } from "../src/skill-frontmatter.ts";
 
 const REPO_ROOT = path.join(import.meta.dirname, "..", "..");
 const SCAN_ROOTS = ["agents-base", "modules", "pi-prompts"];
@@ -153,7 +153,7 @@ export function checkTreeSurface(root: string): { names: Map<string, string>; fa
   for (const dir of dirs) {
     const skillMd = path.join(skillDir, dir, "SKILL.md");
     if (!existsSync(skillMd)) continue;
-    const name = frontmatterName(readFileSync(skillMd, "utf8"));
+    const name = frontmatterField(readFileSync(skillMd, "utf8"), "name");
     if (name === null) {
       failures.push({ kind: "frontmatter", detail: `skill/${dir}/SKILL.md has no \`name:\` in its first frontmatter block` });
     } else if (name !== dir) {
@@ -163,7 +163,7 @@ export function checkTreeSurface(root: string): { names: Map<string, string>; fa
   return { names, failures };
 }
 
-/** Repo-only additions: LENSES resolution + anti-vacuity on the union. */
+/** Repo-only additions: roster-builder resolution (buildLensRoster) + anti-vacuity on the union. */
 export function checkRepoSurface(repoRoot: string): SkillSurfaceFailure[] {
   const { names, failures } = checkTreeSurface(repoRoot);
   const out = [...failures];

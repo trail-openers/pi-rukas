@@ -31,17 +31,14 @@ export function firstFrontmatterBlock(text: string): string | null {
 /**
  * A single top-level `key:` value from the first frontmatter block only,
  * or null when the key is absent. Surrounding single/double quotes are
- * stripped; a trailing CR is tolerated.
+ * stripped; a trailing CR is tolerated. `key` is regex-escaped so a key
+ * containing metacharacters cannot corrupt the pattern.
  */
 export function frontmatterField(text: string, key: string): string | null {
   const block = firstFrontmatterBlock(text);
   if (block === null) return null;
-  const m = block.match(new RegExp(`^${key}:[ \\t]*(.+?)[ \\t]*\\r?$`, "m"));
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = block.match(new RegExp(`^${escaped}:[ \\t]*(.+?)[ \\t]*\\r?$`, "m"));
   if (!m || m[1] === undefined) return null;
   return m[1].replace(/^["']|["']$/g, "");
-}
-
-/** `name:` value from the first frontmatter block only (null when absent). */
-export function frontmatterName(text: string): string | null {
-  return frontmatterField(text, "name");
 }

@@ -1,5 +1,5 @@
 /**
- * Pure formatting/parsing helpers for the six-pass lens review: the lens
+ * Pure formatting/parsing helpers for the code-review lens roster: the lens
  * roster, prompt construction, report_finding parsing, precedence-based
  * dedup, and the human-readable summary renderer. No `ExtensionAPI`
  * coupling — orchestration (spawning, retries, job wiring) lives in
@@ -24,12 +24,12 @@ export function lensPromptFor(
   evidence?: string,
   roster: RosterEntry[] = [],
 ): string {
-  // The other-lenses list is derived from the roster (a seventh lens that
-  // is configuration, not code, appears here without a code change); the
-  // lens's own name is excluded.
-  const others = roster
-    .filter((e) => !e.error && e.name !== lens.name)
-    .map((e) => e.name.toLowerCase());
+  // The other-lenses list is derived from the FULL roster — every other
+  // lens in the configured roster, including blocked ones (a blocked lens
+  // still has a separate reviewer row, so the claim reflects what the
+  // review actually runs); the lens's own name is excluded. A seventh lens
+  // that is configuration, not code, appears here without a code change.
+  const others = roster.filter((e) => e.name !== lens.name).map((e) => e.name.toLowerCase());
   const laneList =
     others.length > 0 ? others.join(" / ") : "the other review lenses (each has its own reviewer)";
   return `You are running the **${lens.name}** review lens.
