@@ -18,15 +18,19 @@
  * together at `base·2^level`:
  *
  *   1. The PM is notified via `notifyAgent` (always `deliverAs: "steer"`)
- *      with the same fields `dispatch_peek` shows (driver-owned children
- *      notify the PM too).
+ *      with the same fields `dispatch_peek` shows — role, label, turns,
+ *      tokens, elapsed, last tool, a short snippet of the last assistant
+ *      text, and the job id the PM can pass to `dispatch_peek` /
+ *      `dispatch_steer`. Driver-owned children (ownerKind "driver") notify
+ *      the PM too — the operator wants to be prompted for those.
  *   2. The child receives ONE automatic steer through `steerChild` (the
  *      lifecycle-logged core the driver's caps already use), demanding a
  *      ≤3-line status report. It never kills.
- * Neither half exists as a kill or cap: `PI_ENSEMBLE_AUTO_STEER=0` keeps
- * the notice, `PI_ENSEMBLE_SLOW_NOTICE=0` disables both. The driver
- * additionally persists a `dispatch-slow` event through the `onSlow`
- * callback it threads into `dispatchCore` (workflow-state-events-slow.ts).
+ *
+ * Neither half exists as a kill or cap: `PI_ENSEMBLE_AUTO_STEER=0` keeps the
+ * notice, `PI_ENSEMBLE_SLOW_NOTICE=0` disables both. The driver additionally
+ * persists a `dispatch-slow` event through the `onSlow` callback it threads
+ * into `dispatchCore` (see workflow-state-events-slow.ts for the event).
  *
  * Threshold state lives in a module-level Map keyed by the watch id — one
  * entry per live child, bounded by MAX_JOBS, deleted on settle.
@@ -140,9 +144,12 @@ interface Watch {
   steerFn?: SlowWatchInput["steerFn"];
   now: () => number;
   onSlow?: OnSlowCallback;
-  /** Last delivered snapshot — a timer tick with nothing new replays it. */
+  /** Last delivered snapshot — the timer ticks with nothing new to say (the
+   * child is silent), so a timer-driven evaluation replays the latest
+   * snapshot rather than a stale one. */
   lastState: RunningState | undefined;
-  /** Set once the first progress event has been fed. */
+  /** Set once the first progress event has been fed; a timer tick with no
+   * snapshot has nothing to notice about. */
   seenProgress: boolean;
   /** The pending elapsed-check timer (unref'd in production). */
   timer?: () => void;
@@ -170,6 +177,7 @@ export function levelReached(value: number, base: number): number {
   return value >= base ? k : 0;
 }
 
+/** Format `150 turns` / `20.0M tokens` / `42.0m` for the notice + steer text. */
 function fmtSlow(elapsedMs: number, turns: number, tokens: number): string {
   return `${formatElapsed(elapsedMs)} · ${turns} turns · ${formatTokens(tokens)} tokens`;
 }
@@ -196,9 +204,10 @@ export function slowSteerText(elapsedMs: number, turns: number): string {
 
 function deliver(w: Watch, s: RunningState, triggered: string[]): void {
   const elapsed = s.elapsedMs > 0 ? s.elapsedMs : Math.max(0, w.now() - w.startedAt);
-  // 1 — PM notice (notifyAgent, always deliverAs "steer"). A rejection must
-  // never be an unhandled rejection. Lens/adversarial children have no
-  // `input.pi` — the parent api registered at extension load stands in.
+  // 1 — PM notice (notifyAgent, always deliverAs "steer"). A rejection of the
+  // send must never be an unhandled rejection. `input.pi` is absent for
+  // lens/adversarial children (they spawn without a pi in scope) — the parent
+  // api registered at extension load stands in, so those children notify too.
   const pi = w.pi ?? getParentExtensionApi();
   if (pi) {
     try {
@@ -217,8 +226,9 @@ function deliver(w: Watch, s: RunningState, triggered: string[]): void {
         "driver-slow-notice",
       );
     } catch (err) {
-      // A throwing steer core must never abort the notice — the PM notice
-      // above already went out, and the onSlow record below must still land.
+      // A throwing steer core (or a rejected async one) must never abort the
+      // notice — the PM notice above already went out, and the onSlow record
+      // below must still land.
       trace(`slow-notice: auto-steer for ${w.id} threw: ${(err as Error).message}`);
     }
     if (r instanceof Promise) {
@@ -256,7 +266,7 @@ function deliver(w: Watch, s: RunningState, triggered: string[]): void {
 
 function scheduleElapsedCheck(w: Watch, ms: number): void {
   // #799 — the cancel may be absent (a test scheduler that returns an
-  // object): the null guard keeps the stop function from throwing.
+  // object): a null guard keeps the stop function from throwing mid-settle.
   w.timer =
     w.schedule(() => {
       const cur = watches.get(w.id);
@@ -304,8 +314,9 @@ function advanceLevel(
 /**
  * The ELAPSED dimension evaluated without a progress event. A child silent
  * for 20+ minutes (a long build, a hung CI wait) otherwise crosses only when
- * its next event arrives — or never. Fires with the latest fed snapshot,
- * delivers on a crossing, re-arms at the next doubling.
+ * its next event arrives — or never. The timer fires with the latest fed
+ * snapshot (or nothing, until one has been fed), delivers on a crossing, and
+ * re-arms at the next doubling.
  */
 function tickElapsed(w: Watch): void {
   const s = w.lastState;
@@ -343,10 +354,11 @@ export function watchSlowDispatch(input: SlowWatchInput): () => void {
     });
   // #799 — the parent pi, threaded through `input.pi` so lens/adversarial
   // children — spawned without a pi in scope — still deliver the PM notice.
-  // The parent api the watch falls back to is the one the extension
-  // registered ONCE at load (index.ts) — `deliver` reads it via
-  // `getParentExtensionApi()`, and this function deliberately never calls
-  // `setParentExtensionApi` (a per-watch set would race a sibling cycle).
+  // `w.pi` (set below from `input.pi`) wins per watch; the parent api the
+  // watch falls back to is the one the extension registered ONCE at load
+  // (index.ts) — `deliver` reads it via `getParentExtensionApi()`, and this
+  // function deliberately never calls `setParentExtensionApi` (the single
+  // writer is the load; a per-watch set would race a sibling cycle's watch).
   // Absent in the suite → the notice is skipped, never thrown.
   const w: Watch = {
     id: input.id,
@@ -354,7 +366,8 @@ export function watchSlowDispatch(input: SlowWatchInput): () => void {
     label: input.label,
     startedAt: now(),
     // #799 — the timer cancel must be a real function: a test scheduler may
-    // return an object (a missing/invalid cancel would make stop throw).
+    // return an object, and a missing/invalid cancel would make the stop
+    // function throw mid-settle (the section-2b hang shape).
     schedule: (fn, ms) => {
       const c = rawSchedule(fn, ms);
       return typeof c === "function" ? c : () => {};
@@ -423,76 +436,11 @@ export function feedSlowProgress(id: string, s: RunningState): void {
   deliver(w, s, triggered);
 }
 
-/**
- * #799 — the driver's pending slow-event buffer, keyed by the cycle's
- * primary issue: the per-step `onSlow` recorder pushes each crossing into
- * ITS cycle's list, and the driver's single step-boundary persistence point
- * (work-driver-step-router.ts `routeStepOutcome`, before its first
- * `writeState`) drains it, so one crossing lands exactly once in the durable
- * log regardless of which step recorded it.
- *
- * The key is load-bearing: up to MAX_PARALLEL_GROUPS_DEFAULT (3) groups run
- * concurrently in one process, and the registry (work-driver-registry.ts)
- * keys cycles by the primary issue. Each entry is dropped on drain and on
- * cycle end — the handoff step is the terminal step every /work cycle ends
- * in, so `dropSlowEvents` there covers every leftover.
- */
-const pendingSlowEvents = new Map<number, WorkEvent[]>();
-
-/** The driver's per-step slow recorder: the `onSlow` callback the driver
- * threads into `dispatchCore`. `issue` is the cycle's primary issue — the
- * buffer key. Sync + never throws (the contract is sync so the event log
- * stays append-only). */
-export function slowRecorder(issue: number, step: WorkStep): OnSlowCallback {
-  return (info) => {
-    const list = pendingSlowEvents.get(issue) ?? [];
-    list.push({
-      kind: "dispatch-slow",
-      step,
-      role: info.role,
-      jobId: info.jobId,
-      label: info.label,
-      elapsedMs: info.elapsedMs,
-      turns: info.turns,
-      tokens: info.tokens,
-      at: info.at,
-    });
-    pendingSlowEvents.set(issue, list);
-  };
-}
-
-/** Drain one cycle's pending list (returns it, deletes the entry; an empty
- * or unknown list gives `[]` without touching anything). Called at the
- * driver's step-boundary persistence point, just before `writeState`, so
- * slow events land in the durable log together with the step's own events —
- * and only in THAT cycle's log. The events carry their own `at`, so it is
- * acceptable that they land after the step's completion event. */
-export function drainSlowEvents(issue: number): WorkEvent[] {
-  const list = pendingSlowEvents.get(issue);
-  if (!list || list.length === 0) {
-    if (list) pendingSlowEvents.delete(issue);
-    return [];
-  }
-  pendingSlowEvents.delete(issue);
-  return list;
-}
-
-/** Drop one cycle's leftover list without returning it. Called at the
- * handoff step — the terminal step every /work cycle ends in — so a cycle
- * that recorded a crossing no step boundary drained (e.g. a child that
- * outlived the handoff ops bound) cannot leak its events into a later cycle
- * of the same issue. */
-export function dropSlowEvents(issue: number): void {
-  pendingSlowEvents.delete(issue);
-}
+/** Test-only: empty the pending buffer (all cycles). */
+export { clearSlowEventsForTesting } from "./slow-events.ts";
 
 /** Test-only: clear all watch state (the module-level map is a singleton
  * across the test process, and the suite shares one module graph). */
 export function clearSlowWatchesForTesting(): void {
   watches.clear();
-}
-
-/** Test-only: empty the pending buffer (all cycles). */
-export function clearSlowEventsForTesting(): void {
-  pendingSlowEvents.clear();
 }

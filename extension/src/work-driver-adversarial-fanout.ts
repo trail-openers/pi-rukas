@@ -11,7 +11,7 @@
  */
 
 import { runAdversarialLoop } from "./adversarial.ts";
-import { slowRecorder } from "./slow-notice.ts";
+import { slowRecorder } from "./slow-events.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";

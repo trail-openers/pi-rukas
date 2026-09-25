@@ -29,9 +29,9 @@ import {
 } from "../src/async-jobs-registry.ts";
 import { steerChild } from "../src/dispatch-steer.ts";
 import type { RunningState } from "../src/progress.ts";
+import { drainSlowEvents } from "../src/slow-events.ts";
 import {
   clearSlowWatchesForTesting,
-  drainSlowEvents,
   feedSlowProgress,
   slowThresholds,
   watchSlowDispatch,
@@ -336,7 +336,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
   // the old shared array let cycle A's routeStepOutcome drain cycle B's
   // crossings into A's event log. Drive both recorders concurrently and
   // verify each drain returns ONLY its own cycle's events.
-  const { clearSlowEventsForTesting, slowRecorder } = await import("../src/slow-notice.ts");
+  const { clearSlowEventsForTesting, slowRecorder } = await import("../src/slow-events.ts");
   clearSlowEventsForTesting();
   const at = Date.now();
   slowRecorder(100, "plan")({
