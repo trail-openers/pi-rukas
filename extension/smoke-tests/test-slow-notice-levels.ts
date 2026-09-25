@@ -443,5 +443,47 @@ await withEnv({}, async () => {
   assert(levelReached(1, 0) === 0, "levelReached: base ≤ 0 → 0 (disabled dimension)");
 });
 
+// -------------------------------------------------
+// 8. #884 — env changes AFTER arming never move a live watch's thresholds.
+// watchSlowDispatch snapshots the level-0 bases once at arm time; every
+// per-level threshold is base·2^level arithmetic from there. Set a turns
+// base of 1M, arm, then set 150 — the watch still fires at 1M / 2M, not at
+// 150 / 300 (the exported helpers still read the env and now say 150).
+await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "1000000" }, async () => {
+  setup();
+  const notices: string[] = [];
+  const steers: Array<{ id: string }> = [];
+  const sched = fakeScheduler();
+  const stop = watchSlowDispatch({
+    id: "job-rearm-env",
+    role: "developer",
+    label: "developer",
+    pi: fakePi(notices),
+    steerFn: (_id, _text, _src) => steers.push({ id: _id, text: _text, source: _src }),
+    schedule: sched.schedule,
+  });
+  try {
+    process.env.PI_ENSEMBLE_SLOW_NOTICE_TURNS = "150";
+    // The env-reading helper agrees with the new env…
+    assert(levelThresholds(0).turns === 150, "rearm: env helper now reports the new base");
+    // …but the armed watch's thresholds are frozen at 1M / 2M.
+    feedSlowProgress("job-rearm-env", stateAt(300, 0, 0));
+    assert(notices.length === 0, "rearm: 300 turns (≥ the NEW 150/300 base) → no fire on the old watch");
+    feedSlowProgress("job-rearm-env", stateAt(999_999, 0, 0));
+    assert(notices.length === 0, "rearm: 999_999 turns (< the OLD 1M base) → still no fire");
+    feedSlowProgress("job-rearm-env", stateAt(1_000_000, 0, 0));
+    assert(notices.length === 1, "rearm: 1M turns (the OLD base) → one notice");
+    assert(notices[0]?.includes("triggered by: turns") === true, "rearm: names turns");
+    // The next fire is at the OLD base doubled: 2M, not the new base's 300.
+    feedSlowProgress("job-rearm-env", stateAt(300, 0, 0));
+    assert(notices.length === 1, "rearm: 300 (< the OLD 2M) → no second fire");
+    feedSlowProgress("job-rearm-env", stateAt(2_000_000, 0, 0));
+    assert(notices.length === 2, "rearm: 2M (the OLD base doubled) → second notice");
+  } finally {
+    stop();
+    delete process.env.PI_ENSEMBLE_SLOW_NOTICE_TURNS;
+  }
+});
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
