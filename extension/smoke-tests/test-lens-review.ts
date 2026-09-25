@@ -226,6 +226,9 @@ function lensResult(
     parseError?: string;
     summary?: string;
     findings?: typeof mk extends (...a: never[]) => infer F ? F[] : never;
+    killCause?: "timeout" | "inactivity" | "abort" | "loop" | "token-budget" | "plan-timeout";
+    loopEvidence?: { tool: string; count: number };
+    tokenBudget?: { budget: number; used: number };
   },
 ): LensRunResult {
   return {
@@ -240,6 +243,9 @@ function lensResult(
     // silent case is a defect with its own coverage in test-lens-silence.ts;
     // these fixtures model lenses that worked, so they say something.
     summary: opts.summary ?? "Reviewed the diff for this lens.",
+    killCause: opts.killCause,
+    loopEvidence: opts.loopEvidence,
+    tokenBudget: opts.tokenBudget,
   };
 }
 

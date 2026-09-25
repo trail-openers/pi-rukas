@@ -164,6 +164,29 @@ export function bySeverityCounts(findings: Finding[]): Record<Severity, number> 
   return out;
 }
 
+/**
+ * #878 — the suffix that names WHY a blocked lens was stopped, read from
+ * `killCause` (plus the loop/token-budget evidence threaded alongside it).
+ * Returns "" when no killCause is present so the tag/banner stay
+ * byte-identical to pre-#878 output for plain crashes (the #327 regression
+ * guard). "not retried: self-inflicted cap, #543" attaches only to the two
+ * cap kills that break the retry loop in lens-review-child.ts.
+ */
+function killCauseSuffix(r: LensRunResult): string {
+  const cause = r.killCause;
+  if (!cause) return "";
+  if (cause === "loop") {
+    const evidence = r.loopEvidence ? ` — ${r.loopEvidence.tool} ×${r.loopEvidence.count}` : "";
+    return ` (killed: loop${evidence}; not retried: self-inflicted cap, #543)`;
+  }
+  if (cause === "token-budget") {
+    const evidence = r.tokenBudget ? ` — ${r.tokenBudget.used}/${r.tokenBudget.budget} tokens` : "";
+    return ` (killed: token-budget${evidence}; not retried: self-inflicted cap, #543)`;
+  }
+  if (cause === "abort") return " (aborted)";
+  return ` (killed: ${cause})`;
+}
+
 export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): string {
   const blockedLenses = s.lenses.filter((r) => r.blocked);
   const retriedLenses = s.lenses.filter((r) => !r.blocked && r.attempts > 1);
@@ -171,7 +194,7 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
   const lensLines = s.lenses.map((r: LensRunResult) => {
     let tag: string;
     if (r.blocked) {
-      tag = `BLOCKED after ${r.attempts} attempts — ${r.parseError ?? "fail"}`;
+      tag = `BLOCKED after ${r.attempts} attempts — ${r.parseError ?? "fail"}${killCauseSuffix(r)}`;
     } else if (r.ok) {
       const findingCount = `${r.findings.length} finding${r.findings.length === 1 ? "" : "s"}`;
       const retryNote =
@@ -199,12 +222,28 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
   // Blocked-lens banner — prominent because verdict=REVIEW_INCOMPLETE means
   // the six-pass review did NOT actually complete six lenses. PM/user MUST
   // decide whether to retry, override, or halt; never silently downgrade (#3).
+  // #878 — the header wording depends on whether the blocked lenses were
+  // stopped by a self-inflicted dispatch cap (loop / token-budget), by a
+  // mix of causes, or by none of those (plain failure — byte-identical to
+  // pre-#878, so the #327 test keeps passing unchanged).
+  const capKilledCauses = new Set<"loop" | "token-budget">(["loop", "token-budget"]);
+  const capKilledCount = blockedLenses.filter((r) =>
+    r.killCause ? capKilledCauses.has(r.killCause as "loop" | "token-budget") : false,
+  ).length;
+  const blockedHeader =
+    capKilledCount === blockedLenses.length
+      ? "was stopped by a self-inflicted cap (not retried)"
+      : capKilledCount > 0
+        ? "did not complete (see each lens)"
+        : `failed all ${maxLensAttempts} attempts`;
   const blockedBanner =
     blockedLenses.length > 0
       ? [
           "",
-          `⛔ REVIEW INCOMPLETE: ${blockedLenses.length}/${s.lenses.length} lens(es) failed all ${maxLensAttempts} attempts:`,
-          ...blockedLenses.map((r) => `  - ${r.lens}: ${r.parseError ?? "unknown failure"}`),
+          `⛔ REVIEW INCOMPLETE: ${blockedLenses.length}/${s.lenses.length} lens(es) ${blockedHeader}:`,
+          ...blockedLenses.map(
+            (r) => `  - ${r.lens}: ${r.parseError ?? "unknown failure"}${killCauseSuffix(r)}`,
+          ),
           "",
           "The verdict above is computed from the lenses that DID complete; the failed lens(es) contributed zero findings — they did not approve, they did not run. Re-dispatch dispatch_lens_review to retry, or override and proceed despite the incomplete review.",
         ]
