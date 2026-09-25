@@ -60,11 +60,7 @@ const REPO = mkdtempSync(path.join(os.tmpdir(), "pi-ens-799s-"));
 
 /** A fake pi whose sendUserMessage records the steer-delivered messages. */
 function fakePi(notices: string[]) {
-  return {
-    sendUserMessage: (text: string, _opts?: { deliverAs?: string }) => {
-      notices.push(text);
-    },
-  };
+  return { sendUserMessage: (text: string, _opts?: { deliverAs?: string }) => notices.push(text) };
 }
 
 /** A fake steer core: records deliveries. */
@@ -74,7 +70,6 @@ function recordSteers(stored: Array<{ id: string; text: string; source: string }
     return { id, delivered: true, label: id };
   };
 }
-
 /** A RunningState at the given turn count (elapsed/tokens left to 0 so the
  * turn dimension is the only one armed for the turn-crossing tests). */
 function stateAt(turns: number, elapsedMs = 0, tokens = 0, text?: string): RunningState {
@@ -235,11 +230,9 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
   setup();
   const state = initialState(799, 1_000_000);
   const fakeDispatch: NonNullable<DriverContext["dispatchFn"]> = async (_pi, _spec, opts) => {
-    // Simulate the child crossing the threshold mid-dispatch: the watch is
-    // keyed by the job id startJob mints, which the driver does not see
-    // until beginDispatch — so instead drive the watch directly under the
-    // SAME id the onSlow callback will report (the driver folds the event
-    // from the callback's own state ref).
+    // The fake dispatch crosses the threshold directly via onSlow (the watch
+    // is keyed by the job id startJob mints, which the driver does not see
+    // until beginDispatch — the recorder's buffer is what carries the event).
     const onSlow = opts?.onSlow;
     assert(typeof onSlow === "function", "runSingleDispatch threads onSlow");
     onSlow?.({
@@ -252,15 +245,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
       tokens: 1234,
       at: Date.now(),
     });
-    return {
-      role: "ops",
-      ok: true,
-      text: "done",
-      toolUses: [],
-      ms: 1,
-      exitCode: 0,
-      transcriptPath: "/tmp/x",
-    };
+    return { role: "ops", ok: true, text: "done", toolUses: [], ms: 1, exitCode: 0, transcriptPath: "/tmp/x" };
   };
   const ctx: DriverContext = {
     pi: fakePi([]),
@@ -269,26 +254,25 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
     repoRoot: REPO,
     dispatchFn: fakeDispatch,
   } as unknown as DriverContext;
-  const out = await runSingleDispatch(
-    ctx,
-    state,
-    "branch",
-    "ops",
-    "ops:branch",
-    Date.now(),
-    () => "prompt",
-  );
-  const slowEvents = out.eventLog.filter((e) => e.kind === "dispatch-slow");
-  assert(slowEvents.length === 1, "driver dispatch crossing → one dispatch-slow in the event log");
+  const out = await runSingleDispatch(ctx, state, "branch", "ops", "ops:branch", Date.now(), () => "prompt");
+  // #799 — the slow recorder no longer folds into a per-step state ref: the
+  // crossing is collected in the driver's pending buffer and drained at the
+  // step boundary (routeStepOutcome, the single persistence point). Drain it
+  // here exactly as the driver does, then check the union is exactly one.
+  const { drainSlowEvents } = await import("../src/slow-notice.ts");
+  const drained = drainSlowEvents();
+  const slowEvents = [...out.eventLog, ...drained].filter((e) => e.kind === "dispatch-slow");
+  assert(slowEvents.length === 1, "driver dispatch crossing → one dispatch-slow in the log (buffer drain)");
   const ev = slowEvents[0];
   if (ev && ev.kind === "dispatch-slow") {
     assert(ev.step === "branch", "dispatch-slow carries the step");
     assert(ev.turns === 3 && ev.tokens === 1234, "dispatch-slow carries turns + tokens");
     assert(ev.jobId === "fake-job", "dispatch-slow carries the job id");
   }
-  // The completion event lands AFTER the slow event (folded ref).
+  // The completion event lands in the step's own returned state (the buffer
+  // drain at the step boundary lands the slow event in the PERSISTED log).
   const last = out.eventLog[out.eventLog.length - 1];
-  assert(last?.kind === "dispatch-completed", "completion event is the tail");
+  assert(last?.kind === "dispatch-completed", "completion event is the tail of the step's own state");
 });
 
 // ------------------------------- 7. runSingleDispatch has no heartbeat loop
@@ -316,7 +300,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
   // (lens-review-child.ts) registers via registerChildHandle in onStdin;
   // this test drives the registry seam directly with a fake stdin.
   setup();
-  const { registerChildHandle } = await import("../src/async-jobs-registry.ts");
+  const { registerChildHandle, childHandles } = await import("../src/async-jobs-registry.ts");
   const deckMod = await import("../src/dispatch-deck.ts");
   const deckKey = "run-abc/simplicity";
   deckMod.startEntry(deckKey, {
@@ -325,24 +309,13 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
     tag: "simplicity",
   });
   const written: string[] = [];
-  const fakeStdin = {
-    write: (s: string) => {
-      written.push(s);
-      return true;
-    },
-  } as unknown as Writable;
-  registerChildHandle(
-    deckKey,
-    fakeStdin,
-    "code-review-specialist[simplicity]",
-    "code-review-specialist",
-  );
+  const fakeStdin = { write: (s: string) => (written.push(s), true) } as unknown as Writable;
+  registerChildHandle(deckKey, fakeStdin, "code-review-specialist[simplicity]", "code-review-specialist");
   const r = steerChild(deckKey, "status check", "pm-tool");
   assert(r.delivered === true, `lens child is steerable by the deck id (${r.reason ?? "ok"})`);
   assert(written.length === 1, "the steer reached the child's stdin");
   assert(written[0]?.includes('"type":"steer"') === true, "the RPC envelope is correct");
   deckMod.clearEntry(deckKey);
-  const { childHandles } = await import("../src/async-jobs-registry.ts");
   childHandles.delete(deckKey);
   assert(
     steerChild(deckKey, "again", "pm-tool").delivered === false,
@@ -403,12 +376,14 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
   }
 });
 
-// ---------------------------------------------------------------- 11. runPlan state
+// ---------------------------------------------------------------- 11. runPlan slow event
 {
   process.env.PI_ENSEMBLE_RESUME = "0";
   process.env.PI_ENSEMBLE_CROSS_GROUP_CONFLICTS = "0";
   const { runPlan } = await import("../src/work-driver-plan.ts");
   const { initialState } = await import("../src/workflow-state.ts");
+  const { clearSlowEventsForTesting, drainSlowEvents } = await import("../src/slow-notice.ts");
+  clearSlowEventsForTesting();
   const fakeDispatch: any = async (_pi: unknown, _spec: unknown, opts: any) => {
     opts?.onSlow?.({
       step: "plan",
@@ -430,13 +405,69 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
     dispatchFn: fakeDispatch,
   };
   const out = await runPlan(ctx, initialState(799, 1_000_000));
+  // #799 — the plan-time crossing is collected in the pending buffer (the
+  // old shape folded into a throwaway ref that was never folded back, so it
+  // was lost); the driver drains it at the step boundary.
+  const drained = drainSlowEvents();
+  const slowEvents = [...out.eventLog, ...drained].filter((e) => e.kind === "dispatch-slow");
   assert(
-    out.eventLog.some((e) => e.kind === "dispatch-slow" || e.kind === "dispatch-completed"),
-    "runPlan: the step completed (dispatch-completed or dispatch-slow present)",
+    slowEvents.length === 1 &&
+      slowEvents[0]?.kind === "dispatch-slow" &&
+      slowEvents[0]?.step === "plan",
+    "runPlan: the dispatch-slow recorded during the plan step lands exactly once (pending buffer drain)",
+  );
+  assert(out.eventLog.length >= 1, "runPlan: the step completed (its own state still carries its own events)");
+}
+
+// ------------------------------------ 12. adversarial fan-out slow event
+{
+  // #799 — the fan-out's slow recorder: the old shape wrote into a
+  // `fanoutStateRef` the fan-out never read back (the crossings were lost).
+  // The recorder now collects into the driver's pending buffer, which the
+  // step boundary drains. Drive the REAL `fanOutAdversarial` with a fake
+  // loop fn whose child crosses the threshold (onSlow fires). The child
+  // must actually run (not be skipped by the empty-diff short-circuit), so
+  // the worktree resolves to a real repoRoot with a non-empty diff.
+  process.env.PI_ENSEMBLE_RESUME = "0";
+  process.env.PI_ENSEMBLE_CROSS_GROUP_CONFLICTS = "0";
+  const { fanOutAdversarial } = await import("../src/work-driver-adversarial-fanout.ts");
+  const { initialState } = await import("../src/workflow-state.ts");
+  const { clearSlowEventsForTesting, drainSlowEvents } = await import("../src/slow-notice.ts");
+  clearSlowEventsForTesting();
+  const state = initialState(799, 1_000_000);
+  state.pipelineState.worktrees = { default: process.cwd() };
+  const fakeLoop: NonNullable<DriverContext["adversarialLoopFn"]> = async (_params) => {
+    _params.onSlow?.({
+      step: "adversarial",
+      role: "adversarial-developer",
+      jobId: "fanout-fake",
+      label: "adversarial_loop",
+      elapsedMs: 12_000,
+      turns: 3,
+      tokens: 1234,
+      at: Date.now(),
+    });
+    return { role: "adversarial-loop", ok: true, text: "VERDICT: APPROVED\n\nNo issues.", toolUses: [], ms: 1, exitCode: 0 };
+  };
+  const ctx: any = {
+    pi: { sendUserMessage: () => {} },
+    issue: 799,
+    issues: [799],
+    repoRoot: process.cwd(),
+    adversarialLoopFn: fakeLoop,
+  };
+  const { next } = await fanOutAdversarial(ctx, state, ["default"], new Map(), false, null);
+  const drained = drainSlowEvents();
+  const slowEvents = [...next.eventLog, ...drained].filter((e) => e.kind === "dispatch-slow");
+  assert(
+    slowEvents.length === 1 &&
+      slowEvents[0]?.kind === "dispatch-slow" &&
+      slowEvents[0]?.step === "adversarial",
+    "adversarial fan-out: the dispatch-slow recorded during the fan-out lands exactly once (pending buffer drain)",
   );
 }
 
-// ---------------------------------------------------------------- 12. lens PM notice
+// ---------------------------------------------------------------- 13. lens PM notice
 await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
   const notices: string[] = [];
   const fakePi: any = { sendUserMessage: (t: string) => notices.push(t) };

@@ -74,71 +74,80 @@ export async function runLensChild(opts: {
   // failure (spawn error OR non-zero exit). User abort (opts.signal)
   // breaks out immediately — that's the operator saying stop, not a
   // transient failure. Backoff between retries gives the provider /
-  // local process spawner room to recover.
+  // local process spawner room to recover. The loop body is wrapped in
+  // try/finally so `stopSlow()` + the deck/handle cleanup below run on
+  // EVERY exit path — the comment above claims it, and a spawn-layer
+  // throw used to skip all three of them.
   let attempts = 0;
   let result: DispatchResult | undefined;
   let lastError: string | undefined;
-  while (attempts < MAX_LENS_ATTEMPTS) {
-    attempts++;
-    if (runOpts.signal?.aborted) {
-      lastError = "aborted by user";
-      break;
-    }
-    try {
-      result = await spawnSpecialist(
-        { role: "code-review-specialist", prompt, cwd: runOpts.cwd },
-        {
-          runId,
-          tag,
-          // Pin to this lens's skill + load the report_finding tool. `--no-extensions`
-          // (set in spawn.ts) disables auto-discovery; `--extension <path>` still
-          // loads explicit paths, so the reporter is the only extension in the child.
-          extraArgs: ["--no-skills", "--skill", skillPath, "--extension", LENS_REPORTER_PATH],
-          // No timeoutMs override — inherits per-role default from
-          // spawn.ts:roleTimeoutMs(spec.role). For code-review-specialist
-          // that's 15 min (PR5 — was a 30 min global pre-PR5).
-          signal: runOpts.signal,
-          onProgress: (state) => {
-            dispatchDeck.updateEntry(deckKey, state);
-            feedSlowProgress(deckKey, state);
-          },
-          onStdin: (stdin) =>
-            // #799 — register the stdin against the DECK KEY (the id
-            // dispatch_peek shows) so the child is steerable directly,
-            // not only through the orchestrator's active-child path.
-            registerChildHandle(deckKey, stdin, slowLabel, slowRole),
-        },
-      );
-      if (result.ok) {
-        lastError = undefined;
-        break; // success
+  try {
+    while (attempts < MAX_LENS_ATTEMPTS) {
+      attempts++;
+      if (runOpts.signal?.aborted) {
+        lastError = "aborted by user";
+        break;
       }
-      lastError = `attempt ${attempts}/${MAX_LENS_ATTEMPTS}: exit ${result.exitCode ?? "?"}`;
-    } catch (err) {
-      lastError = `attempt ${attempts}/${MAX_LENS_ATTEMPTS}: spawn failed: ${(err as Error).message}`;
+      try {
+        result = await spawnSpecialist(
+          { role: "code-review-specialist", prompt, cwd: runOpts.cwd },
+          {
+            runId,
+            tag,
+            // Pin to this lens's skill + load the report_finding tool. `--no-extensions`
+            // (set in spawn.ts) disables auto-discovery; `--extension <path>` still
+            // loads explicit paths, so the reporter is the only extension in the child.
+            extraArgs: ["--no-skills", "--skill", skillPath, "--extension", LENS_REPORTER_PATH],
+            // No timeoutMs override — inherits per-role default from
+            // spawn.ts:roleTimeoutMs(spec.role). For code-review-specialist
+            // that's 15 min (PR5 — was a 30 min global pre-PR5).
+            signal: runOpts.signal,
+            onProgress: (state) => {
+              dispatchDeck.updateEntry(deckKey, state);
+              feedSlowProgress(deckKey, state);
+            },
+            onStdin: (stdin) =>
+              // #799 — register the stdin against the DECK KEY (the id
+              // dispatch_peek shows) so the child is steerable directly,
+              // not only through the orchestrator's active-child path.
+              registerChildHandle(deckKey, stdin, slowLabel, slowRole),
+          },
+        );
+        if (result.ok) {
+          lastError = undefined;
+          break; // success
+        }
+        lastError = `attempt ${attempts}/${MAX_LENS_ATTEMPTS}: exit ${result.exitCode ?? "?"}`;
+      } catch (err) {
+        lastError = `attempt ${attempts}/${MAX_LENS_ATTEMPTS}: spawn failed: ${(err as Error).message}`;
+      }
+      // #543 no-retry-on-cap-kill: a loop / token-budget killed child is a
+      // SELF-inflicted cap, never a transient failure. Re-spawning it would
+      // just re-loop (the kill is the cap; the retry would undo it 4x).
+      if (result && (result.killCause === "loop" || result.killCause === "token-budget")) {
+        break;
+      }
+      // Backoff before next retry (skipped on last attempt to keep total
+      // wall-clock bounded).
+      if (attempts < MAX_LENS_ATTEMPTS) {
+        // Jittered, not flat. Six lenses fail in lockstep whenever the cause
+        // is a provider blip — which is the common case — so a fixed delay
+        // retries all six at the same instant, i.e. a self-inflicted
+        // thundering herd against the endpoint that just rate-limited us.
+        // Reuses the driver's canonical jitter (#366) rather than adding a
+        // second formula.
+        await new Promise((r) => setTimeout(r, jitteredMs(LENS_RETRY_BACKOFF_MS)));
+      }
     }
-    // #543 no-retry-on-cap-kill: a loop / token-budget killed child is a
-    // SELF-inflicted cap, never a transient failure. Re-spawning it would
-    // just re-loop (the kill is the cap; the retry would undo it 4x).
-    if (result && (result.killCause === "loop" || result.killCause === "token-budget")) {
-      break;
-    }
-    // Backoff before next retry (skipped on last attempt to keep total
-    // wall-clock bounded).
-    if (attempts < MAX_LENS_ATTEMPTS) {
-      // Jittered, not flat. Six lenses fail in lockstep whenever the cause
-      // is a provider blip — which is the common case — so a fixed delay
-      // retries all six at the same instant, i.e. a self-inflicted
-      // thundering herd against the endpoint that just rate-limited us.
-      // Reuses the driver's canonical jitter (#366) rather than adding a
-      // second formula.
-      await new Promise((r) => setTimeout(r, jitteredMs(LENS_RETRY_BACKOFF_MS)));
-    }
+  } finally {
+    // #799 — the slow watch + deck entry + child handle are released on
+    // every exit path, as the comment above claims (success, cap-kill,
+    // abort, or a throw from the spawn layer).
+    dispatchDeck.clearEntry(deckKey);
+    stopSlow();
+    childHandles.delete(deckKey);
   }
 
-  dispatchDeck.clearEntry(deckKey);
-  stopSlow();
-  childHandles.delete(deckKey);
   bumpBatch();
 
   // All attempts failed (or user aborted) — lens is blocked, no findings.

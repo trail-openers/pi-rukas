@@ -211,6 +211,58 @@ await withEnv("PI_ENSEMBLE_STEP_NOTICE_MS", "10", async () => {
   assert(sent.length === first, "after cancel (step end) no further notices");
 });
 
+// ---------------------------------- 4b. second cycle of the same issue re-notifies
+
+// #799 fix — the fired set is keyed by the cycle's stable identity
+// (issue + startedAt), not by the issue number: a second cycle of the SAME
+// issue (after a handoff) is a new run with a new startedAt and must be able
+// to notify again, while the same cycle re-entering a step must not.
+await withEnv("PI_ENSEMBLE_STEP_NOTICE_MS", "10", async () => {
+  clearStepNoticeForTesting();
+  process.env.PI_ENSEMBLE_NOTIFY_CMD = "true"; // dummy — the notifyFn seam records the notice
+  const clock = fakeTime();
+  const sent: Notification[] = [];
+  // Cycle 1: startedAt=1_000_000 (initialState's fixed timestamp).
+  const p1: StepNoticeParams = {
+    state: mkState(),
+    step: "develop",
+    startedAt: clock.now(),
+    schedule: clock.schedule,
+    now: clock.now,
+    notifyFn: recordingNotify(sent),
+  };
+  const cancel1 = armStepNotice(p1);
+  clock.advance(10);
+  clock.flush();
+  assert(sent.length === 1, "cycle 1: fired once at the crossing");
+  cancel1();
+  // Same cycle re-armed (an adversarial-style re-entry) → no second notice.
+  const p1b: StepNoticeParams = { ...p1, startedAt: clock.now() - 10_000 };
+  const cancel1b = armStepNotice(p1b);
+  clock.advance(10);
+  clock.flush();
+  assert(sent.length === 1, "same cycle, re-armed step: still one notice");
+  cancel1b();
+  // Cycle 2: a NEW state file for the same issue (fresh startedAt).
+  const state2: WorkState = {
+    ...mkState(),
+    startedAt: mkState().startedAt + 10_000_000,
+  };
+  const p2: StepNoticeParams = {
+    state: state2,
+    step: "develop",
+    startedAt: clock.now(),
+    schedule: clock.schedule,
+    now: clock.now,
+    notifyFn: recordingNotify(sent),
+  };
+  const cancel2 = armStepNotice(p2);
+  clock.advance(10);
+  clock.flush();
+  assert(sent.length === 2, "second cycle of the same issue: notifies again");
+  cancel2();
+});
+
 // ---------------------------------------------------- 5. disabled = no-op
 
 await withEnv("PI_ENSEMBLE_STEP_NOTICE_MS", "0", async () => {

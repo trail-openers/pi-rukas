@@ -96,9 +96,6 @@ export async function runSingleDispatch(
   const begun = await beginDispatch(ctx.repoRoot, next, step, role, label, startedAt);
   next = begun.state;
   const jobId = begun.jobId;
-  // #799 — the state ref the slow recorder appends to (a later completion
-  // event re-reads the latest state; the ref keeps them in step).
-  const dispatchStateRef = { current: next };
   let result: DispatchResult;
   try {
     // PR15 — per-call timeout override (3-min default; runCi lifts it to 30).
@@ -116,17 +113,17 @@ export async function runSingleDispatch(
       {
         label,
         timeoutMs: opts?.timeoutMs,
-        onSlow: slowRecorder(step, dispatchStateRef),
+        // #799 — the slow recorder collects the crossings into the driver's
+        // pending buffer; the step-boundary drain (routeStepOutcome) persists
+        // them — this step folds nothing of its own any more.
+        onSlow: slowRecorder(step),
       },
     );
-    // #799 — the slow recorder appends to dispatchStateRef; fold any
-    // dispatch-slow events it recorded into `next` before settling, so the
-    // completion event lands after them in the log.
-    next = dispatchStateRef.current;
   } catch (err) {
-    // #799 — fold on the failure path too: a crossing recorded before the
-    // failure must not be dropped by the dispatch-failed append.
-    return appendEvent(clearDispatch(dispatchStateRef.current, jobId), {
+    // #799 — a crossing recorded before the failure survives in the pending
+    // buffer and is drained at the step boundary; the failure append here
+    // needs no ref fold.
+    return appendEvent(clearDispatch(next, jobId), {
       kind: "dispatch-failed",
       step,
       role,

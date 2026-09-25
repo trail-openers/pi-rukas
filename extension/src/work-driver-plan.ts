@@ -108,10 +108,12 @@ export async function runPlan(
   let result: DispatchResult;
   // #754 — the PRIMARY plan dispatch carries the step's own bound; the
   // corrective below deliberately does not (it is the recovery path).
+  // #799 — onSlow collects into the driver's pending buffer; the step
+  // boundary (routeStepOutcome) drains it — this step folds nothing.
   const primaryOpts = {
     label: "plan",
     timeoutMs: planDispatchTimeoutMs(),
-    onSlow: slowRecorder("plan", { current: next }),
+    onSlow: slowRecorder("plan"),
   };
   try {
     result = await dispatch(ctx.pi, { role: "explore", prompt }, primaryOpts);
@@ -209,7 +211,7 @@ export async function runPlan(
     const retry = await dispatch(
       ctx.pi,
       { role: "explore", prompt: correctivePrompt },
-      { label: "plan:corrective", onSlow: slowRecorder("plan", { current: next }) },
+      { label: "plan:corrective", onSlow: slowRecorder("plan") },
     ).catch(() => undefined);
     if (retry) {
       // #754 — the corrective is NEVER re-dispatched again — exactly one

@@ -7,8 +7,11 @@
  * and `branch-completed` events, the case-1 sibling-injection) and
  * `runDependentWorkstreams` (the dependent-workstream phase: skip cascade,
  * deferred worktree creation from the dependency's post-commit SHA, base
- * resolution). The closure captures per-run state via `DevelopRunState` so
- * the caller shares it across both dispatch phases.
+ * resolution) — which since #799 lives in work-develop-dependent.ts (moved
+ * VERBATIM for the 500-line gate headroom; the pointer below re-exports it,
+ * and `parkDeferredLeftover` stays in this file). The closure captures per-run
+ * state via `DevelopRunState` so the caller shares it across both dispatch
+ * phases.
  *
  * `runDevelopTopological` — the #679 topological-dispatch core (independent
  * fan-out, failed/skipped detection, the safety net + verify gate) — lives
@@ -16,7 +19,6 @@
  */
 import path from "node:path";
 import { buildMemoryBrief } from "./memory-brief.ts";
-import type { OnSlowCallback } from "./slow-notice.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
@@ -53,8 +55,6 @@ export interface DevelopRunState {
   ids: string[];
   /** The dispatch function (ctx.dispatchFn ?? dispatchCore). */
   dispatch: NonNullable<DriverContext["dispatchFn"]>;
-  /** #799 — per-workstream slow-run recorders (dispatch-slow events). */
-  slowFor: Record<string, OnSlowCallback>;
   /** Per-branch verdicts accumulated across both phases. */
   verdicts: Array<{ id: string; ok: boolean; reason?: string }>;
   /** Per-branch events (completion, speculative, branch-completed, dispatch-failed). */
@@ -188,7 +188,7 @@ export function makeRunOneWorkstream(
             ),
             cwd,
           },
-          { label: developerLabel, ...(s.slowFor[id] ? { onSlow: s.slowFor[id] } : {}) },
+          { label: developerLabel },
         ),
         speculativeOn
           ? dispatch(

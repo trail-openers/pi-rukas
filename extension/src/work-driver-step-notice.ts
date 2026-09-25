@@ -41,12 +41,16 @@ import { trace } from "./trace.ts";
 import { type Notification, notify, notifyCommand } from "./work-notify.ts";
 import type { WorkState } from "./workflow-state.ts";
 
-// #799 fix — the fired set, keyed by issue+step, is MODULE-LEVEL on purpose:
-// `fanOutAdversarial` re-enters per #486 (infra-failure retry re-runs the
-// step), and a module-level fired flag survives those re-entries, so the
-// operator gets at most one per-step notice per cycle. Process-local (a
-// crash-resume is a fresh run and may notice again — the durable record is
-// the `dispatch-slow` event, not this notice).
+// #799 fix — the fired set, keyed by CYCLE + step, is MODULE-LEVEL on
+// purpose: `fanOutAdversarial` re-enters per #486 (infra-failure retry re-runs
+// the step), and a module-level fired flag survives those re-entries, so the
+// operator gets at most one per-step notice per cycle. The key is the cycle's
+// stable identity (`issue:<startedAt>` — `startedAt` is set once at cycle
+// creation and never patched, and `--restart` mints a fresh state file with a
+// new one), NOT the issue number: a SECOND cycle of the same issue (after a
+// handoff) is a new run and must be able to notice again, while the same cycle
+// re-entering a step must not. Process-local (a crash-resume is a fresh
+// process; the durable record is the `dispatch-slow` event, not this notice).
 const stepNoticeFired = new Set<string>();
 
 /** Test-only: clear the fired set (fresh process per test file, but the
@@ -112,8 +116,11 @@ export function armStepNotice(p: StepNoticeParams): () => void {
   // #799 fix — the fire-once contract is per CYCLE STEP, not per arm call:
   // the adversarial step re-enters (#486) and each re-entry arms fresh, so a
   // local fired flag would let one step notify its operator twice in the
-  // same cycle. The module-level set below is the binding constraint.
-  const fireKey = `${p.state.issue}:${p.step}`;
+  // same cycle. The module-level set below is the binding constraint, and it
+  // is keyed by the cycle's stable identity (`issue:<startedAt>`) plus the
+  // step — bounded at one entry per cycle-step per process, and a second
+  // cycle of the same issue (new startedAt) may notify again.
+  const fireKey = `${p.state.issue}:${p.state.startedAt}:${p.step}`;
   if (stepNoticeFired.has(fireKey)) return () => {};
   const now = p.now ?? Date.now;
   const notifyFn = p.notifyFn ?? notify;

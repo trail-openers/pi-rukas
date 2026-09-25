@@ -83,10 +83,6 @@ export async function fanOutAdversarial(
   // `retries` (which a resumed cycle reads from its state file) keeps the
   // bound intact across restarts.
   const localRetries: Record<string, number> = { ...retries };
-  // #799 — the fan-out's state ref: the per-workstream slow recorder appends
-  // dispatch-slow events to the latest state.
-  const fanoutStateRef = { current: state };
-  const slowFor = () => slowRecorder("adversarial", fanoutStateRef);
   // #799 F2 — the fan-out's wall-clock span, keyed on the STEP (not any
   // child), matching the develop-path notice. Fires once, above the healthy
   // band; a cancel is returned and invoked on every exit below.
@@ -164,8 +160,6 @@ export async function fanOutAdversarial(
     }
 
     const loopFn = ctx.adversarialLoopFn ?? runAdversarialLoop;
-    // #799 — the slow-run recorder for this workstream's inner children.
-    const onSlow = slowFor();
     let result: DispatchResult;
     try {
       result = await loopFn(
@@ -184,7 +178,10 @@ export async function fanOutAdversarial(
           // not just against generic code quality. Absent on cycles resumed
           // from older state files, which degrade to the previous behaviour.
           issueBody: state.pipelineState.issueBodyArtifact,
-          onSlow,
+          // #799 — the slow-run recorder collects into the driver's pending
+          // buffer; the step boundary (routeStepOutcome) drains it — the
+          // fan-out folds nothing of its own any more.
+          onSlow: slowRecorder("adversarial"),
         },
         // No AbortController plumbing in v1 — spawn-level timeouts
         // in spawn.ts (per-role) bound the work.

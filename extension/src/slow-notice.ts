@@ -34,14 +34,13 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { notifyAgent } from "./agent-message.ts";
-import { getParentExtensionApi, setParentExtensionApi } from "./async-jobs-registry.ts";
+import { getParentExtensionApi } from "./async-jobs-registry.ts";
 import type { SteerSource } from "./dispatch-steer.ts";
 import { steerChild } from "./dispatch-steer.ts";
 import type { RunningState } from "./progress.ts";
 import { formatElapsed, formatTokens } from "./progress.ts";
 import { trace } from "./trace.ts";
-import type { WorkState } from "./workflow-state.ts";
-import { appendEvent } from "./workflow-state.ts";
+import type { WorkEvent, WorkStep } from "./workflow-state.ts";
 
 /** The one place the driver's dispatch-slow events get appended: threaded
  * through `dispatchCore`'s opts (work-driver-event seam). Absent for PM
@@ -191,11 +190,26 @@ function deliver(w: Watch, s: RunningState): void {
   }
   // 2 — the one automatic steer, lifecycle-logged through the steer core.
   if (autoSteerEnabled()) {
-    const r = (w.steerFn ?? ((id, t, src) => steerChild(id, t, src)))(
-      w.id,
-      slowSteerText(elapsed, s.turns),
-      "driver-slow-notice",
-    );
+    let r: unknown;
+    try {
+      r = (w.steerFn ?? ((id, t, src) => steerChild(id, t, src)))(
+        w.id,
+        slowSteerText(elapsed, s.turns),
+        "driver-slow-notice",
+      );
+    } catch (err) {
+      // A throwing steer core (or a rejected async one) must never abort the
+      // notice — the PM notice above already went out, and the onSlow record
+      // below must still land.
+      trace(`slow-notice: auto-steer for ${w.id} threw: ${(err as Error).message}`);
+    }
+    if (r instanceof Promise) {
+      // The steer seam is sync in production, but a rejected promise is still
+      // an unhandled rejection if nobody attaches — the trace is enough.
+      r.catch((err: unknown) =>
+        trace(`slow-notice: auto-steer for ${w.id} rejected: ${(err as Error).message}`),
+      );
+    }
     if (r && typeof r === "object" && "delivered" in r && !r.delivered) {
       trace(
         `slow-notice: auto-steer for ${w.id} not delivered: ${(r as { reason?: string }).reason ?? "unknown"}`,
@@ -266,13 +280,14 @@ export function watchSlowDispatch(input: SlowWatchInput): () => void {
       t.unref?.();
       return () => clearTimeout(t);
     });
-  // #799 — the parent pi, threaded through watchSlowDispatch (which registers
-  // it with slow-notice's parent-api seam) so lens/adversarial children —
-  // spawned without a pi in scope — still deliver the PM notice. `w.pi` (set
-  // below from `input.pi`) wins per watch; a later site's registration only
-  // stands in for sites with no pi of their own. Absent in the suite → the
-  // notice is skipped, never thrown.
-  setParentExtensionApi(input.pi);
+  // #799 — the parent pi, threaded through `input.pi` so lens/adversarial
+  // children — spawned without a pi in scope — still deliver the PM notice.
+  // `w.pi` (set below from `input.pi`) wins per watch; the parent api the
+  // watch falls back to is the one the extension registered ONCE at load
+  // (index.ts) — `deliver` reads it via `getParentExtensionApi()`, and this
+  // function deliberately never calls `setParentExtensionApi` (the single
+  // writer is the load; a per-watch set would race a sibling cycle's watch).
+  // Absent in the suite → the notice is skipped, never thrown.
   const w: Watch = {
     id: input.id,
     role: input.role,
@@ -344,12 +359,9 @@ export function feedSlowProgress(id: string, s: RunningState): void {
   // dimension is checked at each doubling; a not-yet-crossed dimension keeps
   // its first threshold as its next check. Waiting the threshold value from
   // now covers both shapes (the doubling IS the threshold itself; the first
-  // crossing is ≤ threshold away).
-  if (w.timer) w.timer();
-  w.timer = w.schedule(() => {
-    const cur = watches.get(w.id);
-    if (cur === w) tickElapsed(w);
-  }, w.armed.ms);
+  // crossing is ≤ threshold away). Re-arming goes through scheduleElapsedCheck
+  // (its null-guarded cancel + the watches identity check stay in one place).
+  if (Number.isFinite(w.armed.ms)) scheduleElapsedCheck(w, w.armed.ms);
   deliver(w, s);
 }
 
@@ -362,21 +374,26 @@ function nextLevel(current: number, base: number): number {
 }
 
 /**
- * The driver's per-step slow recorder: the `onSlow` callback the driver
- * threads into `dispatchCore`. It only COLLECTS the crossing into the
- * step's state ref — it never persists (the driver's normal `writeState`
- * owns persistence, so the recorder cannot write a divergent snapshot over
- * the step's own appends). The caller folds `ref.current` back into its own
- * state before its next append, on BOTH the success and the failure path.
- * The callback is sync + never throws (the watch also catches, but the
- * contract is sync so the event log stays append-only).
+ * #799 — the driver's pending slow-event buffer. The per-step `onSlow`
+ * recorder (via `slowRecorder`) pushes each crossing there INSTEAD of
+ * folding into a per-site state ref: the buffer is drained into the cycle's
+ * state at the driver's single step-boundary persistence point
+ * (work-driver-step-router.ts `routeStepOutcome`, before its first
+ * `writeState`), so one crossing lands exactly once in the durable log
+ * regardless of which step recorded it (the two broken shapes it fixes:
+ * a plan-time recorder that folded into a throwaway ref, and an adversarial
+ * fan-out whose ref was never read back).
  */
-export function slowRecorder(
-  step: WorkState["pipelineState"]["currentStep"],
-  ref: { current: WorkState },
-): OnSlowCallback {
+const pendingSlowEvents: WorkEvent[] = [];
+
+/** The driver's per-step slow recorder: the `onSlow` callback the driver
+ * threads into `dispatchCore`. Pushes the crossing into the pending buffer;
+ * persistence is the driver's single drain point (see above). Sync + never
+ * throws (the watch also catches, but the contract is sync so the event
+ * log stays append-only). */
+export function slowRecorder(step: WorkStep): OnSlowCallback {
   return (info) => {
-    ref.current = appendEvent(ref.current, {
+    pendingSlowEvents.push({
       kind: "dispatch-slow",
       step,
       role: info.role,
@@ -388,6 +405,21 @@ export function slowRecorder(
       at: info.at,
     });
   };
+}
+
+/** Drain the pending buffer (returns it, leaves it empty). Called at the
+ * driver's step-boundary persistence point, just before `writeState`, so
+ * slow events land in the durable log together with the step's own events.
+ * The events carry their own `at`, so it is acceptable that they land after
+ * the step's completion event. */
+export function drainSlowEvents(): WorkEvent[] {
+  if (pendingSlowEvents.length === 0) return [];
+  return pendingSlowEvents.splice(0, pendingSlowEvents.length);
+}
+
+/** Test-only: empty the pending buffer. */
+export function clearSlowEventsForTesting(): void {
+  pendingSlowEvents.length = 0;
 }
 
 /** Test-only: clear all watch state (the module-level map is a singleton

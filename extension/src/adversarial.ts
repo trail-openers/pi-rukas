@@ -8,7 +8,7 @@ import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
 import { markOrchestrator, setOrchestratorActiveChild, startJob } from "./async-jobs.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { readEnumMarker } from "./reply-markers.ts";
-import { feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
+import { type OnSlowCallback, feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { AdversarialVerdict, DispatchFailureCause, DispatchResult } from "./types.ts";
@@ -102,19 +102,10 @@ export async function runAdversarialLoop(
     issueBody?: string;
     /** #799 — the slow-run recorder for this loop's inner children (each
      * threshold crossing of a review / fix round appends dispatch-slow). */
-    onSlow?: (info: {
-      step: string;
-      role: string;
-      jobId: string;
-      label: string;
-      elapsedMs: number;
-      turns: number;
-      tokens: number;
-      at: number;
-    }) => void;
+    onSlow?: OnSlowCallback;
     /** #799 — the parent pi for the inner children's slow-run watch (the PM
      * notice half; the watch site has no pi of its own). */
-    pi?: import("@earendil-works/pi-coding-agent").ExtensionAPI;
+    pi?: ExtensionAPI;
   },
   signal: AbortSignal,
   orchestratorJobId: string,

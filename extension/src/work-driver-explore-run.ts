@@ -202,9 +202,6 @@ export async function runExplore(
     exploreTranscript,
   );
   next = begun.state;
-  // #799 — the state ref the slow recorder appends to (the step folds it
-  // back on every exit path; the recorder itself never persists).
-  const exploreStateRef = { current: next };
   // #594 — delete the prior cycle's spec artifact before dispatch (best-effort,
   // trace on failure). Gated on useIntent: the artifact is only used on the
   // intent path, so on the legacy path (PI_ENSEMBLE_INTENT=0 or N>1) leave it.
@@ -215,14 +212,18 @@ export async function runExplore(
     dispatch(
       ctx.pi,
       { role: "explore", prompt },
-      { label: "explore", onSlow: slowRecorder("explore", exploreStateRef) },
+      // #799 — the slow recorder collects into the driver's pending buffer;
+      // the step boundary (routeStepOutcome) drains it — this step folds
+      // nothing.
+      { label: "explore", onSlow: slowRecorder("explore") },
     ),
   ]).then((arr) => arr[0]);
 
   if (dispatchSettled?.status === "rejected") {
-    // #799 — fold the recorder's ref on the failure path too: a crossing
-    // recorded before the failure must not be dropped by the next writeState.
-    return appendEvent(clearDispatch(exploreStateRef.current, begun.jobId), {
+    // #799 — a crossing recorded before the failure survives in the pending
+    // buffer and is drained at the step boundary; the failure append here
+    // needs no ref fold.
+    return appendEvent(clearDispatch(next, begun.jobId), {
       kind: "dispatch-failed",
       step: "explore",
       role: "explore",
@@ -237,7 +238,7 @@ export async function runExplore(
     // Defensive — Promise.allSettled returns either fulfilled or rejected;
     // this branch unreachable. Synthesise a dispatch-failed so the driver
     // can route normally.
-    return appendEvent(clearDispatch(exploreStateRef.current, begun.jobId), {
+    return appendEvent(clearDispatch(next, begun.jobId), {
       kind: "dispatch-failed",
       step: "explore",
       role: "explore",
@@ -252,9 +253,6 @@ export async function runExplore(
   // dispatchSettled.value is the explore role's dispatch result
   // (single-dispatch — explore returns one report covering all issues).
   const exploreDispatch = dispatchSettled.value as DispatchResult;
-  // #799 — fold the recorder's ref back: the dispatch-slow events recorded
-  // during the dispatch sit in exploreStateRef.current.
-  next = exploreStateRef.current;
   const event = await buildCompletionEvent(ctx, "explore", "explore", "explore", exploreDispatch);
   next = appendEvent(clearDispatch(next, begun.jobId), event);
 

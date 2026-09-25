@@ -6,14 +6,25 @@
  * the #799 F2 step-notice wiring): `runDependentWorkstreams` (sequential
  * topological dispatch of `dependsOn` workstreams, deferred worktree
  * creation from the dependency's post-commit SHA, the park-on-dirty-leftover
- * coupling) and its one helper `parkDeferredLeftover` (the
- * cap-hit + park-flag structural unit). No behaviour change — the import
- * paths below are the union of both files' imports, and `work-develop-run.ts`
- * re-exports both names so existing imports keep their path.
+ * coupling). Its one helper `parkDeferredLeftover` (the cap-hit + park-flag
+ * structural unit) stays in work-develop-run.ts, which also re-exports both
+ * names so existing imports keep their path. No behaviour change — the
+ * import paths below are the union of both files' imports.
  */
 import { trace } from "./trace.ts";
-import type { BranchCompletedExtra, DependentRunState } from "./work-develop-run.ts";
-import { parkDeferredLeftover } from "./work-develop-run.ts";
+import {
+  type BranchCompletedExtra,
+  type DependentRunState,
+  parkDeferredLeftover,
+} from "./work-develop-run.ts";
+import type { DriverContext } from "./work-driver-context.ts";
+import {
+  computeSkipCascade,
+  createDependentWorktree,
+  resolveDependentBase,
+} from "./work-driver-dep-scheduler.ts";
+import { armStepNotice } from "./work-driver-step-notice.ts";
+import { type WorkEvent, type WorkState, writeState } from "./workflow-state.ts";
 
 /**
  * #679 — run all dependent workstreams sequentially in topological order.
@@ -29,14 +40,6 @@ import { parkDeferredLeftover } from "./work-develop-run.ts";
  * dependents keep processing (the PR7 branches-converged router halts the
  * cycle at the tail, unchanged).
  */
-import type { DriverContext } from "./work-driver-context.ts";
-import {
-  computeSkipCascade,
-  createDependentWorktree,
-  resolveDependentBase,
-} from "./work-driver-dep-scheduler.ts";
-import { armStepNotice } from "./work-driver-step-notice.ts";
-import type { WorkEvent, WorkState } from "./workflow-state.ts";
 export async function runDependentWorkstreams(
   ctx: DriverContext,
   ids: string[],
@@ -187,6 +190,11 @@ export async function runDependentWorkstreams(
         // transcripts.
         const leftoverPath = created.failure.leftoverPath ?? "(path unknown)";
         const parked = parkDeferredLeftover(stateRef, leftoverPath, branchEvents);
+        // #753 — the park path's own writeState: the sibling branch-completed
+        // events flushed by parkDeferredLeftover are persisted HERE, before
+        // the caller's short-circuit returns — a crash between the cap-hit and
+        // the step-boundary write would otherwise lose the siblings' results.
+        await writeState(ctx.repoRoot, stateRef.current);
         trace(
           `work-driver: PARK — deferred worktree creation for ${id} refused by dirty leftover at ${leftoverPath}; parking the cycle (no force-remove)`,
         );

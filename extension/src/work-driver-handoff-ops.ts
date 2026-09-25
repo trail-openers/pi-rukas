@@ -61,9 +61,6 @@ export async function runHandoffOpsDispatch(
     handoffTranscript,
   );
   next = begun.state;
-  // #799 — the state ref the slow recorder appends to (the step folds it
-  // back on every exit path; the recorder itself never persists).
-  const handoffStateRef = { current: next };
   let opsReplyText = "";
   // Two enforcement points, deliberately: `timeoutMs` makes spawn SIGTERM the
   // real child so an abandoned handoff agent is not left running, and the race
@@ -83,7 +80,11 @@ export async function runHandoffOpsDispatch(
         {
           label: "ops:handoff",
           timeoutMs: boundMs,
-          onSlow: slowRecorder("handoff", handoffStateRef),
+          // #799 — the slow recorder collects into the driver's pending
+          // buffer; the step boundary (routeStepOutcome) drains it. The
+          // child may outlive the race (below) — its crossings are recorded
+          // either way and land in the log with the step's own events.
+          onSlow: slowRecorder("handoff"),
         },
       ),
       bound,
@@ -91,7 +92,7 @@ export async function runHandoffOpsDispatch(
     // #799 — the bound path keeps the slow events: the child may still be
     // running (the race freed the driver, not the child), and its recorded
     // crossings belong to the log either way.
-    next = clearDispatch(handoffStateRef.current, begun.jobId);
+    next = clearDispatch(next, begun.jobId);
     if (res === "bound") {
       trace(`work-driver: handoff ops dispatch exceeded ${boundMs}ms — using in-process gh`);
       next = appendEvent(next, {
@@ -117,7 +118,7 @@ export async function runHandoffOpsDispatch(
     }
   } catch (err) {
     trace(`work-driver: handoff ops dispatch threw: ${(err as Error).message}`);
-    next = appendEvent(clearDispatch(handoffStateRef.current, begun.jobId), {
+    next = appendEvent(clearDispatch(next, begun.jobId), {
       kind: "dispatch-failed",
       step: "handoff",
       role: "ops",
@@ -128,6 +129,10 @@ export async function runHandoffOpsDispatch(
       errorTail: (err as Error).message?.slice(-200),
     });
   } finally {
+    // The bounded race frees the DRIVER; the child it was racing may still be
+    // running, so the slow watch is deliberately NOT stopped here — its
+    // crossings keep recording until the child settles (the watch's own
+    // settle path owns the stop).
     if (boundTimer) clearTimeout(boundTimer);
   }
   return { next, opsReplyText };
