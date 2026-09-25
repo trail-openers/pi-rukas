@@ -33,7 +33,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  */
 
 export { CLAIM_SCAN, LENS_PREFIX, extractFindings, dedupeFindings, renderSummary };
-export type LensName = string;
+export type LensName = string; // deliberately unbounded — the roster is data-driven from SKILL.md frontmatter (#873)
 /** One roster entry — the shape a lens child receives per dispatch (#873:
  * the roster is data, so `LensDef` is the parsed entry type). */
 export type LensDef = RosterEntry;

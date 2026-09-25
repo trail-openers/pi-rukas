@@ -22,8 +22,9 @@
  * Gating (a blocked lens never silently reorders the roster): a
  * `code-review-*` entry that fails to parse blocks that lens with an error
  * naming the skill dir and the problem — SKILL.md missing/unreadable,
- * frontmatter missing, `name:` ≠ directory, `precedence:` missing or not
- * an integer, duplicate precedence (BOTH names in the error). The caller
+ * frontmatter missing, `name:` ≠ directory, `precedence:` missing, not an
+ * integer, or not a safe integer, duplicate precedence (BOTH names in the
+ * error). The caller
  * turns blocked entries into blocked LensRunResults → REVIEW_INCOMPLETE.
  */
 
@@ -125,7 +126,16 @@ export function buildLensRoster(dir: string): RosterEntry[] {
       });
       continue;
     }
-    raw.push({ name, skill: entryName, precedence: Number(precStr) });
+    const prec = Number(precStr);
+    if (!Number.isSafeInteger(prec)) {
+      raw.push({
+        name,
+        skill: entryName,
+        error: `${entryName}: precedence ${precStr} is not a safe integer`,
+      });
+      continue;
+    }
+    raw.push({ name, skill: entryName, precedence: prec });
   }
   // Duplicate precedence blocks BOTH lenses with both names in the error —
   // the roster is never silently reordered.
@@ -181,11 +191,16 @@ export function buildExpectedRoster(installedDir: string): RosterEntry[] {
     return buildLensRoster(installedDir);
   }
   const installed = buildLensRoster(installedDir);
+  // The installed set counts every parsed entry by skill dir, parse state
+  // (healthy, duplicate-precedence blocked, name mismatch, …) regardless —
+  // an expected lens whose skill IS present but blocked by its own parse
+  // error appears ONCE, with its true error, and gets no false "not
+  // installed" row on top of it.
+  const installedSkills = new Set(installed.map((e) => e.skill));
   const healthyInstalled = installed.filter(
     (e) => e.error === undefined && e.precedence !== undefined,
   );
   if (healthyInstalled.length === 0) return installed;
-  const installedSkills = new Set(healthyInstalled.map((e) => e.skill));
   const missing: RosterEntry[] = [];
   for (const e of expected) {
     if (e.error !== undefined || e.skill === undefined || !e.skill.startsWith("code-review-"))
