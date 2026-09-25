@@ -10,6 +10,7 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { dispatchCore } from "./dispatch.ts";
+import { slowRecorder } from "./slow-notice.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { buildCompletionEvent } from "./work-driver-completion-event.ts";
@@ -30,7 +31,7 @@ import { DOCTRINE_FILES, type DoctrineDoc, judgePolicy } from "./work-driver-pol
 import { inlineMergePrompt } from "./work-driver-prompts-late.ts";
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { activeIssuesOf, scratchDir, teardownWorkspaceTmp } from "./work-driver-workspace.ts";
-import { type WorkState, type WorkStep, appendEvent, writeState } from "./workflow-state.ts";
+import { type WorkState, type WorkStep, appendEvent } from "./workflow-state.ts";
 import { worktreePrune, worktreeRemove } from "./worktree.ts";
 
 const execp = promisify(exec);
@@ -98,13 +99,31 @@ export async function runSingleDispatch(
   let result: DispatchResult;
   try {
     // PR15 — per-call timeout override (3-min default; runCi lifts it to 30).
+    // #799 — plain `await dispatch(...)`. The earlier periodic heartbeat
+    // wrapped this await in a loop that slept out its first interval and
+    // then awaited the (already settled) promise — so it never emitted.
+    // The slow-run watch now lives in the dispatch layer (slow-notice.ts,
+    // one watch per job at startJob) and records `dispatch-slow` through
+    // the `onSlow` callback; there is no driver-side polling loop here.
+    // The await itself is unchanged: same promise, same resolution.
     result = await dispatch(
       ctx.pi,
       // `cwd` matters when work lives elsewhere (lens-fix: worktree, not repoRoot).
       { role, prompt: buildPrompt(), ...(opts?.cwd ? { cwd: opts.cwd } : {}) },
-      { label, timeoutMs: opts?.timeoutMs },
+      {
+        label,
+        timeoutMs: opts?.timeoutMs,
+        // #799 — the slow recorder collects the crossings into the driver's
+        // pending buffer (keyed by this cycle's primary issue); the
+        // step-boundary drain (routeStepOutcome) persists them — this step
+        // folds nothing of its own any more.
+        onSlow: slowRecorder(ctx.issue, step),
+      },
     );
   } catch (err) {
+    // #799 — a crossing recorded before the failure survives in the pending
+    // buffer and is drained at the step boundary; the failure append here
+    // needs no ref fold.
     return appendEvent(clearDispatch(next, jobId), {
       kind: "dispatch-failed",
       step,

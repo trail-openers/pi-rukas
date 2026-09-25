@@ -86,9 +86,10 @@ const ROOT_INTENTIONAL_SITES: Array<{ file: string; site: RegExp; label: string;
     why: "watches the FORGE, not a tree — the worktrees are already committed and pushed at this point",
   },
   {
-    file: "work-driver-explore.ts",
-    site: /dispatch\(ctx\.pi,\s*\{\s*role:\s*"explore",\s*prompt\s*\},\s*\{\s*label:\s*"explore"\s*\}\)/,
-    label: "explore (label: explore)",
+    file: "work-driver-explore-run.ts",
+    // #799 — runExplore (and its dispatch) lives in work-driver-explore-run.ts
+    site: /dispatch\(\s*ctx\.pi,\s*\{\s*role:\s*"explore",\s*prompt\s*\},\s*\{\s*label:\s*"explore",\s*onSlow:/,
+    label: "explore (label: explore) — runExplore",
     why: "reads the issue and the code at the integration point before any worktree exists",
   },
   {
@@ -120,7 +121,7 @@ const ROOT_INTENTIONAL_SITES: Array<{ file: string; site: RegExp; label: string;
   },
   {
     file: "work-driver-handoff-ops.ts",
-    site: /dispatch\(ctx\.pi,\s*\{\s*role:\s*"ops",\s*prompt\s*\},\s*\{\s*label:\s*"ops:handoff"/,
+    site: /dispatch\(\s*ctx\.pi,\s*\{\s*role:\s*"ops",\s*prompt\s*\},\s*\{\s*label:\s*"ops:handoff"/,
     label: "handoff (ops:handoff)",
     why: "posts the handoff comment to the forge; the cycle's trees are torn down or parked and the operator is being told where to look",
   },
@@ -140,7 +141,7 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
   // The developer dispatch and the speculative-explore dispatch both thread
   // the caller's `cwd` onto their DispatchSpecs.
   const devDispatch = run.match(
-    /dispatch\(\s*ctx\.pi,\s*\{[\s\S]{0,400}?cwd,\s*\},\s*\{\s*label:\s*developerLabel\s*\}/,
+    /dispatch\(\s*ctx\.pi,\s*\{[\s\S]{0,400}?cwd,\s*\},\s*\{\s*label:\s*developerLabel[\s\S]{0,80}\}/,
   );
   assert(
     devDispatch !== null,
@@ -155,8 +156,11 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
   );
   // Dependent workstreams dispatch only after a successful deferred
   // worktree creation, with the created path as cwd.
+  // The dependent phase moved to work-develop-dependent.ts (500-line
+  // headroom) — the canary reads that file now.
+  const dep = read("work-develop-dependent.ts");
   assert(
-    /runOneWorkstream\(\s*id,\s*createdPath\s*\)/.test(run),
+    /runOneWorkstream\(\s*id,\s*createdPath\s*\)/.test(dep),
     "canary: dependent workstreams are dispatched with their freshly created worktree path — no fallback",
   );
 }
@@ -281,6 +285,7 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     "work-driver-lens.ts": 1, // the lens-fix runSingleDispatch (the review is an exec)
     "adversarial.ts": 1, // runPhase's inner spawn — cwd threaded by the fan-out
     "lens-review-child.ts": 1, // the lens child — cwd: runOpts.cwd, set by the lens review seam
+    "work-driver-explore-run.ts": 1, // runExplore (the integration-point read, no cwd)
   };
   // The /plan and /research drivers' seams — outside the /work driver's
   // scope for this audit (their own cwd hygiene is a separate concern).

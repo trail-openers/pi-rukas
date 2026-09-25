@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { type ForgeType, detectForge } from "./forge-detect.ts";
 import { type Forge, createForge } from "./forge.ts";
+import { drainSlowEvents } from "./slow-notice.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import {
@@ -362,6 +363,22 @@ export async function runHandoff(
   trace(
     `work-driver: handoff for issue #${ctx.issue} (${target}) — commentUrl=${commentUrl ?? "?"} label=${labelApplied}`,
   );
+  // #799 — final drain: the handoff ops child may outlive the dispatch bound
+  // (its slow watch keeps recording until it settles), and the driver's
+  // step-boundary drain (routeStepOutcome, which runs after this function
+  // returns) is the last persistence point this cycle gets — handoff is the
+  // terminal step. Drain the buffer into the returned state so a crossing
+  // recorded during the handoff leg lands in the durable log instead of
+  // being discarded. A crossing recorded AFTER this drain is not persisted:
+  // the cycle is done and there is no later boundary to carry it. That is
+  // acceptable — the crossing is an in-session notice (the PM was already
+  // notified at the moment it fired), and the driver's cycle-start drop
+  // (work-driver.ts) keeps any such leftover from leaking into the next
+  // cycle of this issue.
+  const slowEvents = drainSlowEvents(ctx.issue);
+  if (slowEvents.length > 0) {
+    next = { ...next, eventLog: [...next.eventLog, ...slowEvents] };
+  }
   return next;
 }
 /** #674 — consolidate the parked cycle's workstream work onto its feature branch BEFORE the handoff body is rendered (item 1+2 preferred fix direction). Delegates to work-driver-handoff-consolidate.ts for the actual integration (which runs under withIntegrationLock, respects integrate()'s dirty-repoRoot preflight, and degrades to a failure outcome rather than throwing). Returns the `handoff-consolidated` event to append, or undefined when consolidation was not possible (no branch, no work, no baseSha, dirty repoRoot, conflict, or git error). The caller degrades to the accurate per-worktree recovery in that case. */

@@ -8,6 +8,7 @@
  * All 9 steps wired; each implementation lives in `work-driver-<step>.ts`.
  */
 import { notifyAgent } from "./agent-message.ts";
+import { dropSlowEvents } from "./slow-notice.ts";
 import { trace } from "./trace.ts";
 import { runAdversarial } from "./work-driver-adversarial.ts";
 import { runArtifactSweep } from "./work-driver-artifact-sweep.ts";
@@ -138,6 +139,12 @@ export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> 
     };
   }
   try {
+    // #799 — clear any stale slow-event buffer entry for EVERY issue in the
+    // group before the cycle begins: a previous parked cycle of the same
+    // issue (whose handoff's final drain ran before a late crossing) can
+    // otherwise leak its leftover events into this cycle's log.
+    const groupIssues = [...new Set([ctx.issue, ...(ctx.issues ?? [])])];
+    for (const n of groupIssues) dropSlowEvents(n);
     return await runWorkDriverInner(ctx);
   } finally {
     claimed.claim.release();

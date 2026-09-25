@@ -9,6 +9,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type JobKind, childHandles, jobs } from "./async-jobs-registry.ts";
+import { reset as resetDeck } from "./dispatch-deck.ts";
 import { trace } from "./trace.ts";
 
 /** Snapshot of current jobs for dispatch_status (metadata only — never content). */
@@ -78,6 +79,10 @@ export function clearJobsForTesting(): void {
   for (const job of jobs.values()) job.abort.abort();
   jobs.clear();
   childHandles.clear();
+  // #799 — the deck mirrors the job state (one entry per job); drain it so a
+  // drained test leaves the render surface empty. Quiet mode included — the
+  // entries map holds data independent of the widget (see updateEntry).
+  resetDeck();
 }
 
 /**

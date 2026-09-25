@@ -70,7 +70,10 @@ export type SteerSource =
   /** #607 d3 — deck UI steer (user confirms a row in the interactive deck). */
   | "deck-ui"
   /** #772 — the success-keyed repetition counter's report-demanding steer. */
-  | "driver-success-keyed";
+  | "driver-success-keyed"
+  /** #799 — the slow-run watch's automatic steer (one per threshold
+   * crossing; notice + steer, never a kill). */
+  | "driver-slow-notice";
 
 /**
  * The driver-callable steer core (#543 F2).
