@@ -284,16 +284,27 @@ export async function ensureIntegrateWorktree(
  * Whether the MAIN working tree (repoRoot) currently holds the branch.
  * `git worktree list --porcelain` never lists the main tree, so the
  * branch-holder audit and the repoRoot-detach path can both see it only
- * via this direct probe of its own checkout. Unreadable → false (the safe
- * direction: nothing to halt on; the PR-verification gates still run).
+ * via this direct probe of its own checkout.
+ *
+ * Error classes are distinguished, because "cannot answer" and "holds the
+ * branch" have OPPOSITE consequences:
+ *  - "not a git repository" (stderr) or ENOENT (the directory is gone) →
+ *    FALSE. A directory that is not a repository cannot hold a branch, so
+ *    reading it as holding would halt clean cycles with a spurious
+ *    `integration-worktree-violation` (the #861 shape: the fallback audit
+ *    probed a temp repoRoot that is not a repo and the fail-closed default
+ *    read it as the offending holder).
+ *  - ANY OTHER git error (a lock, permission, timeout) → TRUE (fail closed
+ *    with a trace): there is a repo there we simply could not read, and a
+ *    possibly-holding tree must not be exculpated (the #861 defect: a
+ *    failing probe read as "does not hold").
  */
 export async function repoRootHoldsBranch(repoRoot: string, branchName: string): Promise<boolean> {
   if (!branchName) return false;
   // The probe ALWAYS runs through the production exec seam (not execFn):
   // the repoRoot holder is the one `git worktree list` refuses to report,
   // and a test fake's `git symbolic-ref` short-circuit must not be able to
-  // make the probe fail and exculpate that holder (the #861 defect: a
-  // failing probe read as "does not hold"). The primary probe is
+  // make the probe fail and exculpate that holder. The primary probe is
   // `symbolic-ref`; a DETACHED HEAD returns non-empty output but the wrong
   // ref, so a detached root reads as not-holding. A truly unreadable
   // symbolic-ref (not a clean empty) cannot be distinguished from a
@@ -308,15 +319,28 @@ export async function repoRootHoldsBranch(repoRoot: string, branchName: string):
       });
       return stdout;
     } catch (err) {
+      const e = err as Error & { code?: string; stderr?: string };
+      const detail = e.stderr ?? e.message ?? "";
+      if (/not a git repository/i.test(detail) || e.code === "ENOENT") {
+        // A directory that is not a repository (or is gone) cannot hold a
+        // branch — the fail-closed default would halt clean cycles over
+        // what is actually nothing (the #861 spurious-violation shape).
+        trace(
+          `work-driver: repoRoot holder probe for ${branchName} — ${repoRoot} is not a git repository (or is gone) — it cannot hold the branch`,
+        );
+        return "not-a-repo";
+      }
       trace(
-        `work-driver: repoRoot holder probe failed for ${branchName} — treating as possibly holding (fail closed): ${(err as Error).message?.slice(0, 200)}`,
+        `work-driver: repoRoot holder probe failed for ${branchName} — treating as possibly holding (fail closed): ${String(detail).slice(0, 200)}`,
       );
       return undefined;
     }
   };
   const refProbe = await probe("git symbolic-ref --quiet --short HEAD");
+  if (refProbe === "not-a-repo") return false;
   if (refProbe !== undefined) return refProbe.trim() === branchName;
   const statusOut = await probe("git status --porcelain=v1 -b --untracked-files=normal");
+  if (statusOut === "not-a-repo") return false;
   if (statusOut === undefined) return true;
   const line = statusOut.split("\n")[0] ?? "";
   const m = /^## ([^\s.]+)/.exec(line);
