@@ -68,8 +68,11 @@ async function workstreamTouchedSet(
   const ps = state.pipelineState;
   const wt = ps.worktrees?.[id];
   if (!wt) return undefined;
-  const fn = execFn ?? ctx.verifyExecFn;
-  if (!fn) return undefined;
+  // `verifyExecFn` is a TEST-ONLY injection that production callers leave
+  // unset (see the #476 comment in work-driver-merged.ts: "production
+  // callers omit it") — fall back to the real shell or the gate would fail
+  // closed for every workstream in production.
+  const fn = execFn ?? ctx.verifyExecFn ?? execp;
   // Repo-ownership check: the recorded worktree path must be a worktree of
   // THIS repo or its output cannot be trusted as evidence for this cycle.
   const commonDirOf = async (dir: string) => {
@@ -125,9 +128,19 @@ async function workstreamTouchedSet(
     if (p) touched.add(p);
   }
 
+  // (b) the worktree porcelain — modified AND untracked (`??` counts).
+  // `--untracked-files=all` is load-bearing: bare `--porcelain` collapses a
+  // wholly-UNTRACKED directory to a single `?? dir/` line, so a file that
+  // only exists as untracked inside it would never appear in the evidence
+  // and a path declared at the root of that directory could read as
+  // over-declaration (fail open). Listing every file individually keeps the
+  // cumulative set file-granular.
   let porcelainOut: string;
   try {
-    const { stdout } = await fn("git status --porcelain", { cwd: wt, maxBuffer: 1024 * 1024 });
+    const { stdout } = await fn("git status --porcelain --untracked-files=all", {
+      cwd: wt,
+      maxBuffer: 1024 * 1024,
+    });
     porcelainOut = stdout;
   } catch {
     return undefined; // unreadable worktree → fail closed
@@ -290,15 +303,7 @@ export async function verifyConsolidation(
     // porcelain in its worktree), resolved ONCE per worktree. `undefined` =
     // unreadable worktree → fail closed: every declared path counts as
     // touched, so it falls through to uncovered (never a silent pass).
-    const rawCumulative: Set<string> | undefined = await workstreamTouchedSet(ctx, state, id);
-    // Exclude bare directory entries (e.g. "src") from the cumulative set —
-    // they are not file paths and would cause `cumulativeOf` to match every
-    // path under that directory via `startsWith("src/")`, incorrectly
-    // covering declared files.
-    const cumulative: Set<string> | undefined =
-      rawCumulative === undefined
-        ? undefined
-        : new Set([...rawCumulative].filter((p) => p.includes("/")));
+    const cumulative: Set<string> | undefined = await workstreamTouchedSet(ctx, state, id);
 
     // #875 — an EMPTY cumulative set is treated like unreadable (fail
     // closed). The over-declaration carve-out ("declared path needed no
