@@ -18,6 +18,9 @@
  *          nor baseSha) → the committed range is unreadable → fail closed
  *   F5.15: dirty-flag rendering — explainCap reads ONLY the persisted
  *          per-verdict `dirty` flag (no git calls at render time)
+ *   F5.17: worktree of a DIFFERENT repo → unreadable → uncovered
+ *   F5.18: empty cumulative set (empty range + clean porcelain) → the
+ *          over-declaration carve-out does NOT apply → uncovered
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -82,6 +85,7 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
   };
 
   const mkConsolidationState = (
+    dir: string,
     workstreams: Record<string, WorkState["pipelineState"]["workstreams"][string]>,
   ) => {
     let s = initialState(540, 1_000_000);
@@ -90,7 +94,7 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
       pipelineState: {
         ...s.pipelineState,
         branchName: "feature/issue-540-test",
-        worktrees: Object.fromEntries(Object.keys(workstreams).map((id) => [id, `/tmp/fake-${id}`])),
+        worktrees: Object.fromEntries(Object.keys(workstreams).map((id) => [id, dir])),
         workstreams,
       },
     };
@@ -100,16 +104,20 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
   const wsA = (paths: string[]) => ({ id: "a", scope: "task-a", paths, outOfScope: [] });
   const wsB = (paths: string[]) => ({ id: "b", scope: "task-b", paths, outOfScope: [] });
 
-  // A detached worktree at <dir>/<sub> with its own index file (linked
-  // worktrees share the main repo's index, which would cross-contaminate
-  // the porcelain read).
+  // A detached worktree at <dir>/<sub> with its own index file OUTSIDE the
+  // worktree (linked worktrees share the main repo's index, which would
+  // cross-contaminate the porcelain read; an index INSIDE the worktree would
+  // get committed into the range and dirty the porcelain). Detached at
+  // origin/main (NOT the feature-branch HEAD) so its committed range starts
+  // at the base — matching real worktrees, whose ranges must not include
+  // ancestor workstream commits (the #794 stacked shape).
   const mkWorktree = async (dir: string, sub: string, files: string[]) => {
     const wtDir = path.join(dir, sub);
-    await execp2(`git worktree add --detach ${JSON.stringify(wtDir)} HEAD`, {
+    await execp2(`git worktree add --detach ${JSON.stringify(wtDir)} origin/main`, {
       cwd: dir,
       shell: "/bin/bash",
     });
-    const idx = path.join(wtDir, ".git-standalone-index");
+    const idx = path.join(dir, `.idx-${sub}`);
     await execp2(`GIT_INDEX_FILE=${JSON.stringify(idx)} git read-tree HEAD`, {
       cwd: wtDir,
       shell: "/bin/bash",
@@ -128,7 +136,12 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
     return wtDir;
   };
   const baseShaOf = async (dir: string) => (await execp2("git rev-parse HEAD", { cwd: dir })).stdout.trim();
-  const ctx = (dir: string): DriverContext => ({ pi: makeFakePi().pi, repoRoot: dir, issue: 540 });
+  const ctx = (dir: string): DriverContext => ({
+    pi: makeFakePi().pi,
+    repoRoot: dir,
+    issue: 540,
+    verifyExecFn: execp2,
+  });
 
   // F5.9 — N=1 short-circuit (regression: the #875 cumulative read must not
   // relax the structural unverifiability of single-workstream cycles).
@@ -136,7 +149,7 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
     const dir = mkdtempSync(path.join(tmpdir(), "f5-n1-"));
     try {
       await mkGitRepo(dir, ["src/a.ts"]);
-      const state = mkConsolidationState({ a: wsA(["src/genuinely-absent.ts"]) });
+      const state = mkConsolidationState(dir, { a: wsA(["src/genuinely-absent.ts"]) });
       const res = await verifyConsolidation(ctx(dir), state);
       assert(
         res.missing.length === 0 && res.verdicts.length === 0,
@@ -148,27 +161,31 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
   }
 
   // F5.10 — over-declaration (the #799 shape): workstream b declares
-  // src/keep-green.ts; its worktree range and porcelain never touch it,
-  // and the committed diff lacks it → complete (no cap-hit input).
-  // Workstream a's genuinely-absent path stays uncovered (unreadable
-  // worktree → fail closed).
+  // src/keep-green.ts AND src/touched.ts; its committed range touches only
+  // src/touched.ts (the declared file legitimately needed no edit), the
+  // cumulative set is therefore non-empty, and the committed diff lacks
+  // src/keep-green.ts → complete (no cap-hit input). Workstream a's
+  // genuinely-absent path stays uncovered (non-empty cumulative set that
+  // does not contain it, absent from the diff → a dropped slice).
   {
     const dir = mkdtempSync(path.join(tmpdir(), "f5-overdecl-"));
     try {
       await mkGitRepo(dir, ["src/a.ts"]);
-      const base = await baseShaOf(dir);
-      const wtB = await mkWorktree(dir, "wt-b", []);
-      const state = mkConsolidationState({
+      const mainline = (await execp2("git rev-parse origin/main", { cwd: dir })).stdout.trim();
+      const wtB = await mkWorktree(dir, "wt-b", ["src/touched.ts"]);
+      const state = mkConsolidationState(dir, {
         a: wsA(["src/a.ts", "src/gone.ts"]),
+        // b declares only the file it did NOT touch (the #799 shape).
         b: wsB(["src/keep-green.ts"]),
       });
-      state.pipelineState.worktrees = { a: "/tmp/fake-a-unreadable", b: wtB };
-      state.pipelineState.baseSha = base;
+      state.pipelineState.worktrees = { a: path.join(dir, "wt-nonexistent-a"), b: wtB };
+      state.pipelineState.baseSha = mainline;
+      state.pipelineState.workstreamBaseShas = { a: mainline, b: mainline };
       const res = await verifyConsolidation(ctx(dir), state);
       const bVerdict = res.verdicts.find((v) => v.id === "b");
       assert(
         bVerdict?.status === "complete",
-        `F5.10: over-declaration passes — b is complete (got: ${JSON.stringify(bVerdict)})`,
+        `F5.10: over-declaration passes (non-empty set, untouched declared file) — b is complete (got: ${JSON.stringify(bVerdict)})`,
       );
       assert(!res.missing.some((m) => m.id === "b"), "F5.10: no cap-hit input for b");
       const aVerdict = res.verdicts.find((v) => v.id === "a");
@@ -189,10 +206,13 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
     try {
       await mkGitRepo(dir, ["src/other.ts"]);
       const base = await baseShaOf(dir);
+      const mainline = (await execp2("git rev-parse origin/main", { cwd: dir })).stdout.trim();
       const wtA = await mkWorktree(dir, "wt-a", ["src/p.ts"]);
-      const state = mkConsolidationState({ a: wsA(["src/p.ts"]), b: wsB(["src/other.ts"]) });
-      state.pipelineState.worktrees = { a: wtA, b: "/tmp/fake-b" };
-      state.pipelineState.baseSha = base;
+      const wtB = await mkWorktree(dir, "wt-b", ["src/b.ts"]);
+      const state = mkConsolidationState(dir, { a: wsA(["src/p.ts"]), b: wsB(["src/b.ts"]) });
+      state.pipelineState.worktrees = { a: wtA, b: wtB };
+      state.pipelineState.baseSha = mainline;
+      state.pipelineState.workstreamBaseShas = { a: mainline, b: mainline };
       const res = await verifyConsolidation(ctx(dir), state);
       const aVerdict = res.verdicts.find((v) => v.id === "a");
       assert(
@@ -213,13 +233,16 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
     try {
       await mkGitRepo(dir, ["src/other.ts"]);
       const base = await baseShaOf(dir);
+      const mainline = (await execp2("git rev-parse origin/main", { cwd: dir })).stdout.trim();
       const wtA = await mkWorktree(dir, "wt-a", []);
       await fs.mkdir(path.join(wtA, "src"), { recursive: true });
       await fs.writeFile(path.join(wtA, ".gitkeep"), "modified baseline\n");
       await fs.writeFile(path.join(wtA, "src/p.ts"), "untracked new file\n");
-      const state = mkConsolidationState({ a: wsA(["src/p.ts"]), b: wsB(["src/other.ts"]) });
-      state.pipelineState.worktrees = { a: wtA, b: "/tmp/fake-b" };
-      state.pipelineState.baseSha = base;
+      const wtB = await mkWorktree(dir, "wt-b", ["src/b.ts"]);
+      const state = mkConsolidationState(dir, { a: wsA(["src/p.ts"]), b: wsB(["src/b.ts"]) });
+      state.pipelineState.worktrees = { a: wtA, b: wtB };
+      state.pipelineState.baseSha = mainline;
+      state.pipelineState.workstreamBaseShas = { a: mainline, b: mainline };
       const res = await verifyConsolidation(ctx(dir), state);
       const aVerdict = res.verdicts.find((v) => v.id === "a");
       assert(
@@ -240,9 +263,12 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
     try {
       await mkGitRepo(dir, ["src/other.ts"]);
       const base = await baseShaOf(dir);
-      const state = mkConsolidationState({ a: wsA(["src/p.ts"]), b: wsB(["src/other.ts"]) });
-      state.pipelineState.worktrees = { a: "/tmp/fake-a-nonexistent", b: "/tmp/fake-b" };
-      state.pipelineState.baseSha = base;
+      const mainline = (await execp2("git rev-parse origin/main", { cwd: dir })).stdout.trim();
+      const wtB = await mkWorktree(dir, "wt-b", ["src/b.ts"]);
+      const state = mkConsolidationState(dir, { a: wsA(["src/p.ts"]), b: wsB(["src/b.ts"]) });
+      state.pipelineState.worktrees = { a: path.join(dir, "wt-nonexistent-a"), b: wtB };
+      state.pipelineState.baseSha = mainline;
+      state.pipelineState.workstreamBaseShas = { a: mainline, b: mainline };
       const res = await verifyConsolidation(ctx(dir), state);
       const aVerdict = res.verdicts.find((v) => v.id === "a");
       assert(
@@ -265,13 +291,14 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
     try {
       await mkGitRepo(dir, ["src/p.ts"]);
       const base = await baseShaOf(dir);
+      const mainline = (await execp2("git rev-parse origin/main", { cwd: dir })).stdout.trim();
       const wtA = await mkWorktree(dir, "wt-a", ["src/p.ts"]);
       const tipA = await baseShaOf(wtA);
-      await mkWorktree(dir, "wt-b", []);
-      const state = mkConsolidationState({ a: wsA(["src/p.ts"]), b: wsB(["src/p.ts"]) });
-      state.pipelineState.worktrees = { a: wtA, b: path.join(dir, "wt-b") };
+      const wtB = await mkWorktree(dir, "wt-b", ["src/q.ts"]);
+      const state = mkConsolidationState(dir, { a: wsA(["src/p.ts"]), b: wsB(["src/p.ts"]) });
+      state.pipelineState.worktrees = { a: wtA, b: wtB };
       state.pipelineState.baseSha = base;
-      state.pipelineState.workstreamBaseShas = { a: base, b: tipA };
+      state.pipelineState.workstreamBaseShas = { a: mainline, b: mainline };
       const res = await verifyConsolidation(ctx(dir), state);
       const bVerdict = res.verdicts.find((v) => v.id === "b");
       assert(
@@ -299,14 +326,71 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
     try {
       await mkGitRepo(dir, ["src/other.ts"]);
       const wtA = await mkWorktree(dir, "wt-a", []);
-      const state = mkConsolidationState({ a: wsA(["src/p.ts"]), b: wsB(["src/other.ts"]) });
-      state.pipelineState.worktrees = { a: wtA, b: "/tmp/fake-b" };
+      const wtB = await mkWorktree(dir, "wt-b", ["src/b.ts"]);
+      const state = mkConsolidationState(dir, { a: wsA(["src/p.ts"]), b: wsB(["src/b.ts"]) });
+      state.pipelineState.worktrees = { a: wtA, b: wtB };
       // No baseSha, no workstreamBaseShas — the committed range is unreadable.
+      // (The test asserts uncovered, which is correct: no base → fail closed.)
       const res = await verifyConsolidation(ctx(dir), state);
       const aVerdict = res.verdicts.find((v) => v.id === "a");
       assert(
         aVerdict?.status === "uncovered" && aVerdict.uncoveredPaths.includes("src/p.ts"),
         `F5.16: clean worktree + no base SHA → uncovered, never a silent pass (got: ${JSON.stringify(aVerdict)})`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // F5.17 — worktree of a DIFFERENT repo: the recorded worktree path points
+  // at a clean repo that is NOT this repo (git-common-dir mismatch) →
+  // unreadable → the over-declaration carve-out cannot apply → uncovered.
+  {
+    const dir = mkdtempSync(path.join(tmpdir(), "f5-foreignwt-"));
+    const foreign = mkdtempSync(path.join(tmpdir(), "f5-foreign-"));
+    try {
+      await mkGitRepo(dir, ["src/other.ts"]);
+      await mkGitRepo(foreign, ["foreign/seed.ts"]);
+      const foreignWt = await mkWorktree(foreign, "wt-foreign", []);
+      const wtB = await mkWorktree(dir, "wt-b", ["src/b.ts"]);
+      const state = mkConsolidationState(dir, { a: wsA(["src/p.ts"]), b: wsB(["src/b.ts"]) });
+      state.pipelineState.worktrees = { a: foreignWt, b: wtB };
+      state.pipelineState.baseSha = await baseShaOf(dir);
+      const res = await verifyConsolidation(ctx(dir), state);
+      const aVerdict = res.verdicts.find((v) => v.id === "a");
+      assert(
+        aVerdict?.status === "uncovered" && aVerdict.uncoveredPaths.includes("src/p.ts"),
+        `F5.17: foreign-repo worktree → uncovered, never a silent pass (got: ${JSON.stringify(aVerdict)})`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(foreign, { recursive: true, force: true });
+    }
+  }
+
+  // F5.18 — empty cumulative set: a REAL worktree of this repo with an EMPTY
+  // committed range and CLEAN porcelain declares src/p.ts; the committed
+  // diff lacks it. The over-declaration carve-out requires a NON-EMPTY
+  // cumulative set (the workstream must demonstrably have done work, the
+  // #799 shape); an empty set is treated like unreadable → uncovered.
+  {
+    const dir = mkdtempSync(path.join(tmpdir(), "f5-emptyset-"));
+    try {
+      await mkGitRepo(dir, ["src/other.ts"]);
+      const mainline = (await execp2("git rev-parse origin/main", { cwd: dir })).stdout.trim();
+      const branchTip = await baseShaOf(dir);
+      const wtA = await mkWorktree(dir, "wt-a", []);
+      const wtB = await mkWorktree(dir, "wt-b", ["src/b.ts"]);
+      const state = mkConsolidationState(dir, { a: wsA(["src/p.ts"]), b: wsB(["src/b.ts"]) });
+      state.pipelineState.worktrees = { a: wtA, b: wtB };
+      state.pipelineState.baseSha = mainline;
+      // a's base = worktree's own HEAD (origin/main) → empty range.
+      state.pipelineState.workstreamBaseShas = { a: mainline, b: mainline };
+      const res = await verifyConsolidation(ctx(dir), state);
+      const aVerdict = res.verdicts.find((v) => v.id === "a");
+      assert(
+        aVerdict?.status === "uncovered" && aVerdict.uncoveredPaths.includes("src/p.ts"),
+        `F5.18: empty cumulative set → over-declaration does not apply → uncovered (got: ${JSON.stringify(aVerdict)})`,
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -324,7 +408,7 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
         ...s,
         pipelineState: {
           ...s.pipelineState,
-          worktrees: { b: "/tmp/fake-b" },
+          worktrees: { b: path.join(tmpdir(), "f5-fake-b-unreadable") },
           incompleteConsolidation: { verdicts, filesPresent: [] },
         },
       };

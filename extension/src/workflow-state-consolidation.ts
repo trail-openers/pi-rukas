@@ -33,7 +33,7 @@
  * (modified + untracked). The handoff renderers read ONLY this persisted
  * field — never a live git call — and claim "uncommitted on disk" only
  * for workstreams with `dirty: true`. Absent on state files written before
- * #875 (and on `complete`/`moved`/`unverifiable`); readers must tolerate
+ * #875 (and on `complete`/`unverifiable`); readers must tolerate
  * the absence (legacy verdicts render with the pre-#875 unconditional
  * wording via the reader adapters' `?? true` default).
  */

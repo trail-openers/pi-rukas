@@ -13,6 +13,7 @@
  */
 
 import { exec } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { promisify } from "node:util";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
@@ -43,6 +44,20 @@ const VALID_SHA_RE = /^[0-9a-f]{40}$/;
  * counts as touched, so the covered-check fails closed and the workstream
  * falls through to the uncovered/park logic. A worktree the driver cannot
  * read cannot prove the slice shipped; it never passes.
+ *
+ * The worktree is only trusted as evidence if it belongs to THIS repo:
+ * `git rev-parse --path-format=absolute --git-common-dir` run in the
+ * worktree is compared (realpath-normalised) to the same command at
+ * `ctx.repoRoot`. A mismatch or failure returns `undefined` (fail closed)
+ * — a worktree pointing at a different repository says nothing about this
+ * cycle's work.
+ *
+ * Over-declaration carve-out: the caller may treat a declared path as
+ * covered ("needed no edit", the #799 shape) only when the returned set is
+ * non-EMPTY — the workstream demonstrably did work (it touched other files
+ * and one declared file needed no edit). An empty set (nothing committed,
+ * clean porcelain) is treated like unreadable: every declared path counts
+ * as touched → uncovered.
  */
 async function workstreamTouchedSet(
   ctx: DriverContext,
@@ -55,14 +70,33 @@ async function workstreamTouchedSet(
   if (!wt) return undefined;
   const fn = execFn ?? ctx.verifyExecFn;
   if (!fn) return undefined;
+  // Repo-ownership check: the recorded worktree path must be a worktree of
+  // THIS repo or its output cannot be trusted as evidence for this cycle.
+  const commonDirOf = async (dir: string) => {
+    try {
+      const { stdout } = await fn("git rev-parse --path-format=absolute --git-common-dir", {
+        cwd: dir,
+        maxBuffer: 64 * 1024,
+      });
+      return realpathSync(stdout.trim());
+    } catch {
+      return undefined;
+    }
+  };
+  const wtCommon = await commonDirOf(wt);
+  const rootCommon = await commonDirOf(ctx.repoRoot);
+  if (!wtCommon || !rootCommon || wtCommon !== rootCommon) return undefined;
   const touched = new Set<string>();
 
   // (a) the committed range — the workstream's OWN base (the #794
   // stacked-workstream shape: a global range would include ancestors).
-  // A missing or invalid base SHA means the committed side of the
-  // cumulative evidence is UNREADABLE, which fails closed — proceeding
-  // on porcelain alone would let a clean tree pass as over-declaration
-  // even though the committed range was never proven to be clean.
+  // `workstreamBaseShas[id]` records the SHA the worktree was created at
+  // (the branch step's baseSha for non-stacked workstreams, the ancestor's
+  // TIP for stacked ones). A missing or invalid base means the committed
+  // side of the cumulative evidence is UNREADABLE, which fails closed —
+  // proceeding on porcelain alone would let a clean tree pass as
+  // over-declaration even though the committed range was never proven to
+  // be clean.
   const ownBase = ps.workstreamBaseShas?.[id] ?? ps.baseSha;
   if (ownBase === undefined || !VALID_SHA_RE.test(ownBase)) return undefined;
   let rangeOut: string;
@@ -91,7 +125,6 @@ async function workstreamTouchedSet(
     if (p) touched.add(p);
   }
 
-  // (b) the worktree porcelain — modified AND untracked (`??` counts).
   let porcelainOut: string;
   try {
     const { stdout } = await fn("git status --porcelain", { cwd: wt, maxBuffer: 1024 * 1024 });
@@ -257,15 +290,29 @@ export async function verifyConsolidation(
     // porcelain in its worktree), resolved ONCE per worktree. `undefined` =
     // unreadable worktree → fail closed: every declared path counts as
     // touched, so it falls through to uncovered (never a silent pass).
-    const cumulative: Set<string> | undefined = await workstreamTouchedSet(
-      ctx,
-      state,
-      id,
-      ctx.verifyExecFn ?? execp,
-    );
+    const rawCumulative: Set<string> | undefined = await workstreamTouchedSet(ctx, state, id);
+    // Exclude bare directory entries (e.g. "src") from the cumulative set —
+    // they are not file paths and would cause `cumulativeOf` to match every
+    // path under that directory via `startsWith("src/")`, incorrectly
+    // covering declared files.
+    const cumulative: Set<string> | undefined =
+      rawCumulative === undefined
+        ? undefined
+        : new Set([...rawCumulative].filter((p) => p.includes("/")));
+
+    // #875 — an EMPTY cumulative set is treated like unreadable (fail
+    // closed). The over-declaration carve-out ("declared path needed no
+    // edit") applies only when the set is non-empty: the workstream
+    // demonstrably did work (the #799 shape). Nothing committed + clean
+    // porcelain cannot prove a declared path was legitimately unedited.
+    // cumulativeOf depends on workstreamTouchedSet storing BOTH the source
+    // and the target of R-codes — that is what keeps a renamed declared
+    // path "touched".
+    const cumulativeArrays =
+      cumulative !== undefined && cumulative.size > 0 ? Array.from(cumulative) : undefined;
     const cumulativeOf = (p: string): boolean => {
-      if (cumulative === undefined) return true; // unreadable → touched
-      return cumulative.has(p) || Array.from(cumulative).some((f) => f.startsWith(`${p}/`));
+      if (cumulativeArrays === undefined) return true; // unreadable/empty → touched
+      return cumulativeArrays.some((f) => f === p || f.startsWith(`${p}/`));
     };
     // #540 full-set subsumption: a declared path p of W is covered when p
     // is in the committed diff, OR p is also declared by a sibling whose
