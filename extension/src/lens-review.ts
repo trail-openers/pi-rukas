@@ -15,6 +15,7 @@ import {
   lensPromptFor,
   renderSummary,
 } from "./lens-review-format.ts";
+import { blockedLensResults, skillsDirUsable } from "./lens-review-skills.ts";
 import { makeRunId } from "./spawn.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
@@ -277,6 +278,34 @@ export async function runLensReview(opts: {
   const runId = makeRunId();
   const skillsDir = piSkillsDir();
   const context = opts.context ?? "";
+  // #872 — ONE skills-dir check before the fan-out (not six per-lens
+  // checks): missing or empty blocks ALL six with a single install
+  // message and no spawn is ever called.
+  const skillsDirProblem = skillsDirUsable(skillsDir);
+  if (skillsDirProblem) {
+    const batchKey = `${runId}/batch`;
+    dispatchDeck.startBatchEntry(batchKey, {
+      label: `code-review-specialist×${LENSES.length}`,
+      size: LENSES.length,
+    });
+    const lensResults = blockedLensResults(skillsDirProblem);
+    // Bump the batch once per lens so the deck shows 6/6 even though no
+    // spawn happened — the lens did "complete" (as a block), and the
+    // operator should see the pass as finished, not stuck.
+    for (let i = 1; i <= lensResults.length; i++) {
+      dispatchDeck.updateBatchProgress(batchKey, i);
+    }
+    dispatchDeck.clearBatchEntry(batchKey);
+    const all = [...(opts.extraFindings ?? [])];
+    const deduped = dedupeFindings(all);
+    return {
+      verdict: computeVerdict(deduped, lensResults, opts.threshold),
+      totalFindings: deduped.length,
+      bySeverity: bySeverityCounts(deduped),
+      lenses: lensResults,
+      findings: deduped,
+    };
+  }
 
   // Persistent batch summary row (#139). Lets the user see "X/6 done"
   // throughout the run even as fast lenses drop out at 0s linger. Registered
