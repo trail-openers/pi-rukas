@@ -14,6 +14,9 @@
  */
 
 import { mock } from "bun:test";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   SUCCESS_KILL_AT,
@@ -326,6 +329,13 @@ const STEER_BASH_5 =
 
 /* (h) lens no-retry */
 {
+  // #872 — runLensReview pre-checks the skills dir before fanning out. Point
+  // it at the repo's own skill/ (which holds all six code-review-* skills)
+  // so this case does not depend on ~/.pi/agent/skills existing on the
+  // host; restore the previous value afterwards (delete if it was unset).
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const repoSkillDir = path.resolve(here, "..", "..", "skill");
+  const priorSkillsDir = process.env.PI_ENSEMBLE_SKILLS_DIR;
   const spawnCalls: Array<{ prompt: string }> = [];
   mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
     makeRunId: () => "run-f1h",
@@ -344,16 +354,22 @@ const STEER_BASH_5 =
     },
   }));
   const { runLensReview } = await import("../src/lens-review.ts");
-  const summary = await runLensReview({ diff: "diff --git a/a b/a" } as never);
-  eq(spawnCalls.length, 6, "F1(h): 6 lenses, 6 spawns (no retry)");
-  assert(
-    summary.lenses.every((l) => l.attempts === 1 && l.blocked && l.killCause === "loop"),
-    "F1(h): all blocked, no retry",
-  );
-  assert(
-    summary.capKill === "loop" && summary.verdict === "REVIEW_INCOMPLETE",
-    "F1(h): REVIEW_INCOMPLETE",
-  );
+  try {
+    process.env.PI_ENSEMBLE_SKILLS_DIR = repoSkillDir;
+    const summary = await runLensReview({ diff: "diff --git a/a b/a" } as never);
+    eq(spawnCalls.length, 6, "F1(h): 6 lenses, 6 spawns (no retry)");
+    assert(
+      summary.lenses.every((l) => l.attempts === 1 && l.blocked && l.killCause === "loop"),
+      "F1(h): all blocked, no retry",
+    );
+    assert(
+      summary.capKill === "loop" && summary.verdict === "REVIEW_INCOMPLETE",
+      "F1(h): REVIEW_INCOMPLETE",
+    );
+  } finally {
+    if (priorSkillsDir === undefined) delete process.env.PI_ENSEMBLE_SKILLS_DIR;
+    else process.env.PI_ENSEMBLE_SKILLS_DIR = priorSkillsDir;
+  }
 }
 
 /* (i) #772: non-adjacent green re-run — the #753 incident shape */
