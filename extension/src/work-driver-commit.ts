@@ -16,16 +16,17 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { trace } from "./trace.ts";
 import { raiseConsolidationIncompleteCap } from "./work-driver-commit-completeness.ts";
-import { dispatchCommitPrFallback } from "./work-driver-commit-fallback.ts";
 import {
   causeFromIntegrateFailure,
   conflictArtifactFromPlumb,
 } from "./work-driver-commit-helpers.ts";
+
 import {
   type CommitPrRootState,
   commitPrRootFieldsOf,
   inspectCommitPrRoot,
 } from "./work-driver-commit-inspect.ts";
+import { runCommitPr } from "./work-driver-commit-lock.ts";
 import { auditCommitPrFallback } from "./work-driver-commit-pr-audit.ts";
 import {
   finalizeCommitPrState,
@@ -44,6 +45,11 @@ import {
 } from "./work-driver-integrate.ts";
 import { renderAssumptions } from "./work-driver-intent.ts";
 import { parsePrNumber } from "./work-driver-merged.ts";
+
+// #861 — the lock-wrapped step handler lives in work-driver-commit-lock.ts
+// (the AGENTS.md §12 500-line cap pushed it out); re-exported here so the
+// existing import path in work-driver.ts is unchanged.
+export { runCommitPr };
 import {
   assumptionsBlockOf,
   carriedFindingsSectionOf,
@@ -59,6 +65,7 @@ import { verifyConsolidation, verifyStepOutcome } from "./work-driver-verify.ts"
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
 import { appendEvent } from "./workflow-state.ts";
+import { workStateFile } from "./workflow-state.ts";
 import type {
   CommitPrFallbackCause,
   ConsolidationVerdict,
@@ -236,12 +243,16 @@ export async function mechanizedCommitPr(
       // LLM judgment call.
       if (ps.baseSha) {
         try {
-          await ensureIntegrateWorktree(execFn, {
-            repoRoot: ctx.repoRoot,
-            issue: ctx.issue,
-            branchName,
-            baseSha: ps.baseSha,
-          });
+          await ensureIntegrateWorktree(
+            execFn,
+            {
+              repoRoot: ctx.repoRoot,
+              issue: ctx.issue,
+              branchName,
+              baseSha: ps.baseSha,
+            },
+            workStateFile(ctx.repoRoot, ctx.issue),
+          );
         } catch (rawErr) {
           const err = rawErr as Error & { stderr?: string };
           const detail = (err.stderr ?? err.message ?? "").toString();
@@ -378,111 +389,4 @@ export async function mechanizedCommitPr(
       reason: `${(e.stderr ?? e.message ?? "unknown error").toString().trim().slice(0, 300)}`,
     };
   }
-}
-
-/**
- * Step 6 — Commit + PR. ops commits the diff, pushes, opens a PR with
- * `Fixes #N` in the body. PR4 captures the `pr: <N>` line ops's prompt
- * asks for into pipelineState.prNumber so the handoff step (7g) targets
- * the right PR for `gh pr comment` instead of falling back to issue.
- */
-export async function runCommitPr(
-  ctx: DriverContext,
-  state: WorkState,
-  now: number,
-): Promise<WorkState> {
-  // PR19 — one contiguous critical section per group: includes the LLM ops
-  // fallback (it mutates repoRoot exactly as the mechanized path does) and
-  // BOTH verify gates, which read repoRoot HEAD via `git rev-list` /
-  // `git diff --name-only` and would otherwise validate a sibling group's
-  // commits as this group's evidence.
-  return withIntegrationLock(ctx.repoRoot, () => runCommitPrLocked(ctx, state, now));
-}
-
-async function runCommitPrLocked(
-  ctx: DriverContext,
-  state: WorkState,
-  now: number,
-): Promise<WorkState> {
-  let next: WorkState | undefined;
-  let preDispatch = state;
-  const execFn = ctx.verifyExecFn ?? execp;
-  // PR19 — mechanized commit-pr. The LLM ops dispatch remains as fallback
-  // for judgmental recovery (apply conflict, push rejection).
-  {
-    const mech = await mechanizedCommitPr(ctx, state, now);
-    if (mech.ok) {
-      next = mech.state;
-    } else if (mech.terminal) {
-      // The consolidated tree does not build (the `integration-verify-failed`
-      // cap) OR the driver-owned integrate worktree could not be created
-      // (the `integration-worktree-violation` cap): in BOTH cases the
-      // fallback exists to absorb environment variance, not to overrule a
-      // verdict — dispatching ops would either commit the same broken tree
-      // (a gate that cannot fail; the six lenses would review something
-      // never compiled) or work in a tree the prompt forbids (an unpinned
-      // dispatch — the #841 defect class, which the strict audit would halt
-      // anyway). The prepared state carries the plumb + cap already appended.
-      trace(`work-driver: commit-pr halted (terminal mechanized failure): ${mech.reason}`);
-      return (
-        mech.haltedAfter ??
-        appendEvent(
-          state,
-          {
-            kind: "plumb-report",
-            at: Date.now(),
-            step: "commit-pr",
-            role: "driver",
-            body: mech.reason,
-          },
-          {
-            kind: "cap-hit",
-            at: Date.now(),
-            cap: "integration-verify-failed",
-            reviewRound: state.pipelineState.reviewRound,
-            nextStep: "handoff",
-          },
-        )
-      );
-    } else {
-      trace(`work-driver: mechanized commit-pr fell back to ops dispatch: ${mech.reason}`);
-      preDispatch = appendEvent(state, {
-        kind: "plumb-report",
-        at: Date.now(),
-        step: "commit-pr",
-        role: "driver",
-        // #861 — the old "the repo root may contain partially staged
-        // consolidation" sentence is GONE: on every fallback-reachable
-        // failure integrate() runs verifiedRestoreRoot (it saves any partial
-        // state to a scratch artifact first, then reset --hard + checkout and
-        // VERIFIES repoRoot is clean). A restore failure already carries
-        // "repoRoot was NOT restored …" in mech.reason — the driver never
-        // claims a restoration it has not verified.
-        body: `Mechanized commit-pr fell back to the ops dispatch: ${mech.reason}`,
-        // #539 — the writer's own structured observation; the renderer
-        // prefers this over re-deriving the cause from the recorded state.
-        fallbackCause: mech.fallbackCause,
-      });
-    }
-  }
-  let fallbackFired = false;
-  if (next === undefined) {
-    // #861 — the fallback is pinned to the driver-owned integrate worktree
-    // (created by mechanizedCommitPr under the integration lock); the
-    // prompt names that path as the ONLY permitted working tree (worktree-
-    // commit-fallback.ts owns the dispatch shape + the prompt threading).
-    next = await dispatchCommitPrFallback(ctx, preDispatch, now, execFn);
-    fallbackFired = true;
-  }
-  const last = next.eventLog[next.eventLog.length - 1];
-  if (last?.kind !== "dispatch-completed") return next;
-  // #861 — the post-dispatch sequence (the #841 defect's guard): the
-  // PR-verification gates run first (a partial consolidation halts with
-  // `commit-pr-incomplete-consolidation` before the cycle can advance),
-  // then the STRICT branch-holder audit — the integration branch must be
-  // held by the integrate worktree, or by NOTHING; any other holder
-  // (including repoRoot and this cycle's own workstream worktrees) halts
-  // with `integration-worktree-violation`. A fully clean tail removes the
-  // integrate worktree (kept on any handoff halt for inspection).
-  return auditCommitPrFallback(ctx, execFn, next, fallbackFired, true);
 }

@@ -243,16 +243,23 @@ try {
     "canary: a verify failure is marked terminal — every other failure still falls back",
   );
   // The load-bearing branch: `terminal` must be handled BEFORE the else that
-  // builds the ops fallback, or the gate cannot fail.
-  const mechIdx = code.indexOf("const mech = await mechanizedCommitPr");
-  const terminalIdx = code.indexOf("mech.terminal", mechIdx);
-  const fallbackIdx = code.indexOf("dispatchCommitPrFallback", mechIdx);
+  // builds the ops fallback, or the gate cannot fail. The check lives in
+  // work-driver-commit-lock.ts (the #861 file-size cap moved it out of
+  // work-driver-commit.ts); read both files so the canary tracks the code.
+  const lockCode = readFileSync(path.join(SRC, "work-driver-commit-lock.ts"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    " ",
+  );
+  const combined = code + " " + lockCode.replace(/^\s*\/\/.*$/gm, " ");
+  const mechIdx = combined.indexOf("const mech = await mechanizedCommitPr");
+  const terminalIdx = combined.indexOf("mech.terminal", mechIdx);
+  const fallbackIdx = combined.indexOf("dispatchCommitPrFallback", mechIdx);
   assert(
     mechIdx >= 0 && terminalIdx > mechIdx && terminalIdx < fallbackIdx,
     "canary: the terminal branch is checked before the ops fallback is reached",
   );
   assert(
-    /cap: "integration-verify-failed"/.test(code),
+    /cap: "integration-verify-failed"/.test(combined),
     "canary: it halts with a named cap rather than failing silently",
   );
 

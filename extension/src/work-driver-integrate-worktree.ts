@@ -73,6 +73,7 @@ export interface IntegrateWorktreeCreation {
 export async function ensureIntegrateWorktree(
   execFn: ExecFn,
   opts: { repoRoot: string; issue: number; branchName: string; baseSha: string },
+  stateFile?: string,
 ): Promise<IntegrateWorktreeCreation> {
   const { repoRoot, issue, branchName, baseSha } = opts;
   const name = integrateWorktreeName(issue);
@@ -103,13 +104,66 @@ export async function ensureIntegrateWorktree(
   let staleHead: string | undefined;
   const registered = await isRegisteredWorktree(execFn, repoRoot, abs);
   if (registered) {
+    // #861 round 2 — ownership check: a registered tree at the integrate
+    // path is driver-owned re-entry residue ONLY when this cycle's state
+    // file records it. An operator who manually created a worktree at the
+    // same path (e.g. reusing a #475 salvage) is NOT driver-owned residue —
+    // the ticket's own edge-case list says "a directory that exists but is
+    // registered NOWHERE is not driver-owned residue — left for the
+    // #475 target guard, which refuses a dirty one." A registered-but-
+    // operator-owned tree at the integrate path is the same shape: the
+    // #545 sibling scan would have caught it (the integrate path is
+    // excluded from that scan), so the driver REFUSES a dirty one and
+    // force-removes a clean one (the guard's own pre-remove).
+    const inCycle = await isIntegrateTreeInCycle(stateFile, abs);
     let registeredStill = true;
     try {
       await execFn("git rev-parse --verify --quiet HEAD", { cwd: abs, maxBuffer: 64 * 1024 });
     } catch {
       registeredStill = false;
     }
-    if (registeredStill) {
+    if (!inCycle) {
+      // A registered worktree at the integrate path that the state file
+      // does NOT record as this cycle's: an operator residue the driver
+      // must not silently destroy. The ticket's edge-case list says a
+      // dirty one HALTS (the driver refuses to destroy operator work);
+      // a clean one is pre-removed and the fresh creation proceeds
+      // (the same shape as the "unregistered directory" case, where the
+      // #475 target guard's own pre-remove handles it).
+      if (registeredStill) {
+        let dirt = "";
+        try {
+          ({ stdout: dirt } = await execFn("git status --porcelain", {
+            cwd: abs,
+            maxBuffer: 1024 * 1024,
+          }));
+        } catch {
+          dirt = "";
+        }
+        if (dirt.split("\n").some((l) => l.trim())) {
+          throw new Error(
+            `integrate path ${abs} holds a registered worktree NOT recorded in the cycle's state file (the state file records only the branch step's workstreams) and is dirty — the driver refuses to destroy operator residue: ${dirt
+              .split("\n")
+              .filter((l) => l.trim())
+              .slice(0, 5)
+              .join(", ")}`,
+          );
+        }
+        trace(
+          `work-driver: registered worktree at ${abs} is NOT this cycle's (state file does not record it) and is clean — force-removing and recreating (the cycle already committed to replacing the integrate tree)`,
+        );
+        await worktreeRemove(execFn, repoRoot, name, true);
+      } else {
+        // The unregistered-on-disk case (registeredStill === false): the
+        // registration is stale; remove it so the fresh `worktree add`
+        // does not hit "already exists".
+        trace(
+          `work-driver: ${name} registered in the worktree list but gone from disk — removing the stale registration`,
+        );
+        await worktreeRemove(execFn, repoRoot, name, true);
+      }
+    } else if (registeredStill) {
+      // Driver-owned re-entry (this cycle's state records the path).
       try {
         const { stdout } = await execFn("git rev-parse --verify --quiet HEAD", {
           cwd: abs,
@@ -124,6 +178,7 @@ export async function ensureIntegrateWorktree(
       );
       await worktreeRemove(execFn, repoRoot, name, true);
     } else {
+      // Driver-owned but gone from disk: remove the stale registration.
       trace(
         `work-driver: ${name} registered in the worktree list but gone from disk — removing the stale registration`,
       );
@@ -307,6 +362,36 @@ export async function branchHolders(
     if (found) i = j;
   }
   return holders;
+}
+
+/**
+ * #861 round 2 — the stale-tree ownership check. The state file (the cycle's
+ * `.pi/work-state/<issue>.json`) records the branch step's worktree map
+ * (id → path). If the integrate path appears in that map, the tree at that
+ * path is driver-owned re-entry residue (this cycle created it). If it does
+ * NOT appear, the tree is NOT this cycle's — it is operator residue the
+ * driver must not silently destroy (a dirty one HALTS; a clean one is
+ * pre-removed by the #475 target guard below).
+ *
+ * An unreadable state file returns false (the safe direction: the path is
+ * then treated as NOT this cycle's, so a dirty one halts rather than being
+ * silently destroyed; a clean one is pre-removed and the fresh creation
+ * proceeds — the same shape as the "unregistered directory" case).
+ */
+async function isIntegrateTreeInCycle(
+  stateFile: string | undefined,
+  abs: string,
+): Promise<boolean> {
+  if (!stateFile) return false;
+  try {
+    const raw = await fs.readFile(stateFile, "utf8");
+    const parsed = JSON.parse(raw) as { pipelineState?: { worktrees?: Record<string, string> } };
+    const worktrees = parsed.pipelineState?.worktrees ?? {};
+    const target = resolvePath(abs);
+    return Object.values(worktrees).some((p) => resolvePath(p) === target);
+  } catch {
+    return false;
+  }
 }
 
 async function pathExists(p: string): Promise<boolean> {

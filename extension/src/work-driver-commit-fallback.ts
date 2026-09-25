@@ -27,6 +27,11 @@ export async function dispatchCommitPrFallback(
   preDispatch: WorkState,
   now: number,
   execFn: ExecFn,
+  // #861 round 2 — the structured conflict-artifact value threaded from the
+  // mechanized failure (or `undefined` when no patch was preserved). The
+  // prompt's conflict section reads it directly, never re-parsing the
+  // plumb's body (the old event indirection).
+  conflictPatch: string | undefined,
 ): Promise<WorkState> {
   // #818 — the ops fallback receives the DERIVED conventional subject (not
   // the raw issue title), so the PR the ops child opens is conventional
@@ -72,6 +77,7 @@ export async function dispatchCommitPrFallback(
           baseSha: ps.baseSha ?? "(base not recorded)",
           conflictPatch: conflictArtifactFromPlumb(
             preDispatch.eventLog[preDispatch.eventLog.length - 1],
+            conflictPatch,
           ),
           worktrees: ps.worktrees ?? {},
           commitShas: ps.commitShas ?? {},

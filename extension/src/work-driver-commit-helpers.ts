@@ -23,11 +23,22 @@ export function causeFromIntegrateFailure(res: IntegrateResult): CommitPrFallbac
 /**
  * #861 — the fallback's structural conflict-artifact source. The plumb
  * report the driver appends on a non-terminal mechanized failure carries
- * "(patch preserved at <path>)" in its body (mechanizedCommitPr's reason
- * does) — the ops prompt gets the path STRUCTURALLY from this event, never
- * re-parsed out of a free-text reason at the prompt seam.
+ * "(patch preferred at <path>)" in its body (mechanizedCommitPr's reason
+ * does) — the ops prompt gets the path from this event, never re-parsed
+ * out of a free-text reason at the prompt seam.
+ *
+ * #861 round 2 — the caller threads `res.conflictPatch` (the structured
+ * field on the mechanized failure) into `dispatchCommitPrFallback` and
+ * passes it to this helper; the helper now PREFERS the structural value
+ * and only falls back to parsing the plumb's body when the caller had no
+ * structured value (the "no-diff workstream" reason, which carries no
+ * patch). One event indirection, gone.
  */
-export function conflictArtifactFromPlumb(event: WorkEvent | undefined): string | undefined {
+export function conflictArtifactFromPlumb(
+  event: WorkEvent | undefined,
+  structural: string | undefined,
+): string | undefined {
+  if (structural) return structural;
   if (event?.kind !== "plumb-report") return undefined;
   const m = event.body.match(/\(patch preserved at (\S+)\)/);
   return m?.[1];
