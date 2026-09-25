@@ -86,7 +86,7 @@ export async function fanOutAdversarial(
   // #799 — the fan-out's state ref: the per-workstream slow recorder appends
   // dispatch-slow events to the latest state.
   const fanoutStateRef = { current: state };
-  const slowFor = () => slowRecorder(ctx.repoRoot, "adversarial", fanoutStateRef);
+  const slowFor = () => slowRecorder("adversarial", fanoutStateRef);
   // #799 F2 — the fan-out's wall-clock span, keyed on the STEP (not any
   // child), matching the develop-path notice. Fires once, above the healthy
   // band; a cancel is returned and invoked on every exit below.

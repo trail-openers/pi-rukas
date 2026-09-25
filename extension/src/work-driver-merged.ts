@@ -99,7 +99,7 @@ export async function runSingleDispatch(
   // #799 — the state ref the slow recorder appends to (a later completion
   // event re-reads the latest state; the ref keeps them in step).
   const dispatchStateRef = { current: next };
-  let result: DispatchResult | undefined;
+  let result: DispatchResult;
   try {
     // PR15 — per-call timeout override (3-min default; runCi lifts it to 30).
     // #799 — plain `await dispatch(...)`. The earlier periodic heartbeat
@@ -116,7 +116,7 @@ export async function runSingleDispatch(
       {
         label,
         timeoutMs: opts?.timeoutMs,
-        onSlow: slowRecorder(ctx.repoRoot, step, dispatchStateRef),
+        onSlow: slowRecorder(step, dispatchStateRef),
       },
     );
     // #799 — the slow recorder appends to dispatchStateRef; fold any
@@ -124,7 +124,9 @@ export async function runSingleDispatch(
     // completion event lands after them in the log.
     next = dispatchStateRef.current;
   } catch (err) {
-    return appendEvent(clearDispatch(next, jobId), {
+    // #799 — fold on the failure path too: a crossing recorded before the
+    // failure must not be dropped by the dispatch-failed append.
+    return appendEvent(clearDispatch(dispatchStateRef.current, jobId), {
       kind: "dispatch-failed",
       step,
       role,
@@ -133,18 +135,6 @@ export async function runSingleDispatch(
       ms: Date.now() - startedAt,
       at: Date.now(),
       errorTail: (err as Error).message?.slice(-200),
-    });
-  }
-  if (!result) {
-    return appendEvent(clearDispatch(next, jobId), {
-      kind: "dispatch-failed",
-      step,
-      role,
-      jobId,
-      label,
-      ms: Date.now() - startedAt,
-      at: Date.now(),
-      errorTail: "dispatch seam: no result (unreachable)",
     });
   }
   const event = await buildCompletionEvent(ctx, step, role, label, result);

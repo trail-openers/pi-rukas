@@ -89,7 +89,7 @@ async function runDevelopTopological(
   // its own dispatch-slow events to the cycle state and persists them.
   const slowFor: Record<string, OnSlowCallback> = {};
   for (const id of ids) {
-    slowFor[id] = slowRecorder(ctx.repoRoot, "develop", stateRef);
+    slowFor[id] = slowRecorder("develop", stateRef);
   }
   const runOneWorkstream = makeRunOneWorkstream({
     ctx,
@@ -247,6 +247,10 @@ async function runDevelopTopological(
     // be cleared on this path too — the non-park path does it just below; on the
     // parked path the cycle terminates via handoff, but leaving the job in
     // inFlightJobIds would trip detectInconsistencies on a later read.
+    // #799 — fold the recorders' ref on the park path too: the slow events
+    // recorded by the independent children must survive into the returned
+    // state.
+    next = stateRef.current;
     next = appendEvent(clearDispatch(next, begun.jobId));
     next = {
       ...next,
@@ -259,6 +263,10 @@ async function runDevelopTopological(
     return endStep(next);
   }
   void independentResults;
+  // #799 — fold the recorders' ref back on the main path too (the slow
+  // events recorded by the developer children must land before the
+  // branch-completed batch).
+  next = stateRef.current;
   next = appendEvent(clearDispatch(next, begun.jobId), ...branchEvents);
   next = {
     ...next,

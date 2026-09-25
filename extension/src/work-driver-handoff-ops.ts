@@ -60,6 +60,10 @@ export async function runHandoffOpsDispatch(
     startedAt,
     handoffTranscript,
   );
+  next = begun.state;
+  // #799 — the state ref the slow recorder appends to (the step folds it
+  // back on every exit path; the recorder itself never persists).
+  const handoffStateRef = { current: next };
   let opsReplyText = "";
   // Two enforcement points, deliberately: `timeoutMs` makes spawn SIGTERM the
   // real child so an abandoned handoff agent is not left running, and the race
@@ -79,12 +83,15 @@ export async function runHandoffOpsDispatch(
         {
           label: "ops:handoff",
           timeoutMs: boundMs,
-          onSlow: slowRecorder(ctx.repoRoot, "handoff", { current: next }),
+          onSlow: slowRecorder("handoff", handoffStateRef),
         },
       ),
       bound,
     ]);
-    next = clearDispatch(next, begun.jobId);
+    // #799 — the bound path keeps the slow events: the child may still be
+    // running (the race freed the driver, not the child), and its recorded
+    // crossings belong to the log either way.
+    next = clearDispatch(handoffStateRef.current, begun.jobId);
     if (res === "bound") {
       trace(`work-driver: handoff ops dispatch exceeded ${boundMs}ms — using in-process gh`);
       next = appendEvent(next, {
@@ -110,7 +117,7 @@ export async function runHandoffOpsDispatch(
     }
   } catch (err) {
     trace(`work-driver: handoff ops dispatch threw: ${(err as Error).message}`);
-    next = appendEvent(clearDispatch(next, begun.jobId), {
+    next = appendEvent(clearDispatch(handoffStateRef.current, begun.jobId), {
       kind: "dispatch-failed",
       step: "handoff",
       role: "ops",

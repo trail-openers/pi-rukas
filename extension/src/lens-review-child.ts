@@ -12,6 +12,7 @@ import * as dispatchDeck from "./dispatch-deck.ts";
 import { extractFindings, lensPromptFor } from "./lens-review-format.ts";
 import { LENS_REPORTER_PATH, type LensDef } from "./lens-review.ts";
 import type { LensRunResult } from "./lens-review.ts";
+import type { SlowWatchInput } from "./slow-notice.ts";
 import { feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
 import { spawnSpecialist } from "./spawn.ts";
 import type { DispatchResult } from "./types.ts";
@@ -32,6 +33,10 @@ export async function runLensChild(opts: {
     evidence?: string;
   };
   bumpBatch: () => void;
+  /** #799 — the parent pi for the slow-run watch's PM notice (the driver
+   * threads its own; PM-driven lens runs pass nothing — the PM's
+   * dispatch_peek already sees the lens's progress there). */
+  pi?: SlowWatchInput["pi"];
 }): Promise<LensRunResult> {
   const { lens, runId, skillsDir, context, bumpBatch } = opts;
   const runOpts = opts.opts;
@@ -62,6 +67,7 @@ export async function runLensChild(opts: {
     id: deckKey,
     role: slowRole,
     label: slowLabel,
+    ...(opts.pi ? { pi: opts.pi } : {}),
   });
 
   // Retry loop (#3). Up to MAX_LENS_ATTEMPTS attempts on transient

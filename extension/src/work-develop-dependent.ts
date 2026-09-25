@@ -36,7 +36,6 @@ import {
   resolveDependentBase,
 } from "./work-driver-dep-scheduler.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
-import { writeState } from "./workflow-state.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 export async function runDependentWorkstreams(
   ctx: DriverContext,
@@ -188,8 +187,6 @@ export async function runDependentWorkstreams(
         // transcripts.
         const leftoverPath = created.failure.leftoverPath ?? "(path unknown)";
         const parked = parkDeferredLeftover(stateRef, leftoverPath, branchEvents);
-        await writeState(ctx.repoRoot, stateRef.current);
-        cancelPhaseNotice();
         trace(
           `work-driver: PARK — deferred worktree creation for ${id} refused by dirty leftover at ${leftoverPath}; parking the cycle (no force-remove)`,
         );

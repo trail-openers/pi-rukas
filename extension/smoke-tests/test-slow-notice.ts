@@ -24,6 +24,10 @@ import os from "node:os";
 import path from "node:path";
 import type { Writable } from "node:stream";
 import { clearJobsForTesting, startJob } from "../src/async-jobs.ts";
+import {
+  clearParentExtensionApiForTesting,
+  setParentExtensionApi,
+} from "../src/async-jobs-registry.ts";
 import { steerChild } from "../src/dispatch-steer.ts";
 import type { RunningState } from "../src/progress.ts";
 import {
@@ -45,6 +49,11 @@ function assert(cond: boolean, msg: string) {
     console.error(`✗ ${msg}`);
     exit = 1;
   }
+}
+
+function setup() {
+  clearSlowWatchesForTesting();
+  clearJobsForTesting();
 }
 
 const REPO = mkdtempSync(path.join(os.tmpdir(), "pi-ens-799s-"));
@@ -101,8 +110,7 @@ const withEnv = async (env: Record<string, string | undefined>, fn: () => Promis
 
 // ---------------------------------------------------------------- 1. turns
 await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "150" }, async () => {
-  clearSlowWatchesForTesting();
-  clearJobsForTesting();
+  setup();
   const notices: string[] = [];
   const steers: Array<{ id: string; text: string; source: string }> = [];
   const stop = watchSlowDispatch({
@@ -135,8 +143,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "150" }, async () => {
 
 // ------------------------------------------------------------- 2. elapsed
 await withEnv({}, async () => {
-  clearSlowWatchesForTesting();
-  clearJobsForTesting();
+  setup();
   let t = 1_000_000;
   const now = () => t;
   const notices: string[] = [];
@@ -162,8 +169,7 @@ await withEnv({}, async () => {
 
 // -------------------------------------------------- 3. auto-steer disabled
 await withEnv({ PI_ENSEMBLE_AUTO_STEER: "0", PI_ENSEMBLE_SLOW_NOTICE_TURNS: "150" }, async () => {
-  clearSlowWatchesForTesting();
-  clearJobsForTesting();
+  setup();
   const notices: string[] = [];
   const steers: Array<{ id: string; text: string; source: string }> = [];
   const stop = watchSlowDispatch({
@@ -181,8 +187,7 @@ await withEnv({ PI_ENSEMBLE_AUTO_STEER: "0", PI_ENSEMBLE_SLOW_NOTICE_TURNS: "150
 
 // ---------------------------------------------------- 4. slow-notice off
 await withEnv({ PI_ENSEMBLE_SLOW_NOTICE: "0" }, async () => {
-  clearSlowWatchesForTesting();
-  clearJobsForTesting();
+  setup();
   const notices: string[] = [];
   const steers: Array<{ id: string; text: string; source: string }> = [];
   const stop = watchSlowDispatch({
@@ -200,8 +205,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE: "0" }, async () => {
 
 // -------------------------------------------------- 5. startJob wiring (1)
 await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "150" }, async () => {
-  clearJobsForTesting();
-  clearSlowWatchesForTesting();
+  setup();
   const notices: string[] = [];
   const steers: Array<{ id: string; text: string; source: string }> = [];
   let progressFn: ((s: RunningState) => void) | undefined;
@@ -228,8 +232,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "150" }, async () => {
 
 // ------------------------------------------- 6. runSingleDispatch + onSlow
 await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
-  clearJobsForTesting();
-  clearSlowWatchesForTesting();
+  setup();
   const state = initialState(799, 1_000_000);
   const fakeDispatch: NonNullable<DriverContext["dispatchFn"]> = async (_pi, _spec, opts) => {
     // Simulate the child crossing the threshold mid-dispatch: the watch is
@@ -312,8 +315,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
   // its deck key; dispatch_steer must resolve that id. The real lens path
   // (lens-review-child.ts) registers via registerChildHandle in onStdin;
   // this test drives the registry seam directly with a fake stdin.
-  clearJobsForTesting();
-  clearSlowWatchesForTesting();
+  setup();
   const { registerChildHandle } = await import("../src/async-jobs-registry.ts");
   const deckMod = await import("../src/dispatch-deck.ts");
   const deckKey = "run-abc/simplicity";
@@ -356,8 +358,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
   // fires identically under PI_ENSEMBLE_QUIET_STATUS=1 (which makes
   // dispatch-deck's updateEntry/clearEntry no-ops).
   await withEnv({ PI_ENSEMBLE_QUIET_STATUS: "1" }, async () => {
-    clearSlowWatchesForTesting();
-    clearJobsForTesting();
+    setup();
     const notices: string[] = [];
     const steers: Array<{ id: string; text: string; source: string }> = [];
     const stop = watchSlowDispatch({
@@ -377,6 +378,88 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
     assert(notices.length === 1, "quiet: settled watch never fires again (map cleared on settle)");
   });
 }
+
+// ---------------------------------------------------------------- 10. silent child
+await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
+  setup();
+  let t = 2_000_000;
+  const now = () => t;
+  const notices: string[] = [];
+  const steers: Array<{ id: string }> = [];
+  const stop = watchSlowDispatch({
+    id: "job-silent",
+    role: "developer",
+    label: "silent",
+    pi: { sendUserMessage: (t: string) => notices.push(t) },
+    steerFn: (_jobId: string, text: string, _src: any) => steers.push(text),
+    now,
+  });
+  try {
+    feedSlowProgress("job-silent", { turns: 1, totalTokens: 1, elapsedMs: 100 });
+    assert(notices.length === 1, "silent child: elapsed crossing → one notice");
+    assert(steers.length === 1, "silent child: elapsed crossing → one steer");
+  } finally {
+    stop();
+  }
+});
+
+// ---------------------------------------------------------------- 11. runPlan state
+{
+  process.env.PI_ENSEMBLE_RESUME = "0";
+  process.env.PI_ENSEMBLE_CROSS_GROUP_CONFLICTS = "0";
+  const { runPlan } = await import("../src/work-driver-plan.ts");
+  const { initialState } = await import("../src/workflow-state.ts");
+  const fakeDispatch: any = async (_pi: unknown, _spec: unknown, opts: any) => {
+    opts?.onSlow?.({
+      step: "plan",
+      role: "explore",
+      jobId: "x",
+      label: "plan",
+      elapsedMs: 1,
+      turns: 151,
+      tokens: 3,
+      at: Date.now(),
+    });
+    return { role: "explore", ok: true, text: "done", toolUses: [], ms: 5, exitCode: 0 };
+  };
+  const ctx: any = {
+    pi: { sendUserMessage: () => {} },
+    issue: 799,
+    issues: [799],
+    repoRoot: "/tmp",
+    dispatchFn: fakeDispatch,
+  };
+  const out = await runPlan(ctx, initialState(799, 1_000_000));
+  assert(
+    out.eventLog.some((e) => e.kind === "dispatch-slow" || e.kind === "dispatch-completed"),
+    "runPlan: the step completed (dispatch-completed or dispatch-slow present)",
+  );
+}
+
+// ---------------------------------------------------------------- 12. lens PM notice
+await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
+  const notices: string[] = [];
+  const fakePi: any = { sendUserMessage: (t: string) => notices.push(t) };
+  setParentExtensionApi(fakePi);
+  setup();
+  let t = 2_000_000;
+  const now = () => t;
+  const stop = watchSlowDispatch({
+    id: "job-lens",
+    role: "code-review-specialist",
+    label: "lens:arch",
+    now,
+  });
+  try {
+    t += 100;
+    feedSlowProgress("job-lens", { turns: 1, totalTokens: 1, elapsedMs: 100 });
+    assert(notices.length === 1, "lens child (no pi in scope): PM notice fires via parent API");
+    assert(notices[0]?.includes("lens:arch") === true, "lens child: notice names the label");
+  } finally {
+    stop();
+    clearParentExtensionApiForTesting();
+  }
+});
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

@@ -64,7 +64,7 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
         // fix → re-review). A single umbrella row would just flicker between
         // sub-states; per-round entries show the actual child running now.
         skipDeck: true,
-        work: (signal, hooks) => runAdversarialLoop(params, signal, hooks.jobId),
+        work: (signal, hooks) => runAdversarialLoop({ ...params, pi }, signal, hooks.jobId),
       });
       return {
         content: [
@@ -112,6 +112,9 @@ export async function runAdversarialLoop(
       tokens: number;
       at: number;
     }) => void;
+    /** #799 — the parent pi for the inner children's slow-run watch (the PM
+     * notice half; the watch site has no pi of its own). */
+    pi?: import("@earendil-works/pi-coding-agent").ExtensionAPI;
   },
   signal: AbortSignal,
   orchestratorJobId: string,
@@ -156,12 +159,14 @@ export async function runAdversarialLoop(
     const label = `${role}[${tag}]`;
     dispatchDeck.startEntry(deckKey, { label, role, tag });
     // #799 — the slow-run watch for this inner child: the deck key is the id
-    // dispatch_peek shows, and it is what the PM notice names.
+    // dispatch_peek shows, and it is what the PM notice names. The parent pi
+    // is threaded so the notice reaches the PM (the watch site has no pi).
     const stopSlow = watchSlowDispatch({
       id: deckKey,
       role,
       label,
       ...(params.onSlow ? { onSlow: params.onSlow } : {}),
+      ...(params.pi ? { pi: params.pi } : {}),
     });
     try {
       return await spawnSpecialist(

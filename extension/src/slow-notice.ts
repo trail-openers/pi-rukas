@@ -34,17 +34,18 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { notifyAgent } from "./agent-message.ts";
+import { getParentExtensionApi, setParentExtensionApi } from "./async-jobs-registry.ts";
 import type { SteerSource } from "./dispatch-steer.ts";
 import { steerChild } from "./dispatch-steer.ts";
 import type { RunningState } from "./progress.ts";
 import { formatElapsed, formatTokens } from "./progress.ts";
 import { trace } from "./trace.ts";
 import type { WorkState } from "./workflow-state.ts";
-import { appendEvent, writeState } from "./workflow-state.ts";
+import { appendEvent } from "./workflow-state.ts";
 
 /** The one place the driver's dispatch-slow events get appended: threaded
- * through `dispatchCore`'s opts (work-driver-event seam), persisted there via
- * `writeState`. When absent (PM-owned jobs) the notice is PM-only. */
+ * through `dispatchCore`'s opts (work-driver-event seam). Absent for PM
+ * jobs (their notice is PM-only). */
 export type OnSlowCallback = (info: {
   step: string;
   role: string;
@@ -61,8 +62,10 @@ export interface SlowWatchInput {
   id: string;
   role: string;
   label: string;
-  /** Injectable pi — the notifyAgent target (undefined in the suite → the
-   * notice is skipped, never thrown). */
+  /** Injectable pi — the notifyAgent target. Defaults to the parent
+   * extension api (async-jobs-registry) so children spawned without a pi in
+   * scope (lens, adversarial) still notify the PM. Undefined in the suite →
+   * the notice is skipped, never thrown. */
   pi?: Pick<ExtensionAPI, "sendUserMessage">;
   /** Injectable steer core — tests record instead of writing to a real
    * stdin. Defaults to `steerChild`. */
@@ -70,6 +73,10 @@ export interface SlowWatchInput {
   /** Injectable clock — the elapsed dimension is computed from it (tests
    * drive it deterministically). */
   now?: () => number;
+  /** Injectable scheduler for the elapsed check — tests arm/tick without
+   * waiting on a 20-minute wall. Returns the matching cancel. Defaults to an
+   * unref'd setTimeout. */
+  schedule?: (fn: () => void, ms: number) => () => void;
   onSlow?: OnSlowCallback;
 }
 
@@ -117,6 +124,8 @@ interface Watch {
   role: string;
   label: string;
   startedAt: number;
+  /** Injectable scheduler for the elapsed check (injectable in tests). */
+  schedule: (fn: () => void, ms: number) => () => void;
   pi?: Pick<ExtensionAPI, "sendUserMessage">;
   steerFn?: SlowWatchInput["steerFn"];
   now: () => number;
@@ -125,9 +134,15 @@ interface Watch {
    * armed; Infinity means the dimension has never crossed (its threshold is
    * still the first one) or it was never configured. */
   armed: Thresholds;
-  /** A crossing was processed this feed() call — prevents double-fires when
-   * several dimensions cross in the same update. */
-  firedThisCall: boolean;
+  /** Last delivered snapshot — the timer ticks with nothing new to say (the
+   * child is silent), so a timer-driven evaluation replays the latest
+   * snapshot rather than a stale one. */
+  lastState: RunningState | undefined;
+  /** Set once the first progress event has been fed; a timer tick with no
+   * snapshot has nothing to notice about. */
+  seenProgress: boolean;
+  /** The pending elapsed-check timer (unref'd in production). */
+  timer?: () => void;
 }
 
 const watches = new Map<string, Watch>();
@@ -163,10 +178,13 @@ export function slowSteerText(elapsedMs: number, turns: number): string {
 function deliver(w: Watch, s: RunningState): void {
   const elapsed = s.elapsedMs > 0 ? s.elapsedMs : Math.max(0, w.now() - w.startedAt);
   // 1 — PM notice (notifyAgent, always deliverAs "steer"). A rejection of the
-  // send must never be an unhandled rejection.
-  if (w.pi) {
+  // send must never be an unhandled rejection. `input.pi` is absent for
+  // lens/adversarial children (they spawn without a pi in scope) — the parent
+  // api registered at extension load stands in, so those children notify too.
+  const pi = w.pi ?? getParentExtensionApi();
+  if (pi) {
     try {
-      notifyAgent(w.pi, noticeText(w, { ...s, elapsedMs: elapsed }));
+      notifyAgent(pi, noticeText(w, { ...s, elapsedMs: elapsed }));
     } catch (err) {
       trace(`slow-notice: PM notice for ${w.id} failed: ${(err as Error).message}`);
     }
@@ -202,6 +220,37 @@ function deliver(w: Watch, s: RunningState): void {
   trace(`slow-notice: ${w.label} (${w.id}) crossed — ${fmtSlow(elapsed, s.turns, s.totalTokens)}`);
 }
 
+function scheduleElapsedCheck(w: Watch, ms: number): void {
+  // #799 — the cancel may be absent (a test scheduler that returns an
+  // object): a null guard keeps the stop function from throwing mid-settle.
+  w.timer =
+    w.schedule(() => {
+      const cur = watches.get(w.id);
+      if (cur === w) tickElapsed(w);
+    }, ms) ?? (() => {});
+}
+/**
+ * The ELAPSED dimension evaluated without a progress event. A child silent
+ * for 20+ minutes (a long build, a hung CI wait) otherwise crosses only when
+ * its next event arrives — or never. The timer fires with the latest fed
+ * snapshot (or nothing, until one has been fed), delivers on a crossing, and
+ * re-arms at the next doubling.
+ */
+function tickElapsed(w: Watch): void {
+  const s = w.lastState;
+  if (!w.seenProgress || !s) return;
+  const elapsed = Math.max(0, w.now() - w.startedAt);
+  const armed = w.armed;
+  if (Number.isFinite(armed.ms) && elapsed >= armed.ms) {
+    const th = slowThresholds();
+    if (Number.isFinite(th.ms)) {
+      w.armed.ms = thresholdValue(th.ms, nextLevel(armed.ms, th.ms));
+      deliver(w, { ...s, elapsedMs: elapsed });
+    }
+  }
+  if (Number.isFinite(w.armed.ms)) scheduleElapsedCheck(w, w.armed.ms);
+}
+
 /**
  * Arm the watch. Returns a stop function the caller MUST invoke when the
  * child settles (success or failure): it deletes the state entry, so a
@@ -210,20 +259,51 @@ function deliver(w: Watch, s: RunningState): void {
 export function watchSlowDispatch(input: SlowWatchInput): () => void {
   const th = slowThresholds();
   const now = input.now ?? Date.now;
+  const rawSchedule =
+    input.schedule ??
+    ((fn, ms) => {
+      const t = setTimeout(fn, ms);
+      t.unref?.();
+      return () => clearTimeout(t);
+    });
+  // #799 — the parent pi, threaded through watchSlowDispatch (which registers
+  // it with slow-notice's parent-api seam) so lens/adversarial children —
+  // spawned without a pi in scope — still deliver the PM notice. `w.pi` (set
+  // below from `input.pi`) wins per watch; a later site's registration only
+  // stands in for sites with no pi of their own. Absent in the suite → the
+  // notice is skipped, never thrown.
+  setParentExtensionApi(input.pi);
   const w: Watch = {
     id: input.id,
     role: input.role,
     label: input.label,
     startedAt: now(),
+    // #799 — the timer cancel must be a real function: a test scheduler may
+    // return an object, and a missing/invalid cancel would make the stop
+    // function throw mid-settle (the section-2b hang shape).
+    schedule: (fn, ms) => {
+      const c = rawSchedule(fn, ms);
+      return typeof c === "function" ? c : () => {};
+    },
     ...(input.pi ? { pi: input.pi } : {}),
     ...(input.steerFn ? { steerFn: input.steerFn } : {}),
     now,
     ...(input.onSlow ? { onSlow: input.onSlow } : {}),
     armed: { ms: th.ms, turns: th.turns, tokens: th.tokens },
-    firedThisCall: false,
+    lastState: undefined,
+    seenProgress: false,
   };
   watches.set(input.id, w);
+  // Arm the first elapsed check (no-op when the dimension is disabled).
+  if (Number.isFinite(w.armed.ms)) scheduleElapsedCheck(w, w.armed.ms);
   return () => {
+    if (w.timer) {
+      try {
+        w.timer();
+      } catch {
+        // A malformed scheduler cancel must not abort the settle path.
+      }
+    }
     watches.delete(input.id);
   };
 }
@@ -239,7 +319,8 @@ export function watchSlowDispatch(input: SlowWatchInput): () => void {
 export function feedSlowProgress(id: string, s: RunningState): void {
   const w = watches.get(id);
   if (!w) return;
-  w.firedThisCall = false;
+  w.lastState = s;
+  w.seenProgress = true;
   const elapsed = s.elapsedMs > 0 ? s.elapsedMs : Math.max(0, w.now() - w.startedAt);
   const crossed =
     (w.armed.ms !== Number.POSITIVE_INFINITY && elapsed >= w.armed.ms) ||
@@ -259,7 +340,16 @@ export function feedSlowProgress(id: string, s: RunningState): void {
   if (w.armed.tokens !== Number.POSITIVE_INFINITY && s.totalTokens >= w.armed.tokens) {
     w.armed.tokens = thresholdValue(th.tokens, nextLevel(w.armed.tokens, th.tokens));
   }
-  w.firedThisCall = true;
+  // Re-arm the elapsed timer for the next crossing. A crossed (finite, re-armed)
+  // dimension is checked at each doubling; a not-yet-crossed dimension keeps
+  // its first threshold as its next check. Waiting the threshold value from
+  // now covers both shapes (the doubling IS the threshold itself; the first
+  // crossing is ≤ threshold away).
+  if (w.timer) w.timer();
+  w.timer = w.schedule(() => {
+    const cur = watches.get(w.id);
+    if (cur === w) tickElapsed(w);
+  }, w.armed.ms);
   deliver(w, s);
 }
 
@@ -272,19 +362,21 @@ function nextLevel(current: number, base: number): number {
 }
 
 /**
- * The driver's per-step slow recorder: append a `dispatch-slow` event to the
- * cycle's state and persist. Shared by every driver dispatch site so the
- * event shape + the persist-on-failure contract live in one place. The
- * returned callback is sync + never throws (the watch also catches, but the
+ * The driver's per-step slow recorder: the `onSlow` callback the driver
+ * threads into `dispatchCore`. It only COLLECTS the crossing into the
+ * step's state ref — it never persists (the driver's normal `writeState`
+ * owns persistence, so the recorder cannot write a divergent snapshot over
+ * the step's own appends). The caller folds `ref.current` back into its own
+ * state before its next append, on BOTH the success and the failure path.
+ * The callback is sync + never throws (the watch also catches, but the
  * contract is sync so the event log stays append-only).
  */
 export function slowRecorder(
-  repoRoot: string,
   step: WorkState["pipelineState"]["currentStep"],
-  stateRef: { current: WorkState },
+  ref: { current: WorkState },
 ): OnSlowCallback {
   return (info) => {
-    stateRef.current = appendEvent(stateRef.current, {
+    ref.current = appendEvent(ref.current, {
       kind: "dispatch-slow",
       step,
       role: info.role,
@@ -295,9 +387,6 @@ export function slowRecorder(
       tokens: info.tokens,
       at: info.at,
     });
-    void writeState(repoRoot, stateRef.current).catch((err) =>
-      trace(`slow-notice: dispatch-slow persist failed: ${(err as Error).message}`),
-    );
   };
 }
 

@@ -105,16 +105,13 @@ export async function runPlan(
     planTranscript,
   );
   next = begun.state;
-  // #799 — the state ref the slow recorder appends to (the corrective
-  // re-dispatch below re-reads the latest state; the ref keeps them in step).
-  const planStateRef = { current: next };
   let result: DispatchResult;
   // #754 — the PRIMARY plan dispatch carries the step's own bound; the
   // corrective below deliberately does not (it is the recovery path).
   const primaryOpts = {
     label: "plan",
     timeoutMs: planDispatchTimeoutMs(),
-    onSlow: slowRecorder(ctx.repoRoot, "plan", planStateRef),
+    onSlow: slowRecorder("plan", { current: next }),
   };
   try {
     result = await dispatch(ctx.pi, { role: "explore", prompt }, primaryOpts);
@@ -212,7 +209,7 @@ export async function runPlan(
     const retry = await dispatch(
       ctx.pi,
       { role: "explore", prompt: correctivePrompt },
-      { label: "plan:corrective", onSlow: slowRecorder(ctx.repoRoot, "plan", planStateRef) },
+      { label: "plan:corrective", onSlow: slowRecorder("plan", { current: next }) },
     ).catch(() => undefined);
     if (retry) {
       // #754 — the corrective is NEVER re-dispatched again — exactly one
