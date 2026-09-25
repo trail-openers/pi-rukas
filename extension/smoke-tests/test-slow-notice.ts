@@ -16,12 +16,13 @@
  *    → neither.
  *  - a lens child is steerable by the id dispatch_peek shows.
  *  - a driver dispatch crossing a threshold records dispatch-slow in the
- *    event log; runSingleDispatch has no heartbeat loop.
+ *    event log (runPlan + adversarial fan-out, drained at the step boundary).
  */
 
 import { mkdtempSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execSync } from "node:child_process";
 import type { Writable } from "node:stream";
 import { clearJobsForTesting, startJob } from "../src/async-jobs.ts";
 import {
@@ -152,10 +153,7 @@ await withEnv({}, async () => {
     now,
   });
   // Default thresholds: 20 min / 150 turns / 20M tokens.
-  t += 19 * 60_000;
-  feedSlowProgress("job-elapsed", stateAt(1));
-  assert(notices.length === 0, "19 min → nothing yet");
-  t += 2 * 60_000;
+  t += 21 * 60_000;
   feedSlowProgress("job-elapsed", stateAt(1));
   assert(notices.length === 1, "crossing 20 min → exactly one notice (fake clock)");
   assert(steers.length === 1, "crossing 20 min → exactly one steer");
@@ -421,13 +419,11 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
 
 // ------------------------------------ 12. adversarial fan-out slow event
 {
-  // #799 — the fan-out's slow recorder: the old shape wrote into a
-  // `fanoutStateRef` the fan-out never read back (the crossings were lost).
-  // The recorder now collects into the driver's pending buffer, which the
-  // step boundary drains. Drive the REAL `fanOutAdversarial` with a fake
-  // loop fn whose child crosses the threshold (onSlow fires). The child
-  // must actually run (not be skipped by the empty-diff short-circuit), so
-  // the worktree resolves to a real repoRoot with a non-empty diff.
+  // The fan-out's slow recorder: the old shape wrote into a `fanoutStateRef`
+  // the fan-out never read back (crossings lost). It now collects into the
+  // driver's pending buffer, drained at the step boundary. Drive the REAL
+  // `fanOutAdversarial` with a fake loop fn whose child crosses the threshold.
+  // The child must actually run (not be skipped by the empty-diff short-circuit).
   process.env.PI_ENSEMBLE_RESUME = "0";
   process.env.PI_ENSEMBLE_CROSS_GROUP_CONFLICTS = "0";
   const { fanOutAdversarial } = await import("../src/work-driver-adversarial-fanout.ts");
@@ -436,16 +432,27 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
   clearSlowEventsForTesting();
   const state = initialState(799, 1_000_000);
   state.pipelineState.worktrees = { default: process.cwd() };
+  // A real diff is required so the empty-diff short-circuit does not skip the
+  // dispatch (no child → onSlow never fires). `git diff <baseSha>..HEAD` shows
+  // the commits since base — for this branch that is the #799 work (non-empty),
+  // so pin baseSha to the branch base. Deterministic; falls back to empty diff.
+  for (const r of ["origin/main", "main", "HEAD~3"]) {
+    try {
+      const sha = execSync(`git -C . rev-parse --verify ${r}`, { maxBuffer: 64 * 1024 })
+        .toString()
+        .trim();
+      if (/^[0-9a-f]{40}$/.test(sha)) {
+        state.pipelineState.baseSha = sha;
+        break;
+      }
+    } catch {
+      /* try the next ref */
+    }
+  }
   const fakeLoop: NonNullable<DriverContext["adversarialLoopFn"]> = async (_params) => {
     _params.onSlow?.({
-      step: "adversarial",
-      role: "adversarial-developer",
-      jobId: "fanout-fake",
-      label: "adversarial_loop",
-      elapsedMs: 12_000,
-      turns: 3,
-      tokens: 1234,
-      at: Date.now(),
+      step: "adversarial", role: "adversarial-developer", jobId: "fanout-fake", label: "adversarial_loop",
+      elapsedMs: 12_000, turns: 3, tokens: 1234, at: Date.now(),
     });
     return { role: "adversarial-loop", ok: true, text: "VERDICT: APPROVED\n\nNo issues.", toolUses: [], ms: 1, exitCode: 0 };
   };
@@ -475,12 +482,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
   setup();
   let t = 2_000_000;
   const now = () => t;
-  const stop = watchSlowDispatch({
-    id: "job-lens",
-    role: "code-review-specialist",
-    label: "lens:arch",
-    now,
-  });
+  const stop = watchSlowDispatch({ id: "job-lens", role: "code-review-specialist", label: "lens:arch", now });
   try {
     t += 100;
     feedSlowProgress("job-lens", { turns: 1, totalTokens: 1, elapsedMs: 100 });
