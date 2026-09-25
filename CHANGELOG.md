@@ -8,6 +8,21 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.60](https://github.com/trail-openers/pi-rukas/compare/v0.12.59...v0.12.60) (2026-09-25)
+
+
+### Features
+
+* **deck:** live view of a running subagent's activity ([#876](https://github.com/trail-openers/pi-rukas/issues/876)) ([12b2133](https://github.com/trail-openers/pi-rukas/commit/12b21330c6a34fa851dc867d84261a8861dde19a))
+* **deck:** navigate running subagents with the arrow keys from an empty editor ([#864](https://github.com/trail-openers/pi-rukas/issues/864)) ([4071b3a](https://github.com/trail-openers/pi-rukas/commit/4071b3ab333c4920971285e320b2d42b9504a04d))
+* **research:** fall back to the wigolo CLI when parallel-cli fails ([#866](https://github.com/trail-openers/pi-rukas/issues/866)) ([2ee9662](https://github.com/trail-openers/pi-rukas/commit/2ee966280b488a0b6a6c599ed763a034e474a219))
+* **work:** notify the PM and steer slow subagents instead of killing them ([#879](https://github.com/trail-openers/pi-rukas/issues/879)) ([23bfd5c](https://github.com/trail-openers/pi-rukas/commit/23bfd5c39b73256505cfe5812bd48120b2bf429a))
+
+
+### Bug Fixes
+
+* **work:** stop the consolidation gate parking over-declared paths ([#877](https://github.com/trail-openers/pi-rukas/issues/877)) ([234b35f](https://github.com/trail-openers/pi-rukas/commit/234b35f3c1608f1e6220613fb29906afbb46f9b0))
+
 ## [0.12.59](https://github.com/trail-openers/pi-rukas/compare/v0.12.58...v0.12.59) (2026-09-24)
 
 
