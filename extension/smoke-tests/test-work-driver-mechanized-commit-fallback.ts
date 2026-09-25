@@ -276,6 +276,15 @@ const mkDispatchFn =
         const calls4: string[] = [];
         const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
           calls4.push(cmd);
+          // #861 — the driver's ensureIntegrateWorktree probes the branch ref
+          // and the (nonexistent) integrate path's HEAD before the #475
+          // target guard. The path's HEAD read must fail (directory absent)
+          // so the re-entry does not treat the tree as stale; the branch ref
+          // read hits the same `base123` the rest of the fake answers.
+          if (cmd.startsWith("git rev-parse --verify --quiet refs/heads/"))
+            return { stdout: "base123\n" };
+          if (cmd.startsWith("git rev-parse --verify --quiet HEAD"))
+            throw new Error("fatal: not a git repository");
           if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
           if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-997\n" };
           if (cmd.startsWith("git rev-parse ")) return { stdout: "base123\n" };

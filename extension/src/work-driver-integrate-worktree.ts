@@ -88,37 +88,49 @@ export async function ensureIntegrateWorktree(
   }
 
   // The stale-tree re-entry: driver-owned residue of an earlier attempt of
-  // this same cycle. Its HEAD is recorded, then it is force-removed —
-  // NOT operator residue (the #475/#545 guards below still run on top,
-  // but a driver-owned stale tree must never park the cycle).
+  // this same cycle. Its HEAD is recorded, then it is force-removed BEFORE
+  // the #475 target-path guard runs — the guard is unconditional and
+  // never waived, so the driver removes its own stale tree first, making
+  // the target absent when the guard inspects it (a fresh creation is the
+  // same shape: the path simply does not exist, and a git command in a
+  // nonexistent directory fails, which the guard's own catch treats as
+  // "no work to lose", not a refusal).
   let repoRootDetached = false;
   let staleHead: string | undefined;
-  if (await pathExists(abs)) {
+  const registered = await isRegisteredWorktree(execFn, repoRoot, abs);
+  if (registered) {
+    let registeredStill = true;
     try {
-      const { stdout } = await execFn("git rev-parse --verify --quiet HEAD", {
-        cwd: abs,
-        maxBuffer: 64 * 1024,
-      });
-      staleHead = stdout.trim() || undefined;
+      await execFn("git rev-parse --verify --quiet HEAD", { cwd: abs, maxBuffer: 64 * 1024 });
     } catch {
-      staleHead = undefined;
+      registeredStill = false;
     }
-    try {
-      const { stdout } = await execFn("git status --porcelain", {
-        cwd: abs,
-        maxBuffer: 1024 * 1024,
-      });
-      trace(
-        `work-driver: stale ${name} worktree at ${abs} (old HEAD: ${staleHead ?? "unreadable"}, dirty: ${
-          stdout.split("\n").filter((l) => l.trim()).length > 0
-        }) — driver-owned, force-removing and recreating`,
-      );
-    } catch {
+    if (registeredStill) {
+      try {
+        const { stdout } = await execFn("git rev-parse --verify --quiet HEAD", {
+          cwd: abs,
+          maxBuffer: 64 * 1024,
+        });
+        staleHead = stdout.trim() || undefined;
+      } catch {
+        staleHead = undefined;
+      }
       trace(
         `work-driver: stale ${name} worktree at ${abs} (old HEAD: ${staleHead ?? "unreadable"}) — driver-owned, force-removing and recreating`,
       );
+      await worktreeRemove(execFn, repoRoot, name, true);
+    } else {
+      trace(
+        `work-driver: ${name} registered in the worktree list but gone from disk — removing the stale registration`,
+      );
+      await worktreeRemove(execFn, repoRoot, name, true);
     }
-    await worktreeRemove(execFn, repoRoot, name, true);
+  } else if (await pathExists(abs)) {
+    // Registered nowhere, yet the directory exists: a leftover that is NOT
+    // this driver's stale re-entry. The unconditional #475 target guard
+    // below inspects it as any other pre-existing tree (a dirty one parks;
+    // a clean one is pre-removed by the guard's own remove step).
+    trace(`work-driver: unregistered directory at ${abs} — leaving it for the target guard`);
   }
 
   // ---- repoRoot must not hold the branch: git refuses the add otherwise
@@ -176,20 +188,14 @@ export async function ensureIntegrateWorktree(
   }
 
   // ---- the #475/#545 create guards (still apply to the driver-owned tree)
-  // The stale-integrate re-entry above is driver-owned residue and was
-  // handled; the guards still run on top so foreign leftovers of the same
-  // issue are still refused the usual way. The driver-owned tree's OWN path
-  // is excluded from the guards' in-cycle set: it is already handled (old
-  // HEAD recorded + force-removed above), and re-inspecting it as a guard
-  // refusal would treat driver-owned residue as operator residue.
-  // #861 — `targetHandled` waives the TARGET-path #475 dirty inspection
-  // (the path is either absent — fresh creation — or was just force-removed
-  // by the re-entry); the SIBLING scan still runs (a foreign same-issue
-  // leftover is still a hazard).
-  const targetHandled = staleHead !== undefined || (await pathExists(abs)) === false;
-  await runCreateGuards(execFn, { repoRoot, name, fromRef: branchHead ?? baseSha, targetHandled }, [
-    abs,
-  ]);
+  // The stale-integrate re-entry above was already force-removed (HEAD
+  // recorded first), so the target path is ABSENT here — the unconditional
+  // target-path guard sees a fresh creation, and the sibling scan still
+  // refuses a foreign same-issue leftover. The driver-owned tree's OWN path
+  // is in the in-cycle set: it is already handled above (nothing to
+  // pre-remove), and the guard's own `git worktree add` "already exists"
+  // error remains the signal for a clean in-cycle path.
+  await runCreateGuards(execFn, { repoRoot, name, fromRef: branchHead ?? baseSha }, [abs]);
 
   const ref = branchHead ?? baseSha;
   // ATTACHED (no --detach): this is the one documented exemption from #287's
@@ -266,6 +272,37 @@ async function pathExists(p: string): Promise<boolean> {
   try {
     await fs.access(p);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether the path is a REGISTERED worktree (`git worktree list --porcelain`
+ * contains it). This is the driver's stale-tree discriminator: a registered
+ * tree at the integrate path is driver-owned re-entry residue (an earlier
+ * attempt of this same cycle created it), so it is force-replaced. A
+ * directory that exists but is registered NOWHERE is not driver-owned
+ * residue — it is left for the unconditional #475 target guard, which
+ * refuses a dirty one.
+ *
+ * Unreadable list → false (the safe direction: the path, if anything is
+ * there, is then left to the guard rather than force-removed).
+ */
+async function isRegisteredWorktree(
+  execFn: ExecFn,
+  repoRoot: string,
+  abs: string,
+): Promise<boolean> {
+  try {
+    const { stdout } = await execFn("git worktree list --porcelain", {
+      cwd: repoRoot,
+      maxBuffer: 1024 * 1024,
+    });
+    const target = resolvePath(abs);
+    return stdout
+      .split("\n")
+      .some((l) => l.trim().startsWith("worktree ") && resolvePath(l.trim().slice("worktree ".length)) === target);
   } catch {
     return false;
   }

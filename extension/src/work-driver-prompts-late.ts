@@ -257,7 +257,7 @@ export function inlineCommitPrPrompt(
       "",
       `  1. **Verify each worktree has commits ahead of the integration base.** For each of the ${ids.length} worktrees, run \`git -C <path> log --oneline ${branchName}..HEAD | head\`. If any workstream's log is empty, either the developer did not write OR the developer did not commit — STOP, report which workstream, and DO NOT proceed. A clean \`status --porcelain\` is EXPECTED here (committed work), not a failure signal.`,
       "",
-      `  2. **Consolidate each worktree's diff onto the integration branch.** Capture each worktree's diff and apply it on the integration branch's working tree (the repo root if it's checked out on \`${branchName}\`, else \`cd\` into a worktree that is). Concrete recipe per workstream:`,
+      `  2. **Consolidate each worktree's diff onto the integration branch.** Capture each worktree's diff and apply it in the driver-owned integration worktree (create it at \`.worktrees/issue-${issues[0]}-integrate\` with \`git worktree add\` on \`${branchName}\` if it is absent — the repo root's checkout is OFF LIMITS; the driver's post-dispatch audit refuses the cycle if the branch ends up held by any tree other than the integrate worktree, this cycle's own worktrees, or the repo root). Concrete recipe per workstream:`,
       "       ```",
       "       git -C <worktree-path> add -- <reviewed in-scope-paths-or-developer-created-new-files>",
       `       git -C <worktree-path> diff --cached --binary > tmp/issue-${issues[0]}/<workstream-id>.patch`,
@@ -271,12 +271,14 @@ export function inlineCommitPrPrompt(
       "",
       `  4. \`git commit -m "<concise subject>"\` with a meaningful message. Body should reference all active issues + summarise the ${ids.length} workstreams' contributions.`,
       `  5. \`git push -u origin ${branchName}\`.`,
-      // #861 — step 6 of the NON-fallback shape: the old "repo root if it's
-      // checked out on <branch>, else cd into a worktree that is" step is
-      // gone — that instruction produced the #841 defect (ops checked the
-      // branch out inside a sibling cycle's worktree). The driver pins the
-      // fallback to its own integrate worktree (the `fallback` branch above)
-      // and leaves this shape to the normal consolidation recipe.
+      // #861 — step 2 of the NON-fallback shape is pinned to the driver-owned
+      // integrate worktree (`.worktrees/issue-<N>-integrate`) the same way the
+      // `fallback` branch above pins its child: the #841 defect came from an
+      // instruction to "cd into the repo root or a worktree that holds the
+      // branch", which let an ops child check the branch out inside a SIBLING
+      // cycle's worktree. This shape is reachable by any ops:commit-pr
+      // dispatch (the fallback arg is passed unconditionally), so its recipe
+      // must not reproduce that instruction.
       `  6. \`gh pr create --title "<title>" --body "...\\n\\n${fixesLines}${companionLines ? `\\n${companionLines}` : ""}${bodySections ? `\\n\\n${bodySections}` : ""}\` — ${fixesNote}`,
       "  7. End your reply with `pr: <PR-number>` so the driver can capture it.",
       ...droppedNote,

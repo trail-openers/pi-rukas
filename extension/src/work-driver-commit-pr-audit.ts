@@ -47,10 +47,28 @@ export async function auditCommitPrFallback(
   // other holder (the #841 shape) halts the cycle with the dedicated cap,
   // BEFORE the PR-verification gates can validate a PR opened from the wrong
   // tree.
+  //
+  // The cycle's OWN worktrees (ps.worktrees) are NOT a violation. The ops
+  // fallback prompt's non-fallback multi-workstream shape (still reachable:
+  // the `fallback` arg is passed unconditionally, so a fallback cycle with a
+  // populated worktrees map is multi-shape) instructs the child to apply each
+  // patch in the integrate worktree, but the CHILD decides where the branch
+  // ends up — a stub/child that commits in its own worktree (ps.worktrees[id])
+  // still produces a valid PR (the branch is pushed; the consolidate gate
+  // verifies the committed diff). The #841 defect is the branch held in an
+  // UNRELATED cycle's worktree (a sibling's tree), not this cycle's own.
   const auditBranch = next.pipelineState.branchName ?? "";
   const holders = await branchHolders(execFn, ctx.repoRoot, auditBranch);
   const integratePath = integrateWorktreePath(ctx.repoRoot, ctx.issue);
-  const bad = holders.find((h) => resolvePath(h) !== resolvePath(integratePath));
+  const ownTrees = new Set(
+    Object.values(next.pipelineState.worktrees ?? {}).map((p) => resolvePath(p)),
+  );
+  const bad = holders.find(
+    (h) =>
+      resolvePath(h) !== resolvePath(integratePath) &&
+      !ownTrees.has(resolvePath(h)) &&
+      resolvePath(h) !== resolvePath(ctx.repoRoot),
+  );
   if (bad !== undefined) {
     trace(
       `work-driver: commit-pr fallback audit — integration branch held by ${bad} (expected ${integratePath} or nothing) — halting before PR verification`,
