@@ -8,7 +8,7 @@
 
 import fs from "node:fs/promises";
 import { dispatchCore } from "./dispatch.ts";
-import { slowRecorder } from "./slow-notice.ts";
+import { slowRecorder } from "./slow-events.ts";
 import { trace } from "./trace.ts";
 import { extractListField, sliceMarkdownSection } from "./work-driver-plan-parse.ts";
 

@@ -10,7 +10,7 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { dispatchCore } from "./dispatch.ts";
-import { slowRecorder } from "./slow-notice.ts";
+import { slowRecorder } from "./slow-events.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { buildCompletionEvent } from "./work-driver-completion-event.ts";

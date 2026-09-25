@@ -14,7 +14,7 @@
 
 import * as lifecycle from "./lifecycle-events.ts";
 import type { RoleName } from "./roles.ts";
-import { drainSlowEvents } from "./slow-notice.ts";
+import { drainSlowEvents } from "./slow-events.ts";
 import { trace } from "./trace.ts";
 import { capKilledString } from "./work-driver-cap-killed.ts";
 import { STEP_FAILURE_POLICY } from "./work-driver-context.ts";
