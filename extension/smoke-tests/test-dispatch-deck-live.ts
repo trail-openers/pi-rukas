@@ -90,7 +90,7 @@ function resetBuffers(): void {
     "2b: assistant text buffered",
   );
   assert(buf[1]?.kind === "toolCall" && buf[1].name === "bash", "2c: toolCall buffered with name");
-  assert(buf[1]?.args.includes("cargo test --lib"), "2d: tool args stringified + trimmed");
+  assert(buf[1]?.args === "cargo test --lib", "2d: object args use the extractToolHint command hint");
   assert(
     buf[2]?.kind === "toolResult" && buf[2].text === "test result: 12 passed, 0 failed",
     "2e: toolResult buffered",
@@ -147,6 +147,26 @@ function resetBuffers(): void {
 }
 
 // ---------------------------------------------------------------------------
+// 2c. Huge object arg with a priority key: the hint wins, no full stringify
+// ---------------------------------------------------------------------------
+{
+  resetBuffers();
+  startBuffer("b3");
+  const huge = { noise: "w".repeat(1_000_000), command: "cargo test --lib" };
+  feedRawEvent("b3", {
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "toolCall", name: "bash", arguments: huge }],
+    },
+  });
+  const arg = getBuffer("b3")[0] as { args: string };
+  assert(arg.args === "cargo test --lib", "2c-a: huge object arg → command hint, not stringified noise");
+  assert(!arg.args.includes("w"), "2c-b: the noise field never reached the preview");
+  dropBuffer("b3");
+}
+
+// ---------------------------------------------------------------------------
 // 3. Overlay renders events; new events appear on next render (same component).
 // ---------------------------------------------------------------------------
 const fakeTheme = { muted: (t: string) => t, error: (t: string) => t } as const;
@@ -169,28 +189,19 @@ const fakeTheme = { muted: (t: string) => t, error: (t: string) => t } as const;
     fakeTheme,
     (r) => doneResults.push(r),
   );
-  // render before any events → "no activity yet"
-  const lines0 = comp.render(80);
-  const flat0 = lines0.join("\n");
+  const flat0 = comp.render(80).join("\n");
   assert(flat0.includes("no activity yet"), "3a: 'no activity yet' before any event");
-  // feed an event, render again on the SAME component
   feedRawEvent("b1", {
     type: "message_end",
     message: { role: "assistant", content: [{ type: "text", text: "starting work" }] },
   });
-  const lines1 = comp.render(80);
-  const flat1 = lines1.join("\n");
+  const flat1 = comp.render(80).join("\n");
   assert(flat1.includes("starting work"), "3b: new event appears on the next render");
   assert(flat1.includes("developer"), "3c: header shows the role label");
-  // Esc → close
-  comp.handleInput("\x1b");
+  comp.handleInput("\x1b"); // Esc → close
   assert(doneResults.includes("close"), "3d: Esc → done('close')");
-  // s → steer
-  const comp2 = createLiveViewComponent(
-    "b1",
-    () => undefined,
-    fakeTheme,
-    (r) => doneResults.push(`steer-${r}`),
+  const comp2 = createLiveViewComponent("b1", () => undefined, fakeTheme, (r) =>
+    doneResults.push(`steer-${r}`),
   );
   comp2.handleInput("s");
   assert(doneResults.includes("steer-steer"), "3e: 's' → done('steer')");
@@ -238,7 +249,7 @@ const fakeTheme = { muted: (t: string) => t, error: (t: string) => t } as const;
 // ---------------------------------------------------------------------------
 // 5. Buffer freed on dropBuffer (clear).
 // ---------------------------------------------------------------------------
-function testDropBuffer() {
+{
   resetBuffers();
   startBuffer("b1");
   feedRawEvent("b1", {
@@ -250,7 +261,6 @@ function testDropBuffer() {
   assert(!hasBuffer("b1"), "5b: buffer gone after drop");
   assert(bufferCount() === 0, "5c: buffer count is 0 after drop");
 }
-testDropBuffer();
 
 // ---------------------------------------------------------------------------
 // 6. Quiet mode: no buffer created.
@@ -324,8 +334,16 @@ async function testStartBatchLastMemberSyncThrow() {
   startBatch(fakePi, {
     batchLabel: "sync-throw-batch",
     members: [
-      { label: "member-ok", role: "explore", work: async () => ({ role: "explore", ok: true, ms: 5, text: "member-ok done" }) },
-      { label: "member-sync-throw", role: "developer", work: () => { throw new Error("batch sync work failure"); } },
+      {
+        label: "member-ok",
+        role: "explore",
+        work: async () => ({ role: "explore", ok: true, ms: 5, text: "member-ok done" }),
+      },
+      {
+        label: "member-sync-throw",
+        role: "developer",
+        work: () => { throw new Error("batch sync work failure"); },
+      },
     ],
   });
   await new Promise((r) => setTimeout(r, 100));
@@ -336,7 +354,7 @@ async function testStartBatchLastMemberSyncThrow() {
   );
   assert(
     batchSnapshot().find((b) => b.label === "member-ok") === undefined,
-    "6d-c: member deck entry cleared",
+    "6d-c: member entry cleared",
   );
   assert(batchSnapshot().length === 0, "6d-d: batch entry cleared");
   assert(bufferCount() === 0, "6d-e: buffer count is 0");
@@ -356,70 +374,28 @@ await testStartBatchLastMemberSyncThrow();
   // --- 7a: running row with buffer → custom(overlay:true) called, no steer prompt
   startBuffer("deck-job-1");
   startEntry("deck-job-1", { label: "developer", role: "developer" });
-  const customCalls: Array<{ overlay?: boolean }> = [];
+  const customCalls: Array<unknown> = [];
   const editorCalls: string[] = [];
-  const fakeCtx = {
-    hasUI: true,
-    ui: {
-      custom: (_factory: unknown, opts?: { overlay?: boolean }) => {
-        customCalls.push(opts ?? {});
-        return Promise.resolve("close");
-      },
-      editor: (_title: string, _prefill: string) => {
-        editorCalls.push(_title);
-        return Promise.resolve(undefined);
-      },
-      setWidget: () => {},
-      getEditorText: () => "",
-      onTerminalInput: () => () => {},
-    },
-  } as unknown as Parameters<typeof onRowConfirm>[0];
+  const fakeCtx = fakeCtx({ custom: customCalls, editors: editorCalls });
   await onRowConfirm(fakeCtx, "deck-job-1", rowHost());
   assert(customCalls.length === 1, "7a: running row with buffer → custom called once");
-  assert(customCalls[0]?.overlay === true, "7b: custom called with overlay:true");
+  assert(customCalls[0] === true, "7b: custom called with overlay:true");
   assert(editorCalls.length === 0, "7c: no steer prompt (no editor call)");
   clearEntry("deck-job-1");
   dropBuffer("deck-job-1");
 
-  // --- 7b: running row WITHOUT buffer → steer prompt directly, no custom
-  startEntry("deck-job-2", { label: "explore", role: "explore" });
+  startEntry("deck-job-2", { label: "explore", role: "explore" }); // 7b: no buffer → steer directly
   const customCalls2: unknown[] = [];
   const editorCalls2: string[] = [];
-  const fakeCtx2 = {
-    hasUI: true,
-    ui: {
-      custom: (_f: unknown, o?: unknown) => {
-        customCalls2.push(o);
-        return Promise.resolve("close");
-      },
-      editor: (t: string, _p: string) => {
-        editorCalls2.push(t);
-        return Promise.resolve("hello");
-      },
-      setWidget: () => {},
-      getEditorText: () => "",
-      onTerminalInput: () => () => {},
-    },
-  } as unknown as Parameters<typeof onRowConfirm>[0];
+  const fakeCtx2 = fakeCtx({ custom: customCalls2, editors: editorCalls2 });
   await onRowConfirm(fakeCtx2, "deck-job-2", rowHost());
   assert(customCalls2.length === 0, "7d: running row without buffer → no custom call");
   assert(editorCalls2.length === 1, "7e: steer prompt opened directly (editor called)");
   clearEntry("deck-job-2");
   detach();
 
-  // --- 7f: a REJECTING editor is caught inside openSteerPrompt — onRowConfirm
-  //     resolves (the throw never escapes into the roster input handler).
-  startEntry("deck-job-4", { label: "explore", role: "explore" });
-  const fakeCtx4 = {
-    hasUI: true,
-    ui: {
-      custom: (_f: unknown, _o?: unknown) => Promise.resolve("close"),
-      editor: (_t: string, _p: string) => Promise.reject(new Error("editor unsupported")),
-      setWidget: () => {},
-      getEditorText: () => "",
-      onTerminalInput: () => () => {},
-    },
-  } as unknown as Parameters<typeof onRowConfirm>[0];
+  startEntry("deck-job-4", { label: "explore", role: "explore" }); // 7f: rejecting editor is caught
+  const fakeCtx4 = fakeCtx({ custom: [], editors: [], rejectEditor: true });
   let threw = false;
   try {
     await onRowConfirm(fakeCtx4, "deck-job-4", rowHost());
@@ -449,6 +425,32 @@ await testStartBatchLastMemberSyncThrow();
 function rowHost() {
   return { getEntry: (k: string) => snapshot().find((e) => e.key === k), steer: () => {} };
 }
+
+// Fake ExtensionContext for onRowConfirm; `custom`/`editor` are recorded so
+// the assertions can inspect what the roster action opened.
+function fakeCtx(rec: {
+  custom: Array<unknown>;
+  editors: string[];
+  rejectEditor?: boolean;
+}) {
+  return {
+    hasUI: true,
+    ui: {
+      custom: (_f: unknown, o?: unknown) => {
+        rec.custom.push(o);
+        return Promise.resolve("close");
+      },
+      editor: (t: string, _p: string) => {
+        if (rec.rejectEditor) return Promise.reject(new Error("editor unsupported"));
+        rec.editors.push(t);
+        return Promise.resolve("hello");
+      },
+      setWidget: () => {},
+      getEditorText: () => "",
+      onTerminalInput: () => () => {},
+    },
+  } as unknown as Parameters<typeof onRowConfirm>[0];
+}
 // ---------------------------------------------------------------------------
 // 9. Exception safety: feedRawEvent never throws on bounded inputs.
 // ---------------------------------------------------------------------------
@@ -457,7 +459,7 @@ function rowHost() {
   startBuffer("b9");
   let threw = false;
   try {
-    // Even a malformed / huge event must not throw from pushEvent.
+    // A malformed / huge event must not throw from pushEvent.
     feedRawEvent("b9", {
       type: "message_end",
       message: { role: "assistant", content: [{ type: "text", text: "x".repeat(10_000) }] },

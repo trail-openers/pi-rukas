@@ -35,7 +35,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Component, isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
 import type { DeckEntry } from "./dispatch-deck.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
-import { formatElapsed } from "./progress.ts";
+import { extractToolHint, formatElapsed } from "./progress.ts";
 import { trace } from "./trace.ts";
 import { TOOL_ARGS_PREVIEW_MAX, TOOL_RESULT_LINE_MAX } from "./transcript-preview-limits.ts";
 
@@ -68,18 +68,27 @@ function truncate(s: string, max: number): string {
 
 /**
  * One-line, whitespace-normalised preview of a tool call's arguments.
- * The raw string is bounded to ~4× the target BEFORE the whitespace collapse
- * so a multi-MB payload is not rescanned in full: the collapse can only
- * shorten the string, so anything past the first 4×LIVE_ARGS_MAX chars of the
- * collapsed output would sit past the truncation point anyway (whitespace is
- * at most half of a raw string that is all whitespace).
+ * String args take the cheap path directly. Object args reuse
+ * `extractToolHint` (progress.ts) — its priority-key hint (command, path, …)
+ * already bounds the output to 50 chars, so no stringify of the full
+ * arguments object happens on the hot path. JSON.stringify is only the
+ * fallback for objects the hint cannot summarise, bounded to ~4× the target
+ * BEFORE the whitespace collapse so a multi-MB serialisation is not
+ * rescanned in full: the collapse can only shorten the string, so anything
+ * past the first 4×LIVE_ARGS_MAX chars of the collapsed output would sit
+ * past the truncation point anyway.
  */
 export function toolCallArgsPreview(args: unknown): string {
   if (args === undefined || args === null) return "";
-  const raw = typeof args === "string" ? args : JSON.stringify(args);
+  if (typeof args === "string") {
+    const bounded = args.length > LIVE_ARGS_MAX * 4 ? args.slice(0, LIVE_ARGS_MAX * 4) : args;
+    return truncate(bounded.replaceAll(/\s+/g, " ").trim(), LIVE_ARGS_MAX);
+  }
+  const hint = extractToolHint(args);
+  if (hint) return hint;
+  const raw = JSON.stringify(args) ?? "";
   const bounded = raw.length > LIVE_ARGS_MAX * 4 ? raw.slice(0, LIVE_ARGS_MAX * 4) : raw;
-  const oneLine = bounded.replaceAll(/\s+/g, " ").trim();
-  return truncate(oneLine, LIVE_ARGS_MAX);
+  return truncate(bounded.replaceAll(/\s+/g, " ").trim(), LIVE_ARGS_MAX);
 }
 
 const buffers = new Map<string, LiveEvent[]>();
@@ -107,6 +116,19 @@ export function hasBuffer(key: string): boolean {
 /** The buffer contents (a copy — the caller may mutate the array). */
 export function getBuffer(key: string): LiveEvent[] {
   return [...(buffers.get(key) ?? [])];
+}
+
+/**
+ * The newest `n` events of a buffer without copying the whole ring (the
+ * overlay renders on the deck's 1 s cadence; copying up to 200 events per
+ * tick is wasted work when it only reads a 24-line window). `getBuffer`
+ * stays for tests.
+ */
+export function getBufferTail(key: string, n: number): LiveEvent[] {
+  const buf = buffers.get(key);
+  if (!buf) return [];
+  const start = Math.max(0, buf.length - n);
+  return buf.slice(start);
 }
 
 /** Buffer count for leak assertions (tests). */
@@ -246,7 +268,7 @@ export function createLiveViewComponent(
       const hline = h
         ? `${h.label} · ${h.role} · ${formatElapsed(Math.max(0, h.now - h.startedAt))} · ${h.turns} turn${h.turns === 1 ? "" : "s"} · ${h.toolUses} tools · ${h.totalTokens} tokens${h.lastToolName ? ` · last: ${h.lastToolName}` : ""}`
         : key;
-      const events = getBuffer(key);
+      const events = getBufferTail(key, visible);
       const lines: string[] = [hline];
       if (events.length === 0) {
         lines.push(theme.muted("no activity yet"));
@@ -265,7 +287,8 @@ export function createLiveViewComponent(
     },
     handleInput(data: string): void {
       if (isKeyRelease(data)) return;
-      const n = getBuffer(key).length;
+      const buf = buffers.get(key);
+      const n = buf ? buf.length : 0;
       if (matchesKey(data, "escape")) {
         done("close");
       } else if (matchesKey(data, "s")) {
