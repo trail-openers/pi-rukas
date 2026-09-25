@@ -109,7 +109,7 @@ export async function runCreateGuards(
   // refuses a foreign same-issue leftover either way.
   const targetHandledByCaller = inCycleSet.has(resolvePath(abs));
   const leftover =
-    targetHandledByCaller && !await pathExists(abs)
+    targetHandledByCaller && !(await pathExists(abs))
       ? undefined
       : await inspectWorktreeForLoss(execFn, opts.repoRoot, abs, opts.fromRef);
   if (leftover) {
