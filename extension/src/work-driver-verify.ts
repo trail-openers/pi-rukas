@@ -20,6 +20,7 @@ import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import { detectMainline } from "./work-driver-git.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
+import { workstreamTouchedSet } from "./work-driver-verify-cumulative.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
 import type { ConsolidationVerdict } from "./workflow-state-consolidation.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
@@ -31,39 +32,48 @@ export { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 const execp = promisify(exec);
 
 /**
- * PR14 + #540 — Verify the integration branch's committed diff (vs
- * origin/main) covers every active workstream. Used as the post-dispatch
- * safety gate in runCommitPr.
+ * PR14 + #540 + #875 — Verify the integration branch's committed diff
+ * (vs origin/main) covers every active workstream. Used as the
+ * post-dispatch safety gate in runCommitPr.
  *
  * Coverage rule (#540): a workstream W is COVERED iff for EVERY declared
  * path p of W: p is in the committed diff, OR p is declared by a sibling S
  * whose ENTIRE declared path set is present in the committed diff
- * (full-set subsumption). A partial sibling cannot cover another
- * workstream's path — with A={a,b}, B={b} and commit={b} only, B is
- * covered (its own full set is present) but A is NOT: b is present, but a
- * is absent and B's full set {b} does not cover a. The pre-#540 rule
- * (`any path present`) fired in the mirror case (commit={a,b}) where B's
- * path "b" WAS in the diff but flagged B's overlap pessimism, and missed
- * the false-pass direction entirely.
+ * (full-set subsumption — a partial sibling cannot cover; unchanged and
+ * still applied on top of #875). With A={a,b}, B={b} and commit={b}
+ * only, B is covered (its own full set is present) but A is NOT: b is
+ * present, but a is absent and B's full set {b} does not cover a.
  *
- * #778 rename awareness: the diff is read with `--name-status -M` so a
- * move (`git mv` / rename-during-develop, the #744 shape where a declared
- * name never appears in `--name-only`) is a rename code (R###), not a
- * silent absence. A path is covered when the normalised path is an exact
- * diff name, sits beneath a changed entry (directory declaration), OR a
- * rename's SOURCE equals it — a move of the declared file still ships its
- * content. R-code rename detection is the exact-path-evidence basis; no
- * basename/substring matching, so co-located-but-different files (#655's
- * measurement workstream) still read uncovered.
+ * #875 cumulative rule: a declared path p of W is ALSO covered (and W is
+ * COMPLETE, not uncovered) when p is absent from BOTH the workstream's
+ * own cumulative evidence — its committed range (`git diff --name-status
+ * -M <workstreamBase>..HEAD` in its worktree) UNION its worktree
+ * porcelain — AND the committed integration diff (over-declaration: the
+ * file legitimately needed no edit, the #799 shape). A path in the
+ * cumulative set but absent from the committed diff stays uncovered
+ * (a dropped slice). The worktree read FAILS CLOSED: a missing worktree
+ * path, a missing base SHA, or a git error counts the workstream as
+ * touched — it parks, never passes. This is deliberately asymmetric
+ * with the integrated diff read below, which stays best-effort.
+ *
+ * #778 rename awareness (both sides): the integrated diff and the
+ * per-workstream range are read with `--name-status -M` so a move is a
+ * rename code (R###), not a silent absence; a path is covered/touched
+ * when the normalised path is an exact entry, sits beneath a changed
+ * entry (directory declaration), or a rename's SOURCE equals it. No
+ * basename/substring matching, so co-located-but-different files (#655)
+ * still read uncovered.
  *
  * Returns BOTH sides of the verdict: `missing` (workstreams not covered,
  * for backward compat with the PR14 cap-hit message) AND `filesPresent`
  * (the committed file list — what actually shipped, so the handoff can
  * render present + missing).
  *
- * Best-effort: any git-shell failure returns no-missing (don't false-
- * alarm on a transient git issue). The N=1 case short-circuits since
- * there's only one workstream and partial-commit doesn't apply.
+ * Best-effort (integrated diff read only): a git-shell failure there
+ * returns no-missing (don't false-alarm on a transient git issue).
+ * The N=1 case short-circuits — there's only one workstream and
+ * partial-commit doesn't apply (the gate is structurally unverifiable
+ * there; regression-asserted).
  */
 export async function verifyConsolidation(
   ctx: DriverContext,
@@ -167,11 +177,28 @@ export async function verifyConsolidation(
       continue;
     }
     const own = declaredOf(ws);
+    // #875 — the workstream's own cumulative evidence (committed range +
+    // porcelain in its worktree), resolved ONCE per worktree. `undefined` =
+    // unreadable worktree → fail closed: every declared path counts as
+    // touched, so it falls through to uncovered (never a silent pass).
+    const cumulative: Set<string> | undefined = await workstreamTouchedSet(
+      ctx,
+      state,
+      id,
+      ctx.verifyExecFn ?? execp,
+    );
+    const cumulativeOf = (p: string): boolean => {
+      if (cumulative === undefined) return true; // unreadable → touched
+      return cumulative.has(p) || Array.from(cumulative).some((f) => f.startsWith(`${p}/`));
+    };
     // #540 full-set subsumption: a declared path p of W is covered when p
     // is in the committed diff, OR p is also declared by a sibling whose
     // ENTIRE declared set is present — a partial sibling cannot cover.
+    // #875: OR p is absent from BOTH the workstream's cumulative evidence
+    // and the committed diff (over-declaration — covered, not dropped).
     const uncovered = own.filter((p) => {
       if (declaredPathInDiff(p)) return false;
+      if (!cumulativeOf(p)) return false;
       return !ids.some((sid) => {
         if (sid === id) return false;
         const s = workstreams[sid];

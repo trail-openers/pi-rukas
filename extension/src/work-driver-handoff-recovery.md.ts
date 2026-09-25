@@ -48,6 +48,19 @@ export function recoveryCommandsMarkdown(
     const filesPresent = filesPresentFromConsolidation(ps.incompleteConsolidation);
     const root = ps.commitPrRoot;
     const conflicted = (root?.unmergedPaths ?? []).length > 0;
+    // #875 — the header claims the work is "uncommitted" only when EVERY
+    // missing workstream actually is (persisted `dirty` flag; legacy
+    // state files lack the flag and keep the old wording). A
+    // dirty=false workstream's work is committed in its worktree — the
+    // cherry-pick step below (from the shared step generator) is its
+    // recovery, and the header must not contradict it.
+    const ic = ps.incompleteConsolidation;
+    const anyUncommitted =
+      missing.length === 0 ||
+      missing.some((m) => {
+        const v = !Array.isArray(ic) && ic ? ic.verdicts.find((x) => x.id === m.id) : undefined;
+        return !v || v.status !== "uncovered" || v.dirty === true;
+      });
     // #500 — a placeholder branch means `reset --hard HEAD` would abort a
     // merge in progress WITHOUT clearing the index; name the branch first.
     const clearRoot = root
@@ -71,7 +84,9 @@ export function recoveryCommandsMarkdown(
     }
     lines.push(
       ...commitPrDirtyRootStep(root, "", ""),
-      "# 1. Inspect each missing workstream's worktree — the developer's work is still there uncommitted:",
+      anyUncommitted
+        ? "# 1. Inspect each missing workstream's worktree — the developer's work is still there uncommitted:"
+        : "# 1. Inspect each missing workstream's worktree (nothing uncommitted — the work is committed there):",
       ...step1.lines,
       "",
       ...(conflicted
