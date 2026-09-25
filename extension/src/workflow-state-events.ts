@@ -32,10 +32,7 @@ export type {
   HandoffEmittedEvent,
   LensSkippedEmptyDiffEvent,
 } from "./workflow-state-events-handoff.ts";
-// #799 — the dispatch-slow event member re-exported from the sibling
-// fragment (same pattern as the handoff members above): one record per
-// threshold crossing of a driver dispatch, written by the slow-run watch.
-export type { DispatchSlowEvent } from "./workflow-state-events-slow.ts";
+export type { DispatchSlowEvent };
 /**
  * Linear step identifiers the driver walks. This union IS the definition
  * of the cycle — #393 deleted the prose flow that used to be its source.

@@ -91,9 +91,6 @@ export async function runHandoffOpsDispatch(
       ),
       bound,
     ]);
-    // #799 — the bound path keeps the slow events: the child may still be
-    // running (the race freed the driver, not the child), and its recorded
-    // crossings belong to the log either way.
     next = clearDispatch(next, begun.jobId);
     if (res === "bound") {
       trace(`work-driver: handoff ops dispatch exceeded ${boundMs}ms — using in-process gh`);
@@ -134,7 +131,8 @@ export async function runHandoffOpsDispatch(
     // The bounded race frees the DRIVER; the child it was racing may still be
     // running, so the slow watch is deliberately NOT stopped here — its
     // crossings keep recording until the child settles (the watch's own
-    // settle path owns the stop).
+    // settle path owns the stop). Its recorded crossings belong to the log
+    // either way.
     if (boundTimer) clearTimeout(boundTimer);
   }
   return { next, opsReplyText };
