@@ -14,7 +14,6 @@ import { extractFindings, lensPromptFor } from "./lens-review-format.ts";
 import { LENS_REPORTER_PATH, type LensDef } from "./lens-review.ts";
 import type { LensRunResult } from "./lens-review.ts";
 import { readEnumMarker } from "./reply-markers.ts";
-import { skillLoadStatus } from "./skill-load-status.ts";
 import type { SlowWatchInput } from "./slow-notice.ts";
 import { feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
 import { spawnSpecialist } from "./spawn.ts";
@@ -208,8 +207,11 @@ export async function runLensChild(opts: {
   // is the executed evidence that the skill existed; absence is recorded as
   // a note (skillLoadNote) so the operator can see the honor system was
   // simply not exercised.
-  const status = skillLoadStatus(result.text ?? "");
-  if (status === "FAILED") {
+  const skillLoadStatus = readEnumMarker(result.text ?? "", "Skill Load Status", [
+    "SUCCESS",
+    "FAILED",
+  ]);
+  if (skillLoadStatus === "FAILED") {
     return {
       lens: lens.name,
       ok: result.ok,
@@ -239,7 +241,7 @@ export async function runLensChild(opts: {
     model: result.model,
     transcriptPath: result.transcriptPath,
     parseError: skipped > 0 ? `${skipped} malformed report_finding call(s) skipped` : undefined,
-    ...(status === undefined
+    ...(skillLoadStatus === undefined
       ? {
           skillLoadNote: `skill load status absent (${lens.skill}) — pre-spawn stat passed; honor-system marker not emitted`,
         }

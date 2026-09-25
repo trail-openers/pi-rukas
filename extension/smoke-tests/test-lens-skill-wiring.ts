@@ -46,11 +46,6 @@ import os from "node:os";
 import path from "node:path";
 import { mock } from "bun:test";
 
-// The equals-form collision regression lives in the dedicated reader test
-// (the shared reader itself returns undefined for the rule's prose, and the
-// line-anchored fallback in skill-load-status.ts is what must not fire on
-// it either); see (h) below.
-
 let exit = 0;
 function assert(cond: boolean, msg: string) {
   if (cond) console.log(`✓ ${msg}`);
@@ -101,7 +96,6 @@ const { runLensReview } = await import("../src/lens-review.ts");
 const { LENSES } = await import("../src/lens-review-format.ts");
 const { skillsDirUsable } = await import("../src/lens-review-skills.ts");
 const { readEnumMarker } = await import("../src/reply-markers.ts");
-const { skillLoadStatus } = await import("../src/skill-load-status.ts");
 
 const SIX_SKILLS = LENSES.map((l) => l.skill);
 const MISSING_SKILL = "code-review-security";
@@ -431,28 +425,6 @@ const CLEAN_SUMMARY =
     ]),
     "FAILED",
     "(g) last-match-wins: a musing about FAILED is still FAILED (the prompt says to END with the marker, so the last one is the answer)",
-  );
-}
-
-/* (h) the equals-form collision — the CRITICAL RULE's prose must NOT read as
- * a real FAILED declaration, while a compliant `=` declaration still does.
- * The shared reader (readEnumMarker) already returns undefined for the
- * rule's prose (it does not accept `=`); this pins that on the LIVE reader
- * AND on skillLoadStatus, and pins that a real `=` declaration parses.
- */
-{
-  const RULE_PROSE =
-    "**CRITICAL RULE**: If `Skill Load Status=FAILED`, verdict CANNOT be APPROVED.";
-  eq(readEnumMarker(RULE_PROSE, "Skill Load Status", ["SUCCESS", "FAILED"]), undefined, "(h) the shared reader stays undefined on the rule's prose (no `=` extension)");
-  eq(skillLoadStatus(RULE_PROSE), undefined, "(h) the rule's prose (mid-line, no space before FAILED) does NOT read as a real FAILED");
-  eq(skillLoadStatus("Skill Load Status=FAILED"), "FAILED", "(h) a compliant `=` declaration at line start still parses FAILED");
-  eq(skillLoadStatus("Skill Load Status= FAILED"), "FAILED", "(h) `= FAILED` with a space parses FAILED");
-  eq(
-    skillLoadStatus(
-      "Skill Load Status=FAILED\n\n**CRITICAL RULE**: If `Skill Load Status=FAILED`, verdict CANNOT be APPROVED.\nSkill Load Status: SUCCESS",
-    ),
-    "SUCCESS",
-    "(h) last real declaration wins when the prose is quoted later (the line anchor ignores mid-line prose)",
   );
 }
 
