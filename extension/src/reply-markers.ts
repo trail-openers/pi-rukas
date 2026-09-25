@@ -173,4 +173,11 @@ export const MARKER_CONTRACTS: readonly MarkerContract[] = [
     consumer: "work-driver-lens.ts",
     onAbsence: "undefined — downstream gates that need the PR fail their own checks",
   },
+  {
+    token: "Skill Load Status",
+    values: ["SUCCESS", "FAILED"],
+    consumer: "lens-review-child.ts",
+    onAbsence:
+      "not blocked — recorded as a trace/summary note (skillLoadNote): the pre-spawn statSync in runLensChild is the executed evidence that the skill exists; only an explicit FAILED blocks",
+  },
 ];
