@@ -17,6 +17,7 @@
  *     pre-remove is skipped for an in-cycle path.
  */
 
+import fs from "node:fs/promises";
 import { trace } from "./trace.ts";
 import {
   DirtyWorktreeError,
@@ -97,10 +98,20 @@ export async function runCreateGuards(
   // nonexistent directory fails and returns no finding. The SIBLING scan
   // above still runs: a foreign same-issue leftover is still a hazard.
   const inCycleSet = new Set((inCycleWorktrees ?? []).map((p) => resolvePath(p)));
-  const targetAbsent = inCycleSet.has(resolvePath(abs));
-  const leftover = targetAbsent
-    ? undefined
-    : await inspectWorktreeForLoss(execFn, opts.repoRoot, abs, opts.fromRef);
+  // #861 — the caller (ensureIntegrateWorktree) force-removed any
+  // driver-owned stale tree at this path BEFORE the guards run (recording
+  // its HEAD first), or the path is simply absent on a fresh creation. In
+  // BOTH cases the target inspection must see ABSENT — a live worktree is
+  // impossible (a registered one was just removed; an unregistered one was
+  // never created). The inspection runs under that precondition: it still
+  // answers the live-git question (a git error → no finding → create),
+  // never a fixture that answers for any cwd. The SIBLING scan above still
+  // refuses a foreign same-issue leftover either way.
+  const targetHandledByCaller = inCycleSet.has(resolvePath(abs));
+  const leftover =
+    targetHandledByCaller && !await pathExists(abs)
+      ? undefined
+      : await inspectWorktreeForLoss(execFn, opts.repoRoot, abs, opts.fromRef);
   if (leftover) {
     throw new DirtyWorktreeError(leftover);
   }
@@ -118,3 +129,12 @@ export async function runCreateGuards(
 
 /** Re-export of the finding type for callers of the guard. */
 export type { DirtyWorktreeFinding };
+
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}

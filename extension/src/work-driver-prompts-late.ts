@@ -74,9 +74,8 @@ export function inlineCommitPrPrompt(
   eventLog: readonly import("./workflow-state-events.ts").WorkEvent[],
   scratchDirAbs: string,
   issueTitle?: string,
-  // #861 — the ops-fallback integration context. Absent on a fresh cycle;
-  // present when the mechanized commit-pr fell back and the driver created
-  // the driver-owned integrate worktree the fallback is pinned to.
+  // #861 — ops-fallback integration context; present when the driver created
+  // the integrate worktree the fallback is pinned to (only permitted tree).
   fallback?: {
     /** The driver-owned integration worktree — the ONLY permitted working tree. */
     integratePath: string;
@@ -86,7 +85,7 @@ export function inlineCommitPrPrompt(
     baseSha: string;
     /** The preserved conflict patch, when integrate() preserved one. */
     conflictPatch?: string;
-    /** The workstream map + declared scope (in-scope / out-of-scope paths). */
+    /** The workstream map (id → worktree path). */
     worktrees: Record<string, string>;
     /** #453 — each workstream's committed SHAs, as recorded in the state. */
     commitShas: Record<string, string>;
@@ -149,10 +148,8 @@ export function inlineCommitPrPrompt(
   const proseRule =
     "**PR PROSE:** The PR title/body must describe the DIFF and the ISSUE; do not derive prose from the branch name.";
 
-  // #861 — the ops-fallback shape (the mechanized commit-pr failed, e.g. on a
-  // cherry-pick conflict). The fallback child works EXCLUSIVELY in the
-  // driver-owned integrate worktree: the prompt names it as the only
-  // permitted tree and forbids the repo root and every other .worktrees/*.
+  // #861 — the ops-fallback shape (the mechanized commit-pr failed): the
+  // child works EXCLUSIVELY in the driver-owned integrate worktree.
   if (fallback) {
     const fbIds = Object.keys(fallback.worktrees);
     const fbWorktreeLines = fbIds.flatMap((id) => {
@@ -272,13 +269,11 @@ export function inlineCommitPrPrompt(
       `  4. \`git commit -m "<concise subject>"\` with a meaningful message. Body should reference all active issues + summarise the ${ids.length} workstreams' contributions.`,
       `  5. \`git push -u origin ${branchName}\`.`,
       // #861 — step 2 of the NON-fallback shape is pinned to the driver-owned
-      // integrate worktree (`.worktrees/issue-<N>-integrate`) the same way the
-      // `fallback` branch above pins its child: the #841 defect came from an
-      // instruction to "cd into the repo root or a worktree that holds the
-      // branch", which let an ops child check the branch out inside a SIBLING
-      // cycle's worktree. This shape is reachable by any ops:commit-pr
-      // dispatch (the fallback arg is passed unconditionally), so its recipe
-      // must not reproduce that instruction.
+      // integrate worktree (`.worktrees/issue-<N>-integrate`) as the `fallback`
+      // branch above pins its child: #841 came from "cd into the repo root or a
+      // worktree that holds the branch" (a sibling's tree). This shape is
+      // reachable by any ops:commit-pr dispatch (the fallback arg is passed
+      // unconditionally), so its recipe must not reproduce that instruction.
       `  6. \`gh pr create --title "<title>" --body "...\\n\\n${fixesLines}${companionLines ? `\\n${companionLines}` : ""}${bodySections ? `\\n\\n${bodySections}` : ""}\` — ${fixesNote}`,
       "  7. End your reply with `pr: <PR-number>` so the driver can capture it.",
       ...droppedNote,
