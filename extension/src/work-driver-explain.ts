@@ -14,6 +14,7 @@ import { explainLens } from "./work-driver-explain-lens.ts";
 import { explainOther } from "./work-driver-explain-other.ts";
 import { explainPrSteps } from "./work-driver-explain-pr-steps.ts";
 import { explainReview } from "./work-driver-explain-review.ts";
+import { cherryPickRecoveryFor } from "./work-driver-handoff-cherry-pick.ts";
 import { type ParkReason, explainPark } from "./work-driver-intent.ts";
 import { explainMergeHold } from "./work-driver-merge-authority.ts";
 import { lastCapHit } from "./workflow-state-cap.ts";
@@ -416,7 +417,6 @@ function commitPrConsolidationBlurb(
   const ic = ps.incompleteConsolidation;
   const verdicts = Array.isArray(ic) ? [] : (ic?.verdicts ?? []);
   const wts = ps.worktrees ?? {};
-  const base = ps.baseSha ?? "(base)";
   const lines: string[] = [`the committed diff is missing declared files from: ${which}.`];
   for (const id of opts.missingIds) {
     const v = verdicts.find((x) => x.id === id);
@@ -428,13 +428,15 @@ function commitPrConsolidationBlurb(
       );
       continue;
     }
-    const ownBase = ps.workstreamBaseShas?.[id] ?? base;
-    const head = ps.commitShas?.[id];
-    const pick = head
-      ? `git cherry-pick ${JSON.stringify(ownBase)}..${JSON.stringify(head)}`
-      : `git cherry-pick ${JSON.stringify(ownBase)}..HEAD (in the worktree)`;
+    const pick = cherryPickRecoveryFor(state.issue, id, {
+      worktree: wts[id],
+      baseSha: ps.baseSha,
+      ownBase: ps.workstreamBaseShas?.[id],
+      headSha: ps.commitShas?.[id],
+    });
+    const pickText = pick.kind === "command" ? `cherry-pick it: \`${pick.line}\`` : pick.line;
     lines.push(
-      `  - ${id}: nothing uncommitted — the work is COMMITTED in its worktree${wtSuffix}. If ${v.uncoveredPaths.join(", ")} genuinely needed a change, cherry-pick it: \`${pick}\`; otherwise the declaration was over-broad and the fix is a restart.`,
+      `  - ${id}: nothing uncommitted — the work is COMMITTED in its worktree${wtSuffix}. If ${v.uncoveredPaths.join(", ")} genuinely needed a change, ${pickText}; otherwise the declaration was over-broad and the fix is a restart.`,
     );
   }
   if (opts.filesPresent.length > 0) {

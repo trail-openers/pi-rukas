@@ -59,7 +59,9 @@ export function recoveryCommandsMarkdown(
       missing.length === 0 ||
       missing.some((m) => {
         const v = !Array.isArray(ic) && ic ? ic.verdicts.find((x) => x.id === m.id) : undefined;
-        return !v || v.status !== "uncovered" || v.dirty === true;
+        // #875 — `dirty !== false` (not `=== true`): a legacy verdict without
+        // the flag reads as dirty, consistent with isDirty/isClean elsewhere.
+        return !v || v.status !== "uncovered" || v.dirty !== false;
       });
     // #500 — a placeholder branch means `reset --hard HEAD` would abort a
     // merge in progress WITHOUT clearing the index; name the branch first.

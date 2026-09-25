@@ -8,6 +8,7 @@
 
 import type { ForgeType } from "./forge-detect.ts";
 import { dependencyLeaves } from "./work-driver-cherry-pick.ts";
+import { cherryPickRecoveryFor } from "./work-driver-handoff-cherry-pick.ts";
 import { consolidatedMergeStep } from "./work-driver-handoff-merge-step.ts";
 import {
   CONSOLIDATE_APPLY,
@@ -43,7 +44,6 @@ function commitPrConsolidationSteps(state: WorkState, issue: number): RecoverySt
   };
   const dirtyMissing = missing.filter((m) => isDirty(m.id));
   const cleanMissing = missing.filter((m) => !isDirty(m.id));
-  const baseSha = ps.baseSha ?? "(base)";
   const S = "commit-pr-incomplete-consolidation" as const;
   const steps: RecoveryStep[] = [
     {
@@ -69,14 +69,16 @@ function commitPrConsolidationSteps(state: WorkState, issue: number): RecoverySt
         "2b. Cherry-pick each committed (dirty=false) workstream's work onto the",
         "    integration branch — the work is already committed in the worktree:",
       ],
-      lines: cleanMissing.map((m) => {
-        const ownBase = ps.workstreamBaseShas?.[m.id] ?? baseSha;
-        const head = ps.commitShas?.[m.id];
-        const pick = head
-          ? `git cherry-pick ${ownBase}..${head}`
-          : `git cherry-pick ${ownBase}..HEAD   # in the worktree: .worktrees/issue-${issue}-${m.id}`;
-        return `${pick}   # workstream: ${m.id} — if it genuinely needed a change, cherry-pick; otherwise the declaration was over-broad and the fix is a restart`;
-      }),
+      lines: cleanMissing.map(
+        (m) =>
+          cherryPickRecoveryFor(issue, m.id, {
+            worktree: ps.worktrees?.[m.id],
+            baseSha: ps.baseSha,
+            ownBase: ps.workstreamBaseShas?.[m.id],
+            headSha: ps.commitShas?.[m.id],
+            comment: `workstream: ${m.id} — if it genuinely needed a change, cherry-pick; otherwise the declaration was over-broad and the fix is a restart`,
+          }).line,
+      ),
     });
   }
   steps.push(

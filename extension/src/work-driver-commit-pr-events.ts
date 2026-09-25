@@ -61,7 +61,9 @@ export async function runCommitPrPostDispatchGates(
       `work-driver: commit-pr partial-consolidation detected — missing workstreams: ${consolidationCheck.missing.map((m) => m.id).join(", ")}`,
     );
     // #875 — compute the per-workstream `dirty` flag ONCE at gate time
-    // (worktree porcelain: modified + untracked) and persist it on each
+    // (worktree porcelain: modified + untracked, same `--untracked-files=all`
+    // as work-driver-verify.ts — bare `--porcelain` collapses a wholly-
+    // untracked directory to one `?? dir/` line) and persist it on each
     // uncovered verdict. The handoff renderers read ONLY the persisted
     // flag — no live git call at render time. An unreadable worktree
     // cannot prove anything, so it is recorded dirty (the conservative
@@ -77,7 +79,7 @@ export async function runCommitPrPostDispatchGates(
           let porcelain: string | undefined;
           if (wt) {
             try {
-              const { stdout } = await execFn("git status --porcelain", {
+              const { stdout } = await execFn("git status --porcelain --untracked-files=all", {
                 cwd: wt,
                 maxBuffer: 1024 * 1024,
               });

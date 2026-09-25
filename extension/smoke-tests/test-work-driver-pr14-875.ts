@@ -101,5 +101,19 @@ const mkDirtyState = (dirty: boolean | undefined) => {
   assert(explanation.includes("uncommitted on disk"), "legacy: explainCap has 'uncommitted on disk'");
 }
 
+// Legacy (no dirty flag): the markdown surface's header must claim the work
+// is still uncommitted — the `anyUncommitted` gate reads `dirty !== false`,
+// so a legacy flag-absent verdict counts as uncommitted (consistent with
+// isDirty/isClean), not "committed there".
+{
+  const s = mkDirtyState(undefined);
+  const md = renderHandoffMarkdown(s, "/repo/proj");
+  assert(
+    md.includes("# 1. Inspect each missing workstream's worktree — the developer's work is still there uncommitted:"),
+    "legacy: markdown header keeps the 'still there uncommitted' wording",
+  );
+  assert(!md.includes("nothing uncommitted — the work is committed there"), "legacy: markdown header does not claim the work is committed");
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

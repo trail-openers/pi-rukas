@@ -84,5 +84,85 @@ for (const [name, dirty, expectCherryPick, expectAddApply] of [
   }
 }
 
+// #875 LOW round — the dirty=false cherry-pick line must be qualified to the
+// workstream's OWN worktree on BOTH surfaces, and the chat renderer's
+// `requalifyLine` must leave a worktree-qualified pick alone (the
+// `git -C .worktrees/<x>…` rule rewrites it to the absolute path; the
+// repo-root re-anchoring rule only fires on unqualified `git` lines).
+{
+  const s = dirtyFixture(false);
+  const wt = `${REPO}/.worktrees/issue-481-default`;
+  const md = renderHandoffMarkdown(s, REPO);
+  const chat = renderHandoffUserMessage(s, REPO, `${REPO}/tmp/issue-481`);
+  // The recorded worktree is absolute; the markdown surface still emits the
+  // in-tree-relative qualifier (`git -C .worktrees/<x>` — the shape
+  // `requalifyLine` rewrites cleanly), and the chat surface gets the
+  // absolute path from that rewrite — never the repoRoot-anchored
+  // `git -C <repoRoot> cherry-pick` shape (re-anchoring would requalify the
+  // line as if it were an integration-tree command).
+  assert(
+    md.includes("git -C .worktrees/issue-481-default cherry-pick abc1234..def5678"),
+    "markdown: cherry-pick line is qualified to the worktree (in-tree relative path)",
+  );
+  assert(
+    chat.includes(`git -C ${wt} cherry-pick abc1234..def5678`),
+    "chat: requalifyLine rewrites the worktree qualifier to the absolute path",
+  );
+  assert(
+    !chat.includes(`git -C ${REPO} cherry-pick`),
+    "chat: cherry-pick is NOT re-anchored at repoRoot",
+  );
+}
+
+// #875 LOW round — a RELATIVE recorded worktree path renders in-tree-relative
+// on the markdown surface (`.worktrees/issue-481-default`) and `requalifyLine`
+// rewrites the qualifier to the absolute path on the chat surface.
+{
+  let s = dirtyFixture(false);
+  s = {
+    ...s,
+    pipelineState: {
+      ...s.pipelineState,
+      worktrees: { default: ".worktrees/issue-481-default" },
+    },
+  };
+  const wt = `${REPO}/.worktrees/issue-481-default`;
+  const md = renderHandoffMarkdown(s, REPO);
+  const chat = renderHandoffUserMessage(s, REPO, `${REPO}/tmp/issue-481`);
+  assert(
+    md.includes("git -C .worktrees/issue-481-default cherry-pick abc1234..def5678"),
+    "markdown (relative worktree): in-tree-relative qualifier on the pick",
+  );
+  assert(
+    chat.includes(`git -C ${wt} cherry-pick abc1234..def5678`),
+    "chat (relative worktree): requalifyLine rewrote the qualifier to the absolute path",
+  );
+}
+
+// #875 LOW round — when the base SHA is absent (no cycle base, no per-
+// workstream base), the cherry-pick line must be plain text naming the
+// problem — never a command interpolating a placeholder.
+{
+  let s = dirtyFixture(false);
+  s = {
+    ...s,
+    pipelineState: {
+      ...s.pipelineState,
+      baseSha: undefined,
+      workstreamBaseShas: {},
+    },
+  };
+  const md = renderHandoffMarkdown(s, REPO);
+  const chat = renderHandoffUserMessage(s, REPO, `${REPO}/tmp/issue-481`);
+  for (const [surface, out] of [
+    ["markdown", md],
+    ["chat", chat],
+  ] as const) {
+    assert(out.includes("base SHA"), `${surface}: no-base case names the missing base SHA`);
+    assert(!out.includes("(base)"), `${surface}: no '(base)' placeholder in the output`);
+    assert(!/git (?:-C \S+ )?cherry-pick/.test(out), `${surface}: no cherry-pick command rendered`);
+  }
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
