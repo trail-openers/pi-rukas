@@ -112,7 +112,7 @@ PM reads the report, decides, updates the spec / tracker issue, and re-dispatche
 3. Confirm: "Loaded [skill-name] for this task"
 4. Use context7 for any related technical documentation
 
-**Common skills**: `python-tdd`, `rust-systems`, `rails-conventions`, `react-web`, `react-native-mobile`, `go-idiomatic`, `shell-scripting`, `postgres-database`, `api-design`, `nextjs-app-router-patterns`, `e2e-testing-patterns`, `devops-infrastructure`
+**Common skills**: `python-tdd`, `rust-systems`, `rails-conventions`, `react-web`, `react-native-mobile`, `go-idiomatic`, `shell-scripting`, `postgres-database`, `api-design`, `devops-infrastructure`
 
 **If domain is unclear**: invoke `mcp_skill` with any skill name — the tool response lists ALL available skills you can choose from.
 
