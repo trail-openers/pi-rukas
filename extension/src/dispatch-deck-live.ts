@@ -36,8 +36,8 @@ import { type Component, isKeyRelease, matchesKey } from "@earendil-works/pi-tui
 import type { DeckEntry } from "./dispatch-deck.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { formatElapsed } from "./progress.ts";
-import { TOOL_ARGS_PREVIEW_MAX, TOOL_RESULT_LINE_MAX } from "./runs.ts";
 import { trace } from "./trace.ts";
+import { TOOL_ARGS_PREVIEW_MAX, TOOL_RESULT_LINE_MAX } from "./transcript-preview-limits.ts";
 
 // =============================================================================
 // Ring buffer
@@ -53,8 +53,8 @@ export type LiveEvent =
 export const LIVE_RING_CAP = 200;
 /** Assistant text is truncated to this many chars at feed time (PM decision 5). */
 export const LIVE_TEXT_MAX = 400;
-// Tool-arg / tool-result truncation reuses the runs.ts limits (LIVE_TOOL_ARGS_MAX /
-// LIVE_TOOL_RESULT_MAX imported from runs.ts) so the two surfaces cannot drift.
+// Tool-arg / tool-result truncation reuses the shared transcript-preview
+// limits (transcript-preview-limits.ts) so the two surfaces cannot drift.
 /** Preview of a tool call's arguments after whitespace collapse (chars). */
 export const LIVE_ARGS_MAX = TOOL_ARGS_PREVIEW_MAX;
 /** Preview of a tool result after newlines collapse to spaces (chars). */

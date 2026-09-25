@@ -13,10 +13,9 @@ import {
 } from "./async-jobs-registry.ts";
 import {
   type BatchReportInput,
-  deliverSteerReport,
+  formatBatchReport,
   formatFailReport,
   formatSingleReport,
-  settleMember,
   totalTokens,
 } from "./async-jobs-report.ts";
 import * as live from "./dispatch-deck-live.ts";
@@ -78,14 +77,8 @@ export interface WorkHooks {
   onProgress: (state: RunningState) => void;
   /**
    * #839 — raw-event observer for the dispatch deck's live view. Work
-   * functions pass this through to spawnSpecialist's onRawEvent option (which
-   * is OPTIONAL there — SpawnOptions.onRawEvent? — so orchestrator-shaped work
-   * that builds its own SpawnOptions may omit the pass-through for inner
-   * children); it fires for every parsed child event and feeds the job's ring
-   * buffer (dispatch-deck-live.ts), which the live-view overlay renders.
-   * Here it is REQUIRED because async-jobs always creates the hook and every
-   * work function in this codebase passes it through. No-op for
-   * deck-skipping jobs (no buffer is ever created for them).
+   * functions pass this through to spawnSpecialist's onRawEvent option
+   * (OPTIONAL there); it feeds the job's ring buffer (dispatch-deck-live.ts).
    */
   onRawEvent: (event: PiJsonEvent) => void;
   /**
@@ -187,18 +180,10 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
   sessionAutosave.recordDispatch(input.role);
 
   if (!input.skipDeck) live.startBuffer(jobId);
-  // #839 — the buffer is dropped by dispatchDeck.clearEntry (co-located
-  // lifecycle, dispatch-deck-live.ts), so a synchronous throw from the work
-  // function below can no longer leak one.
   const hooks: WorkHooks = {
     onProgress: (progress) => {
       if (!input.skipDeck) dispatchDeck.updateEntry(jobId, progress);
     },
-    // #839 — feed the live-view ring buffer from the raw event stream. The
-    // buffer's lifecycle is co-located with the deck entry: every settle path
-    // (success, async failure, synchronous throw) clears the entry via
-    // dispatchDeck.clearEntry, which drops the buffer — so skipDeck jobs
-    // (lens/adversarial orchestrators) get no buffer and no leak.
     onRawEvent: (event) => {
       live.feedRawEvent(jobId, event);
     },
@@ -208,29 +193,17 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
     jobId,
   };
 
-  // If `input.work` throws SYNCHRONOUSLY (before `.then` attaches), the
-  // completion-promise handlers below would never run — the deck entry and
-  // buffer would leak for the life of the process. Catch it, clear the deck
-  // entry (which drops the buffer), and rethrow the same error. Asynchronous
-  // rejections of the work function are unaffected: they reject `completion`
-  // and hit the handlers as before.
-  let workPromise: Promise<DispatchResult>;
-  try {
-    workPromise = input.work(abort.signal, hooks);
-  } catch (err) {
-    jobs.delete(jobId);
-    if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
-    throw err;
-  }
-  const completion = workPromise.then(
+  // Wrapping in `new Promise` turns a SYNCHRONOUS throw from `input.work`
+  // into a rejection that flows through the handlers below (as async
+  // failures already do) — no separate synchronous-throw path.
+  const completion = new Promise<DispatchResult>((resolve) =>
+    resolve(input.work(abort.signal, hooks)),
+  ).then(
     (result) => {
       jobs.delete(jobId);
       childHandles.delete(jobId);
       clearJobIssues(jobId);
-      if (!input.skipDeck) {
-        // clearEntry drops the live-view buffer (co-located, dispatch-deck.ts).
-        dispatchDeck.clearEntry(jobId);
-      }
+      if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
       // Five-way: ok / killCause / 429 / FAILED-PROVIDER-ERROR / process-exit-failed.
       // #309/#314 — killCause (#296) wins over errorStop. A self-kill is NOT a
       // provider/transport error and must not emit the "terminated mid-stream" badge.
@@ -285,7 +258,7 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
       // [ensemble:async] message into PM's session and confuse the next turn.
       if (ownerKind === "pm") {
         const report = formatSingleReport(jobId, input.label, result);
-        deliverSteerReport(pi, report);
+        deliverReport(pi, report);
       }
       trace(`async job ${jobId} (${input.label}, owner=${ownerKind}) finished in ${result.ms}ms`);
       return result;
@@ -294,15 +267,12 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
       jobs.delete(jobId);
       childHandles.delete(jobId);
       clearJobIssues(jobId);
-      if (!input.skipDeck) {
-        // clearEntry drops the live-view buffer (co-located, dispatch-deck.ts).
-        dispatchDeck.clearEntry(jobId);
-      }
+      if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
       lifecycle.emitFailed(jobId, input.label, input.role, Date.now() - state.startedAt);
       sessionAutosave.recordOutcome(false);
       if (ownerKind === "pm") {
         const report = formatFailReport(jobId, input.label, err);
-        deliverSteerReport(pi, report);
+        deliverReport(pi, report);
       }
       trace(`async job ${jobId} (${input.label}, owner=${ownerKind}) failed: ${err.message}`);
       // Driver-owned callers want the error surfaced via the promise so
@@ -414,39 +384,14 @@ export function startBatch(
       jobId,
     };
 
-    // Synchronous-throw window: if `m.work` throws before `.then` attaches,
-    // the member settle handlers below would never run — the deck entry and
-    // buffer would leak and the batch counter would never reach `size` (the
-    // batch would hang forever). Catch it, clear the member entry (which
-    // drops the buffer), settle the member as failed, and advance the batch
-    // counter so the batch still delivers its one consolidated report.
-    let memberWork: Promise<DispatchResult>;
-    try {
-      memberWork = m.work(memberAbort.signal, memberHooks);
-    } catch (err) {
-      jobs.delete(jobId);
-      childHandles.delete(jobId);
-      // clearEntry drops the live-view buffer (co-located, dispatch-deck.ts).
-      dispatchDeck.clearEntry(jobId);
-      sessionAutosave.recordOutcome(false);
-      memberResults.push({
-        jobId,
-        label: m.label,
-        result: { failed: true, error: (err as Error).message },
-      });
-      orchestrator.completed++;
-      dispatchDeck.updateBatchProgress(batchId, orchestrator.completed);
-      if (orchestrator.completed === orchestrator.size) {
-        jobs.delete(batchId);
-      }
-      continue;
-    }
-    void memberWork
+    // Wrapping in `new Promise` turns a SYNCHRONOUS throw from `m.work` into
+    // a rejection that settles through the handlers below (as async failures
+    // already do) — no separate synchronous-throw path.
+    void new Promise<DispatchResult>((resolve) => resolve(m.work(memberAbort.signal, memberHooks)))
       .then(
         (result) => {
           jobs.delete(jobId);
           childHandles.delete(jobId);
-          // clearEntry drops the live-view buffer (co-located, dispatch-deck.ts).
           dispatchDeck.clearEntry(jobId);
           sessionAutosave.recordOutcome(result.ok);
           memberResults.push({ jobId, label: m.label, result });
@@ -454,7 +399,6 @@ export function startBatch(
         (err: Error) => {
           jobs.delete(jobId);
           childHandles.delete(jobId);
-          // clearEntry drops the live-view buffer (co-located, dispatch-deck.ts).
           dispatchDeck.clearEntry(jobId);
           sessionAutosave.recordOutcome(false);
           memberResults.push({
@@ -465,10 +409,50 @@ export function startBatch(
         },
       )
       .finally(() => {
-        settleMember(pi, batchId, input.batchLabel, startedAt, orchestrator, memberResults);
+        orchestrator.completed++;
+        // Advance the batch row's counter so the user sees "1/3 done · 2 running".
+        dispatchDeck.updateBatchProgress(batchId, orchestrator.completed);
+        if (orchestrator.completed === orchestrator.size) {
+          jobs.delete(batchId);
+          dispatchDeck.clearBatchEntry(batchId);
+          const batchMs = Date.now() - startedAt;
+          const anyFailed = memberResults.some((m) => "failed" in m.result || !m.result.ok);
+          const tokens = memberResults.reduce((acc, m) => {
+            if ("failed" in m.result) return acc;
+            return acc + totalTokens(m.result);
+          }, 0);
+          if (anyFailed) {
+            lifecycle.emitFailed(batchId, input.batchLabel, input.batchLabel, batchMs);
+          } else {
+            lifecycle.emitCompleted(batchId, input.batchLabel, input.batchLabel, batchMs, tokens);
+          }
+          const report = formatBatchReport({
+            batchLabel: input.batchLabel,
+            batchId,
+            startedAt,
+            members: memberResults,
+          });
+          deliverReport(pi, report);
+          trace(
+            `async batch ${batchId} (${input.batchLabel}) finished in ${Date.now() - startedAt}ms`,
+          );
+        }
       });
   }
 
   trace(`async batch ${batchId} (${input.batchLabel}, n=${input.members.length}) started`);
   return { batchId, jobIds: memberJobIds };
+}
+
+/**
+ * Push a report back to the parent agent. `deliverAs: "steer"` queues the
+ * message during a streaming turn (delivered before the next LLM call) or
+ * directly if the agent is idle.
+ */
+function deliverReport(pi: ExtensionAPI, report: string): void {
+  try {
+    pi.sendUserMessage(report, { deliverAs: "steer" });
+  } catch (err) {
+    trace(`async report delivery failed: ${(err as Error).message}`);
+  }
 }

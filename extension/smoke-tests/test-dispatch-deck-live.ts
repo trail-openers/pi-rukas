@@ -1,31 +1,13 @@
 #!/usr/bin/env bun
 /**
  * #839 — live view of a running subagent's activity (dispatch deck, epic
- * #833 G5).
- *
- * Drives the real ring buffer (dispatch-deck-live.ts) and the real overlay
- * component with synthetic events:
- *   - ring eviction at 201 events (keeps exactly the newest 200)
- *   - the real observer path (feedRawEvent) fills the buffer from synthetic
- *     message_end / toolResult events; truncation applied at feed time
- *   - the overlay renders the buffer; new events appear on the NEXT render
- *     of the same component (no re-creation)
- *   - "no activity yet" before any event
- *   - handleInput: `s` → steer with the right key, Esc → close, ↑/↓ pause
- *     and resume following
- *   - the buffer is freed on dropBuffer
- *   - clearEntry (deck module) drops the buffer — co-located lifecycle
- *   - quiet mode → no buffer
- *   - a synchronous throw from a work function does not leak (startJob path)
- *   - an openSteerPrompt editor rejection is caught (onRowConfirm resolves)
- *
- * The roster Enter → live-view wiring (dispatch-deck-confirm.ts onRowConfirm
- * with a fake ctx.ui.custom) is covered here too: a running row WITH a buffer
- * opens the live view (custom called with overlay:true, no picker); a row
- * WITHOUT a buffer opens the steer prompt directly (no custom call).
+ * #833 G5). Drives the real ring buffer and overlay with synthetic events:
+ * ring eviction, feedRawEvent, overlay render/handleInput, dropBuffer,
+ * clearEntry co-located lifecycle, quiet mode, sync-throw exception safety
+ * (startJob + startBatch), and roster Enter → live-view wiring.
  */
 
-import { startJob } from "../src/async-jobs.ts";
+import { startBatch, startJob } from "../src/async-jobs.ts";
 import { onRowConfirm } from "../src/dispatch-deck-confirm.ts";
 import {
   LIVE_RING_CAP,
@@ -37,7 +19,7 @@ import {
   hasBuffer,
   startBuffer,
 } from "../src/dispatch-deck-live.ts";
-import { clearEntry, detach, reset, snapshot, startEntry } from "../src/dispatch-deck.ts";
+import { batchSnapshot, clearEntry, detach, reset, snapshot, startEntry } from "../src/dispatch-deck.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -167,14 +149,11 @@ function resetBuffers(): void {
 // ---------------------------------------------------------------------------
 // 3. Overlay renders events; new events appear on next render (same component).
 // ---------------------------------------------------------------------------
+const fakeTheme = { muted: (t: string) => t, error: (t: string) => t } as const;
 {
   resetBuffers();
   startBuffer("b1");
   const doneResults: string[] = [];
-  const fakeTheme = {
-    muted: (t: string) => t,
-    error: (t: string) => t,
-  } as const;
   const comp = createLiveViewComponent(
     "b1",
     () => ({
@@ -231,7 +210,6 @@ function resetBuffers(): void {
     });
   }
   const doneResults: string[] = [];
-  const fakeTheme = { muted: (t: string) => t, error: (t: string) => t } as const;
   const comp = createLiveViewComponent(
     "b2",
     () => undefined,
@@ -292,9 +270,7 @@ function testQuietMode() {
 testQuietMode();
 
 // ---------------------------------------------------------------------------
-// 6b. clearEntry (deck module) drops the buffer — co-located lifecycle:
-//     the buffer dies with the deck entry, so async-jobs needs no separate
-//     dropBuffer call on settle.
+// 6b. clearEntry drops the buffer — co-located lifecycle.
 // ---------------------------------------------------------------------------
 function testClearEntryDropsBuffer() {
   resetBuffers();
@@ -310,35 +286,65 @@ function testClearEntryDropsBuffer() {
 testClearEntryDropsBuffer();
 
 // ---------------------------------------------------------------------------
-// 6c. A synchronous throw from a work function does not leak: the deck entry
-//     and its buffer are cleared before startJob rethrows.
+// 6c. Sync-throw exception safety (startJob + startBatch)
+//     The new Promise wrapper turns a sync throw into a rejection that flows
+//     through the existing settle handlers — no special branches.
 // ---------------------------------------------------------------------------
-{
+async function testStartJobSyncThrow() {
   resetBuffers();
   reset();
-  const fakePi = {
-    sendUserMessage: () => {},
-  } as never;
-  let threw = false;
+  const fakePi = { sendUserMessage: () => {} } as never;
+  let threwSync = false;
+  let completionRejected = false;
   try {
-    startJob(fakePi, {
+    const handle = startJob(fakePi, {
       label: "sync-throw-job",
       role: "developer",
       work: () => {
         throw new Error("sync work failure");
       },
     });
+    await handle.completion;
   } catch (err) {
-    threw = err instanceof Error && err.message === "sync work failure";
+    completionRejected = err instanceof Error && err.message === "sync work failure";
   }
-  assert(threw, "6c-a: synchronous work throw propagates from startJob");
-  // The deck entry is gone (no row for a job that never ran) and clearEntry
-  // drops the buffer with it — nothing leaks for a job that threw.
+  assert(!threwSync, "6c-a: sync throw does not propagate from startJob");
+  assert(completionRejected, "6c-b: throw becomes a rejection of the job promise");
+  await new Promise((r) => setTimeout(r, 10));
   const leaked = snapshot().find((e) => e.label === "sync-throw-job");
-  assert(!leaked, "6c-b: no deck entry leaked for a synchronously-throwing job");
-  assert(bufferCount() === 0, "6c-c: buffer count is 0 after the sync throw");
+  assert(!leaked, "6c-c: no deck entry leaked");
+  assert(bufferCount() === 0, "6c-d: buffer count is 0 after the sync throw");
   detach();
 }
+async function testStartBatchLastMemberSyncThrow() {
+  resetBuffers();
+  reset();
+  const inbox: string[] = [];
+  const fakePi = { sendUserMessage: (c: string) => inbox.push(c) } as never;
+  startBatch(fakePi, {
+    batchLabel: "sync-throw-batch",
+    members: [
+      { label: "member-ok", role: "explore", work: async () => ({ role: "explore", ok: true, ms: 5, text: "member-ok done" }) },
+      { label: "member-sync-throw", role: "developer", work: () => { throw new Error("batch sync work failure"); } },
+    ],
+  });
+  await new Promise((r) => setTimeout(r, 100));
+  assert(inbox.length === 1, "6d-a: ONE consolidated batch report delivered");
+  assert(
+    inbox[0]?.includes("batch") && inbox[0].includes("member-sync-throw"),
+    "6d-b: batch report names the failing member",
+  );
+  assert(
+    batchSnapshot().find((b) => b.label === "member-ok") === undefined,
+    "6d-c: member deck entry cleared",
+  );
+  assert(batchSnapshot().length === 0, "6d-d: batch entry cleared");
+  assert(bufferCount() === 0, "6d-e: buffer count is 0");
+  detach();
+}
+// Await both before section 7's `reset()` clears the deck entries.
+await testStartJobSyncThrow();
+await testStartBatchLastMemberSyncThrow();
 
 // ---------------------------------------------------------------------------
 // 7. Roster Enter → live view (running row WITH buffer → custom overlay;
@@ -441,18 +447,10 @@ testClearEntryDropsBuffer();
 }
 
 function rowHost() {
-  return {
-    getEntry: (k: string) => snapshot().find((e) => e.key === k),
-    steer: (_k: string, _m: string) => {},
-  };
+  return { getEntry: (k: string) => snapshot().find((e) => e.key === k), steer: () => {} };
 }
 // ---------------------------------------------------------------------------
-// 9. Exception safety: a throwing observer must not be swallowed — the
-//    #839 contract is that observers are cheap and non-throwing by
-//    construction, and the spawn line handler does NOT guard them (a throw
-//    surfaces through spawn, which is what this test pins down). We verify
-//    that `pushEvent` itself never throws on bounded inputs, and that the
-//    observer path in `feedRawEvent` is defensive (map lookup + pushEvent).
+// 9. Exception safety: feedRawEvent never throws on bounded inputs.
 // ---------------------------------------------------------------------------
 {
   resetBuffers();
