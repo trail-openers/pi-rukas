@@ -71,7 +71,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
   // cycle's primary issue, 799 here) and drained at the step boundary
   // (routeStepOutcome, the single persistence point). Drain it here exactly
   // as the driver does, then check the union is exactly one.
-  const { drainSlowEvents } = await import("../src/slow-notice.ts");
+  const { drainSlowEvents } = await import("../src/slow-events.ts");
   const drained = drainSlowEvents(799);
   const slowEvents = [...out.eventLog, ...drained].filter((e) => e.kind === "dispatch-slow");
   assert(slowEvents.length === 1, "driver dispatch crossing → one dispatch-slow in the log (buffer drain)");
@@ -102,7 +102,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
   process.env.PI_ENSEMBLE_RESUME = "0";
   process.env.PI_ENSEMBLE_CROSS_GROUP_CONFLICTS = "0";
   const { runPlan } = await import("../src/work-driver-plan.ts");
-  const { clearSlowEventsForTesting, drainSlowEvents } = await import("../src/slow-notice.ts");
+  const { clearSlowEventsForTesting, drainSlowEvents } = await import("../src/slow-events.ts");
   clearSlowEventsForTesting();
   const fakeDispatch: any = async (_pi: unknown, _spec: unknown, opts: any) => {
     opts?.onSlow?.({
@@ -153,7 +153,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
   process.env.PI_ENSEMBLE_RESUME = "0";
   process.env.PI_ENSEMBLE_CROSS_GROUP_CONFLICTS = "0";
   const { fanOutAdversarial } = await import("../src/work-driver-adversarial-fanout.ts");
-  const { clearSlowEventsForTesting, drainSlowEvents } = await import("../src/slow-notice.ts");
+  const { clearSlowEventsForTesting, drainSlowEvents } = await import("../src/slow-events.ts");
   clearSlowEventsForTesting();
   const fixture = mkdtempSync(path.join(os.tmpdir(), "pi-ens-799fan-"));
   const git = (args: string) =>
@@ -221,7 +221,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
   process.env.PI_ENSEMBLE_HANDOFF_CONSOLIDATE = "0";
   process.env.PI_ENSEMBLE_WORKTREE_TEARDOWN = "0";
   const { runHandoff } = await import("../src/work-driver-handoff.ts");
-  const { clearSlowEventsForTesting, drainSlowEvents, slowRecorder } = await import("../src/slow-notice.ts");
+  const { clearSlowEventsForTesting, drainSlowEvents, slowRecorder } = await import("../src/slow-events.ts");
   clearSlowEventsForTesting();
   const dir = mkdtempSync(path.join(os.tmpdir(), "pi-ens-799handoff-"));
   const ctx: any = {
@@ -273,7 +273,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "2" }, async () => {
   // final drain did not catch) must not leak into a fresh cycle of the same
   // issue: the driver drops every issue's entry when a cycle begins.
   process.env.PI_ENSEMBLE_FORGE = "none";
-  const { clearSlowEventsForTesting, drainSlowEvents, slowRecorder } = await import("../src/slow-notice.ts");
+  const { clearSlowEventsForTesting, drainSlowEvents, slowRecorder } = await import("../src/slow-events.ts");
   clearSlowEventsForTesting();
   const stale = slowRecorder(799, "handoff");
   stale({

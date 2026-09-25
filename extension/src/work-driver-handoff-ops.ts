@@ -11,7 +11,7 @@
  */
 
 import { dispatchCore } from "./dispatch.ts";
-import { slowRecorder } from "./slow-notice.ts";
+import { slowRecorder } from "./slow-events.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";

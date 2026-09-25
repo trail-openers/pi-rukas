@@ -5,7 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { type ForgeType, detectForge } from "./forge-detect.ts";
 import { type Forge, createForge } from "./forge.ts";
-import { drainSlowEvents } from "./slow-notice.ts";
+import { drainSlowEvents } from "./slow-events.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import {

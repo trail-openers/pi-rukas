@@ -10,8 +10,12 @@
  * `spawnSpecialist`), so they register a handle directly against their deck
  * key and are watched by the same mechanism.
  *
- * On a threshold crossing (20 min / 150 turns / 20M tokens, whichever comes
- * first; then again at each doubling of the crossed dimension(s)):
+ * On a threshold crossing — ONE level per watch: `level` counts the levels
+ * already fired (0 initially) and the NEXT fire happens when ANY dimension
+ * meets `base·2^level` (level 0: 20 min / 150 turns / 20M tokens; level 1:
+ * 40 min / 300 turns / 40M; and so on). After a fire, `level` jumps to the
+ * highest level any dimension has now reached, and every dimension re-arms
+ * together at `base·2^level`:
  *
  *   1. The PM is notified via `notifyAgent` (always `deliverAs: "steer"`)
  *      with the same fields `dispatch_peek` shows — role, label, turns,
@@ -79,43 +83,46 @@ export interface SlowWatchInput {
   onSlow?: OnSlowCallback;
 }
 
-/** #799 — the doubling schedule. First crossing at 20 min / 150 turns /
- * 20M tokens, whichever comes first; after that, each crossed dimension
- * re-arms at its own doubling (40 / 300 / 40M, …). Env overrides:
- * PI_ENSEMBLE_SLOW_NOTICE_MS / _TURNS / _TOKENS. */
-export function slowThresholds(): { ms: number; turns: number; tokens: number } {
+/** The thresholds at level n: `base·2^n` per dimension. Level 0 is the
+ * first crossing (20 min / 150 turns / 20M tokens, whichever comes first);
+ * level 1 is 40 / 300 / 40M, and so on. ONE level per watch: a feed or
+ * timer tick fires when ANY dimension meets level n+1's threshold, and the
+ * watch's level then jumps to the highest level any dimension has now
+ * reached, so all dimensions re-arm together at the next level. #884
+ * replaces the per-dimension re-arming that let one run crossing all three
+ * dimensions minutes apart fire three notices. Env overrides:
+ * PI_ENSEMBLE_SLOW_NOTICE_MS / _TURNS / _TOKENS set the BASE (level 0);
+ * a disabled dimension (PI_ENSEMBLE_SLOW_NOTICE=0 or a 0 override) stays
+ * Infinity at every level. `watchSlowDispatch` reads these overrides ONCE
+ * and snapshots them onto the watch as `base`; per-level thresholds (feed,
+ * tick, re-arm) are then pure arithmetic on `base·2^level` with no env
+ * reads, so an env change after arming never moves that watch. The exported
+ * helpers remain env-reading, used only at arm time (and by the tests). */
+export function levelThresholds(level: number): { ms: number; turns: number; tokens: number } {
   const v = process.env.PI_ENSEMBLE_SLOW_NOTICE;
+  const disabled = v === "0";
   return {
-    ms: envMs("PI_ENSEMBLE_SLOW_NOTICE_MS", 20 * 60_000, v === "0"),
-    turns: envNum("PI_ENSEMBLE_SLOW_NOTICE_TURNS", 150, v === "0"),
-    tokens: envNum("PI_ENSEMBLE_SLOW_NOTICE_TOKENS", 20_000_000, v === "0"),
+    ms: envDimension("PI_ENSEMBLE_SLOW_NOTICE_MS", 20 * 60_000, level, disabled),
+    turns: envDimension("PI_ENSEMBLE_SLOW_NOTICE_TURNS", 150, level, disabled),
+    tokens: envDimension("PI_ENSEMBLE_SLOW_NOTICE_TOKENS", 20_000_000, level, disabled),
   };
 }
 
-function envMs(key: string, def: number, disabled: boolean): number {
-  if (disabled) return Number.POSITIVE_INFINITY;
-  const raw = process.env[key];
-  if (raw === undefined || raw === "") return def;
-  const n = Number(raw.replace(/_/g, ""));
-  return Number.isFinite(n) && n > 0 ? n : def;
+/** #799 — the doubling schedule, level 0 (the first crossing). */
+export function slowThresholds(): { ms: number; turns: number; tokens: number } {
+  return levelThresholds(0);
 }
 
-function envNum(key: string, def: number, disabled: boolean): number {
+function envDimension(key: string, base: number, level: number, disabled: boolean): number {
   if (disabled) return Number.POSITIVE_INFINITY;
   const raw = process.env[key];
-  if (raw === undefined || raw === "") return def;
-  const n = Number(raw.replace(/_/g, ""));
-  return Number.isFinite(n) && n > 0 ? n : def;
+  const n = raw === undefined || raw === "" ? base : Number(raw.replace(/_/g, ""));
+  if (!Number.isFinite(n) || n <= 0) return base;
+  return n * 2 ** Math.max(0, level);
 }
 
 export function autoSteerEnabled(): boolean {
   return process.env.PI_ENSEMBLE_AUTO_STEER !== "0";
-}
-
-interface Thresholds {
-  ms: number;
-  turns: number;
-  tokens: number;
 }
 
 interface Watch {
@@ -123,16 +130,20 @@ interface Watch {
   role: string;
   label: string;
   startedAt: number;
+  /** The number of levels already fired (0 initially). The next fire
+   * happens when ANY dimension meets `base·2^level`; on a fire the level
+   * jumps to the highest level any dimension has NOW reached (so a
+   * simultaneous or overshooting crossing fires once, with no catch-up
+   * burst) and every dimension re-arms together at `base·2^level`. The
+   * elapsed timer is absolute from the watch start.
+   * #884 — replaces the per-dimension re-arming that fired three notices. */
+  level: number;
   /** Injectable scheduler for the elapsed check (injectable in tests). */
   schedule: (fn: () => void, ms: number) => () => void;
   pi?: Pick<ExtensionAPI, "sendUserMessage">;
   steerFn?: SlowWatchInput["steerFn"];
   now: () => number;
   onSlow?: OnSlowCallback;
-  /** Next crossing per dimension. A finite value means the dimension is
-   * armed; Infinity means the dimension has never crossed (its threshold is
-   * still the first one) or it was never configured. */
-  armed: Thresholds;
   /** Last delivered snapshot — the timer ticks with nothing new to say (the
    * child is silent), so a timer-driven evaluation replays the latest
    * snapshot rather than a stale one. */
@@ -142,12 +153,28 @@ interface Watch {
   seenProgress: boolean;
   /** The pending elapsed-check timer (unref'd in production). */
   timer?: () => void;
+  /** #884 — level-0 bases snapshotted ONCE at arm time. */
+  base: { ms: number; turns: number; tokens: number };
 }
 
 const watches = new Map<string, Watch>();
 
-function thresholdValue(base: number, level: number): number {
-  return base * 2 ** Math.max(0, level);
+function dimThreshold(base: number, level: number): number {
+  return Number.isFinite(base) ? base * 2 ** Math.max(0, level) : Number.POSITIVE_INFINITY;
+}
+
+/** The highest level a dimension has reached: 0 below `base`, else the
+ * largest k with value ≥ base·2^(k-1). Integer doubling, so exact powers
+ * stay exact. */
+export function levelReached(value: number, base: number): number {
+  if (base <= 0 || !Number.isFinite(value)) return 0;
+  let k = 1;
+  let t = base;
+  while (value >= t * 2) {
+    t *= 2;
+    k++;
+  }
+  return value >= base ? k : 0;
 }
 
 /** Format `150 turns` / `20.0M tokens` / `42.0m` for the notice + steer text. */
@@ -155,12 +182,13 @@ function fmtSlow(elapsedMs: number, turns: number, tokens: number): string {
   return `${formatElapsed(elapsedMs)} · ${turns} turns · ${formatTokens(tokens)} tokens`;
 }
 
-function noticeText(w: Watch, s: RunningState): string {
+function noticeText(w: Watch, s: RunningState, triggered: string[]): string {
   const snippet = s.lastText
     ? ` Last said: "${s.lastText.replaceAll("\n", " ").slice(0, 200)}"`
     : "";
+  const trigger = triggered.length > 0 ? ` triggered by: ${triggered.join(", ")}.` : "";
   return [
-    `[ensemble:slow] ${w.label} (${w.id}) has been running past a slow-run threshold: ${fmtSlow(s.elapsedMs, s.turns, s.totalTokens)}.`,
+    `[ensemble:slow] ${w.label} (${w.id}) has been running past a slow-run threshold (level ${w.level})${trigger} ${fmtSlow(s.elapsedMs, s.turns, s.totalTokens)}.`,
     s.lastToolName ? `Last tool: ${s.lastToolName}` : "",
     snippet,
     `Use dispatch_peek ${w.id} to inspect it or dispatch_steer ${w.id} to course-correct it.`,
@@ -174,7 +202,7 @@ export function slowSteerText(elapsedMs: number, turns: number): string {
   return `You have been running for ${formatElapsed(elapsedMs)} / ${turns} turns. Report status in ≤3 lines (done / remaining / blocked). If you are re-running or re-scanning checks, stop: use the gate's exit code, commit, and write your final report.`;
 }
 
-function deliver(w: Watch, s: RunningState): void {
+function deliver(w: Watch, s: RunningState, triggered: string[]): void {
   const elapsed = s.elapsedMs > 0 ? s.elapsedMs : Math.max(0, w.now() - w.startedAt);
   // 1 — PM notice (notifyAgent, always deliverAs "steer"). A rejection of the
   // send must never be an unhandled rejection. `input.pi` is absent for
@@ -183,7 +211,7 @@ function deliver(w: Watch, s: RunningState): void {
   const pi = w.pi ?? getParentExtensionApi();
   if (pi) {
     try {
-      notifyAgent(pi, noticeText(w, { ...s, elapsedMs: elapsed }));
+      notifyAgent(pi, noticeText(w, { ...s, elapsedMs: elapsed }, triggered));
     } catch (err) {
       trace(`slow-notice: PM notice for ${w.id} failed: ${(err as Error).message}`);
     }
@@ -231,7 +259,9 @@ function deliver(w: Watch, s: RunningState): void {
   } catch (err) {
     trace(`slow-notice: onSlow for ${w.id} failed: ${(err as Error).message}`);
   }
-  trace(`slow-notice: ${w.label} (${w.id}) crossed — ${fmtSlow(elapsed, s.turns, s.totalTokens)}`);
+  trace(
+    `slow-notice: ${w.label} (${w.id}) level ${w.level} crossed${triggered.length > 0 ? ` by ${triggered.join(", ")}` : ""} — ${fmtSlow(elapsed, s.turns, s.totalTokens)}`,
+  );
 }
 
 function scheduleElapsedCheck(w: Watch, ms: number): void {
@@ -243,6 +273,44 @@ function scheduleElapsedCheck(w: Watch, ms: number): void {
       if (cur === w) tickElapsed(w);
     }, ms) ?? (() => {});
 }
+
+/**
+ * The ONE level-jump rule, shared by `feedSlowProgress` and `tickElapsed`
+ * (they must never diverge): the dimensions that now meet the NEXT level's
+ * threshold (`base·2^level` from the snapshotted base — no env reads), and
+ * the level each crossed dimension has REACHED within its own scale (0 for
+ * an un-crossed one). The caller adds the highest reached to the current
+ * level, so an overshoot jumps straight to its top level, no catch-up burst.
+ */
+function advanceLevel(
+  w: Watch,
+  values: { elapsed: number; turns: number; tokens: number },
+): {
+  crossedMs: boolean;
+  crossedTurns: boolean;
+  crossedTokens: boolean;
+  reachedMs: number;
+  reachedTurns: number;
+  reachedTokens: number;
+} {
+  const thMs = dimThreshold(w.base.ms, w.level);
+  const thTurns = dimThreshold(w.base.turns, w.level);
+  const thTokens = dimThreshold(w.base.tokens, w.level);
+  const crossedMs = Number.isFinite(thMs) && values.elapsed >= thMs;
+  const crossedTurns = Number.isFinite(thTurns) && values.turns >= thTurns;
+  const crossedTokens = Number.isFinite(thTokens) && values.tokens >= thTokens;
+  return {
+    crossedMs,
+    crossedTurns,
+    crossedTokens,
+    // Within this dimension's own scale (starting at 1 at the threshold):
+    // 0 unless it crossed.
+    reachedMs: crossedMs ? levelReached(values.elapsed, thMs) : 0,
+    reachedTurns: crossedTurns ? levelReached(values.turns, thTurns) : 0,
+    reachedTokens: crossedTokens ? levelReached(values.tokens, thTokens) : 0,
+  };
+}
+
 /**
  * The ELAPSED dimension evaluated without a progress event. A child silent
  * for 20+ minutes (a long build, a hung CI wait) otherwise crosses only when
@@ -254,24 +322,28 @@ function tickElapsed(w: Watch): void {
   const s = w.lastState;
   if (!w.seenProgress || !s) return;
   const elapsed = Math.max(0, w.now() - w.startedAt);
-  const armed = w.armed;
-  if (Number.isFinite(armed.ms) && elapsed >= armed.ms) {
-    const th = slowThresholds();
-    if (Number.isFinite(th.ms)) {
-      w.armed.ms = thresholdValue(th.ms, nextLevel(armed.ms, th.ms));
-      deliver(w, { ...s, elapsedMs: elapsed });
-    }
+  // Only elapsed can be evaluated from the clock — the snapshot's turns and
+  // tokens are unchanged since the last feed (which already evaluated them),
+  // so -1 (below every finite threshold) keeps them inert here.
+  const crossed = advanceLevel(w, { elapsed, turns: -1, tokens: -1 });
+  if (crossed.crossedMs) {
+    w.level += crossed.reachedMs;
+    deliver(w, { ...s, elapsedMs: elapsed }, ["elapsed"]);
   }
-  if (Number.isFinite(w.armed.ms)) scheduleElapsedCheck(w, w.armed.ms);
+  // The elapsed timer is absolute from the watch start: re-arm for
+  // `start + msBase·2^level` minus now (Infinity → no timer).
+  const nextMs = dimThreshold(w.base.ms, w.level);
+  if (Number.isFinite(nextMs)) {
+    scheduleElapsedCheck(w, Math.max(0, nextMs - elapsed));
+  }
 }
 
-/**
- * Arm the watch. Returns a stop function the caller MUST invoke when the
+/** Arm the watch. Returns a stop function the caller MUST invoke when the
  * child settles (success or failure): it deletes the state entry, so a
  * finished child can never notice again and the map stays bounded.
  */
 export function watchSlowDispatch(input: SlowWatchInput): () => void {
-  const th = slowThresholds();
+  const base = levelThresholds(0);
   const now = input.now ?? Date.now;
   const rawSchedule =
     input.schedule ??
@@ -304,13 +376,16 @@ export function watchSlowDispatch(input: SlowWatchInput): () => void {
     ...(input.steerFn ? { steerFn: input.steerFn } : {}),
     now,
     ...(input.onSlow ? { onSlow: input.onSlow } : {}),
-    armed: { ms: th.ms, turns: th.turns, tokens: th.tokens },
+    level: 0,
     lastState: undefined,
     seenProgress: false,
+    // #884 — the env overrides are read ONCE here; from this point the watch
+    // is pure arithmetic on `base` (see dimThreshold / advanceLevel).
+    base,
   };
   watches.set(input.id, w);
   // Arm the first elapsed check (no-op when the dimension is disabled).
-  if (Number.isFinite(w.armed.ms)) scheduleElapsedCheck(w, w.armed.ms);
+  if (Number.isFinite(base.ms)) scheduleElapsedCheck(w, base.ms);
   return () => {
     if (w.timer) {
       try {
@@ -324,12 +399,13 @@ export function watchSlowDispatch(input: SlowWatchInput): () => void {
 }
 
 /**
- * Feed a progress update. Each dimension that has crossed its armed level
- * fires the notice+steer ONCE and re-arms at its next doubling; dimensions
- * that have not crossed yet still compare against the first threshold. A
- * single feed can therefore fire at most once (the dimensions cross
- * together or separately, but the crossing is a monotone event per feed
- * call). 149→151→160 turns: only the 151 feed fires.
+ * Feed a progress update. Fires when ANY dimension meets the NEXT level's
+ * threshold, delivering ONE notice+steer+onSlow for the level and naming the
+ * triggering dimension(s); the level then jumps to the HIGHEST level any
+ * dimension has now reached (an overshoot fires once, no catch-up burst);
+ * disabled (Infinity) dimensions stay inert. 149→151→160 turns: only the 151
+ * feed fires; the other dimensions' first crossings are covered by the
+ * level-1 fire and fire again only at 40 min / 300 turns / 40M.
  */
 export function feedSlowProgress(id: string, s: RunningState): void {
   const w = watches.get(id);
@@ -337,119 +413,31 @@ export function feedSlowProgress(id: string, s: RunningState): void {
   w.lastState = s;
   w.seenProgress = true;
   const elapsed = s.elapsedMs > 0 ? s.elapsedMs : Math.max(0, w.now() - w.startedAt);
-  const crossed =
-    (w.armed.ms !== Number.POSITIVE_INFINITY && elapsed >= w.armed.ms) ||
-    (w.armed.turns !== Number.POSITIVE_INFINITY && s.turns >= w.armed.turns) ||
-    (w.armed.tokens !== Number.POSITIVE_INFINITY && s.totalTokens >= w.armed.tokens);
-  if (!crossed) return;
-  // Re-arm each crossed dimension at its next doubling; untouched dimensions
-  // keep their current arm (an untouched dimension's next crossing is still
-  // its own next level — the level is derived from its own armed value).
-  const th = slowThresholds();
-  if (w.armed.ms !== Number.POSITIVE_INFINITY && elapsed >= w.armed.ms) {
-    w.armed.ms = thresholdValue(th.ms, nextLevel(w.armed.ms, th.ms));
-  }
-  if (w.armed.turns !== Number.POSITIVE_INFINITY && s.turns >= w.armed.turns) {
-    w.armed.turns = thresholdValue(th.turns, nextLevel(w.armed.turns, th.turns));
-  }
-  if (w.armed.tokens !== Number.POSITIVE_INFINITY && s.totalTokens >= w.armed.tokens) {
-    w.armed.tokens = thresholdValue(th.tokens, nextLevel(w.armed.tokens, th.tokens));
-  }
-  // Re-arm the elapsed timer for the next crossing. A crossed (finite, re-armed)
-  // dimension is checked at each doubling; a not-yet-crossed dimension keeps
-  // its first threshold as its next check. Waiting the threshold value from
-  // now covers both shapes (the doubling IS the threshold itself; the first
-  // crossing is ≤ threshold away). Re-arming goes through scheduleElapsedCheck
-  // (its null-guarded cancel + the watches identity check stay in one place).
-  if (Number.isFinite(w.armed.ms)) scheduleElapsedCheck(w, w.armed.ms);
-  deliver(w, s);
-}
-
-function nextLevel(current: number, base: number): number {
-  // The armed value is base * 2^n for n >= 0; the next level is n+1.
-  for (let n = 0; n < 64; n++) {
-    if (base * 2 ** n === current) return n + 1;
-  }
-  return 1;
-}
-
-/**
- * #799 — the driver's pending slow-event buffer, keyed by the cycle's
- * primary issue. The per-step `onSlow` recorder (via `slowRecorder`) pushes
- * each crossing into ITS cycle's list INSTEAD of folding into a per-site
- * state ref: the list is drained into the cycle's state at the driver's
- * single step-boundary persistence point (work-driver-step-router.ts
- * `routeStepOutcome`, before its first `writeState`), so one crossing lands
- * exactly once in the durable log regardless of which step recorded it (the
- * two broken shapes it fixes: a plan-time recorder that folded into a
- * throwaway ref, and an adversarial fan-out whose ref was never read back).
- *
- * The key is load-bearing, not decorative: up to
- * MAX_PARALLEL_GROUPS_DEFAULT (3) groups run concurrently in one process, and
- * a single shared buffer let cycle A's routeStepOutcome drain cycle B's
- * crossings into A's event log. The registry (work-driver-registry.ts) keys
- * cycles by the primary issue, which is what identifies a cycle uniquely.
- * Each entry is dropped on drain (no unbounded growth) and on cycle end —
- * the handoff step is the terminal step every /work cycle ends in (success
- * goes through it, and the merged step has no dispatch of its own), so
- * `dropSlowEvents` there covers every leftover.
- */
-const pendingSlowEvents = new Map<number, WorkEvent[]>();
-
-/** The driver's per-step slow recorder: the `onSlow` callback the driver
- * threads into `dispatchCore`. `issue` is the cycle's primary issue — the
- * buffer key (see above). Pushes the crossing into that cycle's list;
- * persistence is the driver's single drain point (see above). Sync + never
- * throws (the watch also catches, but the contract is sync so the event
- * log stays append-only). */
-export function slowRecorder(issue: number, step: WorkStep): OnSlowCallback {
-  return (info) => {
-    const list = pendingSlowEvents.get(issue) ?? [];
-    list.push({
-      kind: "dispatch-slow",
-      step,
-      role: info.role,
-      jobId: info.jobId,
-      label: info.label,
-      elapsedMs: info.elapsedMs,
-      turns: info.turns,
-      tokens: info.tokens,
-      at: info.at,
-    });
-    pendingSlowEvents.set(issue, list);
-  };
-}
-
-/** Drain one cycle's pending list (returns it, deletes the entry — an empty
- * or unknown list gives `[]` without touching anything). Called at the
- * driver's step-boundary persistence point, just before `writeState`, so
- * slow events land in the durable log together with the step's own events
- * — and only in THAT cycle's log (a sibling cycle's list is untouched).
- * The events carry their own `at`, so it is acceptable that they land after
- * the step's completion event. */
-export function drainSlowEvents(issue: number): WorkEvent[] {
-  const list = pendingSlowEvents.get(issue);
-  if (!list || list.length === 0) {
-    if (list) pendingSlowEvents.delete(issue);
-    return [];
-  }
-  pendingSlowEvents.delete(issue);
-  return list;
-}
-
-/** Drop one cycle's leftover list without returning it. Called at the
- * handoff step — the terminal step every /work cycle ends in — so a cycle
- * that recorded a crossing no step boundary drained (e.g. a child that
- * outlived the handoff ops bound) cannot leak its events into a later cycle
- * of the same issue. */
-export function dropSlowEvents(issue: number): void {
-  pendingSlowEvents.delete(issue);
+  const crossed = advanceLevel(w, { elapsed, turns: s.turns, tokens: s.totalTokens });
+  if (!crossed.crossedMs && !crossed.crossedTurns && !crossed.crossedTokens) return;
+  // Set the level to the HIGHEST level any dimension has now reached, so a
+  // simultaneous or overshooting crossing fires once. `reached*` is within
+  // the dimension's own scale (1 at the threshold); add `w.level` for the
+  // absolute level: tokens 45M vs threshold 40M (level 1) → absolute 2.
+  const prev = w.level;
+  w.level = prev + 1;
+  if (crossed.crossedMs) w.level = Math.max(w.level, prev + crossed.reachedMs);
+  if (crossed.crossedTurns) w.level = Math.max(w.level, prev + crossed.reachedTurns);
+  if (crossed.crossedTokens) w.level = Math.max(w.level, prev + crossed.reachedTokens);
+  // Re-arm the elapsed timer ABSOLUTELY from the watch start (Infinity →
+  // no timer): its next fire is at start + msBase·2^level.
+  const nextMs = dimThreshold(w.base.ms, w.level);
+  if (Number.isFinite(nextMs)) scheduleElapsedCheck(w, Math.max(0, nextMs - elapsed));
+  const triggered = [
+    crossed.crossedMs && "elapsed",
+    crossed.crossedTurns && "turns",
+    crossed.crossedTokens && "tokens",
+  ].filter((x): x is string => typeof x === "string");
+  deliver(w, s, triggered);
 }
 
 /** Test-only: empty the pending buffer (all cycles). */
-export function clearSlowEventsForTesting(): void {
-  pendingSlowEvents.clear();
-}
+export { clearSlowEventsForTesting } from "./slow-events.ts";
 
 /** Test-only: clear all watch state (the module-level map is a singleton
  * across the test process, and the suite shares one module graph). */
