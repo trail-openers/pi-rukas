@@ -337,6 +337,10 @@ async function spawnSpecialistInner(
       caps.turnNudge?.(runningState.turns);
       opts.onProgress?.({ ...runningState, usage: { ...runningState.usage } });
     }
+    // #839 — raw-event observer for the dispatch deck's live view. Fires
+    // for EVERY parsed child event; the observer (dispatch-deck-live.ts)
+    // keeps only assistant message_end blocks and toolResult messages.
+    opts.onRawEvent?.(parsed);
     // Retain only the two events collapseEvents actually reads (the latest
     // agent_end + the latest assistant message_end as fallback). Everything
     // else is already absorbed by ingestEvent into runningState above, and

@@ -70,6 +70,7 @@ export function dispatchCore(
       spawnSpecialist(stripped, {
         signal,
         onProgress: hooks.onProgress,
+        onRawEvent: hooks.onRawEvent,
         onStdin: hooks.onStdin,
         // #543 F6 — the driver's token-budget cap steers the child through
         // steerChild (the F2 seam) so the lifecycle 'steered' entry is tagged
@@ -125,6 +126,7 @@ export function registerDispatchTools(pi: ExtensionAPI) {
               spawnSpecialist(spec, {
                 signal: sig,
                 onProgress: hooks.onProgress,
+                onRawEvent: hooks.onRawEvent,
                 onStdin: hooks.onStdin,
               }),
             { signal, onRetry: (n) => traceRetry(spec.role, n) },
@@ -196,6 +198,7 @@ export function registerDispatchTools(pi: ExtensionAPI) {
                     tag,
                     signal: sig,
                     onProgress: hooks.onProgress,
+                    onRawEvent: hooks.onRawEvent,
                     onStdin: hooks.onStdin,
                   }),
                 { signal, onRetry: (n) => traceRetry(displayLabel, n) },

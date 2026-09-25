@@ -87,6 +87,16 @@ export interface SpawnOptions {
    * and the steer is skipped (budget default-OFF makes it a no-op for them).
    */
   onSteer?: (message: string, source: SteerSource) => void;
+  /**
+   * #839 — raw-event observer for the dispatch deck's live view (epic #833
+   * G5). Invoked from spawn.ts's stdout line handler for EVERY parsed child
+   * event (assistant `message_end` blocks and `toolResult` messages in
+   * practice; everything else is dropped inside the observer). The event is
+   * the raw parsed shape (no `ProgressEvent` narrowing) so spawn does not
+   * have to re-type its own line handler. The observer must be cheap and
+   * non-throwing — it runs on the hot event path.
+   */
+  onRawEvent?: (event: PiJsonEvent) => void;
 }
 
 // Pi event shape (Pi 0.75.3) — emitted by `--mode rpc` to stdout as JSONL.
@@ -108,7 +118,24 @@ export interface PiUsage {
   cost?: { total?: number };
 }
 export interface PiMessage {
-  role: "user" | "assistant";
+  /**
+   * The three message roles Pi emits: assistant turns, user turns (prompts
+   * and tool-result-bearing messages per Anthropic's shape), and the
+   * `toolResult` role Pi uses for tool results as their OWN message (carrying
+   * `toolName`, `toolCallId` and `isError` — see pi-ai's `ToolResultMessage`).
+   * The version tolerance for any OTHER role an operator's Pi version might
+   * emit lives at the JSON.parse cast in spawn.ts (`parsed` is cast from
+   * plain parsed JSON), not here; the consumers (progress.ts,
+   * dispatch-deck-live.ts) narrow with equality checks
+   * (`=== "toolResult"` / `=== "assistant"`).
+   */
+  role: "user" | "assistant" | "toolResult";
+  /** #839 — stamped on `toolResult` messages (pi-ai `ToolResultMessage`). */
+  toolName?: string;
+  /** #839 — stamped on `toolResult` messages (pi-ai `ToolResultMessage`). */
+  toolCallId?: string;
+  /** #839 — stamped on `toolResult` messages (pi-ai `ToolResultMessage`). */
+  isError?: boolean;
   content?: PiContentBlock[];
   toolResults?: unknown[];
   usage?: PiUsage;
