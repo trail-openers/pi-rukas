@@ -1,21 +1,9 @@
 /**
- * work-driver-handoff-recovery-caps — the per-cap RECOVERY RECIPE table,
- * extracted from work-driver-handoff-recovery.ts (AGENTS.md §12 file-size
- * limit). This module owns the cap → recovery-steps DECISION BODY:
- * `recoveryStepsForCap(state, forge)`, the if/else chain of per-cap literal
- * command sections (including the #674 worktree-aware block that precedes
- * the cap-keyed chain and short-circuits it), plus the `forgeLines` helper
- * that picks the github/gitlab spelling per forge.
- *
- * The shared types (`RecoverySection`, `RecoveryStep`) and
- * `CONSOLIDATE_APPLY` stay in the parent work-driver-handoff-recovery.ts;
- * the parent re-exports `recoveryStepsForCap` from here so the renderers,
- * the forge test and the smoke tests import it unchanged.
- *
- * Behaviour contract: the branch ORDER is load-bearing — the worktree-aware
- * block must fire before the if/else chain (it short-circuits the regular
- * caps when `committedWork` is non-empty), and no branch may be reordered
- * or re-worded without breaking test-handoff-rendering.ts.
+ * work-driver-handoff-recovery-caps — the per-cap RECOVERY RECIPE table.
+ * Owns `recoveryStepsForCap(state, forge)`: the if/else chain of per-cap
+ * literal command sections + the `forgeLines` helper. Shared types and
+ * `CONSOLIDATE_APPLY` stay in the parent; the parent re-exports this
+ * function. Branch ORDER is load-bearing (worktree-aware block fires first).
  */
 
 import type { ForgeType } from "./forge-detect.ts";
@@ -42,8 +30,69 @@ function forgeLines(forge: ForgeType, github: string[], gitlab: string[]): strin
   return forge === "gitlab" ? gitlab : github;
 }
 
-// #810 — the step-3 recovery merge command (consolidatedMergeStep) is in
-// work-driver-handoff-merge-step.ts; re-exported here for importers.
+// #875 — the commit-pr-incomplete-consolidation recovery steps, split by
+// the persisted per-workstream `dirty` flag. No live git calls.
+function commitPrConsolidationSteps(state: WorkState, issue: number): RecoveryStep[] {
+  const ps = state.pipelineState;
+  const missing = missingWorkstreamsFromConsolidation(ps.incompleteConsolidation);
+  const ic = ps.incompleteConsolidation;
+  const isDirty = (id: string): boolean => {
+    if (ic === undefined || Array.isArray(ic)) return true;
+    const v = ic.verdicts.find((x) => x.id === id);
+    return !v || v.status !== "uncovered" || v.dirty !== false;
+  };
+  const dirtyMissing = missing.filter((m) => isDirty(m.id));
+  const cleanMissing = missing.filter((m) => !isDirty(m.id));
+  const baseSha = ps.baseSha ?? "(base)";
+  const S = "commit-pr-incomplete-consolidation" as const;
+  const steps: RecoveryStep[] = [
+    {
+      section: S,
+      comment: ["1. Inspect each missing workstream's worktree:"],
+      lines: missing.map((m) => `git -C .worktrees/issue-${issue}-${m.id} status --porcelain`),
+    },
+  ];
+  if (dirtyMissing.length > 0) {
+    steps.push({
+      section: S,
+      comment: ["2. Apply each missing diff (stage first — `diff HEAD` omits untracked):"],
+      lines: dirtyMissing.flatMap((m) => [
+        `git -C .worktrees/issue-${issue}-${m.id} add -A`,
+        `git -C .worktrees/issue-${issue}-${m.id} diff --cached --binary | ${CONSOLIDATE_APPLY}    # in the integration tree`,
+      ]),
+    });
+  }
+  if (cleanMissing.length > 0) {
+    steps.push({
+      section: S,
+      comment: [
+        "2b. Cherry-pick each committed (dirty=false) workstream's work onto the",
+        "    integration branch — the work is already committed in the worktree:",
+      ],
+      lines: cleanMissing.map((m) => {
+        const ownBase = ps.workstreamBaseShas?.[m.id] ?? baseSha;
+        const head = ps.commitShas?.[m.id];
+        const pick = head
+          ? `git cherry-pick ${ownBase}..${head}`
+          : `git cherry-pick ${ownBase}..HEAD   # in the worktree: .worktrees/issue-${issue}-${m.id}`;
+        return `${pick}   # workstream: ${m.id} — if it genuinely needed a change, cherry-pick; otherwise the declaration was over-broad and the fix is a restart`;
+      }),
+    });
+  }
+  steps.push(
+    {
+      section: S,
+      comment: ["3. Verify all workstreams' files now appear, then commit + push:"],
+      lines: ["git diff --name-only --cached", "git commit -m '<concise>'", "git push"],
+    },
+    {
+      section: S,
+      comment: ["4. Or: abandon + restart from scratch:"],
+      lines: [`rm .pi/work-state/${issue}.json`, `/work ${issue} --restart`],
+    },
+  );
+  return steps;
+}
 
 export function recoveryStepsForCap(
   state: WorkState,
@@ -60,11 +109,7 @@ export function recoveryStepsForCap(
   const cap: Cap | undefined = capHit ? capHit.cap : undefined;
   const steps: RecoveryStep[] = [];
 
-  // #674 — worktree-aware recovery. The predicate is the state
-  // (`handoffSnapshot.committedWork` non-empty), NOT the cap. When
-  // consolidation succeeded the branch contains the work; when it was
-  // infeasible the per-worktree paths + HEAD SHAs + cherry-pick commands
-  // are the honest recovery.
+  // #674 — worktree-aware recovery (predicate: `committedWork` non-empty).
   const committedWork = ps.handoffSnapshot?.committedWork;
   if (cap !== undefined && committedWork && committedWork.length > 0 && ps.branchName) {
     const consEvent = [...state.eventLog]
@@ -91,11 +136,7 @@ export function recoveryStepsForCap(
           ],
           lines: [`git push -u origin ${ps.branchName}`],
         },
-        // #810 — the subject is the PR title, read live by the caller
-        // (mergeSubjectForState) and threaded in; for a parked cycle whose
-        // consolidated branch holds a single commit, GitHub's squash would
-        // otherwise use the driver's `chore(handoff):` commit subject.
-        // Absent → the step degrades to the pre-#810 form (no subject flag).
+        // #810 — the PR title threaded in by the caller; absent → no subject flag.
         consolidatedMergeStep(
           forge,
           ps.prNumber,
@@ -108,17 +149,8 @@ export function recoveryStepsForCap(
         },
       );
     } else {
-      // #794 (task-b) — for a dependsOn STACK, picking every worktree's
-      // HEAD replays each ancestor commit once per level of the stack
-      // (the #775 shape: the printed instructions themselves reproduced
-      // the failure when followed). In a stack each dependent's worktree
-      // is based on its dependency's tip, so the DEPENDENCY LEAVES — the
-      // worktrees no other workstream builds on — carry the union of the
-      // stack's commits. Pick those once, in topological order, and the
-      // branch lands every commit exactly once. With no `dependsOn`
-      // declared, every worktree is its own leaf and the printed commands
-      // are byte-identical to the pre-#794 per-worktree list (the
-      // N-disjoint behaviour is unchanged).
+      // #794 — dependsOn stack: pick only the DEPENDENCY LEAVES (worktrees
+      // no other workstream builds on) so each commit lands exactly once.
       const leaves = dependencyLeaves(
         committedWork.map((w) => w.worktreeId),
         ps.workstreams
@@ -395,39 +427,7 @@ export function recoveryStepsForCap(
       },
     );
   } else if (cap === "commit-pr-incomplete-consolidation") {
-    const missing = missingWorkstreamsFromConsolidation(ps.incompleteConsolidation);
-    steps.push(
-      {
-        section: "commit-pr-incomplete-consolidation",
-        comment: ["1. Inspect each missing workstream's worktree:"],
-        lines: missing.map((m) => `git -C .worktrees/issue-${issue}-${m.id} status --porcelain`),
-      },
-      {
-        section: "commit-pr-incomplete-consolidation",
-        comment: [
-          "2. Apply each missing diff to the integration branch. Stage inside the",
-          "   worktree FIRST — `git diff HEAD` alone silently omits untracked new",
-          "   files — and use --3way, which resolves two workstreams touching",
-          "   different regions of one file instead of rejecting the second:",
-        ],
-        lines: missing.flatMap((m) => [
-          `git -C .worktrees/issue-${issue}-${m.id} add -A`,
-          // #499 — the lossless recipe: stage first, diff the STAGED tree
-          // (a bare `diff HEAD` omits untracked new files), apply --3way.
-          `git -C .worktrees/issue-${issue}-${m.id} diff --cached --binary | ${CONSOLIDATE_APPLY}    # in the integration tree`,
-        ]),
-      },
-      {
-        section: "commit-pr-incomplete-consolidation",
-        comment: ["3. Verify all workstreams' files now appear, then commit + push:"],
-        lines: ["git diff --name-only --cached", "git commit -m '<concise>'", "git push"],
-      },
-      {
-        section: "commit-pr-incomplete-consolidation",
-        comment: ["4. Or: abandon + restart from scratch:"],
-        lines: [`rm .pi/work-state/${issue}.json`, `/work ${issue} --restart`],
-      },
-    );
+    steps.push(...commitPrConsolidationSteps(state, issue));
   } else if (cap === "intent-park") {
     steps.push(
       {

@@ -71,6 +71,7 @@ export function recoveryCommandsMarkdown(
     const byNum = (n: string) => steps.find((s) => s.comment[0]?.startsWith(`${n}.`)) ?? EMPTY_STEP;
     const step1 = byNum("1");
     const step2 = byNum("2");
+    const step2b = byNum("2b");
     const step3 = byNum("3");
     const step4 = byNum("4");
     if (filesPresent.length > 0) {
@@ -105,6 +106,11 @@ export function recoveryCommandsMarkdown(
       ...step2.comment.map((c) => `# ${c}`),
       ...step2.lines,
       "",
+      // #875 — the cherry-pick step for dirty=false (committed) workstreams;
+      // EMPTY_STEP when no clean workstreams (renders nothing).
+      ...(step2b.comment.length > 0
+        ? [...step2b.comment.map((c) => `# ${c}`), ...step2b.lines, ""]
+        : []),
       ...step3.comment.map((c) => `# ${c}`),
       ...step3.lines,
       "",
