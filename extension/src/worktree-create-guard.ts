@@ -34,6 +34,19 @@ export interface CreateGuardOpts {
   repoRoot: string;
   name: string;
   fromRef: string;
+  /**
+   * #861 — the integrate-worktree's own contract: the caller
+   * (ensureIntegrateWorktree) has ALREADY force-removed any driver-owned
+   * stale tree at this path (recording its HEAD first) or verified the path
+   * absent, and is about to run `git worktree add` on it. Under this option
+   * the target-path #475 inspection is skipped ONLY when the target is
+   * verified ABSENT at guard time (fs.access) — a live worktree appearing
+   * after the caller's pre-removal (a race, or the pre-removal silently
+   * failing) is still inspected and a dirty one still throws
+   * `DirtyWorktreeError`. No other caller passes this: `worktreeCreate`'
+   * normal workstream path runs the target inspection unconditionally.
+   */
+  callerVerifiedTargetAbsent?: boolean;
 }
 
 /**
@@ -98,22 +111,13 @@ export async function runCreateGuards(
   // nonexistent directory fails and returns no finding. The SIBLING scan
   // above still runs: a foreign same-issue leftover is still a hazard.
   const inCycleSet = new Set((inCycleWorktrees ?? []).map((p) => resolvePath(p)));
-  // #861 — the caller (ensureIntegrateWorktree) force-removed any
-  // driver-owned stale tree at this path BEFORE the guards run (recording
-  // its HEAD first), or the path is simply absent on a fresh creation. In
-  // BOTH cases the target inspection must see ABSENT — a live worktree is
-  // impossible (a registered one was just removed; an unregistered one was
-  // never created). The inspection runs under that precondition: it still
-  // answers the live-git question (a git error → no finding → create),
-  // never a fixture that answers for any cwd. The SIBLING scan above still
-  // refuses a foreign same-issue leftover either way.
-  const targetHandledByCaller = inCycleSet.has(resolvePath(abs));
-  const leftover =
-    targetHandledByCaller && !(await pathExists(abs))
-      ? undefined
-      : await inspectWorktreeForLoss(execFn, opts.repoRoot, abs, opts.fromRef);
-  if (leftover) {
-    throw new DirtyWorktreeError(leftover);
+  const targetAbsent =
+    opts.callerVerifiedTargetAbsent === true && (await pathExists(abs)) === false;
+  if (!targetAbsent) {
+    const leftover = await inspectWorktreeForLoss(execFn, opts.repoRoot, abs, opts.fromRef);
+    if (leftover) {
+      throw new DirtyWorktreeError(leftover);
+    }
   }
   // #753 — the in-cycle set: this worktree is part of the current cycle (the
   // branch step or an earlier dependent created it, so it is registered in

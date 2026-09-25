@@ -15,8 +15,13 @@ export type { ConvergeEvidence } from "./workflow-state-schema-converge.ts";
 export type { FenceViolation } from "./workflow-state-schema-verify.ts";
 import type { ConsolidationCompleteness } from "./workflow-state-schema-consolidation-completeness.ts";
 import type { ConvergeEvidence } from "./workflow-state-schema-converge.ts";
+import type { PlanQualityReason } from "./workflow-state-schema-plan-quality.ts";
 import type { FenceViolation } from "./workflow-state-schema-verify.ts";
 import type { Workstream, WorkstreamBaseShas } from "./workflow-state-schema-workstreams.ts";
+
+// #861 — PlanQualityReason moved to its own fragment (the 500-line cap);
+// re-exported so existing importers keep their path.
+export type { PlanQualityReason };
 
 export {
   filesPresentFromConsolidation,
@@ -60,26 +65,8 @@ import type { CommitPrRootState } from "./workflow-state-schema-commitpr-root.ts
  * from eventLog but stored explicitly for O(1) reads. When the two
  * diverge, eventLog is authoritative.
  */
-export type PlanQualityReason =
-  | "under-decomposed"
-  | "empty-paths"
-  | "overlapping-paths"
-  | "test-subject-split"
-  // #679 — case 2(a): a `depends-on` reference naming a workstream the plan
-  // did not declare (including a self-reference, or a reference to an id
-  // folded away by the MAX_WORKSTREAMS ceiling).
-  | "invalid-dependency"
-  // #679 — case 2(a): the depends-on graph has a cycle (A→B→A, or the
-  // transitive A→B→C→A shape). Cycle detection lives ONLY in the
-  // plan-quality gate — once it passes, runDevelop's scheduler is guaranteed
-  // a DAG and needs no cycle handling of its own.
-  | "circular-dependency"
-  // #679 — case 3: workstreams are interdependent via DIFFERENT-FILE
-  // relationships (an explicit depends-on, or the #479 test-subject split) but
-  // the dependent workstream declares no `- integration-test: <path>` line
-  // naming a consolidated-tree test exercising both halves. Deliberately
-  // disjoint from overlapping-paths, which fires on the SAME file.
-  | "interdependent-no-integration-test";
+// #861 — PlanQualityReason lives in workflow-state-schema-plan-quality.ts
+// (re-exported above); the 500-line cap.
 
 export interface PipelineState {
   /** Current step. Drives template selection and transition table. */
@@ -117,6 +104,16 @@ export interface PipelineState {
    * `repoRoot` for the `default` workstream.
    */
   worktrees: Record<string, string>;
+  /**
+   * #861 — the driver-owned integration worktree (`.worktrees/issue-<N>-integrate`),
+   * recorded when the commit-pr ops-fallback creates it and cleared when the
+   * post-dispatch audit removes it on success. Persists via the normal
+   * state flow (writeState) so a re-entry after a crash recognises a
+   * driver-owned tree at that path and REPLACES it (recording the old HEAD
+   * first — decision (2)) rather than refusing a dirty one. Absent on
+   * pre-#861 state files and on cycles that never created the tree.
+   */
+  integrateWorktree?: string;
   /**
    * #679 — the per-workstream EFFECTIVE BASE: the commit the workstream's
    * worktree was (or will be) created from. See WorkstreamBaseShas for the

@@ -175,7 +175,7 @@ export async function ensureIntegrateWorktree(
     trace(`work-driver: unregistered directory at ${abs} — leaving it for the target guard`);
   }
   // ---- repoRoot must not hold the branch: git refuses the add otherwise
-  if (branchHead && (await repoRootHoldsBranch(execFn, repoRoot, branchName))) {
+  if (branchHead && (await repoRootHoldsBranch(repoRoot, branchName))) {
     // The main working tree (repoRoot) is NOT in `git worktree list
     // --porcelain` — the worktree-list holder audit can never say repoRoot
     // holds the branch. The direct probe (repoRootHoldsBranch) is what
@@ -249,7 +249,16 @@ export async function ensureIntegrateWorktree(
   // is in the in-cycle set: it is already handled above (nothing to
   // pre-remove), and the guard's own `git worktree add` "already exists"
   // error remains the signal for a clean in-cycle path.
-  await runCreateGuards(execFn, { repoRoot, name, fromRef: branchHead ?? baseSha }, [abs]);
+  await runCreateGuards(
+    execFn,
+    {
+      repoRoot,
+      name,
+      fromRef: branchHead ?? baseSha,
+      callerVerifiedTargetAbsent: true,
+    },
+    [abs],
+  );
 
   const ref = branchHead ?? baseSha;
   // ATTACHED (no --detach): this is the one documented exemption from #287's
@@ -278,11 +287,7 @@ export async function ensureIntegrateWorktree(
  * via this direct probe of its own checkout. Unreadable → false (the safe
  * direction: nothing to halt on; the PR-verification gates still run).
  */
-export async function repoRootHoldsBranch(
-  execFn: ExecFn | undefined | null,
-  repoRoot: string,
-  branchName: string,
-): Promise<boolean> {
+export async function repoRootHoldsBranch(repoRoot: string, branchName: string): Promise<boolean> {
   if (!branchName) return false;
   // The probe ALWAYS runs through the production exec seam (not execFn):
   // the repoRoot holder is the one `git worktree list` refuses to report,
@@ -296,16 +301,23 @@ export async function repoRootHoldsBranch(
   // disambiguates: its "## branch..." line carries the checkout name.
   const probe = async (cmd: string): Promise<string | undefined> => {
     try {
-      const { stdout } = await execp(cmd, { cwd: repoRoot, maxBuffer: 1024 * 1024 });
+      const { stdout } = await execp(cmd, {
+        cwd: repoRoot,
+        maxBuffer: 1024 * 1024,
+        timeout: 60_000,
+      });
       return stdout;
-    } catch {
+    } catch (err) {
+      trace(
+        `work-driver: repoRoot holder probe failed for ${branchName} — treating as possibly holding (fail closed): ${(err as Error).message?.slice(0, 200)}`,
+      );
       return undefined;
     }
   };
-  const ref = (await probe("git symbolic-ref --quiet --short HEAD"))?.trim();
-  if (ref !== undefined) return ref === branchName;
+  const refProbe = await probe("git symbolic-ref --quiet --short HEAD");
+  if (refProbe !== undefined) return refProbe.trim() === branchName;
   const statusOut = await probe("git status --porcelain=v1 -b --untracked-files=normal");
-  if (statusOut === undefined) return false;
+  if (statusOut === undefined) return true;
   const line = statusOut.split("\n")[0] ?? "";
   const m = /^## ([^\s.]+)/.exec(line);
   return m !== null && m[1] === branchName;
@@ -323,19 +335,21 @@ export async function repoRootHoldsBranch(
  * Unreadable list → empty array (the safe direction: nothing to halt on;
  * the PR-verification gates still run the executed-evidence checks).
  */
+export type BranchHoldersResult = { ok: true; holders: string[] } | { ok: false; error: string };
+
 export async function branchHolders(
   execFn: ExecFn,
   repoRoot: string,
   branchName: string,
-): Promise<string[]> {
+): Promise<BranchHoldersResult> {
   let list: string;
   try {
     ({ stdout: list } = await execFn("git worktree list --porcelain", {
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
     }));
-  } catch {
-    return [];
+  } catch (err) {
+    return { ok: false, error: (err as Error).message ?? String(err) };
   }
   const lines = list.split("\n");
   const holders: string[] = [];
@@ -359,7 +373,7 @@ export async function branchHolders(
     }
     if (found) i = j;
   }
-  return holders;
+  return { ok: true, holders };
 }
 
 /**
@@ -383,9 +397,18 @@ async function isIntegrateTreeInCycle(
   if (!stateFile) return false;
   try {
     const raw = await fs.readFile(stateFile, "utf8");
-    const parsed = JSON.parse(raw) as { pipelineState?: { worktrees?: Record<string, string> } };
-    const worktrees = parsed.pipelineState?.worktrees ?? {};
+    const parsed = JSON.parse(raw) as {
+      pipelineState?: {
+        worktrees?: Record<string, string>;
+        integrateWorktree?: string;
+      };
+    };
+    const ps = parsed.pipelineState ?? {};
+    const worktrees = ps.worktrees ?? {};
     const target = resolvePath(abs);
+    if (ps.integrateWorktree !== undefined && resolvePath(ps.integrateWorktree) === target) {
+      return true;
+    }
     return Object.values(worktrees).some((p) => resolvePath(p) === target);
   } catch {
     return false;

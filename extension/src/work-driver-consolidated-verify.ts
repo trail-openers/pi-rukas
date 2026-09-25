@@ -48,57 +48,33 @@ export type ConsolidatedVerifyRetryDecision =
   | "allowed-unknown"
   | "suppressed-mismatch";
 
+/**
+ * The options for the consolidated verify (the locked wrapper and the
+ * unlocked body share this shape; the wrapper only adds the integration
+ * lock, the body does the work). Defined ONCE so the two signatures
+ * cannot drift.
+ */
+export interface ConsolidatedVerifyOpts {
+  repoRoot: string;
+  baseSha: string;
+  branchName?: string;
+  worktrees: Record<string, string>;
+  scratchDir: string;
+  verifyCmd: string;
+  timeoutMs: number;
+  workstreamBaseShas?: Record<string, string>;
+  retry?: {
+    canRetry: boolean;
+    onRecover: (evidenceTail?: string) => void;
+    onFirstFailure?: (
+      rawFailure: string,
+    ) => { allowed: boolean; decision: ConsolidatedVerifyRetryDecision } | undefined;
+  };
+}
+
 export async function runConsolidatedVerify(
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
-  opts: {
-    repoRoot: string;
-    baseSha: string;
-    branchName?: string;
-    worktrees: Record<string, string>;
-    scratchDir: string;
-    verifyCmd: string;
-    timeoutMs: number;
-    /**
-     * #794 — per-workstream effective base map (`workstreamBaseShas`):
-     * a stacked workstream's OWN range is measured against its dependency's
-     * tip, not the global baseSha — the same map the develop step records
-     * when it creates the dependent worktree (work-driver-dep-scheduler.ts).
-     * A workstream with no entry falls back to `baseSha` (byte-identical to
-     * the pre-#794 range for the N-disjoint case).
-     */
-    workstreamBaseShas?: Record<string, string>;
-    /**
-     * #782/#826 — the single bounded flake re-run, two-phase contract:
-     * `canRetry` only ADMITS the first run (the length precondition —
-     * caller-gated, N>1 at this seam); the FINAL allow/suppress decision is
-     * made by `onFirstFailure` when the first run fails. When the re-run is
-     * allowed it runs once on the SAME still-checked-out scratch tree
-     * (BEFORE `restoreRoot`) and the outcome replaces the single-run
-     * verdict: the re-run passes → `status: "passed"` + the `onRecover`
-     * callback with the original failing tail (the caller emits
-     * `verify-flake-recovered` and proceeds); the re-run fails → the SAME
-     * failed shape as a single-run failure, with `retried: true` and
-     * `recovered: false` so the caller records `retries: 1, recovered:
-     * false` and classifies/parks exactly as today.
-     * #826 — `onFirstFailure` fires with the RAW first-run failure text
-     * (before `extractAttributedTail` elision) and returns the decision —
-     * `{ allowed: boolean, decision: ConsolidatedVerifyRetryDecision }`.
-     * `allowed: false` SUPPRESSES the re-run (e.g. a known per-worktree
-     * assertion the first run did not share — a likely genuine defect).
-     * `allowed: true` runs it. The decision is computed here, ONCE, and
-     * reported on the failed/passed result as `retryDecision` so the
-     * caller renders its notes from the recorded value instead of a second
-     * comparator call. When no first-run failure occurs (or the callback is
-     * absent) `retryDecision` is undefined.
-     */
-    retry?: {
-      canRetry: boolean;
-      onRecover: (evidenceTail?: string) => void;
-      onFirstFailure?: (
-        rawFailure: string,
-      ) => { allowed: boolean; decision: ConsolidatedVerifyRetryDecision } | undefined;
-    };
-  },
+  opts: ConsolidatedVerifyOpts,
 ) {
   return withIntegrationLock(opts.repoRoot, () => runConsolidatedVerifyUnlocked(execFn, opts));
 }
@@ -174,23 +150,7 @@ export type ConsolidatedVerifyResult =
  */
 export async function runConsolidatedVerifyUnlocked(
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
-  opts: {
-    repoRoot: string;
-    baseSha: string;
-    branchName?: string;
-    worktrees: Record<string, string>;
-    scratchDir: string;
-    verifyCmd: string;
-    timeoutMs: number;
-    workstreamBaseShas?: Record<string, string>;
-    retry?: {
-      canRetry: boolean;
-      onRecover: (evidenceTail?: string) => void;
-      onFirstFailure?: (
-        rawFailure: string,
-      ) => { allowed: boolean; decision: ConsolidatedVerifyRetryDecision } | undefined;
-    };
-  },
+  opts: ConsolidatedVerifyOpts,
 ): Promise<ConsolidatedVerifyResult> {
   const { repoRoot, baseSha, worktrees, scratchDir, verifyCmd, timeoutMs } = opts;
   // #794 — the pick scope: each workstream's own range is measured against

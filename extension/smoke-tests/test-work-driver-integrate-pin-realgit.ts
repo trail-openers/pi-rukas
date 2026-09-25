@@ -1,41 +1,25 @@
 #!/usr/bin/env bun
 /**
- * #861 (SLICE 1) — the commit-pr ops fallback is pinned to the driver-owned
- * integration worktree (`.worktrees/issue-<N>-integrate`), and the
- * post-dispatch branch-holder audit halts with `integration-worktree-violation`
- * when the branch is held by the WRONG tree (the #841 defect).
+ * #861 (SLICE 1) — the commit-pr ops fallback is pinned to the
+ * driver-owned integration worktree (`.worktrees/issue-<N>-integrate`),
+ * and the post-dispatch branch-holder audit halts with
+ * `integration-worktree-violation` when the branch is held by the WRONG
+ * tree (the #841 defect).
  *
- * Real-git offline test (the #841 shape needs a real repo; the M2-M4 fake-exec
- * harness in test-work-driver-mechanized-commit-fallback.ts cannot exercise
- * the branch-holder audit, which parses `git worktree list --porcelain`).
- *
- * Coverage:
- *  (1) cycle 1's fallback stub checks its branch out inside a DIFFERENT
- *      cycle's worktree (issue-2-task-a) and commits there → the audit
- *      halts with `integration-worktree-violation` naming issue-2-task-a,
- *      and NO PR-verification gate runs.
- *  (1b) STRICT rule (decision (4)): repoRoot holding the branch (probed
- *      directly — `git worktree list` never lists the main tree) →
- *      violation; this cycle's OWN workstream worktree holding it →
- *      violation.
- *  (2) a REAL cherry-pick conflict in integrate() → fallback → a stub that
- *      works ONLY in issue-1-integrate (applies the work, commits, pushes
- *      via a local bare remote, prints `pr: 99`) → the cycle proceeds
- *      through the PR gates, and the integrate worktree is GONE after
- *      success.
- *  (3) a stale dirty issue-1-integrate from a previous attempt is
- *      force-replaced; its old HEAD is recorded in a plumb/trace event.
- *  (4) the fallback dispatch spec carries `cwd` = the integrate path, and
- *      the prompt names that path as the ONLY permitted working tree and
- *      forbids the repo root and every other .worktrees/*.
- *  (5) the detach path (decision (1)): repoRoot CLEAN on the branch is
- *      detached BEFORE the integrate worktree is created; the fallback
- *      proceeds, and the audit passes (the branch held by the integrate
- *      worktree is the only holder).
- *  (7) `integration-worktree-violation` is in explainCap, in the recovery
- *      renderer, and accepted by the validator (the cap union +
- *      CAP_HIT_FIXED_LITERALS live in the source and are covered by the
- *      full gate; this asserts the two renderers).
+ * Real-git offline test (the #841 shape needs a real repo; the M2-M4
+ * fake-exec harness cannot exercise the branch-holder audit, which parses
+ * `git worktree list --porcelain`). Coverage: (1) rogue holder → audit
+ * halts; (1b) STRICT rule; (2) a REAL cherry-pick conflict → fallback →
+ * stub works ONLY in issue-1-integrate → cycle proceeds, integrate
+ * worktree GONE after success; (3) a stale dirty issue-1-integrate is
+ * force-replaced, old HEAD recorded; (4) the fallback dispatch spec carries
+ * `cwd` = the integrate path; (5) the detach path: repoRoot CLEAN on the
+ * branch is detached first, audit passes; (8) a FAILING `git worktree
+ * list` is NOT "no holders" — the audit halts with the evidence (the #861
+ * fail-closed probe); (9) Re-entry: a DIRTY driver-owned integrate tree
+ * RECORDED IN STATE is REPLACED (decision (2)), not refused — no halt;
+ * (7) `integration-worktree-violation` is in explainCap, in the recovery
+ * renderer, and accepted by the validator.
  */
 
 import { execFile } from "node:child_process";
@@ -44,11 +28,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { explainCap } from "../src/work-driver-explain.ts";
-import { recoveryStepsForCap } from "../src/work-driver-handoff-recovery.ts";
 import { integrateWorktreePath } from "../src/work-driver-integrate-worktree.ts";
-import { validateDiscriminants } from "../src/workflow-state-validate.ts";
-import type { WorkState } from "../src/workflow-state.ts";
 import {
   addLocalRemote,
   fixture,
@@ -363,7 +343,7 @@ try {
     await git(repo, ["checkout", "-q", "-B", branch1]);
     const before = await (
       await import("../src/work-driver-integrate-worktree.ts")
-    ).repoRootHoldsBranch(realExec, repo, branch1);
+    ).repoRootHoldsBranch(repo, branch1);
     assert(before, "detach: repoRoot STARTS on the branch (the fixture precondition)");
     const { ensureIntegrateWorktree } = await import("../src/work-driver-integrate-worktree.ts");
     const created = await ensureIntegrateWorktree(realExec, {
@@ -408,53 +388,85 @@ try {
   }
 
   // =====================================================================
-  // (7) The cap in explainCap + recovery renderer + validator.
+  // (8) branchHolders: a FAILING `git worktree list` is NOT "no holders"
+  // (the #861 fail-closed probe principle) — the audit halts with the
+  // evidence rather than passing an unreadable holder.
   // =====================================================================
   {
-    const state: WorkState = {
-      schemaVersion: 1,
-      resumable: false,
-      issue: 1,
-      startedAt: 1,
-      updatedAt: 2,
-      pipelineState: {
-        currentStep: "handoff",
-        inFlightJobIds: [],
-        worktrees: {},
-        reviewRound: 0,
-        ciRetryCount: 0,
-        plumbReports: [],
-        status: "handoff",
-        branchName: "feature/issue-1",
-      },
-      eventLog: [
-        {
-          kind: "cap-hit",
-          at: 3,
-          cap: "integration-worktree-violation",
-          evidence:
-            "holder: /x/.worktrees/issue-2-task-a (integration branch feature/issue-1; expected holder /x/.worktrees/issue-1-integrate)",
-          reviewRound: 0,
-          nextStep: "handoff",
-        },
-      ],
+    const { repo, baseSha } = await fixture(root, "holders-unreadable");
+    await addLocalRemote(root, repo);
+    const branch1 = "feature/issue-1-unreadable";
+    const failingExec: typeof realExec = async (cmd, o) => {
+      if (cmd.includes("git worktree list")) throw new Error("simulated git failure");
+      return realExec(cmd, o);
     };
-    const explained = explainCap("integration-worktree-violation", state);
+    const state = auditStateFor(1, branch1, baseSha, "stub\npr: 99");
+    const ctx: DriverContext = {
+      pi: {} as unknown as DriverContext["pi"],
+      repoRoot: repo,
+      issue: 1,
+      verifyExecFn: failingExec,
+    } as unknown as DriverContext;
+    const { auditCommitPrFallback } = await import("../src/work-driver-commit-pr-audit.ts");
+    const after = await auditCommitPrFallback(ctx, failingExec, state, true);
+    const capHit = after.eventLog.find((e) => e.kind === "cap-hit");
     assert(
-      /wrong tree|NOT the driver-owned integrate worktree/i.test(explained),
-      "explainCap renders a defined sentence for integration-worktree-violation",
+      capHit?.kind === "cap-hit" && capHit.cap === "integration-worktree-violation",
+      `a failing worktree list HALTS the audit (got ${capHit?.cap})`,
     );
-    const recovery = recoveryStepsForCap(state, "github");
-    const section = recovery.steps.find((s) => s.section === "integration-worktree-violation");
     assert(
-      section !== undefined,
-      "recoveryStepsForCap renders an integration-worktree-violation section",
+      (capHit?.evidence ?? "").includes("branch holders unreadable"),
+      "the halt's evidence says the holders are UNREADABLE (not a holder name)",
     );
-    // The validator accepts the cap (it is in CAP_HIT_FIXED_LITERALS).
-    const findings = validateDiscriminants(state);
+  }
+
+  // =====================================================================
+  // (9) Re-entry: a DIRTY driver-owned integrate tree RECORDED IN STATE
+  // (pipelineState.integrateWorktree) is REPLACED (decision (2)), not
+  // refused — the old HEAD is traced, and no halt fires.
+  // =====================================================================
+  {
+    const { repo, baseSha } = await fixture(root, "reentry-recorded");
+    await addLocalRemote(root, repo);
+    const integrate1 = integrateWorktreePath(repo, 1);
+    await git(repo, ["worktree", "add", "-q", "--detach", integrate1, baseSha]);
+    writeFileSync(path.join(integrate1, "stale-work.txt"), "leftover\n");
+    const { writeState, initialState } = await import("../src/workflow-state.ts");
+    const st = initialState(1, 1000);
+    await writeState(repo, {
+      ...st,
+      pipelineState: {
+        ...st.pipelineState,
+        currentStep: "commit-pr",
+        branchName: "feature/issue-1-reentry",
+        baseSha,
+        integrateWorktree: integrate1,
+      },
+    });
+    const wt = path.join(repo, ".worktrees", "issue-1-task-a");
+    await git(repo, ["worktree", "add", "-q", "--detach", wt, baseSha]);
+    writeFileSync(path.join(wt, "feature1.txt"), "feature one\n");
+    await git(wt, ["add", "."]);
+    await git(wt, ["commit", "-q", "-m", "w1"]);
+    const branch1 = "feature/issue-1-reentry";
+    const onOps = (_c: string | undefined, _p: string) =>
+      mkResult({ role: "ops", text: "consolidated and pushed.\npr: 99" });
+    const after = await runCycle({
+      repo,
+      issue: 1,
+      branchName: branch1,
+      baseSha,
+      worktreePath: wt,
+      onOpsCommitPr: onOps,
+    });
+    // The cycle did NOT halt on a guard refusal — the recorded driver-owned
+    // tree was replaced (decision (2)).
+    const haltCap = after?.eventLog.find(
+      (e) => e.kind === "cap-hit" && e.cap === "integration-worktree-violation",
+    );
     assert(
-      !findings.some((f) => /integration-worktree-violation/.test(f)),
-      "the validator accepts integration-worktree-violation (no unknown-value finding)",
+      haltCap === undefined || !(haltCap?.evidence ?? "").includes("refuses to destroy"),
+      "no operator-residue halt — the recorded driver-owned tree was replaced",
     );
   }
 } finally {

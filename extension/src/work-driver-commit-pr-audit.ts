@@ -83,14 +83,23 @@ export async function auditCommitPrFallback(
   const integratePath = integrateWorktreePath(ctx.repoRoot, ctx.issue);
   const auditHalt = async (base: WorkState): Promise<WorkState> => {
     const holders = await branchHolders(execFn, ctx.repoRoot, auditBranch);
-    // The repoRoot probe runs through the PRODUCTION exec seam (not
-    // execFn) so a test fake's `git` short-circuit cannot make the probe
-    // fail and exculpate the holder — the #861 defect was exactly a
-    // failing probe reading as "does not hold".
-    const rootHolds = await repoRootHoldsBranch(undefined, ctx.repoRoot, auditBranch);
+    if (!holders.ok) {
+      trace(
+        `work-driver: commit-pr fallback audit — branch holders unreadable — halting: ${holders.error.slice(0, 200)}`,
+      );
+      return appendEvent(base, {
+        kind: "cap-hit",
+        at: Date.now(),
+        cap: "integration-worktree-violation",
+        evidence: `branch holders unreadable: ${holders.error.slice(0, 200)}`,
+        reviewRound: next.pipelineState.reviewRound,
+        nextStep: "handoff",
+      });
+    }
+    const rootHolds = await repoRootHoldsBranch(ctx.repoRoot, auditBranch);
     const bad = rootHolds
       ? ctx.repoRoot
-      : holders.find((h) => resolvePath(h) !== resolvePath(integratePath));
+      : holders.holders.find((h) => resolvePath(h) !== resolvePath(integratePath));
     if (bad !== undefined) {
       trace(
         `work-driver: commit-pr fallback audit — integration branch held by ${bad} (expected ${integratePath} or nothing) — halting`,

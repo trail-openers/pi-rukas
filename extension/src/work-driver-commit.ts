@@ -21,6 +21,7 @@ import {
   conflictArtifactFromPlumb,
 } from "./work-driver-commit-helpers.ts";
 
+import { ensureIntegrateWorktreeOrHalt } from "./work-driver-commit-fallback.ts";
 import {
   type CommitPrRootState,
   commitPrRootFieldsOf,
@@ -36,7 +37,6 @@ import type { DriverContext } from "./work-driver-context.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { deriveConsolidationSubject } from "./work-driver-handoff-subject.ts";
-import { ensureIntegrateWorktree } from "./work-driver-integrate-worktree.ts";
 import {
   type IntegrateResult,
   cachedIssueTitle,
@@ -65,7 +65,6 @@ import { verifyConsolidation, verifyStepOutcome } from "./work-driver-verify.ts"
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
 import { appendEvent } from "./workflow-state.ts";
-import { workStateFile } from "./workflow-state.ts";
 import type {
   CommitPrFallbackCause,
   ConsolidationVerdict,
@@ -241,59 +240,16 @@ export async function mechanizedCommitPr(
       // halt a child that worked there anyway). A failure to create the
       // integrate worktree is a driver environment failure → a cap, not an
       // LLM judgment call.
-      if (ps.baseSha) {
-        try {
-          await ensureIntegrateWorktree(
-            execFn,
-            {
-              repoRoot: ctx.repoRoot,
-              issue: ctx.issue,
-              branchName,
-              baseSha: ps.baseSha,
-            },
-            workStateFile(ctx.repoRoot, ctx.issue),
-          );
-        } catch (rawErr) {
-          const err = rawErr as Error & { stderr?: string };
-          const detail = (err.stderr ?? err.message ?? "").toString();
-          trace(
-            `work-driver: integrate worktree creation failed — halting (no unpinned ops dispatch): ${detail.slice(0, 200)}`,
-          );
-          // The strict post-dispatch audit (decision (4)) permits exactly
-          // two holders of the integration branch — the integrate worktree,
-          // or NOTHING. A dispatch without the tree can only land the branch
-          // in a forbidden holder (repoRoot / a workstream worktree), which
-          // the audit would halt with the same cap — so the creation failure
-          // HALTS with it directly, carrying the creation evidence, rather
-          // than dispatching to guarantee a violation.
-          const capBody = `integrate worktree could not be created: ${detail.slice(0, 200)}`;
-          const halted: WorkState = appendEvent(
-            appendEvent(state, {
-              kind: "plumb-report",
-              at: Date.now(),
-              step: "commit-pr",
-              role: "driver",
-              body: "The driver-owned integrate worktree could not be created; the commit-pr ops fallback is pinned to it as the ONLY permitted working tree, so no ops dispatch is attempted.",
-              fallbackCause: "other",
-            }),
-            {
-              kind: "cap-hit",
-              at: Date.now(),
-              cap: "integration-worktree-violation",
-              evidence: capBody,
-              reviewRound: state.pipelineState.reviewRound,
-              nextStep: "handoff",
-            },
-          );
-          return {
-            ok: false,
-            reason: res.conflictPatch
-              ? `${res.reason} (patch preserved at ${res.conflictPatch})`
-              : res.reason,
-            terminal: true,
-            haltedAfter: halted,
-          };
-        }
+      const worktreeRes = await ensureIntegrateWorktreeOrHalt(ctx, state, branchName, execFn);
+      if ("halted" in worktreeRes) {
+        return {
+          ok: false,
+          reason: res.conflictPatch
+            ? `${res.reason} (patch preserved at ${res.conflictPatch})`
+            : res.reason,
+          terminal: true,
+          haltedAfter: worktreeRes.halted,
+        };
       }
       return {
         ok: false,
