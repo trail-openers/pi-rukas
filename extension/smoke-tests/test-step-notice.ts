@@ -24,6 +24,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import {
   armStepNotice,
+  clearStepNoticeForTesting,
   stepNoticeThresholdMs,
   type StepNoticeParams,
 } from "../src/work-driver-step-notice.ts";
@@ -187,6 +188,7 @@ await withEnv("PI_ENSEMBLE_STEP_NOTICE_MS", "10", async () => {
 // ------------------------------------------- 4. cancel after firing = done
 
 await withEnv("PI_ENSEMBLE_STEP_NOTICE_MS", "10", async () => {
+  clearStepNoticeForTesting();
   process.env.PI_ENSEMBLE_NOTIFY_CMD = "true"; // dummy — the notifyFn seam records the notice
   const clock = fakeTime();
   const sent: Notification[] = [];
@@ -365,6 +367,7 @@ async function runWithRecorder(
 
 // W1 — a slow develop step crossing the threshold → the hook received it
 await withEnv("PI_ENSEMBLE_STEP_NOTICE_MS", "150", async () => {
+  clearStepNoticeForTesting();
   const { repo, state } = mkDevelopFixture();
   const text = await runWithRecorder(repo, state, mkDispatch(400));
   const count = (text.match(/still running/g) ?? []).length;

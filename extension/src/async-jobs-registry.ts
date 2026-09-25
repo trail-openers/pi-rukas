@@ -112,6 +112,26 @@ export interface ChildHandle {
 
 export const childHandles = new Map<string, ChildHandle>();
 
+/**
+ * Register a child's stdin handle under an id of the CALLER's choice.
+ * #799 — lens children (`${runId}/${tag}`) and adversarial round children own
+ * no job id: they are spawned directly (not through startJob), so nothing
+ * put their handle in this map, and `dispatch_steer` / `dispatch_peek`
+ * answered "No such running job" for the operator's slowest children.
+ * They now register under their deck key — the id `dispatch_peek` shows —
+ * so `steerChild` resolves the peeked id to a live handle. `startJob` /
+ * `startBatch` keep using `.set` directly (their ids ARE job ids); this
+ * helper exists so the non-job paths can share the same map.
+ */
+export function registerChildHandle(
+  id: string,
+  stdin: Writable,
+  label: string,
+  role: string,
+): void {
+  childHandles.set(id, { stdin, label, role });
+}
+
 /** Look up a running child's stdin + label by jobId. Used by dispatch_steer.
  *  Returns undefined when the job has already settled (stdin handle cleaned up). */
 export function getChildHandle(jobId: string): ChildHandle | undefined {

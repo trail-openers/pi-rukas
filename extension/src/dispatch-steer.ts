@@ -27,7 +27,9 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { type ChildHandle, childHandles } from "./async-jobs-registry.ts";
 import { getChildHandle, getOrchestratorActiveChild, isOrchestratorJob } from "./async-jobs.ts";
+import { snapshot as deckSnapshot } from "./dispatch-deck.ts";
 import * as lifecycle from "./lifecycle-events.ts";
 
 interface SteerDetails {
@@ -70,7 +72,10 @@ export type SteerSource =
   /** #607 d3 — deck UI steer (user confirms a row in the interactive deck). */
   | "deck-ui"
   /** #772 — the success-keyed repetition counter's report-demanding steer. */
-  | "driver-success-keyed";
+  | "driver-success-keyed"
+  /** #799 — the slow-run watch's automatic steer (one per threshold
+   * crossing; notice + steer, never a kill). */
+  | "driver-slow-notice";
 
 /**
  * The driver-callable steer core (#543 F2).
@@ -108,7 +113,7 @@ export function steerChild(jobId: string, text: string, source: SteerSource): St
     return { jobId, delivered: true, label: active.label };
   }
 
-  const handle = getChildHandle(jobId);
+  const handle = resolveSteerHandle(jobId);
   if (!handle) {
     return { jobId, delivered: false, reason: "no-such-job" };
   }
@@ -119,6 +124,23 @@ export function steerChild(jobId: string, text: string, source: SteerSource): St
   }
   lifecycle.emitSteered(jobId, handle.label, handle.role, text, source);
   return { jobId, delivered: true, label: handle.label };
+}
+
+/**
+ * Resolve a steer target to a child handle. Direct jobs resolve through the
+ * async-jobs registry; the else branch is the #799 addition — lens children
+ * (`${runId}/${tag}` deck keys) and adversarial round children are NOT jobs:
+ * they own no job id, so `childHandles` has no entry for them under the id
+ * `dispatch_peek` shows. They register their stdin against that deck key
+ * (`registerChildHandle`), so the id the operator reads from the peek is the
+ * id the steer accepts.
+ */
+function resolveSteerHandle(jobId: string): ChildHandle | undefined {
+  const direct = getChildHandle(jobId);
+  if (direct) return direct;
+  const deckEntry = deckSnapshot().find((e) => e.key === jobId);
+  if (!deckEntry) return undefined;
+  return childHandles.get(jobId);
 }
 
 export function registerDispatchSteerTool(pi: ExtensionAPI) {

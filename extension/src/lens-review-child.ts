@@ -7,10 +7,12 @@
  */
 
 import path from "node:path";
+import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { extractFindings, lensPromptFor } from "./lens-review-format.ts";
 import { LENS_REPORTER_PATH, type LensDef } from "./lens-review.ts";
 import type { LensRunResult } from "./lens-review.ts";
+import { feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
 import { spawnSpecialist } from "./spawn.ts";
 import type { DispatchResult } from "./types.ts";
 import { jitteredMs } from "./work-driver-failure-taxonomy.ts";
@@ -50,6 +52,17 @@ export async function runLensChild(opts: {
     tag,
     batchKey: `${runId}/batch`,
   });
+  // #799 — the slow-run watch for this lens child. The deck key is the id
+  // dispatch_peek shows, so the PM notice names it and the operator can
+  // peek/steer from the notice. `stopSlow` + handle cleanup land in the
+  // finally at the bottom of this function.
+  const slowRole = "code-review-specialist";
+  const slowLabel = `code-review-specialist[${tag}]`;
+  const stopSlow = watchSlowDispatch({
+    id: deckKey,
+    role: slowRole,
+    label: slowLabel,
+  });
 
   // Retry loop (#3). Up to MAX_LENS_ATTEMPTS attempts on transient
   // failure (spawn error OR non-zero exit). User abort (opts.signal)
@@ -79,7 +92,15 @@ export async function runLensChild(opts: {
           // spawn.ts:roleTimeoutMs(spec.role). For code-review-specialist
           // that's 15 min (PR5 — was a 30 min global pre-PR5).
           signal: runOpts.signal,
-          onProgress: (state) => dispatchDeck.updateEntry(deckKey, state),
+          onProgress: (state) => {
+            dispatchDeck.updateEntry(deckKey, state);
+            feedSlowProgress(deckKey, state);
+          },
+          onStdin: (stdin) =>
+            // #799 — register the stdin against the DECK KEY (the id
+            // dispatch_peek shows) so the child is steerable directly,
+            // not only through the orchestrator's active-child path.
+            registerChildHandle(deckKey, stdin, slowLabel, slowRole),
         },
       );
       if (result.ok) {
@@ -110,6 +131,8 @@ export async function runLensChild(opts: {
   }
 
   dispatchDeck.clearEntry(deckKey);
+  stopSlow();
+  childHandles.delete(deckKey);
   bumpBatch();
 
   // All attempts failed (or user aborted) — lens is blocked, no findings.

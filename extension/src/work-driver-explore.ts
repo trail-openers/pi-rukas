@@ -1,14 +1,12 @@
 /**
- * work-driver-explore — Step 1 (explore) handler.
- *
- * Extracted from work-driver.ts (issue #171 file-size hygiene). Dispatches
- * `@explore` with all requested issue bodies inlined, then routes on the
- * parsed verdict(s) via work-driver-plan.ts's parsers.
+ * work-driver-explore — Step 1 (explore) handler. Dispatches `@explore`
+ * with all issue bodies inlined, then routes on the parsed verdict(s).
  */
 
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { dispatchCore } from "./dispatch.ts";
+import { slowRecorder } from "./slow-notice.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
@@ -311,7 +309,11 @@ export async function runExplore(
     await deleteSpecArtifact(ctx.repoRoot, ctx.issue);
   }
   const dispatchSettled = await Promise.allSettled([
-    dispatch(ctx.pi, { role: "explore", prompt }, { label: "explore" }),
+    dispatch(
+      ctx.pi,
+      { role: "explore", prompt },
+      { label: "explore", onSlow: slowRecorder(ctx.repoRoot, "explore", { current: next }) },
+    ),
   ]).then((arr) => arr[0]);
 
   if (dispatchSettled?.status === "rejected") {

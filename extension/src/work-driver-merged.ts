@@ -10,6 +10,7 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { dispatchCore } from "./dispatch.ts";
+import { slowRecorder } from "./slow-notice.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { buildCompletionEvent } from "./work-driver-completion-event.ts";
@@ -17,7 +18,6 @@ import type { DriverContext } from "./work-driver-context.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { detectMainline, restoreCheckout } from "./work-driver-git.ts";
-import { heartbeatEventFor, shouldEmitHeartbeat } from "./work-driver-heartbeat.ts";
 import { withIntegrationLock } from "./work-driver-integrate.ts";
 import {
   gatherMergeEvidence,
@@ -31,7 +31,7 @@ import { DOCTRINE_FILES, type DoctrineDoc, judgePolicy } from "./work-driver-pol
 import { inlineMergePrompt } from "./work-driver-prompts-late.ts";
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
 import { activeIssuesOf, scratchDir, teardownWorkspaceTmp } from "./work-driver-workspace.ts";
-import { type WorkState, type WorkStep, appendEvent, writeState } from "./workflow-state.ts";
+import { type WorkState, type WorkStep, appendEvent } from "./workflow-state.ts";
 import { worktreePrune, worktreeRemove } from "./worktree.ts";
 
 const execp = promisify(exec);
@@ -96,119 +96,35 @@ export async function runSingleDispatch(
   const begun = await beginDispatch(ctx.repoRoot, next, step, role, label, startedAt);
   next = begun.state;
   const jobId = begun.jobId;
-  let hbState = next; // the loop below reassigns as heartbeats are appended
+  // #799 — the state ref the slow recorder appends to (a later completion
+  // event re-reads the latest state; the ref keeps them in step).
+  const dispatchStateRef = { current: next };
   let result: DispatchResult | undefined;
   try {
     // PR15 — per-call timeout override (3-min default; runCi lifts it to 30).
-    // #799 task-a — the heartbeat seam: `dispatchPromise` is captured BEFORE
-    // the first await, so the dispatch runs (and the child works) while the
-    // wrapper loop below sleeps out heartbeat intervals and persists a
-    // bounded snapshot (turns / last tool / elapsed / tokens — no
-    // transcript, mirroring dispatch_peek's contract) for every interval
-    // that elapses while the child is still in flight. The common case — a
-    // dispatch that finishes in under one interval (15 min) — takes the
-    // early-exit below and emits ZERO heartbeat events. The await of the
-    // promise never changes what the dispatch sees: same promise, same
-    // resolution; the loop only observes. A heartbeat never kills, signals
-    // or delays the child (out of scope per the ticket: no new killCause,
-    // no wall-clock bound) — its only side effects are an appended event +
-    // a state write (crash-resume: a mid-heartbeat crash is recorded as the
-    // dispatch still in flight, exactly as if it had died two seconds later).
-    const dispatchPromise = dispatch(
+    // #799 — plain `await dispatch(...)`. The earlier periodic heartbeat
+    // wrapped this await in a loop that slept out its first interval and
+    // then awaited the (already settled) promise — so it never emitted.
+    // The slow-run watch now lives in the dispatch layer (slow-notice.ts,
+    // one watch per job at startJob) and records `dispatch-slow` through
+    // the `onSlow` callback; there is no driver-side polling loop here.
+    // The await itself is unchanged: same promise, same resolution.
+    result = await dispatch(
       ctx.pi,
       // `cwd` matters when work lives elsewhere (lens-fix: worktree, not repoRoot).
       { role, prompt: buildPrompt(), ...(opts?.cwd ? { cwd: opts.cwd } : {}) },
-      { label, timeoutMs: opts?.timeoutMs },
-    );
-    // #799 task-a — track the dispatch's settlement directly. `Promise.race`
-    // with a sentinel does NOT work for this: a settled promise's
-    // microtask resolves AFTER the sentinel, so the race always returns
-    // `false` even when the dispatch is done. The `.then` flag is set by
-    // the promise's own microtask and is accurate on the next tick of the
-    // event loop (one `setTimeout` round-trip), which is the granularity
-    // the heartbeat loop operates at.
-    let dispatchSettled = false;
-    dispatchPromise.then(
-      () => {
-        dispatchSettled = true;
-      },
-      () => {
-        dispatchSettled = true;
-      },
-    );
-    for (;;) {
-      const tick = shouldEmitHeartbeat(startedAt, Date.now());
-      if (!tick.enabled) break; // disabled (PI_ENSEMBLE_DISPATCH_HEARTBEAT_MS=0)
-      if (!tick.due) {
-        // Not due yet: the dispatch is the only work to do — await it
-        // directly. If it settles, we're done; if it takes longer than
-        // the interval, the loop re-checks on the next iteration (the
-        // `dispatchSettled` flag will be true by then).
-        try {
-          result = await dispatchPromise;
-        } catch (err) {
-          return appendEvent(clearDispatch(hbState, jobId), {
-            kind: "dispatch-failed",
-            step,
-            role,
-            jobId,
-            label,
-            ms: Date.now() - startedAt,
-            at: Date.now(),
-            errorTail: (err as Error).message?.slice(-200),
-          });
-        }
-        break;
-      }
-      // Due: sleep until the tick, emit the heartbeat, then check whether
-      // the dispatch settled while we were persisting. If it did, the
-      // completion event is the final record and the loop ends. If not,
-      // the loop re-checks at the top of the next iteration.
-      await new Promise((r) => setTimeout(r, Math.max(0, tick.dueAt - Date.now())));
-      const ev = heartbeatEventFor({
-        step,
-        role,
+      {
         label,
-        jobId,
-        startedAt,
-        now: Date.now(),
-        state: hbState,
-      });
-      if (ev) {
-        hbState = appendEvent(hbState, ev);
-        await writeState(ctx.repoRoot, hbState).catch((err) =>
-          trace(`work-driver: heartbeat persist failed: ${(err as Error).message}`),
-        );
-      }
-      if (dispatchSettled) {
-        try {
-          result = await dispatchPromise;
-        } catch (err) {
-          return appendEvent(clearDispatch(hbState, jobId), {
-            kind: "dispatch-failed",
-            step,
-            role,
-            jobId,
-            label,
-            ms: Date.now() - startedAt,
-            at: Date.now(),
-            errorTail: (err as Error).message?.slice(-200),
-          });
-        }
-        break;
-      }
-      // Not settled yet — the dispatch is still running. Wait a short
-      // grace period (one tick of the event loop, so the `dispatchSettled`
-      // flag can catch up) and re-check. If the dispatch settles during
-      // this grace, the next iteration's `dispatchSettled` check catches it.
-      await new Promise((r) => setTimeout(r, 1));
-    }
+        timeoutMs: opts?.timeoutMs,
+        onSlow: slowRecorder(ctx.repoRoot, step, dispatchStateRef),
+      },
+    );
+    // #799 — the slow recorder appends to dispatchStateRef; fold any
+    // dispatch-slow events it recorded into `next` before settling, so the
+    // completion event lands after them in the log.
+    next = dispatchStateRef.current;
   } catch (err) {
-    // Reaching here means the loop broke on `!tick.enabled` (disabled) or
-    // the promise threw in a way the sentinel race did not convert — the
-    // `hbState` (not `next`) carries any heartbeats already appended, so
-    // the failed-dispatch event lands on the right tail either way.
-    return appendEvent(clearDispatch(hbState, jobId), {
+    return appendEvent(clearDispatch(next, jobId), {
       kind: "dispatch-failed",
       step,
       role,
@@ -219,12 +135,8 @@ export async function runSingleDispatch(
       errorTail: (err as Error).message?.slice(-200),
     });
   }
-  // #799 task-a — the loop guarantees an assignment on every non-return
-  // path (the `!tick.enabled` break is the only assignment-less exit and
-  // `dispatchPromise` is a pending promise, so this is unreachable at
-  // runtime — the union type is a documentation aid, not a second check).
   if (!result) {
-    return appendEvent(clearDispatch(hbState, jobId), {
+    return appendEvent(clearDispatch(next, jobId), {
       kind: "dispatch-failed",
       step,
       role,
@@ -232,15 +144,14 @@ export async function runSingleDispatch(
       label,
       ms: Date.now() - startedAt,
       at: Date.now(),
-      errorTail: "dispatch-heartbeat seam: loop exited without a result (unreachable)",
+      errorTail: "dispatch seam: no result (unreachable)",
     });
   }
   const event = await buildCompletionEvent(ctx, step, role, label, result);
   // Clear the in-flight marker whichever way the dispatch settled — a
   // completed dispatch that still looks in-flight would make the next
   // invocation resume a step that already finished.
-  // `hbState` (not `next`): it carries the heartbeats the loop appended.
-  return appendEvent(clearDispatch(hbState, jobId), event);
+  return appendEvent(clearDispatch(next, jobId), event);
 }
 
 /**

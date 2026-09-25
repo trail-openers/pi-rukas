@@ -11,6 +11,7 @@
  */
 
 import { dispatchCore } from "./dispatch.ts";
+import { slowRecorder } from "./slow-notice.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
@@ -72,7 +73,15 @@ export async function runHandoffOpsDispatch(
       boundTimer.unref?.();
     });
     const res = await Promise.race([
-      dispatch(ctx.pi, { role: "ops", prompt }, { label: "ops:handoff", timeoutMs: boundMs }),
+      dispatch(
+        ctx.pi,
+        { role: "ops", prompt },
+        {
+          label: "ops:handoff",
+          timeoutMs: boundMs,
+          onSlow: slowRecorder(ctx.repoRoot, "handoff", { current: next }),
+        },
+      ),
       bound,
     ]);
     next = clearDispatch(next, begun.jobId);

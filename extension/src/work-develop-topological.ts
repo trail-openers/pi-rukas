@@ -1,3 +1,4 @@
+import { type OnSlowCallback, slowRecorder } from "./slow-notice.ts";
 /**
  * work-develop-topological — #679: the topological-dispatch core of runDevelop.
  *
@@ -27,7 +28,7 @@ import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net
 import { armStepNotice } from "./work-driver-step-notice.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
-import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
+import { type WorkEvent, type WorkState, appendEvent, writeState } from "./workflow-state.ts";
 
 // #841 — per-failure / joined-evidence bounds for the cap-hit evidence
 // field. A failure string is already an 800-char attributed tail; a
@@ -84,6 +85,12 @@ async function runDevelopTopological(
   // the fan-out resolves is the completion timestamp every dependent records.
   const independentCompletedAt = Date.now();
   const failureSource: Record<string, "skipped" | "failed"> = {};
+  // #799 — per-workstream slow-run recorders: each developer child appends
+  // its own dispatch-slow events to the cycle state and persists them.
+  const slowFor: Record<string, OnSlowCallback> = {};
+  for (const id of ids) {
+    slowFor[id] = slowRecorder(ctx.repoRoot, "develop", stateRef);
+  }
   const runOneWorkstream = makeRunOneWorkstream({
     ctx,
     activeIssues,
@@ -91,6 +98,7 @@ async function runDevelopTopological(
     workstreams: workstreams as DevelopRunState["workstreams"],
     ids,
     dispatch,
+    slowFor,
     verdicts,
     branchEvents: branchEvents as WorkEvent[],
     stateRef,

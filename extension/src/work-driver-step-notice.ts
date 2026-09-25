@@ -41,15 +41,31 @@ import { trace } from "./trace.ts";
 import { type Notification, notify, notifyCommand } from "./work-notify.ts";
 import type { WorkState } from "./workflow-state.ts";
 
+// #799 fix — the fired set, keyed by issue+step, is MODULE-LEVEL on purpose:
+// `fanOutAdversarial` re-enters per #486 (infra-failure retry re-runs the
+// step), and a module-level fired flag survives those re-entries, so the
+// operator gets at most one per-step notice per cycle. Process-local (a
+// crash-resume is a fresh run and may notice again — the durable record is
+// the `dispatch-slow` event, not this notice).
+const stepNoticeFired = new Set<string>();
+
+/** Test-only: clear the fired set (fresh process per test file, but the
+ * adversarial re-entry suite arms the same step multiple times in one). */
+export function clearStepNoticeForTesting(): void {
+  stepNoticeFired.clear();
+}
+
 /** The operator's notice threshold in ms, defaulting to 90 min (see file
  * header for why it sits above the healthy band). `PI_ENSEMBLE_STEP_NOTICE_MS`
- * overrides; `=0` disables the notice entirely (a non-finite threshold). */
+ * overrides; `=0` disables the notice entirely (a non-finite threshold).
+ * Parsed with `Number()` (not `parseInt`) so a malformed value like `30x`
+ * reads as the default instead of the truncation `parseInt` would give.
+ */
 export function stepNoticeThresholdMs(): number {
   const v = process.env.PI_ENSEMBLE_STEP_NOTICE_MS;
   if (v === "0") return Number.POSITIVE_INFINITY;
-  // Strip underscores so "1_000_000" parses as 1000000, not 1 (parseInt
-  // stops at the first underscore).
-  const n = Number.parseInt((v ?? "").replace(/_/g, ""), 10);
+  if (v === undefined || v === "") return 90 * 60 * 1000;
+  const n = Number(v.replace(/_/g, ""));
   return Number.isFinite(n) && n > 0 ? n : 90 * 60 * 1000;
 }
 
@@ -93,6 +109,12 @@ export function armStepNotice(p: StepNoticeParams): () => void {
   const threshold = stepNoticeThresholdMs();
   if (!Number.isFinite(threshold)) return () => {};
   if (!notifyCommand()) return () => {};
+  // #799 fix — the fire-once contract is per CYCLE STEP, not per arm call:
+  // the adversarial step re-enters (#486) and each re-entry arms fresh, so a
+  // local fired flag would let one step notify its operator twice in the
+  // same cycle. The module-level set below is the binding constraint.
+  const fireKey = `${p.state.issue}:${p.step}`;
+  if (stepNoticeFired.has(fireKey)) return () => {};
   const now = p.now ?? Date.now;
   const notifyFn = p.notifyFn ?? notify;
   const schedule =
@@ -107,6 +129,7 @@ export function armStepNotice(p: StepNoticeParams): () => void {
   const doFire = async () => {
     if (fired) return;
     fired = true;
+    stepNoticeFired.add(fireKey);
     const ms = now() - p.startedAt;
     if (ms < threshold) return;
     const n: Notification = {
@@ -115,8 +138,16 @@ export function armStepNotice(p: StepNoticeParams): () => void {
       reason: `${p.step} still running at ${fmtSpan(ms)}`,
       action: `check #${p.state.issue} with /work-status, or dispatch_peek the running job`,
     };
-    const r = await notifyFn(n);
-    if (!r.sent) trace(`work-driver: step-notice did not deliver — ${r.reason}`);
+    // #799 fix — a notifyFn rejection must be caught and traced, never left
+    // unhandled: doFire is a voided async call (no caller to catch it), and
+    // an unhandled rejection from the operator's own hook must not take the
+    // process down.
+    try {
+      const r = await notifyFn(n);
+      if (!r.sent) trace(`work-driver: step-notice did not deliver — ${r.reason}`);
+    } catch (err) {
+      trace(`work-driver: step-notice hook rejected — ${(err as Error).message}`);
+    }
   };
   const tick = () => {
     if (fired) return;

@@ -17,11 +17,14 @@
  *  - a cycle with no dispatch rows renders nothing (no empty section)
  */
 
-import { dispatchDurations, renderDispatchDurations } from "../src/work-status-dispatch-durations.ts";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
+import {
+  dispatchDurations,
+  renderDispatchDurations,
+} from "../src/work-status-dispatch-durations.ts";
 import { renderStatus } from "../src/work-status.ts";
-import type { WorkState } from "../src/workflow-state.ts";
 import type { WorkStep } from "../src/workflow-state-events.ts";
+import { type WorkState, initialState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -34,18 +37,18 @@ function assert(cond: boolean, msg: string) {
 
 const REPO = "/tmp/fake-repo";
 
-/** Build a minimal state with the given event log. */
+/** Build a minimal state with the given event log (the fixture sets the
+ * status/step fields the renderers read; the rest rides the real schema). */
 function mkState(
   status: WorkState["pipelineState"]["status"],
   events: WorkState["eventLog"],
   issue = 799,
 ): WorkState {
+  const base = initialState(issue, 1_000_000);
   return {
-    schemaVersion: 1,
-    issue,
-    startedAt: 1_000_000,
-    updatedAt: 2_000_000,
+    ...base,
     pipelineState: {
+      ...base.pipelineState,
       status,
       currentStep: "handoff",
       lastCompletedStep: "ci",
@@ -55,8 +58,7 @@ function mkState(
       branchName: "feature/issue-799-task-c",
     },
     eventLog: events,
-    // biome-ignore lint/suspicious/noExplicitAny: partial fixture
-  } as any;
+  };
 }
 
 /** A dispatch-completed event with the given fields. */
@@ -76,8 +78,7 @@ function completed(
     ms,
     at: 2_000_000,
     ...(usage ? { usage } : {}),
-    // biome-ignore lint/suspicious/noExplicitAny: partial fixture
-  } as any;
+  } as WorkState["eventLog"][number];
 }
 
 /** A dispatch-failed event with the given fields. */
@@ -91,8 +92,7 @@ function failed(step: WorkStep, label: string, ms: number): WorkState["eventLog"
     ms,
     at: 2_000_000,
     exitCode: 1,
-    // biome-ignore lint/suspicious/noExplicitAny: partial fixture
-  } as any;
+  } as WorkState["eventLog"][number];
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +125,10 @@ function failed(step: WorkStep, label: string, ms: number): WorkState["eventLog"
   }
   const rows = dispatchDurations(events);
   assert(rows.length === 6, "fan-out: 6 dispatches → 6 rows (not 1 rolled-up step row)");
-  assert(rows.every((r) => r.step === "develop"), "all 6 rows are step=develop");
+  assert(
+    rows.every((r) => r.step === "develop"),
+    "all 6 rows are step=develop",
+  );
   assert(rows[0]?.ms === 100_000 && rows[5]?.ms === 600_000, "ms values preserved in order");
 }
 
@@ -149,9 +152,7 @@ function failed(step: WorkStep, label: string, ms: number): WorkState["eventLog"
 // 4. No dispatch events → empty array (renderers omit the section).
 // ---------------------------------------------------------------------------
 {
-  const events: WorkState["eventLog"] = [
-    { kind: "step-started", step: "explore", at: 1_000_000 },
-  ];
+  const events: WorkState["eventLog"] = [{ kind: "step-started", step: "explore", at: 1_000_000 }];
   const rows = dispatchDurations(events);
   assert(rows.length === 0, "no dispatches → empty array");
   const rendered = renderDispatchDurations(events);
@@ -214,13 +215,14 @@ function failed(step: WorkStep, label: string, ms: number): WorkState["eventLog"
 // 8. /work-status: no dispatches → no per-dispatch section (no empty block).
 // ---------------------------------------------------------------------------
 {
-  const events: WorkState["eventLog"] = [
-    { kind: "step-started", step: "explore", at: 1_000_000 },
-  ];
+  const events: WorkState["eventLog"] = [{ kind: "step-started", step: "explore", at: 1_000_000 }];
   const state = mkState("running", events);
   const out = renderStatus(state, REPO);
   assert(!out.includes("dispatch durations:"), "running (no dispatches): no per-dispatch section");
-  assert(!out.includes("Dispatch durations:"), "running (no dispatches): no terminal per-dispatch section");
+  assert(
+    !out.includes("Dispatch durations:"),
+    "running (no dispatches): no terminal per-dispatch section",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -270,9 +272,7 @@ function failed(step: WorkStep, label: string, ms: number): WorkState["eventLog"
   // The section header is still present (it's part of the static template),
   // but it should have no dispatch rows under it.
   const section = md.split("### What was attempted")[1] ?? "";
-  const rows = section
-    .split("\n")
-    .filter((l) => l.startsWith("- ") && /\d+(ms|s|m\d{2}s)/.test(l));
+  const rows = section.split("\n").filter((l) => l.startsWith("- ") && /\d+(ms|s|m\d{2}s)/.test(l));
   assert(rows.length === 0, "handoff (no dispatches): no duration rows under 'What was attempted'");
 }
 
@@ -294,7 +294,10 @@ function failed(step: WorkStep, label: string, ms: number): WorkState["eventLog"
   assert(terminalOut.includes(formatted), "terminal: ms value rendered");
   // All three surfaces share fmtElapsed now — the handoff must render the
   // same `7m40s` as the status renderers, not its own `460.0s` format.
-  assert(handoffMd.includes(formatted), "handoff: ms value rendered identically to status surfaces");
+  assert(
+    handoffMd.includes(formatted),
+    "handoff: ms value rendered identically to status surfaces",
+  );
 }
 
 console.log(`\nexit ${exit}`);

@@ -1,16 +1,14 @@
 /**
  * work-driver-adversarial-fanout — the per-workstream fan-out of the
- * adversarial gate (#486), extracted from work-driver-adversarial.ts
- * (AGENTS.md §12 file-size limit). Leaf module — no dependency on any
- * work-driver-<step>.ts handler. #486: a transient infrastructure failure
- * in ONE workstream's loop is retried in-step (per-workstream budget,
- * taxonomy backoff) while the other workstreams' approved verdicts are
- * preserved in the event log either way. A permanent failure parks with
- * cap `adversarial-infra-failure` instead of being rendered as a review
- * rejection.
+ * adversarial gate (#486), extracted from work-driver-adversarial.ts.
+ * Leaf module. A transient infra failure in ONE workstream's loop is
+ * retried in-step (per-workstream budget, taxonomy backoff) while the
+ * other workstreams' approved verdicts are preserved in the event log.
+ * A permanent failure parks with cap `adversarial-infra-failure`.
  */
 
 import { runAdversarialLoop } from "./adversarial.ts";
+import { slowRecorder } from "./slow-notice.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
@@ -62,6 +60,10 @@ export async function fanOutAdversarial(
   // `retries` (which a resumed cycle reads from its state file) keeps the
   // bound intact across restarts.
   const localRetries: Record<string, number> = { ...retries };
+  // #799 — the fan-out's state ref: the per-workstream slow recorder appends
+  // dispatch-slow events to the latest state.
+  const fanoutStateRef = { current: state };
+  const slowFor = () => slowRecorder(ctx.repoRoot, "adversarial", fanoutStateRef);
   // #799 F2 — the fan-out's wall-clock span, keyed on the STEP (not any
   // child), matching the develop-path notice. Fires once, above the healthy
   // band; a cancel is returned and invoked on every exit below.
@@ -139,6 +141,8 @@ export async function fanOutAdversarial(
     }
 
     const loopFn = ctx.adversarialLoopFn ?? runAdversarialLoop;
+    // #799 — the slow-run recorder for this workstream's inner children.
+    const onSlow = slowFor();
     let result: DispatchResult;
     try {
       result = await loopFn(
@@ -157,6 +161,7 @@ export async function fanOutAdversarial(
           // not just against generic code quality. Absent on cycles resumed
           // from older state files, which degrade to the previous behaviour.
           issueBody: state.pipelineState.issueBodyArtifact,
+          onSlow,
         },
         // No AbortController plumbing in v1 — spawn-level timeouts
         // in spawn.ts (per-role) bound the work.
