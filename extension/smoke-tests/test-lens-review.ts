@@ -480,6 +480,50 @@ const _bs = (l: LensRunResult, ...r: LensRunResult[]) =>
 }
 {
   const r = _bs(
+    lensResult("PERFORMANCE", {
+      ok: false,
+      attempts: 1,
+      blocked: true,
+      parseError: "attempt 1/4: exit 143",
+      killCause: "token-budget",
+    }),
+  );
+  assert(
+    r.includes(
+      "BLOCKED after 1 attempts — attempt 1/4: exit 143 (killed: token-budget; not retried: self-inflicted cap, #543)",
+    ),
+    "#878: token-budget bare (no budget data)",
+  );
+}
+{
+  const r = _bs(
+    lensResult("ARCHITECTURE", {
+      ok: false,
+      attempts: 4,
+      blocked: true,
+      parseError: "attempt 4/4: plan timeout",
+      killCause: "timeout",
+    }),
+    lensResult("SIMPLICITY", {
+      ok: false,
+      attempts: 4,
+      blocked: true,
+      parseError: "attempt 4/4: plan timeout",
+      killCause: "plan-timeout",
+    }),
+  );
+  assert(
+    r.includes("BLOCKED after 4 attempts — attempt 4/4: plan timeout (killed: timeout)"),
+    "#878: timeout",
+  );
+  assert(
+    r.includes("BLOCKED after 4 attempts — attempt 4/4: plan timeout (killed: plan-timeout)"),
+    "#878: unknown cause fallback (plan-timeout)",
+  );
+  assert(!r.includes("not retried"), "#878: timeout/plan-timeout no not-retried");
+}
+{
+  const r = _bs(
     lensResult("SECURITY", {
       ok: false,
       attempts: 1,
@@ -514,6 +558,10 @@ const _bs = (l: LensRunResult, ...r: LensRunResult[]) =>
     "#878: banner PERF",
   );
   assert(r.includes("was stopped by a self-inflicted cap (not retried)"), "#878: all-cap header");
+  assert(
+    r.includes("⛔ REVIEW INCOMPLETE: 2/6 lens(es) was stopped by a self-inflicted cap (not retried):"),
+    "#878: all-cap full header line",
+  );
   assert(!r.includes("failed all"), "#878: all-cap no failed-all");
 }
 {
@@ -538,6 +586,10 @@ const _bs = (l: LensRunResult, ...r: LensRunResult[]) =>
     lensResult("SIMPLICITY", { ok: true, attempts: 1, blocked: false }),
   );
   assert(r.includes("did not complete (see each lens)"), "#878: mixed header");
+  assert(
+    r.includes("⛔ REVIEW INCOMPLETE: 2/6 lens(es) did not complete (see each lens):"),
+    "#878: mixed full header line",
+  );
   assert(!r.includes("failed all"), "#878: mixed no failed-all");
   assert(!r.includes("was stopped by a self-inflicted cap"), "#878: mixed no all-cap");
 }
@@ -555,6 +607,10 @@ const _bs = (l: LensRunResult, ...r: LensRunResult[]) =>
     "#878: no killCause byte-identical",
   );
   assert(!r.includes("(killed:"), "#878: no killCause no suffix");
+  assert(
+    r.includes("⛔ REVIEW INCOMPLETE: 1/1 lens(es) failed all 4 attempts:\n  - SECURITY: attempt 1/4: exit 143"),
+    "#878: no killCause banner byte-identical (line + old header)",
+  );
 }
 
 console.log(`\nexit ${exit}`);
