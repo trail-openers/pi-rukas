@@ -48,6 +48,21 @@ export function recoveryCommandsMarkdown(
     const filesPresent = filesPresentFromConsolidation(ps.incompleteConsolidation);
     const root = ps.commitPrRoot;
     const conflicted = (root?.unmergedPaths ?? []).length > 0;
+    // #875 — the header claims the work is "uncommitted" only when EVERY
+    // missing workstream actually is (persisted `dirty` flag; legacy
+    // state files lack the flag and keep the old wording). A
+    // dirty=false workstream's work is committed in its worktree — the
+    // cherry-pick step below (from the shared step generator) is its
+    // recovery, and the header must not contradict it.
+    const ic = ps.incompleteConsolidation;
+    const anyUncommitted =
+      missing.length === 0 ||
+      missing.some((m) => {
+        const v = !Array.isArray(ic) && ic ? ic.verdicts.find((x) => x.id === m.id) : undefined;
+        // #875 — `dirty !== false` (not `=== true`): a legacy verdict without
+        // the flag reads as dirty, consistent with isDirty/isClean elsewhere.
+        return !v || v.status !== "uncovered" || v.dirty !== false;
+      });
     // #500 — a placeholder branch means `reset --hard HEAD` would abort a
     // merge in progress WITHOUT clearing the index; name the branch first.
     const clearRoot = root
@@ -58,6 +73,7 @@ export function recoveryCommandsMarkdown(
     const byNum = (n: string) => steps.find((s) => s.comment[0]?.startsWith(`${n}.`)) ?? EMPTY_STEP;
     const step1 = byNum("1");
     const step2 = byNum("2");
+    const step2b = byNum("2b");
     const step3 = byNum("3");
     const step4 = byNum("4");
     if (filesPresent.length > 0) {
@@ -71,7 +87,9 @@ export function recoveryCommandsMarkdown(
     }
     lines.push(
       ...commitPrDirtyRootStep(root, "", ""),
-      "# 1. Inspect each missing workstream's worktree — the developer's work is still there uncommitted:",
+      anyUncommitted
+        ? "# 1. Inspect each missing workstream's worktree — the developer's work is still there uncommitted:"
+        : "# 1. Inspect each missing workstream's worktree (nothing uncommitted — the work is committed there):",
       ...step1.lines,
       "",
       ...(conflicted
@@ -90,6 +108,11 @@ export function recoveryCommandsMarkdown(
       ...step2.comment.map((c) => `# ${c}`),
       ...step2.lines,
       "",
+      // #875 — the cherry-pick step for dirty=false (committed) workstreams;
+      // EMPTY_STEP when no clean workstreams (renders nothing).
+      ...(step2b.comment.length > 0
+        ? [...step2b.comment.map((c) => `# ${c}`), ...step2b.lines, ""]
+        : []),
       ...step3.comment.map((c) => `# ${c}`),
       ...step3.lines,
       "",

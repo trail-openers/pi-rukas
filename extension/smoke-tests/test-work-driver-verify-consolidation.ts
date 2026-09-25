@@ -9,6 +9,9 @@
  *   F5.7: #655 multi-workstream: one present, one absent → uncovered detected
  *   F5.8: Interior-paren filename through verifyConsolidation
  *
+ * F5.9-F5.15 (#875 cumulative cases) live in
+ * test-work-driver-verify-consolidation-875.ts (AGENTS.md §12 file-size limit).
+ *
  * These use REAL git repos so `git diff --name-status -M origin/main..HEAD`
  * produces actual output (baseline commit = origin/main; committed files =
  * the feature-branch diff).
