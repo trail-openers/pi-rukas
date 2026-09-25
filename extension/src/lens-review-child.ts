@@ -17,6 +17,7 @@ import { readEnumMarker } from "./reply-markers.ts";
 import type { SlowWatchInput } from "./slow-notice.ts";
 import { feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
 import { spawnSpecialist } from "./spawn.ts";
+import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { jitteredMs } from "./work-driver-failure-taxonomy.ts";
 
@@ -204,8 +205,8 @@ export async function runLensChild(opts: {
   // with its findings KEPT (the CRITICAL RULE in the role prompt allows a
   // FAILED-skill child to have reported content; that content is still
   // evidence). Absent or unknown does NOT block: the pre-spawn stat above
-  // is the executed evidence that the skill existed; absence is recorded as
-  // a note (skillLoadNote) so the operator can see the honor system was
+  // is the executed evidence that the skill existed; absence is traced
+  // (PI_ENSEMBLE_DEBUG=1) so the operator can see the honor system was
   // simply not exercised.
   const skillLoadStatus = readEnumMarker(result.text ?? "", "Skill Load Status", [
     "SUCCESS",
@@ -227,6 +228,7 @@ export async function runLensChild(opts: {
       usage: result.usage,
     };
   }
+  traceSkillLoadAbsence(lens.skill, skillLoadStatus);
   return {
     lens: lens.name,
     ok: result.ok,
@@ -241,12 +243,16 @@ export async function runLensChild(opts: {
     model: result.model,
     transcriptPath: result.transcriptPath,
     parseError: skipped > 0 ? `${skipped} malformed report_finding call(s) skipped` : undefined,
-    ...(skillLoadStatus === undefined
-      ? {
-          skillLoadNote: `skill load status absent (${lens.skill}) — pre-spawn stat passed; honor-system marker not emitted`,
-        }
-      : {}),
     // #534 — was previously dropped at this return; the cycle total needs it.
     usage: result.usage,
   };
+}
+
+// #872 — honor-system absence is traced, not blocked: the marker was not
+// emitted, but the pre-spawn statSync in `runLensChild` is the executed
+// evidence the skill exists, so only an explicit FAILED ever blocks.
+function traceSkillLoadAbsence(lensSkill: string, status: string | undefined): void {
+  if (status === undefined) {
+    trace(`skill load status absent (${lensSkill}) — pre-spawn stat passed; marker not emitted`);
+  }
 }

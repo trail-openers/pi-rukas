@@ -380,16 +380,9 @@ const CLEAN_SUMMARY =
     });
     const summary = await runCase("diff --git a/a b/a", dir);
     eq(summary.verdict, "APPROVED", "(f) clean no-marker replies → APPROVED");
-    assert(summary.lenses.every((l) => !l.blocked && l.attempts === 1), "(f) all six clean");
     assert(
-      summary.lenses.every((l) => l.skillLoadNote !== undefined),
-      "(f) absence recorded as a note (skillLoadNote) on every lens",
-    );
-    assert(
-      summary.lenses.every((l) =>
-        l.skillLoadNote?.startsWith("skill load status absent"),
-      ),
-      "(f) the note explains absence (pre-spawn stat passed; honor-system not emitted)",
+      summary.lenses.every((l) => !l.blocked && l.attempts === 1),
+      "(f) all six unblocked and APPROVED-eligible (absence is traced, not blocked)",
     );
   } finally {
     cleanup();
@@ -425,6 +418,32 @@ const CLEAN_SUMMARY =
     ]),
     "FAILED",
     "(g) last-match-wins: a musing about FAILED is still FAILED (the prompt says to END with the marker, so the last one is the answer)",
+  );
+}
+
+/* (h) the rule prose cannot be misread as a declaration. The CRITICAL RULE
+ * in the role prompt reads "If Skill Load Status=FAILED, verdict CANNOT be
+ * APPROVED" — a child that QUOTES it while ending with a real marker must
+ * not be blocked by the quote. The `=` form is NOT an accepted declaration
+ * (PM decision #872); the colon-anchored reader must miss it entirely. */
+{
+  eq(
+    readEnumMarker(
+      "If Skill Load Status=FAILED, verdict CANNOT be APPROVED.",
+      "Skill Load Status",
+      ["SUCCESS", "FAILED"],
+    ),
+    undefined,
+    "(h) the rule prose's `Status=FAILED` is not a declaration — parses absent",
+  );
+  eq(
+    readEnumMarker(
+      "Per the rules, if Skill Load Status=FAILED I must block.\n\nSkill Load Status: SUCCESS",
+      "Skill Load Status",
+      ["SUCCESS", "FAILED"],
+    ),
+    "SUCCESS",
+    "(h) a reply quoting the rule and ending with a real SUCCESS marker parses SUCCESS",
   );
 }
 

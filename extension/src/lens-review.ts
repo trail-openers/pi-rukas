@@ -135,13 +135,6 @@ export interface LensRunResult {
    * six-lens pass's spend into the cycle total at the emission point.
    */
   usage?: DispatchUsage;
-  /**
-   * #872 — trace note when the child's reply carried NO `Skill Load Status`
-   * marker (SUCCESS or FAILED). Absence does not block: the pre-spawn stat
-   * in lens-review-child.ts is the executed evidence the skill existed. Set
-   * only on the non-blocked path.
-   */
-  skillLoadNote?: string;
 }
 
 export interface LensReviewSummary {
