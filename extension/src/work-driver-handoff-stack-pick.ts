@@ -29,3 +29,17 @@ export function stackPickRange(
   const rootBase = (root ? ps.workstreamBaseShas?.[root.worktreeId] : undefined) ?? ps.baseSha;
   return rootBase ? `git cherry-pick ${rootBase}..${tip}` : `git cherry-pick ${tip}`;
 }
+
+/**
+ * The bare `<rootBase>..<tip>` range (no `git cherry-pick` prefix) for a
+ * single-leaf stack whose leaf IS the stack root, given its root base — the
+ * shape decision (6) emits and the real-git test EXECUTES. Exported so the
+ * fixture test builds the range from the REAL root base SHA (read from git)
+ * rather than a hand-written fixture `workstreamBaseShas` — a typo in the
+ * range FORM (e.g. a reversed order) fails the fixture run, not just a
+ * string assertion. `rootBase === undefined` → undefined (no range; the
+ * caller falls back to a bare tip pick, matching `stackPickRange`).
+ */
+export function singleLeafPickRange(rootBase: string | undefined, tip: string): string | undefined {
+  return rootBase ? `${rootBase}..${tip}` : undefined;
+}

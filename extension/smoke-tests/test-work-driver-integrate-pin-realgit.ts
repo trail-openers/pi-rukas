@@ -102,12 +102,7 @@ try {
     // before they can).
     const state = auditStateFor(1, branch1, baseSha, "rogue commit in the wrong tree\npr: 99");
     const { auditCommitPrFallback } = await import("../src/work-driver-commit-pr-audit.ts");
-    const after = await auditCommitPrFallback(
-      auditCtx(repo, 1),
-      realExec,
-      state,
-      true,
-    );
+    const after = await auditCommitPrFallback(auditCtx(repo, 1), realExec, state, true);
     const capHit = after.eventLog.find((e) => e.kind === "cap-hit");
     assert(
       capHit?.kind === "cap-hit" && capHit.cap === "integration-worktree-violation",

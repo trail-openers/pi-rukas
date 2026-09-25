@@ -254,7 +254,7 @@ export function inlineCommitPrPrompt(
       "",
       `  1. **Verify each worktree has commits ahead of the integration base.** For each of the ${ids.length} worktrees, run \`git -C <path> log --oneline ${branchName}..HEAD | head\`. If any workstream's log is empty, either the developer did not write OR the developer did not commit — STOP, report which workstream, and DO NOT proceed. A clean \`status --porcelain\` is EXPECTED here (committed work), not a failure signal.`,
       "",
-      `  2. **Consolidate each worktree's diff onto the integration branch.** Capture each worktree's diff and apply it in the driver-owned integration worktree (create it at \`.worktrees/issue-${issues[0]}-integrate\` with \`git worktree add\` on \`${branchName}\` if it is absent — the repo root's checkout is OFF LIMITS; the driver's post-dispatch audit refuses the cycle if the branch ends up held by any tree other than the integrate worktree, this cycle's own worktrees, or the repo root). Concrete recipe per workstream:`,
+      `  2. **Consolidate each worktree's diff onto the integration branch.** Capture each worktree's diff and apply it in the driver-owned integration worktree at \`.worktrees/issue-${issues[0]}-integrate\` (the repo root's checkout is OFF LIMITS; the driver's post-dispatch audit refuses the cycle if the branch ends up held by any tree other than the integrate worktree). Concrete recipe per workstream:`,
       "       ```",
       "       git -C <worktree-path> add -- <reviewed in-scope-paths-or-developer-created-new-files>",
       `       git -C <worktree-path> diff --cached --binary > tmp/issue-${issues[0]}/<workstream-id>.patch`,
