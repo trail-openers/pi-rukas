@@ -59,33 +59,36 @@ async function workstreamTouchedSet(
 
   // (a) the committed range — the workstream's OWN base (the #794
   // stacked-workstream shape: a global range would include ancestors).
+  // A missing or invalid base SHA means the committed side of the
+  // cumulative evidence is UNREADABLE, which fails closed — proceeding
+  // on porcelain alone would let a clean tree pass as over-declaration
+  // even though the committed range was never proven to be clean.
   const ownBase = ps.workstreamBaseShas?.[id] ?? ps.baseSha;
-  if (ownBase !== undefined && VALID_SHA_RE.test(ownBase)) {
-    let rangeOut: string;
-    try {
-      const { stdout } = await fn(`git diff --name-status -M ${JSON.stringify(ownBase)}..HEAD`, {
-        cwd: wt,
-        maxBuffer: 1024 * 1024,
-      });
-      rangeOut = stdout;
-    } catch {
-      return undefined; // unreadable range → fail closed
+  if (ownBase === undefined || !VALID_SHA_RE.test(ownBase)) return undefined;
+  let rangeOut: string;
+  try {
+    const { stdout } = await fn(`git diff --name-status -M ${JSON.stringify(ownBase)}..HEAD`, {
+      cwd: wt,
+      maxBuffer: 1024 * 1024,
+    });
+    rangeOut = stdout;
+  } catch {
+    return undefined; // unreadable range → fail closed
+  }
+  for (const line of rangeOut.split("\n")) {
+    const fields = line.split("\t");
+    const code = fields[0]?.trim() ?? "";
+    const codeBase = code[0];
+    if (!codeBase) continue;
+    if (codeBase === "R" && fields.length >= 3) {
+      const src = normaliseDeclaredPath(fields[1] ?? "");
+      if (src) touched.add(src);
+      const tgt = normaliseDeclaredPath(fields[2] ?? "");
+      if (tgt) touched.add(tgt);
+      continue;
     }
-    for (const line of rangeOut.split("\n")) {
-      const fields = line.split("\t");
-      const code = fields[0]?.trim() ?? "";
-      const codeBase = code[0];
-      if (!codeBase) continue;
-      if (codeBase === "R" && fields.length >= 3) {
-        const src = normaliseDeclaredPath(fields[1] ?? "");
-        if (src) touched.add(src);
-        const tgt = normaliseDeclaredPath(fields[2] ?? "");
-        if (tgt) touched.add(tgt);
-        continue;
-      }
-      const p = normaliseDeclaredPath(fields[1] ?? "");
-      if (p) touched.add(p);
-    }
+    const p = normaliseDeclaredPath(fields[1] ?? "");
+    if (p) touched.add(p);
   }
 
   // (b) the worktree porcelain — modified AND untracked (`??` counts).

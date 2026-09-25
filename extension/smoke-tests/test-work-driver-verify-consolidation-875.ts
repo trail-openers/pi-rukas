@@ -14,6 +14,8 @@
  *   F5.13: unreadable worktree → uncovered (never a silent pass)
  *   F5.14: own range base (workstreamBaseShas) — an ancestor's file does
  *          not taint the dependent's verdict
+ *   F5.16: real clean worktree but NO base SHA (neither workstreamBaseShas
+ *          nor baseSha) → the committed range is unreadable → fail closed
  *   F5.15: dirty-flag rendering — explainCap reads ONLY the persisted
  *          per-verdict `dirty` flag (no git calls at render time)
  */
@@ -280,6 +282,31 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
       assert(
         aVerdict?.status === "complete",
         `F5.14: a is covered via the committed diff (got: ${JSON.stringify(aVerdict)})`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // F5.16 — a REAL, clean worktree (empty range, empty porcelain) whose
+  // cycle recorded NO base SHA (neither workstreamBaseShas[id] nor baseSha)
+  // declares src/p.ts; the committed diff lacks it. Pre-fix the range read
+  // was SKIPPED and porcelain alone (clean) let this pass as
+  // over-declaration — fail-open. A base SHA is required to prove the
+  // committed range clean, so the verdict is uncovered (fail closed).
+  {
+    const dir = mkdtempSync(path.join(tmpdir(), "f5-nobase-"));
+    try {
+      await mkGitRepo(dir, ["src/other.ts"]);
+      const wtA = await mkWorktree(dir, "wt-a", []);
+      const state = mkConsolidationState({ a: wsA(["src/p.ts"]), b: wsB(["src/other.ts"]) });
+      state.pipelineState.worktrees = { a: wtA, b: "/tmp/fake-b" };
+      // No baseSha, no workstreamBaseShas — the committed range is unreadable.
+      const res = await verifyConsolidation(ctx(dir), state);
+      const aVerdict = res.verdicts.find((v) => v.id === "a");
+      assert(
+        aVerdict?.status === "uncovered" && aVerdict.uncoveredPaths.includes("src/p.ts"),
+        `F5.16: clean worktree + no base SHA → uncovered, never a silent pass (got: ${JSON.stringify(aVerdict)})`,
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });

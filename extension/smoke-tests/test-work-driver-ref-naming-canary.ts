@@ -251,12 +251,10 @@ async function testConsolidationZeroCommits() {
       result.filesPresent.length === 0,
       "#451: verifyConsolidation reports no files when branch has zero commits (root on mainline)",
     );
-    // #875 — the `default` workstream maps to the real repo root (clean
-    // porcelain, no base SHA recorded) → over-declaration → covered.
-    // Only `task-b` (no worktree entry → unreadable → fail-closed) is missing.
+    // All workstreams with paths should be reported as missing/uncovered.
     assert(
-      result.missing.length === 1 && result.missing[0].id === "task-b",
-      `#451: verifyConsolidation reports the workless workstream missing (got ${JSON.stringify(result.missing)})`,
+      result.missing.length === 2,
+      `#451: verifyConsolidation reports all 2 workstreams missing (got ${result.missing.length})`,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });

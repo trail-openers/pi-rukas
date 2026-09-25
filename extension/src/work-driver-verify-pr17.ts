@@ -18,6 +18,39 @@ import type { WorkState } from "./workflow-state.ts";
 
 const execp = promisify(exec);
 
+/**
+ * PR17 — Driver-side outcome verification gate.
+ *
+ * Every quality gate before this PR was LLM judgment (adversarial + six
+ * lenses reading diffs/transcripts); nothing driver-side ever EXECUTED
+ * anything until post-PR CI. Agents claim "done" and the driver trusted
+ * the claim — the documented silent-merge (#245/#253) and phantom-
+ * handoff incidents are exactly this failure class (MAST: verification
+ * failures = 21.3% of multi-agent failures). This gate checks executed
+ * evidence, costs zero LLM tokens, and shortens the failure loop from
+ * post-PR CI churn to pre-commit.
+ *
+ * Checks by step:
+ *
+ *   develop — delegated to verifyDevelopOutcome in work-driver-verify-develop.ts.
+ *
+ *   commit-pr —
+ *     (a) commits exist on the branch: `git rev-list --count
+ *         origin/<base>..<branchName>` > 0 at repoRoot (#451 — the branch
+ *         is named explicitly so the gate works regardless of repo-root checkout).
+ *     (b) the parsed PR number resolves via the forge adapter. When ops
+ *         forgot the `pr: <N>` marker, fall back to a head-branch PR
+ *         list and ADOPT the number into pipelineState
+ *         (bonus repair — pre-PR17 a missing marker degraded handoff
+ *         targeting). No PR found at all = the "opened a PR" claim was
+ *         hollow.
+ *
+ * Failure semantics: returns `{ok: false, failures}` — the caller emits
+ * cap-hit `verify-failed:<step>` → handoff with evidence in
+ * pipelineState.verifyEvidence. Infra errors on OUR side (git itself
+ * erroring at repoRoot) are notes, not failures — same no-false-alarm
+ * stance as verifyConsolidation.
+ */
 /** PR17 — escape hatch: PI_ENSEMBLE_VERIFY=0 disables the outcome gate. */
 function verifyGateEnabled(): boolean {
   const v = process.env.PI_ENSEMBLE_VERIFY;
@@ -94,8 +127,8 @@ export async function verifyStepOutcome(
   fenceViolations?: FenceViolationRecord[];
   /**
    * #841 — the consolidated verify's persisted raw-output log path (run2
-   * when a flake re-run fired, run1 otherwise), carried STRUCTURALLY so
-   * the caller records it on the cap-hit event's `logPaths` field instead of
+   * when a flake re-run fired, run1 otherwise), carried STRUCTURALLY so the
+   * caller records it on the cap-hit event's `logPaths` field instead of
    * regexing the path out of the failure prose. Absent when no log was
    * written (write failure, no consolidated run).
    */
