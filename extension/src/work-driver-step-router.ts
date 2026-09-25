@@ -14,6 +14,7 @@
 
 import * as lifecycle from "./lifecycle-events.ts";
 import type { RoleName } from "./roles.ts";
+import { drainSlowEvents } from "./slow-notice.ts";
 import { trace } from "./trace.ts";
 import { capKilledString } from "./work-driver-cap-killed.ts";
 import { STEP_FAILURE_POLICY } from "./work-driver-context.ts";
@@ -102,7 +103,19 @@ export async function routeStepOutcome(
   stepRound: number,
   stepStartedAt: number,
 ): Promise<{ state: WorkState; retry: boolean }> {
-  let state = stateIn;
+  // #799 — drain THIS cycle's slow-event buffer into its state BEFORE the
+  // persistence below (this is the driver's single step-boundary persistence
+  // point, and the `dispatch-slow` events the per-step `onSlow` recorders
+  // collect land here, exactly once, regardless of which step recorded
+  // them). The buffer is keyed by the cycle's primary issue (the registry's
+  // cycle identity), so a sibling cycle running concurrently in this process
+  // drains only its own list. The events carry their own `at`, so it is
+  // acceptable that they sit after the step's completion event in the log.
+  const slowEvents = drainSlowEvents(ctx.issue);
+  let state =
+    slowEvents.length > 0
+      ? { ...stateIn, eventLog: [...stateIn.eventLog, ...slowEvents] }
+      : stateIn;
   {
     const lastEvent = failureEventOf(state.eventLog);
     const elapsed = Date.now() - stepStartedAt;

@@ -137,7 +137,7 @@ const SEAMS: Seam[] = [
       markDispatchStarted:
         "resume plumbing — write-ahead dispatch-started; exercised by test-resume.ts",
     },
-    canary: { symbol: "beginDispatch", importer: "work-driver-explore.ts" },
+    canary: { symbol: "beginDispatch", importer: "work-driver-explore-run.ts" },
   },
   {
     // #594 — spec artifact validation, precedence, and file operations.
@@ -153,7 +153,7 @@ const SEAMS: Seam[] = [
       exploreSpecArtifactPath:
         "#594 — artifact path helper; called by test-work-driver-pr12.ts and internally by readSpecArtifact/deleteSpecArtifact",
     },
-    canary: { symbol: "resolveIntentVerdict", importer: "work-driver-explore.ts" },
+    canary: { symbol: "resolveIntentVerdict", importer: "work-driver-explore-run.ts" },
   },
   {
     // #750 — the shared verified-restore helper for consolidation abort
@@ -318,9 +318,13 @@ for (const seam of SEAMS) {
 // fetcher without `timeout:` would restore the unbounded `gh issue view` that
 // killed cycle #700, and the whole suite would still pass.
 {
+  const exploreRun = readFileSync(
+    path.join(SRC, "work-driver-explore-run.ts"),
+    "utf8",
+  );
   const explore = readFileSync(path.join(SRC, "work-driver-explore.ts"), "utf8");
   assert(
-    /ctx\.issueBodyFetcherFn \?\? fetchIssueBodyViaGh/.test(explore),
+    /ctx\.issueBodyFetcherFn \?\? fetchIssueBodyViaGh/.test(exploreRun),
     "runExplore's fetch default is fetchIssueBodyViaGh — the fetcher that carries a deadline",
   );
   assert(
@@ -328,6 +332,5 @@ for (const seam of SEAMS) {
     "...and that fetcher sets a per-attempt timeout, so no unbounded gh call reaches production",
   );
 }
-
 console.log(`\nexit ${exit}`);
 process.exit(exit);

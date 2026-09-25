@@ -18,6 +18,7 @@ import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-lefto
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 import type { WorktreeProvisionedEvent } from "./workflow-state-events-provision.ts";
 import type { SafetyNetCommitEvent } from "./workflow-state-events-safety-net.ts";
+import type { DispatchSlowEvent } from "./workflow-state-events-slow.ts";
 import type {
   VerifyFlakeRecoveredEvent,
   VerifyFullStatusEvent,
@@ -31,6 +32,7 @@ export type {
   HandoffEmittedEvent,
   LensSkippedEmptyDiffEvent,
 } from "./workflow-state-events-handoff.ts";
+export type { DispatchSlowEvent };
 /**
  * Linear step identifiers the driver walks. This union IS the definition
  * of the cycle — #393 deleted the prose flow that used to be its source.
@@ -489,6 +491,7 @@ export type WorkEvent =
   | WorktreeProvisionedEvent
   | SafetyNetCommitEvent
   | BranchResetEvent
-  | WorktreeLeftoverHandledEvent;
+  | WorktreeLeftoverHandledEvent
+  | DispatchSlowEvent;
 /** Discriminator union of event kinds — useful for callers that switch on it. */
 export type WorkEventKind = WorkEvent["kind"];

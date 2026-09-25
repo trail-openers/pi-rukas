@@ -42,6 +42,23 @@ import type { DispatchUsage } from "./types.ts";
  * liveness — so it sits deliberately far above any legitimate runtime rather
  * than being tuned to one.
  *
+ * #799 — why this backstop and the inactivity watchdog above produced no
+ * event for the 186-minute silent span on cycle #782 (2026-09-21): both
+ * mechanisms cover EVERY child by construction — `spawn.ts` applies the
+ * backstop `setTimeout` and the inactivity poll in `spawnSpecialist`, and
+ * the lens-fix path spawns through exactly that seam (runSingleDispatch →
+ * dispatchCore → spawnSpecialist). Neither fired because neither is
+ * observability: the watchdog requires 25 min of stdout silence (a
+ * productive child never is silent) and this backstop is 2 h of wall clock
+ * (a 186-minute run, and every individual child inside the silent span,
+ * sat under it). Both are KILLS on hang/runaway — deliberately the only
+ * kind of bound this project keeps on open-ended work (AGENTS.md §7: six
+ * per-role wall-clock caps were deleted because each kill destroyed work
+ * whose duration is a property of the model). A watchdog that cannot fire
+ * on a productive-but-endless dispatch is working as designed; the gap the
+ * ticket documents is signal, and it is closed by the driver-side
+ * heartbeat + per-step notice (#799 F1/F2), not by extending a kill.
+ *
  * Operator/CI override: PI_ENSEMBLE_SPAWN_TIMEOUT_MS. PM cannot influence it
  * (no tool schema exposes a timeout — #114).
  */
@@ -56,6 +73,14 @@ export const SPAWN_BACKSTOP_MS = 2 * 60 * 60_000;
  * transcripts is ~15 min (a long bash execution), so 25 min gives margin
  * while still detecting true hangs long before the wall-clock cap.
  * Override: PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS (0 disables).
+ *
+ * #799 — why this watchdog cannot fire on a productive child: the clock
+ * resets on ANY stdout line (spawn.ts, parseable or not), so a child that
+ * works for hours while continuously emitting is by definition never 25 min
+ * silent. That is working as designed, not a coverage gap — this watchdog
+ * is a SILENCE detector, not a duration detector. A long-but-active dispatch
+ * is invisible to it by construction; observability for that shape lives in
+ * the driver's heartbeat (#799 F1), not here.
  */
 export function inactivityTimeoutMs(): number {
   const env = Number(process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS);

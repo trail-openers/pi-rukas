@@ -79,6 +79,7 @@ export type {
   WorkEvent,
   WorkEventKind,
   CommitPrFallbackCause,
+  DispatchSlowEvent,
 } from "./workflow-state-events.ts";
 export { WORK_STATE_SCHEMA_VERSION } from "./workflow-state-schema.ts";
 export type {

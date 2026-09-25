@@ -268,6 +268,9 @@ export async function runLensReview(opts: {
    * `/work` and `/review` through this one path.
    */
   extraFindings?: Finding[];
+  /** #799 — the parent pi for the inner children's slow-run watch (the PM
+   * notice half; the watch site has no pi of its own). */
+  pi?: Pick<import("@earendil-works/pi-coding-agent").ExtensionAPI, "sendUserMessage">;
   /** Blocking bar; defaults to MEDIUM. See `DEFAULT_REVIEW_THRESHOLD`. */
   threshold?: Severity;
 }): Promise<LensReviewSummary> {
@@ -290,7 +293,15 @@ export async function runLensReview(opts: {
   };
 
   const promises = LENSES.map((lens) =>
-    runLensChild({ lens, runId, skillsDir, context, opts, bumpBatch }),
+    runLensChild({
+      lens,
+      runId,
+      skillsDir,
+      context,
+      opts,
+      bumpBatch,
+      ...(opts.pi ? { pi: opts.pi } : {}),
+    }),
   );
 
   const lensResults = await Promise.all(promises);

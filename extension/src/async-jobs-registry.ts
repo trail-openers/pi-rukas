@@ -112,6 +112,60 @@ export interface ChildHandle {
 
 export const childHandles = new Map<string, ChildHandle>();
 
+/**
+ * #799 — the parent Pi's API, registered once at extension load so code that
+ * spawns children WITHOUT a pi in scope (lens children, adversarial round
+ * children — they are `spawnSpecialist` calls, not startJob callers) can
+ * still deliver the slow-run PM notice through `notifyAgent`. Always present
+ * in a running extension (registered from commands.ts before any dispatch
+ * exists); undefined only in bare test processes.
+ */
+let parentApi:
+  | Pick<import("@earendil-works/pi-coding-agent").ExtensionAPI, "sendUserMessage">
+  | undefined;
+
+export function setParentExtensionApi(api: unknown): void {
+  if (
+    api &&
+    typeof api === "object" &&
+    typeof (api as { sendUserMessage?: unknown }).sendUserMessage === "function"
+  ) {
+    parentApi = api as typeof parentApi;
+  }
+}
+
+export function getParentExtensionApi():
+  | Pick<import("@earendil-works/pi-coding-agent").ExtensionAPI, "sendUserMessage">
+  | undefined {
+  return parentApi;
+}
+
+/**
+ * Register a child's stdin handle under an id of the CALLER's choice.
+ * #799 — lens children (`${runId}/${tag}`) and adversarial round children own
+ * no job id: they are spawned directly (not through startJob), so nothing
+ * put their handle in this map, and `dispatch_steer` / `dispatch_peek`
+ * answered "No such running job" for the operator's slowest children.
+ * They now register under their deck key — the id `dispatch_peek` shows —
+ * so `steerChild` resolves the peeked id to a live handle. `startJob` /
+ * `startBatch` keep using `.set` directly (their ids ARE job ids); this
+ * helper exists so the non-job paths can share the same map.
+ */
+export function registerChildHandle(
+  id: string,
+  stdin: Writable,
+  label: string,
+  role: string,
+): void {
+  childHandles.set(id, { stdin, label, role });
+}
+
+/** Test-only: drop the registered parent api (the module singleton is shared
+ * across the test process). */
+export function clearParentExtensionApiForTesting(): void {
+  parentApi = undefined;
+}
+
 /** Look up a running child's stdin + label by jobId. Used by dispatch_steer.
  *  Returns undefined when the job has already settled (stdin handle cleaned up). */
 export function getChildHandle(jobId: string): ChildHandle | undefined {

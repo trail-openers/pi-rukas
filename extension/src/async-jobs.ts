@@ -24,6 +24,7 @@ import * as lifecycle from "./lifecycle-events.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import type { RunningState } from "./progress.ts";
 import * as sessionAutosave from "./session-autosave.ts";
+import { type OnSlowCallback, feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
 import { trace } from "./trace.ts";
 import { type DispatchResult, isRateLimit429Msg } from "./types.ts";
 
@@ -126,6 +127,14 @@ interface StartJobInput {
    * See SingleJobState.ownerKind for the full rationale.
    */
   ownerKind?: "pm" | "driver";
+  /**
+   * #799 — invoked by the slow-run watch (slow-notice.ts) on each threshold
+   * crossing, before the PM notice and the auto-steer. The driver threads
+   * its `dispatch-slow` event appender through `dispatchCore`; PM jobs never
+   * set it (their watch has no cycle state to append to). Must be sync and
+   * must not throw (the watch catches, but the contract is synchronous).
+   */
+  onSlow?: OnSlowCallback;
 }
 
 export interface StartJobHandle {
@@ -180,9 +189,20 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
   sessionAutosave.recordDispatch(input.role);
 
   if (!input.skipDeck) live.startBuffer(jobId);
+  // #799 — the slow-run watch: one per job, at the one layer that sees
+  // progress for every PM job, batch member and driver child. Notice +
+  // steer, never a kill; disabled entirely by PI_ENSEMBLE_SLOW_NOTICE=0.
+  const stopSlow = watchSlowDispatch({
+    id: jobId,
+    role: input.role,
+    label: input.label,
+    ...(pi ? { pi } : {}),
+    ...(input.onSlow ? { onSlow: input.onSlow } : {}),
+  });
   const hooks: WorkHooks = {
     onProgress: (progress) => {
-      if (!input.skipDeck) dispatchDeck.updateEntry(jobId, progress);
+      dispatchDeck.updateEntry(jobId, progress);
+      feedSlowProgress(jobId, progress);
     },
     onRawEvent: (event) => {
       live.feedRawEvent(jobId, event);
@@ -203,6 +223,7 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
       jobs.delete(jobId);
       childHandles.delete(jobId);
       clearJobIssues(jobId);
+      stopSlow();
       if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
       // Five-way: ok / killCause / 429 / FAILED-PROVIDER-ERROR / process-exit-failed.
       // #309/#314 — killCause (#296) wins over errorStop. A self-kill is NOT a
@@ -267,6 +288,7 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
       jobs.delete(jobId);
       childHandles.delete(jobId);
       clearJobIssues(jobId);
+      stopSlow();
       if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
       lifecycle.emitFailed(jobId, input.label, input.role, Date.now() - state.startedAt);
       sessionAutosave.recordOutcome(false);
@@ -375,8 +397,20 @@ export function startBatch(
     dispatchDeck.startEntry(jobId, { label: m.label, role: m.role, batchKey: batchId });
     live.startBuffer(jobId);
     sessionAutosave.recordDispatch(m.role);
+    // #799 — batch members are watched exactly like single jobs (one watch
+    // per member; the batch orchestrator itself gets none — it is a
+    // bookkeeping row, not a child).
+    const stopMemberSlow = watchSlowDispatch({
+      id: jobId,
+      role: m.role,
+      label: m.label,
+      ...(pi ? { pi } : {}),
+    });
     const memberHooks: WorkHooks = {
-      onProgress: (progress) => dispatchDeck.updateEntry(jobId, progress),
+      onProgress: (progress) => {
+        dispatchDeck.updateEntry(jobId, progress);
+        feedSlowProgress(jobId, progress);
+      },
       onRawEvent: (event) => live.feedRawEvent(jobId, event),
       onStdin: (stdin) => {
         childHandles.set(jobId, { stdin, label: m.label, role: m.role });
@@ -392,6 +426,7 @@ export function startBatch(
         (result) => {
           jobs.delete(jobId);
           childHandles.delete(jobId);
+          stopMemberSlow();
           dispatchDeck.clearEntry(jobId);
           sessionAutosave.recordOutcome(result.ok);
           memberResults.push({ jobId, label: m.label, result });
@@ -399,6 +434,7 @@ export function startBatch(
         (err: Error) => {
           jobs.delete(jobId);
           childHandles.delete(jobId);
+          stopMemberSlow();
           dispatchDeck.clearEntry(jobId);
           sessionAutosave.recordOutcome(false);
           memberResults.push({

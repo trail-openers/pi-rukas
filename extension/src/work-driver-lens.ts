@@ -82,16 +82,8 @@ export async function runLens(
   }
 
   // PR6 — empty-diff guard. Lens children hallucinate findings against
-  // unrelated files when given empty context: on #533 (a devDep bump
-  // already merged 5 days earlier) develop committed nothing, then
-  // lens-review found PERFORMANCE issues in `src/web/sweep_stats.rs`.
-  // PR11 narrows the failure mode the guard fires for: the integration
-  // branch has no commits ahead of mainline (genuinely nothing to
-  // review), not "git diff HEAD is empty after commit" (post-PR11 the
-  // diff is base..HEAD, not HEAD).
-  // Reaching here with an empty diff now means the branch was CONFIRMED to
-  // have no commits ahead of base (`git rev-list --count` returned 0), not
-  // merely that the read produced no output.
+  // unrelated files when given empty context (see #533). PR11 narrows the
+  // failure mode: the integration branch has no commits ahead of mainline.
   if (diffResult.empty) {
     next = appendEvent(
       next,
@@ -160,7 +152,15 @@ export async function runLens(
   // the step router + F5 checkpoint + handoff see the structured cause.
   let summary: Awaited<ReturnType<typeof reviewFn>>;
   try {
-    summary = await reviewFn({ diff, context, cwd, evidence, extraFindings, threshold });
+    summary = await reviewFn({
+      diff,
+      context,
+      cwd,
+      evidence,
+      extraFindings,
+      threshold,
+      pi: ctx.pi,
+    });
     const capKillEvent = lensCapKillEvent(
       summary,
       jobId,
@@ -487,10 +487,8 @@ export async function runLensFix(
 }
 
 /**
- * The tree the lens gate works in. The review and the fix must agree on this;
- * one resolver keeps them from drifting apart. #492 — exported so the
- * adversarial gate's lens-fix integration path names the SAME tree. Falls
- * back to repoRoot when no worktree is recorded.
+ * The tree the lens gate works in. #492 — exported so the adversarial gate's
+ * lens-fix integration path names the SAME tree. Falls back to repoRoot.
  */
 export function lensWorktree(ctx: DriverContext, state: WorkState): string {
   const wt = state.pipelineState.worktrees ?? {};

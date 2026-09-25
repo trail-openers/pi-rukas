@@ -144,5 +144,11 @@ export function fmtEvent(e: WorkEvent): string {
       // #844 — the old tip is the recovery handle; both are rendered so the
       // operator can `git checkout <oldSha>` without reading the state file.
       return `  branch-reset · ${e.branch} · ${e.oldSha.slice(0, 8)} → ${e.newSha.slice(0, 8)}`;
+    case "dispatch-slow":
+      // #799 — one bounded record per slow-run threshold crossing of a
+      // driver dispatch. The scalars the PM notice carries, on the status
+      // surface: a 3-hour dispatch crossing 20m / 40m / 80m reads as three
+      // rows, each one the durable proof that someone was prompted.
+      return `  dispatch-slow · ${e.step} · ${e.label} · ${fmtElapsed(e.elapsedMs)} · ${e.turns} turn${e.turns === 1 ? "" : "s"} · ${fmtTokens(e.tokens)} tok`;
   }
 }

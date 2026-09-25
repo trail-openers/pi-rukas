@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerAdversarialTool } from "./adversarial.ts";
 import { registerAgentsMdTools } from "./agents-md-tool.ts";
+import { setParentExtensionApi } from "./async-jobs-registry.ts";
 import { registerAsyncJobsLifecycle } from "./async-jobs.ts";
 import { registerCommands } from "./commands.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
@@ -73,6 +74,10 @@ export default async function (pi: ExtensionAPI) {
   registerModelPicker(pi);
   registerAsyncJobsLifecycle(pi);
   registerPermissionGuard(pi);
+  // #799 — the slow-run watch's PM-notice half needs a pi even from code
+  // that spawns children without one in scope (lens + adversarial children);
+  // this registers the parent api once, before any dispatch can exist.
+  setParentExtensionApi(pi);
   // Sandbox FS guard — self-gates on PI_ENSEMBLE_SANDBOX_MODE=1. In sandbox
   // mode the permission-guard short-circuits, so this is the only layer
   // preventing symlink-traversal out of /workspace (CVE-2026-39861 class).

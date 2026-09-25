@@ -15,6 +15,7 @@ import { formatCycleTotal } from "./work-driver-cycle-total.ts";
 import { explainCap } from "./work-driver-explain.ts";
 import { readQueueSummary } from "./work-queue-summary.ts";
 import { humanActionFor } from "./work-queue.ts";
+import { renderDispatchDurations } from "./work-status-dispatch-durations.ts";
 import { fmtElapsed, fmtEvent, fmtTokens, stepTotals } from "./work-status-events.ts";
 import { discoverAllCycles, renderCycleIndex } from "./work-status-index.ts";
 import { isIssueNumberArg, resolveJobId } from "./work-status-jobid.ts";
@@ -114,6 +115,14 @@ export function renderRunningStatus(state: WorkState, repoRoot: string): string 
     }
     const cycleTotal = formatCycleTotal(state.eventLog);
     if (cycleTotal) lines.push(`  ${"(cycle total)".padEnd(14)}${cycleTotal}`);
+  }
+
+  // #799 — per-dispatch durations: one row per dispatch (not per step), so a
+  // 6-way fan-out surfaces each child's own time rather than one rolled-up
+  // step row. Omitted entirely when no dispatch rows exist.
+  const dispatchRows = renderDispatchDurations(state.eventLog);
+  if (dispatchRows.length > 0) {
+    lines.push("", "dispatch durations:", ...dispatchRows);
   }
 
   if (state.eventLog.length > 0) {
@@ -221,6 +230,14 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
     }
     const cycleTotal = formatCycleTotal(state.eventLog);
     if (cycleTotal) lines.push(`  ${"(cycle total)".padEnd(14)}${cycleTotal}`);
+  }
+
+  // #799 — per-dispatch durations: the post-mortem view of a slow cycle. One
+  // row per dispatch (not per step), so an operator can see exactly which
+  // child or attempt took the time. Omitted when no dispatch rows exist.
+  const dispatchRows = renderDispatchDurations(state.eventLog);
+  if (dispatchRows.length > 0) {
+    lines.push("", "Dispatch durations:", ...dispatchRows);
   }
 
   // Last 5 events.

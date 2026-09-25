@@ -24,9 +24,10 @@ import { topologicalDispatchOrder } from "./work-driver-dep-scheduler.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import { clearDispatch } from "./work-driver-resume.ts";
 import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net.ts";
+import { armStepNotice } from "./work-driver-step-notice.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
-import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
+import { type WorkEvent, type WorkState, appendEvent, writeState } from "./workflow-state.ts";
 
 // #841 — per-failure / joined-evidence bounds for the cap-hit evidence
 // field. A failure string is already an 800-char attributed tail; a
@@ -97,6 +98,21 @@ async function runDevelopTopological(
   let worktrees = next.pipelineState.worktrees ?? {};
   let workstreamBaseShas = next.pipelineState.workstreamBaseShas ?? {};
   const globalBaseSha = next.pipelineState.baseSha;
+  // #799 F2 — the step notice: the fan-out's wall-clock span, not any single
+  // child's. The incident's silent window was a fan-out whose children were
+  // each individually healthy (19–73 min) yet collectively ran ~2h — the
+  // notice is keyed on the STEP's elapsed time so it fires on the incident
+  // shape without alarming on a healthy 73-min child.
+  const stepStartedAt = Date.now();
+  const cancelStepNotice = armStepNotice({
+    state: next,
+    step: "develop",
+    startedAt: stepStartedAt,
+  });
+  const endStep = (final: WorkState): WorkState => {
+    cancelStepNotice();
+    return final;
+  };
   // #679 — a workstream is “blocked” for its dependents when its dispatch
   // failed OR when it produced NO commits ahead of its base (the case-2(c)
   // falsely-ok shape): building a dependent worktree on a dependency that
@@ -223,6 +239,7 @@ async function runDevelopTopological(
     // be cleared on this path too — the non-park path does it just below; on the
     // parked path the cycle terminates via handoff, but leaving the job in
     // inFlightJobIds would trip detectInconsistencies on a later read.
+    next = stateRef.current;
     next = appendEvent(clearDispatch(next, begun.jobId));
     next = {
       ...next,
@@ -232,9 +249,13 @@ async function runDevelopTopological(
         workstreamBaseShas: { ...workstreamBaseShas, ...next.pipelineState.workstreamBaseShas },
       },
     };
-    return next;
+    return endStep(next);
   }
   void independentResults;
+  // The state ref above is the memory-inject appends' shared state; the slow
+  // events the developer children recorded are collected in the driver's
+  // pending buffer and drained at the step boundary (routeStepOutcome).
+  next = stateRef.current;
   next = appendEvent(clearDispatch(next, begun.jobId), ...branchEvents);
   next = {
     ...next,
@@ -403,7 +424,7 @@ async function runDevelopTopological(
       });
     }
   }
-  return next;
+  return endStep(next);
 }
 
 // #841 — re-exported for the smoke test's direct bound check (the N=1

@@ -4,6 +4,7 @@ import { startBatch, startJob } from "./async-jobs.ts";
 import { type RetryNotice, withProviderBackoff } from "./dispatch-retry.ts";
 import { steerChild } from "./dispatch-steer.ts";
 import { ROLE_NAMES } from "./roles.ts";
+import type { OnSlowCallback } from "./slow-notice.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import { trace } from "./trace.ts";
@@ -51,7 +52,13 @@ export function stripModelOverride(spec: DispatchSpec): DispatchSpec {
 export function dispatchCore(
   pi: ExtensionAPI,
   spec: DispatchSpec,
-  opts: { label?: string; skipDeck?: boolean; timeoutMs?: number; extraArgs?: string[] } = {},
+  opts: {
+    label?: string;
+    skipDeck?: boolean;
+    timeoutMs?: number;
+    extraArgs?: string[];
+    onSlow?: OnSlowCallback;
+  } = {},
 ): Promise<DispatchResult> {
   const stripped = stripModelOverride(spec);
   // #573 — derive the transcript path BEFORE dispatch so crash-resume can
@@ -61,11 +68,16 @@ export function dispatchCore(
   const runId = stripped.runId ?? makeRunId();
   const transcriptPath = transcriptPathFor(stripped.role, runId);
   const label = opts.label ?? stripped.role;
+  // #799 — the driver's dispatch-slow record: the watch (owned by startJob)
+  // fires it on each threshold crossing; the caller appends the event to the
+  // cycle state and persists (see the runX call sites). Absent for PM jobs.
+  const onSlow = opts.onSlow;
   const handle = startJob(pi, {
     label,
     role: stripped.role,
     ownerKind: "driver",
     skipDeck: opts.skipDeck,
+    onSlow,
     work: (signal, hooks) =>
       spawnSpecialist(stripped, {
         signal,

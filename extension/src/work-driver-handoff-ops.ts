@@ -11,6 +11,7 @@
  */
 
 import { dispatchCore } from "./dispatch.ts";
+import { slowRecorder } from "./slow-notice.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
@@ -59,6 +60,7 @@ export async function runHandoffOpsDispatch(
     startedAt,
     handoffTranscript,
   );
+  next = begun.state;
   let opsReplyText = "";
   // Two enforcement points, deliberately: `timeoutMs` makes spawn SIGTERM the
   // real child so an abandoned handoff agent is not left running, and the race
@@ -72,7 +74,23 @@ export async function runHandoffOpsDispatch(
       boundTimer.unref?.();
     });
     const res = await Promise.race([
-      dispatch(ctx.pi, { role: "ops", prompt }, { label: "ops:handoff", timeoutMs: boundMs }),
+      dispatch(
+        ctx.pi,
+        { role: "ops", prompt },
+        {
+          label: "ops:handoff",
+          timeoutMs: boundMs,
+          // #799 — the slow recorder collects into the driver's pending
+          // buffer. The child may outlive the race (below) — its crossings
+          // are recorded either way and drainSlowEvents at the end of
+          // runHandoff (the cycle's terminal step) lands them in the durable
+          // log. A crossing recorded after that final drain is not persisted
+          // (no later boundary exists — handoff is terminal); the in-session
+          // notice already went out, and the next cycle's start drops any
+          // leftover (see work-driver.ts).
+          onSlow: slowRecorder(ctx.issue, "handoff"),
+        },
+      ),
       bound,
     ]);
     next = clearDispatch(next, begun.jobId);
@@ -112,6 +130,13 @@ export async function runHandoffOpsDispatch(
       errorTail: (err as Error).message?.slice(-200),
     });
   } finally {
+    // The bounded race frees the DRIVER; the child it was racing may still be
+    // running, so the slow watch is deliberately NOT stopped here — its
+    // crossings keep recording until the child settles (the watch's own
+    // settle path owns the stop). Crossings that arrive before runHandoff's
+    // final drain land in the log with it; one recorded after that drain is
+    // not persisted (the cycle is terminal — the in-session notice already
+    // went out, and the next cycle's start drops the leftover).
     if (boundTimer) clearTimeout(boundTimer);
   }
   return { next, opsReplyText };

@@ -47,7 +47,14 @@ export function notifyCommand(): string | undefined {
   return cmd ? cmd : undefined;
 }
 
-export type NotifyKind = "parked" | "halted" | "awaiting-merge" | "crashed";
+export type NotifyKind =
+  | "parked"
+  | "halted"
+  | "awaiting-merge"
+  | "crashed"
+  /** #799 — a step is still running but well past a threshold: an operator
+   * notice, never a kill. The action tells the operator how to look. */
+  | "running-slow";
 
 export interface Notification {
   kind: NotifyKind;
@@ -73,6 +80,10 @@ export function formatNotification(n: Notification): string {
     halted: `/work HALTED at ${who}: ${n.reason}`,
     "awaiting-merge": `/work finished ${who} — waiting on you to merge`,
     crashed: `/work crashed on ${who}: ${n.reason}`,
+    // A slow run is not a failure — the work is probably fine and may need
+    // the duration it is taking (issue #799: a step can run for hours while
+    // doing real work). The message names the STEP, not a verdict.
+    "running-slow": `/work ${who} — ${n.reason}`,
   };
   return `${head[n.kind]}\n→ ${n.action}`;
 }
