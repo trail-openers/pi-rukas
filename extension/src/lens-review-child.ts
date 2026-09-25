@@ -6,15 +6,18 @@
  * deck, dedup, verdict and cap-kill summary live in the parent.
  */
 
+import { statSync } from "node:fs";
 import path from "node:path";
 import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { extractFindings, lensPromptFor } from "./lens-review-format.ts";
 import { LENS_REPORTER_PATH, type LensDef } from "./lens-review.ts";
 import type { LensRunResult } from "./lens-review.ts";
+import { readEnumMarker } from "./reply-markers.ts";
 import type { SlowWatchInput } from "./slow-notice.ts";
 import { feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
 import { spawnSpecialist } from "./spawn.ts";
+import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { jitteredMs } from "./work-driver-failure-taxonomy.ts";
 
@@ -44,6 +47,26 @@ export async function runLensChild(opts: {
   // (spawn cap 1) is diagnosable: sequential startMs mean queueing.
   const startMs = Date.now();
   const skillPath = path.join(skillsDir, lens.skill);
+  // #872 — executed evidence the skill exists BEFORE spending a spawn on it.
+  // `statSync` follows symlinks (the real skills dir holds symlinks into the
+  // repo's skill/ per install.sh), so a dangling symlink throws ENOENT and
+  // counts as missing. A missing skill is a setup failure, not a transient
+  // one — spawning 4x would just burn timeouts on the same dead path.
+  try {
+    statSync(skillPath);
+  } catch {
+    bumpBatch();
+    return {
+      lens: lens.name,
+      ok: false,
+      ms: 0,
+      startMs,
+      findings: [],
+      attempts: 0,
+      blocked: true,
+      parseError: `skill not installed: ${skillPath} (not spawned)`,
+    };
+  }
   const prompt = lensPromptFor(lens, runOpts.diff, context, runOpts.evidence);
   const tag = lens.name.toLowerCase().replaceAll("_", "-");
   // Per-lens deck key. The dispatch deck (#117) is now the single live
@@ -176,6 +199,36 @@ export async function runLensChild(opts: {
   }
 
   const { findings, skipped } = extractFindings(result.toolUses, lens.name);
+  // #872 — the child self-reports its skill load in the closing reply
+  // (`Skill Load Status: SUCCESS|FAILED`, code-review-specialist.md). An
+  // explicit FAILED blocks this lens — its verdict can never be APPROVED —
+  // with its findings KEPT (the CRITICAL RULE in the role prompt allows a
+  // FAILED-skill child to have reported content; that content is still
+  // evidence). Absent or unknown does NOT block: the pre-spawn stat above
+  // is the executed evidence that the skill existed; absence is traced
+  // (PI_ENSEMBLE_DEBUG=1) so the operator can see the honor system was
+  // simply not exercised.
+  const skillLoadStatus = readEnumMarker(result.text ?? "", "Skill Load Status", [
+    "SUCCESS",
+    "FAILED",
+  ]);
+  if (skillLoadStatus === "FAILED") {
+    return {
+      lens: lens.name,
+      ok: result.ok,
+      ms: result.ms,
+      startMs,
+      findings,
+      attempts,
+      blocked: true,
+      summary: result.text?.trim() || undefined,
+      model: result.model,
+      transcriptPath: result.transcriptPath,
+      parseError: `skill load reported FAILED by the child (${lens.skill})`,
+      usage: result.usage,
+    };
+  }
+  traceSkillLoadAbsence(lens.skill, skillLoadStatus);
   return {
     lens: lens.name,
     ok: result.ok,
@@ -193,4 +246,13 @@ export async function runLensChild(opts: {
     // #534 — was previously dropped at this return; the cycle total needs it.
     usage: result.usage,
   };
+}
+
+// #872 — honor-system absence is traced, not blocked: the marker was not
+// emitted, but the pre-spawn statSync in `runLensChild` is the executed
+// evidence the skill exists, so only an explicit FAILED ever blocks.
+function traceSkillLoadAbsence(lensSkill: string, status: string | undefined): void {
+  if (status === undefined) {
+    trace(`skill load status absent (${lensSkill}) — pre-spawn stat passed; marker not emitted`);
+  }
 }
