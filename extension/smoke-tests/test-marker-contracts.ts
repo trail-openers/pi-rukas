@@ -67,6 +67,7 @@ for (const c of MARKER_CONTRACTS) {
     "plan-gaps.ts",
     "research-verify.ts",
     "work-driver-lens.ts",
+    "skill-load-status.ts",
   ];
   const registered = new Set(MARKER_CONTRACTS.map((c) => c.consumer));
   for (const f of KNOWN_CONSUMERS) {

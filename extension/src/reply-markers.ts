@@ -176,8 +176,8 @@ export const MARKER_CONTRACTS: readonly MarkerContract[] = [
   {
     token: "Skill Load Status",
     values: ["SUCCESS", "FAILED"],
-    consumer: "lens-review-child.ts",
+    consumer: "skill-load-status.ts",
     onAbsence:
-      "not blocked — recorded as a trace/summary note (skillLoadNote): the pre-spawn statSync in runLensChild is the executed evidence that the skill exists; only an explicit FAILED blocks",
+      "not blocked — recorded as a trace note (skillLoadNote in lens-review-child.ts): the pre-spawn statSync in runLensChild is the executed evidence that the skill exists; only an explicit FAILED blocks",
   },
 ];
