@@ -125,9 +125,9 @@ export function extractSkillNames(root: string): Map<string, string> {
 
 /** The first `---`-delimited frontmatter block, or null when absent. */
 export function firstFrontmatterBlock(text: string): string | null {
-  if (!text.startsWith("---")) return null;
+  if (!/^---[ \t]*\r?$/.test(text.split(/\r?\n/)[0] ?? "")) return null;
   const rest = text.slice(3);
-  const end = rest.search(/^---[ \t]*$/m);
+  const end = rest.search(/^---[ \t]*\r?$/m);
   if (end === -1) return null;
   return rest.slice(0, end);
 }
@@ -136,7 +136,7 @@ export function firstFrontmatterBlock(text: string): string | null {
 export function frontmatterName(text: string): string | null {
   const block = firstFrontmatterBlock(text);
   if (block === null) return null;
-  const m = block.match(/^name:\s*(.+?)\s*$/m);
+  const m = block.match(/^name:\s*(.+?)\s*\r?$/m);
   if (!m) return null;
   return m[1].replace(/^["']|["']$/g, "");
 }
@@ -148,9 +148,9 @@ export interface SkillSurfaceFailure {
 
 /**
  * The full gate over one tree: extracted names must resolve, frontmatter
- * names must match their directories. LENSES and the anti-vacuity floor are
- * repo-only checks (the fixture carries its own lens file? no — LENSES is a
- * static import of the real roster), so they run inside `checkRepoSurface`.
+ * names must match their directories. LENSES resolution and the
+ * anti-vacuity floor are repo-only checks — LENSES is a static import of
+ * the real roster — so they run inside `checkRepoSurface`.
  */
 export function checkTreeSurface(root: string): { names: Map<string, string>; failures: SkillSurfaceFailure[] } {
   const names = extractSkillNames(root);
@@ -182,17 +182,17 @@ export function checkTreeSurface(root: string): { names: Map<string, string>; fa
 
 /** Repo-only additions: LENSES resolution + anti-vacuity on the union. */
 export function checkRepoSurface(repoRoot: string): SkillSurfaceFailure[] {
-  const failures = [...checkTreeSurface(repoRoot).failures];
+  const { names, failures } = checkTreeSurface(repoRoot);
+  const out = [...failures];
   for (const lens of LENSES) {
     if (!existsSync(path.join(repoRoot, "skill", lens.skill, "SKILL.md"))) {
-      failures.push({ kind: "lens", detail: `LENSES ${lens.name} → \`${lens.skill}\` does not resolve to skill/${lens.skill}/SKILL.md` });
+      out.push({ kind: "lens", detail: `LENSES ${lens.name} → \`${lens.skill}\` does not resolve to skill/${lens.skill}/SKILL.md` });
     }
   }
-  const distinct = extractSkillNames(repoRoot).size;
-  if (distinct < ANTI_VACUITY_FLOOR) {
-    failures.push({ kind: "phantom", detail: `anti-vacuity: only ${distinct} distinct names extracted (floor ${ANTI_VACUITY_FLOOR})` });
+  if (names.size < ANTI_VACUITY_FLOOR) {
+    out.push({ kind: "phantom", detail: `anti-vacuity: only ${names.size} distinct names extracted (floor ${ANTI_VACUITY_FLOOR})` });
   }
-  return failures;
+  return out;
 }
 
 let exit = 0;
@@ -221,6 +221,11 @@ function assert(cond: boolean, msg: string) {
     );
     writeFileSync(path.join(fixtureRoot, "skill", "good-skill", "SKILL.md"), "---\nname: good-skill\ndescription: fine\n---\n\nbody\n");
     writeFileSync(path.join(fixtureRoot, "skill", "bad-skill", "SKILL.md"), "---\nname: something-else\ndescription: >\n  folded\n---\n\nbody\n");
+    mkdirSync(path.join(fixtureRoot, "skill", "crlf-skill"), { recursive: true });
+    writeFileSync(
+      path.join(fixtureRoot, "skill", "crlf-skill", "SKILL.md"),
+      "---\r\nname: crlf-skill\r\ndescription: fine\r\n---\r\n\nbody with a `name: other-value` line\r\n",
+    );
     const { names, failures } = checkTreeSurface(fixtureRoot);
     const got = failures.map((f) => `${f.kind}:${f.detail}`);
     assert(
@@ -238,6 +243,10 @@ function assert(cond: boolean, msg: string) {
     assert(
       failures.some((f) => f.kind === "frontmatter" && f.detail.includes("something-else")),
       `canary: frontmatter name ≠ directory IS reported (good-skill passes silently; bad-skill does not)`,
+    );
+    assert(
+      !failures.some((f) => f.kind === "frontmatter" && f.detail.includes("crlf-skill")),
+      "CRLF: a CRLF-frontmatter SKILL.md with an in-body `name:` line passes (the body line is not read, no trailing CR kept)",
     );
   } finally {
     rmSync(fixtureRoot, { recursive: true, force: true });
