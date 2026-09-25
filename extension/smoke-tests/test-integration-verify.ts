@@ -239,14 +239,14 @@ try {
   const code = commit.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
 
   assert(
-    /terminal:\s*res\.failure === "verify"/.test(code),
+    /res\.failure === "verify"[\s\S]{0,400}?terminal: true/.test(code),
     "canary: a verify failure is marked terminal — every other failure still falls back",
   );
   // The load-bearing branch: `terminal` must be handled BEFORE the else that
   // builds the ops fallback, or the gate cannot fail.
   const mechIdx = code.indexOf("const mech = await mechanizedCommitPr");
   const terminalIdx = code.indexOf("mech.terminal", mechIdx);
-  const fallbackIdx = code.indexOf("inlineCommitPrPrompt", mechIdx);
+  const fallbackIdx = code.indexOf("dispatchCommitPrFallback", mechIdx);
   assert(
     mechIdx >= 0 && terminalIdx > mechIdx && terminalIdx < fallbackIdx,
     "canary: the terminal branch is checked before the ops fallback is reached",

@@ -25,13 +25,17 @@
  * driver audits); nothing here runs at process.cwd().
  */
 
+import { exec as execCb } from "node:child_process";
 import fs from "node:fs/promises";
+import { promisify } from "node:util";
 import { trace } from "./trace.ts";
 import { isDriverManagedDirtLine } from "./work-driver-branch-residue.ts";
 import { runCreateGuards } from "./worktree-create-guard.ts";
 import { provisionWorktree } from "./worktree-provision.ts";
 import { resolvePath, worktreePath, worktreeRemove } from "./worktree.ts";
 import type { ExecFn } from "./worktree.ts";
+
+const execp = promisify(execCb);
 
 /** The worktree name the driver owns for this issue's commit-pr fallback. */
 export function integrateWorktreeName(issue: number): string {
@@ -132,59 +136,56 @@ export async function ensureIntegrateWorktree(
     // a clean one is pre-removed by the guard's own remove step).
     trace(`work-driver: unregistered directory at ${abs} — leaving it for the target guard`);
   }
-
   // ---- repoRoot must not hold the branch: git refuses the add otherwise
-  if (branchHead) {
-    // The holder list comes from `git worktree list --porcelain`, which does
-    // NOT include the main working tree (repoRoot itself) — so the list can
-    // never say repoRoot holds the branch, and the dirty-repoRoot refusal
-    // below would be dead code in the production executor. Probe repoRoot
-    // DIRECTLY: the main tree's checkout IS what matters here.
-    // The main working tree (repoRoot) is NOT in `git worktree list --porcelain`.
-    // The pre-#861 code probed `branchHolders` (the worktree list) and compared
-    // against `resolvePath(repoRoot)` — the main tree never appears there, so
-    // the dirty-repoRoot refusal was dead code in the production executor. The
-    // correct probe is repoRoot's own checkout.
-    const holders = await branchHolders(execFn, repoRoot, branchName);
-    const rootHolds = holders.some((h) => resolvePath(h) === resolvePath(repoRoot));
-    if (rootHolds) {
-      let dirt = "";
-      try {
-        ({ stdout: dirt } = await execFn("git status --porcelain", {
-          cwd: repoRoot,
-          maxBuffer: 1024 * 1024,
-        }));
-      } catch {
-        dirt = "";
-      }
-      if (dirt.split("\n").some((l) => l.trim() && !isDriverManagedDirtLine(l))) {
-        throw new Error(
-          `repoRoot holds ${branchName} and is dirty — cannot detach it for the ${name} worktree: ${dirt
-            .split("\n")
-            .filter((l) => l.trim())
-            .slice(0, 5)
-            .join(", ")}`,
-        );
-      }
-      const originalRef = await execFn("git symbolic-ref --quiet --short HEAD", {
+  if (branchHead && (await repoRootHoldsBranch(execFn, repoRoot, branchName))) {
+    // The main working tree (repoRoot) is NOT in `git worktree list
+    // --porcelain` — the worktree-list holder audit can never say repoRoot
+    // holds the branch. The direct probe (repoRootHoldsBranch) is what
+    // matters here: the main tree's own checkout is what git refuses to
+    // duplicate into a second worktree, so a clean repoRoot on the branch
+    // is DETACHED first (decision (1)), and a DIRTY one HALTS — the
+    // driver never moves operator residue. The probe runs through the
+    // production exec seam, so a test fake cannot fake the checkout.
+    let dirt = "";
+    try {
+      ({ stdout: dirt } = await execFn("git status --porcelain", {
         cwd: repoRoot,
-        maxBuffer: 64 * 1024,
-      })
-        .then((r) => r.stdout.trim())
-        .catch(async () =>
-          (
-            await execFn("git rev-parse HEAD", { cwd: repoRoot, maxBuffer: 64 * 1024 })
-          ).stdout.trim(),
-        );
-      await execFn(`git checkout ${JSON.stringify(originalRef)}`, {
-        cwd: repoRoot,
-        maxBuffer: 256 * 1024,
-      });
-      trace(
-        `work-driver: detached repoRoot from ${branchName} (checked out ${originalRef}) so the ${name} worktree can hold it`,
-      );
-      repoRootDetached = true;
+        maxBuffer: 1024 * 1024,
+      }));
+    } catch {
+      dirt = "";
     }
+    if (dirt.split("\n").some((l) => l.trim() && !isDriverManagedDirtLine(l))) {
+      throw new Error(
+        `repoRoot holds ${branchName} and is dirty — cannot detach it for the ${name} worktree: ${dirt
+          .split("\n")
+          .filter((l) => l.trim())
+          .slice(0, 5)
+          .join(", ")}`,
+      );
+    }
+    const originalRef = await execFn("git symbolic-ref --quiet --short HEAD", {
+      cwd: repoRoot,
+      maxBuffer: 64 * 1024,
+    })
+      .then((r) => r.stdout.trim())
+      .catch(async () =>
+        (await execFn("git rev-parse HEAD", { cwd: repoRoot, maxBuffer: 64 * 1024 })).stdout.trim(),
+      );
+    // DETACHED HEAD: the main tree is on no branch — a plain
+    // `git checkout <ref>` would move it ONTO the branch we are trying to
+    // free (the trace would say "detached" while repoRoot still holds the
+    // branch, and the strict audit would halt the next fallback). The
+    // branch cannot be checked out twice, so a detached root is the only
+    // place to park it.
+    await execFn(`git checkout --detach ${JSON.stringify(originalRef)}`, {
+      cwd: repoRoot,
+      maxBuffer: 256 * 1024,
+    });
+    trace(
+      `work-driver: detached repoRoot from ${branchName} (checked out ${originalRef}) so the ${name} worktree can hold it`,
+    );
+    repoRootDetached = true;
   }
 
   // ---- the #475/#545 create guards (still apply to the driver-owned tree)
@@ -215,6 +216,46 @@ export async function ensureIntegrateWorktree(
     trace(`work-driver: ${name} worktree provisioning incomplete — ${provisioned.problem}`);
   }
   return { path: abs, refHead: ref, ...(staleHead ? { staleHead } : {}), repoRootDetached };
+}
+
+/**
+ * Whether the MAIN working tree (repoRoot) currently holds the branch.
+ * `git worktree list --porcelain` never lists the main tree, so the
+ * branch-holder audit and the repoRoot-detach path can both see it only
+ * via this direct probe of its own checkout. Unreadable → false (the safe
+ * direction: nothing to halt on; the PR-verification gates still run).
+ */
+export async function repoRootHoldsBranch(
+  execFn: ExecFn | undefined | null,
+  repoRoot: string,
+  branchName: string,
+): Promise<boolean> {
+  if (!branchName) return false;
+  // The probe ALWAYS runs through the production exec seam (not execFn):
+  // the repoRoot holder is the one `git worktree list` refuses to report,
+  // and a test fake's `git symbolic-ref` short-circuit must not be able to
+  // make the probe fail and exculpate that holder (the #861 defect: a
+  // failing probe read as "does not hold"). The primary probe is
+  // `symbolic-ref`; a DETACHED HEAD returns non-empty output but the wrong
+  // ref, so a detached root reads as not-holding. A truly unreadable
+  // symbolic-ref (not a clean empty) cannot be distinguished from a
+  // detached HEAD via that command, so the `git status` fallback
+  // disambiguates: its "## branch..." line carries the checkout name.
+  const probe = async (cmd: string): Promise<string | undefined> => {
+    try {
+      const { stdout } = await execp(cmd, { cwd: repoRoot, maxBuffer: 1024 * 1024 });
+      return stdout;
+    } catch {
+      return undefined;
+    }
+  };
+  const ref = (await probe("git symbolic-ref --quiet --short HEAD"))?.trim();
+  if (ref !== undefined) return ref === branchName;
+  const statusOut = await probe("git status --porcelain=v1 -b --untracked-files=normal");
+  if (statusOut === undefined) return false;
+  const line = statusOut.split("\n")[0] ?? "";
+  const m = /^## ([^\s.]+)/.exec(line);
+  return m !== null && m[1] === branchName;
 }
 
 /**

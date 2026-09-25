@@ -14,6 +14,10 @@
  *      cycle's worktree (issue-2-task-a) and commits there → the audit
  *      halts with `integration-worktree-violation` naming issue-2-task-a,
  *      and NO PR-verification gate runs.
+ *  (1b) STRICT rule (decision (4)): repoRoot holding the branch (probed
+ *      directly — `git worktree list` never lists the main tree) →
+ *      violation; this cycle's OWN workstream worktree holding it →
+ *      violation.
  *  (2) a REAL cherry-pick conflict in integrate() → fallback → a stub that
  *      works ONLY in issue-1-integrate (applies the work, commits, pushes
  *      via a local bare remote, prints `pr: 99`) → the cycle proceeds
@@ -24,6 +28,10 @@
  *  (4) the fallback dispatch spec carries `cwd` = the integrate path, and
  *      the prompt names that path as the ONLY permitted working tree and
  *      forbids the repo root and every other .worktrees/*.
+ *  (5) the detach path (decision (1)): repoRoot CLEAN on the branch is
+ *      detached BEFORE the integrate worktree is created; the fallback
+ *      proceeds, and the audit passes (the branch held by the integrate
+ *      worktree is the only holder).
  *  (7) `integration-worktree-violation` is in explainCap, in the recovery
  *      renderer, and accepted by the validator (the cap union +
  *      CAP_HIT_FIXED_LITERALS live in the source and are covered by the
@@ -31,18 +39,26 @@
  */
 
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { recoveryStepsForCap } from "../src/work-driver-handoff-recovery.ts";
 import { integrateWorktreePath } from "../src/work-driver-integrate-worktree.ts";
-import { runWorkDriver } from "../src/work-driver.ts";
 import { validateDiscriminants } from "../src/workflow-state-validate.ts";
 import type { WorkState } from "../src/workflow-state.ts";
+import {
+  addLocalRemote,
+  fixture,
+  git,
+  mkResult,
+  realExec,
+  runCycle,
+  auditStateFor,
+  auditCtx,
+} from "./helpers-integrate-pin-realgit.ts";
 
 const execFileP = promisify(execFile);
 
@@ -55,135 +71,7 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const realExec = async (cmd: string, o?: { cwd?: string; maxBuffer?: number }) => {
-  try {
-    const { stdout } = await execFileP("/bin/sh", ["-c", cmd], {
-      cwd: o?.cwd,
-      maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
-    });
-    return { stdout };
-  } catch (e) {
-    const err = e as Error & { stderr?: string };
-    throw new Error(`${err.message}\n${err.stderr ?? ""}`);
-  }
-};
-const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
-const gitOut = async (cwd: string, args: string[]): Promise<string> =>
-  (await execFileP("git", args, { cwd })).stdout;
-
 const root = mkdtempSync(path.join(tmpdir(), "pi-ens-861-slice1-"));
-
-async function fixture(name: string): Promise<{ repo: string; baseSha: string }> {
-  const repo = path.join(root, name);
-  mkdirSync(repo, { recursive: true });
-  writeFileSync(path.join(repo, "shared.txt"), "line1\nline2\nline3\n");
-  await git(repo, ["init", "-q", "--initial-branch=main"]);
-  await git(repo, ["config", "user.email", "t@example.com"]);
-  await git(repo, ["config", "user.name", "T"]);
-  await git(repo, ["add", "shared.txt"]);
-  await git(repo, ["commit", "-q", "-m", "base"]);
-  const { stdout } = await git(repo, ["rev-parse", "HEAD"]);
-  return { repo, baseSha: stdout.trim() };
-}
-
-/** A local bare "remote" so `git push -u origin <branch>` works offline. */
-async function addLocalRemote(repo: string): Promise<void> {
-  const remote = path.join(root, `${path.basename(repo)}-remote.git`);
-  await execFileP("git", ["init", "-q", "--bare", remote]);
-  await git(repo, ["remote", "add", "origin", remote]);
-}
-
-const mkResult = (o: Partial<DispatchResult> = {}): DispatchResult => ({
-  role: "explore",
-  ok: true,
-  text: "stub",
-  toolUses: [],
-  ms: 100,
-  exitCode: 0,
-  transcriptPath: "/tmp/stub-transcript.json",
-  ...o,
-});
-
-const PLAN_REPLY = `## Workstreams
-
-### task-a — edit the shared file
-- paths: shared.txt
-- out-of-scope: docs
-`;
-
-/**
- * Build the driver context for a cycle. `exec` wraps real git (the driver's
- * verify seam); `dispatch` is the ops-fallback stub. The dispatchFn records
- * every (label, prompt, cwd) it sees.
- */
-function makeCtx(opts: {
-  repo: string;
-  issue: number;
-  branchName: string;
-  baseSha: string;
-  worktreePath: string;
-  onOpsCommitPr: (cwd: string | undefined, prompt: string) => Promise<DispatchResult | undefined>;
-}): DriverContext {
-  const { repo, issue, branchName, baseSha, worktreePath } = opts;
-  const exec = async (cmd: string, o?: { cwd?: string }) => {
-    if (cmd.startsWith("gh ")) return { stdout: "" };
-    if (cmd.startsWith("git fetch")) return { stdout: "" };
-    return realExec(cmd, o);
-  };
-  const dispatchFn: NonNullable<DriverContext["dispatchFn"]> = async (_pi, spec, dOpts) => {
-    const label = dOpts?.label ?? spec.role;
-    if (label === "explore") return mkResult({ text: "VERDICT: NEEDS_WORK" });
-    if (label === "plan") return mkResult({ text: PLAN_REPLY });
-    if (label === "ops") {
-      return mkResult({
-        role: "ops",
-        text: `branch: ${branchName}\n\n## Worktrees\n\n- task-a: ${worktreePath}`,
-      });
-    }
-    if (label.startsWith("developer"))
-      return mkResult({ role: "developer", text: "done — implemented" });
-    if (label === "ops:commit-pr") {
-      return (
-        (await opts.onOpsCommitPr(spec.cwd, spec.prompt)) ??
-        mkResult({ role: "ops", text: "stub commit-pr (see onOpsCommitPr)" })
-      );
-    }
-    if (label === "ops:ci") throw new Error("halt at ci: integration assertion boundary");
-    if (label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
-    throw new Error(`unexpected dispatch: ${label}`);
-  };
-  return {
-    pi: {} as unknown as DriverContext["pi"],
-    repoRoot: repo,
-    issue,
-    issueBodyFetcherFn: async (i: number) => ({
-      stdout: `title:\tmock issue #${i}\nstate:\tOPEN\n\nmock body for issue #${i}`,
-    }),
-    verifyExecFn: exec,
-    adversarialLoopFn: async () =>
-      mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
-    dispatchFn,
-  };
-}
-
-/** Run the driver, capturing the ops:commit-pr invocation. */
-async function runCycle(opts: {
-  repo: string;
-  issue: number;
-  branchName: string;
-  baseSha: string;
-  worktreePath: string;
-  onOpsCommitPr: (cwd: string | undefined, prompt: string) => Promise<DispatchResult | undefined>;
-}): Promise<WorkState | undefined> {
-  process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
-  process.env.PI_ENSEMBLE_SPAWN_TIMEOUT_MS = "2000";
-  process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
-  process.env.PI_ENSEMBLE_VERIFY = "0";
-  const ctx = makeCtx(opts);
-  await runWorkDriver(ctx).catch(() => {});
-  const { readState } = await import("../src/workflow-state.ts");
-  return readState(opts.repo, opts.issue);
-}
 
 try {
   // =====================================================================
@@ -195,8 +83,8 @@ try {
   // the rogue branch is never pushed, so the driver halts at lens first.)
   // =====================================================================
   {
-    const { repo, baseSha } = await fixture("viol");
-    await addLocalRemote(repo);
+    const { repo, baseSha } = await fixture(root, "viol");
+    await addLocalRemote(root, repo);
     // cycle 2's worktree (a DIFFERENT issue) — the #841 shape: #841's ops
     // child checked its branch out inside #844's worktree.
     const wtIssue2 = path.join(repo, ".worktrees", "issue-2-task-a");
@@ -212,31 +100,10 @@ try {
     // A completed fallback dispatch (the ops child returned) — the audit
     // runs on this state. The gates have NOT run (the audit must halt
     // before they can).
-    const { initialState, appendEvent } = await import("../src/workflow-state.ts");
-    let state = initialState(1, 1000);
-    state = appendEvent(state, {
-      kind: "dispatch-completed",
-      step: "commit-pr",
-      role: "ops",
-      label: "ops:commit-pr",
-      jobId: "j1",
-      summary: "rogue commit in the wrong tree\npr: 99",
-      ms: 100,
-      at: 2000,
-      ok: true,
-    });
-    state = {
-      ...state,
-      pipelineState: { ...state.pipelineState, branchName: branch1, baseSha },
-    };
+    const state = auditStateFor(1, branch1, baseSha, "rogue commit in the wrong tree\npr: 99");
     const { auditCommitPrFallback } = await import("../src/work-driver-commit-pr-audit.ts");
     const after = await auditCommitPrFallback(
-      {
-        pi: {} as unknown as DriverContext["pi"],
-        repoRoot: repo,
-        issue: 1,
-        verifyExecFn: realExec,
-      } as unknown as DriverContext,
+      auditCtx(repo, 1),
       realExec,
       state,
       true,
@@ -269,13 +136,57 @@ try {
   }
 
   // =====================================================================
+  // (1b) STRICT rule (decision (4)): the audit accepts the integrate
+  // worktree or NOTHING. repoRoot as holder → violation; this cycle's OWN
+  // workstream worktree as holder → violation.
+  // =====================================================================
+  {
+    const { repo, baseSha } = await fixture(root, "strict");
+    await addLocalRemote(root, repo);
+    const branch1 = "feature/issue-1-strict";
+    const auditCtxStrict = auditCtx(repo, 1);
+    const stateWith = (extra: Record<string, unknown> = {}) =>
+      auditStateFor(1, branch1, baseSha, "stub\npr: 99", extra);
+    const { auditCommitPrFallback } = await import("../src/work-driver-commit-pr-audit.ts");
+    // (a) repoRoot holds the branch (main tree — not in `git worktree list`).
+    const wtStrict = path.join(repo, ".worktrees", "issue-1-task-a");
+    await git(repo, ["worktree", "add", "-q", "--detach", wtStrict, baseSha]);
+    await execFileP("git", ["checkout", "-q", "-B", branch1], { cwd: repo });
+    await git(repo, ["commit", "-q", "--allow-empty", "-m", "repoRoot holds the branch"]);
+    const afterRoot = await auditCommitPrFallback(auditCtxStrict, realExec, stateWith(), true);
+    const capRoot = afterRoot.eventLog.find((e) => e.kind === "cap-hit");
+    assert(
+      capRoot?.kind === "cap-hit" && capRoot.cap === "integration-worktree-violation",
+      `STRICT: repoRoot as holder → violation (got ${capRoot?.cap})`,
+    );
+    assert(
+      (capRoot?.evidence ?? "").startsWith(`holder: ${repo}`),
+      `STRICT: the repoRoot violation evidence names repoRoot (got: ${capRoot?.evidence})`,
+    );
+    // (b) this cycle's OWN workstream worktree holds the branch.
+    await git(repo, ["checkout", "-q", "main"]);
+    await git(wtStrict, ["checkout", "-q", "-B", branch1]);
+    await git(wtStrict, ["commit", "-q", "--allow-empty", "-m", "own worktree holds the branch"]);
+    const afterOwn = await auditCommitPrFallback(auditCtxStrict, realExec, stateWith(), true);
+    const capOwn = afterOwn.eventLog.find((e) => e.kind === "cap-hit");
+    assert(
+      capOwn?.kind === "cap-hit" && capOwn.cap === "integration-worktree-violation",
+      `STRICT: this cycle's OWN workstream worktree as holder → violation (got ${capOwn?.cap})`,
+    );
+    assert(
+      (capOwn?.evidence ?? "").includes("issue-1-task-a"),
+      "STRICT: the own-worktree violation evidence names the workstream worktree",
+    );
+  }
+
+  // =====================================================================
   // (2) A REAL cherry-pick conflict → fallback → a stub that works ONLY in
   // issue-1-integrate → the cycle proceeds, and the integrate worktree is
   // GONE after success.
   // =====================================================================
   {
-    const { repo, baseSha } = await fixture("conflict");
-    await addLocalRemote(repo);
+    const { repo, baseSha } = await fixture(root, "conflict");
+    await addLocalRemote(root, repo);
     // A sibling commit on main (shared.txt line2) that the workstream's
     // commit (shared.txt line2, different) conflicts with: integrate()'s
     // cherry-pick of the workstream onto main (baseSha) hits a real
@@ -368,8 +279,8 @@ try {
   // (3) A stale dirty issue-1-integrate is force-replaced (no guard refusal).
   // =====================================================================
   {
-    const { repo, baseSha } = await fixture("stale");
-    await addLocalRemote(repo);
+    const { repo, baseSha } = await fixture(root, "stale");
+    await addLocalRemote(root, repo);
     const integrate1 = integrateWorktreePath(repo, 1);
     // Pre-create a DIRTY stale integrate worktree (a prior crashed
     // attempt left uncommitted work there).
@@ -417,7 +328,7 @@ try {
     // Re-run scenario 2's shape minimally to capture the cwd: a fresh
     // fixture where the fallback fires (empty worktree → the no-uncommitted
     // reason) and the stub does nothing.
-    const { repo, baseSha } = await fixture("cwd");
+    const { repo, baseSha } = await fixture(root, "cwd");
     const wt = path.join(repo, ".worktrees", "issue-1-task-a");
     await git(repo, ["worktree", "add", "-q", "--detach", wt, baseSha]);
     const branch1 = "feature/issue-1-cwd";
@@ -436,6 +347,68 @@ try {
     assert(
       opsCwd === integrateWorktreePath(repo, 1),
       `the fallback dispatch spec's cwd IS the integrate path (got ${opsCwd})`,
+    );
+  }
+
+  // =====================================================================
+  // (5) The detach path (decision (1)) — exercised DIRECTLY on
+  // ensureIntegrateWorktree (a cycle-level fixture cannot drive it: the
+  // branch step's own preflight refuses a repoRoot with uncommitted
+  // work, and integrate()'s `checkout -B` moves repoRoot onto the branch
+  // by the time the fallback runs — so in the cycle flow repoRoot never
+  // holds the branch at ensureIntegrateWorktree time; this is the unit
+  // shape): repoRoot CLEAN on the branch is detached, the integrate
+  // worktree is created ATTACHED at the branch tip, and a post-creation
+  // audit passes (the integrate worktree is the only holder).
+  // =====================================================================
+  {
+    const { repo, baseSha } = await fixture(root, "detach");
+    await addLocalRemote(root, repo);
+    const branch1 = "feature/issue-1-detach";
+    await git(repo, ["checkout", "-q", "-B", branch1]);
+    const before = await (
+      await import("../src/work-driver-integrate-worktree.ts")
+    ).repoRootHoldsBranch(realExec, repo, branch1);
+    assert(before, "detach: repoRoot STARTS on the branch (the fixture precondition)");
+    const { ensureIntegrateWorktree } = await import("../src/work-driver-integrate-worktree.ts");
+    const created = await ensureIntegrateWorktree(realExec, {
+      repoRoot: repo,
+      issue: 1,
+      branchName: branch1,
+      baseSha,
+    });
+    assert(created.repoRootDetached, "detach: the result records that repoRoot was detached");
+    const { stdout: rootRef } = await execFileP(
+      "git",
+      ["symbolic-ref", "--quiet", "--short", "HEAD"],
+      {
+        cwd: repo,
+      },
+    ).catch(() => ({ stdout: "" }));
+    assert(
+      rootRef.trim() !== branch1,
+      `repoRoot was DETACHED off ${branch1} (now on ${(rootRef ?? "").trim() || "detached HEAD"})`,
+    );
+    const list = (await git(repo, ["worktree", "list", "--porcelain"])).stdout;
+    assert(
+      list.includes("issue-1-integrate"),
+      "the integrate worktree was created (it now holds the branch after the detach)",
+    );
+    // Post-creation audit: the integrate worktree is the ONLY holder →
+    // no violation (a stub dispatch result completes the audit's input).
+    const { auditCommitPrFallback } = await import("../src/work-driver-commit-pr-audit.ts");
+    const after = await auditCommitPrFallback(
+      auditCtx(repo, 1),
+      realExec,
+      auditStateFor(1, branch1, baseSha, "stub\npr: 99"),
+      true,
+    );
+    const cap = after.eventLog.find(
+      (e) => e.kind === "cap-hit" && e.cap === "integration-worktree-violation",
+    );
+    assert(
+      cap === undefined,
+      "detach: the post-creation audit PASSES (integrate worktree is the only holder)",
     );
   }
 
