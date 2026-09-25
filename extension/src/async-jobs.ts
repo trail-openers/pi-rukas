@@ -18,8 +18,10 @@ import {
   formatSingleReport,
   totalTokens,
 } from "./async-jobs-report.ts";
+import * as live from "./dispatch-deck-live.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import * as lifecycle from "./lifecycle-events.ts";
+import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import type { RunningState } from "./progress.ts";
 import * as sessionAutosave from "./session-autosave.ts";
 import { trace } from "./trace.ts";
@@ -73,6 +75,12 @@ export interface WorkHooks {
    * straight through to spawnSpecialist's onProgress option.
    */
   onProgress: (state: RunningState) => void;
+  /**
+   * #839 — raw-event observer for the dispatch deck's live view. Work
+   * functions pass this through to spawnSpecialist's onRawEvent option
+   * (OPTIONAL there); it feeds the job's ring buffer (dispatch-deck-live.ts).
+   */
+  onRawEvent: (event: PiJsonEvent) => void;
   /**
    * Stdin-handle callback (#153). Called once after the child is spawned,
    * before the kickoff prompt is written. Work functions pass this through
@@ -171,9 +179,13 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
   lifecycle.emitDispatched(jobId, input.label, input.role);
   sessionAutosave.recordDispatch(input.role);
 
+  if (!input.skipDeck) live.startBuffer(jobId);
   const hooks: WorkHooks = {
     onProgress: (progress) => {
       if (!input.skipDeck) dispatchDeck.updateEntry(jobId, progress);
+    },
+    onRawEvent: (event) => {
+      live.feedRawEvent(jobId, event);
     },
     onStdin: (stdin) => {
       childHandles.set(jobId, { stdin, label: input.label, role: input.role });
@@ -181,7 +193,12 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
     jobId,
   };
 
-  const completion = input.work(abort.signal, hooks).then(
+  // Wrapping in `new Promise` turns a SYNCHRONOUS throw from `input.work`
+  // into a rejection that flows through the handlers below (as async
+  // failures already do) — no separate synchronous-throw path.
+  const completion = new Promise<DispatchResult>((resolve) =>
+    resolve(input.work(abort.signal, hooks)),
+  ).then(
     (result) => {
       jobs.delete(jobId);
       childHandles.delete(jobId);
@@ -356,17 +373,21 @@ export function startBatch(
     jobs.set(jobId, memberState);
 
     dispatchDeck.startEntry(jobId, { label: m.label, role: m.role, batchKey: batchId });
+    live.startBuffer(jobId);
     sessionAutosave.recordDispatch(m.role);
     const memberHooks: WorkHooks = {
       onProgress: (progress) => dispatchDeck.updateEntry(jobId, progress),
+      onRawEvent: (event) => live.feedRawEvent(jobId, event),
       onStdin: (stdin) => {
         childHandles.set(jobId, { stdin, label: m.label, role: m.role });
       },
       jobId,
     };
 
-    void m
-      .work(memberAbort.signal, memberHooks)
+    // Wrapping in `new Promise` turns a SYNCHRONOUS throw from `m.work` into
+    // a rejection that settles through the handlers below (as async failures
+    // already do) — no separate synchronous-throw path.
+    void new Promise<DispatchResult>((resolve) => resolve(m.work(memberAbort.signal, memberHooks)))
       .then(
         (result) => {
           jobs.delete(jobId);

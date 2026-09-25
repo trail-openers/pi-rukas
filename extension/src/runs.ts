@@ -2,6 +2,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import {
+  TOOL_ARGS_PREVIEW_MAX,
+  TOOL_RESULT_LINE_MAX,
+  TOOL_RESULT_PREVIEW_MAX,
+} from "./transcript-preview-limits.ts";
 
 const ENSEMBLE_DIR_DEFAULT = path.join(os.homedir(), ".pi", "agent", "ensemble-runs");
 
@@ -284,7 +289,7 @@ export async function summariseTranscript(file: string): Promise<ParsedTranscrip
     if (msg.role === "toolResult") {
       const blocks = msg.content ?? [];
       const preview = blocks.map((b) => (b.type === "text" && b.text ? b.text : "")).join("");
-      out.toolResults.push({ preview: preview.slice(0, 400) });
+      out.toolResults.push({ preview: preview.slice(0, TOOL_RESULT_PREVIEW_MAX) });
     } else if (msg.role === "user") {
       for (const b of msg.content ?? []) {
         if (b.type === "text" && b.text) {
@@ -296,7 +301,7 @@ export async function summariseTranscript(file: string): Promise<ParsedTranscrip
               : Array.isArray(b.content)
                 ? (b.content as Array<{ text?: string }>).map((c) => c.text ?? "").join("")
                 : JSON.stringify(b.content ?? "");
-          out.toolResults.push({ preview: preview.slice(0, 400) });
+          out.toolResults.push({ preview: preview.slice(0, TOOL_RESULT_PREVIEW_MAX) });
         }
       }
     } else if (msg.role === "assistant") {
@@ -342,12 +347,15 @@ export function renderTranscript(file: RunFile, parsed: ParsedTranscript): strin
       const tc = parsed.toolCalls[i];
       if (!tc) continue;
       const inputStr = JSON.stringify(tc.input);
-      const truncated = inputStr.length > 240 ? `${inputStr.slice(0, 240)}…` : inputStr;
+      const truncated =
+        inputStr.length > TOOL_ARGS_PREVIEW_MAX
+          ? `${inputStr.slice(0, TOOL_ARGS_PREVIEW_MAX)}…`
+          : inputStr;
       lines.push(`${i + 1}. [${tc.name}] ${truncated}`);
       const matching = parsed.toolResults[i];
       if (matching) {
-        const preview = matching.preview.replaceAll("\n", " ").slice(0, 200);
-        lines.push(`   → ${preview}${preview.length === 200 ? "…" : ""}`);
+        const preview = matching.preview.replaceAll("\n", " ").slice(0, TOOL_RESULT_LINE_MAX);
+        lines.push(`   → ${preview}${preview.length === TOOL_RESULT_LINE_MAX ? "…" : ""}`);
       }
     }
   }
