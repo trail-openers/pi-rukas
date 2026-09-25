@@ -1,5 +1,6 @@
 ---
 name: code-review-performance
+precedence: 40
 description: Performance code review lens for identifying bottlenecks, inefficient algorithms, and resource waste.
 ---
 

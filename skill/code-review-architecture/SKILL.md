@@ -1,5 +1,6 @@
 ---
 name: code-review-architecture
+precedence: 50
 description: Architecture code review lens for assessing design quality, coupling, cohesion, and structural integrity.
 ---
 

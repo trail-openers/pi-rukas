@@ -1,5 +1,5 @@
 /**
- * Pure formatting/parsing helpers for the six-pass lens review: the lens
+ * Pure formatting/parsing helpers for the code-review lens roster: the lens
  * roster, prompt construction, report_finding parsing, precedence-based
  * dedup, and the human-readable summary renderer. No `ExtensionAPI`
  * coupling — orchestration (spawning, retries, job wiring) lives in
@@ -13,27 +13,28 @@ import type {
   LensRunResult,
   Severity,
 } from "./lens-review.ts";
+import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
 
-export const LENSES = [
-  { name: "SECURITY", skill: "code-review-security", precedence: 0 },
-  { name: "ERROR_HANDLING", skill: "code-review-error-handling", precedence: 1 },
-  { name: "TYPE_SAFETY", skill: "code-review-type-safety", precedence: 2 },
-  { name: "PERFORMANCE", skill: "code-review-performance", precedence: 3 },
-  { name: "ARCHITECTURE", skill: "code-review-architecture", precedence: 4 },
-  { name: "SIMPLICITY", skill: "code-review-simplicity", precedence: 5 },
-] as const;
-
-export type LensName = (typeof LENSES)[number]["name"];
+export const LENS_PREFIX = "code-review-";
 
 export function lensPromptFor(
-  lens: (typeof LENSES)[number],
+  lens: RosterEntry,
   diff: string,
   context: string,
   evidence?: string,
+  roster: RosterEntry[] = [],
 ): string {
+  // The other-lenses list is derived from the FULL roster — every other
+  // lens in the configured roster, including blocked ones (a blocked lens
+  // still has a separate reviewer row, so the claim reflects what the
+  // review actually runs); the lens's own name is excluded. A seventh lens
+  // that is configuration, not code, appears here without a code change.
+  const others = roster.filter((e) => e.name !== lens.name).map((e) => e.name.toLowerCase());
+  const laneList =
+    others.length > 0 ? others.join(" / ") : "the other review lenses (each has its own reviewer)";
   return `You are running the **${lens.name}** review lens.
 
-Scope discipline — only flag issues that belong to **${lens.name}**. Do NOT report findings that belong to other lenses (security / errors / types / perf / architecture / simplicity have separate reviewers; trust them with their own lanes).
+Scope discipline — only flag issues that belong to **${lens.name}**. Do NOT report findings that belong to other lenses (${laneList} have separate reviewers; trust them with their own lanes).
 
 Context for this PR: ${context || "(no extra context)"}
 
@@ -71,7 +72,7 @@ When you have finished all findings, write a short prose summary as your final r
  */
 export function extractFindings(
   toolUses: unknown[],
-  lens: LensName,
+  lens: string,
 ): { findings: Finding[]; skipped: number } {
   const out: Finding[] = [];
   let skipped = 0;
@@ -111,14 +112,20 @@ function normalisePath(p: string): string {
 /**
  * Deduplicate findings by (normalised path, line, lowercased title). When
  * duplicates exist across lenses, keep the one from the highest-priority lens
- * (SECURITY > ERROR_HANDLING > TYPE_SAFETY > PERFORMANCE > ARCHITECTURE > SIMPLICITY).
+ * (roster precedence ascending: the lowest declared value wins). `lens`
+ * takes the roster parsed from the skills dir; lenses the roster does not
+ * know (e.g. stale findings from an older pass) fall back to 99.
  */
-export function dedupeFindings(input: Finding[]): Finding[] {
-  const precedenceOf = new Map<FindingSource, number>(LENSES.map((l) => [l.name, l.precedence]));
+export function dedupeFindings(input: Finding[], lens: RosterEntry[]): Finding[] {
+  const precedenceOf = new Map<FindingSource, number>();
+  for (const l of lens) {
+    if (l.precedence !== undefined) precedenceOf.set(l.name, l.precedence);
+  }
   // CLAIM_SCAN outranks every lens on a collision. Its findings are lookups,
   // not judgments — if a lens and the scan land on the same line, the one that
-  // can point at a grep result is the one worth keeping.
-  precedenceOf.set("CLAIM_SCAN", -1);
+  // can point at a grep result is the one worth keeping. NEGATIVE_INFINITY so
+  // it outranks any declared value, whatever the skill authors renumber to.
+  precedenceOf.set(CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE);
   // `bestByKey` is bounded by the lens fan-in (≤6 children × finite findings
   // per pass) — at most a few hundred entries per invocation, and the whole
   // map goes out of scope when this function returns. No explicit cap needed.
@@ -260,7 +267,7 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
       : [];
 
   return [
-    `Six-pass code review verdict: ${s.verdict}`,
+    `Code review verdict (${s.lenses.length} lenses): ${s.verdict}`,
     `Total findings: ${s.totalFindings}  (${sevSummary || "none"})`,
     ...blockedBanner,
     ...retryNote,

@@ -1,5 +1,5 @@
 ---
-description: On-demand six-pass code review (SECURITY, ERROR_HANDLING, TYPE_SAFETY, PERFORMANCE, ARCHITECTURE, SIMPLICITY)
+description: On-demand code review — every code-review lens (roster parsed from the installed skills), deduped by (path, line, title) with precedence merge (SECURITY > ERROR_HANDLING > TYPE_SAFETY > PERFORMANCE > ARCHITECTURE > SIMPLICITY)
 argument-hint: "[#PR | path | latest N | (empty = full codebase)]"
 ---
 
@@ -15,7 +15,7 @@ If no scope was provided above, this command defaults to a full-codebase review 
 
 ## Role
 
-You are running an on-demand six-pass code review. Your job:
+You are running an on-demand code review across every lens in the review roster. Your job:
 1. Determine the scope (one PR, a path, the latest N PRs, or the whole codebase).
 2. Gather the code under review as a single `diff` payload.
 3. Call the `dispatch_lens_review` tool ONCE.
@@ -58,7 +58,7 @@ Match strictly:
 
 ### Mode 2 — Full codebase review (empty `$ARGUMENTS`)
 
-1. Confirm with the user: "Run a full-codebase review across all six lenses? This will take several minutes and a few cents on token spend. (y/n)"
+1. Confirm with the user: "Run a full-codebase review across all the review lenses? This will take several minutes and a few cents on token spend. (y/n)"
 2. If declined: ask what scope to use instead and restart at Mode 1.
 3. If confirmed:
    - Partition by top-level directory (`src/`, `lib/`, `packages/`, etc.).
@@ -77,7 +77,7 @@ Call the `dispatch_lens_review` tool with:
 - `context`: 1-2 sentences explaining what was assembled (e.g., "PR #456 — refactor auth handler" or "Static review of src/auth/").
 - `cwd`: only set if the review should run in a non-default working directory.
 
-The tool fans out the six parallel `code-review-specialist` children, each pinned to its skill, dedupes findings by `(path, line, title)` and precedence-merges them (SECURITY > ERROR_HANDLING > TYPE_SAFETY > PERFORMANCE > ARCHITECTURE > SIMPLICITY), and returns a verdict.
+The tool fans out the parallel `code-review-specialist` children (one per lens in the roster, each pinned to its skill), dedupes findings by `(path, line, title)` and precedence-merges them (SECURITY > ERROR_HANDLING > TYPE_SAFETY > PERFORMANCE > ARCHITECTURE > SIMPLICITY), and returns a verdict.
 
 ---
 

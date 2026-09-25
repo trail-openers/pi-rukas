@@ -32,7 +32,8 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { buildEvidence } from "../src/lens-evidence.ts";
-import { LENSES, lensPromptFor } from "../src/lens-review-format.ts";
+import { buildLensRoster } from "../src/lens-roster.ts";
+import { lensPromptFor } from "../src/lens-review-format.ts";
 import { DEFAULT_REVIEW_THRESHOLD, computeVerdict } from "../src/lens-review.ts";
 import type { Finding } from "../src/lens-review.ts";
 import { resolveReviewThreshold } from "../src/review-threshold.ts";
@@ -55,6 +56,13 @@ function assert(cond: boolean, msg: string) {
 }
 
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-lens-evidence-"));
+
+// The repo's own skill/ dir is the offline stand-in for the installed skills
+// dir (never ~/.pi). Lens lookups are by name, not by array index — the
+// roster is data now and its length is not 6 by contract.
+const EVIDENCE_ROSTER = buildLensRoster(path.resolve(import.meta.dirname, "..", "..", "skill"));
+const LENS_SIMPLE = EVIDENCE_ROSTER.find((e) => e.name === "SIMPLICITY")!;
+const LENS_SECURITY = EVIDENCE_ROSTER.find((e) => e.name === "SECURITY")!;
 
 // ------------------- the wrong-tree canary, against a real detached worktree
 
@@ -140,7 +148,7 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-lens-evidence-"));
   // The delivery point: evidence must actually reach the child's prompt, and
   // every lens must be told its filesystem is stale. A helper that builds
   // evidence nobody is given would pass every assertion above.
-  const prompt = lensPromptFor(LENSES[5], diff, "ctx", evidence);
+  const prompt = lensPromptFor(LENS_SIMPLE, diff, "ctx", evidence, EVIDENCE_ROSTER);
   assert(
     prompt.includes("The default timeout is 30 seconds."),
     "the evidence reaches the rendered lens prompt",
@@ -150,7 +158,7 @@ const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-lens-evidence-"));
     "...and every lens is warned that opening a file yields the pre-change version",
   );
   assert(
-    !lensPromptFor(LENSES[0], diff, "ctx").includes("The default timeout is 30 seconds."),
+    !lensPromptFor(LENS_SECURITY, diff, "ctx", undefined, EVIDENCE_ROSTER).includes("The default timeout is 30 seconds."),
     "...while a prompt built without evidence carries none (not vacuous)",
   );
 

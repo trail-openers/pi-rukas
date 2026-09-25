@@ -1,5 +1,6 @@
 ---
 name: code-review-error-handling
+precedence: 20
 description: Error-handling and resilience code review lens for catching silent failures, unbounded I/O, swallowed exceptions, and partial-failure pitfalls.
 ---
 

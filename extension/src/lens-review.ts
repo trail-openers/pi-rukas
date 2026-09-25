@@ -7,15 +7,15 @@ import { startJob } from "./async-jobs.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { runLensChild } from "./lens-review-child.ts";
 import {
-  LENSES,
-  type LensName,
+  LENS_PREFIX,
   bySeverityCounts,
   dedupeFindings,
   extractFindings,
   lensPromptFor,
   renderSummary,
 } from "./lens-review-format.ts";
-import { blockedLensResults, skillsDirUsable } from "./lens-review-skills.ts";
+import { installBlockRows, skillsDirUsable } from "./lens-review-skills.ts";
+import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
 import { makeRunId } from "./spawn.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
@@ -32,9 +32,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * this module owns spawning, retries, and the async-job/tool wiring.
  */
 
-export { LENSES, extractFindings, dedupeFindings, renderSummary };
-export type { LensName };
-export type LensDef = (typeof LENSES)[number];
+export { CLAIM_SCAN, LENS_PREFIX, extractFindings, dedupeFindings, renderSummary };
+export type LensName = string; // deliberately unbounded — the roster is data-driven from SKILL.md frontmatter (#873)
+/** One roster entry — the shape a lens child receives per dispatch (#873:
+ * the roster is data, so `LensDef` is the parsed entry type). */
+export type LensDef = RosterEntry;
 export const LENS_REPORTER_PATH = path.join(__dirname, "lens-reporter.ts");
 
 /**
@@ -278,26 +280,39 @@ export async function runLensReview(opts: {
   const runId = makeRunId();
   const skillsDir = piSkillsDir();
   const context = opts.context ?? "";
-  // #872 — ONE skills-dir check before the fan-out (not six per-lens
-  // checks): missing or empty blocks ALL six with a single install
-  // message and no spawn is ever called.
-  const skillsDirProblem = skillsDirUsable(skillsDir);
-  if (skillsDirProblem) {
+  // #873 — the roster is data: the INSTALLED skills dir's `code-review-*`
+  // SKILL.md files (precedence in frontmatter), PLUS a blocked entry for
+  // every expected lens (the BUNDLED skill/ dir) that is absent from the
+  // installed dir or has a dangling skill — a lens must never silently
+  // disappear from a six-pass review (five lenses + APPROVED). Blocked
+  // entries (missing/duplicate precedence, unparseable SKILL.md, `name:` ≠
+  // dir, skill not installed) become blocked lens results below →
+  // REVIEW_INCOMPLETE; the review never runs a silently reduced or reordered
+  // roster.
+  const roster = buildExpectedRoster(skillsDir);
+  // #872 — ONE skills-dir check before the fan-out (not per-lens checks):
+  // a missing, empty, or no-`code-review-*`-skill dir blocks ALL lenses
+  // with a single install message and no spawn is ever called. The roster
+  // is empty exactly in those cases, so the two are one check now (#873
+  // moved the "any lens skill present" test onto the parsed roster).
+  if (roster.length === 0) {
+    const problem =
+      skillsDirUsable(skillsDir) ?? `skills dir ${skillsDir} missing or empty — run ./install.sh`;
     const batchKey = `${runId}/batch`;
     dispatchDeck.startBatchEntry(batchKey, {
-      label: `code-review-specialist×${LENSES.length}`,
-      size: LENSES.length,
+      label: "code-review-specialist×0",
+      size: 0,
     });
-    const lensResults = blockedLensResults(skillsDirProblem);
-    // Bump the batch once per lens so the deck shows 6/6 even though no
-    // spawn happened — the lens did "complete" (as a block), and the
-    // operator should see the pass as finished, not stuck.
+    const lensResults = installBlockRows(problem);
+    // Bump the batch once per lens so the deck shows the pass as finished,
+    // not stuck, even though no spawn happened — the lens did "complete"
+    // (as a block).
     for (let i = 1; i <= lensResults.length; i++) {
       dispatchDeck.updateBatchProgress(batchKey, i);
     }
     dispatchDeck.clearBatchEntry(batchKey);
     const all = [...(opts.extraFindings ?? [])];
-    const deduped = dedupeFindings(all);
+    const deduped = dedupeFindings(all, roster);
     return {
       verdict: computeVerdict(deduped, lensResults, opts.threshold),
       totalFindings: deduped.length,
@@ -312,8 +327,8 @@ export async function runLensReview(opts: {
   // BEFORE the per-lens entries so its seq sorts first on Pi's footer.
   const batchKey = `${runId}/batch`;
   dispatchDeck.startBatchEntry(batchKey, {
-    label: `code-review-specialist×${LENSES.length}`,
-    size: LENSES.length,
+    label: `code-review-specialist×${roster.length}`,
+    size: roster.length,
   });
   let completedLenses = 0;
   const bumpBatch = () => {
@@ -321,25 +336,42 @@ export async function runLensReview(opts: {
     dispatchDeck.updateBatchProgress(batchKey, completedLenses);
   };
 
-  const promises = LENSES.map((lens) =>
+  // #873 — blocked roster entries become blocked lens results (no spawn,
+  // the named error as parseError) and feed REVIEW_INCOMPLETE via
+  // computeVerdict; healthy entries fan out as before.
+  const blocked = roster.filter((e) => e.error !== undefined);
+  const healthy = roster.filter((e) => e.error === undefined);
+  const blockedResults: LensRunResult[] = blocked.map((e) => ({
+    lens: e.name,
+    ok: false,
+    ms: 0,
+    startMs: Date.now(),
+    findings: [],
+    attempts: 0,
+    blocked: true,
+    parseError: e.error,
+  }));
+
+  const promises = healthy.map((lens) =>
     runLensChild({
       lens,
       runId,
       skillsDir,
       context,
+      roster,
       opts,
       bumpBatch,
       ...(opts.pi ? { pi: opts.pi } : {}),
     }),
   );
 
-  const lensResults = await Promise.all(promises);
+  const lensResults = [...(await Promise.all(promises)), ...blockedResults];
   dispatchDeck.clearBatchEntry(batchKey);
   // Deterministic findings are merged BEFORE dedup and verdict so they are
   // indistinguishable downstream from a lens's own — same precedence rules,
   // same threshold, same rendering. They are findings, not a side channel.
   const all = [...lensResults.flatMap((r) => r.findings), ...(opts.extraFindings ?? [])];
-  const deduped = dedupeFindings(all);
+  const deduped = dedupeFindings(all, roster);
   const verdict = computeVerdict(deduped, lensResults, opts.threshold);
   // #534 — raw sum across lenses (no dedup, matching the retry rule).
   // `turns` is not meaningful at the aggregate level; keep it as the sum
@@ -405,9 +437,9 @@ function capKillSummary(
 export function registerLensReviewTool(pi: ExtensionAPI) {
   pi.registerTool({
     name: "dispatch_lens_review",
-    label: "Six-pass Code Review",
+    label: "Code Review",
     description:
-      "Fan out the six mandatory code-review lenses (SECURITY, ERROR_HANDLING, TYPE_SAFETY, PERFORMANCE, ARCHITECTURE, SIMPLICITY) in parallel as an async job. Returns a job handle immediately; ONE consolidated verdict + dedup'd findings arrives as a [ensemble:async] user message when all 6 lenses finish. End your turn after dispatching.",
+      "Fan out the code-review lenses (roster parsed from the installed `code-review-*` skills, precedence in each SKILL.md's frontmatter) in parallel as an async job. Returns a job handle immediately; ONE consolidated verdict + dedup'd findings arrives as a [ensemble:async] user message when all lenses finish. End your turn after dispatching.",
     parameters: Type.Object({
       diff: Type.String({ description: LENS_REVIEW_DIFF_DESCRIPTION }),
       context: Type.Optional(
@@ -431,8 +463,8 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
           const summary = await runLensReview({ ...params, signal });
           // ok is true when the review completed AND the verdict is neither
           // CRITICAL nor INCOMPLETE. INCOMPLETE means at least one lens
-          // failed all retries (#3) — the review did NOT actually run six
-          // passes, so PM/user must decide whether to retry or override.
+          // failed all retries (#3) — the review did NOT actually run every
+          // pass, so PM/user must decide whether to retry or override.
           return {
             role: "lens-review",
             ok:
@@ -449,7 +481,7 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
         content: [
           {
             type: "text",
-            text: `Dispatched async six-pass lens review; job ${jobId}. Verdict + findings will arrive as a [ensemble:async] user message when all 6 lenses finish. End your turn.`,
+            text: `Dispatched async lens review; job ${jobId}. Verdict + findings will arrive as a [ensemble:async] user message when all lenses finish. End your turn.`,
           },
         ],
         details: { jobId, role: "lens-review", async: true },

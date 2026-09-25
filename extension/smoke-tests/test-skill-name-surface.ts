@@ -8,8 +8,8 @@
  *      skill/<name>/SKILL.md.
  *   2. Each SKILL.md frontmatter `name:` (first `---` block only) equals
  *      its directory name.
- *   3. Every LENSES[].skill (extension/src/lens-review-format.ts) resolves
- *      to the repo's skill/<name>/SKILL.md.
+ *   3. Every lens skill in the repo's skill/ dir (the data-driven roster,
+ *      extension/src/lens-roster.ts) resolves.
  *   4. Anti-vacuity: the real-repo extraction yields ≥ 10 DISTINCT names.
  *
  * **Extraction rule** (#867 decisions comment). A skill-name reference is
@@ -44,7 +44,8 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { LENSES } from "../src/lens-review-format.ts";
+import { buildLensRoster } from "../src/lens-roster.ts";
+import { frontmatterField } from "../src/skill-frontmatter.ts";
 
 const REPO_ROOT = path.join(import.meta.dirname, "..", "..");
 const SCAN_ROOTS = ["agents-base", "modules", "pi-prompts"];
@@ -123,24 +124,6 @@ export function extractSkillNames(root: string): Map<string, string> {
   return names;
 }
 
-/** The first `---`-delimited frontmatter block, or null when absent. */
-export function firstFrontmatterBlock(text: string): string | null {
-  if (!/^---[ \t]*\r?$/.test(text.split(/\r?\n/)[0] ?? "")) return null;
-  const rest = text.slice(3);
-  const end = rest.search(/^---[ \t]*\r?$/m);
-  if (end === -1) return null;
-  return rest.slice(0, end);
-}
-
-/** `name:` value from the first frontmatter block only. */
-export function frontmatterName(text: string): string | null {
-  const block = firstFrontmatterBlock(text);
-  if (block === null) return null;
-  const m = block.match(/^name:\s*(.+?)\s*\r?$/m);
-  if (!m) return null;
-  return m[1].replace(/^["']|["']$/g, "");
-}
-
 export interface SkillSurfaceFailure {
   kind: "phantom" | "frontmatter" | "lens";
   detail: string;
@@ -148,9 +131,9 @@ export interface SkillSurfaceFailure {
 
 /**
  * The full gate over one tree: extracted names must resolve, frontmatter
- * names must match their directories. LENSES resolution and the
- * anti-vacuity floor are repo-only checks — LENSES is a static import of
- * the real roster — so they run inside `checkRepoSurface`.
+ * names must match their directories. Roster resolution and the
+ * anti-vacuity floor are repo-only checks — the roster is parsed from the
+ * real repo's skill/ dir — so they run inside `checkRepoSurface`.
  */
 export function checkTreeSurface(root: string): { names: Map<string, string>; failures: SkillSurfaceFailure[] } {
   const names = extractSkillNames(root);
@@ -170,7 +153,7 @@ export function checkTreeSurface(root: string): { names: Map<string, string>; fa
   for (const dir of dirs) {
     const skillMd = path.join(skillDir, dir, "SKILL.md");
     if (!existsSync(skillMd)) continue;
-    const name = frontmatterName(readFileSync(skillMd, "utf8"));
+    const name = frontmatterField(readFileSync(skillMd, "utf8"), "name");
     if (name === null) {
       failures.push({ kind: "frontmatter", detail: `skill/${dir}/SKILL.md has no \`name:\` in its first frontmatter block` });
     } else if (name !== dir) {
@@ -180,13 +163,13 @@ export function checkTreeSurface(root: string): { names: Map<string, string>; fa
   return { names, failures };
 }
 
-/** Repo-only additions: LENSES resolution + anti-vacuity on the union. */
+/** Repo-only additions: roster-builder resolution (buildLensRoster) + anti-vacuity on the union. */
 export function checkRepoSurface(repoRoot: string): SkillSurfaceFailure[] {
   const { names, failures } = checkTreeSurface(repoRoot);
   const out = [...failures];
-  for (const lens of LENSES) {
+  for (const lens of buildLensRoster(path.join(repoRoot, "skill"))) {
     if (!existsSync(path.join(repoRoot, "skill", lens.skill, "SKILL.md"))) {
-      out.push({ kind: "lens", detail: `LENSES ${lens.name} → \`${lens.skill}\` does not resolve to skill/${lens.skill}/SKILL.md` });
+      out.push({ kind: "lens", detail: `roster ${lens.name} → \`${lens.skill}\` does not resolve to skill/${lens.skill}/SKILL.md` });
     }
   }
   if (names.size < ANTI_VACUITY_FLOOR) {
@@ -260,7 +243,7 @@ const extracted = [...extractSkillNames(REPO_ROOT).keys()].sort();
 console.log(`  distinct names from the real-repo scan (${extracted.length}):`);
 for (const n of extracted) console.log(`    - ${n}`);
 if (repoFailures.length === 0) {
-  assert(true, `every extracted skill name, every SKILL.md frontmatter name and every LENSES entry resolves (${extracted.length} distinct names)`);
+  assert(true, `every extracted skill name, every SKILL.md frontmatter name and every roster entry resolves (${extracted.length} distinct names)`);
 } else {
   for (const f of repoFailures) {
     assert(false, f.detail);
