@@ -1,5 +1,6 @@
 ---
 name: code-review-type-safety
+precedence: 30
 description: Type-safety code review lens for catching type errors, schema mismatches, and unsafe type coercions.
 ---
 

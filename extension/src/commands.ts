@@ -374,7 +374,7 @@ function descriptionFor(name: SlashCommand): string {
     case "work":
       return "<issue-number> — Execute a GitHub issue end-to-end: branch → implement → adversarial → PR → review → CI → merge";
     case "review":
-      return "[#PR | path | latest N | empty=full] — On-demand six-pass code review (SECURITY/ERROR/TYPES/PERF/ARCH/SIMPLICITY)";
+      return "[#PR | path | latest N | empty=full] — On-demand code review (SECURITY/ERROR/TYPES/PERF/ARCH/SIMPLICITY lenses)";
     case "audit":
       return "[<path> | <path>=<scope> ...] — Audit repo/path against its own standards (derive from docs/config/examples, not hard-coded)";
     case "do":

@@ -2,7 +2,9 @@
  * lens-review-child — one lens's spawn + retry loop + result shaping,
  * split from lens-review.ts (AGENTS.md §12 file-size limit).
  *
- * `runLensReview` (lens-review.ts) maps `LENSES` over this; the batch
+ * `runLensReview` (lens-review.ts) maps the parsed lens roster (the
+ * `code-review-*` skill dirs — see `buildLensRoster` in lens-roster.ts)
+ * over this; the batch
  * deck, dedup, verdict and cap-kill summary live in the parent.
  */
 
@@ -13,6 +15,7 @@ import * as dispatchDeck from "./dispatch-deck.ts";
 import { extractFindings, lensPromptFor } from "./lens-review-format.ts";
 import { LENS_REPORTER_PATH, type LensDef } from "./lens-review.ts";
 import type { LensRunResult } from "./lens-review.ts";
+import type { RosterEntry } from "./lens-roster.ts";
 import { readEnumMarker } from "./reply-markers.ts";
 import type { SlowWatchInput } from "./slow-notice.ts";
 import { feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
@@ -29,6 +32,9 @@ export async function runLensChild(opts: {
   runId: string;
   skillsDir: string;
   context: string;
+  /** #873 — the full parsed roster, so the prompt's other-lenses list is
+   * derived from the data (a seventh lens appears with no code change). */
+  roster: RosterEntry[];
   opts: {
     diff: string;
     cwd?: string;
@@ -43,6 +49,7 @@ export async function runLensChild(opts: {
 }): Promise<LensRunResult> {
   const { lens, runId, skillsDir, context, bumpBatch } = opts;
   const runOpts = opts.opts;
+  const roster = opts.roster;
   // #456 — the moment this lens began dispatching, so a serialised pass
   // (spawn cap 1) is diagnosable: sequential startMs mean queueing.
   const startMs = Date.now();
@@ -67,7 +74,7 @@ export async function runLensChild(opts: {
       parseError: `skill not installed: ${skillPath} (not spawned)`,
     };
   }
-  const prompt = lensPromptFor(lens, runOpts.diff, context, runOpts.evidence);
+  const prompt = lensPromptFor(lens, runOpts.diff, context, runOpts.evidence, roster);
   const tag = lens.name.toLowerCase().replaceAll("_", "-");
   // Per-lens deck key. The dispatch deck (#117) is now the single live
   // surface — there used to be a parallel onUpdate callback rendering an
