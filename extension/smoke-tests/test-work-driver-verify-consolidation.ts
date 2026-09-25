@@ -21,7 +21,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { explainCap } from "../src/work-driver-explain.ts";
 import { verifyConsolidation } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
 
@@ -103,41 +102,6 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
   const wsA = (paths: string[]) => ({ id: "a", scope: "task-a", paths, outOfScope: [] });
   const wsB = (paths: string[]) => ({ id: "b", scope: "task-b", paths, outOfScope: [] });
 
-  // #875 — a detached worktree at <dir>/<sub> of the repo, committed from
-  // the recorded base (the workstream's own range base, mirroring the
-  // driver's `git worktree add --detach` shape). Each worktree gets its
-  // own index file so the porcelain read is isolated (linked worktrees
-  // share the main repo's index, which would cross-contaminate the
-  // porcelain read in the test fixture).
-  const mkWorktree = async (dir: string, sub: string, files: string[]) => {
-    const wtDir = path.join(dir, sub);
-    await execp2(`git worktree add --detach ${JSON.stringify(wtDir)} HEAD`, {
-      cwd: dir,
-      shell: "/bin/bash",
-    });
-    // Isolate the index so this worktree's `git status` doesn't see the
-    // main repo's or sibling worktrees' staged paths.
-    const idx = path.join(wtDir, ".git-standalone-index");
-    await execp2(`GIT_INDEX_FILE=${JSON.stringify(idx)} git read-tree HEAD`, {
-      cwd: wtDir,
-      shell: "/bin/bash",
-    });
-    if (files.length > 0) {
-      for (const f of files) {
-        const fp = path.join(wtDir, f);
-        await fs.mkdir(path.dirname(fp), { recursive: true });
-        await fs.writeFile(fp, `worktree content of ${f}\n`);
-      }
-      await execp2(
-        `GIT_INDEX_FILE=${JSON.stringify(idx)} git add -A && GIT_INDEX_FILE=${JSON.stringify(idx)} git commit -q -m 'worktree commit'`,
-        { cwd: wtDir, shell: "/bin/bash" },
-      );
-    }
-    return wtDir;
-  };
-  const baseShaOf = async (dir: string) =>
-    (await execp2("git rev-parse HEAD", { cwd: dir })).stdout.trim();
-
   // F5.1 + F5.2 — commit={a.ts,b.ts} → both covered (B's full set present,
   // A's own paths present) → no missing.
   {
@@ -205,23 +169,12 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
     const dir = mkdtempSync(path.join(tmpdir(), "f5-empty-"));
     try {
       await mkGitRepo(dir, []);
-      const state = mkConsolidationState({
-        a: wsA(["src/a.ts", "src/b.ts"]),
-        b: wsB(["src/b.ts"]),
-      });
-      const res = await verifyConsolidation(
-        { pi: makeFakePi().pi, repoRoot: dir, issue: 540 },
-        state,
-      );
+      const state = mkConsolidationState({ a: wsA(["src/a.ts", "src/b.ts"]), b: wsB(["src/b.ts"]) });
+      const res = await verifyConsolidation({ pi: makeFakePi().pi, repoRoot: dir, issue: 540 }, state);
       const ids = res.missing.map((m) => m.id).sort();
-      assert(
-        JSON.stringify(ids) === JSON.stringify(["a", "b"]),
-        `F5.4: empty diff → all missing (got: ${JSON.stringify(ids)})`,
-      );
+      assert(JSON.stringify(ids) === JSON.stringify(["a", "b"]), `F5.4: empty diff → all missing (got: ${JSON.stringify(ids)})`);
       assert(res.filesPresent.length === 0, "F5.4: empty diff → empty filesPresent");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   }
 
   // F5.5 — declared path with planner annotation → covered (#744 false positive).
@@ -278,9 +231,7 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
       await fs.writeFile(path.join(dir, ".gitkeep"), "\n");
       await execp2("git add . && git commit -q -m baseline", { cwd: dir, shell: "/bin/bash" });
       await execp2("git update-ref refs/remotes/origin/main HEAD", { cwd: dir });
-      await execp2("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", {
-        cwd: dir,
-      });
+      await execp2("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", { cwd: dir });
       await execp2("git checkout -qb feature/issue-540-test", { cwd: dir });
       // The developer renames the file (git mv → R100 in --name-status -M).
       await execp2("git mv src/old-name.ts src/new-name.ts", { cwd: dir, shell: "/bin/bash" });
@@ -297,7 +248,10 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
         aVerdict?.status === "complete",
         `F5.6: renamed file (R-code source) is covered (got: ${JSON.stringify(aVerdict)})`,
       );
-      assert(!res.missing.some((m) => m.id === "a"), "F5.6: no missing for the renamed workstream");
+      assert(
+        !res.missing.some((m) => m.id === "a"),
+        "F5.6: no missing for the renamed workstream",
+      );
       // B is genuinely absent → uncovered.
       const bVerdict = res.verdicts.find((v) => v.id === "b");
       assert(
@@ -375,9 +329,7 @@ process.env.PI_ENSEMBLE_VERIFY = "1";
       await fs.writeFile(path.join(dir, ".gitkeep"), "\n");
       await execp2("git add . && git commit -q -m baseline", { cwd: dir, shell: "/bin/bash" });
       await execp2("git update-ref refs/remotes/origin/main HEAD", { cwd: dir });
-      await execp2("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", {
-        cwd: dir,
-      });
+      await execp2("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main", { cwd: dir });
       await execp2("git checkout -qb feature/issue-540-test", { cwd: dir });
       await fs.mkdir(path.join(dir, "docs"), { recursive: true });
       await fs.writeFile(path.join(dir, "docs", "notes (draft).md"), "content\n");

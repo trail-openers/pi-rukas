@@ -1,8 +1,29 @@
 /**
- * work-driver-intent — turn ANY issue body into a normalised spec, then
- * decide. Issues are hand-written, terse, or wrong; the resolver runs in
- * the `explore` role (structurally cannot build — write/edit tools are
- * gated off). Grouping markers are high-confidence hints, never required.
+ * work-driver-intent — turn ANY issue body into a normalised spec, then decide.
+ *
+ * `/work` used to assume an issue tells it what to build. Real backlogs do not
+ * honour that: issues are hand-written, terse, imported from another project,
+ * or simply wrong. Measured externally, 38.3% of real GitHub issues are
+ * underspecified (SWE-bench Verified, 93 annotators over 1,699 samples), and
+ * 41.77% of multi-agent failures are specification and system design (MAST) —
+ * the largest single category.
+ *
+ * Two structural problems this replaces:
+ *
+ *   1. A missing verdict meant "build it" (`work-driver-plan.ts` defaulted an
+ *      absent token to NEEDS_WORK). Silence was treated as permission.
+ *   2. Nothing asked whether the issue was TRUE — whether the named symbols
+ *      exist, whether the described behaviour matches the code, whether the
+ *      work is already done. A confidently-wrong bug report got built.
+ *
+ * The resolver runs inside the `explore` role, which `role-tools.ts` already
+ * gates with `--exclude-tools write,edit,multiedit` (#238). That is not
+ * incidental: "Ask or Assume?" (69.4% on an underspecified SWE-bench variant)
+ * finds that an agent holding edit tools rationalises ambiguity away, because
+ * building is cheaper than asking. The resolver structurally cannot build.
+ *
+ * Grouping markers, where present, are consumed as high-confidence hints. They
+ * are never required — that is the whole point.
  */
 
 import { readMarker } from "./reply-markers.ts";
@@ -14,7 +35,6 @@ import {
 } from "./work-driver-intent-criticality.ts";
 import { sliceSpecField, sliceSpecSectionH2OrH3 } from "./work-driver-intent-spec-slice.ts";
 import { sliceMarkdownSection } from "./work-driver-plan.ts";
-import type { WorkState } from "./workflow-state.ts";
 
 /** Why a cycle refused to write code. Machine-readable so the queue can act. */
 export type ParkReason =
@@ -110,12 +130,16 @@ function sliceSubsection(text: string, name: string): string | undefined {
   return sliceSpecField(text, name);
 }
 
+/** Bullet lines of a markdown section, with the leading marker stripped. */
 /**
- * The items of a markdown list, whichever marker the writer used. Matched
- * `^[-*]\s+` only, so a NUMBERED list was invisible — and it backs four spec
- * fields, so a numbered spec parsed to empty on every one of them. Could not
- * self-rescue through #397's complete-spec path (reads the same empty
- * fields). nessie #662 parked twice this way.
+ * The items of a markdown list, whichever marker the writer used.
+ *
+ * This matched `^[-*]\s+` only, so a NUMBERED list was invisible — and it backs
+ * four spec fields (deliverables, acceptanceCriteria, evidence, openQuestions),
+ * so a numbered spec parsed to an empty spec on every one of them. It could not
+ * even self-rescue through #397's "a complete spec refutes underspecified"
+ * path, because that reads the same empty fields. nessie #662 parked twice this
+ * way while its own resolver rationale said the intent was clear.
  */
 function bullets(section: string | undefined): string[] {
   if (!section) return [];
@@ -140,10 +164,12 @@ function bullets(section: string | undefined): string[] {
  * default then flowed into a decision (#404). Both forms are accepted; bold
  * and heading markers are tolerated, as they are on every sibling parser.
  */
-// The private `readToken` duplicate is DELETED (seam audit 2026-09-09):
-// strictly weaker than reply-markers.ts's shared reader (FIRST match instead
-// of LAST, mandatory colon, no post-value bold tolerance). `readMarker` keeps
-// the heading form (#404) and is wider on every axis, so parseable-today stays
+// The private `readToken` duplicate is DELETED (seam audit 2026-09-09): it
+// was strictly weaker than reply-markers.ts's shared reader — FIRST match
+// instead of LAST (the exact defect readMarker was built to fix: a resolver
+// musing about a verdict had its musing read as the verdict), a mandatory
+// colon, and no post-value bold tolerance. `readMarker` keeps the heading
+// form (#404) and is wider on every axis, so parseable-today stays
 // parseable and the provenance semantics below are unchanged.
 
 /**
@@ -236,12 +262,19 @@ function parseDeliverables(section: string | undefined): SpecDeliverable[] {
 }
 
 /**
- * `- <claim> — <source> — confirmed|contradicted|unverifiable`.
- * The verdict token tolerates the shapes an LLM actually emits. #397: a real
- * resolver reply wrote `— **confirmed**` on all seven of its evidence rows,
- * and the strict `last === "confirmed"` test downgraded every one to
- * `unverifiable`. Anchored at `^` deliberately: an unanchored `/confirmed/`
- * would accept prose like "I could not confirm this" as a confirmation.
+ * `- <claim> — <source> — confirmed|contradicted|unverifiable`
+ *
+ * The verdict token tolerates the shapes an LLM actually emits, not just the
+ * one the template shows. #397: a real resolver reply wrote `— **confirmed**`
+ * on all seven of its evidence rows, and the strict `last === "confirmed"`
+ * test downgraded every one to `unverifiable` — so the driver held seven
+ * executed-evidence confirmations and recorded them as "could not tell".
+ * The sibling verdict parsers already tolerate bold (`\**` in the
+ * INTENT-VERDICT and PARK-REASON regexes above); this was the one place the
+ * tolerance was omitted.
+ *
+ * Anchored at `^` deliberately: an unanchored `/confirmed/` would accept
+ * prose like "I could not confirm this" as a confirmation.
  */
 function parseEvidence(section: string | undefined): SpecEvidence[] {
   return bullets(section).map((line) => {
@@ -280,12 +313,21 @@ function blockingQuestions(qs: string[]): string[] {
 }
 
 /**
- * Is there something to build? Lower bar than `specIsComplete` (which refutes
- * a park): an intent and at least one deliverable that is NOT a pure no-diff
- * marker. Without this the driver would run plan+develop with zero diff-producing
- * work. The `confirmed` conjunct in `specIsComplete` keeps #378's "silence is not
- * permission" true: a resolver that filled the template without checking anything
- * against the code has no confirmed evidence row and still parks.
+ * Does this spec, on its own terms, determine what to build?
+ *
+ * The `confirmed` conjunct is what keeps #378's "silence is not permission"
+ * true. A resolver that filled in the template without checking anything
+ * against the code has no confirmed evidence row, fails this predicate, and
+ * still parks. It also couples this to `parseEvidence` by design: without the
+ * bold tolerance there, a real reply scores zero confirmed rows and this
+ * correctly returns false.
+ */
+/**
+ * Is there something to build?
+ *
+ * Lower bar than `specIsComplete` (which refutes a park): an intent and at
+ * least one deliverable that is NOT a pure no-diff marker. Without this the
+ * driver would run plan+develop with zero diff-producing work.
  */
 export function specIsActionable(spec: NormalisedSpec): boolean {
   return (
@@ -446,49 +488,4 @@ export function renderAssumptions(spec: NormalisedSpec): string {
     "",
     ...spec.assumptions.map((a) => `- **${a.text}**${a.basis ? ` — ${a.basis}` : ""}`),
   ].join("\n");
-}
-
-/**
- * #875 — the "missing workstreams" blurb for the
- * `commit-pr-incomplete-consolidation` cap. Reads ONLY the persisted
- * per-verdict `dirty` flag (no git calls) — dirty=true or flag absent
- * (legacy) → "uncommitted on disk"; dirty=false → cherry-pick recovery.
- */
-export function commitPrConsolidationBlurb(
-  state: WorkState,
-  opts: { missingIds: string[]; filesPresent: string[] },
-): string {
-  const ps = state.pipelineState;
-  const which = opts.missingIds.length > 0 ? opts.missingIds.join(", ") : "one or more workstreams";
-  const ic = ps.incompleteConsolidation;
-  const verdicts = Array.isArray(ic) ? [] : (ic?.verdicts ?? []);
-  const wts = ps.worktrees ?? {};
-  const base = ps.baseSha ?? "(base)";
-  const lines: string[] = [`the committed diff is missing declared files from: ${which}.`];
-  for (const id of opts.missingIds) {
-    const v = verdicts.find((x) => x.id === id);
-    const isClean = !Array.isArray(ic) && !!v && v.status === "uncovered" && v.dirty === false;
-    const wtSuffix = wts[id] ? ` (${wts[id]})` : "";
-    if (!isClean) {
-      lines.push(
-        `  - ${id}: the developers' work in the missing worktree${wtSuffix} is uncommitted on disk.`,
-      );
-      continue;
-    }
-    const ownBase = ps.workstreamBaseShas?.[id] ?? base;
-    const head = ps.commitShas?.[id];
-    const pick = head
-      ? `git cherry-pick ${JSON.stringify(ownBase)}..${JSON.stringify(head)}`
-      : `git cherry-pick ${JSON.stringify(ownBase)}..HEAD (in the worktree)`;
-    lines.push(
-      `  - ${id}: nothing uncommitted — the work is COMMITTED in its worktree${wtSuffix}. If ${v.uncoveredPaths.join(", ")} genuinely needed a change, cherry-pick it: \`${pick}\`; otherwise the declaration was over-broad and the fix is a restart.`,
-    );
-  }
-  if (opts.filesPresent.length > 0) {
-    const shown = opts.filesPresent.slice(0, 5).join(", ");
-    lines.push(
-      ` The committed diff contains ${opts.filesPresent.length} file(s): ${shown}${opts.filesPresent.length > 5 ? ` and ${opts.filesPresent.length - 5} more` : ""} — the missing workstreams' files are the difference.`,
-    );
-  }
-  return lines.join(" ");
 }

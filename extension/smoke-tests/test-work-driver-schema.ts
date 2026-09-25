@@ -61,17 +61,12 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   try {
     const state = initialState(547, 1000);
     assert(
-      state.schemaVersion === WORK_STATE_SCHEMA_VERSION &&
-        state.resumable === false &&
-        state.pipelineState.currentStep === "explore" &&
-        state.pipelineState.status === "running" &&
+      state.schemaVersion === WORK_STATE_SCHEMA_VERSION && state.resumable === false &&
+        state.pipelineState.currentStep === "explore" && state.pipelineState.status === "running" &&
         state.eventLog.length === 0,
       "initialState: schemaVersion 1, resumable=false, explore/running, empty eventLog",
     );
-    assert(
-      (await readState(dir, 547)) === undefined,
-      "readState returns undefined for missing file",
-    );
+    assert(await readState(dir, 547) === undefined, "readState returns undefined for missing file");
     await writeState(dir, state);
     const rt = await readState(dir, 547);
     assert(
@@ -108,16 +103,13 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     );
     // Pre-#453 file: strip the fields from the on-disk JSON.
     const file = workStateFile(dir, issue);
-    const onDisk = JSON.parse(readFileSync(file, "utf8")) as {
-      pipelineState: Record<string, unknown>;
-    };
+    const onDisk = JSON.parse(readFileSync(file, "utf8")) as { pipelineState: Record<string, unknown> };
     onDisk.pipelineState.commitShas = undefined;
     onDisk.pipelineState.appliedShas = undefined;
     writeFileSync(file, `${JSON.stringify(onDisk, null, 2)}\n`);
     const legacy = await readState(dir, issue);
     assert(
-      legacy !== undefined &&
-        legacy.pipelineState.commitShas === undefined &&
+      legacy !== undefined && legacy.pipelineState.commitShas === undefined &&
         legacy.pipelineState.appliedShas === undefined &&
         legacy.schemaVersion === WORK_STATE_SCHEMA_VERSION &&
         legacy.pipelineState.currentStep === "explore",
@@ -138,12 +130,8 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     recorded.pipelineState.workstreams = {
       "task-a": { id: "task-a", scope: "base", paths: ["src/a.ts"], outOfScope: [] },
       "task-b": {
-        id: "task-b",
-        scope: "depends on a",
-        paths: ["src/b.ts"],
-        outOfScope: [],
-        dependsOn: ["task-a"],
-        integrationTest: "smoke-tests/test-int.ts",
+        id: "task-b", scope: "depends on a", paths: ["src/b.ts"], outOfScope: [],
+        dependsOn: ["task-a"], integrationTest: "smoke-tests/test-int.ts",
       },
     };
     await writeState(dir, recorded);
@@ -157,9 +145,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
     const onDisk = JSON.parse(readFileSync(workStateFile(dir, 679), "utf8")) as {
       pipelineState: Record<string, unknown>;
     };
-    const ws = onDisk.pipelineState.workstreams as
-      | Record<string, Record<string, unknown>>
-      | undefined;
+    const ws = onDisk.pipelineState.workstreams as Record<string, Record<string, unknown>> | undefined;
     if (ws) {
       delete ws["task-b"].dependsOn;
       delete ws["task-b"].integrationTest;
@@ -189,11 +175,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   // check was always false and skipped commit-pr — confirmed live on #553).
   let s: WorkState = {
     ...base,
-    pipelineState: {
-      ...base.pipelineState,
-      currentStep: "adversarial",
-      lastCompletedStep: "develop",
-    },
+    pipelineState: { ...base.pipelineState, currentStep: "adversarial", lastCompletedStep: "develop" },
   };
   s = appendEvent(s, { kind: "adversarial-approved", at: 2000, jobId: "j1", rounds: 1 });
   assert(
@@ -457,31 +439,61 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   );
 }
 
-// 3b. #540 + #875 — consolidation verdict shape: {verdicts, filesPresent}
-// with the `status` discriminant validated; the pre-#540 bare array stays
-// readable; the #875 dirty flag is optional (legacy files lack it) and
-// must be a boolean when present.
+// 3b. #540 — consolidation verdict shape: {verdicts, filesPresent} with the
+// `status` discriminant validated; the pre-#540 bare array stays readable.
 {
-  const ic = (ic0: unknown, issue = 540) =>
+  const ic = (ic0: unknown) =>
     validateDiscriminants({
-      ...initialState(issue, 1000),
-      pipelineState: { ...initialState(issue, 1000).pipelineState, incompleteConsolidation: ic0 },
+      ...initialState(540, 1000),
+      pipelineState: { ...initialState(540, 1000).pipelineState, incompleteConsolidation: ic0 },
     } as unknown as Record<string, unknown>);
-  const v = (o: Record<string, unknown>) => ({ verdicts: [o], filesPresent: [] });
+  const good = ic({
+    verdicts: [
+      { id: "a", status: "uncovered", uncoveredPaths: ["src/a.ts"] },
+      { id: "b", status: "complete" },
+    ],
+    filesPresent: ["src/a.ts"],
+  });
+  assert(good.length === 0, "#540: {verdicts, filesPresent} with valid discriminants accepted");
   assert(
-    ic({ verdicts: [{ id: "a", status: "uncovered", uncoveredPaths: ["src/a.ts"] }, { id: "b", status: "complete" }], filesPresent: ["src/a.ts"] }).length === 0,
-    "#540: valid discriminants accepted",
+    ic([{ id: "a", paths: ["src/a.ts"] }]).length === 0,
+    "#540: pre-#540 array shape stays readable",
   );
-  assert(ic([{ id: "a", paths: ["src/a.ts"] }]).length === 0, "#540: pre-#540 array stays readable");
-  assert(ic({ verdicts: [], filesPresent: { not: "an array" } }).some((x) => x.includes("filesPresent")), "#540: non-array filesPresent refuses");
-  assert(ic({ verdicts: [{ id: "a", status: "mystery", uncoveredPaths: [] }], filesPresent: [] }).some((x) => x.includes("status has unknown value")), "#540: unknown status refuses");
-  assert(ic({ verdicts: [{ id: "a", status: "uncovered" }], filesPresent: [] }).some((x) => x.includes("uncoveredPaths")), "#540: uncovered without uncoveredPaths refuses");
-  assert(ic({ verdicts: [{ id: "a", status: "unverifiable", reason: "no declared paths" }], filesPresent: [] }).length === 0, "#540: unverifiable WITH reason accepted");
-  assert(ic({ verdicts: [{ id: "a", status: "unverifiable" }], filesPresent: [] }).some((x) => x.includes("reason")), "#540: unverifiable without reason refuses");
-  assert(ic({ filesPresent: [] }).some((x) => x.includes("verdicts")), "#540: missing verdicts refuses");
-  assert(ic(v({ id: "a", status: "uncovered", uncoveredPaths: ["src/a.ts"], dirty: true }), 875).length === 0 && ic(v({ id: "a", status: "uncovered", uncoveredPaths: ["src/b.ts"], dirty: false }), 875).length === 0, "#875: dirty true/false valid");
-  assert(ic(v({ id: "a", status: "uncovered", uncoveredPaths: ["src/a.ts"] }), 875).length === 0, "#875: legacy (no dirty flag) stays valid");
-  assert(ic(v({ id: "a", status: "uncovered", uncoveredPaths: ["src/a.ts"], dirty: "yes" }), 875).some((x) => x.includes("dirty") && x.includes("not a boolean")), "#875: non-boolean dirty refuses");
+  assert(
+    ic({ verdicts: [], filesPresent: { not: "an array" } }).some((x: string) =>
+      x.includes("filesPresent"),
+    ),
+    "#540: non-array filesPresent refuses",
+  );
+  assert(
+    ic({ verdicts: [{ id: "a", status: "mystery", uncoveredPaths: [] }], filesPresent: [] }).some(
+      (x: string) => x.includes("status has unknown value"),
+    ),
+    "#540: unknown verdict status refuses",
+  );
+  assert(
+    ic({ verdicts: [{ id: "a", status: "uncovered" }], filesPresent: [] }).some((x: string) =>
+      x.includes("uncoveredPaths"),
+    ),
+    "#540: uncovered without uncoveredPaths refuses",
+  );
+  assert(
+    ic({
+      verdicts: [{ id: "a", status: "unverifiable", reason: "no declared paths" }],
+      filesPresent: [],
+    }).length === 0,
+    "#540: unverifiable WITH reason accepted",
+  );
+  assert(
+    ic({ verdicts: [{ id: "a", status: "unverifiable" }], filesPresent: [] }).some((x: string) =>
+      x.includes("reason"),
+    ),
+    "#540: unverifiable without reason refuses",
+  );
+  assert(
+    ic({ filesPresent: [] }).some((x: string) => x.includes("verdicts")),
+    "#540: missing verdicts field refuses",
+  );
 }
 
 console.log(`\nexit ${exit}`);

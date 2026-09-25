@@ -10,7 +10,7 @@
 
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
-import type { WorkState } from "../src/workflow-state.ts";
+import { appendEvent, initialState, type WorkState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -23,61 +23,40 @@ function assert(cond: boolean, msg: string) {
 
 const REPO = "/Users/x/repo";
 
-/** Minimal commit-pr-incomplete-consolidation state for dirty-flag testing. */
-function commitPrConflictedState(): WorkState {
-  return {
-    schemaVersion: 1,
-    resumable: false,
-    issue: 481,
-    startedAt: 1,
-    updatedAt: 2,
-    pipelineState: {
-      status: "handoff",
-      currentStep: "handoff",
-      lastCompletedStep: "commit-pr",
-      reviewRound: 0,
-      ciRetryCount: 0,
-      inFlightJobIds: [],
-      branchName: "feature/issue-481-worktree-provision",
-      worktrees: {},
-    },
-    eventLog: [
-      {
-        kind: "cap-hit",
-        at: 3,
-        cap: "commit-pr-incomplete-consolidation",
-        reviewRound: 0,
-        nextStep: "handoff",
-      },
-    ],
-    // biome-ignore lint/suspicious/noExplicitAny: partial fixture
-  } as any;
-}
-
 const dirtyFixture = (dirty?: boolean): WorkState => {
-  const s = commitPrConflictedState();
-  s.pipelineState.incompleteConsolidation = {
-    verdicts: [
-      {
-        id: "default",
-        status: "uncovered",
-        uncoveredPaths: ["extension/src/worktree-provision.ts"],
-        ...(dirty !== undefined ? { dirty } : {}),
+  let s = initialState(481, 1_000_000);
+  s = {
+    ...s,
+    pipelineState: {
+      ...s.pipelineState,
+      status: "handoff" as const,
+      currentStep: "handoff" as const,
+      lastCompletedStep: "commit-pr" as const,
+      branchName: "feature/issue-481-worktree-provision",
+      worktrees: { default: `${REPO}/.worktrees/issue-481-default` },
+      baseSha: "abc1234",
+      workstreamBaseShas: { default: "abc1234" },
+      commitShas: { default: "def5678" },
+      incompleteConsolidation: {
+        verdicts: [
+          {
+            id: "default",
+            status: "uncovered" as const,
+            uncoveredPaths: ["extension/src/worktree-provision.ts"],
+            ...(dirty !== undefined ? { dirty } : {}),
+          },
+        ],
+        filesPresent: ["extension/src/other.ts"],
       },
-    ],
-    filesPresent: ["extension/src/other.ts"],
-  } as any;
-  s.pipelineState.commitPrRoot = {
-    branch: "feature/issue-481-worktree-provision",
-    unmergedPaths: [],
-    stagedCount: 0,
-    totalEntries: 0,
-    capturedAt: Date.now(),
+    },
   };
-  // Persisted SHAs for the cherry-pick line (dirty=false path).
-  s.pipelineState.baseSha = "abc1234";
-  s.pipelineState.workstreamBaseShas = { default: "abc1234" };
-  s.pipelineState.commitShas = { default: "def5678" };
+  s = appendEvent(s, {
+    kind: "cap-hit",
+    at: 1_000_500,
+    cap: "commit-pr-incomplete-consolidation",
+    reviewRound: 0,
+    nextStep: "handoff",
+  });
   return s;
 };
 
