@@ -93,28 +93,23 @@ mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
 // The lens modules must be imported AFTER the mock is installed so they
 // bind to the mocked `spawn.ts`.
 const { runLensReview } = await import("../src/lens-review.ts");
-const { buildLensRoster } = await import("../src/lens-roster.ts");
+const { LENS_ROSTER } = await import("../src/lens-roster.ts");
 const { skillsDirUsable } = await import("../src/lens-review-skills.ts");
 const { readEnumMarker } = await import("../src/reply-markers.ts");
 
-// The lens skill dirs are derived from the REPO's own skill/ dir (the
-// offline stand-in for the installed dir; never ~/.pi). #873: the roster
-// is data, so the skill list is the roster's, not a hard-coded six.
-const REPO_SKILL_DIR = path.resolve(import.meta.dirname, "..", "..", "skill");
-const REPO_SKILLS = buildLensRoster(REPO_SKILL_DIR)
-  .filter((e) => !e.error)
-  .map((e) => e.skill);
+const SIX_SKILLS = LENS_ROSTER.map((l) => l.skill);
 const MISSING_SKILL = "code-review-security";
-const PRESENT_SKILLS = REPO_SKILLS.filter((s) => s !== MISSING_SKILL);
+const PRESENT_SKILLS = SIX_SKILLS.filter((s) => s !== MISSING_SKILL);
 
 /** Build a fixture skills dir; `present` controls which lens skill dirs
  * exist inside it. Returns the fixture root (and a cleanup fn). */
 function fixtureSkillsDir(present: string[], name: string): { dir: string; cleanup: () => void } {
   const dir = path.join(mkdtempSync(path.join(os.tmpdir(), `lens872-${name}-`)), "skills");
   mkdirSync(dir, { recursive: true });
-  // #873 — fixtures carry a precedence so the roster parse passes; the
-  // values are arbitrary unique integers (this test does not exercise
-  // the dedup order, only the skill-wiring behaviour).
+  // #873 — fixtures carry a `precedence:` because the lens roster is data
+  // (parsed from SKILL.md frontmatter); the values are arbitrary unique
+  // integers (this test does not exercise the dedup order, only the
+  // skill-wiring behaviour).
   let prec = 10;
   for (const s of present) {
     const skillDir = path.join(dir, s);
@@ -212,16 +207,16 @@ const CLEAN_SUMMARY =
   const summary = await runCase("diff --git a/a b/a", missingDir);
   eq(spawnCalls.length, 0, "(b) zero spawns with a missing skills dir");
   assert(
-    summary.lenses.every((l) => l.blocked && l.attempts === 0 && l.parseError ===
-      `skills dir ${missingDir} missing or empty — run ./install.sh`),
+    summary.lenses.every(
+      (l) =>
+        l.blocked &&
+        l.attempts === 0 &&
+        l.parseError === `skills dir ${missingDir} missing or empty — run ./install.sh`,
+    ),
     "(b) all six lenses blocked with the single install message",
   );
   eq(summary.verdict, "REVIEW_INCOMPLETE", "(b) verdict is REVIEW_INCOMPLETE");
-  eq(
-    summary.lenses.length,
-    6,
-    "(b) one row per lens (six identical blocked rows, one message)",
-  );
+  eq(summary.lenses.length, 6, "(b) one row per lens (six identical blocked rows, one message)");
   assert(
     skillsDirUsable(missingDir) === `skills dir ${missingDir} missing or empty — run ./install.sh`,
     "(b) skillsDirUsable flags a missing dir with the install message",
@@ -244,8 +239,11 @@ const CLEAN_SUMMARY =
     const summary = await runCase("diff --git a/a b/a", empty.dir);
     eq(spawnCalls.length, 0, "(c) empty dir: zero spawns");
     assert(
-      summary.lenses.every((l) => l.blocked && l.parseError ===
-        `skills dir ${empty.dir} missing or empty — run ./install.sh`),
+      summary.lenses.every(
+        (l) =>
+          l.blocked &&
+          l.parseError === `skills dir ${empty.dir} missing or empty — run ./install.sh`,
+      ),
       "(c) empty dir: all six blocked with the install message",
     );
     eq(summary.verdict, "REVIEW_INCOMPLETE", "(c) empty dir: REVIEW_INCOMPLETE");
@@ -274,8 +272,11 @@ const CLEAN_SUMMARY =
     const summary = await runCase("diff --git a/a b/a", unrelated.dir);
     eq(spawnCalls.length, 0, "(c) unrelated-only dir: zero spawns");
     assert(
-      summary.lenses.every((l) => l.blocked && l.parseError ===
-        `skills dir ${unrelated.dir} missing or empty — run ./install.sh`),
+      summary.lenses.every(
+        (l) =>
+          l.blocked &&
+          l.parseError === `skills dir ${unrelated.dir} missing or empty — run ./install.sh`,
+      ),
       "(c) unrelated-only dir: all six blocked with the install message (unrelated skills tolerated, lens skills required)",
     );
     eq(summary.verdict, "REVIEW_INCOMPLETE", "(c) unrelated-only dir: REVIEW_INCOMPLETE");
@@ -321,7 +322,7 @@ const CLEAN_SUMMARY =
 /* (e) a reply with `**Skill Load Status:** FAILED` → that lens blocked,
  * findings KEPT, verdict not APPROVED. */
 {
-  const { dir, cleanup } = fixtureSkillsDir(REPO_SKILLS, "e");
+  const { dir, cleanup } = fixtureSkillsDir(SIX_SKILLS, "e");
   try {
     spawnCalls.length = 0;
     spawnResponder = (spec) => {
@@ -330,8 +331,7 @@ const CLEAN_SUMMARY =
         return {
           role: "code-review-specialist",
           ok: true,
-          text:
-            "**Skill Load Status:** FAILED\nThe skill failed to load — blocking this lens.\n",
+          text: "**Skill Load Status:** FAILED\nThe skill failed to load — blocking this lens.\n",
           toolUses: [
             {
               name: "report_finding",
@@ -378,7 +378,7 @@ const CLEAN_SUMMARY =
 /* (f) a reply without the marker, clean with a summary → APPROVED-eligible
  * (verdict APPROVED when all six are clean). */
 {
-  const { dir, cleanup } = fixtureSkillsDir(REPO_SKILLS, "f");
+  const { dir, cleanup } = fixtureSkillsDir(SIX_SKILLS, "f");
   try {
     spawnCalls.length = 0;
     spawnResponder = () => ({

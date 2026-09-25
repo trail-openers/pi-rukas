@@ -15,7 +15,7 @@ import {
   renderSummary,
 } from "./lens-review-format.ts";
 import { blockedLensResults, installBlockRows, skillsDirUsable } from "./lens-review-skills.ts";
-import { CLAIM_SCAN, type RosterEntry, buildLensRoster } from "./lens-roster.ts";
+import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
 import { makeRunId } from "./spawn.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
@@ -280,12 +280,16 @@ export async function runLensReview(opts: {
   const runId = makeRunId();
   const skillsDir = piSkillsDir();
   const context = opts.context ?? "";
-  // #873 — the roster is data: parsed from the skills dir's `code-review-*`
-  // SKILL.md files (precedence in frontmatter). Blocked entries (missing or
-  // duplicate precedence, unparseable SKILL.md, `name:` ≠ dir) become blocked
-  // lens results below → REVIEW_INCOMPLETE; the review never runs a silently
-  // reordered roster.
-  const roster = buildLensRoster(skillsDir);
+  // #873 — the roster is data: the INSTALLED skills dir's `code-review-*`
+  // SKILL.md files (precedence in frontmatter), PLUS a blocked entry for
+  // every expected lens (the BUNDLED skill/ dir) that is absent from the
+  // installed dir or has a dangling skill — a lens must never silently
+  // disappear from a six-pass review (five lenses + APPROVED). Blocked
+  // entries (missing/duplicate precedence, unparseable SKILL.md, `name:` ≠
+  // dir, skill not installed) become blocked lens results below →
+  // REVIEW_INCOMPLETE; the review never runs a silently reduced or reordered
+  // roster.
+  const roster = buildExpectedRoster(skillsDir);
   // #872 — ONE skills-dir check before the fan-out (not per-lens checks):
   // a missing, empty, or no-`code-review-*`-skill dir blocks ALL lenses
   // with a single install message and no spawn is ever called. The roster

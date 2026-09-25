@@ -29,7 +29,26 @@
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { frontmatterField } from "./skill-frontmatter.ts";
+import { trace } from "./trace.ts";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * The BUNDLED `code-review-*` skill dirs — the skills this extension ships
+ * in `<repo>/skill/`, resolved relative to the extension source the same
+ * way `LENS_REPORTER_PATH` is resolved (the source `__dirname`, two levels
+ * up). This is the EXPECTED lens set: a lens the bundled dir declares but
+ * the installed dir does not (missing or dangling skill) must never silently
+ * disappear from the review — it blocks with `skill not installed: …`,
+ * feeding REVIEW_INCOMPLETE instead of an APPROVED five-pass review.
+ */
+export const BUNDLED_SKILL_DIR = path.join(__dirname, "..", "..", "skill");
+
+/** The bundled lens roster — the EXPECTED lenses (one entry per bundled
+ * `code-review-*` skill, precedence from its frontmatter). */
+export const LENS_ROSTER = buildLensRoster(BUNDLED_SKILL_DIR);
 
 export interface RosterEntry {
   /** Roster-relative lens name (derived from the skill directory). */
@@ -131,6 +150,62 @@ export function buildLensRoster(dir: string): RosterEntry[] {
     if (ap !== bp) return ap - bp;
     return a.skill.localeCompare(b.skill);
   });
+}
+
+/**
+ * The runtime roster (#873 safety fix): the INSTALLED dir's roster, plus a
+ * blocked entry for every expected lens (from the bundled `skill/` dir) that
+ * is absent from the installed dir or whose installed SKILL.md does not stat
+ * (dangling symlink — `statSync` follows symlinks). The blocked row carries
+ * `skill not installed: <abs installed path> (not spawned)` and attempts 0
+ * — the same shape the pre-spawn stat in lens-review-child.ts produces. Extra
+ * `code-review-*` skills present only in the installed dir are allowed
+ * (a seventh lens by configuration); the installed entries' precedence /
+ * duplicate / name checks apply exactly as before.
+ *
+ * Two deliberate exceptions keep the #872 install-message path unchanged:
+ * an installed dir that holds NO healthy `code-review-*` skill at all
+ * (missing dir, empty, unrelated-only) still blocks every row with the
+ * single install message, and when the bundled dir cannot be read the
+ * expected set is unavailable — fall back to the installed-only roster and
+ * trace it.
+ */
+export function buildExpectedRoster(installedDir: string): RosterEntry[] {
+  let expected: RosterEntry[];
+  try {
+    expected = buildLensRoster(BUNDLED_SKILL_DIR);
+  } catch (err) {
+    trace(
+      `expected lens set unavailable (bundled skill dir ${BUNDLED_SKILL_DIR} unreadable: ${String(err)}); installed-only roster`,
+    );
+    return buildLensRoster(installedDir);
+  }
+  const installed = buildLensRoster(installedDir);
+  const healthyInstalled = installed.filter(
+    (e) => e.error === undefined && e.precedence !== undefined,
+  );
+  if (healthyInstalled.length === 0) return installed;
+  const installedSkills = new Set(healthyInstalled.map((e) => e.skill));
+  const missing: RosterEntry[] = [];
+  for (const e of expected) {
+    if (e.error !== undefined || e.skill === undefined || !e.skill.startsWith("code-review-"))
+      continue;
+    const skillMd = path.join(installedDir, e.skill, "SKILL.md");
+    let readable = true;
+    try {
+      statSync(skillMd);
+    } catch {
+      readable = false;
+    }
+    if (!readable || !installedSkills.has(e.skill)) {
+      missing.push({
+        name: e.name,
+        skill: e.skill,
+        error: `skill not installed: ${path.join(installedDir, e.skill)} (not spawned)`,
+      });
+    }
+  }
+  return [...installed, ...missing];
 }
 
 /** Derive the lens name from a `code-review-*` directory name (module header). */
