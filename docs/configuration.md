@@ -90,7 +90,56 @@ All optional. Defaults are reasonable for typical use. This file holds the full 
 | `PI_ENSEMBLE_ALLOWED_ROOTS` | wrapper | Colon-separated allowed roots for `sandbox-fs-guard` beyond the workspace. Auto-populated from the image-dir list so dragged images aren't blocked. |
 | `PI_ENSEMBLE_DECK_MAX_ROWS` | user | Maximum batch-header rows shown in the live dispatch deck (the in-flight subagent footer). Default: `20` — the cap applies to batch-header rows only; the per-job rows (one per RUNNING job, [#834](https://github.com/trail-openers/pi-rukas/issues/834)) render in full. The deck bypasses Pi's built-in 10-row widget cap via the factory-form `setWidget` so two-batch lens-reviews (~14 rows) fit cleanly. Lower it (`=15`) for a tighter footer, raise it (`=50`) to never clip batch headers, set to `999` for effectively unlimited. |
 
-Advanced (internal path overrides; rarely needed): `PI_ENSEMBLE_DIR`, `PI_ENSEMBLE_PROMPTS_DIR`, `PI_ENSEMBLE_PI_PROMPTS_DIR`, `PI_ENSEMBLE_PM_PROMPT`, `PI_ENSEMBLE_MODELS_CONFIG`, `PI_ENSEMBLE_RUNS_DIR`, `PI_ENSEMBLE_SKILLS_DIR` — override default file/directory locations.
+Advanced (internal path overrides; rarely needed): `PI_ENSEMBLE_DIR`, `PI_ENSEMBLE_PROMPTS_DIR`, `PI_ENSEMBLE_PI_PROMPTS_DIR`, `PI_ENSEMBLE_PM_PROMPT`, `PI_ENSEMBLE_MODELS_CONFIG`, `PI_ENSEMBLE_RUNS_DIR`, `PI_ENSEMBLE_SKILLS_DIR` — override default file/directory locations (the authoritative description of `PI_ENSEMBLE_SKILLS_DIR` lives in [Skills and review lenses](#skills-and-review-lenses) below).
+
+## Skills and review lenses
+
+The six-pass code review fans out one `code-review-specialist` child per lens, each pinned to its own `code-review-*` skill. The lens roster is **data, not code**: it is parsed from the `code-review-*` SKILL.md files in the installed skills dir, with each lens's ordering declared in that skill's frontmatter.
+
+### Where the skills live
+
+- `PI_ENSEMBLE_SKILLS_DIR` overrides the skills directory the extension reads from; unset, it defaults to `~/.pi/agent/skills` (`piSkillsDir()` in `extension/src/lens-review.ts`).
+- `./install.sh` populates it: it symlinks every directory under the repo's `skill/` into `$PI_AGENT_DIR/skills` (via `ln -sfn`; `$PI_AGENT_DIR` defaults to `~/.pi/agent` — see the Paths table, which lists the default `~/.pi/agent/skills/`). Re-run `./install.sh` after adding a lens so the new symlink lands in the installed dir.
+- Installed entries are symlinks, and every check below `stat`s them through the symlink — a dangling symlink counts as missing.
+
+### Pre-spawn verification
+
+Before any lens child is spawned, the extension verifies the skills dir and the roster:
+
+- **Expected lenses** = the roster of the **bundled** repo `skill/` dir (`BUNDLED_SKILL_DIR` / `buildExpectedRoster` in `extension/src/lens-roster.ts`).
+- A lens that is **missing or dangling** in the installed dir (present in the bundled roster but not stat-able at the installed path) is blocked with `skill not installed: <absolute installed path> (not spawned)` and zero attempts — the review degrades to `REVIEW_INCOMPLETE` instead of silently becoming a five-pass `APPROVED`.
+- A **missing, empty, or no-`code-review-*`-skill** dir (a `code-review-*` plain file does not count — only directories do) blocks **all** lenses with the single message `skills dir <path> missing or empty — run ./install.sh` (`skillsDirUsable` in `extension/src/lens-review-skills.ts`), one blocked row per bundled lens, no spawns at all.
+- **Extra** `code-review-*` lenses present only in the installed dir (not in the bundled roster) are allowed — a seventh lens is a configuration change, not a code change.
+- A lens that **is** installed but fails to parse (SKILL.md unreadable, no frontmatter `name:`, `name:` ≠ directory, `precedence:` missing/not an integer/not a safe integer, or duplicate `precedence:` — which blocks **both** lenses and names both) shows its parse error as a blocked row.
+
+A per-lens `statSync` of `<skills dir>/<skill>` immediately before spawning repeats the missing-skill check as executed evidence (`extension/src/lens-review-child.ts`), blocking that lens with the same `skill not installed: <path> (not spawned)` message without burning a spawn.
+
+### Skill Load Status marker
+
+Each lens child self-reports its skill load in its closing reply: `Skill Load Status: [SUCCESS/FAILED]` (the format in `agents-base/code-review-specialist.md`), and the parent parses it (`readEnumMarker`).
+
+- `FAILED` **blocks that lens** — the verdict can never be `APPROVED` (`REVIEW_INCOMPLETE`), while the lens's findings are **kept** (a failed skill load doesn't invalidate evidence the child already gathered). The block's reason reads `skill load reported FAILED by the child (<skill>)`.
+- An **absent or unknown** marker does **not** block: the pre-spawn `stat` above is the executed evidence the skill existed, so an unexercised honor system is only traced (`PI_ENSEMBLE_DEBUG=1`), never a verdict input.
+
+### Adding a review lens
+
+1. Create `skill/code-review-<name>/SKILL.md` whose first frontmatter block has `name: code-review-<name>` (the frontmatter `name:` must equal the directory name) and a **unique integer** `precedence:` (lower runs first). The shipped lenses use `precedence` 10–60: `code-review-security` 10, `code-review-error-handling` 20, `code-review-type-safety` 30, `code-review-performance` 40, `code-review-architecture` 50, `code-review-simplicity` 60.
+2. The lens name is derived from the directory: strip the `code-review-` prefix, replace `-` with `_`, uppercase (`code-review-error-handling` → `ERROR_HANDLING`).
+3. Add the lens to **both** prose lists: the launch list in `agents-base/project-manager.md` (a `@code-review-specialist (lens: <NAME>, skill: code-review-<name>)` line) and the lens mapping in `agents-base/code-review-specialist.md` — the prose gate fails if either list diverges from the roster.
+4. Run `./install.sh` to symlink the new skill into the installed skills dir.
+5. No TypeScript change is required.
+
+### What the gates enforce
+
+Offline smoke tests (part of the pre-push gate) enforce the wiring contract:
+
+- **`test-skill-name-surface.ts`** — skill-name surface: every skill name referenced in the prompt sources (`agents-base/`, `modules/`, `pi-prompts/`) resolves to `skill/<name>/SKILL.md`, every SKILL.md's first-frontmatter `name:` equals its directory name, and every roster lens resolves.
+- **`test-lens-roster.ts`** — roster resolution from SKILL.md frontmatter (a 7th lens is discovered with no code change), `precedence:` present / a safe integer / unique (a duplicate blocks both lenses and names both), a missing skill or broken entry blocks that lens with a named error, and a fixture with only 5 of the 6 bundled lenses yields 6 rows with the missing one blocked — never a silently reduced or reordered roster.
+- **`test-lens-roster-expected.ts`** — installed-set semantics of `buildExpectedRoster`: a missing or dangling bundled lens produces the `skill not installed: … (not spawned)` row; a lens installed but blocked by its own parse error appears once with that error (no duplicate `not installed` row on top); a non-safe-integer `precedence:` blocks with a named error.
+- **`test-lens-skill-wiring.ts`** — the pre-spawn checks against the real `runLensReview` with a mocked spawner: one missing lens blocks only that lens with its absolute path and zero spawns for it; a missing/empty/unrelated-only skills dir blocks all lenses with the install message and zero spawns total; a dangling symlink blocks that lens; a `Skill Load Status: FAILED` reply blocks that lens (findings kept) while an absent marker leaves the review `APPROVED`-eligible. `test-lens-skill-plain-file.ts` pins that a `code-review-*` plain **file** (not a directory) yields the all-blocked install message, matching the roster predicate.
+- **Prose-list gate** (`test-lens-roster.ts`, case g) — every roster lens (name **and** skill) appears in both the `project-manager.md` launch list and the `code-review-specialist.md` lens list, and the PM launch list contains no lens the roster doesn't have.
+- **Failure direction (bogus fixtures)** — each gate above is proven to fail: the tests build deliberate fixtures (a phantom skill reference, a frontmatter `name:` ≠ directory, a divergent prose list, a broken skill) and assert the failure is reported; a gate that cannot fail is worthless. The repo-side check then asserts the real tree is clean.
+
 
 `PI_ENSEMBLE_ROLE` is set internally by `spawn.ts` for subagent processes; do not set it manually.
 
