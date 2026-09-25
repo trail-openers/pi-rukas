@@ -93,23 +93,34 @@ mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
 // The lens modules must be imported AFTER the mock is installed so they
 // bind to the mocked `spawn.ts`.
 const { runLensReview } = await import("../src/lens-review.ts");
-const { LENSES } = await import("../src/lens-review-format.ts");
+const { buildLensRoster } = await import("../src/lens-roster.ts");
 const { skillsDirUsable } = await import("../src/lens-review-skills.ts");
 const { readEnumMarker } = await import("../src/reply-markers.ts");
 
-const SIX_SKILLS = LENSES.map((l) => l.skill);
+// The lens skill dirs are derived from the REPO's own skill/ dir (the
+// offline stand-in for the installed dir; never ~/.pi). #873: the roster
+// is data, so the skill list is the roster's, not a hard-coded six.
+const REPO_SKILL_DIR = path.resolve(import.meta.dirname, "..", "..", "skill");
+const REPO_SKILLS = buildLensRoster(REPO_SKILL_DIR)
+  .filter((e) => !e.error)
+  .map((e) => e.skill);
 const MISSING_SKILL = "code-review-security";
-const PRESENT_SKILLS = SIX_SKILLS.filter((s) => s !== MISSING_SKILL);
+const PRESENT_SKILLS = REPO_SKILLS.filter((s) => s !== MISSING_SKILL);
 
 /** Build a fixture skills dir; `present` controls which lens skill dirs
  * exist inside it. Returns the fixture root (and a cleanup fn). */
 function fixtureSkillsDir(present: string[], name: string): { dir: string; cleanup: () => void } {
   const dir = path.join(mkdtempSync(path.join(os.tmpdir(), `lens872-${name}-`)), "skills");
   mkdirSync(dir, { recursive: true });
+  // #873 — fixtures carry a precedence so the roster parse passes; the
+  // values are arbitrary unique integers (this test does not exercise
+  // the dedup order, only the skill-wiring behaviour).
+  let prec = 10;
   for (const s of present) {
     const skillDir = path.join(dir, s);
     mkdirSync(skillDir, { recursive: true });
-    writeFileSync(path.join(skillDir, "SKILL.md"), `---\nname: ${s}\n---\n`);
+    writeFileSync(path.join(skillDir, "SKILL.md"), `---\nname: ${s}\nprecedence: ${prec}\n---\n`);
+    prec += 10;
   }
   return {
     dir,
@@ -310,7 +321,7 @@ const CLEAN_SUMMARY =
 /* (e) a reply with `**Skill Load Status:** FAILED` → that lens blocked,
  * findings KEPT, verdict not APPROVED. */
 {
-  const { dir, cleanup } = fixtureSkillsDir(SIX_SKILLS, "e");
+  const { dir, cleanup } = fixtureSkillsDir(REPO_SKILLS, "e");
   try {
     spawnCalls.length = 0;
     spawnResponder = (spec) => {
@@ -367,7 +378,7 @@ const CLEAN_SUMMARY =
 /* (f) a reply without the marker, clean with a summary → APPROVED-eligible
  * (verdict APPROVED when all six are clean). */
 {
-  const { dir, cleanup } = fixtureSkillsDir(SIX_SKILLS, "f");
+  const { dir, cleanup } = fixtureSkillsDir(REPO_SKILLS, "f");
   try {
     spawnCalls.length = 0;
     spawnResponder = () => ({

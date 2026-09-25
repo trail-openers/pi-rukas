@@ -17,6 +17,13 @@ import {
   extractFindings,
   renderSummary,
 } from "../src/lens-review.ts";
+import { buildLensRoster } from "../src/lens-roster.ts";
+import path from "node:path";
+
+// The repo's own skill/ dir — the offline stand-in for the installed skills
+// dir (never ~/.pi). The six repo lenses keep their relative order; the
+// dedup assertions below exercise that through the real parsed roster.
+const REPO_ROSTER = buildLensRoster(path.resolve(import.meta.dirname, "..", "..", "skill"));
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -72,7 +79,7 @@ assert(
 {
   const sec = mk("SECURITY", "HIGH", "src/auth.ts", 42, "unsafe input");
   const simp = mk("SIMPLICITY", "LOW", "src/auth.ts", 42, "Unsafe input");
-  const merged = dedupeFindings([simp, sec]);
+  const merged = dedupeFindings([simp, sec], REPO_ROSTER);
   assert(merged.length === 1, "duplicate (path,line,title) collapses to 1");
   assert(merged[0]?.lens === "SECURITY", "precedence keeps SECURITY over SIMPLICITY");
   assert(merged[0]?.severity === "HIGH", "kept the SECURITY entry's severity (HIGH)");
@@ -81,54 +88,69 @@ assert(
 // 7. Dedup: SECURITY > ERROR_HANDLING > TYPE_SAFETY > PERFORMANCE > ARCHITECTURE > SIMPLICITY
 {
   const same = (lens: LensName) => mk(lens, "MEDIUM", "x.ts", 0, "Some issue");
-  const merged = dedupeFindings([
-    same("SIMPLICITY"),
-    same("ARCHITECTURE"),
-    same("PERFORMANCE"),
-    same("TYPE_SAFETY"),
-    same("ERROR_HANDLING"),
-    same("SECURITY"),
-  ]);
+  const merged = dedupeFindings(
+    [
+      same("SIMPLICITY"),
+      same("ARCHITECTURE"),
+      same("PERFORMANCE"),
+      same("TYPE_SAFETY"),
+      same("ERROR_HANDLING"),
+      same("SECURITY"),
+    ],
+    REPO_ROSTER,
+  );
   assert(merged.length === 1, "six identical findings collapse to 1");
   assert(merged[0]?.lens === "SECURITY", "SECURITY wins the full precedence chain");
 }
 
 // 8. Different lines → distinct findings
 {
-  const merged = dedupeFindings([
-    mk("SECURITY", "HIGH", "a.ts", 1, "leak"),
-    mk("SECURITY", "HIGH", "a.ts", 2, "leak"),
-  ]);
+  const merged = dedupeFindings(
+    [
+      mk("SECURITY", "HIGH", "a.ts", 1, "leak"),
+      mk("SECURITY", "HIGH", "a.ts", 2, "leak"),
+    ],
+    REPO_ROSTER,
+  );
   assert(merged.length === 2, "same file/title at different lines stay distinct");
 }
 
 // 9. Different titles → distinct findings
 {
-  const merged = dedupeFindings([
-    mk("SECURITY", "HIGH", "a.ts", 1, "leak A"),
-    mk("ERROR_HANDLING", "MEDIUM", "a.ts", 1, "leak B"),
-  ]);
+  const merged = dedupeFindings(
+    [
+      mk("SECURITY", "HIGH", "a.ts", 1, "leak A"),
+      mk("ERROR_HANDLING", "MEDIUM", "a.ts", 1, "leak B"),
+    ],
+    REPO_ROSTER,
+  );
   assert(merged.length === 2, "same path/line different titles stay distinct");
 }
 
 // 10. Title normalisation: trailing punctuation + case-insensitive
 {
-  const merged = dedupeFindings([
-    mk("SECURITY", "HIGH", "a.ts", 1, "SQL injection."),
-    mk("ARCHITECTURE", "MEDIUM", "a.ts", 1, "sql injection"),
-  ]);
+  const merged = dedupeFindings(
+    [
+      mk("SECURITY", "HIGH", "a.ts", 1, "SQL injection."),
+      mk("ARCHITECTURE", "MEDIUM", "a.ts", 1, "sql injection"),
+    ],
+    REPO_ROSTER,
+  );
   assert(merged.length === 1, "title is case-insensitive + trailing-punctuation-insensitive");
   assert(merged[0]?.lens === "SECURITY", "kept SECURITY in title-normalised match");
 }
 
 // 11. Findings are sorted by severity (CRITICAL first)
 {
-  const merged = dedupeFindings([
-    mk("SIMPLICITY", "LOW", "z.ts", 1, "z"),
-    mk("SECURITY", "CRITICAL", "a.ts", 1, "a"),
-    mk("PERFORMANCE", "MEDIUM", "b.ts", 1, "b"),
-    mk("ERROR_HANDLING", "HIGH", "c.ts", 1, "c"),
-  ]);
+  const merged = dedupeFindings(
+    [
+      mk("SIMPLICITY", "LOW", "z.ts", 1, "z"),
+      mk("SECURITY", "CRITICAL", "a.ts", 1, "a"),
+      mk("PERFORMANCE", "MEDIUM", "b.ts", 1, "b"),
+      mk("ERROR_HANDLING", "HIGH", "c.ts", 1, "c"),
+    ],
+    REPO_ROSTER,
+  );
   assert(merged[0]?.severity === "CRITICAL", "first finding is CRITICAL");
   assert(merged[1]?.severity === "HIGH", "second is HIGH");
   assert(merged[2]?.severity === "MEDIUM", "third is MEDIUM");
@@ -212,13 +234,7 @@ assert(
 import type { LensRunResult } from "../src/lens-review.ts";
 
 function lensResult(
-  lens:
-    | "SECURITY"
-    | "ERROR_HANDLING"
-    | "TYPE_SAFETY"
-    | "PERFORMANCE"
-    | "ARCHITECTURE"
-    | "SIMPLICITY",
+  lens: string,
   opts: {
     ok: boolean;
     attempts: number;

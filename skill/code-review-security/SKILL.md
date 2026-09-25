@@ -1,5 +1,6 @@
 ---
 name: code-review-security
+precedence: 10
 description: Security-focused code review lens for identifying vulnerabilities, injection risks, auth flaws, and unsafe patterns.
 ---
 

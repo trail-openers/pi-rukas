@@ -16,8 +16,9 @@
 
 import { readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { LENSES } from "./lens-review-format.ts";
+import { LENS_PREFIX } from "./lens-review-format.ts";
 import type { LensRunResult } from "./lens-review.ts";
+import type { RosterEntry } from "./lens-roster.ts";
 
 /**
  * #872 — the skills dir itself must exist and hold at least one of the six
@@ -41,9 +42,10 @@ export function skillsDirUsable(dir: string): string | undefined {
     return message;
   }
   if (entries.length === 0) return message;
-  const present = LENSES.some((lens) => {
+  const present = entries.some((entry) => {
+    if (!entry.startsWith(LENS_PREFIX)) return false;
     try {
-      statSync(path.join(dir, lens.skill));
+      statSync(path.join(dir, entry));
       return true;
     } catch {
       return false;
@@ -53,15 +55,46 @@ export function skillsDirUsable(dir: string): string | undefined {
 }
 
 /**
- * #872 — the per-lens shape of a skills-dir block: all six lenses blocked
- * with `attempts: 0` (no spawn, no retries) and the single install message
- * as `parseError`. `startMs` is captured at call time so the six rows carry
- * the same timestamp (the fan-out never started).
+ * #872 — the per-lens shape of a skills-dir block: every roster entry
+ * blocked with `attempts: 0` (no spawn, no retries) and the single install
+ * message as `parseError`. `startMs` is captured at call time so the rows
+ * carry the same timestamp (the fan-out never started). The roster is a
+ * parameter now (#873): a skills-dir block only happens when the parsed
+ * roster is empty, so the caller passes an empty roster for a full block.
  */
-export function blockedLensResults(problem: string): LensRunResult[] {
+export function blockedLensResults(problem: string, roster: RosterEntry[] = []): LensRunResult[] {
   const startMs = Date.now();
-  return LENSES.map((lens) => ({
+  return roster.map((lens) => ({
     lens: lens.name,
+    ok: false,
+    ms: 0,
+    startMs,
+    findings: [],
+    attempts: 0,
+    blocked: true,
+    parseError: problem,
+  }));
+}
+
+/**
+ * #872/#873 — the install-block rows: when the skills dir is missing, empty,
+ * or has no `code-review-*` skill, the roster is empty and the review must
+ * still produce one blocked row per standard lens name so `computeVerdict`
+ * sees the block and returns REVIEW_INCOMPLETE. The six names are the
+ * canonical lens set; a seventh lens is configuration, not a new install.
+ */
+export function installBlockRows(problem: string): LensRunResult[] {
+  const names = [
+    "SECURITY",
+    "ERROR_HANDLING",
+    "TYPE_SAFETY",
+    "PERFORMANCE",
+    "ARCHITECTURE",
+    "SIMPLICITY",
+  ];
+  const startMs = Date.now();
+  return names.map((name) => ({
+    lens: name,
     ok: false,
     ms: 0,
     startMs,

@@ -1,5 +1,6 @@
 ---
 name: code-review-simplicity
+precedence: 60
 description: Simplicity code review lens for identifying unnecessary complexity, dead code, and maintainability issues.
 ---
 
