@@ -13,57 +13,189 @@
  */
 
 import { exec } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { promisify } from "node:util";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
-import { forgeForCycle } from "./work-driver-forge-ctx.ts";
-import type { VerifyExecFn } from "./work-driver-git.ts";
 import { detectMainline } from "./work-driver-git.ts";
-import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
-import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
 import type { ConsolidationVerdict } from "./workflow-state-consolidation.ts";
-import type { WorkEvent } from "./workflow-state-events.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 // Re-export for existing consumers (smoke tests) so import paths stay valid.
 export { verifyCmdFor } from "./work-driver-verify-cmd.ts";
+// Re-export for existing consumers (smoke tests).
+export { judgePrIdentity, verifyStepOutcome } from "./work-driver-verify-pr17.ts";
+export type { PrView } from "./work-driver-verify-pr17.ts";
 
 const execp = promisify(exec);
 
+const VALID_SHA_RE = /^[0-9a-f]{40}$/;
+
 /**
- * PR14 + #540 — Verify the integration branch's committed diff (vs
- * origin/main) covers every active workstream. Used as the post-dispatch
- * safety gate in runCommitPr.
+ * #875 — the workstream's cumulative "touched" evidence. Returns the set of
+ * normalised paths its own committed range (`git diff --name-status -M
+ * <ownBase>..HEAD` in its worktree) and its worktree porcelain (`git status
+ * --porcelain`) touch, or `undefined` when the worktree CANNOT be read
+ * (missing path in `worktrees`, no usable base SHA, or a git failure in
+ * either read).
+ *
+ * Failure direction is deliberately asymmetric with the integrated diff
+ * read (which stays best-effort): `undefined` means TOUCHED — every path
+ * counts as touched, so the covered-check fails closed and the workstream
+ * falls through to the uncovered/park logic. A worktree the driver cannot
+ * read cannot prove the slice shipped; it never passes.
+ *
+ * The worktree is only trusted as evidence if it belongs to THIS repo:
+ * `git rev-parse --path-format=absolute --git-common-dir` run in the
+ * worktree is compared (realpath-normalised) to the same command at
+ * `ctx.repoRoot`. A mismatch or failure returns `undefined` (fail closed)
+ * — a worktree pointing at a different repository says nothing about this
+ * cycle's work.
+ *
+ * Over-declaration carve-out: the caller may treat a declared path as
+ * covered ("needed no edit", the #799 shape) only when the returned set is
+ * non-EMPTY — the workstream demonstrably did work (it touched other files
+ * and one declared file needed no edit). An empty set (nothing committed,
+ * clean porcelain) is treated like unreadable: every declared path counts
+ * as touched → uncovered.
+ */
+async function workstreamTouchedSet(
+  ctx: DriverContext,
+  state: WorkState,
+  id: string,
+  execFn?: (cmd: string, o?: { cwd?: string; maxBuffer?: number }) => Promise<{ stdout: string }>,
+): Promise<Set<string> | undefined> {
+  const ps = state.pipelineState;
+  const wt = ps.worktrees?.[id];
+  if (!wt) return undefined;
+  // `verifyExecFn` is a TEST-ONLY injection that production callers leave
+  // unset (see the #476 comment in work-driver-merged.ts: "production
+  // callers omit it") — fall back to the real shell or the gate would fail
+  // closed for every workstream in production.
+  const fn = execFn ?? ctx.verifyExecFn ?? execp;
+  // Repo-ownership check: the recorded worktree path must be a worktree of
+  // THIS repo or its output cannot be trusted as evidence for this cycle.
+  const commonDirOf = async (dir: string) => {
+    try {
+      const { stdout } = await fn("git rev-parse --path-format=absolute --git-common-dir", {
+        cwd: dir,
+        maxBuffer: 64 * 1024,
+      });
+      return realpathSync(stdout.trim());
+    } catch {
+      return undefined;
+    }
+  };
+  const wtCommon = await commonDirOf(wt);
+  const rootCommon = await commonDirOf(ctx.repoRoot);
+  if (!wtCommon || !rootCommon || wtCommon !== rootCommon) return undefined;
+  const touched = new Set<string>();
+
+  // (a) the committed range — the workstream's OWN base (the #794
+  // stacked-workstream shape: a global range would include ancestors).
+  // `workstreamBaseShas[id]` records the SHA the worktree was created at
+  // (the branch step's baseSha for non-stacked workstreams, the ancestor's
+  // TIP for stacked ones). A missing or invalid base means the committed
+  // side of the cumulative evidence is UNREADABLE, which fails closed —
+  // proceeding on porcelain alone would let a clean tree pass as
+  // over-declaration even though the committed range was never proven to
+  // be clean.
+  const ownBase = ps.workstreamBaseShas?.[id] ?? ps.baseSha;
+  if (ownBase === undefined || !VALID_SHA_RE.test(ownBase)) return undefined;
+  let rangeOut: string;
+  try {
+    const { stdout } = await fn(`git diff --name-status -M ${JSON.stringify(ownBase)}..HEAD`, {
+      cwd: wt,
+      maxBuffer: 1024 * 1024,
+    });
+    rangeOut = stdout;
+  } catch {
+    return undefined; // unreadable range → fail closed
+  }
+  for (const line of rangeOut.split("\n")) {
+    const fields = line.split("\t");
+    const code = fields[0]?.trim() ?? "";
+    const codeBase = code[0];
+    if (!codeBase) continue;
+    if (codeBase === "R" && fields.length >= 3) {
+      const src = normaliseDeclaredPath(fields[1] ?? "");
+      if (src) touched.add(src);
+      const tgt = normaliseDeclaredPath(fields[2] ?? "");
+      if (tgt) touched.add(tgt);
+      continue;
+    }
+    const p = normaliseDeclaredPath(fields[1] ?? "");
+    if (p) touched.add(p);
+  }
+
+  // (b) the worktree porcelain — modified AND untracked (`??` counts).
+  // `--untracked-files=all` is load-bearing: bare `--porcelain` collapses a
+  // wholly-UNTRACKED directory to a single `?? dir/` line, so a file that
+  // only exists as untracked inside it would never appear in the evidence
+  // and a path declared at the root of that directory could read as
+  // over-declaration (fail open). Listing every file individually keeps the
+  // cumulative set file-granular.
+  let porcelainOut: string;
+  try {
+    const { stdout } = await fn("git status --porcelain --untracked-files=all", {
+      cwd: wt,
+      maxBuffer: 1024 * 1024,
+    });
+    porcelainOut = stdout;
+  } catch {
+    return undefined; // unreadable worktree → fail closed
+  }
+  for (const line of porcelainOut.split("\n")) {
+    if (line.length < 4) continue;
+    const p = normaliseDeclaredPath(line.slice(3));
+    if (p) touched.add(p);
+  }
+  return touched;
+}
+
+/**
+ * PR14 + #540 + #875 — Verify the integration branch's committed diff
+ * (vs origin/main) covers every active workstream. Used as the
+ * post-dispatch safety gate in runCommitPr.
  *
  * Coverage rule (#540): a workstream W is COVERED iff for EVERY declared
  * path p of W: p is in the committed diff, OR p is declared by a sibling S
  * whose ENTIRE declared path set is present in the committed diff
- * (full-set subsumption). A partial sibling cannot cover another
- * workstream's path — with A={a,b}, B={b} and commit={b} only, B is
- * covered (its own full set is present) but A is NOT: b is present, but a
- * is absent and B's full set {b} does not cover a. The pre-#540 rule
- * (`any path present`) fired in the mirror case (commit={a,b}) where B's
- * path "b" WAS in the diff but flagged B's overlap pessimism, and missed
- * the false-pass direction entirely.
+ * (full-set subsumption — a partial sibling cannot cover; unchanged and
+ * still applied on top of #875). With A={a,b}, B={b} and commit={b}
+ * only, B is covered (its own full set is present) but A is NOT: b is
+ * present, but a is absent and B's full set {b} does not cover a.
  *
- * #778 rename awareness: the diff is read with `--name-status -M` so a
- * move (`git mv` / rename-during-develop, the #744 shape where a declared
- * name never appears in `--name-only`) is a rename code (R###), not a
- * silent absence. A path is covered when the normalised path is an exact
- * diff name, sits beneath a changed entry (directory declaration), OR a
- * rename's SOURCE equals it — a move of the declared file still ships its
- * content. R-code rename detection is the exact-path-evidence basis; no
- * basename/substring matching, so co-located-but-different files (#655's
- * measurement workstream) still read uncovered.
+ * #875 cumulative rule: a declared path p of W is ALSO covered (and W is
+ * COMPLETE, not uncovered) when p is absent from BOTH the workstream's
+ * own cumulative evidence — its committed range (`git diff --name-status
+ * -M <workstreamBase>..HEAD` in its worktree) UNION its worktree
+ * porcelain — AND the committed integration diff (over-declaration: the
+ * file legitimately needed no edit, the #799 shape). A path in the
+ * cumulative set but absent from the committed diff stays uncovered
+ * (a dropped slice). The worktree read FAILS CLOSED: a missing worktree
+ * path, a missing base SHA, or a git error counts the workstream as
+ * touched — it parks, never passes. This is deliberately asymmetric
+ * with the integrated diff read below, which stays best-effort.
+ *
+ * #778 rename awareness (both sides): the integrated diff and the
+ * per-workstream range are read with `--name-status -M` so a move is a
+ * rename code (R###), not a silent absence; a path is covered/touched
+ * when the normalised path is an exact entry, sits beneath a changed
+ * entry (directory declaration), or a rename's SOURCE equals it. No
+ * basename/substring matching, so co-located-but-different files (#655)
+ * still read uncovered.
  *
  * Returns BOTH sides of the verdict: `missing` (workstreams not covered,
  * for backward compat with the PR14 cap-hit message) AND `filesPresent`
  * (the committed file list — what actually shipped, so the handoff can
  * render present + missing).
  *
- * Best-effort: any git-shell failure returns no-missing (don't false-
- * alarm on a transient git issue). The N=1 case short-circuits since
- * there's only one workstream and partial-commit doesn't apply.
+ * Best-effort (integrated diff read only): a git-shell failure there
+ * returns no-missing (don't false-alarm on a transient git issue).
+ * The N=1 case short-circuits — there's only one workstream and
+ * partial-commit doesn't apply (the gate is structurally unverifiable
+ * there; regression-asserted).
  */
 export async function verifyConsolidation(
   ctx: DriverContext,
@@ -167,11 +299,34 @@ export async function verifyConsolidation(
       continue;
     }
     const own = declaredOf(ws);
+    // #875 — the workstream's own cumulative evidence (committed range +
+    // porcelain in its worktree), resolved ONCE per worktree. `undefined` =
+    // unreadable worktree → fail closed: every declared path counts as
+    // touched, so it falls through to uncovered (never a silent pass).
+    const cumulative: Set<string> | undefined = await workstreamTouchedSet(ctx, state, id);
+
+    // #875 — an EMPTY cumulative set is treated like unreadable (fail
+    // closed). The over-declaration carve-out ("declared path needed no
+    // edit") applies only when the set is non-empty: the workstream
+    // demonstrably did work (the #799 shape). Nothing committed + clean
+    // porcelain cannot prove a declared path was legitimately unedited.
+    // cumulativeOf depends on workstreamTouchedSet storing BOTH the source
+    // and the target of R-codes — that is what keeps a renamed declared
+    // path "touched".
+    const cumulativeArrays =
+      cumulative !== undefined && cumulative.size > 0 ? Array.from(cumulative) : undefined;
+    const cumulativeOf = (p: string): boolean => {
+      if (cumulativeArrays === undefined) return true; // unreadable/empty → touched
+      return cumulativeArrays.some((f) => f === p || f.startsWith(`${p}/`));
+    };
     // #540 full-set subsumption: a declared path p of W is covered when p
     // is in the committed diff, OR p is also declared by a sibling whose
     // ENTIRE declared set is present — a partial sibling cannot cover.
+    // #875: OR p is absent from BOTH the workstream's cumulative evidence
+    // and the committed diff (over-declaration — covered, not dropped).
     const uncovered = own.filter((p) => {
       if (declaredPathInDiff(p)) return false;
+      if (!cumulativeOf(p)) return false;
       return !ids.some((sid) => {
         if (sid === id) return false;
         const s = workstreams[sid];
@@ -215,246 +370,4 @@ export function normaliseDeclaredPath(raw: string): string {
     .replace(/^\.\//, "")
     .replace(/\/+$/, "")
     .trim();
-}
-
-/** PR17 — escape hatch: PI_ENSEMBLE_VERIFY=0 disables the outcome gate. */
-function verifyGateEnabled(): boolean {
-  const v = process.env.PI_ENSEMBLE_VERIFY;
-  return v !== "0" && v !== "false";
-}
-
-/**
- * PR17 — Driver-side outcome verification gate.
- *
- * Every quality gate before this PR was LLM judgment (adversarial + six
- * lenses reading diffs/transcripts); nothing driver-side ever EXECUTED
- * anything until post-PR CI. Agents claim "done" and the driver trusted
- * the claim — the documented silent-merge (#245/#253) and phantom-
- * handoff incidents are exactly this failure class (MAST: verification
- * failures = 21.3% of multi-agent failures). This gate checks executed
- * evidence, costs zero LLM tokens, and shortens the failure loop from
- * post-PR CI churn to pre-commit.
- *
- * Checks by step:
- *
- *   develop — delegated to verifyDevelopOutcome in work-driver-verify-develop.ts.
- *
- *   commit-pr —
- *     (a) commits exist on the branch: `git rev-list --count
- *         origin/<base>..<branchName>` > 0 at repoRoot (#451 — the branch
- *         is named explicitly so the gate works regardless of repo-root checkout).
- *     (b) the parsed PR number resolves via the forge adapter. When ops
- *         forgot the `pr: <N>` marker, fall back to a head-branch PR
- *         list and ADOPT the number into pipelineState
- *         (bonus repair — pre-PR17 a missing marker degraded handoff
- *         targeting). No PR found at all = the "opened a PR" claim was
- *         hollow.
- *
- * Failure semantics: returns `{ok: false, failures}` — the caller emits
- * cap-hit `verify-failed:<step>` → handoff with evidence in
- * pipelineState.verifyEvidence. Infra errors on OUR side (git itself
- * erroring at repoRoot) are notes, not failures — same no-false-alarm
- * stance as verifyConsolidation.
- */
-/** The fields of the forge `prView` result this gate reads. */
-export interface PrView {
-  state?: string;
-  headRefName?: string;
-}
-
-/**
- * Is this the PR this cycle opened?
- *
- * Fails CLOSED on anything unreadable. Unlike the review threshold — where
- * silent doctrine is the normal case and the default applies — this guards the
- * one irreversible act in the cycle, so an answer it cannot understand is a
- * refusal rather than a shrug.
- */
-export function judgePrIdentity(
-  branchName: string | undefined,
-  view: PrView | undefined,
-): { ok: true } | { ok: false; failure: string } {
-  if (!branchName) {
-    return { ok: false, failure: "cannot be bound to this cycle: no branch was recorded" };
-  }
-  if (!view?.headRefName) {
-    return {
-      ok: false,
-      failure: "returned no headRefName, so it cannot be bound to this cycle's branch",
-    };
-  }
-  if (view.headRefName !== branchName) {
-    return {
-      ok: false,
-      failure: `is opened against \`${view.headRefName}\`, not this cycle's branch \`${branchName}\` — the number does not belong to this cycle`,
-    };
-  }
-  if (view.state !== "OPEN") {
-    return {
-      ok: false,
-      failure: `is ${view.state ?? "in an unreported state"}, not OPEN — there is nothing here left to merge`,
-    };
-  }
-  return { ok: true };
-}
-
-export async function verifyStepOutcome(
-  ctx: DriverContext,
-  state: WorkState,
-  step: "develop" | "commit-pr",
-): Promise<{
-  ok: boolean;
-  failures: string[];
-  notes: string[];
-  adoptedPrNumber?: number;
-  /**
-   * #782 — true when this run's consolidated verify recovered from a single
-   * transient flake (the caller emits `verify-flake-recovered` and records
-   * `retries: 1, recovered: true` on any verifyEvidence it writes). Absent
-   * on every other outcome, including the retry-failed path (that path
-   * records `retries: 1, recovered: false` without the flag).
-   */
-  flakeRecovered?: boolean;
-  /**
-   * #814 — structured develop-scope-fence violations recorded by the
-   * develop gate (absent when the gate recorded none, including
-   * pre-#814 state files and self-fence/dependsOn-exempt hits). The caller
-   * persists them on `pipelineState.verifyEvidence.fenceViolations` so the
-   * explain/handoff renderers can attribute a consolidation conflict to the
-   * fence instead of asserting an incoherent decomposition.
-   */
-  fenceViolations?: FenceViolationRecord[];
-  /**
-   * #841 — the consolidated verify's persisted raw-output log path (run2
-   * when a flake re-run fired, run1 otherwise), carried STRUCTURALLY so the
-   * caller records it on the cap-hit event's `logPaths` field instead of
-   * regexing the path out of the failure prose. Absent when no log was
-   * written (write failure, no consolidated run).
-   */
-  logPath?: string;
-}> {
-  const failures: string[] = [];
-  const notes: string[] = [];
-  if (!verifyGateEnabled()) {
-    return { ok: true, failures, notes: ["PI_ENSEMBLE_VERIFY=0 — outcome gate skipped"] };
-  }
-  const execFn = ctx.verifyExecFn ?? execp;
-
-  if (step === "develop") {
-    // #782 — the flake callback is wired at this layer: on recovery it
-    // returns a success verdict carrying the flag the caller routes.
-    let flakeEvidenceTail: string | undefined;
-    let consolidatedLogPath: string | undefined;
-    const fenceViolations: FenceViolationRecord[] = [];
-    await verifyDevelopOutcome(
-      ctx,
-      state,
-      execFn,
-      failures,
-      notes,
-      (evidenceTail) => {
-        flakeEvidenceTail = evidenceTail;
-      },
-      fenceViolations,
-      (logPath) => {
-        consolidatedLogPath = logPath;
-      },
-    );
-    const flakeRecovered = flakeEvidenceTail !== undefined;
-    return {
-      ok: failures.length === 0,
-      failures,
-      notes,
-      ...(fenceViolations.length > 0 ? { fenceViolations } : {}),
-      ...(flakeRecovered ? { flakeRecovered: true } : {}),
-      ...(consolidatedLogPath !== undefined ? { logPath: consolidatedLogPath } : {}),
-    };
-  }
-
-  // step === "commit-pr"
-  let base = "main";
-  const mainline = await detectMainline(ctx.repoRoot, execFn);
-  if (mainline && "branch" in mainline) {
-    base = mainline.branch;
-  }
-  try {
-    // #451 — name the integration branch explicitly. `origin/<branchName>`
-    // requires the branch to be pushed, which it is at commit-pr time (ops
-    // pushes before opening the PR). Using the local ref name (not
-    // `origin/<branch>`) because the commit-pr gate can run before push in
-    // some edge cases; the local ref is what the cycle created.
-    const branch = state.pipelineState.branchName ?? "HEAD";
-    const { stdout } = await execFn(`git rev-list --count origin/${base}..${branch}`, {
-      cwd: ctx.repoRoot,
-      maxBuffer: 64 * 1024,
-    });
-    if (Number.parseInt(stdout.trim(), 10) === 0) {
-      failures.push(
-        `ops claimed commit+PR done but the branch has zero commits ahead of origin/${base} — nothing was committed`,
-      );
-    }
-  } catch (err) {
-    notes.push(
-      `git rev-list failed (${(err as Error).message?.slice(0, 100)}) — commit evidence unavailable`,
-    );
-  }
-  let adoptedPrNumber: number | undefined;
-  let prToCheck = state.pipelineState.prNumber;
-  if (prToCheck === undefined) {
-    // Ops forgot the `pr: <N>` marker. Try to resolve by branch name
-    // before declaring failure (bonus repair for handoff targeting).
-    const branch = state.pipelineState.branchName;
-    if (branch) {
-      const forge = await forgeForCycle(ctx, execFn);
-      if (forge) {
-        try {
-          const prs = await forge.prList({ sourceBranch: branch });
-          const n = prs[0]?.number;
-          if (n !== undefined && Number.isFinite(n) && n > 0) {
-            adoptedPrNumber = n;
-            prToCheck = n;
-            notes.push(
-              `ops omitted the pr: marker; resolved PR #${n} via forge prList by head branch`,
-            );
-          }
-        } catch {
-          // forge unavailable or no PR — the check below reports it.
-        }
-      }
-    }
-    if (prToCheck === undefined) {
-      failures.push(
-        "ops claimed a PR was opened but no `pr: <N>` marker was parsed and no PR exists for the branch — the claim is not backed by an actual PR",
-      );
-    }
-  }
-  if (prToCheck !== undefined) {
-    // The number may have come from an ops child's reply. Asking whether it
-    // resolves proves only that SOME PR has that number — in a busy repo the
-    // numbers around a real PR are all live PRs, so a plausible mistake is a
-    // valid one. Bind it to the branch instead: that is driver-computed, and
-    // `gh pr create --head` opened the PR against exactly it.
-    let view: PrView | undefined;
-    const forge = await forgeForCycle(ctx, execFn);
-    if (forge) {
-      try {
-        const pr = await forge.prView(prToCheck);
-        view = { state: pr.state, headRefName: pr.headRefName };
-      } catch (err) {
-        const e = err as Error & { stderr?: string };
-        failures.push(
-          `PR #${prToCheck} does not resolve via the forge adapter: ${(e.stderr ?? e.message ?? "").slice(0, 200)}`,
-        );
-      }
-    } else {
-      failures.push(`PR #${prToCheck} cannot be verified: forge undetermined for this repo`);
-    }
-    if (view !== undefined) {
-      const identity = judgePrIdentity(state.pipelineState.branchName, view);
-      if (!identity.ok && identity.failure) {
-        failures.push(`PR #${prToCheck} ${identity.failure}`);
-      }
-    }
-  }
-  return { ok: failures.length === 0, failures, notes, adoptedPrNumber };
 }

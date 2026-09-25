@@ -167,6 +167,9 @@ export function recoveryCommandsChat(
     const step2 = steps.find(
       (s) => s.section === "commit-pr-incomplete-consolidation" && s.comment[0]?.startsWith("2."),
     );
+    const step2b = steps.find(
+      (s) => s.section === "commit-pr-incomplete-consolidation" && s.comment[0]?.startsWith("2b."),
+    );
     const step3 = steps.find(
       (s) => s.section === "commit-pr-incomplete-consolidation" && s.comment[0]?.startsWith("3."),
     );
@@ -210,6 +213,15 @@ export function recoveryCommandsChat(
         refCtx,
       ).map((l) => `     ${l}`),
       "",
+      // #875 — cherry-pick step for dirty=false (committed) workstreams;
+      // absent when there are no clean workstreams.
+      ...(step2b
+        ? [
+            ...(step2b.comment ?? []).map((c) => `  # ${c}`),
+            ...resolveLines(step2b, refCtx).map((l) => `     ${l}`),
+            "",
+          ]
+        : []),
       ...(step3?.comment ?? []).map((c) => `  # ${c}`),
       ...resolveLines(
         step3 ?? { section: "commit-pr-incomplete-consolidation", comment: [], lines: [] },

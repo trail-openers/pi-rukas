@@ -60,9 +60,48 @@ export async function runCommitPrPostDispatchGates(
     trace(
       `work-driver: commit-pr partial-consolidation detected — missing workstreams: ${consolidationCheck.missing.map((m) => m.id).join(", ")}`,
     );
-    const verdicts: ConsolidationVerdict[] = consolidationCheck.verdicts.filter(
-      (v) => v.status !== "complete",
-    );
+    // #875 — compute the per-workstream `dirty` flag ONCE at gate time
+    // (worktree porcelain: modified + untracked, same `--untracked-files=all`
+    // as work-driver-verify.ts — bare `--porcelain` collapses a wholly-
+    // untracked directory to one `?? dir/` line) and persist it on each
+    // uncovered verdict. The handoff renderers read ONLY the persisted
+    // flag — no live git call at render time. An unreadable worktree
+    // cannot prove anything, so it is recorded dirty (the conservative
+    // side — the worktree may indeed hold uncommitted work).
+    const ps = state.pipelineState;
+    const worktrees = ps.worktrees ?? {};
+    let dirtyCache: Record<string, boolean> | null = null;
+    const dirtyOf = async (id: string): Promise<boolean> => {
+      if (dirtyCache === null) {
+        const cache: Record<string, boolean> = {};
+        for (const mid of consolidationCheck.missing.map((m) => m.id)) {
+          const wt = worktrees[mid];
+          let porcelain: string | undefined;
+          if (wt) {
+            try {
+              const { stdout } = await execFn("git status --porcelain --untracked-files=all", {
+                cwd: wt,
+                maxBuffer: 1024 * 1024,
+              });
+              porcelain = stdout;
+            } catch {
+              porcelain = undefined;
+            }
+          }
+          cache[mid] = porcelain === undefined ? true : porcelain.trim().length > 0;
+        }
+        dirtyCache = cache;
+      }
+      return dirtyCache[id] ?? true;
+    };
+    const verdicts: ConsolidationVerdict[] = [];
+    for (const v of consolidationCheck.verdicts) {
+      if (v.status !== "uncovered") {
+        verdicts.push(v);
+        continue;
+      }
+      verdicts.push({ ...v, dirty: await dirtyOf(v.id) });
+    }
     state = {
       ...state,
       pipelineState: {

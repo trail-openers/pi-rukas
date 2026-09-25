@@ -221,7 +221,7 @@ export function inlinePlanPrompt(issues: number[], scratchDirAbs: string): strin
     "",
     "For N>1 workstreams, repeat the `###` subheading per workstream (use short ids like `task-a`, `task-b`). The `out-of-scope` line is LOAD-BEARING — issue #553 polluted PR #556 with off-scope files because nothing told the developer what was OUT. Fence the scope explicitly even when you think it's obvious.",
     "",
-    "EVERY workstream MUST declare a non-empty `paths:`. The driver checks the committed diff against that list to prove each workstream's slice actually landed; an empty list silently disables that check for the slice.",
+    "EVERY workstream MUST declare a non-empty `paths:`. The driver checks the committed diff against that list to prove each workstream's slice actually landed; an empty list silently disables that check for the slice. `paths` means files the developer is EXPECTED TO MODIFY: a file you list in `paths` but never edit (e.g. a shared or legacy test whose contract you keep green without touching it) counts as a missing slice at the consolidation gate and parks the cycle. Shared tests, legacy tests, or anything you deliberately keep green without editing go in `out-of-scope` — that is what the out-of-scope line is for.",
     "",
     "If single-workstream, ALWAYS use `### default` so the driver routes through the same code path uniformly.",
     "",

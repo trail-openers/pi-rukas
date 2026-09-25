@@ -27,10 +27,19 @@
  * third state: no declared paths (the planner gave nothing to verify) or the
  * diff read itself failed (best-effort — a transient git issue must not
  * false-alarm the whole cycle).
+ *
+ * #875 — the `uncovered` member carries a per-workstream `dirty` flag,
+ * computed ONCE at gate time from the worktree's `git status --porcelain`
+ * (modified + untracked). The handoff renderers read ONLY this persisted
+ * field — never a live git call — and claim "uncommitted on disk" only
+ * for workstreams with `dirty: true`. Absent on state files written before
+ * #875 (and on `complete`/`unverifiable`); readers must tolerate
+ * the absence (legacy verdicts render with the pre-#875 unconditional
+ * wording via the reader adapters' `?? true` default).
  */
 export type ConsolidationVerdict =
   | { id: string; status: "complete" }
-  | { id: string; status: "uncovered"; uncoveredPaths: string[] }
+  | { id: string; status: "uncovered"; uncoveredPaths: string[]; dirty?: boolean }
   | { id: string; status: "unverifiable"; reason: string };
 
 /**

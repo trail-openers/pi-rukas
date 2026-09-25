@@ -315,6 +315,21 @@ function assert(cond: boolean, msg: string) {
     "plan-prompt: the inferred test-subject coupling is named as a trigger for the integration-test line",
   );
   assert(/N>1/i.test(p), "plan-prompt: both new lines are documented as N>1-only");
+  // #875 — the paths-means-modified rule: the planner is told that a declared
+  // path the developer never edits parks the cycle at the consolidation gate,
+  // and that keep-green/shared/legacy files belong in out-of-scope instead.
+  assert(
+    /EXPECTED TO MODIFY/i.test(p),
+    "plan-prompt: the paths line states paths means files the developer is expected to modify",
+  );
+  assert(
+    /never edit/i.test(p) && /missing slice/i.test(p) && /parks the cycle/i.test(p),
+    "plan-prompt: a declared-but-untouched path is named as a missing slice that parks the cycle",
+  );
+  assert(
+    /Shared tests, legacy tests/i.test(p) && /go in `out-of-scope`/i.test(p),
+    "plan-prompt: shared/legacy tests to keep green without editing are routed to out-of-scope",
+  );
   // The pre-existing contract lines are untouched.
   assert(
     p.includes("- paths: <comma-separated touchpoint files>"),

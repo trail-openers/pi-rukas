@@ -14,6 +14,7 @@ import { explainLens } from "./work-driver-explain-lens.ts";
 import { explainOther } from "./work-driver-explain-other.ts";
 import { explainPrSteps } from "./work-driver-explain-pr-steps.ts";
 import { explainReview } from "./work-driver-explain-review.ts";
+import { cherryPickRecoveryFor } from "./work-driver-handoff-cherry-pick.ts";
 import { type ParkReason, explainPark } from "./work-driver-intent.ts";
 import { explainMergeHold } from "./work-driver-merge-authority.ts";
 import { lastCapHit } from "./workflow-state-cap.ts";
@@ -183,26 +184,18 @@ export function explainCap(
     case "step-back-revise-spec":
       return explainOther(cap, state);
     case "commit-pr-incomplete-consolidation": {
-      const missing = missingWorkstreamsFromConsolidation(
-        state.pipelineState.incompleteConsolidation,
-      );
-      const which =
-        missing.length > 0
-          ? missing.map((m: { id: string }) => m.id).join(", ")
-          : "one or more workstreams";
-      // #540 — the PRESENT side of the verdict: what the committed diff
-      // actually contains, so the operator can tell a true partial commit
-      // (files present, one workstream's slice absent) from a hollow
-      // commit (an empty committed diff). Absent on pre-#540 state files
-      // (the field was a bare array then) — say nothing rather than
-      // render a hollow list.
-      const filesPresent = filesPresentFromConsolidation(
-        state.pipelineState.incompleteConsolidation,
-      );
-      const presentBlurb =
-        filesPresent.length > 0
-          ? ` The committed diff contains ${filesPresent.length} file(s): ${filesPresent.slice(0, 5).join(", ")}${filesPresent.length > 5 ? ` and ${filesPresent.length - 5} more` : ""} — the missing workstreams' files are the difference.`
-          : "";
+      // #875 — the per-workstream `dirty` flag (persisted at gate time)
+      // decides the claim, not a live git call: "uncommitted on disk"
+      // is stated only for workstreams that actually had uncommitted
+      // work; committed-but-unintegrated work gets the cherry-pick
+      // recovery instead. Pre-#875 state files (no flag) keep the old
+      // unconditional wording (see commitPrConsolidationBlurb).
+      const which = commitPrConsolidationBlurb(state, {
+        missingIds: missingWorkstreamsFromConsolidation(
+          state.pipelineState.incompleteConsolidation,
+        ).map((m) => m.id),
+        filesPresent: filesPresentFromConsolidation(state.pipelineState.incompleteConsolidation),
+      });
       // #500 — the recorded repoRoot state, when the inspection ran. The
       // pre-#500 silence (nothing recorded, nothing rendered) is the defect:
       // a conflicted root wedges every later cycle at integrate()'s
@@ -215,7 +208,7 @@ export function explainCap(
         state.pipelineState.commitPrRootError,
         "the recovery commands below apply as-is",
       );
-      return `commit-pr's post-dispatch consolidation gate detected that the committed diff is missing files from these workstreams: ${which}. Ops committed a partial slice — the developers' work in the missing worktrees is uncommitted on disk. Pre-PR14 this would have merged silently (v0.12.13 /work 577 closed an issue with 1 of 3 workstreams' changes shipped). The driver halted before merge; recover by collecting the missing diffs from \`.worktrees/issue-N-<id>\` and re-running, or take over the integration manually.${presentBlurb}${rootBlurb}`;
+      return `commit-pr's post-dispatch consolidation gate detected that the committed diff is missing files from these workstreams. ${which} Pre-PR14 this would have merged silently (v0.12.13 /work 577 closed an issue with 1 of 3 workstreams' changes shipped). The driver halted before merge; take over the integration manually or follow the recovery below.${rootBlurb}`;
     }
     case "verify-failed:commit-pr":
       return explainConsolidation(cap, state);
@@ -407,4 +400,50 @@ export function explainCap(
   // covered above; if we land here, surface the raw cap so the user
   // can still grep the state file.
   return `step failed: ${String(cap)} — see state-file event log`;
+}
+
+/**
+ * #875 — the "missing workstreams" blurb for the
+ * `commit-pr-incomplete-consolidation` cap. Reads ONLY the persisted
+ * per-verdict `dirty` flag (no git calls) — dirty=true or flag absent
+ * (legacy) → "uncommitted on disk"; dirty=false → cherry-pick recovery.
+ */
+function commitPrConsolidationBlurb(
+  state: WorkState,
+  opts: { missingIds: string[]; filesPresent: string[] },
+): string {
+  const ps = state.pipelineState;
+  const which = opts.missingIds.length > 0 ? opts.missingIds.join(", ") : "one or more workstreams";
+  const ic = ps.incompleteConsolidation;
+  const verdicts = Array.isArray(ic) ? [] : (ic?.verdicts ?? []);
+  const wts = ps.worktrees ?? {};
+  const lines: string[] = [`the committed diff is missing declared files from: ${which}.`];
+  for (const id of opts.missingIds) {
+    const v = verdicts.find((x) => x.id === id);
+    const isClean = !Array.isArray(ic) && !!v && v.status === "uncovered" && v.dirty === false;
+    const wtSuffix = wts[id] ? ` (${wts[id]})` : "";
+    if (!isClean) {
+      lines.push(
+        `  - ${id}: the developers' work in the missing worktree${wtSuffix} is uncommitted on disk.`,
+      );
+      continue;
+    }
+    const pick = cherryPickRecoveryFor(state.issue, id, {
+      worktree: wts[id],
+      baseSha: ps.baseSha,
+      ownBase: ps.workstreamBaseShas?.[id],
+      headSha: ps.commitShas?.[id],
+    });
+    const pickText = pick.kind === "command" ? `cherry-pick it: \`${pick.line}\`` : pick.line;
+    lines.push(
+      `  - ${id}: nothing uncommitted — the work is COMMITTED in its worktree${wtSuffix}. If ${v.uncoveredPaths.join(", ")} genuinely needed a change, ${pickText}; otherwise the declaration was over-broad and the fix is a restart.`,
+    );
+  }
+  if (opts.filesPresent.length > 0) {
+    const shown = opts.filesPresent.slice(0, 5).join(", ");
+    lines.push(
+      ` The committed diff contains ${opts.filesPresent.length} file(s): ${shown}${opts.filesPresent.length > 5 ? ` and ${opts.filesPresent.length - 5} more` : ""} — the missing workstreams' files are the difference.`,
+    );
+  }
+  return lines.join(" ");
 }

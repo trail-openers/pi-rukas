@@ -273,6 +273,16 @@ export function validateDiscriminants(state: unknown): string[] {
                 `pipelineState.incompleteConsolidation.verdicts[${i}].uncoveredPaths is missing or not an array (required when status is 'uncovered')`,
               );
             }
+            // #875 — the per-workstream dirty flag (computed once at gate
+            // time from the worktree porcelain). OPTIONAL: pre-#875 state
+            // files lack it entirely and must keep validating; when
+            // present it must be a boolean (renderers read it verbatim,
+            // so a non-boolean would be a confident-wrong claim).
+            if (e.status === "uncovered" && e.dirty !== undefined && typeof e.dirty !== "boolean") {
+              out.push(
+                `pipelineState.incompleteConsolidation.verdicts[${i}].dirty is not a boolean (must be a boolean when present)`,
+              );
+            }
             if (e.status === "unverifiable" && typeof e.reason !== "string") {
               out.push(
                 `pipelineState.incompleteConsolidation.verdicts[${i}].reason is missing or not a string (required when status is 'unverifiable')`,
