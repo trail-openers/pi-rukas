@@ -84,6 +84,18 @@ export async function auditCommitPrFallback(
   const auditHalt = async (base: WorkState): Promise<WorkState> => {
     const holders = await branchHolders(execFn, ctx.repoRoot, auditBranch);
     if (!holders.ok) {
+      // Distinguish error classes (the same principle as repoRootHoldsBranch):
+      // "not a git repository" means there is NO repo, so there are NO holders
+      // to violate — degrading to an empty holder list is correct (the PR
+      // verification gates still run their own checks). Any OTHER git error
+      // (lock, permission, timeout) means there IS a repo we could not read —
+      // a possibly-violating holder must not be exculpated, so halt.
+      if (/not a git repository/i.test(holders.error)) {
+        trace(
+          "work-driver: commit-pr fallback audit — repoRoot is not a git repository — no holders to audit",
+        );
+        return base;
+      }
       trace(
         `work-driver: commit-pr fallback audit — branch holders unreadable — halting: ${holders.error.slice(0, 200)}`,
       );
