@@ -98,9 +98,10 @@ export async function runLensChild(opts: {
             // (set in spawn.ts) disables auto-discovery; `--extension <path>` still
             // loads explicit paths, so the reporter is the only extension in the child.
             extraArgs: ["--no-skills", "--skill", skillPath, "--extension", LENS_REPORTER_PATH],
-            // No timeoutMs override — inherits per-role default from
-            // spawn.ts:roleTimeoutMs(spec.role). For code-review-specialist
-            // that's 15 min (PR5 — was a 30 min global pre-PR5).
+            // No timeoutMs override — inherits spawn.ts's bounds: the 2h
+            // wall-clock backstop (spawnBackstopMs, spawn-support.ts) and the
+            // 25-min inactivity watchdog (inactivityTimeoutMs). No per-role
+            // timeout exists; liveness, not wall clock, is the real signal.
             signal: runOpts.signal,
             onProgress: (state) => {
               dispatchDeck.updateEntry(deckKey, state);
