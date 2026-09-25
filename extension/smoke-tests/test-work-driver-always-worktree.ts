@@ -20,6 +20,7 @@ import {
   detectMainline,
   mechanizedBranchSetup,
 } from "../src/work-driver-branch-mechanized.ts";
+import { integrateWorktreePath } from "../src/work-driver-integrate-worktree.ts";
 import { integrate } from "../src/work-driver-integrate.ts";
 import type { ExecFn } from "../src/worktree.ts";
 
@@ -107,13 +108,27 @@ assert(
     path.resolve(out.worktrees.default ?? "") !== path.resolve(REPO),
     "worktrees[id] can never resolve to repoRoot — the #602 precondition",
   );
+  // #861 — the driver-owned integration worktree is the ONE documented
+  // exemption from #287's always-detached invariant: it is ATTACHED (it
+  // checks out the integration branch so the ops fallback starts on it).
+  // The exemption is by NAME (the `-integrate` suffix), not by the worktree
+  // map, so assert the driver's own helper produces the exempted path.
+  assert(
+    integrateWorktreePath(REPO, 287).endsWith("issue-287-integrate"),
+    "the -integrate worktree name is the documented always-detached exemption",
+  );
   assert(
     out.baseSha === "deadbeefcafe",
     "baseSha resolved from origin/<mainline>, not repoRoot HEAD",
   );
   assert(
-    calls.some((c) => c.cmd.includes("git worktree add") && c.cmd.includes("--detach")),
-    "worktrees are created DETACHED — no scratch branch per workstream",
+    calls.every(
+      (c) =>
+        !c.cmd.includes("git worktree add") ||
+        c.cmd.includes("--detach") ||
+        c.cmd.includes("-integrate"),
+    ),
+    "worktrees are created DETACHED — no scratch branch per workstream (the -integrate tree is the documented exemption, created by the commit-pr fallback, not here)",
   );
   assert(
     !calls.some((c) => c.cmd.startsWith("git checkout") || c.cmd.startsWith("git pull")),
@@ -142,6 +157,14 @@ assert(
     Object.keys(out.worktrees).length === 2 &&
       out.worktrees["task-a"]?.endsWith("issue-553-task-a") === true,
     "N>1 produces one worktree per workstream",
+  );
+  const allAdds = calls.filter((c) => c.cmd.includes("git worktree add"));
+  // #861 — the -integrate suffix is the ONLY always-detached exemption. A
+  // hypothetical sibling worktree (issue-N-task-x) must still carry
+  // --detach; only the driver-owned -integrate tree may be attached.
+  assert(
+    allAdds.every((c) => c.cmd.includes("--detach") || c.cmd.includes("-integrate")),
+    "N>1: every created worktree is detached (or is the -integrate exempted tree)",
   );
   assert(
     calls.filter((c) => c.cmd.includes("git worktree add")).length === 2,

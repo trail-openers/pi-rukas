@@ -404,6 +404,51 @@ export function recoveryStepsForCap(
         lines: [`rm .pi/work-state/${issue}.json`],
       },
     );
+  } else if (cap === "integration-worktree-violation") {
+    // #861 — the commit-pr ops-fallback audit halted: the integration
+    // branch is held by the WRONG worktree (the #841 shape). The driver
+    // kept the driver-owned integrate worktree for inspection and refused
+    // the PR-verification gates, so nothing was validated from the wrong
+    // tree. The holder path rides in the cap's evidence.
+    const hit = lastCapHit(state, "integration-worktree-violation");
+    const evidence = hit?.evidence ?? "(no holder recorded)";
+    steps.push(
+      {
+        section: "integration-worktree-violation",
+        comment: [
+          "1. The branch-holder audit found the integration branch held by a",
+          `   worktree that is NOT the driver-owned integrate worktree: ${evidence}`,
+          "   The driver-owned integrate worktree is preserved — inspect it first:",
+        ],
+        lines: [`.worktrees/issue-${issue}-integrate   # the driver kept this for inspection`],
+      },
+      {
+        section: "integration-worktree-violation",
+        comment: [
+          "2. Inspect the offending holder (the path above) — confirm whose work",
+          "   it holds, and whether it is a sibling cycle's worktree:",
+        ],
+        lines: ["git status   # at the offending holder path"],
+      },
+      {
+        section: "integration-worktree-violation",
+        comment: [
+          "3. Move the branch back: commit or push the holder's work to the right",
+          "   tree, then detach the holder and re-run the cycle (the driver",
+          "   recreates the integrate worktree on re-entry):",
+        ],
+        lines: [
+          "git checkout <branch>   # from the integrate worktree, once the holder is free",
+          `rm .pi/work-state/${issue}.json`,
+          `/work ${issue} --restart`,
+        ],
+      },
+      {
+        section: "integration-worktree-violation",
+        comment: ["4. Or abandon the cycle entirely (the integrate worktree is preserved):"],
+        lines: [`rm .pi/work-state/${issue}.json`],
+      },
+    );
   } else if (cap === "develop-incomplete-deliverables") {
     // #741 — the converge gate capped: the verify gate passed (the code
     // builds) but a plan deliverable's declared paths are absent from the

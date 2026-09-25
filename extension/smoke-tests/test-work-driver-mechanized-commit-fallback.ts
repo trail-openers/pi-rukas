@@ -282,6 +282,12 @@ const mkDispatchFn =
           if (cmd.startsWith("git fetch origin")) return { stdout: "" };
           if (cmd.startsWith("git worktree add")) return { stdout: "" };
           if (cmd.startsWith("git worktree remove")) return { stdout: "" };
+          // #861 — the driver now creates the integrate worktree on a
+          // non-terminal mechanized failure. The fake exec must tolerate it:
+          // the new directory does not exist, so `git` in that cwd throws
+          // (caught → treated as "no stale tree", the correct shape for a
+          // first-time creation).
+          if (cmd.includes("/issue-997-integrate")) return { stdout: "" };
           if (cmd.startsWith("git status --porcelain")) {
             const cwd = o?.cwd ?? "";
             const worktreeAdds = calls4.filter((c) => c.startsWith("git worktree add")).length;

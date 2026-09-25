@@ -21,10 +21,15 @@ import {
   commitPrRootFieldsOf,
   inspectCommitPrRoot,
 } from "./work-driver-commit-inspect.ts";
+import { auditCommitPrFallback } from "./work-driver-commit-pr-audit.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { deriveConsolidationSubject } from "./work-driver-handoff-subject.ts";
+import {
+  ensureIntegrateWorktree,
+  integrateWorktreePath,
+} from "./work-driver-integrate-worktree.ts";
 import {
   type IntegrateResult,
   cachedIssueTitle,
@@ -47,6 +52,7 @@ import { inlineCommitPrPrompt } from "./work-driver-prompts-late.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyConsolidation, verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
+import type { WorkEvent } from "./workflow-state-events.ts";
 import { appendEvent } from "./workflow-state.ts";
 import type {
   CommitPrFallbackCause,
@@ -55,10 +61,7 @@ import type {
   WorkState,
 } from "./workflow-state.ts";
 const execp = promisify(exec);
-import {
-  finalizeCommitPrState,
-  runCommitPrPostDispatchGates,
-} from "./work-driver-commit-pr-events.ts";
+import { finalizeCommitPrState, runCommitPrPostDispatchGates } from "./work-driver-commit-pr-events.ts";
 
 // clipTitle (#507) lives with the PR text builders in
 // work-driver-pr-body-definition.ts; re-exported for existing consumers.
@@ -73,6 +76,19 @@ export type { CommitPrFallbackCause } from "./workflow-state-events.ts";
 function causeFromIntegrateFailure(res: IntegrateResult): CommitPrFallbackCause | undefined {
   if (res.ok) return undefined;
   return res.failure === "dirty-repoRoot" ? "dirty-repoRoot" : "other";
+}
+
+/**
+ * #861 — the fallback's structural conflict-artifact source. The plumb
+ * report the driver appends on a non-terminal mechanized failure carries
+ * "(patch preserved at <path>)" in its body (mechanizedCommitPr's reason
+ * does) — the ops prompt gets the path STRUCTURALLY from this event, never
+ * re-parsed out of a free-text reason at the prompt seam.
+ */
+function conflictArtifactFromPlumb(event: WorkEvent | undefined): string | undefined {
+  if (event?.kind !== "plumb-report") return undefined;
+  const m = event.body.match(/\(patch preserved at (\S+)\)/);
+  return m?.[1];
 }
 import { deriveCommitPrTitle, integrationVerifyTimeoutMs } from "./work-driver-commit-title.ts";
 export { deriveCommitPrTitle, integrationVerifyTimeoutMs };
@@ -192,6 +208,24 @@ export async function mechanizedCommitPr(
     // KNOWS why it failed; a reader re-parsing `reason` would be guessing.
     const fallbackCause = causeFromIntegrateFailure(res);
     if (!res.ok) {
+      // #861 — on a non-terminal failure the ops fallback takes over, so
+      // the driver creates the worktree the fallback is pinned to, HERE:
+      // (a) it sits INSIDE withIntegrationLock (runCommitPr wraps
+      // mechanizedCommitPr) — the tree will hold the integration branch and
+      // a sibling's sweep/integration must not race it; (b) `res.conflictPatch`
+      // is in scope — the patch path is passed STRUCTURALLY to the prompt
+      // (the "where possible" in the decision), never re-parsed from reason;
+      // (c) a tree-creation failure THROWS into the catch below, which
+      // returns a non-terminal `{ok:false}` — the exact failure path the
+      // fallback already absorbs (no new cap, no new halt path).
+      if (res.failure !== "verify" && ps.baseSha) {
+        await ensureIntegrateWorktree(execFn, {
+          repoRoot: ctx.repoRoot,
+          issue: ctx.issue,
+          branchName,
+          baseSha: ps.baseSha,
+        });
+      }
       return {
         ok: false,
         reason: res.conflictPatch
@@ -357,39 +391,90 @@ async function runCommitPrLocked(
         at: Date.now(),
         step: "commit-pr",
         role: "driver",
-        body: `Mechanized commit-pr fell back to the ops dispatch: ${mech.reason}. Note: the repo root may contain partially staged consolidation from the mechanized attempt — verify with \`git status\` before re-applying patches.`,
+        // #861 — the old "the repo root may contain partially staged
+        // consolidation" sentence is GONE: on every fallback-reachable
+        // failure integrate() runs verifiedRestoreRoot (it saves any partial
+        // state to a scratch artifact first, then reset --hard + checkout and
+        // VERIFIES repoRoot is clean). A restore failure already carries
+        // "repoRoot was NOT restored …" in mech.reason — the driver never
+        // claims a restoration it has not verified.
+        body: `Mechanized commit-pr fell back to the ops dispatch: ${mech.reason}`,
         // #539 — the writer's own structured observation; the renderer
         // prefers this over re-deriving the cause from the recorded state.
         fallbackCause: mech.fallbackCause,
       });
     }
   }
+  let fallbackFired = false;
   if (next === undefined) {
     // #818 — the ops fallback receives the DERIVED conventional subject (not
     // the raw issue title), so the PR the ops child opens is conventional
     // even when the mechanized path fell back. The prompt instructs it to
     // use the subject verbatim as the PR title.
     const issueTitle = await deriveCommitPrTitle(preDispatch, ctx, execFn);
-    next = await runSingleDispatch(ctx, preDispatch, "commit-pr", "ops", "ops:commit-pr", now, () =>
-      // PR14 — thread worktrees + workstreams + branchName into the prompt
-      // so ops knows to consolidate every worktree's uncommitted changes
-      // (not just whichever one its dispatch landed in). Pre-PR14 the
-      // prompt was single-tree shaped; multi-workstream cycles silently
-      // committed only one worktree's slice (v0.12.13 /work 577 incident).
-      inlineCommitPrPrompt(
-        activeIssuesOf(preDispatch),
-        preDispatch.pipelineState.droppedIssues ?? [],
-        preDispatch.pipelineState.worktrees ?? {},
-        preDispatch.pipelineState.workstreams ?? {},
-        preDispatch.pipelineState.branchName ?? "(branch not captured — set in Step 3)",
-        preDispatch.pipelineState.normalisedSpec,
-        preDispatch.eventLog,
-        scratchDir(ctx.repoRoot, ctx.issue),
-        issueTitle,
-      ),
+    // #861 — the fallback is pinned to the driver-owned integrate worktree
+    // (created by mechanizedCommitPr under the integration lock). The spec
+    // carries `cwd` (the #841 defect was a cwd-less dispatch whose prompt
+    // told the child to roam); the prompt carries the worktree path as the
+    // ONLY permitted working tree, the scratch dir, the preserved conflict
+    // artifact (structured, from the mechanized failure), the baseSha and
+    // every workstream's worktree path + committed SHA — and forbids the
+    // repo root's checkout and every other .worktrees/* path.
+    const ps = preDispatch.pipelineState;
+    const integratePath = integrateWorktreePath(ctx.repoRoot, ctx.issue);
+    next = await runSingleDispatch(
+      ctx,
+      preDispatch,
+      "commit-pr",
+      "ops",
+      "ops:commit-pr",
+      now,
+      () =>
+        // PR14 — thread worktrees + workstreams + branchName into the prompt
+        // so ops knows to consolidate every worktree's uncommitted changes
+        // (not just whichever one its dispatch landed in). Pre-PR14 the
+        // prompt was single-tree shaped; multi-workstream cycles silently
+        // committed only one worktree's slice (v0.12.13 /work 577 incident).
+        inlineCommitPrPrompt(
+          activeIssuesOf(preDispatch),
+          preDispatch.pipelineState.droppedIssues ?? [],
+          preDispatch.pipelineState.worktrees ?? {},
+          preDispatch.pipelineState.workstreams ?? {},
+          preDispatch.pipelineState.branchName ?? "(branch not captured — set in Step 3)",
+          preDispatch.pipelineState.normalisedSpec,
+          preDispatch.eventLog,
+          scratchDir(ctx.repoRoot, ctx.issue),
+          issueTitle,
+          {
+            integratePath,
+            scratchDir: scratchDir(ctx.repoRoot, ctx.issue),
+            baseSha: ps.baseSha ?? "(base not recorded)",
+            conflictPatch: conflictArtifactFromPlumb(
+              preDispatch.eventLog[preDispatch.eventLog.length - 1],
+            ),
+            worktrees: ps.worktrees ?? {},
+            commitShas: ps.commitShas ?? {},
+            workstreams: ps.workstreams ?? {},
+          },
+        ),
+      {
+        cwd: integratePath,
+      },
     );
+    fallbackFired = true;
   }
   const last = next.eventLog[next.eventLog.length - 1];
   if (last?.kind !== "dispatch-completed") return next;
-  return runCommitPrPostDispatchGates(ctx, execFn, next);
+  // #861 — the post-dispatch branch-holder audit (the #841 defect's guard):
+  // the integration branch must now be held by the integrate worktree — or
+  // by nothing. A violation halts with `integration-worktree-violation`
+  // BEFORE the PR-verification gates can validate a PR opened from the
+  // wrong tree; a clean tail removes the integrate worktree (kept on
+  // handoff), after which the normal PR gates (consolidation + verify) run
+  // via runCommitPrPostDispatchGates.
+  const audited = await auditCommitPrFallback(ctx, execFn, next, fallbackFired);
+  const auditedLast = audited.eventLog[audited.eventLog.length - 1];
+  if (auditedLast?.kind === "cap-hit" && auditedLast.cap === "integration-worktree-violation")
+    return audited;
+  return runCommitPrPostDispatchGates(ctx, execFn, audited);
 }

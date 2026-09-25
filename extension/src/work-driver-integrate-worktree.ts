@@ -29,6 +29,7 @@ import fs from "node:fs/promises";
 import { trace } from "./trace.ts";
 import { isDriverManagedDirtLine } from "./work-driver-branch-residue.ts";
 import { runCreateGuards } from "./worktree-create-guard.ts";
+import { provisionWorktree } from "./worktree-provision.ts";
 import { resolvePath, worktreePath, worktreeRemove } from "./worktree.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -122,6 +123,16 @@ export async function ensureIntegrateWorktree(
 
   // ---- repoRoot must not hold the branch: git refuses the add otherwise
   if (branchHead) {
+    // The holder list comes from `git worktree list --porcelain`, which does
+    // NOT include the main working tree (repoRoot itself) — so the list can
+    // never say repoRoot holds the branch, and the dirty-repoRoot refusal
+    // below would be dead code in the production executor. Probe repoRoot
+    // DIRECTLY: the main tree's checkout IS what matters here.
+    // The main working tree (repoRoot) is NOT in `git worktree list --porcelain`.
+    // The pre-#861 code probed `branchHolders` (the worktree list) and compared
+    // against `resolvePath(repoRoot)` — the main tree never appears there, so
+    // the dirty-repoRoot refusal was dead code in the production executor. The
+    // correct probe is repoRoot's own checkout.
     const holders = await branchHolders(execFn, repoRoot, branchName);
     const rootHolds = holders.some((h) => resolvePath(h) === resolvePath(repoRoot));
     if (rootHolds) {
@@ -171,7 +182,14 @@ export async function ensureIntegrateWorktree(
   // is excluded from the guards' in-cycle set: it is already handled (old
   // HEAD recorded + force-removed above), and re-inspecting it as a guard
   // refusal would treat driver-owned residue as operator residue.
-  await runCreateGuards(execFn, { repoRoot, name, fromRef: branchHead ?? baseSha }, [abs]);
+  // #861 — `targetHandled` waives the TARGET-path #475 dirty inspection
+  // (the path is either absent — fresh creation — or was just force-removed
+  // by the re-entry); the SIBLING scan still runs (a foreign same-issue
+  // leftover is still a hazard).
+  const targetHandled = staleHead !== undefined || (await pathExists(abs)) === false;
+  await runCreateGuards(execFn, { repoRoot, name, fromRef: branchHead ?? baseSha, targetHandled }, [
+    abs,
+  ]);
 
   const ref = branchHead ?? baseSha;
   // ATTACHED (no --detach): this is the one documented exemption from #287's
@@ -182,6 +200,14 @@ export async function ensureIntegrateWorktree(
     cwd: repoRoot,
     maxBuffer: 1024 * 1024,
   });
+  // A bare worktree cannot run a project's own commands — the same
+  // provisioning the branch step's worktreeCreate gives every workstream
+  // tree (provisionWorktree never throws; a failure is a reported problem,
+  // not a cycle killer).
+  const provisioned = await provisionWorktree(execFn, repoRoot, abs);
+  if (provisioned.problem) {
+    trace(`work-driver: ${name} worktree provisioning incomplete — ${provisioned.problem}`);
+  }
   return { path: abs, refHead: ref, ...(staleHead ? { staleHead } : {}), repoRootDetached };
 }
 

@@ -24,7 +24,11 @@
 import { trace } from "./trace.ts";
 import { runCommitPrPostDispatchGates } from "./work-driver-commit-pr-events.ts";
 import type { DriverContext } from "./work-driver-context.ts";
-import { branchHolders, integrateWorktreePath } from "./work-driver-integrate-worktree.ts";
+import {
+  branchHolders,
+  integrateWorktreeName,
+  integrateWorktreePath,
+} from "./work-driver-integrate-worktree.ts";
 import { appendEvent } from "./workflow-state.ts";
 import type { WorkState } from "./workflow-state.ts";
 import { worktreeRemove } from "./worktree.ts";
@@ -70,8 +74,12 @@ export async function auditCommitPrFallback(
   // violation halt above. Only a clean tail means the PR was verified.
   const gatedLast = gated.eventLog[gated.eventLog.length - 1];
   if (gatedLast?.kind !== "cap-hit") {
-    await worktreeRemove(execFn, ctx.repoRoot, `issue-${ctx.issue}-integrate`, true).catch((err) =>
+    const removal = worktreeRemove(execFn, ctx.repoRoot, integrateWorktreeName(ctx.issue), true);
+    await removal.catch((err) =>
       trace(`work-driver: integrate worktree removal failed: ${(err as Error).message}`),
+    );
+    trace(
+      `work-driver: commit-pr SUCCEEDED — removed the driver-owned integrate worktree ${integrateWorktreePath(ctx.repoRoot, ctx.issue)} (kept on handoff)`,
     );
   }
   return gated;

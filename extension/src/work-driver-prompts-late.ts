@@ -7,6 +7,7 @@ import {
   operatorActionsSectionOf,
 } from "./work-driver-pr-body-definition.ts";
 import { renderLensFindingsSection } from "./work-driver-pr-sections.ts";
+import type { Workstream } from "./workflow-state-schema.ts";
 
 /**
  * /work driver — inline prompt builders for the late pipeline steps.
@@ -73,6 +74,25 @@ export function inlineCommitPrPrompt(
   eventLog: readonly import("./workflow-state-events.ts").WorkEvent[],
   scratchDirAbs: string,
   issueTitle?: string,
+  // #861 — the ops-fallback integration context. Absent on a fresh cycle;
+  // present when the mechanized commit-pr fell back and the driver created
+  // the driver-owned integrate worktree the fallback is pinned to.
+  fallback?: {
+    /** The driver-owned integration worktree — the ONLY permitted working tree. */
+    integratePath: string;
+    /** The scratch dir the conflict / restored-state artifacts live in. */
+    scratchDir: string;
+    /** The base the feature branch was created at. */
+    baseSha: string;
+    /** The preserved conflict patch, when integrate() preserved one. */
+    conflictPatch?: string;
+    /** The workstream map + declared scope (in-scope / out-of-scope paths). */
+    worktrees: Record<string, string>;
+    /** #453 — each workstream's committed SHAs, as recorded in the state. */
+    commitShas: Record<string, string>;
+    /** The per-workstream plan (scope / paths), when captured. */
+    workstreams: Record<string, Workstream>;
+  },
 ): string {
   const headline = issues.length === 1 ? `issue #${issues[0]}` : `issues #${issues.join(", #")}`;
   const fixesLines = issues.map((n) => `Fixes #${n}`).join("\\n");
@@ -129,6 +149,74 @@ export function inlineCommitPrPrompt(
   const proseRule =
     "**PR PROSE:** The PR title/body must describe the DIFF and the ISSUE; do not derive prose from the branch name.";
 
+  // #861 — the ops-fallback shape (the mechanized commit-pr failed, e.g. on a
+  // cherry-pick conflict). The fallback child works EXCLUSIVELY in the
+  // driver-owned integrate worktree: the prompt names it as the only
+  // permitted tree and forbids the repo root and every other .worktrees/*.
+  if (fallback) {
+    const fbIds = Object.keys(fallback.worktrees);
+    const fbWorktreeLines = fbIds.flatMap((id) => {
+      const ws = fallback.workstreams[id];
+      const wtPath = fallback.worktrees[id] ?? "(no path)";
+      const sha = fallback.commitShas[id];
+      const scope = ws?.scope ?? "(no scope captured)";
+      const paths = ws?.paths.length ? ws.paths.join(", ") : "(no paths declared)";
+      return [
+        `  - **${id}** at \`${wtPath}\``,
+        `      scope: ${scope}`,
+        `      in-scope paths: ${paths}`,
+        `      committed SHA(s): ${sha ?? "(none recorded — the worktree may be uncommitted)"}`,
+      ];
+    });
+    const conflictNote = fallback.conflictPatch
+      ? `  - The preserved conflict artifact from the mechanized attempt is at \`${fallback.conflictPatch}\` — the consolidation to reconcile is there (and in the worktrees below).`
+      : "  - No conflict artifact was preserved by the mechanized attempt — the consolidation below is the whole job.";
+    return [
+      `/work ${headline} — Step 6 (Commit + PR). **Fallback shape** — the mechanized commit-pr failed, and the driver created a driver-owned integration worktree for you to complete the consolidation.`,
+      "",
+      `**INTEGRATION WORKTREE (the ONLY permitted working tree): \`${fallback.integratePath}\`** — it has the integration branch \`${branchName}\` checked out.`,
+      "",
+      `**HARD BOUNDARIES:** The repo root (its checkout) is OFF LIMITS — the driver verified it clean and will not have it touched. Every other \`.worktrees/*\` path is OFF LIMITS — a sibling worktree is another cycle's ground. ALL git work in this dispatch happens in \`${fallback.integratePath}\` (prefix every command with \`git -C ${fallback.integratePath} \`).`,
+      "",
+      `Base (the SHA the feature branch was created at): \`${fallback.baseSha}\``,
+      conflictNote,
+      "",
+      "Workstream worktrees (each contains the developer's committed slice — READ-ONLY, never modify):",
+      ...fbWorktreeLines,
+      "",
+      issueTitleLine,
+      "",
+      "Out-of-scope staging fences (these are DO-NOT-STAGE instructions):",
+      ...scopeFence,
+      "",
+      stagingRule,
+      proseRule,
+      "",
+      `  1. **Verify the worktree has the work the branch needs.** For each of the ${fbIds.length} worktrees, run \`git -C <path> log --oneline ${fallback.baseSha}..HEAD | head\`. A clean \`status --porcelain\` is EXPECTED here (committed work), not a failure signal. If the worktree has UNCOMMITTED changes, \`git add\` the changed files (avoid \`git add -A\` — keep the staged set explicit) before capturing the diff.`,
+      "",
+      `  2. **Consolidate each worktree's diff onto the integration branch, in the integrate worktree.** Capture each worktree's diff and apply it in \`${fallback.integratePath}\` (which is already on \`${branchName}\`). Concrete recipe per workstream:`,
+      "       ```",
+      "       git -C <worktree-path> add -- <reviewed in-scope-paths-or-developer-created-new-files>",
+      `       git -C <worktree-path> diff --cached --binary > ${fallback.scratchDir}/<workstream-id>.patch`,
+      `       git apply --3way --binary --index ${fallback.scratchDir}/<workstream-id>.patch`,
+      "       ```",
+      `     Repeat for ALL ${fbIds.length} workstreams. Staging first is not optional: \`git diff HEAD\` omits untracked new files, which is how whole files were silently dropped. \`--binary\` carries blobs a text patch cannot, and \`--3way\` merges two workstreams that touched different regions of one file rather than rejecting the second outright.`,
+      "",
+      `     **If a patch conflicts:** resolve it in the integrate worktree (or rebase the patch onto the branch head and re-apply); the conflict is the point of this fallback, so do NOT give up — but never "fix" it by working outside the integrate worktree.`,
+      "",
+      `  3. **Verify the staged set includes files from ALL ${fbIds.length} workstreams.** In the integrate worktree run \`git diff --name-only --cached\` and confirm each workstream's in-scope paths appear. The driver re-runs this check after your dispatch via \`git diff --name-only origin/<base>..HEAD\` — if any workstream's paths are entirely absent, the cycle halts with cap \`commit-pr-incomplete-consolidation\` and the operator has to investigate. Catch it here first to save the round-trip.`,
+      "",
+      `  4. \`git -C ${fallback.integratePath} commit -m "<concise subject>"\` with a meaningful message. Body should reference all active issues + summarise the ${fbIds.length} workstreams' contributions.`,
+      `  5. \`git -C ${fallback.integratePath} push -u origin ${branchName}\`.`,
+      `  6. \`gh pr create --title "<title>" --body "...\\n\\n${fixesLines}${companionLines ? `\\n${companionLines}` : ""}${bodySections ? `\\n\\n${bodySections}` : ""}\` — ${fixesNote}`,
+      "  7. End your reply with `pr: <PR-number>` so the driver can capture it.",
+      ...droppedNote,
+      "",
+      "If you need a longer PR body, write it to a file under the scratch dir and pass via `gh pr create --body-file <path>` — DO NOT write the body file to the repo root.",
+      scratchHygieneSection(fallback.scratchDir),
+    ].join("\n");
+  }
+
   // PR14 — multi-workstream cycles need explicit consolidation. Each
   // worktree has its own uncommitted slice of the work (developer prompt
   // Step 3 says "Do NOT commit"); ops's job here is to gather ALL of
@@ -183,6 +271,12 @@ export function inlineCommitPrPrompt(
       "",
       `  4. \`git commit -m "<concise subject>"\` with a meaningful message. Body should reference all active issues + summarise the ${ids.length} workstreams' contributions.`,
       `  5. \`git push -u origin ${branchName}\`.`,
+      // #861 — step 6 of the NON-fallback shape: the old "repo root if it's
+      // checked out on <branch>, else cd into a worktree that is" step is
+      // gone — that instruction produced the #841 defect (ops checked the
+      // branch out inside a sibling cycle's worktree). The driver pins the
+      // fallback to its own integrate worktree (the `fallback` branch above)
+      // and leaves this shape to the normal consolidation recipe.
       `  6. \`gh pr create --title "<title>" --body "...\\n\\n${fixesLines}${companionLines ? `\\n${companionLines}` : ""}${bodySections ? `\\n\\n${bodySections}` : ""}\` — ${fixesNote}`,
       "  7. End your reply with `pr: <PR-number>` so the driver can capture it.",
       ...droppedNote,
