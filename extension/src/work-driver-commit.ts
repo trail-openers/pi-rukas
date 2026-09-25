@@ -61,7 +61,10 @@ import type {
   WorkState,
 } from "./workflow-state.ts";
 const execp = promisify(exec);
-import { finalizeCommitPrState, runCommitPrPostDispatchGates } from "./work-driver-commit-pr-events.ts";
+import {
+  finalizeCommitPrState,
+  runCommitPrPostDispatchGates,
+} from "./work-driver-commit-pr-events.ts";
 
 // clipTitle (#507) lives with the PR text builders in
 // work-driver-pr-body-definition.ts; re-exported for existing consumers.

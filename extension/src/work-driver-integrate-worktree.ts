@@ -302,7 +302,11 @@ async function isRegisteredWorktree(
     const target = resolvePath(abs);
     return stdout
       .split("\n")
-      .some((l) => l.trim().startsWith("worktree ") && resolvePath(l.trim().slice("worktree ".length)) === target);
+      .some(
+        (l) =>
+          l.trim().startsWith("worktree ") &&
+          resolvePath(l.trim().slice("worktree ".length)) === target,
+      );
   } catch {
     return false;
   }
