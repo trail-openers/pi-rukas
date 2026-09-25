@@ -16,6 +16,7 @@ import {
   type RecoverySection,
   type RecoveryStep,
 } from "./work-driver-handoff-recovery.ts";
+import { stackPickRange } from "./work-driver-handoff-stack-pick.ts";
 import { mergeHoldGrantAction } from "./work-driver-merge-authority.ts";
 import { isConsolidatedPark } from "./work-driver-merge-subject.ts";
 import { type CapHitEvent, lastCapHit } from "./workflow-state-cap.ts";
@@ -104,7 +105,7 @@ export function recoveryStepsForCap(
         .map((id) => byId.get(id))
         .filter((w): w is (typeof committedWork)[number] => w !== undefined);
       const stacked = toPick.length < committedWork.length;
-      const topOfStack = toPick.length > 0 && toPick.length === 1 ? toPick[0] : undefined;
+      const stackPick = stacked && toPick.length === 1 ? stackPickRange(state, toPick) : undefined;
       steps.push(
         {
           section: "worktree-work-fallback",
@@ -130,9 +131,13 @@ export function recoveryStepsForCap(
               ],
           lines: [
             `git checkout ${ps.branchName}`,
-            ...toPick.flatMap((w) => [
-              `git cherry-pick ${w.headSha}   # worktree: ${w.path} (HEAD ${w.headSha.slice(0, 8)})${topOfStack ? "   # tip of the dependency chain — applies the whole stack in one pick" : ""}`,
-            ]),
+            ...(stackPick
+              ? [
+                  `${stackPick}   # applies every commit of the stack in order (root base .. leaf tip)`,
+                ]
+              : toPick.flatMap((w) => [
+                  `git cherry-pick ${w.headSha}   # worktree: ${w.path} (HEAD ${w.headSha.slice(0, 8)})`,
+                ])),
           ],
         },
         {
