@@ -194,8 +194,19 @@ const OK_FINDINGS = 2;
 }
 
 {
-  // The pre-existing steers are untouched by the new reason.
-  for (const r of ["under-decomposed", "empty-paths"] as const) {
+  // The pre-existing steers are untouched by the new reason. Every
+  // PlanQualityReason renders — the exhaustive list keeps the steer from
+  // silently falling through to the empty-paths fallback for a new reason.
+  for (const r of [
+    "under-decomposed",
+    "empty-paths",
+    "overlapping-paths",
+    "test-subject-split",
+    "invalid-dependency",
+    "circular-dependency",
+    "interdependent-no-integration-test",
+    "dropped-dependencies",
+  ] as const) {
     const s = correctivePlanSteer(r, 6, 1);
     assert(s.length > 0 && !s.includes("undefined"), `${r} still renders without details`);
   }

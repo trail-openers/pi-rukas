@@ -298,6 +298,19 @@ assert(
   );
 }
 
+// --------------------------------- #849 — dropped-dependencies steer
+
+{
+  // The new reason renders (falls through to the empty-paths body — the
+  // corrective for dropped-dependencies is a RECORD, not a re-dispatch, so
+  // the steer body is only reached if a future bug re-dispatches on it).
+  const s = correctivePlanSteer("dropped-dependencies", 6, 2);
+  assert(
+    s.length > 0 && !s.includes("undefined"),
+    "#849: dropped-dependencies renders without leaking 'undefined'",
+  );
+}
+
 // --------------------------------- #657 — corrective prompt: historical note
 
 {

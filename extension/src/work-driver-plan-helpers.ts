@@ -16,6 +16,7 @@ import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
+import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import type { PlanQualityReason } from "./workflow-state-schema.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -87,16 +88,15 @@ export function planTimeoutKill(
 
 /**
  * #754 — the one-shot corrective re-dispatch after a PRIMARY plan dispatch
- * killed at the step's own bound. Extracted from runPlan (line budget). A
- * killed child has no structured output (parseWorkstreams would return
- * nothing), so the corrective is the recovery path. It carries the timeout
- * steer — NOT correctivePlanSteer: a timeout says nothing about
- * decomposition, and steering a killed planner toward MORE workstreams is
- * the forced-split pressure that produced the wrong-work shape #819. The
- * corrective is NEVER re-dispatched again: if it fails or is killed itself,
- * its dispatch-failed is the step's tail and the router's `plan-timeout` cap
- * halts to handoff. The caller applies the one-shot corrective budget by
- * skipping the #290 quality gate after this runs.
+ * killed at the step's own bound. A killed child has no structured output
+ * (parseWorkstreams would return nothing), so the corrective is the recovery
+ * path. It carries the timeout steer — NOT correctivePlanSteer: a timeout
+ * says nothing about decomposition, and steering a killed planner toward
+ * MORE workstreams is the forced-split pressure that produced the wrong-work
+ * shape #819. The corrective is NEVER re-dispatched again: if it fails or is
+ * killed itself, its dispatch-failed is the step's tail and the router's
+ * `plan-timeout` cap halts to handoff. The caller applies the one-shot
+ * corrective budget by skipping the #290 quality gate after this runs.
  */
 export async function planTimeoutCorrective(
   ctx: DriverContext,
@@ -279,6 +279,16 @@ export function correctivePlanSteer(
       "merge conflict the driver cannot resolve. Re-plan so every file belongs to exactly ONE workstream:",
       "either move the shared file into whichever workstream genuinely owns it, or merge the two",
       "workstreams if they cannot be separated.",
+      "",
+      "#849 — dependencies survive the re-plan: where one workstream CONSUMES an artifact another",
+      "workstream CREATES (a function, a type, a migration, a config value), keep the `- depends-on:`",
+      "line (or ADD one) so the develop step defers the consumer's worktree until the creator commits —",
+      "two parallel developers editing around a not-yet-created artifact is the #814 shape that",
+      "duplicated a migration at commit-pr. And where BOTH workstreams would CREATE the same artifact",
+      "(the shared file above), MERGE them into one workstream rather than splitting ownership:",
+      "merging is what the overlap fix is for; preserving the file boundary and dropping the dependency",
+      "edge leaves the two halves semantically coupled but structurally independent, which is the",
+      "worse outcome of the two.",
     ].join("\n");
   }
   if (reason === "under-decomposed") {
@@ -337,6 +347,98 @@ export function correctivePlanSteer(
     "actually contains each workstream's slice, and an empty list silently disables that check.",
     "Re-plan with a non-empty `paths:` and `out-of-scope:` for every workstream.",
   ].join("\n");
+}
+
+/**
+ * #849 — the dependsOn edges a corrective re-plan dropped.
+ *
+ * The one-shot corrective re-plan is free to MERGE the colliding workstreams
+ * (the overlap fix) but not to silently drop a `dependsOn` edge: on the #814
+ * cycle the corrective re-plan made the paths disjoint and dropped every
+ * dependency, leaving four semantically-coupled workstreams running in
+ * parallel from one baseSha — the shape that re-implemented a migration at
+ * develop time and parked the cycle at the fence.
+ *
+ * Match (documented): an edge is PRESERVED if the same two workstream IDs
+ * remain connected (`from` depends on `to` in both plans), OR — because the
+ * re-plan may RENAME workstream IDs — if a pair of corrective workstreams
+ * carry IDENTICAL (normalised, sorted) path sets to the first plan's
+ * `from`/`to` pair and remain connected (the path-set signature of the
+ * original dependency). An edge is MERGED if both endpoints now lie in ONE
+ * corrective workstream (a path set that is a SUPERSET of both old sets —
+ * the union the overlap fix produces). A first-plan edge that is neither
+ * preserved nor merged is DROPPED. The cycle CONTINUES with the corrective
+ * plan (no second re-dispatch per #754's one-shot rule); the drop is
+ * recorded as `planQuality: { reason: "dropped-dependencies" }` and surfaced
+ * through the same channel as every other reason. Pure: no I/O, no state
+ * mutation; the caller (runPlan) invokes it on the first plan's workstreams
+ * and the corrective re-plan's workstreams after the re-dispatch returns.
+ */
+export function findDroppedDependencyEdges(
+  first: Record<string, PlanQualityWorkstream>,
+  corrective: Record<string, PlanQualityWorkstream>,
+): { from: string; to: string }[] {
+  const pathKey = (paths: string[]) =>
+    [...new Set(paths.map(normaliseDeclaredPath).filter((p) => p.length > 0))].sort().join("\n");
+  // Map each corrective plan's path-set to the workstream id that has it,
+  // so a renamed first-plan workstream can still be recognised by its
+  // path-set signature. First match wins on a duplicate path-set — a
+  // corrective plan with two workstreams claiming the same files is
+  // itself a defect the plan-quality gate would have caught, so a
+  // duplicate here is unreachable in practice (and, if it did happen,
+  // treating both as "the same workstream" is the conservative match).
+  const byPath = new Map<string, string>();
+  for (const id of Object.keys(corrective)) {
+    const key = pathKey(corrective[id]?.paths ?? []);
+    if (!byPath.has(key)) byPath.set(key, id);
+  }
+  const dropped: { from: string; to: string }[] = [];
+  for (const from of Object.keys(first)) {
+    for (const to of first[from]?.dependsOn ?? []) {
+      if (!(to in first)) continue; // invalid-dependency; not a real edge
+      const correctiveFrom = byPath.get(pathKey(first[from]?.paths ?? []));
+      const correctiveTo = byPath.get(pathKey(first[to]?.paths ?? []));
+      // PRESERVED (id): the same two ids still exist in the corrective
+      // plan and `from` still declares the edge to `to`.
+      if (
+        from in corrective &&
+        to in corrective &&
+        (corrective[from]?.dependsOn ?? []).includes(to)
+      ) {
+        continue;
+      }
+      // PRESERVED (path-set signature): the re-plan renamed the ids but
+      // kept the dependency between the same two workstreams — the pair of
+      // corrective workstreams that carries the first plan's `from` / `to`
+      // path-set signatures is still connected by a dependsOn edge.
+      if (
+        correctiveFrom &&
+        correctiveTo &&
+        (corrective[correctiveFrom]?.dependsOn ?? []).includes(correctiveTo)
+      ) {
+        continue;
+      }
+      // MERGED: both endpoints now lie in one corrective workstream — that
+      // workstream's normalised path set is a SUPERSET of both old sets
+      // (the union the corrective steer's "merge the two workstreams" fix
+      // produces).
+      const merged = Object.keys(corrective).some((id) => {
+        const paths = new Set(
+          (corrective[id]?.paths ?? []).map(normaliseDeclaredPath).filter((p) => p.length > 0),
+        );
+        const coversFrom = (first[from]?.paths ?? [])
+          .map(normaliseDeclaredPath)
+          .every((p) => p.length > 0 && paths.has(p));
+        const coversTo = (first[to]?.paths ?? [])
+          .map(normaliseDeclaredPath)
+          .every((p) => p.length > 0 && paths.has(p));
+        return coversFrom && coversTo;
+      });
+      if (merged) continue;
+      dropped.push({ from, to });
+    }
+  }
+  return dropped;
 }
 
 export function correctiveTestSubjectSplitSteer(
