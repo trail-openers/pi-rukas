@@ -8,6 +8,19 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.63](https://github.com/trail-openers/pi-rukas/compare/v0.12.62...v0.12.63) (2026-09-26)
+
+
+### Features
+
+* **research:** deduplicate claims across angles and tighten fallback, memo and entailment inputs ([#903](https://github.com/trail-openers/pi-rukas/issues/903)) ([abff98e](https://github.com/trail-openers/pi-rukas/commit/abff98e4309abff672ee81e3a311e897143fcef6))
+* **research:** persist run metrics in the artifact and write a fuller memory takeaway ([#905](https://github.com/trail-openers/pi-rukas/issues/905)) ([6421f41](https://github.com/trail-openers/pi-rukas/commit/6421f413fbdaddaa6bdbdfd02fd81dbe02bb454f))
+
+
+### Bug Fixes
+
+* **plan:** file complete titles and stop duplicating context in the issue body ([#906](https://github.com/trail-openers/pi-rukas/issues/906)) ([2d30445](https://github.com/trail-openers/pi-rukas/commit/2d30445de9e3a784b347b115099794309b70d508))
+
 ## [0.12.62](https://github.com/trail-openers/pi-rukas/compare/v0.12.61...v0.12.62) (2026-09-26)
 
 
