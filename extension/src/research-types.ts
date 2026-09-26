@@ -136,6 +136,13 @@ export interface ResearchClaim {
    */
   staleness: "stable" | "fast-moving";
   angle: string;
+  /**
+   * Every angle that contributed to this claim after cross-angle dedup
+   * (deduped, in first-appearance order). A claim that survived without a
+   * merge carries its single angle here; `angle` stays = the survivor's
+   * for readers that predate this field.
+   */
+  angles?: string[];
   verification: ClaimVerification;
   /**
    * Deep tier only: does the cited source actually support the claim?

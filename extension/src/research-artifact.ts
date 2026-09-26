@@ -93,7 +93,8 @@ function verificationLabel(c: ResearchClaim): string {
 function claimRow(c: ResearchClaim): string {
   const date = c.sourceDate ? ` · ${c.sourceDate}` : "";
   const support = c.support ? ` · support: ${c.support}` : "";
-  return `- ${c.text}\n  - source: ${c.source}${date} · confidence: ${c.confidence} · staleness: ${c.staleness} · verification: ${verificationLabel(c)}${support} · angle: ${c.angle}`;
+  const angles = (c.angles ?? [c.angle]).join(", ");
+  return `- ${c.text}\n  - source: ${c.source}${date} · confidence: ${c.confidence} · staleness: ${c.staleness} · verification: ${verificationLabel(c)}${support} · angles: ${angles}`;
 }
 
 export interface ArtifactArgs {
@@ -109,6 +110,12 @@ export interface ArtifactArgs {
   entailment?: "ran" | "unavailable";
   /** Adoption tier: the synthesis child's memo sections (verbatim). */
   memo?: MemoSections;
+  /**
+   * Pre-dedup claim count across all angles (set by the driver). Absent =
+   * no merging happened (raw == unique), in which case the count line is
+   * omitted — a reader never sees a redundant "3 reported, 3 unique".
+   */
+  rawClaimCount?: number;
 }
 
 /** Shared claim-section helper. */
@@ -124,10 +131,14 @@ function headerBlock(a: ArtifactArgs, title: string): string {
     a.entailment === "unavailable"
       ? "\n> **Entailment pass unavailable** — the reviewer dispatch failed; support annotations are absent, not clean.\n"
       : "";
+  const claimsCount =
+    a.rawClaimCount !== undefined && a.rawClaimCount > a.claims.length
+      ? `\n**Claims:** ${a.rawClaimCount} reported, ${a.claims.length} unique after deduplication`
+      : "";
   return `# ${title}: ${a.topic}
 
 **Date:** ${a.date} · **Tier:** ${a.tier} · **Pinned commit:** ${a.pinnedCommit}
-**Provenance:** ${a.provenanceBasename}
+**Provenance:** ${a.provenanceBasename}${claimsCount}
 ${abstention}${entail}`;
 }
 
@@ -229,20 +240,31 @@ export function memoSynthesisPrompt(topic: string, claims: readonly ResearchClai
  * Parse the two marker-delimited memo sections (tolerant of bolding in
  * either order — `**RECOMMENDATION:**` and `**RECOMMENDATION**:` both
  * parse; absent = absent).
+ *
+ * LAST-marker semantics (the reply-markers last-match convention, #896): a
+ * child that emitted a second block renders the LAST one. The
+ * recommendation runs from its marker to the next COMPARISON marker after
+ * it (or to the end when no such marker exists); the comparison runs from
+ * its marker to the end of the reply — never to a following stray marker
+ * of its own kind.
  */
 export function parseMemoSections(reply: string): MemoSections {
-  const recM = reply.match(/^\s*\**\s*RECOMMENDATION\s*[:：]?\s*\**\s*[:：]?\s*$/im);
-  const cmpM = reply.match(/^\s*\**\s*COMPARISON\s*[:：]?\s*\**\s*[:：]?\s*$/im);
-  const recStart = recM?.index !== undefined ? recM.index + (recM[0]?.length ?? 0) : undefined;
-  const cmpStart = cmpM?.index !== undefined ? cmpM.index + (cmpM[0]?.length ?? 0) : undefined;
+  const markerLine = /^\s*\**\s*(RECOMMENDATION|COMPARISON)\s*[:：]?\s*\**\s*[:：]?\s*$/im;
+  const markers: { kind: "RECOMMENDATION" | "COMPARISON"; start: number }[] = [];
+  for (const m of reply.matchAll(markerLine)) {
+    markers.push({ kind: m[1] as "RECOMMENDATION" | "COMPARISON", start: (m.index ?? 0) + m[0].length });
+  }
+  const rec = markers.filter((x) => x.kind === "RECOMMENDATION").at(-1);
+  const cmp = markers.filter((x) => x.kind === "COMPARISON").at(-1);
   const out: MemoSections = {};
-  if (recStart !== undefined) {
-    const end = cmpM?.index !== undefined && cmpM.index > recStart ? cmpM.index : reply.length;
-    const t = reply.slice(recStart, end).trim();
+  if (rec) {
+    const laterCmp = markers.filter((x) => x.kind === "COMPARISON" && x.start > rec.start);
+    const end = laterCmp.length > 0 ? laterCmp[0].start : reply.length;
+    const t = reply.slice(rec.start, end).trim();
     if (t) out.recommendation = t;
   }
-  if (cmpStart !== undefined) {
-    const t = reply.slice(cmpStart).trim();
+  if (cmp) {
+    const t = reply.slice(cmp.start).trim();
     if (t) out.comparison = t;
   }
   return out;
@@ -255,11 +277,15 @@ export function renderProvenance(a: ArtifactArgs): string {
     const parts = v.parts
       ? v.parts.map((p) => `  - part: ${p.source} · kind: ${p.kind} · ${p.status}`).join("\n")
       : "";
-    return `- ${c.source} · kind: ${c.sourceKind} · ${verificationLabel(c)}${c.support ? ` · support: ${c.support}` : ""}${c.sourceDate ? ` · source date: ${c.sourceDate}` : ""} · cited by: ${c.text.slice(0, 80)}${parts}`;
+    return `- ${c.source} · kind: ${c.sourceKind} · ${verificationLabel(c)}${c.support ? ` · support: ${c.support}` : ""}${c.sourceDate ? ` · source date: ${c.sourceDate}` : ""} · cited by: ${c.text.slice(0, 80)} · angles: ${(c.angles ?? [c.angle]).join(", ")}${parts}`;
   });
+  const claimsCount =
+    a.rawClaimCount !== undefined && a.rawClaimCount > a.claims.length
+      ? ` · **Claims:** ${a.rawClaimCount} reported, ${a.claims.length} unique after deduplication`
+      : "";
   return `# Provenance: ${a.topic}
 
-**Date:** ${a.date} · **Tier:** ${a.tier} · **Pinned commit:** ${a.pinnedCommit}
+**Date:** ${a.date} · **Tier:** ${a.tier} · **Pinned commit:** ${a.pinnedCommit}${claimsCount}
 
 Verification legend: \`url live/dead/unreachable\` = HTTP GET at the date above (403/429/405 count as unreachable, not dead — a page that refuses automation still exists; \`dead\` is confident absence; \`url skipped-cap\` = the liveness check was not run because the URL was past the liveness cap (LIVENESS_URL_CAP unique URLs)); \`skipped-cap\` = the liveness pass was capped (legacy form of the same marker) — a check that was NOT run, distinct from unchecked; \`grounded/ungrounded\` = path and symbol checked at the pinned commit's tree (symbol must appear in the cited file at that commit); \`local-present/local-missing\` = local path stat-checked (never fetched); \`unchecked\` = no deterministic check applies (doc references) or it could not run (an external repo with no checkable URL, an unknown pinned commit). Compound sources record each part on its own line below the claim.
 

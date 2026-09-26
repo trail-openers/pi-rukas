@@ -56,6 +56,7 @@ import {
   surfaceForAngle,
   wigoloAnglePrompt,
 } from "./research-fallback.ts";
+import { dedupResearchClaims } from "./research-dedup.ts";
 import { writeResearchMemory } from "./research-memory.ts";
 import {
   type AngleRun,
@@ -324,7 +325,12 @@ export async function runResearchPipeline(
     ),
   );
 
-  const claims = angles.flatMap((a) => a.claims);
+  // Cross-angle dedup AFTER extraction, BEFORE verification (#896): a
+  // merged claim verifies its survivor's source once, and its `angles`
+  // attribute the provenance; the raw vs unique counts land in the
+  // artifact + provenance headers.
+  const rawClaimCount = angles.reduce((sum, a) => sum + a.claims.length, 0);
+  const claims = dedupResearchClaims(angles.flatMap((a) => a.claims));
   const base: Omit<ResearchResult, "halt" | "abstained" | "memory"> = {
     topic,
     tier,
@@ -448,6 +454,7 @@ export async function runResearchPipeline(
           provenanceBasename: path.basename(p.provenancePath),
           entailment,
           memo,
+          rawClaimCount,
         },
         p,
       );
