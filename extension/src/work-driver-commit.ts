@@ -19,6 +19,7 @@ import { raiseConsolidationIncompleteCap } from "./work-driver-commit-completene
 import {
   causeFromIntegrateFailure,
   conflictArtifactFromPlumb,
+  withPatchNote,
 } from "./work-driver-commit-helpers.ts";
 
 import { ensureIntegrateWorktreeOrHalt } from "./work-driver-commit-fallback.ts";
@@ -85,7 +86,7 @@ export type { CommitPrFallbackCause } from "./workflow-state-events.ts";
 // seam) live in work-driver-commit-helpers.ts, shared with the fallback
 // dispatch module (work-driver-commit-fallback.ts) — a circular import
 // between the two modules would break jiti's load order.
-export { conflictArtifactFromPlumb } from "./work-driver-commit-helpers.ts";
+export { conflictArtifactFromPlumb, withPatchNote } from "./work-driver-commit-helpers.ts";
 import { deriveCommitPrTitle, integrationVerifyTimeoutMs } from "./work-driver-commit-title.ts";
 export { deriveCommitPrTitle, integrationVerifyTimeoutMs };
 
@@ -105,6 +106,15 @@ export async function mechanizedCommitPr(
       reason: string;
       terminal?: boolean;
       fallbackCause?: CommitPrFallbackCause;
+      /**
+       * #861 — the structured conflict-patch path preserved by integrate()
+       * (the "where possible" of the ops-fallback conflict seam). Set when
+       * integrate() preserved a patch on a non-terminal failure; the caller
+       * (runCommitPrLocked) threads it as the STRUCTURAL argument of
+       * `conflictArtifactFromPlumb`, so the ops prompt reads the field
+       * rather than re-parsing the plumb's body.
+       */
+      conflictPatch?: string;
       /**
        * #861 — set when a TERMINAL mechanized failure already appended the
        * plumb + cap events (the creation-failure halt): the caller returns
@@ -244,19 +254,19 @@ export async function mechanizedCommitPr(
       if ("halted" in worktreeRes) {
         return {
           ok: false,
-          reason: res.conflictPatch
-            ? `${res.reason} (patch preserved at ${res.conflictPatch})`
-            : res.reason,
+          reason: withPatchNote(res.reason, res.conflictPatch),
           terminal: true,
           haltedAfter: worktreeRes.halted,
         };
       }
+      // #861 — the structured conflict-patch value threads to the caller
+      // (runCommitPrLocked) instead of being re-parsed from this reason's
+      // marker text.
       return {
         ok: false,
-        reason: res.conflictPatch
-          ? `${res.reason} (patch preserved at ${res.conflictPatch})`
-          : res.reason,
+        reason: withPatchNote(res.reason, res.conflictPatch),
         fallbackCause,
+        conflictPatch: res.conflictPatch,
       };
     }
     if (res.empty) {

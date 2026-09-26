@@ -127,13 +127,22 @@ export async function auditCommitPrFallback(
     }
     return base;
   };
-  const removal = async (): Promise<void> => {
+  const removal = async (cleanTail: WorkState): Promise<WorkState> => {
     worktreeRemove(execFn, ctx.repoRoot, integrateWorktreeName(ctx.issue), true).catch((err) =>
       trace(`work-driver: integrate worktree removal failed: ${(err as Error).message}`),
     );
     trace(
       `work-driver: commit-pr SUCCEEDED — removed the driver-owned integrate worktree ${integratePath} (kept on handoff)`,
     );
+    // #861 — the schema contract: `pipelineState.integrateWorktree` is
+    // cleared when the audit removes the tree on success. A re-entry after
+    // this cycle's success must not mistake the (removed) path for
+    // driver-owned residue of THIS cycle.
+    if (cleanTail.pipelineState.integrateWorktree === undefined) return cleanTail;
+    return {
+      ...cleanTail,
+      pipelineState: { ...cleanTail.pipelineState, integrateWorktree: undefined },
+    };
   };
   if (gatesFirst) {
     // Production order: the consolidation gate owns the cycle-level halt;
@@ -145,7 +154,7 @@ export async function auditCommitPrFallback(
     if (gatedLast?.kind === "cap-hit") return gated;
     const audited = await auditHalt(gated);
     const auditedLast = audited.eventLog[audited.eventLog.length - 1];
-    if (auditedLast?.kind !== "cap-hit") void removal();
+    if (auditedLast?.kind !== "cap-hit") return removal(audited);
     return audited;
   }
   // Unit-test order: the violation must be the tail with the gates
@@ -155,6 +164,6 @@ export async function auditCommitPrFallback(
   if (auditedLast?.kind === "cap-hit") return audited;
   const gated = await runCommitPrPostDispatchGates(ctx, execFn, audited);
   const gatedLast = gated.eventLog[gated.eventLog.length - 1];
-  if (gatedLast?.kind !== "cap-hit") void removal();
+  if (gatedLast?.kind !== "cap-hit") return removal(gated);
   return gated;
 }

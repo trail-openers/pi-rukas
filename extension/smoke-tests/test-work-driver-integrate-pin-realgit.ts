@@ -248,6 +248,20 @@ try {
         /OFF LIMITS/.test(opsPrompt),
       "the fallback prompt names the integrate path as the ONLY permitted tree and forbids the rest",
     );
+    // #861 — this fixture's real git conflict routes through the CHERRY-PICK
+    // path, which has no conflictPatch (the patch-preservation convention is
+    // the patch-apply path's) — the prompt says no artifact was preserved.
+    // (The M2b fake-exec test carries the preserved-patch shape.)
+    assert(
+      /No conflict artifact was preserved/.test(opsPrompt),
+      "the fallback prompt reports no preserved artifact (cherry-pick path carries no conflictPatch)",
+    );
+    // #861 — the success-path audit cleared pipelineState.integrateWorktree
+    // (the schema contract: cleared when the audit removes it on success).
+    assert(
+      after?.pipelineState.integrateWorktree === undefined,
+      "pipelineState.integrateWorktree is CLEARED after the audit removed the tree on success",
+    );
   }
 
   // =====================================================================

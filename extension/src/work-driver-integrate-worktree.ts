@@ -37,6 +37,33 @@ import type { ExecFn } from "./worktree.ts";
 
 const execp = promisify(execCb);
 
+/**
+ * #861 — the shared porcelain-dirt reader (trimmed, non-empty lines; `[]`
+ * on failure) for the two inline dirt checks in ensureIntegrateWorktree.
+ * Both call sites keep their own failure behaviour (an unreadable dirt read
+ * reads as clean — a throwing check is not a dirty tree) — only the
+ * line-extraction shape was duplicated.
+ */
+export async function readDirtyPorcelainLines(
+  execFn: ExecFn,
+  cwd: string,
+  timeoutMs = 60_000,
+): Promise<string[]> {
+  try {
+    const { stdout } = await execp("git status --porcelain", {
+      cwd,
+      maxBuffer: 1024 * 1024,
+      timeout: timeoutMs,
+    });
+    return stdout
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l);
+  } catch {
+    return [];
+  }
+}
+
 /** The worktree name the driver owns for this issue's commit-pr fallback. */
 export function integrateWorktreeName(issue: number): string {
   return `issue-${issue}-integrate`;
@@ -144,20 +171,10 @@ export async function ensureIntegrateWorktree(
       // driver never moves operator residue); a clean one is pre-removed
       // (the same shape as the "unregistered directory" case, where the
       // #475 target guard's own pre-remove handles it).
-      let dirt = "";
-      try {
-        ({ stdout: dirt } = await execFn("git status --porcelain", {
-          cwd: abs,
-          maxBuffer: 1024 * 1024,
-        }));
-      } catch {
-        dirt = "";
-      }
-      if (dirt.split("\n").some((l) => l.trim())) {
+      const dirt = await readDirtyPorcelainLines(execFn, abs);
+      if (dirt.length > 0) {
         throw new Error(
           `integrate path ${abs} holds a registered worktree NOT recorded in the cycle's state file (the state file records only the branch step's workstreams) and is dirty — the driver refuses to destroy operator residue: ${dirt
-            .split("\n")
-            .filter((l) => l.trim())
             .slice(0, 5)
             .join(", ")}`,
         );
@@ -184,20 +201,10 @@ export async function ensureIntegrateWorktree(
     // is DETACHED first (decision (1)), and a DIRTY one HALTS — the
     // driver never moves operator residue. The probe runs through the
     // production exec seam, so a test fake cannot fake the checkout.
-    let dirt = "";
-    try {
-      ({ stdout: dirt } = await execFn("git status --porcelain", {
-        cwd: repoRoot,
-        maxBuffer: 1024 * 1024,
-      }));
-    } catch {
-      dirt = "";
-    }
-    if (dirt.split("\n").some((l) => l.trim() && !isDriverManagedDirtLine(l))) {
+    const dirt = await readDirtyPorcelainLines(execFn, repoRoot);
+    if (dirt.some((l) => !isDriverManagedDirtLine(l))) {
       throw new Error(
         `repoRoot holds ${branchName} and is dirty — cannot detach it for the ${name} worktree: ${dirt
-          .split("\n")
-          .filter((l) => l.trim())
           .slice(0, 5)
           .join(", ")}`,
       );
@@ -434,7 +441,13 @@ async function isIntegrateTreeInCycle(
       return true;
     }
     return Object.values(worktrees).some((p) => resolvePath(p) === target);
-  } catch {
+  } catch (err) {
+    // An unreadable state file reads as "not this cycle's" (the safe
+    // direction — a dirty one then halts rather than being destroyed), but
+    // the operator needs to be able to tell the two apart.
+    trace(
+      `work-driver: integrate-tree cycle check — could not read state file ${stateFile}: ${(err as Error).message ?? String(err)}`,
+    );
     return false;
   }
 }

@@ -114,7 +114,7 @@ async function runCommitPrLocked(
       // caller did not have a structured value — e.g. the no-diff reason).
       fallbackConflictPatch = conflictArtifactFromPlumb(
         preDispatch.eventLog[preDispatch.eventLog.length - 1],
-        undefined,
+        mech.conflictPatch,
       );
     }
   }

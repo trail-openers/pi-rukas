@@ -43,3 +43,12 @@ export function conflictArtifactFromPlumb(
   const m = event.body.match(/\(patch preserved at (\S+)\)/);
   return m?.[1];
 }
+
+/**
+ * #861 — the shared reason-suffix both mechanizedCommitPr return sites used
+ * to duplicate inline: the conflict-patch marker appended to a non-terminal
+ * reason (or the reason unchanged when no patch was preserved).
+ */
+export function withPatchNote(reason: string, patch?: string): string {
+  return patch ? `${reason} (patch preserved at ${patch})` : reason;
+}
