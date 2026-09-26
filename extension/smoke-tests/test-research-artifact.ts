@@ -147,6 +147,79 @@ const args: ArtifactArgs = {
     p.includes("local-present/local-missing` = local path stat-checked"),
     "provenance: legend defines local-present/local-missing",
   );
+  assert(
+    p.includes("skipped-cap` = the liveness pass was capped"),
+    "provenance: legend defines skipped-cap",
+  );
+
+  // New statuses render in the claim rows (rows match the legend).
+  const localClaims: ResearchClaim[] = [
+    {
+      kind: "finding",
+      text: "a local file is present",
+      source: "/Users/janni/x.md",
+      sourceKind: "doc",
+      confidence: "high",
+      staleness: "stable",
+      angle: "docs-depth",
+      verification: { check: "local-file", status: "local-present" },
+    },
+    {
+      kind: "finding",
+      text: "a local file is missing",
+      source: "/Users/janni/y.md",
+      sourceKind: "doc",
+      confidence: "high",
+      staleness: "stable",
+      angle: "docs-depth",
+      verification: { check: "local-file", status: "local-missing" },
+    },
+    {
+      kind: "finding",
+      text: "the 61st URL was skipped",
+      source: "https://example.com/many",
+      sourceKind: "url",
+      confidence: "low",
+      staleness: "stable",
+      angle: "web-current",
+      verification: { check: "none", status: "skipped-cap" },
+    },
+  ];
+  const la = renderArtifact({ ...args, claims: [...claims, ...localClaims] });
+  assert(la.includes("verification: local-present"), "artifact row: local-present renders");
+  assert(la.includes("verification: local-missing"), "artifact row: local-missing renders");
+  assert(la.includes("verification: skipped-cap"), "artifact row: skipped-cap renders");
+
+  // renderProvenance prints `parts` for ANY check kind that carries parts,
+  // not only url-liveness.
+  const partsClaims: ResearchClaim[] = [
+    {
+      kind: "finding",
+      text: "mixed local + code compound",
+      source: "/Users/janni/present.txt + src/x.ts",
+      sourceKind: "url",
+      confidence: "medium",
+      staleness: "stable",
+      angle: "codebase",
+      verification: {
+        check: "code-grounding",
+        status: "grounded",
+        parts: [
+          { source: "/Users/janni/present.txt", kind: "local", status: "local-present" },
+          { source: "src/x.ts", kind: "code", status: "grounded" },
+        ],
+      },
+    },
+  ];
+  const pp = renderProvenance({ ...args, claims: partsClaims });
+  assert(
+    pp.includes("- part: /Users/janni/present.txt · kind: local · local-present"),
+    "provenance: parts printed for a code-grounding claim (not only url-liveness)",
+  );
+  assert(
+    pp.includes("- part: src/x.ts · kind: code · grounded"),
+    "provenance: second part printed",
+  );
 }
 
 // ---------------------------------------------- paths, exclude, fs write

@@ -252,10 +252,9 @@ export function parseMemoSections(reply: string): MemoSections {
 export function renderProvenance(a: ArtifactArgs): string {
   const rows = a.claims.map((c) => {
     const v = c.verification;
-    const parts =
-      v.check === "url-liveness" && v.parts
-        ? v.parts.map((p) => `  - part: ${p.source} · kind: ${p.kind} · ${p.status}`).join("\n")
-        : "";
+    const parts = v.parts
+      ? v.parts.map((p) => `  - part: ${p.source} · kind: ${p.kind} · ${p.status}`).join("\n")
+      : "";
     return `- ${c.source} · kind: ${c.sourceKind} · ${verificationLabel(c)}${c.support ? ` · support: ${c.support}` : ""}${c.sourceDate ? ` · source date: ${c.sourceDate}` : ""} · cited by: ${c.text.slice(0, 80)}${parts}`;
   });
   return `# Provenance: ${a.topic}

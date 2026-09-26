@@ -3,13 +3,15 @@ import type {
   ClaimSupport,
   ClaimVerification,
   ResearchClaim,
+  ResolvedSource,
+  StatLike,
   VerificationPart,
 } from "./research-types.ts";
 import {
-  type ResolvedSource,
   checkLocalFile,
   checkPart,
   groundCodeSource,
+  parseCodeSource,
   resolveSourcePart,
   splitCompoundSource,
 } from "./research-verify-classify.ts";
@@ -41,14 +43,17 @@ import type { ExecFn } from "./worktree.ts";
 
 export type LivenessStatus = "live" | "dead" | "unreachable";
 
+/** Liveness plus the cap marker (excess unique URLs are never checked). */
+export type LivenessCheckStatus = LivenessStatus | "skipped-cap";
+
 /** Minimal fetch shape (injectable for offline tests). */
 export type FetchLike = (
   url: string,
   init: { method: string; redirect: "follow"; signal: AbortSignal },
 ) => Promise<{ status: number }>;
 
-/** Minimal stat shape (injectable for offline tests — local files only). */
-export type StatLike = (p: string) => Promise<{ isDirectory: boolean } | undefined>;
+/** Re-export the injectable stat seam (declared in research-types.ts). */
+export type { StatLike } from "./research-types.ts";
 
 export {
   checkLocalFile,
@@ -57,7 +62,7 @@ export {
   resolveSourcePart,
   splitCompoundSource,
 } from "./research-verify-classify.ts";
-export type { ResolvedSource } from "./research-verify-classify.ts";
+export type { ResolvedSource } from "./research-types.ts";
 
 const defaultStat: StatLike = (p) =>
   fs.stat(p).then(
@@ -97,9 +102,9 @@ export function classifyLiveness(status: number): LivenessStatus {
 export async function checkUrlLiveness(
   urls: readonly string[],
   fetchFn: FetchLike = (u, init) => fetch(u, init),
-): Promise<Map<string, "live" | "dead" | "unreachable" | "skipped-cap">> {
+): Promise<Map<string, LivenessCheckStatus>> {
   const unique = [...new Set(urls)];
-  const out = new Map<string, "live" | "dead" | "unreachable" | "skipped-cap">();
+  const out = new Map<string, LivenessCheckStatus>();
   for (const url of unique.slice(LIVENESS_URL_CAP)) out.set(url, "skipped-cap");
   const checkable = unique.slice(0, LIVENESS_URL_CAP);
   let idx = 0;
@@ -143,12 +148,26 @@ export async function pinnedCommit(execFn: ExecFn, repoRoot: string): Promise<st
  * code parts decide.
  */
 export function aggregateLivenessStatuses(
-  statuses: readonly ("live" | "dead" | "unreachable" | "skipped-cap")[],
-): "live" | "dead" | "unreachable" | "skipped-cap" {
+  statuses: readonly LivenessCheckStatus[],
+): LivenessCheckStatus {
   if (statuses.some((s) => s === "live")) return "live";
   if (statuses.some((s) => s === "unreachable")) return "unreachable";
   if (statuses.some((s) => s === "dead")) return "dead";
   return "skipped-cap";
+}
+
+/**
+ * checkPart for a code part with the memoized grounding: the liveness pass
+ * is already resolved by the caller (no `url` to return), the only other
+ * branch is the memoized groundCodeSource keyed by (sha, path, symbol).
+ */
+async function memoCheckPart(
+  part: ResolvedSource,
+  ground: (part: ResolvedSource) => Promise<"grounded" | "ungrounded" | "unchecked">,
+): Promise<{ v: ClaimVerification | null; url?: string }> {
+  const status = await ground(part);
+  if (status === "unchecked") return { v: { check: "none", status: "unchecked" } };
+  return { v: { check: "code-grounding", status } };
 }
 
 /**
@@ -169,7 +188,18 @@ export async function verifyClaims(
   fetchFn?: FetchLike,
   opts?: { pinnedSha?: string; statFn?: StatLike },
 ): Promise<ResearchClaim[]> {
-  const pinnedSha = opts?.pinnedSha ?? (await pinnedCommit(execFn, repoRoot));
+  let pinnedSha: string;
+  if (opts?.pinnedSha !== undefined) {
+    pinnedSha = opts.pinnedSha;
+  } else {
+    try {
+      pinnedSha = await pinnedCommit(execFn, repoRoot);
+    } catch {
+      // A git-less / non-repo environment must not fail verification: the
+      // code parts simply cannot be grounded.
+      pinnedSha = "unknown";
+    }
+  }
   const statFn = opts?.statFn ?? defaultStat;
   const resolved = claims.map((c) =>
     c.source === "none"
@@ -185,6 +215,22 @@ export async function verifyClaims(
     ),
   ];
   const liveness = await checkUrlLiveness(urls, fetchFn);
+  // Per-run memo: duplicate citations of the same (sha, path, symbol) do
+  // not re-spawn git — the grounding is pure given those three keys.
+  const groundMemo = new Map<string, Promise<"grounded" | "ungrounded" | "unchecked">>();
+  const ground = (p: ResolvedSource) => {
+    // Key on the parsed (sha, path, symbol) — the ResolvedSource.path
+    // carries the raw source string (e.g. "src/x.ts#sym") which
+    // parseCodeSource reduces to (path="src/x.ts", symbol="sym").
+    const { path: parsedPath, symbol } = parseCodeSource(p.path ?? "");
+    const key = `${pinnedSha}\u0000${parsedPath}\u0000${symbol ?? ""}`;
+    let entry = groundMemo.get(key);
+    if (!entry) {
+      entry = groundCodeSource(execFn, repoRoot, p.path ?? "", pinnedSha);
+      groundMemo.set(key, entry);
+    }
+    return entry;
+  };
   const out: ResearchClaim[] = [];
   for (let i = 0; i < claims.length; i++) {
     const c = claims[i] as ResearchClaim;
@@ -194,7 +240,11 @@ export async function verifyClaims(
       continue;
     }
     const results = await Promise.all(
-      parts.map((p) => checkPart(p, execFn, repoRoot, pinnedSha, statFn)),
+      parts.map((p) =>
+        p.kind === "code" && p.path
+          ? memoCheckPart(p, ground)
+          : checkPart(p, execFn, repoRoot, pinnedSha, statFn),
+      ),
     );
     const lvIdx = results.map((r, j) => (r.url ? j : -1)).filter((j) => j >= 0);
     const lvStatuses = lvIdx.map(
@@ -205,9 +255,7 @@ export async function verifyClaims(
       return {
         source: p.url ?? p.path ?? p.localPath ?? c.source,
         kind: p.kind,
-        status: r.v
-          ? (r.v as { status: string }).status
-          : (liveness.get(r.url ?? "") ?? "unchecked"),
+        status: r.v ? r.v.status : (liveness.get(r.url ?? "") ?? "unchecked"),
       };
     });
     let verification: ClaimVerification;
@@ -219,11 +267,11 @@ export async function verifyClaims(
       const nonNull = results.map((r) => r.v).filter((v): v is ClaimVerification => v !== null);
       const code = nonNull.find((v) => v.check === "code-grounding");
       const local = nonNull.find((v) => v.check === "local-file");
-      const lv = nonNull.find((v) => v.check === "url-liveness");
-      const none = nonNull.find((v) => v.check === "none");
+      const none = nonNull.find((v) => v.check === "none" && v.status === "unchecked");
+      const skipped = nonNull.find((v) => v.check === "none" && v.status === "skipped-cap");
       if (code) verification = code;
       else if (local) verification = local;
-      else if (lv) verification = lv;
+      else if (skipped) verification = skipped;
       else if (none)
         verification =
           none.status === "unchecked" && none.reason
@@ -231,7 +279,7 @@ export async function verifyClaims(
             : { check: "none", status: "unchecked" };
       else verification = { check: "none", status: "unchecked" };
     }
-    if (parts.length > 1) verification = { ...verification, parts: partsRec } as ClaimVerification;
+    if (parts.length > 1) verification = { ...verification, parts: partsRec };
     out.push({ ...c, verification });
   }
   const failed = out.filter((c) => {

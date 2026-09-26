@@ -175,8 +175,7 @@ const statStubFor = (present: Set<string>) =>
   // stub: cat-file succeeds, no symbol → grounded).
   // verifyClaims picks code first when no liveness parts exist.
   assert(
-    mixed2?.verification.check === "code-grounding" &&
-      mixed2?.verification.status === "grounded",
+    mixed2?.verification.check === "code-grounding" && mixed2?.verification.status === "grounded",
     "local+code compound splits; code part decides (grounded in stub)",
   );
   assert(
@@ -216,6 +215,101 @@ const statStubFor = (present: Set<string>) =>
     "past-cap URL → skipped-cap, distinct from unchecked",
   );
   assert(out[0]?.verification.check === "url-liveness", "within-cap URLs still liveness-checked");
+}
+
+// --------------------------------------------------- git-unavailability safety
+
+{
+  // A rejecting exec (git missing / non-repo) must NOT throw out of
+  // groundCodeSource or verifyClaims — the code claim stays unchecked and
+  // the promise resolves.
+  const rejectExec: ExecFn = async () => {
+    throw new Error("spawn git ENOENT");
+  };
+  let threw = false;
+  let out: import("../src/research-types.ts").ResearchClaim[] = [];
+  try {
+    out = await verifyClaims(
+      [claim({ source: "src/x.ts#resolveModel", sourceKind: "code" })],
+      "/r",
+      rejectExec,
+      undefined,
+      { statFn: statStubFor(new Set()), pinnedSha: "abc1234def" },
+    );
+  } catch {
+    threw = true;
+  }
+  assert(!threw, "verifyClaims resolves when the exec seam rejects (git unavailable)");
+  assert(
+    out[0]?.verification.check === "none" && out[0]?.verification.status === "unchecked",
+    "a code claim whose git could not run is unchecked (never ungrounded, never a throw)",
+  );
+
+  // Containment: a sibling dir whose name shares the repoRoot prefix is NOT
+  // inside the repo — it must classify local, not code.
+  const { resolveSourcePart } = await import("../src/research-verify.ts");
+  const sibling = resolveSourcePart("/a/b-evil/x.ts", "/a/b");
+  assert(
+    sibling.kind === "local" && sibling.localPath === "/a/b-evil/x.ts",
+    "sibling dir /a/b-evil is local, not code (prefix containment uses path.sep)",
+  );
+  const inside = resolveSourcePart("/a/b/x.ts", "/a/b");
+  assert(
+    inside.kind === "code" && inside.path === "x.ts",
+    "a path actually inside the repo still classifies code",
+  );
+}
+
+// --------------------------------------------------- classification regressions
+
+{
+  // The per-run grounding memo: two claims citing the same (sha, path)
+  // must not re-spawn git — duplicate citations share one memoized result.
+  const catFileCallsByPath = new Map<string, number>();
+  const memoExec: ExecFn = async (cmd) => {
+    const m = cmd.match(/^git cat-file -e [0-9a-f]+:(.+)$/);
+    if (m) {
+      const p = JSON.parse(m[1] as string) as string;
+      catFileCallsByPath.set(p, (catFileCallsByPath.get(p) ?? 0) + 1);
+      return { stdout: "" };
+    }
+    if (cmd.startsWith("git grep")) return { stdout: "hit\n" };
+    throw new Error(`unexpected: ${cmd}`);
+  };
+  const out = await verifyClaims(
+    [
+      claim({ source: "src/x.ts", sourceKind: "code" }),
+      claim({ source: "src/x.ts", sourceKind: "code" }),
+      claim({ source: "src/x.ts#resolveModel", sourceKind: "code" }),
+    ],
+    "/r",
+    memoExec,
+    (async () => ({ status: 200 })) as never,
+    { statFn: statStubFor(new Set()), pinnedSha: "abc1234def" },
+  );
+  // The two bare src/x.ts claims share one git cat-file (the #-symbol claim
+  // carries a different source string and grounds itself).
+  assert(
+    catFileCallsByPath.get("src/x.ts") === 2,
+    `grounding memo: 2 identical src/x.ts claims share 1 cat-file, the #sym claim adds 1 (got ${catFileCallsByPath.get("src/x.ts")})`,
+  );
+  assert(
+    out.every(
+      (c) => c.verification.check === "code-grounding" && c.verification.status === "grounded",
+    ),
+    "memoized duplicate citations all grounded",
+  );
+}
+
+{
+  // Extensionless / bare-word shapes that real research claims carry:
+  // `Makefile` (single-segment known filename) and `bin/pi-rukas`,
+  // `extension/src` (multi-segment paths) classify as CODE, not doc.
+  const { resolveSourcePart } = await import("../src/research-verify.ts");
+  assert(resolveSourcePart("Makefile", "/r").kind === "code", "Makefile → code");
+  assert(resolveSourcePart("bin/pi-rukas", "/r").kind === "code", "bin/pi-rukas → code");
+  assert(resolveSourcePart("extension/src", "/r").kind === "code", "extension/src → code");
+  assert(resolveSourcePart("Dockerfile", "/r").kind === "code", "Dockerfile → code");
 }
 
 console.log(`\nexit ${exit}`);

@@ -1,6 +1,11 @@
 import os from "node:os";
 import path from "node:path";
-import type { ClaimVerification } from "./research-types.ts";
+import type {
+  ClaimVerification,
+  ResolvedSource,
+  SourceKindDerived,
+  StatLike,
+} from "./research-types.ts";
 /**
  * research-verify-classify — content-based driver-side source classification
  * (the #894 classifier): resolveSourcePart, splitCompoundSource,
@@ -11,20 +16,7 @@ import type { ClaimVerification } from "./research-types.ts";
  * child labelled "code" is still a URL; a local path labelled "url" is
  * stat-checked, never fetched).
  */
-import type { StatLike } from "./research-verify.ts";
 import type { ExecFn } from "./worktree.ts";
-
-export interface ResolvedSource {
-  kind: "url" | "code" | "local" | "external-code" | "doc";
-  /** The URL liveness-checked for url / external-code parts. */
-  url?: string;
-  /** The repo-relative path for code parts. */
-  path?: string;
-  /** The path stat-checked for local parts. */
-  localPath?: string;
-  /** Set when an external-code part has no URL that can be formed. */
-  externalUnchecked?: boolean;
-}
 
 /**
  * Resolve one source part by CONTENT (the driver-side classifier — the
@@ -52,12 +44,21 @@ export function resolveSourcePart(raw: string, repoRoot: string): ResolvedSource
   if (s.startsWith("~")) return { kind: "local", localPath: path.join(os.homedir(), s.slice(1)) };
   if (s.startsWith("./") || s.startsWith("/")) {
     if (path.isAbsolute(s)) {
-      if (path.resolve(s).startsWith(`${repoRoot}/`))
-        return { kind: "code", path: path.relative(repoRoot, path.resolve(s)) };
+      const resolved = path.resolve(s);
+      if (
+        resolved === repoRoot ||
+        resolved.startsWith(`${repoRoot}${path.sep}`) ||
+        resolved.startsWith(`${repoRoot}/`)
+      )
+        return { kind: "code", path: path.relative(repoRoot, resolved) };
       return { kind: "local", localPath: s };
     }
     const resolved = path.resolve(repoRoot, s);
-    if (resolved.startsWith(`${repoRoot}/`))
+    if (
+      resolved === repoRoot ||
+      resolved.startsWith(`${repoRoot}${path.sep}`) ||
+      resolved.startsWith(`${repoRoot}/`)
+    )
       return { kind: "code", path: path.relative(repoRoot, resolved) };
     return { kind: "local", localPath: resolved };
   }
@@ -142,7 +143,8 @@ export async function checkLocalFile(
 
 /**
  * Parse one code source part into a (path, symbol) pair. Accepted forms:
- * `path`, `path#symbol`, `path:line`, `path#Lline`, `path (annotation)`
+ * `path`, `path#symbol`, `path:line`, `path#Lline`, `path#L42#sym`
+ * (line 42, symbol sym — the line marker is consumed), `path (annotation)`
  * and `path … line ~N` (the `#` in `L123` / `~123` is consumed as a line
  * marker, not a symbol separator).
  */
@@ -165,6 +167,11 @@ export function parseCodeSource(source: string): { path: string; symbol: string 
     s = s.slice(0, colonIdx);
   }
   const p = s.trim();
+  // `#L42#sym` → line 42, symbol sym (a line marker followed by a symbol).
+  if (hash !== null) {
+    const m = hash.match(/^L(\d+)(?:#(.*))?$/);
+    if (m) return { path: p, symbol: m[2]?.trim() || null };
+  }
   if (hash !== null && /^L?\d+$/.test(hash)) return { path: p, symbol: null };
   if (colon !== null && /^\d+$/.test(colon)) return { path: p, symbol: null };
   if (hash !== null) return { path: p, symbol: hash.trim() || null };
@@ -172,13 +179,38 @@ export function parseCodeSource(source: string): { path: string; symbol: string 
 }
 
 /**
+ * Extract the git error behind a rejected exec: `stderr` when the rejection
+ * carries one (the production `ExecFn` is promisify(exec) — the message is
+ * the command wrapper), else the message. Used to tell a "path absent at
+ * the sha" failure (exit 1) from a failure that means the CHECK ITSELF
+ * could not run (git missing, not a repo, bad object).
+ */
+function gitErrText(e: unknown): string {
+  const err = e as Error & { stderr?: string };
+  return ((err.stderr ?? err.message ?? "") as string).trim();
+}
+
+/** True when a git rejection means "path/object absent" (exit 1, no match). */
+function isGitNotFound(e: unknown): boolean {
+  const t = gitErrText(e);
+  if (/^exit 1$/.test(t)) return true;
+  return /no (such )?(path|object|such)|not a (valid|commit)|path.*does not exist|does not exist|no match/i.test(
+    t,
+  );
+}
+
+/**
  * Ground one code source against the PINNED commit: the path must exist in
  * that commit's tree (`git cat-file -e <sha>:<path>`), and a symbol must
  * appear IN THAT FILE at that commit (`git grep -F -- <symbol> <sha> --
- * <path>` — never repo-wide). An unknown sha degrades to unchecked, not
- * ungrounded; a git-grep "no match" (exit 1) is ungrounded, while any
- * other exec failure leaves the claim unchecked (a check that could not
- * run must not manufacture a finding).
+ * <path>` — never repo-wide; the `-e` flag keeps a symbol that starts with
+ * `-` the pattern, not a git option). An unknown sha degrades to unchecked,
+ * not ungrounded. A cat-file failure whose output clearly means the path is
+ * ABSENT at the sha (exit 1 or a not-found message) is ungrounded, while
+ * ANY other failure (git missing, non-repo, bad object, rejecting exec)
+ * leaves the claim unchecked — a check that could not run must not
+ * manufacture a finding. Likewise a git-grep "no match" (exit 1) is
+ * ungrounded, while any other exec failure leaves the claim unchecked.
  */
 export async function groundCodeSource(
   execFn: ExecFn,
@@ -192,27 +224,28 @@ export async function groundCodeSource(
   const q = JSON.stringify(p);
   try {
     await execFn(`git cat-file -e ${pinnedSha}:${q}`, { cwd: repoRoot });
-  } catch {
-    return "ungrounded";
+  } catch (e) {
+    return isGitNotFound(e) ? "ungrounded" : "unchecked";
   }
   if (!symbol) return "grounded";
   try {
     const { stdout: hits } = await execFn(
-      `git grep -F -- ${JSON.stringify(symbol)} ${pinnedSha} -- ${q}`,
+      `git grep -F -e ${JSON.stringify(symbol)} ${pinnedSha} -- ${q}`,
       { cwd: repoRoot },
     );
     return hits.trim() ? "grounded" : "ungrounded";
   } catch (e) {
-    if (e instanceof Error && /^exit 1$/.test(e.message)) return "ungrounded";
-    return "unchecked";
+    return isGitNotFound(e) ? "ungrounded" : "unchecked";
   }
 }
 
 /**
  * The deterministic check for one resolved part. Returns the verification
- * to attach (or null for parts another pass covers), plus the URLs any
- * liveness part needs fetched. external-code parts whose ref gives no
- * formable URL stay unchecked with the "external repo" reason.
+ * to attach (or `v: null` for parts another pass covers — the url /
+ * external-code parts, whose liveness is resolved by the caller from the
+ * shared bounded liveness map), plus the URL any liveness part needs
+ * fetched. external-code parts whose ref gives no formable URL stay
+ * unchecked with the "external repo" reason.
  */
 export async function checkPart(
   part: ResolvedSource,
@@ -233,11 +266,7 @@ export async function checkPart(
     return { v: { check: "none", status: "unchecked", reason: "external repo" } };
   if (part.url)
     return {
-      v: {
-        check: "none",
-        status: "unchecked",
-        reason: part.kind === "external-code" ? "external repo" : undefined,
-      },
+      v: null,
       url: part.url,
     };
   return { v: { check: "none", status: "unchecked" } };

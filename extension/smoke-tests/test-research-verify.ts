@@ -136,7 +136,7 @@ function groundExecStub(behavior: GroundBehavior): ExecFn {
       if (behavior.catFileOk.includes(p)) return { stdout: "" };
       throw new Error("exit 1");
     }
-    const grep = cmd.match(/^git grep -F -- (.+) ([0-9a-f]+) -- (.+)$/);
+    const grep = cmd.match(/^git grep -F -e (.+) ([0-9a-f]+) -- (.+)$/);
     if (grep) {
       const symbol = JSON.parse(grep[1] as string) as string;
       const sha = grep[2] as string;
@@ -216,9 +216,12 @@ function fnSeen(fn: ExecFn): string[] {
     throw new Error("fatal: not a git repository");
   };
   assert(
-    (await groundCodeSource(broken, "/r", "src/x.ts", "abc1234def")) === "ungrounded",
-    "cat-file exec failure → ungrounded (the check ran, the path is not in the tree)",
+    (await groundCodeSource(broken, "/r", "src/x.ts", "abc1234def")) === "unchecked",
+    "cat-file exec failure that is not 'path absent' (non-repo) → unchecked, never throws",
   );
+  // A rejecting exec whose message does NOT mean 'path absent' → unchecked
+  // (a check that could not run must not manufacture a finding), and
+  // verifyClaims still resolves (see the integration block below).
   const grepBroken = groundExecStub({
     catFileOk: ["src/x.ts"],
     grep: () => "throw-other",
@@ -239,6 +242,19 @@ function fnSeen(fn: ExecFn): string[] {
   assert(
     (await groundCodeSource(broken, "/r", "", "abc1234def")) === "unchecked",
     "empty source → unchecked",
+  );
+
+  // Symbol argv safety: a symbol starting with `-` must reach git grep as
+  // the pattern (via -e), not as an option. The stub's grep regex requires
+  // the `-e <json> <sha> -- <path>` shape, so if the `-e` were dropped the
+  // command would not match and the claim would be unchecked, not grounded.
+  const dashSym = groundExecStub({
+    catFileOk: ["src/x.ts"],
+    grep: (sym) => (sym === "-foo" ? "hits" : "no-match"),
+  });
+  assert(
+    (await groundCodeSource(dashSym, "/r", "src/x.ts#-foo", "abc1234def")) === "grounded",
+    "symbol starting with '-' reaches git grep as the pattern (-e), grounded",
   );
 }
 
@@ -263,8 +279,8 @@ function fnSeen(fn: ExecFn): string[] {
   assert(pl.path === "src/x.ts" && pl.symbol === null, "parse: path … line ~N");
   const pline = f("src/x.ts#L42#sym");
   assert(
-    (pline.path === "src/x.ts" && pline.symbol === "L42#sym") || pline.symbol === null,
-    "parse: #Lline consumed as line marker",
+    pline.path === "src/x.ts" && pline.symbol === "sym",
+    "parse: path#L42#sym → line 42, symbol sym",
   );
 }
 

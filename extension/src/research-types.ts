@@ -48,6 +48,31 @@ export interface VerificationPart {
 }
 
 /**
+ * Minimal stat shape (injectable for offline tests — local files only).
+ * Lives here so the classify module does not have to import back into
+ * research-verify.ts (which imports the classifier — a cycle).
+ */
+export type StatLike = (p: string) => Promise<{ isDirectory: boolean } | undefined>;
+
+/**
+ * A single verification part of a source. Compound sources record every
+ * part (each with its own derived kind and check status) so the provenance
+ * sidecar can print the parts from claim data alone — the kind decides how
+ * the status is read, but the record is uniform.
+ */
+export interface ResolvedSource {
+  kind: SourceKindDerived;
+  /** The URL liveness-checked for url / external-code parts. */
+  url?: string;
+  /** The repo-relative path for code parts. */
+  path?: string;
+  /** The path stat-checked for local parts. */
+  localPath?: string;
+  /** Set when an external-code part has no URL that can be formed. */
+  externalUnchecked?: boolean;
+}
+
+/**
  * Verification outcome attached to a claim by the DRIVER (never by the
  * child). Deterministic checks only in the standard tier — the report's
  * FaithJudge caveat (<72% F1) is why LLM entailment is deep-tier-only and
@@ -69,20 +94,26 @@ export interface VerificationPart {
  * unknown pinned commit). The `reason` says why, so "no check applies"
  * stays distinguishable from "the check could not be run".
  */
+/**
+ * The optional `parts` record every verification arm carries (a shared
+ * base, so attaching parts to any kind needs no cast) — the compound
+ * split's per-part statuses, recorded so renderProvenance can print them
+ * from claim data alone.
+ */
+export type VerificationBase = { parts?: VerificationPart[] };
+
 export type ClaimVerification =
-  | {
+  | (VerificationBase & {
       check: "url-liveness";
       status: "live" | "dead" | "unreachable" | "skipped-cap";
-      parts?: VerificationPart[];
-    }
-  | { check: "code-grounding"; status: "grounded" | "ungrounded"; parts?: VerificationPart[] }
-  | { check: "local-file"; status: "local-present" | "local-missing"; parts?: VerificationPart[] }
-  | {
+    })
+  | (VerificationBase & { check: "code-grounding"; status: "grounded" | "ungrounded" })
+  | (VerificationBase & { check: "local-file"; status: "local-present" | "local-missing" })
+  | (VerificationBase & {
       check: "none";
       status: "unchecked" | "skipped-cap";
       reason?: string;
-      parts?: VerificationPart[];
-    };
+    });
 
 export interface ResearchClaim {
   kind: ResearchClaimKind;
