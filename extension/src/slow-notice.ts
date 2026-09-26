@@ -199,7 +199,7 @@ function noticeText(w: Watch, s: RunningState, triggered: string[]): string {
 
 /** The exact operator-mandated steer text (#799 scope 2). */
 export function slowSteerText(elapsedMs: number, turns: number): string {
-  return `You have been running for ${formatElapsed(elapsedMs)} / ${turns} turns. Report status in ≤3 lines (done / remaining / blocked). If you are re-running or re-scanning checks, stop: use the gate's exit code, commit, and write your final report.`;
+  return `You have been running for ${formatElapsed(elapsedMs)} / ${turns} turns. Report status in ≤3 lines (done / remaining / blocked), then CONTINUE the task — this is not a stop signal. Only if you are re-running or re-scanning the same checks without progress: stop re-scanning, use the gate's exit code, commit, and finish.`;
 }
 
 function deliver(w: Watch, s: RunningState, triggered: string[]): void {
