@@ -32,23 +32,15 @@ import {
 } from "./plan-draft.ts";
 import { allAnglesFailedSpec, correctiveRedraftError, haltResult } from "./plan-driver-halt.ts";
 import { type FilingFailure, fileIssue, getPlanForge, planForgeFor } from "./plan-filing.ts";
+import { type GapGateLoopResult, residualGapsSection, runGapGateLoop } from "./plan-gaps.ts";
 import { type CarriedCritical, gapGatePrompt, gapGateVerifyPrompt } from "./plan-gate-prompt.ts";
 import {
   PLAN_DISPATCH_TIMEOUT_MS,
   PLAN_MARKER_CHILD_ARGS,
-  PLAN_REPORTER_PATH,
   runInvestigation,
 } from "./plan-investigate.ts";
+import { phase5FilingFailure } from "./plan-phase5.ts";
 import { precheckDescriptor } from "./plan-precheck.ts";
-import {
-  FORGE_BODY_MAX,
-  fitDraftToBudget,
-  parsePinnedSubIssueCount,
-  validateDraft,
-} from "./plan-validate.ts";
-import { reporterMissingError } from "./reporter-preflight.ts";
-
-import { type GapGateLoopResult, residualGapsSection, runGapGateLoop } from "./plan-gaps.ts";
 import {
   type PlanDriverInput,
   type PlanGap,
@@ -57,6 +49,12 @@ import {
   classifyPlanType,
   planTitle,
 } from "./plan-types.ts";
+import {
+  FORGE_BODY_MAX,
+  fitDraftToBudget,
+  parsePinnedSubIssueCount,
+  validateDraft,
+} from "./plan-validate.ts";
 import { type ResolvedDecision, buildResolvedDecisions } from "./plan-writeback.ts";
 import { trace } from "./trace.ts";
 
@@ -159,10 +157,11 @@ export async function runPlanPipeline(
   );
 
   // Phase 1b + Phase 2 — ONE parallel barrier (plan-investigate.ts): the
-  // duplicate-risk explore and the angle set dispatch together; wall clock
-  // is the slowest child, not their sum. The HIGH-risk hard stop applies
-  // AFTER the barrier — a HIGH verdict still refuses to file; the only
-  // trade is that on HIGH the angle tokens are already spent.
+  // duplicate-risk explore and the type-specialised angle set dispatch
+  // together; wall clock is the slowest child, not their sum. The HIGH-risk
+  // hard stop applies AFTER the barrier — semantics unchanged (a HIGH
+  // verdict still refuses to file); the only trade is that on HIGH the
+  // angle tokens are already spent, and HIGH is the rare case.
   const codeIds = codeIdentifiersIn(descriptor);
   // C5: an operator-pinned sub-issue count ("EXACTLY 5 sub-issues") is
   // threaded into the decomposition angle AND asserted by validateDraft.
@@ -214,23 +213,18 @@ export async function runPlanPipeline(
     });
   }
 
-  // #633 all-angles-failed guard (fail-closed): EVERY angle produced zero
-  // structured items → halt before draftSpec/fileIssue with the discriminated
-  // `skipped-all-angles-failed` reason ("deliberately skipped", never
-  // "filing failed").
+  // #633 aggregate all-angles-failed guard (fail-closed): if EVERY angle
+  // produced zero structured items, every typed section would silently fall
+  // back — halt before draftSpec/fileIssue with the discriminated
+  // `skipped-all-angles-failed` reason instead ("deliberately skipped",
+  // never "filing failed").
   const withItems = findings.filter((f) => f.toolUses.length > 0).length;
   if (findings.length > 0 && withItems === 0) {
     trace(
       `plan-driver: ALL ${findings.length} angles produced zero structured items (prose-only or schema-invalid calls) — halting, no spec filed`,
     );
     const angleNames = findings.map((f) => f.name).join(", ");
-    // #893 — when EVERY failed angle carries the named reporter-missing
-    // error, the preflight failed: the builder renders the honest
-    // "nothing was dispatched" text instead of the dispatched-angles text.
-    const allReporterMissing = findings.every(
-      (f) => f.failure === reporterMissingError(PLAN_REPORTER_PATH),
-    );
-    const spec = allAnglesFailedSpec(angleNames, allReporterMissing);
+    const spec = allAnglesFailedSpec(angleNames, findings);
     const title = planTitle(descriptor, type);
     trace(
       `plan-driver: type=${type} angles=${findings.length} structured=${withItems} gaps=0 filed=false dryRun=${!!dryRun} ALL-ANGLES-FAILED`,
@@ -250,8 +244,9 @@ export async function runPlanPipeline(
     });
   }
 
-  // Phase 3 — draft WITHIN the forge body budget (four filings hit the
-  // 65,536-char wall; plan-validate.ts owns the stage-0/compaction policy).
+  // Phase 3 — draft WITHIN the forge body budget (vipune session: four
+  // filings hit the 65,536-char wall after clean gates; plan-validate.ts
+  // owns the stage-0/compaction/tooLarge policy).
   const openQuestions: string[] = [];
   const outOfScope: string[] = [];
   const fitted = fitDraftToBudget((b) =>
@@ -418,8 +413,9 @@ export async function runPlanPipeline(
     rawUnparsedHead = loopResult.rawUnparsedHead;
   }
 
-  // D2: append the residual disclosure HERE, before fileIssue, so the
-  // single filing pass sees the final body.
+  // D2: when the cap routed to filing, the spec that gets filed carries the
+  // residual disclosure. Append it HERE, before fileIssue, so the single
+  // filing pass below sees the final body.
   const finalBody =
     residualForDisclosure.length > 0
       ? `${body}\n\n${residualGapsSection(residualForDisclosure)}`
@@ -432,43 +428,22 @@ export async function runPlanPipeline(
   // terminal rule, #664 transposed), do NOT file — surface to the operator. D7: the filing failure is DISCRIMINATED and
   // carried on the result; the operator-visible text (plan-tool.ts) surfaces
   // the reason including the forge stderr, without requiring PI_ENSEMBLE_DEBUG.
-  let issueUrl: string | undefined;
-  let filingFailure: FilingFailure | undefined;
-  // The cap-based skips set filingFailure REGARDLESS of dryRun: they are
-  // policy, and the NOT-FILEABLE head + FILING STATUS must render on a dry
-  // run too (hiding a halt behind dryRun is the #647 C1 defect).
-  if (capReason === "review-unparseable") {
-    // Fail closed: nothing was reviewed, so nothing files. The raw head
-    // travels so parser-vs-prompt drift is diagnosable, never silent.
-    filingFailure = {
-      reason: "review-unparseable",
-      detail: `the gap-gate review could not be parsed (no structured findings and no verdict, after one strict retry) — the spec was NOT reviewed and was not filed. Re-run start_plan_driver to retry the gate. Raw reviewer output head: ${rawUnparsedHead ?? "(unavailable)"}`,
-    };
-  } else if (capReason === "unresolved-blocking") {
-    // Deliberate skip: CRITICAL gaps remain (CRITICAL-only blocks; HIGH
-    // travels in the residual disclosure) — not filed by policy.
-    filingFailure = {
-      reason: "cap-surface",
-      detail: "the gap gate cap routed to surface (CRITICAL gaps remain) — not filed by policy",
-    };
-  } else if (capReason === "gate-unavailable") {
-    // Deliberate skip: the gate dispatch failed — no reviewer saw the spec.
-    filingFailure = {
-      reason: "gate-unavailable",
-      detail:
-        "the gap-gate dispatch failed — no reviewer ever saw the spec, so it was not filed (re-run start_plan_driver after the gate failure is addressed)",
-    };
-  } else if (!dryRun) {
-    const fr = await timed("filing", () =>
-      fileIssue(title, finalBody, getPlanForge() ?? (() => planForgeFor(repoRoot))),
-    );
-    issueUrl = fr.url;
-    filingFailure = fr.failure;
-  }
+  // The cap-skip routing + the single filing pass (moved to plan-phase5.ts
+  // along the 500-line seam) keep the driver's orchestration visible here.
+  const { issueUrl, filingFailure } = await phase5FilingFailure({
+    capReason,
+    dryRun,
+    title,
+    finalBody,
+    repoRoot,
+    rawUnparsedHead,
+    timed,
+  });
 
   // #633: report BOTH how many angles were dispatched and how many produced
-  // structured items — `angles=` alone read as "3 angles ran" even when
-  // all three returned prose-only.
+  // structured items — `angles=` alone read as "3 angles ran" even when all
+  // three returned prose-only (the all-angles-failed case the guard above
+  // halts for now still surfaces the count when it fires).
   const structuredCount = findings.filter((f) => f.toolUses.length > 0).length;
   trace(
     `plan-driver: type=${type} angles=${findings.length} structured=${structuredCount} gaps=${gaps.length} filed=${!!issueUrl} dryRun=${!!dryRun} capReason=${capReason ?? "none"}`,

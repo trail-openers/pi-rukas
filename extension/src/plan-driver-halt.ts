@@ -10,6 +10,7 @@
  * forgotten at four of five sites. Split from plan-driver.ts along the
  * 500-line seam (AGENTS.md §12).
  */
+import type { AngleFindings } from "./plan-draft.ts";
 import type { FilingFailure } from "./plan-filing.ts";
 import { PLAN_REPORTER_PATH } from "./plan-investigate.ts";
 import type { PlanPhaseTiming, PlanResult, PlanType } from "./plan-types.ts";
@@ -50,7 +51,13 @@ export function haltResult(args: {
  * instead. Moved from plan-driver.ts along the 500-line seam (AGENTS.md §12);
  * the sentences are verbatim from the driver's original builder.
  */
-export function allAnglesFailedSpec(angleNames: string, allReporterMissing: boolean): string {
+// #893 — when EVERY failed angle carries the named reporter-missing error,
+// the preflight failed: the builder renders the honest "nothing was
+// dispatched" text instead of the dispatched-angles text.
+export function allAnglesFailedSpec(angleNames: string, findings: AngleFindings[]): string {
+  const allReporterMissing = findings.every(
+    (f) => f.failure === reporterMissingError(PLAN_REPORTER_PATH),
+  );
   return allReporterMissing
     ? `(spec not drafted — the plan-reporter extension is missing)\n\nNo angles were dispatched — ${reporterMissingError(PLAN_REPORTER_PATH)}.`
     : `(spec not drafted — all investigation angles returned zero structured items)\n\nDispatched angles: ${angleNames}\n\nEach angle returned either prose only (no report_plan_item tool calls) or schema-invalid calls only. This usually means the reporter extension was not loaded, or the model did not make the tool calls. Re-run start_plan_driver — the investigation children are re-dispatched; if this recurs, check the plan-reporter extension registration (PLAN_REPORTER_PATH).`;
