@@ -22,7 +22,7 @@
  * always truncate mid-sentence). The cap still wins over any longer
  * combination; tests pin the exact stored row including that boundary.
  */
-import type { ResearchMemoryOutcome } from "./research-types.ts";
+import type { ResearchClaim, ResearchMemoryOutcome } from "./research-types.ts";
 import { vipuneAdd, vipuneSearch } from "./vipune.ts";
 
 /**
@@ -69,11 +69,11 @@ export function researchMemoryText(
  *
  * Shape: `<N> verified of <M> claims across <K> angles — top findings:
  * <first 3 verified findings, each truncated to 80 chars, joined by
- * " | ">` (exactly `no reliably verified findings` when N is 0), capped at
- * 400 chars.
+ * " | ">` (exactly the count line — `0 verified of M claims across K angles` —
+ * when N is 0), capped at 400 chars.
  */
 export function researchTakeawayText(
-  verified: { text: string }[],
+  verified: readonly Pick<ResearchClaim, "text">[],
   totalClaims: number,
   angleCount: number,
 ): string {
