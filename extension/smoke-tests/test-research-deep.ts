@@ -69,13 +69,23 @@ function assert(cond: boolean, msg: string) {
   const two =
     "RECOMMENDATION:\nFirst rec: do not adopt.\n\nCOMPARISON:\n| a | b |\n\nRECOMMENDATION:\nSecond rec: adopt with conditions.\n\nCOMPARISON:\n| c | d |\n";
   const s2 = parseMemoSections(two);
-  assert(s2.recommendation === "Second rec: adopt with conditions.", "memo parser: last RECOMMENDATION block wins");
-  assert(!s2.recommendation?.includes("First rec"), "memo parser: first block not leaked into the recommendation");
+  assert(
+    s2.recommendation === "Second rec: adopt with conditions.",
+    "memo parser: last RECOMMENDATION block wins",
+  );
+  assert(
+    !s2.recommendation?.includes("First rec"),
+    "memo parser: first block not leaked into the recommendation",
+  );
   assert(s2.comparison?.startsWith("| c |"), "memo parser: last COMPARISON block wins");
 }
 
 {
-  const mk = (kind: string, sourceKind: string, derivedKinds?: ("url" | "code" | "local" | "external-code" | "doc")[]): ResearchClaim =>
+  const mk = (
+    kind: string,
+    sourceKind: string,
+    derivedKinds?: ("url" | "code" | "local" | "external-code" | "doc")[],
+  ): ResearchClaim =>
     ({
       kind,
       text: "t",
@@ -86,11 +96,16 @@ function assert(cond: boolean, msg: string) {
       angle: "a",
       verification: { check: "none", status: "unchecked", derivedKinds },
     }) as ResearchClaim;
-  const many = Array.from({ length: ENTAILMENT_CLAIM_CAP + 5 }, () => mk("finding", "url", ["url"]));
+  const many = Array.from({ length: ENTAILMENT_CLAIM_CAP + 5 }, () =>
+    mk("finding", "url", ["url"]),
+  );
   assert(entailableClaims(many).length === ENTAILMENT_CLAIM_CAP, "entailable: capped");
   assert(
-    entailableClaims([mk("finding", "code", ["code"]), mk("gap", "url", ["url"]), mk("contradiction", "doc", ["doc"])])
-      .length === 1,
+    entailableClaims([
+      mk("finding", "code", ["code"]),
+      mk("gap", "url", ["url"]),
+      mk("contradiction", "doc", ["doc"]),
+    ]).length === 1,
     "entailable: only sourced findings/contradictions with url/doc derived kinds (code claims are grounded deterministically)",
   );
   // The driver-derived kind wins over the child's label: a claim the child
@@ -115,7 +130,11 @@ function assert(cond: boolean, msg: string) {
     confidence: "high",
     staleness: "stable",
     angle: "a",
-    verification: { check: "url-liveness" as const, status: "dead" as const, derivedKinds: ["url"] as ("url" | "code" | "local" | "external-code" | "doc")[] },
+    verification: {
+      check: "url-liveness" as const,
+      status: "dead" as const,
+      derivedKinds: ["url"] as ("url" | "code" | "local" | "external-code" | "doc")[],
+    },
   } as ResearchClaim;
   const ungroundedClaim = {
     kind: "finding",
@@ -125,12 +144,25 @@ function assert(cond: boolean, msg: string) {
     confidence: "high",
     staleness: "stable",
     angle: "a",
-    verification: { check: "code-grounding" as const, status: "ungrounded" as const, derivedKinds: ["code"] as ("url" | "code" | "local" | "external-code" | "doc")[] },
+    verification: {
+      check: "code-grounding" as const,
+      status: "ungrounded" as const,
+      derivedKinds: ["code"] as ("url" | "code" | "local" | "external-code" | "doc")[],
+    },
   } as ResearchClaim;
   const liveClaim = mk("finding", "url", ["url"]);
-  assert(entailableClaims([deadClaim, liveClaim]).length === 1, "entailable: dead claim excluded, live claim takes the slot");
-  assert(entailableClaims([deadClaim, liveClaim])[0]?.text === "t", "entailable: the freed slot goes to the eligible claim");
-  assert(entailableClaims([ungroundedClaim, liveClaim]).length === 1, "entailable: ungrounded claim excluded");
+  assert(
+    entailableClaims([deadClaim, liveClaim]).length === 1,
+    "entailable: dead claim excluded, live claim takes the slot",
+  );
+  assert(
+    entailableClaims([deadClaim, liveClaim])[0]?.text === "t",
+    "entailable: the freed slot goes to the eligible claim",
+  );
+  assert(
+    entailableClaims([ungroundedClaim, liveClaim]).length === 1,
+    "entailable: ungrounded claim excluded",
+  );
 
   // #896 — the entailment prompt includes each claim's deterministic status.
   const { entailmentPrompt } = await import("../src/research-verify.ts");
@@ -145,9 +177,18 @@ function assert(cond: boolean, msg: string) {
     verification: { check: "url-liveness" as const, status: "live" as const },
   } as ResearchClaim;
   const prompt = entailmentPrompt([statusClaim]);
-  assert(prompt.includes("STATUS: live"), "entailment prompt includes the deterministic verification status");
-  const deadStatusClaim = { ...statusClaim, verification: { check: "url-liveness" as const, status: "dead" as const } } as ResearchClaim;
-  assert(entailmentPrompt([deadStatusClaim]).includes("STATUS: dead"), "entailment prompt includes dead status");
+  assert(
+    prompt.includes("STATUS: live"),
+    "entailment prompt includes the deterministic verification status",
+  );
+  const deadStatusClaim = {
+    ...statusClaim,
+    verification: { check: "url-liveness" as const, status: "dead" as const },
+  } as ResearchClaim;
+  assert(
+    entailmentPrompt([deadStatusClaim]).includes("STATUS: dead"),
+    "entailment prompt includes dead status",
+  );
 }
 
 // ------------------------------------------------------ pipeline (stubs)

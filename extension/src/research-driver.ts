@@ -47,6 +47,7 @@ import {
   slugify,
   writeArtifact,
 } from "./research-artifact.ts";
+import { dedupResearchClaims } from "./research-dedup.ts";
 import {
   type ParallelOutcome,
   classifyParallelOutcome,
@@ -55,7 +56,6 @@ import {
   surfaceForAngle,
   wigoloAnglePrompt,
 } from "./research-fallback.ts";
-import { dedupResearchClaims } from "./research-dedup.ts";
 import { writeResearchMemory } from "./research-memory.ts";
 import {
   type AngleRun,

@@ -156,10 +156,7 @@ function assert(cond: boolean, msg: string) {
     surfaceForAngle("custom-1") === "search",
     "surface: custom-N angle → search (web-capable, #896)",
   );
-  assert(
-    surfaceForAngle("custom-42") === "search",
-    "surface: custom-N (any N) → search",
-  );
+  assert(surfaceForAngle("custom-42") === "search", "surface: custom-N (any N) → search");
   assert(
     selectFallback("credit-exhausted", "search", true) === "fall-back-to-wigolo",
     "selector: custom angle credit-exhausted → fall-back-to-wigolo",
@@ -192,7 +189,10 @@ function assert(cond: boolean, msg: string) {
   assert(surfaceForAngle("deep-dive") === "research", "surface: deep tier → research");
   assert(surfaceForAngle("codebase") === "none", "surface: codebase angle → none (no re-dispatch)");
   // #896 mandated change: custom-N was `none`, now the web (search) surface.
-  assert(surfaceForAngle("custom-1") === "search", "surface: custom-N angle → search (was none, #896)");
+  assert(
+    surfaceForAngle("custom-1") === "search",
+    "surface: custom-N angle → search (was none, #896)",
+  );
   assert(surfaceForAngle("mystery-angle") === "none", "surface: unknown angle → none, not search");
   assert(
     selectFallback("credit-exhausted", "none", true) === "no-fallback-available",

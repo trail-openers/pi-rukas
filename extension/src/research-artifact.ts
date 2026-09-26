@@ -249,11 +249,15 @@ export function memoSynthesisPrompt(topic: string, claims: readonly ResearchClai
  * of its own kind.
  */
 export function parseMemoSections(reply: string): MemoSections {
-  const markerLine = /^\s*\**\s*(RECOMMENDATION|COMPARISON)\s*[:：]?\s*\**\s*[:：]?\s*$/img;
+  const markerLine = /^\s*\**\s*(RECOMMENDATION|COMPARISON)\s*[:：]?\s*\**\s*[:：]?\s*$/gim;
   const markers: { kind: "RECOMMENDATION" | "COMPARISON"; index: number; start: number }[] = [];
   for (const m of reply.matchAll(markerLine)) {
     const idx = m.index ?? 0;
-    markers.push({ kind: m[1] as "RECOMMENDATION" | "COMPARISON", index: idx, start: idx + m[0].length });
+    markers.push({
+      kind: m[1] as "RECOMMENDATION" | "COMPARISON",
+      index: idx,
+      start: idx + m[0].length,
+    });
   }
   const rec = markers.filter((x) => x.kind === "RECOMMENDATION").at(-1);
   const cmp = markers.filter((x) => x.kind === "COMPARISON").at(-1);

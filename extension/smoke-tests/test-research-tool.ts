@@ -191,7 +191,10 @@ async function freshRepo(): Promise<string> {
     rrf?.angles?.join(",") === "web-current,docs-depth,codebase",
     `dedup: merged claim attributes all three angles (got ${rrf?.angles?.join(",")})`,
   );
-  assert(rrf?.angle === "web-current", "dedup: angle field stays the survivor's (first encountered)");
+  assert(
+    rrf?.angle === "web-current",
+    "dedup: angle field stays the survivor's (first encountered)",
+  );
   assert(rrf?.confidence === "high", "dedup: survivor's confidence kept");
   // The raw/unique count line lands in the artifact + provenance headers.
   const bodyAfterCount = await fs.readFile(r.artifactPath as string, "utf8");
@@ -214,7 +217,9 @@ async function freshRepo(): Promise<string> {
   // tools unconditionally.
   assert(
     seen.every(
-      (s) => !s.extraArgs?.includes("--no-extensions") && !s.extraArgs?.includes("PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD"),
+      (s) =>
+        !s.extraArgs?.includes("--no-extensions") &&
+        !s.extraArgs?.includes("PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD"),
     ),
     "codebase tools: dispatches carry no discovery-disabling flag (installed extensions still forwarded)",
   );

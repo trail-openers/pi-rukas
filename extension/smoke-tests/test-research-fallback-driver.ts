@@ -152,7 +152,10 @@ async function freshRepo(): Promise<string> {
   // #893 — the stub returns toolUses: [] (0 raw report_research_claim calls)
   // for the failed angle, so the all-silent distinction fires: the halt
   // reason is reporter-silent, not no-structured-claims.
-  assert(r.halt?.reason === "reporter-silent", "all-angles-silent (0 raw calls) → reporter-silent halt");
+  assert(
+    r.halt?.reason === "reporter-silent",
+    "all-angles-silent (0 raw calls) → reporter-silent halt",
+  );
   wigoloFails = false;
   await fs.rm(tmp, { recursive: true, force: true });
 }
@@ -224,7 +227,9 @@ async function freshRepo(): Promise<string> {
     const isWigolo = spec.prompt.includes("WIGOLO CLI") || spec.prompt.includes("wigolo fallback");
     const fail = label === "research-web-current" && !isWigolo;
     longSeen.push({ label, prompt: spec.prompt } as SeenDispatch);
-    const prose = "the parallel search returned a plausible result set but credit ran out; ".repeat(35);
+    const prose = "the parallel search returned a plausible result set but credit ran out; ".repeat(
+      35,
+    );
     const text = fail
       ? `${prose.slice(0, 1990)} parallel-outcome: credit-exhausted`
       : isWigolo
@@ -238,10 +243,21 @@ async function freshRepo(): Promise<string> {
     });
   }) as never;
   setResearchDispatch(longStub);
-  const rLong = await runResearchPipeline(FAKE_PI, { topic: "what is a thing", tier: "quick" }, tmp, deps);
+  const rLong = await runResearchPipeline(
+    FAKE_PI,
+    { topic: "what is a thing", tier: "quick" },
+    tmp,
+    deps,
+  );
   const webDispatches = longSeen.filter((s) => s.label === "research-web-current");
-  assert(webDispatches.length === 2, `long reply with trailing marker still re-dispatches (got ${webDispatches.length} dispatches)`);
-  assert(/WIGOLO CLI/.test(webDispatches[1]?.prompt ?? ""), "second attempt is wigolo-framed after the long credit-exhausted reply");
+  assert(
+    webDispatches.length === 2,
+    `long reply with trailing marker still re-dispatches (got ${webDispatches.length} dispatches)`,
+  );
+  assert(
+    /WIGOLO CLI/.test(webDispatches[1]?.prompt ?? ""),
+    "second attempt is wigolo-framed after the long credit-exhausted reply",
+  );
   assert(rLong.angles[0]?.backend === "wigolo", "long-reply angle carries backend: wigolo");
   setResearchDispatch(null);
   await fs.rm(tmp, { recursive: true, force: true });
@@ -268,7 +284,10 @@ async function freshRepo(): Promise<string> {
   );
   assert(r2.halt === undefined, "pipeline completed when codebase angle fails (no re-dispatch)");
   const codebase = r2.angles.find((x) => x.name === "codebase");
-  assert(codebase !== undefined, `codebase angle present (angles: ${r2.angles.map((x) => x.name).join(",")})`);
+  assert(
+    codebase !== undefined,
+    `codebase angle present (angles: ${r2.angles.map((x) => x.name).join(",")})`,
+  );
   assert(codebase?.ok === false, "codebase angle is not ok");
   assert((codebase?.claims.length ?? 1) === 0, "codebase angle has no claims");
   assert(codebase?.backend === "parallel", "codebase angle stays on parallel (no re-dispatch)");
@@ -313,8 +332,14 @@ async function freshRepo(): Promise<string> {
       /wigolo search/.test(customDispatches[1]?.prompt ?? ""),
     "#896: second attempt is wigolo-framed (search surface) for the custom angle",
   );
-  assert(r3.angles.find((x) => x.name === "custom-1")?.backend === "wigolo", "#896: custom angle carries backend: wigolo");
-  assert(r3.angles.find((x) => x.name === "custom-1")?.ok === true, "#896: custom angle ok after wigolo re-dispatch");
+  assert(
+    r3.angles.find((x) => x.name === "custom-1")?.backend === "wigolo",
+    "#896: custom angle carries backend: wigolo",
+  );
+  assert(
+    r3.angles.find((x) => x.name === "custom-1")?.ok === true,
+    "#896: custom angle ok after wigolo re-dispatch",
+  );
 
   // Non-web classified failure (unparseable) → no wigolo re-dispatch, even
   // for a web-capable custom angle (selectFallback keeps parallel).
@@ -352,7 +377,10 @@ async function freshRepo(): Promise<string> {
     r4.angles.find((x) => x.name === "custom-1")?.backend === "parallel",
     "#896: custom angle unparseable → stays parallel (no wigolo re-dispatch)",
   );
-  assert(unparseableSeen.filter((s) => s.includes("research-custom-1")).length === 1, "#896: exactly one custom-N dispatch (no loop)");
+  assert(
+    unparseableSeen.filter((s) => s.includes("research-custom-1")).length === 1,
+    "#896: exactly one custom-N dispatch (no loop)",
+  );
   assert(
     r4.angles.find((x) => x.name === "custom-1")?.summary.includes("keep-parallel"),
     "#896: summary records the keep-parallel decision",

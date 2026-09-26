@@ -41,7 +41,11 @@ export function normaliseClaimText(text: string): string {
 
 /** The token set of a string after normalisation (empties dropped). */
 export function claimTokens(text: string): Set<string> {
-  return new Set(normaliseClaimText(text).split(" ").filter((t) => t.length > 0));
+  return new Set(
+    normaliseClaimText(text)
+      .split(" ")
+      .filter((t) => t.length > 0),
+  );
 }
 
 /** Jaccard similarity of two token SETS (identical-empty → 0, no tokens → 0). */
@@ -87,8 +91,7 @@ export function dedupResearchClaims(claims: readonly ResearchClaim[]): ResearchC
     }
     const cur = out[i];
     if (!cur) continue;
-    const keep =
-      CONFIDENCE_RANK[cur.confidence] <= CONFIDENCE_RANK[c.confidence] ? cur : c;
+    const keep = CONFIDENCE_RANK[cur.confidence] <= CONFIDENCE_RANK[c.confidence] ? cur : c;
     const angles = [...new Set([...(cur.angles ?? [cur.angle]), ...(c.angles ?? [c.angle])])];
     out[i] = { ...keep, angles };
   }
