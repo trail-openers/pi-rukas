@@ -173,11 +173,17 @@ export async function runPlan(
   // planned single-workstream issue therefore triggered a corrective
   // re-dispatch essentially every time.
   const reason = planQualityReason(workstreams, findingsCount);
-  // #849 — the FIRST plan's dependsOn edges, held aside so the one-shot
-  // corrective re-dispatch below can be checked against them. `let` because
-  // the timeout-triggered corrective also re-parses workstreams and must
-  // drop a dependency edge there too.
+  // #849 — the FIRST plan's workstreams (and their dependsOn edges), held
+  // aside so the quality-triggered corrective below can be checked against
+  // them. The kill/timeout corrective intentionally does NOT set it: that
+  // corrective is a recovery path with no parsed first plan to compare
+  // against (the primary was killed mid-stream and never produced structured
+  // output), so there is nothing its re-plan could have dropped.
   let firstPlanWorkstreams: typeof workstreams | undefined;
+  // #849 — set when the quality-triggered corrective re-plan dropped a
+  // dependsOn edge the first plan had (without merging the pair into one
+  // workstream); carried into the single planQuality write at the return.
+  let droppedEdges: { from: string; to: string }[] | undefined;
   let redispatched = false;
   // #754 — a primary killed at the step's own bound gets the one-shot
   // corrective re-dispatch below (the kill-triggered half of it).
@@ -249,29 +255,21 @@ export async function runPlan(
   // semantically-coupled workstreams running in parallel from one baseSha.
   // There is no second re-dispatch (#754's one-shot rule); the cycle
   // CONTINUES with the corrective plan and the drop is RECORDED as
-  // `dropped-dependencies` (a PlanQualityReason), surfaced through the same
-  // `pipelineState.planQuality.reason` channel as every other reason so the
-  // operator sees it. The match is id-priority (same ids still connected) with
-  // a path-set signature fallback for renamed workstreams, and a merged pair
-  // (both endpoints now in one workstream) never flags — see
-  // findDroppedDependencyEdges for the full rule.
+  // `dropped-dependencies` (a PlanQualityReason) at the single planQuality
+  // write in the return below (the edges ride along as droppedEdges),
+  // surfaced through the same `pipelineState.planQuality.reason` channel as
+  // every other reason so the operator sees it. The match is id-priority
+  // (same ids still connected) with a path-set signature fallback for
+  // renamed workstreams, and a merged pair (both endpoints now in one
+  // workstream) never flags — see findDroppedDependencyEdges for the full
+  // rule.
   if (firstPlanWorkstreams && redispatched) {
     const dropped = findDroppedDependencyEdges(firstPlanWorkstreams, workstreams);
     if (dropped.length > 0) {
+      droppedEdges = dropped;
       trace(
         `work-driver: plan quality — corrective dropped ${dropped.length} dependsOn edge(s) without merging: ${dropped.map((e) => `${e.from}→${e.to}`).join(", ")}`,
       );
-      next = {
-        ...next,
-        pipelineState: {
-          ...next.pipelineState,
-          planQuality: {
-            findingsCount,
-            redispatched: true,
-            reason: "dropped-dependencies",
-          },
-        },
-      };
     }
   }
 
@@ -289,12 +287,22 @@ export async function runPlan(
       outOfScope: [],
     };
   }
+  // #849 — planQuality is written EXACTLY ONCE here: the final reason is
+  // computed once (`dropped-dependencies` wins when the corrective dropped an
+  // edge, else the first plan's quality reason) so the mid-function #849
+  // check and the return can no longer disagree.
+  const finalReason = droppedEdges && droppedEdges.length > 0 ? "dropped-dependencies" : reason;
   return {
     ...next,
     pipelineState: {
       ...next.pipelineState,
       workstreams,
-      planQuality: { findingsCount, redispatched, ...(reason ? { reason } : {}) },
+      planQuality: {
+        findingsCount,
+        redispatched,
+        ...(finalReason ? { reason: finalReason } : {}),
+        ...(droppedEdges ? { droppedEdges } : {}),
+      },
     },
   };
 }

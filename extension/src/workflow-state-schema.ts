@@ -250,6 +250,13 @@ export interface PipelineState {
     findingsCount: number;
     redispatched: boolean;
     reason?: PlanQualityReason;
+    /**
+     * #849 — the dependsOn edges the one-shot corrective re-plan dropped
+     * (reason: dropped-dependencies). Persisted alongside the reason so the
+     * original trigger's evidence isn't the only thing the operator sees;
+     * absent when no edge was dropped.
+     */
+    droppedEdges?: { from: string; to: string }[];
   };
   /**
    * PR14/#540 — the subsumption-aware consolidation verdict: `verdicts`

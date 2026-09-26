@@ -2,8 +2,8 @@
  * work-driver-plan-workstreams — parseWorkstreams + maxWorkstreams.
  *
  * Extracted from work-driver-plan.ts for the AGENTS.md §12 500-line cap
- * (#849 moved parseWorkstreams into work-driver-plan-helpers.ts as a
- * temporary relief; this module is the permanent home).
+ * (#849 moved parseWorkstreams into work-driver-plan-helpers.ts first; this
+ * module is the permanent home).
  */
 
 import { trace } from "./trace.ts";

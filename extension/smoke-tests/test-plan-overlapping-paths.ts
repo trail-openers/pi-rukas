@@ -269,6 +269,38 @@ const OK_FINDINGS = 2;
     ).length === 0,
     "#849: a plan with no dependsOn edges has nothing to drop",
   );
+
+  // Empty-paths guard (vacuous truth): an endpoint whose first-plan path
+  // list is EMPTY must never count as "covered" by the merged check —
+  // `[].every(...)` is vacuously true, so without the guard any corrective
+  // workstream would "cover" the empty endpoint and the edge would be read
+  // as merged. The edge stays flagged.
+  const emptyEndpoint = {
+    "task-a": { paths: ["src/a.ts"], dependsOn: ["task-b"] },
+    "task-b": { paths: [] },
+  };
+  const emptyDropped = findDroppedDependencyEdges(emptyEndpoint, {
+    merged: { paths: ["src/a.ts"] },
+  });
+  assert(
+    emptyDropped.length === 1 &&
+      emptyDropped[0]?.from === "task-a" &&
+      emptyDropped[0]?.to === "task-b",
+    "#849: an empty-paths endpoint is never 'covered' by the merged check — the edge is still flagged",
+  );
+
+  // Sanity: the same edge with a NON-empty endpoint IS covered by the
+  // merged check (the guard does not over-fire).
+  assert(
+    findDroppedDependencyEdges(
+      {
+        "task-a": { paths: ["src/a.ts"], dependsOn: ["task-b"] },
+        "task-b": { paths: ["src/b.ts"] },
+      },
+      { merged: { paths: ["src/a.ts", "src/b.ts"] } },
+    ).length === 0,
+    "#849: the merged check still covers a genuine merge (non-empty endpoints)",
+  );
 }
 
 console.log(`\nexit ${exit}`);
