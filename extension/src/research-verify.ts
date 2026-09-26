@@ -1,4 +1,21 @@
-import type { ClaimSupport, ClaimVerification, ResearchClaim } from "./research-types.ts";
+import { promises as fs } from "node:fs";
+import type {
+  ClaimSupport,
+  ClaimVerification,
+  ResearchClaim,
+  ResolvedSource,
+  SourceKindDerived,
+  StatLike,
+  VerificationPart,
+} from "./research-types.ts";
+import {
+  checkLocalFile,
+  checkPart,
+  groundCodeSource,
+  parseCodeSource,
+  resolveSourcePart,
+  splitCompoundSource,
+} from "./research-verify-classify.ts";
 import { trace } from "./trace.ts";
 /**
  * research-verify — the deterministic verification layer of /research.
@@ -14,13 +31,21 @@ import { trace } from "./trace.ts";
  * FaithJudge caveat that automated hallucination detection is <72% F1 and
  * must never be a silent quality claim.
  *
- * Everything is injectable (fetch, exec) so the smoke tests run offline;
- * the default fetch is the bare global-fetch + AbortSignal.timeout pattern
- * from forge-detect.ts — the repo's only HTTP precedent.
+ * Classification is DRIVER-side and content-based (the child's sourceKind
+ * stays the raw record): an https URL the child labelled "code" is
+ * liveness-checked, a local path labelled "url" is stat-checked, and an
+ * external repo is never grounded against the local tree.
+ *
+ * Everything is injectable (fetch, exec, stat) so the smoke tests run
+ * offline; the default fetch is the bare global-fetch + AbortSignal.timeout
+ * pattern from forge-detect.ts — the repo's only HTTP precedent.
  */
 import type { ExecFn } from "./worktree.ts";
 
 export type LivenessStatus = "live" | "dead" | "unreachable";
+
+/** Liveness plus the cap marker (excess unique URLs are never checked). */
+export type LivenessCheckStatus = LivenessStatus | "skipped-cap";
 
 /** Minimal fetch shape (injectable for offline tests). */
 export type FetchLike = (
@@ -28,9 +53,29 @@ export type FetchLike = (
   init: { method: string; redirect: "follow"; signal: AbortSignal },
 ) => Promise<{ status: number }>;
 
-/** Bound the liveness pass: unique URLs past the cap stay unchecked. */
-export const LIVENESS_URL_CAP = 30;
+/** Re-export the injectable stat seam (declared in research-types.ts). */
+export type { StatLike } from "./research-types.ts";
+
+export {
+  checkLocalFile,
+  groundCodeSource,
+  parseCodeSource,
+  resolveSourcePart,
+  splitCompoundSource,
+} from "./research-verify-classify.ts";
+export type { ResolvedSource } from "./research-types.ts";
+
+const defaultStat: StatLike = (p) =>
+  fs.stat(p).then(
+    (s) => ({ isDirectory: s.isDirectory() }),
+    () => undefined,
+  );
+
+/** Bound the liveness pass: unique URLs past the cap are marked skipped-cap. */
+export const LIVENESS_URL_CAP = 60;
 export const LIVENESS_TIMEOUT_MS = 5000;
+/** Bound the sockets the liveness pass opens at once. */
+export const LIVENESS_CONCURRENCY = 8;
 
 /**
  * Classify one HTTP status. Bot filters (403/429) and method rejection
@@ -48,15 +93,27 @@ export function classifyLiveness(status: number): LivenessStatus {
  * Check each unique URL once (GET, redirects followed, 5s timeout). A
  * thrown fetch (network error, timeout) is `unreachable` — absence of an
  * answer is not evidence of death.
+ *
+ * Bounded concurrency (LIVENESS_CONCURRENCY sockets at once, never
+ * Promise.all over the whole set), and unique URLs PAST the cap are
+ * recorded in the map as `skipped-cap` — distinct from `unchecked` (no
+ * check applies), so the provenance sidecar can tell a skipped check from
+ * an inapplicable one.
  */
 export async function checkUrlLiveness(
   urls: readonly string[],
   fetchFn: FetchLike = (u, init) => fetch(u, init),
-): Promise<Map<string, LivenessStatus>> {
-  const unique = [...new Set(urls)].slice(0, LIVENESS_URL_CAP);
-  const out = new Map<string, LivenessStatus>();
-  await Promise.all(
-    unique.map(async (url) => {
+): Promise<Map<string, LivenessCheckStatus>> {
+  const unique = [...new Set(urls)];
+  const out = new Map<string, LivenessCheckStatus>();
+  for (const url of unique.slice(LIVENESS_URL_CAP)) out.set(url, "skipped-cap");
+  const checkable = unique.slice(0, LIVENESS_URL_CAP);
+  let idx = 0;
+  const workers = Array.from({ length: LIVENESS_CONCURRENCY }, async () => {
+    for (;;) {
+      const url = checkable[idx];
+      if (url === undefined) return;
+      idx++;
       try {
         const res = await fetchFn(url, {
           method: "GET",
@@ -67,8 +124,9 @@ export async function checkUrlLiveness(
       } catch {
         out.set(url, "unreachable");
       }
-    }),
-  );
+    }
+  });
+  await Promise.all(workers);
   return out;
 }
 
@@ -84,98 +142,185 @@ export async function pinnedCommit(execFn: ExecFn, repoRoot: string): Promise<st
 }
 
 /**
- * Ground one code source (`path` or `path#symbol`) against the working tree
- * at HEAD: the path must be tracked (`git ls-files`), and the symbol — when
- * given — must occur somewhere in tracked content (`git grep -l -F`). Both
- * commands exiting non-zero means "not found"; an exec failure of any other
- * shape degrades to ungrounded=false being UNKNOWABLE, so the claim is left
- * unchecked rather than condemned (same posture as claim-scan's fail-open
- * lookup: a check that could not run must not manufacture a finding).
+ * The compound status mapping (liveness parts): live if any part is live;
+ * unreachable if none is live and any is unreachable; dead otherwise.
+ * `skipped-cap` never promotes — it neither adds a liveness class nor is
+ * one, so it is its own branch of the result (the caller keeps
+ * `check: "url-liveness"` with `status: "skipped-cap"` rather than
+ * remapping to `check: "none"`). Mixed kinds: the liveness parts decide
+ * when any exist, else the code parts decide.
  */
-export async function groundCodeSource(
-  execFn: ExecFn,
-  repoRoot: string,
-  source: string,
-): Promise<"grounded" | "ungrounded" | "unchecked"> {
-  const [rawPath, symbol] = source.split("#", 2);
-  const p = (rawPath ?? "").trim();
-  if (!p) return "unchecked";
-  try {
-    const { stdout } = await execFn(`git ls-files -- ${JSON.stringify(p)}`, { cwd: repoRoot });
-    if (!stdout.trim()) return "ungrounded";
-    if (symbol?.trim()) {
-      try {
-        const { stdout: hits } = await execFn(
-          `git grep -l -F -- ${JSON.stringify(symbol.trim())}`,
-          {
-            cwd: repoRoot,
-          },
-        );
-        return hits.trim() ? "grounded" : "ungrounded";
-      } catch {
-        // git grep exits 1 on zero matches (promisified exec throws).
-        return "ungrounded";
-      }
-    }
-    return "grounded";
-  } catch {
-    return "unchecked";
-  }
+export type AggregatedLiveness = LivenessStatus | "skipped-cap";
+
+export function aggregateLivenessStatuses(
+  statuses: readonly LivenessCheckStatus[],
+): AggregatedLiveness {
+  if (statuses.some((s) => s === "live")) return "live";
+  if (statuses.some((s) => s === "unreachable")) return "unreachable";
+  if (statuses.some((s) => s === "dead")) return "dead";
+  return "skipped-cap";
 }
 
 /**
- * Annotate every claim with its deterministic verification outcome:
- * url sources → liveness class; code sources → grounding against HEAD;
- * doc/none → unchecked. Returns new claim objects (input never mutated).
+ * checkPart for a code part with the memoized grounding: the liveness pass
+ * is already resolved by the caller (no `url` to return), the only other
+ * branch is the memoized groundCodeSource keyed by (sha, path, symbol).
+ */
+async function memoCheckPart(
+  part: ResolvedSource,
+  ground: (part: ResolvedSource) => Promise<"grounded" | "ungrounded" | "unchecked">,
+): Promise<{ v: ClaimVerification | null; url?: string }> {
+  const status = await ground(part);
+  if (status === "unchecked") return { v: { check: "none", status: "unchecked" } };
+  return { v: { check: "code-grounding", status } };
+}
+
+/**
+ * Annotate every claim with its deterministic verification outcome.
+ * Classification is driver-side by CONTENT (the child's sourceKind stays
+ * the raw record): compound sources are split FIRST, then each part is
+ * resolved (url / external-code / local / code / doc) and checked — URLs
+ * through the bounded liveness pass, local paths through the stat seam
+ * (never fetched), code at the pinned commit, doc parts unchecked and
+ * recorded. All parts are recorded in `verification.parts` when the
+ * source was compound, so the provenance sidecar can print them from
+ * claim data alone. Returns new claim objects (input never mutated).
  */
 export async function verifyClaims(
   claims: readonly ResearchClaim[],
   repoRoot: string,
   execFn: ExecFn,
   fetchFn?: FetchLike,
+  opts?: { pinnedSha?: string; statFn?: StatLike },
 ): Promise<ResearchClaim[]> {
-  const urls = claims.filter((c) => c.sourceKind === "url").map((c) => c.source);
-  const liveness = await checkUrlLiveness(urls, fetchFn);
-  const out: ResearchClaim[] = [];
-  for (const c of claims) {
-    let verification: ClaimVerification = { check: "none", status: "unchecked" };
-    if (c.sourceKind === "url") {
-      const status = liveness.get(c.source);
-      if (status) verification = { check: "url-liveness", status };
-    } else if (c.sourceKind === "code") {
-      const status = await groundCodeSource(execFn, repoRoot, c.source);
-      if (status !== "unchecked") verification = { check: "code-grounding", status };
+  let pinnedSha: string;
+  if (opts?.pinnedSha !== undefined) {
+    pinnedSha = opts.pinnedSha;
+  } else {
+    try {
+      pinnedSha = await pinnedCommit(execFn, repoRoot);
+    } catch {
+      // A git-less / non-repo environment must not fail verification: the
+      // code parts simply cannot be grounded.
+      pinnedSha = "unknown";
     }
-    out.push({ ...c, verification });
   }
-  const dead = out.filter(
-    (c) => c.verification.check === "url-liveness" && c.verification.status === "dead",
-  ).length;
-  const ungrounded = out.filter(
-    (c) => c.verification.check === "code-grounding" && c.verification.status === "ungrounded",
-  ).length;
-  if (dead + ungrounded > 0)
-    trace(`research-verify: ${dead} dead URL(s), ${ungrounded} ungrounded code claim(s)`);
+  const statFn = opts?.statFn ?? defaultStat;
+  const resolved = claims.map((c) =>
+    c.source === "none"
+      ? []
+      : splitCompoundSource(c.source).map((partRaw) => resolveSourcePart(partRaw, repoRoot)),
+  );
+  const urls = [
+    ...new Set(
+      resolved
+        .flat()
+        .map((p) => p.url)
+        .filter(Boolean) as string[],
+    ),
+  ];
+  const liveness = await checkUrlLiveness(urls, fetchFn);
+  // Per-run memo: duplicate citations of the same (sha, path, symbol) do
+  // not re-spawn git — the grounding is pure given those three keys.
+  const groundMemo = new Map<string, Promise<"grounded" | "ungrounded" | "unchecked">>();
+  const ground = (p: ResolvedSource) => {
+    // Key on the parsed (sha, path, symbol) — the ResolvedSource.path
+    // carries the raw source string (e.g. "src/x.ts#sym") which
+    // parseCodeSource reduces to (path="src/x.ts", symbol="sym").
+    const { path: parsedPath, symbol } = parseCodeSource(p.path ?? "");
+    const key = `${pinnedSha}\u0000${parsedPath}\u0000${symbol ?? ""}`;
+    let entry = groundMemo.get(key);
+    if (!entry) {
+      entry = groundCodeSource(execFn, repoRoot, p.path ?? "", pinnedSha);
+      groundMemo.set(key, entry);
+    }
+    return entry;
+  };
+  const out: ResearchClaim[] = [];
+  for (let i = 0; i < claims.length; i++) {
+    const c = claims[i] as ResearchClaim;
+    const parts = resolved[i] as ResolvedSource[];
+    if (parts.length === 0) {
+      out.push({ ...c, verification: { check: "none", status: "unchecked" } });
+      continue;
+    }
+    const results = await Promise.all(
+      parts.map((p) =>
+        p.kind === "code" && p.path
+          ? memoCheckPart(p, ground)
+          : checkPart(p, execFn, repoRoot, pinnedSha, statFn),
+      ),
+    );
+    const lvIdx = results.map((r, j) => (r.url ? j : -1)).filter((j) => j >= 0);
+    const lvStatuses = lvIdx.map(
+      (j) => liveness.get((results[j] as { url: string }).url) ?? "skipped-cap",
+    );
+    const partsRec: VerificationPart[] = parts.map((p, j) => {
+      const r = results[j] as { v: ClaimVerification | null; url?: string };
+      return {
+        source: p.url ?? p.path ?? p.localPath ?? c.source,
+        kind: p.kind,
+        status: r.v ? r.v.status : (liveness.get(r.url ?? "") ?? "unchecked"),
+      };
+    });
+    let verification: ClaimVerification;
+    if (lvIdx.length > 0) {
+      // The liveness parts decide the status; when they all skipped the
+      // cap the check is kept as url-liveness/skipped-cap (the liveness
+      // pass was the check, it was just capped — remapping to check:none
+      // would lose that).
+      verification = { check: "url-liveness", status: aggregateLivenessStatuses(lvStatuses) };
+    } else {
+      const nonNull = results.map((r) => r.v).filter((v): v is ClaimVerification => v !== null);
+      const code = nonNull.find((v) => v.check === "code-grounding");
+      const local = nonNull.find((v) => v.check === "local-file");
+      const none = nonNull.find((v) => v.check === "none" && v.status === "unchecked");
+      if (code) verification = code;
+      else if (local) verification = local;
+      else if (none)
+        verification =
+          none.status === "unchecked" && none.reason
+            ? none
+            : { check: "none", status: "unchecked" };
+      else verification = { check: "none", status: "unchecked" };
+    }
+    if (parts.length > 1) verification = { ...verification, parts: partsRec };
+    out.push({ ...c, verification: { ...verification, derivedKinds: parts.map((p) => p.kind) } });
+  }
+  const failed = out.filter((c) => {
+    const v = c.verification;
+    if (v.check === "url-liveness") return v.status === "dead";
+    if (v.check === "code-grounding") return v.status === "ungrounded";
+    if (v.check === "local-file") return v.status === "local-missing";
+    return false;
+  }).length;
+  if (failed > 0) trace(`research-verify: ${failed} dead/ungrounded/missing source(s)`);
   return out;
 }
 
 /**
- * A claim counts as VERIFIED for the abstention decision when it is a
- * finding whose deterministic check affirmed it (live URL or grounded
- * code), or a finding with an unchecked-but-named doc source. Findings with
- * dead/ungrounded sources, unsourced findings, and non-finding kinds do not
- * count — zero verified findings triggers the honest abstention artifact.
- * A deep-tier entailment verdict of "none" (the cited source does not
- * support the claim) also disqualifies: annotation never upgrades, but a
- * refutation demotes.
+ * A claim counts as VERIFIED for the abstention decision when its
+ * deterministic check AFFIRMED it (a live-or-unreachable URL, grounded
+ * code, or a present local file). A doc-sourced claim with no passing
+ * check does NOT count — a source kind is not evidence. Findings with
+ * dead/ungrounded/missing sources, unsourced findings, and non-finding
+ * kinds do not count — zero verified findings triggers the honest
+ * abstention artifact. A deep-tier entailment verdict of "none" (the cited
+ * source does not support the claim) also disqualifies: annotation never
+ * upgrades, but a refutation demotes.
  */
 export function isVerifiedFinding(c: ResearchClaim): boolean {
   if (c.kind !== "finding") return false;
   if (c.support === "none") return false;
   const v = c.verification;
-  if (v.check === "url-liveness") return v.status !== "dead";
+  if (v.check === "url-liveness") return v.status === "live" || v.status === "unreachable";
   if (v.check === "code-grounding") return v.status === "grounded";
-  return c.sourceKind === "doc";
+  if (v.check === "local-file") return v.status === "local-present";
+  // check:none: `skipped-cap` is the legacy shape for a capped liveness
+  // check (the live path now records url-liveness/skipped-cap); the child's
+  // sourceKind still counts for a URL-labelled claim with no passing check.
+  if (v.check === "none") return v.status === "skipped-cap" ? false : c.sourceKind === "url";
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -189,15 +334,41 @@ export function isVerifiedFinding(c: ResearchClaim): boolean {
  */
 export const ENTAILMENT_CLAIM_CAP = 20;
 
-/** The claims the entailment pass judges (stable order — index = claim id). */
+/**
+ * The claims the entailment pass judges (stable order — index = claim id).
+ * Keyed on the driver-DERIVED kind, not the child's sourceKind: a
+ * liveness-checked URL (one the child may have labelled "code") and a doc
+ * source with no passing check are both entailable; a grounded-code claim
+ * is not (its check is deterministic and already done).
+ */
 export function entailableClaims(claims: readonly ResearchClaim[]): ResearchClaim[] {
   return claims
     .filter(
-      (c) =>
-        (c.kind === "finding" || c.kind === "contradiction") &&
-        (c.sourceKind === "url" || c.sourceKind === "doc"),
+      (c) => (c.kind === "finding" || c.kind === "contradiction") && isEntailableSourceKind(c),
     )
     .slice(0, ENTAILMENT_CLAIM_CAP);
+}
+
+/**
+ * The driver-side source-kind classification for the entailment pool —
+ * read from the driver-DERIVED kinds recorded on the verification (set by
+ * the driver from the resolved source parts, never the child's sourceKind):
+ * a claim with a url-liveness verification (any status) is liveness-checked
+ * and entailable; a doc claim with a local-file verification (a local file
+ * the child labelled doc) is entailable too; a code-grounded claim is not
+ * (deterministic, already checked); a doc claim with no passing check is
+ * entailable (that's the point — its source is the only evidence, and the
+ * reviewer reads it). A source the child labelled "url" that resolves to a
+ * local path is NOT entailable via the url rule — the label never counts.
+ */
+function isEntailableSourceKind(c: ResearchClaim): boolean {
+  const v = c.verification;
+  if (v.check === "url-liveness") return true;
+  if (v.check === "code-grounding") return false;
+  if (v.check === "local-file") return true;
+  const kinds = v.derivedKinds;
+  if (kinds && kinds.length > 0) return kinds.some((k) => k === "url" || k === "doc");
+  return false;
 }
 
 /**

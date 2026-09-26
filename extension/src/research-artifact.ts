@@ -85,6 +85,8 @@ function verificationLabel(c: ResearchClaim): string {
   const v = c.verification;
   if (v.check === "url-liveness") return `url ${v.status}`;
   if (v.check === "code-grounding") return v.status;
+  if (v.check === "local-file") return v.status;
+  if (v.check === "none" && v.status === "skipped-cap") return "skipped-cap";
   return "unchecked";
 }
 
@@ -248,15 +250,18 @@ export function parseMemoSections(reply: string): MemoSections {
 
 /** Render the provenance sidecar: every source, its check, its outcome. */
 export function renderProvenance(a: ArtifactArgs): string {
-  const rows = a.claims.map(
-    (c) =>
-      `- ${c.source} · kind: ${c.sourceKind} · ${verificationLabel(c)}${c.support ? ` · support: ${c.support}` : ""}${c.sourceDate ? ` · source date: ${c.sourceDate}` : ""} · cited by: ${c.text.slice(0, 80)}`,
-  );
+  const rows = a.claims.map((c) => {
+    const v = c.verification;
+    const parts = v.parts
+      ? v.parts.map((p) => `  - part: ${p.source} · kind: ${p.kind} · ${p.status}`).join("\n")
+      : "";
+    return `- ${c.source} · kind: ${c.sourceKind} · ${verificationLabel(c)}${c.support ? ` · support: ${c.support}` : ""}${c.sourceDate ? ` · source date: ${c.sourceDate}` : ""} · cited by: ${c.text.slice(0, 80)}${parts}`;
+  });
   return `# Provenance: ${a.topic}
 
 **Date:** ${a.date} · **Tier:** ${a.tier} · **Pinned commit:** ${a.pinnedCommit}
 
-Verification legend: \`url live/dead/unreachable\` = HTTP check at the date above (403/429 count as unreachable, not dead); \`grounded/ungrounded\` = path/symbol checked against the pinned commit's tree; \`unchecked\` = no deterministic check applies.
+Verification legend: \`url live/dead/unreachable\` = HTTP GET at the date above (403/429/405 count as unreachable, not dead — a page that refuses automation still exists; \`dead\` is confident absence; \`url skipped-cap\` = the liveness check was not run because the URL was past the liveness cap (LIVENESS_URL_CAP unique URLs)); \`skipped-cap\` = the liveness pass was capped (legacy form of the same marker) — a check that was NOT run, distinct from unchecked; \`grounded/ungrounded\` = path and symbol checked at the pinned commit's tree (symbol must appear in the cited file at that commit); \`local-present/local-missing\` = local path stat-checked (never fetched); \`unchecked\` = no deterministic check applies (doc references) or it could not run (an external repo with no checkable URL, an unknown pinned commit). Compound sources record each part on its own line below the claim.
 
 ## Sources
 
