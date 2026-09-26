@@ -55,6 +55,18 @@ for (const cmd of [
   "git log --oneline -10",
   "git diff HEAD",
   "git ls-files",
+  // Read-only git -C forms (operator decision B11, issue #891): the mid
+  // `*` in the pattern is a standalone wildcard — it matches exactly ONE
+  // whitespace-free argument. A real path is therefore what the test uses.
+  "git -C /Users/me/repo log --oneline -3",
+  "git -C /x status --porcelain",
+  "git -C /x diff --stat origin/main",
+  "git -C /x show HEAD --stat",
+  "git -C /x branch --show-current",
+  "git -C /x branch --list",
+  "git -C /x rev-parse HEAD",
+  "git -C /x worktree list",
+  "git -C /x stash list",
   // oo-wrapped reads (the wrapper is part of the pattern — matchBashSubcommand
   // matches on the raw command, so the allowlist carries BOTH shapes).
   "oo git log --oneline",
@@ -84,6 +96,81 @@ for (const cmd of [
   assert(pmVerdict(cmd) === "allow", `allowed — ${cmd}`);
 }
 
+// --------------------------------------------------- matcher unit tests
+//
+// Direct tests of matchBashSubcommand's mid-pattern `*` semantics.
+// A standalone `*` token in the middle of a pattern (not trailing) is
+// converted to `\S+` — exactly one whitespace-free argument. It never
+// spans spaces and is not a prefix match.
+
+{
+  const midAllowlist: Record<string, string> = {
+    "git -C * branch --show-current": "allow",
+    "git -C * log*": "allow", // trailing-* on last token: prefix semantics
+    "vipune search *": "allow", // standard ` *` word-boundary prefix
+  };
+
+  // Mid `*` matches exactly one whitespace-free argument.
+  assert(
+    matchBashSubcommand("git -C /x branch --show-current", midAllowlist) === "allow",
+    "mid *: matches a real path (one whitespace-free arg)",
+  );
+  assert(
+    matchBashSubcommand("git -C /a/b/c branch --show-current", midAllowlist) === "allow",
+    "mid *: matches a deep path",
+  );
+  // Mid `*` does NOT match when the argument contains a space (two args).
+  assert(
+    matchBashSubcommand("git -C /a b branch --show-current", midAllowlist) !== "allow",
+    "mid *: does NOT span a space (two separate args)",
+  );
+  // Mid `*` does NOT match zero args.
+  assert(
+    matchBashSubcommand("git -C branch --show-current", midAllowlist) !== "allow",
+    "mid *: does NOT match zero args (empty path)",
+  );
+
+  // Trailing `*` semantics are unchanged: ` *` is a word-boundary prefix.
+  assert(
+    matchBashSubcommand("vipune search foo", midAllowlist) === "allow",
+    "` *`: word-boundary prefix matches (vipune search foo)",
+  );
+  assert(
+    matchBashSubcommand("vipune search foo bar", midAllowlist) === "allow",
+    "` *`: word-boundary prefix matches multi-arg (vipune search foo bar)",
+  );
+  assert(
+    matchBashSubcommand("vipuneish", midAllowlist) !== "allow",
+    "` *`: word-boundary prefix does NOT match (vipuneish)",
+  );
+
+  // Trailing `*` (no space) is a loose prefix — `git -C * log*` matches
+  // any `git -C <path> log…` command.
+  assert(
+    matchBashSubcommand("git -C /x log --oneline", midAllowlist) === "allow",
+    "trailing * (loose prefix): git -C /x log --oneline → allow",
+  );
+  assert(
+    matchBashSubcommand("git -C /x logish", midAllowlist) === "allow",
+    "trailing * (loose prefix): git -C /x logish → allow (prefix match)",
+  );
+
+  // Quoted path with a space: the raw command is matched by the mid-wildcard
+  // regex, where \S+ sees "/a and b" as two tokens, but the pattern
+  // expects exactly one \S+ token between -C and the verb.
+  assert(
+    matchBashSubcommand('git -C "/a b" branch --show-current', midAllowlist) !== "allow",
+    "mid *: quoted path with space does NOT match exact mid-* pattern",
+  );
+
+  // Regression: an existing pattern row behaves identically on a command
+  // with a quoted argument. The raw command is matched, so the quoted arg
+  // does not change the verdict — this pins the origin/main behaviour.
+  assert(
+    matchBashSubcommand("git commit -m \"x y\"", midAllowlist) !== "allow",
+    "regression: git commit -m with quoted arg does NOT match any mid-wildcard row",
+  );
+}
 // ------------------------------------------------------- everything else blocks
 
 for (const cmd of [
@@ -94,6 +181,20 @@ for (const cmd of [
   "gh pr create --title x",
   "gh pr merge 123",
   "gh pr close 123",
+  // Mutations in -C form are denied by ABSENCE of an allowlist row (the
+  // matcher is a raw anchored prefix — there is no negative pattern), so the
+  // catch-all `*": "ask` blocks them.
+  "git -C /x checkout y",
+  "git -C /x reset --hard",
+  "git -C /x stash pop",
+  "git -C /x commit -m x",
+  "git -C /x push",
+  // The exact-match row is deliberately NOT a loose prefix: `git -C * branch
+  // --show-current` (no trailing `*`) must not also grant `branch -D`.
+  "git -C /x branch -D y",
+  // Quoted path with a space: the mid `*` is `\S+` — it cannot span a space,
+  // so `git -C "a b" log` does not match and falls to the `*" ask` catch-all.
+  "git -C \"/a b\" log",
   // Creative bypasses — interpreters, in-place editors, arbitrary HTTP, shells.
   "python -c 'print(1)'",
   "node -e 'console.log(1)'",
@@ -122,6 +223,8 @@ for (const cmd of [
   "git status > out.txt",
   "git status `id`",
   "git status $(id)",
+  // Chained -C forms inherit the chain denial (null, not "allow").
+  "git -C /p status && git push",
   // Not on the list at all.
   "rm -rf /",
   "ls",
@@ -130,7 +233,14 @@ for (const cmd of [
 }
 
 // injection vectors: null specifically (the spec's hard-denial surface)
-for (const cmd of ["git status && git push", "git log | wc -l", "git status; rm -rf /"]) {
+for (const cmd of [
+  "git status && git push",
+  "git log | wc -l",
+  "git status; rm -rf /",
+  // A chained -C read must also hard-deny — the new rows cannot widen the
+  // chain rule (BASH_COMMAND_INJECTION_CHARS → null).
+  "git -C /p status && git push",
+]) {
   assert(
     pmVerdict(cmd) === null,
     `injection vector → matchBashSubcommand null (hard-deny surface) — ${cmd}`,
@@ -255,6 +365,27 @@ else process.env.PI_ENSEMBLE_SANDBOX_MODE = prevSandbox;
     bash["export PROJECT_ID=*"] === undefined,
     "parity: the dangerous `export PROJECT_ID=*` allowlist row is removed",
   );
+  // Issue #891 (B11): the read-only `git -C` grants pin the new rows, and the
+  // branch row is the one exact-match (no trailing `*`) — a loose prefix would
+  // also grant `branch -D`.
+  const gitCRows = [
+    "git -C * log*",
+    "git -C * status*",
+    "git -C * diff*",
+    "git -C * show*",
+    "git -C * branch --show-current",
+    "git -C * branch --list*",
+    "git -C * rev-parse*",
+    "git -C * worktree list*",
+    "git -C * stash list*",
+  ];
+  for (const p of gitCRows) {
+    assert(bash[p] === "allow", `parity: pattern present — ${p}`);
+  }
+  assert(
+    bash["git -C * branch --show-current*"] === undefined,
+    "parity: the branch --show-current row is exact-match (no trailing *)",
+  );
   // Every allowlisted pattern must actually resolve to allow for a
   // representative command through the guard's own matcher.
   const samples: Array<[string, string]> = [
@@ -264,6 +395,8 @@ else process.env.PI_ENSEMBLE_SANDBOX_MODE = prevSandbox;
     ["vipune search *", "vipune search 'x'"],
     ["which*", "which bun"],
     ["jq*", "jq .a b.json"],
+    ["git -C * log*", "git -C /x log --oneline"],
+    ["git -C * branch --show-current", "git -C /x branch --show-current"],
   ];
   for (const [pattern, cmd] of samples) {
     assert(bash[pattern] === "allow", `parity: pattern present — ${pattern}`);
