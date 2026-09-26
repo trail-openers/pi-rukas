@@ -8,6 +8,22 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.61](https://github.com/trail-openers/pi-rukas/compare/v0.12.60...v0.12.61) (2026-09-26)
+
+
+### Features
+
+* **review:** build the lens roster from skill frontmatter ([#885](https://github.com/trail-openers/pi-rukas/issues/885)) ([ddd5c33](https://github.com/trail-openers/pi-rukas/commit/ddd5c33c8bfb4d8c0d169087e84dc3f350494c9c))
+
+
+### Bug Fixes
+
+* **review:** name the kill cause when a lens is blocked ([#880](https://github.com/trail-openers/pi-rukas/issues/880)) ([a816202](https://github.com/trail-openers/pi-rukas/commit/a816202c87a637cfb391ece04fcbb4b7cce83bd3))
+* **review:** stat each lens skill before spawning and honour Skill Load Status ([#882](https://github.com/trail-openers/pi-rukas/issues/882)) ([0cd684e](https://github.com/trail-openers/pi-rukas/commit/0cd684e32705c1eb2f2d4978231660c184d64889))
+* **work:** make the slow-run steer say continue, not stop ([#890](https://github.com/trail-openers/pi-rukas/issues/890)) ([5204279](https://github.com/trail-openers/pi-rukas/commit/5204279ac90d0e3dec8adddc237962346cd6fffd))
+* **work:** one slow-run notice per level, not per dimension ([#887](https://github.com/trail-openers/pi-rukas/issues/887)) ([5ffce0b](https://github.com/trail-openers/pi-rukas/commit/5ffce0bc80c534154383863e1c7f1c6684e320c5))
+* **work:** pin the commit-pr fallback to its own worktree and lock the consolidated verify ([#889](https://github.com/trail-openers/pi-rukas/issues/889)) ([dcf712d](https://github.com/trail-openers/pi-rukas/commit/dcf712d528914ea3cb17b2653456697f6af0001d))
+
 ## [0.12.60](https://github.com/trail-openers/pi-rukas/compare/v0.12.59...v0.12.60) (2026-09-25)
 
 
