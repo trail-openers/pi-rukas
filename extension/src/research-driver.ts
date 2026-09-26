@@ -219,7 +219,7 @@ export async function runResearchPipeline(
           outcome: "skipped" as const,
           detail: "reporter preflight failed — nothing to remember",
         },
-        halt: { reason: "artifact-write-failed" as const, detail: (err as Error).message },
+        halt: { reason: "reporter-missing" as const, detail: (err as Error).message },
         timings: finishTimings(),
       };
     }
@@ -343,8 +343,9 @@ export async function runResearchPipeline(
     // the all-silent check — it already has its own failure message.
     const dispatched = angles.filter((a) => a.rawClaimCalls !== undefined);
     const allSilent = dispatched.length > 0 && dispatched.every((a) => a.rawClaimCalls === 0);
+    const rawCalls = angles.reduce((sum, a) => sum + (a.rawClaimCalls ?? 0), 0);
     trace(
-      `research-driver: all ${angles.length} angles produced zero structured claims — halting (allSilent=${allSilent})`,
+      `research-driver: all ${angles.length} angles produced zero structured claims — halting (allSilent=${allSilent}, rawCalls=${rawCalls})`,
     );
     return {
       ...base,

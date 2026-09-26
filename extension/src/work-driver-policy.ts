@@ -368,20 +368,6 @@ export function policyReporterPath(): string {
 const POLICY_JUDGE_TIMEOUT_MS = 5 * 60_000;
 
 /**
- * The concrete judge: a read-only child that answers one policy question and
- * reports through `report_policy`.
- *
- * Runs as `explore` because that is the roster's read-only, repo-cwd role; the
- * judge needs no tool beyond reading, and the prompt is entirely
- * self-contained. `--no-skills` plus the reporter as the only loaded extension
- * mirrors lens-review's isolation. The timeout is deliberately short — one
- * question against one document is not an investigation — so a wedged judge
- * denies quickly rather than stalling a cycle whose work is already finished
- * and pushed.
- *
- * Returns undefined on any failure; `askPolicy` treats that as no permission.
- */
-/**
  * #893 — injectable stat seam for the pre-spawn existence check on
  * `POLICY_REPORTER_PATH`. Production passes none (the real `fs.stat` is
  * used); tests pass a rejecting stub to simulate a missing reporter.

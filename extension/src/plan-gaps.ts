@@ -453,3 +453,12 @@ export async function runGapGateLoop(
     ...(rawUnparsedHead !== undefined ? { rawUnparsedHead } : {}),
   };
 }
+
+/**
+ * Export seam for tests: `parseGaps` is module-private to the gap gate (the
+ * driver runs it directly on the gate child's reply — the parsing logic now
+ * lives in plan-gaps.ts). The smoke test reaches it through this alias.
+ */
+export function parseGapsForTest(reply: string) {
+  return parseGaps(reply);
+}

@@ -164,6 +164,14 @@ function claimCall(kind: string, text: string, source: string, sourceKind: strin
     `missing reporter → halt detail is the named error (got "${r.halt?.detail}")`,
   );
   assert(
+    r.halt?.reason === "reporter-missing",
+    `missing reporter → halt reason reporter-missing (got ${r.halt?.reason})`,
+  );
+  assert(
+    r.angles.every((a) => a.failure === reporterMissingError(RESEARCH_REPORTER_PATH)),
+    "missing reporter → every angle failure carries the named error",
+  );
+  assert(
     r.angles.length > 0 && r.angles.every((a) => !a.ok),
     "missing reporter → all angles marked not-ok",
   );
@@ -306,6 +314,70 @@ function claimCall(kind: string, text: string, source: string, sourceKind: strin
       "0 report_research_claim calls — reporter may not have loaded (check pi version / --extension)",
     `silent angle names the 0-call diagnostic (got "${silentRun?.failure}")`,
   );
+  setResearchDispatch(null);
+  await fs.rm(tmp, { recursive: true, force: true });
+}
+
+// ============= 5b. failed angle (ok=false) + 2 reporting angles → no mislabel
+
+{
+  // 2 angles report valid claims, 1 angle's dispatch FAILS (ok=false) with
+  // an EMPTY toolUses list. The failed angle must keep "dispatch failed or
+  // timed out" — the "reporter may not have loaded" diagnostic belongs
+  // only to a DISPATCHED (ok=true) angle with 0 raw calls.
+  const failedLabel = "research-custom-2";
+  setResearchDispatch(((
+    _pi: unknown,
+    _spec: { role: string; prompt: string },
+    opts?: { label?: string },
+  ) => {
+    const label = opts?.label ?? "";
+    if (label === failedLabel) {
+      return Promise.resolve({
+        role: "explore",
+        ok: false,
+        text: "",
+        toolUses: [],
+        ms: 1,
+        exitCode: 1,
+      });
+    }
+    return Promise.resolve({
+      role: "explore",
+      ok: true,
+      text: "found a claim",
+      toolUses: [claimCall("finding", "a valid claim", "https://a/live", "url")],
+      ms: 1,
+      exitCode: 0,
+    });
+  }) as never);
+
+  const tmp = await freshRepo();
+  const r = await runResearchPipeline(
+    FAKE_PI,
+    { topic: "failed angle", tier: "standard", angles: ["angle-one", "angle-two", "angle-three"] },
+    tmp,
+    { execFn: execStub, fetchFn: fetchStub, vipuneSearchFn: searchStub, memoryWriteFn: memoryStub },
+  );
+
+  assert(!r.halt, "failed angle (1 of 3) → no halt (the other 2 reported)");
+  assert(r.claims.length === 2, `2 valid claims from the 2 reporting angles (got ${r.claims.length})`);
+  const failedRun = r.angles.find((a) => a.name === "custom-2");
+  assert(failedRun !== undefined, "failed angle present in result");
+  assert(failedRun?.ok === false, "failed angle marked not-ok");
+  assert(
+    failedRun?.failure === "dispatch failed or timed out",
+    `failed angle keeps the dispatch-failure label (got "${failedRun?.failure}")`,
+  );
+  assert(
+    failedRun?.failure !==
+      "0 report_research_claim calls — reporter may not have loaded (check pi version / --extension)",
+    "failed angle is NOT mislabelled as a silent reporter",
+  );
+  // The two reporting angles DID make raw calls, so the run-level all-silent
+  // check stays false — the raw-vs-valid distinction holds even when one
+  // angle was never dispatched (rawClaimCalls undefined for the fallback).
+  assert(r.halt?.reason !== "reporter-silent", "mixed run is not reporter-silent");
   setResearchDispatch(null);
   await fs.rm(tmp, { recursive: true, force: true });
 }

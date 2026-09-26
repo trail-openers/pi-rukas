@@ -34,13 +34,9 @@ export async function statReporterPath(
 ): Promise<void> {
   try {
     await check(path);
-  } catch (err) {
-    if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new Error(reporterMissingError(path));
-    }
-    // Any other stat failure is the same operator signal (the file is not
-    // usable) — a read-permission problem on the reporter file is just as
-    // broken as its absence.
+  } catch {
+    // Any stat failure (ENOENT or a read-permission problem) is the same
+    // operator signal — the reporter file is not usable.
     throw new Error(reporterMissingError(path));
   }
 }

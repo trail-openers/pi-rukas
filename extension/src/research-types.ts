@@ -108,11 +108,14 @@ export interface AngleRun {
  * is the schema-invalid / prose-only case (the child made tool calls that
  * did not parse, or made none at all but NOT every angle was silent);
  * `reporter-silent` is the raw zero-calls case (no angle ever called the
- * reporter at all — the channel, not the child's output, is suspect).
+ * reporter at all — the channel, not the child's output, is suspect);
+ * `reporter-missing` is the pre-spawn stat failure (the reporter extension
+ * path does not exist — no angle was ever dispatched).
  */
 export type ResearchHaltReason =
   | "no-structured-claims"
   | "reporter-silent"
+  | "reporter-missing"
   | "artifact-write-failed";
 
 export interface ResearchMemoryOutcome {

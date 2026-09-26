@@ -46,22 +46,7 @@ import {
   validateDraft,
 } from "./plan-validate.ts";
 
-// The dispatch seam, injectable for tests (ESM namespaces are not mutable
-// in Bun — the FsOps-style DI the agents-md core uses too).
-export type PlanDispatchFn = typeof dispatchCore;
-
-let _dispatchOverride: PlanDispatchFn | null = null;
-
-/** Set a dispatch stub for the next run (tests). Pass `null` to clear. */
-export function setPlanDispatch(fn: PlanDispatchFn | null): void {
-  _dispatchOverride = fn;
-}
-import {
-  type GapGateLoopResult,
-  parseGaps,
-  residualGapsSection,
-  runGapGateLoop,
-} from "./plan-gaps.ts";
+import { type GapGateLoopResult, residualGapsSection, runGapGateLoop } from "./plan-gaps.ts";
 import {
   type PlanDriverInput,
   type PlanGap,
@@ -72,6 +57,25 @@ import {
 } from "./plan-types.ts";
 import { type ResolvedDecision, buildResolvedDecisions } from "./plan-writeback.ts";
 import { trace } from "./trace.ts";
+
+// The dispatch seam, injectable for tests (ESM namespaces are not mutable
+// in Bun — the FsOps-style DI the agents-md core uses too).
+export type PlanDispatchFn = typeof dispatchCore;
+
+let _dispatchOverride: PlanDispatchFn | null = null;
+
+/** Set a dispatch stub for the next run (tests). Pass `null` to clear. */
+export function setPlanDispatch(fn: PlanDispatchFn | null): void {
+  _dispatchOverride = fn;
+}
+
+// #893 — injectable stat seam for the plan-reporter preflight (tests).
+let _statFnOverride: ((p: string) => Promise<unknown>) | null = null;
+
+/** Set a stat stub for the next run (tests). Pass `null` to clear. */
+export function setPlanStatFn(fn: ((p: string) => Promise<unknown>) | null): void {
+  _statFnOverride = fn;
+}
 
 const GAP_GATE_MAX_ITERATIONS = 2;
 
@@ -180,6 +184,7 @@ export async function runPlanPipeline(
       codeIdentifiers: codeIds,
       pinnedSubIssues,
       forbiddenPhrases: directives.neverClaim,
+      statFn: _statFnOverride ?? undefined,
     }),
   );
 
@@ -487,12 +492,5 @@ export async function runPlanPipeline(
 // Re-export for consumers that import from plan-driver.ts
 export { classifyPlanType, planTitle } from "./plan-types.ts";
 export { codeIdentifiersIn, draftSpec } from "./plan-draft.ts";
-
-/**
- * Export seam for tests: `parseGaps` is module-private to the gap gate (the
- * driver runs it directly on the gate child's reply — the parsing logic now
- * lives in plan-gaps.ts). The smoke test reaches it through this alias.
- */
-export function parseGapsForTest(reply: string) {
-  return parseGaps(reply);
-}
+// Test seam re-export (the alias now lives in plan-gaps.ts, its home).
+export { parseGapsForTest } from "./plan-gaps.ts";

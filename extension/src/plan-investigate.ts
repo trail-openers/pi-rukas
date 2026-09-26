@@ -247,7 +247,34 @@ export async function runInvestigation(
   // than spending a dispatch on a child that can never report.
   const reporterPath = reporterPathFromArgs(PLAN_EXTRA_ARGS);
   if (reporterPath) {
-    await statReporterPath(reporterPath, args.statFn);
+    try {
+      await statReporterPath(reporterPath, args.statFn);
+    } catch (err) {
+      // #893 — a missing reporter path is a STRUCTURED all-angles-failed
+      // result, not an uncaught throw: every angle is marked failed with
+      // the named error (so the driver's existing all-angles-failed halt
+      // carries it in failedAngles), and nothing is dispatched — the
+      // duplicate-risk child included, since it shares the fan-out's fate
+      // here (no reporter = a broken install, and no partial plan is filed
+      // in that state).
+      const msg = (err as Error).message;
+      trace(`plan-investigate: reporter preflight failed — no dispatch (${msg})`);
+      const failed = anglePromptsFor(
+        type,
+        descriptor,
+        priorContext,
+        codeIdentifiers,
+        args.pinnedSubIssues,
+        args.forbiddenPhrases,
+      ).map((a) => ({
+        name: a.name,
+        ok: false,
+        text: "",
+        toolUses: [] as ReturnType<typeof extractPlanItems>,
+        failure: msg,
+      }));
+      return { findings: failed, neverClaimDisclosure: [] };
+    }
   }
   const angles = anglePromptsFor(
     type,
