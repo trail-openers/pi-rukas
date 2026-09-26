@@ -102,11 +102,11 @@ export default async function (pi: ExtensionAPI) {
     lifecycle.detach();
   });
 
-  // Fire-and-forget housekeeping: keep the most-recent N subagent transcripts
-  // on disk (default 20, override via PI_ENSEMBLE_RUNS_KEEP_LAST). The user's
-  // mental model is "the latest or second-latest run" — anything older is
-  // noise that bloats the /runs picker. The in-progress safety floor (60 s)
-  // protects spawns that are still being written to.
+  // Fire-and-forget housekeeping: age-based retention for subagent transcripts
+  // — delete batches whose newest child is older than the window (default 5
+  // days, override via PI_ENSEMBLE_TRANSCRIPT_RETENTION_DAYS; 0 disables).
+  // The in-progress safety floor (60 s) protects spawns that are still being
+  // written to.
   pruneOldRuns()
     .then((s) => {
       if (s.deletedBatches > 0) {

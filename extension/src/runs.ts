@@ -11,17 +11,22 @@ import {
 const ENSEMBLE_DIR_DEFAULT = path.join(os.homedir(), ".pi", "agent", "ensemble-runs");
 
 /**
- * Keep this many most-recent batches on disk; everything older is auto-pruned
- * on extension activation. The default (20) covers the common case ("look at
- * the latest or second-latest run") with comfortable headroom for a heavy
- * /work cycle that might fire 10+ dispatches in quick succession.
- *
- * Override with PI_ENSEMBLE_RUNS_KEEP_LAST. A value ≤ 0 disables pruning.
+ * Retention window in days: delete transcript batches whose newest child file
+ * is older than this. Read at call time (not module load) so tests and same-
+ * process env changes take effect on the next prune. Override with
+ * PI_ENSEMBLE_TRANSCRIPT_RETENTION_DAYS: unset/empty/invalid/negative → 5;
+ * "0" disables; fractional values (e.g. "1.5") are honoured.
  */
-const KEEP_LAST_BATCHES = (() => {
-  const env = Number(process.env.PI_ENSEMBLE_RUNS_KEEP_LAST);
-  return Number.isFinite(env) ? env : 20;
-})();
+const RETENTION_DAYS_DEFAULT = 5;
+
+export function transcriptRetentionDays(): number {
+  const raw = process.env.PI_ENSEMBLE_TRANSCRIPT_RETENTION_DAYS;
+  if (raw !== undefined && raw.trim() !== "") {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return RETENTION_DAYS_DEFAULT;
+}
 
 /**
  * Safety floor — never delete anything younger than this regardless of count
@@ -47,13 +52,10 @@ interface Batch {
 
 /**
  * Filename shape (from spawn.ts/transcriptPathFor):
- *   <runId>-<role>[-<seq>].json
- *   runId      → "<base36ms>-<rand6>"   (two dash-separated segments)
- *   role       → known role names, may contain dashes (e.g. "adversarial-developer")
- *   seq        → optional numeric suffix from dispatch_parallel
- *
- * To split robustly, we anchor to the runId prefix: take the first two
- * dash-separated tokens as the runId, then the rest is "<role>[-<seq>]".
+ *   <runId>-<role>[-<seq>].json  (runId = "<base36ms>-<rand6>", seq = optional
+ *   numeric dispatch_parallel suffix; roles may contain dashes).
+ * Anchor to the runId prefix: the first two dash-separated tokens are the
+ * runId, the rest is "<role>[-<seq>]".
  */
 function parseRunFilename(
   filename: string,
@@ -88,8 +90,7 @@ async function listRunFiles(rootDir: string): Promise<RunFile[]> {
     const dir = path.join(rootDir, date);
     const stat = await fs.stat(dir).catch(() => null);
     if (!stat?.isDirectory()) continue;
-    const entries = await fs.readdir(dir);
-    for (const entry of entries) {
+    for (const entry of await fs.readdir(dir)) {
       if (!entry.endsWith(".json")) continue;
       const parsed = parseRunFilename(entry);
       if (!parsed) continue;
@@ -133,16 +134,15 @@ export interface PruneSummary {
 }
 
 /**
- * Delete all batches beyond `keepLast` most-recent — but never anything
- * younger than `PRUNE_MIN_AGE_MS` (60 s). The min-age guard protects
- * in-progress spawns whose transcript files Pi is still writing.
- *
- * Returns a summary the caller can log/trace. Cheap to call repeatedly:
- * a single dir walk + filtered unlinks.
+ * Delete every batch whose NEWEST child file is older than the retention
+ * window (default 5 days) — but never anything younger than `PRUNE_MIN_AGE_MS`
+ * (60 s), which protects in-progress spawns. `retentionDays === 0` disables
+ * pruning (no-op). A batch survives if any child is still inside the window.
+ * Cheap to call repeatedly: a single dir walk + filtered unlinks.
  */
 export async function pruneOldRuns(
   rootDir: string = process.env.PI_ENSEMBLE_RUNS_DIR ?? ENSEMBLE_DIR_DEFAULT,
-  keepLast: number = KEEP_LAST_BATCHES,
+  retentionDays: number = transcriptRetentionDays(),
 ): Promise<PruneSummary> {
   const summary: PruneSummary = {
     totalBatches: 0,
@@ -151,15 +151,15 @@ export async function pruneOldRuns(
     bytesFreed: 0,
     preservedByAgeFloor: 0,
   };
-  if (keepLast <= 0) return summary;
+  if (retentionDays <= 0) return summary;
 
   const files = await listRunFiles(rootDir);
   const batches = groupIntoBatches(files);
   summary.totalBatches = batches.length;
-  if (batches.length <= keepLast) return summary;
 
   const now = Date.now();
-  const candidates = batches.slice(keepLast);
+  const windowMs = retentionDays * 86_400_000;
+  const candidates = batches.filter((b) => now - b.mtimeMs >= windowMs);
   for (const b of candidates) {
     if (now - b.mtimeMs < PRUNE_MIN_AGE_MS) {
       summary.preservedByAgeFloor++;
@@ -196,7 +196,7 @@ export async function pruneOldRuns(
 
 /**
  * One-line summary for /ensemble-debug: file count, batch count, oldest age,
- * total size on disk. Returns an empty string when no runs exist yet.
+ * total size, active retention window. Empty string when no runs exist.
  */
 export async function transcriptsSummary(
   rootDir: string = process.env.PI_ENSEMBLE_RUNS_DIR ?? ENSEMBLE_DIR_DEFAULT,
@@ -211,7 +211,9 @@ export async function transcriptsSummary(
       ? `${(totalBytes / 1024).toFixed(0)} KB`
       : `${(totalBytes / 1024 / 1024).toFixed(1)} MB`;
   const oldestAge = oldest ? fmtRelative(oldest.mtimeMs) : "?";
-  return `${files.length} files · ${batches.length} batches · oldest ${oldestAge} · ${sizeStr}  (keep last ${KEEP_LAST_BATCHES})`;
+  const retention = transcriptRetentionDays();
+  const retentionStr = retention > 0 ? `retention ${retention} days` : "retention off";
+  return `${files.length} files · ${batches.length} batches · oldest ${oldestAge} · ${sizeStr}  (${retentionStr})`;
 }
 
 function fmtRelative(mtimeMs: number, now = Date.now()): string {
@@ -280,12 +282,10 @@ export async function summariseTranscript(file: string): Promise<ParsedTranscrip
     }
     if (ev.type !== "message" || !ev.message) continue;
     const msg = ev.message;
-    // Pi emits tool results as their OWN message role, not as blocks inside a
-    // user message, and names the block type `toolCall`/`toolResult` rather
-    // than Anthropic's `tool_use`/`tool_result`. Matching only the Anthropic
-    // spelling meant `/runs` reported "tool calls: 0" for every transcript —
-    // including one with 41 of them, at the exact moment an operator was
-    // reading it to find out whether a killed child had done any work.
+    // Pi emits tool results as their OWN message role (not as blocks inside a
+    // user message), and names the block `toolCall`/`toolResult` rather than
+    // Anthropic's `tool_use`/`tool_result` — matching the Anthropic spelling
+    // alone made /runs report "tool calls: 0" for every transcript.
     if (msg.role === "toolResult") {
       const blocks = msg.content ?? [];
       const preview = blocks.map((b) => (b.type === "text" && b.text ? b.text : "")).join("");
@@ -321,9 +321,9 @@ export async function summariseTranscript(file: string): Promise<ParsedTranscrip
 
 /**
  * Render a parsed transcript as markdown for the read-only viewer
- * (`ctx.ui.editor`, #607 d2). The same renderer the `/runs` command uses
- * for its level-3 view — the deck viewer reuses it so both surfaces
- * display identical output.
+ * (`ctx.ui.editor`, #607 d2). The same renderer the `/runs` command uses for
+ * its level-3 view — the deck viewer reuses it so both surfaces display
+ * identical output.
  */
 export function renderTranscript(file: RunFile, parsed: ParsedTranscript): string {
   const lines: string[] = [];
@@ -375,25 +375,28 @@ export function registerRunsCommand(pi: ExtensionAPI) {
       const rootDir = process.env.PI_ENSEMBLE_RUNS_DIR ?? ENSEMBLE_DIR_DEFAULT;
       const trimmed = args.trim().toLowerCase();
 
-      // `/runs prune [N]` — manual cleanup
+      // `/runs prune [days]` — manual cleanup (days defaults to the configured window)
       if (trimmed.startsWith("prune")) {
-        const m = trimmed.match(/^prune\s+(\d+)/);
-        const keep = m ? Number(m[1]) : KEEP_LAST_BATCHES;
+        const m = trimmed.match(/^prune\s+(\d+(?:\.\d+)?)/);
+        const days = m ? Number(m[1]) : transcriptRetentionDays();
+        if (days <= 0) {
+          ctx.ui.notify("Nothing to prune — retention is disabled (0 days).", "info");
+          return;
+        }
         const preview = await listRunFiles(rootDir).then(groupIntoBatches);
-        const willDelete = Math.max(0, preview.length - keep);
+        const now = Date.now();
+        const windowMs = days * 86_400_000;
+        const willDelete = preview.filter((b) => now - b.mtimeMs >= windowMs).length;
         if (willDelete === 0) {
-          ctx.ui.notify(
-            `Nothing to prune — ${preview.length} batches on disk, keeping ${keep}.`,
-            "info",
-          );
+          ctx.ui.notify(`Nothing to prune — no batches older than ${days} days.`, "info");
           return;
         }
         const confirmed = await ctx.ui.confirm(
           "Prune old runs?",
-          `Delete ${willDelete} batches (keep last ${keep})? In-progress runs younger than ${Math.round(PRUNE_MIN_AGE_MS / 1000)}s are preserved.`,
+          `Delete ${willDelete} batch(es) older than ${days} days? In-progress runs younger than ${Math.round(PRUNE_MIN_AGE_MS / 1000)}s are preserved.`,
         );
         if (!confirmed) return;
-        const s = await pruneOldRuns(rootDir, keep);
+        const s = await pruneOldRuns(rootDir, days);
         ctx.ui.notify(
           `Pruned ${s.deletedBatches} batches · ${s.deletedFiles} files · ${(s.bytesFreed / 1024).toFixed(1)} KB freed.${s.preservedByAgeFloor > 0 ? `  (${s.preservedByAgeFloor} kept by age floor.)` : ""}`,
           "info",
@@ -439,11 +442,10 @@ export function registerRunsCommand(pi: ExtensionAPI) {
 }
 
 /**
- * Default page size for the batch picker. Sized so the list comfortably fits a
- * typical 24-line terminal with room for the title and 1-2 sentinel rows.
- * Pi's `ctx.ui.select` doesn't scroll well past terminal height, so capping
- * the visible list is the only way to keep all entries reachable without the
- * user having to shrink their font.
+ * Default page size for the batch picker: fits a typical 24-line terminal
+ * with room for the title and 1-2 sentinel rows. `ctx.ui.select` doesn't
+ * scroll well past terminal height, so capping the visible list is the only
+ * way to keep all entries reachable without shrinking the font.
  */
 const BATCH_PAGE_SIZE = 15;
 const SHOW_OLDER = "── show older ──";
