@@ -8,6 +8,8 @@
  * dependent-workstream runner live in work-develop-run.ts.
  */
 import { trace } from "./trace.ts";
+import { runFenceRecoveryFlow } from "./work-develop-fence-recovery-run.ts";
+import { siblingDeclaredViolators } from "./work-develop-fence-recovery.ts";
 import {
   applyFenceVerdicts,
   describeSiblingFenceViolations,
@@ -265,6 +267,10 @@ async function runDevelopTopological(
       workstreamBaseShas: { ...workstreamBaseShas, ...next.pipelineState.workstreamBaseShas },
     },
   };
+  // #849 — the fence recovery reads `stateRef.current` (the shared ref the
+  // memory-inject events and the gate operate on); keep it in sync with the
+  // local `next` (the branchEvents + worktrees merge just applied).
+  stateRef.current = next;
   if (ids.length > 1) {
     // #814 — the develop branches-converged emits here (after the
     // branch-completed batch, before the safety net and the develop verify
@@ -296,6 +302,11 @@ async function runDevelopTopological(
   // PI_ENSEMBLE_SAFETY_NET_COMMIT=0 disables it.
   if (hasDevelopEvidence) {
     next = await applySafetyNet(ctx, next);
+    // #849 — the gate (and the fence flip below) operate on `stateRef.current`
+    // (the shared state the memory-inject events accumulate into); keep the
+    // local alias and the shared ref in sync so the flip's verdict replacement
+    // is visible to the fence recovery that reads `stateRef.current`.
+    stateRef.current = next;
   }
   // PR17 — outcome verification gate. Runs whenever the fanout produced any
   // evidence, not only when every branch claims success. The gate exists to
@@ -318,6 +329,53 @@ async function runDevelopTopological(
       if (changed) {
         next = replaceDevelopConvergedVerdicts(next, flipped);
       }
+    }
+    // #849 — the fence recovery: when the gate recorded a BLOCKING
+    // sibling-declared violation (and no issue-fenced one, which still blocks
+    // as today), the driver recovers the violator(s) instead of parking —
+    // inject the dependsOn edges, discard the violator's commit (recording
+    // its SHA), re-dispatch ONLY the violator(s) once from the owners'
+    // post-commit tree, and re-run the fence + verify gates (the full flow
+    // lives in work-develop-fence-recovery-run.ts). A cycle parks with zero
+    // re-dispatch; a second violation parks with both attempts' evidence.
+    // `issue-fenced` and `undeclared` records never recover: the condition is
+    // exactly "sibling-declared only". The gate runs on `stateRef.current`
+    // (the flip above wrote the verdicts there), not the local `next`.
+    const recoverableFence =
+      gate.fenceViolations !== undefined &&
+      siblingDeclaredViolators(gate.fenceViolations).length > 0 &&
+      !gate.fenceViolations.some((f) => f.kind === "issue-fenced");
+    if (gate.ok === false && recoverableFence) {
+      // #849 — the gate's fence records are not yet on `pipelineState`
+      // (the develop step writes them only on a failure path, after the
+      // gate returns). Stash them so `recoverFenceViolations` (which reads
+      // `stateRef.current.pipelineState.verifyEvidence`) sees the first
+      // attempt's records for the cycle check and the discard evidence.
+      next = {
+        ...next,
+        pipelineState: {
+          ...next.pipelineState,
+          verifyEvidence: {
+            step: "develop",
+            failures: gate.failures,
+            at: Date.now(),
+            fenceViolations: gate.fenceViolations ?? [],
+          },
+        },
+      };
+      stateRef.current = next;
+      next = await runFenceRecoveryFlow(
+        ctx,
+        next,
+        stateRef,
+        ids,
+        verdicts,
+        execFn,
+        dispatch,
+        activeIssues,
+        scratchAbs,
+      );
+      return endStep(next);
     }
     if (gate.ok) {
       // #782 — the consolidated verify's single re-run passed: the driver

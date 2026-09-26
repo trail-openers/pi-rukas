@@ -185,6 +185,29 @@ export type WorkEvent =
       at: number;
     }
   | {
+      /**
+       * #849 — the develop step's fence recovery is underway: a workstream
+       * V committed a sibling-declared fence violation, its commit was
+       * discarded (the worktree reset to the post-commit tree of the
+       * declaring owner(s)), and V is being re-dispatched once from that
+       * tree. `discardedSha` keeps the discarded commit reachable and
+       * auditable — the event is the recovery record both park shapes
+       * (second violation, violator↔owner cycle) name when they cite the
+       * first attempt. Carries `at` (no `step` field: the event kind
+       * itself is step-scoped to develop, the same shape as
+       * `lens-fix-empty-resend`'s round naming).
+       */
+      kind: "fence-recovery-started";
+      at: number;
+      workstreamId: string;
+      /** The declaring owner(s) the injected dependsOn edges point to. */
+      owners: string[];
+      /** The discarded commit — reachable in the object store, named here.
+       * Absent only when the violator's HEAD could not be read before the
+       * reset (no commit ahead of base, or git could not read it). */
+      discardedSha?: string;
+    }
+  | {
       kind: "cap-hit";
       at: number;
       /**
@@ -347,6 +370,14 @@ export type WorkEvent =
         // Own literal so explainCap can give it a tailored sentence and the
         // handoff does NOT terminalize it as `aborted`.
         | "deferred-creation:develop"
+        // #849 — the develop scope fence parked after a fence recovery: the
+        // violator's FIRST commit was discarded and re-developed once from
+        // the owner's post-commit tree, and it violated again (or the
+        // recovery's dependency injection formed a violator↔owner cycle). One
+        // recovery round per cycle — a second violation is terminal. The
+        // cap's evidence names BOTH attempts' SHAs (the first on the
+        // fence-recovery-started event, the second on verifyEvidence).
+        | "fence-violation:develop"
         // #746 task-b — branch-step early dirty-root block: a stray untracked/
         // modified file at repoRoot BEFORE any develop dispatch. Deliberate park.
         | "repo-root-residue";
