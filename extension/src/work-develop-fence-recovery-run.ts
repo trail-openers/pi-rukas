@@ -1,9 +1,9 @@
-import { trace } from "./trace.ts";
 import {
   fenceRecoveryCycles,
   fenceRecoveryPrompt,
   fenceViolationCapHit,
   injectFenceDependsOn,
+  makeParkPrecondition,
   siblingDeclaredViolators,
 } from "./work-develop-fence-recovery.ts";
 import {
@@ -35,14 +35,19 @@ import {
  * ZERO re-dispatches of ANY violator.
  *
  * `runFenceRecoveryFlow` (below) then re-runs the fence + verify gates on
- * the recovered tree itself: a second violation parks with the fence cap
- * (the evidence names BOTH attempts), a clean re-run proceeds through the
- * converge gate.
+ * the recovered tree itself (the re-run always gates: a recovered worktree
+ * by construction carries the owner's commit): a second violation parks
+ * with the fence cap (the evidence names BOTH attempts); a clean re-run with
+ * a failing verify parks with the verify-failed cap; a fully clean re-run
+ * proceeds through the converge gate. The restore is honest: a recovered
+ * violator returns to ok:true ONLY when the re-run gate passed; if the
+ * re-run gate did not pass — a re-violation or a verify failure — the
+ * violator's verdict stays ok:false.
  */
 import { buildCompletionEvent } from "./work-driver-completion-event.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { runConvergeGateHandler } from "./work-driver-converge-gate.ts";
-import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net.ts";
+import { applySafetyNet } from "./work-driver-safety-net.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -116,21 +121,7 @@ export async function recoverFenceViolations(
   let next = stateIn;
   // #849 — the discard is all-or-nothing: EVERY precondition of EVERY
   // violator is resolved BEFORE any reset; a failure parks. No silent skips.
-  const parkPrecondition = (
-    violator: string,
-    owners: string[],
-    reason: string,
-  ): FenceRecoveryOutcome => {
-    trace(`work-develop: fence recovery: ${violator} precondition failed — ${reason}`);
-    stateRef.current = appendEvent(
-      stateRef.current,
-      fenceViolationCapHit(
-        stateRef.current.pipelineState.reviewRound,
-        `fence recovery aborted — violator ${violator} cannot be discarded (owner(s): ${owners.join(", ") || "none"}) — ${reason.slice(0, 200)}; first attempt: workstream(s) ${violators.join(", ")} could not be discarded, so no re-dispatch was attempted`,
-      ),
-    );
-    return { parked: true };
-  };
+  const parkPrecondition = makeParkPrecondition(stateRef, stateIn, violators);
   const prepared: Array<{
     violator: string;
     owners: string[];
@@ -377,21 +368,20 @@ export async function runFenceRecoveryFlow(
     },
   };
   stateRef.current = next;
-  // #849 — re-run the fence + verify gates on the recovered tree (the fence
-  // re-runs over the same workstreams map with the injected edges; the
-  // safety net re-fires if the re-dispatch left uncommitted work).
-  const hasRecoveryEvidence = await hasAnyWorktreeEvidence(ctx, next);
-  if (hasRecoveryEvidence) {
+  // #849 — the re-run always gates: a fence recovery by construction produced
+  // evidence (the re-dispatch committed work, or the discard reset the
+  // worktree to the owner's tip).
+  {
     next = await applySafetyNet(ctx, next);
     const gate2 = await verifyStepOutcome(ctx, next, "develop");
     const rereRunRecords = gate2.fenceViolations ?? [];
     const blockingSecond = rereRunRecords.filter(
       (f) => f.kind === "sibling-declared" || f.kind === "issue-fenced",
     );
-    // #849 round 3 — the RESTORE is honest: a recovered violator returns
-    // to ok:true ONLY when the re-run gate ran (hasRecoveryEvidence),
-    // gate2.ok is true, AND no blocking fence record names it in the
-    // re-run; otherwise it stays ok:false.
+    // #849 — the RESTORE is honest: a recovered violator returns to ok:true
+    // ONLY when the re-run gate ran, gate2.ok is true, AND no blocking fence
+    // record names it; otherwise it stays ok:false (covers both re-violations
+    // and verify failures).
     const reRanClean = gate2.ok && blockingSecond.every((r) => !recoveredIds.has(r.workstreamId));
     if (reRanClean) {
       for (let i = 0; i < verdicts.length; i++) {
@@ -399,6 +389,17 @@ export async function runFenceRecoveryFlow(
         if (!v) continue;
         if (recoveredIds.has(v.id) && v.ok === false) {
           verdicts[i] = { id: v.id, ok: true };
+        }
+      }
+    } else {
+      // #849 edge case 2 — the re-run gate did NOT pass: the recovered
+      // violator stays ok:false (the `verdicts` array carries the ORIGINAL
+      // dispatch verdict ok:true, so an explicit flip is required).
+      for (let i = 0; i < verdicts.length; i++) {
+        const v = verdicts[i];
+        if (!v) continue;
+        if (recoveredIds.has(v.id) && v.ok !== false) {
+          verdicts[i] = { id: v.id, ok: false };
         }
       }
     }
@@ -495,5 +496,4 @@ export async function runFenceRecoveryFlow(
     });
     return next;
   }
-  return next;
 }

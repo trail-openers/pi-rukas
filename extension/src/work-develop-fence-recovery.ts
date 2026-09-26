@@ -34,9 +34,13 @@
  * today (no recovery), and `undeclared` records (warn-only) never trigger
  * recovery.
  */
+import { trace } from "./trace.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import type { WorkCapLiteral } from "./workflow-state-events-caps.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
+import { appendEvent } from "./workflow-state.ts";
+
+type ParkStateRef = { current: import("./workflow-state.ts").WorkState };
 
 // #849 — typed from the `cap` literal union (workflow-state-events-caps.ts) so
 // the cap name has one source: a rename there breaks here, not silently.
@@ -194,5 +198,28 @@ export function fenceViolationCapHit(
     reviewRound,
     nextStep: "handoff",
     evidence,
+  };
+}
+
+/** #849 — the discard precondition park (moved here from
+ * work-develop-fence-recovery-run.ts to stay under the 500-line gate):
+ * a failed precondition parks with the fence cap naming the violator and
+ * the owner(s), ZERO re-dispatches of ANY violator.
+ */
+export function makeParkPrecondition(
+  stateRef: ParkStateRef,
+  stateIn: import("./workflow-state.ts").WorkState,
+  violators: string[],
+) {
+  return (violator: string, owners: string[], reason: string): { parked: true } => {
+    trace(`work-develop: fence recovery: ${violator} precondition failed — ${reason}`);
+    stateRef.current = appendEvent(
+      stateRef.current,
+      fenceViolationCapHit(
+        stateRef.current.pipelineState.reviewRound,
+        `fence recovery aborted — violator ${violator} cannot be discarded (owner(s): ${owners.join(", ") || "none"}) — ${reason.slice(0, 200)}; first attempt: workstream(s) ${violators.join(", ")} could not be discarded, so no re-dispatch was attempted`,
+      ),
+    );
+    return { parked: true };
   };
 }
