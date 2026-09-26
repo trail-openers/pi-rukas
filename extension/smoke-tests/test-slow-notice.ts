@@ -30,9 +30,11 @@ import {
 import { steerChild } from "../src/dispatch-steer.ts";
 import type { RunningState } from "../src/progress.ts";
 import { drainSlowEvents } from "../src/slow-events.ts";
+import { formatElapsed } from "../src/progress.ts";
 import {
   clearSlowWatchesForTesting,
   feedSlowProgress,
+  slowSteerText,
   slowThresholds,
   watchSlowDispatch,
 } from "../src/slow-notice.ts";
@@ -121,6 +123,21 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "150" }, async () => {
   assert(notices[0]?.includes("last tool") === false, "notice format sanity");
   assert(notices[0]?.includes("Last tool: bash") === true, "notice carries the last tool");
   assert(/Report status in ≤3 lines/.test(steers[0]?.text ?? ""), "steer is the mandated text");
+  // #888 — the steer must read as a non-destructive nudge: report, then
+  // continue. The old text ("…write your final report") was read as a stop
+  // instruction and healthy children ended their run mid-task.
+  const steerText = steers[0]?.text ?? "";
+  assert(/continue/i.test(steerText), "steer explicitly says to continue (case-insensitive)");
+  assert(steerText.includes("not a stop signal"), "steer says this is not a stop signal");
+  assert(
+    steerText.indexOf("use the gate's exit code") > steerText.indexOf("without progress"),
+    "wrap-up clause is conditioned on 'without progress'",
+  );
+  assert(!steerText.includes("final report"), "steer no longer contains 'final report'");
+  assert(!steerText.includes("\n"), "steer stays a single line (no newlines)");
+  const pinned = slowSteerText(1_500_000, 123);
+  assert(pinned.includes("25m0s"), `steer embeds formatElapsed(1500000) → "25m0s" (${formatElapsed(1_500_000)})`);
+  assert(pinned.includes("123 turns"), "steer embeds the turn count");
   feedSlowProgress("job-turns", stateAt(160));
   assert(notices.length === 1 && steers.length === 1, "149→151→160 → no duplicates");
   feedSlowProgress("job-turns", stateAt(299));
