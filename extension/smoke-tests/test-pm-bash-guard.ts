@@ -155,20 +155,22 @@ for (const cmd of [
     "trailing * (loose prefix): git -C /x logish → allow (prefix match)",
   );
 
-  // Quoted path with a space: stripQuotedSegments removes the quoted run,
-  // so `git -C "/a b" log` becomes `git -C  log` (two consecutive spaces
-  // collapse in the regex `\\s+`). The mid `*` in `git -C * log*` is on
-  // the second token — but the pattern `git -C * log*` has a trailing `*`,
-  // so it uses the loose-prefix branch, not the mid-wildcard branch.
-  // The mid-wildcard case with a quoted path is the exact-match pattern
-  // `git -C * branch --show-current`: after stripping, `git -C "a b"`
-  // → `git -C ` (empty where the path was), so `\S+` finds nothing.
+  // Quoted path with a space: the raw command is matched by the mid-wildcard
+  // regex, where \S+ sees "/a and b" as two tokens, but the pattern
+  // expects exactly one \S+ token between -C and the verb.
   assert(
     matchBashSubcommand('git -C "/a b" branch --show-current', midAllowlist) !== "allow",
     "mid *: quoted path with space does NOT match exact mid-* pattern",
   );
-}
 
+  // Regression: an existing pattern row behaves identically on a command
+  // with a quoted argument. The raw command is matched, so the quoted arg
+  // does not change the verdict — this pins the origin/main behaviour.
+  assert(
+    matchBashSubcommand("git commit -m \"x y\"", midAllowlist) !== "allow",
+    "regression: git commit -m with quoted arg does NOT match any mid-wildcard row",
+  );
+}
 // ------------------------------------------------------- everything else blocks
 
 for (const cmd of [
