@@ -58,6 +58,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { reporterPathFromArgs, statReporterPath } from "./reporter-preflight.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import { trace } from "./trace.ts";
 
@@ -380,14 +381,47 @@ const POLICY_JUDGE_TIMEOUT_MS = 5 * 60_000;
  *
  * Returns undefined on any failure; `askPolicy` treats that as no permission.
  */
-export function judgePolicy(repoRoot: string): PolicyJudgeFn {
+/**
+ * #893 — injectable stat seam for the pre-spawn existence check on
+ * `POLICY_REPORTER_PATH`. Production passes none (the real `fs.stat` is
+ * used); tests pass a rejecting stub to simulate a missing reporter.
+ */
+export type PolicyStatFn = (p: string) => Promise<unknown>;
+
+/**
+ * The concrete judge: a read-only child that answers one policy question and
+ * reports through `report_policy`.
+ *
+ * Runs as `explore` because that is the roster's read-only, repo-cwd role; the
+ * judge needs no tool beyond reading, and the prompt is entirely
+ * self-contained. `--no-skills` plus the reporter as the only loaded extension
+ * mirrors lens-review's isolation. The timeout is deliberately short — one
+ * question against one document is not an investigation — so a wedged judge
+ * denies quickly rather than stalling a cycle whose work is already finished
+ * and pushed.
+ *
+ * Returns undefined on any failure; `askPolicy` treats that as no permission.
+ *
+ * #893 — pre-spawn stat of `POLICY_REPORTER_PATH` via the injectable
+ * `statFn` seam. A missing reporter path throws the named
+ * "reporter extension missing" error before `spawnSpecialist` is called, so
+ * the judge fails fast with a clear message rather than silently producing
+ * an empty `toolUses: []` that `askPolicy` reads as "no permission".
+ */
+export function judgePolicy(repoRoot: string, statFn?: PolicyStatFn): PolicyJudgeFn {
+  const extraArgs = ["--no-skills", "--extension", POLICY_REPORTER_PATH];
+  const reporterPath = reporterPathFromArgs(extraArgs);
   return async (prompt: string) => {
+    // #893 — pre-spawn stat; missing path → named error, no spawn.
+    if (reporterPath) {
+      await statReporterPath(reporterPath, statFn);
+    }
     const result = await spawnSpecialist(
       { role: "explore", prompt, cwd: repoRoot },
       {
         runId: makeRunId(),
         tag: "policy-judge",
-        extraArgs: ["--no-skills", "--extension", POLICY_REPORTER_PATH],
+        extraArgs,
         timeoutMs: POLICY_JUDGE_TIMEOUT_MS,
       },
     );
