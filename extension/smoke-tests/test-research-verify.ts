@@ -332,7 +332,7 @@ const fnSeen = (fn: ExecFn) => (fn as ExecFn & { seen?: string[] }).seen ?? [];
   const os = await import("node:os");
   const fs2 = await import("node:fs");
   const path = await import("node:path");
-  const tmp = await fs2.promises.mkdtemp(`${os.tmpdir()}research-local-`);
+  const tmp = await fs2.promises.mkdtemp(`${path.join(os.tmpdir(), "research-local-")}`);
   const realFile = path.join(tmp, "real.txt");
   await fs2.promises.writeFile(realFile, "x");
   const statReal: (p: string) => Promise<{ isDirectory: boolean } | undefined> = (p) =>
