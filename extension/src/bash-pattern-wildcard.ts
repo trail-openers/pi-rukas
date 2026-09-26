@@ -1,5 +1,7 @@
 /**
- * Mid-pattern `*` wildcard helpers for matchBashSubcommand (#891).
+ * Bash permission helper primitives: mid-`*` wildcard matching for
+ * matchBashSubcommand (#891), plus the relocated isDestructiveMemoryWrite
+ * guard.
  *
  * A standalone `*` token in the middle of a bash allowlist pattern
  * (surrounded by spaces, not trailing) matches exactly one whitespace-free
@@ -48,9 +50,11 @@ export function hasMidWildcard(pattern: string): boolean {
   return false;
 }
 
-// Build a RegExp for a pattern containing `*` tokens. Standalone mid `*`
-// tokens become `\S+` (one whitespace-free arg); a trailing `*` on the last
-// token becomes `.*` (loose prefix). Returns null if no `*` tokens at all.
+// Build a RegExp for a pattern containing `*` tokens. Like hasMidWildcard,
+// standalone mid `*` tokens mean exactly one whitespace-free argument.
+// Standalone mid `*` tokens become `\S+` (one whitespace-free arg); a
+// trailing `*` on the last token becomes `.*` (loose prefix). Returns null if
+// no `*` tokens at all.
 export function midWildcardPattern(pattern: string): RegExp | null {
   const tokens = pattern.split(" ");
   let hasAny = false;

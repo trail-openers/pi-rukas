@@ -27,7 +27,7 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const { matchBashSubcommand, createsIssue, stripQuotedSegments } = await import("../src/bash-command-parser.ts");
+const { matchBashSubcommand, createsIssue } = await import("../src/bash-command-parser.ts");
 const { loadAgentsJson, resolveAgentsJsonPath } = await import("../src/permission-config.ts");
 const { armPmMode, resetPmMode } = await import("../src/pm-mode.ts");
 const { registerPmBashGuard } = await import("../src/pm-bash-guard.ts");

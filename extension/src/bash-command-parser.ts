@@ -333,6 +333,10 @@ export function matchBashSubcommand(
     .sort(([a], [b]) => b.length - a.length);
   for (const [pattern, verdict] of patterns) {
     if (typeof verdict !== "string") continue;
+    // hasMidWildcard()/midWildcardPattern() (bash-pattern-wildcard.ts) and the
+    // two string-prefix branches below must change together: a pattern with a
+    // standalone mid `*` must always route to the regex branch — the prefix
+    // branches only apply to patterns without a mid `*`.
     const mid = hasMidWildcard(pattern);
     if (!mid && pattern.endsWith(" *")) {
       const p = pattern.slice(0, -2);
