@@ -116,15 +116,30 @@ const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
 // -------------------------------------------- spike validation (C2, hard)
 
 {
-  const bare = draftSpec("spike", "d", [{ name: "scoping", ok: true, text: "p", toolUses: [] }], [], [], [], 0, NO_DIRS, []);
+  const bare = draftSpec(
+    "spike",
+    "d",
+    [{ name: "scoping", ok: true, text: "p", toolUses: [] }],
+    [],
+    [],
+    [],
+    0,
+    NO_DIRS,
+    [],
+  );
   assert(
     validateDraft("spike", bare.body, 0, { operatorSupplied: false }).ok,
     "spike without operator input: scaffold strings are tolerated (status quo)",
   );
   const v = validateDraft("spike", bare.body, 0, { operatorSupplied: true });
-  assert(!v.ok, "spike WITH operator input: scaffold deliverable halts (the gate never runs for spikes)");
   assert(
-    v.problems.some((p) => p.includes(SPIKE_DELIVERABLE_FALLBACK.slice(0, 10)) || /Expected deliverable/.test(p)),
+    !v.ok,
+    "spike WITH operator input: scaffold deliverable halts (the gate never runs for spikes)",
+  );
+  assert(
+    v.problems.some(
+      (p) => p.includes(SPIKE_DELIVERABLE_FALLBACK.slice(0, 10)) || /Expected deliverable/.test(p),
+    ),
     "…and the problem names the deliverable section",
   );
   assert(
@@ -136,10 +151,19 @@ const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
 // --------------------------------------------------- pinned count (C5)
 
 {
-  assert(parsePinnedSubIssueCount("break into EXACTLY 5 sub-issues please") === 5, "C5: pin parses");
+  assert(
+    parsePinnedSubIssueCount("break into EXACTLY 5 sub-issues please") === 5,
+    "C5: pin parses",
+  );
   assert(parsePinnedSubIssueCount("exactly 3 sub issues") === 3, "C5: spaced form parses");
-  assert(parsePinnedSubIssueCount("about five sub-issues") === undefined, "C5: no numeric pin → undefined");
-  assert(parsePinnedSubIssueCount("exactly 99 sub-issues") === undefined, "C5: an insane pin is ignored");
+  assert(
+    parsePinnedSubIssueCount("about five sub-issues") === undefined,
+    "C5: no numeric pin → undefined",
+  );
+  assert(
+    parsePinnedSubIssueCount("exactly 99 sub-issues") === undefined,
+    "C5: an insane pin is ignored",
+  );
 
   const findings = (n: number) => [
     {
@@ -155,7 +179,10 @@ const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
   ];
   const three = draftSpec("epic", "d", findings(3), [], [], [], 0, NO_DIRS, []);
   const vPin = validateDraft("epic", three.body, 0, { pinnedSubIssues: 5 });
-  assert(!vPin.ok && /EXACTLY 5/.test(vPin.problems[0] ?? ""), "C5: pin mismatch (3 vs 5) is draft-invalid");
+  assert(
+    !vPin.ok && /EXACTLY 5/.test(vPin.problems[0] ?? ""),
+    "C5: pin mismatch (3 vs 5) is draft-invalid",
+  );
   const five = draftSpec("epic", "d", findings(5), [], [], [], 0, NO_DIRS, []);
   assert(validateDraft("epic", five.body, 0, { pinnedSubIssues: 5 }).ok, "C5: pin match passes");
   assert(validateDraft("epic", three.body, 0, {}).ok, "C5: no pin → count free (ceiling only)");
@@ -171,15 +198,25 @@ const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
 // ------------------------------------------- duplicate-risk prompt (C6)
 
 {
-  const inv = { memory: [], related: [{ number: 103, title: "hybrid default", state: "closed" }], errors: [] };
+  const inv = {
+    memory: [],
+    related: [{ number: 103, title: "hybrid default", state: "closed" }],
+    errors: [],
+  };
   const p = duplicateRiskPrompt("chore", "make hybrid the default", inv);
   assert(
     /REVERSAL target, not a duplicate/.test(p) && /report medium at most/.test(p),
     "C6: the prompt distinguishes a closed/landed issue (reversal target) from a duplicate",
   );
-  assert(/high means DUPLICATE: an OPEN issue/.test(p), "C6: high is reserved for open/unlanded work");
+  assert(
+    /high means DUPLICATE: an OPEN issue/.test(p),
+    "C6: high is reserved for open/unlanded work",
+  );
   const withCtx = duplicateRiskPrompt("chore", "make hybrid the default", inv, [
-    { source: "context param", fact: "this deliberately reverses #103 because the 2026 tradeoffs changed" },
+    {
+      source: "context param",
+      fact: "this deliberately reverses #103 because the 2026 tradeoffs changed",
+    },
   ]);
   assert(
     /RECONCILED and must not raise the risk above medium/.test(withCtx) &&
@@ -212,7 +249,9 @@ const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
 
   // Blank-line termination with bullet lookahead: spaced lists stay open,
   // a trailing prose paragraph does not.
-  const spaced = parseOperatorDirectives("PITFALLS:\n- one\n\n- two\n\nplain trailing prose paragraph");
+  const spaced = parseOperatorDirectives(
+    "PITFALLS:\n- one\n\n- two\n\nplain trailing prose paragraph",
+  );
   assert(
     spaced.pitfalls.length === 2 && !spaced.pitfalls.some((s) => s.includes("trailing")),
     "grammar: blank line + bullet continues the list; blank line + prose ends the block",
@@ -248,7 +287,17 @@ const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
   // Operator testSurface count cap: 21 directive items render as 20 (the
   // section cap) — an unbounded leak can no longer flood the filed body.
   const many = Array.from({ length: 21 }, (_, i) => `operator test item ${i}`);
-  const capped = draftSpec("feature", "d", [], [], [], [], 0, { ...NO_DIRS, testSurface: many }, []);
+  const capped = draftSpec(
+    "feature",
+    "d",
+    [],
+    [],
+    [],
+    [],
+    0,
+    { ...NO_DIRS, testSurface: many },
+    [],
+  );
   const ts = capped.body.slice(
     capped.body.indexOf("## Test surface"),
     capped.body.indexOf("## Edge cases"),
@@ -257,10 +306,15 @@ const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
     ts.includes("operator test item 19") && !ts.includes("operator test item 20"),
     "cap: operator TEST SURFACE items are count-capped at the section cap (20)",
   );
-  assert(!ts.includes("…"), "cap: operator test-surface text is never clipped (D2 — count cap only)");
+  assert(
+    !ts.includes("…"),
+    "cap: operator test-surface text is never clipped (D2 — count cap only)",
+  );
 
   // C2 replace semantics re-run through the fence form end-to-end.
-  const viaFence = parseOperatorDirectives("TEST SURFACE:\nBEGIN\nexactly none — no code shipped\nEND");
+  const viaFence = parseOperatorDirectives(
+    "TEST SURFACE:\nBEGIN\nexactly none — no code shipped\nEND",
+  );
   const fenceDraft = draftSpec(
     "feature",
     "d",
@@ -269,7 +323,9 @@ const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
         name: "test-surface",
         ok: true,
         text: "prose",
-        toolUses: [{ kind: "test-surface-item", text: "extend test-foo.ts", angle: "test-surface" }],
+        toolUses: [
+          { kind: "test-surface-item", text: "extend test-foo.ts", angle: "test-surface" },
+        ],
       },
     ],
     [],
@@ -316,11 +372,15 @@ const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
 
   // Fence form: BEGIN/END are delimiters, never items — same block-termination
   // grammar as every other directive block.
-  const fence = parseOperatorDirectives("NEVER CLAIM:\nBEGIN\nrankings are identical\nEND\ntrailing prose after the close");
+  const fence = parseOperatorDirectives(
+    "NEVER CLAIM:\nBEGIN\nrankings are identical\nEND\ntrailing prose after the close",
+  );
   assert(
     fence.neverClaim?.length === 1 &&
       fence.neverClaim[0] === "rankings are identical" &&
-      !fence.neverClaim.some((p) => p.includes("BEGIN") || p.includes("END") || p.includes("trailing")),
+      !fence.neverClaim.some(
+        (p) => p.includes("BEGIN") || p.includes("END") || p.includes("trailing"),
+      ),
     `#677: fenced NEVER CLAIM block — fences are delimiters, trailing prose never leaks (${JSON.stringify(fence.neverClaim)})`,
   );
 
@@ -340,11 +400,17 @@ const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
   // Prompt seam: the phrases are threaded VERBATIM into every angle prompt
   // and the gap-gate prompt as a dedicated, cap-immune block.
   const phrases = ["rankings are identical"];
-  const angle = anglePromptsFor("feature", "make hybrid the default", [], [], undefined, phrases).find(
-    (p) => p.name === "test-surface",
-  );
+  const angle = anglePromptsFor(
+    "feature",
+    "make hybrid the default",
+    [],
+    [],
+    undefined,
+    phrases,
+  ).find((p) => p.name === "test-surface");
   assert(
-    /FORBIDDEN PHRASES\b/.test(angle?.prompt ?? "") && (angle?.prompt ?? "").includes("FORBIDDEN: rankings are identical"),
+    /FORBIDDEN PHRASES\b/.test(angle?.prompt ?? "") &&
+      (angle?.prompt ?? "").includes("FORBIDDEN: rankings are identical"),
     "#677: the angle prompt carries the verbatim FORBIDDEN PHRASES block",
   );
   const gate = gapGatePrompt("body", [], [], phrases);
@@ -365,6 +431,36 @@ const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
   assert(
     /UNINVESTIGATED — a missing investigation is not evidence of absence/.test(g),
     "C3: the gate prompt weighs skipped/failed angles as uninvestigated surface",
+  );
+}
+
+// ---------------------- vipune precedence note (D6, #858 relevance filter)
+
+{
+  // The D6 precedence note fires when vipune rows REMAIN in prior context
+  // (post-#858 relevance filtering, the surviving rows carry the vipune
+  // source tag).
+  const g = gapGatePrompt(
+    "body",
+    [],
+    [{ source: "vipune (prior snapshot — may be stale)", fact: "a surviving vipune row" }],
+  );
+  assert(
+    g.includes("PRECEDENCE: entries tagged with a vipune source"),
+    "D6: the precedence note fires when vipune rows remain in prior context",
+  );
+  // …and an inventory with NO vipune rows (all dropped by the relevance
+  // filter, or cold start) must not break: the note is absent, prompt
+  // renders cleanly.
+  const g2 = gapGatePrompt("body", [], [{ source: "context param", fact: "an operator fact" }]);
+  assert(
+    !g2.includes("PRECEDENCE: entries tagged with a vipune source"),
+    "D6: no vipune rows — no precedence note, prompt intact",
+  );
+  const g3 = gapGatePrompt("body", [], []);
+  assert(
+    !g3.includes("PRECEDENCE: entries tagged with a vipune source"),
+    "D6: empty prior context — no precedence note, prompt intact",
   );
 }
 

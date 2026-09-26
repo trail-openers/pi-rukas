@@ -1,3 +1,5 @@
+import type { Forge } from "../src/forge.ts";
+import { setPlanVipuneSearch } from "../src/plan-draft.ts";
 /**
  * plan-test-stubs — the shared /plan pipeline test-seam stubs.
  *
@@ -9,7 +11,9 @@
  */
 import { setPlanDispatch } from "../src/plan-driver.ts";
 import { setPlanForge } from "../src/plan-filing.ts";
-import type { Forge } from "../src/forge.ts";
+import type { RegisteredPlanTool } from "../src/plan-tool.ts";
+import type { SearchResult } from "../src/vipune.ts";
+import { vipuneSearch } from "../src/vipune.ts";
 
 /** The gate prompts captured by installForgeStub/makeDispatchStub callers. */
 export const gatePrompts: string[] = [];
@@ -88,3 +92,46 @@ export function makeDispatchStub(gateReply: string | string[]) {
 }
 
 export { setPlanDispatch };
+
+/**
+ * The vipune-search stub seam (#858): routes the plan inventory's semantic +
+ * hybrid legs through the driver's `setPlanVipuneSearch` DI seam. The
+ * stub receives the full (query, opts) pair so tests can distinguish the
+ * hybrid leg (opts.hybrid) from the semantic leg, and returns the same
+ * SearchResult shape the real seam does. Pass `null` to restore the real
+ * vipuneSearch.
+ */
+export function setPlanVipuneStub(
+  fn: ((q: string, o: { hybrid?: boolean }) => Promise<SearchResult>) | null,
+): void {
+  if (fn === null) {
+    setPlanVipuneSearch(null);
+    return;
+  }
+  // The partial signature is safe: the inventory calls vipuneSearch with
+  // (terms, searchOpts) only — no other shape ever reaches this seam.
+  setPlanVipuneSearch(((q: string, o: { cwd: string }) => fn(q, { hybrid: o.hybrid })) as unknown as typeof vipuneSearch);
+}
+
+/**
+ * The dry-run harness shared by the pipeline e2e tests (#858 blocks moved
+ * from test-plan-tool.ts along the 500-line seam). `calls` records each
+ * dispatch as `role:prompt-head` so phase-ordering assertions can check
+ * what ran; `gatePrompts` (above) captures the gap-gate prompts.
+ */
+export const calls: string[] = [];
+
+export async function invokePlanTool(
+  tools: RegisteredPlanTool[],
+  params: Record<string, unknown>,
+): Promise<{ text: string; details: Record<string, unknown> }> {
+  const t = tools.find((x) => x.name === "start_plan_driver");
+  if (!t) throw new Error("start_plan_driver not registered");
+  calls.length = 0;
+  gatePrompts.length = 0;
+  const out = (await t.execute("id", params, undefined, undefined, { cwd: process.cwd() })) as {
+    content: Array<{ type: string; text: string }>;
+    details: Record<string, unknown>;
+  };
+  return { text: out.content[0]?.text ?? "", details: out.details ?? {} };
+}

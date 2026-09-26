@@ -24,11 +24,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { dispatchCore } from "./dispatch.ts";
 import {
   type AngleFindings,
-  VIPUNE_PRIOR_SOURCE,
   codeIdentifiersIn,
   draftSpec,
   mechanicalInventory,
-  parseOperatorDirectives,
 } from "./plan-draft.ts";
 import { allAnglesFailedSpec, correctiveRedraftError, haltResult } from "./plan-driver-halt.ts";
 import { type FilingFailure, fileIssue, getPlanForge, planForgeFor } from "./plan-filing.ts";
@@ -41,6 +39,7 @@ import {
 } from "./plan-investigate.ts";
 import { phase5FilingFailure } from "./plan-phase5.ts";
 import { precheckDescriptor } from "./plan-precheck.ts";
+import { assemblePriorContext } from "./plan-prior-context-assembly.ts";
 import {
   type PlanDriverInput,
   type PlanGap,
@@ -136,25 +135,12 @@ export async function runPlanPipeline(
   // clips at a fixed budget, so the operator's context-param entries — the
   // authority (D2) — come FIRST; vipune snapshots are the droppable tail.
   const inv = await timed("inventory", () => mechanicalInventory(repoRoot, descriptor));
-  const priorContext: { source: string; fact: string }[] = [];
-  // D7: operator typed blocks override specialist output for their fields.
-  const directives = parseOperatorDirectives(context);
-  if (context && context.trim().length > 0) {
-    for (const line of context.trim().split("\n")) {
-      if (line.trim())
-        // D2: no 200-char clipping of operator context — the operator is the
-        // authority and the inventory renders it verbatim.
-        priorContext.push({ source: "context param", fact: line.trim() });
-    }
-  }
-  priorContext.push(
-    ...inv.related
-      .slice(0, 5)
-      .map((r) => ({ source: `issue #${r.number} (${r.state})`, fact: r.title })),
-    // D6: vipune hits are tagged as prior snapshots (may be stale); the
-    // precedence note in the child prompts makes live context win on conflict.
-    ...inv.memory.map((h) => ({ source: VIPUNE_PRIOR_SOURCE, fact: h.content.slice(0, 200) })),
-  );
+  // Phase 1's two-channel prior-context build (plan-prior-context-assembly.ts):
+  // the child-prompt channel gets the FULL operator context (D2: the operator
+  // is the authority — test-plan-prior-context.ts pins those caps), the
+  // FILED-body inventory gets the untyped prose lines only (the typed-block
+  // lines consumed by the directive parser render in their section, #858).
+  const { priorContext, inventoryContext, directives } = assemblePriorContext(context, inv);
 
   // Phase 1b + Phase 2 — ONE parallel barrier (plan-investigate.ts): the
   // duplicate-risk explore and the type-specialised angle set dispatch
@@ -254,7 +240,7 @@ export async function runPlanPipeline(
       type,
       descriptor,
       findings,
-      priorContext,
+      inventoryContext,
       openQuestions,
       outOfScope,
       depth,
@@ -374,7 +360,7 @@ export async function runPlanPipeline(
               type,
               descriptor,
               findings,
-              priorContext,
+              inventoryContext,
               openQuestions,
               outOfScope,
               depth,
@@ -454,7 +440,7 @@ export async function runPlanPipeline(
     title,
     spec: finalBody,
     gaps: resolvedGaps,
-    priorContext: priorContext.slice(0, 15),
+    priorContext: inventoryContext.slice(0, 15),
     filed: !!issueUrl,
     issueUrl,
     capHit: capHit || undefined,
