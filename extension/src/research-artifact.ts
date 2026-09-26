@@ -16,6 +16,7 @@
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import type { PlanPhaseTiming } from "./plan-types.ts";
 import type { AngleRun, ResearchClaim, ResearchTier } from "./research-types.ts";
 import { trace } from "./trace.ts";
 
@@ -116,11 +117,134 @@ export interface ArtifactArgs {
    * omitted — a reader never sees a redundant "3 reported, 3 unique".
    */
   rawClaimCount?: number;
+  /**
+   * Per-phase wall times from the pipeline timer, INCLUDING the `total`
+   * row at artifact-write time (phases completed so far + elapsed total).
+   * Rendered as the `## Run metrics` section (the adoption memo too) and
+   * mirrored into the provenance header as machine-readable `key: value`
+   * lines (#895). Absent = metrics omitted (e.g. a bare render call).
+   */
+  timings?: PlanPhaseTiming[];
 }
 
 /** Shared claim-section helper. */
 function section(title: string, items: ResearchClaim[], empty: string): string {
   return `## ${title}\n\n${items.length > 0 ? items.map(claimRow).join("\n") : `- ${empty}`}\n`;
+}
+
+/**
+ * The verification mix for the Run metrics section, computed from the
+ * post-verify (post-entailment) claims' `verification` fields — no re-run
+ * of verification: url live/dead/unreachable/skipped-cap, grounded/
+ * ungrounded, local-present/local-missing, unchecked. The `skipped-cap`
+ * count is the URL-cap tally (check `none` with status `skipped-cap` is the
+ * legacy shape of the same marker, so it counts here too).
+ */
+function verificationMix(claims: ResearchClaim[]): VerificationMix {
+  const mix: VerificationMix = {
+    urlLive: 0,
+    urlDead: 0,
+    urlUnreachable: 0,
+    urlSkippedCap: 0,
+    grounded: 0,
+    ungrounded: 0,
+    localPresent: 0,
+    localMissing: 0,
+    unchecked: 0,
+  };
+  for (const c of claims) {
+    const v = c.verification;
+    if (v.check === "url-liveness") {
+      if (v.status === "live") mix.urlLive++;
+      else if (v.status === "dead") mix.urlDead++;
+      else if (v.status === "unreachable") mix.urlUnreachable++;
+      else mix.urlSkippedCap++;
+    } else if (v.check === "code-grounding") {
+      if (v.status === "grounded") mix.grounded++;
+      else mix.ungrounded++;
+    } else if (v.check === "local-file") {
+      if (v.status === "local-present") mix.localPresent++;
+      else mix.localMissing++;
+    } else {
+      if (v.status === "skipped-cap") mix.urlSkippedCap++;
+      else mix.unchecked++;
+    }
+  }
+  return mix;
+}
+
+/** The nine verification-mix counters (see {@link verificationMix}). */
+type VerificationMix = Record<
+  | "urlLive"
+  | "urlDead"
+  | "urlUnreachable"
+  | "urlSkippedCap"
+  | "grounded"
+  | "ungrounded"
+  | "localPresent"
+  | "localMissing"
+  | "unchecked",
+  number
+>;
+
+/**
+ * The `## Run metrics` section body (#895): per-phase wall times, total,
+ * per-angle rows (claims reported = the PRE-DEDUP per-angle count, backend,
+ * ok/failed) and the verification mix. Shared by both artifact layouts so
+ * the adoption memo renders it identically.
+ */
+function runMetricsSection(a: ArtifactArgs): string {
+  if (!a.timings || a.timings.length === 0) return "";
+  const total = a.timings.find((t) => t.phase === "total");
+  const phases = a.timings.filter((t) => t.phase !== "total");
+  const rows: string[] = [
+    "## Run metrics",
+    "",
+    ...phases.map((t) => `- **${t.phase}**: ${t.ms} ms`),
+    `- **total**: ${total?.ms ?? "-"} ms`,
+    "",
+    ...a.angles.map(
+      (x) =>
+        `- **${x.name}**: ${x.claims.length} claims reported · backend: ${x.backend} · ${x.ok ? "ok" : "failed"}`,
+    ),
+  ];
+  const mix = verificationMix(a.claims);
+  rows.push(
+    "",
+    `verification: ${mix.urlLive} url live · ${mix.urlDead} dead · ${mix.urlUnreachable} unreachable · ${mix.urlSkippedCap} skipped-cap · ${mix.grounded} grounded · ${mix.ungrounded} ungrounded · ${mix.localPresent} local-present · ${mix.localMissing} local-missing · ${mix.unchecked} unchecked`,
+  );
+  // The section is joined to the next heading via a single "\n" in the
+  // template; it must END with a blank line itself so the final ".replace(/\n{3,}/g, "\n\n")"
+  // collapse (which needs 3+ newlines) does not eat the separator.
+  return `${rows.join("\n")}\n\n`;
+}
+
+/**
+ * The provenance-header mirror of Run metrics as machine-readable
+ * `key: value` lines (#895): `phase.<name>.ms`, `total.ms`,
+ * `angle.<name>: claims=N backend=B ok=true/false`, `verify.<check>.<status>: n`.
+ */
+function metricsHeaderLines(a: ArtifactArgs): string {
+  if (!a.timings || a.timings.length === 0) return "";
+  const lines: string[] = a.timings.map((t) =>
+    t.phase === "total" ? `total.ms: ${t.ms}` : `phase.${t.phase}.ms: ${t.ms}`,
+  );
+  for (const x of a.angles) {
+    lines.push(`angle.${x.name}: claims=${x.claims.length} backend=${x.backend} ok=${x.ok}`);
+  }
+  const mix = verificationMix(a.claims);
+  lines.push(`verify.url.live: ${mix.urlLive}`);
+  lines.push(`verify.url.dead: ${mix.urlDead}`);
+  lines.push(`verify.url.unreachable: ${mix.urlUnreachable}`);
+  lines.push(`verify.url.skipped-cap: ${mix.urlSkippedCap}`);
+  lines.push(`verify.grounded: ${mix.grounded}`);
+  lines.push(`verify.ungrounded: ${mix.ungrounded}`);
+  lines.push(`verify.local-present: ${mix.localPresent}`);
+  lines.push(`verify.local-missing: ${mix.localMissing}`);
+  lines.push(`verify.unchecked: ${mix.unchecked}`);
+  // Leading + trailing blank lines so the block survives the template's
+  // blank-line join and the final ".replace(/\n{3,}/g, "\n\n")" collapse.
+  return `\n\n${lines.join("\n")}\n`;
 }
 
 function headerBlock(a: ArtifactArgs, title: string): string {
@@ -135,11 +259,12 @@ function headerBlock(a: ArtifactArgs, title: string): string {
     a.rawClaimCount !== undefined && a.rawClaimCount > a.claims.length
       ? `\n**Claims:** ${a.rawClaimCount} reported, ${a.claims.length} unique after deduplication`
       : "";
+  const metrics = runMetricsSection(a);
   return `# ${title}: ${a.topic}
 
 **Date:** ${a.date} · **Tier:** ${a.tier} · **Pinned commit:** ${a.pinnedCommit}
 **Provenance:** ${a.provenanceBasename}${claimsCount}
-${abstention}${entail}`;
+${abstention}${entail}${metrics}${"\n"}`;
 }
 
 function angleSummaries(a: ArtifactArgs): string {
@@ -289,10 +414,10 @@ export function renderProvenance(a: ArtifactArgs): string {
     a.rawClaimCount !== undefined && a.rawClaimCount > a.claims.length
       ? ` · **Claims:** ${a.rawClaimCount} reported, ${a.claims.length} unique after deduplication`
       : "";
+  const metrics = metricsHeaderLines(a);
   return `# Provenance: ${a.topic}
 
-**Date:** ${a.date} · **Tier:** ${a.tier} · **Pinned commit:** ${a.pinnedCommit}${claimsCount}
-
+**Date:** ${a.date} · **Tier:** ${a.tier} · **Pinned commit:** ${a.pinnedCommit}${claimsCount}${metrics}
 Verification legend: \`url live/dead/unreachable\` = HTTP GET at the date above (403/429/405 count as unreachable, not dead — a page that refuses automation still exists; \`dead\` is confident absence; \`url skipped-cap\` = the liveness check was not run because the URL was past the liveness cap (LIVENESS_URL_CAP unique URLs)); \`skipped-cap\` = the liveness pass was capped (legacy form of the same marker) — a check that was NOT run, distinct from unchecked; \`grounded/ungrounded\` = path and symbol checked at the pinned commit's tree (symbol must appear in the cited file at that commit); \`local-present/local-missing\` = local path stat-checked (never fetched); \`unchecked\` = no deterministic check applies (doc references) or it could not run (an external repo with no checkable URL, an unknown pinned commit). Compound sources record each part on its own line below the claim.
 
 ## Sources

@@ -55,7 +55,7 @@ import {
   surfaceForAngle,
   wigoloAnglePrompt,
 } from "./research-fallback.ts";
-import { writeResearchMemory } from "./research-memory.ts";
+import { researchTakeawayText, writeResearchMemory } from "./research-memory.ts";
 import { PhaseTimer } from "./research-timings.ts";
 import {
   type AngleRun,
@@ -441,6 +441,7 @@ export async function runResearchPipeline(
           entailment,
           memo,
           rawClaimCount,
+          timings: timer.finish(),
         },
         p,
       );
@@ -460,11 +461,12 @@ export async function runResearchPipeline(
     };
   }
 
-  // Phase 5 — memory (never fails the run).
-  const firstVerified = verified.find(isVerifiedFinding);
-  const takeaway = firstVerified
-    ? firstVerified.text.slice(0, 120)
-    : "no reliably verified findings";
+  // Phase 5 — memory (never fails the run). The takeaway counts the
+  // POST-ENTAILMENT verified findings — on the deep tier the entail pass has
+  // already demoted "none" verdicts out of this set (isVerifiedFinding), so
+  // "N verified" reflects the demotion, not the raw claim count.
+  const verifiedFindings = verified.filter(isVerifiedFinding);
+  const takeaway = researchTakeawayText(verifiedFindings, claims.length, angles.length);
   const memory = await timed("memory", () =>
     memoryWriteFn({
       topic,
