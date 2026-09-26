@@ -46,7 +46,29 @@ import { startJob } from "./async-jobs.ts";
 import { type SlashCommand, expandArgs, loadPromptBody } from "./commands.ts";
 import { armPmMode } from "./pm-mode.ts";
 import { trace } from "./trace.ts";
+import { doctrinePresence } from "./work-driver-policy.ts";
 import { parseWorkArgs, resolveRepoRoot, runDriver } from "./work-entry.ts";
+
+/**
+ * The merge-authority sentence of the `start_work_driver` launch notice, from
+ * a cheap stat of the doctrine files — no policy judge runs here (that stays
+ * at the merged step, #406/#407). The three-way split matters: an unreadable
+ * file is NOT "will park", because the merged-step judge reads doctrine via
+ * `git show <baseSha>`, a different read that can still succeed.
+ */
+export function mergeAuthorityNotice(presence: {
+  files: Record<string, string>;
+  presentFiles: string[];
+}): string {
+  if (presence.presentFiles.length > 0) {
+    return `project doctrine present (${presence.presentFiles.join(", ")}) — the policy judge decides merge authority at the merged step (\`--merge\` is operator-only and was not passed)`;
+  }
+  const unreadable = Object.keys(presence.files).filter((f) => presence.files[f] === "unreadable");
+  if (unreadable.length > 0) {
+    return `doctrine file unreadable (${unreadable[0]}) — the policy judge will retry at merge time`;
+  }
+  return "no AGENTS.md/CLAUDE.md found — auto-merge is off; the cycle will park as awaiting-human-merge";
+}
 
 /**
  * Commands whose body is prose for the main agent. `work` is excluded because
@@ -105,6 +127,7 @@ export function registerWorkTools(pi: ExtensionAPI) {
 
       armPmMode();
       const repoRoot = await resolveRepoRoot(ctx.cwd);
+      const presence = await doctrinePresence(repoRoot);
 
       const handle = startJob(pi, {
         label: "work-driver",
@@ -127,7 +150,7 @@ export function registerWorkTools(pi: ExtensionAPI) {
         content: [
           {
             type: "text",
-            text: `pi-rukas: /work driver started for ${issueText} (jobId: ${handle.jobId}). A structured report will be delivered via steer when complete. Merge authority was NOT granted — the cycle will open its PR and park unless the project's AGENTS.md grants it. Do not poll .pi/work-state/ or run /work-status to check progress.`,
+            text: `pi-rukas: /work driver started for ${issueText} (jobId: ${handle.jobId}). A structured report will be delivered via steer when complete. ${mergeAuthorityNotice(presence)} Do not poll .pi/work-state/ or run /work-status to check progress.`,
           },
         ],
         details: {

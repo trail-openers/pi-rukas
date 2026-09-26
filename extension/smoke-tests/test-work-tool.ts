@@ -14,9 +14,12 @@
  * such parameter, and no path through it can set the grant.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
-import { registerWorkTools } from "../src/work-tool.ts";
+import { mkdtempSync } from "node:fs";
+import { registerWorkTools, mergeAuthorityNotice } from "../src/work-tool.ts";
+import { doctrinePresence, DOCTRINE_FILES } from "../src/work-driver-policy.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -95,6 +98,67 @@ registerWorkTools(fakePi);
   assert(
     /mergeGrant:\s*false/.test(src),
     "canary: mergeGrant is forced to false, not just left unset",
+  );
+  assert(
+    !src.includes("Merge authority was NOT granted"),
+    "canary: the hardcoded 'NOT granted' launch-notice literal is gone — the notice reflects actual doctrine presence",
+  );
+}
+
+// ----------------- #860 — launch notice reflects doctrine presence (no judge)
+
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "work-tool-notice-"));
+  const run = async (shape: "present" | "absent" | "unreadable") => {
+    const repo = path.join(dir, shape);
+    mkdirSync(repo);
+    if (shape !== "absent") {
+      writeFileSync(path.join(repo, "AGENTS.md"), "# AGENTS.md\n");
+      if (shape === "unreadable")
+        (await import("node:fs")).default.chmodSync(path.join(repo, "AGENTS.md"), 0);
+    }
+    const p = await doctrinePresence(repo);
+    return mergeAuthorityNotice(p);
+  };
+  const present = await run("present");
+  assert(
+    present.includes("project doctrine present (AGENTS.md)") &&
+      present.includes("the policy judge decides merge authority at the merged step") &&
+      !present.includes("NOT granted"),
+    "AGENTS.md present → judge-decides wording, no 'NOT granted': " + present,
+  );
+  const absent = await run("absent");
+  assert(
+    absent === "no AGENTS.md/CLAUDE.md found — auto-merge is off; the cycle will park as awaiting-human-merge",
+    "neither file present → auto-merge off / will park wording: " + absent,
+  );
+  if (process.getuid?.() !== 0) {
+    const unreadable = await run("unreadable");
+    assert(
+      unreadable === "doctrine file unreadable (AGENTS.md) — the policy judge will retry at merge time",
+      "unreadable file → retry-at-merge wording (not 'will park'): " + unreadable,
+    );
+  } else {
+    console.log("- unreadable case skipped: running as root, chmod 000 is ineffective");
+  }
+  rmSync(dir, { recursive: true, force: true });
+
+  // The helper spans all of DOCTRINE_FILES and probes each file (stat, plus
+  // a bounded read-probe for the unreadable branch) without loading contents.
+  const helper = readFileSync(path.resolve(import.meta.dirname, "..", "src", "work-driver-policy.ts"), "utf8");
+  const helperBody = helper.slice(
+    helper.indexOf("export async function doctrinePresence"),
+    helper.indexOf("export async function readDoctrineFromDisk"),
+  );
+  assert(
+    DOCTRINE_FILES.length === 2 &&
+      helperBody.includes("DOCTRINE_FILES") &&
+      /fs\.stat\(p\)/.test(helperBody),
+    "doctrinePresence spans DOCTRINE_FILES and stats each file",
+  );
+  assert(
+    !/readFile\(/.test(helperBody) && /\.read\(new Uint8Array\(32\)/.test(helperBody),
+    "canary: the presence check never loads file contents (bounded 32-byte probe only) and does not touch readDoctrineFromDisk",
   );
 }
 
