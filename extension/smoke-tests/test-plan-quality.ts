@@ -298,6 +298,28 @@ assert(
   );
 }
 
+// --------------------------------- #849 — dropped-dependencies steer
+
+{
+  // #849 — dropped-dependencies has its OWN branch in correctivePlanSteer
+  // (the record-only steer). It must render, and it must not fall through
+  // to the empty-paths prose ("no `paths:`") — that prose would describe
+  // the wrong defect for this reason.
+  const s = correctivePlanSteer("dropped-dependencies", 6, 2);
+  assert(
+    s.length > 0 && !s.includes("undefined"),
+    "#849: dropped-dependencies renders without leaking 'undefined'",
+  );
+  assert(
+    !/declared no `paths:`/.test(s),
+    "#849: dropped-dependencies does NOT fall through to the empty-paths prose",
+  );
+  assert(
+    /Record-only/.test(s) && /never re-dispatched/.test(s),
+    "#849: the steer states the reason is recorded and never re-dispatched",
+  );
+}
+
 // --------------------------------- #657 — corrective prompt: historical note
 
 {
@@ -309,7 +331,10 @@ assert(
   const steer = correctivePlanSteer("overlapping-paths", 2, 2, [
     { a: "task-a", b: "task-b", path: "src/foo.ts" },
   ]);
-  const corrective = planCorrectivePrompt(`${inlinePlanPrompt([657], "/tmp/scratch")}\n\n${priorContext}`, steer);
+  const corrective = planCorrectivePrompt(
+    `${inlinePlanPrompt([657], "/tmp/scratch")}\n\n${priorContext}`,
+    steer,
+  );
   assert(
     corrective.includes(priorContext),
     "#657: the corrective prompt carries the prior-handoff context through",

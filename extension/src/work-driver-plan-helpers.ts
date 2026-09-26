@@ -16,6 +16,9 @@ import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
+// #849 — findDroppedDependencyEdges moved to work-driver-plan-deps.ts (the
+// 500-line cap); re-exported so the importers keep their paths.
+export { findDroppedDependencyEdges } from "./work-driver-plan-deps.ts";
 import type { PlanQualityReason } from "./workflow-state-schema.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -87,16 +90,15 @@ export function planTimeoutKill(
 
 /**
  * #754 — the one-shot corrective re-dispatch after a PRIMARY plan dispatch
- * killed at the step's own bound. Extracted from runPlan (line budget). A
- * killed child has no structured output (parseWorkstreams would return
- * nothing), so the corrective is the recovery path. It carries the timeout
- * steer — NOT correctivePlanSteer: a timeout says nothing about
- * decomposition, and steering a killed planner toward MORE workstreams is
- * the forced-split pressure that produced the wrong-work shape #819. The
- * corrective is NEVER re-dispatched again: if it fails or is killed itself,
- * its dispatch-failed is the step's tail and the router's `plan-timeout` cap
- * halts to handoff. The caller applies the one-shot corrective budget by
- * skipping the #290 quality gate after this runs.
+ * killed at the step's own bound. A killed child has no structured output
+ * (parseWorkstreams would return nothing), so the corrective is the recovery
+ * path. It carries the timeout steer — NOT correctivePlanSteer: a timeout
+ * says nothing about decomposition, and steering a killed planner toward
+ * MORE workstreams is the forced-split pressure that produced the wrong-work
+ * shape #819. The corrective is NEVER re-dispatched again: if it fails or is
+ * killed itself, its dispatch-failed is the step's tail and the router's
+ * `plan-timeout` cap halts to handoff. The caller applies the one-shot
+ * corrective budget by skipping the #290 quality gate after this runs.
  */
 export async function planTimeoutCorrective(
   ctx: DriverContext,
@@ -279,6 +281,32 @@ export function correctivePlanSteer(
       "merge conflict the driver cannot resolve. Re-plan so every file belongs to exactly ONE workstream:",
       "either move the shared file into whichever workstream genuinely owns it, or merge the two",
       "workstreams if they cannot be separated.",
+      "",
+      "#849 — dependencies survive the re-plan: where one workstream CONSUMES an artifact another",
+      "workstream CREATES (a function, a type, a migration, a config value), keep the `- depends-on:`",
+      "line (or ADD one) so the develop step defers the consumer's worktree until the creator commits —",
+      "two parallel developers editing around a not-yet-created artifact is the #814 shape that",
+      "duplicated a migration at commit-pr. And where BOTH workstreams would CREATE the same artifact",
+      "(the shared file above), MERGE them into one workstream rather than splitting ownership:",
+      "merging is what the overlap fix is for; preserving the file boundary and dropping the dependency",
+      "edge leaves the two halves semantically coupled but structurally independent, which is the",
+      "worse outcome of the two.",
+    ].join("\n");
+  }
+  // #849 — dropped-dependencies is a RECORDED reason, not a re-dispatch
+  // trigger: the one-shot corrective has ALREADY run (it is what dropped
+  // the edge), and there is no second re-dispatch per #754's one-shot rule.
+  // The steer body below is unreachable by construction — it exists only so
+  // this reason never falls through to the empty-paths prose if a future
+  // bug re-dispatches on it.
+  if (reason === "dropped-dependencies") {
+    return [
+      "## Corrective re-dispatch (not issued)",
+      "",
+      "Record-only: the previous corrective re-plan dropped a `- depends-on:` edge the",
+      "first plan had. The cycle continues with the corrective plan — this reason is",
+      "recorded on pipelineState.planQuality so the operator can see the drop; it is",
+      "never re-dispatched.",
     ].join("\n");
   }
   if (reason === "under-decomposed") {
