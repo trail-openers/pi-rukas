@@ -57,6 +57,69 @@ const fakePi = {
 
 registerPlanTool(fakePi);
 
+// ----------------------------------------------------------- dispatch stub
+
+const gatePrompts: string[] = [];
+const gateReplyOverride: string | null = null;
+
+function __responses(spec: { role: string; prompt: string }): any {
+  if (spec.role === "adversarial-developer") {
+    gatePrompts.push(spec.prompt);
+    return {
+      role: "adversarial-developer",
+      ok: true,
+      text:
+        gateReplyOverride ??
+        "GAP: CRITICAL — missing acceptance criterion for the failure mode — proposed resolution: add a criterion for the retry path\nVERDICT: NEEDS_ITERATION",
+      toolUses: [],
+      ms: 1,
+      exitCode: 0,
+    };
+  }
+  if (spec.prompt.includes("DUPLICATE RISK CHECK"))
+    return {
+      role: "explore",
+      ok: true,
+      text: "DUPLICATE_RISK: none — no overlapping open work",
+      toolUses: [],
+      ms: 1,
+      exitCode: 0,
+    };
+  return {
+    role: "explore",
+    ok: true,
+    text: "Task complete: investigated the work area.\n\n- extension/src/plan-driver.ts:42 — existing seam for the pipeline",
+    toolUses: [
+      {
+        name: "report_plan_item",
+        arguments: {
+          kind: "acceptance-criterion",
+          text: "the new tool registers with the exact TypeBox schema",
+          angle: "interfaces-and-contracts",
+        },
+      },
+      {
+        name: "report_plan_item",
+        arguments: {
+          kind: "edge-case",
+          text: "a child killed mid-flight reports toolUses: [] — the driver must not parse its prose as findings",
+          angle: "reproduction-surface",
+        },
+      },
+    ],
+    ms: 1,
+    exitCode: 0,
+  };
+}
+
+setPlanDispatch(((pi: unknown, spec: { role: string; prompt: string }) => {
+  calls.push(`${spec.role}:${spec.prompt.slice(0, 200)}`);
+  const ctx = (pi as { __testContext?: string }).__testContext;
+  return Promise.resolve(
+    __responses({ ...spec, prompt: ctx ? `${ctx}\n${spec.prompt}` : spec.prompt }),
+  );
+}) as never);
+
 // --------------------------------------------------- unit: classify + draft
 
 {
@@ -327,137 +390,6 @@ registerPlanTool(fakePi);
   assert(
     /DO NOT re-raise/.test(pgp),
     "canary: the gap gate prompt carries the DO-NOT-RE-RAISE framing (plan-gate-prompt.ts)",
-  );
-}
-
-{
-  // D4: sub-issues come from tool calls, not line splits (the old path
-  // line-split decomposition prose with minLen=6 + a 4-word blocklist, so
-  // junk like "Deps: none" / "## subIssues[]" survived into the spec).
-  const subs = extractPlanItems(
-    [
-      {
-        name: "report_plan_item",
-        arguments: { kind: "sub-issue", text: "Retry backoff config — scope: the retry module" },
-      },
-      {
-        name: "report_plan_item",
-        arguments: { kind: "sub-issue", text: "Timeout surfaces — scope: spawn.ts" },
-      },
-    ],
-    "decomposition-surface",
-  );
-  const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
-  const { body } = draftSpec(
-    "epic",
-    "epic descriptor",
-    [
-      {
-        name: "decomposition-surface",
-        ok: true,
-        text: "Task complete: decomposed the epic.\n## subIssues[]\n- Retry backoff config\nDeps: none\nOrder: 2",
-        toolUses: subs,
-      },
-    ],
-    [],
-    [],
-    [],
-    1,
-    NO_DIRS,
-    [],
-  );
-  const subSection = body.slice(body.indexOf("## Sub-issues"));
-  assert(
-    subSection.includes("Retry backoff config — scope: the retry module"),
-    "D4: sub-issue text comes from the tool call (title + scope intact)",
-  );
-  assert(
-    subSection.includes("Timeout surfaces — scope: spawn.ts"),
-    "D4: second sub-issue from tool call",
-  );
-  assert(
-    !subSection.includes("Deps: none"),
-    "D4: line-split junk ('Deps: none') does not reach the spec",
-  );
-  assert(!subSection.includes("## subIssues[]"), "D4: heading debris does not reach the spec");
-  assert(!subSection.includes("Task complete:"), "D4: the prose preamble does not reach the spec");
-  // #633: the sub-issue prose line-split fallback is DELETED. With the driver's
-  // aggregate all-angles-failed guard, this path is unreachable — if zero angles
-  // produced structured items, the pipeline halts before draftSpec. So when
-  // epicSubIssues has zero sub-issue items, it returns [] and the caller renders
-  // the "(decomposition not available)" fallback string. No prose parsing at all.
-  const prose = draftSpec(
-    "epic",
-    "epic descriptor",
-    [
-      {
-        name: "decomposition-surface",
-        ok: true,
-        text: "## subIssues[]\n- first sub-task one\n- second sub-task two\nDeps: none\nOrder: 2",
-        toolUses: [],
-      },
-    ],
-    [],
-    [],
-    [],
-    1,
-    NO_DIRS,
-    [],
-  );
-  const proseSection = prose.body.slice(prose.body.indexOf("## Sub-issues"));
-  assert(
-    proseSection.includes("(decomposition not available)"),
-    "#633: zero sub-issue items → '(decomposition not available)' fallback, no prose parsing",
-  );
-  assert(
-    !proseSection.includes("first sub-task one"),
-    "#633: prose lines do NOT become checkboxes",
-  );
-  assert(
-    !proseSection.includes("second sub-task two"),
-    "#633: no prose line-split into sub-issues",
-  );
-  assert(!proseSection.includes("Deps: none"), "#633: no junk in the sub-issues section");
-  assert(
-    !proseSection.includes("## subIssues[]"),
-    "#633: no heading debris in the sub-issues section",
-  );
-}
-
-{
-  // D3: edge cases populate for a feature-type plan — the old filter matched
-  // only angle names "risk-surface" / "reproduction-surface", so for
-  // feature/epic/chore/spike it matched nothing and the fallback string
-  // printed even when the operator supplied an explicit pitfalls list.
-  const edgeItems = extractPlanItems(
-    [
-      {
-        name: "report_plan_item",
-        arguments: {
-          kind: "edge-case",
-          text: "the retry path must not double-fire on provider timeout",
-          angle: "test-surface",
-        },
-      },
-    ],
-    "test-surface",
-  );
-  const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
-  const { body } = draftSpec(
-    "feature",
-    "add a retry path to the plan driver",
-    [{ name: "test-surface", ok: true, text: "summary", toolUses: edgeItems }],
-    [],
-    [],
-    [],
-    0,
-    NO_DIRS,
-    [],
-  );
-  const edgeSection = body.slice(body.indexOf("## Edge cases"));
-  assert(
-    edgeSection.includes("the retry path must not double-fire on provider timeout"),
-    "D3: edge-case items from ANY angle populate the Edge cases section for a feature plan",
   );
 }
 

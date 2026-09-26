@@ -7,7 +7,7 @@
  * #858 title/dedup/vipune blocks moved back into test-plan-tool.ts.
  */
 
-import { codeIdentifiersIn, draftSpec } from "../src/plan-draft.ts";
+import { codeIdentifiersIn, draftSpec, extractPlanItems } from "../src/plan-draft.ts";
 import { setPlanDispatch } from "../src/plan-driver.ts";
 import { registerPlanTool } from "../src/plan-tool.ts";
 import { type PlanType, classifyPlanType } from "../src/plan-types.ts";
@@ -307,6 +307,141 @@ async function invoke(params: Record<string, unknown>) {
     "gate runs unconditionally for feature types (the deleted env var is inert)",
   );
   delete process.env.PI_ENSEMBLE_PLAN_GAP_GATE;
+}
+
+console.log(`\nexit ${exit}`);
+
+// D4 sub-issues + D3 edge-cases (moved from test-plan-tool.ts along the 500-line seam)
+
+{
+  // D4: sub-issues come from tool calls, not line splits (the old path
+  // line-split decomposition prose with minLen=6 + a 4-word blocklist, so
+  // junk like "Deps: none" / "## subIssues[]" survived into the spec).
+  const subs = extractPlanItems(
+    [
+      {
+        name: "report_plan_item",
+        arguments: { kind: "sub-issue", text: "Retry backoff config — scope: the retry module" },
+      },
+      {
+        name: "report_plan_item",
+        arguments: { kind: "sub-issue", text: "Timeout surfaces — scope: spawn.ts" },
+      },
+    ],
+    "decomposition-surface",
+  );
+  const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
+  const { body } = draftSpec(
+    "epic",
+    "epic descriptor",
+    [
+      {
+        name: "decomposition-surface",
+        ok: true,
+        text: "Task complete: decomposed the epic.\n## subIssues[]\n- Retry backoff config\nDeps: none\nOrder: 2",
+        toolUses: subs,
+      },
+    ],
+    [],
+    [],
+    [],
+    1,
+    NO_DIRS,
+    [],
+  );
+  const subSection = body.slice(body.indexOf("## Sub-issues"));
+  assert(
+    subSection.includes("Retry backoff config — scope: the retry module"),
+    "D4: sub-issue text comes from the tool call (title + scope intact)",
+  );
+  assert(
+    subSection.includes("Timeout surfaces — scope: spawn.ts"),
+    "D4: second sub-issue from tool call",
+  );
+  assert(
+    !subSection.includes("Deps: none"),
+    "D4: line-split junk ('Deps: none') does not reach the spec",
+  );
+  assert(!subSection.includes("## subIssues[]"), "D4: heading debris does not reach the spec");
+  assert(!subSection.includes("Task complete:"), "D4: the prose preamble does not reach the spec");
+  // #633: the sub-issue prose line-split fallback is DELETED. With the driver's
+  // aggregate all-angles-failed guard, this path is unreachable — if zero angles
+  // produced structured items, the pipeline halts before draftSpec. So when
+  // epicSubIssues has zero sub-issue items, it returns [] and the caller renders
+  // the "(decomposition not available)" fallback string. No prose parsing at all.
+  const prose = draftSpec(
+    "epic",
+    "epic descriptor",
+    [
+      {
+        name: "decomposition-surface",
+        ok: true,
+        text: "## subIssues[]\n- first sub-task one\n- second sub-task two\nDeps: none\nOrder: 2",
+        toolUses: [],
+      },
+    ],
+    [],
+    [],
+    [],
+    1,
+    NO_DIRS,
+    [],
+  );
+  const proseSection = prose.body.slice(prose.body.indexOf("## Sub-issues"));
+  assert(
+    proseSection.includes("(decomposition not available)"),
+    "#633: zero sub-issue items → '(decomposition not available)' fallback, no prose parsing",
+  );
+  assert(
+    !proseSection.includes("first sub-task one"),
+    "#633: prose lines do NOT become checkboxes",
+  );
+  assert(
+    !proseSection.includes("second sub-task two"),
+    "#633: no prose line-split into sub-issues",
+  );
+  assert(!proseSection.includes("Deps: none"), "#633: no junk in the sub-issues section");
+  assert(
+    !proseSection.includes("## subIssues[]"),
+    "#633: no heading debris in the sub-issues section",
+  );
+}
+
+{
+  // D3: edge cases populate for a feature-type plan — the old filter matched
+  // only angle names "risk-surface" / "reproduction-surface", so for
+  // feature/epic/chore/spike it matched nothing and the fallback string
+  // printed even when the operator supplied an explicit pitfalls list.
+  const edgeItems = extractPlanItems(
+    [
+      {
+        name: "report_plan_item",
+        arguments: {
+          kind: "edge-case",
+          text: "the retry path must not double-fire on provider timeout",
+          angle: "test-surface",
+        },
+      },
+    ],
+    "test-surface",
+  );
+  const NO_DIRS = { acceptanceCriteria: [], pitfalls: [], outOfScope: [] };
+  const { body } = draftSpec(
+    "feature",
+    "add a retry path to the plan driver",
+    [{ name: "test-surface", ok: true, text: "summary", toolUses: edgeItems }],
+    [],
+    [],
+    [],
+    0,
+    NO_DIRS,
+    [],
+  );
+  const edgeSection = body.slice(body.indexOf("## Edge cases"));
+  assert(
+    edgeSection.includes("the retry path must not double-fire on provider timeout"),
+    "D3: edge-case items from ANY angle populate the Edge cases section for a feature plan",
+  );
 }
 
 console.log(`\nexit ${exit}`);
