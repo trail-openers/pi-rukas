@@ -237,6 +237,17 @@ export function explainCap(
       return explainConsolidation(cap, state);
     case "lens-fix-not-integrated":
       return explainLens(cap, state);
+    case "integration-worktree-violation": {
+      // #861 — the commit-pr ops-fallback audit: the integration branch is
+      // held by a worktree that is NOT the driver-owned integrate worktree
+      // (the #841 shape: #841's ops child checked its branch out inside
+      // #844's worktree). The holder path rides in the cap's evidence; the
+      // PR-verification gates were refused so no PR was validated from the
+      // wrong tree. The integrate worktree is KEPT for inspection.
+      const hit = lastCapHit(state, "integration-worktree-violation");
+      const evidence = hit?.evidence ?? "(no holder recorded)";
+      return `commit-pr's ops fallback worked in the wrong tree: after the dispatch, the integration branch is held by a worktree that is NOT the driver-owned integrate worktree — ${evidence}. The driver's post-dispatch branch-holder audit halted the cycle BEFORE the PR-verification gates, so no PR was validated from the wrong tree (the #841 defect: #841's ops child checked its branch out inside #844's worktree). The driver-owned integrate worktree is preserved for inspection; inspect the offending holder, move the branch back, and re-run`;
+    }
   }
   // #844 — a local branch of the resolved name holds commits the freshly
   // fetched origin/<mainline> does not. Deliberate halt: only a human can

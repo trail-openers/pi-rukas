@@ -125,9 +125,11 @@ function assert(cond: boolean, msg: string) {
       `canary: ${f} advises --3way --binary — it advised --index, which rejects a second workstream on the same file`,
     );
   }
+  // #861 — commitPrConsolidationSteps moved to the commit-pr sibling;
+  // the staged-diff canary follows the literal where it now lives.
   assert(
-    /diff --cached --binary/.test(read("work-driver-handoff-recovery-caps.ts")),
-    "canary: work-driver-handoff-recovery-caps.ts captures the STAGED diff — it used `git diff HEAD`, which silently omits untracked new files",
+    /diff --cached --binary/.test(read("work-driver-handoff-recovery-commit-pr.ts")),
+    "canary: work-driver-handoff-recovery-commit-pr.ts captures the STAGED diff — it used `git diff HEAD`, which silently omits untracked new files",
   );
   // And the driver's own path agrees with what it tells the operator to do.
   assert(

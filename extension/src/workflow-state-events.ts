@@ -255,6 +255,7 @@ export type WorkEvent =
         | "commit-pr-incomplete-consolidation"
         | "lens-fix-not-integrated"
         | "integration-verify-failed"
+        | "integration-worktree-violation"
         // #669 — develop-time consolidation hit a real file-level conflict:
         // two workstreams edited the same lines. Distinct from
         // verify-failed:develop — the work may be individually fine; the

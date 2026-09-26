@@ -36,6 +36,11 @@ const issue = 775;
 const BRANCH = "feature/issue-775";
 
 // Distinct, easily-greppable 40-char SHAs per workstream.
+// The cycle's global base and the stack root's recorded workstream base
+// (the dependency's tip at deferred-creation time; #861 decision 6).
+const BASE_SHA = "aaaa11111111111111111111111111111111111111";
+const PREP_BASE = "cccc22222222222222222222222222222222222222";
+
 const SHAs: Record<string, string> = {
   prep: "111122223333444455556666777788889999aaaa",
   "label-verify": "22223333444455556666777788889999aaaabbbb",
@@ -67,7 +72,8 @@ function stackedState(): WorkState {
       ciRetryCount: 0,
       inFlightJobIds: [],
       branchName: BRANCH,
-      baseSha: "aaaa11111111111111111111111111111111111111",
+      baseSha: BASE_SHA,
+      workstreamBaseShas: { prep: PREP_BASE },
       worktrees: {
         prep: `${REPO}/.worktrees/issue-${issue}-prep`,
         "label-verify": `${REPO}/.worktrees/issue-${issue}-label-verify`,
@@ -120,8 +126,8 @@ function stackedState(): WorkState {
     .filter((l) => l.includes("git cherry-pick"));
   assert(pickLines.length === 1, "stack: exactly one cherry-pick command is printed");
   assert(
-    pickLines[0]?.includes(SHAs["banner-tests"]),
-    "stack: the single pick is the leaf workstream's tip (banner-tests)",
+    pickLines[0]?.includes(`${BASE_SHA}..${SHAs["banner-tests"]}`),
+    "stack: the single pick is a range from the cycle's baseSha to the leaf's tip (root's own base is prep's head)",
   );
   assert(
     !pickLines.join("\n").includes(SHAs["label-verify"]),
@@ -131,12 +137,180 @@ function stackedState(): WorkState {
     !pickLines.join("\n").includes(SHAs["prep"]),
     "stack: the root ancestor's HEAD is not a pick target",
   );
+  assert(
+    !pickLines.join("\n").includes(PREP_BASE),
+    "stack: the root's workstream base (its parent's tip) is not emitted — rootBase is the stack root's own base",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 1a. #861 — a workstream base RECORDED for the stack root is used verbatim
+//     as rootBase (the deferred-creation shape where the root itself was
+//     created from a dependency's tip outside this stack).
+// ---------------------------------------------------------------------------
+{
+  const s = stackedState();
+  s.pipelineState.workstreams = {
+    "label-verify": { id: "label-verify", dependsOn: ["prep"] },
+    "forge-seams": { id: "forge-seams", dependsOn: ["label-verify"] },
+    "banner-tests": { id: "banner-tests", dependsOn: ["forge-seams"] },
+  };
+  const { steps } = recoveryStepsForCap(s);
+  const pickLines = steps
+    .filter((s) => s.section === "worktree-work-fallback")
+    .flatMap((s) => s.lines)
+    .filter((l) => l.includes("git cherry-pick"));
+  assert(pickLines.length === 1, "recorded base: exactly one cherry-pick command is printed");
+  // The map's recorded base is PREP's own base (the parent's tip); the pick
+  // root's OWN base is prep's head — so the emitted range runs from BASE_SHA
+  // and never emits the recorded PREP_BASE as rootBase.
+  assert(
+    pickLines[0]?.includes(`${BASE_SHA}..${SHAs["banner-tests"]}`),
+    "recorded base: a recorded workstream base that is not the pick root's own base is not used as rootBase",
+  );
+  assert(
+    !pickLines.join("\n").includes(PREP_BASE),
+    "recorded base: the map's non-root base is not emitted on the recovery line",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 1a-2. #861 — a workstream whose own `workstreamBaseShas` is the stack
+//     root's base: a 2-node diamond where `a` and `b` are independent
+//     (no dependsOn between them) and both are in `toPick` — the case
+//     where the LEAF is also the root (single-element toPick).
+//     `a` (base at PICK_BASE, no dependsOn) → the sole leaf.
+// ---------------------------------------------------------------------------
+{
+  const s = stackedState();
+  const PICK_BASE = "dddd33333333333333333333333333333333333333";
+  s.pipelineState.worktrees = {
+    a: `${REPO}/.worktrees/issue-${issue}-a`,
+  };
+  s.pipelineState.workstreams = {
+    a: { id: "a" },
+    b: { id: "b", dependsOn: ["a"] },
+  };
+  s.pipelineState.workstreamBaseShas = { a: PICK_BASE };
+  s.pipelineState.handoffSnapshot.committedWork = [
+    {
+      worktreeId: "a",
+      path: `${REPO}/.worktrees/issue-${issue}-a`,
+      headSha: SHAs["prep"],
+      ahead: 1,
+    },
+  ];
+  const { steps } = recoveryStepsForCap(s);
+  const pickLines = steps
+    .filter((st) => st.section === "worktree-work-fallback")
+    .flatMap((st) => st.lines)
+    .filter((l) => l.includes("git cherry-pick"));
+  // committedWork has only 'a'; toPick = ['a'] (a is the only leaf); stacked = false
+  // (1 < 1 is false) → per-leaf pick, not a range. The workstreamBaseShas path
+  // is not exercised here (no range pick).
+  assert(pickLines.length === 1, "own base: one cherry-pick for a single-element committedWork");
+  assert(
+    pickLines[0]?.includes(SHAs["prep"]),
+    "own base: single leaf picks its own head SHA (no range)",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 1b. #861 — no recorded base for the stack root: the pick range falls back
+//     to the cycle's baseSha (and with no dependsOn map at all the pick
+//     stays a bare single-SHA pick — the pre-#679 shape).
+// ---------------------------------------------------------------------------
+{
+  const s = stackedState();
+  delete s.pipelineState.workstreams;
+  const { steps } = recoveryStepsForCap(s);
+  const pickLines = steps
+    .filter((s) => s.section === "worktree-work-fallback")
+    .flatMap((s) => s.lines)
+    .filter((l) => l.includes("git cherry-pick"));
+  assert(pickLines.length === 4, "fallback: no dependsOn map → one pick per worktree (pre-#679 shape)");
+  assert(
+    !pickLines.join("\n").includes(".."),
+    "fallback: per-leaf picks are single-SHA picks, not a range",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 1c. #861 — a disjoint leaf that IS a dependency root gets its own
+//     per-leaf pick: a recorded workstream base is never emitted for a
+//     disjoint (non-stacked) pick.
+// ---------------------------------------------------------------------------
+{
+  const s = stackedState();
+  s.pipelineState.worktrees = {
+    "task-a": `${REPO}/.worktrees/issue-${issue}-task-a`,
+    "task-b": `${REPO}/.worktrees/issue-${issue}-task-b`,
+  };
+  s.pipelineState.workstreams = {
+    "task-a": { id: "task-a" },
+    "task-b": { id: "task-b" },
+  };
+  s.pipelineState.workstreamBaseShas = { "task-a": PREP_BASE };
+  s.pipelineState.handoffSnapshot.committedWork = [
+    {
+      worktreeId: "task-a",
+      path: `${REPO}/.worktrees/issue-${issue}-task-a`,
+      headSha: "aabbccddeeff0011223344556677889900112233",
+      ahead: 1,
+    },
+    {
+      worktreeId: "task-b",
+      path: `${REPO}/.worktrees/issue-${issue}-task-b`,
+      headSha: "ffeeddccbbaa0011223344556677889900112233",
+      ahead: 2,
+    },
+  ];
+  const { steps } = recoveryStepsForCap(s);
+  const pickLines = steps
+    .filter((s) => s.section === "worktree-work-fallback")
+    .flatMap((s) => s.lines)
+    .filter((l) => l.includes("git cherry-pick"));
+  assert(pickLines.length === 2, "disjoint-with-base: one cherry-pick per worktree");
+  assert(
+    !pickLines.join("\n").includes(PREP_BASE),
+    "disjoint-with-base: a disjoint leaf's recorded workstream base is never emitted (no range pick)",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 1d. #861 — a stacked state where the stack root IS a leaf (the workstreams
+//     map covers only the dependent chain; the root sits below it untracked),
+//     plus the stack-only comment still explains the block.
+// ---------------------------------------------------------------------------
+{
+  const s = stackedState();
+  s.pipelineState.workstreams = {
+    prep: { id: "prep" },
+    "label-verify": { id: "label-verify", dependsOn: ["prep"] },
+  };
+  s.pipelineState.handoffSnapshot.committedWork = [
+    committedWork("prep", 1),
+    committedWork("label-verify", 2),
+  ];
+  const { steps } = recoveryStepsForCap(s);
+  const pickLines = steps
+    .filter((s) => s.section === "worktree-work-fallback")
+    .flatMap((s) => s.lines)
+    .filter((l) => l.includes("git cherry-pick"));
+  assert(pickLines.length === 1, "stack root leaf: exactly one cherry-pick command is printed");
+  assert(
+    pickLines[0]?.includes(BASE_SHA + ".." + SHAs["label-verify"]),
+    "stack root leaf: the pick range runs from the cycle's baseSha to the leaf's tip",
+  );
   const allLines = steps.flatMap((s) => [...s.comment, ...s.lines]).join("\n");
   assert(
     allLines.includes("dependsOn") || allLines.includes("stack"),
     "stack: the printed block explains why only the leaf is picked",
   );
-  assert(allLines.includes("tip of the dependency chain"), "stack: the pick is named as the tip of the dependency chain");
+  assert(
+    allLines.includes("applies every commit of the stack in order"),
+    "stack: the pick is explained as applying every commit of the stack in order",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +344,10 @@ function stackedState(): WorkState {
     .filter((l) => l.includes("git cherry-pick"));
   assert(pickLines.length === 2, "disjoint: one cherry-pick per worktree when no dependsOn is declared");
   assert(
+    !pickLines.join("\n").includes(".."),
+    "disjoint: per-leaf picks are single-SHA picks, not a range",
+  );
+  assert(
     pickLines.join("\n").includes("aabbccddeeff0011223344556677889900112233"),
     "disjoint: task-a's HEAD is picked",
   );
@@ -178,7 +356,7 @@ function stackedState(): WorkState {
     "disjoint: task-b's HEAD is picked",
   );
   const allLines = steps.flatMap((st) => [...st.comment, ...st.lines]).join("\n");
-  assert(!allLines.includes("tip of the dependency chain"), "disjoint: no stack-only explanation is printed");
+  assert(!allLines.includes("applies every commit of the stack in order"), "disjoint: no stack-only explanation is printed");
 }
 
 // ---------------------------------------------------------------------------

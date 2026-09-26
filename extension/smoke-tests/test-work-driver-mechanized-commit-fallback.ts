@@ -213,6 +213,110 @@ const mkDispatchFn =
       }
     }
 
+    // M2b — #861: a conflict that PRESERVED a patch (integrate()'s
+    // conflictPatch) → the fallback prompt carries that path as the
+    // structured value (the ops prompt's "preserved conflict artifact" line
+    // reads it directly, never re-parsed from the plumb's body).
+    {
+      const dir = mkdtempSync(path.join(tmpdir(), "mech-fallback-patch-"));
+      try {
+        await (await import("node:fs/promises")).mkdir(path.join(dir, ".git", "info"), {
+          recursive: true,
+        });
+        // integrate() preserves the patch at <scratchDir>/integrate-<id>.patch
+        // on an apply conflict — the path the structured conflictPatch
+        // carries (and the ops prompt must name).
+        const PATCH = path.join(dir, "tmp", "issue-998", "integrate-task-a.patch");
+        const capturedOpsPrompts: string[] = [];
+        const callsP: string[] = [];
+        const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
+          callsP.push(cmd);
+          if (cmd.startsWith("git rev-parse --verify --quiet refs/heads/"))
+            return { stdout: "base123\n" };
+          if (cmd.startsWith("git rev-parse --verify --quiet HEAD"))
+            throw new Error("fatal: not a git repository");
+          if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
+          if (cmd === "git rev-parse --abbrev-ref HEAD")
+            return { stdout: "feature/issue-998\n" };
+          if (cmd.startsWith("git rev-parse ")) return { stdout: "base123\n" };
+          if (cmd.startsWith("git fetch origin")) return { stdout: "" };
+          if (cmd.startsWith("git worktree add")) return { stdout: "" };
+          if (cmd.startsWith("git worktree remove")) return { stdout: "" };
+          if (cmd.includes("/issue-998-integrate")) return { stdout: "" };
+          if (cmd.startsWith("git status --porcelain")) {
+            const worktreeAdds = callsP.filter((c) => c.startsWith("git worktree add")).length;
+            const cwd = o?.cwd ?? "";
+            if (worktreeAdds < 3) return { stdout: "" };
+            if (/-task-[abc]$/.test(cwd)) return { stdout: " M src/x.rs\n" };
+            return { stdout: "" };
+          }
+          if (cmd.startsWith("git rev-list --count base123")) return { stdout: "0\n" };
+          if (cmd.startsWith("git rev-list --count origin/")) return { stdout: "1\n" };
+          if (cmd.startsWith("git add -- ")) return { stdout: "" };
+          if (cmd.startsWith("git diff --cached"))
+            return { stdout: "diff --git a/x b/x\n+new\n" };
+          // #861 — a FAILED apply: the patch file (integrate-task-a.patch)
+          // is the preserved artifact integrate() records as conflictPatch.
+          if (cmd.startsWith("git apply")) {
+            const err = new Error("patch does not apply") as Error & { stderr?: string };
+            err.stderr = "error: patch failed: src/x.rs:1";
+            throw err;
+          }
+          if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
+          if (cmd.startsWith("git diff --name-only origin/"))
+            return { stdout: "src/a.rs\nsrc/b.rs\nsrc/c.rs\n" };
+          if (cmd.startsWith("gh pr view")) return { stdout: '{"state":"OPEN"}' };
+          return { stdout: "" };
+        };
+        const mkOpsResult = (): DispatchResult =>
+          mkResult({ role: "ops", text: "Committed and pushed.\npr: 599" });
+        const ctx: DriverContext = {
+          pi: makeFakePi().pi,
+          repoRoot: dir,
+          issue: 998,
+          issueBodyFetcherFn: mockIssueBodyOk,
+          verifyExecFn: exec,
+          adversarialLoopFn: async () =>
+            mkResult({ role: "adversarial-developer", text: "APPROVED after round 1" }),
+          dispatchFn: async (_pi, spec, dOpts) => {
+            const label = dOpts?.label ?? spec.role;
+            if (label === "explore") return mkResult({ text: "VERDICT: NEEDS_WORK" });
+            if (label === "plan") return mkResult({ text: PLAN_REPLY });
+            if (label === "ops") return mkResult({ role: "ops", text: branchReplyFor(dir, 998) });
+            if (label.startsWith("developer"))
+              return mkResult({ role: "developer", text: "done — implemented" });
+            if (label === "ops:commit-pr") {
+              capturedOpsPrompts.push(spec.prompt);
+              return mkOpsResult();
+            }
+            if (label === "ops:ci") throw new Error("halt at ci: integration assertion boundary");
+            if (label === "ops:handoff") return mkResult({ role: "ops", text: "Posted." });
+            throw new Error(`unexpected dispatch: ${label}`);
+          },
+        };
+        await runWorkDriver(ctx).catch(() => {});
+        const after = await readState(dir, 998);
+        assert(
+          after?.eventLog.some(
+            (e) => e.kind === "plumb-report" && e.step === "commit-pr" && e.body.includes(PATCH),
+          ),
+          "M2b: plumb-report carries the preserved patch path (the marker in the reason)",
+        );
+        const prompt = capturedOpsPrompts.join("\n");
+        assert(
+          prompt.includes(PATCH) &&
+            /The preserved conflict artifact from the mechanized attempt is at `[^`]+`/.test(prompt),
+          "M2b: the fallback ops prompt carries the conflict-patch path (structured value)",
+        );
+        assert(
+          !/No conflict artifact was preserved/.test(prompt),
+          "M2b: the fallback ops prompt does NOT claim no artifact was preserved",
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
     // M3 — empty-worktree guard: one clean worktree → fallback with the
     // no-uncommitted-work reason.
     {
@@ -276,12 +380,27 @@ const mkDispatchFn =
         const calls4: string[] = [];
         const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
           calls4.push(cmd);
+          // #861 — the driver's ensureIntegrateWorktree probes the branch ref
+          // and the (nonexistent) integrate path's HEAD before the #475
+          // target guard. The path's HEAD read must fail (directory absent)
+          // so the re-entry does not treat the tree as stale; the branch ref
+          // read hits the same `base123` the rest of the fake answers.
+          if (cmd.startsWith("git rev-parse --verify --quiet refs/heads/"))
+            return { stdout: "base123\n" };
+          if (cmd.startsWith("git rev-parse --verify --quiet HEAD"))
+            throw new Error("fatal: not a git repository");
           if (cmd === "git rev-parse HEAD") return { stdout: "base123\n" };
           if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-997\n" };
           if (cmd.startsWith("git rev-parse ")) return { stdout: "base123\n" };
           if (cmd.startsWith("git fetch origin")) return { stdout: "" };
           if (cmd.startsWith("git worktree add")) return { stdout: "" };
           if (cmd.startsWith("git worktree remove")) return { stdout: "" };
+          // #861 — the driver now creates the integrate worktree on a
+          // non-terminal mechanized failure. The fake exec must tolerate it:
+          // the new directory does not exist, so `git` in that cwd throws
+          // (caught → treated as "no stale tree", the correct shape for a
+          // first-time creation).
+          if (cmd.includes("/issue-997-integrate")) return { stdout: "" };
           if (cmd.startsWith("git status --porcelain")) {
             const cwd = o?.cwd ?? "";
             const worktreeAdds = calls4.filter((c) => c.startsWith("git worktree add")).length;

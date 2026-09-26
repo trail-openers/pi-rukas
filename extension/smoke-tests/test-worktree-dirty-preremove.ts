@@ -39,6 +39,7 @@ import type { DriverContext } from "../src/work-driver-context.ts";
 import { initialState } from "../src/workflow-state.ts";
 import { DirtyWorktreeError, inspectWorktreeForLoss, worktreeCreate } from "../src/worktree.ts";
 import type { ExecFn } from "../src/worktree.ts";
+import { runCreateGuards } from "../src/worktree-create-guard.ts";
 
 const execFileP = promisify(execFile);
 
@@ -210,6 +211,62 @@ try {
   }
 } finally {
   rmSync(root, { recursive: true, force: true });
+}
+
+// ------------- the #861 exemption is INTEGRATE-ONLY: a workstream path
+// (dirty target, no callerVerifiedTargetAbsent) still hits the unconditional
+// target guard — the workstream path NEVER passes the option.
+{
+  const { repo, baseSha } = await fixture("workstream-guard");
+  const wt = path.join(repo, ".worktrees", "issue-475-default");
+  await git(repo, ["worktree", "add", "-q", "--detach", wt, baseSha]);
+  writeFileSync(path.join(wt, "a.txt"), "base\nuncommitted work\n");
+  // runCreateGuards on a dirty target WITHOUT the option (the workstream
+  // path's contract) must throw DirtyWorktreeError — the target guard is
+  // unconditional and the option is integrate-only.
+  let dirtyWs: DirtyWorktreeError | undefined;
+  let rawErr: unknown;
+  try {
+    await runCreateGuards(
+      realExec,
+      { repoRoot: repo, name: "issue-475-default", fromRef: baseSha },
+      // An in-cycle path (like the branch step's worktrees): the guard must
+      // still fire — in-cycle membership never waives the target guard.
+      [wt],
+    );
+  } catch (err) {
+    if (err instanceof DirtyWorktreeError) dirtyWs = err;
+    else rawErr = err;
+  }
+  assert(
+    dirtyWs !== undefined,
+    "runCreateGuards: a dirty in-cycle workstream target throws DirtyWorktreeError (the #475 guard is unconditional)",
+  );
+  assert(
+    !String(rawErr ?? "").includes("already exists"),
+    "not a raw 'already exists' git error — the guard's descriptive refusal fired",
+  );
+  // And with the option (the integrate path): the guard skips the inspection
+  // only when the target is ABSENT (it is present here → the guard fires).
+  let dirtyIntegrate: DirtyWorktreeError | undefined;
+  try {
+    await runCreateGuards(
+      realExec,
+      {
+        repoRoot: repo,
+        name: "issue-475-default",
+        fromRef: baseSha,
+        callerVerifiedTargetAbsent: true,
+      },
+      [wt],
+    );
+  } catch (err) {
+    if (err instanceof DirtyWorktreeError) dirtyIntegrate = err;
+  }
+  assert(
+    dirtyIntegrate !== undefined,
+    "runCreateGuards: a PRESENT dirty target still fires even with callerVerifiedTargetAbsent (the option only skips when ABSENT)",
+  );
 }
 
 // ----------------------------------------------------- injected-exec routing
