@@ -249,18 +249,19 @@ export function memoSynthesisPrompt(topic: string, claims: readonly ResearchClai
  * of its own kind.
  */
 export function parseMemoSections(reply: string): MemoSections {
-  const markerLine = /^\s*\**\s*(RECOMMENDATION|COMPARISON)\s*[:：]?\s*\**\s*[:：]?\s*$/im;
-  const markers: { kind: "RECOMMENDATION" | "COMPARISON"; start: number }[] = [];
+  const markerLine = /^\s*\**\s*(RECOMMENDATION|COMPARISON)\s*[:：]?\s*\**\s*[:：]?\s*$/img;
+  const markers: { kind: "RECOMMENDATION" | "COMPARISON"; index: number; start: number }[] = [];
   for (const m of reply.matchAll(markerLine)) {
-    markers.push({ kind: m[1] as "RECOMMENDATION" | "COMPARISON", start: (m.index ?? 0) + m[0].length });
+    const idx = m.index ?? 0;
+    markers.push({ kind: m[1] as "RECOMMENDATION" | "COMPARISON", index: idx, start: idx + m[0].length });
   }
   const rec = markers.filter((x) => x.kind === "RECOMMENDATION").at(-1);
   const cmp = markers.filter((x) => x.kind === "COMPARISON").at(-1);
   const out: MemoSections = {};
   if (rec) {
-    const laterCmp = markers.filter((x) => x.kind === "COMPARISON" && x.start > rec.start);
+    const laterCmp = markers.filter((x) => x.kind === "COMPARISON" && x.index >= rec.start);
     const first = laterCmp[0];
-    const end = first ? first.start : reply.length;
+    const end = first ? first.index : reply.length;
     const t = reply.slice(rec.start, end).trim();
     if (t) out.recommendation = t;
   }

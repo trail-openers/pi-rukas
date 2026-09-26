@@ -65,6 +65,13 @@ function assert(cond: boolean, msg: string) {
   assert(bold.recommendation === "Do not adopt.", "memo parser: bolded marker tolerated");
   const none = parseMemoSections("I could not synthesize anything useful.");
   assert(!none.recommendation && !none.comparison, "memo parser: absent markers → absent sections");
+  // #896 — two RECOMMENDATION blocks: the LAST one wins, rendered once.
+  const two =
+    "RECOMMENDATION:\nFirst rec: do not adopt.\n\nCOMPARISON:\n| a | b |\n\nRECOMMENDATION:\nSecond rec: adopt with conditions.\n\nCOMPARISON:\n| c | d |\n";
+  const s2 = parseMemoSections(two);
+  assert(s2.recommendation === "Second rec: adopt with conditions.", "memo parser: last RECOMMENDATION block wins");
+  assert(!s2.recommendation?.includes("First rec"), "memo parser: first block not leaked into the recommendation");
+  assert(s2.comparison?.startsWith("| c |"), "memo parser: last COMPARISON block wins");
 }
 
 {
@@ -98,6 +105,49 @@ function assert(cond: boolean, msg: string) {
     entailableClaims([mk("finding", "url", undefined)]).length === 0,
     "entailable: child-labelled `url` with no derived kinds is NOT entailable (silence is not a url)",
   );
+  // #896 — dead / ungrounded claims are EXCLUDED before the cap, and the
+  // freed slot goes to the next eligible claim.
+  const deadClaim = {
+    kind: "finding",
+    text: "dead text",
+    source: "https://a/dead",
+    sourceKind: "url",
+    confidence: "high",
+    staleness: "stable",
+    angle: "a",
+    verification: { check: "url-liveness" as const, status: "dead" as const, derivedKinds: ["url"] as ("url" | "code" | "local" | "external-code" | "doc")[] },
+  } as ResearchClaim;
+  const ungroundedClaim = {
+    kind: "finding",
+    text: "ungrounded text",
+    source: "src/missing.ts",
+    sourceKind: "code",
+    confidence: "high",
+    staleness: "stable",
+    angle: "a",
+    verification: { check: "code-grounding" as const, status: "ungrounded" as const, derivedKinds: ["code"] as ("url" | "code" | "local" | "external-code" | "doc")[] },
+  } as ResearchClaim;
+  const liveClaim = mk("finding", "url", ["url"]);
+  assert(entailableClaims([deadClaim, liveClaim]).length === 1, "entailable: dead claim excluded, live claim takes the slot");
+  assert(entailableClaims([deadClaim, liveClaim])[0]?.text === "t", "entailable: the freed slot goes to the eligible claim");
+  assert(entailableClaims([ungroundedClaim, liveClaim]).length === 1, "entailable: ungrounded claim excluded");
+
+  // #896 — the entailment prompt includes each claim's deterministic status.
+  const { entailmentPrompt } = await import("../src/research-verify.ts");
+  const statusClaim = {
+    kind: "finding",
+    text: "a status-bearing claim",
+    source: "https://a/one",
+    sourceKind: "url",
+    confidence: "high",
+    staleness: "stable",
+    angle: "a",
+    verification: { check: "url-liveness" as const, status: "live" as const },
+  } as ResearchClaim;
+  const prompt = entailmentPrompt([statusClaim]);
+  assert(prompt.includes("STATUS: live"), "entailment prompt includes the deterministic verification status");
+  const deadStatusClaim = { ...statusClaim, verification: { check: "url-liveness" as const, status: "dead" as const } } as ResearchClaim;
+  assert(entailmentPrompt([deadStatusClaim]).includes("STATUS: dead"), "entailment prompt includes dead status");
 }
 
 // ------------------------------------------------------ pipeline (stubs)
