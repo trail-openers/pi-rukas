@@ -89,8 +89,14 @@ function assert(cond: boolean, msg: string) {
   assert(capped.size === LIVENESS_URL_CAP + 10, `cap: map records ALL inputs (${capped.size})`);
   let skipped = 0;
   for (const [, s] of capped) if (s === "skipped-cap") skipped++;
-  assert(skipped === 10, `cap: ${skipped} past-cap URLs marked skipped-cap (not absent, not unchecked)`);
-  assert(capped.get(`https://a/${LIVENESS_URL_CAP}`) === "skipped-cap", "first past-cap URL → skipped-cap");
+  assert(
+    skipped === 10,
+    `cap: ${skipped} past-cap URLs marked skipped-cap (not absent, not unchecked)`,
+  );
+  assert(
+    capped.get(`https://a/${LIVENESS_URL_CAP}`) === "skipped-cap",
+    "first past-cap URL → skipped-cap",
+  );
   assert(capped.get("https://a/0") === "live", "within-cap URL checked as before");
 }
 
@@ -168,7 +174,9 @@ function fnSeen(fn: ExecFn): string[] {
     "grounding pins to the commit (git cat-file -e <sha>:<path>)",
   );
   assert(
-    fnSeen(ok).filter((c) => c.includes("git grep")).some((c) => c.includes('abc1234def -- "src/x.ts"')) === true,
+    fnSeen(ok)
+      .filter((c) => c.includes("git grep"))
+      .some((c) => c.includes('abc1234def -- "src/x.ts"')) === true,
     "symbol grep is scoped to the file at the sha (git grep -F -- <sym> <sha> -- <path>)",
   );
 
@@ -220,11 +228,18 @@ function fnSeen(fn: ExecFn): string[] {
     "a grep failure that isn't 'no match' leaves the claim unchecked, never condemned",
   );
   assert(
-    (await groundCodeSource(groundExecStub({ catFileOk: ["src/x.ts"], grep: () => "hits" }), "/r", "src/x.ts", "unknown")) ===
-      "unchecked",
+    (await groundCodeSource(
+      groundExecStub({ catFileOk: ["src/x.ts"], grep: () => "hits" }),
+      "/r",
+      "src/x.ts",
+      "unknown",
+    )) === "unchecked",
     "unknown sha → unchecked, not ungrounded",
   );
-  assert((await groundCodeSource(broken, "/r", "", "abc1234def")) === "unchecked", "empty source → unchecked");
+  assert(
+    (await groundCodeSource(broken, "/r", "", "abc1234def")) === "unchecked",
+    "empty source → unchecked",
+  );
 }
 
 // parse forms
@@ -234,14 +249,23 @@ function fnSeen(fn: ExecFn): string[] {
   assert(f("src/x.ts").path === "src/x.ts" && f("src/x.ts").symbol === null, "parse: path");
   const ps = f("src/x.ts#resolveModel");
   assert(ps.path === "src/x.ts" && ps.symbol === "resolveModel", "parse: path#symbol");
-  assert(f("src/x.ts:42").path === "src/x.ts" && f("src/x.ts:42").symbol === null, "parse: path:line");
-  assert(f("src/x.ts#L42").path === "src/x.ts" && f("src/x.ts#L42").symbol === null, "parse: path#Lline");
+  assert(
+    f("src/x.ts:42").path === "src/x.ts" && f("src/x.ts:42").symbol === null,
+    "parse: path:line",
+  );
+  assert(
+    f("src/x.ts#L42").path === "src/x.ts" && f("src/x.ts#L42").symbol === null,
+    "parse: path#Lline",
+  );
   const pa = f("src/x.ts (formatRow)");
   assert(pa.path === "src/x.ts" && pa.symbol === null, "parse: path (annotation)");
   const pl = f("src/x.ts … line ~25");
   assert(pl.path === "src/x.ts" && pl.symbol === null, "parse: path … line ~N");
   const pline = f("src/x.ts#L42#sym");
-  assert(pline.path === "src/x.ts" && pline.symbol === "L42#sym" || pline.symbol === null, "parse: #Lline consumed as line marker");
+  assert(
+    (pline.path === "src/x.ts" && pline.symbol === "L42#sym") || pline.symbol === null,
+    "parse: #Lline consumed as line marker",
+  );
 }
 
 // split compound sources
@@ -251,11 +275,17 @@ function fnSeen(fn: ExecFn): string[] {
   assert(s("https://a/1; https://b/2") === "https://a/1␟https://b/2", "split: ; separator");
   assert(s("https://a/1 + https://b/2") === "https://a/1␟https://b/2", "split: + separator");
   assert(s("https://a/1, https://b/2") === "https://a/1␟https://b/2", "split: , separator");
-  assert(s("https://a/1 https://b/2") === "https://a/1␟https://b/2", "split: whitespace between URLs");
+  assert(
+    s("https://a/1 https://b/2") === "https://a/1␟https://b/2",
+    "split: whitespace between URLs",
+  );
   assert(s("https://a/1") === "https://a/1", "no split: single URL");
   assert(s("src/x.ts#sym") === "src/x.ts#sym", "no split: code source");
   assert(s("lib@1.2 docs") === "lib@1.2 docs", "no split: doc reference");
-  assert(s("outputs/*.provenance.md (all 30 sidecars)") === "outputs/*.provenance.md (all 30 sidecars)", "no split: glob + annotation");
+  assert(
+    s("outputs/*.provenance.md (all 30 sidecars)") === "outputs/*.provenance.md (all 30 sidecars)",
+    "no split: glob + annotation",
+  );
   // The real fixture shape: parenthetical annotation stays with its URL.
   const annotated = splitCompoundSource(
     "https://github.com/trail-openers/pi-rukas/commit/9855a08 (label: formatRow(e, now) added at line 234); https://github.com/trail-openers/pi-rukas/issues/709",
@@ -275,13 +305,20 @@ function fnSeen(fn: ExecFn): string[] {
 
 {
   const statStub = (async (p: string) =>
-    p.endsWith("missing") || p.endsWith("/missing")
-      ? undefined
-      : { isDirectory: false }) as never;
-  assert((await checkLocalFile("/r/present.txt", statStub)) === "local-present", "stat: present → local-present");
-  assert((await checkLocalFile("/r/missing", statStub)) === "local-missing", "stat: missing → local-missing");
+    p.endsWith("missing") || p.endsWith("/missing") ? undefined : { isDirectory: false }) as never;
+  assert(
+    (await checkLocalFile("/r/present.txt", statStub)) === "local-present",
+    "stat: present → local-present",
+  );
+  assert(
+    (await checkLocalFile("/r/missing", statStub)) === "local-missing",
+    "stat: missing → local-missing",
+  );
   const dirStub = (async () => ({ isDirectory: true })) as never;
-  assert((await checkLocalFile("/r/dir", dirStub)) === "local-present", "stat: directory → local-present");
+  assert(
+    (await checkLocalFile("/r/dir", dirStub)) === "local-present",
+    "stat: directory → local-present",
+  );
 }
 
 {
@@ -297,7 +334,10 @@ function fnSeen(fn: ExecFn): string[] {
       .stat(p)
       .then((st) => ({ isDirectory: st.isDirectory() }))
       .catch(() => undefined);
-  assert((await checkLocalFile(realFile, statReal)) === "local-present", "stat seam: real file present");
+  assert(
+    (await checkLocalFile(realFile, statReal)) === "local-present",
+    "stat seam: real file present",
+  );
   assert(
     (await checkLocalFile(path.join(tmp, "nope.txt"), statReal)) === "local-missing",
     "stat seam: real missing leaf",
@@ -305,8 +345,6 @@ function fnSeen(fn: ExecFn): string[] {
   assert((await checkLocalFile(tmp, statReal)) === "local-present", "stat seam: directory present");
   await fs2.promises.rm(tmp, { recursive: true, force: true });
 }
-
-// --------------------------------------------------- classification (verifyClaims)
 
 function claim(over: Partial<ResearchClaim>): ResearchClaim {
   return {
@@ -332,144 +370,6 @@ function verifyExecStub(grepHits: boolean): ExecFn {
     }
     throw new Error(`unexpected: ${cmd}`);
   };
-}
-
-const statStubFor = (present: Set<string>) =>
-  (async (p: string) => (present.has(p) ? { isDirectory: false } : undefined)) as never;
-
-{
-  const fetched: string[] = [];
-  const fetchStub = (async (u: string) => {
-    fetched.push(u);
-    return { status: u.includes("dead") ? 404 : 200 };
-  }) as never;
-
-  // An https URL the child labelled "code" → liveness-checked, not grounded.
-  const out = await verifyClaims(
-    [
-      claim({ source: "https://a/ok", sourceKind: "code" }),
-      claim({ source: "https://a/dead; https://a/ok", sourceKind: "url" }),
-      claim({ source: "/Users/janni/present.txt", sourceKind: "url" }),
-      claim({ source: "/Users/janni/missing.txt", sourceKind: "url" }),
-      claim({ source: "KnockOutEZ/wigolo @ main", sourceKind: "code" }),
-      claim({ source: "https://github.com/KnockOutEZ/wigolo/blob/main/src/a.ts", sourceKind: "code" }),
-      claim({ source: "src/x.ts#resolveModel", sourceKind: "code" }),
-      claim({ source: "src/x.ts (annotation)", sourceKind: "code" }),
-      claim({ source: "lib@1.2 docs", sourceKind: "doc" }),
-      claim({ source: "outputs/*.provenance.md", sourceKind: "code" }),
-    ],
-    "/r",
-    verifyExecStub(false),
-    fetchStub,
-    {
-      statFn: statStubFor(new Set(["/Users/janni/present.txt"])),
-      pinnedSha: "abc1234def",
-    },
-  );
-  const by = (src: string) => out.find((c) => c.source === src)?.verification;
-
-  const urlAsCode = by("https://a/ok");
-  assert(
-    urlAsCode?.check === "url-liveness" && urlAsCode?.status === "live",
-    "https URL labelled 'code' → liveness-checked live (content wins over the child's label)",
-  );
-  const compound = by("https://a/dead; https://a/ok");
-  assert(
-    compound?.check === "url-liveness" && compound?.status === "live",
-    "compound dead+live → live (best-part mapping)",
-  );
-  assert(
-    (compound as { parts?: { status: string }[] } | undefined)?.parts?.length === 2,
-    "compound parts recorded in verification.parts",
-  );
-  const lp = by("/Users/janni/present.txt");
-  assert(
-    lp?.check === "local-file" && lp?.status === "local-present",
-    "local path labelled 'url' → stat-checked local-present, never fetched",
-  );
-  const lm = by("/Users/janni/missing.txt");
-  assert(
-    lm?.check === "local-file" && lm?.status === "local-missing",
-    "missing local path → local-missing",
-  );
-  const extRef = by("KnockOutEZ/wigolo @ main");
-  assert(
-    extRef?.check === "none" && extRef?.status === "unchecked" && (extRef as { reason?: string }).reason === "external repo",
-    "owner/repo @ ref → external-code, unchecked with the 'external repo' reason (no URL formable from a bare ref)",
-  );
-  const extBlob = by("https://github.com/KnockOutEZ/wigolo/blob/main/src/a.ts");
-  assert(
-    extBlob?.check === "url-liveness" && extBlob?.status === "live",
-    "github blob URL → external-code, liveness-checked as a URL",
-  );
-  const codeSym = by("src/x.ts#resolveModel");
-  assert(
-    codeSym?.check === "code-grounding" && codeSym?.status === "ungrounded",
-    "code source grounded at the pinned commit (stub: grep no-match → ungrounded)",
-  );
-  const codeAnn = by("src/x.ts (annotation)");
-  assert(
-    codeAnn?.check === "code-grounding" && codeAnn?.status === "grounded",
-    "path (annotation) parsed, path grounded at pinned commit (no symbol → grounded)",
-  );
-  const doc = by("lib@1.2 docs");
-  assert(
-    doc?.check === "none" && doc?.status === "unchecked",
-    "unmatched doc reference → doc/none, unchecked",
-  );
-  const glob = by("outputs/*.provenance.md");
-  assert(
-    glob?.check === "none" && glob?.status === "unchecked",
-    "unmatched glob → doc/none, unchecked (not code)",
-  );
-  assert(
-    fetched.every((u) => u.startsWith("http")),
-    "local paths never fetched (fetch stub saw only http URLs)",
-  );
-}
-
-{
-  // Mixed kinds: liveness parts decide when present, else code parts.
-  const fetchStub = (async (u: string) => ({ status: u.includes("dead") ? 404 : 200 })) as never;
-  const out = await verifyClaims(
-    [
-      claim({ source: "https://a/dead + /Users/janni/present.txt", sourceKind: "url" }),
-      claim({ source: "/Users/janni/present.txt + src/x.ts", sourceKind: "url" }),
-      claim({ source: "https://a/dead, src/x.ts", sourceKind: "url" }),
-    ],
-    "/r",
-    verifyExecStub(false),
-    fetchStub,
-    { statFn: statStubFor(new Set(["/Users/janni/present.txt"])), pinnedSha: "abc1234def" },
-  );
-  const [mixed1, mixed2, mixed3] = out;
-  assert(
-    mixed1?.verification.check === "url-liveness" && mixed1?.verification.status === "dead",
-    "mixed URL+local: the liveness part decides (dead)",
-  );
-  assert(
-    mixed2?.verification.check === "local-file" && mixed2?.verification.status === "local-present",
-    "local+code compound (no URLs to split on) → stat-checked local-present",
-  );
-  assert(
-    mixed3?.verification.check === "url-liveness" && mixed3?.verification.status === "dead",
-    "comma-split mixed compound → liveness part decides",
-  );
-}
-
-{
-  // Cap marker through verifyClaims: 61st unique URL → skipped-cap.
-  const urls = Array.from({ length: LIVENESS_URL_CAP + 1 }, (_, i) => `https://a/${i}`);
-  const sources = urls.map((u) => claim({ source: u, sourceKind: "url" }));
-  const out = await verifyClaims(sources, "/r", verifyExecStub(false), (async () => ({ status: 200 })) as never, {
-    pinnedSha: "abc1234def",
-  });
-  const over = out[out.length - 1]?.verification;
-  assert(
-    over?.check === "none" && over?.status === "skipped-cap",
-    "past-cap URL → skipped-cap, distinct from unchecked",
-  );
-  assert(out[0]?.verification.check === "url-liveness", "within-cap URLs still liveness-checked");
 }
 
 // --------------------------------------------------- abstention predicate
@@ -507,7 +407,9 @@ const statStubFor = (present: Set<string>) =>
     "doc-sourced finding with NO passing check does NOT count (source kind is not evidence)",
   );
   assert(
-    isVerifiedFinding(claim({ sourceKind: "doc", verification: { check: "url-liveness", status: "live" } })),
+    isVerifiedFinding(
+      claim({ sourceKind: "doc", verification: { check: "url-liveness", status: "live" } }),
+    ),
     "doc-labeled claim whose source was a URL (content classification) DOES count",
   );
   assert(

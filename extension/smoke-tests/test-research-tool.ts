@@ -108,6 +108,7 @@ setResearchDispatch(((
           : [
               claimCall("finding", "the scoring is RRF", "https://a/live", "url"),
               claimCall("finding", "seam exists", "src/x.ts#seamFn", "code"),
+              claimCall("finding", "URL mislabelled as code", "https://a/mislabeled", "code"),
               claimCall("contradiction", "A says 1, B says 2", "https://a/bot", "url"),
               { name: "report_research_claim", arguments: { kind: "finding", text: "" } }, // invalid → dropped
               { name: "other_tool", arguments: {} }, // foreign → ignored
@@ -124,10 +125,9 @@ setResearchDispatch(((
 
 const execStub: ExecFn = async (cmd) => {
   if (cmd.startsWith("git rev-parse")) return { stdout: "feedbeef12345\n" };
-  if (cmd.startsWith("git ls-files"))
-    return { stdout: cmd.includes("src/x.ts") ? "src/x.ts\n" : "" };
+  if (cmd.startsWith("git cat-file")) return { stdout: "" };
   if (cmd.startsWith("git grep")) {
-    if (cmd.includes("seamFn")) return { stdout: "src/x.ts\n" };
+    if (cmd.includes("seamFn") && cmd.includes("src/x.ts")) return { stdout: "hit\n" };
     throw new Error("exit 1");
   }
   throw new Error(`unexpected: ${cmd}`);
@@ -193,7 +193,14 @@ async function freshRepo(): Promise<string> {
   const code = r.claims.find((c) => c.source === "src/x.ts#seamFn");
   assert(
     code?.verification.check === "code-grounding" && code.verification.status === "grounded",
-    "code claim grounded against the pinned tree",
+    "code claim grounded at the pinned commit (cat-file + scoped grep)",
+  );
+  // End-to-end: an https URL the child labelled "code" is liveness-checked
+  // (content classification beats the child's label), not code-grounded.
+  const mislabeled = r.claims.find((c) => c.source === "https://a/mislabeled");
+  assert(
+    mislabeled?.verification.check === "url-liveness" && mislabeled.verification.status === "live",
+    "https URL labelled 'code' is liveness-checked end-to-end (driver classification)",
   );
   assert(!r.abstained && !r.halt, "verified findings → no abstention, no halt");
   assert(!!r.artifactPath && !!r.provenancePath, "artifact + provenance paths returned");

@@ -135,7 +135,18 @@ const args: ArtifactArgs = {
     p.includes("https://example.com/doc · kind: url · url live"),
     "provenance: source row with verification",
   );
-  assert(p.includes("403/429 count as unreachable, not dead"), "provenance: verification legend");
+  assert(
+    p.includes("grounded/ungrounded` = path and symbol checked at the pinned commit's tree"),
+    "provenance: verification legend",
+  );
+  assert(
+    p.includes("skipped-cap` = the liveness pass was capped"),
+    "provenance: legend defines skipped-cap",
+  );
+  assert(
+    p.includes("local-present/local-missing` = local path stat-checked"),
+    "provenance: legend defines local-present/local-missing",
+  );
 }
 
 // ---------------------------------------------- paths, exclude, fs write

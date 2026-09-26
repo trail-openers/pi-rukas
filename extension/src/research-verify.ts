@@ -1,12 +1,18 @@
 import { promises as fs } from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import {
-  type ClaimSupport,
-  type ClaimVerification,
-  type ResearchClaim,
-  type VerificationPart,
+import type {
+  ClaimSupport,
+  ClaimVerification,
+  ResearchClaim,
+  VerificationPart,
 } from "./research-types.ts";
+import {
+  type ResolvedSource,
+  checkLocalFile,
+  checkPart,
+  groundCodeSource,
+  resolveSourcePart,
+  splitCompoundSource,
+} from "./research-verify-classify.ts";
 import { trace } from "./trace.ts";
 /**
  * research-verify — the deterministic verification layer of /research.
@@ -44,8 +50,20 @@ export type FetchLike = (
 /** Minimal stat shape (injectable for offline tests — local files only). */
 export type StatLike = (p: string) => Promise<{ isDirectory: boolean } | undefined>;
 
+export {
+  checkLocalFile,
+  groundCodeSource,
+  parseCodeSource,
+  resolveSourcePart,
+  splitCompoundSource,
+} from "./research-verify-classify.ts";
+export type { ResolvedSource } from "./research-verify-classify.ts";
+
 const defaultStat: StatLike = (p) =>
-  fs.stat(p).then((s) => ({ isDirectory: s.isDirectory() }), () => undefined);
+  fs.stat(p).then(
+    (s) => ({ isDirectory: s.isDirectory() }),
+    () => undefined,
+  );
 
 /** Bound the liveness pass: unique URLs past the cap are marked skipped-cap. */
 export const LIVENESS_URL_CAP = 60;
@@ -117,214 +135,6 @@ export async function pinnedCommit(execFn: ExecFn, repoRoot: string): Promise<st
   }
 }
 
-export interface ResolvedSource {
-  kind: "url" | "code" | "local" | "external-code" | "doc";
-  /** The URL liveness-checked for url / external-code parts. */
-  url?: string;
-  /** The repo-relative path for code parts. */
-  path?: string;
-  /** The path stat-checked for local parts. */
-  localPath?: string;
-  /** Set when an external-code part has no URL that can be formed. */
-  externalUnchecked?: boolean;
-}
-
-/**
- * Resolve one source part by CONTENT (the driver-side classifier — the
- * child's sourceKind is never consulted): an http(s) URL → url; an
- * external repo (github blob/tree URL, or `owner/repo @ ref`) →
- * external-code (liveness-checked through a formed github URL where one
- * exists, otherwise unchecked with the "external repo" reason); a path in
- * the repo → code; an absolute, `~`- or `./`-relative path outside it →
- * local; anything else (doc references, version strings) → doc. A github
- * blob/tree URL is external-code, not plain url.
- */
-function resolveSourcePart(raw: string, repoRoot: string): ResolvedSource {
-  const s = raw.trim();
-  if (/^https?:\/\//i.test(s)) {
-    if (/^https?:\/\/github\.com\/[^/]+\/[^/]+\/blob\/|^https?:\/\/github\.com\/[^/]+\/[^/]+\/tree\//i.test(s))
-      return { kind: "external-code", url: s };
-    return { kind: "url", url: s };
-  }
-  const ref = s.match(/^(\w[\w.-]*)\/(\w[\w.-]*)\s+@\s*[\w.-]+$/);
-  if (ref) return { kind: "external-code", externalUnchecked: true };
-  if (s.startsWith("~")) return { kind: "local", localPath: path.join(os.homedir(), s.slice(1)) };
-  if (s.startsWith("./") || s.startsWith("/")) {
-    if (path.isAbsolute(s)) {
-      if (path.resolve(s).startsWith(`${repoRoot}/`))
-        return { kind: "code", path: path.relative(repoRoot, path.resolve(s)) };
-      return { kind: "local", localPath: s };
-    }
-    const resolved = path.resolve(repoRoot, s);
-    if (resolved.startsWith(`${repoRoot}/`))
-      return { kind: "code", path: path.relative(repoRoot, resolved) };
-    return { kind: "local", localPath: resolved };
-  }
-  // Strip a trailing parenthetical annotation before the code-path test
-  const codeCandidate = s.replace(/\s*\([^()]*\)$/, "").trim();
-  if (/^[\w@.#-]+\/[\w@.#/-]+$/.test(codeCandidate) && codeCandidate.split("/").length <= 4)
-    return { kind: "code", path: s };
-  return { kind: "doc" };
-}
-
-/**
- * Split a compound source into parts. Only `;`, ` + `, `,` and whitespace
- * BETWEEN url-like parts split — a parenthetical annotation ("… (label: …)")
- * stays with the part before it, and a source with at most one url-like
- * token is single. A doc-ish part is kept verbatim so its kind is recorded.
- */
-export function splitCompoundSource(source: string): string[] {
-  const urls = [...source.matchAll(/https?:\/\/\S+/g)]
-    .map((m) => m[0])
-    .filter((t) => /^https?:\/\//i.test(t));
-  if (urls.length <= 1) return [source.trim()];
-  const trimmed = urls.map((u) => u.replace(/[\s;,+]+$/, ""));
-  const parts = urls.map((u, i) => {
-    const trimmed = u.replace(/[\s;,+]+$/, "");
-    const idx = source.indexOf(u);
-    const before = source.slice(0, idx);
-    // For the first part: the annotation (if any) is AFTER it, not before.
-    if (i === 0) {
-      const after = source.slice(idx + u.length);
-      const parenStart = after.indexOf("(");
-      if (parenStart >= 0) {
-        let depth = 0;
-        let end = -1;
-        for (let k = parenStart; k < after.length; k++) {
-          if (after[k] === "(") depth++;
-          else if (after[k] === ")") {
-            depth--;
-            if (depth === 0) { end = k; break; }
-          }
-        }
-        if (end >= 0) return trimmed + " " + after.slice(parenStart, end + 1);
-      }
-      return trimmed;
-    }
-    // For subsequent parts: the annotation (if any) is in `before`.
-    const m = before.match(/\([^()]*(?:\([^()]*\)[^()]*)*\)\s*$/);
-    if (m) return trimmed + m[0].replace(/\s*[;,+]+$/, "");
-    return trimmed;
-  });
-  return parts.length > 0 ? parts : [source.trim()];
-}
-
-/**
- * Stat-check one local path (injectable seam): a directory or file counts
- * as `local-present`; a missing leaf (or missing parent) is
- * `local-missing`. Local paths are NEVER fetched.
- */
-export async function checkLocalFile(
-  p: string,
-  statFn: StatLike = defaultStat,
-): Promise<"local-present" | "local-missing"> {
-  const s = await statFn(p);
-  return s ? "local-present" : "local-missing";
-}
-
-/**
- * Parse one code source part into a (path, symbol) pair. Accepted forms:
- * `path`, `path#symbol`, `path:line`, `path#Lline`, `path (annotation)`
- * and `path … line ~N` (the `#` in `L123` / `~123` is consumed as a line
- * marker, not a symbol separator).
- */
-export function parseCodeSource(source: string): { path: string; symbol: string | null } {
-  let s = source.trim();
-  const lineTail = s.match(/^\s*(.*)\s+[\s…]+line\s*~\d+\s*$/i);
-  if (lineTail && lineTail[1]) s = lineTail[1];
-  const paren = s.match(/^\s*(.*)\s*\([^()]*\)\s*$/);
-  if (paren && paren[1]) s = paren[1];
-  let hash: string | null = null;
-  const hashIdx = s.indexOf("#");
-  if (hashIdx >= 0) {
-    hash = s.slice(hashIdx + 1);
-    s = s.slice(0, hashIdx);
-  }
-  let colon: string | null = null;
-  const colonIdx = s.indexOf(":");
-  if (colonIdx >= 0) {
-    colon = s.slice(colonIdx + 1);
-    s = s.slice(0, colonIdx);
-  }
-  const p = s.trim();
-  if (hash !== null && /^L?\d+$/.test(hash)) return { path: p, symbol: null };
-  if (colon !== null && /^\d+$/.test(colon)) return { path: p, symbol: null };
-  if (hash !== null) return { path: p, symbol: hash.trim() || null };
-  return { path: p, symbol: null };
-}
-
-/**
- * Ground one code source against the PINNED commit: the path must exist in
- * that commit's tree (`git cat-file -e <sha>:<path>`), and a symbol must
- * appear IN THAT FILE at that commit (`git grep -F -- <symbol> <sha> --
- * <path>` — never repo-wide). An unknown sha degrades to unchecked, not
- * ungrounded; a git-grep "no match" (exit 1) is ungrounded, while any
- * other exec failure leaves the claim unchecked (a check that could not
- * run must not manufacture a finding).
- */
-export async function groundCodeSource(
-  execFn: ExecFn,
-  repoRoot: string,
-  source: string,
-  pinnedSha: string,
-): Promise<"grounded" | "ungrounded" | "unchecked"> {
-  const { path: p, symbol } = parseCodeSource(source);
-  if (!p) return "unchecked";
-  if (pinnedSha === "unknown") return "unchecked";
-  const q = JSON.stringify(p);
-  try {
-    await execFn(`git cat-file -e ${pinnedSha}:${q}`, { cwd: repoRoot });
-  } catch {
-    return "ungrounded";
-  }
-  if (!symbol) return "grounded";
-  try {
-    const { stdout: hits } = await execFn(
-      `git grep -F -- ${JSON.stringify(symbol)} ${pinnedSha} -- ${q}`,
-      { cwd: repoRoot },
-    );
-    return hits.trim() ? "grounded" : "ungrounded";
-  } catch (e) {
-    if (e instanceof Error && /^exit 1$/.test(e.message)) return "ungrounded";
-    return "unchecked";
-  }
-}
-
-/**
- * The deterministic check for one resolved part. Returns the verification
- * to attach (or null for parts another pass covers), plus the URLs any
- * liveness part needs fetched. external-code parts whose ref gives no
- * formable URL stay unchecked with the "external repo" reason.
- */
-async function checkPart(
-  part: ResolvedSource,
-  execFn: ExecFn,
-  repoRoot: string,
-  pinnedSha: string,
-  statFn: StatLike,
-): Promise<{ v: ClaimVerification | null; url?: string }> {
-  if (part.kind === "local" && part.localPath) {
-    return { v: { check: "local-file", status: await checkLocalFile(part.localPath, statFn) } };
-  }
-  if (part.kind === "code" && part.path) {
-    const status = await groundCodeSource(execFn, repoRoot, part.path, pinnedSha);
-    if (status === "unchecked") return { v: { check: "none", status: "unchecked" } };
-    return { v: { check: "code-grounding", status } };
-  }
-  if (part.externalUnchecked)
-    return { v: { check: "none", status: "unchecked", reason: "external repo" } };
-  if (part.url)
-    return {
-      v: {
-        check: "none",
-        status: "unchecked",
-        reason: part.kind === "external-code" ? "external repo" : undefined,
-      },
-      url: part.url,
-    };
-  return { v: { check: "none", status: "unchecked" } };
-}
-
 /**
  * The compound status mapping (liveness parts): live if any part is live;
  * unreachable if none is live and any is unreachable; dead otherwise.
@@ -366,12 +176,19 @@ export async function verifyClaims(
       ? []
       : splitCompoundSource(c.source).map((partRaw) => resolveSourcePart(partRaw, repoRoot)),
   );
-  const urls = [...new Set(resolved.flat().map((p) => p.url).filter(Boolean) as string[])];
+  const urls = [
+    ...new Set(
+      resolved
+        .flat()
+        .map((p) => p.url)
+        .filter(Boolean) as string[],
+    ),
+  ];
   const liveness = await checkUrlLiveness(urls, fetchFn);
   const out: ResearchClaim[] = [];
   for (let i = 0; i < claims.length; i++) {
-    const c = claims[i]!;
-    const parts = resolved[i]!;
+    const c = claims[i] as ResearchClaim;
+    const parts = resolved[i] as ResolvedSource[];
     if (parts.length === 0) {
       out.push({ ...c, verification: { check: "none", status: "unchecked" } });
       continue;
@@ -379,22 +196,24 @@ export async function verifyClaims(
     const results = await Promise.all(
       parts.map((p) => checkPart(p, execFn, repoRoot, pinnedSha, statFn)),
     );
-    const lvIdx = results
-      .map((r, j) => (r.url ? j : -1))
-      .filter((j) => j >= 0);
-    const lvStatuses = lvIdx.map((j) => liveness.get(results[j]!.url as string) ?? "skipped-cap");
-    const partsRec: VerificationPart[] = parts.map((p, j) => ({
-      source: p.url ?? p.path ?? p.localPath ?? c.source,
-      kind: p.kind,
-      status: results[j]!.v
-        ? (results[j]!.v as { status: string }).status
-        : liveness.get(results[j]!.url as string) ?? "unchecked",
-    }));
+    const lvIdx = results.map((r, j) => (r.url ? j : -1)).filter((j) => j >= 0);
+    const lvStatuses = lvIdx.map(
+      (j) => liveness.get((results[j] as { url: string }).url) ?? "skipped-cap",
+    );
+    const partsRec: VerificationPart[] = parts.map((p, j) => {
+      const r = results[j] as { v: ClaimVerification | null; url?: string };
+      return {
+        source: p.url ?? p.path ?? p.localPath ?? c.source,
+        kind: p.kind,
+        status: r.v
+          ? (r.v as { status: string }).status
+          : (liveness.get(r.url ?? "") ?? "unchecked"),
+      };
+    });
     let verification: ClaimVerification;
     if (lvIdx.length > 0) {
       const status = aggregateLivenessStatuses(lvStatuses);
-      if (status === "skipped-cap")
-        verification = { check: "none", status: "skipped-cap" };
+      if (status === "skipped-cap") verification = { check: "none", status: "skipped-cap" };
       else verification = { check: "url-liveness", status };
     } else {
       const nonNull = results.map((r) => r.v).filter((v): v is ClaimVerification => v !== null);
@@ -405,11 +224,14 @@ export async function verifyClaims(
       if (code) verification = code;
       else if (local) verification = local;
       else if (lv) verification = lv;
-      else if (none) verification = none.status === "unchecked" && none.reason ? none : { check: "none", status: "unchecked" };
+      else if (none)
+        verification =
+          none.status === "unchecked" && none.reason
+            ? none
+            : { check: "none", status: "unchecked" };
       else verification = { check: "none", status: "unchecked" };
     }
-    if (parts.length > 1)
-      verification = { ...verification, parts: partsRec } as ClaimVerification;
+    if (parts.length > 1) verification = { ...verification, parts: partsRec } as ClaimVerification;
     out.push({ ...c, verification });
   }
   const failed = out.filter((c) => {
@@ -466,9 +288,7 @@ export const ENTAILMENT_CLAIM_CAP = 20;
 export function entailableClaims(claims: readonly ResearchClaim[]): ResearchClaim[] {
   return claims
     .filter(
-      (c) =>
-        (c.kind === "finding" || c.kind === "contradiction") &&
-        isEntailableSourceKind(c),
+      (c) => (c.kind === "finding" || c.kind === "contradiction") && isEntailableSourceKind(c),
     )
     .slice(0, ENTAILMENT_CLAIM_CAP);
 }
