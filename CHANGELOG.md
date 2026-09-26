@@ -8,6 +8,20 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.62](https://github.com/trail-openers/pi-rukas/compare/v0.12.61...v0.12.62) (2026-09-26)
+
+
+### Features
+
+* **research:** name a missing reporter extension before spawning, and say when a run was silent ([#893](https://github.com/trail-openers/pi-rukas/issues/893)) ([b50ef46](https://github.com/trail-openers/pi-rukas/commit/b50ef461bc6e4f9f27b223dbe2ea77031b1376ac))
+* **runs:** keep subagent transcripts for five days instead of the last 20 batches ([#899](https://github.com/trail-openers/pi-rukas/issues/899)) ([8281f9f](https://github.com/trail-openers/pi-rukas/commit/8281f9f5a2f7f0d23044327f9f52aa8108fbfee3))
+
+
+### Bug Fixes
+
+* **research:** classify sources by content and ground code at the pinned commit ([#902](https://github.com/trail-openers/pi-rukas/issues/902)) ([71eb655](https://github.com/trail-openers/pi-rukas/commit/71eb655ca50f595c5ff19d703bc31029f7a24f50))
+* **work:** state real merge-authority status in the launch notice and /start ([#897](https://github.com/trail-openers/pi-rukas/issues/897)) ([64f5347](https://github.com/trail-openers/pi-rukas/commit/64f5347ea2cdf6a564235fc4b4f0e98330304f38)), closes [#860](https://github.com/trail-openers/pi-rukas/issues/860)
+
 ## [0.12.61](https://github.com/trail-openers/pi-rukas/compare/v0.12.60...v0.12.61) (2026-09-26)
 
 
