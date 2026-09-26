@@ -6,6 +6,11 @@
  * string/token parsing with no Pi API and no filesystem I/O.
  */
 
+import {
+  hasMidWildcard,
+  isDestructiveMemoryWrite,
+  midWildcardPattern,
+} from "./bash-pattern-wildcard.ts";
 import { trace } from "./trace.js";
 
 // Chars that indicate command injection / chaining in a bash *command*. If a
@@ -291,32 +296,13 @@ export function extractCommandPrefix(command: string): string {
 //
 // Pattern semantics: "pattern *" is a word-boundary prefix (`vipune *` matches
 // `vipune add foo` but not `vipuneish`); "pattern*" (no space) is a loose
-// prefix; a bare pattern is an exact match. Most specific wins.
+// prefix; a bare pattern is an exact match. A standalone `*` in the middle
+// of a pattern (e.g. `git -C *`) matches exactly one whitespace-free
+// argument. Most specific wins.
 //
 // Refuses to match commands containing injection vectors OUTSIDE quoted
 // segments — those must always reach the interactive prompt. Quoted content
 // is transparent (see stripQuotedSegments and issue #108).
-/**
- * `vipune update` carrying new content — refused for every role, unconditionally.
- *
- * Measured: `vipune update <id> -t "…"` REPLACES the row's content in place. One
- * row before, one row after; no new row, no `superseded_by` lineage, no undo. The
- * id survives, so anything that cited that memory now cites different text —
- * which makes it quieter than `delete`, and worse.
- *
- * The allowlist alone cannot express this. `matchBashSubcommand` is
- * prefix-based, so `"vipune update *"` grants every flag or none; there is no way
- * to permit `--status` (harmless promotion) while refusing `--text`. So the
- * refusal lives here, ahead of the allowlist, and holds even if a future edit
- * re-admits the verb. The harness repairs memory with `add --supersedes`, which
- * preserves the original row — an agent must not silently rewrite the record it
- * is judged against.
- */
-export function isDestructiveMemoryWrite(command: string): boolean {
-  const c = command.trim();
-  if (!/^vipune\s+update\b/.test(c)) return false;
-  return /(^|\s)(-t|--text)(\s|=|$)/.test(c);
-}
 
 export function matchBashSubcommand(
   command: string,
@@ -347,13 +333,18 @@ export function matchBashSubcommand(
     .sort(([a], [b]) => b.length - a.length);
   for (const [pattern, verdict] of patterns) {
     if (typeof verdict !== "string") continue;
-    if (pattern.endsWith(" *")) {
-      const prefix = pattern.slice(0, -2);
-      if (command === prefix || command.startsWith(`${prefix} `)) return verdict;
-    } else if (pattern.endsWith("*")) {
-      const prefix = pattern.slice(0, -1);
-      if (command.startsWith(prefix)) return verdict;
-    } else if (command === pattern) {
+    // hasMidWildcard()/midWildcardPattern() (bash-pattern-wildcard.ts) and the
+    // two string-prefix branches below must change together: a pattern with a
+    // standalone mid `*` must always route to the regex branch — the prefix
+    // branches only apply to patterns without a mid `*`.
+    const mid = hasMidWildcard(pattern);
+    if (!mid && pattern.endsWith(" *")) {
+      const p = pattern.slice(0, -2);
+      if (command === p || command.startsWith(`${p} `)) return verdict;
+    } else if (!mid && pattern.endsWith("*")) {
+      const p = pattern.slice(0, -1);
+      if (command.startsWith(p)) return verdict;
+    } else if (command === pattern || midWildcardPattern(pattern)?.test(command)) {
       return verdict;
     }
   }
