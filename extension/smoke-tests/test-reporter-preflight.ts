@@ -285,9 +285,7 @@ function claimCall(kind: string, text: string, source: string, sourceKind: strin
   ) => {
     const label = opts?.label ?? "";
     const isSilent = label === silentLabel;
-    // #896 — vary the claim text per angle so cross-angle dedup does not
-    // merge them (these tests assert on the per-angle claim count, not on
-    // the dedup itself).
+    // #896 — vary the claim text per angle so cross-angle dedup does not merge them.
     const claimIdx = label.includes("custom-1") || label === "research-web-current" ? 1 : 2;
     return Promise.resolve({
       role: "explore",
@@ -356,8 +354,7 @@ function claimCall(kind: string, text: string, source: string, sourceKind: strin
       role: "explore",
       ok: true,
       text: "found a claim",
-      // #896 — vary the claim text per angle so cross-angle dedup does not
-      // merge them (this test asserts on the per-angle claim count).
+      // #896 — vary the claim text per angle so cross-angle dedup does not merge them.
       toolUses: [claimCall("finding", `${label} claim`, "https://a/live", "url")],
       ms: 1,
       exitCode: 0,

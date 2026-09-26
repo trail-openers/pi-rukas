@@ -55,8 +55,8 @@ import {
   surfaceForAngle,
   wigoloAnglePrompt,
 } from "./research-fallback.ts";
-import { PhaseTimer } from "./research-timings.ts";
 import { writeResearchMemory } from "./research-memory.ts";
+import { PhaseTimer } from "./research-timings.ts";
 import {
   type AngleRun,
   RESEARCH_TIERS,
