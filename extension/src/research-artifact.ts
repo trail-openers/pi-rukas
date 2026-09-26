@@ -259,7 +259,8 @@ export function parseMemoSections(reply: string): MemoSections {
   const out: MemoSections = {};
   if (rec) {
     const laterCmp = markers.filter((x) => x.kind === "COMPARISON" && x.start > rec.start);
-    const end = laterCmp.length > 0 ? laterCmp[0].start : reply.length;
+    const first = laterCmp[0];
+    const end = first ? first.start : reply.length;
     const t = reply.slice(rec.start, end).trim();
     if (t) out.recommendation = t;
   }

@@ -49,7 +49,6 @@ import {
 } from "./research-artifact.ts";
 import {
   type ParallelOutcome,
-  type WigoloSurface,
   classifyParallelOutcome,
   researchFallbackLine,
   selectFallback,

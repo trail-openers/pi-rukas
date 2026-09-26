@@ -85,9 +85,11 @@ export function dedupResearchClaims(claims: readonly ResearchClaim[]): ResearchC
       out.push({ ...c, angles: [c.angle] });
       continue;
     }
+    const cur = out[i];
+    if (!cur) continue;
     const keep =
-      CONFIDENCE_RANK[out[i].confidence] <= CONFIDENCE_RANK[c.confidence] ? out[i] : c;
-    const angles = [...new Set([...(out[i].angles ?? [out[i].angle]), ...(c.angles ?? [c.angle])])];
+      CONFIDENCE_RANK[cur.confidence] <= CONFIDENCE_RANK[c.confidence] ? cur : c;
+    const angles = [...new Set([...(cur.angles ?? [cur.angle]), ...(c.angles ?? [c.angle])])];
     out[i] = { ...keep, angles };
   }
   return out;

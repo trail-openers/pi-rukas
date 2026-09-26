@@ -141,15 +141,41 @@ function assert(cond: boolean, msg: string) {
     selectFallback("network-failed", "search", false) === "keep-parallel",
     "selector: flag 0 → never (network)",
   );
-  // Non-web angles (monitor / findall / enrichment / custom) map to `none`
-  // via surfaceForAngle — the selector's surface is WigoloSurface, so they
+  // Non-web angles (monitor / findall / enrichment) map to `none` via
+  // surfaceForAngle — the selector's surface is WigoloSurface, so they
   // arrive here as "none".
-  for (const angle of ["monitor", "findall", "enrichment", "custom-1"] as const) {
+  for (const angle of ["monitor", "findall", "enrichment"] as const) {
     assert(
       surfaceForAngle(angle) === "none",
       `surface: ${angle} angle → none (no wigolo equivalent)`,
     );
   }
+  // #896 — custom-N PM angles are web-capable (the dominant recent pattern
+  // was custom angles that never got the #773 fallback):
+  assert(
+    surfaceForAngle("custom-1") === "search",
+    "surface: custom-N angle → search (web-capable, #896)",
+  );
+  assert(
+    surfaceForAngle("custom-42") === "search",
+    "surface: custom-N (any N) → search",
+  );
+  assert(
+    selectFallback("credit-exhausted", "search", true) === "fall-back-to-wigolo",
+    "selector: custom angle credit-exhausted → fall-back-to-wigolo",
+  );
+  assert(
+    selectFallback("network-failed", "search", true) === "fall-back-to-wigolo",
+    "selector: custom angle network-failed → fall-back-to-wigolo",
+  );
+  assert(
+    selectFallback("unparseable", "search", true) === "keep-parallel",
+    "selector: custom angle unparseable → keep (never a trigger)",
+  );
+  assert(
+    selectFallback("success", "search", true) === "keep-parallel",
+    "selector: custom angle success → keep",
+  );
   assert(
     selectFallback("credit-exhausted", "none", false) === "keep-parallel",
     "selector: flag 0 beats even no-fallback",
@@ -165,7 +191,8 @@ function assert(cond: boolean, msg: string) {
   assert(surfaceForAngle("docs-depth") === "fetch", "surface: docs-depth → fetch");
   assert(surfaceForAngle("deep-dive") === "research", "surface: deep tier → research");
   assert(surfaceForAngle("codebase") === "none", "surface: codebase angle → none (no re-dispatch)");
-  assert(surfaceForAngle("custom-1") === "none", "surface: custom-N angle → none");
+  // #896 mandated change: custom-N was `none`, now the web (search) surface.
+  assert(surfaceForAngle("custom-1") === "search", "surface: custom-N angle → search (was none, #896)");
   assert(surfaceForAngle("mystery-angle") === "none", "surface: unknown angle → none, not search");
   assert(
     selectFallback("credit-exhausted", "none", true) === "no-fallback-available",

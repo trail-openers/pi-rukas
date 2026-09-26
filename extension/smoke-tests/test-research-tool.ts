@@ -181,8 +181,49 @@ async function freshRepo(): Promise<string> {
     assert(s.role === "explore", `explore role: ${s.label}`);
   }
   assert(
-    r.claims.length === 12,
-    `claims extracted, invalid + foreign dropped (got ${r.claims.length})`,
+    r.claims.length === 4,
+    `claims extracted + deduplicated across angles (12 raw → 4 unique; got ${r.claims.length})`,
+  );
+  // #896 — dedup: the four unique claims keep their angle attribution,
+  // and the surviving claim's angles carry every contributor.
+  const rrf = r.claims.find((c) => c.text === "the scoring is RRF");
+  assert(
+    rrf?.angles?.join(",") === "web-current,docs-depth,codebase",
+    `dedup: merged claim attributes all three angles (got ${rrf?.angles?.join(",")})`,
+  );
+  assert(rrf?.angle === "web-current", "dedup: angle field stays the survivor's (first encountered)");
+  assert(rrf?.confidence === "high", "dedup: survivor's confidence kept");
+  // The raw/unique count line lands in the artifact + provenance headers.
+  const bodyAfterCount = await fs.readFile(r.artifactPath as string, "utf8");
+  assert(
+    bodyAfterCount.includes("**Claims:** 12 reported, 4 unique after deduplication"),
+    `count line: artifact body (header: ${bodyAfterCount.split("\n").slice(0, 6).join(" | ")})`,
+  );
+  const prov = await fs.readFile(r.provenancePath as string, "utf8");
+  assert(
+    prov.includes("**Claims:** 12 reported, 4 unique after deduplication"),
+    "count line: provenance sidecar header reports raw vs unique",
+  );
+  assert(
+    prov.includes("angles: web-current, docs-depth, codebase"),
+    "provenance rows show merged angles",
+  );
+  // The codebase-tools decision (ACCEPT all-angle forwarding): the research
+  // dispatches carry no discovery-disabling flag, and the codebase/adoption-fit
+  // angle prompts are conditional ("if available") rather than promising the
+  // tools unconditionally.
+  assert(
+    seen.every(
+      (s) => !s.extraArgs?.includes("--no-extensions") && !s.extraArgs?.includes("PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD"),
+    ),
+    "codebase tools: dispatches carry no discovery-disabling flag (installed extensions still forwarded)",
+  );
+  const codebasePrompt = seen.find((s) => s.label === "research-codebase")?.prompt ?? "";
+  assert(
+    /codebase_memory_search_code/.test(codebasePrompt) &&
+      /if.*available/i.test(codebasePrompt) &&
+      /fall back to grep\/read/i.test(codebasePrompt),
+    "codebase tools: codebase angle prompt is conditional (if available / grep-read fallback)",
   );
   assert(r.pinnedCommit === "feedbeef12345", "pinned commit from exec stub");
   const live = r.claims.find((c) => c.source === "https://a/live");

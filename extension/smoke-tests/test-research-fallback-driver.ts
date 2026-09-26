@@ -283,6 +283,82 @@ async function freshRepo(): Promise<string> {
   await fs.rm(tmp, { recursive: true, force: true });
 }
 
+{
+  // #896 — custom-N angle: web-capable → a credit-exhausted failure is
+  // re-dispatched ONCE wigolo-framed (search surface), like the derived
+  // web angles. A non-web classified failure (unparseable) never triggers.
+  setResearchDispatch(driverStub);
+  const tmp = await freshRepo();
+  seen.length = 0;
+  failAngle = "custom-1";
+  const r3 = await runResearchPipeline(
+    FAKE_PI,
+    {
+      topic: "what is a thing",
+      tier: "standard",
+      angles: ["a custom angle: investigate X", "another: investigate Y"],
+    },
+    tmp,
+    deps,
+  );
+  const customDispatches = seen.filter((s) => s.label === "research-custom-1");
+  assert(
+    customDispatches.length === 2,
+    `#896: custom-N credit-exhausted re-dispatched once (got ${customDispatches.length})`,
+  );
+  assert(
+    /WIGOLO CLI/.test(customDispatches[1]?.prompt ?? "") &&
+      /wigolo search/.test(customDispatches[1]?.prompt ?? ""),
+    "#896: second attempt is wigolo-framed (search surface) for the custom angle",
+  );
+  assert(r3.angles.find((x) => x.name === "custom-1")?.backend === "wigolo", "#896: custom angle carries backend: wigolo");
+  assert(r3.angles.find((x) => x.name === "custom-1")?.ok === true, "#896: custom angle ok after wigolo re-dispatch");
+
+  // Non-web classified failure (unparseable) → no wigolo re-dispatch, even
+  // for a web-capable custom angle (selectFallback keeps parallel).
+  seen.length = 0;
+  let unparseableSeen: string[] = [];
+  setResearchDispatch(((_pi: unknown, spec: { prompt: string }, opts?: { label?: string }) => {
+    const label = opts?.label ?? "";
+    const isWigolo = spec.prompt.includes("WIGOLO CLI");
+    unparseableSeen.push(`${label}:${isWigolo ? "w" : "p"}`);
+    if (label === "research-custom-1" && !isWigolo)
+      return Promise.resolve({
+        role: "explore",
+        ok: true,
+        text: "totally unrelated prose with no markers at all",
+        toolUses: [],
+      });
+    return Promise.resolve({
+      role: "explore",
+      ok: true,
+      text: isWigolo ? "found via wigolo\nbackend: wigolo" : "found via parallel",
+      toolUses: [claimCall("a claim", "https://a/live")],
+    });
+  }) as never);
+  const r4 = await runResearchPipeline(
+    FAKE_PI,
+    {
+      topic: "what is a thing",
+      tier: "standard",
+      angles: ["a custom angle: investigate X", "another: investigate Y"],
+    },
+    tmp,
+    deps,
+  );
+  assert(
+    r4.angles.find((x) => x.name === "custom-1")?.backend === "parallel",
+    "#896: custom angle unparseable → stays parallel (no wigolo re-dispatch)",
+  );
+  assert(unparseableSeen.filter((s) => s.includes("research-custom-1")).length === 1, "#896: exactly one custom-N dispatch (no loop)");
+  assert(
+    r4.angles.find((x) => x.name === "custom-1")?.summary.includes("keep-parallel"),
+    "#896: summary records the keep-parallel decision",
+  );
+  setResearchDispatch(driverStub);
+  await fs.rm(tmp, { recursive: true, force: true });
+}
+
 // ------------------------------------------------------- dispatch-time flag
 
 {
