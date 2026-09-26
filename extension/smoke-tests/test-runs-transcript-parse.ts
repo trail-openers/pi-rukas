@@ -18,8 +18,8 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { summariseTranscript } from "../src/runs.ts";
 import { buildViewerText, findTranscriptPath } from "../src/dispatch-deck-interactive.ts";
+import { summariseTranscript } from "../src/runs-viewer.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

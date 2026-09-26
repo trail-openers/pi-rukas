@@ -15,7 +15,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { pruneOldRuns, transcriptRetentionDays } from "../src/runs.ts";
+import { pruneOldRuns } from "../src/runs.ts";
+import { transcriptRetentionDays } from "../src/runs-retention.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
