@@ -32,7 +32,7 @@ import { codeIdentifiersIn, draftSpec } from "../src/plan-draft.ts";
 import { setPlanDispatch } from "../src/plan-driver.ts";
 import { registerPlanTool } from "../src/plan-tool.ts";
 import { type PlanType, classifyPlanType } from "../src/plan-types.ts";
-import { calls, invokePlanTool, setPlanVipuneStub } from "./plan-test-stubs.ts";
+import { calls, gatePrompts, invokePlanTool, setPlanVipuneStub } from "./plan-test-stubs.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -57,9 +57,32 @@ const fakePi = {
 
 registerPlanTool(fakePi);
 
+{
+  // #858 review: the registration schema assertions (re-added — they were
+  // dropped when this file was spliced along the 500-line seam; the block
+  // moved to test-plan-pipeline.ts without them).
+  const t = tools.find((x) => x.name === "start_plan_driver");
+  assert(!!t, "start_plan_driver registers");
+  const props = Object.keys(t?.parameters.properties ?? {});
+  assert(
+    props.join(",") === "descriptor,type,context,dryRun",
+    `exact TypeBox schema: ${props.join(", ")}`,
+  );
+  const typeUnion = (t?.parameters.properties?.type as { anyOf?: Array<{ const?: string }> })?.anyOf;
+  const types = (typeUnion ?? []).map((v) => v.const).filter(Boolean) as string[];
+  assert(
+    types.join(",") === "bug,feature,epic,chore,spike",
+    `type union is the five-way literal set: ${types.join(",")}`,
+  );
+  assert(
+    /dryRun/.test(t?.description ?? "") &&
+      /start_plan_driver|gated|refus/.test(t?.description ?? ""),
+    "the description names the dryRun seam and the gating",
+  );
+}
+
 // ----------------------------------------------------------- dispatch stub
 
-const gatePrompts: string[] = [];
 const gateReplyOverride: string | null = null;
 
 function __responses(spec: { role: string; prompt: string }): any {

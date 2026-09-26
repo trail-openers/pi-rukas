@@ -63,6 +63,29 @@ function assert(cond: boolean, msg: string) {
   assert(/[a-z0-9]$/.test(t), `#858: the title ends on a word (got ${JSON.stringify(t)})`);
 }
 
+// #858 review: the dangling-fragment strip is ONE-PASS — a descriptor that
+// already ends in a connector is not stripped past the intended word
+// (the old loop turned "…registers with" into "…registers" and could
+// empty a short summary; a loop is also what would eat the legitimately
+// complete "…with the plan pipeline").
+{
+  const t1 = planTitle("the tool registers with", "feature");
+  assert(
+    t1 === "feat: the tool registers with",
+    `#858: a descriptor ending in "with" is not over-stripped (got ${JSON.stringify(t1)})`,
+  );
+  const t2 = planTitle("add a seam to", "feature");
+  assert(
+    t2 === "feat: add a seam to",
+    `#858: a descriptor ending in "to" is not over-stripped (got ${JSON.stringify(t2)})`,
+  );
+  const t3 = planTitle("remove the guard of", "chore");
+  assert(
+    t3 === "chore: remove the guard of",
+    `#858: a descriptor ending in "of" is not over-stripped (got ${JSON.stringify(t3)})`,
+  );
+}
+
 // #858: the degenerate no-boundary case — a single token longer than the
 // budget is hard-cut WITHOUT an ellipsis (the primary path's ellipsis ban
 // must not silently re-introduce itself here).

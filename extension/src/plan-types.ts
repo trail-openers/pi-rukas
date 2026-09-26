@@ -173,7 +173,7 @@ const TITLE_PREFIX: Record<PlanType, string> = {
 /** The total title budget, prefix INCLUDED (#858). */
 export const TOTAL_TITLE_BUDGET = 72;
 
-const TRAILING_FRAGMENT_RE = /\s+(?:and|or|with|to|the|a|of|for)$/i;
+const TRAILING_FRAGMENT_RE = /\s+(?:and|or|with|to|the|a|an|of|for|in|on|at|by)$/i;
 
 /**
  * Cut the descriptor's FIRST clause to `budget` chars (summary budget,
@@ -181,7 +181,7 @@ const TRAILING_FRAGMENT_RE = /\s+(?:and|or|with|to|the|a|of|for)$/i;
  * then the last word boundary within the budget. NEVER an ellipsis (the
  * mid-sentence "…" tail is the defect this replaces); a single token longer
  * than the budget is hard-cut without one. Trailing punctuation and dangling
- * conjunction fragments are stripped (checked as whole trailing words, so a
+ * conjunction fragments are stripped as a ONE-PASS cut (checked as whole trailing words, so a
  * summary that legitimately ends "with the plan pipeline" is untouched).
  */
 function titleSummary(d: string, budget: number): string {
@@ -203,7 +203,7 @@ function titleSummary(d: string, budget: number): string {
     s = s.slice(0, lastBoundary);
   }
   s = s.replace(/[,;:)]+[)\]]*$/g, "").trim();
-  while (TRAILING_FRAGMENT_RE.test(s)) s = s.replace(TRAILING_FRAGMENT_RE, "").trim();
+  if (TRAILING_FRAGMENT_RE.test(s)) s = s.replace(TRAILING_FRAGMENT_RE, "").trim();
   return s;
 }
 
