@@ -85,6 +85,8 @@ function verificationLabel(c: ResearchClaim): string {
   const v = c.verification;
   if (v.check === "url-liveness") return `url ${v.status}`;
   if (v.check === "code-grounding") return v.status;
+  if (v.check === "local-file") return v.status;
+  if (v.check === "none" && v.status === "skipped-cap") return "skipped-cap";
   return "unchecked";
 }
 
@@ -248,10 +250,14 @@ export function parseMemoSections(reply: string): MemoSections {
 
 /** Render the provenance sidecar: every source, its check, its outcome. */
 export function renderProvenance(a: ArtifactArgs): string {
-  const rows = a.claims.map(
-    (c) =>
-      `- ${c.source} · kind: ${c.sourceKind} · ${verificationLabel(c)}${c.support ? ` · support: ${c.support}` : ""}${c.sourceDate ? ` · source date: ${c.sourceDate}` : ""} · cited by: ${c.text.slice(0, 80)}`,
-  );
+  const rows = a.claims.map((c) => {
+    const v = c.verification;
+    const parts =
+      v.check === "url-liveness" && v.parts
+        ? v.parts.map((p) => `  - part: ${p.source} · kind: ${p.kind} · ${p.status}`).join("\n")
+        : "";
+    return `- ${c.source} · kind: ${c.sourceKind} · ${verificationLabel(c)}${c.support ? ` · support: ${c.support}` : ""}${c.sourceDate ? ` · source date: ${c.sourceDate}` : ""} · cited by: ${c.text.slice(0, 80)}${parts}`;
+  });
   return `# Provenance: ${a.topic}
 
 **Date:** ${a.date} · **Tier:** ${a.tier} · **Pinned commit:** ${a.pinnedCommit}

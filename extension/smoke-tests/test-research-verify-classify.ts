@@ -14,7 +14,7 @@
  */
 
 import type { ResearchClaim } from "../src/research-types.ts";
-import { LIVENESS_URL_CAP, verifyClaims } from "../src/research-verify.ts";
+import { LIVENESS_URL_CAP, splitCompoundSource, verifyClaims } from "../src/research-verify.ts";
 import type { ExecFn } from "../src/worktree.ts";
 
 let exit = 0;
@@ -170,16 +170,31 @@ const statStubFor = (present: Set<string>) =>
     mixed1?.verification.check === "url-liveness" && mixed1?.verification.status === "dead",
     "mixed URL+local: the liveness part decides (dead)",
   );
+  // "/Users/janni/present.txt + src/x.ts" now splits into two parts:
+  // local (stat-checked → local-present) + code (grounded at pinned commit,
+  // stub: cat-file succeeds, no symbol → grounded).
+  // verifyClaims picks code first when no liveness parts exist.
   assert(
-    mixed2?.verification.check === "local-file" &&
-      (mixed2?.verification.status === "local-present" ||
-        mixed2?.verification.status === "local-missing"),
-    "local+code compound (no URLs to split on) → stat-checked local check runs (never fetched, never code)",
+    mixed2?.verification.check === "code-grounding" &&
+      mixed2?.verification.status === "grounded",
+    "local+code compound splits; code part decides (grounded in stub)",
+  );
+  assert(
+    (mixed2?.verification as { parts?: { status: string }[] } | undefined)?.parts?.length === 2,
+    "local+code compound: both parts recorded in verification.parts",
   );
   assert(
     mixed3?.verification.check === "url-liveness" && mixed3?.verification.status === "dead",
     "comma-split mixed compound → liveness part decides",
   );
+}
+
+{
+  // The required fixture: `a.md (annotation) + src/x.ts#sym` must split.
+  const parts = splitCompoundSource("a.md (annotation) + src/x.ts#sym");
+  assert(parts.length === 2, `fixture splits into 2 parts (got ${parts.length})`);
+  assert(parts[0] === "a.md (annotation)", "first part: doc with annotation");
+  assert(parts[1] === "src/x.ts#sym", "second part: code with symbol");
 }
 
 {

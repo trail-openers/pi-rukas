@@ -75,9 +75,14 @@ export type ClaimVerification =
       status: "live" | "dead" | "unreachable" | "skipped-cap";
       parts?: VerificationPart[];
     }
-  | { check: "code-grounding"; status: "grounded" | "ungrounded" }
-  | { check: "local-file"; status: "local-present" | "local-missing" }
-  | { check: "none"; status: "unchecked" | "skipped-cap"; reason?: string };
+  | { check: "code-grounding"; status: "grounded" | "ungrounded"; parts?: VerificationPart[] }
+  | { check: "local-file"; status: "local-present" | "local-missing"; parts?: VerificationPart[] }
+  | {
+      check: "none";
+      status: "unchecked" | "skipped-cap";
+      reason?: string;
+      parts?: VerificationPart[];
+    };
 
 export interface ResearchClaim {
   kind: ResearchClaimKind;

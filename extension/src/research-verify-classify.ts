@@ -61,63 +61,70 @@ export function resolveSourcePart(raw: string, repoRoot: string): ResolvedSource
       return { kind: "code", path: path.relative(repoRoot, resolved) };
     return { kind: "local", localPath: resolved };
   }
-  // A bare multi-segment word path is code ONLY with a known file
-  // extension (the "lib@1.2 docs", "lib/docs" and "owner/repo" shapes must
-  // stay doc, not code). Extensionless bare paths are doc references.
+  // A bare multi-segment word path is code — extensionless paths included
+  // (`bin/pi-rukas`, `extension/src`, `src`). Single-segment words without
+  // a slash are doc references (`lib@1.2 docs` has a space, fails the
+  // regex). The @-ref shape (`owner/repo @ ref`) is already handled above;
+  // a bare `owner/repo` without ` @ ref` is ambiguous — treat as code
+  // (the caller cat-files and it will be ungrounded if not in the tree).
   const codeCandidate = s.replace(/\s*\([^()]*\)$/, "").trim();
-  if (
-    /^[\w@.#-]+\/[\w@.#/-]+$/.test(codeCandidate) &&
-    codeCandidate.split("/").length <= 4 &&
-    /\.[A-Za-z0-9]{1,10}(\.[A-Za-z0-9]{1,10})*(#\w+)?$/.test(
-      codeCandidate.replace(/\s*\([^()]*\)$/, ""),
-    )
-  )
+  if (/^[\w@.#-]+(\/[\w@.#-]+)*$/.test(codeCandidate) && codeCandidate.includes("/"))
+    return { kind: "code", path: s };
+  // Single-segment known filenames (no slash): code.
+  if (/^(Makefile|Dockerfile|LICENSE|CHANGELOG|README|CONTRIBUTING)$/.test(codeCandidate))
     return { kind: "code", path: s };
   return { kind: "doc" };
 }
 
 /**
- * Split a compound source into parts. Only `;`, ` + `, `,` and whitespace
- * BETWEEN url-like parts split — a parenthetical annotation ("… (label: …)")
- * stays with the part before it, and a source with at most one url-like
- * token is single. A doc-ish part is kept verbatim so its kind is recorded.
+ * Split a compound source into parts. Splits on `;` and ` + ` regardless
+ * of whether the parts are URLs — the decision says to split on those
+ * separators. `,` and whitespace split only BETWEEN url-like parts (2+ URLs
+ * present). A source with no `;` or ` + ` separator and fewer than 2 URLs
+ * is single (never split).
+ *
+ * A parenthetical annotation ("… (label: …)") stays with the part it
+ * follows: `url (annotation); url2` → [`url (annotation)`, `url2`].
  */
 export function splitCompoundSource(source: string): string[] {
-  const urls = [...source.matchAll(/https?:\/\/\S+/g)]
-    .map((m) => m[0])
-    .filter((t) => /^https?:\/\//i.test(t));
-  if (urls.length <= 1) return [source.trim()];
-  const parts = urls.map((u, i) => {
-    const trimmed = u.replace(/[\s;,+]+$/, "");
-    const idx = source.indexOf(u);
-    const before = source.slice(0, idx);
-    // For the first part: the annotation (if any) is AFTER it, not before.
-    if (i === 0) {
-      const after = source.slice(idx + u.length);
-      const parenStart = after.indexOf("(");
-      if (parenStart >= 0) {
-        let depth = 0;
-        let end = -1;
-        for (let k = parenStart; k < after.length; k++) {
-          if (after[k] === "(") depth++;
-          else if (after[k] === ")") {
-            depth--;
-            if (depth === 0) {
-              end = k;
-              break;
-            }
-          }
-        }
-        if (end >= 0) return `${trimmed} ${after.slice(parenStart, end + 1)}`;
-      }
-      return trimmed;
+  const s = source.trim();
+  // Primary separators: `;` and ` + ` (always split on these).
+  const bySemi = s
+    .split(";")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (bySemi.length <= 1) {
+    // No `;` — try ` + `.
+    const byPlus = s
+      .split(" + ")
+      .map((p) => p.trim())
+      .filter(Boolean);
+    if (byPlus.length > 1) return byPlus;
+    // No `;` or ` + ` — check if there are 2+ URLs split by `,` or whitespace.
+    const urls = [...s.matchAll(/https?:\/\/\S+/g)].map((m) => m[0]);
+    if (urls.length >= 2) {
+      // Split on `,` and whitespace between URLs.
+      const byComma = s
+        .split(",")
+        .map((p) => p.trim())
+        .filter(Boolean);
+      if (byComma.length >= 2) return byComma;
+      // Split on whitespace between URLs (the two URLs are separated by space(s)).
+      const bySpace = s.split(/\s+/).filter(Boolean);
+      if (bySpace.length >= 2) return bySpace;
     }
-    // For subsequent parts: the annotation (if any) is in `before`.
-    const m = before.match(/\([^()]*(?:\([^()]*\)[^()]*)*\)\s*$/);
-    if (m) return trimmed + m[0].replace(/\s*[;,+]+$/, "");
-    return trimmed;
-  });
-  return parts.length > 0 ? parts : [source.trim()];
+    return [s];
+  }
+  // Has `;` — further split each segment on ` + ` if needed.
+  const parts: string[] = [];
+  for (const seg of bySemi) {
+    const sub = seg
+      .split(" + ")
+      .map((p) => p.trim())
+      .filter(Boolean);
+    parts.push(...(sub.length > 1 ? sub : [seg]));
+  }
+  return parts;
 }
 
 /**
