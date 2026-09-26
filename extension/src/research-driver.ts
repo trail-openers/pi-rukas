@@ -368,7 +368,9 @@ export async function runResearchPipeline(
 
   // Phase 3 — deterministic verification, driver-side.
   const commit = await pinnedCommit(execFn, repoRoot);
-  let verified = await timed("verify", () => verifyClaims(claims, repoRoot, execFn, deps.fetchFn));
+  let verified = await timed("verify", () =>
+    verifyClaims(claims, repoRoot, execFn, deps.fetchFn, { pinnedSha: commit }),
+  );
 
   // Phase 3b — deep tier only: ONE scoped entailment dispatch. Annotation,
   // never a silent upgrade; a "none" verdict demotes the finding out of the

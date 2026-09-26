@@ -32,17 +32,92 @@ export type ClaimSupport = "full" | "partial" | "none" | "unreachable";
 export type ResearchClaimKind = (typeof RESEARCH_CLAIM_KINDS)[number];
 
 /**
- * Verification outcome attached to a claim by the DRIVER (never by the
- * child): url-liveness for url sources, code-grounding (against the pinned
- * commit) for code sources, unchecked for everything else. Deterministic
- * checks only in the standard tier — the report's FaithJudge caveat (<72%
- * F1) is why LLM entailment is deep-tier-only and explicit, never a silent
- * quality claim.
+ * The DERIVED source kind — what the source CONTENT is (http(s) → url;
+ * a path inside the repo → code; an absolute/~/. path outside it → local;
+ * an external repo → external-code; anything else → doc), as opposed to
+ * the child's self-reported sourceKind, which is kept verbatim on the
+ * claim. Content wins: a URL the child labelled "code" is still a URL.
  */
+export type SourceKindDerived = "url" | "code" | "local" | "external-code" | "doc";
+
+/** One part of a compound source: its own derived kind and check status. */
+export interface VerificationPart {
+  source: string;
+  kind: SourceKindDerived;
+  status: string;
+}
+
+/**
+ * Minimal stat shape (injectable for offline tests — local files only).
+ * Lives here so the classify module does not have to import back into
+ * research-verify.ts (which imports the classifier — a cycle).
+ */
+export type StatLike = (p: string) => Promise<{ isDirectory: boolean } | undefined>;
+
+/**
+ * A single verification part of a source. Compound sources record every
+ * part (each with its own derived kind and check status) so the provenance
+ * sidecar can print the parts from claim data alone — the kind decides how
+ * the status is read, but the record is uniform.
+ */
+export interface ResolvedSource {
+  kind: SourceKindDerived;
+  /** The URL liveness-checked for url / external-code parts. */
+  url?: string;
+  /** The repo-relative path for code parts. */
+  path?: string;
+  /** The path stat-checked for local parts. */
+  localPath?: string;
+  /** Set when an external-code part has no URL that can be formed. */
+  externalUnchecked?: boolean;
+}
+
+/**
+ * Verification outcome attached to a claim by the DRIVER (never by the
+ * child). Deterministic checks only in the standard tier — the report's
+ * FaithJudge caveat (<72% F1) is why LLM entailment is deep-tier-only and
+ * explicit, never a silent quality claim.
+ *
+ * url-liveness: any http(s) source (liveness-checked; compound sources
+ * carry the best part status — live if any part is live, unreachable if
+ * none is live and any is unreachable, dead otherwise — with `parts`
+ * recording each part so the provenance sidecar can print them from claim
+ * data alone; the liveness cap marks excess parts `skipped-cap`, which
+ * never promote the status).
+ * code-grounding: a repo-relative path, checked at the PINNED commit
+ * (path present in the tree; a symbol present IN THAT FILE at that
+ * commit).
+ * local-file: an absolute/home-relative/./ path outside the repo, checked
+ * by stat — never fetched.
+ * none: no deterministic check applies (doc references, "none"), or the
+ * check could not run (an external repo with no checkable URL, an
+ * unknown pinned commit). The `reason` says why, so "no check applies"
+ * stays distinguishable from "the check could not be run".
+ */
+/**
+ * The optional `parts` record every verification arm carries (a shared
+ * base, so attaching parts to any kind needs no cast) — the compound
+ * split's per-part statuses, recorded so renderProvenance can print them
+ * from claim data alone. `derivedKinds` records the DRIVER-derived source
+ * kinds of the claim's resolved parts (set by the driver from the resolved
+ * parts, never the child's sourceKind) so downstream reads (entailment
+ * eligibility) classify by what the source IS, not what the child called
+ * it.
+ */
+export type VerificationBase = { parts?: VerificationPart[]; derivedKinds?: SourceKindDerived[] };
+
 export type ClaimVerification =
-  | { check: "url-liveness"; status: "live" | "dead" | "unreachable" }
-  | { check: "code-grounding"; status: "grounded" | "ungrounded" }
-  | { check: "none"; status: "unchecked" };
+  | (VerificationBase & {
+      check: "url-liveness";
+      status: "live" | "dead" | "unreachable" | "skipped-cap";
+    })
+  | (VerificationBase & { check: "code-grounding"; status: "grounded" | "ungrounded" })
+  | (VerificationBase & { check: "local-file"; status: "local-present" | "local-missing" })
+  | (VerificationBase & {
+      check: "none";
+      status: "unchecked" | "skipped-cap";
+      reason?: string;
+    });
 
 export interface ResearchClaim {
   kind: ResearchClaimKind;

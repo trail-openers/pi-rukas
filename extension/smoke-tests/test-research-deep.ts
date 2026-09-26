@@ -68,7 +68,7 @@ function assert(cond: boolean, msg: string) {
 }
 
 {
-  const mk = (kind: string, sourceKind: string): ResearchClaim =>
+  const mk = (kind: string, sourceKind: string, derivedKinds?: ("url" | "code" | "local" | "external-code" | "doc")[]): ResearchClaim =>
     ({
       kind,
       text: "t",
@@ -77,14 +77,26 @@ function assert(cond: boolean, msg: string) {
       confidence: "high",
       staleness: "stable",
       angle: "a",
-      verification: { check: "none", status: "unchecked" },
+      verification: { check: "none", status: "unchecked", derivedKinds },
     }) as ResearchClaim;
-  const many = Array.from({ length: ENTAILMENT_CLAIM_CAP + 5 }, () => mk("finding", "url"));
+  const many = Array.from({ length: ENTAILMENT_CLAIM_CAP + 5 }, () => mk("finding", "url", ["url"]));
   assert(entailableClaims(many).length === ENTAILMENT_CLAIM_CAP, "entailable: capped");
   assert(
-    entailableClaims([mk("finding", "code"), mk("gap", "url"), mk("contradiction", "doc")])
+    entailableClaims([mk("finding", "code", ["code"]), mk("gap", "url", ["url"]), mk("contradiction", "doc", ["doc"])])
       .length === 1,
-    "entailable: only sourced findings/contradictions with url/doc sources (code claims are grounded deterministically)",
+    "entailable: only sourced findings/contradictions with url/doc derived kinds (code claims are grounded deterministically)",
+  );
+  // The driver-derived kind wins over the child's label: a claim the child
+  // labelled `url` whose source resolves to a local path is NOT entailable.
+  assert(
+    entailableClaims([mk("finding", "url", ["local"])]).length === 0,
+    "entailable: child-labelled `url` with derived kind `local` is NOT entailable (the label never counts)",
+  );
+  // No derivedKinds (pre-#894 / external code) → never entailable, even if
+  // the child labelled it `url`.
+  assert(
+    entailableClaims([mk("finding", "url", undefined)]).length === 0,
+    "entailable: child-labelled `url` with no derived kinds is NOT entailable (silence is not a url)",
   );
 }
 
