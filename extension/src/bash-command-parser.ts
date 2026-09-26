@@ -149,6 +149,48 @@ const TRIPLE_LEVEL_PAIRS = new Set(["npm run", "pnpm run", "yarn run", "bun run"
 // [A-Za-z0-9_.-=] terminates prefix collection — paths (`/tmp/foo`), globs
 // (`*.ts`), env-var values past `=`, etc.
 const NON_PREFIX_TOKEN = /[^A-Za-z0-9_.\-=]/;
+
+// Escape a single pattern token for use inside a RegExp literal.
+function escapeRegexToken(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Returns true if the pattern has at least one standalone `*` token in a
+// non-trailing position. Patterns with a mid `*` are routed through the
+// regex branch; trailing `*`/` *` branches only apply to patterns without a mid `*`.
+function hasMidWildcard(pattern: string): boolean {
+  const tokens = pattern.split(" ");
+  for (let i = 0; i < tokens.length - 1; i++) {
+    if (tokens[i] === "*") return true;
+  }
+  return false;
+}
+
+// Build a RegExp for a pattern containing `*` tokens. Standalone mid `*`
+// tokens become `\S+` (one whitespace-free arg); a trailing `*` on the last
+// token becomes `.*` (loose prefix). Returns null if no `*` tokens at all.
+function midWildcardPattern(pattern: string): RegExp | null {
+  const tokens = pattern.split(" ");
+  let hasAny = false;
+  for (const t of tokens) {
+    if (t === "*" || t.endsWith("*")) {
+      hasAny = true;
+      break;
+    }
+  }
+  if (!hasAny) return null;
+  const last = tokens.length - 1;
+  const parts = tokens.map((t, i) => {
+    if (t === "*") return "\\S+";
+    if (i === last && t.endsWith("*")) {
+      const stem = t.slice(0, -1);
+      return stem ? `${escapeRegexToken(stem)}.*` : ".*";
+    }
+    return escapeRegexToken(t);
+  });
+  return new RegExp(`^${parts.join("\\s+")}$`);
+}
+
 // Chars that, when found inside a token, mean the *next* shell command starts
 // here (compound/redirect). Distinct from BASH_COMMAND_INJECTION_CHARS because
 // we use this to find the head of the *current* command — `git;` should yield
@@ -285,32 +327,18 @@ export function extractCommandPrefix(command: string): string {
 }
 
 // Match a concrete bash command against a nested subcommand allowlist
-// (e.g. agents.json's `permission.bash` { "vipune *": "allow", ... }).
-// Returns the verdict from the longest matching pattern, or the catch-all "*"
-// if present. Null if no entry matches.
+// (e.g. agents.json's `permission.bash`). Returns the verdict from the longest
+// matching pattern, or the catch-all `*` if present. Null if no entry matches.
 //
-// Pattern semantics: "pattern *" is a word-boundary prefix (`vipune *` matches
-// `vipune add foo` but not `vipuneish`); "pattern*" (no space) is a loose
-// prefix; a bare pattern is an exact match. Most specific wins.
-//
-// Refuses to match commands containing injection vectors OUTSIDE quoted
-// segments — those must always reach the interactive prompt. Quoted content
-// is transparent (see stripQuotedSegments and issue #108).
+// Pattern semantics: "pattern *" is a word-boundary prefix; "pattern*" (no
+// space) is a loose prefix; a bare pattern is an exact match. A STANDALONE `*`
+// token in the middle (surrounded by spaces, not trailing — e.g. `git -C *`)
+// matches exactly ONE whitespace-free argument (`\S+`). Most specific wins.
+// Refuses to match commands with injection vectors outside quoted segments.
 /**
  * `vipune update` carrying new content — refused for every role, unconditionally.
- *
- * Measured: `vipune update <id> -t "…"` REPLACES the row's content in place. One
- * row before, one row after; no new row, no `superseded_by` lineage, no undo. The
- * id survives, so anything that cited that memory now cites different text —
- * which makes it quieter than `delete`, and worse.
- *
- * The allowlist alone cannot express this. `matchBashSubcommand` is
- * prefix-based, so `"vipune update *"` grants every flag or none; there is no way
- * to permit `--status` (harmless promotion) while refusing `--text`. So the
- * refusal lives here, ahead of the allowlist, and holds even if a future edit
- * re-admits the verb. The harness repairs memory with `add --supersedes`, which
- * preserves the original row — an agent must not silently rewrite the record it
- * is judged against.
+ * The allowlist is prefix-based and cannot express "allow `--status` but not
+ * `--text`", so this refusal sits ahead of the allowlist and holds regardless.
  */
 export function isDestructiveMemoryWrite(command: string): boolean {
   const c = command.trim();
@@ -322,39 +350,31 @@ export function matchBashSubcommand(
   command: string,
   allowlist: Record<string, string>,
 ): string | null {
-  // Commands containing injection vectors OUTSIDE quoted segments (`&&`, `|`,
-  // `>`, `$(...)`, backticks, etc.) can't be safely auto-approved by any
-  // wildcard pattern. We return null here so the lookup falls through to the
-  // role's `*: ask` catch-all (or, absent that, resolveToolPermission's
-  // default "ask") — i.e. the parent prompts the user with the FULL command
-  // text visible. The user is the trust boundary: they read the chain and
-  // approve / deny once. LLM subagents naturally emit chains like
-  // `cd $WORKTREE && git status`, and hard-denying without a prompt blocks
-  // legitimate workflows (#188 follow-up; broke ops/developer subagent bash
-  // for routine /work cycles).
-  //
-  // Defense in depth on the CACHE side stays intact: getBashAlwaysScope and
-  // bashPatternMatches both refuse to wildcard a command with injection
-  // vectors. "Allow always" on a chained command stores only an exact-hash
-  // cache entry — any *different* chain shape will still re-prompt. So the
-  // user can never approve `git X && rm -rf /` as a side-effect of having
-  // ever approved `git status && git diff`.
+  // Injection vectors outside quoted segments → null (the caller prompts).
   if (BASH_COMMAND_INJECTION_CHARS.test(stripQuotedSegments(command))) return null;
   if (isDestructiveMemoryWrite(command)) return "deny";
-  // Sort patterns by length descending so the more specific entry wins.
+  // Match on the stripped form so a quoted path with a space (`git -C "a b"`)
+  // is seen as a single token and rejected by `\S+`.
+  const stripped = stripQuotedSegments(command);
   const patterns = Object.entries(allowlist)
     .filter(([k]) => k !== "*")
     .sort(([a], [b]) => b.length - a.length);
   for (const [pattern, verdict] of patterns) {
     if (typeof verdict !== "string") continue;
-    if (pattern.endsWith(" *")) {
+    const hasMid = hasMidWildcard(pattern);
+    if (!hasMid && pattern.endsWith(" *")) {
       const prefix = pattern.slice(0, -2);
-      if (command === prefix || command.startsWith(`${prefix} `)) return verdict;
-    } else if (pattern.endsWith("*")) {
+      if (stripped === prefix || stripped.startsWith(`${prefix} `)) return verdict;
+    } else if (!hasMid && pattern.endsWith("*")) {
       const prefix = pattern.slice(0, -1);
-      if (command.startsWith(prefix)) return verdict;
-    } else if (command === pattern) {
+      if (stripped.startsWith(prefix)) return verdict;
+    } else if (stripped === pattern) {
       return verdict;
+    } else {
+      // Mid `*` support (#891): standalone `*` tokens become `\S+`; a
+      // trailing `*` on the last token becomes `.*` (loose prefix).
+      const regex = midWildcardPattern(pattern);
+      if (regex?.test(stripped)) return verdict;
     }
   }
   const catchall = allowlist["*"];
@@ -364,21 +384,11 @@ export function matchBashSubcommand(
 /**
  * Does this command discard uncommitted work in the working tree?
  *
- * A validation subagent "cleaned up scratch commits" with `git checkout`,
- * wiped the uncommitted deliverable, and then "restored" it by re-applying an
- * older patch — silently reverting two reviewed defect fixes. It was caught
- * only because a diffstat line count looked wrong.
- * Nothing anywhere stopped it. Gating is bypassed in trust mode (the default
- * on an interactive host), bypassed in sandbox mode, and explicitly allowed
- * even under strict opt-in by the `oo git *` catch-all in agents.json. So this
- * refusal cannot live in the allowlist — like `isDestructiveMemoryWrite`, it
- * sits ahead of it and holds regardless.
- * Deliberately conservative: a false positive makes an agent pick another
- * route, while a false negative destroys work the harness has already paid a
- * developer and a reviewer to produce. NOT included: `git stash` (recoverable
- * via `git stash list`), `git reset` without `--hard` (index only), and plain
- * `git checkout <branch>` (git refuses to switch when that would clobber local
- * modifications).
+ * Scans the whole string (not just the leading verb) so compound commands
+ * and `git -C <path>` forms are caught. Quoted segments are stripped first.
+ * Deliberately conservative: a false positive is cheap, a false negative
+ * destroys work. NOT included: `git stash`, `git reset` without `--hard`,
+ * plain `git checkout <branch>`.
  */
 export function discardsUncommittedWork(command: string): string | undefined {
   // Compound commands are the norm (`cd x && git checkout .`), and `git -C
@@ -404,19 +414,11 @@ export function discardsUncommittedWork(command: string): string | undefined {
 
 /**
  * Does this command run an INTERACTIVE git command that can hang an agent
- * child waiting on an editor or a terminal prompt it can never answer?
+ * child waiting on an editor or a terminal prompt?
  *
- * Agent children have no TTY and no editor. `git rebase -i` waits for a
- * sequence editor and a bare `git commit` waits for $EDITOR; each parks the
- * child until the inactivity watchdog kills it and misclassifies the stall
- * (Claude Code #158/#27136, Codex #6411, Aider #185, OpenHands #3660, Cline
- * #8582). The env-var layer (GIT_EDITOR=true, GIT_SEQUENCE_EDITOR=true,
- * GIT_TERMINAL_PROMPT=0, GIT_PAGER=cat in spawn.ts childEnv) is the primary
- * defense; this predicate is the catch ahead of it inside
- * `registerDestructiveGitGuard` (ahead of the trust/sandbox early-returns —
- * in trust-mode children the env vars are the effective defense), mirroring
- * `discardsUncommittedWork`: scan-not-anchor + `stripQuotedSegments`. Narrow:
- * commit is refused ONLY when it supplies no message.
+ * `git rebase -i` and bare `git commit` (without `-m`) each park the child
+ * until the inactivity watchdog kills it. The env-var layer in spawn.ts
+ * childEnv is the primary defense; this predicate is the catch ahead of it.
  */
 export function rejectsInteractiveGit(command: string): string | undefined {
   const c = stripQuotedSegments(command);
@@ -440,32 +442,10 @@ export function rejectsInteractiveGit(command: string): string | undefined {
 /**
  * Does this command create a forge issue (or a REST POST that does)?
  *
- * Forge-agnostic (#611): the same two doors, for both `gh` (GitHub) and
- * `glab` (GitLab).
- *
- * The mode-independent issue-creation guard (#598) calls this ahead of every
- * trust/sandbox bypass, exactly like `discardsUncommittedWork`: the
- * permission layers answer "may this role run the forge CLI?" — yes — and the
- * self-judged triviality test that used to gate creation had no oracle. The
- * shapes must all be caught, on the same scan-not-anchor + strip-quoted terms:
- *
- *   - `gh issue create …` / `glab issue create …` (with or without the `oo`
- *     prefix, chained after `cd x && …` or any other command),
- *   - `gh api repos/{o}/{r}/issues` — gh api defaults to POST when body
- *     fields (`-f`) are present, so a "read" that isn't actually a read is a
- *     second door into issue creation. Blocked unless the command EXPLICITLY
- *     says `--method GET`; a GET on a SPECIFIC issue (`…/issues/123`) is a
- *     read and stays open.
- *   - `glab api /projects/{id}/issues` — glab's REST door. glab api does NOT
- *     default to POST the way gh api does, so this door is method-aware:
- *     it is blocked only when the command EXPLICITLY posts (`-X POST`,
- *     `--method POST`, or `-f`/`-F`/`--field` body fields, which glab
- *     converts to a POST/PUT); an unqualified `glab api /…/issues` or an
- *     explicit `--method GET` is a read and stays open, as is a GET on a
- *     SPECIFIC issue (`…/issues/123`).
- *
- * Quoted segments are stripped first, so `echo "gh issue create"` or a PR
- * comment that merely mentions the verb is not blocked.
+ * Forge-agnostic (#611). Catches `gh issue create`, `glab issue create`,
+ * `gh api repos/{o}/{r}/issues` (blocked unless `--method GET`), and
+ * `glab api /projects/{id}/issues` (blocked only when explicitly posting).
+ * Quoted segments are stripped first.
  */
 export function createsIssue(command: string): string | undefined {
   const c = stripQuotedSegments(command);

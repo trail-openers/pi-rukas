@@ -27,7 +27,7 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const { matchBashSubcommand, createsIssue } = await import("../src/bash-command-parser.ts");
+const { matchBashSubcommand, createsIssue, stripQuotedSegments } = await import("../src/bash-command-parser.ts");
 const { loadAgentsJson, resolveAgentsJsonPath } = await import("../src/permission-config.ts");
 const { armPmMode, resetPmMode } = await import("../src/pm-mode.ts");
 const { registerPmBashGuard } = await import("../src/pm-bash-guard.ts");
@@ -55,22 +55,18 @@ for (const cmd of [
   "git log --oneline -10",
   "git diff HEAD",
   "git ls-files",
-  // Read-only git -C forms (operator decision B11, issue #891): the matcher
-  // has no wildcard matching — `*` is a literal char in the pattern — so the
-  // pattern `git -C * log*` matches the literal string `git -C * log …`, and
-  // a REAL path never matches (the command would start `git -C /…`). Pinned
-  // with a literal path here and a `*`-path command in the parity section.
-  "git -C * log --oneline",
-  "git -C * log --oneline -10",
-  "git -C * status",
-  "git -C * status --porcelain",
-  "git -C * diff HEAD",
-  "git -C * show 4b8",
-  "git -C * branch --show-current",
-  "git -C * branch --list",
-  "git -C * rev-parse HEAD",
-  "git -C * worktree list",
-  "git -C * stash list",
+  // Read-only git -C forms (operator decision B11, issue #891): the mid
+  // `*` in the pattern is a standalone wildcard — it matches exactly ONE
+  // whitespace-free argument. A real path is therefore what the test uses.
+  "git -C /Users/me/repo log --oneline -3",
+  "git -C /x status --porcelain",
+  "git -C /x diff --stat origin/main",
+  "git -C /x show HEAD --stat",
+  "git -C /x branch --show-current",
+  "git -C /x branch --list",
+  "git -C /x rev-parse HEAD",
+  "git -C /x worktree list",
+  "git -C /x stash list",
   // oo-wrapped reads (the wrapper is part of the pattern — matchBashSubcommand
   // matches on the raw command, so the allowlist carries BOTH shapes).
   "oo git log --oneline",
@@ -100,6 +96,79 @@ for (const cmd of [
   assert(pmVerdict(cmd) === "allow", `allowed — ${cmd}`);
 }
 
+// --------------------------------------------------- matcher unit tests
+//
+// Direct tests of matchBashSubcommand's mid-pattern `*` semantics.
+// A standalone `*` token in the middle of a pattern (not trailing) is
+// converted to `\S+` — exactly one whitespace-free argument. It never
+// spans spaces and is not a prefix match.
+
+{
+  const midAllowlist: Record<string, string> = {
+    "git -C * branch --show-current": "allow",
+    "git -C * log*": "allow", // trailing-* on last token: prefix semantics
+    "vipune search *": "allow", // standard ` *` word-boundary prefix
+  };
+
+  // Mid `*` matches exactly one whitespace-free argument.
+  assert(
+    matchBashSubcommand("git -C /x branch --show-current", midAllowlist) === "allow",
+    "mid *: matches a real path (one whitespace-free arg)",
+  );
+  assert(
+    matchBashSubcommand("git -C /a/b/c branch --show-current", midAllowlist) === "allow",
+    "mid *: matches a deep path",
+  );
+  // Mid `*` does NOT match when the argument contains a space (two args).
+  assert(
+    matchBashSubcommand("git -C /a b branch --show-current", midAllowlist) !== "allow",
+    "mid *: does NOT span a space (two separate args)",
+  );
+  // Mid `*` does NOT match zero args.
+  assert(
+    matchBashSubcommand("git -C branch --show-current", midAllowlist) !== "allow",
+    "mid *: does NOT match zero args (empty path)",
+  );
+
+  // Trailing `*` semantics are unchanged: ` *` is a word-boundary prefix.
+  assert(
+    matchBashSubcommand("vipune search foo", midAllowlist) === "allow",
+    "` *`: word-boundary prefix matches (vipune search foo)",
+  );
+  assert(
+    matchBashSubcommand("vipune search foo bar", midAllowlist) === "allow",
+    "` *`: word-boundary prefix matches multi-arg (vipune search foo bar)",
+  );
+  assert(
+    matchBashSubcommand("vipuneish", midAllowlist) !== "allow",
+    "` *`: word-boundary prefix does NOT match (vipuneish)",
+  );
+
+  // Trailing `*` (no space) is a loose prefix — `git -C * log*` matches
+  // any `git -C <path> log…` command.
+  assert(
+    matchBashSubcommand("git -C /x log --oneline", midAllowlist) === "allow",
+    "trailing * (loose prefix): git -C /x log --oneline → allow",
+  );
+  assert(
+    matchBashSubcommand("git -C /x logish", midAllowlist) === "allow",
+    "trailing * (loose prefix): git -C /x logish → allow (prefix match)",
+  );
+
+  // Quoted path with a space: stripQuotedSegments removes the quoted run,
+  // so `git -C "/a b" log` becomes `git -C  log` (two consecutive spaces
+  // collapse in the regex `\\s+`). The mid `*` in `git -C * log*` is on
+  // the second token — but the pattern `git -C * log*` has a trailing `*`,
+  // so it uses the loose-prefix branch, not the mid-wildcard branch.
+  // The mid-wildcard case with a quoted path is the exact-match pattern
+  // `git -C * branch --show-current`: after stripping, `git -C "a b"`
+  // → `git -C ` (empty where the path was), so `\S+` finds nothing.
+  assert(
+    matchBashSubcommand('git -C "/a b" branch --show-current', midAllowlist) !== "allow",
+    "mid *: quoted path with space does NOT match exact mid-* pattern",
+  );
+}
+
 // ------------------------------------------------------- everything else blocks
 
 for (const cmd of [
@@ -121,6 +190,9 @@ for (const cmd of [
   // The exact-match row is deliberately NOT a loose prefix: `git -C * branch
   // --show-current` (no trailing `*`) must not also grant `branch -D`.
   "git -C /x branch -D y",
+  // Quoted path with a space: the mid `*` is `\S+` — it cannot span a space,
+  // so `git -C "a b" log` does not match and falls to the `*" ask` catch-all.
+  "git -C \"/a b\" log",
   // Creative bypasses — interpreters, in-place editors, arbitrary HTTP, shells.
   "python -c 'print(1)'",
   "node -e 'console.log(1)'",
@@ -321,8 +393,8 @@ else process.env.PI_ENSEMBLE_SANDBOX_MODE = prevSandbox;
     ["vipune search *", "vipune search 'x'"],
     ["which*", "which bun"],
     ["jq*", "jq .a b.json"],
-    ["git -C * log*", "git -C * log --oneline"],
-    ["git -C * branch --show-current", "git -C * branch --show-current"],
+    ["git -C * log*", "git -C /x log --oneline"],
+    ["git -C * branch --show-current", "git -C /x branch --show-current"],
   ];
   for (const [pattern, cmd] of samples) {
     assert(bash[pattern] === "allow", `parity: pattern present — ${pattern}`);
