@@ -104,7 +104,7 @@ export async function mechanicalInventory(
       return { related, errors };
     })(),
   ]);
-  const memory = pickRelevant(semRes as SearchResult, hydRes as SearchResult | undefined);
+  const memory = pickRelevant(semRes, hydRes);
   return { memory, ...forgeSide };
 }
 

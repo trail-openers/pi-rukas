@@ -13,6 +13,7 @@ import { setPlanDispatch } from "../src/plan-driver.ts";
 import { setPlanForge } from "../src/plan-filing.ts";
 import type { RegisteredPlanTool } from "../src/plan-tool.ts";
 import type { SearchResult } from "../src/vipune.ts";
+import { vipuneSearch } from "../src/vipune.ts";
 
 /** The gate prompts captured by installForgeStub/makeDispatchStub callers. */
 export const gatePrompts: string[] = [];
@@ -107,7 +108,9 @@ export function setPlanVipuneStub(
     setPlanVipuneSearch(null);
     return;
   }
-  setPlanVipuneSearch(((q: string, o: { cwd: string }) => fn(q, { hybrid: o.hybrid })) as never);
+  // The partial signature is safe: the inventory calls vipuneSearch with
+  // (terms, searchOpts) only — no other shape ever reaches this seam.
+  setPlanVipuneSearch(((q: string, o: { cwd: string }) => fn(q, { hybrid: o.hybrid })) as unknown as typeof vipuneSearch);
 }
 
 /**
@@ -118,8 +121,6 @@ export function setPlanVipuneStub(
  */
 export const calls: string[] = [];
 
-const FAKE_CTX = { cwd: process.cwd() } as never;
-
 export async function invokePlanTool(
   tools: RegisteredPlanTool[],
   params: Record<string, unknown>,
@@ -128,7 +129,7 @@ export async function invokePlanTool(
   if (!t) throw new Error("start_plan_driver not registered");
   calls.length = 0;
   gatePrompts.length = 0;
-  const out = (await t.execute("id", params, undefined, undefined, FAKE_CTX)) as {
+  const out = (await t.execute("id", params, undefined, undefined, { cwd: process.cwd() })) as {
     content: Array<{ type: string; text: string }>;
     details: Record<string, unknown>;
   };

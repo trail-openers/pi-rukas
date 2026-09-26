@@ -177,12 +177,16 @@ const TRAILING_FRAGMENT_RE = /\s+(?:and|or|with|to|the|a|an|of|for|in|on|at|by)$
 
 /**
  * Cut the descriptor's FIRST clause to `budget` chars (summary budget,
- * prefix excluded). Cut order: first sentence end, then ` — `/`; `/`: `,
- * then the last word boundary within the budget. NEVER an ellipsis (the
- * mid-sentence "…" tail is the defect this replaces); a single token longer
- * than the budget is hard-cut without one. Trailing punctuation and dangling
- * conjunction fragments are stripped as a ONE-PASS cut (checked as whole trailing words, so a
- * summary that legitimately ends "with the plan pipeline" is untouched).
+ * prefix excluded). Cut order: trailing punctuation is stripped first, then
+ * the clause is shortened to the FIRST sentence end (`.`, `?`, `!`), or to
+ * the first ` — ` / `; ` / `: ` separator if there is no sentence end, then
+ * — while it still exceeds the budget — back to the last word (or hyphen)
+ * boundary within the budget. NEVER an ellipsis (the mid-sentence "…" tail
+ * is the defect this replaces); a single token longer than the budget is
+ * hard-cut without one. After the cut, trailing punctuation and dangling
+ * conjunction fragments are stripped as a ONE-PASS cut (checked as whole
+ * trailing words, so a summary that legitimately ends "with the plan
+ * pipeline" is untouched).
  */
 function titleSummary(d: string, budget: number): string {
   let s = d.replace(/[,;:)]+[)\]]*$/g, "").trim();

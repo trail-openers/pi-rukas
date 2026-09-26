@@ -60,6 +60,15 @@ export interface OperatorDirectives {
  * lookahead only ever DEMOTES (a bullet under a closed block is consumed as
  * an item of the block as it always was, a plain prose line cannot be typed
  * and is left unlisted), so no consumed line is missed.
+ *
+ * LINE-INDEX INVARIANT (#858 review): `consumedLines` are indices into
+ * `context.trim().split("\n")`, not into the raw string. The parser trims
+ * the context BEFORE splitting (see parseOperatorDirectivesWithLines), so
+ * a consumer that splits `context.trim()` — the prior-context inventory
+ * (plan-prior-context-assembly.ts) — indexes the SAME array and a
+ * consumed index excludes exactly that line. Trimming here, at the single
+ * split site, is what keeps that alignment true for contexts with leading
+ * or trailing blank lines.
  */
 export interface OperatorDirectiveParse {
   directives: OperatorDirectives;
@@ -149,7 +158,11 @@ export function parseOperatorDirectivesWithLines(
   };
   const consumed = new Set<number>();
   if (!context || !context.trim()) return { directives: out, consumedLines: [] };
-  const lines = context.split("\n");
+  // TRIM BEFORE SPLIT (the line-index invariant documented on
+  // OperatorDirectiveParse): consumers split `context.trim()` and index
+  // `consumedLines` into that array; splitting the raw string would shift
+  // every index by the leading whitespace's worth of lines.
+  const lines = context.trim().split("\n");
   let target: keyof OperatorDirectives | null = null;
   for (let i = 0; i < lines.length; i++) {
     const line = (lines[i] ?? "").trim();

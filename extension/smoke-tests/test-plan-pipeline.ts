@@ -9,7 +9,7 @@
 
 import { codeIdentifiersIn, draftSpec, extractPlanItems } from "../src/plan-draft.ts";
 import { setPlanDispatch } from "../src/plan-driver.ts";
-import { registerPlanTool } from "../src/plan-tool.ts";
+import { registerPlanTool, type RegisteredPlanTool } from "../src/plan-tool.ts";
 import { type PlanType, classifyPlanType } from "../src/plan-types.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { calls, gatePrompts, invokePlanTool } from "./plan-test-stubs.ts";
@@ -84,17 +84,10 @@ function __responses(spec: { role: string; prompt: string }): DispatchResult {
 
 // ------------------------------------------------------------- registration
 
-interface Registered {
-  name: string;
-  description: string;
-  parameters: { properties?: Record<string, unknown> };
-  execute: (...a: unknown[]) => Promise<unknown>;
-}
-
-const tools: Registered[] = [];
+const tools: RegisteredPlanTool[] = [];
 // biome-ignore lint/suspicious/noExplicitAny: minimal stub; only registerTool is used
 const fakePi = {
-  registerTool(def: Registered) {
+  registerTool(def: RegisteredPlanTool) {
     tools.push(def);
   },
 } as any;
@@ -308,8 +301,6 @@ async function invoke(params: Record<string, unknown>) {
   );
   delete process.env.PI_ENSEMBLE_PLAN_GAP_GATE;
 }
-
-console.log(`\nexit ${exit}`);
 
 // D4 sub-issues + D3 edge-cases (moved from test-plan-tool.ts along the 500-line seam)
 

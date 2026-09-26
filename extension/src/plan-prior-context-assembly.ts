@@ -1,4 +1,3 @@
-import { type OperatorDirectives, parseOperatorDirectivesWithLines } from "./plan-directives.ts";
 /**
  * plan-prior-context-assembly — the two-channel prior-context build for the
  * /plan pipeline (split out of plan-driver.ts along the 500-line seam,
@@ -14,7 +13,13 @@ import { type OperatorDirectives, parseOperatorDirectivesWithLines } from "./pla
  * section, and re-listing them verbatim is the duplication #858 removes).
  * This module is the single site where the split happens; the driver feeds
  * both arrays to their consumers and never re-derives it.
+ *
+ * The operator-context split is done against `context.trim().split("\n")`;
+ * the directive parser (plan-directives.ts) trims BEFORE splitting, so
+ * `consumedLines` index the SAME array (see the line-index invariant on
+ * OperatorDirectiveParse there).
  */
+import { type OperatorDirectives, parseOperatorDirectivesWithLines } from "./plan-directives.ts";
 import { type MechanicalInventory, VIPUNE_PRIOR_SOURCE } from "./plan-draft.ts";
 
 export interface PriorContextAssembly {
@@ -38,9 +43,9 @@ export interface PriorContextAssembly {
 
 /**
  * Build both prior-context channels from the operator's `context` param and
- * the mechanical inventory. `context.trim().split("\n")` indices align with
- * the parser's 0-based source lines (both see the same string), so a
- * consumed line index excludes exactly that line from the inventory.
+ * the mechanical inventory. Both this function and the directive parser
+ * (plan-directives.ts) split `context.trim()`, so a consumed line index
+ * excludes exactly that line from the inventory.
  */
 export function assemblePriorContext(
   context: string | undefined,

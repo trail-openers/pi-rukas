@@ -30,8 +30,8 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { codeIdentifiersIn, draftSpec } from "../src/plan-draft.ts";
 import { setPlanDispatch } from "../src/plan-driver.ts";
-import { registerPlanTool } from "../src/plan-tool.ts";
-import { type PlanType, classifyPlanType } from "../src/plan-types.ts";
+import { registerPlanTool, type RegisteredPlanTool } from "../src/plan-tool.ts";
+import { classifyPlanType } from "../src/plan-types.ts";
 import { calls, gatePrompts, invokePlanTool, setPlanVipuneStub } from "./plan-test-stubs.ts";
 
 let exit = 0;
@@ -44,8 +44,6 @@ function assert(cond: boolean, msg: string) {
 }
 
 // ------------------------------------------------------------- registration
-
-import type { RegisteredPlanTool } from "../src/plan-tool.ts";
 
 const tools: RegisteredPlanTool[] = [];
 // biome-ignore lint/suspicious/noExplicitAny: minimal stub; only registerTool is used
@@ -296,6 +294,49 @@ setPlanDispatch(((pi: unknown, spec: { role: string; prompt: string }) => {
   assert(
     inv.includes(prose),
     "#858 inventory: a second untyped prose line renders in the inventory",
+  );
+}
+
+{
+  // #858 line-index alignment: a context with leading and trailing blank
+  // lines must not shift the directive parser's consumed indices. The parser
+  // and the inventory assembly both split context.trim() (see the line-index
+  // invariant in plan-directives.ts), so a leading newline cannot make the
+  // heading consume the WRONG line. The typed lines leave the inventory,
+  // the prose lines stay.
+  const acLine2 = "the seam is exercised by a dry-run e2e with a stubbed dispatch";
+  const prose2a = "leading prose line before the typed block";
+  const prose2b = "trailing prose line after the typed block";
+  const blanked = `\n\n${prose2a}\nACCEPTANCE CRITERIA:\n- ${acLine2}\n\n${prose2b}\n\n`;
+  const { text } = await invokePlanTool(tools, {
+    descriptor: "add a start_plan_driver tool for the plan pipeline in extension",
+    context: blanked,
+    dryRun: true,
+  });
+  const inv2 = text.slice(
+    text.indexOf("## Prior context inventory"),
+    text.indexOf("## Technical context"),
+  );
+  const ac2 = text.slice(text.indexOf("## Acceptance criteria"), text.indexOf("## References"));
+  assert(
+    ac2.includes(acLine2),
+    "#858 alignment: the typed AC bullet renders in the Acceptance criteria section",
+  );
+  assert(
+    !inv2.includes(acLine2),
+    "#858 alignment: with leading/trailing blank lines the typed bullet is STILL absent from the inventory",
+  );
+  assert(
+    !inv2.includes("ACCEPTANCE CRITERIA:"),
+    "#858 alignment: the heading line is still excluded (no index shift into it)",
+  );
+  assert(
+    inv2.includes(prose2a),
+    "#858 alignment: the prose line BEFORE the typed block is kept",
+  );
+  assert(
+    inv2.includes(prose2b),
+    "#858 alignment: the prose line AFTER the typed block is kept",
   );
 }
 
