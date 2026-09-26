@@ -21,12 +21,18 @@ import {
  *   1. the cycle check (a cycle parks with zero re-dispatch),
  *   2. the dependsOn injection (V → each declaring owner),
  *   3. the discard (the violator's worktree reset to the owner's post-commit
- *      SHA; the discarded SHA recorded on a fence-recovery-started event —
- *      the object stays reachable in the store, so the discard cannot
- *      destroy evidence),
+ *      SHA; the discarded SHA recorded on a fence-recovery-started event),
  *   4. the single re-dispatch of ONLY the violators, with the recovery
  *      prompt (names the violated files, tells the developer to use the
  *      owners' versions rather than re-implement them).
+ *
+ * Every precondition of the discard is collected BEFORE any reset happens
+ * (all violators' preconditions first, then the resets): a missing
+ * workstream/worktree, missing owners, a missing owner worktree, an
+ * unreadable or empty owner SHA, an unreadable violator HEAD — or a reset
+ * failure — is the SAME terminal park (the `fence-violation:develop` cap
+ * with the violator, the owner(s) and the reason): never a silent skip,
+ * ZERO re-dispatches of ANY violator.
  *
  * `runFenceRecoveryFlow` (below) then re-runs the fence + verify gates on
  * the recovered tree itself: a second violation parks with the fence cap
@@ -43,11 +49,6 @@ import { type WorkState, appendEvent } from "./workflow-state.ts";
 import { gitErrorDetail } from "./worktree.ts";
 import type { ExecFn } from "./worktree.ts";
 
-// #849 — the prefix of the flip's fence reason (work-develop-fence-verdicts.ts
-// builds `fence violation: <files>` in applyFenceVerdicts). The verdict restore
-// keys on it, so the prefix lives next to its only reader here.
-const FENCE_VIOLATION_REASON_PREFIX = "fence violation";
-
 /** #849 — the recovery outcome (see the module header for the shapes). */
 export type FenceRecoveryOutcome =
   | { parked: true }
@@ -58,12 +59,6 @@ export type FenceRecoveryOutcome =
       workstreams: NonNullable<WorkState["pipelineState"]["workstreams"]>;
       firstAttemptEvidence: string;
     };
-
-// #849 — `Workstream` extends `{ id: string; dependsOn?: string[] }`, so
-// `injectFenceDependsOn<Workstream>` is safe; the alias keeps the call site
-// readable without a cast.
-// (The generic is invoked at the call site as `injectFenceDependsOn<WS>`; this
-// type alias is for the outcome shape only.)
 import type { Workstream } from "./workflow-state-schema.ts";
 
 type WS = Workstream;
@@ -73,9 +68,7 @@ type WS = Workstream;
  * cycle check, the discard, the single re-dispatch). `stateRef` is the
  * caller's shared state ref: events (fence-recovery-started, the re-dispatch
  * completion, any park cap-hit) are appended to it, so the caller reads
- * `stateRef.current` after this returns. A parked outcome carries the cap-hit
- * already appended; the caller returns `stateRef.current` without re-running
- * the gates.
+ * `stateRef.current` after this returns.
  */
 export async function recoverFenceViolations(
   ctx: DriverContext,
@@ -86,16 +79,6 @@ export async function recoverFenceViolations(
   dispatch: NonNullable<DriverContext["dispatchFn"]>,
 ): Promise<FenceRecoveryOutcome> {
   const wsIn = stateIn.pipelineState.workstreams ?? {};
-  // #849 — the gate's fence records live on the gate's result, not on
-  // `pipelineState.verifyEvidence` (which the develop step only writes on a
-  // FAILURE path, and only AFTER the gate returns). The caller (the
-  // runFenceRecoveryFlow re-run below) passes the gate's records via the
-  // state's `verifyEvidence` AFTER the re-dispatch; for the FIRST pass (this
-  // function's input) the records arrive on `stateIn`'s `verifyEvidence` set
-  // by the caller just before the call. To keep this self-contained, the
-  // records are read from a field the caller stashes on the state: the
-  // caller sets `pipelineState.verifyEvidence` right before invoking this
-  // function (the gate's result, carried structurally).
   const fenceViolations = stateIn.pipelineState.verifyEvidence?.fenceViolations ?? [];
   const violators = siblingDeclaredViolators(fenceViolations);
   if (violators.length === 0) {
@@ -107,10 +90,8 @@ export async function recoverFenceViolations(
       firstAttemptEvidence: "(no fence record)",
     };
   }
-  // #849 — the cycle check runs BEFORE any recovery machinery (a cycle parks
-  // with zero re-dispatch). Nothing has been discarded yet, so the first
-  // attempt's evidence is the violators' ids (their commits are still on the
-  // worktrees).
+  // #849 — the cycle check runs BEFORE any recovery machinery (a cycle
+  // parks with zero re-dispatch).
   const cycles = fenceRecoveryCycles(wsIn, fenceViolations);
   if (cycles.size > 0) {
     const reasons = [...cycles.entries()]
@@ -125,9 +106,7 @@ export async function recoverFenceViolations(
     );
     return { parked: true };
   }
-  // #849 — inject the dependsOn edges (V → each declaring owner). The
-  // injected map keeps the `Record<string, Workstream>` shape (a workstream
-  // entry is only replaced, never removed).
+  // #849 — inject the dependsOn edges (V → each declaring owner).
   const injected = injectFenceDependsOn(wsIn, fenceViolations) as NonNullable<
     WorkState["pipelineState"]["workstreams"]
   >;
@@ -135,20 +114,63 @@ export async function recoverFenceViolations(
   const workstreamBaseShas = { ...(stateIn.pipelineState.workstreamBaseShas ?? {}) };
   const discardedShas: string[] = [];
   let next = stateIn;
+  // #849 — the discard is all-or-nothing: EVERY precondition of EVERY
+  // violator is resolved BEFORE any reset; a failure parks. No silent skips.
+  const parkPrecondition = (
+    violator: string,
+    owners: string[],
+    reason: string,
+  ): FenceRecoveryOutcome => {
+    trace(`work-develop: fence recovery: ${violator} precondition failed — ${reason}`);
+    stateRef.current = appendEvent(
+      stateRef.current,
+      fenceViolationCapHit(
+        stateRef.current.pipelineState.reviewRound,
+        `fence recovery aborted — violator ${violator} cannot be discarded (owner(s): ${owners.join(", ") || "none"}) — ${reason.slice(0, 200)}; first attempt: workstream(s) ${violators.join(", ")} could not be discarded, so no re-dispatch was attempted`,
+      ),
+    );
+    return { parked: true };
+  };
+  const prepared: Array<{
+    violator: string;
+    owners: string[];
+    violatorWt: string;
+    ownerSha: string;
+    violatorSha: string;
+  }> = [];
   for (const violator of violators) {
     const vWs = injected[violator];
-    if (!vWs) continue;
+    if (!vWs) {
+      return parkPrecondition(violator, [], `the workstreams map has no entry for ${violator}`);
+    }
     const owners = (vWs.dependsOn ?? []).filter((o) => wsIn[o]);
-    if (owners.length === 0) continue;
+    if (owners.length === 0) {
+      return parkPrecondition(
+        violator,
+        vWs.dependsOn ?? [],
+        `no owner workstreams exist (dependsOn: ${(vWs.dependsOn ?? []).join(", ") || "none"})`,
+      );
+    }
     const violatorWt = worktrees[violator];
-    if (typeof violatorWt !== "string") continue;
-    // #849 — the owner's post-commit tree = the owner's worktree HEAD (the
-    // stack tip, the same shape `resolveDependentBase` resolves for a
-    // dependent workstream from its dependency's post-commit SHA).
+    if (typeof violatorWt !== "string") {
+      return parkPrecondition(
+        violator,
+        owners,
+        `no worktree recorded for violator ${violator} (worktrees map has no entry)`,
+      );
+    }
     const primaryOwner = owners[0];
-    if (primaryOwner === undefined) continue;
+    if (primaryOwner === undefined) {
+      return parkPrecondition(violator, owners, `no owner workstream resolved for ${violator}`);
+    }
     const ownerWt = worktrees[primaryOwner];
-    if (typeof ownerWt !== "string") continue;
+    if (typeof ownerWt !== "string") {
+      return parkPrecondition(
+        violator,
+        owners,
+        `no worktree recorded for owner ${primaryOwner} (worktrees map has no entry)`,
+      );
+    }
     let ownerSha = "";
     try {
       const { stdout } = await execFn("git rev-parse HEAD", {
@@ -156,11 +178,20 @@ export async function recoverFenceViolations(
         maxBuffer: 64 * 1024,
       });
       ownerSha = stdout.trim();
-    } catch {
-      continue; // owner's SHA unreadable — cannot reset; leave as-is
+    } catch (err) {
+      return parkPrecondition(
+        violator,
+        owners,
+        `owner ${primaryOwner}'s SHA unreadable (git rev-parse in ${ownerWt}): ${gitErrorDetail(err)}`,
+      );
     }
-    if (!ownerSha) continue;
-    // #849 — read the violator's current HEAD (the commit to discard).
+    if (!ownerSha) {
+      return parkPrecondition(
+        violator,
+        owners,
+        `owner ${primaryOwner}'s SHA read empty (rev-parse in ${ownerWt})`,
+      );
+    }
     let violatorSha = "";
     try {
       const { stdout } = await execFn("git rev-parse HEAD", {
@@ -168,46 +199,42 @@ export async function recoverFenceViolations(
         maxBuffer: 64 * 1024,
       });
       violatorSha = stdout.trim();
-    } catch {
-      // no readable HEAD — nothing to discard
-    }
-    // #849 — discard the violator's commit: reset its worktree to the owner's
-    // post-commit SHA. The object stays reachable in the store; the SHA is
-    // recorded on the event (the discard cannot destroy evidence).
-    // #849 round 2 — a git failure here is NOT "leave as-is": re-dispatching
-    // a violator whose commit was not discarded would re-run it on top of
-    // its own violating commit (a re-violation by construction) with no
-    // evidence that anything changed. If ANY violator cannot be discarded,
-    // do not re-dispatch anyone: park immediately, naming the violator,
-    // the failing command and the git error.
-    const resetCmd = `git reset --hard ${JSON.stringify(ownerSha)}`;
-    try {
-      await execFn(resetCmd, { cwd: violatorWt, maxBuffer: 64 * 1024 });
     } catch (err) {
-      const detail = gitErrorDetail(err);
-      trace(`work-develop: fence recovery: ${resetCmd} failed in ${violatorWt} — ${detail}`);
-      stateRef.current = appendEvent(
-        stateRef.current,
-        fenceViolationCapHit(
-          stateRef.current.pipelineState.reviewRound,
-          `fence recovery aborted — ${resetCmd} failed for violator ${violator} (worktree ${violatorWt}): ${detail} (first attempt: workstream(s) ${violators.join(", ")} could not be discarded, so no re-dispatch was attempted)`,
-        ),
+      return parkPrecondition(
+        violator,
+        owners,
+        `violator ${violator}'s HEAD unreadable (git rev-parse in ${violatorWt}): ${gitErrorDetail(err)}`,
       );
-      return { parked: true };
     }
-    if (violatorSha) discardedShas.push(violatorSha);
+    prepared.push({ violator, owners, violatorWt, ownerSha, violatorSha });
+  }
+  // #849 — every precondition resolved for every violator; now the resets
+  // (a reset failure is the same terminal park: the discard is
+  // all-or-nothing).
+  for (const p of prepared) {
+    const resetCmd = `git reset --hard ${JSON.stringify(p.ownerSha)}`;
+    try {
+      await execFn(resetCmd, { cwd: p.violatorWt, maxBuffer: 64 * 1024 });
+    } catch (err) {
+      return parkPrecondition(
+        p.violator,
+        p.owners,
+        `${resetCmd} failed in ${p.violatorWt}: ${gitErrorDetail(err)}`,
+      );
+    }
+    if (p.violatorSha) discardedShas.push(p.violatorSha);
     // #849 — record the discard on a fence-recovery-started event.
     next = appendEvent(next, {
       kind: "fence-recovery-started",
       at: Date.now(),
-      workstreamId: violator,
-      owners,
-      ...(violatorSha ? { discardedSha: violatorSha } : {}),
+      workstreamId: p.violator,
+      owners: p.owners,
+      ...(p.violatorSha ? { discardedSha: p.violatorSha } : {}),
     });
-    // #849 — the violator's effective base is now the owner's tip (the
-    // fence re-run's #725 carve-out and the verify gate's per-workstream
-    // diff measure against the owner's tip, not the global baseSha).
-    workstreamBaseShas[violator] = ownerSha;
+    // #849 — the violator's effective base is now the owner's tip (the fence
+    // re-run's #725 carve-out and the verify gate's per-workstream diff
+    // measure against the owner's tip, not the global baseSha).
+    workstreamBaseShas[p.violator] = p.ownerSha;
   }
   // #849 — persist the injected workstreams + updated base map through the
   // state ref (the caller reads stateRef.current after this returns).
@@ -222,16 +249,15 @@ export async function recoverFenceViolations(
   };
   stateRef.current = next;
   // #849 — re-dispatch ONLY the violators, once each, with the recovery
-  // prompt (it names the violated files and tells the developer to use the
-  // owners' versions rather than re-implement them). The worktrees are
-  // already reset to the owners' tips, so no deferred worktree creation is
-  // needed.
+  // prompt (the worktrees are already reset to the owners' tips). Every
+  // precondition was resolved in the pass above; the guards below are
+  // type-narrowing only and cannot fire.
   for (const violator of violators) {
     const vWs = injected[violator];
     if (!vWs) continue;
     const owners = (vWs.dependsOn ?? []).filter((o) => wsIn[o]);
     const violatorWt = worktrees[violator];
-    if (typeof violatorWt !== "string" || owners.length === 0) continue;
+    if (typeof violatorWt !== "string") continue;
     const violatedRecords = fenceViolations.filter(
       (v) => v.workstreamId === violator && v.kind === "sibling-declared",
     );
@@ -267,8 +293,8 @@ export async function recoverFenceViolations(
         });
       }
     } catch (err) {
-      // #849 — the re-dispatch threw: park with the fence cap (the recovery
-      // failed; the evidence names the first attempt's discarded SHA).
+      // #849 — the re-dispatch threw: park with the fence cap (the
+      // evidence names the first attempt's discarded SHA).
       const errMsg = (err as Error).message?.slice(0, 200) ?? "unknown error";
       stateRef.current = appendEvent(
         stateRef.current,
@@ -293,10 +319,9 @@ export async function recoverFenceViolations(
  * #849 — the full fence recovery flow: `recoverFenceViolations` (the cycle
  * check, the discard, the single re-dispatch) followed by the fence + verify
  * gate re-run on the recovered tree. A clean re-run proceeds through the
- * converge gate; a second violation parks with the fence cap (the evidence
- * names BOTH attempts); a non-fence failure parks with the verify-failed cap
- * and the re-run's evidence. The caller (runDevelopTopological) returns the
- * returned state as the step's result.
+ * converge gate; a second violation parks with the fence cap (evidence names
+ * BOTH attempts); a non-fence failure parks with the verify-failed cap.
+ * The caller (runDevelopTopological) returns the result as the step's state.
  */
 export async function runFenceRecoveryFlow(
   ctx: DriverContext,
@@ -308,8 +333,7 @@ export async function runFenceRecoveryFlow(
   dispatch: NonNullable<DriverContext["dispatchFn"]>,
 ): Promise<WorkState> {
   // #849 — the gate runs on `stateRef.current` (the flip wrote the verdicts
-  // there), not the `stateIn` the caller passed in — the flip's replacement
-  // is what the recovery's fence re-run must see.
+  // there), not the `stateIn` the caller passed in.
   const recovery = await recoverFenceViolations(
     ctx,
     stateRef,
@@ -322,27 +346,29 @@ export async function runFenceRecoveryFlow(
     return stateRef.current;
   }
   // #849 — the recovery's violator list is the source of truth for the
-  // re-run's verdict restore (the workstreams map is the FULL map, so a
-  // membership check on it is always true). Captured before the gate's
-  // stashed `verifyEvidence` is overwritten by the re-run's result.
+  // re-run's verdict restore; captured before the re-run's result overwrites
+  // the stashed `verifyEvidence`.
   const recoveredIds = new Set(
     siblingDeclaredViolators(stateRef.current.pipelineState.verifyEvidence?.fenceViolations ?? []),
   );
-  let next = stateRef.current;
-  next = {
-    ...next,
+  // #849 round 3 — worktrees/workstreamBaseShas come from a FRESH read of
+  // `stateRef.current` (after `recoverFenceViolations` returned) merged with
+  // the recovery's reset-derived maps — not from the captured pre-dispatch
+  // map (the re-dispatch and completion events operate on `stateRef.current`
+  // in the window between the discard and this read). The recovery wrote the
+  // merged maps into `stateRef.current` itself (no aliasing); merge idempotent.
+  const afterRecovery = stateRef.current;
+  let next: WorkState = {
+    ...afterRecovery,
     pipelineState: {
-      ...next.pipelineState,
-      worktrees: recovery.worktrees,
-      // #849 — the recovery re-based the RECOVERED workstream's base to the
-      // owner's post-commit SHA (so the re-dispatch's diff is measured from
-      // there). The OTHER workstreams keep their original base — merging the
-      // maps (rather than replacing) preserves them, which keeps the fence
-      // re-run's changed-paths diff correct for every workstream (a replaced
-      // map with only the recovered id would drop the others' bases and make
-      // their diffs measure from the wrong point).
+      ...afterRecovery.pipelineState,
+      worktrees: { ...afterRecovery.pipelineState.worktrees, ...recovery.worktrees },
+      // #849 — merge (not replace) the base maps: the recovery re-based the
+      // RECOVERED workstream to the owner's post-commit SHA; the OTHER
+      // workstreams keep their original base (a replaced map would drop the
+      // others' bases and their diffs would measure from the wrong point).
       workstreamBaseShas: {
-        ...stateRef.current.pipelineState.workstreamBaseShas,
+        ...afterRecovery.pipelineState.workstreamBaseShas,
         ...recovery.workstreamBaseShas,
       },
       // #849 — the injected dependsOn edges persist so the gate's #725
@@ -350,48 +376,39 @@ export async function runFenceRecoveryFlow(
       workstreams: recovery.workstreams,
     },
   };
-  // #849 — re-run the fence + verify gates on the recovered tree (the
-  // re-dispatch's work is now committed; the fence re-runs over the same
-  // workstreams map with the injected edges, and the safety net re-fires on
-  // the recovered worktree if its re-dispatch left uncommitted work).
+  stateRef.current = next;
+  // #849 — re-run the fence + verify gates on the recovered tree (the fence
+  // re-runs over the same workstreams map with the injected edges; the
+  // safety net re-fires if the re-dispatch left uncommitted work).
   const hasRecoveryEvidence = await hasAnyWorktreeEvidence(ctx, next);
   if (hasRecoveryEvidence) {
     next = await applySafetyNet(ctx, next);
     const gate2 = await verifyStepOutcome(ctx, next, "develop");
-    // #849 — the re-run's flip must be able to RESTORE a violator's verdict
-    // to ok:true when the recovery re-run is clean. `applyFenceVerdicts` only
-    // flips entries that were ok:true, so a violator left at ok:false by the
-    // first flip would never be restored. The recovery's violator list
-    // (`recoveredIds`, captured above) is the source of truth: a clean re-run
-    // (the re-dispatch committed only its own file) restores the verdict; a
-    // re-violation is detected by the re-run's own fence records (the
-    // `blockingSecond` branch below). The reason prefix is a guard, not the
-    // key — the key is the structural `recoveredIds` (a violator left at
-    // ok:false by any first-pass flip is restorable when the re-run is
-    // clean). This code is reached only when recovery actually happened
-    // (runFenceRecoveryFlow), so the restore is safe here.
-    for (let i = 0; i < verdicts.length; i++) {
-      const v = verdicts[i];
-      if (!v) continue;
-      if (
-        recoveredIds.has(v.id) &&
-        v.ok === false &&
-        (v.reason?.startsWith(FENCE_VIOLATION_REASON_PREFIX) ?? false)
-      ) {
-        verdicts[i] = { id: v.id, ok: true };
+    const rereRunRecords = gate2.fenceViolations ?? [];
+    const blockingSecond = rereRunRecords.filter(
+      (f) => f.kind === "sibling-declared" || f.kind === "issue-fenced",
+    );
+    // #849 round 3 — the RESTORE is honest: a recovered violator returns
+    // to ok:true ONLY when the re-run gate ran (hasRecoveryEvidence),
+    // gate2.ok is true, AND no blocking fence record names it in the
+    // re-run; otherwise it stays ok:false.
+    const reRanClean = gate2.ok && blockingSecond.every((r) => !recoveredIds.has(r.workstreamId));
+    if (reRanClean) {
+      for (let i = 0; i < verdicts.length; i++) {
+        const v = verdicts[i];
+        if (!v) continue;
+        if (recoveredIds.has(v.id) && v.ok === false) {
+          verdicts[i] = { id: v.id, ok: true };
+        }
       }
     }
-    // Force the restore into the event log (the flip below only runs when the
-    // re-run's fence records are non-empty; a clean re-run yields an empty
-    // record set, so the restore must be applied unconditionally).
-    next = replaceDevelopConvergedVerdicts(
-      next,
-      verdicts.map((v) => ({ ...v })),
-    );
-    if (gate2.fenceViolations && ids.length > 1) {
+    // #849 round 3 — whenever the re-run produced ANY blocking record
+    // (sibling-declared OR issue-fenced), apply the flip BEFORE any park
+    // return, so the converged verdicts reflect the re-run.
+    if (blockingSecond.length > 0 && ids.length > 1) {
       const flipped2 = applyFenceVerdicts(
         verdicts.map((v) => ({ ...v })),
-        gate2.fenceViolations,
+        rereRunRecords,
       );
       const changed2 = flipped2.some((v, i) => {
         const o = verdicts[i];
@@ -399,26 +416,21 @@ export async function runFenceRecoveryFlow(
       });
       if (changed2) {
         next = replaceDevelopConvergedVerdicts(next, flipped2);
-        // #849 — the local `verdicts` array is the source the caller's later
-        // reads compare against; sync it so the re-flip's changed-detection
-        // compares against the latest state.
         for (let i = 0; i < verdicts.length; i++) {
           const f = flipped2[i];
           if (f) verdicts[i] = { ...f };
         }
       }
     }
-    // #849 round 2 — the PARK decision keys on the re-run's fence RECORDS,
-    // not on gate2.ok: a re-dispatch that re-violates the fence but passes
-    // the verify command would still yield a blocking sibling-declared or
-    // issue-fenced record, and the verdict restore above would flip the
-    // violator back to ok. Parking here (even when the re-run's other gates
-    // passed) keeps the violator at ok:false and the re-violation out of the
-    // converge/commit-pr path. Only non-blocking (undeclared, warn-only)
-    // records never park.
-    const blockingSecond = (gate2.fenceViolations ?? []).filter(
-      (f) => f.kind === "sibling-declared" || f.kind === "issue-fenced",
+    // Force the (honest) verdict state into the event log.
+    next = replaceDevelopConvergedVerdicts(
+      next,
+      verdicts.map((v) => ({ ...v })),
     );
+    // #849 round 2 — the PARK decision keys on the re-run's fence RECORDS,
+    // not on gate2.ok (a re-violation that passes the verify command still
+    // yields a blocking record and parks; only non-blocking warn-only
+    // records never park).
     if (blockingSecond.length > 0) {
       const secondProse = (gate2.fenceViolations ?? [])
         .filter(
@@ -451,10 +463,9 @@ export async function runFenceRecoveryFlow(
       return next;
     }
     if (gate2.ok) {
-      // #849 round 2 — the re-run passed every gate and the re-run's fence
-      // records carry no blocking entry: proceed through the converge gate
-      // (the second-violation / git-failure / cycle parks are above or in
-      // recoverFenceViolations; the genuine verify failure parks below).
+      // #849 round 2 — the re-run passed every gate with no blocking fence
+      // record: proceed through the converge gate (the second-violation /
+      // git-failure / cycle parks are above or in recoverFenceViolations).
       next = await runConvergeGateHandler(ctx, next, dispatch);
       return next;
     }
