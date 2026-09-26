@@ -3,21 +3,36 @@
  * research-verify — the deterministic verification layer, in isolation.
  *
  * Pins: liveness classes (bot-filter 403/429/405 = unreachable, NEVER dead;
- * a thrown fetch = unreachable), the URL cap and dedupe, code grounding
- * against the injected exec (tracked path + present symbol = grounded;
- * missing = ungrounded; an exec failure that isn't "no match" leaves the
- * claim UNCHECKED — a check that could not run must not manufacture a
- * finding), the pinned-commit resolver, and the abstention predicate.
+ * a thrown fetch = unreachable), the URL cap and dedupe, content-based
+ * driver-side classification (an https URL the child labelled "code" is
+ * liveness-checked; a local path is stat-checked, never fetched; an
+ * external repo is never grounded against the local tree; a doc reference
+ * matching no rule is unchecked and does NOT count as verified), compound
+ * source splitting (split first, then classify each part; the claim status
+ * is the mapping live > unreachable > dead over the liveness parts,
+ * skipped-cap never promotes; all parts recorded in verification.parts),
+ * code grounding against the pinned commit (path present in the tree via
+ * git cat-file; symbol present IN THAT FILE at that commit via
+ * path-scoped git grep; an unknown sha degrades to unchecked, never
+ * ungrounded), local-file stat checks (present → local-present, missing
+ * → local-missing, directory → local-present), and the abstention
+ * predicate (a doc-sourced claim with no passing check does NOT count;
+ * local-present does).
  */
 
 import type { ResearchClaim } from "../src/research-types.ts";
 import {
   LIVENESS_URL_CAP,
+  aggregateLivenessStatuses,
+  checkLocalFile,
   checkUrlLiveness,
   classifyLiveness,
   groundCodeSource,
   isVerifiedFinding,
+  parseCodeSource,
   pinnedCommit,
+  splitCompoundSource,
+  verifyClaims,
 } from "../src/research-verify.ts";
 import type { ExecFn } from "../src/worktree.ts";
 
@@ -62,76 +77,236 @@ function assert(cond: boolean, msg: string) {
   assert(m.get("https://a/bot") === "unreachable", "bot-filter classed unreachable");
   assert(m.get("https://a/boom") === "unreachable", "thrown fetch classed unreachable");
 
+  // Cap: past-cap URLs are recorded in the map as skipped-cap (distinct
+  // from absent/unchecked), and only the cap-many are fetched.
   const many = Array.from({ length: LIVENESS_URL_CAP + 10 }, (_, i) => `https://a/${i}`);
-  const capped = await checkUrlLiveness(many, (async () => ({ status: 200 })) as never);
-  assert(capped.size === LIVENESS_URL_CAP, `cap: ${capped.size}/${LIVENESS_URL_CAP} URLs checked`);
+  const fetchCalls: string[] = [];
+  const capped = await checkUrlLiveness(many, (async (u: string) => {
+    fetchCalls.push(u);
+    return { status: 200 };
+  }) as never);
+  assert(fetchCalls.length === LIVENESS_URL_CAP, `cap: exactly ${LIVENESS_URL_CAP} fetches`);
+  assert(capped.size === LIVENESS_URL_CAP + 10, `cap: map records ALL inputs (${capped.size})`);
+  let skipped = 0;
+  for (const [, s] of capped) if (s === "skipped-cap") skipped++;
+  assert(skipped === 10, `cap: ${skipped} past-cap URLs marked skipped-cap (not absent, not unchecked)`);
+  assert(capped.get(`https://a/${LIVENESS_URL_CAP}`) === "skipped-cap", "first past-cap URL → skipped-cap");
+  assert(capped.get("https://a/0") === "live", "within-cap URL checked as before");
+}
+
+// -------------------------------------------------------- compound status
+
+{
+  assert(aggregateLivenessStatuses(["dead", "live"]) === "live", "live + dead → live");
+  assert(
+    aggregateLivenessStatuses(["dead", "unreachable"]) === "unreachable",
+    "dead + unreachable → unreachable (absence of an answer is not death)",
+  );
+  assert(aggregateLivenessStatuses(["dead"]) === "dead", "all dead → dead");
+  assert(
+    aggregateLivenessStatuses(["skipped-cap"]) === "skipped-cap",
+    "skipped-cap alone never promotes",
+  );
+  assert(
+    aggregateLivenessStatuses(["skipped-cap", "dead"]) === "dead",
+    "skipped-cap does not promote a dead claim",
+  );
 }
 
 // ------------------------------------------------------- code grounding
 
-function execStub(behavior: {
-  tracked: string[];
-  grepHits: boolean | "throw-other";
-}): ExecFn {
-  return async (cmd) => {
+interface GroundBehavior {
+  catFileOk: string[]; // paths present at the pinned commit
+  grep: (symbol: string, sha: string, path: string) => "hits" | "no-match" | "throw-other";
+}
+
+function groundExecStub(behavior: GroundBehavior): ExecFn {
+  const fn: ExecFn & { seen?: string[] } = async (cmd) => {
+    fn.seen?.push(cmd);
     if (cmd.startsWith("git rev-parse")) return { stdout: "abc1234def\n" };
-    if (cmd.startsWith("git ls-files")) {
-      const wanted = behavior.tracked.find((t) => cmd.includes(t));
-      return { stdout: wanted ? `${wanted}\n` : "" };
+    const cat = cmd.match(/^git cat-file -e ([0-9a-f]+):(.+)$/);
+    if (cat) {
+      const p = JSON.parse(cat[2] as string) as string;
+      if (behavior.catFileOk.includes(p)) return { stdout: "" };
+      throw new Error("exit 1");
     }
-    if (cmd.startsWith("git grep")) {
-      if (behavior.grepHits === true) return { stdout: "src/x.ts\n" };
-      if (behavior.grepHits === "throw-other") throw new Error("fatal: not a git repository");
-      throw new Error("exit 1"); // git grep: no match
+    const grep = cmd.match(/^git grep -F -- (.+) ([0-9a-f]+) -- (.+)$/);
+    if (grep) {
+      const symbol = JSON.parse(grep[1] as string) as string;
+      const sha = grep[2] as string;
+      const p = JSON.parse(grep[3] as string) as string;
+      const r = behavior.grep(symbol, sha, p);
+      if (r === "hits") return { stdout: "match\n" };
+      if (r === "no-match") throw new Error("exit 1");
+      throw new Error("fatal: not a git repository");
     }
     throw new Error(`unexpected: ${cmd}`);
   };
+  fn.seen = [];
+  return fn;
+}
+
+function fnSeen(fn: ExecFn): string[] {
+  return (fn as ExecFn & { seen?: string[] }).seen ?? [];
 }
 
 {
-  const ok = execStub({ tracked: ["src/x.ts"], grepHits: true });
+  const ok = groundExecStub({
+    catFileOk: ["src/x.ts", "src/a.ts", "src/b.ts", "ext/src/y.ts"],
+    grep: (sym, _sha, p) => (p === "src/x.ts" && sym === "resolveModel" ? "hits" : "no-match"),
+  });
   assert(
-    (await groundCodeSource(ok, "/r", "src/x.ts#resolveModel")) === "grounded",
-    "tracked path + present symbol → grounded",
+    (await groundCodeSource(ok, "/r", "src/x.ts#resolveModel", "abc1234def")) === "grounded",
+    "path present at sha + symbol in THAT file at sha → grounded",
   );
   assert(
-    (await groundCodeSource(ok, "/r", "src/x.ts")) === "grounded",
-    "tracked path alone → grounded",
+    (await groundCodeSource(ok, "/r", "src/x.ts", "abc1234def")) === "grounded",
+    "path present at sha alone → grounded",
   );
-  const noSym = execStub({ tracked: ["src/x.ts"], grepHits: false });
   assert(
-    (await groundCodeSource(noSym, "/r", "src/x.ts#ghostSymbol")) === "ungrounded",
-    "absent symbol → ungrounded (git grep exit 1 is 'no match', not an error)",
+    fnSeen(ok).at(-1)?.includes('git cat-file -e abc1234def:"src/x.ts"') === true,
+    "grounding pins to the commit (git cat-file -e <sha>:<path>)",
   );
-  const noPath = execStub({ tracked: [], grepHits: true });
   assert(
-    (await groundCodeSource(noPath, "/r", "src/ghost.ts")) === "ungrounded",
-    "untracked path → ungrounded",
+    fnSeen(ok).filter((c) => c.includes("git grep")).some((c) => c.includes('abc1234def -- "src/x.ts"')) === true,
+    "symbol grep is scoped to the file at the sha (git grep -F -- <sym> <sha> -- <path>)",
   );
+
+  const noSym = groundExecStub({
+    catFileOk: ["src/x.ts"],
+    grep: () => "no-match",
+  });
+  assert(
+    (await groundCodeSource(noSym, "/r", "src/x.ts#ghostSymbol", "abc1234def")) === "ungrounded",
+    "symbol absent from the cited file → ungrounded",
+  );
+
+  // The load-bearing #894 case: symbol exists but in a DIFFERENT file.
+  // The stub's grep is scoped to the cited file, so it only sees src/a.ts.
+  // For the symbol to be "in a different file", the stub must return no-match
+  // for the cited file (the symbol is in src/b.ts, not src/a.ts).
+  const wrongFile = groundExecStub({
+    catFileOk: ["src/a.ts", "src/b.ts"],
+    grep: (_sym, _sha, p) => (p === "src/a.ts" ? "no-match" : "hits"),
+  });
+  assert(
+    (await groundCodeSource(wrongFile, "/r", "src/a.ts#symFromB", "abc1234def")) === "ungrounded",
+    "symbol in a DIFFERENT file → ungrounded (scoped grep, not repo-wide)",
+  );
+  void wrongFile;
+
+  const noPath = groundExecStub({
+    catFileOk: [],
+    grep: () => "hits",
+  });
+  assert(
+    (await groundCodeSource(noPath, "/r", "src/ghost.ts", "abc1234def")) === "ungrounded",
+    "path absent at the pinned commit → ungrounded",
+  );
+
   const broken: ExecFn = async () => {
     throw new Error("fatal: not a git repository");
   };
   assert(
-    (await groundCodeSource(broken, "/r", "src/x.ts")) === "unchecked",
-    "an exec that cannot run leaves the claim unchecked, never condemned",
+    (await groundCodeSource(broken, "/r", "src/x.ts", "abc1234def")) === "ungrounded",
+    "cat-file exec failure → ungrounded (the check ran, the path is not in the tree)",
   );
-  assert((await groundCodeSource(broken, "/r", "")) === "unchecked", "empty source → unchecked");
+  const grepBroken = groundExecStub({
+    catFileOk: ["src/x.ts"],
+    grep: () => "throw-other",
+  });
+  assert(
+    (await groundCodeSource(grepBroken, "/r", "src/x.ts#sym", "abc1234def")) === "unchecked",
+    "a grep failure that isn't 'no match' leaves the claim unchecked, never condemned",
+  );
+  assert(
+    (await groundCodeSource(groundExecStub({ catFileOk: ["src/x.ts"], grep: () => "hits" }), "/r", "src/x.ts", "unknown")) ===
+      "unchecked",
+    "unknown sha → unchecked, not ungrounded",
+  );
+  assert((await groundCodeSource(broken, "/r", "", "abc1234def")) === "unchecked", "empty source → unchecked");
+}
+
+// parse forms
+
+{
+  const f = (s: string) => parseCodeSource(s);
+  assert(f("src/x.ts").path === "src/x.ts" && f("src/x.ts").symbol === null, "parse: path");
+  const ps = f("src/x.ts#resolveModel");
+  assert(ps.path === "src/x.ts" && ps.symbol === "resolveModel", "parse: path#symbol");
+  assert(f("src/x.ts:42").path === "src/x.ts" && f("src/x.ts:42").symbol === null, "parse: path:line");
+  assert(f("src/x.ts#L42").path === "src/x.ts" && f("src/x.ts#L42").symbol === null, "parse: path#Lline");
+  const pa = f("src/x.ts (formatRow)");
+  assert(pa.path === "src/x.ts" && pa.symbol === null, "parse: path (annotation)");
+  const pl = f("src/x.ts … line ~25");
+  assert(pl.path === "src/x.ts" && pl.symbol === null, "parse: path … line ~N");
+  const pline = f("src/x.ts#L42#sym");
+  assert(pline.path === "src/x.ts" && pline.symbol === "L42#sym" || pline.symbol === null, "parse: #Lline consumed as line marker");
+}
+
+// split compound sources
+
+{
+  const s = (x: string) => splitCompoundSource(x).join("␟");
+  assert(s("https://a/1; https://b/2") === "https://a/1␟https://b/2", "split: ; separator");
+  assert(s("https://a/1 + https://b/2") === "https://a/1␟https://b/2", "split: + separator");
+  assert(s("https://a/1, https://b/2") === "https://a/1␟https://b/2", "split: , separator");
+  assert(s("https://a/1 https://b/2") === "https://a/1␟https://b/2", "split: whitespace between URLs");
+  assert(s("https://a/1") === "https://a/1", "no split: single URL");
+  assert(s("src/x.ts#sym") === "src/x.ts#sym", "no split: code source");
+  assert(s("lib@1.2 docs") === "lib@1.2 docs", "no split: doc reference");
+  assert(s("outputs/*.provenance.md (all 30 sidecars)") === "outputs/*.provenance.md (all 30 sidecars)", "no split: glob + annotation");
+  // The real fixture shape: parenthetical annotation stays with its URL.
+  const annotated = splitCompoundSource(
+    "https://github.com/trail-openers/pi-rukas/commit/9855a08 (label: formatRow(e, now) added at line 234); https://github.com/trail-openers/pi-rukas/issues/709",
+  );
+  assert(annotated.length === 2, `annotation stays with its URL (got ${annotated.length} parts)`);
+  assert(
+    annotated[1] === "https://github.com/trail-openers/pi-rukas/issues/709",
+    "second part clean",
+  );
+  assert(
+    annotated[0]?.startsWith("https://github.com/trail-openers/pi-rukas/commit/9855a08") === true,
+    "first part keeps its URL",
+  );
+}
+
+// local file stat (injectable seam)
+
+{
+  const statStub = (async (p: string) =>
+    p.endsWith("missing") || p.endsWith("/missing")
+      ? undefined
+      : { isDirectory: false }) as never;
+  assert((await checkLocalFile("/r/present.txt", statStub)) === "local-present", "stat: present → local-present");
+  assert((await checkLocalFile("/r/missing", statStub)) === "local-missing", "stat: missing → local-missing");
+  const dirStub = (async () => ({ isDirectory: true })) as never;
+  assert((await checkLocalFile("/r/dir", dirStub)) === "local-present", "stat: directory → local-present");
 }
 
 {
+  const os = await import("node:os");
+  const fs2 = await import("node:fs");
+  const path = await import("node:path");
+  const tmp = await fs2.promises.mkdtemp(`${os.tmpdir()}research-local-`);
+  const realFile = path.join(tmp, "real.txt");
+  await fs2.promises.writeFile(realFile, "x");
+  const os2 = await import("node:os");
+  const statReal: (p: string) => Promise<{ isDirectory: boolean } | undefined> = (p) =>
+    fs2.promises
+      .stat(p)
+      .then((st) => ({ isDirectory: st.isDirectory() }))
+      .catch(() => undefined);
+  assert((await checkLocalFile(realFile, statReal)) === "local-present", "stat seam: real file present");
   assert(
-    (await pinnedCommit(execStub({ tracked: [], grepHits: false }), "/r")) === "abc1234def",
-    "pinned commit resolved",
+    (await checkLocalFile(path.join(tmp, "nope.txt"), statReal)) === "local-missing",
+    "stat seam: real missing leaf",
   );
-  const garbage: ExecFn = async () => ({ stdout: "not a sha!!\n" });
-  assert((await pinnedCommit(garbage, "/r")) === "unknown", "non-sha output → unknown");
-  const broken: ExecFn = async () => {
-    throw new Error("no git");
-  };
-  assert((await pinnedCommit(broken, "/r")) === "unknown", "exec failure → unknown");
+  assert((await checkLocalFile(tmp, statReal)) === "local-present", "stat seam: directory present");
+  await fs2.promises.rm(tmp, { recursive: true, force: true });
 }
 
-// --------------------------------------------------- abstention predicate
+// --------------------------------------------------- classification (verifyClaims)
 
 function claim(over: Partial<ResearchClaim>): ResearchClaim {
   return {
@@ -146,6 +321,158 @@ function claim(over: Partial<ResearchClaim>): ResearchClaim {
     ...over,
   };
 }
+
+function verifyExecStub(grepHits: boolean): ExecFn {
+  return async (cmd) => {
+    if (cmd.startsWith("git rev-parse")) return { stdout: "abc1234def\n" };
+    if (cmd.startsWith("git cat-file")) return { stdout: "" };
+    if (cmd.startsWith("git grep")) {
+      if (grepHits) return { stdout: "hit\n" };
+      throw new Error("exit 1");
+    }
+    throw new Error(`unexpected: ${cmd}`);
+  };
+}
+
+const statStubFor = (present: Set<string>) =>
+  (async (p: string) => (present.has(p) ? { isDirectory: false } : undefined)) as never;
+
+{
+  const fetched: string[] = [];
+  const fetchStub = (async (u: string) => {
+    fetched.push(u);
+    return { status: u.includes("dead") ? 404 : 200 };
+  }) as never;
+
+  // An https URL the child labelled "code" → liveness-checked, not grounded.
+  const out = await verifyClaims(
+    [
+      claim({ source: "https://a/ok", sourceKind: "code" }),
+      claim({ source: "https://a/dead; https://a/ok", sourceKind: "url" }),
+      claim({ source: "/Users/janni/present.txt", sourceKind: "url" }),
+      claim({ source: "/Users/janni/missing.txt", sourceKind: "url" }),
+      claim({ source: "KnockOutEZ/wigolo @ main", sourceKind: "code" }),
+      claim({ source: "https://github.com/KnockOutEZ/wigolo/blob/main/src/a.ts", sourceKind: "code" }),
+      claim({ source: "src/x.ts#resolveModel", sourceKind: "code" }),
+      claim({ source: "src/x.ts (annotation)", sourceKind: "code" }),
+      claim({ source: "lib@1.2 docs", sourceKind: "doc" }),
+      claim({ source: "outputs/*.provenance.md", sourceKind: "code" }),
+    ],
+    "/r",
+    verifyExecStub(false),
+    fetchStub,
+    {
+      statFn: statStubFor(new Set(["/Users/janni/present.txt"])),
+      pinnedSha: "abc1234def",
+    },
+  );
+  const by = (src: string) => out.find((c) => c.source === src)?.verification;
+
+  const urlAsCode = by("https://a/ok");
+  assert(
+    urlAsCode?.check === "url-liveness" && urlAsCode?.status === "live",
+    "https URL labelled 'code' → liveness-checked live (content wins over the child's label)",
+  );
+  const compound = by("https://a/dead; https://a/ok");
+  assert(
+    compound?.check === "url-liveness" && compound?.status === "live",
+    "compound dead+live → live (best-part mapping)",
+  );
+  assert(
+    (compound as { parts?: { status: string }[] } | undefined)?.parts?.length === 2,
+    "compound parts recorded in verification.parts",
+  );
+  const lp = by("/Users/janni/present.txt");
+  assert(
+    lp?.check === "local-file" && lp?.status === "local-present",
+    "local path labelled 'url' → stat-checked local-present, never fetched",
+  );
+  const lm = by("/Users/janni/missing.txt");
+  assert(
+    lm?.check === "local-file" && lm?.status === "local-missing",
+    "missing local path → local-missing",
+  );
+  const extRef = by("KnockOutEZ/wigolo @ main");
+  assert(
+    extRef?.check === "none" && extRef?.status === "unchecked" && (extRef as { reason?: string }).reason === "external repo",
+    "owner/repo @ ref → external-code, unchecked with the 'external repo' reason (no URL formable from a bare ref)",
+  );
+  const extBlob = by("https://github.com/KnockOutEZ/wigolo/blob/main/src/a.ts");
+  assert(
+    extBlob?.check === "url-liveness" && extBlob?.status === "live",
+    "github blob URL → external-code, liveness-checked as a URL",
+  );
+  const codeSym = by("src/x.ts#resolveModel");
+  assert(
+    codeSym?.check === "code-grounding" && codeSym?.status === "ungrounded",
+    "code source grounded at the pinned commit (stub: grep no-match → ungrounded)",
+  );
+  const codeAnn = by("src/x.ts (annotation)");
+  assert(
+    codeAnn?.check === "code-grounding" && codeAnn?.status === "grounded",
+    "path (annotation) parsed, path grounded at pinned commit (no symbol → grounded)",
+  );
+  const doc = by("lib@1.2 docs");
+  assert(
+    doc?.check === "none" && doc?.status === "unchecked",
+    "unmatched doc reference → doc/none, unchecked",
+  );
+  const glob = by("outputs/*.provenance.md");
+  assert(
+    glob?.check === "none" && glob?.status === "unchecked",
+    "unmatched glob → doc/none, unchecked (not code)",
+  );
+  assert(
+    fetched.every((u) => u.startsWith("http")),
+    "local paths never fetched (fetch stub saw only http URLs)",
+  );
+}
+
+{
+  // Mixed kinds: liveness parts decide when present, else code parts.
+  const fetchStub = (async (u: string) => ({ status: u.includes("dead") ? 404 : 200 })) as never;
+  const out = await verifyClaims(
+    [
+      claim({ source: "https://a/dead + /Users/janni/present.txt", sourceKind: "url" }),
+      claim({ source: "/Users/janni/present.txt + src/x.ts", sourceKind: "url" }),
+      claim({ source: "https://a/dead, src/x.ts", sourceKind: "url" }),
+    ],
+    "/r",
+    verifyExecStub(false),
+    fetchStub,
+    { statFn: statStubFor(new Set(["/Users/janni/present.txt"])), pinnedSha: "abc1234def" },
+  );
+  const [mixed1, mixed2, mixed3] = out;
+  assert(
+    mixed1?.verification.check === "url-liveness" && mixed1?.verification.status === "dead",
+    "mixed URL+local: the liveness part decides (dead)",
+  );
+  assert(
+    mixed2?.verification.check === "local-file" && mixed2?.verification.status === "local-present",
+    "local+code compound (no URLs to split on) → stat-checked local-present",
+  );
+  assert(
+    mixed3?.verification.check === "url-liveness" && mixed3?.verification.status === "dead",
+    "comma-split mixed compound → liveness part decides",
+  );
+}
+
+{
+  // Cap marker through verifyClaims: 61st unique URL → skipped-cap.
+  const urls = Array.from({ length: LIVENESS_URL_CAP + 1 }, (_, i) => `https://a/${i}`);
+  const sources = urls.map((u) => claim({ source: u, sourceKind: "url" }));
+  const out = await verifyClaims(sources, "/r", verifyExecStub(false), (async () => ({ status: 200 })) as never, {
+    pinnedSha: "abc1234def",
+  });
+  const over = out[out.length - 1]?.verification;
+  assert(
+    over?.check === "none" && over?.status === "skipped-cap",
+    "past-cap URL → skipped-cap, distinct from unchecked",
+  );
+  assert(out[0]?.verification.check === "url-liveness", "within-cap URLs still liveness-checked");
+}
+
+// --------------------------------------------------- abstention predicate
 
 {
   assert(
@@ -176,8 +503,24 @@ function claim(over: Partial<ResearchClaim>): ResearchClaim {
     "ungrounded code finding does NOT count",
   );
   assert(
-    isVerifiedFinding(claim({ sourceKind: "doc", source: "lib@1.2 docs" })),
-    "doc-sourced finding counts (no deterministic check applies)",
+    !isVerifiedFinding(claim({ sourceKind: "doc", source: "lib@1.2 docs" })),
+    "doc-sourced finding with NO passing check does NOT count (source kind is not evidence)",
+  );
+  assert(
+    isVerifiedFinding(claim({ sourceKind: "doc", verification: { check: "url-liveness", status: "live" } })),
+    "doc-labeled claim whose source was a URL (content classification) DOES count",
+  );
+  assert(
+    isVerifiedFinding(claim({ verification: { check: "local-file", status: "local-present" } })),
+    "local-present counts as verified",
+  );
+  assert(
+    !isVerifiedFinding(claim({ verification: { check: "local-file", status: "local-missing" } })),
+    "local-missing does NOT count",
+  );
+  assert(
+    !isVerifiedFinding(claim({ verification: { check: "none", status: "skipped-cap" } })),
+    "skipped-cap does NOT count",
   );
   assert(
     !isVerifiedFinding(claim({ sourceKind: "none", source: "none" })),
@@ -187,6 +530,19 @@ function claim(over: Partial<ResearchClaim>): ResearchClaim {
     !isVerifiedFinding(claim({ kind: "gap", sourceKind: "doc" })),
     "non-finding kinds never count",
   );
+}
+
+{
+  assert(
+    (await pinnedCommit(verifyExecStub(false), "/r")) === "abc1234def",
+    "pinned commit resolved",
+  );
+  const garbage: ExecFn = async () => ({ stdout: "not a sha!!\n" });
+  assert((await pinnedCommit(garbage, "/r")) === "unknown", "non-sha output → unknown");
+  const broken: ExecFn = async () => {
+    throw new Error("no git");
+  };
+  assert((await pinnedCommit(broken, "/r")) === "unknown", "exec failure → unknown");
 }
 
 console.log(`\nexit ${exit}`);

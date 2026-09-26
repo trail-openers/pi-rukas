@@ -256,7 +256,7 @@ export function renderProvenance(a: ArtifactArgs): string {
 
 **Date:** ${a.date} · **Tier:** ${a.tier} · **Pinned commit:** ${a.pinnedCommit}
 
-Verification legend: \`url live/dead/unreachable\` = HTTP check at the date above (403/429 count as unreachable, not dead); \`grounded/ungrounded\` = path/symbol checked against the pinned commit's tree; \`unchecked\` = no deterministic check applies.
+Verification legend: \`url live/dead/unreachable\` = HTTP GET at the date above (403/429/405 count as unreachable, not dead — a page that refuses automation still exists; \`dead\` is confident absence); \`skipped-cap\` = the liveness pass was capped (LIVENESS_URL_CAP unique URLs) — a check that was NOT run, distinct from unchecked; \`grounded/ungrounded\` = path and symbol checked at the pinned commit's tree (symbol must appear in the cited file at that commit); \`local-present/local-missing\` = local path stat-checked (never fetched); \`unchecked\` = no deterministic check applies (doc references) or it could not run (an external repo with no checkable URL, an unknown pinned commit). Compound sources record each part on its own line below the claim.
 
 ## Sources
 
