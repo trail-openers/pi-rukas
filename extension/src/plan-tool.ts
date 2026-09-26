@@ -41,6 +41,18 @@ import type { PlanResult } from "./plan-types.ts";
 import { trace } from "./trace.ts";
 import { resolveRepoRoot } from "./work-entry.ts";
 
+/**
+ * The shape of a registered `start_plan_driver` tool def — shared with the
+ * test harness (plan-test-stubs.ts: invokePlanTool) so the dry-run e2e
+ * blocks can drive the tool without the full ExtensionAPI surface.
+ */
+export interface RegisteredPlanTool {
+  name: string;
+  description: string;
+  parameters: { properties?: Record<string, unknown> };
+  execute: (...a: unknown[]) => Promise<unknown>;
+}
+
 export function registerPlanTool(pi: ExtensionAPI) {
   pi.registerTool({
     name: "start_plan_driver",

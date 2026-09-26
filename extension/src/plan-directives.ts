@@ -48,6 +48,33 @@ export interface OperatorDirectives {
   neverClaim?: string[];
 }
 
+/**
+ * One parse of the operator's `context` param: the typed channels plus the
+ * 0-based source-line indices the parser CONSUMED as typed-block lines
+ * (#858). A consumed line is one that became a heading, a fence, or a
+ * typed-block item (or a bulleted line inside a closed block). Untyped
+ * prose lines stay unlisted — they are the Prior context inventory's only
+ * operator content; consumed lines must NOT be re-listed there.
+ *
+ * The split is line-level and conservative: the parser's blank-line
+ * lookahead only ever DEMOTES (a bullet under a closed block is consumed as
+ * an item of the block as it always was, a plain prose line cannot be typed
+ * and is left unlisted), so no consumed line is missed.
+ *
+ * LINE-INDEX INVARIANT (#858 review): `consumedLines` are indices into
+ * `context.trim().split("\n")`, not into the raw string. The parser trims
+ * the context BEFORE splitting (see parseOperatorDirectivesWithLines), so
+ * a consumer that splits `context.trim()` — the prior-context inventory
+ * (plan-prior-context-assembly.ts) — indexes the SAME array and a
+ * consumed index excludes exactly that line. Trimming here, at the single
+ * split site, is what keeps that alignment true for contexts with leading
+ * or trailing blank lines.
+ */
+export interface OperatorDirectiveParse {
+  directives: OperatorDirectives;
+  consumedLines: number[];
+}
+
 const KEYWORD =
   "(ACCEPTANCE[\\s-]*CRITERIA|PITFALLS|EDGE[\\s-]*CASES|OUT[\\s-]*OF[\\s-]*SCOPE|TEST[\\s-]*SURFACE|DECOMPOSITION|SUB[\\s-]*ISSUES?|NEVER[\\s-]*CLAIM|FORBIDDEN)";
 
@@ -107,6 +134,20 @@ function stripBullet(line: string): string {
  * Grammar in the module header.
  */
 export function parseOperatorDirectives(context: string | undefined): OperatorDirectives {
+  return parseOperatorDirectivesWithLines(context).directives;
+}
+
+/**
+ * `parseOperatorDirectives` plus the 0-based source-line indices the parser
+ * CONSUMED as typed-block lines (#858). The driver keeps its own line loop
+ * feeding the child-prompt channel (D2: the operator is authority) and uses
+ * `consumedLines` only to exclude typed-block lines from the FILED-body
+ * Prior context inventory. Untyped prose lines stay unlisted — they are the
+ * inventory's only operator content.
+ */
+export function parseOperatorDirectivesWithLines(
+  context: string | undefined,
+): OperatorDirectiveParse {
   const out: Required<OperatorDirectives> = {
     acceptanceCriteria: [],
     pitfalls: [],
@@ -115,8 +156,13 @@ export function parseOperatorDirectives(context: string | undefined): OperatorDi
     decomposition: [],
     neverClaim: [],
   };
-  if (!context || !context.trim()) return out;
-  const lines = context.split("\n");
+  const consumed = new Set<number>();
+  if (!context || !context.trim()) return { directives: out, consumedLines: [] };
+  // TRIM BEFORE SPLIT (the line-index invariant documented on
+  // OperatorDirectiveParse): consumers split `context.trim()` and index
+  // `consumedLines` into that array; splitting the raw string would shift
+  // every index by the leading whitespace's worth of lines.
+  const lines = context.trim().split("\n");
   let target: keyof OperatorDirectives | null = null;
   for (let i = 0; i < lines.length; i++) {
     const line = (lines[i] ?? "").trim();
@@ -127,12 +173,17 @@ export function parseOperatorDirectives(context: string | undefined): OperatorDi
         let j = i + 1;
         while (j < lines.length && !(lines[j] ?? "").trim()) j++;
         const next = j < lines.length ? (lines[j] ?? "").trim() : "";
-        if (!BULLET_RE.test(next)) target = null;
+        // A bulleted lookahead is a typed-block line (an item under a closed
+        // block — consumed as it always was, now visible to the exclusion);
+        // a non-bullet lookahead just demotes the block.
+        if (BULLET_RE.test(next)) consumed.add(j < lines.length ? j : i);
+        else target = null;
       }
       continue;
     }
     const m = line.match(HEADING_RE);
     if (m) {
+      consumed.add(i);
       target = channelFor(m[1] ?? "");
       if ((m[3] ?? "").toUpperCase() === "END") {
         target = null; // "TEST SURFACE END" closes the block
@@ -146,7 +197,14 @@ export function parseOperatorDirectives(context: string | undefined): OperatorDi
       else if (rest && !/^[#=*`]+$/.test(rest) && !/^BEGIN$/i.test(rest)) out[target].push(rest);
       continue;
     }
-    if (!target) continue;
+    if (!target) {
+      // Outside an open block: a bulleted line is a typed-block line the
+      // parser consumes (it never becomes an item — same as before, now
+      // visible to the inventory exclusion).
+      if (BULLET_RE.test(line)) consumed.add(i);
+      continue;
+    }
+    consumed.add(i);
     if (FENCE_RE.test(line)) {
       if (/END/i.test(line)) target = null;
       continue;
@@ -154,5 +212,5 @@ export function parseOperatorDirectives(context: string | undefined): OperatorDi
     const bullet = stripBullet(line);
     if (bullet) out[target].push(bullet);
   }
-  return out;
+  return { directives: out, consumedLines: [...consumed].sort((a, b) => a - b) };
 }
