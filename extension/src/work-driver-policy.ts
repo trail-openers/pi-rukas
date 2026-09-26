@@ -395,6 +395,57 @@ export function judgePolicy(repoRoot: string): PolicyJudgeFn {
   };
 }
 
+/** One doctrine file's launch-time status, from a stat rather than a read. */
+export type DoctrinePresence = "present" | "absent" | "unreadable";
+
+/**
+ * Stat (not read) each of `DOCTRINE_FILES` at `repoRoot`. Returns per-file
+ * statuses plus `presentFiles` — the subset that exists — because that is the
+ * same set the merged-step judge is fed, so the launch notice and the gate
+ * agree on what they see. ENOENT is `absent` (the file is genuinely not
+ * there); any other stat error is `unreadable` (permissions, I/O — the
+ * merged-step judge reads via `git show <baseSha>`, a different read that can
+ * still succeed, so this must not be reported as "will park").
+ *
+ * Presence-only by design: nothing here reads file contents, and the policy
+ * judge is deliberately NOT invoked — authority is decided at the merged
+ * step, this notice is informational.
+ */
+export async function doctrinePresence(
+  repoRoot: string,
+): Promise<{ files: Record<string, DoctrinePresence>; presentFiles: string[] }> {
+  const files = {} as Record<string, DoctrinePresence>;
+  for (const file of DOCTRINE_FILES) {
+    const p = path.join(repoRoot, file);
+    try {
+      await fs.stat(p);
+    } catch (err) {
+      files[file] = (err as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "unreadable";
+      continue;
+    }
+    // A stat pass is not enough on macOS — `stat` succeeds on a mode-000
+    // file. A bounded read probe (32 bytes is well past any in-kernel cache
+    // boundary for a regular file, and the read of a doctrine file would be
+    // far larger anyway) makes the "unreadable" branch honest without loading
+    // the file: this is a presence check, never a content read.
+    try {
+      const fh = await fs.open(p, "r");
+      try {
+        await fh.read(new Uint8Array(32), 0, 32, 0);
+      } finally {
+        await fh.close();
+      }
+      files[file] = "present";
+    } catch {
+      files[file] = "unreadable";
+    }
+  }
+  return {
+    files,
+    presentFiles: DOCTRINE_FILES.filter((f) => files[f] === "present"),
+  };
+}
+
 /** Read a doctrine document from disk. Used only where base-reading does not apply. */
 export async function readDoctrineFromDisk(
   repoRoot: string,

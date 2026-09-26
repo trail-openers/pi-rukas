@@ -166,12 +166,22 @@ assert(
   "R2 staleness signal is its own non-chained command bullet (git log -1 -- AGENTS.md)",
 );
 assert(
+  commandBullets.some((c) => c === "git log -1 --format=%cd -- CLAUDE.md"),
+  "the CLAUDE.md existence check is its own non-chained command bullet (so a missing doctrine pair is distinguishable from a stale AGENTS.md)",
+);
+assert(
   /AGENTS\.md/.test(body) && /agents-md/.test(body),
   "the R2 readiness note points at the sibling /agents-md command (check-and-pointer only)",
 );
 assert(
   !/(regenerate|regen)\s+(AGENTS\.md)/i.test(body),
   "/start never inlines an AGENTS.md regenerate — that belongs to /agents-md",
+);
+
+assert(
+  /auto-merge off: no AGENTS\.md\/CLAUDE\.md/.test(body) &&
+    /awaiting-human-merge/.test(body),
+  "the readiness line names the missing-doctrine state explicitly — auto-merge off because no AGENTS.md/CLAUDE.md, cycle parks as awaiting-human-merge",
 );
 
 // R3 — the budget is advisory prompt text in the explore section (no code can

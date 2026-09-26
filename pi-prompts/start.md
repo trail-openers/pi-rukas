@@ -35,13 +35,14 @@ argument-hint: ""
    - `oo git shortlog -sn --no-merges`
    - `oo git for-each-ref --sort=-committerdate refs/heads --format='%(HEAD) %(refname:short) %(committerdate:relative)'`
    - `git log -1 --format=%cd -- AGENTS.md`
+   - `git log -1 --format=%cd -- CLAUDE.md`
    - Forge state — pick by the detected forge (`git remote get-url origin` host: `github.com` → GitHub, `gitlab.com` → GitLab, otherwise skip these and note "forge undetected"), one bash call each:
      - GitHub: `gh issue list --limit 15`, `gh pr list`, `gh run list --branch main --limit 3`
      - GitLab: `glab issue list --limit 15`, `glab mr list`, `glab ci list --limit 3`
 
    These are read-only — no dispatch, no subagent spawn, no GLM summarisation dependency. The output is yours to synthesise in step 6.
 
-   **AGENTS.md staleness check** (reuses the output already read above — no new command). If the AGENTS.md read came back empty (the file is missing), or its commit date is older than the 10th-most-recent commit from the `oo git log --oneline -10` output above, note it in the readiness line and point the operator at the sibling `/agents-md` command to regenerate — check-and-pointer only, never run a regenerate yourself.
+   **AGENTS.md staleness check** (reuses the output already read above — no new command). If the AGENTS.md read came back empty (the file is missing), or its commit date is older than the 10th-most-recent commit from the `oo git log --oneline -10` output above, note it in the readiness line and point the operator at the sibling `/agents-md` command to regenerate — check-and-pointer only, never run a regenerate yourself. If the AGENTS.md read came back empty AND the CLAUDE.md existence check in the bullet list above is also empty, the readiness line must name that state explicitly: **"auto-merge off: no AGENTS.md/CLAUDE.md — the cycle will park as awaiting-human-merge"**. A repo without doctrine files has nothing for the `/work` policy judge to read at the merged step, so auto-merge is off for every cycle in it — say so rather than only pointing at regeneration.
 
 5. **What `/work` left behind** — run these directly, one call each, alongside step 4. Use the `read` tool for the directory listing — **NOT a bash `ls`**: `ls` is not on the PM's bash allowlist and a refused call is a data gap that must be reported, not narrated around.
    - `read` tool on `.pi/work-state/` (directory listing — the read tool handles directories; `ls` is not allowlisted for the PM)
