@@ -30,21 +30,33 @@ import {
   mechanicalInventory,
   parseOperatorDirectives,
 } from "./plan-draft.ts";
-import { correctiveRedraftError, haltResult } from "./plan-driver-halt.ts";
+import { allAnglesFailedSpec, correctiveRedraftError, haltResult } from "./plan-driver-halt.ts";
 import { type FilingFailure, fileIssue, getPlanForge, planForgeFor } from "./plan-filing.ts";
+import { type GapGateLoopResult, residualGapsSection, runGapGateLoop } from "./plan-gaps.ts";
 import { type CarriedCritical, gapGatePrompt, gapGateVerifyPrompt } from "./plan-gate-prompt.ts";
 import {
   PLAN_DISPATCH_TIMEOUT_MS,
   PLAN_MARKER_CHILD_ARGS,
   runInvestigation,
 } from "./plan-investigate.ts";
+import { phase5FilingFailure } from "./plan-phase5.ts";
 import { precheckDescriptor } from "./plan-precheck.ts";
+import {
+  type PlanDriverInput,
+  type PlanGap,
+  type PlanPhaseTiming,
+  type PlanResult,
+  classifyPlanType,
+  planTitle,
+} from "./plan-types.ts";
 import {
   FORGE_BODY_MAX,
   fitDraftToBudget,
   parsePinnedSubIssueCount,
   validateDraft,
 } from "./plan-validate.ts";
+import { type ResolvedDecision, buildResolvedDecisions } from "./plan-writeback.ts";
+import { trace } from "./trace.ts";
 
 // The dispatch seam, injectable for tests (ESM namespaces are not mutable
 // in Bun — the FsOps-style DI the agents-md core uses too).
@@ -56,22 +68,14 @@ let _dispatchOverride: PlanDispatchFn | null = null;
 export function setPlanDispatch(fn: PlanDispatchFn | null): void {
   _dispatchOverride = fn;
 }
-import {
-  type GapGateLoopResult,
-  parseGaps,
-  residualGapsSection,
-  runGapGateLoop,
-} from "./plan-gaps.ts";
-import {
-  type PlanDriverInput,
-  type PlanGap,
-  type PlanPhaseTiming,
-  type PlanResult,
-  classifyPlanType,
-  planTitle,
-} from "./plan-types.ts";
-import { type ResolvedDecision, buildResolvedDecisions } from "./plan-writeback.ts";
-import { trace } from "./trace.ts";
+
+// #893 — injectable stat seam for the plan-reporter preflight (tests).
+let _statFnOverride: ((p: string) => Promise<unknown>) | null = null;
+
+/** Set a stat stub for the next run (tests). Pass `null` to clear. */
+export function setPlanStatFn(fn: ((p: string) => Promise<unknown>) | null): void {
+  _statFnOverride = fn;
+}
 
 const GAP_GATE_MAX_ITERATIONS = 2;
 
@@ -104,10 +108,10 @@ export async function runPlanPipeline(
       timings.push({ phase, ms: Date.now() - t0 });
     }
   };
-  const finishTimings = (): PlanPhaseTiming[] => [
-    ...timings,
-    { phase: "total", ms: Date.now() - pipelineStart },
-  ];
+  const finishTimings = (): PlanPhaseTiming[] => {
+    const total = { phase: "total", ms: Date.now() - pipelineStart } as const;
+    return [...timings, total];
+  };
 
   // Phase 0b — deterministic under-specification triage (plan-precheck.ts)
   // BEFORE any dispatch; fires only on the strongest signal.
@@ -180,6 +184,7 @@ export async function runPlanPipeline(
       codeIdentifiers: codeIds,
       pinnedSubIssues,
       forbiddenPhrases: directives.neverClaim,
+      statFn: _statFnOverride ?? undefined,
     }),
   );
 
@@ -219,7 +224,7 @@ export async function runPlanPipeline(
       `plan-driver: ALL ${findings.length} angles produced zero structured items (prose-only or schema-invalid calls) — halting, no spec filed`,
     );
     const angleNames = findings.map((f) => f.name).join(", ");
-    const spec = `(spec not drafted — all investigation angles returned zero structured items)\n\nDispatched angles: ${angleNames}\n\nEach angle returned either prose only (no report_plan_item tool calls) or schema-invalid calls only. This usually means the reporter extension was not loaded, or the model did not make the tool calls. Re-run start_plan_driver — the investigation children are re-dispatched; if this recurs, check the plan-reporter extension registration (PLAN_REPORTER_PATH).`;
+    const spec = allAnglesFailedSpec(angleNames, findings);
     const title = planTitle(descriptor, type);
     trace(
       `plan-driver: type=${type} angles=${findings.length} structured=${withItems} gaps=0 filed=false dryRun=${!!dryRun} ALL-ANGLES-FAILED`,
@@ -423,39 +428,17 @@ export async function runPlanPipeline(
   // terminal rule, #664 transposed), do NOT file — surface to the operator. D7: the filing failure is DISCRIMINATED and
   // carried on the result; the operator-visible text (plan-tool.ts) surfaces
   // the reason including the forge stderr, without requiring PI_ENSEMBLE_DEBUG.
-  let issueUrl: string | undefined;
-  let filingFailure: FilingFailure | undefined;
-  // The cap-based skips set filingFailure REGARDLESS of dryRun: they are
-  // policy, and the NOT-FILEABLE head + FILING STATUS must render on a dry
-  // run too (hiding a halt behind dryRun is the #647 C1 defect).
-  if (capReason === "review-unparseable") {
-    // Fail closed: nothing was reviewed, so nothing files. The raw head
-    // travels so parser-vs-prompt drift is diagnosable, never silent.
-    filingFailure = {
-      reason: "review-unparseable",
-      detail: `the gap-gate review could not be parsed (no structured findings and no verdict, after one strict retry) — the spec was NOT reviewed and was not filed. Re-run start_plan_driver to retry the gate. Raw reviewer output head: ${rawUnparsedHead ?? "(unavailable)"}`,
-    };
-  } else if (capReason === "unresolved-blocking") {
-    // Deliberate skip: CRITICAL gaps remain (CRITICAL-only blocks; HIGH
-    // travels in the residual disclosure) — not filed by policy.
-    filingFailure = {
-      reason: "cap-surface",
-      detail: "the gap gate cap routed to surface (CRITICAL gaps remain) — not filed by policy",
-    };
-  } else if (capReason === "gate-unavailable") {
-    // Deliberate skip: the gate dispatch failed — no reviewer saw the spec.
-    filingFailure = {
-      reason: "gate-unavailable",
-      detail:
-        "the gap-gate dispatch failed — no reviewer ever saw the spec, so it was not filed (re-run start_plan_driver after the gate failure is addressed)",
-    };
-  } else if (!dryRun) {
-    const fr = await timed("filing", () =>
-      fileIssue(title, finalBody, getPlanForge() ?? (() => planForgeFor(repoRoot))),
-    );
-    issueUrl = fr.url;
-    filingFailure = fr.failure;
-  }
+  // The cap-skip routing + the single filing pass (moved to plan-phase5.ts
+  // along the 500-line seam) keep the driver's orchestration visible here.
+  const { issueUrl, filingFailure } = await phase5FilingFailure({
+    capReason,
+    dryRun,
+    title,
+    finalBody,
+    repoRoot,
+    rawUnparsedHead,
+    timed,
+  });
 
   // #633: report BOTH how many angles were dispatched and how many produced
   // structured items — `angles=` alone read as "3 angles ran" even when all
@@ -487,12 +470,5 @@ export async function runPlanPipeline(
 // Re-export for consumers that import from plan-driver.ts
 export { classifyPlanType, planTitle } from "./plan-types.ts";
 export { codeIdentifiersIn, draftSpec } from "./plan-draft.ts";
-
-/**
- * Export seam for tests: `parseGaps` is module-private to the gap gate (the
- * driver runs it directly on the gate child's reply — the parsing logic now
- * lives in plan-gaps.ts). The smoke test reaches it through this alias.
- */
-export function parseGapsForTest(reply: string) {
-  return parseGaps(reply);
-}
+// Test seam re-export (the alias now lives in plan-gaps.ts, its home).
+export { parseGapsForTest } from "./plan-gaps.ts";

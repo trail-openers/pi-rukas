@@ -17,6 +17,7 @@ import { LENS_REPORTER_PATH, type LensDef } from "./lens-review.ts";
 import type { LensRunResult } from "./lens-review.ts";
 import type { RosterEntry } from "./lens-roster.ts";
 import { readEnumMarker } from "./reply-markers.ts";
+import { reporterPathFromArgs, statReporterPath } from "./reporter-preflight.ts";
 import type { SlowWatchInput } from "./slow-notice.ts";
 import { feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
 import { spawnSpecialist } from "./spawn.ts";
@@ -46,6 +47,13 @@ export async function runLensChild(opts: {
    * threads its own; PM-driven lens runs pass nothing — the PM's
    * dispatch_peek already sees the lens's progress there). */
   pi?: SlowWatchInput["pi"];
+  /**
+   * #893 — injectable stat of the lens-reporter extension path. A rejecting
+   * stat blocks this lens before ANY spawn attempt with the named
+   * "reporter extension missing" error (0 attempts, no spawn). Production
+   * passes none (the real `fs.stat` is used); tests pass a stub.
+   */
+  statFn?: (p: string) => Promise<unknown>;
 }): Promise<LensRunResult> {
   const { lens, runId, skillsDir, context, bumpBatch } = opts;
   const runOpts = opts.opts;
@@ -73,6 +81,31 @@ export async function runLensChild(opts: {
       blocked: true,
       parseError: `skill not installed: ${skillPath} (not spawned)`,
     };
+  }
+  // #893 — pre-spawn stat of the lens-reporter extension. The extraArgs for
+  // every lens child include `--extension LENS_REPORTER_PATH`, so a missing
+  // path means the child would run with no report_finding tool and the
+  // silence diagnostic in lensProducedEvidence would fire on every lens in
+  // lockstep — indistinguishable from a genuinely clean review. Failing here
+  // with a named error is cheaper and unambiguous.
+  const lensExtraArgs = ["--no-skills", "--skill", skillPath, "--extension", LENS_REPORTER_PATH];
+  const lensReporterPath = reporterPathFromArgs(lensExtraArgs);
+  if (lensReporterPath) {
+    try {
+      await statReporterPath(lensReporterPath, opts.statFn);
+    } catch (err) {
+      bumpBatch();
+      return {
+        lens: lens.name,
+        ok: false,
+        ms: 0,
+        startMs,
+        findings: [],
+        attempts: 0,
+        blocked: true,
+        parseError: (err as Error).message,
+      };
+    }
   }
   const prompt = lensPromptFor(lens, runOpts.diff, context, runOpts.evidence, roster);
   const tag = lens.name.toLowerCase().replaceAll("_", "-");
@@ -127,7 +160,7 @@ export async function runLensChild(opts: {
             // Pin to this lens's skill + load the report_finding tool. `--no-extensions`
             // (set in spawn.ts) disables auto-discovery; `--extension <path>` still
             // loads explicit paths, so the reporter is the only extension in the child.
-            extraArgs: ["--no-skills", "--skill", skillPath, "--extension", LENS_REPORTER_PATH],
+            extraArgs: lensExtraArgs,
             // No timeoutMs override — inherits spawn.ts's bounds: the 2h
             // wall-clock backstop (spawnBackstopMs, spawn-support.ts) and the
             // 25-min inactivity watchdog (inactivityTimeoutMs). No per-role

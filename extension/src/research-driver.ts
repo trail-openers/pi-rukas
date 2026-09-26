@@ -23,6 +23,7 @@
  *                  (research-memory.ts); a memory failure never fails a run
  */
 import { exec } from "node:child_process";
+import { stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -36,6 +37,7 @@ import {
 } from "./plan-draft.ts";
 import { PLAN_DISPATCH_TIMEOUT_MS, PLAN_MARKER_CHILD_ARGS } from "./plan-investigate.ts";
 import type { PlanPhaseTiming } from "./plan-types.ts";
+import { reporterPathFromArgs, statReporterPath } from "./reporter-preflight.ts";
 import { anglesForTier } from "./research-angles.ts";
 import {
   type MemoSections,
@@ -109,6 +111,13 @@ export interface ResearchDeps {
   fetchFn?: FetchLike;
   vipuneSearchFn?: typeof vipuneSearch;
   memoryWriteFn?: typeof writeResearchMemory;
+  /**
+   * #893 — the pre-spawn stat of the reporter extension path, injectable
+   * for the offline tests (mirrors execFn/fetchFn). Rejecting it makes
+   * every angle fail with the named "reporter extension missing" error
+   * before any dispatch happens.
+   */
+  statFn?: (p: string) => Promise<unknown>;
 }
 
 export async function runResearchPipeline(
@@ -119,6 +128,7 @@ export async function runResearchPipeline(
 ): Promise<ResearchResult> {
   const dispatch: ResearchDispatchFn = _dispatchOverride ?? dispatchCore;
   const execFn = deps.execFn ?? defaultExec;
+  const statFn = deps.statFn ?? (stat as (p: string) => Promise<unknown>);
   const searchFn = deps.vipuneSearchFn ?? vipuneSearch;
   const memoryWriteFn = deps.memoryWriteFn ?? writeResearchMemory;
   const topic = input.topic.trim();
@@ -182,6 +192,38 @@ export async function runResearchPipeline(
   // the Parallel failure as retryable (credit/auth/network) is re-dispatched
   // ONCE, wigolo-framed (#773) — never more, and never for an empty result.
   const angleSpecs = anglesForTier(tier, topic, codeIdentifiersIn(topic), input.angles);
+  // #893 — pre-spawn stat of the reporter extension. Every angle child
+  // carries RESEARCH_EXTRA_ARGS, so the check runs once before the fan-out
+  // and fails the whole retrieval phase with the named error when the path
+  // is missing — no spawn, no silent empty artifact.
+  const reporterPath = reporterPathFromArgs(RESEARCH_EXTRA_ARGS);
+  if (reporterPath) {
+    try {
+      await statReporterPath(reporterPath, statFn);
+    } catch (err) {
+      return {
+        topic,
+        tier,
+        angles: angleSpecs.map((a) => ({
+          name: a.name,
+          ok: false,
+          summary: "not dispatched — reporter extension missing",
+          claims: [] as ResearchClaim[],
+          backend: "parallel" as const,
+          failure: (err as Error).message,
+        })),
+        claims: [] as ResearchClaim[],
+        pinnedCommit: "unknown",
+        abstained: false,
+        memory: {
+          outcome: "skipped" as const,
+          detail: "reporter preflight failed — nothing to remember",
+        },
+        halt: { reason: "reporter-missing" as const, detail: (err as Error).message },
+        timings: finishTimings(),
+      };
+    }
+  }
   const runAngle = async (
     a: (typeof angleSpecs)[number],
     backend: AngleRun["backend"],
@@ -219,6 +261,15 @@ export async function runResearchPipeline(
       };
     }
     const claims = extractResearchClaims(r.toolUses, a.name);
+    // #893 — raw count of report_research_claim toolUses (schema-valid or
+    // not), keyed off `name` only, distinct from the post-extraction
+    // `claims.length`. Zero raw calls = the reporter tool was never called
+    // (possibly never loaded); >0 with zero valid claims = the calls were
+    // schema-invalid or prose-only.
+    const rawCalls = (r.toolUses ?? []).filter((tu) => {
+      if (!tu || typeof tu !== "object") return false;
+      return (tu as { name?: string }).name === "report_research_claim";
+    }).length;
     const ok = r.ok && !r.errorStop && claims.length > 0;
     return {
       name: a.name,
@@ -232,7 +283,10 @@ export async function runResearchPipeline(
           ? "dispatch failed or timed out"
           : r.errorStop
             ? "provider error mid-stream"
-            : "returned no structured claims",
+            : rawCalls === 0
+              ? "0 report_research_claim calls — reporter may not have loaded (check pi version / --extension)"
+              : "returned no structured claims",
+      rawClaimCalls: rawCalls,
       // The parallel-outcome:/backend: markers are the LAST lines of a
       // reply — classification must see the full text, not the summary.
       fullText: r.text,
@@ -280,15 +334,34 @@ export async function runResearchPipeline(
     timings: [],
   };
   if (claims.length === 0) {
-    trace(`research-driver: all ${angles.length} angles produced zero structured claims — halting`);
+    // #893 — whole-run signal: distinguish "every angle was silent" (0 raw
+    // report_research_claim calls from every dispatched angle → the
+    // reporting channel appears broken) from "calls existed but were
+    // schema-invalid" (the existing no-structured-claims path). Keyed off
+    // rawClaimCalls: an angle that was never dispatched (dispatch rejection,
+    // preflight failure) has rawClaimCalls undefined and is excluded from
+    // the all-silent check — it already has its own failure message.
+    const dispatched = angles.filter((a) => a.rawClaimCalls !== undefined);
+    const allSilent = dispatched.length > 0 && dispatched.every((a) => a.rawClaimCalls === 0);
+    const rawCalls = angles.reduce((sum, a) => sum + (a.rawClaimCalls ?? 0), 0);
+    trace(
+      `research-driver: all ${angles.length} angles produced zero structured claims — halting (allSilent=${allSilent}, rawCalls=${rawCalls})`,
+    );
     return {
       ...base,
       abstained: false,
       memory: { outcome: "skipped", detail: "no claims — nothing to remember" },
-      halt: {
-        reason: "no-structured-claims",
-        detail: `all ${angles.length} angles returned zero report_research_claim calls (prose-only or schema-invalid). Re-run start_research_driver; if this recurs, check the research-reporter extension registration (RESEARCH_REPORTER_PATH).`,
-      },
+      halt: allSilent
+        ? {
+            reason: "reporter-silent",
+            detail:
+              'the reporting channel appears broken — 0 report_research_claim calls from every angle (the tool was never called, so this is not "nothing found"). ' +
+              "Check pi version / --extension / RESEARCH_REPORTER_PATH. Re-run start_research_driver; if this recurs, the reporter extension may not be loading.",
+          }
+        : {
+            reason: "no-structured-claims",
+            detail: `all ${angles.length} angles returned zero report_research_claim calls (prose-only or schema-invalid). Re-run start_research_driver; if this recurs, check the research-reporter extension registration (RESEARCH_REPORTER_PATH).`,
+          },
       timings: finishTimings(),
     };
   }

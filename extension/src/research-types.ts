@@ -86,15 +86,37 @@ export interface AngleRun {
   backend: "parallel" | "wigolo";
   /**
    * Why the angle failed (always set when `ok` is false): "dispatch
-   * failed or timed out", "provider error mid-stream", "returned no
-   * structured claims", or the dispatch rejection's message. Rendered in
-   * the angle summaries (mirrors plan-investigate.ts's failure strings).
+   * failed or timed out", "provider error mid-stream", "0
+   * report_research_claim calls — reporter may not have loaded (check pi
+   * version / --extension)", "returned no structured claims", or the
+   * dispatch rejection's message. Rendered in the angle summaries (mirrors
+   * plan-investigate.ts's failure strings).
    */
   failure?: string;
+  /**
+   * Raw count of `report_research_claim` toolUses on the child (schema-
+   * valid or not). #893: keys the per-angle "reporter may not have loaded"
+   * diagnostic and the whole-run `reporter-silent` halt off the RAW call
+   * count, not the post-extraction `claims.length`, so a schema-invalid
+   * child is told apart from a child that never had the tool.
+   */
+  rawClaimCalls?: number;
 }
 
-/** Reasons the pipeline halted without an artifact. */
-export type ResearchHaltReason = "no-structured-claims" | "artifact-write-failed";
+/**
+ * Reasons the pipeline halted without an artifact. `no-structured-claims`
+ * is the schema-invalid / prose-only case (the child made tool calls that
+ * did not parse, or made none at all but NOT every angle was silent);
+ * `reporter-silent` is the raw zero-calls case (no angle ever called the
+ * reporter at all — the channel, not the child's output, is suspect);
+ * `reporter-missing` is the pre-spawn stat failure (the reporter extension
+ * path does not exist — no angle was ever dispatched).
+ */
+export type ResearchHaltReason =
+  | "no-structured-claims"
+  | "reporter-silent"
+  | "reporter-missing"
+  | "artifact-write-failed";
 
 export interface ResearchMemoryOutcome {
   outcome: "written" | "superseded" | "skipped" | "error";
