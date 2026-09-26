@@ -57,7 +57,7 @@ function adoptionAngles(topic: string): ResearchAngle[] {
     ),
     frame(
       "adoption-fit",
-      `Establish how "${topic}" would integrate with THIS repository: read the manifests (package.json / Cargo.toml / etc.), the existing dependency set and the code that would touch it (codebase_memory_search_code). Report findings for: where it would be used, what it would replace or overlap with, install/runtime constraints (supply-chain embargo compatibility, platform support), and code claims as \`path#symbol\` sources so the driver can pin them.`,
+      `Establish how "${topic}" would integrate with THIS repository: read the manifests (package.json / Cargo.toml / etc.), the existing dependency set and the code that would touch it. If the codebase-memory tools are available (codebase_memory_search_code), use them to locate the touching code; otherwise fall back to grep/read. Report findings for: where it would be used, what it would replace or overlap with, install/runtime constraints (supply-chain embargo compatibility, platform support), and code claims as \`path#symbol\` sources so the driver can pin them.`,
     ),
   ];
 }
@@ -99,7 +99,7 @@ export function anglesForTier(
     angles.push(
       frame(
         "codebase",
-        `Establish how this topic relates to THIS repository's code: "${topic}". Use codebase_memory_search_code (and trace_path / get_architecture where relevant). Candidate identifiers: ${codeIdentifiers.join(", ")}. Every code claim must name the repo path (and \`path#symbol\` where a symbol is the subject) so the driver can verify it against the pinned commit.`,
+        `Establish how this topic relates to THIS repository's code: "${topic}". If the codebase-memory tools are available (codebase_memory_search_code, trace_path, get_architecture), use them; otherwise fall back to grep/read. Candidate identifiers: ${codeIdentifiers.join(", ")}. Every code claim must name the repo path (and \`path#symbol\` where a symbol is the subject) so the driver can verify it against the pinned commit.`,
       ),
     );
   }

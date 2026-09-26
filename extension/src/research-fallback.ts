@@ -119,12 +119,15 @@ export function selectFallback(
 }
 
 /**
- * Map an angle name to its wigolo surface (#773 spec). ONLY the known web
+ * Map an angle name to its wigolo surface (#773 spec, #896). The known web
  * angles map: web-current / adoption-signals / alternatives → search,
- * docs-depth → fetch, deep-dive → research. Everything else — the
- * codebase angle, custom-N PM angles, anything unknown — is `none` (no
- * wigolo equivalent: the decision is `no-fallback-available`, never a
- * re-dispatch of a non-web angle through a web surface).
+ * docs-depth → fetch, deep-dive → research. Custom-N PM angles (the
+ * dominant recent pattern) are treated as WEB-CAPABLE and map to search —
+ * a custom angle that fails with the web-failure classification gets the
+ * one-shot wigolo fallback through the web surface. Everything else — the
+ * codebase angle, monitor / findall / enrichment, anything unknown — is
+ * `none` (no wigolo equivalent: the decision is `no-fallback-available`,
+ * never a re-dispatch of a non-web angle through a web surface).
  */
 export function surfaceForAngle(angleName: string): WigoloSurface {
   const n = angleName.toLowerCase();
@@ -132,6 +135,7 @@ export function surfaceForAngle(angleName: string): WigoloSurface {
     return "search";
   if (n === "docs-depth") return "fetch";
   if (n === "deep-dive") return "research";
+  if (/^custom-\d+$/.test(n)) return "search";
   return "none";
 }
 
