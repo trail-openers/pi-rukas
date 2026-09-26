@@ -137,8 +137,10 @@ const fetchStub = (async (url: string) => ({
 })) as never;
 const searchStub = (async () => ({ kind: "hits", hits: [] })) as never;
 let memoryCalls = 0;
-const memoryStub = (async () => {
+let lastTakeaway: string | undefined;
+const memoryStub = (async (args: { takeaway: string }) => {
   memoryCalls++;
+  lastTakeaway = args.takeaway;
   return { outcome: "written" as const, id: "m1" };
 }) as never;
 
@@ -255,6 +257,33 @@ async function freshRepo(): Promise<string> {
   const exclude = await fs.readFile(path.join(tmp, ".git", "info", "exclude"), "utf8");
   assert(exclude.includes("outputs/"), "outputs/ excluded per-clone");
   assert(memoryCalls === 1 && r.memory.outcome === "written", "memory row written via seam");
+  // #895 — the vipune takeaway: the new format, captured via the stub, and
+  // ≤400 chars. Four unique claims, of which 3 are verified findings (the
+  // contradiction verifies unreachable → not a finding).
+  assert(
+    lastTakeaway ===
+      "3 verified of 4 claims across 3 angles — top findings: the scoring is RRF | seam exists | URL mislabelled as code",
+    `memory: takeaway in the new format (got ${lastTakeaway})`,
+  );
+  assert((lastTakeaway ?? "").length <= 400, "memory: takeaway within the 400-char bound");
+  // #895 — Run metrics: the written artifact carries the section (per-phase
+  // wall times, total, per-angle rows) and the provenance sidecar carries
+  // the machine-readable mirror.
+  assert(body.includes("## Run metrics"), "#895: artifact carries the Run metrics section");
+  assert(body.includes("- **inventory**:"), "#895: artifact metric row: inventory phase");
+  assert(body.includes("- **total**:"), "#895: artifact metric row: total");
+  assert(
+    body.includes("- **web-current**: 4 claims reported · backend: parallel · ok"),
+    "#895: artifact per-angle row (pre-dedup count, backend, ok)",
+  );
+  assert(body.includes("verification: "), "#895: artifact verification mix row");
+  assert(prov.includes("phase.inventory.ms: "), "#895: provenance machine-readable phase line");
+  assert(prov.includes("total.ms: "), "#895: provenance machine-readable total line");
+  assert(
+    prov.includes("angle.web-current: claims=4 backend=parallel ok=true"),
+    "#895: provenance machine-readable per-angle line",
+  );
+  assert(prov.includes("verify.url.live: "), "#895: provenance machine-readable mix line");
   const phases = r.timings.map((t) => t.phase);
   for (const p of ["inventory", "retrieve", "verify", "artifact", "memory", "total"]) {
     assert(phases.includes(p), `timings: phase "${p}" recorded`);
