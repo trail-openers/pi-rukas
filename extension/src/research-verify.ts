@@ -4,6 +4,7 @@ import type {
   ClaimVerification,
   ResearchClaim,
   ResolvedSource,
+  SourceKindDerived,
   StatLike,
   VerificationPart,
 } from "./research-types.ts";
@@ -144,12 +145,16 @@ export async function pinnedCommit(execFn: ExecFn, repoRoot: string): Promise<st
  * The compound status mapping (liveness parts): live if any part is live;
  * unreachable if none is live and any is unreachable; dead otherwise.
  * `skipped-cap` never promotes — it neither adds a liveness class nor is
- * one. Mixed kinds: the liveness parts decide when any exist, else the
- * code parts decide.
+ * one, so it is its own branch of the result (the caller keeps
+ * `check: "url-liveness"` with `status: "skipped-cap"` rather than
+ * remapping to `check: "none"`). Mixed kinds: the liveness parts decide
+ * when any exist, else the code parts decide.
  */
+export type AggregatedLiveness = LivenessStatus | "skipped-cap";
+
 export function aggregateLivenessStatuses(
   statuses: readonly LivenessCheckStatus[],
-): LivenessCheckStatus {
+): AggregatedLiveness {
   if (statuses.some((s) => s === "live")) return "live";
   if (statuses.some((s) => s === "unreachable")) return "unreachable";
   if (statuses.some((s) => s === "dead")) return "dead";
@@ -260,18 +265,18 @@ export async function verifyClaims(
     });
     let verification: ClaimVerification;
     if (lvIdx.length > 0) {
-      const status = aggregateLivenessStatuses(lvStatuses);
-      if (status === "skipped-cap") verification = { check: "none", status: "skipped-cap" };
-      else verification = { check: "url-liveness", status };
+      // The liveness parts decide the status; when they all skipped the
+      // cap the check is kept as url-liveness/skipped-cap (the liveness
+      // pass was the check, it was just capped — remapping to check:none
+      // would lose that).
+      verification = { check: "url-liveness", status: aggregateLivenessStatuses(lvStatuses) };
     } else {
       const nonNull = results.map((r) => r.v).filter((v): v is ClaimVerification => v !== null);
       const code = nonNull.find((v) => v.check === "code-grounding");
       const local = nonNull.find((v) => v.check === "local-file");
       const none = nonNull.find((v) => v.check === "none" && v.status === "unchecked");
-      const skipped = nonNull.find((v) => v.check === "none" && v.status === "skipped-cap");
       if (code) verification = code;
       else if (local) verification = local;
-      else if (skipped) verification = skipped;
       else if (none)
         verification =
           none.status === "unchecked" && none.reason
@@ -280,7 +285,7 @@ export async function verifyClaims(
       else verification = { check: "none", status: "unchecked" };
     }
     if (parts.length > 1) verification = { ...verification, parts: partsRec };
-    out.push({ ...c, verification });
+    out.push({ ...c, verification: { ...verification, derivedKinds: parts.map((p) => p.kind) } });
   }
   const failed = out.filter((c) => {
     const v = c.verification;
@@ -311,6 +316,9 @@ export function isVerifiedFinding(c: ResearchClaim): boolean {
   if (v.check === "url-liveness") return v.status === "live" || v.status === "unreachable";
   if (v.check === "code-grounding") return v.status === "grounded";
   if (v.check === "local-file") return v.status === "local-present";
+  // check:none: `skipped-cap` is the legacy shape for a capped liveness
+  // check (the live path now records url-liveness/skipped-cap); the child's
+  // sourceKind still counts for a URL-labelled claim with no passing check.
   if (v.check === "none") return v.status === "skipped-cap" ? false : c.sourceKind === "url";
   return false;
 }
@@ -343,20 +351,24 @@ export function entailableClaims(claims: readonly ResearchClaim[]): ResearchClai
 
 /**
  * The driver-side source-kind classification for the entailment pool —
- * derived from the verification record (set by the driver, never the
- * child): a claim with a url-liveness verification (any status) is
- * liveness-checked and entailable; a doc claim with a local-file
- * verification (a local file the child labelled doc) is entailable too;
- * a code-grounded claim is not (deterministic, already checked); a doc
- * claim with no passing check is entailable (that's the point — its
- * source is the only evidence, and the reviewer reads it).
+ * read from the driver-DERIVED kinds recorded on the verification (set by
+ * the driver from the resolved source parts, never the child's sourceKind):
+ * a claim with a url-liveness verification (any status) is liveness-checked
+ * and entailable; a doc claim with a local-file verification (a local file
+ * the child labelled doc) is entailable too; a code-grounded claim is not
+ * (deterministic, already checked); a doc claim with no passing check is
+ * entailable (that's the point — its source is the only evidence, and the
+ * reviewer reads it). A source the child labelled "url" that resolves to a
+ * local path is NOT entailable via the url rule — the label never counts.
  */
 function isEntailableSourceKind(c: ResearchClaim): boolean {
   const v = c.verification;
   if (v.check === "url-liveness") return true;
   if (v.check === "code-grounding") return false;
   if (v.check === "local-file") return true;
-  return c.sourceKind === "url" || c.sourceKind === "doc";
+  const kinds = v.derivedKinds;
+  if (kinds && kinds.length > 0) return kinds.some((k) => k === "url" || k === "doc");
+  return false;
 }
 
 /**

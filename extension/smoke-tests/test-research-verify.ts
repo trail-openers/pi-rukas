@@ -27,6 +27,7 @@ import {
   checkLocalFile,
   checkUrlLiveness,
   classifyLiveness,
+  entailableClaims,
   groundCodeSource,
   isVerifiedFinding,
   parseCodeSource,
@@ -152,9 +153,7 @@ function groundExecStub(behavior: GroundBehavior): ExecFn {
   return fn;
 }
 
-function fnSeen(fn: ExecFn): string[] {
-  return (fn as ExecFn & { seen?: string[] }).seen ?? [];
-}
+const fnSeen = (fn: ExecFn) => (fn as ExecFn & { seen?: string[] }).seen ?? [];
 
 {
   const ok = groundExecStub({
@@ -169,16 +168,8 @@ function fnSeen(fn: ExecFn): string[] {
     (await groundCodeSource(ok, "/r", "src/x.ts", "abc1234def")) === "grounded",
     "path present at sha alone → grounded",
   );
-  assert(
-    fnSeen(ok).at(-1)?.includes('git cat-file -e abc1234def:"src/x.ts"') === true,
-    "grounding pins to the commit (git cat-file -e <sha>:<path>)",
-  );
-  assert(
-    fnSeen(ok)
-      .filter((c) => c.includes("git grep"))
-      .some((c) => c.includes('abc1234def -- "src/x.ts"')) === true,
-    "symbol grep is scoped to the file at the sha (git grep -F -- <sym> <sha> -- <path>)",
-  );
+  assert(fnSeen(ok).at(-1)?.includes('git cat-file -e abc1234def:"src/x.ts"') === true, "grounding pins to the commit");
+  assert(fnSeen(ok).filter((c) => c.includes("git grep")).some((c) => c.includes('abc1234def -- "src/x.ts"')) === true, "symbol grep is scoped to the file at the sha");
 
   const noSym = groundExecStub({
     catFileOk: ["src/x.ts"],
@@ -344,7 +335,6 @@ function fnSeen(fn: ExecFn): string[] {
   const tmp = await fs2.promises.mkdtemp(`${os.tmpdir()}research-local-`);
   const realFile = path.join(tmp, "real.txt");
   await fs2.promises.writeFile(realFile, "x");
-  const os2 = await import("node:os");
   const statReal: (p: string) => Promise<{ isDirectory: boolean } | undefined> = (p) =>
     fs2.promises
       .stat(p)
@@ -441,6 +431,10 @@ function verifyExecStub(grepHits: boolean): ExecFn {
     "skipped-cap does NOT count",
   );
   assert(
+    !isVerifiedFinding(claim({ verification: { check: "url-liveness", status: "skipped-cap" } })),
+    "url-liveness/skipped-cap does NOT count (the liveness check was capped, not passed)",
+  );
+  assert(
     !isVerifiedFinding(claim({ sourceKind: "none", source: "none" })),
     "unsourced finding does NOT count",
   );
@@ -461,6 +455,41 @@ function verifyExecStub(grepHits: boolean): ExecFn {
     throw new Error("no git");
   };
   assert((await pinnedCommit(broken, "/r")) === "unknown", "exec failure → unknown");
+}
+
+// --------------------------------------------------- entailment eligibility
+
+{
+  // Entailment reads the DRIVER-derived kinds, not the child's sourceKind.
+  const localAsUrl = claim({
+    sourceKind: "url",
+    source: "/Users/janni/present.txt",
+    verification: { check: "local-file", status: "local-present", derivedKinds: ["local"] },
+  });
+  const localAsUrlNone = claim({
+    sourceKind: "url",
+    source: "/Users/janni/missing.txt",
+    verification: { check: "none", status: "unchecked", derivedKinds: ["local"] },
+  });
+  assert(entailableClaims([localAsUrl]).length === 1, "local-file check stays entailable");
+  assert(
+    entailableClaims([localAsUrlNone]).length === 0,
+    "child-labelled `url` whose derived kind is `local` is NOT entailable (the label never counts)",
+  );
+  const docClaim = claim({
+    sourceKind: "doc",
+    source: "lib@1.2 docs",
+    verification: { check: "none", status: "unchecked", derivedKinds: ["doc"] },
+  });
+  assert(entailableClaims([docClaim]).length === 1, "doc-derived claim with no check IS entailable");
+  const noKinds = claim({
+    sourceKind: "url",
+    verification: { check: "none", status: "unchecked" },
+  });
+  assert(
+    entailableClaims([noKinds]).length === 0,
+    "child-labelled `url` with no derived kinds is NOT entailable (silence is not a url)",
+  );
 }
 
 console.log(`\nexit ${exit}`);

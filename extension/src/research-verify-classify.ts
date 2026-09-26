@@ -1,11 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import type {
-  ClaimVerification,
-  ResolvedSource,
-  SourceKindDerived,
-  StatLike,
-} from "./research-types.ts";
+import type { ClaimVerification, ResolvedSource, StatLike } from "./research-types.ts";
 /**
  * research-verify-classify — content-based driver-side source classification
  * (the #894 classifier): resolveSourcePart, splitCompoundSource,
@@ -190,11 +185,16 @@ function gitErrText(e: unknown): string {
   return ((err.stderr ?? err.message ?? "") as string).trim();
 }
 
-/** True when a git rejection means "path/object absent" (exit 1, no match). */
+/**
+ * True when a git rejection means "path/object absent" (exit 1, no match).
+ * Anchored to git's actual not-found output only: a bare `does not exist`
+ * (a cwd/repo error such as `fatal: /r does not exist`) is NOT a path-absent
+ * signal — a check that could not run leaves the claim unchecked.
+ */
 function isGitNotFound(e: unknown): boolean {
   const t = gitErrText(e);
   if (/^exit 1$/.test(t)) return true;
-  return /no (such )?(path|object|such)|not a (valid|commit)|path.*does not exist|does not exist|no match/i.test(
+  return /not a valid object name|no such (path|object)|bad revision|exists on disk, but not in|path '[^']*' does not exist in '\S+'|no match/im.test(
     t,
   );
 }

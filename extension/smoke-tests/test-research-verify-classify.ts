@@ -16,6 +16,7 @@
 import type { ResearchClaim } from "../src/research-types.ts";
 import { LIVENESS_URL_CAP, splitCompoundSource, verifyClaims } from "../src/research-verify.ts";
 import type { ExecFn } from "../src/worktree.ts";
+import { groundCodeSource } from "../src/research-verify.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -211,8 +212,8 @@ const statStubFor = (present: Set<string>) =>
   );
   const over = out[out.length - 1]?.verification;
   assert(
-    over?.check === "none" && over?.status === "skipped-cap",
-    "past-cap URL → skipped-cap, distinct from unchecked",
+    over?.check === "url-liveness" && over?.status === "skipped-cap",
+    "past-cap URL → url-liveness/skipped-cap (the check is kept, the cap is the status)",
   );
   assert(out[0]?.verification.check === "url-liveness", "within-cap URLs still liveness-checked");
 }
@@ -310,6 +311,35 @@ const statStubFor = (present: Set<string>) =>
   assert(resolveSourcePart("bin/pi-rukas", "/r").kind === "code", "bin/pi-rukas → code");
   assert(resolveSourcePart("extension/src", "/r").kind === "code", "extension/src → code");
   assert(resolveSourcePart("Dockerfile", "/r").kind === "code", "Dockerfile → code");
+}
+
+{
+  // isGitNotFound anchoring: a bare `does not exist` (a cwd/repo error such
+  // as `fatal: /r does not exist`) is NOT a path-absent signal — the check
+  // could not run, so the claim stays unchecked. Git's actual not-found
+  // shapes do match.
+  const gitErr = (msg: string) => new Error(`fatal: ${msg}`);
+  const groundWith = (msg: string) =>
+    groundCodeSource(
+      (async () => {
+        throw gitErr(msg);
+      }) as ExecFn,
+      "/r",
+      "src/x.ts",
+      "abc1234def",
+    );
+  assert(
+    (await groundWith("/r does not exist")) === "unchecked",
+    "`fatal: /r does not exist` (cwd/repo error) → unchecked, never ungrounded",
+  );
+  assert(
+    (await groundWith("path 'x' does not exist in 'abc'")) === "ungrounded",
+    "git's pinned-tree phrasing `path 'x' does not exist in 'abc'` → ungrounded",
+  );
+  assert(
+    (await groundWith("Not a valid object name abc:x")) === "ungrounded",
+    "`Not a valid object name abc:x` → ungrounded",
+  );
 }
 
 console.log(`\nexit ${exit}`);

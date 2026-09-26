@@ -98,9 +98,13 @@ export interface ResolvedSource {
  * The optional `parts` record every verification arm carries (a shared
  * base, so attaching parts to any kind needs no cast) — the compound
  * split's per-part statuses, recorded so renderProvenance can print them
- * from claim data alone.
+ * from claim data alone. `derivedKinds` records the DRIVER-derived source
+ * kinds of the claim's resolved parts (set by the driver from the resolved
+ * parts, never the child's sourceKind) so downstream reads (entailment
+ * eligibility) classify by what the source IS, not what the child called
+ * it.
  */
-export type VerificationBase = { parts?: VerificationPart[] };
+export type VerificationBase = { parts?: VerificationPart[]; derivedKinds?: SourceKindDerived[] };
 
 export type ClaimVerification =
   | (VerificationBase & {
