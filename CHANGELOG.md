@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.64](https://github.com/trail-openers/pi-rukas/compare/v0.12.63...v0.12.64) (2026-09-26)
+
+
+### Features
+
+* **work:** keep dependsOn edges through the overlapping-paths re-plan ([#908](https://github.com/trail-openers/pi-rukas/issues/908)) ([8c2c6d3](https://github.com/trail-openers/pi-rukas/commit/8c2c6d33debbec27890d8293a83b11ec554cae3f))
+
 ## [0.12.63](https://github.com/trail-openers/pi-rukas/compare/v0.12.62...v0.12.63) (2026-09-26)
 
 
