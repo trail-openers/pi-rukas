@@ -65,7 +65,6 @@ const SEAMS: Seam[] = [
       // recall for nothing on this corpus (files-hit 22/24 -> 8/24, zero false
       // positives removed). The develop read applies the agreement bit directly.
       // Kept because the rule is correct for the question it was calibrated on.
-      selectResults: "superseded for the develop leg — see memory-brief.ts",
       SIM_FLOOR: "superseded for the develop leg — read only by selectResults",
       readDoctrineFromDisk:
         "#407 — superseded by readDoctrineAtBase; kept for callers outside the driver",
@@ -176,7 +175,8 @@ const SEAMS: Seam[] = [
     pending: {},
     testOnly: {
       buildSteerPrompt: "steer prompt builder; exercised by test-dispatch-deck-interactive.ts",
-      buildJobRows: "row builder with the #835 key-fragment disambiguator; exercised by test-dispatch-deck.ts block 14",
+      buildJobRows:
+        "row builder with the #835 key-fragment disambiguator; exercised by test-dispatch-deck.ts block 14",
     },
     canary: { symbol: "buildCompositeFactory", importer: "dispatch-deck.ts" },
   },
@@ -318,10 +318,7 @@ for (const seam of SEAMS) {
 // fetcher without `timeout:` would restore the unbounded `gh issue view` that
 // killed cycle #700, and the whole suite would still pass.
 {
-  const exploreRun = readFileSync(
-    path.join(SRC, "work-driver-explore-run.ts"),
-    "utf8",
-  );
+  const exploreRun = readFileSync(path.join(SRC, "work-driver-explore-run.ts"), "utf8");
   const explore = readFileSync(path.join(SRC, "work-driver-explore.ts"), "utf8");
   assert(
     /ctx\.issueBodyFetcherFn \?\? fetchIssueBodyViaGh/.test(exploreRun),

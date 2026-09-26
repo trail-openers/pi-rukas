@@ -164,9 +164,59 @@ const TITLE_PREFIX: Record<PlanType, string> = {
   spike: "research: ",
 };
 
+/**
+ * The dangling-fragment words stripped from the end of a cut summary — a
+ * cut landing mid-clause would otherwise end the title on a conjunction or
+ * article ("… and it also"). Checked as whole trailing words, so a title
+ * that legitimately ends "with" ("with the plan pipeline") is untouched.
+ */
+/** The total title budget, prefix INCLUDED (#858). */
+export const TOTAL_TITLE_BUDGET = 72;
+
+const TRAILING_FRAGMENT_RE = /\s+(?:and|or|with|to|the|a|of|for)$/i;
+
+/**
+ * Cut the descriptor's FIRST clause to `budget` chars (summary budget,
+ * prefix excluded). Cut order: first sentence end, then ` — `/`; `/`: `,
+ * then the last word boundary within the budget. NEVER an ellipsis (the
+ * mid-sentence "…" tail is the defect this replaces); a single token longer
+ * than the budget is hard-cut without one. Trailing punctuation and dangling
+ * conjunction fragments are stripped (checked as whole trailing words, so a
+ * summary that legitimately ends "with the plan pipeline" is untouched).
+ */
+function titleSummary(d: string, budget: number): string {
+  let s = d.replace(/[,;:)]+[)\]]*$/g, "").trim();
+  for (const re of [/[.?!]\s+/u, / — /u, /; /u, /: /u]) {
+    const idx = s.search(re);
+    if (idx >= 0) {
+      s = s.slice(0, idx);
+      break;
+    }
+  }
+  while (s.length > budget) {
+    const cut = s.slice(0, budget);
+    const lastBoundary = Math.max(cut.lastIndexOf(" "), cut.lastIndexOf("-"));
+    if (lastBoundary < 1) {
+      s = cut; // single token longer than the budget: hard cut, no ellipsis
+      break;
+    }
+    s = s.slice(0, lastBoundary);
+  }
+  s = s.replace(/[,;:)]+[)\]]*$/g, "").trim();
+  while (TRAILING_FRAGMENT_RE.test(s)) s = s.replace(TRAILING_FRAGMENT_RE, "").trim();
+  return s;
+}
+
+/**
+ * `#858`: a conventional title whose summary is a COMPLETE first clause of
+ * the descriptor — never a mid-sentence prefix cut, never a "…" tail. The
+ * 72-char budget is TOTAL including the type prefix; a descriptor that
+ * already fits renders verbatim.
+ */
 export function planTitle(descriptor: string, type: PlanType): string {
   const d = descriptor.trim().replace(/\s+/g, " ");
-  const first = d.split(/\s+/).slice(0, 8).join(" ");
-  const clipped = d.length > 64 ? `${first.slice(0, 63)}…` : first;
-  return `${TITLE_PREFIX[type]}${clipped}`;
+  const prefix = TITLE_PREFIX[type] ?? "";
+  const budget = TOTAL_TITLE_BUDGET - prefix.length;
+  const summary = d.length <= budget ? d : titleSummary(d, budget);
+  return `${prefix}${summary}`;
 }

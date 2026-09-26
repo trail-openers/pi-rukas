@@ -15,9 +15,12 @@
  */
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import { detectForge } from "./forge-detect.ts";
-import { type Forge, createForge } from "./forge.ts";
 import { epicSubIssues } from "./plan-angles.ts";
+import {
+  type MechanicalInventory,
+  mechanicalInventory,
+  setPlanVipuneSearch,
+} from "./plan-inventory.ts";
 import { PLAN_ITEM_KINDS } from "./plan-reporter.ts";
 import { EPIC_SUB_ISSUE_DEPTH_LIMIT, type PlanType, planTitle } from "./plan-types.ts";
 import {
@@ -36,84 +39,15 @@ import {
   markWrittenDecisions,
   renderOpenQuestions,
 } from "./plan-writeback.ts";
-import type { MemoryHit } from "./vipune.ts";
-import { vipuneSearch } from "./vipune.ts";
-
-const execp = promisify(exec);
-
-/**
- * Resolve the forge adapter for the plan-draft inventory step
- * (#612 S4 task-b). `PI_ENSEMBLE_FORGE=none` refuses; unknown detection
- * falls back to raw `gh` (pre-migration behaviour).
- */
-async function planDraftForge(repoRoot: string): Promise<Forge | undefined> {
-  if (process.env.PI_ENSEMBLE_FORGE === "none") return undefined;
-  try {
-    const det = await detectForge(repoRoot, {});
-    if (det.forge === "unknown") return undefined;
-    return createForge(det, { cwd: repoRoot });
-  } catch {
-    return undefined;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Phase 1 — mechanical inventory
-// ---------------------------------------------------------------------------
-
-/**
- * Extract the concrete code identifiers the descriptor names (file names,
- * dotted/qualified symbols). Phase 2's code prior-art leg runs only when
- * the descriptor actually names code — a meta descriptor should not burn a
- * code search.
- */
-export function codeIdentifiersIn(descriptor: string): string[] {
-  const out = new Set<string>();
-  const fileRe = /\b[\w./-]+\.(?:ts|tsx|js|jsx|mjs|rs|go|py|rb|sh|json|ya?ml|toml)\b/g;
-  const symbolRe = /\b[a-z][a-zA-Z0-9]*(?:[./][a-zA-Z0-9_]+)+\b/g;
-  for (const m of descriptor.matchAll(fileRe)) if (m[0]) out.add(m[0]);
-  for (const m of descriptor.matchAll(symbolRe)) if (m[0] && m[0].length >= 6) out.add(m[0]);
-  return [...out].slice(0, 5);
-}
-
-export interface MechanicalInventory {
-  memory: MemoryHit[];
-  related: { number: number; title: string; state: string }[];
-  errors: string[];
-}
-
-export async function mechanicalInventory(
-  repoRoot: string,
-  descriptor: string,
-  forgeOverride?: Forge,
-): Promise<MechanicalInventory> {
-  const keywords = descriptor
-    .replace(/[()]/g, " ")
-    .split(/\s+/)
-    .filter((w) => w.length >= 4 && !/^(the|and|with|from|into|that|this|which|when)\b/i.test(w))
-    .slice(0, 4);
-  const terms = keywords.length > 0 ? keywords.join(" ") : descriptor.slice(0, 60);
-  // #612 S4 task-b — forge adapter (an unresolvable forge yields an empty
-  // related list, no error). The two legs share no data — concurrent.
-  const [res, forgeSide] = await Promise.all([
-    vipuneSearch(terms, { cwd: repoRoot, limit: 5 }),
-    (async () => {
-      const related: MechanicalInventory["related"] = [];
-      const errors: string[] = [];
-      const forge = forgeOverride ?? (await planDraftForge(repoRoot));
-      if (forge) {
-        try {
-          const rows = await forge.issueSearch(terms.replace(/'/g, ""));
-          for (const r of rows) related.push({ number: r.number, title: r.title, state: r.state });
-        } catch (err) {
-          errors.push(`forge issueSearch: ${(err as Error).message.split("\n")[0]}`);
-        }
-      }
-      return { related, errors };
-    })(),
-  ]);
-  return { memory: res.kind === "hits" ? res.hits : [], ...forgeSide };
-}
+// mechanicalInventory + the vipune seam + the forge-adapter resolution
+// (plan-inventory.ts, split along the 500-line seam); re-exported for
+// existing consumers (the driver, the assembly module, the tests).
+export {
+  type MechanicalInventory,
+  codeIdentifiersIn,
+  mechanicalInventory,
+  setPlanVipuneSearch,
+} from "./plan-inventory.ts";
 
 // ---------------------------------------------------------------------------
 // Phase 2 — type-specialised investigation (parallel explore)
@@ -173,9 +107,46 @@ export function extractPlanItems(toolUses: unknown[], angleName: string): PlanIt
 // (the operator's trusted typed channel); re-exported for existing consumers.
 import type { OperatorDirectives } from "./plan-directives.ts";
 export { type OperatorDirectives, parseOperatorDirectives } from "./plan-directives.ts";
+export { parseOperatorDirectivesWithLines } from "./plan-directives.ts";
+
+/**
+ * Normalised-text key for de-duplication (#858): lowercase, collapse
+ * whitespace, strip trailing punctuation. Case/whitespace-modulo duplicates
+ * ("Offline tests with stubs" / "offline tests with stubs.") collapse; the
+ * exact-`.trim()` Set alone would let a case-differing pair both render.
+ */
+export function normalisedTextKey(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[.,;:!?)]+$/, "")
+    .trim();
+}
+
+/**
+ * First-occurrence-wins de-duplication on normalised text (#858). The
+ * operator's own line wins over a specialist item that restates it.
+ */
+export function dedupeByNormalised(items: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const s of items) {
+    const t = s.trim();
+    if (!t) continue;
+    const k = normalisedTextKey(t);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(t);
+  }
+  return out;
+}
 
 function sectionBullets(items: string[], fallback: string): string {
-  const clean = [...new Set(items.map((s) => s.trim()))].filter((s) => s.length > 0);
+  // #858: normalised de-dup (case/whitespace/trailing-punctuation equality),
+  // replacing the exact-`.trim()` Set that let a case-differing pair both
+  // render. First occurrence wins.
+  const clean = dedupeByNormalised(items);
   return clean.length > 0 ? clean.map((s) => `- ${s}`).join("\n") : `- ${fallback}`;
 }
 
@@ -331,11 +302,14 @@ export function draftSpec(
       : "- (no code-named investigation angles ran for this descriptor)";
 
   // Acceptance criteria — operator directives first, then structured items
-  // from ALL angles (D1: the Test surface section no longer double-uses lines).
-  const acItems = [
+  // from ALL angles (D1: the Test surface section no longer double-uses
+  // lines). #858: de-duplicated on normalised text across BOTH sources
+  // (first occurrence wins — an operator line beats an angle item that
+  // restates it modulo case/whitespace/punctuation).
+  const acItems = dedupeByNormalised([
     ...directives.acceptanceCriteria,
     ...itemsByKind(findings, "acceptance-criterion").map((i) => clip(i.text)),
-  ].slice(0, cap);
+  ]).slice(0, cap);
 
   // An operator TEST SURFACE directive REPLACES the angle items (unlike
   // ACs, which prepend) — "exactly: none" must not be diluted (C2). The
