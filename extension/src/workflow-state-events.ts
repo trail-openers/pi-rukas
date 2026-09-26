@@ -1,7 +1,7 @@
 /**
  * /work workflow state — event-log types. `WorkStep` (linear step identifiers)
- * and `WorkEvent` (append-only, typed event-log entries). Split from
- * `workflow-state.ts` for module-size hygiene (AGENTS.md §12).
+ * and `WorkEvent` (append-only, typed entries). Split from `workflow-state.ts`
+ * for module-size hygiene (AGENTS.md §12).
  */
 import type { RoleName } from "./roles.ts";
 import type { DispatchUsage } from "./types.ts";
@@ -186,25 +186,20 @@ export type WorkEvent =
     }
   | {
       /**
-       * #849 — the develop step's fence recovery is underway: a workstream
-       * V committed a sibling-declared fence violation, its commit was
-       * discarded (the worktree reset to the post-commit tree of the
-       * declaring owner(s)), and V is being re-dispatched once from that
-       * tree. `discardedSha` keeps the discarded commit reachable and
-       * auditable — the event is the recovery record both park shapes
-       * (second violation, violator↔owner cycle) name when they cite the
-       * first attempt. Carries `at` (no `step` field: the event kind
-       * itself is step-scoped to develop, the same shape as
-       * `lens-fix-empty-resend`'s round naming).
+       * #849 — the develop step's fence recovery is underway: workstream V
+       * committed a sibling-declared fence violation, its commit was discarded
+       * (the worktree reset to the declaring owner's post-commit tree), and V
+       * is re-dispatched once from that tree. `discardedSha` keeps the
+       * discarded commit reachable/auditable — the record both park shapes
+       * name when citing the first attempt. Carries `at` (no `step` field).
        */
       kind: "fence-recovery-started";
       at: number;
       workstreamId: string;
       /** The declaring owner(s) the injected dependsOn edges point to. */
       owners: string[];
-      /** The discarded commit — reachable in the object store, named here.
-       * Absent only when the violator's HEAD could not be read before the
-       * reset (no commit ahead of base, or git could not read it). */
+      /** The discarded commit — reachable in the object store, named here
+       * (absent only if the violator's HEAD could not be read pre-reset). */
       discardedSha?: string;
     }
   | {
@@ -216,65 +211,41 @@ export type WorkEvent =
        * status`) instead of "a worktree".
        */
       lensWorktreePath?: string;
-      /**
-       * #797 — the ref the cycle's integration started from at repoRoot
-       * (recorded before the checkout). Present on `lens-fix-not-integrated`
-       * caps: the post-condition for the handoff's recovery steps is that
-       * repoRoot is on this ref again. Absent on pre-#797 state files and
-       * on caps whose recovery does not depend on the checkout.
-       */
+      /** #797 — the ref the cycle's integration started from at repoRoot
+       * (pre-checkout); on `lens-fix-not-integrated` caps. */
       restoredToRef?: string;
-      /**
-       * Which cap fired. Covers the handoff-doctrine caps plus the
-       * "ci-retry" cap added in PR2 after the live-test infinite-loop bug:
-       * ci-status:failure → develop → adversarial → review → ci → ... had no
-       * cap of its own and could spin forever when the branch step silently
-       * ABORTed and no PR ever existed for CI to watch.
-       *
-       * PR5 adds two new cap shapes for halt-cascade prevention:
-       *  - "developer-timeout": developer subagent SIGTERM'd by spawn-cap.
-       *    Routed by the post-step dispatch-failed router to handoff
-       *    immediately so adversarial doesn't waste hours on partial work
-       *    (the empirical #553 cascade).
-       *  - "step-failed:<step>": generic dispatch-failed at any HALT-class
-       *    step (explore / plan / branch / commit-pr / lens-fix / ci) or
-       *    retry-exhausted at any RETRY_ONCE-class step (adversarial /
-       *    lens-review). Template-literal shape so explainCap() can
-       *    enumerate without losing the originating step name.
-       */
+      /** Which cap fired. Handoff-doctrine caps plus "ci-retry" (PR2: the
+       * ci-status:failure → develop → adversarial → review → ci loop had no
+       * cap and could spin forever). PR5 added "developer-timeout" (spawn-cap
+       * SIGTERM → handoff, #553) and "step-failed:<step>" (any HALT-class
+       * dispatch-failed; keeps the step name). */
       cap:
         | "adversarial-loop"
         | "round-cap"
         | "wall-clock"
-        // A lens failed every retry, so the six-pass review is incomplete.
-        // Distinct from the round cap: nothing capped, the review could not be
-        // completed. This used to be reported as "adversarial-loop".
+        // A lens failed every retry, so the six-pass review is incomplete
+        // (distinct from the round cap; used to be "adversarial-loop").
         | "review-incomplete"
         | "ci-retry"
         | "developer-timeout"
         | "explore-already-complete"
         | "explore-needs-clarification"
-        // PR11: pre-condition failure — `gh issue view <N>` returned empty
-        // or errored for one or more issues. The driver halts before
-        // explore-dispatch processing because per-issue verdict routing
-        // is unreliable on partial body data (live evidence: v10r
-        // 2026-06-25 where 4/5 empty bodies cascaded into wrong-issue
-        // work landing on main).
+        // PR11: pre-condition failure — `gh issue view <N>` returned empty or
+        // errored for one or more issues. The driver halts before explore
+        // dispatch (per-issue verdict routing is unreliable on partial body
+        // data — live evidence: v10r 2026-06-25, 4/5 empty bodies cascaded
+        // into wrong-issue work on main).
         | "explore-bodies-empty"
-        // PR12 — emitted by `runStepBack` after the SDD analysis lands so
-        // the handoff renderers have a cap to switch on (step-back-
-        // completed alone is invisible to explainCap). Surfaces the
-        // proposedRevision + the /plan + /work --restart recovery path.
+        // PR12 — emitted by `runStepBack` after the SDD analysis lands so the
+        // handoff renderers have a cap to switch on (step-back-completed alone
+        // is invisible to explainCap). Surfaces the proposedRevision + the
+        // /plan + /work --restart recovery path.
         | "step-back-revise-spec"
-        // PR14 — emitted by the post-dispatch consolidation gate in
-        // runCommitPr when the committed diff is missing files from
-        // one or more workstreams' scope. The N>1 commit-pr prompt
-        // (also new in PR14) is supposed to consolidate every worktree
-        // before committing; this cap-hit catches the case where ops
-        // drifted and committed only a subset. Pre-PR14 the partial
-        // commit shipped silently (live evidence: /work 577 on v0.12.13
-        // closed #577 with 1 of 3 workstreams' changes — root fix
-        // lost from main).
+        // PR14 — the post-dispatch consolidation gate in runCommitPr fires
+        // when the committed diff is missing files from one or more
+        // workstreams' scope. Pre-PR14 the partial commit shipped silently
+        // (live evidence: /work 577 on v0.12.13 closed #577 with 1 of 3
+        // workstreams' changes — root fix lost from main).
         | "commit-pr-incomplete-consolidation"
         | "lens-fix-not-integrated"
         | "integration-verify-failed"
@@ -371,12 +342,11 @@ export type WorkEvent =
         // handoff does NOT terminalize it as `aborted`.
         | "deferred-creation:develop"
         // #849 — the develop scope fence parked after a fence recovery: the
-        // violator's FIRST commit was discarded and re-developed once from
-        // the owner's post-commit tree, and it violated again (or the
-        // recovery's dependency injection formed a violator↔owner cycle). One
-        // recovery round per cycle — a second violation is terminal. The
-        // cap's evidence names BOTH attempts' SHAs (the first on the
-        // fence-recovery-started event, the second on verifyEvidence).
+        // violator's first commit was discarded and re-developed once from the
+        // owner's post-commit tree, then it violated again (or the recovery's
+        // dependency injection formed a cycle). One recovery round per cycle.
+        // Evidence names BOTH attempts' SHAs (first on the
+        // fence-recovery-started event, second on verifyEvidence).
         | "fence-violation:develop"
         // #746 task-b — branch-step early dirty-root block: a stray untracked/
         // modified file at repoRoot BEFORE any develop dispatch. Deliberate park.

@@ -286,6 +286,7 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     "lens-review-child.ts": 1, // the lens child — cwd: runOpts.cwd, set by the lens review seam
     "work-driver-explore-run.ts": 1, // runExplore (the integration-point read, no cwd)
     "work-driver-commit-fallback.ts": 1, // #861 — the ops-fallback commit-pr dispatch, pinned to the integrate worktree (cwd: integratePath)
+    "work-develop-fence-recovery-run.ts": 1, // #849 — the fence recovery's single re-dispatch, pinned to the violator's worktree (cwd: the recovered workstream's worktree)
   };
   // The /plan and /research drivers' seams — outside the /work driver's
   // scope for this audit (their own cwd hygiene is a separate concern).

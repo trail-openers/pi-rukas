@@ -321,7 +321,17 @@ export async function runFenceRecoveryFlow(
     pipelineState: {
       ...next.pipelineState,
       worktrees: recovery.worktrees,
-      workstreamBaseShas: recovery.workstreamBaseShas,
+      // #849 — the recovery re-based the RECOVERED workstream's base to the
+      // owner's post-commit SHA (so the re-dispatch's diff is measured from
+      // there). The OTHER workstreams keep their original base — merging the
+      // maps (rather than replacing) preserves them, which keeps the fence
+      // re-run's changed-paths diff correct for every workstream (a replaced
+      // map with only the recovered id would drop the others' bases and make
+      // their diffs measure from the wrong point).
+      workstreamBaseShas: {
+        ...stateRef.current.pipelineState.workstreamBaseShas,
+        ...recovery.workstreamBaseShas,
+      },
       // #849 — the injected dependsOn edges persist so the gate's #725
       // carve-out and the commit-pr consolidation see the new dependency graph.
       workstreams: recovery.workstreams,
@@ -339,14 +349,11 @@ export async function runFenceRecoveryFlow(
     // to ok:true when the recovery re-run is clean. `applyFenceVerdicts` only
     // flips entries that were ok:true, so a violator left at ok:false by the
     // first flip would never be restored. The recovery's violator list
-    // (`recoveredIds`, captured above) is the source of truth. Gated on a
-    // `fence-recovery-started` event: when NO recovery happened (the plain
-    #814 blocked-fence path, which also reaches this re-run), the flip must
-    // keep the violator at ok:false — the restore is a recovery-specific
-    // behaviour, not a general one.
-    const recoveryHappened = stateRef.current.eventLog.some(
-      (e) => e.kind === "fence-recovery-started",
-    );
+    // (`recoveredIds`, captured above) is the source of truth: a clean re-run
+    // (the re-dispatch committed only its own file) restores the verdict; a
+    // re-violation is detected by the re-run's own fence records (the
+    // `fenceBlocked` branch below). This code is reached only when recovery
+    // actually happened (runFenceRecoveryFlow), so the restore is safe here.
     for (let i = 0; i < verdicts.length; i++) {
       const v = verdicts[i];
       if (!v) continue;
