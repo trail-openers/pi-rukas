@@ -36,7 +36,6 @@ import {
   renderPriorContext,
 } from "./plan-draft.ts";
 import { PLAN_DISPATCH_TIMEOUT_MS, PLAN_MARKER_CHILD_ARGS } from "./plan-investigate.ts";
-import type { PlanPhaseTiming } from "./plan-types.ts";
 import { reporterPathFromArgs, statReporterPath } from "./reporter-preflight.ts";
 import { anglesForTier } from "./research-angles.ts";
 import {
@@ -47,9 +46,9 @@ import {
   slugify,
   writeArtifact,
 } from "./research-artifact.ts";
+import { dedupResearchClaims } from "./research-dedup.ts";
 import {
   type ParallelOutcome,
-  type WigoloSurface,
   classifyParallelOutcome,
   researchFallbackLine,
   selectFallback,
@@ -57,6 +56,7 @@ import {
   wigoloAnglePrompt,
 } from "./research-fallback.ts";
 import { writeResearchMemory } from "./research-memory.ts";
+import { PhaseTimer } from "./research-timings.ts";
 import {
   type AngleRun,
   RESEARCH_TIERS,
@@ -136,21 +136,8 @@ export async function runResearchPipeline(
     ? (input.tier as ResearchTier)
     : "standard";
   const date = new Date().toISOString().slice(0, 10);
-
-  const timings: PlanPhaseTiming[] = [];
-  const pipelineStart = Date.now();
-  const timed = async <T>(phase: string, fn: () => Promise<T>): Promise<T> => {
-    const t0 = Date.now();
-    try {
-      return await fn();
-    } finally {
-      timings.push({ phase, ms: Date.now() - t0 });
-    }
-  };
-  const finishTimings = (): PlanPhaseTiming[] => [
-    ...timings,
-    { phase: "total", ms: Date.now() - pipelineStart },
-  ];
+  const timer = new PhaseTimer();
+  const timed = <T>(phase: string, fn: () => Promise<T>) => timer.run(phase, fn);
 
   // Phase 1 — inventory (vipune keywords + context param), briefing only:
   // children are told what is already established so they dive deeper
@@ -220,7 +207,7 @@ export async function runResearchPipeline(
           detail: "reporter preflight failed — nothing to remember",
         },
         halt: { reason: "reporter-missing" as const, detail: (err as Error).message },
-        timings: finishTimings(),
+        timings: timer.finish(),
       };
     }
   }
@@ -324,7 +311,12 @@ export async function runResearchPipeline(
     ),
   );
 
-  const claims = angles.flatMap((a) => a.claims);
+  // Cross-angle dedup AFTER extraction, BEFORE verification (#896): a
+  // merged claim verifies its survivor's source once, and its `angles`
+  // attribute the provenance; the raw vs unique counts land in the
+  // artifact + provenance headers.
+  const rawClaimCount = angles.reduce((sum, a) => sum + a.claims.length, 0);
+  const claims = dedupResearchClaims(angles.flatMap((a) => a.claims));
   const base: Omit<ResearchResult, "halt" | "abstained" | "memory"> = {
     topic,
     tier,
@@ -362,7 +354,7 @@ export async function runResearchPipeline(
             reason: "no-structured-claims",
             detail: `all ${angles.length} angles returned zero report_research_claim calls (prose-only or schema-invalid). Re-run start_research_driver; if this recurs, check the research-reporter extension registration (RESEARCH_REPORTER_PATH).`,
           },
-      timings: finishTimings(),
+      timings: timer.finish(),
     };
   }
 
@@ -448,6 +440,7 @@ export async function runResearchPipeline(
           provenanceBasename: path.basename(p.provenancePath),
           entailment,
           memo,
+          rawClaimCount,
         },
         p,
       );
@@ -463,7 +456,7 @@ export async function runResearchPipeline(
       abstained,
       memory: { outcome: "skipped", detail: "artifact write failed — nothing durable to point at" },
       halt: { reason: "artifact-write-failed", detail: (err as Error).message },
-      timings: finishTimings(),
+      timings: timer.finish(),
     };
   }
 
@@ -494,6 +487,6 @@ export async function runResearchPipeline(
     abstained,
     entailment,
     memory,
-    timings: finishTimings(),
+    timings: timer.finish(),
   };
 }
