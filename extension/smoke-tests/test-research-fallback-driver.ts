@@ -250,23 +250,25 @@ async function freshRepo(): Promise<string> {
 {
   // codebase angle: NO wigolo equivalent → no re-dispatch, stays parallel,
   // summary records the no-fallback decision, other angle and artifact intact.
+  // (A PM-supplied angle gets a custom-N name, which is now web-capable; to
+  // pin the no-fallback path we use the codebase derivation — topic naming
+  // code triggers the codebase angle, and codebase maps to `none`.)
   setResearchDispatch(driverStub);
   const tmp = await freshRepo();
   seen.length = 0;
-  failAngle = "custom-1";
+  failAngle = "codebase";
   const r2 = await runResearchPipeline(
     FAKE_PI,
     {
-      topic: "what is a thing",
+      topic: "what is a thing in src/x.ts",
       tier: "standard",
-      angles: ["codebase: establish the current state", "web-current: establish the docs depth"],
     },
     tmp,
     deps,
   );
   assert(r2.halt === undefined, "pipeline completed when codebase angle fails (no re-dispatch)");
-  const codebase = r2.angles.find((x) => x.name === "custom-1");
-  assert(codebase !== undefined, "codebase angle present");
+  const codebase = r2.angles.find((x) => x.name === "codebase");
+  assert(codebase !== undefined, `codebase angle present (angles: ${r2.angles.map((x) => x.name).join(",")})`);
   assert(codebase?.ok === false, "codebase angle is not ok");
   assert((codebase?.claims.length ?? 1) === 0, "codebase angle has no claims");
   assert(codebase?.backend === "parallel", "codebase angle stays on parallel (no re-dispatch)");
@@ -279,7 +281,7 @@ async function freshRepo(): Promise<string> {
   assert(r2.claims.length === 1, "the surviving claim reached the result");
   const body = await fs.readFile(r2.artifactPath as string, "utf8");
   assert(body.includes("no-fallback-available"), "artifact renders the no-fallback decision");
-  assert(/\*\*custom-2\*\* \(ok\):/.test(body), "artifact renders the other angle's summary");
+  assert(/\*\*docs-depth\*\* \(ok\):/.test(body), "artifact renders the other angle's summary");
   await fs.rm(tmp, { recursive: true, force: true });
 }
 
