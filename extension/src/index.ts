@@ -114,6 +114,9 @@ export default async function (pi: ExtensionAPI) {
           `pruned ${s.deletedBatches} old batches (${s.deletedFiles} files, ${(s.bytesFreed / 1024).toFixed(1)} KB)`,
         );
       }
+      if (s.failedFiles > 0) {
+        trace(`prune: ${s.failedFiles} file(s) could not be deleted`);
+      }
     })
     .catch((err) => {
       trace(`prune skipped: ${(err as Error).message}`);

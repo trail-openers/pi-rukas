@@ -5,8 +5,8 @@
  */
 import fs from "node:fs/promises";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import type { RunFile } from "./runs.ts";
-import { fmtRelative } from "./runs.ts";
+import type { Batch, RunFile } from "./runs-shared.ts";
+import { fmtRelative, fmtSize } from "./runs-shared.ts";
 import {
   TOOL_ARGS_PREVIEW_MAX,
   TOOL_RESULT_LINE_MAX,
@@ -23,12 +23,6 @@ import {
 const BATCH_PAGE_SIZE = 15;
 const SHOW_OLDER = "── show older ──";
 const SHOW_ALL = "── show all ──";
-
-interface Batch {
-  runId: string;
-  mtimeMs: number; // newest child's mtime
-  children: RunFile[];
-}
 
 export async function pickBatch(
   ctx: ExtensionCommandContext,
@@ -216,10 +210,4 @@ export function renderTranscript(file: RunFile, parsed: ParsedTranscript): strin
   lines.push("---");
   lines.push(`Press Esc to close.  Replay: pi --session ${file.path}`);
   return lines.join("\n");
-}
-
-function fmtSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}K`;
-  return `${(bytes / 1024 / 1024).toFixed(1)}M`;
 }

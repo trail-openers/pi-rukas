@@ -175,7 +175,32 @@ await makeFakeRun(root7, today, `bid007-${Math.random().toString(36).slice(2, 8)
   }
 }
 
-// Test 8: "(retention off)" when disabled
+// Test 8: undeletable child — a batch with even one failed unlink is NOT
+// counted in deletedBatches, and the failure shows up in failedFiles.
+const root8 = await fs.mkdtemp(path.join(os.tmpdir(), "pi-ensemble-prune-"));
+{
+  const r = `bid008-${Math.random().toString(36).slice(2, 8)}`;
+  await makeFakeRun(root8, today, r, ["explore"], 6 * DAY);
+  // Make the file's parent dir read-only so fs.unlink fails with EPERM.
+  // (Skipped under root, where chmod 500 does not stop deletion.)
+  const dir = path.join(root8, today);
+  if (typeof process.getuid === "function" && process.getuid() !== 0) {
+    await fs.chmod(dir, 0o500);
+    const s = await pruneOldRuns(root8, 5);
+    assert(s.totalBatches === 1, "failed-delete: saw the batch");
+    assert(s.deletedBatches === 0, "failed-delete: batch not counted as deleted");
+    assert(s.deletedFiles === 0, "failed-delete: no files counted as deleted");
+    assert(s.failedFiles >= 1, "failed-delete: failedFiles >= 1");
+    const remaining = await fs.readdir(dir);
+    assert(remaining.length === 1, "failed-delete: file survives on disk");
+    await fs.chmod(dir, 0o755);
+  } else {
+    const s = await pruneOldRuns(root8, 5);
+    assert(s.deletedBatches === 1, "failed-delete (root): root can delete, batch deleted");
+  }
+}
+
+// Test 9: "(retention off)" when disabled
 {
   const saved = process.env.PI_ENSEMBLE_RUNS_DIR;
   const savedDays = process.env.PI_ENSEMBLE_TRANSCRIPT_RETENTION_DAYS;
@@ -194,7 +219,7 @@ await makeFakeRun(root7, today, `bid007-${Math.random().toString(36).slice(2, 8)
 }
 
 // Cleanup
-for (const r of [root, root2, root3, root4, root5, root7]) {
+for (const r of [root, root2, root3, root4, root5, root7, root8]) {
   await fs.rm(r, { recursive: true, force: true });
 }
 

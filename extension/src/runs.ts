@@ -3,25 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { PRUNE_MIN_AGE_MS, transcriptRetentionDays } from "./runs-retention.ts";
+import { isPruneCandidate } from "./runs-shared.ts";
+import type { Batch, RunFile } from "./runs-shared.ts";
+import { fmtRelative, fmtSize } from "./runs-shared.ts";
 import { pickBatch, renderTranscript, summariseTranscript } from "./runs-viewer.ts";
 
 const ENSEMBLE_DIR_DEFAULT = path.join(os.homedir(), ".pi", "agent", "ensemble-runs");
-
-export interface RunFile {
-  path: string;
-  filename: string;
-  runId: string;
-  role: string;
-  seq: number | null;
-  mtimeMs: number;
-  sizeBytes: number;
-}
-
-interface Batch {
-  runId: string;
-  mtimeMs: number; // newest child's mtime
-  children: RunFile[];
-}
 
 /**
  * Filename shape (from spawn.ts/transcriptPathFor):
@@ -66,7 +53,8 @@ async function listRunFiles(rootDir: string): Promise<RunFile[]> {
     const dir = path.join(rootDir, date);
     const stat = await fs.stat(dir).catch(() => null);
     if (!stat?.isDirectory()) continue;
-    const entries = await fs.readdir(dir);
+    const entries = await fs.readdir(dir).catch(() => null);
+    if (!entries) continue;
     for (const entry of entries) {
       if (!entry.endsWith(".json")) continue;
       const parsed = parseRunFilename(entry);
@@ -108,6 +96,8 @@ export interface PruneSummary {
   bytesFreed: number;
   /** Batches kept young enough to survive even past the retention window (safety floor). */
   preservedByAgeFloor: number;
+  /** Transcript files that could not be removed (permissions / races). */
+  failedFiles: number;
 }
 
 /**
@@ -127,6 +117,7 @@ export async function pruneOldRuns(
     deletedFiles: 0,
     bytesFreed: 0,
     preservedByAgeFloor: 0,
+    failedFiles: 0,
   };
   if (retentionDays <= 0) return summary;
 
@@ -136,12 +127,12 @@ export async function pruneOldRuns(
 
   const now = Date.now();
   const windowMs = retentionDays * 86_400_000;
-  const candidates = batches.filter((b) => now - b.mtimeMs >= windowMs);
-  for (const b of candidates) {
-    if (now - b.mtimeMs < PRUNE_MIN_AGE_MS) {
-      summary.preservedByAgeFloor++;
+  for (const b of batches) {
+    if (!isPruneCandidate(b.mtimeMs, now, windowMs)) {
+      if (now - b.mtimeMs >= windowMs) summary.preservedByAgeFloor++;
       continue;
     }
+    let failed = 0;
     for (const c of b.children) {
       try {
         await fs.unlink(c.path);
@@ -149,9 +140,11 @@ export async function pruneOldRuns(
         summary.bytesFreed += c.sizeBytes;
       } catch {
         // Best effort — ignore unlink races / permissions
+        failed++;
       }
     }
-    summary.deletedBatches++;
+    if (failed > 0) summary.failedFiles += failed;
+    else summary.deletedBatches++;
   }
 
   // Best-effort: remove empty date subdirs.
@@ -193,14 +186,6 @@ export async function transcriptsSummary(
   return `${files.length} files · ${batches.length} batches · oldest ${oldestAge} · ${sizeStr}  (${retentionStr})`;
 }
 
-export function fmtRelative(mtimeMs: number, now = Date.now()): string {
-  const dMs = now - mtimeMs;
-  if (dMs < 60_000) return `${Math.round(dMs / 1000)}s ago`;
-  if (dMs < 3_600_000) return `${Math.round(dMs / 60_000)}m ago`;
-  if (dMs < 86_400_000) return `${Math.round(dMs / 3_600_000)}h ago`;
-  return `${Math.round(dMs / 86_400_000)}d ago`;
-}
-
 export function registerRunsCommand(pi: ExtensionAPI) {
   pi.registerCommand("runs", {
     description: "Browse recent pi-rukas subagent runs (or `/runs all`, `/runs prune [N]`)",
@@ -219,7 +204,7 @@ export function registerRunsCommand(pi: ExtensionAPI) {
         const preview = await listRunFiles(rootDir).then(groupIntoBatches);
         const now = Date.now();
         const windowMs = days * 86_400_000;
-        const willDelete = preview.filter((b) => now - b.mtimeMs >= windowMs).length;
+        const willDelete = preview.filter((b) => isPruneCandidate(b.mtimeMs, now, windowMs)).length;
         if (willDelete === 0) {
           ctx.ui.notify(`Nothing to prune — no batches older than ${days} days.`, "info");
           return;
@@ -230,8 +215,12 @@ export function registerRunsCommand(pi: ExtensionAPI) {
         );
         if (!confirmed) return;
         const s = await pruneOldRuns(rootDir, days);
+        const suffix = [
+          s.preservedByAgeFloor > 0 ? `  (${s.preservedByAgeFloor} kept by age floor.)` : "",
+          s.failedFiles > 0 ? `  (${s.failedFiles} file(s) could not be deleted.)` : "",
+        ].join("");
         ctx.ui.notify(
-          `Pruned ${s.deletedBatches} batches · ${s.deletedFiles} files · ${(s.bytesFreed / 1024).toFixed(1)} KB freed.${s.preservedByAgeFloor > 0 ? `  (${s.preservedByAgeFloor} kept by age floor.)` : ""}`,
+          `Pruned ${s.deletedBatches} batches · ${s.deletedFiles} files · ${(s.bytesFreed / 1024).toFixed(1)} KB freed.${suffix}`,
           "info",
         );
         return;
@@ -272,10 +261,4 @@ export function registerRunsCommand(pi: ExtensionAPI) {
       await ctx.ui.editor(`${child.role}${child.seq != null ? `-${child.seq}` : ""}`, rendered);
     },
   });
-}
-
-function fmtSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}K`;
-  return `${(bytes / 1024 / 1024).toFixed(1)}M`;
 }
