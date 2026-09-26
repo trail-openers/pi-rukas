@@ -100,7 +100,7 @@ export async function buildViewerText(
       "Replay (when available): pi --session <transcript path>",
     ].join("\n");
   }
-  const { summariseTranscript, renderTranscript } = await import("./runs.ts");
+  const { summariseTranscript, renderTranscript } = await import("./runs-viewer.ts");
   const parsed = await summariseTranscript(file);
   return renderTranscript(
     {
