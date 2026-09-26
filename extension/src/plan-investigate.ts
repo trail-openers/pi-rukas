@@ -270,7 +270,7 @@ export async function runInvestigation(
         name: a.name,
         ok: false,
         text: "",
-        toolUses: [] as ReturnType<typeof extractPlanItems>,
+        toolUses: [] as PlanItemKind[],
         failure: msg,
       }));
       return { findings: failed, neverClaimDisclosure: [] };

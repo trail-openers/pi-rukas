@@ -35,6 +35,12 @@ import {
   reporterPathFromArgs,
   statReporterPath,
 } from "../src/reporter-preflight.ts";
+import { PLAN_REPORTER_PATH } from "../src/plan-investigate.ts";
+import {
+  runPlanPipeline,
+  setPlanDispatch,
+  setPlanStatFn,
+} from "../src/plan-driver.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import type { RosterEntry } from "../src/lens-roster.ts";
 
@@ -487,6 +493,5 @@ function claimCall(kind: string, text: string, source: string, sourceKind: strin
   setResearchDispatch(null);
   await fs.rm(tmp, { recursive: true, force: true });
 }
-
 console.log(`\nexit ${exit}`);
 process.exit(exit);

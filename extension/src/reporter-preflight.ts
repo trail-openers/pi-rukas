@@ -33,6 +33,8 @@ export async function statReporterPath(
   check: (p: string) => Promise<unknown> = stat,
 ): Promise<void> {
   try {
+    // The stat is a diagnostic (fail fast with a named error), not an
+    // integrity or security boundary.
     await check(path);
   } catch {
     // Any stat failure (ENOENT or a read-permission problem) is the same

@@ -30,12 +30,13 @@ import {
   mechanicalInventory,
   parseOperatorDirectives,
 } from "./plan-draft.ts";
-import { correctiveRedraftError, haltResult } from "./plan-driver-halt.ts";
+import { allAnglesFailedSpec, correctiveRedraftError, haltResult } from "./plan-driver-halt.ts";
 import { type FilingFailure, fileIssue, getPlanForge, planForgeFor } from "./plan-filing.ts";
 import { type CarriedCritical, gapGatePrompt, gapGateVerifyPrompt } from "./plan-gate-prompt.ts";
 import {
   PLAN_DISPATCH_TIMEOUT_MS,
   PLAN_MARKER_CHILD_ARGS,
+  PLAN_REPORTER_PATH,
   runInvestigation,
 } from "./plan-investigate.ts";
 import { precheckDescriptor } from "./plan-precheck.ts";
@@ -45,6 +46,7 @@ import {
   parsePinnedSubIssueCount,
   validateDraft,
 } from "./plan-validate.ts";
+import { reporterMissingError } from "./reporter-preflight.ts";
 
 import { type GapGateLoopResult, residualGapsSection, runGapGateLoop } from "./plan-gaps.ts";
 import {
@@ -108,10 +110,10 @@ export async function runPlanPipeline(
       timings.push({ phase, ms: Date.now() - t0 });
     }
   };
-  const finishTimings = (): PlanPhaseTiming[] => [
-    ...timings,
-    { phase: "total", ms: Date.now() - pipelineStart },
-  ];
+  const finishTimings = (): PlanPhaseTiming[] => {
+    const total = { phase: "total", ms: Date.now() - pipelineStart } as const;
+    return [...timings, total];
+  };
 
   // Phase 0b — deterministic under-specification triage (plan-precheck.ts)
   // BEFORE any dispatch; fires only on the strongest signal.
@@ -157,11 +159,10 @@ export async function runPlanPipeline(
   );
 
   // Phase 1b + Phase 2 — ONE parallel barrier (plan-investigate.ts): the
-  // duplicate-risk explore and the type-specialised angle set dispatch
-  // together; wall clock is the slowest child, not their sum. The HIGH-risk
-  // hard stop applies AFTER the barrier — semantics unchanged (a HIGH
-  // verdict still refuses to file); the only trade is that on HIGH the
-  // angle tokens are already spent, and HIGH is the rare case.
+  // duplicate-risk explore and the angle set dispatch together; wall clock
+  // is the slowest child, not their sum. The HIGH-risk hard stop applies
+  // AFTER the barrier — a HIGH verdict still refuses to file; the only
+  // trade is that on HIGH the angle tokens are already spent.
   const codeIds = codeIdentifiersIn(descriptor);
   // C5: an operator-pinned sub-issue count ("EXACTLY 5 sub-issues") is
   // threaded into the decomposition angle AND asserted by validateDraft.
@@ -213,18 +214,23 @@ export async function runPlanPipeline(
     });
   }
 
-  // #633 aggregate all-angles-failed guard (fail-closed): if EVERY angle
-  // produced zero structured items, every typed section would silently fall
-  // back — halt before draftSpec/fileIssue with the discriminated
-  // `skipped-all-angles-failed` reason instead ("deliberately skipped",
-  // never "filing failed").
+  // #633 all-angles-failed guard (fail-closed): EVERY angle produced zero
+  // structured items → halt before draftSpec/fileIssue with the discriminated
+  // `skipped-all-angles-failed` reason ("deliberately skipped", never
+  // "filing failed").
   const withItems = findings.filter((f) => f.toolUses.length > 0).length;
   if (findings.length > 0 && withItems === 0) {
     trace(
       `plan-driver: ALL ${findings.length} angles produced zero structured items (prose-only or schema-invalid calls) — halting, no spec filed`,
     );
     const angleNames = findings.map((f) => f.name).join(", ");
-    const spec = `(spec not drafted — all investigation angles returned zero structured items)\n\nDispatched angles: ${angleNames}\n\nEach angle returned either prose only (no report_plan_item tool calls) or schema-invalid calls only. This usually means the reporter extension was not loaded, or the model did not make the tool calls. Re-run start_plan_driver — the investigation children are re-dispatched; if this recurs, check the plan-reporter extension registration (PLAN_REPORTER_PATH).`;
+    // #893 — when EVERY failed angle carries the named reporter-missing
+    // error, the preflight failed: the builder renders the honest
+    // "nothing was dispatched" text instead of the dispatched-angles text.
+    const allReporterMissing = findings.every(
+      (f) => f.failure === reporterMissingError(PLAN_REPORTER_PATH),
+    );
+    const spec = allAnglesFailedSpec(angleNames, allReporterMissing);
     const title = planTitle(descriptor, type);
     trace(
       `plan-driver: type=${type} angles=${findings.length} structured=${withItems} gaps=0 filed=false dryRun=${!!dryRun} ALL-ANGLES-FAILED`,
@@ -244,9 +250,8 @@ export async function runPlanPipeline(
     });
   }
 
-  // Phase 3 — draft WITHIN the forge body budget (vipune session: four
-  // filings hit the 65,536-char wall after clean gates; plan-validate.ts
-  // owns the stage-0/compaction/tooLarge policy).
+  // Phase 3 — draft WITHIN the forge body budget (four filings hit the
+  // 65,536-char wall; plan-validate.ts owns the stage-0/compaction policy).
   const openQuestions: string[] = [];
   const outOfScope: string[] = [];
   const fitted = fitDraftToBudget((b) =>
@@ -413,9 +418,8 @@ export async function runPlanPipeline(
     rawUnparsedHead = loopResult.rawUnparsedHead;
   }
 
-  // D2: when the cap routed to filing, the spec that gets filed carries the
-  // residual disclosure. Append it HERE, before fileIssue, so the single
-  // filing pass below sees the final body.
+  // D2: append the residual disclosure HERE, before fileIssue, so the
+  // single filing pass sees the final body.
   const finalBody =
     residualForDisclosure.length > 0
       ? `${body}\n\n${residualGapsSection(residualForDisclosure)}`
@@ -463,9 +467,8 @@ export async function runPlanPipeline(
   }
 
   // #633: report BOTH how many angles were dispatched and how many produced
-  // structured items — `angles=` alone read as "3 angles ran" even when all
-  // three returned prose-only (the all-angles-failed case the guard above
-  // halts for now still surfaces the count when it fires).
+  // structured items — `angles=` alone read as "3 angles ran" even when
+  // all three returned prose-only.
   const structuredCount = findings.filter((f) => f.toolUses.length > 0).length;
   trace(
     `plan-driver: type=${type} angles=${findings.length} structured=${structuredCount} gaps=${gaps.length} filed=${!!issueUrl} dryRun=${!!dryRun} capReason=${capReason ?? "none"}`,
