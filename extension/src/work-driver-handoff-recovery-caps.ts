@@ -10,11 +10,13 @@ import type { ForgeType } from "./forge-detect.ts";
 import { dependencyLeaves } from "./work-driver-cherry-pick.ts";
 import { cherryPickRecoveryFor } from "./work-driver-handoff-cherry-pick.ts";
 import { consolidatedMergeStep } from "./work-driver-handoff-merge-step.ts";
+import { commitPrConsolidationSteps } from "./work-driver-handoff-recovery-commit-pr.ts";
 import {
   CONSOLIDATE_APPLY,
   type RecoverySection,
   type RecoveryStep,
 } from "./work-driver-handoff-recovery.ts";
+import { stackPickRange } from "./work-driver-handoff-stack-pick.ts";
 import { mergeHoldGrantAction } from "./work-driver-merge-authority.ts";
 import { isConsolidatedPark } from "./work-driver-merge-subject.ts";
 import { type CapHitEvent, lastCapHit } from "./workflow-state-cap.ts";
@@ -33,69 +35,6 @@ function forgeLines(forge: ForgeType, github: string[], gitlab: string[]): strin
 
 // #875 — the commit-pr-incomplete-consolidation recovery steps, split by
 // the persisted per-workstream `dirty` flag. No live git calls.
-function commitPrConsolidationSteps(state: WorkState, issue: number): RecoveryStep[] {
-  const ps = state.pipelineState;
-  const missing = missingWorkstreamsFromConsolidation(ps.incompleteConsolidation);
-  const ic = ps.incompleteConsolidation;
-  const isDirty = (id: string): boolean => {
-    if (ic === undefined || Array.isArray(ic)) return true;
-    const v = ic.verdicts.find((x) => x.id === id);
-    return !v || v.status !== "uncovered" || v.dirty !== false;
-  };
-  const dirtyMissing = missing.filter((m) => isDirty(m.id));
-  const cleanMissing = missing.filter((m) => !isDirty(m.id));
-  const S = "commit-pr-incomplete-consolidation" as const;
-  const steps: RecoveryStep[] = [
-    {
-      section: S,
-      comment: ["1. Inspect each missing workstream's worktree:"],
-      lines: missing.map((m) => `git -C .worktrees/issue-${issue}-${m.id} status --porcelain`),
-    },
-  ];
-  if (dirtyMissing.length > 0) {
-    steps.push({
-      section: S,
-      comment: ["2. Apply each missing diff (stage first — `diff HEAD` omits untracked):"],
-      lines: dirtyMissing.flatMap((m) => [
-        `git -C .worktrees/issue-${issue}-${m.id} add -A`,
-        `git -C .worktrees/issue-${issue}-${m.id} diff --cached --binary | ${CONSOLIDATE_APPLY}    # in the integration tree`,
-      ]),
-    });
-  }
-  if (cleanMissing.length > 0) {
-    steps.push({
-      section: S,
-      comment: [
-        "2b. Cherry-pick each committed (dirty=false) workstream's work onto the",
-        "    integration branch — the work is already committed in the worktree:",
-      ],
-      lines: cleanMissing.map(
-        (m) =>
-          cherryPickRecoveryFor(issue, m.id, {
-            worktree: ps.worktrees?.[m.id],
-            baseSha: ps.baseSha,
-            ownBase: ps.workstreamBaseShas?.[m.id],
-            headSha: ps.commitShas?.[m.id],
-            comment: `workstream: ${m.id} — if it genuinely needed a change, cherry-pick; otherwise the declaration was over-broad and the fix is a restart`,
-          }).line,
-      ),
-    });
-  }
-  steps.push(
-    {
-      section: S,
-      comment: ["3. Verify all workstreams' files now appear, then commit + push:"],
-      lines: ["git diff --name-only --cached", "git commit -m '<concise>'", "git push"],
-    },
-    {
-      section: S,
-      comment: ["4. Or: abandon + restart from scratch:"],
-      lines: [`rm .pi/work-state/${issue}.json`, `/work ${issue} --restart`],
-    },
-  );
-  return steps;
-}
-
 export function recoveryStepsForCap(
   state: WorkState,
   forge: ForgeType = "github",
@@ -166,7 +105,7 @@ export function recoveryStepsForCap(
         .map((id) => byId.get(id))
         .filter((w): w is (typeof committedWork)[number] => w !== undefined);
       const stacked = toPick.length < committedWork.length;
-      const topOfStack = toPick.length > 0 && toPick.length === 1 ? toPick[0] : undefined;
+      const stackPick = stacked && toPick.length === 1 ? stackPickRange(state, toPick) : undefined;
       steps.push(
         {
           section: "worktree-work-fallback",
@@ -192,9 +131,13 @@ export function recoveryStepsForCap(
               ],
           lines: [
             `git checkout ${ps.branchName}`,
-            ...toPick.flatMap((w) => [
-              `git cherry-pick ${w.headSha}   # worktree: ${w.path} (HEAD ${w.headSha.slice(0, 8)})${topOfStack ? "   # tip of the dependency chain — applies the whole stack in one pick" : ""}`,
-            ]),
+            ...(stackPick
+              ? [
+                  `${stackPick}   # applies every commit of the stack in order (root base .. leaf tip)`,
+                ]
+              : toPick.flatMap((w) => [
+                  `git cherry-pick ${w.headSha}   # worktree: ${w.path} (HEAD ${w.headSha.slice(0, 8)})`,
+                ])),
           ],
         },
         {
@@ -463,6 +406,51 @@ export function recoveryStepsForCap(
       {
         section: "review-incomplete",
         comment: ["3. Or abandon the cycle:"],
+        lines: [`rm .pi/work-state/${issue}.json`],
+      },
+    );
+  } else if (cap === "integration-worktree-violation") {
+    // #861 — the commit-pr ops-fallback audit halted: the integration
+    // branch is held by the WRONG worktree (the #841 shape). The driver
+    // kept the driver-owned integrate worktree for inspection and refused
+    // the PR-verification gates, so nothing was validated from the wrong
+    // tree. The holder path rides in the cap's evidence.
+    const hit = lastCapHit(state, "integration-worktree-violation");
+    const evidence = hit?.evidence ?? "(no holder recorded)";
+    steps.push(
+      {
+        section: "integration-worktree-violation",
+        comment: [
+          "1. The branch-holder audit found the integration branch held by a",
+          `   worktree that is NOT the driver-owned integrate worktree: ${evidence}`,
+          "   The driver-owned integrate worktree is preserved — inspect it first:",
+        ],
+        lines: [`.worktrees/issue-${issue}-integrate   # the driver kept this for inspection`],
+      },
+      {
+        section: "integration-worktree-violation",
+        comment: [
+          "2. Inspect the offending holder (the path above) — confirm whose work",
+          "   it holds, and whether it is a sibling cycle's worktree:",
+        ],
+        lines: ["git status   # at the offending holder path"],
+      },
+      {
+        section: "integration-worktree-violation",
+        comment: [
+          "3. Move the branch back: commit or push the holder's work to the right",
+          "   tree, then detach the holder and re-run the cycle (the driver",
+          "   recreates the integrate worktree on re-entry):",
+        ],
+        lines: [
+          "git checkout <branch>   # from the integrate worktree, once the holder is free",
+          `rm .pi/work-state/${issue}.json`,
+          `/work ${issue} --restart`,
+        ],
+      },
+      {
+        section: "integration-worktree-violation",
+        comment: ["4. Or abandon the cycle entirely (the integrate worktree is preserved):"],
         lines: [`rm .pi/work-state/${issue}.json`],
       },
     );

@@ -62,10 +62,10 @@ const ROOT_INTENTIONAL_SITES: Array<{ file: string; site: RegExp; label: string;
     why: "creates the feature branch and the worktrees — it cannot run inside a worktree it has not made yet",
   },
   {
-    file: "work-driver-commit.ts",
+    file: "work-driver-commit-fallback.ts",
     site: /runSingleDispatch\(\s*ctx,\s*preDispatch,\s*"commit-pr",\s*"ops",\s*"ops:commit-pr"/,
     label: "commit-pr (ops:commit-pr)",
-    why: "stages the consolidated diff at the integration point where the worktrees' commits are applied",
+    why: "the ops fallback is pinned to the driver-owned integrate worktree (cwd: integratePath) — the #841 defect was a cwd-less dispatch",
   },
   {
     file: "work-driver-merged.ts",
@@ -263,15 +263,14 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
     const raw = readFileSync(path.join(SRC, entry.name), "utf8");
     let n = 0;
-    raw
-      .split("\n")
-      .forEach((line) => {
-        if (/^\s*\*/.test(line)) return; // block-comment line
-        if (SEAM.test(line)) n += 1;
-      });
+    for (const line of raw.split("\n")) {
+      if (/^\s*\*/.test(line)) continue; // block-comment line
+      if (SEAM.test(line)) n += 1;
+    }
     // Subtract the file's own seam DEFINITIONS (export function dispatchCore,
     // export function spawnSpecialist) — those are the seams, not call sites.
-    const defs = raw.match(/^export (?:async )?function (?:dispatchCore|spawnSpecialist)\(/gm)?.length ?? 0;
+    const defs =
+      raw.match(/^export (?:async )?function (?:dispatchCore|spawnSpecialist)\(/gm)?.length ?? 0;
     const calls = Math.max(0, n - defs);
     if (calls > 0) perFile[entry.name] = (perFile[entry.name] ?? 0) + calls;
   }
@@ -286,6 +285,7 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     "adversarial.ts": 1, // runPhase's inner spawn — cwd threaded by the fan-out
     "lens-review-child.ts": 1, // the lens child — cwd: runOpts.cwd, set by the lens review seam
     "work-driver-explore-run.ts": 1, // runExplore (the integration-point read, no cwd)
+    "work-driver-commit-fallback.ts": 1, // #861 — the ops-fallback commit-pr dispatch, pinned to the integrate worktree (cwd: integratePath)
   };
   // The /plan and /research drivers' seams — outside the /work driver's
   // scope for this audit (their own cwd hygiene is a separate concern).
@@ -317,7 +317,9 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     if (NON_WORK_DRIVER.has(file)) continue; // /plan + /research — outside this audit's scope
     const expected = AUDITED[file];
     if (expected === undefined) {
-      problems.push(`${file}: ${count} call site(s) in a file that is neither allowlisted, cwd-audited, nor seam plumbing`);
+      problems.push(
+        `${file}: ${count} call site(s) in a file that is neither allowlisted, cwd-audited, nor seam plumbing`,
+      );
     } else if (count !== expected) {
       problems.push(
         `${file}: ${count} call site(s) found but the audit section accounts for ${expected} — a dispatch site moved or a new one was added`,
@@ -329,6 +331,27 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     problems.length === 0
       ? "census: every spawn-seam call site is in an allowlisted (decision #5) or cwd-audited file, and the counts match the audit sections"
       : `census: unaccounted dispatch sites — \n  ${problems.join("\n  ")}`,
+  );
+}
+
+// ------------------------------------------- commit-pr: the #861 fallback is pinned
+
+{
+  // #861 — the commit-pr ops fallback (the #841 defect) is no longer
+  // repoRoot-intentional: the driver pins it to the driver-owned integrate
+  // worktree (ensureIntegrateWorktree) and threads the path as `cwd`. The
+  // The commit-pr ops fallback dispatch lives in
+  // work-driver-commit-fallback.ts (the driver calls it from
+  // work-driver-commit.ts) — that file is cwd-audited, not allowlisted,
+  // and the census above must count it.
+  const commit = read("work-driver-commit-fallback.ts");
+  assert(
+    /cwd:\s*integratePath/.test(commit),
+    "canary: the commit-pr ops fallback dispatch carries cwd: integratePath (the driver-owned integrate worktree)",
+  );
+  assert(
+    /integrateWorktreePath\(ctx\.repoRoot,\s*ctx\.issue\)/.test(commit),
+    "canary: the fallback's cwd resolves to the -integrate worktree, not repoRoot",
   );
 }
 

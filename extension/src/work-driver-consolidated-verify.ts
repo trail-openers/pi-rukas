@@ -14,6 +14,7 @@ import { isDriverManagedDirtLine } from "./work-driver-branch-residue.ts";
 import { orchestrateCherryPick } from "./work-driver-cherry-pick.js";
 import type { DriverContext } from "./work-driver-context.js";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
+import { withIntegrationLock } from "./work-driver-lock.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
 import {
@@ -47,58 +48,43 @@ export type ConsolidatedVerifyRetryDecision =
   | "allowed-unknown"
   | "suppressed-mismatch";
 
+/**
+ * The options for the consolidated verify (the locked wrapper and the
+ * unlocked body share this shape; the wrapper only adds the integration
+ * lock, the body does the work). Defined ONCE so the two signatures
+ * cannot drift.
+ */
+export interface ConsolidatedVerifyOpts {
+  repoRoot: string;
+  baseSha: string;
+  branchName?: string;
+  worktrees: Record<string, string>;
+  scratchDir: string;
+  verifyCmd: string;
+  timeoutMs: number;
+  workstreamBaseShas?: Record<string, string>;
+  retry?: {
+    canRetry: boolean;
+    onRecover: (evidenceTail?: string) => void;
+    onFirstFailure?: (
+      rawFailure: string,
+    ) => { allowed: boolean; decision: ConsolidatedVerifyRetryDecision } | undefined;
+  };
+}
+
 export async function runConsolidatedVerify(
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
-  opts: {
-    repoRoot: string;
-    baseSha: string;
-    branchName?: string;
-    worktrees: Record<string, string>;
-    scratchDir: string;
-    verifyCmd: string;
-    timeoutMs: number;
-    /**
-     * #794 — per-workstream effective base map (`workstreamBaseShas`):
-     * a stacked workstream's OWN range is measured against its dependency's
-     * tip, not the global baseSha — the same map the develop step records
-     * when it creates the dependent worktree (work-driver-dep-scheduler.ts).
-     * A workstream with no entry falls back to `baseSha` (byte-identical to
-     * the pre-#794 range for the N-disjoint case).
-     */
-    workstreamBaseShas?: Record<string, string>;
-    /**
-     * #782/#826 — the single bounded flake re-run, two-phase contract:
-     * `canRetry` only ADMITS the first run (the length precondition —
-     * caller-gated, N>1 at this seam); the FINAL allow/suppress decision is
-     * made by `onFirstFailure` when the first run fails. When the re-run is
-     * allowed it runs once on the SAME still-checked-out scratch tree
-     * (BEFORE `restoreRoot`) and the outcome replaces the single-run
-     * verdict: the re-run passes → `status: "passed"` + the `onRecover`
-     * callback with the original failing tail (the caller emits
-     * `verify-flake-recovered` and proceeds); the re-run fails → the SAME
-     * failed shape as a single-run failure, with `retried: true` and
-     * `recovered: false` so the caller records `retries: 1, recovered:
-     * false` and classifies/parks exactly as today.
-     * #826 — `onFirstFailure` fires with the RAW first-run failure text
-     * (before `extractAttributedTail` elision) and returns the decision —
-     * `{ allowed: boolean, decision: ConsolidatedVerifyRetryDecision }`.
-     * `allowed: false` SUPPRESSES the re-run (e.g. a known per-worktree
-     * assertion the first run did not share — a likely genuine defect).
-     * `allowed: true` runs it. The decision is computed here, ONCE, and
-     * reported on the failed/passed result as `retryDecision` so the
-     * caller renders its notes from the recorded value instead of a second
-     * comparator call. When no first-run failure occurs (or the callback is
-     * absent) `retryDecision` is undefined.
-     */
-    retry?: {
-      canRetry: boolean;
-      onRecover: (evidenceTail?: string) => void;
-      onFirstFailure?: (
-        rawFailure: string,
-      ) => { allowed: boolean; decision: ConsolidatedVerifyRetryDecision } | undefined;
-    };
-  },
-): Promise<
+  opts: ConsolidatedVerifyOpts,
+) {
+  return withIntegrationLock(opts.repoRoot, () => runConsolidatedVerifyUnlocked(execFn, opts));
+}
+
+/**
+ * #861 — the shared result shape of the consolidated verify (the wrapper
+ * and its unlocked body return the same type; the body computes it, the
+ * wrapper only adds the lock).
+ */
+export type ConsolidatedVerifyResult =
   | {
       status: "passed";
       applied: string[];
@@ -141,9 +127,31 @@ export async function runConsolidatedVerify(
   // #725 — the caller distinguishes a genuine cherry-pick / patch-apply
   // conflict from a dirty-repoRoot preflight refusal via `kind`, not by
   // regexing the `detail` prose (a reworded message used to silently
-  // re-route the refusal to the conflict cap).
-  | { status: "conflict"; detail: string; kind: "conflict" | "dirty-root" }
-> {
+  // re-route the refusal to the conflict cap). The unlocked body below
+  // returns this same shape in both cases.
+  | { status: "conflict"; detail: string; kind: "conflict" | "dirty-root" };
+
+/**
+ * #861 — the unlocked body of the consolidated verify. The ONLY production
+ * caller is `runConsolidatedVerify` (the `withIntegrationLock` wrapper);
+ * this export exists so the smoke-test harness can prove the wrapper is what
+ * serialises (the anti-vacuity control calls this directly).
+ *
+ * #861 (decision 5) — the wrapper takes the integration lock around the
+ * WHOLE repoRoot section (dirty-root preflight read, checkout -B,
+ * cherry-pick, verify, the single flake re-run, restoreRoot and branch -D),
+ * exactly like every other repoRoot-mutating path (integrate(), runCommitPr,
+ * handoff-consolidate, merged teardown). The only production caller chain
+ * — runVerifyCommandGate → verifyDevelopOutcome →
+ * verifyStepOutcome("develop") — runs at step boundaries with no ancestor
+ * holding the lock (the develop/commit-pr step handlers never hold it while
+ * running the outcome gate), so the take is exactly once; nesting would
+ * deadlock the in-process chain (the same call waiting on itself).
+ */
+export async function runConsolidatedVerifyUnlocked(
+  execFn: NonNullable<DriverContext["verifyExecFn"]>,
+  opts: ConsolidatedVerifyOpts,
+): Promise<ConsolidatedVerifyResult> {
   const { repoRoot, baseSha, worktrees, scratchDir, verifyCmd, timeoutMs } = opts;
   // #794 — the pick scope: each workstream's own range is measured against
   // its effective base (the dependency's tip for a stacked workstream), so

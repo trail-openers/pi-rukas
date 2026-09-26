@@ -17,10 +17,23 @@ import { promisify } from "node:util";
 import { trace } from "./trace.ts";
 import { raiseConsolidationIncompleteCap } from "./work-driver-commit-completeness.ts";
 import {
+  causeFromIntegrateFailure,
+  conflictArtifactFromPlumb,
+  withPatchNote,
+} from "./work-driver-commit-helpers.ts";
+
+import { ensureIntegrateWorktreeOrHalt } from "./work-driver-commit-fallback.ts";
+import {
   type CommitPrRootState,
   commitPrRootFieldsOf,
   inspectCommitPrRoot,
 } from "./work-driver-commit-inspect.ts";
+import { runCommitPr } from "./work-driver-commit-lock.ts";
+import { auditCommitPrFallback } from "./work-driver-commit-pr-audit.ts";
+import {
+  finalizeCommitPrState,
+  runCommitPrPostDispatchGates,
+} from "./work-driver-commit-pr-events.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
@@ -32,7 +45,12 @@ import {
   withIntegrationLock,
 } from "./work-driver-integrate.ts";
 import { renderAssumptions } from "./work-driver-intent.ts";
-import { parsePrNumber, runSingleDispatch } from "./work-driver-merged.ts";
+import { parsePrNumber } from "./work-driver-merged.ts";
+
+// #861 — the lock-wrapped step handler lives in work-driver-commit-lock.ts
+// (the AGENTS.md §12 500-line cap pushed it out); re-exported here so the
+// existing import path in work-driver.ts is unchanged.
+export { runCommitPr };
 import {
   assumptionsBlockOf,
   carriedFindingsSectionOf,
@@ -43,10 +61,10 @@ import {
 } from "./work-driver-pr-body-definition.ts";
 import { findOpenPrForBranch } from "./work-driver-pr-preflight.ts";
 import { renderLensFindingsSection } from "./work-driver-pr-sections.ts";
-import { inlineCommitPrPrompt } from "./work-driver-prompts-late.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { verifyConsolidation, verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
+import type { WorkEvent } from "./workflow-state-events.ts";
 import { appendEvent } from "./workflow-state.ts";
 import type {
   CommitPrFallbackCause,
@@ -55,10 +73,6 @@ import type {
   WorkState,
 } from "./workflow-state.ts";
 const execp = promisify(exec);
-import {
-  finalizeCommitPrState,
-  runCommitPrPostDispatchGates,
-} from "./work-driver-commit-pr-events.ts";
 
 // clipTitle (#507) lives with the PR text builders in
 // work-driver-pr-body-definition.ts; re-exported for existing consumers.
@@ -68,51 +82,14 @@ export { clipTitle } from "./work-driver-pr-body-definition.ts";
 // (the event type that persists it) and is imported above; re-exported for
 // the mechanizedCommitPr return type below.
 export type { CommitPrFallbackCause } from "./workflow-state-events.ts";
-/** #539 — the structured cause, or `undefined` when integrate() did not
- * fail. Reads `res.failure` (the discriminator), never re-parses `reason`. */
-function causeFromIntegrateFailure(res: IntegrateResult): CommitPrFallbackCause | undefined {
-  if (res.ok) return undefined;
-  return res.failure === "dirty-repoRoot" ? "dirty-repoRoot" : "other";
-}
+// #861 — the shared helpers (the structured cause + the conflict-artifact
+// seam) live in work-driver-commit-helpers.ts, shared with the fallback
+// dispatch module (work-driver-commit-fallback.ts) — a circular import
+// between the two modules would break jiti's load order.
+export { conflictArtifactFromPlumb, withPatchNote } from "./work-driver-commit-helpers.ts";
+import { deriveCommitPrTitle, integrationVerifyTimeoutMs } from "./work-driver-commit-title.ts";
+export { deriveCommitPrTitle, integrationVerifyTimeoutMs };
 
-/**
- * #818 — the commit-pr PR title and commit title, always a valid
- * conventional-commit subject.
- *
- * Derives via `deriveConsolidationSubject` (the single shared parser — the
- * handoff consolidation path derives through the same helper, so the two
- * cannot disagree) from the cached issue title, then the LIVE forge issue
- * title (the #810 pattern in work-driver-handoff-consolidate.ts), then an
- * honest `chore(work): …`. `implement issue #N` is removed: it is not a
- * conventional subject, release-please drops it, and it is exactly what
- * #771/#809 landed as. Derivation runs BEFORE clipping so the `type(scope):`
- * prefix can never be cut off.
- */
-export async function deriveCommitPrTitle(
-  state: WorkState,
-  ctx: Pick<DriverContext, "repoRoot" | "issue">,
-  execFn: (cmd: string, o?: { cwd?: string; maxBuffer?: number }) => Promise<{ stdout: string }>,
-): Promise<string> {
-  const from = async (rawTitle: string | undefined): Promise<string | undefined> =>
-    rawTitle ? deriveConsolidationSubject(rawTitle) : undefined;
-  const cached = await from(await cachedIssueTitle(state));
-  if (cached) return clipTitle(cached, 64);
-  let live: string | undefined;
-  try {
-    const forge = await forgeForCycle(ctx, execFn);
-    if (forge) live = await from((await forge.issueView(ctx.issue)).title);
-  } catch {
-    live = undefined;
-  }
-  if (live) return clipTitle(live, 64);
-  return clipTitle(`chore(work): resolve issue #${ctx.issue}`, 64);
-}
-/** Wall-clock for the verify run against the consolidated tree (FAST suite).
- * Exists to catch "the combination does not build". Default 15 min. */
-function integrationVerifyTimeoutMs(): number {
-  const env = Number(process.env.PI_ENSEMBLE_INTEGRATION_VERIFY_TIMEOUT_MS);
-  return Number.isFinite(env) && env > 0 ? env : 15 * 60_000;
-}
 /**
  * PR19 — Mechanized commit-pr: consolidation + commit + push + PR-creation
  * executed directly. Falls back to LLM ops dispatch on `{ok: false}` unless
@@ -124,7 +101,27 @@ export async function mechanizedCommitPr(
   now: number,
 ): Promise<
   | { ok: true; state: WorkState }
-  | { ok: false; reason: string; terminal?: boolean; fallbackCause?: CommitPrFallbackCause }
+  | {
+      ok: false;
+      reason: string;
+      terminal?: boolean;
+      fallbackCause?: CommitPrFallbackCause;
+      /**
+       * #861 — the structured conflict-patch path preserved by integrate()
+       * (the "where possible" of the ops-fallback conflict seam). Set when
+       * integrate() preserved a patch on a non-terminal failure; the caller
+       * (runCommitPrLocked) threads it as the STRUCTURAL argument of
+       * `conflictArtifactFromPlumb`, so the ops prompt reads the field
+       * rather than re-parsing the plumb's body.
+       */
+      conflictPatch?: string;
+      /**
+       * #861 — set when a TERMINAL mechanized failure already appended the
+       * plumb + cap events (the creation-failure halt): the caller returns
+       * this state instead of appending a second cap of its own.
+       */
+      haltedAfter?: WorkState;
+    }
 > {
   const execFn = ctx.verifyExecFn ?? execp;
   const ps = state.pipelineState;
@@ -228,18 +225,48 @@ export async function mechanizedCommitPr(
     // KNOWS why it failed; a reader re-parsing `reason` would be guessing.
     const fallbackCause = causeFromIntegrateFailure(res);
     if (!res.ok) {
+      if (res.failure === "verify") {
+        // The consolidated tree does not build: a terminal verdict, not
+        // environment variance — the ops fallback would commit and push the
+        // same broken tree, making the verify gate one that cannot fail.
+        return {
+          ok: false,
+          reason: res.reason,
+          terminal: true,
+          fallbackCause,
+        };
+      }
+      // #861 — on a non-terminal failure the ops fallback takes over, so
+      // the driver creates the worktree the fallback is pinned to, HERE:
+      // (a) it sits INSIDE withIntegrationLock (runCommitPr wraps
+      // mechanizedCommitPr) — the tree will hold the integration branch and
+      // a sibling's sweep/integration must not race it; (b) `res.conflictPatch`
+      // is in scope — the patch path is passed STRUCTURALLY to the prompt
+      // (the "where possible" in the decision), never re-parsed from reason;
+      // (c) a tree-creation failure does NOT dispatch: the fallback's ONLY
+      // permitted working tree would not exist (a cwd-less / repoRoot-cwd
+      // dispatch is exactly the #841 defect class — the prompt forbids both
+      // repoRoot and the workstream worktrees, and the strict audit would
+      // halt a child that worked there anyway). A failure to create the
+      // integrate worktree is a driver environment failure → a cap, not an
+      // LLM judgment call.
+      const worktreeRes = await ensureIntegrateWorktreeOrHalt(ctx, state, branchName, execFn);
+      if ("halted" in worktreeRes) {
+        return {
+          ok: false,
+          reason: withPatchNote(res.reason, res.conflictPatch),
+          terminal: true,
+          haltedAfter: worktreeRes.halted,
+        };
+      }
+      // #861 — the structured conflict-patch value threads to the caller
+      // (runCommitPrLocked) instead of being re-parsed from this reason's
+      // marker text.
       return {
         ok: false,
-        reason: res.conflictPatch
-          ? `${res.reason} (patch preserved at ${res.conflictPatch})`
-          : res.reason,
-        // A tree that does not build is a verdict, not the environment
-        // variance the LLM fallback exists to absorb: handing it on would
-        // make the gate one that cannot fail — it blocks the mechanized path
-        // and the ops dispatch commits and pushes the same broken tree
-        // anyway — #328's shape, in a new place.
-        terminal: res.failure === "verify",
+        reason: withPatchNote(res.reason, res.conflictPatch),
         fallbackCause,
+        conflictPatch: res.conflictPatch,
       };
     }
     if (res.empty) {
@@ -328,104 +355,4 @@ export async function mechanizedCommitPr(
       reason: `${(e.stderr ?? e.message ?? "unknown error").toString().trim().slice(0, 300)}`,
     };
   }
-}
-
-/**
- * Step 6 — Commit + PR. ops commits the diff, pushes, opens a PR with
- * `Fixes #N` in the body. PR4 captures the `pr: <N>` line ops's prompt
- * asks for into pipelineState.prNumber so the handoff step (7g) targets
- * the right PR for `gh pr comment` instead of falling back to issue.
- */
-export async function runCommitPr(
-  ctx: DriverContext,
-  state: WorkState,
-  now: number,
-): Promise<WorkState> {
-  // PR19 — one contiguous critical section per group: includes the LLM ops
-  // fallback (it mutates repoRoot exactly as the mechanized path does) and
-  // BOTH verify gates, which read repoRoot HEAD via `git rev-list` /
-  // `git diff --name-only` and would otherwise validate a sibling group's
-  // commits as this group's evidence.
-  return withIntegrationLock(ctx.repoRoot, () => runCommitPrLocked(ctx, state, now));
-}
-
-async function runCommitPrLocked(
-  ctx: DriverContext,
-  state: WorkState,
-  now: number,
-): Promise<WorkState> {
-  let next: WorkState | undefined;
-  let preDispatch = state;
-  const execFn = ctx.verifyExecFn ?? execp;
-  // PR19 — mechanized commit-pr. The LLM ops dispatch remains as fallback
-  // for judgmental recovery (apply conflict, push rejection).
-  {
-    const mech = await mechanizedCommitPr(ctx, state, now);
-    if (mech.ok) {
-      next = mech.state;
-    } else if (mech.terminal) {
-      // The consolidated tree does not build: the fallback exists to absorb
-      // environment variance, not to overrule a verdict — letting ops commit
-      // and push the same tree would make this a gate that cannot fail, and
-      // the six lenses would review something that was never compiled.
-      trace(`work-driver: commit-pr halted, consolidated tree failed verify: ${mech.reason}`);
-      return appendEvent(
-        state,
-        {
-          kind: "plumb-report",
-          at: Date.now(),
-          step: "commit-pr",
-          role: "driver",
-          body: mech.reason,
-        },
-        {
-          kind: "cap-hit",
-          at: Date.now(),
-          cap: "integration-verify-failed",
-          reviewRound: state.pipelineState.reviewRound,
-          nextStep: "handoff",
-        },
-      );
-    } else {
-      trace(`work-driver: mechanized commit-pr fell back to ops dispatch: ${mech.reason}`);
-      preDispatch = appendEvent(state, {
-        kind: "plumb-report",
-        at: Date.now(),
-        step: "commit-pr",
-        role: "driver",
-        body: `Mechanized commit-pr fell back to the ops dispatch: ${mech.reason}. Note: the repo root may contain partially staged consolidation from the mechanized attempt — verify with \`git status\` before re-applying patches.`,
-        // #539 — the writer's own structured observation; the renderer
-        // prefers this over re-deriving the cause from the recorded state.
-        fallbackCause: mech.fallbackCause,
-      });
-    }
-  }
-  if (next === undefined) {
-    // #818 — the ops fallback receives the DERIVED conventional subject (not
-    // the raw issue title), so the PR the ops child opens is conventional
-    // even when the mechanized path fell back. The prompt instructs it to
-    // use the subject verbatim as the PR title.
-    const issueTitle = await deriveCommitPrTitle(preDispatch, ctx, execFn);
-    next = await runSingleDispatch(ctx, preDispatch, "commit-pr", "ops", "ops:commit-pr", now, () =>
-      // PR14 — thread worktrees + workstreams + branchName into the prompt
-      // so ops knows to consolidate every worktree's uncommitted changes
-      // (not just whichever one its dispatch landed in). Pre-PR14 the
-      // prompt was single-tree shaped; multi-workstream cycles silently
-      // committed only one worktree's slice (v0.12.13 /work 577 incident).
-      inlineCommitPrPrompt(
-        activeIssuesOf(preDispatch),
-        preDispatch.pipelineState.droppedIssues ?? [],
-        preDispatch.pipelineState.worktrees ?? {},
-        preDispatch.pipelineState.workstreams ?? {},
-        preDispatch.pipelineState.branchName ?? "(branch not captured — set in Step 3)",
-        preDispatch.pipelineState.normalisedSpec,
-        preDispatch.eventLog,
-        scratchDir(ctx.repoRoot, ctx.issue),
-        issueTitle,
-      ),
-    );
-  }
-  const last = next.eventLog[next.eventLog.length - 1];
-  if (last?.kind !== "dispatch-completed") return next;
-  return runCommitPrPostDispatchGates(ctx, execFn, next);
 }

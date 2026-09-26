@@ -17,6 +17,7 @@
  *     pre-remove is skipped for an in-cycle path.
  */
 
+import fs from "node:fs/promises";
 import { trace } from "./trace.ts";
 import {
   DirtyWorktreeError,
@@ -33,6 +34,19 @@ export interface CreateGuardOpts {
   repoRoot: string;
   name: string;
   fromRef: string;
+  /**
+   * #861 — the integrate-worktree's own contract: the caller
+   * (ensureIntegrateWorktree) has ALREADY force-removed any driver-owned
+   * stale tree at this path (recording its HEAD first) or verified the path
+   * absent, and is about to run `git worktree add` on it. Under this option
+   * the target-path #475 inspection is skipped ONLY when the target is
+   * verified ABSENT at guard time (fs.access) — a live worktree appearing
+   * after the caller's pre-removal (a race, or the pre-removal silently
+   * failing) is still inspected and a dirty one still throws
+   * `DirtyWorktreeError`. No other caller passes this: `worktreeCreate`'
+   * normal workstream path runs the target inspection unconditionally.
+   */
+  callerVerifiedTargetAbsent?: boolean;
 }
 
 /**
@@ -86,12 +100,24 @@ export async function runCreateGuards(
   }
   // The TARGET path: the #475 dirty guard runs UNCONDITIONALLY (in-cycle
   // membership never waives it — a dirty pre-existing worktree here still
-  // holds work a force-remove would destroy), and only the pre-remove is
-  // skipped for an in-cycle path (nothing to remove; a clean in-cycle path
-  // means `git worktree add`'s own "already exists" error is the signal).
-  const leftover = await inspectWorktreeForLoss(execFn, opts.repoRoot, abs, opts.fromRef);
-  if (leftover) {
-    throw new DirtyWorktreeError(leftover);
+  // holds work a force-remove would destroy), and the pre-remove is skipped
+  // for an in-cycle path (nothing to remove; a clean in-cycle path means
+  // `git worktree add`'s own "already exists" error is the signal).
+  // #861 — the in-cycle set doubles as the TARGET-path exemption: the
+  // caller (ensureIntegrateWorktree) has already force-removed any
+  // driver-owned stale tree at this path (recording its HEAD first) or
+  // verified the path absent, so a path the caller itself created in this
+  // cycle is re-inspected as ABSENT — the guard's `git rev-parse` in a
+  // nonexistent directory fails and returns no finding. The SIBLING scan
+  // above still runs: a foreign same-issue leftover is still a hazard.
+  const inCycleSet = new Set((inCycleWorktrees ?? []).map((p) => resolvePath(p)));
+  const targetAbsent =
+    opts.callerVerifiedTargetAbsent === true && (await pathExists(abs)) === false;
+  if (!targetAbsent) {
+    const leftover = await inspectWorktreeForLoss(execFn, opts.repoRoot, abs, opts.fromRef);
+    if (leftover) {
+      throw new DirtyWorktreeError(leftover);
+    }
   }
   // #753 — the in-cycle set: this worktree is part of the current cycle (the
   // branch step or an earlier dependent created it, so it is registered in
@@ -99,7 +125,6 @@ export async function runCreateGuards(
   // resolved paths (macOS /private/var/…) while `abs` is the logical form
   // (/var/…), so both sides go through the same realpath resolution as the
   // sibling scan.
-  const inCycleSet = new Set((inCycleWorktrees ?? []).map((p) => resolvePath(p)));
   if (!inCycleSet.has(resolvePath(abs))) {
     await worktreeRemove(execFn, opts.repoRoot, opts.name, true).catch(() => undefined);
   }
@@ -108,3 +133,12 @@ export async function runCreateGuards(
 
 /** Re-export of the finding type for callers of the guard. */
 export type { DirtyWorktreeFinding };
+
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}

@@ -46,7 +46,8 @@ export type RecoverySection =
   | "review-incomplete"
   | "worktree-work-consolidated"
   | "worktree-work-fallback"
-  | "develop-incomplete-deliverables";
+  | "develop-incomplete-deliverables"
+  | "integration-worktree-violation";
 
 export interface RecoveryStep {
   /** The section this step belongs to (one of `RecoverySection`). */
