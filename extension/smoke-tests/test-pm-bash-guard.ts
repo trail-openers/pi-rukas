@@ -55,6 +55,22 @@ for (const cmd of [
   "git log --oneline -10",
   "git diff HEAD",
   "git ls-files",
+  // Read-only git -C forms (operator decision B11, issue #891): the matcher
+  // has no wildcard matching — `*` is a literal char in the pattern — so the
+  // pattern `git -C * log*` matches the literal string `git -C * log …`, and
+  // a REAL path never matches (the command would start `git -C /…`). Pinned
+  // with a literal path here and a `*`-path command in the parity section.
+  "git -C * log --oneline",
+  "git -C * log --oneline -10",
+  "git -C * status",
+  "git -C * status --porcelain",
+  "git -C * diff HEAD",
+  "git -C * show 4b8",
+  "git -C * branch --show-current",
+  "git -C * branch --list",
+  "git -C * rev-parse HEAD",
+  "git -C * worktree list",
+  "git -C * stash list",
   // oo-wrapped reads (the wrapper is part of the pattern — matchBashSubcommand
   // matches on the raw command, so the allowlist carries BOTH shapes).
   "oo git log --oneline",
@@ -94,6 +110,17 @@ for (const cmd of [
   "gh pr create --title x",
   "gh pr merge 123",
   "gh pr close 123",
+  // Mutations in -C form are denied by ABSENCE of an allowlist row (the
+  // matcher is a raw anchored prefix — there is no negative pattern), so the
+  // catch-all `*": "ask` blocks them.
+  "git -C /x checkout y",
+  "git -C /x reset --hard",
+  "git -C /x stash pop",
+  "git -C /x commit -m x",
+  "git -C /x push",
+  // The exact-match row is deliberately NOT a loose prefix: `git -C * branch
+  // --show-current` (no trailing `*`) must not also grant `branch -D`.
+  "git -C /x branch -D y",
   // Creative bypasses — interpreters, in-place editors, arbitrary HTTP, shells.
   "python -c 'print(1)'",
   "node -e 'console.log(1)'",
@@ -122,6 +149,8 @@ for (const cmd of [
   "git status > out.txt",
   "git status `id`",
   "git status $(id)",
+  // Chained -C forms inherit the chain denial (null, not "allow").
+  "git -C /p status && git push",
   // Not on the list at all.
   "rm -rf /",
   "ls",
@@ -130,7 +159,14 @@ for (const cmd of [
 }
 
 // injection vectors: null specifically (the spec's hard-denial surface)
-for (const cmd of ["git status && git push", "git log | wc -l", "git status; rm -rf /"]) {
+for (const cmd of [
+  "git status && git push",
+  "git log | wc -l",
+  "git status; rm -rf /",
+  // A chained -C read must also hard-deny — the new rows cannot widen the
+  // chain rule (BASH_COMMAND_INJECTION_CHARS → null).
+  "git -C /p status && git push",
+]) {
   assert(
     pmVerdict(cmd) === null,
     `injection vector → matchBashSubcommand null (hard-deny surface) — ${cmd}`,
@@ -255,6 +291,27 @@ else process.env.PI_ENSEMBLE_SANDBOX_MODE = prevSandbox;
     bash["export PROJECT_ID=*"] === undefined,
     "parity: the dangerous `export PROJECT_ID=*` allowlist row is removed",
   );
+  // Issue #891 (B11): the read-only `git -C` grants pin the new rows, and the
+  // branch row is the one exact-match (no trailing `*`) — a loose prefix would
+  // also grant `branch -D`.
+  const gitCRows = [
+    "git -C * log*",
+    "git -C * status*",
+    "git -C * diff*",
+    "git -C * show*",
+    "git -C * branch --show-current",
+    "git -C * branch --list*",
+    "git -C * rev-parse*",
+    "git -C * worktree list*",
+    "git -C * stash list*",
+  ];
+  for (const p of gitCRows) {
+    assert(bash[p] === "allow", `parity: pattern present — ${p}`);
+  }
+  assert(
+    bash["git -C * branch --show-current*"] === undefined,
+    "parity: the branch --show-current row is exact-match (no trailing *)",
+  );
   // Every allowlisted pattern must actually resolve to allow for a
   // representative command through the guard's own matcher.
   const samples: Array<[string, string]> = [
@@ -264,6 +321,8 @@ else process.env.PI_ENSEMBLE_SANDBOX_MODE = prevSandbox;
     ["vipune search *", "vipune search 'x'"],
     ["which*", "which bun"],
     ["jq*", "jq .a b.json"],
+    ["git -C * log*", "git -C * log --oneline"],
+    ["git -C * branch --show-current", "git -C * branch --show-current"],
   ];
   for (const [pattern, cmd] of samples) {
     assert(bash[pattern] === "allow", `parity: pattern present — ${pattern}`);
