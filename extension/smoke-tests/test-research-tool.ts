@@ -83,7 +83,7 @@ interface SeenDispatch {
   extraArgs?: string[];
 }
 const seen: SeenDispatch[] = [];
-let claimMode: "normal" | "empty" | "gaps-only" = "normal";
+let claimMode: "normal" | "empty" | "schema-invalid" | "gaps-only" = "normal";
 
 function claimCall(kind: string, text: string, source: string, sourceKind: string) {
   return {
@@ -101,15 +101,17 @@ setResearchDispatch(((
   const toolUses =
     claimMode === "empty"
       ? []
-      : claimMode === "gaps-only"
-        ? [claimCall("gap", "could not answer", "none", "none")]
-        : [
-            claimCall("finding", "the scoring is RRF", "https://a/live", "url"),
-            claimCall("finding", "seam exists", "src/x.ts#seamFn", "code"),
-            claimCall("contradiction", "A says 1, B says 2", "https://a/bot", "url"),
-            { name: "report_research_claim", arguments: { kind: "finding", text: "" } }, // invalid → dropped
-            { name: "other_tool", arguments: {} }, // foreign → ignored
-          ];
+      : claimMode === "schema-invalid"
+        ? [{ name: "report_research_claim", arguments: { kind: "finding", text: "" } }]
+        : claimMode === "gaps-only"
+          ? [claimCall("gap", "could not answer", "none", "none")]
+          : [
+              claimCall("finding", "the scoring is RRF", "https://a/live", "url"),
+              claimCall("finding", "seam exists", "src/x.ts#seamFn", "code"),
+              claimCall("contradiction", "A says 1, B says 2", "https://a/bot", "url"),
+              { name: "report_research_claim", arguments: { kind: "finding", text: "" } }, // invalid → dropped
+              { name: "other_tool", arguments: {} }, // foreign → ignored
+            ];
   return Promise.resolve({
     role: "explore",
     ok: true,
@@ -231,16 +233,20 @@ async function freshRepo(): Promise<string> {
 }
 
 {
-  // All angles empty → halt, no artifact file.
+  // #893 — all angles with 0 raw report_research_claim calls → reporter-silent.
   const tmp = await freshRepo();
   claimMode = "empty";
   const r = await runResearchPipeline(FAKE_PI, { topic: "t", tier: "quick" }, tmp, deps);
   claimMode = "normal";
   assert(
-    r.halt?.reason === "no-structured-claims",
-    "all-angles-empty halts with the discriminated reason",
+    r.halt?.reason === "reporter-silent",
+    "all-angles-silent (0 raw calls) halts with reporter-silent",
   );
-  assert(!r.artifactPath, "no artifact on the infra halt (nothing to record)");
+  assert(
+    r.halt?.detail.includes("reporting channel appears broken"),
+    "reporter-silent detail names the broken channel",
+  );
+  assert(!r.artifactPath, "no artifact on the reporter-silent halt");
   assert(
     await fs
       .access(path.join(tmp, "outputs"))
@@ -248,6 +254,20 @@ async function freshRepo(): Promise<string> {
       .catch(() => true),
     "outputs/ not created on the halt",
   );
+  await fs.rm(tmp, { recursive: true, force: true });
+}
+
+{
+  // #893 — schema-invalid calls (raw > 0, valid = 0) → no-structured-claims (unchanged).
+  const tmp = await freshRepo();
+  claimMode = "schema-invalid";
+  const r = await runResearchPipeline(FAKE_PI, { topic: "t", tier: "quick" }, tmp, deps);
+  claimMode = "normal";
+  assert(
+    r.halt?.reason === "no-structured-claims",
+    "schema-invalid calls (raw>0, valid=0) → no-structured-claims",
+  );
+  assert(r.halt?.reason !== "reporter-silent", "schema-invalid is distinct from reporter-silent");
   await fs.rm(tmp, { recursive: true, force: true });
 }
 

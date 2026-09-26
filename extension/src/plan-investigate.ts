@@ -27,6 +27,7 @@ import { extractPlanItems, renderPriorContext } from "./plan-draft.ts";
 import { forbiddenPhrasesBlock } from "./plan-prior-context.ts";
 import type { PlanType } from "./plan-types.ts";
 import { normalisePhrase } from "./plan-validate.ts";
+import { reporterPathFromArgs, statReporterPath } from "./reporter-preflight.ts";
 import { trace } from "./trace.ts";
 
 /** The dispatch seam (same shape as plan-driver's PlanDispatchFn). */
@@ -229,9 +230,52 @@ export async function runInvestigation(
     pinnedSubIssues?: number;
     /** #677: the operator's verbatim forbidden phrases (NEVER CLAIM block). */
     forbiddenPhrases?: string[];
+    /**
+     * #893 — injectable stat of the plan-reporter extension path. A rejecting
+     * stat makes the phase fail before ANY dispatch (duplicate-risk included)
+     * with the named "reporter extension missing" error. Production passes
+     * none (the real fs.stat is used); tests pass a stub.
+     */
+    statFn?: (p: string) => Promise<unknown>;
   },
 ): Promise<InvestigationResult> {
   const { type, descriptor, repoRoot, inv, priorContext, codeIdentifiers } = args;
+  // #893 — pre-spawn stat of the plan-reporter extension. The Phase-2 angle
+  // children carry PLAN_EXTRA_ARGS; the duplicate-risk child carries only
+  // --no-skills (no reporter). The check is keyed off the actual reporter
+  // path, so marker-line children are unaffected. Failing here is cheaper
+  // than spending a dispatch on a child that can never report.
+  const reporterPath = reporterPathFromArgs(PLAN_EXTRA_ARGS);
+  if (reporterPath) {
+    try {
+      await statReporterPath(reporterPath, args.statFn);
+    } catch (err) {
+      // #893 — a missing reporter path is a STRUCTURED all-angles-failed
+      // result, not an uncaught throw: every angle is marked failed with
+      // the named error (so the driver's existing all-angles-failed halt
+      // carries it in failedAngles), and nothing is dispatched — the
+      // duplicate-risk child included, since it shares the fan-out's fate
+      // here (no reporter = a broken install, and no partial plan is filed
+      // in that state).
+      const msg = (err as Error).message;
+      trace(`plan-investigate: reporter preflight failed — no dispatch (${msg})`);
+      const failed = anglePromptsFor(
+        type,
+        descriptor,
+        priorContext,
+        codeIdentifiers,
+        args.pinnedSubIssues,
+        args.forbiddenPhrases,
+      ).map((a) => ({
+        name: a.name,
+        ok: false,
+        text: "",
+        toolUses: [] as PlanItemKind[],
+        failure: msg,
+      }));
+      return { findings: failed, neverClaimDisclosure: [] };
+    }
+  }
   const angles = anglePromptsFor(
     type,
     descriptor,
@@ -272,6 +316,14 @@ export async function runInvestigation(
         },
       ).then((r) => {
         const toolUses = r.toolUses; // #633: DispatchResult declares toolUses: unknown[] (non-optional)
+        // #893 — raw count of report_plan_item toolUses (schema-valid or not),
+        // distinct from the post-extraction count. Zero raw calls means the
+        // child never called the reporter at all (possibly never loaded);
+        // >0 with zero valid items means the calls were schema-invalid.
+        const rawCalls = toolUses.filter((tu) => {
+          if (!tu || typeof tu !== "object") return false;
+          return (tu as { name?: string }).name === "report_plan_item";
+        }).length;
         // Structured-first (D8, fail-closed): an angle is "ok" only when the
         // dispatch succeeded AND it produced at least one structured item.
         const ok = r.ok && !r.errorStop && toolUses.length > 0;
@@ -285,7 +337,9 @@ export async function runInvestigation(
             ? `dispatch failed or timed out (exit ${r.exitCode ?? "?"}${r.exitCode === 143 ? " — killed at the dispatch bound" : ""})`
             : r.errorStop
               ? "provider error mid-stream"
-              : "returned no structured items (prose only)";
+              : rawCalls === 0
+                ? "0 report_plan_item calls — reporter may not have loaded (check pi version / --extension)"
+                : "returned no structured items (prose only)";
         return {
           name: a.name,
           ok,

@@ -149,7 +149,10 @@ async function freshRepo(): Promise<string> {
     `a second failure does not loop (got ${webDispatches.length} dispatches)`,
   );
   assert(r.angles[0]?.ok === false, "angle stays failed after wigolo also fails");
-  assert(r.halt?.reason === "no-structured-claims", "all-angles-failed → the infra halt");
+  // #893 — the stub returns toolUses: [] (0 raw report_research_claim calls)
+  // for the failed angle, so the all-silent distinction fires: the halt
+  // reason is reporter-silent, not no-structured-claims.
+  assert(r.halt?.reason === "reporter-silent", "all-angles-silent (0 raw calls) → reporter-silent halt");
   wigoloFails = false;
   await fs.rm(tmp, { recursive: true, force: true });
 }
