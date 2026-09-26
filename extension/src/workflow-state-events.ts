@@ -221,7 +221,7 @@ export type WorkEvent =
        *    lens-review). Template-literal shape so explainCap() can
        *    enumerate without losing the originating step name.
        */
-      cap: WorkCapLiteral | "fence-violation:develop"; // #849 — fence park cap (see work-develop-fence-recovery.ts)
+      cap: WorkCapLiteral;
       /** #543 — which role's child was cap-killed (loop/token-budget caps). */
       role?: RoleName;
       reviewRound: number;

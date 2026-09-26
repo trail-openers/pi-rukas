@@ -364,17 +364,7 @@ async function runDevelopTopological(
         },
       };
       stateRef.current = next;
-      next = await runFenceRecoveryFlow(
-        ctx,
-        next,
-        stateRef,
-        ids,
-        verdicts,
-        execFn,
-        dispatch,
-        activeIssues,
-        scratchAbs,
-      );
+      next = await runFenceRecoveryFlow(ctx, next, stateRef, ids, verdicts, execFn, dispatch);
       return endStep(next);
     }
     if (gate.ok) {

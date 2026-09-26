@@ -237,6 +237,17 @@ export function explainCap(
       return explainConsolidation(cap, state);
     case "lens-fix-not-integrated":
       return explainLens(cap, state);
+    case "fence-violation:develop": {
+      // #849 — the develop fence's terminal park. A recovery round was
+      // attempted (the violator's commit discarded, the violator re-dispatched
+      // once); a second violation, a violator↔owner cycle, or a git failure
+      // discarding the violator's commit parked the cycle. Both attempts ride
+      // in the cap's evidence (the first via the discarded SHA, the second
+      // via the re-run's fence record) — inspect them before re-planning.
+      const hit = lastCapHit(state, "fence-violation:develop");
+      const ev = hit?.evidence ?? "(no detail recorded)";
+      return `the develop scope fence's recovery could not converge — a recovery round was attempted, and the cycle parked on what the evidence shows: ${ev}. Re-dispatching the violator again will not fix it: restore the fence boundary (split the plan so the violated file is declared by exactly one workstream) and re-run`;
+    }
     case "integration-worktree-violation": {
       // #861 — the commit-pr ops-fallback audit: the integration branch is
       // held by a worktree that is NOT the driver-owned integrate worktree

@@ -22,20 +22,25 @@
  *     the `fence-violation:develop` cap; the evidence names BOTH attempts.
  *   - a violator↔owner cycle (V's owner also depends on V, or V declared a
  *     file the owner violated) parks with the same cap and NO re-dispatch.
- *   - at most one recovery round per cycle (the caller runs the fence gate
- *     at most twice; only the first pass may recover).
+ *   - a git failure discarding a violator's commit parks with the same cap
+ *     and NO re-dispatch (a violator that was not discarded cannot be
+ *     re-dispatched — re-running it on top of its own violating commit is a
+ *     re-violation by construction, with no evidence anything changed).
+ *   - at most one recovery round per cycle (the flow runs the fence gate at
+ *     most twice; only the first pass may recover).
  *
  * The discriminator is the record KIND from the gate's `fenceViolations` —
  * `sibling-declared` only. `issue-fenced` violations still block exactly as
  * today (no recovery), and `undeclared` records (warn-only) never trigger
  * recovery.
  */
-import { trace } from "./trace.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
+import type { WorkCapLiteral } from "./workflow-state-events-caps.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
 
-/** The cap the fence parks with after a recovery round (or a cycle). */
-export const FENCE_VIOLATION_CAP = "fence-violation:develop";
+// #849 — typed from the `cap` literal union (workflow-state-events-caps.ts) so
+// the cap name has one source: a rename there breaks here, not silently.
+export const FENCE_VIOLATION_CAP = "fence-violation:develop" as const satisfies WorkCapLiteral;
 
 /**
  * #849 — the workstream ids with a BLOCKING sibling-declared fence record
@@ -191,6 +196,3 @@ export function fenceViolationCapHit(
     evidence,
   };
 }
-
-// Trace re-export so the recovery module logs through the same seam.
-export { trace };

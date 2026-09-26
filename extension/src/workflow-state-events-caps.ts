@@ -139,6 +139,13 @@ export type WorkCapLiteral =
   // Own literal so explainCap can give it a tailored sentence and the
   // handoff does NOT terminalize it as `aborted`.
   | "deferred-creation:develop"
+  // #849 — the develop fence's terminal cap after a recovery round (second
+  // violation, a violator↔owner cycle before any re-dispatch, or a git
+  // failure discarding a violator's commit). A deliberate park terminalized
+  // as a handoff; the evidence names both attempts (the first via the
+  // fence-recovery-started event's discarded SHA, the second via the
+  // re-run's fence record) or the failing git command.
+  | "fence-violation:develop"
   // #746 task-b — branch-step early dirty-root block: a stray untracked/
   // modified file at repoRoot BEFORE any develop dispatch. Deliberate park.
   | "repo-root-residue";

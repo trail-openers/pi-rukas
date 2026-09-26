@@ -1,3 +1,4 @@
+import { trace } from "./trace.ts";
 import {
   fenceRecoveryCycles,
   fenceRecoveryPrompt,
@@ -27,10 +28,10 @@ import {
  *      prompt (names the violated files, tells the developer to use the
  *      owners' versions rather than re-implement them).
  *
- * The caller (runDevelopTopological) re-runs the fence + verify gates on the
- * recovered tree after this returns; a second violation parks with the
- * fence cap (the evidence names BOTH attempts), a clean re-run proceeds
- * through the converge gate.
+ * `runFenceRecoveryFlow` (below) then re-runs the fence + verify gates on
+ * the recovered tree itself: a second violation parks with the fence cap
+ * (the evidence names BOTH attempts), a clean re-run proceeds through the
+ * converge gate.
  */
 import { buildCompletionEvent } from "./work-driver-completion-event.ts";
 import type { DriverContext } from "./work-driver-context.ts";
@@ -39,6 +40,13 @@ import { applySafetyNet, hasAnyWorktreeEvidence } from "./work-driver-safety-net
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
+import { gitErrorDetail } from "./worktree.ts";
+import type { ExecFn } from "./worktree.ts";
+
+// #849 — the prefix of the flip's fence reason (work-develop-fence-verdicts.ts
+// builds `fence violation: <files>` in applyFenceVerdicts). The verdict restore
+// keys on it, so the prefix lives next to its only reader here.
+const FENCE_VIOLATION_REASON_PREFIX = "fence violation";
 
 /** #849 — the recovery outcome (see the module header for the shapes). */
 export type FenceRecoveryOutcome =
@@ -76,11 +84,7 @@ export async function recoverFenceViolations(
   ids: string[],
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
   dispatch: NonNullable<DriverContext["dispatchFn"]>,
-  activeIssues: number[],
-  scratchAbs: string,
 ): Promise<FenceRecoveryOutcome> {
-  void activeIssues;
-  void scratchAbs;
   const wsIn = stateIn.pipelineState.workstreams ?? {};
   // #849 — the gate's fence records live on the gate's result, not on
   // `pipelineState.verifyEvidence` (which the develop step only writes on a
@@ -170,13 +174,26 @@ export async function recoverFenceViolations(
     // #849 — discard the violator's commit: reset its worktree to the owner's
     // post-commit SHA. The object stays reachable in the store; the SHA is
     // recorded on the event (the discard cannot destroy evidence).
+    // #849 round 2 — a git failure here is NOT "leave as-is": re-dispatching
+    // a violator whose commit was not discarded would re-run it on top of
+    // its own violating commit (a re-violation by construction) with no
+    // evidence that anything changed. If ANY violator cannot be discarded,
+    // do not re-dispatch anyone: park immediately, naming the violator,
+    // the failing command and the git error.
+    const resetCmd = `git reset --hard ${JSON.stringify(ownerSha)}`;
     try {
-      await execFn(`git reset --hard ${JSON.stringify(ownerSha)}`, {
-        cwd: violatorWt,
-        maxBuffer: 64 * 1024,
-      });
-    } catch {
-      continue; // reset failed — cannot recover; leave as-is
+      await execFn(resetCmd, { cwd: violatorWt, maxBuffer: 64 * 1024 });
+    } catch (err) {
+      const detail = gitErrorDetail(err);
+      trace(`work-develop: fence recovery: ${resetCmd} failed in ${violatorWt} — ${detail}`);
+      stateRef.current = appendEvent(
+        stateRef.current,
+        fenceViolationCapHit(
+          stateRef.current.pipelineState.reviewRound,
+          `fence recovery aborted — ${resetCmd} failed for violator ${violator} (worktree ${violatorWt}): ${detail} (first attempt: workstream(s) ${violators.join(", ")} could not be discarded, so no re-dispatch was attempted)`,
+        ),
+      );
+      return { parked: true };
     }
     if (violatorSha) discardedShas.push(violatorSha);
     // #849 — record the discard on a fence-recovery-started event.
@@ -289,8 +306,6 @@ export async function runFenceRecoveryFlow(
   verdicts: Array<{ id: string; ok: boolean; reason?: string }>,
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
   dispatch: NonNullable<DriverContext["dispatchFn"]>,
-  activeIssues: number[],
-  scratchAbs: string,
 ): Promise<WorkState> {
   // #849 — the gate runs on `stateRef.current` (the flip wrote the verdicts
   // there), not the `stateIn` the caller passed in — the flip's replacement
@@ -302,8 +317,6 @@ export async function runFenceRecoveryFlow(
     ids,
     execFn,
     dispatch,
-    activeIssues,
-    scratchAbs,
   );
   if (recovery.parked) {
     return stateRef.current;
@@ -352,12 +365,19 @@ export async function runFenceRecoveryFlow(
     // (`recoveredIds`, captured above) is the source of truth: a clean re-run
     // (the re-dispatch committed only its own file) restores the verdict; a
     // re-violation is detected by the re-run's own fence records (the
-    // `fenceBlocked` branch below). This code is reached only when recovery
-    // actually happened (runFenceRecoveryFlow), so the restore is safe here.
+    // `blockingSecond` branch below). The reason prefix is a guard, not the
+    // key — the key is the structural `recoveredIds` (a violator left at
+    // ok:false by any first-pass flip is restorable when the re-run is
+    // clean). This code is reached only when recovery actually happened
+    // (runFenceRecoveryFlow), so the restore is safe here.
     for (let i = 0; i < verdicts.length; i++) {
       const v = verdicts[i];
       if (!v) continue;
-      if (recoveredIds.has(v.id) && v.ok === false && v.reason?.startsWith("fence violation")) {
+      if (
+        recoveredIds.has(v.id) &&
+        v.ok === false &&
+        (v.reason?.startsWith(FENCE_VIOLATION_REASON_PREFIX) ?? false)
+      ) {
         verdicts[i] = { id: v.id, ok: true };
       }
     }
@@ -388,22 +408,18 @@ export async function runFenceRecoveryFlow(
         }
       }
     }
-    if (gate2.ok) {
-      // #849 — the recovery passed the re-run: proceed through the converge
-      // gate (the fence re-violation / cycle / genuine verify failure parks
-      // below).
-      next = await runConvergeGateHandler(ctx, next, dispatch);
-      return next;
-    }
-    // #849 — the re-run failed. Any fence-blocking record (sibling-declared
-    // or issue-fenced) parks with the fence cap (the evidence names BOTH
-    // attempts — the first via the discarded SHA, the second via the
-    // re-run's record); a non-fence failure (genuine verify failure) falls
-    // through to the verify-failed cap.
-    const fenceBlocked = (gate2.fenceViolations ?? []).some(
+    // #849 round 2 — the PARK decision keys on the re-run's fence RECORDS,
+    // not on gate2.ok: a re-dispatch that re-violates the fence but passes
+    // the verify command would still yield a blocking sibling-declared or
+    // issue-fenced record, and the verdict restore above would flip the
+    // violator back to ok. Parking here (even when the re-run's other gates
+    // passed) keeps the violator at ok:false and the re-violation out of the
+    // converge/commit-pr path. Only non-blocking (undeclared, warn-only)
+    // records never park.
+    const blockingSecond = (gate2.fenceViolations ?? []).filter(
       (f) => f.kind === "sibling-declared" || f.kind === "issue-fenced",
     );
-    if (fenceBlocked) {
+    if (blockingSecond.length > 0) {
       const secondProse = (gate2.fenceViolations ?? [])
         .filter(
           (v): v is FenceViolationRecord & { kind: "sibling-declared" } =>
@@ -434,6 +450,16 @@ export async function runFenceRecoveryFlow(
       );
       return next;
     }
+    if (gate2.ok) {
+      // #849 round 2 — the re-run passed every gate and the re-run's fence
+      // records carry no blocking entry: proceed through the converge gate
+      // (the second-violation / git-failure / cycle parks are above or in
+      // recoverFenceViolations; the genuine verify failure parks below).
+      next = await runConvergeGateHandler(ctx, next, dispatch);
+      return next;
+    }
+    // #849 — the re-run failed without a blocking fence record: a genuine
+    // verify failure falls through to the verify-failed cap.
     const failureEvidence =
       gate2.failures.length > 0 ? gate2.failures.join(" | ") : "(no failure string)";
     next = {

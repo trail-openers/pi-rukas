@@ -270,7 +270,6 @@ function discardedShaOf(after: WorkState): string | undefined {
 }
 
 // ── case 3: violator↔owner cycle (C dependsOn B; B violates C's file) —
-// ── case 3: violator↔owner cycle (C dependsOn B; B violates C's file) —
 // park with ZERO re-dispatches ────────────────────────────────────────────
 //
 // The integration test for case 3 cannot reach the fence cap through
@@ -358,6 +357,76 @@ function discardedShaOf(after: WorkState): string | undefined {
   assert(
     rec === undefined,
     `#849 case 3: no fence-recovery-started event on a cycle (got: ${rec ? rec.kind : "none"})`,
+  );
+}
+
+// ── case 4: re-violation AND the re-run's verify gate passes — the park
+// decision keys on the re-run's fence RECORDS, not gate2.ok ───────────────
+//
+// B's re-dispatch re-violates a-file.txt (declared by A, NOT in B's injected
+// deps) and commits it. The re-run's fence gate records the fresh
+// sibling-declared hit — its failure string reaches `failures`, but the
+// fixture has no verify command to run, so a re-dispatch that PASSES the
+// re-run's other gates while re-violating must still park (the lens finding:
+// gate2.ok deriving from failures.length === 0 alone would let the
+// re-violation ship through converge/commit-pr). The driver parks with the
+// fence cap, the evidence names BOTH attempts, and B's verdict stays ok:false.
+{
+  const { repo, baseSha } = await fixture("reviolate-ok");
+  const { wt, bSha } = await setup3WS(repo, baseSha);
+  const calls: Call[] = [];
+  // The stub: B's re-dispatch commits its in-scope file AND re-violates
+  // a-file.txt (declared by A — NOT among B's injected deps).
+  const onRecovery = async (cwd: string) => {
+    writeFileSync(path.join(cwd, "b-file.txt"), "b\n");
+    await git(cwd, ["add", "b-file.txt"]);
+    await git(cwd, ["commit", "-q", "-m", "b-scope"]);
+    writeFileSync(path.join(cwd, "a-file.txt"), "B violated again (a's file)\n");
+    await git(cwd, ["add", "a-file.txt"]);
+    await git(cwd, ["commit", "-q", "-m", "b-reviolated"]);
+  };
+  const dispatchFn = recordingDispatch(calls, onRecovery);
+  const ctx = ctxFor(repo, dispatchFn);
+  const workstreams = ws3(["a-file.txt", "c-file.txt"]);
+  const base = initialState(849);
+  base.pipelineState.baseSha = baseSha;
+  base.pipelineState.worktrees = wt;
+  base.pipelineState.workstreamBaseShas = { a: baseSha, b: baseSha, c: baseSha };
+  base.pipelineState.workstreams = workstreams;
+  base.pipelineState.currentStep = "develop";
+  const after = await runDevelopTopological(
+    ctx,
+    base,
+    ["a", "b", "c"],
+    workstreams,
+    [849],
+    dispatchFn,
+    realExec,
+    Date.now(),
+    "job-849-reviolate-ok",
+  );
+  const caps = after.eventLog.filter(
+    (e): e is Extract<import("../src/workflow-state.ts").WorkEvent, { kind: "cap-hit" }> =>
+      e.kind === "cap-hit",
+  );
+  assert(
+    caps.length === 1 && caps[0].cap === "fence-violation:develop",
+    `#849 case 4: a re-violation that passes verify still parks with the fence cap (got: ${caps.map((c) => c.cap)})`,
+  );
+  const ev = caps[0]?.evidence ?? "";
+  assert(
+    ev.includes(bSha) && ev.includes("a-file.txt") && ev.includes("a"),
+    `#849 case 4: the evidence names BOTH attempts (got: ${ev.slice(0, 200)})`,
+  );
+  // B's verdict is NOT restored to ok (the re-violation stands).
+  const conv = [...after.eventLog].reverse().find(
+    (e): e is Extract<WorkEvent, { kind: "branches-converged" }> =>
+      e.kind === "branches-converged" && e.step === "develop",
+  );
+  const bVerdict = conv?.verdicts.find((v) => v.id === "b");
+  assert(
+    bVerdict?.ok === false,
+    `#849 case 4: b's final verdict is NOT ok (the re-violation stands) (got: ${JSON.stringify(conv?.verdicts)})`,
   );
 }
 
