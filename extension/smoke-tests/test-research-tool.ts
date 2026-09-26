@@ -181,7 +181,7 @@ async function freshRepo(): Promise<string> {
     assert(s.role === "explore", `explore role: ${s.label}`);
   }
   assert(
-    r.claims.length === 9,
+    r.claims.length === 12,
     `claims extracted, invalid + foreign dropped (got ${r.claims.length})`,
   );
   assert(r.pinnedCommit === "feedbeef12345", "pinned commit from exec stub");
