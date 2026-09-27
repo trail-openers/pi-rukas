@@ -139,6 +139,10 @@ async function spawnSpecialistInner(
     }
   }
 
+  // #926 — the argv names CHILD_GUARDS_PATH, so verify it BEFORE building the
+  // args: a missing companion must be a named dispatch failure, never a child
+  // without the mode-independent guards.
+  preflightChildGuards();
   const childArgs = buildChildArgs(
     spec.role,
     tmpPromptFile,
@@ -147,10 +151,6 @@ async function spawnSpecialistInner(
     subagentGuardEnabled,
     opts.extraArgs,
   );
-  // #926 — the argv names CHILD_GUARDS_PATH, so verify it before spawning;
-  // a missing companion must be a named dispatch failure, never a child
-  // without the mode-independent guards.
-  preflightChildGuards();
   // No positional prompt — sent over stdin RPC channel below.
   const invocation = getPiInvocation(childArgs);
 

@@ -33,17 +33,23 @@
  */
 
 import { statSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerModeIndependentGuards } from "./subagent-guard-guards.ts";
 import { trace } from "./trace.ts";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 /**
- * The child-guards companion path, resolved relative to this source file
- * (same __dirname seam as FACTS_REPORTER_PATH in facts-reporter.ts). Loaded
- * via `--extension <path>` at spawn time — never auto-discovered from
+ * The child-guards companion path, resolved relative to this source file via
+ * `path.dirname(fileURLToPath(import.meta.url))` (the same seam as
+ * LENS_REPORTER_PATH in lens-review.ts — bare `__dirname` is not defined in
+ * ESM and would only resolve under the jiti CJS shim). Loaded via
+ * `--extension <path>` at spawn time — never auto-discovered from
  * `~/.pi/agent/extensions/`.
  */
-export const CHILD_GUARDS_PATH = `${__dirname}/child-guards.ts`;
+export const CHILD_GUARDS_PATH = path.join(__dirname, "child-guards.ts");
 
 /**
  * The `--extension` flags that load this companion into a child. Always
@@ -100,6 +106,64 @@ export default function registerChildGuards(pi: ExtensionAPI): void {
   // loads into every trust-mode child, and adding the oo-rewrite there would
   // be a behaviour change outside #926's scope. See the call site in
   // permission-subagent-guard.ts.
-  registerModeIndependentGuards(pi);
+  registerModeIndependentGuards(failClosedPi(pi));
   trace("child-guards: registered the mode-independent guards for this child");
+}
+
+/**
+ * A thin ExtensionAPI wrapper that makes the `tool_call` handlers
+ * fail-closed (#926 fix round).
+ *
+ * Exported for testing (test-child-guards-extension.ts drives the wrapper
+ * directly with a throwing handler to verify the catch path).
+ *
+ * Pi's `emitToolCall` (dist/core/extensions/runner.js) `await`s each
+ * `tool_call` handler with NO per-handler try/catch, and the caller in
+ * agent-session.js re-throws into pi-agent-core's agent-loop, where the
+ * tool-call prep catch converts a thrown handler into a generic
+ * `isError` tool result — the command is refused with the raw error text
+ * rather than the guard's named refusal, and the distinction is lost. A
+ * wrapper that catches every handler error and answers `{ block: true,
+ * reason }` instead turns an internal guard fault into the SAME shape a
+ * deliberate refusal produces: the command is blocked, the reason is
+ * named, and no fault ever lets a command through or aborts the child's
+ * turn. Every other ExtensionAPI method delegates to the real pi.
+ */
+export function failClosedPi(pi: ExtensionAPI): ExtensionAPI {
+  // A plain delegating object, NOT a Proxy around pi: the guards bind
+  // `pi.on` at registration (e.g. `const on = pi.on; on("tool_call", …)`),
+  // and a Proxy `get` trap returning a function auto-binds `this` to the
+  // PROXY — so a second `pi.on` call would re-enter the wrapper recursively.
+  // A flat object that forwards every method to the real pi has no such
+  // identity trap: `pi.on` called twice yields the same wrapped function,
+  // and every other method delegates to the real pi by reference.
+  const wrapped: Record<string, unknown> = {};
+  for (const key of Object.keys(pi)) {
+    const value = (pi as unknown as Record<string, unknown>)[key];
+    if (key === "on" && typeof value === "function") {
+      wrapped[key] = (event: string, handler: unknown, ...rest: unknown[]) => {
+        if (event === "tool_call" && typeof handler === "function") {
+          const original = handler as (e: unknown, c: unknown) => unknown;
+          const wrappedHandler = async (e: unknown, c: unknown) => {
+            try {
+              return await original(e, c);
+            } catch (err) {
+              trace(
+                `child-guards: tool_call guard threw — fail-closed refusal: ${(err as Error).message}`,
+              );
+              return {
+                block: true,
+                reason: `pi-rukas guard error — command refused (fail-closed): ${(err as Error).message}`,
+              };
+            }
+          };
+          return (pi.on as (ev: string, h: unknown) => void).call(pi, event, wrappedHandler);
+        }
+        return (value as (h: unknown, ...r: unknown[]) => unknown).apply(pi, [handler, ...rest]);
+      };
+    } else {
+      wrapped[key] = typeof value === "function" ? value.bind(pi) : value;
+    }
+  }
+  return wrapped as unknown as ExtensionAPI;
 }

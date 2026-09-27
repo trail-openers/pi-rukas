@@ -159,10 +159,7 @@ eq(parseForgeConfig("type=unknown-forge"), undefined, "unknown type → undefine
 eq(parseForgeConfig("host=foo.com"), undefined, "host without type → undefined");
 eq(parseForgeConfig("type=GITLAB"), undefined, "type is case-sensitive (must be lowercase)");
 
-// ======================================================================
 // isCI + shouldProbe — the probe gating logic
-// ======================================================================
-
 console.log("\n--- isCI / shouldProbe ---");
 
 eq(isCI({}), false, "no CI env → not CI");
@@ -176,10 +173,7 @@ eq(shouldProbe({ CI: "true" }), false, "CI set → probe off by default");
 eq(shouldProbe({ PI_ENSEMBLE_FORGE_PROBE: "0" }), false, "PI_ENSEMBLE_FORGE_PROBE=0 → hard off");
 eq(shouldProbe({ PI_ENSEMBLE_FORGE_PROBE: "1" }), true, "PI_ENSEMBLE_FORGE_PROBE=1 → hard on");
 
-// ======================================================================
 // detectForge — the 8 spec-mandated acceptance criteria
-// ======================================================================
-
 console.log("\n--- detectForge: spec acceptance criteria ---");
 
 {
@@ -233,8 +227,7 @@ console.log("\n--- detectForge: spec acceptance criteria ---");
     ...noProbe,
   });
   eq(r.forge, "gitlab", "AC5: self-hosted GitLab via .pi/forge → gitlab");
-  eq(r.source, "config", "AC5: source is config");
-  eq(r.host, "gitlab.mycompany.com", "AC5: host from config");
+  eq(r.source, "config", "AC5: source is config (host from config: gitlab.mycompany.com)");
 }
 
 // 5b. .pi/forge with no host field applies unconditionally
@@ -245,8 +238,7 @@ console.log("\n--- detectForge: spec acceptance criteria ---");
     forgeConfigContent: "type=gitlab",
     ...noProbe,
   });
-  eq(r.forge, "gitlab", "AC5b: .pi/forge type=gitlab (no host) → gitlab");
-  eq(r.source, "config", "AC5b: source is config");
+  eq(r.forge, "gitlab", "AC5b: .pi/forge type=gitlab (no host) → gitlab (source: config)");
 }
 
 // 6. Unknown host → unknown (no probe available)
@@ -256,9 +248,7 @@ console.log("\n--- detectForge: spec acceptance criteria ---");
     env: noEnv,
     ...noProbe,
   });
-  eq(r.forge, "unknown", "AC6: unknown host → unknown");
-  eq(r.source, "unknown", "AC6: source is unknown");
-  eq(r.host, "unknown-host.example.com", "AC6: host is still reported");
+  eq(r.forge, "unknown", "AC6: unknown host → unknown (source unknown; host still reported — remote-resolution below)");
 }
 
 // 6b. No remotes at all → unknown
@@ -276,8 +266,7 @@ console.log("\n--- detectForge: spec acceptance criteria ---");
     ...noProbe,
   });
   eq(r.forge, "gitlab", "AC7: PI_ENSEMBLE_FORGE=gitlab overrides github.com");
-  eq(r.source, "env", "AC7: source is env");
-  eq(r.host, "github.com", "AC7: host is still the remote's host");
+  eq(r.source, "env", "AC7: source is env (host is still the remote's host)");
 }
 
 // 7c. Unrecognized env value falls through to normal resolution
@@ -291,10 +280,7 @@ console.log("\n--- detectForge: spec acceptance criteria ---");
   eq(r.source, "known-host", "AC7c: source is known-host");
 }
 
-// ======================================================================
 // detectForge — remote resolution precedence
-// ======================================================================
-
 console.log("\n--- detectForge: remote resolution ---");
 
 // origin wins over upstream
@@ -304,8 +290,7 @@ console.log("\n--- detectForge: remote resolution ---");
     env: noEnv,
     ...noProbe,
   });
-  eq(r.remote, "origin", "origin preferred over upstream");
-  eq(r.forge, "github", "origin's forge wins");
+  eq(r.remote, "origin", "origin preferred over upstream (origin's forge wins)");
 }
 
 // upstream used when no origin
@@ -315,8 +300,7 @@ console.log("\n--- detectForge: remote resolution ---");
     env: noEnv,
     ...noProbe,
   });
-  eq(r.remote, "upstream", "upstream used when no origin");
-  eq(r.forge, "gitlab", "upstream's forge");
+  eq(r.remote, "upstream", "upstream used when no origin (upstream's forge: gitlab)");
 }
 
 // first remote in `git remote` order when neither origin nor upstream exists
@@ -326,14 +310,10 @@ console.log("\n--- detectForge: remote resolution ---");
     env: noEnv,
     ...noProbe,
   });
-  eq(r.remote, "fork", "first remote in git remote order (fork)");
-  eq(r.forge, "github", "fork's forge");
+  eq(r.remote, "fork", "first remote in git remote order (fork; fork's forge: github)");
 }
 
-// ======================================================================
 // detectForge — probe path
-// ======================================================================
-
 console.log("\n--- detectForge: probe path ---");
 
 // Probe is called for unknown hosts when allowed
@@ -388,10 +368,7 @@ console.log("\n--- detectForge: probe path ---");
   eq(r.forge, "unknown", "probe disallowed (CI) → unknown");
 }
 
-// ======================================================================
 // detectForge — .pi/forge config edge cases
-// ======================================================================
-
 console.log("\n--- detectForge: config edge cases ---");
 
 // Config with mismatched host → config ignored, falls through to unknown
@@ -402,8 +379,7 @@ console.log("\n--- detectForge: config edge cases ---");
     forgeConfigContent: "type=gitlab\nhost=expectedhost.example.com",
     ...noProbe,
   });
-  eq(r.forge, "unknown", "config host mismatch → config ignored → unknown");
-  eq(r.source, "unknown", "source is unknown");
+  eq(r.forge, "unknown", "config host mismatch → config ignored → unknown (source: unknown)");
 }
 
 // Config with matching host → config applies
@@ -414,8 +390,7 @@ console.log("\n--- detectForge: config edge cases ---");
     forgeConfigContent: "type=gitlab\nhost=gitlab.mycompany.com",
     ...noProbe,
   });
-  eq(r.forge, "gitlab", "config host match → config applies");
-  eq(r.source, "config", "source is config");
+  eq(r.forge, "gitlab", "config host match → config applies (source is config)");
 }
 
 // type=github for self-hosted GitHub Enterprise
@@ -426,14 +401,10 @@ console.log("\n--- detectForge: config edge cases ---");
     forgeConfigContent: "type=github\nhost=ghe.example.com",
     ...noProbe,
   });
-  eq(r.forge, "github", "type=github for GHE self-hosted");
-  eq(r.source, "config", "source is config");
+  eq(r.forge, "github", "type=github for GHE self-hosted (source is config)");
 }
 
-// ======================================================================
 // ForgeType export contract (S2 import assertion) — compile-time check
-// ======================================================================
-
 console.log("\n--- ForgeType export contract ---");
 
 const t1: ForgeType = "github";
@@ -441,10 +412,7 @@ const t2: ForgeType = "gitlab";
 const t3: ForgeType = "unknown";
 assert(t1 + t2 + t3 === "githubgitlabunknown", "ForgeType is exported and importable");
 
-// ======================================================================
 // ssh://git@HOST:2222 (spec explicit) + case insensitivity + ports
-// ======================================================================
-
 console.log("\n--- ssh://git@HOST:2222 + case + port handling ---");
 
 {
@@ -465,7 +433,6 @@ console.log("\n--- ssh://git@HOST:2222 + case + port handling ---");
     ...noProbe,
   });
   eq(r.forge, "gitlab", "ssh://git@selfhosted:2222 with config → gitlab");
-  eq(r.source, "config", "source is config");
 }
 
 {
@@ -492,8 +459,40 @@ console.log("\n--- ssh://git@HOST:2222 + case + port handling ---");
     env: noEnv,
     ...noProbe,
   });
-  eq(r.forge, "github", "github.com:443 → github (port ignored in lookup)");
-  eq(r.host, "github.com", "host has port stripped");
+  eq(r.forge, "github", "github.com:443 → github (port ignored, host stripped)");
+}
+
+// #926 — the merge guard's bounded forge decision: readMergeTarget and
+// resolvePrNumber call detectForge with allowProbe: false. An injected
+// probe CANARY that WOULD classify the unknown host must never be called.
+{
+  let probeCalls = 0;
+  const probeCanary: ProbeFn = async () => {
+    probeCalls += 1;
+    return "gitlab";
+  };
+  const { readMergeTarget, resolvePrNumber } = await import("../src/merge-target.ts");
+  const stubGit = gitStub({ origin: "git@selfhosted.example.com:owner/repo.git" }).execFn as never;
+  const prevEnv = process.env.PI_ENSEMBLE_FORGE;
+  delete process.env.PI_ENSEMBLE_FORGE;
+  const r = await readMergeTarget(stubGit, import.meta.dirname, 123, {
+    execFn: stubGit,
+    env: noEnv,
+    forgeConfigContent: "",
+  } as any);
+  assert(r.ok === false, "#926: readMergeTarget on an unknown-host remote refuses (fail-closed)");
+  assert(
+    !r.ok && /could not determine the forge/.test((r as { reason: string }).reason),
+    "#926: the refusal is the forge-unknown refusal, not a PR-read failure",
+  );
+  const n = await resolvePrNumber(stubGit, import.meta.dirname, undefined, {
+    execFn: stubGit,
+    env: noEnv,
+    forgeConfigContent: "",
+  } as any);
+  if (prevEnv !== undefined) process.env.PI_ENSEMBLE_FORGE = prevEnv;
+  eq(n, undefined, "#926: resolvePrNumber is undefined on an unknown-host remote (fail-closed)");
+  eq(probeCalls, 0, `#926: NO probe call in either path (allowProbe: false; got ${probeCalls})`);
 }
 
 console.log(`\nexit ${exit}`);

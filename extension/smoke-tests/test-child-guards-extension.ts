@@ -45,10 +45,10 @@
  *      depends on exactly that).
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { CHILD_GUARDS_PATH, childGuardsArgs } from "../src/child-guards.ts";
+import { CHILD_GUARDS_PATH, childGuardsArgs, failClosedPi } from "../src/child-guards.ts";
 import childGuards from "../src/child-guards.ts";
 import { registerMergeGuard } from "../src/merge-guard.ts";
 
@@ -70,6 +70,24 @@ function assert(cond: boolean, msg: string) {
 }
 
 type Handler = (event: unknown, ctx: unknown) => unknown | Promise<unknown>;
+
+/**
+ * Given the index of an opener `{` in `src`, return the index just PAST its
+ * matching `}` (brace counting; spawn.ts has no string literals containing
+ * braces, so no string-awareness is needed).
+ */
+function braceMatchEnd(src: string, openerIdx: number): number {
+  let depth = 0;
+  for (let i = openerIdx; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
 
 interface FakePi {
   on: (name: string, fn: Handler) => void;
@@ -165,6 +183,75 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
 }
 
 // ============================================================
+// 2a. Fail-closed wrapper (#926 fix round): a guard whose tool_call handler
+//     THROWS must never let a command through — Pi's emitToolCall has no
+//     per-handler try/catch, so the companion wraps the guard pi with
+//     failClosedPi and a thrown handler becomes a { block: true, reason }
+//     refusal, not an aborted turn. Here: a fake pi whose every handler
+//     throws is loaded through the companion; every resulting hook must
+//     refuse with the fail-closed reason naming the thrown error.
+// ============================================================
+{
+  // Drive the wrapper directly: the wrapper wraps the handler itself, so the
+  // captured handler (the wrapped one) must catch the throw and return a
+  // fail-closed refusal. The "block" and "inert" cases verify that non-error
+  // results pass through unchanged.
+  // Drive the wrapper directly: pass a throwing/blocking/inert handler
+  // through failClosedPi and verify the wrapped handler's behaviour.
+  const makeWrapped = (behaviour: "throw" | "block" | "inert") => {
+    const handlers: Handler[] = [];
+    const spyPi: any = {
+      on(event: string, fn: any) {
+        if (event === "tool_call") handlers.push(fn);
+      },
+    };
+    // The underlying handler that the wrapper will wrap.
+    const underlying: Handler = () => {
+      if (behaviour === "throw") throw new Error("boom-guard");
+      if (behaviour === "block") return { block: true, reason: "the-guard-blocked" } as never;
+      return undefined;
+    };
+    const wrappedPi = failClosedPi(spyPi as unknown as ExtensionAPI);
+    // Register the underlying handler via the wrapped pi — the wrapper wraps
+    // it and passes the wrapped version to spyPi.on (the spy).
+    wrappedPi.on("tool_call", underlying);
+    return handlers.map((wrapped) => async (cmd: string) =>
+      wrapped({ toolName: "bash", input: { command: cmd } }, {}),
+    );
+  };
+
+  // Throwing: the wrapped handler must catch the throw and return a
+  // fail-closed refusal naming the error — never rethrow.
+  const throwing = makeWrapped("throw");
+  assert(throwing.length === 1, "fail-closed: one wrapped handler registered");
+  const rThrow = await throwing[0]("true");
+  const oThrow = rThrow as { block?: boolean; reason?: string } | undefined;
+  assert(
+    oThrow?.block === true && /fail-closed/.test(oThrow?.reason ?? "") && /boom-guard/.test(oThrow?.reason ?? ""),
+    "fail-closed: a throwing guard → block with the reason naming the error, never a rethrow",
+  );
+
+  // Blocking: a well-behaved guard's refusal passes through unchanged.
+  const blocking = makeWrapped("block");
+  const rBlock = await Promise.all(blocking.map((h) => h("x")));
+  assert(
+    rBlock.every((res) => {
+      const o = res as { block?: boolean; reason?: string } | undefined;
+      return o?.block === true && o.reason === "the-guard-blocked";
+    }),
+    "fail-closed: a well-behaved guard's refusal passes through unchanged",
+  );
+
+  // Inert: a no-op handler still returns undefined.
+  const inert = makeWrapped("inert");
+  const rInert = await Promise.all(inert.map((h) => h("x")));
+  assert(
+    rInert.every((res) => res === undefined),
+    "fail-closed: a no-op handler still returns undefined (the wrapper only converts thrown errors)",
+  );
+}
+
+// ============================================================
 // 2b. The merge refusal through the GUARD'S OWN EXEC SEAM (stubbed): no
 //     ledger → gh pr view fails → refused. This is the same hook body the
 //     companion registers, driven offline exactly as test-merge-guard.ts
@@ -241,8 +328,12 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
   ];
   // The companion delegates to the shared block — the single list.
   assert(
-    /registerModeIndependentGuards\s*\(pi\)/.test(src),
-    "canary: the companion calls the shared block registerModeIndependentGuards(pi)",
+    /registerModeIndependentGuards\s*\(failClosedPi\s*\(pi\s*\)\s*\)/.test(src),
+    "canary: the companion calls the shared block registerModeIndependentGuards(failClosedPi(pi))",
+  );
+  assert(
+    /function failClosedPi/.test(src),
+    "canary: the fail-closed wrapper exists in the companion (#926 fix round)",
   );
   for (const name of expected) {
     assert(
@@ -289,6 +380,22 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
   assert(args.length === 2, "childGuardsArgs() is exactly [--extension, <path>]");
   assert(args[0] === "--extension", "childGuardsArgs() flag is --extension");
   assert(args[1] === CHILD_GUARDS_PATH, "childGuardsArgs() path equals CHILD_GUARDS_PATH");
+  // #926 fix round — the path is DERIVED via
+  // path.dirname(fileURLToPath(import.meta.url)) (the lens-review.ts seam):
+  // assert it names an existing file ending in child-guards.ts, and canary
+  // that the bare-__dirname literal form is gone (bare __dirname does not
+  // exist in ESM — it only resolved under the jiti CJS shim).
+  assert(/child-guards\.ts$/.test(CHILD_GUARDS_PATH), "CHILD_GUARDS_PATH ends with child-guards.ts");
+  assert(existsSync(CHILD_GUARDS_PATH), "CHILD_GUARDS_PATH exists on disk");
+  const src6 = readFileSync(path.resolve(import.meta.dirname, "..", "src", "child-guards.ts"), "utf8");
+  assert(
+    src6.includes("path.dirname(fileURLToPath(import.meta.url))"),
+    "canary: CHILD_GUARDS_PATH is derived via path.dirname(fileURLToPath(import.meta.url))",
+  );
+  assert(
+    /const __dirname = path\.dirname\(fileURLToPath\(import\.meta\.url\)\)/.test(src6),
+    "canary: the module-scope __dirname IS the ESM derivation (no bare-literal form)",
+  );
 }
 
 // ============================================================
@@ -334,18 +441,19 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
   );
   // PI_ENSEMBLE_SUBAGENT_MODE=1 is assigned inside the subagentGuardEnabled
   // branch only — a trust-mode child (the `} else if (parentTrustMode)`
-  // branch) must not carry it. Scanning from the assignment back to the
-  // immediately preceding branch opener: it must be the subagentGuardEnabled
-  // branch, not the trust-mode branch.
+  // branch) must not carry it. Locate the enclosing `if (subagentGuardEnabled) {
+  // block by BRACE MATCHING from its opener (lastIndexOf comparisons misplace
+  // the boundary once the branch body contains nested braces) and assert the
+  // assignment lies within that block's span.
   const assignIdx = spawnSrc.indexOf('childEnv.PI_ENSEMBLE_SUBAGENT_MODE = "1"');
   assert(assignIdx > 0, "canary: spawn.ts assigns PI_ENSEMBLE_SUBAGENT_MODE = \"1\" in the childEnv");
-  const before = spawnSrc.slice(0, assignIdx);
-  const openerIdx = before.lastIndexOf("if (subagentGuardEnabled) {");
-  const trustIdx = before.lastIndexOf("if (parentTrustMode)");
-  const elseIdx = before.lastIndexOf("} else if (parentTrustMode)");
+  const openerIdx = spawnSrc.lastIndexOf("if (subagentGuardEnabled) {");
+  assert(openerIdx > 0, "canary: spawn.ts contains the `if (subagentGuardEnabled) {` branch opener");
+  const blockEnd = braceMatchEnd(spawnSrc, openerIdx + "if (subagentGuardEnabled) {".length - 1);
+  assert(blockEnd > assignIdx, "canary: a brace-matched span exists for the subagentGuardEnabled branch");
   assert(
-    openerIdx > 0 && openerIdx > trustIdx && openerIdx > elseIdx,
-    "canary: the PI_ENSEMBLE_SUBAGENT_MODE = \"1\" assignment is inside the subagentGuardEnabled branch (the trust-mode branch must not set it)",
+    openerIdx < assignIdx && assignIdx < blockEnd,
+    "canary: the PI_ENSEMBLE_SUBAGENT_MODE = \"1\" assignment lies within the subagentGuardEnabled block's span (the trust-mode branch must not set it)",
   );
 }
 
