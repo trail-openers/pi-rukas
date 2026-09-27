@@ -22,7 +22,7 @@
  * module-level watch map.
  */
 
-import type { PiContentBlock } from "./pi-event-shapes.ts";
+import type { PiContentBlock, PiJsonEvent } from "./pi-event-shapes.ts";
 
 /**
  * Classifier — is this bash command a CI-watch command?
@@ -139,6 +139,11 @@ export function createCiWaitSpanTracker(now: () => number): CiWaitSpanTracker {
       let total = 0;
       for (const span of spans.values()) {
         if (span.openAt !== undefined) total += Math.max(0, at - span.openAt);
+        // #907 — a CLOSED span is never double-counted: its live measurement
+        // ends at the close moment (openAt → undefined), after which only
+        // the frozen `closedTotal` carries its duration.
+      }
+      for (const span of spans.values()) {
         total += span.closedTotal;
       }
       return total;
@@ -147,5 +152,25 @@ export function createCiWaitSpanTracker(now: () => number): CiWaitSpanTracker {
     dispose: () => {
       spans.clear();
     },
+  };
+}
+
+/** #907 — wraps the caller's onRawEvent so the span tracker is fed from
+ * the watch's own clock: the assistant toolCall block of a message_end
+ * opens a span, the matching toolResult closes it. The caller's hook is
+ * chained, never replaced. Returns the wrapper (or undefined when the
+ * caller passed no onRawEvent). */
+export function installRawEventSeam(
+  userFn: (event: PiJsonEvent) => void,
+  ciWait: CiWaitSpanTracker,
+): (event: PiJsonEvent) => void {
+  return (event) => {
+    const msg = (
+      event as { message?: { role?: string; content?: PiContentBlock[]; toolCallId?: string } }
+    ).message;
+    if (msg && msg.role === "assistant" && Array.isArray(msg.content))
+      ciWait.observeBlocks(msg.content);
+    else if (msg && msg.role === "toolResult") ciWait.observeToolResult(msg.toolCallId);
+    userFn(event);
   };
 }

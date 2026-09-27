@@ -137,6 +137,26 @@ interface StartJobInput {
   onSlow?: OnSlowCallback;
 }
 
+/** #799/#907 — shared slow-watch wiring (watch + CI-wait span feed). */
+function makeSlowWatch(
+  id: string,
+  role: string,
+  label: string,
+  pi: ExtensionAPI | undefined,
+  onSlow: OnSlowCallback | undefined,
+): { hooks: Pick<WorkHooks, "onRawEvent">; stop: () => void } {
+  const slowRaw: (event: PiJsonEvent) => void = (event) => live.feedRawEvent(id, event);
+  const watch = watchSlowDispatch({
+    id,
+    role,
+    label,
+    ...(pi ? { pi } : {}),
+    ...(onSlow ? { onSlow } : {}),
+    onRawEvent: slowRaw,
+  });
+  return { hooks: { onRawEvent: watch.onRawEvent ?? slowRaw }, stop: watch.stop };
+}
+
 export interface StartJobHandle {
   jobId: string;
   /**
@@ -189,29 +209,16 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
   sessionAutosave.recordDispatch(input.role);
 
   if (!input.skipDeck) live.startBuffer(jobId);
-  // #799 — the slow-run watch: one per job, at the one layer that sees
-  // progress for every PM job, batch member and driver child. Notice +
-  // steer, never a kill; disabled entirely by PI_ENSEMBLE_SLOW_NOTICE=0.
-  // #907 — the CI-wait span feed: the watch installs its own raw-event
-  // half (the span tracker, keyed to the watch's clock) on top of this
-  // hook and returns the installed wrapper; the job's work function
-  // receives the wrapper so the child's raw events reach BOTH the span
-  // tracker and the deck's live buffer.
-  const slowRaw: (event: PiJsonEvent) => void = (event) => live.feedRawEvent(jobId, event);
-  const slowWatch = watchSlowDispatch({
-    id: jobId,
-    role: input.role,
-    label: input.label,
-    ...(pi ? { pi } : {}),
-    ...(input.onSlow ? { onSlow: input.onSlow } : {}),
-    onRawEvent: slowRaw,
-  });
+  // #799/#907 — the slow-run watch + its CI-wait span feed: one per job,
+  // at the one layer that sees progress for every PM job, batch member
+  // and driver child. Notice + steer, never a kill.
+  const slow = makeSlowWatch(jobId, input.role, input.label, pi, input.onSlow);
   const hooks: WorkHooks = {
     onProgress: (progress) => {
       dispatchDeck.updateEntry(jobId, progress);
       feedSlowProgress(jobId, progress);
     },
-    onRawEvent: slowWatch.onRawEvent ?? slowRaw,
+    onRawEvent: slow.hooks.onRawEvent,
     onStdin: (stdin) => {
       childHandles.set(jobId, { stdin, label: input.label, role: input.role });
     },
@@ -228,7 +235,7 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
       jobs.delete(jobId);
       childHandles.delete(jobId);
       clearJobIssues(jobId);
-      slowWatch.stop();
+      slow.stop();
       if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
       // Five-way: ok / killCause / 429 / FAILED-PROVIDER-ERROR / process-exit-failed.
       // #309/#314 — killCause (#296) wins over errorStop. A self-kill is NOT a
@@ -293,7 +300,7 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
       jobs.delete(jobId);
       childHandles.delete(jobId);
       clearJobIssues(jobId);
-      slowWatch.stop();
+      slow.stop();
       if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
       lifecycle.emitFailed(jobId, input.label, input.role, Date.now() - state.startedAt);
       sessionAutosave.recordOutcome(false);
@@ -402,24 +409,15 @@ export function startBatch(
     dispatchDeck.startEntry(jobId, { label: m.label, role: m.role, batchKey: batchId });
     live.startBuffer(jobId);
     sessionAutosave.recordDispatch(m.role);
-    // #799 — batch members are watched exactly like single jobs (one watch
-    // per member; the batch orchestrator itself gets none — it is a
-    // bookkeeping row, not a child).
-    const memberSlowRaw: (event: PiJsonEvent) => void = (event) => live.feedRawEvent(jobId, event);
-    const stopMemberSlow = watchSlowDispatch({
-      id: jobId,
-      role: m.role,
-      label: m.label,
-      ...(pi ? { pi } : {}),
-      // #907 — the member's CI-wait span feed (same wiring as startJob).
-      onRawEvent: memberSlowRaw,
-    });
+    // #799/#907 — batch members get the same watch + span feed as single
+    // jobs (the batch orchestrator itself gets none — it is a bookkeeping row, not a child).
+    const memberSlow = makeSlowWatch(jobId, m.role, m.label, pi, undefined);
     const memberHooks: WorkHooks = {
       onProgress: (progress) => {
         dispatchDeck.updateEntry(jobId, progress);
         feedSlowProgress(jobId, progress);
       },
-      onRawEvent: stopMemberSlow.onRawEvent ?? memberSlowRaw,
+      onRawEvent: memberSlow.hooks.onRawEvent,
       onStdin: (stdin) => {
         childHandles.set(jobId, { stdin, label: m.label, role: m.role });
       },
@@ -434,7 +432,7 @@ export function startBatch(
         (result) => {
           jobs.delete(jobId);
           childHandles.delete(jobId);
-          stopMemberSlow.stop();
+          memberSlow.stop();
           dispatchDeck.clearEntry(jobId);
           sessionAutosave.recordOutcome(result.ok);
           memberResults.push({ jobId, label: m.label, result });
@@ -442,7 +440,7 @@ export function startBatch(
         (err: Error) => {
           jobs.delete(jobId);
           childHandles.delete(jobId);
-          stopMemberSlow.stop();
+          memberSlow.stop();
           dispatchDeck.clearEntry(jobId);
           sessionAutosave.recordOutcome(false);
           memberResults.push({
