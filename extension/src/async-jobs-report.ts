@@ -235,6 +235,25 @@ function truncationBadge(result: DispatchResult): string {
   return ` — POSSIBLY-TRUNCATED: final text is a tool-narration line at ${result.usage?.turns ?? 0} turns with no completion summary. Verify on-disk state (git status/log in the target worktree) before re-dispatching: survey disk, classify done/missing/broken, resume with the full contract rather than a blind re-run.`;
 }
 
+/**
+ * #911 — the review-gate reminder a PM-owned developer completion carries.
+ *
+ * Hand-managed development (a hand-dispatched developer, /do, free-form
+ * requests) has no driver step to force the gates, so the report itself names
+ * them at the moment the developer finishes. Keyed on the LABEL the job was
+ * dispatched under (a "developer" or "developer[...]" job) AND on the
+ * computed outcome being "finished" — never on `result.ok` alone, because a
+ * 429-killed child can carry ok:true with an errorStop and is not a
+ * completion. Other roles (explore, ops, reviewers) are not developer
+ * completions and do not get the line.
+ */
+const GATE_LINE =
+  "Hand-managed work gets the same gates as /work: before any commit/PR/merge, run `adversarial_loop` on the diff AND `dispatch_lens_review` on the PR, with CRITICAL/HIGH findings fixed. A developer's self-report plus CI is NOT a pass.";
+
+function isDeveloperLabel(label: string): boolean {
+  return label === "developer" || label.startsWith("developer[");
+}
+
 export function formatSingleReport(jobId: string, label: string, result: DispatchResult): string {
   const turns = result.usage?.turns ?? 0;
   const elapsed = fmtElapsed(result.ms);
@@ -266,9 +285,12 @@ export function formatSingleReport(jobId: string, label: string, result: Dispatc
       body,
     ].join("\n");
   }
-  const footer = result.ok
-    ? "---\nYou started this async dispatch earlier. Continue the workflow."
-    : `---\n(See /runs for full transcript at ${result.transcriptPath ?? "ensemble-runs/"}.)`;
+  const footer =
+    status === "finished" && isDeveloperLabel(label)
+      ? `---\n${GATE_LINE}\n\nYou started this async dispatch earlier. Continue the workflow.`
+      : result.ok
+        ? "---\nYou started this async dispatch earlier. Continue the workflow."
+        : `---\n(See /runs for full transcript at ${result.transcriptPath ?? "ensemble-runs/"}.)`;
   return `${head}\n\n${body}\n\n${footer}`;
 }
 
@@ -327,6 +349,16 @@ export function formatBatchReport(input: BatchReportInput): string {
     const badge = truncated ? truncationBadge(m.result) : "";
     return `=== ${m.label} (job ${m.jobId}) — ${status} · ${turns} turns · ${elapsed}${fmtObservedWork(m.result)}${fmtUsage(m.result)}${badge} ===\n${body}`;
   });
-  const footer = "---\nYou started this async batch earlier. Continue the workflow.";
+  // #911 — the gate line appears at most once in the shared footer: any
+  // developer member that actually finished ("finished" via the shared
+  // describeOutcome, not raw ok) is enough, and a batch of non-developers or
+  // failed developers gets no gate line at all.
+  const anyDeveloperFinished = input.members.some((m) => {
+    if ("failed" in m.result || !isDeveloperLabel(m.label)) return false;
+    return describeOutcome(m.result).status === "finished";
+  });
+  const footer = anyDeveloperFinished
+    ? `---\n${GATE_LINE}\n\nYou started this async batch earlier. Continue the workflow.`
+    : "---\nYou started this async batch earlier. Continue the workflow.";
   return `${head}\n\n${sections.join("\n\n")}\n\n${footer}`;
 }

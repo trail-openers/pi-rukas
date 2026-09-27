@@ -47,9 +47,9 @@ This is NOT the deterministic state machine that `/work` runs. Pick the steps th
 
 4. **Adversarial-gate the diff.** Run `adversarial_loop` against the resulting `git diff HEAD`. If it REJECTS, re-dispatch developer with the findings. Three rounds max — if still REJECTED after round 3, surface the diff + findings to the user and let them decide.
 
-5. **Commit + PR (optional).** If the work warrants a PR — most do — dispatch `ops` to commit (conventional commit per the target project's `AGENTS.md`) and open the PR. If the work is a one-off direct-to-main change (extremely rare, e.g., release-please follow-up), be explicit with the user before bypassing PR review.
+5. **Lens review.** For non-trivial diffs, dispatch `dispatch_lens_review` against the PR diff. Fix-loop on findings via re-dispatch developer with the lens output, then re-gate the fixes through `adversarial_loop`.
 
-6. **Lens review (optional).** For non-trivial diffs, dispatch `dispatch_lens_review` against the PR diff. Fix-loop on findings via re-dispatch developer with the lens output.
+6. **Merge.** PR, CI and merge go through `ops`, and only after BOTH `adversarial_loop` AND `dispatch_lens_review` have passed with all CRITICAL/HIGH findings fixed — hand-managed work gets the same gates as `/work`, and a developer's self-report plus CI is NOT a pass. The only carve-out: a release-please/Dependabot follow-up on a one-off direct-to-main change may skip the full PR cycle (extremely rare); name the carve-out explicitly when you take it. If the work is genuinely issue-driven and deserves the full step machine, use `/work` instead — `start_work_driver` runs it.
 
 7. **CI watch (optional).** If the project has CI and a PR was opened, dispatch `ops` to watch it and report back — per forge: GitHub: `gh run watch`, GitLab: poll `glab ci status` (or the latest pipeline via `glab ci view`) until a terminal state (`success`, `failed`, `canceled`, `skipped` or `manual`).
 

@@ -178,5 +178,78 @@ const result = (over: Partial<DispatchResult> & { turns?: number }): DispatchRes
   );
 }
 
+// ------------------------------------------------ #911 — the gate-line footer
+
+{
+  // A PM-owned developer job that finished names both review gates in the
+  // report footer — the moment nothing else reminds the PM of them.
+  const done = result({ text: "Task complete: gate-line fixture", turns: 12 });
+  const report = formatSingleReport("j911a", "developer", done);
+  assert(
+    report.includes("Hand-managed work gets the same gates as /work"),
+    "a finished developer single report carries the gate line",
+  );
+  assert(
+    report.includes("adversarial_loop") && report.includes("dispatch_lens_review"),
+    "...and it names both gates by tool name",
+  );
+  assert(
+    formatSingleReport("j911b", "developer[task-A]", done).includes(
+      "Hand-managed work gets the same gates as /work",
+    ),
+    "a batch-labeled developer (developer[...]) earns it too",
+  );
+
+  // Non-developer roles: the line is about developer completions, not every
+  // successful job.
+  for (const role of ["explore", "ops", "code-review-specialist", "adversarial-developer"] as const) {
+    const r = result({ role, text: "Task complete", turns: 5 });
+    assert(
+      !formatSingleReport(`j-${role}`, role, r).includes("Hand-managed work"),
+      `a finished ${role} job does NOT get the gate line`,
+    );
+  }
+
+  // Killed developers (every killCause the taxonomy has) are not completions.
+  for (const cause of ["timeout", "inactivity", "abort", "loop", "token-budget"] as const) {
+    const killed = result({ ok: false, killCause: cause, text: "Now editing.", turns: 50 });
+    assert(
+      !formatSingleReport(`jk-${cause}`, "developer", killed).includes("Hand-managed work"),
+      `a developer killed (${cause}) does NOT get the gate line`,
+    );
+  }
+
+  // A provider errorStop (FAILED-PROVIDER-ERROR) is not a completion either.
+  const errored = result({
+    ok: false,
+    errorStop: { reason: "error", message: "Provider request error: terminated" },
+    text: "Now editing.",
+    turns: 50,
+  });
+  assert(
+    !formatSingleReport("jerr", "developer", errored).includes("Hand-managed work"),
+    "a developer with a provider errorStop does NOT get the gate line",
+  );
+
+  // The 429-with-ok=true trap: the child can carry ok:true with a 429
+  // errorStop, which describeOutcome classifies as rate-limited, NOT
+  // finished. Keying on result.ok would emit the gate line here.
+  const rateLimited = result({
+    ok: true,
+    errorStop: { reason: "error", message: "Server requested 59s retry delay (max: 10s). 429 status code (no body)" },
+    text: "",
+    turns: 1,
+  });
+  const rlReport = formatSingleReport("jrl", "developer", rateLimited);
+  assert(
+    !rlReport.includes("Hand-managed work"),
+    "a 429-killed developer (ok:true + 429 errorStop) does NOT get the gate line — the predicate keys on describeOutcome 'finished', not ok",
+  );
+  assert(
+    /rate-limited/.test(rlReport),
+    "canary: the 429 fixture is classified rate-limited, not finished",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

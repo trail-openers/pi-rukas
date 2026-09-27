@@ -104,9 +104,11 @@ async function nextTick() {
   );
   // Bounded — no transcript content. The fake result text is small; any extra
   // bytes beyond header + body + footer would mean we're dumping transcript
-  // events. Allow 400 bytes of envelope (header + footer + formatting).
+  // events. Without #911 the envelope was ~130 bytes; the gate-line footer a
+  // finished developer report now carries adds ~270, so the bound is 450
+  // (402 measured).
   const envelopeBytes = msg.content.length - FAKE_TEXT.length;
-  assert(envelopeBytes < 400, `envelope <400 bytes (got ${envelopeBytes})`);
+  assert(envelopeBytes < 450, `envelope <450 bytes (got ${envelopeBytes})`);
 }
 
 // ---------------------------------------------------------------------------

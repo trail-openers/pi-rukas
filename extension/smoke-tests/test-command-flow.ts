@@ -156,6 +156,35 @@ assert(rec.registeredCommands.includes("runs"), "/runs registered");
     doBody.includes("adversarial_loop"),
     "pi-prompts/do.md mentions adversarial_loop (non-negotiable commit gate)",
   );
+  // #911 — the explicit merge step names BOTH gates as preconditions, carries
+  // the single consolidated carve-out and the /work pointer, and the old
+  // "be explicit with the user before bypassing PR review" sentence is gone.
+  const mergeStep = doBody.slice(
+    doBody.indexOf("**Merge.**"),
+    doBody.indexOf("**CI watch"),
+  );
+  assert(mergeStep.length > 0, "pi-prompts/do.md has an explicit Merge step");
+  assert(
+    mergeStep.includes("adversarial_loop") && mergeStep.includes("dispatch_lens_review"),
+    "the Merge step names BOTH adversarial_loop and dispatch_lens_review as preconditions",
+  );
+  assert(
+    /CRITICAL\/HIGH findings fixed/.test(mergeStep),
+    "the Merge step requires CRITICAL/HIGH findings fixed before merge",
+  );
+  assert(
+    /release-please\/Dependabot/.test(mergeStep) &&
+      (mergeStep.match(/carve-out/g) ?? []).length >= 1,
+    "the single consolidated release-please/Dependabot carve-out is present",
+  );
+  assert(
+    /start_work_driver/.test(doBody) && /\/work/.test(doBody),
+    "do.md points genuinely issue-driven work at /work / start_work_driver",
+  );
+  assert(
+    !/be explicit with the user before bypassing PR review/.test(doBody),
+    "the old 'be explicit with the user before bypassing PR review' sentence is gone",
+  );
 }
 assert(rec.registeredTools.includes("dispatch_specialist"), "dispatch_specialist tool registered");
 assert(rec.registeredTools.includes("dispatch_parallel"), "dispatch_parallel tool registered");
