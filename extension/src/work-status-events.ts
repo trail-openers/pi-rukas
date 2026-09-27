@@ -118,6 +118,11 @@ export function fmtEvent(e: WorkEvent): string {
       return `  lens-fix-empty-resend · round ${e.round} · ${e.worktree}`;
     case "converge-redispatch":
       return "  converge-redispatch · develop · corrective dispatch for missing deliverable(s)";
+    case "fence-recovery-started":
+      // #849 — the discard record: the violator, its owner(s), and the
+      // discarded SHA (the operator can `git show <sha>` without reading the
+      // state file).
+      return `  fence-recovery-started · [${e.workstreamId}] → ${e.owners.join(", ")} · discarded ${e.discardedSha ? e.discardedSha.slice(0, 8) : "(no commit ahead of base)"}`;
     case "adversarial-skipped-empty-diff":
       return `  adversarial-skipped-empty-diff · workstream ${e.workstreamId}`;
     case "verify-full-status":

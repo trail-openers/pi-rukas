@@ -55,6 +55,8 @@ export const KNOWN_EVENT_KINDS: readonly unknown[] = [
   "memory-inject",
   // #741 — the converge gate's one-shot corrective dispatch marker.
   "converge-redispatch",
+  // #849 — the develop fence recovery marker (discarded SHA + owners).
+  "fence-recovery-started",
   // #844 — the branch step's stale-local-branch reset record (old + new tip).
   // Absent from the tuple, EVERY restarted cycle that resets a stale branch
   // halts on its own re-entry (the fix manufactures the corruption it

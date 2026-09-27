@@ -101,25 +101,37 @@ try {
       : [];
   const b = verdicts.find((v) => v.id === "b");
   const a = verdicts.find((v) => v.id === "a");
+  // #849 — the fence recovery: a sibling-declared violation (b annexed a's
+  // file) now RECOVERS instead of parking. The driver injects the b→a
+  // dependsOn edge, discards b's commit, and re-dispatches b from a's
+  // post-commit tree. The re-run is clean (the injected edge makes a-file.txt
+  // dependency-owned, so the re-introduced file is exempt from the fence),
+  // and b's verdict is restored to ok:true. The recovery is recorded on a
+  // fence-recovery-started event (evidence of the discard).
+  const recoveryEvent = result.eventLog.find((e) => e.kind === "fence-recovery-started");
   assert(
-    b?.ok === false &&
-      (b?.reason ?? "").includes("a-file.txt") &&
-      (b?.reason ?? "").includes("declared by a"),
-    `persisted eventLog: the violator's verdict is ok:false with the attributed reason (got: ${JSON.stringify(verdicts)})`,
+    recoveryEvent !== undefined &&
+      recoveryEvent.kind === "fence-recovery-started" &&
+      recoveryEvent.workstreamId === "b",
+    `#849 persisted: a fence-recovery-started event records b's recovery (got: ${recoveryEvent ? recoveryEvent.kind : "none"})`,
+  );
+  assert(
+    b?.ok === true,
+    `#849 persisted: b's verdict is restored to ok (the recovery re-run was clean) (got: ${JSON.stringify(verdicts)})`,
   );
   assert(
     a?.ok === true,
-    `persisted eventLog: the clean workstream keeps ok:true (got: ${JSON.stringify(verdicts)})`,
+    `#849 persisted: the clean workstream keeps ok:true (got: ${JSON.stringify(verdicts)})`,
   );
 
-  // #814 aliasing invariant — the persisted event carries the FLIPPED verdict
-  // (b ok:false, a ok:true), not the original all-true array that was
-  // originally appended. The dispatch fakes all return ok:true, so the
-  // originally-appended event had both ok:true. The gate replaced it with a
-  // copy showing b flipped — proving the in-place replacement worked.
+  // #849 — the persisted event carries the RESTORED verdict (b ok:true, a
+  // ok:true), reflecting the recovery's clean re-run. The recovery is a
+  // deliberate #849 behaviour change: a sibling-declared violation no longer
+  // parks but recovers (single re-dispatch from the owner's post-commit
+  // tree), and a clean re-run restores the violator's verdict.
   assert(
-    b?.ok === false && a?.ok === true,
-    `persisted eventLog: the persisted event carries the FLIPPED verdict (not the original all-true array) (got: ${JSON.stringify(verdicts)})`,
+    b?.ok === true && a?.ok === true,
+    `#849 persisted: the persisted event carries the RESTORED verdict (the recovery re-run was clean) (got: ${JSON.stringify(verdicts)})`,
   );
 
   // No-evidence path — N>1, no worktree evidence: branches-converged is still
