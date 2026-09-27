@@ -7,6 +7,7 @@ import { decideLoopAction, parseVerdict } from "./adversarial-verdict.ts";
 import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
 import { markOrchestrator, setOrchestratorActiveChild, startJob } from "./async-jobs.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
+import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { readEnumMarker } from "./reply-markers.ts";
 import { type OnSlowCallback, feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
@@ -152,12 +153,16 @@ export async function runAdversarialLoop(
     // #799 — the slow-run watch for this inner child: the deck key is the id
     // dispatch_peek shows, and it is what the PM notice names. The parent pi
     // is threaded so the notice reaches the PM (the watch site has no pi).
+    // #907 — the CI-wait span feed for this inner child: the watch chains
+    // its span tracker in front of the raw-event hook the spawn receives.
+    const slowRaw: (event: PiJsonEvent) => void = () => {};
     const stopSlow = watchSlowDispatch({
       id: deckKey,
       role,
       label,
       ...(params.onSlow ? { onSlow: params.onSlow } : {}),
       ...(params.pi ? { pi: params.pi } : {}),
+      onRawEvent: slowRaw,
     });
     try {
       return await spawnSpecialist(
@@ -170,6 +175,7 @@ export async function runAdversarialLoop(
             dispatchDeck.updateEntry(deckKey, state);
             feedSlowProgress(deckKey, state);
           },
+          onRawEvent: stopSlow.onRawEvent ?? slowRaw,
           onStdin: (stdin) => {
             // Publish this inner spawn as the orchestrator's active child so
             // PM's peek/steer calls against the orchestrator jobId resolve
@@ -181,7 +187,7 @@ export async function runAdversarialLoop(
         },
       );
     } finally {
-      stopSlow();
+      stopSlow.stop();
       dispatchDeck.clearEntry(deckKey);
       childHandles.delete(deckKey);
       setOrchestratorActiveChild(orchestratorJobId, null);

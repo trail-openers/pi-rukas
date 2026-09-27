@@ -16,6 +16,7 @@ import { extractFindings, lensPromptFor } from "./lens-review-format.ts";
 import { LENS_REPORTER_PATH, type LensDef } from "./lens-review.ts";
 import type { LensRunResult } from "./lens-review.ts";
 import type { RosterEntry } from "./lens-roster.ts";
+import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { readEnumMarker } from "./reply-markers.ts";
 import { reporterPathFromArgs, statReporterPath } from "./reporter-preflight.ts";
 import type { SlowWatchInput } from "./slow-notice.ts";
@@ -126,11 +127,15 @@ export async function runLensChild(opts: {
   // finally at the bottom of this function.
   const slowRole = "code-review-specialist";
   const slowLabel = `code-review-specialist[${tag}]`;
+  // #907 — the CI-wait span feed for this lens child: the watch chains its
+  // span tracker in front of the raw-event hook the spawn receives.
+  const slowRaw: (event: PiJsonEvent) => void = () => {};
   const stopSlow = watchSlowDispatch({
     id: deckKey,
     role: slowRole,
     label: slowLabel,
     ...(opts.pi ? { pi: opts.pi } : {}),
+    onRawEvent: slowRaw,
   });
 
   // Retry loop (#3). Up to MAX_LENS_ATTEMPTS attempts on transient
@@ -170,6 +175,7 @@ export async function runLensChild(opts: {
               dispatchDeck.updateEntry(deckKey, state);
               feedSlowProgress(deckKey, state);
             },
+            onRawEvent: stopSlow.onRawEvent ?? slowRaw,
             onStdin: (stdin) =>
               // #799 — register the stdin against the DECK KEY (the id
               // dispatch_peek shows) so the child is steerable directly,
@@ -208,7 +214,7 @@ export async function runLensChild(opts: {
     // every exit path, as the comment above claims (success, cap-kill,
     // abort, or a throw from the spawn layer).
     dispatchDeck.clearEntry(deckKey);
-    stopSlow();
+    stopSlow.stop();
     childHandles.delete(deckKey);
   }
 

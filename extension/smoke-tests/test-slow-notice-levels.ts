@@ -180,7 +180,7 @@ await withEnv({}, async () => {
       `timer: re-armed absolutely for start+80min (${rearm[0]?.ms} vs ${expected})`,
     );
   } finally {
-    stop();
+    stop.stop();
   }
 });
 
@@ -238,7 +238,7 @@ await withEnv({}, async () => {
       `overshoot: timer re-armed absolutely for start+160min (${rearm[0]?.ms} vs ${expected})`,
     );
   } finally {
-    stop();
+    stop.stop();
   }
 });
 
@@ -310,7 +310,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "20" }, async () => {
     assert(steers.length === 2, "silent 2×: exactly one more steer");
     assert(notices[1]?.includes("level 2") === true, "silent 2×: the second fire is level 2");
   } finally {
-    stop();
+    stop.stop();
   }
 });
 
@@ -336,7 +336,7 @@ await withEnv({ PI_ENSEMBLE_AUTO_STEER: "0" }, async () => {
     assert(steers.length === 0, "AUTO_STEER=0: no steer");
     assert(slowEvents.length === 1, "AUTO_STEER=0: the dispatch-slow event still fires");
   } finally {
-    stop();
+    stop.stop();
   }
 });
 
@@ -362,7 +362,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE: "0" }, async () => {
     assert(steers.length === 0, "SLOW_NOTICE=0: no steer at any scale");
     assert(slowEvents.length === 0, "SLOW_NOTICE=0: no dispatch-slow event");
   } finally {
-    stop();
+    stop.stop();
   }
 });
 
@@ -402,7 +402,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "1000000" }, async () => {
     feedSlowProgress("job-highturns", stateAt(999, 39 * MIN, 0));
     assert(notices.length === 1, "high turns: 39 min below 40 min → still one");
   } finally {
-    stop();
+    stop.stop();
   }
 });
 
@@ -480,7 +480,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "1000000" }, async () => {
     feedSlowProgress("job-rearm-env", stateAt(2_000_000, 0, 0));
     assert(notices.length === 2, "rearm: 2M (the OLD base doubled) → second notice");
   } finally {
-    stop();
+    stop.stop();
     delete process.env.PI_ENSEMBLE_SLOW_NOTICE_TURNS;
   }
 });
