@@ -19,7 +19,13 @@
  */
 
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
-import { forgeStub, gatePrompts, installForgeStub, makeDispatchStub } from "./plan-test-stubs.ts";
+import {
+  forgeStub,
+  gatePrompts,
+  installForgeStub,
+  installOfflineVipuneStub,
+  makeDispatchStub,
+} from "./plan-test-stubs.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -31,6 +37,7 @@ function assert(cond: boolean, msg: string) {
 }
 
 installForgeStub();
+installOfflineVipuneStub();
 const DESCRIPTOR = "add a start_plan_driver tool for the plan pipeline in extension";
 
 async function run(gateReplies: string[] | string) {

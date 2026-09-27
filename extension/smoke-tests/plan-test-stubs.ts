@@ -94,6 +94,25 @@ export function makeDispatchStub(gateReply: string | string[]) {
 export { setPlanDispatch };
 
 /**
+ * Install an OFFLINE vipune-search stub so a test that drives the full
+ * /plan pipeline (runPlanPipeline) never reaches the real vipune binary.
+ *
+ * The pipeline's Phase-1 inventory runs TWO concurrent vipune searches per
+ * call (semantic + hybrid legs) through the injectable seam. A pipeline test
+ * that runs the driver 3-4 times therefore issues 6-8 real vipune invocations
+ * — each a ~5-7 s process spawn on a loaded dev host (the offline gate runs
+ * them back-to-back) — while asserting nothing about memory content. That is
+ * the dominant source of the local gate's 25-40 min runtime (vs ~7 min in CI,
+ * where the binary is fast). Pointing the seam at an empty result keeps the
+ * pipeline fully offline and its output byte-deterministic (the vipune rows
+ * are the "droppable tail" of the inventory; no pipeline assertion reads
+ * them). Pair with installForgeStub() so the related-issues leg is stubbed too.
+ */
+export function installOfflineVipuneStub(): void {
+  setPlanVipuneSearch(async () => ({ kind: "hits", hits: [] }));
+}
+
+/**
  * The vipune-search stub seam (#858): routes the plan inventory's semantic +
  * hybrid legs through the driver's `setPlanVipuneSearch` DI seam. The
  * stub receives the full (query, opts) pair so tests can distinguish the

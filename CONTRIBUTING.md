@@ -40,7 +40,7 @@ Prerequisites for the full table.
 | `cd extension && bun run smoke-tests/test-cancel.ts` | Unit smoke for tool cancellation (offline). |
 | `cd extension && bun run smoke-tests/test-file-size-limit.ts` | File-size ratchet (#171, AGENTS.md §12) — fails if any `extension/src` or `extension/smoke-tests` `.ts` file exceeds 500 lines (offline). |
 | `cd extension && bun run smoke-tests/test-spawn.ts` | **Live** — spawns a real Pi child, costs a few cents. |
-| `cd extension && bun run smoke-tests/test-parallel.ts` | **Live** — three concurrent children. |
+| `cd extension && bun run smoke-tests/test-parallel-live.ts` | **Live** — three concurrent children. |
 | `cd extension && bun run smoke-tests/test-progress-live.ts` | **Live** — multi-turn child verifies progress callbacks. |
 | `cd extension && bun run smoke-tests/test-lens-review-live.ts` | **Live** — full six-pass review against a synthetic diff (~$0.02 on Cerebras). |
 

@@ -26,6 +26,7 @@ import {
   forgeStub,
   gatePrompts,
   installForgeStub,
+  installOfflineVipuneStub,
   makeDispatchStub,
 } from "./plan-test-stubs.ts";
 
@@ -45,6 +46,7 @@ function assert(cond: boolean, msg: string) {
 
 // Install the forge stub BEFORE any non-dryRun invocation.
 installForgeStub();
+installOfflineVipuneStub();
 
 // ------------------------------ NO-OP ROUND ELIMINATED (speed fix)
 
@@ -74,10 +76,7 @@ installForgeStub();
   );
 
   const gateDispatchCount = gatePrompts.length - gatePromptsBefore;
-  assert(
-    gateDispatchCount === 1,
-    `NO-OP: exactly ONE gate dispatch (got ${gateDispatchCount})`,
-  );
+  assert(gateDispatchCount === 1, `NO-OP: exactly ONE gate dispatch (got ${gateDispatchCount})`);
   assert(r1.filed === true, `NO-OP: filed (got filed=${r1.filed})`);
   assert(
     r1.capReason === "residual-high",
@@ -187,21 +186,13 @@ installForgeStub();
     "UNION: round-2 MEDIUM finding is in the residual section",
   );
   // Both severities disclosed.
-  assert(
-    filedBody.includes("[HIGH]"),
-    "UNION: [HIGH] severity is disclosed",
-  );
-  assert(
-    filedBody.includes("[MEDIUM]"),
-    "UNION: [MEDIUM] severity is disclosed",
-  );
+  assert(filedBody.includes("[HIGH]"), "UNION: [HIGH] severity is disclosed");
+  assert(filedBody.includes("[MEDIUM]"), "UNION: [MEDIUM] severity is disclosed");
   // Adversarial follow-up: the inline cap list must use the SAME union as
   // the filed body — a 2-round CRITICAL-then-HIGH case used to disclose the
   // round-1 HIGH in the body but not in the inline list (last-round-only).
   assert(
-    (r1.residualForDisclosure ?? []).some((g) =>
-      g.description.includes("mock curl's -o flag"),
-    ),
+    (r1.residualForDisclosure ?? []).some((g) => g.description.includes("mock curl's -o flag")),
     "UNION follow-up: the residual union on the result carries the round-1 HIGH (inline list source)",
   );
   assert(
@@ -246,10 +237,7 @@ installForgeStub();
     gateDispatchCount === 1,
     `RATCHETING: exactly ONE gate dispatch (got ${gateDispatchCount})`,
   );
-  assert(
-    r1.filed === true,
-    `RATCHETING: fresh-HIGH stream → FILED (got filed=${r1.filed})`,
-  );
+  assert(r1.filed === true, `RATCHETING: fresh-HIGH stream → FILED (got filed=${r1.filed})`);
   assert(
     r1.capReason === "residual-high",
     `RATCHETING: capReason is residual-high (got ${r1.capReason})`,

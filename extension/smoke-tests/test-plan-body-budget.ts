@@ -24,7 +24,7 @@ import {
   fitDraftToBudget,
 } from "../src/plan-validate.ts";
 import { draftSpec } from "../src/plan-draft.ts";
-import { gatePrompts, installForgeStub } from "./plan-test-stubs.ts";
+import { gatePrompts, installForgeStub, installOfflineVipuneStub } from "./plan-test-stubs.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -115,6 +115,7 @@ function assert(cond: boolean, msg: string) {
 // ------------------------------------------------------------ pipeline
 
 installForgeStub();
+installOfflineVipuneStub();
 process.env.PI_ENSEMBLE_FORGE = "none";
 
 const LONG_ITEM = `the verify gate must ${"x".repeat(2950)} end`;
