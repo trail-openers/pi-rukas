@@ -18,7 +18,7 @@
  * shared, so the two cannot drift again.
  */
 
-import { formatBatchReport, formatSingleReport } from "../src/async-jobs-report.ts";
+import { GATE_LINE, formatBatchReport, formatSingleReport } from "../src/async-jobs-report.ts";
 import type { DispatchResult } from "../src/types.ts";
 
 let exit = 0;
@@ -240,8 +240,10 @@ const succeeded: DispatchResult = {
     // biome-ignore lint/suspicious/noExplicitAny: partial fixture
   } as any as DispatchResult;
 
-  const countGateLines = (r: string): number =>
-    r.split("Hand-managed work gets the same gates as /work").length - 1;
+  // Split on the imported constant (via its opening phrase): the count must
+  // track whatever the module defines, not a re-typed literal that can drift.
+  const gateOpening = GATE_LINE.slice(0, GATE_LINE.indexOf(":"));
+  const countGateLines = (r: string): number => r.split(gateOpening).length - 1;
 
   // Mixed batch (one finished developer + one 429-killed developer + one
   // explore): the gate line appears exactly once, in the shared footer — not

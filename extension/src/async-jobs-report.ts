@@ -247,11 +247,28 @@ function truncationBadge(result: DispatchResult): string {
  * completion. Other roles (explore, ops, reviewers) are not developer
  * completions and do not get the line.
  */
-const GATE_LINE =
+export const GATE_LINE =
   "Hand-managed work gets the same gates as /work: before any commit/PR/merge, run `adversarial_loop` on the diff AND `dispatch_lens_review` on the PR, with CRITICAL/HIGH findings fixed. A developer's self-report plus CI is NOT a pass.";
+
+/**
+ * The gate line with the truncation caveat prefixed. A finished-developer
+ * report that also carries the POSSIBLY-TRUNCATED badge would otherwise end
+ * with a plain "run the gates" instruction that contradicts the badge above
+ * it; the prefixed form orders the two: verify disk first, then gate.
+ */
+export const GATE_LINE_TRUNCATED = `First verify the on-disk state (the report may be truncated); then: ${GATE_LINE}`;
 
 function isDeveloperLabel(label: string): boolean {
   return label === "developer" || label.startsWith("developer[");
+}
+
+/**
+ * A developer job whose computed outcome is "finished" — the predicate both
+ * report formatters use for the gate footer, so the single and batch paths
+ * cannot drift on what counts as a developer completion.
+ */
+function isFinishedDeveloper(label: string, result: DispatchResult): boolean {
+  return isDeveloperLabel(label) && describeOutcome(result).status === "finished";
 }
 
 export function formatSingleReport(jobId: string, label: string, result: DispatchResult): string {
@@ -287,7 +304,7 @@ export function formatSingleReport(jobId: string, label: string, result: Dispatc
   }
   const footer =
     status === "finished" && isDeveloperLabel(label)
-      ? `---\n${GATE_LINE}\n\nYou started this async dispatch earlier. Continue the workflow.`
+      ? `---\n${truncated ? GATE_LINE_TRUNCATED : GATE_LINE}\n\nYou started this async dispatch earlier. Continue the workflow.`
       : result.ok
         ? "---\nYou started this async dispatch earlier. Continue the workflow."
         : `---\n(See /runs for full transcript at ${result.transcriptPath ?? "ensemble-runs/"}.)`;
@@ -353,10 +370,9 @@ export function formatBatchReport(input: BatchReportInput): string {
   // developer member that actually finished ("finished" via the shared
   // describeOutcome, not raw ok) is enough, and a batch of non-developers or
   // failed developers gets no gate line at all.
-  const anyDeveloperFinished = input.members.some((m) => {
-    if ("failed" in m.result || !isDeveloperLabel(m.label)) return false;
-    return describeOutcome(m.result).status === "finished";
-  });
+  const anyDeveloperFinished = input.members.some(
+    (m) => !("failed" in m.result) && isFinishedDeveloper(m.label, m.result),
+  );
   const footer = anyDeveloperFinished
     ? `---\n${GATE_LINE}\n\nYou started this async batch earlier. Continue the workflow.`
     : "---\nYou started this async batch earlier. Continue the workflow.";

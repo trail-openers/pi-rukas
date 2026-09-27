@@ -249,6 +249,31 @@ const result = (over: Partial<DispatchResult> & { turns?: number }): DispatchRes
     /rate-limited/.test(rlReport),
     "canary: the 429 fixture is classified rate-limited, not finished",
   );
+
+  // A finished developer whose tail is truncation-shaped gets the prefixed
+  // gate line ("First verify the on-disk state…"), so the footer does not
+  // contradict the POSSIBLY-TRUNCATED badge; without truncation, the plain
+  // gate line stays.
+  const truncatedDone = result({ text: narration, turns: 120 });
+  const trReport = formatSingleReport("j911c", "developer", truncatedDone);
+  assert(trReport.includes("POSSIBLY-TRUNCATED"), "the fixture is still tagged POSSIBLY-TRUNCATED");
+  assert(
+    trReport.includes(
+      "First verify the on-disk state (the report may be truncated); then: Hand-managed work gets the same gates as /work",
+    ),
+    "a finished developer with a truncation-shaped tail gets the prefixed gate line",
+  );
+
+  const cleanDone = result({ text: "Task complete: prefixed-gate fixture", turns: 12 });
+  const cleanReport = formatSingleReport("j911d", "developer", cleanDone);
+  assert(
+    cleanReport.includes("---\nHand-managed work gets the same gates as /work"),
+    "a finished developer without truncation gets the plain gate line",
+  );
+  assert(
+    !cleanReport.includes("First verify the on-disk state"),
+    "...and the truncation caveat stays out of the clean report",
+  );
 }
 
 console.log(`\nexit ${exit}`);
