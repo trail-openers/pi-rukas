@@ -33,6 +33,12 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Component, isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
+import {
+  NEWLINE_SEP,
+  collapseToSpaces,
+  sanitizeText,
+  toTerminalLine,
+} from "./dispatch-deck-line.ts";
 import type { DeckEntry } from "./dispatch-deck.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { extractToolHint, formatElapsed } from "./progress.ts";
@@ -82,13 +88,13 @@ export function toolCallArgsPreview(args: unknown): string {
   if (args === undefined || args === null) return "";
   if (typeof args === "string") {
     const bounded = args.length > LIVE_ARGS_MAX * 4 ? args.slice(0, LIVE_ARGS_MAX * 4) : args;
-    return truncate(bounded.replaceAll(/\s+/g, " ").trim(), LIVE_ARGS_MAX);
+    return truncate(collapseToSpaces(bounded), LIVE_ARGS_MAX);
   }
   const hint = extractToolHint(args);
-  if (hint) return hint;
+  if (hint) return collapseToSpaces(hint);
   const raw = JSON.stringify(args) ?? "";
   const bounded = raw.length > LIVE_ARGS_MAX * 4 ? raw.slice(0, LIVE_ARGS_MAX * 4) : raw;
-  return truncate(bounded.replaceAll(/\s+/g, " ").trim(), LIVE_ARGS_MAX);
+  return truncate(collapseToSpaces(bounded), LIVE_ARGS_MAX);
 }
 
 const buffers = new Map<string, LiveEvent[]>();
@@ -160,12 +166,18 @@ export function pushEvent(buf: LiveEvent[], event: PiJsonEvent): void {
       .join("");
     if (!resultText) return;
     // #839 — the tool-result identity fields live on the MESSAGE (pi-ai
-    // `ToolResultMessage`), not on the event; no cast needed.
+    // `ToolResultMessage`), not on the event; no cast needed. The result
+    // text is untrusted child output — sanitise + collapse to ONE logical
+    // line at feed time (newlines → the ` ⏎ ` separator, C0/ANSI stripped,
+    // tabs → spaces) so the overlay can never desync pi-tui's line
+    // accounting (issue #927: raw newlines / control chars from tool
+    // results ghosted the overlay over the main chat and polluted the
+    // scrollback on every 1 s re-render).
     const name = msg.toolName;
     appendEvicted(buf, {
       kind: "toolResult",
-      name: name ? name : "unknown",
-      text: truncate(resultText, LIVE_RESULT_MAX),
+      name: name ? sanitizeText(name) : "unknown",
+      text: truncate(sanitizeText(resultText).replace(/\n+/g, NEWLINE_SEP), LIVE_RESULT_MAX),
       isError: msg.isError === true,
     });
     return;
@@ -173,11 +185,14 @@ export function pushEvent(buf: LiveEvent[], event: PiJsonEvent): void {
   if (msg.role !== "assistant") return;
   for (const block of msg.content ?? []) {
     if (block.type === "text" && typeof block.text === "string" && block.text.length > 0) {
-      appendEvicted(buf, { kind: "text", text: truncate(block.text, LIVE_TEXT_MAX) });
+      appendEvicted(buf, {
+        kind: "text",
+        text: truncate(sanitizeText(block.text).replace(/\n+/g, NEWLINE_SEP), LIVE_TEXT_MAX),
+      });
     } else if (block.type === "toolCall" && block.name) {
       appendEvicted(buf, {
         kind: "toolCall",
-        name: block.name,
+        name: sanitizeText(block.name),
         args: toolCallArgsPreview(block.arguments),
       });
     }
@@ -221,16 +236,30 @@ export interface LiveViewTheme {
 // handleInput() directly; a live check covers the cadence on the
 // installed Pi, per the issue's AGENTS.md §4 note.)
 
-/** Render one buffer event as a single overlay line. */
-function renderEvent(ev: LiveEvent, theme: LiveViewTheme): string {
+/**
+ * Render one buffer event as a single overlay line. Every piece of
+ * UNTRUSTED content (assistant text, tool name, args, result) is sanitised
+ * and width-bounded to the row via `toTerminalLine` — render() must never
+ * return a string containing a newline or wider than the overlay column
+ * (pi-tui's differential renderer corrupts the terminal otherwise; see
+ * dispatch-deck-line.ts).
+ */
+function renderEvent(ev: LiveEvent, theme: LiveViewTheme, width: number): string {
   switch (ev.kind) {
     case "text":
-      return ev.text;
+      return toTerminalLine(ev.text, width);
     case "toolCall":
-      return ev.args ? `→ ${ev.name} ${ev.args}` : `→ ${ev.name}`;
+      return toTerminalLine(ev.args ? `→ ${ev.name} ${ev.args}` : `→ ${ev.name}`, width);
     case "toolResult": {
-      const marker = ev.isError ? `✗ ${ev.name} (error)` : `✓ ${ev.name}`;
-      return ev.text ? `${ev.isError ? theme.error(marker) : marker} ${ev.text}` : marker;
+      // Sanitise + width-bound the plain text FIRST, then apply the theme
+      // colour to the marker (issue #927: never colour before sanitising —
+      // the marker only carries the tool name and the "error" literal).
+      const safeText = toTerminalLine(ev.text, width);
+      const marker = ev.isError
+        ? `✗ ${toTerminalLine(ev.name, 40)} (error)`
+        : `✓ ${toTerminalLine(ev.name, 40)}`;
+      const head = ev.isError ? theme.error(marker) : marker;
+      return safeText ? `${head} ${safeText}` : marker;
     }
   }
 }
@@ -265,9 +294,18 @@ export function createLiveViewComponent(
     },
     render(width: number): string[] {
       const h = header();
+      // The header carries the entry label and the last tool name, both of
+      // which flow in from untrusted child output — sanitize like any other
+      // line, so the overlay header can never desync the renderer either.
       const hline = h
-        ? `${h.label} · ${h.role} · ${formatElapsed(Math.max(0, h.now - h.startedAt))} · ${h.turns} turn${h.turns === 1 ? "" : "s"} · ${h.toolUses} tools · ${h.totalTokens} tokens${h.lastToolName ? ` · last: ${h.lastToolName}` : ""}`
-        : key;
+        ? toTerminalLine(
+            `${h.label} · ${h.role} · ${formatElapsed(Math.max(0, h.now - h.startedAt))} · ${h.turns} turn${h.turns === 1 ? "" : "s"} · ${h.toolUses} tools · ${h.totalTokens} tokens${h.lastToolName ? ` · last: ${h.lastToolName}` : ""}`,
+            width,
+          )
+        : toTerminalLine(key, width);
+      // The overlay's visible window is exactly 24 event rows: header +
+      // 24 + hint = 26 rows, NEVER more (pi-tui's overlay compositing is
+      // height-sensitive — a taller render ghosts into the chat below).
       const events = getBufferTail(key, visible);
       const lines: string[] = [hline];
       if (events.length === 0) {
@@ -276,13 +314,12 @@ export function createLiveViewComponent(
         const start = Math.max(0, events.length - offset - visible);
         for (let i = start; i < events.length; i++) {
           const ev = events[i];
-          if (ev) lines.push(renderEvent(ev, theme));
+          if (ev) lines.push(renderEvent(ev, theme, width));
         }
       }
       const state =
         offset > 0 ? "paused — ↓/End to follow · s steer · Esc close" : "s steer · Esc close";
       lines.push(theme.muted(state));
-      void width;
       return lines;
     },
     handleInput(data: string): void {
