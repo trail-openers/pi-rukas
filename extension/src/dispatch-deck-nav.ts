@@ -102,9 +102,6 @@ export function createDeckNav(
 ): DeckNav {
   let active = false;
   let selected: string | undefined;
-  // Last focus outcome. `false` while roster mode is active triggers the
-  // passive exit (any key, un-consumed).
-  let lastFocus = true;
 
   // "Exit roster mode" — the single spelling of that transition, shared by
   // every branch that clears the selection.
@@ -144,8 +141,8 @@ export function createDeckNav(
     // is no state of our own to keep in sync). Focus moving away from
     // the editor while roster mode is active exits roster mode WITHOUT
     // consuming: the key goes on to whatever now has focus.
-    lastFocus = get.editorFocused();
-    if (active && lastFocus === false) {
+    const focus = get.editorFocused();
+    if (active && focus === false) {
       exit();
       return undefined;
     }
@@ -195,7 +192,7 @@ export function createDeckNav(
     // (fail-closed: an unproven focus must not activate the roster) and a
     // running job.
     const keys = get.runningKeys();
-    if (matchesKey(data, "down") && get.editorText() === "" && lastFocus && keys.length > 0) {
+    if (matchesKey(data, "down") && get.editorText() === "" && focus && keys.length > 0) {
       active = true;
       selected = keys[0];
       onChange();

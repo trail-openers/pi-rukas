@@ -4,6 +4,8 @@
  * other focused components (the /model selector, ctx.ui.* dialogs,
  * overlays), and focus moving away mid-roster must exit roster mode
  * without consuming the key.
+ *
+ * Its fake-deck harness mirrors test-dispatch-deck-nav.ts — change both together.
  */
 
 import { createDeckNav } from "../src/dispatch-deck-nav.ts";

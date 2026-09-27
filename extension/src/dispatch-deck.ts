@@ -84,10 +84,8 @@ let navWarned = false;
 // session; see buildDeckWidgetFactory). Cleared on detach so a stale TUI
 // from a previous session (or test) does not leak into the focus probe.
 let deckTui: TUI | null = null;
-// The focused-component probe seam the tests exercise: identity of the
-// focused component pi-tui exposes privately as `tui.focusedComponent`.
-// Overridable in tests to simulate focus landing on another component
-// without a live TUI process.
+// The focused-component probe seam the tests exercise (identity of the
+// focused component, `tui.focusedComponent`); see setFocusedComponentProbe.
 let focusedComponentProbe: (() => unknown) | undefined;
 // Self-heal attempt counter: caps the renderNow retry loop so a persistent
 // onTerminalInput failure (a host without the capability at all) doesn't
@@ -180,6 +178,7 @@ function editorFocused(): boolean {
     const flag = (focused as { focused?: unknown }).focused;
     return flag === true;
   } catch {
+    trace("dispatch-deck: editorFocused probe threw — treating as not focused");
     return false;
   }
 }
