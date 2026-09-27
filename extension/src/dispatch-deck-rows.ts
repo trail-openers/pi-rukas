@@ -11,6 +11,7 @@
  * (test-dispatch-deck.ts block 8 / 12c) both reference these functions.
  */
 
+import { collapseToSpaces, toTerminalLine } from "./dispatch-deck-line.ts";
 import type { BatchDeckEntry, DeckEntry } from "./dispatch-deck.ts";
 import type { RunningState } from "./progress.ts";
 import { formatElapsed } from "./progress.ts";
@@ -32,7 +33,7 @@ function entryLabel(e: { label: string; state: RunningState }): string {
 }
 
 function truncateHint(s: string): string {
-  const oneLine = s.replaceAll(/\s+/g, " ").trim();
+  const oneLine = collapseToSpaces(s);
   if (oneLine.length <= HINT_MAX) return oneLine;
   return `${oneLine.slice(0, HINT_MAX - 1).trimEnd()}…`;
 }
@@ -42,12 +43,17 @@ function formatRowCore(
   now: number,
 ): string {
   const elapsedMs = Math.max(0, now - entry.startedAt);
-  const parts: string[] = [entryLabel(entry), formatElapsed(elapsedMs)];
+  // The label (and the tag inside it) flow in from untrusted child output —
+  // collapse to a single logical line (newlines → the ` ⏎ ` separator,
+  // C0/C1/ANSI stripped) so a hostile label cannot desync pi-tui's line
+  // accounting (issue #927).
+  const label = toTerminalLine(entryLabel(entry), 80);
+  const parts: string[] = [label, formatElapsed(elapsedMs)];
   if (entry.state.lastToolName) {
     parts.push(
       entry.state.toolUses > 1
-        ? `${entry.state.lastToolName} (#${entry.state.toolUses})`
-        : entry.state.lastToolName,
+        ? `${toTerminalLine(entry.state.lastToolName, 40)} (#${entry.state.toolUses})`
+        : toTerminalLine(entry.state.lastToolName, 40),
     );
     if (entry.state.lastToolHint) parts.push(truncateHint(entry.state.lastToolHint));
   }
