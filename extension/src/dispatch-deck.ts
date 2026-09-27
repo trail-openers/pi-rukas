@@ -21,6 +21,7 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { TUI } from "@earendil-works/pi-tui";
 import * as deckComposite from "./dispatch-deck-composite.ts";
 import { type RowConfirmHost, onRowConfirm } from "./dispatch-deck-confirm.ts";
 import { steerFromDeck } from "./dispatch-deck-interactive.ts";
@@ -42,6 +43,11 @@ function getDeckMaxRows(): number {
   if (!raw) return DECK_MAX_ROWS_DEFAULT;
   const n = Number.parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? n : DECK_MAX_ROWS_DEFAULT;
+}
+
+/** Test seam: override the focus probe's focused-component read. */
+export function setFocusedComponentProbe(probe: (() => unknown) | undefined): void {
+  focusedComponentProbe = probe;
 }
 
 export interface DeckEntry {
@@ -72,6 +78,15 @@ let widgetVisible = false;
 let nav: DeckNav | undefined;
 let navUnsub: (() => void) | undefined;
 let navWarned = false;
+// TUI captured from the deck widget factory at render time — module scope
+// so the focus probe survives re-attach (a re-attach builds a fresh DeckNav
+// but the TUI is the same instance for the lifetime of the interactive
+// session; see buildDeckWidgetFactory). Cleared on detach so a stale TUI
+// from a previous session (or test) does not leak into the focus probe.
+let deckTui: TUI | null = null;
+// The focused-component probe seam the tests exercise (identity of the
+// focused component, `tui.focusedComponent`); see setFocusedComponentProbe.
+let focusedComponentProbe: (() => unknown) | undefined;
 // Self-heal attempt counter: caps the renderNow retry loop so a persistent
 // onTerminalInput failure (a host without the capability at all) doesn't
 // re-create and re-attempt registration on every 1 s render for the whole
@@ -105,6 +120,7 @@ export function detach(): void {
     } catch {}
   }
   detachNav();
+  deckTui = null; // clear the focus-probe TUI capture
   activeCtx = undefined;
   entries.clear();
   batches.clear();
@@ -130,7 +146,41 @@ function navGetters(ctx: ExtensionContext) {
     // input loop). Swallowing it to "" would ENABLE roster mode from a
     // throwing editor — fail open instead.
     editorText: () => ctx.ui.getEditorText(),
+    // Focus gate for the roster nav (#deck-nav-focus): the global
+    // onTerminalInput listener runs BEFORE pi-tui routes the key to the
+    // focused component, so without this the roster would steal `↓` from
+    // the /model selector, ctx.ui.* dialogs and overlays (their editor
+    // text is empty while they have focus). True ONLY when the main
+    // editor is focused.
+    editorFocused: () => editorFocused(),
   };
+}
+
+/**
+ * Exact focus check for the roster nav. Reads `tui.focusedComponent`
+ * (private on pi-tui's TuiBase, duck-typed here) and reads the editor
+ * component's `focused` flag (pi-tui's TuiBase.setFocus toggles it on
+ * every focusable component on focus change). True only when the TUI
+ * says the editor is focused AND the editor's own flag agrees.
+ *
+ * Fail-closed: an absent TUI (no deck render has run yet), a missing
+ * `focusedComponent`/`focused` shape (a host without the probe surface),
+ * or a THROWING read all report `false` — the roster never activates
+ * when focus cannot be proven to be on the editor, rather than guessing
+ * `null` (degraded) and re-stealing keys from other components.
+ */
+function editorFocused(): boolean {
+  try {
+    if (!deckTui) return false;
+    const tui = deckTui as unknown as { focusedComponent?: unknown };
+    const focused = focusedComponentProbe ? focusedComponentProbe() : tui.focusedComponent;
+    if (!focused || typeof focused !== "object") return false;
+    const flag = (focused as { focused?: unknown }).focused;
+    return flag === true;
+  } catch {
+    trace("dispatch-deck: editorFocused probe threw — treating as not focused");
+    return false;
+  }
 }
 
 /**
@@ -291,6 +341,7 @@ export function reset(): void {
   pendingRender = false;
   insertionCounter = 0;
   widgetVisible = false;
+  deckTui = null; // clear the focus-probe TUI capture
   detachNav();
 }
 
@@ -359,13 +410,27 @@ function renderNow(): void {
       trace("dispatch-deck: roster-mode nav restored (self-heal) after earlier failure");
     }
   }
-  const factory = buildCompositeWidgetFactory(activeCtx);
+  const factory = buildDeckWidgetFactory(activeCtx);
   try {
     activeCtx.ui.setWidget(WIDGET_KEY, factory, { placement: "belowEditor" });
     widgetVisible = true;
   } catch (err) {
     trace(`dispatch-deck: setWidget failed: ${(err as Error).message}`);
   }
+}
+
+/**
+ * The deck widget factory wraps the composite factory to capture the TUI
+ * instance (the only TUI an extension legitimately reaches — the deck's
+ * `setWidget` factory receives it as its first argument). The wrapper is
+ * created once per render; the inner composite is built fresh each call.
+ */
+function buildDeckWidgetFactory(ctx: ExtensionContext) {
+  const inner = buildCompositeWidgetFactory(ctx);
+  return (tui: TUI, theme: Parameters<typeof inner>[1]) => {
+    deckTui = tui; // focus probe (editorFocused) reads it via duck-typing
+    return inner(tui, theme);
+  };
 }
 
 /** Build the single composite widget factory (batch rows + per-job plain

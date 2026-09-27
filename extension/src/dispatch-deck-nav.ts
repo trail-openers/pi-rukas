@@ -28,6 +28,21 @@
  * lets pi-tui route it on, which the TUI filters for non-release-hungry
  * focused components.
  *
+ * Focus gate: `onTerminalInput` listeners run BEFORE pi-tui routes the key
+ * to the focused component (TuiBase.handleTerminalInput walks
+ * `inputListeners` first), so a listener cannot see who has focus — while
+ * the `/model` selector, a `ctx.ui.select/confirm/input` dialog or an
+ * overlay has focus, the main editor's text is still empty, which made the
+ * roster steal `↓` from those components. The deck therefore injects an
+ * `editorFocused()` getter that reports true ONLY when the main editor is
+ * the focused component (see dispatch-deck.ts, which duck-types
+ * `tui.focusedComponent` + the editor's `focused` flag). The getter is
+ * FAIL-CLOSED: an absent or throwing focus signal counts as NOT focused,
+ * so the roster never activates when focus cannot be proven. When focus is
+ * on some other component, `down` passes through and an in-progress roster
+ * mode is exited WITHOUT consuming the key (the key goes on to the
+ * focused component).
+ *
  * Known behaviour change (documented in docs/configuration.md): from an
  * EMPTY editor, `down` no longer walks prompt history while subagents are
  * running.
@@ -48,6 +63,16 @@ export interface DeckNavGetters {
   runningKeys: () => string[];
   /** The editor's current text ("" when empty). */
   editorText: () => string;
+  /**
+   * True when the MAIN editor is the focused component, false when some
+   * other component (built-in selector, dialog, overlay, ...) has focus or
+   * the focus signal is absent/throwing (fail-closed — the roster must
+   * not activate when focus cannot be proven to be on the editor). In
+   * inactive mode, `down` enters roster mode only when this is `true`;
+   * while active, it becomes `false` and roster mode exits WITHOUT
+   * consuming the key (the key goes on to the focused component).
+   */
+  editorFocused: () => boolean;
 }
 
 /** The listener handler returned to `ctx.ui.onTerminalInput`. */
@@ -111,6 +136,17 @@ export function createDeckNav(
     // Key-release events are ignored entirely (Kitty protocol flag 2).
     if (isKeyRelease(data)) return undefined;
 
+    // Probe focus on every key (cheap flag read; pi-tui toggles the
+    // focused component's `focused` flag on every focus change, so there
+    // is no state of our own to keep in sync). Focus moving away from
+    // the editor while roster mode is active exits roster mode WITHOUT
+    // consuming: the key goes on to whatever now has focus.
+    const focus = get.editorFocused();
+    if (active && focus === false) {
+      exit();
+      return undefined;
+    }
+
     if (active) {
       // --- Roster mode: every key is consumed EXCEPT an unknown key,
       // which exits and is NOT consumed (typing goes to the editor).
@@ -152,9 +188,11 @@ export function createDeckNav(
       return undefined;
     }
 
-    // --- Inactive: only `down` with an empty editor and a running job.
+    // --- Inactive: only `down` with an empty editor, the editor focused
+    // (fail-closed: an unproven focus must not activate the roster) and a
+    // running job.
     const keys = get.runningKeys();
-    if (matchesKey(data, "down") && get.editorText() === "" && keys.length > 0) {
+    if (matchesKey(data, "down") && get.editorText() === "" && focus && keys.length > 0) {
       active = true;
       selected = keys[0];
       onChange();
