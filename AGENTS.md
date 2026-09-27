@@ -40,6 +40,8 @@ CI runs the offline tests only. Live tests are dev-machine only.
 
 The fix loop is bounded, and what happens at the bound depends on severity. A `CRITICAL` finding always parks. A round cap reached with only MEDIUM/HIGH findings outstanding, an **approving** adversarial gate, and the residual findings **posted to the PR** carries on to CI instead of parking — measured: two of six outcomes in one overnight run parked here, and a human then judged both merge-worthy (one merged unchanged). Parking work that is fine costs a re-run and operator time; carrying findings forward silently would be worse, so disclosure is a precondition and a failure to post parks the cycle instead. A review that also exhausts its wall-clock budget parks regardless — running out of rounds says the loop is not converging, running out of time says nobody knows what it is doing.
 
+**Agent-run PR/MR merges are gated on the review ledger (#912).** A mode-independent `tool_call` hook refuses `gh pr merge` / `glab mr merge` (and the REST doors) in every mode, for every role, unless the per-clone review ledger (under the git common dir) shows a passing `adversarial_loop` **and** a passing `dispatch_lens_review` for that branch's current changes. The driver's mechanized merge is exempt by construction (in-process exec, not a tool call); its own reviews are recorded. Carve-outs: release-please and dependabot. Escape hatch: `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1` (operator-set only). See [docs/troubleshooting.md](docs/troubleshooting.md) → "A merge was refused: review ledger".
+
 ---
 
 ## 2. Two change paths (READ FIRST before editing)

@@ -180,6 +180,33 @@ const SEAMS: Seam[] = [
     },
     canary: { symbol: "buildCompositeFactory", importer: "dispatch-deck.ts" },
   },
+  {
+    // #912 — the per-clone review ledger. The writer calls live in
+    // adversarial.ts (runAdversarialLoop) and lens-review.ts
+    // (runLensReview); the guard (merge-guard.ts) is the reader. The shared
+    // predicates + branchPatchId are the seam the guard trusts.
+    file: "review-ledger.ts",
+    pending: {},
+    testOnly: {
+      readLedgerFile: "the raw file reader; exercised by test-review-ledger.ts",
+      validEntries: "the row validator; exercised by test-review-ledger.ts",
+      dedupeLatest: "the bounded-file dedup; exercised by test-review-ledger.ts",
+      readLedgerAt: "the never-throwing reader; exercised by test-merge-guard.ts",
+      lensBlockedByThreshold:
+        "the driver-side threshold predicate; exercised by test-review-ledger.ts",
+    },
+    canary: { symbol: "appendLedgerEntry", importer: "adversarial-ledger.ts" },
+  },
+  {
+    // #912 — the merge target reader (gh/glab) + carve-out predicate.
+    // Wired into merge-guard.ts (the guard's decision path).
+    file: "merge-target.ts",
+    pending: {},
+    testOnly: {
+      resolvePrNumber: "the no-number PR resolution; exercised by test-merge-guard.ts",
+    },
+    canary: { symbol: "readMergeTarget", importer: "merge-guard.ts" },
+  },
 ];
 
 /**

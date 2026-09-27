@@ -409,9 +409,9 @@ assert(fallthrough === "ask", "Issue #168: catch-all `*: ask` fires when no wild
     const toolCallHandlers = handlers.filter((h) => h.event === "tool_call");
     // In sandbox mode the legacy permission handler is not registered, but the
     // mode-independent guards ARE (registered ahead of the sandbox short-circuit,
-    // #598 issue-creation + #600 PM bash allowlist). Two tool_call handlers remain.
+    // #598 issue-creation + #600 PM bash allowlist + #912 merge guard).
     assert(
-      toolCallHandlers.length === 2,
+      toolCallHandlers.length === 3,
       `L8: PI_ENSEMBLE_SANDBOX_MODE=1 short-circuits the legacy permission handler — only the mode-independent guards remain (${toolCallHandlers.length} tool_call handler(s))`,
     );
 

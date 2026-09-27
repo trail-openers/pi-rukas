@@ -26,7 +26,7 @@
  * like `discardsUncommittedWork`.
  */
 
-import { createsIssue } from "../src/bash-command-parser.ts";
+import { createsIssue } from "../src/bash-creates-issue.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -112,7 +112,7 @@ for (const cmd of [
   // MR verbs are not the issue door.
   "glab mr create --title x --description-file y.md",
   // Quoted mentions of the glab verb create nothing.
-  "echo \"glab issue create\"",
+  'echo "glab issue create"',
   // Non-issue glab REST endpoints stay open.
   "glab api /projects/123/mr/42",
   "glab api user",
