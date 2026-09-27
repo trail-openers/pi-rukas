@@ -82,6 +82,14 @@ function assert(cond: boolean, msg: string) {
   // A lone ESC at the end of the string: dropped, text before it kept.
   const loneEsc = sanitizeText("tail" + E);
   assert(loneEsc === "tail", `1b-c: lone trailing ESC dropped (got ${JSON.stringify(loneEsc)})`);
+  // C1 OSC: 0x9b followed by `]` must be handled exactly like ESC `]`.
+  const c1Osc = sanitizeText("pre\u009b]0;title\u0007post");
+  assert(c1Osc === "prepost", `1b-d: C1 OSC dropped (got ${JSON.stringify(c1Osc)})`);
+  // Unterminated OSC: 10 000-char payload, no terminator — bounded scan.
+  const t0 = Date.now(); const unterminated = sanitizeText(`pre${E}]${"x".repeat(10000)}post`);
+  assert(!/[\u0000-\u001f\u007f-\u009f]/.test(unterminated), "1b-e: no control chars");
+  assert(unterminated.startsWith("pre") && unterminated.endsWith("post"), "1b-f: text preserved");
+  assert(Date.now() - t0 < 2000, "1b-g: bounded scan");
 }
 
 // ---------------------------------------------------------------------------

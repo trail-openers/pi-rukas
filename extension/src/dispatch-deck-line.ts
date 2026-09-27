@@ -11,8 +11,9 @@
  * text interleaves with the main chat, every 1 s re-render leaves a new
  * ghost copy in scrollback, and the ghosting survives the overlay close.
  *
- * These helpers sanitise untrusted text ONCE at the render boundary so no
- * deck surface can emit a line that violates the invariant:
+ * These helpers sanitise untrusted text idempotently at BOTH the feed
+ * boundary and the render boundary so no deck surface can emit a line that
+ * violates the invariant:
  *
  *   - `sanitizeText`   — normalise + strip control chars / ANSI escapes
  *   - `toTerminalLine` — the one-line form: newlines → ` ⏎ `, width-bounded
@@ -48,30 +49,46 @@ const CODE_BEL = 0x07;
 /** Drop ANSI escape sequences and stray C0/C1 control characters. */
 function stripAnsiAndControl(text: string): string {
   let out = "";
+  // Bounded scan: each escape skip loop runs at most this many chars before
+  // giving up — so a runaway payload (no terminator) can't make the scan
+  // quadratic in pathological cases, only linearly longer by the cap.
+  const SCAN_CAP = 256;
   for (let i = 0; i < text.length; i++) {
     const ch = text.charCodeAt(i);
-    if (ch === CODE_ESC || (ch === CODE_CSI_C1 && text.charCodeAt(i + 1) === 0x5b)) {
+    if (
+      ch === CODE_ESC ||
+      (ch === CODE_CSI_C1 && (text.charCodeAt(i + 1) === 0x5b || text.charCodeAt(i + 1) === 0x5d))
+    ) {
       const next = text.charCodeAt(i + 1);
       if (next === 0x5b) {
         // CSI: skip through the final byte (0x40–0x7e).
-        for (let j = i + 2; j < text.length; j++) {
+        let stopped = false;
+        const limit = Math.min(i + 2 + SCAN_CAP, text.length);
+        for (let j = i + 2; j < limit; j++) {
           if (text.charCodeAt(j) >= 0x40 && text.charCodeAt(j) <= 0x7e) {
             i = j;
+            stopped = true;
             break;
           }
         }
+        if (!stopped) i += 1; // cap hit: drop the escape introducer only
       } else if (next === 0x5d) {
         // OSC: skip until BEL or the ST sequence (ESC `\`).
-        for (let j = i + 2; j < text.length; j++) {
+        let stopped = false;
+        const limit = Math.min(i + 2 + SCAN_CAP, text.length);
+        for (let j = i + 2; j < limit; j++) {
           if (text.charCodeAt(j) === CODE_BEL) {
             i = j;
+            stopped = true;
             break;
           }
           if (text.charCodeAt(j) === CODE_ESC && text.charCodeAt(j + 1) === 0x5c) {
             i = j + 1;
+            stopped = true;
             break;
           }
         }
+        if (!stopped) i += 1; // cap hit: drop the escape introducer only
       } else {
         // ESC + single char: drop both (also a lone ESC at end of string).
         i += 1;
