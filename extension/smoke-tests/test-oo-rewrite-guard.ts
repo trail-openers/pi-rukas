@@ -54,10 +54,7 @@ const BARE_PREFIXES = [
 // (a) All 12 bare prefixes rewrite, with and without argument suffixes.
 for (const prefix of BARE_PREFIXES) {
   assert(ooBarePrefix(prefix) === prefix, `bare — ${prefix}`);
-  assert(
-    ooBarePrefix(`${prefix} --release`) === prefix,
-    `bare + args — ${prefix} --release`,
-  );
+  assert(ooBarePrefix(`${prefix} --release`) === prefix, `bare + args — ${prefix} --release`);
 }
 assert(ooBarePrefix("pytest tests/test_foo.py") === "pytest", "pytest tests/test_foo.py");
 assert(
@@ -78,10 +75,7 @@ assert(ooBarePrefix("bun test2") === undefined, "word boundary — bun test2");
 assert(ooBarePrefix("bun tests/") === undefined, "word boundary — bun tests/");
 assert(ooBarePrefix("pytest3") === undefined, "word boundary — pytest3");
 assert(ooBarePrefix("cargo buildx") === undefined, "word boundary — cargo buildx");
-assert(
-  ooBarePrefix("npm run build:prod") === undefined,
-  "word boundary — npm run build:prod",
-);
+assert(ooBarePrefix("npm run build:prod") === undefined, "word boundary — npm run build:prod");
 
 // (d) Wrapper-prefixed forms are OUT OF SCOPE (no stripLeadingWrappers):
 // only a bare 12-item command at the START of the string matches.
@@ -104,7 +98,7 @@ for (const cmd of [
   "bun test `id`",
   "npm test | tee log",
   "go test > out.txt",
-  "pytest -k \"$x\"",
+  'pytest -k "$x"',
 ]) {
   assert(ooBarePrefix(cmd) === undefined, `injection no-match — ${cmd}`);
 }
@@ -136,7 +130,10 @@ for (const cmd of ["cargo fmt", "uv run pytest", "pip install x", "ls", "bun run
 type Handler = (
   event: { toolName: string; input: unknown },
   ctx: { hasUI: boolean },
-) => Promise<{ block: true; reason: string } | undefined> | { block: true; reason: string } | undefined;
+) =>
+  | Promise<{ block: true; reason: string } | undefined>
+  | { block: true; reason: string }
+  | undefined;
 
 function captureOoHandlers(opts?: { probe?: () => boolean }) {
   const handlers: Handler[] = [];
@@ -149,9 +146,11 @@ function captureOoHandlers(opts?: { probe?: () => boolean }) {
   return handlers;
 }
 
-const { registerOoRewriteGuard: registerGuard, resetOoBinaryCache, ooBinaryAvailable } = await import(
-  "../src/oo-rewrite-guard.ts"
-);
+const {
+  registerOoRewriteGuard: registerGuard,
+  resetOoBinaryCache,
+  ooBinaryAvailable,
+} = await import("../src/oo-rewrite-guard.ts");
 
 const prevSandbox = process.env.PI_ENSEMBLE_SANDBOX_MODE;
 const prevTrust = process.env.PI_ENSEMBLE_TRUST_MODE;
@@ -161,7 +160,11 @@ const save = () => ({
   trust: process.env.PI_ENSEMBLE_TRUST_MODE,
   role: process.env.PI_ENSEMBLE_ROLE,
 });
-const restore = (s: { sandbox: string | undefined; trust: string | undefined; role: string | undefined }) => {
+const restore = (s: {
+  sandbox: string | undefined;
+  trust: string | undefined;
+  role: string | undefined;
+}) => {
   const set = (k: string, v: string | undefined) => {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
@@ -176,7 +179,13 @@ const MODES: Array<{ name: string; sandbox: string | undefined; trust: string | 
   { name: "sandbox", sandbox: "1", trust: undefined },
   { name: "strict/headless (neither marker)", sandbox: undefined, trust: undefined },
 ];
-const ROLES = ["developer", "ops", "explore", "code-review-specialist", "adversarial-developer"] as const;
+const ROLES = [
+  "developer",
+  "ops",
+  "explore",
+  "code-review-specialist",
+  "adversarial-developer",
+] as const;
 
 for (const mode of MODES) {
   for (const role of ROLES) {
@@ -188,20 +197,30 @@ for (const mode of MODES) {
     resetOoBinaryCache();
     let probeCalls = 0;
     const handlers = captureOoHandlers({ probe: () => (probeCalls++, true) });
-    assert(handlers.length === 1, `hook: one tool_call handler registered (${mode.name} / ${role})`);
+    assert(
+      handlers.length === 1,
+      `hook: one tool_call handler registered (${mode.name} / ${role})`,
+    );
     const h = handlers[0];
 
-    const shouldFire = (mode.name !== "strict/headless (neither marker)") && (role === "developer" || role === "ops");
+    const shouldFire =
+      mode.name !== "strict/headless (neither marker)" && (role === "developer" || role === "ops");
     const input = { command: "cargo build --release" };
     const result = await h({ toolName: "bash", input }, { hasUI: true });
 
     if (shouldFire) {
       assert(result === undefined, `fires: no block returned (${mode.name} / ${role})`);
-      assert(input.command === "oo cargo build --release", `fires: command rewritten to oo <cmd> (${mode.name} / ${role})`);
+      assert(
+        input.command === "oo cargo build --release",
+        `fires: command rewritten to oo <cmd> (${mode.name} / ${role})`,
+      );
       assert(probeCalls === 1, `fires: oo probe ran exactly once (${mode.name} / ${role})`);
     } else {
       assert(result === undefined, `inert: no block returned (${mode.name} / ${role})`);
-      assert(input.command === "cargo build --release", `inert: command unmutated (${mode.name} / ${role})`);
+      assert(
+        input.command === "cargo build --release",
+        `inert: command unmutated (${mode.name} / ${role})`,
+      );
     }
     // Non-bash tools: untouched, and no probe re-run from a no-op call.
     const input2 = { command: "cargo test" };
@@ -241,13 +260,19 @@ for (const mode of MODES) {
   const path = await import("node:path");
   const { readFileSync } = await import("node:fs");
   const srcDir = path.resolve(import.meta.dirname, "..", "src");
-  const sub = readFileSync(path.join(srcDir, "permission-subagent-guard.ts"), "utf8");
+  // #926 — the registration block moved verbatim into subagent-guard-guards.ts.
+  const sub =
+    readFileSync(path.join(srcDir, "permission-subagent-guard.ts"), "utf8") +
+    readFileSync(path.join(srcDir, "subagent-guard-guards.ts"), "utf8");
   const guard = readFileSync(path.join(srcDir, "oo-rewrite-guard.ts"), "utf8");
 
-  const regIdx = sub.indexOf("registerOoRewriteGuard(pi)");
-  const sandboxIdx = sub.indexOf("PI_ENSEMBLE_SANDBOX_MODE === \"1\"");
-  const trustIdx = sub.indexOf("PI_ENSEMBLE_TRUST_MODE === \"1\"");
-  assert(regIdx > 0, "canary: registerSubagentGuard calls registerOoRewriteGuard");
+  const regIdx = sub.indexOf("registerModeIndependentGuards(pi)");
+  const sandboxIdx = sub.indexOf('PI_ENSEMBLE_SANDBOX_MODE === "1"');
+  const trustIdx = sub.indexOf('PI_ENSEMBLE_TRUST_MODE === "1"');
+  assert(
+    regIdx > 0 && sub.includes("registerOoRewriteGuard(pi)"),
+    "canary: registerSubagentGuard calls the shared block (which registers the oo-rewrite guard)",
+  );
   assert(
     regIdx < sandboxIdx && regIdx < trustIdx,
     `canary: registered BEFORE the sandbox short-circuit (=${sandboxIdx}) and trust return (=${trustIdx})`,
@@ -266,11 +291,20 @@ for (const mode of MODES) {
   // REWRITE ONLY: the hook must never block anything. (The docstring mentions
   // `{ block: true }` to describe the contract; the canary checks for the
   // actual code pattern `block: true` that would appear in a return statement.)
-  assert(!/return\s*\{[^}]*block:\s*true/s.test(guard), "canary: no block return anywhere in the guard (rewrite only)");
+  assert(
+    !/return\s*\{[^}]*block:\s*true/s.test(guard),
+    "canary: no block return anywhere in the guard (rewrite only)",
+  );
   // Wrapper-stripping is deliberately NOT used for the match predicate.
-  assert(!/stripLeadingWrappers\s*\(/.test(guard), "canary: stripLeadingWrappers is not CALLED for the predicate");
+  assert(
+    !/stripLeadingWrappers\s*\(/.test(guard),
+    "canary: stripLeadingWrappers is not CALLED for the predicate",
+  );
   // Reuses the exported parser helpers for the injection gate.
-  assert(/stripQuotedSegments/.test(guard) && /BASH_COMMAND_INJECTION_CHARS/.test(guard), "canary: reuses exported stripQuotedSegments + BASH_COMMAND_INJECTION_CHARS");
+  assert(
+    /stripQuotedSegments/.test(guard) && /BASH_COMMAND_INJECTION_CHARS/.test(guard),
+    "canary: reuses exported stripQuotedSegments + BASH_COMMAND_INJECTION_CHARS",
+  );
 }
 
 if (prevSandbox === undefined) delete process.env.PI_ENSEMBLE_SANDBOX_MODE;

@@ -229,12 +229,23 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
       `canary: the companion registers ${name}(pi) (directly or via the shared block)`,
     );
   }
-  const excluded = ["registerPmBashGuard", "registerSubagentGuard", "registerPermissionGuard"];
+  const excluded = ["registerPmBashGuard"];
   for (const name of excluded) {
     const inShared = new RegExp(`(^|[^\\w])${name}\\s*\\(`).test(shared);
     assert(
       !registered(name) && !inShared,
-      `canary: the companion does NOT register ${name} (parent/subagent-path only)`,
+      `canary: the companion does NOT register ${name} (parent-only)`,
+    );
+  }
+  const notEntrypoints = [
+    "registerSubagentGuard",
+    "registerPermissionGuard",
+    "registerOoRewriteGuard",
+  ];
+  for (const name of notEntrypoints) {
+    assert(
+      !new RegExp(`(^|[^\\w])${name}\\s*\\(`).test(src),
+      `canary: the companion does NOT call ${name} (it registers the guard block, not the entry points)`,
     );
   }
   // The shared block itself must carry the three mode-independent guards.

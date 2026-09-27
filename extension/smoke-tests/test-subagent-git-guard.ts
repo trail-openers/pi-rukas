@@ -88,14 +88,24 @@ for (const cmd of [
 
 {
   const SRC = path.resolve(import.meta.dirname, "..", "src");
+  // #926 — the registration block moved verbatim into subagent-guard-guards.ts;
+  // the shared block is called from registerSubagentGuard BEFORE the bypasses,
+  // so the canary pins the call site's position here and the block's content
+  // there.
   const src = readFileSync(path.join(SRC, "permission-subagent-guard.ts"), "utf8");
-  const guardIdx = src.indexOf("registerDestructiveGitGuard(pi)");
+  const block = readFileSync(path.join(SRC, "subagent-guard-guards.ts"), "utf8");
+  const guardIdx = src.indexOf("registerModeIndependentGuards(pi)");
   const sandboxIdx = src.indexOf("PI_ENSEMBLE_SANDBOX_MODE");
   const trustIdx = src.indexOf("PI_ENSEMBLE_TRUST_MODE");
-  assert(guardIdx > 0, "the destructive-git guard is registered");
+  assert(guardIdx > 0, "the mode-independent block is registered (via the shared call)");
   assert(
     guardIdx < sandboxIdx && guardIdx < trustIdx,
     `canary: it is registered BEFORE both bypasses (guard=${guardIdx}, sandbox=${sandboxIdx}, trust=${trustIdx}) — after them it would never run, because both are defaults`,
+  );
+  const srcWithBlock = src + block;
+  assert(
+    srcWithBlock.includes("registerDestructiveGitGuard(pi)"),
+    "the shared block registers the destructive-git guard",
   );
   // Denial must name a way forward. An agent told only "denied" retries the
   // same command by another route — which is how the original incident's
@@ -142,7 +152,10 @@ for (const cmd of [
   // assertions above plus the guard's own test cases.
   const spreadIdx = src.indexOf("{ ...process.env, PI_ENSEMBLE_ROLE: spec.role }");
   const gitEditorIdx = src.indexOf('GIT_EDITOR = "true"');
-  assert(spreadIdx > 0 && gitEditorIdx > spreadIdx, "canary: the GIT_* assignments come AFTER the process.env spread, so they win over inherited host env");
+  assert(
+    spreadIdx > 0 && gitEditorIdx > spreadIdx,
+    "canary: the GIT_* assignments come AFTER the process.env spread, so they win over inherited host env",
+  );
 }
 
 // ------------------------------------------------------------ it catches

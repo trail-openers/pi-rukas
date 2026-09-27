@@ -127,7 +127,13 @@ for (const cmd of [
   const path = await import("node:path");
   const SRC = path.resolve(import.meta.dirname, "..", "src");
   const pg = readFileSync(path.join(SRC, "permission-guard.ts"), "utf8");
-  const sub = readFileSync(path.join(SRC, "permission-subagent-guard.ts"), "utf8");
+  // #926 — the subagent registration block moved verbatim into
+  // subagent-guard-guards.ts; scan both so the canary tracks it. The
+  // child-guards companion is canaried in test-child-guards-extension.ts
+  // (exact guard set + exclusions) so this file stays under the size limit.
+  const sub =
+    readFileSync(path.join(SRC, "permission-subagent-guard.ts"), "utf8") +
+    readFileSync(path.join(SRC, "subagent-guard-guards.ts"), "utf8");
   const ig = readFileSync(path.join(SRC, "issue-creation-guard.ts"), "utf8");
 
   // Parent guard: registered ahead of the trust-mode early return.
@@ -140,13 +146,21 @@ for (const cmd of [
   );
   // Sandbox short-circuit is also a default (container); the guard must beat it
   // in the subagent process, where registerSubagentGuard is the entry point.
-  const subGuardIdx = sub.indexOf("registerIssueCreationGuard(pi)");
-  const subSandboxIdx = sub.indexOf("PI_ENSEMBLE_SANDBOX_MODE");
-  const subTrustIdx = sub.indexOf("PI_ENSEMBLE_TRUST_MODE");
-  assert(subGuardIdx > 0, "canary: subagent guard registers the issue-creation guard");
+  // #926 — the block moved verbatim into subagent-guard-guards.ts; pin the call
+  // site (before the bypasses) here and the guard's presence in the block there.
+  const subSrc = readFileSync(path.join(SRC, "permission-subagent-guard.ts"), "utf8");
+  const subBlock = readFileSync(path.join(SRC, "subagent-guard-guards.ts"), "utf8");
+  const subGuardIdx = subSrc.indexOf("registerModeIndependentGuards(pi)");
+  const subSandboxIdx = subSrc.indexOf("PI_ENSEMBLE_SANDBOX_MODE");
+  const subTrustIdx = subSrc.indexOf("PI_ENSEMBLE_TRUST_MODE");
+  assert(subGuardIdx > 0, "canary: subagent path registers the shared guard block");
   assert(
     subGuardIdx < subSandboxIdx && subGuardIdx < subTrustIdx,
     `...and BEFORE both bypasses in the subagent path (guard=${subGuardIdx}, sandbox=${subSandboxIdx}, trust=${subTrustIdx})`,
+  );
+  assert(
+    subBlock.includes("registerIssueCreationGuard(pi)"),
+    "canary: the shared block registers the issue-creation guard",
   );
   // The guard itself: all roles (no role check), all modes, escape hatch.
   assert(
