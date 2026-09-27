@@ -20,6 +20,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { preflightChildGuards } from "./child-guards.ts";
 import { type ResolvedModelChoice, resolveModel } from "./models.ts";
 import { type BrokerHandle, startBroker } from "./permission-broker.ts";
 import { isParentInTrustMode, makeBrokerDeps } from "./permission-guard.ts";
@@ -138,7 +139,7 @@ async function spawnSpecialistInner(
     }
   }
 
-  const childArgs = await buildChildArgs(
+  const childArgs = buildChildArgs(
     spec.role,
     tmpPromptFile,
     transcriptPath,
@@ -146,6 +147,10 @@ async function spawnSpecialistInner(
     subagentGuardEnabled,
     opts.extraArgs,
   );
+  // #926 — the argv names CHILD_GUARDS_PATH, so verify it before spawning;
+  // a missing companion must be a named dispatch failure, never a child
+  // without the mode-independent guards.
+  preflightChildGuards();
   // No positional prompt — sent over stdin RPC channel below.
   const invocation = getPiInvocation(childArgs);
 

@@ -27,6 +27,17 @@ import { trace } from "./trace.ts";
 
 export function registerSubagentGuard(pi: ExtensionAPI): void {
   registerModeIndependentGuards(pi);
+  // #716 — same registration site, same reasoning: the "mandatory oo" rule
+  // for verbose runners (pytest, cargo test, bun test, …) is pure prose on the
+  // bash tool's argument string in trust/sandbox mode, where agents.json is
+  // decorative. This is the deterministic rewrite half — a bare 12-item
+  // command at the START of the quote-stripped string is mutated in place to
+  // `oo <cmd>` so the existing `oo <cmd>*` allow rows become the path of
+  // least resistance. REWRITE ONLY: never blocks. The hook's own body gates
+  // on sandbox/trust + developer/ops roles, so strict/headless children stay
+  // byte-identical to today without touching agents.json. When the `oo`
+  // binary is absent at registration the hook is inert for the whole session.
+  registerOoRewriteGuard(pi);
 
   // Sandbox mode short-circuit (PR #197). When pi-rukas runs inside the
   // Docker sandbox (`pi-rukas` wrapper sets PI_ENSEMBLE_SANDBOX_MODE=1),

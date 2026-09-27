@@ -49,7 +49,7 @@ const TEST_MODEL: ResolvedModelChoice = {
 // 1. Read-only roles: --exclude-tools is present with correct value.
 {
   for (const role of ["explore", "adversarial-developer", "code-review-specialist"]) {
-    const args = await buildChildArgs(role, TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, false);
+    const args = buildChildArgs(role, TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, false);
     const value = excludeToolsValueFromArgs(args);
     assert(
       value === "write,edit,multiedit",
@@ -61,7 +61,7 @@ const TEST_MODEL: ResolvedModelChoice = {
 // 2. Executor roles: --exclude-tools is ABSENT.
 {
   for (const role of ["developer", "ops"]) {
-    const args = await buildChildArgs(role, TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, false);
+    const args = buildChildArgs(role, TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, false);
     const value = excludeToolsValueFromArgs(args);
     assert(
       value === undefined,
@@ -72,7 +72,7 @@ const TEST_MODEL: ResolvedModelChoice = {
 
 // 3. project-manager (rarely a subagent): no --exclude-tools.
 {
-  const args = await buildChildArgs(
+  const args = buildChildArgs(
     "project-manager",
     TEST_PROMPT,
     TEST_TRANSCRIPT,
@@ -88,7 +88,7 @@ const TEST_MODEL: ResolvedModelChoice = {
 
 // 4. Unknown role: no --exclude-tools (err open, not closed).
 {
-  const args = await buildChildArgs(
+  const args = buildChildArgs(
     "future-role-that-does-not-exist",
     TEST_PROMPT,
     TEST_TRANSCRIPT,
@@ -101,7 +101,7 @@ const TEST_MODEL: ResolvedModelChoice = {
 
 // 5. Basic arg structure: --mode rpc and --no-extensions are present.
 {
-  const args = await buildChildArgs("developer", TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, false);
+  const args = buildChildArgs("developer", TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, false);
   assert(args.includes("--mode"), "child argv contains --mode");
   assert(args[args.indexOf("--mode") + 1] === "rpc", "child argv --mode value is rpc");
   assert(args.includes("--no-extensions"), "child argv contains --no-extensions");
@@ -109,7 +109,7 @@ const TEST_MODEL: ResolvedModelChoice = {
 
 // 6. extraArgs are appended.
 {
-  const args = await buildChildArgs("developer", TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, false, [
+  const args = buildChildArgs("developer", TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, false, [
     "--extra-flag",
     "value",
   ]);
@@ -127,7 +127,7 @@ const TEST_MODEL: ResolvedModelChoice = {
 
 // 11. Trust mode (subagentGuardEnabled=false): --extension <child-guards path> present.
 {
-  const args = await buildChildArgs("ops", TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, false);
+  const args = buildChildArgs("ops", TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, false);
   const has = args.some((a, idx) => a === "--extension" && args[idx + 1] === CHILD_GUARDS_PATH);
   assert(has, `trust mode: --extension ${CHILD_GUARDS_PATH} present in child argv`);
 }
@@ -137,7 +137,7 @@ const TEST_MODEL: ResolvedModelChoice = {
 // expected and safe because the companion no-ops itself; no-op asserted in
 // test-child-guards-extension.ts).
 {
-  const args = await buildChildArgs("ops", TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, true);
+  const args = buildChildArgs("ops", TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, true);
   const has = args.some((a, idx) => a === "--extension" && args[idx + 1] === CHILD_GUARDS_PATH);
   assert(has, `strict mode: --extension ${CHILD_GUARDS_PATH} present in child argv`);
 }
@@ -146,7 +146,7 @@ const TEST_MODEL: ResolvedModelChoice = {
 // from both the guard and the companion code paths).
 {
   for (const guard of [false, true]) {
-    const args = await buildChildArgs("developer", TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, guard);
+    const args = buildChildArgs("developer", TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, guard);
     const count = args.reduce(
       (n, a, idx) => (a === "--extension" && args[idx + 1] === CHILD_GUARDS_PATH ? n + 1 : n),
       0,

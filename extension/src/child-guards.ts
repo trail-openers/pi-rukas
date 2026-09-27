@@ -13,12 +13,13 @@
  * The fix: this file is the harness-owned companion, loaded into EVERY child
  * via `--extension <this file>` from spawn-support.ts (childGuardsArgs),
  * independent of subagentGuardEnabled / PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD /
- * PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD. It registers the same
- * mode-independent guard block the subagent path uses (the three guards in
- * subagent-guard-guards.ts, registered here explicitly in the same order) —
- * never the parent-only ones (registerPmBashGuard stays where it is), and
- * NOT the #716 oo-rewrite guard, which the shared block carries for
- * strict/headless children but is deliberately out of #926's scope here.
+ * PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD. It calls the shared block
+ * (registerModeIndependentGuards in subagent-guard-guards.ts), which is the
+ * single list of the three mode-independent guards — never the parent-only
+ * ones (registerPmBashGuard stays where it is). The #716 oo-rewrite guard is
+ * NOT in the shared block: it is registered by the strict/headless path in
+ * permission-subagent-guard.ts, right after the shared block call, and stays
+ * out of trust-mode children (see the call site there).
  *
  * No double registration in strict/headless: there the full pi-rukas
  * extension is ALSO forwarded with PI_ENSEMBLE_SUBAGENT_MODE=1 (index.ts →
@@ -27,14 +28,13 @@
  * has exactly one set of guard hooks in every mode.
  *
  * A missing file must fail the dispatch with a named error, never produce a
- * silently unguarded child — hence the preflight stat below (the #893
- * reporter-preflight.ts pattern, reused here).
+ * silently unguarded child — hence the preflight stat in spawn.ts
+ * (spawnSpecialistInner, the #893 reporter-preflight.ts pattern).
  */
 
+import { statSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { registerIssueCreationGuard } from "./issue-creation-guard.ts";
-import { registerMergeGuard } from "./merge-guard.ts";
-import { registerDestructiveGitGuard } from "./permission-subagent-guard.ts";
+import { registerModeIndependentGuards } from "./subagent-guard-guards.ts";
 import { trace } from "./trace.ts";
 
 /**
@@ -46,26 +46,6 @@ import { trace } from "./trace.ts";
 export const CHILD_GUARDS_PATH = `${__dirname}/child-guards.ts`;
 
 /**
- * The preflight existence check for the companion, mirroring
- * reporter-preflight.ts: a missing path (a stale install or restructure) is a
- * named pre-spawn failure, not a silent unguarded child. Injectable for
- * tests so the missing case can be exercised without touching the real
- * filesystem.
- */
-export async function statChildGuardsPath(
-  p: string,
-  check: (p: string) => Promise<unknown> = statDefault,
-): Promise<void> {
-  try {
-    // The stat is a diagnostic (fail fast with a named error), not an
-    // integrity or security boundary.
-    await check(p);
-  } catch {
-    throw new Error(`child-guards extension missing: ${p} — run ./install.sh`);
-  }
-}
-
-/**
  * The `--extension` flags that load this companion into a child. Always
  * present, in every mode: the default export self-gates on
  * PI_ENSEMBLE_SUBAGENT_MODE, so strict/headless children (which also receive
@@ -75,9 +55,23 @@ export function childGuardsArgs(): string[] {
   return ["--extension", CHILD_GUARDS_PATH];
 }
 
-async function statDefault(p: string): Promise<unknown> {
-  const { stat } = await import("node:fs/promises");
-  return stat(p);
+/**
+ * The pre-spawn existence check for the companion (the #893
+ * reporter-preflight.ts pattern): called from spawnSpecialistInner BEFORE
+ * buildChildArgs, so a missing file (a stale install or restructure) is a
+ * named dispatch failure, never a silently unguarded child. ANY stat failure
+ * (ENOENT, EACCES, …) throws. The stat is a diagnostic (fail fast with a
+ * named error), not an integrity or security boundary.
+ */
+export function preflightChildGuards(): void {
+  try {
+    statSync(CHILD_GUARDS_PATH);
+  } catch (err) {
+    const reason = (err as Error).message;
+    throw new Error(
+      `child-guards extension unavailable at ${CHILD_GUARDS_PATH}: ${reason} — run ./install.sh`,
+    );
+  }
 }
 
 /**
@@ -96,20 +90,16 @@ export default function registerChildGuards(pi: ExtensionAPI): void {
     );
     return;
   }
-  // The three mode-independent guards, in the same order as the shared block
-  // (subagent-guard-guards.ts), so a trust-mode child and a strict-mode child
-  // register identical hooks in identical order. registerPmBashGuard stays
-  // parent-only (it is not in the block). All three fire before any
-  // trust/sandbox bypass by construction.
+  // The shared block is the single list of the three mode-independent guards;
+  // registerPmBashGuard stays parent-only (it is not in the block). All three
+  // fire before any trust/sandbox bypass by construction.
   //
   // registerOoRewriteGuard (#716) is deliberately NOT registered here. The
-  // shared block carries it for strict/headless children (unchanged
-  // behaviour), but the companion also loads into every trust-mode child —
-  // adding it there would newly activate the oo-rewrite inside those
-  // children, a behaviour change outside #926's scope. See
-  // subagent-guard-guards.ts for the shared registration site.
-  registerDestructiveGitGuard(pi);
-  registerIssueCreationGuard(pi);
-  registerMergeGuard(pi);
+  // strict/headless path registers it in permission-subagent-guard.ts, right
+  // after its own registerModeIndependentGuards call; the companion also
+  // loads into every trust-mode child, and adding the oo-rewrite there would
+  // be a behaviour change outside #926's scope. See the call site in
+  // permission-subagent-guard.ts.
+  registerModeIndependentGuards(pi);
   trace("child-guards: registered the mode-independent guards for this child");
 }

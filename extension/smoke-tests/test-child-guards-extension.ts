@@ -32,18 +32,23 @@
  *      extension registers the guards there; a second set would double-run
  *      the merge guard's gh/git exec chain).
  *   4. Canary — the EXACT expected set {registerMergeGuard,
- *      registerIssueCreationGuard, registerDestructiveGitGuard} is
- *      registered by the companion's call graph, and the explicit exclusions
- *      {registerPmBashGuard, registerOoRewriteGuard} are NOT. Fails in both
- *      directions.
- *   5. The pre-spawn stat: a missing companion is a named error (the #893
- *      reporter-preflight pattern), never a silently unguarded child.
+ *      registerIssueCreationGuard, registerDestructiveGitGuard} is the
+ *      shared block's contents (subagent-guard-guards.ts), the companion
+ *      calls that block, and the explicit exclusions {registerPmBashGuard,
+ *      registerOoRewriteGuard} are NOT registered by the companion. Fails
+ *      in both directions.
+ *   5. The pre-spawn stat now lives in spawn.ts (spawnSpecialistInner, the
+ *      #893 reporter-preflight pattern): the named error format and the
+ *      use of the exported CHILD_GUARDS_PATH are canaried against its
+ *      source, and the PI_ENSEMBLE_SUBAGENT_MODE assignment is pinned
+ *      inside the subagentGuardEnabled branch (the companion's no-op
+ *      depends on exactly that).
  */
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { CHILD_GUARDS_PATH, childGuardsArgs, statChildGuardsPath } from "../src/child-guards.ts";
+import { CHILD_GUARDS_PATH, childGuardsArgs } from "../src/child-guards.ts";
 import childGuards from "../src/child-guards.ts";
 import { registerMergeGuard } from "../src/merge-guard.ts";
 
@@ -216,30 +221,55 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
 
 // ============================================================
 // 5. Canary — the EXACT expected set {registerMergeGuard,
-//    registerIssueCreationGuard, registerDestructiveGitGuard} is registered
-//    by the companion's call graph (directly or via the shared
-//    registerModeIndependentGuards block), and the explicit exclusion
-//    registerPmBashGuard is NOT. Fails in both directions.
+//    registerIssueCreationGuard, registerDestructiveGitGuard} is the shared
+//    block's contents (subagent-guard-guards.ts); the companion calls that
+//    block (no direct guard calls, no duplicates), and the explicit
+//    exclusions {registerPmBashGuard, registerOoRewriteGuard} are NOT
+//    registered by the companion — the strict/headless path registers
+//    oo-rewrite in permission-subagent-guard.ts, right after its own shared
+//    block call (pinned in test-oo-rewrite-guard.ts). Fails in both
+//    directions.
 // ============================================================
 {
   const SRC = path.resolve(import.meta.dirname, "..", "src");
   const src = readFileSync(path.join(SRC, "child-guards.ts"), "utf8");
   const shared = readFileSync(path.join(SRC, "subagent-guard-guards.ts"), "utf8");
-  const registered = (name: string) => new RegExp(`(^|[^\\w])${name}\\s*\\(pi\\)`).test(src);
   const expected = [
     "registerMergeGuard",
     "registerIssueCreationGuard",
     "registerDestructiveGitGuard",
   ];
+  // The companion delegates to the shared block — the single list.
+  assert(
+    /registerModeIndependentGuards\s*\(pi\)/.test(src),
+    "canary: the companion calls the shared block registerModeIndependentGuards(pi)",
+  );
   for (const name of expected) {
-    assert(registered(name), `canary: the companion registers ${name}(pi)`);
+    assert(
+      !new RegExp(`(^|[^\\w])${name}\\s*\\(pi\\)`).test(src),
+      `canary: the companion does NOT register ${name} directly (no duplicate of the shared block)`,
+    );
   }
-  // The explicit exclusions, failed in both directions: parent-only guards
-  // are absent, AND the #716 oo-rewrite guard is absent from the companion
-  // (it stays in the shared block for the strict/headless path only).
-  const excluded = ["registerPmBashGuard", "registerOoRewriteGuard"];
-  for (const name of excluded) {
-    assert(!registered(name), `canary: the companion does NOT register ${name}`);
+  // The shared block contains EXACTLY the three guards.
+  for (const name of expected) {
+    assert(
+      new RegExp(`(^|[^\\w])${name}\\s*\\(pi\\)`).test(shared),
+      `canary: the shared block registers ${name}(pi)`,
+    );
+  }
+  const notInShared = ["registerPmBashGuard", "registerOoRewriteGuard"];
+  for (const name of notInShared) {
+    assert(
+      !new RegExp(`(^|[^\\w])${name}\\s*\\(pi\\)`).test(shared),
+      `canary: the shared block does NOT register ${name} (oo-rewrite: strict path only; pm-bash: parent-only)`,
+    );
+  }
+  // The companion never registers the exclusions either.
+  for (const name of notInShared) {
+    assert(
+      !new RegExp(`(^|[^\\w])${name}\\s*\\(pi\\)`).test(src),
+      `canary: the companion does NOT register ${name}`,
+    );
   }
   const notEntrypoints = ["registerSubagentGuard", "registerPermissionGuard"];
   for (const name of notEntrypoints) {
@@ -248,19 +278,6 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
       `canary: the companion does NOT call ${name} (it registers the guard block, not the entry points)`,
     );
   }
-  // The shared block itself (the strict/headless path, unchanged behaviour)
-  // must still carry the three mode-independent guards AND the oo-rewrite
-  // guard the companion excludes.
-  for (const name of [...expected, "registerOoRewriteGuard"]) {
-    assert(
-      new RegExp(`(^|[^\\w])${name}\\s*\\(pi\\)`).test(shared),
-      `canary: the shared block registers ${name}(pi)`,
-    );
-  }
-  assert(
-    !/registerPmBashGuard\s*\(/.test(shared),
-    "canary: the shared block does NOT register registerPmBashGuard (parent-only)",
-  );
 }
 
 // ============================================================
@@ -272,38 +289,64 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
   assert(args.length === 2, "childGuardsArgs() is exactly [--extension, <path>]");
   assert(args[0] === "--extension", "childGuardsArgs() flag is --extension");
   assert(args[1] === CHILD_GUARDS_PATH, "childGuardsArgs() path equals CHILD_GUARDS_PATH");
-  const st = statChildGuardsPath;
-  assert(typeof st === "function", "statChildGuardsPath is exported (the pre-spawn check)");
 }
 
 // ============================================================
-// 7. Preflight: a missing companion is a named error (the #893 pattern),
-//    never a silently unguarded child. Injectable check — no filesystem.
+// 7. Preflight (the #893 reporter-preflight pattern): the argv names
+//    CHILD_GUARDS_PATH, so a missing companion must be a named error before
+//    spawn — never a silently unguarded child. The check lives in
+//    preflightChildGuards() (child-guards.ts), called from spawn.ts before
+//    the child starts; the named-error format, the ANY-failure throw, and
+//    the call site are canaried against the sources. The
+//    PI_ENSEMBLE_SUBAGENT_MODE assignment is pinned inside the
+//    subagentGuardEnabled branch — the companion's no-op depends on exactly
+//    that.
 // ============================================================
 {
-  const rejectStat = async () => {
-    throw new Error("ENOENT (stub)");
-  };
-  try {
-    await statChildGuardsPath("/nonexistent/child-guards.ts", rejectStat);
-    assert(false, "preflight: a missing companion must throw the named error");
-  } catch (err) {
-    const msg = (err as Error).message;
-    assert(
-      msg.includes("child-guards extension missing:") && msg.includes("run ./install.sh"),
-      `preflight: named error names the file and the remedy (got: ${msg})`,
-    );
-  }
-  const okStat = async () => "ok";
-  await statChildGuardsPath(CHILD_GUARDS_PATH, okStat);
-  assert(true, "preflight: an existing companion passes the check");
-  // And the REAL path exists (no inject): the shipped companion is there.
-  try {
-    await statChildGuardsPath(CHILD_GUARDS_PATH);
-    assert(true, "preflight: the shipped companion file exists on disk");
-  } catch (err) {
-    assert(false, `preflight: the shipped companion file is missing (${(err as Error).message})`);
-  }
+  const SRC = path.resolve(import.meta.dirname, "..", "src");
+  const guardsSrc = readFileSync(path.join(SRC, "child-guards.ts"), "utf8");
+  const spawnSrc = readFileSync(path.join(SRC, "spawn.ts"), "utf8");
+  assert(
+    guardsSrc.includes("export function preflightChildGuards(): void"),
+    "canary: child-guards.ts exports preflightChildGuards() (the pre-spawn check)",
+  );
+  assert(
+    guardsSrc.includes("statSync(CHILD_GUARDS_PATH)"),
+    "canary: the preflight stat is a plain statSync of the exported CHILD_GUARDS_PATH (no `?? \"\"` fallback)",
+  );
+  assert(
+    guardsSrc.includes("child-guards extension unavailable at ${CHILD_GUARDS_PATH}"),
+    "canary: the named error format is `child-guards extension unavailable at <path>: <reason>`",
+  );
+  assert(
+    guardsSrc.includes("run ./install.sh"),
+    "canary: the named error carries the remedy (run ./install.sh)",
+  );
+  // ANY stat failure throws: no filtering by error code (ENOENT, EACCES, …).
+  const helper = guardsSrc.slice(guardsSrc.indexOf("export function preflightChildGuards"));
+  assert(
+    !/err\.code/.test(helper),
+    "canary: the preflight does not filter by error code (ANY stat failure throws)",
+  );
+  assert(
+    spawnSrc.includes("preflightChildGuards()"),
+    "canary: spawn.ts calls preflightChildGuards() before building the child",
+  );
+  // PI_ENSEMBLE_SUBAGENT_MODE=1 is assigned inside the subagentGuardEnabled
+  // branch only — a trust-mode child (the `} else if (parentTrustMode)`
+  // branch) must not carry it. Scanning from the assignment back to the
+  // immediately preceding branch opener: it must be the subagentGuardEnabled
+  // branch, not the trust-mode branch.
+  const assignIdx = spawnSrc.indexOf('childEnv.PI_ENSEMBLE_SUBAGENT_MODE = "1"');
+  assert(assignIdx > 0, "canary: spawn.ts assigns PI_ENSEMBLE_SUBAGENT_MODE = \"1\" in the childEnv");
+  const before = spawnSrc.slice(0, assignIdx);
+  const openerIdx = before.lastIndexOf("if (subagentGuardEnabled) {");
+  const trustIdx = before.lastIndexOf("if (parentTrustMode)");
+  const elseIdx = before.lastIndexOf("} else if (parentTrustMode)");
+  assert(
+    openerIdx > 0 && openerIdx > trustIdx && openerIdx > elseIdx,
+    "canary: the PI_ENSEMBLE_SUBAGENT_MODE = \"1\" assignment is inside the subagentGuardEnabled branch (the trust-mode branch must not set it)",
+  );
 }
 
 console.log(`\nexit ${exit}`);

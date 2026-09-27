@@ -260,34 +260,32 @@ for (const mode of MODES) {
   const path = await import("node:path");
   const { readFileSync } = await import("node:fs");
   const srcDir = path.resolve(import.meta.dirname, "..", "src");
-  // #926 — the registration block moved verbatim into subagent-guard-guards.ts.
-  const sub =
-    readFileSync(path.join(srcDir, "permission-subagent-guard.ts"), "utf8") +
-    readFileSync(path.join(srcDir, "subagent-guard-guards.ts"), "utf8");
-  const guard = readFileSync(path.join(srcDir, "oo-rewrite-guard.ts"), "utf8");
-
-  // The guard call lives in the moved block (second file), while the
-  // bypasses stay in registerSubagentGuard — pin each against its own file
+  // #926 — the mode-independent block (the three guards) lives in
+  // subagent-guard-guards.ts, called from registerSubagentGuard BEFORE the
+  // bypasses; the oo-rewrite guard lives in permission-subagent-guard.ts,
+  // right after that call (same hook order as pre-#926: destructive-git,
+  // issue-creation, merge, oo-rewrite). Pin each against its own file
   // (same split as test-subagent-git-guard.ts / test-merge-guard.ts /
   // test-issue-creation-guard.ts).
-  const regIdx = sub.indexOf("registerOoRewriteGuard(pi)");
   const subSrc = readFileSync(path.join(srcDir, "permission-subagent-guard.ts"), "utf8");
   const subBlock = readFileSync(path.join(srcDir, "subagent-guard-guards.ts"), "utf8");
+  const regIdx = subSrc.indexOf("registerOoRewriteGuard(pi)");
   const blockIdx = subSrc.indexOf("registerModeIndependentGuards(pi)");
   const sandboxIdx = subSrc.indexOf('PI_ENSEMBLE_SANDBOX_MODE === "1"');
   const trustIdx = subSrc.indexOf('PI_ENSEMBLE_TRUST_MODE === "1"');
   assert(regIdx > 0, "canary: registerSubagentGuard calls registerOoRewriteGuard");
   assert(blockIdx > 0, "canary: registerSubagentGuard calls the shared guard block");
   assert(
-    blockIdx < sandboxIdx && blockIdx < trustIdx,
-    `canary: registered BEFORE the sandbox short-circuit (=${sandboxIdx}) and trust return (=${trustIdx})`,
+    regIdx > blockIdx && regIdx < sandboxIdx && regIdx < trustIdx,
+    `canary: the oo-rewrite registration is AFTER the shared block call (=${blockIdx}) and BEFORE the sandbox short-circuit (=${sandboxIdx}) and trust return (=${trustIdx}) — the strict path's hook order is unchanged`,
   );
   assert(
-    subBlock.includes("registerOoRewriteGuard(pi)"),
-    "canary: the shared block registers the oo-rewrite guard",
+    !subBlock.includes("registerOoRewriteGuard(pi)"),
+    "canary: the shared block does NOT register the oo-rewrite guard (strict path only)",
   );
   // The hook's own body carries the explicit mode gate (fires only when
   // sandbox OR trust) — the mode split is a guard clause, not placement.
+  const guard = readFileSync(path.join(srcDir, "oo-rewrite-guard.ts"), "utf8");
   assert(
     /PI_ENSEMBLE_SANDBOX_MODE !== "1"/.test(guard) && /PI_ENSEMBLE_TRUST_MODE !== "1"/.test(guard),
     "canary: in-hook mode gate — fire only when sandbox OR trust",

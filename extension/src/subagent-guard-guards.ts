@@ -10,7 +10,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerIssueCreationGuard } from "./issue-creation-guard.ts";
 import { registerMergeGuard } from "./merge-guard.ts";
-import { registerOoRewriteGuard } from "./oo-rewrite-guard.ts";
 import { registerDestructiveGitGuard } from "./permission-subagent-guard.ts";
 
 export function registerModeIndependentGuards(pi: ExtensionAPI): void {
@@ -38,15 +37,4 @@ export function registerModeIndependentGuards(pi: ExtensionAPI): void {
   // self-report plus CI in trust/sandbox mode. The review ledger is the
   // structural floor; the guard fires before every bypass.
   registerMergeGuard(pi);
-  // #716 — same registration site, same reasoning: the "mandatory oo" rule
-  // for verbose runners (pytest, cargo test, bun test, …) is pure prose on the
-  // bash tool's argument string in trust/sandbox mode, where agents.json is
-  // decorative. This is the deterministic rewrite half — a bare 12-item
-  // command at the START of the quote-stripped string is mutated in place to
-  // `oo <cmd>` so the existing `oo <cmd>*` allow rows become the path of
-  // least resistance. REWRITE ONLY: never blocks. The hook's own body gates
-  // on sandbox/trust + developer/ops roles, so strict/headless children stay
-  // byte-identical to today without touching agents.json. When the `oo`
-  // binary is absent at registration the hook is inert for the whole session.
-  registerOoRewriteGuard(pi);
 }
