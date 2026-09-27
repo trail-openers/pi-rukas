@@ -70,7 +70,14 @@ try {
     subj.includes("stack root") && subj.includes("stack leaf"),
     "the range pick preserves commit order (root first, leaf on top)",
   );
-  assert(head === tip, "the picked stack tip matches the leaf's real HEAD");
+  // Cherry-pick does not preserve commit SHAs (the committer timestamp
+  // changes), so SHA-equality is a race: it passes only when the original
+  // and the cherry-pick land in the same second. The real invariant is that
+  // the cherry-picked tip carries the same tree as the original — the leaf
+  // content landed. Compare trees, not SHAs.
+  const originalTipTree = (await git(wtLeaf, ["rev-parse", "HEAD^{tree}"])).stdout.trim();
+  const pickedTipTree = (await git(repo, ["rev-parse", "HEAD^{tree}"])).stdout.trim();
+  assert(originalTipTree === pickedTipTree, "the picked stack tip carries the leaf's tree");
   void rootSha;
 } finally {
   rmSync(root, { recursive: true, force: true });
