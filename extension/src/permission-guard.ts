@@ -271,6 +271,7 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
   // Mode-independent guards: registered BEFORE the sandbox short-circuit,
   // the subagent branch, and the trust-mode early return in the main handler.
   // A hook placed after any of those would, in practice, never run.
+  // #926 — children get these guards via the child-guards companion (child-guards.ts, loaded into every child's argv in every mode).
   registerIssueCreationGuard(pi);
   // #912 — mode-independent merge guard: fires in ALL modes (trust, strict,
   // headless, sandbox) for ALL roles. A PR merge on a developer's

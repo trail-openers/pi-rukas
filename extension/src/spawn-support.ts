@@ -11,6 +11,7 @@
 import os from "node:os";
 import path from "node:path";
 import type { Writable } from "node:stream";
+import { childGuardsArgs, statChildGuardsPath } from "./child-guards.ts";
 import type { SteerSource } from "./dispatch-steer.ts";
 import type { ResolvedModelChoice } from "./models.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
@@ -366,19 +367,30 @@ const CHILD_ARGS_BASE = ["--mode", "rpc", "--no-extensions"] as const;
  *   - Extension `--extension` flags are appended after model flags so Pi
  *     resolves the model before extensions can override it.
  */
-export function buildChildArgs(
+export async function buildChildArgs(
   role: string,
   tmpPromptFile: string,
   transcriptPath: string,
   modelChoice: ResolvedModelChoice,
   subagentGuardEnabled: boolean,
   extraArgs?: string[],
-): string[] {
+): Promise<string[]> {
   const args: string[] = [...CHILD_ARGS_BASE];
   // `--mode rpc` keeps stdin open for JSON command injection
   // ({type:"prompt"|"steer"|"abort"|"follow_up"}); this is the foundation
   // for dispatch_steer (#152) and all async push-callback flows.
   args.push("--session", transcriptPath);
+
+  // #926 — pre-spawn existence check for the child-guards companion (the
+  // #893 reporter-preflight pattern). A missing companion (a stale install or
+  // restructure that drops the file) is a named dispatch failure, never a
+  // silently unguarded child: without the file the child argv below would
+  // name a path that loads nothing, and the trust-mode child would run with
+  // no merge / issue-creation / destructive-git protection at all — exactly
+  // the state this ticket fixes.
+  const guardsArgs = childGuardsArgs();
+  await statChildGuardsPath(guardsArgs[1] ?? "");
+  args.push(...guardsArgs);
   args.push("--append-system-prompt", tmpPromptFile);
   // `--exclude-tools` requires a recent Pi (>= 0.83.0); unknown flags exit
   // children immediately (older releases such as the 0.75.x era), so the
@@ -405,6 +417,16 @@ export function buildChildArgs(
       args.push("--extension", ensemblePath);
     }
   }
+  // #926 — the child-guards companion is already in the argv (pushed right
+  // after --session, above): loaded in EVERY mode, independent of
+  // subagentGuardEnabled (so PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD does not
+  // strip it), of discoverInstalledExtensions (so
+  // PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD does not strip it), and of the
+  // full pi-rukas forward above. In strict/headless mode both extension paths
+  // appear in the argv, but the companion's default export no-ops on
+  // PI_ENSEMBLE_SUBAGENT_MODE=1, so the child ends up with exactly one set of
+  // guard hooks. A trust-mode child — which gets no full extension — is
+  // exactly the child the companion exists for.
   if (extraArgs && extraArgs.length > 0) {
     args.push(...extraArgs);
   }

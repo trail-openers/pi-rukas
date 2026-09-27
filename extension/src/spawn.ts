@@ -138,7 +138,7 @@ async function spawnSpecialistInner(
     }
   }
 
-  const childArgs = buildChildArgs(
+  const childArgs = await buildChildArgs(
     spec.role,
     tmpPromptFile,
     transcriptPath,
