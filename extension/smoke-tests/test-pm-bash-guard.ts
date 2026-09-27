@@ -27,7 +27,8 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const { matchBashSubcommand, createsIssue } = await import("../src/bash-command-parser.ts");
+const { matchBashSubcommand } = await import("../src/bash-command-parser.ts");
+const { createsIssue } = await import("../src/bash-creates-issue.ts");
 const { loadAgentsJson, resolveAgentsJsonPath } = await import("../src/permission-config.ts");
 const { armPmMode, resetPmMode } = await import("../src/pm-mode.ts");
 const { registerPmBashGuard } = await import("../src/pm-bash-guard.ts");
@@ -38,10 +39,10 @@ const { registerPermissionGuard } = await import("../src/permission-guard.ts");
 // else (no match, the "ask" catch-all, "deny", or the null that injection
 // vectors produce) is a block.
 function pmVerdict(command: string): string | null {
-  const pmBash = (
-    loadAgentsJson()["project-manager"]?.permission?.bash ??
-    {}
-  ) as Record<string, string>;
+  const pmBash = (loadAgentsJson()["project-manager"]?.permission?.bash ?? {}) as Record<
+    string,
+    string
+  >;
   return matchBashSubcommand(command, pmBash);
 }
 
@@ -167,7 +168,7 @@ for (const cmd of [
   // with a quoted argument. The raw command is matched, so the quoted arg
   // does not change the verdict — this pins the origin/main behaviour.
   assert(
-    matchBashSubcommand("git commit -m \"x y\"", midAllowlist) !== "allow",
+    matchBashSubcommand('git commit -m "x y"', midAllowlist) !== "allow",
     "regression: git commit -m with quoted arg does NOT match any mid-wildcard row",
   );
 }
@@ -194,7 +195,7 @@ for (const cmd of [
   "git -C /x branch -D y",
   // Quoted path with a space: the mid `*` is `\S+` — it cannot span a space,
   // so `git -C "a b" log` does not match and falls to the `*" ask` catch-all.
-  "git -C \"/a b\" log",
+  'git -C "/a b" log',
   // Creative bypasses — interpreters, in-place editors, arbitrary HTTP, shells.
   "python -c 'print(1)'",
   "node -e 'console.log(1)'",
@@ -265,7 +266,10 @@ assert(
 type Handler = (
   event: { toolName: string; input: unknown },
   ctx: { hasUI: boolean },
-) => Promise<{ block: true; reason: string } | undefined> | { block: true; reason: string } | undefined;
+) =>
+  | Promise<{ block: true; reason: string } | undefined>
+  | { block: true; reason: string }
+  | undefined;
 
 function captureGuardHandlers() {
   const handlers: Handler[] = [];
@@ -301,7 +305,10 @@ resetPmMode();
     },
   } as unknown as Parameters<typeof registerPermissionGuard>[0];
   registerPermissionGuard(fakePi);
-  assert(handlers.length === 2, "hook: issue-creation + PM bash handlers registered (both ahead of the sandbox short-circuit)");
+  assert(
+    handlers.length === 3,
+    "hook: issue-creation + PM bash + merge guard handlers registered (all ahead of the sandbox short-circuit)",
+  );
   assert(
     (await callAll(handlers, "git commit -m x", true)) === undefined,
     "hook: silent when PM mode is not armed (subagent/parent-idle)",
@@ -336,11 +343,11 @@ armPmMode();
 {
   process.env.PI_ENSEMBLE_PM_BASH_GUARD = "0";
   const handlers = captureGuardHandlers();
-  delete process.env.PI_ENSEMBLE_PM_BASH_GUARD;
+  process.env.PI_ENSEMBLE_PM_BASH_GUARD = "";
   assert(handlers.length === 0, "escape hatch: PI_ENSEMBLE_PM_BASH_GUARD=0 registers nothing");
 }
 
-if (prevSandbox === undefined) delete process.env.PI_ENSEMBLE_SANDBOX_MODE;
+if (prevSandbox === undefined) process.env.PI_ENSEMBLE_SANDBOX_MODE = "";
 else process.env.PI_ENSEMBLE_SANDBOX_MODE = prevSandbox;
 
 // ------------------------------------------- parity: the guard IS agents.json

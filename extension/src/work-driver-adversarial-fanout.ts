@@ -15,6 +15,7 @@ import { slowRecorder } from "./slow-events.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
+import { capKillOutcomeFields } from "./work-driver-adversarial-fanout-capkill.ts";
 import {
   classifyAdversarialOutcome,
   isTransientAdversarialOutcome,
@@ -36,6 +37,7 @@ import {
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import { armStepNotice } from "./work-driver-step-notice.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
+export { capKillOutcomeFields };
 
 /**
  * #543 — the cap-kill fields of an AdversarialOutcome: the killCause
@@ -43,21 +45,6 @@ import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts
  * the inner spawn's DispatchResult. Empty when the result carries no cap
  * kill. Split from runOne's return (AGENTS.md §12 file-size limit).
  */
-function capKillOutcomeFields(result: DispatchResult): Partial<AdversarialOutcome> {
-  if (result.killCause === "loop") {
-    return {
-      killCause: "loop",
-      ...(result.loopEvidence ? { loopEvidence: result.loopEvidence } : {}),
-    };
-  }
-  if (result.killCause === "token-budget") {
-    return {
-      killCause: "token-budget",
-      ...(result.tokenBudget ? { tokenBudget: result.tokenBudget } : {}),
-    };
-  }
-  return {};
-}
 
 export async function fanOutAdversarial(
   ctx: DriverContext,
@@ -183,6 +170,10 @@ export async function fanOutAdversarial(
           // (routeStepOutcome) drains it — the fan-out folds nothing of its
           // own any more.
           onSlow: slowRecorder(ctx.issue, "adversarial"),
+          // #912 — caller-supplied branch for the review-ledger write
+          // (driver worktrees are detached; the ledger writer cannot
+          // recover the branch name from a detached HEAD).
+          branch: state.pipelineState.branchName,
         },
         // No AbortController plumbing in v1 — spawn-level timeouts
         // in spawn.ts (per-role) bound the work.

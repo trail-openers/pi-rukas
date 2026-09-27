@@ -5,6 +5,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { startJob } from "./async-jobs.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
+import { writeLensLedgerEntry } from "./lens-ledger.ts";
 import { runLensChild } from "./lens-review-child.ts";
 import {
   LENS_PREFIX,
@@ -17,6 +18,7 @@ import {
 import { installBlockRows, skillsDirUsable } from "./lens-review-skills.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
 import { makeRunId } from "./spawn.ts";
+import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -276,6 +278,13 @@ export async function runLensReview(opts: {
   pi?: Pick<import("@earendil-works/pi-coding-agent").ExtensionAPI, "sendUserMessage">;
   /** Blocking bar; defaults to MEDIUM. See `DEFAULT_REVIEW_THRESHOLD`. */
   threshold?: Severity;
+  /**
+   * #912 — caller-supplied branch for the review-ledger write (the driver
+   * worktrees are detached, so `git rev-parse --abbrev-ref HEAD` cannot
+   * recover it). When absent the writer recovers the branch from `HEAD`
+   * and skips (traces) on a detached head.
+   */
+  branch?: string;
 }): Promise<LensReviewSummary> {
   const runId = makeRunId();
   const skillsDir = piSkillsDir();
@@ -373,6 +382,14 @@ export async function runLensReview(opts: {
   const all = [...lensResults.flatMap((r) => r.findings), ...(opts.extraFindings ?? [])];
   const deduped = dedupeFindings(all, roster);
   const verdict = computeVerdict(deduped, lensResults, opts.threshold);
+
+  // #912 — review-ledger write: a completed lens review records a
+  // `{ branch, patchId, passed }` entry so the merge guard can refuse an
+  // agent-run merge with no passing lens review on file. Failure isolation:
+  // every fault is swallowed and traced — the summary comes back identical.
+  const threshold = opts.threshold ?? DEFAULT_REVIEW_THRESHOLD;
+  void writeLensLedgerEntry(verdict, threshold, opts.cwd, opts.branch);
+
   // #534 — raw sum across lenses (no dedup, matching the retry rule).
   // `turns` is not meaningful at the aggregate level; keep it as the sum
   // of the parts' turns since the cycle total is what gets rendered and
@@ -397,7 +414,6 @@ export async function runLensReview(opts: {
   // #543 — a dispatch-cap kill on any lens child (loop detector / token
   // budget) is surfaced on the summary so the driver emits the fixed-literal
   // cap-hit (F4g) instead of a silent 1-of-6 loss.
-  const capKill = capKillSummary(lensResults);
   return {
     verdict,
     totalFindings: deduped.length,
@@ -405,32 +421,6 @@ export async function runLensReview(opts: {
     lenses: lensResults,
     findings: deduped,
     usage,
-    ...capKill,
-  };
-}
-
-/**
- * #543 — the cap-kill tail of the lens summary: which lens child was
- * killed (loop / token-budget) and its structured trigger evidence, so
- * the driver can persist `capEvidence`. Split from runLensReview
- * (AGENTS.md §12 file-size limit).
- */
-function capKillSummary(
-  lensResults: LensRunResult[],
-): Pick<LensReviewSummary, "capKill" | "capKillEvidence"> {
-  const capKillLens = lensResults.find(
-    (r) => r.killCause === "loop" || r.killCause === "token-budget",
-  );
-  const capKill = capKillLens?.killCause;
-  const capKillEvidence =
-    capKillLens?.killCause === "loop" && capKillLens.loopEvidence
-      ? capKillLens.loopEvidence
-      : capKillLens?.killCause === "token-budget" && capKillLens.tokenBudget
-        ? capKillLens.tokenBudget
-        : undefined;
-  return {
-    ...(capKill ? { capKill } : {}),
-    ...(capKillEvidence ? { capKillEvidence } : {}),
   };
 }
 

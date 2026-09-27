@@ -1,0 +1,70 @@
+import { stripQuotedSegments } from "./bash-command-parser.ts";
+
+/**
+ * Does this command merge a PR/MR (or a REST door that does)?
+ *
+ * #912 — the merge guard (merge-guard.ts) calls this ahead of every
+ * trust/sandbox bypass, exactly like `createsIssue`: ops holds an
+ * `oo gh pr merge*` / `oo glab mr merge*` grant in agents.json, and in
+ * trust/sandbox mode nothing else checks it.
+ *
+ * The doors (all on the QUOTE-STRIPPED command, scan-not-anchor):
+ *
+ *   - `gh pr merge …` / `glab mr merge …` (with or without the `oo`
+ *     prefix, chained after `cd x && …` or any other command, `timeout` /
+ *     `nice` / `env` wrappers),
+ *   - `gh pr merge` with NO number — the CLI resolves the PR from the
+ *     current branch; the guard resolves it via `gh pr view --json number`
+ *     before deciding,
+ *   - the gh REST door: `gh api repos/{o}/{r}/pulls/{n}/merge` — gh api
+ *     DEFAULTS TO POST/PUT (like the issues-collection door), so a
+ *     "read-looking" call on /pulls/N/merge IS the write; the no-number
+ *     `gh api repos/{o}/{r}/pulls/merge` shape is the same door,
+ *   - the glab REST door: `glab api /projects/{id}/mr/{n}/merge` —
+ *     method-AWARE (glab api does NOT default to POST, exactly the
+ *     issues-door rule): only an EXPLICIT PUT/POST (`-X PUT`, `--method
+ *     POST`, …) or body fields (`-f`/`-F`/`--field`) is a merge; an
+ *     unqualified call or an explicit GET stays open.
+ *
+ * Reads stay open: `gh pr view`, `gh pr checks`, `gh api repos/o/r/pulls/42`
+ * (no `/merge` suffix), `glab mr view`, and anything only quoted (`echo
+ * "gh pr merge 12"`). An unterminated quote fails closed the way
+ * `stripQuotedSegments` returns the raw command.
+ *
+ * Returns the matched span (for the refusal text), or undefined when the
+ * command does not merge.
+ */
+export function mergesPr(command: string): string | undefined {
+  const c = stripQuotedSegments(command);
+  const FORGE = "(?:^|[;&|]|\\s)(?:oo\\s+)?(?:gh|glab)\\s+";
+  // The verb door: `gh pr merge` / `glab mr merge`, number optional.
+  const verb = new RegExp(`${FORGE}(?:pr\\s+merge|mr\\s+merge)(?:\\s|$)`).exec(c);
+  if (verb?.[0]) return verb[0].trim();
+  // REST door, gh: `gh api` on /pulls/{n}/merge — gh api defaults to
+  // POST/PUT when no --method is given, so the /merge suffix IS the write
+  // even when it "looks like a read". The no-number `.../pulls/merge`
+  // shape is the same door.
+  const ghApiMatch = new RegExp(`${FORGE}api\\s+(repos/[^\\s]+)`).exec(c);
+  const ghEndpoint = ghApiMatch?.[1] ?? "";
+  if (ghApiMatch && /\/pulls(?:\/[^\s/?#]+)?\/merge(?:[?&#\s]|$)/.test(ghEndpoint)) {
+    const rest = c.slice(ghApiMatch.index);
+    if (!/\s(?:--method|-X)\s+GET\b/.test(rest)) return (ghApiMatch?.[0] ?? "").trim();
+  }
+  // REST door, glab: `glab api` on /mr/{n}/merge — method-AWARE: blocked
+  // only when the command EXPLICITLY writes (glab api does not default to
+  // POST the way gh api does; copying the gh rule here would over-block
+  // legitimate reads).
+  const glabApiMatch = new RegExp(
+    `${FORGE}api\\s+(/projects/[^\\s]+)/mr(?:/[^\\s/?#]+)?/merge(?:[?&#\\s]|$)`,
+  ).exec(c);
+  if (glabApiMatch?.[0] !== undefined) {
+    const rest = c.slice(glabApiMatch.index);
+    const explicitGet = /\s(?:--method|-X)\s+GET\b/.test(rest);
+    const writes =
+      /\s(?:-X|-f|-F)\s+(?:PUT|POST)\b/.test(rest) ||
+      /\s--method\s+(?:PUT|POST)\b/.test(rest) ||
+      /\s(?:-f|-F|--field)(?:=|\s)/.test(rest);
+    if (!explicitGet && writes) return glabApiMatch[0].trim();
+  }
+  return undefined;
+}

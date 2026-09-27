@@ -17,6 +17,7 @@ import { type Socket, createConnection } from "node:net";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { discardsUncommittedWork, rejectsInteractiveGit } from "./bash-command-parser.ts";
 import { registerIssueCreationGuard } from "./issue-creation-guard.ts";
+import { registerMergeGuard } from "./merge-guard.ts";
 import { registerOoRewriteGuard } from "./oo-rewrite-guard.ts";
 import type { PermissionRequest } from "./permission-broker.ts";
 import { loadAgentsJson, loadGlobalConfig, loadProjectConfig } from "./permission-config.ts";
@@ -43,6 +44,11 @@ export function registerSubagentGuard(pi: ExtensionAPI): void {
   // is shared with the parent guard (permission-guard.ts) so both layers
   // stay byte-identical.
   registerIssueCreationGuard(pi);
+  // #912 — same mode-independence for the merge door: an ops subagent
+  // holding an `oo gh pr merge*` grant could merge on a developer's
+  // self-report plus CI in trust/sandbox mode. The review ledger is the
+  // structural floor; the guard fires before every bypass.
+  registerMergeGuard(pi);
   // #716 — same registration site, same reasoning: the "mandatory oo" rule
   // for verbose runners (pytest, cargo test, bun test, …) is pure prose on the
   // bash tool's argument string in trust/sandbox mode, where agents.json is

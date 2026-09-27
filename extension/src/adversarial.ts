@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { classifyDispatchOutcome } from "./adversarial-classify.ts";
+import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
 import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
 import { infraFailureResult, runPhaseWithInfraRetry } from "./adversarial-retry.ts";
 import { decideLoopAction, parseVerdict } from "./adversarial-verdict.ts";
@@ -12,6 +13,7 @@ import { readEnumMarker } from "./reply-markers.ts";
 import { type OnSlowCallback, feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import { trace } from "./trace.ts";
+
 import type { AdversarialVerdict, DispatchFailureCause, DispatchResult } from "./types.ts";
 import { ADVERSARIAL_TRANSIENT_MAX_RETRIES, isRateLimit429Msg } from "./types.ts";
 
@@ -107,6 +109,11 @@ export async function runAdversarialLoop(
     /** #799 — the parent pi for the inner children's slow-run watch (the PM
      * notice half; the watch site has no pi of its own). */
     pi?: ExtensionAPI;
+    /** #912 — caller-supplied branch for the review-ledger write (the driver
+     * worktrees are detached, so `git rev-parse --abbrev-ref HEAD` cannot
+     * recover it). When absent the writer recovers the branch from `HEAD`
+     * and skips (traces) on a detached head. */
+    branch?: string;
   },
   signal: AbortSignal,
   orchestratorJobId: string,
@@ -117,6 +124,8 @@ export async function runAdversarialLoop(
   const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
   let lastTranscript: string | undefined;
   let lastModel: string | undefined;
+
+  const ledgerWrite = (result: DispatchResult) => writeAdversarialLedgerEntry(result, params);
   // Mark this job as orchestrator-shaped so dispatch_peek / dispatch_steer
   // can resolve the orchestrator jobId to its active inner child instead of
   // returning "no such job". Active child is updated below in runPhase.
@@ -226,14 +235,17 @@ export async function runAdversarialLoop(
       { runPhase, accumulate, signal },
     );
     const advCls = classifyDispatchOutcome(adv);
-    if (advCls.cause !== "success")
-      return infraFailureResult(round, "review", adv, advCls, {
+    if (advCls.cause !== "success") {
+      const r = infraFailureResult(round, "review", adv, advCls, {
         start,
         usage,
         lastTranscript,
         lastModel,
         toRoundRecords,
       });
+      ledgerWrite(r);
+      return r;
+    }
 
     const verdict = parseVerdict(adv.text);
     rounds.push({ round, verdict, ms: adv.ms });
@@ -244,7 +256,7 @@ export async function runAdversarialLoop(
       // reviewed, so this is not an approval and not a rejection — it is the
       // same "no verdict exists" case the infra path already reports, and the
       // step router already knows to retry it once.
-      return infraFailureResult(
+      const r = infraFailureResult(
         round,
         "review",
         adv,
@@ -254,13 +266,15 @@ export async function runAdversarialLoop(
         },
         { start, usage, lastTranscript, lastModel, toRoundRecords },
       );
+      ledgerWrite(r);
+      return r;
     }
     if (action === "pass") {
       // `PASSED WITH FINDINGS` rather than `APPROVED` when something is still
       // outstanding: the operator (and the lens gate) must be able to tell the
       // two apart, and `commit-pr` carries the findings into the PR body.
       const clean = verdict.status === "APPROVED";
-      return synthesizeResult({
+      const r = synthesizeResult({
         ok: true,
         loopOutcome: "approved",
         text: clean
@@ -272,6 +286,8 @@ export async function runAdversarialLoop(
         model: lastModel,
         adversarialRounds: toRoundRecords(rounds),
       });
+      ledgerWrite(r);
+      return r;
     }
     if (action === "reject") break;
 
@@ -294,18 +310,21 @@ export async function runAdversarialLoop(
       `Round ${round} (${verdict.status}): ${summariseFindings(verdict.findings)}`,
     );
     const fixCls = classifyDispatchOutcome(fix);
-    if (fixCls.cause !== "success")
-      return infraFailureResult(round, "fix", fix, fixCls, {
+    if (fixCls.cause !== "success") {
+      const r = infraFailureResult(round, "fix", fix, fixCls, {
         start,
         usage,
         lastTranscript,
         lastModel,
         toRoundRecords,
       });
+      ledgerWrite(r);
+      return r;
+    }
   }
 
   const last = rounds[rounds.length - 1];
-  return synthesizeResult({
+  const r = synthesizeResult({
     ok: false,
     loopOutcome: "rejected",
     text: [
@@ -326,6 +345,8 @@ export async function runAdversarialLoop(
     model: lastModel,
     adversarialRounds: toRoundRecords(rounds),
   });
+  ledgerWrite(r);
+  return r;
 }
 
 interface SynthesizeInput {
