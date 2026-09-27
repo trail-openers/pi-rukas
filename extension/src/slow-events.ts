@@ -45,6 +45,9 @@ export function slowRecorder(issue: number, step: WorkStep): OnSlowCallback {
       turns: info.turns,
       tokens: info.tokens,
       at: info.at,
+      // #907 — optional CI-wait exclusion, present only when the watch
+      // recorded nonzero excluded time.
+      ...(info.ciWaitExcludedMs !== undefined ? { ciWaitExcludedMs: info.ciWaitExcludedMs } : {}),
     });
     pendingSlowEvents.set(issue, list);
   };
