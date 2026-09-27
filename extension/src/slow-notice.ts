@@ -39,61 +39,17 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { notifyAgent } from "./agent-message.ts";
 import { getParentExtensionApi } from "./async-jobs-registry.ts";
-import type { SteerSource } from "./dispatch-steer.ts";
 import { steerChild } from "./dispatch-steer.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import type { RunningState } from "./progress.ts";
 import { formatElapsed, formatTokens } from "./progress.ts";
 import type { CiWaitSpanTracker } from "./slow-notice-ci-wait.ts";
 import { createCiWaitSpanTracker, installRawEventSeam } from "./slow-notice-ci-wait.ts";
+import type { OnSlowCallback, SlowWatchHandle, SlowWatchInput } from "./slow-notice-types.ts";
 import { trace } from "./trace.ts";
 import type { WorkEvent, WorkStep } from "./workflow-state.ts";
 
-/** The one place the driver's dispatch-slow events get appended: threaded
- * through `dispatchCore`'s opts (work-driver-event seam). Absent for PM
- * jobs (their notice is PM-only). */
-export type OnSlowCallback = (info: {
-  step: string;
-  role: string;
-  jobId: string;
-  label: string;
-  elapsedMs: number;
-  turns: number;
-  tokens: number;
-  at: number;
-  /** #907 — ms of wall time the child spent in an in-flight CI-watch
-   * tool call (excluded from the elapsed dimension); present only when
-   * nonzero. */
-  ciWaitExcludedMs?: number;
-}) => void;
-
-export interface SlowWatchInput {
-  /** Deck key / job id the PM sees (what dispatch_peek shows). */
-  id: string;
-  role: string;
-  label: string;
-  /** Injectable pi — the notifyAgent target. Defaults to the parent
-   * extension api (async-jobs-registry) so children spawned without a pi in
-   * scope (lens, adversarial) still notify the PM. Undefined in the suite →
-   * the notice is skipped, never thrown. */
-  pi?: Pick<ExtensionAPI, "sendUserMessage">;
-  /** Injectable steer core — tests record instead of writing to a real
-   * stdin. Defaults to `steerChild`. */
-  steerFn?: (jobId: string, text: string, source: SteerSource) => unknown;
-  /** Injectable clock — the elapsed dimension is computed from it (tests
-   * drive it deterministically). */
-  now?: () => number;
-  /** #907 — raw-event seam: the caller passes its `onRawEvent` through so
-   * the watch's own clock feeds the CI-wait span tracker (a toolCall block
-   * opens a span, the matching toolResult closes it). When absent the watch
-   * gets no exclusion (a site that cannot feed events simply does not). */
-  onRawEvent?: (event: PiJsonEvent) => void;
-  /** Injectable scheduler for the elapsed check — tests arm/tick without
-   * waiting on a 20-minute wall. Returns the matching cancel. Defaults to an
-   * unref'd setTimeout. */
-  schedule?: (fn: () => void, ms: number) => () => void;
-  onSlow?: OnSlowCallback;
-}
+export type { OnSlowCallback, SlowWatchHandle, SlowWatchInput } from "./slow-notice-types.ts";
 
 /** The thresholds at level n: `base·2^n` per dimension. Level 0 is the
  * first crossing (20 min / 150 turns / 20M tokens, whichever comes first);
@@ -142,10 +98,12 @@ interface Watch {
   role: string;
   label: string;
   startedAt: number;
-  /** Levels already fired (0 initially); next fire when ANY dimension meets
-   * `base·2^level`. On a fire the level jumps to the highest level any
-   * dimension has NOW reached (a simultaneous or overshooting crossing fires
-   * once, no catch-up burst) and every dimension re-arms together.
+  /** The number of levels already fired (0 initially). The next fire
+   * happens when ANY dimension meets `base·2^level`; on a fire the level
+   * jumps to the highest level any dimension has NOW reached (so a
+   * simultaneous or overshooting crossing fires once, with no catch-up
+   * burst) and every dimension re-arms together at `base·2^level`. The
+   * elapsed timer is absolute from the watch start.
    * #884 — replaces the per-dimension re-arming that fired three notices. */
   level: number;
   /** Injectable scheduler for the elapsed check (injectable in tests). */
@@ -224,8 +182,9 @@ export function slowSteerText(elapsedMs: number, turns: number): string {
 
 function deliver(w: Watch, s: RunningState, triggered: string[], excludedMs: number): void {
   const elapsed = s.elapsedMs > 0 ? s.elapsedMs : Math.max(0, w.now() - w.startedAt);
-  // 1 — PM notice (notifyAgent, always deliverAs "steer"). `w.pi` is absent
-  // for lens/adversarial children — the parent api registered at extension
+  // 1 — PM notice (notifyAgent, always deliverAs "steer"). A rejection of the
+  // send must never be an unhandled rejection. `input.pi` is absent for
+  // lens/adversarial children — the parent api registered at extension
   // load stands in, so those children notify too.
   const pi = w.pi ?? getParentExtensionApi();
   if (pi) {
@@ -341,13 +300,10 @@ function advanceLevel(
 function tickElapsed(w: Watch): void {
   const s = w.lastState;
   if (!w.seenProgress || !s) return;
-  // #907 — the elapsed dimension is wall time MINUS the time the child spent
-  // in an in-flight CI-watch tool call (the span tracker lives on the
-  // watch; see feedSlowProgress for the feed path). The re-arm below is
-  // ABSOLUTE from the watch start but shifted by the excluded time: the
-  // next fire is at the wall moment when wall − excluded reaches
-  // `start + msBase·2^level` (Infinity → no timer).
   const wall = Math.max(0, w.now() - w.startedAt);
+  // #907 — the elapsed dimension is wall time MINUS the time the child
+  // spent in an in-flight CI-watch tool call (the span tracker lives on
+  // the watch; the feed path does the same in feedSlowProgress).
   const excluded = w.ciWait.excludedMs(w.now());
   const elapsed = Math.max(0, wall - excluded);
   // Only elapsed can be evaluated from the clock — the snapshot's turns and
@@ -364,22 +320,9 @@ function tickElapsed(w: Watch): void {
   }
 }
 
-/** The handle `watchSlowDispatch` returns: `stop` releases the watch, and
- * `onRawEvent` (when the caller passed an `onRawEvent` input) is the
- * watcher-side raw-event hook the caller threads into its work — the
- * span tracker is chained in front of the caller's hook, so the child's
- * events reach both the watch and the caller's own consumer (the deck's
- * live buffer). Absent when the caller passed no onRawEvent (no span
- * feed → no exclusion). */
-export interface SlowWatchHandle {
-  stop: () => void;
-  onRawEvent?: (event: PiJsonEvent) => void;
-}
-
-/** Arm the watch. Returns a handle whose `stop` the caller MUST invoke
- * when the child settles (success or failure): it deletes the state
- * entry, so a finished child can never notice again and the map stays
- * bounded. */
+/** Arm the watch. Returns a stop function the caller MUST invoke when the
+ * child settles (success or failure): it deletes the state entry, so a
+ * finished child can never notice again and the map stays bounded. */
 export function watchSlowDispatch(input: SlowWatchInput): SlowWatchHandle {
   const base = levelThresholds(0);
   const now = input.now ?? Date.now;
@@ -428,6 +371,7 @@ export function watchSlowDispatch(input: SlowWatchInput): SlowWatchHandle {
   // chained, never replaced.
   if (input.onRawEvent) w.onRawEvent = installRawEventSeam(input.onRawEvent, ciWait);
   watches.set(input.id, w);
+  // Arm the first elapsed check (no-op when the dimension is disabled).
   if (Number.isFinite(base.ms)) scheduleElapsedCheck(w, base.ms);
   const stop = (): void => {
     if (w.timer) {
@@ -445,12 +389,15 @@ export function watchSlowDispatch(input: SlowWatchInput): SlowWatchHandle {
     ...(w.onRawEvent ? { onRawEvent: w.onRawEvent } : {}),
   };
 }
+
 /**
  * Feed a progress update. Fires when ANY dimension meets the NEXT level's
  * threshold, delivering ONE notice+steer+onSlow for the level and naming the
  * triggering dimension(s); the level then jumps to the HIGHEST level any
  * dimension has now reached (an overshoot fires once, no catch-up burst);
- * disabled (Infinity) dimensions stay inert.
+ * disabled (Infinity) dimensions stay inert. 149→151→160 turns: only the 151
+ * feed fires; the other dimensions' first crossings are covered by the
+ * level-1 fire and fire again only at 40 min / 300 turns / 40M.
  */
 export function feedSlowProgress(id: string, s: RunningState): void {
   const w = watches.get(id);
@@ -478,8 +425,8 @@ export function feedSlowProgress(id: string, s: RunningState): void {
   if (crossed.crossedTurns) w.level = Math.max(w.level, prev + crossed.reachedTurns);
   if (crossed.crossedTokens) w.level = Math.max(w.level, prev + crossed.reachedTokens);
   // Re-arm the elapsed timer ABSOLUTELY from the watch start, shifted by
-  // the excluded CI-wait time (Infinity → no timer): its next fire is at
-  // the wall moment when wall − excluded reaches start + msBase·2^level.
+  // the excluded CI-wait time: its next fire is at the wall moment when
+  // wall − excluded reaches `start + msBase·2^level` (Infinity → no timer).
   const nextMs = dimThreshold(w.base.ms, w.level);
   if (Number.isFinite(nextMs)) scheduleElapsedCheck(w, Math.max(0, nextMs + excluded - wall));
   const triggered = [
