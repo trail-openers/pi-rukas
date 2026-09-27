@@ -6,6 +6,8 @@ import type { LensRunResult } from "./lens-review.ts";
  * killed (loop / token-budget) and its structured trigger evidence, so
  * the driver can persist `capEvidence`. Split from runLensReview
  * (AGENTS.md §12 file-size limit).
+ * budget) is surfaced on the summary so the driver emits the fixed-literal
+ * cap-hit (F4g) instead of a silent 1-of-6 loss.
  */
 export function capKillSummary(
   lensResults: LensRunResult[],

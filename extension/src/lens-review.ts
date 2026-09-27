@@ -17,6 +17,7 @@ import {
   renderSummary,
 } from "./lens-review-format.ts";
 import { installBlockRows, skillsDirUsable } from "./lens-review-skills.ts";
+import { aggregateLensUsage } from "./lens-review-usage.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
@@ -263,8 +264,6 @@ export async function runLensReview(opts: {
   context?: string;
   cwd?: string;
   signal?: AbortSignal;
-  /* (threshold + branch: see below — the resolved threshold is computed
-   * once at the top of the body so the verdict and the ledger write agree.) */
   /**
    * Post-change content of files the diff touches, rendered for the prompt.
    * Supplied by the caller because only it knows the branch ref; see
@@ -405,6 +404,9 @@ export async function runLensReview(opts: {
       lenses: lensResults,
       findings: deduped,
       usage: aggregateLensUsage(lensResults),
+      // #543 — a dispatch-cap kill on any lens child (loop detector / token
+      // budget) is surfaced on the summary so the driver emits the fixed-literal
+      // cap-hit (F4g) instead of a silent 1-of-6 loss.
       ...capKillSummary(lensResults),
     },
     threshold,
@@ -422,25 +424,6 @@ function finish(
 ): LensReviewSummary {
   void writeLensLedgerEntry(summary.verdict, threshold, cwd, branch);
   return summary as LensReviewSummary;
-}
-
-/** #534 — raw sum across lenses (no dedup). */
-function aggregateLensUsage(lensResults: LensRunResult[]): DispatchUsage | undefined {
-  const usageUsages = lensResults
-    .map((r) => r.usage)
-    .filter((u): u is DispatchUsage => u !== undefined);
-  if (usageUsages.length === 0) return undefined;
-  return usageUsages.reduce(
-    (acc, u) => ({
-      input: acc.input + u.input,
-      output: acc.output + u.output,
-      cacheRead: acc.cacheRead + u.cacheRead,
-      cacheWrite: acc.cacheWrite + u.cacheWrite,
-      cost: acc.cost + u.cost,
-      turns: acc.turns + u.turns,
-    }),
-    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
-  );
 }
 
 export function registerLensReviewTool(pi: ExtensionAPI) {
