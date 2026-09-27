@@ -355,10 +355,14 @@ export async function appendLedgerEntry(
     // entry alive.
     let entries: LedgerEntry[] = [];
     try {
-      entries = readLedgerFile(file).entries;
+      entries = validEntries(readLedgerFile(file).entries);
     } catch {
       entries = [];
     }
+    // Bounded file: keep only the latest entry per (branch, kind) — the
+    // guard (latestEntry) reads only the latest anyway, so older entries
+    // would be dead weight accumulating one row per review run per clone.
+    entries = dedupeLatest(entries);
     entries.push(entry);
     const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
     writeFileSync(tmp, JSON.stringify({ entries }, null, 2), "utf8");
@@ -396,7 +400,60 @@ export function readLedgerFile(file: string): LedgerFile {
   const raw = readFileSync(file, "utf8");
   const parsed = JSON.parse(raw) as { entries?: unknown };
   if (!parsed || !Array.isArray(parsed.entries)) return { entries: [] };
-  return { entries: parsed.entries as LedgerEntry[] };
+  return { entries: validEntries(parsed.entries) };
+}
+
+/**
+ * Validate an untrusted row before the ledger trusts it: `branch` must be
+ * a non-empty string, `kind` one of the two review kinds, `patchId` a
+ * string, `at` a finite number, `passed` a boolean. Anything else is
+ * dropped (and traced) — a corrupt row must not satisfy or shadow a
+ * genuine one.
+ */
+export function validEntries(entries: unknown[]): LedgerEntry[] {
+  const ok: LedgerEntry[] = [];
+  for (const e of entries) {
+    if (
+      e &&
+      typeof e === "object" &&
+      typeof (e as LedgerEntry).branch === "string" &&
+      (e as LedgerEntry).branch.length > 0 &&
+      ((e as LedgerEntry).kind === "adversarial" || (e as LedgerEntry).kind === "lens") &&
+      typeof (e as LedgerEntry).patchId === "string" &&
+      typeof (e as LedgerEntry).at === "number" &&
+      Number.isFinite((e as LedgerEntry).at) &&
+      typeof (e as LedgerEntry).passed === "boolean"
+    ) {
+      ok.push(e as LedgerEntry);
+    } else {
+      trace(`review-ledger: dropped invalid ledger entry: ${safeJson(e)}`);
+    }
+  }
+  return ok;
+}
+
+/** One line, for the trace: a never-throwing JSON stringify. */
+function safeJson(v: unknown): string {
+  try {
+    return JSON.stringify(v) ?? "undefined";
+  } catch {
+    return "<unserialisable>";
+  }
+}
+
+/**
+ * Keep only the latest entry per (branch, kind) — the guard reads only the
+ * latest, so older rows are never consulted. Stable on `at` ties (later in
+ * file order wins, matching `latestEntry`'s `>=`).
+ */
+export function dedupeLatest(entries: LedgerEntry[]): LedgerEntry[] {
+  const byKey = new Map<string, LedgerEntry>();
+  for (const e of entries) {
+    const key = `${e.branch}\u0000${e.kind}`;
+    const prev = byKey.get(key);
+    if (!prev || e.at >= prev.at) byKey.set(key, e);
+  }
+  return [...byKey.values()];
 }
 
 /**
@@ -416,7 +473,7 @@ export function latestEntry(entries: LedgerEntry[], branch: string, kind: Review
   return best;
 }
 
-/** Read + merge the ledger from a resolved path; never throws. */
+/** Read + validate the ledger from a resolved path; never throws. */
 export function readLedgerAt(file: string): LedgerEntry[] {
   try {
     return readLedgerFile(file).entries;

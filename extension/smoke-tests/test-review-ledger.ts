@@ -29,10 +29,13 @@ import {
   adversarialPassed,
   appendLedgerEntry,
   branchPatchId,
+  dedupeLatest,
   lensBlockedByThreshold,
   lensPassed,
   readLedgerAt,
+  readLedgerFile,
   remoteName,
+  validEntries,
   workingTreePatchId,
 } from "../src/review-ledger.ts";
 
@@ -351,6 +354,77 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
     assert(name === "origin", "remoteName resolves the remote (origin)");
   } finally {
     rmSync(path.dirname(repo), { recursive: true, force: true });
+  }
+}
+
+// ------------------------------------------- bounded + validated ledger
+
+{
+  // Bounded on write: appending a second entry for the same (branch, kind)
+  // replaces the first — the guard only ever reads the latest.
+  const a: LedgerEntry = {
+    branch: "feature/x",
+    kind: "adversarial",
+    patchId: "p1",
+    passed: true,
+    at: 1000,
+  };
+  const b: LedgerEntry = { ...a, patchId: "p2", at: 2000 };
+  const deduped = dedupeLatest([a, b]);
+  assert(
+    deduped.length === 1 && deduped[0] === b,
+    "dedupeLatest keeps only the latest per (branch, kind)",
+  );
+
+  // A lower `at` written later still loses to the higher `at`.
+  const deduped2 = dedupeLatest([b, a]);
+  assert(
+    deduped2.length === 1 && deduped2[0] === b,
+    "dedupeLatest keeps the higher `at` regardless of order",
+  );
+
+  // Distinct (branch, kind) keys both survive.
+  const other: LedgerEntry = { ...a, kind: "lens" };
+  const otherBranch: LedgerEntry = { ...a, branch: "feature/y" };
+  const deduped3 = dedupeLatest([a, b, other, otherBranch]);
+  assert(deduped3.length === 3, "dedupeLatest keeps distinct (branch, kind) keys");
+
+  // Validation: only well-formed rows survive; the rest are dropped.
+  const good: LedgerEntry = { branch: "f", kind: "lens", patchId: "p", passed: false, at: 1 };
+  const badRows = [
+    { branch: "", kind: "lens", patchId: "p", passed: true, at: 1 }, // empty branch
+    { branch: "f", kind: "both", patchId: "p", passed: true, at: 1 }, // bad kind
+    { branch: "f", kind: "lens", patchId: 42, passed: true, at: 1 }, // non-string patchId
+    { branch: "f", kind: "lens", patchId: "p", passed: true, at: NaN }, // NaN at
+    { branch: "f", kind: "lens", patchId: "p", passed: "yes", at: 1 }, // non-boolean passed
+    { branch: "f", kind: "lens", patchId: "p", passed: true }, // missing at
+    null,
+    "a string",
+    42,
+  ];
+  const kept = validEntries([good, ...badRows]);
+  assert(kept.length === 1 && kept[0] === good, "validEntries keeps only well-formed rows");
+
+  // End-to-end: a corrupt file is read as its valid rows only (read path),
+  // and a write into an existing multi-row file collapses older rows.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ledger-validate-"));
+  try {
+    const file = path.join(dir, "review-ledger.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        entries: [a, b, { branch: "x", kind: "nope", patchId: 1, at: "z", passed: "y" }],
+      }),
+      "utf8",
+    );
+    const loaded = readLedgerFile(file).entries;
+    assert(
+      loaded.length === 2 && loaded.some((e) => e.patchId === "p2"),
+      "readLedgerFile drops corrupt rows",
+    );
+    assert(!loaded.some((e) => e.kind === "nope"), "a corrupt row is dropped, not trusted");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 

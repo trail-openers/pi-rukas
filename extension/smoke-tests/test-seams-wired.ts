@@ -189,8 +189,11 @@ const SEAMS: Seam[] = [
     pending: {},
     testOnly: {
       readLedgerFile: "the raw file reader; exercised by test-review-ledger.ts",
+      validEntries: "the row validator; exercised by test-review-ledger.ts",
+      dedupeLatest: "the bounded-file dedup; exercised by test-review-ledger.ts",
       readLedgerAt: "the never-throwing reader; exercised by test-merge-guard.ts",
-      lensBlockedByThreshold: "the driver-side threshold predicate; exercised by test-review-ledger.ts",
+      lensBlockedByThreshold:
+        "the driver-side threshold predicate; exercised by test-review-ledger.ts",
     },
     canary: { symbol: "appendLedgerEntry", importer: "adversarial-ledger.ts" },
   },

@@ -417,13 +417,13 @@ export async function runLensReview(opts: {
 
 /** The ONE exit path: writes the ledger entry and returns the summary. */
 function finish(
-  summary: Omit<LensReviewSummary, "usage"> & { usage?: DispatchUsage },
+  summary: LensReviewSummary,
   threshold: Severity,
   cwd: string | undefined,
   branch: string | undefined,
 ): LensReviewSummary {
   void writeLensLedgerEntry(summary.verdict, threshold, cwd, branch);
-  return summary as LensReviewSummary;
+  return summary;
 }
 
 export function registerLensReviewTool(pi: ExtensionAPI) {
