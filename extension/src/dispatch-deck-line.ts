@@ -33,21 +33,56 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
  */
 export const NEWLINE_SEP = " ⏎ ";
 
-// Pre-built regexes for ANSI / control-char stripping. Patterns are built
-// from char codes so the source contains no literal control characters
-// (biome noControlCharactersInRegex forbids them in regex literals and
-// template literals alike). The `new RegExp` constructor is used
-// deliberately because the patterns are built from variables.
-const ESC = String.fromCharCode(0x1b);
-const BEL = String.fromCharCode(0x07);
-// biome-ignore lint/suspicious/noControlCharactersInRegex: patterns built from ESC/BEL char codes
-const ANSI_CSI = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, "g");
-// biome-ignore lint/suspicious/noControlCharactersInRegex: patterns built from ESC/BEL char codes
-const ANSI_OSC = new RegExp(`${ESC}\\][^${BEL}${ESC}]*(?:${BEL}|${ESC}\\\\)?`, "g");
-// biome-ignore lint/suspicious/noControlCharactersInRegex: patterns built from ESC/BEL char codes
-const ANSI_OTHER = new RegExp(`${ESC}[@-Z\\\\]-`, "g");
-// biome-ignore lint/suspicious/noControlCharactersInRegex: patterns built from ESC/BEL char codes
-const C0_C1 = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
+// ANSI / control-char stripping is a plain character scanner (no regexes,
+// so no control characters appear in the source at all): the scanner
+// recognises ESC (0x1b) sequences — CSI (`[`), OSC (`]`), or a single
+// following char — plus C1 CSI (0x9b `[`) the same way, and drops remaining
+// C0/C1 code points (a lone 0x9b is a stray C1 char, dropped alone — the
+// same shape the pre-#927 regex pipeline produced, where only `ESC [` was
+// a CSI escape and a bare `9b` fell to the C0/C1 sweep).
+const CODE_ESC = 0x1b;
+const CODE_CSI_C1 = 0x9b;
+const CODE_BEL = 0x07;
+
+/** Drop ANSI escape sequences and stray C0/C1 control characters. */
+function stripAnsiAndControl(text: string): string {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    if (ch === CODE_ESC || (ch === CODE_CSI_C1 && text.charCodeAt(i + 1) === 0x5b)) {
+      const next = text.charCodeAt(i + 1);
+      if (next === 0x5b) {
+        // CSI: skip through the final byte (0x40–0x7e).
+        for (let j = i + 2; j < text.length; j++) {
+          if (text.charCodeAt(j) >= 0x40 && text.charCodeAt(j) <= 0x7e) {
+            i = j;
+            break;
+          }
+        }
+      } else if (next === 0x5d) {
+        // OSC: skip until BEL or the ST sequence (ESC `\`).
+        for (let j = i + 2; j < text.length; j++) {
+          if (text.charCodeAt(j) === CODE_BEL) {
+            i = j;
+            break;
+          }
+          if (text.charCodeAt(j) === CODE_ESC && text.charCodeAt(j + 1) === 0x5c) {
+            i = j + 1;
+            break;
+          }
+        }
+      } else {
+        // ESC + single char: drop both (also a lone ESC at end of string).
+        i += 1;
+      }
+    } else if ((ch < 0x20 && ch !== 0x0a && ch !== 0x09) || (ch >= 0x7f && ch <= 0x9f)) {
+      // Remaining C0 (except \n / \t, handled separately) and C1: drop.
+    } else {
+      out += text.charAt(i);
+    }
+  }
+  return out;
+}
 
 /**
  * Sanitise untrusted text into terminal-safe characters:
@@ -63,13 +98,8 @@ const C0_C1 = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
  * (collapse vs split).
  */
 export function sanitizeText(text: string): string {
-  return text
-    .replace(/\r\n?/g, "\n")
-    .replace(/\t/g, " ")
-    .replace(ANSI_CSI, "")
-    .replace(ANSI_OSC, "")
-    .replace(ANSI_OTHER, "")
-    .replace(C0_C1, "");
+  const normalised = text.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+  return stripAnsiAndControl(normalised).replaceAll("\t", " ");
 }
 
 /**

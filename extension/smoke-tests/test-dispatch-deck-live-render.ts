@@ -69,6 +69,22 @@ function assert(cond: boolean, msg: string) {
 }
 
 // ---------------------------------------------------------------------------
+// 1b. sanitizeText: OSC terminators and a lone trailing ESC (#927 fix).
+// ---------------------------------------------------------------------------
+{
+  const E = "\u001b";
+  // OSC terminated by BEL: the whole sequence is dropped.
+  const oscBel = sanitizeText(`pre${E}]0;title\u0007post`);
+  assert(oscBel === "prepost", `1b-a: OSC + BEL dropped (got ${JSON.stringify(oscBel)})`);
+  // OSC terminated by ST (ESC backslash): the whole sequence is dropped.
+  const oscSt = sanitizeText(`pre${E}]0;title${E}\\post`);
+  assert(oscSt === "prepost", `1b-b: OSC + ST dropped (got ${JSON.stringify(oscSt)})`);
+  // A lone ESC at the end of the string: dropped, text before it kept.
+  const loneEsc = sanitizeText("tail" + E);
+  assert(loneEsc === "tail", `1b-c: lone trailing ESC dropped (got ${JSON.stringify(loneEsc)})`);
+}
+
+// ---------------------------------------------------------------------------
 // 2. toTerminalLine: no newlines, width-bounded, visible separator.
 // ---------------------------------------------------------------------------
 {
