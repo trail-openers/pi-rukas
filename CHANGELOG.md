@@ -8,6 +8,14 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.64](https://github.com/trail-openers/pi-rukas/compare/v0.12.63...v0.12.64) (2026-09-27)
+
+
+### Features
+
+* **work:** keep dependsOn edges through the overlapping-paths re-plan ([#908](https://github.com/trail-openers/pi-rukas/issues/908)) ([8c2c6d3](https://github.com/trail-openers/pi-rukas/commit/8c2c6d33debbec27890d8293a83b11ec554cae3f))
+* **work:** recover a develop fence violation instead of parking ([#910](https://github.com/trail-openers/pi-rukas/issues/910)) ([be9f45b](https://github.com/trail-openers/pi-rukas/commit/be9f45be0e1f00fc6f369b8d1c0eb3feea6bcba0))
+
 ## [0.12.63](https://github.com/trail-openers/pi-rukas/compare/v0.12.62...v0.12.63) (2026-09-26)
 
 
