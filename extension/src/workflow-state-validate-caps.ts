@@ -54,6 +54,11 @@ export const CAP_HIT_FIXED_LITERALS: readonly unknown[] = [
   // live parked cycle would halt on "unrecognised value" and tell the
   // operator to rm the very record this cap exists to create.
   "deferred-creation:develop",
+  // #849 — the develop fence's terminal cap after a recovery round (second
+  // violation, or a violator↔owner cycle before any re-dispatch). A
+  // deliberate park terminalized as a handoff; the evidence names both
+  // attempts.
+  "fence-violation:develop",
   // #746 task-b — the branch step's early dirty-root block: a stray
   // untracked/modified file at repoRoot (outside the driver-managed
   // exclusion set) present BEFORE any develop dispatch. A deliberate park
