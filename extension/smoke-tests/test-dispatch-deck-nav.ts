@@ -2,23 +2,27 @@
 /**
  * #834 — roster-mode nav state machine for the dispatch deck.
  *
- * Drives the nav handler with a fake `ctx.ui` and the real createDeckNav
- * state machine: activation, navigation, exit, settle, quiet/headless,
- * listener lifecycle, self-heal cap, and the focus gate (#deck-nav-focus)
- * that prevents the roster from stealing ↓ from other focused components.
+ * Drives the nav handler with a fake `ctx.ui` (getEditorText,
+ * onTerminalInput capture) and the real createDeckNav state machine:
+ *   - down with an empty editor + running jobs → consumed, first row
+ *   - down → next; up → prev; up at first → exits
+ *   - down with a non-empty editor → NOT consumed
+ *   - down with no running jobs → NOT consumed
+ *   - Esc → exits (consumed)
+ *   - printable key while active → exits, NOT consumed
+ *   - Enter → onRowConfirm(selectedKey) after roster mode exits
+ *   - a selected job settling → selection moves or roster mode exits
+ *   - quiet mode / headless (no hasUI) register nothing
+ *   - the listener is registered once and removed on detach
+ *   - the focus gate (see test-dispatch-deck-nav-focus.ts, blocks 19–23)
  *
  * Key sequences use pi-tui's wire format: legacy arrows \x1b[A / \x1b[B,
- * escape \x1b, enter \r.
+ * escape \x1b, enter \r — the same bytes the real TUI hands to the
+ * handler.
  */
 
-import { type DeckNav, type NavListener, createDeckNav } from "../src/dispatch-deck-nav.ts";
-import {
-  attach,
-  detach,
-  reset,
-  setFocusedComponentProbe,
-  startEntry,
-} from "../src/dispatch-deck.ts";
+import { attach, detach, reset, startEntry } from "../src/dispatch-deck.ts";
+import { createDeckNav, type DeckNav, type NavListener } from "../src/dispatch-deck-nav.ts";
 
 const NAV_HEAL_MAX = 5; // must match the cap in dispatch-deck.ts
 
@@ -105,17 +109,23 @@ function makeNav(
   };
 }
 
-// Call the first registered listener (as pi-tui inputListeners loop does).
+// The listener the handler is registered through — call the first (only)
+// registered listener, as pi-tui's inputListeners loop does.
 function press(fake: FakeUI, data: string): { consume?: boolean } | undefined {
   const listener = fake.listeners[0];
   if (!listener) throw new Error("no listener registered");
   return listener(data);
 }
 
-// keysRef wired through the deck module (production path).
+// Wire keysRef through the deck module (the production path) so the
+// handler reads the same keys the deck renders.
 const keyStore = { keys: [] as string[] };
 
-// Async IIFE: lets the finally process.exit wait for main() to complete.
+// Wrapping the body so an unexpected throw still exits deterministically
+// (process.exit in a finally) instead of dying on an uncaught exception with
+// the deck module state left dirty. Awaited (main() is async): a bare
+// call would let the finally run before the awaited body, so block 18
+// would never execute.
 try {
   void (async () => {
     await main();
@@ -136,7 +146,7 @@ try {
 
 async function main(): Promise<void> {
   // ---------------------------------------------------------------------------
-  // 1. Activation: down + empty editor + running → consumed, first row.
+  // 1. Activation: down + empty editor + running jobs → consumed, first row
   // ---------------------------------------------------------------------------
   {
     reset();
@@ -153,7 +163,7 @@ async function main(): Promise<void> {
     assert(h.nav.selectedKey() === "job-1", "1c: first row selected");
   }
 
-  // 2. Navigation: down → next; up → prev; up at first → exits.
+  // 2. down → second row; up → first row; up → exits.
   {
     reset();
     const fake = fakeUI("");
@@ -180,7 +190,7 @@ async function main(): Promise<void> {
     assert(h.nav.selectedKey() === undefined, "2h: no selection after exit");
   }
 
-  // 3. Non-empty editor → down NOT consumed.
+  // 3. down with a NON-EMPTY editor → not consumed.
   {
     reset();
     const fake = fakeUI("typing in progress");
@@ -194,7 +204,7 @@ async function main(): Promise<void> {
     assert(!h.nav.isActive(), "3b: roster mode NOT entered");
   }
 
-  // 4. No running jobs → down NOT consumed.
+  // 4. down with NO running jobs → not consumed.
   {
     reset();
     const fake = fakeUI("");
@@ -207,7 +217,7 @@ async function main(): Promise<void> {
     assert(!h.nav.isActive(), "4b: roster mode NOT entered");
   }
 
-  // 5. Esc → exits.
+  // 5. Esc → exits (consumed).
   {
     reset();
     const fake = fakeUI("");
@@ -222,7 +232,7 @@ async function main(): Promise<void> {
     assert(!h.nav.isActive(), "5b: roster mode exited on Esc");
   }
 
-  // 6. Printable key while active → exits, NOT consumed.
+  // 6. A printable key while active → exits and is NOT consumed.
   {
     reset();
     const fake = fakeUI("");
@@ -237,7 +247,7 @@ async function main(): Promise<void> {
     assert(!h.nav.isActive(), "6b: roster mode exited");
   }
 
-  // 7. Enter → onRowConfirm(selectedKey) after roster mode exits.
+  // 7. Enter → onRowConfirm called with the selected key AFTER roster mode exits.
   {
     reset();
     const fake = fakeUI("");
@@ -258,7 +268,7 @@ async function main(): Promise<void> {
     assert(!h.nav.isActive(), "7e: roster mode exited BEFORE onRowConfirm routing");
   }
 
-  // 8. Selected job settling → selection moves to nearest row.
+  // 8. A selected job settling → the selection moves to the nearest row.
   {
     reset();
     const fake = fakeUI("");
@@ -279,7 +289,7 @@ async function main(): Promise<void> {
     assert(h.nav.selectedKey() === "job-2", "8d: selection moved to the nearest remaining row");
   }
 
-  // 9. All jobs settle → roster exits on next key.
+  // 9. ALL jobs settle while active → roster mode exits on the next key.
   {
     reset();
     const fake = fakeUI("");
@@ -295,7 +305,7 @@ async function main(): Promise<void> {
     assert(!h.nav.isActive(), "9b: roster mode exited (no running jobs)");
   }
 
-  // 10. j/k move selection (vi-style).
+  // 10. j / k move the selection (vi-style).
   {
     reset();
     const fake = fakeUI("");
@@ -314,7 +324,7 @@ async function main(): Promise<void> {
     assert(h.nav.selectedKey() === "job-1", "10d: k moves to previous row");
   }
 
-  // 11. Key-release events ignored (Kitty protocol).
+  // 11. Key-release events are ignored (Kitty protocol): never consumed.
   {
     reset();
     const fake = fakeUI("");
@@ -333,7 +343,7 @@ async function main(): Promise<void> {
     assert(h.nav.isActive(), "11c: still active after a release");
   }
 
-  // 12. Listener registered once, removed on detach.
+  // 12. The listener is registered ONCE and removed on detach.
   {
     reset();
     const fake = fakeUI("");
@@ -359,7 +369,7 @@ async function main(): Promise<void> {
     detach();
   }
 
-  // 13. Quiet mode → no listener.
+  // 13. Quiet mode registers nothing.
   {
     reset();
     const fake = fakeUI("");
@@ -377,7 +387,7 @@ async function main(): Promise<void> {
     delete process.env.PI_ENSEMBLE_QUIET_STATUS;
   }
 
-  // 14. Headless (no hasUI) → no listener.
+  // 14. Headless (no hasUI) registers nothing.
   {
     reset();
     const fake = fakeUI("");
@@ -393,82 +403,51 @@ async function main(): Promise<void> {
     detach();
   }
 
-  // 15. Down clamps at last row (no wrap).
+  // (Blocks 15–17 moved to test-dispatch-deck-nav-focus.ts — the 500-line file limit.)
+
+  // 18. Self-heal cap: a UI whose onTerminalInput always throws → renderNow
+  // retries registration at most NAV_HEAL_MAX times and emits the operator
+  // warning exactly once. The resets live in attachNav (explicit attach =
+  // fresh budget), not tryAttachNav, so renderNow's self-heal path
+  // ACCUMULATES attempts across renders and the cap binds. A reset in
+  // tryAttachNav would let the counter never reach the cap.
   {
     reset();
-    const fake = fakeUI("");
-    startEntry("job-1", { label: "developer", role: "developer" });
-    startEntry("job-2", { label: "explore", role: "explore" });
-    keyStore.keys = ["job-1", "job-2"];
-    const h = makeNav(keyStore, fake);
-    fake.ui.onTerminalInput(h.nav.handler);
-
-    press(fake, "\x1b[B"); // activate → job-1
-    press(fake, "\x1b[B"); // → job-2
-    const r = press(fake, "\x1b[B"); // down at last → stays
-    assert(r?.consume === true, "15a: down at last row → consumed");
-    assert(h.nav.selectedKey() === "job-2", "15b: clamped at last row (no wrap)");
-  }
-
-  // 16. onChange fires on state transitions.
-  {
-    reset();
-    const fake = fakeUI("");
-    startEntry("job-1", { label: "developer", role: "developer" });
-    keyStore.keys = ["job-1"];
-    const h = makeNav(keyStore, fake);
-    fake.ui.onTerminalInput(h.nav.handler);
-
-    const before = h.changes;
-    press(fake, "\x1b[B"); // activate
-    assert(h.changes > before, "16a: onChange fired on activation");
-    const before2 = h.changes;
-    press(fake, "\x1b"); // escape
-    assert(h.changes > before2, "16b: onChange fired on exit");
-  }
-
-  // 17. Batch-member confirm routes to onRowConfirm (steer route intact).
-  {
-    reset();
-    startEntry("batch-m1", { label: "developer[task-A]", role: "developer", batchKey: "b1" });
-    keyStore.keys = ["batch-m1"];
-    const fake = fakeUI("");
-    const h = makeNav(keyStore, fake);
-    fake.ui.onTerminalInput(h.nav.handler);
-
-    press(fake, "\x1b[B"); // activate → batch-m1
-    press(fake, "\r"); // enter → onRowConfirm(batch-m1)
-    assert(
-      h.confirm.length === 1 && h.confirm[0] === "batch-m1",
-      "17: batch-member row confirms its own key (steer route intact)",
-    );
-  }
-
-  // 18. Self-heal cap: onTerminalInput throws → capped retries + one warning.
-  {
-    reset();
-    let rc = 0;
-    let w = 0;
+    let registerCalls = 0;
+    let warnings = 0;
     const ctx = {
       hasUI: true,
       ui: {
         getEditorText: () => "",
         onTerminalInput: () => {
-          rc++;
+          registerCalls++;
           throw new Error("boom");
         },
-        notify: (_m: string, l: string) => {
-          if (l === "warning") w++;
+        notify: (_m: string, level: string) => {
+          if (level === "warning") warnings++;
         },
         setWidget: () => {},
       },
     } as unknown as Parameters<typeof attach>[0];
-    startEntry("job-1", { label: "d", role: "d" });
-    attach(ctx);
+    startEntry("job-1", { label: "developer", role: "developer" });
+    attach(ctx); // explicit attach: fails (registerCalls 1, warning 1), resets the heal counter
+    // renderNow fires via the deck's 1 s ticker. Wait past NAV_HEAL_MAX + 2
+    // ticks so >7 renders happen while nav is absent; the self-heal path must
+    // cap registration at NAV_HEAL_MAX additional attempts total.
     await new Promise((r) => setTimeout(r, (NAV_HEAL_MAX + 2) * 1000 + 200));
-    assert(rc <= 1 + NAV_HEAL_MAX, `18a: capped (${rc})`);
-    assert(w === 1, `18c: warn once (${w})`);
+    // 1 (attach) + NAV_HEAL_MAX (heals) = 6 max. With a reset-in-tryAttachNav
+    // the count would be 1 + number of renders (≈ 8+), i.e. uncapped.
+    assert(
+      registerCalls <= 1 + NAV_HEAL_MAX,
+      `18a: self-heal registration attempts capped at NAV_HEAL_MAX (${registerCalls} ≤ ${1 + NAV_HEAL_MAX})`,
+    );
+    assert(
+      registerCalls < 1 + (NAV_HEAL_MAX + 2),
+      `18b: cap actually skips renders (registerCalls=${registerCalls} < ${1 + NAV_HEAL_MAX + 2})`,
+    );
+    assert(warnings === 1, `18c: operator warning emitted exactly once (got ${warnings})`);
     detach();
   }
+
   console.log(`\nexit ${exit}`);
 }

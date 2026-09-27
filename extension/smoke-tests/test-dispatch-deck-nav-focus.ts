@@ -186,5 +186,49 @@ async function main(): Promise<void> {
     assert(r1?.consume === true && r2?.consume === true, "23e: re-enter + move consumed");
   }
 
+  // 15. down clamps at the last row (no wrap).
+  {
+    reset();
+    startEntry("job-1", { label: "developer", role: "developer" });
+    startEntry("job-2", { label: "explore", role: "explore" });
+    keyStore.keys = ["job-1", "job-2"];
+    const h = makeNav(true);
+    press(h.fake, "\x1b[B"); // activate → job-1
+    press(h.fake, "\x1b[B"); // → job-2
+    const r = press(h.fake, "\x1b[B"); // down at last → stays
+    assert(r?.consume === true, "15a: down at last row → consumed");
+    assert(h.nav.selectedKey() === "job-2", "15b: clamped at last row (no wrap)");
+  }
+
+  // 16. onChange fires on state transitions (deck re-render trigger).
+  {
+    reset();
+    startEntry("job-1", { label: "developer", role: "developer" });
+    keyStore.keys = ["job-1"];
+    const h = makeNav(() => true);
+    press(h.fake, "\x1b[B"); // activate
+    assert(h.changes() >= 1, "16a: onChange fired on activation");
+    const before2 = h.changes();
+    press(h.fake, "\x1b"); // escape
+    assert(h.changes() > before2, "16b: onChange fired on exit");
+  }
+
+  // 17. dispatch_steer from the deck (steerFromDeck) still routes for batch
+  // members: confirm a batch-member row → the steer prompt opens (the
+  // onRowConfirm route is intact). We verify the route by confirming the key
+  // resolves to a real entry in the deck (steerDeckEntry would be called).
+  {
+    reset();
+    startEntry("batch-m1", { label: "developer[task-A]", role: "developer", batchKey: "b1" });
+    keyStore.keys = ["batch-m1"];
+    const h = makeNav(() => true);
+    press(h.fake, "\x1b[B"); // activate → batch-m1
+    press(h.fake, "\r"); // enter → onRowConfirm(batch-m1)
+    assert(
+      h.confirm.length === 1 && h.confirm[0] === "batch-m1",
+      "17: batch-member row confirms its own key (steer route intact)",
+    );
+  }
+
   console.log(`\nexit ${exit}`);
 }
