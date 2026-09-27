@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.66](https://github.com/trail-openers/pi-rukas/compare/v0.12.65...v0.12.66) (2026-09-27)
+
+
+### Features
+
+* **permissions:** refuse agent-run PR merges that lack passing adversarial and lens reviews ([#923](https://github.com/trail-openers/pi-rukas/issues/923)) ([aea98f9](https://github.com/trail-openers/pi-rukas/commit/aea98f91c57520c25e9226c1f7b80d88b7555dde))
+
 ## [0.12.65](https://github.com/trail-openers/pi-rukas/compare/v0.12.64...v0.12.65) (2026-09-27)
 
 
