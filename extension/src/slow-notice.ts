@@ -32,6 +32,12 @@
  * persists a `dispatch-slow` event through the `onSlow` callback it threads
  * into `dispatchCore` (see workflow-state-events-slow.ts for the event).
  *
+ * The elapsed dimension excludes wall time spent in an in-flight CI-watch
+ * tool call (#907, fed through the `onRawEvent` seam; it delays and never
+ * suppresses a notice). `watchSlowDispatch` returns a `SlowWatchHandle`
+ * (`stop()` plus an optional chained `onRawEvent`) rather than a bare stop
+ * function.
+ *
  * Threshold state lives in a module-level Map keyed by the watch id — one
  * entry per live child, bounded by MAX_JOBS, deleted on settle.
  */
@@ -39,49 +45,17 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { notifyAgent } from "./agent-message.ts";
 import { getParentExtensionApi } from "./async-jobs-registry.ts";
-import type { SteerSource } from "./dispatch-steer.ts";
 import { steerChild } from "./dispatch-steer.ts";
+import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import type { RunningState } from "./progress.ts";
 import { formatElapsed, formatTokens } from "./progress.ts";
+import type { CiWaitSpanTracker } from "./slow-notice-ci-wait.ts";
+import { createCiWaitSpanTracker, installRawEventSeam } from "./slow-notice-ci-wait.ts";
+import type { OnSlowCallback, SlowWatchHandle, SlowWatchInput } from "./slow-notice-types.ts";
 import { trace } from "./trace.ts";
 import type { WorkEvent, WorkStep } from "./workflow-state.ts";
 
-/** The one place the driver's dispatch-slow events get appended: threaded
- * through `dispatchCore`'s opts (work-driver-event seam). Absent for PM
- * jobs (their notice is PM-only). */
-export type OnSlowCallback = (info: {
-  step: string;
-  role: string;
-  jobId: string;
-  label: string;
-  elapsedMs: number;
-  turns: number;
-  tokens: number;
-  at: number;
-}) => void;
-
-export interface SlowWatchInput {
-  /** Deck key / job id the PM sees (what dispatch_peek shows). */
-  id: string;
-  role: string;
-  label: string;
-  /** Injectable pi — the notifyAgent target. Defaults to the parent
-   * extension api (async-jobs-registry) so children spawned without a pi in
-   * scope (lens, adversarial) still notify the PM. Undefined in the suite →
-   * the notice is skipped, never thrown. */
-  pi?: Pick<ExtensionAPI, "sendUserMessage">;
-  /** Injectable steer core — tests record instead of writing to a real
-   * stdin. Defaults to `steerChild`. */
-  steerFn?: (jobId: string, text: string, source: SteerSource) => unknown;
-  /** Injectable clock — the elapsed dimension is computed from it (tests
-   * drive it deterministically). */
-  now?: () => number;
-  /** Injectable scheduler for the elapsed check — tests arm/tick without
-   * waiting on a 20-minute wall. Returns the matching cancel. Defaults to an
-   * unref'd setTimeout. */
-  schedule?: (fn: () => void, ms: number) => () => void;
-  onSlow?: OnSlowCallback;
-}
+export type { OnSlowCallback, SlowWatchHandle, SlowWatchInput } from "./slow-notice-types.ts";
 
 /** The thresholds at level n: `base·2^n` per dimension. Level 0 is the
  * first crossing (20 min / 150 turns / 20M tokens, whichever comes first);
@@ -151,6 +125,15 @@ interface Watch {
   /** Set once the first progress event has been fed; a timer tick with no
    * snapshot has nothing to notice about. */
   seenProgress: boolean;
+  /** #907 — the CI-wait span tracker: in-flight CI-watch toolCalls are
+   * excluded from the elapsed dimension (delay, never suppress). The
+   * tracker lives on the watch and is disposed in the stop function, so a
+   * killed child cannot exclude time forever. */
+  ciWait: CiWaitSpanTracker;
+  /** #907 — the raw-event feed installed by the arm (spans open/close
+   * from it); undefined when the caller passed no onRawEvent (no
+   * exclusion). */
+  onRawEvent?: (event: PiJsonEvent) => void;
   /** The pending elapsed-check timer (unref'd in production). */
   timer?: () => void;
   /** #884 — level-0 bases snapshotted ONCE at arm time. */
@@ -178,17 +161,18 @@ export function levelReached(value: number, base: number): number {
 }
 
 /** Format `150 turns` / `20.0M tokens` / `42.0m` for the notice + steer text. */
-function fmtSlow(elapsedMs: number, turns: number, tokens: number): string {
-  return `${formatElapsed(elapsedMs)} · ${turns} turns · ${formatTokens(tokens)} tokens`;
+function fmtSlow(elapsedMs: number, turns: number, tokens: number, excludedMs = 0): string {
+  const excluded = excludedMs > 0 ? ` (+${formatElapsed(excludedMs)} CI wait excluded)` : "";
+  return `${formatElapsed(elapsedMs)}${excluded} · ${turns} turns · ${formatTokens(tokens)} tokens`;
 }
 
-function noticeText(w: Watch, s: RunningState, triggered: string[]): string {
+function noticeText(w: Watch, s: RunningState, triggered: string[], excludedMs: number): string {
   const snippet = s.lastText
     ? ` Last said: "${s.lastText.replaceAll("\n", " ").slice(0, 200)}"`
     : "";
   const trigger = triggered.length > 0 ? ` triggered by: ${triggered.join(", ")}.` : "";
   return [
-    `[ensemble:slow] ${w.label} (${w.id}) has been running past a slow-run threshold (level ${w.level})${trigger} ${fmtSlow(s.elapsedMs, s.turns, s.totalTokens)}.`,
+    `[ensemble:slow] ${w.label} (${w.id}) has been running past a slow-run threshold (level ${w.level})${trigger} ${fmtSlow(s.elapsedMs, s.turns, s.totalTokens, excludedMs)}.`,
     s.lastToolName ? `Last tool: ${s.lastToolName}` : "",
     snippet,
     `Use dispatch_peek ${w.id} to inspect it or dispatch_steer ${w.id} to course-correct it.`,
@@ -202,16 +186,16 @@ export function slowSteerText(elapsedMs: number, turns: number): string {
   return `You have been running for ${formatElapsed(elapsedMs)} / ${turns} turns. Report status in ≤3 lines (done / remaining / blocked), then CONTINUE the task — this is not a stop signal. Only if you are re-running or re-scanning the same checks without progress: stop re-scanning, use the gate's exit code, commit, and finish.`;
 }
 
-function deliver(w: Watch, s: RunningState, triggered: string[]): void {
+function deliver(w: Watch, s: RunningState, triggered: string[], excludedMs: number): void {
   const elapsed = s.elapsedMs > 0 ? s.elapsedMs : Math.max(0, w.now() - w.startedAt);
   // 1 — PM notice (notifyAgent, always deliverAs "steer"). A rejection of the
   // send must never be an unhandled rejection. `input.pi` is absent for
-  // lens/adversarial children (they spawn without a pi in scope) — the parent
-  // api registered at extension load stands in, so those children notify too.
+  // lens/adversarial children — the parent api registered at extension
+  // load stands in, so those children notify too.
   const pi = w.pi ?? getParentExtensionApi();
   if (pi) {
     try {
-      notifyAgent(pi, noticeText(w, { ...s, elapsedMs: elapsed }, triggered));
+      notifyAgent(pi, noticeText(w, { ...s, elapsedMs: elapsed }, triggered, excludedMs));
     } catch (err) {
       trace(`slow-notice: PM notice for ${w.id} failed: ${(err as Error).message}`);
     }
@@ -255,12 +239,13 @@ function deliver(w: Watch, s: RunningState, triggered: string[]): void {
       turns: s.turns,
       tokens: s.totalTokens,
       at: w.now(),
+      ...(excludedMs > 0 ? { ciWaitExcludedMs: excludedMs } : {}),
     });
   } catch (err) {
     trace(`slow-notice: onSlow for ${w.id} failed: ${(err as Error).message}`);
   }
   trace(
-    `slow-notice: ${w.label} (${w.id}) level ${w.level} crossed${triggered.length > 0 ? ` by ${triggered.join(", ")}` : ""} — ${fmtSlow(elapsed, s.turns, s.totalTokens)}`,
+    `slow-notice: ${w.label} (${w.id}) level ${w.level} crossed${triggered.length > 0 ? ` by ${triggered.join(", ")}` : ""} — ${fmtSlow(elapsed, s.turns, s.totalTokens, excludedMs)}`,
   );
 }
 
@@ -321,28 +306,30 @@ function advanceLevel(
 function tickElapsed(w: Watch): void {
   const s = w.lastState;
   if (!w.seenProgress || !s) return;
-  const elapsed = Math.max(0, w.now() - w.startedAt);
+  const wall = Math.max(0, w.now() - w.startedAt);
+  // #907 — the elapsed dimension is wall time MINUS the time the child
+  // spent in an in-flight CI-watch tool call (the span tracker lives on
+  // the watch; the feed path does the same in feedSlowProgress).
+  const excluded = w.ciWait.excludedMs(w.now());
+  const elapsed = Math.max(0, wall - excluded);
   // Only elapsed can be evaluated from the clock — the snapshot's turns and
   // tokens are unchanged since the last feed (which already evaluated them),
   // so -1 (below every finite threshold) keeps them inert here.
   const crossed = advanceLevel(w, { elapsed, turns: -1, tokens: -1 });
   if (crossed.crossedMs) {
     w.level += crossed.reachedMs;
-    deliver(w, { ...s, elapsedMs: elapsed }, ["elapsed"]);
+    deliver(w, { ...s, elapsedMs: wall }, ["elapsed"], excluded);
   }
-  // The elapsed timer is absolute from the watch start: re-arm for
-  // `start + msBase·2^level` minus now (Infinity → no timer).
   const nextMs = dimThreshold(w.base.ms, w.level);
   if (Number.isFinite(nextMs)) {
-    scheduleElapsedCheck(w, Math.max(0, nextMs - elapsed));
+    scheduleElapsedCheck(w, Math.max(0, nextMs + excluded - wall));
   }
 }
 
 /** Arm the watch. Returns a stop function the caller MUST invoke when the
  * child settles (success or failure): it deletes the state entry, so a
- * finished child can never notice again and the map stays bounded.
- */
-export function watchSlowDispatch(input: SlowWatchInput): () => void {
+ * finished child can never notice again and the map stays bounded. */
+export function watchSlowDispatch(input: SlowWatchInput): SlowWatchHandle {
   const base = levelThresholds(0);
   const now = input.now ?? Date.now;
   const rawSchedule =
@@ -360,6 +347,7 @@ export function watchSlowDispatch(input: SlowWatchInput): () => void {
   // function deliberately never calls `setParentExtensionApi` (the single
   // writer is the load; a per-watch set would race a sibling cycle's watch).
   // Absent in the suite → the notice is skipped, never thrown.
+  const ciWait = createCiWaitSpanTracker(now);
   const w: Watch = {
     id: input.id,
     role: input.role,
@@ -379,14 +367,19 @@ export function watchSlowDispatch(input: SlowWatchInput): () => void {
     level: 0,
     lastState: undefined,
     seenProgress: false,
+    ciWait,
     // #884 — the env overrides are read ONCE here; from this point the watch
     // is pure arithmetic on `base` (see dimThreshold / advanceLevel).
     base,
   };
+  // #907 — the raw-event seam feeds the span tracker (toolCall block opens
+  // a span, the matching toolResult closes it); the caller's onRawEvent is
+  // chained, never replaced.
+  if (input.onRawEvent) w.onRawEvent = installRawEventSeam(input.onRawEvent, ciWait);
   watches.set(input.id, w);
   // Arm the first elapsed check (no-op when the dimension is disabled).
   if (Number.isFinite(base.ms)) scheduleElapsedCheck(w, base.ms);
-  return () => {
+  const stop = (): void => {
     if (w.timer) {
       try {
         w.timer();
@@ -394,7 +387,12 @@ export function watchSlowDispatch(input: SlowWatchInput): () => void {
         // A malformed scheduler cancel must not abort the settle path.
       }
     }
+    w.ciWait.dispose();
     watches.delete(input.id);
+  };
+  return {
+    stop,
+    ...(w.onRawEvent ? { onRawEvent: w.onRawEvent } : {}),
   };
 }
 
@@ -412,7 +410,15 @@ export function feedSlowProgress(id: string, s: RunningState): void {
   if (!w) return;
   w.lastState = s;
   w.seenProgress = true;
-  const elapsed = s.elapsedMs > 0 ? s.elapsedMs : Math.max(0, w.now() - w.startedAt);
+  // #907 — the elapsed dimension is the wall clock minus the time the
+  // child has spent in an in-flight CI-watch tool call. The wall value is
+  // what the notice/steer/onSlow record report (the operator sees the
+  // true runtime); the ADJUSTED value is what the threshold math and the
+  // timer re-arm compare against. `s.elapsedMs` is already wall (the
+  // spawn's `now() - start`), so the same subtraction applies.
+  const wall = s.elapsedMs > 0 ? s.elapsedMs : Math.max(0, w.now() - w.startedAt);
+  const excluded = w.ciWait.excludedMs(w.now());
+  const elapsed = Math.max(0, wall - excluded);
   const crossed = advanceLevel(w, { elapsed, turns: s.turns, tokens: s.totalTokens });
   if (!crossed.crossedMs && !crossed.crossedTurns && !crossed.crossedTokens) return;
   // Set the level to the HIGHEST level any dimension has now reached, so a
@@ -424,16 +430,17 @@ export function feedSlowProgress(id: string, s: RunningState): void {
   if (crossed.crossedMs) w.level = Math.max(w.level, prev + crossed.reachedMs);
   if (crossed.crossedTurns) w.level = Math.max(w.level, prev + crossed.reachedTurns);
   if (crossed.crossedTokens) w.level = Math.max(w.level, prev + crossed.reachedTokens);
-  // Re-arm the elapsed timer ABSOLUTELY from the watch start (Infinity →
-  // no timer): its next fire is at start + msBase·2^level.
+  // Re-arm the elapsed timer ABSOLUTELY from the watch start, shifted by
+  // the excluded CI-wait time: its next fire is at the wall moment when
+  // wall − excluded reaches `start + msBase·2^level` (Infinity → no timer).
   const nextMs = dimThreshold(w.base.ms, w.level);
-  if (Number.isFinite(nextMs)) scheduleElapsedCheck(w, Math.max(0, nextMs - elapsed));
+  if (Number.isFinite(nextMs)) scheduleElapsedCheck(w, Math.max(0, nextMs + excluded - wall));
   const triggered = [
     crossed.crossedMs && "elapsed",
     crossed.crossedTurns && "turns",
     crossed.crossedTokens && "tokens",
   ].filter((x): x is string => typeof x === "string");
-  deliver(w, s, triggered);
+  deliver(w, { ...s, elapsedMs: wall }, triggered, excluded);
 }
 
 /** Test-only: empty the pending buffer (all cycles). */

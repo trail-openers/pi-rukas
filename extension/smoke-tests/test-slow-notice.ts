@@ -145,7 +145,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "150" }, async () => {
   feedSlowProgress("job-turns", stateAt(301));
   assert(notices.length === 2, "crossing 300 turns → one more notice");
   assert(steers.length === 2, "crossing 300 turns → one more steer");
-  stop();
+  stop.stop();
 });
 
 // ------------------------------------------------------------- 2. elapsed
@@ -171,7 +171,7 @@ await withEnv({}, async () => {
   feedSlowProgress("job-elapsed", stateAt(1));
   assert(notices.length === 1, "crossing 20 min → exactly one notice (fake clock)");
   assert(steers.length === 1, "crossing 20 min → exactly one steer");
-  stop();
+  stop.stop();
 });
 
 // -------------------------------------------------- 3. auto-steer disabled
@@ -189,7 +189,7 @@ await withEnv({ PI_ENSEMBLE_AUTO_STEER: "0", PI_ENSEMBLE_SLOW_NOTICE_TURNS: "150
   feedSlowProgress("job-nosteer", stateAt(151));
   assert(notices.length === 1, "AUTO_STEER=0 → the notice still fires");
   assert(steers.length === 0, "AUTO_STEER=0 → no steer");
-  stop();
+  stop.stop();
 });
 
 // ---------------------------------------------------- 4. slow-notice off
@@ -207,7 +207,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE: "0" }, async () => {
   feedSlowProgress("job-off", stateAt(99_999, 99_999_999, 99_999_999));
   assert(notices.length === 0, "SLOW_NOTICE=0 → no notice at any scale");
   assert(steers.length === 0, "SLOW_NOTICE=0 → no steer at any scale");
-  stop();
+  stop.stop();
 });
 
 // -------------------------------------------------- 5. startJob wiring (1)
@@ -290,7 +290,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_TURNS: "150" }, async () => {
     feedSlowProgress("job-quiet", stateAt(151));
     assert(notices.length === 1, "quiet mode: crossing 150 turns → notice still fires");
     assert(steers.length === 1, "quiet mode: crossing 150 turns → steer still fires");
-    stop();
+    stop.stop();
     feedSlowProgress("job-quiet", stateAt(400));
     assert(notices.length === 1, "quiet: settled watch never fires again (map cleared on settle)");
   });
@@ -316,7 +316,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
     assert(notices.length === 1, "silent child: elapsed crossing → one notice");
     assert(steers.length === 1, "silent child: elapsed crossing → one steer");
   } finally {
-    stop();
+    stop.stop();
   }
 });
 
@@ -340,7 +340,7 @@ await withEnv({ PI_ENSEMBLE_SLOW_NOTICE_MS: "50" }, async () => {
     assert(notices.length === 1, "lens child (no pi in scope): PM notice fires via parent API");
     assert(notices[0]?.includes("lens:arch") === true, "lens child: notice names the label");
   } finally {
-    stop();
+    stop.stop();
     clearParentExtensionApiForTesting();
   }
 });

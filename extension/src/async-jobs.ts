@@ -18,13 +18,14 @@ import {
   formatSingleReport,
   totalTokens,
 } from "./async-jobs-report.ts";
+import { makeSlowWatch } from "./async-jobs-slow.ts";
 import * as live from "./dispatch-deck-live.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import * as lifecycle from "./lifecycle-events.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import type { RunningState } from "./progress.ts";
 import * as sessionAutosave from "./session-autosave.ts";
-import { type OnSlowCallback, feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
+import { type OnSlowCallback, feedSlowProgress } from "./slow-notice.ts";
 import { trace } from "./trace.ts";
 import { type DispatchResult, isRateLimit429Msg } from "./types.ts";
 
@@ -189,24 +190,17 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
   sessionAutosave.recordDispatch(input.role);
 
   if (!input.skipDeck) live.startBuffer(jobId);
-  // #799 — the slow-run watch: one per job, at the one layer that sees
-  // progress for every PM job, batch member and driver child. Notice +
-  // steer, never a kill; disabled entirely by PI_ENSEMBLE_SLOW_NOTICE=0.
-  const stopSlow = watchSlowDispatch({
-    id: jobId,
-    role: input.role,
-    label: input.label,
-    ...(pi ? { pi } : {}),
-    ...(input.onSlow ? { onSlow: input.onSlow } : {}),
-  });
+  // #799/#907 — the slow-run watch + its CI-wait span feed: one per job,
+  // at the one layer that sees progress for every PM job, batch member
+  // and driver child. Notice + steer, never a kill. disabled entirely by
+  // PI_ENSEMBLE_SLOW_NOTICE=0.
+  const slow = makeSlowWatch(jobId, input.role, input.label, pi, input.onSlow);
   const hooks: WorkHooks = {
     onProgress: (progress) => {
       dispatchDeck.updateEntry(jobId, progress);
       feedSlowProgress(jobId, progress);
     },
-    onRawEvent: (event) => {
-      live.feedRawEvent(jobId, event);
-    },
+    onRawEvent: slow.hooks.onRawEvent,
     onStdin: (stdin) => {
       childHandles.set(jobId, { stdin, label: input.label, role: input.role });
     },
@@ -223,7 +217,7 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
       jobs.delete(jobId);
       childHandles.delete(jobId);
       clearJobIssues(jobId);
-      stopSlow();
+      slow.stop();
       if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
       // Five-way: ok / killCause / 429 / FAILED-PROVIDER-ERROR / process-exit-failed.
       // #309/#314 — killCause (#296) wins over errorStop. A self-kill is NOT a
@@ -288,7 +282,7 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
       jobs.delete(jobId);
       childHandles.delete(jobId);
       clearJobIssues(jobId);
-      stopSlow();
+      slow.stop();
       if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
       lifecycle.emitFailed(jobId, input.label, input.role, Date.now() - state.startedAt);
       sessionAutosave.recordOutcome(false);
@@ -397,21 +391,15 @@ export function startBatch(
     dispatchDeck.startEntry(jobId, { label: m.label, role: m.role, batchKey: batchId });
     live.startBuffer(jobId);
     sessionAutosave.recordDispatch(m.role);
-    // #799 — batch members are watched exactly like single jobs (one watch
-    // per member; the batch orchestrator itself gets none — it is a
-    // bookkeeping row, not a child).
-    const stopMemberSlow = watchSlowDispatch({
-      id: jobId,
-      role: m.role,
-      label: m.label,
-      ...(pi ? { pi } : {}),
-    });
+    // #799/#907 — batch members get the same watch + span feed as single
+    // jobs (the batch orchestrator itself gets none — it is a bookkeeping row, not a child).
+    const memberSlow = makeSlowWatch(jobId, m.role, m.label, pi, undefined);
     const memberHooks: WorkHooks = {
       onProgress: (progress) => {
         dispatchDeck.updateEntry(jobId, progress);
         feedSlowProgress(jobId, progress);
       },
-      onRawEvent: (event) => live.feedRawEvent(jobId, event),
+      onRawEvent: memberSlow.hooks.onRawEvent,
       onStdin: (stdin) => {
         childHandles.set(jobId, { stdin, label: m.label, role: m.role });
       },
@@ -426,7 +414,7 @@ export function startBatch(
         (result) => {
           jobs.delete(jobId);
           childHandles.delete(jobId);
-          stopMemberSlow();
+          memberSlow.stop();
           dispatchDeck.clearEntry(jobId);
           sessionAutosave.recordOutcome(result.ok);
           memberResults.push({ jobId, label: m.label, result });
@@ -434,7 +422,7 @@ export function startBatch(
         (err: Error) => {
           jobs.delete(jobId);
           childHandles.delete(jobId);
-          stopMemberSlow();
+          memberSlow.stop();
           dispatchDeck.clearEntry(jobId);
           sessionAutosave.recordOutcome(false);
           memberResults.push({

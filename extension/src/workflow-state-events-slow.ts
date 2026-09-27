@@ -44,4 +44,8 @@ export type DispatchSlowEvent = {
   turns: number;
   /** Cumulative tokens at the crossing. */
   tokens: number;
+  /** #907 — ms of wall time this dispatch spent in an in-flight CI-watch
+   * tool call (excluded from the elapsed dimension); present only when
+   * nonzero, so a zero-exclusion event is byte-identical to today's. */
+  ciWaitExcludedMs?: number;
 };
