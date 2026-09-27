@@ -212,14 +212,16 @@ function block(reason: string) {
 }
 
 /**
- * Extract the PR number from the matched merge command.
+ * Extract the PR number from the matched merge span.
  *
  * `gh pr merge 12` → 12. `gh pr merge` → undefined (resolve via gh pr view).
- * `glab mr merge 7` → 7.
+ * `glab mr merge 7` → 7. The number is read from the matched span ONLY —
+ * scoping to the whole command would pick up unrelated numbers (a `cd
+ * /data/3 && gh pr merge` extracts `3` from the path) and validate the
+ * ledger for the wrong PR.
  */
-function extractPrNumber(command: string): number | undefined {
-  // The matched span from mergesPr is the verb + optional number.
-  const m = /\b(\d+)\b/.exec(command);
+function extractPrNumber(matched: string): number | undefined {
+  const m = /\b(\d+)\b/.exec(matched);
   return m?.[1] ? Number.parseInt(m[1], 10) : undefined;
 }
 

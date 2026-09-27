@@ -48,21 +48,27 @@ export function mergesPr(command: string): string | undefined {
   const ghEndpoint = ghApiMatch?.[1] ?? "";
   if (ghApiMatch && /\/pulls(?:\/[^\s/?#]+)?\/merge(?:[?&#\s]|$)/.test(ghEndpoint)) {
     const rest = c.slice(ghApiMatch.index);
-    if (!/\s(?:--method|-X)\s+GET\b/.test(rest)) return (ghApiMatch?.[0] ?? "").trim();
+    // The door is a WRITE unless the command is an explicit GET AND carries
+    // no body fields — gh api's `-f`/`-F`/`--field` flags force a PUT
+    // regardless of `--method`, so `--method GET --field x` is still the write.
+    const explicitGet = /\s(?:--method|-X)\s+get\b/i.test(rest);
+    const hasBodyFields = /\s(?:-f|-F|--field)(?:=|\s)/.test(rest);
+    if (!explicitGet || hasBodyFields) return (ghApiMatch?.[0] ?? "").trim();
   }
-  // REST door, glab: `glab api` on /mr/{n}/merge — method-AWARE: blocked
-  // only when the command EXPLICITLY writes (glab api does not default to
-  // POST the way gh api does; copying the gh rule here would over-block
-  // legitimate reads).
+  // REST door, glab: `glab api` on /mr/{n}/merge or
+  // /merge_requests/{n}/merge (the repo's canonical shape) — method-AWARE:
+  // blocked only when the command EXPLICITLY writes (glab api does not
+  // default to POST the way gh api does; copying the gh rule here would
+  // over-block legitimate reads). Method names are case-insensitive.
   const glabApiMatch = new RegExp(
-    `${FORGE}api\\s+(/projects/[^\\s]+)/mr(?:/[^\\s/?#]+)?/merge(?:[?&#\\s]|$)`,
+    `${FORGE}api\\s+(/projects/[^\\s]+)/(?:mr|merge_requests)(?:/[^\\s/?#]+)?/merge(?:[?&#\\s]|$)`,
   ).exec(c);
   if (glabApiMatch?.[0] !== undefined) {
     const rest = c.slice(glabApiMatch.index);
-    const explicitGet = /\s(?:--method|-X)\s+GET\b/.test(rest);
+    const explicitGet = /\s(?:--method|-X)\s+get\b/i.test(rest);
     const writes =
-      /\s(?:-X|-f|-F)\s+(?:PUT|POST)\b/.test(rest) ||
-      /\s--method\s+(?:PUT|POST)\b/.test(rest) ||
+      /\s(?:-X|-f|-F)\s+(?:put|post)\b/i.test(rest) ||
+      /\s--method\s+(?:put|post)\b/i.test(rest) ||
       /\s(?:-f|-F|--field)(?:=|\s)/.test(rest);
     if (!explicitGet && writes) return glabApiMatch[0].trim();
   }

@@ -128,6 +128,8 @@ This is the structural floor for the incident where a PM merged two PRs on a dev
 
 **Escape hatch (operator-set only):** `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1` disables the guard for the whole session. Use only when you have reviewed by other means and want to merge by hand.
 
+**What the matcher does NOT cover:** GraphQL merges (`gh api graphql -f query='mutation { mergePullRequest … }'`) bypass the guard by design — the ticket scopes the guard to the REST merge doors, and parsing GraphQL queries is a large surface with little to gain (an agent that could compose the mutation could merge anyway). A direct `git push origin HEAD:main` is likewise outside the guard: branch protection is the git-level control for that, and blocking arbitrary pushes would break the driver's own ops paths. Both are judged acceptable given the incident model (an honest-but-forgetful agent, not an adversary: an agent with credentials can always merge directly — the guard's threat model is "the reviews weren't run", which the ledger detects).
+
 **To satisfy the guard:** run `adversarial_loop` (the `adversarial_loop` tool) and `dispatch_lens_review` (the `dispatch_lens_review` tool) on the branch, let them complete, then merge. The ledger entries are written automatically at completion.
 
 PR: [#912](https://github.com/trail-openers/pi-rukas/issues/912)
