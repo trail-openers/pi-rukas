@@ -33,6 +33,7 @@ import {
   tokenizeForPrefix,
 } from "./bash-command-parser.ts";
 import { registerIssueCreationGuard } from "./issue-creation-guard.ts";
+import { registerMergeGuard } from "./merge-guard.ts";
 import type { BrokerDeps, PermissionRequest } from "./permission-broker.ts";
 import {
   findProjectConfigPath,
@@ -271,6 +272,13 @@ export function registerPermissionGuard(pi: ExtensionAPI): void {
   // the subagent branch, and the trust-mode early return in the main handler.
   // A hook placed after any of those would, in practice, never run.
   registerIssueCreationGuard(pi);
+  // #912 — mode-independent merge guard: fires in ALL modes (trust, strict,
+  // headless, sandbox) for ALL roles. A PR merge on a developer's
+  // self-report plus CI is exactly the incident this guard closes; the
+  // review ledger (review-ledger.ts) is the structural floor that the
+  // prompt-layer doctrine (adversarial_loop + dispatch_lens_review) alone
+  // could not enforce.
+  registerMergeGuard(pi);
   // #600 — PM bash allowlist guard: fires in ALL modes (trust, strict,
   // headless, sandbox) for consistency. PM-only: gated on isPmModeActive
   // inside the hook; registered here (the parent path) only — subagent

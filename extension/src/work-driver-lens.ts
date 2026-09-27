@@ -160,6 +160,10 @@ export async function runLens(
       extraFindings,
       threshold,
       pi: ctx.pi,
+      // #912 — caller-supplied branch for the review-ledger write
+      // (driver worktrees are detached; the ledger writer cannot
+      // recover the branch name from a detached HEAD).
+      branch: ps.branchName,
     });
     const capKillEvent = lensCapKillEvent(
       summary,

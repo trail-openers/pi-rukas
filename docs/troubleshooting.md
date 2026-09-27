@@ -111,6 +111,35 @@ Check the raw transcript under `~/.pi/agent/ensemble-runs/<date>/` before conclu
 
 ## Review gates
 
+### A merge was refused: review ledger
+
+**Symptom:** An agent (PM, ops, or a subagent) runs `gh pr merge N` or `glab mr merge N` and the command is refused with a message like *"no passing adversarial review on file for branch …"* or *"no passing lens review on file for branch …"*.
+
+**Cause (by design):** The mode-independent merge guard (issue #912) checks the per-clone review ledger before allowing any agent-run PR/MR merge. The ledger lives under the git common dir (`git rev-parse --git-common-dir` + `review-ledger.json`) and is written by `adversarial_loop` and `dispatch_lens_review` at completion. The guard requires:
+
+1. The **latest** adversarial entry for the branch to be `passed: true` **and** its `patchId` to match the current `git patch-id` of the branch (a new commit since the review refuses).
+2. The **latest** lens entry for the branch to be `passed: true` (any `patchId` — a passing lens entry may predate a later commit; a later **failing** lens run is what the latest-ness protects against). The lens `passed` boolean follows the project's review threshold (the same bar the driver's verdict used — see `lensBlockedByThreshold` / `lensPassed` in review-ledger.ts).
+
+This is the structural floor for the incident where a PM merged two PRs on a developer's self-report plus CI, skipping both reviews. The prompt doctrine demanded both; the prompt layer is what failed. The guard cannot be bypassed by trust mode, sandbox mode, or `agents.json` overrides — it fires in every mode, for every role, before any short-circuit.
+
+**What this guard is — and is not.** This is a **safeguard** against an agent that *forgets* the gates — a PM who merges on a developer's self-report plus CI without running the reviews. It is **not** a security boundary: anything with shell access to this clone can write or delete the ledger file (it is a plain JSON file under the git common dir), and the head check (the fetched head must equal the PR's `headOid`) is a **freshness gate**, not atomic with the merge — a concurrent push between the check and the merge is not detectable here. The threat model is the honest-but-forgetful agent, not an adversary: an agent with credentials can always merge by other means (a direct `git push` to the base branch, a GraphQL merge mutation). Those paths are **consciously out of scope**: branch protection is the git-level control for pushes, and parsing GraphQL is a large surface with little to gain. The guard's job is to catch the case where the reviews simply weren't run — which the ledger detects.
+
+**The patchId base.** The writers (adversarial-ledger.ts, lens-ledger.ts) store their entries against the **merge-base** of HEAD and `<remote>/<mainline>` (resolved via `detectMainline` + the forge remote, never a hardcoded `origin/main`), over the working tree (so uncommitted fixes the adversarial loop made are covered). When those fixes are committed unchanged, the id the guard recomputes at merge time matches the stored one. The guard computes its patchId against `<remote>/<PR baseBranch>` — the PR's actual base. A PR whose base branch is **not** the mainline will therefore fail the patchId check (the two bases differ); that is deliberate and fails closed — the operator re-runs the reviews on the PR's actual base. The git remote is resolved the same way forge detection does (`origin` → `upstream` → first remote; no remote → refuse), so a repo whose remote is not named `origin` still resolves the same ref on both sides.
+
+**Carve-outs (not agent merges):** release-please branches (`release-please--*` head or `autorelease: pending` label) and dependabot PRs (`dependabot/*` head or `dependabot[bot]` / `app/dependabot` author) pass through without a ledger check. The `autorelease: pending` label leg is settable by any collaborator, which is accepted under the forget-the-gates threat model: the carve-out exists for release-please, and the threat model is the honest-but-forgetful agent, not an adversary.
+
+**The driver's mechanized merge is exempt by construction.** The `/work` driver's `mechanizedMerge` (work-driver-merged-mechanized.ts) is an in-process `execp` call, not a `tool_call` — it does not pass through the guard's hook. The driver's own adversarial and lens reviews are recorded in the ledger (the driver passes the cycle's branch name to the writer), so a driver cycle that reaches `merged` has its entries on file.
+
+**Grouped multi-workstream cycles.** A grouped `/work` cycle (N>1) records its adversarial entries per workstream tree, not against the integrated branch. A hand/ops fallback merge of the **integrated** branch (e.g. after a handoff) may therefore be refused — the ledger holds no entry under the integration branch's name — until the reviews are re-run on that branch. The driver's own mechanized merge is unaffected (it is exempt by construction and its entries were written against the cycle's branch).
+
+**Escape hatch (operator-set only):** `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1` disables the guard for the whole session. Use only when you have reviewed by other means and want to merge by hand.
+
+**What the matcher does NOT cover:** GraphQL merges (`gh api graphql -f query='mutation { mergePullRequest … }'`) bypass the guard by design — the ticket scopes the guard to the REST merge doors, and parsing GraphQL queries is a large surface with little to gain (an agent that could compose the mutation could merge anyway). A direct `git push origin HEAD:main` is likewise outside the guard: branch protection is the git-level control for that, and blocking arbitrary pushes would break the driver's own ops paths. Both are judged acceptable given the incident model (an honest-but-forgetful agent, not an adversary: an agent with credentials can always merge directly — the guard's threat model is "the reviews weren't run", which the ledger detects).
+
+**To satisfy the guard:** run `adversarial_loop` (the `adversarial_loop` tool) and `dispatch_lens_review` (the `dispatch_lens_review` tool) on the branch, let them complete, then merge. The ledger entries are written automatically at completion.
+
+PR: [#912](https://github.com/trail-openers/pi-rukas/issues/912)
+
 ### `commit-pr-incomplete-consolidation` — check the plan's `paths:` first
 
 Before assuming a workstream's work is genuinely missing, look at how the plan declared its paths. A qualified declaration — `src/config/data.rs (lines 21-44, function body only)` — used to be split on the inner comma into two fragments with unbalanced parentheses, which nothing downstream could normalise back into a path.
