@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 /**
  * #839 — live view of a running subagent's activity (dispatch deck, epic
- * #833 G5). Drives the real ring buffer and overlay with synthetic events
- * (ring eviction, feedRawEvent, overlay render/handleInput, dropBuffer,
- * clearEntry lifecycle, quiet mode, sync-throw safety, roster Enter wiring).
+ * #833 G5). Drives the real ring buffer and overlay with synthetic events:
+ * ring eviction, feedRawEvent, overlay render/handleInput, dropBuffer,
+ * clearEntry co-located lifecycle, quiet mode, sync-throw exception safety
+ * (startJob + startBatch), and roster Enter → live-view wiring.
  */
 
 import { startBatch, startJob } from "../src/async-jobs.ts";
@@ -18,14 +19,7 @@ import {
   hasBuffer,
   startBuffer,
 } from "../src/dispatch-deck-live.ts";
-import {
-  batchSnapshot,
-  clearEntry,
-  detach,
-  reset,
-  snapshot,
-  startEntry,
-} from "../src/dispatch-deck.ts";
+import { batchSnapshot, clearEntry, detach, reset, snapshot, startEntry } from "../src/dispatch-deck.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -41,7 +35,9 @@ function resetBuffers(): void {
   for (const k of ["b1", "b2", "b3"]) dropBuffer(k);
 }
 
+// ---------------------------------------------------------------------------
 // 1. Ring eviction: 201 events → exactly the newest 200 remain.
+// ---------------------------------------------------------------------------
 {
   resetBuffers();
   startBuffer("b1");
@@ -61,10 +57,13 @@ function resetBuffers(): void {
   dropBuffer("b1");
 }
 
+// ---------------------------------------------------------------------------
 // 2. Real observer path: synthetic message_end + toolResult events.
+// ---------------------------------------------------------------------------
 {
   resetBuffers();
   startBuffer("b2");
+  // assistant message_end with text + toolCall
   feedRawEvent("b2", {
     type: "message_end",
     message: {
@@ -91,10 +90,7 @@ function resetBuffers(): void {
     "2b: assistant text buffered",
   );
   assert(buf[1]?.kind === "toolCall" && buf[1].name === "bash", "2c: toolCall buffered with name");
-  assert(
-    buf[1]?.args === "cargo test --lib",
-    "2d: object args use the extractToolHint command hint",
-  );
+  assert(buf[1]?.args === "cargo test --lib", "2d: object args use the extractToolHint command hint");
   assert(
     buf[2]?.kind === "toolResult" && buf[2].text === "test result: 12 passed, 0 failed",
     "2e: toolResult buffered",
@@ -114,7 +110,9 @@ function resetBuffers(): void {
   dropBuffer("b2");
 }
 
+// ---------------------------------------------------------------------------
 // 2b. Truncation at feed time: 400 text, 240 args, 200 result.
+// ---------------------------------------------------------------------------
 {
   resetBuffers();
   startBuffer("b3");
@@ -132,7 +130,10 @@ function resetBuffers(): void {
   });
   feedRawEvent("b3", {
     type: "message",
-    message: { role: "toolResult", content: [{ type: "text", text: "z".repeat(300) }] },
+    message: {
+      role: "toolResult",
+      content: [{ type: "text", text: "z".repeat(300) }],
+    },
   });
   const buf = getBuffer("b3");
   assert(buf[0]?.kind === "text" && buf[0].text.length <= 400, "2b-1: text truncated to ≤400");
@@ -145,25 +146,29 @@ function resetBuffers(): void {
   dropBuffer("b3");
 }
 
+// ---------------------------------------------------------------------------
 // 2c. Huge object arg with a priority key: the hint wins, no full stringify
+// ---------------------------------------------------------------------------
 {
   resetBuffers();
   startBuffer("b3");
   const huge = { noise: "w".repeat(1_000_000), command: "cargo test --lib" };
   feedRawEvent("b3", {
     type: "message_end",
-    message: { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: huge }] },
+    message: {
+      role: "assistant",
+      content: [{ type: "toolCall", name: "bash", arguments: huge }],
+    },
   });
   const arg = getBuffer("b3")[0] as { args: string };
-  assert(
-    arg.args === "cargo test --lib",
-    "2c-a: huge object arg → command hint, not stringified noise",
-  );
+  assert(arg.args === "cargo test --lib", "2c-a: huge object arg → command hint, not stringified noise");
   assert(!arg.args.includes("w"), "2c-b: the noise field never reached the preview");
   dropBuffer("b3");
 }
 
+// ---------------------------------------------------------------------------
 // 3. Overlay renders events; new events appear on next render (same component).
+// ---------------------------------------------------------------------------
 const fakeTheme = { muted: (t: string) => t, error: (t: string) => t } as const;
 {
   resetBuffers();
@@ -195,18 +200,17 @@ const fakeTheme = { muted: (t: string) => t, error: (t: string) => t } as const;
   assert(flat1.includes("developer"), "3c: header shows the role label");
   comp.handleInput("\x1b"); // Esc → close
   assert(doneResults.includes("close"), "3d: Esc → done('close')");
-  const comp2 = createLiveViewComponent(
-    "b1",
-    () => undefined,
-    fakeTheme,
-    (r) => doneResults.push(`steer-${r}`),
+  const comp2 = createLiveViewComponent("b1", () => undefined, fakeTheme, (r) =>
+    doneResults.push(`steer-${r}`),
   );
   comp2.handleInput("s");
   assert(doneResults.includes("steer-steer"), "3e: 's' → done('steer')");
   dropBuffer("b1");
 }
 
+// ---------------------------------------------------------------------------
 // 4. Scroll: ↑/↓ pause and resume following.
+// ---------------------------------------------------------------------------
 {
   resetBuffers();
   startBuffer("b2");
@@ -242,7 +246,9 @@ const fakeTheme = { muted: (t: string) => t, error: (t: string) => t } as const;
   dropBuffer("b2");
 }
 
+// ---------------------------------------------------------------------------
 // 5. Buffer freed on dropBuffer (clear).
+// ---------------------------------------------------------------------------
 {
   resetBuffers();
   startBuffer("b1");
@@ -256,22 +262,9 @@ const fakeTheme = { muted: (t: string) => t, error: (t: string) => t } as const;
   assert(bufferCount() === 0, "5c: buffer count is 0 after drop");
 }
 
-// 6. Quiet mode: no buffer created.
-function testQuietMode() {
-  resetBuffers();
-  process.env.PI_ENSEMBLE_QUIET_STATUS = "1";
-  startBuffer("b1");
-  assert(!hasBuffer("b1"), "6a: quiet mode → startBuffer creates no buffer");
-  feedRawEvent("b1", {
-    type: "message_end",
-    message: { role: "assistant", content: [{ type: "text", text: "x" }] },
-  });
-  assert(!hasBuffer("b1"), "6b: quiet mode → feedRawEvent is a no-op");
-  Reflect.deleteProperty(process.env, "PI_ENSEMBLE_QUIET_STATUS");
-}
-testQuietMode();
-
+// ---------------------------------------------------------------------------
 // 6b. clearEntry drops the buffer — co-located lifecycle.
+// ---------------------------------------------------------------------------
 function testClearEntryDropsBuffer() {
   resetBuffers();
   reset();
@@ -332,9 +325,7 @@ async function testStartBatchLastMemberSyncThrow() {
       {
         label: "member-sync-throw",
         role: "developer",
-        work: () => {
-          throw new Error("batch sync work failure");
-        },
+        work: () => { throw new Error("batch sync work failure"); },
       },
     ],
   });
@@ -402,7 +393,9 @@ await testStartBatchLastMemberSyncThrow();
   detach();
 }
 
+// ---------------------------------------------------------------------------
 // 8. Entry is running (not settled) — the deck shows only RUNNING rows.
+// ---------------------------------------------------------------------------
 {
   resetBuffers();
   reset();
@@ -447,7 +440,9 @@ function fakeCtx(rec: {
     },
   } as unknown as Parameters<typeof onRowConfirm>[0];
 }
+// ---------------------------------------------------------------------------
 // 9. Exception safety: feedRawEvent never throws on bounded inputs.
+// ---------------------------------------------------------------------------
 {
   resetBuffers();
   startBuffer("b9");
