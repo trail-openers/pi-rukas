@@ -17,18 +17,45 @@
  *   3. Resolve the merge target: `gh pr view N --json …` (or `glab mr view
  *      N --output json`). A missing/unreadable `gh` AND `glab` both refuse.
  *   4. Carve-out: release-please / dependabot identities pass through.
- *   5. Fetch the branch: `git fetch origin <headRef>` — fail-closed on
- *      error.
+ *   5. Fetch the branch: `git fetch <remote> <headRef>` where `<remote>` is
+ *      resolved like forge detection (`origin` → `upstream` → first remote;
+ *      no remote → refuse) — fail-closed on error.
  *   6. Head OID check: the fetched head must equal the PR's `headOid`.
  *      A mismatch means the branch moved after the PR was opened; refuse.
+ *      This is a FRESHNESS gate: it confirms the branch is where the PR
+ *      says it is at this instant. It is NOT atomic with the merge — a
+ *      concurrent push between the check and the merge is not detectable
+ *      here, and branch protection is the git-level control for that.
  *   7. Adversarial ledger: the LATEST adversarial entry for this branch
  *      must be `passed: true` AND its `patchId` must equal the current
- *      patchId (computed from `origin/<base>..origin/<head>`). A new commit
- *      since the review changes the patchId → refuse.
+ *      patchId (computed from `<remote>/<base>..<remote>/<head>`, the PR's
+ *      ACTUAL base branch). A new commit since the review changes the
+ *      patchId → refuse. Note the asymmetry with the writers: the ledger
+ *      entries are stored against the MERGE-BASE of `<remote>/<mainline>`,
+ *      so a PR whose base branch is not the mainline will fail this check
+ *      (patchId mismatch) — that is deliberate and fails closed; the
+ *      operator re-runs the reviews on the PR's actual base (see
+ *      docs/troubleshooting.md → "A merge was refused: review ledger").
  *   8. Lens ledger: the LATEST lens entry for this branch must be
  *      `passed: true` (any patchId — a passing lens entry may predate a
  *      later commit; a later FAILING lens entry is what the latest-ness
- *      protects against).
+ *      protects against). The lens `passed` boolean follows the project's
+ *      review threshold (the same bar the driver's verdict used — see
+ *      `lensBlockedByThreshold` / `lensPassed` in review-ledger.ts).
+ *
+ * ## What this guard is — and is not
+ *
+ * This is a SAFEGUARD against an agent that FORGETS the gates — a PM who
+ * merges on a developer's self-report plus CI without running the reviews.
+ * It is NOT a security boundary: anything with shell access to this clone
+ * can write or delete the ledger file (it is a plain JSON file under the
+ * git common dir), and the head check is not atomic with the merge. The
+ * threat model is the honest-but-forgetful agent, not an adversary: an
+ * agent with credentials can always merge by other means (a direct
+ * `git push` to the base branch, a GraphQL merge mutation) — those are
+ * CONSCIOUSLY out of scope (branch protection covers pushes; parsing
+ * GraphQL is a large surface with little to gain). See
+ * docs/troubleshooting.md for the full statement.
  *
  * ## Mode-independence
  *
@@ -66,6 +93,7 @@ import {
   latestEntry,
   ledgerPathFor,
   readLedgerAt,
+  remoteName,
 } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
 
@@ -84,8 +112,12 @@ function unreviewedMergeAllowed(): boolean {
  *
  * Call BEFORE the sandbox short-circuit, the subagent-mode branch, and the
  * trust-mode bypass in `registerPermissionGuard` / `registerSubagentGuard`.
+ *
+ * `opts.execFn` replaces the shell executor for the guard's gh/git calls
+ * (tests drive the REAL hook through this option with a stub; production
+ * uses `execp`).
  */
-export function registerMergeGuard(pi: ExtensionAPI): void {
+export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecFn } = {}): void {
   if (unreviewedMergeAllowed()) {
     trace("merge-guard: PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 — unreviewed merges permitted");
     return;
@@ -97,13 +129,9 @@ export function registerMergeGuard(pi: ExtensionAPI): void {
     if (!merging) return;
 
     const cwd = process.cwd();
-    // The injectable exec seam: tests stub this via the global;
-    // production uses execp. The cast is safe: the test sets a
-    // MergeExecFn-shaped function, and execp matches the signature.
-    const globalExec = (globalThis as Record<string, unknown>).__mergeGuardExecFn as
-      | MergeExecFn
-      | undefined;
-    const execFn: MergeExecFn = globalExec ?? execp;
+    // The injectable exec seam: `opts.execFn` (tests drive the real hook
+    // through it); production uses execp.
+    const execFn: MergeExecFn = opts.execFn ?? execp;
 
     // Resolve the PR number (from the command or the current branch).
     const prNumber = await resolvePrNumberForCommand(execFn, cwd, merging);
@@ -126,9 +154,20 @@ export function registerMergeGuard(pi: ExtensionAPI): void {
       return;
     }
 
+    // Resolve the git remote the same way forge detection does
+    // (origin → upstream → first remote). Never hardcoded `origin`:
+    // a repo whose remote has another name must still resolve the same
+    // ref both here and in the writers' patchId. Fail-closed on none.
+    const remote = await remoteName(execFn, cwd);
+    if (!remote) {
+      return block(
+        "no git remote found (origin/upstream/first) — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)",
+      );
+    }
+
     // Fetch the branch. Fail-closed on error.
     try {
-      await execFn(`git fetch origin ${target.headBranch}`, {
+      await execFn(`git fetch ${remote} ${target.headBranch}`, {
         cwd,
         maxBuffer: 64 * 1024,
         timeout: EXEC_TIMEOUT_MS,
@@ -142,7 +181,7 @@ export function registerMergeGuard(pi: ExtensionAPI): void {
     // Check the fetched head OID against the PR's headOid.
     let fetchedHead: string;
     try {
-      const { stdout } = await execFn(`git rev-parse origin/${target.headBranch}`, {
+      const { stdout } = await execFn(`git rev-parse ${remote}/${target.headBranch}`, {
         cwd,
         maxBuffer: 8 * 1024,
         timeout: EXEC_TIMEOUT_MS,
@@ -150,7 +189,7 @@ export function registerMergeGuard(pi: ExtensionAPI): void {
       fetchedHead = stdout.trim();
     } catch (err) {
       return block(
-        `could not read origin/${target.headBranch}: ${(err as Error).message?.slice(0, 120)} — the merge guard refuses by default`,
+        `could not read ${remote}/${target.headBranch}: ${(err as Error).message?.slice(0, 120)} — the merge guard refuses by default`,
       );
     }
     if (fetchedHead !== target.headOid) {
@@ -159,12 +198,17 @@ export function registerMergeGuard(pi: ExtensionAPI): void {
       );
     }
 
-    // Compute the current patchId.
+    // Compute the current patchId against the PR's ACTUAL base branch
+    // (`<remote>/<baseBranch>`) — NOT the mainline. The writers store their
+    // entries against the mainline's merge-base, so a PR based off a
+    // non-mainline branch will not match and fails closed (see the module
+    // header, step 7). The guard keeps using the PR's baseBranch because
+    // that is the ref the merge will actually run against.
     const currentPatchId = await branchPatchId(
       execFn,
       cwd,
-      `origin/${target.headBranch}`,
-      `origin/${target.baseBranch}`,
+      `${remote}/${target.headBranch}`,
+      `${remote}/${target.baseBranch}`,
     );
     if (!currentPatchId) {
       return block(

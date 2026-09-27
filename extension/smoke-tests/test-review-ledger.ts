@@ -29,8 +29,11 @@ import {
   adversarialPassed,
   appendLedgerEntry,
   branchPatchId,
+  lensBlockedByThreshold,
   lensPassed,
   readLedgerAt,
+  remoteName,
+  workingTreePatchId,
 } from "../src/review-ledger.ts";
 
 let exit = 0;
@@ -70,6 +73,9 @@ function setupRepo(): { repo: string; origin: string; branch: string } {
   // without fighting the origin's checked-out branch.
   git("git branch -M dev");
   git("git push -q origin dev");
+  // Set the mainline symbolic ref so detectMainline can resolve it without
+  // a network call to gh (the test repo has no GitHub remote).
+  git("git remote set-head origin dev");
   git("git checkout -qb feature/x dev");
   git("echo change > change.txt");
   git("git add change.txt");
@@ -270,6 +276,114 @@ assert(!lensPassed("CRITICAL_ISSUES_FOUND", "LOW"), "CRITICAL blocks even at LOW
     );
   } finally {
     rmSync(path.dirname(repo), { recursive: true, force: true });
+  }
+}
+
+// ------------------------------------------- workingTreePatchId (item 1)
+
+{
+  const { repo } = setupRepo();
+  try {
+    // The temp repo's remote is named `origin` (set up by setupRepo).
+    // detectMainline will resolve the mainline via `git symbolic-ref`
+    // (which points to `origin/dev` after the rename) or `gh repo view`
+    // (which will fail in the test, but the symbolic-ref path should work).
+    // The merge-base of HEAD (on feature/x) and origin/dev is the base commit.
+    const computed = await workingTreePatchId(execp, repo);
+    assert(
+      typeof computed.patchId === "string" && computed.patchId.length > 0,
+      "workingTreePatchId computes an id for the working-tree diff",
+    );
+    assert(computed.untracked.length === 0, "no untracked files in the clean working tree");
+    assert(computed.warning === undefined, "no warning for a clean working tree");
+
+    // The patchId should match the branchPatchId of the same content.
+    const branchId = await branchPatchId(execp, repo, "HEAD", "origin/dev");
+    assert(
+      computed.patchId === branchId,
+      "workingTreePatchId matches branchPatchId for the same (committed) content",
+    );
+
+    // An uncommitted change changes the working-tree patchId (item 1: the
+    // diff covers uncommitted fixes the adversarial loop made but has not
+    // yet committed). The branch patchId (which only sees commits) is
+    // unchanged by the uncommitted edit.
+    execSync("echo uncommitted >> change.txt", { cwd: repo, stdio: "ignore" });
+    const withUncommitted = await workingTreePatchId(execp, repo);
+    assert(
+      withUncommitted.patchId !== computed.patchId,
+      "an uncommitted change changes the working-tree patchId (covers uncommitted fixes)",
+    );
+    // The branch patchId is unchanged (it only sees commits, not the worktree).
+    const branchIdAfter = await branchPatchId(execp, repo, "HEAD", "origin/dev");
+    assert(
+      branchIdAfter === branchId,
+      "the branch patchId is unchanged by an uncommitted edit (only commits change it)",
+    );
+
+    // Untracked files: still written, but with a warning.
+    execSync("echo new > untracked.txt", { cwd: repo, stdio: "ignore" });
+    const withUntracked = await workingTreePatchId(execp, repo);
+    assert(
+      withUntracked.untracked.length === 1 && withUntracked.untracked[0] === "untracked.txt",
+      "untracked files are enumerated",
+    );
+    assert(
+      withUntracked.warning !== undefined && withUntracked.warning.includes("untracked"),
+      "a warning is returned when untracked files exist",
+    );
+    assert(
+      typeof withUntracked.patchId === "string" && withUntracked.patchId.length > 0,
+      "the entry is still written (patchId present) when untracked files exist",
+    );
+  } finally {
+    rmSync(path.dirname(repo), { recursive: true, force: true });
+  }
+}
+
+// ------------------------------------------- remoteName (item 2)
+
+{
+  const { repo } = setupRepo();
+  try {
+    // The temp repo's remote is named `origin`.
+    const name = await remoteName(execp, repo);
+    assert(name === "origin", "remoteName resolves the remote (origin)");
+  } finally {
+    rmSync(path.dirname(repo), { recursive: true, force: true });
+  }
+}
+
+// ------------------------------------------- lensBlockedByThreshold (item 6)
+
+{
+  // The threshold predicate has ONE implementation (review-ledger.ts:
+  // lensBlockedByThreshold → lensPassed). The driver's computeVerdict and
+  // the ledger writer both apply it.
+  assert(!lensBlockedByThreshold("APPROVED", "MEDIUM"), "APPROVED does not block at MEDIUM");
+  assert(lensBlockedByThreshold("ISSUES_FOUND", "MEDIUM"), "ISSUES_FOUND blocks at MEDIUM");
+  assert(!lensBlockedByThreshold("ISSUES_FOUND", "LOW"), "ISSUES_FOUND does not block at LOW");
+  assert(
+    lensBlockedByThreshold("CRITICAL_ISSUES_FOUND", "LOW"),
+    "CRITICAL blocks at every threshold",
+  );
+  assert(
+    lensBlockedByThreshold("REVIEW_INCOMPLETE", "LOW"),
+    "REVIEW_INCOMPLETE blocks at every threshold",
+  );
+  // The predicate is the inverse of lensPassed.
+  for (const verdict of [
+    "APPROVED",
+    "ISSUES_FOUND",
+    "CRITICAL_ISSUES_FOUND",
+    "REVIEW_INCOMPLETE",
+  ]) {
+    for (const th of ["LOW", "MEDIUM", "HIGH", "CRITICAL"]) {
+      assert(
+        lensBlockedByThreshold(verdict, th as never) === !lensPassed(verdict, th),
+        `lensBlockedByThreshold(${verdict}, ${th}) === !lensPassed(${verdict}, ${th})`,
+      );
+    }
   }
 }
 

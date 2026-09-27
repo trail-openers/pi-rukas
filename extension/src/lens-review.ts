@@ -225,6 +225,7 @@ export function computeVerdict(
   // exit code said. Six of those used to add up to APPROVED.
   if (lensResults?.some((r) => !lensProducedEvidence(r))) return "REVIEW_INCOMPLETE";
   if (findings.some((f) => f.severity === "CRITICAL")) return "CRITICAL_ISSUES_FOUND";
+  // The threshold check: any finding at or above the project's bar.
   const bar = SEVERITY_RANK[threshold];
   if (findings.some((f) => SEVERITY_RANK[f.severity] <= bar)) return "ISSUES_FOUND";
   return "APPROVED";
@@ -262,6 +263,8 @@ export async function runLensReview(opts: {
   context?: string;
   cwd?: string;
   signal?: AbortSignal;
+  /* (threshold + branch: see below — the resolved threshold is computed
+   * once at the top of the body so the verdict and the ledger write agree.) */
   /**
    * Post-change content of files the diff touches, rendered for the prompt.
    * Supplied by the caller because only it knows the branch ref; see
@@ -290,6 +293,9 @@ export async function runLensReview(opts: {
   const runId = makeRunId();
   const skillsDir = piSkillsDir();
   const context = opts.context ?? "";
+  // The RESOLVED threshold (computed once; both the verdict and the ledger
+  // write apply the same bar).
+  const threshold = opts.threshold ?? DEFAULT_REVIEW_THRESHOLD;
   // #873 — the roster is data: the INSTALLED skills dir's `code-review-*`
   // SKILL.md files (precedence in frontmatter), PLUS a blocked entry for
   // every expected lens (the BUNDLED skill/ dir) that is absent from the
@@ -323,13 +329,21 @@ export async function runLensReview(opts: {
     dispatchDeck.clearBatchEntry(batchKey);
     const all = [...(opts.extraFindings ?? [])];
     const deduped = dedupeFindings(all, roster);
-    return {
-      verdict: computeVerdict(deduped, lensResults, opts.threshold),
-      totalFindings: deduped.length,
-      bySeverity: bySeverityCounts(deduped),
-      lenses: lensResults,
-      findings: deduped,
-    };
+    // SINGLE EXIT PATH (item 5): the early return is the same `finish(...)`
+    return finish(
+      {
+        verdict: computeVerdict(deduped, lensResults, threshold),
+        totalFindings: deduped.length,
+        bySeverity: bySeverityCounts(deduped),
+        lenses: lensResults,
+        findings: deduped,
+        usage: undefined,
+        ...capKillSummary(lensResults),
+      },
+      threshold,
+      opts.cwd,
+      opts.branch,
+    );
   }
 
   // Persistent batch summary row (#139). Lets the user see "X/6 done"
@@ -382,49 +396,51 @@ export async function runLensReview(opts: {
   // same threshold, same rendering. They are findings, not a side channel.
   const all = [...lensResults.flatMap((r) => r.findings), ...(opts.extraFindings ?? [])];
   const deduped = dedupeFindings(all, roster);
-  const verdict = computeVerdict(deduped, lensResults, opts.threshold);
+  const verdict = computeVerdict(deduped, lensResults, threshold);
+  return finish(
+    {
+      verdict,
+      totalFindings: deduped.length,
+      bySeverity: bySeverityCounts(deduped),
+      lenses: lensResults,
+      findings: deduped,
+      usage: aggregateLensUsage(lensResults),
+      ...capKillSummary(lensResults),
+    },
+    threshold,
+    opts.cwd,
+    opts.branch,
+  );
+}
 
-  // #912 — review-ledger write: a completed lens review records a
-  // `{ branch, patchId, passed }` entry so the merge guard can refuse an
-  // agent-run merge with no passing lens review on file. Failure isolation:
-  // every fault is swallowed and traced — the summary comes back identical.
-  const threshold = opts.threshold ?? DEFAULT_REVIEW_THRESHOLD;
-  void writeLensLedgerEntry(verdict, threshold, opts.cwd, opts.branch);
+/** The ONE exit path: writes the ledger entry and returns the summary. */
+function finish(
+  summary: Omit<LensReviewSummary, "usage"> & { usage?: DispatchUsage },
+  threshold: Severity,
+  cwd: string | undefined,
+  branch: string | undefined,
+): LensReviewSummary {
+  void writeLensLedgerEntry(summary.verdict, threshold, cwd, branch);
+  return summary as LensReviewSummary;
+}
 
-  // #534 — raw sum across lenses (no dedup, matching the retry rule).
-  // `turns` is not meaningful at the aggregate level; keep it as the sum
-  // of the parts' turns since the cycle total is what gets rendered and
-  // no consumer interprets the aggregate's turn count.
+/** #534 — raw sum across lenses (no dedup). */
+function aggregateLensUsage(lensResults: LensRunResult[]): DispatchUsage | undefined {
   const usageUsages = lensResults
     .map((r) => r.usage)
     .filter((u): u is DispatchUsage => u !== undefined);
-  const usage =
-    usageUsages.length > 0
-      ? usageUsages.reduce(
-          (acc, u) => ({
-            input: acc.input + u.input,
-            output: acc.output + u.output,
-            cacheRead: acc.cacheRead + u.cacheRead,
-            cacheWrite: acc.cacheWrite + u.cacheWrite,
-            cost: acc.cost + u.cost,
-            turns: acc.turns + u.turns,
-          }),
-          { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
-        )
-      : undefined;
-  // #543 — a dispatch-cap kill on any lens child (loop detector / token
-  // budget) is surfaced on the summary so the driver emits the fixed-literal
-  // cap-hit (F4g) instead of a silent 1-of-6 loss.
-  const capKill = capKillSummary(lensResults);
-  return {
-    verdict,
-    totalFindings: deduped.length,
-    bySeverity: bySeverityCounts(deduped),
-    lenses: lensResults,
-    findings: deduped,
-    usage,
-    ...capKill,
-  };
+  if (usageUsages.length === 0) return undefined;
+  return usageUsages.reduce(
+    (acc, u) => ({
+      input: acc.input + u.input,
+      output: acc.output + u.output,
+      cacheRead: acc.cacheRead + u.cacheRead,
+      cacheWrite: acc.cacheWrite + u.cacheWrite,
+      cost: acc.cost + u.cost,
+      turns: acc.turns + u.turns,
+    }),
+    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+  );
 }
 
 export function registerLensReviewTool(pi: ExtensionAPI) {

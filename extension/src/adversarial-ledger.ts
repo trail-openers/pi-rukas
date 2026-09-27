@@ -7,6 +7,13 @@
  * with no passing review on file. Failure isolation: every fault here is
  * swallowed and traced — the loop's DispatchResult comes back byte-identical
  * whether the write ran or threw.
+ *
+ * The patchId comes from `workingTreePatchId` (review-ledger.ts) — the ONE
+ * shared base/patchId computation both writers use. It diffs the working tree
+ * against the merge-base of HEAD and `<remote>/<mainline>` (resolved via
+ * detectMainline + the forge remote, never a hardcoded `origin/main`), so
+ * the entry covers the uncommitted fixes the loop made; when those fixes are
+ * committed unchanged, the id the guard recomputes at merge time matches.
  */
 
 import { exec } from "node:child_process";
@@ -15,7 +22,7 @@ import {
   type LedgerEntry,
   adversarialPassed,
   appendLedgerEntry,
-  branchPatchId,
+  workingTreePatchId,
 } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
@@ -50,31 +57,16 @@ export function writeAdversarialLedgerEntry(
       trace("adversarial: ledger write skipped — no branch (detached head, no caller branch)");
       return;
     }
-    // The patchId is the `git patch-id --stable` of the branch's diff against
-    // its base. The base is `origin/main` when available (the normal case for
-    // a feature branch), else `HEAD~1` (a standalone commit). The guard
-    // re-derives the same id at merge time, so both sides compute it
-    // identically.
-    let patchId: string | undefined;
-    try {
-      const { stdout } = await execp(
-        "git rev-parse --verify -q origin/main || git rev-parse HEAD~1",
-        {
-          cwd: c,
-          maxBuffer: 8 * 1024,
-        },
-      );
-      const baseRef = stdout.trim() || "HEAD~1";
-      patchId = await branchPatchId(execp, c, "HEAD", baseRef);
-    } catch (err) {
-      trace(`adversarial: ledger patch-id failed: ${(err as Error).message}`);
-      return;
-    }
-    if (!patchId) return;
+    // The shared working-tree patch id (review-ledger.ts). When untracked
+    // files exist the entry is still written for the tracked content, but the
+    // gap is traced — see the warning's wording in workingTreePatchId.
+    const computed = await workingTreePatchId(execp, c);
+    if (computed.warning) trace(`adversarial: ${computed.warning}`);
+    if (!computed.patchId) return;
     const entry: LedgerEntry = {
       branch,
       kind: "adversarial",
-      patchId,
+      patchId: computed.patchId,
       passed: adversarialPassed(result),
       at: Date.now(),
       detail: result.loopOutcome ?? "completed",

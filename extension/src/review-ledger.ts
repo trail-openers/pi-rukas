@@ -39,6 +39,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { trace } from "./trace.ts";
+import { type VerifyExecFn, detectMainline } from "./work-driver-git.ts";
 
 /** The two review kinds the ledger tracks — and what a merge needs of each. */
 export type ReviewKind = "adversarial" | "lens";
@@ -62,10 +63,7 @@ interface LedgerFile {
   entries: LedgerEntry[];
 }
 
-export type LedgerExecFn = (
-  cmd: string,
-  opts?: { cwd?: string; timeout?: number; maxBuffer?: number; shell?: string },
-) => Promise<{ stdout: string; stderr?: string }>;
+export type LedgerExecFn = VerifyExecFn;
 
 /**
  * The patch id of a branch's changes: the diff from `baseRef` to the branch
@@ -89,16 +87,164 @@ export async function branchPatchId(
       cwd,
       maxBuffer: 1024 * 1024,
     });
-    const id = stdout.trim().split(/\s+/)[0]?.trim();
-    if (!id) return undefined;
-    return id;
+    return parsePatchId(stdout, `${baseRef}..${branchRef}`);
   } catch (err) {
     trace(`review-ledger: patch-id failed for ${branchRef}: ${(err as Error).message}`);
     return undefined;
   }
 }
 
-/** The shared pass predicates the guard's booleans are computed with. */
+/** One `git patch-id` line (`<id> <path>`) → the id, or undefined when empty. */
+function parsePatchId(stdout: string, label: string): string | undefined {
+  const id = stdout.trim().split(/\s+/)[0]?.trim();
+  if (!id) trace(`review-ledger: patch-id was empty for ${label}`);
+  return id;
+}
+
+/**
+ * The remote the forge detection resolves against: `origin` → `upstream` →
+ * the first remote in `git remote` order — the same precedence as
+ * `detectForge` (forge-detect.ts). The guard and the ledger writers both
+ * call this, so a repo whose remote is NOT named `origin` resolves the same
+ * ref on both sides of the patchId comparison. Returns undefined when the
+ * repo has no remotes — the callers fail closed.
+ */
+export async function remoteName(execFn: LedgerExecFn, cwd: string): Promise<string | undefined> {
+  for (const name of ["origin", "upstream"]) {
+    try {
+      const { stdout } = await execFn(`git config --get remote.${name}.url`, {
+        cwd,
+        maxBuffer: 64 * 1024,
+      });
+      if (stdout.trim()) return name;
+    } catch {
+      /* try the next */
+    }
+  }
+  try {
+    const { stdout } = await execFn("git remote", { cwd, maxBuffer: 64 * 1024 });
+    return stdout.trim().split("\n")[0]?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The WORKING-tree patch id against the mainline — the one number the #912
+ * writers (adversarial-ledger.ts, lens-ledger.ts) store in the ledger,
+ * computed by ONE shared function so both writers agree with each other.
+ *
+ * The base is `<remote>/<mainline>`, resolved via `detectMainline`
+ * (work-driver-git.ts) and `remoteName` — never a hardcoded `origin/main`,
+ * never a `HEAD~1` fallback — and the diff runs from the MERGE-BASE of HEAD
+ * and that base, over the working tree (uncommitted changes included). Two
+ * properties fall out of that:
+ *
+ *   - the diff covers what the adversarial loop actually saw (its reviewer
+ *     reads the working tree, including fixes the fix-developer applied but
+ *     has not yet committed),
+ *   - when those fixes are later committed UNCHANGED, the id recomputed at
+ *     merge time matches the stored one (committing identical content does
+ *     not change the content's patch-id).
+ *
+ * A PR whose base branch is NOT the mainline will not match: the guard
+ * computes its patchId against `<remote>/<PR base>` (merge-guard.ts), the
+ * patchId differs, and the mismatch fails closed — the operator re-runs the
+ * reviews (see docs/troubleshooting.md → "A merge was refused: review ledger").
+ *
+ * `untracked` names the untracked files the worktree diff could not cover.
+ * The entry is still written for the tracked content, but the warning is
+ * returned so the caller traces it — the gap is visible to the operator.
+ */
+export async function workingTreePatchId(
+  execFn: LedgerExecFn,
+  cwd: string,
+): Promise<{ patchId?: string; untracked: string[]; warning?: string }> {
+  const mainline = await detectMainline(cwd, execFn);
+  if ("branch" in mainline === false) {
+    return {
+      untracked: [],
+      warning: `cannot resolve the mainline branch (${mainline.reason}) — no ledger entry written`,
+    };
+  }
+  const remote = await remoteName(execFn, cwd);
+  if (!remote) {
+    return {
+      untracked: [],
+      warning: "no git remote found (origin/upstream/first) — no ledger entry written",
+    };
+  }
+  const baseRef = `${remote}/${mainline.branch}`;
+  let mergeBase = "";
+  try {
+    const { stdout } = await execFn(`git merge-base HEAD ${baseRef}`, {
+      cwd,
+      maxBuffer: 8 * 1024,
+    });
+    mergeBase = stdout.trim();
+  } catch (err) {
+    return {
+      untracked: [],
+      warning: `merge-base against ${baseRef} failed: ${(err as Error).message?.slice(0, 120)} — no ledger entry written`,
+    };
+  }
+  if (!mergeBase) {
+    return {
+      untracked: [],
+      warning: `no merge-base between HEAD and ${baseRef} — no ledger entry written`,
+    };
+  }
+  let patchId: string | undefined;
+  try {
+    // The diff runs from the merge-base to the WORKING TREE (a single ref =
+    // index + worktree), so uncommitted fixes made by the adversarial loop
+    // are covered. `git patch-id --stable` reads the diff from stdin.
+    const { stdout } = await execFn(`git diff ${mergeBase} | git patch-id --stable`, {
+      cwd,
+      maxBuffer: 1024 * 1024,
+    });
+    patchId = parsePatchId(stdout, `working tree vs ${mergeBase.slice(0, 8)}`);
+  } catch (err) {
+    return {
+      untracked: [],
+      warning: `working-tree patch-id failed: ${(err as Error).message?.slice(0, 120)} — no ledger entry written`,
+    };
+  }
+  if (!patchId) return { patchId: undefined, untracked: [] };
+  // Untracked files are invisible to a worktree diff. The entry is still
+  // written for the tracked content, but the gap is surfaced — and anything
+  // untracked that later lands in a commit will fail closed at merge time
+  // because the committed patchId will no longer match.
+  const untracked: string[] = [];
+  try {
+    const { stdout } = await execFn("git status --porcelain", { cwd, maxBuffer: 256 * 1024 });
+    for (const line of stdout.split("\n")) {
+      if (line.startsWith("??")) untracked.push(line.slice(3).trim());
+    }
+  } catch {
+    // Untracked enumeration is best-effort; the tracked diff is authoritative.
+  }
+  if (untracked.length > 0) {
+    return {
+      patchId,
+      untracked,
+      warning: `untracked files not covered by the ledger patchId: ${untracked
+        .slice(0, 5)
+        .join(", ")}${untracked.length > 5 ? ` (+${untracked.length - 5} more)` : ""}`,
+    };
+  }
+  return { patchId, untracked: [] };
+}
+
+/**
+ * The shared pass predicates the guard's booleans are computed with.
+ *
+ * `lensPassed` is the ONE predicate both call sites use: the ledger writer
+ * (lens-ledger.ts) stores `lensPassed(verdict, threshold)`, and the driver's
+ * verdict threshold (lensBlockedByThreshold, below) applies the same
+ * comparison — one function, two call sites, no re-implementation that could
+ * drift.
+ */
 
 /**
  * Adversarial: a completed review passed when its final verdict is one the
@@ -133,6 +279,20 @@ export function lensPassed(verdict: string, threshold: string): boolean {
   if (verdict === "CRITICAL_ISSUES_FOUND") return false;
   // ISSUES_FOUND — the project's threshold decides.
   return threshold === "LOW";
+}
+
+/**
+ * The driver-side twin of `lensPassed`: does this verdict fail AT the given
+ * threshold? The ISSUES_FOUND branch of `computeVerdict` (lens-review.ts)
+ * applies this exact comparison, and the ledger writer applies `lensPassed`
+ * with the SAME resolved threshold — the threshold predicate has one
+ * implementation.
+ */
+export function lensBlockedByThreshold(
+  verdict: string,
+  threshold: import("./lens-review.ts").Severity,
+): boolean {
+  return !lensPassed(verdict, threshold);
 }
 
 /**

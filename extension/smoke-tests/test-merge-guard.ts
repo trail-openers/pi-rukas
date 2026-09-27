@@ -1,21 +1,6 @@
 #!/usr/bin/env bun
 /**
- * #912 — the merge guard.
- *
- * Three parts:
- *
- *   1. The `mergesPr` matcher table — positives (the doors) and negatives
- *      (reads + quoted text must stay open), mirroring
- *      test-issue-creation-guard.ts.
- *   2. The guard decision matrix — a stubbed exec seam drives
- *      `readMergeTarget` + the ledger check: refused with no entries,
- *      allowed with a passing adversarial (matching patchId) + passing lens,
- *      refused after a patchId change, refused on a head-Oid mismatch.
- *   3. Registration-order canaries — the guard is registered BEFORE the
- *      trust/sandbox short-circuits in both permission-guard.ts and
- *      permission-subagent-guard.ts, is role-agnostic and mode-agnostic,
- *      and the driver's mechanizedMerge stays an in-process exec (exempt
- *      by construction).
+ * #912 — the merge guard: matcher table, decision matrix, registration canaries.
  */
 
 import { readFileSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
@@ -73,26 +58,21 @@ for (const cmd of [
   "git status; gh pr merge 12 --squash",
   "nice -n 5 glab mr merge 3",
   "env FOO=1 gh pr merge 12",
-  // No PR number — resolved via `gh pr view --json number` on the current
-  // branch (the guard does the resolution; the matcher must still fire).
+  // No PR number — resolved via `gh pr view --json number` on the current branch.
   "gh pr merge",
-  // The gh REST door: gh api defaults to POST/PUT, so /pulls/N/merge IS the
-  // write even when it "looks like a read".
+  // The gh REST door: gh api defaults to POST/PUT, so /pulls/N/merge IS the write.
   "gh api repos/o/r/pulls/12/merge",
   "gh api repos/o/r/pulls/12/merge --dry-run",
   "gh api repos/o/r/pulls/merge -f a=b",
   // Body fields force a PUT regardless of --method — a GET with -f is the write.
   "gh api repos/o/r/pulls/12/merge --method GET --field merge_method=squash",
   "gh api repos/o/r/pulls/12/merge -X GET -f merge_method=squash",
-  // The glab REST door: method-AWARE — only an explicit PUT/POST or body
-  // fields (glab api does NOT default to POST, unlike gh api).
+  // The glab REST door: method-AWARE — only an explicit PUT/POST or body fields.
   "glab api /projects/1/mr/12/merge -X PUT",
   "glab api /projects/1/mr/12/merge --method POST",
   "glab api /projects/1/mr/12/merge -f squash=true",
   "glab api /projects/1/mr/merge --method PUT",
-  // The repo's canonical glab shape: /merge_requests/{n}/merge (unquoted —
-  // a QUOTED endpoint is removed by the quote-strip and stays open, exactly
-  // like the quoted shapes in test-issue-creation-guard.ts).
+  // The repo's canonical glab shape: /merge_requests/{n}/merge (unquoted).
   "glab api /projects/1/merge_requests/12/merge -X PUT",
   "glab api /projects/1/merge_requests/12/merge --method put",
   "glab api /projects/1/merge_requests/12/merge -f squash=true",
@@ -120,8 +100,7 @@ for (const cmd of [
   "gh api repos/o/r/pulls/12/merge --method GET",
   "gh api repos/o/r/pulls/12/merge -X GET",
   "gh api repos/o/r/pulls/12/merge -X get",
-  // The glab /merge door: unqualified or explicit GET is a read — glab api
-  // does not default to POST.
+  // The glab /merge door: unqualified or explicit GET is a read.
   "glab api /projects/1/mr/12/merge",
   "glab api /projects/1/mr/12/merge -X GET",
   "glab api /projects/1/mr/12/merge --method GET",
@@ -188,13 +167,7 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
 }
 
 // ------------------------------------------------- the guard decision matrix
-//
-// Driven through the REAL hook: `registerMergeGuard` with a fake pi, the
-// `__mergeGuardExecFn` seam stubbing every gh/git exec, and the ledger read
-// from the real git common dir of this worktree (the shared .git). Each row
-// exercises the full decision path — carve-out → gh pr view → fetch →
-// head-Oid → patchId → ledger — not a re-implementation of it.
-
+// Driven through the REAL hook via `opts.execFn`.
 
 /** Save/restore the shared ledger around a row so the matrix is side-effect-free. */
 async function withLedger(entries: LedgerEntry[], fn: () => Promise<unknown>) {
@@ -230,7 +203,7 @@ async function withLedger(entries: LedgerEntry[], fn: () => Promise<unknown>) {
   }
 }
 
-/** Register the real guard on a fake pi and stub the exec seam for this row. */
+/** Register the real guard on a fake pi and drive it through `opts.execFn`. */
 async function makeHook(env: {
   target: MergeTarget;
   currentPatchId: string;
@@ -246,8 +219,6 @@ async function makeHook(env: {
       if (name === "tool_call") handler = fn;
     },
   } as never;
-  registerMergeGuard(fakePi);
-  if (!handler) throw new Error("the merge guard did not register a tool_call handler");
   const t = env.target;
   const ghView = {
     stdout: JSON.stringify({
@@ -271,14 +242,30 @@ async function makeHook(env: {
       if (env.failFetch) throw new Error("unable to connect");
       return { stdout: "" };
     }
-    if (cmd.includes("rev-parse origin/")) return { stdout: env.fetchedHead };
+    // Remote resolution: origin → upstream → first remote.
+    if (cmd.includes("git config --get remote.origin.url")) {
+      if (env.remote === "origin") return { stdout: "git@github.com:o/r.git\n" };
+      return { stdout: "" };
+    }
+    if (cmd.includes("git config --get remote.upstream.url")) {
+      if (env.remote === "upstream") return { stdout: "git@github.com:o/r.git\n" };
+      return { stdout: "" };
+    }
+    if (cmd.includes("git config --get remote.")) {
+      return { stdout: "" };
+    }
+    if (cmd.includes("git remote")) {
+      return { stdout: env.remote + "\n" };
+    }
+    if (cmd.includes(`rev-parse ${env.remote}/`)) return { stdout: env.fetchedHead };
     if (cmd.includes("patch-id")) return { stdout: `${env.currentPatchId} 0000` };
     if (cmd.includes("git-common-dir")) {
       return { stdout: env.ledgerCommonDir ?? "" };
     }
     throw new Error(`unexpected exec: ${cmd}`);
   };
-  (globalThis as Record<string, unknown>).__mergeGuardExecFn = execFn;
+  registerMergeGuard(fakePi, { execFn });
+  if (!handler) throw new Error("the merge guard did not register a tool_call handler");
   return handler;
 }
 
@@ -292,6 +279,7 @@ async function hookDecision(
     failGh?: boolean;
     failFetch?: boolean;
     ledgerCommonDir?: string;
+    remote?: string;
   } = {},
 ) {
   const env = {
@@ -302,6 +290,7 @@ async function hookDecision(
     failFetch: opts.failFetch,
     ledgerCommonDir: opts.ledgerCommonDir ?? (LEDGER_FILE ? path.dirname(LEDGER_FILE) : ""),
     calls: [] as string[],
+    remote: opts.remote ?? "origin",
   };
   const handler = await makeHook(env);
   const r = await withLedger(entries, () =>
@@ -362,7 +351,10 @@ await setupLedgerPath();
   // A new commit changes the patchId → refused until adversarial re-runs.
   const r = await hookDecision("gh pr merge 12", GOOD_ENTRIES, { patchId: "p2" });
   assert(r.block === true, "refused after a new commit changes the patchId");
-  assert(/adversarial review is stale/.test(r.reason ?? ""), "…naming the stale adversarial review");
+  assert(
+    /adversarial review is stale/.test(r.reason ?? ""),
+    "…naming the stale adversarial review",
+  );
 }
 {
   // Fetched head ≠ headOid → refused (stale).
@@ -396,18 +388,25 @@ await setupLedgerPath();
   assert(r.block === true, "fail-closed: git fetch failure refuses");
   assert(/git fetch failed/.test(r.reason ?? ""), "…naming the fetch failure");
 }
+// ------------------------------------------- the carve-outs (item 8)
 {
-  // Carve-outs are allowed without any ledger entries — the hook short-circuits
-  // after the target read and never reaches the ledger check.
-  const carveTargets: Array<[string, MergeTarget]> = [
-    ["release-please branch", { ...TARGET, headBranch: "release-please--branches--main" }],
-    ["dependabot branch", { ...TARGET, headBranch: "dependabot/npm-and-yarn/foo-1.2.3" }],
-    ["dependabot[bot] author", { ...TARGET, author: "dependabot[bot]" }],
+  // Carve-outs require a BOT IDENTITY, not a branch shape. The hook
+  // short-circuits after the target read when the bot identity is present.
+  const carveTargets: Array<[string, MergeTarget, boolean]> = [
+    ["dependabot[bot] author", { ...TARGET, author: "dependabot[bot]" }, false],
+    ["app/dependabot author", { ...TARGET, author: "app/dependabot" }, false],
+    ["dependabot/ branch alone", { ...TARGET, headBranch: "dependabot/npm-and-yarn/foo-1.2.3" }, true],
+    ["release-please branch + label", { ...TARGET, headBranch: "release-please--branches--main", labels: ["autorelease: pending"] }, false],
+    ["release-please branch + bot author", { ...TARGET, headBranch: "release-please--branches--main", author: "release-please[bot]" }, false],
+    ["release-please branch alone", { ...TARGET, headBranch: "release-please--branches--main" }, true],
   ];
-  for (const [label, target] of carveTargets) {
+  for (const [label, target, expectBlock] of carveTargets) {
     const r = await hookDecision("gh pr merge 12", [], { target });
-    assert(r.block === false, `carve-out: ${label} allowed`);
-    assert(!r.calls.some((c) => c.includes("patch-id")), `carve-out: ${label} does not reach the ledger check`);
+    if (expectBlock) assert(r.block === true, `carve-out: ${label} is NOT a carve-out (bot ID required)`);
+    else {
+      assert(r.block === false, `carve-out: ${label} allowed`);
+      assert(!r.calls.some((c) => c.includes("patch-id")), `carve-out: ${label} does not reach the ledger check`);
+    }
   }
 }
 {
@@ -421,9 +420,26 @@ await setupLedgerPath();
   // `cd /data/3` path) is not a PR number — the hook must not validate the
   // ledger for PR #3 (the stub would throw on an unexpected `gh pr view 3`).
   const r = await hookDecision("cd /data/3 && gh pr merge", GOOD_ENTRIES);
-  assert(r.block === false, "a chained `cd /N && gh pr merge` does not pick the digit up as the PR number");
+  assert(
+    r.block === false,
+    "a chained `cd /N && gh pr merge` does not pick the digit up as the PR number",
+  );
 }
 
+// ------------------------------------------- the remote is NOT hardcoded
+{
+  const entries: LedgerEntry[] = [
+    { branch: "feature/up", kind: "adversarial", patchId: "p1", passed: true, at: 1 },
+    { branch: "feature/up", kind: "lens", patchId: "p1", passed: true, at: 2 },
+  ];
+  const r = await hookDecision("gh pr merge 12", entries, {
+    target: { ...TARGET, headBranch: "feature/up" },
+    remote: "upstream",
+  });
+  assert(r.calls.some((c) => c.includes("upstream/feature/up")), "remote resolved via git config");
+  assert(!r.calls.some((c) => c.includes("origin/feature/up")), "no hardcoded origin");
+  assert(r.block === false, "merge allowed when remote is upstream and patchId matches");
+}
 
 // ------------------------------ registration-order + shape canaries
 
@@ -433,8 +449,7 @@ await setupLedgerPath();
   const sub = readFileSync(path.join(SRC, "permission-subagent-guard.ts"), "utf8");
   const mg = readFileSync(path.join(SRC, "merge-guard.ts"), "utf8");
 
-  // Parent guard: registered ahead of the trust-mode early return AND the
-  // sandbox short-circuit.
+  // Parent guard: before trust-mode return AND sandbox short-circuit.
   const guardIdx = pg.indexOf("registerMergeGuard(pi)");
   const sandboxIdx = pg.indexOf('if (process.env.PI_ENSEMBLE_SANDBOX_MODE === "1") {');
   const trustIdx = pg.indexOf("isInTrustMode(ctx.hasUI === true)");
@@ -448,10 +463,7 @@ await setupLedgerPath();
   const subSandboxIdx = sub.indexOf("PI_ENSEMBLE_SANDBOX_MODE");
   const subTrustIdx = sub.indexOf("PI_ENSEMBLE_TRUST_MODE");
   assert(subGuardIdx > 0, "canary: subagent guard registers the merge guard");
-  assert(
-    subGuardIdx < subSandboxIdx && subGuardIdx < subTrustIdx,
-    `...and BEFORE both bypasses in the subagent path (guard=${subGuardIdx}, sandbox=${subSandboxIdx}, trust=${subTrustIdx})`,
-  );
+  assert(subGuardIdx < subSandboxIdx && subGuardIdx < subTrustIdx, "subagent: before both bypasses");
   // Role-agnostic, mode-agnostic, escape hatch present.
   assert(
     !/PI_ENSEMBLE_ROLE/.test(mg),
@@ -465,35 +477,19 @@ await setupLedgerPath();
     /PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE === "1"/.test(mg),
     "escape hatch: PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 opens the door for a human",
   );
-  // The hook is async and awaits the execs before deciding (the async
-  // tool_call handler + awaited readMergeTarget/branchPatchId calls).
-  assert(
-    /async \(event, _ctx\)/.test(mg),
-    "the tool_call handler is async (it awaits the gh/git execs before deciding)",
-  );
+  // The hook is async and awaits the execs before deciding.
+  assert(/async \(event, _ctx\)/.test(mg), "the tool_call handler is async");
   assert(/await readMergeTarget/.test(mg), "…and it awaits the PR read before the ledger check");
   assert(/await branchPatchId/.test(mg), "…and it awaits the patch-id computation before deciding");
 }
 
 // ------------------------------------------------ mechanizedMerge canary
-
 {
   const SRC = path.resolve(import.meta.dirname, "..", "src");
   const merged = readFileSync(path.join(SRC, "work-driver-merged-mechanized.ts"), "utf8");
-  // The driver's merge path runs via in-process exec (execp / forge.prMerge),
-  // NOT through a tool call / the bash hook — the by-construction exemption.
-  assert(
-    /import \{ exec \} from "node:child_process"/.test(merged),
-    "canary: mechanizedMerge merges via in-process exec (node:child_process), not a tool call",
-  );
-  assert(
-    /execp\(|forge\.prMerge\(|forge\.prView\(/.test(merged),
-    "…executing gh directly in-process",
-  );
-  assert(
-    !merged.includes("tool_call"),
-    "the driver's merge path does not route through the bash tool_call hook (exempt by construction)",
-  );
+  assert(/import \{ exec \} from "node:child_process"/.test(merged), "canary: mechanizedMerge merges via in-process exec");
+  assert(/execp\(|forge\.prMerge\(|forge\.prView\(/.test(merged), "…executing gh directly in-process");
+  assert(!merged.includes("tool_call"), "the driver's merge path does not route through the bash tool_call hook");
 }
 
 console.log(`\nexit ${exit}`);

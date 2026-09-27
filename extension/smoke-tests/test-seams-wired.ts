@@ -190,6 +190,7 @@ const SEAMS: Seam[] = [
     testOnly: {
       readLedgerFile: "the raw file reader; exercised by test-review-ledger.ts",
       readLedgerAt: "the never-throwing reader; exercised by test-merge-guard.ts",
+      lensBlockedByThreshold: "the driver-side threshold predicate; exercised by test-review-ledger.ts",
     },
     canary: { symbol: "appendLedgerEntry", importer: "adversarial-ledger.ts" },
   },

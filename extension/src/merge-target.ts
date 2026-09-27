@@ -5,11 +5,15 @@
  * #912. The guard resolves the merge target with `gh`/`glab` (NOT git):
  *
  *   1. The PR number — from the command, or from `gh pr view --json number`
- *      on the current branch when the command omits it.
+ *      (GitHub) / `glab mr view --output json` (GitLab) on the CURRENT
+ *      branch when the command omits it.
  *   2. The PR's identity — `gh pr view N --json headRefName,headRefOid,
  *      baseRefName,author,labels` (GitHub) or `glab mr view N --output json`
  *      (GitLab, the repo's canonical form; the head OID comes from
  *      `diff_refs.head_sha`).
+ *   3. The git remote — `origin` → `upstream` → first remote (the same
+ *      precedence as `detectForge`), so `git fetch`/`rev-parse` /`patch-id`
+ *      never assume a remote named `origin`. No remote → fail-closed.
  *
  * Every fault is fail-closed: an unreadable `gh` AND an unreadable `glab`
  * both refuse (the refusal text names the escape hatch). A partial JSON
@@ -67,19 +71,19 @@ export async function readMergeTarget(
 ): Promise<MergeTargetResult> {
   const escapeHatch = "PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 (operator-set only)";
 
-  // Detect the forge. Fail-closed on an unknown forge.
-  // detectForge resolves the forge from PI_ENSEMBLE_FORGE, .pi/forge, or
-  // the remote URL. No execFn injection needed: the env-var override and
-  // the .pi/forge config file are the primary paths, and the remote URL
-  // parse is a pure string operation (no exec needed for the common case).
+  // Detect the forge. Fail-closed on an unknown forge: `detection.source` is
+  // the detection's own "how did we know this" answer, and it is the real
+  // unknown signal (an env-forced forge still reports source "env" even when
+  // its remote is unparseable — the type is authoritative there, so that is
+  // by design). A remote that exists is a real answer; an absent remote is
+  // the fail-closed case the guard must refuse.
   const detection = await detectForge(cwd);
-  if (detection.forge === "unknown") {
+  if (detection.source === "unknown") {
     return {
       ok: false,
       reason: `could not determine the forge for this repo — the merge guard refuses by default; set ${escapeHatch} to override`,
     };
   }
-
   if (detection.forge === "github") {
     return readGhTarget(execFn, cwd, prNumber, escapeHatch);
   }
@@ -94,33 +98,21 @@ async function readGhTarget(
 ): Promise<MergeTargetResult> {
   // The exact argv the guard shells out to — pinned by the test.
   const cmd = `gh pr view ${prNumber} --json headRefName,headRefOid,baseRefName,author,labels`;
-  let stdout: string;
+  let raw: Record<string, unknown>;
   try {
-    ({ stdout } = await execFn(cmd, { cwd, maxBuffer: 64 * 1024 }));
+    const { stdout } = await execFn(cmd, { cwd, maxBuffer: 64 * 1024 });
+    raw = JSON.parse(stdout);
   } catch (err) {
     return {
       ok: false,
       reason: `gh pr view ${prNumber} failed: ${(err as Error).message?.slice(0, 120)} — set ${escapeHatch} to override`,
     };
   }
-  let raw: Record<string, unknown>;
-  try {
-    raw = JSON.parse(stdout);
-  } catch {
-    return {
-      ok: false,
-      reason: `gh pr view ${prNumber} returned malformed JSON — set ${escapeHatch} to override`,
-    };
-  }
   const headBranch = str(raw.headRefName);
   const headOid = str(raw.headRefOid);
   const baseBranch = str(raw.baseRefName);
   const author = str((raw.author as Record<string, unknown> | null)?.login);
-  const labels = Array.isArray(raw.labels)
-    ? (raw.labels as unknown[])
-        .map((l) => (l as Record<string, unknown>)?.name)
-        .filter((s): s is string => typeof s === "string")
-    : [];
+  const labels = labelNames(raw.labels);
   if (!headBranch || !headOid || !baseBranch) {
     return {
       ok: false,
@@ -149,33 +141,21 @@ async function readGlTarget(
 ): Promise<MergeTargetResult> {
   // The repo's canonical glab read shape (forge-commands.ts): --output json.
   const cmd = `glab mr view ${prNumber} --output json`;
-  let stdout: string;
+  let raw: Record<string, unknown>;
   try {
-    ({ stdout } = await execFn(cmd, { cwd, maxBuffer: 64 * 1024 }));
+    const { stdout } = await execFn(cmd, { cwd, maxBuffer: 64 * 1024 });
+    raw = JSON.parse(stdout);
   } catch (err) {
     return {
       ok: false,
       reason: `glab mr view ${prNumber} failed: ${(err as Error).message?.slice(0, 120)} — set ${escapeHatch} to override`,
     };
   }
-  let raw: Record<string, unknown>;
-  try {
-    raw = JSON.parse(stdout);
-  } catch {
-    return {
-      ok: false,
-      reason: `glab mr view ${prNumber} returned malformed JSON — set ${escapeHatch} to override`,
-    };
-  }
   const headBranch = str(raw.source_branch);
   const headOid = str((raw.diff_refs as Record<string, unknown> | null)?.head_sha);
   const baseBranch = str(raw.target_branch);
   const author = str((raw.author as Record<string, unknown> | null)?.username);
-  const labels = Array.isArray(raw.labels)
-    ? (raw.labels as unknown[])
-        .map((l) => (l as Record<string, unknown>)?.name)
-        .filter((s): s is string => typeof s === "string")
-    : [];
+  const labels = labelNames(raw.labels);
   if (!headBranch || !headOid || !baseBranch) {
     return {
       ok: false,
@@ -196,6 +176,14 @@ async function readGlTarget(
   };
 }
 
+/** The forge's labels array (gh: `[{name}]`, glab: `[{name}]` or `[]`) → names. */
+function labelNames(labels: unknown): string[] {
+  if (!Array.isArray(labels)) return [];
+  return (labels as unknown[])
+    .map((l) => (l as Record<string, unknown>)?.name)
+    .filter((s): s is string => typeof s === "string");
+}
+
 function str(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined;
 }
@@ -211,7 +199,21 @@ export async function resolvePrNumber(
   commandNumber: number | undefined,
 ): Promise<number | undefined> {
   if (commandNumber !== undefined) return commandNumber;
+  // Forge-aware: the PR/MR for the CURRENT branch, read from whichever forge
+  // the repo lives on (detectForge: PI_ENSEMBLE_FORGE → .pi/forge → remote
+  // URL → probe). `gh pr view --json number` on the current branch (GitHub)
+  // and `glab mr view --output json` on the current branch (GitLab).
+  const detection = await detectForge(cwd);
+  if (detection.source === "unknown") {
+    trace("merge-target: cannot resolve PR number — forge is unknown (fail-closed)");
+    return undefined;
+  }
   try {
+    if (detection.forge === "gitlab") {
+      const { stdout } = await execFn("glab mr view --output json", { cwd, maxBuffer: 8 * 1024 });
+      const n = (JSON.parse(stdout) as { iid?: number }).iid;
+      return typeof n === "number" ? n : undefined;
+    }
     const { stdout } = await execFn("gh pr view --json number", { cwd, maxBuffer: 8 * 1024 });
     const n = (JSON.parse(stdout) as { number?: number }).number;
     return typeof n === "number" ? n : undefined;
@@ -223,14 +225,38 @@ export async function resolvePrNumber(
 
 /**
  * The carve-out identities that are NOT agent merges and must stay open:
- * release-please branches and dependabot PRs.
+ * release-please and dependabot.
+ *
+ * Both require a BOT IDENTITY, not a branch shape: a branch prefix alone
+ * proves nothing (a human or an agent can open a PR from any branch name —
+ * the incident this guard closes was exactly an agent acting on its own
+ * work, and a self-named branch must not launder it into a bot). So:
+ *
+ *   - dependabot: the AUTHOR is the dependabot bot identity
+ *     (`dependabot[bot]` on GitHub, `app/dependabot` on GitLab).
+ *   - release-please: the head branch is `release-please--*` (release-please
+ *     always names its head branch that way) AND the label `autorelease:
+ *     pending` is present OR the author is a bot identity.
  */
 export function isCarveOut(target: MergeTarget): boolean {
-  // release-please: head branch `release-please--*` OR label `autorelease: pending`.
-  if (target.headBranch.startsWith("release-please--")) return true;
-  if (target.labels.includes("autorelease: pending")) return true;
-  // dependabot: head branch `dependabot/*` OR author `dependabot[bot]` / `app/dependabot`.
-  if (target.headBranch.startsWith("dependabot/")) return true;
-  if (target.author === "dependabot[bot]" || target.author === "app/dependabot") return true;
+  const isDependabotAuthor =
+    target.author === "dependabot[bot]" || target.author === "app/dependabot";
+  // dependabot: the bot author is the identity — a `dependabot/*` branch
+  // alone (any author) is not.
+  if (isDependabotAuthor) return true;
+  // release-please: head branch prefix + (label OR bot author).
+  if (target.headBranch.startsWith("release-please--")) {
+    return target.labels.includes("autorelease: pending") || isBotAuthor(target.author);
+  }
   return false;
+}
+
+/** A bot identity in the forge's author field (GitHub or GitLab). */
+function isBotAuthor(author: string): boolean {
+  return (
+    author === "dependabot[bot]" ||
+    author === "app/dependabot" ||
+    author === "release-please[bot]" ||
+    author === "app/release-please"
+  );
 }
