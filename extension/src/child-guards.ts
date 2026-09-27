@@ -14,9 +14,11 @@
  * via `--extension <this file>` from spawn-support.ts (childGuardsArgs),
  * independent of subagentGuardEnabled / PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD /
  * PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD. It registers the same
- * mode-independent guard block the subagent path uses
- * (registerModeIndependentGuards in subagent-guard-guards.ts) — never the
- * parent-only ones (registerPmBashGuard stays where it is).
+ * mode-independent guard block the subagent path uses (the three guards in
+ * subagent-guard-guards.ts, registered here explicitly in the same order) —
+ * never the parent-only ones (registerPmBashGuard stays where it is), and
+ * NOT the #716 oo-rewrite guard, which the shared block carries for
+ * strict/headless children but is deliberately out of #926's scope here.
  *
  * No double registration in strict/headless: there the full pi-rukas
  * extension is ALSO forwarded with PI_ENSEMBLE_SUBAGENT_MODE=1 (index.ts →
@@ -30,7 +32,9 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { registerModeIndependentGuards } from "./subagent-guard-guards.ts";
+import { registerIssueCreationGuard } from "./issue-creation-guard.ts";
+import { registerMergeGuard } from "./merge-guard.ts";
+import { registerDestructiveGitGuard } from "./permission-subagent-guard.ts";
 import { trace } from "./trace.ts";
 
 /**
@@ -92,11 +96,20 @@ export default function registerChildGuards(pi: ExtensionAPI): void {
     );
     return;
   }
-  // The exact registration block the subagent path uses (destructive-git,
-  // issue-creation, merge, oo-rewrite — see subagent-guard-guards.ts), so a
-  // trust-mode child and a strict-mode child register identical hooks in
-  // identical order. registerPmBashGuard stays parent-only (it is not in the
-  // block). All four fire before any trust/sandbox bypass by construction.
-  registerModeIndependentGuards(pi);
+  // The three mode-independent guards, in the same order as the shared block
+  // (subagent-guard-guards.ts), so a trust-mode child and a strict-mode child
+  // register identical hooks in identical order. registerPmBashGuard stays
+  // parent-only (it is not in the block). All three fire before any
+  // trust/sandbox bypass by construction.
+  //
+  // registerOoRewriteGuard (#716) is deliberately NOT registered here. The
+  // shared block carries it for strict/headless children (unchanged
+  // behaviour), but the companion also loads into every trust-mode child —
+  // adding it there would newly activate the oo-rewrite inside those
+  // children, a behaviour change outside #926's scope. See
+  // subagent-guard-guards.ts for the shared registration site.
+  registerDestructiveGitGuard(pi);
+  registerIssueCreationGuard(pi);
+  registerMergeGuard(pi);
   trace("child-guards: registered the mode-independent guards for this child");
 }

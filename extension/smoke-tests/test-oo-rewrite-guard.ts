@@ -266,16 +266,25 @@ for (const mode of MODES) {
     readFileSync(path.join(srcDir, "subagent-guard-guards.ts"), "utf8");
   const guard = readFileSync(path.join(srcDir, "oo-rewrite-guard.ts"), "utf8");
 
-  const regIdx = sub.indexOf("registerModeIndependentGuards(pi)");
-  const sandboxIdx = sub.indexOf('PI_ENSEMBLE_SANDBOX_MODE === "1"');
-  const trustIdx = sub.indexOf('PI_ENSEMBLE_TRUST_MODE === "1"');
+  // The guard call lives in the moved block (second file), while the
+  // bypasses stay in registerSubagentGuard — pin each against its own file
+  // (same split as test-subagent-git-guard.ts / test-merge-guard.ts /
+  // test-issue-creation-guard.ts).
+  const regIdx = sub.indexOf("registerOoRewriteGuard(pi)");
+  const subSrc = readFileSync(path.join(srcDir, "permission-subagent-guard.ts"), "utf8");
+  const subBlock = readFileSync(path.join(srcDir, "subagent-guard-guards.ts"), "utf8");
+  const blockIdx = subSrc.indexOf("registerModeIndependentGuards(pi)");
+  const sandboxIdx = subSrc.indexOf('PI_ENSEMBLE_SANDBOX_MODE === "1"');
+  const trustIdx = subSrc.indexOf('PI_ENSEMBLE_TRUST_MODE === "1"');
+  assert(regIdx > 0, "canary: registerSubagentGuard calls registerOoRewriteGuard");
+  assert(blockIdx > 0, "canary: registerSubagentGuard calls the shared guard block");
   assert(
-    regIdx > 0 && sub.includes("registerOoRewriteGuard(pi)"),
-    "canary: registerSubagentGuard calls the shared block (which registers the oo-rewrite guard)",
+    blockIdx < sandboxIdx && blockIdx < trustIdx,
+    `canary: registered BEFORE the sandbox short-circuit (=${sandboxIdx}) and trust return (=${trustIdx})`,
   );
   assert(
-    regIdx < sandboxIdx && regIdx < trustIdx,
-    `canary: registered BEFORE the sandbox short-circuit (=${sandboxIdx}) and trust return (=${trustIdx})`,
+    subBlock.includes("registerOoRewriteGuard(pi)"),
+    "canary: the shared block registers the oo-rewrite guard",
   );
   // The hook's own body carries the explicit mode gate (fires only when
   // sandbox OR trust) — the mode split is a guard clause, not placement.

@@ -10,12 +10,19 @@
  * none of them — live-proven by an ops child's `gh pr merge 999999 --squash`
  * reaching gh.
  *
+ * The companion registers EXACTLY those three (in that order), NOT the #716
+ * oo-rewrite guard that the shared block also carries for strict/headless
+ * children: activating oo-rewrite inside trust-mode children would be a
+ * behaviour change outside #926's scope.
+ *
  * This test loads the companion's DEFAULT EXPORT into a fake pi (the
  * fakePi `on`-capture pattern from test-oo-rewrite-guard.ts) and asserts:
  *
- *   1. Loading with no PI_ENSEMBLE_SUBAGENT_MODE registers FOUR tool_call
- *      hooks (the mode-independent guards, identical to the subagent path's
- *      registerModeIndependentGuards block) and no tools/commands; driving
+ *   1. Loading with no PI_ENSEMBLE_SUBAGENT_MODE registers THREE tool_call
+ *      hooks (destructive-git, issue-creation, merge — the three
+ *      mode-independent guards, same order as the subagent path's shared
+ *      block minus the deliberately-excluded oo-rewrite) and no
+ *      tools/commands; driving
  *      them through a stubbed exec refuses `gh pr merge 5 --squash` (no
  *      ledger → refused) and `gh issue create -t x`, and ignores
  *      `gh pr view 5`.
@@ -26,8 +33,9 @@
  *      the merge guard's gh/git exec chain).
  *   4. Canary — the EXACT expected set {registerMergeGuard,
  *      registerIssueCreationGuard, registerDestructiveGitGuard} is
- *      registered by the companion's call graph, and the explicit exclusion
- *      registerPmBashGuard is NOT. Fails in both directions.
+ *      registered by the companion's call graph, and the explicit exclusions
+ *      {registerPmBashGuard, registerOoRewriteGuard} are NOT. Fails in both
+ *      directions.
  *   5. The pre-spawn stat: a missing companion is a named error (the #893
  *      reporter-preflight pattern), never a silently unguarded child.
  */
@@ -107,14 +115,18 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
 };
 
 // ============================================================
-// 1. Loading with no SUBAGENT_MODE: exactly four tool_call hooks (the
-//    mode-independent guard set), no tools, no commands.
+// 1. Loading with no SUBAGENT_MODE: exactly THREE tool_call hooks (the
+//    three mode-independent guards; oo-rewrite deliberately excluded), no
+//    tools, no commands.
 // ============================================================
 {
   const fake = makeFakePi();
   childGuards(fake as unknown as ExtensionAPI);
   const n = fake.handlers["tool_call"]?.length ?? 0;
-  assert(n === 4, `registers exactly 4 tool_call hooks (the mode-independent guard set; got ${n})`);
+  assert(
+    n === 3,
+    `registers exactly 3 tool_call hooks (the three mode-independent guards, oo-rewrite excluded; got ${n})`,
+  );
   assert(fake.registeredTools.length === 0, "registers no tools (hook-only companion)");
   assert(fake.registeredCommands.length === 0, "registers no commands");
 }
@@ -213,43 +225,33 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
   const SRC = path.resolve(import.meta.dirname, "..", "src");
   const src = readFileSync(path.join(SRC, "child-guards.ts"), "utf8");
   const shared = readFileSync(path.join(SRC, "subagent-guard-guards.ts"), "utf8");
-  const usesSharedBlock = /registerModeIndependentGuards\s*\(/.test(src);
-  const registered = (name: string) =>
-    usesSharedBlock
-      ? new RegExp(`(^|[^\\w])${name}\\s*\\(pi\\)`).test(shared)
-      : new RegExp(`(^|[^\\w])${name}\\s*\\(pi\\)`).test(src);
+  const registered = (name: string) => new RegExp(`(^|[^\\w])${name}\\s*\\(pi\\)`).test(src);
   const expected = [
     "registerMergeGuard",
     "registerIssueCreationGuard",
     "registerDestructiveGitGuard",
   ];
   for (const name of expected) {
-    assert(
-      registered(name),
-      `canary: the companion registers ${name}(pi) (directly or via the shared block)`,
-    );
+    assert(registered(name), `canary: the companion registers ${name}(pi)`);
   }
-  const excluded = ["registerPmBashGuard"];
+  // The explicit exclusions, failed in both directions: parent-only guards
+  // are absent, AND the #716 oo-rewrite guard is absent from the companion
+  // (it stays in the shared block for the strict/headless path only).
+  const excluded = ["registerPmBashGuard", "registerOoRewriteGuard"];
   for (const name of excluded) {
-    const inShared = new RegExp(`(^|[^\\w])${name}\\s*\\(`).test(shared);
-    assert(
-      !registered(name) && !inShared,
-      `canary: the companion does NOT register ${name} (parent-only)`,
-    );
+    assert(!registered(name), `canary: the companion does NOT register ${name}`);
   }
-  const notEntrypoints = [
-    "registerSubagentGuard",
-    "registerPermissionGuard",
-    "registerOoRewriteGuard",
-  ];
+  const notEntrypoints = ["registerSubagentGuard", "registerPermissionGuard"];
   for (const name of notEntrypoints) {
     assert(
       !new RegExp(`(^|[^\\w])${name}\\s*\\(`).test(src),
       `canary: the companion does NOT call ${name} (it registers the guard block, not the entry points)`,
     );
   }
-  // The shared block itself must carry the three mode-independent guards.
-  for (const name of expected) {
+  // The shared block itself (the strict/headless path, unchanged behaviour)
+  // must still carry the three mode-independent guards AND the oo-rewrite
+  // guard the companion excludes.
+  for (const name of [...expected, "registerOoRewriteGuard"]) {
     assert(
       new RegExp(`(^|[^\\w])${name}\\s*\\(pi\\)`).test(shared),
       `canary: the shared block registers ${name}(pi)`,
