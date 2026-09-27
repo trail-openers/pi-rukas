@@ -192,19 +192,15 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
 //     refuse with the fail-closed reason naming the thrown error.
 // ============================================================
 {
-  // Drive the wrapper directly: the wrapper wraps the handler itself, so the
-  // captured handler (the wrapped one) must catch the throw and return a
-  // fail-closed refusal. The "block" and "inert" cases verify that non-error
-  // results pass through unchanged.
   // Drive the wrapper directly: pass a throwing/blocking/inert handler
   // through failClosedPi and verify the wrapped handler's behaviour.
   const makeWrapped = (behaviour: "throw" | "block" | "inert") => {
     const handlers: Handler[] = [];
-    const spyPi: any = {
-      on(event: string, fn: any) {
+    const spyPi = {
+      on(event: string, fn: Handler) {
         if (event === "tool_call") handlers.push(fn);
       },
-    };
+    } as unknown as ExtensionAPI;
     // The underlying handler that the wrapper will wrap.
     const underlying: Handler = () => {
       if (behaviour === "throw") throw new Error("boom-guard");

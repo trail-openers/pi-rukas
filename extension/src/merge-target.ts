@@ -23,7 +23,7 @@
  * fakeGh pattern in test-merge-authority.ts.
  */
 
-import { type DetectForgeOpts, type ProbeFn, detectForge } from "./forge-detect.ts";
+import { type DetectForgeOpts, detectForge } from "./forge-detect.ts";
 import { trace } from "./trace.ts";
 
 /**
@@ -40,31 +40,17 @@ import { trace } from "./trace.ts";
 const GUARD_FORGE_OPTS = { allowProbe: false } as const;
 
 /**
- * A probe that counts its own calls — the guard's forge decision must never
- * invoke a network probe (allowProbe: false). The counter is shared across
- * all calls so the test can assert zero invocations after both readMergeTarget
- * and resolvePrNumber have run.
- */
-const PROBE_CALL_COUNT = { count: 0 };
-const guardProbe: ProbeFn = async (host: string) => {
-  PROBE_CALL_COUNT.count += 1;
-  trace(`merge-target: PROBE CALLED (should not happen) — host=${host}`);
-  return "gitlab";
-};
-
-/**
  * Build the forge options for the guard's detectForge call: the guard's
- * allowProbe: false always wins, and a counting probe is always injected
- * so the test can verify it was never called. Caller-supplied execFn and
- * env are preserved.
+ * allowProbe: false always wins (a caller cannot re-enable the probe through
+ * the guard), and caller-supplied options (execFn, env, probe, …) are
+ * preserved. The caller's injected probe — when allowProbe is off the probe
+ * is never invoked — is the seam tests use to canary "the guard never
+ * probes" (see test-merge-target-forge-bound.ts).
  */
-function guardForgeOpts(
-  callerOpts: Parameters<typeof detectForge>[1] = {},
-): Parameters<typeof detectForge>[1] {
+function guardForgeOpts(callerOpts: DetectForgeOpts = {}): DetectForgeOpts {
   return {
     ...callerOpts,
     allowProbe: GUARD_FORGE_OPTS.allowProbe,
-    probe: guardProbe,
   };
 }
 
@@ -110,7 +96,7 @@ export async function readMergeTarget(
   execFn: MergeExecFn,
   cwd: string,
   prNumber: number,
-  forgeOpts: DetectForgeOpts = GUARD_FORGE_OPTS,
+  forgeOpts?: DetectForgeOpts,
 ): Promise<MergeTargetResult> {
   const escapeHatch = "PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 (operator-set only)";
 
@@ -241,7 +227,7 @@ export async function resolvePrNumber(
   execFn: MergeExecFn,
   cwd: string,
   commandNumber: number | undefined,
-  forgeOpts: DetectForgeOpts = GUARD_FORGE_OPTS,
+  forgeOpts?: DetectForgeOpts,
 ): Promise<number | undefined> {
   if (commandNumber !== undefined) return commandNumber;
   // Forge-aware: the PR/MR for the CURRENT branch, read from whichever forge
