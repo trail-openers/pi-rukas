@@ -28,6 +28,7 @@ import { setPlanDispatch } from "../src/plan-driver.ts";
 import { runPlanPipeline } from "../src/plan-driver.ts";
 import { setPlanForge } from "../src/plan-filing.ts";
 import type { Forge } from "../src/forge.ts";
+import { installOfflineVipuneStub } from "./plan-test-stubs.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -108,6 +109,7 @@ function makeGateFailingDispatch(mode: "not-ok" | "error-stop") {
 }
 
 installForgeStub();
+installOfflineVipuneStub();
 
 for (const mode of ["not-ok", "error-stop"] as const) {
   const label = mode === "not-ok" ? "gate dispatch ok:false" : "gate dispatch errorStop";

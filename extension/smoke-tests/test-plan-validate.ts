@@ -17,7 +17,12 @@
 import { draftSpec } from "../src/plan-draft.ts";
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
 import { applyNeverClaimFilter } from "../src/plan-investigate.ts";
-import { EPIC_SUB_ISSUE_MAX, bodyContainsForbiddenPhrase, validateDraft } from "../src/plan-validate.ts";
+import {
+  EPIC_SUB_ISSUE_MAX,
+  bodyContainsForbiddenPhrase,
+  validateDraft,
+} from "../src/plan-validate.ts";
+import { installOfflineVipuneStub } from "./plan-test-stubs.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -177,7 +182,11 @@ function findingsWith(items: { kind: string; text: string }[]) {
       ok: true,
       text: "prose",
       toolUses: [
-        { kind: "acceptance-criterion", text: "the rankings are identical to the old run", angle: "x" },
+        {
+          kind: "acceptance-criterion",
+          text: "the rankings are identical to the old run",
+          angle: "x",
+        },
         { kind: "acceptance-criterion", text: "the tool registers", angle: "x" },
       ],
     },
@@ -187,7 +196,9 @@ function findingsWith(items: { kind: string; text: string }[]) {
   //    phrase, the item kind and the drop count.
   const res = applyNeverClaimFilter(findings, forbidden);
   assert(
-    res.droppedCount === 1 && res.findings[0].toolUses.length === 1 && res.findings[0].toolUses[0].text === "the tool registers",
+    res.droppedCount === 1 &&
+      res.findings[0].toolUses.length === 1 &&
+      res.findings[0].toolUses[0].text === "the tool registers",
     "#677 filter: a verbatim-matching item is dropped; non-matching items survive",
   );
   assert(
@@ -205,18 +216,24 @@ function findingsWith(items: { kind: string; text: string }[]) {
   // 2. A paraphrase (NOT verbatim — the round-9 class, 0/3 caught by design)
   //    is NOT matched.
   const paraphrase = applyNeverClaimFilter(
-    findingsWith([{ kind: "acceptance-criterion", text: "the rankings are exactly the same as before" }]),
+    findingsWith([
+      { kind: "acceptance-criterion", text: "the rankings are exactly the same as before" },
+    ]),
     forbidden,
   );
   assert(
-    paraphrase.droppedCount === 0 && paraphrase.disclosure.length === 0 && paraphrase.findings[0].toolUses.length === 1,
+    paraphrase.droppedCount === 0 &&
+      paraphrase.disclosure.length === 0 &&
+      paraphrase.findings[0].toolUses.length === 1,
     "#677 filter: a paraphrase ('exactly the same as before') is NOT matched — verbatim-only by design",
   );
 
   // 3. A different true-invariant phrase sharing words ('identical', 'exactly')
   //    with the forbidden phrase is NOT dropped — over-matching guard.
   const trueInvariant = applyNeverClaimFilter(
-    findingsWith([{ kind: "acceptance-criterion", text: "with alpha=0 the scores match today exactly" }]),
+    findingsWith([
+      { kind: "acceptance-criterion", text: "with alpha=0 the scores match today exactly" },
+    ]),
     forbidden,
   );
   assert(
@@ -285,15 +302,14 @@ function findingsWith(items: { kind: string; text: string }[]) {
   const v = validateDraft("feature", generated, 0, { forbiddenPhrases: forbidden });
   assert(
     !v.ok &&
-      v.problems.some(
-        (p) => p.includes('"rankings are identical"') && p.includes("NEVER CLAIM"),
-      ),
+      v.problems.some((p) => p.includes('"rankings are identical"') && p.includes("NEVER CLAIM")),
     `#677 validate: the generated-section occurrence invalidates the draft and names the phrase (${v.problems[0]})`,
   );
 
   // No forbidden phrases → the check is a no-op (existing drafts unaffected).
   assert(
-    validateDraft("feature", generated, 0).ok && bodyContainsForbiddenPhrase(generated, []).length === 0,
+    validateDraft("feature", generated, 0).ok &&
+      bodyContainsForbiddenPhrase(generated, []).length === 0,
     "#677 validate: without forbidden phrases the scan is a no-op",
   );
 }
@@ -302,6 +318,7 @@ function findingsWith(items: { kind: string; text: string }[]) {
 
 {
   process.env.PI_ENSEMBLE_FORGE = "none";
+  installOfflineVipuneStub();
   let gateDispatches = 0;
   setPlanDispatch(((_pi: unknown, spec: { role: string; prompt: string }) => {
     if (spec.role === "adversarial-developer") gateDispatches++;
