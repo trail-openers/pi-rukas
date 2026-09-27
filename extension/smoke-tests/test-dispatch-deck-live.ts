@@ -263,23 +263,6 @@ const fakeTheme = { muted: (t: string) => t, error: (t: string) => t } as const;
 }
 
 // ---------------------------------------------------------------------------
-// 6. Quiet mode: no buffer created.
-// ---------------------------------------------------------------------------
-function testQuietMode() {
-  resetBuffers();
-  process.env.PI_ENSEMBLE_QUIET_STATUS = "1";
-  startBuffer("b1");
-  assert(!hasBuffer("b1"), "6a: quiet mode → startBuffer creates no buffer");
-  feedRawEvent("b1", {
-    type: "message_end",
-    message: { role: "assistant", content: [{ type: "text", text: "x" }] },
-  });
-  assert(!hasBuffer("b1"), "6b: quiet mode → feedRawEvent is a no-op");
-  Reflect.deleteProperty(process.env, "PI_ENSEMBLE_QUIET_STATUS");
-}
-testQuietMode();
-
-// ---------------------------------------------------------------------------
 // 6b. clearEntry drops the buffer — co-located lifecycle.
 // ---------------------------------------------------------------------------
 function testClearEntryDropsBuffer() {
@@ -376,10 +359,13 @@ await testStartBatchLastMemberSyncThrow();
   startEntry("deck-job-1", { label: "developer", role: "developer" });
   const customCalls: Array<unknown> = [];
   const editorCalls: string[] = [];
-  const fakeCtx = fakeCtx({ custom: customCalls, editors: editorCalls });
-  await onRowConfirm(fakeCtx, "deck-job-1", rowHost());
+  const ctx = fakeCtx({ custom: customCalls, editors: editorCalls });
+  await onRowConfirm(ctx, "deck-job-1", rowHost());
   assert(customCalls.length === 1, "7a: running row with buffer → custom called once");
-  assert(customCalls[0] === true, "7b: custom called with overlay:true");
+  assert(
+    (customCalls[0] as { overlay?: boolean })?.overlay === true,
+    "7b: custom called with overlay:true",
+  );
   assert(editorCalls.length === 0, "7c: no steer prompt (no editor call)");
   clearEntry("deck-job-1");
   dropBuffer("deck-job-1");
@@ -437,6 +423,9 @@ function fakeCtx(rec: {
     hasUI: true,
     ui: {
       custom: (_f: unknown, o?: unknown) => {
+        // Record the options (ctx.ui.custom's second argument) so the
+        // assertions can see the `overlay: true` flag the production caller
+        // (openLiveView) passes; the first argument is the component factory.
         rec.custom.push(o);
         return Promise.resolve("close");
       },

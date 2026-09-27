@@ -28,6 +28,7 @@
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, Container, type TUI, Text } from "@earendil-works/pi-tui";
+import { toTerminalLine } from "./dispatch-deck-line.ts";
 import { DECK_HINT_TEXT } from "./dispatch-deck-nav.ts";
 import { type DeckEntry, formatRow } from "./dispatch-deck.ts";
 import { formatElapsed } from "./progress.ts";
@@ -61,16 +62,34 @@ export interface JobRowLine {
  * `updateEntry` (the #835 class), so every row >10 chars appends a
  * collision-aware `· key …` fragment (≤10-char keys append the key
  * verbatim) that `distinctKeyFragments` guarantees distinct across the set.
+ *
+ * The row is ALWAYS sanitised via `toTerminalLine`, width-bounded to
+ * `width` when the caller knows it (the composite's render path) or to a
+ * generous fixed 200-col budget otherwise — a row never escapes
+ * unsanitised (the label/hint/key fragment are untrusted child output; see
+ * #927), and the composite re-sanitises at render time with the real
+ * render width, so the fixed budget is a safety net, not the bound.
  */
-export function buildJobRows(running: readonly DeckEntry[], now: number): JobRowLine[] {
+export function buildJobRows(
+  running: readonly DeckEntry[],
+  now: number,
+  width?: number,
+): JobRowLine[] {
   const fragments = distinctKeyFragments(running.map((e) => e.key));
-  return running.map((e, i) => ({
-    key: e.key,
+  return running.map((e, i) => {
     // Elided (>10-char) fragments carry a `key ` prefix so the suffix is
     // visibly a key, not opaque text; short keys stay verbatim (already
     // the full key, a prefix would be noise).
-    text: `${formatRow(e, now)} · ${e.key.length > 10 ? `key ${fragments[i]}` : fragments[i]}`,
-  }));
+    const raw = `${formatRow(e, now)} · ${e.key.length > 10 ? `key ${fragments[i]}` : fragments[i]}`;
+    // width is the composite's render width (known once the factory is
+    // invoked). Sanitise the untrusted label/hint/key fragment and bound the
+    // row either to the terminal's column budget (pi-tui's Text wraps lines
+    // wider than the budget, which desyncs its line accounting; see
+    // dispatch-deck-line.ts) or, when the width is unknown, to a generous
+    // fixed 200-col budget so no raw row ever escapes.
+    const w = width ?? 200;
+    return { key: e.key, text: toTerminalLine(raw, w) };
+  });
 }
 
 /**
@@ -133,7 +152,16 @@ function distinctKeyFragments(keys: string[]): string[] {
 export function buildSteerPrompt(e: DeckEntry, now: number): string {
   const elapsed = formatElapsed(Math.max(0, now - e.startedAt));
   const tool = e.state.lastToolName ? ` (last tool: ${e.state.lastToolName})` : "";
-  return `[deck-ui steer → ${e.label}, job ${e.key}]\nReply with a short status update (≤3 lines), then continue. Running ${elapsed}${tool}.`;
+  // The label and key flow in from untrusted child output — sanitise them
+  // (newlines / control chars / ANSI would break the editor prefill and the
+  // steer-routing parser) while keeping the load-bearing `[deck-ui steer →
+  // …]` prefix and the job-key line byte-for-byte the routing shape.
+  const safeLabel = toTerminalLine(e.label, 80);
+  const safeKey = toTerminalLine(e.key, 80);
+  const safeTool = e.state.lastToolName
+    ? ` (last tool: ${toTerminalLine(e.state.lastToolName, 40)})`
+    : "";
+  return `[deck-ui steer → ${safeLabel}, job ${safeKey}]\nReply with a short status update (≤3 lines), then continue. Running ${elapsed}${safeTool}.`;
 }
 
 /**
@@ -156,7 +184,7 @@ export function buildCompositeFactory(
   rows: () => DeckRows,
   maxRows: number,
 ): (tui: TUI, theme: Theme) => Component {
-  return (_tui: TUI, theme: Theme) => {
+  return (tui: TUI, theme: Theme) => {
     // Both projections read the deck module's entry/batch maps, which
     // are updated atomically within that module (no concurrent writer),
     // so a mid-render interleaving cannot split the two projections.
@@ -165,21 +193,27 @@ export function buildCompositeFactory(
     const now = Date.now();
     const rowState = rows();
     const container = new Container();
+    const renderWidth = tui?.terminal?.columns ?? 80;
+    // The Text rows below are `new Text(line, 1, 0)` — paddingX 1 — so the
+    // line budget is the render width minus the left/right padding.
+    const lineWidth = Math.max(1, renderWidth - 2);
     const batchLines = lines();
     const visible = batchLines.slice(0, maxRows);
     const overflow = Math.max(0, batchLines.length - maxRows);
-    for (const line of visible) container.addChild(new Text(line, 1, 0));
+    for (const line of visible) container.addChild(new Text(toTerminalLine(line, lineWidth), 1, 0));
     if (overflow > 0) {
       container.addChild(new Text(theme.fg("muted", `... (${overflow} more)`), 1, 0));
     }
-    for (const row of buildJobRows(rowState.running, now)) {
+    for (const row of buildJobRows(rowState.running, now, lineWidth)) {
       const isSel = rowState.selectedKey === row.key;
       const line = isSel ? `> ${row.text}` : `  ${row.text}`;
       container.addChild(new Text(line, 1, 0));
     }
     if (rowState.running.length > 0) container.addChild(new Text("", 1, 0));
     if (rowState.showHint) {
-      container.addChild(new Text(theme.fg("muted", DECK_HINT_TEXT), 1, 0));
+      container.addChild(
+        new Text(theme.fg("muted", toTerminalLine(DECK_HINT_TEXT, lineWidth)), 1, 0),
+      );
     }
     return container;
   };
