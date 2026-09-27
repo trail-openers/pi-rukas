@@ -8,6 +8,19 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.65](https://github.com/trail-openers/pi-rukas/compare/v0.12.64...v0.12.65) (2026-09-27)
+
+
+### Features
+
+* **work:** remind the PM of the review gates when a hand-dispatched developer finishes ([#920](https://github.com/trail-openers/pi-rukas/issues/920)) ([5078959](https://github.com/trail-openers/pi-rukas/commit/5078959dac3d79879fe9e953098780960639f94b))
+
+
+### Bug Fixes
+
+* **deck:** stop the subagent roster stealing the down arrow from focused dialogs ([#921](https://github.com/trail-openers/pi-rukas/issues/921)) ([f4b442b](https://github.com/trail-openers/pi-rukas/commit/f4b442b44f24a32090a4649bb4184f507389a104))
+* **spawn:** stop counting CI-wait time toward slow-run notices ([#907](https://github.com/trail-openers/pi-rukas/issues/907)) ([3387044](https://github.com/trail-openers/pi-rukas/commit/3387044c99e5d06a75bbf798b9c0f66d98e9d949))
+
 ## [0.12.64](https://github.com/trail-openers/pi-rukas/compare/v0.12.63...v0.12.64) (2026-09-27)
 
 
