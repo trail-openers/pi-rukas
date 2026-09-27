@@ -6,6 +6,7 @@ import { Type } from "@sinclair/typebox";
 import { startJob } from "./async-jobs.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { writeLensLedgerEntry } from "./lens-ledger.ts";
+import { capKillSummary } from "./lens-review-capkill.ts";
 import { runLensChild } from "./lens-review-child.ts";
 import {
   LENS_PREFIX,
@@ -414,6 +415,7 @@ export async function runLensReview(opts: {
   // #543 — a dispatch-cap kill on any lens child (loop detector / token
   // budget) is surfaced on the summary so the driver emits the fixed-literal
   // cap-hit (F4g) instead of a silent 1-of-6 loss.
+  const capKill = capKillSummary(lensResults);
   return {
     verdict,
     totalFindings: deduped.length,
@@ -421,6 +423,7 @@ export async function runLensReview(opts: {
     lenses: lensResults,
     findings: deduped,
     usage,
+    ...capKill,
   };
 }
 
