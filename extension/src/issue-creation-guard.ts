@@ -33,7 +33,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createsIssue } from "./bash-command-parser.ts";
+import { createsIssue } from "./bash-creates-issue.ts";
 import { trace } from "./trace.ts";
 
 /** Opt-out for an operator who genuinely wants to file tickets by hand. */
