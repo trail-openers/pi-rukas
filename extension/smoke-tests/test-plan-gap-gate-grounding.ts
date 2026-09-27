@@ -40,6 +40,7 @@
  */
 
 import { setPlanDispatch } from "../src/plan-driver.ts";
+import { installOfflineVipuneStub } from "./plan-test-stubs.ts";
 import { setPlanForge } from "../src/plan-filing.ts";
 import { runPlanPipeline } from "../src/plan-driver.ts";
 import { parseGaps, runGapGateLoop } from "../src/plan-gaps.ts";
@@ -119,6 +120,7 @@ function makeDispatchStub(gateReply: string) {
 }
 
 installForgeStub();
+installOfflineVipuneStub();
 
 // -------------------------------------------------
 // Unit: the UNGROUNDED: marker parses into its own channel, never as a gap
