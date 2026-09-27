@@ -27,7 +27,7 @@
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { type Component, Container, type TUI, Text, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, Container, type TUI, Text } from "@earendil-works/pi-tui";
 import { toTerminalLine } from "./dispatch-deck-line.ts";
 import { DECK_HINT_TEXT } from "./dispatch-deck-nav.ts";
 import { type DeckEntry, formatRow } from "./dispatch-deck.ts";
@@ -62,6 +62,13 @@ export interface JobRowLine {
  * `updateEntry` (the #835 class), so every row >10 chars appends a
  * collision-aware `· key …` fragment (≤10-char keys append the key
  * verbatim) that `distinctKeyFragments` guarantees distinct across the set.
+ *
+ * The row is ALWAYS sanitised via `toTerminalLine`, width-bounded to
+ * `width` when the caller knows it (the composite's render path) or to a
+ * generous fixed 200-col budget otherwise — a row never escapes
+ * unsanitised (the label/hint/key fragment are untrusted child output; see
+ * #927), and the composite re-sanitises at render time with the real
+ * render width, so the fixed budget is a safety net, not the bound.
  */
 export function buildJobRows(
   running: readonly DeckEntry[],
@@ -75,11 +82,13 @@ export function buildJobRows(
     // the full key, a prefix would be noise).
     const raw = `${formatRow(e, now)} · ${e.key.length > 10 ? `key ${fragments[i]}` : fragments[i]}`;
     // width is the composite's render width (known once the factory is
-    // invoked) — sanitise the untrusted label/hint/key fragment and bound
-    // the row to the terminal's column budget (pi-tui's Text wraps lines
+    // invoked). Sanitise the untrusted label/hint/key fragment and bound the
+    // row either to the terminal's column budget (pi-tui's Text wraps lines
     // wider than the budget, which desyncs its line accounting; see
-    // dispatch-deck-line.ts).
-    return { key: e.key, text: width !== undefined ? toTerminalLine(raw, width) : raw };
+    // dispatch-deck-line.ts) or, when the width is unknown, to a generous
+    // fixed 200-col budget so no raw row ever escapes.
+    const w = width ?? 200;
+    return { key: e.key, text: toTerminalLine(raw, w) };
   });
 }
 

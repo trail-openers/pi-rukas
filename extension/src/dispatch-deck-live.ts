@@ -49,7 +49,16 @@ import { TOOL_ARGS_PREVIEW_MAX, TOOL_RESULT_LINE_MAX } from "./transcript-previe
 // Ring buffer
 // =============================================================================
 
-/** A normalised (already truncated) unit of a child's recent activity. */
+/**
+ * A normalised (already truncated) unit of a child's recent activity.
+ *
+ * The stored strings are NOT raw child output: `pushEvent` sanitises them at
+ * FEED time (issue #927) — every `text` / `args` / `name` field is single-
+ * line, control-char/ANSI-stripped, with newlines already collapsed to the
+ * ` ⏎ ` separator (dispatch-deck-line.ts `NEWLINE_SEP`). Renderers must
+ * still width-bound via `toTerminalLine`, but must not assume raw newlines
+ * or control characters here.
+ */
 export type LiveEvent =
   | { kind: "text"; text: string }
   | { kind: "toolCall"; name: string; args: string }

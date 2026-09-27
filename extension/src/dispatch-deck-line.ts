@@ -19,8 +19,9 @@
  *   - `toTerminalLines` — the wrapping form (split on newlines, each row
  *                        width-bounded) for surfaces that may render
  *                        multiple rows (#916 full wrapping)
- *   - `collapseToSpaces` — the existing whitespace-collapse shape (feeds
- *                        the deck row hint / live-view arg preview)
+ *   - `collapseToSpaces` — whitespace-collapses to ONE line (feeds the deck
+ *                        row hint / live-view arg preview); the ` ⏎ ` newline
+ *                        separator belongs to `toTerminalLine`, NOT here
  *
  * All functions are pure and synchronous (render hot path, 1 s cadence).
  */
