@@ -18,7 +18,7 @@
  * shared, so the two cannot drift again.
  */
 
-import { formatBatchReport, formatSingleReport } from "../src/async-jobs-report.ts";
+import { GATE_LINE, formatBatchReport, formatSingleReport } from "../src/async-jobs-report.ts";
 import type { DispatchResult } from "../src/types.ts";
 
 let exit = 0;
@@ -212,6 +212,86 @@ const succeeded: DispatchResult = {
   assert(
     report.includes("(no output)"),
     "a child that really produced nothing, with no error, still reads '(no output)'",
+  );
+}
+
+// ------------------------------------------------ #911 — the batch gate line
+
+{
+  const devDone: DispatchResult = {
+    role: "developer",
+    ok: true,
+    exitCode: 0,
+    ms: 300_000,
+    text: "Task complete: gate line fixture",
+    toolUses: [],
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 8 },
+    // biome-ignore lint/suspicious/noExplicitAny: partial fixture
+  } as any as DispatchResult;
+  const devKilled429: DispatchResult = {
+    role: "developer",
+    ok: false,
+    exitCode: 0,
+    ms: 100_000,
+    text: "",
+    toolUses: [],
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+    errorStop: { reason: "error", message: RATE_LIMIT },
+    // biome-ignore lint/suspicious/noExplicitAny: partial fixture
+  } as any as DispatchResult;
+
+  // Split on the imported constant (via its opening phrase): the count must
+  // track whatever the module defines, not a re-typed literal that can drift.
+  const gateOpening = GATE_LINE.slice(0, GATE_LINE.indexOf(":"));
+  const countGateLines = (r: string): number => r.split(gateOpening).length - 1;
+
+  // Mixed batch (one finished developer + one 429-killed developer + one
+  // explore): the gate line appears exactly once, in the shared footer — not
+  // per-member.
+  const mixed = formatBatchReport({
+    batchId: "b911a",
+    members: [
+      { jobId: "j1", label: "developer[task-A]", result: devDone },
+      { jobId: "j2", label: "developer[task-B]", result: devKilled429 },
+      { jobId: "j3", label: "explore[context]", result: succeeded },
+    ],
+    // biome-ignore lint/suspicious/noExplicitAny: partial fixture
+  } as any);
+  assert(
+    countGateLines(mixed) === 1,
+    "a mixed batch (finished developer + 429-killed developer + explore) shows the gate line exactly once",
+  );
+  assert(
+    /adversarial_loop\` AND \`dispatch_lens_review|adversarial_loop.*dispatch_lens_review/s.test(mixed),
+    "...and it names both gates",
+  );
+
+  // Two finished developers: still exactly once (dedup in the shared footer).
+  const twoDevs = formatBatchReport({
+    batchId: "b911b",
+    members: [
+      { jobId: "j1", label: "developer[task-A]", result: devDone },
+      { jobId: "j2", label: "developer[task-B]", result: devDone },
+    ],
+    // biome-ignore lint/suspicious/noExplicitAny: partial fixture
+  } as any);
+  assert(
+    countGateLines(twoDevs) === 1,
+    "two finished developers still show the gate line exactly once (deduped, not per-member)",
+  );
+
+  // No finished developer (429-killed developer + explore success): never.
+  const none = formatBatchReport({
+    batchId: "b911c",
+    members: [
+      { jobId: "j1", label: "developer[task-B]", result: devKilled429 },
+      { jobId: "j2", label: "explore[context]", result: succeeded },
+    ],
+    // biome-ignore lint/suspicious/noExplicitAny: partial fixture
+  } as any);
+  assert(
+    countGateLines(none) === 0,
+    "a batch with no finished developer (429-killed developer + explore) shows NO gate line",
   );
 }
 

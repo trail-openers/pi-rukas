@@ -43,6 +43,22 @@ for (const manifestName of readdirSync(MANIFESTS).filter((name) => name.endsWith
   const prompt = readFileSync(promptPath, "utf8");
   const promptLines = new Set(prompt.split("\n"));
 
+  // #911 — content check (not just heading presence): the PM prompt must
+  // carry the hand-managed-work gate sentence in the Development Workflow
+  // section, so a future edit can't drop it silently.
+  if (role === "project-manager") {
+    assert(
+      prompt.includes("Hand-managed work gets the same gates as /work"),
+      "project-manager: built prompt contains the hand-managed-work gate sentence",
+    );
+    assert(
+      prompt.slice(prompt.indexOf("## Development Workflow")).includes(
+        "Hand-managed work gets the same gates as /work",
+      ),
+      "project-manager: the gate sentence is in the Development Workflow section",
+    );
+  }
+
   for (const line of readFileSync(manifestPath, "utf8").split("\n")) {
     const modulePath = line.trim();
     if (!modulePath || modulePath.startsWith("#")) continue;

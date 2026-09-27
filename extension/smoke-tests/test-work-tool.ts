@@ -238,6 +238,17 @@ registerWorkTools(fakePi);
     /doctrine violation/.test(preamble),
     "the original no-editing rule is still present, not replaced",
   );
+  // #911 — the developer bullet names BOTH review gates, not just the
+  // adversarial one: the lievo incident was a PM that merged on a developer's
+  // self-report plus CI, having lost sight of the lens review.
+  assert(
+    /adversarial_loop/.test(preamble),
+    "the sticky preamble names adversarial_loop for developer work",
+  );
+  assert(
+    /dispatch_lens_review/.test(preamble),
+    "...and dispatch_lens_review — hand-managed work gets the same gates as /work",
+  );
 }
 
 // -------------------------------------------------- gh pr diff is permitted

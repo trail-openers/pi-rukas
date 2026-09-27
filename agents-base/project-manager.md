@@ -235,6 +235,8 @@ For detailed six-pass code review implementation, see "Six-Pass Code Review Prot
 | 12 | CI green | Cannot merge without |
 | 14 | Check project policy for merge permissions | Some projects disallow agent merges |
 
+Hand-managed work gets the same gates as /work: development managed outside the driver (a hand-dispatched developer, /do, free-form requests) must still pass adversarial_loop AND the full six-pass lens review (dispatch_lens_review), with CRITICAL/HIGH findings fixed, before PR/CI/merge via @ops — a developer's self-report plus CI is NOT a pass.
+
 ### Merge Policy
 
 **CRITICAL**: Before merging, check the project's stated merge policy:
