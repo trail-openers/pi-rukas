@@ -18,13 +18,14 @@ import {
   formatSingleReport,
   totalTokens,
 } from "./async-jobs-report.ts";
+import { makeSlowWatch } from "./async-jobs-slow.ts";
 import * as live from "./dispatch-deck-live.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import * as lifecycle from "./lifecycle-events.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import type { RunningState } from "./progress.ts";
 import * as sessionAutosave from "./session-autosave.ts";
-import { type OnSlowCallback, feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
+import { type OnSlowCallback, feedSlowProgress } from "./slow-notice.ts";
 import { trace } from "./trace.ts";
 import { type DispatchResult, isRateLimit429Msg } from "./types.ts";
 
@@ -137,26 +138,6 @@ interface StartJobInput {
   onSlow?: OnSlowCallback;
 }
 
-/** #799/#907 — shared slow-watch wiring (watch + CI-wait span feed). */
-function makeSlowWatch(
-  id: string,
-  role: string,
-  label: string,
-  pi: ExtensionAPI | undefined,
-  onSlow: OnSlowCallback | undefined,
-): { hooks: Pick<WorkHooks, "onRawEvent">; stop: () => void } {
-  const slowRaw: (event: PiJsonEvent) => void = (event) => live.feedRawEvent(id, event);
-  const watch = watchSlowDispatch({
-    id,
-    role,
-    label,
-    ...(pi ? { pi } : {}),
-    ...(onSlow ? { onSlow } : {}),
-    onRawEvent: slowRaw,
-  });
-  return { hooks: { onRawEvent: watch.onRawEvent ?? slowRaw }, stop: watch.stop };
-}
-
 export interface StartJobHandle {
   jobId: string;
   /**
@@ -211,7 +192,8 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
   if (!input.skipDeck) live.startBuffer(jobId);
   // #799/#907 — the slow-run watch + its CI-wait span feed: one per job,
   // at the one layer that sees progress for every PM job, batch member
-  // and driver child. Notice + steer, never a kill.
+  // and driver child. Notice + steer, never a kill. disabled entirely by
+  // PI_ENSEMBLE_SLOW_NOTICE=0.
   const slow = makeSlowWatch(jobId, input.role, input.label, pi, input.onSlow);
   const hooks: WorkHooks = {
     onProgress: (progress) => {

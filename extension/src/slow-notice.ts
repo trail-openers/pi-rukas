@@ -32,6 +32,12 @@
  * persists a `dispatch-slow` event through the `onSlow` callback it threads
  * into `dispatchCore` (see workflow-state-events-slow.ts for the event).
  *
+ * The elapsed dimension excludes wall time spent in an in-flight CI-watch
+ * tool call (#907, fed through the `onRawEvent` seam; it delays and never
+ * suppresses a notice). `watchSlowDispatch` returns a `SlowWatchHandle`
+ * (`stop()` plus an optional chained `onRawEvent`) rather than a bare stop
+ * function.
+ *
  * Threshold state lives in a module-level Map keyed by the watch id — one
  * entry per live child, bounded by MAX_JOBS, deleted on settle.
  */

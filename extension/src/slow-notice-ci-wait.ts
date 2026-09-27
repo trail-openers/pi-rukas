@@ -25,11 +25,25 @@
 import type { PiContentBlock, PiJsonEvent } from "./pi-event-shapes.ts";
 
 /**
+ * The canonical CI-watch shapes the ops recipes use (AGENTS.md / the ship
+ * briefs). This list and the `isCiWatchCommand` classifier below must
+ * change together — a recipe that gains a new watch form requires both the
+ * list and the classifier to grow in the same change.
+ */
+export const CI_WATCH_SHAPES: readonly { cmd: string; description: string }[] = [
+  { cmd: "gh pr checks … --watch", description: "GitHub PR required checks in watch mode" },
+  { cmd: "gh run watch", description: "GitHub workflow run in watch mode" },
+  { cmd: "glab ci status --live", description: "GitLab CI status in live mode" },
+  { cmd: "glab ci view", description: "GitLab CI view" },
+];
+
+/**
  * Classifier — is this bash command a CI-watch command?
  *
- * Accepts exactly four shapes, tolerant of flag order and of leading
- * shell wrappers (`oo `, `timeout <N>[smh]? ` with optional flags such as
- * `-k 5`, `env VAR=… `, `nice `) in any combination and order:
+ * Accepts exactly the four shapes in `CI_WATCH_SHAPES`, tolerant of flag
+ * order and of leading shell wrappers (`oo `, `timeout <N>[smh]? ` with
+ * optional flags such as `-k 5`, `env VAR=… `, `nice `) in any combination
+ * and order:
  *   - `gh pr checks … --watch`   - `gh run watch`
  *   - `glab ci status --live`    - `glab ci view`
  *

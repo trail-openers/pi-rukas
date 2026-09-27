@@ -405,13 +405,16 @@ await withEnv({}, async () => {
       { type: "toolCall", name: "bash", arguments: { command: "gh run watch" } },
     ] } });
     t += 30 * MIN; // no span opened — see the fresh watch below
-    const { notices: notices2, stop: stop3 } = harness("job-excl-malformed-2", now);
+  } finally {
+    stop();
+  }
+  const { notices: notices2, stop: stop3 } = harness("job-excl-malformed-2", now);
+  try {
     feedSlowProgress("job-excl-malformed-2", stateAt(1, 30 * MIN));
     assert(notices2.length === 1, "malformed blocks: no span → plain crossing fires");
     assert(notices2[0]?.includes("CI wait excluded") === false, "malformed blocks: zero exclusion → no suffix");
-    stop3();
   } finally {
-    stop();
+    stop3();
   }
 });
 
