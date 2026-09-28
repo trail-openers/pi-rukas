@@ -28,15 +28,17 @@
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, Container, type TUI, Text } from "@earendil-works/pi-tui";
+import { buildAgentListHint } from "./agent-list-keys.ts";
+import type { AgentListLine } from "./agent-list.ts";
 import { toTerminalLine } from "./dispatch-deck-line.ts";
-import { DECK_HINT_TEXT } from "./dispatch-deck-nav.ts";
 import { type DeckEntry, formatRow } from "./dispatch-deck.ts";
 import { formatElapsed } from "./progress.ts";
 
 /**
- * Row state for the plain-row rendering (#834).
- * `running` includes batch members (one row per job, #709/#729/#742/#761
- * single-surface invariant); `selectedKey` is the roster-mode `>` target.
+ * Row state for the plain-row rendering (#834, #914).
+ * `running` is read only for the hint/separator presence (#914: the rows
+ * themselves come from the agent-list projection, `agentList`); the roster
+ * `selectedKey` still drives the `>` marker overlay.
  */
 export interface DeckRows {
   running: readonly DeckEntry[];
@@ -182,6 +184,7 @@ export function buildSteerPrompt(e: DeckEntry, now: number): string {
 export function buildCompositeFactory(
   lines: () => string[],
   rows: () => DeckRows,
+  agentList: () => AgentListLine[],
   maxRows: number,
 ): (tui: TUI, theme: Theme) => Component {
   return (tui: TUI, theme: Theme) => {
@@ -190,8 +193,8 @@ export function buildCompositeFactory(
     // so a mid-render interleaving cannot split the two projections.
     // One clock sample per render: the batch headers and the per-job rows
     // cannot disagree by an elapsed-time tick crossing mid-render.
-    const now = Date.now();
     const rowState = rows();
+    const agentRows = agentList();
     const container = new Container();
     const renderWidth = tui?.terminal?.columns ?? 80;
     // The Text rows below are `new Text(line, 1, 0)` — paddingX 1 — so the
@@ -204,15 +207,27 @@ export function buildCompositeFactory(
     if (overflow > 0) {
       container.addChild(new Text(theme.fg("muted", `... (${overflow} more)`), 1, 0));
     }
-    for (const row of buildJobRows(rowState.running, now, lineWidth)) {
-      const isSel = rowState.selectedKey === row.key;
-      const line = isSel ? `> ${row.text}` : `  ${row.text}`;
-      container.addChild(new Text(line, 1, 0));
+    // #914 — the rows are the agent-list projection (the `main` row
+    // leading, then batch headers and job rows in insertion order), so the
+    // passive widget shows exactly the shape the list overlay renders.
+    // The roster `>` marker overlays the row whose key matches
+    // `selectedKey`; batch-header rows (non-selectable) never carry it.
+    const selKey = rowState.selectedKey;
+    for (const row of agentRows) {
+      const isSel = row.selectable && selKey === row.key;
+      const prefix = row.key === "main" ? "◆ " : isSel ? "> " : row.selectable ? "  " : "   ";
+      const line = toTerminalLine(prefix + row.text, lineWidth);
+      const text = isSel
+        ? theme.fg("accent", line)
+        : row.selectable
+          ? line
+          : theme.fg("muted", line);
+      container.addChild(new Text(text, 1, 0));
     }
-    if (rowState.running.length > 0) container.addChild(new Text("", 1, 0));
+    if (agentRows.length > 0) container.addChild(new Text("", 1, 0));
     if (rowState.showHint) {
       container.addChild(
-        new Text(theme.fg("muted", toTerminalLine(DECK_HINT_TEXT, lineWidth)), 1, 0),
+        new Text(theme.fg("muted", toTerminalLine(buildAgentListHint(lineWidth), lineWidth)), 1, 0),
       );
     }
     return container;

@@ -54,8 +54,14 @@
  */
 
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
+import { MAIN_ROW_KEY } from "./agent-list.ts";
 
 export const DECK_HINT_TEXT = "↓ select subagents";
+
+// #914 — the ↓ roster now walks the agent-list rows: the leading `main`
+// row (Esc-equivalent — exits the roster, never opens a view) followed by
+// the running jobs. `runningKeys` carries MAIN_ROW_KEY first.
+export { MAIN_ROW_KEY };
 
 /** Minimal shape of the deck the nav handler needs. */
 export interface DeckNavGetters {
@@ -157,7 +163,10 @@ export function createDeckNav(
       if (matchesKey(data, "enter")) {
         const key = selected;
         exit();
-        if (key) onRowConfirm(key);
+        // #914 — the leading `main` row is Esc-equivalent: exiting without
+        // confirming is the ONLY effect (it never opens a view). Job rows
+        // confirm through the unchanged route.
+        if (key && key !== MAIN_ROW_KEY) onRowConfirm(key);
         return { consume: true };
       }
       if (matchesKey(data, "down") || matchesKey(data, "j")) {

@@ -109,12 +109,17 @@ export function toolCallArgsPreview(args: unknown): string {
 const buffers = new Map<string, LiveEvent[]>();
 
 /**
- * Create (or return) the per-job ring buffer. No-op under quiet mode — a
- * quiet-mode session gets no buffers at all, and the deck entry itself is
- * suppressed there, so the two gates stay in lockstep.
+ * Create (or return) the per-job ring buffer.
+ *
+ * #914 quiet-mode gate relocation: the `PI_ENSEMBLE_QUIET_STATUS` early
+ * return that lived here is REMOVED — buffers are ALWAYS created, because
+ * quiet mode now only suppresses the PASSIVE deck widget (renderNow's
+ * empty-deck guard in dispatch-deck.ts); the agent list / roster still
+ * open the live view for a quiet session's rows. This is the quiet gate
+ * that CHANGED; the widget suppression in dispatch-deck.ts is the one
+ * that KEPT.
  */
 export function startBuffer(key: string): void {
-  if (process.env.PI_ENSEMBLE_QUIET_STATUS === "1") return;
   if (!buffers.has(key)) buffers.set(key, []);
 }
 

@@ -170,7 +170,16 @@ const fakeTheme = {
     },
   ];
   const rows: DeckRows = { running: entries, showHint: true };
-  const factory = buildCompositeFactory(() => [], () => rows, 20);
+  const agentRows = () => [
+    { key: "main", text: "main", selectable: true, running: true },
+    ...rows.running.map((e) => ({
+      key: e.key,
+      text: `⏳ ${e.label} · ${e.state.role}`,
+      selectable: true,
+      running: true,
+    })),
+  ];
+  const factory = buildCompositeFactory(() => [], () => rows, agentRows, 20);
   const component = factory(null, fakeTheme);
   assert(component instanceof Container, "composite factory returns a Container");
   if (component instanceof Container) {
@@ -180,14 +189,27 @@ const fakeTheme = {
       textChildren.length === component.children.length,
       "every child is a plain Text row (no SelectList, #834)",
     );
-    // 2 job rows + 1 blank separator + 1 hint = 4 rows.
+    // The row projection above the hint is the AGENT-LIST projection
+    // (#914): the leading `main` row, then the job rows (the roster walks
+    // the same rows). 2 jobs → 3 rows + blank separator + hint = 5 rows.
     assert(
-      component.children.length === 4,
-      `2 jobs + blank separator + hint → 4 rows (got ${component.children.length})`,
+      component.children.length === 5,
+      `main row + 2 jobs + blank separator + hint → 5 rows (got ${component.children.length})`,
     );
-    // The roster-mode hint is present (showHint=true, inactive).
-    const hintRows = textChildren.filter((c) => (c as Text).text === "↓ select subagents");
-    assert(hintRows.length === 1, "the '↓ select subagents' hint row is present");
+    // #914 — the leading `main` row renders in the passive roster.
+    const mainRows = textChildren.filter((c) =>
+      (c as Text).text.startsWith("◆ "),
+    );
+    assert(mainRows.length === 1, "the leading 'main' row is present in the passive roster (#914)");
+    // #914 — the roster-mode hint is the new agent-list hint line (before:
+    // DECK_HINT_TEXT "↓ select subagents"; after: the agent-list hint).
+    // The assertion below checks the hint line is PRESENT and MENTIONS the
+    // agents; the exact wording is pinned by buildAgentListHint in the new
+    // test-dispatch-deck-list.ts, not re-hard-coded here.
+    const hintRows = textChildren.filter((c) =>
+      (c as Text).text.startsWith("↓ agents"),
+    );
+    assert(hintRows.length === 1, "the '↓ agents …' hint row is present (#914)");
     // Each job renders exactly once (one row per job, single-surface
     // invariant #709/#729/#742/#761).
     const rendered = textChildren.map((c) => (c as Text).text);
@@ -216,7 +238,16 @@ const fakeTheme = {
     },
   ];
   const rows: DeckRows = { running: entries, selectedKey: "job-b", showHint: false };
-  const factory = buildCompositeFactory(() => [], () => rows, 20);
+  const agentRows = () => [
+    { key: "main", text: "main", selectable: true, running: true },
+    ...rows.running.map((e) => ({
+      key: e.key,
+      text: `⏳ ${e.label} · ${e.state.role}`,
+      selectable: true,
+      running: true,
+    })),
+  ];
+  const factory = buildCompositeFactory(() => [], () => rows, agentRows, 20);
   const component = factory(null, fakeTheme);
   if (component instanceof Container) {
     const rendered = component.children
@@ -241,7 +272,12 @@ const fakeTheme = {
 // production; here we assert the factory's own behaviour).
 {
   const rows: DeckRows = { running: [], showHint: false };
-  const factory = buildCompositeFactory(() => [], () => rows, 20);
+  const factory = buildCompositeFactory(
+    () => [],
+    () => rows,
+    () => [{ key: "main", text: "main", selectable: true, running: true }],
+    20,
+  );
   const component = factory(null, fakeTheme);
   if (component instanceof Container) {
     assert(
@@ -298,9 +334,11 @@ const fakeTheme = {
     assert(n("task-A") === 1, "member A renders exactly once");
     assert(n("task-B") === 1, "member B renders exactly once");
     assert(n("explore") >= 1, "standalone renders");
-    // 1 batch header + 3 job rows + 1 blank separator + 1 hint row
-    // (empty editor → hint shown) = 6 children total.
-    assert(comp.children.length === 6, "batch header + 3 job rows + separator + hint");
+    // #914 child-count flip (before/after):
+    //   before: `comp.children.length === 6` — "batch header + 3 job rows + separator + hint"
+    //   after:  `comp.children.length === 7` — the agent-list projection adds the leading
+    //           `main` row (main + batch header + 3 job rows + separator + hint).
+    assert(comp.children.length === 7, "main + batch header + 3 job rows + separator + hint (#914)");
   }
   detach();
 }

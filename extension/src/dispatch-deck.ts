@@ -22,6 +22,7 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
+import { MAIN_ROW_KEY, buildAgentListLines, openAgentList } from "./agent-list.ts";
 import * as deckComposite from "./dispatch-deck-composite.ts";
 import { type RowConfirmHost, onRowConfirm } from "./dispatch-deck-confirm.ts";
 import { steerFromDeck } from "./dispatch-deck-interactive.ts";
@@ -141,7 +142,7 @@ function detachNav(): void {
 
 function navGetters(ctx: ExtensionContext) {
   return {
-    runningKeys: () => [...entries.values()].map((e) => e.key),
+    runningKeys: () => [MAIN_ROW_KEY, ...[...entries.values()].map((e) => e.key)],
     // No try/catch: a throw propagates to the key-press handler (Pi's
     // input loop). Swallowing it to "" would ENABLE roster mode from a
     // throwing editor — fail open instead.
@@ -198,17 +199,25 @@ function attachNav(ctx: ExtensionContext): void {
 }
 
 /**
- * Own the nav wiring for one cycle: the quiet/hasUI guards, the
- * prior-listener teardown, the createDeckNav construction and the
- * registration. Used by `attach()` (explicit attach — a new budget for
- * the self-heal counters) and renderNow's self-heal (a transient
- * attach-time failure retries here on a later render). The
- * `navWarned`/`navHealAttempts` resets live in `attachNav` only: the
- * self-heal path must accumulate across renders so the cap binds. Returns
- * true when the listener is live.
+ * Own the nav wiring for one cycle: the hasUI guard, the prior-listener
+ * teardown, the createDeckNav construction and the registration. Used by
+ * `attach()` (explicit attach — a new budget for the self-heal counters)
+ * and renderNow's self-heal (a transient attach-time failure retries here
+ * on a later render). The `navWarned`/`navHealAttempts` resets live in
+ * `attachNav` only: the self-heal path must accumulate across renders so
+ * the cap binds. Returns true when the listener is live.
+ *
+ * #914 quiet-mode gate relocation: the `isQuiet()` early-return that
+ * lived here is REMOVED — quiet mode now still registers the roster
+ * listener (and the global shortcut), because quiet only suppresses the
+ * PASSIVE deck widget (renderNow's empty-deck guard). The buffer gate in
+ * dispatch-deck-live.ts `startBuffer` was removed the same way, so a
+ * quiet session's rows open the live view via the list/roster like any
+ * other session; the widget suppression in this module (renderNow) is
+ * the quiet gate that KEPT.
  */
 function tryAttachNav(ctx: ExtensionContext): boolean {
-  if (isQuiet() || !ctx.hasUI) return false;
+  if (!ctx.hasUI) return false;
   // Unsubscribe any prior listener before re-registering (attach can be
   // called more than once in a session without an intervening detach).
   detachNav();
@@ -362,6 +371,16 @@ function rowConfirmHostFor(ctx: ExtensionContext): RowConfirmHost {
   };
 }
 
+/**
+ * #914 — route an agent-list Enter on a job row through the deck's
+ * unchanged confirm route (buffer → live view, else steer prompt) using
+ * the ctx the list was opened from. Returns the promise so callers (the
+ * shortcut handler) can await it; the deck module does not hold it.
+ */
+export function confirmRow(ctx: ExtensionContext, key: string): Promise<void> {
+  return onRowConfirm(ctx, key, rowConfirmHostFor(ctx));
+}
+
 function startTickerIfNeeded(): void {
   if (tickHandle !== undefined || isQuiet()) return;
   tickHandle = setInterval(() => {
@@ -412,6 +431,18 @@ function renderNow(): void {
   }
   const factory = buildDeckWidgetFactory(activeCtx);
   try {
+    if (isQuiet()) {
+      // #914 quiet gate: quiet mode suppresses ONLY the passive widget
+      // (the roster listener and the global shortcut stay live). A stale
+      // widget from a non-quiet half of the session is cleared here.
+      if (widgetVisible) {
+        try {
+          activeCtx.ui.setWidget(WIDGET_KEY, undefined);
+        } catch {}
+        widgetVisible = false;
+      }
+      return;
+    }
     activeCtx.ui.setWidget(WIDGET_KEY, factory, { placement: "belowEditor" });
     widgetVisible = true;
   } catch (err) {
@@ -450,6 +481,7 @@ function buildCompositeWidgetFactory(ctx: ExtensionContext) {
       selectedKey: nav?.selectedKey(),
       showHint: !nav?.isActive() && entries.size > 0,
     }),
+    () => buildAgentListLines(snapshot(), [...batches.values()], getDeckMaxRows()),
     getDeckMaxRows(),
   );
 }
