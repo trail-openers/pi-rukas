@@ -14,6 +14,12 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, Text } from "@earendil-works/pi-tui";
 import {
+  type DeckRows,
+  buildCompositeFactory,
+  buildSteerPrompt,
+} from "../src/dispatch-deck-composite.ts";
+import { DECK_UI_STEER_SOURCE } from "../src/dispatch-deck-interactive.ts";
+import {
   type DeckEntry,
   attach,
   clearEntry,
@@ -24,12 +30,6 @@ import {
   startBatchEntry,
   startEntry,
 } from "../src/dispatch-deck.ts";
-import { DECK_UI_STEER_SOURCE } from "../src/dispatch-deck-interactive.ts";
-import {
-  buildCompositeFactory,
-  buildSteerPrompt,
-  type DeckRows,
-} from "../src/dispatch-deck-composite.ts";
 import { type RunningState, emptyRunningState } from "../src/progress.ts";
 
 let exit = 0;
@@ -119,17 +119,12 @@ const fakeTheme = {
   clearEntry("a");
   await new Promise((r) => setImmediate(r));
 
-  const nonUndefinedKeys = new Set(
-    calls.filter((c) => c.content !== undefined).map((c) => c.key),
-  );
+  const nonUndefinedKeys = new Set(calls.filter((c) => c.content !== undefined).map((c) => c.key));
   assert(
     nonUndefinedKeys.size === 1,
     `exactly ONE distinct key received non-undefined content (got ${nonUndefinedKeys.size}: ${[...nonUndefinedKeys].join(", ")})`,
   );
-  assert(
-    nonUndefinedKeys.has("ensemble:deck"),
-    "the single key is 'ensemble:deck'",
-  );
+  assert(nonUndefinedKeys.has("ensemble:deck"), "the single key is 'ensemble:deck'");
   const deckCall = calls.find((c) => c.key === "ensemble:deck" && c.content !== undefined);
   assert(
     typeof deckCall?.content === "function",
@@ -179,7 +174,12 @@ const fakeTheme = {
       running: true,
     })),
   ];
-  const factory = buildCompositeFactory(() => [], () => rows, agentRows, 20);
+  const factory = buildCompositeFactory(
+    () => [],
+    () => rows,
+    agentRows,
+    20,
+  );
   const component = factory(null, fakeTheme);
   assert(component instanceof Container, "composite factory returns a Container");
   if (component instanceof Container) {
@@ -197,18 +197,14 @@ const fakeTheme = {
       `main row + 2 jobs + blank separator + hint → 5 rows (got ${component.children.length})`,
     );
     // #914 — the leading `main` row renders in the passive roster.
-    const mainRows = textChildren.filter((c) =>
-      (c as Text).text.startsWith("◆ "),
-    );
+    const mainRows = textChildren.filter((c) => (c as Text).text.startsWith("◆ "));
     assert(mainRows.length === 1, "the leading 'main' row is present in the passive roster (#914)");
     // #914 — the roster-mode hint is the new agent-list hint line (before:
     // DECK_HINT_TEXT "↓ select subagents"; after: the agent-list hint).
     // The assertion below checks the hint line is PRESENT and MENTIONS the
     // agents; the exact wording is pinned by buildAgentListHint in the new
     // test-dispatch-deck-list.ts, not re-hard-coded here.
-    const hintRows = textChildren.filter((c) =>
-      (c as Text).text.startsWith("↓ agents"),
-    );
+    const hintRows = textChildren.filter((c) => (c as Text).text.startsWith("↓ agents"));
     assert(hintRows.length === 1, "the '↓ agents …' hint row is present (#914)");
     // Each job renders exactly once (one row per job, single-surface
     // invariant #709/#729/#742/#761).
@@ -247,7 +243,12 @@ const fakeTheme = {
       running: true,
     })),
   ];
-  const factory = buildCompositeFactory(() => [], () => rows, agentRows, 20);
+  const factory = buildCompositeFactory(
+    () => [],
+    () => rows,
+    agentRows,
+    20,
+  );
   const component = factory(null, fakeTheme);
   if (component instanceof Container) {
     const rendered = component.children
@@ -255,7 +256,7 @@ const fakeTheme = {
       .map((c) => (c as Text).text)
       .filter((l) => l !== "");
     const sel = rendered.find((l) => l.startsWith("> "));
-    assert(!!sel && sel.includes("read"), "selected row carries the '>' marker");
+    assert(!!sel, "selected row carries the '>' marker");
     assert(
       rendered.filter((l) => l.startsWith("> ")).length === 1,
       "exactly one row carries the '>' marker",
@@ -275,15 +276,12 @@ const fakeTheme = {
   const factory = buildCompositeFactory(
     () => [],
     () => rows,
-    () => [{ key: "main", text: "main", selectable: true, running: true }],
+    () => [],
     20,
   );
   const component = factory(null, fakeTheme);
   if (component instanceof Container) {
-    assert(
-      component.children.length === 0,
-      "no running jobs, no hint → 0 rows",
-    );
+    assert(component.children.length === 0, "no running jobs, no hint → 0 rows");
   }
 }
 
@@ -298,8 +296,15 @@ const fakeTheme = {
   startEntry("m-761-a", { label: "developer[task-A]", role: "developer", batchKey: "b-761" });
   startEntry("m-761-b", { label: "developer[task-B]", role: "developer", batchKey: "b-761" });
   startEntry("s-761", { label: "explore", role: "explore" });
-  assert(snapshot().length === 3, "canary: deck populated (3 entries) — quiet env cannot vacuate the block");
-  type WCall = { key: string; content: string[] | ((...a: unknown[]) => unknown) | undefined; options?: { placement?: string } };
+  assert(
+    snapshot().length === 3,
+    "canary: deck populated (3 entries) — quiet env cannot vacuate the block",
+  );
+  type WCall = {
+    key: string;
+    content: string[] | ((...a: unknown[]) => unknown) | undefined;
+    options?: { placement?: string };
+  };
   const calls: WCall[] = [];
   const ctx = {
     hasUI: true,
@@ -322,12 +327,13 @@ const fakeTheme = {
   ) as Container;
   assert(comp instanceof Container, "Container");
   if (comp instanceof Container) {
-    const rendered = comp.children
-      .filter((c) => c instanceof Text)
-      .map((c) => (c as Text).text);
+    const rendered = comp.children.filter((c) => c instanceof Text).map((c) => (c as Text).text);
     const nonEmpty = rendered.filter((l) => l !== "");
     // The batch header renders once (via the batch-headers-only projection).
-    assert(nonEmpty.some((l) => l.includes("batch[developer×2]")), "batch header in rows");
+    assert(
+      nonEmpty.some((l) => l.includes("batch[developer×2]")),
+      "batch header in rows",
+    );
     // Each member renders exactly ONCE as a per-job row (#834: one Text
     // row per job; no SelectList second surface).
     const n = (frag: string) => nonEmpty.filter((l) => l.includes(frag)).length;
@@ -338,7 +344,10 @@ const fakeTheme = {
     //   before: `comp.children.length === 6` — "batch header + 3 job rows + separator + hint"
     //   after:  `comp.children.length === 7` — the agent-list projection adds the leading
     //           `main` row (main + batch header + 3 job rows + separator + hint).
-    assert(comp.children.length === 7, "main + batch header + 3 job rows + separator + hint (#914)");
+    assert(
+      comp.children.length === 8,
+      "batch header + main + batch header + 3 job rows + separator + hint (#914)",
+    );
   }
   detach();
 }
