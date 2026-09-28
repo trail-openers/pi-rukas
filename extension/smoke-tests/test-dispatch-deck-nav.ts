@@ -7,10 +7,13 @@
  *   - down with an empty editor + running jobs → consumed, first row
  *   - down → next; up → prev; up at first → exits
  *   - down with a non-empty editor → NOT consumed
+ *   - down with no running jobs → NOT consumed
  *   - Esc → exits (consumed)
  *   - printable key while active → exits, NOT consumed
  *   - Enter → onRowConfirm(selectedKey) after roster mode exits
  *   - a selected job settling → selection moves or roster mode exits
+ *   - quiet mode / headless (no hasUI) register nothing
+ *   - the listener is registered once and removed on detach
  *   - the focus gate (see test-dispatch-deck-nav-focus.ts, blocks 19–23)
  *
  * Key sequences use pi-tui's wire format: legacy arrows \x1b[A / \x1b[B,
@@ -18,8 +21,8 @@
  * handler.
  */
 
-import { type DeckNav, type NavListener, createDeckNav } from "../src/dispatch-deck-nav.ts";
 import { attach, detach, reset, startEntry } from "../src/dispatch-deck.ts";
+import { createDeckNav, type DeckNav, type NavListener } from "../src/dispatch-deck-nav.ts";
 
 const NAV_HEAL_MAX = 5; // must match the cap in dispatch-deck.ts
 
@@ -33,6 +36,9 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Fake UI + nav harness
+// ---------------------------------------------------------------------------
 
 interface FakeUI {
   editorText: string;
@@ -82,8 +88,15 @@ function makeNav(
   return {
     nav: createDeckNav(
       {
-        runningKeys: () => ["main", ...keysRef.keys],
+        // #914 — the deck's navGetters (and this harness) expose ONLY running
+    // job keys: the `main` row must appear only when ≥1 job is running,
+    // so with no jobs the ↓ still belongs to Pi's prompt history.
+    runningKeys: () => keysRef.keys,
         editorText: () => fake.editorText,
+        // `focus` simulates the main editor being/not being the focused
+        // component (the production probe reads the editor's `focused`
+        // flag from the TUI — see dispatch-deck.ts editorFocused()).
+        // Accepts a closure so tests can flip focus mid-sequence.
         editorFocused: () => (typeof focus === "function" ? focus() : (focus ?? true)),
       },
       (key) => confirm.push(key),
@@ -111,6 +124,11 @@ function press(fake: FakeUI, data: string): { consume?: boolean } | undefined {
 // handler reads the same keys the deck renders.
 const keyStore = { keys: [] as string[] };
 
+// Wrapping the body so an unexpected throw still exits deterministically
+// (process.exit in a finally) instead of dying on an uncaught exception with
+// the deck module state left dirty. Awaited (main() is async): a bare
+// call would let the finally run before the awaited body, so block 18
+// would never execute.
 try {
   void (async () => {
     await main();
@@ -130,6 +148,9 @@ try {
 }
 
 async function main(): Promise<void> {
+  // ---------------------------------------------------------------------------
+  // 1. Activation: down + empty editor + running jobs → consumed, first row
+  // ---------------------------------------------------------------------------
   {
     reset();
     const fake = fakeUI("");
@@ -142,7 +163,7 @@ async function main(): Promise<void> {
     const r = press(fake, "\x1b[B"); // down
     assert(r?.consume === true, "1a: down (empty editor, 2 running) → consumed");
     assert(h.nav.isActive(), "1b: roster mode is active after activation");
-    assert(h.nav.selectedKey() === "main", "1c: first row is `main` (#914)");
+    assert(h.nav.selectedKey() === "job-1", "1c: first row selected");
   }
 
   // 2. down → second row; up → first row; up → exits.
@@ -155,29 +176,21 @@ async function main(): Promise<void> {
     const h = makeNav(keyStore, fake);
     fake.ui.onTerminalInput(h.nav.handler);
 
-    press(fake, "\x1b[B"); // activate → main row
-    assert(h.nav.selectedKey() === "main", "2a: activation selects the `main` row (#914)");
+    press(fake, "\x1b[B"); // activate → job-1
+    assert(h.nav.selectedKey() === "job-1", "2a: activation selects first row");
 
-    const r2 = press(fake, "\x1b[B"); // down → job-1
+    const r2 = press(fake, "\x1b[B"); // down → job-2
     assert(r2?.consume === true, "2b: down → second row (consumed)");
-    assert(h.nav.selectedKey() === "job-1", "2c: second row selected");
+    assert(h.nav.selectedKey() === "job-2", "2c: second row selected");
 
-    const r3 = press(fake, "\x1b[B"); // down → job-2
-    assert(r3?.consume === true, "2d: down → third row (consumed)");
-    assert(h.nav.selectedKey() === "job-2", "2e: third row selected");
+    const r3 = press(fake, "\x1b[A"); // up → job-1
+    assert(r3?.consume === true, "2d: up → first row (consumed)");
+    assert(h.nav.selectedKey() === "job-1", "2e: first row selected again");
 
-    const r4 = press(fake, "\x1b[A"); // up → job-1
-    assert(r4?.consume === true, "2f: up → previous row (consumed)");
-    assert(h.nav.selectedKey() === "job-1", "2g: previous row selected");
-
-    const r5 = press(fake, "\x1b[A"); // up → main
-    assert(r5?.consume === true, "2g2: up → `main` row (consumed)");
-    assert(h.nav.selectedKey() === "main", "2h2: main row selected");
-
-    const r6 = press(fake, "\x1b[A"); // up at first → exit
-    assert(r6?.consume === true, "2h: up at first row → consumed");
-    assert(!h.nav.isActive(), "2i: roster mode exited");
-    assert(h.nav.selectedKey() === undefined, "2j: no selection after exit");
+    const r4 = press(fake, "\x1b[A"); // up at first → exit
+    assert(r4?.consume === true, "2f: up at first row → consumed");
+    assert(!h.nav.isActive(), "2g: roster mode exited");
+    assert(h.nav.selectedKey() === undefined, "2h: no selection after exit");
   }
 
   // 3. down with a NON-EMPTY editor → not consumed.
@@ -194,11 +207,7 @@ async function main(): Promise<void> {
     assert(!h.nav.isActive(), "3b: roster mode NOT entered");
   }
 
-  // 4. down with NO running jobs → not consumed (#914: the `main` row is
-  //    always present, so the activation guard `keys.length > 0` is always
-  //    true; the guard now serves as a safety net rather than a practical
-  //    filter. This test documents the current behaviour: down IS consumed
-  //    and the roster activates on the `main` row.)
+  // 4. down with NO running jobs → not consumed.
   {
     reset();
     const fake = fakeUI("");
@@ -207,9 +216,8 @@ async function main(): Promise<void> {
     fake.ui.onTerminalInput(h.nav.handler);
 
     const r = press(fake, "\x1b[B");
-    assert(r?.consume === true, "4a: down (no running jobs) → consumed (main row activates, #914)");
-    assert(h.nav.isActive(), "4b: roster mode entered on the `main` row (#914)");
-    press(fake, "\x1b"); // Esc to clean up
+    assert(r === undefined, "4a: down (no running jobs) → NOT consumed");
+    assert(!h.nav.isActive(), "4b: roster mode NOT entered");
   }
 
   // 5. Esc → exits (consumed).
@@ -252,8 +260,7 @@ async function main(): Promise<void> {
     const h = makeNav(keyStore, fake);
     fake.ui.onTerminalInput(h.nav.handler);
 
-    press(fake, "\x1b[B"); // activate → main row
-    press(fake, "\x1b[B"); // down → job-1
+    press(fake, "\x1b[B"); // activate → job-1
     press(fake, "\x1b[B"); // down → job-2
     const wasActiveBefore = h.nav.isActive();
     const r = press(fake, "\r"); // enter
@@ -274,11 +281,10 @@ async function main(): Promise<void> {
     const h = makeNav(keyStore, fake);
     fake.ui.onTerminalInput(h.nav.handler);
 
-    press(fake, "\x1b[B"); // activate → main row
-    press(fake, "\x1b[B"); // down → job-1
-    assert(h.nav.selectedKey() === "job-1", "8a: job-1 selected (down from main, #914)");
+    press(fake, "\x1b[B"); // activate → job-1
+    assert(h.nav.selectedKey() === "job-1", "8a: job-1 selected");
 
-    // job-1 settles → main + job-2 remain. Next key press re-resolves.
+    // job-1 settles → only job-2 remains. Next key press re-resolves.
     keyStore.keys = ["job-2"];
     const r = press(fake, "\x1b[B"); // down → re-resolves, moves
     assert(r?.consume === true, "8b: down after settle → consumed");
@@ -286,9 +292,7 @@ async function main(): Promise<void> {
     assert(h.nav.selectedKey() === "job-2", "8d: selection moved to the nearest remaining row");
   }
 
-  // 9. ALL jobs settle while active → the `main` row remains, so the roster
-  //    stays active on the `main` row (#914). The `main` row is Esc-equivalent:
-  //    Enter on it exits without confirming.
+  // 9. ALL jobs settle while active → roster mode exits on the next key.
   {
     reset();
     const fake = fakeUI("");
@@ -297,17 +301,11 @@ async function main(): Promise<void> {
     const h = makeNav(keyStore, fake);
     fake.ui.onTerminalInput(h.nav.handler);
 
-    press(fake, "\x1b[B"); // activate → main row
-    press(fake, "\x1b[B"); // down → job-1
+    press(fake, "\x1b[B"); // activate → job-1
     keyStore.keys = []; // job settles
-    press(fake, "\x1b[B"); // down → re-resolves to `main` (the only row)
-    assert(
-      h.nav.isActive(),
-      "9a: roster stays active on the `main` row after all jobs settle (#914)",
-    );
-    const r = press(fake, "\r"); // Enter on main → exits (Esc-equivalent)
-    assert(r?.consume === true, "9b: Enter on `main` → consumed");
-    assert(!h.nav.isActive(), "9c: roster mode exited (main is Esc-equivalent, #914)");
+    const r = press(fake, "\x1b[B"); // any key → re-resolve finds nothing
+    assert(r?.consume === true, "9a: key after all settled → consumed");
+    assert(!h.nav.isActive(), "9b: roster mode exited (no running jobs)");
   }
 
   // 10. j / k move the selection (vi-style).
@@ -320,9 +318,7 @@ async function main(): Promise<void> {
     const h = makeNav(keyStore, fake);
     fake.ui.onTerminalInput(h.nav.handler);
 
-    press(fake, "\x1b[B"); // activate → main row
-    press(fake, "\x1b[B"); // down → job-1
-    assert(h.nav.selectedKey() === "job-1", "10a2: down from main selects the first job");
+    press(fake, "\x1b[B"); // activate → job-1
     const r1 = press(fake, "j");
     assert(r1?.consume === true, "10a: j → consumed");
     assert(h.nav.selectedKey() === "job-2", "10b: j moves to next row");
@@ -331,6 +327,7 @@ async function main(): Promise<void> {
     assert(h.nav.selectedKey() === "job-1", "10d: k moves to previous row");
   }
 
+  // 11. Key-release events are ignored (Kitty protocol): never consumed.
   {
     reset();
     const fake = fakeUI("");
@@ -339,20 +336,14 @@ async function main(): Promise<void> {
     const h = makeNav(keyStore, fake);
     fake.ui.onTerminalInput(h.nav.handler);
 
-    // 11. Key-release events are ignored (Kitty protocol): never consumed.
-    // The down-arrow release (Kitty flag-2 form) must be ignored in both
-    // states — the roster starts on the `main` row (#914), so a release
-    // there must not move or exit either.
+    // Release of the down arrow (Kitty flag-2 form): must be ignored in
+    // both states.
     const rInactive = press(fake, "\x1b[1:3B");
     assert(rInactive === undefined, "11a: key-release ignored when inactive");
     press(fake, "\x1b[B"); // activate
     const rActive = press(fake, "\x1b[1:3B");
     assert(rActive === undefined, "11b: key-release ignored when active (does not move/exit)");
     assert(h.nav.isActive(), "11c: still active after a release");
-    assert(
-      h.nav.selectedKey() === "main",
-      "11d: selection unchanged by the release (main row, #914)",
-    );
   }
 
   // 12. The listener is registered ONCE and removed on detach.
@@ -381,9 +372,7 @@ async function main(): Promise<void> {
     detach();
   }
 
-  // 13. Quiet mode STILL registers the roster listener (#914 — the quiet
-  // gate moved to the passive widget only; the listener and the global
-  // shortcut now register in quiet mode too).
+  // 13. Quiet mode registers nothing.
   {
     reset();
     const fake = fakeUI("");
@@ -396,15 +385,9 @@ async function main(): Promise<void> {
     } as unknown as Parameters<typeof attach>[0];
 
     attach(ctx);
-    // #914 flip (before/after):
-    //   13a before: `fake.listeners.length === 0` — "quiet mode → no listener registered"
-    //   13a after:  `fake.listeners.length === 1` — "quiet mode → roster listener still registered"
-    assert(
-      fake.listeners.length === 1,
-      "13a: quiet mode → roster listener still registered (#914)",
-    );
+    assert(fake.listeners.length === 0, "13a: quiet mode → no listener registered");
     detach();
-    process.env.PI_ENSEMBLE_QUIET_STATUS = undefined;
+    delete process.env.PI_ENSEMBLE_QUIET_STATUS;
   }
 
   // 14. Headless (no hasUI) registers nothing.
@@ -423,41 +406,14 @@ async function main(): Promise<void> {
     detach();
   }
 
-  // (Blocks 15–17 moved to test-dispatch-deck-nav-focus.ts.)
-
-  // 19. #914 — the leading `main` row: activation lands on `main`, Enter
-  // on it exits WITHOUT confirming (Esc-equivalent), and job rows still
-  // open views.
-  {
-    reset();
-    const fake = fakeUI("");
-    startEntry("job-1", { label: "developer", role: "developer" });
-    keyStore.keys = ["job-1"];
-    const h = makeNav(keyStore, fake);
-    fake.ui.onTerminalInput(h.nav.handler);
-
-    press(fake, "\x1b[B"); // activate → main row
-    assert(h.nav.selectedKey() === "main", "19a: activation lands on the `main` row");
-    const rEnter = press(fake, "\r"); // Enter on main
-    assert(rEnter?.consume === true, "19b: Enter on `main` → consumed");
-    assert(!h.nav.isActive(), "19c: roster mode exited (main is Esc-equivalent)");
-    assert(h.confirm.length === 0, "19d: main never opens a view (no confirm)");
-
-    // Job rows still confirm.
-    press(fake, "\x1b[B"); // activate → main
-    press(fake, "\x1b[B"); // down → job-1
-    assert(h.nav.selectedKey() === "job-1", "19e: down from `main` selects the first job");
-    press(fake, "\r"); // Enter on job-1
-    assert(h.confirm.length === 1, "19f: job row still opens its view");
-    assert(h.confirm[0] === "job-1", "19g: confirm routed with the job key");
-    assert(!h.nav.isActive(), "19h: roster exited after the job confirm");
-  }
+  // (Blocks 15–17 moved to test-dispatch-deck-nav-focus.ts — the 500-line file limit.)
 
   // 18. Self-heal cap: a UI whose onTerminalInput always throws → renderNow
   // retries registration at most NAV_HEAL_MAX times and emits the operator
   // warning exactly once. The resets live in attachNav (explicit attach =
   // fresh budget), not tryAttachNav, so renderNow's self-heal path
-  // ACCUMULATES attempts across renders and the cap binds.
+  // ACCUMULATES attempts across renders and the cap binds. A reset in
+  // tryAttachNav would let the counter never reach the cap.
   {
     reset();
     let registerCalls = 0;

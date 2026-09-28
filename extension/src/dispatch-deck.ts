@@ -7,23 +7,24 @@
  * (which never received input — keys route to the focused editor, #176)
  * with these rows plus a roster-mode input listener (dispatch-deck-nav.ts)
  * that lets the operator walk the rows with the arrow keys from an empty
- * editor.
+ * editor. Selecting a row confirms the job: a running job with an activity
+ * buffer opens the live view (#839), otherwise it opens the steer prompt
+ * (`deck-ui` source tag). Opt-out: PI_ENSEMBLE_QUIET_STATUS=1.
  *
- * Selecting a row (Enter in roster mode) confirms the job: a running job
- * with an activity buffer opens the live view (#839), otherwise it opens
- * the steer prompt (`deck-ui` source tag).
- *
- * Opt-out: PI_ENSEMBLE_QUIET_STATUS=1. #709's "do not remove either
+ * #709's "do not remove either widget" directive is superseded — the
+ * aboveEditor `ensemble:deck-prompt` widget was the source of the
+ * duplicate projection and was removed in #729.
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
-import { MAIN_ROW_KEY, buildAgentListLines, openAgentList } from "./agent-list.ts";
+import { buildAgentListLines } from "./agent-list.ts";
 import * as deckComposite from "./dispatch-deck-composite.ts";
 import { type RowConfirmHost, onRowConfirm } from "./dispatch-deck-confirm.ts";
 import { steerFromDeck } from "./dispatch-deck-interactive.ts";
 import { dropBuffer } from "./dispatch-deck-live.ts";
 import { type DeckNav, createDeckNav } from "./dispatch-deck-nav.ts";
+import { suppressWidgetIfQuiet } from "./dispatch-deck-quiet.ts";
 import {
   buildLinesBatchOnly as buildLinesBatchOnlyImpl,
   buildLines as buildLinesImpl,
@@ -75,17 +76,20 @@ let widgetVisible = false;
 let nav: DeckNav | undefined;
 let navUnsub: (() => void) | undefined;
 let navWarned = false;
+// TUI captured from the deck widget factory at render time — module scope
 // so the focus probe survives re-attach (a re-attach builds a fresh DeckNav
 // but the TUI is the same instance for the lifetime of the interactive
-// session; see buildDeckWidgetFactory). Cleared on detach.
+// session; see buildDeckWidgetFactory). Cleared on detach so a stale TUI
+// from a previous session (or test) does not leak into the focus probe.
 let deckTui: TUI | null = null;
-// The focused-component probe seam (identity of the
-// focused component, `tui.focusedComponent`; see setFocusedComponentProbe.
+// The focused-component probe seam the tests exercise (identity of the
+// focused component, `tui.focusedComponent`); see setFocusedComponentProbe.
 let focusedComponentProbe: (() => unknown) | undefined;
 // Self-heal attempt counter: caps the renderNow retry loop so a persistent
-// onTerminalInput failure doesn't re-create and re-attempt registration on
-// every 1 s render. Reset ONLY by attachNav — the self-heal path must
-// ACCUMULATE attempts across renders or the cap never binds.
+// onTerminalInput failure (a host without the capability at all) doesn't
+// re-create and re-attempt registration on every 1 s render for the whole
+// session. Reset ONLY by attachNav — the self-heal path must ACCUMULATE
+// attempts across renders or the cap never binds.
 let navHealAttempts = 0;
 const NAV_HEAL_MAX = 5;
 
@@ -135,8 +139,12 @@ function detachNav(): void {
 
 function navGetters(ctx: ExtensionContext) {
   return {
-    runningKeys: () => [MAIN_ROW_KEY, ...[...entries.values()].map((e) => e.key)],
+    runningKeys: () => [...entries.values()].map((e) => e.key),
+    // No try/catch: a throw propagates to the key-press handler (Pi's
+    // input loop). Swallowing it to "" would ENABLE roster mode from a
+    // throwing editor — fail open instead.
     editorText: () => ctx.ui.getEditorText(),
+    // Focus gate for the roster nav (#deck-nav-focus): the global
     // onTerminalInput listener runs BEFORE pi-tui routes the key to the
     // focused component, so without this the roster would steal `↓` from
     // the /model selector, ctx.ui.* dialogs and overlays (their editor
@@ -177,7 +185,8 @@ function editorFocused(): boolean {
  * #834 — register the roster-mode input listener once. The listener is
  * the operator's path into the deck's running-job rows: from an empty
  * editor, `down` enters roster mode (see dispatch-deck-nav.ts). It is
- * registered when the extension has a UI surface. `detach()`
+ * registered only when the extension has a UI surface and the deck is
+ * not quiet — quiet mode and headless mode register nothing. `detach()`
  * unsubscribes; a re-`attach` after `detach` registers a fresh listener
  * (the module-level `nav` is cleared by `detach`, so at most one
  * listener is ever live).
@@ -187,21 +196,22 @@ function attachNav(ctx: ExtensionContext): void {
 }
 
 /**
- * Own the nav wiring for one cycle: the hasUI guard, the prior-listener
- * teardown, the createDeckNav construction and the registration. Used by
- * `attach()` (explicit attach — a new budget for the self-heal counters)
- * and renderNow's self-heal (a transient attach-time failure retries here
- * on a later render). The `navWarned`/`navHealAttempts` resets live in
- * `attachNav` only: the self-heal path must accumulate across renders so
- * the cap binds. Returns true when the listener is live.
+ * Own the nav wiring for one cycle: the quiet/hasUI guards, the
+ * prior-listener teardown, the createDeckNav construction and the
+ * registration. Used by `attach()` (explicit attach — a new budget for
+ * the self-heal counters) and renderNow's self-heal (a transient
+ * attach-time failure retries here on a later render). The
+ * `navWarned`/`navHealAttempts` resets live in `attachNav` only: the
+ * self-heal path must accumulate across renders so the cap binds. Returns
+ * true when the listener is live.
  *
- * #914 quiet-mode gate relocation: the `isQuiet()` early-return that
- * lived here is REMOVED — quiet mode now still registers the roster
- * listener (and the global shortcut), because quiet only suppresses the
- * PASSIVE deck widget (renderNow's empty-deck guard).
+ * #914 — the global shortcut (agent-list-keys.ts) is the quiet-mode
+ * entry point; this roster listener itself stays quiet-gated, so a quiet
+ * session's hidden roster cannot capture `↓`.
  */
 function tryAttachNav(ctx: ExtensionContext): boolean {
-  if (!ctx.hasUI) return false;
+  if (isQuiet() || !ctx.hasUI) return false;
+  // Unsubscribe any prior listener before re-registering (attach can be
   // called more than once in a session without an intervening detach).
   detachNav();
   const n = createDeckNav(
@@ -341,7 +351,9 @@ export function isTicking(): boolean {
   return tickHandle !== undefined;
 }
 
-// confirming ctx differed from the last attach()).
+/** Deck-map accessors the row-confirm module (#607 d3 / #839) reads through.
+ *  #839 — the steer host is built per-attach so a steer is never silently
+ *  dropped (the confirming ctx may differ from the last attach()). */
 function rowConfirmHostFor(ctx: ExtensionContext): RowConfirmHost {
   return {
     getEntry: (key) => entries.get(key),
@@ -349,12 +361,8 @@ function rowConfirmHostFor(ctx: ExtensionContext): RowConfirmHost {
   };
 }
 
-/**
- * #914 — route an agent-list Enter on a job row through the deck's
- * unchanged confirm route (buffer → live view, else steer prompt) using
- * the ctx the list was opened from. Returns the promise so callers (the
- * shortcut handler) can await it; the deck module does not hold it.
- */
+/** #914 — route an agent-list Enter on a job row through the deck's
+ *  unchanged confirm route (buffer → live view, else steer prompt). */
 export function confirmRow(ctx: ExtensionContext, key: string): Promise<void> {
   return onRowConfirm(ctx, key, rowConfirmHostFor(ctx));
 }
@@ -385,6 +393,22 @@ function scheduleRender(): void {
 
 function renderNow(): void {
   if (!activeCtx) return;
+  // #914 — quiet mode suppresses ONLY the passive widget (the roster
+  // listener stays quiet-gated in tryAttachNav; the global shortcut stays
+  // live). A widget left visible from a pre-quiet render is dropped; the
+  // helper lives in dispatch-deck-quiet.ts (moved from renderNow to keep
+  // this module within the 500-line limit).
+  if (
+    suppressWidgetIfQuiet(
+      activeCtx,
+      WIDGET_KEY,
+      () => widgetVisible,
+      (v) => {
+        widgetVisible = v;
+      },
+    )
+  )
+    return;
   if (entries.size === 0 && batches.size === 0) {
     if (widgetVisible) {
       try {
@@ -444,10 +468,14 @@ function buildDeckWidgetFactory(ctx: ExtensionContext) {
 /** Build the single composite widget factory (batch rows + per-job plain
  *  rows). The Text projection reads `buildLinesBatchOnly` (batch headers
  *  only); the per-job rows are one Text row per RUNNING entry (batch
- *  members included, #834) with the roster-mode `>` marker and the
- *  agent-list hint line. renderNow's empty-deck guard tests
+ *  `↓ select subagents` hint. renderNow's empty-deck guard tests
  *  `entries.size === 0 && batches.size === 0` directly (no projection
- *  read) so that a deck with only standalone entries still renders. */
+ *  read) so that a deck with only standalone entries still renders;
+ *  `buildLines`' output is a strict superset of `buildLinesBatchOnly`'s
+ *  (both contain batch headers; only `buildLines` adds standalone rows).
+ *  #914 — the per-job rows ARE the agent-list projection
+ *  (buildAgentListLines, the shared overlay/widget row layout), and the
+ *  hint line is the agent-list hint (buildAgentListHint). */
 function buildCompositeWidgetFactory(ctx: ExtensionContext) {
   return deckComposite.buildCompositeFactory(
     () => buildLinesBatchOnlyImpl(batches),
@@ -460,6 +488,12 @@ function buildCompositeWidgetFactory(ctx: ExtensionContext) {
     getDeckMaxRows(),
   );
 }
+
+// =============================================================================
+// Row rendering (the row-shape code lives in dispatch-deck-rows.ts;
+// these thin wrappers keep the module's public API stable while the deck
+// module's private `entries`/`batches` maps stay module-private)
+// =============================================================================
 
 /** Top-level deck rows: batch headers + standalone (non-batched) entries,
  *  in insertion order. Batched members are NOT included — they render as
@@ -493,8 +527,5 @@ export function buildLinesBatchOnly(now: number = Date.now()): string[] {
   return buildLinesBatchOnlyImpl(batches, now);
 }
 
-// Re-exported from dispatch-deck-rows.ts so that existing importers
-// (dispatch-deck-composite.ts, test-dispatch-deck.ts) keep their import
-// paths unchanged — the deck module stays the stable public surface for
-// the row-shape API.
-export { formatBatchRow, formatRow } from "./dispatch-deck-rows.ts";
+// Re-exported from dispatch-deck-rows.ts (existing importers keep their paths).
+export { formatBatchRow, formatRow, formatAgentRow } from "./dispatch-deck-rows.ts";

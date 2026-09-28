@@ -29,7 +29,7 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, visibleWidth } from "@earendil-works/pi-tui";
-import { LIST_SHORTCUT, STOP_ALL_CHORD, buildAgentListHint } from "../src/agent-list-keys.ts";
+import { LIST_SHORTCUT, STOP_ALL_KEY, buildAgentListHint } from "../src/agent-list-keys.ts";
 import {
   type AgentListLine,
   MAIN_ROW_KEY,
@@ -144,24 +144,22 @@ function registerRealJob(jobId: string): AbortController {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Row projection: main + A + B + <batch header> + M; selectable rows
-//    exactly [main, A, B, M] (PM decision: fixture row sequence).
+// 1. Row projection: main + A + B + M; selectable rows exactly [main, A,
+//    B, M]. Batch headers are NOT in the list's own projection (they render
+//    via the deck's batch-headers-only projection, so a batch deck does not
+//    double-render its header — see agent-list.ts #914 comment).
 // ---------------------------------------------------------------------------
 {
   const lines = buildAgentListLines(fixtureEntries(), fixtureBatches(), 80, NOW);
-  assert(lines.length === 5, "1a: 5 rows (main + A + B + batch header + M)");
+  assert(lines.length === 4, "1a: 4 rows (main + A + B + M; batch headers NOT in the list projection)");
   assert(lines[0]?.key === MAIN_ROW_KEY && lines[0]?.text === "main", "1b: leading row is `main`");
   assert(lines[1]?.key === "job-a", "1c: row 2 is job A");
   assert(lines[2]?.key === "job-b", "1d: row 3 is job B");
-  assert(
-    lines[3]?.key === "b1" && lines[3] !== undefined && !lines[3].selectable,
-    "1e: batch header between B and M, not selectable",
-  );
-  assert(lines[4]?.key === "job-m", "1f: row 5 is batch member M");
+  assert(lines[3]?.key === "job-m", "1e: row 4 is batch member M (the batch header renders via the lines() projection)");
   const selectable = lines.filter((l) => l.selectable).map((l) => l.key);
   assert(
     JSON.stringify(selectable) === JSON.stringify(["main", "job-a", "job-b", "job-m"]),
-    "1g: selectable rows are exactly [main, A, B, M]",
+    "1f: selectable rows are exactly [main, A, B, M]",
   );
 }
 
@@ -219,8 +217,8 @@ function registerRealJob(jobId: string): AbortController {
 }
 
 // ---------------------------------------------------------------------------
-// 4. The stop-all chord (ctrl+x ctrl+k) → y calls killAllJobs and closes;
-//    the `X` fallback does the same; a broken arm cancels silently.
+// 4. The stop-all key `X` (shift+x, in-list only) → y calls killAllJobs
+//    and closes; `n` cancels.
 // ---------------------------------------------------------------------------
 {
   const j1 = "real-all-1";
@@ -228,8 +226,7 @@ function registerRealJob(jobId: string): AbortController {
   registerRealJob(j1);
   registerRealJob(j2);
   const h = makeHarness([entry(j1, "K1", "developer", 0), entry(j2, "K2", "explore", 1)], []);
-  h.comp.handleInput("\x18"); // ctrl+x — arm the chord
-  h.comp.handleInput("\x0b"); // ctrl+k — the kill-all prompt
+  h.comp.handleInput("\x1b[120;2u"); // shift+x Kitty wire form (codepoint 120 = 'x', mod 2 = shift)
   const rendered = h.comp.render(80);
   assert(
     rendered.some((l) => l.includes("Kill ALL")),
@@ -243,27 +240,27 @@ function registerRealJob(jobId: string): AbortController {
   assert(h.done, "4c: the list closed after kill-all");
   clearJobsForTesting();
 
-  // A broken arm: ctrl+x then `q` cancels the chord (no prompt, no kill).
-  const j3 = "real-broken";
+  // `X` then `n` cancels (no kill).
+  const j3 = "real-keep-all";
   registerRealJob(j3);
   const h2 = makeHarness([entry(j3, "K", "developer", 0)], []);
-  h2.comp.handleInput("\x18"); // arm
-  h2.comp.handleInput("q"); // breaks the arm (q is swallowed — no prompt, no kill)
+  h2.comp.handleInput("\x1b[120;2u"); // shift+x — the kill-all prompt
+  h2.comp.handleInput("n");
   const rendered2 = h2.comp.render(80);
   assert(
     !rendered2.some((l) => l.includes("Kill ALL")),
-    "4d: a broken arm cancels the chord (no prompt)",
+    "4d: `n` cancels the kill-all prompt",
   );
-  assert(killJob(j3) === true, "4e: the job survived the broken arm (nothing killed)");
+  assert(killJob(j3) === true, "4e: the job survived the cancel (nothing killed)");
   clearJobsForTesting();
 
-  // The `X` single-key fallback opens the same confirmation.
+  // A plain `x` (kill-one) does NOT fire the kill-all prompt.
   const h3 = makeHarness(fixtureEntries(), []);
-  h3.comp.handleInput("X");
+  h3.comp.handleInput("x"); // plain x — kill-one prompt (not kill-all)
   const rendered3 = h3.comp.render(80);
   assert(
-    rendered3.some((l) => l.includes("Kill ALL")),
-    "4f: `X` opens the kill-all prompt (fallback)",
+    !rendered3.some((l) => l.includes("Kill ALL")),
+    "4f: plain `x` (kill-one) does not fire the kill-all prompt",
   );
   h3.comp.handleInput("n");
 }
@@ -317,13 +314,16 @@ function registerRealJob(jobId: string): AbortController {
   // A (job-a) settles while the selection is on its slot: the new
   // projection has no A; down from main lands on A's slot and re-resolves
   // to A's successor (B).
+  // #914 — the projection no longer includes batch headers, so the row
+  // text is the formatAgentRow projection (label · role · tool · hint · tok)
+  // rather than the old `B · explore` format.
   const remaining = fixtureEntries().filter((e) => e.key !== "job-a");
   const h = makeHarness(remaining, fixtureBatches());
   h.comp.handleInput("\x1b[B"); // down → main → A's old slot → re-resolves to B
   const rendered = h.comp.render(80);
   const sel = rendered.find((l) => l.startsWith("> "));
   assert(
-    !!sel && sel.includes("B · explore"),
+    !!sel && sel.includes("B"),
     "6a: selection on the successor (B) after A settled",
   );
 
@@ -440,42 +440,67 @@ function registerRealJob(jobId: string): AbortController {
   assert(hint.startsWith("↓ agents"), "9a: the passive hint mentions the agents");
   assert(hint.includes("Enter view"), "9b: the hint carries the view action");
   assert(
-    hint.includes(`${STOP_ALL_CHORD[0]} ${STOP_ALL_CHORD[1]} stop all`),
-    "9c: the hint names the stop-all chord",
+    hint.includes(`${STOP_ALL_KEY} stop all`),
+    "9c: the hint names the stop-all key",
   );
 }
 
 // ---------------------------------------------------------------------------
-// 10. Chord collision test: the chosen list shortcut and the stop-all
-//     chord are UNBOUND in Pi's built-in table (getKeybindings from the
-//     installed @earendil-works/pi-tui, at test time).
+// 10. Key collision test: the chosen list shortcut is UNBOUND in BOTH
+//     tables Pi resolves — the installed pi-tui table (getKeybindings)
+//     AND the pi-coding-agent KEYBINDINGS (app.* ids). The control
+//     assertion proves `ctrl+l` IS detected as bound in the app table
+//     (where app.model.select owns it), so the test cannot pass
+//     vacuously. The in-list stop-all key `X` (shift+x) is not a
+//     global binding: `ctrl+x` is bound (app.message.copy) but `X`
+//     (shift+x) is not — a plain `x` (kill-one) and `ctrl+x` (copy)
+//     are distinct from `X` in pi-tui's case-sensitive matcher.
 // ---------------------------------------------------------------------------
 {
   const { getKeybindings } = await import("@earendil-works/pi-tui");
+  // pi-coding-agent's app-level keybindings (app.* ids). The module is not
+  // re-exported from the package root, so we import it via a relative path
+  // from the installed package's dist directory.
+  const { KEYBINDINGS: APP_KB } = await import("../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js");
   const kb = getKeybindings();
-  const config = kb.getResolvedBindings() as Record<string, string | string[] | undefined>;
+  const tui = kb.getResolvedBindings() as Record<string, string | string[] | undefined>;
+  const app = APP_KB as Record<string, { defaultKeys: string | string[] }>;
+  // Collect all bound keys from BOTH tables.
   const allBound: string[] = [];
-  for (const v of Object.values(config)) {
+  for (const v of Object.values(tui)) {
     if (Array.isArray(v)) allBound.push(...v);
     else if (typeof v === "string") allBound.push(v);
   }
+  for (const d of Object.values(app)) {
+    if (Array.isArray(d.defaultKeys)) allBound.push(...d.defaultKeys);
+    else if (typeof d.defaultKeys === "string") allBound.push(d.defaultKeys);
+  }
+  // Control assertion: `ctrl+l` IS bound in the app table (app.model.select).
+  // This proves the test is actually reading the app table — without it,
+  // a bug that made the app table unreadable would let the unbound check
+  // pass vacuously.
+  assert(
+    allBound.includes("ctrl+l"),
+    "10-control: `ctrl+l` IS detected as bound in the app table (app.model.select) — the test reads both tables",
+  );
   assert(
     !allBound.includes(LIST_SHORTCUT),
-    `10a: list shortcut ${LIST_SHORTCUT} is UNBOUND in the built-in table`,
+    `10a: list shortcut ${LIST_SHORTCUT} is UNBOUND in BOTH tables (pi-tui + pi-coding-agent)`,
   );
-  // The chord's individual keys may be bound (ctrl+x, ctrl+k) — what must
-  // be unbound is the CHORD as a sequence: Pi's single-key matcher can
-  // never fire a two-key sequence, so the chord is in-list-only.
+  // The in-list stop-all key `X` (shift+x) is not a global binding.
   assert(
-    !allBound.includes(`${STOP_ALL_CHORD[0]} ${STOP_ALL_CHORD[1]}`),
-    "10b: the stop-all chord (two-key sequence) is not a built-in binding",
+    !allBound.includes(STOP_ALL_KEY),
+    `10b: stop-all key ${STOP_ALL_KEY} (shift+x) is UNBOUND globally`,
   );
+  // The global `ctrl+x` IS bound (app.message.copy) — this is the collision
+  // that motivated the original chord. The chord is now removed; `X`
+  // (shift+x) is in-list-only and does not collide.
   assert(
-    !allBound.includes(`${STOP_ALL_CHORD[0]}+${STOP_ALL_CHORD[1]}`),
-    "10b2: no combined-form binding of the chord exists",
+    allBound.includes("ctrl+x"),
+    "10c: `ctrl+x` IS bound globally (app.message.copy) — the collision the original chord was chosen to avoid",
   );
   const conflicts = kb.getConflicts();
-  assert(Array.isArray(conflicts), "10c: getConflicts() returns a list (the manager is live)");
+  assert(Array.isArray(conflicts), "10d: getConflicts() returns a list (the manager is live)");
 }
 
 console.log(`\nexit ${exit}`);

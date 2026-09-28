@@ -163,10 +163,7 @@ export function createDeckNav(
       if (matchesKey(data, "enter")) {
         const key = selected;
         exit();
-        // #914 — the leading `main` row is Esc-equivalent: exiting without
-        // confirming is the ONLY effect (it never opens a view). Job rows
-        // confirm through the unchanged route.
-        if (key && key !== MAIN_ROW_KEY) onRowConfirm(key);
+        if (key) onRowConfirm(key);
         return { consume: true };
       }
       if (matchesKey(data, "down") || matchesKey(data, "j")) {

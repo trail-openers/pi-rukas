@@ -2,15 +2,6 @@
 /**
  * #839 — live view of a running subagent's activity (dispatch deck, epic
  * #833 G5). Quiet mode test extracted from test-dispatch-deck-live.ts.
- *
- * #914 — quiet-mode decision: buffers are now ALWAYS created (the
- * startBuffer quiet early-return was REMOVED — quiet mode only suppresses
- * the passive deck widget, not the live view). Sections 6a/6b therefore
- * FLIP from "no buffer" to "buffer exists" with this before/after record:
- *   6a before: `!hasBuffer("b1")` — "quiet mode → startBuffer creates no buffer"
- *   6a after:  `hasBuffer("b1")` — "quiet mode → startBuffer STILL creates the buffer (#914)"
- *   6b before: `!hasBuffer("b1")` — "quiet mode → feedRawEvent is a no-op"
- *   6b after:  `hasBuffer("b1")` — "quiet mode → feedRawEvent stores events (#914)"
  */
 
 import {
@@ -37,18 +28,23 @@ function resetBuffers(): void {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Quiet mode: buffer STILL created (#914 — the startBuffer quiet gate
-//    was removed; quiet now only suppresses the passive deck widget).
+// 6. Quiet mode: no buffer created.
 // ---------------------------------------------------------------------------
 function testQuietMode() {
   resetBuffers();
   process.env.PI_ENSEMBLE_QUIET_STATUS = "1";
   startBuffer("b1");
+  // #914 — quiet-mode decision: the startBuffer quiet early-return was REMOVED
+  // (buffers are now ALWAYS created — quiet mode only suppresses the PASSIVE
+  // deck widget, not the live view). This assertion flips from "no buffer"
+  // to "buffer exists" to document that change.
   assert(hasBuffer("b1"), "6a: quiet mode → startBuffer STILL creates the buffer (#914)");
   feedRawEvent("b1", {
     type: "message_end",
     message: { role: "assistant", content: [{ type: "text", text: "x" }] },
   });
+  // #914 — feedRawEvent now stores events in quiet mode too (the buffer
+  // exists, so events are buffered; the live view is reachable).
   assert(hasBuffer("b1"), "6b: quiet mode → feedRawEvent stores events (#914)");
   Reflect.deleteProperty(process.env, "PI_ENSEMBLE_QUIET_STATUS");
 }

@@ -35,10 +35,11 @@ import { type DeckEntry, formatRow } from "./dispatch-deck.ts";
 import { formatElapsed } from "./progress.ts";
 
 /**
- * Row state for the plain-row rendering (#834, #914).
- * `running` is read only for the hint/separator presence (#914: the rows
- * themselves come from the agent-list projection, `agentList`); the roster
- * `selectedKey` still drives the `>` marker overlay.
+ * Row state for the plain-row rendering (#834).
+ * `running` includes batch members (one row per job, #709/#729/#742/#761
+ * single-surface invariant); `selectedKey` is the roster-mode `>` target.
+ * #914 — the plain rows are the agent-list projection (`agentList`);
+ * `running` now only drives the blank separator / hint presence.
  */
 export interface DeckRows {
   running: readonly DeckEntry[];
@@ -193,6 +194,7 @@ export function buildCompositeFactory(
     // so a mid-render interleaving cannot split the two projections.
     // One clock sample per render: the batch headers and the per-job rows
     // cannot disagree by an elapsed-time tick crossing mid-render.
+    const now = Date.now();
     const rowState = rows();
     const agentRows = agentList();
     const container = new Container();
@@ -207,11 +209,15 @@ export function buildCompositeFactory(
     if (overflow > 0) {
       container.addChild(new Text(theme.fg("muted", `... (${overflow} more)`), 1, 0));
     }
-    // #914 — the rows are the agent-list projection (the `main` row
-    // leading, then batch headers and job rows in insertion order), so the
-    // passive widget shows exactly the shape the list overlay renders.
-    // The roster `>` marker overlays the row whose key matches
-    // `selectedKey`; batch-header rows (non-selectable) never carry it.
+    // #914 — the per-job rows are the agent-list projection (the `main`
+    // row leading, then the job rows in insertion order), so the passive
+    // widget shows exactly the shape the list overlay renders. The roster
+    // `>` marker overlays the row whose key matches `selectedKey`; the
+    // marker and the `◆ ` main-row prefix are applied ONCE here, over the
+    // projection's own row text. Batch-header rows render ONLY via the
+    // batch-headers projection above (the lines() children), never in this
+    // loop (buildAgentListLines lists main + job rows only), so a batch
+    // deck does not double-render its header.
     const selKey = rowState.selectedKey;
     for (const row of agentRows) {
       const isSel = row.selectable && selKey === row.key;
@@ -224,7 +230,7 @@ export function buildCompositeFactory(
           : theme.fg("muted", line);
       container.addChild(new Text(text, 1, 0));
     }
-    if (agentRows.length > 0) container.addChild(new Text("", 1, 0));
+    if (rowState.running.length > 0) container.addChild(new Text("", 1, 0));
     if (rowState.showHint) {
       container.addChild(
         new Text(theme.fg("muted", toTerminalLine(buildAgentListHint(lineWidth), lineWidth)), 1, 0),

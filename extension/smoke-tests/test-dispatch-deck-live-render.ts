@@ -461,6 +461,10 @@ for (const w of [40, 80, 120]) {
   assert(allWithin, "9b: composite rows within 80 cols");
 }
 
+// ---------------------------------------------------------------------------
+// 10. Steer prompt: exactly two lines, structural \n preserved, label/key
+//     sanitised.
+// ---------------------------------------------------------------------------
 {
   const now = 1_000_000_000;
   const hostileEntry: DeckEntry = {

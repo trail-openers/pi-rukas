@@ -12,11 +12,9 @@
  *   - `x` asks `Kill <label>? (y/n)`; `y` kills exactly that job, `n` (or
  *     anything else) cancels. A job that settles after the confirm is a
  *     no-op in the registry (`killJob` returns false for an unknown id).
- *   - The stop-all chord (`ctrl+x` `ctrl+k` — see agent-list-keys.ts for
- *     the collision evidence) asks `Kill ALL N agents? (y/n)`; `y` calls
- *     `killAllJobs` once and closes the list. `X` is the single-key
- *     fallback (Pi has no multi-key chords in `registerShortcut`, so the
- *     chord is in-list-only).
+ *   - `X` (shift+x, in-list only — see agent-list-keys.ts for the
+ *     collision evidence) asks `Kill ALL N agents? (y/n)`; `y` calls
+ *     `killAllJobs` once and closes the list.
  *   - `Esc` closes the list back to the main UI.
  *
  * The list is a focused `ctx.ui.custom({ overlay: true })` component. The
@@ -43,11 +41,11 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Component, isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
-import { STOP_ALL_CHORD, STOP_ALL_FALLBACK_KEY } from "./agent-list-keys.ts";
+import { STOP_ALL_KEY } from "./agent-list-keys.ts";
 import { killAllJobs, killJob } from "./async-jobs-lifecycle.ts";
 import { toTerminalLine } from "./dispatch-deck-line.ts";
+import { formatAgentRow, formatBatchRow } from "./dispatch-deck-rows.ts";
 import type { BatchDeckEntry, DeckEntry } from "./dispatch-deck.ts";
-import { formatElapsed } from "./progress.ts";
 
 /** The leading row's selectable key (Esc-equivalent — closes, never opens). */
 export const MAIN_ROW_KEY = "main";
@@ -89,46 +87,29 @@ export function buildAgentListLines(
   width: number,
   now: number = Date.now(),
 ): AgentListLine[] {
-  const batchKeys = new Set(batches.map((b) => b.key));
   type Item = { kind: "batch"; b: BatchDeckEntry } | { kind: "job"; e: DeckEntry };
   // Batch members render as their OWN row under the header (the deck's row
   // model, #834/#709 single-surface invariant): the header is a separate
   // non-selectable row, so members are NOT filtered out here.
-  const items: Item[] = [
-    ...batches.map((b) => ({ kind: "batch" as const, b })),
-    ...entries.map((e) => ({ kind: "job" as const, e })),
-  ];
-  items.sort(
-    (a, b) => (a.kind === "batch" ? a.b.seq : a.e.seq) - (b.kind === "batch" ? b.b.seq : b.e.seq),
-  );
+  // #914 — batch headers are NOT in the list's own projection: they render
+  // via the deck's batch-headers-only projection (the composite's lines()
+  // children), so a batch deck does not double-render its header. The
+  // overlay shows only the main row + the job rows (batch members included,
+  // each with its own row — the #834/#709 single-surface invariant); the
+  // passive mirror (dispatch-deck-composite.ts) adds the header row on top
+  // of the same job rows, so the operator sees the header once, up top,
+  // exactly as before #914.
   const lines: AgentListLine[] = [
     { key: MAIN_ROW_KEY, text: toTerminalLine("main", width), selectable: true, running: true },
   ];
-  for (const item of items) {
-    if (item.kind === "batch") {
-      const running = Math.max(0, item.b.size - item.b.completed);
-      lines.push({
-        key: item.b.key,
-        text: toTerminalLine(
-          `batch[${item.b.label}] ${formatElapsed(Math.max(0, now - item.b.startedAt))} · ${item.b.completed}/${item.b.size} done${running > 0 ? ` · ${running} running` : ""}`,
-          width,
-        ),
-        selectable: false,
-        running: running > 0,
-      });
-      continue;
-    }
-    const e = item.e;
-    const tool = e.state.lastToolName
-      ? ` · ${e.state.lastToolName}${e.state.toolUses > 1 ? ` (#${e.state.toolUses})` : ""}`
-      : "";
-    const hint = e.state.lastToolHint ? ` ${e.state.lastToolHint}` : "";
+  for (const e of entries) {
+    // #914 — the job row carries the full running activity (icon, label,
+    // elapsed, last tool + use-count, hint — the formatRow projection)
+    // plus the token total (formatAgentRow); the list is the surface that
+    // shows the running tool, as the deck row did before #914.
     lines.push({
       key: e.key,
-      text: toTerminalLine(
-        `${e.label} · ${e.state.role} · ${formatElapsed(Math.max(0, now - e.startedAt))}${tool}${hint} · ${e.state.totalTokens} tok`,
-        width,
-      ),
+      text: toTerminalLine(formatAgentRow(e, now), width),
       selectable: true,
       running: true,
     });
@@ -162,7 +143,6 @@ export function createAgentListComponent(
 ): Component {
   let index = 0;
   let pending: { kind: "kill"; key: string } | { kind: "kill-all" } | undefined;
-  let chordArmed = false;
   let lastRows: AgentListLine[] = [];
 
   const selectableRows = (): AgentListLine[] => lastRows.filter((r) => r.selectable);
@@ -238,11 +218,6 @@ export function createAgentListComponent(
       // does not explicitly own are swallowed: the overlay is focused, so
       // an unhandled key here would otherwise land in the editor.
       if (isKeyRelease(data)) return;
-      // A key that breaks the arm of the stop-all chord cancels it
-      // (nothing fires; the key is handled below as a fresh press).
-      const wasArmed = chordArmed;
-      chordArmed = false;
-
       if (pending) {
         // The y/n confirmation swallows EVERYTHING except the two answer
         // keys (no arrows, no x, no Esc — a miskey during a confirm must
@@ -274,13 +249,8 @@ export function createAgentListComponent(
         if (row?.selectable && row.key !== MAIN_ROW_KEY) pending = { kind: "kill", key: row.key };
         return;
       }
-      if (wasArmed && matchesKey(data, STOP_ALL_CHORD[1])) {
+      if (matchesKey(data, STOP_ALL_KEY)) {
         pending = { kind: "kill-all" };
-        return;
-      }
-      if (matchesKey(data, STOP_ALL_CHORD[0]) || data === STOP_ALL_FALLBACK_KEY) {
-        chordArmed = matchesKey(data, STOP_ALL_CHORD[0]);
-        if (data === STOP_ALL_FALLBACK_KEY) pending = { kind: "kill-all" };
         return;
       }
       if (matchesKey(data, "enter")) {

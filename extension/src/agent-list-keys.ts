@@ -9,22 +9,25 @@
  * "the chord-collision test proves the shortcut and stop-all chords are
  * unbound in Pi's built-in table"):
  *
- *   - list opening: `ctrl+l` (LIST_SHORTCUT). Pi's built-in table has no
- *     `ctrl+l` binding — `ctrl+l` is not among the 33 bound keys in the
- *     installed pi-tui keybinding table (verified at test time via
- *     `getKeybindings().getResolvedBindings()`), so the editor is
- *     unaffected.
- *   - stop-all: `ctrl+x ctrl+k` (STOP_ALL_CHORD, a two-press chord owned
- *     by the list's input state machine — `ctrl+x` arms the chord,
- *     `ctrl+k` within it fires the confirmation prompt, any other key
- *     cancels it). Pi does NOT support multi-key chords via
- *     `registerShortcut` (one KeyId per shortcut —
- *     `registerShortcut(shortcut: KeyId, …)`), so the chord is
- *     in-list-only, and `X` inside the list is the single-key fallback
- *     (STOP_ALL_FALLBACK_KEY). Neither form is a global binding:
- *     standalone `ctrl+k` is bound (`tui.editor.deleteToLineEnd`),
- *     standalone `ctrl+x` is bound (`app.message.copy`), but the CHORD is
- *     a sequence Pi's single-key matcher cannot see.
+ *   - list opening: `alt+a` (LIST_SHORTCUT). `alt+a` is unbound in BOTH
+ *     tables Pi resolves — the installed pi-tui table
+ *     (`getKeybindings().getResolvedBindings()`) and the pi-coding-agent
+ *     `KEYBINDINGS` (`app.*` ids) — verified at test time against both,
+ *     with a control assertion that `ctrl+l` IS detected as bound in the
+ *     app table (where `app.model.select` owns it) so the test cannot
+ *     pass vacuously. (The first pass of this issue chose `ctrl+l` after
+ *     reading only the pi-tui table — that is the collision that led to
+ *     this re-choice. #914 — the list shortcut was changed from `ctrl+l`
+ *     to `alt+a` for exactly this reason.)
+ *   - stop-all: `X` (STOP_ALL_KEY, a single key — shift+x) inside the
+ *     list overlay ONLY, with the y/n confirm. The `ctrl+x ctrl+k` global
+ *     chord that the first pass registered is REMOVED: `ctrl+x` is bound
+ *     globally (`app.message.copy`) and the two-press in-list chord added
+ *     a second global registration without adding capability the single
+ *     in-list key does not already provide. `X` matches pi-tui's
+ *     case-sensitive KeyId (`matchesKey("X", "X")` is true, `matchesKey
+ *     ("x", "X")` is false), so a plain `x` (kill-one) never fires it,
+ *     and `ctrl+x` (0x18) matches neither.
  *
  * The collision test (smoke-tests/test-dispatch-deck-list.ts) asserts at
  * test time against the installed `getKeybindings()` table.
@@ -34,13 +37,10 @@ import { MAIN_ROW_KEY, buildAgentListLines } from "./agent-list.ts";
 import type { BatchDeckEntry, DeckEntry } from "./dispatch-deck.ts";
 
 /** The global shortcut that opens the agent-list overlay. */
-export const LIST_SHORTCUT = "ctrl+l";
+export const LIST_SHORTCUT = "alt+a";
 
-/** The stop-all chord (in-list): `ctrl+x` arms it, `ctrl+k` fires it. */
-export const STOP_ALL_CHORD: ["ctrl+x", "ctrl+k"] = ["ctrl+x", "ctrl+k"];
-
-/** The single-key stop-all fallback inside the list (mirrors `x`→kill). */
-export const STOP_ALL_FALLBACK_KEY = "X";
+/** The in-list stop-all key (a single key — shift+x, `Shift+X` on the keyboard). */
+export const STOP_ALL_KEY = "shift+x";
 
 /**
  * The passive-widget hint line. The row projection above it is exactly the
@@ -50,5 +50,5 @@ export const STOP_ALL_FALLBACK_KEY = "X";
  * Esc-equivalent.
  */
 export function buildAgentListHint(width: number): string {
-  return `↓ agents · Enter view · x stop · ${STOP_ALL_CHORD[0]} ${STOP_ALL_CHORD[1]} stop all · Esc close`;
+  return `↓ agents · Enter view · x stop · ${STOP_ALL_KEY} stop all · Esc close`;
 }
