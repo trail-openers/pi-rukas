@@ -130,40 +130,55 @@ export default function registerChildGuards(pi: ExtensionAPI): void {
  * turn. Every other ExtensionAPI method delegates to the real pi.
  */
 export function failClosedPi(pi: ExtensionAPI): ExtensionAPI {
-  // A plain delegating object, NOT a Proxy around pi: the guards bind
-  // `pi.on` at registration (e.g. `const on = pi.on; on("tool_call", …)`),
-  // and a Proxy `get` trap returning a function auto-binds `this` to the
-  // PROXY — so a second `pi.on` call would re-enter the wrapper recursively.
-  // A flat object that forwards every method to the real pi has no such
-  // identity trap: `pi.on` called twice yields the same wrapped function,
-  // and every other method delegates to the real pi by reference.
-  const wrapped: Record<string, unknown> = {};
-  for (const key of Object.keys(pi)) {
-    const value = (pi as unknown as Record<string, unknown>)[key];
-    if (key === "on" && typeof value === "function") {
-      wrapped[key] = (event: string, handler: unknown, ...rest: unknown[]) => {
-        if (event === "tool_call" && typeof handler === "function") {
-          const original = handler as (e: unknown, c: unknown) => unknown;
-          const wrappedHandler = async (e: unknown, c: unknown) => {
-            try {
-              return await original(e, c);
-            } catch (err) {
-              trace(
-                `child-guards: tool_call guard threw — fail-closed refusal: ${(err as Error).message}`,
-              );
-              return {
-                block: true,
-                reason: `pi-rukas guard error — command refused (fail-closed): ${(err as Error).message}`,
-              };
-            }
-          };
-          return (pi.on as (ev: string, h: unknown) => void).call(pi, event, wrappedHandler);
-        }
-        return (value as (h: unknown, ...r: unknown[]) => unknown).apply(pi, [handler, ...rest]);
-      };
-    } else {
-      wrapped[key] = typeof value === "function" ? value.bind(pi) : value;
-    }
+  // The wrapper is a PROTOTYPE-INHERITING object, not a flat key copy and
+  // not a Proxy. The guards bind `pi.on` at registration (e.g. `const on =
+  // pi.on; on("tool_call", …)`), and a Proxy `get` trap returning a function
+  // auto-binds `this` to the PROXY — so a second `pi.on` call would re-enter
+  // the wrapper recursively. An `Object.keys(pi)` copy has the mirror
+  // problem: it only sees pi's OWN enumerable properties, so an `on` that
+  // lives on pi's prototype (non-enumerable) is missed and the wrapper
+  // registers nothing while LOOKING registered. `Object.create(pi)` inherits
+  // every property — own, prototype, getters — so the wrapper's identity
+  // can never diverge from pi's surface, and the single OWN `on` defined
+  // below shadows it for registration only. No recursion: the own `on` is
+  // an own property of the wrapper (not the inherited one), and it calls
+  // `pi.on.call(pi, …)` — the REAL pi's on, with `this` pinned to the real
+  // pi — so the wrapped handler is installed into pi itself.
+  if (typeof pi.on !== "function") {
+    throw new Error(
+      "child-guards: ExtensionAPI has no " + "`on`" + " — refusing to load without guards",
+    );
   }
-  return wrapped as unknown as ExtensionAPI;
+  const wrapper = Object.create(pi) as Record<string, unknown>;
+  Object.defineProperty(wrapper, "on", {
+    value: (event: string, handler: unknown, ...rest: unknown[]) => {
+      if (event === "tool_call" && typeof handler === "function") {
+        const original = handler as (e: unknown, c: unknown) => unknown;
+        const wrappedHandler = async (e: unknown, c: unknown) => {
+          try {
+            return await original(e, c);
+          } catch (err) {
+            trace(
+              `child-guards: tool_call guard threw — fail-closed refusal: ${(err as Error).message}`,
+            );
+            return {
+              block: true,
+              reason: `pi-rukas guard error — command refused (fail-closed): ${(err as Error).message}`,
+            };
+          }
+        };
+        (pi.on as (ev: string, h: unknown) => void).call(pi, event, wrappedHandler);
+        return undefined;
+      }
+      return (pi.on as (ev: string, h: unknown, ...r: unknown[]) => unknown).apply(pi, [
+        event,
+        handler,
+        ...rest,
+      ]);
+    },
+    configurable: true,
+    enumerable: true,
+    writable: true,
+  });
+  return wrapper as unknown as ExtensionAPI;
 }

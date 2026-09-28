@@ -16,8 +16,6 @@
 import { type Socket, createConnection } from "node:net";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { discardsUncommittedWork, rejectsInteractiveGit } from "./bash-command-parser.ts";
-import { registerIssueCreationGuard } from "./issue-creation-guard.ts";
-import { registerMergeGuard } from "./merge-guard.ts";
 import { registerOoRewriteGuard } from "./oo-rewrite-guard.ts";
 import type { PermissionRequest } from "./permission-broker.ts";
 import { loadAgentsJson, loadGlobalConfig, loadProjectConfig } from "./permission-config.ts";

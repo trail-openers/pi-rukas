@@ -3,20 +3,16 @@
  * #926 — the child-guards companion extension: the file that carries the
  * mode-independent tool_call guards into spawned subagents in EVERY mode.
  *
- * The bug: the three mode-independent guards (registerMergeGuard #912,
- * registerIssueCreationGuard #598, registerDestructiveGitGuard) were
- * registered only inside the full pi-rukas extension, which spawn.ts
- * forwarded to children only in strict/headless mode. A trust-mode child got
- * none of them — live-proven by an ops child's `gh pr merge 999999 --squash`
- * reaching gh.
+ * The bug: the three mode-independent guards were registered only inside the
+ * full pi-rukas extension, which spawn.ts forwarded to children only in
+ * strict/headless mode. A trust-mode child got none of them.
  *
  * The companion registers EXACTLY those three (in that order), NOT the #716
  * oo-rewrite guard that the shared block also carries for strict/headless
  * children: activating oo-rewrite inside trust-mode children would be a
  * behaviour change outside #926's scope.
  *
- * This test loads the companion's DEFAULT EXPORT into a fake pi (the
- * fakePi `on`-capture pattern from test-oo-rewrite-guard.ts) and asserts:
+ * Loads the companion's DEFAULT EXPORT into a fake pi and asserts:
  *
  *   1. Loading with no PI_ENSEMBLE_SUBAGENT_MODE registers THREE tool_call
  *      hooks (destructive-git, issue-creation, merge — the three
