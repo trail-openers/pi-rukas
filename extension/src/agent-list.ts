@@ -77,7 +77,9 @@ export interface AgentListLine {
 
 /**
  * Project the agent-list rows from the deck maps: `main` first, then batch
- * header / member / standalone job rows in insertion (seq) order. Every
+ * headers / their members / standalone job rows in insertion (seq) order.
+ * Batch members sit directly under their header (the header itself is a
+ * non-selectable row) — the same shape the deck renders (#834). Every
  * untrusted fragment (label, last tool name + hint) goes through
  * `toTerminalLine` with the caller's width budget.
  */
@@ -89,11 +91,12 @@ export function buildAgentListLines(
 ): AgentListLine[] {
   const batchKeys = new Set(batches.map((b) => b.key));
   type Item = { kind: "batch"; b: BatchDeckEntry } | { kind: "job"; e: DeckEntry };
+  // Batch members render as their OWN row under the header (the deck's row
+  // model, #834/#709 single-surface invariant): the header is a separate
+  // non-selectable row, so members are NOT filtered out here.
   const items: Item[] = [
     ...batches.map((b) => ({ kind: "batch" as const, b })),
-    ...entries
-      .filter((e) => !e.batchKey || !batchKeys.has(e.batchKey))
-      .map((e) => ({ kind: "job" as const, e })),
+    ...entries.map((e) => ({ kind: "job" as const, e })),
   ];
   items.sort(
     (a, b) => (a.kind === "batch" ? a.b.seq : a.e.seq) - (b.kind === "batch" ? b.b.seq : b.e.seq),
@@ -180,7 +183,9 @@ export function createAgentListComponent(
     // The settled row's successor shifts into its slot (or the last row
     // when the settled row was last).
     const idx = lastRows.findIndex((r) => r.key === current);
-    const next = rows.findIndex((r) => r.key === (idx < lastRows.length ? lastRows[idx + 1]?.key : undefined));
+    const next = rows.findIndex(
+      (r) => r.key === (idx < lastRows.length ? lastRows[idx + 1]?.key : undefined),
+    );
     index = next === -1 ? rows.length - 1 : next;
     return true;
   };

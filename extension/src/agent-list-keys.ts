@@ -9,12 +9,11 @@
  * "the chord-collision test proves the shortcut and stop-all chords are
  * unbound in Pi's built-in table"):
  *
- *   - list opening: `ctrl+a` (LIST_SHORTCUT). Pi's built-in table has no
- *     `ctrl+a` binding — `tui.editor.cursorLineStart` defaults to
- *     `home`, `ctrl+home` (the `ctrl+a` default was removed in the
- *     namespaced-keybinding migration) — and the standalone `ctrl+a` byte
- *     is an unbound legacy editor alias for cursor-line-start that Pi's
- *     keybinding matcher does not match, so the editor is unaffected.
+ *   - list opening: `ctrl+l` (LIST_SHORTCUT). Pi's built-in table has no
+ *     `ctrl+l` binding — `ctrl+l` is not among the 33 bound keys in the
+ *     installed pi-tui keybinding table (verified at test time via
+ *     `getKeybindings().getResolvedBindings()`), so the editor is
+ *     unaffected.
  *   - stop-all: `ctrl+x ctrl+k` (STOP_ALL_CHORD, a two-press chord owned
  *     by the list's input state machine — `ctrl+x` arms the chord,
  *     `ctrl+k` within it fires the confirmation prompt, any other key
@@ -35,7 +34,7 @@ import { MAIN_ROW_KEY, buildAgentListLines } from "./agent-list.ts";
 import type { BatchDeckEntry, DeckEntry } from "./dispatch-deck.ts";
 
 /** The global shortcut that opens the agent-list overlay. */
-export const LIST_SHORTCUT = "ctrl+a";
+export const LIST_SHORTCUT = "ctrl+l";
 
 /** The stop-all chord (in-list): `ctrl+x` arms it, `ctrl+k` fires it. */
 export const STOP_ALL_CHORD: ["ctrl+x", "ctrl+k"] = ["ctrl+x", "ctrl+k"];
