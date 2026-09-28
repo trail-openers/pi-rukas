@@ -8,6 +8,14 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.67](https://github.com/trail-openers/pi-rukas/compare/v0.12.66...v0.12.67) (2026-09-28)
+
+
+### Bug Fixes
+
+* **deck:** stop the subagent live view corrupting the terminal ([#928](https://github.com/trail-openers/pi-rukas/issues/928)) ([4b137f6](https://github.com/trail-openers/pi-rukas/commit/4b137f647b317b2efd3d4dc4051d062f8a20b407))
+* **permissions:** load the mode-independent guards into every subagent ([#930](https://github.com/trail-openers/pi-rukas/issues/930)) ([801bb35](https://github.com/trail-openers/pi-rukas/commit/801bb353a75f6c96de34c5edcfeed51ff383ff5c))
+
 ## [0.12.66](https://github.com/trail-openers/pi-rukas/compare/v0.12.65...v0.12.66) (2026-09-27)
 
 
