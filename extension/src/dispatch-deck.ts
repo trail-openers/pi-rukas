@@ -24,7 +24,12 @@ import { type RowConfirmHost, onRowConfirm } from "./dispatch-deck-confirm.ts";
 import { steerFromDeck } from "./dispatch-deck-interactive.ts";
 import { dropBuffer } from "./dispatch-deck-live.ts";
 import { type DeckNav, createDeckNav } from "./dispatch-deck-nav.ts";
-import { suppressWidgetIfQuiet } from "./dispatch-deck-quiet.ts";
+import {
+  _clearNavUnsub,
+  _getNavUnsub,
+  registerNavListener,
+  suppressWidgetIfQuiet,
+} from "./dispatch-deck-quiet.ts";
 import {
   buildLinesBatchOnly as buildLinesBatchOnlyImpl,
   buildLines as buildLinesImpl,
@@ -74,8 +79,6 @@ let insertionCounter = 0;
 let tickHandle: ReturnType<typeof setInterval> | undefined;
 let widgetVisible = false;
 let nav: DeckNav | undefined;
-let navUnsub: (() => void) | undefined;
-let navWarned = false;
 // TUI captured from the deck widget factory at render time — module scope
 // so the focus probe survives re-attach (a re-attach builds a fresh DeckNav
 // but the TUI is the same instance for the lifetime of the interactive
@@ -128,12 +131,13 @@ export function detach(): void {
 
 /** Detach the roster-mode listener (if registered) and drop the nav state. */
 function detachNav(): void {
-  if (navUnsub) {
+  const unsub = _getNavUnsub();
+  if (unsub) {
     try {
-      navUnsub();
+      unsub();
     } catch {}
-    navUnsub = undefined;
   }
+  _clearNavUnsub();
   nav = undefined;
 }
 
@@ -222,34 +226,6 @@ function tryAttachNav(ctx: ExtensionContext): boolean {
   if (!registerNavListener(n, ctx)) return false;
   nav = n;
   return true;
-}
-
-/**
- * Register the nav listener. Returns true on success. On failure the
- * deck still renders — only the roster-mode entry point is unavailable;
- * registration is retried on the next renderNow (self-heal for a
- * transient attach-time failure) and a persistent one surfaces a
- * one-time operator-visible warning (the trace alone is stderr-only and
- * off unless PI_ENSEMBLE_DEBUG=1).
- */
-function registerNavListener(n: DeckNav, ctx: ExtensionContext): boolean {
-  try {
-    navUnsub = ctx.ui.onTerminalInput(n.handler);
-    return true;
-  } catch (err) {
-    navUnsub = undefined;
-    trace(`dispatch-deck: onTerminalInput unavailable: ${(err as Error).message}`);
-    if (!navWarned) {
-      navWarned = true;
-      try {
-        ctx.ui.notify(
-          "Dispatch deck: arrow-key roster nav is unavailable this session (onTerminalInput not supported); rows still render.",
-          "warning",
-        );
-      } catch {}
-    }
-    return false;
-  }
 }
 
 export interface StartEntryOpts {

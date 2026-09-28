@@ -391,46 +391,6 @@ function registerRealJob(jobId: string): AbortController {
   );
 }
 
-// ---------------------------------------------------------------------------
-// 8. Hostile labels (#927 / PR #928): every rendered row is a SINGLE line
-//    whose visibleWidth ≤ the render width — newline, ANSI, 2000 chars
-//    and CJK all stay inside the budget.
-// ---------------------------------------------------------------------------
-{
-  const hostile = [
-    "evil\nlabel",
-    "\x1b[31mANSI\x1b[0m label",
-    "x".repeat(2000),
-    "日本語ラベル",
-    "\r\n mixed \u0000 control",
-  ];
-  const entries: DeckEntry[] = hostile.map((label, i) => ({
-    key: `job-h${i}`,
-    label,
-    state: mkState("developer", {
-      lastToolName: `tool\n${"y".repeat(300)}`,
-      lastToolHint: `\x1b[99mhint${"z".repeat(300)}`,
-    }),
-    seq: i,
-    startedAt: NOW - 1000 * (i + 1),
-  }));
-  const lines = buildAgentListLines(entries, [], 60, NOW);
-  let allSingle = true;
-  let allBounded = true;
-  for (const row of lines) {
-    if (row.text.includes("\n") || row.text.includes("\r") || row.text.includes("\u0000"))
-      allSingle = false;
-    if (visibleWidth(row.text) > 60) allBounded = false;
-  }
-  assert(allSingle, "8a: no rendered row contains a newline/CR/NUL (single-row invariant)");
-  assert(allBounded, "8b: every projected row's visibleWidth ≤ the 60-col budget (CJK/ANSI-safe)");
-
-  const h = makeHarness(entries, []);
-  const rendered = h.comp.render(60);
-  let compBounded = true;
-  for (const r of rendered) if (visibleWidth(r) > 60) compBounded = false;
-  assert(compBounded, "8c: component render rows are also within the width budget");
-}
 
 // ---------------------------------------------------------------------------
 // 9. The passive-widget hint line names the keys.

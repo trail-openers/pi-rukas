@@ -1,14 +1,35 @@
 /**
- * #914 quiet-mode widget suppression for the dispatch deck — moved out of
- * dispatch-deck.ts (whose renderNow carried this block) so that module
- * stays within the 500-line limit; the behaviour is unchanged: quiet
- * mode suppresses ONLY the passive deck widget, so a widget left visible
- * from a pre-quiet render is dropped and nothing is ever set. The roster
- * listener stays quiet-gated in tryAttachNav (dispatch-deck.ts) and the
- * global agent-list shortcut stays live in quiet mode.
+ * #914 quiet-mode widget suppression and nav listener registration for the
+ * dispatch deck — moved out of dispatch-deck.ts (whose renderNow and
+ * tryAttachNav carried these) so that module stays within the 500-line
+ * limit. The behaviour is unchanged:
+ *
+ *   - quiet mode suppresses ONLY the passive deck widget: a widget left
+ *     visible from a pre-quiet render is dropped and nothing is ever set.
+ *     The roster listener stays quiet-gated in tryAttachNav (dispatch-deck.ts)
+ *     and the global agent-list shortcut stays live in quiet mode.
+ *   - the nav listener registration self-heals: on failure the deck still
+ *     renders (only the roster-mode entry point is unavailable), registration
+ *     is retried on the next renderNow (self-heal for a transient attach-time
+ *     failure) and a persistent one surfaces a one-time operator-visible
+ *     warning (the trace alone is stderr-only and off unless
+ *     PI_ENSEMBLE_DEBUG=1).
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { trace } from "./trace.ts";
+
+// Module-level state owned by this module (dispatch-deck.ts no longer holds
+// navUnsub / navWarned — they move here with the registration helper).
+let _navUnsub: (() => void) | undefined;
+let _navWarned = false;
+
+export function _getNavUnsub(): (() => void) | undefined {
+  return _navUnsub;
+}
+export function _clearNavUnsub(): void {
+  _navUnsub = undefined;
+}
 
 /**
  * Drop a still-visible deck widget when quiet mode is active; returns true
@@ -30,27 +51,26 @@ export function suppressWidgetIfQuiet(
   return true;
 }
 
-/** #834 — register the roster-mode input listener. Returns true on
- *  success; on failure the deck still renders (only the roster-mode entry
- *  point is unavailable), registration is retried on the next renderNow
- *  (self-heal) and a persistent one surfaces a one-time operator-visible
- *  warning (the trace alone is stderr-only and off unless
- *  PI_ENSEMBLE_DEBUG=1).
+/**
+ * Register the nav listener. Returns true on success. On failure the
+ * deck still renders — only the roster-mode entry point is unavailable;
+ * registration is retried on the next renderNow (self-heal for a
+ * transient attach-time failure) and a persistent one surfaces a
+ * one-time operator-visible warning (the trace alone is stderr-only and
+ * off unless PI_ENSEMBLE_DEBUG=1).
  */
 export function registerNavListener(
   n: { handler: (data: string) => { consume?: boolean } | undefined },
   ctx: ExtensionContext,
-  navUnsub: { current: (() => void) | undefined },
-  navWarned: { value: boolean },
 ): boolean {
   try {
-    navUnsub.current = ctx.ui.onTerminalInput(n.handler);
+    _navUnsub = ctx.ui.onTerminalInput(n.handler);
     return true;
   } catch (err) {
-    navUnsub.current = undefined;
-    console.error(`dispatch-deck: onTerminalInput unavailable: ${(err as Error).message}`);
-    if (!navWarned.value) {
-      navWarned.value = true;
+    _navUnsub = undefined;
+    trace(`dispatch-deck: onTerminalInput unavailable: ${(err as Error).message}`);
+    if (!_navWarned) {
+      _navWarned = true;
       try {
         ctx.ui.notify(
           "Dispatch deck: arrow-key roster nav is unavailable this session (onTerminalInput not supported); rows still render.",
