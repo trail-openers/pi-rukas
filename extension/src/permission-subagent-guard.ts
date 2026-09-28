@@ -16,39 +16,15 @@
 import { type Socket, createConnection } from "node:net";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { discardsUncommittedWork, rejectsInteractiveGit } from "./bash-command-parser.ts";
-import { registerIssueCreationGuard } from "./issue-creation-guard.ts";
-import { registerMergeGuard } from "./merge-guard.ts";
 import { registerOoRewriteGuard } from "./oo-rewrite-guard.ts";
 import type { PermissionRequest } from "./permission-broker.ts";
 import { loadAgentsJson, loadGlobalConfig, loadProjectConfig } from "./permission-config.ts";
 import { resolveToolPermission } from "./permission-guard.ts";
+import { registerModeIndependentGuards } from "./subagent-guard-guards.ts";
 import { trace } from "./trace.ts";
 
 export function registerSubagentGuard(pi: ExtensionAPI): void {
-  // BEFORE every bypass below. Trust mode is the default on an interactive
-  // host and sandbox mode is the default in a container, so a guard placed
-  // after them would, in practice, never run — which is exactly the state that
-  // let a subagent `git checkout` away an uncommitted deliverable and silently
-  // revert two reviewed defect fixes.
-  //
-  // This is not a permission. The permission layers answer "is this role
-  // allowed to run git?", and the answer is yes. This answers "may anything
-  // destroy work the harness has not captured yet?", and the answer is no,
-  // whatever the trust level — the container fence and the operator's trust
-  // both protect the HOST, and neither protects the developer's own diff.
-  registerDestructiveGitGuard(pi);
-  // #598 — same mode-independence for the second un-gated door: PM filed
-  // three non-trivial issues inline in one session (#591/#592/#594) through a
-  // self-judged "triviality test" with no oracle. A subagent that discovers a
-  // missing ticket must report it to PM, not open the door itself. The guard
-  // is shared with the parent guard (permission-guard.ts) so both layers
-  // stay byte-identical.
-  registerIssueCreationGuard(pi);
-  // #912 — same mode-independence for the merge door: an ops subagent
-  // holding an `oo gh pr merge*` grant could merge on a developer's
-  // self-report plus CI in trust/sandbox mode. The review ledger is the
-  // structural floor; the guard fires before every bypass.
-  registerMergeGuard(pi);
+  registerModeIndependentGuards(pi);
   // #716 — same registration site, same reasoning: the "mandatory oo" rule
   // for verbose runners (pytest, cargo test, bun test, …) is pure prose on the
   // bash tool's argument string in trust/sandbox mode, where agents.json is
@@ -225,12 +201,18 @@ function destructiveGitAllowed(): boolean {
 /**
  * Refuse working-tree-discarding git inside a subagent.
  *
+ * #926 — exported so child-guards.ts (the companion extension spawned into
+ * trust-mode children) can register the same guard; it was previously
+ * file-private and therefore unreachable outside registerSubagentGuard, which
+ * is why trust-mode children ran with no destructive-git protection at all.
+ * registerSubagentGuard keeps its existing registration below.
+ *
  * The message names a non-destructive route rather than only saying no: an
  * agent told "denied" tends to retry the same command through another shell,
  * which is how the original incident's "restore" step re-applied a stale
  * patch over reviewed fixes.
  */
-function registerDestructiveGitGuard(pi: ExtensionAPI): void {
+export function registerDestructiveGitGuard(pi: ExtensionAPI): void {
   if (destructiveGitAllowed()) {
     trace("subagent-guard: PI_ENSEMBLE_ALLOW_DESTRUCTIVE_GIT=1 — destructive git permitted");
     return;

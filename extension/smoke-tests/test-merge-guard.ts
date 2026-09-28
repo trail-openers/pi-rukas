@@ -446,7 +446,8 @@ await setupLedgerPath();
 {
   const SRC = path.resolve(import.meta.dirname, "..", "src");
   const pg = readFileSync(path.join(SRC, "permission-guard.ts"), "utf8");
-  const sub = readFileSync(path.join(SRC, "permission-subagent-guard.ts"), "utf8");
+  const subSrc = readFileSync(path.join(SRC, "permission-subagent-guard.ts"), "utf8");
+  const subBlock = readFileSync(path.join(SRC, "subagent-guard-guards.ts"), "utf8");
   const mg = readFileSync(path.join(SRC, "merge-guard.ts"), "utf8");
 
   // Parent guard: before trust-mode return AND sandbox short-circuit.
@@ -458,12 +459,14 @@ await setupLedgerPath();
     guardIdx < sandboxIdx && guardIdx < trustIdx,
     `registered BEFORE the sandbox short-circuit and the trust-mode return (guard=${guardIdx}, sandbox=${sandboxIdx}, trust=${trustIdx})`,
   );
-  // Subagent guard: before both bypasses.
-  const subGuardIdx = sub.indexOf("registerMergeGuard(pi)");
-  const subSandboxIdx = sub.indexOf("PI_ENSEMBLE_SANDBOX_MODE");
-  const subTrustIdx = sub.indexOf("PI_ENSEMBLE_TRUST_MODE");
-  assert(subGuardIdx > 0, "canary: subagent guard registers the merge guard");
+  // Subagent guard: before both bypasses (shared block call site here,
+  // guard presence in the block there).
+  const subGuardIdx = subSrc.indexOf("registerModeIndependentGuards(pi)");
+  const subSandboxIdx = subSrc.indexOf("PI_ENSEMBLE_SANDBOX_MODE");
+  const subTrustIdx = subSrc.indexOf("PI_ENSEMBLE_TRUST_MODE");
+  assert(subGuardIdx > 0, "canary: subagent path registers the shared guard block");
   assert(subGuardIdx < subSandboxIdx && subGuardIdx < subTrustIdx, "subagent: before both bypasses");
+  assert(subBlock.includes("registerMergeGuard(pi)"), "canary: the shared block registers the merge guard");
   // Role-agnostic, mode-agnostic, escape hatch present.
   assert(
     !/PI_ENSEMBLE_ROLE/.test(mg),

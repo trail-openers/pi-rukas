@@ -20,6 +20,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { preflightChildGuards } from "./child-guards.ts";
 import { type ResolvedModelChoice, resolveModel } from "./models.ts";
 import { type BrokerHandle, startBroker } from "./permission-broker.ts";
 import { isParentInTrustMode, makeBrokerDeps } from "./permission-guard.ts";
@@ -138,6 +139,10 @@ async function spawnSpecialistInner(
     }
   }
 
+  // #926 — the argv names CHILD_GUARDS_PATH, so verify it BEFORE building the
+  // args: a missing companion must be a named dispatch failure, never a child
+  // without the mode-independent guards.
+  preflightChildGuards();
   const childArgs = buildChildArgs(
     spec.role,
     tmpPromptFile,

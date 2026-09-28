@@ -11,6 +11,7 @@
  * Also retains the direct map assertions for role-tools.ts itself.
  */
 
+import { CHILD_GUARDS_PATH } from "../src/child-guards.ts";
 import type { ResolvedModelChoice } from "../src/models.ts";
 import { excludeToolListFor, excludeToolsFor } from "../src/role-tools.ts";
 import { buildChildArgs } from "../src/spawn.ts";
@@ -71,7 +72,13 @@ const TEST_MODEL: ResolvedModelChoice = {
 
 // 3. project-manager (rarely a subagent): no --exclude-tools.
 {
-  const args = buildChildArgs("project-manager", TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, false);
+  const args = buildChildArgs(
+    "project-manager",
+    TEST_PROMPT,
+    TEST_TRANSCRIPT,
+    TEST_MODEL,
+    false,
+  );
   const value = excludeToolsValueFromArgs(args);
   assert(
     value === undefined,
@@ -108,6 +115,56 @@ const TEST_MODEL: ResolvedModelChoice = {
   ]);
   assert(args.includes("--extra-flag"), "child argv includes extraArgs");
   assert(args[args.indexOf("--extra-flag") + 1] === "value", "extraArgs value is correct");
+}
+
+// ============================================================
+// #926 — the child-guards companion is in the child argv in EVERY mode
+// Present when subagentGuardEnabled is false (trust mode — the child that
+// got no other pi-rukas extension at all) AND when true (strict/headless —
+// the companion coexists with the full pi-rukas extension and no-ops itself
+// via PI_ENSEMBLE_SUBAGENT_MODE=1; see test-child-guards-extension.ts).
+// ============================================================
+
+// 11. Trust mode (subagentGuardEnabled=false): --extension <child-guards path> present.
+{
+  const args = buildChildArgs("ops", TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, false);
+  const has = args.some((a, idx) => a === "--extension" && args[idx + 1] === CHILD_GUARDS_PATH);
+  assert(has, `trust mode: --extension ${CHILD_GUARDS_PATH} present in child argv`);
+}
+
+// 12. Strict mode (subagentGuardEnabled=true): --extension <child-guards path> present
+// (the full pi-rukas extension is there too — both paths in the argv is
+// expected and safe because the companion no-ops itself; no-op asserted in
+// test-child-guards-extension.ts).
+{
+  const args = buildChildArgs("ops", TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, true);
+  const has = args.some((a, idx) => a === "--extension" && args[idx + 1] === CHILD_GUARDS_PATH);
+  assert(has, `strict mode: --extension ${CHILD_GUARDS_PATH} present in child argv`);
+}
+
+// 13. The child-guards flag appears EXACTLY ONCE per child argv (no duplicate
+// from both the guard and the companion code paths).
+{
+  for (const guard of [false, true]) {
+    const args = buildChildArgs("developer", TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, guard);
+    const count = args.reduce(
+      (n, a, idx) => (a === "--extension" && args[idx + 1] === CHILD_GUARDS_PATH ? n + 1 : n),
+      0,
+    );
+    assert(
+      count === 1,
+      `child-guards --extension appears exactly once (guard=${guard}, got ${count})`,
+    );
+  }
+}
+
+// 14. The companion path is the source file that exists on disk.
+{
+  const fs = await import("node:fs");
+  assert(
+    fs.statSync(CHILD_GUARDS_PATH).isFile(),
+    `child-guards companion file exists on disk (${CHILD_GUARDS_PATH})`,
+  );
 }
 
 // ============================================================

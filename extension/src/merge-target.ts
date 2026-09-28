@@ -23,8 +23,36 @@
  * fakeGh pattern in test-merge-authority.ts.
  */
 
-import { detectForge } from "./forge-detect.ts";
+import { type DetectForgeOpts, detectForge } from "./forge-detect.ts";
 import { trace } from "./trace.ts";
+
+/**
+ * The forge detection options the guard uses for its own decisions (#926
+ * fix round): `allowProbe: false`. detectForge's default path may fall into
+ * an unbounded API probe against a non-github/gitlab remote host, and the
+ * merge guard's tool_call hook already spends its 30s exec budget on the
+ * gh/git reads — a network probe there would eat the whole budget and could
+ * hang the child's turn. With `allowProbe: false` the forge decision uses
+ * only the local heuristics (env → .pi/forge config → remote-URL known
+ * hosts); a host those cannot classify is `source: "unknown"` and the guard
+ * fails closed exactly as before.
+ */
+const GUARD_FORGE_OPTS = { allowProbe: false } as const;
+
+/**
+ * Build the forge options for the guard's detectForge call: the guard's
+ * allowProbe: false always wins (a caller cannot re-enable the probe through
+ * the guard), and caller-supplied options (execFn, env, probe, …) are
+ * preserved. The caller's injected probe — when allowProbe is off the probe
+ * is never invoked — is the seam tests use to canary "the guard never
+ * probes" (see test-merge-target-forge-bound.ts).
+ */
+function guardForgeOpts(callerOpts: DetectForgeOpts = {}): DetectForgeOpts {
+  return {
+    ...callerOpts,
+    allowProbe: GUARD_FORGE_OPTS.allowProbe,
+  };
+}
 
 export type MergeExecFn = (
   cmd: string,
@@ -68,6 +96,7 @@ export async function readMergeTarget(
   execFn: MergeExecFn,
   cwd: string,
   prNumber: number,
+  forgeOpts?: DetectForgeOpts,
 ): Promise<MergeTargetResult> {
   const escapeHatch = "PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 (operator-set only)";
 
@@ -76,8 +105,9 @@ export async function readMergeTarget(
   // unknown signal (an env-forced forge still reports source "env" even when
   // its remote is unparseable — the type is authoritative there, so that is
   // by design). A remote that exists is a real answer; an absent remote is
-  // the fail-closed case the guard must refuse.
-  const detection = await detectForge(cwd);
+  // the fail-closed case the guard must refuse. allowProbe: false keeps the
+  // guard's forge decision inside the 30s exec budget (see GUARD_FORGE_OPTS).
+  const detection = await detectForge(cwd, guardForgeOpts(forgeOpts));
   if (detection.source === "unknown") {
     return {
       ok: false,
@@ -197,13 +227,16 @@ export async function resolvePrNumber(
   execFn: MergeExecFn,
   cwd: string,
   commandNumber: number | undefined,
+  forgeOpts?: DetectForgeOpts,
 ): Promise<number | undefined> {
   if (commandNumber !== undefined) return commandNumber;
   // Forge-aware: the PR/MR for the CURRENT branch, read from whichever forge
   // the repo lives on (detectForge: PI_ENSEMBLE_FORGE → .pi/forge → remote
-  // URL → probe). `gh pr view --json number` on the current branch (GitHub)
+  // URL). The probe is disabled by the caller (allowProbe: false) — the
+  // guard's forge decision is local-heuristics-only and fails closed on an
+  // unknown host. `gh pr view --json number` on the current branch (GitHub)
   // and `glab mr view --output json` on the current branch (GitLab).
-  const detection = await detectForge(cwd);
+  const detection = await detectForge(cwd, guardForgeOpts(forgeOpts));
   if (detection.source === "unknown") {
     trace("merge-target: cannot resolve PR number — forge is unknown (fail-closed)");
     return undefined;

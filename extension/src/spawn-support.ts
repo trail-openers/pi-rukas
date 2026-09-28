@@ -11,6 +11,7 @@
 import os from "node:os";
 import path from "node:path";
 import type { Writable } from "node:stream";
+import { childGuardsArgs } from "./child-guards.ts";
 import type { SteerSource } from "./dispatch-steer.ts";
 import type { ResolvedModelChoice } from "./models.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
@@ -360,6 +361,14 @@ const CHILD_ARGS_BASE = ["--mode", "rpc", "--no-extensions"] as const;
  * Build the complete child argument list for spawning a subagent Pi process.
  * Used by `spawnSpecialist` and exported for smoke-test verification.
  *
+ * Sync and pure: no I/O here. The pre-spawn existence check for the
+ * child-guards companion (a missing file must fail the dispatch with a named
+ * error, never produce a silently unguarded child — the #893
+ * reporter-preflight.ts pattern) lives in spawnSpecialistInner (spawn.ts),
+ * which stats CHILD_GUARDS_PATH before building the args and throws
+ * `child-guards extension unavailable at <path>: <reason> — run ./install.sh`
+ * on ANY stat failure.
+ *
  * Argument order is load-bearing:
  *   - `--provider` must precede `--model` so Pi disambiguates against the
  *     provider catalog (custom providers need explicit provider IDs).
@@ -379,6 +388,17 @@ export function buildChildArgs(
   // ({type:"prompt"|"steer"|"abort"|"follow_up"}); this is the foundation
   // for dispatch_steer (#152) and all async push-callback flows.
   args.push("--session", transcriptPath);
+  // #926 — the child-guards companion is appended in EVERY mode, independent
+  // of subagentGuardEnabled (so PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD does not
+  // strip it), of discoverInstalledExtensions (so
+  // PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD does not strip it), and of the
+  // full pi-rukas forward below. In strict/headless mode both extension
+  // paths appear in the argv, but the companion's default export no-ops on
+  // PI_ENSEMBLE_SUBAGENT_MODE=1, so the child ends up with exactly one set
+  // of guard hooks. A trust-mode child — which gets no full extension — is
+  // exactly the child the companion exists for. The file's existence is
+  // checked before this is called (spawnSpecialistInner, #893 pattern).
+  args.push(...childGuardsArgs());
   args.push("--append-system-prompt", tmpPromptFile);
   // `--exclude-tools` requires a recent Pi (>= 0.83.0); unknown flags exit
   // children immediately (older releases such as the 0.75.x era), so the
