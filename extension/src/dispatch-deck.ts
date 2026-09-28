@@ -7,9 +7,13 @@
  * (which never received input — keys route to the focused editor, #176)
  * with these rows plus a roster-mode input listener (dispatch-deck-nav.ts)
  * that lets the operator walk the rows with the arrow keys from an empty
- * editor. Selecting a row confirms the job: a running job with an activity
- * buffer opens the live view (#839), otherwise it opens the steer prompt
- * (`deck-ui` source tag). Opt-out: PI_ENSEMBLE_QUIET_STATUS=1.
+ * editor.
+ *
+ * Selecting a row (Enter in roster mode) confirms the job: a running job
+ * with an activity buffer opens the live view (#839), otherwise it opens
+ * the steer prompt (`deck-ui` source tag).
+ *
+ * Opt-out: PI_ENSEMBLE_QUIET_STATUS=1.
  *
  * #709's "do not remove either widget" directive is superseded — the
  * aboveEditor `ensemble:deck-prompt` widget was the source of the
@@ -327,9 +331,12 @@ export function isTicking(): boolean {
   return tickHandle !== undefined;
 }
 
-/** Deck-map accessors the row-confirm module (#607 d3 / #839) reads through.
- *  #839 — the steer host is built per-attach so a steer is never silently
- *  dropped (the confirming ctx may differ from the last attach()). */
+/** Deck-map accessors the row-confirm module (#607 d3 / #839) reads through. */
+// #839 — the steer host is built per-attach (onRowConfirm receives it at call
+// time) so a steer is never silently dropped: openSteerPrompt / openLiveView
+// pass the SAME ctx.ui down, so steerFromDeck always has a UI to notify on
+// failure (an `activeCtx`-only lookup silently dropped steers whenever the
+// confirming ctx differed from the last attach()).
 function rowConfirmHostFor(ctx: ExtensionContext): RowConfirmHost {
   return {
     getEntry: (key) => entries.get(key),
@@ -374,16 +381,7 @@ function renderNow(): void {
   // live). A widget left visible from a pre-quiet render is dropped; the
   // helper lives in dispatch-deck-quiet.ts (moved from renderNow to keep
   // this module within the 500-line limit).
-  if (
-    suppressWidgetIfQuiet(
-      activeCtx,
-      WIDGET_KEY,
-      () => widgetVisible,
-      (v) => {
-        widgetVisible = v;
-      },
-    )
-  )
+  if (suppressWidgetIfQuiet(activeCtx, WIDGET_KEY, () => widgetVisible, (v) => (widgetVisible = v)))
     return;
   if (entries.size === 0 && batches.size === 0) {
     if (widgetVisible) {
@@ -409,17 +407,6 @@ function renderNow(): void {
   }
   const factory = buildDeckWidgetFactory(activeCtx);
   try {
-    if (isQuiet()) {
-      // #914 quiet gate: quiet mode suppresses ONLY the passive widget
-      // (the roster listener and the global shortcut stay live).
-      if (widgetVisible) {
-        try {
-          activeCtx.ui.setWidget(WIDGET_KEY, undefined);
-        } catch {}
-        widgetVisible = false;
-      }
-      return;
-    }
     activeCtx.ui.setWidget(WIDGET_KEY, factory, { placement: "belowEditor" });
     widgetVisible = true;
   } catch (err) {
@@ -503,5 +490,8 @@ export function buildLinesBatchOnly(now: number = Date.now()): string[] {
   return buildLinesBatchOnlyImpl(batches, now);
 }
 
-// Re-exported from dispatch-deck-rows.ts (existing importers keep their paths).
+// Re-exported from dispatch-deck-rows.ts so that existing importers
+// (dispatch-deck-composite.ts, test-dispatch-deck.ts) keep their import
+// paths unchanged — the deck module stays the stable public surface for
+// the row-shape API.
 export { formatBatchRow, formatRow, formatAgentRow } from "./dispatch-deck-rows.ts";
