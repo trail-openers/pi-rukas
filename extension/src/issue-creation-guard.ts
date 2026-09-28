@@ -29,7 +29,10 @@
  * Fires for ALL roles (PM, explore, ops, developer, adversarial-developer,
  * code-review-specialist) in ALL modes (trust, strict, headless, sandbox).
  * A subagent that discovers a missing ticket must REPORT it to PM, not open
- * the door itself.
+ * the door itself. Since #926 the guard reaches spawned children too: the
+ * child-guards companion extension (child-guards.ts) registers it into every
+ * child's argv in every mode, so a trust-mode child — which never receives
+ * the full pi-rukas extension — is guarded by this hook the same way.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
