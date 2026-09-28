@@ -43,7 +43,7 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Component, isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
-import { STOP_ALL_CHORD, STOP_ALL_FALLBACK_KEY, buildAgentListHint } from "./agent-list-keys.ts";
+import { STOP_ALL_CHORD, STOP_ALL_FALLBACK_KEY } from "./agent-list-keys.ts";
 import { killAllJobs, killJob } from "./async-jobs-lifecycle.ts";
 import { toTerminalLine } from "./dispatch-deck-line.ts";
 import type { BatchDeckEntry, DeckEntry } from "./dispatch-deck.ts";
@@ -57,16 +57,6 @@ export interface AgentListTheme {
   selected: (t: string) => string;
   /** Muted colour for headers, batch rows and hints. */
   muted: (t: string) => string;
-}
-
-/** One selectable row the component walks. */
-interface ListRow {
-  /** Selectable key: MAIN_ROW_KEY or a running job's key. */
-  key: string;
-  /** The terminal-safe row text (already `toTerminalLine`-bounded). */
-  text: string;
-  /** True while the row renders (job still running, or the main row). */
-  alive: () => boolean;
 }
 
 /**
@@ -148,8 +138,10 @@ export function buildAgentListLines(
  *
  * `getRows()` projects the current deck maps each render; `openJob(key)`
  * is the Enter-on-job route (the deck module wires it to `onRowConfirm`);
- * `onSettle()` fires when the deck has no running jobs left and the list
- * must close itself (the main UI is restored — the overlay `done` route).
+ * `onSettle()` fires when the deck has no running jobs left (only the
+ * `main` row remains) and the list must close itself (the main UI is
+ * restored — the overlay `done` route); `theme()` supplies the selected /
+ * muted styling; `done()` is the overlay's `ctx.ui.custom` done callback.
  *
  * The component swallows every key it owns: arrows, `j`/`k`, `Enter`,
  * `Esc`, `x`, and — while a y/n confirmation is pending — everything
@@ -170,22 +162,14 @@ export function createAgentListComponent(
   let chordArmed = false;
   let lastRows: AgentListLine[] = [];
 
-  const renderable = (): AgentListLine[] => {
-    // A job that settles while listed drops out of the projection; the
-    // selection re-clamps to its neighbour on the next key (reResolve).
-    const rows = getRows();
-    if (rows.length === 1) onSettle();
-    return rows;
-  };
+  const selectableRows = (): AgentListLine[] => lastRows.filter((r) => r.selectable);
 
-  const selectable = (): AgentListLine[] => lastRows.filter((r) => r.selectable);
-
-  // Re-clamp the selection after rows changed (a row settled). The settled
-  // row's neighbour takes its slot; when nothing selectable remains the
-  // list closes itself (the main row is always present, so this is the
-  // all-jobs-settled case).
+  // Re-clamp the selection after rows changed (a job settled). The settled
+  // row's neighbour takes its slot; when the selection itself is gone and
+  // nothing selectable remains, close the list (the main row is always
+  // present, so this is the all-jobs-settled case).
   const reResolve = (): boolean => {
-    const rows = selectable();
+    const rows = selectableRows();
     if (rows.length === 0) return false;
     if (!lastRows[index]?.selectable || lastRows[index]?.key === undefined) {
       index = 0;
@@ -196,11 +180,19 @@ export function createAgentListComponent(
     // The settled row's successor shifts into its slot (or the last row
     // when the settled row was last).
     const idx = lastRows.findIndex((r) => r.key === current);
-    const next = rows.findIndex(
-      (r) => r.key === (idx < lastRows.length - 1 ? lastRows[idx + 1]?.key : undefined),
-    );
+    const next = rows.findIndex((r) => r.key === (idx < lastRows.length ? lastRows[idx + 1]?.key : undefined));
     index = next === -1 ? rows.length - 1 : next;
     return true;
+  };
+
+  // Re-project the rows from the live maps. A batch header is counted as
+  // "running" while any of its members run (the deck keeps the batch row
+  // in the projection until every member settles), so "the list must
+  // close itself" means: nothing but the `main` row remains.
+  const renderable = (): AgentListLine[] => {
+    const rows = getRows();
+    if (rows.length === 1) onSettle();
+    return rows;
   };
 
   return {
@@ -208,10 +200,11 @@ export function createAgentListComponent(
       /* no cached state */
     },
     render(width: number): string[] {
-      lastRows = renderable();
+      const rows = renderable();
+      lastRows = rows;
       const lines: string[] = [];
-      for (let i = 0; i < lastRows.length; i++) {
-        const row = lastRows[i];
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
         if (!row) continue;
         const prefix =
           row.key === MAIN_ROW_KEY ? "◆ " : row.selectable ? (i === index ? "> " : "  ") : "   ";
@@ -226,10 +219,11 @@ export function createAgentListComponent(
       }
       if (pending) {
         const p = pending;
+        const n = Math.max(0, selectableRows().length - 1);
         const q =
           p.kind === "kill-all"
-            ? `Kill ALL ${selectable().length - 1} agents? (y/n)`
-            : `Kill ${lastRows.find((r) => r.key === p.key)?.text ?? "?"} (y/n)`;
+            ? `Kill ALL ${n} agents? (y/n)`
+            : `Kill ${rows.find((r) => r.key === p.key)?.text ?? "?"} (y/n)`;
         lines.push(toTerminalLine(theme().muted(q), width));
       }
       return lines;
@@ -295,14 +289,14 @@ export function createAgentListComponent(
       }
       if (matchesKey(data, "down") || matchesKey(data, "j")) {
         if (!reResolve()) return;
-        const rows = selectable();
+        const rows = selectableRows();
         const i = rows.findIndex((r) => r.key === lastRows[index]?.key);
         index = Math.min(i < 0 ? 0 : i + 1, rows.length - 1);
         return;
       }
       if (matchesKey(data, "up") || matchesKey(data, "k")) {
         if (!reResolve()) return;
-        const rows = selectable();
+        const rows = selectableRows();
         const i = rows.findIndex((r) => r.key === lastRows[index]?.key);
         const target = i <= 0 ? 0 : i - 1;
         index = Math.max(target, 0);
