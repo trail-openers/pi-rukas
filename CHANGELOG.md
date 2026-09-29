@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.68](https://github.com/trail-openers/pi-rukas/compare/v0.12.67...v0.12.68) (2026-09-29)
+
+
+### Bug Fixes
+
+* **spawn:** stop a steer to a closed child pipe crashing the pi session ([#934](https://github.com/trail-openers/pi-rukas/issues/934)) ([63a018c](https://github.com/trail-openers/pi-rukas/commit/63a018cce0980b893fe93d800c758243d50e3112))
+
 ## [0.12.67](https://github.com/trail-openers/pi-rukas/compare/v0.12.66...v0.12.67) (2026-09-28)
 
 
