@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerAdversarialTool } from "./adversarial.ts";
 import { LIST_SHORTCUT } from "./agent-list-keys.ts";
 import { openAgentList } from "./agent-list.ts";
+
 import { registerAgentsMdTools } from "./agents-md-tool.ts";
 import { setParentExtensionApi } from "./async-jobs-registry.ts";
 import { registerAsyncJobsLifecycle } from "./async-jobs.ts";
@@ -101,25 +102,24 @@ export default async function (pi: ExtensionAPI) {
   try {
     pi.registerShortcut(LIST_SHORTCUT, {
       description: "Open agent list",
-      handler: (ctx) =>
-        openAgentList(ctx, {
-          getEntries: dispatchDeck.snapshot,
-          openJob: (key) =>
-            // #916 SLICE B — thread the list re-open into the view's Esc
-            // route (confirmRow → onRowConfirm → openLiveView → done
-            // "returnToList"). The roster nav path passes nothing, so Esc
-            // there just closes, as before.
-            dispatchDeck.confirmRow(ctx, key, {
-              onReturnToList: () => {
-                void openAgentList(ctx, {
-                  getEntries: dispatchDeck.snapshot,
-                  openJob: (k) => dispatchDeck.confirmRow(ctx, k),
-                  onSettle: () => {},
-                });
-              },
-            }),
-          onSettle: () => {},
-        }),
+      handler: (ctx) => {
+        // #916 SLICE B — thread the list re-open into the view's Esc
+        // route (confirmRow → onRowConfirm → openLiveView → done
+        // "returnToList"). The roster nav path passes nothing, so Esc
+        // there just closes, as before.
+        const openList = (): Promise<void> =>
+          openAgentList(ctx, {
+            getEntries: dispatchDeck.snapshot,
+            openJob: (key) =>
+              dispatchDeck.confirmRow(ctx, key, {
+                onReturnToList: () => {
+                  void openList();
+                },
+              }),
+            onSettle: () => {},
+          });
+        return void openList();
+      },
     });
   } catch (err) {
     trace(`agent-list: shortcut registration failed: ${(err as Error).message}`);
