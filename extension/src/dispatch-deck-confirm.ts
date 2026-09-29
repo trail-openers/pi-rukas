@@ -73,6 +73,11 @@ export async function onRowConfirm(
     return;
   }
   await openSteerPrompt(ctx, entry, host);
+  // A job opened from the agent list (opts.onReturnToList set) must return
+  // to the list when the steer prompt resolves — whether the operator
+  // submitted or cancelled. The no-op branch above (no buffer, no entry)
+  // must NOT call it: nothing was opened.
+  opts?.onReturnToList?.();
 }
 
 /**
