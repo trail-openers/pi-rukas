@@ -36,6 +36,7 @@ import {
   piEnsembleExtensionPath,
 } from "./spawn-extension-forward.ts";
 import { withSpawnSlot } from "./spawn-semaphore.ts";
+import { attachStdinErrorGuard } from "./stdin-guard.ts";
 import {
   STDERR_TAIL_BYTES,
   assertLiveSpawnAllowed,
@@ -190,6 +191,16 @@ async function spawnSpecialistInner(
     stdio: ["pipe", "pipe", "pipe"],
     env: childEnv,
   });
+
+  // #932 — universal EPIPE backstop, attached IMMEDIATELY after spawn and
+  // BEFORE onStdin / the initial prompt write: Node emits EPIPE on the
+  // stdin socket asynchronously as an `error` event, so the kickoff write,
+  // completePrompt's end(), and every later steer all funnel through this
+  // listener instead of becoming an uncaughtException that kills the
+  // parent. It never rethrows.
+  child.stdin?.on("error", (err: Error) =>
+    trace(`spawn[${spec.role}]: child stdin error (ignored): ${err.message}`),
+  );
 
   const start = Date.now();
   // Bounded per-spawn buffers: unbounded `events[]` / `stderr +=` accumulators
