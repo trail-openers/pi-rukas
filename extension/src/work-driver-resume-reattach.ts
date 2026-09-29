@@ -11,6 +11,7 @@
 import { spawn } from "node:child_process";
 import { notifyAgent } from "./agent-message.ts";
 import { emitStepCompleted } from "./lifecycle-events.ts";
+import { attachStdinErrorGuard } from "./stdin-guard.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { nextStep } from "./work-driver-context.ts";
@@ -126,6 +127,10 @@ async function realSpawnReattach(
   }
 
   const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], env: childEnv });
+  // #932 — universal EPIPE backstop (stdin-guard.ts): the resume prompt is
+  // written to child.stdin below; if the child dies before reading it the
+  // error event is async and unguarded it would crash the whole process.
+  attachStdinErrorGuard(child.stdin, "resume-reattach");
   const stdoutChunks: Buffer[] = [];
   let stdoutSize = 0;
   const MAX_STDOUT = 1024 * 1024;
