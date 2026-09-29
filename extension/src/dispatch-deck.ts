@@ -29,7 +29,7 @@ import {
 } from "./dispatch-deck-confirm-row.ts";
 import { type RowConfirmHost, onRowConfirm } from "./dispatch-deck-confirm.ts";
 import { steerFromDeck } from "./dispatch-deck-interactive.ts";
-import { dropBuffer } from "./dispatch-deck-live.ts";
+import { releaseOnEntryClear } from "./dispatch-deck-live.ts";
 import { type DeckNav, createDeckNav } from "./dispatch-deck-nav.ts";
 import {
   clearNavUnsub,
@@ -271,10 +271,12 @@ export function updateEntry(key: string, state: RunningState): void {
 
 export function clearEntry(key: string): void {
   if (!entries.delete(key)) return;
-  // #839 — the live-view ring buffer's lifecycle is co-located with the deck
-  // entry's: clearing the entry always drops the buffer (no-op for keys with
-  // none — lens/adversarial children and skipDeck jobs get no buffer at all).
-  dropBuffer(key);
+  // #839/#916 — the live-view ring buffer's lifecycle is co-located with
+  // the deck entry's, EXCEPT while the job's live view is OPEN (#916):
+  // releaseOnEntryClear keeps the buffer (markViewClosed drops it when the
+  // view closes) or drops it now — jobs whose view was never opened are
+  // still dropped — no leak.
+  releaseOnEntryClear(key);
   scheduleRender();
   if (entries.size === 0 && batches.size === 0) stopTicker();
 }

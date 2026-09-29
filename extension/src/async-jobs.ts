@@ -218,6 +218,17 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
       childHandles.delete(jobId);
       clearJobIssues(jobId);
       slow.stop();
+      // #916 — record the settle outcome before the deck entry clears, so
+      // an open live view can show finished/failed/killed in its header.
+      // Uses the SAME five-way classification as the lifecycle emits below.
+      {
+        // #916 — record the settle outcome for the live view (kill → killed,
+        // any error stop → failed, ok → finished). Deliberately coarser than
+        // the lifecycle's five-way classification: the header only needs the
+        // three operator-visible states.
+        const status = result.killCause ? "killed" : result.errorStop ? "failed" : "finished";
+        live.markSettled(jobId, status);
+      }
       if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
       // Five-way: ok / killCause / 429 / FAILED-PROVIDER-ERROR / process-exit-failed.
       // #309/#314 — killCause (#296) wins over errorStop. A self-kill is NOT a
@@ -283,6 +294,8 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
       childHandles.delete(jobId);
       clearJobIssues(jobId);
       slow.stop();
+      // #916 — settle outcome for the live view (rejection = failed).
+      live.markSettled(jobId, "failed");
       if (!input.skipDeck) dispatchDeck.clearEntry(jobId);
       lifecycle.emitFailed(jobId, input.label, input.role, Date.now() - state.startedAt);
       sessionAutosave.recordOutcome(false);
@@ -415,6 +428,8 @@ export function startBatch(
           jobs.delete(jobId);
           childHandles.delete(jobId);
           memberSlow.stop();
+          // #916 — settle outcome for the live view (member finished).
+          live.markSettled(jobId, "finished");
           dispatchDeck.clearEntry(jobId);
           sessionAutosave.recordOutcome(result.ok);
           memberResults.push({ jobId, label: m.label, result });
@@ -423,6 +438,8 @@ export function startBatch(
           jobs.delete(jobId);
           childHandles.delete(jobId);
           memberSlow.stop();
+          // #916 — settle outcome for the live view (member rejected).
+          live.markSettled(jobId, "failed");
           dispatchDeck.clearEntry(jobId);
           sessionAutosave.recordOutcome(false);
           memberResults.push({
