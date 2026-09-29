@@ -78,17 +78,20 @@ function resetBuffers(keys: string[]): void {
 }
 
 // ---------------------------------------------------------------------------
-// (b) Byte bound: 100 events × 50 KB → stored total ≤ 512 KB, the newest
-//     events that do not fit are evicted, the newest retained.
+// (b) Byte bound: 100 events × 50 KB → stored total ≤ 512 KB; eviction is
+//     OLDEST-first, so the NEWEST event (index 99) is the LAST entry and
+//     the FIRST event is gone. (Previously encoded newest-first: the last
+//     entry check passed trivially because eviction dropped the newest.)
 // ---------------------------------------------------------------------------
 {
   resetBuffers(["b1"]);
   startBuffer("b1");
   const chunk = "p".repeat(50 * 1024); // 50 KB
   for (let i = 0; i < 100; i++) {
+    const text = i === 99 ? "n".repeat(50 * 1024) : `e${i}` + "p".repeat(50 * 1024 - 2); // distinguish index 99
     feedRawEvent("b1", {
       type: "message_end",
-      message: { role: "assistant", content: [{ type: "text", text: chunk }] },
+      message: { role: "assistant", content: [{ type: "text", text }] },
     });
   }
   const buf = getBuffer("b1");
@@ -99,12 +102,16 @@ function resetBuffers(keys: string[]): void {
   }
   assert(total <= LIVE_BUFFER_MAX_BYTES, `b1: stored total ≤ 512 KB (got ${total} B)`);
   assert(buf.length >= 1 && buf.length < 100, `b2: events that did not fit evicted (kept ${buf.length})`);
-  assert(buf[buf.length - 1]?.text === chunk, "b3: newest event retained in full");
+  assert(buf[buf.length - 1]?.text === "n".repeat(50 * 1024), "b3: NEWEST event (index 99) is the LAST buffer entry");
+  assert(buf[0]?.text !== `e0` + "p".repeat(50 * 1024 - 2), "b4: FIRST event evicted");
   dropBuffer("b1");
 }
 
 // ---------------------------------------------------------------------------
-// (c) A single event larger than the bound is kept ALONE, untruncated.
+// (c) A single event larger than the bound is kept ALONE, untruncated;
+//     it does NOT stick — the next event makes it the oldest, so it is the
+//     one evicted. (Previous c3 asserted the oversized event survived a
+//     later small event — that encoded the buggy newest-first eviction.)
 // ---------------------------------------------------------------------------
 {
   resetBuffers(["c1"]);
@@ -117,15 +124,27 @@ function resetBuffers(keys: string[]): void {
   const buf = getBuffer("c1");
   assert(buf.length === 1, "c1: oversized event kept alone");
   assert(buf[0]?.text === big, "c2: oversized event untruncated (full 600 KB)");
-  // A second, smaller event is evicted by the oversized one (oldest-first);
-  // the oversized event is retained ALONE, untruncated — the bound caps the
-  // total across events, never a lone event (PM decision, #916).
+  // One small event arrives: the 600 KB event is now the OLDEST and is the
+  // one evicted — the buffer ends up holding exactly the small event.
   feedRawEvent("c1", {
     type: "message_end",
-    message: { role: "assistant", content: [{ type: "text", text: "smaller" }] },
+    message: { role: "assistant", content: [{ type: "text", text: "small" }] },
   });
   const buf2 = getBuffer("c1");
-  assert(buf2.length === 1 && buf2[0]?.text === big, "c3: oversized event retained alone after a later event");
+  assert(buf2.length === 1 && buf2[0]?.text === "small", "c3: 600 KB event evicted as the oldest — buffer is exactly [the small event]");
+  // A second 600 KB event after a few small ones: retained alone (it is the
+  // only event over the bound and eviction stops at one).
+  feedRawEvent("c1", {
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "text", text: "s2" }] },
+  });
+  const big2 = "r".repeat(600 * 1024);
+  feedRawEvent("c1", {
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "text", text: big2 }] },
+  });
+  const buf3 = getBuffer("c1");
+  assert(buf3.length === 1 && buf3[0]?.text === big2, "c4: a later oversized event is retained alone");
   dropBuffer("c1");
 }
 
@@ -250,6 +269,35 @@ function resetBuffers(keys: string[]): void {
   assert(!hasBuffer("g2"), "g2b: clearEntry drops the buffer when no view is open");
   assert(bufferCount() === 0, "g2c: buffer count is 0 — no leak");
   reset();
+}
+
+// ---------------------------------------------------------------------------
+// (i) "Live view keeps up" regression: once the buffer is full, a NEW
+//     event must still be the last entry — the pop() version dropped the
+//     just-pushed event and froze the view on stale output.
+// ---------------------------------------------------------------------------
+{
+  resetBuffers(["i1"]);
+  startBuffer("i1");
+  // 256 KB × 2 = 512 KB = cap; marker (6 chars) overflows → pop() evicts
+  // the just-pushed marker (last entry), leaving the buffer frozen on stale
+  // output. 50 KB chunks never overflow on push, so the bug needs an event
+  // that pushes the total over the cap.
+  const chunk = "m".repeat(256 * 1024);
+  for (let i = 0; i < 2; i++) {
+    feedRawEvent("i1", {
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: chunk }] },
+    });
+  }
+  const marker = "LIVE-MARKER-" + Date.now(); // distinct small event
+  feedRawEvent("i1", {
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "text", text: marker }] },
+  });
+  const buf = getBuffer("i1");
+  assert(buf[buf.length - 1]?.text === marker, "i1: a new event lands as the LAST entry on a full buffer");
+  dropBuffer("i1");
 }
 
 // ---------------------------------------------------------------------------

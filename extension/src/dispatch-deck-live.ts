@@ -91,10 +91,12 @@ export type LiveEvent =
  * `.text` field for text/thinking, the full JSON string for toolCall
  * args) — #916, replacing the 200-event ring cap and the feed-time
  * character truncation. The buffer behaves as a bounded queue: when the
- * total exceeds the bound, the newest-arriving events that do not fit are
- * evicted. A single event whose own size exceeds the bound is kept ALONE
- * and untruncated (the bound caps the TOTAL across multiple events, never
- * a lone event — PM decision, #916).
+ * total exceeds the bound, the OLDEST events are evicted until the total
+ * fits — the buffer keeps the most RECENT activity (that is what a live
+ * view is for; eviction of the just-pushed event would freeze the view on
+ * stale output once the bound is reached). A single event whose own size
+ * exceeds the bound is kept ALONE and untruncated (the bound caps the
+ * TOTAL across multiple events, never a lone event — PM decision, #916).
  */
 export const LIVE_BUFFER_MAX_BYTES = 512 * 1024;
 
@@ -363,26 +365,25 @@ export function pushEvent(buf: LiveEvent[], event: PiJsonEvent): boolean {
 }
 
 /**
- * Enforce the per-job byte bound AFTER a push: evict NEWEST-first (the just-
- * pushed event and everything younger) until the total stored RAW text
- * length is within `LIVE_BUFFER_MAX_BYTES`. A single event larger than the
- * bound is kept ALONE (evicting older events cannot bring the total under
- * the bound, and evicting it would empty the buffer — the bound caps the
- * TOTAL across events, never a lone event). Keeping the newest-arrived as
- * the survivor makes the buffer behave like a bounded queue (like the old
- * ring, which kept the newest N) and means a >512 KB event — a large file
- * read — does not permanently displace the rest of the buffer's history:
- * the next small event evicts it.
+ * Enforce the per-job byte bound AFTER a push: evict OLDEST-first
+ * (`buf.shift()`) until the total stored RAW text length is within
+ * `LIVE_BUFFER_MAX_BYTES` — a live view must show the RECENT activity, so
+ * the just-pushed event is never the first casualty. The `buf.length > 1`
+ * guard keeps a lone oversized event ALONE and untruncated (evicting it
+ * would empty the buffer — the bound caps the TOTAL across events, never a
+ * lone event). Nothing "sticks": a >512 KB event — a large file read —
+ * survives only until the next event arrives, at which point it is the
+ * OLDEST and the first to be evicted.
  */
 function trimToBound(buf: LiveEvent[]): boolean {
   let total = 0;
   for (const ev of buf) total += eventSize(ev);
   if (total <= LIVE_BUFFER_MAX_BYTES) return buf.length > 0;
-  // Evict newest-first, but never evict down to zero events — a lone
+  // Evict oldest-first, but never evict down to zero events — a lone
   // oversized event is retained alone (see above).
   while (total > LIVE_BUFFER_MAX_BYTES && buf.length > 1) {
-    const newest = buf.pop();
-    if (newest) total -= eventSize(newest);
+    const oldest = buf.shift();
+    if (oldest) total -= eventSize(oldest);
   }
   return buf.length > 0;
 }
