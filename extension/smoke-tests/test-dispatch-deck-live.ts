@@ -10,7 +10,6 @@
 import { startBatch, startJob } from "../src/async-jobs.ts";
 import { onRowConfirm } from "../src/dispatch-deck-confirm.ts";
 import {
-  LIVE_RING_CAP,
   bufferCount,
   createLiveViewComponent,
   dropBuffer,
@@ -36,7 +35,9 @@ function resetBuffers(): void {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Ring eviction: 201 events → exactly the newest 200 remain.
+// 1. Buffer bound: the 200-event ring cap is gone; the bound is now BYTES
+//    (LIVE_BUFFER_MAX_BYTES, oldest-first), exercised in the new buffer test
+//    file. Tiny events no longer evict at all.
 // ---------------------------------------------------------------------------
 {
   resetBuffers();
@@ -48,12 +49,12 @@ function resetBuffers(): void {
     });
   }
   const buf = getBuffer("b1");
-  assert(
-    buf.length === LIVE_RING_CAP,
-    `1a: 201 events → ring holds exactly ${LIVE_RING_CAP} (got ${buf.length})`,
-  );
-  assert(buf[0]?.text === "msg-1", "1b: oldest (msg-0) evicted");
-  assert(buf[199]?.text === "msg-200", "1c: newest (msg-200) present");
+  // before: 201 events → ring holds exactly LIVE_RING_CAP (200) / after: all 201
+  // remain — the event-count cap was deleted in #916 (only the 512 KB byte
+  // bound applies; see test-dispatch-deck-live-buffer.ts) (#916)
+  assert(buf.length === 201, `1a: 201 tiny events all buffered (got ${buf.length})`);
+  assert(buf[0]?.text === "msg-0", "1b: oldest (msg-0) retained — no event-count eviction");
+  assert(buf[200]?.text === "msg-200", "1c: newest (msg-200) present");
   dropBuffer("b1");
 }
 
@@ -90,7 +91,7 @@ function resetBuffers(): void {
     "2b: assistant text buffered",
   );
   assert(buf[1]?.kind === "toolCall" && buf[1].name === "bash", "2c: toolCall buffered with name");
-  assert(buf[1]?.args === "cargo test --lib", "2d: object args use the extractToolHint command hint");
+  assert(buf[1]?.kind === "toolCall" && buf[1].args === JSON.stringify({ command: "cargo test --lib" }), "2d: object args stored as full JSON");
   assert(
     buf[2]?.kind === "toolResult" && buf[2].text === "test result: 12 passed, 0 failed",
     "2e: toolResult buffered",
@@ -111,7 +112,8 @@ function resetBuffers(): void {
 }
 
 // ---------------------------------------------------------------------------
-// 2b. Truncation at feed time: 400 text, 240 args, 200 result.
+// 2b. Feed-time storage is UNTRUNCATED (#916): 500-char text/args/result
+//     survive verbatim; only the per-job 512 KB byte bound applies.
 // ---------------------------------------------------------------------------
 {
   resetBuffers();
@@ -136,18 +138,28 @@ function resetBuffers(): void {
     },
   });
   const buf = getBuffer("b3");
-  assert(buf[0]?.kind === "text" && buf[0].text.length <= 400, "2b-1: text truncated to ≤400");
-  assert(buf[0].text.endsWith("…"), "2b-2: text has ellipsis");
-  assert(buf[1]?.kind === "toolCall" && buf[1].args.length <= 240, "2b-3: args truncated to ≤240");
+  // before: text truncated to ≤400 at feed time / after: stored in full, no
+  // truncation (#916)
+  assert(buf[0]?.kind === "text" && buf[0].text === long, "2b-1: 500-char text stored verbatim");
+  assert(!buf[0]?.text.endsWith("…"), "2b-2: no ellipsis — nothing truncated");
+  // before: args truncated to ≤240 (50-char tool hint) / after: full JSON
+  // stringify, untruncated (#916)
   assert(
-    buf[2]?.kind === "toolResult" && buf[2].text.length <= 200,
-    "2b-4: result truncated to ≤200",
+    buf[1]?.kind === "toolCall" && buf[1].args === JSON.stringify({ command: "y".repeat(300) }),
+    "2b-3: 300-char arg value stored as full JSON",
+  );
+  // before: result truncated to ≤200 / after: stored in full, untruncated
+  // (#916)
+  assert(
+    buf[2]?.kind === "toolResult" && buf[2].text === "z".repeat(300),
+    "2b-4: 300-char result stored verbatim",
   );
   dropBuffer("b3");
 }
 
 // ---------------------------------------------------------------------------
-// 2c. Huge object arg with a priority key: the hint wins, no full stringify
+// 2c. Huge object arg: stored as FULL JSON — the 1 MB noise field is kept
+//     in full (nothing is previewed or hinted any more).
 // ---------------------------------------------------------------------------
 {
   resetBuffers();
@@ -155,14 +167,13 @@ function resetBuffers(): void {
   const huge = { noise: "w".repeat(1_000_000), command: "cargo test --lib" };
   feedRawEvent("b3", {
     type: "message_end",
-    message: {
-      role: "assistant",
-      content: [{ type: "toolCall", name: "bash", arguments: huge }],
-    },
+    message: { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: huge }] },
   });
   const arg = getBuffer("b3")[0] as { args: string };
-  assert(arg.args === "cargo test --lib", "2c-a: huge object arg → command hint, not stringified noise");
-  assert(!arg.args.includes("w"), "2c-b: the noise field never reached the preview");
+  // before: huge object arg → 50-char command hint, noise dropped /
+  // after: full JSON.stringify, noise field kept in full (#916)
+  assert(arg.args === JSON.stringify(huge), "2c-a: huge object arg stored as full JSON");
+  assert(arg.args.includes("w".repeat(100)), "2c-b: the noise field is stored in full");
   dropBuffer("b3");
 }
 
@@ -200,9 +211,7 @@ const fakeTheme = { muted: (t: string) => t, error: (t: string) => t } as const;
   assert(flat1.includes("developer"), "3c: header shows the role label");
   comp.handleInput("\x1b"); // Esc → close
   assert(doneResults.includes("close"), "3d: Esc → done('close')");
-  const comp2 = createLiveViewComponent("b1", () => undefined, fakeTheme, (r) =>
-    doneResults.push(`steer-${r}`),
-  );
+  const comp2 = createLiveViewComponent("b1", () => undefined, fakeTheme, (r) => doneResults.push(`steer-${r}`));
   comp2.handleInput("s");
   assert(doneResults.includes("steer-steer"), "3e: 's' → done('steer')");
   dropBuffer("b1");
@@ -458,9 +467,11 @@ function fakeCtx(rec: {
   }
   assert(!threw, "9a: feedRawEvent does not throw on large input");
   assert(getBuffer("b9")?.length === 1, "9b: one event buffered");
+  // before: truncation bounds the ring entry to ≤400 / after: the 10 000-char
+  // text is stored in full — no feed-time truncation any more (#916)
   assert(
-    (getBuffer("b9")[0] as { text: string }).text.length <= 400,
-    "9c: truncation bounds the ring entry",
+    (getBuffer("b9")[0] as { text: string }).text.length === 10_000,
+    "9c: 10 000-char event stored untruncated",
   );
   // Unknown event type is a no-op, never a throw.
   let threwUnknown = false;
