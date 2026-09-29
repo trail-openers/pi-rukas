@@ -376,13 +376,21 @@ function scheduleRender(): void {
 
 function renderNow(): void {
   if (!activeCtx) return;
-  // #914 — quiet mode suppresses ONLY the passive widget (the roster
-  // listener stays quiet-gated in tryAttachNav; the global shortcut stays
-  // live). A widget left visible from a pre-quiet render is dropped; the
-  // helper lives in dispatch-deck-quiet.ts (moved from renderNow to keep
-  // this module within the 500-line limit).
-  if (suppressWidgetIfQuiet(activeCtx, WIDGET_KEY, () => widgetVisible, (v) => (widgetVisible = v)))
+  // #914 — quiet mode suppresses ONLY the passive widget (roster listener
+  // quiet-gated in tryAttachNav, global shortcut stays live); a widget left
+  // visible from a pre-quiet render is dropped (dispatch-deck-quiet.ts).
+  if (
+    suppressWidgetIfQuiet(
+      activeCtx,
+      WIDGET_KEY,
+      () => widgetVisible,
+      (v) => {
+        widgetVisible = v;
+      },
+    )
+  ) {
     return;
+  }
   if (entries.size === 0 && batches.size === 0) {
     if (widgetVisible) {
       try {

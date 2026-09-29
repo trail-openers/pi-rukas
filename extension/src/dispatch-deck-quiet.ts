@@ -1,26 +1,20 @@
 /**
- * #914 quiet-mode widget suppression and nav listener registration for the
- * dispatch deck — moved out of dispatch-deck.ts (whose renderNow and
- * tryAttachNav carried these) so that module stays within the 500-line
- * limit. The behaviour is unchanged:
- *
- *   - quiet mode suppresses ONLY the passive deck widget: a widget left
- *     visible from a pre-quiet render is dropped and nothing is ever set.
- *     The roster listener stays quiet-gated in tryAttachNav (dispatch-deck.ts)
- *     and the global agent-list shortcut stays live in quiet mode.
- *   - the nav listener registration self-heals: on failure the deck still
- *     renders (only the roster-mode entry point is unavailable), registration
- *     is retried on the next renderNow (self-heal for a transient attach-time
- *     failure) and a persistent one surfaces a one-time operator-visible
- *     warning (the trace alone is stderr-only and off unless
- *     PI_ENSEMBLE_DEBUG=1).
+ * #914 quiet-mode widget suppression and nav listener registration —
+ * moved out of dispatch-deck.ts (renderNow / tryAttachNav) to keep that
+ * module within the 500-line limit. Behaviour unchanged: quiet mode
+ * suppresses ONLY the passive deck widget (a pre-quiet widget is dropped,
+ * nothing is ever set; the roster listener stays quiet-gated and the
+ * global agent-list shortcut stays live in quiet mode), and the nav
+ * listener registration self-heals (retry on next renderNow; a persistent
+ * failure surfaces a one-time operator-visible warning — the trace alone
+ * is stderr-only and off unless PI_ENSEMBLE_DEBUG=1).
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { trace } from "./trace.ts";
 
-// Module-level state owned by this module (dispatch-deck.ts no longer holds
-// navUnsub / navWarned — they move here with the registration helper).
+// Module-level state owned by this module (dispatch-deck.ts no longer
+// holds navUnsub / navWarned — they move here with the helper).
 let _navUnsub: (() => void) | undefined;
 let _navWarned = false;
 
