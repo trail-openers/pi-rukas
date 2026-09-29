@@ -50,6 +50,7 @@ import {
   transcriptPathFor,
   willRetryAfter,
 } from "./spawn-support.ts";
+import { attachStdinErrorGuard } from "./stdin-guard.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
 import { vipuneChildEnv } from "./vipune.ts";
@@ -191,6 +192,10 @@ async function spawnSpecialistInner(
     env: childEnv,
   });
 
+  // #932 — universal EPIPE backstop (stdin-guard.ts): EPIPE fires async as `error`,
+  // so without this listener the kickoff write, end(), or any later steer becomes
+  // an uncaughtException. Must precede onStdin.
+  attachStdinErrorGuard(child.stdin, spec.role);
   const start = Date.now();
   // Bounded per-spawn buffers: unbounded `events[]` / `stderr +=` accumulators
   // caused parent OOM at ~3.7GB during long /work cycles (V8 SlowFlatten on the
@@ -217,7 +222,6 @@ async function spawnSpecialistInner(
   // Running state shared with the parent's onProgress callback. Each child
   // gets its own state; lens-review aggregates over 6 of them in parallel.
   const runningState = emptyRunningState(spec.role, opts.tag);
-
   if (!child.stdout || !child.stderr || !child.stdin) {
     throw new Error("Failed to attach to child stdio");
   }
@@ -293,7 +297,6 @@ async function spawnSpecialistInner(
     childExited: () => childExited,
     turns: () => runningState.turns,
   });
-
   // Inactivity watchdog state (#296): ANY stdout line counts as life —
   // parseable or not. Checked on a coarse interval below.
   let lastActivityAt = Date.now();
@@ -302,7 +305,6 @@ async function spawnSpecialistInner(
   // Full reasoning in test-kill-attribution.ts.
   let lastActivityKind = "nothing yet";
   let stdoutLines = 0;
-
   const stdoutRl = createInterface({ input: child.stdout });
   stdoutRl.on("line", (line) => {
     lastActivityAt = Date.now();
@@ -365,7 +367,6 @@ async function spawnSpecialistInner(
   child.stderr.on("data", (d) => {
     appendStderr(d);
   });
-
   // Always cap wall-clock — see SPAWN_BACKSTOP_MS. A stalled child without a
   // timeout hangs the parent indefinitely (observed in the wild: overnight
   // stuck session). The backstop only catches runaway loops; the inactivity
@@ -487,7 +488,6 @@ async function spawnSpecialistInner(
   }
 
   reconcileObservedCounts(result, runningState);
-
   // Final onProgress emit — flips the child from running to done so the
   // aggregator's last render shows the resolved icon (✓ / ✗) instead of the
   // running spinner.

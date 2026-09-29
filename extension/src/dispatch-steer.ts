@@ -25,6 +25,7 @@
  *     like "job finished".
  */
 
+import type { Writable } from "node:stream";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { getChildHandle, getOrchestratorActiveChild, isOrchestratorJob } from "./async-jobs.ts";
@@ -94,6 +95,16 @@ export type SteerSource =
  * between lookup and write). Never throws on delivery failure.
  */
 export function steerChild(jobId: string, text: string, source: SteerSource): SteerDetails {
+  // #932 — pre-write guard: a dead pipe's `destroyed` flag is set as soon
+  // as the child exits (measured), long before `writableEnded` is, so the
+  // guard must check it first. Returning early here keeps the NEW steer
+  // off a dead pipe; the pre-attached stdin `error` listener at spawn time
+  // still absorbs EPIPEs from data already queued at exit.
+  // `destroyed` is a true boolean on real Writables; undefined means the
+  // handle is a fake without the flag (test stubs) — treat as open.
+  const stdinClosed = (stdin: Writable): boolean =>
+    stdin.destroyed === true || stdin.writable === false || stdin.writableEnded === true;
+
   // Orchestrator-shaped jobs (adversarial_loop) don't have a stdin handle of
   // their own — the orchestrator is a function, not a Pi process. Resolve the
   // active inner child so the steer reaches the currently-running phase.
@@ -102,8 +113,14 @@ export function steerChild(jobId: string, text: string, source: SteerSource): St
     if (!active) {
       return { jobId, delivered: false, reason: "between-rounds" };
     }
+    if (stdinClosed(active.stdin)) {
+      return { jobId, delivered: false, reason: "child stdin closed" };
+    }
     try {
-      active.stdin.write(`${JSON.stringify({ type: "steer", message: text })}\n`);
+      active.stdin.write(`${JSON.stringify({ type: "steer", message: text })}\n`, () => {
+        /* #932 — the write callback swallows the write's own error; the
+            stdin `error` listener at spawn time traces it. */
+      });
     } catch (err) {
       return { jobId, delivered: false, reason: (err as Error).message };
     }
@@ -115,8 +132,14 @@ export function steerChild(jobId: string, text: string, source: SteerSource): St
   if (!handle) {
     return { jobId, delivered: false, reason: "no-such-job" };
   }
+  if (stdinClosed(handle.stdin)) {
+    return { jobId, delivered: false, reason: "child stdin closed" };
+  }
   try {
-    handle.stdin.write(`${JSON.stringify({ type: "steer", message: text })}\n`);
+    handle.stdin.write(`${JSON.stringify({ type: "steer", message: text })}\n`, () => {
+      /* #932 — the write callback swallows the write's own error; the
+          stdin `error` listener at spawn time traces it. */
+    });
   } catch (err) {
     return { jobId, delivered: false, reason: (err as Error).message };
   }
