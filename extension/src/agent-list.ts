@@ -47,11 +47,8 @@ import { type Component, isKeyRelease, matchesKey } from "@earendil-works/pi-tui
 import { STOP_ALL_KEY } from "./agent-list-keys.ts";
 import { killJob, killJobs } from "./async-jobs-lifecycle.ts";
 import { toTerminalLine } from "./dispatch-deck-line.ts";
-import { buffers, startBuffer } from "./dispatch-deck-live.ts";
-import { suppressWidgetIfQuiet } from "./dispatch-deck-quiet.ts";
 import { formatAgentRow } from "./dispatch-deck-rows.ts";
 import type { BatchDeckEntry, DeckEntry } from "./dispatch-deck.ts";
-import { emptyRunningState } from "./progress.ts";
 
 /** The leading row's selectable key (Esc-equivalent — closes, never opens). */
 export const MAIN_ROW_KEY = "main";
@@ -359,102 +356,4 @@ export async function openAgentList(
     },
     { overlay: true },
   );
-}
-
-// A minimal fake ctx for the quiet gate test (suppressWidgetIfQuiet calls
-// ctx.ui.setWidget when the widget is visible — here it is not, so the
-// call is a no-op; the fake needs the shape for the type, not the call).
-const fakeCtxWithUi = {
-  ui: { setWidget: () => {}, notify: () => {} },
-  hasUI: true,
-} as unknown as ExtensionContext;
-
-// ---------------------------------------------------------------------------
-// 8. Quiet-mode gate relocation (issue #914 / the adversarial round).
-//    The `PI_ENSEMBLE_QUIET_STATUS` early return that lived in
-//    dispatch-deck-live.ts `startBuffer` is REMOVED — buffers are ALWAYS
-//    created, because quiet mode now only suppresses the PASSIVE deck
-//    widget (dispatch-deck.ts `renderNow`); the agent list / roster still
-//    open the live view for a quiet session's rows. This block is the
-//    guard against regressing the relocation: it pins the two gates in
-//    opposite directions and proves the quiet gate CHANGED (buffers
-//    created) while the one that KEPT (the widget) is still suppressed.
-// ---------------------------------------------------------------------------
-{
-  const NOW = 2_000_000;
-  const entries: DeckEntry[] = [
-    {
-      key: "job-q",
-      label: "Q",
-      state: emptyRunningState("developer"),
-      seq: 0,
-      startedAt: NOW - 60_000,
-    },
-  ];
-  const quietSaved = process.env.PI_ENSEMBLE_QUIET_STATUS;
-  process.env.PI_ENSEMBLE_QUIET_STATUS = "1";
-  try {
-    // The quiet gate that CHANGED: startBuffer no longer early-returns.
-    // The buffer is created and the live view is available for a quiet
-    // session's rows (the list opens it via onRowConfirm, which reads the
-    // buffer — a quiet session with no buffer would fall through to the
-    // steer prompt, which is itself quiet-gated in dispatch-deck-interactive.
-    // The buffer existing is the load-bearing fact: it is the data the
-    // live view renders, and its absence was the old quiet gate's effect.
-    startBuffer("job-q");
-    const buf = buffers.get("job-q");
-    if (!buf || buf.length !== 0) {
-      console.error(
-        "✗ 8a: quiet mode still suppresses startBuffer (the gate was moved) — buffer absent",
-      );
-      process.exit(1);
-    }
-    console.log("✓ 8a: startBuffer creates a buffer in quiet mode (the gate moved)");
-
-    // The quiet gate that KEPT: renderNow still suppresses the widget.
-    // `suppressWidgetIfQuiet` returns true while quiet, so renderNow
-    // returns early and the deck widget is never set.
-    const quietSuppressed = suppressWidgetIfQuiet(
-      fakeCtxWithUi,
-      "ensemble:deck",
-      () => false,
-      () => {},
-    );
-    if (!quietSuppressed) {
-      console.error(
-        "✗ 8b: suppressWidgetIfQuiet returned false in quiet mode (the kept gate is gone)",
-      );
-      process.exit(1);
-    }
-    console.log(
-      "✓ 8b: suppressWidgetIfQuiet still suppresses the widget in quiet mode (the kept gate)",
-    );
-
-    // The agent list is reachable in quiet mode (the global shortcut is
-    // registered regardless — index.ts); the list's own rows project
-    // normally. This is the load-bearing fact for a quiet session: the
-    // operator can open the list and the live view without the widget.
-    const lines = buildAgentListLines(entries, [], 80, NOW);
-    if (lines.length !== 2 || lines[0]?.key !== MAIN_ROW_KEY || lines[1]?.key !== "job-q") {
-      console.error("✗ 8c: agent list does not project rows in quiet mode");
-      process.exit(1);
-    }
-    console.log("✓ 8c: the agent list projects its rows in quiet mode (the list is live)");
-
-    // The live view opens for a quiet session's row: the buffer exists
-    // (proven above) and the live-view component reads it on every
-    // render (dispatch-deck-live.ts) — the openLiveView route in
-    // onRowConfirm does not gate on quiet mode. This is the behavioural
-    // consequence of the gate relocation.
-    const liveViewAvailable = buf !== undefined;
-    if (!liveViewAvailable) {
-      console.error("✗ 8d: the live view is unavailable for a quiet session's row");
-      process.exit(1);
-    }
-    console.log("✓ 8d: the live view is available for a quiet session's row (the gate moved)");
-  } finally {
-    if (quietSaved === undefined) process.env.PI_ENSEMBLE_QUIET_STATUS = undefined;
-    else process.env.PI_ENSEMBLE_QUIET_STATUS = quietSaved;
-    buffers.delete("job-q");
-  }
 }
