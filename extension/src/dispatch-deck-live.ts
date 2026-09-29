@@ -11,10 +11,13 @@
  *     (spawn.ts line handler, for every assistant `message_end` and
  *     `toolResult`), threaded through `WorkHooks` in `startJob`/`startBatch`.
  *     Buffers are dropped when the job's deck entry is cleared (the deck
- *     module's `clearEntry` calls `dropBuffer` — co-located lifecycle, no
- *     leak across many dispatches).
+ *     module's `clearEntry` calls `releaseOnEntryClear`) — with ONE
+ *     exception: while the job's live view is OPEN, the entry's clear
+ *     remembers that and keeps the buffer; `markViewClosed` then drops it.
+ *     A job whose view was never open still drops its buffer at clear — no
+ *     leak across many dispatches.
  *   - Events are stored UNTRUNCATED at feed time (#916): the only bound is
- *     the per-job byte cap (`LIVE_BUFFER_MAX_BYTES`, measured on the stored
+ *     the per-job bound (`LIVE_BUFFER_MAX_CHARS`, measured on the stored
  *     RAW text length, bounded queue — the newest-arriving events that do
  *     not fit are evicted; a single event larger than the bound is kept
  *     ALONE and untruncated).
@@ -23,7 +26,7 @@
  *     truncation was removed.
  *   - `markSettled(key, status)` / `getStatus(key)` record the settle
  *     outcome (async-jobs.ts calls `markSettled` at the same sites as
- *     `clearEntry`); the header reads it.
+ *     `clearEntry`); the view header will read it in #916 slice B.
  *   - `onBufferAppend(key, cb)` (unsubscribe returned) notifies subscribers
  *     after an event is appended — the overlay uses it to re-render instead
  *     of relying on the deck's 1 s ticker (#916 PM decision).
@@ -47,7 +50,6 @@
  */
 
 import { NEWLINE_SEP, sanitizeText } from "./dispatch-deck-line.ts";
-import { snapshot as deckSnapshot } from "./dispatch-deck.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { trace } from "./trace.ts";
 
@@ -87,9 +89,9 @@ export type LiveEvent =
   | { kind: "thinking"; text: string };
 
 /**
- * The per-job byte cap, measured on the stored RAW text length (the
- * `.text` field for text/thinking, the full JSON string for toolCall
- * args) — #916, replacing the 200-event ring cap and the feed-time
+ * The per-job bound, measured on the stored string length in UTF-16 code
+ * units (the `.text` field for text/thinking, the full JSON string for
+ * toolCall args) — #916, replacing the 200-event ring cap and the feed-time
  * character truncation. The buffer behaves as a bounded queue: when the
  * total exceeds the bound, the OLDEST events are evicted until the total
  * fits — the buffer keeps the most RECENT activity (that is what a live
@@ -98,7 +100,7 @@ export type LiveEvent =
  * exceeds the bound is kept ALONE and untruncated (the bound caps the
  * TOTAL across multiple events, never a lone event — PM decision, #916).
  */
-export const LIVE_BUFFER_MAX_BYTES = 512 * 1024;
+export const LIVE_BUFFER_MAX_CHARS = 512 * 1024;
 
 /** The settle outcome recorded for the header (async-jobs calls markSettled). */
 export type SettleStatus = "running" | "finished" | "failed" | "killed";
@@ -114,8 +116,15 @@ const settledStatuses = new Map<string, SettleStatus>();
 /** True while the job's live view overlay is open (buffer survives clearEntry). */
 const viewsOpen = new Set<string>();
 
+/** True while the deck entry has been cleared but the view is still open. */
+const entryCleared = new Set<string>();
+
 /** Append subscribers per key (#916: the overlay re-renders on feed). */
 const appendSubscribers = new Map<string, Set<() => void>>();
+
+/** Running stored size per buffer (key → sum of eventSize), kept in sync
+ *  on push/evict so trimToBound never re-sums the buffer. */
+const bufferSizes = new Map<string, number>();
 
 /** The raw stored size of one event, in characters of the stored text. */
 function eventSize(ev: LiveEvent): number {
@@ -171,11 +180,23 @@ export function startBuffer(key: string): void {
   if (!buffers.has(key)) buffers.set(key, []);
 }
 
-/** Drop the per-job ring buffer (called when the job's deck entry clears). */
+/**
+ * Drop the per-job ring buffer (called when the job's deck entry clears,
+ * when a view closes over an already-cleared entry, and by tests). Clears
+ * the key's subscribers (then deletes the set) plus its entryCleared and
+ * viewOpen state so no per-key bookkeeping outlives the buffer.
+ */
 export function dropBuffer(key: string): void {
   buffers.delete(key);
+  const subs = appendSubscribers.get(key);
+  if (subs) {
+    subs.clear();
+    appendSubscribers.delete(key);
+  }
+  entryCleared.delete(key);
   settledStatuses.delete(key);
   viewsOpen.delete(key);
+  bufferSizes.delete(key);
 }
 
 /** True when a live-view buffer exists for the key (gate for the row action). */
@@ -190,12 +211,13 @@ export function hasBuffer(key: string): boolean {
 /**
  * Record the job's settle outcome, called from the async-jobs settle sites
  * alongside `clearEntry` (success → "finished", error → "failed",
- * kill/abort → "killed"). The view header reads it via `getStatus`.
+ * kill/abort → "killed"). The view header will read it via `getStatus`
+ * in #916 slice B.
  */
 export function markSettled(key: string, status: Exclude<SettleStatus, "running">): void {
   settledStatuses.set(key, status);
 }
-
+// Consumer: the #916 slice-B view header (not yet wired).
 /** The recorded status for the key — "running" until markSettled. */
 export function getStatus(key: string): SettleStatus {
   return settledStatuses.get(key) ?? "running";
@@ -256,22 +278,27 @@ export function markViewOpen(key: string): void {
 }
 
 /**
- * Mark the job's live view as closed. If the job has already settled
- * (its deck entry is cleared, so `hasBuffer` alone can't tell us — the
- * deck module's clearEntry held the buffer because the view was open),
- * drop the buffer now: it has outlived both its entry and its view.
+ * Mark the job's live view as closed. Drops the buffer iff the deck entry
+ * was ALREADY cleared while the view was open (the entryCleared fact, set
+ * by `releaseOnEntryClear`) — otherwise the entry is still alive, the
+ * buffer is still owned by the entry's lifecycle, and only viewOpen is
+ * cleared.
  */
 export function markViewClosed(key: string): void {
   viewsOpen.delete(key);
-  if (!hasEntry(key)) dropBuffer(key);
+  if (entryCleared.has(key)) dropBuffer(key);
 }
 
 /**
- * Has the job's deck entry already been cleared? The deck module owns the
- * map; this module can only observe via the deck's `snapshot` export.
+ * The deck module's `clearEntry` calls this in place of its conditional
+ * drop: if the view is open, remember that the entry cleared (the buffer
+ * is kept for the view; `markViewClosed` drops it then); otherwise drop
+ * the buffer now. The live module owns the keep/drop fact — no snapshot
+ * of the deck's entries is needed to ask whether one entry is gone.
  */
-function hasEntry(key: string): boolean {
-  return deckSnapshot().some((e) => e.key === key);
+export function releaseOnEntryClear(key: string): void {
+  if (viewsOpen.has(key)) entryCleared.add(key);
+  else dropBuffer(key);
 }
 
 // =============================================================================
@@ -287,7 +314,7 @@ function hasEntry(key: string): boolean {
 export function feedRawEvent(key: string, event: PiJsonEvent): void {
   const buf = buffers.get(key);
   if (!buf) return;
-  const added = pushEvent(buf, event);
+  const added = pushEvent(key, buf, event);
   if (added) notifyAppend(key);
 }
 
@@ -295,16 +322,17 @@ export function feedRawEvent(key: string, event: PiJsonEvent): void {
  * Push a parsed event onto a buffer (module helper, exported for the
  * feed-path test). Returns true when at least one event was stored.
  *
- * Storage is UNTRUNCATED (#916): the only bound is the per-job byte cap
- * (`LIVE_BUFFER_MAX_BYTES`), enforced AFTER the push by evicting oldest
+ * Storage is UNTRUNCATED (#916): the only bound is the per-job char cap
+ * (`LIVE_BUFFER_MAX_CHARS`), enforced AFTER the push by evicting oldest
  * events first. Sanitisation (control chars, ANSI, newline collapse) is
  * kept — only the length truncation was removed.
  */
-export function pushEvent(buf: LiveEvent[], event: PiJsonEvent): boolean {
+export function pushEvent(key: string, buf: LiveEvent[], event: PiJsonEvent): boolean {
   if (event.type !== "message" && event.type !== "message_end") return false;
   const msg = event.message;
   if (!msg) return false;
   let added = false;
+  let total = bufferSizes.get(key) ?? 0;
   if (msg.role === "toolResult") {
     const resultText = (msg.content ?? [])
       .filter((b) => b.type === "text" && typeof b.text === "string" && b.text.length > 0)
@@ -320,22 +348,26 @@ export function pushEvent(buf: LiveEvent[], event: PiJsonEvent): boolean {
     // results ghosted the overlay over the main chat and polluted the
     // scrollback on every 1 s re-render).
     const name = msg.toolName;
-    buf.push({
+    const ev: LiveEvent = {
       kind: "toolResult",
       name: name ? sanitizeText(name) : "unknown",
       text: sanitizeText(resultText).replace(/\n+/g, NEWLINE_SEP),
       isError: msg.isError === true,
-    });
+    };
+    buf.push(ev);
+    total += eventSize(ev);
     added = true;
-    return trimToBound(buf);
+    return trimToBound(key, buf);
   }
   if (msg.role !== "assistant") return false;
   for (const block of msg.content ?? []) {
     if (block.type === "text" && typeof block.text === "string" && block.text.length > 0) {
-      buf.push({
+      const ev: LiveEvent = {
         kind: "text",
         text: sanitizeText(block.text).replace(/\n+/g, NEWLINE_SEP),
-      });
+      };
+      buf.push(ev);
+      total += eventSize(ev);
       added = true;
     } else if (
       block.type === "thinking" &&
@@ -344,46 +376,54 @@ export function pushEvent(buf: LiveEvent[], event: PiJsonEvent): boolean {
     ) {
       // #916 — thinking blocks were silently dropped before; store them as
       // their own variant so the view can render `▸ thinking (N chars)`.
-      buf.push({
+      const ev: LiveEvent = {
         kind: "thinking",
         text: sanitizeText(block.thinking).replace(/\n+/g, NEWLINE_SEP),
-      });
+      };
+      buf.push(ev);
+      total += eventSize(ev);
       added = true;
     } else if (block.type === "toolCall" && block.name) {
       // #916 — store the FULL JSON of the arguments (previously the 50-char
       // extractToolHint preview); the view renders it in full.
-      buf.push({
+      const ev: LiveEvent = {
         kind: "toolCall",
         name: sanitizeText(block.name),
         args: JSON.stringify(block.arguments ?? ""),
-      });
+      };
+      buf.push(ev);
+      total += eventSize(ev);
       added = true;
     }
   }
-  if (added) trimToBound(buf);
+  if (added) {
+    bufferSizes.set(key, total);
+    return trimToBound(key, buf);
+  }
   return added;
 }
 
 /**
- * Enforce the per-job byte bound AFTER a push: evict OLDEST-first
- * (`buf.shift()`) until the total stored RAW text length is within
- * `LIVE_BUFFER_MAX_BYTES` — a live view must show the RECENT activity, so
- * the just-pushed event is never the first casualty. The `buf.length > 1`
- * guard keeps a lone oversized event ALONE and untruncated (evicting it
- * would empty the buffer — the bound caps the TOTAL across events, never a
- * lone event). Nothing "sticks": a >512 KB event — a large file read —
- * survives only until the next event arrives, at which point it is the
- * OLDEST and the first to be evicted.
+ * Enforce the per-job char bound AFTER a push: evict OLDEST-first
+ * (`buf.shift()` — acceptable: the buffer is bounded in size) until the
+ * RUNNING total (maintained per key by `feedRawEvent`, so no re-summing)
+ * is within `LIVE_BUFFER_MAX_CHARS` — a live view must show the RECENT
+ * activity, so the just-pushed event is never the first casualty. The
+ * `buf.length > 1` guard keeps a lone oversized event ALONE and untruncated
+ * (evicting it would empty the buffer — the bound caps the TOTAL across
+ * events, never a lone event). Nothing "sticks": a >512 KB event — a large
+ * file read — survives only until the next event arrives, at which point
+ * it is the OLDEST and the first to be evicted.
  */
-function trimToBound(buf: LiveEvent[]): boolean {
-  let total = 0;
-  for (const ev of buf) total += eventSize(ev);
-  if (total <= LIVE_BUFFER_MAX_BYTES) return buf.length > 0;
+function trimToBound(key: string, buf: LiveEvent[]): boolean {
+  if (buf.length === 0) return false;
   // Evict oldest-first, but never evict down to zero events — a lone
   // oversized event is retained alone (see above).
-  while (total > LIVE_BUFFER_MAX_BYTES && buf.length > 1) {
+  let total = bufferSizes.get(key) ?? 0;
+  while (total > LIVE_BUFFER_MAX_CHARS && buf.length > 1) {
     const oldest = buf.shift();
     if (oldest) total -= eventSize(oldest);
   }
-  return buf.length > 0;
+  bufferSizes.set(key, total);
+  return true;
 }

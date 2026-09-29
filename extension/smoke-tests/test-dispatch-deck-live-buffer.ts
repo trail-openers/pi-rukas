@@ -11,7 +11,7 @@
  */
 
 import {
-  LIVE_BUFFER_MAX_BYTES,
+  LIVE_BUFFER_MAX_CHARS,
   bufferCount,
   createLiveViewComponent,
   dropBuffer,
@@ -100,7 +100,7 @@ function resetBuffers(keys: string[]): void {
     total +=
       ev.kind === "text" ? ev.text.length : ev.kind === "toolCall" ? ev.args.length : ev.text.length;
   }
-  assert(total <= LIVE_BUFFER_MAX_BYTES, `b1: stored total ≤ 512 KB (got ${total} B)`);
+  assert(total <= LIVE_BUFFER_MAX_CHARS, `b1: stored total ≤ 512 KB (got ${total} B)`);
   assert(buf.length >= 1 && buf.length < 100, `b2: events that did not fit evicted (kept ${buf.length})`);
   assert(buf[buf.length - 1]?.text === "n".repeat(50 * 1024), "b3: NEWEST event (index 99) is the LAST buffer entry");
   assert(buf[0]?.text !== `e0` + "p".repeat(50 * 1024 - 2), "b4: FIRST event evicted");
@@ -231,6 +231,19 @@ function resetBuffers(keys: string[]): void {
   assert(!threw, "f4: throwing subscriber is caught (no throw escapes)");
   assert(getBuffer("f1").length === 3, "f5: feed continued past the throwing subscriber");
   dropBuffer("f1");
+  // f6: dropBuffer deletes the key's appendSubscribers entry (clear then
+  // delete) — no per-key bookkeeping (subscribers, entryCleared, viewOpen,
+  // settle status, size total) outlives the buffer.
+  const unsub6 = onBufferAppend("f1", () => {});
+  startBuffer("f1"); // buffer recreated, subscribers gone
+  const unsub6b = onBufferAppend("f1", () => {});
+  assert(unsub6 !== undefined && unsub6b !== undefined, "f6: re-subscribing a dropped key works fresh (old subscribers gone)");
+  feedRawEvent("f1", {
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "text", text: "f1b" }] },
+  });
+  assert(getBuffer("f1").length === 1, "f6b: fresh buffer — no stale state from the dropped key");
+  dropBuffer("f1");
 }
 
 // ---------------------------------------------------------------------------
@@ -268,6 +281,21 @@ function resetBuffers(keys: string[]): void {
   clearEntry("g2");
   assert(!hasBuffer("g2"), "g2b: clearEntry drops the buffer when no view is open");
   assert(bufferCount() === 0, "g2c: buffer count is 0 — no leak");
+  // g3: view closed BEFORE the entry clears → the buffer is kept until
+  // clearEntry, then dropped (markViewClosed alone must not drop it while
+  // the entry is still alive).
+  startBuffer("g3");
+  startEntry("g3", { label: "ops", role: "ops" });
+  feedRawEvent("g3", {
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "text", text: "g3 activity" }] },
+  });
+  markViewOpen("g3");
+  markViewClosed("g3");
+  assert(hasBuffer("g3"), "g3a: view closed before clear → buffer KEPT (entry still alive)");
+  clearEntry("g3");
+  assert(!hasBuffer("g3"), "g3b: clearEntry then drops the buffer");
+  assert(bufferCount() === 0, "g3c: buffer count is 0 — no leak");
   reset();
 }
 
@@ -309,7 +337,29 @@ function resetBuffers(keys: string[]): void {
   assert(TOOL_RESULT_PREVIEW_MAX === 400, "h1: TOOL_RESULT_PREVIEW_MAX is still 400");
   assert(TOOL_ARGS_PREVIEW_MAX === 240, "h2: TOOL_ARGS_PREVIEW_MAX is still 240");
   assert(TOOL_RESULT_LINE_MAX === 200, "h3: TOOL_RESULT_LINE_MAX is still 200");
-  assert(LIVE_BUFFER_MAX_BYTES === 512 * 1024, "h4: LIVE_BUFFER_MAX_BYTES is the 512 KB bound");
+  assert(LIVE_BUFFER_MAX_CHARS === 512 * 1024, "h4: LIVE_BUFFER_MAX_CHARS is the 512 KB bound");
+}
+
+// ---------------------------------------------------------------------------
+// (j) Running size total: feed a buffer just over the bound, evict oldest
+//     first, and the buffer stays bounded across many appends.
+// ---------------------------------------------------------------------------
+{
+  resetBuffers(["j1"]);
+  startBuffer("j1");
+  const chunk = "z".repeat(100 * 1024); // 100 KB each, 6 × 100 KB = 600 KB > bound
+  for (let i = 0; i < 6; i++) {
+    feedRawEvent("j1", {
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: `j${i}` + chunk.slice(1) }] },
+    });
+  }
+  const buf = getBuffer("j1");
+  let total = 0;
+  for (const ev of buf) total += ev.kind === "text" ? ev.text.length : ev.text.length;
+  assert(total <= LIVE_BUFFER_MAX_CHARS, `j1: running total stays ≤ bound across 6 appends (got ${total})`);
+  assert(buf.length >= 2 && buf.length <= 5, `j2: oldest events evicted, newest kept (kept ${buf.length})`);
+  dropBuffer("j1");
 }
 
 console.log(`\nexit ${exit}`);

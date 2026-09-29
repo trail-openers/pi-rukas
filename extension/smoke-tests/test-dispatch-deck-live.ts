@@ -35,8 +35,8 @@ function resetBuffers(): void {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Buffer bound: the 200-event ring cap is gone; the bound is now BYTES
-//    (LIVE_BUFFER_MAX_BYTES, oldest-first), exercised in the new buffer test
+// 1. Buffer bound: the 200-event ring cap is gone; the bound is now chars
+//    (LIVE_BUFFER_MAX_CHARS, oldest-first), exercised in the new buffer test
 //    file. Tiny events no longer evict at all.
 // ---------------------------------------------------------------------------
 {
