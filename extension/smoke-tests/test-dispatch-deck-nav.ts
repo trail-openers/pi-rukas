@@ -88,7 +88,10 @@ function makeNav(
   return {
     nav: createDeckNav(
       {
-        runningKeys: () => keysRef.keys,
+        // #914 — the deck's navGetters (and this harness) expose ONLY running
+    // job keys: the `main` row must appear only when ≥1 job is running,
+    // so with no jobs the ↓ still belongs to Pi's prompt history.
+    runningKeys: () => keysRef.keys,
         editorText: () => fake.editorText,
         // `focus` simulates the main editor being/not being the focused
         // component (the production probe reads the editor's `focused`

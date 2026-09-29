@@ -7,10 +7,11 @@
  * the operator walk the RUNNING subagents from an empty editor, mirroring
  * nicobailon/pi-subagents' fleet status:
  *
- *  - Inactive: `down` is consumed ONLY when the editor text is empty AND at
- *    least one running entry (standalone or batch member) exists. Every
- *    other key passes through untouched — the editor behaves exactly as
- *    today.
+ *  - Inactive: `down` is consumed ONLY when the editor text is empty, the
+ *    main editor is the focused component (the focus gate below — fail-
+ *    closed), and at least one running entry (standalone or batch member)
+ *    exists. Every other key passes through untouched — the editor
+ *    behaves exactly as today.
  *  - Active ("roster mode"): down/up (and j/k) move the selection, clamped;
  *    up at the first row or Esc exits; Enter confirms the selected row via
  *    the existing `onRowConfirm` route (steer prompt for a running job);
@@ -55,7 +56,11 @@
 
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
 
-export const DECK_HINT_TEXT = "↓ select subagents";
+// #914 — the ↓ roster now walks the agent-list rows: the leading `main`
+// row (Esc-equivalent — exits the roster, never opens a view) followed by
+// the running jobs. `runningKeys` carries `main` first. The hint line is
+// the agent-list hint (buildAgentListHint in agent-list-keys.ts) — the
+// old `DECK_HINT_TEXT` constant is gone (zero consumers after #914).
 
 /** Minimal shape of the deck the nav handler needs. */
 export interface DeckNavGetters {

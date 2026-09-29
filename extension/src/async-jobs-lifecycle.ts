@@ -67,6 +67,24 @@ export function killAllJobs(): number {
 }
 
 /**
+ * Kill exactly the given job ids (best-effort — an id absent from the
+ * registry, e.g. already settled, is skipped; no error for unknown ids).
+ * Returns the number of jobs actually aborted, so a caller can prove the
+ * action's scope equals the set it was asked to kill (the agent-list
+ * stop-all prompt counts the visible rows; `y` must abort that same set —
+ * `killAllJobs` would abort registry jobs the list does not show: batch
+ * orchestrators, non-deck driver children, jobs absent from the deck
+ * maps).
+ */
+export function killJobs(keys: readonly string[]): number {
+  let n = 0;
+  for (const key of keys) {
+    if (jobs.has(key) && killJob(key)) n++;
+  }
+  return n;
+}
+
+/**
  * Test-only: forcibly drain the jobs and childHandles maps without going
  * through the abort+settle cycle. Required for tests that use
  * never-resolving work (`new Promise(() => undefined)`) — aborting such a

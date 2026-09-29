@@ -35,7 +35,24 @@ export async function onRowConfirm(
   host: RowConfirmHost,
 ): Promise<void> {
   const entry = host.getEntry(key);
-  if (!entry) return;
+  if (!entry) {
+    // A buffer with no deck entry (quiet mode: startEntry is quiet-gated)
+    // still opens the live view — the buffer is the live view's data. Only
+    // the steer fallthrough (no buffer AND no entry) is a no-op, so the
+    // trace lives here: the operator sees the Enter that did nothing.
+    if (hasBuffer(key)) {
+      await openLiveView(ctx, key, {
+        getEntry: (k) => host.getEntry(k),
+        buildSteerPrompt: (e, now) => deckComposite.buildSteerPrompt(e, now),
+        steer: (k, text) => host.steer(k, text),
+      });
+      return;
+    }
+    trace(
+      `dispatch-deck-confirm: onRowConfirm for unknown key ${key} (no buffer, no entry — steer no-op)`,
+    );
+    return;
+  }
   if (hasBuffer(key)) {
     await openLiveView(ctx, key, {
       getEntry: (k) => host.getEntry(k),
