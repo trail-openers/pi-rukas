@@ -17,6 +17,7 @@ import { loadOverrides } from "./model-config.ts";
 import { registerModelPicker } from "./model-picker.ts";
 import { registerPermissionGuard } from "./permission-guard.ts";
 import { registerPlanTool } from "./plan-tool.ts";
+import { setPmActive } from "./pm-active.ts";
 import { registerResearchTool } from "./research-tool.ts";
 import { warnIfRetryConfigTooLow } from "./retry-config-check.ts";
 import { registerCheckReviewCapTool } from "./review-cap.ts";
@@ -103,7 +104,20 @@ export default async function (pi: ExtensionAPI) {
       handler: (ctx) =>
         openAgentList(ctx, {
           getEntries: dispatchDeck.snapshot,
-          openJob: (key) => dispatchDeck.confirmRow(ctx, key),
+          openJob: (key) =>
+            // #916 SLICE B — thread the list re-open into the view's Esc
+            // route (confirmRow → onRowConfirm → openLiveView → done
+            // "returnToList"). The roster nav path passes nothing, so Esc
+            // there just closes, as before.
+            dispatchDeck.confirmRow(ctx, key, {
+              onReturnToList: () => {
+                void openAgentList(ctx, {
+                  getEntries: dispatchDeck.snapshot,
+                  openJob: (k) => dispatchDeck.confirmRow(ctx, k),
+                  onSettle: () => {},
+                });
+              },
+            }),
           onSettle: () => {},
         }),
     });
@@ -118,6 +132,14 @@ export default async function (pi: ExtensionAPI) {
     dispatchDeck.attach(ctx);
     workWidget.attach(ctx);
   });
+  // #916 SLICE B — the "PM active" badge seam: the parent agent's streaming
+  // state is exposed on the ExtensionContext (ctx.isIdle), not on the TUI.
+  // index.ts flips pm-active.ts from pi's agent_start / agent_end events
+  // (the PARENT's own lifecycle — subagent children are separate processes
+  // and never fire the parent's events); the live-view header reads
+  // pmActive() each render.
+  pi.on("agent_start", () => setPmActive(true));
+  pi.on("agent_end", () => setPmActive(false));
   pi.on("session_shutdown", () => {
     dispatchDeck.detach();
     workWidget.detach();

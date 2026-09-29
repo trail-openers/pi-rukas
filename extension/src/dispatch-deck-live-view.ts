@@ -1,182 +1,119 @@
 /**
- * Live view — the overlay component and the open/close loop (#839, #916).
+ * Live view — the full-screen overlay component host and the open/close
+ * loop (#839, #916 SLICE B).
  *
  * Split out from dispatch-deck-live.ts (the per-job ring buffer module)
  * when #916 SLICE A pushed that file past the 500-line cap. The view side
  * owns everything on the render / overlay boundary:
  *
- *   - `createLiveViewComponent` — builds the overlay component (returned
- *     DIRECTLY from the `ctx.ui.custom` factory — never Container-wrapped,
- *     #176). The component re-reads the buffer on every render, so new
- *     events appear on the next render without re-creating the component.
- *     Each event renders as ONE line, width-bounded via `toTerminalLine`
- *     (slice B rewrites the view with real wrapping).
- *   - `openLiveView` — the Enter-on-row action (dispatch-deck.ts is the
- *     production caller). Surrounds the `ctx.ui.custom` call with
- *     `markViewOpen` / `markViewClosed` (#916): while open, a settling
- *     job's `clearEntry` keeps the buffer; on close, an already-settled
- *     job's buffer is dropped (no leak).
+ *   - `createLiveViewComponent` — the FULL-SCREEN agent view (#916 slice B):
+ *     a `100%` × `100%` top-left-anchored overlay (the `OverlayOptions` the
+ *     pinned pi-tui types accept — `width: "100%"`, `maxHeight: "100%"`,
+ *     `anchor: "top-left"`) that renders the job's UNTRUNCATED buffer in
+ *     full, wrapped to the render width (the component itself is
+ *     dispatch-deck-live-view-component.ts).
+ *   - `openLiveView` — the Enter-on-row action (dispatch-deck.ts and
+ *     the agent list are the production callers). Surrounds the
+ *     `ctx.ui.custom` call with `markViewOpen` / `markViewClosed`
+ *     (#916): while open, a settling job's `clearEntry` keeps the buffer;
+ *     on close, an already-settled job's buffer is dropped (no leak).
  *
  * The buffer itself (storage, byte bound, settle status, append
  * subscribers, view-open bookkeeping) lives in dispatch-deck-live.ts;
  * this module reads it through the exported seams only.
+ *
+ * Re-render is event-driven: `onBufferAppend(key, () => tui.requestRender())`
+ * re-renders the overlay the moment an event lands (subscribed on open,
+ * unsubscribed in the finally), and the deck's 1 s ticker also re-renders
+ * the focused component (idempotent — the same buffer, re-read).
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type Component, isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
-import { toTerminalLine } from "./dispatch-deck-line.ts";
-import { buffers, getBufferTail, markViewClosed, markViewOpen } from "./dispatch-deck-live.ts";
-import type { LiveEvent } from "./dispatch-deck-live.ts";
+import type { TUI } from "@earendil-works/pi-tui";
+import * as agentView from "./dispatch-deck-live-view-component.ts";
+import {
+  type LiveViewTheme,
+  getStatus,
+  markViewClosed,
+  markViewOpen,
+  onBufferAppend,
+} from "./dispatch-deck-live.ts";
 import type { DeckEntry } from "./dispatch-deck.ts";
-import { formatElapsed } from "./progress.ts";
+import { getNotices, resetNotices } from "./notice-counter.ts";
+import { pmActive } from "./pm-active.ts";
 import { trace } from "./trace.ts";
 
-// =============================================================================
-// Overlay component
-// =============================================================================
+export type { LiveViewTheme, ViewHeader, TuiHandle } from "./dispatch-deck-live-view-component.ts";
 
-export interface LiveViewHeader {
-  label: string;
-  role: string;
-  startedAt: number;
-  /** Epoch ms (set by the caller on each render — the view is live). */
-  now: number;
-  turns: number;
-  toolUses: number;
-  totalTokens: number;
-  lastToolName?: string;
-}
-
-export interface LiveViewTheme {
-  /** Muted colour for header/hint/error-marker text. */
-  muted: (t: string) => string;
-  /** Error colour for error-marked tool results. */
-  error: (t: string) => string;
-}
+export const VIEW_FALLBACK_ROWS = agentView.VIEW_FALLBACK_ROWS;
+export const VIEW_FOOTER_HINT = agentView.VIEW_FOOTER_HINT;
+export {
+  createAgentViewComponent,
+  getViewScrollState,
+  clearViewScroll,
+} from "./dispatch-deck-live-view-component.ts";
 
 // The deck's 1 s ticker (dispatch-deck.ts renderNow) re-registers its
 // widget and calls requestRender on its 1 s cadence, which re-renders the
-// focused component (this overlay) in the same TUI pass — that is the
-// "new events appear on the next render" seam. The deck is the only
-// scheduled renderer while a job runs, so the overlay re-reads the buffer
-// on that cadence without owning its own timer. (Tests drive render() and
-// handleInput() directly; a live check covers the cadence on the
+// focused component (this overlay) in the same TUI pass — so the overlay
+// re-reads the buffer on that cadence WITHOUT owning its own timer, and the
+// append subscription (onBufferAppend → tui.requestRender, see
+// openLiveView) re-renders the SAME overlay the moment an event lands.
+// The two re-render paths are IDEMPOTENT — they re-read the same buffer and
+// produce the same lines — so the deck ticker and the append hook can both
+// fire for one append without any visible artifact. (Tests drive render()
+// and handleInput() directly; a live check covers the cadence on the
 // installed Pi, per the issue's AGENTS.md §4 note.)
 
 /**
- * Render one buffer event as a single overlay line. Every piece of
- * UNTRUSTED content (assistant text, tool name, args, result) is
- * width-bounded to the row via `toTerminalLine` — render() must never
- * return a string containing a newline or wider than the overlay column
- * (pi-tui's differential renderer corrupts the terminal otherwise; see
- * dispatch-deck-line.ts). (#916: stored text is untruncated — the
- * one-line-per-event shape stays for now; slice B rewrites the view with
- * real wrapping.)
- */
-function renderEvent(ev: LiveEvent, theme: LiveViewTheme, width: number): string {
-  switch (ev.kind) {
-    case "text":
-      return toTerminalLine(ev.text, width);
-    case "toolCall":
-      return toTerminalLine(ev.args ? `→ ${ev.name} ${ev.args}` : `→ ${ev.name}`, width);
-    case "toolResult": {
-      // Sanitise + width-bound the plain text FIRST, then apply the theme
-      // colour to the marker (issue #927: never colour before sanitising —
-      // the marker only carries the tool name and the "error" literal).
-      const safeText = toTerminalLine(ev.text, width);
-      const marker = ev.isError
-        ? `✗ ${toTerminalLine(ev.name, 40)} (error)`
-        : `✓ ${toTerminalLine(ev.name, 40)}`;
-      const head = ev.isError ? theme.error(marker) : marker;
-      return safeText ? `${head} ${safeText}` : marker;
-    }
-    case "thinking":
-      // #916 — collapsed form for now; N = raw stored char count.
-      return toTerminalLine(`▸ thinking (${ev.text.length} chars)`, width);
-  }
-}
-
-/**
- * The live-view overlay component (#839). Re-reads the job's ring buffer on
- * every render, so new events appear on the next TUI render cycle without
- * re-creating the component (the deck's 1 s ticker re-renders the TUI tree
- * while the overlay is up).
- *
- * Follows the tail by default; `↑`/`PgUp` scroll up and PAUSE following,
- * `↓`/`PgDn` scroll down, `End` resumes following. `s` opens the steer
- * prompt (the caller re-opens the view after steering); `Esc` closes.
- *
- * Key handling is a direct `matchesKey` dispatch (the same pattern
- * dispatch-deck-nav.ts uses for the global listener). Any key the view does
- * not understand is ignored (typed characters are swallowed by the overlay
- * focus, not forwarded to the editor).
+ * The legacy one-line-per-event overlay component (retained for the
+ * pre-#916 test suite's block 3/4 coverage of Esc→close and
+ * `s`→steer). New callers use `createAgentViewComponent`.
  */
 export function createLiveViewComponent(
   key: string,
-  header: () => LiveViewHeader | undefined,
+  header: () => {
+    label: string;
+    role: string;
+    startedAt: number;
+    now: number;
+    turns: number;
+    toolUses: number;
+    totalTokens: number;
+    lastToolName?: string;
+  },
   theme: LiveViewTheme,
   done: (result: "close" | "steer") => void,
-): Component {
-  let offset = 0; // events scrolled back from the tail; 0 = following
-  const visible = 24;
-
-  return {
-    invalidate(): void {
-      /* no cached state */
-    },
-    render(width: number): string[] {
+): import("@earendil-works/pi-tui").Component {
+  // Delegate to a minimal agent view (the legacy surface is subsumed by
+  // the full-screen view; the done results the legacy tests assert —
+  // `close` on Esc, `steer` on `s` — are reproduced verbatim).
+  return agentView.createAgentViewComponent(
+    key,
+    () => {
       const h = header();
-      // The header carries the entry label and the last tool name, both of
-      // which flow in from untrusted child output — sanitize like any other
-      // line, so the overlay header can never desync the renderer either.
-      const hline = h
-        ? toTerminalLine(
-            `${h.label} · ${h.role} · ${formatElapsed(Math.max(0, h.now - h.startedAt))} · ${h.turns} turn${h.turns === 1 ? "" : "s"} · ${h.toolUses} tools · ${h.totalTokens} tokens${h.lastToolName ? ` · last: ${h.lastToolName}` : ""}`,
-            width,
-          )
-        : toTerminalLine(key, width);
-      // The overlay's visible window is exactly 24 event rows: header +
-      // 24 + hint = 26 rows, NEVER more (pi-tui's overlay compositing is
-      // height-sensitive — a taller render ghosts into the chat below).
-      const events = getBufferTail(key, visible);
-      const lines: string[] = [hline];
-      if (events.length === 0) {
-        lines.push(theme.muted("no activity yet"));
-      } else {
-        const start = Math.max(0, events.length - offset - visible);
-        for (let i = start; i < events.length; i++) {
-          const ev = events[i];
-          if (ev) lines.push(renderEvent(ev, theme, width));
-        }
-      }
-      const state =
-        offset > 0 ? "paused — ↓/End to follow · s steer · Esc close" : "s steer · Esc close";
-      lines.push(theme.muted(state));
-      return lines;
+      if (!h) return undefined as unknown as agentView.ViewHeader;
+      return {
+        label: h.label,
+        role: h.role,
+        status: "running",
+        startedAt: h.startedAt,
+        now: h.now,
+        turns: h.turns,
+        totalTokens: h.totalTokens,
+        pmActive: false,
+        notices: 0,
+        settled: false,
+      };
     },
-    handleInput(data: string): void {
-      if (isKeyRelease(data)) return;
-      const buf = buffers.get(key);
-      const n = buf ? buf.length : 0;
-      if (matchesKey(data, "escape")) {
-        done("close");
-      } else if (matchesKey(data, "s")) {
-        done("steer");
-      } else if (matchesKey(data, "up") || matchesKey(data, "pageUp")) {
-        if (offset === 0 && n === 0) return;
-        offset += matchesKey(data, "up") ? 1 : visible;
-        offset = Math.min(offset, n);
-      } else if (matchesKey(data, "down") || matchesKey(data, "pageDown")) {
-        offset = Math.max(0, offset - (matchesKey(data, "down") ? 1 : visible));
-      } else if (matchesKey(data, "end")) {
-        offset = 0;
-      }
-    },
-  };
+    theme,
+    undefined,
+    (r) => done(r === "returnToList" ? "close" : r),
+  );
 }
 
 // =============================================================================
-// Overlay open/close (dispatch-deck.ts is the production caller)
+// Overlay open/close (dispatch-deck.ts and the agent list are the callers)
 // =============================================================================
 
 /**
@@ -191,67 +128,134 @@ export interface LiveViewHost {
 }
 
 /**
- * #839 — open the live-view overlay for a job (the Enter-on-row action).
+ * #839 — open the full-screen agent view overlay for a job.
+ *
  * The component is returned DIRECTLY from the factory (never
  * Container-wrapped — #176: keys route to the focused component, a
- * Container swallows them). `s` inside the view opens the existing steer
- * prompt and, after it resolves, the overlay RE-OPENS for the same job so
- * the operator keeps watching; the loop ends on Esc ("close"), on the job
- * settling, or when the deck entry is gone.
+ * Container swallows them). The overlay options pin the full-screen
+ * shape from the pinned pi-tui types: `width: "100%"` and
+ * `maxHeight: "100%"` (both valid `SizeValue` percentage forms) with
+ * `anchor: "top-left"` (an `OverlayAnchor` literal).
+ *
+ * `s` inside the view opens the existing steer prompt and, after it
+ * resolves, the overlay RE-OPENS for the same job so the operator keeps
+ * watching; the loop ends on Esc ("returnToList"), on the job settling
+ * (the view keeps showing the settled content until Esc), or when the
+ * deck entry is gone.
+ *
+ * `opts.onReturnToList` (optional) is invoked on Esc: the agent list
+ * passes a callback that re-opens the list, the roster nav passes
+ * nothing (Esc just closes).
  *
  * The buffer's view-open bookkeeping (#916) surrounds the `ctx.ui.custom`
  * call: `markViewOpen` before, `markViewClosed` in a finally — while open,
  * a settling job's `clearEntry` keeps the buffer; on close, an already-
- * settled job's buffer is dropped (no leak).
+ * settled job's buffer is dropped (no leak). The append subscription
+ * (event-driven re-render) is unsubscribed in the same finally.
  */
 export async function openLiveView(
   ctx: ExtensionContext,
   key: string,
   host: LiveViewHost,
+  opts?: { onReturnToList?: () => void },
 ): Promise<void> {
   markViewOpen(key);
+  // Reset the notice counter on open so the badge counts only deliveries
+  // while THIS view is open (deliverReport increments; the header reads).
+  resetNotices();
+  let lastStats = { turns: 0, totalTokens: 0, startedAt: Date.now(), role: "" };
+  let tui: TUI | undefined;
+  let unsubAppend: (() => void) | undefined;
   try {
     for (;;) {
-      const result = await ctx.ui.custom<string>(
-        (_tui, theme, _kb, done) =>
-          createLiveViewComponent(
+      const result = await ctx.ui.custom<"close" | "returnToList" | "steer">(
+        (tuiHandle, theme, _kb, done) => {
+          tui = tuiHandle;
+          // Subscribe to appends: re-render the overlay the moment an
+          // event lands (unsubscribed in the finally). The deck's 1 s
+          // ticker also re-renders the focused component (idempotent).
+          unsubAppend = onBufferAppend(key, () => {
+            try {
+              tuiHandle.requestRender();
+            } catch (err) {
+              trace(
+                `dispatch-deck-live-view: requestRender on append failed: ${(err as Error).message}`,
+              );
+            }
+          });
+          return agentView.createAgentViewComponent(
             key,
             () => {
               const e = host.getEntry(key);
-              if (!e) return undefined;
+              const status = getStatus(key);
+              const settled = status !== "running";
+              // Header data: the deck entry's RunningState while present,
+              // falling back to the last seen values after settle (the
+              // entry clears on settle).
+              const turns = e?.state.turns ?? lastStats.turns;
+              const totalTokens = e?.state.totalTokens ?? lastStats.totalTokens;
+              const startedAt = e?.startedAt ?? lastStats.startedAt;
+              const role = e?.state.role ?? lastStats.role;
+              if (e) {
+                lastStats = {
+                  turns: e.state.turns,
+                  totalTokens: e.state.totalTokens,
+                  startedAt: e.startedAt,
+                  role: e.state.role,
+                };
+              }
               return {
-                label: e.label,
-                role: e.state.role,
-                startedAt: e.startedAt,
+                label: e?.label ?? key,
+                role,
+                status,
+                startedAt,
                 now: Date.now(),
-                turns: e.state.turns,
-                toolUses: e.state.toolUses,
-                totalTokens: e.state.totalTokens,
-                lastToolName: e.state.lastToolName,
+                turns,
+                totalTokens,
+                pmActive: pmActive(),
+                notices: getNotices(),
+                settled,
               };
             },
             {
               muted: (t) => theme.fg("muted", t),
               error: (t) => theme.fg("error", t),
             } satisfies LiveViewTheme,
+            tuiHandle,
             (r) => done(r),
-          ),
-        { overlay: true },
+          );
+        },
+        {
+          overlay: true,
+          overlayOptions: {
+            width: "100%",
+            maxHeight: "100%",
+            anchor: "top-left",
+          },
+        },
       );
-      if (result !== "steer") break;
-      const entry = host.getEntry(key);
-      if (!entry) break; // job settled while the overlay was up
-      const text = await ctx.ui.editor(
-        `Steer ${entry.label}`,
-        host.buildSteerPrompt(entry, Date.now()),
-      );
-      if (text === undefined) break;
-      host.steer(key, text);
-      // loop → re-open the live view for the same job
+      if (result === "steer") {
+        const entry = host.getEntry(key);
+        if (!entry) break; // job settled while the overlay was up
+        const text = await ctx.ui.editor(
+          `Steer ${entry.label}`,
+          host.buildSteerPrompt(entry, Date.now()),
+        );
+        if (text === undefined) break;
+        host.steer(key, text);
+        // loop → re-open the live view for the same job
+        continue;
+      }
+      // Esc ("returnToList") or "close" — the view is closing.
+      if (result === "returnToList") {
+        opts?.onReturnToList?.();
+      }
+      break;
     }
   } catch (err) {
     trace(`dispatch-deck-live: live view failed for ${key}: ${(err as Error).message}`);
   } finally {
+    unsubAppend?.();
     markViewClosed(key);
   }
 }
