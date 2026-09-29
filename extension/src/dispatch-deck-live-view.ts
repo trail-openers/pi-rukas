@@ -211,7 +211,17 @@ export async function openLiveView(
       }
       // Esc ("returnToList") or "close" — the view is closing.
       if (result === "returnToList") {
-        opts?.onReturnToList?.();
+        // Own try/catch with a distinct trace: a list-reopen failure must
+        // not be reported as a live-view failure (the view already closed
+        // cleanly). The callback still runs here — AFTER the view closed —
+        // so the order with the loop break is unchanged.
+        try {
+          opts?.onReturnToList?.();
+        } catch (err) {
+          trace(
+            `dispatch-deck-live-view: returnToList callback failed for ${key}: ${(err as Error).message}`,
+          );
+        }
       }
       break;
     }
