@@ -74,6 +74,21 @@ function resetBuffers(keys: string[]): void {
     buf[1]?.kind === "toolCall" && buf[1].args === JSON.stringify(args),
     "a2: 1,000-char args stored as full JSON, verbatim",
   );
+  // A toolCall with ABSENT arguments stores args === "" (the view renders
+  // "→ name" with no empty-string artifact), not the 2-char string '""'.
+  feedRawEvent("a1", {
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "toolCall", name: "read" }],
+    },
+  });
+  const bufA1 = getBuffer("a1");
+  assert(
+    bufA1[bufA1.length - 1]?.kind === "toolCall" &&
+      (bufA1[bufA1.length - 1] as { args: string }).args === "",
+    "a3: toolCall with no arguments stores args === \"\"",
+  );
   dropBuffer("a1");
 }
 

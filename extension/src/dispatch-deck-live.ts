@@ -389,7 +389,11 @@ export function pushEvent(key: string, buf: LiveEvent[], event: PiJsonEvent): bo
       const ev: LiveEvent = {
         kind: "toolCall",
         name: sanitizeText(block.name),
-        args: JSON.stringify(block.arguments ?? ""),
+        // block.arguments comes from JSON.parse of the child's event stream, so it cannot be circular or contain BigInt — stringify cannot throw here.
+        args:
+          block.arguments === undefined || block.arguments === null
+            ? ""
+            : (JSON.stringify(block.arguments) ?? ""),
       };
       buf.push(ev);
       total += eventSize(ev);
