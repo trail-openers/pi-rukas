@@ -49,6 +49,7 @@ import {
   truncateToWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import { decodePrintableKey } from "@earendil-works/pi-tui/dist/keys.js";
 import { sanitizeText } from "./dispatch-deck-line.ts";
 import type { LiveEvent, LiveViewTheme } from "./dispatch-deck-live.ts";
 import { getBuffer } from "./dispatch-deck-live.ts";
@@ -79,9 +80,15 @@ export type TuiHandle = { terminal?: { rows?: number } } | undefined;
 /** Fallback body height when the terminal rows are unavailable. */
 export const VIEW_FALLBACK_ROWS = 24;
 
-/** The key-legend footer line. */
+/**
+ * The key-legend footer line. #915 — the view's input line is ALWAYS
+ * focused: every printable key inserts into it, and the view commands are
+ * the non-printing keys only (↑/↓/PgUp/PgDn/Home/End scroll, ctrl+t
+ * toggles thinking, Enter sends, Esc clears-then-returns). The `s`/`t`/
+ * `g`/`G` letters are gone from the legend — they now type.
+ */
 export const VIEW_FOOTER_HINT =
-  "↑↓ scroll · PgUp/PgDn page · Home/g top · End/G bottom+follow · t thinking · s steer · Esc back";
+  "Message @<label>… · Enter send · ↑↓ scroll · End follow · ^T thinking · Esc back";
 
 /**
  * Per-job scroll/follow state, keyed by the job key. Persists for the
@@ -233,6 +240,26 @@ function eventLines(
       if (!ev.text) return [head];
       return [head, ...wrapCached(ev, ev.text, width, expanded, "body")];
     }
+    case "operatorSteer": {
+      // #915 — the operator's own steer, rendered distinctly (in muted so
+      // it reads as the operator's voice, not the child's) as
+      // `you → <label>: <text>`. The label is sanitised + newline-collapsed
+      // (it flows from untrusted child output); the text wraps like any
+      // other body line.
+      const label = sanitizeText(ev.label).replace(/\n+/g, " ");
+      const prefix = theme.muted(`you → ${label}: `);
+      // The prefix is already on its own row (a single short line); the
+      // wrapped text rows follow. The first row carries the prefix so the
+      // echo reads `you → label: text` on one logical line, wrapping the
+      // rest onto continuation rows.
+      const wrapped = wrapCached(ev, ev.text, width, expanded, "body");
+      const rows: string[] = [...wrapped];
+      if (rows.length === 0) {
+        rows.push("");
+      }
+      rows[0] = `${prefix}${rows[0] ?? ""}`;
+      return rows;
+    }
   }
 }
 
@@ -275,8 +302,13 @@ export function createAgentViewComponent(
   header: () => ViewHeader,
   theme: LiveViewTheme,
   tui: TuiHandle,
-  done: (result: "close" | "returnToList" | "steer") => void,
-): Component {
+  done: (result: "close" | "returnToList") => void,
+  onSend: (text: string) => void,
+): Component & {
+  inputValue: () => string;
+  clearInput: () => void;
+  setStatus: (s: { text: string; ok: boolean } | undefined) => void;
+} {
   // View-local: the thinking toggle is per view instance (a fresh open
   // starts collapsed); scroll/follow is per job key (persists).
   let thinkingExpanded = false;
@@ -289,8 +321,27 @@ export function createAgentViewComponent(
   // so the sentinel -1 is never read — but guard anyway for a first
   // handleInput on a fresh view).
   let lastBodyLen = -1;
-
-  return {
+  // #915 — the always-focused message input: a plain string buffer
+  // (component state — the input line is the focused surface, every
+  // printable key inserts into it). Paste arrives as a multi-char chunk;
+  // newlines collapse to spaces. The buffer is stored raw; rendering
+  // sanitises + width-bounds it (showing the TAIL of a long input) and the
+  // send path sanitises again (idempotent) before delivery.
+  let input = "";
+  // #915 — the inline send status (✓ sent / ⧗ between rounds / ✗ reason),
+  // set by the view host after a send. REPLACED by the next send's result
+  // and CLEARED when the job settles (the settled final line takes over).
+  // (Named sendStatus — the render body uses a local `status` for the job's
+  // settle status.)
+  let sendStatus: { text: string; ok: boolean } | undefined;
+  const comp: {
+    invalidate: () => void;
+    render: (width: number) => string[];
+    handleInput: (data: string) => void;
+    inputValue: () => string;
+    clearInput: () => void;
+    setStatus: (s: { text: string; ok: boolean } | undefined) => void;
+  } = {
     invalidate(): void {
       /* wrapped lines are cached per event — nothing to drop here */
     },
@@ -326,9 +377,40 @@ export function createAgentViewComponent(
       // field), so the post-truncate sanitize only removes the reset codes.
       const headerLine = sanitizeText(truncateToWidth(headerRaw, width, "…"));
       const lines: string[] = [headerLine, ...window];
-      // Pad the body to the full height so the footer sits on the last
-      // row of the full-screen overlay.
-      while (lines.length < height + 2) lines.push("");
+      // Pad the body to the full height so the input/status/footer sit on
+      // the last three rows of the full-screen overlay.
+      while (lines.length < height + 3) lines.push("");
+      // #915 — the input line (always focused): `Message @<label>: <text>`
+      // with a visible cursor (the trailing `▍`) at the end. The text is
+      // sanitised + width-bounded, showing the TAIL of a long input (the
+      // operator's own text — the leading prompt is short and the tail is
+      // what matters when the buffer grows). The inline send status, when
+      // present, replaces the label part of the line; cleared on settle.
+      const label = h ? sanitizeText(h.label).replace(/\n+/g, " ") : key;
+      const cursor = "\u258D";
+      if (settled && sendStatus) {
+        // The settled final line takes over — the inline status is cleared.
+        sendStatus = undefined;
+      }
+      let inputLine: string;
+      if (sendStatus) {
+        // The result glyph (✓ / ⧗ / ✗) leads the inline status; muted so it
+        // reads as a status line, not an input line.
+        inputLine = theme.muted(`${sendStatus.text} · Esc back`);
+      } else {
+        // Show the tail of the input: truncateToWidth from the left is not
+        // available, so take the last (width - prompt - cursor) chars and
+        // let the ellipsis mark the truncated head. The prompt + cursor are
+        // short; the text budget is the remainder.
+        const prompt = `Message @${label}: `;
+        const budget = Math.max(1, width - prompt.length - 1);
+        const shown =
+          input.length <= budget
+            ? input
+            : `…${sanitizeText(input).slice(input.length - budget + 1)}`;
+        inputLine = `${prompt}${sanitizeText(shown)}${cursor}`;
+      }
+      lines.push(inputLine);
       const footer =
         state.scroll === 0
           ? VIEW_FOOTER_HINT.slice(0, Math.max(1, width - 1))
@@ -348,21 +430,56 @@ export function createAgentViewComponent(
         (lastBodyLen >= 0 ? lastBodyLen : bodyLineCount(key, lastWidth, thinkingExpanded, theme)) +
         (settled ? 1 : 0);
       const maxScroll = Math.max(0, total - height);
+      // #915 — the input line is ALWAYS focused. Non-printing keys drive the
+      // view; every PRINTABLE key (including letters t/x/g/s, digits, space,
+      // symbols) inserts into the input. Ctrl+t toggles thinking (replacing
+      // the old `t`); Home/End cover the old `g`/`G`.
       if (matchesKey(data, "escape")) {
-        done("returnToList");
-      } else if (matchesKey(data, "s")) {
-        done("steer");
-      } else if (matchesKey(data, "t")) {
+        // Esc: clear the input if non-empty (no done); if empty, return.
+        if (input.length > 0) {
+          input = "";
+        } else {
+          done("returnToList");
+        }
+      } else if (matchesKey(data, "ctrl+t")) {
+        // ctrl+t toggles thinking (the non-printing replacement for `t`).
         thinkingExpanded = !thinkingExpanded;
+      } else if (matchesKey(data, "enter")) {
+        // Enter: send if the input is non-empty; a no-op when empty.
+        if (input.length > 0) {
+          onSend(input);
+        }
+      } else if (matchesKey(data, "backspace")) {
+        if (input.length > 0) input = input.slice(0, -1);
       } else if (matchesKey(data, "up") || matchesKey(data, "pageUp")) {
         state.scroll = Math.min(maxScroll, state.scroll + (matchesKey(data, "up") ? 1 : height));
       } else if (matchesKey(data, "down") || matchesKey(data, "pageDown")) {
         state.scroll = Math.max(0, state.scroll - (matchesKey(data, "down") ? 1 : height));
-      } else if (matchesKey(data, "home") || data === "g") {
+      } else if (matchesKey(data, "home")) {
         state.scroll = maxScroll;
-      } else if (matchesKey(data, "end") || data === "G") {
+      } else if (matchesKey(data, "end")) {
         state.scroll = 0; // follow on
+      } else {
+        // #915 — any other key: if it carries a printable character, insert
+        // it into the input (a paste is a multi-char printable chunk; its
+        // newlines collapse to spaces). Non-printable / control chars are
+        // swallowed so the view never desyncs on raw bytes.
+        const printable = decodePrintableKey(data);
+        if (printable !== undefined) {
+          input += printable.replace(/\n+/g, " ");
+        }
       }
     },
+    // #915 — the input accessors the host (openLiveView) uses in the send
+    // callback: read the buffer, clear it after a successful send, and set
+    // the inline status.
+    inputValue: () => input,
+    clearInput: () => {
+      input = "";
+    },
+    setStatus: (s: { text: string; ok: boolean } | undefined) => {
+      sendStatus = s;
+    },
   };
+  return comp;
 }

@@ -47,8 +47,6 @@ export async function onRowConfirm(
         key,
         {
           getEntry: (k) => host.getEntry(k),
-          buildSteerPrompt: (e, now) => deckComposite.buildSteerPrompt(e, now),
-          steer: (k, text) => host.steer(k, text),
         },
         opts,
       );
@@ -65,8 +63,6 @@ export async function onRowConfirm(
       key,
       {
         getEntry: (k) => host.getEntry(k),
-        buildSteerPrompt: (e, now) => deckComposite.buildSteerPrompt(e, now),
-        steer: (k, text) => host.steer(k, text),
       },
       opts,
     );
