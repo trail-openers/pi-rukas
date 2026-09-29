@@ -98,10 +98,12 @@ export function steerChild(jobId: string, text: string, source: SteerSource): St
   // #932 — pre-write guard: a dead pipe's `destroyed` flag is set as soon
   // as the child exits (measured), long before `writableEnded` is, so the
   // guard must check it first. Returning early here keeps the NEW steer
-  // off a dead pipe; the pre-attached stdin `error` listener (spawn.ts /
-  // stdin-guard.ts) still absorbs EPIPEs from data already queued at exit.
+  // off a dead pipe; the pre-attached stdin `error` listener at spawn time
+  // still absorbs EPIPEs from data already queued at exit.
+  // `destroyed` is a true boolean on real Writables; undefined means the
+  // handle is a fake without the flag (test stubs) — treat as open.
   const stdinClosed = (stdin: Writable): boolean =>
-    stdin.destroyed || !stdin.writable || stdin.writableEnded;
+    stdin.destroyed === true || stdin.writable === false || stdin.writableEnded === true;
 
   // Orchestrator-shaped jobs (adversarial_loop) don't have a stdin handle of
   // their own — the orchestrator is a function, not a Pi process. Resolve the

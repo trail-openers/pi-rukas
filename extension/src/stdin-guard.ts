@@ -19,6 +19,6 @@ import { trace } from "./trace.ts";
 
 export function attachStdinErrorGuard(stdin: Writable, label: string): void {
   stdin.on("error", (err: Error) => {
-    trace(`stdin-guard[${label}]: child stdin error (ignored): ${err.message}`);
+    trace(`spawn[${label}]: child stdin error (ignored): ${err.message}`);
   });
 }

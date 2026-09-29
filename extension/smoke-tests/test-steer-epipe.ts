@@ -20,23 +20,22 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { attachStdinErrorGuard } from "../src/stdin-guard.ts";
+import { clearJobsForTesting } from "../src/async-jobs-lifecycle.ts";
 import {
+  clearParentExtensionApiForTesting,
   jobs,
   markOrchestrator,
   registerChildHandle,
   setOrchestratorActiveChild,
   setParentExtensionApi,
-  clearParentExtensionApiForTesting,
 } from "../src/async-jobs-registry.ts";
-import { clearJobsForTesting } from "../src/async-jobs-lifecycle.ts";
 import { steerChild } from "../src/dispatch-steer.ts";
+import type { RunningState } from "../src/progress.ts";
 import {
   clearSlowWatchesForTesting,
   feedSlowProgress,
   watchSlowDispatch,
 } from "../src/slow-notice.ts";
-import type { RunningState } from "../src/progress.ts";
 
 let exitCode = 0;
 function assert(cond: boolean, msg: string) {
@@ -75,7 +74,11 @@ async function deadChildStdin(id: string) {
   const child = spawn("/usr/bin/true", [], { stdio: ["pipe", "pipe", "pipe"] });
   const stdin = child.stdin;
   if (!stdin) throw new Error("no stdin on child");
-  attachStdinErrorGuard(stdin, id);
+  // The SAME backstop spawn.ts attaches immediately after spawn: a never-
+  // rethrowing error listener on the child's stdin (#932).
+  stdin.on("error", (err: Error) => {
+    /* swallow — spawn.ts traces it; the test only needs zero uncaughts */
+  });
   // 2 MB before exit: reproduces the queued-data async EPIPE (a plain
   // small write to an already-dead stream is swallowed silently).
   stdin.write(Buffer.alloc(2 * 1024 * 1024, 65));
@@ -144,7 +147,10 @@ function stateAt(turns: number, elapsedMs: number): RunningState {
   await sleep(100);
   assert(r.delivered === false, "(b) orchestrator steer with closed stdin → delivered:false");
   assert(r.reason === "child stdin closed", `(b) reason is the closed-stdin guard (${r.reason})`);
-  assert(uncaught === 0 && unhandled === 0, "(b) still zero uncaughtException / unhandledRejection");
+  assert(
+    uncaught === 0 && unhandled === 0,
+    "(b) still zero uncaughtException / unhandledRejection",
+  );
   setOrchestratorActiveChild(id, null);
   clearJobsForTesting();
 }
@@ -162,7 +168,7 @@ await (async () => {
     setParentExtensionApi({
       sendUserMessage: (t: string, _o?: { deliverAs?: string }) => notices.push(t),
     });
-    let t = 1_000_000;
+    const t = 1_000_000;
     const stop = watchSlowDispatch({
       id,
       role: "developer",
@@ -183,7 +189,7 @@ await (async () => {
       clearParentExtensionApiForTesting();
     }
   } finally {
-    if (prevMs === undefined) delete process.env.PI_ENSEMBLE_SLOW_NOTICE_MS;
+    if (prevMs === undefined) process.env.PI_ENSEMBLE_SLOW_NOTICE_MS = undefined;
     else process.env.PI_ENSEMBLE_SLOW_NOTICE_MS = prevMs;
   }
 })();
@@ -191,12 +197,10 @@ await (async () => {
 // ----------------------------------------------- (d) spawn.ts source canary
 {
   const src = readFileSync(path.resolve(import.meta.dirname, "..", "src", "spawn.ts"), "utf8");
-  const code = src
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/^\s*\/\/.*$/gm, " ");
-  const guardIdx = code.indexOf('child.stdin?.on("error"');
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
+  const guardIdx = code.indexOf("attachStdinErrorGuard");
   const onStdinIdx = code.indexOf("opts.onStdin");
-  assert(guardIdx >= 0, "(d) spawn.ts attaches a child.stdin error listener");
+  assert(guardIdx >= 0, "(d) spawn.ts attaches the stdin EPIPE backstop");
   assert(
     guardIdx >= 0 && onStdinIdx >= 0 && guardIdx < onStdinIdx,
     "(d) the listener is attached BEFORE opts.onStdin (and the prompt write)",
