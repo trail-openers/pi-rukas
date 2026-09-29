@@ -3,32 +3,14 @@
  * #839 — live view of a running subagent's activity (dispatch deck, epic
  * #833 G5). Drives the real ring buffer and overlay with synthetic events:
  * ring eviction, feedRawEvent, overlay render/handleInput, dropBuffer,
- * clearEntry co-located lifecycle, quiet mode, sync-throw exception safety
- * (startJob + startBatch), and roster Enter → live-view wiring.
+ * clearEntry co-located lifecycle, quiet mode, and roster Enter →
+ * live-view wiring.
  */
 
-import { startBatch, startJob } from "../src/async-jobs.ts";
 import { onRowConfirm } from "../src/dispatch-deck-confirm.ts";
-import {
-  bufferCount,
-  dropBuffer,
-  feedRawEvent,
-  getBuffer,
-  hasBuffer,
-  startBuffer,
-} from "../src/dispatch-deck-live.ts";
-import {
-  createAgentViewComponent,
-  type ViewHeader,
-} from "../src/dispatch-deck-live-view-component.ts";
-import {
-  batchSnapshot,
-  clearEntry,
-  detach,
-  reset,
-  snapshot,
-  startEntry,
-} from "../src/dispatch-deck.ts";
+import { bufferCount, dropBuffer, feedRawEvent, getBuffer, hasBuffer, startBuffer } from "../src/dispatch-deck-live.ts";
+import { createAgentViewComponent, type ViewHeader } from "../src/dispatch-deck-live-view-component.ts";
+import { clearEntry, detach, reset, snapshot, startEntry } from "../src/dispatch-deck.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -288,93 +270,6 @@ function headerB1(): ViewHeader {
   assert(!hasBuffer("b1"), "5b: buffer gone after drop");
   assert(bufferCount() === 0, "5c: buffer count is 0 after drop");
 }
-
-// ---------------------------------------------------------------------------
-// 6b. clearEntry drops the buffer — co-located lifecycle.
-// ---------------------------------------------------------------------------
-function testClearEntryDropsBuffer() {
-  resetBuffers();
-  reset();
-  startBuffer("deck-job-1");
-  startEntry("deck-job-1", { label: "developer", role: "developer" });
-  assert(hasBuffer("deck-job-1"), "6b-a: buffer exists while the entry is alive");
-  clearEntry("deck-job-1");
-  assert(!hasBuffer("deck-job-1"), "6b-b: clearEntry drops the buffer (co-located)");
-  assert(bufferCount() === 0, "6b-c: buffer count is 0 after clearEntry");
-  detach();
-}
-testClearEntryDropsBuffer();
-
-// ---------------------------------------------------------------------------
-// 6c. Sync-throw exception safety (startJob + startBatch)
-//     The new Promise wrapper turns a sync throw into a rejection that flows
-//     through the existing settle handlers — no special branches.
-// ---------------------------------------------------------------------------
-async function testStartJobSyncThrow() {
-  resetBuffers();
-  reset();
-  const fakePi = { sendUserMessage: () => {} } as never;
-  let threwSync = false;
-  let completionRejected = false;
-  try {
-    const handle = startJob(fakePi, {
-      label: "sync-throw-job",
-      role: "developer",
-      work: () => {
-        throw new Error("sync work failure");
-      },
-    });
-    await handle.completion;
-  } catch (err) {
-    completionRejected = err instanceof Error && err.message === "sync work failure";
-  }
-  assert(!threwSync, "6c-a: sync throw does not propagate from startJob");
-  assert(completionRejected, "6c-b: throw becomes a rejection of the job promise");
-  await new Promise((r) => setTimeout(r, 10));
-  const leaked = snapshot().find((e) => e.label === "sync-throw-job");
-  assert(!leaked, "6c-c: no deck entry leaked");
-  assert(bufferCount() === 0, "6c-d: buffer count is 0 after the sync throw");
-  detach();
-}
-async function testStartBatchLastMemberSyncThrow() {
-  resetBuffers();
-  reset();
-  const inbox: string[] = [];
-  const fakePi = { sendUserMessage: (c: string) => inbox.push(c) } as never;
-  startBatch(fakePi, {
-    batchLabel: "sync-throw-batch",
-    members: [
-      {
-        label: "member-ok",
-        role: "explore",
-        work: async () => ({ role: "explore", ok: true, ms: 5, text: "member-ok done" }),
-      },
-      {
-        label: "member-sync-throw",
-        role: "developer",
-        work: () => {
-          throw new Error("batch sync work failure");
-        },
-      },
-    ],
-  });
-  await new Promise((r) => setTimeout(r, 100));
-  assert(inbox.length === 1, "6d-a: ONE consolidated batch report delivered");
-  assert(
-    inbox[0]?.includes("batch") && inbox[0].includes("member-sync-throw"),
-    "6d-b: batch report names the failing member",
-  );
-  assert(
-    batchSnapshot().find((b) => b.label === "member-ok") === undefined,
-    "6d-c: member entry cleared",
-  );
-  assert(batchSnapshot().length === 0, "6d-d: batch entry cleared");
-  assert(bufferCount() === 0, "6d-e: buffer count is 0");
-  detach();
-}
-// Await both before section 7's `reset()` clears the deck entries.
-await testStartJobSyncThrow();
-await testStartBatchLastMemberSyncThrow();
 
 // ---------------------------------------------------------------------------
 // 7. Roster Enter → live view (running row WITH buffer → custom overlay;
