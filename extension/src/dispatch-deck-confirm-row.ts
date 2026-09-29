@@ -1,8 +1,10 @@
 /**
  * The agent-list Enter-on-job confirm route for the dispatch deck (#914)
  * and the deck widget factory (the composite-factory wrapper that captures
- * the TUI instance and builds the agent-list projection). Moved out of
- * dispatch-deck.ts to keep that module within the 500-line limit.
+ * the TUI instance and builds the agent-list projection). The second
+ * responsibility is the passive below-editor widget factory
+ * `buildCompositeWidgetFactory`; moved out of dispatch-deck.ts to keep
+ * that module within the 500-line limit.
  *
  * Behaviour: `confirmRow` wraps the shared `onRowConfirm` route
  * (buffer → live view, else steer prompt) in a try/catch with a trace —
@@ -79,7 +81,7 @@ export function buildCompositeWidgetFactory(
       selectedKey: getSelectedKey(),
       showHint: getShowHint(),
     }),
-    () => buildAgentListLines(getEntries(), maxRows),
+    (width) => buildAgentListLines(getEntries(), width),
     maxRows,
   );
 }

@@ -87,7 +87,7 @@ export function buildSteerPrompt(e: DeckEntry, now: number): string {
 export function buildCompositeFactory(
   lines: () => string[],
   rows: () => DeckRows,
-  agentList: () => AgentListLine[],
+  agentList: (width: number) => AgentListLine[],
   maxRows: number,
 ): (tui: TUI, theme: Theme) => Component {
   return (tui: TUI, theme: Theme) => {
@@ -95,12 +95,15 @@ export function buildCompositeFactory(
     // are updated atomically within that module (no concurrent writer),
     // so a mid-render interleaving cannot split the two projections.
     const rowState = rows();
-    const agentRows = agentList();
     const container = new Container();
     const renderWidth = tui?.terminal?.columns ?? 80;
     // The Text rows below are `new Text(line, 1, 0)` — paddingX 1 — so the
     // line budget is the render width minus the left/right padding.
     const lineWidth = Math.max(1, renderWidth - 2);
+    // The agent-list projection must use the RENDER width (the row's
+    // character budget), not a row COUNT — passing the batch-header row
+    // cap as the width truncated every per-job row to that many columns.
+    const agentRows = agentList(lineWidth);
     const batchLines = lines();
     const visible = batchLines.slice(0, maxRows);
     const overflow = Math.max(0, batchLines.length - maxRows);

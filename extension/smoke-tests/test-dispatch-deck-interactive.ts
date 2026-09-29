@@ -119,17 +119,12 @@ const fakeTheme = {
   clearEntry("a");
   await new Promise((r) => setImmediate(r));
 
-  const nonUndefinedKeys = new Set(
-    calls.filter((c) => c.content !== undefined).map((c) => c.key),
-  );
+  const nonUndefinedKeys = new Set(calls.filter((c) => c.content !== undefined).map((c) => c.key));
   assert(
     nonUndefinedKeys.size === 1,
     `exactly ONE distinct key received non-undefined content (got ${nonUndefinedKeys.size}: ${[...nonUndefinedKeys].join(", ")})`,
   );
-  assert(
-    nonUndefinedKeys.has("ensemble:deck"),
-    "the single key is 'ensemble:deck'",
-  );
+  assert(nonUndefinedKeys.has("ensemble:deck"), "the single key is 'ensemble:deck'");
   const deckCall = calls.find((c) => c.key === "ensemble:deck" && c.content !== undefined);
   assert(
     typeof deckCall?.content === "function",
@@ -183,7 +178,12 @@ const fakeTheme = {
       selectable: true,
     })),
   ];
-  const factory = buildCompositeFactory(() => [], () => rows, agentRows, 20);
+  const factory = buildCompositeFactory(
+    () => [],
+    () => rows,
+    () => agentRows(),
+    20,
+  );
   const component = factory(null, fakeTheme);
   assert(component instanceof Container, "composite factory returns a Container");
   if (component instanceof Container) {
@@ -248,7 +248,12 @@ const fakeTheme = {
       selectable: true,
     })),
   ];
-  const factory = buildCompositeFactory(() => [], () => rows, agentRows, 20);
+  const factory = buildCompositeFactory(
+    () => [],
+    () => rows,
+    () => agentRows(),
+    20,
+  );
   const component = factory(null, fakeTheme);
   if (component instanceof Container) {
     const rendered = component.children
@@ -275,13 +280,15 @@ const fakeTheme = {
   const rows: DeckRows = { running: [], showHint: false };
   // #914 — empty agent-list projection (no running jobs → no main row,
   // the main row appears only when ≥1 job is running).
-  const factory = buildCompositeFactory(() => [], () => rows, () => [], 20);
+  const factory = buildCompositeFactory(
+    () => [],
+    () => rows,
+    () => [],
+    20,
+  );
   const component = factory(null, fakeTheme);
   if (component instanceof Container) {
-    assert(
-      component.children.length === 0,
-      "no running jobs, no hint → 0 rows",
-    );
+    assert(component.children.length === 0, "no running jobs, no hint → 0 rows");
   }
 }
 
@@ -296,8 +303,15 @@ const fakeTheme = {
   startEntry("m-761-a", { label: "developer[task-A]", role: "developer", batchKey: "b-761" });
   startEntry("m-761-b", { label: "developer[task-B]", role: "developer", batchKey: "b-761" });
   startEntry("s-761", { label: "explore", role: "explore" });
-  assert(snapshot().length === 3, "canary: deck populated (3 entries) — quiet env cannot vacuate the block");
-  type WCall = { key: string; content: string[] | ((...a: unknown[]) => unknown) | undefined; options?: { placement?: string } };
+  assert(
+    snapshot().length === 3,
+    "canary: deck populated (3 entries) — quiet env cannot vacuate the block",
+  );
+  type WCall = {
+    key: string;
+    content: string[] | ((...a: unknown[]) => unknown) | undefined;
+    options?: { placement?: string };
+  };
   const calls: WCall[] = [];
   const ctx = {
     hasUI: true,
@@ -320,12 +334,13 @@ const fakeTheme = {
   ) as Container;
   assert(comp instanceof Container, "Container");
   if (comp instanceof Container) {
-    const rendered = comp.children
-      .filter((c) => c instanceof Text)
-      .map((c) => (c as Text).text);
+    const rendered = comp.children.filter((c) => c instanceof Text).map((c) => (c as Text).text);
     const nonEmpty = rendered.filter((l) => l !== "");
     // The batch header renders once (via the batch-headers-only projection).
-    assert(nonEmpty.some((l) => l.includes("batch[developer×2]")), "batch header in rows");
+    assert(
+      nonEmpty.some((l) => l.includes("batch[developer×2]")),
+      "batch header in rows",
+    );
     // Each member renders exactly ONCE as a per-job row (#834: one Text
     // row per job; no SelectList second surface).
     const n = (frag: string) => nonEmpty.filter((l) => l.includes(frag)).length;

@@ -143,7 +143,7 @@ export function renderAgentRow(
   row: AgentListLine,
   selected: boolean,
   width: number,
-  theme: { selected: (t: string) => string; muted: (t: string) => string },
+  theme: AgentListTheme,
 ): string {
   const prefix =
     row.key === MAIN_ROW_KEY ? "◆ " : row.selectable ? (selected ? "> " : "  ") : "   ";
