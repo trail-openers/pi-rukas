@@ -16,6 +16,8 @@
  *       feedSlowProgress with an injected clock — no crash, PM notice fires.
  *   (d) source canary: spawn.ts attaches the stdin error listener BEFORE
  *       the onStdin handoff.
+ *   (e) source canary: work-driver-resume-reattach.ts attaches the stdin
+ *       error listener BEFORE the resume-prompt stdin write.
  */
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -204,6 +206,23 @@ await (async () => {
   assert(
     guardIdx >= 0 && onStdinIdx >= 0 && guardIdx < onStdinIdx,
     "(d) the listener is attached BEFORE opts.onStdin (and the prompt write)",
+  );
+}
+
+// (e) source canary: the reattach child's stdin is guarded BEFORE the
+// resume-prompt write (same async-EPIPE class as (d)).
+{
+  const src = readFileSync(
+    path.resolve(import.meta.dirname, "..", "src", "work-driver-resume-reattach.ts"),
+    "utf8",
+  );
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
+  const guardIdx = code.indexOf("attachStdinErrorGuard(child.stdin");
+  const writeIdx = code.indexOf("stdin?.write(");
+  assert(guardIdx >= 0, "(e) work-driver-resume-reattach.ts attaches the stdin EPIPE backstop");
+  assert(
+    guardIdx >= 0 && writeIdx >= 0 && guardIdx < writeIdx,
+    "(e) the listener is attached BEFORE the resume-prompt stdin write",
   );
 }
 

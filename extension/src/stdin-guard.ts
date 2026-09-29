@@ -18,7 +18,8 @@ import type { Writable } from "node:stream";
 import { trace } from "./trace.ts";
 
 export function attachStdinErrorGuard(stdin: Writable, label: string): void {
-  stdin.on("error", (err: Error) => {
-    trace(`spawn[${label}]: child stdin error (ignored): ${err.message}`);
+  stdin.on("error", (err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    trace(`spawn[${label}]: child stdin error (ignored): ${msg}`);
   });
 }
