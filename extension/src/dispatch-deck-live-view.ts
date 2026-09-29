@@ -33,6 +33,7 @@ import type { TUI } from "@earendil-works/pi-tui";
 import {
   type LiveViewTheme,
   getStatus,
+  hasBuffer,
   markViewClosed,
   markViewOpen,
   onBufferAppend,
@@ -51,6 +52,7 @@ import {
   VIEW_FOOTER_HINT,
   clearViewScroll,
   createAgentViewComponent,
+  dropOrphanedViewScroll,
   getViewScrollState,
 } from "./dispatch-deck-live-view-component.ts";
 import type { TuiHandle, ViewHeader } from "./dispatch-deck-live-view-component.ts";
@@ -59,6 +61,7 @@ export {
   createAgentViewComponent,
   getViewScrollState,
   clearViewScroll,
+  dropOrphanedViewScroll,
   VIEW_FALLBACK_ROWS,
   VIEW_FOOTER_HINT,
 };
@@ -268,5 +271,12 @@ export async function openLiveView(
   } finally {
     unsubAppend?.();
     markViewClosed(key);
+    // Sweep scroll-state entries left by getViewScrollState's create-on-read
+    // path (a view opened for a key, the key dropped, the entry orphaned).
+    // The predicate queries the live module's own buffer set — the sweep
+    // is called after markViewClosed so the buffer it belongs to may have
+    // just been dropped by that call, which is exactly the orphan shape
+    // the sweep is for.
+    dropOrphanedViewScroll(hasBuffer);
   }
 }

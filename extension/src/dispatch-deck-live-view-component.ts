@@ -33,8 +33,8 @@
  * the buffer.
  *
  * Performance: the wrapped lines are cached per event by (event
- * identity, width, thinkingExpanded) in a WeakMap keyed by the event
- * object — a render never re-wraps the whole buffer each frame.
+ * identity, width, thinkingExpanded, part) in a WeakMap keyed by the
+ * event object — a render never re-wraps the whole buffer each frame.
  *
  * The view re-reads the buffer on every render: openLiveView subscribes
  * with `onBufferAppend(key, () => tui.requestRender())` so an append
@@ -105,9 +105,26 @@ export function getViewScrollState(key: string): ViewScrollState {
   return s;
 }
 
-/** Drop the job's scroll state (dropBuffer calls this — no outlived state). */
+/**
+ * Drop the job's scroll state (dropBuffer calls this — no outlived state).
+ * The `getViewScrollState` create-on-read path can leave an entry with no
+ * buffer; `dropOrphanedViewScroll` sweeps those so nothing outlives its
+ * buffer (called from `openLiveView`'s finally on every close path).
+ */
 export function clearViewScroll(key: string): void {
   scrollStates.delete(key);
+}
+
+/**
+ * Remove every scroll-state entry with no live buffer (the create-on-read
+ * residue that `clearViewScroll` cannot reach by key, since it runs when no
+ * view is open). Called opportunistically when a view closes; safe to call
+ * with any buffer set.
+ */
+export function dropOrphanedViewScroll(hasBuffer: (key: string) => boolean): void {
+  for (const key of [...scrollStates.keys()]) {
+    if (!hasBuffer(key)) scrollStates.delete(key);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -115,13 +132,18 @@ export function clearViewScroll(key: string): void {
 // ---------------------------------------------------------------------------
 
 /**
+ * The cache's part discriminator: which logical part of an event a cache
+ * entry holds. An explicit `part` token distinguishes the toolCall header
+ * ("▸ name") from its body (the pretty-printed JSON) — two different texts
+ * that could in principle have the same length. The buffer is append-only
+ * (stored events are never mutated), so the event's identity plus its part
+ * is a stable key.
+ */
+type WrapPart = "hdr" | "body";
+
+/**
  * Per-event wrapped-line cache, keyed by the event object (a WeakMap —
- * entries die with the event), then (width, thinkingExpanded, content
- * length). The buffer is append-only (stored events are never mutated),
- * so the event's identity is a stable key. The content length in the key
- * distinguishes the header ("▸ name") from the body (the full JSON) in
- * toolCall events, which both go through wrapCached with the same event
- * object.
+ * entries die with the event), then (width, thinkingExpanded, part).
  */
 const wrappedCache = new WeakMap<LiveEvent, Map<string, string[]>>();
 
@@ -130,9 +152,9 @@ function wrapCached(
   text: string,
   width: number,
   expanded: boolean,
-  textLen: number,
+  part: WrapPart,
 ): string[] {
-  const cacheKey = `${width}|${expanded ? 1 : 0}|${textLen}`;
+  const cacheKey = `${width}|${expanded ? 1 : 0}|${part}`;
   const byKey = wrappedCache.get(ev);
   if (byKey) {
     const hit = byKey.get(cacheKey);
@@ -160,10 +182,10 @@ function eventLines(
 ): string[] {
   switch (ev.kind) {
     case "text":
-      return wrapCached(ev, ev.text, width, expanded, ev.text.length);
+      return wrapCached(ev, ev.text, width, expanded, "body");
     case "thinking":
       return expanded
-        ? wrapCached(ev, ev.text, width, expanded, ev.text.length).map((r) => theme.muted(r))
+        ? wrapCached(ev, ev.text, width, expanded, "body").map((r) => theme.muted(r))
         : [theme.muted(`▸ thinking (${ev.text.length} chars)`)];
     case "toolCall": {
       // Pretty-print the args: parse → re-stringify with 2-space indent
@@ -179,9 +201,9 @@ function eventLines(
         }
       }
       const headerText = `▸ ${sanitizeText(ev.name).replace(/\n+/g, " ")}`;
-      if (body === undefined) return wrapCached(ev, headerText, width, expanded, headerText.length);
-      const header = wrapCached(ev, headerText, width, expanded, headerText.length)[0] ?? "";
-      return [header, ...wrapCached(ev, body, width, expanded, body.length)];
+      if (body === undefined) return wrapCached(ev, headerText, width, expanded, "hdr");
+      const header = wrapCached(ev, headerText, width, expanded, "hdr")[0] ?? "";
+      return [header, ...wrapCached(ev, body, width, expanded, "body")];
     }
     case "toolResult": {
       // Sanitize the tool name (collapse newlines — sanitizeText preserves
@@ -190,7 +212,7 @@ function eventLines(
       const marker = ev.isError ? `✗ ${safeName} (error)` : `✓ ${safeName}`;
       const head = ev.isError ? theme.error(marker) : marker;
       if (!ev.text) return [head];
-      return [head, ...wrapCached(ev, ev.text, width, expanded, ev.text.length)];
+      return [head, ...wrapCached(ev, ev.text, width, expanded, "body")];
     }
   }
 }
@@ -243,6 +265,11 @@ export function createAgentViewComponent(
   // The render width is needed by handleInput's scroll clamp — captured
   // on each render (the width is stable for the view's lifetime).
   let lastWidth = 80;
+  // The body's rendered line count, written by render() and read by
+  // handleInput's scroll clamp (render always runs before input is routed,
+  // so the sentinel -1 is never read — but guard anyway for a first
+  // handleInput on a fresh view).
+  let lastBodyLen = -1;
 
   return {
     invalidate(): void {
@@ -254,15 +281,17 @@ export function createAgentViewComponent(
       const status = h ? h.status : "running";
       const settled = h ? h.settled : false;
       const height = bodyHeight(tui);
-      // The scroll domain is the body's wrapped lines (+1 final line on
-      // settle). Clamp the persisted scroll into [0, maxScroll].
-      const total = bodyLineCount(key, width, thinkingExpanded, theme) + (settled ? 1 : 0);
-      const maxScroll = Math.max(0, total - height);
-      state.scroll = Math.max(0, Math.min(state.scroll, maxScroll));
-      // Build the full body once (the window is a slice of it).
+      // Build the full body once (the window is a slice of it). The wrap
+      // cache keeps this O(buffer) map lookups per render, not a re-wrap.
       const body: string[] = [];
       for (const ev of getBuffer(key)) body.push(...eventLines(ev, width, thinkingExpanded, theme));
       if (settled) body.push(`— ${status} · press Esc —`);
+      lastBodyLen = body.length;
+      // The scroll domain is the body's wrapped lines (+1 final line on
+      // settle). Clamp the persisted scroll into [0, maxScroll].
+      const total = lastBodyLen + (settled ? 1 : 0);
+      const maxScroll = Math.max(0, total - height);
+      state.scroll = Math.max(0, Math.min(state.scroll, maxScroll));
       const start = Math.max(0, body.length - height - state.scroll);
       const window: string[] = [];
       for (let i = start; i < Math.min(body.length, start + height); i++) {
@@ -272,7 +301,10 @@ export function createAgentViewComponent(
       const headerRaw = h
         ? `${sanitizeText(h.label).replace(/\n+/g, " ")} · ${sanitizeText(h.role).replace(/\n+/g, " ")} · ${status} · ${fmtElapsed(h.now - h.startedAt)} · ${h.turns} turn${h.turns === 1 ? "" : "s"} · ${h.totalTokens} tokens${h.pmActive ? " · PM active" : ""}${h.notices > 0 ? ` · ${h.notices} new notices` : ""}`
         : status;
-      // truncateToWidth adds ANSI reset sequences; sanitize them out.
+      // sanitizeText AFTER truncateToWidth: truncateToWidth adds ANSI reset
+      // sequences (\x1b[0m) around the ellipsis, which sanitizeText strips.
+      // The input is already sanitised (headerRaw uses sanitizeText on each
+      // field), so the post-truncate sanitize only removes the reset codes.
       const headerLine = sanitizeText(truncateToWidth(headerRaw, width, "…"));
       const lines: string[] = [headerLine, ...window];
       // Pad the body to the full height so the footer sits on the last
@@ -290,7 +322,12 @@ export function createAgentViewComponent(
       const height = bodyHeight(tui);
       const h = header();
       const settled = h ? h.settled : false;
-      const total = bodyLineCount(key, lastWidth, thinkingExpanded, theme) + (settled ? 1 : 0);
+      // The scroll domain is the body's wrapped lines. Use lastBodyLen when
+      // render has run at least once (the common case); otherwise fall back
+      // to a direct count so a first handleInput before render still clamps.
+      const total =
+        (lastBodyLen >= 0 ? lastBodyLen : bodyLineCount(key, lastWidth, thinkingExpanded, theme)) +
+        (settled ? 1 : 0);
       const maxScroll = Math.max(0, total - height);
       if (matchesKey(data, "escape")) {
         done("returnToList");
