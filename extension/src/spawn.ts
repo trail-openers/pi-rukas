@@ -36,7 +36,6 @@ import {
   piEnsembleExtensionPath,
 } from "./spawn-extension-forward.ts";
 import { withSpawnSlot } from "./spawn-semaphore.ts";
-import { attachStdinErrorGuard } from "./stdin-guard.ts";
 import {
   STDERR_TAIL_BYTES,
   assertLiveSpawnAllowed,
@@ -51,6 +50,7 @@ import {
   transcriptPathFor,
   willRetryAfter,
 } from "./spawn-support.ts";
+import { attachStdinErrorGuard } from "./stdin-guard.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
 import { vipuneChildEnv } from "./vipune.ts";
