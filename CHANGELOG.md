@@ -8,6 +8,15 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.69](https://github.com/trail-openers/pi-rukas/compare/v0.12.68...v0.12.69) (2026-09-29)
+
+
+### Features
+
+* **deck:** agent list overlay for running subagents ([#931](https://github.com/trail-openers/pi-rukas/issues/931)) ([bc4a449](https://github.com/trail-openers/pi-rukas/commit/bc4a449d2b7bcae3280cc01fdbe343f156f9cba3))
+* **deck:** full-fidelity live buffer for the agent view ([#937](https://github.com/trail-openers/pi-rukas/issues/937)) ([0bc25c6](https://github.com/trail-openers/pi-rukas/commit/0bc25c62e1dc8b44b834a62ca147082a9c63429f))
+* **deck:** full-screen agent view for running subagents ([#938](https://github.com/trail-openers/pi-rukas/issues/938)) ([a6c2baa](https://github.com/trail-openers/pi-rukas/commit/a6c2baadd810f58cc3a022b7562d4032078fe9e0))
+
 ## [0.12.68](https://github.com/trail-openers/pi-rukas/compare/v0.12.67...v0.12.68) (2026-09-29)
 
 
