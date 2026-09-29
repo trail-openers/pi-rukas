@@ -24,7 +24,10 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { buildAgentListLines } from "./agent-list.ts";
 import * as deckComposite from "./dispatch-deck-composite.ts";
-import { buildCompositeWidgetFactory, confirmRow } from "./dispatch-deck-confirm-row.ts";
+import {
+  buildCompositeWidgetFactory,
+  confirmRow as confirmRowImpl,
+} from "./dispatch-deck-confirm-row.ts";
 import { type RowConfirmHost, onRowConfirm } from "./dispatch-deck-confirm.ts";
 import { steerFromDeck } from "./dispatch-deck-interactive.ts";
 import { dropBuffer } from "./dispatch-deck-live.ts";
@@ -341,14 +344,21 @@ export function isTicking(): boolean {
 // time) so a steer is never silently dropped: openSteerPrompt / openLiveView
 // pass the SAME ctx.ui down, so steerFromDeck always has a UI to notify on
 // failure.
-export function rowConfirmHostFor(ctx: ExtensionContext): RowConfirmHost {
+function rowConfirmHostFor(ctx: ExtensionContext): RowConfirmHost {
   return {
     getEntry: (key) => entries.get(key),
     steer: (key, message) => void steerFromDeck(ctx.ui, key, message),
   };
 }
 
-export { confirmRow } from "./dispatch-deck-confirm-row.ts";
+// Thin wrapper so the agent-list overlay (index.ts) can call confirmRow
+// without knowing the host: the host is built here (per-attach, from this
+// ctx) and passed down — confirmRowImpl itself never imports a value from
+// this module, so the dispatch-deck.ts ↔ dispatch-deck-confirm-row.ts
+// import cycle stays broken (type-only imports are fine).
+export function confirmRow(ctx: ExtensionContext, key: string): Promise<void> {
+  return confirmRowImpl(ctx, key, rowConfirmHostFor(ctx));
+}
 
 function startTickerIfNeeded(): void {
   if (tickHandle !== undefined || isQuiet()) return;
@@ -428,9 +438,9 @@ function buildDeckWidgetFactory(ctx: ExtensionContext) {
     () => !nav?.isActive() && entries.size > 0,
     getDeckMaxRows(),
   );
-  return (tui: TUI, theme: unknown) => {
+  return (tui: TUI, theme: Parameters<typeof factory>[1]) => {
     deckTui = tui; // focus probe (editorFocused) reads it via duck-typing
-    return factory(tui, theme as never);
+    return factory(tui, theme);
   };
 }
 

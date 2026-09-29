@@ -40,7 +40,7 @@ const fakeTheme = {
 };
 
 // 14. #835 regression guard on the #834 plain-row surface: two same-role
-//jobs whose keys share a prefix (the realistic newJobId shape — a shared
+// jobs whose keys share a prefix (the realistic newJobId shape — a shared
 // base-36 timestamp prefix) can render byte-identical formatRow lines from
 // spawn until the first updateEntry. buildAgentListLines appends the
 // collision-aware key fragment to the colliding rows so the rendered rows

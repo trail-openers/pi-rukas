@@ -7,21 +7,22 @@
  * Behaviour: `confirmRow` wraps the shared `onRowConfirm` route
  * (buffer → live view, else steer prompt) in a try/catch with a trace —
  * the agent-list overlay calls this fire-and-forget, so a throw here must
- * not become an unhandled rejection. The "no entry" fallthrough (the
- * quiet-mode steer no-op) is traced so an operator can see it.
+ * not become an unhandled rejection.
+ *
+ * The route takes the `RowConfirmHost` as a parameter (dispatch-deck.ts
+ * supplies `rowConfirmHostFor(ctx)` in its thin `confirmRow` wrapper) so
+ * this module never imports a VALUE from dispatch-deck.ts — type-only
+ * imports stay — which breaks the dispatch-deck.ts ↔ this module import
+ * cycle.
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Theme } from "@earendil-works/pi-coding-agent";
 import { buildAgentListLines } from "./agent-list.ts";
 import * as deckComposite from "./dispatch-deck-composite.ts";
-import { onRowConfirm } from "./dispatch-deck-confirm.ts";
+import { type RowConfirmHost, onRowConfirm } from "./dispatch-deck-confirm.ts";
 import { buildLinesBatchOnly } from "./dispatch-deck-rows.ts";
-import { type BatchDeckEntry, type DeckEntry, rowConfirmHostFor } from "./dispatch-deck.ts";
+import type { BatchDeckEntry, DeckEntry } from "./dispatch-deck.ts";
 import { trace } from "./trace.ts";
-
-/** Re-exported so dispatch-deck.ts can reference the factory's return theme type. */
-export type { Theme };
 
 /**
  * #914 — route an agent-list Enter on a job row through the deck's
@@ -29,17 +30,21 @@ export type { Theme };
  * Wrapped in try/catch with a trace: the agent-list overlay calls this
  * fire-and-forget (item 5), so a throw here must not become an unhandled
  * rejection — the same guarantee onRowConfirm's inner openSteerPrompt
- * already gives for the steer-prompt path. The "no entry" fallthrough
- * (the quiet-mode steer no-op) is traced so an operator can see it.
+ * already gives for the steer-prompt path.
+ *
+ * The route is NOT skipped for unknown keys: in quiet mode buffers exist
+ * without deck entries (startEntry is quiet-gated), and the FIRST branch of
+ * onRowConfirm opens the live view whenever a BUFFER exists, before it ever
+ * reads the entry. An early return here was a regression — Enter no longer
+ * opened the live view for quiet sessions.
  */
-export async function confirmRow(ctx: ExtensionContext, key: string): Promise<void> {
+export async function confirmRow(
+  ctx: ExtensionContext,
+  key: string,
+  host: RowConfirmHost,
+): Promise<void> {
   try {
-    const entry = rowConfirmHostFor(ctx).getEntry(key);
-    if (!entry) {
-      trace(`dispatch-deck-confirm: confirmRow for unknown key ${key} (quiet-mode steer no-op)`);
-      return;
-    }
-    await onRowConfirm(ctx, key, rowConfirmHostFor(ctx));
+    await onRowConfirm(ctx, key, host);
   } catch (err) {
     trace(`dispatch-deck-confirm: confirmRow for ${key} failed: ${(err as Error).message}`);
   }

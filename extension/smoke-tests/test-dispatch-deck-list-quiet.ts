@@ -22,6 +22,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { MAIN_ROW_KEY, buildAgentListLines } from "../src/agent-list.ts";
+import { confirmRow } from "../src/dispatch-deck-confirm-row.ts";
 import { buffers, startBuffer } from "../src/dispatch-deck-live.ts";
 import { suppressWidgetIfQuiet } from "../src/dispatch-deck-quiet.ts";
 import type { DeckEntry } from "../src/dispatch-deck.ts";
@@ -121,6 +122,60 @@ const fakeCtxWithUi = {
     if (quietSaved === undefined) delete process.env.PI_ENSEMBLE_QUIET_STATUS;
     else process.env.PI_ENSEMBLE_QUIET_STATUS = quietSaved;
     buffers.delete("job-q");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 8f. Regression: quiet mode, buffer present, NO deck entry → confirmRow
+//     must route to the live view, not a no-op. The early `if (!entry)`
+//     return that used to live in confirmRow skipped onRowConfirm entirely
+//     for unknown keys — but in quiet mode buffers exist without deck
+//     entries (startEntry is quiet-gated), so Enter no longer opened the
+//     live view for quiet sessions. The host here returns no entry
+//     (getEntry → undefined) while a buffer exists: a faithful stand-in
+//     for the production quiet-mode state, where the entries map is
+//     empty but the buffer map is not. The assertion is on the `ctx.ui.custom`
+//     call count of a fake ctx: openLiveView's overlay is the only route
+//     that calls it, so one call = the live view opened; zero = the
+//     no-op regression.
+// ---------------------------------------------------------------------------
+{
+  const quietSaved = process.env.PI_ENSEMBLE_QUIET_STATUS;
+  process.env.PI_ENSEMBLE_QUIET_STATUS = "1";
+  const customCalls: Array<unknown> = [];
+  try {
+    startBuffer("job-qf");
+    const quietCtx = {
+      hasUI: true,
+      ui: {
+        custom: (_f: unknown, o?: unknown) => {
+          customCalls.push(o);
+          return Promise.resolve("close");
+        },
+        editor: (_t: string, _p: string) => Promise.resolve(undefined) as never,
+        setWidget: () => {},
+        getEditorText: () => "",
+        onTerminalInput: () => () => {},
+      },
+    } as unknown as ExtensionContext;
+    // No entry: getEntry returns undefined for every key (the quiet-mode
+    // entries map is empty). steer is never reachable — the live-view
+    // branch must be taken first.
+    await confirmRow(quietCtx, "job-qf", {
+      getEntry: () => undefined,
+      steer: () => {},
+    });
+    if (customCalls.length === 1) {
+      pass("8f: confirmRow routes to the live view in quiet mode with a buffer and no entry");
+    } else {
+      fail(
+        `8f: confirmRow was a no-op for a quiet-mode buffer (expected 1 custom call, got ${customCalls.length})`,
+      );
+    }
+  } finally {
+    if (quietSaved === undefined) delete process.env.PI_ENSEMBLE_QUIET_STATUS;
+    else process.env.PI_ENSEMBLE_QUIET_STATUS = quietSaved;
+    buffers.delete("job-qf");
   }
 }
 
