@@ -134,5 +134,29 @@ function makeHarness(
   assert(unhandled.length === 0, "2a: a rejecting view opener never becomes an unhandled rejection");
 }
 
+// ---------------------------------------------------------------------------
+// 3. onSettle latch (moved here from test-dispatch-deck-list.ts section 6,
+//    6c — the 500-line hard limit): a component that renders the settled
+//    state (rows.length === 1) twice fires onSettle at most once — without
+//    the latch, the second render in the settled state would re-fire it.
+// ---------------------------------------------------------------------------
+{
+  let settleCount = 0;
+  const compSettle = createAgentListComponent(
+    () => buildAgentListLines([], 80, NOW),
+    () => 80,
+    () => {},
+    () => {
+      settleCount++;
+    },
+    () => ({ selected: (t) => t, muted: (t) => t }),
+    () => {},
+    killJobs,
+  );
+  compSettle.render(80);
+  compSettle.render(80);
+  assert(settleCount === 1, "6c: onSettle fires once across two settled renders (latched)");
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

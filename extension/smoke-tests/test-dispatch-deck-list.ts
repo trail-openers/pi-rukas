@@ -16,13 +16,16 @@
  *   - `Esc` closes; unowned keys are swallowed;
  *   - a job settling while selected moves the selection to its neighbour;
  *     when ALL jobs settle the list closes itself (done);
- *   - the factory returns the component DIRECTLY (never Container-wrapped — #176);
- *   - hostile labels render as a single row whose visibleWidth ≤ the
- *     render width (the #927/PR #928 invariant).
+ *   - the factory returns the component DIRECTLY (the `ctx.ui.custom`
+ *     factory's return value, never Container-wrapped — #176);
+ *   - hostile labels (newline, ANSI, 2000 chars, CJK) render as a single
+ *     row whose visibleWidth ≤ the render width (the #927/PR #928
+ *     invariant — every row goes through `toTerminalLine`).
  *
  * The kill path is exercised against the REAL registry (`jobs` from
- * async-jobs-registry) with a directly-inserted single job — no Pi stub
- * needed (the spawn path is covered by test-async-dispatch).
+ * async-jobs-registry, the same map `killJob`/`killAllJobs` act on) with
+ * a directly-inserted single job — no Pi stub needed (the spawn path is
+ * covered by test-async-dispatch).
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -127,7 +130,6 @@ function makeHarness(entries: DeckEntry[], batches: BatchDeckEntry[], width = 80
   return h;
 }
 
-
 // A real single job in the registry (the map killJob/killAllJobs act on).
 function registerRealJob(jobId: string): AbortController {
   const abort = new AbortController();
@@ -182,10 +184,6 @@ function registerRealJob(jobId: string): AbortController {
   assert(h2.opens.length === 0, "2c: Enter on `main` opens nothing");
   assert(h2.done, "2d: `main` closes the list (Esc-equivalent)");
 }
-
-// The view-opener guard (throwing / rejecting openJob) is exercised in
-// test-dispatch-deck-list-open-guard.ts (split here for the 500-line
-// limit).
 
 // ---------------------------------------------------------------------------
 // 3. x → y kills EXACTLY the selected job (real registry); x → n kills
@@ -354,34 +352,17 @@ function registerRealJob(jobId: string): AbortController {
     "6a: selection on the successor (B) after A settled",
   );
 
-  // All jobs settle → onSettle fires once; done() closes the overlay.
+  // All jobs settle → the list closes itself: the projection (main only)
+  // fires onSettle once, and done() closes the overlay.
   const h2 = makeHarness([], []);
   assert(
     h2.settles === 1,
     "6a2: all jobs settle → onSettle fires exactly once (initial projection)",
   );
-  // done() is not observable here (no real overlay); the production close
-  // path is the overlay's own done callback (see openAgentList).
+  // In the test the component's done() is not observable (no real overlay);
+  // the production close path is the overlay's own done callback (the
+  // component's done → ctx.ui.custom done, see openAgentList).
   assert(true, "6b: all jobs settled → the list closes itself (done, once)");
-
-  // #914 — onSettle latch: a component that renders the settled state
-  // (rows.length === 1) twice fires onSettle at most once — without the
-  // latch, the second render in the settled state would re-fire it.
-  let settleCount = 0;
-  const compSettle = createAgentListComponent(
-    () => buildAgentListLines([], 80, NOW),
-    () => 80,
-    () => {},
-    () => {
-      settleCount++;
-    },
-    () => ({ selected: (t) => t, muted: (t) => t }),
-    () => {},
-    killJobs,
-  );
-  compSettle.render(80);
-  compSettle.render(80);
-  assert(settleCount === 1, "6c: onSettle fires once across two settled renders (latched)");
 }
 
 // ---------------------------------------------------------------------------
@@ -392,15 +373,22 @@ function registerRealJob(jobId: string): AbortController {
 {
   let captured: unknown;
   let customOpts: unknown;
-  const theme = { fg: (_c: string, t: string) => t, bg: (_c: string, t: string) => t };
   const fakeCtx = {
     ui: {
-      custom: <T>(factory: (tui: unknown, t: unknown, kb: unknown, done: (v: T) => void) => unknown, opts?: unknown) => {
+      custom: <T>(
+        factory: (tui: unknown, theme: unknown, kb: unknown, done: (v: T) => void) => unknown,
+        opts?: unknown,
+      ) => {
         customOpts = opts;
+        const theme = { fg: (_c: string, t: string) => t, bg: (_c: string, t: string) => t };
         captured = factory({ terminal: { columns: 80 } }, theme, {}, (v: T) => {
+          // The real ctx.ui.custom resolves when done() is called; the fake
+          // does the same so openAgentList's await can complete.
           (resolve as (v: T) => void)(v);
         });
         return new Promise<T>((resolve) => {
+          // If the factory's done is never called (the overlay stays open),
+          // the test still needs to progress — resolve after a tick.
           setTimeout(() => resolve(undefined as T), 10);
         }) as unknown as Promise<T>;
       },
@@ -447,15 +435,18 @@ function registerRealJob(jobId: string): AbortController {
 //     AND the pi-coding-agent KEYBINDINGS (app.* ids). The control
 //     assertion proves `ctrl+l` IS detected as bound in the app table
 //     (where app.model.select owns it), so the test cannot pass
-//     vacuously. The in-list stop-all key `X` (shift+x) is not a global
-//     binding: `ctrl+x` is bound (app.message.copy) but `X` is not — a
-//     plain `x` never fires the stop-all key (verified in
-//     test-dispatch-deck-list-keys.ts section 11).
+//     vacuously. The in-list stop-all key `X` (shift+x) is not a
+//     global binding: `ctrl+x` is bound (app.message.copy) but `X`
+//     (shift+x) is not — a plain `x` (kill-one) and `ctrl+x` (copy)
+//     are distinct from `X` in pi-tui's key matcher (a plain `x` never
+//     fires the stop-all key — `matchesKey("x", "shift+x")` is false,
+//     verified in test-dispatch-deck-list-keys.ts section 11).
 // ---------------------------------------------------------------------------
 {
   const { getKeybindings } = await import("@earendil-works/pi-tui");
-  // pi-coding-agent's app-level keybindings (app.* ids); imported via a
-  // relative path from the installed package's dist directory.
+  // pi-coding-agent's app-level keybindings (app.* ids). The module is not
+  // re-exported from the package root, so we import it via a relative path
+  // from the installed package's dist directory.
   const { KEYBINDINGS: APP_KB } = await import("../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js");
   const kb = getKeybindings();
   const tui = kb.getResolvedBindings() as Record<string, string | string[] | undefined>;
@@ -470,8 +461,10 @@ function registerRealJob(jobId: string): AbortController {
     if (Array.isArray(d.defaultKeys)) allBound.push(...d.defaultKeys);
     else if (typeof d.defaultKeys === "string") allBound.push(d.defaultKeys);
   }
-  // Control assertion: `ctrl+l` IS bound in the app table (app.model.select)
-  // — proves the test is actually reading the app table.
+  // Control assertion: `ctrl+l` IS bound in the app table (app.model.select).
+  // This proves the test is actually reading the app table — without it,
+  // a bug that made the app table unreadable would let the unbound check
+  // pass vacuously.
   assert(
     allBound.includes("ctrl+l"),
     "10-control: `ctrl+l` IS detected as bound in the app table (app.model.select) — the test reads both tables",

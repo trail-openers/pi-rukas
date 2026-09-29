@@ -115,6 +115,10 @@ export function buildAgentListLines(
     // shows the running tool, as the deck row did before #914.
     // Computed once per entry and reused for the collision check and the
     // row projection (the two helpers would otherwise re-project it).
+    // The fragment is appended to the raw projection BEFORE the single
+    // `toTerminalLine` pass, so the render-width truncation treats row and
+    // fragment as one line — the same guarantee the deck row had (the raw
+    // row + suffix bounded to one terminal line at the caller's width).
     const plain = formatAgentRow(e, now);
     const frag = fragments[i] ?? "";
     const fragment = e.key.length > 10 ? `key ${frag}` : frag;
@@ -407,10 +411,8 @@ export function createAgentListComponent(
         // handler.
         try {
           const r = openJob(key);
-          if (r && typeof (r as Promise<void>).catch === "function") {
-            (r as Promise<void>).catch((err: unknown) =>
-              trace(`agent-list: openJob(${key}) failed: ${String(err)}`),
-            );
+          if (r instanceof Promise) {
+            r.catch((err: unknown) => trace(`agent-list: openJob(${key}) failed: ${String(err)}`));
           }
         } catch (err) {
           trace(`agent-list: openJob(${key}) threw: ${String(err)}`);
