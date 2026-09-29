@@ -13,14 +13,25 @@
  *     Buffers are dropped when the job's deck entry is cleared (the deck
  *     module's `clearEntry` calls `dropBuffer` — co-located lifecycle, no
  *     leak across many dispatches).
- *   - Truncation happens at FEED time: normalised events are stored
- *     already-truncated (assistant text 400, tool args 240, results 200 —
- *     the runs.ts limits). The ring cap (200 events) is the only other
- *     bound.
+ *   - Events are stored UNTRUNCATED at feed time (#916): the only bound is
+ *     the per-job byte cap (`LIVE_BUFFER_MAX_BYTES`, measured on the stored
+ *     RAW text length, oldest events evicted first). A single event larger
+ *     than the bound is kept ALONE and untruncated (PM decision, #916).
+ *     Stored text is still sanitised (control chars / ANSI stripped,
+ *     newlines collapsed to the ` ⏎ ` separator) — only the LENGTH
+ *     truncation was removed.
+ *   - `markSettled(key, status)` / `getStatus(key)` record the settle
+ *     outcome (async-jobs.ts calls `markSettled` at the same sites as
+ *     `clearEntry`); the header reads it.
+ *   - `onBufferAppend(key, cb)` (unsubscribe returned) notifies subscribers
+ *     after an event is appended — the overlay uses it to re-render instead
+ *     of relying on the deck's 1 s ticker (#916 PM decision).
  *   - `createLiveViewComponent` builds the overlay component (returned
  *     DIRECTLY from the `ctx.ui.custom` factory — never Container-wrapped,
  *     #176). The component re-reads the buffer on every render, so new
  *     events appear on the next render without re-creating the component.
+ *     Each event still renders as ONE line, width-bounded via
+ *     `toTerminalLine` (slice B rewrites the view with real wrapping).
  *
  * Quiet mode (`PI_ENSEMBLE_QUIET_STATUS=1`): `startBuffer` creates the
  * buffer regardless (#914 gate relocation — the early return that lived
@@ -36,83 +47,102 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Component, isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
-import {
-  NEWLINE_SEP,
-  collapseToSpaces,
-  sanitizeText,
-  toTerminalLine,
-} from "./dispatch-deck-line.ts";
+import { NEWLINE_SEP, sanitizeText, toTerminalLine } from "./dispatch-deck-line.ts";
 import type { DeckEntry } from "./dispatch-deck.ts";
+import { snapshot as deckSnapshot } from "./dispatch-deck.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
-import { extractToolHint, formatElapsed } from "./progress.ts";
+import { formatElapsed } from "./progress.ts";
 import { trace } from "./trace.ts";
-import { TOOL_ARGS_PREVIEW_MAX, TOOL_RESULT_LINE_MAX } from "./transcript-preview-limits.ts";
 
 // =============================================================================
 // Ring buffer
 // =============================================================================
 
 /**
- * A normalised (already truncated) unit of a child's recent activity.
+ * A normalised unit of a child's recent activity.
  *
- * The stored strings are NOT raw child output: `pushEvent` sanitises them at
- * FEED time (issue #927) — every `text` / `args` / `name` field is single-
- * line, control-char/ANSI-stripped, with newlines already collapsed to the
- * ` ⏎ ` separator (dispatch-deck-line.ts `NEWLINE_SEP`). Renderers must
- * still width-bound via `toTerminalLine`, but must not assume raw newlines
- * or control characters here.
+ * The stored strings are sanitised at FEED time (issue #927): every
+ * `text` / `args` / `name` field is control-char/ANSI-stripped, with
+ * newlines collapsed to the ` ⏎ ` separator (dispatch-deck-line.ts
+ * `NEWLINE_SEP`) — but UNTRUNCATED (#916). Renderers must still
+ * width-bound via `toTerminalLine`, but must not assume raw newlines or
+ * control characters here.
+ *
+ * `thinking` blocks (`{kind:"thinking"}`) are stored with their raw
+ * character count as `text` (#916: the view renders `▸ thinking (N chars)`
+ * with N = raw char count, not the post-wrap rendered size).
  */
 export type LiveEvent =
   | { kind: "text"; text: string }
   | { kind: "toolCall"; name: string; args: string }
-  | { kind: "toolResult"; name: string; text: string; isError: boolean };
-
-/** The ring cap — 200 events, oldest evicted. */
-export const LIVE_RING_CAP = 200;
-/** Assistant text is truncated to this many chars at feed time (PM decision 5). */
-export const LIVE_TEXT_MAX = 400;
-// Tool-arg / tool-result truncation reuses the shared transcript-preview
-// limits (transcript-preview-limits.ts) so the two surfaces cannot drift.
-/** Preview of a tool call's arguments after whitespace collapse (chars). */
-export const LIVE_ARGS_MAX = TOOL_ARGS_PREVIEW_MAX;
-/** Preview of a tool result after newlines collapse to spaces (chars). */
-export const LIVE_RESULT_MAX = TOOL_RESULT_LINE_MAX;
-
-/** Truncate with an ellipsis marker, matching runs.ts / progress.ts style. */
-function truncate(s: string, max: number): string {
-  if (s.length <= max) return s;
-  return `${s.slice(0, max - 1).trimEnd()}…`;
-}
+  | { kind: "toolResult"; name: string; text: string; isError: boolean }
+  | { kind: "thinking"; text: string };
 
 /**
- * One-line, whitespace-normalised preview of a tool call's arguments.
- * String args take the cheap path directly. Object args reuse
- * `extractToolHint` (progress.ts) — its priority-key hint (command, path, …)
- * already bounds the output to 50 chars, so no stringify of the full
- * arguments object happens on the hot path. JSON.stringify is only the
- * fallback for objects the hint cannot summarise, bounded to ~4× the target
- * BEFORE the whitespace collapse so a multi-MB serialisation is not
- * rescanned in full: the collapse can only shorten the string, so anything
- * past the first 4×LIVE_ARGS_MAX chars of the collapsed output would sit
- * past the truncation point anyway.
+ * The per-job byte cap, measured on the stored RAW text length (the
+ * `.text` field for text/thinking, the full JSON string for toolCall
+ * args) — #916, replacing the 200-event ring cap and the feed-time
+ * character truncation. Oldest events are evicted first; a single event
+ * whose own size exceeds the bound is kept ALONE and untruncated (the
+ * bound caps the TOTAL across multiple events, never a lone event).
  */
-export function toolCallArgsPreview(args: unknown): string {
-  if (args === undefined || args === null) return "";
-  if (typeof args === "string") {
-    const bounded = args.length > LIVE_ARGS_MAX * 4 ? args.slice(0, LIVE_ARGS_MAX * 4) : args;
-    return truncate(collapseToSpaces(bounded), LIVE_ARGS_MAX);
-  }
-  const hint = extractToolHint(args);
-  if (hint) return collapseToSpaces(hint);
-  const raw = JSON.stringify(args) ?? "";
-  const bounded = raw.length > LIVE_ARGS_MAX * 4 ? raw.slice(0, LIVE_ARGS_MAX * 4) : raw;
-  return truncate(collapseToSpaces(bounded), LIVE_ARGS_MAX);
-}
+export const LIVE_BUFFER_MAX_BYTES = 512 * 1024;
+
+/** The settle outcome recorded for the header (async-jobs calls markSettled). */
+export type SettleStatus = "running" | "finished" | "failed" | "killed";
 
 // Exported for the quiet-mode gate test (agent-list.ts block 8) — the
 // buffer map is the load-bearing fact the test reads to prove the
 // `startBuffer` gate moved (a quiet session's buffer IS created).
 export const buffers = new Map<string, LiveEvent[]>();
+
+/** Settle outcomes recorded by markSettled (read by the view header). */
+const settledStatuses = new Map<string, SettleStatus>();
+
+/** True while the job's live view overlay is open (buffer survives clearEntry). */
+const viewsOpen = new Set<string>();
+
+/** Append subscribers per key (#916: the overlay re-renders on feed). */
+const appendSubscribers = new Map<string, Set<() => void>>();
+
+/** The raw stored size of one event, in characters of the stored text. */
+function eventSize(ev: LiveEvent): number {
+  switch (ev.kind) {
+    case "text":
+      return ev.text.length;
+    case "toolCall":
+      return ev.args.length;
+    case "toolResult":
+      return ev.text.length;
+    case "thinking":
+      return ev.text.length;
+  }
+}
+
+/**
+ * The buffer contents (a copy — the caller may mutate the array).
+ */
+export function getBuffer(key: string): LiveEvent[] {
+  return [...(buffers.get(key) ?? [])];
+}
+
+/**
+ * The newest `n` events of a buffer without copying the whole ring (the
+ * overlay renders on the deck's 1 s cadence; copying the full buffer per
+ * tick is wasted work when it only reads a 24-line window). `getBuffer`
+ * stays for tests.
+ */
+export function getBufferTail(key: string, n: number): LiveEvent[] {
+  const buf = buffers.get(key);
+  if (!buf) return [];
+  const start = Math.max(0, buf.length - n);
+  return buf.slice(start);
+}
+
+/** Buffer count for leak assertions (tests). */
+export function bufferCount(): number {
+  return buffers.size;
+}
 
 /**
  * Create (or return) the per-job ring buffer.
@@ -132,6 +162,8 @@ export function startBuffer(key: string): void {
 /** Drop the per-job ring buffer (called when the job's deck entry clears). */
 export function dropBuffer(key: string): void {
   buffers.delete(key);
+  settledStatuses.delete(key);
+  viewsOpen.delete(key);
 }
 
 /** True when a live-view buffer exists for the key (gate for the row action). */
@@ -139,28 +171,98 @@ export function hasBuffer(key: string): boolean {
   return buffers.has(key);
 }
 
-/** The buffer contents (a copy — the caller may mutate the array). */
-export function getBuffer(key: string): LiveEvent[] {
-  return [...(buffers.get(key) ?? [])];
+// =============================================================================
+// Settle status (#916)
+// =============================================================================
+
+/**
+ * Record the job's settle outcome, called from the async-jobs settle sites
+ * alongside `clearEntry` (success → "finished", error → "failed",
+ * kill/abort → "killed"). The view header reads it via `getStatus`.
+ */
+export function markSettled(key: string, status: Exclude<SettleStatus, "running">): void {
+  settledStatuses.set(key, status);
+}
+
+/** The recorded status for the key — "running" until markSettled. */
+export function getStatus(key: string): SettleStatus {
+  return settledStatuses.get(key) ?? "running";
+}
+
+// =============================================================================
+// Append notifications (#916)
+// =============================================================================
+
+/**
+ * Subscribe to appends for the key's buffer. Returns an unsubscribe.
+ * `cb` is invoked AFTER the event is stored; a throwing subscriber is
+ * caught and traced (it can never break the feed path).
+ */
+export function onBufferAppend(key: string, cb: () => void): () => void {
+  let subs = appendSubscribers.get(key);
+  if (!subs) {
+    subs = new Set();
+    appendSubscribers.set(key, subs);
+  }
+  subs.add(cb);
+  return () => {
+    subs.delete(cb);
+    if (subs.size === 0) appendSubscribers.delete(key);
+  };
+}
+
+/** Notify the key's append subscribers (called from feedRawEvent). */
+function notifyAppend(key: string): void {
+  const subs = appendSubscribers.get(key);
+  if (!subs) return;
+  for (const cb of subs) {
+    try {
+      cb();
+    } catch (err) {
+      trace(`dispatch-deck-live: onBufferAppend subscriber threw for ${key}: ${(err as Error).message}`);
+    }
+  }
+}
+
+// =============================================================================
+// View-open bookkeeping (#916)
+// =============================================================================
+
+/** The live view for the key is open (markViewOpen / markViewClosed). */
+export function isViewOpen(key: string): boolean {
+  return viewsOpen.has(key);
 }
 
 /**
- * The newest `n` events of a buffer without copying the whole ring (the
- * overlay renders on the deck's 1 s cadence; copying up to 200 events per
- * tick is wasted work when it only reads a 24-line window). `getBuffer`
- * stays for tests.
+ * Mark the job's live view as open — while open, `clearEntry` (job settle)
+ * must NOT drop the buffer; the view keeps reading it until close.
  */
-export function getBufferTail(key: string, n: number): LiveEvent[] {
-  const buf = buffers.get(key);
-  if (!buf) return [];
-  const start = Math.max(0, buf.length - n);
-  return buf.slice(start);
+export function markViewOpen(key: string): void {
+  viewsOpen.add(key);
 }
 
-/** Buffer count for leak assertions (tests). */
-export function bufferCount(): number {
-  return buffers.size;
+/**
+ * Mark the job's live view as closed. If the job has already settled
+ * (its deck entry is cleared, so `hasBuffer` alone can't tell us — the
+ * deck module's clearEntry held the buffer because the view was open),
+ * drop the buffer now: it has outlived both its entry and its view.
+ */
+export function markViewClosed(key: string): void {
+  viewsOpen.delete(key);
+  if (!hasEntry(key)) dropBuffer(key);
 }
+
+/**
+ * Has the job's deck entry already been cleared? The deck module owns the
+ * map; this module can only observe via the deck's `snapshot` export.
+ */
+function hasEntry(key: string): boolean {
+  return deckSnapshot().some((e) => e.key === key);
+}
+
+// =============================================================================
+// Feed path
+// =============================================================================
 
 /**
  * Feed one parsed child event into the job's ring buffer. Events the
@@ -171,20 +273,30 @@ export function bufferCount(): number {
 export function feedRawEvent(key: string, event: PiJsonEvent): void {
   const buf = buffers.get(key);
   if (!buf) return;
-  pushEvent(buf, event);
+  const added = pushEvent(buf, event);
+  if (added) notifyAppend(key);
 }
 
-/** Push a parsed event onto a ring (module helper, exported for the feed-path test). */
-export function pushEvent(buf: LiveEvent[], event: PiJsonEvent): void {
-  if (event.type !== "message" && event.type !== "message_end") return;
+/**
+ * Push a parsed event onto a buffer (module helper, exported for the
+ * feed-path test). Returns true when at least one event was stored.
+ *
+ * Storage is UNTRUNCATED (#916): the only bound is the per-job byte cap
+ * (`LIVE_BUFFER_MAX_BYTES`), enforced AFTER the push by evicting oldest
+ * events first. Sanitisation (control chars, ANSI, newline collapse) is
+ * kept — only the length truncation was removed.
+ */
+export function pushEvent(buf: LiveEvent[], event: PiJsonEvent): boolean {
+  if (event.type !== "message" && event.type !== "message_end") return false;
   const msg = event.message;
-  if (!msg) return;
+  if (!msg) return false;
+  let added = false;
   if (msg.role === "toolResult") {
     const resultText = (msg.content ?? [])
       .filter((b) => b.type === "text" && typeof b.text === "string" && b.text.length > 0)
       .map((b) => b.text as string)
       .join("");
-    if (!resultText) return;
+    if (!resultText) return false;
     // #839 — the tool-result identity fields live on the MESSAGE (pi-ai
     // `ToolResultMessage`), not on the event; no cast needed. The result
     // text is untrusted child output — sanitise + collapse to ONE logical
@@ -194,34 +306,60 @@ export function pushEvent(buf: LiveEvent[], event: PiJsonEvent): void {
     // results ghosted the overlay over the main chat and polluted the
     // scrollback on every 1 s re-render).
     const name = msg.toolName;
-    appendEvicted(buf, {
+    buf.push({
       kind: "toolResult",
       name: name ? sanitizeText(name) : "unknown",
-      text: truncate(sanitizeText(resultText).replace(/\n+/g, NEWLINE_SEP), LIVE_RESULT_MAX),
+      text: sanitizeText(resultText).replace(/\n+/g, NEWLINE_SEP),
       isError: msg.isError === true,
     });
-    return;
+    added = true;
+    return trimToBound(buf);
   }
-  if (msg.role !== "assistant") return;
+  if (msg.role !== "assistant") return false;
   for (const block of msg.content ?? []) {
     if (block.type === "text" && typeof block.text === "string" && block.text.length > 0) {
-      appendEvicted(buf, {
+      buf.push({
         kind: "text",
-        text: truncate(sanitizeText(block.text).replace(/\n+/g, NEWLINE_SEP), LIVE_TEXT_MAX),
+        text: sanitizeText(block.text).replace(/\n+/g, NEWLINE_SEP),
       });
+      added = true;
+    } else if (block.type === "thinking" && typeof block.thinking === "string" && block.thinking.length > 0) {
+      // #916 — thinking blocks were silently dropped before; store them as
+      // their own variant so the view can render `▸ thinking (N chars)`.
+      buf.push({ kind: "thinking", text: sanitizeText(block.thinking).replace(/\n+/g, NEWLINE_SEP) });
+      added = true;
     } else if (block.type === "toolCall" && block.name) {
-      appendEvicted(buf, {
+      // #916 — store the FULL JSON of the arguments (previously the 50-char
+      // extractToolHint preview); the view renders it in full.
+      buf.push({
         kind: "toolCall",
         name: sanitizeText(block.name),
-        args: toolCallArgsPreview(block.arguments),
+        args: JSON.stringify(block.arguments ?? ""),
       });
+      added = true;
     }
   }
+  if (added) trimToBound(buf);
+  return added;
 }
 
-function appendEvicted(buf: LiveEvent[], ev: LiveEvent): void {
-  buf.push(ev);
-  while (buf.length > LIVE_RING_CAP) buf.shift();
+/**
+ * Enforce the per-job byte bound AFTER a push: evict OLDEST events first
+ * until the total stored RAW text length is within `LIVE_BUFFER_MAX_BYTES`.
+ * A single event larger than the bound is kept ALONE (evicting it would
+ * empty the buffer and the bound is on the TOTAL, not a per-event cap).
+ */
+function trimToBound(buf: LiveEvent[]): boolean {
+  let total = 0;
+  for (const ev of buf) total += eventSize(ev);
+  if (total <= LIVE_BUFFER_MAX_BYTES) return buf.length > 0;
+  // Evict oldest-first, but never evict down to zero events when the
+  // remaining single event alone exceeds the bound (keep it alone).
+  while (total > LIVE_BUFFER_MAX_BYTES && buf.length > 1) {
+    const oldest = buf.shift();
+    if (oldest) total -= eventSize(oldest);
+  }
+  return buf.length > 0;
 }
 
 // =============================================================================
@@ -258,11 +396,13 @@ export interface LiveViewTheme {
 
 /**
  * Render one buffer event as a single overlay line. Every piece of
- * UNTRUSTED content (assistant text, tool name, args, result) is sanitised
- * and width-bounded to the row via `toTerminalLine` — render() must never
+ * UNTRUSTED content (assistant text, tool name, args, result) is
+ * width-bounded to the row via `toTerminalLine` — render() must never
  * return a string containing a newline or wider than the overlay column
  * (pi-tui's differential renderer corrupts the terminal otherwise; see
- * dispatch-deck-line.ts).
+ * dispatch-deck-line.ts). (#916: stored text is untruncated — the
+ * one-line-per-event shape stays for now; slice B rewrites the view with
+ * real wrapping.)
  */
 function renderEvent(ev: LiveEvent, theme: LiveViewTheme, width: number): string {
   switch (ev.kind) {
@@ -281,6 +421,9 @@ function renderEvent(ev: LiveEvent, theme: LiveViewTheme, width: number): string
       const head = ev.isError ? theme.error(marker) : marker;
       return safeText ? `${head} ${safeText}` : marker;
     }
+    case "thinking":
+      // #916 — collapsed form for now; N = raw stored char count.
+      return toTerminalLine(`▸ thinking (${ev.text.length} chars)`, width);
   }
 }
 
@@ -386,12 +529,18 @@ export interface LiveViewHost {
  * prompt and, after it resolves, the overlay RE-OPENS for the same job so
  * the operator keeps watching; the loop ends on Esc ("close"), on the job
  * settling, or when the deck entry is gone.
+ *
+ * The buffer's view-open bookkeeping (#916) surrounds the `ctx.ui.custom`
+ * call: `markViewOpen` before, `markViewClosed` in a finally — while open,
+ * a settling job's `clearEntry` keeps the buffer; on close, an already-
+ * settled job's buffer is dropped (no leak).
  */
 export async function openLiveView(
   ctx: ExtensionContext,
   key: string,
   host: LiveViewHost,
 ): Promise<void> {
+  markViewOpen(key);
   try {
     for (;;) {
       const result = await ctx.ui.custom<string>(
@@ -433,5 +582,7 @@ export async function openLiveView(
     }
   } catch (err) {
     trace(`dispatch-deck-live: live view failed for ${key}: ${(err as Error).message}`);
+  } finally {
+    markViewClosed(key);
   }
 }
