@@ -37,16 +37,16 @@
 
 import type { ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
+import { steerFromDeck } from "./dispatch-deck-interactive.ts";
 import {
-  appendOperatorSteer,
   type LiveViewTheme,
+  appendOperatorSteer,
   getStatus,
   hasBuffer,
   markViewClosed,
   markViewOpen,
   onBufferAppend,
 } from "./dispatch-deck-live.ts";
-import { steerFromDeck } from "./dispatch-deck-interactive.ts";
 import type { DeckEntry } from "./dispatch-deck.ts";
 import { getNotices, resetNotices } from "./notice-counter.ts";
 import { pmActive } from "./pm-active.ts";
@@ -127,7 +127,9 @@ async function handleSend(
   const label = entry?.label ?? key;
   try {
     const result = await steerFromDeck(
-      { notify: (msg: string) => trace(`dispatch-deck-live-view: steer notify: ${msg}`) } as ExtensionUIContext,
+      {
+        notify: (msg: string) => trace(`dispatch-deck-live-view: steer notify: ${msg}`),
+      } as ExtensionUIContext,
       key,
       text,
     );

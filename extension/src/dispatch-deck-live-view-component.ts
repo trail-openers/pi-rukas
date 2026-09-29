@@ -275,11 +275,13 @@ function bodyLineCount(
   return n;
 }
 
-/** The body height: the terminal rows minus the header + footer lines. */
+/** The body height: the terminal rows minus the header + input + footer lines.
+ *  #915 — the input line takes one row, so the body is 3 rows shorter than
+ *  the pre-#915 calculation (which only subtracted header + footer). */
 function bodyHeight(tui: TuiHandle): number {
   const rows = tui?.terminal?.rows;
-  const h = typeof rows === "number" && rows > 2 ? rows : VIEW_FALLBACK_ROWS;
-  return Math.max(1, h - 2);
+  const h = typeof rows === "number" && rows > 3 ? rows : VIEW_FALLBACK_ROWS;
+  return Math.max(1, h - 3);
 }
 
 function fmtElapsed(ms: number): string {
@@ -459,16 +461,23 @@ export function createAgentViewComponent(
         state.scroll = maxScroll;
       } else if (matchesKey(data, "end")) {
         state.scroll = 0; // follow on
-      } else {
-        // #915 — any other key: if it carries a printable character, insert
-        // it into the input (a paste is a multi-char printable chunk; its
-        // newlines collapse to spaces). Non-printable / control chars are
-        // swallowed so the view never desyncs on raw bytes.
-        const printable = decodePrintableKey(data);
-        if (printable !== undefined) {
-          input += printable.replace(/\n+/g, " ");
+      } else if (data.length === 1) {
+        // #915 — a single printable ASCII char (space through ~, code
+        // 32–126): insert it into the input. Control chars (code < 32) and
+        // DEL (127) are swallowed so the view never desyncs on raw bytes.
+        // This covers all plain-keyboard input: letters (including t/x/g/s
+        // which the old view treated as commands), digits, symbols, space.
+        const code = data.charCodeAt(0);
+        if (code >= 32 && code <= 126) {
+          input += data;
         }
+      } else if (data.length > 1) {
+        // #915 — multi-char input: a paste (or an IME composition commit).
+        // Insert as-is with newlines collapsed to spaces. The data is
+        // sanitised at render time; the buffer stores the raw chunk.
+        input += data.replace(/\n+/g, " ");
       }
+      // (Single-char non-printable and empty data are silently swallowed.)
     },
     // #915 — the input accessors the host (openLiveView) uses in the send
     // callback: read the buffer, clear it after a successful send, and set
