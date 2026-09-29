@@ -11,14 +11,24 @@ import { startBatch, startJob } from "../src/async-jobs.ts";
 import { onRowConfirm } from "../src/dispatch-deck-confirm.ts";
 import {
   bufferCount,
-  createLiveViewComponent,
   dropBuffer,
   feedRawEvent,
   getBuffer,
   hasBuffer,
   startBuffer,
 } from "../src/dispatch-deck-live.ts";
-import { batchSnapshot, clearEntry, detach, reset, snapshot, startEntry } from "../src/dispatch-deck.ts";
+import {
+  createAgentViewComponent,
+  type ViewHeader,
+} from "../src/dispatch-deck-live-view-component.ts";
+import {
+  batchSnapshot,
+  clearEntry,
+  detach,
+  reset,
+  snapshot,
+  startEntry,
+} from "../src/dispatch-deck.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -91,7 +101,10 @@ function resetBuffers(): void {
     "2b: assistant text buffered",
   );
   assert(buf[1]?.kind === "toolCall" && buf[1].name === "bash", "2c: toolCall buffered with name");
-  assert(buf[1]?.kind === "toolCall" && buf[1].args === JSON.stringify({ command: "cargo test --lib" }), "2d: object args stored as full JSON");
+  assert(
+    buf[1]?.kind === "toolCall" && buf[1].args === JSON.stringify({ command: "cargo test --lib" }),
+    "2d: object args stored as full JSON",
+  );
   assert(
     buf[2]?.kind === "toolResult" && buf[2].text === "test result: 12 passed, 0 failed",
     "2e: toolResult buffered",
@@ -178,30 +191,34 @@ function resetBuffers(): void {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Overlay renders events; new events appear on next render (same component).
+// 3. Overlay renders events; new events appear on next render (same
+//    component). before: drove the legacy createLiveViewComponent shim /
+//    after: drives createAgentViewComponent directly (#916 slice B); the
+//    old done('close') mapping is the new component's 'returnToList'.
 // ---------------------------------------------------------------------------
 const fakeTheme = { muted: (t: string) => t, error: (t: string) => t } as const;
+function headerB1(): ViewHeader {
+  return {
+    label: "developer",
+    role: "developer",
+    status: "running",
+    startedAt: Date.now(),
+    now: Date.now(),
+    turns: 1,
+    totalTokens: 100,
+    pmActive: false,
+    notices: 0,
+    settled: false,
+  };
+}
 {
   resetBuffers();
   startBuffer("b1");
   const doneResults: string[] = [];
-  const comp = createLiveViewComponent(
-    "b1",
-    () => ({
-      label: "developer",
-      role: "developer",
-      startedAt: Date.now(),
-      now: Date.now(),
-      turns: 1,
-      toolUses: 1,
-      totalTokens: 100,
-      lastToolName: "bash",
-    }),
-    fakeTheme,
-    (r) => doneResults.push(r),
+  const comp = createAgentViewComponent("b1", headerB1, fakeTheme, undefined, (r) =>
+    doneResults.push(r),
   );
-  const flat0 = comp.render(80).join("\n");
-  assert(flat0.includes("no activity yet"), "3a: 'no activity yet' before any event");
+  // before: 3a pinned the shim's 'no activity yet' empty-buffer placeholder / after: removed — the full-screen component has no such placeholder (it renders the padded body + footer) (#916 slice B)
   feedRawEvent("b1", {
     type: "message_end",
     message: { role: "assistant", content: [{ type: "text", text: "starting work" }] },
@@ -210,8 +227,11 @@ const fakeTheme = { muted: (t: string) => t, error: (t: string) => t } as const;
   assert(flat1.includes("starting work"), "3b: new event appears on the next render");
   assert(flat1.includes("developer"), "3c: header shows the role label");
   comp.handleInput("\x1b"); // Esc → close
-  assert(doneResults.includes("close"), "3d: Esc → done('close')");
-  const comp2 = createLiveViewComponent("b1", () => undefined, fakeTheme, (r) => doneResults.push(`steer-${r}`));
+  // before: 3d pinned done('close') — the shim remapped returnToList→close / after: the new component returns 'returnToList' verbatim (#916 slice B)
+  assert(doneResults.includes("returnToList"), "3d: Esc → done('returnToList')");
+  const comp2 = createAgentViewComponent("b1", headerB1, fakeTheme, undefined, (r) =>
+    doneResults.push(`steer-${r}`),
+  );
   comp2.handleInput("s");
   assert(doneResults.includes("steer-steer"), "3e: 's' → done('steer')");
   dropBuffer("b1");
@@ -219,39 +239,37 @@ const fakeTheme = { muted: (t: string) => t, error: (t: string) => t } as const;
 
 // ---------------------------------------------------------------------------
 // 4. Scroll: ↑/↓ pause and resume following.
+//    before: drove the shim's EVENT-offset scroll (↑ paused at ANY buffer
+//    length; ↓/End resumed) / after: the full-screen component's LINE-offset
+//    scroll — ↑ pauses (footer 'paused') and End resumes at the same width
+//    and buffer (#916 slice B).
 // ---------------------------------------------------------------------------
 {
   resetBuffers();
   startBuffer("b2");
-  for (let i = 0; i < 10; i++) {
+  // 30 events: taller than the view's body window (24 lines), so ↑ actually
+  // scrolls back (the shim's event-offset scroll did not need that).
+  for (let i = 0; i < 30; i++) {
     feedRawEvent("b2", {
       type: "message_end",
       message: { role: "assistant", content: [{ type: "text", text: `line-${i}` }] },
     });
   }
-  const doneResults: string[] = [];
-  const comp = createLiveViewComponent(
-    "b2",
-    () => undefined,
-    fakeTheme,
-    (r) => doneResults.push(r),
-  );
+  const comp = createAgentViewComponent("b2", headerB1, fakeTheme, undefined, () => {});
   // Initially following (offset 0): render shows the last 10 events.
   let flat = comp.render(80).join("\n");
-  assert(flat.includes("line-9"), "4a: following shows the newest event");
-  // ↑ → pause (offset 1): the newest line scrolls off.
+  assert(flat.includes("line-29"), "4a: following shows the newest event");
+  // ↑ → pause: the footer shows 'paused'.
   comp.handleInput("\x1b[A");
   flat = comp.render(80).join("\n");
   assert(flat.includes("paused"), "4b: ↑ pauses following (footer shows 'paused')");
-  // ↓ → resume (offset 0).
-  comp.handleInput("\x1b[B");
+  // End → resume following (offset 0).
+  comp.handleInput("\x1b[F");
   flat = comp.render(80).join("\n");
-  assert(flat.includes("line-9"), "4c: ↓ resumes following");
-  // End → resume.
-  comp.handleInput("\x1b[A"); // pause again
-  comp.handleInput("\x1b[F"); // End
-  flat = comp.render(80).join("\n");
-  assert(flat.includes("line-9"), "4d: End resumes following");
+  assert(flat.includes("line-29"), "4c: End resumes following");
+  // before: 4d pinned the shim's ↓-resume (legacy event-offset semantics) /
+  // after: removed — the new component's ↓ moves DOWN toward the tail and
+  // only End/G re-enters follow mode (#916 slice B)
   dropBuffer("b2");
 }
 
@@ -334,7 +352,9 @@ async function testStartBatchLastMemberSyncThrow() {
       {
         label: "member-sync-throw",
         role: "developer",
-        work: () => { throw new Error("batch sync work failure"); },
+        work: () => {
+          throw new Error("batch sync work failure");
+        },
       },
     ],
   });

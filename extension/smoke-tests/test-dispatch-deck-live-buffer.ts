@@ -13,7 +13,6 @@
 import {
   LIVE_BUFFER_MAX_CHARS,
   bufferCount,
-  createLiveViewComponent,
   dropBuffer,
   feedRawEvent,
   getBuffer,
@@ -27,6 +26,7 @@ import {
   startBuffer,
 } from "../src/dispatch-deck-live.ts";
 import { clearEntry, reset, startEntry } from "../src/dispatch-deck.ts";
+import { createAgentViewComponent } from "../src/dispatch-deck-live-view-component.ts";
 import {
   TOOL_ARGS_PREVIEW_MAX,
   TOOL_RESULT_LINE_MAX,
@@ -69,7 +69,10 @@ function resetBuffers(keys: string[]): void {
   });
   const buf = getBuffer("a1");
   assert(buf.length === 2, `a0: two events buffered (got ${buf.length})`);
-  assert(buf[0]?.kind === "text" && buf[0].text === longText, "a1: 1,000-char text stored verbatim");
+  assert(
+    buf[0]?.kind === "text" && buf[0].text === longText,
+    "a1: 1,000-char text stored verbatim",
+  );
   assert(
     buf[1]?.kind === "toolCall" && buf[1].args === JSON.stringify(args),
     "a2: 1,000-char args stored as full JSON, verbatim",
@@ -87,7 +90,7 @@ function resetBuffers(keys: string[]): void {
   assert(
     bufA1[bufA1.length - 1]?.kind === "toolCall" &&
       (bufA1[bufA1.length - 1] as { args: string }).args === "",
-    "a3: toolCall with no arguments stores args === \"\"",
+    'a3: toolCall with no arguments stores args === ""',
   );
   dropBuffer("a1");
 }
@@ -113,11 +116,21 @@ function resetBuffers(keys: string[]): void {
   let total = 0;
   for (const ev of buf) {
     total +=
-      ev.kind === "text" ? ev.text.length : ev.kind === "toolCall" ? ev.args.length : ev.text.length;
+      ev.kind === "text"
+        ? ev.text.length
+        : ev.kind === "toolCall"
+          ? ev.args.length
+          : ev.text.length;
   }
   assert(total <= LIVE_BUFFER_MAX_CHARS, `b1: stored total ≤ 512 KB (got ${total} B)`);
-  assert(buf.length >= 1 && buf.length < 100, `b2: events that did not fit evicted (kept ${buf.length})`);
-  assert(buf[buf.length - 1]?.text === "n".repeat(50 * 1024), "b3: NEWEST event (index 99) is the LAST buffer entry");
+  assert(
+    buf.length >= 1 && buf.length < 100,
+    `b2: events that did not fit evicted (kept ${buf.length})`,
+  );
+  assert(
+    buf[buf.length - 1]?.text === "n".repeat(50 * 1024),
+    "b3: NEWEST event (index 99) is the LAST buffer entry",
+  );
   assert(buf[0]?.text !== `e0` + "p".repeat(50 * 1024 - 2), "b4: FIRST event evicted");
   dropBuffer("b1");
 }
@@ -146,7 +159,10 @@ function resetBuffers(keys: string[]): void {
     message: { role: "assistant", content: [{ type: "text", text: "small" }] },
   });
   const buf2 = getBuffer("c1");
-  assert(buf2.length === 1 && buf2[0]?.text === "small", "c3: 600 KB event evicted as the oldest — buffer is exactly [the small event]");
+  assert(
+    buf2.length === 1 && buf2[0]?.text === "small",
+    "c3: 600 KB event evicted as the oldest — buffer is exactly [the small event]",
+  );
   // A second 600 KB event after a few small ones: retained alone (it is the
   // only event over the bound and eviction stops at one).
   feedRawEvent("c1", {
@@ -159,7 +175,10 @@ function resetBuffers(keys: string[]): void {
     message: { role: "assistant", content: [{ type: "text", text: big2 }] },
   });
   const buf3 = getBuffer("c1");
-  assert(buf3.length === 1 && buf3[0]?.text === big2, "c4: a later oversized event is retained alone");
+  assert(
+    buf3.length === 1 && buf3[0]?.text === big2,
+    "c4: a later oversized event is retained alone",
+  );
   dropBuffer("c1");
 }
 
@@ -179,12 +198,24 @@ function resetBuffers(keys: string[]): void {
     },
   });
   const buf = getBuffer("d1");
-  assert(buf.length === 1 && buf[0]?.kind === "thinking", "d1: thinking block stored as thinking variant");
+  assert(
+    buf.length === 1 && buf[0]?.kind === "thinking",
+    "d1: thinking block stored as thinking variant",
+  );
   assert(buf[0]?.text === think, "d2: thinking text stored in full");
   const fakeTheme = { muted: (t: string) => t, error: (t: string) => t } as const;
-  const comp = createLiveViewComponent("d1", () => undefined, fakeTheme, () => {});
+  const comp = createAgentViewComponent(
+    "d1",
+    () => null,
+    fakeTheme,
+    undefined,
+    () => {},
+  );
   const flat = comp.render(80).join("\n");
-  assert(flat.includes(`▸ thinking (${think.length} chars)`), "d3: view shows '▸ thinking (N chars)' with raw count");
+  assert(
+    flat.includes(`▸ thinking (${think.length} chars)`),
+    "d3: view shows '▸ thinking (N chars)' with raw count",
+  );
   dropBuffer("d1");
 }
 
@@ -252,7 +283,10 @@ function resetBuffers(keys: string[]): void {
   const unsub6 = onBufferAppend("f1", () => {});
   startBuffer("f1"); // buffer recreated, subscribers gone
   const unsub6b = onBufferAppend("f1", () => {});
-  assert(unsub6 !== undefined && unsub6b !== undefined, "f6: re-subscribing a dropped key works fresh (old subscribers gone)");
+  assert(
+    unsub6 !== undefined && unsub6b !== undefined,
+    "f6: re-subscribing a dropped key works fresh (old subscribers gone)",
+  );
   feedRawEvent("f1", {
     type: "message_end",
     message: { role: "assistant", content: [{ type: "text", text: "f1b" }] },
@@ -339,7 +373,10 @@ function resetBuffers(keys: string[]): void {
     message: { role: "assistant", content: [{ type: "text", text: marker }] },
   });
   const buf = getBuffer("i1");
-  assert(buf[buf.length - 1]?.text === marker, "i1: a new event lands as the LAST entry on a full buffer");
+  assert(
+    buf[buf.length - 1]?.text === marker,
+    "i1: a new event lands as the LAST entry on a full buffer",
+  );
   dropBuffer("i1");
 }
 
@@ -372,8 +409,14 @@ function resetBuffers(keys: string[]): void {
   const buf = getBuffer("j1");
   let total = 0;
   for (const ev of buf) total += ev.kind === "text" ? ev.text.length : ev.text.length;
-  assert(total <= LIVE_BUFFER_MAX_CHARS, `j1: running total stays ≤ bound across 6 appends (got ${total})`);
-  assert(buf.length >= 2 && buf.length <= 5, `j2: oldest events evicted, newest kept (kept ${buf.length})`);
+  assert(
+    total <= LIVE_BUFFER_MAX_CHARS,
+    `j1: running total stays ≤ bound across 6 appends (got ${total})`,
+  );
+  assert(
+    buf.length >= 2 && buf.length <= 5,
+    `j2: oldest events evicted, newest kept (kept ${buf.length})`,
+  );
   dropBuffer("j1");
 }
 

@@ -6,12 +6,13 @@
  * when #916 SLICE A pushed that file past the 500-line cap. The view side
  * owns everything on the render / overlay boundary:
  *
- *   - `createLiveViewComponent` — the FULL-SCREEN agent view (#916 slice B):
- *     a `100%` × `100%` top-left-anchored overlay (the `OverlayOptions` the
- *     pinned pi-tui types accept — `width: "100%"`, `maxHeight: "100%"`,
+ *   - `createAgentViewComponent` — the FULL-SCREEN agent view (#916 slice
+ *     B): a `100%` × `100%` top-left-anchored overlay (the `OverlayOptions`
+ *     the pinned pi-tui types accept — `width: "100%"`, `maxHeight: "100%"`,
  *     `anchor: "top-left"`) that renders the job's UNTRUNCATED buffer in
  *     full, wrapped to the render width (the component itself is
- *     dispatch-deck-live-view-component.ts).
+ *     dispatch-deck-live-view-component.ts). Re-exported from here so
+ *     existing import paths keep working.
  *   - `openLiveView` — the Enter-on-row action (dispatch-deck.ts and
  *     the agent list are the production callers). Surrounds the
  *     `ctx.ui.custom` call with `markViewOpen` / `markViewClosed`
@@ -43,30 +44,23 @@ import { getNotices, resetNotices } from "./notice-counter.ts";
 import { pmActive } from "./pm-active.ts";
 import { trace } from "./trace.ts";
 
+// before: `getBuffer` was imported here for the legacy
+// createLiveViewComponent shim's empty-buffer check / after: the shim is
+// gone (#916 slice B), with it the last import of getBuffer in this file.
+
 // Re-export the view component's public API. These are direct value
 // imports (not `agentView.X`) to avoid the circular TDZ error that
 // occurs when `agentView` is imported as a namespace from a module that
 // imports from this one (dispatch-deck-live.ts re-exports from here).
 import {
-  VIEW_FALLBACK_ROWS,
-  VIEW_FOOTER_HINT,
   clearViewScroll,
   createAgentViewComponent,
   dropOrphanedViewScroll,
   getViewScrollState,
 } from "./dispatch-deck-live-view-component.ts";
-import type { TuiHandle, ViewHeader } from "./dispatch-deck-live-view-component.ts";
-import { getBuffer } from "./dispatch-deck-live.ts";
-
-export {
-  createAgentViewComponent,
-  getViewScrollState,
-  clearViewScroll,
-  dropOrphanedViewScroll,
-  VIEW_FALLBACK_ROWS,
-  VIEW_FOOTER_HINT,
-};
-export type { LiveViewTheme, ViewHeader, TuiHandle };
+import type { TuiHandle } from "./dispatch-deck-live-view-component.ts";
+export { createAgentViewComponent, getViewScrollState, clearViewScroll, dropOrphanedViewScroll };
+export type { LiveViewTheme, TuiHandle };
 
 // The deck's 1 s ticker (dispatch-deck.ts renderNow) re-registers its
 // widget and calls requestRender on its 1 s cadence, which re-renders the
@@ -79,108 +73,6 @@ export type { LiveViewTheme, ViewHeader, TuiHandle };
 // fire for one append without any visible artifact. (Tests drive render()
 // and handleInput() directly; a live check covers the cadence on the
 // installed Pi, per the issue's AGENTS.md §4 note.)
-
-/**
- * The legacy one-line-per-event overlay component (retained for the
- * pre-#916 test suite's block 3/4 coverage of Esc→close and
- * `s`→steer). New callers use `createAgentViewComponent`.
- */
-export function createLiveViewComponent(
-  key: string,
-  header: () => {
-    label: string;
-    role: string;
-    startedAt: number;
-    now: number;
-    turns: number;
-    toolUses: number;
-    totalTokens: number;
-    lastToolName?: string;
-  },
-  theme: LiveViewTheme,
-  done: (result: "close" | "steer") => void,
-): import("@earendil-works/pi-tui").Component {
-  // Delegate to the agent view (the legacy surface is subsumed by the
-  // full-screen view). The done results the legacy suite asserts —
-  // `close` on Esc, `steer` on `s` — are reproduced verbatim, and two
-  // pre-#916 render behaviours the retained legacy suite pins are
-  // reproduced here (not in the full-screen component, whose line-offset
-  // scroll and padded body are the #916 SLICE B semantics):
-  //   - an EMPTY buffer renders the `no activity yet` placeholder;
-  //   - the ↑/↓ scroll is in EVENT OFFSETS (legacy) rather than rendered
-  //     lines, so ↑ pauses following at any buffer length — the 'paused'
-  //     footer appears without a buffer taller than the body window.
-  // The inner view takes a non-null header (the legacy header may return
-  // undefined — the full-screen component renders `status` alone in that
-  // case, which the legacy suite never asserts, so a neutral running
-  // header is used for the undefined case).
-  const headerFn = (): ViewHeader => {
-    const h = header();
-    if (!h)
-      return {
-        label: key,
-        role: "",
-        status: "running",
-        startedAt: Date.now(),
-        now: Date.now(),
-        turns: 0,
-        totalTokens: 0,
-        pmActive: false,
-        notices: 0,
-        settled: false,
-      };
-    return {
-      label: h.label,
-      role: h.role,
-      status: "running",
-      startedAt: h.startedAt,
-      now: h.now,
-      turns: h.turns,
-      totalTokens: h.totalTokens,
-      pmActive: false,
-      notices: 0,
-      settled: false,
-    };
-  };
-  const inner = createAgentViewComponent(key, headerFn, theme, undefined, (r) =>
-    done(r === "returnToList" ? "close" : r),
-  );
-  // The legacy event-offset scroll: 0 = following, >0 = paused (see the
-  // doc above — the full-screen component's line-offset scroll stays for
-  // production callers).
-  let upDownOffset = 0;
-  return {
-    invalidate(): void {
-      inner.invalidate();
-    },
-    render(width: number): string[] {
-      if (getBuffer(key).length === 0) return [theme.muted("no activity yet")];
-      const lines = inner.render(width);
-      if (upDownOffset > 0) {
-        lines[lines.length - 1] = theme.muted(
-          `paused (End to follow) · ${VIEW_FOOTER_HINT}`.slice(0, Math.max(1, width - 1)),
-        );
-      }
-      return lines;
-    },
-    handleInput(data: string): void {
-      if (data === "\x1b[A") {
-        // ↑ → pause: scroll back one EVENT (legacy offset semantics), so
-        // the 'paused' footer appears at any buffer length.
-        upDownOffset += 1;
-        inner.handleInput?.(data);
-        return;
-      }
-      if (data === "\x1b[B" || data === "\x1b[F") {
-        // ↓ / End → resume following (offset 0).
-        upDownOffset = 0;
-        inner.handleInput?.(data);
-        return;
-      }
-      inner.handleInput?.(data);
-    },
-  };
-}
 
 // =============================================================================
 // Overlay open/close (dispatch-deck.ts and the agent list are the callers)

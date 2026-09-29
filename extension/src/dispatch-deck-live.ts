@@ -32,14 +32,14 @@
  *     immediately (`openLiveView` subscribes on open, unsubscribes on
  *     close), while the deck's 1 s ticker also re-renders the focused
  *     overlay (idempotent — the same buffer, re-read).
- *   - `createLiveViewComponent` / `createAgentViewComponent` build the
- *     overlay component (returned DIRECTLY from the `ctx.ui.custom`
- *     factory — never Container-wrapped, #176). The full-screen view
- *     (slice B) renders the untruncated buffer in full, wrapped to the
- *     render width; the component re-reads the buffer on every render,
- *     so new events appear on the next render without re-creating the
- *     component (appends trigger a re-render via onBufferAppend, and the
- *     deck's 1 s ticker re-renders too — idempotent).
+ *   - `createAgentViewComponent` builds the overlay component (returned
+ *     DIRECTLY from the `ctx.ui.custom` factory — never Container-
+ *     wrapped, #176). The full-screen view (slice B) renders the
+ *     untruncated buffer in full, wrapped to the render width; the
+ *     component re-reads the buffer on every render, so new events appear
+ *     on the next render without re-creating the component (appends
+ *     trigger a re-render via onBufferAppend, and the deck's 1 s ticker
+ *     re-renders too — idempotent).
  *
  * Quiet mode (`PI_ENSEMBLE_QUIET_STATUS=1`): `startBuffer` creates the
  * buffer regardless (#914 gate relocation — the early return that lived
@@ -73,7 +73,6 @@ export interface LiveViewTheme {
 // dispatch-deck-live-view.ts when this file hit the 500-line cap; the
 // re-exports below keep the existing import paths working unchanged.
 export {
-  createLiveViewComponent,
   createAgentViewComponent,
   getViewScrollState,
   openLiveView,

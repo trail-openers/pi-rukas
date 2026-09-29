@@ -30,13 +30,9 @@ import {
   toTerminalLine,
   toTerminalLines,
 } from "../src/dispatch-deck-line.ts";
-import {
-  createLiveViewComponent,
-  dropBuffer,
-  feedRawEvent,
-  getBuffer,
-  startBuffer,
-} from "../src/dispatch-deck-live.ts";
+import { dropBuffer, feedRawEvent, getBuffer, startBuffer } from "../src/dispatch-deck-live.ts";
+import { createAgentViewComponent } from "../src/dispatch-deck-live-view-component.ts";
+import type { ViewHeader } from "../src/dispatch-deck-live-view-component.ts";
 import { formatRow } from "../src/dispatch-deck-rows.ts";
 import type { DeckEntry } from "../src/dispatch-deck.ts";
 
@@ -83,7 +79,8 @@ function assert(cond: boolean, msg: string) {
   const c1Osc = sanitizeText("pre\u009b]0;title\u0007post");
   assert(c1Osc === "prepost", `1b-d: C1 OSC dropped (got ${JSON.stringify(c1Osc)})`);
   // Unterminated OSC: 10 000-char payload, no terminator — bounded scan.
-  const t0 = Date.now(); const unterminated = sanitizeText(`pre${E}]${"x".repeat(10000)}post`);
+  const t0 = Date.now();
+  const unterminated = sanitizeText(`pre${E}]${"x".repeat(10000)}post`);
   assert(!/[\u0000-\u001f\u007f-\u009f]/.test(unterminated), "1b-e: no control chars");
   assert(unterminated.startsWith("pre") && unterminated.endsWith("post"), "1b-f: text preserved");
   assert(Date.now() - t0 < 2000, "1b-g: bounded scan");
@@ -192,19 +189,23 @@ for (const w of [40, 80, 120]) {
   const key = `lv-w${w}`;
   dropBuffer(key);
   feedHostile(key);
-  const comp = createLiveViewComponent(
+  const comp = createAgentViewComponent(
     key,
-    () => ({
-      label: "label-with\nnewline\tand\x00null",
-      role: "developer",
-      startedAt: Date.now(),
-      now: Date.now(),
-      turns: 1,
-      toolUses: 1,
-      totalTokens: 100,
-      lastToolName: "bash",
-    }),
+    () =>
+      ({
+        label: "label-with\nnewline\tand\x00null",
+        role: "developer",
+        status: "running",
+        startedAt: Date.now(),
+        now: Date.now(),
+        turns: 1,
+        totalTokens: 100,
+        pmActive: false,
+        notices: 0,
+        settled: false,
+      }) satisfies ViewHeader,
     fakeTheme,
+    undefined,
     () => {},
   );
   const lines = comp.render(w);
@@ -257,10 +258,23 @@ for (const w of [40, 80, 120]) {
       });
     }
   }
-  const comp = createLiveViewComponent(
+  const comp = createAgentViewComponent(
     key,
-    () => undefined,
+    () =>
+      ({
+        label: key,
+        role: "developer",
+        status: "running",
+        startedAt: Date.now(),
+        now: Date.now(),
+        turns: 0,
+        totalTokens: 0,
+        pmActive: false,
+        notices: 0,
+        settled: false,
+      }) satisfies ViewHeader,
     fakeTheme,
+    undefined,
     () => {},
   );
   const lines = comp.render(w);
@@ -401,7 +415,10 @@ for (const w of [40, 80, 120]) {
   const rows = allLines.slice(1);
   assert(rows.length === 2, "8d: two job rows (after main row)");
   for (const r of rows) {
-    assert(!r.text.includes("\n") && !r.text.includes("\r"), "8e: buildAgentListLines row is single-row");
+    assert(
+      !r.text.includes("\n") && !r.text.includes("\r"),
+      "8e: buildAgentListLines row is single-row",
+    );
     assert(visibleWidth(r.text) <= 80, "8f: buildAgentListLines row within width");
   }
   assert(rows[0]?.text !== rows[1]?.text, "8g: rows remain distinct after sanitisation");
