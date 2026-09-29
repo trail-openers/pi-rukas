@@ -1,8 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerAdversarialTool } from "./adversarial.ts";
 import { LIST_SHORTCUT } from "./agent-list-keys.ts";
-import { openAgentList } from "./agent-list.ts";
-
+import { openAgentListWithReturn } from "./agent-list-nav.ts";
 import { registerAgentsMdTools } from "./agents-md-tool.ts";
 import { setParentExtensionApi } from "./async-jobs-registry.ts";
 import { registerAsyncJobsLifecycle } from "./async-jobs.ts";
@@ -102,23 +101,13 @@ export default async function (pi: ExtensionAPI) {
   try {
     pi.registerShortcut(LIST_SHORTCUT, {
       description: "Open agent list",
+      // #916 SLICE B — thread the list re-open into the view's Esc route
+      // (confirmRow → onRowConfirm → openLiveView → done "returnToList").
+      // The roster nav path passes nothing, so Esc there just closes, as
+      // before. The shared closure lives in agent-list-nav.ts (one
+      // production copy, also called by smoke-tests/test-agent-list-nav.ts).
       handler: (ctx) => {
-        // #916 SLICE B — thread the list re-open into the view's Esc
-        // route (confirmRow → onRowConfirm → openLiveView → done
-        // "returnToList"). The roster nav path passes nothing, so Esc
-        // there just closes, as before.
-        const openList = (): Promise<void> =>
-          openAgentList(ctx, {
-            getEntries: dispatchDeck.snapshot,
-            openJob: (key) =>
-              dispatchDeck.confirmRow(ctx, key, {
-                onReturnToList: () => {
-                  void openList();
-                },
-              }),
-            onSettle: () => {},
-          });
-        return void openList();
+        return openAgentListWithReturn(ctx);
       },
     });
   } catch (err) {

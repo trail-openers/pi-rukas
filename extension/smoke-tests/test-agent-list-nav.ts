@@ -17,11 +17,9 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { openAgentList } from "../src/agent-list.ts";
-import type { DeckEntry } from "../src/dispatch-deck.ts";
-import { confirmRow } from "../src/dispatch-deck.ts";
+import { openAgentListWithReturn } from "../src/agent-list-nav.ts";
+import { startEntry, clearEntry } from "../src/dispatch-deck.ts";
 import { dropBuffer, startBuffer } from "../src/dispatch-deck-live.ts";
-import { emptyRunningState } from "../src/progress.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -40,15 +38,11 @@ function assert(cond: boolean, msg: string) {
   let viewDone: ((v: string | undefined) => void) | undefined;
   let currentList: { handleInput: (d: string) => void; render: (w: number) => string[] } | undefined;
   const theme = { fg: (_c: string, s: string) => s, bg: (_c: string, s: string) => s };
-  const entry: DeckEntry = {
-    key: "j11",
-    label: "J",
-    state: emptyRunningState("developer"),
-    seq: 0,
-    startedAt: Date.now() - 60_000,
-  };
-  // Buffer seeded first: onRowConfirm opens the live view whenever a
-  // buffer exists, so no deck entry is needed for this wiring test.
+  // Deck entry started first so the real snapshot() returns it (the list
+  // overlay now uses the production openAgentListWithReturn which calls
+  // dispatchDeck.snapshot, not a test-local entry list).
+  startEntry("j11", { label: "J", role: "developer" });
+  // Buffer seeded: onRowConfirm opens the live view when a buffer exists.
   startBuffer("j11");
   // The fake routes by opts: overlayOptions set = the VIEW (openLiveView's
   // full-screen shape), absent = the LIST (openAgentList's plain
@@ -86,15 +80,11 @@ function assert(cond: boolean, msg: string) {
     hasUI: true,
   } as unknown as ExtensionContext;
 
-  // Production wiring under test — index.ts's handler verbatim: the shared
-  // openList closure, openJob through the REAL confirmRow.
+  // Production wiring under test — index.ts's handler calls the shared
+  // openAgentListWithReturn closure (agent-list-nav.ts), which threads
+  // openJob through the REAL confirmRow route.
   const tick = (ms = 10) => new Promise((r) => setTimeout(r, ms));
-  const openList = (): Promise<void> =>
-    openAgentList(fakeCtx, {
-      getEntries: () => [entry],
-      openJob: (key) => confirmRow(fakeCtx, key, { onReturnToList: () => void openList() }),
-      onSettle: () => {},
-    });
+  const openList = () => openAgentListWithReturn(fakeCtx);
 
   // Hop 1: open list → render → down (main → job row) + Enter → openJob.
   void openList();
@@ -123,6 +113,7 @@ function assert(cond: boolean, msg: string) {
   await tick();
   assert(listOpens === 3, "1f: the SECOND Esc also returned to the list (3rd list open)");
 
+  clearEntry("j11");
   dropBuffer("j11");
 }
 
