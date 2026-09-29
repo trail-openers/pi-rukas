@@ -30,7 +30,7 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { TUI } from "@earendil-works/pi-tui";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import {
   type LiveViewTheme,
   getStatus,
@@ -136,6 +136,7 @@ export async function openLiveView(
           // Subscribe to appends: re-render the overlay the moment an
           // event lands (unsubscribed in the finally). The deck's 1 s
           // ticker also re-renders the focused component (idempotent).
+          unsubAppend?.();
           unsubAppend = onBufferAppend(key, () => {
             try {
               tuiHandle.requestRender();
