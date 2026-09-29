@@ -176,12 +176,11 @@ const fakeTheme = {
   // (label · elapsed · last tool · hint) plus the token total — the roster
   // row must keep showing the running tool (block 9b asserts on it).
   const agentRows = () => [
-    { key: "main", text: "main", selectable: true, running: true },
+    { key: "main", text: "main", selectable: true },
     ...rows.running.map((e) => ({
       key: e.key,
       text: `⏳ ${e.label} · ${e.state.role}${e.state.lastToolName ? ` (${e.state.lastToolName})` : ""} · 0 tok`,
       selectable: true,
-      running: true,
     })),
   ];
   const factory = buildCompositeFactory(() => [], () => rows, agentRows, 20);
@@ -242,12 +241,11 @@ const fakeTheme = {
   // #914 — same agent-list projection shape as block 9 (main + job rows),
   // carrying the running activity (label · role · last tool · token total).
   const agentRows = () => [
-    { key: "main", text: "main", selectable: true, running: true },
+    { key: "main", text: "main", selectable: true },
     ...rows.running.map((e) => ({
       key: e.key,
       text: `⏳ ${e.label} · ${e.state.role}${e.state.lastToolName ? ` (${e.state.lastToolName})` : ""} · 0 tok`,
       selectable: true,
-      running: true,
     })),
   ];
   const factory = buildCompositeFactory(() => [], () => rows, agentRows, 20);

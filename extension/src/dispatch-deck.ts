@@ -24,16 +24,17 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { buildAgentListLines } from "./agent-list.ts";
 import * as deckComposite from "./dispatch-deck-composite.ts";
+import { buildCompositeWidgetFactory, confirmRow } from "./dispatch-deck-confirm-row.ts";
 import { type RowConfirmHost, onRowConfirm } from "./dispatch-deck-confirm.ts";
 import { steerFromDeck } from "./dispatch-deck-interactive.ts";
 import { dropBuffer } from "./dispatch-deck-live.ts";
 import { type DeckNav, createDeckNav } from "./dispatch-deck-nav.ts";
 import {
-  _clearNavUnsub,
-  _getNavUnsub,
-  _getWidgetVisible,
-  _setWidgetVisible,
+  clearNavUnsub,
+  getNavUnsub,
+  getWidgetVisible,
   registerNavListener,
+  setWidgetVisible,
   suppressWidgetIfQuiet,
 } from "./dispatch-deck-quiet.ts";
 import {
@@ -83,10 +84,12 @@ let activeCtx: ExtensionContext | undefined;
 let pendingRender = false;
 let insertionCounter = 0;
 let tickHandle: ReturnType<typeof setInterval> | undefined;
-// The widget's visibility flag moved to dispatch-deck-quiet.ts (#914 —
-// the empty-deck guard + setWidget call moved there with it, so the flag
-// and the call stay in lockstep; dispatch-deck.ts reads it via
-// _getWidgetVisible / writes via _setWidgetVisible).
+// The widget's visibility flag and the nav listener's unsub callback both
+// live in dispatch-deck-quiet.ts (#914 — the flag, the unsub and the
+// quiet-gate helper moved there together, so the flag and the setWidget
+// call stay in lockstep in one module). dispatch-deck.ts reads the flag via
+// getWidgetVisible / writes it via setWidgetVisible; the nav unsub via
+// getNavUnsub / clearNavUnsub.
 let nav: DeckNav | undefined;
 // TUI captured from the deck widget factory at render time — module scope
 // so the focus probe survives re-attach (a re-attach builds a fresh DeckNav
@@ -124,7 +127,7 @@ export function attach(ctx: ExtensionContext): void {
 
 export function detach(): void {
   stopTicker();
-  if (activeCtx && _getWidgetVisible()) {
+  if (activeCtx && getWidgetVisible()) {
     try {
       activeCtx.ui.setWidget(WIDGET_KEY, undefined);
     } catch {}
@@ -135,18 +138,18 @@ export function detach(): void {
   entries.clear();
   batches.clear();
   pendingRender = false;
-  _setWidgetVisible(false);
+  setWidgetVisible(false);
 }
 
 /** Detach the roster-mode listener (if registered) and drop the nav state. */
 function detachNav(): void {
-  const unsub = _getNavUnsub();
+  const unsub = getNavUnsub();
   if (unsub) {
     try {
       unsub();
     } catch {}
   }
-  _clearNavUnsub();
+  clearNavUnsub();
   nav = undefined;
 }
 
@@ -325,7 +328,7 @@ export function reset(): void {
   activeCtx = undefined;
   pendingRender = false;
   insertionCounter = 0;
-  _setWidgetVisible(false);
+  setWidgetVisible(false);
   deckTui = null; // clear the focus-probe TUI capture
   detachNav();
 }
@@ -338,18 +341,14 @@ export function isTicking(): boolean {
 // time) so a steer is never silently dropped: openSteerPrompt / openLiveView
 // pass the SAME ctx.ui down, so steerFromDeck always has a UI to notify on
 // failure.
-function rowConfirmHostFor(ctx: ExtensionContext): RowConfirmHost {
+export function rowConfirmHostFor(ctx: ExtensionContext): RowConfirmHost {
   return {
     getEntry: (key) => entries.get(key),
     steer: (key, message) => void steerFromDeck(ctx.ui, key, message),
   };
 }
 
-/** #914 — route an agent-list Enter on a job row through the deck's
- *  unchanged confirm route (buffer → live view, else steer prompt). */
-export function confirmRow(ctx: ExtensionContext, key: string): Promise<void> {
-  return onRowConfirm(ctx, key, rowConfirmHostFor(ctx));
-}
+export { confirmRow } from "./dispatch-deck-confirm-row.ts";
 
 function startTickerIfNeeded(): void {
   if (tickHandle !== undefined || isQuiet()) return;
@@ -383,15 +382,15 @@ function renderNow(): void {
   // The empty-deck guard and the widget set are the same seam — they live
   // in dispatch-deck-quiet.ts (setDeckWidget) to keep this module within
   // the 500-line limit.
-  if (suppressWidgetIfQuiet(activeCtx, WIDGET_KEY, _getWidgetVisible, _setWidgetVisible)) {
+  if (suppressWidgetIfQuiet(activeCtx, WIDGET_KEY)) {
     return;
   }
   if (entries.size === 0 && batches.size === 0) {
-    if (_getWidgetVisible()) {
+    if (getWidgetVisible()) {
       try {
         activeCtx.ui.setWidget(WIDGET_KEY, undefined);
       } catch {}
-      _setWidgetVisible(false);
+      setWidgetVisible(false);
     }
     return;
   }
@@ -411,7 +410,7 @@ function renderNow(): void {
   const factory = buildDeckWidgetFactory(activeCtx);
   try {
     activeCtx.ui.setWidget(WIDGET_KEY, factory, { placement: "belowEditor" });
-    _setWidgetVisible(true);
+    setWidgetVisible(true);
   } catch (err) {
     trace(`dispatch-deck: setWidget failed: ${(err as Error).message}`);
   }
@@ -422,37 +421,17 @@ function renderNow(): void {
  *  `setWidget` factory receives it as its first argument). The wrapper is
  *  created once per render; the inner composite is built fresh each call. */
 function buildDeckWidgetFactory(ctx: ExtensionContext) {
-  const inner = buildCompositeWidgetFactory(ctx);
-  return (tui: TUI, theme: Parameters<typeof inner>[1]) => {
-    deckTui = tui; // focus probe (editorFocused) reads it via duck-typing
-    return inner(tui, theme);
-  };
-}
-
-/** Build the single composite widget factory (batch rows + per-job plain
- *  rows). The Text projection reads `buildLinesBatchOnly` (batch headers
- *  only); the per-job rows are one Text row per RUNNING entry (batch
- *  members included, #834) with the roster-mode `>` marker and the
- *  agent-list hint (buildAgentListHint). renderNow's empty-deck guard
- *  tests `entries.size === 0 && batches.size === 0` directly (no
- *  projection read) so that a deck with only standalone entries still
- *  renders; `buildLines`' output is a strict superset of
- *  `buildLinesBatchOnly`'s (both contain batch headers; only `buildLines`
- *  adds standalone rows).
- *  #914 — the per-job rows ARE the agent-list projection
- *  (buildAgentListLines, the shared overlay/widget row layout), and the
- *  hint line is the agent-list hint (buildAgentListHint). */
-function buildCompositeWidgetFactory(ctx: ExtensionContext) {
-  return deckComposite.buildCompositeFactory(
-    () => buildLinesBatchOnlyImpl(batches),
-    () => ({
-      running: snapshot(),
-      selectedKey: nav?.selectedKey(),
-      showHint: !nav?.isActive() && entries.size > 0,
-    }),
-    () => buildAgentListLines(snapshot(), [...batches.values()], getDeckMaxRows()),
+  const factory = buildCompositeWidgetFactory(
+    () => snapshot(),
+    () => batchSnapshot(),
+    () => nav?.selectedKey(),
+    () => !nav?.isActive() && entries.size > 0,
     getDeckMaxRows(),
   );
+  return (tui: TUI, theme: unknown) => {
+    deckTui = tui; // focus probe (editorFocused) reads it via duck-typing
+    return factory(tui, theme as never);
+  };
 }
 
 // =============================================================================

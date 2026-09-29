@@ -21,11 +21,8 @@
  */
 
 import { visibleWidth } from "@earendil-works/pi-tui";
-import {
-  buildCompositeFactory,
-  buildJobRows,
-  buildSteerPrompt,
-} from "../src/dispatch-deck-composite.ts";
+import { buildCompositeFactory, buildSteerPrompt } from "../src/dispatch-deck-composite.ts";
+import { buildAgentListLines } from "../src/agent-list.ts";
 import {
   NEWLINE_SEP,
   collapseToSpaces,
@@ -338,7 +335,7 @@ for (const w of [40, 80, 120]) {
 }
 
 // ---------------------------------------------------------------------------
-// 8. Roster rows (formatRow + buildJobRows): hostile label/hint/key →
+// 8. Roster rows (formatRow + buildAgentListLines): hostile label/hint/key →
 //    single-row, width-bounded.
 // ---------------------------------------------------------------------------
 {
@@ -369,7 +366,7 @@ for (const w of [40, 80, 120]) {
   assert(visibleWidth(row) <= 120, `8b: formatRow within 120 cols (got ${visibleWidth(row)})`);
   assert(row.includes("hostile"), "8c: label content preserved");
 
-  // buildJobRows with a width bound (the composite's render path).
+  // buildAgentListLines with a width bound (the composite's render path).
   const entries = [
     {
       key: "aaaaaaaaaaa1",
@@ -400,11 +397,12 @@ for (const w of [40, 80, 120]) {
       },
     },
   ];
-  const rows = buildJobRows(entries, now, 80);
-  assert(rows.length === 2, "8d: two job rows");
+  const allLines = buildAgentListLines(entries, [], 80, now);
+  const rows = allLines.slice(1);
+  assert(rows.length === 2, "8d: two job rows (after main row)");
   for (const r of rows) {
-    assert(!r.text.includes("\n") && !r.text.includes("\r"), "8e: buildJobRows row is single-row");
-    assert(visibleWidth(r.text) <= 80, "8f: buildJobRows row within width");
+    assert(!r.text.includes("\n") && !r.text.includes("\r"), "8e: buildAgentListLines row is single-row");
+    assert(visibleWidth(r.text) <= 80, "8f: buildAgentListLines row within width");
   }
   assert(rows[0]?.text !== rows[1]?.text, "8g: rows remain distinct after sanitisation");
 }

@@ -49,8 +49,8 @@ function assert(cond: boolean, msg: string) {
     () => ["batch header\nline2\twith\ttabs\x00"],
     () => ({ running: [hostileEntry], selectedKey: undefined, showHint: true }),
     () => [
-      { key: "main", text: "main", selectable: true, running: true },
-      { key: hostileEntry.key, text: `⏳ ${hostileEntry.label} · ${hostileEntry.state.role}`, selectable: true, running: true },
+      { key: "main", text: "main", selectable: true },
+      { key: hostileEntry.key, text: `⏳ ${hostileEntry.label} · ${hostileEntry.state.role}`, selectable: true },
     ],
     20,
   );

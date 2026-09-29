@@ -44,14 +44,17 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Component, isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
-import { STOP_ALL_KEY } from "./agent-list-keys.ts";
+import { MAIN_ROW_KEY, STOP_ALL_KEY } from "./agent-list-keys.ts";
 import { killJob, killJobs } from "./async-jobs-lifecycle.ts";
 import { toTerminalLine } from "./dispatch-deck-line.ts";
 import { formatAgentRow } from "./dispatch-deck-rows.ts";
 import type { BatchDeckEntry, DeckEntry } from "./dispatch-deck.ts";
 
-/** The leading row's selectable key (Esc-equivalent — closes, never opens). */
-export const MAIN_ROW_KEY = "main";
+// #914 — MAIN_ROW_KEY is defined in the leaf agent-list-keys.ts (the
+// import cycle is broken by keeping it in the leaf); re-exported from here
+// so existing import sites (the smoke tests, dispatch-deck-quiet.ts's
+// doc reference) keep their import path.
+export { MAIN_ROW_KEY };
 
 export interface AgentListTheme {
   /** Highlight for the selected row. */
@@ -64,18 +67,17 @@ export interface AgentListTheme {
  * One projected row of the agent list (shared by the overlay and the
  * passive-widget mirror). Batch headers are NOT in the projection (the
  * deck's batch-headers-only projection renders them — see
- * buildAgentListLines), so `selectable` is true for the `main` and every
- * job row.
+ * buildAgentListLines), so `selectable` is ALWAYS true for every row the
+ * projection produces (main + job rows).
  */
 export interface AgentListLine {
   /** MAIN_ROW_KEY for the main row; a job key otherwise. */
   key: string;
   /** The terminal-safe row text. */
   text: string;
-  /** True for the `main` row and job rows; false for batch headers. */
+  /** True for the `main` row and job rows (every projected row; batch
+   *  headers are not in the projection — see above). */
   selectable: boolean;
-  /** True while the underlying job is still running. */
-  running: boolean;
 }
 
 /**
@@ -102,12 +104,29 @@ export function buildAgentListLines(
   // of the same job rows, so the operator sees the header once, up top,
   // exactly as before #914.
   const lines: AgentListLine[] = [mainRow(width)];
-  for (const e of entries) {
+  // #835 on the live projection: two same-role jobs whose keys share a
+  // prefix can render byte-identical rows from spawn until the first
+  // updateEntry. Only the rows that WOULD render byte-identical to an
+  // already-projected row carry the collision-aware `· key …` fragment
+  // (distinctKeyFragments guarantees the fragments are pairwise distinct
+  // over the whole set); a unique row stays clean (unconditional appending
+  // is visible noise and churns every row on every key churn).
+  const fragments = distinctKeyFragments(entries.map((e) => e.key));
+  const seen = new Map<string, number>();
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i] as DeckEntry;
     // #914 — the job row carries the full running activity (icon, label,
     // elapsed, last tool + use-count, hint — the formatRow projection)
     // plus the token total (formatAgentRow); the list is the surface that
     // shows the running tool, as the deck row did before #914.
-    lines.push(jobRow(e, width, now));
+    const plain = formatAgentRow(e, now);
+    const frag = fragments[i] ?? "";
+    lines.push(
+      seen.has(plain) === false && e.key.length <= 10
+        ? jobRow(e, width, now)
+        : jobRowWithFragment(e, width, now, e.key.length > 10 ? `key ${frag}` : frag),
+    );
+    seen.set(plain, (seen.get(plain) ?? 0) + 1);
   }
   return lines;
 }
@@ -118,8 +137,74 @@ export function mainRow(width: number): AgentListLine {
     key: MAIN_ROW_KEY,
     text: toTerminalLine("main", width),
     selectable: true,
-    running: true,
   };
+}
+
+/**
+ * The `· key …` collision-aware suffix (and the fragment algorithm that
+ * supplies it) moved here from dispatch-deck-composite.ts when #914's live
+ * projection (buildAgentListLines) took over the guarantee: same-role rows
+ * with identical text must stay distinguishable. #835's algorithm, verbatim
+ * (previously dead code in the composite, now the LIVE reader).
+ */
+
+/**
+ * Render `key` truncated to a `prefix`-char fragment. ≤10-char keys
+ * render verbatim (no marker); longer keys render as a 10-char prefix +
+ * `…` (the #835 elision shape, trimmed) — unless `prefix` reaches the full
+ * key length, in which case the full key renders with no ellipsis.
+ */
+function keyFragmentAt(key: string, prefix: number): string {
+  if (key.length <= 10) return key;
+  if (prefix >= key.length) return key;
+  return `${key.slice(0, prefix).trimEnd()}…`;
+}
+
+/**
+ * Collision-aware fragments over the whole visible set (#835's algorithm,
+ * ported to the plain-row surface when #834 deleted the SelectList column
+ * that was its reader). Group keys by their current fragment; for any group
+ * with more than one DISTINCT fragment, increase the 2nd+ occurrence's
+ * prefix length by 1 and re-group, repeating until every fragment is
+ * distinct or the prefix reaches the full key length (rendered in full,
+ * no ellipsis). Entries whose fragment is already unique keep the 10-char
+ * form. The loop is bounded: a pass in which no prefix can change makes
+ * further lengthening impossible, so it exits as-is — duplicate keys
+ * ≤10 chars stay identical, where the row's other content (label, `>`
+ * marker, position) still distinguishes them.
+ */
+function distinctKeyFragments(keys: string[]): string[] {
+  const n = keys.length;
+  const prefix = keys.map((k) => (k.length > 10 ? 10 : k.length));
+  for (;;) {
+    const fragments = keys.map((k, i) => keyFragmentAt(k, prefix[i] ?? 10));
+    const seen = new Set<string>();
+    const bumped = new Set<number>();
+    for (let i = 0; i < n; i++) {
+      const frag = fragments[i] ?? "";
+      if (seen.has(frag)) bumped.add(i);
+      seen.add(frag);
+    }
+    if (bumped.size === 0) return fragments;
+    let changed = false;
+    for (const i of bumped) {
+      const key = keys[i] ?? "";
+      const cur = prefix[i] ?? key.length;
+      if (cur < key.length) {
+        prefix[i] = cur + 1;
+        changed = true;
+      }
+    }
+    if (!changed) return fragments;
+  }
+}
+
+/** The single explicit stop-all scope: job rows = selectable rows minus
+ *  the `main` row (the count and the kill action use the SAME filter).
+ *  (Replaces the positional `selectableRows().slice(1)` / `length - 1`.)
+ */
+function jobRowKeys(rows: readonly AgentListLine[]): string[] {
+  return rows.filter((r) => r.selectable && r.key !== MAIN_ROW_KEY).map((r) => r.key);
 }
 
 /** One job row (the formatAgentRow projection, sanitised at the row boundary). */
@@ -128,7 +213,27 @@ export function jobRow(e: DeckEntry, width: number, now: number): AgentListLine 
     key: e.key,
     text: toTerminalLine(formatAgentRow(e, now), width),
     selectable: true,
-    running: true,
+  };
+}
+
+/**
+ * One job row carrying the #835 collision-aware `· key …` fragment (only
+ * rendered for rows that would otherwise collide — see buildAgentListLines).
+ * The fragment is appended to the raw projection BEFORE the single
+ * `toTerminalLine` pass, so the render-width truncation treats row and
+ * fragment as one line — the same guarantee the deck row had (the raw row
+ * + suffix bounded to one terminal line at the caller's width).
+ */
+function jobRowWithFragment(
+  e: DeckEntry,
+  width: number,
+  now: number,
+  fragment: string,
+): AgentListLine {
+  return {
+    key: e.key,
+    text: toTerminalLine(`${formatAgentRow(e, now)} · ${fragment}`, width),
+    selectable: true,
   };
 }
 
@@ -233,12 +338,21 @@ export function createAgentListComponent(
         // visible job rows (`main` excluded — it is Esc-equivalent, not a
         // killable agent). Orchestrator / non-deck registry jobs never
         // appear here, so they are never aborted by an in-list stop-all.
-        const n = Math.max(0, selectableRows().length - 1);
+        const n = jobRowKeys(lastRows).length;
         const q =
           p.kind === "kill-all"
             ? `Kill ALL ${n} agents? (y/n)`
-            : `Kill ${rows.find((r) => r.key === p.key)?.text ?? "?"} (y/n)`;
-        lines.push(toTerminalLine(theme().muted(q), width));
+            : // #914 — do not interpolate the already-truncated `row.text`:
+              // build the prompt so the `Kill … (y/n)` framing always fits —
+              // re-project the label at the width minus the framing length
+              // and apply `toTerminalLine` once to the whole prompt.
+              (() => {
+                const target = rows.find((r) => r.key === p.key);
+                const framing = "Kill  (y/n)";
+                const room = Math.max(1, width - framing.length);
+                return `Kill ${toTerminalLine(target ? target.text : "?", room)} (y/n)`;
+              })();
+        lines.push(theme().muted(q));
       }
       return lines;
     },
@@ -257,11 +371,7 @@ export function createAgentListComponent(
           if (p.kind === "kill") {
             killJob(p.key);
           } else {
-            killJobs(
-              selectableRows()
-                .slice(1)
-                .map((r) => r.key),
-            );
+            killJobs(jobRowKeys(lastRows));
             done();
             return;
           }

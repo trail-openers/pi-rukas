@@ -7,16 +7,17 @@
  *
  * Two same-role jobs whose keys share a prefix (the realistic newJobId
  * shape — a shared base-36 timestamp prefix) can render byte-identical
- * formatRow lines from spawn until the first updateEntry. buildJobRows
- * appends the collision-aware key fragment so the rendered rows stay
- * distinct for their whole lifetime; the composite renders them with the
- * same fragment.
+ * formatRow lines from spawn until the first updateEntry. buildAgentListLines
+ * appends the collision-aware key fragment to the colliding rows so the
+ * rendered rows stay distinct for their whole lifetime; the composite renders
+ * them with the same fragment.
  */
 
 import { Container, Text } from "@earendil-works/pi-tui";
-import { buildJobRows, buildCompositeFactory } from "../src/dispatch-deck-composite.ts";
+import { buildCompositeFactory } from "../src/dispatch-deck-composite.ts";
 import { type DeckEntry, formatRow } from "../src/dispatch-deck.ts";
 import { type RunningState, emptyRunningState } from "../src/progress.ts";
+import { buildAgentListLines, MAIN_ROW_KEY } from "../src/agent-list.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -39,11 +40,12 @@ const fakeTheme = {
 };
 
 // 14. #835 regression guard on the #834 plain-row surface: two same-role
-// jobs whose keys share a prefix (the realistic newJobId shape — a shared
+//jobs whose keys share a prefix (the realistic newJobId shape — a shared
 // base-36 timestamp prefix) can render byte-identical formatRow lines from
-// spawn until the first updateEntry. buildJobRows appends the collision-
-// aware key fragment so the rendered rows stay distinct for their whole
-// lifetime; the composite renders them with the same fragment.
+// spawn until the first updateEntry. buildAgentListLines appends the
+// collision-aware key fragment to the colliding rows so the rendered rows
+// stay distinct for their whole lifetime; the composite renders them with
+// the same fragment.
 {
   const now = 4_500_000;
   const keys = ["aaaaaaaaaaa1", "aaaaaaaaaaa2"];
@@ -57,12 +59,18 @@ const fakeTheme = {
   // Precondition: without the fragment the rows are byte-identical (the
   // bug the fragment fixes) — same label, same role, same-second elapsed.
   assert(formatRow(entries[0]!, now) === formatRow(entries[1]!, now), "14a: bare formatRow rows are identical (the #835 class)");
-  const rows = buildJobRows(entries, now);
-  assert(rows[0]?.text !== rows[1]?.text, `14b: buildJobRows rows distinct (${rows[0]?.text} vs ${rows[1]?.text})`);
+
+  // #914 — buildAgentListLines is the live projection; the fragment is
+  // appended only to rows that would otherwise be byte-identical.
+  const agentLines = buildAgentListLines(entries, [], 200, now);
+  // Skip the leading main row.
+  const jobLines = agentLines.slice(1);
+  assert(jobLines.length === 2, "14b-pre: 2 job rows after the main row");
+  assert(jobLines[0]?.text !== jobLines[1]?.text, `14b: buildAgentListLines rows distinct (${jobLines[0]?.text} vs ${jobLines[1]?.text})`);
   assert(
-    (rows[0]?.text ?? "").endsWith(" · ") === false &&
-      (rows[0]?.text ?? "").includes(" · key aaaaaaaa") &&
-      (rows[1]?.text ?? "").includes(" · key aaaaaaaa"),
+    (jobLines[0]?.text ?? "").endsWith(" · ") === false &&
+      (jobLines[0]?.text ?? "").includes(" · key aaaaaaaa") &&
+      (jobLines[1]?.text ?? "").includes(" · key aaaaaaaa"),
     "14c: fragment is the row suffix, prefixed `key `, preserves the shared 10-char prefix",
   );
   // The composite factory renders the same distinct rows (the production
@@ -72,15 +80,7 @@ const fakeTheme = {
   const factory = buildCompositeFactory(
     () => [],
     () => ({ running: entries, selectedKey: keys[0], showHint: false }),
-    () => [
-      { key: "main", text: "main", selectable: true, running: true },
-      ...entries.map((e, i) => ({
-        key: e.key,
-        text: buildJobRows(entries, 4_500_000)[i]?.text ?? "",
-        selectable: true,
-        running: true,
-      })),
-    ],
+    () => agentLines,
     20,
   );
   const comp = factory(null, fakeTheme);
@@ -110,7 +110,8 @@ const fakeTheme = {
     startedAt: now - 134_000,
     state: makeState("developer", { lastEventAt: now - 1000 }),
   }));
-  const advFragments = buildJobRows(advEntries, now).map((r) => r.text.split(" · ").pop() ?? "");
+  const advLines = buildAgentListLines(advEntries, [], 200, now);
+  const advFragments = advLines.slice(1).map((r) => r.text.split(" · ").pop() ?? "");
   assert(
     new Set(advFragments).size === 3 &&
       advFragments.every((f) => f.startsWith("key abcdefghij")),

@@ -86,13 +86,9 @@ const fakeCtxWithUi = {
 
     // The quiet gate that KEPT: renderNow still suppresses the widget.
     // `suppressWidgetIfQuiet` returns true while quiet, so renderNow
-    // returns early and the deck widget is never set.
-    const quietSuppressed = suppressWidgetIfQuiet(
-      fakeCtxWithUi,
-      "ensemble:deck",
-      () => false,
-      () => {},
-    );
+    // returns early and the deck widget is never set. It reads and writes
+    // its own module-level state (no injected callbacks — #914).
+    const quietSuppressed = suppressWidgetIfQuiet(fakeCtxWithUi, "ensemble:deck");
     if (!quietSuppressed) {
       fail("8b: suppressWidgetIfQuiet returned false in quiet mode (the kept gate is gone)");
     } else {

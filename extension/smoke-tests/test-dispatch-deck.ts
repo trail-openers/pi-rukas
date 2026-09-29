@@ -37,7 +37,7 @@ import {
   type AgentListLine,
   buildAgentListLines,
 } from "../src/agent-list.ts";
-import { buildJobRows, buildCompositeFactory } from "../src/dispatch-deck-composite.ts";
+import { buildCompositeFactory } from "../src/dispatch-deck-composite.ts";
 import { type RunningState, emptyRunningState } from "../src/progress.ts";
 
 let exit = 0;

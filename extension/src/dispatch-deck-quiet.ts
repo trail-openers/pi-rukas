@@ -14,46 +14,42 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { trace } from "./trace.ts";
 
 // Module-level state owned by this module (dispatch-deck.ts no longer
-// holds navUnsub / navWarned — they move here with the helper).
-let _navUnsub: (() => void) | undefined;
-let _navWarned = false;
+// holds navUnsub / navWarned / widgetVisible — the state moved here with
+// its single writer (setDeckWidget in dispatch-deck.ts's renderNow path
+// via setWidgetVisible) and reader (suppressWidgetIfQuiet / getNavUnsub),
+// so the flag and the setWidget call stay in lockstep in one module).
+let navUnsub: (() => void) | undefined;
+let navWarned = false;
+let widgetVisible = false;
 
-// The widget's visibility flag (dispatch-deck.ts no longer holds
-// widgetVisible — it moves here with setDeckWidget, the single writer,
-// so the flag and the setWidget call stay in lockstep).
-let _widgetVisible = false;
-
-export function _getWidgetVisible(): boolean {
-  return _widgetVisible;
+export function getWidgetVisible(): boolean {
+  return widgetVisible;
 }
 
-export function _setWidgetVisible(v: boolean): void {
-  _widgetVisible = v;
+export function setWidgetVisible(v: boolean): void {
+  widgetVisible = v;
 }
 
-export function _getNavUnsub(): (() => void) | undefined {
-  return _navUnsub;
+export function getNavUnsub(): (() => void) | undefined {
+  return navUnsub;
 }
-export function _clearNavUnsub(): void {
-  _navUnsub = undefined;
+export function clearNavUnsub(): void {
+  navUnsub = undefined;
 }
 
 /**
  * Drop a still-visible deck widget when quiet mode is active; returns true
- * while quiet (the caller must skip rendering), false otherwise.
+ * while quiet (the caller must skip rendering), false otherwise. Reads and
+ * writes this module's own `widgetVisible` flag (no injected callbacks —
+ * the flag lives where it is read, so the two cannot drift).
  */
-export function suppressWidgetIfQuiet(
-  ctx: ExtensionContext,
-  key: string,
-  isVisible: () => boolean,
-  setVisible: (v: boolean) => void,
-): boolean {
+export function suppressWidgetIfQuiet(ctx: ExtensionContext, key: string): boolean {
   if (process.env.PI_ENSEMBLE_QUIET_STATUS !== "1") return false;
-  if (isVisible()) {
+  if (widgetVisible) {
     try {
       ctx.ui.setWidget(key, undefined);
     } catch {}
-    setVisible(false);
+    widgetVisible = false;
   }
   return true;
 }
@@ -71,13 +67,13 @@ export function registerNavListener(
   ctx: ExtensionContext,
 ): boolean {
   try {
-    _navUnsub = ctx.ui.onTerminalInput(n.handler);
+    navUnsub = ctx.ui.onTerminalInput(n.handler);
     return true;
   } catch (err) {
-    _navUnsub = undefined;
+    navUnsub = undefined;
     trace(`dispatch-deck: onTerminalInput unavailable: ${(err as Error).message}`);
-    if (!_navWarned) {
-      _navWarned = true;
+    if (!navWarned) {
+      navWarned = true;
       try {
         ctx.ui.notify(
           "Dispatch deck: arrow-key roster nav is unavailable this session (onTerminalInput not supported); rows still render.",

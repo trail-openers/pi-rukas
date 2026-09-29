@@ -269,6 +269,28 @@ function registerRealJob(jobId: string): AbortController {
 }
 
 // ---------------------------------------------------------------------------
+// 4g. 2000-char label: the kill-confirm prompt's `Kill … (y/n)` framing
+//     always fits. The label is re-projected at `width - framing.length`
+//     and `toTerminalLine` is applied once to the whole prompt, so the
+//     rendered prompt ends with `(y/n)` and its visibleWidth ≤ width.
+// ---------------------------------------------------------------------------
+{
+  const longLabel = "A".repeat(2000);
+  const h = makeHarness([entry("long-914", longLabel, "developer", 0)], []);
+  h.comp.handleInput("\x1b[B"); // down → the long-label job
+  h.comp.handleInput("x"); // kill prompt
+  const width = 80;
+  const rendered = h.comp.render(width);
+  const promptLine = rendered.find((l) => l.includes("(y/n)"));
+  assert(!!promptLine, "4g-pre: the kill-confirm prompt renders");
+  if (promptLine) {
+    assert(promptLine.endsWith("(y/n)"), "4g: rendered prompt ends with (y/n) (2000-char label, width 80)");
+    assert(visibleWidth(promptLine) <= width, `4g2: rendered prompt visibleWidth ≤ ${width} (got ${visibleWidth(promptLine)})`);
+  }
+  h.comp.handleInput("n");
+}
+
+// ---------------------------------------------------------------------------
 // 5. Esc closes; unowned keys are swallowed (no opens, no done, selection
 //    unchanged); key-release events are ignored; the y/n confirmation
 //    swallows everything except the two answer keys.
@@ -417,7 +439,9 @@ function registerRealJob(jobId: string): AbortController {
 //     vacuously. The in-list stop-all key `X` (shift+x) is not a
 //     global binding: `ctrl+x` is bound (app.message.copy) but `X`
 //     (shift+x) is not — a plain `x` (kill-one) and `ctrl+x` (copy)
-//     are distinct from `X` in pi-tui's case-sensitive matcher.
+//     are distinct from `X` in pi-tui's key matcher (a plain `x` never
+//     fires the stop-all key — `matchesKey("x", "shift+x")` is false,
+//     verified in test-dispatch-deck-list-keys.ts section 11).
 // ---------------------------------------------------------------------------
 {
   const { getKeybindings } = await import("@earendil-works/pi-tui");

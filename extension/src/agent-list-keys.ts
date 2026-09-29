@@ -24,16 +24,22 @@
  *     chord that the first pass registered is REMOVED: `ctrl+x` is bound
  *     globally (`app.message.copy`) and the two-press in-list chord added
  *     a second global registration without adding capability the single
- *     in-list key does not already provide. `X` matches pi-tui's
- *     case-sensitive KeyId (`matchesKey("X", "X")` is true, `matchesKey
- *     ("x", "X")` is false), so a plain `x` (kill-one) never fires it,
- *     and `ctrl+x` (0x18) matches neither.
+ *     in-list key does not already provide. `X` is distinguished from a
+ *     plain `x` by the key data, not by any case rule: pi-tui's
+ *     `matchesKey("x", "shift+x")` is FALSE (a plain `x` never fires the
+ *     stop-all key — the regression test pins this) while
+ *     `matchesKey("\x1b[120;2u", "shift+x")` is true (Kitty's shift+x
+ *     wire form). `ctrl+x` (0x18) matches neither.
  *
  * The collision test (smoke-tests/test-dispatch-deck-list.ts) asserts at
  * test time against the installed `getKeybindings()` table.
+ *
+ * This module is a LEAF: it imports nothing from agent-list.ts (the
+ * import cycle agent-list.ts → agent-list-keys.ts → agent-list.ts is
+ * broken by keeping MAIN_ROW_KEY defined HERE, in the leaf, so
+ * agent-list.ts re-exports it from its original import site).
  */
 
-import { MAIN_ROW_KEY, buildAgentListLines } from "./agent-list.ts";
 import type { BatchDeckEntry, DeckEntry } from "./dispatch-deck.ts";
 
 /** The global shortcut that opens the agent-list overlay. */
@@ -41,6 +47,12 @@ export const LIST_SHORTCUT = "alt+a";
 
 /** The in-list stop-all key (a single key — shift+x, `Shift+X` on the keyboard). */
 export const STOP_ALL_KEY = "shift+x";
+
+/** The leading row's selectable key (Esc-equivalent — closes, never opens).
+ *  Defined here (leaf module) and re-exported by agent-list.ts so existing
+ *  import sites keep their import path without an agent-list.ts →
+ *  agent-list-keys.ts → agent-list.ts cycle. */
+export const MAIN_ROW_KEY = "main";
 
 /**
  * The passive-widget hint line. The row projection above it is exactly the
