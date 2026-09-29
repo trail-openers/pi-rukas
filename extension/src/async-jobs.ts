@@ -1,5 +1,6 @@
 import type { Writable } from "node:stream";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { deliverReport } from "./async-jobs-lifecycle.ts";
 import {
   type BatchMemberJobState,
   type BatchOrchestratorJobState,
@@ -22,7 +23,6 @@ import { makeSlowWatch } from "./async-jobs-slow.ts";
 import * as live from "./dispatch-deck-live.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import * as lifecycle from "./lifecycle-events.ts";
-import { incrementNotice } from "./notice-counter.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import type { RunningState } from "./progress.ts";
 import * as sessionAutosave from "./session-autosave.ts";
@@ -484,21 +484,4 @@ export function startBatch(
 
   trace(`async batch ${batchId} (${input.batchLabel}, n=${input.members.length}) started`);
   return { batchId, jobIds: memberJobIds };
-}
-
-/**
- * Push a report back to the parent agent. `deliverAs: "steer"` queues the
- * message during a streaming turn (delivered before the next LLM call) or
- * directly if the agent is idle.
- */
-function deliverReport(pi: ExtensionAPI, report: string): void {
-  // #916 SLICE B — count the delivery for the live view's "N new notices"
-  // badge (the counter is reset on view open; the view reads it each
-  // render). A delivery while no view is open is unbadged by design.
-  incrementNotice();
-  try {
-    pi.sendUserMessage(report, { deliverAs: "steer" });
-  } catch (err) {
-    trace(`async report delivery failed: ${(err as Error).message}`);
-  }
 }

@@ -42,7 +42,13 @@
  * (idempotent — the same buffer, re-read).
  */
 
-import { type Component, isKeyRelease, matchesKey, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import {
+  type Component,
+  isKeyRelease,
+  matchesKey,
+  truncateToWidth,
+  wrapTextWithAnsi,
+} from "@earendil-works/pi-tui";
 import { sanitizeText } from "./dispatch-deck-line.ts";
 import type { LiveEvent, LiveViewTheme } from "./dispatch-deck-live.ts";
 import { getBuffer } from "./dispatch-deck-live.ts";
@@ -110,14 +116,23 @@ export function clearViewScroll(key: string): void {
 
 /**
  * Per-event wrapped-line cache, keyed by the event object (a WeakMap —
- * entries die with the event), then (width, thinkingExpanded). The
- * buffer is append-only (stored events are never mutated), so the
- * event's identity is a stable key.
+ * entries die with the event), then (width, thinkingExpanded, content
+ * length). The buffer is append-only (stored events are never mutated),
+ * so the event's identity is a stable key. The content length in the key
+ * distinguishes the header ("▸ name") from the body (the full JSON) in
+ * toolCall events, which both go through wrapCached with the same event
+ * object.
  */
 const wrappedCache = new WeakMap<LiveEvent, Map<string, string[]>>();
 
-function wrapCached(ev: LiveEvent, text: string, width: number, expanded: boolean): string[] {
-  const cacheKey = `${width}|${expanded ? 1 : 0}`;
+function wrapCached(
+  ev: LiveEvent,
+  text: string,
+  width: number,
+  expanded: boolean,
+  textLen: number,
+): string[] {
+  const cacheKey = `${width}|${expanded ? 1 : 0}|${textLen}`;
   const byKey = wrappedCache.get(ev);
   if (byKey) {
     const hit = byKey.get(cacheKey);
@@ -145,10 +160,10 @@ function eventLines(
 ): string[] {
   switch (ev.kind) {
     case "text":
-      return wrapCached(ev, ev.text, width, expanded);
+      return wrapCached(ev, ev.text, width, expanded, ev.text.length);
     case "thinking":
       return expanded
-        ? wrapCached(ev, ev.text, width, expanded).map((r) => theme.muted(r))
+        ? wrapCached(ev, ev.text, width, expanded, ev.text.length).map((r) => theme.muted(r))
         : [theme.muted(`▸ thinking (${ev.text.length} chars)`)];
     case "toolCall": {
       // Pretty-print the args: parse → re-stringify with 2-space indent
@@ -163,15 +178,19 @@ function eventLines(
           body = raw;
         }
       }
-      if (body === undefined) return wrapCached(ev, `▸ ${ev.name}`, width, expanded);
-      const header = wrapCached(ev, `▸ ${ev.name}`, width, expanded)[0] ?? "";
-      return [header, ...wrapCached(ev, body, width, expanded)];
+      const headerText = `▸ ${sanitizeText(ev.name).replace(/\n+/g, " ")}`;
+      if (body === undefined) return wrapCached(ev, headerText, width, expanded, headerText.length);
+      const header = wrapCached(ev, headerText, width, expanded, headerText.length)[0] ?? "";
+      return [header, ...wrapCached(ev, body, width, expanded, body.length)];
     }
     case "toolResult": {
-      const marker = ev.isError ? `✗ ${ev.name} (error)` : `✓ ${ev.name}`;
+      // Sanitize the tool name (collapse newlines — sanitizeText preserves
+      // them, which would desync the renderer).
+      const safeName = sanitizeText(ev.name).replace(/\n+/g, " ");
+      const marker = ev.isError ? `✗ ${safeName} (error)` : `✓ ${safeName}`;
       const head = ev.isError ? theme.error(marker) : marker;
       if (!ev.text) return [head];
-      return [head, ...wrapCached(ev, ev.text, width, expanded)];
+      return [head, ...wrapCached(ev, ev.text, width, expanded, ev.text.length)];
     }
   }
 }
@@ -250,15 +269,19 @@ export function createAgentViewComponent(
         const line = body[i];
         if (line !== undefined) window.push(line);
       }
-      const headerLine = h
-        ? `${h.label} · ${h.role} · ${status} · ${fmtElapsed(h.now - h.startedAt)} · ${h.turns} turn${h.turns === 1 ? "" : "s"} · ${h.totalTokens} tokens${h.pmActive ? " · PM active" : ""}${h.notices > 0 ? ` · ${h.notices} new notices` : ""}`
+      const headerRaw = h
+        ? `${sanitizeText(h.label).replace(/\n+/g, " ")} · ${sanitizeText(h.role).replace(/\n+/g, " ")} · ${status} · ${fmtElapsed(h.now - h.startedAt)} · ${h.turns} turn${h.turns === 1 ? "" : "s"} · ${h.totalTokens} tokens${h.pmActive ? " · PM active" : ""}${h.notices > 0 ? ` · ${h.notices} new notices` : ""}`
         : status;
+      // truncateToWidth adds ANSI reset sequences; sanitize them out.
+      const headerLine = sanitizeText(truncateToWidth(headerRaw, width, "…"));
       const lines: string[] = [headerLine, ...window];
       // Pad the body to the full height so the footer sits on the last
       // row of the full-screen overlay.
       while (lines.length < height + 2) lines.push("");
       const footer =
-        state.scroll === 0 ? VIEW_FOOTER_HINT : `paused (End to follow) · ${VIEW_FOOTER_HINT}`;
+        state.scroll === 0
+          ? VIEW_FOOTER_HINT.slice(0, Math.max(1, width - 1))
+          : `paused (End to follow) · ${VIEW_FOOTER_HINT}`.slice(0, Math.max(1, width - 1));
       lines.push(theme.muted(footer));
       return lines;
     },

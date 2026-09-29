@@ -128,7 +128,7 @@ export function sanitizeText(text: string): string {
  */
 export function boundedLine(text: string, width: number): string {
   if (width <= 0) return "";
-  return truncateToWidth(text, width, "…");
+  return truncateToWidth(sanitizeText(text), width, "…");
 }
 
 /**

@@ -30,7 +30,6 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
-import * as agentView from "./dispatch-deck-live-view-component.ts";
 import {
   type LiveViewTheme,
   getStatus,
@@ -43,15 +42,27 @@ import { getNotices, resetNotices } from "./notice-counter.ts";
 import { pmActive } from "./pm-active.ts";
 import { trace } from "./trace.ts";
 
-export type { LiveViewTheme, ViewHeader, TuiHandle } from "./dispatch-deck-live-view-component.ts";
+// Re-export the view component's public API. These are direct value
+// imports (not `agentView.X`) to avoid the circular TDZ error that
+// occurs when `agentView` is imported as a namespace from a module that
+// imports from this one (dispatch-deck-live.ts re-exports from here).
+import {
+  VIEW_FALLBACK_ROWS,
+  VIEW_FOOTER_HINT,
+  clearViewScroll,
+  createAgentViewComponent,
+  getViewScrollState,
+} from "./dispatch-deck-live-view-component.ts";
+import type { TuiHandle, ViewHeader } from "./dispatch-deck-live-view-component.ts";
 
-export const VIEW_FALLBACK_ROWS = agentView.VIEW_FALLBACK_ROWS;
-export const VIEW_FOOTER_HINT = agentView.VIEW_FOOTER_HINT;
 export {
   createAgentViewComponent,
   getViewScrollState,
   clearViewScroll,
-} from "./dispatch-deck-live-view-component.ts";
+  VIEW_FALLBACK_ROWS,
+  VIEW_FOOTER_HINT,
+};
+export type { LiveViewTheme, ViewHeader, TuiHandle };
 
 // The deck's 1 s ticker (dispatch-deck.ts renderNow) re-registers its
 // widget and calls requestRender on its 1 s cadence, which re-renders the
@@ -88,11 +99,11 @@ export function createLiveViewComponent(
   // Delegate to a minimal agent view (the legacy surface is subsumed by
   // the full-screen view; the done results the legacy tests assert —
   // `close` on Esc, `steer` on `s` — are reproduced verbatim).
-  return agentView.createAgentViewComponent(
+  return createAgentViewComponent(
     key,
     () => {
       const h = header();
-      if (!h) return undefined as unknown as agentView.ViewHeader;
+      if (!h) return undefined as unknown as ViewHeader;
       return {
         label: h.label,
         role: h.role,
@@ -183,7 +194,7 @@ export async function openLiveView(
               );
             }
           });
-          return agentView.createAgentViewComponent(
+          return createAgentViewComponent(
             key,
             () => {
               const e = host.getEntry(key);

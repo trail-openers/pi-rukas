@@ -10,7 +10,22 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type JobKind, childHandles, jobs } from "./async-jobs-registry.ts";
 import { reset as resetDeck } from "./dispatch-deck.ts";
+import { incrementNotice } from "./notice-counter.ts";
 import { trace } from "./trace.ts";
+
+/**
+ * Push a report back to the parent agent (deliverAs: "steer").
+ * #916 SLICE B: counts the delivery for the live view's "N new notices"
+ * badge (reset on view open).
+ */
+export function deliverReport(pi: ExtensionAPI, report: string): void {
+  incrementNotice();
+  try {
+    pi.sendUserMessage(report, { deliverAs: "steer" });
+  } catch (err) {
+    trace(`async report delivery failed: ${(err as Error).message}`);
+  }
+}
 
 /** Snapshot of current jobs for dispatch_status (metadata only — never content). */
 export interface JobStatusRow {
