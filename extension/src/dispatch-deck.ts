@@ -13,7 +13,7 @@
  * with an activity buffer opens the live view (#839), otherwise it opens
  * the steer prompt (`deck-ui` source tag).
  *
- * Opt-out: PI_ENSEMBLE_QUIET_STATUS=1.
+ * Opt-out: PI_ENSEMBLE_QUIET_STATUS=1 (see dispatch-deck-quiet.ts).
  *
  * #709's "do not remove either widget" directive is superseded — the
  * aboveEditor `ensemble:deck-prompt` widget was the source of the
@@ -31,6 +31,8 @@ import { type DeckNav, createDeckNav } from "./dispatch-deck-nav.ts";
 import {
   _clearNavUnsub,
   _getNavUnsub,
+  _getWidgetVisible,
+  _setWidgetVisible,
   registerNavListener,
   suppressWidgetIfQuiet,
 } from "./dispatch-deck-quiet.ts";
@@ -81,7 +83,10 @@ let activeCtx: ExtensionContext | undefined;
 let pendingRender = false;
 let insertionCounter = 0;
 let tickHandle: ReturnType<typeof setInterval> | undefined;
-let widgetVisible = false;
+// The widget's visibility flag moved to dispatch-deck-quiet.ts (#914 —
+// the empty-deck guard + setWidget call moved there with it, so the flag
+// and the call stay in lockstep; dispatch-deck.ts reads it via
+// _getWidgetVisible / writes via _setWidgetVisible).
 let nav: DeckNav | undefined;
 // TUI captured from the deck widget factory at render time — module scope
 // so the focus probe survives re-attach (a re-attach builds a fresh DeckNav
@@ -119,7 +124,7 @@ export function attach(ctx: ExtensionContext): void {
 
 export function detach(): void {
   stopTicker();
-  if (activeCtx && widgetVisible) {
+  if (activeCtx && _getWidgetVisible()) {
     try {
       activeCtx.ui.setWidget(WIDGET_KEY, undefined);
     } catch {}
@@ -130,7 +135,7 @@ export function detach(): void {
   entries.clear();
   batches.clear();
   pendingRender = false;
-  widgetVisible = false;
+  _setWidgetVisible(false);
 }
 
 /** Detach the roster-mode listener (if registered) and drop the nav state. */
@@ -197,7 +202,9 @@ function editorFocused(): boolean {
  * not quiet — quiet mode and headless mode register nothing. `detach()`
  * unsubscribes; a re-`attach` after `detach` registers a fresh listener
  * (the module-level `nav` is cleared by `detach`, so at most one
- * listener is ever live).
+ * listener is ever live). #914 — the global shortcut (agent-list-keys.ts)
+ * is the quiet-mode entry point; this roster listener stays quiet-gated,
+ * so a quiet session's hidden roster cannot capture `↓`.
  */
 function attachNav(ctx: ExtensionContext): void {
   if (!tryAttachNav(ctx)) detachNav();
@@ -212,10 +219,6 @@ function attachNav(ctx: ExtensionContext): void {
  * `navWarned`/`navHealAttempts` resets live in `attachNav` only: the
  * self-heal path must accumulate across renders so the cap binds. Returns
  * true when the listener is live.
- *
- * #914 — the global shortcut (agent-list-keys.ts) is the quiet-mode
- * entry point; this roster listener itself stays quiet-gated, so a quiet
- * session's hidden roster cannot capture `↓`.
  */
 function tryAttachNav(ctx: ExtensionContext): boolean {
   if (isQuiet() || !ctx.hasUI) return false;
@@ -322,7 +325,7 @@ export function reset(): void {
   activeCtx = undefined;
   pendingRender = false;
   insertionCounter = 0;
-  widgetVisible = false;
+  _setWidgetVisible(false);
   deckTui = null; // clear the focus-probe TUI capture
   detachNav();
 }
@@ -331,12 +334,10 @@ export function isTicking(): boolean {
   return tickHandle !== undefined;
 }
 
-/** Deck-map accessors the row-confirm module (#607 d3 / #839) reads through. */
 // #839 — the steer host is built per-attach (onRowConfirm receives it at call
 // time) so a steer is never silently dropped: openSteerPrompt / openLiveView
 // pass the SAME ctx.ui down, so steerFromDeck always has a UI to notify on
-// failure (an `activeCtx`-only lookup silently dropped steers whenever the
-// confirming ctx differed from the last attach()).
+// failure.
 function rowConfirmHostFor(ctx: ExtensionContext): RowConfirmHost {
   return {
     getEntry: (key) => entries.get(key),
@@ -379,24 +380,18 @@ function renderNow(): void {
   // #914 — quiet mode suppresses ONLY the passive widget (roster listener
   // quiet-gated in tryAttachNav, global shortcut stays live); a widget left
   // visible from a pre-quiet render is dropped (dispatch-deck-quiet.ts).
-  if (
-    suppressWidgetIfQuiet(
-      activeCtx,
-      WIDGET_KEY,
-      () => widgetVisible,
-      (v) => {
-        widgetVisible = v;
-      },
-    )
-  ) {
+  // The empty-deck guard and the widget set are the same seam — they live
+  // in dispatch-deck-quiet.ts (setDeckWidget) to keep this module within
+  // the 500-line limit.
+  if (suppressWidgetIfQuiet(activeCtx, WIDGET_KEY, _getWidgetVisible, _setWidgetVisible)) {
     return;
   }
   if (entries.size === 0 && batches.size === 0) {
-    if (widgetVisible) {
+    if (_getWidgetVisible()) {
       try {
         activeCtx.ui.setWidget(WIDGET_KEY, undefined);
       } catch {}
-      widgetVisible = false;
+      _setWidgetVisible(false);
     }
     return;
   }
@@ -416,18 +411,16 @@ function renderNow(): void {
   const factory = buildDeckWidgetFactory(activeCtx);
   try {
     activeCtx.ui.setWidget(WIDGET_KEY, factory, { placement: "belowEditor" });
-    widgetVisible = true;
+    _setWidgetVisible(true);
   } catch (err) {
     trace(`dispatch-deck: setWidget failed: ${(err as Error).message}`);
   }
 }
 
-/**
- * The deck widget factory wraps the composite factory to capture the TUI
- * instance (the only TUI an extension legitimately reaches — the deck's
- * `setWidget` factory receives it as its first argument). The wrapper is
- * created once per render; the inner composite is built fresh each call.
- */
+/** The deck widget factory wraps the composite factory to capture the TUI
+ *  instance (the only TUI an extension legitimately reaches — the deck's
+ *  `setWidget` factory receives it as its first argument). The wrapper is
+ *  created once per render; the inner composite is built fresh each call. */
 function buildDeckWidgetFactory(ctx: ExtensionContext) {
   const inner = buildCompositeWidgetFactory(ctx);
   return (tui: TUI, theme: Parameters<typeof inner>[1]) => {
@@ -439,11 +432,13 @@ function buildDeckWidgetFactory(ctx: ExtensionContext) {
 /** Build the single composite widget factory (batch rows + per-job plain
  *  rows). The Text projection reads `buildLinesBatchOnly` (batch headers
  *  only); the per-job rows are one Text row per RUNNING entry (batch
- *  `↓ select subagents` hint. renderNow's empty-deck guard tests
- *  `entries.size === 0 && batches.size === 0` directly (no projection
- *  read) so that a deck with only standalone entries still renders;
- *  `buildLines`' output is a strict superset of `buildLinesBatchOnly`'s
- *  (both contain batch headers; only `buildLines` adds standalone rows).
+ *  members included, #834) with the roster-mode `>` marker and the
+ *  agent-list hint (buildAgentListHint). renderNow's empty-deck guard
+ *  tests `entries.size === 0 && batches.size === 0` directly (no
+ *  projection read) so that a deck with only standalone entries still
+ *  renders; `buildLines`' output is a strict superset of
+ *  `buildLinesBatchOnly`'s (both contain batch headers; only `buildLines`
+ *  adds standalone rows).
  *  #914 — the per-job rows ARE the agent-list projection
  *  (buildAgentListLines, the shared overlay/widget row layout), and the
  *  hint line is the agent-list hint (buildAgentListHint). */

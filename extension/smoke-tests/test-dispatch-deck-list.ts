@@ -10,8 +10,9 @@
  *   - Enter on a job calls the view opener with that jobId; Enter on main
  *     closes without opening anything;
  *   - `x` then `y` kills exactly the selected job; `x` then `n` kills
- *     nothing; the stop-all chord (`ctrl+x` `ctrl+k`) then `y` calls
- *     killAllJobs;
+ *     nothing; the stop-all key (`X`, shift+x) then `y` aborts exactly
+ *     the visible job rows (`killJobs` — the scope matches the prompt's
+ *     count, not the whole registry);
  *   - `Esc` closes; unowned keys are swallowed;
  *   - a job settling while selected moves the selection to its neighbour;
  *     when ALL jobs settle the list closes itself (done);
@@ -37,7 +38,7 @@ import {
   createAgentListComponent,
   openAgentList,
 } from "../src/agent-list.ts";
-import { clearJobsForTesting, killJob } from "../src/async-jobs-lifecycle.ts";
+import { clearJobsForTesting, killJob, killJobs } from "../src/async-jobs-lifecycle.ts";
 import { jobs } from "../src/async-jobs-registry.ts";
 import type { BatchDeckEntry, DeckEntry } from "../src/dispatch-deck.ts";
 import { type RunningState, emptyRunningState } from "../src/progress.ts";
@@ -121,6 +122,7 @@ function makeHarness(entries: DeckEntry[], batches: BatchDeckEntry[], width = 80
       const mainRow = buildAgentListLines([], [], width, NOW)[0];
       if (mainRow) rows = [mainRow];
     },
+    killJobs,
   );
   // Prime the projection: the component's selection walks the last
   // rendered rows, so the first render fixes the row set (main first).
@@ -217,8 +219,9 @@ function registerRealJob(jobId: string): AbortController {
 }
 
 // ---------------------------------------------------------------------------
-// 4. The stop-all key `X` (shift+x, in-list only) → y calls killAllJobs
-//    and closes; `n` cancels.
+// 4. The stop-all key `X` (shift+x, in-list only) → y aborts the visible
+//    job rows (killJobs — the scope matches the prompt's count, not the
+//    whole registry) and closes; `n` cancels.
 // ---------------------------------------------------------------------------
 {
   const j1 = "real-all-1";

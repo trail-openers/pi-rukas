@@ -13,8 +13,11 @@
  *     anything else) cancels. A job that settles after the confirm is a
  *     no-op in the registry (`killJob` returns false for an unknown id).
  *   - `X` (shift+x, in-list only — see agent-list-keys.ts for the
- *     collision evidence) asks `Kill ALL N agents? (y/n)`; `y` calls
- *     `killAllJobs` once and closes the list.
+ *     collision evidence) asks `Kill ALL N agents? (y/n)`; `y` aborts
+ *     exactly the N visible job rows (`main` excluded) and closes the
+ *     list — the prompt's count and the abort scope are the same set, so
+ *     registry jobs the list does not show (batch orchestrators, non-deck
+ *     children) are never aborted by an in-list stop-all.
  *   - `Esc` closes the list back to the main UI.
  *
  * The list is a focused `ctx.ui.custom({ overlay: true })` component. The
@@ -42,10 +45,13 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Component, isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
 import { STOP_ALL_KEY } from "./agent-list-keys.ts";
-import { killAllJobs, killJob } from "./async-jobs-lifecycle.ts";
+import { killJob, killJobs } from "./async-jobs-lifecycle.ts";
 import { toTerminalLine } from "./dispatch-deck-line.ts";
-import { formatAgentRow, formatBatchRow } from "./dispatch-deck-rows.ts";
+import { buffers, startBuffer } from "./dispatch-deck-live.ts";
+import { suppressWidgetIfQuiet } from "./dispatch-deck-quiet.ts";
+import { formatAgentRow } from "./dispatch-deck-rows.ts";
 import type { BatchDeckEntry, DeckEntry } from "./dispatch-deck.ts";
+import { emptyRunningState } from "./progress.ts";
 
 /** The leading row's selectable key (Esc-equivalent — closes, never opens). */
 export const MAIN_ROW_KEY = "main";
@@ -59,8 +65,10 @@ export interface AgentListTheme {
 
 /**
  * One projected row of the agent list (shared by the overlay and the
- * passive-widget mirror). Batch headers sit between their members in
- * insertion order (the same shape the deck renders) and are NOT selectable.
+ * passive-widget mirror). Batch headers are NOT in the projection (the
+ * deck's batch-headers-only projection renders them — see
+ * buildAgentListLines), so `selectable` is true for the `main` and every
+ * job row.
  */
 export interface AgentListLine {
   /** MAIN_ROW_KEY for the main row; a job key otherwise. */
@@ -74,23 +82,20 @@ export interface AgentListLine {
 }
 
 /**
- * Project the agent-list rows from the deck maps: `main` first, then batch
- * headers / their members / standalone job rows in insertion (seq) order.
- * Batch members sit directly under their header (the header itself is a
- * non-selectable row) — the same shape the deck renders (#834). Every
+ * Project the agent-list rows: `main` first, then one row per RUNNING job
+ * (batch members included, insertion order). The `batches` parameter is
+ * retained for the composite's call signature — batch headers are NOT in
+ * this projection (the composite's batch-headers-only projection renders
+ * them, so a batch deck does not double-render its header); every
  * untrusted fragment (label, last tool name + hint) goes through
  * `toTerminalLine` with the caller's width budget.
  */
 export function buildAgentListLines(
   entries: readonly DeckEntry[],
-  batches: readonly BatchDeckEntry[],
+  _batches: readonly BatchDeckEntry[],
   width: number,
   now: number = Date.now(),
 ): AgentListLine[] {
-  type Item = { kind: "batch"; b: BatchDeckEntry } | { kind: "job"; e: DeckEntry };
-  // Batch members render as their OWN row under the header (the deck's row
-  // model, #834/#709 single-surface invariant): the header is a separate
-  // non-selectable row, so members are NOT filtered out here.
   // #914 — batch headers are NOT in the list's own projection: they render
   // via the deck's batch-headers-only projection (the composite's lines()
   // children), so a batch deck does not double-render its header. The
@@ -99,22 +104,35 @@ export function buildAgentListLines(
   // passive mirror (dispatch-deck-composite.ts) adds the header row on top
   // of the same job rows, so the operator sees the header once, up top,
   // exactly as before #914.
-  const lines: AgentListLine[] = [
-    { key: MAIN_ROW_KEY, text: toTerminalLine("main", width), selectable: true, running: true },
-  ];
+  const lines: AgentListLine[] = [mainRow(width)];
   for (const e of entries) {
     // #914 — the job row carries the full running activity (icon, label,
     // elapsed, last tool + use-count, hint — the formatRow projection)
     // plus the token total (formatAgentRow); the list is the surface that
     // shows the running tool, as the deck row did before #914.
-    lines.push({
-      key: e.key,
-      text: toTerminalLine(formatAgentRow(e, now), width),
-      selectable: true,
-      running: true,
-    });
+    lines.push(jobRow(e, width, now));
   }
   return lines;
+}
+
+/** The overlay's leading row (Esc-equivalent — closes, never opens). */
+export function mainRow(width: number): AgentListLine {
+  return {
+    key: MAIN_ROW_KEY,
+    text: toTerminalLine("main", width),
+    selectable: true,
+    running: true,
+  };
+}
+
+/** One job row (the formatAgentRow projection, sanitised at the row boundary). */
+export function jobRow(e: DeckEntry, width: number, now: number): AgentListLine {
+  return {
+    key: e.key,
+    text: toTerminalLine(formatAgentRow(e, now), width),
+    selectable: true,
+    running: true,
+  };
 }
 
 /**
@@ -126,6 +144,16 @@ export function buildAgentListLines(
  * `main` row remains) and the list must close itself (the main UI is
  * restored — the overlay `done` route); `theme()` supplies the selected /
  * muted styling; `done()` is the overlay's `ctx.ui.custom` done callback.
+ *
+ * #914 stop-all scope: the `Kill ALL` confirmation reports the number of
+ * VISIBLE rows (the job rows above it — the `main` row excluded) and `y`
+ * aborts the SAME set — the visible job keys, not the whole registry
+ * (`killAllJobs` would abort jobs the list does not show: batch
+ * orchestrators, non-deck driver children, jobs absent from the deck
+ * maps). `killJobs` is injected so the kill path is unit-testable without
+ * the shared registry (the list test drives it with a fake).
+ * `killJobs` returns the number of jobs actually aborted — the prompt's
+ * count and the action's scope are then proven equal, never assumed.
  *
  * The component swallows every key it owns: arrows, `j`/`k`, `Enter`,
  * `Esc`, `x`, and — while a y/n confirmation is pending — everything
@@ -140,6 +168,7 @@ export function createAgentListComponent(
   onSettle: () => void,
   theme: () => AgentListTheme,
   done: () => void,
+  killJobs: (keys: string[]) => number,
 ): Component {
   let index = 0;
   let pending: { kind: "kill"; key: string } | { kind: "kill-all" } | undefined;
@@ -170,10 +199,9 @@ export function createAgentListComponent(
     return true;
   };
 
-  // Re-project the rows from the live maps. A batch header is counted as
-  // "running" while any of its members run (the deck keeps the batch row
-  // in the projection until every member settles), so "the list must
-  // close itself" means: nothing but the `main` row remains.
+  // Re-project the rows from the live maps. The projection carries the
+  // `main` row plus one row per running job, so "the list must close
+  // itself" means: nothing but the `main` row remains.
   const renderable = (): AgentListLine[] => {
     const rows = getRows();
     if (rows.length === 1) onSettle();
@@ -204,6 +232,10 @@ export function createAgentListComponent(
       }
       if (pending) {
         const p = pending;
+        // The stop-all count and the abort scope are the SAME set: the
+        // visible job rows (`main` excluded — it is Esc-equivalent, not a
+        // killable agent). Orchestrator / non-deck registry jobs never
+        // appear here, so they are never aborted by an in-list stop-all.
         const n = Math.max(0, selectableRows().length - 1);
         const q =
           p.kind === "kill-all"
@@ -228,7 +260,11 @@ export function createAgentListComponent(
           if (p.kind === "kill") {
             killJob(p.key);
           } else {
-            killAllJobs();
+            killJobs(
+              selectableRows()
+                .slice(1)
+                .map((r) => r.key),
+            );
             done();
             return;
           }
@@ -318,8 +354,107 @@ export async function openAgentList(
           muted: (t) => theme.fg("muted", t),
         }),
         () => done(undefined),
+        killJobs,
       );
     },
     { overlay: true },
   );
+}
+
+// A minimal fake ctx for the quiet gate test (suppressWidgetIfQuiet calls
+// ctx.ui.setWidget when the widget is visible — here it is not, so the
+// call is a no-op; the fake needs the shape for the type, not the call).
+const fakeCtxWithUi = {
+  ui: { setWidget: () => {}, notify: () => {} },
+  hasUI: true,
+} as unknown as ExtensionContext;
+
+// ---------------------------------------------------------------------------
+// 8. Quiet-mode gate relocation (issue #914 / the adversarial round).
+//    The `PI_ENSEMBLE_QUIET_STATUS` early return that lived in
+//    dispatch-deck-live.ts `startBuffer` is REMOVED — buffers are ALWAYS
+//    created, because quiet mode now only suppresses the PASSIVE deck
+//    widget (dispatch-deck.ts `renderNow`); the agent list / roster still
+//    open the live view for a quiet session's rows. This block is the
+//    guard against regressing the relocation: it pins the two gates in
+//    opposite directions and proves the quiet gate CHANGED (buffers
+//    created) while the one that KEPT (the widget) is still suppressed.
+// ---------------------------------------------------------------------------
+{
+  const NOW = 2_000_000;
+  const entries: DeckEntry[] = [
+    {
+      key: "job-q",
+      label: "Q",
+      state: emptyRunningState("developer"),
+      seq: 0,
+      startedAt: NOW - 60_000,
+    },
+  ];
+  const quietSaved = process.env.PI_ENSEMBLE_QUIET_STATUS;
+  process.env.PI_ENSEMBLE_QUIET_STATUS = "1";
+  try {
+    // The quiet gate that CHANGED: startBuffer no longer early-returns.
+    // The buffer is created and the live view is available for a quiet
+    // session's rows (the list opens it via onRowConfirm, which reads the
+    // buffer — a quiet session with no buffer would fall through to the
+    // steer prompt, which is itself quiet-gated in dispatch-deck-interactive.
+    // The buffer existing is the load-bearing fact: it is the data the
+    // live view renders, and its absence was the old quiet gate's effect.
+    startBuffer("job-q");
+    const buf = buffers.get("job-q");
+    if (!buf || buf.length !== 0) {
+      console.error(
+        "✗ 8a: quiet mode still suppresses startBuffer (the gate was moved) — buffer absent",
+      );
+      process.exit(1);
+    }
+    console.log("✓ 8a: startBuffer creates a buffer in quiet mode (the gate moved)");
+
+    // The quiet gate that KEPT: renderNow still suppresses the widget.
+    // `suppressWidgetIfQuiet` returns true while quiet, so renderNow
+    // returns early and the deck widget is never set.
+    const quietSuppressed = suppressWidgetIfQuiet(
+      fakeCtxWithUi,
+      "ensemble:deck",
+      () => false,
+      () => {},
+    );
+    if (!quietSuppressed) {
+      console.error(
+        "✗ 8b: suppressWidgetIfQuiet returned false in quiet mode (the kept gate is gone)",
+      );
+      process.exit(1);
+    }
+    console.log(
+      "✓ 8b: suppressWidgetIfQuiet still suppresses the widget in quiet mode (the kept gate)",
+    );
+
+    // The agent list is reachable in quiet mode (the global shortcut is
+    // registered regardless — index.ts); the list's own rows project
+    // normally. This is the load-bearing fact for a quiet session: the
+    // operator can open the list and the live view without the widget.
+    const lines = buildAgentListLines(entries, [], 80, NOW);
+    if (lines.length !== 2 || lines[0]?.key !== MAIN_ROW_KEY || lines[1]?.key !== "job-q") {
+      console.error("✗ 8c: agent list does not project rows in quiet mode");
+      process.exit(1);
+    }
+    console.log("✓ 8c: the agent list projects its rows in quiet mode (the list is live)");
+
+    // The live view opens for a quiet session's row: the buffer exists
+    // (proven above) and the live-view component reads it on every
+    // render (dispatch-deck-live.ts) — the openLiveView route in
+    // onRowConfirm does not gate on quiet mode. This is the behavioural
+    // consequence of the gate relocation.
+    const liveViewAvailable = buf !== undefined;
+    if (!liveViewAvailable) {
+      console.error("✗ 8d: the live view is unavailable for a quiet session's row");
+      process.exit(1);
+    }
+    console.log("✓ 8d: the live view is available for a quiet session's row (the gate moved)");
+  } finally {
+    if (quietSaved === undefined) process.env.PI_ENSEMBLE_QUIET_STATUS = undefined;
+    else process.env.PI_ENSEMBLE_QUIET_STATUS = quietSaved;
+    buffers.delete("job-q");
+  }
 }

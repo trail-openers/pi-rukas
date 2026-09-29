@@ -22,9 +22,12 @@
  *     #176). The component re-reads the buffer on every render, so new
  *     events appear on the next render without re-creating the component.
  *
- * Quiet mode (`PI_ENSEMBLE_QUIET_STATUS=1`): `startBuffer` creates no
- * buffer, so a quiet-mode session's rows have no live view at all (the
- * deck itself is hidden too).
+ * Quiet mode (`PI_ENSEMBLE_QUIET_STATUS=1`): `startBuffer` creates the
+ * buffer regardless (#914 gate relocation — the early return that lived
+ * here is removed; quiet mode now only suppresses the PASSIVE deck widget,
+ * so a quiet session's rows still open the live view via the agent list /
+ * roster). The widget suppression in dispatch-deck.ts `renderNow` is the
+ * quiet gate that KEPT.
  *
  * Out of scope: /runs integration (#836); pause/skip/retry controls;
  * lens-review and adversarial children, which own their deck entries
@@ -106,7 +109,10 @@ export function toolCallArgsPreview(args: unknown): string {
   return truncate(collapseToSpaces(bounded), LIVE_ARGS_MAX);
 }
 
-const buffers = new Map<string, LiveEvent[]>();
+// Exported for the quiet-mode gate test (agent-list.ts block 8) — the
+// buffer map is the load-bearing fact the test reads to prove the
+// `startBuffer` gate moved (a quiet session's buffer IS created).
+export const buffers = new Map<string, LiveEvent[]>();
 
 /**
  * Create (or return) the per-job ring buffer.

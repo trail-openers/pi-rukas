@@ -15,7 +15,8 @@
  * steered; the header stays as its own Text row for the progress display).
  * While roster mode is active (see dispatch-deck-nav.ts) the selected row
  * carries a `>` marker; when the editor is empty and any job runs, a
- * one-line `↓ select subagents` hint appears below the rows.
+ * one-line agent-list hint (buildAgentListHint — `↓ agents · Enter view ·
+ * x stop · …`) appears below the rows.
  *
  * The composite returns a Container. Pi's setWidget calls
  * `existing.dispose?.()` on the previous component; Container has no
@@ -172,7 +173,7 @@ export function buildSteerPrompt(e: DeckEntry, now: number): string {
  * Text rows (capped at `maxRows` with an overflow indicator when needed),
  * the per-job plain Text rows (one per running entry, `>` on the
  * selected row while roster mode is active), and — when the editor is
- * empty and jobs exist — the one-line `↓ select subagents` hint.
+ * empty and jobs exist — the one-line agent-list hint (buildAgentListHint).
  *
  * The factory returns a Container. Pi's setWidget calls
  * `existing.dispose?.()` on the previous component; Container has no

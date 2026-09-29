@@ -18,6 +18,19 @@ import { trace } from "./trace.ts";
 let _navUnsub: (() => void) | undefined;
 let _navWarned = false;
 
+// The widget's visibility flag (dispatch-deck.ts no longer holds
+// widgetVisible — it moves here with setDeckWidget, the single writer,
+// so the flag and the setWidget call stay in lockstep).
+let _widgetVisible = false;
+
+export function _getWidgetVisible(): boolean {
+  return _widgetVisible;
+}
+
+export function _setWidgetVisible(v: boolean): void {
+  _widgetVisible = v;
+}
+
 export function _getNavUnsub(): (() => void) | undefined {
   return _navUnsub;
 }
