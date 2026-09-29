@@ -20,11 +20,12 @@
  *   - the roster rows and steer prompt respect the same invariants.
  */
 
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { buildCompositeFactory, buildSteerPrompt } from "../src/dispatch-deck-composite.ts";
 import { buildAgentListLines } from "../src/agent-list.ts";
 import {
   NEWLINE_SEP,
+  boundedLine,
   collapseToSpaces,
   sanitizeText,
   toTerminalLine,
@@ -121,6 +122,28 @@ function assert(cond: boolean, msg: string) {
 {
   const c = collapseToSpaces("a\n\n  b\tc\x1b[31m");
   assert(c === "a b c", `4a: collapsed + sanitised (got ${JSON.stringify(c)})`);
+}
+
+// ---------------------------------------------------------------------------
+// 4b. boundedLine: huge input is bounded (no ESC, visibleWidth ≤ width);
+//     a normal short input is byte-identical to the unbounded form.
+// ---------------------------------------------------------------------------
+{
+  // A 1 MB input (with hostile ESC sequences in the TAIL): the head is
+  // capped before sanitising, the visible width is bounded, and the ESC
+  // sequences in the head are stripped; tail content is truncated away.
+  const big = "x".repeat(512 * 1024) + "\u001b[31m" + "tail".repeat(100_000);
+  const t0 = Date.now();
+  const line = boundedLine(big, 80);
+  assert(visibleWidth(line) <= 80, `4b-a: 1 MB input → visibleWidth ≤ 80 (got ${visibleWidth(line)})`);
+  assert(!line.includes("\u001b"), "4b-b: no ESC in the bounded line");
+  assert(line.includes("…"), "4b-c: ellipsis marks the truncation");
+  assert(line.startsWith("x"), "4b-d: the head is preserved");
+  assert(!line.includes("tail"), "4b-e: the tail beyond the truncation point is gone");
+  assert(Date.now() - t0 < 2000, "4b-f: bounded input → no O(full string) scan");
+  // Short inputs are byte-identical to the unbounded pipeline.
+  assert(boundedLine("short input", 40) === truncateToWidth(sanitizeText("short input"), 40, "…"), "4b-g: short input byte-identical to the unbounded form");
+  assert(boundedLine("a b c d", 80) === "a b c d", "4b-h: short input untruncated, verbatim");
 }
 
 // ---------------------------------------------------------------------------
