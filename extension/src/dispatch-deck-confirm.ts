@@ -33,6 +33,7 @@ export async function onRowConfirm(
   ctx: ExtensionContext,
   key: string,
   host: RowConfirmHost,
+  opts?: { onReturnToList?: () => void },
 ): Promise<void> {
   const entry = host.getEntry(key);
   if (!entry) {
@@ -41,11 +42,16 @@ export async function onRowConfirm(
     // the steer fallthrough (no buffer AND no entry) is a no-op, so the
     // trace lives here: the operator sees the Enter that did nothing.
     if (hasBuffer(key)) {
-      await openLiveView(ctx, key, {
-        getEntry: (k) => host.getEntry(k),
-        buildSteerPrompt: (e, now) => deckComposite.buildSteerPrompt(e, now),
-        steer: (k, text) => host.steer(k, text),
-      });
+      await openLiveView(
+        ctx,
+        key,
+        {
+          getEntry: (k) => host.getEntry(k),
+          buildSteerPrompt: (e, now) => deckComposite.buildSteerPrompt(e, now),
+          steer: (k, text) => host.steer(k, text),
+        },
+        opts,
+      );
       return;
     }
     trace(
@@ -54,14 +60,24 @@ export async function onRowConfirm(
     return;
   }
   if (hasBuffer(key)) {
-    await openLiveView(ctx, key, {
-      getEntry: (k) => host.getEntry(k),
-      buildSteerPrompt: (e, now) => deckComposite.buildSteerPrompt(e, now),
-      steer: (k, text) => host.steer(k, text),
-    });
+    await openLiveView(
+      ctx,
+      key,
+      {
+        getEntry: (k) => host.getEntry(k),
+        buildSteerPrompt: (e, now) => deckComposite.buildSteerPrompt(e, now),
+        steer: (k, text) => host.steer(k, text),
+      },
+      opts,
+    );
     return;
   }
   await openSteerPrompt(ctx, entry, host);
+  // A job opened from the agent list (opts.onReturnToList set) must return
+  // to the list when the steer prompt resolves — whether the operator
+  // submitted or cancelled. The no-op branch above (no buffer, no entry)
+  // must NOT call it: nothing was opened.
+  opts?.onReturnToList?.();
 }
 
 /**

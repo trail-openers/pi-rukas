@@ -28,14 +28,18 @@
  *     outcome (async-jobs.ts calls `markSettled` at the same sites as
  *     `clearEntry`); the view header will read it in #916 slice B.
  *   - `onBufferAppend(key, cb)` (unsubscribe returned) notifies subscribers
- *     after an event is appended — the overlay uses it to re-render instead
- *     of relying on the deck's 1 s ticker (#916 PM decision).
- *   - `createLiveViewComponent` builds the overlay component (returned
- *     DIRECTLY from the `ctx.ui.custom` factory — never Container-wrapped,
- *     #176). The component re-reads the buffer on every render, so new
- *     events appear on the next render without re-creating the component.
- *     Each event still renders as ONE line, width-bounded via
- *     `toTerminalLine` (slice B rewrites the view with real wrapping).
+ *     after an event is appended — the overlay uses it to re-render
+ *     immediately (`openLiveView` subscribes on open, unsubscribes on
+ *     close), while the deck's 1 s ticker also re-renders the focused
+ *     overlay (idempotent — the same buffer, re-read).
+ *   - `createAgentViewComponent` builds the overlay component (returned
+ *     DIRECTLY from the `ctx.ui.custom` factory — never Container-
+ *     wrapped, #176). The full-screen view (slice B) renders the
+ *     untruncated buffer in full, wrapped to the render width; the
+ *     component re-reads the buffer on every render, so new events appear
+ *     on the next render without re-creating the component (appends
+ *     trigger a re-render via onBufferAppend, and the deck's 1 s ticker
+ *     re-renders too — idempotent).
  *
  * Quiet mode (`PI_ENSEMBLE_QUIET_STATUS=1`): `startBuffer` creates the
  * buffer regardless (#914 gate relocation — the early return that lived
@@ -50,18 +54,28 @@
  */
 
 import { NEWLINE_SEP, sanitizeText } from "./dispatch-deck-line.ts";
+import { clearViewScroll } from "./dispatch-deck-live-view-component.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { trace } from "./trace.ts";
+
+/**
+ * The live-view theme — the component receives it from the caller
+ * (dispatch-deck-live-view.ts builds it from the pi-tui theme).
+ */
+export interface LiveViewTheme {
+  /** Muted colour for header/hint/error-marker text. */
+  muted: (t: string) => string;
+  /** Error colour for error-marked tool results. */
+  error: (t: string) => string;
+}
 
 // #916 — the overlay component and the open/close loop moved to
 // dispatch-deck-live-view.ts when this file hit the 500-line cap; the
 // re-exports below keep the existing import paths working unchanged.
 export {
-  createLiveViewComponent,
+  createAgentViewComponent,
+  getViewScrollState,
   openLiveView,
-  type LiveViewHeader,
-  type LiveViewTheme,
-  type LiveViewHost,
 } from "./dispatch-deck-live-view.ts";
 
 // =============================================================================
@@ -197,6 +211,10 @@ export function dropBuffer(key: string): void {
   settledStatuses.delete(key);
   viewsOpen.delete(key);
   bufferSizes.delete(key);
+  // #916 SLICE B — clear the job's persisted scroll/follow state (the
+  // view component's module-level Map) so no per-key view state outlives
+  // the buffer (the small exported hook the brief calls for).
+  clearViewScroll(key);
 }
 
 /** True when a live-view buffer exists for the key (gate for the row action). */

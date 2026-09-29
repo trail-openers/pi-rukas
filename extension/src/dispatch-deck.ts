@@ -357,8 +357,16 @@ function rowConfirmHostFor(ctx: ExtensionContext): RowConfirmHost {
 // ctx) and passed down — confirmRowImpl itself never imports a value from
 // this module, so the dispatch-deck.ts ↔ dispatch-deck-confirm-row.ts
 // import cycle stays broken (type-only imports are fine).
-export function confirmRow(ctx: ExtensionContext, key: string): Promise<void> {
-  return confirmRowImpl(ctx, key, rowConfirmHostFor(ctx));
+//
+// #916 SLICE B — `opts.onReturnToList` threads the agent-list re-open into
+// the view's Esc route (the roster nav path passes nothing — Esc just
+// closes, as before).
+export function confirmRow(
+  ctx: ExtensionContext,
+  key: string,
+  opts?: { onReturnToList?: () => void },
+): Promise<void> {
+  return confirmRowImpl(ctx, key, rowConfirmHostFor(ctx), opts);
 }
 
 function startTickerIfNeeded(): void {
