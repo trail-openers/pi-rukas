@@ -72,6 +72,18 @@ export function formatRow(
   return `${isStale(entry, now) ? "⚠" : "⏳"} ${formatRowCore(entry, now)}`;
 }
 
+/** #914 — the agent-list job row: the `formatRow` projection (icon, label,
+ *  elapsed, last tool + use-count, last-tool hint — the same running
+ *  activity the deck row shows) plus the running job's token total. The
+ *  list is the overlay's one line per job, so the tool/hint projection
+ *  moves here from the deck row; the token total is list-specific. */
+export function formatAgentRow(
+  entry: { label: string; state: RunningState; startedAt: number },
+  now: number = Date.now(),
+): string {
+  return `${formatRow(entry, now)} · ${entry.state.totalTokens} tok`;
+}
+
 export function formatBatchRow(
   batch: { label: string; size: number; completed: number; startedAt: number },
   now: number = Date.now(),

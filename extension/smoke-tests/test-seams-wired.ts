@@ -178,7 +178,7 @@ const SEAMS: Seam[] = [
       buildJobRows:
         "row builder with the #835 key-fragment disambiguator; exercised by test-dispatch-deck.ts block 14",
     },
-    canary: { symbol: "buildCompositeFactory", importer: "dispatch-deck.ts" },
+    canary: { symbol: "buildCompositeFactory", importer: "dispatch-deck-confirm-row.ts" },
   },
   {
     // #912 — the per-clone review ledger. The writer calls live in

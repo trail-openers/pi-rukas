@@ -119,17 +119,12 @@ const fakeTheme = {
   clearEntry("a");
   await new Promise((r) => setImmediate(r));
 
-  const nonUndefinedKeys = new Set(
-    calls.filter((c) => c.content !== undefined).map((c) => c.key),
-  );
+  const nonUndefinedKeys = new Set(calls.filter((c) => c.content !== undefined).map((c) => c.key));
   assert(
     nonUndefinedKeys.size === 1,
     `exactly ONE distinct key received non-undefined content (got ${nonUndefinedKeys.size}: ${[...nonUndefinedKeys].join(", ")})`,
   );
-  assert(
-    nonUndefinedKeys.has("ensemble:deck"),
-    "the single key is 'ensemble:deck'",
-  );
+  assert(nonUndefinedKeys.has("ensemble:deck"), "the single key is 'ensemble:deck'");
   const deckCall = calls.find((c) => c.key === "ensemble:deck" && c.content !== undefined);
   assert(
     typeof deckCall?.content === "function",
@@ -170,7 +165,25 @@ const fakeTheme = {
     },
   ];
   const rows: DeckRows = { running: entries, showHint: true };
-  const factory = buildCompositeFactory(() => [], () => rows, 20);
+  // #914 — the new agentList projection: the leading `main` row (the ↓
+  // roster treats it as Esc-equivalent) plus one job row per running job.
+  // The row text mirrors the formatRow projection: the running activity
+  // (label · elapsed · last tool · hint) plus the token total — the roster
+  // row must keep showing the running tool (block 9b asserts on it).
+  const agentRows = () => [
+    { key: "main", text: "main", selectable: true },
+    ...rows.running.map((e) => ({
+      key: e.key,
+      text: `⏳ ${e.label} · ${e.state.role}${e.state.lastToolName ? ` (${e.state.lastToolName})` : ""} · 0 tok`,
+      selectable: true,
+    })),
+  ];
+  const factory = buildCompositeFactory(
+    () => [],
+    () => rows,
+    () => agentRows(),
+    20,
+  );
   const component = factory(null, fakeTheme);
   assert(component instanceof Container, "composite factory returns a Container");
   if (component instanceof Container) {
@@ -180,14 +193,23 @@ const fakeTheme = {
       textChildren.length === component.children.length,
       "every child is a plain Text row (no SelectList, #834)",
     );
-    // 2 job rows + 1 blank separator + 1 hint = 4 rows.
+    // #914 — the row projection above the hint is the AGENT-LIST projection:
+    // the leading `main` row, then the job rows (the roster walks the same
+    // rows). 2 jobs → 3 rows + blank separator + hint = 5 rows.
     assert(
-      component.children.length === 4,
-      `2 jobs + blank separator + hint → 4 rows (got ${component.children.length})`,
+      component.children.length === 5,
+      `main row + 2 jobs + blank separator + hint → 5 rows (got ${component.children.length})`,
     );
-    // The roster-mode hint is present (showHint=true, inactive).
-    const hintRows = textChildren.filter((c) => (c as Text).text === "↓ select subagents");
-    assert(hintRows.length === 1, "the '↓ select subagents' hint row is present");
+    // #914 — the leading `main` row renders in the passive roster.
+    const mainRows = textChildren.filter((c) => (c as Text).text.startsWith("◆ "));
+    assert(mainRows.length === 1, "the leading 'main' row is present in the passive roster (#914)");
+    // #914 — the roster-mode hint is the new agent-list hint line (before:
+    // DECK_HINT_TEXT "↓ select subagents"; after: the agent-list hint).
+    // The assertion checks the hint line is PRESENT and mentions the agents;
+    // the exact wording is pinned by buildAgentListHint in
+    // test-dispatch-deck-list.ts, not re-hard-coded here.
+    const hintRows = textChildren.filter((c) => (c as Text).text.startsWith("↓ agents"));
+    assert(hintRows.length === 1, "the '↓ agents …' hint row is present (#914)");
     // Each job renders exactly once (one row per job, single-surface
     // invariant #709/#729/#742/#761).
     const rendered = textChildren.map((c) => (c as Text).text);
@@ -216,7 +238,22 @@ const fakeTheme = {
     },
   ];
   const rows: DeckRows = { running: entries, selectedKey: "job-b", showHint: false };
-  const factory = buildCompositeFactory(() => [], () => rows, 20);
+  // #914 — same agent-list projection shape as block 9 (main + job rows),
+  // carrying the running activity (label · role · last tool · token total).
+  const agentRows = () => [
+    { key: "main", text: "main", selectable: true },
+    ...rows.running.map((e) => ({
+      key: e.key,
+      text: `⏳ ${e.label} · ${e.state.role}${e.state.lastToolName ? ` (${e.state.lastToolName})` : ""} · 0 tok`,
+      selectable: true,
+    })),
+  ];
+  const factory = buildCompositeFactory(
+    () => [],
+    () => rows,
+    () => agentRows(),
+    20,
+  );
   const component = factory(null, fakeTheme);
   if (component instanceof Container) {
     const rendered = component.children
@@ -241,13 +278,17 @@ const fakeTheme = {
 // production; here we assert the factory's own behaviour).
 {
   const rows: DeckRows = { running: [], showHint: false };
-  const factory = buildCompositeFactory(() => [], () => rows, 20);
+  // #914 — empty agent-list projection (no running jobs → no main row,
+  // the main row appears only when ≥1 job is running).
+  const factory = buildCompositeFactory(
+    () => [],
+    () => rows,
+    () => [],
+    20,
+  );
   const component = factory(null, fakeTheme);
   if (component instanceof Container) {
-    assert(
-      component.children.length === 0,
-      "no running jobs, no hint → 0 rows",
-    );
+    assert(component.children.length === 0, "no running jobs, no hint → 0 rows");
   }
 }
 
@@ -262,8 +303,15 @@ const fakeTheme = {
   startEntry("m-761-a", { label: "developer[task-A]", role: "developer", batchKey: "b-761" });
   startEntry("m-761-b", { label: "developer[task-B]", role: "developer", batchKey: "b-761" });
   startEntry("s-761", { label: "explore", role: "explore" });
-  assert(snapshot().length === 3, "canary: deck populated (3 entries) — quiet env cannot vacuate the block");
-  type WCall = { key: string; content: string[] | ((...a: unknown[]) => unknown) | undefined; options?: { placement?: string } };
+  assert(
+    snapshot().length === 3,
+    "canary: deck populated (3 entries) — quiet env cannot vacuate the block",
+  );
+  type WCall = {
+    key: string;
+    content: string[] | ((...a: unknown[]) => unknown) | undefined;
+    options?: { placement?: string };
+  };
   const calls: WCall[] = [];
   const ctx = {
     hasUI: true,
@@ -286,21 +334,30 @@ const fakeTheme = {
   ) as Container;
   assert(comp instanceof Container, "Container");
   if (comp instanceof Container) {
-    const rendered = comp.children
-      .filter((c) => c instanceof Text)
-      .map((c) => (c as Text).text);
+    const rendered = comp.children.filter((c) => c instanceof Text).map((c) => (c as Text).text);
     const nonEmpty = rendered.filter((l) => l !== "");
     // The batch header renders once (via the batch-headers-only projection).
-    assert(nonEmpty.some((l) => l.includes("batch[developer×2]")), "batch header in rows");
+    assert(
+      nonEmpty.some((l) => l.includes("batch[developer×2]")),
+      "batch header in rows",
+    );
     // Each member renders exactly ONCE as a per-job row (#834: one Text
     // row per job; no SelectList second surface).
     const n = (frag: string) => nonEmpty.filter((l) => l.includes(frag)).length;
     assert(n("task-A") === 1, "member A renders exactly once");
     assert(n("task-B") === 1, "member B renders exactly once");
     assert(n("explore") >= 1, "standalone renders");
-    // 1 batch header + 3 job rows + 1 blank separator + 1 hint row
-    // (empty editor → hint shown) = 6 children total.
-    assert(comp.children.length === 6, "batch header + 3 job rows + separator + hint");
+    // #914 child-count flip (before/after):
+    //   before: `comp.children.length === 6` — "1 batch header + 3 job rows + 1 blank separator + 1 hint row (empty editor → hint shown)"
+    //   after:  `comp.children.length === 7` — the same shape with the
+    //           agent-list projection's rows: main + 3 job rows (the batch
+    //           header renders only via the batch-headers projection, not
+    //           double), + blank separator + hint. Sole flip: the leading
+    //           `main` row appears because ≥1 job is running.
+    assert(
+      comp.children.length === 7,
+      "main + 3 job rows + separator + hint (#914); batch header via the lines projection",
+    );
   }
   detach();
 }

@@ -1,5 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerAdversarialTool } from "./adversarial.ts";
+import { LIST_SHORTCUT } from "./agent-list-keys.ts";
+import { openAgentList } from "./agent-list.ts";
 import { registerAgentsMdTools } from "./agents-md-tool.ts";
 import { setParentExtensionApi } from "./async-jobs-registry.ts";
 import { registerAsyncJobsLifecycle } from "./async-jobs.ts";
@@ -88,6 +90,26 @@ export default async function (pi: ExtensionAPI) {
   // session_shutdown when PI_ENSEMBLE_AUTOSAVE=1. Opt-in; no-op otherwise.
   sessionAutosave.attach(pi);
 
+  // #914 — global shortcut for the agent-list overlay (main + every running
+  // subagent; Enter → live view, x → kill, the stop-all chord → kill all,
+  // Esc → main UI). The handler opens the list with its OWN ctx (the
+  // registerShortcut handler receives a fresh ctx per press), and routes
+  // Enter-on-job through the deck's confirm route unchanged until #916.
+  // Registered even in quiet mode (quiet only suppresses the passive deck
+  // widget, #914).
+  try {
+    pi.registerShortcut(LIST_SHORTCUT, {
+      description: "Open agent list",
+      handler: (ctx) =>
+        openAgentList(ctx, {
+          getEntries: dispatchDeck.snapshot,
+          openJob: (key) => dispatchDeck.confirmRow(ctx, key),
+          onSettle: () => {},
+        }),
+    });
+  } catch (err) {
+    trace(`agent-list: shortcut registration failed: ${(err as Error).message}`);
+  }
   // Capture an ExtensionContext so the dispatch deck (#117) can call
   // ctx.ui.setStatus from spawn.ts onProgress callbacks that fire outside
   // any event handler scope. Pi passes ctx into every event listener; we
