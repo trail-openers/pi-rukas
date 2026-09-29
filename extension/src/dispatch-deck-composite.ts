@@ -29,8 +29,8 @@
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, Container, type TUI, Text } from "@earendil-works/pi-tui";
-import { MAIN_ROW_KEY, buildAgentListHint } from "./agent-list-keys.ts";
-import type { AgentListLine } from "./agent-list.ts";
+import { buildAgentListHint } from "./agent-list-keys.ts";
+import { type AgentListLine, renderAgentRow } from "./agent-list.ts";
 import { toTerminalLine } from "./dispatch-deck-line.ts";
 import type { DeckEntry } from "./dispatch-deck.ts";
 import { formatElapsed } from "./progress.ts";
@@ -119,20 +119,16 @@ export function buildCompositeFactory(
     // deck does not double-render its header.
     const selKey = rowState.selectedKey;
     for (const row of agentRows) {
-      const isSel = row.selectable && selKey === row.key;
-      const prefix = row.key === MAIN_ROW_KEY ? "◆ " : isSel ? "> " : row.selectable ? "  " : "   ";
-      const line = toTerminalLine(prefix + row.text, lineWidth);
-      const text = isSel
-        ? theme.fg("accent", line)
-        : row.selectable
-          ? line
-          : theme.fg("muted", line);
+      const text = renderAgentRow(row, row.selectable && selKey === row.key, lineWidth, {
+        selected: (t) => theme.fg("accent", t),
+        muted: (t) => theme.fg("muted", t),
+      });
       container.addChild(new Text(text, 1, 0));
     }
     if (rowState.running.length > 0) container.addChild(new Text("", 1, 0));
     if (rowState.showHint) {
       container.addChild(
-        new Text(theme.fg("muted", toTerminalLine(buildAgentListHint(lineWidth), lineWidth)), 1, 0),
+        new Text(theme.fg("muted", toTerminalLine(buildAgentListHint(), lineWidth)), 1, 0),
       );
     }
     return container;

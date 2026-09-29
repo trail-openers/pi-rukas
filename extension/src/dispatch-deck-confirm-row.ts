@@ -79,7 +79,7 @@ export function buildCompositeWidgetFactory(
       selectedKey: getSelectedKey(),
       showHint: getShowHint(),
     }),
-    () => buildAgentListLines(getEntries(), getBatches(), maxRows),
+    () => buildAgentListLines(getEntries(), maxRows),
     maxRows,
   );
 }

@@ -41,7 +41,7 @@ function makeHarness(entries: DeckEntry[], width = 80): Harness {
   let rows: AgentListLine[] = [];
   h.comp = createAgentListComponent(
     () => {
-      rows = buildAgentListLines(entries, [], width, NOW);
+      rows = buildAgentListLines(entries, width, NOW);
       return rows;
     },
     () => width,
@@ -77,7 +77,7 @@ function makeHarness(entries: DeckEntry[], width = 80): Harness {
     seq: i,
     startedAt: NOW - 1000 * (i + 1),
   }));
-  const lines = buildAgentListLines(entries, [], 60, NOW);
+  const lines = buildAgentListLines(entries, 60, NOW);
   let allSingle = true;
   let allBounded = true;
   for (const row of lines) {

@@ -100,7 +100,7 @@ const fakeCtxWithUi = {
     // registered regardless — index.ts); the list's own rows project
     // normally. This is the load-bearing fact for a quiet session: the
     // operator can open the list and the live view without the widget.
-    const lines = buildAgentListLines(entries, [], 80, NOW);
+    const lines = buildAgentListLines(entries, 80, NOW);
     if (lines.length !== 2 || lines[0]?.key !== MAIN_ROW_KEY || lines[1]?.key !== "job-q") {
       fail("8c: agent list does not project rows in quiet mode");
     } else {

@@ -62,7 +62,7 @@ const fakeTheme = {
 
   // #914 — buildAgentListLines is the live projection; the fragment is
   // appended only to rows that would otherwise be byte-identical.
-  const agentLines = buildAgentListLines(entries, [], 200, now);
+  const agentLines = buildAgentListLines(entries, 200, now);
   // Skip the leading main row.
   const jobLines = agentLines.slice(1);
   assert(jobLines.length === 2, "14b-pre: 2 job rows after the main row");
@@ -110,7 +110,7 @@ const fakeTheme = {
     startedAt: now - 134_000,
     state: makeState("developer", { lastEventAt: now - 1000 }),
   }));
-  const advLines = buildAgentListLines(advEntries, [], 200, now);
+  const advLines = buildAgentListLines(advEntries, 200, now);
   const advFragments = advLines.slice(1).map((r) => r.text.split(" · ").pop() ?? "");
   assert(
     new Set(advFragments).size === 3 &&

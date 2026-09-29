@@ -48,7 +48,8 @@ import { MAIN_ROW_KEY, STOP_ALL_KEY } from "./agent-list-keys.ts";
 import { killJob, killJobs } from "./async-jobs-lifecycle.ts";
 import { toTerminalLine } from "./dispatch-deck-line.ts";
 import { formatAgentRow } from "./dispatch-deck-rows.ts";
-import type { BatchDeckEntry, DeckEntry } from "./dispatch-deck.ts";
+import type { DeckEntry } from "./dispatch-deck.ts";
+import { trace } from "./trace.ts";
 
 // #914 — MAIN_ROW_KEY is defined in the leaf agent-list-keys.ts (the
 // import cycle is broken by keeping it in the leaf); re-exported from here
@@ -82,27 +83,20 @@ export interface AgentListLine {
 
 /**
  * Project the agent-list rows: `main` first, then one row per RUNNING job
- * (batch members included, insertion order). The `batches` parameter is
- * retained for the composite's call signature — batch headers are NOT in
- * this projection (the composite's batch-headers-only projection renders
- * them, so a batch deck does not double-render its header); every
- * untrusted fragment (label, last tool name + hint) goes through
- * `toTerminalLine` with the caller's width budget.
+ * (batch members included, insertion order). Batch headers are NOT in this
+ * projection — the composite's batch-headers-only projection (the
+ * `lines()` children) renders them, so a batch deck does not double-render
+ * its header; the passive mirror (dispatch-deck-composite.ts) adds the
+ * header row on top of the same job rows, so the operator sees the header
+ * once, up top, exactly as before #914. Every untrusted fragment (label,
+ * last tool name + hint) goes through `toTerminalLine` with the caller's
+ * width budget.
  */
 export function buildAgentListLines(
   entries: readonly DeckEntry[],
-  _batches: readonly BatchDeckEntry[],
   width: number,
   now: number = Date.now(),
 ): AgentListLine[] {
-  // #914 — batch headers are NOT in the list's own projection: they render
-  // via the deck's batch-headers-only projection (the composite's lines()
-  // children), so a batch deck does not double-render its header. The
-  // overlay shows only the main row + the job rows (batch members included,
-  // each with its own row — the #834/#709 single-surface invariant); the
-  // passive mirror (dispatch-deck-composite.ts) adds the header row on top
-  // of the same job rows, so the operator sees the header once, up top,
-  // exactly as before #914.
   const lines: AgentListLine[] = [mainRow(width)];
   // #835 on the live projection: two same-role jobs whose keys share a
   // prefix can render byte-identical rows from spawn until the first
@@ -119,16 +113,42 @@ export function buildAgentListLines(
     // elapsed, last tool + use-count, hint — the formatRow projection)
     // plus the token total (formatAgentRow); the list is the surface that
     // shows the running tool, as the deck row did before #914.
+    // Computed once per entry and reused for the collision check and the
+    // row projection (the two helpers would otherwise re-project it).
     const plain = formatAgentRow(e, now);
     const frag = fragments[i] ?? "";
+    const fragment = e.key.length > 10 ? `key ${frag}` : frag;
     lines.push(
       seen.has(plain) === false && e.key.length <= 10
-        ? jobRow(e, width, now)
-        : jobRowWithFragment(e, width, now, e.key.length > 10 ? `key ${frag}` : frag),
+        ? { key: e.key, text: toTerminalLine(plain, width), selectable: true }
+        : { key: e.key, text: toTerminalLine(`${plain} · ${fragment}`, width), selectable: true },
     );
     seen.set(plain, (seen.get(plain) ?? 0) + 1);
   }
   return lines;
+}
+
+/**
+ * Render one projected row with its list prefix and selected/plain/muted
+ * theming — the single definition of the row shape shared by the overlay
+ * (createAgentListComponent.render) and the passive-widget mirror
+ * (buildCompositeFactory in dispatch-deck-composite.ts). The prefix + row
+ * text goes through `toTerminalLine` exactly once, at the caller's width.
+ */
+export function renderAgentRow(
+  row: AgentListLine,
+  selected: boolean,
+  width: number,
+  theme: { selected: (t: string) => string; muted: (t: string) => string },
+): string {
+  const prefix =
+    row.key === MAIN_ROW_KEY ? "◆ " : row.selectable ? (selected ? "> " : "  ") : "   ";
+  const line = toTerminalLine(prefix + row.text, width);
+  return selected && row.selectable
+    ? theme.selected(line)
+    : row.selectable
+      ? line
+      : theme.muted(line);
 }
 
 /** The overlay's leading row (Esc-equivalent — closes, never opens). */
@@ -207,36 +227,6 @@ function jobRowKeys(rows: readonly AgentListLine[]): string[] {
   return rows.filter((r) => r.selectable && r.key !== MAIN_ROW_KEY).map((r) => r.key);
 }
 
-/** One job row (the formatAgentRow projection, sanitised at the row boundary). */
-export function jobRow(e: DeckEntry, width: number, now: number): AgentListLine {
-  return {
-    key: e.key,
-    text: toTerminalLine(formatAgentRow(e, now), width),
-    selectable: true,
-  };
-}
-
-/**
- * One job row carrying the #835 collision-aware `· key …` fragment (only
- * rendered for rows that would otherwise collide — see buildAgentListLines).
- * The fragment is appended to the raw projection BEFORE the single
- * `toTerminalLine` pass, so the render-width truncation treats row and
- * fragment as one line — the same guarantee the deck row had (the raw row
- * + suffix bounded to one terminal line at the caller's width).
- */
-function jobRowWithFragment(
-  e: DeckEntry,
-  width: number,
-  now: number,
-  fragment: string,
-): AgentListLine {
-  return {
-    key: e.key,
-    text: toTerminalLine(`${formatAgentRow(e, now)} · ${fragment}`, width),
-    selectable: true,
-  };
-}
-
 /**
  * Build the agent-list overlay component.
  *
@@ -266,7 +256,7 @@ function jobRowWithFragment(
 export function createAgentListComponent(
   getRows: () => AgentListLine[],
   width: () => number,
-  openJob: (key: string) => void,
+  openJob: (key: string) => void | Promise<void>,
   onSettle: () => void,
   theme: () => AgentListTheme,
   done: () => void,
@@ -275,6 +265,12 @@ export function createAgentListComponent(
   let index = 0;
   let pending: { kind: "kill"; key: string } | { kind: "kill-all" } | undefined;
   let lastRows: AgentListLine[] = [];
+  // #914 — onSettle latch: renderable() runs on every render, so without a
+  // latch the settled state (rows.length === 1) would re-fire onSettle on
+  // every tick. The latch fires it at most once per component, on the
+  // first render that sees the settled state (the all-jobs-settled case —
+  // the list must close itself once, never re-fire on a later render).
+  let settledFired = false;
 
   const selectableRows = (): AgentListLine[] => lastRows.filter((r) => r.selectable);
 
@@ -306,7 +302,10 @@ export function createAgentListComponent(
   // itself" means: nothing but the `main` row remains.
   const renderable = (): AgentListLine[] => {
     const rows = getRows();
-    if (rows.length === 1) onSettle();
+    if (rows.length === 1 && !settledFired) {
+      settledFired = true;
+      onSettle();
+    }
     return rows;
   };
 
@@ -321,16 +320,7 @@ export function createAgentListComponent(
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i];
         if (!row) continue;
-        const prefix =
-          row.key === MAIN_ROW_KEY ? "◆ " : row.selectable ? (i === index ? "> " : "  ") : "   ";
-        const line = toTerminalLine(prefix + row.text, width);
-        lines.push(
-          i === index && row.selectable
-            ? theme().selected(line)
-            : row.selectable
-              ? line
-              : theme().muted(line),
-        );
+        lines.push(renderAgentRow(row, i === index, width, theme()));
       }
       if (pending) {
         const p = pending;
@@ -371,7 +361,17 @@ export function createAgentListComponent(
           if (p.kind === "kill") {
             killJob(p.key);
           } else {
-            killJobs(jobRowKeys(lastRows));
+            // #914 — the prompt's count and the abort scope are the SAME
+            // set (jobRowKeys); when the registry aborted fewer (jobs that
+            // settled after the prompt rendered), record it — the list
+            // closes either way.
+            const n = jobRowKeys(lastRows);
+            const aborted = killJobs(n);
+            if (aborted < n.length) {
+              trace(
+                `agent-list: kill-all aborted ${aborted} of ${n.length} visible jobs (settled in between)`,
+              );
+            }
             done();
             return;
           }
@@ -402,7 +402,19 @@ export function createAgentListComponent(
         const key = row.key;
         done();
         if (key === MAIN_ROW_KEY) return; // main closes (Esc-equivalent)
-        openJob(key);
+        // #914 — a last-resort guard: a synchronous throw (or a rejected
+        // promise) from the view opener must not escape the TUI input
+        // handler.
+        try {
+          const r = openJob(key);
+          if (r && typeof (r as Promise<void>).catch === "function") {
+            (r as Promise<void>).catch((err: unknown) =>
+              trace(`agent-list: openJob(${key}) failed: ${String(err)}`),
+            );
+          }
+        } catch (err) {
+          trace(`agent-list: openJob(${key}) threw: ${String(err)}`);
+        }
         return;
       }
       if (matchesKey(data, "down") || matchesKey(data, "j")) {
@@ -437,8 +449,7 @@ export async function openAgentList(
   ctx: ExtensionContext,
   opts: {
     getEntries: () => readonly DeckEntry[];
-    getBatches: () => readonly BatchDeckEntry[];
-    openJob: (key: string) => void;
+    openJob: (key: string) => void | Promise<void>;
     onSettle: () => void;
   },
 ): Promise<void> {
@@ -452,7 +463,7 @@ export async function openAgentList(
         return Math.max(1, w - 2);
       };
       return createAgentListComponent(
-        () => buildAgentListLines(opts.getEntries(), opts.getBatches(), width()),
+        () => buildAgentListLines(opts.getEntries(), width()),
         width,
         opts.openJob,
         opts.onSettle,

@@ -103,7 +103,6 @@ export default async function (pi: ExtensionAPI) {
       handler: (ctx) =>
         openAgentList(ctx, {
           getEntries: dispatchDeck.snapshot,
-          getBatches: dispatchDeck.batchSnapshot,
           openJob: (key) => dispatchDeck.confirmRow(ctx, key),
           onSettle: () => {},
         }),

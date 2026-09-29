@@ -397,7 +397,7 @@ for (const w of [40, 80, 120]) {
       },
     },
   ];
-  const allLines = buildAgentListLines(entries, [], 80, now);
+  const allLines = buildAgentListLines(entries, 80, now);
   const rows = allLines.slice(1);
   assert(rows.length === 2, "8d: two job rows (after main row)");
   for (const r of rows) {

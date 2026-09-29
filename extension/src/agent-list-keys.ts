@@ -61,6 +61,6 @@ export const MAIN_ROW_KEY = "main";
  * shape — including the leading `main` row the ↓ roster treats as
  * Esc-equivalent.
  */
-export function buildAgentListHint(width: number): string {
+export function buildAgentListHint(): string {
   return `↓ agents · Enter view · x stop · ${STOP_ALL_KEY} stop all · Esc close`;
 }

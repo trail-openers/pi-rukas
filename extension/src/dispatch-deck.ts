@@ -22,7 +22,6 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
-import { buildAgentListLines } from "./agent-list.ts";
 import * as deckComposite from "./dispatch-deck-composite.ts";
 import {
   buildCompositeWidgetFactory,
