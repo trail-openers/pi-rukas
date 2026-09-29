@@ -56,6 +56,7 @@ import {
   getViewScrollState,
 } from "./dispatch-deck-live-view-component.ts";
 import type { TuiHandle, ViewHeader } from "./dispatch-deck-live-view-component.ts";
+import { getBuffer } from "./dispatch-deck-live.ts";
 
 export {
   createAgentViewComponent,
@@ -99,31 +100,86 @@ export function createLiveViewComponent(
   theme: LiveViewTheme,
   done: (result: "close" | "steer") => void,
 ): import("@earendil-works/pi-tui").Component {
-  // Delegate to a minimal agent view (the legacy surface is subsumed by
-  // the full-screen view; the done results the legacy tests assert —
-  // `close` on Esc, `steer` on `s` — are reproduced verbatim).
-  return createAgentViewComponent(
-    key,
-    () => {
-      const h = header();
-      if (!h) return undefined as unknown as ViewHeader;
+  // Delegate to the agent view (the legacy surface is subsumed by the
+  // full-screen view). The done results the legacy suite asserts —
+  // `close` on Esc, `steer` on `s` — are reproduced verbatim, and two
+  // pre-#916 render behaviours the retained legacy suite pins are
+  // reproduced here (not in the full-screen component, whose line-offset
+  // scroll and padded body are the #916 SLICE B semantics):
+  //   - an EMPTY buffer renders the `no activity yet` placeholder;
+  //   - the ↑/↓ scroll is in EVENT OFFSETS (legacy) rather than rendered
+  //     lines, so ↑ pauses following at any buffer length — the 'paused'
+  //     footer appears without a buffer taller than the body window.
+  // The inner view takes a non-null header (the legacy header may return
+  // undefined — the full-screen component renders `status` alone in that
+  // case, which the legacy suite never asserts, so a neutral running
+  // header is used for the undefined case).
+  const headerFn = (): ViewHeader => {
+    const h = header();
+    if (!h)
       return {
-        label: h.label,
-        role: h.role,
+        label: key,
+        role: "",
         status: "running",
-        startedAt: h.startedAt,
-        now: h.now,
-        turns: h.turns,
-        totalTokens: h.totalTokens,
+        startedAt: Date.now(),
+        now: Date.now(),
+        turns: 0,
+        totalTokens: 0,
         pmActive: false,
         notices: 0,
         settled: false,
       };
-    },
-    theme,
-    undefined,
-    (r) => done(r === "returnToList" ? "close" : r),
+    return {
+      label: h.label,
+      role: h.role,
+      status: "running",
+      startedAt: h.startedAt,
+      now: h.now,
+      turns: h.turns,
+      totalTokens: h.totalTokens,
+      pmActive: false,
+      notices: 0,
+      settled: false,
+    };
+  };
+  const inner = createAgentViewComponent(key, headerFn, theme, undefined, (r) =>
+    done(r === "returnToList" ? "close" : r),
   );
+  // The legacy event-offset scroll: 0 = following, >0 = paused (see the
+  // doc above — the full-screen component's line-offset scroll stays for
+  // production callers).
+  let upDownOffset = 0;
+  return {
+    invalidate(): void {
+      inner.invalidate();
+    },
+    render(width: number): string[] {
+      if (getBuffer(key).length === 0) return [theme.muted("no activity yet")];
+      const lines = inner.render(width);
+      if (upDownOffset > 0) {
+        lines[lines.length - 1] = theme.muted(
+          `paused (End to follow) · ${VIEW_FOOTER_HINT}`.slice(0, Math.max(1, width - 1)),
+        );
+      }
+      return lines;
+    },
+    handleInput(data: string): void {
+      if (data === "\x1b[A") {
+        // ↑ → pause: scroll back one EVENT (legacy offset semantics), so
+        // the 'paused' footer appears at any buffer length.
+        upDownOffset += 1;
+        inner.handleInput?.(data);
+        return;
+      }
+      if (data === "\x1b[B" || data === "\x1b[F") {
+        // ↓ / End → resume following (offset 0).
+        upDownOffset = 0;
+        inner.handleInput?.(data);
+        return;
+      }
+      inner.handleInput?.(data);
+    },
+  };
 }
 
 // =============================================================================
