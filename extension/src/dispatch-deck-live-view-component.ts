@@ -144,8 +144,37 @@ type WrapPart = "hdr" | "body";
 /**
  * Per-event wrapped-line cache, keyed by the event object (a WeakMap —
  * entries die with the event), then (width, thinkingExpanded, part).
+ * The toolCall args' pretty-printed form is cached separately (prettyArgs
+ * and prettyArgsCache) so JSON.parse + stringify run once per event.
  */
 const wrappedCache = new WeakMap<LiveEvent, Map<string, string[]>>();
+
+/**
+ * Per-event toolCall args pretty-print cache (separate WeakMap — the value
+ * is a single string, not a line array, and the args never change: the
+ * buffer is append-only, so JSON.parse + stringify run once per event
+ * rather than on every render). Entries die with the event.
+ */
+const prettyArgsCache = new WeakMap<LiveEvent, string | undefined>();
+
+/** The toolCall args' pretty-printed body (raw when they don't parse), or
+ * undefined when the event has no args. Cached per event.
+ */
+function prettyArgs(ev: Extract<LiveEvent, { kind: "toolCall" }>): string | undefined {
+  if (prettyArgsCache.has(ev)) return prettyArgsCache.get(ev);
+  const raw = ev.args;
+  let body: string | undefined;
+  if (raw) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      body = JSON.stringify(parsed, null, 2) ?? raw;
+    } catch {
+      body = raw;
+    }
+  }
+  prettyArgsCache.set(ev, body);
+  return body;
+}
 
 function wrapCached(
   ev: LiveEvent,
@@ -188,18 +217,8 @@ function eventLines(
         ? wrapCached(ev, ev.text, width, expanded, "body").map((r) => theme.muted(r))
         : [theme.muted(`▸ thinking (${ev.text.length} chars)`)];
     case "toolCall": {
-      // Pretty-print the args: parse → re-stringify with 2-space indent
-      // when the stored args parse as JSON, else the raw stored string.
-      const raw = ev.args;
-      let body: string | undefined;
-      if (raw) {
-        try {
-          const parsed: unknown = JSON.parse(raw);
-          body = JSON.stringify(parsed, null, 2) ?? raw;
-        } catch {
-          body = raw;
-        }
-      }
+      // Pretty-print the args (cached per event — see prettyArgs).
+      const body = prettyArgs(ev);
       const headerText = `▸ ${sanitizeText(ev.name).replace(/\n+/g, " ")}`;
       if (body === undefined) return wrapCached(ev, headerText, width, expanded, "hdr");
       const header = wrapCached(ev, headerText, width, expanded, "hdr")[0] ?? "";
