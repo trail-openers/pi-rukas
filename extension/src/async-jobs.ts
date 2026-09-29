@@ -1,5 +1,6 @@
 import type { Writable } from "node:stream";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { deliverReport } from "./async-jobs-lifecycle.ts";
 import {
   type BatchMemberJobState,
   type BatchOrchestratorJobState,
@@ -483,17 +484,4 @@ export function startBatch(
 
   trace(`async batch ${batchId} (${input.batchLabel}, n=${input.members.length}) started`);
   return { batchId, jobIds: memberJobIds };
-}
-
-/**
- * Push a report back to the parent agent. `deliverAs: "steer"` queues the
- * message during a streaming turn (delivered before the next LLM call) or
- * directly if the agent is idle.
- */
-function deliverReport(pi: ExtensionAPI, report: string): void {
-  try {
-    pi.sendUserMessage(report, { deliverAs: "steer" });
-  } catch (err) {
-    trace(`async report delivery failed: ${(err as Error).message}`);
-  }
 }

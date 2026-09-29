@@ -20,23 +20,20 @@
  *   - the roster rows and steer prompt respect the same invariants.
  */
 
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { buildCompositeFactory, buildSteerPrompt } from "../src/dispatch-deck-composite.ts";
 import { buildAgentListLines } from "../src/agent-list.ts";
 import {
   NEWLINE_SEP,
+  boundedLine,
   collapseToSpaces,
   sanitizeText,
   toTerminalLine,
   toTerminalLines,
 } from "../src/dispatch-deck-line.ts";
-import {
-  createLiveViewComponent,
-  dropBuffer,
-  feedRawEvent,
-  getBuffer,
-  startBuffer,
-} from "../src/dispatch-deck-live.ts";
+import { dropBuffer, feedRawEvent, getBuffer, startBuffer } from "../src/dispatch-deck-live.ts";
+import { createAgentViewComponent } from "../src/dispatch-deck-live-view-component.ts";
+import type { ViewHeader } from "../src/dispatch-deck-live-view-component.ts";
 import { formatRow } from "../src/dispatch-deck-rows.ts";
 import type { DeckEntry } from "../src/dispatch-deck.ts";
 
@@ -83,7 +80,8 @@ function assert(cond: boolean, msg: string) {
   const c1Osc = sanitizeText("pre\u009b]0;title\u0007post");
   assert(c1Osc === "prepost", `1b-d: C1 OSC dropped (got ${JSON.stringify(c1Osc)})`);
   // Unterminated OSC: 10 000-char payload, no terminator — bounded scan.
-  const t0 = Date.now(); const unterminated = sanitizeText(`pre${E}]${"x".repeat(10000)}post`);
+  const t0 = Date.now();
+  const unterminated = sanitizeText(`pre${E}]${"x".repeat(10000)}post`);
   assert(!/[\u0000-\u001f\u007f-\u009f]/.test(unterminated), "1b-e: no control chars");
   assert(unterminated.startsWith("pre") && unterminated.endsWith("post"), "1b-f: text preserved");
   assert(Date.now() - t0 < 2000, "1b-g: bounded scan");
@@ -124,6 +122,28 @@ function assert(cond: boolean, msg: string) {
 {
   const c = collapseToSpaces("a\n\n  b\tc\x1b[31m");
   assert(c === "a b c", `4a: collapsed + sanitised (got ${JSON.stringify(c)})`);
+}
+
+// ---------------------------------------------------------------------------
+// 4b. boundedLine: huge input is bounded (no ESC, visibleWidth ≤ width);
+//     a normal short input is byte-identical to the unbounded form.
+// ---------------------------------------------------------------------------
+{
+  // A 1 MB input (with hostile ESC sequences in the TAIL): the head is
+  // capped before sanitising, the visible width is bounded, and the ESC
+  // sequences in the head are stripped; tail content is truncated away.
+  const big = "x".repeat(512 * 1024) + "\u001b[31m" + "tail".repeat(100_000);
+  const t0 = Date.now();
+  const line = boundedLine(big, 80);
+  assert(visibleWidth(line) <= 80, `4b-a: 1 MB input → visibleWidth ≤ 80 (got ${visibleWidth(line)})`);
+  assert(!line.includes("\u001b"), "4b-b: no ESC in the bounded line");
+  assert(line.includes("…"), "4b-c: ellipsis marks the truncation");
+  assert(line.startsWith("x"), "4b-d: the head is preserved");
+  assert(!line.includes("tail"), "4b-e: the tail beyond the truncation point is gone");
+  assert(Date.now() - t0 < 2000, "4b-f: bounded input → no O(full string) scan");
+  // Short inputs are byte-identical to the unbounded pipeline.
+  assert(boundedLine("short input", 40) === truncateToWidth(sanitizeText("short input"), 40, "…"), "4b-g: short input byte-identical to the unbounded form");
+  assert(boundedLine("a b c d", 80) === "a b c d", "4b-h: short input untruncated, verbatim");
 }
 
 // ---------------------------------------------------------------------------
@@ -192,19 +212,23 @@ for (const w of [40, 80, 120]) {
   const key = `lv-w${w}`;
   dropBuffer(key);
   feedHostile(key);
-  const comp = createLiveViewComponent(
+  const comp = createAgentViewComponent(
     key,
-    () => ({
-      label: "label-with\nnewline\tand\x00null",
-      role: "developer",
-      startedAt: Date.now(),
-      now: Date.now(),
-      turns: 1,
-      toolUses: 1,
-      totalTokens: 100,
-      lastToolName: "bash",
-    }),
+    () =>
+      ({
+        label: "label-with\nnewline\tand\x00null",
+        role: "developer",
+        status: "running",
+        startedAt: Date.now(),
+        now: Date.now(),
+        turns: 1,
+        totalTokens: 100,
+        pmActive: false,
+        notices: 0,
+        settled: false,
+      }) satisfies ViewHeader,
     fakeTheme,
+    undefined,
     () => {},
   );
   const lines = comp.render(w);
@@ -257,10 +281,23 @@ for (const w of [40, 80, 120]) {
       });
     }
   }
-  const comp = createLiveViewComponent(
+  const comp = createAgentViewComponent(
     key,
-    () => undefined,
+    () =>
+      ({
+        label: key,
+        role: "developer",
+        status: "running",
+        startedAt: Date.now(),
+        now: Date.now(),
+        turns: 0,
+        totalTokens: 0,
+        pmActive: false,
+        notices: 0,
+        settled: false,
+      }) satisfies ViewHeader,
     fakeTheme,
+    undefined,
     () => {},
   );
   const lines = comp.render(w);
@@ -401,7 +438,10 @@ for (const w of [40, 80, 120]) {
   const rows = allLines.slice(1);
   assert(rows.length === 2, "8d: two job rows (after main row)");
   for (const r of rows) {
-    assert(!r.text.includes("\n") && !r.text.includes("\r"), "8e: buildAgentListLines row is single-row");
+    assert(
+      !r.text.includes("\n") && !r.text.includes("\r"),
+      "8e: buildAgentListLines row is single-row",
+    );
     assert(visibleWidth(r.text) <= 80, "8f: buildAgentListLines row within width");
   }
   assert(rows[0]?.text !== rows[1]?.text, "8g: rows remain distinct after sanitisation");

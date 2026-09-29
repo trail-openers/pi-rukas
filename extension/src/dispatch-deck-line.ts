@@ -125,10 +125,20 @@ export function sanitizeText(text: string): string {
  * `truncateToWidth`, so CJK / emoji wide characters are measured by
  * `visibleWidth`, not by char count. A ≤0 width yields an empty string, so
  * an over-full row can never overflow its budget.
+ *
+ * The input is BOUND before sanitising (O(width) instead of O(full string)
+ * per render on huge rows): sanitising beyond the truncation point cannot
+ * change the visible output — the ellipsis replaces everything after
+ * `width` visible columns — and the `width * 4 + 64` headroom covers wide
+ * characters (≤2 columns each) plus control characters that sanitising
+ * strips entirely. (The result is re-sanitised, mirroring the
+ * pre-truncation sanitise — the head can end mid-escape, which the plain
+ * scanner cannot always complete on truncated input.)
  */
 export function boundedLine(text: string, width: number): string {
   if (width <= 0) return "";
-  return truncateToWidth(text, width, "…");
+  const capped = text.length > width * 4 + 64 ? text.slice(0, width * 4 + 64) : text;
+  return sanitizeText(truncateToWidth(sanitizeText(capped), width, "…"));
 }
 
 /**

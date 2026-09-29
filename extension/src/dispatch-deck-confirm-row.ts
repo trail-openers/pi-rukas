@@ -44,9 +44,10 @@ export async function confirmRow(
   ctx: ExtensionContext,
   key: string,
   host: RowConfirmHost,
+  opts?: { onReturnToList?: () => void },
 ): Promise<void> {
   try {
-    await onRowConfirm(ctx, key, host);
+    await onRowConfirm(ctx, key, host, opts);
   } catch (err) {
     trace(`dispatch-deck-confirm: confirmRow for ${key} failed: ${(err as Error).message}`);
   }
