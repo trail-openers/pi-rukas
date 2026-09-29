@@ -98,9 +98,6 @@ function resetKeys(keys: string[]): void {
     }
     assert(allFit, `1a(w=${w}): every line visibleWidth ≤ ${w}`);
   }
-  // The 1,000-char text renders in full: join the body lines and check a
-  // large portion is present (wrapTextWithAnsi drops trailing whitespace
-  // at line breaks, so the exact string is not contiguous in the output).
   const flat = comp.render(500).join("\n");
   const textWords = longText.trim().split(" ").slice(0, 50).join(" ");
   assert(flat.includes(textWords), "1b: 1,000-char text renders in full (no truncation)");
@@ -109,7 +106,6 @@ function resetKeys(keys: string[]): void {
   // The tool args render in full: the command string is in the output.
   assert(flat.includes("echo"), "1d: 1,000-char tool args render in full (head)");
   assert(flat.includes("a".repeat(20)), "1e: the tail of the tool args is present");
-  // The args are pretty-printed (2-space indent).
   const pretty = JSON.stringify(args, null, 2);
   const prettyLines = pretty.split("\n");
   assert(prettyLines[0]?.startsWith("{"), "1f: tool args are pretty-printed (multi-line)");
@@ -160,28 +156,22 @@ function resetKeys(keys: string[]): void {
   const comp1 = createAgentViewComponent("v3", () => makeHeader(), fakeTheme, tui, () => {});
   let flat = comp1.render(80).join("\n");
   assert(flat.includes("line-29"), "3a: following shows the newest event");
-  // ↑ → pause
   comp1.handleInput("\x1b[A");
   flat = comp1.render(80).join("\n");
   assert(flat.includes("paused"), "3b: ↑ pauses following (footer shows 'paused')");
-  // End → resume
   comp1.handleInput("\x1b[F");
   flat = comp1.render(80).join("\n");
   assert(flat.includes("line-29"), "3c: End resumes following");
-  // PgUp → pause
   comp1.handleInput("\x1b[5~");
   flat = comp1.render(80).join("\n");
   assert(flat.includes("paused"), "3d: PgUp pauses following");
-  // End → resume
   comp1.handleInput("\x1b[F");
-  // Auto-scroll: append a new event while following → it appears
   feedRawEvent("v3", {
     type: "message_end",
     message: { role: "assistant", content: [{ type: "text", text: "new-line" }] },
   });
   flat = comp1.render(80).join("\n");
   assert(flat.includes("new-line"), "3e: new event auto-scrolls into view when following");
-  // ↑ → pause; append → does NOT auto-scroll
   comp1.handleInput("\x1b[A");
   feedRawEvent("v3", {
     type: "message_end",
@@ -189,12 +179,9 @@ function resetKeys(keys: string[]): void {
   });
   flat = comp1.render(80).join("\n");
   assert(!flat.includes("another-line"), "3f: new event does NOT auto-scroll when paused");
-  // State persists across re-creation: create a second component for the
-  // same key and verify the scroll state is restored.
   const comp2 = createAgentViewComponent("v3", () => makeHeader(), fakeTheme, tui, () => {});
   const state = getViewScrollState("v3");
   assert(state.scroll > 0, "3g: scroll state persisted (scroll > 0 after re-creation)");
-  // End → follow on
   comp2.handleInput("\x1b[F");
   const state2 = getViewScrollState("v3");
   assert(state2.scroll === 0, "3h: End resets scroll to 0 (following)");
@@ -344,10 +331,7 @@ function resetKeys(keys: string[]): void {
     message: { role: "assistant", content: [{ type: "text", text: "日本語テスト" }] },
   });
   // 2000-char line
-  feedRawEvent("v8", {
-    type: "message_end",
-    message: { role: "assistant", content: [{ type: "text", text: "x".repeat(2000) }] },
-  });
+  feedRawEvent("v8", { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "x".repeat(2000) }] } });
   const comp = createAgentViewComponent("v8", () => makeHeader(), fakeTheme, undefined, () => {});
   for (const w of [40, 120]) {
     const lines = comp.render(w);
@@ -481,6 +465,33 @@ function resetKeys(keys: string[]): void {
   clearEntry("deck-job-11");
   dropBuffer("deck-job-11");
   reset();
+}
+
+// 12. Steer re-open loop: exactly ONE live append subscription per open.
+{
+  resetKeys(["deck-job-12"]); startBuffer("deck-job-12"); reset();
+  startEntry("deck-job-12", { label: "developer", role: "developer" });
+  let n = 0, rc = 0, d = -1, sc = 0;
+  const ctx = { ui: {
+    custom: (f: (t: unknown) => unknown) => {
+      n++; const t = { requestRender: () => { rc++; } };
+      f(t);
+      if (n === 3) { const b = rc; feedRawEvent("deck-job-12", { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "x" }] } }); d = rc - b; }
+      return Promise.resolve(n <= 2 ? ("steer" as const) : ("returnToList" as const));
+    },
+    editor: () => Promise.resolve("steer"),
+    setWidget: () => {}, getEditorText: () => "", onTerminalInput: () => () => {},
+  } } as unknown as Parameters<typeof openLiveView>[0];
+  const p = openLiveView(ctx, "deck-job-12", { getEntry: (k) => snapshot().find((e) => e.key === k), buildSteerPrompt: () => "", steer: () => { sc++; } });
+  for (let i = 0; n < 3 && i < 200; i++) await new Promise((r) => setTimeout(r, 10));
+  assert(n === 3, "12a: custom called 3 times");
+  assert(sc === 2, "12b: steer called twice");
+  assert(d === 1, `12c: one append → one render (got ${d})`);
+  await p;
+  const after = rc;
+  feedRawEvent("deck-job-12", { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "y" }] } });
+  assert(rc === after, "12d: no render after close");
+  clearEntry("deck-job-12"); dropBuffer("deck-job-12"); reset();
 }
 
 console.log(`\nexit ${exit}`);
