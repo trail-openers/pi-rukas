@@ -56,7 +56,9 @@ function makeHeader(): ViewHeader {
 //    tabs collapsed to spaces, whitespace runs collapsed).
 // ---------------------------------------------------------------------------
 {
-  const paste = "\u001b[200~a\x07b\x9bc\x7fd\u0007\u0007\ue015é😀e\f\nfg\t h\u001b[201~".replace("\u0007\u0007\ue015", "d\u0007\ue015").replace("dd", "d");
+  // Carries: C0 (\x07 bell), C1 (\x9b), DEL (\x7f), a Kitty PUA (U+E015),
+  // a tab, a form feed and a newline (collapsed to spaces by the filter).
+  const paste = "\u001b[200~a\x07b\x9bc\x7fd\x07\ue015é😀e\f\nfg\t h\u001b[201~";
   const out = decodeInsertable(paste);
   assert(out !== undefined, "1a: paste with controls decodes to a string");
   assert(
@@ -73,7 +75,7 @@ function makeHeader(): ViewHeader {
   );
   // The same content via a multi-char plain-text chunk (IME commit /
   // non-bracketed-paste delivery) is filtered identically.
-  const plain = "a\x07b\x9bc\x7fd\u0007\u0007\ue015é😀e\f\nfg\t h".replace("\u0007\u0007\ue015", "d\u0007\ue015").replace("dd", "d");
+  const plain = "a\x07b\x9bc\x7fd\x07\ue015é😀e\f\nfg\t h";
   const out2 = decodeInsertable(plain);
   assert(
     out2 === "abcdé😀e fg h",
@@ -121,6 +123,25 @@ function makeHeader(): ViewHeader {
   );
   assert(comp2.inputValue() === "x".repeat(7999), "2e: the buffer ends on a complete unit");
   dropBuffer("ivf2");
+}
+
+// ---------------------------------------------------------------------------
+// 3. The inline status line is width-bounded (the 500-char status text plus
+//    the "· Esc back" suffix renders at ≤ width — sanitise + truncateToWidth,
+//    the same treatment as the input line).
+// ---------------------------------------------------------------------------
+{
+  dropBuffer("ivf3");
+  startBuffer("ivf3");
+  const comp = createAgentViewComponent("ivf3", makeHeader, fakeTheme, undefined, () => {}, () => {});
+  comp.setStatus({ text: "x".repeat(500), ok: true });
+  const lines = comp.render(80);
+  const statusLine = lines.find((l) => l.startsWith("xx"));
+  assert(
+    statusLine !== undefined && statusLine.length <= 80,
+    `3a: 500-char status line is width-bounded to 80 (got ${statusLine?.length ?? "missing"})`,
+  );
+  dropBuffer("ivf3");
 }
 
 console.log(`\nexit ${exit}`);
