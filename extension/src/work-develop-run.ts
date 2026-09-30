@@ -199,7 +199,10 @@ export function makeRunOneWorkstream(
             // #838 — the developer row's deck entry (row label `#<issue>
             // develop · <workstream>` — display only; the job label above is
             // what the cap checkpoint's `developer[<id>]` parse sees).
-            deck: { ...driverDeckOpts(ctx.issue, "develop", deckTagFor(id)), label: developerLabel },
+            deck: {
+              ...driverDeckOpts(ctx.issue, "develop", deckTagFor(id)),
+              label: developerLabel,
+            },
           },
         ),
         speculativeOn

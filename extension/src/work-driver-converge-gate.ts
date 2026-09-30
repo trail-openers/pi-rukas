@@ -110,7 +110,10 @@ export async function runConvergeGateHandler(
         // test-dispatch-cwd-audit: an explicit cwd above — the `label:` token
         // below is the dispatch label, not a deck-option label.)
         label: "develop:corrective",
-        deck: { ...driverDeckOpts(ctx.issue, "develop", "corrective"), label: "develop:corrective" },
+        deck: {
+          ...driverDeckOpts(ctx.issue, "develop", "corrective"),
+          label: "develop:corrective",
+        },
       },
     );
     if (retry?.ok !== true) {

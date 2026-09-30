@@ -17,14 +17,15 @@
  * cycle's live header is never vacated by a finishing sibling.
  *
  * Quiet mode: `startBatchEntry` and `clearBatchEntry` are quiet-gated
- * inside the deck module (startBatchEntry is a no-op; clearBatchEntry on
- * an absent key returns false — the ownership entry is then dropped by
- * releaseWorkDeckHeader's `if (deleted)` branch), so header + members
- * (both quiet-gated at their own call sites) are suppressed atomically —
- * a quiet session never gets a header whose members are missing, nor
- * orphans (the orphan-member contract in dispatch-deck-rows.ts renders
- * a batchKey-less-or-orphan entry as a standalone row; with the header
- * absent a quiet session has no members either, so no orphan renders).
+ * inside the deck module (startBatchEntry is a no-op; clearBatchEntry on an
+ * absent key returns without doing anything — release deletes the owner
+ * entry from the `owners` map, and the deck-level clear is a no-op), so
+ * header + members (both quiet-gated at their own call sites) are
+ * suppressed atomically — a quiet session never gets a header whose members
+ * are missing, nor orphans (the orphan-member contract in
+ * dispatch-deck-rows.ts renders a batchKey-less-or-orphan entry as a
+ * standalone row; with the header absent a quiet session has no members
+ * either, so no orphan renders).
  */
 
 import { clearBatchEntry, startBatchEntry } from "./dispatch-deck.ts";
