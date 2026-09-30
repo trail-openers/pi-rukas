@@ -11,7 +11,7 @@ import { registerDispatchPeekTool } from "./dispatch-peek.ts";
 import { registerDispatchStatusTool } from "./dispatch-status.ts";
 import { registerDispatchSteerTool } from "./dispatch-steer.ts";
 import { registerDispatchTools } from "./dispatch.ts";
-import { registerLensReviewTool } from "./lens-review.ts";
+import { registerLensReviewTool } from "./lens-review-tool.ts";
 import * as lifecycle from "./lifecycle-events.ts";
 import { loadOverrides } from "./model-config.ts";
 import { registerModelPicker } from "./model-picker.ts";

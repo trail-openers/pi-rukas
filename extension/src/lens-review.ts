@@ -1,9 +1,6 @@
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
-import { startJob } from "./async-jobs.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { writeLensLedgerEntry } from "./lens-ledger.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
@@ -77,6 +74,7 @@ export type Verdict =
  * exit. Matches the opencode contract. Aborted lenses (user cancel) don't
  * retry. */
 const MAX_LENS_ATTEMPTS = 4;
+export { MAX_LENS_ATTEMPTS };
 
 /** Backoff between retries (ms). Small fixed delay — these failures are
  * usually transient (process spawn pressure, provider-side rate limits). */
@@ -251,8 +249,20 @@ export function computeVerdict(
   return "APPROVED";
 }
 
-// How serious a finding must be before it blocks is a project decision, not
-// the lens's — `AGENTS.md §1` sets the bar (see `work-driver-policy.ts`).
+/**
+ * How serious a finding must be before it blocks.
+ *
+ * The lens decides a finding's severity — that is its judgment and this module
+ * does not second-guess it. Which severity is serious *enough to stop a merge*
+ * is a different question, and it belongs to the project, not to this code.
+ * `AGENTS.md §1` in this repo has always said "blocking at MEDIUM severity and
+ * above"; until now nothing read that sentence, so it was decorative and a
+ * project wanting a different bar had no way to say so.
+ *
+ * MEDIUM stays the default, so a project that says nothing — or has no
+ * AGENTS.md at all — gets exactly today's behaviour. See
+ * `work-driver-policy.ts` for how a project loosens it.
+ */
 export const DEFAULT_REVIEW_THRESHOLD: Severity = "MEDIUM";
 
 const SEVERITY_RANK: Record<Severity, number> = {
@@ -306,7 +316,8 @@ export async function runLensReview(opts: {
   // The RESOLVED threshold (computed once; both the verdict and the ledger
   // write apply the same bar).
   const threshold = opts.threshold ?? DEFAULT_REVIEW_THRESHOLD;
-  // #873 — the roster is data: the INSTALLED skills dir's `code-review-*` SKILL.md files  // (precedence in frontmatter), PLUS a blocked entry for
+  // #873 — the roster is data: the INSTALLED skills dir's `code-review-*`
+  // SKILL.md files (precedence in frontmatter), PLUS a blocked entry for
   // every expected lens (the BUNDLED skill/ dir) that is absent from the
   // installed dir or has a dangling skill — a lens must never silently
   // disappear from a six-pass review (five lenses + APPROVED). Blocked
@@ -388,7 +399,8 @@ export async function runLensReview(opts: {
     }),
   );
   const lensResults = [...(await Promise.all(promises)), ...blockedResults];
-  dispatchDeck.clearBatchEntry(batchKey); // Deterministic findings are merged BEFORE dedup and verdict so they are
+  dispatchDeck.clearBatchEntry(batchKey);
+  // Deterministic findings are merged BEFORE dedup and verdict so they are
   // indistinguishable downstream from a lens's own — same precedence rules,
   // same threshold, same rendering. They are findings, not a side channel.
   const all = [...lensResults.flatMap((r) => r.findings), ...(opts.extraFindings ?? [])];
@@ -413,88 +425,3 @@ export async function runLensReview(opts: {
   );
 }
 
-export function registerLensReviewTool(pi: ExtensionAPI) {
-  pi.registerTool({
-    name: "dispatch_lens_review",
-    label: "Code Review",
-    description:
-      "Fan out the code-review lenses (roster parsed from the installed `code-review-*` skills, precedence in each SKILL.md's frontmatter) in parallel as an async job. Returns a job handle immediately; ONE consolidated verdict + dedup'd findings arrives as a [ensemble:async] user message when all lenses finish. End your turn after dispatching.",
-    parameters: Type.Object({
-      diff: Type.Optional(Type.String({ description: LENS_REVIEW_DIFF_DESCRIPTION })),
-      context: Type.Optional(
-        Type.String({
-          description: "1-3 sentence description of what changed and why; passed to every lens.",
-        }),
-      ),
-      base: Type.Optional(
-        Type.String({
-          description:
-            "With head: the base ref for `git diff <base>...<head>` (three-dot, merge-base) in cwd. Requires head.",
-        }),
-      ),
-      head: Type.Optional(
-        Type.String({
-          description:
-            "With base: the head ref for the diff the tool computes itself (see base). Requires base.",
-        }),
-      ),
-      cwd: Type.Optional(
-        Type.String({
-          description:
-            "Working directory; defaults to current; also the cwd for `git diff <base>...<head>` when base+head are given.",
-        }),
-      ),
-    }),
-    async execute(_id, raw) {
-      const params = raw as {
-        diff?: string;
-        context?: string;
-        cwd?: string;
-        base?: string;
-        head?: string;
-      };
-      const hasDiff = typeof params.diff === "string" && params.diff.length > 0;
-      const hasRange = typeof params.base === "string" && typeof params.head === "string";
-      if (hasDiff && hasRange) {
-        trace(
-          `lens review: diff string supplied alongside base=${params.base} head=${params.head} — the diff string wins`,
-        );
-      }
-      const { jobId } = startJob(pi, {
-        label: "lens_review",
-        role: "lens-review",
-        // Orchestrator-only — runLensReview opens one deck entry per lens
-        // (6 rows) so the deck shows the real children, not a synthetic
-        // umbrella row that masks them.
-        skipDeck: true,
-        work: async (signal): Promise<DispatchResult> => {
-          const start = Date.now();
-          const summary = await runLensReview({ ...params, signal });
-          // ok is true when the review completed AND the verdict is neither
-          // CRITICAL nor INCOMPLETE. INCOMPLETE means at least one lens
-          // failed all retries (#3) — the review did NOT actually run every
-          // pass, so PM/user must decide whether to retry or override.
-          return {
-            role: "lens-review",
-            ok:
-              summary.verdict !== "CRITICAL_ISSUES_FOUND" &&
-              summary.verdict !== "REVIEW_INCOMPLETE",
-            text: renderSummary(summary, MAX_LENS_ATTEMPTS),
-            toolUses: [],
-            ms: Date.now() - start,
-            exitCode: 0,
-          };
-        },
-      });
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Dispatched async lens review; job ${jobId}. Verdict + findings will arrive as a [ensemble:async] user message when all lenses finish. End your turn.`,
-          },
-        ],
-        details: { jobId, role: "lens-review", async: true },
-      };
-    },
-  });
-}

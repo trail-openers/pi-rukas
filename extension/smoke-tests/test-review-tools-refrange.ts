@@ -203,7 +203,7 @@ registerAdversarialTool(fakePi().pi); // warm any module init
   const { dir, head, base } = await mkRepoWithBranch();
   try {
     const { pi, tools } = fakePi();
-    const { registerLensReviewTool } = await import("../src/lens-review.ts");
+    const { registerLensReviewTool } = await import("../src/lens-review-tool.ts");
     registerLensReviewTool(pi);
     const lens = tools.get("dispatch_lens_review")!;
     // We can't easily intercept the diff the lens children receive without
