@@ -144,7 +144,11 @@ export function eventLines(
       const plainPrefix = `you → ${label}: `;
       const first = rows[0];
       if (first?.startsWith(plainPrefix)) {
-        rows[0] = theme.muted(plainPrefix) + first.slice(plainPrefix.length);
+        // #915 lens r1 — build a NEW first row rather than assigning
+        // rows[0]: `rows` is the cached array (wrapCached), so the
+        // mutation would persist the themed row into the cache and leak
+        // it into every later read of the same (event, width, part).
+        return [theme.muted(plainPrefix) + first.slice(plainPrefix.length), ...rows.slice(1)];
       }
       return rows;
     }
