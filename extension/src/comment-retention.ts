@@ -21,9 +21,9 @@
 
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
+import { trace } from "./trace.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import type { ExecFn } from "./worktree.ts";
-import { trace } from "./trace.ts";
 
 /**
  * A real shell `ExecFn` built on `promisify(exec)`, for callers (e.g. the
@@ -97,7 +97,9 @@ function isCommentLine(raw: string, inBlock: boolean): boolean {
 
 /**
  * Read every file under `paths` at `ref` (one `git grep -e ""` read, not N
- * per-file greps) and return the set of line contents present at that ref.
+ * per-file greps) and return the line contents present at that ref as both
+ * the raw lines (for the substring fallback) and a trimmed set (for the O(1)
+ * exact lookup).
  * Returns `undefined` when the read itself fails (an infra error the caller
  * turns into a NOTE).
  */
@@ -106,7 +108,7 @@ async function readLinesAtRef(
   cwd: string,
   ref: string,
   paths: string[],
-): Promise<Set<string> | undefined> {
+): Promise<{ lines: Set<string>; trimmed: Set<string> } | undefined> {
   const pathArg = paths.join(" ");
   try {
     const { stdout } = await execFn(`git grep -e "" ${ref} -- ${pathArg}`, {
