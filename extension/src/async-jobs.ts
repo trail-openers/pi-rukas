@@ -51,37 +51,39 @@ export {
 /**
  * Async-dispatch job registry.
  *
- * Every dispatch tool is fire-and-forget from the LLM's POV: the tool returns
- * a `{ jobId }` handle immediately, the child runs in the background under our
- * supervision, and on completion we push the result back to the parent agent
- * via `pi.sendUserMessage(report, { deliverAs: "steer" })`. Pi delivers the
- * steer as a fresh user turn → new `agent_start` → parent picks up.
+ * Every dispatch tool is fire-and-forget from the LLM's POV: the tool
+ * returns a `{ jobId }` handle immediately, the child runs in the background
+ * under our supervision, and on completion we push the result back to the
+ * parent agent via `pi.sendUserMessage(report, { deliverAs: "steer" })`.
+ * Pi delivers the steer as a fresh user turn → new `agent_start` → parent
+ * picks up.
  *
- * Why this matters: a synchronous tool call locks the user out of the parent
- * for the full duration of the dispatch (often minutes). Async means the user
- * can interact with the parent at any time while children run in the background.
+ * Why this matters: a synchronous tool call locks the user out of the
+ * parent for the full duration of the dispatch (often minutes). Async means
+ * the user can interact with the parent at any time while children run in
+ * the background.
  *
  * Invariants enforced here (see issue #19):
- *   1. The parent agent ONLY ever sees the child's final assistant text in the
- *      steer report — never the full transcript, never per-turn output.
- *   2. The report header is ~100 chars (jobId, role, turns, elapsed, cost).
- *      Going async adds zero context bloat over sync dispatch.
- *   3. Batched orchestrators (dispatch_parallel, lens review) fire a SINGLE
- *      steer when ALL children complete — never N out-of-order arrivals.
+ *   1. The parent agent ONLY ever sees the child's final assistant text in
+ *      the steer report — never the full transcript, never per-turn output.
+ *   2. The report header is ~100 chars (jobId, role, turns, elapsed,
+ *      cost). Going async adds zero context bloat over sync dispatch.
+ *   3. Batched orchestrators (dispatch_parallel, lens review) fire a
+ *      SINGLE steer when ALL children complete — never N out-of-order
+ *      arrivals.
  */
-
 /** Live-progress hooks passed to a job's work function. */
 export interface WorkHooks {
   /**
-   * Forward a child's RunningState update. Wired to the dispatch deck so the
-   * footer can render live activity (#117). Work functions should pass this
-   * straight through to spawnSpecialist's onProgress option.
+   * Forward a child's RunningState update. Wired to the dispatch deck so
+   * the footer can render live activity (#117). Work functions should pass
+   * this straight through to spawnSpecialist's onProgress option.
    */
   onProgress: (state: RunningState) => void;
   /**
    * #839 — raw-event observer for the dispatch deck's live view. Work
    * functions pass this through to spawnSpecialist's onRawEvent option
-   * (OPTIONAL there); it feeds the job's ring buffer (dispatch-deck-live.ts).
+   * (OPTIONAL there); it feeds the job's ring buffer.
    */
   onRawEvent: (event: PiJsonEvent) => void;
   /**
@@ -92,59 +94,52 @@ export interface WorkHooks {
    */
   onStdin: (stdin: Writable) => void;
   /**
-   * Orchestrator-shaped work functions (adversarial_loop) need to know their
-   * own job id so they can register the currently-running inner child via
-   * `setOrchestratorActiveChild`. Provided to every work function for
-   * symmetry; single dispatches ignore it.
+   * Orchestrator-shaped work functions (adversarial_loop) need to know
+   * their own job id so they can register the currently-running inner
+   * child via `setOrchestratorActiveChild`. Provided to every work
+   * function for symmetry; single dispatches ignore it.
    */
   jobId: string;
 }
 
 interface StartJobInput {
-  /** Human-readable subagent label (role + optional tag, e.g. "code-review-specialist[security]"). */
+  /** Human-readable subagent label (role + optional tag). */
   label: string;
   /** Role name for telemetry. */
   role: string;
   /**
    * Work function. Receives an AbortSignal tied to our internal abort
-   * controller (NOT the tool's exec signal — that one is gone the moment we
-   * return from execute()). Should call spawnSpecialist internally and
+   * controller (NOT the tool's exec signal — that one is gone the moment
+   * we return from execute()). Should call spawnSpecialist internally and
    * forward `hooks.onProgress` to it.
    */
   work: (signal: AbortSignal, hooks: WorkHooks) => Promise<DispatchResult>;
   /**
-   * Skip the automatic dispatch-deck entry. Set true for orchestrators that
-   * fan out internally (lens-review, adversarial) and manage their own
-   * per-child deck entries — otherwise the orchestrator's "synthetic" row
-   * would mask the real children behind it.
+   * Skip the automatic dispatch-deck entry. Set true for orchestrators
+   * that fan out internally (lens-review, adversarial) and manage their
+   * own per-child deck entries — otherwise the orchestrator's "synthetic"
+   * row would mask the real children behind it.
    */
   skipDeck?: boolean;
-  /**
-   * #838 — when set, the job's deck entry is registered under this batch
-   * key (the deck's `startEntry` `batchKey` option) so it renders grouped
-   * under the batch's header row. Driver cycle jobs set it to their
-   * per-cycle header key ("work:<issue>"); PM jobs never set it (their
-   * batches come from `startBatch`, which passes `batchKey` to
-   * `startEntry` itself). Ignored when `skipDeck` is true (no deck entry
-   * is created at all).
-   */
+  /** #838 — batch key the job's deck entry groups under (the driver's
+   *  per-cycle header, "work:<issue>"); ignored when `skipDeck`. */
   batchKey?: string;
   /**
    * Who consumes the result. Default "pm" — preserves the existing
    * send-as-steer behaviour every dispatch tool depends on. Set "driver"
    * when an in-process caller (e.g. the work-driver) will await the
    * `completion` promise directly; we then skip the sendUserMessage steer
-   * so PM doesn't see a `[ensemble:async]` it didn't ask for.
-   *
-   * See SingleJobState.ownerKind for the full rationale.
+   * so PM doesn't see a `[ensemble:async]` it didn't ask for. See
+   * SingleJobState.ownerKind for the full rationale.
    */
   ownerKind?: "pm" | "driver";
   /**
-   * #799 — invoked by the slow-run watch (slow-notice.ts) on each threshold
-   * crossing, before the PM notice and the auto-steer. The driver threads
-   * its `dispatch-slow` event appender through `dispatchCore`; PM jobs never
-   * set it (their watch has no cycle state to append to). Must be sync and
-   * must not throw (the watch catches, but the contract is synchronous).
+   * #799 — invoked by the slow-run watch (slow-notice.ts) on each
+   * threshold crossing, before the PM notice and the auto-steer. The
+   * driver threads its `dispatch-slow` event appender through
+   * `dispatchCore`; PM jobs never set it (their watch has no cycle state
+   * to append to). Must be sync and must not throw (the watch catches,
+   * but the contract is synchronous).
    */
   onSlow?: OnSlowCallback;
 }
@@ -152,17 +147,17 @@ interface StartJobInput {
 export interface StartJobHandle {
   jobId: string;
   /**
-   * Resolves with the DispatchResult when the work function settles. Always
-   * returned. PM-owned callers normally ignore it (the steer is the
-   * contract). Driver-owned callers await this to consume the result
+   * Resolves with the DispatchResult when the work function settles.
+   * Always returned. PM-owned callers normally ignore it (the steer is
+   * the contract). Driver-owned callers await this to consume the result
    * directly — `deliverReport` is skipped for them so PM never sees an
    * `[ensemble:async]` it didn't initiate.
    *
    * Note: this promise resolves (not rejects) for both ok and failed
    * dispatches — failure is encoded in `result.ok === false` /
    * `result.errorStop`. It DOES reject if the work function throws
-   * (transport / spawn-level errors before any DispatchResult is produced).
-   * Driver code should catch that explicitly.
+   * (transport / spawn-level errors before any DispatchResult is
+   * produced). Driver code should catch that explicitly.
    */
   completion: Promise<DispatchResult>;
 }
@@ -172,7 +167,8 @@ export interface StartJobHandle {
  * execute() should also return immediately. The report is delivered to the
  * parent via pi.sendUserMessage when the work resolves — UNLESS
  * `input.ownerKind === "driver"`, in which case the in-process caller
- * consumes the result via the `completion` promise and the steer is skipped.
+ * consumes the result via the `completion` promise and the steer is
+ * skipped.
  */
 export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle {
   if (jobs.size >= MAX_JOBS) {
@@ -207,13 +203,13 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
   if (!input.skipDeck) live.startBuffer(jobId);
   // #799/#907 — the slow-run watch + its CI-wait span feed: one per job,
   // at the one layer that sees progress for every PM job, batch member
-  // and driver child. Notice + steer, never a kill. disabled entirely by
+  // and driver child. Notice + steer, never a kill; disabled entirely by
   // PI_ENSEMBLE_SLOW_NOTICE=0.
   const slow = makeSlowWatch(jobId, input.role, input.label, pi, input.onSlow);
   const hooks: WorkHooks = {
-    onProgress: (progress) => {
-      dispatchDeck.updateEntry(jobId, progress);
-      feedSlowProgress(jobId, progress);
+    onProgress: (p) => {
+      dispatchDeck.updateEntry(jobId, p);
+      feedSlowProgress(jobId, p);
     },
     onRawEvent: slow.hooks.onRawEvent,
     onStdin: (stdin) => {
@@ -261,19 +257,18 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
           result.exitCode ?? undefined,
         );
       } else if (result.errorStop && !is429) {
-        // Genuine provider/transport error (not 429).
-        // #299 — driver-owned jobs skip the per-child "terminated
-        // mid-stream" line: the driver emits its own step-failed /
-        // step-retry line for the same event, and pre-#299 a single
-        // error-stop produced three provider-blame lines in scrollback.
+        // Genuine provider/transport error (not 429). #299 — driver-owned
+        // jobs skip the per-child "terminated mid-stream" line: the driver
+        // emits its own step-failed/step-retry line for the same event, and
+        // pre-#299 a single error-stop produced three provider-blame lines
+        // in scrollback.
         if (ownerKind === "pm") {
           lifecycle.emitErrored(jobId, input.label, input.role, result.ms, totalTokens(result));
         }
       } else if (is429) {
-        // #309 — 429 with ok=true must NOT emit a "finished" badge.
-        // The child technically exited ok (it produced output), but the
-        // provider rate-limited the request. Emit as failed so the
-        // operator sees a consistent failure signal.
+        // #309 — 429 with ok=true must NOT emit a "finished" badge (the
+        // provider rate-limited the request; emit as failed so the operator
+        // sees a consistent failure signal).
         lifecycle.emitFailed(
           jobId,
           input.label,
@@ -329,13 +324,12 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
   );
 
   // PM-owned callers (every dispatch tool today) destructure only `jobId`
-  // and ignore `completion`. Without this suppressor a rejected completion
-  // promise would trigger Node's unhandled-rejection warning. The internal
-  // .catch attaches an observer — it does NOT consume the rejection from
-  // the perspective of any other observer, so a driver-owned caller's
-  // `await completion` still throws as expected.
+  // and ignore `completion` — a rejected completion promise would otherwise
+  // trigger Node's unhandled-rejection warning. The internal .catch attaches
+  // an observer; it does NOT consume the rejection from the perspective of
+  // any other observer, so a driver-owned caller's `await completion` still
+  // throws as expected.
   completion.catch(() => undefined);
-
   trace(`async job ${jobId} (${input.label}, owner=${ownerKind}) started`);
   return { jobId, completion };
 }
@@ -350,16 +344,17 @@ interface StartBatchInput {
 }
 
 /**
- * Fire a batch: spawn all members concurrently, but deliver ONE steer message
- * when ALL members have settled. This preserves the parent's "I called the
- * tool, I expect one return" mental model — async-batched, not async-N-arrivals.
+ * Fire a batch: spawn all members concurrently, but deliver ONE steer
+ * message when ALL members have settled. This preserves the parent's
+ * "I called the tool, I expect one return" mental model — async-batched,
+ * not async-N-arrivals.
  */
 export function startBatch(
   pi: ExtensionAPI,
   input: StartBatchInput,
 ): { batchId: string; jobIds: string[] } {
-  // Batch slot count: 1 orchestrator + N members. Reject up-front rather than
-  // letting some members land and others fail mid-construction.
+  // Batch slot count: 1 orchestrator + N members. Reject up-front rather
+  // than letting some members land and others fail mid-construction.
   const required = 1 + input.members.length;
   if (jobs.size + required > MAX_JOBS) {
     throw new Error(
@@ -423,9 +418,9 @@ export function startBatch(
     // jobs (the batch orchestrator itself gets none — it is a bookkeeping row, not a child).
     const memberSlow = makeSlowWatch(jobId, m.role, m.label, pi, undefined);
     const memberHooks: WorkHooks = {
-      onProgress: (progress) => {
-        dispatchDeck.updateEntry(jobId, progress);
-        feedSlowProgress(jobId, progress);
+      onProgress: (p) => {
+        dispatchDeck.updateEntry(jobId, p);
+        feedSlowProgress(jobId, p);
       },
       onRawEvent: memberSlow.hooks.onRawEvent,
       onStdin: (stdin) => {
@@ -434,17 +429,16 @@ export function startBatch(
       jobId,
     };
 
-    // Wrapping in `new Promise` turns a SYNCHRONOUS throw from `m.work` into
-    // a rejection that settles through the handlers below (as async failures
-    // already do) — no separate synchronous-throw path.
+    // `new Promise` turns a SYNCHRONOUS throw from `m.work` into a rejection
+    // that settles through the handlers below (as async failures do) — no
+    // separate synchronous-throw path.
     void new Promise<DispatchResult>((resolve) => resolve(m.work(memberAbort.signal, memberHooks)))
       .then(
         (result) => {
           jobs.delete(jobId);
           childHandles.delete(jobId);
           memberSlow.stop();
-          // #916 — settle outcome for the live view (member finished).
-          live.markSettled(jobId, "finished");
+          live.markSettled(jobId, "finished"); // #916 — live view outcome
           dispatchDeck.clearEntry(jobId);
           sessionAutosave.recordOutcome(result.ok);
           memberResults.push({ jobId, label: m.label, result });
@@ -453,8 +447,7 @@ export function startBatch(
           jobs.delete(jobId);
           childHandles.delete(jobId);
           memberSlow.stop();
-          // #916 — settle outcome for the live view (member rejected).
-          live.markSettled(jobId, "failed");
+          live.markSettled(jobId, "failed"); // #916 — live view outcome
           dispatchDeck.clearEntry(jobId);
           sessionAutosave.recordOutcome(false);
           memberResults.push({
@@ -495,7 +488,6 @@ export function startBatch(
         }
       });
   }
-
   trace(`async batch ${batchId} (${input.batchLabel}, n=${input.members.length}) started`);
   return { batchId, jobIds: memberJobIds };
 }

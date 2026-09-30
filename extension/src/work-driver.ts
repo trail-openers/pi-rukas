@@ -5,7 +5,7 @@
  * `dispatchCore()` (ownerKind:driver), persists to `.pi/work-state/` via
  * `writeState()`, surfaces progress via `notifyAgent()`.
  *
- * All 9 steps wired; each implementation lives in `work-driver-<step>.ts`.
+ * All 9 steps wired; each implementation lives in work-driver-<step>.ts.
  */
 import { notifyAgent } from "./agent-message.ts";
 import { dropSlowEvents } from "./slow-events.ts";
@@ -16,7 +16,12 @@ import { checkAttentionLabel } from "./work-driver-attention.ts";
 import { runBranch, runDevelop } from "./work-driver-branch-develop.ts";
 import { checkpointCapedDispatch } from "./work-driver-cap-checkpoint.ts";
 import { runCommitPr } from "./work-driver-commit.ts";
-import { type DriverContext, STEP_ORDINAL, nextStep } from "./work-driver-context.ts";
+import {
+  type DriverContext,
+  DriverNotImplementedError,
+  STEP_ORDINAL,
+  nextStep,
+} from "./work-driver-context.ts";
 import { acquireWorkDeckHeader } from "./work-driver-deck-header.ts";
 import { countPriorStepStarts } from "./work-driver-diff.ts";
 import { runExplore } from "./work-driver-explore.ts";
@@ -103,18 +108,7 @@ async function runStep(ctx: DriverContext, state: WorkState, step: WorkStep): Pr
   }
 }
 
-/**
- * Error thrown by `runStep` when the step's body is staged for a later
- * commit. The smoke test asserts these are thrown for the unimplemented
- * steps; the live /work handler catches them and falls back to legacy
- * PM-driven flow until the step body lands.
- */
-export class DriverNotImplementedError extends Error {
-  constructor(public readonly step: WorkStep) {
-    super(`work-driver: step "${step}" is not yet implemented in this build`);
-    this.name = "DriverNotImplementedError";
-  }
-}
+export { DriverNotImplementedError } from "./work-driver-context.ts";
 
 /**
  * Run one /work cycle: read/create state, loop over steps via `nextStep()`,
@@ -328,11 +322,10 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
     const stepStartedAt = Date.now();
     // PR4: sub-round labels for iterative steps.
     const stepRound = countPriorStepStarts(state, step) + 1;
-    // #657 — the first event of this iteration is the step-started the step
-    // handler appends; backfill its round here (the single chokepoint every
+    // #657 — backfill the step-started's round (the single chokepoint every
     // iteration flows through) so renderers can show re-entries as
     // "adversarial (round 3)". Additive field; absent in the 12 per-step
-    // handler append sites, so nothing there changes.
+    // handler append sites.
     const before = state.eventLog.length;
     emitStepStarted(step, stepOrd.num, stepOrd.total, stepRound, ctx.issue);
     // PR2 O2: footer status cursor (step-level position with live-tick).

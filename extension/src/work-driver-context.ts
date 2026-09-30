@@ -287,6 +287,20 @@ export type StepDecision =
   | { kind: "done" }
   | { kind: "unknown-step"; value: unknown };
 
+/**
+ * Error thrown by `runStep` when the step's body is staged for a later
+ * commit (smoke tests assert the throw; the live /work handler catches it).
+ * Moved here from work-driver.ts (#838, the 500-line gate): the context
+ * module is the driver's shared leaf and the class has no step-handler
+ * dependencies.
+ */
+export class DriverNotImplementedError extends Error {
+  constructor(public readonly step: WorkStep) {
+    super(`work-driver: step "${step}" is not yet implemented in this build`);
+    this.name = "DriverNotImplementedError";
+  }
+}
+
 /** Decide the next step from the current step + just-appended events. */
 export function nextStep(state: WorkState): StepDecision {
   const ps = state.pipelineState;

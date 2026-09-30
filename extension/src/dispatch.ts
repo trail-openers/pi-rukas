@@ -10,6 +10,20 @@ import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
 
+/**
+ * #838 — the per-cycle deck option a driver dispatch threads through
+ * `dispatchCore`: `cycleKey` is the batch key the member rows group under
+ * (the driver's "/work #N" header, see work-driver-deck-header.ts); `label`
+ * is the row label ("#N develop · default"). When present the job is
+ * registered in the deck exactly like a PM job (skipDeck false) while the
+ * PM steer-back stays gated on ownerKind "driver" — a deck row is
+ * display/steer-only, never a report.
+ */
+export interface DriverDeckOpts {
+  cycleKey: string;
+  label: string;
+}
+
 const MAX_PARALLEL = 10;
 
 // Issue #92: the agent must not pick subagent provider/model per dispatch —
@@ -55,18 +69,12 @@ export function dispatchCore(
   opts: {
     label?: string;
     skipDeck?: boolean;
-    /**
-     * #838 — register this driver dispatch in the dispatch deck (and the
-     * live-view buffer) so the operator can see and steer the driver's
-     * children. `cycleKey` is the per-cycle batch key (the driver's header,
-     * e.g. "work:42") and `label` is the row label ("#42 develop ·
-     * default"). Mutually exclusive with `skipDeck`; when present the deck
-     * entry + live buffer are created exactly as for a PM job (skipDeck
-     * false), while the PM steer-back stays gated on ownerKind "driver" —
-     * a deck row for a driver child is display/steer-only, never a
-     * report steer-back to the PM.
-     */
-    deck?: { cycleKey: string; label: string };
+    /** #838 — the driver's per-cycle deck option (batch key + row label;
+     *  see DriverDeckOpts in async-jobs.ts). When present the deck entry is
+     *  created (skipDeck false, exactly like a PM job); the PM steer-back
+     *  stays gated on ownerKind "driver" — a deck row is display/steer
+     *  only, never a report steer-back to the PM. */
+    deck?: DriverDeckOpts;
     timeoutMs?: number;
     extraArgs?: string[];
     onSlow?: OnSlowCallback;

@@ -104,7 +104,10 @@ export async function runConvergeGateHandler(
         cwd: correctiveCwd,
       },
       {
-        // #838 — the converge corrective dispatch's deck row.
+        // #838 — the converge corrective dispatch's deck row. (This site is
+        // allowlisted in test-dispatch-cwd-audit: an explicit cwd above — the
+        // `label:` token below is the deck-option label, not a dispatch-shape
+        // marker the canary reads.)
         label: "develop:corrective",
         deck: driverDeckOpts(ctx.issue, "develop", "develop:corrective"),
       },
