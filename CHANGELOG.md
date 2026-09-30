@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.73](https://github.com/trail-openers/pi-rukas/compare/v0.12.72...v0.12.73) (2026-09-30)
+
+
+### Features
+
+* **work:** comment-retention gate against silently deleted comments ([#949](https://github.com/trail-openers/pi-rukas/issues/949)) ([373e497](https://github.com/trail-openers/pi-rukas/commit/373e4972ce9dcfe6c3f32efe38812004d4eacd72))
+
 ## [0.12.72](https://github.com/trail-openers/pi-rukas/compare/v0.12.71...v0.12.72) (2026-09-30)
 
 
