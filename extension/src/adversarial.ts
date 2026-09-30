@@ -7,6 +7,7 @@ import { infraFailureResult, runPhaseWithInfraRetry } from "./adversarial-retry.
 import { decideLoopAction, parseVerdict, synthesizeResult } from "./adversarial-verdict.ts";
 import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
 import { markOrchestrator, setOrchestratorActiveChild, startJob } from "./async-jobs.ts";
+import { buildCommentsLine } from "./comment-retention.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { readEnumMarker } from "./reply-markers.ts";
@@ -164,12 +165,23 @@ export async function runAdversarialLoop(
 
   const ledgerWrite = (result: DispatchResult) => writeAdversarialLedgerEntry(result, params);
 
+  // #859 — resolve the ref range (used by both the diff and the comment check).
+  const range = params.base && params.head ? { base: params.base, head: params.head } : null;
+
+  // #948 — the comment-retention line, computed lazily at FINAL synthesis
+  // (both the pass and the reject path). When the loop has a ref range, the
+  // check runs in workCwd against base...head with a real ExecFn and appends
+  // a `comments: lost=<n>` line (plus up to 20 lines) to the FINAL text —
+  // reflecting the post-fix tree, since round 2+ re-reads the range. A lost
+  // count > 0 does NOT change the verdict. Without a range: `not-run`. Early
+  // exits (empty-diff skip, errors) never pay for the check.
+  const commentsLineNow = () => buildCommentsLine(range, params.workCwd ?? process.cwd());
+
   // #859 — resolve the diff: a pasted string wins over a ref range (traced);
   // with no string, base+head compute the range in workCwd (else the process
   // cwd). An error (invalid ref naming the ref, confirmed-empty range, cap
   // overflow) is returned AS the result — never a fallback to an empty
   // string, which the loop would review as "nothing to change" and approve.
-  const range = params.base && params.head ? { base: params.base, head: params.head } : null;
   let diff: string;
   let getDiff = params.getDiff;
   if (params.diff && range) {
@@ -380,14 +392,15 @@ export async function runAdversarialLoop(
       // two apart, and `commit-pr` carries the findings into the PR body.
       const clean = verdict.status === "APPROVED";
       const notePrefix = diffRereadNotes.length ? `${diffRereadNotes.join("\n")}\n\n` : "";
+      const commentsLine = await commentsLineNow();
       const r = synthesizeResult({
         ok: true,
         loopOutcome: "approved",
         text:
           notePrefix +
           (clean
-            ? `Adversarial APPROVED after round ${round}.\n\n${verdict.findings}`
-            : `Adversarial PASSED WITH FINDINGS after round ${round} (verdict: ${verdict.status} — non-blocking per agents-base/adversarial-developer.md). These findings are unresolved and travel to the PR body and the lens review; they did not block the commit.\n\n${verdict.findings}`),
+            ? `Adversarial APPROVED after round ${round}.\n\n${verdict.findings}\n\n${commentsLine}`
+            : `Adversarial PASSED WITH FINDINGS after round ${round} (verdict: ${verdict.status} — non-blocking per agents-base/adversarial-developer.md). These findings are unresolved and travel to the PR body and the lens review; they did not block the commit.\n\n${verdict.findings}\n\n${commentsLine}`),
         ms: Date.now() - start,
         usage,
         transcriptPath: lastTranscript,
@@ -432,6 +445,7 @@ export async function runAdversarialLoop(
   }
 
   const last = rounds[rounds.length - 1];
+  const commentsLine = await commentsLineNow();
   const r = synthesizeResult({
     ok: false,
     loopOutcome: "rejected",
@@ -447,6 +461,8 @@ export async function runAdversarialLoop(
       "  (b) Accept the current state and proceed to @ops commit. Record the override in vipune.",
       "  (c) Abandon and rework the approach — return to issue scoping or developer redesign.",
       "  (d) Take over manually — user steps in to address findings directly.",
+      "",
+      commentsLine,
     ].join("\n"),
     ms: Date.now() - start,
     usage,
