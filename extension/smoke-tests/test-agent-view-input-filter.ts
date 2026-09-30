@@ -94,6 +94,21 @@ function makeHeader(): ViewHeader {
     decodeInsertable("\u001b[200~\x07\x9b\x7f\u001b[201~") === "",
     "1f: all-control paste drops to empty",
   );
+  // 1g: the remaining C0 line-break codes — form feed (\f, 0x0C) and
+  // vertical tab (\v, 0x0B) — are dropped, not inserted: they fall through
+  // isInsertableCodePoint (cp >= 32 fails) and are not one of the three
+  // collapse-to-space codes (0x09/0x0a/0x0d), so the filter drops them.
+  // (The fixture literal above stays as-is; this is an independent check.)
+  const feedPaste = decodeInsertable("\u001b[200~a\f\vb\u001b[201~");
+  assert(
+    feedPaste === "ab",
+    `1g: form feed (\f) and vertical tab (\v) are dropped, not inserted (got ${JSON.stringify(feedPaste)})`,
+  );
+  const feedPlain = decodeInsertable("a\f\vb");
+  assert(
+    feedPlain === "ab",
+    `1g2: \f/\v drop identically in a plain multi-char chunk (got ${JSON.stringify(feedPlain)})`,
+  );
 }
 
 // ---------------------------------------------------------------------------
