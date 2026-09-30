@@ -12,6 +12,7 @@ import type {
   LensReviewSummary,
   LensRunResult,
   Severity,
+  Verdict,
 } from "./lens-review.ts";
 import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
 
@@ -170,6 +171,90 @@ export function bySeverityCounts(findings: Finding[]): Record<Severity, number> 
   for (const f of findings) out[f.severity]++;
   return out;
 }
+
+/**
+ * Did this lens actually review anything?
+ *
+ * A lens that reported a finding plainly did. A lens that reported none is
+ * only credible if it also wrote the closing summary the prompt asks for.
+ * Neither means the child produced nothing at all — wrong model, dropped
+ * reporter extension, exhausted context, or a bare "ok" — and that is
+ * indistinguishable from a careful review right up until it is treated as one.
+ *
+ * `blocked` covers the lens that FAILED. This covers the lens that succeeded
+ * at saying nothing, which is the harder case because it looks like success.
+ */
+export function lensProducedEvidence(r: LensRunResult): boolean {
+  if (r.findings.length > 0) return true;
+  const summary = r.summary?.trim();
+  if (!summary) return false;
+  // `collapseEvents` substitutes this literal when a child produced only
+  // thinking blocks. It is a placeholder describing the absence of output, not
+  // output — counting it as a summary would let the exact silence this guards
+  // against slip through wearing the right shape.
+  return summary !== NO_TEXT_PLACEHOLDER;
+}
+
+/** What `spawn-collapse-events.ts` substitutes for a reply that was all thinking. */
+const NO_TEXT_PLACEHOLDER = "(thinking content only - no text output)";
+
+/**
+ * Map (findings × lens completion state) to a single verdict.
+ *
+ * Precedence (first match wins):
+ *   1. REVIEW_INCOMPLETE — at least one lens hit max retries (#3); the
+ *      six-pass review degenerated to a five-or-fewer-pass review. Never
+ *      silently downgrade — surface explicitly.
+ *   2. CRITICAL_ISSUES_FOUND — any CRITICAL finding from any completed lens.
+ *   3. ISSUES_FOUND — any finding at or above `threshold` (default MEDIUM).
+ *   4. APPROVED — only sub-threshold (or no) findings AND all lenses completed.
+ *
+ * CRITICAL blocks regardless of `threshold`. A project may decide that MEDIUM
+ * findings are advisory; none gets to decide that a CRITICAL one is.
+ *
+ * lensResults is optional for backwards compat with pure-function tests
+ * that only care about finding-driven verdicts. When omitted, blocked
+ * lenses can't be detected and the verdict logic falls back to pre-#3
+ * behaviour.
+ */
+export function computeVerdict(
+  findings: Finding[],
+  lensResults?: LensRunResult[],
+  threshold: Severity = DEFAULT_REVIEW_THRESHOLD,
+): Verdict {
+  if (lensResults?.some((r) => r.blocked)) return "REVIEW_INCOMPLETE";
+  // A lens that returned in silence has not reviewed the diff, whatever its
+  // exit code said. Six of those used to add up to APPROVED.
+  if (lensResults?.some((r) => !lensProducedEvidence(r))) return "REVIEW_INCOMPLETE";
+  if (findings.some((f) => f.severity === "CRITICAL")) return "CRITICAL_ISSUES_FOUND";
+  // The threshold check: any finding at or above the project's bar.
+  const bar = SEVERITY_RANK[threshold];
+  if (findings.some((f) => SEVERITY_RANK[f.severity] <= bar)) return "ISSUES_FOUND";
+  return "APPROVED";
+}
+
+/**
+ * How serious a finding must be before it blocks.
+ *
+ * The lens decides a finding's severity — that is its judgment and this module
+ * does not second-guess it. Which severity is serious *enough to stop a merge*
+ * is a different question, and it belongs to the project, not to this code.
+ * `AGENTS.md §1` in this repo has always said "blocking at MEDIUM severity and
+ * above"; until now nothing read that sentence, so it was decorative and a
+ * project wanting a different bar had no way to say so.
+ *
+ * MEDIUM stays the default, so a project that says nothing — or has no
+ * AGENTS.md at all — gets exactly today's behaviour. See
+ * `work-driver-policy.ts` for how a project loosens it.
+ */
+export const DEFAULT_REVIEW_THRESHOLD: Severity = "MEDIUM";
+
+const SEVERITY_RANK: Record<Severity, number> = {
+  CRITICAL: 0,
+  HIGH: 1,
+  MEDIUM: 2,
+  LOW: 3,
+};
 
 /**
  * #878 — the suffix that names WHY a blocked lens was stopped, read from

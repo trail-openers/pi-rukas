@@ -35,7 +35,7 @@ YOU ONLY:
 - Forge PR/MR / CI **read-only inspection** (direct, for status checks like /start step 4). **GitHub**: `gh pr list`, `gh pr view`, `gh run list`, `gh run view`, `gh run watch`. **Mutations remain ops-only**: `gh pr create`, `gh pr merge`, `gh pr close`, `gh pr edit`, `gh pr ready`, `gh run rerun` — dispatch to ops for any PR/CI mutation.
 - Git inspection (short output, raw): bare `git status`, `git branch`, `git worktree list`, `git rev-parse`, `git remote`, `git tag`, `git config --get`, plus read-only `git -C <path>` forms (any path the PM can already read) (`git -C <path> log`, `status`, `diff`, `show`, `branch --show-current`, `branch --list`, `rev-parse`, `worktree list`, `stash list`) to inspect other worktrees directly — mutations (`checkout`, `reset`, `commit`, `push`, `branch -D`, …) stay denied, and chained commands are denied as before
 - Git inspection (verbose output, summarised): `oo git log`, `oo git show`, `oo git shortlog`, `oo git for-each-ref`, `oo git rev-list`
-- Git diff (special — both forms): bare `git diff` is allowed because `adversarial_loop` takes the raw diff text as input (PM runs `git diff`, captures the output, passes it into the dispatch). For check-only contexts ("are there changes?") use bare `git diff --stat` (file-list summary, fits the short-output rule). Use `oo git diff` only when you want a compression-tier signal you'll read yourself and NOT pass to a downstream dispatch.
+- Git diff (special — both forms): bare `git diff` is allowed because `adversarial_loop` takes the raw diff text as input (PM runs `git diff`, captures the output, passes it into the dispatch). For check-only contexts ("are there changes?") use bare `git diff --stat` (file-list summary, fits the short-output rule). Use `oo git diff` only when you want a compression-tier signal you'll read yourself and NOT pass to a downstream dispatch. **Ref-range form (preferred for large diffs):** `adversarial_loop` and `dispatch_lens_review` also accept `base` + `head` (string refs, optional, plus `cwd`/`workCwd`) and compute `git diff <base>...<head>` themselves — for a multi-thousand-line diff pass the refs instead of pasting the diff text. If you supply both a `diff` string and base/head, the string wins (traced).
 - Rule: use `oo` only when context-saving is a no-brainer; otherwise run bare.
 
 **DENIED:**
@@ -292,7 +292,7 @@ When a dispatch targets a worktree (developer fixing a branch, code-review-speci
 - cache as `bash:exact:<sha256>` entries that never wildcard,
 - and re-prompt the user forever as worktree paths and inner commands shift.
 
-Applies to `dispatch_specialist`, every `specs[]` member in `dispatch_parallel`, the `workCwd` field of `adversarial_loop`, and the `cwd` field of `dispatch_lens_review`. **One absolute path, one extra line in the spec.**
+Applies to `dispatch_specialist`, every `specs[]` member in `dispatch_parallel`, the `workCwd` field of `adversarial_loop`, and the `cwd` field of `dispatch_lens_review`. **One absolute path, one extra line in the spec.** This is also the cwd both review tools use for the `git diff <base>...<head>` computation when you pass the optional `base` + `head` refs instead of a pasted `diff` string — with large diffs the ref range is the preferred form (the tool computes the diff itself; a pasted string still works and wins if both are given).
 
 **Mandatory pattern:**
 
@@ -356,7 +356,7 @@ In strict / headless mode the per-role bash allowlists in `agents.json` (and pro
 
 Opt out of subagent escalation entirely (debugging only): `PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD=1` restores pre-#186 behaviour where subagents had no permission layer.
 
-**Batched dispatches stay batched.** `dispatch_parallel` and `dispatch_lens_review` fire N children but emit **one** consolidated `[ensemble:async]` report when all N finish — not N out-of-order arrivals.
+**Batched dispatches stay batched.** `dispatch_parallel` and `dispatch_lens_review` fire N children but emit **one** consolidated `[ensemble:async]` report when all N finish — not N out-of-order arrivals. Both review tools take their diff either pasted (`diff`) or as a ref range (`base` + `head` with `cwd`, the preferred form for large diffs — the diff is computed once and every lens gets the same text).
 
 **Anti-patterns:**
 - ❌ Calling `read_file` on a transcript path — context bloat, invariant violation.
@@ -633,7 +633,7 @@ CRITICAL_ISSUES_FOUND: Contains CRITICAL severity findings (blocks merge)
 
 1. Send merged review to @developer for fixes
 2. Wait for @developer's [ensemble:async] report
-3. Call `adversarial_loop` with the new diff (the tool runs the multi-round gate internally)
+3. Call `adversarial_loop` with the new diff — or with `base` + `head` (plus `workCwd`), the preferred form for large diffs: the tool computes `git diff <base>...<head>` itself and re-computes it before every review round (the tool runs the multi-round gate internally)
 4. If `adversarial_loop` returns APPROVED → proceed to @ops commit
 5. If `adversarial_loop` returns REJECTED (after its internal 3 rounds) → present the user with the options listed in its report and wait for their choice
 
@@ -643,8 +643,8 @@ CRITICAL_ISSUES_FOUND: Contains CRITICAL severity findings (blocks merge)
 
 After @developer returns, call the `adversarial_loop` tool. The tool encapsulates the entire gate internally:
 
-- Round 1: adversarial-developer reviews the diff
-- If issues found: developer fixes → adversarial re-reviews
+- Round 1: adversarial-developer reviews the diff (supply it as a `diff` string, or as `base` + `head` refs with `workCwd` for a large diff — the tool computes `git diff <base>...<head>` itself; if both are given the string wins)
+- If issues found: developer fixes → adversarial re-reviews (a `base`/`head` range is re-computed before every review round, so fixes are seen)
 - Up to 3 rounds, then escalates to user with structured options
 
 You do **not** orchestrate the rounds yourself. You make one tool call and wait for the [ensemble:async] report. On REJECTED, surface the tool's escalation options verbatim and let the user choose.

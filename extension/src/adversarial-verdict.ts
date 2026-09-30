@@ -43,7 +43,7 @@
  */
 
 import { readEnumMarker } from "./reply-markers.ts";
-import type { AdversarialVerdict, AdversarialVerdictStatus } from "./types.ts";
+import type { AdversarialVerdict, AdversarialVerdictStatus, DispatchResult } from "./types.ts";
 
 /**
  * The verdicts the reviewer may return, most severe first.
@@ -119,4 +119,39 @@ export function decideLoopAction(
   if (round < maxRounds) return "fix";
   // Out of rounds. Only the verdict the doctrine calls blocking blocks.
   return status === "CRITICAL_ISSUES_FOUND" ? "reject" : "pass";
+}
+
+interface SynthesizeInput {
+  ok: boolean;
+  text: string;
+  ms: number;
+  usage: DispatchResult["usage"];
+  transcriptPath?: string;
+  model?: string;
+  /** #298 — how the loop ended; see DispatchResult.loopOutcome. */
+  loopOutcome?: DispatchResult["loopOutcome"];
+  /** #485 — per-round verdict records, threaded from the loop as data. */
+  adversarialRounds?: DispatchResult["adversarialRounds"];
+  /** #485 — total rounds executed when the loop exited with no verdict. */
+  roundsExecuted?: number;
+  /** #543 — a loop / token-budget self-kill, threaded so the cap path can distinguish it. */
+  killCause?: DispatchResult["killCause"];
+}
+
+export function synthesizeResult(i: SynthesizeInput): DispatchResult {
+  return {
+    role: "adversarial-loop",
+    ok: i.ok,
+    text: i.text,
+    toolUses: [],
+    ms: i.ms,
+    exitCode: i.ok ? 0 : 1,
+    usage: i.usage,
+    model: i.model,
+    transcriptPath: i.transcriptPath,
+    loopOutcome: i.loopOutcome,
+    adversarialRounds: i.adversarialRounds,
+    roundsExecuted: i.roundsExecuted,
+    ...(i.killCause ? { killCause: i.killCause } : {}),
+  };
 }
