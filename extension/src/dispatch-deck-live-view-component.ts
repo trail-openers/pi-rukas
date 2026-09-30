@@ -82,6 +82,14 @@ export type TuiHandle = { terminal?: { rows?: number } } | undefined;
 export const VIEW_FALLBACK_ROWS = 24;
 
 /**
+ * #915 lens r1 — the input's length cap (characters). A huge paste would
+ * otherwise bloat the per-render sanitising of the input line and the
+ * steer write on send; inserts are truncated to this prefix (see the
+ * INSERT branch in handleInput).
+ */
+const INPUT_MAX_CHARS = 8000;
+
+/**
  * The key-legend footer line. #915 — the view's input line is ALWAYS
  * focused: every printable key inserts into it, and the view commands are
  * the non-printing keys only (↑/↓/PgUp/PgDn/Home/End scroll, ctrl+t
@@ -332,12 +340,20 @@ export function createAgentViewComponent(
         // #915 — INSERT or SWALLOW, decided by decodeInsertable
         // (deck-key-decode.ts): printables (ASCII, Kitty CSI-u decoded to
         // a character — non-ASCII/CJK/emoji never as raw sequences, pastes
-        // with newlines collapsed) insert; everything else (F-keys, mouse,
+        // filtered per code point) insert; everything else (F-keys, mouse,
         // alt+x, arrows, lone ESC, control bytes) is swallowed — garbage
         // in the buffer would desync terminal line accounting (#927).
-        // Key-release was already filtered above.
+        // Key-release is filtered above before this branch runs; the
+        // decoder guards it again as defence in depth, so this branch
+        // stays safe even if that filter ever moves.
         const insert = decodeInsertable(data);
-        if (insert !== undefined) input += insert;
+        if (insert !== undefined) {
+          // #915 lens r1 — cap the input so a huge paste can't bloat the
+          // per-render sanitising or the steer write: keep the first
+          // INPUT_MAX_CHARS characters (truncate the tail of the insert).
+          input += insert;
+          if (input.length > INPUT_MAX_CHARS) input = input.slice(0, INPUT_MAX_CHARS);
+        }
       }
     },
     // #915 — the input accessors the host (openLiveView) uses in the send

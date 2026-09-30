@@ -18,10 +18,13 @@
  *     character (covers non-ASCII: é, CJK, emoji, and shifted letters);
  *   - the start of a bracketed paste (`\x1b[200~`) → strip the marker
  *     (pi-tui's ProcessTerminal wraps every paste in
- *     `\x1b[200~…\x1b[201~`; the end marker is swallowed as unknown);
+ *     `\x1b[200~…\x1b[201~`; the end marker is swallowed as unknown) and
+ *     filter the pasted content per code point (insertables in,
+ *     newlines/CR/tabs to spaces, C0/C1 controls, DEL and PUA dropped —
+ *     see `filterPlainText`);
  *   - any other multi-char plain text (an IME composition commit, or
- *     terminal text delivered without bracketed-paste mode) → insert with
- *     newlines collapsed to spaces;
+ *     terminal text delivered without bracketed-paste mode) → the same
+ *     per-code-point filter;
  *   - everything else (unknown escape sequences — F-keys, mouse SGR,
  *     alt+x, arrow keys, the paste end marker, lone ESC, control bytes)
  *     → swallow. Garbage in the message buffer would desync the
@@ -30,6 +33,11 @@
  * The decode result is validated: a non-empty string whose every code
  * point is ≥ 32. That admits é/CJK/emoji (code points 128+) and rejects
  * the control/empty shapes without a per-shape allow-list.
+ *
+ * Key-release (Kitty flag 2) is filtered in the component BEFORE this
+ * decoder is called; the guard at the top of `decodeInsertable` is
+ * defence in depth so the decoder stays safe even if the component ever
+ * changes shape.
  *
  * Known trade (measured against the pinned pi-tui): the strict
  * decoder is LENIENT about malformed `;u` shapes — a sequence whose
@@ -46,36 +54,7 @@
  * and are swallowed — no raw escape sequence ever reaches the buffer.
  */
 
-import {
-  decodeKittyPrintable,
-  isKeyRelease,
-  matchesKey,
-  parseKey,
-} from "@earendil-works/pi-tui/dist/keys.js";
-
-/**
- * The view's command keys (the NON-printing keys that drive the view,
- * checked with `matchesKey` in the component BEFORE this decoder runs).
- * The decoder is a pure function of `data`; listing the keys here keeps
- * the two sides reviewable side by side.
- */
-export const VIEW_COMMAND_KEYS = [
-  "escape",
-  "ctrl+t",
-  "enter",
-  "backspace",
-  "up",
-  "down",
-  "pageUp",
-  "pageDown",
-  "home",
-  "end",
-] as const;
-
-/** True when `data` carries one of the view's command keys. */
-export function isViewCommandKey(data: string): boolean {
-  return VIEW_COMMAND_KEYS.some((k) => matchesKey(data, k));
-}
+import { decodeKittyPrintable, isKeyRelease } from "@earendil-works/pi-tui/dist/keys.js";
 
 /** The bracketed-paste markers pi-tui's ProcessTerminal wraps pastes in. */
 const PASTE_START = "\u001b[200~";
@@ -83,7 +62,8 @@ const PASTE_END = "\u001b[201~";
 
 /**
  * The per-code-point insertability predicate, shared by the legacy
- * single-char path and the CSI-u validation loop. A code point inserts
+ * single-char path, the CSI-u validation loop, and the per-code-point
+ * filter over pasted / multi-char plain text. A code point inserts
  * when it is ≥ 32 and NOT: DEL (127), a C1 control (0x80–0x9F), or a
  * Kitty functional key. The functional-key range is the Private Use
  * Area U+E000–U+F8FF — where Kitty actually places its function keys
@@ -93,6 +73,26 @@ const PASTE_END = "\u001b[201~";
  */
 function isInsertableCodePoint(cp: number): boolean {
   return cp >= 32 && cp !== 0x7f && !(cp >= 0x80 && cp < 0xa0) && !(cp >= 0xe000 && cp <= 0xf8ff);
+}
+
+/**
+ * Filter a paste / plain-text chunk per code point: insertables pass
+ * through; newlines, CR and tabs collapse to spaces (same shape as the
+ * newline collapse below); everything else (C0/C1 controls, DEL, Kitty
+ * functional PUA) is dropped. Runs of spaces the mapping produces are
+ * collapsed to a single space, as the newline collapse does.
+ */
+function filterPlainText(data: string): string {
+  let out = "";
+  for (const ch of data) {
+    const cp = ch.codePointAt(0) ?? 0;
+    if (isInsertableCodePoint(cp)) {
+      out += ch;
+    } else if (cp === 0x09 || cp === 0x0a || cp === 0x0d) {
+      out += " ";
+    }
+  }
+  return out.replace(/\s+/g, " ");
 }
 
 /**
@@ -123,9 +123,9 @@ export function decodeInsertable(data: string): string | undefined {
       // A bracketed paste (pi-tui wraps every paste in \x1b[200~ …
       // \x1b[201~; the end marker may ride in the same chunk or arrive
       // separately and is swallowed as an unknown sequence). Strip the
-      // markers and insert the content with newlines collapsed — the
-      // same shape the paste-free path below produces.
-      return data.split(PASTE_START).join("").split(PASTE_END).join("").replace(/\n+/g, " ");
+      // markers and filter the content per code point — the same shape
+      // the paste-free path below produces.
+      return filterPlainText(data.split(PASTE_START).join("").split(PASTE_END).join(""));
     }
     // First: a PRINTABLE encoding (Kitty CSI-u or modifyOtherKeys)?
     // decodeKittyPrintable returns a character for those (the strict
@@ -153,23 +153,18 @@ export function decodeInsertable(data: string): string | undefined {
       // Decoded to a non-printable (control, C1, or functional key):
       // fall through to the swallow check.
     }
-    // Second: a recognised NON-printable (arrow, F-key, functional
-    // CSI-u, legacy \x1b[5~, alt+x, …)? pi-tui's key vocabulary —
-    // `matchesKey` for the view's own command keys and `parseKey` for
-    // the rest — covers the sequences a terminal emits. If pi-tui
-    // knows the key, it is a command, not text: swallow it (the
-    // component handles the keys it cares about; unknown command keys
-    // like F1 simply do nothing).
-    if (isViewCommandKey(data) || parseKey(data) !== undefined) return undefined;
-    // Unknown escape sequence: swallow. Inserting raw ESC bytes into the
-    // buffer would desync the terminal (sanitizeText strips them at
-    // render, so the typed text would vanish invisibly — worse than
-    // losing the keypress).
+    // Any other escape sequence: swallow — recognised command keys
+    // (arrows, F-keys, legacy CSI, alt+x, …) and unknown sequences
+    // alike. Inserting raw ESC bytes into the buffer would desync the
+    // terminal (sanitizeText strips them at render, so the typed text
+    // would vanish invisibly — worse than losing the keypress).
     return undefined;
   }
   // Multi-char plain text: an IME composition commit, or terminal text
-  // delivered without bracketed-paste mode. Insert, newlines collapsed
-  // to spaces (a paste's newlines would desync the one-line input; the
-  // collapse keeps it readable).
-  return data.replace(/\n+/g, " ");
+  // delivered without bracketed-paste mode. Filter per code point
+  // (insertables in, newlines/CR/tabs to spaces, controls dropped —
+  // the same filter the bracketed-paste branch applies; a paste's
+  // newlines would desync the one-line input, and the collapse keeps it
+  // readable).
+  return filterPlainText(data);
 }
