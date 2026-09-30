@@ -35,7 +35,9 @@ function assert(cond: boolean, msg: string) {
 /** A repo with a feature branch holding a real change + origin refs. */
 async function mkRepoWithBranch(): Promise<{ dir: string; head: string; base: string }> {
   const dir = mkdtempSync(path.join(tmpdir(), "pi-lens-refrange-"));
-  await execp("git init -q", { cwd: dir });
+  // Pin the initial branch to main (a bare `git init` follows the machine's
+  // init.defaultBranch; CI is not guaranteed to default to main).
+  await execp("git init -q -b main", { cwd: dir });
   await execp('git config user.email "t@t" && git config user.name "T"', {
     cwd: dir,
     shell: "/bin/bash",
@@ -106,7 +108,8 @@ async function mkRepoWithBranch(): Promise<{ dir: string; head: string; base: st
 // ------------------------------------------- empty range → explicit error, never APPROVED
 {
   const dir = mkdtempSync(path.join(tmpdir(), "pi-lens-refrange-empty-"));
-  await execp("git init -q", { cwd: dir });
+  // Pin the initial branch to main (machine init.defaultBranch may differ).
+  await execp("git init -q -b main", { cwd: dir });
   await execp('git config user.email "t@t" && git config user.name "T"', { cwd: dir, shell: "/bin/bash" });
   writeFileSync(path.join(dir, "base.txt"), "hello\n");
   await execp("git add -A && git commit -q -m initial", { cwd: dir, shell: "/bin/bash" });

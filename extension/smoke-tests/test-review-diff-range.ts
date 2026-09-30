@@ -37,7 +37,10 @@ function assert(cond: boolean, msg: string) {
 /** A repo with an initial commit and origin/main pointing at it. */
 async function mkRepo(): Promise<string> {
   const dir = mkdtempSync(path.join(tmpdir(), "pi-review-diff-"));
-  await execp("git init -q", { cwd: dir });
+  // Pin the initial branch to main: a bare `git init` uses the machine's
+  // init.defaultBranch (CI runners are not guaranteed to default to main),
+  // and the ref range under test is `origin/main`.
+  await execp("git init -q -b main", { cwd: dir });
   await execp('git config user.email "t@t" && git config user.name "T"', {
     cwd: dir,
     shell: "/bin/bash",

@@ -102,7 +102,10 @@ const git = (dir: string, ...args: string[]) =>
 
 const repoDir = mkdtempSync(path.join(os.tmpdir(), "adv-reread-859-"));
 try {
-  git(repoDir, "init", "-q");
+  // Pin the initial branch to main: a bare `git init` follows the machine's
+  // init.defaultBranch (CI runners are not guaranteed to default to main), and
+  // the loop's range is `main...feat/round1`.
+  git(repoDir, "init", "-q", "-b", "main");
   git(repoDir, "config", "user.email", "t@example.com");
   git(repoDir, "config", "user.name", "test");
   // Base content is a single line. The head branch adds one line carrying
