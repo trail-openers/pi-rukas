@@ -112,7 +112,10 @@ try {
   // The head branch carries one real change — the round-1 diff the loop
   // computes from the ref range.
   git(repoDir, "checkout", "-qb", "feat/round1");
-  writeFileSync(path.join(repoDir, "src-sample-rs.txt"), "line one\nline two original_sample_function\n");
+  writeFileSync(
+    path.join(repoDir, "src-sample-rs.txt"),
+    "line one\nline two original_sample_function\n",
+  );
   git(repoDir, "add", "-A");
   git(repoDir, "commit", "-q", "-m", "round 1 change");
 

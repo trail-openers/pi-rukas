@@ -12,12 +12,13 @@ import {
   startPersistentBatch,
 } from "./lens-review-diff.ts";
 import {
-  LENS_PREFIX,
   DEFAULT_REVIEW_THRESHOLD,
+  LENS_PREFIX,
   bySeverityCounts,
   computeVerdict,
   dedupeFindings,
   extractFindings,
+  lensProducedEvidence,
   renderSummary,
 } from "./lens-review-format.ts";
 import { runInstallBlock, skillsDirUsable } from "./lens-review-skills.ts";
@@ -46,6 +47,7 @@ export {
   computeVerdict,
   dedupeFindings,
   extractFindings,
+  lensProducedEvidence,
   renderSummary,
 };
 import { aggregateLensUsage } from "./lens-review-usage.ts";
