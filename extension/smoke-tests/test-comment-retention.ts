@@ -180,6 +180,44 @@ const PATHS = ["src"];
     }
     rmSync(dirF, { recursive: true, force: true });
   }
+
+  // (g) arithmetic continuation: `const y = a\n * b;` — the ` * b;` line
+  // follows a non-comment line, so it is NOT classified as a comment. The
+  // real `// a real comment here` is exempt (the code `const y = a` is also
+  // deleted, so the exemption rule applies). Result: nothing is lost.
+  const dirG = await makeRepo(
+    `const x = 5;\n// a real comment here\nconst y = a\n * b;\nconst z = 9;\n`,
+    `const x = 5;\nconst z = 9;\n`,
+  );
+  {
+    const base = (await git(dirG, ["rev-parse", "HEAD~1"])).stdout.trim();
+    const head = (await git(dirG, ["rev-parse", "HEAD"])).stdout.trim();
+    const res = await findLostComments(realExec, dirG, base, head, PATHS);
+    assert(res.ok === true, "real-git (g): result is ok");
+    assert(
+      res.ok && res.lost.length === 0,
+      "real-git (g): arithmetic continuation is NOT reported lost; comment is exempt (code also deleted)",
+    );
+    rmSync(dirG, { recursive: true, force: true });
+  }
+
+  // (h) arithmetic continuation where the code is RETAINED: the ` * b;` line
+  // is NOT a comment, and the `// real` comment above retained code IS lost.
+  const dirH = await makeRepo(
+    `// a real comment above\nconst y = a\n * b;\nconst z = 9;\n`,
+    `const y = a\n * b;\nconst z = 9;\n`,
+  );
+  {
+    const base = (await git(dirH, ["rev-parse", "HEAD~1"])).stdout.trim();
+    const head = (await git(dirH, ["rev-parse", "HEAD"])).stdout.trim();
+    const res = await findLostComments(realExec, dirH, base, head, PATHS);
+    assert(res.ok === true, "real-git (h): result is ok");
+    assert(
+      res.ok && res.lost.length === 1 && res.lost[0] === "// a real comment above",
+      "real-git (h): real comment above retained code IS lost; arithmetic continuation is not a comment",
+    );
+    rmSync(dirH, { recursive: true, force: true });
+  }
 }
 
 // --- develop-gate wiring via verifyStepOutcome (fake ExecFn) --------------

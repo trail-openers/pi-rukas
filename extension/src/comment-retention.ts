@@ -46,28 +46,36 @@ function isSafeRef(ref: string): boolean {
   return VALID_SHA_RE.test(ref) || VALID_REFNAME_RE.test(ref);
 }
 
-/**
- * A whole-line comment (trimmed): a double-slash line, an open block-comment
- * line, or an asterisk (block continuation) line. Uses `startsWith` (not
- * `charCodeAt` or array indexing) to keep the type simple under
- * `noUncheckedIndexedAccess`.
- */
-function isCommentLine(raw: string): boolean {
-  const t = raw.trim();
-  if (t.startsWith("//")) return true;
-  if (t.startsWith("/*")) return true;
-  if (t.startsWith("*")) {
-    // `*` (continuation) but not `**` (a code line like `**x`) and not just `*`.
-    if (t.length > 1 && !t.startsWith("**")) return true;
-    return t === "*";
-  }
-  if (t.endsWith("*/") && t.length > 2) return true; // closing of a block comment
-  return false;
-}
-
 export type LostCommentResult =
   | { ok: true; lost: string[]; exempt: number }
   | { ok: false; reason: string };
+
+// Leading-`*` line forms. Bare `*` or `**` are always a block-closer comment.
+// A prose `* text` line is a block continuation ONLY when the previous line was
+// also a comment (we are inside a block). An arithmetic continuation (` * b;`
+// after `const y = a`) has a non-comment predecessor and is NOT a comment.
+const STAR_BARE_RE = /^\*(\*)?$/;
+const STAR_PROSE_RE = /^\*(\*\/?)?\s\S/;
+
+/**
+ * A whole-line comment: a double-slash line, a block-open line, a block-close
+ * line, or a block-continuation star line.
+ *
+ * `inBlock` is `true` when the previous line was also a comment (we are
+ * inside a block comment). A prose `* text` line is a comment only when
+ * `inBlock` is true; a bare `*` or `**` is always a comment (block closer).
+ * This stops an arithmetic continuation (` * b;` after `const y = a`) from
+ * being misread as a JSDoc continuation.
+ */
+function isCommentLine(raw: string, inBlock: boolean): boolean {
+  const t = raw.trim();
+  if (t.startsWith("//") || t.startsWith("/*")) return true;
+  if (t.startsWith("*")) {
+    if (STAR_BARE_RE.test(t)) return true;
+    return inBlock && STAR_PROSE_RE.test(t);
+  }
+  return t.endsWith("*/") && t.length > 2; // closing of a block comment
+}
 
 /**
  * Read every file under `paths` at `ref` (one `git grep -e ""` read, not N
@@ -158,12 +166,17 @@ export async function findLostComments(
     return false;
   };
 
-  // 3. Walk removed lines, grouping consecutive comment lines into blocks.
+  // 3. Walk removed lines, tagging each with `isComment`. A prose `* text`
+  // line is a comment only when the previous removed line was also a comment
+  // (we are inside a block); `inBlock` tracks that.
   const removed: Array<{ raw: string; isComment: boolean }> = [];
+  let inBlock = false;
   for (const line of diff.split("\n")) {
     if (!line.startsWith("-") || line.startsWith("---")) continue;
     const raw = line.slice(1);
-    removed.push({ raw, isComment: isCommentLine(raw) });
+    const isComment = isCommentLine(raw, inBlock);
+    removed.push({ raw, isComment });
+    inBlock = isComment;
   }
 
   const lost: string[] = [];
