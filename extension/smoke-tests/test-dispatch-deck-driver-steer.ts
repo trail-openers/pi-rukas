@@ -11,6 +11,7 @@ import { buildAgentListLines } from "../src/agent-list.ts";
 import { steerFromDeck } from "../src/dispatch-deck-interactive.ts";
 import * as dispatchDeck from "../src/dispatch-deck.ts";
 import { steerChild } from "../src/dispatch-steer.ts";
+import { driverDeckOpts, workDeckKey } from "../src/work-driver-deck-header.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -83,6 +84,16 @@ function assert(cond: boolean, msg: string) {
   dispatchDeck.clearEntry("j-agent-1");
   dispatchDeck.clearBatchEntry("work:42");
   dispatchDeck.reset();
+}
+
+// 10. The driverDeckOpts helper: label grammar + cycle key.
+{
+  const o1 = driverDeckOpts(42, "develop", "default");
+  assert(o1.cycleKey === "work:42", "driverDeckOpts: cycleKey is work:<issue>");
+  assert(o1.label === "#42 develop · default", "driverDeckOpts: label is #<issue> <step> · <tag>");
+  const o2 = driverDeckOpts(7, "explore", "explore");
+  assert(o2.label === "#7 explore · explore", "driverDeckOpts: explore step label");
+  assert(workDeckKey(7) === "work:7", "workDeckKey: work:<issue>");
 }
 
 console.log(`\nexit ${exit}`);

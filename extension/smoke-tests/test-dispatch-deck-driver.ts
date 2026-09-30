@@ -1,9 +1,18 @@
 #!/usr/bin/env bun
 /**
- * #838 — driver dispatches in the dispatch deck. The deck option,
- * header lifecycle, quiet mode, counter-less rendering, and header-token
- * ownership. Steer + agent-list tests: test-dispatch-deck-driver-steer.ts.
- * All dispatch faked (FORBID_LIVE_SPAWN); no real Pi spawn.
+ * #838 — driver dispatches in the dispatch deck.
+ *
+ * Covers the deck option on `dispatchCore`/`startJob` (one entry keyed by the
+ * jobId, the per-cycle batchKey, label `#<issue> <step> · <tag>`; zero PM
+ * steer-backs for driver jobs), the driver's per-cycle header lifecycle (created on cycle start,
+ * cleared on every terminal path — merged, handoff, thrown error — via the try/finally), quiet-mode
+ * atomic suppression (header + members, matching PM jobs), the steer path
+ * (steerChild/steerFromDeck; steer + agent-list tests: companion
+ * test-dispatch-deck-driver-steer.ts), and the counter-less header rendering (size-0),
+ * the second-cycle ownership token (no clobber), and the agent-list projection (a driver row in
+ * buildAgentListLines). All dispatch is faked (startJob-level for the deck option — the spawn layer
+ * cannot be faked, FORBID_LIVE_SPAWN blocks it; the driver's dispatchFn injection for the
+ * cycle tests), no real Pi spawn.
  */
 
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -16,9 +25,7 @@ import { dispatchCore } from "../src/dispatch.ts";
 import type { DispatchResult, DispatchSpec } from "../src/types.ts";
 import {
   acquireWorkDeckHeader,
-  driverDeckOpts,
   headerToken,
-  workDeckKey,
 } from "../src/work-driver-deck-header.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { readState } from "../src/workflow-state.ts";
@@ -487,16 +494,6 @@ function fakeResult(role: string, text = "done", ok = true): DispatchResult {
     rmSync(dir, { recursive: true, force: true });
     dispatchDeck.reset();
   }
-}
-
-// 10. The driverDeckOpts helper: label grammar + cycle key.
-{
-  const o1 = driverDeckOpts(42, "develop", "default");
-  assert(o1.cycleKey === "work:42", "driverDeckOpts: cycleKey is work:<issue>");
-  assert(o1.label === "#42 develop · default", "driverDeckOpts: label is #<issue> <step> · <tag>");
-  const o2 = driverDeckOpts(7, "explore", "explore");
-  assert(o2.label === "#7 explore · explore", "driverDeckOpts: explore step label");
-  assert(workDeckKey(7) === "work:7", "workDeckKey: work:<issue>");
 }
 
 console.log(`\nexit ${exit}`);
