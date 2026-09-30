@@ -52,11 +52,9 @@ function refError(ref: string, err: unknown): { ok: false; reason: string } {
 async function refIsCommit(cwd: string, ref: string): Promise<boolean> {
   if (ref.startsWith("-")) return false;
   try {
-    await execFileP(
-      "git",
-      ["-C", cwd, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
-      { maxBuffer: 64 * 1024 },
-    );
+    await execFileP("git", ["-C", cwd, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`], {
+      maxBuffer: 64 * 1024,
+    });
     return true;
   } catch {
     return false;
@@ -78,7 +76,11 @@ async function refIsCommit(cwd: string, ref: string): Promise<boolean> {
  * - a diff beyond the 1 MiB cap → `{ok:false}` (never a silent "" or a
  *   silently truncated string).
  */
-export async function computeRangeDiff(cwd: string, base: string, head: string): Promise<RangeDiff> {
+export async function computeRangeDiff(
+  cwd: string,
+  base: string,
+  head: string,
+): Promise<RangeDiff> {
   for (const ref of [base, head]) {
     if (ref.startsWith("-")) {
       return { ok: false, reason: `ref "${ref}" is rejected: ref names must not start with '-'` };
@@ -95,9 +97,15 @@ export async function computeRangeDiff(cwd: string, base: string, head: string):
   } catch (err) {
     const stderr = (err as Error & { stderr?: string })?.stderr ?? "";
     if (diffOverflow(stderr)) {
-      return { ok: false, reason: `git diff ${base}...${head} exceeded the ${DIFF_MAX_BUFFER} byte cap` };
+      return {
+        ok: false,
+        reason: `git diff ${base}...${head} exceeded the ${DIFF_MAX_BUFFER} byte cap`,
+      };
     }
-    return { ok: false, reason: `git diff ${base}...${head} failed: ${((err as Error)?.message ?? String(err)).slice(0, 200)}` };
+    return {
+      ok: false,
+      reason: `git diff ${base}...${head} failed: ${((err as Error)?.message ?? String(err)).slice(0, 200)}`,
+    };
   }
   if (!stdout.trim()) {
     return {
