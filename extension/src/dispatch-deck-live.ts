@@ -100,7 +100,15 @@ export type LiveEvent =
   | { kind: "text"; text: string }
   | { kind: "toolCall"; name: string; args: string }
   | { kind: "toolResult"; name: string; text: string; isError: boolean }
-  | { kind: "thinking"; text: string };
+  | { kind: "thinking"; text: string }
+  /**
+   * #915 — an operator steer sent from the agent view's input line.
+   * Distinct from the child's own events: rendered as
+   * `you → <label>: <text>` so the conversation reads in order. Stored
+   * UNTRUNCATED like every other event and counted within the per-job
+   * byte bound.
+   */
+  | { kind: "operatorSteer"; label: string; text: string; at: number };
 
 /**
  * The per-job bound, measured on the stored string length in UTF-16 code
@@ -151,6 +159,8 @@ function eventSize(ev: LiveEvent): number {
       return ev.text.length;
     case "thinking":
       return ev.text.length;
+    case "operatorSteer":
+      return ev.text.length;
   }
 }
 
@@ -159,6 +169,44 @@ function eventSize(ev: LiveEvent): number {
  */
 export function getBuffer(key: string): LiveEvent[] {
   return [...(buffers.get(key) ?? [])];
+}
+
+/**
+ * #915 — record an operator steer sent from the agent view's input line
+ * as an `operatorSteer` event, so the view's transcript shows
+ * `you → <label>: <text>` in order with the child's own events.
+ *
+ * The label is taken at call time (the deck entry's label while the job is
+ * running; the caller passes a fallback for a settled job) and is sanitised
+ * here — labels flow from untrusted child output, and the rendered line
+ * must never desync the overlay. The steer text is stored UNTRUNCATED
+ * (the echo is operator input, exempt from the child-truncation limits —
+ * only the per-job byte bound applies) but with newlines collapsed to the
+ * ` ⏎ ` separator, so the echo renders as one wrapped logical line like
+ * every other text event. Sanitisation is idempotent.
+ *
+ * The push goes through the SAME bound as feedRawEvent (LIVE_BUFFER_MAX_CHARS
+ * — `trimToBound` evicts oldest-first) and triggers the SAME append
+ * subscribers (`onBufferAppend`), so the open view re-renders immediately.
+ * A key with no buffer (view closed, job long settled) is a no-op — there
+ * is no surface left to show the echo on.
+ */
+export function appendOperatorSteer(key: string, label: string, text: string): void {
+  const buf = buffers.get(key);
+  if (!buf) return;
+  const ev: LiveEvent = {
+    kind: "operatorSteer",
+    label: sanitizeText(label),
+    text: sanitizeText(text).replace(/\n+/g, NEWLINE_SEP),
+    at: Date.now(),
+  };
+  buf.push(ev);
+  // Same bookkeeping as pushEvent: the running total is maintained per key
+  // so trimToBound never re-sums the buffer (it evicts oldest-first within
+  // the per-job LIVE_BUFFER_MAX_CHARS bound).
+  bufferSizes.set(key, (bufferSizes.get(key) ?? 0) + eventSize(ev));
+  trimToBound(key, buf);
+  notifyAppend(key);
 }
 
 /**
