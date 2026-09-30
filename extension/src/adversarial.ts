@@ -4,7 +4,7 @@ import { classifyDispatchOutcome } from "./adversarial-classify.ts";
 import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
 import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
 import { infraFailureResult, runPhaseWithInfraRetry } from "./adversarial-retry.ts";
-import { decideLoopAction, parseVerdict } from "./adversarial-verdict.ts";
+import { decideLoopAction, parseVerdict, synthesizeResult } from "./adversarial-verdict.ts";
 import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
 import { markOrchestrator, setOrchestratorActiveChild, startJob } from "./async-jobs.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
@@ -155,6 +155,9 @@ export async function runAdversarialLoop(
   const start = Date.now();
   const runId = makeRunId();
   const rounds: Array<{ round: number; verdict: AdversarialVerdict; ms: number }> = [];
+  // #859 — failed re-reads of the ref range on rounds 2+: the loop keeps the
+  // previous diff (never abandons a round), but the final result must say so.
+  const diffRereadNotes: string[] = [];
   const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
   let lastTranscript: string | undefined;
   let lastModel: string | undefined;
@@ -196,7 +199,19 @@ export async function runAdversarialLoop(
     diff = initial.diff;
     // Rounds 2+ re-compute the SAME range, so a fix round's changes are
     // reviewed (same rule as the driver's per-round getDiff re-read).
-    getDiff = () => rangeDiffFn(cwd, range.base, range.head).then((r) => (r.ok ? r.diff : ""));
+    getDiff = async () => {
+      const r = await rangeDiffFn(cwd, range.base, range.head);
+      if (!r.ok) {
+        // #859 — a re-read failure is no longer a silent "" (which the loop
+        // would ignore and review the STALE diff on). Name it, and let the
+        // caller record it in the final result.
+        trace(
+          `adversarial: diff re-read failed for range ${range.base}...${range.head}: ${r.reason} — reviewing the previous diff`,
+        );
+        throw new Error(r.reason);
+      }
+      return r.diff;
+    };
   } else {
     const r = synthesizeResult({
       ok: false,
@@ -302,7 +317,13 @@ export async function runAdversarialLoop(
       } catch (err) {
         // A failed re-read is not a reason to abandon the round; the previous
         // diff plus the live worktree is what the reviewer had before this.
-        trace(`adversarial: diff re-read failed for round ${round}: ${(err as Error).message}`);
+        // #859 — record it, so the final result names the staleness instead
+        // of the operator having to notice it.
+        const reason = (err as Error).message;
+        trace(`adversarial: diff re-read failed for round ${round}: ${reason}`);
+        diffRereadNotes.push(
+          `note: round ${round} diff re-read failed (${reason}) — reviewed the previous diff`,
+        );
       }
     }
     const adv = await runPhaseWithInfraRetry(
@@ -358,12 +379,15 @@ export async function runAdversarialLoop(
       // outstanding: the operator (and the lens gate) must be able to tell the
       // two apart, and `commit-pr` carries the findings into the PR body.
       const clean = verdict.status === "APPROVED";
+      const notePrefix = diffRereadNotes.length ? `${diffRereadNotes.join("\n")}\n\n` : "";
       const r = synthesizeResult({
         ok: true,
         loopOutcome: "approved",
-        text: clean
-          ? `Adversarial APPROVED after round ${round}.\n\n${verdict.findings}`
-          : `Adversarial PASSED WITH FINDINGS after round ${round} (verdict: ${verdict.status} — non-blocking per agents-base/adversarial-developer.md). These findings are unresolved and travel to the PR body and the lens review; they did not block the commit.\n\n${verdict.findings}`,
+        text:
+          notePrefix +
+          (clean
+            ? `Adversarial APPROVED after round ${round}.\n\n${verdict.findings}`
+            : `Adversarial PASSED WITH FINDINGS after round ${round} (verdict: ${verdict.status} — non-blocking per agents-base/adversarial-developer.md). These findings are unresolved and travel to the PR body and the lens review; they did not block the commit.\n\n${verdict.findings}`),
         ms: Date.now() - start,
         usage,
         transcriptPath: lastTranscript,
@@ -412,6 +436,7 @@ export async function runAdversarialLoop(
     ok: false,
     loopOutcome: "rejected",
     text: [
+      ...diffRereadNotes,
       `❌ Adversarial REJECTED after ${MAX_ROUNDS} rounds. Last verdict: ${last?.verdict.status}`,
       "",
       last?.verdict.findings ?? "",
@@ -433,23 +458,6 @@ export async function runAdversarialLoop(
   return r;
 }
 
-interface SynthesizeInput {
-  ok: boolean;
-  text: string;
-  ms: number;
-  usage: DispatchResult["usage"];
-  transcriptPath?: string;
-  model?: string;
-  /** #298 — how the loop ended; see DispatchResult.loopOutcome. */
-  loopOutcome?: DispatchResult["loopOutcome"];
-  /** #485 — per-round verdict records, threaded from the loop as data. */
-  adversarialRounds?: DispatchResult["adversarialRounds"];
-  /** #485 — total rounds executed when the loop exited with no verdict. */
-  roundsExecuted?: number;
-  /** #543 — a loop / token-budget self-kill, threaded so the cap path can distinguish it. */
-  killCause?: DispatchResult["killCause"];
-}
-
 function toRoundRecords(
   rounds: Array<{ round: number; verdict: AdversarialVerdict; ms: number }>,
 ): DispatchResult["adversarialRounds"] {
@@ -458,24 +466,6 @@ function toRoundRecords(
     status: r.verdict.status,
     verdictParsed: r.verdict.verdictParsed !== false,
   }));
-}
-
-function synthesizeResult(i: SynthesizeInput): DispatchResult {
-  return {
-    role: "adversarial-loop",
-    ok: i.ok,
-    text: i.text,
-    toolUses: [],
-    ms: i.ms,
-    exitCode: i.ok ? 0 : 1,
-    usage: i.usage,
-    model: i.model,
-    transcriptPath: i.transcriptPath,
-    loopOutcome: i.loopOutcome,
-    adversarialRounds: i.adversarialRounds,
-    roundsExecuted: i.roundsExecuted,
-    ...(i.killCause ? { killCause: i.killCause } : {}),
-  };
 }
 
 /**
