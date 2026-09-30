@@ -13,12 +13,17 @@
  * with `attempts: 0` (no spawn, no retries) and the single install message
  * as `parseError`. Feeds the existing REVIEW_INCOMPLETE path via
  * `computeVerdict`'s `some((r) => r.blocked)`.
+ *
+ * `runInstallBlock` is the early exit that check drives, moved here from
+ * `runLensReview` for the 500-line cap; the verdict math and the ledger
+ * write stay on `runLensReview`'s single `finish` path.
  */
 
 import { readdirSync, statSync } from "node:fs";
 import path from "node:path";
+import * as dispatchDeck from "./dispatch-deck.ts";
 import { LENS_PREFIX } from "./lens-review-format.ts";
-import type { LensRunResult } from "./lens-review.ts";
+import type { Finding, LensRunResult } from "./lens-review.ts";
 import { LENS_ROSTER } from "./lens-roster.ts";
 import { trace } from "./trace.ts";
 
@@ -89,4 +94,31 @@ export function installBlockRows(problem: string): LensRunResult[] {
     `install block: bundled lens roster unreadable (LENS_ROSTER empty) — single "LENSES" row carries the problem: ${problem}`,
   );
   return rows(["LENSES"]);
+}
+
+/**
+ * The #872 install-block early exit: the deck bookkeeping (one batch row,
+ * bumped once per blocked lens, cleared) plus the per-lens blocked rows.
+ * The caller folds the result into its SINGLE EXIT PATH.
+ */
+export function runInstallBlock(
+  runId: string,
+  problem: string,
+  extraFindings: Finding[],
+): { lensResults: LensRunResult[]; findings: Finding[] } {
+  const batchKey = `${runId}/batch`;
+  dispatchDeck.startBatchEntry(batchKey, {
+    label: "code-review-specialist×0",
+    size: 0,
+  });
+  const lensResults = installBlockRows(problem);
+  // Bump the batch once per lens so the deck shows the pass as finished,
+  // not stuck, even though no spawn happened — the lens did "complete"
+  // (as a block).
+  for (let i = 1; i <= lensResults.length; i++) {
+    dispatchDeck.updateBatchProgress(batchKey, i);
+  }
+  dispatchDeck.clearBatchEntry(batchKey);
+  const findings = [...extraFindings];
+  return { lensResults, findings };
 }

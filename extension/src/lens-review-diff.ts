@@ -16,6 +16,7 @@
  * (bundled-only) is reserved for the skills-dir problem case.
  */
 
+import * as dispatchDeck from "./dispatch-deck.ts";
 import { bySeverityCounts, dedupeFindings } from "./lens-review-format.ts";
 import type { LensRunResult, Severity, Verdict } from "./lens-review.ts";
 import { type Finding, computeVerdict } from "./lens-review.ts";
@@ -74,10 +75,13 @@ export function blockedRowsForRoster(roster: RosterEntry[], problem: string): Le
 /**
  * The single blocked-review summary for an unresolvable diff: dedup the
  * extra findings against the expected roster, score the verdict with the
- * resolved threshold. Keeping the shape here (rather than in runLensReview)
- * is what keeps lens-review.ts under the 500-line gate.
+ * resolved threshold, and bump the deck's batch row once per blocked lens so
+ * the pass shows as finished (no spawn happened — the lens "completed" as a
+ * block). Keeping the shape here (rather than in runLensReview) is what keeps
+ * lens-review.ts under the 500-line gate.
  */
 export function blockedReviewSummary(
+  runId: string,
   extraFindings: Finding[] | undefined,
   roster: RosterEntry[],
   blockRows: LensRunResult[],
@@ -90,6 +94,15 @@ export function blockedReviewSummary(
   findings: Finding[];
   usage: undefined;
 } {
+  const batchKey = `${runId}/batch`;
+  dispatchDeck.startBatchEntry(batchKey, {
+    label: `code-review-specialist×${blockRows.length}`,
+    size: blockRows.length,
+  });
+  for (let i = 1; i <= blockRows.length; i++) {
+    dispatchDeck.updateBatchProgress(batchKey, i);
+  }
+  dispatchDeck.clearBatchEntry(batchKey);
   const all = [...(extraFindings ?? [])];
   const deduped = dedupeFindings(all, roster);
   return {
@@ -99,5 +112,30 @@ export function blockedReviewSummary(
     lenses: blockRows,
     findings: deduped,
     usage: undefined,
+  };
+}
+
+/**
+ * The persistent batch summary row (#139): the "X/6 done" deck entry that
+ * lets the user watch the pass throughout the run even as fast lenses drop
+ * out at 0s linger. Registered BEFORE the per-lens entries so its seq sorts
+ * first on Pi's footer (moved here from runLensReview for the 500-line cap).
+ */
+export function startPersistentBatch(
+  runId: string,
+  size: number,
+): { batchKey: string; bumpBatch: () => void } {
+  const batchKey = `${runId}/batch`;
+  dispatchDeck.startBatchEntry(batchKey, {
+    label: `code-review-specialist×${size}`,
+    size,
+  });
+  let completedLenses = 0;
+  return {
+    batchKey,
+    bumpBatch: () => {
+      completedLenses += 1;
+      dispatchDeck.updateBatchProgress(batchKey, completedLenses);
+    },
   };
 }
