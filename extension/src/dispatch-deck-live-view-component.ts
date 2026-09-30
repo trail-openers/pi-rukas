@@ -263,16 +263,17 @@ export function createAgentViewComponent(
       // #915 lens r2 — render is read-only: the status stays hidden once the
       // job settles (the settled final line takes over), computed here
       // without mutating sendStatus (setStatus is the only writer).
-      const showStatus = sendStatus && !settled;
       let inputLine: string;
-      if (showStatus) {
+      if (sendStatus && !settled) {
         // The result glyph (✓ / ⧗ / ✗) leads the inline status; muted so it
         // reads as a status line, not an input line. #915 — sanitised and
         // width-bounded like the input line (truncateToWidth first — its ANSI
         // reset codes are stripped by the trailing sanitizeText), so a
         // hostile status string can never push the line past the overlay
         // width.
-        inputLine = theme.muted(sanitizeText(truncateToWidth(`${sendStatus.text} · Esc back`, width, "…")));
+        inputLine = theme.muted(
+          sanitizeText(truncateToWidth(`${sendStatus.text} · Esc back`, width, "…")),
+        );
       } else {
         // Show the tail of the input: truncateToWidth from the left is not
         // available, so take the last (width - prompt - cursor) chars and
