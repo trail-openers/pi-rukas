@@ -5,7 +5,7 @@
  * `dispatchCore()` (ownerKind:driver), persists to `.pi/work-state/` via
  * `writeState()`, surfaces progress via `notifyAgent()`.
  *
- * All 9 steps wired; each implementation lives in work-driver-<step>.ts.
+ * All 9 steps wired; each implementation lives in `work-driver-<step>.ts`.
  */
 import { notifyAgent } from "./agent-message.ts";
 import { dropSlowEvents } from "./slow-events.ts";
@@ -109,7 +109,6 @@ async function runStep(ctx: DriverContext, state: WorkState, step: WorkStep): Pr
 }
 
 export { DriverNotImplementedError } from "./work-driver-context.ts";
-
 /**
  * Run one /work cycle: read/create state, loop over steps via `nextStep()`,
  * persist after every transition, surface outcome via `pi.sendUserMessage`.
@@ -322,10 +321,11 @@ async function runWorkDriverInner(ctx: DriverContext): Promise<DriverOutcome> {
     const stepStartedAt = Date.now();
     // PR4: sub-round labels for iterative steps.
     const stepRound = countPriorStepStarts(state, step) + 1;
-    // #657 — backfill the step-started's round (the single chokepoint every
+    // #657 — the first event of this iteration is the step-started the step
+    // handler appends; backfill its round here (the single chokepoint every
     // iteration flows through) so renderers can show re-entries as
     // "adversarial (round 3)". Additive field; absent in the 12 per-step
-    // handler append sites.
+    // handler append sites, so nothing there changes.
     const before = state.eventLog.length;
     emitStepStarted(step, stepOrd.num, stepOrd.total, stepRound, ctx.issue);
     // PR2 O2: footer status cursor (step-level position with live-tick).

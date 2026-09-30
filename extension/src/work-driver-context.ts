@@ -289,10 +289,9 @@ export type StepDecision =
 
 /**
  * Error thrown by `runStep` when the step's body is staged for a later
- * commit (smoke tests assert the throw; the live /work handler catches it).
- * Moved here from work-driver.ts (#838, the 500-line gate): the context
- * module is the driver's shared leaf and the class has no step-handler
- * dependencies.
+ * commit. The smoke test asserts these are thrown for the unimplemented
+ * steps; the live /work handler catches them and falls back to legacy
+ * PM-driven flow until the step body lands.
  */
 export class DriverNotImplementedError extends Error {
   constructor(public readonly step: WorkStep) {
