@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.71](https://github.com/trail-openers/pi-rukas/compare/v0.12.70...v0.12.71) (2026-09-30)
+
+
+### Features
+
+* **work:** show /work driver subagents in the deck and agent list ([#942](https://github.com/trail-openers/pi-rukas/issues/942)) ([79a7361](https://github.com/trail-openers/pi-rukas/commit/79a7361bd399d1253d517ea49ed567e30c4ba359))
+
 ## [0.12.70](https://github.com/trail-openers/pi-rukas/compare/v0.12.69...v0.12.70) (2026-09-30)
 
 
