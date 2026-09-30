@@ -13,7 +13,7 @@ import { clearJobsForTesting, jobStatusSnapshot, startJob } from "../src/async-j
 import { formatBatchRow } from "../src/dispatch-deck-rows.ts";
 import * as dispatchDeck from "../src/dispatch-deck.ts";
 import { dispatchCore } from "../src/dispatch.ts";
-import type { DispatchResult } from "../src/types.ts";
+import type { DispatchResult, DispatchSpec } from "../src/types.ts";
 import {
   acquireWorkDeckHeader,
   driverDeckOpts,
@@ -62,12 +62,13 @@ function sleep(ms: number): Promise<void> {
 
 function makePiStub() {
   const inbox: { content: string; deliverAs?: string }[] = [];
-  // biome-ignore lint/suspicious/noExplicitAny: testing seam — the minimum shape startJob needs.
-  const pi: any = {
+  // Testing seam — the minimum shape dispatchCore/startJob need; the cast is
+  // through unknown so the structural gap stays documented at one site.
+  const pi = {
     sendUserMessage(content: string, options?: { deliverAs?: string }) {
       inbox.push({ content, deliverAs: options?.deliverAs });
     },
-  };
+  } as unknown as Parameters<typeof dispatchCore>[0];
   return { pi, inbox };
 }
 
@@ -91,7 +92,8 @@ function fakeResult(role: string, text = "done", ok = true): DispatchResult {
   clearJobsForTesting();
   const { pi, inbox } = makePiStub();
   let rejection: unknown;
-  dispatchCore(pi, { role: "developer", prompt: "work", cwd: "/tmp" } as never, {
+  const spec: DispatchSpec = { role: "developer", prompt: "work", cwd: "/tmp" };
+  dispatchCore(pi, spec, {
     deck: { cycleKey: "work:42", label: "#42 develop · default" },
     timeoutMs: 100,
   }).then(
@@ -112,7 +114,7 @@ function fakeResult(role: string, text = "done", ok = true): DispatchResult {
   assert(inbox.length === 0, "deck option: NO PM steer-back emitted (ownerKind driver)");
   // WITHOUT the deck option (skipDeck true): deck untouched.
   clearJobsForTesting();
-  const p2 = dispatchCore(pi, { role: "explore", prompt: "work", cwd: "/tmp" } as never, {
+  const p2 = dispatchCore(pi, { role: "explore", prompt: "work", cwd: "/tmp" }, {
     skipDeck: true,
     timeoutMs: 100,
   });
@@ -174,7 +176,7 @@ function fakeResult(role: string, text = "done", ok = true): DispatchResult {
   dispatchDeck.reset();
   clearJobsForTesting();
   const { pi } = makePiStub();
-  dispatchCore(pi, { role: "developer", prompt: "work", cwd: "/tmp" } as never, {
+  dispatchCore(pi, { role: "developer", prompt: "work", cwd: "/tmp" }, {
     label: "developer[task-a]",
     deck: {
       cycleKey: "work:838",
@@ -246,8 +248,9 @@ function fakeResult(role: string, text = "done", ok = true): DispatchResult {
   assert(batches[0]?.label === "/work #42", "header: label is /work #<issue>");
   assert(batches[0]?.size === 0, "header: size 0 (counter-less)");
   // Counter-less rendering: no "done" / "running" fragments.
-  // biome-ignore lint/style/noNonNullAssertion: test seam — assert already verified length.
-  const row = formatBatchRow(batches[0]!, 1000);
+  const batch0 = batches[0];
+  assert(batch0 !== undefined, "header row present for rendering");
+  const row = batch0 === undefined ? "" : formatBatchRow(batch0, 1000);
   assert(row.includes("batch[/work #42]"), "header row renders the /work #42 label");
   assert(!row.includes("done"), "counter-less header: no 'done' counter");
   assert(!row.includes("running"), "counter-less header: no 'running' counter");

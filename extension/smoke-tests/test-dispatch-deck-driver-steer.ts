@@ -40,18 +40,20 @@ function assert(cond: boolean, msg: string) {
   assert(r.delivered === true, "steerChild: delivered to a driver-shaped job");
   assert(r.label === "#42 develop · default", "steerChild: returns the driver row's label");
   assert(lines.length === 1, "steerChild: exactly one stdin write");
-  // biome-ignore lint/style/noNonNullAssertion: test seam — assert already verified length.
-  const parsed = JSON.parse(lines[0]!);
+  const line0 = lines[0];
+  assert(line0 !== undefined, "steerChild: the stdin line is present");
+  const parsed = line0 === undefined ? {} : JSON.parse(line0);
   assert(
     parsed.type === "steer" && parsed.message === "stop and report status",
     "steerChild: stdin line is the {type:'steer', message} envelope",
   );
   const ui = { notify: () => {}, editor: undefined, setStatus: () => {}, editorValue: "" };
-  const r2 = await steerFromDeck(ui as never, "j-driver-838", "hello from deck");
+  const r2 = await steerFromDeck(ui as unknown as Parameters<typeof steerFromDeck>[0], "j-driver-838", "hello from deck");
   assert(r2.delivered === true, "steerFromDeck: delivered to the driver row");
   assert(lines.length === 2, "steerFromDeck: a second stdin write (total 2)");
-  // biome-ignore lint/style/noNonNullAssertion: test seam — assert already verified length.
-  const parsed2 = JSON.parse(lines[1]!);
+  const line1 = lines[1];
+  assert(line1 !== undefined, "steerFromDeck: the second stdin line is present");
+  const parsed2 = line1 === undefined ? {} : JSON.parse(line1);
   assert(
     parsed2.type === "steer" && parsed2.message === "hello from deck",
     "steerFromDeck: envelope carries the message",
