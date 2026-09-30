@@ -82,6 +82,20 @@ const PASTE_START = "\u001b[200~";
 const PASTE_END = "\u001b[201~";
 
 /**
+ * The per-code-point insertability predicate, shared by the legacy
+ * single-char path and the CSI-u validation loop. A code point inserts
+ * when it is ≥ 32 and NOT: DEL (127), a C1 control (0x80–0x9F), or a
+ * Kitty functional key. The functional-key range is the Private Use
+ * Area U+E000–U+F8FF — where Kitty actually places its function keys
+ * (F1 = U+E00C…57356, …) — NOT "U+E000 and up": that reading would
+ * reject every astral code point (emoji, CJK Ext-B) that terminals
+ * legitimately emit as user text.
+ */
+function isInsertableCodePoint(cp: number): boolean {
+  return cp >= 32 && cp !== 0x7f && !(cp >= 0x80 && cp < 0xa0) && !(cp >= 0xe000 && cp <= 0xf8ff);
+}
+
+/**
  * The text one key event inserts into the input line — or `undefined` to
  * swallow the event (see the module header for the decision table).
  */
@@ -93,12 +107,15 @@ export function decodeInsertable(data: string): string | undefined {
   // release would insert its press twin).
   if (isKeyRelease(data)) return undefined;
   if (data.length === 1) {
-    // Single-char legacy input: insert printable ASCII only. Control
-    // chars (0–31) and DEL (127) are swallowed. (A lone ESC and a lone
-    // raw ctrl+t are handled upstream as command keys; they fall to the
-    // swallow here if the component ever changes shape.)
+    // Single-char legacy input: insert any printable character — not just
+    // ASCII. Control chars (< 32), DEL (127) and C1 (0x80–0x9F) are
+    // swallowed; a lone surrogate (0xD800–0xDFFF) is not a character at
+    // all and is swallowed too. (A lone ESC and a lone raw ctrl+t are
+    // handled upstream as command keys; they fall to the swallow here if
+    // the component ever changes shape.)
     const code = data.charCodeAt(0);
-    return code >= 32 && code <= 126 ? data : undefined;
+    if (code >= 0xd800 && code <= 0xdfff) return undefined;
+    return isInsertableCodePoint(code) ? data : undefined;
   }
   if (data.startsWith("\u001b")) {
     // A multi-char escape sequence.
@@ -116,17 +133,18 @@ export function decodeInsertable(data: string): string | undefined {
     // shapes and why not decodePrintableKey).
     // pi-tui's strict decoder returns `String.fromCodePoint(n)` for ANY
     // numeric prefix — it does NOT check the code point against the
-    // terminal's actual printable range. Functional keys (F1 = U+E015,
-    // up = U+E017, alt+x = U+0085, …) "decode" to spurious code points
-    // that are NOT user text. The guard: a string whose every code point
-    // is in the printable range [32, 0x7F] ∪ [0xA0, 0xE000) — excluding
-    // C1 controls (0x80–0x9F) and Kitty functional keys (U+E000+).
+    // terminal's actual printable range. Functional keys (F1 = U+E00C
+    // = 57356, up = U+E00E, …) "decode" to spurious code points that are
+    // NOT user text. The guard (isInsertableCodePoint): a string whose
+    // every code point is ≥ 32 and none is DEL, C1 (0x80–0x9F), or a
+    // Kitty functional key (the PUA U+E000–U+F8FF only — astral text
+    // like emoji or CJK Ext-B must still insert).
     const decoded = decodeKittyPrintable(data);
     if (typeof decoded === "string") {
       let printable = decoded.length > 0;
       for (const ch of decoded) {
         const cp = ch.codePointAt(0);
-        if (cp === undefined || cp < 32 || (cp >= 0x80 && cp < 0xa0) || cp >= 0xe000) {
+        if (cp === undefined || !isInsertableCodePoint(cp)) {
           printable = false;
           break;
         }

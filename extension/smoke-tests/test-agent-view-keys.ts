@@ -115,6 +115,36 @@ function makeComp(key: string, sent: string[], done: (r: string) => void = () =>
 }
 
 // ---------------------------------------------------------------------------
+// 1b. Non-ASCII insertability — the two decode-bug classes the #915 hardening
+//     fix (deck-key-decode.ts): the legacy single-char path must accept
+//     non-ASCII single chars (é, 中 — one UTF-16 char in legacy mode), and
+//     the CSI-u guard must reject ONLY the Kitty PUA (U+E000–U+F8FF), not
+//     every astral code point (emoji, CJK Ext-B).
+// ---------------------------------------------------------------------------
+{
+  // Legacy single-char path: non-ASCII single chars insert as-is.
+  assert(decodeInsertable("é") === "é", "1b-1: legacy single char é (U+00E9) inserts");
+  assert(decodeInsertable("中") === "中", "1b-2: legacy single char 中 (U+4E2D) inserts");
+  assert(decodeInsertable("😀") === "😀", "1b-3: legacy emoji 😀 (a surrogate-pair string) inserts");
+  // Legacy rejects: DEL, C1 (0x80–0x9F), a lone surrogate.
+  assert(decodeInsertable("\u007f") === undefined, "1b-4: legacy DEL (\u007f) swallows");
+  assert(decodeInsertable("\u0080") === undefined, "1b-5: legacy C1 0x80 swallows");
+  assert(decodeInsertable("\u009f") === undefined, "1b-6: legacy C1 0x9F swallows");
+  assert(decodeInsertable("\ud800") === undefined, "1b-7: legacy lone surrogate (\ud800) swallows");
+  assert(decodeInsertable("\udfff") === undefined, "1b-8: legacy lone surrogate (\udfff) swallows");
+  // Kitty CSI-u: é, 中 and emoji (astral — must NOT be rejected by the
+  // functional-key guard, which covers only the PUA U+E000–U+F8FF).
+  assert(decodeInsertable("\u001b[233u") === "é", "1b-9: kitty CSI-u é (\u001b[233u) inserts");
+  assert(decodeInsertable("\u001b[20013u") === "中", "1b-10: kitty CSI-u 中 (\u001b[20013u) inserts");
+  assert(decodeInsertable("\u001b[128512u") === "😀", "1b-11: kitty CSI-u 😀 (\u001b[128512u, astral) inserts");
+  // Kitty CSI-u: functional keys and controls still swallow.
+  assert(decodeInsertable("\u001b[57364u") === undefined, "1b-12: kitty F1 (\u001b[57364u, PUA) swallows");
+  assert(decodeInsertable("\u001b[133u") === undefined, "1b-13: kitty CSI-u C1 (\u001b[133u) swallows");
+  // CJK Ext-B (U+20000, astral beyond emoji): still insertable via CSI-u.
+  assert(decodeInsertable("\u001b[131072u") === "\u{20000}", "1b-14: kitty CSI-u CJK Ext-B (U+20000) inserts");
+}
+
+// ---------------------------------------------------------------------------
 // 2. The component's handleInput: kitty CSI-u letters insert (not raw
 //    sequences), unknown sequences insert nothing, a paste with newlines
 //    collapses, and a key-release inserts nothing.

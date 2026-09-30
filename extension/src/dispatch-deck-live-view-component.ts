@@ -51,6 +51,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { decodeInsertable } from "./deck-key-decode.ts";
 import { sanitizeText } from "./dispatch-deck-line.ts";
+import { bodyLineCount, eventLines } from "./dispatch-deck-live-view-render.ts";
 import type { LiveEvent, LiveViewTheme } from "./dispatch-deck-live.ts";
 import { getBuffer } from "./dispatch-deck-live.ts";
 
@@ -134,147 +135,6 @@ export function dropOrphanedViewScroll(hasBuffer: (key: string) => boolean): voi
   }
 }
 
-// ---------------------------------------------------------------------------
-// Wrapped-line cache
-// ---------------------------------------------------------------------------
-
-/**
- * The cache's part discriminator: which logical part of an event a cache
- * entry holds. An explicit `part` token distinguishes the toolCall header
- * ("▸ name") from its body (the pretty-printed JSON) — two different texts
- * that could in principle have the same length. The buffer is append-only
- * (stored events are never mutated), so the event's identity plus its part
- * is a stable key.
- */
-type WrapPart = "hdr" | "body";
-
-/**
- * Per-event wrapped-line cache, keyed by the event object (a WeakMap —
- * entries die with the event), then (width, thinkingExpanded, part).
- * The toolCall args' pretty-printed form is cached separately (prettyArgs
- * and prettyArgsCache) so JSON.parse + stringify run once per event.
- */
-const wrappedCache = new WeakMap<LiveEvent, Map<string, string[]>>();
-
-/**
- * Per-event toolCall args pretty-print cache (separate WeakMap — the value
- * is a single string, not a line array, and the args never change: the
- * buffer is append-only, so JSON.parse + stringify run once per event
- * rather than on every render). Entries die with the event.
- */
-const prettyArgsCache = new WeakMap<LiveEvent, string | undefined>();
-
-/** The toolCall args' pretty-printed body (raw when they don't parse), or
- * undefined when the event has no args. Cached per event.
- */
-function prettyArgs(ev: Extract<LiveEvent, { kind: "toolCall" }>): string | undefined {
-  if (prettyArgsCache.has(ev)) return prettyArgsCache.get(ev);
-  const raw = ev.args;
-  let body: string | undefined;
-  if (raw) {
-    try {
-      const parsed: unknown = JSON.parse(raw);
-      body = JSON.stringify(parsed, null, 2) ?? raw;
-    } catch {
-      body = raw;
-    }
-  }
-  prettyArgsCache.set(ev, body);
-  return body;
-}
-
-function wrapCached(
-  ev: LiveEvent,
-  text: string,
-  width: number,
-  expanded: boolean,
-  part: WrapPart,
-): string[] {
-  const cacheKey = `${width}|${expanded ? 1 : 0}|${part}`;
-  const byKey = wrappedCache.get(ev);
-  if (byKey) {
-    const hit = byKey.get(cacheKey);
-    if (hit) return hit;
-  }
-  // Sanitise FIRST (the stored text is already sanitised at feed time —
-  // idempotent), then wrap. wrapTextWithAnsi guarantees each row is ≤
-  // width visible columns; on sanitised input no ANSI survives, so every
-  // row satisfies the single-line invariant.
-  const rows = wrapTextWithAnsi(sanitizeText(text), width);
-  if (!byKey) wrappedCache.set(ev, new Map([[cacheKey, rows]]));
-  else byKey.set(cacheKey, rows);
-  return rows;
-}
-
-/**
- * The wrapped lines for one event at `width` (cached). `expanded`
- * toggles thinking blocks to their full text.
- */
-function eventLines(
-  ev: LiveEvent,
-  width: number,
-  expanded: boolean,
-  theme: LiveViewTheme,
-): string[] {
-  switch (ev.kind) {
-    case "text":
-      return wrapCached(ev, ev.text, width, expanded, "body");
-    case "thinking":
-      return expanded
-        ? wrapCached(ev, ev.text, width, expanded, "body").map((r) => theme.muted(r))
-        : [theme.muted(`▸ thinking (${ev.text.length} chars)`)];
-    case "toolCall": {
-      // Pretty-print the args (cached per event — see prettyArgs).
-      const body = prettyArgs(ev);
-      const headerText = `▸ ${sanitizeText(ev.name).replace(/\n+/g, " ")}`;
-      if (body === undefined) return wrapCached(ev, headerText, width, expanded, "hdr");
-      const header = wrapCached(ev, headerText, width, expanded, "hdr")[0] ?? "";
-      return [header, ...wrapCached(ev, body, width, expanded, "body")];
-    }
-    case "toolResult": {
-      // Sanitize the tool name (collapse newlines — sanitizeText preserves
-      // them, which would desync the renderer).
-      const safeName = sanitizeText(ev.name).replace(/\n+/g, " ");
-      const marker = ev.isError ? `✗ ${safeName} (error)` : `✓ ${safeName}`;
-      const head = ev.isError ? theme.error(marker) : marker;
-      if (!ev.text) return [head];
-      return [head, ...wrapCached(ev, ev.text, width, expanded, "body")];
-    }
-    case "operatorSteer": {
-      // #915 — the operator's own steer, rendered distinctly (in muted so
-      // it reads as the operator's voice, not the child's) as
-      // `you → <label>: <text>`. The label is sanitised + newline-collapsed
-      // (it flows from untrusted child output); the text wraps like any
-      // other body line.
-      const label = sanitizeText(ev.label).replace(/\n+/g, " ");
-      const prefix = theme.muted(`you → ${label}: `);
-      // The prefix is already on its own row (a single short line); the
-      // wrapped text rows follow. The first row carries the prefix so the
-      // echo reads `you → label: text` on one logical line, wrapping the
-      // rest onto continuation rows.
-      const wrapped = wrapCached(ev, ev.text, width, expanded, "body");
-      const rows: string[] = [...wrapped];
-      if (rows.length === 0) {
-        rows.push("");
-      }
-      rows[0] = `${prefix}${rows[0] ?? ""}`;
-      return rows;
-    }
-  }
-}
-
-/** The body's total wrapped lines at `width` (the scroll domain). */
-function bodyLineCount(
-  key: string,
-  width: number,
-  expanded: boolean,
-  theme: LiveViewTheme,
-): number {
-  let n = 0;
-  for (const ev of getBuffer(key)) n += eventLines(ev, width, expanded, theme).length;
-  return n;
-}
-
 /** The body height: the terminal rows minus the header + input + footer lines.
  *  #915 — the input line takes one row, so the body is 3 rows shorter than
  *  the pre-#915 calculation (which only subtracted header + footer). */
@@ -331,6 +191,11 @@ export function createAgentViewComponent(
   // sanitises + width-bounds it (showing the TAIL of a long input) and the
   // send path sanitises again (idempotent) before delivery.
   let input = "";
+  // #915 — the inline send status (✓ sent / ⧗ between rounds / ✗ reason),
+  // set by the view host after a send. REPLACED by the next send's result
+  // and CLEARED when the job settles (the settled final line takes over).
+  // (Named sendStatus — the render body uses a local `status` for the job's
+  // settle status.)
   let sendStatus: { text: string; ok: boolean } | undefined;
   const comp: {
     invalidate: () => void;
