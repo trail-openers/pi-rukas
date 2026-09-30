@@ -6,6 +6,7 @@
  * `runExplore` so existing imports keep their path.
  */
 import { dispatchCore } from "./dispatch.ts";
+import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { slowRecorder } from "./slow-events.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
 import { trace } from "./trace.ts";
@@ -215,7 +216,7 @@ export async function runExplore(
       // #799 — the slow recorder collects into the driver's pending buffer;
       // the step boundary (routeStepOutcome) drains it — this step folds
       // nothing.
-      { label: "explore", onSlow: slowRecorder(ctx.issue, "explore") },
+      { label: "explore", onSlow: slowRecorder(ctx.issue, "explore"), deck: driverDeckOpts(ctx.issue, "explore", "explore") },
     ),
   ]).then((arr) => arr[0]);
 

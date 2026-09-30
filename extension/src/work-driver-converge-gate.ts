@@ -30,6 +30,7 @@ import { exec } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
 import { trace } from "./trace.ts";
+import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import {
   type ConvergeVerdict,
@@ -99,6 +100,10 @@ export async function runConvergeGateHandler(
       role: "developer",
       prompt,
       cwd: correctiveCwd,
+    }, {
+      // #838 — the converge corrective dispatch's deck row.
+      label: "develop:corrective",
+      deck: driverDeckOpts(ctx.issue, "develop", "develop:corrective"),
     });
     if (retry?.ok !== true) {
       correctiveNote = retry

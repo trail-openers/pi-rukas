@@ -162,7 +162,14 @@ export interface DriverContext {
   dispatchFn?: (
     pi: ExtensionAPI,
     spec: { role: string; prompt: string; cwd?: string },
-    opts?: { label?: string; skipDeck?: boolean; timeoutMs?: number; onSlow?: OnSlowCallback },
+    opts?: {
+      label?: string;
+      skipDeck?: boolean;
+      /** #838 — see dispatchCore's deck option. */
+      deck?: { cycleKey: string; label: string };
+      timeoutMs?: number;
+      onSlow?: OnSlowCallback;
+    },
   ) => Promise<DispatchResult>;
   /**
    * PR11 — optional injection point for tests: replace the `gh issue view`

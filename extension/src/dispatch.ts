@@ -55,6 +55,18 @@ export function dispatchCore(
   opts: {
     label?: string;
     skipDeck?: boolean;
+    /**
+     * #838 — register this driver dispatch in the dispatch deck (and the
+     * live-view buffer) so the operator can see and steer the driver's
+     * children. `cycleKey` is the per-cycle batch key (the driver's header,
+     * e.g. "work:42") and `label` is the row label ("#42 develop ·
+     * default"). Mutually exclusive with `skipDeck`; when present the deck
+     * entry + live buffer are created exactly as for a PM job (skipDeck
+     * false), while the PM steer-back stays gated on ownerKind "driver" —
+     * a deck row for a driver child is display/steer-only, never a
+     * report steer-back to the PM.
+     */
+    deck?: { cycleKey: string; label: string };
     timeoutMs?: number;
     extraArgs?: string[];
     onSlow?: OnSlowCallback;
@@ -67,7 +79,7 @@ export function dispatchCore(
   // what actually determines the file that Pi writes.
   const runId = stripped.runId ?? makeRunId();
   const transcriptPath = transcriptPathFor(stripped.role, runId);
-  const label = opts.label ?? stripped.role;
+  const label = opts.deck?.label ?? opts.label ?? stripped.role;
   // #799 — the driver's dispatch-slow record: the watch (owned by startJob)
   // fires it on each threshold crossing; the caller appends the event to the
   // cycle state and persists (see the runX call sites). Absent for PM jobs.
@@ -76,7 +88,12 @@ export function dispatchCore(
     label,
     role: stripped.role,
     ownerKind: "driver",
-    skipDeck: opts.skipDeck,
+    // #838 — the deck option takes precedence: a deck-tagged driver job is
+    // registered exactly like a PM job (skipDeck false). `deck` and
+    // `skipDeck` are mutually exclusive; the deck option wins so a caller
+    // that passes both still gets the row (the driver's intent).
+    skipDeck: opts.deck ? false : opts.skipDeck,
+    batchKey: opts.deck?.cycleKey,
     onSlow,
     work: (signal, hooks) =>
       spawnSpecialist(stripped, {

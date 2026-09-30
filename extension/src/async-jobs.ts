@@ -120,6 +120,16 @@ interface StartJobInput {
    */
   skipDeck?: boolean;
   /**
+   * #838 — when set, the job's deck entry is registered under this batch
+   * key (the deck's `startEntry` `batchKey` option) so it renders grouped
+   * under the batch's header row. Driver cycle jobs set it to their
+   * per-cycle header key ("work:<issue>"); PM jobs never set it (their
+   * batches come from `startBatch`, which passes `batchKey` to
+   * `startEntry` itself). Ignored when `skipDeck` is true (no deck entry
+   * is created at all).
+   */
+  batchKey?: string;
+  /**
    * Who consumes the result. Default "pm" — preserves the existing
    * send-as-steer behaviour every dispatch tool depends on. Set "driver"
    * when an in-process caller (e.g. the work-driver) will await the
@@ -185,7 +195,11 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
   jobs.set(jobId, state);
 
   if (!input.skipDeck) {
-    dispatchDeck.startEntry(jobId, { label: input.label, role: input.role });
+    dispatchDeck.startEntry(jobId, {
+      label: input.label,
+      role: input.role,
+      batchKey: input.batchKey,
+    });
   }
   lifecycle.emitDispatched(jobId, input.label, input.role);
   sessionAutosave.recordDispatch(input.role);

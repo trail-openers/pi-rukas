@@ -28,6 +28,7 @@ import {
   emitStepStarted,
   updateFooter,
 } from "./work-driver-lifecycle.ts";
+import { acquireWorkDeckHeader } from "./work-driver-deck-header.ts";
 import { runMerged } from "./work-driver-merged.ts";
 import { runPlan } from "./work-driver-plan.ts";
 import { claimCycle } from "./work-driver-registry.ts";
@@ -145,7 +146,17 @@ export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> 
     // otherwise leak its leftover events into this cycle's log.
     const groupIssues = [...new Set([ctx.issue, ...(ctx.issues ?? [])])];
     for (const n of groupIssues) dropSlowEvents(n);
-    return await runWorkDriverInner(ctx);
+    // #838 — the per-cycle deck header ("/work #N"): created when the cycle
+    // starts, cleared on EVERY terminal path via the finally — merged,
+    // handoff, park, halt, thrown error all unwind through it. A second
+    // cycle on the same issue never clobbers the first cycle's header
+    // (ownership token; see work-driver-deck-header.ts).
+    const header = acquireWorkDeckHeader(ctx.issue, String(process.pid));
+    try {
+      return await runWorkDriverInner(ctx);
+    } finally {
+      header.release();
+    }
   } finally {
     claimed.claim.release();
   }
