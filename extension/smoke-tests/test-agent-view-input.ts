@@ -158,14 +158,9 @@ function makeWiredComp(key: string, header: () => ViewHeader, tui?: { terminal?:
   startBuffer("iv2");
   const stdin = makeStdin();
   childHandles.set("iv2", { stdin: stdin as never, label: "developer", role: "developer" });
-  const comp = makeWiredComp("iv2", () => makeHeader(), { terminal: { rows: 30 } });
+  // Records the sent text by wrapping the send callback (records + delegates
+  // to the shared steerChild wiring).
   let sent: string | undefined;
-  // Intercept the send: wrap the component's onSend to capture the text
-  const origSend = comp; // makeWiredComp already wired it
-  // We need to capture what was sent — use a proxy approach: the makeWiredComp
-  // already calls steerChild, so we just verify the result via the buffer.
-  // Instead, let's use a different approach: create the component manually
-  // with a send callback that both records and delegates.
   {
     const compRef: {
       current:
