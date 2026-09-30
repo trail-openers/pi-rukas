@@ -7,7 +7,7 @@ import { infraFailureResult, runPhaseWithInfraRetry } from "./adversarial-retry.
 import { decideLoopAction, parseVerdict, synthesizeResult } from "./adversarial-verdict.ts";
 import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
 import { markOrchestrator, setOrchestratorActiveChild, startJob } from "./async-jobs.ts";
-import { COMMENT_RETENTION_PATHS, buildCommentsLine } from "./comment-retention.ts";
+import { buildCommentsLine } from "./comment-retention.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { readEnumMarker } from "./reply-markers.ts";
@@ -168,11 +168,14 @@ export async function runAdversarialLoop(
   // #859 — resolve the ref range (used by both the diff and the comment check).
   const range = params.base && params.head ? { base: params.base, head: params.head } : null;
 
-  // #948 — the comment-retention line. When the loop has a ref range, run the
-  // check in workCwd against base...head with a real ExecFn and append a
-  // `comments: lost=<n>` line (plus up to 20 lines) to the FINAL text. A lost
-  // count > 0 does NOT change the verdict. Without a range: `not-run`.
-  const commentsLine = await buildCommentsLine(range, params.workCwd ?? process.cwd());
+  // #948 — the comment-retention line, computed lazily at FINAL synthesis
+  // (both the pass and the reject path). When the loop has a ref range, the
+  // check runs in workCwd against base...head with a real ExecFn and appends
+  // a `comments: lost=<n>` line (plus up to 20 lines) to the FINAL text —
+  // reflecting the post-fix tree, since round 2+ re-reads the range. A lost
+  // count > 0 does NOT change the verdict. Without a range: `not-run`. Early
+  // exits (empty-diff skip, errors) never pay for the check.
+  const commentsLineNow = () => buildCommentsLine(range, params.workCwd ?? process.cwd());
 
   // #859 — resolve the diff: a pasted string wins over a ref range (traced);
   // with no string, base+head compute the range in workCwd (else the process
@@ -389,6 +392,7 @@ export async function runAdversarialLoop(
       // two apart, and `commit-pr` carries the findings into the PR body.
       const clean = verdict.status === "APPROVED";
       const notePrefix = diffRereadNotes.length ? `${diffRereadNotes.join("\n")}\n\n` : "";
+      const commentsLine = await commentsLineNow();
       const r = synthesizeResult({
         ok: true,
         loopOutcome: "approved",
@@ -441,6 +445,7 @@ export async function runAdversarialLoop(
   }
 
   const last = rounds[rounds.length - 1];
+  const commentsLine = await commentsLineNow();
   const r = synthesizeResult({
     ok: false,
     loopOutcome: "rejected",
