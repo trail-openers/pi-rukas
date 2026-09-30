@@ -8,6 +8,18 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.70](https://github.com/trail-openers/pi-rukas/compare/v0.12.69...v0.12.70) (2026-09-30)
+
+
+### Features
+
+* **deck:** message input line in the agent view ([#941](https://github.com/trail-openers/pi-rukas/issues/941)) ([c45229b](https://github.com/trail-openers/pi-rukas/commit/c45229b8662403b64472c80bbe4febe447fb2510))
+
+
+### Bug Fixes
+
+* **sandbox:** chown fresh-host named volumes to vscode ([#939](https://github.com/trail-openers/pi-rukas/issues/939)) ([472e033](https://github.com/trail-openers/pi-rukas/commit/472e0339faa8c7ecf3f2a126208873069a8b23fd)), closes [#933](https://github.com/trail-openers/pi-rukas/issues/933)
+
 ## [0.12.69](https://github.com/trail-openers/pi-rukas/compare/v0.12.68...v0.12.69) (2026-09-29)
 
 
