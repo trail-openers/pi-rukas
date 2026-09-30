@@ -295,9 +295,9 @@ export async function runAdversarialLoop(
 
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     if (signal.aborted) break;
-    if (round > 1 && params.getDiff) {
+    if (round > 1 && getDiff) {
       try {
-        const fresh = await params.getDiff();
+        const fresh = await getDiff();
         if (fresh.trim()) diff = fresh;
       } catch (err) {
         // A failed re-read is not a reason to abandon the round; the previous
