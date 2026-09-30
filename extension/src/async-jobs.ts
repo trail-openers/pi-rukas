@@ -115,6 +115,10 @@ interface StartJobInput {
   /** #838 — batch key the job's deck entry groups under (the driver's
    *  per-cycle header, "work:<issue>"); ignored when `skipDeck`. */
   batchKey?: string;
+  /** #838 — display label for the deck entry (row + batch grouping); the
+   *  job's own events keep `label` (the driver's cap checkpoint parses the
+   *  workstream id out of it). Absent → the deck entry shows `label`. */
+  deckLabel?: string;
   /**
    * Who consumes the result. Default "pm" — preserves the existing
    * send-as-steer behaviour every dispatch tool depends on. Set "driver"
@@ -182,7 +186,7 @@ export function startJob(pi: ExtensionAPI, input: StartJobInput): StartJobHandle
 
   if (!input.skipDeck) {
     dispatchDeck.startEntry(jobId, {
-      label: input.label,
+      label: input.deckLabel ?? input.label,
       role: input.role,
       batchKey: input.batchKey,
     });

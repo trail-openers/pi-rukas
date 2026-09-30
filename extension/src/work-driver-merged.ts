@@ -124,7 +124,7 @@ export async function runSingleDispatch(
         // step-back, merged, ...) gets its deck row from here (label
         // `#<issue> <step> · <label>`) — one seam for every step-dispatch
         // shape.
-        deck: driverDeckOpts(ctx.issue, step, label),
+        deck: { ...driverDeckOpts(ctx.issue, step, label), label },
       },
     );
   } catch (err) {

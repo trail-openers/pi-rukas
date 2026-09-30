@@ -196,9 +196,10 @@ export function makeRunOneWorkstream(
           },
           {
             label: developerLabel,
-            // #838 — the developer row's deck entry (label `#<issue> develop
-            // · <workstream>`).
-            deck: driverDeckOpts(ctx.issue, "develop", deckTagFor(id)),
+            // #838 — the developer row's deck entry (row label `#<issue>
+            // develop · <workstream>` — display only; the job label above is
+            // what the cap checkpoint's `developer[<id>]` parse sees).
+            deck: { ...driverDeckOpts(ctx.issue, "develop", deckTagFor(id)), label: developerLabel },
           },
         ),
         speculativeOn
@@ -216,7 +217,10 @@ export function makeRunOneWorkstream(
               },
               {
                 label: ids.length > 1 ? `explore:speculative[${id}]` : "explore:speculative",
-                deck: driverDeckOpts(ctx.issue, "develop", deckTagFor(`${id}:speculative`)),
+                deck: {
+                  ...driverDeckOpts(ctx.issue, "develop", deckTagFor(`${id}:speculative`)),
+                  label: ids.length > 1 ? `explore:speculative[${id}]` : "explore:speculative",
+                },
               },
             )
           : Promise.resolve(null),

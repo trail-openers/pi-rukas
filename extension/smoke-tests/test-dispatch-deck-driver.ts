@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { buildAgentListLines } from "../src/agent-list.ts";
 import { childHandles } from "../src/async-jobs-registry.ts";
-import { clearJobsForTesting, startJob } from "../src/async-jobs.ts";
+import { clearJobsForTesting, jobStatusSnapshot, startJob } from "../src/async-jobs.ts";
 import { steerFromDeck } from "../src/dispatch-deck-interactive.ts";
 import { formatBatchRow } from "../src/dispatch-deck-rows.ts";
 import * as dispatchDeck from "../src/dispatch-deck.ts";
@@ -32,6 +32,7 @@ import type { DispatchResult } from "../src/types.ts";
 import {
   acquireWorkDeckHeader,
   driverDeckOpts,
+  headerToken,
   workDeckKey,
 } from "../src/work-driver-deck-header.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
@@ -179,6 +180,75 @@ function fakeResult(role: string, text = "done", ok = true): DispatchResult {
   clearJobsForTesting();
 }
 
+// 2b. #838 lens fix — the JOB label and the DECK row label are decoupled.
+//    A develop dispatch with the deck option: the job label (what the
+//    driver's completion/failure events and the cap checkpoint's
+//    `developer[<id>]` parse see) is the caller's label; the deck entry's
+//    display label is the row label from driverDeckOpts.
+{
+  dispatchDeck.reset();
+  clearJobsForTesting();
+  const { pi } = makePiStub();
+  dispatchCore(pi, { role: "developer", prompt: "work", cwd: "/tmp" } as never, {
+    label: "developer[task-a]",
+    deck: {
+      cycleKey: "work:838",
+      label: "#838 develop · task-a",
+      deckLabel: "#838 develop · task-a",
+    },
+    timeoutMs: 100,
+  }).catch(() => undefined);
+  await sleep(50);
+  // The deck entry (display) carried the row label under the cycle key.
+  const deckSnap = dispatchDeck.snapshot();
+  assert(
+    deckSnap.length === 0,
+    "job/deck label split: deck cleared after the guard rejection settles",
+  );
+  // The JOB label (events + registry): captured via jobStatusSnapshot while
+  // in flight; the completion event's label is the SAME string — assert the
+  // registry row, which startJob stamped verbatim, alongside the deck
+  // entry's display label read mid-flight.
+  clearJobsForTesting();
+  let jobRowLabel = "(unset)";
+  let deckRowLabel = "(unset)";
+  let deckRowKey = "(unset)";
+  const r3 = startJob(pi, {
+    label: "developer[task-a]",
+    deckLabel: "#838 develop · task-a",
+    batchKey: "work:838",
+    role: "developer",
+    ownerKind: "driver",
+    work: async () => {
+      await sleep(30);
+      // In-flight: the registry row is the JOB label; the deck entry is the
+      // DECK label.
+      const snapNow = jobStatusSnapshot();
+      const jobRow = snapNow.find((j) => j.label === "developer[task-a]");
+      const deckRow = dispatchDeck.snapshot();
+      jobRowLabel = jobRow?.label ?? "(none)";
+      deckRowLabel = deckRow[0]?.label ?? "(none)";
+      deckRowKey = deckRow[0]?.batchKey ?? "(none)";
+      return fakeResult("developer", "finished the work");
+    },
+  });
+  await r3.completion;
+  assert(
+    jobRowLabel === "developer[task-a]",
+    `job/deck label split: the job label is the caller's ("developer[task-a]") — the events + cap-checkpoint parse see this (got: ${jobRowLabel})`,
+  );
+  assert(
+    deckRowLabel === "#838 develop · task-a",
+    `job/deck label split: the deck entry shows the row label (got: ${deckRowLabel})`,
+  );
+  assert(
+    deckRowKey === "work:838",
+    `job/deck label split: the deck entry keeps the cycle batch key (got: ${deckRowKey})`,
+  );
+  dispatchDeck.reset();
+  clearJobsForTesting();
+}
+
 // 3. The per-cycle header via the acquire/release seam: created with the
 //    right label, counter-less (size 0), cleared by release (the
 //    try/finally path runWorkDriver uses).
@@ -246,6 +316,32 @@ function fakeResult(role: string, text = "done", ok = true): DispatchResult {
   assert(
     dispatchDeck.batchSnapshot().length === 0,
     "ownership: first cycle's release cleared the header",
+  );
+  dispatchDeck.reset();
+
+  // 3c. The unique-token shape the driver mints per invocation (#838 lens
+  //     fix): token A acquires, token B's acquire is a no-op, releasing B
+  //     leaves the header in place; releasing A clears it.
+  const hA = acquireWorkDeckHeader(101, "tok-A");
+  const hB = acquireWorkDeckHeader(101, "tok-B");
+  hB.release();
+  assert(
+    dispatchDeck.batchSnapshot().length === 1,
+    "unique token: release of the non-owning token left the header in place",
+  );
+  hA.release();
+  assert(
+    dispatchDeck.batchSnapshot().length === 0,
+    "unique token: release of the owning token cleared the header",
+  );
+  // headerToken() itself: per-invocation unique (module counter), and
+  // every token carries the pid prefix (cross-process non-collision).
+  const t1 = headerToken();
+  const t2 = headerToken();
+  assert(t1 !== t2, `headerToken: consecutive tokens differ (got ${t1} / ${t2})`);
+  assert(
+    t1.startsWith(`pid:${process.pid}:`) && t2.startsWith(`pid:${process.pid}:`),
+    "headerToken: tokens carry the pid prefix (cross-process uniqueness)",
   );
   dispatchDeck.reset();
 }

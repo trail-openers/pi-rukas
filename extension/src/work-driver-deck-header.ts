@@ -33,6 +33,19 @@ import { trace } from "./trace.ts";
 /** header-key → cycle-owner token. */
 const owners = new Map<string, string>();
 
+// #838 lens fix — the deck header's ownership token must be unique PER
+// INVOCATION, not per process: two concurrent /work cycles in one Pi process
+// (a tool-started cycle + a slash-command cycle, or grouped cycles) share
+// `process.pid`, and a pid-keyed token would let one cycle's release clear
+// the other's live header. A module counter + pid gives each invocation its
+// own token; the pid keeps tokens from colliding across processes (where the
+// counter restarts at zero).
+let headerTokenSeq = 0;
+/** Mint a fresh per-invocation header-ownership token (pid + counter). */
+export function headerToken(): string {
+  return `pid:${process.pid}:${++headerTokenSeq}`;
+}
+
 /** The cycle's header key — "work:<issue>". Exported so the dispatch
  *  seam (driverDeckOpts) and the release path share one spelling. */
 export function workDeckKey(issue: number): string {
@@ -88,12 +101,16 @@ export function acquireWorkDeckHeader(
  * (batchKey) plus the per-dispatch row label. The label is
  * `#<issue> <step> · <workstream|role>` — the workstream id for a
  * per-workstream develop dispatch, the dispatch's own label otherwise
- * (so `explore:speculative[ws]` keeps its existing tag shape).
+ * (so `explore:speculative[ws]` keeps its existing tag shape). The deck
+ * row is display-only (startJob's `deckLabel`): the job's own label —
+ * what the driver's events and the cap checkpoint's `developer[<id>]`
+ * parse see — is the caller's `label`.
  */
 export function driverDeckOpts(
   issue: number,
   step: string,
   tag: string,
-): { cycleKey: string; label: string } {
-  return { cycleKey: workDeckKey(issue), label: `#${issue} ${step} · ${tag}` };
+): { cycleKey: string; label: string; deckLabel?: string } {
+  const label = `#${issue} ${step} · ${tag}`;
+  return { cycleKey: workDeckKey(issue), label, deckLabel: label };
 }

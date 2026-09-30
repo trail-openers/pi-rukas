@@ -22,7 +22,7 @@ import {
   STEP_ORDINAL,
   nextStep,
 } from "./work-driver-context.ts";
-import { acquireWorkDeckHeader } from "./work-driver-deck-header.ts";
+import { acquireWorkDeckHeader, headerToken } from "./work-driver-deck-header.ts";
 import { countPriorStepStarts } from "./work-driver-diff.ts";
 import { runExplore } from "./work-driver-explore.ts";
 import { runHandoff } from "./work-driver-handoff.ts";
@@ -143,8 +143,8 @@ export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> 
     // starts, cleared on EVERY terminal path via the finally — merged,
     // handoff, park, halt, thrown error all unwind through it. A second
     // cycle on the same issue never clobbers the first cycle's header
-    // (ownership token; see work-driver-deck-header.ts).
-    const header = acquireWorkDeckHeader(ctx.issue, String(process.pid));
+    // (per-invocation ownership token; see work-driver-deck-header.ts).
+    const header = acquireWorkDeckHeader(ctx.issue, headerToken());
     try {
       return await runWorkDriverInner(ctx);
     } finally {

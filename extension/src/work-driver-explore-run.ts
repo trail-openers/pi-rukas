@@ -219,7 +219,7 @@ export async function runExplore(
       {
         label: "explore",
         onSlow: slowRecorder(ctx.issue, "explore"),
-        deck: driverDeckOpts(ctx.issue, "explore", "explore"),
+        deck: { ...driverDeckOpts(ctx.issue, "explore", "explore"), label: "explore" },
       },
     ),
   ]).then((arr) => arr[0]);

@@ -166,7 +166,7 @@ export interface DriverContext {
       label?: string;
       skipDeck?: boolean;
       /** #838 — see dispatchCore's deck option. */
-      deck?: { cycleKey: string; label: string };
+      deck?: { cycleKey: string; label: string; deckLabel?: string };
       timeoutMs?: number;
       onSlow?: OnSlowCallback;
     },
