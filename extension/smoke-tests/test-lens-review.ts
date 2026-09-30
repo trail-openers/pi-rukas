@@ -382,7 +382,28 @@ function lensResult(
 // used to be unreachable by any test (the registration happens inside
 // registerLensReviewTool, which needs a live ExtensionAPI). Exporting it as a
 // named const is what makes this assertion possible.
+// #859 (before/after): pre-#859 the description was exactly the first
+// sentence — "The full PR/MR diff to review. Fetch it once … do NOT re-fetch
+// per lens." — with no mention of base/head (the param was required pasted
+// text). Post-#859 it appends the ref-range alternative. All pre-#859
+// substrings below are preserved verbatim; the new sentence is appended.
 {
+  const PRE_859_FIRST_SENTENCE =
+    "The full PR/MR diff to review. Fetch it once with your forge CLI (e.g. `gh pr diff <N>` or `glab mr diff <N>`) or `git diff main...feature/...` and reuse — do NOT re-fetch per lens.";
+  assert(
+    LENS_REVIEW_DIFF_DESCRIPTION.startsWith(PRE_859_FIRST_SENTENCE),
+    "#859: the pre-#859 first sentence of the diff description is preserved verbatim",
+  );
+  assert(
+    LENS_REVIEW_DIFF_DESCRIPTION.includes(
+      "prefer the optional base + head refs",
+    ),
+    "#859: the description now mentions the preferred base + head ref-range form",
+  );
+  assert(
+    LENS_REVIEW_DIFF_DESCRIPTION.includes("the string wins"),
+    "#859: the description states the string-wins rule when both are given",
+  );
   assert(
     !/gh pr diff/.test(LENS_REVIEW_DIFF_DESCRIPTION) ||
       LENS_REVIEW_DIFF_DESCRIPTION.includes("glab"),
