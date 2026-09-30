@@ -16,7 +16,13 @@ import { checkAttentionLabel } from "./work-driver-attention.ts";
 import { runBranch, runDevelop } from "./work-driver-branch-develop.ts";
 import { checkpointCapedDispatch } from "./work-driver-cap-checkpoint.ts";
 import { runCommitPr } from "./work-driver-commit.ts";
-import { type DriverContext, STEP_ORDINAL, nextStep } from "./work-driver-context.ts";
+import {
+  type DriverContext,
+  DriverNotImplementedError,
+  STEP_ORDINAL,
+  nextStep,
+} from "./work-driver-context.ts";
+import { acquireWorkDeckHeader, headerToken } from "./work-driver-deck-header.ts";
 import { countPriorStepStarts } from "./work-driver-diff.ts";
 import { runExplore } from "./work-driver-explore.ts";
 import { runHandoff } from "./work-driver-handoff.ts";
@@ -102,19 +108,7 @@ async function runStep(ctx: DriverContext, state: WorkState, step: WorkStep): Pr
   }
 }
 
-/**
- * Error thrown by `runStep` when the step's body is staged for a later
- * commit. The smoke test asserts these are thrown for the unimplemented
- * steps; the live /work handler catches them and falls back to legacy
- * PM-driven flow until the step body lands.
- */
-export class DriverNotImplementedError extends Error {
-  constructor(public readonly step: WorkStep) {
-    super(`work-driver: step "${step}" is not yet implemented in this build`);
-    this.name = "DriverNotImplementedError";
-  }
-}
-
+export { DriverNotImplementedError } from "./work-driver-context.ts";
 /**
  * Run one /work cycle: read/create state, loop over steps via `nextStep()`,
  * persist after every transition, surface outcome via `pi.sendUserMessage`.
@@ -145,7 +139,17 @@ export async function runWorkDriver(ctx: DriverContext): Promise<DriverOutcome> 
     // otherwise leak its leftover events into this cycle's log.
     const groupIssues = [...new Set([ctx.issue, ...(ctx.issues ?? [])])];
     for (const n of groupIssues) dropSlowEvents(n);
-    return await runWorkDriverInner(ctx);
+    // #838 — the per-cycle deck header ("/work #N"): created when the cycle
+    // starts, cleared on EVERY terminal path via the finally — merged,
+    // handoff, park, halt, thrown error all unwind through it. A second
+    // cycle on the same issue never clobbers the first cycle's header
+    // (per-invocation ownership token; see work-driver-deck-header.ts).
+    const header = acquireWorkDeckHeader(ctx.issue, headerToken());
+    try {
+      return await runWorkDriverInner(ctx);
+    } finally {
+      header.release();
+    }
   } finally {
     claimed.claim.release();
   }

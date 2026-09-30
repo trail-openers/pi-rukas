@@ -10,6 +10,7 @@ import fs from "node:fs/promises";
 import { dispatchCore } from "./dispatch.ts";
 import { slowRecorder } from "./slow-events.ts";
 import { trace } from "./trace.ts";
+import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { extractListField, sliceMarkdownSection } from "./work-driver-plan-parse.ts";
 
 // Re-exported: several modules read plan/spec markdown through this module.
@@ -119,6 +120,8 @@ export async function runPlan(
     label: "plan",
     timeoutMs: planDispatchTimeoutMs(),
     onSlow: slowRecorder(ctx.issue, "plan"),
+    // #838 — the plan dispatch's deck row (via the shared deck option).
+    deck: { ...driverDeckOpts(ctx.issue, "plan", "plan"), label: "plan" },
   };
   try {
     result = await dispatch(ctx.pi, { role: "explore", prompt }, primaryOpts);
@@ -228,7 +231,11 @@ export async function runPlan(
     const retry = await dispatch(
       ctx.pi,
       { role: "explore", prompt: correctivePrompt },
-      { label: "plan:corrective", onSlow: slowRecorder(ctx.issue, "plan") },
+      {
+        label: "plan:corrective",
+        onSlow: slowRecorder(ctx.issue, "plan"),
+        deck: { ...driverDeckOpts(ctx.issue, "plan", "plan:corrective"), label: "plan:corrective" },
+      },
     ).catch(() => undefined);
     if (retry) {
       // #754 — the corrective is NEVER re-dispatched again — exactly one

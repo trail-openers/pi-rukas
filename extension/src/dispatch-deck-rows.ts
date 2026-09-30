@@ -89,6 +89,13 @@ export function formatBatchRow(
   now: number = Date.now(),
 ): string {
   const running = Math.max(0, batch.size - batch.completed);
+  // #838 — a counter-less batch header (size 0, e.g. the driver's per-cycle
+  // "/work #N" header): the children are independent step dispatches, not a
+  // fixed-size fan-out, so a done/total counter would be noise. Existing
+  // batches (size > 0) render byte-identically to before.
+  if (batch.size === 0) {
+    return `⏳ batch[${batch.label}] ${formatElapsed(Math.max(0, now - batch.startedAt))}`;
+  }
   return `⏳ batch[${batch.label}] ${formatElapsed(Math.max(0, now - batch.startedAt))} · ${batch.completed}/${batch.size} done${running > 0 ? ` · ${running} running` : ""}`;
 }
 

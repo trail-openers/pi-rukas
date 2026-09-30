@@ -141,7 +141,7 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
   // The developer dispatch and the speculative-explore dispatch both thread
   // the caller's `cwd` onto their DispatchSpecs.
   const devDispatch = run.match(
-    /dispatch\(\s*ctx\.pi,\s*\{[\s\S]{0,400}?cwd,\s*\},\s*\{\s*label:\s*developerLabel[\s\S]{0,80}\}/,
+    /dispatch\(\s*ctx\.pi,\s*\{[\s\S]*?cwd,\s*\},\s*\{[\s\S]*?label:\s*developerLabel[\s\S]*?deck:\s*\{[\s\S]*?\}\s*,?\s*\)/,
   );
   assert(
     devDispatch !== null,

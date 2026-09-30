@@ -10,6 +10,26 @@ import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
 
+/**
+ * #838 — the per-cycle deck option a driver dispatch threads through
+ * `dispatchCore`: `cycleKey` is the batch key the member rows group under
+ * (the driver's "/work #N" header, see work-driver-deck-header.ts); `label`
+ * is the row label ("#N develop · default"). The job's event label stays
+ * `opts.label ?? role` — the driver's cap checkpoint parses `developer[<id>]`
+ * out of it — while the deck row shows `label` (display only; `deckLabel`
+ * overrides when the row label must differ from the job label). When present
+ * the job is registered in the deck exactly like a PM job (skipDeck false)
+ * while the PM steer-back stays gated on ownerKind "driver" — a deck row is
+ * display/steer-only, never a report.
+ */
+export interface DriverDeckOpts {
+  cycleKey: string;
+  label: string;
+  /** Display label for the deck entry (and its batch key row); absent means
+   *  the deck row shows the job label as-is. */
+  deckLabel?: string;
+}
+
 const MAX_PARALLEL = 10;
 
 // Issue #92: the agent must not pick subagent provider/model per dispatch —
@@ -55,6 +75,12 @@ export function dispatchCore(
   opts: {
     label?: string;
     skipDeck?: boolean;
+    /** #838 — the driver's per-cycle deck option (batch key + row label;
+     *  see DriverDeckOpts above). When present the deck entry is created
+     *  (skipDeck false, exactly like a PM job); the PM steer-back stays
+     *  gated on ownerKind "driver" — a deck row is display/steer only,
+     *  never a report steer-back to the PM. */
+    deck?: DriverDeckOpts;
     timeoutMs?: number;
     extraArgs?: string[];
     onSlow?: OnSlowCallback;
@@ -67,6 +93,10 @@ export function dispatchCore(
   // what actually determines the file that Pi writes.
   const runId = stripped.runId ?? makeRunId();
   const transcriptPath = transcriptPathFor(stripped.role, runId);
+  // #838 lens fix — the JOB label stays `opts.label ?? role`: the driver's
+  // events (dispatch-started/completed/failed/slow) and the cap checkpoint's
+  // `workstreamIdFromLabel(/^developer\[(.+)\]$/)` parse depend on it. The
+  // deck row is display-only and gets its own label separately.
   const label = opts.label ?? stripped.role;
   // #799 — the driver's dispatch-slow record: the watch (owned by startJob)
   // fires it on each threshold crossing; the caller appends the event to the
@@ -76,7 +106,11 @@ export function dispatchCore(
     label,
     role: stripped.role,
     ownerKind: "driver",
-    skipDeck: opts.skipDeck,
+    // #838 — deck implies skipDeck=false: a deck-tagged driver job is
+    // registered exactly like a PM job (the deck row is display/steer-only).
+    skipDeck: opts.deck ? false : opts.skipDeck,
+    batchKey: opts.deck?.cycleKey,
+    deckLabel: opts.deck?.deckLabel ?? opts.deck?.label ?? label,
     onSlow,
     work: (signal, hooks) =>
       spawnSpecialist(stripped, {

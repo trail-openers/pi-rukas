@@ -37,6 +37,7 @@ import {
   runConvergeGate,
   workstreamOwnsMissingPaths,
 } from "./work-driver-converge.ts";
+import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { applySafetyNet } from "./work-driver-safety-net.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -95,11 +96,26 @@ export async function runConvergeGateHandler(
   // missing result can never fall through and present as a completion.
   let correctiveNote: string | undefined;
   try {
-    const retry = await dispatchFn(ctx.pi, {
-      role: "developer",
-      prompt,
-      cwd: correctiveCwd,
-    });
+    const retry = await dispatchFn(
+      ctx.pi,
+      {
+        role: "developer",
+        prompt,
+        cwd: correctiveCwd,
+      },
+      {
+        // #838 — the converge corrective dispatch's deck row (row label
+        // `#<issue> develop · corrective` — display only; the job label below
+        // is what the cycle's events record). (This site is allowlisted in
+        // test-dispatch-cwd-audit: an explicit cwd above — the `label:` token
+        // below is the dispatch label, not a deck-option label.)
+        label: "develop:corrective",
+        deck: {
+          ...driverDeckOpts(ctx.issue, "develop", "corrective"),
+          label: "develop:corrective",
+        },
+      },
+    );
     if (retry?.ok !== true) {
       correctiveNote = retry
         ? "corrective re-dispatch FAILED (child reported failure)"
