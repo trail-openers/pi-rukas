@@ -211,11 +211,12 @@ function headerB1(): ViewHeader {
   comp.handleInput("\x1b"); // Esc → close
   // before: 3d pinned done('close') — the shim remapped returnToList→close / after: the new component returns 'returnToList' verbatim (#916 slice B)
   assert(doneResults.includes("returnToList"), "3d: Esc → done('returnToList')");
-  const comp2 = createAgentViewComponent("b1", headerB1, fakeTheme, undefined, (r) =>
-    doneResults.push(`steer-${r}`),
-  );
+  // #915: `s` now inserts into the input (no done('steer'))
+  const comp2 = createAgentViewComponent("b1", headerB1, fakeTheme, undefined, (r) => {
+    doneResults.push(`steer-${r}`);
+  }, () => {});
   comp2.handleInput("s");
-  assert(doneResults.includes("steer-steer"), "3e: 's' → done('steer')");
+  assert((comp2 as unknown as { inputValue: () => string }).inputValue() === "s", "3e: 's' inserts into the input (no done)");
   dropBuffer("b1");
 }
 
@@ -335,6 +336,8 @@ function headerB1(): ViewHeader {
 function rowHost() {
   return { getEntry: (k: string) => snapshot().find((e) => e.key === k), steer: () => {} };
 }
+// #915: buildSteerPrompt is no longer needed in the LiveViewHost — only
+// getEntry remains.
 
 // Fake ExtensionContext for onRowConfirm; `custom`/`editor` are recorded so
 // the assertions can inspect what the roster action opened.
@@ -353,6 +356,7 @@ function fakeCtx(rec: {
         rec.custom.push(o);
         return Promise.resolve("close");
       },
+      // #915: the steer prompt is no longer opened from the live view
       editor: (t: string, _p: string) => {
         if (rec.rejectEditor) return Promise.reject(new Error("editor unsupported"));
         rec.editors.push(t);
