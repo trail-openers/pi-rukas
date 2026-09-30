@@ -692,6 +692,14 @@ PR: [#217](https://github.com/trail-openers/pi-rukas/pull/217)
 
 **Fix:** `./install.sh` to rebuild the official image. Verify: `docker run --rm trail-openers/pi-rukas:latest id` → `uid=1000(vscode)`.
 
+### First sandbox run crashes with `EACCES: permission denied, mkdir '.../.pi/agent/sessions/...'`
+
+**Symptom:** On a fresh host (no `~/.pi/agent/sessions`, `~/.pi/agent/ensemble-runs` or `~/.vipune`), `pi-rukas` crashes at startup with `EACCES: permission denied, mkdir '<mount>/sessions/--<project>--'` (issue #933).
+
+**Cause:** When a host directory is missing, the launcher (`bin/pi-rukas` `build_mounts()`) falls back to a named volume (`pi-ensemble-sessions`, `pi-ensemble-runs`, `pi-ensemble-vipune`). If the image doesn't contain the mount point, Docker creates the new volume owned by `root:root` (mode 755); the entrypoint then drops privileges to `vscode` (UID 1000), which can't write into it. Same class hits the always-on cache volumes (`~/.cache`, `~/.bun`, `~/.cargo`, `/commandhistory`) when the mount point is absent.
+
+**Fix:** `./install.sh` to pull the rebuilt image (v0.12.68+). The image now bakes the mount points in as `vscode`-owned, and the entrypoint repairs an existing root-owned named volume (`chown vscode:vscode`) at boot — but only for targets the launcher passes via `PI_ENSEMBLE_VOLUME_MOUNTS`, so a bind-mounted host directory is never touched. One-time manual repair if you can't upgrade: `docker volume rm pi-ensemble-sessions pi-ensemble-runs pi-ensemble-vipune` (destroys only container-scoped state) and/or `mkdir -p ~/.pi/agent/sessions ~/.pi/agent/ensemble-runs ~/.vipune` on the host so the launcher uses bind mounts instead.
+
 ## Diagnostics
 
 ### Confirm a bind-mount is reaching the container
