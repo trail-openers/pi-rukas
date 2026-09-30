@@ -50,7 +50,7 @@ import {
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { decodeInsertable } from "./deck-key-decode.ts";
-import { sanitizeText } from "./dispatch-deck-line.ts";
+import { sanitizeText, toTerminalLine } from "./dispatch-deck-line.ts";
 import { bodyLineCount, eventLines } from "./dispatch-deck-live-view-render.ts";
 import type { LiveEvent, LiveViewTheme } from "./dispatch-deck-live.ts";
 import { getBuffer } from "./dispatch-deck-live.ts";
@@ -266,14 +266,13 @@ export function createAgentViewComponent(
       let inputLine: string;
       if (sendStatus && !settled) {
         // The result glyph (✓ / ⧗ / ✗) leads the inline status; muted so it
-        // reads as a status line, not an input line. #915 — sanitised and
-        // width-bounded like the input line (truncateToWidth first — its ANSI
-        // reset codes are stripped by the trailing sanitizeText), so a
-        // hostile status string can never push the line past the overlay
-        // width.
-        inputLine = theme.muted(
-          sanitizeText(truncateToWidth(`${sendStatus.text} · Esc back`, width, "…")),
-        );
+        // reads as a status line, not an input line. #915 — rendered as a
+        // single terminal row: toTerminalLine sanitises, collapses any
+        // newlines to ` ⏎ `, and width-bounds (truncateToWidth + a final
+        // sanitise), so a hostile or multi-line status string (e.g. a
+        // steer error whose err.message carries a newline) can never push
+        // the line past the overlay width or emit a raw newline.
+        inputLine = theme.muted(toTerminalLine(`${sendStatus.text} · Esc back`, width));
       } else {
         // Show the tail of the input: truncateToWidth from the left is not
         // available, so take the last (width - prompt - cursor) chars and

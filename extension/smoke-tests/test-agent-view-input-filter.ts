@@ -67,10 +67,13 @@ function makeHeader(): ViewHeader {
   );
   // Nothing control-shaped survives.
   assert(
-    out !== undefined && [...out].every((c) => {
-      const cp = c.codePointAt(0) ?? 0;
-      return cp >= 32 && cp !== 0x7f && !(cp >= 0x80 && cp < 0xa0) && !(cp >= 0xe000 && cp <= 0xf8ff);
-    }),
+    out !== undefined &&
+      [...out].every((c) => {
+        const cp = c.codePointAt(0) ?? 0;
+        return (
+          cp >= 32 && cp !== 0x7f && !(cp >= 0x80 && cp < 0xa0) && !(cp >= 0xe000 && cp <= 0xf8ff)
+        );
+      }),
     "1c: no C0/C1/DEL/PUA code point survives the paste filter",
   );
   // The same content via a multi-char plain-text chunk (IME commit /
@@ -87,7 +90,10 @@ function makeHeader(): ViewHeader {
     "1e: whitespace-only paste collapses to a single space",
   );
   // All-control paste content drops to the empty string (inserts nothing).
-  assert(decodeInsertable("\u001b[200~\x07\x9b\x7f\u001b[201~") === "", "1f: all-control paste drops to empty");
+  assert(
+    decodeInsertable("\u001b[200~\x07\x9b\x7f\u001b[201~") === "",
+    "1f: all-control paste drops to empty",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -97,14 +103,24 @@ function makeHeader(): ViewHeader {
 {
   dropBuffer("ivf1");
   startBuffer("ivf1");
-  const comp = createAgentViewComponent("ivf1", makeHeader, fakeTheme, undefined, () => {}, () => {});
+  const comp = createAgentViewComponent(
+    "ivf1",
+    makeHeader,
+    fakeTheme,
+    undefined,
+    () => {},
+    () => {},
+  );
   const big = "x".repeat(20000);
   comp.handleInput("\u001b[200~" + big + "\u001b[201~");
   assert(
     comp.inputValue().length === 8000,
     `2a: 20,000-char paste leaves the input at 8,000 chars (got ${comp.inputValue().length})`,
   );
-  assert(comp.inputValue() === "x".repeat(8000), "2b: the first 8,000 chars are kept (tail truncated)");
+  assert(
+    comp.inputValue() === "x".repeat(8000),
+    "2b: the first 8,000 chars are kept (tail truncated)",
+  );
   // A subsequent insert past the cap truncates the tail of the insert.
   comp.handleInput("yyyy");
   assert(comp.inputValue().length === 8000, "2c: the cap holds after further inserts");
@@ -115,7 +131,14 @@ function makeHeader(): ViewHeader {
   // 7999 x's, the half-cut emoji dropped cleanly).
   dropBuffer("ivf1");
   startBuffer("ivf2");
-  const comp2 = createAgentViewComponent("ivf2", makeHeader, fakeTheme, undefined, () => {}, () => {});
+  const comp2 = createAgentViewComponent(
+    "ivf2",
+    makeHeader,
+    fakeTheme,
+    undefined,
+    () => {},
+    () => {},
+  );
   comp2.handleInput("x".repeat(7999) + "\ud83d\ude00"); // x*7999 + 😀
   assert(
     comp2.inputValue().length === 7999,
@@ -126,20 +149,83 @@ function makeHeader(): ViewHeader {
 }
 
 // ---------------------------------------------------------------------------
-// 3. The inline status line is width-bounded (the 500-char status text plus
-//    the "· Esc back" suffix renders at ≤ width — sanitise + truncateToWidth,
-//    the same treatment as the input line).
+// 3. The inline status line is width-bounded to a SINGLE terminal row (the
+//    status text plus the "· Esc back" suffix renders at ≤ width and with no
+//    raw newline — toTerminalLine sanitises, collapses newlines to ` ⏎ `,
+//    and width-bounds, the same treatment as the input line).
 // ---------------------------------------------------------------------------
 {
   dropBuffer("ivf3");
   startBuffer("ivf3");
-  const comp = createAgentViewComponent("ivf3", makeHeader, fakeTheme, undefined, () => {}, () => {});
+  const comp = createAgentViewComponent(
+    "ivf3",
+    makeHeader,
+    fakeTheme,
+    undefined,
+    () => {},
+    () => {},
+  );
   comp.setStatus({ text: "x".repeat(500), ok: true });
   const lines = comp.render(80);
   const statusLine = lines.find((l) => l.startsWith("xx"));
   assert(
     statusLine !== undefined && statusLine.length <= 80,
     `3a: 500-char status line is width-bounded to 80 (got ${statusLine?.length ?? "missing"})`,
+  );
+  // 3b: a NEWLINE-BEARING status (the steer catch path feeds err.message,
+  // which can be multi-line) must still render as ONE row at ≤ width with
+  // no raw newline — the width bound alone does not collapse `\n` (the
+  // earlier truncateToWidth-only path overflowed and left a raw newline).
+  // The status line is the single non-empty line that is neither the header
+  // (index 0) nor the footer (last); the collapsed ` ⏎ ` separator survives
+  // truncation, so we locate it by position, not by the (truncated) suffix.
+  dropBuffer("ivf3");
+  startBuffer("ivf3");
+  const comp2 = createAgentViewComponent(
+    "ivf3",
+    makeHeader,
+    fakeTheme,
+    undefined,
+    () => {},
+    () => {},
+  );
+  comp2.setStatus({ text: "a\nb".repeat(100), ok: false });
+  const lines2 = comp2.render(80);
+  const statusLine2 = lines2
+    .map((l, i) => ({ l, i }))
+    .filter(({ l, i }) => l.length > 0 && i !== 0 && i !== lines2.length - 1)
+    .map(({ l }) => l)[0];
+  assert(
+    statusLine2 !== undefined && !statusLine2.includes("\n"),
+    `3b: newline-bearing status line renders as a single row (got ${statusLine2 !== undefined ? JSON.stringify(statusLine2) : "missing"})`,
+  );
+  assert(
+    statusLine2 !== undefined && statusLine2.length <= 80,
+    `3b: newline-bearing status line is width-bounded to 80 (got ${statusLine2?.length ?? "missing"})`,
+  );
+  // 3c: a SHORT newline-bearing status keeps the "· Esc back" suffix (the
+  // common delivered/between-rounds case — short, newline-free or lightly
+  // multi-line) and still fits at ≤ width with no raw newline.
+  dropBuffer("ivf3");
+  startBuffer("ivf3");
+  const comp3 = createAgentViewComponent(
+    "ivf3",
+    makeHeader,
+    fakeTheme,
+    undefined,
+    () => {},
+    () => {},
+  );
+  comp3.setStatus({ text: "line one\nline two", ok: true });
+  const lines3 = comp3.render(80);
+  const statusLine3 = lines3.find((l) => l.includes("Esc back"));
+  assert(
+    statusLine3 !== undefined && !statusLine3.includes("\n"),
+    `3c: short multi-line status keeps its suffix on one row (got ${statusLine3 !== undefined ? JSON.stringify(statusLine3) : "missing"})`,
+  );
+  assert(
+    statusLine3 !== undefined && statusLine3.length <= 80,
+    `3c: short multi-line status is width-bounded to 80 (got ${statusLine3?.length ?? "missing"})`,
   );
   dropBuffer("ivf3");
 }
