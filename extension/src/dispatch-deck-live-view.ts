@@ -95,6 +95,14 @@ export interface LiveViewHost {
   getEntry: (key: string) => DeckEntry | undefined;
 }
 
+/** The input accessors the component exposes (beyond the Component surface). */
+interface ViewInputAccessors {
+  inputValue: () => string;
+  clearInput: () => void;
+  setStatus: (s: { text: string; ok: boolean } | undefined) => void;
+  setInput: (t: string) => void;
+}
+
 /**
  * #915 — the view's send path. `comp` carries the input accessors
  * (`inputValue`/`clearInput`/`setStatus`) the component exposes.
@@ -108,14 +116,6 @@ export interface LiveViewHost {
  * A throw (e.g. a rejecting `steerFromDeck`) must never escape into the TUI
  * input handler — try/catch plus a trace, the input text left untouched.
  */
-/** The input accessors the component exposes (beyond the Component surface). */
-interface ViewInputAccessors {
-  inputValue: () => string;
-  clearInput: () => void;
-  setStatus: (s: { text: string; ok: boolean } | undefined) => void;
-  setInput: (t: string) => void;
-}
-
 async function handleSend(
   key: string,
   host: LiveViewHost,

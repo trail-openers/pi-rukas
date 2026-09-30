@@ -260,15 +260,19 @@ export function createAgentViewComponent(
       // present, replaces the label part of the line; cleared on settle.
       const label = h ? sanitizeText(h.label).replace(/\n+/g, " ") : key;
       const cursor = "\u258D";
-      if (settled && sendStatus) {
-        // The settled final line takes over — the inline status is cleared.
-        sendStatus = undefined;
-      }
+      // #915 lens r2 — render is read-only: the status stays hidden once the
+      // job settles (the settled final line takes over), computed here
+      // without mutating sendStatus (setStatus is the only writer).
+      const showStatus = sendStatus && !settled;
       let inputLine: string;
-      if (sendStatus) {
+      if (showStatus) {
         // The result glyph (✓ / ⧗ / ✗) leads the inline status; muted so it
-        // reads as a status line, not an input line.
-        inputLine = theme.muted(`${sendStatus.text} · Esc back`);
+        // reads as a status line, not an input line. #915 — sanitised and
+        // width-bounded like the input line (truncateToWidth first — its ANSI
+        // reset codes are stripped by the trailing sanitizeText), so a
+        // hostile status string can never push the line past the overlay
+        // width.
+        inputLine = theme.muted(sanitizeText(truncateToWidth(`${sendStatus.text} · Esc back`, width, "…")));
       } else {
         // Show the tail of the input: truncateToWidth from the left is not
         // available, so take the last (width - prompt - cursor) chars and
@@ -379,6 +383,8 @@ export function createAgentViewComponent(
     setInput: (t: string) => {
       input = t;
     },
+    // #915 — the only writer of sendStatus (hidden once the job settles —
+    // render only reads it, computing `showStatus`).
     setStatus: (s: { text: string; ok: boolean } | undefined) => {
       sendStatus = s;
     },
