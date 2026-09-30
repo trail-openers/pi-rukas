@@ -8,6 +8,7 @@ import * as dispatchDeck from "./dispatch-deck.ts";
 import { writeLensLedgerEntry } from "./lens-ledger.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
 import { runLensChild } from "./lens-review-child.ts";
+import { blockedReviewSummary, blockedRowsForRoster, resolveLensDiff } from "./lens-review-diff.ts";
 import {
   LENS_PREFIX,
   bySeverityCounts,
@@ -19,7 +20,6 @@ import {
 import { installBlockRows, skillsDirUsable } from "./lens-review-skills.ts";
 import { aggregateLensUsage } from "./lens-review-usage.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
-import { computeRangeDiff } from "./review-diff.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
@@ -310,68 +310,19 @@ export async function runLensReview(opts: {
   // write apply the same bar).
   const threshold = opts.threshold ?? DEFAULT_REVIEW_THRESHOLD;
   // #859 — ref-range diffs: when `diff` is absent and base+head are present,
-  // the diff is computed once here and fed to every lens. An error (invalid
-  // ref, confirmed-empty range, cap overflow) blocks the whole review as a
-  // failed dispatch result — a computed diff is never silently empty and
+  // the diff is computed ONCE and fed to every lens. An error (invalid ref,
+  // confirmed-empty range, cap overflow, nothing supplied) blocks the whole
+  // review as a failed result — a computed diff is never silently empty and
   // never read as "nothing to review" (same rule as #384). Blocked rows use
-  // the EXPECTED (installed + bundled) roster — the same set the #872 block
-  // below uses — so one problem row is never six.
+  // the EXPECTED roster the #872 check below builds.
   const roster = buildExpectedRoster(skillsDir);
-  const blockedFor = (problem: string): LensRunResult[] =>
-    roster.map((e) => ({
-      lens: e.name,
-      ok: false,
-      ms: 0,
-      startMs: Date.now(),
-      findings: [],
-      attempts: 0,
-      blocked: true,
-      parseError: problem,
-    }));
-  let diff = opts.diff;
-  if (!diff && opts.base && opts.head) {
-    const range = await computeRangeDiff(opts.cwd ?? process.cwd(), opts.base, opts.head);
-    if (!range.ok) {
-      const problem = `lens review: cannot compute diff for ${opts.base}...${opts.head}: ${range.reason}`;
-      const blockRows = blockedFor(problem);
-      const all = [...(opts.extraFindings ?? [])];
-      const deduped = dedupeFindings(all, roster);
-      return finish(
-        {
-          verdict: computeVerdict(deduped, blockRows, threshold),
-          totalFindings: deduped.length,
-          bySeverity: bySeverityCounts(deduped),
-          lenses: blockRows,
-          findings: deduped,
-          usage: undefined,
-        },
-        threshold,
-        opts.cwd,
-        opts.branch,
-      );
-    }
-    diff = range.diff;
-  } else if (!diff) {
-    // No diff string and no complete ref range — the review has nothing to
-    // look at. This is a caller error, not an approval.
-    const problem = "lens review: no diff supplied (pass `diff`, or both `base` and `head`)";
-    const blockRows = blockedFor(problem);
-    const all = [...(opts.extraFindings ?? [])];
-    const deduped = dedupeFindings(all, roster);
-    return finish(
-      {
-        verdict: computeVerdict(deduped, blockRows, threshold),
-        totalFindings: deduped.length,
-        bySeverity: bySeverityCounts(deduped),
-        lenses: blockRows,
-        findings: deduped,
-        usage: undefined,
-      },
-      threshold,
-      opts.cwd,
-      opts.branch,
-    );
+  const resolution = await resolveLensDiff(opts);
+  if (resolution.problem) {
+    const blockRows = blockedRowsForRoster(roster, resolution.problem);
+    const blocked = blockedReviewSummary(opts.extraFindings, roster, blockRows, threshold);
+    return finish(blocked, threshold, opts.cwd, opts.branch);
   }
+  const diff = resolution.diff ?? "";
   // #872 — ONE skills-dir check before the fan-out (not per-lens checks):
   // a missing, empty, or no-`code-review-*`-skill dir blocks ALL lenses
   // with a single install message and no spawn is ever called. The roster
@@ -539,16 +490,6 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
         trace(
           `lens review: diff string supplied alongside base=${params.base} head=${params.head} — the diff string wins`,
         );
-      } else if (!hasDiff && !hasRange) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: "dispatch_lens_review: provide `diff`, or both `base` and `head` refs (with `cwd`) — nothing to review was supplied.",
-            },
-          ],
-          details: { jobId: "", role: "lens-review", async: true },
-        };
       }
       const { jobId } = startJob(pi, {
         label: "lens_review",

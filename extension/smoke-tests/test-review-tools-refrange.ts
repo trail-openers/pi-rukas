@@ -183,20 +183,18 @@ registerAdversarialTool(fakePi().pi); // warm any module init
 // ============================================================ 5. neither diff nor base/head → error at tool entry
 
 {
-  // The lens tool path validates at execute(): no diff and no base/head →
-  // a clear error return (no job started). We call the tool's execute via
-  // the captured definition.
-  const { pi, tools } = fakePi();
-  // register the lens tool
-  const { registerLensReviewTool } = await import("../src/lens-review.ts");
-  registerLensReviewTool(pi);
-  const lens = tools.get("dispatch_lens_review")!;
-  const noDiff = await (lens.execute as (id: string, raw: unknown) => Promise<unknown>)("id", {
-    context: "no diff at all",
-  });
-  const noDiffText = JSON.stringify(noDiff);
-  assert(/diff|base|head/.test(noDiffText), "neither diff nor base/head → error text names what's missing");
-  assert(!/Dispatched async/.test(noDiffText), "...and NO job is dispatched (no jobId)");
+  // The tool path validates at the review seam: no diff and no base/head →
+  // a blocked review (REVIEW_INCOMPLETE, never APPROVED) with a clear
+  // problem naming what's missing. We assert at the resolveLensDiff seam
+  // (the single resolution the tool uses) — no Pi spawn needed.
+  const { resolveLensDiff } = await import("../src/lens-review-diff.ts");
+  const res = await resolveLensDiff({});
+  assert(res.problem !== undefined, "neither diff nor base/head → a problem (no diff to review)");
+  assert(
+    /diff|base|head/.test(res.problem ?? ""),
+    "the problem text names what's missing (diff / base / head)",
+  );
+  assert(res.diff === undefined, "...and NO diff is produced (no approval path)");
 }
 
 // ============================================================ 6. diff + base/head → diff wins (lens tool path)
