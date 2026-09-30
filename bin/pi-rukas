@@ -33,6 +33,8 @@
 
 set -euo pipefail
 
+source "${BASH_SOURCE[0]%/*}/lib-pi-rukas-shell.sh"
+
 IMAGE="${PI_ENSEMBLE_IMAGE:-ghcr.io/trail-openers/pi-rukas:latest}"
 PROJECT_ROOT="$(cd "$(pwd)" && pwd -P)"
 PROJECT_NAME="$(basename "$PROJECT_ROOT" | tr -c 'A-Za-z0-9._-' '-' | head -c 40)"
@@ -391,6 +393,19 @@ run_container() {
   while IFS= read -r -d '' line; do mounts+=("$line"); done < <(build_mounts)
   while IFS= read -r -d '' line; do envs+=("$line"); done < <(build_env)
   while IFS= read -r -d '' line; do hosts+=("$line"); done < <(build_host_aliases)
+  # #933: entrypoint repairs legacy root-owned NAMED volumes; tell it which
+  # allowlisted paths are volumes, not bind mounts (path/socket source).
+  local vol_targets=()
+  for line in "${mounts[@]}"; do
+    local src="${line#-v }"
+    case "$src" in
+      */*) ;;  # bind mount (path / socket source) — never a named volume
+      *)  vol_targets+=("${src#*:}") ;;
+    esac
+  done
+  if [ "${#vol_targets[@]}" -gt 0 ]; then
+    envs+=(-e "PI_ENSEMBLE_VOLUME_MOUNTS=$(IFS=:; echo "${vol_targets[*]}")")
+  fi
   # Ensure terminal gets cleaned up even if docker run exits non-zero
   # (Pi crashed, OOM, etc.). Without this, the host shell is unusable.
   trap repair_tty EXIT
@@ -436,21 +451,6 @@ cmd_stop() {
   echo "Stopping $count pi-rukas container(s) for $PROJECT_ROOT:"
   printf '%s\n' "$matches" | while IFS= read -r name; do
     docker stop "$name"
-  done
-}
-
-cmd_prune() {
-  require_docker
-  echo "This removes shared sandbox caches (codebase-memory-mcp index,"
-  echo "bun/cargo caches, shell history). Bind-mounted host state"
-  echo "(vipune, transcripts, model picks) is NOT affected."
-  read -r -p "Continue? [y/N] " ans
-  case "$ans" in
-    y|Y|yes) ;;
-    *) echo "Cancelled"; exit 0 ;;
-  esac
-  for vol in pi-ensemble-cache pi-ensemble-bun-cache pi-ensemble-cargo-cache pi-ensemble-history; do
-    docker volume rm "$vol" 2>/dev/null && echo "removed $vol" || echo "skip $vol (not present or in use)"
   done
 }
 

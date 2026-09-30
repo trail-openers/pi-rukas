@@ -232,6 +232,28 @@ RUN pi install npm:pi-mcp-adapter@2.32.1 || true \
 # also run at container start if a bind-mounted state volume needs re-wiring.
 RUN cd ${PI_ENSEMBLE_DIR} && ./install.sh || true
 
+# Issue #933 (fresh-host EACCES): bake the state mount points into the image
+# as vscode-owned so Docker creates NEW named volumes vscode-owned when the
+# launcher falls back to them (bin/pi-rukas build_mounts). When a named volume
+# is mounted at a path that didn't exist in the image, Docker creates the
+# volume owned by the mount point's owner — here root:root (755), which the
+# vscode user (UID 1000) can't write to, crashing pi on first launch in a
+# fresh sandbox. This mkdir (as vscode) fixes volumes created from now on; the
+# entrypoint repairs PRE-EXISTING root-owned volumes. Mirrors the entrypoint
+# allowlist and the launcher's PI_ENSEMBLE_VOLUME_MOUNTS derivation.
+RUN mkdir -p /home/vscode/.pi/agent/sessions \
+             /home/vscode/.pi/agent/ensemble-runs \
+             /home/vscode/.vipune \
+             /home/vscode/.cache \
+             /home/vscode/.bun \
+             /home/vscode/.cargo
+# /commandhistory lives at the filesystem root, outside vscode's write scope;
+# create it as root then hand it to vscode (same #933 class — the always-on
+# pi-ensemble-history volume would otherwise be root-owned).
+USER root
+RUN mkdir -p /commandhistory && chown vscode:vscode /commandhistory
+USER vscode
+
 # -----------------------------------------------------------------------------
 # 7. Workspace + sandbox-mode env
 # -----------------------------------------------------------------------------
