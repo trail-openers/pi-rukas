@@ -113,6 +113,7 @@ interface ViewInputAccessors {
   inputValue: () => string;
   clearInput: () => void;
   setStatus: (s: { text: string; ok: boolean } | undefined) => void;
+  setInput: (t: string) => void;
 }
 
 async function handleSend(
@@ -139,19 +140,28 @@ async function handleSend(
       comp.clearInput();
       comp.setStatus({ text: "✓ sent", ok: true });
       appendOperatorSteer(key, label, text);
-    } else if (result.reason === "between-rounds") {
-      // ⧗ between rounds — an orchestrator with no active inner child.
-      // The text is KEPT (the operator can retry once a round starts).
-      comp.setStatus({ text: "⧗ between rounds — not sent", ok: false });
     } else {
-      // ✗ settled / no handle / EPIPE / any other failure — the text is
-      // KEPT so the operator can resend once the job is alive again.
-      comp.setStatus({ text: `✗ ${result.reason ?? "not delivered"}`, ok: false });
+      // #915 — the buffer is cleared synchronously on Enter (the
+      // double-Enter guard), so a FAILED delivery must put the text back
+      // (between-rounds ⧗ or ✗ reason) for the operator to edit and
+      // resend; the inline status explains why the send did not go through.
+      comp.setInput(text);
+      if (result.reason === "between-rounds") {
+        // ⧗ between rounds — an orchestrator with no active inner child.
+        // The text is KEPT (the operator can retry once a round starts).
+        comp.setStatus({ text: "⧗ between rounds — not sent", ok: false });
+      } else {
+        // ✗ settled / no handle / EPIPE / any other failure — the text is
+        // KEPT so the operator can resend once the job is alive again.
+        comp.setStatus({ text: `✗ ${result.reason ?? "not delivered"}`, ok: false });
+      }
     }
   } catch (err) {
-    // A throw must never escape into the TUI input handler — the input text
-    // is left untouched and the operator can retry.
+    // A throw must never escape into the TUI input handler — the buffer
+    // was cleared on Enter, so restore the text and let the operator
+    // retry.
     trace(`dispatch-deck-live-view: send failed for ${key}: ${(err as Error).message}`);
+    comp.setInput(text);
     comp.setStatus({ text: `✗ ${(err as Error).message}`, ok: false });
   }
 }

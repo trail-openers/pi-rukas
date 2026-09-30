@@ -31,7 +31,7 @@
  * point is ≥ 32. That admits é/CJK/emoji (code points 128+) and rejects
  * the control/empty shapes without a per-shape allow-list.
  *
- * Known trade (measured against the pinned pi-tui 0.84.4): the strict
+ * Known trade (measured against the pinned pi-tui): the strict
  * decoder is LENIENT about malformed `;u` shapes — a sequence whose
  * numeric prefix is not the pressed key's code point (`\x1b[101u` for
  * "a") reads the sequence tail and decodes to a spurious single
@@ -114,18 +114,26 @@ export function decodeInsertable(data: string): string | undefined {
     // decodeKittyPrintable returns a character for those (the strict
     // decoder — see the module header for the trade on malformed `;u`
     // shapes and why not decodePrintableKey).
+    // pi-tui's strict decoder returns `String.fromCodePoint(n)` for ANY
+    // numeric prefix — it does NOT check the code point against the
+    // terminal's actual printable range. Functional keys (F1 = U+E015,
+    // up = U+E017, alt+x = U+0085, …) "decode" to spurious code points
+    // that are NOT user text. The guard: a string whose every code point
+    // is in the printable range [32, 0x7F] ∪ [0xA0, 0xE000) — excluding
+    // C1 controls (0x80–0x9F) and Kitty functional keys (U+E000+).
     const decoded = decodeKittyPrintable(data);
-    if (decoded !== undefined) {
-      let printable = true;
+    if (typeof decoded === "string") {
+      let printable = decoded.length > 0;
       for (const ch of decoded) {
         const cp = ch.codePointAt(0);
-        if (cp === undefined || cp < 32) {
+        if (cp === undefined || cp < 32 || (cp >= 0x80 && cp < 0xa0) || cp >= 0xe000) {
           printable = false;
           break;
         }
       }
       if (printable) return decoded;
-      // Decoded to a non-printable: fall through to the swallow check.
+      // Decoded to a non-printable (control, C1, or functional key):
+      // fall through to the swallow check.
     }
     // Second: a recognised NON-printable (arrow, F-key, functional
     // CSI-u, legacy \x1b[5~, alt+x, …)? pi-tui's key vocabulary —

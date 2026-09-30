@@ -310,6 +310,7 @@ export function createAgentViewComponent(
   inputValue: () => string;
   clearInput: () => void;
   setStatus: (s: { text: string; ok: boolean } | undefined) => void;
+  setInput: (t: string) => void;
 } {
   // View-local: the thinking toggle is per view instance (a fresh open
   // starts collapsed); scroll/follow is per job key (persists).
@@ -330,11 +331,6 @@ export function createAgentViewComponent(
   // sanitises + width-bounds it (showing the TAIL of a long input) and the
   // send path sanitises again (idempotent) before delivery.
   let input = "";
-  // #915 — the inline send status (✓ sent / ⧗ between rounds / ✗ reason),
-  // set by the view host after a send. REPLACED by the next send's result
-  // and CLEARED when the job settles (the settled final line takes over).
-  // (Named sendStatus — the render body uses a local `status` for the job's
-  // settle status.)
   let sendStatus: { text: string; ok: boolean } | undefined;
   const comp: {
     invalidate: () => void;
@@ -343,6 +339,7 @@ export function createAgentViewComponent(
     inputValue: () => string;
     clearInput: () => void;
     setStatus: (s: { text: string; ok: boolean } | undefined) => void;
+    setInput: (t: string) => void;
   } = {
     invalidate(): void {
       /* wrapped lines are cached per event — nothing to drop here */
@@ -467,22 +464,13 @@ export function createAgentViewComponent(
       } else if (matchesKey(data, "end")) {
         state.scroll = 0; // follow on
       } else {
-        // #915 — everything else is INSERT or SWALLOW, decided by
-        // decodeInsertable (deck-key-decode.ts):
-        //   - a single printable char (ASCII 32–126) inserts as-is —
-        //     letters (including t/x/g/s which the old view treated as
-        //     commands), digits, symbols, space;
-        //   - a Kitty CSI-u / modifyOtherKeys sequence that decodes to a
-        //     printable char (non-ASCII é/CJK/emoji, shifted letters) is
-        //     decoded and the CHARACTER is inserted — raw sequences never
-        //     reach the buffer;
-        //   - multi-char text (a bracketed paste, an IME composition
-        //     commit) inserts with newlines collapsed to spaces;
-        //   - everything else (unknown escape sequences — F-keys, mouse
-        //     SGR, alt+x, arrow-key sequences, lone ESC, control bytes)
-        //     is swallowed: garbage in the message buffer would desync the
-        //     terminal line accounting (issue #927's class).
-        // A key-release was already filtered at the top of handleInput.
+        // #915 — INSERT or SWALLOW, decided by decodeInsertable
+        // (deck-key-decode.ts): printables (ASCII, Kitty CSI-u decoded to
+        // a character — non-ASCII/CJK/emoji never as raw sequences, pastes
+        // with newlines collapsed) insert; everything else (F-keys, mouse,
+        // alt+x, arrows, lone ESC, control bytes) is swallowed — garbage
+        // in the buffer would desync terminal line accounting (#927).
+        // Key-release was already filtered above.
         const insert = decodeInsertable(data);
         if (insert !== undefined) input += insert;
       }
@@ -493,6 +481,13 @@ export function createAgentViewComponent(
     inputValue: () => input,
     clearInput: () => {
       input = "";
+    },
+    // #915 — the send path clears the buffer synchronously on Enter (the
+    // double-Enter guard), so a FAILED delivery must put the text back for
+    // the operator to edit and resend (the host calls setInput from the
+    // onSend callback when steerFromDeck reports a failure).
+    setInput: (t: string) => {
+      input = t;
     },
     setStatus: (s: { text: string; ok: boolean } | undefined) => {
       sendStatus = s;

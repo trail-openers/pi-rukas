@@ -16,7 +16,10 @@ import {
   startBuffer,
   type LiveEvent,
 } from "../src/dispatch-deck-live.ts";
-import { createAgentViewComponent, type ViewHeader } from "../src/dispatch-deck-live-view-component.ts";
+import {
+  createAgentViewComponent,
+  type ViewHeader,
+} from "../src/dispatch-deck-live-view-component.ts";
 import { openLiveView, type LiveViewTheme } from "../src/dispatch-deck-live-view.ts";
 import { clearEntry, reset, snapshot, startEntry } from "../src/dispatch-deck.ts";
 import { steerChild } from "../src/dispatch-steer.ts";
@@ -75,7 +78,17 @@ function resetKeys(keys: string[]): void {
 // passed to the send callback after creation (the component's `onSend`
 // closure captures the send function, which captures the component via
 // the `compRef` object).
-function makeSend(key: string, compRef: { current: { setStatus: (s: { text: string; ok: boolean } | undefined) => void; clearInput: () => void } | undefined }) {
+function makeSend(
+  key: string,
+  compRef: {
+    current:
+      | {
+          setStatus: (s: { text: string; ok: boolean } | undefined) => void;
+          clearInput: () => void;
+        }
+      | undefined;
+  },
+) {
   return (text: string) => {
     if (!compRef.current) return;
     const result = steerChild(key, text, "deck-ui");
@@ -83,27 +96,27 @@ function makeSend(key: string, compRef: { current: { setStatus: (s: { text: stri
       compRef.current.clearInput();
       compRef.current.setStatus({ text: "✓ sent", ok: true });
       appendOperatorSteer(key, "developer", text);
-    } else if (result.reason === "between-rounds") {
-      compRef.current.setStatus({ text: "⧗ between rounds — not sent", ok: false });
     } else {
-      compRef.current.setStatus({ text: `✗ ${result.reason ?? "not delivered"}`, ok: false });
+      // #915 — the buffer is cleared synchronously on Enter before this
+      // callback runs, so a failed delivery would lose the typed text. Put
+      // it back: the operator edits and re-sends (the ⧗/✗ status explains
+      // why the send did not go through).
+      compRef.current.setInput(text);
+      if (result.reason === "between-rounds") {
+        compRef.current.setStatus({ text: "⧗ between rounds — not sent", ok: false });
+      } else {
+        compRef.current.setStatus({ text: `✗ ${result.reason ?? "not delivered"}`, ok: false });
+      }
     }
   };
 }
 
 // Create a component wired to steerChild for the given key.
 function makeWiredComp(key: string, header: () => ViewHeader, tui?: { terminal?: { rows?: number } }) {
-  const compRef: { current: { setStatus: (s: { text: string; ok: boolean } | undefined) => void; clearInput: () => void } | undefined } = { current: undefined };
+  const compRef: { current: { setStatus: (s: { text: string; ok: boolean } | undefined) => void; clearInput: () => void; setInput: (t: string) => void } | undefined } = { current: undefined };
   const send = makeSend(key, compRef);
-  const comp = createAgentViewComponent(
-    key,
-    header,
-    fakeTheme,
-    tui,
-    () => {},
-    (text) => send(text),
-  );
-  compRef.current = { setStatus: (s) => comp.setStatus(s), clearInput: () => comp.clearInput() };
+  const comp = createAgentViewComponent(key, header, fakeTheme, tui, () => {}, (text) => send(text));
+  compRef.current = { setStatus: (s) => comp.setStatus(s), clearInput: () => comp.clearInput(), setInput: (t) => comp.setInput(t) };
   return comp;
 }
 
@@ -127,8 +140,7 @@ function makeWiredComp(key: string, header: () => ViewHeader, tui?: { terminal?:
   comp.handleInput("\r");
   assert(stdin1.lines.length === 1, `1a: exactly one stdin line (got ${stdin1.lines.length})`);
   assert(
-    stdin1.lines[0] ===
-      `${JSON.stringify({ type: "steer", message: "focus on tests" })}\n`,
+    stdin1.lines[0] === `${JSON.stringify({ type: "steer", message: "focus on tests" })}\n`,
     "1b: the stdin line is the exact steer envelope",
   );
   assert(stdin2.lines.length === 0, "1c: nothing written to the other job's stdin");
@@ -155,7 +167,14 @@ function makeWiredComp(key: string, header: () => ViewHeader, tui?: { terminal?:
   // Instead, let's use a different approach: create the component manually
   // with a send callback that both records and delegates.
   {
-    const compRef: { current: { setStatus: (s: { text: string; ok: boolean } | undefined) => void; clearInput: () => void } | undefined } = { current: undefined };
+    const compRef: {
+      current:
+        | {
+            setStatus: (s: { text: string; ok: boolean } | undefined) => void;
+            clearInput: () => void;
+          }
+        | undefined;
+    } = { current: undefined };
     const send = makeSend("iv2", compRef);
     const comp2 = createAgentViewComponent(
       "iv2",
@@ -168,7 +187,10 @@ function makeWiredComp(key: string, header: () => ViewHeader, tui?: { terminal?:
         send(text);
       },
     );
-    compRef.current = { setStatus: (s) => comp2.setStatus(s), clearInput: () => comp2.clearInput() };
+    compRef.current = {
+      setStatus: (s) => comp2.setStatus(s),
+      clearInput: () => comp2.clearInput(),
+    };
     for (const ch of "focus on tests") comp2.handleInput(ch);
     assert(comp2.inputValue() === "focus on tests", "2a: input buffer has the typed text");
     comp2.handleInput("\r"); // send
@@ -256,7 +278,10 @@ function makeWiredComp(key: string, header: () => ViewHeader, tui?: { terminal?:
   for (const ch of "try steer") comp2.handleInput(ch);
   assert(comp2.inputValue() === "try steer", "4b: text is in the input before send");
   comp2.handleInput("\r"); // send → between-rounds → keeps text
-  assert(comp2.inputValue() === "try steer", "4b2: between-rounds keeps the text in input after send");
+  assert(
+    comp2.inputValue() === "try steer",
+    "4b2: between-rounds keeps the text in input after send",
+  );
   jobs.delete(orchJobId);
   jobs.delete(idleJobId);
   childHandles.delete("iv4");
@@ -272,7 +297,9 @@ function makeWiredComp(key: string, header: () => ViewHeader, tui?: { terminal?:
   startBuffer("iv5");
   // No handle registered → no-such-job → ✗ status, text kept
   // Use a key with no child handle so steerChild returns no-such-job
-  const comp = makeWiredComp("iv5-nohandle", () => makeHeader({ status: "finished", settled: true }));
+  const comp = makeWiredComp("iv5-nohandle", () =>
+    makeHeader({ status: "finished", settled: true }),
+  );
   for (const ch of "hello") comp.handleInput(ch);
   assert(comp.inputValue() === "hello", "5a: text is in the input before send");
   comp.handleInput("\r"); // send → no-such-job → ✗ status, text kept
@@ -322,7 +349,12 @@ function makeWiredComp(key: string, header: () => ViewHeader, tui?: { terminal?:
     type: "message_end",
     message: {
       role: "assistant",
-      content: [{ type: "thinking", thinking: thinkText } as unknown as { type: "thinking"; thinking: string }],
+      content: [
+        { type: "thinking", thinking: thinkText } as unknown as {
+          type: "thinking";
+          thinking: string;
+        },
+      ],
     },
   });
   // After first ctrl+t: thinking is expanded
@@ -331,7 +363,10 @@ function makeWiredComp(key: string, header: () => ViewHeader, tui?: { terminal?:
   // ctrl+t again to collapse
   comp.handleInput("\x14");
   const flatCollapsed = comp.render(80).join("\n");
-  assert(flatCollapsed.includes(`▸ thinking (${thinkText.length} chars)`), "6d: thinking collapsed after second ctrl+t");
+  assert(
+    flatCollapsed.includes(`▸ thinking (${thinkText.length} chars)`),
+    "6d: thinking collapsed after second ctrl+t",
+  );
   dropBuffer("iv6");
 }
 
