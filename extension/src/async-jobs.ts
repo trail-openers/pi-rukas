@@ -10,11 +10,7 @@ import {
   jobs,
   newJobId,
 } from "./async-jobs-registry.ts";
-import {
-  formatFailReport,
-  formatSingleReport,
-  totalTokens,
-} from "./async-jobs-report.ts";
+import { formatFailReport, formatSingleReport, totalTokens } from "./async-jobs-report.ts";
 import { makeSlowWatch } from "./async-jobs-slow.ts";
 import * as live from "./dispatch-deck-live.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";

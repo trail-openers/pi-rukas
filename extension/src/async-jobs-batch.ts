@@ -10,6 +10,7 @@ import {
 } from "./async-jobs-registry.ts";
 import { type BatchReportInput, formatBatchReport, totalTokens } from "./async-jobs-report.ts";
 import { makeSlowWatch } from "./async-jobs-slow.ts";
+import type { WorkHooks } from "./async-jobs.ts";
 import * as live from "./dispatch-deck-live.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import * as lifecycle from "./lifecycle-events.ts";
@@ -17,7 +18,6 @@ import * as sessionAutosave from "./session-autosave.ts";
 import { feedSlowProgress } from "./slow-notice.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
-import type { WorkHooks } from "./async-jobs.ts";
 
 interface StartBatchInput {
   batchLabel: string;
