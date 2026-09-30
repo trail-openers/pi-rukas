@@ -59,7 +59,9 @@ export function acquireWorkDeckHeader(
   const key = workDeckKey(issue);
   const existing = owners.get(key);
   if (existing !== undefined && existing !== ownerToken) {
-    trace(`work-driver: deck header ${key} held by cycle ${existing}; this cycle's rows render standalone`);
+    trace(
+      `work-driver: deck header ${key} held by cycle ${existing}; this cycle's rows render standalone`,
+    );
     return { headerPresent: true, release: () => undefined };
   }
   // The owner is this cycle (first claim, or a re-entry with its own token —

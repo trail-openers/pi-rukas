@@ -20,8 +20,8 @@
 import path from "node:path";
 import { buildMemoryBrief } from "./memory-brief.ts";
 import { trace } from "./trace.ts";
-import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import {
   inlineDevelopPrompt,

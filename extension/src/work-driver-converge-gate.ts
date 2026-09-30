@@ -30,7 +30,6 @@ import { exec } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
 import { trace } from "./trace.ts";
-import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import {
   type ConvergeVerdict,
@@ -38,6 +37,7 @@ import {
   runConvergeGate,
   workstreamOwnsMissingPaths,
 } from "./work-driver-converge.ts";
+import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { applySafetyNet } from "./work-driver-safety-net.ts";
 import { verifyStepOutcome } from "./work-driver-verify.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -96,15 +96,19 @@ export async function runConvergeGateHandler(
   // missing result can never fall through and present as a completion.
   let correctiveNote: string | undefined;
   try {
-    const retry = await dispatchFn(ctx.pi, {
-      role: "developer",
-      prompt,
-      cwd: correctiveCwd,
-    }, {
-      // #838 — the converge corrective dispatch's deck row.
-      label: "develop:corrective",
-      deck: driverDeckOpts(ctx.issue, "develop", "develop:corrective"),
-    });
+    const retry = await dispatchFn(
+      ctx.pi,
+      {
+        role: "developer",
+        prompt,
+        cwd: correctiveCwd,
+      },
+      {
+        // #838 — the converge corrective dispatch's deck row.
+        label: "develop:corrective",
+        deck: driverDeckOpts(ctx.issue, "develop", "develop:corrective"),
+      },
+    );
     if (retry?.ok !== true) {
       correctiveNote = retry
         ? "corrective re-dispatch FAILED (child reported failure)"

@@ -17,6 +17,7 @@ import { runBranch, runDevelop } from "./work-driver-branch-develop.ts";
 import { checkpointCapedDispatch } from "./work-driver-cap-checkpoint.ts";
 import { runCommitPr } from "./work-driver-commit.ts";
 import { type DriverContext, STEP_ORDINAL, nextStep } from "./work-driver-context.ts";
+import { acquireWorkDeckHeader } from "./work-driver-deck-header.ts";
 import { countPriorStepStarts } from "./work-driver-diff.ts";
 import { runExplore } from "./work-driver-explore.ts";
 import { runHandoff } from "./work-driver-handoff.ts";
@@ -28,7 +29,6 @@ import {
   emitStepStarted,
   updateFooter,
 } from "./work-driver-lifecycle.ts";
-import { acquireWorkDeckHeader } from "./work-driver-deck-header.ts";
 import { runMerged } from "./work-driver-merged.ts";
 import { runPlan } from "./work-driver-plan.ts";
 import { claimCycle } from "./work-driver-registry.ts";
