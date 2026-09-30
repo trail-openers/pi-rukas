@@ -9,6 +9,7 @@
  */
 import {
   appendOperatorSteer,
+  dropBuffer,
   getBuffer,
   startBuffer,
 } from "../src/dispatch-deck-live.ts";
@@ -110,6 +111,11 @@ if (ev) {
       assert(visibleWidth(l) <= 80, "cache: width-80 line ≤ 80");
   }
 }
+
+// #915 lens r1 — release the buffers this file started (the module-level
+// Map otherwise outlives the test and would collide with re-runs).
+dropBuffer("svw");
+dropBuffer("svw2");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
