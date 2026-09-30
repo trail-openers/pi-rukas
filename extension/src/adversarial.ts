@@ -10,6 +10,7 @@ import { markOrchestrator, setOrchestratorActiveChild, startJob } from "./async-
 import * as dispatchDeck from "./dispatch-deck.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { readEnumMarker } from "./reply-markers.ts";
+import { type RangeDiff, computeRangeDiff } from "./review-diff.ts";
 import { type OnSlowCallback, feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import { trace } from "./trace.ts";
@@ -47,18 +48,42 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
     description:
       "Run the mandatory adversarial gate as an async job: adversarial review → developer fix → re-review, up to 3 rounds. Returns a job handle immediately. The final verdict (APPROVED or REJECTED + findings) arrives as a [ensemble:async] user message. End your turn after dispatching.",
     parameters: Type.Object({
-      diff: Type.String({ description: "Current diff to review (git diff output)." }),
+      diff: Type.Optional(
+        Type.String({
+          description:
+            "Current diff to review (git diff output). Optional when base+head are given — then the diff is computed from the ref range; when both are given, this string wins (traced).",
+        }),
+      ),
       context: Type.String({
         description: "Brief description of what changed and why; passed to adversarial.",
       }),
+      base: Type.Optional(
+        Type.String({
+          description:
+            "With head: ref for the diff the tool computes itself as `git diff <base>...<head>` (three-dot, merge-base) in workCwd — preferred over pasting a large diff.",
+        }),
+      ),
+      head: Type.Optional(
+        Type.String({
+          description:
+            "Ref for the diff the tool computes itself (see base). Recomputed before every review round, so rounds 2+ see fixes.",
+        }),
+      ),
       workCwd: Type.Optional(
         Type.String({
-          description: "Worktree or repo path where developer should apply fixes.",
+          description:
+            "Worktree or repo path where developer should apply fixes; also the cwd for `git diff <base>...<head>` (defaults to the process cwd).",
         }),
       ),
     }),
     async execute(_id, raw) {
-      const params = raw as { diff: string; context: string; workCwd?: string };
+      const params = raw as {
+        diff?: string;
+        context: string;
+        base?: string;
+        head?: string;
+        workCwd?: string;
+      };
       const { jobId } = startJob(pi, {
         label: "adversarial_loop",
         role: "adversarial-loop",
@@ -66,7 +91,8 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
         // fix → re-review). A single umbrella row would just flicker between
         // sub-states; per-round entries show the actual child running now.
         skipDeck: true,
-        work: (signal, hooks) => runAdversarialLoop({ ...params, pi }, signal, hooks.jobId),
+        work: (signal, hooks) =>
+          runAdversarialLoop({ ...params, pi }, signal, hooks.jobId, computeRangeDiff),
       });
       return {
         content: [
@@ -95,7 +121,13 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
  */
 export async function runAdversarialLoop(
   params: {
-    diff: string;
+    /** Optional when `base` + `head` are present (computed from the ref
+     * range). When both `diff` and base/head are given, the string wins. */
+    diff?: string;
+    /** #859 — the base ref the tool computes the diff from (with head). */
+    base?: string;
+    /** #859 — the head ref the tool computes the diff from (with base). */
+    head?: string;
     context: string;
     workCwd?: string;
     /** Recompute the diff before each review. Without it rounds 2+ see pre-fix material. */
@@ -116,6 +148,9 @@ export async function runAdversarialLoop(
   },
   signal: AbortSignal,
   orchestratorJobId: string,
+  /** #859 — the ref-range diff computation (injectable for tests). Used when
+   * `diff` is absent and base/head are present. */
+  rangeDiffFn: (cwd: string, base: string, head: string) => Promise<RangeDiff> = computeRangeDiff,
 ): Promise<DispatchResult> {
   const start = Date.now();
   const runId = makeRunId();
@@ -125,6 +160,57 @@ export async function runAdversarialLoop(
   let lastModel: string | undefined;
 
   const ledgerWrite = (result: DispatchResult) => writeAdversarialLedgerEntry(result, params);
+
+  // #859 — resolve the diff: a pasted string wins over a ref range (traced);
+  // with no string, base+head compute the range in workCwd (else the process
+  // cwd). An error (invalid ref naming the ref, confirmed-empty range, cap
+  // overflow) is returned AS the result — never a fallback to an empty
+  // string, which the loop would review as "nothing to change" and approve.
+  const range = params.base && params.head ? { base: params.base, head: params.head } : null;
+  let diff: string;
+  let getDiff = params.getDiff;
+  if (params.diff && range) {
+    trace(
+      `adversarial: diff string supplied alongside base=${range.base} head=${range.head} — the diff string wins`,
+    );
+    diff = params.diff;
+  } else if (params.diff) {
+    diff = params.diff;
+  } else if (range) {
+    const cwd = params.workCwd ?? process.cwd();
+    // Round 1 uses the diff computed once here at tool entry.
+    const initial = await rangeDiffFn(cwd, range.base, range.head);
+    if (!initial.ok) {
+      const r = synthesizeResult({
+        ok: false,
+        loopOutcome: "rejected",
+        text: `Adversarial loop could not compute the diff for ${range.base}...${range.head}: ${initial.reason}`,
+        ms: Date.now() - start,
+        usage,
+        transcriptPath: lastTranscript,
+        model: lastModel,
+      });
+      ledgerWrite(r);
+      return r;
+    }
+    diff = initial.diff;
+    // Rounds 2+ re-compute the SAME range, so a fix round's changes are
+    // reviewed (same rule as the driver's per-round getDiff re-read).
+    getDiff = () => rangeDiffFn(cwd, range.base, range.head).then((r) => (r.ok ? r.diff : ""));
+  } else {
+    const r = synthesizeResult({
+      ok: false,
+      loopOutcome: "rejected",
+      text: "Adversarial loop: provide `diff`, or both `base` and `head` (with `workCwd`) — nothing to review was supplied.",
+      ms: Date.now() - start,
+      usage,
+      transcriptPath: lastTranscript,
+      model: lastModel,
+    });
+    ledgerWrite(r);
+    return r;
+  }
+
   // Mark this job as orchestrator-shaped so dispatch_peek / dispatch_steer
   // can resolve the orchestrator jobId to its active inner child instead of
   // returning "no such job". Active child is updated below in runPhase.
@@ -205,7 +291,6 @@ export async function runAdversarialLoop(
   // Re-read before every review. `fetchDiff` used to run once, before the loop,
   // so rounds 2 and 3 were prompted with pre-fix material and the reviewer had
   // to notice the staleness itself.
-  let diff = params.diff;
   const priorFindings: string[] = [];
 
   for (let round = 1; round <= MAX_ROUNDS; round++) {

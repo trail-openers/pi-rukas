@@ -19,6 +19,7 @@ import {
 import { installBlockRows, skillsDirUsable } from "./lens-review-skills.ts";
 import { aggregateLensUsage } from "./lens-review-usage.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
+import { computeRangeDiff } from "./review-diff.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
@@ -51,9 +52,13 @@ export const LENS_REPORTER_PATH = path.join(__dirname, "lens-reporter.ts");
  * operator is to fetch it ONCE (however their forge spells it) and reuse.
  * Exported so the wording is assertable offline (the tool registration is
  * the only place it lives, and no test reached it before).
+ *
+ * #859 — the "fetch once" instruction survives the new optional base/head
+ * params; the preferred form for a large diff is now the ref range, which
+ * the tool computes itself (nothing to fetch, paste, or re-fetch per lens).
  */
 export const LENS_REVIEW_DIFF_DESCRIPTION =
-  "The full PR/MR diff to review. Fetch it once with your forge CLI (e.g. `gh pr diff <N>` or `glab mr diff <N>`) or `git diff main...feature/...` and reuse — do NOT re-fetch per lens.";
+  "The full PR/MR diff to review. Fetch it once with your forge CLI (e.g. `gh pr diff <N>` or `glab mr diff <N>`) or `git diff main...feature/...` and reuse — do NOT re-fetch per lens. For large diffs, prefer the optional base + head refs (with cwd) so the tool computes `git diff <base>...<head>` itself; when both this string and base/head are given, the string wins.";
 
 export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
 export type Verdict =
@@ -260,9 +265,18 @@ export function isSeverity(s: string): s is Severity {
 }
 
 export async function runLensReview(opts: {
-  diff: string;
+  diff?: string;
   context?: string;
   cwd?: string;
+  /**
+   * #859 — the base ref the tool computes the diff from (with head):
+   * `git diff <base>...<head>` (three-dot) in cwd. Optional when `diff` is
+   * given. An error (invalid ref naming the ref, confirmed-empty range,
+   * cap overflow) comes back as a failure result — never an approval.
+   */
+  base?: string;
+  /** #859 — the head ref the tool computes the diff from (with base). */
+  head?: string;
   signal?: AbortSignal;
   /**
    * Post-change content of files the diff touches, rendered for the prompt.
@@ -295,6 +309,57 @@ export async function runLensReview(opts: {
   // The RESOLVED threshold (computed once; both the verdict and the ledger
   // write apply the same bar).
   const threshold = opts.threshold ?? DEFAULT_REVIEW_THRESHOLD;
+  // #859 — ref-range diffs: when `diff` is absent and base+head are present,
+  // the diff is computed once here and fed to every lens. An error (invalid
+  // ref, confirmed-empty range, cap overflow) blocks the whole review as a
+  // failed dispatch result — a computed diff is never silently empty and
+  // never read as "nothing to review" (same rule as #384).
+  let diff = opts.diff;
+  if (!diff && opts.base && opts.head) {
+    const range = await computeRangeDiff(opts.cwd ?? process.cwd(), opts.base, opts.head);
+    if (!range.ok) {
+      const blockRows = installBlockRows(
+        `lens review: cannot compute diff for ${opts.base}...${opts.head}: ${range.reason}`,
+      );
+      const all = [...(opts.extraFindings ?? [])];
+      const deduped = dedupeFindings(all, []);
+      return finish(
+        {
+          verdict: computeVerdict(deduped, blockRows, threshold),
+          totalFindings: deduped.length,
+          bySeverity: bySeverityCounts(deduped),
+          lenses: blockRows,
+          findings: deduped,
+          usage: undefined,
+        },
+        threshold,
+        opts.cwd,
+        opts.branch,
+      );
+    }
+    diff = range.diff;
+  } else if (!diff) {
+    // No diff string and no complete ref range — the review has nothing to
+    // look at. This is a caller error, not an approval.
+    const blockRows = installBlockRows(
+      "lens review: no diff supplied (pass `diff`, or both `base` and `head`)",
+    );
+    const all = [...(opts.extraFindings ?? [])];
+    const deduped = dedupeFindings(all, []);
+    return finish(
+      {
+        verdict: computeVerdict(deduped, blockRows, threshold),
+        totalFindings: deduped.length,
+        bySeverity: bySeverityCounts(deduped),
+        lenses: blockRows,
+        findings: deduped,
+        usage: undefined,
+      },
+      threshold,
+      opts.cwd,
+      opts.branch,
+    );
+  }
   // #873 — the roster is data: the INSTALLED skills dir's `code-review-*`
   // SKILL.md files (precedence in frontmatter), PLUS a blocked entry for
   // every expected lens (the BUNDLED skill/ dir) that is absent from the
@@ -305,6 +370,7 @@ export async function runLensReview(opts: {
   // REVIEW_INCOMPLETE; the review never runs a silently reduced or reordered
   // roster.
   const roster = buildExpectedRoster(skillsDir);
+  const resolvedDiff = diff ?? "";
   // #872 — ONE skills-dir check before the fan-out (not per-lens checks):
   // a missing, empty, or no-`code-review-*`-skill dir blocks ALL lenses
   // with a single install message and no spawn is ever called. The roster
@@ -382,7 +448,7 @@ export async function runLensReview(opts: {
       skillsDir,
       context,
       roster,
-      opts,
+      opts: { ...opts, diff: resolvedDiff },
       bumpBatch,
       ...(opts.pi ? { pi: opts.pi } : {}),
     }),
@@ -433,16 +499,56 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
     description:
       "Fan out the code-review lenses (roster parsed from the installed `code-review-*` skills, precedence in each SKILL.md's frontmatter) in parallel as an async job. Returns a job handle immediately; ONE consolidated verdict + dedup'd findings arrives as a [ensemble:async] user message when all lenses finish. End your turn after dispatching.",
     parameters: Type.Object({
-      diff: Type.String({ description: LENS_REVIEW_DIFF_DESCRIPTION }),
+      diff: Type.Optional(Type.String({ description: LENS_REVIEW_DIFF_DESCRIPTION })),
       context: Type.Optional(
         Type.String({
           description: "1-3 sentence description of what changed and why; passed to every lens.",
         }),
       ),
-      cwd: Type.Optional(Type.String({ description: "Working directory; defaults to current." })),
+      base: Type.Optional(
+        Type.String({
+          description:
+            "With head: the base ref for the diff the tool computes itself as `git diff <base>...<head>` (three-dot, merge-base) in cwd — preferred for large diffs. Requires head.",
+        }),
+      ),
+      head: Type.Optional(
+        Type.String({
+          description:
+            "With base: the head ref for the diff the tool computes itself (see base). Requires base.",
+        }),
+      ),
+      cwd: Type.Optional(
+        Type.String({
+          description:
+            "Working directory; defaults to current. Also the cwd for the `git diff <base>...<head>` computation when base+head are given.",
+        }),
+      ),
     }),
     async execute(_id, raw) {
-      const params = raw as { diff: string; context?: string; cwd?: string };
+      const params = raw as {
+        diff?: string;
+        context?: string;
+        cwd?: string;
+        base?: string;
+        head?: string;
+      };
+      const hasDiff = typeof params.diff === "string" && params.diff.length > 0;
+      const hasRange = typeof params.base === "string" && typeof params.head === "string";
+      if (hasDiff && hasRange) {
+        trace(
+          `lens review: diff string supplied alongside base=${params.base} head=${params.head} — the diff string wins`,
+        );
+      } else if (!hasDiff && !hasRange) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "dispatch_lens_review: provide `diff`, or both `base` and `head` refs (with `cwd`) — nothing to review was supplied.",
+            },
+          ],
+          details: { jobId: "", role: "lens-review", async: true },
+        };
+      }
       const { jobId } = startJob(pi, {
         label: "lens_review",
         role: "lens-review",
