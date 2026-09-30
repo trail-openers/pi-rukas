@@ -93,6 +93,9 @@ async function runDevelopTopological(
     workstreams: workstreams as DevelopRunState["workstreams"],
     ids,
     dispatch,
+    // #838 — the develop dispatch's deck tag: the workstream id when N>1
+    // (per-workstream rows), "default" for the single-workstream shape.
+    deckTagFor: (id) => (ids.length > 1 ? id : "default"),
     verdicts,
     branchEvents: branchEvents as WorkEvent[],
     stateRef,

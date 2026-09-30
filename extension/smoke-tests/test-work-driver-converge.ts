@@ -150,8 +150,12 @@ async function runConvergeCycle(
             role: "ops",
             text: `branch: ${BRANCH}\n\n## Worktrees\n- task-a: ${wtA}\n- task-b: ${wtB}`,
           });
-        if (label === "developer" || label?.startsWith("developer[")) {
-          const isCorrective = label === "developer";
+        if (label === "developer" || label === "develop:corrective" || label?.startsWith("developer[")) {
+          // #838 — the converge corrective now carries its own label
+          // ("develop:corrective") via the deck option; it remains the ONLY
+          // corrective in the cycle (the per-workstream developers carry
+          // `developer` / `developer[<id>]`).
+          const isCorrective = label === "develop:corrective";
           if (isCorrective) {
             // A failed corrective (child returns ok:false — the documented
             // killed-child shape, AC5).

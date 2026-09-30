@@ -162,7 +162,14 @@ export interface DriverContext {
   dispatchFn?: (
     pi: ExtensionAPI,
     spec: { role: string; prompt: string; cwd?: string },
-    opts?: { label?: string; skipDeck?: boolean; timeoutMs?: number; onSlow?: OnSlowCallback },
+    opts?: {
+      label?: string;
+      skipDeck?: boolean;
+      /** #838 — see dispatchCore's deck option. */
+      deck?: { cycleKey: string; label: string; deckLabel?: string };
+      timeoutMs?: number;
+      onSlow?: OnSlowCallback;
+    },
   ) => Promise<DispatchResult>;
   /**
    * PR11 — optional injection point for tests: replace the `gh issue view`
@@ -279,6 +286,19 @@ export type StepDecision =
   | { kind: "step"; step: WorkStep }
   | { kind: "done" }
   | { kind: "unknown-step"; value: unknown };
+
+/**
+ * Error thrown by `runStep` when the step's body is staged for a later
+ * commit. The smoke test asserts these are thrown for the unimplemented
+ * steps; the live /work handler catches them and falls back to legacy
+ * PM-driven flow until the step body lands.
+ */
+export class DriverNotImplementedError extends Error {
+  constructor(public readonly step: WorkStep) {
+    super(`work-driver: step "${step}" is not yet implemented in this build`);
+    this.name = "DriverNotImplementedError";
+  }
+}
 
 /** Decide the next step from the current step + just-appended events. */
 export function nextStep(state: WorkState): StepDecision {

@@ -15,6 +15,7 @@ import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { buildCompletionEvent } from "./work-driver-completion-event.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { detectMainline, restoreCheckout } from "./work-driver-git.ts";
@@ -118,6 +119,12 @@ export async function runSingleDispatch(
         // step-boundary drain (routeStepOutcome) persists them — this step
         // folds nothing of its own any more.
         onSlow: slowRecorder(ctx.issue, step),
+        // #838 — the shared single-dispatch seam: every step that routes
+        // through runSingleDispatch (branch ops fallback, ci, lens-fix,
+        // step-back, merged, ...) gets its deck row from here (label
+        // `#<issue> <step> · <label>`) — one seam for every step-dispatch
+        // shape.
+        deck: { ...driverDeckOpts(ctx.issue, step, label), label },
       },
     );
   } catch (err) {

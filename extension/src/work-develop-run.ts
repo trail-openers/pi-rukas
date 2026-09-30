@@ -21,6 +21,7 @@ import path from "node:path";
 import { buildMemoryBrief } from "./memory-brief.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import { driverDeckOpts } from "./work-driver-deck-header.ts";
 import { buildCompletionEvent } from "./work-driver-merged.ts";
 import {
   inlineDevelopPrompt,
@@ -55,6 +56,11 @@ export interface DevelopRunState {
   ids: string[];
   /** The dispatch function (ctx.dispatchFn ?? dispatchCore). */
   dispatch: NonNullable<DriverContext["dispatchFn"]>;
+  /** #838 — the deck tag for this workstream's dispatch rows (the
+   *  workstream id when N>1, "default" for the single-workstream shape);
+   *  the deck option itself is composed inside the closure from the cycle
+   *  key + step. */
+  deckTagFor: (id: string) => string;
   /** Per-branch verdicts accumulated across both phases. */
   verdicts: Array<{ id: string; ok: boolean; reason?: string }>;
   /** Per-branch events (completion, speculative, branch-completed, dispatch-failed). */
@@ -121,7 +127,7 @@ export function makeRunOneWorkstream(
   s: DevelopRunState,
 ): (id: string, cwd: string) => Promise<{ id: string; ok: boolean }> {
   return async (id: string, cwd: string) => {
-    const { ctx, activeIssues, scratchAbs, workstreams, ids, dispatch } = s;
+    const { ctx, activeIssues, scratchAbs, workstreams, ids, dispatch, deckTagFor } = s;
     // The speculative-explore knob is a global env var, not per-run state,
     // so the closure reads it directly (the caller does not thread it).
     const speculativeOn = process.env.PI_ENSEMBLE_SPECULATIVE_EXPLORE === "1";
@@ -188,7 +194,16 @@ export function makeRunOneWorkstream(
             ),
             cwd,
           },
-          { label: developerLabel },
+          {
+            label: developerLabel,
+            // #838 — the developer row's deck entry (row label `#<issue>
+            // develop · <workstream>` — display only; the job label above is
+            // what the cap checkpoint's `developer[<id>]` parse sees).
+            deck: {
+              ...driverDeckOpts(ctx.issue, "develop", deckTagFor(id)),
+              label: developerLabel,
+            },
+          },
         ),
         speculativeOn
           ? dispatch(
@@ -205,6 +220,10 @@ export function makeRunOneWorkstream(
               },
               {
                 label: ids.length > 1 ? `explore:speculative[${id}]` : "explore:speculative",
+                deck: {
+                  ...driverDeckOpts(ctx.issue, "develop", deckTagFor(`${id}:speculative`)),
+                  label: ids.length > 1 ? `explore:speculative[${id}]` : "explore:speculative",
+                },
               },
             )
           : Promise.resolve(null),
