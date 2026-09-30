@@ -4,12 +4,13 @@ import { classifyDispatchOutcome } from "./adversarial-classify.ts";
 import { writeAdversarialLedgerEntry } from "./adversarial-ledger.ts";
 import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
 import { infraFailureResult, runPhaseWithInfraRetry } from "./adversarial-retry.ts";
-import { decideLoopAction, parseVerdict } from "./adversarial-verdict.ts";
+import { decideLoopAction, parseVerdict, synthesizeResult } from "./adversarial-verdict.ts";
 import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
 import { markOrchestrator, setOrchestratorActiveChild, startJob } from "./async-jobs.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { readEnumMarker } from "./reply-markers.ts";
+import { type RangeDiff, computeRangeDiff } from "./review-diff.ts";
 import { type OnSlowCallback, feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
 import { makeRunId, spawnSpecialist } from "./spawn.ts";
 import { trace } from "./trace.ts";
@@ -47,18 +48,42 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
     description:
       "Run the mandatory adversarial gate as an async job: adversarial review → developer fix → re-review, up to 3 rounds. Returns a job handle immediately. The final verdict (APPROVED or REJECTED + findings) arrives as a [ensemble:async] user message. End your turn after dispatching.",
     parameters: Type.Object({
-      diff: Type.String({ description: "Current diff to review (git diff output)." }),
+      diff: Type.Optional(
+        Type.String({
+          description:
+            "Current diff to review (git diff output). Optional when base+head are given — then the diff is computed from the ref range; when both are given, this string wins (traced).",
+        }),
+      ),
       context: Type.String({
         description: "Brief description of what changed and why; passed to adversarial.",
       }),
+      base: Type.Optional(
+        Type.String({
+          description:
+            "With head: ref for the diff the tool computes itself as `git diff <base>...<head>` (three-dot, merge-base) in workCwd — preferred over pasting a large diff.",
+        }),
+      ),
+      head: Type.Optional(
+        Type.String({
+          description:
+            "Ref for the diff the tool computes itself (see base). Recomputed before every review round, so rounds 2+ see fixes.",
+        }),
+      ),
       workCwd: Type.Optional(
         Type.String({
-          description: "Worktree or repo path where developer should apply fixes.",
+          description:
+            "Worktree or repo path where developer should apply fixes; also the cwd for `git diff <base>...<head>` (defaults to the process cwd).",
         }),
       ),
     }),
     async execute(_id, raw) {
-      const params = raw as { diff: string; context: string; workCwd?: string };
+      const params = raw as {
+        diff?: string;
+        context: string;
+        base?: string;
+        head?: string;
+        workCwd?: string;
+      };
       const { jobId } = startJob(pi, {
         label: "adversarial_loop",
         role: "adversarial-loop",
@@ -66,7 +91,8 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
         // fix → re-review). A single umbrella row would just flicker between
         // sub-states; per-round entries show the actual child running now.
         skipDeck: true,
-        work: (signal, hooks) => runAdversarialLoop({ ...params, pi }, signal, hooks.jobId),
+        work: (signal, hooks) =>
+          runAdversarialLoop({ ...params, pi }, signal, hooks.jobId, computeRangeDiff),
       });
       return {
         content: [
@@ -95,7 +121,13 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
  */
 export async function runAdversarialLoop(
   params: {
-    diff: string;
+    /** Optional when `base` + `head` are present (computed from the ref
+     * range). When both `diff` and base/head are given, the string wins. */
+    diff?: string;
+    /** #859 — the base ref the tool computes the diff from (with head). */
+    base?: string;
+    /** #859 — the head ref the tool computes the diff from (with base). */
+    head?: string;
     context: string;
     workCwd?: string;
     /** Recompute the diff before each review. Without it rounds 2+ see pre-fix material. */
@@ -116,15 +148,84 @@ export async function runAdversarialLoop(
   },
   signal: AbortSignal,
   orchestratorJobId: string,
+  /** #859 — the ref-range diff computation (injectable for tests). Used when
+   * `diff` is absent and base/head are present. */
+  rangeDiffFn: (cwd: string, base: string, head: string) => Promise<RangeDiff> = computeRangeDiff,
 ): Promise<DispatchResult> {
   const start = Date.now();
   const runId = makeRunId();
   const rounds: Array<{ round: number; verdict: AdversarialVerdict; ms: number }> = [];
+  // #859 — failed re-reads of the ref range on rounds 2+: the loop keeps the
+  // previous diff (never abandons a round), but the final result must say so.
+  const diffRereadNotes: string[] = [];
   const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
   let lastTranscript: string | undefined;
   let lastModel: string | undefined;
 
   const ledgerWrite = (result: DispatchResult) => writeAdversarialLedgerEntry(result, params);
+
+  // #859 — resolve the diff: a pasted string wins over a ref range (traced);
+  // with no string, base+head compute the range in workCwd (else the process
+  // cwd). An error (invalid ref naming the ref, confirmed-empty range, cap
+  // overflow) is returned AS the result — never a fallback to an empty
+  // string, which the loop would review as "nothing to change" and approve.
+  const range = params.base && params.head ? { base: params.base, head: params.head } : null;
+  let diff: string;
+  let getDiff = params.getDiff;
+  if (params.diff && range) {
+    trace(
+      `adversarial: diff string supplied alongside base=${range.base} head=${range.head} — the diff string wins`,
+    );
+    diff = params.diff;
+  } else if (params.diff) {
+    diff = params.diff;
+  } else if (range) {
+    const cwd = params.workCwd ?? process.cwd();
+    // Round 1 uses the diff computed once here at tool entry.
+    const initial = await rangeDiffFn(cwd, range.base, range.head);
+    if (!initial.ok) {
+      const r = synthesizeResult({
+        ok: false,
+        loopOutcome: "rejected",
+        text: `Adversarial loop could not compute the diff for ${range.base}...${range.head}: ${initial.reason}`,
+        ms: Date.now() - start,
+        usage,
+        transcriptPath: lastTranscript,
+        model: lastModel,
+      });
+      ledgerWrite(r);
+      return r;
+    }
+    diff = initial.diff;
+    // Rounds 2+ re-compute the SAME range, so a fix round's changes are
+    // reviewed (same rule as the driver's per-round getDiff re-read).
+    getDiff = async () => {
+      const r = await rangeDiffFn(cwd, range.base, range.head);
+      if (!r.ok) {
+        // #859 — a re-read failure is no longer a silent "" (which the loop
+        // would ignore and review the STALE diff on). Name it, and let the
+        // caller record it in the final result.
+        trace(
+          `adversarial: diff re-read failed for range ${range.base}...${range.head}: ${r.reason} — reviewing the previous diff`,
+        );
+        throw new Error(r.reason);
+      }
+      return r.diff;
+    };
+  } else {
+    const r = synthesizeResult({
+      ok: false,
+      loopOutcome: "rejected",
+      text: "Adversarial loop: provide `diff`, or both `base` and `head` (with `workCwd`) — nothing to review was supplied.",
+      ms: Date.now() - start,
+      usage,
+      transcriptPath: lastTranscript,
+      model: lastModel,
+    });
+    ledgerWrite(r);
+    return r;
+  }
+
   // Mark this job as orchestrator-shaped so dispatch_peek / dispatch_steer
   // can resolve the orchestrator jobId to its active inner child instead of
   // returning "no such job". Active child is updated below in runPhase.
@@ -205,19 +306,24 @@ export async function runAdversarialLoop(
   // Re-read before every review. `fetchDiff` used to run once, before the loop,
   // so rounds 2 and 3 were prompted with pre-fix material and the reviewer had
   // to notice the staleness itself.
-  let diff = params.diff;
   const priorFindings: string[] = [];
 
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     if (signal.aborted) break;
-    if (round > 1 && params.getDiff) {
+    if (round > 1 && getDiff) {
       try {
-        const fresh = await params.getDiff();
+        const fresh = await getDiff();
         if (fresh.trim()) diff = fresh;
       } catch (err) {
         // A failed re-read is not a reason to abandon the round; the previous
         // diff plus the live worktree is what the reviewer had before this.
-        trace(`adversarial: diff re-read failed for round ${round}: ${(err as Error).message}`);
+        // #859 — record it, so the final result names the staleness instead
+        // of the operator having to notice it.
+        const reason = (err as Error).message;
+        trace(`adversarial: diff re-read failed for round ${round}: ${reason}`);
+        diffRereadNotes.push(
+          `note: round ${round} diff re-read failed (${reason}) — reviewed the previous diff`,
+        );
       }
     }
     const adv = await runPhaseWithInfraRetry(
@@ -273,12 +379,15 @@ export async function runAdversarialLoop(
       // outstanding: the operator (and the lens gate) must be able to tell the
       // two apart, and `commit-pr` carries the findings into the PR body.
       const clean = verdict.status === "APPROVED";
+      const notePrefix = diffRereadNotes.length ? `${diffRereadNotes.join("\n")}\n\n` : "";
       const r = synthesizeResult({
         ok: true,
         loopOutcome: "approved",
-        text: clean
-          ? `Adversarial APPROVED after round ${round}.\n\n${verdict.findings}`
-          : `Adversarial PASSED WITH FINDINGS after round ${round} (verdict: ${verdict.status} — non-blocking per agents-base/adversarial-developer.md). These findings are unresolved and travel to the PR body and the lens review; they did not block the commit.\n\n${verdict.findings}`,
+        text:
+          notePrefix +
+          (clean
+            ? `Adversarial APPROVED after round ${round}.\n\n${verdict.findings}`
+            : `Adversarial PASSED WITH FINDINGS after round ${round} (verdict: ${verdict.status} — non-blocking per agents-base/adversarial-developer.md). These findings are unresolved and travel to the PR body and the lens review; they did not block the commit.\n\n${verdict.findings}`),
         ms: Date.now() - start,
         usage,
         transcriptPath: lastTranscript,
@@ -327,6 +436,7 @@ export async function runAdversarialLoop(
     ok: false,
     loopOutcome: "rejected",
     text: [
+      ...diffRereadNotes,
       `❌ Adversarial REJECTED after ${MAX_ROUNDS} rounds. Last verdict: ${last?.verdict.status}`,
       "",
       last?.verdict.findings ?? "",
@@ -348,23 +458,6 @@ export async function runAdversarialLoop(
   return r;
 }
 
-interface SynthesizeInput {
-  ok: boolean;
-  text: string;
-  ms: number;
-  usage: DispatchResult["usage"];
-  transcriptPath?: string;
-  model?: string;
-  /** #298 — how the loop ended; see DispatchResult.loopOutcome. */
-  loopOutcome?: DispatchResult["loopOutcome"];
-  /** #485 — per-round verdict records, threaded from the loop as data. */
-  adversarialRounds?: DispatchResult["adversarialRounds"];
-  /** #485 — total rounds executed when the loop exited with no verdict. */
-  roundsExecuted?: number;
-  /** #543 — a loop / token-budget self-kill, threaded so the cap path can distinguish it. */
-  killCause?: DispatchResult["killCause"];
-}
-
 function toRoundRecords(
   rounds: Array<{ round: number; verdict: AdversarialVerdict; ms: number }>,
 ): DispatchResult["adversarialRounds"] {
@@ -373,24 +466,6 @@ function toRoundRecords(
     status: r.verdict.status,
     verdictParsed: r.verdict.verdictParsed !== false,
   }));
-}
-
-function synthesizeResult(i: SynthesizeInput): DispatchResult {
-  return {
-    role: "adversarial-loop",
-    ok: i.ok,
-    text: i.text,
-    toolUses: [],
-    ms: i.ms,
-    exitCode: i.ok ? 0 : 1,
-    usage: i.usage,
-    model: i.model,
-    transcriptPath: i.transcriptPath,
-    loopOutcome: i.loopOutcome,
-    adversarialRounds: i.adversarialRounds,
-    roundsExecuted: i.roundsExecuted,
-    ...(i.killCause ? { killCause: i.killCause } : {}),
-  };
 }
 
 /**
