@@ -1586,6 +1586,16 @@ These are documented limits, not bugs — fixing them requires real parser state
 
 **Escape hatch:** `PI_ENSEMBLE_SKIP_RATCHET=0` disables the check (use sparingly).
 
+#### Comment-retention check (#948)
+
+The develop gate also detects **pre-existing comment lines that are deleted** without reappearing (a developer shrinking a file to hit the 500-line cap by stripping comments). For every removed comment line in `git diff <base>...<head> -- extension/src extension/smoke-tests agents-base`, the gate requires the same trimmed text to exist somewhere under those paths at `<head>` — a verbatim move (same or different file) is fine; a genuine deletion is reported **lost**.
+
+**Exemption (the one rule):** a removed comment is exempt when the nearest following removed line that is *not* a comment is a **code** line *and* that code line's trimmed text does not reappear at `<head>` — i.e. the comment was deleted together with the code it documented (a legitimate function + its doc comment vanishing). A comment deleted above code that still exists is **not** exempt (that is exactly the "only the comment was lost" case). Multi-line block comments share the block's exemption status.
+
+On failure the gate emits a `comment-retention:` evidence row listing up to 20 lost lines plus "N more". An infra error (unreadable base, git failure) degrades to a NOTE ("diff unavailable, gate skipped"), never a failure. The adversarial loop also appends a `comments: lost=<n>` line (or `comments: not-run (no base ref)`) to its report — a reporting aid; only the develop gate *fails* on lost comments.
+
+**Escape hatch:** `PI_ENSEMBLE_COMMENT_RETENTION=0` disables the check (use sparingly).
+
 #### Product smoke command (PR277)
 
 The develop gate runs an optional **smoke test** configured in `.pi/smoke-cmd` at the repo root. Format mirrors `.pi/verify-cmd`: first non-empty, non-comment line is the command verbatim, executed with the same 10-minute timeout as the verify command (`PI_ENSEMBLE_VERIFY_TIMEOUT_MS`; shared for simplicity).

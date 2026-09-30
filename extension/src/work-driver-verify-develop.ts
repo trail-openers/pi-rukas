@@ -9,6 +9,7 @@
  * normaliser, tolerance) live in work-driver-verify-develop-helpers.ts.
  */
 
+import { COMMENT_RETENTION_PATHS } from "./comment-retention.ts";
 import { runConsolidatedVerify } from "./work-driver-consolidated-verify.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import {
@@ -22,7 +23,11 @@ import { runFalsilyGreenCheck } from "./work-driver-falsily-green.ts";
 import { runScopeFanoutGate } from "./work-driver-scope-fanout.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { declaredPathsHaveSource, verifyCmdFor } from "./work-driver-verify-cmd.ts";
-import { runSkipRatchetGate, runSmokeGate } from "./work-driver-verify-develop-gates.ts";
+import {
+  runCommentRetentionGate,
+  runSkipRatchetGate,
+  runSmokeGate,
+} from "./work-driver-verify-develop-gates.ts";
 import { normaliseScopePath } from "./work-driver-verify-develop-helpers.ts";
 import { runVerifyCommandGate } from "./work-driver-verify-verify-cmd.ts";
 
@@ -60,6 +65,13 @@ export async function verifyDevelopOutcome(
       : { default: ctx.repoRoot };
   const baseSha = state.pipelineState.baseSha;
   const changedWorktrees: string[] = [];
+  // #948 — comment-retention paths. Overridable via env (tests inject a
+  // scratch layout); defaults to the three trees the PM's check grepped.
+  const commentRetentionPaths = process.env.PI_ENSEMBLE_COMMENT_RETENTION_PATHS
+    ? process.env.PI_ENSEMBLE_COMMENT_RETENTION_PATHS.split(",")
+        .map((p) => p.trim())
+        .filter(Boolean)
+    : COMMENT_RETENTION_PATHS;
   // #406 — every path the developers touched, across all worktrees, so the
   // protected-path gate below sees the whole change set rather than one
   // worktree's slice of it.
@@ -330,6 +342,16 @@ export async function verifyDevelopOutcome(
   // file-size cap). The #782 flake-retry logic above pushed this file past
   // the 500-line limit; the two independent post-verify gates move there.
   await runSkipRatchetGate(execFn, ctx.repoRoot, baseSha, changedWorktrees, failures, notes);
+  // #948 — comment-retention gate. Threaded like runFalsilyGreenCheck: per
+  // worktree, against that workstream's effective base.
+  await runCommentRetentionGate(
+    execFn,
+    effectiveBaseFor,
+    new Map(Object.entries(worktrees)),
+    commentRetentionPaths,
+    failures,
+    notes,
+  );
   await runSmokeGate(execFn, ctx.repoRoot, changedWorktrees, failures, notes);
   return undefined;
 }
