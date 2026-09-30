@@ -49,7 +49,7 @@ import {
   truncateToWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import { decodePrintableKey } from "@earendil-works/pi-tui/dist/keys.js";
+import { decodeInsertable } from "./deck-key-decode.ts";
 import { sanitizeText } from "./dispatch-deck-line.ts";
 import type { LiveEvent, LiveViewTheme } from "./dispatch-deck-live.ts";
 import { getBuffer } from "./dispatch-deck-live.ts";
@@ -448,8 +448,13 @@ export function createAgentViewComponent(
         thinkingExpanded = !thinkingExpanded;
       } else if (matchesKey(data, "enter")) {
         // Enter: send if the input is non-empty; a no-op when empty.
+        // The buffer is cleared BEFORE the (async) send callback, so a
+        // double-Enter finds an empty buffer and is a no-op — the same
+        // text can never fire two concurrent sends.
         if (input.length > 0) {
-          onSend(input);
+          const text = input;
+          input = "";
+          onSend(text);
         }
       } else if (matchesKey(data, "backspace")) {
         if (input.length > 0) input = input.slice(0, -1);
@@ -461,23 +466,26 @@ export function createAgentViewComponent(
         state.scroll = maxScroll;
       } else if (matchesKey(data, "end")) {
         state.scroll = 0; // follow on
-      } else if (data.length === 1) {
-        // #915 — a single printable ASCII char (space through ~, code
-        // 32–126): insert it into the input. Control chars (code < 32) and
-        // DEL (127) are swallowed so the view never desyncs on raw bytes.
-        // This covers all plain-keyboard input: letters (including t/x/g/s
-        // which the old view treated as commands), digits, symbols, space.
-        const code = data.charCodeAt(0);
-        if (code >= 32 && code <= 126) {
-          input += data;
-        }
-      } else if (data.length > 1) {
-        // #915 — multi-char input: a paste (or an IME composition commit).
-        // Insert as-is with newlines collapsed to spaces. The data is
-        // sanitised at render time; the buffer stores the raw chunk.
-        input += data.replace(/\n+/g, " ");
+      } else {
+        // #915 — everything else is INSERT or SWALLOW, decided by
+        // decodeInsertable (deck-key-decode.ts):
+        //   - a single printable char (ASCII 32–126) inserts as-is —
+        //     letters (including t/x/g/s which the old view treated as
+        //     commands), digits, symbols, space;
+        //   - a Kitty CSI-u / modifyOtherKeys sequence that decodes to a
+        //     printable char (non-ASCII é/CJK/emoji, shifted letters) is
+        //     decoded and the CHARACTER is inserted — raw sequences never
+        //     reach the buffer;
+        //   - multi-char text (a bracketed paste, an IME composition
+        //     commit) inserts with newlines collapsed to spaces;
+        //   - everything else (unknown escape sequences — F-keys, mouse
+        //     SGR, alt+x, arrow-key sequences, lone ESC, control bytes)
+        //     is swallowed: garbage in the message buffer would desync the
+        //     terminal line accounting (issue #927's class).
+        // A key-release was already filtered at the top of handleInput.
+        const insert = decodeInsertable(data);
+        if (insert !== undefined) input += insert;
       }
-      // (Single-char non-printable and empty data are silently swallowed.)
     },
     // #915 — the input accessors the host (openLiveView) uses in the send
     // callback: read the buffer, clear it after a successful send, and set

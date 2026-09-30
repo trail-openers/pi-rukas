@@ -437,6 +437,7 @@ function resetKeys(keys: string[]): void {
     { onReturnToList: () => { returnCalled = true; } },
   );
   assert(returnCalled, "10a: onReturnToList invoked on Esc when provided");
+  // Without onReturnToList: just closes, no callback.
   clearEntry("deck-job-10");
   dropBuffer("deck-job-10");
   reset();
