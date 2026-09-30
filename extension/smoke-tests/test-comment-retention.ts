@@ -27,6 +27,7 @@ import {
 import type { ExecFn } from "../src/worktree.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
+import { runCommentRetentionGate } from "../src/work-driver-verify-develop-gates.ts";
 import { initialState } from "../src/workflow-state.ts";
 
 const execFileP = promisify(execFile);
@@ -199,6 +200,46 @@ const PATHS = ["src"];
       "real-git (g): arithmetic continuation is NOT reported lost; comment is exempt (code also deleted)",
     );
     rmSync(dirG, { recursive: true, force: true });
+  }
+
+  // (h0) an empty scoped diff with a non-empty UNSCOPED range: the head
+  // commit touches only a file OUTSIDE paths, so no in-scope comment can be
+  // lost — the gate must pass cleanly (ok:true, lost 0) with NO skip note,
+  // not skip with a misleading "range has N commits" reason.
+  {
+    const dirH0 = mkdtempSync(path.join(tmpdir(), "pi-ens-comment-"));
+    await execFileP("git", ["init", "-q", "-b", "main"], { cwd: dirH0 });
+    await git(dirH0, ["config", "user.email", "t@example.com"]);
+    await git(dirH0, ["config", "user.name", "T"]);
+    mkdirSync(path.join(dirH0, "src"), { recursive: true });
+    writeFileSync(path.join(dirH0, "src/app.ts"), `// an in-scope comment at base\nfunction a() {\n  return 1;\n}\n`);
+    await git(dirH0, ["add", "src"]);
+    await git(dirH0, ["commit", "-q", "-m", "base"]);
+    mkdirSync(path.join(dirH0, "out-of-scope"), { recursive: true });
+    writeFileSync(path.join(dirH0, "out-of-scope/other.txt"), "noise\n");
+    await git(dirH0, ["add", "-A"]);
+    await git(dirH0, ["commit", "-q", "-m", "out-of-scope change"]);
+    const base = (await git(dirH0, ["rev-parse", "HEAD~1"])).stdout.trim();
+    const head = (await git(dirH0, ["rev-parse", "HEAD"])).stdout.trim();
+    const res = await findLostComments(realExec, dirH0, base, head, PATHS);
+    assert(res.ok === true, "real-git (h0): result is ok when only out-of-scope files changed");
+    assert(
+      res.ok && res.lost.length === 0 && res.exempt === 0,
+      "real-git (h0): empty scoped diff + out-of-scope commit → {ok:true, lost:[], exempt:0}",
+    );
+    const failures: string[] = [];
+    const notes: string[] = [];
+    await runCommentRetentionGate(
+      realExec,
+      () => base,
+      new Map<string, string>([["default", dirH0]]),
+      PATHS,
+      failures,
+      notes,
+    );
+    assert(failures.length === 0, "real-git (h0): gate passes (no failure)");
+    assert(notes.length === 0, "real-git (h0): gate emits NO skip note");
+    rmSync(dirH0, { recursive: true, force: true });
   }
 
   // (h) arithmetic continuation where the code is RETAINED: the ` * b;` line

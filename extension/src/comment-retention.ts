@@ -174,13 +174,15 @@ export async function findLostComments(
   if (!diff.trim()) {
     // #384 pattern — establish empty POSITIVELY. An empty diff under the
     // pathspec is legitimate (no changes under paths), but a truncated or
-    // mis-invoked read could also yield one; cross-check the WHOLE range
-    // (no pathspec — a mis-invocation usually affects the pathspec, not the
-    // range) and, if the range is non-empty, note it rather than silently
+    // mis-invoked read could also yield one; cross-check the range scoped to
+    // THE SAME validated paths (a mis-invocation that makes the diff read
+    // empty usually affects the pathspec, and an unscoped range would count
+    // out-of-scope commits and skip the gate with a misleading note) and,
+    // if the scoped range is non-empty, report it rather than silently
     // passing as "nothing lost".
     let changedInRange = -1;
     try {
-      const { stdout } = await execFn(`git rev-list --count ${baseRef}..${headRef}`, {
+      const { stdout } = await execFn(`git rev-list --count ${baseRef}..${headRef} -- ${pathArg}`, {
         cwd,
         maxBuffer: 1 * 1024 * 1024,
       });
@@ -191,13 +193,13 @@ export async function findLostComments(
     if (Number.isNaN(changedInRange)) {
       return {
         ok: false,
-        reason: `diff empty and range ${baseRef}...${headRef} unreadable — cannot establish "nothing changed"`,
+        reason: `diff empty and range ${baseRef}...${headRef} (under paths) unreadable — cannot establish "nothing changed"`,
       };
     }
     if (changedInRange > 0) {
       return {
         ok: false,
-        reason: `diff empty but range ${baseRef}...${headRef} has ${changedInRange} commit(s) (outside paths, or a misread) — cannot trust an empty diff`,
+        reason: `diff empty but range ${baseRef}...${headRef} (under paths) has ${changedInRange} commit(s) (misread) — cannot trust an empty diff`,
       };
     }
     return { ok: true, lost: [], exempt: 0 };

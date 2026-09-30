@@ -1592,7 +1592,7 @@ The develop gate also detects **pre-existing comment lines that are deleted** wi
 
 **Exemption (the one rule):** a removed comment is exempt when the nearest following removed line that is *not* a comment is a **code** line *and* that code line's trimmed text does not reappear at `<head>` — i.e. the comment was deleted together with the code it documented (a legitimate function + its doc comment vanishing). A comment deleted above code that still exists is **not** exempt (that is exactly the "only the comment was lost" case). Multi-line block comments share the block's exemption status.
 
-On failure the gate emits a `comment-retention:` evidence row listing up to 20 lost lines plus "N more". An infra error (unreadable base, git failure) degrades to a NOTE ("diff unavailable, gate skipped"), never a failure. The adversarial loop also appends a `comments: lost=<n>` line (or `comments: not-run (no base ref)`) to its report — a reporting aid; only the develop gate *fails* on lost comments.
+On failure the gate emits a `comment-retention:` evidence row listing up to 20 lost lines plus "N more". An infra error (unreadable base, git failure) degrades to a NOTE ("diff unavailable, gate skipped"), never a failure. The adversarial loop also appends a `comments: lost=<n> (exempt: <k>)` line (or `comments: not-run (no base ref)`) to its report, followed by up to 20 listed lost lines (plus "N more" when truncated) — a reporting aid; only the develop gate *fails* on lost comments.
 
 **Escape hatch:** `PI_ENSEMBLE_COMMENT_RETENTION=0` disables the check (use sparingly).
 
