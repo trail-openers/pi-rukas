@@ -107,7 +107,20 @@ function makeHeader(): ViewHeader {
   comp.handleInput("yyyy");
   assert(comp.inputValue().length === 8000, "2c: the cap holds after further inserts");
   assert(comp.inputValue().endsWith("xxx"), "2d: the tail of the oversized insert is cut");
+  // 2e: an astral surrogate pair straddling the cap boundary (7999 x's +
+  // 😀 = 8001 UTF-16 units) must not leave a lone high surrogate at the
+  // tail — the slice trims the dangling high surrogate instead (8000 →
+  // 7999 x's, the half-cut emoji dropped cleanly).
   dropBuffer("ivf1");
+  startBuffer("ivf2");
+  const comp2 = createAgentViewComponent("ivf2", makeHeader, fakeTheme, undefined, () => {}, () => {});
+  comp2.handleInput("x".repeat(7999) + "\ud83d\ude00"); // x*7999 + 😀
+  assert(
+    comp2.inputValue().length === 7999,
+    `2e: cap boundary on a surrogate pair trims the dangling high surrogate (got ${comp2.inputValue().length})`,
+  );
+  assert(comp2.inputValue() === "x".repeat(7999), "2e: the buffer ends on a complete unit");
+  dropBuffer("ivf2");
 }
 
 console.log(`\nexit ${exit}`);

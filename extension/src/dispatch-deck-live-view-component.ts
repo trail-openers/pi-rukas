@@ -352,7 +352,16 @@ export function createAgentViewComponent(
           // per-render sanitising or the steer write: keep the first
           // INPUT_MAX_CHARS characters (truncate the tail of the insert).
           input += insert;
-          if (input.length > INPUT_MAX_CHARS) input = input.slice(0, INPUT_MAX_CHARS);
+          if (input.length > INPUT_MAX_CHARS) {
+            // #915 adversarial r1 — input.length is a UTF-16 count, so the
+            // slice can land between the two halves of an astral surrogate
+            // pair (7999 x's + 😀 → 8001 units → a lone high surrogate at
+            // the tail). Trim the dangling high surrogate so the buffer
+            // never carries a half emoji.
+            input = input.slice(0, INPUT_MAX_CHARS);
+            const last = input.charCodeAt(input.length - 1);
+            if (last >= 0xd800 && last <= 0xdbff) input = input.slice(0, -1);
+          }
         }
       }
     },
