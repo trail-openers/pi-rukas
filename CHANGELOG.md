@@ -8,6 +8,18 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.12.72](https://github.com/trail-openers/pi-rukas/compare/v0.12.71...v0.12.72) (2026-09-30)
+
+
+### Features
+
+* **review:** let adversarial_loop and dispatch_lens_review take a git ref range ([#947](https://github.com/trail-openers/pi-rukas/issues/947)) ([a0080ff](https://github.com/trail-openers/pi-rukas/commit/a0080ff597a4d86539da0bdfddc90185ce6e20b5))
+
+
+### Bug Fixes
+
+* **test:** run the deck live-view test in the offline gate ([#945](https://github.com/trail-openers/pi-rukas/issues/945)) ([00b898d](https://github.com/trail-openers/pi-rukas/commit/00b898de4d80a7e66d1f9f23920a21113cde1b49)), closes [#944](https://github.com/trail-openers/pi-rukas/issues/944)
+
 ## [0.12.71](https://github.com/trail-openers/pi-rukas/compare/v0.12.70...v0.12.71) (2026-09-30)
 
 
