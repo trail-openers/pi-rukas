@@ -21,11 +21,12 @@ import { getBuffer } from "./dispatch-deck-live.ts";
  * The cache's part discriminator: which logical part of an event a cache
  * entry holds. An explicit `part` token distinguishes the toolCall header
  * ("▸ name") from its body (the pretty-printed JSON) — two different texts
- * that could in principle have the same length. The buffer is append-only
+ * that could in principle have the same length. `steer` wraps the full
+ * operator-echo line (prefix + text) as one unit. The buffer is append-only
  * (stored events are never mutated), so the event's identity plus its part
  * is a stable key.
  */
-type WrapPart = "hdr" | "body";
+type WrapPart = "hdr" | "body" | "steer";
 
 /**
  * Per-event wrapped-line cache, keyed by the event object (a WeakMap —
@@ -125,18 +126,26 @@ export function eventLines(
       // `you → <label>: <text>`. The label is sanitised + newline-collapsed
       // (it flows from untrusted child output); the text wraps like any
       // other body line.
+      //
+      // Terminal-safety: wrap the WHOLE logical line as one string so
+      // every row satisfies visibleWidth ≤ width. Wrapping the body alone
+      // and prepending the prefix to the first row would overflow when
+      // the prefix (a long label) is itself wider than width. The muted
+      // theme is re-applied to the prefix fragment on the first row after
+      // wrapping — since the text is sanitised (no ANSI survives), the
+      // plain prefix string is a verbatim substring of the first row.
       const label = sanitizeText(ev.label).replace(/\n+/g, " ");
-      const prefix = theme.muted(`you → ${label}: `);
-      // The prefix is already on its own row (a single short line); the
-      // wrapped text rows follow. The first row carries the prefix so the
-      // echo reads `you → label: text` on one logical line, wrapping the
-      // rest onto continuation rows.
-      const wrapped = wrapCached(ev, ev.text, width, expanded, "body");
-      const rows: string[] = [...wrapped];
-      if (rows.length === 0) {
-        rows.push("");
+      const full = `you → ${label}: ${ev.text}`;
+      const rows = wrapCached(ev, full, width, expanded, "steer");
+      // Re-apply the muted theme to the prefix fragment on the first row.
+      // The prefix is always non-empty ("you → "), and wrapTextWithAnsi
+      // never emits a leading empty row for non-empty input, so the
+      // prefix always sits at the start of row 0.
+      const plainPrefix = `you → ${label}: `;
+      const first = rows[0];
+      if (first?.startsWith(plainPrefix)) {
+        rows[0] = theme.muted(plainPrefix) + first.slice(plainPrefix.length);
       }
-      rows[0] = `${prefix}${rows[0] ?? ""}`;
       return rows;
     }
   }
