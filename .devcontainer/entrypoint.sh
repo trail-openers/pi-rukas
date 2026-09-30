@@ -67,6 +67,34 @@ if [ "$(id -u)" = "0" ]; then
       unset SSH_AUTH_SOCK
     fi
   fi
+  # Issue #933 — repair NAMED VOLUMES created root-owned by an older image.
+  # When build_mounts() falls back to a named volume (host dir missing) or
+  # mounts an always-on cache volume, and the mount point didn't exist in the
+  # image at launch time, Docker creates the volume owned by root (755), which
+  # the vscode user (UID 1000) can't write to — crashing pi on first launch in
+  # a freshly-created sandbox, or breaking shell history in legacy volumes.
+  #
+  # We chown ONLY targets the launcher explicitly handed us via
+  # PI_ENSEMBLE_VOLUME_MOUNTS (the container-side destinations of every named
+  # volume it mounted, colon-separated) AND that appear on the hard-coded
+  # allowlist below. A bind-mounted host directory is path-/socket-sourced and
+  # is never on the list, so it can never be chowned here (a root-owned host
+  # binding must stay untouched). Only directories that are actually
+  # root-owned are changed; absence or empties mean no-op, so devcontainer.json
+  # users (always bind mounts) and a bare `docker run` are unaffected.
+  if [ -n "${PI_ENSEMBLE_VOLUME_MOUNTS-}" ]; then
+    IFS=: read -r -a _vol_targets <<<"${PI_ENSEMBLE_VOLUME_MOUNTS}"
+    for _t in "${_vol_targets[@]}"; do
+      case "$_t" in
+        /home/vscode/.pi/agent/sessions|/home/vscode/.pi/agent/ensemble-runs|/home/vscode/.vipune|/home/vscode/.cache|/home/vscode/.bun|/home/vscode/.cargo|/commandhistory) ;;
+        *) continue ;;
+      esac
+      if [ -d "$_t" ] && [ "$(stat -c %u "$_t")" = "0" ]; then
+        chown vscode:vscode "$_t"
+      fi
+    done
+    unset _vol_targets _t
+  fi
   # setpriv (util-linux, baked into image) preserves env verbatim — no PATH
   # stripping like sudo's secure_path. --init-groups initialises supplementary
   # groups for vscode. Explicit HOME=/home/vscode so the vscode-phase HF cache
