@@ -105,7 +105,7 @@ interface ViewInputAccessors {
 
 /**
  * #915 — the view's send path. `comp` carries the input accessors
- * (`inputValue`/`clearInput`/`setStatus`) the component exposes.
+ * (`clearInput`/`setStatus`/`setInput`) the component exposes.
  *
  * The delivery goes through `steerFromDeck` (the same core the PM
  * dispatch_steer tool uses, with the `deck-ui` source tag). Failure shapes:
