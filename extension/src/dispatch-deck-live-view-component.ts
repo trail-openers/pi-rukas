@@ -310,7 +310,8 @@ export function createAgentViewComponent(
         const prompt = `Message @${label}: `;
         const half = Math.floor(width / 2);
         let boundedPrompt = prompt;
-        if (visibleWidth(prompt) > half) boundedPrompt = sanitizeText(truncateToWidth(prompt, half, "…"));
+        if (visibleWidth(prompt) > half)
+          boundedPrompt = sanitizeText(truncateToWidth(prompt, half, "…"));
         const budget = Math.max(0, width - visibleWidth(boundedPrompt) - 1);
         const tail = inputTailWithin(budget);
         inputLine = `${boundedPrompt}${sanitizeText(tail)}${cursor}`;
