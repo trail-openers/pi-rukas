@@ -47,6 +47,7 @@ import {
   isKeyRelease,
   matchesKey,
   truncateToWidth,
+  visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { decodeInsertable } from "./deck-key-decode.ts";
@@ -187,6 +188,26 @@ export function createAgentViewComponent(
   // The render width is needed by handleInput's scroll clamp — captured
   // on each render (the width is stable for the view's lifetime).
   let lastWidth = 80;
+  /**
+   * The tail of the (sanitised) input whose visibleWidth fits `budget` cols:
+   * walks the input's code points from the END, accumulating each code
+   * point's visibleWidth, and stops before the budget is exceeded. The
+   * cursor (1 col) is accounted for by the caller's budget, so this returns
+   * the text only. An empty budget yields the empty string.
+   */
+  function inputTailWithin(budget: number): string {
+    if (budget <= 0) return "";
+    const text = sanitizeText(input);
+    let out = "";
+    let used = 0;
+    for (const ch of [...text].reverse()) {
+      const w = visibleWidth(ch);
+      if (used + w > budget) break;
+      out = ch + out;
+      used += w;
+    }
+    return out;
+  }
   // The body's rendered line count, written by render() and read by
   // handleInput's scroll clamp (render always runs before input is routed,
   // so the sentinel -1 is never read — but guard anyway for a first
@@ -274,17 +295,25 @@ export function createAgentViewComponent(
         // the line past the overlay width or emit a raw newline.
         inputLine = theme.muted(toTerminalLine(`${sendStatus.text} · Esc back`, width));
       } else {
-        // Show the tail of the input: truncateToWidth from the left is not
-        // available, so take the last (width - prompt - cursor) chars and
-        // let the ellipsis mark the truncated head. The prompt + cursor are
-        // short; the text budget is the remainder.
+        // Show the tail of the input, measured in VISIBLE COLUMNS (not
+        // UTF-16 units — a CJK/emoji label or CJK/emoji input is 2 cols per
+        // unit and would overflow `width` under a .length budget). The
+        // prompt is bounded to at most half the width; when it fits the
+        // budget, the full prompt is kept (no ellipsis, so ASCII short
+        // labels render byte-identical to the pre-fix behaviour); when it
+        // does not, truncateToWidth("…") bounds it (its ANSI resets are
+        // stripped by the final sanitise). The input tail is the last
+        // typed code points whose summed visibleWidth fits the remaining
+        // budget, walked from the end, and the cursor closes the line. The
+        // line always satisfies visibleWidth ≤ width.
+        const label = h ? sanitizeText(h.label).replace(/\n+/g, " ") : key;
         const prompt = `Message @${label}: `;
-        const budget = Math.max(1, width - prompt.length - 1);
-        const shown =
-          input.length <= budget
-            ? input
-            : `…${sanitizeText(input).slice(input.length - budget + 1)}`;
-        inputLine = `${prompt}${sanitizeText(shown)}${cursor}`;
+        const half = Math.floor(width / 2);
+        let boundedPrompt = prompt;
+        if (visibleWidth(prompt) > half) boundedPrompt = sanitizeText(truncateToWidth(prompt, half, "…"));
+        const budget = Math.max(0, width - visibleWidth(boundedPrompt) - 1);
+        const tail = inputTailWithin(budget);
+        inputLine = `${boundedPrompt}${sanitizeText(tail)}${cursor}`;
       }
       lines.push(inputLine);
       const footer =
