@@ -220,6 +220,31 @@ const PATHS = ["src"];
   }
 }
 
+// --- injection / safety regressions ---------------------------------------
+{
+  // (i) ref injection: payload refs are refused before any exec (PR338 class).
+  for (const evil of ["HEAD; touch pwned", "$(touch pwned)", "-R HEAD"] as const) {
+    const res = await findLostComments(realExec, "/tmp", evil, "HEAD", PATHS);
+    assert(
+      res.ok === false && res.reason.includes("unsafe ref"),
+      `injection: ref ${JSON.stringify(evil)} is refused before exec`,
+    );
+  }
+  // (j) path injection: an env-shape path token (PI_ENSEMBLE_COMMENT_RETENTION_PATHS
+  // splits on `,` with no quoting) is refused — NO shell exec of the payload.
+  for (const evilPath of ["x$(touch /tmp/pi-ens-comment-pwned-948)", "a;b", "-R HEAD", "a b", "x\ty", "x@y"] as const) {
+    const res = await findLostComments(realExec, "/tmp", "abc123def456abc123def456abc123def456", "HEAD", [evilPath]);
+    assert(
+      res.ok === false && res.reason.includes("unsafe path"),
+      `injection: path ${JSON.stringify(evilPath)} is refused before exec`,
+    );
+  }
+  assert(
+    !existsSync("/tmp/pi-ens-comment-pwned-948"),
+    "injection: no shell side effects from a rejected path",
+  );
+}
+
 // --- develop-gate wiring via verifyStepOutcome (fake ExecFn) --------------
 {
   const prevVerify = process.env.PI_ENSEMBLE_VERIFY;
@@ -245,6 +270,8 @@ const PATHS = ["src"];
         // gates use `git diff ${baseRef} -U0`. Disambiguate on the ellipsis.
         if (cmd.includes("..."))
           return { stdout: `--- a/src/app.ts\n+++ b/src/app.ts\n-${lostComment}\n function add(a,b){return a+b;}\n` };
+        if (cmd.startsWith("git rev-list --count ") && !cmd.includes("-- "))
+          return { stdout: "1\n" };
         if (cmd.startsWith("git diff")) return { stdout: "" };
         if (cmd.startsWith("git grep")) return { stdout: "HEAD:src/app.ts:function add(a,b){return a+b;}\n" };
         return { stdout: "" };
@@ -282,6 +309,8 @@ const PATHS = ["src"];
           if (cmd.startsWith("git diff --name-only")) return { stdout: "src/app.ts\n" };
           if (cmd.includes("..."))
             return { stdout: `--- a/src/app.ts\n+++ b/src/app.ts\n+function add(a,b){return a+b;}\n` };
+          if (cmd.startsWith("git rev-list --count ") && !cmd.includes("-- "))
+            return { stdout: "0\n" };
           if (cmd.startsWith("git diff")) return { stdout: "" };
           if (cmd.startsWith("git grep")) return { stdout: "HEAD:src/app.ts:function add(a,b){return a+b;}\n" };
           return { stdout: "" };

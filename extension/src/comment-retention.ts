@@ -46,6 +46,22 @@ function isSafeRef(ref: string): boolean {
   return VALID_SHA_RE.test(ref) || VALID_REFNAME_RE.test(ref);
 }
 
+/**
+ * Path tokens are interpolated into the ExecFn's shell string (the same
+ * injection class the harness already guards for refs — PR338 / `isSafeRef`).
+ * A path may be `PI_ENSEMBLE_COMMENT_RETENTION_PATHS`-shaped env input, so
+ * every token is validated BEFORE any exec; a failing token makes the whole
+ * call an infra note (never a failure, never an exec). No leading `-` (git
+ * option injection), no whitespace or shell metacharacters (word splitting /
+ * injection — a whitespace-split token also made `git diff` silently match
+ * nothing, a gate no-op that passed without a note).
+ */
+const VALID_PATH_RE = /^[A-Za-z0-9._/-]+$/;
+
+function isSafePathList(paths: string[]): boolean {
+  return paths.length > 0 && paths.every((p) => !p.startsWith("-") && VALID_PATH_RE.test(p));
+}
+
 export type LostCommentResult =
   | { ok: true; lost: string[]; exempt: number }
   | { ok: false; reason: string };
@@ -133,6 +149,12 @@ export async function findLostComments(
       reason: `unsafe ref (${baseRef} / ${headRef}) — refusing shell interpolation`,
     };
   }
+  if (!isSafePathList(paths)) {
+    return {
+      ok: false,
+      reason: `unsafe path — refusing shell interpolation (${paths.join(", ").slice(0, 80)})`,
+    };
+  }
   const pathArg = paths.join(" ");
 
   // 1. The diff (normal context, so comment blocks stay contiguous).
@@ -149,7 +171,37 @@ export async function findLostComments(
       reason: `git diff failed: ${(err as Error).message?.slice(0, 120) ?? "error"}`,
     };
   }
-  if (!diff.trim()) return { ok: true, lost: [], exempt: 0 };
+  if (!diff.trim()) {
+    // #384 pattern — establish empty POSITIVELY. An empty diff under the
+    // pathspec is legitimate (no changes under paths), but a truncated or
+    // mis-invoked read could also yield one; cross-check the WHOLE range
+    // (no pathspec — a mis-invocation usually affects the pathspec, not the
+    // range) and, if the range is non-empty, note it rather than silently
+    // passing as "nothing lost".
+    let changedInRange = -1;
+    try {
+      const { stdout } = await execFn(`git rev-list --count ${baseRef}..${headRef}`, {
+        cwd,
+        maxBuffer: 1 * 1024 * 1024,
+      });
+      changedInRange = Number.parseInt(stdout.trim(), 10);
+    } catch {
+      changedInRange = -1; // unreadable — note, not pass
+    }
+    if (Number.isNaN(changedInRange)) {
+      return {
+        ok: false,
+        reason: `diff empty and range ${baseRef}...${headRef} unreadable — cannot establish "nothing changed"`,
+      };
+    }
+    if (changedInRange > 0) {
+      return {
+        ok: false,
+        reason: `diff empty but range ${baseRef}...${headRef} has ${changedInRange} commit(s) (outside paths, or a misread) — cannot trust an empty diff`,
+      };
+    }
+    return { ok: true, lost: [], exempt: 0 };
+  }
 
   // 2. Read the head tree under paths ONCE and search in memory.
   const headLines = await readLinesAtRef(execFn, cwd, headRef, paths);
