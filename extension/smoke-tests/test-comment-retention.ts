@@ -436,6 +436,24 @@ const PATHS = ["src"];
     assert(line.startsWith("comments: lost=1"), "report: lossy range → 'comments: lost=1'");
     assert(line.includes("gone for good"), "report: the lost line is listed");
   }
+  // A timeout-like exec error is an infra error: the gate degrades to a
+  // not-run note, never a failure — and the timeout option is actually
+  // passed on every git exec (a recording fake asserts that).
+  {
+    const seenOpts: Array<{ timeout?: number } | undefined> = [];
+    const failingExec: ExecFn = async (cmd, opts) => {
+      seenOpts.push(opts);
+      throw new Error(`etimedout: git ${cmd.split(" ")[1]} timed out after 1000ms (killed)`);
+    };
+    const line = await buildCommentsLine({ base: "abc", head: "def" }, "/tmp", failingExec, ["src"]);
+    assert(line.startsWith("comments: not-run ("), "report: timeout-like exec error → not-run note, not a failure");
+    assert(
+      seenOpts.length > 0 && seenOpts.every((o) => typeof o?.timeout === "number" && o.timeout > 0),
+      "report: every git exec in findLostComments carries a timeout option",
+    );
+    const res = await findLostComments(failingExec, "/tmp", "abc", "def", ["src"]);
+    assert(!res.ok, "findLostComments: a timed-out git diff is an infra failure (ok:false → note), never a lost-comment verdict");
+  }
 }
 
 console.log(`\nexit ${exit}`);

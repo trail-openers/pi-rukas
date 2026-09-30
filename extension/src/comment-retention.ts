@@ -21,7 +21,9 @@
 
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
+import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import type { ExecFn } from "./worktree.ts";
+import { trace } from "./trace.ts";
 
 /**
  * A real shell `ExecFn` built on `promisify(exec)`, for callers (e.g. the
@@ -109,9 +111,11 @@ async function readLinesAtRef(
   try {
     const { stdout } = await execFn(`git grep -e "" ${ref} -- ${pathArg}`, {
       cwd,
+      timeout: verifyTimeoutMs(),
       maxBuffer: 64 * 1024 * 1024,
     });
     const set = new Set<string>();
+    const trimmed = new Set<string>();
     for (const line of stdout.split("\n")) {
       // `git grep -e "" <ref> -- <paths>` emits `ref:file:line`. The first
       // colon after the ref marks the path; the line content is what follows
@@ -120,10 +124,15 @@ async function readLinesAtRef(
       if (first < 0) continue;
       const second = line.indexOf(":", first + 1);
       if (second < 0) continue;
-      set.add(line.slice(second + 1));
+      const content = line.slice(second + 1);
+      set.add(content);
+      trimmed.add(content.trim());
     }
-    return set;
-  } catch {
+    return { lines: set, trimmed };
+  } catch (err) {
+    trace(
+      `comment-retention: readLinesAtRef failed at ${ref}: ${(err as Error).message?.slice(0, 120) ?? "error"}`,
+    );
     return undefined;
   }
 }
@@ -162,6 +171,7 @@ export async function findLostComments(
   try {
     const { stdout } = await execFn(`git diff ${baseRef}...${headRef} -- ${pathArg}`, {
       cwd,
+      timeout: verifyTimeoutMs(),
       maxBuffer: 16 * 1024 * 1024,
     });
     diff = stdout;
@@ -184,6 +194,7 @@ export async function findLostComments(
     try {
       const { stdout } = await execFn(`git rev-list --count ${baseRef}..${headRef} -- ${pathArg}`, {
         cwd,
+        timeout: verifyTimeoutMs(),
         maxBuffer: 1 * 1024 * 1024,
       });
       changedInRange = Number.parseInt(stdout.trim(), 10);
@@ -213,10 +224,14 @@ export async function findLostComments(
       reason: `could not read head tree at ${headRef} under ${pathArg}`,
     };
   }
+  // An exact (trimmed) line lookup first — the common "retained verbatim"
+  // case is O(1); the substring scan below stays only as a fallback (e.g. a
+  // removed line that reappears as part of a longer line at head).
   const presentAtHead = (text: string): boolean => {
     const t = text.trim();
     if (!t) return false;
-    for (const line of headLines) if (line.includes(t)) return true;
+    if (headLines.trimmed.has(t)) return true;
+    for (const line of headLines.lines) if (line.includes(t)) return true;
     return false;
   };
 
