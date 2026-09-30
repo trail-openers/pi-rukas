@@ -2,11 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { startJob } from "./async-jobs.ts";
 import { renderSummary } from "./lens-review-format.ts";
-import {
-  LENS_REVIEW_DIFF_DESCRIPTION,
-  MAX_LENS_ATTEMPTS,
-  runLensReview,
-} from "./lens-review.ts";
+import { LENS_REVIEW_DIFF_DESCRIPTION, MAX_LENS_ATTEMPTS, runLensReview } from "./lens-review.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 
