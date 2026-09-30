@@ -27,13 +27,10 @@ import type { DispatchResult, DispatchUsage } from "./types.ts";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
- * Six-pass code review — fan out to one `code-review-specialist` child per
- * lens, each pinned to its lens-specific skill. Synthesise findings via
- * (path, line, title) dedup + precedence merging, then map worst severity to
- * an overall verdict.
- *
- * Mirrors the Step 7 contract of the opencode `/work` command. Lens roster,
- * prompt construction, parsing, and rendering live in lens-review-format.ts;
+ * Six-pass code review — one `code-review-specialist` child per lens, each
+ * pinned to its lens skill. Synthesise findings via (path, line, title)
+ * dedup + precedence merging, then map worst severity to an overall verdict.
+ * Lens roster, prompt, parsing, and rendering live in lens-review-format.ts;
  * this module owns spawning, retries, and the async-job/tool wiring.
  */
 
@@ -44,21 +41,10 @@ export type LensName = string; // deliberately unbounded — the roster is data-
 export type LensDef = RosterEntry;
 export const LENS_REPORTER_PATH = path.join(__dirname, "lens-reporter.ts");
 
-/**
- * #612 — the diff parameter's description, forge-agnostic on purpose.
- * The pre-#612 text told the operator `gh pr diff <N>`, which is GitHub
- * only (on GitLab the same operation is `glab mr diff <N>`). The driver
- * assembles the diff itself and passes it in, so the instruction to the
- * operator is to fetch it ONCE (however their forge spells it) and reuse.
- * Exported so the wording is assertable offline (the tool registration is
- * the only place it lives, and no test reached it before).
- *
- * #859 — the "fetch once" instruction survives the new optional base/head
- * params; the preferred form for a large diff is now the ref range, which
- * the tool computes itself (nothing to fetch, paste, or re-fetch per lens).
- */
+// #612/#859 — the diff param's description (forge-agnostic; #859 appends
+// the ref-range alternative). Exported so the wording is assertable offline.
 export const LENS_REVIEW_DIFF_DESCRIPTION =
-  "The full PR/MR diff to review. Fetch it once with your forge CLI (e.g. `gh pr diff <N>` or `glab mr diff <N>`) or `git diff main...feature/...` and reuse — do NOT re-fetch per lens. For large diffs, prefer the optional base + head refs (with cwd) so the tool computes `git diff <base>...<head>` itself; when both this string and base/head are given, the string wins.";
+  "The full PR/MR diff to review. Fetch it once (e.g. `gh pr diff <N>` or `glab mr diff <N>`) or `git diff main...feature/...` and reuse — do NOT re-fetch per lens. For large diffs, prefer the optional base + head refs (with cwd) so the tool computes `git diff <base>...<head>` itself; when both are given, the string wins.";
 
 export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
 export type Verdict =
@@ -176,6 +162,17 @@ function piSkillsDir(): string {
   return process.env.PI_ENSEMBLE_SKILLS_DIR ?? path.join(os.homedir(), ".pi", "agent", "skills");
 }
 
+/** The ONE exit path: writes the ledger entry and returns the summary. */
+function finish(
+  summary: LensReviewSummary,
+  threshold: Severity,
+  cwd: string | undefined,
+  branch: string | undefined,
+): LensReviewSummary {
+  void writeLensLedgerEntry(summary.verdict, threshold, cwd, branch);
+  return summary;
+}
+
 /**
  * Map (findings × lens completion state) to a single verdict.
  *
@@ -268,14 +265,9 @@ export async function runLensReview(opts: {
   diff?: string;
   context?: string;
   cwd?: string;
-  /**
-   * #859 — the base ref the tool computes the diff from (with head):
-   * `git diff <base>...<head>` (three-dot) in cwd. Optional when `diff` is
-   * given. An error (invalid ref naming the ref, confirmed-empty range,
-   * cap overflow) comes back as a failure result — never an approval.
-   */
+  /** #859 — base ref for the tool-computed `git diff <base>...<head>` (with head). */
   base?: string;
-  /** #859 — the head ref the tool computes the diff from (with base). */
+  /** #859 — head ref for the tool-computed diff (with base). */
   head?: string;
   signal?: AbortSignal;
   /**
@@ -309,13 +301,17 @@ export async function runLensReview(opts: {
   // The RESOLVED threshold (computed once; both the verdict and the ledger
   // write apply the same bar).
   const threshold = opts.threshold ?? DEFAULT_REVIEW_THRESHOLD;
+  // #873 — the roster is data: the INSTALLED skills dir's `code-review-*`
+  // SKILL.md files (precedence in frontmatter), PLUS a blocked entry for
+  // every expected lens (the BUNDLED skill/ dir) that is absent from the
+  // installed dir or has a dangling skill — a lens must never silently
+  // disappear from a six-pass review (five lenses + APPROVED).
+  const roster = buildExpectedRoster(skillsDir);
   // #859 — ref-range diffs: when `diff` is absent and base+head are present,
   // the diff is computed ONCE and fed to every lens. An error (invalid ref,
   // confirmed-empty range, cap overflow, nothing supplied) blocks the whole
-  // review as a failed result — a computed diff is never silently empty and
-  // never read as "nothing to review" (same rule as #384). Blocked rows use
-  // the EXPECTED roster the #872 check below builds.
-  const roster = buildExpectedRoster(skillsDir);
+  // review — a computed diff is never silently empty, never an approval
+  // (same rule as #384). Blocked rows use the EXPECTED roster above.
   const resolution = await resolveLensDiff(opts);
   if (resolution.problem) {
     const blockRows = blockedRowsForRoster(roster, resolution.problem);
@@ -323,30 +319,14 @@ export async function runLensReview(opts: {
     return finish(blocked, threshold, opts.cwd, opts.branch);
   }
   const diff = resolution.diff ?? "";
-  // #872 — ONE skills-dir check before the fan-out (not per-lens checks):
-  // a missing, empty, or no-`code-review-*`-skill dir blocks ALL lenses
-  // with a single install message and no spawn is ever called. The roster
-  // is empty exactly in those cases, so the two are one check now (#873
-  // moved the "any lens skill present" test onto the parsed roster).
-  if (roster.length === 0) {
+  // #872/#873 — a missing/empty skills dir (no usable roster) blocks ALL
+  // lenses with one install message, no spawn.
+  if (skillsDirUsable(skillsDir) !== undefined) {
     const problem =
       skillsDirUsable(skillsDir) ?? `skills dir ${skillsDir} missing or empty — run ./install.sh`;
-    const batchKey = `${runId}/batch`;
-    dispatchDeck.startBatchEntry(batchKey, {
-      label: "code-review-specialist×0",
-      size: 0,
-    });
     const lensResults = installBlockRows(problem);
-    // Bump the batch once per lens so the deck shows the pass as finished,
-    // not stuck, even though no spawn happened — the lens did "complete"
-    // (as a block).
-    for (let i = 1; i <= lensResults.length; i++) {
-      dispatchDeck.updateBatchProgress(batchKey, i);
-    }
-    dispatchDeck.clearBatchEntry(batchKey);
     const all = [...(opts.extraFindings ?? [])];
-    const deduped = dedupeFindings(all, roster);
-    // SINGLE EXIT PATH (item 5): the early return is the same `finish(...)`
+    const deduped = dedupeFindings(all, []);
     return finish(
       {
         verdict: computeVerdict(deduped, lensResults, threshold),
@@ -355,7 +335,6 @@ export async function runLensReview(opts: {
         lenses: lensResults,
         findings: deduped,
         usage: undefined,
-        ...capKillSummary(lensResults),
       },
       threshold,
       opts.cwd,
@@ -363,9 +342,25 @@ export async function runLensReview(opts: {
     );
   }
 
-  // Persistent batch summary row (#139). Lets the user see "X/6 done"
-  // throughout the run even as fast lenses drop out at 0s linger. Registered
-  // BEFORE the per-lens entries so its seq sorts first on Pi's footer.
+  // #873 — blocked roster entries become blocked lens results (no spawn,
+  // the named error as parseError) and feed REVIEW_INCOMPLETE; healthy fan out.
+  const healthy = roster.filter((e) => e.error === undefined);
+  const blockedResults: LensRunResult[] = roster
+    .filter((e) => e.error !== undefined)
+    .map(
+      (e): LensRunResult => ({
+        lens: e.name,
+        ok: false,
+        ms: 0,
+        startMs: Date.now(),
+        findings: [],
+        attempts: 0,
+        blocked: true,
+        parseError: e.error,
+      }),
+    );
+
+  // Persistent batch summary row (#139): "X/6 done" throughout the run.
   const batchKey = `${runId}/batch`;
   dispatchDeck.startBatchEntry(batchKey, {
     label: `code-review-specialist×${roster.length}`,
@@ -376,22 +371,6 @@ export async function runLensReview(opts: {
     completedLenses += 1;
     dispatchDeck.updateBatchProgress(batchKey, completedLenses);
   };
-
-  // #873 — blocked roster entries become blocked lens results (no spawn,
-  // the named error as parseError) and feed REVIEW_INCOMPLETE via
-  // computeVerdict; healthy entries fan out as before.
-  const blocked = roster.filter((e) => e.error !== undefined);
-  const healthy = roster.filter((e) => e.error === undefined);
-  const blockedResults: LensRunResult[] = blocked.map((e) => ({
-    lens: e.name,
-    ok: false,
-    ms: 0,
-    startMs: Date.now(),
-    findings: [],
-    attempts: 0,
-    blocked: true,
-    parseError: e.error,
-  }));
 
   const promises = healthy.map((lens) =>
     runLensChild({
@@ -431,17 +410,6 @@ export async function runLensReview(opts: {
     opts.cwd,
     opts.branch,
   );
-}
-
-/** The ONE exit path: writes the ledger entry and returns the summary. */
-function finish(
-  summary: LensReviewSummary,
-  threshold: Severity,
-  cwd: string | undefined,
-  branch: string | undefined,
-): LensReviewSummary {
-  void writeLensLedgerEntry(summary.verdict, threshold, cwd, branch);
-  return summary;
 }
 
 export function registerLensReviewTool(pi: ExtensionAPI) {
