@@ -313,16 +313,29 @@ export async function runLensReview(opts: {
   // the diff is computed once here and fed to every lens. An error (invalid
   // ref, confirmed-empty range, cap overflow) blocks the whole review as a
   // failed dispatch result — a computed diff is never silently empty and
-  // never read as "nothing to review" (same rule as #384).
+  // never read as "nothing to review" (same rule as #384). Blocked rows use
+  // the EXPECTED (installed + bundled) roster — the same set the #872 block
+  // below uses — so one problem row is never six.
+  const roster = buildExpectedRoster(skillsDir);
+  const blockedFor = (problem: string): LensRunResult[] =>
+    roster.map((e) => ({
+      lens: e.name,
+      ok: false,
+      ms: 0,
+      startMs: Date.now(),
+      findings: [],
+      attempts: 0,
+      blocked: true,
+      parseError: problem,
+    }));
   let diff = opts.diff;
   if (!diff && opts.base && opts.head) {
     const range = await computeRangeDiff(opts.cwd ?? process.cwd(), opts.base, opts.head);
     if (!range.ok) {
-      const blockRows = installBlockRows(
-        `lens review: cannot compute diff for ${opts.base}...${opts.head}: ${range.reason}`,
-      );
+      const problem = `lens review: cannot compute diff for ${opts.base}...${opts.head}: ${range.reason}`;
+      const blockRows = blockedFor(problem);
       const all = [...(opts.extraFindings ?? [])];
-      const deduped = dedupeFindings(all, []);
+      const deduped = dedupeFindings(all, roster);
       return finish(
         {
           verdict: computeVerdict(deduped, blockRows, threshold),
@@ -341,11 +354,10 @@ export async function runLensReview(opts: {
   } else if (!diff) {
     // No diff string and no complete ref range — the review has nothing to
     // look at. This is a caller error, not an approval.
-    const blockRows = installBlockRows(
-      "lens review: no diff supplied (pass `diff`, or both `base` and `head`)",
-    );
+    const problem = "lens review: no diff supplied (pass `diff`, or both `base` and `head`)";
+    const blockRows = blockedFor(problem);
     const all = [...(opts.extraFindings ?? [])];
-    const deduped = dedupeFindings(all, []);
+    const deduped = dedupeFindings(all, roster);
     return finish(
       {
         verdict: computeVerdict(deduped, blockRows, threshold),
@@ -360,17 +372,6 @@ export async function runLensReview(opts: {
       opts.branch,
     );
   }
-  // #873 — the roster is data: the INSTALLED skills dir's `code-review-*`
-  // SKILL.md files (precedence in frontmatter), PLUS a blocked entry for
-  // every expected lens (the BUNDLED skill/ dir) that is absent from the
-  // installed dir or has a dangling skill — a lens must never silently
-  // disappear from a six-pass review (five lenses + APPROVED). Blocked
-  // entries (missing/duplicate precedence, unparseable SKILL.md, `name:` ≠
-  // dir, skill not installed) become blocked lens results below →
-  // REVIEW_INCOMPLETE; the review never runs a silently reduced or reordered
-  // roster.
-  const roster = buildExpectedRoster(skillsDir);
-  const resolvedDiff = diff ?? "";
   // #872 — ONE skills-dir check before the fan-out (not per-lens checks):
   // a missing, empty, or no-`code-review-*`-skill dir blocks ALL lenses
   // with a single install message and no spawn is ever called. The roster
@@ -448,7 +449,7 @@ export async function runLensReview(opts: {
       skillsDir,
       context,
       roster,
-      opts: { ...opts, diff: resolvedDiff },
+      opts: { ...opts, diff: diff ?? "" },
       bumpBatch,
       ...(opts.pi ? { pi: opts.pi } : {}),
     }),
