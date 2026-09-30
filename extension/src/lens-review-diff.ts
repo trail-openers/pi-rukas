@@ -17,9 +17,9 @@
  */
 
 import * as dispatchDeck from "./dispatch-deck.ts";
-import { bySeverityCounts, dedupeFindings } from "./lens-review-format.ts";
+import { bySeverityCounts, computeVerdict, dedupeFindings } from "./lens-review-format.ts";
 import type { LensRunResult, Severity, Verdict } from "./lens-review.ts";
-import { type Finding, computeVerdict } from "./lens-review.ts";
+import type { Finding } from "./lens-review.ts";
 import type { RosterEntry } from "./lens-roster.ts";
 import { computeRangeDiff } from "./review-diff.ts";
 
