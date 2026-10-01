@@ -217,9 +217,11 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
   assert(
     withEnv(
       { PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS: undefined, PI_ENSEMBLE_SPAWN_TIMEOUT_MS: undefined },
-      () => inactivityTimeoutMs() === 25 * 60_000 && spawnBackstopMs() === 2 * 60 * 60_000,
+      // #951 — inactivity default moved 25 → 30 min (the in-flight tool-call
+      // exemption now covers the ~15-min long-bash gap this budget once defended).
+      () => inactivityTimeoutMs() === 30 * 60_000 && spawnBackstopMs() === 2 * 60 * 60_000,
     ),
-    "inertness: inactivity (25m) and backstop (2h) budgets are unchanged",
+    "inertness: inactivity (30m, was 25m pre-#951) and backstop (2h) budgets are unchanged",
   );
 }
 
@@ -227,6 +229,8 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
 // #543 C1 — killCause priority: a budget-killed child that ALSO tripped the
 // wall-clock backstop is a token-budget kill, NOT a timeout. The attribution
 // drives retry semantics AND the env override the operator reads.
+// #951 — tool-inactivity ranks equal with inactivity (both are wall-clock
+// silence kills of the same poll; exactly one is set per poll, by construction).
 // ---------------------------------------------------------------------------
 // biome-ignore lint/complexity/noUselessLoneBlockStatements: fixture scope (shared `exit`/`assert` across the file)
 {
@@ -234,6 +238,7 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     resolveKillCause({
       loopKilled: false,
       inactivityKilled: false,
+      toolInactivityKilled: false,
       timedOut: true,
       tokenBudgetKilled: true,
       aborted: false,
@@ -244,6 +249,7 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     resolveKillCause({
       loopKilled: false,
       inactivityKilled: false,
+      toolInactivityKilled: false,
       timedOut: false,
       tokenBudgetKilled: true,
       aborted: false,
@@ -254,37 +260,65 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     resolveKillCause({
       loopKilled: false,
       inactivityKilled: false,
+      toolInactivityKilled: false,
       timedOut: true,
       tokenBudgetKilled: false,
       aborted: false,
     }) === "timeout",
     "C1: timedOut alone → 'timeout' (the #296 semantics are untouched)",
   );
-  // full priority order: loop > inactivity > timeout > token-budget > abort
+  // #951 — tool-inactivity alone → 'tool-inactivity'
+  assert(
+    resolveKillCause({
+      loopKilled: false,
+      inactivityKilled: false,
+      toolInactivityKilled: true,
+      timedOut: false,
+      tokenBudgetKilled: false,
+      aborted: false,
+    }) === "tool-inactivity",
+    "C1: toolInactivityKilled alone → 'tool-inactivity' (#951)",
+  );
+  // full priority order: loop > inactivity = tool-inactivity > token-budget > timeout > abort
   assert(
     resolveKillCause({
       loopKilled: true,
       inactivityKilled: true,
+      toolInactivityKilled: true,
       timedOut: true,
       tokenBudgetKilled: true,
       aborted: true,
     }) === "loop",
-    "C1: all five facts → 'loop' wins",
+    "C1: all six facts → 'loop' wins",
   );
   assert(
     resolveKillCause({
       loopKilled: false,
       inactivityKilled: true,
+      toolInactivityKilled: false,
       timedOut: true,
       tokenBudgetKilled: true,
       aborted: true,
     }) === "inactivity",
     "C1: inactivity beats timeout + token-budget + abort",
   );
+  // #951 — tool-inactivity also beats timeout + token-budget + abort
   assert(
     resolveKillCause({
       loopKilled: false,
       inactivityKilled: false,
+      toolInactivityKilled: true,
+      timedOut: true,
+      tokenBudgetKilled: true,
+      aborted: true,
+    }) === "tool-inactivity",
+    "C1: tool-inactivity beats timeout + token-budget + abort (#951)",
+  );
+  assert(
+    resolveKillCause({
+      loopKilled: false,
+      inactivityKilled: false,
+      toolInactivityKilled: false,
       timedOut: false,
       tokenBudgetKilled: false,
       aborted: true,
@@ -295,6 +329,7 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     resolveKillCause({
       loopKilled: false,
       inactivityKilled: false,
+      toolInactivityKilled: false,
       timedOut: false,
       tokenBudgetKilled: false,
       aborted: false,
@@ -320,6 +355,7 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
     totalTokens: () => 1_000_000, // over budget — check() will trigger
     timedOut: () => false,
     inactivityKilled: () => false,
+    toolInactivityKilled: () => false,
     aborted: () => false,
     capKillGraceMs: 600,
     childExited: () => exited,
@@ -367,6 +403,7 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
       totalTokens: () => 0,
       timedOut: () => false,
       inactivityKilled: () => false,
+      toolInactivityKilled: () => false,
       aborted: () => false,
       capKillGraceMs: 1000,
       childExited: () => false,
@@ -413,6 +450,7 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
       totalTokens: () => 0,
       timedOut: () => false,
       inactivityKilled: () => false,
+      toolInactivityKilled: () => false,
       aborted: () => false,
       capKillGraceMs: 30_000,
       childExited: () => false,

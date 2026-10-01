@@ -95,6 +95,12 @@ export function classifyFailureCause(tail: {
   if (tail.killCause === "inactivity") {
     return { cause: "self-killed:inactivity", shouldRetry: true, maxRetries: 1 };
   }
+  // #951 — the in-flight-tool silence kill is the same hang shape as
+  // inactivity (a tool that never returned), so it is retried the same way:
+  // shouldRetry true, maxRetries 1 — NOT the generic crashed fallback.
+  if (tail.killCause === "tool-inactivity") {
+    return { cause: "self-killed:tool-inactivity", shouldRetry: true, maxRetries: 1 };
+  }
   if (tail.killCause === "abort") {
     return { cause: "self-killed:abort", shouldRetry: false, maxRetries: 0 };
   }
@@ -185,6 +191,8 @@ export function failureCauseReason(tail: {
       return "killed by pi-rukas (wall-clock timeout)";
     case "self-killed:inactivity":
       return "killed by pi-rukas (inactivity watchdog)";
+    case "self-killed:tool-inactivity":
+      return "killed by pi-rukas (tool-inactivity watchdog — a tool call never returned)";
     case "self-killed:abort":
       return "cancelled (abort signal)";
     case "self-killed:loop":
@@ -226,6 +234,8 @@ export function failureCauseReasonForClass(
       return "killed by pi-rukas (wall-clock timeout)";
     case "self-killed:inactivity":
       return "killed by pi-rukas (inactivity watchdog)";
+    case "self-killed:tool-inactivity":
+      return "killed by pi-rukas (tool-inactivity watchdog — a tool call never returned)";
     case "self-killed:abort":
       return "cancelled (abort signal)";
     case "self-killed:loop":

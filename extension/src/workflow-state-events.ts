@@ -131,8 +131,15 @@ export type WorkEvent =
       /** Process-level failure (non-zero exit), distinct from provider-error. */
       exitCode?: number | null;
       errorTail?: string;
-      /** Structured self-kill cause (#296; #543 adds loop/token-budget; #754 adds plan-timeout). */
-      killCause?: "timeout" | "inactivity" | "abort" | "loop" | "token-budget" | "plan-timeout";
+      /** Structured self-kill cause (#296; #543 adds loop/token-budget; #754 adds plan-timeout; #951 adds tool-inactivity). */
+      killCause?:
+        | "timeout"
+        | "inactivity"
+        | "abort"
+        | "loop"
+        | "token-budget"
+        | "plan-timeout"
+        | "tool-inactivity";
       /** #543 — the F1 streak evidence at a loop kill (tool + count);
        * persisted on `pipelineState.capEvidence` so `explainCap` renders WHAT looped.
        * #772 — `kind` names which counter fired ("streak" vs the success-keyed
