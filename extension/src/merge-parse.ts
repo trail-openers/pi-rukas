@@ -106,15 +106,6 @@ export function extractMergeNumber(args: string): number | undefined {
   return parseArgsAfterVerb(args).number;
 }
 
-/**
- * Unwrap ONE shell-eval layer (`bash -c …`, `sh -c …`, `eval …`, with
- * `env`/`oo` wrappers) to its quoted string argument. Re-exported from
- * merge-verb-head.ts (the name the round-1 callers imported) so the merge
- * guard can walk the layers itself when extracting the repo flag (which can
- * appear before the verb, in the pre-verb portion of the command).
- */
-export { mergeVerbUnwrapOne };
-
 /** The repo (see `mergeVerbRepo`) parsed from post-verb arguments alone. */
 export function extractMergeRepo(args: string): string | undefined {
   return parseArgsAfterVerb(args).repo;
@@ -243,7 +234,15 @@ function repoFlagBeforeVerb(command: string): string | undefined {
 // ---------------------------------------------------------------------------
 // verb-argument parsing
 
-/** The PR/MR number and forge repo carried by the post-verb arguments. */
+/**
+ * The PR/MR number and forge repo carried by the post-verb arguments.
+ *
+ * NOTE: an UNTERMINATED token list (a quote never closes) returns
+ * `{ number: undefined, repo: undefined }` — indistinguishable from
+ * numberless args. Callers that need fail-closed semantics must use
+ * `mergeVerbArgs` (which carries the fail-closed empty-string tail signal
+ * for that case), not this function directly.
+ */
 function parseArgsAfterVerb(args: string): {
   number: number | undefined;
   repo: string | undefined;
