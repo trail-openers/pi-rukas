@@ -10,9 +10,10 @@
 
 import { statSync } from "node:fs";
 import path from "node:path";
+import type { Writable } from "node:stream";
 import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
-import { extractFindings, lensPromptFor } from "./lens-review-format.ts";
+import { extractFindings, hasReviewEvidence, lensPromptFor } from "./lens-review-format.ts";
 import { LENS_REPORTER_PATH, type LensDef } from "./lens-review.ts";
 import type { LensRunResult } from "./lens-review.ts";
 import type { RosterEntry } from "./lens-roster.ts";
@@ -149,6 +150,11 @@ export async function runLensChild(opts: {
   let attempts = 0;
   let result: DispatchResult | undefined;
   let lastError: string | undefined;
+  // #952 — the lens child's stdin, set by onStdin, read by the onSteer
+  // closure. The closure captures the variable directly rather than looking
+  // it up in childHandles, so a steer is possible from the moment onStdin
+  // fires and is a no-op once the child has exited.
+  let lensStdin: Writable | undefined;
   try {
     while (attempts < MAX_LENS_ATTEMPTS) {
       attempts++;
@@ -176,11 +182,40 @@ export async function runLensChild(opts: {
               feedSlowProgress(deckKey, state);
             },
             onRawEvent: stopSlow.onRawEvent ?? slowRaw,
-            onStdin: (stdin) =>
+            onStdin: (stdin) => {
               // #799 — register the stdin against the DECK KEY (the id
               // dispatch_peek shows) so the child is steerable directly,
               // not only through the orchestrator's active-child path.
-              registerChildHandle(deckKey, stdin, slowLabel, slowRole),
+              registerChildHandle(deckKey, stdin, slowLabel, slowRole);
+              // #952 — capture the handle for the onSteer closure below.
+              lensStdin = stdin;
+            },
+            onSteer: (message) => {
+              // #952 — write the RPC steer envelope to the captured stdin
+              // (the same handle onStdin registers). If the child has
+              // already exited, the #932 closed-stdin guard makes this a
+              // traced no-op — no throw, no EPIPE.
+              if (!lensStdin) {
+                trace(`lens steer skipped (${deckKey}): stdin not yet captured`);
+                return;
+              }
+              if (
+                lensStdin.destroyed === true ||
+                lensStdin.writable === false ||
+                lensStdin.writableEnded === true
+              ) {
+                trace(`lens steer skipped (${deckKey}): stdin closed`);
+                return;
+              }
+              try {
+                lensStdin.write(`${JSON.stringify({ type: "steer", message })}\n`, () => {
+                  /* #932 — the write callback swallows the write's own error; the
+                      stdin `error` listener at spawn time traces it. */
+                });
+              } catch (err) {
+                trace(`lens steer write failed (${deckKey}): ${(err as Error).message}`);
+              }
+            },
           },
         );
         if (result.ok) {
@@ -220,20 +255,31 @@ export async function runLensChild(opts: {
 
   bumpBatch();
 
-  // All attempts failed (or user aborted) — lens is blocked, no findings.
+  // #952 — a cap-killed lens that already reported findings (or wrote a
+  // non-placeholder summary) counts as a completed lens: keep the findings
+  // and summary, set blocked = false, and let computeVerdict judge them
+  // like any other lens result. The killCause suffix in renderSummary still
+  // shows the operator that the lens was cap-killed. Only a cap-killed
+  // lens with NO evidence (no findings, no real summary) stays blocked.
   if (!result || !result.ok) {
+    // #534 — a failed lens still flushes usage from whatever turns
+    // completed before it died; count it like any other dispatch-failed.
+    const findings = result ? extractFindings(result.toolUses, lens.name).findings : [];
+    const summary = result?.text?.trim() || undefined;
+    const hasEvidence = hasReviewEvidence(findings, summary);
     return {
       lens: lens.name,
       ok: false,
       ms: result?.ms ?? 0,
       startMs,
-      findings: [],
+      findings: hasEvidence ? findings : [],
       attempts,
-      blocked: true,
-      parseError: lastError ?? "unknown failure",
-      // #534 — a failed lens still flushes usage from whatever turns
-      // completed before it died; count it like any other dispatch-failed.
+      blocked: !hasEvidence,
+      parseError: hasEvidence ? undefined : (lastError ?? "unknown failure"),
+      summary: hasEvidence ? summary : undefined,
       usage: result?.usage,
+      ...(hasEvidence && result ? { model: result.model } : {}),
+      ...(hasEvidence && result?.transcriptPath ? { transcriptPath: result.transcriptPath } : {}),
       ...(result?.killCause ? { killCause: result.killCause } : {}),
       ...(result?.killCause === "loop" && result.loopEvidence
         ? { loopEvidence: result.loopEvidence }

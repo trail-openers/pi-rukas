@@ -181,8 +181,17 @@ function noticeText(w: Watch, s: RunningState, triggered: string[], excludedMs: 
     .join("\n");
 }
 
-/** The exact operator-mandated steer text (#799 scope 2). */
-export function slowSteerText(elapsedMs: number, turns: number): string {
+/** The exact operator-mandated steer text (#799 scope 2).
+ *
+ * #952 — an optional `role` parameter: for "code-review-specialist" the
+ * text carries the stop clause ("If you have already written your closing
+ * summary, stop now and end") because a lens child that has written its
+ * summary is done; any other role or no argument produces the original
+ * "CONTINUE the task" text byte-for-byte. */
+export function slowSteerText(elapsedMs: number, turns: number, role?: string): string {
+  if (role === "code-review-specialist") {
+    return `You have been running for ${formatElapsed(elapsedMs)} / ${turns} turns. If you have already written your closing summary, stop now and end. Otherwise report status in ≤3 lines and finish your review.`;
+  }
   return `You have been running for ${formatElapsed(elapsedMs)} / ${turns} turns. Report status in ≤3 lines (done / remaining / blocked), then CONTINUE the task — this is not a stop signal. Only if you are re-running or re-scanning the same checks without progress: stop re-scanning, use the gate's exit code, commit, and finish.`;
 }
 
@@ -206,7 +215,7 @@ function deliver(w: Watch, s: RunningState, triggered: string[], excludedMs: num
     try {
       r = (w.steerFn ?? ((id, t, src) => steerChild(id, t, src)))(
         w.id,
-        slowSteerText(elapsed, s.turns),
+        slowSteerText(elapsed, s.turns, w.role),
         "driver-slow-notice",
       );
     } catch (err) {

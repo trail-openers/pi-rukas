@@ -105,17 +105,32 @@ export function spawnBackstopMs(): number {
  * count (input + output + cacheRead + cacheWrite, accumulated per `message_end`
  * — the same sum `progress.ts` tracks). `0` / unset / non-numeric = OFF.
  *
- * SHIPS DEFAULT-OFF for every role (all 0 at ship) — this ticket adds the
- * mechanism + tests; the developer default-on number (derived from #538's
- * measured p99) is a FOLLOW-UP. The budget is a secondary cost bound: the
- * loop-detector (F1) is the primary time/money stop. When the cumulative total
- * crosses the budget, spawn steers the child to wrap up, then kills after the
- * grace window (see capKillGraceMs) with killCause "token-budget".
+ * #952 — code-review-specialist ships with a measured default of 8 000 000
+ * tokens. Measurement: 1 073 lens children (≤150 turns) from
+ * ~/.pi/agent/ensemble-runs transcripts dated 2026-09-27…2026-10-01,
+ * p95 = 4 104 877 tokens; 2× p95 rounded to 0.5 M = 8 000 000.
+ * The env override wins; `PI_ENSEMBLE_TOKEN_BUDGET_CODE_REVIEW_SPECIALIST=0`
+ * disables it.
+ *
+ * All other roles ship DEFAULT-OFF (all 0 at ship). The budget is a secondary
+ * cost bound: the loop-detector (F1) is the primary time/money stop. When the
+ * cumulative total crosses the budget, spawn steers the child to wrap up, then
+ * kills after the grace window (see capKillGraceMs) with killCause
+ * "token-budget".
  */
+const CODE_REVIEW_SPECIALIST_DEFAULT_BUDGET = 8_000_000;
+
 export function tokenBudgetFor(role: string): number {
   const env = process.env[`PI_ENSEMBLE_TOKEN_BUDGET_${role.toUpperCase()}`];
-  const n = Number(env);
-  return Number.isFinite(n) && n > 0 ? n : 0;
+  // Set explicitly (including "0" = off, which must beat the default) or
+  // non-numeric (off, never NaN): the env value wins.
+  if (env !== undefined) {
+    const n = Number(env);
+    if (env.trim() === "" || !Number.isFinite(n) || n <= 0) return 0;
+    return n;
+  }
+  if (role === "code-review-specialist") return CODE_REVIEW_SPECIALIST_DEFAULT_BUDGET;
+  return 0;
 }
 
 /**
