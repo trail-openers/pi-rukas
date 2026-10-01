@@ -43,22 +43,24 @@ process.env.PI_ENSEMBLE_DISPATCH_CAPS = "0"; // caps off: the subject is the wat
 process.env.PI_ENSEMBLE_CAP_KILL_GRACE_MS = "0";
 // The two watchdog knobs must be VISIBLE to each child (they are read at
 // child startup, not at the parent's spawn). The fake `pi` script exports
-// the current parent values, so each case's override lands in the child.
-const exportKnobs =
-  `\nexport PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS=${process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS ?? ''} PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS=${process.env.PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS ?? ''}\n`;
-
-/** The JSONL one-liner an assistant message_end carrying a toolCall block. */
-const toolCallEnd =
-  '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"sleep 30"}}]}}';
-
-/** The JSONL one-liner a toolResult message for call_1. */
-const toolResultLine =
-  '{"type":"message_end","message":{"role":"toolResult","toolName":"bash","toolCallId":"call_1","toolResults":[]}}';
-
+// the current parent values AT WRITE TIME (writeFakePi is called before each
+// case sets its env), so each case's override lands in the child.
 function writeFakePi(body: string) {
+  const inactivity = process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS ?? "";
+  const toolInactivity = process.env.PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS ?? "";
+  const exportKnobs = `export PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS=${inactivity} PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS=${toolInactivity}`;
   writeFileSync(join(fakeDir, "pi"), ["#!/bin/sh", exportKnobs, body].join("\n"));
   chmodSync(join(fakeDir, "pi"), 0o755);
 }
+
+/** The JSONL one-liner an assistant message_end carrying a toolCall block.
+ * Wrapped in echo so the shell script emits it as stdout, not executes it. */
+const toolCallEnd =
+  `echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"sleep 30"}}]}}'`;
+
+/** The JSONL one-liner a toolResult message for call_1. */
+const toolResultLine =
+  `echo '{"type":"message_end","message":{"role":"toolResult","toolName":"bash","toolCallId":"call_1","toolResults":[]}}'`;
 
 /** Restore the process-wide env even when a case above throws. */
 function restoreEnv() {
@@ -83,9 +85,9 @@ try {
   // INACTIVITY bound (but under the tool bound) is NOT killed. The
   // in-flight-tool exemption is the whole point of #951.
   {
-    writeFakePi(`${toolCallEnd}\nsleep 30`);
     process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
-    process.env.PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS = "8000";
+    process.env.PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS = "120000";
+    writeFakePi(`${toolCallEnd}\nsleep 10`);
     console.log("\n[test 951a] toolCall then silent past inactivity bound (not tool bound)...");
     const start = Date.now();
     const r = await spawnSpecialist({ role: "explore", prompt: "irrelevant" });
@@ -95,17 +97,17 @@ try {
       `(a) tool-in-flight child NOT killed past inactivity bound (killCause=${r.killCause ?? "none"})`,
     );
     assertLocal(
-      elapsed >= 7_500 && elapsed < 30_000,
-      `(a) child survived to the 8s tool bound region (took ${elapsed}ms)`,
+      elapsed >= 9_000 && elapsed < 15_000,
+      `(a) child survived to exit (took ${elapsed}ms)`,
     );
   }
 
   // Case (b) — the same child, silent past the TOOL bound, IS killed with
   // killCause 'tool-inactivity' and killBudgetMs = the tool bound.
   {
-    writeFakePi(`${toolCallEnd}\nsleep 30`);
     process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
     process.env.PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS = "3000";
+    writeFakePi(`${toolCallEnd}\nsleep 30`);
     console.log("\n[test 951b] toolCall then silent past tool bound...");
     const r = await spawnSpecialist({ role: "explore", prompt: "irrelevant" });
     assertLocal(r.ok === false, "(b) tool-inactivity-killed child reports ok=false");
@@ -126,9 +128,9 @@ try {
   // Case (c) — a child with NO tool in flight is killed at the inactivity
   // bound with cause 'inactivity' (the #296 behaviour is untouched).
   {
-    writeFakePi(`sleep 30`);
     process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "1500";
     process.env.PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS = "5000";
+    writeFakePi(`sleep 30`);
     console.log("\n[test 951c] silent child, no tool in flight...");
     const r = await spawnSpecialist({ role: "explore", prompt: "irrelevant" });
     assertLocal(
@@ -145,9 +147,9 @@ try {
   // Case (d) — a toolResult closes the span, so subsequent silence kills
   // with cause 'inactivity' (the model-silence bound) again.
   {
-    writeFakePi(`${toolCallEnd}\n${toolResultLine}\nsleep 30`);
     process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "3000";
     process.env.PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS = "6000";
+    writeFakePi(`${toolCallEnd}\n${toolResultLine}\nsleep 30`);
     console.log("\n[test 951d] toolResult closes the span...");
     const r = await spawnSpecialist({ role: "explore", prompt: "irrelevant" });
     assertLocal(
@@ -164,12 +166,12 @@ try {
   // span open (the second tool is still in flight).
   {
     const twoCalls =
-      '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"a"}},{"type":"toolCall","id":"call_2","name":"read","arguments":{"path":"x"}}]}}';
+      `echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"a"}},{"type":"toolCall","id":"call_2","name":"read","arguments":{"path":"x"}}]}}'`;
     const res1 =
-      '{"type":"message_end","message":{"role":"toolResult","toolName":"bash","toolCallId":"call_1","toolResults":[]}}';
-    writeFakePi(`${twoCalls}\n${res1}\nsleep 30`);
+      `echo '{"type":"message_end","message":{"role":"toolResult","toolName":"bash","toolCallId":"call_1","toolResults":[]}}'`;
     process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "1500";
     process.env.PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS = "3000";
+    writeFakePi(`${twoCalls}\n${res1}\nsleep 30`);
     console.log("\n[test 951e] two toolCalls, one result arrives...");
     const r = await spawnSpecialist({ role: "explore", prompt: "irrelevant" });
     assertLocal(
@@ -185,9 +187,9 @@ try {
   // Case (f) — PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS=0 alone still leaves the
   // tool bound armed: a tool-in-flight child is killed at the tool bound.
   {
-    writeFakePi(`${toolCallEnd}\nsleep 30`);
     process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "0";
     process.env.PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS = "3000";
+    writeFakePi(`${toolCallEnd}\nsleep 30`);
     console.log("\n[test 951f] inactivity=0 alone, tool bound armed...");
     const r = await spawnSpecialist({ role: "explore", prompt: "irrelevant" });
     assertLocal(

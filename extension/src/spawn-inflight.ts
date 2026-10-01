@@ -20,11 +20,9 @@
  */
 
 import type { ChildProcess } from "node:child_process";
-import type { Readable } from "node:stream";
-import { createInterface } from "node:readline";
-import type { CapSession } from "./spawn-caps.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
-import { emptyRunningState, ingestEvent, type RunningState } from "./progress.ts";
+import { type RunningState, ingestEvent } from "./progress.ts";
+import type { CapSession } from "./spawn-caps.ts";
 import { inactivityTimeoutMs, toolInactivityTimeoutMs, willRetryAfter } from "./spawn-support.ts";
 
 /** The per-spawn set of open toolCall ids. A toolCall block opens one; the
@@ -99,24 +97,28 @@ export function createInactivityPoll(opts: {
     toolInactivityMs > 0 ? toolInactivityMs : Number.POSITIVE_INFINITY,
   );
   if (pollBudgetMs === Number.POSITIVE_INFINITY) return () => undefined;
-  const interval = setInterval(() => {
-    const budget = armedBudget();
-    if (budget.ms <= 0) return; // this budget is disabled; the other is checked in its own branch
-    if (Date.now() - lastActivityAt() >= budget.ms) {
-      onKill(budget.cause, budget.ms, inFlightTools.toolNames());
-      child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
-    }
-  }, Math.min(30_000, Math.max(250, Math.floor(pollBudgetMs / 2))));
+  const interval = setInterval(
+    () => {
+      const budget = armedBudget();
+      if (budget.ms <= 0) return; // this budget is disabled; the other is checked in its own branch
+      if (Date.now() - lastActivityAt() >= budget.ms) {
+        onKill(budget.cause, budget.ms, inFlightTools.toolNames());
+        child.kill("SIGTERM");
+        setTimeout(() => child.kill("SIGKILL"), 5_000).unref();
+      }
+    },
+    Math.min(30_000, Math.max(250, Math.floor(pollBudgetMs / 2))),
+  );
   interval.unref();
   return () => clearInterval(interval);
 }
 
 /**
- * #951 — the stdout line handler factory. Extracted from spawn.ts to keep
- * spawn.ts under the 500-line cap. Returns a function that processes one
- * stdout line, updating the in-flight state, running state, and activity
- * tracking.
+ * The stdout line handler, moved verbatim from spawn.ts (AGENTS.md §12
+ * file-size limit; the comment-retention gate #948 enforces verbatim
+ * moves). Processes one stdout line: resets activity tracking, parses the
+ * JSONL event, streams into the running state, and advances the in-flight
+ * tool state.
  */
 export function createStdoutLineHandler(opts: {
   start: number;
@@ -126,9 +128,12 @@ export function createStdoutLineHandler(opts: {
   caps: CapSession;
   onProgress?: (snapshot: RunningState) => void;
   onRawEvent?: (event: PiJsonEvent) => void;
-  willRetryAfter: (event: PiJsonEvent) => boolean;
   onAgentEnd: (parsed: PiJsonEvent) => void;
-}) {
+}): (line: string) => {
+  kind: string;
+  agentEnd: PiJsonEvent | null;
+  assistantMessageEnd: PiJsonEvent | null;
+} {
   const {
     start,
     inFlightTools,
@@ -137,13 +142,11 @@ export function createStdoutLineHandler(opts: {
     caps,
     onProgress,
     onRawEvent,
-    willRetryAfter,
     onAgentEnd,
   } = opts;
-
-  return (line: string, lastActivityKind: string): { kind: string; agentEnd: PiJsonEvent | null; assistantMessageEnd: PiJsonEvent | null } => {
+  return (line: string) => {
     const trimmed = line.trim();
-    if (!trimmed) return { kind: lastActivityKind, agentEnd: null, assistantMessageEnd: null };
+    if (!trimmed) return { kind: "", agentEnd: null, assistantMessageEnd: null };
     let kind = "unparsed stdout";
     let parsed: PiJsonEvent | null = null;
     try {
@@ -152,6 +155,16 @@ export function createStdoutLineHandler(opts: {
       appendStderr(`${trimmed}\n`);
       return { kind, agentEnd: null, assistantMessageEnd: null };
     }
+    // Stream into the running state. ingestEvent returns true only when an
+    // assistant turn completed (the right cadence to surface to the user).
+    // #543 F1 — pass the full block list to the loop detector (ops-role
+    // children are exempt: the cap session returns no observer for them).
+    // #772 — the 5th argument feeds the success-keyed counter with the
+    // toolResult events the streak observer never sees. Without it the
+    // counter's only input is invisible in production: the session eagerly
+    // builds the observer, but nothing routes the event stream to it
+    // (the "second detector that silently does not fire" class — exactly
+    // what the ticket's gap gate condemned).
     if (
       ingestEvent(
         runningState,
@@ -161,18 +174,30 @@ export function createStdoutLineHandler(opts: {
         caps.toolResultObserver,
       )
     ) {
+      // #543 F6 — check the token budget on every assistant turn end.
       caps.tokenBudgetTracker?.check(Date.now());
       caps.tokenBudgetTracker?.onMessageEnd(Date.now());
       caps.turnNudge?.(runningState.turns);
       onProgress?.({ ...runningState, usage: { ...runningState.usage } });
     }
+    // #839 — raw-event observer for the dispatch deck's live view. Fires
+    // for EVERY parsed child event; the observer (dispatch-deck-live.ts)
+    // keeps only assistant message_end blocks and toolResult messages.
     onRawEvent?.(parsed);
+    // #951 — advance the in-flight tool state (toolCall opens, toolResult
+    // closes). Runs on the SAME hot path where lastActivityAt resets, so the
+    // watchdog's poll below sees the current set at every tick.
     inFlightTools.observe(parsed);
+    // Retain only the two events collapseEvents actually reads (the latest
+    // agent_end + the latest assistant message_end as fallback). Everything
+    // else is already absorbed by ingestEvent into runningState above, and
+    // dropping the rest keeps per-spawn memory bounded.
     kind = parsed.type ?? "unknown event";
     let agentEnd: PiJsonEvent | null = null;
     let assistantMessageEnd: PiJsonEvent | null = null;
     if (parsed.type === "agent_end") {
       agentEnd = parsed;
+      // Not while the child is retrying — see `willRetryAfter`.
       if (!willRetryAfter(parsed)) onAgentEnd(parsed);
     } else if (
       parsed.type === "message_end" &&

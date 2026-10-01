@@ -28,7 +28,6 @@ import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
 import { emptyRunningState, ingestEvent } from "./progress.ts";
 import { excludeToolsFor } from "./role-tools.ts";
 import { ROLES, type RoleName, isRoleName } from "./roles.ts";
-import { InFlightTools, createInactivityPoll } from "./spawn-inflight.ts";
 import { type CapSession, capKillAttribution, createCapSession } from "./spawn-caps.ts";
 import { collapseEvents } from "./spawn-collapse-events.ts";
 import {
@@ -36,6 +35,7 @@ import {
   discoverInstalledExtensions,
   piEnsembleExtensionPath,
 } from "./spawn-extension-forward.ts";
+import { InFlightTools, createInactivityPoll, createStdoutLineHandler } from "./spawn-inflight.ts";
 import { withSpawnSlot } from "./spawn-semaphore.ts";
 import {
   STDERR_TAIL_BYTES,
@@ -322,7 +322,6 @@ async function spawnSpecialistInner(
   const inFlightTools = new InFlightTools();
   const stdoutRl = createInterface({ input: child.stdout });
   const lineHandler = createStdoutLineHandler({
-    child: child.stdout!,
     start,
     inFlightTools,
     appendStderr,
@@ -330,12 +329,18 @@ async function spawnSpecialistInner(
     caps,
     onProgress: opts.onProgress,
     onRawEvent: opts.onRawEvent,
-    willRetryAfter,
+    onAgentEnd: (parsed) => {
+      lastAgentEnd = parsed;
+      if (!willRetryAfter(parsed)) completePrompt();
+    },
   });
   stdoutRl.on("line", (line) => {
     lastActivityAt = Date.now();
     stdoutLines += 1;
-    lastActivityKind = lineHandler(line, lastActivityKind, lastAgentEnd, lastAssistantMessageEnd);
+    const res = lineHandler(line);
+    if (res.kind) lastActivityKind = res.kind;
+    if (res.agentEnd) lastAgentEnd = res.agentEnd;
+    if (res.assistantMessageEnd) lastAssistantMessageEnd = res.assistantMessageEnd;
   });
   child.stderr.on("data", (d) => {
     appendStderr(d);
