@@ -17,6 +17,7 @@ import type { ResolvedModelChoice } from "./models.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { budgetSteerText } from "./progress.ts";
 import { excludeToolsFor } from "./role-tools.ts";
+import { CODE_REVIEW_SPECIALIST_ROLE } from "./roles.ts";
 import {
   applyUserExtension,
   discoverInstalledExtensions,
@@ -141,7 +142,7 @@ export function tokenBudgetFor(role: string): number {
     if (env.trim() === "" || !Number.isFinite(n) || n <= 0) return 0;
     return n;
   }
-  if (role === "code-review-specialist") return CODE_REVIEW_SPECIALIST_DEFAULT_BUDGET;
+  if (role === CODE_REVIEW_SPECIALIST_ROLE) return CODE_REVIEW_SPECIALIST_DEFAULT_BUDGET;
   return 0;
 }
 
