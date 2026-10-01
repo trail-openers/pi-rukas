@@ -172,6 +172,36 @@ const LENS_SECURITY = EVIDENCE_ROSTER.find((e) => e.name === "SECURITY")!;
   else process.env.PI_ENSEMBLE_LENS_EVIDENCE = prev;
 }
 
+// #952 — canary: the exact stop sentence must appear in BOTH terminal branches
+// of lensPromptFor. The findings branch (above) is already covered by the
+// prompt assertion; the clean-lane branch ("If you find nothing… one-sentence
+// summary") is the one with zero existing prompt-text coverage.
+{
+  const STOP_SENTENCE =
+    "After writing your summary, STOP — no further tool calls. Do not re-read files, re-run commands or re-scan the diff; the summary is your terminal output.";
+  const findingsBranch = lensPromptFor(LENS_SIMPLE, "diff", "ctx", undefined, EVIDENCE_ROSTER);
+  const cleanLaneBranch = lensPromptFor(LENS_SECURITY, "diff", "ctx", undefined, EVIDENCE_ROSTER);
+  assert(
+    findingsBranch.includes(STOP_SENTENCE),
+    "#952 canary: findings-expected branch carries the exact stop sentence",
+  );
+  assert(
+    cleanLaneBranch.includes(STOP_SENTENCE),
+    "#952 canary: clean-lane (no-findings) branch carries the exact stop sentence",
+  );
+  // Both branches end with the stop sentence as the final non-blank line.
+  const lastLine = (s: string) =>
+    [...s.split("\n").reverse()].find((l) => l.trim() !== "") ?? "";
+  assert(
+    lastLine(findingsBranch) === STOP_SENTENCE,
+    "#952 canary: stop sentence is the LAST line of the findings branch",
+  );
+  assert(
+    lastLine(cleanLaneBranch) === STOP_SENTENCE,
+    "#952 canary: stop sentence is the LAST line of the clean-lane branch",
+  );
+}
+
 // ------------------------------------------------------------- the threshold
 
 const mk = (severity: Finding["severity"]): Finding => ({

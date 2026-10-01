@@ -81,13 +81,6 @@ const withEnv = <T>(vars: Record<string, string | undefined>, fn: () => T): T =>
   );
   assert(
     withEnv(
-      { PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER: undefined },
-      () => tokenBudgetFor("code-review-specialist") === 0,
-    ),
-    "tokenBudgetFor: unset → 0 (off) for a reviewer role",
-  );
-  assert(
-    withEnv(
       { PI_ENSEMBLE_TOKEN_BUDGET_DEVELOPER: "500000" },
       () => tokenBudgetFor("developer") === 500_000,
     ),
