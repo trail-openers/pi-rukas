@@ -1,6 +1,6 @@
 import { stripQuotedSegments } from "./bash-command-parser.ts";
 import { mergeVerbArgs } from "./merge-parse.ts";
-import { FORGE_PREFIX_SRC, mergeVerbSpanRegex, shellSegments } from "./merge-tokens.ts";
+import { mergeVerbSpanRegex, shellSegments } from "./merge-tokens.ts";
 import { innerBodies, matchMergeVerb } from "./merge-verb-head.ts";
 
 /**
@@ -85,14 +85,14 @@ export function mergesPr(command: string): string | undefined {
 function restDoors(texts: string[]): string | undefined {
   for (const raw of texts) {
     const c = stripQuotedSegments(raw);
-    // The forge word, optionally path-qualified (`/usr/bin/gh`), shared with
-    // MERGE_VERB_SPAN_SRC via FORGE_PREFIX_SRC (merge-tokens.ts) so the two
-    // doors cannot drift (#955 lens round-2: the doors hard-coded a bare
-    // `gh`/`glab` here, so a path-qualified forge bypassed them). The
-    // `\s+` after the forge word is stripped from FORGE_PREFIX_SRC here
-    // because the REST doors need an optional repo flag between the forge
-    // word and `api` (`gh -R o/r api …`) — the same shape the verb door
-    // allows (#955 adversarial round 2, finding 1).
+    // The forge word, optionally path-qualified (`/usr/bin/gh`) — an
+    // inline copy of the forge-word fragment that the verb door keeps in
+    // MERGE_VERB_SPAN_SRC (merge-tokens.ts), kept separate (and NOT
+    // composed from that source) because the REST doors need an OPTIONAL
+    // repo flag between the forge word and `api` (`gh -R o/r api …`) that
+    // the verb span does not carry (#955 adversarial round 2, finding 1).
+    // The leading separator / `oo` prefix differ between the doors, so the
+    // shared fragment never composes into both as-is.
     const FORGE =
       "(?:^|[;&|]|\\s)(?:oo\\s+)?(?:/\\S*/)?(?:gh|glab)(?:\\s+(?:-R|--repo|--project)\\s+\\S+)?\\s+";
     // REST door, gh: `gh api` on /pulls/{n}/merge — gh api defaults to
