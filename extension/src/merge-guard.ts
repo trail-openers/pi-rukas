@@ -134,6 +134,7 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // through it); production uses execp.
     const execFn: MergeExecFn = opts.execFn ?? execp;
 
+    // Resolve the PR number (from the command or the current branch).
     // Resolve the PR number. The verb door (`gh pr merge …` / `glab mr
     // merge …`) carries the number in the arguments AFTER the matched verb
     // (#955: the legacy span-based extraction only saw the verb itself, so
@@ -320,13 +321,18 @@ function block(reason: string) {
 }
 
 /**
- * Extract the PR number from the matched REST-door span.
+ * Extract the PR number from the matched merge span.
  *
- * `gh api repos/o/r/pulls/12/merge` → 12. `glab api /projects/1/mr/7/merge`
- * → 7. The number is read from the matched span ONLY — the REST endpoint
- * path carries the number as a path segment. (The verb door is handled by
- * `mergeVerbArgs` + `extractMergeNumber` in merge-parse.ts — it does NOT
- * use this function.)
+ * `gh pr merge 12` → 12. `gh pr merge` → undefined (resolve via gh pr view).
+ * `glab mr merge 7` → 7. The number is read from the matched span ONLY —
+ * scoping to the whole command would pick up unrelated numbers (a `cd
+ * /data/3 && gh pr merge` extracts `3` from the path) and validate the
+ * ledger for the wrong PR.
+ * #955 — the verb door no longer reaches here: its number is read from the
+ * post-verb arguments (merge-parse.ts `extractMergeNumber`); this span-scoped
+ * read now covers only the REST doors, whose endpoint path carries the number
+ * as a path segment (`gh api …/pulls/12/merge` → 12, `glab api …/mr/7/merge`
+ * → 7).
  */
 function extractPrNumber(matched: string): number | undefined {
   const m = /\b(\d+)\b/.exec(matched);

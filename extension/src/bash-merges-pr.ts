@@ -1,5 +1,10 @@
+import { stripQuotedSegments } from "./bash-command-parser.ts";
+import { mergeVerbArgs } from "./merge-parse.ts";
+
 /**
  * bash-merges-pr — the merge matcher (`mergesPr`).
+ *
+ * Does this command merge a PR/MR (or a REST door that does)?
  *
  * #912 — the merge guard (merge-guard.ts) calls this ahead of every
  * trust/sandbox bypass, exactly like `createsIssue`: ops holds an
@@ -32,9 +37,6 @@
  * Returns the matched span (for the refusal text), or undefined when the
  * command does not merge.
  */
-
-import { stripQuotedSegments } from "./bash-command-parser.ts";
-import { mergeVerbArgs } from "./merge-parse.ts";
 
 export function mergesPr(command: string): string | undefined {
   const c = stripQuotedSegments(command);
