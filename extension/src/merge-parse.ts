@@ -45,6 +45,7 @@
 
 import { isValidRepoValue, mergeVerbSpanRegex, rawTokens, shellSegments } from "./merge-tokens.ts";
 import { innerBodies, matchMergeVerb, mergeVerbUnwrapOne } from "./merge-verb-head.ts";
+export { mergeVerbUnwrapOne };
 
 /**
  * The arguments that follow the matched merge verb, verbatim (the raw tail
@@ -249,27 +250,102 @@ function hasMergeVerbInRaw(command: string): boolean {
 }
 
 /**
- * The repo flag placed BEFORE the merge verb (`gh -R o/r pr merge 17`).
+ * The repo flag placed BEFORE the merge verb (`gh -R o/r pr merge 17`),
+ * including the pre-verb portion of a shell-eval body: `bash -c "gh -R
+ * o/r pr merge 17"` merges exactly the same PR, and the flag sits in the
+ * INNER text (the raw outer segment has no unquoted `-R` token at all).
+ * #955: the flag was scanned only over the raw command's segments, so the
+ * unwrapped tail carried the repo for the NUMBER but not for the repo —
+ * the guard verified the PR in the CWD's repo instead of `o/r` (a
+ * wrong-target ledger check). The walk now scans the raw segments AND,
+ * for every segment carrying a merge, the segment's unwrapped inner text
+ * (the same `mergeVerbUnwrapOne` the tail path uses, per segment, so the
+ * repo always comes from the SAME tail that yields the number). The
+ * value is read exactly like the post-verb path (quoted value → inner
+ * text, trailing unbalanced `)` stripped), and a value read from an
+ * inner body is validated at the `mergeVerbRepo` boundary like the tail
+ * value (an unsafe inner value is refused there, never interpolated).
+ *
  * The token walk is quote-aware (a quoted `"-R"` is not a flag); only
- * unquoted flag tokens count. Runs segment-by-segment over the WHOLE
- * command (scan-not-anchor — the flag can sit in any segment).
+ * unquoted flag tokens count. Runs segment-by-segment (scan-not-anchor —
+ * the flag can sit in any merge segment).
  */
 function repoFlagBeforeVerb(command: string): string | undefined {
-  for (const seg of shellSegments(command)) {
-    if (matchMergeVerb(seg) === undefined) continue;
-    const tokens = rawTokens(seg);
-    if (tokens.terminated === false) continue;
-    for (let i = 0; i < tokens.list.length; i++) {
-      const t = tokens.list[i] ?? "";
-      if (t === "-R" || t === "--repo" || t === "--project") {
-        const v = tokens.list[i + 1];
-        if (v === undefined || v.length === 0) continue;
-        const q = v[0];
-        return q === "'" || q === '"' ? v.slice(1, -1) : v;
+  // The pre-verb flag can only sit in a segment that is itself a merge
+  // invocation — a raw segment, or the segment's unwrapped inner text
+  // (a shell-eval body that matchMergeVerb cannot see through). The inner
+  // walk mirrors the tail path's 3-layer budget exactly: each unwrapped
+  // layer's segments are the same `shellSegments` the tail path uses, and
+  // each inner layer is re-entered with one less budget, so the repo
+  // always comes from the SAME tail that yields the number (including
+  // nested bodies past a single unwrap — and exhaustion fails closed the
+  // same way the tail path does).
+  const walk = (text: string, depth: number): string | undefined => {
+    for (const seg of shellSegments(text)) {
+      // The raw segment is scanned only when it is itself a merge
+      // invocation — a `gh -R o/r pr merge 17` segment, or a wrapper head
+      // (`timeout 30 gh -R o/r pr merge 17`) that matchMergeVerb strips.
+      // (Scanning every raw segment would pick up a repo flag from an
+      // UNRELATED segment in a multi-segment command.)
+      if (matchMergeVerb(seg) !== undefined) {
+        const direct = repoFlagInTokens(seg);
+        if (direct !== undefined) return direct;
       }
+      // The segment's shell-eval body: the flag can sit in the inner text
+      // (a body that matchMergeVerb cannot see through) at ANY depth — the
+      // inner is re-entered through shellSegments with the shared 3-layer
+      // budget, exactly the way the tail path (matchMergeVerbTail) walks
+      // the layers, so the repo comes from the SAME tail that yields the
+      // number. A non-merge segment (`cd x`) is skipped: its `bash -c` body
+      // (if any) belongs to the merge's own layer walk, not to an unrelated
+      // segment's.
+      if (depth <= 0) continue; // budget exhausted — the tail path fails closed here too
+      const inner = mergeVerbUnwrapOne(seg);
+      if (inner === undefined) continue;
+      const found = walk(inner, depth - 1);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  };
+  return walk(command, 3);
+}
+
+/**
+ * Read the `-R`/`--repo`/`--project` flag (with its value) from one
+ * segment's raw tokens, or `undefined` when the segment carries no repo
+ * flag. Quoted values are unquoted the way the post-verb path reads them
+ * (the shell strips the quotes), and a trailing unbalanced `)` glued to
+ * the value is stripped (the same coping `parseArgsAfterVerb` applies
+ * before matching its tokens, where `17)` is the number 17 in
+ * `(gh pr merge 17)`).
+ */
+function repoFlagInTokens(seg: string): string | undefined {
+  const tokens = rawTokens(seg);
+  if (tokens.terminated === false) return undefined;
+  for (let i = 0; i < tokens.list.length; i++) {
+    const t = tokens.list[i] ?? "";
+    if (t === "-R" || t === "--repo" || t === "--project") {
+      const v = tokens.list[i + 1];
+      if (v === undefined || v.length === 0) continue;
+      const q = v[0];
+      const val = q === "'" || q === '"' ? v.slice(1, -1) : v;
+      return stripGluedParen(val);
     }
   }
   return undefined;
+}
+
+/**
+ * Strip a trailing unbalanced `)` from a raw repo-value token — the
+ * subshell's closing paren glued to the value by `rawTokens` (the same
+ * coping `parseArgsAfterVerb` applies before matching its tokens, where
+ * `17)` is the number 17 in `(gh pr merge 17)`). Balanced parens inside
+ * a repo value are not a repo shape and stay as-is (they fail the
+ * `isValidRepoValue` boundary check upstream — refused, never interpolated).
+ */
+function stripGluedParen(value: string): string {
+  if (value.endsWith(")") && value.length > 1) return value.slice(0, -1);
+  return value;
 }
 
 // ---------------------------------------------------------------------------
@@ -329,14 +405,15 @@ function parseArgsAfterVerb(args: string): {
       const eq = t.indexOf("=");
       if (eq > 0) {
         const flagName = t.slice(0, eq);
-        if (flagName === "--repo" || flagName === "--project") repo = t.slice(eq + 1);
+        if (flagName === "--repo" || flagName === "--project")
+          repo = stripGluedParen(t.slice(eq + 1));
         continue;
       }
       if (t === "-R" || t === "--repo" || t === "--project") {
         const v = tokens.list[i + 1];
         if (v !== undefined && v.length > 0) {
           const q = v[0];
-          repo = q === "'" || q === '"' ? v.slice(1, -1) : v;
+          repo = stripGluedParen(q === "'" || q === '"' ? v.slice(1, -1) : v);
           i++;
         }
         continue;

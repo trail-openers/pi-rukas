@@ -13,7 +13,7 @@
  */
 
 import { mergesPr } from "../src/bash-merges-pr.ts";
-import { extractMergeNumber, mergeVerbArgs } from "../src/merge-parse.ts";
+import { extractMergeNumber, mergeVerbArgs, mergeVerbRepo } from "../src/merge-parse.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -75,6 +75,50 @@ for (const cmd of [
 assert(
   extractMergeNumber(mergeVerbArgs('cd x && bash -c "gh pr merge 17"') ?? "") === 17,
   "canary (number): mergeVerbArgs/extractMergeNumber yield 17 from the per-segment shape",
+);
+
+// ------------------------------------------------------------ repo through the shell-eval unwrap (#955)
+// The -R flag sits INSIDE the shell-eval body: the tail path (number) sees
+// it after unwrapping, but mergeVerbRepo used to read the repo only from
+// the post-verb tail of the raw command — so the number came from `o/r`
+// while the guard verified the PR in the CWD's repo (wrong-target ledger
+// check). The repo must come from the SAME unwrapped tail that yields the
+// number, for every path.
+for (const cmd of [
+  'bash -c "gh pr merge 17 -R o/r"',
+  'cd x && bash -c "gh pr merge 17 -R o/r"',
+  'cd x && bash -c "cd y && bash -c \\"gh pr merge 17 -R o/r\\""',
+]) {
+  const r = mergeVerbRepo(cmd);
+  assert(
+    r?.kind === "repo" && r.repo === "o/r",
+    `canary (repo through unwrap): repo is o/r — ${cmd}`,
+  );
+  assert(
+    extractMergeNumber(mergeVerbArgs(cmd) ?? "") === 17,
+    `canary (number through unwrap): number is 17 — ${cmd}`,
+  );
+}
+
+// An unsafe repo value inside the unwrapped body is refused at the
+// extraction boundary (never interpolated), not silently dropped.
+const unsafe = mergeVerbRepo('bash -c "gh pr merge 17 -R \\"o/r; x\\""');
+assert(
+  unsafe?.kind === "unsafe",
+  "canary (repo through unwrap, unsafe): an injected repo value in the body is refused (unsafe), not dropped",
+);
+
+// The subshell's closing paren glued to the value: `(gh pr merge 17 -R
+// o/r)` must read the repo o/r (the paren is stripped, the way the number
+// path already copes with `17)`), not the false-refusal `o/r)`.
+const paren = mergeVerbRepo("(gh pr merge 17 -R o/r)");
+assert(
+  paren?.kind === "repo" && paren.repo === "o/r",
+  "canary (repo, subshell paren): the closing paren is stripped — repo is o/r",
+);
+assert(
+  extractMergeNumber(mergeVerbArgs("(gh pr merge 17 -R o/r)") ?? "") === 17,
+  "canary (number, subshell paren): number is 17",
 );
 
 // ------------------------------------------------------------ REST reads stay open
